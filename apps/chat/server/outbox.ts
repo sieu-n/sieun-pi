@@ -38,6 +38,10 @@ type Line = { t: "row"; row: OutboxRow } | { t: "set"; requestId: string; patch:
 
 /** Retry waits grow to this and stay there. A soft cap: the send keeps trying until pi-host takes it or refuses it for good. */
 const MAX_BACKOFF_MS = 30_000;
+/** The wait before try `attempts + 1` of a send to pi-host, after `attempts` failed. */
+export const retryWait = (attempts: number): number => Math.min(MAX_BACKOFF_MS, 250 * 2 ** Math.min(attempts, 10));
+/** Whether pi-host refused a send for good, so no retry changes the answer. */
+export const refusedForGood = (message: string): boolean => FATAL.test(message);
 /** A sent row no input matched after this long is dropped from the overlay; pi-host has it, and its own entry shows on reload. */
 const SENT_TTL_MS = 6 * 3600_000;
 const SWEEP_MS = 3000;
@@ -264,12 +268,12 @@ export class Outbox {
       if (!this.rows.has(row.requestId)) return;
       const message = error instanceof Error ? error.message : String(error);
       const attempts = row.attempts + 1;
-      if (FATAL.test(message)) {
+      if (refusedForGood(message)) {
         this.deps.log(`outbox: ${row.requestId} to ${row.conversation} refused: ${message}`);
         this.set(row, { state: "failed", attempts, error: message });
         return;
       }
-      const wait = Math.min(MAX_BACKOFF_MS, 250 * 2 ** Math.min(attempts, 10));
+      const wait = retryWait(attempts);
       this.deps.log(`outbox: ${row.requestId} to ${row.conversation} attempt ${attempts} failed, retry in ${wait} ms: ${message}`);
       // The row stays `sending`; after a few tries the page shows the reason, so a long pi-host restart is visible.
       this.set(row, { attempts, ...(attempts >= 3 ? { error: message } : {}) });

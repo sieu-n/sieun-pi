@@ -25,6 +25,14 @@ export const FIXTURE_IDS = {
   generalChannel: "ch_general",
 };
 
+/** The agents the seed makes, one per root chat, keyed as FIXTURE_IDS names their work threads. */
+export const FIXTURE_AGENTS = {
+  vent: "ag_vent",
+  harness: "ag_ai-harness-developer-environment-vp",
+  crawler: "ag_crawler-vp",
+  frontend: "ag_frontend-bro",
+};
+
 /** A drawn stand-in for a screenshot of the board panel, for the rich answer's embedded image (served by /api/local-image). */
 const BOARD_SHOT = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
 <rect width="640" height="360" rx="18" fill="#f1f1f2"/>
@@ -162,9 +170,9 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
   } satisfies ChatBoard);
 
   // The chat server's own files: thread kinds, read marks, channels, duties and the check-in.
-  const vp = "ag_ai-harness-developer-environment-vp";
+  const vp = FIXTURE_AGENTS.harness;
   const state: StateFile = {
-    v: 1, threads: { [ids.cutover]: { kind: "job", parent: ids.harness }, [ids.uptimeDuty]: { kind: "job", parent: ids.harness } }, dms: [ids.crawler],
+    v: 1, threads: { [ids.cutover]: { kind: "job", parent: ids.harness }, [ids.uptimeDuty]: { kind: "job", parent: ids.harness } },
     reads: {
       [ids.vent]: { at: at(1, 3.5) }, [ids.frontend]: { at: now }, [ids.cutoverChannel]: { at: at(1), seq: 4 },
       "dm_vent": { at: at(0, -2), seq: 9 }, "dm_frontend-bro": { at: now, seq: 2 }, [`dm_${vp.slice(3)}`]: { at: at(3), seq: 2 },
@@ -264,7 +272,7 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
     duty: dutyId, at: when, trigger: "schedule", ms: 3100, verdict: value >= target ? "met" : "missed", metrics: { [key]: { value, target, op: ">=", met: value >= target } },
     summary: value >= target ? `${key} ${value}% met ${target}%` : `${key} ${value}% missed ${target}%`,
   });
-  writeJson(join(dataDir, "boards", ids.harness, "duties.json"), {
+  writeJson(join(dataDir, "agents", vp, "duties.json"), {
     duties: [duty("d1", "Relay uptime", "The canary relay answers every minute.", "relay_up_pct", 99), { ...duty("d2", "Search freshness", "Search covers every entry within a minute.", "fresh_pct", 95), status: "paused" }],
     runs: {
       d1: [run("d1", "relay_up_pct", at(2), 99.5, 99), { ...run("d1", "relay_up_pct", dutyAt, 97.2, 99), job: { id: ids.uptimeDuty, name: uptimeDuty.row.name } }, run("d1", "relay_up_pct", at(0, -8), 98.1, 99)],
@@ -292,7 +300,7 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
     schema: 1, refinements: [],
     entries: { prompt: {}, skill: {}, subagent: {}, memory: { m1: memory("m1", "The Mac sleeps at night, so cross-box tests run in the day", at(3)), m2: memory("m2", "pi-pool slots free up at 07:00 KST", at(1)) } },
   });
-  writeJson(join(dataDir, "boards", ids.harness, "duties", "d1.state.json"), { lastSeenAt: new Date(at(0, -8)).toISOString(), downMinutes: 41 });
+  writeJson(join(dataDir, "agents", vp, "duties", "d1.state.json"), { lastSeenAt: new Date(at(0, -8)).toISOString(), downMinutes: 41 });
 
   // Keep one turn streaming for as long as the fixture runs.
   const stream = async () => {

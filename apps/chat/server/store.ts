@@ -1,6 +1,6 @@
 /**
- * The chat server's own small state in its data dir: thread kinds, opened DMs, read marks, channels and their post logs, duties and
- * check-ins. pi-host owns every thread's entries; nothing here copies them. One process writes these files.
+ * The chat server's own small state in its data dir: thread kinds, read marks, channels and their post logs. Agents and DM rooms are
+ * agent-store.ts, duties and check-ins boards.ts. pi-host owns every thread's entries; nothing here copies them. One process writes these files.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -11,7 +11,6 @@ export interface ReadMark { at: number; seq?: number }
 export interface StateFile {
   v: 1;
   threads: Record<string, ThreadMeta>;
-  dms: AgentId[];
   reads: Record<ConversationId, ReadMark>;
 }
 
@@ -50,7 +49,7 @@ export class Store {
 
   constructor(readonly dir: string) {
     mkdirSync(join(dir, "channels"), { recursive: true });
-    this.state = readJson<StateFile>(join(dir, "state.json"), { v: 1, threads: {}, dms: [], reads: {} });
+    this.state = readJson<StateFile>(join(dir, "state.json"), { v: 1, threads: {}, reads: {} });
     this.channels = readJson<{ channels: ChannelRow[] }>(join(dir, "channels.json"), { channels: [] }).channels;
   }
 

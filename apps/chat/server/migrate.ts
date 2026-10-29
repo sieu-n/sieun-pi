@@ -67,7 +67,7 @@ export async function migrateAgents(host: Host, dataDir: string, opts: MigrateOp
   const since = now - (opts.days ?? 30) * DAY_MS;
   const log = opts.log ?? (() => {});
   const store = opts.store ?? new AgentStore(dataDir);
-  const state: StateFile = opts.state?.state ?? readJson<StateFile>(join(dataDir, "state.json"), { v: 1, threads: {}, dms: [], reads: {} });
+  const state: StateFile = opts.state?.state ?? readJson<StateFile>(join(dataDir, "state.json"), { v: 1, threads: {}, reads: {} });
   const rows = (await host.threads()).filter(row => !row.archived);
   const report: MigrationReport = { apply: opts.apply, since, agents: [], aliases: {}, ms: 0 };
   const taken = new Set(store.agents.agents.map(a => a.slug));

@@ -16,13 +16,15 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 
 | Id | Form | Example |
 |---|---|---|
-| Root thread, and its agent | pi-host thread id | `0f1e0000-0000-4000-8000-000000000001` |
-| Job inside a thread, and its agent | `<thread>:<conversation>` | `0f1e...0001:14` |
+| Agent | `ag_<slug>` | `ag_vent` |
+| Agent's DM room | `dm_<slug>` | `dm_vent` |
+| Work thread, root job thread, or a root chat no agent holds yet | pi-host thread id | `0f1e0000-0000-4000-8000-000000000001` |
+| Job inside a thread | `<thread>:<conversation>` | `0f1e...0001:14` |
 | Channel | `ch_<id>` | `ch_cutover` |
 | Thread item | `e<entry>` for an input, `t<entry of its input>` for a turn | `e12`, `t12` |
-| Channel post | `p<seq>` | `p7` |
+| Channel post and DM post | `p<seq>` | `p7` |
 
-1. An agent's id is the id of its own conversation, so `/api/c/<agent id>` opens its transcript and a DM with it.
+1. An agent (`agents.json`, `server/agents.ts`) has one main work thread, its root job threads, and one DM room. `/api/c/dm_<slug>` opens the DM, and `/api/c/<work thread id>` opens the work thread's transcript. A thread id of an agent's work thread or root job resolves to the agent wherever an agent id is taken, and a principal names the agent (`ag_<slug>`).
 2. The owner's principal id is `owner`.
 3. A turn's id is the id of the input it answers, so the live turn keeps one id from the moment the input lands.
 4. A pending send is `r:<requestId>` until its real item arrives: an input with its text in a thread, or the post with its `requestId` in a channel.
@@ -37,39 +39,42 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | `api.header(id)` | `GET /api/c/:id` | `ConversationHeader`: summary, members, model, the agent, channel purpose and home chat. |
 | `api.items(id, {before, after, around, limit})` | `GET /api/c/:id/items` | `TimelinePage`: items oldest first, with `older`, `newer` and `focus` cursors; a thread's newest page ends with its pending sends. |
 | `api.replies(channel, root)` | `GET /api/c/:id/replies/:root` | A channel thread: `{root, items}`. |
-| `api.send(id, SendRequest)` | `POST /api/c/:id/send` | `SendResult` at once: a thread's pending item `r:<requestId>`, or a channel's post with its deliveries. |
-| `api.retrySend(id, requestId)` | `POST /api/c/:id/send/:requestId/retry` | `SendResult`: a failed thread send tries again now. |
-| `api.discardSend(id, requestId)` | `DELETE /api/c/:id/send/:requestId` | Drops a failed thread send; its item goes away on every page. |
-| `api.abort(id)` | `POST /api/c/:id/abort` | Stops the running turn of that conversation; for a channel, of every member. |
-| `api.patch(id, {name, archived, model, thinkingLevel, cwd})` | `PATCH /api/c/:id` | The new header. A job inside a thread takes model changes only. `cwd` moves a root thread to another project folder, and its next request runs there; the server answers 400 for the home folder, a folder above it, a relative path or a missing folder. |
+| `api.send(id, SendRequest)` | `POST /api/c/:id/send` | `SendResult` at once: a DM's stored post, a thread's pending item `r:<requestId>`, or a channel's post with its deliveries. |
+| `api.retrySend(id, requestId)` | `POST /api/c/:id/send/:requestId/retry` | `SendResult`: a failed DM post or thread send tries again now; a DM post's delivery goes back to `queued`. |
+| `api.discardSend(id, requestId)` | `DELETE /api/c/:id/send/:requestId` | Drops a failed thread send; its item goes away on every page. A DM post is stored, so a DM answers 400. |
+| `api.abort(id)` | `POST /api/c/:id/abort` | Stops the running turn of that conversation; for a DM, of the agent's work thread; for a channel, of every member. |
+| `api.patch(id, {name, archived, model, thinkingLevel, cwd})` | `PATCH /api/c/:id` | The new header. On a DM, a rename or archive changes the agent and its work thread, and the rest changes the work thread. A job inside a thread takes model changes only. `cwd` moves a root thread to another project folder, and its next request runs there; the server answers 400 for the home folder, a folder above it, a relative path or a missing folder. |
 | `api.read(id, seq?)` | `POST /api/c/:id/read` | Sets the owner's read mark. |
 | `api.jobs(thread)` | `GET /api/threads/:id/jobs` | `JobNode[]`, the thread's job tree. |
-| `api.openDm(agent)` | `POST /api/dms` | Lists that root chat under DMs and returns its summary; a job is returned and stays unlisted. |
+| `api.openDm(agent)` | `POST /api/dms {agent}` | The agent's DM summary; `agent` is an agent id or one of its thread ids. Every agent has a DM. |
+| | `GET /api/dms` | Every agent's DM summary, archived ones too. |
 | `![alt](/abs/path.png)` in markdown | `GET /api/local-image?path=` | An image file on this box by its absolute or `~/` path: PNG, JPEG, GIF, WebP or SVG up to 25 MiB whose bytes match its type. |
 
-1. A Solo row is a root thread of kind chat, and a DM row is a root chat the owner opened with `openDm`. A root job (a thread started for a chat, such as a duty run's thread), and a job inside a thread are kind `job` with their `parent`: they never sit under Direct messages, show under their parent agent (its Swarm and the Agents page's Jobs tab), and open by link.
-2. `around=<item id or e<entry>>` returns the page that holds that entry and `focus`, the id of the item that holds it, so a search hit opens at its message.
-3. A thread page always starts at an input, so a turn never splits across two pages.
-4. In a thread, `message` items are inputs, `turn` items hold the answer text, the steps (thinking and tool calls with name, one-line summary, status and output) and the jobs the turn spawned, and `system` items are notes such as a compaction.
+1. A DM row is one per agent that is not archived, `dm_<slug>`, with `agent` its agent id, `status` working while any of its threads runs, `preview` the newest post, and `unread` the agent's posts after the owner's read mark. A Solo row is a root chat no agent holds yet, which the migration turns into an agent within one thread list read. An agent's work thread, a root job (a thread started for an agent, such as a duty run's thread) and a job inside a thread are kind `job` with their `parent` (a work thread's is its DM room): they never sit in the sidebar, show under their agent (its Swarm and the Agents page's Jobs tab), and open by link.
+2. A DM is a room of posts the chat server stores in `<data dir>/rooms/dm_<slug>.jsonl` (`server/rooms.ts`), never a view of the thread. Its header has `workThread`, which "Open work thread" opens, and `readSeq`. Its items are `message` items, `p<seq>`, oldest first, and `before`, `after` and `around` take post ids. An owner post carries `requestId`, `send` and its delivery to the agent in `deliveries` (queued, delivered or failed). An agent post carries `why` (the tell_owner call's), `work` (the work thread and `e<entry>` of the call, for "Show work") and `jobs` (the jobs its turn started, with live status).
+3. A DM send writes the post and answers with it at once, shows it on every watching page, then delivers it to the agent's work thread as the owner's input (`requestId` `d:<post>:<agent>`, steer when busy, owner turn), retried with backoff and across a restart until pi-host takes it, or `failed` when pi-host refuses it for good. The agent answers through its speaking calls: each `tell_owner` or `send_message` with no `to` whose result says it went out becomes the agent's post, and a held or refused call posts nothing. A turn a channel post started speaks to the channel, not the DM. An owner input typed in the work thread itself shows as his post once. A repeated `requestId`, or a re-read of the thread, lands nothing twice.
+4. `around=<item id or e<entry>>` returns the page that holds that entry and `focus`, the id of the item that holds it, so a search hit opens at its message.
+5. A thread page always starts at an input, so a turn never splits across two pages.
+6. In a thread, `message` items are inputs, `turn` items hold the answer text, the steps (thinking and tool calls with name, one-line summary, status and output) and the jobs the turn spawned, and `system` items are notes such as a compaction.
    An agent speaks to people only through its speaking tools, Prime's `tell_owner` (which pi-host's durable chat threads run from Prime's own chat extension) and pi-host's `send_message`, drawn alike (`SPEAKING_TOOLS` in `server/timeline.ts`). A turn of an agent that does holds `sent`, each call's text in order, which the page draws as one bubble each, and `text` is them joined by a blank line. Its other text becomes `note` steps beside its thinking and tool steps in the fold, and the calls themselves are not steps. A `tell_owner` call its guard held (its result opens with `Kept as a note, not sent`) is a `note` step, as Prime's feed shows it, and a refused one (an error result) is neither. A turn with `sent: []` sent nothing and draws only its fold, as "Worked quietly · N steps".
    A turn from before the conversation's first `send_message` call has no `sent`, and its own text is its bubble, so an agent that has never called the tool reads as before (`speaksThroughSendMessage` in `server/timeline.ts`). The server keeps the earliest call it has seen per conversation, so a page of quiet turns after it still reads as sent-only.
-5. A turn's `jobs` hold each child conversation a `subagent` call made, which the page draws as a thread pill under the turn; a step's `job` names it too.
-6. In a channel every post is a `message` item; a root post carries `thread` with its reply count, last reply and authors, and replies come from `replies`.
-7. Send takes `text`, `images` (`{data, mimeType}`, base64 without the data: prefix), `mentions` (agent ids), `threadRoot` for a channel reply, `whenBusy` (steer, the default, or followUp) and a `requestId`, and a repeated `requestId` lands once.
-8. A send lands in the chat server and answers at once, as in Slack; no answer waits on pi-host. A thread send is written to the outbox (`<data dir>/outbox.jsonl`), shows on every watching page as the owner's message `r:<requestId>` with `send: "sending"`, and goes to pi-host behind the answer as the owner's input, retried with backoff until pi-host takes it (`send: "sent"`, also a steer that waits for the running turn), and across a restart. The item goes away (`items` with `removed`) once the input with its text shows in the conversation. pi-host refusing it for good (no thread, archived) makes it `send: "failed"` with `sendError`, until Retry or Discard. Each mention in it goes to that agent as an agent message once pi-host has the send.
-9. A channel send writes the post and answers; each mention goes to that agent's conversation as an `agent.message` input with a `[#channel · post N from You]` header and the thread so far (channels.md 4.1).
-10. Every owner send and owner mention reaches pi-host with `ownerTurn: true`, so pi-pool starts its run at once; an agent's mention waits its place in the turn queue.
-11. While a run waits for a working slot, the header and the `queue` events carry its place (`TurnPlace`: queued with position and total, or marked), the header has `queue`, and watchers get `queue` events until it works, when the place goes to null; a channel delivery carries the same place in `queue` and reads `queued` while it waits.
-12. What the turn a mention starts sends with `send_message` comes back into the post's thread, one post per call, as that agent's posts, and the delivery reads `answered` with the first post; a call whose `to` names another channel is not posted there. A turn that sent nothing reads `no_reply`. A target that has never called `send_message` posts its answer's text as one post instead, or reads `no_reply` when it has none. A post 6 agent hops from the owner reads `stopped`.
-13. A delivery's states are queued, delivered, read, answered, no_reply, stopped and failed.
-14. Mentioning a non-member answers 400 with the line "X is not in #name. Add it to the channel first."
+7. A turn's `jobs` hold each child conversation a `subagent` call made, which the page draws as a thread pill under the turn; a step's `job` names it too.
+8. In a channel every post is a `message` item; a root post carries `thread` with its reply count, last reply and authors, and replies come from `replies`.
+9. Send takes `text`, `images` (`{data, mimeType}`, base64 without the data: prefix), `mentions` (agent ids), `threadRoot` for a channel reply, `whenBusy` (steer, the default, or followUp) and a `requestId`, and a repeated `requestId` lands once.
+10. A thread send lands in the chat server and answers at once, as in Slack; no answer waits on pi-host. A thread send is written to the outbox (`<data dir>/outbox.jsonl`), shows on every watching page as the owner's message `r:<requestId>` with `send: "sending"`, and goes to pi-host behind the answer as the owner's input, retried with backoff until pi-host takes it (`send: "sent"`, also a steer that waits for the running turn), and across a restart. The item goes away (`items` with `removed`) once the input with its text shows in the conversation. pi-host refusing it for good (no thread, archived) makes it `send: "failed"` with `sendError`, until Retry or Discard. Each mention in it goes to that agent as an agent message once pi-host has the send.
+11. A channel send writes the post and answers; each mention goes to that agent's conversation as an `agent.message` input with a `[#channel · post N from You]` header and the thread so far (channels.md 4.1).
+12. Every owner send and owner mention reaches pi-host with `ownerTurn: true`, so pi-pool starts its run at once; an agent's mention waits its place in the turn queue.
+13. While a run waits for a working slot, the header and the `queue` events carry its place (`TurnPlace`: queued with position and total, or marked), the header has `queue`, and watchers get `queue` events until it works, when the place goes to null; a channel delivery carries the same place in `queue` and reads `queued` while it waits.
+14. What the turn a mention starts sends with `send_message` comes back into the post's thread, one post per call, as that agent's posts, and the delivery reads `answered` with the first post; a call whose `to` names another channel is not posted there. A turn that sent nothing reads `no_reply`. A target that has never called `send_message` posts its answer's text as one post instead, or reads `no_reply` when it has none. A post 6 agent hops from the owner reads `stopped`.
+15. A delivery's states are queued, delivered, read, answered, no_reply, stopped and failed.
+16. Mentioning a non-member answers 400 with the line "X is not in #name. Add it to the channel first."
 
 ## Agents and models
 
 | Call | Endpoint | Returns |
 |---|---|---|
-| `api.agents({archived})` | `GET /api/agents` | `AgentSummary[]`, one card per chat and job, newest first. |
-| `api.createAgent({name, model, thinkingLevel, cwd, kind, parent})` | `POST /api/agents` | The new root thread's `AgentSummary`; `kind: "job"` with a `parent` files it under that chat. It runs in `cwd`, else in the default project folder; the home folder is refused with 400. |
+| `api.agents({archived})` | `GET /api/agents` | `AgentSummary[]`, one card per agent and job, newest first, and one per root chat no agent holds yet. |
+| `api.createAgent({name, model, thinkingLevel, cwd, kind, parent})` | `POST /api/agents` | The new agent's `AgentSummary` (`ag_<slug>`, with `room` and `home`): its work thread, record and DM room are made at once. `kind: "job"` with a `parent` makes a root job thread filed under that agent instead. It runs in `cwd`, else in the default project folder; the home folder is refused with 400. |
 | `api.projects()` | `GET /api/projects` | `ProjectList`: the configured project checkouts on this box (`APPS_CHAT_PROJECTS`, else `~/src/sieun-pi`, `~/Documents/Github/auto-sns-agent` and `~/Documents/Github/sieun-pi`), the first as `default`, and the `home` folder the server refuses. |
 | `api.setAgentCwd(id, cwd)` | `PATCH /api/c/:id {cwd}` | The new header, with the root thread moved to `cwd`. |
 | `api.agentConfig(id)` | `GET /api/agents/:id/config` | `AgentConfig`: identity and purpose, where it runs, its board, memory, instructions, swarm and 7-day usage. |
@@ -79,9 +84,9 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | `api.models()` | `GET /api/models` | `ModelCatalog`: models with labels and thinking levels, and the default (Opus 5.5, high, c31). |
 
 1. An agent's `status` is working, idle, sleeping or failed.
-2. `parent` is the chat or job that started it, and `channels` lists the channels it is in.
-3. `AgentConfig` reads each part where it lives (`server/agent-config.ts`): name, model, status and cwd from pi-host's thread row and tree; `purpose` from the conversation's first entry (the owner's first message, or the brief a parent or duty sent); the system text from `PRIME_BASE_PROMPT` in the running pi-host's `packages/pi-family/preamble.ts`; the thread file `<durable dir>/threads/<thread>.sqlite`; the board from its chat's `chat.board`; duties and the check-in from `<data dir>/boards/<chat>/duties.json`; usage from `durable_usage`.
-4. A job's board, duties and check-in are its chat's: the root of its thread, or the chat a root job is filed under.
+2. An agent's `thread` is its work thread, `room` its DM, and `home` the work thread's cwd when the agent was made. A job's `parent` is the agent or job that started it, and `channels` lists the channels it is in. Members and mentions of a channel take agent ids and store the work thread.
+3. `AgentConfig` reads each part where it lives (`server/agent-config.ts`): name, model, status and cwd from pi-host's thread row and tree; `purpose` from the conversation's first entry (the owner's first message, or the brief a parent or duty sent); the system text from `PRIME_BASE_PROMPT` in the running pi-host's `packages/pi-family/preamble.ts`; the thread file `<durable dir>/threads/<thread>.sqlite`; the board from its agent's work thread's `chat.board`; duties and the check-in from `<data dir>/agents/<agent id>/duties.json`; usage from `durable_usage`.
+4. A job's board, duties and check-in are its agent's: the agent of its thread, or the agent a root job is filed under.
 5. `memory` is `{kind: "none", note, related}` today: pi-host's durable registry gives a thread only the Prime preamble, coding tools and the subagent tool, so it has no memory store. `related` names the stores near it, such as Prime's continual harness (`<agent dir>/harness/harness_state.json`, which only Prime and pi-rlm kernels read) and its duties' precheck state files, each with `loaded: false`.
 6. `instructions.files` are the AGENTS.md and CLAUDE.md files in its cwd and each folder above it, then `<agent dir>/AGENTS.md`, each `loaded: false`, since pi-durable loads none of them.
 7. The web client opens a configuration at `#/agents/<id>` (with `?section=` overview, runs, board, memory, instructions or swarm) in the side panel; a card click or Enter opens it, Esc or back closes it, and Message opens the conversation.
@@ -118,22 +123,23 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 
 | Call | Endpoint | Returns |
 |---|---|---|
-| `api.board(chat)` | `GET /api/threads/:id/board` | `BoardView`: `{board, awaitingGo}`, with the ids of plan steps that wait for the owner's go. |
-| `api.boardOps(chat, ops)` | `POST /api/threads/:id/board` | The new `BoardView` and `summaries`, one line per applied op; the ops are today's `BoardOp`s, applied as the owner. |
-| `api.chatAgents(chat)` | `GET /api/threads/:id/agents` | `{agents: ChatAgent[]}` for the step owner chips. |
-| `api.duties(chat)` | `GET /api/threads/:id/duties` | `{duties: DutyRow[]}`: today's `DutyView` with its newest 20 runs newest first and `running` while a run measures, plus `card` (`dutyCard`) and `last` (`judgedRun`, `missStreak`). |
-| `api.dutyAction(chat, {duty, action, schedule})` | `POST /api/threads/:id/duties` | The duties after run, pause, resume or schedule. |
-| `api.checkIn(chat)` | `GET /api/threads/:id/check-in` | `CheckInView`. |
-| `api.setCheckIn(chat, {everyMs, pause})` | `POST /api/threads/:id/check-in` | The new `CheckInView`; pause is 1h, tomorrow, forever or null. |
+| `api.board(chat)` | `GET /api/agents/:id/board` | `BoardView`: `{board, awaitingGo}`, with the ids of plan steps that wait for the owner's go. |
+| `api.boardOps(chat, ops)` | `POST /api/agents/:id/board` | The new `BoardView` and `summaries`, one line per applied op; the ops are today's `BoardOp`s, applied as the owner. |
+| `api.chatAgents(chat)` | `GET /api/agents/:id/agents` | `{agents: ChatAgent[]}` for the step owner chips. |
+| `api.duties(chat)` | `GET /api/agents/:id/duties` | `{duties: DutyRow[]}`: today's `DutyView` with its newest 20 runs newest first and `running` while a run measures, plus `card` (`dutyCard`) and `last` (`judgedRun`, `missStreak`). |
+| `api.dutyAction(chat, {duty, action, schedule})` | `POST /api/agents/:id/duties` | The duties after run, pause, resume or schedule. |
+| `api.checkIn(chat)` | `GET /api/agents/:id/check-in` | `CheckInView`. |
+| `api.setCheckIn(chat, {everyMs, pause})` | `POST /api/agents/:id/check-in` | The new `CheckInView`; pause is 1h, tomorrow, forever or null. |
 | `api.importPrime(chat, primeId)` | `POST /api/threads/:id/import-prime {prime, cwd?}` | `{board, duties, runs, checkInMs}`: copies a moved Prime chat's board, duties, their last 20 runs each, each duty's precheck state and its check-in interval from Prime's chat data dir into the thread. With `cwd`, it first moves the thread to that project folder. |
 | `api.forYou()` | `GET /api/for-you` | `{items: ForYouItem[]}` across every chat, open and done, newest first. |
 | `api.boards()` | `GET /api/boards` | `BoardRow[]`: per chat its progress, open asks, steps awaiting a go, check-in and duties. |
 
-1. A chat's board is the `chat.board` document of its root conversation in pi-host, changed through today's reducer (`lib/api/shared/chat-board.ts`).
-2. Each owner op also reaches the chat as a `[board] ...` input, as today.
-3. A duty run works as in today's chat: the server runs the duty's precheck command with STATE_FILE, LAST_RUNS_FILE, OUTPUT_FILE and PRECHECK_MODE, judges its metrics, and records the run; when something is due (a miss, an error, an overrun or flagged items) it starts a duty job, a thread filed under the chat, whose `send_message` texts reach the chat as one `[duty <id>]` input from that job (a job that never called it sends its final answer, and "nothing to report" sends nothing).
-4. A duty job, or any agent, changes a board with `POST /api/threads/:id/board {actor: "agent", ops}`; only the owner answers a todo, and a refused op answers 400.
-5. A due check-in or wake reaches the chat as an input from `board`. `POST /api/threads/:id/wakes {id?, conversation?, on, note, since}` arms a wake, where `on` is the board skill's run, time or check wait; it answers `{wake, path, passes?}`, and `passes` means the check already exits 0. A wake is a JSON file in `<data dir>/wakes/` in the legacy chat's format, ticked by its own code (`server/wakes.ts`).
+1. Boards, duties and check-ins are keyed by agent id. Each `/api/agents/:id/...` route has a `/api/threads/:id/...` twin that takes a thread id and resolves it to its agent, because pi-host's `chat_board` tool and the duty briefs name the thread; a root chat no agent holds yet keys by its thread id. `ForYouItem.chatId`, `BoardRow.chatId` and the `board` and `duties` events' `chatId` are agent ids, and `chatName` the agent's name.
+2. An agent's board is the `chat.board` document of its work thread's root conversation in pi-host, changed through today's reducer (`lib/api/shared/chat-board.ts`). Its duties, their precheck state and its check-in live in `<data dir>/agents/<agent id>/`; an agent whose old `boards/<thread>/` folder the migration has not copied yet keeps using that folder.
+3. Each owner op also reaches the work thread as a `[board] ...` input, as today.
+4. A duty run works as in today's chat: the server runs the duty's precheck command with STATE_FILE, LAST_RUNS_FILE, OUTPUT_FILE and PRECHECK_MODE, judges its metrics, and records the run; when something is due (a miss, an error, an overrun or flagged items) it starts a duty job, a thread filed under the chat, whose `send_message` texts reach the chat as one `[duty <id>]` input from that job (a job that never called it sends its final answer, and "nothing to report" sends nothing).
+5. A duty job, or any agent, changes a board with `POST /api/threads/:id/board {actor: "agent", ops}`; only the owner answers a todo, and a refused op answers 400.
+6. A due check-in or wake reaches the work thread as an input from `board`. `POST /api/threads/:id/wakes {id?, conversation?, on, note, since}` arms a wake, where `on` is the board skill's run, time or check wait; it answers `{wake, path, passes?}`, and `passes` means the check already exits 0. A wake is a JSON file in `<data dir>/wakes/` in the legacy chat's format, ticked by its own code (`server/wakes.ts`).
 
 ## Usage, pool and hosts
 
@@ -170,19 +176,19 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 `/api/live` is one WebSocket per tab, and `lib/api/live.svelte.ts` owns it.
 
 1. The server sends `hello` (me, sidebar, agents, conversations) on connect, then `sidebar`, `agent`, `agent_removed`, `conversation`, `status`, `jobs`, `board`, `for_you`, `duties` and `channel` to every tab. `duties` carries a chat's `DutyRow[]` when a run starts or ends and when a duty is paused, resumed or rescheduled.
-2. `items` and `queue` go only to tabs that watch that conversation; `items` may carry `removed`, ids to drop, such as a pending send that landed or was discarded. The server sends no `partial`.
+2. `items` and `queue` go only to tabs that watch that conversation, and a DM's `status` follows its agent, so the page draws typing dots while the agent works; `items` may carry `removed`, ids to drop, such as a pending send that landed or was discarded. The server sends no `partial`.
 3. A tab sends `{type: "watch", conversation, after}` and `{type: "unwatch", conversation}`, and `after` is the newest item id it holds, so a reconnect gets what it missed, and the thread's pending sends.
 
 ## Fixture mode
 
 `npm run fixture` seeds these, all over the last five days.
 
-1. Four chats are seeded: Vent (finished turns with thinking and tool steps, an image, a mermaid answer and a finished job), AI harness developer environment VP (a turn that runs for as long as the server runs, a running job and a board with every step state), Crawler VP (a rich answer with callouts, a table, a diagram, a task list, GitHub cards, file, wiki, thread and board pills, a screenshot, a fold and code, then a failed turn) and frontend bro.
-2. pi cutover prep and Relay uptime duty <stamp> (the thread of duty d1's missed run) are root jobs of the AI harness VP, not DMs; Crawler VP is a chat opened as a DM; and old relay probe is archived.
+1. Four agents are seeded, each with its work thread and DM room: Vent (finished turns with thinking and tool steps, an image, a mermaid answer and a finished job), AI harness developer environment VP (a turn that runs for as long as the server runs, a running job and a board with every step state), Crawler VP (a rich answer with callouts, a table, a diagram, a task list, GitHub cards, file, wiki, thread and board pills, a screenshot, a fold and code, then a failed turn) and frontend bro.
+2. pi cutover prep and Relay uptime duty <stamp> (the thread of duty d1's missed run) are root jobs of the AI harness VP, and old relay probe is an archived agent. Vent's DM has its history as posts, one with a `why` and a job pill, and an owner post whose answer came from a `tell_owner` call; the other DMs hold their first exchange.
 3. Each chat runs in `<data dir>/work/<name>`, with AGENTS.md files there and in `work/`, and `<data dir>/prime-agent` stands in for Prime's agent dir with a global AGENTS.md and a harness store of two memories.
 4. #pi-cutover has posts in answered, no_reply and queued states, a thread with two replies and an @owner post, and #general has one thread.
-5. The AI harness VP has two duties with runs and a check-in.
-6. A send to any thread gets an answer through `send_message`, the plain answer as two calls and every other as one, and the seeded turns and AI harness developer environment VP keep their plain-text answers, as agents from before the tool; a message with "quiet" writes a private note and sends nothing, "spawn" starts a job, "fail" ends in an error, "slow" takes a minute for Stop, "queue" waits 2 s at place 3 then 1 of 7 before it starts, "mermaid" answers with a diagram, "broken diagram" with a mermaid block that does not parse, and "rich" with an answer in every format the chat renders.
+5. The AI harness VP has two duties with runs and a check-in, in `agents/ag_ai-harness-developer-environment-vp/`.
+6. A DM post or a send to any thread gets an answer through `send_message`, which comes back to a DM as the agent's posts, the plain answer as two calls and every other as one, and the seeded turns and AI harness developer environment VP keep their plain-text answers, as agents from before the tool; a message with "quiet" writes a private note and sends nothing, "spawn" starts a job, "fail" ends in an error, "slow" takes a minute for Stop, "queue" waits 2 s at place 3 then 1 of 7 before it starts, "mermaid" answers with a diagram, "broken diagram" with a mermaid block that does not parse, and "rich" with an answer in every format the chat renders.
 7. The words canary, relay and migration repeat across days and authors for search.
 
 ## Host seam

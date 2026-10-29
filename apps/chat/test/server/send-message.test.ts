@@ -169,7 +169,7 @@ describe("on the fixture", () => {
     const hits = await s.get<SearchResult>(`/api/search?q=${encodeURIComponent("zebra relay")}&in=${id}`);
     const hit = hits.hits.find(h => h.kind === "turn");
     assert.equal(hit?.role, "agent");
-    assert.equal(hit?.author.id, id);
+    assert.equal(hit?.author.id, s.app.threads.principal(id).id);
   });
 
   test("a channel mention posts one reply per send_message call; a quiet turn posts nothing and reads no_reply", async () => {
@@ -178,7 +178,7 @@ describe("on the fixture", () => {
     const post = (await s.send("POST", `/api/c/${channel.id}/send`, { text: "@channel desk is the relay fine?", mentions: [id], requestId: "smc-1" })).body;
     const thread = await until(() => s.get(`/api/c/${channel.id}/replies/${post.item.id}`), t => t.root.deliveries[0].state === "answered");
     assert.deepEqual(thread.items.map((i: Extract<Item, { kind: "message" }>) => [i.author.id, i.text]), [
-      [id, 'Got it. You said: "@channel desk is the relay fine?".'], [id, "I checked the canary and the relay, and both answer."],
+      [s.app.threads.principal(id).id, 'Got it. You said: "@channel desk is the relay fine?".'], [s.app.threads.principal(id).id, "I checked the canary and the relay, and both answer."],
     ]);
     assert.equal(thread.root.deliveries[0].answer, thread.items[0].id);
     const quiet = (await s.send("POST", `/api/c/${channel.id}/send`, { text: "@channel desk quiet please", mentions: [id], requestId: "smc-2" })).body;

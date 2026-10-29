@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import type { ConversationSummary, Item, SearchResult, Sidebar, TimelinePage } from "../../web/src/lib/api/types.ts";
-import { FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
+import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { start, until, type Running } from "./helpers.ts";
 
 let s: Running;
@@ -22,14 +22,15 @@ after(async () => {
 const turnText = (page: TimelinePage) => page.items.filter(i => i.kind === "turn").map(i => (i as Extract<Item, { kind: "turn" }>).text);
 
 describe("conversations", () => {
-  test("the sidebar groups solo threads, channels and DMs", async () => {
+  test("the sidebar groups channels and one DM per agent", async () => {
     const sidebar = await s.get<Sidebar>("/api/sidebar");
-    assert.deepEqual(sidebar.solo.map(c => c.name).sort(), ["AI harness developer environment VP", "Vent", "frontend bro"]);
+    assert.deepEqual(sidebar.solo, [], "every root chat is an agent");
     assert.deepEqual(sidebar.channels.map(c => c.name), ["general", "pi-cutover"]);
-    // Only root chats are DMs: a root job, a duty run's thread and a job inside a thread stay out even when listed in `dms`.
-    assert.deepEqual(sidebar.dms.map(c => c.name), ["Crawler VP"]);
+    // One row per agent: a root job, a duty run's thread, a work thread and a job inside a thread stay out.
+    assert.deepEqual(sidebar.dms.map(c => c.name).sort(), ["AI harness developer environment VP", "Crawler VP", "Vent", "frontend bro"]);
+    assert.ok(sidebar.dms.every(c => c.kind === "dm" && c.id.startsWith("dm_") && c.agent?.startsWith("ag_")));
     assert.equal(sidebar.forYou, 4);
-    assert.ok(!sidebar.solo.some(c => c.name === "old relay probe"), "archived threads stay out");
+    assert.ok(!sidebar.dms.some(c => c.name === "old relay probe"), "an archived agent stays out");
   });
 
   test("a thread page has turns with tool steps, an image and a job pill", async () => {
@@ -142,8 +143,8 @@ describe("live turns", () => {
     const page = await until(() => s.get<TimelinePage>(`/api/c/${ids.frontend}/items`), p => p.items.some(i => i.kind === "turn" && i.jobs.length > 0));
     const pill = page.items.find(i => i.kind === "turn" && i.jobs.length) as Extract<Item, { kind: "turn" }>;
     assert.match(pill.jobs[0]!.name, /canary relay/);
-    const agents = await s.get<any[]>("/api/agents");
-    assert.ok(agents.some(a => a.id === pill.jobs[0]!.conversation && a.kind === "job" && a.parent.id === ids.frontend));
+    const list = await s.get<any[]>("/api/agents");
+    assert.ok(list.some(a => a.id === pill.jobs[0]!.conversation && a.kind === "job" && a.parent.id === agents.frontend));
     live.close();
   });
 });
@@ -154,7 +155,7 @@ describe("channels and mentions", () => {
     assert.equal(sent.status, 200);
     assert.equal(sent.body.deliveries[0].state, "queued", "the post answers before its mention reaches the agent");
     const thread = await until(() => s.get(`/api/c/${ids.cutoverChannel}/replies/${sent.body.item.id}`), t => t.root.deliveries[0].state === "answered");
-    assert.equal(thread.items[0].author.id, ids.frontend);
+    assert.equal(thread.items[0].author.id, agents.frontend);
     assert.equal(thread.root.thread.replies, 2);
     const entries = await s.get<TimelinePage>(`/api/c/${ids.frontend}/items`);
     assert.ok(entries.items.some(i => i.kind === "message" && i.author.id === "owner" && i.text.startsWith("[#pi-cutover · post")));
@@ -169,8 +170,8 @@ describe("channels and mentions", () => {
   test("channels create, add members and keep read marks", async () => {
     const created = await s.send("POST", "/api/channels", { name: "#Relay Ops", purpose: "relay", members: [ids.vent] });
     assert.equal(created.body.name, "relay-ops");
-    const added = await s.send("POST", `/api/channels/${created.body.id}/members`, { agents: [ids.crawler] });
-    assert.deepEqual(added.body.members.map((m: any) => m.principal.id), ["owner", ids.vent, ids.crawler]);
+    const added = await s.send("POST", `/api/channels/${created.body.id}/members`, { agents: [agents.crawler] });
+    assert.deepEqual(added.body.members.map((m: any) => m.principal.id), ["owner", agents.vent, agents.crawler]);
     const read = await s.send("POST", `/api/c/${ids.cutoverChannel}/read`, {});
     assert.equal(read.status, 200);
     const sidebar = await s.get<Sidebar>("/api/sidebar");
@@ -222,9 +223,11 @@ describe("boards", () => {
     const answered = await s.send("POST", `/api/threads/${ids.harness}/board`, { ops: [{ op: "todo_update", id: "t1", reply: "Thursday 09:00", done: true }] });
     assert.equal(answered.status, 200, JSON.stringify(answered.body));
     assert.equal(answered.body.board.todos.find((t: any) => t.id === "t1").reply, "Thursday 09:00");
-    await live.waitFor(e => e.type === "board" && e.chatId === ids.harness);
+    await live.waitFor(e => e.type === "board" && e.chatId === agents.harness);
     const forYou = await s.get("/api/for-you");
-    assert.equal(forYou.items.find((i: any) => i.todo.id === "t1" && i.chatId === ids.harness).todo.done, true);
+    const asked = forYou.items.find((i: any) => i.todo.id === "t1" && i.chatId === agents.harness);
+    assert.equal(asked.todo.done, true);
+    assert.equal(asked.chatName, "AI harness developer environment VP");
     const page = await until(() => s.get<TimelinePage>(`/api/c/${ids.harness}/items?limit=200`), p => p.items.some(i => i.kind === "message" && i.text.startsWith("[board]")));
     assert.ok(page);
     live.close();
@@ -251,13 +254,13 @@ describe("boards", () => {
     const duties = await s.get(`/api/threads/${ids.frontend}/duties`);
     assert.equal(duties.duties[0].last.verdict, "missed");
     assert.equal((await s.get(`/api/threads/${ids.frontend}/check-in`)).everyMs, 21_600_000);
-    assert.ok((await s.get("/api/for-you")).items.some((i: any) => i.chatId === ids.frontend && i.todo.text === "Moved ask"));
+    assert.ok((await s.get("/api/for-you")).items.some((i: any) => i.chatId === agents.frontend && i.todo.text === "Moved ask"));
   });
 
   test("a duty run runs its precheck, records the judged run, and a miss starts a duty job whose answer reaches the chat", async () => {
     const dir = mkdtempSync(join(tmpdir(), "duty-"));
-    const file = join(s.app.store.dir, "boards", ids.frontend, "duties.json");
-    mkdirSync(join(s.app.store.dir, "boards", ids.frontend), { recursive: true });
+    const file = s.app.boards.dutiesPath(agents.frontend);
+    mkdirSync(join(file, ".."), { recursive: true });
     const script = `const fs = require("fs"); const seen = JSON.parse(fs.readFileSync(process.env.STATE_FILE, "utf8")); ` +
       `fs.writeFileSync(process.env.STATE_FILE, JSON.stringify({ runs: (seen.runs ?? 0) + 1 })); ` +
       `fs.writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { up: (seen.runs ?? 0) === 0 ? 90 : 100 }, flagged: [] }))`;
@@ -271,8 +274,8 @@ describe("boards", () => {
     assert.equal(run.verdict, "missed");
     assert.equal(run.metrics.up.value, 90);
     assert.match(run.job.name, /^Spec uptime duty /);
-    const agents = await s.get<any[]>("/api/agents");
-    assert.equal(agents.find(a => a.id === run.job.id).parent.id, ids.frontend);
+    const list = await s.get<any[]>("/api/agents");
+    assert.equal(list.find(a => a.id === run.job.id).parent.id, agents.frontend);
     await until(() => s.get<TimelinePage>(`/api/c/${ids.frontend}/items?limit=200`), p => p.items.some(i => i.kind === "message" && i.text.startsWith("[duty d9]") && i.author.id === run.job.id));
     await s.send("POST", `/api/threads/${ids.frontend}/duties`, { duty: "d9", action: "run" });
     const met = await until(() => s.get(`/api/threads/${ids.frontend}/duties`), v => v.duties[0].runs.length === 2);
@@ -296,7 +299,7 @@ describe("boards", () => {
     const paused = await s.send("POST", `/api/threads/${ids.harness}/check-in`, { pause: "1h" });
     assert.equal(paused.body.paused, true);
     const rows = await s.get("/api/boards");
-    assert.equal(rows.find((r: any) => r.chatId === ids.harness).checkIn.paused, true);
+    assert.equal(rows.find((r: any) => r.chatId === agents.harness).checkIn.paused, true);
   });
 });
 
@@ -304,12 +307,16 @@ describe("agents, usage and hosts", () => {
   test("create, rename, change model and archive a thread", async () => {
     const created = await s.send("POST", "/api/agents", { name: "spec thread", model: "anthropic/claude-sonnet-5-5", thinkingLevel: "medium" });
     assert.equal(created.body.model.id, "claude-sonnet-5-5");
-    const id = created.body.id;
-    const renamed = await s.send("PATCH", `/api/c/${id}`, { name: "spec thread 2", model: "anthropic/claude-opus-5-5" });
+    assert.equal(created.body.id, "ag_spec-thread");
+    const room = created.body.room;
+    assert.equal(room, "dm_spec-thread");
+    assert.ok((await s.get<Sidebar>("/api/sidebar")).dms.some(c => c.id === room), "a new agent has its DM at once");
+    const renamed = await s.send("PATCH", `/api/c/${room}`, { name: "spec thread 2", model: "anthropic/claude-opus-5-5" });
     assert.equal(renamed.body.summary.name, "spec thread 2");
     assert.equal(renamed.body.model.label, "Opus 5.5");
-    await s.send("PATCH", `/api/c/${id}`, { archived: true });
-    assert.ok(!(await s.get<Sidebar>("/api/sidebar")).solo.some(c => c.id === id));
+    assert.equal(renamed.body.workThread, created.body.thread);
+    await s.send("PATCH", `/api/c/${room}`, { archived: true });
+    assert.ok(!(await s.get<Sidebar>("/api/sidebar")).dms.some(c => c.id === room));
   });
 
   test("usage sums by thread and model and splits cost by kind", async () => {

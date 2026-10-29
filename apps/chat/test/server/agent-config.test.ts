@@ -1,6 +1,6 @@
 /**
  * `GET /api/agents/:id/config` on the fixture host: identity and purpose, where it runs, its board, memory, instructions and swarm, and the
- * DM rule (only root chats are DMs; duty threads and jobs sit under their parent).
+ * DM rule (one DM per agent; work threads, duty threads and jobs sit under their agent).
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/agent-config.test.ts
  */
 import assert from "node:assert/strict";
@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { AgentConfig, ConversationSummary, Sidebar } from "../../web/src/lib/api/types.ts";
 import { readPreamble } from "../../server/agent-config.ts";
-import { FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
+import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { start, type Running } from "./helpers.ts";
 
 let s: Running;
@@ -22,8 +22,10 @@ after(async () => {
 const config = (id: string) => s.get<AgentConfig>(`/api/agents/${encodeURIComponent(id)}/config`);
 
 test("a chat's config names its purpose, host, cwd, board, memory, instructions and swarm", async () => {
-  const c = await config(ids.harness);
-  assert.equal(c.agent.id, ids.harness);
+  const c = await config(agents.harness);
+  assert.equal(c.agent.id, agents.harness);
+  assert.equal(c.agent.room, "dm_ai-harness-developer-environment-vp");
+  assert.equal(c.agent.home, join(s.app.config.dataDir, "work", "harness"));
   assert.equal(c.identity.purpose?.text, "What still blocks the migration to pi-host?");
   assert.equal(c.identity.purpose?.from.id, "owner");
   assert.equal(c.identity.duty, null);
@@ -38,12 +40,12 @@ test("a chat's config names its purpose, host, cwd, board, memory, instructions 
   assert.equal(c.runs.socket, s.app.config.socket);
 
   assert.ok(c.board);
-  assert.equal(c.board.chat, ids.harness);
+  assert.equal(c.board.chat, agents.harness);
   assert.equal(c.board.own, true);
   assert.equal(c.board.doc, "chat.board");
   assert.deepEqual(c.board.goals.map(g => g.id), ["p1", "p7"]);
   assert.deepEqual(c.board.steps, { open: 5, done: 1, total: 6 });
-  assert.equal(c.board.awaitingGo, (await s.get(`/api/threads/${ids.harness}/board`)).awaitingGo.length);
+  assert.equal(c.board.awaitingGo, (await s.get(`/api/agents/${agents.harness}/board`)).awaitingGo.length);
   assert.deepEqual(c.board.openTodos.map(t => t.id).sort(), ["t1", "t2"]);
 
   assert.equal(c.memory.kind, "none");
@@ -68,21 +70,21 @@ test("a chat's config names its purpose, host, cwd, board, memory, instructions 
   assert.deepEqual(c.swarm.channels, [{ id: "ch_cutover", name: "pi-cutover" }]);
   assert.deepEqual(c.swarm.duties.map(d => [d.id, d.schedule, d.paused]), [["d1", "daily at 07:40 KST", false], ["d2", "daily at 07:40 KST", true]]);
   assert.equal(c.swarm.checkIn?.everyMs, 120 * 60_000);
-  assert.equal(c.swarm.dutiesFile?.path, join(s.app.config.dataDir, "boards", ids.harness, "duties.json"));
+  assert.equal(c.swarm.dutiesFile?.path, join(s.app.config.dataDir, "agents", agents.harness, "duties.json"));
   assert.ok(c.usage && c.usage.days === 7);
 });
 
 test("a duty thread names its duty and the brief it was given, and shares its chat's board", async () => {
   const c = await config(ids.uptimeDuty);
   assert.equal(c.agent.kind, "job");
-  assert.deepEqual(c.identity.duty, { chat: ids.harness, id: "d1", name: "Relay uptime" });
-  assert.equal(c.identity.purpose?.from.id, ids.harness);
+  assert.deepEqual(c.identity.duty, { chat: agents.harness, id: "d1", name: "Relay uptime" });
+  assert.equal(c.identity.purpose?.from.id, agents.harness);
   assert.equal(c.identity.purpose?.via, "duty d1");
   assert.match(c.identity.purpose?.text ?? "", /^You are the duty job/);
-  assert.equal(c.board?.chat, ids.harness);
+  assert.equal(c.board?.chat, agents.harness);
   assert.equal(c.board?.own, false);
   assert.deepEqual(c.swarm.duties, [], "duties belong to the chat");
-  assert.equal(c.swarm.parent?.id, ids.harness);
+  assert.equal(c.swarm.parent?.id, agents.harness);
 });
 
 test("a job inside a thread reads its task as its purpose and its thread's board", async () => {
@@ -91,7 +93,7 @@ test("a job inside a thread reads its task as its purpose and its thread's board
   assert.match(c.identity.purpose?.text ?? "", /Read the canary logs/);
   assert.equal(c.runs.thread, ids.vent);
   assert.notEqual(c.runs.conversation, 1);
-  assert.equal(c.board?.chat, ids.vent);
+  assert.equal(c.board?.chat, agents.vent);
   assert.equal(c.board?.own, false);
 });
 
@@ -100,17 +102,18 @@ test("an unknown agent is a 404", async () => {
   assert.equal(response.status, 404);
 });
 
-test("Direct messages hold only root chats; a duty thread, a root job and a job open by link", async () => {
+test("Direct messages hold one row per agent; work threads, a duty thread, a root job and a job open by link", async () => {
   const sidebar = await s.get<Sidebar>("/api/sidebar");
-  assert.deepEqual(sidebar.dms.map(c => c.id), [ids.crawler]);
+  assert.deepEqual(sidebar.dms.map(c => c.id).sort(), ["dm_ai-harness-developer-environment-vp", "dm_crawler-vp", "dm_frontend-bro", "dm_vent"]);
+  assert.deepEqual(sidebar.solo, []);
   const all = await s.get<ConversationSummary[]>("/api/conversations");
   const duty = all.find(c => c.id === ids.uptimeDuty);
   assert.equal(duty?.kind, "job");
-  assert.equal(duty?.parent, ids.harness);
+  assert.equal(duty?.parent, agents.harness);
   assert.equal(all.find(c => c.id === ids.cutover)?.kind, "job");
+  assert.equal(all.find(c => c.id === ids.vent)?.kind, "job", "a work thread opens from its agent, not the sidebar");
   const opened = await s.send("POST", "/api/dms", { agent: ids.cutover });
-  assert.equal(opened.status, 200);
-  assert.ok(!(await s.get<Sidebar>("/api/sidebar")).dms.some(c => c.id === ids.cutover), "opening a job by DM does not list it");
+  assert.equal(opened.body.id, "dm_ai-harness-developer-environment-vp", "a root job's DM is its agent's");
   assert.equal((await s.get(`/api/c/${ids.uptimeDuty}`)).summary.kind, "job");
 });
 

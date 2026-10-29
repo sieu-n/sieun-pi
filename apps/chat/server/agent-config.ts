@@ -147,11 +147,15 @@ const scheduleText = (duty: Duty): string => (duty.schedule.kind === "daily" ? `
 
 /** The chat whose board, duties and check-in an agent works under: itself for a chat, else the chat its thread or root job belongs to. */
 export function homeChat(app: App, id: AgentId): string | null {
+  const record = app.agents.record(id) ?? app.agents.record(parseConversationId(id).thread);
+  if (record) return record.id;
   let { thread } = parseConversationId(id);
   for (let hops = 0; hops < 8; hops++) {
     const meta = app.threads.meta(thread);
     if (meta.kind === "chat") return app.threads.thread(thread) ? thread : null;
     if (!meta.parent) return null;
+    const parent = app.agents.record(meta.parent);
+    if (parent) return parent.id;
     thread = parseConversationId(meta.parent).thread;
   }
   return null;
@@ -164,11 +168,11 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
     agent = app.threads.agent(id);
   }
   if (!agent) throw new NotFound(`No agent ${id}.`);
-  const { thread, conversation } = parseConversationId(id);
+  const { thread, conversation } = agent;
   const row = app.threads.thread(thread)!;
   const agentDir = primeAgentDir(app);
-  const chat = homeChat(app, id);
-  const dutiesPath = chat ? join(app.store.dir, "boards", chat, "duties.json") : null;
+  const chat = homeChat(app, agent.id);
+  const dutiesPath = chat ? app.boards.dutiesPath(chat) : null;
   const dutyFile = dutiesPath ? readJson<DutyFile>(dutiesPath, { duties: [], runs: {} }) : null;
 
   // Which duty run started each root job, from the run records' `job`.
@@ -212,10 +216,10 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
   }));
   for (const other of app.threads.threadsList()) {
     const meta = app.threads.meta(other.id);
-    if (meta.kind !== "job" || meta.parent !== id) continue;
+    if (meta.kind !== "job" || (meta.parent !== agent.id && meta.parent !== thread) || other.id === thread) continue;
     jobs.push({
       id: other.id, name: other.name || "Untitled", kind: dutyJobs.has(other.id) ? "duty" : "root job", status: app.threads.statusOfConversation(other.id, 1),
-      createdAt: other.createdAt, parent: id, depth: 1,
+      createdAt: other.createdAt, parent: agent.id, depth: 1,
     });
   }
   jobs.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
@@ -237,7 +241,7 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
   // Data that outlives a turn: the duty precheck state files of its chat.
   const related: ConfigFile[] = [harnessStore(agentDir)];
   if (chat && isChatRoot) {
-    const stateDir = join(app.store.dir, "boards", chat, "duties");
+    const stateDir = join(app.boards.dir(chat), "duties");
     let names: string[] = [];
     try {
       names = readdirSync(stateDir).filter(name => name.endsWith(".state.json")).sort();
@@ -265,7 +269,7 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
       host: app.config.box, hostKind: app.host.name, hostVersion: ping.ok ? ping.version : null, socket: app.config.socket, cwd: row.cwd, cwdExists: existsSync(row.cwd),
       project: !isNoProject(row.cwd, app.config.home), canMove: conversation === 1, thread, conversation, threadFile, dataDir: app.store.dir,
     },
-    board: chat && board ? { chat, chatName: app.threads.thread(chat)?.name ?? chat, own: chat === id, ...boardSummary(board) } : null,
+    board: chat && board ? { chat, chatName: app.boards.nameOf(chat), own: chat === agent.id, ...boardSummary(board) } : null,
     memory: {
       kind: "none",
       note: "A pi-host durable thread keeps no memory of its own. pi-host runs every thread with only the Prime preamble, the coding tools in its cwd and the "

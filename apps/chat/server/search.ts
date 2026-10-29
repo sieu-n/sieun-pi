@@ -123,8 +123,8 @@ export class Search {
     const inChannel = inId ? this.channels.row(inId) : undefined;
     const agents = query.from === "agents";
     if (!inChannel) {
-      const scope = inId ? parseConversationId(inId) : undefined;
-      const fromAgent = query.from && query.from !== "owner" && !agents ? parseConversationId(query.from) : undefined;
+      const scope = inId ? parseConversationId(this.threads.conversationOf(inId)) : undefined;
+      const fromAgent = query.from && query.from !== "owner" && !agents ? parseConversationId(this.threads.conversationOf(query.from)) : undefined;
       // The merged page holds at most offset + limit thread hits, so the host builds snippets for those rows only.
       const page = await this.threadSearch({
         q: query.q, sort, limit: offset + limit, skipAgentMessages: CHANNEL_COPY_LIKE, withText: true,

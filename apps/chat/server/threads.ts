@@ -8,6 +8,7 @@ import type {
 } from "../web/src/lib/api/types.ts";
 import type { AgentEvent, DurableEvent, DurableThread, EntryRecord, Host, TreeNode } from "./host/types.ts";
 import type { Store } from "./store.ts";
+import { agentSummary, isAgentId, isRoomId, type Agents } from "./agents.ts";
 import { buildItems, earliest, entryOf, firstSendIn, isInput, itemIdFor, sentMessages, speaks, speaksThroughSendMessage, type TimelineContext } from "./timeline.ts";
 
 export const OWNER: Principal = { id: "owner", kind: "owner", name: "You", avatar: { initials: "Me", hue: 210 } };
@@ -85,10 +86,16 @@ export class Threads {
   private timer?: NodeJS.Timeout;
   /** Extra summaries the channel layer adds (channels), merged into conversations(). */
   channelSummaries: () => ConversationSummary[] = () => [];
+  /** The agents' DM rooms (rooms.ts), merged into conversations(). */
+  roomSummaries: () => ConversationSummary[] = () => [];
   /** Channels each agent is in. */
   channelsOf: (agent: AgentId) => string[] = () => [];
   /** A `doc` event from a watched thread, such as the chat writing `chat.board`. */
   onDoc: (thread: string, name: string, value: unknown) => void = () => {};
+  /** Runs after each thread list read, so the DM rooms read the work threads that changed. */
+  onRefresh: () => void = () => {};
+  /** The agent records (agents.ts), set once the app has made them. */
+  agentRecords?: Agents;
 
   private refreshing?: Promise<void>;
   private cached = "";
@@ -137,6 +144,7 @@ export class Threads {
       }
     }
     this.list = next;
+    this.agentRecords?.follow(next);
     const cache = JSON.stringify({ threads, trees: [...this.trees] } satisfies ThreadsCache);
     if (cache !== this.cached) {
       this.cached = cache;
@@ -158,6 +166,7 @@ export class Threads {
         this.events.status(conversationIdOf(live.thread, live.conversation), status);
       }
     }
+    this.onRefresh();
   }
 
   thread(id: string): DurableThread | undefined {
@@ -185,33 +194,63 @@ export class Threads {
     if (id === "owner") return OWNER;
     const agent = this.agent(id);
     if (agent) return { id: agent.id, kind: agent.kind, name: agent.name, avatar: agent.avatar, ...(agent.parent ? { parent: agent.parent.id } : {}) };
+    const record = this.agentRecords?.record(id);
+    if (record) return { id: record.id, kind: "chat", name: record.name, avatar: avatarOf(record.name) };
     const byName = this.agents({ archived: true }).find(a => a.name === id);
     if (byName) return this.principal(byName.id);
     return { id, kind: "job", name: id, avatar: avatarOf(id) };
   }
 
+  /**
+   * An agent (`ag_<slug>`, or its DM room `dm_<slug>`), a job (`<thread>:<n>`, or a root job thread), or a root chat no agent holds yet. A
+   * work thread's id answers its agent.
+   */
   agent(id: AgentId): AgentSummary | undefined {
+    if (isAgentId(id) || isRoomId(id)) {
+      const record = this.agentRecords?.record(id);
+      const row = record && this.list.get(record.workThread);
+      if (!record) return undefined;
+      return row ? this.agentsOf(row)[0] : agentSummary(record, { tree: [], jobs: [] }, { model: null, channels: this.channelsOf(record.workThread) });
+    }
     const { thread, conversation } = parseConversationId(id);
     const row = this.list.get(thread);
     if (!row) return undefined;
     return this.agentsOf(row).find(a => a.conversation === conversation);
   }
 
+  /** The pi-host conversation an id names: an agent's or a DM room's work thread, and any other id as it is. */
+  conversationOf(id: string): ConversationId {
+    return (isAgentId(id) || isRoomId(id)) ? this.agentRecords?.record(id)?.workThread ?? id : id;
+  }
+
+  /** The agent a root job thread belongs to, from its kind's parent, through the agent's aliases. */
+  private parentOf(meta: { parent?: AgentId }): { id: AgentId; name: string } | null {
+    if (!meta.parent) return null;
+    const record = this.agentRecords?.record(meta.parent) ?? this.agentRecords?.record(parseConversationId(meta.parent).thread);
+    if (record) return { id: record.id, name: this.list.get(record.workThread)?.name || record.name };
+    return { id: meta.parent, name: this.list.get(parseConversationId(meta.parent).thread)?.name ?? meta.parent };
+  }
+
   private agentsOf(row: DurableThread): AgentSummary[] {
     const meta = this.meta(row.id);
     const rootModel = modelRef(`${row.provider}/${row.modelId}`);
-    const root: AgentSummary = {
-      id: row.id, kind: meta.kind, name: row.name || "Untitled", avatar: avatarOf(row.name || row.id), model: rootModel,
-      thinkingLevel: (row.thinkingLevel as ThinkingLevel) ?? null, status: statusOf(row.status),
-      parent: meta.parent ? { id: meta.parent, name: this.list.get(parseConversationId(meta.parent).thread)?.name ?? meta.parent } : null,
-      thread: row.id, conversation: 1, archived: row.archived, createdAt: row.createdAt, updatedAt: row.updatedAt,
-      preview: row.preview.split("\n").find(line => line.trim()) ?? "", channels: this.channelsOf(row.id), host: this.box,
-    };
+    const record = this.agentRecords?.ofWorkThread(row.id);
+    const root: AgentSummary = record
+      ? agentSummary(record, {
+        row, tree: this.tree(row.id),
+        jobs: this.agentRecords!.jobThreads(record).flatMap(id => (this.list.has(id) ? [this.list.get(id)!] : [])),
+      }, { model: rootModel, channels: this.channelsOf(row.id) })
+      : {
+        id: row.id, kind: meta.kind, name: row.name || "Untitled", avatar: avatarOf(row.name || row.id), model: rootModel,
+        thinkingLevel: (row.thinkingLevel as ThinkingLevel) ?? null, status: statusOf(row.status), parent: meta.kind === "job" ? this.parentOf(meta) : null,
+        thread: row.id, conversation: 1, archived: row.archived, createdAt: row.createdAt, updatedAt: row.updatedAt,
+        preview: row.preview.split("\n").find(line => line.trim()) ?? "", channels: this.channelsOf(row.id), host: this.box,
+      };
     const out = [root];
     for (const node of this.tree(row.id)) {
       if (node.parent === null) continue;
       const id = conversationIdOf(row.id, node.id);
-      const parentId = conversationIdOf(row.id, node.parent);
+      const parentId = node.parent === 1 ? root.id : conversationIdOf(row.id, node.parent);
       const parentName = node.parent === 1 ? root.name : this.tree(row.id).find(n => n.id === node.parent)?.name ?? parentId;
       out.push({
         id, kind: "job", name: node.name, avatar: avatarOf(node.name), model: modelRef(node.model), thinkingLevel: root.thinkingLevel,
@@ -239,19 +278,25 @@ export class Threads {
     return status !== "working" && updatedAt > (mark?.at ?? 0) ? 1 : 0;
   }
 
+  /**
+   * A row per thread and job for the directory, search and the transcript view. A root chat no agent holds yet is `solo`; an agent's work
+   * thread and every job are `job`, under the agent's DM room or their parent, so no thread sits in the sidebar beside its agent's DM.
+   */
   threadConversations(): ConversationSummary[] {
     const out: ConversationSummary[] = [];
-    const dms = new Set(this.store.state.dms);
     for (const row of this.list.values()) {
       const meta = this.meta(row.id);
       const agents = this.agentsOf(row);
+      const root = agents[0]!;
+      const record = this.agentRecords?.ofWorkThread(row.id);
       const working = agents.filter(a => a.status === "working").map(a => ({ id: a.id, name: a.name }));
       const status = statusOf(row.status);
+      const solo = !record && meta.kind !== "job";
+      const parent = record ? record.room : meta.kind === "job" ? root.parent?.id : undefined;
       out.push({
-        // Only a root chat is a DM; a root job, such as a duty run's thread, sits under its parent agent and opens by link (owner, 10-28).
-        id: row.id, kind: meta.kind === "job" ? "job" : dms.has(row.id) ? "dm" : "solo", name: row.name || "Untitled", status, archived: row.archived,
-        lastActivityAt: row.updatedAt, preview: row.preview.slice(0, 200), unread: this.unread(row.id, row.updatedAt, status),
-        hasNew: row.updatedAt > (this.store.state.reads[row.id]?.at ?? 0), working, agent: row.id, ...(meta.kind === "job" && meta.parent ? { parent: meta.parent } : {}),
+        id: row.id, kind: solo ? "solo" : "job", name: row.name || "Untitled", status, archived: row.archived,
+        lastActivityAt: row.updatedAt, preview: row.preview.slice(0, 200), unread: solo ? this.unread(row.id, row.updatedAt, status) : 0,
+        hasNew: solo && row.updatedAt > (this.store.state.reads[row.id]?.at ?? 0), working, agent: root.id, ...(parent ? { parent } : {}),
       });
       for (const agent of agents.slice(1)) {
         out.push({
@@ -265,7 +310,7 @@ export class Threads {
   }
 
   conversations(): ConversationSummary[] {
-    return [...this.threadConversations(), ...this.channelSummaries()];
+    return [...this.roomSummaries(), ...this.threadConversations(), ...this.channelSummaries()];
   }
 
   /** Keeps the earliest send_message call in `entries` as the conversation's, and returns the earliest known. */

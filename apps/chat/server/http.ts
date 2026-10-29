@@ -95,19 +95,29 @@ export function routes(app: App): Route[] {
     }),
     route("DELETE", "/api/channels/:id/members/:agent", async (_r, p) => app.channels.removeMember(p.id!, p.agent!)),
     route("POST", "/api/dms", async (_r, _p, _q, body) => app.openDm(((await body()) as { agent: string }).agent)),
+    route("GET", "/api/dms", async () => app.rooms.summaries()),
     route("GET", "/api/search", async (_r, _p, q) => app.search.run({
       q: q.get("q") ?? "", from: str(q.get("from")), in: str(q.get("in")), after: str(q.get("after")), before: str(q.get("before")),
       sort: q.get("sort") === "recent" ? "recent" : "relevance", limit: num(q.get("limit")), cursor: str(q.get("cursor")),
       ...(q.get("type") === "messages" || q.get("type") === "tools" ? { type: q.get("type") as "messages" | "tools" } : {}),
     })),
-    route("GET", "/api/threads/:id/board", async (_r, p) => app.boards.view(p.id!)),
-    route("POST", "/api/threads/:id/board", async (_r, p, _q, body) => {
-      const input = (await body()) as { ops: unknown; actor?: string };
-      // A refused op (a bad shape, or an agent answering a todo) is the caller's error.
-      return app.boards.apply(p.id!, input.ops, input.actor === "agent" ? "agent" : "owner").catch(error => {
-        throw new BadRequest(error instanceof Error ? error.message : String(error));
-      });
-    }),
+    // An agent's board, duties, check-in and jobs by agent id. The thread routes take a thread id and resolve it to its agent through the
+    // aliases, because pi-host's chat_board tool and the duty briefs name the thread.
+    ...(["agents", "threads"] as const).flatMap(scope => [
+      route("GET", `/api/${scope}/:id/board`, async (_r, p) => app.boards.view(p.id!)),
+      route("POST", `/api/${scope}/:id/board`, async (_r, p, _q, body) => {
+        const input = (await body()) as { ops: unknown; actor?: string };
+        // A refused op (a bad shape, or an agent answering a todo) is the caller's error.
+        return app.boards.apply(p.id!, input.ops, input.actor === "agent" ? "agent" : "owner").catch(error => {
+          throw new BadRequest(error instanceof Error ? error.message : String(error));
+        });
+      }),
+      route("GET", `/api/${scope}/:id/agents`, async (_r, p) => ({ agents: app.boards.chatAgents(p.id!) })),
+      route("GET", `/api/${scope}/:id/duties`, async (_r, p) => ({ duties: app.boards.duties(p.id!) })),
+      route("POST", `/api/${scope}/:id/duties`, async (_r, p, _q, body) => ({ duties: await app.boards.dutyAction(p.id!, (await body()) as never) })),
+      route("GET", `/api/${scope}/:id/check-in`, async (_r, p) => app.boards.checkIn(p.id!)),
+      route("POST", `/api/${scope}/:id/check-in`, async (_r, p, _q, body) => app.boards.setCheckIn(p.id!, (await body()) as never)),
+    ]),
     route("POST", "/api/threads/:id/wakes", async (_r, p, _q, body) => {
       try {
         return await app.boards.addWake(p.id!, (await body()) as Record<string, unknown>);
@@ -121,11 +131,6 @@ export function routes(app: App): Route[] {
       if (typeof input.cwd === "string") await app.patch(p.id!, { cwd: input.cwd });
       return app.boards.importPrime(p.id!, String(input.prime ?? ""), app.config.sharedDir);
     }),
-    route("GET", "/api/threads/:id/agents", async (_r, p) => ({ agents: app.boards.chatAgents(p.id!) })),
-    route("GET", "/api/threads/:id/duties", async (_r, p) => ({ duties: app.boards.duties(p.id!) })),
-    route("POST", "/api/threads/:id/duties", async (_r, p, _q, body) => ({ duties: await app.boards.dutyAction(p.id!, (await body()) as never) })),
-    route("GET", "/api/threads/:id/check-in", async (_r, p) => app.boards.checkIn(p.id!)),
-    route("POST", "/api/threads/:id/check-in", async (_r, p, _q, body) => app.boards.setCheckIn(p.id!, (await body()) as never)),
     route("GET", "/api/for-you", async () => ({ items: await app.boards.forYou() })),
     route("GET", "/api/boards", async () => app.boards.index()),
     route("GET", "/api/usage", async (_r, _p, q) => usageReport(app.host, app.threads, app.config.box, { days: num(q.get("days")) ?? 7, thread: str(q.get("thread")), host: str(q.get("host")) })),

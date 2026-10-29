@@ -1,7 +1,9 @@
 /**
- * Boards, For you, duties and check-ins. A chat's board is the `chat.board` document of its root conversation in pi-host, changed through
- * the board reducer copied from today's chat (web/src/lib/api/shared/chat-board.ts). Duties and the check-in clock live in the chat
- * server's data dir, and a due duty, check-in or wake reaches the chat as an input from "board". Wakes are server/wakes.ts.
+ * Boards, For you, duties and check-ins, keyed by agent id (`ag_<slug>`), or by thread id for a root chat no agent holds yet; a thread id
+ * of an agent's work thread or root job resolves to the agent. An agent's board is the `chat.board` document of its work thread's root
+ * conversation in pi-host, changed through the board reducer copied from today's chat (web/src/lib/api/shared/chat-board.ts), because
+ * pi-host's `chat_board` tool reads it there. Duties and the check-in clock live in the chat server's data dir under `agents/<agent id>/`,
+ * and a due duty, check-in or wake reaches the work thread as an input from "board". Wakes are server/wakes.ts.
  */
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -12,6 +14,7 @@ import { DEFAULT_MODEL } from "./config.ts";
 import { asAfter, measure, measureAfter, runStamp } from "./duty-run.ts";
 import { dutyCard, judgedRun, missStreak } from "../web/src/lib/api/shared/duty-card.ts";
 import type { ChatAgent } from "../web/src/lib/api/shared/types.ts";
+import type { Agents } from "./agents.ts";
 import type { Host } from "./host/types.ts";
 import { readJson, writeJson, type Store } from "./store.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
@@ -70,7 +73,14 @@ export class Boards {
   /** This server's own base URL, which a duty job's brief names for the board. */
   selfUrl = "http://127.0.0.1:5184";
 
-  constructor(readonly host: Host, readonly store: Store, readonly threads: Threads, readonly events: BoardEvents, private readonly log: (line: string) => void = () => {}) {
+  constructor(
+    readonly host: Host,
+    readonly store: Store,
+    readonly threads: Threads,
+    readonly agents: Agents,
+    readonly events: BoardEvents,
+    private readonly log: (line: string) => void = () => {},
+  ) {
     // The boards of the last run, read again on first use, so For you and the sidebar count answer while pi-host starts.
     for (const [chat, board] of Object.entries(store.cache<Record<string, ChatBoard | null>>(BOARDS_CACHE, {}))) this.cache.set(chat, { board, at: 0 });
   }
@@ -81,11 +91,40 @@ export class Boards {
     if (changed) this.store.saveCache(BOARDS_CACHE, Object.fromEntries([...this.cache].map(([id, entry]) => [id, entry.board])));
   }
 
-  chats(): string[] {
-    return this.threads.threadsList().filter(t => !t.archived && this.threads.meta(t.id).kind === "chat").map(t => t.id);
+  /** The board's key for an agent id, a DM room, or a thread id: the agent's id, else the root chat's thread id. */
+  chatId(id: string): string {
+    return this.agents.record(id)?.id ?? id;
   }
 
-  async board(chat: string): Promise<ChatBoard | null> {
+  /** The thread whose `chat.board` doc and inputs belong to a board key. */
+  threadOf(chat: string): string {
+    return this.agents.record(chat)?.workThread ?? chat;
+  }
+
+  nameOf(chat: string): string {
+    return this.threads.agent(chat)?.name ?? this.agents.record(chat)?.name ?? this.threads.thread(chat)?.name ?? chat;
+  }
+
+  /**
+   * The folder of a board's duties, their precheck state and its check-in: `agents/<agent id>/`, or a root chat's `boards/<thread>/`. An agent
+   * whose files the migration has not copied yet keeps reading and writing its old `boards/<thread>/` folder, so nothing it holds goes missing.
+   */
+  dir(chat: string): string {
+    const record = this.agents.record(chat);
+    if (!record) return join(this.store.dir, "boards", chat);
+    const fresh = join(this.store.dir, "agents", record.id);
+    const old = join(this.store.dir, "boards", record.workThread);
+    return existsSync(fresh) || !existsSync(old) ? fresh : old;
+  }
+
+  /** The agents that are not archived, and the root chats no agent holds yet. */
+  chats(): string[] {
+    const agents = this.agents.list().filter(a => !(this.threads.thread(a.workThread)?.archived ?? a.archived)).map(a => a.id);
+    return [...agents, ...this.agents.unrecorded(this.threads.threadsList()).map(t => t.id)];
+  }
+
+  async board(id: string): Promise<ChatBoard | null> {
+    const chat = this.chatId(id);
     const cached = this.cache.get(chat);
     if (cached && Date.now() - cached.at < BOARD_TTL_MS) return cached.board;
     return this.read(chat);
@@ -114,7 +153,7 @@ export class Boards {
   /** A failed read keeps the board read before it; a doc event or op that lands while the read runs wins over it. */
   private async fetchBoard(chat: string): Promise<ChatBoard | null> {
     const startedAt = Date.now();
-    const result = await this.host.docGet(chat, BOARD_DOC).then(value => ({ value }), () => null);
+    const result = await this.host.docGet(this.threadOf(chat), BOARD_DOC).then(value => ({ value }), () => null);
     const cached = this.cache.get(chat);
     if (cached && cached.at > startedAt) return cached.board;
     const board = result ? (result.value ? parseBoard(result.value) : null) : (cached?.board ?? null);
@@ -126,8 +165,8 @@ export class Boards {
     return board;
   }
 
-  async view(chat: string): Promise<BoardView> {
-    const board = await this.board(chat);
+  async view(id: string): Promise<BoardView> {
+    const board = await this.board(id);
     return { board, awaitingGo: awaitingGo(board) };
   }
 
@@ -135,7 +174,9 @@ export class Boards {
    * The owner's or an agent's board ops; each of the owner's also reaches the chat as a `[board]` line, as today. The answer carries each op's
    * summary line, which the chat's own `chat_board` call returns to it (packages/pi-host/src/durable/prime-chat.ts), as Prime's agent-board route does.
    */
-  async apply(chat: string, raw: unknown, actor: "owner" | "agent" = "owner"): Promise<BoardView & { summaries: string[] }> {
+  async apply(id: string, raw: unknown, actor: "owner" | "agent" = "owner"): Promise<BoardView & { summaries: string[] }> {
+    const chat = this.chatId(id);
+    const thread = this.threadOf(chat);
     const ops: BoardOp[] = parseBoardOps(raw);
     const now = new Date().toISOString();
     let board = (await this.board(chat)) ?? emptyBoard(now);
@@ -145,12 +186,12 @@ export class Boards {
       board = result.board;
       summaries.push(result.summary);
     }
-    await this.host.docPut(chat, BOARD_DOC, board);
+    await this.host.docPut(thread, BOARD_DOC, board);
     this.remember(chat, board);
     this.events.board(chat, board, awaitingGo(board));
     this.events.forYou(await this.forYouCount());
     if (summaries.length && actor === "owner") {
-      await this.host.submit(chat, {
+      await this.host.submit(thread, {
         text: `${BOARD_PREFIX}${summaries.join("\n")}`, whenBusy: "followUp", requestId: `board:${chat}:${board.rev}`,
         entry: { kind: "agent.message", data: { from: "owner", via: "board" } },
       }).catch(error => this.log(`board note to ${chat} failed: ${String(error)}`));
@@ -158,8 +199,9 @@ export class Boards {
     return { board, awaitingGo: awaitingGo(board), summaries };
   }
 
-  /** A doc event from pi-host: the chat wrote its board. */
-  docChanged(chat: string, value: unknown): void {
+  /** A doc event from pi-host: the thread wrote its board. */
+  docChanged(thread: string, value: unknown): void {
+    const chat = this.chatId(thread);
     const board = value ? parseBoard(value) : null;
     this.remember(chat, board);
     if (board) this.events.board(chat, board, awaitingGo(board));
@@ -176,7 +218,7 @@ export class Boards {
       walk(board.plan, item => steps.set(item.id, item));
       for (const todo of board.todos) {
         const step = todo.step ? steps.get(todo.step) : undefined;
-        out.push({ chatId: chat, chatName: this.threads.thread(chat)?.name ?? chat, todo, ...(step ? { step: { id: step.id, text: step.text, status: step.status } } : {}) });
+        out.push({ chatId: chat, chatName: this.nameOf(chat), todo, ...(step ? { step: { id: step.id, text: step.text, status: step.status } } : {}) });
       }
     }
     return out.sort((a, b) => b.todo.at.localeCompare(a.todo.at));
@@ -202,7 +244,7 @@ export class Boards {
       });
       const checkIn = this.checkIn(chat);
       rows.push({
-        chatId: chat, chatName: this.threads.thread(chat)?.name ?? chat, rev: board.rev, progress: { done, total },
+        chatId: chat, chatName: this.nameOf(chat), rev: board.rev, progress: { done, total },
         openAsks: board.todos.filter(t => !t.done).length, needsGo: awaitingGo(board).length,
         checkIn: { nextAt: checkIn.nextAt, paused: checkIn.paused },
         duties: this.duties(chat).map(d => ({ id: d.duty.id, name: d.duty.name, nextAt: d.nextAt, lastVerdict: d.last?.verdict ?? null })),
@@ -217,14 +259,15 @@ export class Boards {
    * `check-in-settings.json` gives the interval. `durable_import` moves the transcript; this moves the rest. Running it again replaces the board
    * and the duties, and keeps the runs this server recorded since, merged with the imported ones by their start time.
    */
-  async importPrime(chat: string, primeId: string, primeDir: string): Promise<{ board: boolean; duties: number; runs: number; checkInMs: number | null }> {
+  async importPrime(id: string, primeId: string, primeDir: string): Promise<{ board: boolean; duties: number; runs: number; checkInMs: number | null }> {
     if (!/^[0-9a-f-]{36}$/.test(primeId)) throw new Error(`A Prime chat id is a session uuid, got ${primeId}.`);
-    if (!this.threads.thread(chat)) await this.threads.refresh();
-    if (!this.threads.thread(chat)) throw new Error(`No thread ${chat}.`);
+    const chat = this.chatId(id);
+    if (!this.threads.thread(this.threadOf(chat))) await this.threads.refresh();
+    if (!this.threads.thread(this.threadOf(chat))) throw new Error(`No thread ${id}.`);
     const boardFile = join(primeDir, "boards", `${primeId}.json`);
     const board = existsSync(boardFile) ? parseBoard(JSON.parse(readFileSync(boardFile, "utf8"))) : null;
     if (board) {
-      await this.host.docPut(chat, BOARD_DOC, board);
+      await this.host.docPut(this.threadOf(chat), BOARD_DOC, board);
       this.remember(chat, board);
       this.events.board(chat, board, awaitingGo(board));
       this.events.forYou(await this.forYouCount());
@@ -259,7 +302,7 @@ export class Boards {
     file.checkIn = { everyMs: everyMs ?? file.checkIn?.everyMs ?? DEFAULT_CHECK_IN_MS, pausedUntil: null, lastAt: prime.checkIn?.lastRunAt ?? null };
     this.save(chat, file);
     // Each duty's precheck state (`<duty>.state.json`) carries what the last run saw, so the next run reads changes since then.
-    const stateDir = join(this.store.dir, "boards", chat, "duties");
+    const stateDir = join(this.dir(chat), "duties");
     mkdirSync(stateDir, { recursive: true });
     for (const duty of file.duties) {
       const from = join(primeDir, "duties", primeId, `${duty.id}.state.json`);
@@ -270,22 +313,30 @@ export class Boards {
 
   // Duties and check-ins
 
+  /** The file of a board's duties, their runs and its check-in. */
+  dutiesPath(id: string): string {
+    return join(this.dir(this.chatId(id)), "duties.json");
+  }
   private file(chat: string): DutyFile {
-    return readJson<DutyFile>(join(this.store.dir, "boards", chat, "duties.json"), { duties: [], runs: {} });
+    return readJson<DutyFile>(this.dutiesPath(chat), { duties: [], runs: {} });
   }
   private save(chat: string, file: DutyFile): void {
-    writeJson(join(this.store.dir, "boards", chat, "duties.json"), file);
+    writeJson(this.dutiesPath(chat), file);
   }
 
-  chatAgents(chat: string): ChatAgent[] {
-    return this.threads.agents({ archived: false }).filter(a => a.thread === chat && a.conversation !== 1 || a.parent?.id === chat).map(a => ({
-      key: `thread:${a.id}`, sessionId: a.id, name: a.name, job: a.name, sender: a.name, link: a.thread === chat ? "subagent" as const : "root" as const,
+  /** The jobs of an agent: the conversations inside its work thread, and its root job threads. */
+  chatAgents(id: string): ChatAgent[] {
+    const chat = this.chatId(id);
+    const thread = this.threadOf(chat);
+    return this.threads.agents({ archived: false }).filter(a => a.kind === "job" && ((a.thread === thread && a.conversation !== 1) || a.parent?.id === chat)).map(a => ({
+      key: `thread:${a.id}`, sessionId: a.id, name: a.name, job: a.name, sender: a.name, link: a.thread === thread ? "subagent" as const : "root" as const,
       state: a.status === "working" ? "working" as const : a.status === "failed" ? "failed" as const : "idle" as const,
       ...(a.preview ? { activity: a.preview } : {}), lastActivityAt: new Date(a.updatedAt).toISOString(), steps: [],
     }));
   }
 
-  duties(chat: string): DutyRow[] {
+  duties(id: string): DutyRow[] {
+    const chat = this.chatId(id);
     const file = this.file(chat);
     const agents = this.chatAgents(chat);
     return file.duties.map(duty => {
@@ -304,7 +355,8 @@ export class Boards {
     });
   }
 
-  async dutyAction(chat: string, action: DutyAction): Promise<DutyRow[]> {
+  async dutyAction(id: string, action: DutyAction): Promise<DutyRow[]> {
+    const chat = this.chatId(id);
     const file = this.file(chat);
     const duty = file.duties.find(d => d.id === action.duty);
     if (!duty) throw new Error(`No duty ${action.duty} on this chat.`);
@@ -351,20 +403,22 @@ export class Boards {
     duty.lastRunAt = Date.now();
     duty.runCount += 1;
     this.save(chat, before);
-    const dir = join(this.store.dir, "boards", chat, "duties");
+    const dir = join(this.dir(chat), "duties");
+    const thread = this.threadOf(chat);
     const working = new Set(this.threads.agents().filter(a => a.status === "working").map(a => a.name));
     const { record, brief } = await measure({
-      duty, chat: { id: chat, name: this.threads.thread(chat)?.name ?? chat }, dir, trigger, previous: before.runs[dutyId] ?? [], board: await this.board(chat),
-      liveJob: job => working.has(job), boardApi: `${this.selfUrl}/api/threads/${chat}/board`, log: this.log,
+      duty, chat: { id: chat, name: this.nameOf(chat) }, dir, trigger, previous: before.runs[dutyId] ?? [], board: await this.board(chat),
+      liveJob: job => working.has(job), boardApi: `${this.selfUrl}/api/threads/${thread}/board`, log: this.log,
     });
     if (brief) {
       const name = `${duty.name} duty ${runStamp(record.at)}`;
       try {
         // The duty job works where its precheck runs, else in its chat's project folder, so it reads that folder's AGENTS.md chain.
-        const cwd = duty.precheck.cwd || this.threads.thread(chat)?.cwd;
+        const cwd = duty.precheck.cwd || this.threads.thread(thread)?.cwd;
         const job = await this.host.create({ name, model: DEFAULT_MODEL, thinkingLevel: "high", ...(cwd ? { cwd } : {}) });
         this.store.state.threads[job.id] = { kind: "job", parent: chat };
         this.store.saveState();
+        this.agents.alias(job.id, chat);
         await this.threads.refresh().catch(() => undefined);
         const submitted = await this.host.submit(job.id, { text: brief, requestId: `duty:${chat}:${duty.id}:${record.at}`, entry: { kind: "agent.message", data: { from: chat, via: `duty ${duty.id}` } } });
         record.job = { id: job.id, name };
@@ -394,7 +448,7 @@ export class Boards {
       const settled = await this.host.wait(job, submission);
       const text = (await this.threads.said(job, 1, settled)).map(m => m.text).join("\n\n");
       if (!text.trim() || /^nothing to report\.?$/i.test(text.trim())) return;
-      await this.host.submit(chat, { text: `[duty ${duty.id}] ${text}`, whenBusy: "followUp", requestId: `duty-report:${job}`, entry: { kind: "agent.message", data: { from: job, via: `duty ${duty.id}` } } });
+      await this.host.submit(this.threadOf(chat), { text: `[duty ${duty.id}] ${text}`, whenBusy: "followUp", requestId: `duty-report:${job}`, entry: { kind: "agent.message", data: { from: job, via: `duty ${duty.id}` } } });
     } catch (error) {
       this.log(`duty ${chat}/${duty.id}: its job's report did not reach the chat: ${String(error)}`);
     } finally {
@@ -442,7 +496,7 @@ export class Boards {
       this.endChecks.delete(key);
       if (!ended || this.dutyRuns.has(key) || this.afters.has(key)) return;
       const task = (async () => {
-        const after = await measureAfter({ duty, dir: join(this.store.dir, "boards", chat, "duties"), runs, log: this.log });
+        const after = await measureAfter({ duty, dir: join(this.dir(chat), "duties"), runs, log: this.log });
         const latest = this.file(chat);
         const target = latest.runs[dutyId]?.find(entry => entry.at === run.at);
         if (!target || target.after) return;
@@ -456,18 +510,20 @@ export class Boards {
     });
   }
 
-  checkIn(chat: string): CheckInView {
+  checkIn(id: string): CheckInView {
+    const chat = this.chatId(id);
     const state = this.file(chat).checkIn ?? { everyMs: DEFAULT_CHECK_IN_MS, pausedUntil: null, lastAt: null };
     const now = Date.now();
     const paused = state.pausedUntil === "forever" || (typeof state.pausedUntil === "number" && state.pausedUntil > now);
-    const base = state.lastAt ?? this.threads.thread(chat)?.createdAt ?? now;
+    const base = state.lastAt ?? this.threads.thread(this.threadOf(chat))?.createdAt ?? now;
     return {
       everyMs: state.everyMs, paused, pausedUntil: paused ? state.pausedUntil : null,
       nextAt: paused ? (state.pausedUntil === "forever" ? null : Math.max(state.pausedUntil as number, base + state.everyMs)) : base + state.everyMs, lastAt: state.lastAt,
     };
   }
 
-  setCheckIn(chat: string, patch: CheckInPatch): CheckInView {
+  setCheckIn(id: string, patch: CheckInPatch): CheckInView {
+    const chat = this.chatId(id);
     const file = this.file(chat);
     const state = file.checkIn ?? { everyMs: DEFAULT_CHECK_IN_MS, pausedUntil: null, lastAt: null };
     if (patch.everyMs !== undefined) {
@@ -503,10 +559,10 @@ export class Boards {
       let dirty = false;
       if (file.checkIn) {
         const view = this.checkIn(chat);
-        if (view.nextAt !== null && view.nextAt <= now && this.threads.thread(chat)?.status !== "running") {
+        if (view.nextAt !== null && view.nextAt <= now && this.threads.thread(this.threadOf(chat))?.status !== "running") {
           file.checkIn.lastAt = now;
           dirty = true;
-          await this.host.submit(chat, {
+          await this.host.submit(this.threadOf(chat), {
             text: "[check-in] Read your board and your jobs, move each open step, and tell the owner only what needs him.", whenBusy: "followUp",
             requestId: `checkin:${chat}:${now}`, entry: { kind: "agent.message", data: { from: "board", via: "check-in" } },
           }).catch(error => this.log(`check-in for ${chat} failed: ${String(error)}`));
@@ -531,7 +587,8 @@ export class Boards {
    * Sets a wake for a thread's conversation, as the board skill's `board.wake(...)` asks for it from a durable thread's kernel: a run, a time
    * or a check (server/wakes.ts). The same file id twice writes one file, so a retried request sets one wake.
    */
-  async addWake(thread: string, body: Record<string, unknown>): ReturnType<typeof armWake> {
+  async addWake(id: string, body: Record<string, unknown>): ReturnType<typeof armWake> {
+    const thread = this.threadOf(this.chatId(id));
     if (!this.threads.thread(thread)) await this.threads.refresh().catch(() => undefined);
     if (!this.threads.thread(thread)) throw new Error(`No thread ${thread}.`);
     return armWake(this.wakeDir, thread, body);

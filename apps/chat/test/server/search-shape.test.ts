@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe as suite, test } from "node:test";
 import type { SearchResult } from "../../web/src/lib/api/types.ts";
-import { FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
+import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { cleanTool, describe, fullText, searchTerms, snippet } from "../../server/search-snippet.ts";
 import { start, type Running } from "./helpers.ts";
 
@@ -54,7 +54,7 @@ suite("search hits", () => {
     assert.ok(hits.every(h => ["owner", "agent", "tool", "system"].includes(h.role)));
     assert.ok(hits.filter(h => h.role === "owner").every(h => h.author.name === "You"));
     const job = hits.find(h => h.conversation.id === `${ids.vent}:14`)!;
-    assert.deepEqual(job.conversation.parent, { id: ids.vent, name: "Vent" });
+    assert.deepEqual(job.conversation.parent, { id: agents.vent, name: "Vent" });
     assert.ok(hits.filter(h => h.conversation.id === ids.archived).every(h => h.conversation.archived));
     const reply = hits.find(h => h.conversation.id === ids.cutoverChannel && h.messageId === "p3")!;
     assert.equal(reply.threadRoot, "p1");

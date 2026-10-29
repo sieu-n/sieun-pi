@@ -2,7 +2,7 @@
  * Channels after ~/work/slack-layer-design/channels.md sections 3 and 4. A channel is a named room with members and one post log in the
  * chat server's data dir. A post that @mentions an agent goes to that agent's conversation as an `agent.message` input, and what the agent
  * sends with send_message in the turn it starts comes back into the post's thread, one post per call. Each mention is one delivery with its
- * own state.
+ * own state. Members and mentions are stored as conversation ids, so an agent id (`ag_<slug>`) given here stands for its work thread.
  */
 import { randomUUID } from "node:crypto";
 import type {
@@ -73,7 +73,8 @@ export class Channels {
   }
 
   memberChannels(agent: AgentId): string[] {
-    return this.store.channels.filter(c => !c.archived && c.members.some(m => m.principal === agent)).map(c => c.id);
+    const key = this.threads.conversationOf(agent);
+    return this.store.channels.filter(c => !c.archived && c.members.some(m => m.principal === key)).map(c => c.id);
   }
 
   summaries(): ConversationSummary[] {
@@ -101,7 +102,7 @@ export class Channels {
     const now = Date.now();
     const row: ChannelRow = {
       id: `ch_${randomUUID().slice(0, 8)}`, name, purpose: input.purpose ?? "", ...(input.homeChat ? { homeChat: input.homeChat } : {}), createdAt: now, archived: false,
-      members: [{ principal: "owner", role: "owner", wakeOn: "all", addedAt: now }, ...(input.members ?? []).map(id => ({ principal: id, role: "member" as const, wakeOn: "mention" as const, addedAt: now }))],
+      members: [{ principal: "owner", role: "owner", wakeOn: "all", addedAt: now }, ...(input.members ?? []).map(id => ({ principal: this.threads.conversationOf(id), role: "member" as const, wakeOn: "mention" as const, addedAt: now }))],
     };
     this.store.channels.push(row);
     this.store.saveChannels();
@@ -123,8 +124,9 @@ export class Channels {
 
   addMembers(id: string, agents: AgentId[], wakeOn: "mention" | "all" | "none" = "mention"): Channel {
     const row = this.require(id);
-    for (const agent of agents) {
-      if (!this.threads.agent(agent)) throw new Error(`No agent ${agent}.`);
+    for (const given of agents) {
+      if (!this.threads.agent(given)) throw new Error(`No agent ${given}.`);
+      const agent = this.threads.conversationOf(given);
       if (!row.members.some(m => m.principal === agent)) row.members.push({ principal: agent, role: "member", wakeOn, addedAt: Date.now() });
     }
     this.store.saveChannels();
@@ -134,7 +136,8 @@ export class Channels {
 
   removeMember(id: string, agent: AgentId): Channel {
     const row = this.require(id);
-    row.members = row.members.filter(m => m.principal !== agent || m.principal === "owner");
+    const key = this.threads.conversationOf(agent);
+    row.members = row.members.filter(m => m.principal !== key || m.principal === "owner");
     this.store.saveChannels();
     this.changed(row);
     return this.view(row);
@@ -211,7 +214,7 @@ export class Channels {
     const repeat = posts.find(p => p.requestId === request.requestId && p.author === author);
     if (repeat) return { item: this.item(repeat), deliveries: repeat.deliveries.map(publicDelivery) };
     if (request.threadRoot && !posts.some(p => p.id === request.threadRoot && !p.threadRoot)) throw new Error(`No thread ${request.threadRoot} in #${row.name}.`);
-    const mentions = [...new Set(request.mentions ?? [])].filter(m => m !== author);
+    const mentions = [...new Set((request.mentions ?? []).map(m => this.threads.conversationOf(m)))].filter(m => m !== author);
     for (const target of mentions) {
       if (target === "owner") continue;
       if (!row.members.some(m => m.principal === target)) {

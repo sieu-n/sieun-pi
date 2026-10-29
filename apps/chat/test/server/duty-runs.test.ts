@@ -11,7 +11,7 @@ import { after, before, test } from "node:test";
 import type { DutyRow, LiveEvent } from "../../web/src/lib/api/types.ts";
 import type { DutyRunRecord } from "../../web/src/lib/api/shared/chat-duties.ts";
 import { nextRun } from "../../server/boards.ts";
-import { FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
+import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { start, until, type Running } from "./helpers.ts";
 
 const HOUR = 3_600_000;
@@ -28,7 +28,7 @@ const imported = (at: number, value: number, afterValue?: number): DutyRunRecord
 let s: Running;
 let prime: string;
 const now = Date.now();
-const chatDir = () => join(s.app.store.dir, "boards", ids.vent);
+const chatDir = () => s.app.boards.dir(agents.vent);
 const duties = async (): Promise<DutyRow[]> => (await s.get<{ duties: DutyRow[] }>(`/api/threads/${ids.vent}/duties`)).duties;
 
 before(async () => {
@@ -68,7 +68,7 @@ test("a run shows as running, and its start and end reach the page as duties eve
   const live = await s.live();
   const ran = await s.send("POST", `/api/threads/${ids.vent}/duties`, { duty: "d1", action: "run" });
   assert.equal(ran.status, 200);
-  const isDuties = (event: LiveEvent): event is Extract<LiveEvent, { type: "duties" }> => event.type === "duties" && event.chatId === ids.vent;
+  const isDuties = (event: LiveEvent): event is Extract<LiveEvent, { type: "duties" }> => event.type === "duties" && event.chatId === agents.vent;
   const started = await live.waitFor(event => isDuties(event) && event.duties[0]!.running);
   assert.ok(isDuties(started));
   const ended = await live.waitFor(event => isDuties(event) && !event.duties[0]!.running && event.duties[0]!.runs.length === 4);

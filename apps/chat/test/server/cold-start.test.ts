@@ -51,13 +51,13 @@ test("while pi-host is down, the sidebar and For you answer in under a second fr
     sidebar = (await get<Sidebar>(`${base}/api/sidebar`)).body;
     asks = (await get<{ items: unknown[] }>(`${base}/api/for-you`)).body.items.length;
   });
-  assert.ok(sidebar.solo.length > 0 && asks > 0);
+  assert.ok(sidebar.dms.length > 0 && asks > 0);
 
   await run(new PiHost(join(dataDir, "no-pi-host.sock")), async (base, startMs) => {
     assert.ok(startMs < 1000, `the server took ${startMs.toFixed(0)} ms to start`);
     const cold = await get<Sidebar>(`${base}/api/sidebar`);
     assert.ok(cold.ms < 1000, `the sidebar took ${cold.ms.toFixed(0)} ms`);
-    assert.deepEqual(cold.body.solo.map(c => c.id), sidebar.solo.map(c => c.id));
+    assert.deepEqual(cold.body.dms.map(c => c.id), sidebar.dms.map(c => c.id));
     assert.equal(cold.body.forYou, sidebar.forYou);
     const forYou = await get<{ items: unknown[] }>(`${base}/api/for-you`);
     assert.equal(forYou.body.items.length, asks);

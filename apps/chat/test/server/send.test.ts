@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import type { Item, LiveEvent, TimelinePage } from "../../web/src/lib/api/types.ts";
 import type { FixtureHost } from "../../server/host/fixture.ts";
-import { FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
+import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { start, until, type Running } from "./helpers.ts";
 
 type Message = Extract<Item, { kind: "message" }>;
@@ -113,14 +113,14 @@ describe("thread sends", () => {
   });
 
   test("a live turn sends no partial text and no item per tool call", async () => {
-    const agent = (await s.send("POST", "/api/agents", { name: "no stream" })).body as { id: string };
+    const thread = ((await s.send("POST", "/api/agents", { name: "no stream" })).body as { thread: string }).thread;
     const live = await s.live();
-    live.watch(agent.id);
-    await live.waitFor(e => e.type === "status" && e.conversation === agent.id);
+    live.watch(thread);
+    await live.waitFor(e => e.type === "status" && e.conversation === thread);
     const text = `spawn a job ${Date.now()}`;
-    await s.send("POST", `/api/c/${agent.id}/send`, { text, requestId: "nostream-1" });
+    await s.send("POST", `/api/c/${thread}/send`, { text, requestId: "nostream-1" });
     await live.waitFor(e => e.type === "items" && e.items.some(i => i.kind === "turn" && !i.live && i.text.includes(text)));
-    const mine = live.events.filter((e): e is Extract<LiveEvent, { type: "items" }> => e.type === "items" && e.conversation === agent.id);
+    const mine = live.events.filter((e): e is Extract<LiveEvent, { type: "items" }> => e.type === "items" && e.conversation === thread);
     assert.ok(!live.events.some(e => e.type === "partial" && !!e.partial), "no partial text");
     // The input, the run's start, the one answer with text before the job, each of its two send_message calls, and the run's end.
     assert.ok(mine.filter(e => e.items.some(i => i.kind === "turn")).length <= 6, `${mine.length} item events`);
@@ -171,7 +171,7 @@ describe("channel posts", () => {
     assert.equal(sent.body.deliveries[0].state, "queued");
     release();
     const thread = await until(() => s.get(`/api/c/${ids.cutoverChannel}/replies/${sent.body.item.id}`), t => t.root.deliveries[0].state === "answered");
-    assert.equal(thread.items[0].author.id, ids.frontend);
+    assert.equal(thread.items[0].author.id, agents.frontend);
     host.beforeSubmit = undefined;
   });
 });

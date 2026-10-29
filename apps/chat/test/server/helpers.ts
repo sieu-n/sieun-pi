@@ -35,14 +35,15 @@ export interface LiveClient {
 
 /**
  * With `url`, the specs run against a server that already runs there, such as the installed service on :5184. With `dataDir`, the server
- * uses that dir and leaves it on close, so a spec can start a second server on it as a restart.
+ * uses that dir and leaves it on close, so a spec can start a second server on it as a restart. With `host`, it runs on that fixture host as
+ * it stands, unseeded, so a restart keeps the threads the first server saw.
  */
-export async function start(opts: { real?: boolean; wordMs?: number; url?: string; dataDir?: string } = {}): Promise<Running> {
+export async function start(opts: { real?: boolean; wordMs?: number; url?: string; dataDir?: string; host?: FixtureHost } = {}): Promise<Running> {
   if (opts.url) return remote(opts.url);
   const dataDir = opts.dataDir ?? mkdtempSync(join(tmpdir(), "apps-chat-test-"));
   const config = { ...readConfig([]), dataDir, port: 0, fixture: !opts.real, box: "test-box", ...(opts.real ? {} : fixtureFolders(dataDir)) };
-  const host = opts.real ? new PiHost(config.socket) : new FixtureHost();
-  if (host instanceof FixtureHost) {
+  const host = opts.host ?? (opts.real ? new PiHost(config.socket) : new FixtureHost());
+  if (host instanceof FixtureHost && !opts.host) {
     host.wordMs = opts.wordMs ?? 0;
     seedFixture(host, dataDir);
   }

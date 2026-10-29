@@ -9,12 +9,15 @@ import type {
   TimelinePage,
 } from "../web/src/lib/api/types.ts";
 import type { AllowedModel } from "../../../config/allowed-models.ts";
+import { AgentStore, type AgentRecord } from "./agent-store.ts";
+import { Agents, isRoomId } from "./agents.ts";
 import { Boards } from "./boards.ts";
 import { Channels, publicDelivery } from "./channels.ts";
 import { DEFAULT_MODEL, type Config } from "./config.ts";
 import type { Host } from "./host/types.ts";
 import { Outbox, type OutboxRow } from "./outbox.ts";
 import { projectCwd, projectList } from "./projects.ts";
+import { Rooms } from "./rooms.ts";
 import { Search } from "./search.ts";
 import { Store } from "./store.ts";
 import { modelRef, OWNER, parseConversationId, Threads } from "./threads.ts";
@@ -41,6 +44,9 @@ type Client = { socket: WebSocket; watching: Set<ConversationId> };
 
 export class App {
   readonly store: Store;
+  readonly agentStore: AgentStore;
+  readonly agents: Agents;
+  readonly rooms: Rooms;
   readonly threads: Threads;
   readonly channels: Channels;
   readonly boards: Boards;
@@ -50,11 +56,15 @@ export class App {
   private readonly clients = new Set<Client>();
   private sidebarTimer?: NodeJS.Timeout;
   private lastSidebar = "";
+  /** Each DM room's summary as last sent, so a room event goes out only when its row changed. */
+  private roomCache = new Map<string, string>();
   readonly wss = new WebSocketServer({ noServer: true });
 
   constructor(readonly config: Config, readonly host: Host, readonly log: (line: string) => void = line => console.log(line)) {
     this.store = new Store(config.dataDir);
     mkdirSync(this.store.imagePath(""), { recursive: true });
+    this.agentStore = new AgentStore(config.dataDir);
+    this.agents = new Agents(this.agentStore, this.store, host, config.box, log);
     this.threads = new Threads(host, this.store, {
       agents: (changed, removed) => {
         for (const agent of changed) this.broadcast({ type: "agent", agent });
@@ -65,14 +75,35 @@ export class App {
       items: (conversation, items) => {
         this.toWatchers(conversation, { type: "items", conversation, items });
         this.outbox.reconcile(conversation, items);
+        // A watched DM watches its work thread too, so a new speaking call posts without waiting for the next thread list read.
+        const record = this.agents.ofWorkThread(conversation);
+        if (record) void this.rooms.feed(record);
       },
       partial: (conversation, partial) => this.toWatchers(conversation, { type: "partial", conversation, partial }),
       status: (conversation, status) => {
         this.broadcast({ type: "status", conversation, status });
+        const record = this.agents.ofWorkThread(conversation);
+        if (record) this.broadcast({ type: "status", conversation: record.room, status });
         this.sidebarSoon();
       },
       jobs: (thread, jobs) => this.broadcast({ type: "jobs", thread, jobs }),
     }, config.box, log);
+    this.threads.agentRecords = this.agents;
+    this.rooms = new Rooms({
+      store: this.agentStore, state: this.store, host, threads: this.threads, agents: this.agents,
+      events: {
+        items: (room, items) => this.toWatchers(room, { type: "items", conversation: room, items }),
+        status: (room, status) => this.broadcast({ type: "status", conversation: room, status }),
+        changed: () => this.roomsChanged(),
+        submitted: (record, result) => this.queues.follow(record.workThread, result.ticket?.place ?? null),
+      },
+      saveUpload: image => this.saveUpload(image), readUpload: ref => this.readUpload(ref), log,
+    });
+    this.threads.roomSummaries = () => this.rooms.summaries();
+    this.threads.onRefresh = () => {
+      this.rooms.poll();
+      this.migrateSoon();
+    };
     this.channels = new Channels(this.store, host, this.threads, {
       queue: (target, place, listener) => this.queues.follow(target, place, listener),
       items: (conversation, items) => this.toWatchers(conversation, { type: "items", conversation, items }),
@@ -81,7 +112,7 @@ export class App {
     }, log);
     this.threads.channelSummaries = () => this.channels.summaries();
     this.threads.channelsOf = agent => this.channels.memberChannels(agent);
-    this.boards = new Boards(host, this.store, this.threads, {
+    this.boards = new Boards(host, this.store, this.threads, this.agents, {
       board: (chatId, board, awaitingGo) => this.broadcast({ type: "board", chatId, board, awaitingGo }),
       forYou: count => {
         this.broadcast({ type: "for_you", count });
@@ -94,7 +125,11 @@ export class App {
       if (name === "chat.board") this.boards.docChanged(thread, value);
     };
     this.search = new Search(host, this.threads, this.channels, config.fixture ? undefined : config.durableIndex);
-    this.queues = new QueueWatch(host, this.threads, (conversation, place) => this.toWatchers(conversation, { type: "queue", conversation, place }), log);
+    this.queues = new QueueWatch(host, this.threads, (conversation, place) => {
+      this.toWatchers(conversation, { type: "queue", conversation, place });
+      const record = this.agents.ofWorkThread(conversation);
+      if (record) this.toWatchers(record.room, { type: "queue", conversation: record.room, place });
+    }, log);
     this.outbox = new Outbox(config.dataDir, {
       host,
       submitted: (row, result) => this.queues.follow(row.conversation, result.ticket?.place ?? null),
@@ -108,12 +143,14 @@ export class App {
 
   async start(): Promise<void> {
     await this.threads.start(this.config.fixture ? 1000 : 2000);
+    this.rooms.start();
     this.channels.resume();
     this.boards.start();
     this.outbox.start();
   }
 
   async stop(): Promise<void> {
+    this.rooms.stop();
     this.boards.stop();
     this.outbox.stop();
     this.queues.stop();
@@ -131,12 +168,11 @@ export class App {
   }
 
   async sidebar(): Promise<Sidebar> {
-    const all = this.threads.conversations().filter(c => !c.archived);
     const byNew = (a: ConversationSummary, b: ConversationSummary) => b.lastActivityAt - a.lastActivityAt;
     return {
-      solo: all.filter(c => c.kind === "solo").sort(byNew),
-      channels: all.filter(c => c.kind === "channel").sort((a, b) => a.name.localeCompare(b.name)),
-      dms: all.filter(c => c.kind === "dm").sort(byNew),
+      solo: this.threads.threadConversations().filter(c => c.kind === "solo" && !c.archived).sort(byNew),
+      channels: this.channels.summaries().filter(c => !c.archived).sort((a, b) => a.name.localeCompare(b.name)),
+      dms: this.rooms.summaries().filter(c => !c.archived).sort(byNew),
       forYou: await this.boards.forYouCount().catch(() => 0),
     };
   }
@@ -144,6 +180,28 @@ export class App {
   private conversationsChanged(changed: ConversationSummary[]): void {
     for (const conversation of changed) this.broadcast({ type: "conversation", conversation });
     this.sidebarSoon();
+  }
+
+  /** A DM room changed: its row goes out when it differs from the last one sent. */
+  private roomsChanged(): void {
+    const changed = this.rooms.summaries().filter(c => this.roomCache.get(c.id) !== JSON.stringify(c));
+    for (const summary of changed) this.roomCache.set(summary.id, JSON.stringify(summary));
+    this.conversationsChanged(changed);
+  }
+
+  /** A root chat with no agent record yet becomes an agent with a DM, in the background (migrate.ts). */
+  private migrateSoon(): void {
+    void this.agents.migrateIfNeeded(this.threads.threadsList(), this.config.dataDir, () => {
+      this.roomsChanged();
+      void this.threads.refresh().catch(() => undefined);
+    });
+  }
+
+  /** The agent a DM room id names, or NotFound. */
+  private roomAgent(id: ConversationId): AgentRecord {
+    const record = this.agents.record(id);
+    if (!record || record.room !== id) throw new NotFound(`No DM ${id}.`);
+    return record;
   }
 
   private sidebarSoon(): void {
@@ -173,20 +231,35 @@ export class App {
         ...(channel.homeChat ? { homeChat: channel.homeChat } : {}), ...(this.store.state.reads[channel.id]?.seq !== undefined ? { readSeq: this.store.state.reads[channel.id]!.seq! } : {}),
       };
     }
+    if (isRoomId(id)) {
+      const record = this.roomAgent(id);
+      const agent = this.threads.agent(record.id);
+      if (!agent) throw new NotFound(`No agent ${record.id}.`);
+      const readSeq = this.rooms.readSeq(record);
+      return {
+        summary: this.rooms.summary(record), members: this.members(agent), model: agent.model, thinkingLevel: agent.thinkingLevel, agent,
+        queue: this.queues.place(record.workThread), workThread: record.workThread, ...(readSeq !== undefined ? { readSeq } : {}),
+      };
+    }
     const summary = this.threads.conversations().find(c => c.id === id);
     const agent = this.threads.agent(id);
     if (!summary || !agent) throw new NotFound(`No conversation ${id}.`);
-    const members = [{ principal: OWNER, role: "owner" as const, wakeOn: "all" as const }, { principal: this.threads.principal(agent.id), role: "member" as const, wakeOn: "all" as const, status: agent.status }];
-    return { summary, members, model: agent.model, thinkingLevel: agent.thinkingLevel, agent, queue: this.queues.place(id) };
+    return { summary, members: this.members(agent), model: agent.model, thinkingLevel: agent.thinkingLevel, agent, queue: this.queues.place(id) };
+  }
+
+  private members(agent: AgentSummary): ConversationHeader["members"] {
+    return [{ principal: OWNER, role: "owner", wakeOn: "all" }, { principal: this.threads.principal(agent.id), role: "member", wakeOn: "all", status: agent.status }];
   }
 
   /**
-   * A send lands in the chat server and answers at once, as in Slack: a channel post is written and its mentions go out behind it, and
-   * a thread send goes to the outbox, which shows it on every watching page and hands it to pi-host with retries (server/outbox.ts).
+   * A send lands in the chat server and answers at once, as in Slack: a DM post or a channel post is written and delivered behind the answer,
+   * and a send into a work thread's transcript goes to the outbox, which shows it on every watching page and hands it to pi-host with
+   * retries (server/outbox.ts).
    */
   async send(id: ConversationId, request: SendRequest): Promise<SendResult> {
     if (!request.text?.trim() && !request.images?.length) throw new Error("A message needs text or an image.");
     if (!request.requestId) throw new Error("A send needs a requestId, so a retry lands once.");
+    if (isRoomId(id)) return this.rooms.post(this.roomAgent(id), request);
     if (this.isChannel(id)) {
       const images = (request.images ?? []).map(image => this.saveUpload(image));
       return this.channels.post(id, "owner", { ...request, images: undefined as never }, images);
@@ -207,14 +280,16 @@ export class App {
 
   /** Tries a failed or waiting send again now. */
   retrySend(id: ConversationId, requestId: string): SendResult {
+    if (isRoomId(id)) return this.rooms.retry(this.roomAgent(id), requestId);
     const row = this.outbox.get(requestId);
     if (!row || row.conversation !== id) throw new NotFound(`No pending send ${requestId} in ${id}.`);
     const item = this.outbox.retry(requestId)!;
     return { item, deliveries: row.deliveries };
   }
 
-  /** Drops a pending send the owner gave up on. */
+  /** Drops a pending send the owner gave up on. A DM post is stored, so it stays. */
   discardSend(id: ConversationId, requestId: string): void {
+    if (isRoomId(id)) throw new Error("A DM post is stored; retry its delivery instead of discarding it.");
     const row = this.outbox.get(requestId);
     if (!row || row.conversation !== id) throw new NotFound(`No pending send ${requestId} in ${id}.`);
     this.outbox.discard(requestId);
@@ -243,6 +318,7 @@ export class App {
 
   /** A timeline page; the newest page of a thread also carries the sends pi-host has not shown yet, after its entries. */
   async items(id: ConversationId, opts: { before?: string; after?: string; around?: string; limit?: number }): Promise<TimelinePage> {
+    if (isRoomId(id)) return this.rooms.timeline(this.roomAgent(id), opts);
     if (this.isChannel(id)) return this.channels.timeline(id, opts);
     const page = await this.threads.timeline(id, opts);
     this.outbox.reconcile(id, page.items);
@@ -277,16 +353,21 @@ export class App {
       }));
       return;
     }
+    if (isRoomId(id)) {
+      await this.host.abort(this.roomAgent(id).workThread);
+      return;
+    }
     const { thread, conversation } = parseConversationId(id);
     await this.host.abort(thread, conversation === 1 ? undefined : conversation);
   }
 
+  /** On a DM, a rename or archive changes the agent and its work thread, and model, thinking level and cwd change the work thread. */
   async patch(id: ConversationId, patch: ConversationPatch): Promise<ConversationHeader> {
     if (this.isChannel(id)) {
       this.channels.update(id, { ...(patch.name !== undefined ? { name: patch.name } : {}), ...(patch.archived !== undefined ? { archived: patch.archived } : {}) });
       return this.header(id);
     }
-    const { thread, conversation } = parseConversationId(id);
+    const { thread, conversation } = parseConversationId(isRoomId(id) ? this.roomAgent(id).workThread : id);
     if (conversation !== 1 && (patch.name !== undefined || patch.archived !== undefined)) throw new Error("Rename and archive the job's thread instead; a job inside a thread has no name of its own in pi-host.");
     if (conversation !== 1 && patch.cwd !== undefined) throw new Error("A job inside a thread runs in its thread's folder; move the thread's root instead.");
     await this.host.set(thread, {
@@ -303,33 +384,40 @@ export class App {
     return projectList(this.config);
   }
 
-  /** A new root thread in a project folder: the one given, else the default project, never the home folder. */
+  /**
+   * A new agent: its work thread in a project folder (the one given, else the default project, never the home folder), its record and its DM
+   * room, made at once. With `kind: "job"` or a `parent`, the thread is a root job filed under that agent instead.
+   */
   async createAgent(input: { name?: string; model?: string; thinkingLevel?: string; cwd?: string; kind?: "chat" | "job"; parent?: string }): Promise<AgentSummary> {
     const cwd = projectCwd(this.config, input.cwd);
     const created = await this.host.create({
       ...(input.name ? { name: input.name } : {}), model: input.model ?? MODELS.default.model, thinkingLevel: input.thinkingLevel ?? MODELS.default.thinkingLevel, cwd,
     });
     if (input.kind === "job" || input.parent) {
-      this.store.state.threads[created.id] = { kind: "job", ...(input.parent ? { parent: input.parent } : {}) };
+      this.store.state.threads[created.id] = { kind: "job", ...(input.parent ? { parent: this.agents.record(input.parent)?.id ?? input.parent } : {}) };
       this.store.saveState();
+      if (input.parent) this.agents.alias(created.id, input.parent);
+      await this.threads.refresh();
+      return this.threads.agent(created.id)!;
     }
+    const record = this.agents.add(created);
     await this.threads.refresh();
-    return this.threads.agent(created.id)!;
+    this.roomsChanged();
+    return this.threads.agent(record.id)!;
   }
 
+  /** An agent's DM row; every agent has one. */
   openDm(agent: string): ConversationSummary {
-    const found = this.threads.agent(agent);
-    if (!found) throw new NotFound(`No agent ${agent}.`);
-    // Only a root chat becomes a DM; a job opens by link and stays under its parent.
-    if (found.kind === "chat" && found.conversation === 1 && !this.store.state.dms.includes(agent)) {
-      this.store.state.dms.unshift(agent);
-      this.store.saveState();
-    }
-    this.sidebarSoon();
-    return this.threads.conversations().find(c => c.id === agent)!;
+    const record = this.agents.record(agent);
+    if (!record) throw new NotFound(`No agent ${agent}.`);
+    return this.rooms.summary(record);
   }
 
   markRead(id: ConversationId, seq?: number): void {
+    if (isRoomId(id)) {
+      this.rooms.markRead(this.roomAgent(id), seq);
+      return;
+    }
     if (this.isChannel(id)) {
       this.channels.markRead(id, seq);
       return;
@@ -356,7 +444,7 @@ export class App {
     });
     socket.on("close", () => {
       this.clients.delete(client);
-      for (const id of client.watching) if (!this.isChannel(id)) void this.threads.unwatch(id);
+      for (const id of client.watching) if (!this.isChannel(id)) void this.threads.unwatch(this.watchTarget(id));
     });
   }
 
@@ -364,6 +452,17 @@ export class App {
     if (command.type === "watch") {
       if (client.watching.has(command.conversation)) return;
       client.watching.add(command.conversation);
+      if (isRoomId(command.conversation)) {
+        const record = this.roomAgent(command.conversation);
+        if (command.after) {
+          const page = this.rooms.timeline(record, { after: command.after, limit: 200 });
+          if (page.items.length) this.send1(client, { type: "items", conversation: command.conversation, items: page.items });
+        }
+        this.send1(client, { type: "status", conversation: command.conversation, status: this.rooms.status(record) });
+        this.send1(client, { type: "queue", conversation: command.conversation, place: this.queues.place(record.workThread) });
+        await this.threads.watch(record.workThread);
+        return;
+      }
       if (this.isChannel(command.conversation)) {
         if (command.after) {
           const page = this.channels.timeline(command.conversation, { after: command.after, limit: 200 });
@@ -384,8 +483,13 @@ export class App {
       this.send1(client, { type: "queue", conversation: command.conversation, place: this.queues.place(command.conversation) });
     } else if (command.type === "unwatch") {
       if (!client.watching.delete(command.conversation)) return;
-      if (!this.isChannel(command.conversation)) await this.threads.unwatch(command.conversation);
+      if (!this.isChannel(command.conversation)) await this.threads.unwatch(this.watchTarget(command.conversation));
     }
+  }
+
+  /** The thread conversation a watch holds open: a DM's work thread, or the conversation itself. */
+  private watchTarget(id: ConversationId): ConversationId {
+    return isRoomId(id) ? this.agents.record(id)?.workThread ?? id : id;
   }
 
   private send1(client: Client, event: LiveEvent): void {
