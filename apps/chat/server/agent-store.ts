@@ -80,8 +80,11 @@ export interface FeedCursor {
   entry: number;
   /** Speaking calls seen whose result has not landed yet. */
   open: Record<string, { text: string; entry: number; why?: string }>;
-  /** The input that started the current turn, whether a channel post started it, and the turn's newest post. */
-  turn?: { input: number; channel: boolean; lastPost?: string };
+  /**
+   * The input that started the current turn, whether a channel post started it, the turn's newest post, and the jobs the turn started before
+   * it had a post, which go on its next one.
+   */
+  turn?: { input: number; channel: boolean; lastPost?: string; jobs?: string[] };
 }
 
 export interface RoomsFile { v: 1; rooms: RoomRow[]; feed: Record<AgentId, FeedCursor> }
@@ -102,7 +105,6 @@ export class AgentStore {
   private readonly posts = new Map<RoomId, RoomPost[]>();
 
   constructor(readonly dir: string) {
-    mkdirSync(join(dir, "rooms"), { recursive: true });
     this.agents = readJson<AgentsFile>(join(dir, "agents.json"), { v: 1, agents: [], aliases: {} });
     this.rooms = readJson<RoomsFile>(join(dir, "rooms.json"), { v: 1, rooms: [], feed: {} });
   }
