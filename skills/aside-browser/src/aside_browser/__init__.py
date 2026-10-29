@@ -258,6 +258,13 @@ def explain(message: str, sent: str | None = None) -> str | None:
 # ---------------------------------------------------------------- tab ownership
 
 _owned: dict[str, dict[str, str]] = {}
+_opened: dict[str, dict[str, float]] = {}
+
+# Aside leaves a tab out of listBrowserTabs() until its first page commits, and attachBrowserTab() from another REPL session cannot
+# find it then. At 14:56Z on 10-29 a 5180 job's tab under the Mac's load stayed out of the list for over 3 minutes, close_own_tabs()
+# read it as closed and dropped its record, and the tab then loaded as one of four compose-polish tabs that no close could reach.
+# A tab out of the list keeps its record until UNLISTED_S after it opened, so a later close finds it once it loads.
+UNLISTED_S = 900
 
 
 def owner_key() -> str:
@@ -293,6 +300,7 @@ def _owned_tabs() -> dict[str, str]:
     key = owner_key()
     if key not in _owned:
         _owned[key] = {}
+        _opened[key] = {}
         for path in (_registry_path(), _legacy_registry_path()):
             if not path or not os.path.exists(path):
                 continue
@@ -301,10 +309,22 @@ def _owned_tabs() -> dict[str, str]:
                     data = json.load(fh)
                 if data.get("owner") == key and isinstance(data.get("tabs"), dict):
                     _owned[key].update({str(k): str(v) for k, v in data["tabs"].items()})
+                    _opened[key].update(_opened_map(data))
             except (OSError, ValueError):
                 pass
             break
     return _owned[key]
+
+
+def _opened_map(entry: dict[str, Any]) -> dict[str, float]:
+    found = entry.get("opened")
+    return {str(k): float(v) for k, v in found.items() if isinstance(v, (int, float))} if isinstance(found, dict) else {}
+
+
+def _still_loading(ids: list[str], opened: dict[str, float]) -> list[str]:
+    """Of tabs Aside did not list, those opened under UNLISTED_S ago, which may still be loading. A record with no open time counts as old."""
+    now = time.time()
+    return [tid for tid in ids if now - opened.get(tid, 0) < UNLISTED_S]
 
 
 def _save_owned() -> None:
@@ -318,7 +338,9 @@ def _save_owned() -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".aside-tabs-", dir=os.path.dirname(path))
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump({"owner": owner_key(), "host": socket.gethostname(), "pid": os.getpid(), "start": _process_start(os.getpid()), "tabs": tabs_now}, fh)
+        opened = {tid: at for tid, at in _opened.get(owner_key(), {}).items() if tid in tabs_now}
+        json.dump({"owner": owner_key(), "host": socket.gethostname(), "pid": os.getpid(), "start": _process_start(os.getpid()), "tabs": tabs_now,
+                   "opened": opened}, fh)
     os.replace(tmp, path)
 
 
@@ -343,6 +365,7 @@ def _remember(target_ids: list[str], url: str = "") -> None:
     for tid in target_ids:
         if tid and tid not in owned and not tid.startswith(BOX_PREFIX):
             owned[tid] = url
+            _opened.setdefault(owner_key(), {})[tid] = time.time()
             changed = True
     if changed:
         _save_owned()
@@ -350,6 +373,8 @@ def _remember(target_ids: list[str], url: str = "") -> None:
 
 def _forget(target_ids: list[str]) -> None:
     owned = _owned_tabs()
+    for tid in target_ids:
+        _opened.get(owner_key(), {}).pop(tid, None)
     if [owned.pop(tid) for tid in list(target_ids) if tid in owned]:
         _save_owned()
 
@@ -973,7 +998,7 @@ def _park_idle(gen: int) -> list[str]:
             "const __listed = await listBrowserTabs(); const __urls = Object.fromEntries(__listed.map(t => [t.targetId, t.url]));"
             f" const __ids = {json.dumps(ids)}.filter(i => !__listed.some(t => t.targetId === i && t.active));"
             + _close_js("__ids")
-            + " console.log(JSON.stringify({closed: __closed.filter(i => !__left.includes(i)), urls: __urls}))"
+            + " console.log(JSON.stringify({closed: __closed.filter(i => !__left.includes(i)), unlisted: __unlisted, urls: __urls}))"
         )
         try:
             out = subprocess.run([CLI, "repl", js], capture_output=True, text=True, timeout=REPL_LIMIT_S).stdout
@@ -986,7 +1011,11 @@ def _park_idle(gen: int) -> list[str]:
         for tid in closed:
             _parked[tid] = str(urls.get(tid) or owned[tid])
         _forget(closed)
-        return closed
+        loading = _still_loading([str(t) for t in found.get("unlisted") or []], _opened.get(owner_key(), {}))
+        _forget([str(t) for t in found.get("unlisted") or [] if str(t) not in loading])
+    if loading:
+        _arm_park()  # A tab still loading closes on the next idle close, once Aside lists it.
+    return closed
 
 
 async def _unpark() -> None:
@@ -1130,7 +1159,9 @@ async def owned_tabs() -> list[dict[str, Any]]:
     """Open tabs that this agent session opened. Forgets owned tabs that are already closed."""
     found = await tabs("all" if _owned_tabs() else None)
     open_ids = {t.get("targetId") for t in found}
-    _forget([tid for tid in _owned_tabs() if tid not in open_ids])
+    unlisted = [tid for tid in _owned_tabs() if tid not in open_ids]
+    loading = _still_loading(unlisted, _opened.get(owner_key(), {}))
+    _forget([tid for tid in unlisted if tid not in loading])
     return [t for t in found if t["owned"]]
 
 
@@ -1256,7 +1287,8 @@ async def screenshot(path: str, full_page: bool = False, annotated: bool = False
 
 
 def _close_js(ids_js: str) -> str:
-    """JS that closes each still-open tab in the JS array ids_js and defines __closed (ids it tried) and __left (ids still open).
+    """JS that closes each still-open tab in the JS array ids_js and defines __closed (ids it tried), __left (ids still open) and __unlisted
+    (ids Aside does not list and this REPL session does not hold, either closed or still loading; see UNLISTED_S).
 
     In Aside, closeTab() of a tab that another REPL session opened only drops it from this session and leaves it open in the
     window. Every kernel has its own REPL session, so sweeps and closes after a kernel or MCP restart used to drop the record
@@ -1264,8 +1296,10 @@ def _close_js(ids_js: str) -> str:
     page.close({runBeforeUnload: true}), which sends CDP Page.close and really closes it.
     """
     return (
-        "const __open = new Set((await listBrowserTabs()).map(t => t.targetId)); const __closed = [];"
-        f" for (const __id of {ids_js}) {{ if (!__open.has(__id)) continue;"
+        "const __open = new Set((await listBrowserTabs()).map(t => t.targetId)); const __closed = []; const __unlisted = [];"
+        f" for (const __id of {ids_js}) {{ if (!__open.has(__id)) {{ const __mine = getTabByTargetId(__id);"
+        " if (!__mine) { __unlisted.push(__id); continue; }"
+        " await __mine.close({runBeforeUnload: true}).catch(() => {}); await closeTab(__mine).catch(() => {}); __closed.push(__id); continue; }"
         " await closeTab(getTabByTargetId(__id) || await attachBrowserTab(__id)); __closed.push(__id); }"
         " let __now = new Set((await listBrowserTabs()).map(t => t.targetId)); const __stuck = __closed.filter(i => __now.has(i));"
         " for (const __id of __stuck) { const __t = await attachBrowserTab(__id); await __t.close({runBeforeUnload: true});"
@@ -1278,12 +1312,14 @@ def _close_js(ids_js: str) -> str:
 async def _close(target_id: str) -> str:
     tid = _js_string(target_id)
     found = _json_line(await _repl(
-        _scoped(_close_js(f"[{tid}]") + " console.log(JSON.stringify({left: __left, tabs: tabs.length}))"),
+        _scoped(_close_js(f"[{tid}]") + " console.log(JSON.stringify({left: __left, unlisted: __unlisted, tabs: tabs.length}))"),
         "close tab",
         browser="box" if target_id.startswith(BOX_PREFIX) else "aside",
     ))
     if target_id in (found.get("left") or []):
         raise AsideError(f"Tab {target_id} is still open after closeTab() and Page.close.")
+    if _still_loading([str(t) for t in found.get("unlisted") or []], _opened.get(owner_key(), {})):
+        raise AsideError(f"Tab {target_id} is not in Aside's tab list yet, so it may still be loading. Its record stays; close it again in a minute.")
     return f"closed {target_id} - tabs left in this REPL: {found.get('tabs')}"
 
 
@@ -1333,14 +1369,16 @@ async def close_tab(target_id: str | None = None, force: bool = False) -> str:
     return f"closed {target_id} - tabs left in this REPL: {found.get('left')}"
 
 
-async def _close_open(ids: list[str], title: str) -> tuple[list[str], list[str]]:
-    """Close those of ids that are still open in Aside, in one REPL call. Returns (closed, still open) targetIds."""
+async def _close_open(ids: list[str], title: str, opened: dict[str, float]) -> tuple[list[str], list[str]]:
+    """Close those of ids that are still open in Aside, in one REPL call. Returns (closed, kept) targetIds, where kept holds the tabs
+    still open and the unlisted tabs opened under UNLISTED_S ago, whose records stay."""
     found = _json_line(await _repl(
-        _scoped(_close_js(json.dumps(ids)) + " console.log(JSON.stringify({closed: __closed.filter(i => !__left.includes(i)), left: __left}))"),
+        _scoped(_close_js(json.dumps(ids)) + " console.log(JSON.stringify({closed: __closed.filter(i => !__left.includes(i)), left: __left, unlisted: __unlisted}))"),
         title,
         browser="aside",
     ))
-    return [str(t) for t in found.get("closed") or []], [str(t) for t in found.get("left") or []]
+    left = [str(t) for t in found.get("left") or []]
+    return [str(t) for t in found.get("closed") or []], left + _still_loading([str(t) for t in found.get("unlisted") or []], opened)
 
 
 async def close_own_tabs() -> list[str]:
@@ -1356,7 +1394,7 @@ async def close_own_tabs() -> list[str]:
         closed += [str(t) for t in found.get("closed") or []]
     owned = list(_owned_tabs())
     if owned:
-        done, left = await _close_open(owned, "close own tabs")
+        done, left = await _close_open(owned, "close own tabs", _opened.get(owner_key(), {}))
         closed += done
         _forget([t for t in owned if t not in left])
     return closed
@@ -1370,6 +1408,7 @@ async def sweep_stale_tabs() -> list[str]:
     """
     folder = _state_dir()
     stale: dict[str, list[str]] = {}
+    opened: dict[str, float] = {}
     for name in os.listdir(folder) if os.path.isdir(folder) else []:
         path = os.path.join(folder, name)
         if not name.endswith(".json"):
@@ -1381,11 +1420,12 @@ async def sweep_stale_tabs() -> list[str]:
             continue
         if entry.get("owner") != owner_key() and isinstance(entry.get("tabs"), dict) and not _alive(entry):
             stale[path] = [str(t) for t in entry["tabs"]]
+            opened.update(_opened_map(entry))
     ids = [t for found in stale.values() for t in found]
-    closed, left = await _close_open(ids, "sweep stale tabs") if ids else ([], [])
+    closed, left = await _close_open(ids, "sweep stale tabs", opened) if ids else ([], [])
     for path, found in stale.items():
         if set(found) & set(left):
-            continue  # Keep the record of a tab that did not close, so the next sweep tries again.
+            continue  # Keep the record of a tab that did not close or may still be loading, so the next sweep tries again.
         try:
             os.remove(path)
         except FileNotFoundError:

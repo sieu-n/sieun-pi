@@ -694,6 +694,55 @@ class RemoteBoxRunnerTests(Base):
         self.assertEqual(mcp.calls, [])
 
 
+class UnlistedTabTests(Base):
+    """Aside leaves a tab out of listBrowserTabs() until its first page commits. At 14:56Z on 10-29 a 5180 job's tab stayed out of the list
+    for over 3 minutes under the Mac's load, close_own_tabs() dropped its record, and the tab then loaded with no owner (046D216B)."""
+
+    def test_close_own_tabs_keeps_the_record_of_a_tab_aside_does_not_list_yet(self):
+        ab._remember(["LOADING", "MINE"], "http://[::1]:5180/configure")
+        mcp = self.fake('{"closed":["MINE"],"left":[],"unlisted":["LOADING"]}')
+        self.assertEqual(self.call(ab.close_own_tabs()), ["MINE"])
+        self.assertIn("if (!__mine) { __unlisted.push(__id); continue; }", mcp.calls[0]["code"])
+        self.assertEqual(list(ab._owned_tabs()), ["LOADING"])
+        with open(ab._registry_path(), encoding="utf-8") as fh:
+            self.assertEqual(list(json.load(fh)["opened"]), ["LOADING"])
+
+    def test_an_unlisted_tab_past_the_load_window_counts_as_closed(self):
+        ab._remember(["GONE"], "http://[::1]:5180/configure")
+        ab._opened[ab.owner_key()]["GONE"] = 0.0
+        self.fake('{"closed":[],"left":[],"unlisted":["GONE"]}')
+        self.assertEqual(self.call(ab.close_own_tabs()), [])
+        self.assertEqual(ab._owned_tabs(), {})
+
+    def test_a_sweep_keeps_the_record_of_an_exited_kernels_tab_that_is_still_loading(self):
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        proc.wait()
+        path = ab._registry_path("/sessions/finished-job")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"owner": "/sessions/finished-job", "host": ab.socket.gethostname(), "pid": proc.pid, "start": "",
+                       "tabs": {"LOADING": "http://[::1]:5180/"}, "opened": {"LOADING": ab.time.time()}}, fh)
+        self.fake('{"closed":[],"left":[],"unlisted":["LOADING"]}')
+        self.assertEqual(self.call(ab.sweep_stale_tabs()), [])
+        self.assertTrue(os.path.exists(path))
+
+    def test_owned_tabs_keeps_a_tab_that_is_still_loading(self):
+        ab._remember(["LOADING"], "https://example.com/")
+        self.fake("[]")
+        self.assertEqual(self.call(ab.owned_tabs()), [])
+        self.assertIn("LOADING", ab._owned_tabs())
+
+    def test_the_idle_close_tries_again_while_a_tab_is_still_loading(self):
+        os.environ["RLM_SESSION_DIR"] = os.path.join(self.tmp.name, "sub-1234abcd")
+        self.addCleanup(ab._hold_park)
+        ab._remember(["LOADING"], "http://[::1]:5180/configure")
+        ran = subprocess.CompletedProcess([], 0, stdout='{"closed":[],"unlisted":["LOADING"],"urls":{}}', stderr="")
+        with patch.object(ab.subprocess, "run", return_value=ran):
+            self.assertEqual(ab._park_idle(ab._park_gen), [])
+        self.assertIn("LOADING", ab._owned_tabs())
+        self.assertIsNotNone(ab._park_timer)
+
+
 class IdleParkTests(Base):
     """10-29: 15 of the owner's 17 Aside tabs were live 5180 jobs' and held about 9 GB while his Mac paged, though 74% of the time those
     jobs held a tab fell in gaps over 120 s between their calls."""

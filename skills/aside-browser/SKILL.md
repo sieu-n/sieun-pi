@@ -106,6 +106,7 @@ The module records owned Aside tabs, with the kernel's pid, in one file per sess
 - `open_tab()` and `tabs()` also close the Aside tabs of any agent kernel on this host that has exited.
 - Tabs the owner opened have no record, so no sweep or close touches them.
 - In Aside, `closeTab()` of a tab that another REPL session opened only drops it from your session and leaves it open, and every kernel has its own session. The module's closes check the tab list afterwards and send Page.close to a tab that is still there, and a sweep keeps the record of a tab that did not close. Before 2026-10-28 sweeps dropped the records and left 25 job tabs open with no owner.
+- Aside leaves a tab out of its tab list until the tab's first page loads, and another REPL session cannot attach it then, so a close keeps the record of such a tab for 15 min after it opened and a later close or idle close takes it. Before 2026-10-29 closes dropped those records, and four 5180 tabs that loaded slowly under the Mac's load stayed open with no owner.
 - `close_tab()` refuses a tab this session did not open, attached tabs included.
 - `run()` refuses code that loops over `tabs` and closes them.
 - Never call `page.close()`.
