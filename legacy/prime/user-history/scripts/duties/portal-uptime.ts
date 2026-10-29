@@ -16,6 +16,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * The 24 h uptime and its newest failed round come from the probe rows in prod Convex instead (PROD_CONVEX below), which an outage of
  * us-metal01, where that Prometheus runs, cannot hide.
  * It also makes one free signed-out GET of https://api.virev.ai/openapi.json as a second view that does not depend on Convex.
+ * It makes one more signed-out GET of https://api.virev.ai/docs and counts a page that is not the Scalar reference into probes_down_now,
+ * because board goal p110 put the public docs on the same Scalar reference as /dashboard/docs and this duty keeps it there (owner rule c110).
  * It reads the api-portal env files apps/api-portal/.env and .env.staging from GitHub at main (what prod runs) and dev/sieun (what the next
  * promote ships) and counts the key names staging has and prod lacks. Each deploy decrypts its tier's blob (scripts/repo/env/vercel-blobs.mjs),
  * so a staging-only key is a value prod code runs without, as BATCH_WORKER_SECRET is on main on 10-18 (board p9). Key names only, never values.
@@ -33,6 +35,17 @@ const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto
 const GRAFANA = "https://obs.virev.ai/api/ds/query";
 const PROM_UID = "estate_prometheus";
 const PORTAL_OPENAPI = "https://api.virev.ai/openapi.json";
+export const PUBLIC_DOCS = "https://api.virev.ai/docs";
+/**
+ * What the server-rendered /docs holds when it is the Scalar reference (p110): the stylesheet chunk of ApiDocsExplorer, which bundles
+ * @scalar/api-reference/style.css, and the placeholder that component shows until Scalar mounts. Scalar itself renders in the browser, so the
+ * HTML carries no Scalar markup of its own. Read on 2026-10-29 from staging-api.virev.ai/docs, which had both, while prod's hand-built page had neither.
+ */
+export const SCALAR_MARKERS = ["ApiDocsExplorer", "Loading interactive reference"] as const;
+/** True when a /docs page is the Scalar reference: it carries at least one of SCALAR_MARKERS. */
+export const docsIsScalar = (html: string): boolean => SCALAR_MARKERS.some(marker => html.includes(marker));
+/** The signed-out GET of PUBLIC_DOCS: its status, time, whether the page is Scalar, and the fetch error when it got no answer. */
+export interface DocsCheck { status: number; ms: number; scalar: boolean; error?: string }
 /** The refs whose api-portal env files are compared: prod's branch and the branch the next promote takes, us-metal02's dev/sieun (c119). */
 export const DEV_REF = "dev/sieun";
 export const ENV_REFS = ["main", DEV_REF] as const;
@@ -141,7 +154,7 @@ export const blobFingerprint = (text: string): string =>
   createHash("sha256").update(`${text.replace(/\s+$/, "")}\n`).digest("hex").slice(0, 16);
 
 /** The duty's metrics from the query answers, the direct GET and the env files, with a flagged slice for each down target, gap and unread source. */
-export function uptimeMetrics(answers: Answers, direct: { status: number; ms: number; error?: string }, at: number, env: EnvFiles = {}, live?: LiveProd): PrecheckOutput {
+export function uptimeMetrics(answers: Answers, direct: { status: number; ms: number; error?: string }, at: number, env: EnvFiles = {}, live?: LiveProd, docs?: DocsCheck): PrecheckOutput {
   const flagged: FlaggedSlice[] = [];
   let sourceErrors = 0;
   /** The series of one measure, or undefined after flagging why there are none. */
@@ -159,8 +172,14 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
   const metrics: Record<string, number> = {};
 
   const up = read("up", TARGETS);
-  metrics.probes_down_now = up ? up.filter(series => series.value < 1).length : UNMEASURED;
+  const offline = direct.status === 0 && Object.values(answers).every(answer => "error" in answer && !answer.error.startsWith("HTTP "));
+  const docsDown = !offline && docs !== undefined && (docs.status !== 200 || !docs.scalar);
+  metrics.probes_down_now = up ? up.filter(series => series.value < 1).length + (docsDown ? 1 : 0) : UNMEASURED;
   for (const series of up ?? []) if (series.value < 1) flagged.push({ at, kind: "down", excerpt: `prod api probe ${series.labels.target} fails now (api_probe_up 0)` });
+  if (docs && docsDown) {
+    const saw = docs.status === 200 ? `HTTP 200 with no Scalar reference (neither ${SCALAR_MARKERS.map(marker => `"${marker}"`).join(" nor ")} in the HTML)` : docs.error ?? `HTTP ${docs.status}`;
+    flagged.push({ at, kind: "public_docs_scalar", excerpt: `public_docs_scalar: signed-out GET ${PUBLIC_DOCS} gave ${saw} after ${docs.ms} ms. Until the portal promote that carries p110 runs, prod /docs is not Scalar yet; it ships with the next portal promote. After that promote a miss here is a regression to fix on staging.` });
+  }
 
   const uptime = read("uptime", TARGETS);
   metrics.probe_uptime_24h_pct = uptime ? round(100 * uptime.reduce((sum, series) => sum + series.value, 0) / uptime.length, 2) : UNMEASURED_PCT;
@@ -180,7 +199,6 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
   metrics.portal_openapi_p90_ms = p90 ? Math.round(p90[0]!.value) : UNMEASURED;
 
   metrics.portal_openapi_direct_ms = direct.ms;
-  const offline = direct.status === 0 && Object.values(answers).every(answer => "error" in answer && !answer.error.startsWith("HTTP "));
   if (offline) {
     flagged.push({ at, kind: "mac_offline", excerpt: `this Mac reached neither obs.virev.ai nor api.virev.ai (${direct.error ?? "no answer"}), so the run measured nothing about prod; the prod series keep running and the next run reads them` });
   } else if (direct.status !== 200) {
@@ -318,13 +336,17 @@ async function main(): Promise<void> {
   const direct = await fetch(PORTAL_OPENAPI, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
     .then(async response => { await response.arrayBuffer(); return { status: response.status, ms: Date.now() - start }; },
       (error: unknown) => ({ status: 0, ms: Date.now() - start, error: errorText(error) }));
+  const docsStart = Date.now();
+  const docs: DocsCheck = await fetch(PUBLIC_DOCS, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
+    .then(async response => ({ status: response.status, scalar: docsIsScalar(await response.text()), ms: Date.now() - docsStart }),
+      (error: unknown) => ({ status: 0, scalar: false, ms: Date.now() - docsStart, error: errorText(error) }));
   const env: EnvFiles = Object.fromEntries(await Promise.all(ENV_REFS.map(async ref => {
     try {
       const [prod, staging] = await Promise.all([".env", ".env.staging"].map(file => githubRaw(`apps/api-portal/${file}`, ref)));
       return [ref, { prod: prod!, staging: staging! }] as const;
     } catch (error) { return [ref, { error: errorText(error) }] as const; }
   })));
-  await writeFile(output, JSON.stringify(uptimeMetrics(answers, direct, now, env, await liveProdSource(env)), null, 2) + "\n");
+  await writeFile(output, JSON.stringify(uptimeMetrics(answers, direct, now, env, await liveProdSource(env), docs), null, 2) + "\n");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main();

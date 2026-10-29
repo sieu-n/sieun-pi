@@ -2,7 +2,7 @@
 // not, so prod's batch routes ran without the secret staging used (board p9), and no duty metric counted it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { blobFingerprint, ENV_REFS, rowUptime, uptimeMetrics } from "../scripts/duties/portal-uptime.ts";
+import { blobFingerprint, docsIsScalar, ENV_REFS, rowUptime, uptimeMetrics } from "../scripts/duties/portal-uptime.ts";
 
 const UP = [{ labels: { target: "crawler_health" }, value: 1 }, { labels: { target: "crawler_schema" }, value: 1 }, { labels: { target: "portal_openapi" }, value: 1 }];
 const ANSWERS = { up: UP, uptime: UP, age: UP.map(series => ({ ...series, value: 60 })), p90: [{ labels: { target: "portal_openapi" }, value: 400 }], lastDown: [] };
@@ -103,4 +103,39 @@ test("a target with no probe row in 24 h has no uptime series, so the duty flags
   const output = uptimeMetrics({ ...ANSWERS, uptime }, DIRECT, 0);
   assert.equal(output.metrics.probe_uptime_24h_pct, -1);
   assert.ok(output.flagged!.some(flag => flag.kind === "series_missing" && flag.excerpt.includes("crawler_health")));
+});
+
+// p110: d1 keeps api.virev.ai/docs on the Scalar reference. The markup below is what staging-api.virev.ai/docs served on 2026-10-29.
+const SCALAR_DOCS = '<link href="./_app/immutable/assets/ApiDocsExplorer.BAbxZU-i.css" rel="stylesheet"><div class="docs"><p class="text-sm font-semibold text-ink">Loading interactive reference</p></div>';
+const HAND_BUILT_DOCS = '<meta name="description" content="Full reference for the virev.ai social data API"/><h2 id="authentication">Authentication</h2>';
+
+test("a /docs page is Scalar when it carries the ApiDocsExplorer stylesheet or its mount placeholder, and the hand-built page is not", () => {
+  assert.equal(docsIsScalar(SCALAR_DOCS), true);
+  assert.equal(docsIsScalar('<p>Loading interactive reference</p>'), true);
+  assert.equal(docsIsScalar(HAND_BUILT_DOCS), false);
+});
+
+test("a prod /docs that is not Scalar counts one probe down and names public_docs_scalar with what it saw", () => {
+  const output = uptimeMetrics(ANSWERS, DIRECT, 0, {}, undefined, { status: 200, ms: 300, scalar: docsIsScalar(HAND_BUILT_DOCS) });
+  assert.equal(output.metrics.probes_down_now, 1);
+  const flag = output.flagged!.find(row => row.kind === "public_docs_scalar")!;
+  assert.match(flag.excerpt, /^public_docs_scalar: signed-out GET https:\/\/api\.virev\.ai\/docs gave HTTP 200 with no Scalar reference/);
+  assert.match(flag.excerpt, /prod \/docs is not Scalar yet; it ships with the next portal promote/);
+});
+
+test("a Scalar /docs adds nothing, and a failed GET of it counts as down with its error", () => {
+  const ok = uptimeMetrics(ANSWERS, DIRECT, 0, {}, undefined, { status: 200, ms: 300, scalar: true });
+  assert.equal(ok.metrics.probes_down_now, 0);
+  assert.equal(ok.flagged!.some(row => row.kind === "public_docs_scalar"), false);
+  const failed = uptimeMetrics(ANSWERS, DIRECT, 0, {}, undefined, { status: 502, ms: 90, scalar: false });
+  assert.equal(failed.metrics.probes_down_now, 1);
+  assert.match(failed.flagged!.find(row => row.kind === "public_docs_scalar")!.excerpt, /gave HTTP 502 after 90 ms/);
+});
+
+test("an offline Mac leaves probes_down_now unmeasured and does not blame /docs", () => {
+  const down = { error: "fetch failed (ENETUNREACH)" };
+  const answers = { up: down, uptime: down, age: down, p90: down, lastDown: down };
+  const output = uptimeMetrics(answers, { status: 0, ms: 5, error: "fetch failed (ENETUNREACH)" }, 0, {}, undefined, { status: 0, ms: 5, scalar: false, error: "fetch failed (ENETUNREACH)" });
+  assert.equal(output.metrics.probes_down_now, 999999);
+  assert.equal(output.flagged!.some(row => row.kind === "public_docs_scalar"), false);
 });
