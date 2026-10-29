@@ -19,10 +19,10 @@ import { type DsQuery, HOUR, MINUTE, PG, PROM, grafanaClient, num, promInstant, 
  *   products, against TTS_WEEKLY_PCT; its slowest-hour rate of ok product rows stays in the line as detail. Instagram reads
  *   ClickHouse rows, because the dashboard's gauge crawler_v3_rate_controller_good_per_minute keeps its last value while the controller is
  *   down: on 10-22 it read 11,100 from 00:55 to 01:50Z while census finished 56,843 jobs in the 01:00Z hour, so a stopped crawl would read green there;
- * - Meta Ads advertiser re-reads (p850, every due advertiser read within 7 days): advertiser walks finished a minute over 24 h (prod Postgres
- *   meta_ads_walks, as auto-sns-agent scripts/duties/crawler/meta-ads-crawl.mjs reads it) against the walks due now spread over the 7 days;
+ * - Meta Ads advertiser re-reads (p850, every due advertiser read within 7 days): advertiser walks finished a minute over 24 h (the crawler's
+ *   crawler_v3_meta_ads_finished_1h gauge in prod Prometheus) against the walks due now, from a page sample of prod meta_ads_walks, spread over the 7 days;
  * - Instagram re-reads (p683, owner 10-26: "1k+ every month, 10K+ every week" and "under 1k also monthly", at most 1% of read accounts with
- *   10,000+ followers past 7 days and at most 1% of the rest past 30 days): three 0.05% samples of prod instagram_census, read one at a time (REFRESH_SEEDS, REFRESH_WANT).
+ *   10,000+ followers past 7 days and at most 1% of the rest past 30 days): three 0.05% samples of prod instagram_census, read one at a time (REFRESH_SEEDS, REFRESH_WANT, REFRESH_BUDGET_MS).
  *   p829's 14-day line left on 10-26, when the owner's t65 answer replaced it with p683 and the board dropped p829.
  * Each goal number comes from the board item at run time: its target, or the number in its title when it has none. Platforms that crawl on
  * prod with no goal on the board (crawler.job_run_events crawl_profile, and Instagram posts) are listed in the run detail and left out of the count.
@@ -115,6 +115,25 @@ export const WRITER_LAG_EXPR = 'max(max_over_time(crawler_v3_bus_group_lag_recor
  */
 export const REFRESH_SEEDS: readonly number[] = [101, 102, 103, 104, 105, 106];
 export const REFRESH_WANT = 3;
+/**
+ * No seed starts once the samples have read this long, so a timed-out seed costs at most this plus one 30 s statement_timeout. measured: the
+ * 10-29 16:02Z run (d9-261030-0102) took 221 s against the 120 s precheck target because all six seeds timed out one after another (180 s), and
+ * the dashboard panels that run after the goal reads took 39 s at 16:3xZ. The answered seeds took 5.1 to 21.9 s each at 07:3xZ, so three fit.
+ */
+export const REFRESH_BUDGET_MS = 30_000;
+/** Reads seeds one at a time until `want` answered or the budget ran out, keeping the ones that answered; throws the last error when none did. */
+export async function readSamples<T>(seeds: readonly number[], read: (seed: number) => Promise<T>, want = REFRESH_WANT, budgetMs = REFRESH_BUDGET_MS,
+  clock: () => number = Date.now): Promise<T[]> {
+  const start = clock();
+  const out: T[] = [];
+  let lastError: unknown = new Error("no refresh sample answered");
+  for (const seed of seeds) {
+    if (out.length >= want || clock() - start >= budgetMs) break;
+    try { out.push(await read(seed)); } catch (error) { lastError = error; }
+  }
+  if (!out.length) throw lastError;
+  return out;
+}
 export const REFRESH_SAMPLE_PCT = 0.05;
 /** The weekly tier's floor (owner 10-26, "10K+ every week"), as the census reads it: no follower count reads as 0 (auto-sns-agent census policy.cadence). */
 export const WEEKLY_MIN_FOLLOWERS = 10_000;
@@ -353,7 +372,7 @@ export function goalRows(d: ThroughputData): GoalRow[] {
       extra: d.ttsWeekly ? `(${d.ttsWeekly.read.toLocaleString("en-US")} of ${d.ttsWeekly.live.toLocaleString("en-US")}, gone products left out; ${d.ttsSlowest == null ? "rate not read" : `${fmt(d.ttsSlowest)} good a minute ${window}`})` : undefined },
     { platform: "Meta Ads advertiser re-reads", item: "p850", op: ">=", unit: "", reads: "walks finished a minute over 24 h",
       value: d.meta ? d.meta.finished24h / (24 * 60) : null, goal: d.meta && days !== null ? d.meta.due / (days * 24 * 60) : null, source: metaDays.source,
-      extra: d.meta && days !== null ? `(${d.meta.due.toLocaleString("en-US")} advertiser walks due now, read within ${days} days)` : undefined },
+      extra: d.meta && days !== null ? `(about ${count(d.meta.due)} advertiser walks due now from a ${META_SAMPLE_PCT}% page sample, read within ${days} days)` : undefined },
     { platform: "Instagram 10k+ weekly re-reads", item: "p683", value: shares?.big7Pct ?? null, op: "<=", unit: "%",
       reads: "of sampled read accounts with 10,000+ followers last read over 7 days ago", ...goal("p683"),
       extra: shares ? `(${shares.sum.past7Big.toLocaleString("en-US")} of ${shares.sum.readBig.toLocaleString("en-US")})` : undefined },
@@ -522,15 +541,39 @@ export const lastHalfHour = (slots: readonly Slot[], to: number): number =>
   Math.round(slots.filter(s => s.slot >= to - 30 * MINUTE && s.slot < to).reduce((sum, s) => sum + s.good, 0) / 30);
 
 /**
- * Prod Meta advertiser walks due now and finished in 24 h, estimated from a 1% page sample of meta_ads_walks with the columns grafana_ro may read.
- * measured: on 10-29 12:07-12:25Z the full scan (49M rows, 25 GB) hit grafana_ro's 30 s statement_timeout on 3 tries while the media online move's
- * 6 backfill sessions held the disk, and so did the due count alone on ix_meta_ads_walks_due; the 1% sample answered in 10-13 s and read
- * 4.13M due and 730k finished, against 4.0M and 706k from the last full scan at 07:05Z.
+ * Advertiser walks finished in 24 h: the hourly finish tally the crawler publishes (auto-sns-agent apps/crawler-v3 control/metrics/meta_ads_finishes.py,
+ * the count its Meta Ads scheduler reads too), averaged over 24 h and scaled to the day, so no Postgres read is needed. At 10-29 16:3xZ it read 796,658,
+ * where the last answered 1% sample of last_finished_at read 730k at 12:2xZ.
+ */
+export const META_FINISHED_EXPR = 'sum(avg_over_time(crawler_v3_meta_ads_finished_1h{kind="advertiser"}[24h])) * 24';
+/**
+ * The advertiser walks due now come from a page sample of meta_ads_walks, because crawler_v3_meta_ads_due stops counting at 10,000
+ * (META_ADS_DUE_COUNT_CAP in auto-sns-agent apps/crawler-v3 control/metrics/tuning.py) and an exact count times out under load. The sample is
+ * META_SAMPLE_PCT of the table's pages read as META_SAMPLE_RUNS runs of whole pages, TID range scans that read each run in order with readahead, as
+ * the crawler's health reads do (control/metrics/snapshot.py sample_page_ranges).
+ * measured: at 10-29 16:30Z TABLESAMPLE SYSTEM hit grafana_ro's 30 s statement_timeout at 0.1%, 0.2% and 1% alike, and so did the exact count on
+ * ix_meta_ads_walks_due at 10-30 01:3xZ KST (16:3xZ); 1% as 64 page runs then answered in 1.5 to 5.2 s over 6 draws and read 3.53M to 4.28M due,
+ * against 4.13M from the 1% TABLESAMPLE at 12:2xZ, while 16 runs spread 3.29M to 5.06M. The row's margin then was about 40% (796k finished a day
+ * against about 570k due a day over 7 days), so the draw's spread does not flip it.
  */
 export const META_SAMPLE_PCT = 1;
-export const META_SQL = `select count(*) filter (where kind = 'advertiser' and state = 'idle' and next_run_at <= now()) * ${100 / META_SAMPLE_PCT} as due,
-  count(*) filter (where kind = 'advertiser' and last_finished_at > now() - interval '1 day') * ${100 / META_SAMPLE_PCT} as finished
-from meta_ads_walks tablesample system (${META_SAMPLE_PCT})`;
+export const META_SAMPLE_RUNS = 64;
+export const META_PAGES_SQL = "SELECT pg_relation_size('meta_ads_walks') / current_setting('block_size')::bigint AS pages";
+/** `runs` disjoint [first, past) page runs that together hold `percent` of `pages`, with random starts; empty when the table is too small to split. */
+export function pageRuns(pages: number, percent: number, runs: number, random: () => number = Math.random): [number, number][] {
+  const per = Math.floor(Math.ceil((pages * percent) / 100) / runs);
+  const slots = per >= 1 ? Math.floor(pages / per) : 0;
+  if (slots < runs) return [];
+  const picked = new Set<number>();
+  while (picked.size < runs) picked.add(Math.floor(random() * slots));
+  return [...picked].sort((a, b) => a - b).map(slot => [slot * per, slot * per + per]);
+}
+/** Advertiser walks idle and due now over the page runs, and how many pages they hold. */
+export const metaDueSql = (runs: readonly [number, number][]): string => `SELECT count(*) FILTER (WHERE kind = 'advertiser' AND state = 'idle' AND next_run_at <= now()) AS due
+FROM (${runs.map(([first, past]) => `SELECT kind, state, next_run_at FROM meta_ads_walks WHERE ctid >= '(${first},0)'::tid AND ctid < '(${past},0)'::tid`).join("\n  UNION ALL ")}) AS sampled`;
+/** The due count the sample stands for: its due walks times the table's pages over the pages it read. */
+export const scaleDue = (due: number, runs: readonly [number, number][], pages: number): number =>
+  Math.round((due * pages) / runs.reduce((sum, [first, past]) => sum + past - first, 0));
 
 /** Good results a minute per crawl with no board goal: crawl_profile jobs per platform and Instagram posts, by full hour over 24 h. */
 export const OTHERS_SQL = `SELECT kind, if(countIf(hr >= cur - INTERVAL 6 HOUR) < 6, 0, minIf(v, hr >= cur - INTERVAL 6 HOUR)) AS slowest6h, sum(v) / 24 AS average24h
@@ -575,9 +618,13 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
     step("prod deploys", async () => (await promRange(query, PROM.prod, DEPLOY_EXPR, lagFrom, holdTo, SLOT_MS)).flatMap(series => series.points)),
     step("census writer lag", async () => lagSlots((await promRange(query, PROM.prod, WRITER_LAG_EXPR, lagFrom + SLOT_MS, holdTo, SLOT_MS)).flatMap(series => series.points))),
     step("meta ads walks", async () => {
-      const row = (await sqlRows(query, PG.prod, META_SQL))[0];
-      if (!row) throw new Error("meta_ads_walks answered no row");
-      return { due: num(row.due) ?? 0, finished24h: num(row.finished) ?? 0 };
+      const [finished, pages] = await Promise.all([promInstant(query, PROM.prod, META_FINISHED_EXPR), sqlRows(query, PG.prod, META_PAGES_SQL)]);
+      const tablePages = num(pages[0]?.pages);
+      if (!finished[0] || !tablePages) throw new Error(`meta ads walks: ${finished[0] ? "meta_ads_walks answered no page count" : "crawler_v3_meta_ads_finished_1h has no advertiser series"}`);
+      const runs = pageRuns(tablePages, META_SAMPLE_PCT, META_SAMPLE_RUNS);
+      const due = runs.length ? num((await sqlRows(query, PG.prod, metaDueSql(runs)))[0]?.due) : null;
+      if (due == null) throw new Error("the meta_ads_walks page sample answered no row");
+      return { due: scaleDue(due, runs, tablePages), finished24h: Math.round(finished[0].value) };
     }),
     step("other crawls", async () => (await sqlRows(query, CH, OTHERS_SQL)).map(row => ({ kind: String(row.kind), slowest6h: num(row.slowest6h) ?? 0, average24h: num(row.average24h) ?? 0 }))
       .filter(row => !GOAL_KINDS.has(row.kind))),
@@ -617,14 +664,7 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
         const row = (await sqlRows(query, PG.prod, refreshSql(seed)))[0] ?? {};
         return { read: num(row.read) ?? 0, readBig: num(row.readBig) ?? 0, past7Big: num(row.past7Big) ?? 0, past30Rest: num(row.past30Rest) ?? 0 };
       };
-      const out: RefreshSample[] = [];
-      let lastError: unknown = new Error("no refresh sample answered");
-      for (const seed of REFRESH_SEEDS) {
-        if (out.length >= REFRESH_WANT) break;
-        try { out.push(await read(seed)); } catch (error) { lastError = error; }
-      }
-      if (!out.length) throw lastError;
-      return out;
+      return readSamples(REFRESH_SEEDS, read);
     }),
   ]);
   const [panels, panelDeployLock] = await Promise.all([step("dashboards", () => readPanels(api)),

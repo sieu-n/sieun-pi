@@ -4,8 +4,8 @@
 // dashboards drawing ("Check the Observability and Metrics"), where on 10-19 at 15:55Z two panels read No data.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type BoardItem, GOOD_ROWS, REFRESH_SEEDS, REFRESH_WANT, type ThroughputData, backlogged, blankPanels, boardGoal, deploySlots, geonodeHours, geonodeMbps, goalLine, goalRows, grew, interpolate, lastHalfHour,
-  lagSlots, missed, panelQueries, panelState, refreshShares, refreshSql, report, slowestHour, writerLagAtRate } from "../scripts/duties/throughput-goal.ts";
+import { type BoardItem, GOOD_ROWS, META_FINISHED_EXPR, META_SAMPLE_PCT, META_SAMPLE_RUNS, REFRESH_BUDGET_MS, REFRESH_SEEDS, REFRESH_WANT, type ThroughputData, backlogged, blankPanels, boardGoal, deploySlots, geonodeHours, geonodeMbps, goalLine, goalRows, grew, interpolate, lastHalfHour,
+  lagSlots, metaDueSql, missed, pageRuns, panelQueries, panelState, readSamples, refreshShares, refreshSql, report, scaleDue, slowestHour, writerLagAtRate } from "../scripts/duties/throughput-goal.ts";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
 
 const METRICS: DutyMetric[] = [
@@ -291,4 +291,41 @@ test("geonode_mbps dates its miss at the newest hour under 100 Mbps and says whe
   assert.equal(out.windowMs?.geonode_mbps, 24 * 3_600_000);
   assert.match(out.flagged!.find(item => item.kind === "geonode")!.excerpt, /the newest leaving the window at 15:00Z 10-22\./);
   assert.equal(report(base({ geoHours: geoHours.map(h => ({ ...h, census: big })), adLibrary: [] }), METRICS).lastEventAt?.geonode_mbps, undefined);
+});
+
+test("the Meta Ads row reads finished walks from the crawler gauge and due walks from page runs, which answered under the 10-29 load that timed out TABLESAMPLE", () => {
+  assert.match(META_FINISHED_EXPR, /avg_over_time\(crawler_v3_meta_ads_finished_1h\{kind="advertiser"\}\[24h\]\)\) \* 24$/);
+  // meta_ads_walks held 2,442,024 pages on 10-30 01:3xZ KST.
+  const pages = 2_442_024;
+  let seed = 7;
+  const random = (): number => (seed = (seed * 16_807) % 2_147_483_647) / 2_147_483_647;
+  const runs = pageRuns(pages, META_SAMPLE_PCT, META_SAMPLE_RUNS, random);
+  assert.equal(runs.length, 64);
+  assert.ok(runs.every(([first, past]) => past - first === 381 && first >= 0 && past <= pages));
+  assert.ok(runs.every(([first], index) => index === 0 || first >= runs[index - 1]![1]));
+  assert.deepEqual(pageRuns(100, 1, 64), []);
+  const sql = metaDueSql(runs.slice(0, 2));
+  assert.equal(sql.match(/ctid >= '\(\d+,0\)'::tid AND ctid < '\(\d+,0\)'::tid/g)!.length, 2);
+  assert.match(sql, /kind = 'advertiser' AND state = 'idle' AND next_run_at <= now\(\)/);
+  assert.doesNotMatch(sql, /tablesample/i);
+  // A draw of 24,384 pages that held 41,171 due walks stands for about 4.12M.
+  assert.equal(scaleDue(41_171, runs, pages), Math.round((41_171 * pages) / 24_384));
+  const row = goalRows(base({ board: BOARD, meta: { due: 4_123_219, finished24h: 796_658 } })).find(goal => goal.item === "p850")!;
+  assert.equal(Math.round(row.value!), 553);
+  assert.equal(Math.round(row.goal!), 409);
+  assert.equal(missed(row), false);
+  assert.match(row.extra!, /about 4\.1M advertiser walks due now from a 1% page sample, read within 7 days/);
+});
+
+test("the refresh samples start no seed after the budget, so six 30 s timeouts no longer take 180 s (10-29 16:02Z run, 221 s)", async () => {
+  let now = 0;
+  const timedOut = async (): Promise<number> => { now += 30_000; throw new Error("canceling statement due to statement timeout"); };
+  await assert.rejects(readSamples(REFRESH_SEEDS, timedOut, REFRESH_WANT, REFRESH_BUDGET_MS, () => now), /statement timeout/);
+  assert.equal(now, 30_000);
+  now = 0;
+  const tried: number[] = [];
+  const slowThenOk = async (seed: number): Promise<number> => { tried.push(seed); now += seed === 101 ? 30_000 : 8_000; if (seed === 101) throw new Error("timeout"); return seed; };
+  assert.deepEqual(await readSamples(REFRESH_SEEDS, slowThenOk, REFRESH_WANT, 60_000, () => now), [102, 103, 104]);
+  now = 0;
+  assert.deepEqual(await readSamples(REFRESH_SEEDS, async seed => { now += 5_000; return seed; }, REFRESH_WANT, REFRESH_BUDGET_MS, () => now), [101, 102, 103]);
 });
