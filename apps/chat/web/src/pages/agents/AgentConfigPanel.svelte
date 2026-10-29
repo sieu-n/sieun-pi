@@ -97,6 +97,8 @@
   function setFolder(next: AgentFolder) {
     if (config && next.agent === config.folder?.agent) config = { ...config, folder: next };
   }
+  /** A comm thread is named by its room, never as an agent or a job. */
+  const commLabel = (room: string) => (room.startsWith("dm_") ? "DM comm thread" : `Comm thread in ${room}`);
   const dotOf = (status: RunStatus) => (status === "working" ? "online" : status === "sleeping" ? "away" : status === "failed" ? "busy" : "offline");
 
   function copy(path: string) {
@@ -225,6 +227,18 @@
         <dd data-fact="host">{config.runs.host} <span class="t-caption meta">{hostLine}</span></dd>
         <dt>Model</dt>
         <dd data-fact="model">{agent?.model ? agent.model.label : "No model yet"}{#if agent?.thinkingLevel}<span class="t-caption meta">{agent.thinkingLevel} thinking</span>{/if}</dd>
+        {#if agent?.comm?.length}
+          <dt>Threads</dt>
+          <dd data-fact="threads">
+            <a href={conversationHref(agent.thread)} data-work-thread={agent.thread}>Work thread</a>
+            {#each agent.comm as comm (comm.thread)}
+              <span class="comm" data-comm-thread={comm.thread} data-room={comm.room}>
+                <StatusDot status={dotOf(comm.status)} label={STATUS_LABEL[comm.status]} />
+                <a href={conversationHref(comm.thread)}>{commLabel(comm.room)}</a>
+              </span>
+            {/each}
+          </dd>
+        {/if}
         <dt>Board</dt>
         <dd data-fact="board">
           {#if config.board}
@@ -672,5 +686,10 @@
   }
   .channel {
     text-decoration: none;
+  }
+  .comm {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
   }
 </style>

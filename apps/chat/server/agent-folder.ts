@@ -13,20 +13,31 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { AgentFolder, AgentId, ConfigFile, HarnessEntryView, MemoryInput } from "../web/src/lib/api/types.ts";
-import type { AgentRecord } from "./agent-store.ts";
+import type { AgentRecord, RoomId } from "./agent-store.ts";
 
 const PREVIEW_CAP = 400;
 
 /** The chat.doc in a thread's root conversation that names the thread's agent and folder; pi-host reads it to load the brief and memory. */
 export const AGENT_REF_DOC = "agent.ref";
 
-/** `agent.ref`: the agent, its folder, and whether the thread is the agent's work thread or a root job filed under it. */
-export interface AgentRef { agent: AgentId; dir: string; role: "work" | "job" }
+/**
+ * `agent.ref`: the agent, its folder, and the thread's role (phase 4). The work thread names its DM comm thread once the agent is split, a
+ * root job filed under the agent is a job, and a comm thread names its room and the work thread it hands tasks to. pi-host parses the same
+ * JSON and reads any other shape as no agent.
+ */
+export type AgentRef =
+  | { agent: AgentId; dir: string; role: "work"; comm?: string }
+  | { agent: AgentId; dir: string; role: "job" }
+  | { agent: AgentId; dir: string; role: "comm"; room: RoomId; work: string };
+
+const REF_KEYS = ["agent", "dir", "role", "comm", "room", "work"] as const;
 
 /** Whether a doc value is this ref, field by field, so key order does not count. */
 export const sameRef = (a: unknown, b: AgentRef): boolean => {
-  const have = a as Partial<AgentRef> | null;
-  return !!have && typeof have === "object" && have.agent === b.agent && have.dir === b.dir && have.role === b.role;
+  if (!a || typeof a !== "object") return false;
+  const have = a as Record<string, unknown>;
+  const want = b as Record<string, unknown>;
+  return REF_KEYS.every(key => have[key] === want[key]);
 };
 
 export type HarnessKind = HarnessEntryView["kind"];
@@ -66,8 +77,16 @@ const briefPath = (dir: string): string => join(dir, "brief.md");
 /** Prime's `getHarnessStatePath(getLocalHarnessStateDir(<agent folder>))`. */
 export const harnessPath = (dir: string): string => join(dir, "harness", "harness_state.json");
 
-/** The `agent.ref` value for one of the agent's threads. */
-export const agentRef = (agentsDir: string, record: AgentRecord, role: AgentRef["role"]): AgentRef => ({ agent: record.id, dir: agentFolderDir(agentsDir, record), role });
+/** The `agent.ref` value for the agent's work thread, which names the DM comm thread once there is one, or for a root job filed under it. */
+export function agentRef(agentsDir: string, record: AgentRecord, role: "work" | "job"): AgentRef {
+  const base = { agent: record.id, dir: agentFolderDir(agentsDir, record) };
+  const comm = record.comm?.[record.room];
+  return role === "job" ? { ...base, role } : { ...base, role, ...(comm ? { comm } : {}) };
+}
+
+/** The `agent.ref` value for the agent's comm thread in `room`. */
+export const commRef = (agentsDir: string, record: AgentRecord, room: RoomId): AgentRef =>
+  ({ agent: record.id, dir: agentFolderDir(agentsDir, record), role: "comm", room, work: record.workThread });
 
 /** Prime's `_slug`: lowercase letters and digits of any script, every other character to `_`, runs collapsed, at most 80 characters. */
 export function harnessSlug(raw: string, fallback: string): string {

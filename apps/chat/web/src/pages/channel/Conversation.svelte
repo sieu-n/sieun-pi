@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { agents, api, boardStore, jobs, me, timeline, type Item } from "$lib/api";
+  import { agents, api, boardStore, conversations, jobs, me, timeline, type Item } from "$lib/api";
   import { openTarget } from "$pages/agents/agents-model";
   import BoardPanel from "$pages/board/BoardPanel.svelte";
   import { boardHref, boardTitles, rememberTitles } from "$pages/board/chips";
@@ -51,11 +51,20 @@
   const liveLabel = $derived(waiting ? "Waiting for a model slot" : null);
   const others = $derived(header?.members.filter((m) => m.principal.id !== "owner") ?? []);
   const working = $derived(store.status === "working");
-  /** In a DM the dots show only while the agent works on the owner's turn: it works, and the newest post is his. */
+  /** The agent's live card: its work thread's own status and its comm threads. */
+  const liveAgent = $derived(agent ? (agents.byId(agent.id) ?? agent) : null);
+  /** A split agent's comm thread for this DM answers the owner here; absent while the work thread still answers him itself. */
+  const commStatus = $derived(isDm ? (liveAgent?.comm?.find((c) => c.room === id)?.status ?? conversations.byId(id)?.commStatus ?? summary?.commStatus) : undefined);
+  /** The Work pill shows while the agent's work thread or one of its jobs runs. */
+  const workRunning = $derived(
+    isDm && !!workThread && !!liveAgent && (liveAgent.status === "working" || jobs.of(liveAgent.id).some((job) => job.status === "working")),
+  );
+  /** In a DM the dots show only while the agent answers the owner's turn: the thread that answers him runs, and the newest post is his. */
   const ownerTurn = $derived(items.findLast((item) => item.kind !== "system")?.author.id === "owner");
+  const answering = $derived(commStatus === undefined ? working : commStatus === "working");
   const workingNames = $derived(
     isDm
-      ? working && ownerTurn && agent ? [agent.name] : []
+      ? answering && ownerTurn && agent ? [agent.name] : []
       : summary?.working.length ? summary.working.map((w) => w.name) : working && agent ? [agent.name] : working && others.length === 1 ? [others[0]!.principal.name] : [],
   );
   const boardChat = $derived(isChannel ? (header?.homeChat ?? null) : agent?.kind === "chat" ? agent.id : null);
@@ -298,13 +307,16 @@
   <div class="typing" aria-live="polite">
     {#if workingNames.length}
       <TypingDots mode="working" />
-      <span>{workingNames.length > 2 ? "Agents" : workingNames.join(" and ")} working now</span>
+      <span>{commStatus === undefined ? `${workingNames.length > 2 ? "Agents" : workingNames.join(" and ")} working now` : `${workingNames[0]} is answering`}</span>
     {:else if waitText && agent}
       <TypingDots mode="waiting" />
       <span>{agent.name} {waitText}</span>
     {:else if waiting && agent}
       <TypingDots mode="waiting" />
       <span>{agent.name} waits for a model slot</span>
+    {/if}
+    {#if workRunning && workThread}
+      <a class="work-pill" href={conversationHref(workThread)} title="Open the work thread" data-testid="work-pill"><TypingDots mode="working" size={3} />Work</a>
     {/if}
   </div>
   <Composer
@@ -367,5 +379,23 @@
     font: var(--text-caption);
     letter-spacing: var(--tracking-caption);
     white-space: nowrap;
+  }
+  .work-pill {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 6px;
+    height: 20px;
+    margin-left: auto;
+    padding: 0 8px;
+    border: 1px solid var(--border-standard);
+    border-radius: var(--radius-pill);
+    color: var(--text-subtle);
+    text-decoration: none;
+    transition: background var(--duration-fast) var(--ease-standard);
+  }
+  .work-pill:hover {
+    background: var(--affordance-ghost-hover);
+    color: var(--text-standard);
   }
 </style>

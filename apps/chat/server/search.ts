@@ -1,6 +1,9 @@
 /**
  * Full-text search over every thread's entries (pi-host's FTS5 index through `durable_search`) and every channel post, with the filters
  * from:, in:, after: and before: (~/work/slack-layer-design/search.md section 5). `total` is the exact count for the same filters (c191).
+ *
+ * A comm thread (phase 4) has no rows of its own: its entries are left out, and the DM posts whose words it holds are searched as the DM's
+ * posts instead, so a hit opens the DM at the post.
  */
 import type { ConversationKind, ConversationSummary, SearchHit, SearchResult } from "../web/src/lib/api/types.ts";
 import { CHANNEL_COPY_LIKE, type Channels } from "./channels.ts";
@@ -11,6 +14,8 @@ import { openIndexReadOnly, searchIndex } from "../../../packages/pi-host/src/du
 import { safeSnippet } from "./search-snippet.ts";
 import type { Host, SearchHit as HostHit, SearchPage, SearchQuery } from "./host/types.ts";
 import { conversationIdOf, parseConversationId, type Threads } from "./threads.ts";
+import type { AgentRecord, RoomPost } from "./agent-store.ts";
+import { isAgentId, isRoomId } from "./agents.ts";
 
 /** The owner reads dates in KST. */
 export const OWNER_ZONE_OFFSET_MS = 9 * 3600_000;
@@ -76,10 +81,17 @@ type Ranked = { tier: number; score: number; at: number; build: () => SearchHit 
 /** A work-thread input that was a job's test send typed into the owner's DM (rooms.ts `allTestSends`). */
 export interface TestSendEntry { thread: string; entry: number; by: string; reason: string }
 
+/** A DM post search reads as a post (rooms.ts `searchPosts`). */
+export interface DmPost { room: string; agent: AgentRecord; post: RoomPost }
+
 export class Search {
   private index?: DatabaseSync;
   /** The test sends: `from:owner` leaves them out, and their hits name the job as the author. Set by the app once it has the rooms. */
   testSends: () => TestSendEntry[] = () => [];
+  /** Every agent's comm threads, whose entries search leaves out. */
+  commThreads: () => string[] = () => [];
+  /** The DM posts whose words live in a comm thread. */
+  dmPosts: () => DmPost[] = () => [];
 
   /** With `indexPath`, thread hits come from pi-host's index.sqlite on a read-only connection, so search never waits on pi-host. */
   constructor(readonly host: Host, readonly threads: Threads, readonly channels: Channels, private readonly indexPath?: string) {}
@@ -126,25 +138,31 @@ export class Search {
 
     const inId = query.in;
     const inChannel = inId ? this.channels.row(inId) : undefined;
+    const inRoom = inId && (isRoomId(inId) || isAgentId(inId)) ? this.threads.agentRecords?.record(inId) : undefined;
     const agents = query.from === "agents";
     if (!inChannel) {
       const tests = this.testSends();
       const testOf = new Map(tests.map(t => [`${t.thread}:${t.entry}`, t]));
       const scope = inId ? parseConversationId(this.threads.conversationOf(inId)) : undefined;
       const fromAgent = query.from && query.from !== "owner" && !agents ? parseConversationId(this.threads.conversationOf(query.from)) : undefined;
-      // The merged page holds at most offset + limit thread hits, so the host builds snippets for those rows only.
-      const page = await this.threadSearch({
-        q: query.q, sort, limit: offset + limit, skipAgentMessages: CHANNEL_COPY_LIKE, withText: true,
+      const filters: Omit<SearchQuery, "limit" | "withText"> = {
+        q: query.q, sort, skipAgentMessages: CHANNEL_COPY_LIKE,
         ...(sort === "relevance" ? { demoteKinds: TOOL_KINDS } : {}),
         ...(query.type === "tools" ? { kinds: TOOL_KINDS } : query.type === "messages" ? { skipKinds: TOOL_KINDS } : {}),
         ...(scope ? { threads: [scope.thread], conversation: scope.conversation } : {}),
         ...(query.from === "owner" ? { from: "owner", ...(tests.length ? { skipEntries: tests.map(({ thread, entry }) => ({ thread, entry })) } : {}) } : agents ? { notFrom: "owner" } : {}),
         ...(fromAgent ? { by: { thread: fromAgent.thread, conversation: fromAgent.conversation, id: query.from! } } : {}),
         ...(after === undefined ? {} : { after }), ...(before === undefined ? {} : { before }),
-      });
-      total += page.total;
+      };
+      // Comm threads drop out of an unscoped search: their own count comes off the total, and the page reads that many more rows.
+      const comms = scope ? [] : this.commThreads();
+      const skipped = comms.length ? (await this.threadSearch({ ...filters, threads: comms, limit: 0 })).total : 0;
+      const commSet = new Set(comms);
+      // The merged page holds at most offset + limit thread hits, so the host builds snippets for those rows only.
+      const page = await this.threadSearch({ ...filters, limit: offset + limit + skipped, withText: true });
+      total += page.total - skipped;
       const summaries = new Map(this.threads.conversations().map(c => [c.id, c]));
-      page.hits.forEach((hit, rank) => ranked.push({
+      page.hits.filter(hit => !commSet.has(hit.thread)).slice(0, offset + limit).forEach((hit, rank) => ranked.push({
         tier: sort === "relevance" && TOOL_KINDS.includes(hit.kind) ? 1 : 0, score: fused(rank), at: hit.at,
         build: () => this.threadHit(hit, summaries.get(conversationIdOf(hit.thread, hit.conversation)), marks, hit.kind === "pi.user" ? testOf.get(`${hit.thread}:${hit.entryId}`) : undefined),
       }));
@@ -172,6 +190,22 @@ export class Search {
             };
           },
         });
+      }
+      posts.sort((a, b) => b.score - a.score || b.at - a.at).forEach((post, rank) => ranked.push({ ...post, score: fused(rank) }));
+    }
+    if ((!inId || inRoom) && query.type !== "tools") {
+      const posts: Ranked[] = [];
+      const fromRecord = query.from && query.from !== "owner" && !agents ? this.threads.agentRecords?.record(query.from) : undefined;
+      for (const { room, agent, post } of this.dmPosts()) {
+        if (inRoom && agent.id !== inRoom.id) continue;
+        const byOwner = post.author === "owner" && !post.testSend;
+        if (query.from === "owner" ? !byOwner : agents ? byOwner : query.from && post.author !== query.from && post.author !== fromRecord?.id) continue;
+        if (after !== undefined && post.at < after) continue;
+        if (before !== undefined && post.at >= before) continue;
+        const score = postMatch(post.text, words);
+        if (!score) continue;
+        total += 1;
+        posts.push({ tier: 0, score, at: post.at, build: () => this.dmHit(room, agent, post, marks) });
       }
       posts.sort((a, b) => b.score - a.score || b.at - a.at).forEach((post, rank) => ranked.push({ ...post, score: fused(rank) }));
     }
@@ -204,6 +238,20 @@ export class Search {
       ...(said?.tool ? { tool: said.tool } : hit.kind === "pi.tool-result" ? { tool: hit.author.replace(/^tool:/, "") } : {}),
       ...(said?.inCall ? { inCall: true } : {}),
       snippet: shown || safeSnippet(hit.snippet), ...(said && said.text.length > 240 ? { text: long } : {}),
+    };
+  }
+
+  /** A DM post hit opens the DM at the post; a job's test send names the job as its author. */
+  private dmHit(room: string, agent: AgentRecord, post: RoomPost, marks: string[]): SearchHit {
+    const author = post.testSend ? this.threads.principal(post.testSend.by) : this.threads.principal(post.author);
+    const owner = author.kind === "owner";
+    const long = fullText(post.text, marks);
+    const name = this.threads.agent(agent.id)?.name ?? agent.name;
+    return {
+      id: `${room}/${post.id}`, conversation: { id: room, kind: "dm", name, ...(agent.archived ? { archived: true } : {}) }, messageId: post.id,
+      author: { id: author.id, name: author.name, kind: owner ? "owner" : "agent" }, at: post.at, kind: "post", role: owner ? "owner" : "agent",
+      ...(post.testSend ? { testSend: { reason: post.testSend.reason } } : {}),
+      snippet: snippet(post.text, marks) || long, ...(post.text.length > 240 ? { text: long } : {}),
     };
   }
 

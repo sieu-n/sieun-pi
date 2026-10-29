@@ -110,6 +110,11 @@ export function routes(app: App): Route[] {
       return readAgentFolder(app.config.agentsDir, agent);
     }),
     route("POST", "/api/agents", async (_r, _p, _q, body) => app.createAgent((await body()) as Parameters<App["createAgent"]>[0])),
+    route("POST", "/api/agents/:id/split", async (_r, p, _q, body) => {
+      const { apply } = ((await body()) ?? {}) as { apply?: unknown };
+      if (apply !== undefined && typeof apply !== "boolean") throw new BadRequest("A split's apply is true or false when given.");
+      return app.split(p.id!, apply === true);
+    }),
     route("GET", "/api/projects", async () => app.projects()),
     route("GET", "/api/c/:id", async (_r, p) => app.header(p.id!)),
     route("PATCH", "/api/c/:id", async (_r, p, _q, body) => app.patch(p.id!, (await body()) as ConversationPatch)),

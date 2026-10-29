@@ -9,7 +9,7 @@ import type {
 import type { AgentEvent, DurableEvent, DurableThread, EntryRecord, Host, TreeNode } from "./host/types.ts";
 import type { Store } from "./store.ts";
 import type { AgentRecord } from "./agent-store.ts";
-import { agentSummary, isAgentId, isRoomId, type Agents } from "./agents.ts";
+import { agentSummary, isAgentId, isRoomId, type AgentRows, type Agents } from "./agents.ts";
 import { buildItems, earliest, entryOf, firstSendIn, isInput, itemIdFor, sentMessages, speaks, speaksThroughSendMessage, type TimelineContext } from "./timeline.ts";
 
 export const OWNER: Principal = { id: "owner", kind: "owner", name: "You", avatar: { initials: "Me", hue: 210 } };
@@ -227,11 +227,13 @@ export class Threads {
    * work thread's id answers its agent.
    */
   agent(id: AgentId): AgentSummary | undefined {
+    const comm = this.agentRecords?.ofComm(id);
+    if (comm) return this.agent(comm.record.id);
     if (isAgentId(id) || isRoomId(id)) {
       const record = this.agentRecords?.record(id);
       const row = record && this.list.get(record.workThread);
       if (!record) return undefined;
-      return row ? this.agentsOf(row)[0] : agentSummary(record, { tree: [], jobs: [] }, { model: null, channels: this.channelsOf(record.workThread) });
+      return row ? this.agentsOf(row)[0] : agentSummary(record, { tree: [], jobs: [], comm: this.commRows(record) }, { model: null, channels: this.channelsOf(record.workThread) });
     }
     const { thread, conversation } = parseConversationId(id);
     const row = this.list.get(thread);
@@ -239,9 +241,20 @@ export class Threads {
     return this.agentsOf(row).find(a => a.conversation === conversation);
   }
 
-  /** The pi-host conversation an id names: an agent's or a DM room's work thread, and any other id as it is. */
+  /** The pi-host conversation an id names: the work thread of an agent, its DM room or one of its comm threads, and any other id as it is. */
   conversationOf(id: string): ConversationId {
+    const comm = this.agentRecords?.ofComm(id);
+    if (comm) return comm.record.workThread;
     return (isAgentId(id) || isRoomId(id)) ? this.agentRecords?.record(id)?.workThread ?? id : id;
+  }
+
+  private commRows(record: AgentRecord): NonNullable<AgentRows["comm"]> {
+    return Object.entries(record.comm ?? {}).map(([room, thread]) => ({ room, thread, ...(this.list.has(thread) ? { row: this.list.get(thread)! } : {}) }));
+  }
+
+  /** Whether the thread is an agent's comm thread, which no list shows (phase 4). */
+  private isComm(thread: string): boolean {
+    return this.agentRecords?.isComm(thread) ?? false;
   }
 
   /**
@@ -274,6 +287,7 @@ export class Threads {
       ? agentSummary(record, {
         row, tree: this.tree(row.id),
         jobs: this.agentRecords!.jobThreads(record).flatMap(id => (this.list.has(id) ? [this.list.get(id)!] : [])),
+        comm: this.commRows(record),
       }, { model: rootModel, channels: this.channelsOf(row.id) })
       : {
         id: row.id, kind: meta.kind, name: row.name || "Untitled", avatar: avatarOf(row.name || row.id), model: rootModel,
@@ -301,11 +315,11 @@ export class Threads {
   }
 
   /**
-   * Every thread and every conversation in it as a summary, registered or not, newest first. Lookups read it; no list the owner sees does,
-   * because it holds threads no agent owns.
+   * Every thread and every conversation in it as a summary, registered or not, newest first, except comm threads. Lookups read it; no list
+   * the owner sees does, because it holds threads no agent owns.
    */
   allSummaries(opts: { archived?: boolean } = {}): AgentSummary[] {
-    return [...this.list.values()].filter(t => opts.archived || !t.archived).flatMap(t => this.agentsOf(t)).sort(newestFirst);
+    return [...this.list.values()].filter(t => (opts.archived || !t.archived) && !this.isComm(t.id)).flatMap(t => this.agentsOf(t)).sort(newestFirst);
   }
 
   /** The registered agents (`agents.json`), newest first. A thread is an agent only through a record. */
@@ -339,31 +353,42 @@ export class Threads {
 
   /**
    * A row per thread and job for the directory, search and the transcript view. A root chat no agent holds yet is `solo`; an agent's work
-   * thread and every job are `job`, under the agent's DM room or their parent, so no thread sits in the sidebar beside its agent's DM.
+   * thread and every job are `job`, under the agent's DM room or their parent, so no thread sits in the sidebar beside its agent's DM. A
+   * comm thread and its jobs have no row here; `conversation` still finds them, so they open as a transcript by id.
    */
   threadConversations(): ConversationSummary[] {
-    const out: ConversationSummary[] = [];
-    for (const row of this.list.values()) {
-      const meta = this.meta(row.id);
-      const agents = this.agentsOf(row);
-      const root = agents[0]!;
-      const record = this.agentRecords?.ofWorkThread(row.id);
-      const working = agents.filter(a => a.status === "working").map(a => ({ id: a.id, name: a.name }));
-      const status = statusOf(row.status);
-      const solo = !record && meta.kind !== "job";
-      const parent = record ? record.room : meta.kind === "job" ? root.parent?.id : undefined;
+    return [...this.list.values()].filter(row => !this.isComm(row.id)).flatMap(row => this.rowConversations(row));
+  }
+
+  /** The summary of any conversation by id: a DM room, a channel, a thread or job, or a comm thread or one of its jobs. */
+  conversation(id: ConversationId): ConversationSummary | undefined {
+    const listed = this.conversations().find(c => c.id === id);
+    if (listed) return listed;
+    const row = this.list.get(parseConversationId(id).thread);
+    return row && this.isComm(row.id) ? this.rowConversations(row).find(c => c.id === id) : undefined;
+  }
+
+  private rowConversations(row: DurableThread): ConversationSummary[] {
+    const meta = this.meta(row.id);
+    const agents = this.agentsOf(row);
+    const root = agents[0]!;
+    const record = this.agentRecords?.ofWorkThread(row.id);
+    const comm = this.agentRecords?.ofComm(row.id);
+    const working = agents.filter(a => a.status === "working").map(a => ({ id: a.id, name: a.name }));
+    const status = statusOf(row.status);
+    const solo = !record && !comm && meta.kind !== "job";
+    const parent = record ? record.room : comm ? comm.room : meta.kind === "job" ? root.parent?.id : undefined;
+    const out: ConversationSummary[] = [{
+      id: row.id, kind: solo ? "solo" : "job", name: row.name || "Untitled", status, archived: row.archived,
+      lastActivityAt: row.updatedAt, preview: row.preview.slice(0, 200), unread: solo ? this.unread(row.id, row.updatedAt, status) : 0,
+      hasNew: solo && row.updatedAt > (this.store.state.reads[row.id]?.at ?? 0), working, agent: root.id, ...(parent ? { parent } : {}),
+    }];
+    for (const agent of agents.slice(1)) {
       out.push({
-        id: row.id, kind: solo ? "solo" : "job", name: row.name || "Untitled", status, archived: row.archived,
-        lastActivityAt: row.updatedAt, preview: row.preview.slice(0, 200), unread: solo ? this.unread(row.id, row.updatedAt, status) : 0,
-        hasNew: solo && row.updatedAt > (this.store.state.reads[row.id]?.at ?? 0), working, agent: root.id, ...(parent ? { parent } : {}),
+        id: agent.id, kind: "job", name: agent.name, status: agent.status, archived: row.archived, lastActivityAt: agent.updatedAt,
+        preview: "", unread: 0, hasNew: false, working: agent.status === "working" ? [{ id: agent.id, name: agent.name }] : [], agent: agent.id,
+        ...(agent.parent ? { parent: agent.parent.id } : {}),
       });
-      for (const agent of agents.slice(1)) {
-        out.push({
-          id: agent.id, kind: "job", name: agent.name, status: agent.status, archived: row.archived, lastActivityAt: agent.updatedAt,
-          preview: "", unread: 0, hasNew: false, working: agent.status === "working" ? [{ id: agent.id, name: agent.name }] : [], agent: agent.id,
-          ...(agent.parent ? { parent: agent.parent.id } : {}),
-        });
-      }
     }
     return out;
   }

@@ -74,6 +74,11 @@ export interface AgentSummary {
   home?: string;
   /** For a job: the registered agent it works for, even when its `parent` is another job. */
   agent?: { id: AgentId; name: string };
+  /**
+   * An agent's comm threads, one per room (agent-model.md phase 4): the thin thread that talks in that room, reads the work thread's state
+   * and hands it work. A comm thread is never an agent, a job or a solo chat, so no list shows it as one.
+   */
+  comm?: { room: RoomId; thread: string; status: RunStatus }[];
 }
 
 /** One row of the conversation directory, which the sidebar, search and the # typeahead read. */
@@ -95,6 +100,8 @@ export interface ConversationSummary {
   agent?: AgentId;
   /** For a job: its parent conversation. */
   parent?: ConversationId;
+  /** For a dm whose agent has a comm thread: that thread's state, so the room shows typing dots while it answers. */
+  commStatus?: RunStatus;
 }
 
 export interface Sidebar {

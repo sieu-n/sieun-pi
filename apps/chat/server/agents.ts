@@ -3,11 +3,15 @@
  * thread's live row into the `AgentSummary` the pages see, the thread ids that belong to each agent, new agents with their work thread and DM
  * room, and the `agent.ref` doc that points each of an agent's threads at its folder (phase 3, `agent-folder.ts`). A root chat becomes an
  * agent only through `POST /api/agents` or the migrate CLI (`scripts/migrate-agents.ts`); the server never registers one on its own.
+ *
+ * Phase 4 splits an agent into its work thread and one comm thread per room (`ensureComm`): the comm thread takes the room's posts and talks
+ * in the room, and the work thread does the work. The DM's first delivery makes the comm thread, and `POST /api/agents/:id/split` makes it
+ * for the migration (`scripts/split-agents.ts`), whose dry run reads `splitPlan`.
  */
 import type { AgentId, AgentSummary, RunStatus, ThinkingLevel } from "../web/src/lib/api/types.ts";
-import { AGENT_REF_DOC, agentRef, sameRef, type AgentRef } from "./agent-folder.ts";
-import { freeSlug, isUntitled, type AgentRecord, type AgentStore } from "./agent-store.ts";
-import type { Config } from "./config.ts";
+import { AGENT_REF_DOC, agentRef, commRef, sameRef, type AgentRef } from "./agent-folder.ts";
+import { freeSlug, isUntitled, type AgentRecord, type AgentStore, type RoomId } from "./agent-store.ts";
+import { DEFAULT_MODEL, type Config } from "./config.ts";
 import type { DurableThread, Host, TreeNode } from "./host/types.ts";
 import type { Store } from "./store.ts";
 
@@ -28,12 +32,30 @@ export interface AgentRows {
   tree: TreeNode[];
   /** Rows of the root job threads aliased to the agent. */
   jobs: DurableThread[];
+  /** The agent's comm threads, with each row pi-host listed. */
+  comm?: { room: RoomId; thread: string; row?: DurableThread }[];
 }
 
-/** An agent works while its work thread, any conversation in it, or any of its root job threads runs. */
+const runStatus = (row: DurableThread | undefined): RunStatus => (row?.status === "running" ? "working" : row?.status ?? "idle");
+
+/**
+ * An agent works while its work thread, any conversation in it, or any of its root job threads runs. A comm thread's turn does not count,
+ * so the Work pill stays off while it answers; only the DM's own status counts it (rooms.ts).
+ */
 export function agentStatus(rows: AgentRows): RunStatus {
   if (rows.row?.status === "running" || rows.tree.some(n => n.status === "running") || rows.jobs.some(j => j.status === "running")) return "working";
   return rows.row?.status ?? "idle";
+}
+
+/** What `ensureComm` does for an agent's room, without doing it; `"<new>"` stands for the id of a comm thread not made yet. */
+export interface SplitPlan {
+  agent: AgentId; room: RoomId; workThread: string;
+  /** The comm thread the record holds for the room, or the one ensureComm would create. */
+  comm: { thread: string; created: false } | { thread: null; created: true; create: { name: string; model: string; thinkingLevel: string; cwd: string } };
+  /** agent.ref of the comm thread after the split. */
+  commRef: AgentRef;
+  /** agent.ref of the work thread now (as docGet reads it, or null) and after. */
+  workRef: { before: unknown; after: AgentRef };
 }
 
 /** The agent as the pages see it: its record, with the name, model, status, preview and archived flag of its work thread. */
@@ -45,6 +67,7 @@ export function agentSummary(record: AgentRecord, rows: AgentRows, extra: { mode
     status: agentStatus(rows), parent: null, thread: record.workThread, conversation: 1, archived: row?.archived ?? record.archived,
     createdAt: record.createdAt, updatedAt: Math.max(row?.updatedAt ?? record.createdAt, ...rows.jobs.map(j => j.updatedAt)),
     preview: row?.preview.split("\n").find(line => line.trim()) ?? "", channels: extra.channels, host: record.host, room: record.room, home: record.home,
+    ...(rows.comm?.length ? { comm: rows.comm.map(c => ({ room: c.room, thread: c.thread, status: runStatus(c.row) })) } : {}),
   };
 }
 
@@ -54,6 +77,8 @@ export class Agents {
   /** The `agent.ref` each thread holds as this server last read or wrote it, so a sweep reads a thread once per run. */
   private refs = new Map<string, AgentRef>();
   private sweeping?: Promise<void>;
+  /** The comm thread being made per `<agent id>/<room>`, so two deliveries at once make one. */
+  private readonly making = new Map<string, Promise<string>>();
 
   constructor(
     readonly store: AgentStore,
@@ -82,6 +107,63 @@ export class Agents {
   /** Root job threads aliased to the agent. */
   jobThreads(record: AgentRecord): string[] {
     return Object.entries(this.store.agents.aliases).filter(([thread, id]) => id === record.id && thread !== record.workThread).map(([thread]) => thread);
+  }
+
+  /** The agent and room whose comm thread `thread` is. */
+  ofComm(thread: string): { record: AgentRecord; room: RoomId } | undefined {
+    return this.store.commOwner(thread);
+  }
+
+  isComm(thread: string): boolean {
+    return this.store.commOwner(thread) !== undefined;
+  }
+
+  /** The thread the room's feed reads and the room's posts go to: the comm thread once there is one, else the work thread. */
+  roomThread(record: AgentRecord, room: RoomId = record.room): string {
+    return record.comm?.[room] ?? record.workThread;
+  }
+
+  private commCreate(record: AgentRecord): { name: string; model: string; thinkingLevel: string; cwd: string } {
+    return { name: `${record.name} · DM`, model: DEFAULT_MODEL, thinkingLevel: "high", cwd: record.home };
+  }
+
+  /** What `ensureComm(record)` would do, read with no writes, for the migration's dry run. */
+  async splitPlan(record: AgentRecord, room: RoomId = record.room): Promise<SplitPlan> {
+    const known = record.comm?.[room];
+    const after = { ...record, comm: { ...record.comm, [room]: known ?? "<new>" } };
+    return {
+      agent: record.id, room, workThread: record.workThread,
+      comm: known ? { thread: known, created: false } : { thread: null, created: true, create: this.commCreate(record) },
+      commRef: commRef(this.config.agentsDir, record, room),
+      workRef: { before: (await this.host.docGet(record.workThread, AGENT_REF_DOC)) ?? null, after: agentRef(this.config.agentsDir, after, "work") },
+    };
+  }
+
+  /**
+   * The agent's comm thread for `room`: the one the record holds, or a new thread on Opus 5.5 at high thinking (c31) in the agent's home,
+   * saved in the record before anything else. Each call then writes the comm thread's `agent.ref` and the work thread's, which names the
+   * comm thread, and throws while the comm thread's ref is not written, so the caller tries again before the comm thread gets an input
+   * without its role.
+   */
+  async ensureComm(record: AgentRecord, room: RoomId = record.room): Promise<string> {
+    const key = `${record.id}/${room}`;
+    let thread = record.comm?.[room];
+    if (!thread) {
+      let making = this.making.get(key);
+      if (!making) {
+        making = this.host.create(this.commCreate(record)).then(created => {
+          record.comm = { ...record.comm, [room]: created.id };
+          this.store.saveAgents();
+          return created.id;
+        }).finally(() => this.making.delete(key));
+        this.making.set(key, making);
+      }
+      thread = await making;
+    }
+    const wrote = await this.putRef(thread, commRef(this.config.agentsDir, record, room));
+    if (room === record.room) await this.putRef(record.workThread, agentRef(this.config.agentsDir, record, "work"));
+    if (!wrote) throw new Error(`The agent.ref of ${record.id}'s comm thread ${thread} is not written yet.`);
+    return thread;
   }
 
   /**
@@ -115,12 +197,16 @@ export class Agents {
     return record.id;
   }
 
-  /** The `agent.ref` each thread of each agent should hold: the work thread as "work", each root job thread aliased to it as "job". */
+  /**
+   * The `agent.ref` each thread of each agent should hold: the work thread as "work", each root job thread aliased to it as "job", and each
+   * comm thread as "comm".
+   */
   wantedRefs(): Map<string, AgentRef> {
     const out = new Map<string, AgentRef>();
     for (const record of this.list()) {
       out.set(record.workThread, agentRef(this.config.agentsDir, record, "work"));
       for (const thread of this.jobThreads(record)) out.set(thread, agentRef(this.config.agentsDir, record, "job"));
+      for (const [room, thread] of Object.entries(record.comm ?? {})) out.set(thread, commRef(this.config.agentsDir, record, room));
     }
     return out;
   }
@@ -138,14 +224,19 @@ export class Agents {
     return this.sweeping;
   }
 
-  /** Reads the thread's `agent.ref` and writes `ref` only when it is missing or different; a failure logs and never throws. */
-  private async putRef(thread: string, ref: AgentRef): Promise<void> {
-    if (!this.config.agentRefs || sameRef(this.refs.get(thread), ref)) return;
+  /**
+   * Reads the thread's `agent.ref` and writes `ref` only when it is missing or different; answers whether the thread holds it now. A failure
+   * logs and never throws. With `agentRefs` off, no ref is written and every thread counts as holding it.
+   */
+  private async putRef(thread: string, ref: AgentRef): Promise<boolean> {
+    if (!this.config.agentRefs || sameRef(this.refs.get(thread), ref)) return true;
     try {
       if (!sameRef(await this.host.docGet(thread, AGENT_REF_DOC), ref)) await this.host.docPut(thread, AGENT_REF_DOC, ref);
       this.refs.set(thread, ref);
+      return true;
     } catch (error) {
       this.log(`agent.ref for ${thread} (${ref.agent}) not written, next sweep tries again: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
     }
   }
 
@@ -193,8 +284,8 @@ export class Agents {
     return dropped;
   }
 
-  /** Root chats that belong to no agent: not archived, not a job, and in no record or alias. */
+  /** Root chats that belong to no agent: not archived, not a job, and in no record, alias or comm thread. */
   unrecorded(rows: Iterable<DurableThread>): DurableThread[] {
-    return [...rows].filter(t => !t.archived && this.state.state.threads[t.id]?.kind !== "job" && !this.store.agents.aliases[t.id] && !this.ofWorkThread(t.id));
+    return [...rows].filter(t => !t.archived && this.state.state.threads[t.id]?.kind !== "job" && !this.store.agents.aliases[t.id] && !this.ofWorkThread(t.id) && !this.isComm(t.id));
   }
 }

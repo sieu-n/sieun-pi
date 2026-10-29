@@ -1,6 +1,7 @@
 /**
- * DM rooms on the fixture host (server/rooms.ts): an owner post is stored and answered at once, delivered to the agent's work thread once,
- * and the agent's speaking calls come back as its posts through the feed, with nothing lost or doubled across re-reads and restarts.
+ * DM rooms on the fixture host (server/rooms.ts): an owner post is stored and answered at once, delivered to the agent's comm thread once,
+ * and the comm thread's speaking calls come back as its posts through the feed, with nothing lost or doubled across re-reads and restarts.
+ * test/server/comm.test.ts covers the comm thread itself.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/rooms.test.ts
  */
 import assert from "node:assert/strict";
@@ -18,8 +19,10 @@ import { start, until, type Running } from "./helpers.ts";
 type Message = Extract<Item, { kind: "message" }>;
 const ROOM = "dm_vent";
 const posts = async (s: Running, room = ROOM): Promise<Message[]> => (await s.get<TimelinePage>(`/api/c/${room}/items?limit=200`)).items as Message[];
-const inputs = (host: FixtureHost, text: string): EntryRecord[] =>
-  host.threadsById.get(ids.vent)!.entries.filter(e => e.conversationId === 1 && e.kind === "pi.user" && JSON.stringify(e.model?.[0]?.content).includes(text));
+/** vent's DM comm thread, which its first delivery made. */
+const commOf = (s: Running): string => s.app.agents.record(agents.vent)!.comm![ROOM]!;
+const inputs = (host: FixtureHost, thread: string, text: string): EntryRecord[] =>
+  host.threadsById.get(thread)!.entries.filter(e => e.conversationId === 1 && e.kind === "pi.user" && JSON.stringify(e.model?.[0]?.content).includes(text));
 
 describe("owner posts and the feed", () => {
   let s: Running;
@@ -33,7 +36,8 @@ describe("owner posts and the feed", () => {
   });
 
   const vent = () => s.app.agents.record(agents.vent)!;
-  const thread = () => host.threadsById.get(ids.vent)!;
+  /** The thread the room's feed reads: the comm thread once the first post made it. */
+  const thread = () => host.threadsById.get(vent().comm?.[ROOM] ?? ids.vent)!;
   const assistant = (content: ContentBlock[]) =>
     host.append(thread(), 1, { kind: "pi.assistant", model: [{ role: "assistant", content, provider: "anthropic", model: "claude-opus-5-5", stopReason: "toolUse", timestamp: Date.now() }] });
   const result = (id: string, name: string, text: string, extra: { isError?: boolean; details?: Record<string, unknown> } = {}) =>
@@ -77,7 +81,8 @@ describe("owner posts and the feed", () => {
     assert.equal(mine.length, 1);
     assert.equal(mine[0]!.send, "sent");
     assert.equal(mine[0]!.deliveries[0]!.state, "delivered");
-    assert.equal(inputs(host, text).length, 1, "pi-host has the input once");
+    assert.equal(inputs(host, commOf(s), text).length, 1, "pi-host has the input once, in the comm thread");
+    assert.equal(inputs(host, ids.vent, text).length, 0, "the work thread gets no input");
     const replies = await until(() => posts(s), page => page.filter(p => p.author.id === agents.vent && p.seq! > mine[0]!.seq!).length === 2);
     assert.deepEqual(replies.filter(p => p.seq! > mine[0]!.seq!).map(p => p.text), [`Got it. You said: "${text}".`, "I checked the canary and the relay, and both answer."]);
     await live.waitFor(e => e.type === "status" && e.conversation === ROOM && e.status === "working");
@@ -101,7 +106,8 @@ describe("owner posts and the feed", () => {
     const added = page.slice(before);
     assert.deepEqual(added.map(p => [p.author.id, p.text]), [[agents.vent, "Sent with a job."]]);
     assert.equal(added[0]!.why, "update");
-    assert.deepEqual(added[0]!.jobs!.map(j => j.conversation), [`${ids.vent}:777`, `${ids.vent}:778`, `${ids.vent}:779`]);
+    const comm = commOf(s);
+    assert.deepEqual(added[0]!.jobs!.map(j => j.conversation), [`${comm}:777`, `${comm}:778`, `${comm}:779`]);
 
     // The same entries read again land nothing twice: the same toolCallId.
     const cursor = s.app.agentStore.rooms.feed[agents.vent]!;
@@ -147,12 +153,16 @@ describe("restarts", () => {
     seedFixture(host, dataDir);
     let down = true;
     let failures = 0;
-    host.beforeSubmit = (_thread: string, input: SubmitInput) => {
-      if (!down || !input.requestId?.startsWith("d:")) return;
-      failures += 1;
-      // pi-host comes back after the delivery failed six times, which the real backoff (0.5, 1, 2, 4, 8, 16 s) spreads over 31.5 s.
-      if (failures >= 6) down = false;
-      throw new Error("connect ENOENT /run/user/1000/pi-host/host.sock");
+    // The delivery's first call makes the comm thread, so each try fails there while pi-host is away.
+    const create = host.create.bind(host);
+    host.create = async (...args) => {
+      if (down) {
+        failures += 1;
+        // pi-host comes back after the delivery failed six times, which the real backoff (0.5, 1, 2, 4, 8, 16 s) spreads over 31.5 s.
+        if (failures >= 6) down = false;
+        throw new Error("connect ENOENT /run/user/1000/pi-host/host.sock");
+      }
+      return create(...args);
     };
     const entries = host.entries.bind(host);
     host.entries = async (...args) => {
@@ -175,7 +185,7 @@ describe("restarts", () => {
         await until(() => posts(second), page => page.filter(p => p.author.id === agents.vent && p.text.includes(text)).length > 0);
         const page = await until(() => posts(second), p => p.filter(x => x.author.id === agents.vent && x.text === "I checked the canary and the relay, and both answer.").length >= 1);
         assert.equal(page.filter(p => p.author.id === "owner" && p.text === text).length, 1);
-        assert.equal(inputs(host, text).length, 1);
+        assert.equal(inputs(host, commOf(second), text).length, 1);
         assert.equal(page.filter(p => p.text.includes(text) && p.author.id === agents.vent).length, 1);
       } finally {
         await second.close();
@@ -210,16 +220,17 @@ describe("test sends", () => {
   const BY = "agent factory's DM rooms job";
   const REASON = "It typed this into your composer to check that the DM room delivers; you did not write it.";
   const notices = (): EntryRecord[] =>
-    host.threadsById.get(ids.vent)!.entries.filter(e => e.kind === "agent.message" && (e.data as { via?: string }).via === "test-send" && JSON.stringify(e.model?.[0]?.content).includes("[test send from"));
+    host.threadsById.get(commOf(s))!.entries.filter(e => e.kind === "agent.message" && (e.data as { via?: string }).via === "test-send" && JSON.stringify(e.model?.[0]?.content).includes("[test send from"));
   const stored = (id: string) => s.app.agentStore.postsOf(ROOM).find(p => p.id === id)!;
 
-  test("a delivered post marked as a job's test send reads as the job's in the room, the work thread and search, and the agent gets one notice", async () => {
+  test("a delivered post marked as a job's test send reads as the job's in the room, the comm thread and search, and the agent gets one notice", async () => {
     const word = `zebraprobe${Date.now()}`;
     const text = `Phase 2 check ${word}: reply with one line.`;
     const sent = await s.send("POST", `/api/c/${ROOM}/send`, { text, requestId: "probe-1" });
     const id: string = sent.body.item.id;
     await until(() => posts(s), page => page.find(p => p.id === id)?.send === "sent");
-    const entry = inputs(host, text)[0]!;
+    const comm = commOf(s);
+    const entry = inputs(host, comm, text)[0]!;
     assert.ok(entry, "the owner's delivery wrote a pi.user input");
 
     const marked = await s.send("PATCH", `/api/c/${ROOM}/posts/${id}`, { testSend: { by: BY, reason: REASON } });
@@ -242,21 +253,24 @@ describe("test sends", () => {
     assert.equal(inRoom.testSend?.reason, REASON);
     assert.equal(inRoom.send, "sent", "the delivery line stays");
 
-    const work = await s.get<TimelinePage>(`/api/c/${ids.vent}/items?around=e${entry.id}&limit=6`);
-    const input = work.items.find(item => item.id === `e${entry.id}`) as Message;
+    const transcript = await s.get<TimelinePage>(`/api/c/${comm}/items?around=e${entry.id}&limit=6`);
+    const input = transcript.items.find(item => item.id === `e${entry.id}`) as Message;
     assert.equal(input.author.name, BY);
     assert.equal(input.testSend?.reason, REASON);
 
+    // Search reads the comm thread's words as the DM's posts.
     const all = await s.get<SearchResult>(`/api/search?q=${word}&limit=100`);
-    const hit = all.hits.find(h => h.messageId === `e${entry.id}` && h.conversation.id === ids.vent)!;
+    assert.equal(all.hits.some(h => h.conversation.id === comm), false);
+    const hit = all.hits.find(h => h.messageId === id && h.conversation.id === ROOM)!;
+    assert.equal(hit.conversation.kind, "dm");
     assert.equal(hit.author.name, BY);
     assert.equal(hit.role, "agent");
     assert.deepEqual(hit.testSend, { reason: REASON });
     const owner = await s.get<SearchResult>(`/api/search?q=${word}%20from:owner&limit=100`);
-    assert.equal(owner.hits.some(h => h.messageId === `e${entry.id}`), false, "from:owner leaves the test send out");
+    assert.equal(owner.hits.some(h => h.messageId === id || h.messageId === `e${entry.id}`), false, "from:owner leaves the test send out");
     assert.equal(owner.total, owner.hits.length);
     const listed = JSON.parse(readFileSync(join(s.app.config.dataDir, "test-sends.json"), "utf8"));
-    assert.deepEqual(listed.entries, [{ thread: ids.vent, entry: entry.id, by: BY, reason: REASON }], "pi-history's search reads the same list");
+    assert.deepEqual(listed.entries, [{ thread: comm, entry: entry.id, by: BY, reason: REASON }], "pi-history's search reads the same list");
   });
 
   test("a post marked while its delivery still retries reaches the agent as the job's agent message and needs no notice", async () => {
@@ -275,7 +289,7 @@ describe("test sends", () => {
       marked = true;
       await until(() => Promise.resolve(stored(id).delivery?.state), state => state === "delivered");
       assert.equal(stored(id).delivery?.testSend, true);
-      const got = host.threadsById.get(ids.vent)!.entries.filter(e => (e.kind === "pi.user" || e.kind === "agent.message") && JSON.stringify(e.model?.[0]?.content).includes(text));
+      const got = host.threadsById.get(commOf(s))!.entries.filter(e => (e.kind === "pi.user" || e.kind === "agent.message") && JSON.stringify(e.model?.[0]?.content).includes(text));
       assert.deepEqual(got.map(e => [e.kind, e.data]), [["agent.message", { from: BY, via: "test-send" }]]);
       assert.equal(notices().length, before);
     } finally {

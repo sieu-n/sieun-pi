@@ -1,11 +1,14 @@
 /**
- * DM rooms (apps/chat/docs/agent-model.md, phase 2). A DM is a room of posts the chat server stores, as Slack does, never a view of a thread:
+ * DM rooms (apps/chat/docs/agent-model.md, phases 2 and 4). A DM is a room of posts the chat server stores, as Slack does, never a view of a
+ * thread:
  *
- * 1. An owner post is written and shown at once, then delivered to the agent's work thread with retries; its delivery state is a `set` line.
- * 2. The feed reads the work thread's entries after its cursor and turns each speaking call (`tell_owner`, `send_message` with no `to`) whose
+ * 1. An owner post is written and shown at once, then delivered with retries to the agent's comm thread for the room, which the first
+ *    delivery makes (`Agents.ensureComm`); its delivery state is a `set` line.
+ * 2. The feed reads the comm thread's entries after its cursor and turns each speaking call (`tell_owner`, `send_message` with no `to`) whose
  *    result says it went out into an agent post, and the jobs its turn started into the post's job pills. Only these calls and the owner's own
- *    room posts become posts: a plain input a job, a script or another chat submits to the work thread is the thread's, not the room's. A turn
- *    a channel post started speaks to the channel (channels.ts), so it posts nothing here.
+ *    room posts become posts: a plain input a job, a script or another chat submits to the thread is the thread's, not the room's. A turn
+ *    a channel post started speaks to the channel (channels.ts), so it posts nothing here. An agent with no comm thread yet has its feed on
+ *    the work thread; when the comm thread comes, the feed reads the work thread to its end once and then reads only the comm thread.
  * 3. A restart resumes each cursor and delivers every post still `sending` again with the same request id, which pi-host keeps once.
  *
  * Every post has one dedup key (`requestId`), so a repeated send or a re-read page lands nothing twice.
@@ -30,8 +33,10 @@ export interface RoomEvents {
   status(room: RoomId, status: RunStatus): void;
   /** A room's summary changed: a post, a read mark or a status. */
   changed(): void;
-  /** pi-host took an owner post; its answer carries the run's place in pi-pool's turn queue. */
-  submitted(record: AgentRecord, result: Submitted): void;
+  /** The room's posts go to `thread` from now on; resolves once the room's watchers watch it, before its first input. */
+  thread(record: AgentRecord, thread: string): Promise<void>;
+  /** pi-host took an owner post into `thread`; its answer carries the run's place in pi-pool's turn queue. */
+  submitted(thread: string, result: Submitted): void;
 }
 
 export interface RoomDeps {
@@ -97,9 +102,10 @@ export class Rooms {
   /** The feed read going per agent, and whether another must follow it. */
   private readonly reading = new Map<string, Promise<void>>();
   private readonly again = new Set<string>();
-  /** The work thread's `updatedAt` at the last feed read per agent. */
-  private readonly seen = new Map<string, number>();
+  /** The feed thread and its `updatedAt` at the last feed read per agent, as `<thread>@<updatedAt>`. */
+  private readonly seen = new Map<string, string>();
   private readonly statuses = new Map<RoomId, RunStatus>();
+  private readonly commStatuses = new Map<RoomId, RunStatus | undefined>();
   /** `testSendsOf` per work thread, dropped when a mark changes. */
   private readonly testSends = new Map<string, Map<number, { by: string; reason: string }>>();
   private readonly settleTries = new Map<string, number>();
@@ -131,24 +137,34 @@ export class Rooms {
     this.timers.clear();
   }
 
-  /** After each thread list read: status changes go out, and each agent whose work thread changed gets a feed read. */
+  /** After each thread list read: status changes go out, and each agent whose feed thread changed gets a feed read. */
   poll(): void {
     let changed = false;
     for (const record of this.deps.agents.list()) {
       const status = this.status(record);
-      if (this.statuses.get(record.room) !== status) {
+      const commStatus = this.commStatus(record);
+      if (this.statuses.get(record.room) !== status || this.commStatuses.get(record.room) !== commStatus) {
         if (this.statuses.has(record.room)) changed = true;
+        if (this.statuses.get(record.room) !== status) this.deps.events.status(record.room, status);
         this.statuses.set(record.room, status);
-        this.deps.events.status(record.room, status);
+        this.commStatuses.set(record.room, commStatus);
       }
-      const row = this.deps.threads.thread(record.workThread);
-      if (row && this.seen.get(record.id) !== row.updatedAt) void this.feed(record, row.updatedAt);
+      const thread = this.deps.agents.roomThread(record);
+      const row = this.deps.threads.thread(thread);
+      if (row && this.seen.get(record.id) !== `${thread}@${row.updatedAt}`) void this.feed(record, `${thread}@${row.updatedAt}`);
     }
     if (changed) this.deps.events.changed();
   }
 
+  /** The DM's status: the agent's (its work thread and jobs), and working while its comm thread answers. */
   status(record: AgentRecord): RunStatus {
-    return this.deps.threads.agent(record.id)?.status ?? "idle";
+    return this.commStatus(record) === "working" ? "working" : this.deps.threads.agent(record.id)?.status ?? "idle";
+  }
+
+  /** The DM comm thread's own state, when the agent has one. */
+  commStatus(record: AgentRecord): RunStatus | undefined {
+    const comm = record.comm?.[record.room];
+    return comm ? this.deps.threads.statusOfConversation(comm, 1) : undefined;
   }
 
   // Owner posts
@@ -205,20 +221,21 @@ export class Rooms {
     this.inflight.add(key);
     const images = post.images.map(ref => this.deps.readUpload(ref)).filter((image): image is { data: string; mimeType: string } => !!image);
     try {
+      const thread = await this.commThread(record);
       // A test send reaches the agent as the job's agent message, so the agent never reads it as the owner's words.
       const asTest = post.testSend;
       const from = asTest ? { entry: { kind: "agent.message" as const, data: { from: asTest.by, via: TEST_SEND_VIA } } } : { ownerTurn: true };
-      const result = await this.deps.host.submit(record.workThread, {
+      const result = await this.deps.host.submit(thread, {
         text: post.text, ...(images.length ? { images } : {}), requestId: delivery.requestId, whenBusy: "steer", ...from,
       });
       this.store.set(post, { delivery: {
         target: delivery.target, state: "delivered", attempts: delivery.attempts + 1, at: Date.now(), requestId: delivery.requestId, submission: result.submission,
-        ...(asTest ? { testSend: true } : {}),
+        thread, ...(asTest ? { testSend: true } : {}),
       } });
       // A mark that came while the owner's input was on its way: the agent got it as the owner's, so it gets the notice.
       if (post.testSend && !asTest) void this.settleTestSend(record, post);
       this.changed(record, [post]);
-      this.deps.events.submitted(record, result);
+      this.deps.events.submitted(thread, result);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const attempts = delivery.attempts + 1;
@@ -238,6 +255,18 @@ export class Rooms {
     }
   }
 
+  /**
+   * The room's comm thread, made on the first delivery, with the feed moved onto it first: a post reaches the comm thread only once the
+   * feed has read the work thread to its end and reads the comm thread, so no work-thread entry after the switch becomes a post.
+   */
+  private async commThread(record: AgentRecord): Promise<string> {
+    const thread = await this.deps.agents.ensureComm(record);
+    if (this.store.rooms.feed[record.id]?.thread !== thread) await this.feed(record);
+    if (this.store.rooms.feed[record.id]?.thread !== thread) throw new Error(`The feed of ${record.id} has not moved to its comm thread ${thread} yet.`);
+    await this.deps.events.thread(record, thread);
+    return thread;
+  }
+
   // Test sends
 
   /**
@@ -253,7 +282,7 @@ export class Rooms {
     if (post.author !== "owner" || post.imported) throw new Error(`A test send is an owner post typed in the room; ${postId} in ${record.room} is not one.`);
     if (post.testSend?.by !== by || post.testSend.reason !== reason) {
       this.store.set(post, { testSend: { ...post.testSend, by, reason, at: Date.now() } });
-      this.testSends.delete(record.workThread);
+      this.testSends.delete(post.delivery?.thread ?? record.workThread);
       this.changed(record, [post]);
     }
     void this.settleTestSend(record, post);
@@ -268,18 +297,19 @@ export class Rooms {
     if (this.stopped || !mark || delivery?.state !== "delivered" || delivery.testSend || this.inflight.has(key)) return;
     this.inflight.add(key);
     try {
+      const thread = delivery.thread ?? record.workThread;
       if (mark.notice === undefined) {
         const text = testSendNotice(post, mark, this.deps.threads.principal(mark.by).name);
-        await this.deps.host.submit(record.workThread, {
+        await this.deps.host.submit(thread, {
           text, requestId: `t:${post.id}:${record.id}`, whenBusy: "steer", entry: { kind: "agent.message", data: { from: mark.by, via: TEST_SEND_VIA } },
         });
         this.store.set(post, { testSend: { ...post.testSend!, notice: Date.now() } });
       }
       if (post.testSend!.entry === undefined && delivery.submission !== undefined) {
-        const { entry } = await this.deps.host.wait(record.workThread, delivery.submission);
+        const { entry } = await this.deps.host.wait(thread, delivery.submission);
         if (entry !== undefined) {
           this.store.set(post, { testSend: { ...post.testSend!, entry } });
-          this.testSends.delete(record.workThread);
+          this.testSends.delete(thread);
           this.store.saveTestSends(this.allTestSends());
         }
       }
@@ -295,14 +325,14 @@ export class Rooms {
     }
   }
 
-  /** The work-thread inputs that were test sends, by entry id, for search and the thread's timeline. */
+  /** The inputs of a work or comm thread that were test sends, by entry id, for search and the thread's timeline. */
   testSendsOf(thread: string): ReadonlyMap<number, { by: string; reason: string }> {
     let found = this.testSends.get(thread);
     if (found) return found;
     found = new Map();
-    const record = this.deps.agents.ofWorkThread(thread);
+    const record = this.deps.agents.ofWorkThread(thread) ?? this.deps.agents.ofComm(thread)?.record;
     for (const post of record ? this.store.postsOf(record.room) : []) {
-      if (post.testSend?.entry !== undefined) found.set(post.testSend.entry, { by: post.testSend.by, reason: post.testSend.reason });
+      if (post.testSend?.entry !== undefined && (post.delivery?.thread ?? record!.workThread) === thread) found.set(post.testSend.entry, { by: post.testSend.by, reason: post.testSend.reason });
     }
     this.testSends.set(thread, found);
     return found;
@@ -310,7 +340,24 @@ export class Rooms {
 
   /** Every room's test sends whose entry is known, for search. */
   allTestSends(): { thread: string; entry: number; by: string; reason: string }[] {
-    return this.deps.agents.list().flatMap(record => [...this.testSendsOf(record.workThread)].map(([entry, mark]) => ({ thread: record.workThread, entry, ...mark })));
+    return this.deps.agents.list().flatMap(record => [record.workThread, ...Object.values(record.comm ?? {})])
+      .flatMap(thread => [...this.testSendsOf(thread)].map(([entry, mark]) => ({ thread, entry, ...mark })));
+  }
+
+  /**
+   * The posts search reads as posts: those whose words live in a comm thread, which search leaves out. An owner post that went or goes to
+   * the comm thread counts, and an agent post whose call the comm thread holds; everything before the split is in the work thread.
+   */
+  searchPosts(): { room: RoomId; agent: AgentRecord; post: RoomPost }[] {
+    return this.deps.agents.list().flatMap(record => {
+      const comm = record.comm?.[record.room];
+      if (!comm) return [];
+      return this.store.postsOf(record.room).filter(post =>
+        post.author === "owner"
+          ? !post.imported && !!post.delivery && (post.delivery.thread === comm || (post.delivery.thread === undefined && post.delivery.state !== "delivered"))
+          : post.source?.thread === comm,
+      ).map(post => ({ room: record.room, agent: record, post }));
+    });
   }
 
   private changed(record: AgentRecord, posts: RoomPost[]): void {
@@ -320,9 +367,9 @@ export class Rooms {
 
   // The feed
 
-  /** Reads the agent's work thread after its cursor; a read asked for while one runs follows it. */
-  feed(record: AgentRecord, updatedAt?: number): Promise<void> {
-    if (updatedAt !== undefined) this.seen.set(record.id, updatedAt);
+  /** Reads the agent's feed thread after its cursor; a read asked for while one runs follows it. */
+  feed(record: AgentRecord, seen?: string): Promise<void> {
+    if (seen !== undefined) this.seen.set(record.id, seen);
     const going = this.reading.get(record.id);
     if (going) {
       this.again.add(record.id);
@@ -344,20 +391,35 @@ export class Rooms {
     return run;
   }
 
+  /**
+   * Reads the feed thread after the cursor. When the record's comm thread is not the cursor's thread, the old thread is read to its end
+   * first, and the cursor then starts the comm thread at its first entry; a crash in between resumes the old thread from the saved cursor.
+   */
   private async readFeed(record: AgentRecord): Promise<void> {
+    const target = this.deps.agents.roomThread(record);
     let cursor = this.store.rooms.feed[record.id];
     if (!cursor) {
       // The migrate CLI sets the cursor of each agent it makes; a record without one starts at the thread's newest entry.
-      const newest = (await this.deps.host.entries(record.workThread, { conversation: 1, limit: 1 })).entries[0]?.id ?? 0;
-      cursor = this.store.rooms.feed[record.id] ??= { entry: newest, open: {} };
+      const newest = (await this.deps.host.entries(target, { conversation: 1, limit: 1 })).entries[0]?.id ?? 0;
+      cursor = this.store.rooms.feed[record.id] ??= { entry: newest, open: {}, ...(target === record.workThread ? {} : { thread: target }) };
       this.store.saveRooms();
     }
+    if ((cursor.thread ?? record.workThread) !== target) {
+      await this.readThread(record, cursor);
+      cursor = this.store.rooms.feed[record.id] = { thread: target, entry: 0, open: {} };
+      this.store.saveRooms();
+    }
+    await this.readThread(record, cursor);
+  }
+
+  private async readThread(record: AgentRecord, cursor: FeedCursor): Promise<void> {
+    const thread = cursor.thread ?? record.workThread;
     for (;;) {
-      const page = await this.deps.host.entries(record.workThread, { conversation: 1, after: cursor.entry, limit: FEED_PAGE });
+      const page = await this.deps.host.entries(thread, { conversation: 1, after: cursor.entry, limit: FEED_PAGE });
       const touched = new Map<string, RoomPost>();
       for (const entry of page.entries) {
         if (entry.id <= cursor.entry) continue;
-        this.read(record, cursor, entry, touched);
+        this.read(record, thread, cursor, entry, touched);
         cursor.entry = entry.id;
       }
       this.store.saveRooms();
@@ -366,9 +428,8 @@ export class Rooms {
     }
   }
 
-  private read(record: AgentRecord, cursor: FeedCursor, entry: EntryRecord, touched: Map<string, RoomPost>): void {
+  private read(record: AgentRecord, thread: string, cursor: FeedCursor, entry: EntryRecord, touched: Map<string, RoomPost>): void {
     const message = entry.model?.[0];
-    const thread = record.workThread;
     if (isInput(entry)) {
       cursor.turn = { input: entry.id, channel: entry.kind === "agent.message" && isChannelVia((entry.data as { via?: unknown } | undefined)?.via) };
       return;
@@ -477,18 +538,21 @@ export class Rooms {
     };
   }
 
+  /** The DM's row: `status` is the agent's or working while the comm thread answers, and `commStatus` the comm thread's own. */
   summary(record: AgentRecord): ConversationSummary {
     const agent = this.deps.threads.agent(record.id);
+    const commStatus = this.commStatus(record);
     const posts = this.store.postsOf(record.room);
     const last = posts.at(-1);
     const mark = this.deps.state.state.reads[record.room]?.seq ?? 0;
     const unread = posts.filter(p => p.seq > mark && p.author !== "owner").length;
-    const status = agent?.status ?? "idle";
+    const status = this.status(record);
     const name = agent?.name ?? record.name;
     return {
       id: record.room, kind: "dm", name, status, archived: agent?.archived ?? record.archived,
       lastActivityAt: posts.reduce((max, p) => Math.max(max, p.at), record.createdAt), preview: last ? last.text.slice(0, 200) : "",
       unread, hasNew: unread > 0, working: status === "working" ? [{ id: record.id, name }] : [], agent: record.id,
+      ...(commStatus ? { commStatus } : {}),
     };
   }
 

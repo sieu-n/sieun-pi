@@ -199,7 +199,8 @@ class Global {
           break;
         }
         case "status": {
-          const agent = this.agents.find(a => a.id === event.conversation || a.room === event.conversation);
+          // A split agent's DM status counts its comm thread too, so only its work thread's own status moves the agent's.
+          const agent = this.agents.find(a => a.id === event.conversation || a.thread === event.conversation || (a.room === event.conversation && !a.comm?.length));
           if (agent) agent.status = event.status;
           const job = this.jobs.find(j => j.id === event.conversation);
           if (job) job.status = event.status;

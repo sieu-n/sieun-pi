@@ -26,6 +26,11 @@ export interface AgentRecord {
   archived: boolean;
   /** Set when the migration copied the old thread's history into the room. */
   migrated?: { at: Ms; posts: number; since: Ms };
+  /**
+   * The comm thread per room (phase 4): the thread that talks in that room and hands work to the work thread. A comm thread is never an
+   * alias, a job or an agent of its own, and no list shows it.
+   */
+  comm?: Record<RoomId, string>;
 }
 
 export interface AgentsFile {
@@ -46,6 +51,8 @@ export interface RoomDelivery {
   error?: string;
   /** The delivery went as a test send's agent message, so the agent never read the post as the owner's. */
   testSend?: true;
+  /** The thread the delivery went to: the agent's comm thread for the room. Absent on a delivery from before the split, which went to the work thread. */
+  thread?: string;
 }
 
 export interface RoomPost {
@@ -63,7 +70,7 @@ export interface RoomPost {
    */
   requestId: string;
   why?: string;
-  /** The work-thread entry that holds an agent post's call, so "Show work" opens its turn. */
+  /** The entry that holds an agent post's call, in the thread the feed read (the comm thread once there is one), so "Show work" opens its turn. */
   source?: { thread: string; conversation: number; entry: number };
   /** Jobs the post's turn started, as ConversationIds `<thread>:<n>`. */
   jobs?: string[];
@@ -85,8 +92,10 @@ type LogLine = { t: "post"; post: RoomPost } | { t: "set"; post: string; patch: 
 
 export interface RoomRow { id: RoomId; kind: "dm"; agent: AgentId; createdAt: Ms; archived: boolean }
 
-/** Where the feed stands in an agent's work thread, conversation 1. */
+/** Where the feed stands in the thread it reads, conversation 1. */
 export interface FeedCursor {
+  /** The thread the feed reads: the agent's comm thread for its DM. Absent means the work thread. */
+  thread?: string;
   /** The last entry id read. */
   entry: number;
   /** Speaking calls seen whose result has not landed yet. */
@@ -134,10 +143,17 @@ export class AgentStore {
     writeJson(join(this.dir, "test-sends.json"), { v: 1, entries });
   }
 
-  /** The agent a thread id or agent id belongs to. */
+  /** The agent a thread id or agent id belongs to: its work thread, a root job thread aliased to it, or one of its comm threads. */
   agentOf(id: string): AgentRecord | undefined {
     const agentId = id.startsWith("ag_") ? id : this.agents.aliases[id];
-    return this.agents.agents.find(a => a.id === agentId);
+    return this.agents.agents.find(a => a.id === agentId) ?? (agentId ? undefined : this.commOwner(id)?.record);
+  }
+  /** The agent and room whose comm thread `thread` is. */
+  commOwner(thread: string): { record: AgentRecord; room: RoomId } | undefined {
+    for (const record of this.agents.agents) {
+      for (const [room, comm] of Object.entries(record.comm ?? {})) if (comm === thread) return { record, room };
+    }
+    return undefined;
   }
   agentByRoom(room: RoomId): AgentRecord | undefined {
     return this.agents.agents.find(a => a.room === room);
