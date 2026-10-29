@@ -67,37 +67,48 @@ function snapshot(head: string): string {
 	return join(dir, "guards/prime.mjs");
 }
 
-let loaded: { stamp: string; adapter: Promise<Adapter> } | null = null;
+type Handler = (event: unknown, ctx: unknown) => unknown;
+type Guard = { adapter: Adapter; handlers: Map<string, Handler> };
 
-/** The guard as HEAD holds it now. A version that fails to read or import keeps the last one that loaded. */
-async function loadAdapter(): Promise<Adapter> {
-	const previous = loaded;
+let loaded: { head: string; prime: string; guard: Promise<Guard> } | null = null;
+
+/** One guard version, imported and registered; a module that half ran throws here, so it never becomes the live guard. */
+async function importGuard(prime: string): Promise<Guard> {
+	const adapter = (await import(pathToFileURL(prime).href)) as Adapter;
+	const handlers = new Map<string, Handler>();
+	adapter.registerRepoGuard({ on: (name, handler) => handlers.set(name, handler) });
+	return { adapter, handlers };
+}
+
+/*
+ * The guard as HEAD holds it now. A version that fails to read, import or register keeps the last one that loaded.
+ * A guard copy is imported once per session: under Prime's jiti a second import() of a copy whose first import threw
+ * returns the half-run prime.mjs, whose imports are undefined. On 10-29 from 17:35Z auto-sns-agent's c8a05742e8 guard
+ * could not load from its copy, each later commit re-imported that copy, and every tool call failed with
+ * "undefined is not an object (evaluating '_log.LOG_FILE')" on both hosts.
+ */
+async function loadGuard(): Promise<Guard> {
 	try {
-		const stamp = headId();
-		if (previous?.stamp === stamp) return await previous.adapter;
-		const adapter = import(pathToFileURL(snapshot(stamp)).href) as Promise<Adapter>;
-		loaded = { stamp, adapter };
-		return await adapter;
+		const head = headId();
+		if (loaded?.head === head) return await loaded.guard;
+		const prime = snapshot(head);
+		if (loaded?.prime === prime) {
+			loaded = { ...loaded, head };
+			return await loaded.guard;
+		}
+		const fallback = loaded?.guard;
+		const guard = importGuard(prime).catch(error => fallback ?? Promise.reject(error));
+		loaded = { head, prime, guard };
+		return await guard;
 	} catch (error) {
-		if (!previous) throw error;
-		loaded = { stamp: loaded?.stamp ?? previous.stamp, adapter: previous.adapter };
-		return previous.adapter;
+		if (!loaded) throw error;
+		return await loaded.guard;
 	}
 }
 
-type Handler = (event: unknown, ctx: unknown) => unknown;
-const versions = new WeakMap<Adapter, Map<string, Handler>>();
-
 /** The handlers the guard registers now, by event name. */
 async function handlers(): Promise<Map<string, Handler>> {
-	const adapter = await loadAdapter();
-	let byName = versions.get(adapter);
-	if (!byName) {
-		const recorded = new Map<string, Handler>();
-		adapter.registerRepoGuard({ on: (name, handler) => recorded.set(name, handler) });
-		versions.set(adapter, (byName = recorded));
-	}
-	return byName;
+	return (await loadGuard()).handlers;
 }
 
 /** Registers the repo guard, which follows HEAD's guard files at each event. A load error reaches index.ts, which logs it. */
@@ -140,7 +151,7 @@ export function sessionIdOf(sessionDir: string | undefined): string | null {
  */
 export async function judgeKernelShell(text: string, cwd: string, sessionDir: string | undefined): Promise<Verdict> {
 	if (!existsSync(CHECKOUT)) return undefined;
-	const adapter = await loadAdapter();
+	const { adapter } = await loadGuard();
 	const id = sessionIdOf(sessionDir);
 	return adapter.onToolCall({ toolName: "bash", input: { command: text } }, { cwd, sessionManager: { getSessionId: () => id } });
 }
