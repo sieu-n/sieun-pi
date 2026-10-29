@@ -87,6 +87,7 @@ export class App {
         this.broadcast({ type: "for_you", count });
         this.sidebarSoon();
       },
+      duties: (chatId, duties) => this.broadcast({ type: "duties", chatId, duties }),
     }, log);
     this.boards.selfUrl = `http://127.0.0.1:${config.port}`;
     this.threads.onDoc = (thread, name, value) => {

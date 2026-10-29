@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { api, boardStore, type BoardOp, type ChatAgent, type CheckInView, type DutyRow } from "$lib/api";
+  import { api, boardStore, live, type BoardOp, type ChatAgent, type CheckInView, type DutyRow } from "$lib/api";
   import { Button, EmptyState, LoadingText } from "$lib/ui";
   import AskCard from "./AskCard.svelte";
   import PlanTree from "./PlanTree.svelte";
@@ -43,6 +43,11 @@
     void api.duties(id).then(body => { if (id === chatId) duties = body.duties; }).catch(() => {});
     void api.checkIn(id).then(view => { if (id === chatId) checkIn = view; }).catch(() => {});
     void api.chatAgents(id).then(body => { if (id === chatId) agents = body.agents; }).catch(() => {});
+    // A run that starts or ends while the card is open, or a socket that comes back after missing one, replaces the rows.
+    return live.on(event => {
+      if (event.type === "duties" && event.chatId === id) duties = event.duties;
+      if (event.type === "hello") void api.duties(id).then(body => { if (id === chatId) duties = body.duties; }).catch(() => {});
+    });
   });
 
   const board = $derived(store.view?.board ?? null);

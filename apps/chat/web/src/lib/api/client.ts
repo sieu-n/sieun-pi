@@ -4,10 +4,9 @@
  */
 import type {
   AgentConfig, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, Channel, ChannelInput, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
-  ConversationPatch, ConversationSummary, DutyAction, DutyView, ForYouItem, HostsReport, Item, JobNode, Me, ModelCatalog, ProjectList, SearchQuery, SearchResult, SendRequest,
+  ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForYouItem, HostsReport, Item, JobNode, Me, ModelCatalog, ProjectList, SearchQuery, SearchResult, SendRequest,
   SendResult, Sidebar, ThinkingLevel, TimelinePage, UsageReport, AccountsView,
 } from "./types.ts";
-import type { DutyCardModel } from "./shared/duty-card.ts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -15,8 +14,6 @@ export class ApiError extends Error {
   }
 }
 
-/** A duty row as the server sends it: today's DutyView plus the card model and the judged last run. */
-export type DutyRow = DutyView & { card: DutyCardModel; last: { verdict: string; at: number; streak: number; afterJob: boolean } | null };
 
 const enc = encodeURIComponent;
 

@@ -4,9 +4,13 @@
  */
 import type { BoardOp, ChatBoard, CheckInPause, CheckInView, ChatAgent, OwnerTodo, PlanStatus, AccountsView, MachineView } from "./shared/types.ts";
 import type { DutyView } from "./shared/chat-duties.ts";
+import type { DutyCardModel } from "./shared/duty-card.ts";
 
 export type { BoardOp, ChatBoard, CheckInPause, CheckInView, ChatAgent, OwnerTodo, PlanItem, PlanStatus, AccountsView, MachineView } from "./shared/types.ts";
 export type { DutyView } from "./shared/chat-duties.ts";
+
+/** A duty row as the server sends it: the DutyView with its runs newest first, the card model and the judged last run. */
+export type DutyRow = DutyView & { card: DutyCardModel; last: { verdict: string; at: number; streak: number; afterJob: boolean } | null };
 
 /** Epoch milliseconds. */
 export type Ms = number;
@@ -384,6 +388,8 @@ export type LiveEvent =
   | { type: "jobs"; thread: string; jobs: JobNode[] }
   | { type: "board"; chatId: string; board: ChatBoard; awaitingGo: string[] }
   | { type: "for_you"; count: number }
+  /** A chat's duty rows, sent when a run starts or ends and when a duty is paused, resumed or rescheduled. */
+  | { type: "duties"; chatId: string; duties: DutyRow[] }
   | { type: "channel"; channel: Channel }
   | { type: "error"; message: string };
 

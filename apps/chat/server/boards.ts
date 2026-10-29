@@ -5,12 +5,12 @@
  */
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
+import type { BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyRow, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
 import type { Duty, DutyRunRecord, DutySchedule, DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
 import { DEFAULT_MODEL } from "./config.ts";
 import { measure, runStamp } from "./duty-run.ts";
-import { dutyCard, judgedRun, missStreak, type DutyCardModel } from "../web/src/lib/api/shared/duty-card.ts";
+import { dutyCard, judgedRun, missStreak } from "../web/src/lib/api/shared/duty-card.ts";
 import type { ChatAgent } from "../web/src/lib/api/shared/types.ts";
 import type { Host } from "./host/types.ts";
 import { readJson, writeJson, type Store } from "./store.ts";
@@ -23,11 +23,12 @@ const DEFAULT_CHECK_IN_MS = 120 * 60_000;
 const BOARD_TTL_MS = 15_000;
 
 export interface DutyFile { duties: Duty[]; runs: Record<string, DutyRunRecord[]>; checkIn?: { everyMs: number; pausedUntil: number | "forever" | null; lastAt: number | null } }
-export type DutyViewOut = DutyView & { card: DutyCardModel; last: { verdict: string; at: number; streak: number; afterJob: boolean } | null };
 
 export interface BoardEvents {
   board(chatId: string, board: ChatBoard, awaitingGo: string[]): void;
   forYou(count: number): void;
+  /** A chat's duty rows after a run starts or ends or a duty changes, so an open Duties card shows the new run without a reload. */
+  duties(chatId: string, duties: DutyRow[]): void;
 }
 
 function walk(plan: readonly PlanItem[], visit: (item: PlanItem) => void): void {
@@ -213,7 +214,8 @@ export class Boards {
   /**
    * Brings a Prime chat's board, duties, their runs and its check-in interval into a moved thread, from Prime's chat data dir (read only):
    * `boards/<prime id>.json` becomes the thread's `chat.board`, `duties/<prime id>.json` and `.runs.jsonl` become its duties file, and
-   * `check-in-settings.json` gives the interval. `durable_import` moves the transcript; this moves the rest. Running it again replaces both.
+   * `check-in-settings.json` gives the interval. `durable_import` moves the transcript; this moves the rest. Running it again replaces the board
+   * and the duties, and keeps the runs this server recorded since, merged with the imported ones by their start time.
    */
   async importPrime(chat: string, primeId: string, primeDir: string): Promise<{ board: boolean; duties: number; runs: number; checkInMs: number | null }> {
     if (!/^[0-9a-f-]{36}$/.test(primeId)) throw new Error(`A Prime chat id is a session uuid, got ${primeId}.`);
@@ -249,7 +251,11 @@ export class Boards {
     const everyMs = readJson<Record<string, { everyMs?: number }>>(join(primeDir, "check-in-settings.json"), {})[primeId]?.everyMs ?? null;
     const file = this.file(chat);
     file.duties = prime.duties ?? [];
-    file.runs = Object.fromEntries(Object.entries(runs).filter(([id]) => file.duties.some(d => d.id === id)));
+    const kept = file.runs ?? {};
+    file.runs = Object.fromEntries(file.duties.flatMap(duty => {
+      const merged = new Map([...(runs[duty.id] ?? []), ...(kept[duty.id] ?? [])].map(run => [run.at, run] as const));
+      return merged.size ? [[duty.id, [...merged.values()].sort((a, b) => b.at - a.at).slice(0, 20)]] : [];
+    }));
     file.checkIn = { everyMs: everyMs ?? file.checkIn?.everyMs ?? DEFAULT_CHECK_IN_MS, pausedUntil: null, lastAt: prime.checkIn?.lastRunAt ?? null };
     this.save(chat, file);
     // Each duty's precheck state (`<duty>.state.json`) carries what the last run saw, so the next run reads changes since then.
@@ -279,7 +285,7 @@ export class Boards {
     }));
   }
 
-  duties(chat: string): DutyViewOut[] {
+  duties(chat: string): DutyRow[] {
     const file = this.file(chat);
     const agents = this.chatAgents(chat);
     return file.duties.map(duty => {
@@ -287,7 +293,7 @@ export class Boards {
       const view: DutyView = {
         duty: { id: duty.id, name: duty.name, ownerWords: duty.ownerWords, goal: duty.goal, metrics: duty.metrics, status: duty.status, ...(duty.boardGoal ? { boardGoal: duty.boardGoal } : {}) },
         schedule: duty.schedule, paused: duty.status === "paused", nextAt: duty.status === "paused" ? null : nextRun(duty.schedule, duty.lastRunAt ?? duty.createdAt),
-        running: false, runs, priority: "normal",
+        running: this.dutyRuns.has(`${chat}/${duty.id}`), runs, priority: "normal",
       };
       const newest = runs[0];
       const judged = newest ? judgedRun(newest, duty.metrics) : null;
@@ -298,7 +304,7 @@ export class Boards {
     });
   }
 
-  async dutyAction(chat: string, action: DutyAction): Promise<DutyViewOut[]> {
+  async dutyAction(chat: string, action: DutyAction): Promise<DutyRow[]> {
     const file = this.file(chat);
     const duty = file.duties.find(d => d.id === action.duty);
     if (!duty) throw new Error(`No duty ${action.duty} on this chat.`);
@@ -308,6 +314,7 @@ export class Boards {
     duty.updatedAt = Date.now();
     this.save(chat, file);
     if (action.action === "run") void this.runDuty(chat, duty, "owner");
+    else this.events.duties(chat, this.duties(chat));
     return this.duties(chat);
   }
 
@@ -321,8 +328,12 @@ export class Boards {
     const key = `${chat}/${duty.id}`;
     const going = this.dutyRuns.get(key);
     if (going) return going;
-    const run = this.runDutyOnce(chat, duty.id, trigger).catch(error => this.log(`duty ${key} failed: ${String(error)}`)).finally(() => this.dutyRuns.delete(key));
+    const run = this.runDutyOnce(chat, duty.id, trigger).catch(error => this.log(`duty ${key} failed: ${String(error)}`)).finally(() => {
+      this.dutyRuns.delete(key);
+      this.events.duties(chat, this.duties(chat));
+    });
     this.dutyRuns.set(key, run);
+    this.events.duties(chat, this.duties(chat));
     return run;
   }
 

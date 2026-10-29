@@ -19,6 +19,7 @@ import { dirname, join, resolve } from "node:path";
 import type { AgentConfig, AgentId, ChatBoard, ConfigFile, PlanItem } from "../web/src/lib/api/types.ts";
 import type { Duty, DutyRunRecord } from "../web/src/lib/api/shared/chat-duties.ts";
 import { NotFound, type App } from "./app.ts";
+import { judgedRun } from "../web/src/lib/api/shared/duty-card.ts";
 import { awaitingGo, BOARD_DOC, nextRun, type DutyFile } from "./boards.ts";
 import { isNoProject } from "./projects.ts";
 import { readJson } from "./store.ts";
@@ -224,7 +225,7 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
     const runs = [...(dutyFile.runs?.[duty.id] ?? [])].sort((a, b) => b.at - a.at);
     return {
       id: duty.id, name: duty.name, goal: duty.goal, schedule: scheduleText(duty), paused: duty.status === "paused",
-      nextAt: duty.status === "paused" ? null : nextRun(duty.schedule, duty.lastRunAt ?? duty.createdAt), lastVerdict: runs[0]?.verdict ?? null, lastAt: runs[0]?.at ?? null,
+      nextAt: duty.status === "paused" ? null : nextRun(duty.schedule, duty.lastRunAt ?? duty.createdAt), lastVerdict: runs[0] ? judgedRun(runs[0], duty.metrics).verdict : null, lastAt: runs[0]?.at ?? null,
       runs: duty.runCount ?? runs.length,
     };
   }) : [];

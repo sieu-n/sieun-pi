@@ -121,7 +121,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | `api.board(chat)` | `GET /api/threads/:id/board` | `BoardView`: `{board, awaitingGo}`, with the ids of plan steps that wait for the owner's go. |
 | `api.boardOps(chat, ops)` | `POST /api/threads/:id/board` | The new `BoardView` and `summaries`, one line per applied op; the ops are today's `BoardOp`s, applied as the owner. |
 | `api.chatAgents(chat)` | `GET /api/threads/:id/agents` | `{agents: ChatAgent[]}` for the step owner chips. |
-| `api.duties(chat)` | `GET /api/threads/:id/duties` | `{duties: DutyRow[]}`: today's `DutyView` plus `card` (`dutyCard`) and `last` (`judgedRun`, `missStreak`). |
+| `api.duties(chat)` | `GET /api/threads/:id/duties` | `{duties: DutyRow[]}`: today's `DutyView` with its newest 20 runs newest first and `running` while a run measures, plus `card` (`dutyCard`) and `last` (`judgedRun`, `missStreak`). |
 | `api.dutyAction(chat, {duty, action, schedule})` | `POST /api/threads/:id/duties` | The duties after run, pause, resume or schedule. |
 | `api.checkIn(chat)` | `GET /api/threads/:id/check-in` | `CheckInView`. |
 | `api.setCheckIn(chat, {everyMs, pause})` | `POST /api/threads/:id/check-in` | The new `CheckInView`; pause is 1h, tomorrow, forever or null. |
@@ -169,7 +169,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 
 `/api/live` is one WebSocket per tab, and `lib/api/live.svelte.ts` owns it.
 
-1. The server sends `hello` (me, sidebar, agents, conversations) on connect, then `sidebar`, `agent`, `agent_removed`, `conversation`, `status`, `jobs`, `board`, `for_you` and `channel` to every tab.
+1. The server sends `hello` (me, sidebar, agents, conversations) on connect, then `sidebar`, `agent`, `agent_removed`, `conversation`, `status`, `jobs`, `board`, `for_you`, `duties` and `channel` to every tab. `duties` carries a chat's `DutyRow[]` when a run starts or ends and when a duty is paused, resumed or rescheduled.
 2. `items` and `queue` go only to tabs that watch that conversation; `items` may carry `removed`, ids to drop, such as a pending send that landed or was discarded. The server sends no `partial`.
 3. A tab sends `{type: "watch", conversation, after}` and `{type: "unwatch", conversation}`, and `after` is the newest item id it holds, so a reconnect gets what it missed, and the thread's pending sends.
 
