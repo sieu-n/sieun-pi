@@ -1409,6 +1409,21 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual(self.sent, [(self.CI_TRAIN, "continue")])
         self.assertNotIn("sk-ant", json.dumps(report) + str(stdout.mock_calls))
 
+    def test_a_held_run_whose_tree_waits_for_a_slot_carries_the_slot_the_token_hook_names(self):
+        """From 00:00Z to 02:10Z on 10-29 this pass ran the hook with no PRIME_CREDENTIAL_COMMAND_PROTOCOL, so pi-pool answered each held
+        job's slot wait with exit 1 and nothing on stdout, 320 times, and the pass held the job with no time."""
+        self.ci_train()
+        unloaded = {self.CI_TRAIN: resume_paused.parse_ts("2026-10-16T10:27:34.023Z")}
+        slot = NOW.timestamp() + 600
+        hook = self.root / "pi-pool-token"
+        hook.write_text("#!/bin/sh\n" f'[ "$PRIME_CREDENTIAL_COMMAND_PROTOCOL" = 1 ] || exit 1\nprintf \'{{"retryAt": {slot}}}\'\nexit 75\n')
+        hook.chmod(0o755)
+        with patch.object(resume_paused, "TOKEN_HOOK", hook), patch.object(resume_paused.time, "time", return_value=NOW.timestamp()):
+            report = self.run_ci_train(unloaded, dry_run=False)
+        self.assertEqual((report["paused"], self.sent), ([], []))
+        held = [(entry["session_id"], entry["pool_at"]) for entry in resume_paused.HELD]
+        self.assertEqual(held, [(self.CI_TRAIN, dt.datetime.fromtimestamp(slot, dt.timezone.utc).isoformat(timespec="seconds"))])
+
     def test_the_send_pass_runs_the_token_hooks_of_its_runs_at_once(self):
         """On 10-19 the send pass ran the hook for 239 runs one at a time, 333 s of a 365 s pass, and chat restarts killed it before its sends."""
         log = self.root / "hook-log"

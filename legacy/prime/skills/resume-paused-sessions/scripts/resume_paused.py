@@ -1426,6 +1426,29 @@ def prefetch_hooks(pairs, cache):
     cache.update(zip(todo, answers))
 
 
+# Prime runs the token hook with this set, and the hook then answers a slot wait with exit 75 and {"retryAt": <epoch sec>}. Without it the hook
+# exits 1 with nothing on stdout: from 00:00Z to 02:10Z on 10-29 this pass's probes wrote 320 exit-1 slot_wait lines under full session
+# ids in us-metal02's pi-pool.log, each a held job whose slot the pass did not read.
+CREDENTIAL_PROTOCOL_ENV = "PRIME_CREDENTIAL_COMMAND_PROTOCOL"
+SLOT_WAIT_EXIT = 75
+
+
+def hook_slot_at(ran):
+    """The slot time of a token hook run that answered a slot wait (exit 75 with {"retryAt"}), in epoch seconds; else None."""
+    if ran.returncode != SLOT_WAIT_EXIT:
+        return None
+    try:
+        at = json.loads(ran.stdout).get("retryAt")
+    except (ValueError, AttributeError):
+        return None
+    return at if isinstance(at, (int, float)) and not isinstance(at, bool) else None
+
+
+def slot_wait_text(slot_at):
+    stamp = dt.datetime.fromtimestamp(slot_at, dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return f"pi-pool: this session waits for its slot at {stamp}"
+
+
 def hook_blocker(root_session_id, provider, cache):
     """Why the token hook gives this tree no token now, or None when it gives one or there is no hook to run.
 
@@ -1436,10 +1459,12 @@ def hook_blocker(root_session_id, provider, cache):
     hook = TOKEN_HOOK
     if (root_session_id, provider) not in cache:
         try:
-            ran = subprocess.run([str(hook), "--provider", provider], env={**os.environ, SESSION_ENV: root_session_id},
+            ran = subprocess.run([str(hook), "--provider", provider], env={**os.environ, SESSION_ENV: root_session_id, CREDENTIAL_PROTOCOL_ENV: "1"},
                                  stdin=subprocess.DEVNULL, capture_output=True, timeout=HOOK_TIMEOUT_S)
             gave = ran.returncode == 0 and bool(ran.stdout.strip())
-            cache[(root_session_id, provider)] = None if gave else f"the token hook gave no {provider} token (exit {ran.returncode})"
+            slot_at = hook_slot_at(ran)
+            cache[(root_session_id, provider)] = (None if gave else slot_wait_text(slot_at) if slot_at
+                                                  else f"the token hook gave no {provider} token (exit {ran.returncode})")
         except subprocess.TimeoutExpired:
             cache[(root_session_id, provider)] = f"the token hook gave no {provider} token in {HOOK_TIMEOUT_S} s"
         except OSError:
@@ -2248,7 +2273,8 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
         if slot_at:
             blocker, free_at = own_slot_hold(slot_at), slot_at
         elif verdict[0] == "error" and TOKEN_HOOK_ERROR.search(verdict[1]):
-            blocker, free_at = (hook_blocker(root_id, provider, hooks) if check_hook else None), None
+            blocker = hook_blocker(root_id, provider, hooks) if check_hook else None
+            free_at = error_free_at(blocker, time.time()) if blocker else None
         else:
             blocker, free_at = account_blocker(root_id, provider, accounts)
         if blocker:
