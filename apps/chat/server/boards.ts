@@ -19,7 +19,7 @@ import type { Host } from "./host/types.ts";
 import { readJson, writeJson, type Store } from "./store.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
 import type { Threads } from "./threads.ts";
-import { armWake, startThreadWakes, wakeTarget } from "./wakes.ts";
+import { armWake, startThreadWakes, wakeTarget, type CheckResult } from "./wakes.ts";
 
 export const BOARD_DOC = "chat.board";
 const DEFAULT_CHECK_IN_MS = 120 * 60_000;
@@ -72,6 +72,8 @@ export class Boards {
 
   /** This server's own base URL, which a duty job's brief names for the board. */
   selfUrl = "http://127.0.0.1:5184";
+  /** The check of a thread's check wake when the thread runs on another box: that box's relay runs it. Undefined runs it here. */
+  checkOn: (thread: string) => ((command: string, timeoutMs: number) => Promise<CheckResult>) | undefined = () => undefined;
 
   constructor(
     readonly host: Host,
@@ -547,7 +549,7 @@ export class Boards {
 
   start(everyMs = 30_000): void {
     this.timer = setInterval(() => void this.tick().catch(error => this.log(`board tick failed: ${String(error)}`)), everyMs);
-    this.stopWakes = startThreadWakes({ dir: this.wakeDir, host: this.host, log: this.log });
+    this.stopWakes = startThreadWakes({ dir: this.wakeDir, host: this.host, log: this.log, checkOn: thread => this.checkOn(thread) });
   }
   stop(): void {
     clearInterval(this.timer);
@@ -592,6 +594,7 @@ export class Boards {
     const thread = this.threadOf(this.chatId(id));
     if (!this.threads.thread(thread)) await this.threads.refresh().catch(() => undefined);
     if (!this.threads.thread(thread)) throw new Error(`No thread ${thread}.`);
-    return armWake(this.wakeDir, thread, body);
+    const remote = this.checkOn(thread);
+    return remote ? armWake(this.wakeDir, thread, body, remote) : armWake(this.wakeDir, thread, body);
   }
 }

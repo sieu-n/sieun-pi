@@ -18,7 +18,7 @@ import type { ConversationSummary, Delivery, ImageRef, ImageUpload, Item, JobRef
 import { serverNote, TELL_OWNER_HELD, TELL_OWNER_TOOL } from "../web/src/lib/api/shared/chat-feed.ts";
 import type { AgentRecord, AgentStore, FeedCursor, RoomId, RoomPost, TestSend } from "./agent-store.ts";
 import type { Agents } from "./agents.ts";
-import type { ContentBlock, EntryRecord, Host, Message, Submitted } from "./host/types.ts";
+import { isHostAway, type ContentBlock, type EntryRecord, type Host, type Message, type Submitted } from "./host/types.ts";
 import { refusedForGood, retryWait } from "./outbox.ts";
 import type { Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
@@ -50,6 +50,28 @@ export interface RoomDeps {
   saveUpload(image: ImageUpload): ImageRef;
   readUpload(ref: ImageRef): { data: string; mimeType: string } | undefined;
   log(line: string): void;
+  /** Whether the server has a live link to a box; absent on a server with one box, whose box is always up. */
+  linkOf?(box: string): "up" | "away";
+}
+
+/** The delivery error of a post that waits for an offline box; the page shows it as a neutral "queued" line. */
+export const queuedNote = (box: string): string => `queued, ${box} is offline`;
+
+const clock = (at: number, now: number): string => {
+  const iso = new Date(at).toISOString();
+  return `${iso.slice(0, 10) === new Date(now).toISOString().slice(0, 10) ? "" : `${iso.slice(5, 10)} `}${iso.slice(11, 16)}Z`;
+};
+const ago = (ms: number): string => (ms < 3_600_000 ? `${Math.max(1, Math.round(ms / 60_000))} min` : `${(ms / 3_600_000).toFixed(1)} h`);
+
+/** A post that waited for an offline box opens with its age, as legacy agent-outbox.ts `agedText` heads a held message. */
+export function agedPost(text: string, at: number, box: string, now: number): string {
+  return `[written ${ago(now - at)} ago at ${clock(at, now)}; the chat server held it while ${box} was offline]\n\n${text}`;
+}
+
+/** The posts of one bundle in one input: a line that says how many, then each under its place and age, as agent-outbox.ts `bundleText`. */
+export function bundlePosts(posts: readonly Pick<RoomPost, "at" | "text">[], box: string, now: number): string {
+  return [`[${posts.length} posts the owner wrote while ${box} was offline go together in this one input, oldest first]`,
+    ...posts.map((post, index) => `[${index + 1} of ${posts.length}, written ${ago(now - post.at)} ago at ${clock(post.at, now)}]\n\n${post.text}`)].join("\n\n");
 }
 
 const blocks = (message: Message | undefined): ContentBlock[] =>
@@ -295,10 +317,14 @@ export class Rooms {
     const post = this.store.byRequestId(record.room, requestId);
     if (!post?.delivery) throw new Error(`No post ${requestId} in ${record.room} waits for delivery.`);
     if (post.delivery.state !== "delivered") {
-      const { error: _error, ...rest } = post.delivery;
-      this.store.set(post, { delivery: { ...rest, state: "sending", at: Date.now() } });
-      this.changed(record, [post]);
-      this.schedule(post, 0);
+      // A bundle's members go again together, under the bundle's key.
+      const members = this.members(post);
+      for (const member of members) {
+        const { error: _error, away: _away, ...rest } = member.delivery!;
+        this.store.set(member, { delivery: { ...rest, state: "sending", at: Date.now() } });
+      }
+      this.changed(record, members);
+      this.schedule(members[0] ?? post, 0);
     }
     return this.result(post);
   }
@@ -319,46 +345,110 @@ export class Rooms {
     this.timers.set(key, setTimeout(() => void this.deliver(post), delay));
   }
 
+  /** The posts a bundle names, oldest first; a member the log lacks drops out. */
+  private members(post: RoomPost): RoomPost[] {
+    const bundle = post.delivery?.bundle;
+    if (!bundle) return [post];
+    const posts = this.store.postsOf(post.room);
+    return bundle.members.flatMap(id => posts.find(p => p.id === id) ?? []);
+  }
+
   private async deliver(post: RoomPost): Promise<void> {
+    const bundle = post.delivery?.bundle;
+    // A bundle goes as its first post's delivery; any other member's turn hands over to it.
+    if (bundle && bundle.members[0] !== post.id) {
+      const head = this.store.postsOf(post.room).find(p => p.id === bundle.members[0]);
+      if (head && head !== post) return this.deliver(head);
+    }
     const key = `${post.room}/${post.id}`;
     this.timers.delete(key);
     const delivery = post.delivery;
     const record = delivery && this.deps.agents.record(delivery.target);
     if (this.stopped || !delivery || !record || delivery.state !== "sending" || this.inflight.has(key)) return;
     this.inflight.add(key);
-    const images = post.images.map(ref => this.deps.readUpload(ref)).filter((image): image is { data: string; mimeType: string } => !!image);
+    const members = this.members(post);
+    const set = (patch: (d: NonNullable<RoomPost["delivery"]>) => NonNullable<RoomPost["delivery"]>) => {
+      for (const member of members) if (member.delivery) this.store.set(member, { delivery: patch(member.delivery) });
+    };
+    const images = members.flatMap(p => p.images).map(ref => this.deps.readUpload(ref)).filter((image): image is { data: string; mimeType: string } => !!image);
     try {
       const thread = await this.commThread(record);
-      // A test send reaches the agent as the job's agent message, so the agent never reads it as the owner's words.
+      // A test send reaches the agent as the job's agent message, so the agent never read it as the owner's words.
       const asTest = post.testSend;
       const from = asTest ? { entry: { kind: "agent.message" as const, data: { from: asTest.by, via: TEST_SEND_VIA } } } : { ownerTurn: true };
+      const now = Date.now();
+      const text = bundle ? bundlePosts(members, record.host, now) : delivery.waited ? agedPost(post.text, post.at, record.host, now) : post.text;
       const result = await this.deps.host.submit(thread, {
-        text: post.text, ...(images.length ? { images } : {}), requestId: delivery.requestId, whenBusy: "steer", ...from,
+        text, ...(images.length ? { images } : {}), requestId: bundle?.requestId ?? delivery.requestId, whenBusy: "steer", ...from,
       });
-      this.store.set(post, { delivery: {
-        target: delivery.target, state: "delivered", attempts: delivery.attempts + 1, at: Date.now(), requestId: delivery.requestId, submission: result.submission,
-        thread, ...(asTest ? { testSend: true } : {}),
-      } });
+      set(d => ({
+        target: d.target, state: "delivered", attempts: d.attempts + 1, at: Date.now(), requestId: d.requestId, submission: result.submission, thread,
+        ...(asTest ? { testSend: true as const } : {}), ...(d.waited ? { waited: true as const } : {}), ...(d.bundle ? { bundle: d.bundle } : {}),
+      }));
       // A mark that came while the owner's input was on its way: the agent got it as the owner's, so it gets the notice.
       if (post.testSend && !asTest) void this.settleTestSend(record, post);
-      this.changed(record, [post]);
+      this.changed(record, members);
       this.deps.events.submitted(thread, result);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const away = isHostAway(error) ? error.box : this.deps.linkOf?.(record.host) === "away" ? record.host : undefined;
       const attempts = delivery.attempts + 1;
-      if (refusedForGood(message)) {
+      if (away) {
+        // It waits with no timer; the box's link coming back sends it (`release`).
+        this.deps.log(`rooms: ${record.room} ${post.id} waits, ${away} is offline`);
+        set(d => ({ ...d, at: Date.now(), away, error: queuedNote(away) }));
+      } else if (refusedForGood(message)) {
         this.deps.log(`rooms: ${record.room} ${post.id} refused: ${message}`);
-        this.store.set(post, { delivery: { ...delivery, state: "failed", attempts, at: Date.now(), error: message } });
+        set(d => ({ ...d, state: "failed", attempts, at: Date.now(), error: message }));
       } else {
         const wait = this.backoff(attempts);
         this.deps.log(`rooms: ${record.room} ${post.id} attempt ${attempts} failed, retry in ${wait} ms: ${message}`);
         // The post stays `sending`; after a few tries the page shows the reason, so a long pi-host restart is visible.
-        this.store.set(post, { delivery: { ...delivery, attempts, at: Date.now(), ...(attempts >= 3 ? { error: message } : {}) } });
+        set(d => {
+          const { away: _away, error: _error, ...rest } = d;
+          return { ...rest, attempts, at: Date.now(), ...(attempts >= 3 ? { error: message } : {}) };
+        });
         this.schedule(post, wait);
       }
-      this.changed(record, [post]);
+      this.changed(record, members);
     } finally {
       this.inflight.delete(key);
+    }
+  }
+
+  /**
+   * `box`'s link came back: per agent on it, every post that waited goes in order. A bundle saved before goes again as it is; the other
+   * waiting posts go as one new bundle, saved on each member before the submit, or alone when only one waits. A post to an agent the
+   * owner archived meanwhile is dropped with a note.
+   */
+  async release(box: string): Promise<void> {
+    for (const record of this.deps.agents.list()) {
+      const waiting = this.store.postsOf(record.room).filter(p => p.author === "owner" && p.delivery?.state === "sending" && p.delivery.away === box);
+      if (!waiting.length) continue;
+      const clear = (d: NonNullable<RoomPost["delivery"]>): NonNullable<RoomPost["delivery"]> => {
+        const { away: _away, error: _error, ...rest } = d;
+        return { ...rest, waited: true, at: Date.now() };
+      };
+      if (record.archived) {
+        for (const post of waiting) {
+          this.store.set(post, { delivery: { ...post.delivery!, state: "failed", at: Date.now(), error: `dropped, ${record.name} was archived while ${box} was offline` } });
+        }
+        this.deps.log(`rooms: ${waiting.length} post(s) to ${record.id} dropped, the agent was archived while ${box} was offline`);
+        this.changed(record, waiting);
+        continue;
+      }
+      const saved = waiting.filter(p => p.delivery!.bundle);
+      // A test send goes on its own, as the job's agent message.
+      const fresh = waiting.filter(p => !p.delivery!.bundle && !p.testSend);
+      const alone = waiting.filter(p => !p.delivery!.bundle && p.testSend);
+      for (const post of waiting) this.store.set(post, { delivery: clear(post.delivery!) });
+      if (fresh.length > 1) {
+        const bundle = { requestId: `b:${fresh[0]!.id}:${record.id}`, members: fresh.map(p => p.id) };
+        for (const post of fresh) this.store.set(post, { delivery: { ...post.delivery!, bundle } });
+      }
+      this.changed(record, waiting);
+      const heads = [...saved.filter(p => p.delivery!.bundle!.members[0] === p.id), ...(fresh[0] ? [fresh[0]] : []), ...alone].sort((a, b) => a.seq - b.seq);
+      for (const head of heads) await this.deliver(head);
     }
   }
 

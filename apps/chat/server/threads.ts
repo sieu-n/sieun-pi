@@ -233,7 +233,7 @@ export class Threads {
       const record = this.agentRecords?.record(id);
       const row = record && this.list.get(record.workThread);
       if (!record) return undefined;
-      return row ? this.agentsOf(row)[0] : agentSummary(record, { tree: [], jobs: [], comm: this.commRows(record) }, { model: null, rooms: this.roomsOf(record.id) });
+      return row ? this.agentsOf(row)[0] : agentSummary(record, { tree: [], jobs: [], comm: this.commRows(record) }, { model: null, rooms: this.roomsOf(record.id), hostState: this.agentRecords?.hostState(record.host) });
     }
     const { thread, conversation } = parseConversationId(id);
     const row = this.list.get(thread);
@@ -288,12 +288,12 @@ export class Threads {
         row, tree: this.tree(row.id),
         jobs: this.agentRecords!.jobThreads(record).flatMap(id => (this.list.has(id) ? [this.list.get(id)!] : [])),
         comm: this.commRows(record),
-      }, { model: rootModel, rooms: this.roomsOf(record.id) })
+      }, { model: rootModel, rooms: this.roomsOf(record.id), hostState: this.agentRecords!.hostState(record.host) })
       : {
         id: row.id, kind: meta.kind, name: row.name || "Untitled", avatar: avatarOf(row.name || row.id), model: rootModel,
         thinkingLevel: (row.thinkingLevel as ThinkingLevel) ?? null, status: statusOf(row.status), parent: meta.kind === "job" ? this.parentOf(meta) : null,
         thread: row.id, conversation: 1, archived: row.archived, createdAt: row.createdAt, updatedAt: row.updatedAt,
-        preview: row.preview.split("\n").find(line => line.trim()) ?? "", rooms: [], host: this.box,
+        preview: row.preview.split("\n").find(line => line.trim()) ?? "", rooms: [], host: row.box ?? this.box,
       };
     const owner = this.ownerOf(row);
     const worksFor = owner ? { id: owner.id, name: this.list.get(owner.workThread)?.name || owner.name } : undefined;

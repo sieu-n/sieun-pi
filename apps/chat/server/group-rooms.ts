@@ -21,9 +21,9 @@ import type {
 } from "../web/src/lib/api/types.ts";
 import { isGroupRoom, type AgentRecord, type AgentStore, type FeedCursor, type GroupRoom, type RoomDelivery, type RoomId, type RoomMember, type RoomPost, type WakeOn } from "./agent-store.ts";
 import type { Agents } from "./agents.ts";
-import type { EntryRecord, Host, Submitted } from "./host/types.ts";
+import { isHostAway, type EntryRecord, type Host, type Submitted } from "./host/types.ts";
 import { refusedForGood, retryWait } from "./outbox.ts";
-import { agentPostParts, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
+import { agentPostParts, queuedNote, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
 import type { Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
 
@@ -62,6 +62,8 @@ export interface GroupDeps {
   saveUpload(image: ImageUpload): ImageRef;
   readUpload(ref: ImageRef): { data: string; mimeType: string } | undefined;
   log(line: string): void;
+  /** Whether the server has a live link to a box; absent on a server with one box. */
+  linkOf?(box: string): "up" | "away";
 }
 
 type Draft = Omit<RoomPost, "id" | "seq" | "room" | "deliveries"> & { hops: number };
@@ -444,7 +446,12 @@ export class GroupRooms {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const attempts = delivery.attempts + 1;
-      if (refusedForGood(message)) {
+      const away = isHostAway(error) ? error.box : this.deps.linkOf?.(record.host) === "away" ? record.host : undefined;
+      if (away) {
+        // It waits with no timer until the box's link comes back (`release`).
+        this.deps.log(`rooms: ${row.id} ${post.id} to ${target} waits, ${away} is offline`);
+        this.setDelivery(post, target, { ...delivery, at: Date.now(), away, error: queuedNote(away) });
+      } else if (refusedForGood(message)) {
         this.deps.log(`rooms: ${row.id} ${post.id} to ${target} refused: ${message}`);
         this.setDelivery(post, target, { ...delivery, state: "failed", attempts, at: Date.now(), error: message });
       } else {
@@ -457,6 +464,20 @@ export class GroupRooms {
       this.inflight.delete(key);
     }
     this.emit(row, [post]);
+  }
+
+  /** `box`'s link came back: each delivery that waited for it goes again, in post order per room. */
+  release(box: string): void {
+    for (const row of this.rows()) {
+      for (const post of this.store.postsOf(row.id)) {
+        for (const d of post.deliveries ?? []) {
+          if (d.state !== "sending" || d.away !== box) continue;
+          const { away: _away, error: _error, ...rest } = d;
+          this.setDelivery(post, d.target, { ...rest, at: Date.now() });
+          this.schedule(post, d.target, 0);
+        }
+      }
+    }
   }
 
   /** The member's comm thread for the room, made on its first delivery, with its feed cursor set before the thread gets an input. */

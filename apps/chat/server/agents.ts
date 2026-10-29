@@ -9,7 +9,7 @@
  * a Solo room's (phase 5, group-rooms.ts), and `POST /api/agents/:id/split` makes the DM's for the migration (`scripts/split-agents.ts`),
  * whose dry run reads `splitPlan`.
  */
-import type { AgentId, AgentSummary, RunStatus, ThinkingLevel } from "../web/src/lib/api/types.ts";
+import type { AgentHostState, AgentId, AgentSummary, RunStatus, ThinkingLevel } from "../web/src/lib/api/types.ts";
 import { AGENT_REF_DOC, agentRef, commRef, sameRef, type AgentRef } from "./agent-folder.ts";
 import { freeSlug, isUntitled, type AgentRecord, type AgentStore, type RoomId } from "./agent-store.ts";
 import { DEFAULT_MODEL, type Config } from "./config.ts";
@@ -63,7 +63,7 @@ export interface SplitPlan {
 }
 
 /** The agent as the pages see it: its record, with the name, model, status, preview and archived flag of its work thread. */
-export function agentSummary(record: AgentRecord, rows: AgentRows, extra: { model: AgentSummary["model"]; rooms: RoomId[] }): AgentSummary {
+export function agentSummary(record: AgentRecord, rows: AgentRows, extra: { model: AgentSummary["model"]; rooms: RoomId[]; hostState?: AgentHostState }): AgentSummary {
   const row = rows.row;
   const name = row?.name || record.name;
   return {
@@ -72,6 +72,7 @@ export function agentSummary(record: AgentRecord, rows: AgentRows, extra: { mode
     createdAt: record.createdAt, updatedAt: Math.max(row?.updatedAt ?? record.createdAt, ...rows.jobs.map(j => j.updatedAt)),
     preview: row?.preview.split("\n").find(line => line.trim()) ?? "", rooms: extra.rooms, host: record.host, room: record.room, home: record.home,
     ...(rows.comm?.length ? { comm: rows.comm.map(c => ({ room: c.room, thread: c.thread, status: runStatus(c.row) })) } : {}),
+    ...(extra.hostState ? { hostState: extra.hostState } : {}),
   };
 }
 
@@ -83,6 +84,8 @@ export class Agents {
   private sweeping?: Promise<void>;
   /** The comm thread being made per `<agent id>/<room>`, so two deliveries at once make one. */
   private readonly making = new Map<string, Promise<string>>();
+  /** Whether the server has a live link to a box; undefined on a server with one box. The App sets it over its `MultiHost`. */
+  hostState: (box: string) => AgentHostState | undefined = () => undefined;
 
   constructor(
     readonly store: AgentStore,
@@ -92,6 +95,11 @@ export class Agents {
     private readonly log: (line: string) => void = () => {},
   ) {}
 
+
+  /** Where the agent's folder lives on its box: the record's own `agentsDir` for an agent on another box, else this box's. */
+  agentsDirOf(record: AgentRecord): string {
+    return record.agentsDir ?? this.config.agentsDir;
+  }
 
   /** The agent an agent id, a DM room id or one of its thread ids belongs to. */
   record(id: string): AgentRecord | undefined {
@@ -147,8 +155,8 @@ export class Agents {
     return {
       agent: record.id, room, workThread: record.workThread,
       comm: known ? { thread: known, created: false } : { thread: null, created: true, create: await this.commCreate(record, room) },
-      commRef: commRef(this.config.agentsDir, record, room),
-      workRef: { before: (await this.host.docGet(record.workThread, AGENT_REF_DOC)) ?? null, after: agentRef(this.config.agentsDir, after, "work") },
+      commRef: commRef(this.agentsDirOf(record), record, room),
+      workRef: { before: (await this.host.docGet(record.workThread, AGENT_REF_DOC)) ?? null, after: agentRef(this.agentsDirOf(record), after, "work") },
     };
   }
 
@@ -164,7 +172,8 @@ export class Agents {
     if (!thread) {
       let making = this.making.get(key);
       if (!making) {
-        making = this.commCreate(record, room).then(create => this.host.create(create)).then(created => {
+        // A comm thread runs on its agent's box.
+        making = this.commCreate(record, room).then(create => this.host.create({ ...create, box: record.host })).then(created => {
           record.comm = { ...record.comm, [room]: created.id };
           this.store.saveAgents();
           return created.id;
@@ -173,22 +182,23 @@ export class Agents {
       }
       thread = await making;
     }
-    const wrote = await this.putRef(thread, commRef(this.config.agentsDir, record, room));
-    if (room === record.room) await this.putRef(record.workThread, agentRef(this.config.agentsDir, record, "work"));
+    const wrote = await this.putRef(thread, commRef(this.agentsDirOf(record), record, room));
+    if (room === record.room) await this.putRef(record.workThread, agentRef(this.agentsDirOf(record), record, "work"));
     if (!wrote) throw new Error(`The agent.ref of ${record.id}'s comm thread ${thread} is not written yet.`);
     return thread;
   }
 
   /**
    * A record for a work thread just made: its slug is its name's (with -2, -3 on a clash), its room is `dm_<slug>`, and its feed starts at
-   * the thread's first entry.
+   * the thread's first entry. A thread on another box (`thread.box`) makes an agent of that box, whose folder lives in that box's `agentsDir`.
    */
-  add(thread: DurableThread): AgentRecord {
+  add(thread: DurableThread, agentsDir?: string): AgentRecord {
     const known = this.ofWorkThread(thread.id);
     if (known) return known;
     const slug = freeSlug(thread.name || "agent", new Set(this.store.agents.agents.map(a => a.slug)));
     const record: AgentRecord = {
-      id: `ag_${slug}`, slug, name: thread.name || slug, room: `dm_${slug}`, workThread: thread.id, host: this.config.box, home: thread.cwd, createdAt: thread.createdAt, archived: thread.archived,
+      id: `ag_${slug}`, slug, name: thread.name || slug, room: `dm_${slug}`, workThread: thread.id, host: thread.box ?? this.config.box,
+      ...(thread.box && thread.box !== this.config.box && agentsDir ? { agentsDir } : {}), home: thread.cwd, createdAt: thread.createdAt, archived: thread.archived,
     };
     this.store.agents.agents.push(record);
     this.store.agents.aliases[thread.id] = record.id;
@@ -196,7 +206,7 @@ export class Agents {
     this.store.rooms.feed[record.id] = { entry: 0, open: {} };
     this.store.saveAgents();
     this.store.saveRooms();
-    void this.putRef(thread.id, agentRef(this.config.agentsDir, record, "work"));
+    void this.putRef(thread.id, agentRef(this.agentsDirOf(record), record, "work"));
     return record;
   }
 
@@ -215,7 +225,7 @@ export class Agents {
     if (!record) return undefined;
     this.store.agents.aliases[thread] = record.id;
     this.store.saveAgents();
-    void this.putRef(thread, agentRef(this.config.agentsDir, record, thread === record.workThread ? "work" : "job"));
+    void this.putRef(thread, agentRef(this.agentsDirOf(record), record, thread === record.workThread ? "work" : "job"));
     return record.id;
   }
 
@@ -226,9 +236,10 @@ export class Agents {
   wantedRefs(): Map<string, AgentRef> {
     const out = new Map<string, AgentRef>();
     for (const record of this.list()) {
-      out.set(record.workThread, agentRef(this.config.agentsDir, record, "work"));
-      for (const thread of this.jobThreads(record)) out.set(thread, agentRef(this.config.agentsDir, record, "job"));
-      for (const [room, thread] of Object.entries(record.comm ?? {})) out.set(thread, commRef(this.config.agentsDir, record, room));
+      const dir = this.agentsDirOf(record);
+      out.set(record.workThread, agentRef(dir, record, "work"));
+      for (const thread of this.jobThreads(record)) out.set(thread, agentRef(dir, record, "job"));
+      for (const [room, thread] of Object.entries(record.comm ?? {})) out.set(thread, commRef(dir, record, room));
     }
     return out;
   }

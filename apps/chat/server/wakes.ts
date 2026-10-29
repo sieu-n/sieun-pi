@@ -11,7 +11,7 @@ import {
 import type { Host } from "./host/types.ts";
 import { writeJson } from "./store.ts";
 
-export type { Wake } from "../../../legacy/prime/user-history/src/wakes.ts";
+export type { CheckResult, Wake } from "../../../legacy/prime/user-history/src/wakes.ts";
 
 /** A wake's `session` for a thread's conversation; the legacy file format keys every wake by one session id. */
 export const wakeSession = (thread: string, conversation: number): string => `${thread}--${conversation}`;
@@ -64,6 +64,35 @@ export interface ThreadWakeOptions {
   runState?: WakeDeps["runState"];
   stamp?: WakeDeps["stamp"];
   check?: WakeDeps["check"];
+  /** The check of a thread on another box, run by that box's relay; undefined runs it on this box. */
+  checkOn?: (thread: string) => ((command: string, timeoutMs: number) => Promise<CheckResult>) | undefined;
+}
+
+/**
+ * The thread of the check wake whose command this is. The legacy ticker hands a check only its command, so the wake files tell whose it is;
+ * two check wakes with one command on two boxes would both run on the first one's box.
+ */
+export function checkThread(dir: string, command: string): string | undefined {
+  let names: string[] = [];
+  try { names = readdirSync(dir).filter(name => name.endsWith(".json")); } catch { return undefined; }
+  for (const name of names) {
+    try {
+      const wake = JSON.parse(readFileSync(join(dir, name), "utf8")) as Partial<Wake>;
+      if (wake.on?.kind === "check" && wake.on.command === command && typeof wake.session === "string") return wakeTarget(wake.session).thread;
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
+/** Runs a check on the box of the wake that owns it. */
+function boxCheck(dir: string, checkOn: NonNullable<ThreadWakeOptions["checkOn"]>): (command: string, timeoutMs: number) => Promise<CheckResult> {
+  return (command, timeoutMs) => {
+    const thread = checkThread(dir, command);
+    const remote = thread ? checkOn(thread) : undefined;
+    return remote ? remote(command, timeoutMs) : runCheck(command, timeoutMs);
+  };
 }
 
 /**
@@ -91,7 +120,8 @@ export function startThreadWakes(options: ThreadWakeOptions): () => void {
   adoptOldWakes(options.dir, options.log);
   const stale = cacheWatch(options.log);
   return startWakes({
-    dir: options.dir, log: options.log, ...(options.now ? { now: options.now } : {}), ...(options.check ? { check: options.check } : {}),
+    dir: options.dir, log: options.log, ...(options.now ? { now: options.now } : {}),
+    ...(options.check ? { check: options.check } : options.checkOn ? { check: boxCheck(options.dir, options.checkOn) } : {}),
     runState: options.runState ?? (on => readRunState(on, undefined, stale)),
     stamp: options.stamp ?? runStamp,
     deliver: async (session, text, _root, _kind, setAt) => {

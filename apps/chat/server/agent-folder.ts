@@ -106,9 +106,20 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
 
 /** The store as on disk, other entries kept as they are; a missing, unreadable or non-object file reads as empty, as Prime's `load` does. */
 function readStore(path: string): StoreFile {
+  let text: string | undefined;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    text = undefined;
+  }
+  return parseStore(text);
+}
+
+/** The store from its file's text, as `readStore` reads it. */
+function parseStore(text: string | undefined): StoreFile {
   let raw: Record<string, unknown> | undefined;
   try {
-    raw = record(JSON.parse(readFileSync(path, "utf8")));
+    raw = text === undefined ? undefined : record(JSON.parse(text));
   } catch {
     raw = undefined;
   }
@@ -118,6 +129,9 @@ function readStore(path: string): StoreFile {
   })) as StoreFile["entries"];
   return { schema: 1, entries, refinements: Array.isArray(raw?.refinements) ? raw.refinements : [] };
 }
+
+/** Prime's `save` text: JSON with indent 2 and non-ASCII kept. */
+const storeText = (store: StoreFile): string => JSON.stringify({ schema: 1, entries: store.entries, refinements: store.refinements }, null, 2);
 
 /**
  * Prime's `save`: JSON with indent 2 and non-ASCII kept, written to `<name>.<pid>.<hex>.tmp` beside the real file (a symlink's target), then
@@ -137,7 +151,7 @@ function saveStore(path: string, store: StoreFile): void {
   try {
     const fd = openSync(temp, "wx", mode ?? 0o600);
     try {
-      writeSync(fd, JSON.stringify({ schema: 1, entries: store.entries, refinements: store.refinements }, null, 2));
+      writeSync(fd, storeText(store));
     } finally {
       closeSync(fd);
     }
@@ -161,35 +175,104 @@ function entryView(kind: HarnessKind, id: string, raw: RawEntry): HarnessEntryVi
 
 const timeOf = (iso: string): number => Date.parse(iso) || 0;
 
+/** A file as a box reads it for the folder view: here through the disk, on another box through its relay's `file_get`. */
+export interface FolderFile { exists: boolean; text?: string; size?: number; modifiedAt?: number }
+
+/** The brief and harness store as files, read from this box's disk. */
+function readLocalFile(path: string): FolderFile {
+  try {
+    const stat = statSync(path);
+    return { exists: true, text: stat.isFile() ? readFileSync(path, "utf8") : undefined, size: stat.isFile() ? stat.size : undefined, modifiedAt: stat.mtimeMs };
+  } catch {
+    return { exists: false };
+  }
+}
+
+/** A `ConfigFile` from a file another box read, as `fileInfo` builds it from this box's disk. */
+function remoteInfo(label: string, path: string, file: FolderFile, opts: { preview?: boolean; loaded: boolean; note: string }): ConfigFile {
+  const out: ConfigFile = { label, path, exists: file.exists, size: file.size ?? null, modifiedAt: file.modifiedAt ?? null, loaded: opts.loaded, note: opts.note };
+  if (opts.preview && file.text !== undefined) {
+    const head = file.text.slice(0, 4000).split("\n").filter(line => line.trim()).slice(0, 6).join("\n");
+    out.preview = head.length > PREVIEW_CAP ? `${head.slice(0, PREVIEW_CAP - 1)}…` : head;
+  }
+  return out;
+}
+
+const BRIEF_NOTE = "Its responsibility in the owner's words. pi-host adds it after the AGENTS.md files as one more Prime context file in every thread of the agent.";
+const MEMORY_NOTE = "Its memory. Every thread of the agent gets Prime's harness digest of Prime's global store merged with this one, and its kernel's rlm.harness writes here.";
+
+/** The folder view from its two files; `local` builds the file rows from this box's disk. */
+function folderView(agent: AgentRecord, dir: string, brief: FolderFile, store: StoreFile, info: (label: string, path: string, opts: { preview?: boolean; loaded: boolean; note: string }) => ConfigFile): AgentFolder {
+  const text = brief.text ?? "";
+  const entries = HARNESS_KINDS.flatMap(kind => Object.entries(store.entries[kind]).flatMap(([id, raw]) => entryView(kind, id, raw) ?? []))
+    .sort((a, b) => timeOf(b.updatedAt) - timeOf(a.updatedAt) || b.updatedAt.localeCompare(a.updatedAt));
+  const memory = { ...info("the agent's harness store", harnessPath(dir), { loaded: true, note: MEMORY_NOTE }), count: entries.length, entries };
+  if (entries.length) memory.preview = entries.slice(0, 3).map(e => `- ${e.title}`).join("\n");
+  return { agent: agent.id, dir, brief: { ...info("brief.md", briefPath(dir), { preview: true, loaded: text.trim() !== "", note: BRIEF_NOTE }), text }, memory };
+}
+
 /** The agent's brief and memory store, entries of every kind with the newest `updatedAt` first. */
 export function readAgentFolder(agentsDir: string, agent: AgentRecord): AgentFolder {
   const dir = agentFolderDir(agentsDir, agent);
-  let text = "";
-  try {
-    text = readFileSync(briefPath(dir), "utf8");
-  } catch {
-    text = "";
+  return folderView(agent, dir, readLocalFile(briefPath(dir)), readStore(harnessPath(dir)), (label, path, opts) => fileInfo(label, path, opts));
+}
+
+/** File access on an agent's box: its relay's `file_get` and `file_put`. */
+export interface BoxFiles {
+  get(path: string): Promise<FolderFile>;
+  /** Writes the file, or removes it with `text` null. */
+  put(path: string, text: string | null): Promise<void>;
+}
+
+/**
+ * An agent's folder wherever it lives: on this box through the disk, and on another box through that box's relay (`files` answers the
+ * relay for the agent's box, or undefined for this box). A write on another box reads the store, changes one entry and writes the whole
+ * file back, as Prime's writer does here.
+ */
+export class AgentFolders {
+  constructor(private readonly where: (agent: AgentRecord) => { agentsDir: string; files?: BoxFiles }) {}
+
+  async read(agent: AgentRecord): Promise<AgentFolder> {
+    const { agentsDir, files } = this.where(agent);
+    if (!files) return readAgentFolder(agentsDir, agent);
+    const dir = agentFolderDir(agentsDir, agent);
+    const [brief, store] = await Promise.all([files.get(briefPath(dir)), files.get(harnessPath(dir))]);
+    return folderView(agent, dir, brief, parseStore(store.text), (label, path, opts) => remoteInfo(label, path, path === briefPath(dir) ? brief : store, opts));
   }
-  const brief = {
-    ...fileInfo("brief.md", briefPath(dir), {
-      preview: true, loaded: text.trim() !== "",
-      note: "Its responsibility in the owner's words. pi-host adds it after the AGENTS.md files as one more Prime context file in every thread of the agent.",
-    }),
-    text,
-  };
-  const store = readStore(harnessPath(dir));
-  const entries = HARNESS_KINDS.flatMap(kind => Object.entries(store.entries[kind]).flatMap(([id, raw]) => entryView(kind, id, raw) ?? []))
-    .sort((a, b) => timeOf(b.updatedAt) - timeOf(a.updatedAt) || b.updatedAt.localeCompare(a.updatedAt));
-  const memory = {
-    ...fileInfo("the agent's harness store", harnessPath(dir), {
-      loaded: true,
-      note: "Its memory. Every thread of the agent gets Prime's harness digest of Prime's global store merged with this one, and its kernel's rlm.harness writes here.",
-    }),
-    count: entries.length,
-    entries,
-  };
-  if (entries.length) memory.preview = entries.slice(0, 3).map(e => `- ${e.title}`).join("\n");
-  return { agent: agent.id, dir, brief, memory };
+
+  async writeBrief(agent: AgentRecord, text: string): Promise<void> {
+    const { agentsDir, files } = this.where(agent);
+    if (!files) return writeBrief(agentsDir, agent, text);
+    await files.put(briefPath(agentFolderDir(agentsDir, agent)), text.trim() ? text : null);
+  }
+
+  async create(agent: AgentRecord, kind: HarnessKind, input: MemoryInput, source = "owner"): Promise<string> {
+    const { agentsDir, files } = this.where(agent);
+    if (!files) return createEntry(agentsDir, agent, kind, input, source);
+    const path = harnessPath(agentFolderDir(agentsDir, agent));
+    const store = parseStore((await files.get(path)).text);
+    const id = addEntry(store, kind, input, source);
+    await files.put(path, storeText(store));
+    return id;
+  }
+
+  async update(agent: AgentRecord, kind: HarnessKind, id: string, input: MemoryInput, source = "owner"): Promise<void> {
+    const { agentsDir, files } = this.where(agent);
+    if (!files) return updateEntry(agentsDir, agent, kind, id, input, source);
+    const path = harnessPath(agentFolderDir(agentsDir, agent));
+    const store = parseStore((await files.get(path)).text);
+    changeEntry(store, kind, id, input, source);
+    await files.put(path, storeText(store));
+  }
+
+  async delete(agent: AgentRecord, kind: HarnessKind, id: string): Promise<void> {
+    const { agentsDir, files } = this.where(agent);
+    if (!files) return deleteEntry(agentsDir, agent, kind, id);
+    const path = harnessPath(agentFolderDir(agentsDir, agent));
+    const store = parseStore((await files.get(path)).text);
+    dropEntry(store, kind, id);
+    await files.put(path, storeText(store));
+  }
 }
 
 /** Writes `brief.md`; empty text deletes it, since a missing or empty brief is no brief. */
@@ -214,10 +297,8 @@ export function writeBrief(agentsDir: string, agent: AgentRecord, text: string):
   }
 }
 
-/** Prime's `create`: the id is `_slug(title)`, and a title whose id the kind already holds fails. */
-export function createEntry(agentsDir: string, agent: AgentRecord, kind: HarnessKind, input: MemoryInput, source = "owner"): string {
-  const path = harnessPath(agentFolderDir(agentsDir, agent));
-  const store = readStore(path);
+/** Prime's `create` on a store in memory: the id is `_slug(title)`, and a title whose id the kind already holds fails. */
+function addEntry(store: StoreFile, kind: HarnessKind, input: MemoryInput, source: string): string {
   const id = harnessSlug(input.title, kind);
   if (store.entries[kind][id]) throw new EntryExists(`${kind} entry '${id}' already exists`);
   const now = harnessNow();
@@ -225,14 +306,11 @@ export function createEntry(agentsDir: string, agent: AgentRecord, kind: Harness
     id, kind, title: input.title, content: input.content, path: input.path ?? "general", scope: "local", reference: {}, arguments: {}, metadata: {}, source,
     created_at: now, updated_at: now, version: 1,
   };
-  saveStore(path, store);
   return id;
 }
 
-/** Prime's `update`: new title and content, the path kept unless given, the source set, `updated_at` now and `version` one higher. */
-export function updateEntry(agentsDir: string, agent: AgentRecord, kind: HarnessKind, id: string, input: MemoryInput, source = "owner"): void {
-  const path = harnessPath(agentFolderDir(agentsDir, agent));
-  const store = readStore(path);
+/** Prime's `update` on a store in memory: new title and content, the path kept unless given, the source set, `updated_at` now and `version` one higher. */
+function changeEntry(store: StoreFile, kind: HarnessKind, id: string, input: MemoryInput, source: string): void {
   const entry = store.entries[kind][id];
   if (!entry) throw new EntryMissing(`${kind} entry '${id}' does not exist`);
   entry.title = input.title;
@@ -241,6 +319,28 @@ export function updateEntry(agentsDir: string, agent: AgentRecord, kind: Harness
   entry.source = source;
   entry.updated_at = harnessNow();
   entry.version = (typeof entry.version === "number" ? entry.version : Number.parseInt(String(entry.version ?? 1), 10) || 1) + 1;
+}
+
+/** Prime's `delete` on a store in memory. */
+function dropEntry(store: StoreFile, kind: HarnessKind, id: string): void {
+  if (!store.entries[kind][id]) throw new EntryMissing(`${kind} entry '${id}' does not exist`);
+  delete store.entries[kind][id];
+}
+
+/** Prime's `create`. */
+export function createEntry(agentsDir: string, agent: AgentRecord, kind: HarnessKind, input: MemoryInput, source = "owner"): string {
+  const path = harnessPath(agentFolderDir(agentsDir, agent));
+  const store = readStore(path);
+  const id = addEntry(store, kind, input, source);
+  saveStore(path, store);
+  return id;
+}
+
+/** Prime's `update`. */
+export function updateEntry(agentsDir: string, agent: AgentRecord, kind: HarnessKind, id: string, input: MemoryInput, source = "owner"): void {
+  const path = harnessPath(agentFolderDir(agentsDir, agent));
+  const store = readStore(path);
+  changeEntry(store, kind, id, input, source);
   saveStore(path, store);
 }
 
@@ -248,7 +348,6 @@ export function updateEntry(agentsDir: string, agent: AgentRecord, kind: Harness
 export function deleteEntry(agentsDir: string, agent: AgentRecord, kind: HarnessKind, id: string): void {
   const path = harnessPath(agentFolderDir(agentsDir, agent));
   const store = readStore(path);
-  if (!store.entries[kind][id]) throw new EntryMissing(`${kind} entry '${id}' does not exist`);
-  delete store.entries[kind][id];
+  dropEntry(store, kind, id);
   saveStore(path, store);
 }

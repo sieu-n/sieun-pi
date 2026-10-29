@@ -6,11 +6,12 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { extname, join, normalize } from "node:path";
 import type { ConversationPatch, MemoryInput, RoomInput, RoomPatch, SendRequest } from "../web/src/lib/api/types.ts";
 import { agentConfig, agentRecordOf } from "./agent-config.ts";
-import { createEntry, deleteEntry, EntryExists, EntryMissing, HARNESS_KINDS, readAgentFolder, updateEntry, writeBrief, type HarnessKind } from "./agent-folder.ts";
+import { EntryExists, EntryMissing, HARNESS_KINDS, type HarnessKind } from "./agent-folder.ts";
 import type { AgentRecord, WakeOn } from "./agent-store.ts";
 import { App, MODELS, NotFound } from "./app.ts";
 import { LocalImageError, readLocalImage } from "./local-image.ts";
 import { CwdRefused } from "./projects.ts";
+import { isHostAway } from "./host/types.ts";
 import { readJson } from "./store.ts";
 import { usageReport, hostsReport } from "./usage.ts";
 import { accountRoutes, PoolError } from "./accounts.ts";
@@ -87,29 +88,30 @@ export function routes(app: App): Route[] {
     route("GET", "/api/agents", async (_r, _p, q) => app.threads.agents({ archived: q.get("archived") === "1", test: q.get("test") === "1" })),
     route("GET", "/api/jobs", async (_r, _p, q) => app.threads.jobList({ archived: q.get("archived") === "1" })),
     route("GET", "/api/agents/:id/config", async (_r, p) => agentConfig(app, p.id!)),
-    route("GET", "/api/agents/:id/folder", async (_r, p) => readAgentFolder(app.config.agentsDir, folderAgent(p.id!))),
+    route("GET", "/api/agents/:id/folder", async (_r, p) => app.folders.read(folderAgent(p.id!))),
     route("PUT", "/api/agents/:id/brief", async (_r, p, _q, body) => {
       const agent = folderAgent(p.id!);
       const { text } = ((await body()) ?? {}) as { text?: unknown };
       if (typeof text !== "string") throw new BadRequest("A brief needs text, a string; empty text deletes it.");
-      writeBrief(app.config.agentsDir, agent, text);
-      return readAgentFolder(app.config.agentsDir, agent);
+      await app.folders.writeBrief(agent, text);
+      return app.folders.read(agent);
     }),
     route("POST", "/api/agents/:id/memory", async (_r, p, _q, body) => {
       const agent = folderAgent(p.id!);
-      createEntry(app.config.agentsDir, agent, "memory", memoryInput(await body()));
-      return readAgentFolder(app.config.agentsDir, agent);
+      await app.folders.create(agent, "memory", memoryInput(await body()));
+      return app.folders.read(agent);
     }),
     route("PUT", "/api/agents/:id/memory/:entry", async (_r, p, q, body) => {
       const agent = folderAgent(p.id!);
-      updateEntry(app.config.agentsDir, agent, harnessKind(q), p.entry!, memoryInput(await body()));
-      return readAgentFolder(app.config.agentsDir, agent);
+      await app.folders.update(agent, harnessKind(q), p.entry!, memoryInput(await body()));
+      return app.folders.read(agent);
     }),
     route("DELETE", "/api/agents/:id/memory/:entry", async (_r, p, q) => {
       const agent = folderAgent(p.id!);
-      deleteEntry(app.config.agentsDir, agent, harnessKind(q), p.entry!);
-      return readAgentFolder(app.config.agentsDir, agent);
+      await app.folders.delete(agent, harnessKind(q), p.entry!);
+      return app.folders.read(agent);
     }),
+    route("GET", "/api/agent-hosts", async () => app.agentHosts()),
     route("POST", "/api/agents", async (_r, _p, _q, body) => app.createAgent((await body()) as Parameters<App["createAgent"]>[0])),
     route("POST", "/api/agents/:id/split", async (_r, p, _q, body) => {
       const { apply } = ((await body()) ?? {}) as { apply?: unknown };
@@ -242,7 +244,7 @@ async function handle(app: App, table: Route[], req: IncomingMessage, res: Serve
   } catch (error) {
     if (error instanceof PoolError && !res.headersSent) return json(res, error.status, { error: error.message });
     const message = error instanceof Error ? error.message : String(error);
-    const status = error instanceof NotFound || error instanceof EntryMissing ? 404 : error instanceof EntryExists ? 409 : error instanceof BadRequest || error instanceof CwdRefused || /^(No |A |An |Dates|around|after|.* is not in (#|Solo "))/.test(message) ? 400 : 500;
+    const status = isHostAway(error) ? 503 : error instanceof NotFound || error instanceof EntryMissing ? 404 : error instanceof EntryExists ? 409 : error instanceof BadRequest || error instanceof CwdRefused || /^(No |A |An |Dates|around|after|.* is not in (#|Solo "))/.test(message) ? 400 : 500;
     if (status === 500) app.log(`${req.method} ${path} failed: ${error instanceof Error ? error.stack : message}`);
     if (!res.headersSent) json(res, status, { error: message });
     else res.end();

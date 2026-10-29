@@ -41,3 +41,23 @@ export function projectCwd(config: Pick<Config, "projects" | "home">, cwd: strin
   if (!isFolder(path)) throw new CwdRefused(`A project folder must exist on this box, and ${path} does not.`);
   return path;
 }
+
+/**
+ * The cwd a new thread gets on another box, from what its relay said in `hello` (`BoxInfo`): the given folder when it is absolute, below the
+ * box's home and one of its project checkouts or inside one, else the box's default project. This server cannot look at that box's disk, so
+ * the checkouts its relay listed are the folders that exist there.
+ */
+export function boxCwd(info: { box: string; home: string; projects: string[] }, cwd: string | undefined): string {
+  if (cwd === undefined || cwd.trim() === "") {
+    const fallback = info.projects[0];
+    if (!fallback) throw new CwdRefused(`A project folder is needed, and ${info.box} lists no project checkout. Name one in cwd.`);
+    return fallback;
+  }
+  if (!isAbsolute(cwd)) throw new CwdRefused(`A project folder is an absolute path, got ${JSON.stringify(cwd)}.`);
+  const path = resolve(cwd);
+  if (isNoProject(path, info.home)) throw new CwdRefused(`A project folder is needed: ${path} is the home folder of ${info.box} or above it, where no project's AGENTS.md, skills or rules load.`);
+  if (!info.projects.some(project => path === project || path.startsWith(`${project}/`))) {
+    throw new CwdRefused(`A project folder on ${info.box} is one of its checkouts (${info.projects.join(", ") || "none"}) or a folder inside one, and ${path} is not.`);
+  }
+  return path;
+}

@@ -19,7 +19,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { AgentConfig, AgentId, ChatBoard, ConfigFile, PlanItem } from "../web/src/lib/api/types.ts";
 import type { Duty, DutyRunRecord } from "../web/src/lib/api/shared/chat-duties.ts";
-import { fileInfo, readAgentFolder } from "./agent-folder.ts";
+import { fileInfo } from "./agent-folder.ts";
 import type { AgentRecord } from "./agent-store.ts";
 import { NotFound, type App } from "./app.ts";
 import { judgedRun } from "../web/src/lib/api/shared/duty-card.ts";
@@ -236,7 +236,7 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
   })() : null;
 
   const record = chat ? app.agents.record(chat) : undefined;
-  const folder = record ? readAgentFolder(app.config.agentsDir, record) : null;
+  const folder = record ? await app.folders.read(record).catch(() => null) : null;
 
   // Data that outlives a turn: Prime's global store, which pi-host's digest merges into every thread, the thread's own store when no agent
   // holds it, and the duty precheck state files of its chat.
@@ -273,7 +273,7 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
       wakeAt: conversation === 1 ? (row.wakeAt ?? null) : null,
     },
     runs: {
-      host: app.config.box, hostKind: app.host.name, hostVersion: ping.ok ? ping.version : null, socket: app.config.socket, cwd: row.cwd, cwdExists: existsSync(row.cwd),
+      host: record && app.routing?.has(record.host) ? record.host : app.config.box, hostKind: app.host.name, hostVersion: ping.ok ? ping.version : null, socket: app.config.socket, cwd: row.cwd, cwdExists: existsSync(row.cwd),
       project: !isNoProject(row.cwd, app.config.home), canMove: conversation === 1, thread, conversation, threadFile, dataDir: app.store.dir,
     },
     board: chat && board ? { chat, chatName: app.boards.nameOf(chat), own: chat === agent.id, ...boardSummary(board) } : null,

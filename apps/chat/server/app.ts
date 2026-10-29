@@ -5,18 +5,21 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import type {
-  AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, Item, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, ProjectList, SendRequest, SendResult, Sidebar, ThinkingLevel,
+  AgentHostList, AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, Item, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, ProjectList, SendRequest, SendResult, Sidebar, ThinkingLevel,
   TimelinePage,
 } from "../web/src/lib/api/types.ts";
 import type { AllowedModel } from "../../../config/allowed-models.ts";
+import type { FeedRow } from "../../../components/prime-relay/agents/protocol.ts";
+import { AgentFolders, type BoxFiles } from "./agent-folder.ts";
 import { AgentStore, type AgentRecord } from "./agent-store.ts";
 import { Agents, isGroupRoomId, isRoomId, type SplitPlan } from "./agents.ts";
 import { Boards } from "./boards.ts";
 import { GroupRooms } from "./group-rooms.ts";
 import { DEFAULT_MODEL, type Config } from "./config.ts";
+import { MultiHost } from "./host/multi-host.ts";
 import type { Host } from "./host/types.ts";
 import { Outbox, type OutboxRow } from "./outbox.ts";
-import { projectCwd, projectList } from "./projects.ts";
+import { boxCwd, projectCwd, projectList } from "./projects.ts";
 import { Rooms } from "./rooms.ts";
 import { Search } from "./search.ts";
 import { Store } from "./store.ts";
@@ -55,6 +58,10 @@ export class App {
   readonly search: Search;
   readonly queues: QueueWatch;
   readonly outbox: Outbox;
+  /** The boxes agents run on, when the host is a `MultiHost` (server/host/multi-host.ts); a fixture or test host has one box. */
+  readonly routing?: MultiHost;
+  /** Each agent's folder, on this box's disk or through its box's relay. */
+  readonly folders: AgentFolders;
   private readonly clients = new Set<Client>();
   private sidebarTimer?: NodeJS.Timeout;
   private lastSidebar = "";
@@ -67,6 +74,14 @@ export class App {
     mkdirSync(this.store.imagePath(""), { recursive: true });
     this.agentStore = new AgentStore(config.dataDir);
     this.agents = new Agents(this.agentStore, this.store, host, config, log);
+    const routing = host instanceof MultiHost ? host : undefined;
+    this.routing = routing;
+    if (routing) {
+      routing.agentHost = thread => this.agents.record(thread)?.host;
+      this.agents.hostState = box => routing.link(box).state;
+    }
+    this.folders = new AgentFolders(record => ({ agentsDir: this.agents.agentsDirOf(record), ...(routing && record.host !== config.box ? { files: this.boxFiles(record.host) } : {}) }));
+    const linkOf = routing ? (box: string) => routing.link(box).state : undefined;
     this.threads = new Threads(host, this.store, {
       agents: (changed, removed) => {
         for (const agent of changed) this.broadcast({ type: "agent", agent });
@@ -112,7 +127,7 @@ export class App {
         thread: (record, thread) => this.watchRoomThread(record.room, thread),
         submitted: (thread, result) => this.queues.follow(thread, result.ticket?.place ?? null),
       },
-      saveUpload: image => this.saveUpload(image), readUpload: ref => this.readUpload(ref), log,
+      saveUpload: image => this.saveUpload(image), readUpload: ref => this.readUpload(ref), log, ...(linkOf ? { linkOf } : {}),
     });
     this.threads.roomSummaries = () => this.rooms.summaries().filter(c => !this.agentStore.isTest(c.id));
     this.threads.testSendsOf = thread => this.rooms.testSendsOf(thread);
@@ -131,7 +146,7 @@ export class App {
         thread: (room, thread) => this.watchRoomThread(room, thread),
         submitted: (thread, result) => this.queues.follow(thread, result.ticket?.place ?? null),
       },
-      saveUpload: image => this.saveUpload(image), readUpload: ref => this.readUpload(ref), log,
+      saveUpload: image => this.saveUpload(image), readUpload: ref => this.readUpload(ref), log, ...(linkOf ? { linkOf } : {}),
     });
     this.threads.groupSummaries = () => this.groups.summaries().filter(c => !this.agentStore.isTest(c.id));
     this.threads.roomsOf = agent => this.groups.memberRooms(agent).map(row => row.id);
@@ -144,6 +159,24 @@ export class App {
       duties: (chatId, duties) => this.broadcast({ type: "duties", chatId, duties }),
     }, log);
     this.boards.selfUrl = `http://127.0.0.1:${config.port}`;
+    if (routing) {
+      // A check wake of a thread on another box runs its check there.
+      this.boards.checkOn = thread => {
+        const box = routing.boxOf(thread);
+        const relay = box === config.box ? undefined : routing.relay(box);
+        return relay ? (command, timeoutMs) => relay.check(command, timeoutMs) : undefined;
+      };
+      for (const relay of routing.relays()) relay.onFeed = row => this.feedRow(row);
+      routing.onLink((box, link) => {
+        // The agents' hostState follows on the thread list read; deliveries that waited for the box go once it is back.
+        // The box's thread list is read first, so an agent archived there meanwhile reads as archived before its waiting posts go.
+        const refreshed = this.threads.refresh().catch(error => this.log(`thread refresh after ${box} went ${link.state} failed: ${String(error)}`));
+        if (link.state === "up") {
+          void refreshed.then(() => this.rooms.release(box)).catch(error => this.log(`rooms: release of ${box} failed: ${String(error)}`));
+          void refreshed.then(() => this.groups.release(box));
+        }
+      });
+    }
     this.threads.onDoc = (thread, name, value) => {
       if (name === "chat.board") this.boards.docChanged(thread, value);
     };
@@ -168,6 +201,7 @@ export class App {
   }
 
   async start(): Promise<void> {
+    for (const relay of this.routing?.relays() ?? []) relay.start();
     await this.threads.start(this.config.fixture ? 1000 : 2000);
     this.rooms.start();
     this.groups.start();
@@ -436,6 +470,40 @@ export class App {
     return this.header(id);
   }
 
+  /** A feed row from a box's relay: the room whose thread spoke reads its feed, and the relay client acks the row after it. */
+  private async feedRow(row: FeedRow): Promise<void> {
+    const comm = this.agents.ofComm(row.thread);
+    if (comm && isGroupRoomId(comm.room)) return this.groups.feed(row.thread);
+    const record = this.agents.ofWorkThread(row.thread) ?? comm?.record;
+    if (record) await this.rooms.feed(record);
+  }
+
+  /** Files on another box, through its relay. */
+  private boxFiles(box: string): BoxFiles {
+    const relay = () => {
+      const found = this.routing?.relay(box);
+      if (!found) throw new Error(`No relay for box ${box}, so its agent folders cannot be read here.`);
+      return found;
+    };
+    return { get: async path => relay().fileGet(path), put: async (path, text) => relay().filePut(path, text) };
+  }
+
+  /** The boxes a new agent can run on, with their link state and project folders. */
+  agentHosts(): AgentHostList {
+    const routing = this.routing;
+    if (!routing) {
+      const list = projectList(this.config);
+      return { hosts: [{ box: this.config.box, label: this.config.box, self: true, state: "up", home: list.home, projects: list.projects.map(p => p.path) }] };
+    }
+    return {
+      hosts: routing.list().map(b => {
+        const link = routing.link(b.box);
+        const info = routing.info(b.box);
+        return { box: b.box, label: b.label, self: b.box === this.config.box, state: link.state, since: link.since, ...(info ? { home: info.home, projects: info.projects } : {}) };
+      }),
+    };
+  }
+
   /** The project folders a new agent can run in on this box (`server/projects.ts`). */
   projects(): ProjectList {
     return projectList(this.config);
@@ -447,10 +515,21 @@ export class App {
    * a root chat no agent holds, as the composer's "new chat" makes, which shows in the sidebar's solo group and in no agent list. With `test`
    * it is a walk's throwaway agent, which no owner list, live event or badge shows (`AgentStore.isTest`).
    */
-  async createAgent(input: { name?: string; model?: string; thinkingLevel?: string; cwd?: string; kind?: "chat" | "job" | "solo"; parent?: string; test?: boolean }): Promise<AgentSummary> {
-    const cwd = projectCwd(this.config, input.cwd);
+  async createAgent(input: { name?: string; model?: string; thinkingLevel?: string; cwd?: string; kind?: "chat" | "job" | "solo"; parent?: string; test?: boolean; host?: string }): Promise<AgentSummary> {
+    const box = input.host ?? this.config.box;
+    let cwd: string;
+    let agentsDir: string | undefined;
+    if (box === this.config.box) cwd = projectCwd(this.config, input.cwd);
+    else {
+      if (!this.routing?.has(box)) throw new Error(`No box ${box} runs agents; GET /api/agent-hosts lists the boxes.`);
+      const info = this.routing.info(box);
+      if (!info) throw new Error(`A new agent on ${box} needs its relay's hello first, for its project folders, and ${box} has not said hello since this server started.`);
+      cwd = boxCwd(info, input.cwd);
+      agentsDir = info.agentsDir;
+    }
     const created = await this.host.create({
       ...(input.name ? { name: input.name } : {}), model: input.model ?? MODELS.default.model, thinkingLevel: input.thinkingLevel ?? MODELS.default.thinkingLevel, cwd,
+      ...(box === this.config.box ? {} : { box }),
     });
     if (input.kind === "solo") {
       await this.threads.refresh();
@@ -463,7 +542,7 @@ export class App {
       await this.threads.refresh();
       return this.threads.agent(created.id)!;
     }
-    const record = this.agents.add(created);
+    const record = this.agents.add(created, agentsDir);
     if (input.test === true) this.agents.markTest(record);
     await this.threads.refresh();
     this.roomsChanged();

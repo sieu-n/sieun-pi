@@ -19,7 +19,10 @@ export interface AgentRecord {
   room: RoomId;
   /** The pi-host thread id of its main work thread, whose root conversation 1 is the agent. */
   workThread: string;
+  /** The box whose pi-host runs the agent's threads, as the hosts registry names it. */
   host: string;
+  /** Where the agent folders live on its box, for an agent on another box than the chat's (`BoxInfo.agentsDir`); absent means this box's. */
+  agentsDir?: string;
   /** The work thread's cwd when the agent was made. */
   home: string;
   createdAt: Ms;
@@ -56,6 +59,15 @@ export interface RoomDelivery {
   testSend?: true;
   /** The thread the delivery went to: the agent's comm thread for the room. Absent on a delivery from before the split, which went to the work thread. */
   thread?: string;
+  /** The box that was offline when the delivery last tried; it waits, with no retry timer, until that box's link comes back. */
+  away?: string;
+  /** The delivery waited for an offline box, so its input opens with its age. */
+  waited?: true;
+  /**
+   * The waiting posts that go to the agent as one input, oldest first, saved on each member before the submit: `requestId` is
+   * `b:<first post id>:<agent id>`, so a retry sends the same members under the same key, which pi-host keeps once.
+   */
+  bundle?: { requestId: string; members: string[] };
 }
 
 export interface RoomPost {

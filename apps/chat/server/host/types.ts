@@ -7,6 +7,8 @@ import type { TurnPlace } from "../../web/src/lib/api/types.ts";
 export type ThreadStatus = "idle" | "running" | "sleeping" | "failed";
 
 export interface DurableThread {
+  /** The box whose pi-host holds the thread; `MultiHost` sets it, and a host with one box leaves it out. */
+  box?: string;
   id: string; name: string; provider: string; modelId: string; thinkingLevel: string; cwd: string;
   createdAt: number; updatedAt: number; wakeAt?: number; failed: boolean; archived: boolean; preview: string; children: number; status: ThreadStatus;
 }
@@ -91,10 +93,27 @@ export interface SubmitInput {
   ownerTurn?: boolean;
 }
 
+export interface CreateOptions { name?: string; model?: string; thinkingLevel?: string; cwd?: string; box?: string }
+
+export type Ping = ({ ok: true; version: string } | { ok: false; error: string }) & { boxes?: Record<string, { ok: true; version: string } | { ok: false; error: string }> };
+
+/**
+ * A call to a box the chat server has no live link to (`RelayHost`). It fails at once, so a delivery waits as "queued, <box> is offline"
+ * instead of a retry loop, and goes when the box's link comes back.
+ */
+export class HostAway extends Error {
+  constructor(readonly box: string, readonly since: number) {
+    super(`${box} is offline`);
+  }
+}
+
+export const isHostAway = (error: unknown): error is HostAway => error instanceof HostAway;
+
 export interface Host {
   readonly name: string;
   threads(opts?: { archived?: boolean }): Promise<DurableThread[]>;
-  create(opts: { name?: string; model?: string; thinkingLevel?: string; cwd?: string }): Promise<DurableThread>;
+  /** `box` names the box to make the thread on, for a host over several boxes (`MultiHost`); a host with one box ignores it. */
+  create(opts: CreateOptions): Promise<DurableThread>;
   submit(thread: string, input: SubmitInput): Promise<Submitted>;
   /** The conversation's run in pi-pool's turn queue now, or null when it has none. */
   ticket(thread: string, conversation?: number): Promise<Ticket | null>;
@@ -111,7 +130,7 @@ export interface Host {
   docPut(thread: string, name: string, value: unknown): Promise<void>;
   /** `cwd` moves the thread: pi-host runs its next request's tools, prompt and kernels there. */
   set(thread: string, patch: { name?: string; model?: string; thinkingLevel?: string; archived?: boolean; cwd?: string }): Promise<DurableThread>;
-  /** True while the host answers. */
-  ping(): Promise<{ ok: true; version: string } | { ok: false; error: string }>;
+  /** True while the host answers; a host over several boxes adds each box's answer. */
+  ping(): Promise<Ping>;
   close(): Promise<void>;
 }

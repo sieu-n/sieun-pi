@@ -1,9 +1,10 @@
 import { readFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import type { AllowedModel } from "../../../config/allowed-models.ts";
+import { AGENT_RELAY_PATH } from "../../../components/prime-relay/agents/protocol.ts";
 
 /** A new thread's model when none is named: the newest Opus, one of config/allowed-models.ts (c185). */
 export const DEFAULT_MODEL: AllowedModel = "anthropic/claude-opus-5-5";
@@ -36,6 +37,48 @@ export interface Config {
    * temporary agents would point live threads at a temporary folder.
    */
   agentRefs: boolean;
+  /** The hosts registry: `SIEUN_PI_HOSTS`, else `~/.config/sieun-pi/hosts.json`. */
+  hostsFile: string;
+}
+
+/** One box whose agent relay this server dials: each host in the registry with `roles.agents` and an `agentRelayPort`. */
+export interface AgentHostConfig { box: string; label: string; url: string; token: string; self: boolean }
+
+interface RegistryEntry { name: string; label?: string; address: string; agentRelayPort?: number; agentRelayToken?: string; roles?: { agents?: unknown } }
+
+/** A token as the registry stores it: `file:<path>`, relative to the registry's folder or absolute, or the token itself. */
+export function registryToken(value: string | undefined, registryDir: string): string | undefined {
+  if (!value) return undefined;
+  if (!value.startsWith("file:")) return value;
+  const path = value.slice("file:".length);
+  try {
+    return readFileSync(isAbsolute(path) ? path : join(registryDir, path), "utf8").trim();
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The boxes with an agent relay. A box without `roles.agents` gets no relay client; the chat's own box then keeps its local pi-host socket,
+ * so metal works before its relay is installed. A host whose token cannot be read is left out with a line in `log`.
+ */
+export function readAgentHosts(file: string, box: string, log: (line: string) => void = () => {}): AgentHostConfig[] {
+  let hosts: RegistryEntry[];
+  try {
+    hosts = (JSON.parse(readFileSync(file, "utf8")) as { hosts?: RegistryEntry[] }).hosts ?? [];
+  } catch (error) {
+    log(`hosts registry ${file} not read, only the local pi-host serves: ${error instanceof Error ? error.message : String(error)}`);
+    return [];
+  }
+  return hosts.flatMap(h => {
+    if (!h.roles?.agents || !h.agentRelayPort) return [];
+    const token = registryToken(h.agentRelayToken, dirname(file));
+    if (!token) {
+      log(`hosts registry: ${h.name} has roles.agents but no readable agentRelayToken, so it gets no relay client`);
+      return [];
+    }
+    return [{ box: h.name, label: h.label ?? h.name, url: `ws://${h.address}:${h.agentRelayPort}${AGENT_RELAY_PATH}`, token, self: h.name === box }];
+  });
 }
 
 /** The checkouts the agents work in on the Linux box and the Mac; APPS_CHAT_PROJECTS (colon-separated) replaces the list. */
@@ -83,6 +126,7 @@ export function readConfig(argv = process.argv.slice(2), env = process.env): Con
     projects: env.APPS_CHAT_PROJECTS ? env.APPS_CHAT_PROJECTS.split(":").filter(Boolean) : defaultProjects(home),
     agentsDir: resolve(env.APPS_CHAT_AGENTS_DIR ?? (fixture ? join(dataDir, "agent-folders") : join(home, ".pi/agent/agents"))),
     agentRefs: true,
+    hostsFile: resolve(env.SIEUN_PI_HOSTS ?? join(home, ".config/sieun-pi/hosts.json")),
   };
 }
 
