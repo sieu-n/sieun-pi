@@ -10,7 +10,8 @@ scp into us-metal02's checkout left no record, and on 10-29 three commits (250b0
    `tee path`, for a path in an auto-sns-agent checkout, has that box record the paths with `journal.mjs record --tool prime-ssh`.
 
 A record is {"session_id", "path", "tool": "prime-kernel", "ts", "blob", "tool_use_id": null} in <root>/.cache/agent-writes/<UTC day>/<session>.jsonl,
-or under $AGENT_WRITES_ROOT. `path` is relative to the checkout and `blob` is git's blob id of the bytes on disk after the write. A checkout is
+or under $AGENT_WRITES_ROOT. `path` is relative to the checkout and `blob` is the file's blob id as `git hash-object <path>` gives it after the write, so a .gitattributes
+filter, text or eol attribute counts as commit.mjs counts it. A checkout is
 the nearest folder D above the file's realpath with a .git folder whose .git/agent-shared-checkout names D on its first line. The session id is
 the last /session-artifacts/<id>/harness in RLM_HARNESS_STATE_DIR, else CLAUDE_CODE_SESSION_ID or CODEX_THREAD_ID when only one is set, as in
 journal.mjs agentId; with none this file records nothing. The prelude in kernel-guard.ts runs it once per kernel, and python-child/sitecustomize.py
@@ -18,8 +19,6 @@ once per Python a kernel starts. A journal failure prints one line to stderr and
 """
 
 import builtins
-import datetime
-import hashlib
 import io
 import json
 import os
@@ -45,8 +44,18 @@ WRITES_ROOT = os.environ.get("AGENT_WRITES_ROOT")
 SKIPPED = {".git", ".cache", "node_modules", "__pycache__"}
 MARKER = os.path.join(".git", "agent-shared-checkout")
 roots: dict = {}
+near: dict = {}
+WRITING = frozenset("wax+")
 busy = threading.local()
 _os_open = os.open
+
+
+def warn(text: str) -> None:
+    """Prints one line to stderr. A closed or broken stderr drops the line, so a journal failure never reaches the write that caused it."""
+    try:
+        print(text, file=sys.stderr)
+    except Exception:
+        pass
 
 
 def checkout_of(folder: str):
@@ -74,12 +83,33 @@ def checkout_of(folder: str):
     return found
 
 
+def checkout_near(path: str):
+    """(checkout, real folder) for the folder that holds a path, or None, cached by the unresolved folder. A write outside every checkout
+    then costs a dict lookup instead of a realpath walk, which took about 30 of the 80 microseconds a small write took on us-metal02 on 10-29.
+    A file symlink from an outside folder into a checkout is not followed."""
+    folder = os.path.dirname(path if path[:1] == os.sep else os.path.abspath(path))
+    found = near.get(folder, False)
+    if found is False:
+        real = os.path.realpath(folder)
+        root = checkout_of(real)
+        found = near[folder] = (root, real) if root else None
+    return found
+
+
 def target_of(file):
     """(checkout, repo-relative POSIX path, real path) for a file in a shared checkout that the journal covers, else None."""
     if not SESSION or isinstance(file, int) or not isinstance(file, (str, bytes, os.PathLike)):
         return None
-    real = os.path.realpath(os.fsdecode(file))
-    root = checkout_of(os.path.dirname(real))
+    path = os.fsdecode(file)
+    found = checkout_near(path)
+    if found is None:
+        return None
+    if os.path.islink(path):
+        real = os.path.realpath(path)
+        root = checkout_of(os.path.dirname(real))
+    else:
+        root, folder = found
+        real = os.path.join(folder, os.path.basename(path))
     if root is None:
         return None
     parts = os.path.relpath(real, root).split(os.sep)
@@ -90,13 +120,75 @@ def target_of(file):
     return root, "/".join(parts), real
 
 
-def blob_of(real: str):
-    """git's blob id of the file's bytes, or None when the file cannot be read."""
+# Attributes that make `git hash-object <path>` hash other bytes than the disk holds, as commit.mjs and journal.mjs hash them.
+CONVERTING = {"text", "eol", "filter", "ident", "working-tree-encoding", "crlf"}
+settings: dict = {}
+parsed: dict = {}
+
+
+def converts(file: str) -> bool:
+    """Whether an attributes file sets a converting attribute on any pattern. Each file is read again only when its size or mtime moves."""
+    try:
+        info = os.stat(file)
+    except OSError:
+        return False
+    key = (info.st_mtime_ns, info.st_size)
+    seen = parsed.get(file)
+    if seen and seen[0] == key:
+        return seen[1]
+    found = False
+    try:
+        with io.FileIO(file) as handle:
+            for line in handle.read().decode("utf-8", "replace").splitlines():
+                words = line.split()
+                if words and not words[0].startswith("#") and any(w.lstrip("-!").split("=")[0] in CONVERTING for w in words[1:]):
+                    found = True
+                    break
+    except OSError:
+        found = True
+    parsed[file] = (key, found)
+    return found
+
+
+def checkout_settings(root: str):
+    """(core.autocrlf converts, attributes files outside the tree) for a checkout, read once per process with `git var -l`. Only the files
+    outside the tree that exist then are watched, while each .gitattributes in the tree is checked at every record."""
+    if root not in settings:
+        try:
+            run = subprocess.run(["git", "-C", root, "var", "-l"], capture_output=True, text=True, stdin=subprocess.DEVNULL, check=True)
+            values = dict(line.split("=", 1) for line in run.stdout.splitlines() if "=" in line)
+            autocrlf = values.get("core.autocrlf", "false").lower() in ("true", "yes", "on", "1", "input")
+            files = [values[name] for name in ("GIT_ATTR_SYSTEM", "GIT_ATTR_GLOBAL") if values.get(name)]
+        except Exception:
+            autocrlf, files = True, []
+        outside = files + [os.path.join(root, ".git", "info", "attributes")]
+        settings[root] = (autocrlf, [file for file in outside if os.path.exists(file)])
+    return settings[root]
+
+
+def needs_git(root: str, path: str) -> bool:
+    """Whether git would convert the path's bytes when it hashes them, so the raw sha1 would differ from commit.mjs's blob."""
+    autocrlf, files = checkout_settings(root)
+    if autocrlf:
+        return True
+    folders = path.split("/")[:-1]
+    scoped = [os.path.join(root, *folders[:depth], ".gitattributes") for depth in range(len(folders) + 1)]
+    return any(converts(file) for file in files + scoped)
+
+
+def blob_of(root: str, path: str, real: str):
+    """git's blob id of the file as `git hash-object <path>` gives it, or None when the file cannot be read. Raw bytes are hashed here,
+    and git runs only when an attribute or core.autocrlf could convert them."""
+    if needs_git(root, path):
+        run = subprocess.run(["git", "-C", root, "hash-object", "--", path], capture_output=True, text=True, stdin=subprocess.DEVNULL, check=False)
+        return run.stdout.strip() if run.returncode == 0 else None
     try:
         fd = _os_open(real, os.O_RDONLY)
     except OSError:
         return None
     try:
+        import hashlib  # Imported at the first record, since loading OpenSSL took most of the 12 ms this file added to each Python's start.
+
         info = os.fstat(fd)
         digest = hashlib.sha1(b"blob %d\0" % info.st_size)
         while True:
@@ -118,18 +210,22 @@ def record(target) -> None:
     busy.on = True
     try:
         root, path, real = target
-        day = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        day = time.strftime("%Y-%m-%d", time.gmtime())
         folder = os.path.join(WRITES_ROOT or os.path.join(root, ".cache", "agent-writes"), day)
-        os.makedirs(folder, exist_ok=True)
         line = json.dumps({"session_id": SESSION, "path": path, "tool": "prime-kernel", "ts": int(time.time() * 1000),
-                           "blob": blob_of(real), "tool_use_id": None}) + "\n"
-        fd = _os_open(os.path.join(folder, f"{SESSION}.jsonl"), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+                           "blob": blob_of(root, path, real), "tool_use_id": None}) + "\n"
+        name = os.path.join(folder, f"{SESSION}.jsonl")
+        try:
+            fd = _os_open(name, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        except FileNotFoundError:
+            os.makedirs(folder, exist_ok=True)
+            fd = _os_open(name, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
         try:
             os.write(fd, line.encode("utf-8"))
         finally:
             os.close(fd)
     except Exception as error:
-        print(f"global-rules: could not journal the write to {target[2]}: {error}", file=sys.stderr)
+        warn(f"global-rules: could not journal the write to {target[2]}: {error}")
     finally:
         busy.on = False
 
@@ -168,13 +264,13 @@ def watch_close(handle, target, mode: str) -> None:
 def journaling_open(original):
     def open(file, mode="r", *args, **kwargs):
         handle = original(file, mode, *args, **kwargs)
-        if SESSION and isinstance(mode, str) and any(c in mode for c in "wax+") and not getattr(busy, "on", False):
+        if SESSION and isinstance(mode, str) and not WRITING.isdisjoint(mode) and not getattr(busy, "on", False):
             try:
                 target = target_of(file)
                 if target:
                     watch_close(handle, target, mode)
             except Exception as error:
-                print(f"global-rules: could not watch the write to {file!r}: {error}", file=sys.stderr)
+                warn(f"global-rules: could not watch the write to {file!r}: {error}")
         return handle
 
     open.journals_writes = True
@@ -193,7 +289,7 @@ def journaling_move(original):
                 if target:
                     record(target)
             except Exception as error:
-                print(f"global-rules: could not journal the move to {dst!r}: {error}", file=sys.stderr)
+                warn(f"global-rules: could not journal the move to {dst!r}: {error}")
         return result
 
     move.journals_writes = True
@@ -321,9 +417,9 @@ def record_remote(writes: list) -> None:
                                      stdin=subprocess.DEVNULL, check=False)
                 if run.returncode != 0:
                     detail = (run.stderr.strip().splitlines() or [f"exit {run.returncode}"])[-1]
-                    print(f"global-rules: {destination} did not journal {', '.join(paths)}: {detail}", file=sys.stderr)
+                    warn(f"global-rules: {destination} did not journal {', '.join(paths)}: {detail}")
             except Exception as error:
-                print(f"global-rules: {destination} did not journal {', '.join(paths)}: {error}", file=sys.stderr)
+                warn(f"global-rules: {destination} did not journal {', '.join(paths)}: {error}")
     finally:
         busy.on = False
 

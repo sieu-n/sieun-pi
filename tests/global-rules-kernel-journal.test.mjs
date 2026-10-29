@@ -160,3 +160,101 @@ subprocess.run(["scp", "/tmp/x", "us-metal02:/home/sieun/scratch/notes.txt"], ch
     ["ssh", "-o", "BatchMode=yes", "far", script([`"$HOME"/Documents/Github/auto-sns-agent/c.md`])],
   ]);
 });
+
+test("a path whose .gitattributes or core.autocrlf converts its bytes records git's blob, and other paths keep the raw hash", () => {
+  reset();
+  const blobs = (p) => ["", "--no-filters"].map((flag) =>
+    spawnSync("git", ["-C", checkout, "hash-object", ...(flag ? [flag] : []), "--", p], { encoding: "utf8" }).stdout.trim());
+  writeFileSync(join(checkout, "src/.gitattributes"), "*.crlf text eol=crlf\n*.md merge=union\n");
+  try {
+    kernel(`
+c = ${JSON.stringify(checkout)}
+with open(c + "/src/a.crlf", "wb") as f:
+    f.write(b"one\\r\\ntwo\\r\\n")
+with open(c + "/src/b.md", "w") as f:
+    f.write("plain\\n")
+`);
+    const [git, raw] = blobs("src/a.crlf");
+    assert.notEqual(git, raw);
+    assert.deepEqual(journal().map((r) => [r.path, r.blob]), [["src/a.crlf", git], ["src/b.md", blobs("src/b.md")[1]]]);
+  } finally {
+    rmSync(join(checkout, "src/.gitattributes"));
+  }
+  reset();
+  // The box's agent git guard refuses `git config` in a shared checkout, so the setting goes into .git/config as text.
+  const config = join(checkout, ".git/config");
+  const before = readFileSync(config, "utf8");
+  writeFileSync(config, `${before}[core]\n\tautocrlf = true\n`);
+  try {
+    kernel(`
+with open(${JSON.stringify(join(checkout, "src/auto.txt"))}, "wb") as f:
+    f.write(b"x\\r\\n")
+`);
+    const [git, raw] = blobs("src/auto.txt");
+    assert.notEqual(git, raw);
+    assert.deepEqual(journal().map((r) => [r.path, r.blob]), [["src/auto.txt", git]]);
+  } finally {
+    writeFileSync(config, before);
+  }
+});
+
+test("a write through a symlinked folder into the checkout records the checkout path, and a file link from outside is not followed", () => {
+  reset();
+  const link = join(root, "link-to-src");
+  const fileLink = join(plain, "linked.ts");
+  spawnSync("ln", ["-sfn", join(checkout, "src"), link]);
+  writeFileSync(join(checkout, "src/target.ts"), "");
+  spawnSync("ln", ["-sf", join(checkout, "src/target.ts"), fileLink]);
+  kernel(`
+open(${JSON.stringify(join(link, "via-folder.ts"))}, "w").write("a")
+open(${JSON.stringify(fileLink)}, "w").write("b")
+open(${JSON.stringify(join(plain, "src/not.ts"))}, "w").write("c")
+`);
+  assert.deepEqual(journal().map((r) => r.path), ["src/via-folder.ts"]);
+});
+
+test("threads and a forked child each journal their own writes", () => {
+  reset();
+  kernel(`
+import os, threading
+c = ${JSON.stringify(checkout)}
+def write(i):
+    for j in range(20):
+        with open(os.path.join(c, f"src/t{i}-{j}.txt"), "w") as f:
+            f.write(str(j))
+threads = [threading.Thread(target=write, args=(i,)) for i in range(8)]
+[t.start() for t in threads]
+[t.join() for t in threads]
+pid = os.fork()
+if pid == 0:
+    open(os.path.join(c, "src/child.txt"), "w").write("child")
+    os._exit(0)
+os.waitpid(pid, 0)
+open(os.path.join(c, "src/parent.txt"), "w").write("parent")
+`);
+  const paths = journal().map((r) => r.path);
+  assert.equal(paths.length, 162);
+  assert.equal(new Set(paths).size, 162);
+  assert.ok(paths.includes("src/child.txt") && paths.includes("src/parent.txt"));
+});
+
+test("a journal that cannot be written leaves the write and its close alone, even with stderr closed", () => {
+  reset();
+  mkdirSync(join(checkout, ".cache"), { recursive: true });
+  writeFileSync(join(checkout, ".cache/agent-writes"), "not a folder");
+  kernel(`
+import os, sys
+c = ${JSON.stringify(checkout)}
+with open(c + "/src/loud.txt", "w") as f:
+    f.write("one")
+dead = open(os.devnull, "w")
+dead.close()
+sys.stderr = dead
+with open(c + "/src/quiet.txt", "w") as f:
+    f.write("two")
+sys.stderr = sys.__stderr__
+assert open(c + "/src/quiet.txt").read() == "two"
+`);
+  assert.equal(readFileSync(join(checkout, "src/loud.txt"), "utf8"), "one");
+  rmSync(join(checkout, ".cache"), { recursive: true, force: true });
+});
