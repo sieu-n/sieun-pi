@@ -1770,9 +1770,8 @@ export class Chats {
   }
 
   /**
-   * The chat's box and each offline box its catalog rows run on, with the open For you todo on any of the owner's chats that asks him to bring
-   * it back (`hostHolds`); undefined while every box reads online. sep launch!!'s and Railway Breach's jobs on the sleeping MacBook Pro read
-   * as 41 stuck steps on 10-23 while For you t96 on the AI harness chat asked the owner to wake it.
+   * The chat's box and each offline box its catalog rows run on (`hostHolds`); undefined while every box reads online. sep launch!!'s and
+   * Railway Breach's jobs on the sleeping MacBook Pro read as 41 stuck steps on 10-23.
    */
   private async hostHolds(id: string, rows: readonly SessionRow[]): Promise<CheckInContext["hosts"]> {
     const away = this.source.hostAway;
@@ -1780,10 +1779,8 @@ export class Chats {
     const names = [...new Set(rows.flatMap(row => row.host ? [row.host] : []))];
     const offline = (await Promise.all(names.map(name => away(name).catch(() => null)))).filter((host): host is AwayHost => host !== null);
     if (!offline.length) return undefined;
-    const read = (chat: string) => this.source.board(chat).catch(() => null);
-    const todos = (await Promise.all([...this.chatIds].map(async chat => ((await read(chat))?.todos ?? []).map(todo => ({ chat, todo }))))).flat();
     const chatHost = rows.find(row => row.id === id)?.host;
-    return { ...chatHost ? { chatHost } : {}, held: hostHolds(offline, todos) };
+    return { ...chatHost ? { chatHost } : {}, held: hostHolds(offline) };
   }
 
   /** What a check-in reads: the board (or why it cannot be read), the catalog rows, the chat's name, and its jobs with their last messages. */

@@ -68,7 +68,7 @@ const FLAG_WORDS: Record<string, { noun: string; words: string } | string> = {
   plan_risks: { noun: "item", words: "holding a standing risk or upkeep" },
   met_open: { noun: "item", words: "met and still open" },
   stuck_steps: { noun: "step", words: "stuck" },
-  host_held: { noun: "step", words: "waiting for the owner to bring its job's box back" },
+  host_held: { noun: "step", words: "waiting for its job's offline box" },
 };
 
 /**

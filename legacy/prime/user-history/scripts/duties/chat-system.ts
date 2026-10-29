@@ -263,7 +263,7 @@ export function jobsByChat(rows: readonly CatalogRow[], boards: ReadonlyMap<stri
 export interface OwnerReads {
   now: number; named: ReadonlyMap<string, readonly string[]>; jobs: readonly CatalogRow[];
   activity: ReadonlyMap<string, number>; waking: ReadonlySet<string>; poolWaiting: ReadonlySet<string>;
-  /** The chat's steps its check-in held on an offline box that the owner is asked to bring back (`HostHeldStep`); absent: none. */
+  /** The chat's steps its check-in held on an offline box (`HostHeldStep`); absent: none. */
   onHost?: ReadonlySet<string>;
 }
 
@@ -631,8 +631,8 @@ export interface ChatSystemFacts {
   upkeep: readonly PlanFlag[];
   fleet: { pct: number; red: readonly RedDuty[] };
   stuckDuties: readonly { chat: string; line: string }[];
-  /** The open steps and red duties held on an offline box that a For you todo asks the owner to bring back (`HostHeldStep`), by chat id; absent: none. */
-  hostHeld?: readonly { chat: string; id: string; host: string; todo: string; duty?: string }[];
+  /** The open steps and red duties held on a box Tailscale reads offline (`HostHeldStep`), by chat id; absent: none. */
+  hostHeld?: readonly { chat: string; id: string; host: string; duty?: string }[];
   /** Per chat, the open goals with no live job (`goalsWithNoJob`) the run's job pushes it on, beside its stuck duties. */
   idleGoals: readonly { chat: string; goals: readonly PlanItem[] }[];
   /** The pushes the last run's job sent, as they went. */
@@ -675,7 +675,7 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
     const runs = !duties ? (one ? "its job runs" : "their jobs run") : duties === group.steps.length ? (one ? "its chat runs" : "their chats run")
       : `the ${duties === group.steps.length - 1 ? "step's job" : "steps' jobs"} and the ${duties === 1 ? "duty's chat" : "duties' chats"} run`;
     flagged.push({ kind: "host_held", excerpt: `${group.title}: ${runs} on ${group.host}, which Tailscale reads ` +
-      `offline, and For you ${group.todo} asks the owner to bring it back, so ${one ? "it waits" : "they wait"} on his answer and push nothing; ` +
+      `offline, so ${one ? "it waits" : "they wait"} for the box; push nothing and add no For you todo for ${one ? "it" : "them"}; ` +
       `${one ? "it counts" : "they count"} as stuck again once the box answers and nothing moves ${one ? "it" : "them"}. ` +
       `Every one is in ${facts.detail}.` });
   }
@@ -760,18 +760,15 @@ export function spotPick(ids: readonly string[], picks: readonly { at: number; c
   return due[Math.floor(random() * due.length)]!;
 }
 
-/** The held steps and duties grouped by box and todo, with the detail section's title: "41 steps and 1 red duty wait on mac, For you t96". */
-export function hostGroups<T extends { host: string; todo: string; duty?: string }>(steps: readonly T[]): { host: string; todo: string; title: string; steps: T[] }[] {
-  const groups = new Map<string, { host: string; todo: string; steps: T[] }>();
-  for (const step of steps) {
-    const key = `${step.host}\n${step.todo}`;
-    (groups.get(key) ?? groups.set(key, { host: step.host, todo: step.todo, steps: [] }).get(key)!).steps.push(step);
-  }
+/** The held steps and duties grouped by box, with the detail section's title: "41 steps and 1 red duty wait on mac". */
+export function hostGroups<T extends { host: string; duty?: string }>(steps: readonly T[]): { host: string; title: string; steps: T[] }[] {
+  const groups = new Map<string, { host: string; steps: T[] }>();
+  for (const step of steps) (groups.get(step.host) ?? groups.set(step.host, { host: step.host, steps: [] }).get(step.host)!).steps.push(step);
   const count = (n: number, one: string, many: string) => n ? [`${n} ${n === 1 ? one : many}`] : [];
   return [...groups.values()].map(group => {
     const duties = group.steps.filter(step => step.duty !== undefined).length;
     const words = [...count(group.steps.length - duties, "step", "steps"), ...count(duties, "red duty", "red duties")].join(" and ");
-    return { ...group, title: `${words} ${group.steps.length === 1 ? "waits" : "wait"} on ${group.host}, For you ${group.todo}` };
+    return { ...group, title: `${words} ${group.steps.length === 1 ? "waits" : "wait"} on ${group.host}` };
   });
 }
 
@@ -786,7 +783,7 @@ async function awayHosts(): Promise<{ self: string; away: AwayHost[] }> {
     const self = selfHost(registry)?.name ?? hostname();
     return { self, away: status ? registry.hosts.flatMap(host => {
       const reach = host.name === self ? { online: true as const } : peerReach(status, host.address);
-      return reach.online ? [] : [{ name: host.name, ...host.hostname ? { hostname: host.hostname } : {}, ...reach.lastSeen ? { lastSeen: reach.lastSeen } : {} }];
+      return reach.online ? [] : [{ name: host.name, ...reach.lastSeen ? { lastSeen: reach.lastSeen } : {} }];
     }) : [] };
   } catch { return { self: hostname(), away: [] }; }
 }
@@ -911,10 +908,9 @@ async function main(): Promise<void> {
   const rows = parsed.flatMap(copy => copy.rows);
   const jobs = jobsByChat(rows, plan.boards);
   const { self, away } = await awayHosts();
-  const todos = [...plan.boards].flatMap(([chat, board]) => (board?.todos ?? []).map(todo => ({ chat, todo })));
   const owners = withCatalogOwners(plan, jobs, now, rows);
   plan.poolWaiting = new Set([...plan.poolWaiting, ...await mirroredParkOwners(plan.boards, owners.named, parsed, now, relayTail(new Set(away.map(host => host.name))))]);
-  const owned = planCounts({ ...plan, ...owners, away: new Set(away.map(host => host.name)), hosts: copyHosts([...parsed, ...await mirroredSessions()], self), holds: hostHolds(away, todos) });
+  const owned = planCounts({ ...plan, ...owners, away: new Set(away.map(host => host.name)), hosts: copyHosts([...parsed, ...await mirroredSessions()], self), holds: hostHolds(away) });
   const runsByChat = new Map(plan.chats.map(chat => [chat.id, chat.runs]));
   const poolCut = await poolCutJobs(owned.redDuties, runsByChat, id => listedSessions(copies, [id]).get(id)?.file);
   const counts = { ...owned, redDuties: withoutWorkingRuns(owned.redDuties, runsByChat, rows, now, poolCut, await poolTrees()) };
@@ -923,7 +919,7 @@ async function main(): Promise<void> {
     walk(plan.boards.get(chat)?.plan ?? [], item => { if (item.id === id) found = item.text; });
     return found;
   };
-  const hostHeld = owned.hostHeld.map((step: HostHeldStep) => ({ chat: step.chat.id, id: step.id, host: step.host, todo: step.todo,
+  const hostHeld = owned.hostHeld.map((step: HostHeldStep) => ({ chat: step.chat.id, id: step.id, host: step.host,
     text: step.duty ?? text(step.chat.id, step.id) ?? "", ...step.waitsOn ? { waitsOn: step.waitsOn } : {}, ...step.duty ? { duty: step.duty } : {} }));
   const stuck = counts.stuck.flatMap((entry): ChatSystemFacts["stuck"] => entry.items.length
     ? entry.items.map(id => { const waitsOn = waitsOnStep(plan.boards.get(entry.chat.id) ?? null, id);

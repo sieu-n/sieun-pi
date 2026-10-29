@@ -391,7 +391,7 @@ export interface CheckInSource {
   wakes?: (now: number) => Promise<readonly Wake[]>;
   /**
    * The box of hosts.json named `host` when Tailscale reads it offline (src/host-reach.ts), else null; the check-in holds the steps of jobs
-   * there on an open For you todo that asks the owner to bring it back (`hostHolds`). Absent: no box reads offline.
+   * there (`hostHolds`). Absent: no box reads offline.
    */
   hostAway?: (host: string) => Promise<AwayHost | null>;
   /** The sessions in one tool call past STALL_MS at a time (`stalledCalls`); the check-in counts a job stalled in one as not working. Absent: none. */

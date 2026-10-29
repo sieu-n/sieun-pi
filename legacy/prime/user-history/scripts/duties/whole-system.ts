@@ -975,14 +975,13 @@ export type PlanInputs = Pick<Inputs, "now" | "chats" | "boards" | "ownerActivit
   away?: ReadonlySet<string>;
   /** The box each session and chat runs on, by the catalog copy that lists it (`copyHosts`); absent: every one runs on this box. */
   hosts?: ReadonlyMap<string, string>;
-  /** Each offline box with the open For you todo that asks the owner to bring it back (`hostHolds`); absent: no box is held. */
+  /** Each box Tailscale reads offline (`hostHolds`); absent: no box is held. */
   holds?: ReadonlyMap<string, HostHold>;
 };
 /**
- * An open step a check-in held on an offline box (`host_held`), or a red duty of a chat that runs there: its chat, step or duty id, the box and
- * the For you todo that asks the owner to bring it back.
+ * An open step a check-in held on an offline box (`host_held`), or a red duty of a chat that runs there: its chat, step or duty id and the box.
  */
-export interface HostHeldStep { chat: PlanInputs["chats"][number]; id: string; host: string; todo: string;
+export interface HostHeldStep { chat: PlanInputs["chats"][number]; id: string; host: string;
   /** The held step this one's wait names (`waitHolds`); absent: its own job runs on the box. */
   waitsOn?: string;
   /** The red duty's name when the held item is a duty of a chat on the box; absent: a plan step. */
@@ -1064,11 +1063,11 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
     // A chat whose check-in is paused runs no check-in to count from, so its board and step owners are read here (`unmovedSteps`). On 10-24 the
     // owner had paused the check-ins of SEO guy, frontend bro, ops guy and metal-management, and stuck_steps_all read 0 while ops guy's p506
     // named a job unloaded 23 h before with no wake.
-    // A step whose owners all run on an offline box that a For you todo asks the owner to bring back waits on him (`pausedHold`), as a
-    // check-in's host_held slice does: at 10:03Z on 10-24 frontend bro's p330 and p332 counted while their jobs sat on the Mac, off Tailscale.
+    // A step whose owners all run on an offline box waits for that box (`pausedHold`), as a check-in's host_held slice does: at 10:03Z on
+    // 10-24 frontend bro's p330 and p332 counted while their jobs sat on the Mac, off Tailscale.
     if (chat.paused) {
       // Its waits read the open todos of the other chats they name (`withLinkedBoards`), wherever those chats run: at 08:19Z on 10-25 SEO guy's
-      // p101 waited on "01a15427-145f-751d-ba15-d27b6c30f65f t30", sep launch!!'s open ask to wake the Mac, and counted as stuck.
+      // p101 waited on "01a15427-145f-751d-ba15-d27b6c30f65f t30", an open todo of sep launch!!, and counted as stuck.
       const own = input.boards?.get(chat.id);
       const board = own ? withLinkedBoards(own, chat.id, input.boards!) : own;
       const items = unmovedSteps(board, input.now, chat.everyMs, { activity: input.ownerActivity ?? new Map(), live, named: input.named?.get(chat.id) ?? new Map() },
@@ -1081,11 +1080,11 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
         const hold = pausedHold(item, chat.id, input.named?.get(chat.id), input.hosts, input.holds);
         if (hold) held.set(item.id, hold);
       });
-      // A step whose wait names such a held step waits on the same box and todo (`waitHolds`): at 11:25Z on 10-24 frontend bro's p333, whose job
+      // A step whose wait names such a held step waits on the same box (`waitHolds`): at 11:25Z on 10-24 frontend bro's p333, whose job
       // ran on us-metal02, counted while it waited for p332 to push its commit from the offline Mac.
       const waits = waitHolds(unmoved, held);
-      hostHeld.push(...[...held].map(([id, hold]) => ({ chat, id, host: hold.host, todo: hold.todo })),
-        ...[...waits].map(([id, wait]) => ({ chat, id, host: wait.hold.host, todo: wait.hold.todo, waitsOn: wait.on })));
+      hostHeld.push(...[...held].map(([id, hold]) => ({ chat, id, host: hold.host })),
+        ...[...waits].map(([id, wait]) => ({ chat, id, host: wait.hold.host, waitsOn: wait.on })));
       for (const id of waits.keys()) held.set(id, waits.get(id)!.hold);
       const left = items.filter(id => !held.has(id));
       return { chat, value: left.length, at: input.now, items: left };
@@ -1101,11 +1100,11 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
     const at = run === undefined ? undefined : after ? Math.max(run.at, run.after!.at) : run.at;
     const fresh = at !== undefined && (chat.everyMs === undefined || input.now - at <= chat.everyMs);
     const board = input.boards?.get(chat.id);
-    // A step the check-in held on an offline box (`host_held`) waits on the owner while the box stays offline, and counts as stuck again once
+    // A step the check-in held on an offline box (`host_held`) waits for that box while it stays offline, and counts as stuck again once
     // the box reads online and its owner has not written since the snapshot, as `liveStuckIds` reads a stuck one.
     const onHost = fresh ? hostHeldSlices(run!.flagged, board) : [];
     const back = onHost.filter(slice => !input.away?.has(slice.host!)).map(slice => slice.item!);
-    hostHeld.push(...onHost.filter(slice => input.away?.has(slice.host!)).map(slice => ({ chat, id: slice.item!, host: slice.host!, todo: slice.todo ?? "" })));
+    hostHeld.push(...onHost.filter(slice => input.away?.has(slice.host!)).map(slice => ({ chat, id: slice.item!, host: slice.host! })));
     if (run?.job && !run.after) return { chat, value: 0, at: run.at, items: [] as string[] };
     const read = fresh ? (after ?? run!.metrics.stuck_steps)?.value ?? 0 : 0;
     const value = read > 0 ? liveStuck(read, at!, run!.flagged, board, input.ownerActivity ?? new Map(), input.waking) : 0;
@@ -1150,12 +1149,11 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
     const left = holds.filter(entry => !entry.hold).map(entry => entry.key);
     if (owed.length && !left.length) return [];
     if (liveFix(newest, duty.id, board, input.ownerActivity ?? new Map(), live, input.named?.get(chat.id))) return [];
-    // A chat that runs on an offline box a For you todo asks the owner to bring back gets no duty job and no push until the box answers: from
-    // 00:30Z on 10-26 slack green guy's d1 read red on the Mac's chat, every run's start read "the catalog does not list the chat", and d9
-    // counted it as the one stuck duty. It waits on the owner as a step whose job runs there does (`host_held`).
+    // A chat that runs on an offline box gets no duty job and no push until the box answers: from 00:30Z on 10-26 slack green guy's d1 read
+    // red on the Mac's chat, every run's start read "the catalog does not list the chat", and d9 counted it as the one stuck duty. It waits for the box as a step whose job runs there does (`host_held`).
     const box = input.hosts?.get(chat.id);
     const hold = box === undefined ? undefined : input.holds?.get(box);
-    if (hold) { hostHeld.push({ chat, id: duty.id, host: hold.host, todo: hold.todo, duty: duty.name }); return []; }
+    if (hold) { hostHeld.push({ chat, id: duty.id, host: hold.host, duty: duty.name }); return []; }
     const links = left.map(key => `${duty.id}/${key}`);
     return [{ chat: chat.id, duty: duty.id, keys: left, line: `${chat.name}: ${duty.name} read off target in ${missStreak(own) === 1 ? "its last run" : `its last ${missStreak(own)} runs`}, and no open step linked to it ` +
       `(duty field ${links.length ? links.join(" or ") : `${duty.id}/<metricKey>`}) has a live owner now${waits ? `, while ${waits}` : ""}` }];

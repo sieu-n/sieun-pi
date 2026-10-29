@@ -93,8 +93,8 @@ export interface PrecheckOutput { metrics: Record<string, number>; flagged?: Fla
  * about. `handOff` marks work a run hands to the duty's job while that job still works (`Duties.handOff`), so a later run's finding reaches it.
  */
 export interface FlaggedSlice { chat?: string; at?: number; kind: string; excerpt: string; item?: string; handOff?: true;
-  /** A `host_held` step's offline box and the For you todo that asks the owner to bring it back (src/shared/host-hold.ts). */
-  host?: string; todo?: string;
+  /** A `host_held` step's offline box (src/shared/host-hold.ts). */
+  host?: string;
   /** What makes this finding a new situation (`unsentFindings`): a finding with one goes out once, and again only when its sig changes. */
   sig?: string }
 

@@ -9,7 +9,7 @@ import type { ChatBoard } from "../src/shared/types.ts";
 const THREAD = "01a15427-145f-751d-ba15-d27b6c30f65f";
 const SEO = "01a11a24-a46e-77ff-adf7-671d01d462e2";
 const hosts = new Map([[SEO, "us-metal02"], [THREAD, "mac"]]);
-const holds = new Map([["mac", { host: "mac", todo: "t30" }]]);
+const holds = new Map([["mac", { host: "mac" }]]);
 
 test("a job field that holds a session id names that session, and a job name still resolves through the chat's jobs", () => {
   assert.deepEqual(stepSessions({ job: THREAD }, new Map()), [THREAD]);
@@ -18,7 +18,7 @@ test("a job field that holds a session id names that session, and a job name sti
 });
 
 test("a paused chat's step whose job is a session id on an offline box waits on the todo that asks the owner to bring it back", () => {
-  assert.deepEqual(pausedHold({ job: THREAD }, SEO, new Map(), hosts, holds), { host: "mac", todo: "t30" });
+  assert.deepEqual(pausedHold({ job: THREAD }, SEO, new Map(), hosts, holds), { host: "mac" });
   assert.equal(pausedHold({ job: "seo indexing" }, SEO, new Map(), hosts, holds), undefined);
 });
 

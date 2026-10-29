@@ -67,14 +67,14 @@ const carriedText = ({ id, owners }: { id: string; owners: readonly JobFact[] })
 
 /** One open leaf step in the end state or stuck, with why. */
 export interface EndStateView { view: StepView; state: EndState; reason: string;
-  /** The offline box a `host` step's job runs on, with the todo that asks the owner to bring it back. */
+  /** The offline box a `host` step's job runs on. */
   hold?: HostHold }
 
 /**
  * The end state of one open leaf step, rules in order. A parked step (an owner correction in force), a step whose owner is a working job or a
  * working thread, a step whose wait names a working job of this chat (`waitCarrier`, from `facts`) and a step whose wait hands it to another
  * chat's open step (`handedStep`) are fine; a step the chat owns is moving when it changed within STEP_STALE_MS and waits on nothing. Next an explicit For you
- * link (`heldByTodo`), then a job on a box that reads offline while an open For you todo asks the owner to bring it back (`hostHeld`). Every
+ * link (`heldByTodo`), then a job on a box that Tailscale reads offline (`hostHeld`). Every
  * other step is stuck, by what it waits on: the owner with no todo, a release, a CI run, another thread, an event,
  * a time; else its job ended or is gone, else it has no owner.
  */
@@ -117,8 +117,8 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
 }
 
 /**
- * The hold on a step whose job runs on a box that reads offline while an open For you todo asks the owner to bring it back (`hostHolds`): a
- * thread owner runs on its catalog row's box, and the chat's own jobs, named or gone, on the chat's box. A step with no job is not held.
+ * The hold on a step whose job runs on a box that Tailscale reads offline (`hostHolds`): a thread owner runs on its catalog row's box, and the
+ * chat's own jobs, named or gone, on the chat's box. A step with no job is not held.
  */
 export function hostHeld(view: Pick<StepView, "item" | "owner">, rows: readonly Pick<SessionRow, "id" | "host">[], hosts: Movers["hosts"]): HostHold | undefined {
   if (!hosts?.held.size || (!view.owner && !view.item.job)) return undefined;
@@ -173,7 +173,7 @@ export function wakeMover(item: Pick<PlanItem, "waitFor" | "sessionId" | "job" |
 export interface Movers { watches?: ReadonlyMap<string, WakeWatch>; queued?: ReadonlyMap<string, unknown>;
   /** The live owners that carry each plan item (`stepCarriers`), for a step whose wait names another step (`stepCarrier`). Absent: none. */
   steps?: ReadonlyMap<string, readonly JobFact[]>;
-  /** The box the chat runs on (absent: this box) and each offline box an open For you todo asks the owner to bring back (`hostHolds`). Absent: none. */
+  /** The box the chat runs on (absent: this box) and each box Tailscale reads offline (`hostHolds`). Absent: none. */
   hosts?: { chatHost?: string; held: ReadonlyMap<string, HostHold> };
   /** The other chats' boards this chat's waits name (`linkedBoards`), for a wait that hands a step to another chat's open step (`handedStep`). */
   linked?: ReadonlyMap<string, ChatBoard | null> }
@@ -228,7 +228,7 @@ export function outsideMover(view: Pick<StepView, "item" | "owner" | "mine">, mo
 /**
  * The steps whose wait names a step held on an offline box (`held`), each with the step it names and that step's hold, through chains of such
  * waits. Only a held step holds another: a wait on a step a live owner moves on a reachable box holds nothing. On 10-24 frontend bro's p333,
- * whose job ran on us-metal02, waited for p332 to push its commit from the Mac while Tailscale read the Mac offline and For you asked it back.
+ * whose job ran on us-metal02, waited for p332 to push its commit from the Mac while Tailscale read the Mac offline.
  */
 export function waitHolds(steps: readonly Pick<PlanItem, "id" | "waitFor">[], held: ReadonlyMap<string, HostHold>): Map<string, { on: string; hold: HostHold }> {
   const out = new Map<string, { on: string; hold: HostHold }>();
@@ -268,7 +268,7 @@ export function endStateKpi(states: readonly Pick<EndStateView, "state">[]): End
 /** "End state: 77 of 179 open steps (43%) are moving, in For you or parked; 102 stuck (release 84, ci 10, ...)." */
 export function endStateLine(kpi: EndStateKpi): string {
   const split = STUCK_STATES.filter(state => kpi.byState[state]).map(state => `${state} ${kpi.byState[state]}`).join(", ");
-  const onHost = kpi.byState.host ? `, ${kpi.byState.host} of them on a box the owner is asked to bring back` : "";
+  const onHost = kpi.byState.host ? `, ${kpi.byState.host} of them on an offline box` : "";
   return `End state: ${kpi.ok} of ${kpi.open} open steps (${kpi.pct}%) are moving, in For you or parked${onHost}; ${kpi.stuck} stuck${split ? ` (${split})` : ""}.`;
 }
 

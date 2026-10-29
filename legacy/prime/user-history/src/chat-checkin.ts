@@ -97,7 +97,7 @@ export interface CheckInContext { self?: readonly string[];
   owner?: readonly OwnerMessage[];
   /** The duty metric verdicts and PR states that say an item is done (`looksDone`) and that a merge moved work (`noProgress`). Not given: nothing looks done. */
   doneFacts?: DoneFacts;
-  /** The chat's box and the offline boxes an open For you todo asks the owner to bring back (`hostHeld`). Not given: no step is held on a box. */
+  /** The chat's box and the boxes Tailscale reads offline (`hostHeld`). Not given: no step is held on a box. */
   hosts?: Movers["hosts"] }
 
 /** What one check-in precheck found: the memory to keep, every open leaf step with its class, the steps on another thread's work, the open items that look done, and other facts. */
@@ -334,7 +334,7 @@ export function checkInPrecheckText(precheck: CheckInPrecheck, facts: readonly J
     ...section("Stuck steps (the owner's end state: every open step is moved by a live owner now, held by an open For you todo that links it, or " +
       "parked by his correction. Each step below ends this run with a live owner, a For you todo or a close; a chase, a new wait text or a later " +
       "waitUntil leaves it stuck)", stuck),
-    ...section("Held on an offline box (no action here: each job's box is off, and the owner's For you todo asks him to bring it back)", onHost.map(slice => slice.excerpt)),
+    ...section("Held on an offline box (no action and no For you todo here: each job's box is off Tailscale, and its steps count again once it is back)", onHost.map(slice => slice.excerpt)),
     ...section(REPEAT_HEAD, repeatLines(streaks, flagged)),
     ...section("Merged without the owner's go (a repo rule breach: report each to the owner in this run; never merge without his go on that PR)", merged),
     ...section("Hard gates broken (the owner's go, the requirements check): fix each now", gated),
@@ -479,8 +479,8 @@ export function convergenceMisses(chat: string, steps: readonly StepView[], { sc
   const flagged: FlaggedSlice[] = [];
   const flag = (kind: keyof ConvergenceMisses, item: string, excerpt: string) => { misses[kind]++; flagged.push({ chat, at: now, kind, excerpt, item }); };
   const counted = new Set([...done.map(found => found.item.id), ...over.map(met => met.view.item.id)]);
-  // A step held on an offline box gets only its host_held line: no job of the chat can be started, steered or read there until the owner
-  // brings the box back, so "start a job" or "read the job's last report" on it asks for what nobody can do (sep launch!! 10-23 10:12Z on).
+  // A step held on an offline box gets only its host_held line: no job of the chat can be started, steered or read there until the box is
+  // back, so "start a job" or "read the job's last report" on it asks for what nobody can do (sep launch!! 10-23 10:12Z on).
   const onHost = new Set(end.filter(entry => entry.state === "host").map(entry => entry.view.item.id));
   const staleById = new Map(stale.filter(entry => !counted.has(entry.item.id) && !onHost.has(entry.item.id)).map(entry => [entry.item.id, entry]));
   for (const view of steps) {
@@ -550,8 +550,9 @@ export function convergenceMisses(chat: string, steps: readonly StepView[], { sc
   for (const entry of end) if (!OK_STATES.has(entry.state)) flag("stuck_steps", entry.view.item.id, stuckLine(entry, now));
   for (const entry of end) {
     if (!entry.hold) continue;
-    flagged.push({ chat, at: now, kind: "host_held", item: entry.view.item.id, host: entry.hold.host, todo: entry.hold.todo,
-      excerpt: `${entry.view.item.id} ${quote(entry.view.item.text)} waits on the owner: ${entry.reason}. It counts as stuck again once the box is back and its job does not move` });
+    flagged.push({ chat, at: now, kind: "host_held", item: entry.view.item.id, host: entry.hold.host,
+      excerpt: `${entry.view.item.id} ${quote(entry.view.item.text)} waits for its box: ${entry.reason}. Add no For you todo for it; it counts as stuck ` +
+        "again once the box is back and its job does not move" });
   }
   return { metrics: misses, flagged };
 }
