@@ -278,6 +278,46 @@ function waitFailure(message: AssistantMessage, original: string, said: string, 
 	};
 }
 
+/** Builds the failure that makes the session wait for its pi-pool slot at `slotAt` (epoch sec). */
+type SlotWait = (message: AssistantMessage, original: string, said: string, details: Record<string, unknown>, slotAt: number, failure: unknown) => AgentMessage;
+
+/** Prime's usage wait sleeps until the slot, and nothing wakes it sooner. */
+const plainSlotWait: SlotWait = (message, original, said, details, slotAt, failure) => waitFailure(message, original, said, details, waitMs(slotAt), failure);
+
+/**
+ * How long the usage wait sleeps before the model call that meets the credential wait `credentialSlotWait` set. Prime's usage wait
+ * sleeps a failure's `retryAfterMs` exactly, so 1 s is the hop, as for a 429 whose retry moves to another account.
+ */
+const HOP_MS = 1000;
+
+/** A slot wait the next model call hands to Prime's credential wait (`credentialSlotWait`). */
+interface PendingSlot { slotAtMs: number; message: string; waitingFor: string }
+
+/**
+ * The slot wait as Prime's credential wait, which `prime-agent wake` ends (pi-pool `wake-slot`): the failure sleeps HOP_MS, and the
+ * `context` handler of the model call after it sets the credential wait with `pending`, which sleeps until the slot unless the
+ * pool wakes it first. It goes in at that call, as a parked turn's does, because Prime drops an extension's credential wait at
+ * agent_start, and its retry starts a run. A usage wait and a token hook's own credential wait (exit 75) have no wake. On 10-28
+ * 01a18453 dropped from high to normal at 21:23:27Z, which opened its 21:26:00Z cell on claude-virev5, while 01a11af8, first in
+ * line, slept in its usage wait until its 21:44:00Z cell, and 01a15c6c, which asked at 21:24:00Z, took the cell. A wait past
+ * idleEvictionMinutes parks in Prime and frees the worker as before.
+ */
+function credentialSlotWait(pending: (slot: PendingSlot) => void): SlotWait {
+	return (message, original, said, details, slotAt, failure) => {
+		const at = new Date(slotAt * 1000).toISOString();
+		pending({ slotAtMs: slotAt * 1000, message: `${said} pi-pool wakes it sooner when a cell opens for it.`, waitingFor: `its pi-pool slot at ${at.slice(11, 19)}Z` });
+		const { retryAtMs: _at, ...rest } = details;
+		return waitFailure(message, original, said, rest, HOP_MS, failure);
+	};
+}
+
+/** retryAtMs of a token hook's slot wait (exit 75), which Prime turns into a credential wait failure; undefined for anything else. */
+function hookSlotAt(message: AgentMessage): number | undefined {
+	if (message.role !== "assistant" || message.stopReason !== "error" || !POOLED_PROVIDERS.has(message.provider)) return undefined;
+	const details = message.diagnostics?.find((diagnostic) => diagnostic.type === "provider_stream_failure")?.details as Record<string, unknown> | undefined;
+	return details?.kind === "credential_unavailable" && typeof details.retryAtMs === "number" && Number.isFinite(details.retryAtMs) ? details.retryAtMs : undefined;
+}
+
 /**
  * A failed request on a pooled provider.
  *
@@ -294,7 +334,7 @@ function waitFailure(message: AssistantMessage, original: string, said: string, 
  * retries for an account, so the same turn moves on the same way. Prime treats
  * any other 400 as permanent, and the pool leaves it alone.
  */
-async function swapAccount(message: AgentMessage): Promise<AgentMessage | undefined> {
+async function swapAccount(message: AgentMessage, slotWait: SlotWait = plainSlotWait): Promise<AgentMessage | undefined> {
 	if (message.role !== "assistant" || message.stopReason !== "error" || !POOLED_PROVIDERS.has(message.provider)) return undefined;
 	const failure = message.diagnostics?.find((diagnostic) => diagnostic.type === "provider_stream_failure");
 	const details = (failure?.details ?? {}) as Record<string, unknown>;
@@ -322,7 +362,7 @@ async function swapAccount(message: AgentMessage): Promise<AgentMessage | undefi
 		if (!reply.next) {
 			if (typeof reply.retry_at !== "number") return undefined;
 			const said = `pi-pool: ${reply.account} is limited until ${new Date(reply.until * 1000).toISOString()}; this session waits for its slot at ${new Date(reply.retry_at * 1000).toISOString()}.`;
-			return waitFailure(message, original, said, details, waitMs(reply.retry_at), failure);
+			return slotWait(message, original, said, details, reply.retry_at, failure);
 		}
 		const said = reply.stale ? `pi-pool: this 429 came from the account the session already left` : `pi-pool: ${reply.account} is limited until ${new Date(reply.until * 1000).toISOString()}`;
 		return {
@@ -339,7 +379,7 @@ async function swapAccount(message: AgentMessage): Promise<AgentMessage | undefi
 		if (!reply.next) {
 			if (typeof reply.retry_at !== "number") return undefined;
 			const said = `pi-pool: ${reply.account} is out of the pool (${reply.reason}); this session waits for its slot at ${new Date(reply.retry_at * 1000).toISOString()}.`;
-			return waitFailure(message, original, said, details, waitMs(reply.retry_at), failure);
+			return slotWait(message, original, said, details, reply.retry_at, failure);
 		}
 		return {
 			...message,
@@ -363,7 +403,7 @@ const HOOK_FAILED = /^Failed to resolve API key for provider "[^"]+" from shell 
  * failed credential lookup, so the tag comes off and Prime's own retry runs the
  * hook again, up to retry.maxRetries times.
  */
-async function retryHookFailure(message: AgentMessage): Promise<AgentMessage | undefined> {
+async function retryHookFailure(message: AgentMessage, slotWait: SlotWait = plainSlotWait): Promise<AgentMessage | undefined> {
 	if (message.role !== "assistant" || message.stopReason !== "error" || !POOLED_PROVIDERS.has(message.provider)) return undefined;
 	if (!HOOK_FAILED.test(message.errorMessage ?? "")) return undefined;
 	if (!message.diagnostics?.some((diagnostic) => diagnostic.type === "agent_lifecycle_failure")) return undefined;
@@ -375,7 +415,7 @@ async function retryHookFailure(message: AgentMessage): Promise<AgentMessage | u
 		if (!info.error && wait?.account === info.selection.account_id && typeof wait.slot_at === "number") {
 			const label = info.current?.id === info.selection.account_id ? info.current.label ?? info.current.email : undefined;
 			const said = `pi-pool: ${selectionName(info.selection, label)} remains selected; this session waits for its slot at ${new Date(wait.slot_at * 1000).toISOString()}.`;
-			return waitFailure(message, message.errorMessage ?? "", said, {}, waitMs(wait.slot_at), undefined);
+			return slotWait(message, message.errorMessage ?? "", said, {}, wait.slot_at, undefined);
 		}
 		const result = manualFailure(message, info.selection);
 		return info.error ? { ...result, errorMessage: `${result.errorMessage} ${info.error}` } : result;
@@ -384,7 +424,7 @@ async function retryHookFailure(message: AgentMessage): Promise<AgentMessage | u
 	if (info.error) return { ...message, errorMessage: `${message.errorMessage} pi-pool: ${info.error}` };
 	if (wait && typeof wait.slot_at === "number") {
 		const said = `pi-pool: this session waits for its slot at ${new Date(wait.slot_at * 1000).toISOString()}.`;
-		return waitFailure(message, message.errorMessage ?? "", said, {}, waitMs(wait.slot_at), undefined);
+		return slotWait(message, message.errorMessage ?? "", said, {}, wait.slot_at, undefined);
 	}
 	return {
 		...message,
@@ -661,6 +701,10 @@ export default function (pi: ExtensionAPI): void {
 	// "parked": the run gave up its place's process (pi-pool park) and waits in Prime's credential wait; it owes no release,
 	// and its next model call asks again, which takes the slot the pool started for it.
 	let slot: "none" | "held" | "free" | "failed" | "parked" | Promise<void> = "none";
+	// A slot wait the next model call hands to Prime's credential wait (`credentialSlotWait`), and whether a credential wait this
+	// extension set, a slot wait's or a parked turn's, has yet to come back as a failure through message_end.
+	let pendingSlot: PendingSlot | undefined;
+	let credentialOwn = false;
 	let cancelWait = () => {};
 	let renewTimer: ReturnType<typeof setInterval> | undefined;
 	let renewedAt = 0;
@@ -722,6 +766,7 @@ export default function (pi: ExtensionAPI): void {
 				const waitingFor = `a working slot${result.position !== null && result.total !== null ? `, place ${result.position} of ${result.total}` : ""}`;
 				try {
 					waitForCredential?.(result.retry_at * 1000, `pi-pool: this run waits for ${waitingFor}; the pool wakes it when the slot starts, or it asks again at ${new Date(result.retry_at * 1000).toISOString()}.`, { waitingFor });
+					if (waitForCredential) credentialOwn = true;
 				} catch {
 					// A replaced session's ctx throws; its run is over, and the entry waits for the session's next ask.
 				}
@@ -746,6 +791,20 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("context", async (_event, ctx) => {
 		// The pool knows this session's model before it vends for the session's first request.
 		await started;
+		credentialOwn = false;
+		// The call after a slot wait's hop goes to Prime's credential wait, never to the provider, so it asks no turn.
+		const slot = pendingSlot;
+		pendingSlot = undefined;
+		const waitForCredential = slot && slot.slotAtMs > Date.now() ? credentialWait(ctx) : undefined;
+		if (slot && waitForCredential) {
+			try {
+				waitForCredential(slot.slotAtMs, slot.message, { waitingFor: slot.waitingFor });
+				credentialOwn = true;
+				return undefined;
+			} catch {
+				// A replaced session's ctx throws; its run is over.
+			}
+		}
 		await holdSlot(ctx);
 		return undefined;
 	});
@@ -761,8 +820,22 @@ export default function (pi: ExtensionAPI): void {
 		await refreshStatus(ctx, true);
 	});
 	pi.on("turn_end", async (_event, ctx) => refreshStatus(ctx));
-	pi.on("message_end", async (event) => {
-		const message = (await retryHookFailure(event.message)) ?? (await swapAccount(event.message));
+	pi.on("message_end", async (event, ctx) => {
+		const slotWait = credentialWait(ctx) ? credentialSlotWait((slot) => { pendingSlot = slot; }) : plainSlotWait;
+		const hookAt = hookSlotAt(event.message);
+		if (hookAt !== undefined) {
+			// The failure of a credential wait this extension set (a parked turn or a slot wait) is Prime's own wait already.
+			if (credentialOwn) {
+				credentialOwn = false;
+				return undefined;
+			}
+			if (slotWait === plainSlotWait || event.message.role !== "assistant" || hookAt <= Date.now()) return undefined;
+			const failure = event.message.diagnostics?.find((diagnostic) => diagnostic.type === "provider_stream_failure");
+			const said = `pi-pool: this session waits for its slot at ${new Date(hookAt).toISOString()}.`;
+			const details = (failure?.details ?? {}) as Record<string, unknown>;
+			return { message: slotWait(event.message, event.message.errorMessage ?? "", said, details, hookAt / 1000, failure) };
+		}
+		const message = (await retryHookFailure(event.message, slotWait)) ?? (await swapAccount(event.message, slotWait));
 		return message ? { message } : undefined;
 	});
 

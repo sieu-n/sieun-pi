@@ -213,7 +213,7 @@ class AccountWaitPlace(unittest.TestCase):
         self.assertEqual([f for e, f in events if e == "turn_admitted"], [{"session": "d7", "tree": "D", "kind": "slot", "waited_s": 60.0}])
         self.assertEqual(turns.view(t, 960, self.CFG)["queued"][0]["wait_s"], 860)
         changed, answer, events = turns.leave(t, "d7", 970, self.CFG, slot_of=lambda tree: 2000)
-        self.assertEqual(t["kept"]["d7"], {"since": 0, "slot_at": 2000}, "a second wait keeps the first place")
+        self.assertEqual(t["kept"]["d7"], {"since": 0, "slot_at": 2000, "tree": "D"}, "a second wait keeps the first place")
 
     def test_a_run_released_with_no_account_wait_asks_at_the_back(self):
         t = turns.empty()
@@ -272,7 +272,7 @@ class QueuedInputPlace(unittest.TestCase):
         turns.leave(t, "first", 1, self.CFG, slot_of=lambda tree: None, queued_input=True)
         turns.ask(t, ask_args("first", tree="F"), 2, self.CFG)
         turns.leave(t, "first", 3, self.CFG, slot_of=lambda tree: None, queued_input=True)
-        self.assertEqual(t["kept"]["first"], {"since": 0, "slot_at": 3})
+        self.assertEqual(t["kept"]["first"], {"since": 0, "slot_at": 3, "tree": "F"})
 
     def test_a_run_released_with_nothing_queued_asks_at_the_back(self):
         t = turns.empty()

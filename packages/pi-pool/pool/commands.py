@@ -206,8 +206,17 @@ def cmd_priority(rest):
         if key is None:
             return 2
         prev = (state["sessions"].get(key.key) or {}).get("priority") or "normal"
-        vending.IntentWriter(state).set_priority(key, positional[0], time.time(), labeled)
+        now = time.time()
+        vending.IntentWriter(state).set_priority(key, positional[0], now, labeled)
+        # A tree that drops a class keeps its cell only against trees still behind it; the trees now ahead of it
+        # that wait for later cells are woken in order to take it (`refill`).
+        if sched.PRIORITY_RANK[positional[0]] > sched.PRIORITY_RANK.get(prev, 1):
+            cfg = base.config()
+            for provider, wait in ((state["sessions"][key.key].get("wait") or {}).items()):
+                if wait.get("account") and wait["slot_at"] > now + vending.OWN_CELL_EARLY_SEC:
+                    vending.refill(state, provider, wait["account"], registry.load_index(provider), cfg, now)
         base.save_json(base.STATE, state)
+    vending.flush_wakes()
     if prev != positional[0]:
         base.log("priority", session=key.key, priority=positional[0], previous=prev)
     print(f"{key.key}: {positional[0]}")

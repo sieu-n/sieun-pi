@@ -442,8 +442,8 @@ def leave(turns, session, now, cfg, reason=None, slot_of=waiting_slot, queued_in
     slot_at = slot_of(working["tree"]) if working else None
     if working:
         place = working.get("place", working["queued_since"])
-        turns["kept"][session] = ({"since": place, "slot_at": slot_at} if slot_at is not None else {"since": place, "slot_at": now} if queued_input
-                                  else {"since": place, "slot_at": now, "reask": True})
+        turns["kept"][session] = dict({"since": place, "slot_at": slot_at} if slot_at is not None else {"since": place, "slot_at": now} if queued_input
+                                      else {"since": place, "slot_at": now, "reask": True}, tree=working["tree"])
     changed, events = step(turns, now, cfg)
     if working:
         events = [("turn_released", {"session": session, "kind": working["kind"], "held_s": round(now - working["since"], 1),
@@ -550,6 +550,36 @@ def cmd_wake_parked(rest):
     if len(rest) != 1 or rest[0].startswith("-"):
         raise SystemExit("usage: pi-pool wake-parked <session>")
     emit({"session": rest[0], "woke": wake_parked(rest[0])})
+    return 0
+
+
+def sleeping(turns, tree, now):
+    """The sessions of `tree` that let go of their run for an account wait that is still ahead (`kept`), else the tree's
+    own session: a kept place from before 10-29 names no tree."""
+    found = [s for s, kept in turns["kept"].items() if kept.get("tree") == tree and kept["slot_at"] > now]
+    return found or [tree]
+
+
+def wake_slot(trees, run=run_wake, now=None, turns=None):
+    """Wake the sessions of the first of `trees` (refill's line for a cell that opened) that any session answers for, so that
+    tree asks now and takes the cell. A session in no credential wait answers "none", and the next tree in line is tried.
+    Returns [(tree, {session: woke})] for the trees tried."""
+    now = time.time() if now is None else now
+    turns, tried = turns or current(), []
+    for tree in trees:
+        woke = {s: run(s) for s in sleeping(turns, tree, now)}
+        tried.append((tree, woke))
+        base.log("slot_wake", tree=tree, woke=woke)
+        if any(w in ("timer", "park") for w in woke.values()):
+            break
+    return tried
+
+
+def cmd_wake_slot(rest):
+    """`wake-slot <tree>...`: the wake that `vending.flush_wakes` starts for the trees in line for an opened cell."""
+    if not rest or any(tok.startswith("-") for tok in rest):
+        raise SystemExit("usage: pi-pool wake-slot <tree>...")
+    emit({"tried": [{"tree": tree, "woke": woke} for tree, woke in wake_slot(rest)]})
     return 0
 
 

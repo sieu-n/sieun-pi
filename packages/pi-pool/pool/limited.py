@@ -117,6 +117,7 @@ def drain():
             applied.append((event, *apply(state, event, indexes[provider], cfg, now)))
         state[DRAINED] = [event["id"] for _, event in files if event]
         base.save_json(base.STATE, state)
+        vending.flush_wakes()
         for event, last, stale, d in applied:
             log_report(state, event, last, stale, d, spool=event["id"])
         for name, event in files:
@@ -266,6 +267,7 @@ def cmd_limited(rest):
                     raise busy
                 print(json.dumps(log_report(state, event, last, stale, d, name="limited_spooled", spool=event["id"])))
                 return 0
+    vending.flush_wakes()
     if not last:
         print(json.dumps({"error": f"no {provider} vend on file for this session"}))
         return 2

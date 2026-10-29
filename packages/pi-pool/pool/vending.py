@@ -613,17 +613,73 @@ def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
         # entered its 21:14:00Z claude-virev5 cell at 21:13:58.7Z, and 01a14210 took the cell at 21:14:01Z ahead of four trees.
         own = tree.wait is not None and tree.wait[0] == d.account.id and now < tree.wait[1] <= now + 2
         writer.admit(key, provider, d.account.id, tree.wait[1] if own else now)
+        if tree.wait and tree.wait[0] and tree.wait[1] > now + OWN_CELL_EARLY_SEC:
+            # The tree enters ahead of the cell it waited for, which opens to the next tree in line. Its wait moves to the cell
+            # it enters until the vend drops it, so it no longer holds the old one, and it keeps its place if the vend fails.
+            writer.set_wait(key, provider, d.account.id, now, now)
+            refill_left(state, tree, provider, accounts, cfg, now)
         return d, tree, True
     if isinstance(d, sched.Admit):
         writer.set_wait(key, provider, d.account.id, now, now)
+        refill_left(state, tree, provider, accounts, cfg, now)
         return d, tree, True
     if isinstance(d, sched.Wait) and (tree.wait is None or tree.wait[:2] != (d.slot_account.id, d.slot_at)):
         writer.set_wait(key, provider, d.slot_account.id, d.slot_at, now)
         base.log("wait", provider=provider, session=key.key, account=d.slot_account.label,
                  slot_at=iso(d.slot_at), priority=tree.priority, vend=d.vend and d.vend.label,
                  left=d.left and d.left[1])
+        refill_left(state, tree, provider, accounts, cfg, now)
         return d, tree, True
     return d, tree, False
+
+
+def refill_left(state, tree, provider, accounts, cfg, now):
+    """`refill` the account of the cell `tree` held before this request, when that cell is still ahead: the tree now waits for
+    another cell or entered an account."""
+    if tree.wait and tree.wait[0] and tree.wait[1] > now + OWN_CELL_EARLY_SEC:
+        refill(state, provider, tree.wait[0], accounts, cfg, now)
+
+
+# How far ahead a tree's cell has to be for its leaving to open it to another tree: own_cell lets a tree enter its cell 2 s early.
+OWN_CELL_EARLY_SEC = 2
+# The trees `refill` found in line for a cell that opened, one list per opened cell, for `flush_wakes` to wake once the pool flock is free.
+_wakes = []
+
+
+def refill(state, provider, account_id, accounts, cfg, now):
+    """A cell on `account_id` opened ahead of trees that wait for later ones: the tree that held it left it, or ranks lower since
+    `pi-pool priority`. Each tree that waits for the account and whose next request would get an earlier cell than its own, first in
+    line first, goes on a list that `flush_wakes` hands to `pi-pool wake-slot`, which wakes the first tree on it whose session
+    answers. That tree asks at once and takes the cell (`decide` gives a tree that asks early the earliest cell its rank opens), and
+    the cell it leaves opens to the next tree in line the same way. A tree whose session cannot be woken keeps its own cell, and the
+    opened one goes to the tree that asks next, as before. On 10-28 01a18453 went from high to normal at 21:23:27Z, which opened its
+    21:26:00Z claude-virev5 cell, and 01a15c6c, asking at 21:24:00Z, took it while 01a11af8, normal and waiting since 21:04:11Z
+    (01a15c6c since 21:04:40Z), slept until its 21:44:00Z cell. Returns the trees in line."""
+    waiters = sorted((sched.PRIORITY_RANK.get(rec.get("priority") or "normal", 1), w["since"], k)
+                     for k, rec in state["sessions"].items()
+                     for w in [(rec.get("wait") or {}).get(provider) or {}]
+                     if w.get("account") == account_id and w["slot_at"] > now + OWN_CELL_EARLY_SEC)
+    line = []
+    for _, _, k in waiters:
+        rec = state["sessions"][k]
+        d, tree = decision(state, registry.SessionKey(k, rec.get("uuid"), rec.get("active_id")), provider, accounts, cfg, now)
+        if isinstance(d, sched.Admit) or (isinstance(d, sched.Wait) and d.slot_at < tree.wait[1]):
+            line.append(k)
+    if line:
+        _wakes.append(line)
+        base.log("cell_opened", provider=provider, account=next((a.label for a in accounts if a.id == account_id), account_id), line=line)
+    return line
+
+
+def flush_wakes():
+    """Start `pi-pool wake-slot` for each list `refill` made, apart from this process, once the caller let go of the pool flock."""
+    from . import turns
+    while _wakes:
+        line = _wakes.pop(0)
+        if turns.can_wake():
+            subprocess.Popen([sys.executable, "-B", os.path.join(base.CODE_ROOT, "bin", "pi-pool"), "wake-slot", *line],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True, env=turns.wake_env())
 
 
 def reads_due(state, provider, accounts, cfg, now):
@@ -694,6 +750,7 @@ def vend(provider):
         sys.stdout.write(token)
         return
 
+    flush_wakes()
     if reads:
         try:
             start_usage_read(provider, reads)
@@ -789,6 +846,7 @@ def vend(provider):
         except TimeoutError:
             # The token is valid; a vend left off the record only skews the next decision.
             base.log("vend_unrecorded", provider=provider, account=account.label, session=key and key.key)
+        flush_wakes()
         # The hook runs on every provider request, so a line per vend would be a log of
         # thousands. Log the transitions only: a tree entering an account.
         # `why` says why the pin in `shadowed` did not serve (depleted, limited, busy, ...).

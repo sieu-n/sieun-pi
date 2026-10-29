@@ -25,6 +25,7 @@ FIXTURE_FAILURE=terms FIXTURE_EXPECT=baseline node legacy/prime/pi-pool-extensio
 FIXTURE_FAILURE=all node legacy/prime/pi-pool-extension/native/swap.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 node legacy/prime/pi-pool-extension/native/hook-timeout.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 node legacy/prime/pi-pool-extension/native/queue.mjs "$PI_POOL_PRIME_AGENT_ROOT"
+node legacy/prime/pi-pool-extension/native/slot-wake.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 FIXTURE_HOOK=fail node legacy/prime/pi-pool-extension/native/hook-timeout.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 FIXTURE_EXPECT=baseline node legacy/prime/pi-pool-extension/native/hook-timeout.mjs "$PI_POOL_PRIME_AGENT_ROOT"
 ```
@@ -53,3 +54,5 @@ Those boundary tests complement RPC tests. They do not replace end-to-end provid
 `queue.mjs` runs the turn queue in a real Prime run with `working_max` 1 and the one slot taken.
 The run must wait in the extension's `context` handler with no model request, and Stop must drop its queue entry.
 A second run must send its request within 3 s of a release, and agent_end must give the slot back.
+
+`slot-wake.mjs` checks that a token hook slot wait (exit 75) becomes the extension's credential wait, which `prime-agent wake` ends, after one 1 s hop, and that no provider request goes out before the slot.

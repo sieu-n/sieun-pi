@@ -24,7 +24,8 @@ from . import base, registry
 #      passes R2 again (now, or its real reset or 429 `until`), ordered by priority,
 #      then by wait start. Its own account wins a tie, so the tree keeps its cache.
 #      A tree that comes back after its cell went stale keeps its wait start. A tree
-#      back after its cell passed asks for the current cell in this same order.
+#      back after its cell passed asks for the current cell in this same order. A tree
+#      that asks before its cell takes an earlier one that opened for its rank.
 #   R6 move budget: a tree that moved max_moves_per_day[priority] times in 24 h
 #      waits for its own account, at most budget_wait_max_sec from the start of its
 #      wait; a high tree is refused only optional moves.
@@ -391,11 +392,12 @@ def decide(tree, accounts, book, cooldowns, cfg, now):
     frees = [(a, t0) for a, t0 in frees if t0 != float("inf")]
     options = []
     for a, t0 in frees:
+        t = first_open(a, t0, tree, rank, book, cfg, len(frees) == 1)
+        # The tree keeps its own cell unless one before it opened: a cell freed by a tree that left or ranks lower now
+        # goes to the first tree in line (`refill`), not to whoever asks next.
         if tree.wait and tree.wait[0] == a.id and tree.wait[1] >= t0 and not cell_taken(
                 a, int(tree.wait[1] // slot_spacing(a, cfg)), tree, rank, book, cfg):
-            t = max(tree.wait[1], now)
-        else:
-            t = first_open(a, t0, tree, rank, book, cfg, len(frees) == 1)
+            t = min(t, max(tree.wait[1], now))
         options.append((t, a.id != tree.current, -score(a, cfg, t, p, load), a.label, a))
     if not options:
         return Blocked(manual, why_not(by_id[manual]) or "busy") if manual else None

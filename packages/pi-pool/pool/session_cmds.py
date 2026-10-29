@@ -146,6 +146,7 @@ def cmd_refused(rest):
             vending.HookWriter(state).refuse_model(provider, account, model, now)
         d = limited.plan_next(state, key, provider, accounts, cfg, now)
         base.save_json(base.STATE, state)
+    vending.flush_wakes()
     out = {"account": account.label, "reason": reason, **limited.next_fields(d)}
     selection = sched.selection_view(sched.tree_for(state, key, provider))
     out["selection"] = selection

@@ -6,6 +6,7 @@ from fixture_isolation import isolate_test_module
 from test_core import CFG, KEY, NOW, account, vend, vend_record
 from vend.pool import base, limit_resets, registry, sched, status_view, vending
 from vend.pool import limited as limited_report
+from vend.pool import turns as turns_mod
 
 
 def setUpModule():
@@ -390,7 +391,7 @@ class R5Wait(unittest.TestCase):
         state["sessions"][behind.key]["wait"] = {P: {"account": "x", "slot_at": cell + 5 * sp, "since": NOW - 300}}
         self.assertEqual(request(state, early, [x, out], cell - 1.3).account.id, "x")
         d = request(state, behind, [x, out], cell + 1)
-        self.assertEqual((type(d), d.slot_at), (sched.Wait, cell + 5 * sp))
+        self.assertEqual((type(d), d.slot_at), (sched.Wait, cell + sp), "the next cell, which nobody holds, not the one it entered")
 
     def test_a_tree_back_late_still_enters_a_cell_nobody_holds(self):
         state = empty_state()
@@ -802,15 +803,17 @@ class Cli(unittest.TestCase):
     def test_who_and_ls_show_priority_and_wait(self):
         state = empty_state()
         put(state, KEY, on="x", priority="low")
-        state["sessions"][KEY.key]["wait"] = {P: {"account": "y", "slot_at": NOW + 1500, "since": NOW}}
-        state["providers"][P]["admissions"] = {"y": [[NOW, put(state, tree_key("busy"), on="y").key]]}
         accounts = [acct("x", five=100), acct("y", five=40, tier="max 5x")]
+        # The first cell after the one `busy` took: a cell nobody holds before it would move the wait there.
+        slot = (NOW // sched.slot_spacing(accounts[1], CFG) + 1) * sched.slot_spacing(accounts[1], CFG)
+        state["sessions"][KEY.key]["wait"] = {P: {"account": "y", "slot_at": slot, "since": NOW}}
+        state["providers"][P]["admissions"] = {"y": [[NOW, put(state, tree_key("busy"), on="y").key]]}
         _, out, _ = self.run_cli(state, accounts, ["who", "--json"])
         who = json.loads(out)
-        self.assertEqual((who["priority"], who["providers"][P]["wait"]), ("low", {"account": "y", "slot_at": round(NOW + 1500), "reserved": True}))
+        self.assertEqual((who["priority"], who["providers"][P]["wait"]), ("low", {"account": "y", "slot_at": math.ceil(slot), "reserved": True}))
         _, out, _ = self.run_cli(state, accounts, ["ls", "--json"])
         ls = json.loads(out)
-        self.assertEqual((ls["priority"], ls["wait"]), ("low", {"account": "y", "slot_at": round(NOW + 1500), "reserved": True}))
+        self.assertEqual((ls["priority"], ls["wait"]), ("low", {"account": "y", "slot_at": math.ceil(slot), "reserved": True}))
         self.assertNotIn("force", ls["rows"][0])
         rc, out, _ = self.run_cli(state, accounts, ["ls"])
         self.assertEqual(rc, 0)
@@ -1133,6 +1136,67 @@ class Drought1019(unittest.TestCase):
             else:
                 self.assertEqual((type(d), d.slot_account.id), (sched.Wait, "seat"), five)
 
+
+
+class RefillOpenedCell(unittest.TestCase):
+    """10-28 on claude-virev5: 01a18453 went from high to normal at 21:23:27Z, which opened its 21:26:00Z cell. 01a15c6c,
+    normal since 21:04:40Z, asked at 21:24:00Z and took it, while 01a11af8, normal since 21:04:11Z, slept until its
+    21:44:00Z cell. The first tree in line now gets the wake and the cell; the cell it leaves goes to the next one."""
+
+    def setUp(self):
+        vending._wakes.clear()
+        self.addCleanup(vending._wakes.clear)
+
+    def test_a_cell_a_demotion_opens_goes_to_the_first_tree_in_line(self):
+        state = empty_state()
+        x, out = acct("x", five=10, tier="max 5x"), acct("y", five=100, five_reset_in=FIVE)
+        sp = sched.slot_spacing(x, CFG)
+        cell = math.ceil(NOW / sp) * sp
+        demoted = put(state, tree_key("demoted"), on="y", priority="high")
+        first = put(state, tree_key("first"), on="y", priority="normal")
+        later = put(state, tree_key("later"), on="y", priority="normal")
+        state["sessions"]["demoted"]["wait"] = {P: {"account": "x", "slot_at": cell + sp, "since": NOW - 300}}
+        state["sessions"]["first"]["wait"] = {P: {"account": "x", "slot_at": cell + 5 * sp, "since": NOW - 1200}}
+        state["sessions"]["later"]["wait"] = {P: {"account": "x", "slot_at": cell + 6 * sp, "since": NOW - 1100}}
+        state["providers"][P]["admissions"] = {"x": [[NOW, "busy0"], [cell, "busy1"]] + [[cell + n * sp, f"busy{n}"] for n in (2, 3, 4)]}
+        vending.IntentWriter(state).set_priority(demoted, "normal", NOW)
+        self.assertEqual(vending.refill(state, P, "x", [x, out], CFG, NOW), ["first", "later"])
+        self.assertEqual(vending._wakes, [["first", "later"]])
+        d = request(state, first, [x, out], NOW + 1)
+        self.assertEqual((type(d), d.slot_at), (sched.Wait, cell + sp), "the woken tree takes the opened cell")
+        self.assertEqual(vending._wakes[-1], ["later"], "the cell it left opens to the next tree in line")
+        d = request(state, later, [x, out], NOW + 2)
+        self.assertEqual((type(d), d.slot_at), (sched.Wait, cell + 5 * sp))
+        d = request(state, demoted, [x, out], cell + sp)
+        self.assertIsInstance(d, sched.Wait, "the demoted tree ranks behind both now")
+        self.assertGreater(d.slot_at, cell + 5 * sp)
+
+    def test_a_tree_that_waits_for_another_cell_opens_the_one_it_held(self):
+        state = empty_state()
+        x, out = acct("x", five=10, tier="max 5x"), acct("y", five=100, five_reset_in=FIVE)
+        sp = sched.slot_spacing(x, CFG)
+        cell = math.ceil(NOW / sp) * sp
+        leaver, first = put(state, tree_key("leaver"), on="y", priority="high"), put(state, tree_key("first"), on="y")
+        state["sessions"]["leaver"]["wait"] = {P: {"account": "x", "slot_at": cell + sp, "since": NOW - 300}}
+        state["sessions"]["first"]["wait"] = {P: {"account": "x", "slot_at": cell + 3 * sp, "since": NOW - 1200}}
+        state["providers"][P]["admissions"] = {"x": [[NOW, "busy0"], [cell, "busy1"], [cell + 2 * sp, "busy2"]]}
+        z = acct("z", five=10, tier="max 5x")
+        d = request(state, leaver, [x, out, z], NOW + 1)
+        self.assertEqual((type(d), d.account.id), (sched.Admit, "z"))
+        self.assertEqual(vending._wakes, [["first"]], "the tree entered z ahead of its x cell, which opens to the next tree")
+
+    def test_a_tree_in_line_whose_sessions_do_not_answer_passes_the_wake_on(self):
+        turns = {"working": {}, "queued": {}, "owner": {}, "lead": [], "kept": {
+            "sub-a": {"since": NOW - 900, "slot_at": NOW + 600, "tree": "a"},
+            "sub-b": {"since": NOW - 800, "slot_at": NOW + 700, "tree": "b"},
+            "gone-b": {"since": NOW - 800, "slot_at": NOW - 5, "tree": "b"}}}
+        asked = []
+        def run(session):
+            asked.append(session)
+            return "none" if session == "sub-a" else "timer"
+        tried = turns_mod.wake_slot(["a", "b", "c"], run=run, now=NOW, turns=turns)
+        self.assertEqual(asked, ["sub-a", "sub-b"], "a kept place whose slot passed is no sleeping session")
+        self.assertEqual([t for t, _ in tried], ["a", "b"])
 
 if __name__ == "__main__":
     unittest.main()
