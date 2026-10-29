@@ -165,7 +165,7 @@ describe("registration", () => {
     }
   });
 
-  test("the first thread list drops a migrated untitled agent with its aliases and archives its DM, once", async () => {
+  test("the first thread list drops every untitled agent with its aliases and archives its DM, once", async () => {
     const dir = mkdtempSync(join(tmpdir(), "apps-chat-drop-"));
     const fresh = new FixtureHost();
     const at = Date.now() - 60_000;
@@ -184,6 +184,7 @@ describe("registration", () => {
     };
     record("new-thread", untitled, true);
     record("new-thread-2", renamed, true);
+    // The composer's "new chat" made this one through POST /api/agents with no name, as ag_new-thread-4 on the live server was.
     record("new-thread-3", made, false);
     store.agents.aliases[job] = "ag_new-thread";
     store.saveAgents();
@@ -191,7 +192,7 @@ describe("registration", () => {
     let server = await start({ dataDir: dir, host: fresh });
     try {
       const kept = (await server.get<AgentSummary[]>("/api/agents")).map(a => a.id).sort();
-      assert.deepEqual(kept, ["ag_new-thread-2", "ag_new-thread-3"], "a renamed work thread and an agent POST /api/agents made stay");
+      assert.deepEqual(kept, ["ag_new-thread-2"], "only the agent whose work thread got a name stays");
       const saved = new AgentStore(dir);
       assert.ok(!saved.agents.agents.some(a => a.id === "ag_new-thread"));
       assert.equal(saved.agents.aliases[untitled], undefined);
@@ -199,6 +200,7 @@ describe("registration", () => {
       assert.equal(saved.rooms.rooms.find(r => r.id === "dm_new-thread")?.archived, true);
       const sidebar = await server.get<Sidebar>("/api/sidebar");
       assert.ok(sidebar.solo.some(c => c.id === untitled));
+      assert.ok(sidebar.solo.some(c => c.id === made));
       assert.ok(!sidebar.dms.some(c => c.id === "dm_new-thread"));
       await server.close();
       server = await start({ dataDir: dir, host: fresh });

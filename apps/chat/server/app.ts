@@ -407,13 +407,18 @@ export class App {
 
   /**
    * A new agent: its work thread in a project folder (the one given, else the default project, never the home folder), its record and its DM
-   * room, made at once. With `kind: "job"` or a `parent`, the thread is a root job filed under that agent instead.
+   * room, made at once. With `kind: "job"` or a `parent`, the thread is a root job filed under that agent instead. With `kind: "solo"` it is
+   * a root chat no agent holds, as the composer's "new chat" makes, which shows in the sidebar's solo group and in no agent list.
    */
-  async createAgent(input: { name?: string; model?: string; thinkingLevel?: string; cwd?: string; kind?: "chat" | "job"; parent?: string }): Promise<AgentSummary> {
+  async createAgent(input: { name?: string; model?: string; thinkingLevel?: string; cwd?: string; kind?: "chat" | "job" | "solo"; parent?: string }): Promise<AgentSummary> {
     const cwd = projectCwd(this.config, input.cwd);
     const created = await this.host.create({
       ...(input.name ? { name: input.name } : {}), model: input.model ?? MODELS.default.model, thinkingLevel: input.thinkingLevel ?? MODELS.default.thinkingLevel, cwd,
     });
+    if (input.kind === "solo") {
+      await this.threads.refresh();
+      return this.threads.agent(created.id)!;
+    }
     if (input.kind === "job" || input.parent) {
       this.store.state.threads[created.id] = { kind: "job", ...(input.parent ? { parent: this.agents.record(input.parent)?.id ?? input.parent } : {}) };
       this.store.saveState();

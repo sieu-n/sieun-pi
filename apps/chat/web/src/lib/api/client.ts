@@ -65,8 +65,11 @@ export const api = {
 
   agents: (opts: { archived?: boolean } = {}) => call<AgentSummary[]>("GET", `/api/agents${query({ archived: opts.archived ? 1 : undefined })}`),
   jobs: (opts: { archived?: boolean } = {}) => call<AgentSummary[]>("GET", `/api/jobs${query({ archived: opts.archived ? 1 : undefined })}`),
-  /** A new agent with its work thread and DM room (`room`); `kind` "job" with a `parent` files a root thread under that agent as a job instead. */
-  createAgent: (input: { name?: string; model?: string; thinkingLevel?: ThinkingLevel; cwd?: string; kind?: "chat" | "job"; parent?: AgentId }) =>
+  /**
+   * A new agent with its work thread and DM room (`room`); `kind` "job" with a `parent` files a root thread under that agent as a job instead,
+   * and `kind` "solo" makes a root chat no agent holds.
+   */
+  createAgent: (input: { name?: string; model?: string; thinkingLevel?: ThinkingLevel; cwd?: string; kind?: "chat" | "job" | "solo"; parent?: AgentId }) =>
     call<AgentSummary>("POST", "/api/agents", input),
   /** One agent as a role: purpose, where it runs, its board, memory, instructions and swarm (API.md, Agents). */
   agentConfig: (id: AgentId) => call<AgentConfig>("GET", `/api/agents/${enc(id)}/config`),

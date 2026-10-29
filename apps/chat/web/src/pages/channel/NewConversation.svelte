@@ -25,7 +25,8 @@
   const fail = (error: unknown) => toast.error(error instanceof Error ? error.message : "That did not work");
 
   async function startChat(out: Outgoing) {
-    const agent = await api.createAgent({ kind: "chat" });
+    // A new chat is a solo root chat, never an agent: untitled agents filled every picker on 10-29.
+    const agent = await api.createAgent({ kind: "solo" });
     const room = agent.room ?? agent.id;
     await api.send(room, { text: out.text, images: out.images, mentions: out.mentions, requestId: crypto.randomUUID() });
     router.openConversation(room);

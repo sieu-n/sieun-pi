@@ -171,17 +171,16 @@ export class Agents {
   }
 
   /**
-   * Once per server start, on the first thread list: drops each record the old poll-time migration made from an untitled root chat whose
-   * work thread is still untitled, with its aliases, and archives its DM room, so the thread shows again as a solo chat. That migration made
-   * ag_new-thread through ag_new-thread-4 on 10-29 from three "New thread" chats. A record with no `migrated` mark came from
-   * `POST /api/agents` and stays, even with an untitled name. A second run finds nothing, since the record is gone.
+   * Once per server start, on the first thread list: drops each untitled record whose work thread is still untitled, with its aliases, and
+   * archives its DM room, so the thread shows again as a solo chat. The old poll-time migration made ag_new-thread on 10-29, and the composer's
+   * "new chat", which called `POST /api/agents` with no name, made ag_new-thread-2 to -4. A second run finds nothing, since the record is gone.
    */
   dropUntitled(rows: ReadonlyMap<string, DurableThread>): AgentRecord[] {
     if (this.cleaned) return [];
     this.cleaned = true;
     const dropped = this.store.agents.agents.filter(record => {
       const row = rows.get(record.workThread);
-      return record.migrated !== undefined && isUntitled(record.name) && row !== undefined && isUntitled(row.name);
+      return isUntitled(record.name) && row !== undefined && isUntitled(row.name);
     });
     if (!dropped.length) return [];
     const ids = new Set(dropped.map(r => r.id));
