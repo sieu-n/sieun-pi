@@ -68,7 +68,9 @@ function parseHost(value: unknown, at: string): Host {
   if (!isRecord(rolesValue)) throw new Error(`${at}.roles: needs an object keyed by role`);
   const roles: Host["roles"] = {};
   for (const [role, spec] of Object.entries(rolesValue)) {
-    if (!(ROLES as readonly string[]).includes(role)) throw new Error(`${at}.roles.${role}: unknown role (${ROLES.join(", ")})`);
+    // hosts.json is shared with apps/chat, whose roles this service does not run: at 19:53Z on 10-29 the Mac's entry gained `agents: {}`,
+    // and every read here threw, so d9 read no box offline and the chat service's Mac daemon list failed.
+    if (!(ROLES as readonly string[]).includes(role)) continue;
     const port = isRecord(spec) ? spec.port : undefined;
     if (typeof port !== "number" || !Number.isInteger(port)) throw new Error(`${at}.roles.${role}.port: needs a port number`);
     const url = isRecord(spec) ? spec.url : undefined;

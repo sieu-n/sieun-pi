@@ -1,4 +1,4 @@
-// 10-30 from 18:53Z (03:53 KST): the owner's MacBook Pro slept off Tailscale while designer bro's jobs on it held p405, p413 and p414. A step
+// 10-29 from 18:53Z (03:53 KST on 10-30): the owner's MacBook Pro slept off Tailscale while designer bro's jobs on it held p405, p413 and p414. A step
 // counted as held on an offline box only while an open For you todo asked the owner to wake it, so the check-in added t122 and d9's 04:08 KST
 // run added designer bro's t60 ("Wake the Mac when you're up"), and every sleep of the Mac became an owner ask (c178). The hold now reads the
 // box's Tailscale state alone, with no todo on any board.
