@@ -29,7 +29,11 @@ user_ctl=(systemctl --user "--machine=$DEV_USER@")
 # pi-history runs at 10000 beside the chat, whose api/search answers from it: at 03:28Z on 10-28 at load 400 and weight 100, its cpu.pressure
 # full read 23% against 4 to 5% for the chat, and searches took p50 433 ms and p90 1.3 s, mostly pi-history waiting for CPU.
 declare -A SYSTEM_WEIGHTS=([ssh.service]=1000 [tailscaled.service]=1000 [user.slice]=1000 [user@$uid.service]=10000 [virev.slice]=4000 [virev-prod.slice]=300 [virev-ci.slice]=300 [system.slice]=400 [dev.slice]=400)
-declare -A USER_WEIGHTS=([sieun-pi-chat.service]=10000 [pi-history.service]=10000 [pi-pool-serve.service]=1000 [pi-pool-hookd.service]=1000 [prime-agent-daemon.service]=10000)
+# llm-wiki and auto-sns-dev-pm2 (the wiki and the dev servers duty d1 probes) run at 10000 for the same reason as pi-history.
+# measured: on 10-29 at load 200 and weight 100, per CPU-second used the wiki waited 0.35 s and pm2 0.32 s against 0.02 s for the
+# chat at 10000; at load 230 :5174 answered in 12.7 s and the wiki in up to 1.1 s while the chat took 0.13 s, and d1 at 06:06Z saw
+# the wiki miss its 5 s probe. The wiki's cgroup had waited 220 s on CPU and 0.25 s on memory since its start, so the wait is CPU.
+declare -A USER_WEIGHTS=([sieun-pi-chat.service]=10000 [pi-history.service]=10000 [llm-wiki.service]=10000 [auto-sns-dev-pm2.service]=10000 [pi-pool-serve.service]=1000 [pi-pool-hookd.service]=1000 [prime-agent-daemon.service]=10000)
 
 dropin() {
   printf '# CPU layer 1 of deploy/linux/README.md (owner'"'"'s t84 answer 10-19, after https://cho.sh/ko/1983DC). A weight is no cap.\n[%s]\nCPUWeight=%s\n' "$1" "$2"
