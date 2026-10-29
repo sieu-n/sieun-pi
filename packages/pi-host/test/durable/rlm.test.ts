@@ -11,12 +11,13 @@
  *    the old kernel is gone.
  * 6. A thread whose cwd changed moves its live kernel to the new folder before the next cell.
  * 7. A kernel freed when idle comes back on the next call with Prime's restore line and no reset note, and a cell that comes while
- *    the free stops it waits for a new kernel instead of attaching to the relay that is ending.
+ *    the free stops it waits for a new kernel instead of attaching to the relay that is ending. A marker an older pi-host left after
+ *    such a free brings no reset note either, and a marker of a kernel stopped mid-cell does.
  * 8. The kernel's harness store is the agent's in a thread with an `agent.ref`, and the thread's own otherwise.
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -26,6 +27,7 @@ import { LiveDoc, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { testPython } from "@sieun-pi/pi-rlm/test-helpers";
 import { KERNEL_RESET } from "../../../pi-rlm/src/pi/index.ts";
 import { ChatDoc } from "../../src/durable/registry.ts";
+import { artifactDirOf } from "../../src/durable/children.ts";
 import { DurableRlm, IPYTHON_TOOL, loadIpythonTool } from "../../src/durable/rlm.ts";
 import { SUBAGENT_STARTED } from "../../src/durable/subagent.ts";
 import { call, cell, context, entriesOf, firstUser, inputs, lastText, openThread, results, rlmOptions, say, until } from "./rlm-rig.ts";
@@ -157,6 +159,35 @@ test("a cell that comes while the idle free stops the kernel gets a new kernel, 
   const spawned = out[1]!.text;
   assert.ok(!spawned.includes("ipython_kernel_reset"), spawned);
   assert.match(spawned, /\n\n42\nhelper\n$/);
+});
+
+test("a marker another pi-host left after an idle free brings no reset note, and a marker of a kernel stopped mid-cell does", async () => {
+  // Vent's thread on 10-29: release 8bd42e3 freed its idle kernel at 01:22Z and kept the marker, and the next cell under
+  // release ebcae2f at 02:38Z told the agent the kernel "was restarted after it exited".
+  const file = join(dir, "threads", "stale.sqlite");
+  const marker = join(artifactDirOf(file, "stale", 1), "kernel-started");
+  const { harness, root } = await openThread(file, "stale", rlm, ({ messages }) => {
+    const last = lastText(messages);
+    if (last === "set x") return cell("x = 41\nprint('set')");
+    if (last === "read x") return cell("print(x + 1)");
+    if (messages.at(-1)?.role === "toolResult") return say("done");
+    return say(`unexpected: ${last.slice(0, 120)}`);
+  }, dir);
+  await (await root.submit({ type: "input", content: "set x" }, context)).wait(context);
+  await rlm.closeThread("stale", "idle");
+  assert.ok(!existsSync(marker), "an idle free drops the marker");
+  writeFileSync(marker, "1\n");
+  await (await root.submit({ type: "input", content: "read x" }, context)).wait(context);
+  await rlm.closeThread("stale", "idle");
+  writeFileSync(marker, "lost\n");
+  await (await root.submit({ type: "input", content: "read x" }, context)).wait(context);
+  const out = results(await entriesOf(harness));
+  await harness.close(context);
+  await rlm.closeThread("stale", "idle");
+  assert.ok(!out[1]!.text.includes("ipython_kernel_reset"), out[1]!.text);
+  assert.match(out[1]!.text, /^\[python-state-restored\][^\n]*\n[^\n]*\bx\b[^\n]*\n\n42\n$/);
+  assert.ok(out[2]!.text.startsWith(KERNEL_RESET), out[2]!.text);
+  assert.match(out[2]!.text, /\n42\n$/);
 });
 
 test("rlm.spawn returns at admission, the parent answers while the child works, and the child's notice or reply arrives as its own input", async () => {

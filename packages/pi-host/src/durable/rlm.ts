@@ -54,6 +54,8 @@ export const RLM_EXTENSION = "rlm";
 export const IPYTHON_TOOL = "ipython";
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const MARKER = "kernel-started";
+/** The marker's text for a kernel stopped mid-cell, which the next pi-host reports with the reset note. */
+const LOST = "lost";
 
 // ---------------------------------------------------------------------------------------------------------------------------
 // One thread, as the RLM runtime reaches it.
@@ -269,9 +271,11 @@ export class DurableRlm {
     const installable = skills.filter(skill => !readFileSync(join(skill.dir, "pyproject.toml"), "utf8").includes("prime-agent-runtime"));
     const { python, binDir } = await kernelPython(this.options.venvRoot ?? join(this.options.agentDir, "pi-host", "durable"), installable, progress);
     const paths = relayPaths(slot.artifactDir, slot.session);
+    let leftover = false;
     if (!slot.cleared) {
       slot.cleared = true;
-      if (await killLeftover(paths.socket)) this.log(`${slot.session}: killed the kernel a previous pi-host left`);
+      leftover = await killLeftover(paths.socket);
+      if (leftover) this.log(`${slot.session}: killed the kernel a previous pi-host left`);
     }
     const sep = process.platform === "win32" ? ";" : ":";
     const env = baseEnv();
@@ -303,7 +307,10 @@ export class DurableRlm {
     if (!kernel) throw new Error(`the kernel relay for ${slot.session} did not start`);
     await kernel.ready;
     const marker = join(slot.artifactDir, MARKER);
-    const restarted = existsSync(marker);
+    // The marker holds the pid of the pi-host that started the kernel. Another pi-host's marker means a lost kernel only when that
+    // pi-host stopped it mid-cell or left its relay running; a release before 2296ca28 left one after every idle free.
+    const owner = existsSync(marker) ? readFileSync(marker, "utf8").trim() : undefined;
+    const restarted = owner !== undefined && (owner === String(process.pid) || owner === LOST || leftover);
     writeFileSync(marker, `${process.pid}\n`);
     let restore: RestoreResult | undefined;
     if (existsSync(slot.snapshotPath)) {
@@ -416,7 +423,8 @@ export class DurableRlm {
 
   /**
    * Snapshots and stops the kernel. Stopping an idle kernel is no exit, so the marker goes and the next start says only what the
-   * snapshot revived, as Prime does after a resume. A kernel stopped mid-cell keeps the marker, and the next start sends the reset note.
+   * snapshot revived, as Prime does after a resume. A kernel stopped mid-cell leaves the marker marked lost, and the next start sends the
+   * reset note.
    */
   private async free(slot: Slot, snapshotMs: number, onlyIdle = false): Promise<void> {
     while (slot.freeing) await slot.freeing;
@@ -431,6 +439,7 @@ export class DurableRlm {
       const idle = Boolean(kernel?.alive && !kernel.busy && !slot.call);
       await kernel?.shutdown().catch(() => undefined);
       if (idle) rmSync(join(slot.artifactDir, MARKER), { force: true });
+      else if (kernel) writeFileSync(join(slot.artifactDir, MARKER), `${LOST}\n`);
     };
     slot.freeing = run().finally(() => (slot.freeing = undefined));
     await slot.freeing;
