@@ -71,7 +71,7 @@ test("a chat's config names its purpose, host, cwd, board, memory, instructions 
   assert.equal(jobs.get(ids.uptimeDuty)?.kind, "duty");
   assert.equal(jobs.get(ids.cutover)?.kind, "root job");
   assert.ok(c.swarm.jobs.some(j => j.kind === "job" && j.id.startsWith(`${ids.harness}:`) && j.status === "working"));
-  assert.deepEqual(c.swarm.channels, [{ id: "ch_cutover", name: "pi-cutover" }]);
+  assert.deepEqual(c.swarm.rooms, [{ id: "ch_cutover", kind: "channel", name: "pi-cutover" }]);
   assert.deepEqual(c.swarm.duties.map(d => [d.id, d.schedule, d.paused]), [["d1", "daily at 07:40 KST", false], ["d2", "daily at 07:40 KST", true]]);
   assert.equal(c.swarm.checkIn?.everyMs, 120 * 60_000);
   assert.equal(c.swarm.dutiesFile?.path, join(s.app.config.dataDir, "agents", agents.harness, "duties.json"));
@@ -124,7 +124,7 @@ test("an unknown agent is a 404", async () => {
 test("Direct messages hold one row per agent; work threads, a duty thread, a root job and a job open by link", async () => {
   const sidebar = await s.get<Sidebar>("/api/sidebar");
   assert.deepEqual(sidebar.dms.map(c => c.id).sort(), ["dm_ai-harness-developer-environment-vp", "dm_crawler-vp", "dm_frontend-bro", "dm_vent"]);
-  assert.deepEqual(sidebar.solo.map(c => c.id), [ids.solo], "only the root chat no agent holds is solo");
+  assert.deepEqual(sidebar.solo.map(c => c.id), [ids.soloRoom, ids.closedSolo, ids.solo], "the Solo rooms, then only the root chat no agent holds");
   const all = await s.get<ConversationSummary[]>("/api/conversations");
   const duty = all.find(c => c.id === ids.uptimeDuty);
   assert.equal(duty?.kind, "job");

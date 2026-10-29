@@ -31,7 +31,7 @@ describe("pi-host end to end", { skip: !real && "set APPS_CHAT_REAL=1 to run on 
 
   after(async () => {
     if (thread) await s.send("PATCH", `/api/c/${thread}`, { archived: true });
-    for (const id of channels) await s.send("PATCH", `/api/channels/${id}`, { archived: true });
+    for (const id of channels) await s.send("PATCH", `/api/rooms/${id}`, { archived: true });
     await s.close();
   });
 
@@ -78,7 +78,7 @@ describe("pi-host end to end", { skip: !real && "set APPS_CHAT_REAL=1 to run on 
   });
 
   test("a channel mention reaches the thread and the answer comes back", { timeout: 300_000 }, async () => {
-    const channel = await s.send("POST", "/api/channels", { name: `e2e-${Date.now().toString(36)}`, members: [thread] });
+    const channel = await s.send("POST", "/api/rooms", { kind: "channel", name: `e2e-${Date.now().toString(36)}`, members: [thread] });
     assert.equal(channel.status, 200, JSON.stringify(channel.body));
     channels.push(channel.body.id);
     const name = (await s.get(`/api/c/${thread}`)).summary.name;

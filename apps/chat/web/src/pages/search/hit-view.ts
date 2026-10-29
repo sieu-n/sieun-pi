@@ -42,7 +42,9 @@ export function location(conversation: HitConversation): Location {
     case "channel":
       return { icon: "hash", name: conversation.name.replace(/^#/, ""), kind: "Channel", archived };
     case "solo":
-      return { icon: "chat", name: conversation.name, kind: "Chat", archived };
+      return conversation.id.startsWith("so_")
+        ? { icon: "users", name: conversation.name, kind: "Solo room", archived }
+        : { icon: "chat", name: conversation.name, kind: "Chat", archived };
     case "dm":
       return conversation.parent
         ? { icon: "robot", parent: conversation.parent.name, name: conversation.name, kind: "Job", archived }

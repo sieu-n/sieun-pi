@@ -254,7 +254,7 @@ describe("POST /api/agents/:id/split", () => {
     assert.equal(again.body.comm, one.body.comm);
     assert.deepEqual(again.body.plan.comm, { thread: one.body.comm, created: false });
     assert.equal(host.threadsById.size, threads + 1);
-    assert.deepEqual(JSON.parse(readFileSync(agentsFile, "utf8")).agents.find((a: { id: string }) => a.id === agents.crawler).comm, { [record.room]: one.body.comm });
+    assert.deepEqual(JSON.parse(readFileSync(agentsFile, "utf8")).agents.find((a: { id: string }) => a.id === agents.crawler).comm, { [ids.cutoverChannel]: record.comm![ids.cutoverChannel], [record.room]: one.body.comm });
     assert.equal((host.threadsById.get(record.workThread)!.docs.get(AGENT_REF_DOC) as { comm?: string }).comm, one.body.comm);
     assert.equal(s.app.agentStore.rooms.feed[agents.crawler]!.thread, one.body.comm, "the apply moves the room's feed onto the comm thread");
   });

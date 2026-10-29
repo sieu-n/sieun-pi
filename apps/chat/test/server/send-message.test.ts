@@ -1,7 +1,7 @@
 /**
  * An agent speaks to people only through send_message: a turn's bubbles are its send_message texts, its other text and steps go into the
- * fold, a turn that sent nothing is only a fold row, and a channel thread gets one post per call. A conversation that never called it
- * keeps its turn text as the bubble and a channel answer as its text. Prime's tell_owner, which durable chat threads run, renders the same way.
+ * fold, a turn that sent nothing is only a fold row, and a channel thread gets one post per call its member's comm thread makes. A
+ * conversation that never called it keeps its turn text as the bubble. Prime's tell_owner, which durable chat threads run, renders the same way.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/send-message.test.ts
  */
 import assert from "node:assert/strict";
@@ -169,29 +169,33 @@ describe("on the fixture", () => {
     assert.equal(hit?.author.id, s.app.threads.principal(id).id);
   });
 
-  test("a channel mention posts one reply per send_message call; a quiet turn posts nothing and reads no_reply", async () => {
+  test("a channel mention posts what the comm thread sends into the post's thread; a quiet turn posts nothing", async () => {
     const id = await newThread("channel desk");
-    const channel = (await s.send("POST", "/api/channels", { name: "send-desk", members: [id] })).body;
+    const agent = s.app.threads.principal(id).id;
+    const channel = (await s.send("POST", "/api/rooms", { kind: "channel", name: "send-desk", members: [id] })).body;
     const post = (await s.send("POST", `/api/c/${channel.id}/send`, { text: "@channel desk is the relay fine?", mentions: [id], requestId: "smc-1" })).body;
     const thread = await until(() => s.get(`/api/c/${channel.id}/replies/${post.item.id}`), t => t.root.deliveries[0].state === "answered");
     assert.deepEqual(thread.items.map((i: Extract<Item, { kind: "message" }>) => [i.author.id, i.text]), [
-      [s.app.threads.principal(id).id, 'Got it. You said: "@channel desk is the relay fine?".'], [s.app.threads.principal(id).id, "I checked the canary and the relay, and both answer."],
+      [agent, 'Got it. You said: "@channel desk is the relay fine?". I checked the canary and the relay, and both answer.'],
     ]);
     assert.equal(thread.root.deliveries[0].answer, thread.items[0].id);
+    const comm = s.app.agents.record(agent)!.comm![channel.id]!;
     const quiet = (await s.send("POST", `/api/c/${channel.id}/send`, { text: "@channel desk quiet please", mentions: [id], requestId: "smc-2" })).body;
-    const after = await until(() => s.get(`/api/c/${channel.id}/replies/${quiet.item.id}`), t => t.root.deliveries[0].state !== "queued" && t.root.deliveries[0].state !== "delivered");
-    assert.equal(after.root.deliveries[0].state, "no_reply");
+    await until(async () => host.threadsById.get(comm)!.entries.filter(e => e.kind === "pi.assistant" && e.model?.[0]?.stopReason === "stop").length, n => n === 2);
+    await s.app.groups.feed(comm);
+    const after = await s.get(`/api/c/${channel.id}/replies/${quiet.item.id}`);
+    assert.equal(after.root.deliveries[0].state, "delivered");
     assert.deepEqual(after.items, []);
   });
 
-  test("a send_message call to another channel is not posted here", async () => {
+  test("a send_message call aimed at another room is not posted here", async () => {
     const id = await newThread("aimed desk");
-    const channel = (await s.send("POST", "/api/channels", { name: "aimed-desk", members: [id] })).body;
-    const thread = host.threadsById.get(id)!;
-    // This agent answers with one message aimed here and one aimed at #general, then ends its turn quietly.
+    const agent = s.app.threads.principal(id).id;
+    const channel = (await s.send("POST", "/api/rooms", { kind: "channel", name: "aimed-desk", members: [id] })).body;
+    // The comm thread answers with one message aimed here and one aimed at #general, then ends its turn quietly.
     const original = host.answer.bind(host);
     host.answer = async (t, conversation, submission, text, reply) => {
-      if (t !== thread) return original(t, conversation, submission, text, reply);
+      if (t.row.id !== s.app.agents.record(agent)?.comm?.[channel.id]) return original(t, conversation, submission, text, reply);
       host.answer = original;
       const now = Date.now();
       host.append(t, conversation, { kind: "pi.assistant", model: [{ role: "assistant", content: [send("h1", "Posted here.", "#aimed-desk"), send("g1", "Meant for general.", "#general")], provider: "anthropic", model: "claude-opus-5-5", stopReason: "toolUse", timestamp: now }] });
@@ -202,21 +206,6 @@ describe("on the fixture", () => {
     const post = (await s.send("POST", `/api/c/${channel.id}/send`, { text: "@aimed desk where does this go?", mentions: [id], requestId: "sma-1" })).body;
     const replies = await until(() => s.get(`/api/c/${channel.id}/replies/${post.item.id}`), t => t.root.deliveries[0].state === "answered");
     assert.deepEqual(replies.items.map((i: Item) => i.text), ["Posted here."]);
-  });
-
-  test("a target that never called send_message still answers a channel with its turn text", async () => {
-    host.sendMessage = false;
-    try {
-      const id = await newThread("legacy desk");
-      const channel = (await s.send("POST", "/api/channels", { name: "legacy-desk", members: [id] })).body;
-      const post = (await s.send("POST", `/api/c/${channel.id}/send`, { text: "@legacy desk is the relay fine?", mentions: [id], requestId: "sml-1" })).body;
-      const thread = await until(() => s.get(`/api/c/${channel.id}/replies/${post.item.id}`), t => t.root.deliveries[0].state === "answered");
-      assert.deepEqual(thread.items.map((i: Item) => i.text), ['Got it. You said: "@legacy desk is the relay fine?". I checked the canary and the relay, and both answer.']);
-      const page = await s.get<TimelinePage>(`/api/c/${id}/items`);
-      assert.equal(turns(page.items)[0]!.sent, undefined);
-    } finally {
-      host.sendMessage = true;
-    }
   });
 
   test("the seeded turns from before the first speaking call keep their text bubbles", async () => {

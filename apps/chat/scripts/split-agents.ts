@@ -185,7 +185,7 @@ export function renderReport(report: SplitReport): string {
 
 /** `Agents` over the data dir's files and a host that only reads, as the dry run uses them; nothing it holds writes. */
 export function dryRunAgents(dataDir: string, host: Host, config: { box: string; agentsDir: string }): Agents {
-  const state = { state: readJson<StateFile>(join(dataDir, "state.json"), { v: 1, threads: {}, reads: {} }), channels: [] } as Pick<Store, "state" | "channels"> as Store;
+  const state = { state: readJson<StateFile>(join(dataDir, "state.json"), { v: 1, threads: {}, reads: {} }) } as Pick<Store, "state"> as Store;
   return new Agents(new AgentStore(dataDir), state, readOnlyHost(host), { ...config, agentRefs: true });
 }
 

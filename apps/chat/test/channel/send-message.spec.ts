@@ -1,12 +1,12 @@
 import { expect, test } from "@playwright/test";
-import { composerInput, conversation, open, row, tag, VENT } from "./helpers";
+import { commThread, composerInput, conversation, open, row, tag, VENT } from "./helpers";
 
 /**
  * An agent speaks only through send_message: each call is a post in its DM and its own bubble in the work thread, where its other text
  * and steps fold into one line above them, and a turn that sent nothing posts nothing and is only that line, reading "Worked quietly".
  * A thread from before the tool keeps its text bubbles.
  */
-test("two send_message calls are two DM posts and two bubbles in the work thread, and a quiet turn posts nothing and folds", async ({ page, request }) => {
+test("two send_message calls are two DM posts and two bubbles in the comm thread, and a quiet turn posts nothing and folds", async ({ page, request }) => {
   const agent = (await (await request.post("/api/agents", { data: { kind: "chat", name: `sender ${tag()}` } })).json()) as { id: string; room: string; thread: string };
   await open(page, `#/c/${agent.room}`);
   const input = composerInput(conversation(page));
@@ -28,8 +28,8 @@ test("two send_message calls are two DM posts and two bubbles in the work thread
   await expect(page.getByTestId("stop")).toBeHidden({ timeout: 15_000 });
   await expect(posts).toHaveCount(2);
 
-  // The work thread draws each call as its own bubble of one turn, and the quiet turn as a fold with no bubble.
-  await open(page, `#/c/${agent.thread}`);
+  // The comm thread that answers the DM draws each call as its own bubble of one turn, and the quiet turn as a fold with no bubble.
+  await open(page, `#/c/${await commThread(request, agent.id, agent.room)}`);
   const bubbles = conversation(page).locator('[data-kind="turn"]').filter({ hasText: word }).locator("[data-sent]");
   await expect(bubbles).toHaveCount(2, { timeout: 15_000 });
   await expect(bubbles.nth(0)).toHaveClass(/\bfirst\b/);

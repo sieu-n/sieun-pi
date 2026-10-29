@@ -48,7 +48,7 @@ test("opening a DM while Solo is on switches the filter to Team", async ({ page 
 });
 
 test("unread rows are bold and working rows show typing dots", async ({ page, request }) => {
-  const crawler = sidebar(page).getByRole("link", { name: "Crawler VP" });
+  const crawler = sidebar(page).locator('a[href="#/c/dm_crawler-vp"]');
   await expect(crawler).toHaveAttribute("data-unread", "true");
   await expect(crawler).toHaveCSS("font-weight", "500");
   // Other specs post in DMs, so the read row is whichever DM has nothing new now.

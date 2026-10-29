@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { imageUpload, type AgentSummary, type Channel } from "$lib/api";
+  import { imageUpload, type AgentSummary, type Room } from "$lib/api";
   import AvatarStack from "$lib/ui/AvatarStack.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import Picker from "$lib/ui/Picker.svelte";
@@ -14,7 +14,8 @@
     placeholder: string;
     /** Registered agents, the only rows the @ picker lists. */
     agents: AgentSummary[];
-    channels: Channel[];
+    /** Channels, the only rows the # picker lists. */
+    channels: Room[];
     /** The agent works now: Stop shows beside Send. */
     working?: boolean;
     /** localStorage key for the draft, one per conversation. */
@@ -51,7 +52,7 @@
     })),
   );
   const channelCandidates = $derived<Candidate[]>(
-    channels.filter((c) => !c.archived).map((c) => ({ id: c.id, name: c.name, kind: "channel", detail: c.purpose || `${c.members.length} members`, target: { id: c.id, name: c.name, kind: "channel" } })),
+    channels.filter((c) => !c.archived).map((c) => ({ id: c.id, name: c.name, kind: "channel", detail: c.agenda || `${c.members.length} members`, target: { id: c.id, name: c.name, kind: "channel" } })),
   );
   const matches = $derived(query ? matchCandidates(query.trigger === "@" ? agentCandidates : channelCandidates, query.text, 8) : []);
   const pickerItems = $derived<PickerItem[]>(

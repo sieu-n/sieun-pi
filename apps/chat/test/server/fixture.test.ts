@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import type { ConversationSummary, Item, SearchResult, Sidebar, TimelinePage } from "../../web/src/lib/api/types.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
+import type { FixtureHost } from "../../server/host/fixture.ts";
 import { start, until, type Running } from "./helpers.ts";
 
 let s: Running;
@@ -24,7 +25,10 @@ const turnText = (page: TimelinePage) => page.items.filter(i => i.kind === "turn
 describe("conversations", () => {
   test("the sidebar groups channels and one DM per agent", async () => {
     const sidebar = await s.get<Sidebar>("/api/sidebar");
-    assert.deepEqual(sidebar.solo.map(c => c.id), [ids.solo], "a root chat no agent holds stays solo");
+    assert.deepEqual(sidebar.solo.map(c => c.id), [ids.soloRoom, ids.closedSolo, ids.solo], "Solo rooms, open first, then a root chat no agent holds");
+    assert.equal(sidebar.solo[0]!.agenda?.startsWith("Pick the relay protocol"), true);
+    assert.equal(sidebar.solo[0]!.unread, 2, "two agent posts after the read mark");
+    assert.equal(typeof sidebar.solo[1]!.closedAt, "number");
     assert.deepEqual(sidebar.channels.map(c => c.name), ["general", "pi-cutover"]);
     // One row per agent: a root job, a duty run's thread, a work thread and a job inside a thread stay out.
     assert.deepEqual(sidebar.dms.map(c => c.name).sort(), ["AI harness developer environment VP", "Crawler VP", "Vent", "frontend bro"]);
@@ -150,15 +154,20 @@ describe("live turns", () => {
 });
 
 describe("channels and mentions", () => {
-  test("a mention routes to the agent and what it sends comes back into the thread, one post per message", async () => {
+  test("a mention routes to the agent's comm thread for the channel, never its work thread, and its answer comes back into the thread", async () => {
+    const workEntries = (s.host as FixtureHost).threadsById.get(ids.frontend)!.entries.length;
     const sent = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "@frontend bro is the relay page fine?", mentions: [ids.frontend], requestId: "mention-1" });
     assert.equal(sent.status, 200);
     assert.equal(sent.body.deliveries[0].state, "queued", "the post answers before its mention reaches the agent");
     const thread = await until(() => s.get(`/api/c/${ids.cutoverChannel}/replies/${sent.body.item.id}`), t => t.root.deliveries[0].state === "answered");
     assert.equal(thread.items[0].author.id, agents.frontend);
-    assert.equal(thread.root.thread.replies, 2);
-    const entries = await s.get<TimelinePage>(`/api/c/${ids.frontend}/items`);
-    assert.ok(entries.items.some(i => i.kind === "message" && i.author.id === "owner" && i.text.startsWith("[#pi-cutover · post")));
+    assert.equal(thread.root.thread.replies, 1);
+    assert.equal(thread.items[0].threadRoot, sent.body.item.id);
+    const comm = s.app.agents.record(agents.frontend)!.comm![ids.cutoverChannel]!;
+    assert.equal((s.host as FixtureHost).threadsById.get(comm)!.row.name, "frontend bro · #pi-cutover");
+    const entries = await s.get<TimelinePage>(`/api/c/${comm}/items`);
+    assert.ok(entries.items.some(i => i.kind === "message" && i.author.id === "owner" && i.text.startsWith("[#pi-cutover · post 8 from You (owner) · hops 0]")));
+    assert.equal((s.host as FixtureHost).threadsById.get(ids.frontend)!.entries.length, workEntries, "the work thread gets no input");
   });
 
   test("a mention of a non-member is refused", async () => {
@@ -168,10 +177,12 @@ describe("channels and mentions", () => {
   });
 
   test("channels create, add members and keep read marks", async () => {
-    const created = await s.send("POST", "/api/channels", { name: "#Relay Ops", purpose: "relay", members: [ids.vent] });
+    const created = await s.send("POST", "/api/rooms", { kind: "channel", name: "#Relay Ops", agenda: "relay", members: [ids.vent] });
     assert.equal(created.body.name, "relay-ops");
-    const added = await s.send("POST", `/api/channels/${created.body.id}/members`, { agents: [agents.crawler] });
-    assert.deepEqual(added.body.members.map((m: any) => m.principal.id), ["owner", agents.vent, agents.crawler]);
+    assert.match(created.body.id, /^ch_[0-9a-f]{8}$/);
+    const added = await s.send("POST", `/api/rooms/${created.body.id}/members`, { agents: [agents.crawler] });
+    assert.deepEqual(added.body.members.map((m: any) => [m.principal.id, m.wakeOn]), [["owner", "all"], [agents.vent, "mention"], [agents.crawler, "mention"]]);
+    assert.equal((await s.send("GET", "/api/channels")).status, 404, "the channel routes are gone");
     const read = await s.send("POST", `/api/c/${ids.cutoverChannel}/read`, {});
     assert.equal(read.status, 200);
     const sidebar = await s.get<Sidebar>("/api/sidebar");

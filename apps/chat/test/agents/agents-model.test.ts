@@ -5,7 +5,7 @@ import { ACTION_LABEL, actionsFor, agentFromRoute, agentsShown, bytesLabel, canA
 type Agent = Parameters<typeof agentsShown>[0][number];
 const agent = (over: Partial<Agent>): Agent => ({
   id: "t1", kind: "chat", name: "Vent", avatar: { initials: "VE", hue: 1 }, model: { provider: "anthropic", id: "claude-opus-5-5", label: "Opus 5.5" },
-  thinkingLevel: "high", status: "idle", parent: null, thread: "t1", conversation: 1, archived: false, createdAt: 0, updatedAt: 0, preview: "", channels: [], host: "us-metal02",
+  thinkingLevel: "high", status: "idle", parent: null, thread: "t1", conversation: 1, archived: false, createdAt: 0, updatedAt: 0, preview: "", rooms: [], host: "us-metal02",
   ...over,
 });
 

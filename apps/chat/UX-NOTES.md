@@ -20,3 +20,10 @@ We copied no Buzz code, icon, image, font file or mascot art. Every component he
 12. Keyboard focus rings show only after keyboard use, so mouse clicks leave no ring.
 13. Search opens with Cmd K, Cmd F scopes it to the open conversation, and it takes `from:`, `in:`, `after:` and `before:` operators.
 14. The mention list never reorders under the pointer, and a space completes a mention only when the typed name is exact and unique.
+
+## Solo rooms
+
+These are ours, not Buzz's.
+
+1. A Solo room pins its agenda under the header, with its agents as removable chips beside an Add button, and its side panel shows one invited agent's board at a time behind a tab per agent.
+2. Closing a Solo room swaps the composer for a banner with Reopen, and the sidebar folds closed rooms under "Done" between the open rooms and the untitled chats.

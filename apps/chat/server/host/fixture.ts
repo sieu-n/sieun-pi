@@ -6,7 +6,8 @@
  * every format the chat renders, and "broken diagram" answers with a mermaid block that does not parse.
  *
  * The agents answer as pi-host's agents do, through `send_message` (packages/pi-host/src/durable/send-message.ts): each message is one call
- * and its "Sent." result, the plain answer is two calls, and a message that says "quiet" writes only a private note and sends nothing.
+ * and its "Sent." result, the plain answer is two calls (one in a channel or Solo room, whose header opens `[#` or `[Solo "`), and a message
+ * that says "quiet" writes only a private note and sends nothing.
  * The seeded conversations keep their plain-text answers, and the AI harness VP answers in plain text, as threads from before the tool do.
  */
 import { randomUUID } from "node:crypto";
@@ -173,7 +174,9 @@ export class FixtureHost implements Host {
     this.emit(thread, { type: "events", conversation, events: [{ type: "run_start", inputs: [submission.id] }] });
     const sends = this.sendMessage && !thread.plain;
     const quiet = sends && /\bquiet\b/i.test(text);
-    const messages = quiet ? [] : reply !== undefined ? [reply] : sends ? messagesFor(text, this.richImage) : [replyFor(text, this.richImage)];
+    // A post from a channel or Solo room gets one message, so two members answering each other grow the room by two posts a hop.
+    const group = /^\[(#|Solo ")/.test(text);
+    const messages = quiet ? [] : reply !== undefined ? [reply] : sends && !group ? messagesFor(text, this.richImage) : [replyFor(text, this.richImage)];
     const words = (quiet ? QUIET_NOTE : messages.join("\n\n")).split(/(?<= )/);
     const slow = /\bslow\b/i.test(text);
     const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));

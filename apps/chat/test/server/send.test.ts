@@ -161,7 +161,7 @@ describe("channel posts", () => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => (release = resolve));
     host.beforeSubmit = async (_thread, input) => {
-      if (input.requestId?.startsWith(`channel:${ids.cutoverChannel}:`)) await gate;
+      if (input.requestId?.startsWith(`d:${ids.cutoverChannel}:`)) await gate;
     };
     const { value: sent, ms } = await timed(() => s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "@frontend bro quick check", mentions: [ids.frontend], requestId: "post-fast-1" }));
     assert.equal(sent.status, 200);

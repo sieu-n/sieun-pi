@@ -10,6 +10,7 @@
   import { PAGES, hrefFor, router, type PageId } from "$lib/router.svelte";
   import { sidebar } from "./sidebar.svelte";
   import { search } from "./search.svelte";
+  import { soloDialog } from "./solo-dialog.svelte";
   import { theme } from "./theme.svelte";
   import { inDesktopShell } from "./desktop";
 
@@ -29,6 +30,7 @@
 
   const newItems: MenuEntry[] = [
     { id: "chat", label: "New chat", icon: "chat", shortcut: isMac ? "⌘N" : "Ctrl N", onselect: () => router.navigate(hrefFor("messages", ["new"], { kind: "chat" })) },
+    { id: "solo", label: "New Solo room", icon: "users", onselect: () => soloDialog.open() },
     { id: "channel", label: "New channel", icon: "hash", onselect: () => router.navigate(hrefFor("messages", ["new"], { kind: "channel" })) },
     { id: "dm", label: "New DM", icon: "messages", onselect: () => router.navigate(hrefFor("messages", ["new"], { kind: "dm" })) },
   ];

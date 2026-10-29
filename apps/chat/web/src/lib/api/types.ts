@@ -18,13 +18,12 @@ export type Ms = number;
 /**
  * A conversation id names one timeline.
  * An agent's DM room is `dm_<slug>`, a root thread is its pi-host thread id, a job inside a thread is `<thread>:<conversation>`, and a
- * channel is `ch_<id>`. `/api/c/<thread id>` opens a work thread's or job's transcript.
+ * channel is `ch_<id>` and a Solo room `so_<id>`. `/api/c/<thread id>` opens a work thread's or job's transcript.
  */
 export type ConversationId = string;
 /** An agent is `ag_<slug>`. A job keeps its conversation id, and a root thread that no agent record holds yet keeps its thread id. */
 export type AgentId = string;
-export type ChannelId = string;
-/** A room the chat server stores: `dm_<slug>` for an agent's DM. */
+/** A room the chat server stores: `dm_<slug>` for an agent's DM, `ch_<id>` for a channel and `so_<id>` for a Solo room. */
 export type RoomId = string;
 
 export type ConversationKind = "solo" | "dm" | "channel" | "job";
@@ -65,8 +64,8 @@ export interface AgentSummary {
   updatedAt: Ms;
   /** The newest text it wrote, one line. */
   preview: string;
-  /** Channels it is a member of. */
-  channels: ChannelId[];
+  /** The channels and Solo rooms it is a member of. */
+  rooms: RoomId[];
   host: string;
   /** An agent's DM room, `dm_<slug>`. */
   room?: RoomId;
@@ -102,10 +101,14 @@ export interface ConversationSummary {
   parent?: ConversationId;
   /** For a dm whose agent has a comm thread: that thread's state, so the room shows typing dots while it answers. */
   commStatus?: RunStatus;
+  /** For a Solo room (`so_<id>`, kind solo): its agenda. An untitled root chat in the Solo group has none. */
+  agenda?: string;
+  /** For a closed Solo room: when the owner closed it; the sidebar folds it under "Done". */
+  closedAt?: Ms;
 }
 
 export interface Sidebar {
-  /** Root chats that no agent holds yet, newest first; agenda rooms join in phase 5. */
+  /** Solo rooms (`so_<id>`, with `agenda`), open ones first, then root chats that no agent holds, each newest first. */
   solo: ConversationSummary[];
   /** Channels he is a member of, by name. */
   channels: ConversationSummary[];
@@ -225,6 +228,12 @@ export interface ConversationHeader {
   /** Channels: the chat whose board the side panel shows. */
   homeChat?: string;
   purpose?: string;
+  /** Solo rooms: the agenda, pinned on top. */
+  agenda?: string;
+  /** A closed Solo room: it takes no posts until the owner reopens it. */
+  closedAt?: Ms;
+  /** Channels and Solo rooms: the member agents whose boards the side panel shows. */
+  boards?: AgentId[];
   readSeq?: number;
 }
 
@@ -243,8 +252,18 @@ export interface SendRequest {
 }
 export interface SendResult { item: Item; deliveries: Delivery[]; queue?: TurnPlace | null }
 
-export interface ChannelInput { name: string; purpose?: string; members?: AgentId[]; homeChat?: string }
-export interface Channel { id: ChannelId; name: string; purpose: string; homeChat?: string; createdAt: Ms; archived: boolean; members: Member[]; lastSeq: number }
+/**
+ * A channel (`ch_<id>`) or a Solo room (`so_<id>`), as `/api/rooms` returns it (agent-model.md phase 5). `agenda` is a Solo room's agenda
+ * and a channel's purpose. A DM is a room too, but it is listed by agent (`/api/dms`), never here.
+ */
+export interface Room {
+  id: RoomId; kind: "channel" | "solo"; name: string; agenda: string; homeChat?: string; createdAt: Ms; archived: boolean; closedAt?: Ms;
+  members: Member[]; lastSeq: number;
+}
+/** `POST /api/rooms`. A Solo room needs an agenda and at least one agent, and its name defaults to the agenda's start; a channel needs a name. */
+export interface RoomInput { kind: "channel" | "solo"; name?: string; agenda?: string; members?: AgentId[]; homeChat?: string }
+/** `PATCH /api/rooms/:id`. `closed` closes or reopens a Solo room. */
+export interface RoomPatch { name?: string; agenda?: string; closed?: boolean; archived?: boolean; homeChat?: string | null }
 
 /** `cwd` moves a root thread to another project folder; its next request runs there. */
 export interface ConversationPatch { name?: string; archived?: boolean; model?: string; thinkingLevel?: ThinkingLevel; cwd?: string }
@@ -419,7 +438,8 @@ export interface AgentConfig {
   swarm: {
     parent: { id: AgentId; name: string } | null;
     jobs: { id: AgentId; name: string; kind: "job" | "duty" | "root job"; status: RunStatus; createdAt: Ms | null; parent: AgentId | null; depth: number }[];
-    channels: { id: ChannelId; name: string }[];
+    /** The channels and Solo rooms it is a member of. */
+    rooms: { id: RoomId; kind: "channel" | "solo"; name: string }[];
     duties: { id: string; name: string; goal: string; schedule: string; paused: boolean; nextAt: Ms | null; lastVerdict: string | null; lastAt: Ms | null; runs: number }[];
     /** The check-in clock of its chat, when one is set. */
     checkIn: { everyMs: number; paused: boolean; nextAt: Ms | null; lastAt: Ms | null } | null;
@@ -453,7 +473,7 @@ export type LiveEvent =
   | { type: "for_you"; count: number }
   /** A chat's duty rows, sent when a run starts or ends and when a duty is paused, resumed or rescheduled. */
   | { type: "duties"; chatId: string; duties: DutyRow[] }
-  | { type: "channel"; channel: Channel }
+  | { type: "room"; room: Room }
   | { type: "error"; message: string };
 
 /** Page to server. `after` is the newest item id the page holds, so a reconnect sends only what it missed. */

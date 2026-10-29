@@ -1,4 +1,4 @@
-import { connection, sidebar as liveSidebar, type ConversationSummary, type Sidebar as SidebarData } from "$lib/api";
+import { connection, isSoloRoom, sidebar as liveSidebar, type ConversationSummary, type Sidebar as SidebarData } from "$lib/api";
 
 const FILTER_KEY = "chat.sidebarFilter";
 const WIDTH_KEY = "chat.sidebarWidth";
@@ -23,6 +23,16 @@ function write(key: string, value: string): void {
   } catch {}
 }
 
+/** The Solo group's three parts: open Solo rooms, closed ones under "Done", then the untitled root chats no agent holds. */
+export type SoloGroups = { open: ConversationSummary[]; done: ConversationSummary[]; chats: ConversationSummary[] };
+
+/** Splits the server's Solo rows, keeping its order inside each part. */
+export function soloGroups(rows: readonly ConversationSummary[]): SoloGroups {
+  const groups: SoloGroups = { open: [], done: [], chats: [] };
+  for (const row of rows) (isSoloRoom(row.id) ? (row.closedAt ? groups.done : groups.open) : groups.chats).push(row);
+  return groups;
+}
+
 /** Sidebar view state: the All, Solo and Team filter, width and collapse, over the chat server's live sidebar store. */
 class SidebarView {
   filter = $state<SidebarFilter>(parseFilter(read(FILTER_KEY)));
@@ -31,10 +41,16 @@ class SidebarView {
   /** Below 650 px the sidebar is a 220 px drawer over the main panel. The shell sets this from the window width. */
   narrow = $state(false);
   drawerOpen = $state(false);
+  /** The Solo group's "Done" fold of closed Solo rooms; folded on each load. */
+  doneOpen = $state(false);
 
   /** Live rows from GET /api/sidebar and the `sidebar` event, empty until the first answer. */
   get data(): SidebarData {
     return liveSidebar.value ?? EMPTY;
+  }
+
+  get solo(): SoloGroups {
+    return soloGroups(this.data.solo);
   }
 
   get state(): "loading" | "ready" | "offline" {

@@ -1,6 +1,6 @@
 /**
  * The fixture world: four agents with their DM rooms and work threads, a root job, jobs inside threads (one nested under another job), a
- * root chat no agent holds with a job of its own, two channels, boards with plans and asks, duties and a check-in, spread over the last five
+ * root chat no agent holds with a job of its own, two channels, an open and a closed Solo room, boards with plans and asks, duties and a check-in, spread over the last five
  * days with repeated words (canary, relay, migration) so search can rank, filter by date and by author.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -12,9 +12,9 @@ import { richReply, type FixtureHost } from "../host/fixture.ts";
 import type { ContentBlock, EntryRecord, Message } from "../host/types.ts";
 import { runStamp } from "../duty-run.ts";
 import { createEntry, EntryExists, writeBrief } from "../agent-folder.ts";
-import { AgentStore } from "../agent-store.ts";
+import { AgentStore, type RoomRow as RoomsRow } from "../agent-store.ts";
 import { fixtureFolders } from "../config.ts";
-import { writeJson, type ChannelRow, type Post, type StateFile } from "../store.ts";
+import { writeJson, type StateFile } from "../store.ts";
 
 export const FIXTURE_IDS = {
   vent: "0f1e0000-0000-4000-8000-000000000001",
@@ -28,7 +28,13 @@ export const FIXTURE_IDS = {
   solo: "0f1e0000-0000-4000-8000-000000000008",
   cutoverChannel: "ch_cutover",
   generalChannel: "ch_general",
+  /** An open Solo room with Vent and frontend bro around one agenda, three posts into sequence (d). */
+  soloRoom: "so_0f1e0001",
+  /** A closed Solo room with Vent and Crawler VP, which the sidebar folds under "Done". */
+  closedSolo: "so_0f1e0002",
 };
+
+const SOLO_AGENDA = "Pick the relay protocol between the chat server and each box: one WebSocket per box, or pi-host's socket over the tailnet.";
 
 /** The agents the seed makes, one per root chat, keyed as FIXTURE_IDS names their work threads. */
 export const FIXTURE_AGENTS = {
@@ -191,7 +197,7 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
   const state: StateFile = {
     v: 1, threads: { [ids.cutover]: { kind: "job", parent: ids.harness }, [ids.uptimeDuty]: { kind: "job", parent: ids.harness } },
     reads: {
-      [ids.vent]: { at: at(1, 3.5) }, [ids.frontend]: { at: now }, [ids.cutoverChannel]: { at: at(1), seq: 4 },
+      [ids.vent]: { at: at(1, 3.5) }, [ids.frontend]: { at: now }, [ids.cutoverChannel]: { at: at(1), seq: 4 }, [ids.soloRoom]: { at: at(0, -3), seq: 1 },
       "dm_vent": { at: at(0, -2), seq: 9 }, "dm_frontend-bro": { at: now, seq: 2 }, [`dm_${vp.slice(3)}`]: { at: at(3), seq: 2 },
     },
   };
@@ -255,29 +261,64 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
   store.saveAgents();
   store.saveRooms();
   writeJson(join(dataDir, "state.json"), state);
-  const member = (principal: string, wakeOn: "mention" | "all" = "mention") => ({ principal, role: principal === "owner" ? "owner" as const : "member" as const, wakeOn, addedAt: at(3) });
-  const channels: ChannelRow[] = [
-    { id: ids.cutoverChannel, name: "pi-cutover", purpose: "Move :5182 onto pi-host (p1128)", homeChat: ids.harness, createdAt: at(3), archived: false,
-      members: [member("owner", "all"), member(ids.harness), member(ids.crawler), member(ids.frontend)] },
-    { id: ids.generalChannel, name: "general", purpose: "Anything for every agent", createdAt: at(5), archived: false, members: [member("owner", "all"), member(ids.vent), member(ids.frontend)] },
+  // Channels and Solo rooms (group-rooms.ts): rows in rooms.json and posts in rooms/<id>.jsonl, members by agent id. The channels keep the
+  // posts the old router left, with a root job ("pi cutover prep") as one author; the open Solo room holds sequence (d)'s first hops, and the
+  // closed one sits under "Done".
+  type Group = Extract<RoomsRow, { kind: "channel" | "solo" }>;
+  const member = (agent: string, wakeOn: "mention" | "all" = "mention") => ({ agent, wakeOn, addedAt: at(3) });
+  const a = FIXTURE_AGENTS;
+  const groups: Group[] = [
+    { id: ids.cutoverChannel, kind: "channel", name: "pi-cutover", purpose: "Move :5182 onto pi-host (p1128)", homeChat: ids.harness, createdAt: at(3), archived: false,
+      members: [member(a.harness), member(a.crawler), member(a.frontend)] },
+    { id: ids.generalChannel, kind: "channel", name: "general", purpose: "Anything for every agent", createdAt: at(5), archived: false, members: [member(a.vent), member(a.frontend)] },
+    { id: ids.soloRoom, kind: "solo", name: "relay protocol", agenda: SOLO_AGENDA, createdAt: at(0, -3), archived: false, members: [member(a.vent, "all"), member(a.frontend, "all")] },
+    { id: ids.closedSolo, kind: "solo", name: "wiki cleanup", agenda: "Move the wiki's session pages older than a month into the archive.", createdAt: at(2), archived: false,
+      members: [member(a.vent, "all"), member(a.crawler, "all")], closedAt: at(1, 2) },
   ];
-  writeJson(join(dataDir, "channels.json"), { channels });
-  const d = (target: string, name: string, state: Post["deliveries"][number]["state"], when: number, extra: Partial<Post["deliveries"][number]> = {}) => ({ target, name, state, at: when, thread: target, conversation: 1, ...extra });
-  const posts: Post[] = [
-    { id: "p1", seq: 1, channel: ids.cutoverChannel, author: "owner", text: "@AI harness developer environment VP what still blocks the migration?", images: [], mentions: [ids.harness], at: at(3, 1), hops: 0, deliveries: [d(ids.harness, "AI harness developer environment VP", "answered", at(3, 1.1), { answerPost: "p2" })] },
-    { id: "p2", seq: 2, channel: ids.cutoverChannel, author: ids.harness, text: "Two of five: cross-box messaging and the canary send key, both with CI and RepoOps.", images: [], mentions: [], threadRoot: "p1", at: at(3, 1.1), hops: 1, deliveries: [] },
-    { id: "p3", seq: 3, channel: ids.cutoverChannel, author: ids.crawler, text: "The crawler still uses the old relay port.", images: [], mentions: [], threadRoot: "p1", at: at(2, 1), hops: 1, deliveries: [] },
-    { id: "p4", seq: 4, channel: ids.cutoverChannel, author: ids.cutover, text: "Canary send key is in 32dac069. The migration list has one open item fewer.", images: [], mentions: [], at: at(1, 2), hops: 1, deliveries: [] },
-    { id: "p5", seq: 5, channel: ids.cutoverChannel, author: "owner", text: "@Crawler VP is the crawler on us-metal01 still using the old relay port?", images: [], mentions: [ids.crawler], at: at(0, -4), hops: 0, deliveries: [d(ids.crawler, "Crawler VP", "no_reply", at(0, -3.9))] },
-    { id: "p6", seq: 6, channel: ids.cutoverChannel, author: ids.harness, text: "@owner the production cutover needs your pick of a day, t1 on my board.", images: [], mentions: ["owner"], at: at(0, -2), hops: 1, deliveries: [] },
-    { id: "p7", seq: 7, channel: ids.cutoverChannel, author: "owner", text: "@frontend bro can you check the relay page on the canary?", images: [], mentions: [ids.frontend], at: at(0, -1), hops: 0, deliveries: [d(ids.frontend, "frontend bro", "queued", at(0, -1))] },
-    { id: "p1", seq: 1, channel: ids.generalChannel, author: "owner", text: "Morning. The canary relay is back after the Mac woke up.", images: [], mentions: [], at: at(2, 0), hops: 0, deliveries: [] },
-    { id: "p2", seq: 2, channel: ids.generalChannel, author: ids.vent, text: "Confirmed, the relay log is clean since 02:11.", images: [], mentions: [], threadRoot: "p1", at: at(2, 0.2), hops: 1, deliveries: [] },
-  ];
-  mkdirSync(join(dataDir, "channels"), { recursive: true });
-  for (const channel of [ids.cutoverChannel, ids.generalChannel]) {
-    writeFileSync(join(dataDir, "channels", `${channel}.jsonl`), posts.filter(p => p.channel === channel).map(post => JSON.stringify({ t: "post", post })).join("\n") + "\n");
-  }
+  store.rooms.rooms.push(...groups);
+  // Crawler VP's comm thread in #pi-cutover is mid-turn on the owner's p5, so the channel row shows a member answering (typing dots).
+  const crawlerComm = host.addThread({ name: "Crawler VP · #pi-cutover", createdAt: at(0, -4), status: "running" });
+  crawlerComm.row.cwd = join(dataDir, "work", "crawler");
+  user(crawlerComm, 1, "[#pi-cutover · post 5 from You (owner) · hops 0]\n\n@Crawler VP is the crawler on us-metal01 still using the old relay port?", at(0, -3.9));
+  const crawlerRecord = store.agents.agents.find(r => r.id === a.crawler)!;
+  crawlerRecord.comm = { [ids.cutoverChannel]: crawlerComm.row.id };
+  const crawlerInput = crawlerComm.entries.at(-1)!.id;
+  store.rooms.commFeed = { [crawlerComm.row.id]: { thread: crawlerComm.row.id, entry: crawlerInput, open: {}, turn: { input: crawlerInput, channel: false, post: "p5", hops: 0 } } };
+  store.saveAgents();
+  store.saveRooms();
+  type Seeded = { author: string; text: string; when: number; hops: number; mentions?: string[]; threadRoot?: string; to?: string[]; why?: string; thread?: string };
+  const seed = (room: string, posts: Seeded[]) => {
+    for (const draft of posts) {
+      const id = `p${(store.postsOf(room).at(-1)?.seq ?? 0) + 1}`;
+      store.append({
+        room, author: draft.author, text: draft.text, images: [], at: draft.when, requestId: `seed:${room}:${id}`, hops: draft.hops, mentions: draft.mentions ?? [],
+        ...(draft.threadRoot ? { threadRoot: draft.threadRoot } : {}), ...(draft.why ? { why: draft.why } : {}),
+        deliveries: (draft.to ?? []).map(target => ({ target, state: "delivered" as const, attempts: 1, at: draft.when, requestId: `d:${room}:${id}:${target}`, ...(draft.thread ? { thread: draft.thread } : {}) })),
+      });
+    }
+  };
+  seed(ids.cutoverChannel, [
+    { author: "owner", text: "@AI harness developer environment VP what still blocks the migration?", mentions: [a.harness], when: at(3, 1), hops: 0, to: [a.harness] },
+    { author: a.harness, text: "Two of five: cross-box messaging and the canary send key, both with CI and RepoOps.", threadRoot: "p1", when: at(3, 1.1), hops: 1 },
+    { author: a.crawler, text: "The crawler still uses the old relay port.", threadRoot: "p1", when: at(2, 1), hops: 1 },
+    { author: ids.cutover, text: "Canary send key is in 32dac069. The migration list has one open item fewer.", when: at(1, 2), hops: 1 },
+    { author: "owner", text: "@Crawler VP is the crawler on us-metal01 still using the old relay port?", mentions: [a.crawler], when: at(0, -4), hops: 0, to: [a.crawler], thread: crawlerComm.row.id },
+    { author: a.harness, text: "@owner the production cutover needs your pick of a day, t1 on my board.", mentions: ["owner"], when: at(0, -2), hops: 1 },
+    { author: "owner", text: "@frontend bro can you check the relay page on the canary?", mentions: [a.frontend], when: at(0, -1), hops: 0, to: [a.frontend] },
+  ]);
+  seed(ids.generalChannel, [
+    { author: "owner", text: "Morning. The canary relay is back after the Mac woke up.", when: at(2, 0), hops: 0 },
+    { author: a.vent, text: "Confirmed, the relay log is clean since 02:11.", threadRoot: "p1", when: at(2, 0.2), hops: 1 },
+  ]);
+  seed(ids.soloRoom, [
+    { author: "owner", text: SOLO_AGENDA, when: at(0, -3), hops: 0, to: [a.vent, a.frontend] },
+    { author: a.vent, text: "One WebSocket per box, and the chat server dials it. A reconnect resumes from the last cursor.", when: at(0, -2.9), hops: 1, to: [a.frontend] },
+    { author: a.frontend, text: "Fine for the web. The Mac sleeps at night, so deliveries to it must queue until it wakes.", when: at(0, -2.8), hops: 2, to: [a.vent] },
+  ]);
+  seed(ids.closedSolo, [
+    { author: "owner", text: "Move the wiki's session pages older than a month into the archive.", when: at(2), hops: 0, to: [a.vent, a.crawler] },
+    { author: a.crawler, text: "Done: 41 session pages moved to the archive, and the index links to them.", when: at(1, 1), hops: 1, to: [a.vent], why: "done" },
+  ]);
 
   const duty = (id: string, name: string, goal: string, metricKey: string, target: number): Duty => ({
     id, name, ownerWords: `keep ${name.toLowerCase()} healthy`, goal, metrics: [{ key: metricKey, label: name, op: ">=", target, unit: "%", headline: true }],

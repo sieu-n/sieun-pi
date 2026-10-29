@@ -329,6 +329,7 @@ export class Timeline {
       if (event.type === "items" && event.conversation === id) this.upsert(event.items, event.removed);
       else if (event.type === "status" && event.conversation === id) this.status = event.status;
       else if (event.type === "queue" && event.conversation === id) this.queue = event.place;
+      else if (event.type === "room" && event.room.id === id) void this.refreshHeader();
     });
     void this.load(opts.around);
   }
@@ -347,6 +348,15 @@ export class Timeline {
       this.error = message(error);
     } finally {
       this.loading = false;
+    }
+  }
+
+  /** Reads the header again, after a room's name, agenda, members or closed state changed. */
+  async refreshHeader(): Promise<void> {
+    try {
+      this.header = await api.header(this.id);
+    } catch (error) {
+      this.error = message(error);
     }
   }
 

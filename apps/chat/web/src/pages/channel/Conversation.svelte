@@ -1,15 +1,21 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { agents, api, boardStore, conversations, jobs, me, timeline, type Item } from "$lib/api";
+  import { agents, api, boardStore, conversations, isSoloRoom, jobs, me, timeline, type Item } from "$lib/api";
   import { openTarget } from "$pages/agents/agents-model";
   import BoardPanel from "$pages/board/BoardPanel.svelte";
   import { boardHref, boardTitles, rememberTitles } from "$pages/board/chips";
   import { conversationHref, router } from "$lib/router.svelte";
   import { search } from "$lib/shell/search.svelte";
   import { sidePanel } from "$lib/shell/side-panel.svelte";
+  import Avatar from "$lib/ui/Avatar.svelte";
   import AvatarStack from "$lib/ui/AvatarStack.svelte";
   import Button from "$lib/ui/Button.svelte";
+  import Chip from "$lib/ui/Chip.svelte";
+  import Icon from "$lib/ui/Icon.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
+  import Picker from "$lib/ui/Picker.svelte";
+  import Tabs from "$lib/ui/Tabs.svelte";
+  import { stampLabel } from "$lib/ui/datetime";
   import Menu from "$lib/ui/Menu.svelte";
   import PanelHeader from "$lib/ui/PanelHeader.svelte";
   import TypingDots from "$lib/ui/TypingDots.svelte";
@@ -22,7 +28,7 @@
   import ThreadPane from "./ThreadPane.svelte";
   import Timeline from "./Timeline.svelte";
   import { directory } from "./directory.svelte";
-  import { avatarKind, mentionContext, placeText, type Outgoing } from "./present";
+  import { agentPickerItems, avatarKind, mentionContext, placeText, type Outgoing } from "./present";
 
   type Props = { id: string; around?: string };
   let { id, around }: Props = $props();
@@ -41,6 +47,9 @@
   const kind = $derived(summary?.kind ?? (id.startsWith("ch_") ? "channel" : "solo"));
   const isChannel = $derived(kind === "channel");
   const isDm = $derived(kind === "dm");
+  /** A Solo room (`so_<id>`): its agenda is pinned on top, its members are edited here, and the owner closes it when the agenda is done. */
+  const isSolo = $derived(isSoloRoom(id));
+  const closedAt = $derived(header?.closedAt ?? null);
   /** A DM's agent works in its work thread, which `Open work thread` shows as today's transcript. */
   const workThread = $derived(header?.workThread ?? null);
   const name = $derived(summary?.name ?? "");
@@ -68,6 +77,13 @@
       : summary?.working.length ? summary.working.map((w) => w.name) : working && agent ? [agent.name] : working && others.length === 1 ? [others[0]!.principal.name] : [],
   );
   const boardChat = $derived(isChannel ? (header?.homeChat ?? null) : agent?.kind === "chat" ? agent.id : null);
+  /** A Solo room's side panel shows the board of one invited agent at a time, picked by a tab. */
+  const soloBoards = $derived(isSolo ? (header?.boards ?? []) : []);
+  let soloBoardPick = $state<string | null>(null);
+  const soloBoard = $derived(soloBoardPick && soloBoards.includes(soloBoardPick) ? soloBoardPick : (soloBoards[0] ?? null));
+  /** The board the side pane and the Board button open: the Solo room's picked agent, or the chat's own board. */
+  const paneBoard = $derived(isSolo ? soloBoard : boardChat);
+  const memberName = (agentId: string): string => others.find((m) => m.principal.id === agentId)?.principal.name ?? agents.byId(agentId)?.name ?? agentId;
 
   const jobsOf = (item: Item) => (item.kind === "turn" ? item.jobs : item.kind === "message" ? (item.jobs ?? []) : []);
 
@@ -96,7 +112,7 @@
   $effect(() => {
     const key = threadParam;
     const title = threadTitle;
-    const board = boardParam && boardChat ? boardChat : null;
+    const board = boardParam && paneBoard ? paneBoard : null;
     if (!key && !board) {
       if (paneKey) sidePanel.close(paneKey);
       paneKey = null;
@@ -109,7 +125,7 @@
       } });
     } else if (board) {
       paneKey = `board:${board}`;
-      sidePanel.open({ key: paneKey, title: "Board", icon: "board", body: boardPane, actions: boardActions, onclose: () => {
+      sidePanel.open({ key: paneKey, title: isSolo ? `Board of ${memberName(board)}` : "Board", icon: "board", body: boardPane, actions: boardActions, onclose: () => {
         if (!leaving) router.setParams({ board: null });
       } });
     }
@@ -196,6 +212,42 @@
     return store.send(out.text, { images: out.images, mentions: out.mentions });
   }
 
+  const fail = (error: unknown) => toast.error(error instanceof Error ? error.message : "That did not work");
+
+  async function setClosed(closed: boolean) {
+    try {
+      await api.updateRoom(id, { closed });
+      await store.refreshHeader();
+      toast.show(closed ? "Room closed" : "Room reopened");
+    } catch (error) {
+      fail(error);
+    }
+  }
+
+  let inviteOpen = $state(false);
+  let inviteAnchor = $state<HTMLElement>();
+  const inviteItems = $derived(agentPickerItems(agents.list).filter((item) => !others.some((m) => m.principal.id === item.id)));
+
+  async function addMember(agentId: string) {
+    try {
+      await api.addMembers(id, [agentId]);
+      await store.refreshHeader();
+    } catch (error) {
+      fail(error);
+    }
+  }
+
+  async function removeMember(agentId: string) {
+    try {
+      await api.removeMember(id, agentId);
+      await store.refreshHeader();
+    } catch (error) {
+      fail(error);
+    }
+  }
+
+  let agendaOpen = $state(false);
+
   function stop() {
     void store.stop().then(
       () => toast.show("Stopping"),
@@ -206,11 +258,16 @@
   const menuItems = $derived<MenuEntry[]>([
     { id: "search", label: "Search in this conversation", icon: "search", shortcut: "⌘F", onselect: () => search.open({ kind: "conversation", id }) },
     { id: "link", label: "Copy link", icon: "link", onselect: () => void navigator.clipboard.writeText(`${location.origin}${location.pathname}${conversationHref(id)}`).then(() => toast.show("Link copied")) },
-    ...(boardChat
+    ...(paneBoard
       ? [
-          { id: "board", label: "Show board", icon: "board", onselect: () => openBoard() },
-          { id: "board-page", label: "Open board page", icon: "external", onselect: () => router.navigate(boardHref(boardChat)) },
+          { id: "board", label: isSolo ? "Show boards" : "Show board", icon: "board", onselect: () => openBoard() },
+          { id: "board-page", label: "Open board page", icon: "external", onselect: () => router.navigate(boardHref(paneBoard)) },
         ]
+      : []),
+    ...(isSolo && header
+      ? [closedAt
+          ? { id: "reopen", label: "Reopen room", icon: "refresh", onselect: () => void setClosed(false) }
+          : { id: "close", label: "Close room", icon: "check", onselect: () => void setClosed(true) }]
       : []),
     ...(working ? [{ type: "separator" as const }, { id: "stop", label: "Stop", icon: "stop", onselect: stop }] : []),
   ]);
@@ -244,15 +301,20 @@
 {/snippet}
 
 {#snippet boardPane()}
-  {#if boardChat}
-    {#key `${boardChat}|${boardFocus ?? ""}`}
-      <div class="board-pane" data-testid="board-pane"><BoardPanel chatId={boardChat} where="panel" focus={boardFocus} onboardid={(boardId) => openBoard(boardId)} /></div>
+  {#if paneBoard}
+    {#if soloBoards.length > 1}
+      <div class="board-tabs">
+        <Tabs items={soloBoards.map((agentId) => ({ id: agentId, label: memberName(agentId) }))} value={paneBoard} variant="underline" size="sm" label="Boards" onchange={(agentId) => (soloBoardPick = agentId)} />
+      </div>
+    {/if}
+    {#key `${paneBoard}|${boardFocus ?? ""}`}
+      <div class="board-pane" data-testid="board-pane" data-board-chat={paneBoard}><BoardPanel chatId={paneBoard} where="panel" focus={boardFocus} onboardid={(boardId) => openBoard(boardId)} /></div>
     {/key}
   {/if}
 {/snippet}
 
 {#snippet boardActions()}
-  {#if boardChat}<IconButton icon="external" label="Open board page" size="sm" onclick={() => router.navigate(boardHref(boardChat, boardFocus ?? undefined))} />{/if}
+  {#if paneBoard}<IconButton icon="external" label="Open board page" size="sm" onclick={() => router.navigate(boardHref(paneBoard, boardFocus ?? undefined))} />{/if}
 {/snippet}
 
 {#snippet titleContent()}
@@ -272,14 +334,36 @@
   {#if working}
     <IconButton icon="stop" label="Stop" size="sm" onclick={stop} data-testid="header-stop" />
   {/if}
-  {#if boardChat}
-    <IconButton icon="board" label="Board" size="sm" pressed={!!boardParam} onclick={() => (boardParam ? router.setParams({ board: null }) : openBoard())} data-testid="board-button" />
+  {#if isSolo && header && !closedAt}
+    <Button variant="ghost" size="sm" icon="check" onclick={() => void setClosed(true)} data-testid="solo-close">Close</Button>
   {/if}
-  <IconButton icon="more" label={isChannel ? "Channel actions" : isDm ? "Conversation actions" : "Chat actions"} size="sm" bind:element={menuAnchor} onclick={() => (menuOpen = !menuOpen)} />
+  {#if paneBoard}
+    <IconButton icon="board" label={isSolo ? "Boards" : "Board"} size="sm" pressed={!!boardParam} onclick={() => (boardParam ? router.setParams({ board: null }) : openBoard())} data-testid="board-button" />
+  {/if}
+  <IconButton icon="more" label={isChannel ? "Channel actions" : isSolo ? "Room actions" : isDm ? "Conversation actions" : "Chat actions"} size="sm" bind:element={menuAnchor} onclick={() => (menuOpen = !menuOpen)} />
 {/snippet}
 
 <section class="conversation" data-conversation={id} data-kind={kind}>
-  <PanelHeader icon={isChannel ? "hash" : kind === "solo" ? "chat" : "robot"} {titleContent} {actions} />
+  <PanelHeader icon={isChannel ? "hash" : isSolo ? "users" : kind === "solo" ? "chat" : "robot"} {titleContent} {actions} />
+  {#if isSolo && header}
+    <div class="solo-bar" data-testid="solo-agenda">
+      <div class="agenda">
+        <Icon name="pin" size={14} />
+        <p class="agenda-text" class:open={agendaOpen} data-testid="solo-agenda-text">{header.agenda ?? ""}</p>
+        {#if (header.agenda ?? "").length > 140 || (header.agenda ?? "").includes("\n")}
+          <button type="button" class="agenda-more t-caption" aria-expanded={agendaOpen} onclick={() => (agendaOpen = !agendaOpen)}>{agendaOpen ? "Less" : "More"}</button>
+        {/if}
+      </div>
+      <div class="roster" data-testid="solo-members" aria-label="Members">
+        {#each others as member (member.principal.id)}
+          <Chip size="sm" label={member.principal.name} removeLabel="Remove {member.principal.name}" onremove={() => void removeMember(member.principal.id)}>
+            {#snippet leading()}<Avatar name={member.principal.name} kind="agent" seed={member.principal.id} size={16} status={statusOf(member.principal.id)} />{/snippet}
+          </Chip>
+        {/each}
+        <Button variant="ghost" size="sm" icon="plus" bind:element={inviteAnchor} onclick={() => (inviteOpen = true)}>Add agents</Button>
+      </div>
+    </div>
+  {/if}
   <Timeline
     {items}
     loading={store.loading}
@@ -319,6 +403,13 @@
       <a class="work-pill" href={conversationHref(workThread)} title="Open the work thread" data-testid="work-pill"><TypingDots mode="working" size={3} />Work</a>
     {/if}
   </div>
+  {#if closedAt}
+    <div class="closed" role="status" data-testid="closed-banner">
+      <Icon name="lock" size={16} />
+      <span title="Closed {stampLabel(closedAt)}">You closed this room. Agents get no posts until you reopen it.</span>
+      <Button variant="outline" size="sm" onclick={() => void setClosed(false)} data-testid="solo-reopen">Reopen</Button>
+    </div>
+  {:else}
   <Composer
     bind:this={composer}
     placeholder={isChannel ? `Message #${name}` : name ? `Message ${name}` : "Message"}
@@ -330,9 +421,13 @@
     onsend={send}
     onstop={stop}
   />
+  {/if}
 </section>
 
 <Menu bind:open={menuOpen} anchor={menuAnchor} items={menuItems} placement="bottom-end" />
+{#if isSolo}
+  <Picker bind:open={inviteOpen} anchor={inviteAnchor} items={inviteItems} searchable label="Add agents" emptyText="Every agent is in this room" onselect={(agentId) => void addMember(agentId)} />
+{/if}
 
 <style>
   .conversation {
@@ -357,6 +452,77 @@
     white-space: nowrap;
     color: var(--text-subtle);
     font: var(--text-caption);
+  }
+  .solo-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border-standard);
+    background: var(--surface-inset);
+  }
+  .agenda {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    color: var(--text-standard);
+  }
+  .agenda :global(.icon) {
+    flex: none;
+    margin-top: 3px;
+    color: var(--text-subtle);
+  }
+  .agenda-text {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    font: var(--text-body-sm);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+  }
+  .agenda-text.open {
+    display: block;
+  }
+  .agenda-more {
+    flex: none;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-subtle);
+    cursor: pointer;
+  }
+  .agenda-more:hover {
+    color: var(--text-standard);
+  }
+  .roster {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+  .closed {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: min(calc(100% - 32px), 52rem);
+    margin: 0 auto 16px;
+    padding: 12px 16px;
+    border: 1px solid var(--border-standard);
+    border-radius: var(--radius-container);
+    color: var(--text-subtle);
+    font: var(--text-body-sm);
+  }
+  .closed span {
+    flex: 1;
+  }
+  .board-tabs {
+    padding: 0 12px;
+    border-bottom: 1px solid var(--border-standard);
   }
   .board-pane {
     height: 100%;

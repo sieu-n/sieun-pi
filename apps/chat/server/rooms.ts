@@ -7,11 +7,12 @@
  * 2. The feed reads the comm thread's entries after its cursor and turns each speaking call (`tell_owner`, `send_message` with no `to`) whose
  *    result says it went out into an agent post, and the jobs its turn started into the post's job pills. Only these calls and the owner's own
  *    room posts become posts: a plain input a job, a script or another chat submits to the thread is the thread's, not the room's. A turn
- *    a channel post started speaks to the channel (channels.ts), so it posts nothing here. An agent with no comm thread yet has its feed on
+ *    an old channel mention started in the work thread spoke to that channel, so it posts nothing here. An agent with no comm thread yet has its feed on
  *    the work thread; when the comm thread comes, the feed reads the work thread to its end once and then reads only the comm thread.
  * 3. A restart resumes each cursor and delivers every post still `sending` again with the same request id, which pi-host keeps once.
  *
- * Every post has one dedup key (`requestId`), so a repeated send or a re-read page lands nothing twice.
+ * Every post has one dedup key (`requestId`), so a repeated send or a re-read page lands nothing twice. The feed reader (`readFeedThread`) is
+ * shared with the channels and Solo rooms in group-rooms.ts, which give their own `FeedSide`.
  */
 import type { ConversationSummary, Delivery, ImageRef, ImageUpload, Item, JobRef, RunStatus, SendRequest, SendResult, TimelinePage } from "../web/src/lib/api/types.ts";
 import { serverNote, TELL_OWNER_HELD, TELL_OWNER_TOOL } from "../web/src/lib/api/shared/chat-feed.ts";
@@ -55,7 +56,10 @@ const blocks = (message: Message | undefined): ContentBlock[] =>
   !message ? [] : typeof message.content === "string" ? [{ type: "text", text: message.content }] : message.content;
 const textOf = (message: Message | undefined): string => blocks(message).flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n");
 
-/** A channel delivery's input names its channel as `#<name>` (channels.ts); its turn speaks to the channel. */
+/**
+ * Before phase 5 a channel mention went to the work thread as an agent message whose `via` named the channel (`#<name>`), and its turn spoke
+ * to the channel. Only old work-thread history holds such inputs now; a channel post goes to the member's comm thread (group-rooms.ts).
+ */
 export const isChannelVia = (via: unknown): boolean => typeof via === "string" && (via.startsWith("#") || via.startsWith("ch_"));
 
 const SKILL_BLOCK = /<skill\b[^>]*>[\s\S]*?<\/skill>/g;
@@ -82,6 +86,109 @@ function jobsIn(thread: string, message: Message): string[] {
 }
 
 const held = (message: Message): boolean => message.toolName === TELL_OWNER_TOOL && textOf(message).startsWith(TELL_OWNER_HELD);
+
+/** What the feed knows of a speaking call that went out: the post's text, time, dedup key, why, the entry that holds it, and the turn's jobs. */
+export interface Spoken {
+  text: string;
+  at: number;
+  requestId: string;
+  why?: string;
+  source: { thread: string; conversation: number; entry: number };
+  jobs?: string[];
+}
+
+/**
+ * One room's side of a feed read, which the DM (this file) and the group rooms (group-rooms.ts) each give: how an input starts a turn,
+ * whether the turn's speaking calls post in the room, and how such a call becomes a post.
+ */
+export interface FeedSide {
+  room: RoomId;
+  turn(entry: EntryRecord, previous: FeedCursor["turn"]): NonNullable<FeedCursor["turn"]>;
+  speaks(turn: FeedCursor["turn"]): boolean;
+  /** Whether a send_message `to` names this room; a call with any other `to` speaks elsewhere and posts nothing here. */
+  aimedHere(to: string): boolean;
+  post(spoken: Spoken, turn: FeedCursor["turn"]): RoomPost;
+}
+
+/**
+ * Reads the thread after the cursor, page by page, and turns each speaking call whose result says it went out into a post, and the jobs a
+ * turn started into its post's job pills. The cursor is saved after each page; `changed` gets the posts each page wrote or changed.
+ */
+export async function readFeedThread(host: Host, store: AgentStore, side: FeedSide, thread: string, cursor: FeedCursor, changed: (posts: RoomPost[]) => void): Promise<void> {
+  for (;;) {
+    const page = await host.entries(thread, { conversation: 1, after: cursor.entry, limit: FEED_PAGE });
+    const touched = new Map<string, RoomPost>();
+    for (const entry of page.entries) {
+      if (entry.id <= cursor.entry) continue;
+      readFeedEntry(store, side, thread, cursor, entry, touched);
+      cursor.entry = entry.id;
+    }
+    store.saveRooms();
+    if (touched.size) changed([...touched.values()]);
+    if (!page.more || !page.entries.length) return;
+  }
+}
+
+function readFeedEntry(store: AgentStore, side: FeedSide, thread: string, cursor: FeedCursor, entry: EntryRecord, touched: Map<string, RoomPost>): void {
+  const message = entry.model?.[0];
+  if (isInput(entry)) {
+    cursor.turn = side.turn(entry, cursor.turn);
+    return;
+  }
+  if (!side.speaks(cursor.turn)) return;
+  if (message?.role === "assistant") {
+    for (const block of blocks(message)) {
+      const sent = sentMessage(block);
+      if (!sent || (sent.to && !side.aimedHere(sent.to)) || block.type !== "toolCall") continue;
+      const why = typeof block.arguments?.why === "string" && block.arguments.why.trim() ? block.arguments.why.trim() : undefined;
+      cursor.open[sent.id] = { text: sent.text, entry: entry.id, ...(why ? { why } : {}) };
+    }
+    return;
+  }
+  if (message?.role !== "toolResult") return;
+  const call = message.toolCallId ? cursor.open[message.toolCallId] : undefined;
+  if (call && message.toolCallId) {
+    delete cursor.open[message.toolCallId];
+    if (!message.isError && !held(message)) {
+      const pending = cursor.turn?.jobs;
+      const post = side.post({
+        text: call.text, at: message.timestamp ?? Date.now(), requestId: `m:${thread}:${message.toolCallId}`, ...(call.why ? { why: call.why } : {}),
+        source: { thread, conversation: 1, entry: call.entry }, ...(pending?.length ? { jobs: pending } : {}),
+      }, cursor.turn);
+      touched.set(post.id, post);
+      if (cursor.turn) {
+        cursor.turn.lastPost = post.id;
+        delete cursor.turn.jobs;
+      }
+    }
+  }
+  const jobs = jobsIn(thread, message);
+  if (!jobs.length) return;
+  cursor.turn ??= { input: entry.id, channel: false };
+  const last = cursor.turn.lastPost ? store.postsOf(side.room).find(p => p.id === cursor.turn!.lastPost) : undefined;
+  if (last) {
+    const all = [...new Set([...(last.jobs ?? []), ...jobs])];
+    if (all.length !== (last.jobs ?? []).length) {
+      store.set(last, { jobs: all });
+      touched.set(last.id, last);
+    }
+  } else cursor.turn.jobs = [...new Set([...(cursor.turn.jobs ?? []), ...jobs])];
+}
+
+/** An agent post's why, its "Show work" link to the turn that holds its call, and its job pills. */
+export function agentPostParts(threads: Threads, post: RoomPost): { why?: string; work?: { conversation: string; around: string }; jobs?: JobRef[] } {
+  const thread = post.source?.thread;
+  const jobs: JobRef[] = (post.jobs ?? []).map(id => {
+    const [jobThread, n] = [id.slice(0, id.lastIndexOf(":")), Number(id.slice(id.lastIndexOf(":") + 1))];
+    const node = threads.tree(jobThread).find(x => x.id === n);
+    return { conversation: id, name: node?.name ?? `job ${n}`, status: threads.statusOfConversation(jobThread, n), replies: 0, lastAt: node?.createdAt ?? post.at };
+  });
+  return {
+    ...(post.why ? { why: post.why } : {}),
+    ...(post.source ? { work: { conversation: post.source.conversation === 1 ? post.source.thread : `${post.source.thread}:${post.source.conversation}`, around: `e${post.source.entry}` } } : {}),
+    ...(jobs.length ? { jobs } : {}),
+  };
+}
 
 /** The `via` of a test send's agent message: the post itself, delivered after its mark, and the notice for one the owner's delivery took. */
 export const TEST_SEND_VIA = "test-send";
@@ -413,65 +520,18 @@ export class Rooms {
   }
 
   private async readThread(record: AgentRecord, cursor: FeedCursor): Promise<void> {
-    const thread = cursor.thread ?? record.workThread;
-    for (;;) {
-      const page = await this.deps.host.entries(thread, { conversation: 1, after: cursor.entry, limit: FEED_PAGE });
-      const touched = new Map<string, RoomPost>();
-      for (const entry of page.entries) {
-        if (entry.id <= cursor.entry) continue;
-        this.read(record, thread, cursor, entry, touched);
-        cursor.entry = entry.id;
-      }
-      this.store.saveRooms();
-      if (touched.size) this.changed(record, [...touched.values()]);
-      if (!page.more || !page.entries.length) return;
-    }
+    await readFeedThread(this.deps.host, this.store, this.dmSide(record), cursor.thread ?? record.workThread, cursor, posts => this.changed(record, posts));
   }
 
-  private read(record: AgentRecord, thread: string, cursor: FeedCursor, entry: EntryRecord, touched: Map<string, RoomPost>): void {
-    const message = entry.model?.[0];
-    if (isInput(entry)) {
-      cursor.turn = { input: entry.id, channel: entry.kind === "agent.message" && isChannelVia((entry.data as { via?: unknown } | undefined)?.via) };
-      return;
-    }
-    if (cursor.turn?.channel) return;
-    if (message?.role === "assistant") {
-      for (const block of blocks(message)) {
-        const sent = sentMessage(block);
-        if (!sent || sent.to || block.type !== "toolCall") continue;
-        const why = typeof block.arguments?.why === "string" && block.arguments.why.trim() ? block.arguments.why.trim() : undefined;
-        cursor.open[sent.id] = { text: sent.text, entry: entry.id, ...(why ? { why } : {}) };
-      }
-      return;
-    }
-    if (message?.role !== "toolResult") return;
-    const call = message.toolCallId ? cursor.open[message.toolCallId] : undefined;
-    if (call && message.toolCallId) {
-      delete cursor.open[message.toolCallId];
-      if (!message.isError && !held(message)) {
-        const pending = cursor.turn?.jobs;
-        const { post } = this.store.append({
-          room: record.room, author: record.id, text: call.text, images: [], at: message.timestamp ?? Date.now(), requestId: `m:${thread}:${message.toolCallId}`,
-          ...(call.why ? { why: call.why } : {}), source: { thread, conversation: 1, entry: call.entry }, ...(pending?.length ? { jobs: pending } : {}),
-        });
-        touched.set(post.id, post);
-        if (cursor.turn) {
-          cursor.turn.lastPost = post.id;
-          delete cursor.turn.jobs;
-        }
-      }
-    }
-    const jobs = jobsIn(thread, message);
-    if (!jobs.length) return;
-    cursor.turn ??= { input: entry.id, channel: false };
-    const last = cursor.turn.lastPost ? this.store.postsOf(record.room).find(p => p.id === cursor.turn!.lastPost) : undefined;
-    if (last) {
-      const all = [...new Set([...(last.jobs ?? []), ...jobs])];
-      if (all.length !== (last.jobs ?? []).length) {
-        this.store.set(last, { jobs: all });
-        touched.set(last.id, last);
-      }
-    } else cursor.turn.jobs = [...new Set([...(cursor.turn.jobs ?? []), ...jobs])];
+  /** The DM's side of the feed: a turn a channel post started in the work thread before phase 5 speaks to that channel, so it posts nothing here. */
+  private dmSide(record: AgentRecord): FeedSide {
+    return {
+      room: record.room,
+      turn: entry => ({ input: entry.id, channel: entry.kind === "agent.message" && isChannelVia((entry.data as { via?: unknown } | undefined)?.via) }),
+      speaks: turn => !turn?.channel,
+      aimedHere: () => false,
+      post: spoken => this.store.append({ room: record.room, author: record.id, images: [], ...spoken }).post,
+    };
   }
 
   // Reading
@@ -487,22 +547,10 @@ export class Rooms {
         : [];
       return {
         ...base, author: test?.by ?? OWNER, deliveries, requestId: post.requestId, ...(test ? { testSend: test } : {}),
-        ...(d ? { send: d.state === "delivered" ? "sent" as const : d.state, ...(d.error ? { sendError: d.error } : {}) } : {}),
+        ...(d ? { send: d.state === "delivered" ? "sent" as const : d.state === "stopped" ? "failed" as const : d.state, ...(d.error ? { sendError: d.error } : {}) } : {}),
       };
     }
-    const thread = post.source?.thread ?? record?.workThread;
-    const tree = thread ? this.deps.threads.tree(thread) : [];
-    const jobs: JobRef[] = (post.jobs ?? []).map(id => {
-      const [jobThread, n] = [id.slice(0, id.lastIndexOf(":")), Number(id.slice(id.lastIndexOf(":") + 1))];
-      const node = (jobThread === thread ? tree : this.deps.threads.tree(jobThread)).find(x => x.id === n);
-      return { conversation: id, name: node?.name ?? `job ${n}`, status: this.deps.threads.statusOfConversation(jobThread, n), replies: 0, lastAt: node?.createdAt ?? post.at };
-    });
-    return {
-      ...base, author: this.deps.threads.principal(post.author), deliveries: [],
-      ...(post.why ? { why: post.why } : {}),
-      ...(post.source ? { work: { conversation: post.source.conversation === 1 ? post.source.thread : `${post.source.thread}:${post.source.conversation}`, around: `e${post.source.entry}` } } : {}),
-      ...(jobs.length ? { jobs } : {}),
-    };
+    return { ...base, author: this.deps.threads.principal(post.author), deliveries: [], ...agentPostParts(this.deps.threads, post) };
   }
 
   /** A page of the room's posts, oldest first; `before`, `after` and `around` are post ids. */

@@ -253,7 +253,7 @@
         <dt>Swarm</dt>
         <dd data-fact="swarm">
           {plural(config.swarm.jobs.length, "job")}{config.swarm.jobs.some((j) => j.status === "working") ? `, ${config.swarm.jobs.filter((j) => j.status === "working").length} working` : ""}
-          · {plural(config.swarm.channels.length, "channel")} · {plural(config.swarm.duties.length, "duty", "duties")}
+          · {plural(config.swarm.rooms.length, "room")} · {plural(config.swarm.duties.length, "duty", "duties")}
         </dd>
         {#if config.usage}
           <dt>Last 7 days</dt>
@@ -380,13 +380,13 @@
           {/each}
         </ul>
       </section>
-      <section class="block" aria-label="Channels">
-        <h3 class="t-caption heading">Channels</h3>
+      <section class="block" aria-label="Rooms">
+        <h3 class="t-caption heading">Channels and Solo rooms</h3>
         <div class="chips">
-          {#each config.swarm.channels as channel (channel.id)}
-            <a class="channel" href={conversationHref(channel.id)}><Chip size="sm" icon="hash" label={channel.name} /></a>
+          {#each config.swarm.rooms as room (room.id)}
+            <a class="channel" href={conversationHref(room.id)}><Chip size="sm" icon={room.kind === "solo" ? "chat" : "hash"} label={room.name} /></a>
           {:else}
-            <span class="t-caption meta">In no channel.</span>
+            <span class="t-caption meta">In no channel or Solo room.</span>
           {/each}
         </div>
       </section>
@@ -456,6 +456,9 @@
   }
   .model {
     display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
   }
   .actions {
     display: flex;

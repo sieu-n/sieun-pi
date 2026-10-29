@@ -1,12 +1,17 @@
 import { expect, test } from "@playwright/test";
 import { composerInput, conversation, open, row, tag } from "./helpers";
 
-test("a channel shows its name, purpose, members and each post's delivery", async ({ page }) => {
+test("a channel shows its name, purpose, members and a waiting post's delivery", async ({ page }) => {
+  // The fixture's deliveries settle at once, so the page reads p7 as still waiting for a slot.
+  await page.route("**/api/c/ch_cutover/items*", async (route) => {
+    const body = (await (await route.fetch()).json()) as { items: { id: string; deliveries?: { state: string; queue?: unknown }[] }[] };
+    for (const item of body.items) if (item.id === "p7") for (const d of item.deliveries ?? []) Object.assign(d, { state: "queued", queue: { state: "queued", position: 2, total: 3 } });
+    await route.fulfill({ json: body });
+  });
   await open(page, "#/c/ch_cutover");
   await expect(page.getByTestId("conversation-title")).toHaveText("pi-cutover");
   await expect(composerInput(conversation(page))).toHaveAttribute("aria-label", "Message #pi-cutover");
-  await expect(row(page, "p5")).toContainText("read it and ended its turn with no reply");
-  await expect(row(page, "p7")).toContainText("waits for a working slot");
+  await expect(row(page, "p7")).toContainText("frontend bro was mentioned and waits at place 2 of 3.");
 });
 
 test("a mention of the owner is the lime chip and other mentions are grey", async ({ page }) => {

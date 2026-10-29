@@ -6,7 +6,7 @@ const DM = "dm_vent";
 const sidebar = (page: Page) => page.getByRole("navigation", { name: "Conversations" });
 
 test("the sidebar's Direct messages hold one row per agent and no job", async ({ page, request }) => {
-  const listed = (await (await request.get("/api/sidebar")).json()) as { solo: unknown[]; dms: { id: string; agent?: string; name: string }[] };
+  const listed = (await (await request.get("/api/sidebar")).json()) as { solo: { id: string; name: string }[]; dms: { id: string; agent?: string; name: string }[] };
   const all = (await (await request.get("/api/conversations")).json()) as { id: string; kind: string; name: string; archived: boolean }[];
   await open(page, `#/c/${DM}`);
   expect(listed.dms.length).toBeGreaterThan(0);
@@ -15,8 +15,10 @@ test("the sidebar's Direct messages hold one row per agent and no job", async ({
     expect(dm.agent).toBe(`ag_${dm.id.slice(3)}`);
     await expect(sidebar(page).locator(`a[href="#/c/${dm.id}"]`)).toBeVisible();
   }
-  // The fixture's one untitled root chat is no agent, so it sits in Solo and never among the DMs.
-  expect(listed.solo.map((c) => (c as { name: string }).name)).toEqual(["New thread"]);
+  // An untitled root chat is no agent, so it sits in Solo beside the Solo rooms (`so_`) and never among the DMs. New chat specs add more.
+  const chats = listed.solo.filter((c) => !c.id.startsWith("so_"));
+  expect(chats.length).toBeGreaterThan(0);
+  for (const chat of chats) expect(chat.name).toBe("New thread");
   expect(listed.dms.some((dm) => dm.name === "New thread")).toBe(false);
   const jobs = all.filter((c) => c.kind === "job" && !c.archived);
   expect(jobs.length).toBeGreaterThan(0);

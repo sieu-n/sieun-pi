@@ -3,9 +3,9 @@
  * message. Paths are relative, so the page works behind Vite's proxy on :5185 and from the server on :5184 alike.
  */
 import type {
-  AgentConfig, AgentFolder, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, Channel, ChannelInput, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
+  AgentConfig, AgentFolder, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
   ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForYouItem, HarnessEntryView, HostsReport, Item, JobNode, Me, MemoryInput, ModelCatalog, ProjectList, SearchQuery, SearchResult, SendRequest,
-  SendResult, Sidebar, ThinkingLevel, TimelinePage, UsageReport, AccountsView,
+  Room, RoomInput, RoomPatch, SendResult, Sidebar, ThinkingLevel, TimelinePage, UsageReport, AccountsView,
 } from "./types.ts";
 
 export class ApiError extends Error {
@@ -19,6 +19,9 @@ const enc = encodeURIComponent;
 
 /** The DM room of an agent id: `ag_<slug>` has `dm_<slug>`. A job's or a root thread's id names its own conversation. */
 export const roomOf = (id: AgentId): ConversationId => (id.startsWith("ag_") ? `dm_${id.slice(3)}` : id);
+
+/** A Solo room (`so_<id>`): a group chat of invited agents around one agenda. An untitled root chat in the Solo group is not one. */
+export const isSoloRoom = (id: ConversationId): boolean => id.startsWith("so_");
 
 /**
  * Where a board, its duties and its check-in live: `/api/agents/<id>` for an agent (`ag_<slug>`), and `/api/threads/<id>` for a root
@@ -59,8 +62,6 @@ export const api = {
   me: () => call<Me>("GET", "/api/me"),
   sidebar: () => call<Sidebar>("GET", "/api/sidebar"),
   conversations: (opts: { archived?: boolean } = {}) => call<ConversationSummary[]>("GET", `/api/conversations${query({ archived: opts.archived ? 1 : undefined })}`),
-  /** Registered agents only, and each job that works for one of them. */
-  directory: () => call<{ agents: AgentSummary[]; jobs: AgentSummary[]; channels: Channel[] }>("GET", "/api/directory"),
   models: () => call<ModelCatalog>("GET", "/api/models"),
 
   agents: (opts: { archived?: boolean } = {}) => call<AgentSummary[]>("GET", `/api/agents${query({ archived: opts.archived ? 1 : undefined })}`),
@@ -106,11 +107,14 @@ export const api = {
   threadJobs: (thread: string) => call<JobNode[]>("GET", `/api/threads/${enc(thread)}/jobs`),
   openDm: (agent: AgentId) => call<ConversationSummary>("POST", "/api/dms", { agent }),
 
-  channels: () => call<Channel[]>("GET", "/api/channels"),
-  createChannel: (input: ChannelInput) => call<Channel>("POST", "/api/channels", input),
-  updateChannel: (id: string, patch: { name?: string; purpose?: string; archived?: boolean; homeChat?: string | null }) => call<Channel>("PATCH", `/api/channels/${enc(id)}`, patch),
-  addMembers: (id: string, agents: AgentId[], wakeOn?: "mention" | "all" | "none") => call<Channel>("POST", `/api/channels/${enc(id)}/members`, { agents, ...(wakeOn ? { wakeOn } : {}) }),
-  removeMember: (id: string, agent: AgentId) => call<Channel>("DELETE", `/api/channels/${enc(id)}/members/${enc(agent)}`),
+  /** Channels and Solo rooms; a DM is listed by agent, never here. */
+  rooms: () => call<Room[]>("GET", "/api/rooms"),
+  createRoom: (input: RoomInput) => call<Room>("POST", "/api/rooms", input),
+  /** `closed` closes or reopens a Solo room. */
+  updateRoom: (id: string, patch: RoomPatch) => call<Room>("PATCH", `/api/rooms/${enc(id)}`, patch),
+  /** Only registered agents join; the server refuses a job, a work thread or a comm thread. */
+  addMembers: (id: string, agents: AgentId[], wakeOn?: "mention" | "all" | "none") => call<Room>("POST", `/api/rooms/${enc(id)}/members`, { agents, ...(wakeOn ? { wakeOn } : {}) }),
+  removeMember: (id: string, agent: AgentId) => call<Room>("DELETE", `/api/rooms/${enc(id)}/members/${enc(agent)}`),
 
   search: (params: SearchQuery) =>
     call<SearchResult>("GET", `/api/search${query({ ...params })}`),

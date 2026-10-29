@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { composerInput, conversation, FRONTEND, open, row, tag, VENT_JOB, VENT } from "./helpers";
+import { commThread, composerInput, conversation, FRONTEND, open, row, tag, VENT_JOB, VENT } from "./helpers";
 
 test("Enter sends, Shift Enter adds a line, and the answer lands in a new bubble", async ({ page }) => {
   await open(page, `#/c/${FRONTEND}`);
@@ -19,7 +19,7 @@ test("Enter sends, Shift Enter adds a line, and the answer lands in a new bubble
   await expect(conversation(page).locator('[data-kind="turn"]').last()).not.toBeEmpty();
 });
 
-test("Stop ends a running answer, and the work thread's turn reads Response stopped", async ({ page, request }) => {
+test("Stop ends a running answer, and the comm thread's turn reads Response stopped", async ({ page, request }) => {
   const agent = (await (await request.post("/api/agents", { data: { kind: "chat", name: `stop ${tag()}` } })).json()) as { id: string; room: string; thread: string };
   await open(page, `#/c/${agent.room}`);
   const input = composerInput(conversation(page));
@@ -32,7 +32,7 @@ test("Stop ends a running answer, and the work thread's turn reads Response stop
   await stop.click();
   await aborted;
   await expect(stop).toBeHidden({ timeout: 8_000 });
-  await open(page, `#/c/${agent.thread}`);
+  await open(page, `#/c/${await commThread(request, agent.id, agent.room)}`);
   await expect(conversation(page).getByText("Response stopped").last()).toBeVisible({ timeout: 8_000 });
 });
 

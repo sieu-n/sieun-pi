@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type APIRequestContext, type Page } from "@playwright/test";
 
 /** Fixture ids, seeded by `npm run fixture` (apps/chat/API.md, Fixture mode). */
 export const VENT = "0f1e0000-0000-4000-8000-000000000001";
@@ -31,3 +31,14 @@ export const tag = (): string => Math.random().toString(36).slice(2, 8);
 
 export const rgb = (page: Page, selector: string, prop: string) =>
   page.locator(selector).first().evaluate((el, p) => getComputedStyle(el).getPropertyValue(p), prop);
+
+/** The comm thread that answers an agent's DM (agent-model.md phase 4): DM turns run there, and its work thread gets only handed work. */
+export async function commThread(request: APIRequestContext, agentId: string, room: string): Promise<string> {
+  let thread: string | undefined;
+  await expect.poll(async () => {
+    const agents = (await (await request.get("/api/agents")).json()) as { id: string; comm?: { room: string; thread: string }[] }[];
+    thread = agents.find((a) => a.id === agentId)?.comm?.find((c) => c.room === room)?.thread;
+    return thread;
+  }, { timeout: 10_000 }).toBeTruthy();
+  return thread!;
+}

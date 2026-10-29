@@ -11,7 +11,7 @@ interface Config {
   folder: { agent: string; memory: { entries: unknown[] } } | null;
   memory: { kind: "none" | "agent"; note: string; related: { path: string }[] };
   instructions: { files: { path: string }[] };
-  swarm: { jobs: { id: string; name: string; kind: string }[]; duties: { id: string; name: string }[]; channels: { id: string; name: string }[] };
+  swarm: { jobs: { id: string; name: string; kind: string }[]; duties: { id: string; name: string }[]; rooms: { id: string; name: string }[] };
 }
 
 const configOf = async (request: APIRequestContext, id: string): Promise<Config> => {
@@ -66,7 +66,7 @@ test("the configuration shows its host, home directory, board and memory, and ea
   await section(page, "Swarm").click();
   for (const job of config.swarm.jobs.slice(0, 5)) await expect(panel(page).locator(`li[data-job-id="${job.id}"]`)).toContainText(job.name.slice(0, 20));
   for (const duty of config.swarm.duties) await expect(panel(page).locator(`li[data-duty-id="${duty.id}"]`)).toContainText(duty.name);
-  for (const channel of config.swarm.channels) await expect(panel(page).getByRole("link", { name: channel.name })).toBeVisible();
+  for (const room of config.swarm.rooms) await expect(panel(page).getByRole("link", { name: room.name })).toBeVisible();
 
   await section(page, "Board").click();
   if (config.board) {

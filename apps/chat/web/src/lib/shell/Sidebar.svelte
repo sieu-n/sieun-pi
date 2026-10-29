@@ -3,12 +3,14 @@
   import Tabs from "$lib/ui/Tabs.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
+  import Icon from "$lib/ui/Icon.svelte";
   import LoadingText from "$lib/ui/LoadingText.svelte";
   import type { ConversationSummary } from "$lib/api";
   import ResizeHandle from "$lib/ui/ResizeHandle.svelte";
   import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import SidebarRow from "./SidebarRow.svelte";
   import { sidebar, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN } from "./sidebar.svelte";
+  import { soloDialog } from "./solo-dialog.svelte";
   import type { SidebarFilter } from "./sidebar.svelte";
 
   const filters: { id: SidebarFilter; label: string }[] = [
@@ -21,6 +23,7 @@
   /** Solo holds only the rooms the server puts there, and hides when it has none, unless the owner picked the Solo filter. */
   const showSolo = $derived(sidebar.filter === "solo" || (sidebar.filter === "all" && sidebar.data.solo.length > 0));
   const showTeam = $derived(sidebar.filter !== "solo");
+  const solo = $derived(sidebar.solo);
   const forYouSelected = $derived(router.route.page === "board" && router.route.rest[0] === "for-you");
 
   $effect(() => {
@@ -50,13 +53,40 @@
       <section class="group" data-section="solo">
         <div class="heading">
           <h2>Solo</h2>
-          <IconButton icon="plus" label="New chat" size="xs" onclick={() => router.navigate(hrefFor("messages", ["new"], { kind: "chat" }))} />
+          <IconButton icon="plus" label="New Solo room" size="xs" onclick={() => soloDialog.open()} />
         </div>
-        {#each sidebar.data.solo as row (row.id)}
-          <SidebarRow href={conversationHref(row.id)} label={row.name} icon="chat" selected={current === row.id} unread={row.unread} fresh={row.hasNew} working={names(row)} />
-        {:else}
-          <p class="empty">No solo rooms yet.</p>
+        {#each solo.open as row (row.id)}
+          <SidebarRow
+            href={conversationHref(row.id)}
+            label={row.name}
+            title={row.agenda ? `${row.name}: ${row.agenda}` : row.name}
+            icon="users"
+            selected={current === row.id}
+            unread={row.unread}
+            fresh={row.hasNew}
+            working={names(row)}
+          />
         {/each}
+        {#if solo.done.length}
+          <button type="button" class="fold" aria-expanded={sidebar.doneOpen} data-fold="done" onclick={() => (sidebar.doneOpen = !sidebar.doneOpen)}>
+            <Icon name="chevron-right" size={14} />
+            <span>Done</span>
+            <span class="count">{solo.done.length}</span>
+          </button>
+          {#if sidebar.doneOpen}
+            <div class="done" data-group="done">
+              {#each solo.done as row (row.id)}
+                <SidebarRow href={conversationHref(row.id)} label={row.name} title={row.agenda ? `${row.name}: ${row.agenda}` : row.name} icon="check" selected={current === row.id} />
+              {/each}
+            </div>
+          {/if}
+        {/if}
+        {#each solo.chats as row (row.id)}
+          <SidebarRow href={conversationHref(row.id)} label={row.name} icon="chat" selected={current === row.id} unread={row.unread} fresh={row.hasNew} working={names(row)} />
+        {/each}
+        {#if !sidebar.data.solo.length}
+          <p class="empty">No Solo rooms yet.</p>
+        {/if}
       </section>
     {/if}
 
@@ -187,6 +217,42 @@
     padding: 8px;
     font: var(--text-caption);
     color: var(--text-subtle);
+  }
+  .fold {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: var(--size-row);
+    padding: 0 8px;
+    border: 0;
+    border-radius: var(--radius-row);
+    background: transparent;
+    color: var(--text-subtle);
+    font: var(--text-body-sm);
+    text-align: left;
+    cursor: pointer;
+  }
+  .fold:hover {
+    background: var(--affordance-sidebar-hover);
+    color: var(--text-sidebar-hover);
+  }
+  .fold :global(.icon) {
+    margin: 0 3px;
+    transition: transform var(--duration-base) var(--ease-standard);
+  }
+  .fold[aria-expanded="true"] :global(.icon) {
+    transform: rotate(90deg);
+  }
+  .count {
+    margin-left: auto;
+    font: var(--text-caption);
+    color: var(--text-metadata);
+  }
+  .done {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    opacity: 0.8;
   }
   .empty {
     margin: 0;

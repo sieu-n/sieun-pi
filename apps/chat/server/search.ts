@@ -1,12 +1,12 @@
 /**
- * Full-text search over every thread's entries (pi-host's FTS5 index through `durable_search`) and every channel post, with the filters
+ * Full-text search over every thread's entries (pi-host's FTS5 index through `durable_search`) and every room post, with the filters
  * from:, in:, after: and before: (~/work/slack-layer-design/search.md section 5). `total` is the exact count for the same filters (c191).
  *
  * A comm thread (phase 4) has no rows of its own: its entries are left out, and the DM posts whose words it holds are searched as the DM's
- * posts instead, so a hit opens the DM at the post.
+ * posts instead, so a hit opens the DM at the post. Channel and Solo room posts are searched as posts of their room (phase 5).
  */
 import type { ConversationKind, ConversationSummary, SearchHit, SearchResult } from "../web/src/lib/api/types.ts";
-import { CHANNEL_COPY_LIKE, type Channels } from "./channels.ts";
+import { CHANNEL_COPY_LIKE, type GroupRooms } from "./group-rooms.ts";
 import { describe, fullText, searchTerms, snippet } from "./search-snippet.ts";
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
@@ -94,7 +94,7 @@ export class Search {
   dmPosts: () => DmPost[] = () => [];
 
   /** With `indexPath`, thread hits come from pi-host's index.sqlite on a read-only connection, so search never waits on pi-host. */
-  constructor(readonly host: Host, readonly threads: Threads, readonly channels: Channels, private readonly indexPath?: string) {}
+  constructor(readonly host: Host, readonly threads: Threads, readonly groups: GroupRooms, private readonly indexPath?: string) {}
 
   close(): void {
     this.index?.close();
@@ -137,7 +137,7 @@ export class Search {
     let total = 0;
 
     const inId = query.in;
-    const inChannel = inId ? this.channels.row(inId) : undefined;
+    const inChannel = inId ? this.groups.row(inId) : undefined;
     const inRoom = inId && (isRoomId(inId) || isAgentId(inId)) ? this.threads.agentRecords?.record(inId) : undefined;
     const agents = query.from === "agents";
     if (!inChannel) {
@@ -169,9 +169,10 @@ export class Search {
     }
     if ((!inId || inChannel) && query.type !== "tools") {
       const posts: Ranked[] = [];
-      for (const { row, post } of this.channels.allPosts()) {
+      const fromId = query.from && query.from !== "owner" && !agents ? this.threads.registered(query.from)?.id ?? query.from : query.from;
+      for (const { row, post } of this.groups.allPosts()) {
         if (inChannel && row.id !== inChannel.id) continue;
-        if (agents ? post.author === "owner" : query.from && post.author !== query.from) continue;
+        if (agents ? post.author === "owner" : fromId && post.author !== fromId) continue;
         if (after !== undefined && post.at < after) continue;
         if (before !== undefined && post.at >= before) continue;
         const score = postMatch(post.text, words);
@@ -183,7 +184,7 @@ export class Search {
             const author = this.threads.principal(post.author);
             const long = fullText(post.text, marks);
             return {
-              id: `${row.id}/${post.id}`, conversation: { id: row.id, kind: "channel", name: row.name, ...(row.archived ? { archived: true } : {}) }, messageId: post.id,
+              id: `${row.id}/${post.id}`, conversation: { id: row.id, kind: row.kind, name: row.name, ...(row.archived ? { archived: true } : {}) }, messageId: post.id,
               author: { id: author.id, name: author.name, kind: author.kind === "owner" ? "owner" : "agent" }, at: post.at, kind: "post",
               role: author.kind === "owner" ? "owner" : "agent", ...(post.threadRoot ? { threadRoot: post.threadRoot } : {}),
               snippet: snippet(post.text, marks) || long, ...(post.text.length > 240 ? { text: long } : {}),

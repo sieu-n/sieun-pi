@@ -1,5 +1,6 @@
-import type { AgentSummary, Channel, Delivery, ImageUpload, Item, Principal, Step, TurnPlace } from "$lib/api";
+import type { AgentSummary, Delivery, ImageUpload, Item, Principal, Room, Step, TurnPlace } from "$lib/api";
 import type { MarkdownContext } from "$lib/ui/markdown";
+import type { PickerItem } from "$lib/ui/types";
 
 export type TurnItem = Extract<Item, { kind: "turn" }>;
 export type MessageItem = Extract<Item, { kind: "message" }>;
@@ -40,7 +41,7 @@ export function deliveryText(delivery: Delivery): string | null {
 }
 
 /** Mention targets for Markdown: every agent and channel by lower-case name, and the owner as the lime self chip. */
-export function mentionContext(agents: readonly AgentSummary[], channels: readonly Channel[], ownerName: string): MarkdownContext["mentions"] {
+export function mentionContext(agents: readonly AgentSummary[], channels: readonly Room[], ownerName: string): MarkdownContext["mentions"] {
   const map = new Map<string, { id: string; kind: "person" | "agent" | "channel"; self?: boolean }>();
   for (const channel of channels) map.set(channel.name.toLowerCase(), { id: channel.id, kind: "channel" });
   for (const agent of agents) map.set(agent.name.toLowerCase(), { id: agent.id, kind: "agent" });
@@ -72,4 +73,14 @@ export function waitingSend(items: readonly Item[]): string | null {
     if (item.kind === "message" && item.author.id === "owner") return item.id;
   }
   return null;
+}
+
+/**
+ * The rows of every agent picker (channel and Solo members, a DM's To): registered agents (`ag_<slug>`) that are not archived. A job, a work
+ * thread or a comm thread is never an agent, so none of them is ever a row; the owner's 10-29 complaint was a picker that listed them.
+ */
+export function agentPickerItems(agents: readonly AgentSummary[]): PickerItem[] {
+  return agents
+    .filter((a) => a.id.startsWith("ag_") && !a.archived)
+    .map((a) => ({ id: a.id, label: a.name, ...(a.status === "working" ? { detail: "working now" } : {}), avatar: { name: a.name, kind: "agent" as const, seed: a.id } }));
 }

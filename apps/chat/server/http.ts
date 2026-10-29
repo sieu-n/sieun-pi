@@ -4,10 +4,10 @@
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
-import type { ChannelInput, ConversationPatch, MemoryInput, SendRequest } from "../web/src/lib/api/types.ts";
+import type { ConversationPatch, MemoryInput, RoomInput, RoomPatch, SendRequest } from "../web/src/lib/api/types.ts";
 import { agentConfig, agentRecordOf } from "./agent-config.ts";
 import { createEntry, deleteEntry, EntryExists, EntryMissing, HARNESS_KINDS, readAgentFolder, updateEntry, writeBrief, type HarnessKind } from "./agent-folder.ts";
-import type { AgentRecord } from "./agent-store.ts";
+import type { AgentRecord, WakeOn } from "./agent-store.ts";
 import { App, MODELS, NotFound } from "./app.ts";
 import { LocalImageError, readLocalImage } from "./local-image.ts";
 import { CwdRefused } from "./projects.ts";
@@ -81,7 +81,7 @@ export function routes(app: App): Route[] {
     route("GET", "/api/me", async () => app.me()),
     route("GET", "/api/sidebar", async () => app.sidebar()),
     route("GET", "/api/conversations", async (_r, _p, q) => app.threads.conversations().filter(c => q.get("archived") === "1" || !c.archived)),
-    route("GET", "/api/directory", async () => ({ agents: app.threads.agents(), jobs: app.threads.jobList(), channels: app.channels.list() })),
+    route("GET", "/api/directory", async () => ({ agents: app.threads.agents(), jobs: app.threads.jobList(), rooms: app.groups.list() })),
     route("GET", "/api/models", async () => MODELS),
     route("GET", "/api/agents", async (_r, _p, q) => app.threads.agents({ archived: q.get("archived") === "1" })),
     route("GET", "/api/jobs", async (_r, _p, q) => app.threads.jobList({ archived: q.get("archived") === "1" })),
@@ -122,7 +122,7 @@ export function routes(app: App): Route[] {
       const opts = { before: str(q.get("before")), after: str(q.get("after")), around: str(q.get("around")), limit: num(q.get("limit")) };
       return app.items(p.id!, opts);
     }),
-    route("GET", "/api/c/:id/replies/:root", async (_r, p) => app.channels.replies(p.id!, p.root!)),
+    route("GET", "/api/c/:id/replies/:root", async (_r, p) => app.groups.replies(p.id!, p.root!)),
     route("POST", "/api/c/:id/send", async (_r, p, _q, body) => app.send(p.id!, (await body()) as SendRequest)),
     route("POST", "/api/c/:id/send/:requestId/retry", async (_r, p) => app.retrySend(p.id!, p.requestId!)),
     route("DELETE", "/api/c/:id/send/:requestId", async (_r, p) => {
@@ -143,14 +143,14 @@ export function routes(app: App): Route[] {
       return { ok: true };
     }),
     route("GET", "/api/threads/:id/jobs", async (_r, p) => app.threads.jobs(p.id!)),
-    route("GET", "/api/channels", async () => app.channels.list()),
-    route("POST", "/api/channels", async (_r, _p, _q, body) => app.channels.create((await body()) as ChannelInput)),
-    route("PATCH", "/api/channels/:id", async (_r, p, _q, body) => app.channels.update(p.id!, (await body()) as { name?: string; purpose?: string; archived?: boolean })),
-    route("POST", "/api/channels/:id/members", async (_r, p, _q, body) => {
-      const input = (await body()) as { agents: string[]; wakeOn?: "mention" | "all" | "none" };
-      return app.channels.addMembers(p.id!, input.agents ?? [], input.wakeOn);
+    route("GET", "/api/rooms", async () => app.groups.list()),
+    route("POST", "/api/rooms", async (_r, _p, _q, body) => app.groups.create((await body()) as RoomInput)),
+    route("PATCH", "/api/rooms/:id", async (_r, p, _q, body) => app.groups.update(p.id!, ((await body()) ?? {}) as RoomPatch)),
+    route("POST", "/api/rooms/:id/members", async (_r, p, _q, body) => {
+      const input = ((await body()) ?? {}) as { agents?: string[]; wakeOn?: WakeOn };
+      return app.groups.addMembers(p.id!, input.agents ?? [], input.wakeOn);
     }),
-    route("DELETE", "/api/channels/:id/members/:agent", async (_r, p) => app.channels.removeMember(p.id!, p.agent!)),
+    route("DELETE", "/api/rooms/:id/members/:agent", async (_r, p) => app.groups.removeMember(p.id!, p.agent!)),
     route("POST", "/api/dms", async (_r, _p, _q, body) => app.openDm(((await body()) as { agent: string }).agent)),
     route("GET", "/api/dms", async () => app.rooms.summaries()),
     route("GET", "/api/search", async (_r, _p, q) => app.search.run({
@@ -256,7 +256,7 @@ async function handle(app: App, table: Route[], req: IncomingMessage, res: Serve
     return serveWeb(app, path, res);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const status = error instanceof NotFound || error instanceof EntryMissing ? 404 : error instanceof EntryExists ? 409 : error instanceof BadRequest || error instanceof CwdRefused || /^(No |A |An |Dates|around|after|.* is not in #)/.test(message) ? 400 : 500;
+    const status = error instanceof NotFound || error instanceof EntryMissing ? 404 : error instanceof EntryExists ? 409 : error instanceof BadRequest || error instanceof CwdRefused || /^(No |A |An |Dates|around|after|.* is not in (#|Solo "))/.test(message) ? 400 : 500;
     if (status === 500) app.log(`${req.method} ${path} failed: ${error instanceof Error ? error.stack : message}`);
     if (!res.headersSent) json(res, status, { error: message });
     else res.end();

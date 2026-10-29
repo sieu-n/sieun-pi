@@ -42,10 +42,11 @@ export interface AgentsFile {
 
 export interface RoomDelivery {
   target: AgentId;
-  state: "sending" | "delivered" | "failed";
+  /** `stopped`: a group room's post `MAX_HOPS` agent hops from the owner's last post, which is never submitted (hard: money). */
+  state: "sending" | "delivered" | "failed" | "stopped";
   attempts: number;
   at: Ms;
-  /** `d:<postId>:<agentId>`, the durable_submit requestId, which pi-host keeps once. */
+  /** `d:<postId>:<agentId>` in a DM and `d:<room>:<postId>:<agentId>` in a group room: the durable_submit requestId, which pi-host keeps once. */
   requestId: string;
   submission?: number;
   error?: string;
@@ -74,7 +75,16 @@ export interface RoomPost {
   source?: { thread: string; conversation: number; entry: number };
   /** Jobs the post's turn started, as ConversationIds `<thread>:<n>`. */
   jobs?: string[];
+  /** A DM post's one delivery, to the room's agent. */
   delivery?: RoomDelivery;
+  /** A group room post's deliveries, one per member it wakes. */
+  deliveries?: RoomDelivery[];
+  /** Group rooms: the members the post names (agent ids, or "owner"). */
+  mentions?: (AgentId | "owner")[];
+  /** Group rooms: agent hops since the owner's last post; the owner's posts carry 0. */
+  hops?: number;
+  /** Channels: the root post of the Buzz-style thread this reply is in. */
+  threadRoot?: string;
   imported?: boolean;
   /** Set on an owner post that a job typed into the room to test it: the post reads as that job's, never as the owner's. */
   testSend?: TestSend;
@@ -87,10 +97,28 @@ export interface RoomPost {
  */
 export interface TestSend { by: string; reason: string; at: Ms; entry?: number; notice?: Ms }
 
-export type PostPatch = Partial<Pick<RoomPost, "delivery" | "jobs" | "text" | "testSend">>;
+export type PostPatch = Partial<Pick<RoomPost, "delivery" | "deliveries" | "jobs" | "text" | "testSend">>;
 type LogLine = { t: "post"; post: RoomPost } | { t: "set"; post: string; patch: PostPatch };
 
-export interface RoomRow { id: RoomId; kind: "dm"; agent: AgentId; createdAt: Ms; archived: boolean }
+/**
+ * Who in a room a post wakes (phase 5): `all` hears every post, `mention` only a post that names it, `none` nothing. A Solo room's members
+ * are `all`, and a channel's are `mention` unless the owner sets otherwise. The owner is in every room and is never a member row.
+ */
+export type WakeOn = "all" | "mention" | "none";
+export interface RoomMember { agent: AgentId; wakeOn: WakeOn; addedAt: Ms }
+
+interface RoomBase { id: RoomId; createdAt: Ms; archived: boolean }
+/**
+ * A room the chat server owns. A DM (`dm_<slug>`) is the owner and one agent. A channel (`ch_<8 hex>`, the ids channels had before phase 5)
+ * is a named room whose members wake on a mention. A Solo room (`so_<8 hex>`) is a group chat of invited agents around one agenda; every
+ * member hears every post, and a closed Solo room takes no posts and delivers nothing.
+ */
+export type RoomRow =
+  | (RoomBase & { kind: "dm"; agent: AgentId })
+  | (RoomBase & { kind: "channel"; name: string; purpose: string; homeChat?: string; members: RoomMember[] })
+  | (RoomBase & { kind: "solo"; name: string; agenda: string; members: RoomMember[]; closedAt?: Ms });
+export type GroupRoom = Exclude<RoomRow, { kind: "dm" }>;
+export const isGroupRoom = (row: RoomRow): row is GroupRoom => row.kind !== "dm";
 
 /** Where the feed stands in the thread it reads, conversation 1. */
 export interface FeedCursor {
@@ -104,10 +132,14 @@ export interface FeedCursor {
    * The input that started the current turn, whether a channel post started it, the turn's newest post, and the jobs the turn started before
    * it had a post, which go on its next one.
    */
-  turn?: { input: number; channel: boolean; lastPost?: string; jobs?: string[] };
+  turn?: { input: number; channel: boolean; lastPost?: string; jobs?: string[]; post?: string; hops?: number };
 }
 
-export interface RoomsFile { v: 1; rooms: RoomRow[]; feed: Record<AgentId, FeedCursor> }
+/**
+ * `feed` holds each agent's DM cursor by agent id. `commFeed` holds the cursor of each group room's comm thread by that thread's id; in it
+ * `turn.post` and `turn.hops` are the room post whose delivery started the turn and its hops, so a post the turn makes carries hops + 1.
+ */
+export interface RoomsFile { v: 1; rooms: RoomRow[]; feed: Record<AgentId, FeedCursor>; commFeed?: Record<string, FeedCursor> }
 
 export const slugOf = (name: string): string =>
   name.normalize("NFKD").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "agent";

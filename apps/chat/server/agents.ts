@@ -5,8 +5,9 @@
  * agent only through `POST /api/agents` or the migrate CLI (`scripts/migrate-agents.ts`); the server never registers one on its own.
  *
  * Phase 4 splits an agent into its work thread and one comm thread per room (`ensureComm`): the comm thread takes the room's posts and talks
- * in the room, and the work thread does the work. The DM's first delivery makes the comm thread, and `POST /api/agents/:id/split` makes it
- * for the migration (`scripts/split-agents.ts`), whose dry run reads `splitPlan`.
+ * in the room, and the work thread does the work. A room's first delivery to the agent makes its comm thread there, a DM's as a channel's or
+ * a Solo room's (phase 5, group-rooms.ts), and `POST /api/agents/:id/split` makes the DM's for the migration (`scripts/split-agents.ts`),
+ * whose dry run reads `splitPlan`.
  */
 import type { AgentId, AgentSummary, RunStatus, ThinkingLevel } from "../web/src/lib/api/types.ts";
 import { AGENT_REF_DOC, agentRef, commRef, sameRef, type AgentRef } from "./agent-folder.ts";
@@ -16,7 +17,10 @@ import type { DurableThread, Host, TreeNode } from "./host/types.ts";
 import type { Store } from "./store.ts";
 
 export const isAgentId = (id: string): boolean => id.startsWith("ag_");
+/** A DM room id, `dm_<slug>`. */
 export const isRoomId = (id: string): boolean => id.startsWith("dm_");
+/** A channel (`ch_<id>`) or Solo room (`so_<id>`) id (group-rooms.ts). */
+export const isGroupRoomId = (id: string): boolean => /^(ch|so)_/.test(id);
 
 const avatar = (name: string): AgentSummary["avatar"] => {
   const words = name.replace(/[^\p{L}\p{N} ]/gu, " ").trim().split(/\s+/).filter(Boolean);
@@ -59,14 +63,14 @@ export interface SplitPlan {
 }
 
 /** The agent as the pages see it: its record, with the name, model, status, preview and archived flag of its work thread. */
-export function agentSummary(record: AgentRecord, rows: AgentRows, extra: { model: AgentSummary["model"]; channels: string[] }): AgentSummary {
+export function agentSummary(record: AgentRecord, rows: AgentRows, extra: { model: AgentSummary["model"]; rooms: RoomId[] }): AgentSummary {
   const row = rows.row;
   const name = row?.name || record.name;
   return {
     id: record.id, kind: "chat", name, avatar: avatar(name), model: extra.model, thinkingLevel: (row?.thinkingLevel as ThinkingLevel | undefined) ?? null,
     status: agentStatus(rows), parent: null, thread: record.workThread, conversation: 1, archived: row?.archived ?? record.archived,
     createdAt: record.createdAt, updatedAt: Math.max(row?.updatedAt ?? record.createdAt, ...rows.jobs.map(j => j.updatedAt)),
-    preview: row?.preview.split("\n").find(line => line.trim()) ?? "", channels: extra.channels, host: record.host, room: record.room, home: record.home,
+    preview: row?.preview.split("\n").find(line => line.trim()) ?? "", rooms: extra.rooms, host: record.host, room: record.room, home: record.home,
     ...(rows.comm?.length ? { comm: rows.comm.map(c => ({ room: c.room, thread: c.thread, status: runStatus(c.row) })) } : {}),
   };
 }
@@ -123,8 +127,17 @@ export class Agents {
     return record.comm?.[room] ?? record.workThread;
   }
 
-  private commCreate(record: AgentRecord): { name: string; model: string; thinkingLevel: string; cwd: string } {
-    return { name: `${record.name} · DM`, model: DEFAULT_MODEL, thinkingLevel: "high", cwd: record.home };
+  /**
+   * The thread `ensureComm` makes for the agent's comm thread in `room`, on Opus 5.5 at high thinking (c31): named `<agent> · DM`,
+   * `<agent> · #<channel>` or `<agent> · Solo <name>`. A work thread answers its comm thread by that exact name, so a name another root
+   * thread holds gets the room id after it.
+   */
+  private async commCreate(record: AgentRecord, room: RoomId): Promise<{ name: string; model: string; thinkingLevel: string; cwd: string }> {
+    const row = this.store.rooms.rooms.find(r => r.id === room);
+    const label = !row || row.kind === "dm" ? "DM" : row.kind === "channel" ? `#${row.name}` : `Solo ${row.name}`;
+    let name = `${record.name} · ${label}`;
+    if (row && row.kind !== "dm" && (await this.host.threads().catch(() => [])).some(t => t.name === name)) name = `${name} (${room})`;
+    return { name, model: DEFAULT_MODEL, thinkingLevel: "high", cwd: record.home };
   }
 
   /** What `ensureComm(record)` would do, read with no writes, for the migration's dry run. */
@@ -133,7 +146,7 @@ export class Agents {
     const after = { ...record, comm: { ...record.comm, [room]: known ?? "<new>" } };
     return {
       agent: record.id, room, workThread: record.workThread,
-      comm: known ? { thread: known, created: false } : { thread: null, created: true, create: this.commCreate(record) },
+      comm: known ? { thread: known, created: false } : { thread: null, created: true, create: await this.commCreate(record, room) },
       commRef: commRef(this.config.agentsDir, record, room),
       workRef: { before: (await this.host.docGet(record.workThread, AGENT_REF_DOC)) ?? null, after: agentRef(this.config.agentsDir, after, "work") },
     };
@@ -151,7 +164,7 @@ export class Agents {
     if (!thread) {
       let making = this.making.get(key);
       if (!making) {
-        making = this.host.create(this.commCreate(record)).then(created => {
+        making = this.commCreate(record, room).then(create => this.host.create(create)).then(created => {
           record.comm = { ...record.comm, [room]: created.id };
           this.store.saveAgents();
           return created.id;
@@ -277,7 +290,7 @@ export class Agents {
     const ids = new Set(dropped.map(r => r.id));
     this.store.agents.agents = this.store.agents.agents.filter(r => !ids.has(r.id));
     for (const [thread, id] of Object.entries(this.store.agents.aliases)) if (ids.has(id)) delete this.store.agents.aliases[thread];
-    for (const room of this.store.rooms.rooms) if (ids.has(room.agent)) room.archived = true;
+    for (const room of this.store.rooms.rooms) if (room.kind === "dm" && ids.has(room.agent)) room.archived = true;
     this.store.saveAgents();
     this.store.saveRooms();
     for (const record of dropped) this.log(`dropped ${record.id} (${record.name}): an untitled root chat the old migration made an agent; ${record.workThread} is a solo chat again`);

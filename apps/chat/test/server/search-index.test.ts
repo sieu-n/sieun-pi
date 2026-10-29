@@ -12,7 +12,7 @@ import { after, before, test } from "node:test";
 import type { SearchResult } from "../../web/src/lib/api/types.ts";
 import { ThreadIndex } from "../../../../packages/pi-host/src/durable/index-db.ts";
 import { App } from "../../server/app.ts";
-import { CHANNEL_COPY_LIKE } from "../../server/channels.ts";
+import { CHANNEL_COPY_LIKE } from "../../server/group-rooms.ts";
 import { readConfig } from "../../server/config.ts";
 import { PiHost } from "../../server/host/pi-host.ts";
 import { serve } from "../../server/http.ts";

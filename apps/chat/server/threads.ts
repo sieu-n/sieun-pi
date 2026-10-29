@@ -89,12 +89,12 @@ export class Threads {
    */
   private readonly firstSends = new Map<ConversationId, number>();
   private timer?: NodeJS.Timeout;
-  /** Extra summaries the channel layer adds (channels), merged into conversations(). */
-  channelSummaries: () => ConversationSummary[] = () => [];
+  /** The channels and Solo rooms (group-rooms.ts), merged into conversations(). */
+  groupSummaries: () => ConversationSummary[] = () => [];
   /** The agents' DM rooms (rooms.ts), merged into conversations(). */
   roomSummaries: () => ConversationSummary[] = () => [];
-  /** Channels each agent is in. */
-  channelsOf: (agent: AgentId) => string[] = () => [];
+  /** The channels and Solo rooms each agent is a member of, by agent id. */
+  roomsOf: (agent: AgentId) => string[] = () => [];
   /** A `doc` event from a watched thread, such as the chat writing `chat.board`. */
   onDoc: (thread: string, name: string, value: unknown) => void = () => {};
   /** Runs after each thread list read, so the DM rooms read the work threads that changed. */
@@ -233,7 +233,7 @@ export class Threads {
       const record = this.agentRecords?.record(id);
       const row = record && this.list.get(record.workThread);
       if (!record) return undefined;
-      return row ? this.agentsOf(row)[0] : agentSummary(record, { tree: [], jobs: [], comm: this.commRows(record) }, { model: null, channels: this.channelsOf(record.workThread) });
+      return row ? this.agentsOf(row)[0] : agentSummary(record, { tree: [], jobs: [], comm: this.commRows(record) }, { model: null, rooms: this.roomsOf(record.id) });
     }
     const { thread, conversation } = parseConversationId(id);
     const row = this.list.get(thread);
@@ -288,12 +288,12 @@ export class Threads {
         row, tree: this.tree(row.id),
         jobs: this.agentRecords!.jobThreads(record).flatMap(id => (this.list.has(id) ? [this.list.get(id)!] : [])),
         comm: this.commRows(record),
-      }, { model: rootModel, channels: this.channelsOf(row.id) })
+      }, { model: rootModel, rooms: this.roomsOf(record.id) })
       : {
         id: row.id, kind: meta.kind, name: row.name || "Untitled", avatar: avatarOf(row.name || row.id), model: rootModel,
         thinkingLevel: (row.thinkingLevel as ThinkingLevel) ?? null, status: statusOf(row.status), parent: meta.kind === "job" ? this.parentOf(meta) : null,
         thread: row.id, conversation: 1, archived: row.archived, createdAt: row.createdAt, updatedAt: row.updatedAt,
-        preview: row.preview.split("\n").find(line => line.trim()) ?? "", channels: this.channelsOf(row.id), host: this.box,
+        preview: row.preview.split("\n").find(line => line.trim()) ?? "", rooms: [], host: this.box,
       };
     const owner = this.ownerOf(row);
     const worksFor = owner ? { id: owner.id, name: this.list.get(owner.workThread)?.name || owner.name } : undefined;
@@ -307,7 +307,7 @@ export class Threads {
       out.push({
         id, kind: "job", name: node.name, avatar: avatarOf(node.name), model: modelRef(node.model), thinkingLevel: root.thinkingLevel,
         status: statusOf(node.status), parent: { id: parentId, name: parentName }, thread: row.id, conversation: node.id, archived: row.archived,
-        createdAt: node.createdAt ?? row.createdAt, updatedAt: row.updatedAt, preview: "", channels: this.channelsOf(id), host: this.box,
+        createdAt: node.createdAt ?? row.createdAt, updatedAt: row.updatedAt, preview: "", rooms: [], host: this.box,
         ...(worksFor ? { agent: worksFor } : {}),
       });
     }
@@ -360,7 +360,7 @@ export class Threads {
     return [...this.list.values()].filter(row => !this.isComm(row.id)).flatMap(row => this.rowConversations(row));
   }
 
-  /** The summary of any conversation by id: a DM room, a channel, a thread or job, or a comm thread or one of its jobs. */
+  /** The summary of any conversation by id: a DM room, a channel or Solo room, a thread or job, or a comm thread or one of its jobs. */
   conversation(id: ConversationId): ConversationSummary | undefined {
     const listed = this.conversations().find(c => c.id === id);
     if (listed) return listed;
@@ -394,7 +394,7 @@ export class Threads {
   }
 
   conversations(): ConversationSummary[] {
-    return [...this.roomSummaries(), ...this.threadConversations(), ...this.channelSummaries()];
+    return [...this.roomSummaries(), ...this.threadConversations(), ...this.groupSummaries()];
   }
 
   /** Keeps the earliest send_message call in `entries` as the conversation's, and returns the earliest known. */

@@ -295,7 +295,10 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
     },
     swarm: {
       parent: agent.parent ?? null, jobs,
-      channels: app.channels.memberChannels(id).map(channel => ({ id: channel, name: app.channels.row(channel)?.name ?? channel })),
+      rooms: (() => {
+        const member = app.threads.registered(id) ?? app.agents.ofComm(id)?.record;
+        return member ? app.groups.memberRooms(member.id).map(row => ({ id: row.id, kind: row.kind, name: row.name })) : [];
+      })(),
       duties, checkIn,
       dutiesFile: isChatRoot && dutiesPath ? fileInfo("duties, runs and check-in", dutiesPath) : null,
     },

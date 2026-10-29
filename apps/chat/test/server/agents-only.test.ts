@@ -64,7 +64,7 @@ describe("lists", () => {
 
   test("the root chat no agent holds sits in the sidebar's solo group", async () => {
     const sidebar = await s.get<Sidebar>("/api/sidebar");
-    assert.deepEqual(sidebar.solo.map(c => [c.id, c.name]), [[ids.solo, "New thread"]]);
+    assert.deepEqual(sidebar.solo.filter(c => !c.id.startsWith("so_")).map(c => [c.id, c.name]), [[ids.solo, "New thread"]], "after the Solo rooms");
     assert.ok(!sidebar.dms.some(c => c.name === "New thread"));
   });
 
@@ -125,16 +125,19 @@ describe("mentions and members", () => {
     assert.equal(s.app.threads.registered(ids.solo), undefined);
   });
 
-  test("a channel takes a registered agent or its work thread as a member and refuses a job or a bare thread", async () => {
-    const channel = (await s.send("POST", "/api/channels", { name: "agents-only", purpose: "members" })).body;
-    for (const bad of [ids.cutover, jobId(VENT_JOB), ids.solo]) {
-      const refused = await s.send("POST", `/api/channels/${channel.id}/members`, { agents: [bad] });
+  test("a room takes a registered agent or its work thread as a member and refuses a job, a bare thread or a comm thread", async () => {
+    const channel = (await s.send("POST", "/api/rooms", { kind: "channel", name: "agents-only", agenda: "members" })).body;
+    await s.send("POST", "/api/c/dm_vent/send", { text: "make your comm thread", requestId: "ao-comm-1" });
+    const comm = await until(async () => s.app.agents.record(agents.vent)!.comm?.dm_vent, id => id !== undefined);
+    for (const bad of [ids.cutover, jobId(VENT_JOB), ids.solo, comm!]) {
+      const refused = await s.send("POST", `/api/rooms/${channel.id}/members`, { agents: [bad] });
       assert.equal(refused.status, 400, bad);
-      assert.match(refused.body.error, /only a registered agent joins a channel/);
+      assert.match(refused.body.error, /only a registered agent joins a room/);
     }
-    const added = await s.send("POST", `/api/channels/${channel.id}/members`, { agents: [agents.crawler, ids.vent] });
+    const added = await s.send("POST", `/api/rooms/${channel.id}/members`, { agents: [agents.crawler, ids.vent] });
     assert.deepEqual(added.body.members.map((m: { principal: { id: string } }) => m.principal.id), ["owner", agents.crawler, agents.vent]);
-    assert.equal((await s.send("POST", "/api/channels", { name: "agents-only-2", members: [ids.solo] })).status, 400);
+    assert.equal((await s.send("POST", "/api/rooms", { kind: "channel", name: "agents-only-2", members: [ids.solo] })).status, 400);
+    assert.equal((await s.send("POST", "/api/rooms", { kind: "solo", agenda: "jobs only", members: [ids.cutover] })).status, 400);
   });
 });
 

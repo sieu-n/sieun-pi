@@ -9,19 +9,16 @@
   import PanelHeader from "$lib/ui/PanelHeader.svelte";
   import Picker from "$lib/ui/Picker.svelte";
   import { toast } from "$lib/ui/toast.svelte";
-  import type { PickerItem } from "$lib/ui/types";
   import Composer from "./Composer.svelte";
   import { directory } from "./directory.svelte";
-  import type { Outgoing } from "./present";
+  import { agentPickerItems, type Outgoing } from "./present";
 
   type Props = { kind: string };
   let { kind }: Props = $props();
 
   /** Registered agents only: a job works inside its agent and is never a member or a DM of its own. */
-  const live = $derived(directory.agents.filter((a) => !a.archived));
-  const agentItems = $derived<PickerItem[]>(
-    live.map((a) => ({ id: a.id, label: a.name, ...(a.status === "working" ? { detail: "working now" } : {}), avatar: { name: a.name, kind: "agent", seed: a.id } })),
-  );
+  const live = $derived(directory.agents.filter((a) => a.id.startsWith("ag_") && !a.archived));
+  const agentItems = $derived(agentPickerItems(directory.agents));
   const fail = (error: unknown) => toast.error(error instanceof Error ? error.message : "That did not work");
 
   async function startChat(out: Outgoing) {
@@ -46,7 +43,7 @@
     if (!slug || busy) return;
     busy = true;
     try {
-      const channel = await api.createChannel({ name: slug, purpose: purpose.trim(), members });
+      const channel = await api.createRoom({ kind: "channel", name: slug, agenda: purpose.trim(), members });
       router.openConversation(channel.id);
     } catch (error) {
       fail(error);

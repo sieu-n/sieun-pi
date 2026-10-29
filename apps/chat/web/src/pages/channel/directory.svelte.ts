@@ -1,30 +1,35 @@
-import { agents, api, live, type Channel } from "$lib/api";
+import { agents, api, live, type Room } from "$lib/api";
 
-/** Channels for the # typeahead and mention chips, fetched once and kept current from the live socket's channel events. */
-class ChannelDirectory {
-  list = $state<Channel[]>([]);
+/** Channels and Solo rooms, fetched once and kept current from the live socket's room events. */
+class RoomDirectory {
+  list = $state<Room[]>([]);
   private started = false;
 
   start(): void {
     if (this.started) return;
     this.started = true;
-    void api.channels().then((channels) => (this.list = channels)).catch(() => undefined);
+    void api.rooms().then((rooms) => (this.list = rooms)).catch(() => undefined);
     live.on((event) => {
-      if (event.type !== "channel") return;
-      const index = this.list.findIndex((c) => c.id === event.channel.id);
-      this.list = index >= 0 ? this.list.map((c, i) => (i === index ? event.channel : c)) : [...this.list, event.channel];
+      if (event.type !== "room") return;
+      const index = this.list.findIndex((r) => r.id === event.room.id);
+      this.list = index >= 0 ? this.list.map((r, i) => (i === index ? event.room : r)) : [...this.list, event.room];
     });
   }
 }
 
-const channelDirectory = new ChannelDirectory();
+const roomDirectory = new RoomDirectory();
 
 export const directory = {
   get agents() {
     return agents.list;
   },
+  /** Channels only, for the # typeahead and mention chips. */
   get channels() {
-    channelDirectory.start();
-    return channelDirectory.list;
+    roomDirectory.start();
+    return roomDirectory.list.filter((r) => r.kind === "channel");
+  },
+  room(id: string): Room | undefined {
+    roomDirectory.start();
+    return roomDirectory.list.find((r) => r.id === id);
   },
 };

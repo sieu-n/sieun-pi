@@ -4,9 +4,11 @@
   import { trackKeyboardNavigation, modKey } from "$lib/ui/keyboard";
   import { router, hrefFor } from "$lib/router.svelte";
   import { search } from "$lib/shell/search.svelte";
+  import { soloDialog } from "$lib/shell/solo-dialog.svelte";
   import "$lib/shell/theme.svelte";
   import { initZoom, stepZoom } from "$lib/shell/zoom";
   import ChannelPage from "$pages/channel/ChannelPage.svelte";
+  import CreateSoloDialog from "$pages/channel/CreateSoloDialog.svelte";
   import AgentsPage from "$pages/agents/AgentsPage.svelte";
   import BoardPage from "$pages/board/BoardPage.svelte";
   import SettingsPage from "$pages/settings/SettingsPage.svelte";
@@ -66,4 +68,5 @@
 </Shell>
 
 <SearchDialog open={search.isOpen} scope={search.scope} query={search.query} onclose={() => search.close()} />
+<CreateSoloDialog open={soloDialog.isOpen} onclose={() => soloDialog.close()} />
 <Toaster />

@@ -83,7 +83,7 @@ test("a live turn shows typing dots, never half-written text, and the typing row
 });
 
 test("an empty channel says so", async ({ page, request }) => {
-  const created = await request.post("/api/channels", { data: { name: `empty-${Date.now().toString(36)}` } });
+  const created = await request.post("/api/rooms", { data: { kind: "channel", name: `empty-${Date.now().toString(36)}` } });
   const channel = (await created.json()) as { id: string };
   await open(page, `#/c/${channel.id}`);
   await expect(conversation(page)).toContainText("No messages yet.");
