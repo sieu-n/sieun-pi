@@ -1,6 +1,6 @@
 # The agent model: agents, rooms, and comm and work threads
 
-Status: design, for the owner's review. Nothing here is built yet, except where a line says "today".
+Status: design, for the owner's review. Phases 1 and 2 are built; the rest is not, except where a line says "today".
 
 ## The answer
 
@@ -382,7 +382,7 @@ Built by another subagent in `packages/pi-host/src/durable/registry.ts`, plus a 
 
 1. `server/agents.ts`: `agents.json` with the agent records and the thread-id alias map. `/api/agents` returns agents, and jobs move under them.
 2. `server/rooms.ts`: posts, members and deliveries for kind `dm` (channels move in phase 5). It reuses `store.ts`'s post log and `outbox.ts`'s retries.
-3. pi-host `durable_feed {after}` and the `outbox` table, so the chat server sees every `send_message` without one watch per page.
+3. The chat server's feed (`server/rooms.ts`) reads each agent's work thread from a saved cursor, and turns every `tell_owner` or `send_message` call into one post keyed `m:<thread>:<toolCallId>`. It runs on each thread poll and on a live watch while the DM is open, so phase 2 needs no pi-host change. pi-host's `durable_feed {after}` and its `outbox` table wait for phase 6, where the relay drains them.
 4. An owner post goes to the agent's work thread as an input (no comm thread yet), and its `send_message` calls come back as posts.
 5. Boards and duties are keyed by agent id. The migration script runs.
 6. Web: the sidebar's DMs from agents, the DM page reads posts, and "Open work thread" opens today's transcript view.
