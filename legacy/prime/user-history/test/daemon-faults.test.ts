@@ -253,3 +253,23 @@ test("calls the service's own stop closed count as no fault, and the same answer
   const faults = readServiceFaults(OWN_STOP, "us-metal02");
   assert.deepEqual(faults.map(fault => new Date(fault.at).toISOString().slice(11, 16)), ["21:50"], JSON.stringify(faults));
 });
+
+// 10-29 05:27:57Z on us-metal02: the restart into release-93f7304 closed the Mac bridge while the job sweep's open and wake of teams green
+// launch prep were out on it. Both answered that the daemon connection closed, and the next service opened the job live at 05:28:50Z. The
+// chat call at 05:28:03Z stands for one that meets the bridge socket already gone, as the catalog's copy of the Mac did then.
+const BRIDGE_STOP = [
+  "2026-10-29T05:27:31.162Z outbox 01a1833d on mac: m-7c02c116-50e7-4bc5-8004-4dc6f530599f waited 30 s while the target waited for a slot; it goes now",
+  "2026-10-29T05:27:57.516Z stop: begins",
+  "open 01a1840d on mac saved 100 messages: catalog 16ms, first page 43ms, queue 0ms, failed: Connection to the Prime Agent daemon closed. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log., total 108ms",
+  "job 01a1840d: wake: Connection to the Prime Agent daemon closed. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log.",
+  "2026-10-29T05:28:03.850Z chat 01a11b0b: Failed to connect to the Prime Agent daemon: connect ENOENT /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log.",
+  "2026-10-29T05:28:12.757Z stop: 15241 ms: sends 20 ms, bridges 55 ms, server 6735 ms, read-only 0 ms, call log 0 ms, cpu profile 8427 ms",
+  "2026-10-29T05:28:17.240Z serve: listening 3528 ms after start, main thread CPU 2878 ms, from the bundle",
+  "open 01a1840d on mac live 292 messages: catalog 0ms, first page 42ms, queue 0ms, attach 1955ms, snapshot+project 210ms, total 2209ms",
+  "2026-10-29T05:40:00.000Z job 01a1840d: wake: Connection to the Prime Agent daemon closed. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log.",
+];
+
+test("calls the stop's own bridge close cut count as no fault, and the same close after the next start still does", () => {
+  const faults = readServiceFaults(BRIDGE_STOP, "us-metal02");
+  assert.deepEqual(faults.map(fault => `${new Date(fault.at).toISOString().slice(11, 16)} ${fault.host}`), ["05:40 mac"], JSON.stringify(faults));
+});

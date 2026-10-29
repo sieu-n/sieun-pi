@@ -94,7 +94,13 @@ const IDLE_WORKER_FAILED = /^idle unload: [0-9a-f-]+: Session worker is failed\b
  */
 const OWN_STOP_BEGINS = /^stop: begins\b/;
 const SERVICE_UP = /^serve: listening\b/;
-const OWN_CLIENT_CLOSED = /daemon client closed before the operation completed/;
+/**
+ * The stop closes the other boxes' bridges before the server (`timed("bridges", ...)` in src/chat-service.ts), so a call still out to another
+ * box's daemon then answers that its connection closed, and a later one that the daemon is not connected or its bridge socket is gone. At
+ * 05:27:57Z on 10-29 the restart into release-93f7304 cut the job sweep's open and wake of teams green launch prep on the Mac 43 ms after
+ * "stop: begins", d7 read the minute dirty, and the next service opened the job live at 05:28:50Z.
+ */
+const OWN_CLIENT_CLOSED = /daemon client closed before the operation completed|Connection to the Prime Agent daemon closed|Prime Agent daemon is not connected|Failed to connect to the Prime Agent daemon: connect ENOENT/;
 const PREFIXED = /^(idle unload|wakes: wake|reopen|briefs: child|outbox|pin|chat|job [0-9a-f]{8}: (\w+))\b/;
 const FILE_READ = /The session file on [\w.-]+ (?:did not read|is gone)/;
 const SESSION_IN = /\b(01[0-9a-f]{6})(?:-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?\b/;
