@@ -47,8 +47,11 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.du
  *   run until it moves on: on 10-19 the metric read 100% while 32 open walks sat on cursor_provenance_missing. The run detail
  *   deep_walks_open_stuck counts them. An open walk that errored and started inside one cadence is retrying, so it is left out, and the
  *   deep_walks flag shows those as their own count with their codes. NOT_PAGINATION below names the codes left out of the stops.
- * - canary_ig_deaths_1h, canary_accounts_short, staging_due_wait_min, deep_walks_open_stuck and source_errors are run detail: report() writes them to the output, the server does not judge
- *   them, and the canary_short and staging_stall flags carry them to the fix jobs.
+ * - canary_ig_deaths_1h, canary_accounts_short, staging_due_wait_min, deep_walks_open_stuck, paced_busy_hour_share, paced_accts_200plus and source_errors are run detail:
+ *   report() writes them to the output, the server does not judge them, and the canary_short, staging_stall and busy_hour_share flags carry them to the fix jobs.
+ * - paced_busy_hour_share keeps closed goal p229 ("Engage accounts spread their pages across the day on prod, busiest hour at most a tenth of the
+ *   day", 0.074 on 10-28) as run detail, because c75 holds d1 at one headline and 3 supporting metrics. Over BUSY_HOUR_SHARE_MAX the busy_hour_share
+ *   flag is a handOff, so a run whose metrics read met still starts or steers a fix job.
  * - canary_accounts_short: the owner, 10-12 13:33Z, "ALWAYS RUN ~10% account as CANARY"; CANARY_SHARE below.
  * - staging_due_wait_min: staging stays a working test bed, so a due staging collab read starts within STAGING_WAIT_MIN. The owner keeps about
  *   10 monitored accounts on staging (t17, 10-12), so staging reads come in bursts hours apart by design, and the time since the last read
@@ -96,7 +99,7 @@ export const CODE_CAUSES: Readonly<Record<string, Cause>> = {
 };
 /** The staging stall line's limit: the oldest due staging collab read waits at most this long. The launch VP's number. */
 export const STAGING_WAIT_MIN = 60;
-export type Source = "grafana auth" | "prod read log" | "staging read log" | "staging due reads" | "staging config" | "prod accounts" | "prod config" | "prod healthy gauge" | "prod lapsed bindings" | "prod death gauge" | "prod deep walks" | "prod stuck accounts";
+export type Source = "grafana auth" | "prod paced hours" | "prod read log" | "staging read log" | "staging due reads" | "staging config" | "prod accounts" | "prod config" | "prod healthy gauge" | "prod lapsed bindings" | "prod death gauge" | "prod deep walks" | "prod stuck accounts";
 /**
  * How long an account may sit frozen for a shared exit, on 302s, or parked with a dead jar before it counts as stuck. The launch VP's number
  * (10-18): the accounts job wakes every 2 h, and jar account 16 sat active on 302s for 24 h (55 of 55 reads, 10-14 13:16Z to 10-15 12:00Z).
@@ -109,7 +112,8 @@ export const STUCK_302S = 3;
  * they fail the headline, the number a run is judged on, and an unread source never leaves the run green.
  */
 export const FEEDS: Readonly<Record<Source, readonly string[]>> = {
-  "grafana auth": ["prod_capacity_pages_day", "fleet_ig_killed_pct", "canary_ig_deaths_1h"],
+  "grafana auth": ["prod_capacity_pages_day", "fleet_ig_killed_pct", "canary_ig_deaths_1h", "paced_busy_hour_share"],
+  "prod paced hours": ["paced_busy_hour_share"],
   "prod read log": ["prod_capacity_pages_day"], "prod healthy gauge": ["prod_capacity_pages_day"], "prod lapsed bindings": ["prod_capacity_pages_day"],
   "prod accounts": ["prod_capacity_pages_day", "fleet_ig_killed_pct", "canary_ig_deaths_1h"],
   "prod config": ["prod_capacity_pages_day", "fleet_ig_killed_pct", "canary_ig_deaths_1h"],
@@ -151,7 +155,7 @@ export interface StuckAccount { kind: StuckKind; accountId: number; since: numbe
 export interface EngageData {
   now: number;
   days?: DayPages[]; stagingLastReadAt?: number | null; stagingDue?: StagingDue; stagingPauses?: StagingPause[]; accounts?: Account[]; deaths?: Death[]; config?: Record<string, string>;
-  healthy?: number; lapsed?: Lapsed; deepWalks?: DeepWalks; stuck?: StuckAccount[];
+  healthy?: number; lapsed?: Lapsed; deepWalks?: DeepWalks; stuck?: StuckAccount[]; paced?: Paced;
   /** crawler_v3_engage_deaths_24h by cause. */
   deathGauge?: Record<string, number>;
   errors: { source: Source; message: string }[];
@@ -345,6 +349,12 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
       + kinds.map(kind => `${words[kind]}: ${data.stuck!.filter(account => account.kind === kind).map(account => `${account.accountId} since ${utc(account.since)}`).join(", ")}, fixed in ${fixes[kind]}`).join("; ")
       + ". Ship the fix in that code path; a hand thaw or activation is a hand fix d3 counts (F5).").slice(0, 900) });
   }
+  if (data.paced) {
+    metrics.paced_accts_200plus = data.paced.accounts;
+    if (data.paced.share !== null) metrics.paced_busy_hour_share = data.paced.share;
+    const flag = busyHourFlag(data.paced, at);
+    if (flag) flagged.push(flag);
+  }
   metrics.source_errors = data.errors.length;
   const failed = new Set(data.errors.flatMap(error => FEEDS[error.source]));
   const replaced: string[] = [];
@@ -491,6 +501,41 @@ export function stagingDueOf(rows: Record<string, unknown>[]): StagingDue {
   return { due, waitMin };
 }
 
+/** Goal p229's target: the median paced account's busiest hour holds at most this share of its day's sends. */
+export const BUSY_HOUR_SHARE_MAX = 0.1;
+/**
+ * The last full UTC day's paced score, the 'paced' row of p98-paced-grafana.sql (job g2g accounts setup 10-20): over the hours with an
+ * account_busy refusal, each account's busiest hour over its day's sends (a read not refused at dispatch), and the median of that over the
+ * accounts with 200 or more sends. `share` is null when no account sent 200.
+ */
+export interface Paced { day: string; share: number | null; accounts: number; hours: number }
+export const PACED_SQL = `with d as (select date_trunc('day', now() at time zone 'UTC') - interval '1 day' as start),
+r as (select l.account_id, extract(hour from l.at at time zone 'UTC')::int as hr,
+    count(*) filter (where l.dispatched is distinct from false) as sends, count(*) filter (where l.reason = 'account_busy') as paced_refusals
+  from ig_engage_read_log l, d where l.at >= d.start at time zone 'UTC' and l.at < (d.start + interval '1 day') at time zone 'UTC' group by 1, 2),
+backlog as (select hr from r group by hr having sum(paced_refusals) > 0),
+e as (select * from r where paced_refusals > 0 or (sends > 0 and hr in (select hr from backlog))),
+t as (select account_id, sum(sends) as day_sends, max(sends) as top_hour from e group by 1)
+select to_char((select start from d), 'YYYY-MM-DD') as day,
+  (select round((percentile_cont(0.5) within group (order by top_hour::numeric / day_sends))::numeric, 3) from t where day_sends >= 200) as share,
+  (select count(*) from t where day_sends >= 200) as accts_200plus, (select count(*) from backlog) as hours`;
+
+export function pacedOf(rows: Record<string, unknown>[]): Paced {
+  const [row] = rows;
+  const share = num(row?.share), accounts = num(row?.accts_200plus), hours = num(row?.hours);
+  if (rows.length !== 1 || !/^\d{4}-\d{2}-\d{2}$/.test(String(row?.day)) || accounts === null || hours === null || ![accounts, hours, share ?? 0].every(Number.isFinite))
+    throw new Error(`paced hours: unexpected answer ${JSON.stringify(rows).slice(0, 80)}`);
+  return { day: String(row!.day), share, accounts, hours };
+}
+
+/** The busy_hour_share flag when the day's paced share is over BUSY_HOUR_SHARE_MAX, a handOff so a met run acts on it; null otherwise. */
+export function busyHourFlag(paced: Paced, at: number): FlaggedSlice | null {
+  if (paced.share === null || paced.share <= BUSY_HOUR_SHARE_MAX) return null;
+  return { at, kind: "busy_hour_share", handOff: true, sig: paced.day, excerpt: (`paced_busy_hour_share ${paced.share} on ${paced.day} UTC (target at most ${BUSY_HOUR_SHARE_MAX}, closed goal p229): `
+    + `over the ${paced.hours} hours with account_busy refusals, the median of the ${paced.accounts} prod accounts with 200+ sends (paced_accts_200plus) read ${Math.round(paced.share * 1000) / 10}% of its day in its busiest hour. `
+    + "Put a d1/paced_busy_hour_share fix step under p168 with a live job, as for a missed metric.").slice(0, 600) };
+}
+
 export const daysOf = (rows: Record<string, unknown>[]): DayPages[] => rows.map(row => ({ day: String(row.day), accountId: Number(row.account_id), pages: Number(row.pages) }));
 export const accountsOf = (rows: Record<string, unknown>[]): Account[] => rows.map(row => ({ id: Number(row.id), status: String(row.status), ...(row.reason ? { reason: String(row.reason) } : {}) }));
 export const stagingPausesOf = (rows: Record<string, unknown>[]): StagingPause[] => rows.map(row => ({
@@ -522,14 +567,14 @@ export async function measure(query: DsQuery | null, authError: string | null, n
   const stuckAccounts = step("prod stuck accounts", async () => stuckOf(await prodRead(STUCK_SQL)));
   if (!query) {
     data.errors.push({ source: "grafana auth", message: authError ?? "no Grafana login" });
-    for (const source of ["prod read log", "staging read log", "staging due reads", "staging config", "prod accounts", "prod config", "prod healthy gauge"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
+    for (const source of ["prod paced hours", "prod read log", "staging read log", "staging due reads", "staging config", "prod accounts", "prod config", "prod healthy gauge"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
     const [walks, lapsed, stuck] = await Promise.all([deepWalks, lapsedBindings, stuckAccounts]);
     if (walks) data.deepWalks = walks;
     if (stuck) data.stuck = stuck;
     if (lapsed) data.lapsed = lapsed;
     return data;
   }
-  const [days, staging, stagingPauses, accounts, deaths, config, healthy, gauge, walks, due, lapsed, stuck] = await Promise.all([
+  const [days, staging, stagingPauses, accounts, deaths, config, healthy, gauge, walks, due, lapsed, stuck, paced] = await Promise.all([
     step("prod read log", async () => daysOf(await sqlRows(query, PG.prod, DAYS_SQL))),
     step("staging read log", async () => num((await sqlRows(query, PG.staging, STAGING_SQL))[0]?.last_read_at)),
     step("staging config", async () => stagingPausesOf(await sqlRows(query, PG.staging, STAGING_PAUSES_SQL))),
@@ -546,9 +591,10 @@ export async function measure(query: DsQuery | null, authError: string | null, n
     step("staging due reads", async () => stagingDueOf(await sqlRows(query, PG.staging, STAGING_DUE_SQL))),
     lapsedBindings,
     stuckAccounts,
+    step("prod paced hours", async () => pacedOf(await sqlRows(query, PG.prod, PACED_SQL))),
   ]);
   Object.assign(data, days && { days }, staging !== undefined && { stagingLastReadAt: staging }, stagingPauses && { stagingPauses }, accounts && { accounts }, deaths && { deaths }, config && { config },
-    healthy !== undefined && { healthy }, lapsed && { lapsed }, gauge && { deathGauge: gauge }, walks && { deepWalks: walks }, due && { stagingDue: due }, stuck && { stuck });
+    healthy !== undefined && { healthy }, lapsed && { lapsed }, gauge && { deathGauge: gauge }, walks && { deepWalks: walks }, due && { stagingDue: due }, stuck && { stuck }, paced && { paced });
   return data;
 }
 
