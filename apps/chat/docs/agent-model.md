@@ -410,7 +410,7 @@ Built and live on 2026-10-29: pi-host d3368356 (the folder in a163066e), apps/ch
 1. The brief written on its card and a memory added on its Memory tab reached its first request: the `pi.system` entry 12 holds the brief under `## /home/sieun/.pi/agent/agents/phase3-walk/brief.md` in its `context` section, and the full digest holds `[local:the_owner_s_favorite_fruit_is_quince]`. Asked through its DM, it answered both codewords with `tell_owner`, and the answer came back as its post.
 2. After a brief edit and a second memory on the card, the next turn wrote `pi.system` entry 21 with the `context` section alone, and a `[harness-digest update]` that adds the second memory. The agent answered with the new codeword and the new memory's code.
 3. Deleting the second memory on the card removed it from the store.
-4. vent's brief, edited on its card, sits in `~/.pi/agent/agents/vent/brief.md`, and its work thread and its six root job threads hold `agent.ref`.
+4. vent's work thread and its six root job threads hold `agent.ref`. After vent replaced its placeholder brief with its own 2,870-byte brief, its next request wrote `pi.system` entry 10267 with the `context` section alone, holding that brief under `## /home/sieun/.pi/agent/agents/vent/brief.md`. Its check-in turn after that sent no new context, because the brief had not changed.
 
 ### Phase 4: Comm and work split
 
