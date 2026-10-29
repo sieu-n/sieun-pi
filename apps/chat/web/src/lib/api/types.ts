@@ -261,7 +261,11 @@ export interface Room {
   members: Member[]; lastSeq: number;
 }
 /** `POST /api/rooms`. A Solo room needs an agenda and at least one agent, and its name defaults to the agenda's start; a channel needs a name. */
-export interface RoomInput { kind: "channel" | "solo"; name?: string; agenda?: string; members?: AgentId[]; homeChat?: string }
+export interface RoomInput {
+  kind: "channel" | "solo"; name?: string; agenda?: string; members?: AgentId[]; homeChat?: string;
+  /** A walk's throwaway room: no owner list, live event or badge shows it; `GET /api/rooms?test=1` lists it. */
+  test?: boolean;
+}
 /** `PATCH /api/rooms/:id`. `closed` closes or reopens a Solo room. */
 export interface RoomPatch { name?: string; agenda?: string; closed?: boolean; archived?: boolean; homeChat?: string | null }
 

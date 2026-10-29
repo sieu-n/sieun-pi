@@ -84,7 +84,7 @@ export function routes(app: App): Route[] {
     route("GET", "/api/conversations", async (_r, _p, q) => app.threads.conversations().filter(c => q.get("archived") === "1" || !c.archived)),
     route("GET", "/api/directory", async () => ({ agents: app.threads.agents(), jobs: app.threads.jobList(), rooms: app.groups.list() })),
     route("GET", "/api/models", async () => MODELS),
-    route("GET", "/api/agents", async (_r, _p, q) => app.threads.agents({ archived: q.get("archived") === "1" })),
+    route("GET", "/api/agents", async (_r, _p, q) => app.threads.agents({ archived: q.get("archived") === "1", test: q.get("test") === "1" })),
     route("GET", "/api/jobs", async (_r, _p, q) => app.threads.jobList({ archived: q.get("archived") === "1" })),
     route("GET", "/api/agents/:id/config", async (_r, p) => agentConfig(app, p.id!)),
     route("GET", "/api/agents/:id/folder", async (_r, p) => readAgentFolder(app.config.agentsDir, folderAgent(p.id!))),
@@ -144,7 +144,7 @@ export function routes(app: App): Route[] {
       return { ok: true };
     }),
     route("GET", "/api/threads/:id/jobs", async (_r, p) => app.threads.jobs(p.id!)),
-    route("GET", "/api/rooms", async () => app.groups.list()),
+    route("GET", "/api/rooms", async (_r, _p, q) => app.groups.list({ test: q.get("test") === "1" })),
     route("POST", "/api/rooms", async (_r, _p, _q, body) => app.groups.create((await body()) as RoomInput)),
     route("PATCH", "/api/rooms/:id", async (_r, p, _q, body) => app.groups.update(p.id!, ((await body()) ?? {}) as RoomPatch)),
     route("POST", "/api/rooms/:id/members", async (_r, p, _q, body) => {

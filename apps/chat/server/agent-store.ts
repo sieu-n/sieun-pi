@@ -31,6 +31,8 @@ export interface AgentRecord {
    * alias, a job or an agent of its own, and no list shows it.
    */
   comm?: Record<RoomId, string>;
+  /** A walk's throwaway agent (`POST /api/agents {test: true}`): no owner list, live event or badge shows it, and its DM room is a test room too. */
+  test?: true;
 }
 
 export interface AgentsFile {
@@ -107,7 +109,8 @@ type LogLine = { t: "post"; post: RoomPost } | { t: "set"; post: string; patch: 
 export type WakeOn = "all" | "mention" | "none";
 export interface RoomMember { agent: AgentId; wakeOn: WakeOn; addedAt: Ms }
 
-interface RoomBase { id: RoomId; createdAt: Ms; archived: boolean }
+/** `test`: a walk's throwaway room (`POST /api/rooms {test: true}`), which no owner list, live event or badge shows. */
+interface RoomBase { id: RoomId; createdAt: Ms; archived: boolean; test?: true }
 /**
  * A room the chat server owns. A DM (`dm_<slug>`) is the owner and one agent. A channel (`ch_<8 hex>`, the ids channels had before phase 5)
  * is a named room whose members wake on a mention. A Solo room (`so_<8 hex>`) is a group chat of invited agents around one agenda; every
@@ -189,6 +192,16 @@ export class AgentStore {
   }
   agentByRoom(room: RoomId): AgentRecord | undefined {
     return this.agents.agents.find(a => a.room === room);
+  }
+
+  /**
+   * Whether an id belongs to a walk's test agent or test room: an agent id, any thread id of a test agent (work, job or comm thread, or a
+   * conversation `<thread>:<n>` in one), a test agent's DM room, or a test channel or Solo room.
+   */
+  isTest(id: string): boolean {
+    if (this.rooms.rooms.some(r => r.id === id && r.test)) return true;
+    const thread = /^(.*):\d+$/.exec(id)?.[1] ?? id;
+    return !!(this.agentOf(thread)?.test || this.agentByRoom(id)?.test);
   }
 
   postsOf(room: RoomId): RoomPost[] {

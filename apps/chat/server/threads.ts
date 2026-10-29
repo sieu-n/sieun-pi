@@ -323,8 +323,9 @@ export class Threads {
   }
 
   /** The registered agents (`agents.json`), newest first. A thread is an agent only through a record. */
-  agents(opts: { archived?: boolean } = {}): AgentSummary[] {
+  agents(opts: { archived?: boolean; test?: boolean } = {}): AgentSummary[] {
     return (this.agentRecords?.list() ?? []).flatMap(record => {
+      if (record.test && !opts.test) return [];
       const agent = this.agent(record.id);
       return agent && (opts.archived || !agent.archived) ? [agent] : [];
     }).sort(newestFirst);
@@ -335,7 +336,7 @@ export class Threads {
    * job thread, with `agent` set. A job of a thread no agent owns is not in it.
    */
   jobList(opts: { archived?: boolean } = {}): AgentSummary[] {
-    return this.allSummaries(opts).filter(a => a.kind === "job" && a.agent !== undefined);
+    return this.allSummaries(opts).filter(a => a.kind === "job" && a.agent !== undefined && !this.agentRecords?.record(a.agent.id)?.test);
   }
 
   jobs(thread: string): JobNode[] {

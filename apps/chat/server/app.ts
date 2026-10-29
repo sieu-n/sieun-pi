@@ -114,7 +114,7 @@ export class App {
       },
       saveUpload: image => this.saveUpload(image), readUpload: ref => this.readUpload(ref), log,
     });
-    this.threads.roomSummaries = () => this.rooms.summaries();
+    this.threads.roomSummaries = () => this.rooms.summaries().filter(c => !this.agentStore.isTest(c.id));
     this.threads.testSendsOf = thread => this.rooms.testSendsOf(thread);
     this.threads.onRefresh = () => {
       this.rooms.poll();
@@ -133,7 +133,7 @@ export class App {
       },
       saveUpload: image => this.saveUpload(image), readUpload: ref => this.readUpload(ref), log,
     });
-    this.threads.groupSummaries = () => this.groups.summaries();
+    this.threads.groupSummaries = () => this.groups.summaries().filter(c => !this.agentStore.isTest(c.id));
     this.threads.roomsOf = agent => this.groups.memberRooms(agent).map(row => row.id);
     this.boards = new Boards(host, this.store, this.threads, this.agents, {
       board: (chatId, board, awaitingGo) => this.broadcast({ type: "board", chatId, board, awaitingGo }),
@@ -196,7 +196,7 @@ export class App {
 
   async sidebar(): Promise<Sidebar> {
     const byNew = (a: ConversationSummary, b: ConversationSummary) => b.lastActivityAt - a.lastActivityAt;
-    const groups = this.groups.summaries().filter(c => !c.archived);
+    const groups = this.groups.summaries().filter(c => !c.archived && !this.agentStore.isTest(c.id));
     const solo = groups.filter(c => c.kind === "solo");
     return {
       // Solo rooms, open ones first, then the root chats no agent holds.
@@ -205,7 +205,7 @@ export class App {
         ...this.threads.threadConversations().filter(c => c.kind === "solo" && !c.archived).sort(byNew),
       ],
       channels: groups.filter(c => c.kind === "channel").sort((a, b) => a.name.localeCompare(b.name)),
-      dms: this.rooms.summaries().filter(c => !c.archived).sort(byNew),
+      dms: this.rooms.summaries().filter(c => !c.archived && !this.agentStore.isTest(c.id)).sort(byNew),
       forYou: await this.boards.forYouCount().catch(() => 0),
     };
   }
@@ -444,9 +444,10 @@ export class App {
   /**
    * A new agent: its work thread in a project folder (the one given, else the default project, never the home folder), its record and its DM
    * room, made at once. With `kind: "job"` or a `parent`, the thread is a root job filed under that agent instead. With `kind: "solo"` it is
-   * a root chat no agent holds, as the composer's "new chat" makes, which shows in the sidebar's solo group and in no agent list.
+   * a root chat no agent holds, as the composer's "new chat" makes, which shows in the sidebar's solo group and in no agent list. With `test`
+   * it is a walk's throwaway agent, which no owner list, live event or badge shows (`AgentStore.isTest`).
    */
-  async createAgent(input: { name?: string; model?: string; thinkingLevel?: string; cwd?: string; kind?: "chat" | "job" | "solo"; parent?: string }): Promise<AgentSummary> {
+  async createAgent(input: { name?: string; model?: string; thinkingLevel?: string; cwd?: string; kind?: "chat" | "job" | "solo"; parent?: string; test?: boolean }): Promise<AgentSummary> {
     const cwd = projectCwd(this.config, input.cwd);
     const created = await this.host.create({
       ...(input.name ? { name: input.name } : {}), model: input.model ?? MODELS.default.model, thinkingLevel: input.thinkingLevel ?? MODELS.default.thinkingLevel, cwd,
@@ -463,6 +464,7 @@ export class App {
       return this.threads.agent(created.id)!;
     }
     const record = this.agents.add(created);
+    if (input.test === true) this.agents.markTest(record);
     await this.threads.refresh();
     this.roomsChanged();
     return this.threads.agent(record.id)!;
@@ -582,9 +584,17 @@ export class App {
     if (client.socket.readyState === WebSocket.OPEN) client.socket.send(JSON.stringify(event));
   }
 
+  /** Sends an event to every page, except one about a walk's test agent, room or job, which no owner list shows. */
   broadcast(event: LiveEvent): void {
+    if (this.aboutTest(event)) return;
     const json = JSON.stringify(event);
     for (const client of this.clients) if (client.socket.readyState === WebSocket.OPEN) client.socket.send(json);
+  }
+
+  private aboutTest(event: LiveEvent): boolean {
+    const id = event.type === "agent" ? event.agent.id : event.type === "job" ? event.job.agent?.id ?? event.job.id
+      : event.type === "conversation" ? event.conversation.id : event.type === "room" ? event.room.id : event.type === "status" ? event.conversation : undefined;
+    return id !== undefined && this.agentStore.isTest(id);
   }
 
   private toWatchers(conversation: ConversationId, event: LiveEvent): void {

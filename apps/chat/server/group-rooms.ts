@@ -138,8 +138,9 @@ export class GroupRooms {
     return row;
   }
 
-  list(): Room[] {
-    return this.rows().filter(r => !r.archived).map(r => this.view(r));
+  /** The open rooms; a walk's test rooms only with `test`. */
+  list(opts: { test?: boolean } = {}): Room[] {
+    return this.rows().filter(r => !r.archived && (opts.test || !r.test)).map(r => this.view(r));
   }
 
   view(row: GroupRoom): Room {
@@ -228,6 +229,7 @@ export class GroupRooms {
         members: agents.map(agent => ({ agent, wakeOn: "all", addedAt: now })),
       };
     }
+    if (input.test === true) row.test = true;
     this.store.rooms.rooms.push(row);
     this.store.saveRooms();
     this.changed(row);

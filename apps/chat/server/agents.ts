@@ -200,6 +200,15 @@ export class Agents {
     return record;
   }
 
+  /** Makes the agent and its DM room a walk's test agent and room, which no owner list, live event or badge shows. */
+  markTest(record: AgentRecord): void {
+    record.test = true;
+    const room = this.store.rooms.rooms.find(r => r.id === record.room);
+    if (room) room.test = true;
+    this.store.saveAgents();
+    this.store.saveRooms();
+  }
+
   /** Files a root job thread under the agent `parent` names (an agent id or one of its thread ids). */
   alias(thread: string, parent: string): AgentId | undefined {
     const record = this.record(parent);

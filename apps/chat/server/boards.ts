@@ -209,7 +209,8 @@ export class Boards {
 
   async forYou(): Promise<ForYouItem[]> {
     const out: ForYouItem[] = [];
-    const chats = this.chats();
+    // A walk's test agent has no place in the owner's For you list or its badge.
+    const chats = this.chats().filter(chat => !this.agents.store.isTest(chat));
     const boards = await Promise.all(chats.map(chat => this.known(chat)));
     for (const [i, chat] of chats.entries()) {
       const board = boards[i];
