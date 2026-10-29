@@ -128,19 +128,26 @@ export function slotParkOf(lines: readonly string[], sessionId: string, now: num
   return poolPark(fileSlotPark(lines).park, sessionId, now, pool);
 }
 
-/**
- * A file's or row's open wait (`fileSlotPark`, `primePark`) checked against pi-pool now, as `slotParkOf` reads it. A wait whose resumeAt
- * passed and that the pool lists neither queued nor working is over, Prime's labelled park too: a box that went offline keeps its last row,
- * and on 10-29 the outbox held a message to designer bro on the Mac at 23:04Z "while the target waits for its pi-pool slot at 19:30:01Z".
- * A labelled park with no resumeAt lasts until Prime clears it.
- */
+/** A file's open wait (`fileSlotPark`) checked against pi-pool now, as `slotParkOf` reads it. */
 export function poolPark(park: SlotPark | undefined, sessionId: string, now: number, pool: PoolQueue | null): SlotPark | null {
   if (!park) return null;
   if (!pool) return park;
   const queued = pool.queued.get(sessionId);
   if (queued) return { ...park, place: queued.position, total: queued.total };
   if (pool.working.has(sessionId)) return { ...park.since !== undefined ? { since: park.since } : {}, ...park.resumeAt !== undefined ? { resumeAt: park.resumeAt } : {}, starting: true };
-  return (park.resumeAt !== undefined ? park.resumeAt > now : park.label !== undefined) ? park : null;
+  return park.label !== undefined || (park.resumeAt !== undefined && park.resumeAt > now) ? park : null;
+}
+
+/**
+ * The wait that holds a message to `sessionId` (`poolPark`), with a park whose resumeAt passed and that the pool lists neither queued nor
+ * working left out, Prime's labelled park too. A box that went offline keeps its last row: on 10-29 the outbox held a message to designer bro
+ * on the Mac at 23:04Z "while the target waits for its pi-pool slot at 19:30:01Z". Only the outbox reads this: on 10-29 poolPark itself
+ * ending such parks made the chat's first projections after a restart wait on the offline Mac (median 16 s) and fail release-80fe8c3's check.
+ */
+export function messageHold(park: SlotPark | undefined, sessionId: string, now: number, pool: PoolQueue | null): SlotPark | null {
+  const open = poolPark(park, sessionId, now, pool);
+  const listed = pool !== null && (pool.queued.has(sessionId) || pool.working.has(sessionId));
+  return open && !listed && open.resumeAt !== undefined && open.resumeAt <= now ? null : open;
 }
 
 /** Prime's credential park on a summary row (load.3, schema 39 `SessionCredentialPark`): its times are ISO strings, as agent_observe gives them. */

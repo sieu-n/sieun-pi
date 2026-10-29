@@ -38,7 +38,7 @@ import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
 import { resumesNow, tailLines } from "./cut-end.ts";
 import { IdleUnloader, parkChanges, providerWaits, SWEEP_EVERY_MS, takesKillOrigin, unloadRequest } from "./idle-unload.ts";
-import { parkedUntil, poolPark, readRowSlotPark } from "./slot-park.ts";
+import { messageHold, parkedUntil, readRowSlotPark } from "./slot-park.ts";
 import { handOff, handoffSend, handsOffRow, systemPorts } from "./detached-handoff.ts";
 import { unfinishedHandoffs } from "./orphan-services.ts";
 import { entriesTurnSince, readHeldTurns, readTurnSince, writeResumePending } from "./held-turns.ts";
@@ -340,7 +340,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // again (src/agent-outbox.ts). A scratch serve keeps its own folder, so it never delivers the live service's messages.
   const agentOutbox = new AgentOutbox(join(dataDir, quiet ? "agent-outbox-scratch" : "agent-outbox"), { log: dutyLog, hostOf: session => catalog.hostOf(session), reach: host => reach.reach(host),
     slotPark: async session => {
-      return poolPark((await readRowSlotPark(await catalog.summary(session))).park, session, Date.now(), await queued());
+      return messageHold((await readRowSlotPark(await catalog.summary(session))).park, session, Date.now(), await queued());
     },
     synced: () => catalog.hostsSynced(), subagentOf: async session => rowSubagent(await catalog.summary(session)),
     relayed: (session, at) => relays.add(session, at), stopped: stopRecords(dataDir),
