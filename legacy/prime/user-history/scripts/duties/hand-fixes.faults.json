@@ -473,6 +473,20 @@
           "search_sync."
         ]
       }
+    },
+    {
+      "id": "F32",
+      "title": "A reads.* cutover switch flipped by hand to time a read path, because nothing timed both paths without switching every caller's read",
+      "designs": [
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p264",
+        "commit:1672bd6a5"
+      ],
+      "owner": "Prospect feature bro (01a11bd7) job 'd3 posts read cutover timing' (session 01a18587), step p264, filed by d3 on 10-29: the Crawler VP's posts-table job (01a1835d) flipped reads.instagram_snapshot_posts on and off on staging four times to time the new instagram_account_posts read against the stored posts alone (audits 15191 at 10-28 17:19Z, 15202 at 17:23Z, 15596 at 10-29 02:30Z, 15597 at 02:35Z), and each flip switched every staging caller's read. Commit 1672bd6a5 makes the path a per-request choice: a request with X-Crawler-Read: reads.<key>=on|off and the crawler key takes that path alone (crawler-v3 http/read_trial.py, control/read_trial.py read_switch), and scripts/read_trial_timing.py sends each sample request with both paths in turn and reports p50 and p95 per band and route with the on/off ratio. Once the timing passes, the cutover commits the key's tier default in settings.py and clears the stored row, which d3 reads as handing the key back to its default (rule 8 under Control plane in .claude/rules/app-crawler-v3.md). A hand write of a reads.* key after this design is on prod is a repeat.",
+      "match": {
+        "config_key_prefixes": [
+          "reads."
+        ]
+      }
     }
   ],
   "exempt": {
