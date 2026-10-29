@@ -4,7 +4,7 @@
  * | Part | Read from |
  * |---|---|
  * | name, model, status, cwd, created | pi-host's thread row (`durable_threads`) and tree (`durable_tree`); `project` is false for the home folder (`projects.ts`) |
- * | purpose | the conversation's first entry (`durable_entries after 0`): the owner's first message or the brief its parent or a duty sent |
+ * | purpose | the conversation's first input among its first 20 entries (`durable_entries after 0`): the owner's first message or the brief its parent or a duty sent, never a tagged notice such as an imported `[harness-digest]` |
  * | system text | pi-host's durable Preamble, `PRIME_BASE_PROMPT` in packages/pi-family/preamble.ts of the pi-host that runs |
  * | thread file | `<durable dir>/threads/<thread>.sqlite`, beside pi-host's `index.sqlite` |
  * | board | the `chat.board` document of its chat's root conversation, through `Boards` |
@@ -25,11 +25,17 @@ import { NotFound, type App } from "./app.ts";
 import { judgedRun } from "../web/src/lib/api/shared/duty-card.ts";
 import { awaitingGo, BOARD_DOC, nextRun, type DutyFile } from "./boards.ts";
 import { isNoProject } from "./projects.ts";
+import type { EntryRecord } from "./host/types.ts";
+import { ownerText } from "./rooms.ts";
 import { readJson } from "./store.ts";
 import { conversationIdOf, parseConversationId } from "./threads.ts";
 
 const DAY = 86_400_000;
 const PURPOSE_CAP = 1500;
+/** Entries read for the purpose: an imported Prime session opens with its harness digest and other tagged notices before the first input. */
+const FIRST_INPUT_SCAN = 20;
+/** A brief another agent or a duty sent, or an owner message (`ownerText`), not a tagged notice such as `[harness-digest]`. */
+const isFirstInput = (entry: EntryRecord): boolean => entry.kind === "agent.message" || ownerText(entry) !== undefined;
 
 /** Prime's agent dir, which pi-host runs with (`--agent-dir`): its harness store, AGENTS.md and skills. */
 export function primeAgentDir(app: App): string {
@@ -175,7 +181,7 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
   }
 
   const [first, ping, usage, board] = await Promise.all([
-    app.host.entries(thread, { conversation, after: 0, limit: 1 }).then(got => got.entries[0], () => undefined),
+    app.host.entries(thread, { conversation, after: 0, limit: FIRST_INPUT_SCAN }).then(got => got.entries.find(isFirstInput), () => undefined),
     app.host.ping().catch(error => ({ ok: false as const, error: String(error) })),
     app.host.usage({ since: Date.now() - 7 * DAY, threads: [thread] }).catch(() => null),
     chat ? app.boards.board(chat).catch(() => null) : Promise.resolve(null),

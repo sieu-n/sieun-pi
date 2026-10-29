@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { AgentConfig, ConversationSummary, Sidebar } from "../../web/src/lib/api/types.ts";
 import { readPreamble } from "../../server/agent-config.ts";
+import { FixtureHost } from "../../server/host/fixture.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { start, type Running } from "./helpers.ts";
 
@@ -100,6 +101,19 @@ test("a job inside a thread reads its task as its purpose and its thread's board
   assert.notEqual(c.runs.conversation, 1);
   assert.equal(c.board?.chat, agents.vent);
   assert.equal(c.board?.own, false);
+});
+
+test("an imported thread's harness digest and tagged notices before the first message are not its purpose", async () => {
+  const made = (await s.send("POST", "/api/agents", { name: "imported", cwd: join(s.app.config.dataDir, "work", "harness") })).body as { id: string; thread: string };
+  const host = s.host as FixtureHost;
+  const thread = host.threadsById.get(made.thread)!;
+  const user = (text: string) => ({ role: "user" as const, content: [{ type: "text" as const, text }], timestamp: Date.now() });
+  host.append(thread, 1, { kind: "prime.custom", model: [user("[harness-digest]\n\nThe persistent memories produced across this session so far:")] });
+  host.append(thread, 1, { kind: "pi.user", model: [user("[check-in] Read your board.")] });
+  host.append(thread, 1, { kind: "pi.user", model: [user("Own the relay page.")] });
+  const c = await config(made.id);
+  assert.equal(c.identity.purpose?.text, "Own the relay page.");
+  await s.send("PATCH", `/api/c/dm_imported`, { archived: true });
 });
 
 test("an unknown agent is a 404", async () => {
