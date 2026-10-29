@@ -122,7 +122,7 @@
   <div class="draft">
     <div class="hello">
       <p class="t-heading">What should your new chat work on?</p>
-      <p class="sub">The first message starts a new agent on the default model.</p>
+      <p class="sub">The first message starts a new chat on the default model.</p>
     </div>
     <Composer placeholder="Message your agents" agents={directory.agents} channels={directory.channels} draftKey="new-chat" autofocus onsend={startChat} />
   </div>
