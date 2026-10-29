@@ -25,7 +25,8 @@ export const BOARD_DOC = "chat.board";
 const DEFAULT_CHECK_IN_MS = 120 * 60_000;
 const BOARD_TTL_MS = 15_000;
 
-export interface DutyFile { duties: Duty[]; runs: Record<string, DutyRunRecord[]>; checkIn?: { everyMs: number; pausedUntil: number | "forever" | null; lastAt: number | null } }
+interface CheckInState { everyMs: number; pausedUntil: number | "forever" | null; lastAt: number | null }
+export interface DutyFile { duties: Duty[]; runs: Record<string, DutyRunRecord[]>; checkIn?: CheckInState }
 
 export interface BoardEvents {
   board(chatId: string, board: ChatBoard, awaitingGo: string[]): void;
@@ -513,12 +514,22 @@ export class Boards {
     });
   }
 
+  /**
+   * A board's check-in setting: the one its file holds, else every 2 hours from the agent's or root chat's start. A walk's test agent gets no
+   * check-in until one is set for it.
+   */
+  private checkInState(chat: string, file = this.file(chat)): CheckInState | null {
+    if (file.checkIn) return file.checkIn;
+    return this.agents.store.isTest(chat) ? null : { everyMs: DEFAULT_CHECK_IN_MS, pausedUntil: null, lastAt: null };
+  }
+
   checkIn(id: string): CheckInView {
     const chat = this.chatId(id);
-    const state = this.file(chat).checkIn ?? { everyMs: DEFAULT_CHECK_IN_MS, pausedUntil: null, lastAt: null };
+    const state = this.checkInState(chat);
+    if (!state) return { everyMs: DEFAULT_CHECK_IN_MS, paused: false, pausedUntil: null, nextAt: null, lastAt: null };
     const now = Date.now();
     const paused = state.pausedUntil === "forever" || (typeof state.pausedUntil === "number" && state.pausedUntil > now);
-    const base = state.lastAt ?? this.threads.thread(this.threadOf(chat))?.createdAt ?? now;
+    const base = state.lastAt ?? this.agents.record(chat)?.createdAt ?? this.threads.thread(this.threadOf(chat))?.createdAt ?? now;
     return {
       everyMs: state.everyMs, paused, pausedUntil: paused ? state.pausedUntil : null,
       nextAt: paused ? (state.pausedUntil === "forever" ? null : Math.max(state.pausedUntil as number, base + state.everyMs)) : base + state.everyMs, lastAt: state.lastAt,
@@ -560,10 +571,11 @@ export class Boards {
     for (const chat of this.chats()) {
       const file = this.file(chat);
       let dirty = false;
-      if (file.checkIn) {
+      const state = this.checkInState(chat, file);
+      if (state) {
         const view = this.checkIn(chat);
         if (view.nextAt !== null && view.nextAt <= now && this.threads.thread(this.threadOf(chat))?.status !== "running") {
-          file.checkIn.lastAt = now;
+          file.checkIn = { ...state, lastAt: now };
           dirty = true;
           await this.host.submit(this.threadOf(chat), {
             text: "[check-in] Read your board and your jobs, move each open step, and tell the owner only what needs him.", whenBusy: "followUp",
