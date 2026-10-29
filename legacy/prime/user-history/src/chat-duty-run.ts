@@ -142,6 +142,13 @@ export const STILL_GOING = "skipped: previous run still";
 /** A duty job may work this long before a later run counts it as stuck, however short its duty's interval. */
 export const STUCK_MIN_MS = 90 * 60_000;
 /**
+ * A duty job whose tree wrote no model reply for this long is stalled, whatever keeps it up (`DutyJobHost.repliedSince`), and the next run
+ * replaces it. On 10-29 the Wiki dream's 14:33 KST job wrote its last reply at 07:54Z, then sat on pi-pool waits and quota parks with only empty
+ * failed turns, and 13 d4 runs to 10:38Z skipped beside it while wiki_problems rose to 22. Before it wedged, its longest gap between replies
+ * was a 52 min pi-pool park, and its longest gap with no failed call was 6 min. The value is STUCK_MIN_MS.
+ */
+export const STALLED_MS = 90 * 60_000;
+/**
  * A duty job still working this long after its run started is stuck, however long its duty's interval: a daily slot can run CATCH_UP_MS (6 h)
  * late, so the next slot can come 18 h after its job started, and the limit must be under that.
  */
@@ -1036,7 +1043,8 @@ export class Duties {
    * or board.wake keeps it, and the run retires it and starts its own job with the run's findings. A job kept only by pi-pool's turn queue
    * (`inTurnQueue`) still takes the run's hand-off as `working`: from 10-23 10:27Z to 10-24 05:18Z, 18 missed runs on 4 chats skipped beside
    * a job in that queue and handed it nothing, among them d4 at 00:26Z and 05:18Z with 5 and 12 wiki problems. A run that would retire the
-   * last job skips instead while an older job of the duty works again (`olderLive`), and hands that job its items.
+   * last job skips instead while an older job of the duty works again (`olderLive`), and hands that job its items. A job whose tree wrote no
+   * model reply for STALLED_MS is replaced as stalled, however a pool wait or a quota park keeps it (`stalled`).
    */
   private async previous(chatId: string, dutyId: string, schedule: DutySchedule, slot: number): Promise<Previous> {
     const runs = (await this.store.runs(chatId)).filter(run => run.duty === dutyId);
@@ -1046,13 +1054,17 @@ export class Duties {
     if (!started || !last) return {};
     const reported = await this.reported(chatId, last);
     const kept = await this.kept(last, reported);
-    if (kept) {
+    const working = kept !== null || await this.host.jobs.working(last);
+    // A Prime update or a failed hold read keeps the job whatever its replies ("is kept ..."); a pool wait or a quota park does not.
+    const stalled = working && !reported && !kept?.startsWith("is kept") && await this.stalled(started.at, last);
+    if (kept && !stalled) {
       await this.store.updateRun(chatId, dutyId, started.at, record => { record.keptAt = this.now(); }).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: keptAt of ${last.name}: ${message(error)}`));
       return { skipped: `${STILL_WORKING} (job ${last.name} ${kept})`, held: { job: last, why: kept }, ...inTurnQueue(kept) ? { working: last } : {} };
     }
     let next: Previous;
-    if (!(await this.host.jobs.working(last))) next = { last, lastRun: started };
+    if (!working) next = { last, lastRun: started };
     else if (reported) next = { last, lastRun: started, replaced: ` (replaced job ${last.name}, whose report was in)` };
+    else if (stalled) next = { last, lastRun: started, replaced: ` (replaced stalled job ${last.name}${kept ? `, which ${kept},` : ""} with no model reply in ${STALLED_MS / 60_000} min)` };
     else {
       // A run that found the job kept (`keptAt`) gives it a new stuck limit, but never past STUCK_MAX_MS since its run started. Before that cap
       // the AI harness chat's Wiki dream job of 10-26 22:32Z was found in pi-pool's turn queue by 8 runs up to 08:35Z, and kept again at 14:30Z on
@@ -1065,6 +1077,13 @@ export class Duties {
     }
     const live = await this.olderLive(chatId, runs, last, schedule);
     return live ? { skipped: `${STILL_WORKING} (job ${live.name}, an older job of this duty)`, working: live } : next;
+  }
+
+  /** Whether the job of a run that started at `startedAt` has written no model reply in its tree for STALLED_MS; a failed read is no stall. */
+  private async stalled(startedAt: number, job: DutyJobRef): Promise<boolean> {
+    const since = this.now() - STALLED_MS;
+    if (startedAt > since || !this.host.jobs.repliedSince) return false;
+    return !(await this.host.jobs.repliedSince(job, since).catch(error => { this.log(`duty job ${job.name}: read its replies: ${message(error)}`); return true; }));
   }
 
   /**

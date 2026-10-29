@@ -1,6 +1,7 @@
 import { replaceableLine } from "./agent-outbox.ts";
 import { type AlertJob, type AlertLine, alertRulesText, TRIAGE_WORK } from "./alert-bridge.ts";
 import { existsSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { clockTime, localTime } from "./checkin-settings.ts";
 import type { JobRegistry } from "./chat-sources.ts";
@@ -21,6 +22,7 @@ import type { ServiceBrief } from "./brief-keeper.ts";
 import type { AgentQueueReading, SessionRow, ThinkingLevel, ThreadSchedule } from "./shared/types.ts";
 import { fileLines } from "./file-lines.ts";
 import { reportedSince, reportReader } from "./duty-job-report.ts";
+import { modelReplyAt } from "./send-once.ts";
 
 /**
  * Duty jobs: on every scheduled run of a duty (the built-in check-in included) the server starts one job for it, a root session linked to the
@@ -97,6 +99,11 @@ export interface DutyJobHost {
   reported?(job: DutyJobRef, chatId: string): Promise<boolean>;
   /** Sends a working job a message into its current turn (a steer); a host without it (test fakes) hands nothing to a working job. */
   steer?(job: DutyJobRef, text: string): Promise<void>;
+  /**
+   * Whether the job's root or a subagent below it wrote a model reply at or after `since` (`modelReplyAt`), so a later run can tell a job at
+   * work from one parked on pi-pool or answering with empty failed turns. A host without it (test fakes) reads every job as replying.
+   */
+  repliedSince?(job: DutyJobRef, since: number): Promise<boolean>;
 }
 
 /**
@@ -504,6 +511,8 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
    * got; absent: none is kept.
    */
   briefs?: { add(brief: ServiceBrief): Promise<boolean>; drop(id: string): Promise<void> };
+  /** The transcript files of the job's root and every subagent below it (`treeFilesOf`), which `repliedSince` reads; absent, every job reads as replying. */
+  treeFiles?: (id: string) => Promise<readonly string[]>;
   refresh?: () => Promise<void>; lookupWaitsMs?: readonly number[]; sleep?: (ms: number) => Promise<void>; log?: (line: string) => void; now?: () => number }): DutyJobHost {
   const row = async (id: string) => (await input.rows()).find(candidate => candidate.id === id);
   const waits = input.lookupWaitsMs ?? DUTY_LOOKUP_WAITS_MS;
@@ -662,6 +671,14 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
     },
     async steer(job, text) {
       await input.threads.prompt(job.id, { message: text, images: [], mode: "steer" });
+    },
+    async repliedSince(job, since) {
+      if (!input.treeFiles) return true;
+      for (const file of await input.treeFiles(job.id)) {
+        const written = await stat(file).then(info => info.mtimeMs, () => 0);
+        if (written >= since && await modelReplyAt(file, since) !== null) return true;
+      }
+      return false;
     },
   };
 }

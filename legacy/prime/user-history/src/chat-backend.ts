@@ -70,7 +70,7 @@ import { startBridgeWatch } from "./alert-bridge-health.ts";
 import { startAlertPoll } from "./alert-poll.ts";
 import { startUptimeWatch } from "./uptime-watch.ts";
 import { promptView, sessionFileFor } from "./prompt-view.ts";
-import { sessionFileOf, targetStateOf, type TargetState } from "./send-once.ts";
+import { sessionFileOf, targetStateOf, type TargetState, treeFilesOf } from "./send-once.ts";
 import { AgentOutbox, stopRecords } from "./agent-outbox.ts";
 import { noticeOutbox } from "./notice-outbox.ts";
 import { relayHops, rowSubagent } from "./subagent-relay.ts";
@@ -228,6 +228,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const stalls = (now: number) => stalledCalls([...catalog.daemonRows(), ...catalog.remoteHosts().flatMap(({ rows }) => rows)], now, session => calls.process(session));
   const dutyJobs = dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry,
     saved: async id => { const file = await sessionFileOf(id, agentDir); return file ? savedChat(file) : null; }, sessionFile: id => sessionFileOf(id, agentDir),
+    treeFiles: id => treeFilesOf(id, agentDir),
     ...quiet ? {} : { briefs: serviceBriefs(join(dataDir, BRIEFS_DIR), id => sessionFileOf(id, agentDir)) },
     schedules: () => catalog.schedulesNow(), held: () => chats.poolHeldSessions(), queue: hostsReading,
     waking: async id => { const owed = (await pendingWakes(join(dataDir, "wakes"), Date.now())).filter(wake => wake.session === id || wake.root === id); return owed.length ? `waits on ${wakeLabel(owed)}` : null; },

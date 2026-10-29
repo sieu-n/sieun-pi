@@ -77,6 +77,24 @@ export function userMessageAt(file: string, text: string, imageCount: number, si
   });
 }
 
+/**
+ * When the session wrote its newest model reply at or after `since`, else null: an assistant message with content that did not stop on an error
+ * or an abort. A turn parked on pi-pool writes only empty assistant messages that stop on an error, so they are no reply.
+ */
+export function modelReplyAt(file: string, since: number): Promise<number | null> {
+  return lineSince(file, since, line => {
+    if (!line.includes('"role":"assistant"')) return null;
+    try {
+      const entry = JSON.parse(line) as { type?: unknown; timestamp?: unknown; message?: { role?: unknown; content?: unknown; stopReason?: unknown } };
+      const reply = entry.message;
+      if (entry.type !== "message" || reply?.role !== "assistant" || reply.stopReason === "error" || reply.stopReason === "aborted") return null;
+      if (!(Array.isArray(reply.content) ? reply.content.length : typeof reply.content === "string" && reply.content.trim())) return null;
+      const at = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : NaN;
+      return Number.isFinite(at) ? at : null;
+    } catch { return null; }
+  });
+}
+
 /** The time `match` gives the newest line written at or after `since` that it matches, reading the file backward as `landedAt` says. */
 async function lineSince(file: string, since: number, match: (line: string) => number | null): Promise<number | null> {
   const handle = await open(file, "r").catch(() => null);
@@ -121,6 +139,24 @@ export async function sessionFileOf(sessionId: string, agentDir: string): Promis
     level = next;
   }
   return null;
+}
+
+/** The transcript files of a root session and of every subagent below it: `sessions/<id>.jsonl` and each `<sub>.jsonl` up to three `sub-*` levels under its artifacts. */
+export async function treeFilesOf(rootId: string, agentDir: string): Promise<string[]> {
+  const root = join(agentDir, "sessions", `${rootId}.jsonl`);
+  const files = await stat(root).then(() => [root], () => [] as string[]);
+  let level = [join(agentDir, "session-artifacts", rootId)];
+  for (let depth = 0; depth < 3 && level.length; depth++) {
+    const next: string[] = [];
+    for (const dir of level) {
+      for (const entry of await readdir(dir).catch(() => [] as string[])) {
+        if (entry.startsWith("sub-")) next.push(join(dir, entry));
+        else if (depth > 0 && entry.endsWith(".jsonl") && entry !== "semantic-edges.jsonl") files.push(join(dir, entry));
+      }
+    }
+    level = next;
+  }
+  return files;
 }
 
 /**
