@@ -1,6 +1,6 @@
 # The agent model: agents, rooms, and comm and work threads
 
-Status: design, for the owner's review. Phases 1, 2 and 3 are built; the rest is not, except where a line says "today".
+Status: design, for the owner's review. Phases 1 to 4 are built; the rest is not, except where a line says "today".
 
 ## The answer
 
@@ -11,7 +11,7 @@ Status: design, for the owner's review. Phases 1, 2 and 3 are built; the rest is
 5. "So what is status?" asked mid-work starts a turn in the comm thread only. That turn reads the work thread's state and answers, and the worker's context never sees the question.
 6. The sidebar shows Solo rooms, Channels and DMs, and the DMs list holds agents only. Work threads, comm threads and jobs open from the Agents page and from job pills, never from the sidebar.
 7. There are three tiers. The chat server runs on metal only and owns messaging. A relay on each box delivers room messages to that box's pi-host and carries `send_message` back. pi-host runs the threads.
-8. We build it in six phases, each shippable alone. Phases 1 to 3 are built: `send_message`, DMs as rooms the chat server owns, and the agent folder with its brief and memory. Phase 4 adds the comm and work split.
+8. We build it in six phases, each shippable alone. Phases 1 to 4 are built: `send_message`, DMs as rooms the chat server owns, the agent folder with its brief and memory, and the comm and work split.
 
 ## What the owner asked for
 
@@ -417,6 +417,23 @@ Built and live on 2026-10-29: pi-host d3368356 (the folder in a163066e), apps/ch
 1. pi-host `durable/comm.ts` (`agent_status`, `delegate`, `steer_work`, `room_history` through the chat server) and `durable/work.ts` (`report`, `start_job`, `wake`). Work-done notices go back to the comm thread that delegated, keyed `n:<thread>:<submission>`.
 2. `server/relay/` (in the chat server for now) maps (agent, room) to a comm thread and creates it on first delivery with `role: "comm"` and the agent's model, Opus 5.5 at high thinking (c31).
 3. DM deliveries go to the comm thread. The web shows the comm thread's turns in the fold and adds a "Work" pill when work is running.
+
+Built and live on 2026-10-29: pi-host fc286a05 and apps/chat 6821aa3f, both as release-6821aa3. It uses Prime's own tools where Prime has one, so the tools table above maps like this:
+
+| Doc tool | Built as |
+|---|---|
+| `send_message` in a comm thread | Prime's `tell_owner` with its live guard |
+| `agent_status` | Prime's `agent_observe` in the comm thread's ipython, which now reads a pi-host root in the same process: status, messages, live children and turn-queue place, with no input to it |
+| `delegate`, `steer_work` text | `agent_message.send(task, receiver_role="sibling", receiver_name=<work thread>)`, with `mode="steer"` to steer |
+| `steer_work` stop | `stop_work`, a deferred tool only comm threads load (`packages/pi-host/src/durable/comm.ts`) |
+| `report` | Prime's root-job report, `agent_message.send(report, receiver_role="sibling", receiver_name=<comm thread>)`, plus pi-host's `[work-done: no-reply ...]` notice when a handed task ends with no report |
+| `room_history`, `start_job`, `wake` | not built: the comm thread holds its room's posts as inputs, `rlm.create_session` starts jobs, and `board.wake` wakes |
+
+pi-host writes each role into the root conversation's agent in the commit that writes `agent.ref`. A comm thread loses write, edit, bash and subagent and gets the comm instructions, and a work thread with a comm thread loses `tell_owner` and gets the work instructions. The chat server makes the comm thread on a DM's first delivery, or through `POST /api/agents/:id/split`, which `scripts/split-agents.ts` drives with a read-only dry run by default. A channel mention still goes to the work thread until phase 5.
+
+**Tests:** pi-host comm 5/5, with the status turn, the notice with and without a reply, and a restart; apps/chat comm 7/7, rooms 9/9, split 5/5 and migrate 4/4; Playwright test/dm 9/9 with comm.spec.ts 3/3.
+
+**Live walk** on :5184 with the throwaway agent "phase4 walk" (`/home/sieun/work/phase4/live-proof.md`, screenshots beside it). "So what is status?" sent while the work thread ran got its answer 21 s later from one comm turn, which read the work thread with `agent_observe.recent_messages`. The work thread got no input after it. A `[work-done: no-reply ...]` notice about a start note made no post. The work thread's reports of the results the owner asked for each became one post with why "done". vent was split through the route the same day, as comm thread c3969cf6.
 
 **Done when** asking "so what is status?" during a long work turn gets an answer within one comm turn while the work thread's entries show no new input, and a finished delegated task reaches the owner only if he asked for it.
 **Tests:** a pi-host test with a slow faux work turn that asserts the work conversation's entry count does not change across a status turn; a notice test (done, then the comm thread decides; the faux model scripts both branches); a fixture e2e of sequences (a), (b) and (c).
