@@ -97,3 +97,15 @@ test("a local screenshot path loads through /api/local-image", () => {
 test("a wide diagram keeps 80% of its drawn width before it scrolls", () => {
   assert.equal(readable('<svg id="m" width="100%" style="max-width: 1000px;" viewBox="0 0 1000 200">'), '<svg id="m" width="100%" style="max-width: 1000px; min-width: min(800px, 1000px);" viewBox="0 0 1000 200">');
 });
+
+test("a mention chip takes the longest known name, commas, spaces and a trailing dot included", () => {
+  const mentions = new Map([
+    ["search product, misc.", { id: "ag_search-product-misc", kind: "agent" as const }],
+    ["search", { id: "ag_search", kind: "agent" as const }],
+    ["vent", { id: "ag_vent", kind: "agent" as const }],
+  ]);
+  const html = renderMarkdown("@Search product, misc. research the auth stack, then ask @Vent. Not @Ventura or @Searching.", { mentions });
+  assert.match(html, /data-mention-id="ag_search-product-misc">.*<span class="text">Search product, misc\.<\/span><\/button> research/s);
+  assert.match(html, /data-mention-id="ag_vent">.*<span class="text">Vent<\/span><\/button>\. Not @Ventura or @Searching\./s);
+  assert.equal(html.match(/data-mention-id/g)?.length, 2);
+});

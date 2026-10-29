@@ -296,12 +296,15 @@ const mentions: TokenizerAndRendererExtension = {
   tokenizer(src, tokens) {
     const names = ctx.mentions;
     if (!names || this.lexer.state.inLink || /\w$/.test(tokens.at(-1)?.raw ?? "")) return undefined;
-    const m = /^@([\w][\w .-]{0,40})/.exec(src);
-    if (!m) return undefined;
-    let name = m[1]!;
-    while (name && !names.has(name.toLowerCase())) name = name.replace(/[\s.-]*[^\s.-]*$/, "");
-    if (!name) return undefined;
-    const hit = names.get(name.toLowerCase())!;
+    if (!/^@\w/.test(src)) return undefined;
+    const head = src.slice(1).toLowerCase();
+    let key = "";
+    for (const known of names.keys()) {
+      if (known.length > key.length && head.startsWith(known) && !(/\w$/.test(known) && /^\w/.test(head.slice(known.length)))) key = known;
+    }
+    if (!key) return undefined;
+    const name = src.slice(1, 1 + key.length);
+    const hit = names.get(key)!;
     return { type: "mention", raw: `@${name}`, name, id: hit.id, kind: hit.kind, self: !!hit.self };
   },
   renderer(token) {
