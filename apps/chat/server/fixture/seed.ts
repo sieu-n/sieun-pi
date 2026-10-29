@@ -266,7 +266,7 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
     id, name, ownerWords: `keep ${name.toLowerCase()} healthy`, goal, metrics: [{ key: metricKey, label: name, op: ">=", target, unit: "%", headline: true }],
     schedule: { kind: "daily", at: "07:40" },
     precheck: { command: ["node", "-e", `require("fs").writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { ${metricKey}: ${target + 0.5} } }))`], cwd: tmpdir(), timeoutMs: 60_000 }, onMiss: "Find the cause and fix it.", status: "active",
-    createdAt: at(5), updatedAt: at(1), runCount: 3, lastRunAt: at(0, -8),
+    createdAt: at(5), updatedAt: at(1), runCount: 3, lastRunAt: now,
   });
   const run = (dutyId: string, key: string, when: number, value: number, target: number): DutyRunRecord => ({
     duty: dutyId, at: when, trigger: "schedule", ms: 3100, verdict: value >= target ? "met" : "missed", metrics: { [key]: { value, target, op: ">=", met: value >= target } },
