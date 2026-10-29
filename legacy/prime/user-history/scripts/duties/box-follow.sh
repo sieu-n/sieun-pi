@@ -110,4 +110,31 @@ EOF
   [ ${#from_index[@]} = 0 ] || uv pip install -q --python "$python" "${from_index[@]}"
 }
 
+# playwright_browsers: each Playwright browser folder in $V, such as chromium_headless_shell-1248, installed into ~/.cache/ms-playwright by the
+# newest stable Playwright whose browsers.json gives that revision. A folder is the browser's name with - turned to _ and its revision
+# (playwright-core lib/server/registry/index.js), so its install name turns _ back to -. A revision only a Mac `revisionOverrides` entry gives,
+# such as WebKit's for mac14, is a Mac build no box install makes, so no release matches it and the step fails with its name.
+playwright_browsers() {
+  local folder name revision version found versions
+  versions=$(npm view playwright-core versions --json | python3 -c 'import json, re, sys
+stable = [v for v in json.load(sys.stdin) if re.fullmatch(r"\d+\.\d+\.\d+", v)]
+print("\n".join(sorted(stable, key=lambda v: tuple(map(int, v.split("."))), reverse=True)))')
+  for folder in $V; do
+    name=${folder%-*}
+    name=${name//_/-}
+    revision=${folder##*-}
+    found=
+    for version in $versions; do
+      if curl -fsSL "https://raw.githubusercontent.com/microsoft/playwright/v$version/packages/playwright-core/browsers.json" 2>/dev/null \
+        | python3 -c 'import json, sys
+sys.exit(not any(b["name"] == sys.argv[1] and b["revision"] == sys.argv[2] for b in json.load(sys.stdin)["browsers"]))' "$name" "$revision" 2>/dev/null; then
+        found=$version
+        break
+      fi
+    done
+    [ -n "$found" ] || { echo "no stable Playwright release's browsers.json on GitHub gives $name revision $revision" >&2; return 1; }
+    npx -y "playwright@$found" install "$name"
+  done
+}
+
 eval "$2"

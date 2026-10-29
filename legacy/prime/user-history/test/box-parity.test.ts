@@ -424,13 +424,49 @@ test("box-follow.sh release unpacks a version into its own ~/.local/opt folder, 
   assert.equal(execFileSync("readlink", [join(home, ".local/bin/tool")], { encoding: "utf8" }).trim(), join(home, ".local/opt/tool-1.2.3/bin/tool"));
 });
 
+test("box-follow.sh playwright_browsers installs each browser folder with the newest stable Playwright whose browsers.json gives its revision", () => {
+  const home = mkdtempSync(join(tmpdir(), "box-follow-"));
+  const bin = join(home, ".local/bin");
+  mkdirSync(bin, { recursive: true });
+  const browsers: Record<string, [string, string][]> = {
+    "1.63.0": [["chromium-headless-shell", "1243"], ["ffmpeg", "1011"]],
+    "1.64.0": [["chromium-headless-shell", "1248"], ["ffmpeg", "1013"]],
+    "1.64.1": [["chromium-headless-shell", "1249"], ["ffmpeg", "1013"]],
+  };
+  for (const [version, list] of Object.entries(browsers)) {
+    writeFileSync(join(home, `${version}.json`), JSON.stringify({ browsers: list.map(([name, revision]) => ({ name, revision })) }));
+  }
+  writeFileSync(join(bin, "npm"), `#!/bin/sh\necho '["1.63.0","1.64.0","1.64.1","1.65.0-alpha-1"]'\n`, { mode: 0o755 });
+  writeFileSync(join(bin, "curl"), `#!/bin/sh\nfor a; do u=$a; done\nv=\${u#*/playwright/v}\ncat "${home}/\${v%%/*}.json"\n`, { mode: 0o755 });
+  writeFileSync(join(bin, "npx"), `#!/bin/sh\necho "$*" >> "${home}/npx.log"\n`, { mode: 0o755 });
+  const script = join(import.meta.dirname, "../scripts/duties/box-follow.sh");
+  const env = { ...process.env, HOME: home };
+  execFileSync("bash", [script, "chromium_headless_shell-1248 ffmpeg-1013 ffmpeg-1011", "playwright_browsers"], { env });
+  assert.deepEqual(readFileSync(join(home, "npx.log"), "utf8").trim().split("\n"), [
+    "-y playwright@1.64.0 install chromium-headless-shell",
+    "-y playwright@1.64.1 install ffmpeg",
+    "-y playwright@1.63.0 install ffmpeg",
+  ]);
+  assert.throws(() => execFileSync("bash", [script, "webkit-2251", "playwright_browsers"], { env, stdio: "pipe" }),
+    /no stable Playwright release's browsers.json on GitHub gives webkit revision 2251/);
+});
+
+test("the Playwright browsers row follows the Mac's folders the box lacks and never the lock folder", () => {
+  const rows = JSON.parse(readFileSync(join(import.meta.dirname, "../scripts/duties/box-parity.rows.json"), "utf8")) as Row[];
+  const row = rows.find(candidate => candidate.id === "playwright-browsers")!;
+  const mac = output("mac", { "playwright-browsers": ['set:["chromium-1243","chromium_headless_shell-1248","ffmpeg-1013"]'] });
+  const box = output("box", { "playwright-browsers": ['set:["chromium-1243","chromium_headless_shell-1243"]'] });
+  assert.deepEqual(followSteps([row], mac, box).map(step => [step.version, step.recipe]), [["chromium_headless_shell-1248 ffmpeg-1013", "playwright_browsers"]]);
+  assert.ok(!new RegExp(String(row.box![0]!.pattern)).test("__dirlock"));
+});
+
 test("every follow recipe in box-parity.rows.json is valid bash that reads the Mac's version as $V or through a helper", () => {
   const rows = JSON.parse(readFileSync(join(import.meta.dirname, "../scripts/duties/box-parity.rows.json"), "utf8")) as Row[];
   const recipes = rows.flatMap(row => [...row.box ?? row.probes ?? []]).map(probe => probe.follow).filter((recipe): recipe is string => typeof recipe === "string");
   assert.ok(recipes.length >= 40, `${recipes.length} recipes`);
   for (const recipe of recipes) {
     execFileSync("bash", ["-n", "-c", recipe]);
-    assert.match(recipe, /\$V|\{V\}|^(venv|nvm_default|npm_global \S+|conda .+|media .+)$/, recipe);
+    assert.match(recipe, /\$V|\{V\}|^(venv|nvm_default|playwright_browsers|npm_global \S+|conda .+|media .+)$/, recipe);
   }
 });
 
