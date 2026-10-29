@@ -8,7 +8,8 @@ test.describe.configure({ retries: 1 });
 interface Config {
   runs: { host: string; cwd: string; thread: string };
   board: { chat: string; chatName: string; own: boolean; steps: { open: number; done: number }; openTodos: { id: string; text: string }[]; goals: { id: string; text: string }[] } | null;
-  memory: { kind: "none"; note: string; related: { path: string }[] } | { kind: "files"; files: { path: string }[] };
+  folder: { agent: string; memory: { entries: unknown[] } } | null;
+  memory: { kind: "none" | "agent"; note: string; related: { path: string }[] };
   instructions: { files: { path: string }[] };
   swarm: { jobs: { id: string; name: string; kind: string }[]; duties: { id: string; name: string }[]; channels: { id: string; name: string }[] };
 }
@@ -46,7 +47,7 @@ test("the configuration shows its host, home directory, board and memory, and ea
   await expect(panel(page).locator('[data-fact="host"]')).toContainText(config.runs.host);
   await expect(panel(page).locator('[data-fact="cwd"] code')).toHaveAttribute("title", config.runs.cwd);
   await expect(panel(page).locator('[data-fact="cwd"]').getByRole("button", { name: "Copy working directory" })).toBeVisible();
-  await expect(panel(page).locator('[data-fact="memory"]')).toContainText(config.memory.kind === "none" ? "None of its own" : "file");
+  await expect(panel(page).locator('[data-fact="memory"]')).toContainText(config.folder ? "memor" : "None of its own");
   if (config.board) await expect(panel(page).locator('[data-fact="board"]')).toContainText(`${config.board.steps.open} open`);
   else await expect(panel(page).locator('[data-fact="board"]')).toContainText("No board");
 
@@ -55,10 +56,9 @@ test("the configuration shows its host, home directory, board and memory, and ea
   await expect(panel(page).getByRole("tabpanel")).toContainText(config.runs.thread);
 
   await section(page, "Memory").click();
-  if (config.memory.kind === "none") {
-    await expect(panel(page).locator('[data-memory="none"]')).toContainText("No memory of its own");
-    for (const file of config.memory.related) await expect(panel(page).locator(`li[data-path="${file.path}"]`)).toBeVisible();
-  }
+  if (config.folder) await expect(panel(page).getByTestId("agent-memory")).toBeVisible();
+  else await expect(panel(page).locator('[data-memory="none"]')).toContainText("No memory of its own");
+  for (const file of config.memory.related) await expect(panel(page).locator(`li[data-path="${file.path}"]`)).toBeVisible();
 
   await section(page, "Instructions").click();
   for (const file of config.instructions.files) await expect(panel(page).locator(`li[data-path="${file.path}"]`)).toContainText(tail(file.path));

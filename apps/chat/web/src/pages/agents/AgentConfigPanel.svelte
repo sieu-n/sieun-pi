@@ -1,10 +1,12 @@
 <script lang="ts">
-  import { api, type AgentConfig, type AgentSummary, type ConfigFile, type ModelCatalog, type ProjectList, type RunStatus, type ThinkingLevel } from "$lib/api";
+  import { api, type AgentConfig, type AgentFolder, type AgentSummary, type ConfigFile, type ModelCatalog, type ProjectList, type RunStatus, type ThinkingLevel } from "$lib/api";
   import { Avatar, Badge, Button, Chip, EmptyState, IconButton, LoadingText, Meter, ModelPicker, StatusDot, Tabs, TypingDots, stampLabel, toast } from "$lib/ui";
   import { conversationHref, hrefFor } from "$lib/router.svelte";
   import {
     JOB_KIND_LABEL, SECTIONS, STATUS_LABEL, bytesLabel, canArchive, everyLabel, levelsFor, modelKey, modelOptions, shortPath, type ConfigSection,
   } from "./agents-model";
+  import AgentBrief from "./AgentBrief.svelte";
+  import AgentMemory from "./AgentMemory.svelte";
   import ProjectPicker from "./ProjectPicker.svelte";
 
   type Props = {
@@ -88,6 +90,12 @@
   const hostLine = $derived(
     config ? (config.runs.hostVersion && config.runs.hostVersion !== config.runs.hostKind ? `${config.runs.hostKind} ${config.runs.hostVersion}` : config.runs.hostKind) : "",
   );
+  const folder = $derived(config?.folder ?? null);
+  const ownFolder = $derived(!!folder && folder.agent === agentId);
+  const folderName = $derived(ownFolder ? (agent?.name ?? "") : (config?.swarm.parent?.name ?? agent?.parent?.name ?? "its agent"));
+  function setFolder(next: AgentFolder) {
+    if (config && next.agent === config.folder?.agent) config = { ...config, folder: next };
+  }
   const dotOf = (status: RunStatus) => (status === "working" ? "online" : status === "sleeping" ? "away" : status === "failed" ? "busy" : "offline");
 
   function copy(path: string) {
@@ -121,6 +129,12 @@
     {#if item.preview}<pre class="preview t-mono">{item.preview}</pre>{/if}
     {#if item.note}<p class="t-caption note">{item.note}</p>{/if}
   </li>
+{/snippet}
+
+{#snippet belongs(owner: AgentFolder)}
+  <p class="t-caption belongs" data-testid="folder-owner">
+    This job belongs to <a href={hrefFor("agents", [owner.agent])}>{folderName}</a>. It loads the brief and memory of {folderName}, which you edit on its card.
+  </p>
 {/snippet}
 
 <div class="config" data-testid="agent-config" data-agent-id={agentId}>
@@ -190,8 +204,12 @@
           </div>
         {/if}
       </section>
+      {#if folder}
+        {#if !ownFolder}{@render belongs(folder)}{/if}
+        <AgentBrief {folder} name={folderName} purpose={config.identity.purpose?.text ?? null} readonly={!ownFolder} onsaved={setFolder} />
+      {/if}
       <section class="block" aria-label="Purpose">
-        <h3 class="t-caption heading">Responsibility</h3>
+        <h3 class="t-caption heading">First input</h3>
         {#if config.identity.purpose}
           <p class="purpose t-body-sm">{config.identity.purpose.text}</p>
           <span class="t-caption meta">
@@ -204,6 +222,8 @@
       <dl class="facts">
         <dt>Host</dt>
         <dd data-fact="host">{config.runs.host} <span class="t-caption meta">{hostLine}</span></dd>
+        <dt>Model</dt>
+        <dd data-fact="model">{agent?.model ? agent.model.label : "No model yet"}{#if agent?.thinkingLevel}<span class="t-caption meta">{agent.thinkingLevel} thinking</span>{/if}</dd>
         <dt>Board</dt>
         <dd data-fact="board">
           {#if config.board}
@@ -215,7 +235,7 @@
         </dd>
         <dt>Memory</dt>
         <dd data-fact="memory">
-          {#if config.memory.kind === "none"}<span>None of its own</span>{:else}<span>{plural(config.memory.files.length, "file")}</span>{/if}
+          {#if folder}<span>{plural(folder.memory.entries.length, "memory", "memories")}{ownFolder ? "" : ` of ${folderName}`}</span>{:else}<span>None of its own</span>{/if}
           <button type="button" class="more t-caption" onclick={() => onsection("memory")}>Details</button>
         </dd>
         <dt>Swarm</dt>
@@ -297,18 +317,21 @@
         <EmptyState icon="board" title="No board yet" description="Its chat has not written a chat.board document." size="sm" />
       {/if}
     {:else if section === "memory"}
-      {#if config.memory.kind === "none"}
+      {#if folder}
+        {#if !ownFolder}{@render belongs(folder)}{/if}
+        <AgentMemory {folder} name={folderName} readonly={!ownFolder} onsaved={setFolder} />
+      {:else}
         <section class="block callout" data-memory="none">
           <h3 class="t-label-sm">No memory of its own</h3>
           <p class="t-body-sm">{config.memory.note}</p>
         </section>
-        {#if config.memory.related.length}
-          <h3 class="t-caption heading">Stores near it</h3>
+      {/if}
+      {#if config.memory.related.length}
+        <section class="block" aria-label="Prime's global store">
+          <h3 class="t-caption heading">Prime's global store</h3>
+          {#if folder && config.memory.note}<p class="t-caption note">{config.memory.note}</p>{/if}
           <ul class="files">{#each config.memory.related as item (item.path)}{@render file(item)}{/each}</ul>
-        {/if}
-      {:else}
-        {#if config.memory.note}<p class="t-body-sm">{config.memory.note}</p>{/if}
-        <ul class="files">{#each config.memory.files as item (item.path)}{@render file(item)}{/each}</ul>
+        </section>
       {/if}
     {:else if section === "instructions"}
       <section class="block callout"><p class="t-body-sm">{config.instructions.note}</p></section>
@@ -521,6 +544,19 @@
   }
   .move .meta {
     margin: 0;
+  }
+  .belongs {
+    margin: 0;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-row);
+    background: var(--surface-inset);
+    color: var(--text-subtle);
+  }
+  .belongs a {
+    color: var(--text-standard);
+    text-decoration: underline;
+    text-decoration-color: var(--border-standard);
+    text-underline-offset: 2px;
   }
   .note {
     margin: 0;
