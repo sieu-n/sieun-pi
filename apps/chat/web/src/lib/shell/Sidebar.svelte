@@ -5,12 +5,18 @@
   import Avatar from "$lib/ui/Avatar.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import LoadingText from "$lib/ui/LoadingText.svelte";
+  import Menu from "$lib/ui/Menu.svelte";
+  import type { Anchor } from "$lib/ui/floating";
+  import type { MenuEntry } from "$lib/ui/menu";
   import type { ConversationSummary } from "$lib/api";
   import ResizeHandle from "$lib/ui/ResizeHandle.svelte";
   import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import SidebarRow from "./SidebarRow.svelte";
   import { sidebar, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN } from "./sidebar.svelte";
   import { soloDialog } from "./solo-dialog.svelte";
+  import { renameDialog } from "./rename-dialog.svelte";
+  import SectionDialog from "./SectionDialog.svelte";
+  import { CHANNEL_DRAG_TYPE, channelDrop, groupChannels, sidebarSections, visibleRows, type BuiltinSection, type SectionId } from "./sidebar-sections.svelte";
   import type { SidebarFilter } from "./sidebar.svelte";
 
   const filters: { id: SidebarFilter; label: string }[] = [
@@ -25,6 +31,64 @@
   const showTeam = $derived(sidebar.filter !== "solo");
   const solo = $derived(sidebar.solo);
   const forYouSelected = $derived(router.route.page === "board" && router.route.rest[0] === "for-you");
+  const channels = $derived(groupChannels(sidebar.data.channels, sidebarSections.model));
+  const folded = (id: BuiltinSection | SectionId): boolean => sidebarSections.isFolded(id);
+  /** A folded section still shows the open conversation, as Slack does. */
+  const shown = <T extends { id: string }>(rows: readonly T[], id: BuiltinSection | SectionId): T[] => visibleRows(rows, folded(id), current);
+  const channelCount = (id: string): number => channels.sections.find((s) => s.section.id === id)?.rows.length ?? 0;
+
+  /** The one open sidebar menu: a channel row's, a section header's or the Channels header's, keyed so its "..." shows as pressed. */
+  let menu = $state<{ key: string; anchor: Anchor; items: MenuEntry[] } | null>(null);
+
+  function openMenu(key: string, anchor: Anchor, items: MenuEntry[]): void {
+    menu = { key, anchor, items };
+  }
+
+  function channelMenu(row: ConversationSummary): MenuEntry[] {
+    const at = sidebarSections.sectionOf(row.id);
+    const to = (id: SectionId | null, label: string): MenuEntry => ({
+      type: "radio",
+      id: id ?? "channels",
+      group: "section",
+      label,
+      checked: at === id,
+      onselect: () => sidebarSections.move(row.id, id),
+    });
+    return [
+      { id: "rename", label: "Rename channel", icon: "edit", onselect: () => renameDialog.open(row.id, row.name) },
+      {
+        type: "submenu",
+        id: "move",
+        label: "Move to",
+        icon: "folder",
+        items: [
+          ...sidebarSections.sections.map((s) => to(s.id, s.name)),
+          to(null, "Channels"),
+          { type: "separator" },
+          { id: "new-section", label: "New section…", icon: "plus", onselect: () => (sidebarSections.dialog = { kind: "new", channelId: row.id }) },
+        ],
+      },
+    ];
+  }
+
+  function sectionMenu(id: SectionId): MenuEntry[] {
+    return [
+      { id: "rename", label: "Rename section", icon: "edit", onselect: () => (sidebarSections.dialog = { kind: "rename", id }) },
+      {
+        id: "delete",
+        label: "Delete section",
+        icon: "trash",
+        tone: "danger",
+        onselect: () => (channelCount(id) ? (sidebarSections.dialog = { kind: "delete", id }) : sidebarSections.remove(id)),
+      },
+    ];
+  }
+
+  function dragChannel(e: DragEvent, id: string): void {
+    if (!e.dataTransfer) return;
+    e.dataTransfer.setData(CHANNEL_DRAG_TYPE, id);
+    e.dataTransfer.effectAllowed = "move";
+  }
 
   $effect(() => {
     const id = current;
@@ -32,6 +96,43 @@
     untrack(() => sidebar.follow(id));
   });
 </script>
+
+{#snippet fold(id: BuiltinSection | SectionId, label: string)}
+  <button type="button" class="fold title" aria-expanded={!folded(id)} data-fold={id} onclick={() => sidebarSections.toggle(id)}>
+    <Icon name="chevron-right" size={14} />
+    <span>{label}</span>
+  </button>
+{/snippet}
+
+{#snippet more(key: string, label: string, items: () => MenuEntry[])}
+  <IconButton
+    icon="more"
+    {label}
+    size="xs"
+    aria-haspopup="menu"
+    aria-expanded={menu?.key === key}
+    onclick={(e) => openMenu(key, e.currentTarget, items())}
+  />
+{/snippet}
+
+{#snippet channelRow(row: ConversationSummary)}
+  <SidebarRow
+    href={conversationHref(row.id)}
+    label={row.name}
+    icon="hash"
+    selected={current === row.id}
+    unread={row.unread}
+    fresh={row.hasNew}
+    working={names(row)}
+    ondragstart={(e) => dragChannel(e, row.id)}
+    oncontextmenu={(e) => {
+      e.preventDefault();
+      openMenu(row.id, { x: e.clientX, y: e.clientY }, channelMenu(row));
+    }}
+  >
+    {#snippet actions()}{@render more(row.id, `${row.name} options`, () => channelMenu(row))}{/snippet}
+  </SidebarRow>
+{/snippet}
 
 <nav class="sidebar" aria-label="Conversations" data-filter={sidebar.filter}>
   <div class="head">
@@ -52,10 +153,10 @@
     {#if showSolo}
       <section class="group" data-section="solo">
         <div class="heading">
-          <h2>Solo</h2>
+          <h2>{@render fold("solo", "Solo")}</h2>
           <IconButton icon="plus" label="New Solo room" size="xs" onclick={() => soloDialog.open()} />
         </div>
-        {#each solo.open as row (row.id)}
+        {#each shown(solo.open, "solo") as row (row.id)}
           <SidebarRow
             href={conversationHref(row.id)}
             label={row.name}
@@ -67,7 +168,11 @@
             working={names(row)}
           />
         {/each}
-        {#if solo.done.length}
+        {#if folded("solo")}
+          {#each shown(solo.done, "solo") as row (row.id)}
+            <SidebarRow href={conversationHref(row.id)} label={row.name} title={row.agenda ? `${row.name}: ${row.agenda}` : row.name} icon="check" selected={current === row.id} />
+          {/each}
+        {:else if solo.done.length}
           <button type="button" class="fold" aria-expanded={sidebar.doneOpen} data-fold="done" onclick={() => (sidebar.doneOpen = !sidebar.doneOpen)}>
             <Icon name="chevron-right" size={14} />
             <span>Done</span>
@@ -81,10 +186,10 @@
             </div>
           {/if}
         {/if}
-        {#each solo.chats as row (row.id)}
+        {#each shown(solo.chats, "solo") as row (row.id)}
           <SidebarRow href={conversationHref(row.id)} label={row.name} icon="chat" selected={current === row.id} unread={row.unread} fresh={row.hasNew} working={names(row)} />
         {/each}
-        {#if !sidebar.data.solo.length}
+        {#if !sidebar.data.solo.length && !folded("solo")}
           <p class="empty">No Solo rooms yet.</p>
         {/if}
       </section>
@@ -93,28 +198,39 @@
     {#if showTeam}
       <section class="group" data-section="team">
         {#if sidebar.filter === "all"}<div class="heading"><h2>Team</h2></div>{/if}
-        <div class="subheading">
-          <h3>Channels</h3>
-          <IconButton icon="plus" label="Create channel" size="xs" onclick={() => router.navigate(hrefFor("messages", ["new"], { kind: "channel" }))} />
-        </div>
-        {#each sidebar.data.channels as row (row.id)}
-          <SidebarRow
-            href={conversationHref(row.id)}
-            label={row.name}
-            icon="hash"
-            selected={current === row.id}
-            unread={row.unread}
-            fresh={row.hasNew}
-            working={names(row)}
-          />
-        {:else}
-          <p class="empty">No channels yet.</p>
+        {#each channels.sections as { section, rows } (section.id)}
+          <div class="block" data-section-id={section.id} use:channelDrop={(id) => sidebarSections.move(id, section.id)}>
+            <div class="subheading">
+              <h3>{@render fold(section.id, section.name)}</h3>
+              {@render more(section.id, `${section.name} options`, () => sectionMenu(section.id))}
+            </div>
+            {#each shown(rows, section.id) as row (row.id)}
+              {@render channelRow(row)}
+            {/each}
+          </div>
         {/each}
+        <div class="block" data-section-id="channels" use:channelDrop={(id) => sidebarSections.move(id, null)}>
+          <div class="subheading">
+            <h3>{@render fold("channels", "Channels")}</h3>
+            <span class="actions">
+              {@render more("channels", "Channels options", () => [
+                { id: "new-section", label: "New section", icon: "plus", onselect: () => (sidebarSections.dialog = { kind: "new" }) },
+              ])}
+              <IconButton icon="plus" label="Create channel" size="xs" onclick={() => router.navigate(hrefFor("messages", ["new"], { kind: "channel" }))} />
+            </span>
+          </div>
+          {#each shown(channels.rest, "channels") as row (row.id)}
+            {@render channelRow(row)}
+          {/each}
+          {#if !sidebar.data.channels.length && !folded("channels")}
+            <p class="empty">No channels yet.</p>
+          {/if}
+        </div>
         <div class="subheading">
-          <h3>Direct messages</h3>
+          <h3>{@render fold("dms", "Direct messages")}</h3>
           <IconButton icon="plus" label="New message" size="xs" onclick={() => router.navigate(hrefFor("messages", ["new"], { kind: "dm" }))} />
         </div>
-        {#each sidebar.data.dms as row (row.id)}
+        {#each shown(sidebar.data.dms, "dms") as row (row.id)}
           <SidebarRow
             href={conversationHref(row.id)}
             label={row.name}
@@ -147,6 +263,9 @@
     }}
   />{/if}
 </nav>
+
+<Menu open={menu !== null} anchor={menu?.anchor} items={menu?.items ?? []} onclose={() => (menu = null)} />
+<SectionDialog {channelCount} />
 
 <style>
   .sidebar {
@@ -242,6 +361,45 @@
   }
   .fold[aria-expanded="true"] :global(.icon) {
     transform: rotate(90deg);
+  }
+  h2,
+  h3 {
+    flex: 1;
+    min-width: 0;
+  }
+  .fold.title {
+    width: 100%;
+    height: 28px;
+    margin-left: -8px;
+    padding: 0 8px 0 2px;
+    gap: 2px;
+    font: inherit;
+    color: inherit;
+  }
+  .fold.title span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .heading :global(.icon-btn[aria-expanded="true"]),
+  .subheading :global(.icon-btn[aria-expanded="true"]) {
+    opacity: 1;
+  }
+  .block {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    border-radius: var(--radius-row);
+    transition: background-color var(--duration-fast) var(--ease-standard);
+  }
+  .block:global([data-drop]) {
+    background: var(--affordance-sidebar-hover);
+    box-shadow: inset 0 0 0 2px var(--affordance-accent-prominent);
   }
   .count {
     margin-left: auto;

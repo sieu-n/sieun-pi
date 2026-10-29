@@ -214,7 +214,7 @@ export class GroupRooms {
     if (input.kind === "channel") {
       const name = channelName(input.name ?? "");
       if (!name) throw new Error("A channel needs a name.");
-      if (this.rows().some(r => r.kind === "channel" && r.name === name && !r.archived)) throw new Error(`#${name} already exists.`);
+      if (this.rows().some(r => r.kind === "channel" && r.name === name && !r.archived)) throw new Error(`A channel named #${name} already exists.`);
       row = {
         id: `ch_${randomUUID().slice(0, 8)}`, kind: "channel", name, purpose: input.agenda?.trim() ?? "", ...(input.homeChat ? { homeChat: input.homeChat } : {}),
         createdAt: now, archived: false, members: agents.map(agent => ({ agent, wakeOn: "mention", addedAt: now })),

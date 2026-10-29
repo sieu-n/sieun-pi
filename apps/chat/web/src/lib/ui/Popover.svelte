@@ -15,7 +15,7 @@
     maxHeight?: number;
     padding?: number;
     radius?: "row" | "container";
-    /** Called on Esc and on a pointer press outside both the popover and the anchor. */
+    /** Called on Esc and on a pointer press outside the popover, its anchor and any popover opened above it, such as a submenu. */
     onclose?: () => void;
     /** Move focus into the popover when it opens. */
     autofocus?: boolean;
@@ -83,6 +83,8 @@
       const t = e.target as Node;
       if (element?.contains(t)) return;
       if (anchor instanceof HTMLElement && anchor.contains(t)) return;
+      const above = t instanceof Element ? t.closest<HTMLElement>(".popover[data-layer]") : null;
+      if (above && Number(above.dataset.layer) > z) return;
       close();
     };
     const onKey = (e: KeyboardEvent) => {
@@ -117,6 +119,7 @@
     class="popover {surface} {className}"
     class:measured
     data-side={side}
+    data-layer={z}
     style:transform="translate({Math.round(x)}px, {Math.round(y)}px)"
     style:z-index={z}
     style:width={widthStyle}

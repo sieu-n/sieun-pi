@@ -19,37 +19,54 @@
     working?: string[];
     title?: string;
     oncontextmenu?: (e: MouseEvent) => void;
+    /** A hover button at the right end, such as the row's "..." menu; the badge or typing dots move left of it. */
+    actions?: Snippet;
+    /** Makes the row draggable, for moving a channel between sidebar sections. */
+    ondragstart?: (e: DragEvent) => void;
   };
-  let { href, label, icon, leading, selected = false, unread = 0, fresh = false, working = [], title, oncontextmenu }: Props = $props();
+  let { href, label, icon, leading, selected = false, unread = 0, fresh = false, working = [], title, oncontextmenu, actions, ondragstart }: Props = $props();
   const workingLabel = $derived(working.length ? `${working.join(", ")} working in ${label}` : "");
 </script>
 
-<a
-  {href}
-  class="row"
-  class:selected
-  class:unread={fresh || unread > 0}
-  aria-current={selected ? "page" : undefined}
-  title={title ?? label}
-  data-sidebar-row
-  data-unread={fresh || unread > 0 || undefined}
-  data-working={working.length > 0 || undefined}
-  {oncontextmenu}
->
-  <span class="lead">
-    {#if leading}{@render leading()}{:else if icon}<Icon name={icon} size={16} />{/if}
-  </span>
-  <span class="label">{label}</span>
-  <span class="trail">
-    {#if working.length}
-      <span class="working" title={workingLabel}><TypingDots label={workingLabel} /></span>
-    {:else if unread > 0}
-      <Badge value={unread} title="{unread} unread" />
-    {:else if fresh}
-      <Badge dot title="New activity" />
-    {/if}
-  </span>
-</a>
+{#snippet link()}
+  <a
+    {href}
+    class="row"
+    class:selected
+    class:unread={fresh || unread > 0}
+    aria-current={selected ? "page" : undefined}
+    title={title ?? label}
+    data-sidebar-row
+    data-unread={fresh || unread > 0 || undefined}
+    data-working={working.length > 0 || undefined}
+    {oncontextmenu}
+    {ondragstart}
+    draggable={ondragstart ? "true" : undefined}
+  >
+    <span class="lead">
+      {#if leading}{@render leading()}{:else if icon}<Icon name={icon} size={16} />{/if}
+    </span>
+    <span class="label">{label}</span>
+    <span class="trail">
+      {#if working.length}
+        <span class="working" title={workingLabel}><TypingDots label={workingLabel} /></span>
+      {:else if unread > 0}
+        <Badge value={unread} title="{unread} unread" />
+      {:else if fresh}
+        <Badge dot title="New activity" />
+      {/if}
+    </span>
+  </a>
+{/snippet}
+
+{#if actions}
+  <div class="item" class:selected>
+    {@render link()}
+    <span class="actions">{@render actions()}</span>
+  </div>
+{:else}
+  {@render link()}
+{/if}
 
 <style>
   .row {
@@ -104,6 +121,34 @@
     background: var(--text-sidebar-selected);
   }
   .selected .working {
+    color: var(--text-sidebar-selected);
+  }
+  .item {
+    position: relative;
+  }
+  .actions {
+    position: absolute;
+    top: 50%;
+    right: 4px;
+    display: inline-flex;
+    transform: translateY(-50%);
+    opacity: 0;
+  }
+  .item:hover .row:not(.selected) {
+    background: var(--affordance-sidebar-hover);
+    color: var(--text-sidebar-hover);
+  }
+  .item:hover .row,
+  .item:focus-within .row,
+  .item:has(.actions :global([aria-expanded="true"])) .row {
+    padding-right: 28px;
+  }
+  .item:hover .actions,
+  .item:focus-within .actions,
+  .actions:has(:global([aria-expanded="true"])) {
+    opacity: 1;
+  }
+  .item.selected .actions :global(.icon-btn) {
     color: var(--text-sidebar-selected);
   }
 </style>

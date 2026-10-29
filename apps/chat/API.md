@@ -110,7 +110,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 |---|---|---|
 | `api.rooms()` | `GET /api/rooms` | `Room[]`: every channel and Solo room not archived, with members (the owner first) and the last seq. |
 | `api.createRoom(RoomInput)` | `POST /api/rooms` | The `Room`. A channel needs a name no open channel has; its `agenda` is its purpose and its members wake on a mention. A Solo room needs an agenda and at least one agent, its name defaults to the agenda's first line, its members wake on every post, and its agenda becomes the owner's first post, delivered to every member. |
-| `api.updateRoom(id, RoomPatch)` | `PATCH /api/rooms/:id` | The `Room`: `name`, `agenda` (a channel's purpose), `archived`, a channel's `homeChat`, and a Solo room's `closed`, which closes it (`closedAt`) or reopens it. |
+| `api.updateRoom(id, RoomPatch)` | `PATCH /api/rooms/:id` | The `Room`: `name`, `agenda` (a channel's purpose), `archived`, a channel's `homeChat`, and a Solo room's `closed`, which closes it (`closedAt`) or reopens it. A channel's new name is normalized as on create, and the server answers 400 for a blank name, a name another open channel holds, or an unarchive while an open channel holds the name. Links stay valid because they name the id. |
 | `api.addMembers(id, agents, wakeOn)` | `POST /api/rooms/:id/members` | The `Room`; `wakeOn` is all, mention or none, and defaults to all in a Solo room and mention in a channel. |
 | `api.removeMember(id, agent)` | `DELETE /api/rooms/:id/members/:agent` | The `Room`. |
 

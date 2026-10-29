@@ -16,8 +16,10 @@
     onclose?: () => void;
     /** Set by a parent menu so arrow left closes this submenu. */
     nested?: boolean;
+    /** Set by a parent menu so a pick inside this submenu closes the whole menu. */
+    onpick?: () => void;
   };
-  let { open = $bindable(), anchor, items, placement = "bottom-start", width = "auto", label, onclose, nested = false }: Props = $props();
+  let { open = $bindable(), anchor, items, placement = "bottom-start", width = "auto", label, onclose, nested = false, onpick }: Props = $props();
 
   let element = $state<HTMLDivElement>();
   let subOpen = $state<string | null>(null);
@@ -37,11 +39,16 @@
     }
     if (entry.type === "checkbox") {
       entry.onselect?.(!entry.checked);
-      if (entry.keepOpen === false) close();
+      if (entry.keepOpen === false) done();
       return;
     }
     entry.onselect?.();
-    if (!entry.keepOpen) close();
+    if (!entry.keepOpen) done();
+  }
+
+  function done() {
+    close();
+    onpick?.();
   }
 
   function rows(): HTMLElement[] {
@@ -126,7 +133,7 @@
           {/if}
         </button>
         {#if entry.type === "submenu" && subOpen === entry.id}
-          <Menu open={true} anchor={subAnchor} items={entry.items} placement="right-start" nested onclose={() => (subOpen = null)} />
+          <Menu open={true} anchor={subAnchor} items={entry.items} placement="right-start" nested onclose={() => (subOpen = null)} onpick={done} />
         {/if}
       {/if}
     {/each}

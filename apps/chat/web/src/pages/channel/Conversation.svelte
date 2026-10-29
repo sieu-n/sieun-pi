@@ -5,6 +5,7 @@
   import BoardPanel from "$pages/board/BoardPanel.svelte";
   import { boardHref, boardTitles, rememberTitles } from "$pages/board/chips";
   import { conversationHref, router } from "$lib/router.svelte";
+  import { renameDialog } from "$lib/shell/rename-dialog.svelte";
   import { search } from "$lib/shell/search.svelte";
   import { sidePanel } from "$lib/shell/side-panel.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
@@ -263,6 +264,7 @@
           { id: "board-page", label: "Open board page", icon: "external", onselect: () => router.navigate(boardHref(paneBoard)) },
         ]
       : []),
+    ...(isChannel && header ? [{ id: "rename", label: "Rename channel", icon: "edit", onselect: () => renameDialog.open(id, name) }] : []),
     ...(isSolo && header
       ? [closedAt
           ? { id: "reopen", label: "Reopen room", icon: "refresh", onselect: () => void setClosed(false) }
