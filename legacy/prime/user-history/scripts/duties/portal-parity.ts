@@ -174,21 +174,37 @@ export const BATCH_POLL_MS = 1_000;
  */
 export const BATCH_DEADLINE_MS = 3 * 300_000 + 10_000 + 20_000;
 
+/** The fields of a batch progress answer this run reads. */
+export interface BatchProgress { status?: unknown; rows_total?: unknown; rows_ready?: unknown; rows_failed?: unknown }
+
 /**
  * Polls GET /v1/batch/progress/{snapshot_id} until the job leaves `starting` and `running`, as the docs tell a caller to before it downloads
  * ("poll `progress`, download the finished snapshot"). On 10-29 at 02:25Z the run read a snapshot 0.8 s after its trigger and got 409
  * snapshot_not_ready, and a staging repro at 05:33Z read 409 1.0 s after the trigger, then ready on the first progress read and 200 on the download.
- * It stops early on a progress answer that is not 2xx and once BATCH_DEADLINE_MS has passed, and gives the number of progress reads.
+ * It stops early on a progress answer that is not 2xx and once BATCH_DEADLINE_MS has passed, and gives the number of progress reads and the
+ * last progress the job answered.
  */
 export async function untilBatchEnds(read: () => Promise<{ status: number; body: unknown }>, now: () => number = Date.now,
-  sleep: (ms: number) => Promise<unknown> = ms => new Promise(resolve => setTimeout(resolve, ms))): Promise<number> {
+  sleep: (ms: number) => Promise<unknown> = ms => new Promise(resolve => setTimeout(resolve, ms))): Promise<{ reads: number; progress?: BatchProgress }> {
   const end = now() + BATCH_DEADLINE_MS;
   for (let reads = 1; ; reads++) {
     const answer = await read();
-    const status = (answer.body as { data?: { status?: unknown } } | null)?.data?.status;
-    if (answer.status < 200 || answer.status >= 300 || typeof status !== "string" || !BATCH_RUNNING.has(status) || now() >= end) return reads;
+    const progress = (answer.body as { data?: BatchProgress } | null)?.data;
+    const ok = answer.status >= 200 && answer.status < 300;
+    if (!ok || typeof progress?.status !== "string" || !BATCH_RUNNING.has(progress.status) || now() >= end) return ok && progress ? { reads, progress } : { reads };
     await sleep(BATCH_POLL_MS);
   }
+}
+
+/**
+ * Why a finished job counts as broken, or null when it does not: a job whose every row failed still ends `ready` and downloads 200 with no
+ * rows. Until 10-29 the trigger docs example sent `q` rows to instagram.web_profile_info, every row failed invalid_request, and d2 scored the
+ * snapshot read as working on both envs.
+ */
+export function batchRowsBroken(progress: BatchProgress | undefined): string | null {
+  const { rows_total: total, rows_ready: ready, rows_failed: failed } = progress ?? {};
+  if (typeof total !== "number" || total < 1 || ready !== 0) return null;
+  return `every row of the job failed (rows_failed ${String(failed)} of ${total})`;
 }
 
 const exampleOf = (param: Param) => param.example ?? param.schema?.example ?? Object.values(param.examples ?? {})[0]?.value;
@@ -635,8 +651,10 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
     const name = CHAINED.exec(op)![1]!;
     const org = orgs[sources[chained[name]!.from]!.org]!;
     if (op !== SNAPSHOT_READ) return call(org, op, request, "id from this run, same test org");
-    const reads = await untilBatchEnds(() => call(org, "GET /v1/batch/progress/{snapshot_id}", { method: "GET", path: `/v1/batch/progress/${encodeURIComponent(ids.snapshot_id!)}`, query: {} }, "progress poll"));
-    return call(org, op, request, `id from this run, same test org, after ${reads} progress read${reads === 1 ? "" : "s"}`);
+    const { reads, progress } = await untilBatchEnds(() => call(org, "GET /v1/batch/progress/{snapshot_id}", { method: "GET", path: `/v1/batch/progress/${encodeURIComponent(ids.snapshot_id!)}`, query: {} }, "progress poll"));
+    const result = await call(org, op, request, `id from this run, same test org, after ${reads} progress read${reads === 1 ? "" : "s"}`);
+    const broken = result.verdict === "ok" ? batchRowsBroken(progress) : null;
+    return broken ? { ...result, verdict: "portal" as const, code: "batch_rows_failed", note: `${result.note}: ${broken}` } : result;
   });
   const fed = await Promise.all(fedLater.map(async ([op, operation]) => {
     const before = preset(op);

@@ -1,7 +1,7 @@
 // 10-20: staging runs of Portal matches crawler started POST /v1/jobs/{job_id}/cancel together with the reads of the same job, and when the cancel won, GET /v1/jobs/{job_id}/results read a cancelled job and answered 502 upstream_error, so staging_working_pct read 99.4%.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BATCH_DEADLINE_MS, BATCH_POLL_MS, QUERY_CHAINS, firstItemId, readsThenWrites, untilBatchEnds } from "../scripts/duties/portal-parity.ts";
+import { BATCH_DEADLINE_MS, BATCH_POLL_MS, QUERY_CHAINS, batchRowsBroken, firstItemId, readsThenWrites, untilBatchEnds } from "../scripts/duties/portal-parity.ts";
 
 test("no chained write starts before every chained read of the run has answered", async () => {
   const log: string[] = [];
@@ -31,14 +31,22 @@ test("note_detail takes its note_id from the first note of this run's explore an
 test("the snapshot read waits for a progress answer that leaves starting and running", async () => {
   const statuses = ["starting", "running", "running", "ready"];
   const slept: number[] = [];
-  const reads = await untilBatchEnds(async () => ({ status: 200, body: { data: { status: statuses.shift() } } }), () => 0, async ms => { slept.push(ms); });
+  const { reads, progress } = await untilBatchEnds(async () => ({ status: 200, body: { data: { status: statuses.shift() } } }), () => 0, async ms => { slept.push(ms); });
   assert.equal(reads, 4);
+  assert.deepEqual(progress, { status: "ready" });
   assert.deepEqual(slept, [BATCH_POLL_MS, BATCH_POLL_MS, BATCH_POLL_MS]);
 });
 
 test("the progress poll stops on a failed progress answer and at the deadline", async () => {
-  assert.equal(await untilBatchEnds(async () => ({ status: 404, body: null }), () => 0, async () => {}), 1);
+  assert.deepEqual(await untilBatchEnds(async () => ({ status: 404, body: null }), () => 0, async () => {}), { reads: 1 });
   let clock = 0;
-  const reads = await untilBatchEnds(async () => ({ status: 200, body: { data: { status: "running" } } }), () => clock, async ms => { clock += ms; });
+  const { reads } = await untilBatchEnds(async () => ({ status: 200, body: { data: { status: "running" } } }), () => clock, async ms => { clock += ms; });
   assert.equal(reads, BATCH_DEADLINE_MS / BATCH_POLL_MS + 1);
+});
+
+// 10-29: every row of the trigger docs example failed invalid_request, the job still ended ready, and the snapshot read scored as working.
+test("a finished job whose every row failed is broken, and one with a ready row is not", () => {
+  assert.equal(batchRowsBroken({ status: "ready", rows_total: 3, rows_ready: 0, rows_failed: 3 }), "every row of the job failed (rows_failed 3 of 3)");
+  assert.equal(batchRowsBroken({ status: "ready", rows_total: 3, rows_ready: 1, rows_failed: 2 }), null);
+  assert.equal(batchRowsBroken(undefined), null);
 });
