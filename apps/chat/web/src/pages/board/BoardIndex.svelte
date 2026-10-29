@@ -1,30 +1,16 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { api, live, type BoardRow } from "$lib/api";
   import { Avatar, Badge, Button, EmptyState, Icon, IdChip, LoadingText, Meter, PanelHeader, timeLabel } from "$lib/ui";
-  import { router } from "$lib/router.svelte";
+  import { boards } from "./boards.svelte";
   import { boardHref, forYouHref } from "./chips";
   import { WHEN_LABEL, whenGroup, type When } from "./schedule";
 
-  let rows = $state<BoardRow[] | null>(null);
-  let error = $state<string | null>(null);
+  boards.start();
+  const rows = $derived(boards.rows);
+  const error = $derived(boards.error);
   let now = $state(Date.now());
-
-  async function load() {
-    try {
-      rows = await api.boards();
-      error = null;
-    } catch (e) {
-      error = e instanceof Error ? e.message : "The boards did not load.";
-    }
-  }
-  void load();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const stop = live.on(event => {
-    if (event.type === "board" || event.type === "hello") { clearTimeout(timer); timer = setTimeout(() => void load(), 150); }
-  });
   const clock = setInterval(() => { now = Date.now(); }, 30_000);
-  onDestroy(() => { stop(); clearInterval(clock); clearTimeout(timer); });
+  onDestroy(() => clearInterval(clock));
 
   interface Due { key: string; chatId: string; chatName: string; at: number; kind: "checkin" | "duty"; id?: string; name: string; verdict?: string | null }
   const dues = $derived.by(() => {
@@ -48,7 +34,7 @@
 </script>
 
 <div class="page">
-  <PanelHeader title="Board" icon="board" level={1} divider>
+  <PanelHeader title="All boards" icon="board" level={1} divider>
     {#snippet actions()}
       <Button size="sm" variant="ghost" icon="inbox" href={forYouHref()}>For you{totals.asks ? ` ${totals.asks}` : ""}</Button>
     {/snippet}
@@ -56,7 +42,7 @@
   <div class="scroll">
     <div class="sections">
       {#if error && !rows}
-        <div class="notice" role="alert"><p class="t-body">{error}</p><Button size="sm" onclick={load}>Retry boards</Button></div>
+        <div class="notice" role="alert"><p class="t-body">{error}</p><Button size="sm" onclick={() => boards.load()}>Retry boards</Button></div>
       {:else if !rows}
         <LoadingText text="Loading boards…" />
       {:else if !rows.length}

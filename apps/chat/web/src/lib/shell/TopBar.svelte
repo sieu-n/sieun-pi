@@ -14,19 +14,16 @@
   import { theme } from "./theme.svelte";
   import { inDesktopShell } from "./desktop";
 
-  type Props = { ownerName?: string };
-  let { ownerName = "Sieun" }: Props = $props();
+  /** `hasSidebar` is false on a page with no left sidebar, which hides the sidebar button. */
+  type Props = { ownerName?: string; hasSidebar?: boolean };
+  let { ownerName = "Sieun", hasSidebar = true }: Props = $props();
 
   let newOpen = $state(false);
   let newAnchor = $state<HTMLButtonElement>();
   let profileOpen = $state(false);
   let profileAnchor = $state<HTMLButtonElement>();
 
-  const tabs = $derived(PAGES.map((p) => ({ id: p.id, label: p.label, icon: p.icon, href: hrefFor(p.id, p.id === "messages" && lastConversation ? [lastConversation] : []) })));
-  let lastConversation = $state<string | null>(null);
-  $effect(() => {
-    if (router.conversationId && router.conversationId !== "new") lastConversation = router.conversationId;
-  });
+  const tabs = $derived(PAGES.map((p) => ({ id: p.id, label: p.label, icon: p.icon, href: router.tabHref(p.id) })));
 
   const newItems: MenuEntry[] = [
     { id: "chat", label: "New chat", icon: "chat", shortcut: isMac ? "⌘N" : "Ctrl N", onselect: () => router.navigate(hrefFor("messages", ["new"], { kind: "chat" })) },
@@ -47,7 +44,7 @@
 
 <header class="topbar" class:desktop={inDesktopShell} data-tauri-drag-region={inDesktopShell ? "deep" : undefined}>
   <div class="left">
-    <IconButton icon="sidebar" label={sidebar.collapsed ? "Show sidebar" : "Hide sidebar"} onclick={() => sidebar.toggle()} />
+    {#if hasSidebar}<IconButton icon="sidebar" label={sidebar.collapsed ? "Show sidebar" : "Hide sidebar"} onclick={() => sidebar.toggle()} />{/if}
     <IconButton icon="arrow-left" label="Back" shortcut={isMac ? "⌘[" : "Alt ←"} onclick={() => history.back()} />
     <IconButton icon="arrow-right" label="Forward" shortcut={isMac ? "⌘]" : "Alt →"} onclick={() => history.forward()} />
   </div>
@@ -55,7 +52,7 @@
   <div class="capsule" data-testid="nav-capsule">
     <IconButton bind:element={newAnchor} icon="plus" label="New" variant="ghost" class="capsule-btn" pressed={newOpen} onclick={() => (newOpen = !newOpen)} />
     <nav aria-label="Pages">
-      <Tabs items={tabs} value={router.route.page} variant="chrome" embedded label="Pages" onchange={(id: PageId) => router.navigate(tabs.find((t) => t.id === id)?.href ?? hrefFor(id))} />
+      <Tabs items={tabs} value={router.route.page} variant="chrome" embedded label="Pages" onchange={(id: PageId) => router.navigate(router.tabHref(id))} />
     </nav>
     <button class="search-pill" type="button" onclick={() => search.open()} use:tooltip={{ text: "Search", shortcut: searchKey }} aria-label="Search">
       <Icon name="search" size={18} />

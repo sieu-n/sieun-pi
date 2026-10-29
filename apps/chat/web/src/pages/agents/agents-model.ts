@@ -2,10 +2,38 @@ import type { AgentSummary, ModelCatalog, RunStatus } from "$lib/api";
 import type { ModelOption } from "$lib/ui";
 
 /**
- * `#/agents` lists the registered agents; `#/agents/<id>` opens one configuration over it, an agent's or a job's from its agent's Swarm, so
- * a link names one and back closes it.
+ * `#/agents` shows the card grid; `#/agents/<id>` opens one agent's page in its place, or a job's page from its agent's Jobs tab, so a link
+ * names one and back returns to the grid.
  */
 export const agentFromRoute = (rest: readonly string[]): string | null => rest[0] ?? null;
+
+/** The registered agent a route id names: the id itself, or the agent a job works for, so the sidebar marks the agent while its job is open. */
+export function agentOfRoute(id: string | null, jobs: readonly AgentSummary[]): string | null {
+  if (!id) return null;
+  return jobs.find((job) => job.id === id)?.agent?.id ?? id;
+}
+
+export type AgentGroup = "working" | "failed" | "idle";
+
+/**
+ * The Agents sidebar's blocks: Working (working or waiting for a slot), Failed only when one failed, then Idle. Each block lists live agents
+ * by name, so a row keeps its place while its agent stays in that state.
+ */
+export function agentGroups(agents: readonly AgentSummary[]): { id: AgentGroup; label: string; agents: AgentSummary[] }[] {
+  const live = agents.filter((agent) => !agent.archived).sort((a, b) => a.name.localeCompare(b.name));
+  const of = (group: AgentGroup) => live.filter((agent) => groupOf(agent.status) === group);
+  const failed = of("failed");
+  return [
+    { id: "working", label: "Working", agents: of("working") },
+    ...(failed.length ? [{ id: "failed" as const, label: "Failed", agents: failed }] : []),
+    { id: "idle", label: "Idle", agents: of("idle") },
+  ];
+}
+const groupOf = (status: RunStatus): AgentGroup => (status === "working" || status === "sleeping" ? "working" : status === "failed" ? "failed" : "idle");
+
+/** The status dot an agent's avatar shows: green while working, away while waiting, red when failed, none when idle. */
+export const dotOf = (status: RunStatus): "online" | "away" | "busy" | null =>
+  status === "working" ? "online" : status === "sleeping" ? "away" : status === "failed" ? "busy" : null;
 
 export type CardAction = "open" | "model" | "stop" | "archive";
 
@@ -83,18 +111,22 @@ export function levelsFor(catalog: ModelCatalog | null, key: string): string[] {
 /** Archive takes a root thread; a job inside a thread goes with its thread. */
 export const canArchive = (agent: AgentSummary): boolean => agent.conversation === 1;
 
-export type ConfigSection = "overview" | "runs" | "board" | "memory" | "instructions" | "swarm";
-/** Short labels so all six fit the 420 px side panel; the Host section reads as "Where it runs" inside. */
+/** The tabs of an agent's page, as apps/chat/docs/agent-model.md names them. */
+export type ConfigSection = "overview" | "work" | "jobs" | "board" | "memory" | "instructions";
 export const SECTIONS: readonly { id: ConfigSection; label: string }[] = [
   { id: "overview", label: "Overview" },
-  { id: "runs", label: "Host" },
+  { id: "work", label: "Work" },
+  { id: "jobs", label: "Jobs" },
   { id: "board", label: "Board" },
   { id: "memory", label: "Memory" },
   { id: "instructions", label: "Instructions" },
-  { id: "swarm", label: "Swarm" },
 ];
+/** Old `?section=` ids from the side panel: Host became Work and Swarm became Jobs. */
+const RENAMED: Record<string, ConfigSection> = { runs: "work", swarm: "jobs" };
+/** The new id an old `?section=` link names, so the page rewrites the address once; null when the link is current. */
+export const renamedSection = (params: Record<string, string>): ConfigSection | null => (params.section ? (RENAMED[params.section] ?? null) : null);
 export const sectionFromParams = (params: Record<string, string>): ConfigSection =>
-  SECTIONS.some((section) => section.id === params.section) ? (params.section as ConfigSection) : "overview";
+  renamedSection(params) ?? (SECTIONS.some((section) => section.id === params.section) ? (params.section as ConfigSection) : "overview");
 
 export function bytesLabel(size: number | null): string {
   if (size === null) return "";

@@ -539,7 +539,8 @@ class ForYouStore {
         this.timer = setTimeout(() => void this.refresh(), 100);
       }
     });
-    void this.refresh();
+    // The first read can come from a $derived, where refresh's write to `loading` would throw, so the first load starts after it.
+    queueMicrotask(() => void this.refresh());
   }
 
   /** Only the newest call writes, so a slow answer never replaces a newer one or ends its loading. */

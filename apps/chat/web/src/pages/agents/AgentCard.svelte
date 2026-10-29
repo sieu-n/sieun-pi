@@ -21,8 +21,8 @@
   };
   let { agent, catalog, focusable, selected = false, now, onopen, onmenu, onmodel, onfocus, element = $bindable(), jobs = null }: Props = $props();
 
-  const art = $derived(mascotSvg(agent.name, `card-${agent.id.replace(/[^a-z0-9]/gi, "")}`));
-  const backdrop = $derived(`url("data:image/svg+xml;utf8,${encodeURIComponent(mascotSvg(agent.name, "bd"))}")`);
+  const art = $derived(mascotSvg(agent.id, `card-${agent.id.replace(/[^a-z0-9]/gi, "")}`));
+  const backdrop = $derived(`url("data:image/svg+xml;utf8,${encodeURIComponent(mascotSvg(agent.id, "bd"))}")`);
   const current = $derived(agent.model ? modelKey(agent.model) : "");
   const options = $derived.by(() => {
     const list = modelOptions(catalog);

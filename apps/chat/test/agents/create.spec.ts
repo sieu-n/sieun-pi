@@ -1,12 +1,12 @@
 import { expect, test } from "@playwright/test";
-import { card, openAgents, uniqueName } from "./helpers.ts";
+import { card, newAgentButton, openAgents, uniqueName } from "./helpers.ts";
 
 // Chrome drops in-flight dev-server loads with ERR_NETWORK_CHANGED when the box's interfaces change, so one rerun covers that.
 test.describe.configure({ retries: 1 });
 
 test("Create agent asks for a name, makes the agent and opens its DM", async ({ page, request }) => {
   await openAgents(page);
-  await page.getByRole("button", { name: "New agent" }).click();
+  await newAgentButton(page).click();
   const dialog = page.getByRole("dialog", { name: "Create agent" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("textbox", { name: "Name" })).toBeFocused();
@@ -59,11 +59,11 @@ test("Change model in the card menu opens the picker and saves the new model", a
 
 test("the dialog closes on Esc or an outside click only while untouched", async ({ page }) => {
   await openAgents(page);
-  await page.getByRole("button", { name: "New agent" }).click();
+  await newAgentButton(page).click();
   const dialog = page.getByRole("dialog", { name: "Create agent" });
   await page.mouse.click(30, 880);
   await expect(dialog).toHaveCount(0);
-  await page.getByRole("button", { name: "New agent" }).click();
+  await newAgentButton(page).click();
   await dialog.getByRole("textbox", { name: "Name" }).fill("half typed");
   await page.mouse.click(30, 880);
   await expect(dialog).toBeVisible();

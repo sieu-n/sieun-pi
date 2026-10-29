@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { card, grid, listAgents, listJobs, openAgents, roomOf } from "./helpers.ts";
+import { agentPage, card, grid, listAgents, listJobs, newAgentButton, openAgents, roomOf } from "./helpers.ts";
 
 // Chrome drops in-flight dev-server loads with ERR_NETWORK_CHANGED when the box's interfaces change, so one rerun covers that.
 test.describe.configure({ retries: 1 });
@@ -45,26 +45,27 @@ test("the grid has Buzz's measures: a 768 px column, 192 px tracks, 244 px cards
   expect(box.width).toBeGreaterThanOrEqual(192);
   expect(await first.evaluate((el) => getComputedStyle(el).borderTopLeftRadius)).toBe("24px");
   const toolbar = (await page.getByRole("heading", { name: "Your agents" }).boundingBox())!;
-  const button = (await page.getByRole("button", { name: "New agent" }).boundingBox())!;
+  const button = (await newAgentButton(page).boundingBox())!;
   expect(Math.round(button.x + button.width - toolbar.x)).toBe(720);
 });
 
-test("a card opens its configuration, and Message opens an agent's DM or a job's pane beside its agent's DM", async ({ page, request }) => {
+test("a card opens the agent's page in place of the grid, and Message opens an agent's DM or a job's pane beside its agent's DM", async ({ page, request }) => {
   const [agents, jobs] = await Promise.all([listAgents(request), listJobs(request)]);
   const chat = agents[0];
   test.skip(!chat, "no agents on this server");
   await openAgents(page);
   await card(page, chat!).click({ position: { x: 40, y: 120 } });
   await expect(page).toHaveURL(new RegExp(`#/agents/${chat!.id}$`));
-  await expect(card(page, chat!)).toHaveAttribute("aria-selected", "true");
-  await page.getByTestId("agent-config").getByRole("button", { name: "Message" }).click();
+  await expect(agentPage(page)).toHaveAttribute("data-agent-id", chat!.id);
+  await expect(grid(page)).toHaveCount(0);
+  await expect(page.getByTestId("side-panel")).toHaveCount(0);
+  await agentPage(page).getByRole("button", { name: "Message" }).click();
   await expect(page).toHaveURL(new RegExp(`#/c/${roomOf(chat!.id)}$`));
   const job = jobs.find((entry) => entry.agent);
   if (!job) return;
   await page.goto(`/#/agents/${encodeURIComponent(job.id)}`);
-  await expect(page.getByTestId("agent-config")).toBeVisible({ timeout: 20_000 });
-  await expect(card(page, job)).toHaveCount(0);
-  await page.getByTestId("agent-config").getByRole("button", { name: "Message" }).click();
+  await expect(agentPage(page)).toHaveAttribute("data-agent-id", job.id, { timeout: 20_000 });
+  await agentPage(page).getByRole("button", { name: "Message" }).click();
   await expect(page).toHaveURL(new RegExp(`#/c/${roomOf(job.agent!.id)}\\?thread=${encodeURIComponent(job.id)}$`));
 });
 
@@ -107,7 +108,7 @@ test("Stop sends the abort for that agent", async ({ page, request }) => {
   await expect(page.getByText(`Stopped ${working.name}`)).toBeVisible();
 });
 
-test("arrow keys move between cards, Enter opens one's configuration and Esc closes it", async ({ page, request }) => {
+test("arrow keys move between cards, Enter opens one's page and back returns to the grid", async ({ page, request }) => {
   const chats = await listAgents(request);
   test.skip(chats.length < 2, "needs two agents");
   await openAgents(page);
@@ -118,9 +119,9 @@ test("arrow keys move between cards, Enter opens one's configuration and Esc clo
   const id = await cells.nth(1).getAttribute("data-agent-id");
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(new RegExp(`#/agents/${id}$`));
-  await expect(page.getByTestId("agent-config")).toBeVisible();
-  await page.keyboard.press("Escape");
+  await expect(agentPage(page)).toHaveAttribute("data-agent-id", id!);
+  await page.goBack();
   await expect(page).toHaveURL(/#\/agents$/);
-  await expect(page.getByTestId("agent-config")).toHaveCount(0);
-  await expect(cells.nth(1)).toBeFocused();
+  await expect(agentPage(page)).toHaveCount(0);
+  await expect(cells).toHaveCount(chats.length);
 });

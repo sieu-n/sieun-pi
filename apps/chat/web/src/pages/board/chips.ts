@@ -7,9 +7,9 @@ export const boardHref = (chatId: string, focus?: string): string => hrefFor("bo
 /** The conversation of the agent a board belongs to: its DM. */
 export const chatHref = (chatId: string, opts: { thread?: string } = {}): string => conversationHref(agents.room(chatId), opts);
 
-/** One ask open in For you. */
+/** For you in Messages, optionally with one ask open. */
 export const forYouHref = (chatId?: string, todoId?: string): string =>
-  hrefFor("board", chatId && todoId ? ["for-you", chatId, todoId] : ["for-you"]);
+  hrefFor("messages", chatId && todoId ? ["for-you", chatId, todoId] : ["for-you"]);
 
 const short = (text: string): string => (text.length > 60 ? text.slice(0, 59).trimEnd() + "\u2026" : text);
 

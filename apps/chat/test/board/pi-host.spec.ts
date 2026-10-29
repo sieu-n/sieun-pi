@@ -21,7 +21,7 @@ test("an owner note written on pi-host shows on the board and in For you, and Do
     const asks = page.getByRole("region", { name: "For you" });
     await expect(asks).toContainText(text);
 
-    await page.goto("/#/board/for-you");
+    await page.goto("/#/c/for-you");
     await page.getByRole("button", { name: "For you filters" }).click();
     await page.getByRole("menuitemradio", { name: "Your notes" }).click();
     await page.keyboard.press("Escape");

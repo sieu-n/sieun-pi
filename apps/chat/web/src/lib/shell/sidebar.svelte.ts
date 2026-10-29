@@ -1,12 +1,9 @@
 import { connection, isSoloRoom, sidebar as liveSidebar, type ConversationSummary, type Sidebar as SidebarData } from "$lib/api";
 
-const FILTER_KEY = "chat.sidebarFilter";
 const WIDTH_KEY = "chat.sidebarWidth";
 export const SIDEBAR_DEFAULT = 260;
 export const SIDEBAR_MIN = 220;
 export const SIDEBAR_MAX = 520;
-
-export type SidebarFilter = "all" | "solo" | "team";
 
 const EMPTY: SidebarData = { solo: [], channels: [], dms: [], forYou: 0 };
 
@@ -33,9 +30,8 @@ export function soloGroups(rows: readonly ConversationSummary[]): SoloGroups {
   return groups;
 }
 
-/** Sidebar view state: the All, Solo and Team filter, width and collapse, over the chat server's live sidebar store. */
+/** Sidebar view state shared by every root: width and collapse, plus the Messages rows from the chat server's live sidebar store. */
 class SidebarView {
-  filter = $state<SidebarFilter>(parseFilter(read(FILTER_KEY)));
   width = $state(clampWidth(Number(read(WIDTH_KEY)) || SIDEBAR_DEFAULT));
   collapsed = $state(read("chat.sidebarCollapsed") === "1");
   /** Below 650 px the sidebar is a 220 px drawer over the main panel. The shell sets this from the window width. */
@@ -58,25 +54,6 @@ class SidebarView {
     return "loading";
   }
 
-  setFilter(f: SidebarFilter): void {
-    this.filter = f;
-    write(FILTER_KEY, f);
-  }
-
-  /** Opening a conversation of the other kind switches the filter to that kind, unless the filter is All. */
-  follow(id: string | null): void {
-    if (!id || this.filter === "all") return;
-    const row = this.find(id);
-    if (!row) return;
-    const kind: SidebarFilter = row.kind === "solo" ? "solo" : "team";
-    if (kind !== this.filter) this.setFilter(kind);
-  }
-
-  find(id: string): ConversationSummary | undefined {
-    const d = this.data;
-    return d.solo.find((r) => r.id === id) ?? d.channels.find((r) => r.id === id) ?? d.dms.find((r) => r.id === id);
-  }
-
   setWidth(px: number): void {
     this.width = clampWidth(px);
   }
@@ -93,9 +70,6 @@ class SidebarView {
   }
 }
 
-function parseFilter(v: string | null): SidebarFilter {
-  return v === "solo" || v === "team" ? v : "all";
-}
 function clampWidth(px: number): number {
   return Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, Math.round(px)));
 }

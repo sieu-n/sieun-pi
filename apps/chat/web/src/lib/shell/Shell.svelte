@@ -1,13 +1,29 @@
 <script lang="ts">
-  import type { Snippet } from "svelte";
+  import type { Component, Snippet } from "svelte";
   import TopBar from "./TopBar.svelte";
-  import Sidebar from "./Sidebar.svelte";
   import SidePanelHost from "./SidePanelHost.svelte";
   import { sidebar } from "./sidebar.svelte";
-  import { router } from "$lib/router.svelte";
+  import { router, type PageId } from "$lib/router.svelte";
+  import MessagesSidebar from "$pages/channel/MessagesSidebar.svelte";
+  import AgentsSidebar from "$pages/agents/AgentsSidebar.svelte";
+  import BoardSidebar from "$pages/board/BoardSidebar.svelte";
+  import SettingsSidebar from "$pages/settings/SettingsSidebar.svelte";
+  import AccountsSidebar from "$pages/accounts/AccountsSidebar.svelte";
 
   type Props = { children: Snippet; ownerName?: string };
   let { children, ownerName }: Props = $props();
+
+  /** The left sidebar of each page, or null for a page that shows none. */
+  const SIDEBARS: Record<PageId, Component | null> = {
+    messages: MessagesSidebar,
+    search: MessagesSidebar,
+    agents: AgentsSidebar,
+    board: BoardSidebar,
+    settings: SettingsSidebar,
+    accounts: AccountsSidebar,
+    ui: null,
+  };
+  const Nav = $derived(SIDEBARS[router.route.page]);
 
   let bodyWidth = $state(1440);
   /** The main panel keeps at least this much room when the side panel grows. */
@@ -33,14 +49,16 @@
 </script>
 
 <div class="shell texture-dots" data-layout={narrow ? "narrow" : overlay ? "overlay" : "wide"}>
-  <TopBar {ownerName} />
+  <TopBar {ownerName} hasSidebar={Nav !== null} />
   <div class="body" bind:clientWidth={bodyWidth}>
-    {#if narrow && sidebar.drawerOpen}
-      <button class="scrim" type="button" aria-label="Close sidebar" onclick={() => (sidebar.drawerOpen = false)}></button>
+    {#if Nav}
+      {#if narrow && sidebar.drawerOpen}
+        <button class="scrim" type="button" aria-label="Close sidebar" onclick={() => (sidebar.drawerOpen = false)}></button>
+      {/if}
+      <div class="nav-slot" class:collapsed={!sidebarShown} class:drawer={narrow} style:--w="{narrow ? 220 : sidebar.width}px">
+        {#if sidebarShown}<Nav />{/if}
+      </div>
     {/if}
-    <div class="nav-slot" class:collapsed={!sidebarShown} class:drawer={narrow} style:--w="{narrow ? 220 : sidebar.width}px">
-      {#if sidebarShown}<Sidebar />{/if}
-    </div>
     <main class="main-panel" data-testid="main-panel">
       {@render children()}
     </main>

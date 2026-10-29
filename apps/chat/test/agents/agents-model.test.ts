@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ACTION_LABEL, actionsFor, agentFromRoute, agentsShown, bytesLabel, canArchive, everyLabel, jobCounts, jobsLabel, levelsFor, modelOptions, openTarget, sectionFromParams, shortPath } from "../../web/src/pages/agents/agents-model.ts";
+import { ACTION_LABEL, actionsFor, agentFromRoute, agentGroups, agentOfRoute, agentsShown, bytesLabel, canArchive, everyLabel, jobCounts, jobsLabel, levelsFor, modelOptions, openTarget, renamedSection, sectionFromParams, shortPath } from "../../web/src/pages/agents/agents-model.ts";
 
 type Agent = Parameters<typeof agentsShown>[0][number];
 const agent = (over: Partial<Agent>): Agent => ({
@@ -55,13 +55,40 @@ test("models are keyed provider/id with family labels and their levels", () => {
   assert.deepEqual(levelsFor(typed, "x/y"), []);
 });
 
-test("#/agents/<id> names the agent or job whose configuration is open", () => {
+test("#/agents/<id> names the agent or job whose page is open, and old section ids move to Work and Jobs", () => {
   assert.equal(agentFromRoute([]), null);
   assert.equal(agentFromRoute(["ag_vent"]), "ag_vent");
   assert.equal(agentFromRoute(["t1:4"]), "t1:4");
   assert.equal(sectionFromParams({ section: "memory" }), "memory");
+  assert.equal(sectionFromParams({ section: "jobs" }), "jobs");
   assert.equal(sectionFromParams({ section: "nope" }), "overview");
   assert.equal(sectionFromParams({}), "overview");
+  assert.equal(sectionFromParams({ section: "runs" }), "work");
+  assert.equal(sectionFromParams({ section: "swarm" }), "jobs");
+  assert.equal(renamedSection({ section: "swarm" }), "jobs");
+  assert.equal(renamedSection({ section: "work" }), null);
+  assert.equal(renamedSection({}), null);
+});
+
+test("the sidebar marks an agent while its page or one of its jobs is open", () => {
+  const jobs = [agent({ id: "t1:4", kind: "job", agent: { id: "ag_vent", name: "Vent" } })];
+  assert.equal(agentOfRoute(null, jobs), null);
+  assert.equal(agentOfRoute("ag_vent", jobs), "ag_vent");
+  assert.equal(agentOfRoute("t1:4", jobs), "ag_vent");
+  assert.equal(agentOfRoute("t9:2", jobs), "t9:2");
+});
+
+test("the sidebar groups live agents into Working, Failed only when one failed, and Idle, each by name", () => {
+  const list = [
+    agent({ id: "ag_b", name: "Beta", status: "working" }),
+    agent({ id: "ag_a", name: "Alpha", status: "sleeping" }),
+    agent({ id: "ag_c", name: "Gamma", status: "idle" }),
+    agent({ id: "ag_d", name: "Delta", status: "idle", archived: true }),
+  ];
+  const groups = (input: Agent[]) => agentGroups(input).map((group) => [group.id, group.agents.map((a) => a.id)]);
+  assert.deepEqual(groups(list), [["working", ["ag_a", "ag_b"]], ["idle", ["ag_c"]]]);
+  assert.deepEqual(groups([...list, agent({ id: "ag_e", name: "Echo", status: "failed" })]), [["working", ["ag_a", "ag_b"]], ["failed", ["ag_e"]], ["idle", ["ag_c"]]]);
+  assert.deepEqual(groups([]), [["working", []], ["idle", []]]);
 });
 
 test("Message replaces Open thread, and only a root thread archives", () => {

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { agents, api, type AgentConfig, type AgentFolder, type AgentSummary, type ConfigFile, type ModelCatalog, type ProjectList, type RunStatus, type ThinkingLevel } from "$lib/api";
-  import { Avatar, Badge, Button, Chip, EmptyState, IconButton, LoadingText, Meter, ModelPicker, StatusDot, Tabs, TypingDots, stampLabel, toast } from "$lib/ui";
-  import { conversationHref, hrefFor } from "$lib/router.svelte";
+  import { Avatar, Badge, Button, Chip, EmptyState, IconButton, LoadingText, Menu, Meter, ModelPicker, PanelHeader, StatusDot, Tabs, TypingDots, stampLabel, toast, type MenuEntry } from "$lib/ui";
+  import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import {
     JOB_KIND_LABEL, SECTIONS, STATUS_LABEL, bytesLabel, canArchive, everyLabel, levelsFor, modelKey, modelOptions, shortPath, type ConfigSection,
   } from "./agents-model";
@@ -86,6 +86,21 @@
   });
   const running = $derived(agent?.status === "working" || agent?.status === "sleeping");
   const boardHref = $derived(config?.board ? hrefFor("board", [config.board.chat]) : null);
+  let menuOpen = $state(false);
+  let menuAnchor = $state<HTMLButtonElement>();
+  /** The header's "..." menu: Message and the model sit in the header itself. */
+  const menuItems = $derived.by((): MenuEntry[] => {
+    if (!agent) return [];
+    const item = agent;
+    const items: MenuEntry[] = [];
+    if (boardHref) items.push({ id: "board", label: "Open board", icon: "board", onselect: () => router.navigate(boardHref) });
+    if (running) items.push({ id: "stop", label: "Stop", icon: "stop", onselect: () => onstop(item) });
+    if (canArchive(item) && !item.archived) {
+      if (items.length) items.push({ type: "separator" });
+      items.push({ id: "archive", label: "Archive", icon: "trash", tone: "danger", onselect: () => onarchive(item) });
+    }
+    return items;
+  });
   const tabs = SECTIONS.map((item) => ({ ...item }));
   const hostLine = $derived(
     config ? (config.runs.hostVersion && config.runs.hostVersion !== config.runs.hostKind ? `${config.runs.hostKind} ${config.runs.hostVersion}` : config.runs.hostKind) : "",
@@ -142,33 +157,36 @@
 
 <div class="config" data-testid="agent-config" data-agent-id={agentId}>
   {#if agent}
-    <section class="identity">
-      <Avatar name={agent.name} kind="agent" seed={agent.name} size={48} status={dotOf(agent.status)} />
-      <div class="who">
-        <h2 class="t-label name">{agent.name}</h2>
-        <span class="t-caption line" data-status={agent.status}>
-          {#if running}<TypingDots mode={agent.status === "working" ? "working" : "waiting"} size={4} />{/if}
-          <span>{STATUS_LABEL[agent.status]}</span>
-          {#if agent.kind !== "chat"}<span>·</span><span>{config?.identity.duty ? "duty run" : "job"}</span>{/if}
-          {#if agent.parent}<span>· in</span><a href={hrefFor("agents", [agent.parent.id])}>{agent.parent.name}</a>{/if}
+    <PanelHeader>
+      {#snippet titleContent()}
+        <span class="identity">
+          <Avatar name={agent.name} kind="agent" seed={agent.id} size={24} status={agent.status === "idle" ? null : dotOf(agent.status)} />
+          <h1 class="t-label-sm name">{agent.name}</h1>
+          <span class="t-caption line" data-status={agent.status}>
+            {#if running}<TypingDots mode={agent.status === "working" ? "working" : "waiting"} size={4} />{/if}
+            <span>{STATUS_LABEL[agent.status]}</span>
+            {#if agent.kind !== "chat"}<span>·</span><span>{config?.identity.duty ? "duty run" : "job"}</span>{/if}
+            {#if agent.parent}<span>· in</span><a href={hrefFor("agents", [agent.parent.id])}>{agent.parent.name}</a>{/if}
+          </span>
         </span>
-        <span class="model">
-          {#if agent.model}
-            <ModelPicker models={options} value={current} efforts={levelsFor(catalog, current)} effort={agent.thinkingLevel ?? undefined}
-              onchange={(next) => onmodel(agent, next.model, next.effort as ThinkingLevel | undefined)} />
-            <AccountChip thread={agent.id} model={agent.model} />
-          {:else}
-            <span class="t-caption">No model yet</span>
-          {/if}
+      {/snippet}
+      {#snippet actions()}
+        <span class="actions" role="toolbar" aria-label="Agent actions">
+          <span class="model">
+            {#if agent.model}
+              <ModelPicker models={options} value={current} efforts={levelsFor(catalog, current)} effort={agent.thinkingLevel ?? undefined}
+                onchange={(next) => onmodel(agent, next.model, next.effort as ThinkingLevel | undefined)} />
+              <AccountChip thread={agent.id} model={agent.model} />
+            {:else}
+              <span class="t-caption">No model yet</span>
+            {/if}
+          </span>
+          <Button size="sm" variant="primary" icon="chat" onclick={() => onmessage(agent)}>Message</Button>
+          {#if menuItems.length}<IconButton icon="more" label="Actions for {agent.name}" size="sm" bind:element={menuAnchor} onclick={() => (menuOpen = !menuOpen)} />{/if}
         </span>
-      </div>
-    </section>
-    <div class="actions" role="toolbar" aria-label="Agent actions">
-      <Button size="sm" variant="primary" icon="chat" onclick={() => onmessage(agent)}>Message</Button>
-      {#if boardHref}<Button size="sm" icon="board" href={boardHref}>Open board</Button>{/if}
-      {#if running}<Button size="sm" icon="stop" onclick={() => onstop(agent)}>Stop</Button>{/if}
-      {#if canArchive(agent) && !agent.archived}<Button size="sm" variant="ghost" icon="trash" onclick={() => onarchive(agent)}>Archive</Button>{/if}
-    </div>
+      {/snippet}
+    </PanelHeader>
+    <Menu bind:open={menuOpen} anchor={menuAnchor} items={menuItems} label="Actions for {agent.name}" placement="bottom-end" />
   {/if}
 
   <div class="tabs">
@@ -252,17 +270,42 @@
           {#if folder}<span>{plural(folder.memory.entries.length, "memory", "memories")}{ownFolder ? "" : ` of ${folderName}`}</span>{:else}<span>None of its own</span>{/if}
           <button type="button" class="more t-caption" onclick={() => onsection("memory")}>Details</button>
         </dd>
-        <dt>Swarm</dt>
-        <dd data-fact="swarm">
+        <dt>Jobs</dt>
+        <dd data-fact="jobs">
           {plural(config.swarm.jobs.length, "job")}{config.swarm.jobs.some((j) => j.status === "working") ? `, ${config.swarm.jobs.filter((j) => j.status === "working").length} working` : ""}
-          · {plural(config.swarm.rooms.length, "room")} · {plural(config.swarm.duties.length, "duty", "duties")}
+          · {plural(config.swarm.duties.length, "duty", "duties")}
+          <button type="button" class="more t-caption" onclick={() => onsection("jobs")}>Details</button>
         </dd>
         {#if config.usage}
           <dt>Last 7 days</dt>
           <dd data-fact="usage">{money(config.usage.cost)} · {plural(config.usage.turns, "turn")}</dd>
         {/if}
       </dl>
-    {:else if section === "runs"}
+    {:else if section === "work"}
+      {#if agent?.kind === "chat"}
+        <section class="block" aria-label="Threads">
+          <h3 class="t-caption heading">Threads</h3>
+          <ul class="list">
+            <li><StatusDot status={dotOf(agent.status)} label={STATUS_LABEL[agent.status]} /><a class="grow" href={conversationHref(agent.thread)} data-work-thread={agent.thread}>Work thread</a></li>
+            {#each agent.comm ?? [] as comm (comm.thread)}
+              <li data-comm-thread={comm.thread} data-room={comm.room}>
+                <StatusDot status={dotOf(comm.status)} label={STATUS_LABEL[comm.status]} />
+                <a class="grow" href={conversationHref(comm.thread)}>{commLabel(comm.room)}</a>
+              </li>
+            {/each}
+          </ul>
+        </section>
+      {/if}
+      <section class="block" aria-label="Rooms">
+        <h3 class="t-caption heading">Channels and Solo rooms</h3>
+        <div class="chips">
+          {#each config.swarm.rooms as room (room.id)}
+            <a class="channel" href={conversationHref(room.id)}><Chip size="sm" icon={room.kind === "solo" ? "chat" : "hash"} label={room.name} /></a>
+          {:else}
+            <span class="t-caption meta">In no channel or Solo room.</span>
+          {/each}
+        </div>
+      </section>
       <h3 class="t-caption heading">Where it runs</h3>
       <dl class="facts">
         <dt>Host</dt>
@@ -360,7 +403,7 @@
       <ul class="files">
         {#each config.instructions.files as item (item.path)}{@render file(item)}{:else}<li class="t-caption meta">No AGENTS.md or CLAUDE.md in its home directory or above it.</li>{/each}
       </ul>
-    {:else if section === "swarm"}
+    {:else if section === "jobs"}
       {#if config.swarm.parent}
         <section class="block">
           <h3 class="t-caption heading">Coordinator</h3>
@@ -381,16 +424,6 @@
             <li class="t-caption meta">No jobs yet.</li>
           {/each}
         </ul>
-      </section>
-      <section class="block" aria-label="Rooms">
-        <h3 class="t-caption heading">Channels and Solo rooms</h3>
-        <div class="chips">
-          {#each config.swarm.rooms as room (room.id)}
-            <a class="channel" href={conversationHref(room.id)}><Chip size="sm" icon={room.kind === "solo" ? "chat" : "hash"} label={room.name} /></a>
-          {:else}
-            <span class="t-caption meta">In no channel or Solo room.</span>
-          {/each}
-        </div>
       </section>
       <section class="block" aria-label="Duties">
         <h3 class="t-caption heading">Duties</h3>
@@ -423,27 +456,27 @@
   }
   .identity {
     display: flex;
-    align-items: flex-start;
-    gap: var(--space-3);
-    padding: var(--space-2) var(--space-4) 0;
-  }
-  .who {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
+    align-items: center;
+    gap: var(--space-2);
     min-width: 0;
+  }
+  .identity :global(.avatar) {
+    flex: none;
   }
   .name {
     margin: 0;
-    overflow-wrap: anywhere;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     color: var(--text-standard);
   }
   .line {
     display: flex;
-    flex-wrap: wrap;
+    flex: none;
     align-items: center;
     gap: var(--space-1);
     color: var(--text-subtle);
+    white-space: nowrap;
   }
   .line[data-status="failed"] {
     color: var(--text-danger);
@@ -458,15 +491,13 @@
   }
   .model {
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2);
   }
   .actions {
     display: flex;
-    flex-wrap: wrap;
+    align-items: center;
     gap: var(--space-2);
-    padding: var(--space-3) var(--space-4);
   }
   .tabs {
     padding: 0 var(--space-4);
@@ -485,7 +516,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
-    padding: var(--space-4);
+    padding: var(--space-6) max(var(--space-6), calc((100% - 768px) / 2)) var(--space-8);
   }
   .loading {
     padding: var(--space-4) 0;

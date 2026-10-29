@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { card, listAgents, openAgents, uniqueName } from "./helpers.ts";
+import { card, listAgents, newAgentButton, openAgents, uniqueName } from "./helpers.ts";
 
 // Chrome drops in-flight dev-server loads with ERR_NETWORK_CHANGED when the box's interfaces change, so one rerun covers that.
 test.describe.configure({ retries: 1 });
@@ -15,7 +15,7 @@ test("a new agent runs in the project picked in the dialog, and its panel moves 
   const [first, second] = list.projects as [Projects["projects"][0], Projects["projects"][0]];
 
   await openAgents(page);
-  await page.getByRole("button", { name: "New agent" }).click();
+  await newAgentButton(page).click();
   const dialog = page.getByRole("dialog", { name: "Create agent" });
   const picker = dialog.getByRole("combobox", { name: "Project folder" });
   await expect(picker).toHaveValue(list.default!);

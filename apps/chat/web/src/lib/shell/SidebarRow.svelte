@@ -23,8 +23,10 @@
     actions?: Snippet;
     /** Makes the row draggable, for moving a channel between sidebar sections. */
     ondragstart?: (e: DragEvent) => void;
+    /** Shown at the right end when the row has no typing dots, count or dot, such as a light count or a danger badge. */
+    trailing?: Snippet;
   };
-  let { href, label, icon, leading, selected = false, unread = 0, fresh = false, working = [], title, oncontextmenu, actions, ondragstart }: Props = $props();
+  let { href, label, icon, leading, selected = false, unread = 0, fresh = false, working = [], title, oncontextmenu, actions, ondragstart, trailing }: Props = $props();
   const workingLabel = $derived(working.length ? `${working.join(", ")} working in ${label}` : "");
 </script>
 
@@ -54,6 +56,8 @@
         <Badge value={unread} title="{unread} unread" />
       {:else if fresh}
         <Badge dot title="New activity" />
+      {:else if trailing}
+        {@render trailing()}
       {/if}
     </span>
   </a>

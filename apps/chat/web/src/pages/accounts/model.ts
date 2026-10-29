@@ -9,6 +9,13 @@ export type ProviderId = PoolProvider["provider"];
 
 export const PROVIDER_LABEL: Record<ProviderId, string> = { anthropic: "Claude", "openai-codex": "Codex" };
 
+/** The path segment of each provider's page, `#/accounts/claude` and `#/accounts/codex`. */
+export const PROVIDER_SLUG: Record<ProviderId, string> = { anthropic: "claude", "openai-codex": "codex" };
+
+export function providerFromSlug(slug: string | undefined): ProviderId | null {
+  return (Object.keys(PROVIDER_SLUG) as ProviderId[]).find((id) => PROVIDER_SLUG[id] === slug) ?? null;
+}
+
 export type Tone = "accent" | "success" | "muted" | "warning" | "danger";
 export type AccountState = "off" | "needs-login" | "needs-terms" | "refused" | "cooldown" | "limited" | "depleted" | "pinned";
 /** The pool's cooldown reason for an account whose updated Consumer Terms are not accepted on claude.ai yet (pi-pool's pool/base.py NEEDS_TERMS). */

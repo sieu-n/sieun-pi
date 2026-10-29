@@ -11,11 +11,11 @@
   const viewKey = $derived(`${id}|${around ?? ""}`);
 </script>
 
-{#if !id}
+{#if router.messagesView === "new"}
+  <NewConversation kind={router.route.params.kind ?? "chat"} />
+{:else if !id}
   <PanelHeader title="Messages" icon="messages" level={1} />
   <EmptyState icon="messages" title="Pick a conversation" description="Choose a chat, channel or direct message in the sidebar, or start one with +." />
-{:else if id === "new"}
-  <NewConversation kind={router.route.params.kind ?? "chat"} />
 {:else}
   {#key viewKey}
     <Conversation {id} {around} />

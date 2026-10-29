@@ -34,6 +34,13 @@ export const roomOf = (id: string): string => (id.startsWith("ag_") ? `dm_${id.s
 export const grid = (page: Page) => page.getByRole("grid");
 export const card = (page: Page, agent: Pick<Agent, "id">) => page.locator(`[role="gridcell"][data-agent-id="${agent.id}"]`);
 
+/** The page's own New agent button; the Agents sidebar has a "+" with the same name. */
+export const newAgentButton = (page: Page) => page.getByTestId("main-panel").getByRole("button", { name: "New agent" });
+/** An agent's page, the main view at `#/agents/<id>`. */
+export const agentPage = (page: Page) => page.getByTestId("agent-config");
+export const agentsSidebar = (page: Page) => page.locator('[data-testid="sidebar"][data-root="agents"]');
+export const sidebarRow = (page: Page, agent: Pick<Agent, "id">) => agentsSidebar(page).locator(`a[href="#/agents/${encodeURIComponent(agent.id)}"]`);
+
 /** The first load in a fresh browser pulls every module from the dev server, which can take longer than the default 5 s. */
 export async function openAgents(page: Page) {
   await page.goto("/#/agents");

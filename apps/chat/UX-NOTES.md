@@ -8,7 +8,7 @@ We copied no Buzz code, icon, image, font file or mascot art. Every component he
 
 1. The window is a dotted gray shell with white panels: a 260 px resizable sidebar, one main panel with 24 px corners, and a 420 px resizable side panel for threads and boards.
 2. One 40 px capsule centered in the 56 px top bar holds the + menu, the page pills and the search pill.
-3. The sidebar's All, Solo and Team control is a view filter over one list, and it follows you to the right group when you open a chat from elsewhere.
+3. Messages, Agents, Board and Accounts are the app's roots. The top bar picks the root, each root draws its own sidebar on one shared frame, and each tab returns to the last place you were in that root. The Messages sidebar is one list of For you, Solo, Channels and Direct messages, with no view filter.
 4. One accent color, a citrus lime, paints only own bubbles, the Send button and the selected sidebar row, and everything else stays neutral.
 5. In a DM or a chat every message sits in a bubble, stacks merge within five minutes, and the avatar sits at the bottom of a stack.
 6. People have circle avatars and agents have squircle avatars, each with a status dot.

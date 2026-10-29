@@ -13,6 +13,7 @@
   import RenameChannelDialog from "$pages/channel/RenameChannelDialog.svelte";
   import AgentsPage from "$pages/agents/AgentsPage.svelte";
   import BoardPage from "$pages/board/BoardPage.svelte";
+  import ForYouPage from "$pages/board/ForYouPage.svelte";
   import AccountsPage from "$pages/accounts/AccountsPage.svelte";
   import SettingsPage from "$pages/settings/SettingsPage.svelte";
   import SearchDialog from "$pages/search/SearchDialog.svelte";
@@ -56,7 +57,7 @@
 
 <Shell>
   {#if router.route.page === "messages"}
-    <ChannelPage />
+    {#if router.messagesView === "for-you"}<ForYouPage />{:else}<ChannelPage />{/if}
   {:else if router.route.page === "agents"}
     <AgentsPage />
   {:else if router.route.page === "board"}

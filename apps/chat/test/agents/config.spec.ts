@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
-import { card, listAgents, openAgents, type Agent } from "./helpers.ts";
+import { card, grid, listAgents, openAgents, type Agent } from "./helpers.ts";
 
 // Chrome drops in-flight dev-server loads with ERR_NETWORK_CHANGED when the box's interfaces change, so one rerun covers that.
 test.describe.configure({ retries: 1 });
@@ -35,14 +35,15 @@ async function richChat(request: APIRequestContext): Promise<{ chat: Agent; conf
   return best;
 }
 
-test("the configuration shows its host, home directory, board and memory, and each section reads its own data", async ({ page, request }) => {
+test("the agent's page shows its host, home directory, board and memory, and each tab reads its own data", async ({ page, request }) => {
   const found = await richChat(request);
   test.skip(!found, "no chats on this server");
   const { chat, config } = found!;
   await openAgents(page);
   await card(page, chat).click({ position: { x: 40, y: 120 } });
   await expect(panel(page)).toBeVisible();
-  await expect(page.getByTestId("side-panel")).toHaveAttribute("data-panel-key", `agent:${chat.id}`);
+  await expect(page.getByTestId("main-panel").getByTestId("agent-config")).toHaveAttribute("data-agent-id", chat.id);
+  await expect(panel(page).getByRole("tab")).toHaveText(["Overview", "Work", "Jobs", "Board", "Memory", "Instructions"]);
 
   await expect(panel(page).locator('[data-fact="host"]')).toContainText(config.runs.host);
   await expect(panel(page).locator('[data-fact="cwd"] code')).toHaveAttribute("title", config.runs.cwd);
@@ -51,9 +52,10 @@ test("the configuration shows its host, home directory, board and memory, and ea
   if (config.board) await expect(panel(page).locator('[data-fact="board"]')).toContainText(`${config.board.steps.open} open`);
   else await expect(panel(page).locator('[data-fact="board"]')).toContainText("No board");
 
-  await section(page, "Host").click();
-  await expect(page).toHaveURL(/section=runs/);
+  await section(page, "Work").click();
+  await expect(page).toHaveURL(/section=work/);
   await expect(panel(page).getByRole("tabpanel")).toContainText(config.runs.thread);
+  for (const room of config.swarm.rooms) await expect(panel(page).getByRole("link", { name: room.name })).toBeVisible();
 
   await section(page, "Memory").click();
   if (config.folder) await expect(panel(page).getByTestId("agent-memory")).toBeVisible();
@@ -63,10 +65,10 @@ test("the configuration shows its host, home directory, board and memory, and ea
   await section(page, "Instructions").click();
   for (const file of config.instructions.files) await expect(panel(page).locator(`li[data-path="${file.path}"]`)).toContainText(tail(file.path));
 
-  await section(page, "Swarm").click();
+  await section(page, "Jobs").click();
+  await expect(page).toHaveURL(/section=jobs/);
   for (const job of config.swarm.jobs.slice(0, 5)) await expect(panel(page).locator(`li[data-job-id="${job.id}"]`)).toContainText(job.name.slice(0, 20));
   for (const duty of config.swarm.duties) await expect(panel(page).locator(`li[data-duty-id="${duty.id}"]`)).toContainText(duty.name);
-  for (const room of config.swarm.rooms) await expect(panel(page).getByRole("link", { name: room.name })).toBeVisible();
 
   await section(page, "Board").click();
   if (config.board) {
@@ -78,23 +80,25 @@ test("the configuration shows its host, home directory, board and memory, and ea
   }
 });
 
-test("the profile header names the agent once, shows only its state and has one model control", async ({ page, request }) => {
+test("the page header names the agent once with its state, model, Message and a menu", async ({ page, request }) => {
   const chat = (await listAgents(request)).find((agent) => agent.kind === "chat" && agent.model);
   test.skip(!chat, "no chat with a model on this server");
   await openAgents(page);
   await page.goto(`/#/agents/${chat!.id}`);
   await expect(panel(page)).toBeVisible();
-  const side = page.getByTestId("side-panel");
-  await expect(side).toHaveAttribute("aria-label", "Agent");
-  await expect(side.getByRole("heading", { name: "Agent", exact: true })).toBeVisible();
-  await expect(side.getByRole("heading", { name: chat!.name, exact: true })).toHaveCount(1);
-  const line = panel(page).locator(".identity .line");
-  await expect(line).toHaveText({ working: "Working", sleeping: "Waiting", failed: "Failed", idle: "Idle" }[chat!.status]);
-  await expect(panel(page).getByRole("toolbar", { name: "Agent actions" }).getByRole("button", { name: "Change model" })).toHaveCount(0);
-  await expect(panel(page).locator(".identity .model")).toContainText(chat!.model!.label);
+  await expect(panel(page).getByRole("heading", { name: chat!.name, exact: true, level: 1 })).toHaveCount(1);
+  await expect(panel(page).locator(".identity .line")).toHaveText({ working: "Working", sleeping: "Waiting", failed: "Failed", idle: "Idle" }[chat!.status]);
+  const toolbar = panel(page).getByRole("toolbar", { name: "Agent actions" });
+  await expect(toolbar.locator(".model")).toContainText(chat!.model!.label);
+  await expect(toolbar.getByRole("button", { name: "Message" })).toBeVisible();
+  await toolbar.getByRole("button", { name: `Actions for ${chat!.name}` }).click();
+  const expected = [...(chat!.status === "working" || chat!.status === "sleeping" ? ["Stop"] : []), "Archive"];
+  for (const label of expected) await expect(page.getByRole("menu").getByRole("menuitem", { name: label })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu")).toHaveCount(0);
 });
 
-test("a configuration link opens on its own, back closes it and forward opens it again", async ({ page, request }) => {
+test("a page link opens on its own tab, back returns to the grid and forward opens it again", async ({ page, request }) => {
   const chat = (await listAgents(request)).find((agent) => agent.kind === "chat");
   test.skip(!chat, "no chats on this server");
   await openAgents(page);
@@ -103,11 +107,20 @@ test("a configuration link opens on its own, back closes it and forward opens it
   await expect(section(page, "Memory")).toHaveAttribute("aria-selected", "true");
   await page.goto("/#/agents");
   await expect(panel(page)).toHaveCount(0);
+  await expect(grid(page)).toBeVisible();
   await page.goBack();
   await expect(panel(page)).toBeVisible();
-  await page.getByRole("button", { name: /^Close/ }).click();
-  await expect(page).toHaveURL(/#\/agents$/);
-  await expect(panel(page)).toHaveCount(0);
+  await expect(section(page, "Memory")).toHaveAttribute("aria-selected", "true");
+});
+
+test("old section links from the side panel land on the tab that replaced them", async ({ page, request }) => {
+  const chat = (await listAgents(request)).find((agent) => agent.kind === "chat");
+  test.skip(!chat, "no chats on this server");
+  for (const [old, next, tab] of [["runs", "work", "Work"], ["swarm", "jobs", "Jobs"]] as const) {
+    await page.goto(`/#/agents/${chat!.id}?section=${old}`);
+    await expect(section(page, tab)).toHaveAttribute("aria-selected", "true", { timeout: 20_000 });
+    await expect(page).toHaveURL(new RegExp(`#/agents/${chat!.id}\\?section=${next}$`));
+  }
 });
 
 test("a duty run's configuration names its coordinator and shares its chat's board", async ({ page, request }) => {
@@ -126,7 +139,7 @@ test("a duty run's configuration names its coordinator and shares its chat's boa
   await expect(card(page, { id: duty!.id })).toHaveCount(0);
   await expect(panel(page)).toContainText("duty run");
   await expect(panel(page).locator('[data-fact="board"]')).toContainText(`Board of ${duty!.chat.name}`);
-  await section(page, "Swarm").click();
+  await section(page, "Jobs").click();
   await panel(page).getByRole("tabpanel").getByRole("link", { name: duty!.chat.name }).click();
   await expect(page).toHaveURL(new RegExp(`#/agents/${duty!.chat.id}$`));
 });

@@ -3,14 +3,15 @@
   import type { AccountAction, AccountLogin as Login, AccountsView, PoolAccount, PoolPriority, UsageRefresh, UsageRefreshAccount } from "$lib/api/shared/types.ts";
   import { POOL_PRIORITIES } from "$lib/api/shared/types.ts";
   import { tick } from "svelte";
-  import { router } from "$lib/router.svelte";
-  import { Button, Dialog, EmptyState, IconButton, Input, LoadingText, Menu, Page, PanelHeader, Picker, Tabs, toast, tooltip, type MenuEntry, type PickerItem, type TabItem } from "$lib/ui";
+  import { hrefFor, router } from "$lib/router.svelte";
+  import { Button, Dialog, EmptyState, IconButton, Input, LoadingText, Menu, Page, PanelHeader, Picker, toast, tooltip, type MenuEntry, type PickerItem } from "$lib/ui";
   import AccountLogin from "./AccountLogin.svelte";
   import AccountRow from "./AccountRow.svelte";
   import PoolMeters from "./PoolMeters.svelte";
   import { accountsApi } from "./api";
+  import { accountsShown } from "./shown.svelte";
   import {
-    accountState, isManualAccount, pendingReset, POOL_PRIORITY_HINT, POOL_PRIORITY_LABEL, PROVIDER_LABEL, resetConfirm, resolutionSentence, sortedRows,
+    accountState, isManualAccount, pendingReset, POOL_PRIORITY_HINT, POOL_PRIORITY_LABEL, PROVIDER_LABEL, PROVIDER_SLUG, providerFromSlug, resetConfirm, resolutionSentence, sortedRows,
     threadProvider, usableGrant, windowColumns, type ProviderId,
   } from "./model";
 
@@ -34,15 +35,9 @@
   let view = $state<AccountsView | null>(null);
   let loading = $state(false);
   let error = $state<string | null>(null);
-  /** The provider tab the owner picked by hand, or a sign-in just finished on. Null follows the thread's model. It resets when the thread changes. */
-  let tab = $state<ProviderId | null>(null);
-  let tabThread: string | null = null;
-  $effect.pre(() => {
-    if (thread !== tabThread) {
-      tabThread = thread;
-      tab = null;
-    }
-  });
+  /** The provider the route names, `#/accounts/claude` or `#/accounts/codex`. With none, the page follows the thread's model. */
+  const tab = $derived(providerFromSlug(router.route.rest[0]));
+  const showProvider = (provider: ProviderId) => router.navigate(hrefFor("accounts", [PROVIDER_SLUG[provider]], { thread }), { replace: true });
   let acting = $state<string | null>(null);
   let confirm = $state<Confirm | null>(null);
   let confirmOpen = $state(false);
@@ -112,7 +107,7 @@
     if (!next) return;
     if (running(next)) watched = next.id;
     if (next.id === watched && previous?.status !== "done" && next.status === "done") {
-      tab = next.provider;
+      showProvider(next.provider);
       void load(true);
     }
   }
@@ -210,7 +205,10 @@
   const shownLogin = $derived(login && (running(login) || login.id === watched) ? login : null);
   const columns = $derived(current ? windowColumns(current.rows) : []);
   const rows = $derived(current ? sortedRows(current) : []);
-  const tabs = $derived<TabItem<ProviderId>[]>((view?.providers ?? []).map(entry => ({ id: entry.provider, label: PROVIDER_LABEL[entry.provider], badge: entry.rows.length })));
+  $effect(() => {
+    accountsShown.view = view;
+    accountsShown.provider = current?.provider ?? null;
+  });
   const priorityItems: PickerItem[] = POOL_PRIORITIES.map(level => ({ id: level, label: POOL_PRIORITY_LABEL[level] }));
   const waiting = $derived(Boolean(thread && current && (current.wait || !resolution?.email)));
 
@@ -277,7 +275,7 @@
 
 <Page measure="wide">
   {#snippet header()}
-    <PanelHeader title="Accounts" icon="users" level={1}>
+    <PanelHeader title={current ? `${PROVIDER_LABEL[current.provider]} accounts` : "Accounts"} icon="users" level={1}>
       {#snippet actions()}
         <IconButton icon="refresh" label="Read the pool again" size="sm" loading={loading} onclick={() => void load(true)} />
       {/snippet}
@@ -317,7 +315,6 @@
       </div>
 
       <div class="bar">
-        <Tabs items={tabs} value={current.provider} variant="underline" label="Providers" onchange={id => (tab = id)} />
         <span class="spacer"></span>
         <Button size="sm" variant="outline" icon="plus" disabled={running(login)} onclick={() => void startLogin(current.provider, null)}>Add {PROVIDER_LABEL[current.provider]} account</Button>
         {#if current.provider === "anthropic"}

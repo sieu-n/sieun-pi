@@ -71,7 +71,7 @@ test("a new channel's member picker lists registered agents only", async ({ page
   expect((await labels(list)).sort()).toEqual(agents.map((agent) => agent.name).sort());
 });
 
-test("the Agents page shows agent cards only, and a job shows inside its agent's card and Swarm", async ({ page, request }) => {
+test("the Agents page shows agent cards only, and a job shows inside its agent's card and Jobs tab", async ({ page, request }) => {
   await openAgents(page);
   await expect(grid(page).getByRole("gridcell")).toHaveCount(agents.length);
   for (const agent of agents) await expect(card(page, agent)).toBeVisible();
@@ -85,7 +85,7 @@ test("the Agents page shows agent cards only, and a job shows inside its agent's
   await expect(card(page, busiest.agent).locator("[data-jobs]")).toContainText(`${busiest.count} ${busiest.count === 1 ? "job" : "jobs"}`);
 
   const config = (await (await request.get(`/api/agents/${encodeURIComponent(busiest.agent.id)}/config`)).json()) as { swarm: { jobs: { id: string }[] } };
-  await page.goto(`/#/agents/${encodeURIComponent(busiest.agent.id)}?section=swarm`);
+  await page.goto(`/#/agents/${encodeURIComponent(busiest.agent.id)}?section=jobs`);
   const swarm = page.getByTestId("agent-config").getByRole("tabpanel");
   await expect(swarm.locator("li[data-job-id]")).toHaveCount(config.swarm.jobs.length);
   expect(config.swarm.jobs.length).toBeGreaterThan(0);

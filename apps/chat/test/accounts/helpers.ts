@@ -57,11 +57,13 @@ export async function openAccounts(page: Page, thread: string | null = null): Pr
   }
 }
 
-export const providerTab = (page: Page, provider: ProviderId): Locator => page.getByRole("tab", { name: new RegExp(`^${PROVIDER_LABEL[provider]}\\b`) });
+/** The provider's row in the Accounts sidebar, which names it and counts its accounts. */
+export const providerTab = (page: Page, provider: ProviderId): Locator =>
+  page.getByRole("navigation", { name: "Accounts" }).getByRole("link", { name: new RegExp(`^${PROVIDER_LABEL[provider]}\\b`) });
 
 export async function showProvider(page: Page, provider: ProviderId): Promise<void> {
   await providerTab(page, provider).click();
-  await expect(providerTab(page, provider)).toHaveAttribute("aria-selected", "true");
+  await expect(providerTab(page, provider)).toHaveAttribute("aria-current", "page");
 }
 
 /** One account's table row, found by its label shown on its own. */

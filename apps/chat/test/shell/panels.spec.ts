@@ -21,6 +21,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("the sidebar is 260 px, drags between 220 and 520 px, and keeps its width", async ({ page }) => {
+  await page.goto("/#/c/ch_general");
   const nav = 'nav[aria-label="Conversations"]';
   expect(await width(page, nav)).toBe(260);
   await drag(page, "Resize sidebar", 100);
@@ -34,6 +35,7 @@ test("the sidebar is 260 px, drags between 220 and 520 px, and keeps its width",
 });
 
 test("the sidebar toggle hides and shows the sidebar", async ({ page }) => {
+  await page.goto("/#/c/ch_general");
   await page.getByRole("button", { name: "Hide sidebar" }).click();
   await expect(page.getByRole("navigation", { name: "Conversations" })).toHaveCount(0);
   await page.getByRole("button", { name: "Show sidebar" }).click();

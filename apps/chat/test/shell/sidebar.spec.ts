@@ -1,7 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const sidebar = (page: Page) => page.getByRole("navigation", { name: "Conversations" });
-const filter = (page: Page, name: string) => sidebar(page).getByRole("tab", { name, exact: true });
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/#/c/ch_general");
@@ -10,27 +9,14 @@ test.beforeEach(async ({ page }) => {
   await expect(sidebar(page)).toBeVisible();
 });
 
-test("All shows Team and the fixture's untitled solo chat, Solo hides Team, Team hides Solo", async ({ page }) => {
-  const solo = sidebar(page).locator('[data-section="solo"]');
-  const team = sidebar(page).locator('[data-section="team"]');
-  await expect(team).toBeVisible();
-  await expect(solo).toContainText("New thread");
-
-  await filter(page, "Solo").click();
-  await expect(solo).toBeVisible();
-  await expect(solo).toContainText("New thread");
-  await expect(team).toHaveCount(0);
-
-  await filter(page, "Team").click();
-  await expect(team).toBeVisible();
-  await expect(solo).toHaveCount(0);
-  await expect(team.getByRole("heading", { name: "Team" })).toHaveCount(0);
-});
-
-test("the filter choice survives a reload", async ({ page }) => {
-  await filter(page, "Team").click();
-  await page.reload();
-  await expect(filter(page, "Team")).toHaveAttribute("aria-selected", "true");
+test("one list holds For you, Solo, Channels and Direct messages, with no All, Solo or Team switcher", async ({ page }) => {
+  await expect(sidebar(page).getByRole("tab")).toHaveCount(0);
+  await expect(sidebar(page).getByRole("heading", { name: "Team" })).toHaveCount(0);
+  await expect(sidebar(page).getByRole("link", { name: "For you" })).toBeVisible();
+  for (const name of ["Solo", "Channels", "Direct messages"]) await expect(sidebar(page).getByRole("heading", { name, exact: true })).toBeVisible();
+  await expect(sidebar(page).locator('[data-section="solo"]')).toContainText("New thread");
+  await page.goto("/#/c/dm_vent");
+  await expect(sidebar(page).locator('[data-section="solo"]')).toContainText("New thread");
 });
 
 test("a row opens its agent's DM and turns lime", async ({ page }) => {
@@ -39,12 +25,6 @@ test("a row opens its agent's DM and turns lime", async ({ page }) => {
   await expect(page).toHaveURL(/#\/c\/dm_frontend-bro$/);
   await expect(row).toHaveAttribute("aria-current", "page");
   await expect(row).toHaveCSS("background-color", "rgb(190, 218, 54)");
-});
-
-test("opening a DM while Solo is on switches the filter to Team", async ({ page }) => {
-  await filter(page, "Solo").click();
-  await page.goto("/#/c/dm_vent");
-  await expect(filter(page, "Team")).toHaveAttribute("aria-selected", "true");
 });
 
 test("unread rows are bold and working rows show typing dots", async ({ page, request }) => {
@@ -61,7 +41,7 @@ test("unread rows are bold and working rows show typing dots", async ({ page, re
 });
 
 test("Direct messages list only agents: a duty run's thread, a root job and a job inside a thread stay out and still open by link", async ({ page, request }) => {
-  const dms = sidebar(page).locator('[data-section="team"]');
+  const dms = sidebar(page).locator('[data-section="dms"]');
   await expect(dms.getByRole("heading", { name: "Direct messages" })).toBeVisible();
   const all = (await (await request.get("/api/conversations")).json()) as { id: string; kind: string; name: string; archived: boolean }[];
   const listed = ((await (await request.get("/api/sidebar")).json()) as { dms: { id: string }[] }).dms.map((dm) => dm.id);

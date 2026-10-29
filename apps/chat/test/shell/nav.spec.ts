@@ -21,18 +21,20 @@ test("top bar pills open each page and mark the current one", async ({ page }) =
   await expect(page).toHaveURL(/#\/c\/ch_general$/);
 });
 
-test("the top bar holds only Messages, Agents and Board, with Usage and Hosts behind Settings", async ({ page }) => {
+test("the top bar holds only Messages, Agents, Board and Accounts, with Usage and Hosts behind Settings", async ({ page }) => {
   const nav = page.getByRole("navigation", { name: "Pages" });
-  await expect(nav.getByRole("tab")).toHaveText(["Messages", "Agents", "Board"]);
+  await expect(nav.getByRole("tab")).toHaveText(["Messages", "Agents", "Board", "Accounts"]);
   const bar = page.locator("header.topbar");
   await expect(bar.getByText("Usage")).toHaveCount(0);
   await expect(bar.getByText("Hosts")).toHaveCount(0);
 });
 
-test("the Settings button opens Settings at Usage, and its list switches to Hosts", async ({ page }) => {
+test("the Settings button opens Settings at Usage, and its sidebar switches to Hosts", async ({ page }) => {
   await page.locator("header.topbar").getByRole("button", { name: "Settings", exact: true }).click();
   await expect(page).toHaveURL(/#\/settings\/usage$/);
   const sections = page.getByRole("navigation", { name: "Settings" });
+  await expect(sections).toHaveAttribute("data-root", "settings");
+  await expect(page.getByRole("navigation", { name: "Conversations" })).toHaveCount(0);
   await expect(sections.getByRole("link", { name: "Usage" })).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("heading", { name: "Usage", level: 1 })).toBeVisible();
   await sections.getByRole("link", { name: "Hosts" }).click();
@@ -53,7 +55,8 @@ test("old #/usage and #/hosts links land in their Settings section with the quer
   await expect(page.getByRole("combobox", { name: "Period", exact: true })).toHaveValue("7");
   await page.goto("/#/hosts");
   await expect(page).toHaveURL(/#\/settings\/hosts$/);
-  await expect(page.getByTestId("hosts-summary")).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Settings" }).getByRole("link", { name: "Hosts" })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("heading", { name: "Hosts", level: 1 })).toBeVisible();
 });
 
 test("the capsule is 40 px tall and centered in a 56 px top bar", async ({ page }) => {

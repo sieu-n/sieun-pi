@@ -67,7 +67,7 @@ test("a section takes channels by menu and drag, renames, folds with the built-i
     await expect(fold(page, name)).toHaveAttribute("aria-expanded", "false");
   }
   await expect(section(page, "Work").getByRole("link")).toHaveCount(0);
-  const dms = sidebar(page).locator('[data-section="team"] a[href^="#/c/dm_"]');
+  const dms = sidebar(page).locator('[data-section="dms"] a[href^="#/c/dm_"]');
   await expect(dms).toHaveCount(1);
   await expect(dms).toHaveAttribute("href", "#/c/dm_vent");
 
