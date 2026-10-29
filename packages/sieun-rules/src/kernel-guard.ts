@@ -18,6 +18,8 @@ const CWD_FILE = join(HERE, "kernel-cwd.py");
 const OWN_FILE = join(HERE, "kernel-own.py");
 // kernel-read.py refuses reads of another family's session transcripts (chat-057a, 10-19 and 10-20). It has its own flag for the same reason.
 const READ_FILE = join(HERE, "kernel-read.py");
+// kernel-journal.py journals the kernel's writes into a shared auto-sns-agent checkout for its commit.mjs (10-29). It has its own flag for the same reason.
+const JOURNAL_FILE = join(HERE, "kernel-journal.py");
 
 export const PRELUDE_SOURCE = `
 import sys
@@ -45,6 +47,12 @@ if not getattr(sys, "global_rules_kernel_read", False):
         exec(compile(open(${JSON.stringify(READ_FILE)}).read(), ${JSON.stringify(READ_FILE)}, "exec"), {"__name__": "global_rules_kernel_read", "__file__": ${JSON.stringify(READ_FILE)}})
     except Exception as error:
         print(f"global-rules: the kernel transcript guard did not load: {error}", file=sys.stderr)
+if not getattr(sys, "global_rules_kernel_journal", False):
+    sys.global_rules_kernel_journal = True
+    try:
+        exec(compile(open(${JSON.stringify(JOURNAL_FILE)}).read(), ${JSON.stringify(JOURNAL_FILE)}, "exec"), {"__name__": "global_rules_kernel_journal", "__file__": ${JSON.stringify(JOURNAL_FILE)}})
+    except Exception as error:
+        print(f"global-rules: the kernel write journal did not load: {error}", file=sys.stderr)
 `;
 
 /** One line, so the cell's own line numbers in a traceback move by one. */

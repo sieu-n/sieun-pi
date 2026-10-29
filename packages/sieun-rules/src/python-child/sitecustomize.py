@@ -1,4 +1,4 @@
-"""Installs the global-rules send guard (c37) and transcript guard in a Python process started from a guarded Prime kernel, then runs the next sitecustomize.
+"""Installs the global-rules send guard (c37), transcript guard and write journal in a Python process started from a guarded Prime kernel, then runs the next sitecustomize.
 
 kernel-guard.py puts this folder first on PYTHONPATH, so a helper script or a `uv run` command checks its own sends at run time.
 A run passes with OWNER_OK=<chat id>/<todo id> in its environment when that todo is the owner's approved For you todo.
@@ -25,6 +25,15 @@ if not getattr(sys, "global_rules_kernel_read", False):
             exec(compile(_handle.read(), _read, "exec"), {"__name__": "global_rules_kernel_read", "__file__": _read})
     except Exception as _error:
         print(f"global-rules: the transcript guard did not load in this Python process: {_error}", file=sys.stderr)
+
+_journal = os.path.join(os.path.dirname(_here), "kernel-journal.py")
+if not getattr(sys, "global_rules_kernel_journal", False):
+    sys.global_rules_kernel_journal = True
+    try:
+        with open(_journal, encoding="utf-8") as _handle:
+            exec(compile(_handle.read(), _journal, "exec"), {"__name__": "global_rules_kernel_journal", "__file__": _journal})
+    except Exception as _error:
+        print(f"global-rules: the write journal did not load in this Python process: {_error}", file=sys.stderr)
 
 for _entry in sys.path:
     _next = os.path.join(_entry, "sitecustomize.py")

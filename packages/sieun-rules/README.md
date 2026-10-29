@@ -16,6 +16,7 @@ auto-sns-agent is the one exception: its rules stay in that repo's `scripts/repo
 | `tool_call` (`ipython`) | `rlm-delete.ts` | In a subagent, makes `rlm.delete_subagent` wait until a child that already replied is idle. |
 | `tool_call` (`ipython`) | `kernel-guard.ts` | Also installs `kernel-own.py`, which records each path under `~/scratch` the kernel makes, on this box or on another one over ssh, in the session's `owned.json`, and refuses a recursive delete below `~/scratch` of a tree the job did not make (c130). An owner-less leftover goes through `job-leftovers.ts unowned` in `legacy/prime/user-history` instead. |
 | `tool_call` (`ipython`) | `kernel-guard.ts` | Also installs `kernel-read.py`, which refuses reads of another family's session transcripts in the kernel and the Python processes it starts. |
+| `tool_call` (`ipython`) | `kernel-guard.ts` | Also installs `kernel-journal.py`, which appends each write the kernel and the Python processes it starts make into a shared auto-sns-agent checkout to that checkout's `.cache/agent-writes` journal, and has the other box record a file a command wrote there with `scp` or `ssh`, so that repo's `commit.mjs` can refuse a commit that would take another session's bytes. |
 | `tool_call` (`read`, `grep`, `bash`) | `transcript-guard.ts` | Refuses the same transcript reads through the tools, with `kernel-read.py --judge`. |
 | `agent_end` | `aside-tabs.ts` | In a subagent, closes the Aside tabs the session opened when its turn ends, with `aside_browser.close_own_tabs()` in a detached kernel-venv python. A top-level chat keeps its tabs. `GLOBAL_RULES_ASIDE_TABS=off` turns it off. |
 | `session_start`, `tool_call` (`bash`, `ipython`) | `auto-sns-agent.ts` | Registers auto-sns-agent's repo guard (`scripts/repo/agent/guards/prime.mjs` in that checkout) for every session, and judges each git write a Python kernel starts with the kernel's real cwd. |
@@ -136,6 +137,7 @@ A call passes with `owner_ok: "<chat id>/<todo id>"` in its arguments, which the
   -> kernel-guard.ts    -> ipython cell prelude -> kernel-guard.py -> send-targets.json, node send-check.ts -> guard.ts, auto-sns-agent.ts
                             ipython cell prelude -> kernel-read.py (transcript reads), also through python-child/sitecustomize.py
                             ipython cell prelude -> kernel-cwd.py -> $RLM_SESSION_DIR/kernel-cwd.json -> kernel-cwd.ts (guard.ts, auto-sns-agent.ts)
+                            ipython cell prelude -> kernel-journal.py -> <checkout>/.cache/agent-writes (auto-sns-agent commit.mjs), also through python-child/sitecustomize.py
                             python-child/sitecustomize.py -> kernel-guard.py (Python processes the kernel starts)
   -> transcript-guard.ts -> python3 kernel-read.py --judge (read, grep and bash tools)
   -> auto-sns-agent.ts  -> ~/Documents/Github/auto-sns-agent/scripts/repo/agent/guards/prime.mjs (that repo's rules)
@@ -156,7 +158,7 @@ The guards take the session's file and id from `ctx.sessionManager` and fall bac
 On Pi:
 
 1. The tool_call guards refuse transcript reads outside the family, sends without an approved OWNER_OK, resource caps and history rewrites in sieun-pi.
-2. The cell prelude loads `kernel-guard.py`, `kernel-read.py`, `kernel-own.py` and `kernel-cwd.py` into pi-rlm's kernel, as on Prime.
+2. The cell prelude loads `kernel-guard.py`, `kernel-read.py`, `kernel-own.py`, `kernel-cwd.py` and `kernel-journal.py` into pi-rlm's kernel, as on Prime.
 3. pi-claude-rules reads `src/kernel-cwd.ts` from here for an ipython cell's cwd, and the user-history extension registers `chat_board`, `tell_owner` and the chat and job hooks next to these guards.
 4. Pi reads `config/AGENTS.md` as `<agent dir>/AGENTS.md`, so the global rules reach the system prompt once the install links it there.
 
