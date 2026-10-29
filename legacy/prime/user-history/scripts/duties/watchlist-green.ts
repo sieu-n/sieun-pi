@@ -170,7 +170,7 @@ export const isGreen = (row: WatchRow | undefined, now: number): boolean =>
   !!row && !row.paused && (isClosed(row) || isAcceptedHidden(row) || readOk(row, now) || isYoung(row, now));
 /** Why a watch is not green, as a flag phrase. */
 function notGreen(kind: string, row: WatchRow | undefined, now: number): string {
-  if (!row) return `${kind} no monitor row`;
+  if (!row) return `${kind} no unpaused monitor row`;
   if (row.paused) return `${kind} paused`;
   if (!row.lastOutcome) return `${kind} never ran`;
   if (isHidden(row)) return `${kind} Stopped, hidden`;
@@ -516,8 +516,12 @@ const RENAMED_SQL = "case when w.platform <> 'instagram' or w.last_batch_id is n
   "or not (coalesce(w.last_stop_reason, '') = 'hidden' or coalesce(w.last_error_code, '') = 'timeline_hidden') then 'f' " +
   "when exists (select 1 from watch_target_claims c join crawl_batch_targets t on t.batch_id = c.batch_id " +
   "and t.index = any(c.op_indexes) where c.batch_id = w.last_batch_id and c.platform = w.platform and c.kind = w.kind and c.target = w.target " +
-  "and jsonb_typeof(t.retry_evidence -> 'renamed_to') = 'object') then 't' else 'f' end as renamed from watch_targets w where w.tier = 'monitor'";
-const PROD_ROWS_SQL = ROWS_SQL + RENAMED_SQL;
+  "and jsonb_typeof(t.retry_evidence -> 'renamed_to') = 'object' offset 0) then 't' else 'f' end as renamed from watch_targets w where w.tier = 'monitor'";
+/** Prod reads unpaused rows alone, through the partial index ix_watch_targets_monitor_due: prod watch_targets holds 13.0 M rows (6.0 GB) since the census
+ *  tier, and the tier filter alone seq-scans it, which ran past the 30 s statement_timeout at 09:23Z on 2026-10-29 while census and meta-ads writers held
+ *  88 backends in DataFileRead. The offset 0 above keeps the renamed check a per-row pk lookup instead of a hashed seq scan of crawl_batch_targets (1.2 GB).
+ *  The read took 3.8 to 4.6 s this way against 5.6 to 13.6 s before. Prod held 13 paused monitor rows then; a paused owner watch reads "no unpaused monitor row". */
+const PROD_ROWS_SQL = ROWS_SQL + RENAMED_SQL + " and not w.paused";
 const STAGING_ROWS_SQL = ROWS_SQL + "'f' as renamed from watch_targets w where w.tier = 'monitor'";
 /** ROWS_SQL's columns in parseRows order, to print Grafana's table rows as the lines psql prints. */
 const ROW_COLUMNS = ["platform", "kind", "target", "paused", "last_outcome", "last_run_at", "last_stop_reason", "last_error_code", "is_private", "err_streak", "due", "last_ok_at", "added_at", "renamed"];
