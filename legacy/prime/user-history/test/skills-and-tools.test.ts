@@ -334,6 +334,27 @@ test("pool_claude's sign-in fix never tells a job to turn the account off", asyn
   assert.ok(outcome.status === "fail" && outcome.fix.includes("never `pi-pool off` the account") && !/`pi-pool off <email>`/.test(outcome.fix), JSON.stringify(outcome));
 });
 
+// 10-29: Virev's admin moved its 12 seats to virev12 to virev20; virev1, 3 and 7 kept a seatless login and six more had their tokens revoked.
+test("pool_claude passes a revoked team member when its team already refuses a member for having no seat", async () => {
+  const index = JSON.stringify({ accounts: [["v1", "virev"], ["v2", "virev"], ["v3", "other"], ["v4", "virev"]].map(([id, org]) => ({ id, oauthAccount: { organizationUuid: org } })) });
+  const run = (rows: object[]) => {
+    const mac = macDeps(true, TIMED_OUT, []);
+    return poolClaude.run({ ...mac,
+      exec: async (file, args, options) => file === "pi-pool" ? { code: 0, stdout: JSON.stringify({ rows }), stderr: "", ms: 0 } : mac.exec(file, args, options),
+      readFile: async path => { if (path.endsWith("pi-pool/accounts/anthropic.json")) return index; throw new Error(`no ${path}`); } });
+  };
+  const refused = { id: "v1", email: "claude-virev1@slack.green", tier: "team 5x", reason: "cooldown 23h", cooldown_reason: "oauth not allowed for organization" };
+  const revoked = { id: "v2", email: "claude-virev2@slack.green", tier: "team 5x", reason: "needs-reauth" };
+  const elsewhere = { id: "v3", email: "claude-other@slack.green", tier: "team 5x", reason: "needs-reauth" };
+  const live = { id: "v4", email: "claude-virev13@slack.green", tier: "team 5x", usable: true };
+  const seatless = await run([refused, revoked, live]);
+  assert.ok(seatless.status === "pass" && seatless.detail.includes("claude-virev2@slack.green"), JSON.stringify(seatless));
+  const other = await run([refused, revoked, elsewhere, live]);
+  assert.ok(other.status === "fail" && other.detail.startsWith("claude-other@slack.green need") && !other.detail.startsWith("claude-virev2"), JSON.stringify(other));
+  const noRefusal = await run([revoked, live]);
+  assert.ok(noRefusal.status === "fail" && noRefusal.detail.startsWith("claude-virev2@slack.green need"), JSON.stringify(noRefusal));
+});
+
 // 10-24 05:13Z: sieunpark77's Claude refresh grant reached its fixed end, and nothing flagged it before it did.
 test("pool_claude flags a live account whose refresh grant ends within GRANT_WARN_MS, and skips a disabled one", async () => {
   const now = Date.parse("2026-10-24T00:00:00Z");

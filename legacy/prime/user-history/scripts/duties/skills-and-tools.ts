@@ -265,25 +265,49 @@ async function grantEnds(deps: Deps, ids: readonly string[]): Promise<Map<string
   }));
   return ends;
 }
+/** Anthropic's refusal of a team member with no seat: on 10-29 Virev's admin moved its 12 seats to new members, and virev1, 3 and 7 read seat_tier unassigned. */
+const NO_SEAT = "oauth not allowed for organization";
+
+/** Each Claude account's organization uuid, read from pi-pool's account index, which `pi-pool ls` leaves out. */
+async function accountOrgs(deps: Deps): Promise<Map<string, string>> {
+  const index = join((deps.env ?? process.env).PI_POOL_DIR || join(deps.home, ".config/pi-pool"), "accounts/anthropic.json");
+  const orgs = new Map<string, string>();
+  try {
+    const accounts = (JSON.parse(await deps.readFile(index)) as { accounts?: { id?: unknown; oauthAccount?: { organizationUuid?: unknown } }[] }).accounts ?? [];
+    for (const account of accounts) {
+      const org = account.oauthAccount?.organizationUuid;
+      if (typeof account.id === "string" && typeof org === "string") orgs.set(account.id, org);
+    }
+  } catch { /* no index here */ }
+  return orgs;
+}
+
 const utcMinute = (ms: number) => `${new Date(ms).toISOString().slice(5, 16).replace("T", " ")}Z`;
 
 async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise<Outcome> {
   const result = await deps.exec("pi-pool", ["ls", "--json", ...(provider === "anthropic" ? [] : ["--provider", provider])], { timeoutMs: CALL_TIMEOUT_MS });
   if (result.code !== 0) return FAIL("agent", `pi-pool ls ${failText(result)}`, "reinstall pi-pool with packages/pi-pool/install.py in sieun-pi");
-  type Row = { id?: string; email?: string; usable?: boolean; reason?: string | null; disabled?: boolean; limited_until?: number | null; cooldown_until?: number | null; windows?: { resets_at?: number | null }[] };
+  type Row = { id?: string; email?: string; tier?: string; usable?: boolean; reason?: string | null; cooldown_reason?: string | null; disabled?: boolean; limited_until?: number | null; cooldown_until?: number | null; windows?: { resets_at?: number | null }[] };
   const rows = (parseJson(result.stdout) as { rows?: Row[] }).rows ?? [];
   const live = rows.filter(row => row.disabled !== true);
+  // A team org that already refuses a member for having no seat has more members than seats, so signing in a revoked member gives it no
+  // seat either. On 10-29 the Virev admin moved seats from virev1 to virev10 to virev12 to virev20: three kept their login with no seat,
+  // and six had their tokens revoked, which pool_claude read as six sign-ins to chase while only the owner's seat choice gives them room.
+  const orgs = provider === "anthropic" ? await accountOrgs(deps) : new Map<string, string>();
+  const orgOf = (row: Row) => row.id === undefined ? undefined : orgs.get(row.id);
+  const seatless = new Set(live.filter(row => row.tier?.startsWith("team") && row.cooldown_reason === NO_SEAT).flatMap(row => orgOf(row) ?? []));
+  const noSeat = live.filter(row => row.reason === "needs-reauth" && row.tier?.startsWith("team") && seatless.has(orgOf(row) ?? ""));
   const ends = provider === "anthropic" ? await grantEnds(deps, live.flatMap(row => row.reason !== "needs-reauth" && row.id ? [row.id] : [])) : new Map<string, number>();
   const ending = live.flatMap(row => {
     const at = row.id === undefined ? undefined : ends.get(row.id);
     return at !== undefined && at - deps.now() <= GRANT_WARN_MS ? [`${row.email ?? "?"} (grant ends ${utcMinute(at)})`] : [];
   });
-  const reauth = [...live.filter(row => row.reason === "needs-reauth").map(row => row.email ?? "?"), ...ending];
+  const reauth = [...live.filter(row => row.reason === "needs-reauth" && !noSeat.includes(row)).map(row => row.email ?? "?"), ...ending];
   const usable = live.filter(row => row.usable).length;
   const nowSec = deps.now() / 1000;
   const soon = live.some(row => [row.limited_until, row.cooldown_until, ...(row.windows ?? []).map(window => window.resets_at)]
     .some(at => typeof at === "number" && at > nowSec && at - nowSec <= 86_400));
-  const counts = `${usable} of ${live.length} usable, ${rows.length - live.length} off`;
+  const counts = `${usable} of ${live.length} usable, ${rows.length - live.length} off${noSeat.length ? `, ${noSeat.length} revoked in a team with no free seat (${noSeat.map(row => row.email ?? "?").join(", ")}), which gain room only when the owner gives them a seat` : ""}`;
   if (reauth.length && reauth.every(email => email.endsWith(APPLE_RELAY))) return FAIL("owner", `${reauth.join(", ")} need a new sign-in (${counts})`,
     `the owner clicks Sign in again on the account in Settings, Accounts and signs in with Apple; Apple asks for his Apple ID password and a 2FA code on his devices, which no agent holds`);
   if (reauth.length) {
