@@ -32,7 +32,10 @@ import { AgentMessageEntry, ChatDoc, threadEnv, threadRegistry } from "./registr
 import { SPEAKING_TOOLS, type PrimeChat } from "./prime-chat.ts";
 import { PrimeRoots } from "./prime-roots.ts";
 import { jobTitle } from "./job-title.ts";
-import { rlmChildName, type DurableRlm, type RlmThread, type RootRow } from "./rlm.ts";
+import { rlmChildName, type DurableRlm, type PiRootView, type RlmThread, type RootRow } from "./rlm.ts";
+import { AGENT_REF_DOC, applyAgentRole, parseAgentRef, threadAgent } from "./agent-profile.ts";
+import { RlmChildDoc } from "./children.ts";
+import { commExtension, noteHeard, type CommHost, type CommSubmit } from "./comm.ts";
 import { deliverHarnessDigest, type PrimePromptOptions } from "./prime-prompt.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
@@ -144,6 +147,8 @@ interface OpenThread {
   digesting: Promise<void>;
   /** Each task-owned conversation's first input, its task, which its owner conversation wrote: the entry once seen, and the owner. */
   tasks: Map<number, TaskInput>;
+  /** This file's comm extension, whose hand-over task a comm thread's send to its work thread creates. */
+  comm: ReturnType<typeof commExtension>;
 }
 
 /** A child conversation's task: the input its owner wrote, which the index must not credit to the owner of the box. */
@@ -211,7 +216,6 @@ export class DurableThreads {
   /** The slot release of each conversation's last settled input, by `<thread>:<conversation>`, until it is done. */
   private readonly releasing = new Map<string, Promise<void>>();
   private readonly leases = new Leases("pi-host-durable");
-  private readonly registry = threadRegistry();
   private readonly threadsDir: string;
   private readonly idleCloseMs: number;
   private readonly now: () => number;
@@ -317,9 +321,13 @@ export class DurableThreads {
         thread: { id, file, name, get cwd() { return cwd(); }, harness: () => openHarness, boardDoc: () => this.docGet(id, "chat.board"), log: (line: string) => this.log(`${id} ${line}`) },
       };
       const prompt = this.options.prompt && { ...this.options.prompt, thread: { id, file, name, get cwd() { return cwd(); }, harness: () => openHarness }, log: (line: string) => this.log(`${id} ${line}`) };
+      const comm = commExtension(this.commHost(id));
       const harness = await Harness.open(storage, {
         models: this.options.models(id),
-        registry: prompt || chat || this.options.rlm ? threadRegistry(prompt, chat, { thread: { id, file }, ...(this.options.rlm ? { rlm: this.options.rlm.extension(this.rlmThread(id, file, name, cwd, () => openHarness)) } : {}) }) : this.registry,
+        registry: threadRegistry(prompt, chat, {
+          thread: { id, file }, comm: comm.extension,
+          ...(this.options.rlm ? { rlm: this.options.rlm.extension(this.rlmThread(id, file, name, cwd, () => openHarness)) } : {}),
+        }),
         env: threadEnv(cwd),
         ...(this.options.settings === undefined ? {} : { settings: this.options.settings(id) }),
         onWake: next => {
@@ -333,7 +341,7 @@ export class DurableThreads {
       const root = await harness.root(context, init ? { agent: init.agent } : undefined);
       if (root.id !== ROOT_CONVERSATION_ID) throw new Error(`${file}: the root conversation is ${root.id}`);
       const tasks = await this.backfill(id, harness);
-      state = { id, file, harness, root, watchers: new Set(), wake, stopCommits: () => {}, ...(prompt ? { prompt } : {}), digesting: Promise.resolve(), tasks };
+      state = { id, file, harness, root, watchers: new Set(), wake, stopCommits: () => {}, ...(prompt ? { prompt } : {}), digesting: Promise.resolve(), tasks, comm };
       const opened = state;
       opened.stopCommits = harness.subscribeCommits(publication => this.onCommit(opened, publication));
       this.onWake(opened, harness.wake());
@@ -358,10 +366,11 @@ export class DurableThreads {
         return { rows: [...threads, ...prime.roots], ...(prime.missing ? { missing: prime.missing } : {}) };
       },
       submitRoot: async (root, input) => {
-        if (root.kind === "pi") return this.submit(root.id, { text: input.text, requestId: input.requestId, whenBusy: input.whenBusy, entry: input.entry });
+        if (root.kind === "pi") return this.sendRoot(id, root.id, input);
         if (!this.primeRoots) throw new Error(`Prime session ${root.id} is not reachable from here`);
         return this.primeRoots.send(root.id, input.text);
       },
+      observeRoot: (root, open) => this.observe(root, { open }),
       createSession: async input => {
         const created = await this.create({
           ...(input.name ? { name: input.name } : {}), ...(input.model ? { model: input.model } : {}), cwd: input.cwd,
@@ -371,6 +380,71 @@ export class DurableThreads {
         return { id: created.id, name: created.name, file: this.fileOf(created.id), model: `${created.provider}/${created.modelId}` };
       },
       log: line => this.log(`${id} ${line}`),
+    };
+  }
+
+  /** What a thread's comm extension reaches: the other threads' inputs, waits, answers, names and aborts. */
+  private commHost(id: string): CommHost {
+    return {
+      thread: id,
+      submit: (thread, input) => this.submit(thread, input),
+      wait: (thread, submission, waitContext) => this.wait(thread, submission, waitContext),
+      answer: async (thread, entry) => {
+        const open = await this.thread(thread);
+        return (await open.harness.commit(tx => tx.entry(entry as EntryId), context))?.model?.[0] as Message | undefined;
+      },
+      name: thread => this.index.get(thread)?.name ?? thread,
+      abort: thread => this.abort(thread),
+      closing: () => this.closing,
+    };
+  }
+
+  /**
+   * An agent message from one thread's root to another's. A comm thread's message to its agent's work thread becomes a `comm.hand` task of
+   * the comm thread, which admits it and sends the work-done notice when it settles; a message to a comm thread from its work thread is
+   * counted there, so that notice goes out only when the work thread wrote nothing back.
+   */
+  private async sendRoot(from: string, to: string, input: CommSubmit): Promise<unknown> {
+    const sender = await this.thread(from);
+    const ref = await threadAgent(sender.harness, context);
+    if (ref?.role === "comm" && ref.work === to) {
+      this.index.markActive(from, this.now());
+      const task = await sender.harness.commit(tx => tx.createTask(sender.comm.hand, { work: to, ...input }, {
+        ownership: { kind: "conversation" }, conversationId: ROOT_CONVERSATION_ID, background: true,
+      }), context);
+      this.onWake(sender, sender.harness.wake());
+      return { task };
+    }
+    const result = await this.submit(to, { text: input.text, requestId: input.requestId, whenBusy: input.whenBusy, entry: input.entry });
+    const target = await this.thread(to);
+    const targetRef = await threadAgent(target.harness, context);
+    if (targetRef?.role === "comm" && targetRef.work === from) await target.harness.commit(tx => noteHeard(tx, from), context);
+    return result;
+  }
+
+  /**
+   * A thread's root as another thread's `agent_observe` reads it: its run, model context, live rlm children and turn-queue place. It submits
+   * and writes nothing. With `open` false, a closed file gives undefined.
+   */
+  async observe(id: string, options: { open?: boolean } = {}): Promise<PiRootView | undefined> {
+    if (!options.open && !this.open.has(id)) return undefined;
+    const open = await this.thread(id);
+    const harness = open.harness;
+    const running = Boolean((await harness.snapshot(LiveDoc, ROOT_CONVERSATION_ID, context))?.run);
+    const messages = (await open.root.context(context)).messages.filter(message => message.role !== "system") as Message[];
+    const children: PiRootView["children"] = [];
+    for (const record of await this.conversations(harness)) {
+      if (record.owner?.conversationId !== ROOT_CONVERSATION_ID) continue;
+      const doc = await harness.snapshot(RlmChildDoc, record.id, context);
+      if (!doc?.id || doc.deleted) continue;
+      const live = Boolean((await harness.snapshot(LiveDoc, record.id, context))?.run);
+      if (live || doc.status === "running") children.push({ id: `${id}:${record.id}`, name: doc.name, status: "running", progressNote: doc.progressNote || null });
+    }
+    const session = (await harness.snapshot(ProviderDoc, ROOT_CONVERSATION_ID, context))?.sessionId;
+    const row = this.info(id);
+    return {
+      status: running ? "running" : row.status, running, cwd: row.cwd, messages, children,
+      ...(this.options.turns && session ? { turnQueue: this.options.turns.ticket(id, session).place } : {}),
     };
   }
 
@@ -800,12 +874,14 @@ export class DurableThreads {
     return doc?.value ?? null;
   }
 
+  /** Writes a chat.doc. An `agent.ref` in the root conversation also sets the root's tools and instructions for its role, in the same commit. */
   async docPut(id: string, name: string, value: unknown, conversation?: number): Promise<void> {
     const open = await this.thread(id);
     const target = (conversation ?? ROOT_CONVERSATION_ID) as ConversationId;
     await open.harness.commit(async tx => {
       const draft = await tx.doc(ChatDoc, target, name, null);
       draft.value = value as never;
+      if (name === AGENT_REF_DOC && target === ROOT_CONVERSATION_ID) await applyAgentRole(tx, parseAgentRef(value));
     }, context);
     for (const watcher of open.watchers) watcher.sink({ type: "doc", conversation: target, name, value });
   }

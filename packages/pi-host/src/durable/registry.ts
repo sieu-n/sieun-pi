@@ -3,7 +3,8 @@
  * preamble alone, pi-durable's coding tools in the thread's cwd, the subagent tool (which returns at once, `subagent.ts`), the
  * `send_message` tool, and, when the host loaded it, Prime's chat extension (`prime-chat.ts`: `tell_owner`, `chat_board`, `correction_add`,
  * `search_history`, `poteto_mode` and the turn wrappers) and Prime's `ipython` with its RLM runtime (`rlm.ts`), plus the chat's own
- * document and entry kinds and the child delivery task (`children.ts`). Each thread file gets its own registry, so its prompt can name its file.
+ * document and entry kinds, the child delivery task (`children.ts`), and the comm thread's hand-over task and `stop_work` (`comm.ts`).
+ * Each thread file gets its own registry, so its prompt can name its file.
  */
 import type { JsonValue } from "@earendil-works/chord";
 import { createRegistry, defineDocFamily, defineEntry, type Extension, type Registry } from "@earendil-works/pi-durable";
@@ -36,6 +37,8 @@ export interface ThreadExtras {
   thread?: { id: string; file?: string };
   /** Prime's `ipython` and its RLM runtime for this thread (`rlm.ts` `DurableRlm.extension`). */
   rlm?: Extension;
+  /** The comm thread's hand-over task and `stop_work` (`comm.ts` `commExtension`). */
+  comm?: Extension;
 }
 
 export function threadRegistry(prompt?: PrimePromptOptions, chat?: { chat: PrimeChat; thread: ChatThread }, extras: ThreadExtras = {}): Registry {
@@ -48,6 +51,7 @@ export function threadRegistry(prompt?: PrimePromptOptions, chat?: { chat: Prime
   if (chat) registry.install(primeChat(chat.chat, chat.thread));
   registry.install(ChildTasks);
   if (extras.rlm) registry.install(extras.rlm);
+  if (extras.comm) registry.install(extras.comm);
   return registry;
 }
 

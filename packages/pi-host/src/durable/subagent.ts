@@ -2,6 +2,7 @@ import type { Context } from "@earendil-works/chord";
 import { Type, type AssistantMessage } from "@earendil-works/pi-ai";
 import { AssistantEntry, configure, defineExtension, defineTool, type ConversationId, type EntryId, type Extension, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { randomBytes } from "node:crypto";
+import { dropAgentRole } from "./agent-profile.ts";
 import { agentIdOf, artifactDirOf, DeliverTask, RlmChildDoc } from "./children.ts";
 import { jobTitle } from "./job-title.ts";
 import { PrimeChatName } from "./prime-chat.ts";
@@ -50,6 +51,7 @@ export function subagentExtension(thread: { id: string; file?: string }): Extens
             }, { ownership: { kind: "conversation" }, conversationId: api.conversationId, background: true });
             const created = await tx.createConversation({ ownership: { kind: "task", taskId: task } });
             await configure(tx, created.id, { extensions: { remove: [Subagent, SendMessage, PrimeChatName] } });
+            await dropAgentRole(tx, created.id);
             Object.assign(await tx.doc(RlmChildDoc, created.id), {
               id: `sub-${randomBytes(4).toString("hex")}`, name, task: args.task, sessionDir: thread.file ? artifactDirOf(thread.file, thread.id, created.id) : "",
               createdAt: Date.now(), status: "running",

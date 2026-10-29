@@ -43,7 +43,8 @@ H-->>C: the same submission, nothing admitted twice
 | `prime-chat.ts`, `chat-app.ts` | Prime's chat extension (user-history) in a thread's root conversation: `search_history`, `chat_board`, `tell_owner`, `correction_add`, `poteto_mode` and the `[message id]` and `[not from the owner]` wrappers, with `chat_board` and `tell_owner` on apps/chat's board API; `docs/prime-pi-prompt-parity.md` lists each binding and what is skipped. |
 | `prime-prompt.ts` | A Prime chat's system prompt, built by prime-agent's own `buildSystemPrompt` from the agent dir's AGENTS.md files, skills, chat brief and corrections ledger, as pi-durable sections; `docs/prime-pi-prompt-parity.md` maps each part. |
 | `prime-harness.ts`, `vendor/prime-harness.ts` | Prime's harness digest and its updates from the global store and the thread's local one, sent as messages before the inputs they go with, with Prime's own code copied by `scripts/vendor-prime-harness.mjs`. |
-| `agent-profile.ts` | The agent a thread belongs to, read from the `agent.ref` doc of its root conversation, and what that agent's folder gives the thread: the brief as a Prime context file and the agent's harness store as the local store. |
+| `agent-profile.ts` | The agent a thread belongs to, read from the `agent.ref` doc of its root conversation, what that agent's folder gives the thread (the brief as a Prime context file and the agent's harness store as the local store), and the tools filter and instructions its role sets on the root conversation. |
+| `comm.ts` | A comm thread's link to its agent's work thread: the `comm.hand` task that hands the work thread a task and sends the work-done notice, and the `stop_work` tool. |
 | `open.ts` | `openDurableHost()` for one file and the Prime preamble extension. |
 | `@sieun-pi/pi-pool/durable` | `poolProvider()` in `packages/pi-pool/src/durable/pool-provider.ts`: a pi-ai Provider that vends each request's account through pi-pool and turns a slot wait into a stored sleep. |
 | `subagent.ts` | The `subagent` tool: the call starts a child conversation through an `rlm.deliver` task and returns at once, and the child's whole answer reaches the parent later as an input. A call from before this change still owns its child and returns its answer. `ForegroundSubagent` keeps the old tool for `openDurableHost`. |
@@ -53,7 +54,12 @@ H-->>C: the same submission, nothing admitted twice
 
 ## Threads that belong to an agent
 
-apps/chat writes an `agent.ref` chat.doc, `{agent, dir, role}`, into the root conversation of each agent's work thread (role `work`) and of each root job thread filed under an agent (role `job`), through `durable_doc_put`.
+apps/chat writes an `agent.ref` chat.doc into the root conversation of each agent thread through `durable_doc_put`, in one of three shapes.
+
+1. `{agent, dir, role: "work", comm?}` marks the agent's work thread, and `comm` names its DM comm thread once the agent is split.
+2. `{agent, dir, role: "job"}` marks a root job thread filed under the agent.
+3. `{agent, dir, role: "comm", room, work}` marks the thread that talks with the owner in room `room` (`dm_<slug>`) and hands work to the work thread `work`.
+
 A value of any other shape reads as no agent.
 Every conversation of such a thread, its root and each child conversation, differs from a plain thread in two ways.
 
@@ -61,6 +67,43 @@ Every conversation of such a thread, its root and each child conversation, diffe
 2. The local harness store is the agent's, `<dir>/harness`, in place of the thread's own `session-artifacts/<thread>[-<conversation>]/harness`. The root's digest and a child's `harness` section merge it over the global store, and every kernel of the thread gets it as `RLM_HARNESS_STATE_DIR`, so `rlm.harness.create_memory(...)` and `refine.run()` write the agent's memory, and `global_=True` still writes the global store.
 
 A thread with no ref keeps its own store, whose root conversation is `session-artifacts/<thread>/harness` for both the digest and the root's kernel, and gets no brief. A kernel reads the ref when it starts, so a ref written while a kernel runs reaches that kernel at its next start.
+
+## Comm and work threads
+
+The commit that writes an `agent.ref` also sets the root conversation's agent for the role (`applyAgentRole`), so the next request of the thread uses it.
+
+| Role | `tools` | `modelTools` | `instructions` |
+|---|---|---|---|
+| comm | `{remove: ["write", "edit", "bash", "subagent"]}` | `{add: ["stop_work"]}` | the comm role text, naming the agent, the room and the work thread |
+| work with `comm` | `{remove: ["tell_owner"]}` | unset | the work role text, naming the agent and the comm thread |
+| work without `comm`, job | unset | unset | unset |
+
+1. pi-host records each value it wrote in the root's `agent.role` document, and it changes or clears a field only while that field is unset or still holds pi-host's value, so a filter something else set stays.
+2. A repeated ref commits no change.
+3. A child conversation that `rlm.spawn` creates drops the role fields it copied from its owner (`dropAgentRole`), because a child is neither a comm nor a work thread.
+
+```mermaid
+sequenceDiagram
+participant C as comm thread
+participant H as pi-host
+participant W as work thread
+C->>H: agent_message.send(task, sibling, work id)
+H->>C: comm.hand task, background
+C->>W: admit the task (request id agentmsg:<id>)
+W-->>C: optional report with agent_message.send
+W->>H: the input settles
+H->>C: [work-done: no-reply agent:<work name>] unless W reported
+```
+
+1. A comm thread's `agent_message.send` to its agent's work thread commits a background `comm.hand` task in the comm thread's root, which admits the task to the work thread and waits for that input to settle.
+2. A work thread's agent message to its comm thread is counted in the comm root's `comm.heard` document, and the hand-over compares that count with the one it read before it admitted the task.
+3. When the input settles and the work thread sent no agent message since, the comm root gets `[work-done: no-reply agent:<work name>]` with the first 2,000 characters of the last text, or `[work-done: cancelled agent:<work name>]` for an aborted input, as an `agent.message` entry `{from: <work thread>, via: "work.done"}` with `whenBusy: "steer"` and request id `n:<work thread>:<submission>`.
+4. A failed input sends `[work-failed agent:<work name>]` with the error even after a report, as Prime's `[child-failed ...]` does.
+5. The task survives a restart: a phase cut by the shutdown reruns, and the request ids keep the task and the notice once. A call to the work thread that fails because pi-host is shutting down holds the phase until the comm file closes, so it never ends the task.
+6. `stop_work` aborts the work thread's root conversation. It is a deferred tool that only the comm role loads, and it refuses in any other thread.
+
+`agent_observe` reads another thread's root through `RlmThread.observeRoot` (`DurableThreads.observe`) without submitting anything to it: its status, `messageCount`, `firstMessage`, `latestMessage`, `recent_messages`, its live rlm children with their progress notes as `children`, and its place in pi-pool's turn queue as `turnQueue`.
+`get_agent` and `recent_messages` open a closed file to read it, and `list_agents` reads only the files already open and gives the index row for the rest.
 
 ## Socket commands
 
@@ -161,8 +204,9 @@ end
 2. `test/durable/owner-turn.test.ts` runs the real `pool/turns.py` queue in its own `PI_POOL_DIR` with one slot held and two runs queued, and checks that an agent input queues third while an owner input with `ownerTurn: true` is admitted as kind `owner` with no wait and answers, with each ticket over the socket and `durable_usage`'s four costs. `test/durable/owner-turn-settle.test.ts` slows each release by 1 s and checks that an owner input sent right after the last one settled is still admitted as kind `owner` and leaves no mark behind.
 3. `test/durable/child-turn.test.ts` runs the real `pool/turns.py` queue with a subagent whose first ask queues behind two blockers after its root's run ended, gives the child a slot, and checks that the child sends its request and the root answers its answer within 15 s.
 4. `test/durable/rlm.test.ts` runs Prime's `ipython` on a real kernel: state across turns, `rlm.spawn` at admission with the child's notice as a later input, a steer answered while a subagent child runs for 120 s, and a SIGKILL mid-cell that gives `interrupted` and then a fresh kernel.
-5. `test/durable/crash.test.ts` runs the crash cases of item 1 on one file without pi-host, with kills mid root stream, mid child stream and in a slot wait.
-6. The crash tests run on the faux provider behind the real pool wrapper and `pi-pool/test/fake-pool.mjs`, and `PI_DURABLE_REAL=1` adds a case on the real `claude-opus-5-5` through pi-pool.
+5. `test/durable/comm.test.ts` reads a running work thread from a comm thread's status turn with no change to the work conversation's entries, stops it with `stop_work`, checks the role fields, and checks that a handed task sends one work-done notice, none after a report, and one across a restart.
+6. `test/durable/crash.test.ts` runs the crash cases of item 1 on one file without pi-host, with kills mid root stream, mid child stream and in a slot wait.
+7. The crash tests run on the faux provider behind the real pool wrapper and `pi-pool/test/fake-pool.mjs`, and `PI_DURABLE_REAL=1` adds a case on the real `claude-opus-5-5` through pi-pool.
 
 ```sh
 cd packages

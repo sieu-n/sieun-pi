@@ -20,6 +20,8 @@
  * Request ids keep a restart from delivering anything twice. `rlm.list_subagents`, `rlm.collect`, `rlm.delete_subagent`,
  * `rlm.progress_note`, `rlm.find_models`, `rlm.create_session`, `agent_message.send` and `agent_observe.*` read and write that family,
  * with Prime's reach rule (pi-rlm `bus/family.ts`): the parent, siblings and direct children, and every thread's root a sibling of the others.
+ * `agent_observe` reads another pi-host thread's root through `RlmThread.observeRoot` (its run, messages, live rlm children and turn-queue
+ * place) without submitting anything to it; a listing reads only the files already open.
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
@@ -39,7 +41,7 @@ import { Kernel, KernelBusyError, relayPaths, type CellResult, type HostRequest,
 import { BUS_SKILLS, kernelPython, pythonSkillOf, RLM_SKILLS, RUNTIME_SRC, type PythonSkill } from "../../../pi-rlm/src/core/python.ts";
 import { NOTE_INTERVAL_MS } from "../../../pi-rlm/src/pi/children.ts";
 import piRlm, { baseEnv, BUSY_NO_UI, formatCell, KERNEL_RESET, noticeMessage, restoreLine, SNAPSHOT_LIMITS, STILL_RUNNING, type Notice } from "../../../pi-rlm/src/pi/index.ts";
-import { conversationHarnessDir, threadAgent } from "./agent-profile.ts";
+import { conversationHarnessDir, dropAgentRole, threadAgent } from "./agent-profile.ts";
 import { CHAT_URL_ENV, DEFAULT_CHAT_URL } from "./chat-app.ts";
 import { agentIdOf, artifactDirOf, DeliverTask, RlmChildDoc, sessionOf, textOfMessage, type RlmChild } from "./children.ts";
 import { childTitle } from "./job-title.ts";
@@ -84,9 +86,37 @@ export interface RlmThread {
   roots?: () => Promise<{ rows: RootRow[]; missing?: string }>;
   /** Admits an input to another root: a thread's root conversation, or a Prime root through the chat service's outbox. */
   submitRoot?: (root: RootRow, input: Omit<RlmSubmit, "conversation">) => Promise<unknown>;
+  /**
+   * Reads another pi-host thread's root for `agent_observe`, with nothing submitted to it. With `open` false, a closed thread file stays
+   * closed and gives undefined, so a listing never opens every file.
+   */
+  observeRoot?: (id: string, open: boolean) => Promise<PiRootView | undefined>;
   /** `rlm.create_session`: a new thread with this first input. */
   createSession?: (input: { prompt: string; name?: string; model?: ModelRef; thinking?: string; cwd: string }) => Promise<{ id: string; name: string; file: string; model: string }>;
   log?: (line: string) => void;
+}
+
+/** What `agent_observe` reads of another pi-host thread's root: its run, its model context, its live rlm children and its turn-queue place. */
+export interface PiRootView {
+  status: string;
+  running: boolean;
+  cwd: string;
+  messages: Message[];
+  children: { id: string; name: string; status: string; progressNote: string | null }[];
+  /** The root's place in pi-pool's turn queue; absent without the queue or before the root's first request. */
+  turnQueue?: unknown;
+}
+
+/** A row's message fields: the count, the first input (or a child's task) and a preview of the newest message. */
+function messageFields(messages: readonly Message[], task?: string): Record<string, unknown> {
+  const first = task ?? textOfMessage(messages.find(msg => msg.role === "user"));
+  const flat = first.replace(/^\[task from parent\]\s*/, "").trim();
+  const last = messages.length - 1;
+  return {
+    messageCount: messages.length,
+    ...(flat ? { firstMessage: flat.length > FIRST_CHARS ? `${flat.slice(0, FIRST_CHARS - 3).trimEnd()}...` : flat } : {}),
+    ...(last >= 0 ? { latestMessage: previewOf(messages[last] as never, last, LATEST_CHARS) } : {}),
+  };
 }
 
 /** Another pi-host thread's root. */
@@ -503,7 +533,7 @@ export class DurableRlm {
         return this.listAgents(slot);
       case "agent_observe.get": {
         const { known, rel, isCurrent } = await this.resolve(slot, String(payload.target ?? ""));
-        return { agent: await this.agentRow(slot.thread, known, isCurrent, rel) };
+        return { agent: await this.agentRow(slot.thread, known, isCurrent, rel, await this.rootView(slot.thread, known, true)) };
       }
       case "agent_observe.recent":
         return this.recent(slot, payload);
@@ -655,6 +685,7 @@ export class DurableRlm {
       }, { ownership: { kind: "conversation" }, conversationId: slot.conversation as ConversationId, background: true });
       const created = await tx.createConversation({ ownership: { kind: "task", taskId: task } });
       await configure(tx, created.id, { model, thinkingLevel: thinking as ModelThinkingLevel, extensions: { remove: [Subagent, SendMessage, PrimeChatName] } });
+      await dropAgentRole(tx, created.id);
       const doc = await tx.doc(RlmChildDoc, created.id);
       Object.assign(doc, { id, name, task: prompt, model: `${model.provider}/${model.modelId}`, thinking, sessionDir: artifactDirOf(slot.thread.file, slot.thread.id, created.id), createdAt: Date.now(), status: "running" });
       return created.id as number;
@@ -843,35 +874,46 @@ export class DurableRlm {
     return view.messages.filter(m => m.role !== "system") as Message[];
   }
 
-  private async agentRow(thread: RlmThread, known: Known, isCurrent: boolean, rel?: Relationship): Promise<Record<string, unknown>> {
+  /**
+   * Another pi-host root as `agent_observe` reads it, or undefined for any other member. `open` lets a closed thread file be opened to read
+   * it, which only a lookup of that one member does.
+   */
+  private async rootView(thread: RlmThread, known: Known, open: boolean): Promise<PiRootView | undefined> {
+    return known.root?.kind === "pi" && thread.observeRoot ? thread.observeRoot(known.root.id, open) : undefined;
+  }
+
+  /** One member's row; another pi-host root's is read from `view`, its listing row without one. */
+  private async agentRow(thread: RlmThread, known: Known, isCurrent: boolean, rel?: Relationship, view?: PiRootView): Promise<Record<string, unknown>> {
     const m = known.member;
     const base = {
       sessionId: m.id, sessionName: m.name, runtimeKind: m.role === "child" ? "subagent" : "top-level", isCurrent, isCompacting: false, attachedClients: 0,
       ...(m.parentId ? { parentActiveSessionId: m.parentId, parentSessionId: m.parentId } : {}),
       ...(rel ? { relationship: rel } : {}),
     };
-    // Another root's row comes from its listing; its messages are not read here (a Prime transcript lives on its own box).
+    // A Prime root's row comes from its listing; its messages are not read here (a Prime transcript lives on its own box).
     if (known.root?.kind === "prime") {
       const root = known.root;
       return { ...(root.activeId ? { activeSessionId: root.activeId } : {}), ...base, kind: "prime", host: root.box, status: root.status, isStreaming: root.status === "running", queuedCount: 0,
         isSessionActive: true };
     }
     if (known.thread !== thread.id || known.conversation === undefined) {
+      if (view) {
+        return {
+          activeSessionId: m.id, ...base, kind: "pi", cwd: view.cwd, status: view.status, activity: view.running ? "model" : "idle", isStreaming: view.running, queuedCount: 0, isSessionActive: true,
+          ...messageFields(view.messages), children: view.children, ...(view.turnQueue === undefined ? {} : { turnQueue: view.turnQueue }),
+        };
+      }
       return { ...base, kind: "pi", status: known.root?.status ?? "inactive", isStreaming: known.root?.status === "running", queuedCount: 0, isSessionActive: false };
     }
     const harness = this.harnessOf(thread);
     const running = Boolean((await harness.snapshot(LiveDoc, known.conversation as ConversationId, context))?.run);
     const messages = await this.messagesOf(thread, known.conversation);
     const doc = known.conversation === ROOT_CONVERSATION_ID ? undefined : await harness.snapshot(RlmChildDoc, known.conversation as ConversationId, context);
-    const first = doc?.task ?? textOfMessage(messages.find(msg => msg.role === "user"));
-    const flat = first.replace(/^\[task from parent\]\s*/, "").trim();
-    const last = messages.length - 1;
     return {
       activeSessionId: m.id, ...base, cwd: thread.cwd, status: running ? "running" : "idle", activity: running ? "model" : "idle", isStreaming: running,
-      messageCount: messages.length, queuedCount: 0, isSessionActive: true,
+      queuedCount: 0, isSessionActive: true,
       ...(rel === "child" && doc ? { repliedSinceTask: doc.repliedAt >= doc.createdAt && doc.repliedAt > 0 } : {}),
-      ...(flat ? { firstMessage: flat.length > FIRST_CHARS ? `${flat.slice(0, FIRST_CHARS - 3).trimEnd()}...` : flat } : {}),
-      ...(last >= 0 ? { latestMessage: previewOf(messages[last] as never, last, LATEST_CHARS) } : {}),
+      ...messageFields(messages, doc?.task),
     };
   }
 
@@ -882,7 +924,7 @@ export class DurableRlm {
     const members = family(self.member, all).filter(m => !unlisted(m.item));
     return {
       current: await this.agentRow(slot.thread, self, true),
-      agents: await Promise.all(members.map(m => this.agentRow(slot.thread, m.item, false, m.relationship))),
+      agents: await Promise.all(members.map(async m => this.agentRow(slot.thread, m.item, false, m.relationship, await this.rootView(slot.thread, m.item, false)))),
       ...(missing ? { missing } : {}),
     };
   }
@@ -912,10 +954,11 @@ export class DurableRlm {
     const limit = bounded(payload.limit, 8, 1, 50, "agent_observe limit");
     const maxChars = bounded(payload.max_chars, 800, 80, 2000, "agent_observe max_chars");
     const { known, rel, isCurrent } = await this.resolve(slot, String(payload.target ?? ""));
-    const messages = known.thread === slot.thread.id && known.conversation !== undefined ? await this.messagesOf(slot.thread, known.conversation) : [];
+    const view = await this.rootView(slot.thread, known, true);
+    const messages = known.thread === slot.thread.id && known.conversation !== undefined ? await this.messagesOf(slot.thread, known.conversation) : view?.messages ?? [];
     const start = Math.max(0, messages.length - limit);
     return {
-      agent: await this.agentRow(slot.thread, known, isCurrent, rel),
+      agent: await this.agentRow(slot.thread, known, isCurrent, rel, view),
       messages: messages.slice(start).map((m, i) => previewOf(m as never, start + i, maxChars)),
       limit, maxChars, truncated: start > 0,
     };
