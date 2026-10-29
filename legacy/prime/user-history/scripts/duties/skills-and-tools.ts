@@ -455,15 +455,17 @@ export const CHECKS: readonly Check[] = [
     const code = `import asyncio,sys; sys.path.insert(0,${JSON.stringify(join(skill, "src"))}); from websearch import run; print(asyncio.run(run('Prime Intellect', num_results=3, timeout=40)))`;
     const search = () => deps.exec(paths(deps).kernelPython, ["-c", code], { timeoutMs: 55_000 });
     // Google on the Virev crawler drops for a few minutes at a time: 4 of 9 rechecks in
-    // skills-and-tools.rechecks.jsonl (10-17 to 10-18) got the DuckDuckGo note or a 502, and each passed
-    // again minutes later. One more query before failing keeps such a drop from flagging the box alone.
+    // skills-and-tools.rechecks.jsonl (10-17 to 10-18) found it down, and each passed again
+    // minutes later. One more query before failing keeps such a drop from flagging the box alone.
+    const down = /Google is unavailable on the Virev search backend right now \((HTTP .*?)\)\. No charge was taken/;
     const first = await search();
-    const result = /NOTE: google is unavailable|Virev search error \((502|504)\)/.test(both(first)) ? await search() : first;
+    const result = down.test(both(first)) ? await search() : first;
     const text = both(result);
     if (/no Virev API key|rejected the key \((401|403)|balance is empty \(402/.test(text))
       return FAIL("owner", brief(text.split("\n").find(line => /Virev/.test(line)) ?? text, 200), "put a working Virev API key in ~/.prime/agent/auth.json (virev) or top up its balance");
+    const outage = down.exec(text);
+    if (outage) return FAIL("agent", `Google is down on the Virev search backend (${brief(outage[1]!, 160)})`, "report it to the crawler side; the key works");
     const results = /^Result \d+: /m.test(result.stdout);
-    if (results && /NOTE: google is unavailable/.test(text)) return FAIL("agent", "Google is down on the Virev search backend; results came from the DuckDuckGo fallback", "report it to the crawler side; the key works");
     if (results && result.code === 0) return PASS(brief(result.stdout.split("\n").find(line => line.startsWith("Result 1:")) ?? "", 100));
     return FAIL("agent", `no results: ${failText(result)}`, `check that api.virev.ai answers and ${paths(deps).kernelPython} imports httpx`);
   } },

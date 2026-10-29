@@ -1,12 +1,9 @@
-"""Websearch skill backed by the Virev search API (api.virev.ai)."""
+"""Websearch skill backed by the Virev Google search API (api.virev.ai)."""
 
 from __future__ import annotations
 
-import html
 import json
 import os
-import re
-import urllib.parse
 from pathlib import Path
 
 import httpx
@@ -104,7 +101,7 @@ def _error_message(body_text: str) -> str:
         return body_text[:300]
 
 
-def _friendly_http_error(status: int, body_text: str, engine: str) -> str:
+def _friendly_http_error(status: int, body_text: str) -> str:
     message = _error_message(body_text)
     if status in (401, 403):
         return (
@@ -117,96 +114,30 @@ def _friendly_http_error(status: int, body_text: str, engine: str) -> str:
             f"Virev API balance is empty ({status}): {message}\n"
             "Top up the balance at api.virev.ai to keep searching."
         )
-    if status == 429:
+    if status in (429, 502, 504):
+        # A 429 is Google refusing the crawler's exits. A 502 or 504 can also be the
+        # crawler itself being down: on 2026-10-15 a prod deploy hold stopped it from
+        # 09:16Z to 10:24Z and every call came back as 502 "Upstream error".
         return (
-            f"{engine} is rate-limiting right now ({status}): {message}\n"
-            "No charge was taken. Retry in a bit or try engine='bing'."
+            f"Google is unavailable on the Virev search backend right now (HTTP {status}: {message}). "
+            "No charge was taken."
         )
     return f"Virev search error ({status}): {message}"
-
-
-_DDG_LITE = "https://lite.duckduckgo.com/lite/"
-_DDG_HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
-_DDG_LINK = re.compile(
-    r"<a[^>]+href=\"([^\"]+)\"[^>]*class=['\"]result-link['\"][^>]*>(.*?)</a>", re.S
-)
-_DDG_SNIPPET = re.compile(r"<td[^>]*class=['\"]result-snippet['\"][^>]*>(.*?)</td>", re.S)
-
-
-def _ddg_text(fragment: str) -> str:
-    return " ".join(html.unescape(re.sub(r"<[^>]+>", "", fragment)).split())
-
-
-def _ddg_url(href: str) -> str:
-    """The target URL. The GET page wraps each link as //duckduckgo.com/l/?uddg=<url>."""
-    href = html.unescape(href)
-    if href.startswith("//"):
-        href = "https:" + href
-    parts = urllib.parse.urlsplit(href)
-    if parts.hostname and parts.hostname.endswith("duckduckgo.com"):
-        target = urllib.parse.parse_qs(parts.query).get("uddg", [""])[0]
-        return target if target.startswith(("http://", "https://")) else ""
-    return href if parts.scheme in ("http", "https") else ""
-
-
-def _parse_ddg_lite(page: str, num_results: int) -> str:
-    """Format DuckDuckGo Lite results. Each snippet is read from its own result's rows."""
-    sections: list[str] = []
-    matches = list(_DDG_LINK.finditer(page))
-    for i, match in enumerate(matches):
-        url = _ddg_url(match.group(1))
-        if not url:
-            continue
-        lines = [f"Result {len(sections) + 1}: {_ddg_text(match.group(2))}", f"URL: {url}"]
-        rows_end = matches[i + 1].start() if i + 1 < len(matches) else len(page)
-        snippet = _DDG_SNIPPET.search(page, match.end(), rows_end)
-        if snippet and _ddg_text(snippet.group(1)):
-            lines.append(_ddg_text(snippet.group(1)))
-        sections.append("\n".join(lines))
-        if len(sections) >= num_results:
-            break
-    return "\n\n---\n\n".join(sections)
-
-
-async def _ddg_lite(query: str, *, timeout: int, num_results: int) -> str:
-    """Keyless fallback: DuckDuckGo Lite, by POST and then by GET.
-
-    The POST sets no Content-Type header by hand: with one, Lite answered its 202
-    anomaly page to 6 of 6 searches from this Mac on 2026-10-18, and without one
-    it answered 200 with results to 6 of 6. The GET is the second try when the
-    POST gets the 202.
-    """
-    try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            for send in (
-                lambda: client.post(_DDG_LITE, data={"q": query}, headers=_DDG_HEADERS),
-                lambda: client.get(_DDG_LITE, params={"q": query}, headers=_DDG_HEADERS),
-            ):
-                resp = await send()
-                if resp.status_code == 200:
-                    found = _parse_ddg_lite(resp.text, num_results)
-                    if found:
-                        return found
-        return ""
-    except Exception:  # noqa: BLE001 — fallback must never raise
-        return ""
 
 
 async def run(
     query: str,
     *,
-    engine: str = "google",
     num_results: int | None = None,
     gl: str | None = None,
     language: str | None = None,
     max_output: int = 8192,
     timeout: int | None = None,
 ) -> str:
-    """Search the web via the Virev API and return formatted organic results.
+    """Search Google via the Virev API and return formatted organic results.
 
     Args:
         query: Search query (700 chars max).
-        engine: "google" or "bing" (never substituted; a blocked engine is a 429).
         num_results: Organic results to return, 1-100.
         gl: Optional 2-letter country code for localized results.
         language: Optional ISO-639-1 language code.
@@ -216,9 +147,6 @@ async def run(
     Returns:
         Formatted search results, or a setup/error explanation.
     """
-    if engine not in ("google", "bing"):
-        return f"Unknown engine '{engine}': use 'google' or 'bing'."
-
     api_key = _resolve_api_key()
     if not api_key:
         return _SETUP_MESSAGE
@@ -239,38 +167,15 @@ async def run(
     if language:
         params["language_code"] = language
 
-    async def _search(target_engine: str) -> httpx.Response:
+    try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            return await client.get(
-                f"{base_url}/v1/search/{target_engine}",
+            resp = await client.get(
+                f"{base_url}/v1/search/google",
                 params=params,
                 headers={"Authorization": f"Bearer {api_key}"},
             )
-
-    try:
-        resp = await _search(engine)
-        if engine == "google" and resp.status_code in (429, 502, 504):
-            # A 429 is Google refusing the crawler's exits. A 502 or 504 can also
-            # be the crawler itself being down: on 2026-10-15 a prod deploy hold
-            # stopped it from 09:16Z to 10:24Z and every call came back as
-            # 502 "Upstream error". The note quotes the API instead of guessing.
-            # Bing over plain HTTP serves decoy SERPs (verified 2026-08-26), so
-            # the fallback is DuckDuckGo Lite, which throttles one IP with a 202
-            # after about 10 searches in a row (measured 2026-10-15).
-            ddg = await _ddg_lite(query, timeout=timeout, num_results=num_results)
-            if ddg:
-                result = (
-                    "NOTE: google is unavailable on the Virev search backend right now "
-                    f"(HTTP {resp.status_code}: {_error_message(resp.text)}; no charge was taken). "
-                    "These are DuckDuckGo results instead:\n\n" + ddg
-                )
-            else:
-                result = (
-                    _friendly_http_error(resp.status_code, resp.text, engine)
-                    + "\nThe DuckDuckGo fallback returned no results either."
-                )
-        elif resp.status_code != 200:
-            result = _friendly_http_error(resp.status_code, resp.text, engine)
+        if resp.status_code != 200:
+            result = _friendly_http_error(resp.status_code, resp.text)
         else:
             result = _format_results(resp.json(), query)
     except Exception as e:  # noqa: BLE001 — a search tool must not raise into the agent loop

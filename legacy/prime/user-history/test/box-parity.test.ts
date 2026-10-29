@@ -92,7 +92,7 @@ test("judgeRows takes a panel fail that the probe's shared regex matches as a ma
   const mac = output("mac", { search: ["ok"] });
   const box = output("box", { search: ["panel"] });
   const fail = (detail: string) => new Map([["websearch_query", { status: "fail" as const, fixer: "agent" as const, detail, fix: "x" }]]);
-  assert.equal(judgeRows(rows, mac, box, fail("Google is down on the Virev search backend; results came from the DuckDuckGo fallback")).off.length, 0);
+  assert.equal(judgeRows(rows, mac, box, fail("Google is down on the Virev search backend (HTTP 502: Upstream error)")).off.length, 0);
   assert.deepEqual(judgeRows(rows, mac, box, fail("Virev search error (500)")).off.map(verdict => verdict.row.id), ["search"]);
 });
 
@@ -101,7 +101,7 @@ test("the pi-pool panel rows take an account that needs a new sign-in as shared,
     .filter(row => row.id === "tools-panel-check-pool-codex" || row.id === "tools-panel-check-websearch-query");
   const mac = output("mac", { "tools-panel-check-pool-codex": ["ok"], "tools-panel-check-websearch-query": ["ok"] });
   const box = output("box", { "tools-panel-check-pool-codex": ["panel"], "tools-panel-check-websearch-query": ["panel"] });
-  const fail = (codex: string, search = "Google is down on the Virev search backend; results came from the DuckDuckGo fallback") => new Map([
+  const fail = (codex: string, search = "Google is down on the Virev search backend (HTTP 502: Upstream error)") => new Map([
     ["pool_codex", { status: "fail" as const, fixer: "agent" as const, detail: codex, fix: "x" }],
     ["websearch_query", { status: "fail" as const, fixer: "agent" as const, detail: search, fix: "x" }]]);
   const off = (codex: string, search?: string) => judgeRows(rows, mac, box, fail(codex, search)).off.map(verdict => verdict.row.id).sort();

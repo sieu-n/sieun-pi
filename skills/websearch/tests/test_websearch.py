@@ -1,4 +1,5 @@
 import asyncio
+import json
 import unittest
 from unittest import mock
 
@@ -6,40 +7,32 @@ import httpx
 
 import websearch
 
-GET_PAGE = """
-<tr><td><a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.primeintellect.ai%2F&amp;rut=6a" class='result-link'>Prime Intellect - The Open Superintelligence Stack</a></td></tr>
-<tr><td class='result-snippet'><b>Prime</b> <b>Intellect</b> trains models.</td></tr>
-<tr><td><a rel="nofollow" href="//duckduckgo.com/y.js?ad_domain=example.com" class='result-link'>Sponsored</a></td></tr>
-<tr><td><a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fen.wikipedia.org%2Fwiki%2FPrime_Intellect&amp;rut=cb" class='result-link'>Prime Intellect - Wikipedia</a></td></tr>
-<tr><td><a rel="nofollow" href="https://github.com/PrimeIntellect-ai" class='result-link'>GitHub</a></td></tr>
-<tr><td class='result-snippet'>Repositories &amp; more.</td></tr>
-"""
-
-THROTTLE_PAGE = "<html><body><form id='challenge-form'>anomaly</form></body></html>"
-
-
-class ParseTests(unittest.TestCase):
-    def test_unwraps_redirect_links_skips_ads_and_keeps_each_snippet_with_its_result(self):
-        out = websearch._parse_ddg_lite(GET_PAGE, 5)
-        self.assertEqual(
-            out.split("\n\n---\n\n"),
-            [
-                "Result 1: Prime Intellect - The Open Superintelligence Stack\n"
-                "URL: https://www.primeintellect.ai/\nPrime Intellect trains models.",
-                "Result 2: Prime Intellect - Wikipedia\nURL: https://en.wikipedia.org/wiki/Prime_Intellect",
-                "Result 3: GitHub\nURL: https://github.com/PrimeIntellect-ai\nRepositories & more.",
-            ],
-        )
-
-    def test_stops_at_num_results(self):
-        self.assertEqual(websearch._parse_ddg_lite(GET_PAGE, 1).count("Result "), 1)
-
-    def test_throttle_page_has_no_results(self):
-        self.assertEqual(websearch._parse_ddg_lite(THROTTLE_PAGE, 5), "")
+GOOGLE_BODY = {
+    "data": {
+        "tasks": [
+            {
+                "result": [
+                    {
+                        "se_results_count": 1200,
+                        "items": [
+                            {
+                                "rank_absolute": 1,
+                                "title": "Prime Intellect",
+                                "url": "https://www.primeintellect.ai/",
+                                "description": "Open superintelligence stack.",
+                            }
+                        ],
+                    }
+                ]
+            }
+        ]
+    },
+    "meta": {"cost": 0.003, "balance": 12.5},
+}
 
 
-class FallbackTests(unittest.TestCase):
-    def run_with(self, handler):
+class RunTests(unittest.TestCase):
+    def run_with(self, handler, **kwargs):
         seen = []
 
         def record(request):
@@ -48,32 +41,36 @@ class FallbackTests(unittest.TestCase):
 
         real = httpx.AsyncClient
         transport = httpx.MockTransport(record)
-        with mock.patch.object(
-            websearch.httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw)
+        with (
+            mock.patch.dict(websearch.os.environ, {"VIREV_API_KEY": "kb_test", "VIREV_API_BASE": "https://api.test"}),
+            mock.patch.object(websearch.httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw)),
         ):
-            out = asyncio.run(websearch._ddg_lite("prime intellect", timeout=5, num_results=5))
+            out = asyncio.run(websearch.run("prime intellect", **kwargs))
         return out, seen
 
-    def test_post_202_falls_through_to_get(self):
-        def handler(request):
-            if request.method == "POST":
-                return httpx.Response(202, text=THROTTLE_PAGE)
-            return httpx.Response(200, text=GET_PAGE)
+    def test_searches_google_only_and_formats_results(self):
+        out, seen = self.run_with(lambda request: httpx.Response(200, json=GOOGLE_BODY), num_results=3, gl="kr", language="ko")
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0].url.path, "/v1/search/google")
+        self.assertEqual(dict(seen[0].url.params), {"q": "prime intellect", "depth": "3", "gl": "kr", "language_code": "ko"})
+        self.assertEqual(seen[0].headers["authorization"], "Bearer kb_test")
+        self.assertIn("Result 1: Prime Intellect\nURL: https://www.primeintellect.ai/", out)
+        self.assertIn("cost: 0.003 | balance left: 12.5", out)
 
-        out, seen = self.run_with(handler)
-        self.assertEqual([r.method for r in seen], ["POST", "GET"])
-        self.assertEqual(seen[1].url.params["q"], "prime intellect")
-        self.assertIn("URL: https://www.primeintellect.ai/", out)
+    def test_google_down_returns_the_api_error_and_makes_no_other_request(self):
+        for status in (429, 502, 504):
+            body = json.dumps({"error": {"message": "Upstream error"}})
+            out, seen = self.run_with(lambda request, status=status: httpx.Response(status, text=body))
+            self.assertEqual(len(seen), 1)
+            self.assertIn(
+                f"Google is unavailable on the Virev search backend right now (HTTP {status}: Upstream error). No charge was taken.",
+                out,
+            )
+            self.assertNotIn("Result ", out)
 
-    def test_post_with_results_sends_one_request(self):
-        out, seen = self.run_with(lambda request: httpx.Response(200, text=GET_PAGE))
-        self.assertEqual([r.method for r in seen], ["POST"])
-        self.assertEqual(seen[0].content, b"q=prime+intellect")
-        self.assertIn("Result 3: GitHub", out)
-
-    def test_both_throttled_is_empty(self):
-        out, _ = self.run_with(lambda request: httpx.Response(202, text=THROTTLE_PAGE))
-        self.assertEqual(out, "")
+    def test_engine_is_not_a_parameter(self):
+        with self.assertRaises(TypeError):
+            asyncio.run(websearch.run("q", engine="bing"))
 
 
 if __name__ == "__main__":
