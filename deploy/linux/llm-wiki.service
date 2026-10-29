@@ -6,6 +6,11 @@ After=network-online.target
 Type=simple
 Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=%h/Documents/Github/auto-sns-agent/apps/llm-wiki
+# Vite 8's rolldown binding allocates with mimalloc and starts its worker pools at the core count, each thread with its own
+# mimalloc heap, so the wiki needs the env auto-sns-agent scripts/dev/dev-guard.mjs gives every other dev server.
+# measured: on 2026-10-29 a fresh wiki on us-metal02 ran 140 rolldown-worker threads and held 3.8 GB of mimalloc pages for a 0.3 GB V8 heap, and 0.5 GB in all with this env.
+Environment=MIMALLOC_PURGE_DELAY=0 MIMALLOC_PAGE_FULL_RETAIN=0 MIMALLOC_ARENA_EAGER_COMMIT=0 MIMALLOC_GENERIC_COLLECT=100
+Environment=ROLLDOWN_WORKER_THREADS=2 RAYON_NUM_THREADS=2 TOKIO_WORKER_THREADS=2
 ExecStart=%h/.local/node/bin/pnpm run dev
 Restart=always
 RestartSec=10
