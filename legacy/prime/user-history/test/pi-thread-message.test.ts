@@ -76,6 +76,29 @@ test("a send to a thread's full id is one durable_submit with the agent.message 
   }
 });
 
+test("a send from a pi-host thread or one of its jobs names the thread and points the reply at the thread's root, never a Prime session", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-thread-message-"));
+  const host = await fakeHost(dir);
+  try {
+    const route: Route = { box: "us-metal02", socket: host.socket };
+    const job = `${FACTORY}:10605`;
+    await sendToThread([route], { from: { id: job, name: "agent factory's job \"vent alerts to pi thread\"" }, to: VENT, message: "the bridge is live", id: "vent-alerts-live-1" });
+    const fromJob = host.submits[0]!;
+    assert.deepEqual(fromJob.entry, { kind: "agent.message", data: { from: job, via: "agent_message" } });
+    const first = String(fromJob.text).split("\n")[0]!;
+    assert.equal(first, `[agent-message from sibling:agent factory's job "vent alerts to pi thread" (${job}, a job in the pi-host thread agent factory ${FACTORY} on us-metal02); ` +
+      `a job of another thread takes no message, so answer its thread with agent_message.send(text, receiver_role="sibling", receiver_name="${FACTORY}")]`);
+    assert.doesNotMatch(first, /Prime session/);
+
+    await sendToThread([route], { from: { id: FACTORY, name: "agent factory" }, to: VENT, message: "p145 was a test send", id: "m3" });
+    assert.equal(String(host.submits[1]!.text).split("\n")[0], `[agent-message from sibling:agent factory (${FACTORY}, a pi-host thread on us-metal02); ` +
+      `answer with agent_message.send(text, receiver_role="sibling", receiver_name="${FACTORY}")]`);
+  } finally {
+    host.server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("the alert bridge's send to a thread is one durable_submit from alert-bridge with its request id and the header", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-thread-message-"));
   const host = await fakeHost(dir);

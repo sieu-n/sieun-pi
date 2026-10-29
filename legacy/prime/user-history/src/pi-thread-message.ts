@@ -121,10 +121,26 @@ export function pickThread<T extends { thread: Thread }>(rows: readonly T[], to:
   return { error: `"${wanted}" names ${named.length} pi-host threads (${named.map(row => `${row.thread.name} ${row.thread.id} on ${row.thread.box}`).join(", ")}); send to one thread id.` };
 }
 
-/** The input text: the line that names the sender and how to answer, a blank line, then the message. */
-export function threadText(from: { id: string; name: string }, box: string, message: string): string {
-  return `${header(from.name, "sibling").slice(0, -1)} (${from.id}, a Prime session on ${box}); answer with agent_message.send(text, ` +
-    `receiver_role="sibling", receiver_name=${JSON.stringify(from.id)})]\n\n${message}`;
+/** A pi-host conversation id, `<thread>:<n>`: a job inside that thread. */
+const THREAD_JOB = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):(\d+)$/;
+
+/**
+ * The input text: the line that names the sender and how to answer, a blank line, then the message. A sender is a Prime root on `box`, a
+ * pi-host thread in `threads`, or a job `<thread>:<n>` of one. Only roots reach each other as siblings, so a reply to a thread's job goes to
+ * its thread: on 10-29 vent read "a Prime session on us-metal02" for agent factory's job 72ba1ed2-...:10605 at e10224, and that id takes no
+ * sibling message.
+ */
+export function threadText(from: { id: string; name: string }, box: string, message: string, threads: readonly Thread[] = []): string {
+  const reply = (id: string) => `agent_message.send(text, receiver_role="sibling", receiver_name=${JSON.stringify(id)})`;
+  const job = THREAD_JOB.exec(from.id);
+  const thread = threads.find(row => row.id === (job ? job[1] : from.id));
+  let where: string;
+  if (job) {
+    const named = thread?.name ? `${thread.name} ${job[1]}` : job[1];
+    where = `a job in the pi-host thread ${named} on ${thread?.box ?? box}); a job of another thread takes no message, so answer its thread with ${reply(job[1]!)}`;
+  } else if (thread) where = `a pi-host thread on ${thread.box}); answer with ${reply(from.id)}`;
+  else where = `a Prime session on ${box}); answer with ${reply(from.id)}`;
+  return `${header(from.name, "sibling").slice(0, -1)} (${from.id}, ${where}]\n\n${message}`;
 }
 
 /**
@@ -132,10 +148,12 @@ export function threadText(from: { id: string; name: string }, box: string, mess
  * repeats after pi-host did not answer lands once.
  */
 export async function sendToThread(found: readonly Route[], input: { from: { id: string; name: string }; to: string; message: string; id: string }): Promise<Record<string, unknown>> {
-  const target = pickThread(await listThreads(found), input.to);
+  const rows = await listThreads(found);
+  const target = pickThread(rows, input.to);
   if ("error" in target) throw new Error(target.error);
   const box = await ownBox();
-  const data = await submit(target.route, target.thread.id, threadText(input.from, box, input.message), `agentmsg:${input.id}`, { from: input.from.id, via: "agent_message" });
+  const text = threadText(input.from, box, input.message, rows.map(row => row.thread));
+  const data = await submit(target.route, target.thread.id, text, `agentmsg:${input.id}`, { from: input.from.id, via: "agent_message" });
   const endpoint = (id: string, name: string) => ({ activeSessionId: id, sessionId: id, sessionName: name, runtimeKind: "top-level" });
   return { id: `agentmsg_${input.id}`, source: "agent_message", target: endpoint(target.thread.id, target.thread.name), from: endpoint(input.from.id, input.from.name),
     message: input.message, deliveryStatus: data.status === "queued" ? "queued" : "delivered", deliveryMode: "steer", host: target.thread.box, piThread: true,
