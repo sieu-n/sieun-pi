@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { messageCheckPrelude } from "../src/message-limit-check.ts";
-import { pickThread, type Route, sendToThread, threadText } from "../src/pi-thread-message.ts";
+import { pickThread, type Route, sendAlert, sendToThread, threadText } from "../src/pi-thread-message.ts";
 
 const VENT = "230bbdbf-4d84-475f-95d2-63db2f90ca34";
 const FACTORY = "72ba1ed2-e04e-4284-a4da-3547edb6a3d9";
@@ -70,6 +70,23 @@ test("a send to a thread's full id is one durable_submit with the agent.message 
 
     await sendToThread([route], { from: { id: ROOT, name: "metal box owner" }, to: "vent", message: "again", id: "m2" });
     assert.equal(host.submits[1]!.thread, VENT, "an exact name names its thread");
+  } finally {
+    host.server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the alert bridge's send to a thread is one durable_submit from alert-bridge with its request id and the header", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-thread-message-"));
+  const host = await fakeHost(dir);
+  try {
+    await sendAlert([{ box: "us-metal02", socket: host.socket }], VENT, "[alert] A Grafana rule this thread owns fired.", "alert:vent-health-failure-rate-prod@1");
+    assert.equal(host.submits.length, 1);
+    const submit = host.submits[0]!;
+    assert.deepEqual([submit.thread, submit.requestId, submit.whenBusy, submit.entry], [VENT, "alert:vent-health-failure-rate-prod@1", "steer",
+      { kind: "agent.message", data: { from: "alert-bridge", via: "alert-bridge" } }]);
+    assert.equal(submit.text, "[agent-message from alert bridge]\n\n[alert] A Grafana rule this thread owns fired.");
+    await assert.rejects(sendAlert([{ box: "us-metal02", socket: host.socket }], "5a1c0d2e", "x", "alert:x@1"), /No live pi-host thread has the id 5a1c0d2e/);
   } finally {
     host.server.close();
     await rm(dir, { recursive: true, force: true });

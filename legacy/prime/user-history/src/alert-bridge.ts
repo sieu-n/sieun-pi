@@ -323,6 +323,33 @@ export function alertLine(rule: Tracked, firing: ReadonlyMap<string, FiringAlert
 export const ruleText = (line: Pick<AlertLine, "rule" | "alertname" | "startsAt" | "sets">): string =>
   `${line.rule} (${ruleIn(line.rule, line.alertname)}firing since ${minute(line.startsAt)}${line.sets > 1 ? `, ${line.sets} label sets` : ""})`;
 
+/** Each rule a triage job takes, with its summary, values and Grafana link: the rule list of a Prime triage brief and of a pi-host thread's alert message. */
+export const alertRulesText = (lines: readonly AlertLine[]): string => lines.map(line => [`- ${ruleText(line)}`, line.summary ? `  Summary: ${line.summary}` : "",
+  line.values ? `  Values: ${line.values}.` : "", line.url ? `  Grafana: ${line.url}` : ""].filter(Boolean).join("\n")).join("\n");
+
+/** How a triage job works its rules, in a Prime triage brief and in a pi-host thread's alert message. */
+export const TRIAGE_WORK = "Group the rules by cause first: several rules often fire on one fault. Find each cause from evidence: the Grafana rule and its query, the " +
+  "metrics and logs, and read-only reads on the box. Fix it at the root: a fix in our code or alert rules goes through the repo's normal land " +
+  "path, and a rule that fires on something that is not a fault gets fixed or deleted. Follow the chat's rules for any box or repo you touch, and " +
+  "send nothing outside (no email, ticket or vendor chat).";
+
+/**
+ * The agent message that gives a pi-host thread its owed fires. The thread is its own triage job: it reads the rules and starts the triage with
+ * rlm.spawn, so the agent decides the fan-out (c22). Each fire is one message.
+ */
+export const threadAlertText = (lines: readonly AlertLine[]): string => [
+  `[alert] ${lines.length === 1 ? "A Grafana rule this thread owns fired" : `${lines.length} Grafana rules this thread owns fired`}. ${OWNERS_PATH} in ` +
+    "auto-sns-agent routes the rule to this thread, and the alert bridge gives you each of its fires as one message.",
+  alertRulesText(lines),
+  TRIAGE_WORK,
+  "Start the triage with rlm.spawn, or send the fire with agent_message.send to the triage job you already run on the same cause. The bridge " +
+    `sends a rule again when it fires again after it resolved, or when it still fires ${REOPEN_MS / 3_600_000} h later. It escalates the fire to ops guy ` +
+    `when no turn of this thread ends within ${ESCALATE_MS / 60_000} min of it.`,
+].join("\n\n");
+
+/** The request id of one hand-off to a thread: the same fires give the same id, so a send repeated after a failed save lands once. */
+export const threadRequestId = (lines: readonly AlertLine[]): string => `alert:${lines.map(line => `${line.rule}@${line.firedAt}`).join(",")}`;
+
 /** The message that gives a chat's triage job the fires of its chat that came after its brief. */
 export function firedAgainText(lines: readonly AlertLine[]): string {
   const one = (line: AlertLine): string => `${ruleText(line)} fired at ${minute(line.firedAt)}${line.summary ? `. Summary: ${line.summary.replace(/\.+$/, "")}` : ""}`;
@@ -382,6 +409,19 @@ export interface AlertBridgeDeps {
   hasBoard?: (session: string) => Promise<boolean>;
   /** Starts the triage job of `chat` for its owed fires; `previous` is the chat's last triage job, which has ended. Absent, fires escalate to ops guy. */
   startJob?: (chat: string, lines: readonly AlertLine[], previous?: TriageJob) => Promise<AlertJob>;
+  /**
+   * The pi-host threads, which Prime's daemon does not know (c93). A thread that owns a rule is its own triage job: each owed fire goes to it
+   * as one agent message (`threadAlertText`), and a root turn of it that ends after the fire holds the fire, so dedupe, refire, reopen,
+   * escalation and resolve run as for a chat with a board.
+   */
+  threads?: {
+    /** The live threads by id, with their names. */
+    list: () => Promise<ReadonlyMap<string, string>>;
+    /** Submits the text to the thread as an agent message keyed by `requestId`. */
+    send: (thread: string, text: string, requestId: string) => Promise<void>;
+    /** Whether a root turn of the thread ended after `since`. */
+    turn: (thread: string, since: number) => Promise<TurnSince>;
+  };
   /** Whether a job the bridge started still works its turn. */
   jobWorking?: (job: AlertJob) => Promise<boolean>;
   /** Whether a model turn of the job ended after `since` (`readTurnSince`). Absent, every job that took a fire holds it. */
@@ -422,6 +462,8 @@ export class AlertBridge {
   private queue: Promise<unknown> = Promise.resolve();
   private firing: ReadonlyMap<string, FiringAlert> = new Map();
   private boarded: ReadonlySet<string> = new Set();
+  /** The live pi-host threads by id, with their names, from the last poll that read them. */
+  private threads: ReadonlyMap<string, string> = new Map();
   /** The chats whose hand-off runs now, with when it began. */
   private readonly handing = new Map<string, number>();
   /** Each chat's last failed hand-off, until one succeeds. */
@@ -445,9 +487,14 @@ export class AlertBridge {
       if (advanced.fired.size) this.deps.log(`alerts: fired ${[...advanced.fired].map(key => state.rules[key]!.rule).join(", ")}`);
       const boarded = new Set<string>();
       const boardless = new Set<string>();
-      for (const chat of new Set(Object.values(state.rules).filter(rule => !isResolved(rule) || waiting(state, rule, now)).map(rule => rule.chat))) {
-        (await this.deps.hasBoard?.(chat) ?? true ? boarded : boardless).add(chat);
+      const chats = new Set(Object.values(state.rules).filter(rule => !isResolved(rule) || waiting(state, rule, now)).map(rule => rule.chat));
+      if (this.deps.threads && chats.size) {
+        this.threads = await this.deps.threads.list().catch(error => {
+          this.deps.log(`alerts: pi-host threads: ${message(error)}; kept the last list`);
+          return this.threads;
+        });
       }
+      for (const chat of chats) (this.threads.has(chat) || (await this.deps.hasBoard?.(chat) ?? true) ? boarded : boardless).add(chat);
       this.firing = new Map(alerts.map(alert => [alertKey(alert), alert]));
       this.boarded = boarded;
       state = await this.reopen(state, boarded, now);
@@ -467,11 +514,11 @@ export class AlertBridge {
    * run outside `update`, so polls go on meanwhile.
    */
   async dispatch(): Promise<void> {
-    if (!this.deps.startJob) return;
+    if (!this.deps.startJob && !this.deps.threads) return;
     const snapshot = await this.update(async state => state);
     const byChat = new Map<string, string[]>();
     for (const [key, rule] of Object.entries(snapshot.rules)) {
-      if (owed(snapshot, rule) && this.boarded.has(rule.chat) && !this.handing.has(rule.chat)) byChat.set(rule.chat, [...byChat.get(rule.chat) ?? [], key]);
+      if (owed(snapshot, rule) && this.boarded.has(rule.chat) && !this.handing.has(rule.chat) && (this.deps.startJob || this.threads.has(rule.chat))) byChat.set(rule.chat, [...byChat.get(rule.chat) ?? [], key]);
     }
     await Promise.all([...byChat].map(([chat, keys]) => this.handOff(snapshot, chat, keys)));
   }
@@ -541,6 +588,12 @@ export class AlertBridge {
    */
   private async give(chat: string, current: TriageJob | undefined, lines: readonly AlertLine[]): Promise<TriageJob> {
     const rules = lines.map(line => line.rule).join(", ");
+    const thread = this.threads.get(chat);
+    if (thread !== undefined) {
+      await this.deps.threads!.send(chat, threadAlertText(lines), threadRequestId(lines));
+      this.deps.log(`alerts: ${chat.slice(0, 8)}: sent ${rules} to pi-host thread ${thread}`);
+      return current?.id === chat ? current : { id: chat, name: thread, chat, at: this.now() };
+    }
     const keep = async (job: TriageJob): Promise<boolean> => {
       if (await this.deps.jobWorking?.(job)) return true;
       if (!this.deps.jobTurn || this.now() - (job.ranAt ?? job.at) >= REOPEN_MS) return false;
@@ -589,10 +642,14 @@ export class AlertBridge {
     const jobs = { ...state.jobs };
     for (const [id, from] of since) {
       const job = jobs[id]!;
-      const turn: TurnSince | null = this.deps.jobTurn ? await this.deps.jobTurn(job, from).catch(() => null) : { ran: true, at: now };
+      const thread = this.threads.has(id);
+      const turn: TurnSince | null = thread ? await this.deps.threads!.turn(id, from).catch(() => null)
+        : this.deps.jobTurn ? await this.deps.jobTurn(job, from).catch(() => null) : { ran: true, at: now };
       if (!turn) continue;
       if (turn.ran) { jobs[id] = { ...job, ranAt: turn.at }; continue; }
       if (turn.error) errors.set(id, turn.error);
+      // A thread never ends while pi-host lists it, so its fires stay with it and escalate at ESCALATE_MS while no turn of it ends.
+      if (thread) { if (turn.slotAt !== undefined && now < turn.slotAt + TICK_MS) parked.add(id); continue; }
       const place = await this.deps.turnQueued?.(id).catch(() => null);
       if (place) queued.set(id, place);
       if ((turn.slotAt !== undefined && now < turn.slotAt + TICK_MS) || await this.poolHolds(id, turn.provider, now)) parked.add(id);
@@ -637,13 +694,16 @@ export class AlertBridge {
     return freeAt !== null && freeAt > now;
   }
 
-  /** Marks each rule that still fires REOPEN_MS after its job took it, and whose job has ended, as fired now, so `dispatch` starts a new job. */
+  /**
+ * Marks each rule that still fires REOPEN_MS after its job took it, and whose job has ended, as fired now, so `dispatch` starts a new job. A
+ * pi-host thread never ends, so its rule goes to it again.
+ */
   private async reopen(state: BridgeState, boarded: ReadonlySet<string>, now: number): Promise<BridgeState> {
     const due = dueReopens(state, now).filter(key => boarded.has(state.rules[key]!.chat));
     if (!due.length) return state;
     const rules = { ...state.rules };
     for (const key of due) {
-      if (await (this.deps.jobWorking?.(rules[key]!.job!) ?? Promise.resolve(false)).catch(() => true)) continue;
+      if (!this.threads.has(rules[key]!.job!.id) && await (this.deps.jobWorking?.(rules[key]!.job!) ?? Promise.resolve(false)).catch(() => true)) continue;
       rules[key] = { ...rules[key]!, wokeAt: now };
       this.deps.log(`alerts: ${rules[key]!.rule} still fires ${REOPEN_MS / 3_600_000} h after job ${rules[key]!.job!.name} took it, and that job ended`);
     }
@@ -684,7 +744,7 @@ export class AlertBridge {
         const replaced = old ? { replaced: old.name, ...oldError ? { error: oldError } : {} } : {};
         const start = job ? {} : this.handing.has(rule.chat) ? { waitingSince: this.handing.get(rule.chat)! }
           : this.startErrors.has(rule.chat) ? { startError: this.startErrors.get(rule.chat)! } : {};
-        return { ...alertLine(rule, this.firing), chat: chatName(rule.chat), ...job ? { job: job.name } : {}, ...error ? { error } : {}, ...place ? { queued: place } : {}, ...replaced, ...old ? {} : start };
+        return { ...alertLine(rule, this.firing), chat: this.threads.get(rule.chat) ?? chatName(rule.chat), ...job ? { job: job.name } : {}, ...error ? { error } : {}, ...place ? { queued: place } : {}, ...replaced, ...old ? {} : start };
       })), OPS_ROUTE.session);
       const rules = { ...state.rules };
       for (const key of due) rules[key] = { ...rules[key]!, escalatedAt: now };

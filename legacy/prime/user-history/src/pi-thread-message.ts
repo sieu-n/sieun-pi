@@ -135,12 +135,42 @@ export async function sendToThread(found: readonly Route[], input: { from: { id:
   const target = pickThread(await listThreads(found), input.to);
   if ("error" in target) throw new Error(target.error);
   const box = await ownBox();
-  const data = await hostCall(target.route, { type: "durable_submit", thread: target.thread.id, text: threadText(input.from, box, input.message),
-    requestId: `agentmsg:${input.id}`, whenBusy: "steer", entry: { kind: "agent.message", data: { from: input.from.id, via: "agent_message" } } }) as Record<string, unknown>;
+  const data = await submit(target.route, target.thread.id, threadText(input.from, box, input.message), `agentmsg:${input.id}`, { from: input.from.id, via: "agent_message" });
   const endpoint = (id: string, name: string) => ({ activeSessionId: id, sessionId: id, sessionName: name, runtimeKind: "top-level" });
   return { id: `agentmsg_${input.id}`, source: "agent_message", target: endpoint(target.thread.id, target.thread.name), from: endpoint(input.from.id, input.from.name),
     message: input.message, deliveryStatus: data.status === "queued" ? "queued" : "delivered", deliveryMode: "steer", host: target.thread.box, piThread: true,
     requestId: data.requestId, submission: data.submission, status: data.status };
+}
+
+/** One durable_submit of an agent.message input to the thread, which steers a turn that runs. */
+async function submit(route: Route, thread: string, text: string, requestId: string, data: { from: string; via: string }): Promise<Record<string, unknown>> {
+  return await hostCall(route, { type: "durable_submit", thread, text, requestId, whenBusy: "steer", entry: { kind: "agent.message", data } }) as Record<string, unknown>;
+}
+
+/** The thread's route, by its full id. */
+async function routeOf(found: readonly Route[], thread: string): Promise<Route> {
+  const row = (await listThreads(found)).find(row => row.thread.id === thread);
+  if (!row) throw new Error(`No live pi-host thread has the id ${thread}.`);
+  return row.route;
+}
+
+/** The alert bridge's message to a thread that owns a firing rule (src/alert-bridge.ts `threadAlertText`), as an agent message from "alert-bridge". */
+export async function sendAlert(found: readonly Route[], thread: string, message: string, requestId: string): Promise<void> {
+  await submit(await routeOf(found, thread), thread, `${header("alert bridge", undefined)}\n\n${message}`, requestId, { from: "alert-bridge", via: "alert-bridge" });
+}
+
+/**
+ * The thread's newest `limit` root entries, newest first, as durable_entries gives them. A root turn that ended after the alert bridge sent a
+ * fire ends in this page, unless the thread wrote more than `limit` entries after it, which leaves newer turns in the page anyway.
+ */
+export async function threadEntries(found: readonly Route[], thread: string, limit = 50): Promise<unknown[]> {
+  const data = await hostCall(await routeOf(found, thread), { type: "durable_entries", thread, limit });
+  return isRecord(data) && Array.isArray(data.entries) ? data.entries : [];
+}
+
+/** The live threads by id, with their names, from every route that answers. */
+export async function threadNames(found: readonly Route[]): Promise<Map<string, string>> {
+  return new Map((await listThreads(found)).map(row => [row.thread.id, row.thread.name]));
 }
 
 /** `node pi-thread-message.ts siblings|send` with {} or {from: {id, name}, to, message, id} on stdin prints the answer or {error}. */

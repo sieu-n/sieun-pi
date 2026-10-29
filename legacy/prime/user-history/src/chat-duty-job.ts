@@ -1,5 +1,5 @@
 import { replaceableLine } from "./agent-outbox.ts";
-import { type AlertJob, type AlertLine, ruleText } from "./alert-bridge.ts";
+import { type AlertJob, type AlertLine, alertRulesText, TRIAGE_WORK } from "./alert-bridge.ts";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { clockTime, localTime } from "./checkin-settings.ts";
@@ -191,21 +191,16 @@ export const ALERT_OWNER_WORDS = "One place to monitor and debug everything, and
  */
 export function alertJobBrief(chat: DutyChat, job: string, at: number, lines: readonly AlertLine[], previous?: AlertJob & { at: number }): string {
   const agentDir = dirname(dirname(dirname(chat.board)));
-  const rule = (line: AlertLine): string => [`- ${ruleText(line)}`, line.summary ? `  Summary: ${line.summary}` : "", line.values ? `  Values: ${line.values}.` : "",
-    line.url ? `  Grafana: ${line.url}` : ""].filter(Boolean).join("\n");
   return [
     `# ${job}: the firing alerts of the chat "${chat.name}"`,
     `Owner's words (verbatim):\n\n> ${ALERT_OWNER_WORDS}`,
     `You are the job "${job}" of the chat "${chat.name}" (session ${chat.id}), started ${localTime(at)} by the alert bridge, and its conversation is ` +
       `${join(agentDir, "sessions", `${chat.id}.jsonl`)}. You are this chat's one triage job: the bridge gave you ${lines.length === 1 ? "this Grafana rule" : `these ${lines.length} Grafana rules`}, ` +
       "and every rule of the chat that fires while you work comes to you by message.",
-    lines.map(rule).join("\n"),
+    alertRulesText(lines),
     previous ? `The chat's last triage job was "${previous.name}" (session ${previous.id}), started ${localTime(previous.at)}, and it has ended while ` +
       "these rules fire. Read its conversation first and start from what it found." : "",
-    "Group the rules by cause first: several rules often fire on one fault. Find each cause from evidence: the Grafana rule and its query, the " +
-      "metrics and logs, and read-only reads on the box. Fix it at the root: a fix in our code or alert rules goes through the repo's normal land " +
-      "path, and a rule that fires on something that is not a fault gets fixed or deleted. Follow the chat's rules for any box or repo you touch, and " +
-      "send nothing outside (no email, ticket or vendor chat). Put no step on the chat's plan: the chat's duty counts the rules that fire, and you hold them.",
+    `${TRIAGE_WORK} Put no step on the chat's plan: the chat's duty counts the rules that fire, and you hold them.`,
     "## How to act",
     [
       `Read ${join(agentDir, "skills/poteto-mode/SKILL.md")} and ${join(agentDir, "skills/unslop/SKILL.md")} first.`,

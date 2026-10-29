@@ -41,7 +41,8 @@ import { IdleUnloader, parkChanges, providerWaits, SWEEP_EVERY_MS, takesKillOrig
 import { parkedUntil, poolPark, readRowSlotPark } from "./slot-park.ts";
 import { handOff, handoffSend, handsOffRow, systemPorts } from "./detached-handoff.ts";
 import { unfinishedHandoffs } from "./orphan-services.ts";
-import { readHeldTurns, readTurnSince, writeResumePending } from "./held-turns.ts";
+import { entriesTurnSince, readHeldTurns, readTurnSince, writeResumePending } from "./held-turns.ts";
+import { routes as piHostRoutes, sendAlert, threadEntries, threadNames } from "./pi-thread-message.ts";
 import { jobLive, livePaths } from "./job-live.ts";
 import { recordUnloaded, writeReceipt } from "./unloaded.ts";
 import { quietMinutes } from "./quiet-minutes.ts";
@@ -387,6 +388,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       const name = dutyJobName(ALERT_TRIAGE_DUTY, chat.name, at);
       return await dutyJobs.start(chat, name, alertJobBrief(chat, name, at, lines, previous), at);
     },
+    threads: { list: async () => threadNames(await piHostRoutes()), send: async (thread, text, requestId) => sendAlert(await piHostRoutes(), thread, text, requestId),
+      turn: async (thread, since) => entriesTurnSince(await threadEntries(await piHostRoutes(), thread), since) },
     jobWorking: job => dutyJobs.working(job),
     jobTurn: async (job, since) => {
       const file = await sessionFileFor(job.id, { listed: async id => (await catalog.summary(id))?.sessionFile, dataDir, agentDir }) ?? await sessionFileOf(job.id, agentDir);

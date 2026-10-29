@@ -198,6 +198,17 @@ export function turnSince(text: string, since: number): TurnSince {
   return { ran: false, error, ...slots.length ? { slotAt: Math.max(...slots) } : {}, ...provider ? { provider } : {} };
 }
 
+/**
+ * `turnSince` over a pi-host thread's root entries (durable_entries), whose model messages carry a millisecond timestamp, so a failed call
+ * reads as it does in a Prime transcript.
+ */
+export function entriesTurnSince(entries: readonly unknown[], since: number): TurnSince {
+  const messages = entries.flatMap(entry => typeof entry === "object" && entry !== null && Array.isArray((entry as { model?: unknown }).model) ? (entry as { model: unknown[] }).model : [])
+    .filter((message): message is { timestamp: number } => typeof message === "object" && message !== null && typeof (message as { timestamp?: unknown }).timestamp === "number")
+    .sort((a, b) => a.timestamp - b.timestamp);
+  return turnSince(messages.map(message => JSON.stringify({ type: "message", timestamp: new Date(message.timestamp).toISOString(), message })).join("\n"), since);
+}
+
 /** `turnSince` over the transcript at `file`; a missing file has no turn. */
 export async function readTurnSince(file: string, since: number): Promise<TurnSince> {
   return turnSince(await readFile(file, "utf8").catch(() => ""), since);
