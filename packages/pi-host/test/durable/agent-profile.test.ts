@@ -12,10 +12,11 @@ import { after, test } from "node:test";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, getSystemMessageText, type Message } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { getCurrentSystemPrompt } from "@earendil-works/pi-ai/utils/transcript";
-import type { EntryRecord } from "@earendil-works/pi-durable";
+import { AgentDoc, ROOT_CONVERSATION_ID, type AgentState, type EntryRecord } from "@earendil-works/pi-durable";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { PRIME_BASE_PROMPT } from "@sieun-pi/pi-family/preamble";
 import { CHAT_BRIEF } from "../../../../legacy/prime/user-history/src/chat-brief.ts";
-import { agentHarnessDir, briefFile, conversationHarnessDir, parseAgentRef } from "../../src/durable/agent-profile.ts";
+import { agentHarnessDir, AgentRoleDoc, briefFile, commInstructions, conversationHarnessDir, parseAgentRef, type AppliedRole } from "../../src/durable/agent-profile.ts";
 import { threadHarnessDir } from "../../src/durable/prime-harness.ts";
 import { primeModules, primePromptParts, primeResources } from "../../src/durable/prime-prompt.ts";
 import { DurableThreads } from "../../src/durable/threads.ts";
@@ -194,5 +195,52 @@ test("a thread with no agent.ref, or a bad one, keeps its own store and Prime's 
     }
   } finally {
     await threads.shutdown();
+  }
+});
+
+test("a role text that a release changed reaches the thread on its first open, in the instructions section alone", async () => {
+  const f = fixture("release");
+  const ref = { agent: "ag_vent", dir: f.folder, role: "comm", room: "dm_vent", work: "w-1" } as const;
+  const before = threadsOn(f, "release");
+  let id = "";
+  try {
+    id = (await before.threads.create({ name: "vent comm" })).id;
+    await before.threads.docPut(id, "agent.ref", ref);
+    const open = await before.threads.thread(id);
+    await open.harness.commit(async tx => {
+      (await tx.doc(AgentDoc, ROOT_CONVERSATION_ID) as AgentState).instructions = "the role text of an older release";
+      (await tx.doc(AgentRoleDoc, ROOT_CONVERSATION_ID) as AppliedRole).instructions = "the role text of an older release";
+    }, BACKGROUND_CONTEXT);
+    await before.ask(id, "first");
+    assert.ok(getCurrentSystemPrompt(before.roots[0]!).includes("the role text of an older release"), "the old release sent its own role text");
+  } finally {
+    await before.threads.shutdown();
+  }
+
+  const after = threadsOn(f, "release");
+  try {
+    const entries = await after.systems(id);
+    await after.ask(id, "second");
+    const prompt = getCurrentSystemPrompt(after.roots[0]!);
+    assert.ok(prompt.includes(commInstructions(ref)), "the request carries this release's role text");
+    assert.doesNotMatch(prompt, /older release/);
+    const added = (await after.systems(id)).slice(entries.length);
+    assert.deepEqual(added.map(sections => Object.keys(sections)), [["instructions"]], "only the role section changes");
+    assert.equal(added[0]!.instructions, `<instructions>\n${commInstructions(ref)}\n</instructions>`);
+    const first = (messages: Message[]) => getSystemMessageText(messages[0] as Parameters<typeof getSystemMessageText>[0]);
+    assert.equal(first(after.roots[0]!), first(before.roots[0]!), "the first system message, the cached prefix, is unchanged");
+    const open = await after.threads.thread(id);
+    assert.equal((await open.harness.snapshot(AgentRoleDoc, ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT))?.instructions, commInstructions(ref));
+  } finally {
+    await after.threads.shutdown();
+  }
+
+  const again = threadsOn(f, "release");
+  try {
+    const entries = await again.systems(id);
+    await again.ask(id, "third");
+    assert.equal((await again.systems(id)).length, entries.length, "an unchanged role sends no new system entry");
+  } finally {
+    await again.threads.shutdown();
   }
 });

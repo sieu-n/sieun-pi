@@ -341,6 +341,9 @@ export class DurableThreads {
       openHarness = harness;
       const root = await harness.root(context, init ? { agent: init.agent } : undefined);
       if (root.id !== ROOT_CONVERSATION_ID) throw new Error(`${file}: the root conversation is ${root.id}`);
+      // The role from this release's code, so a role whose tools or text changed reaches the thread on its first open after the restart.
+      const ref = await threadAgent(harness, context);
+      if (ref) await harness.commit(tx => applyAgentRole(tx, ref), context);
       const tasks = await this.backfill(id, harness);
       state = { id, file, harness, root, watchers: new Set(), wake, stopCommits: () => {}, ...(prompt ? { prompt } : {}), digesting: Promise.resolve(), tasks, comm };
       const opened = state;

@@ -8,9 +8,10 @@
  * kernel's `RLM_HARNESS_STATE_DIR` points at it, so `rlm.harness` and `refine.run()` write agent memory. A thread with no ref, or a ref of a
  * bad shape, keeps its own store and no brief.
  *
- * The ref's role also sets the root conversation's tools and instructions (`applyAgentRole`), in the commit that writes the ref: a comm
- * thread loses the coding tools that change files and gets `stop_work` (`comm.ts`), and a work thread that has a comm thread loses
- * `tell_owner`. pi-host keeps what it wrote in the `agent.role` document, so it changes or clears only a value it set itself.
+ * The ref's role also sets the root conversation's tools and instructions (`applyAgentRole`), in the commit that writes the ref and again
+ * each time pi-host opens the thread, so a release that changes a role's text reaches every thread of that role: a comm thread loses the
+ * coding tools that change files and gets `stop_work` (`comm.ts`), and a work thread that has a comm thread loses `tell_owner`. pi-host
+ * keeps what it wrote in the `agent.role` document, so it changes or clears only a value it set itself.
  */
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { AgentDoc, defineDoc, ROOT_CONVERSATION_ID, type AgentState, type ConversationId, type DocumentReader, type Tx } from "@earendil-works/pi-durable";

@@ -70,7 +70,7 @@ A thread with no ref keeps its own store, whose root conversation is `session-ar
 
 ## Comm and work threads
 
-The commit that writes an `agent.ref` also sets the root conversation's agent for the role (`applyAgentRole`), so the next request of the thread uses it.
+The commit that writes an `agent.ref` also sets the root conversation's agent for the role (`applyAgentRole`), so the next request of the thread uses it. pi-host applies the role again from its own code each time it opens a thread, so after a release that changes a role's text, every thread of that role sends the new text on its next request, and only the `instructions` section of its prompt changes. A role that did not change commits nothing.
 
 | Role | `tools` | `modelTools` | `instructions` |
 |---|---|---|---|
