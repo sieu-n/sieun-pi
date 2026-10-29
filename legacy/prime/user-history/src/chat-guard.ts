@@ -197,7 +197,7 @@ export interface TellInput { text?: unknown; why?: unknown; about?: unknown; rep
  * sent is left out), and the ids of his messages a `reply_to` may name.
  */
 export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string>; byOwner?: boolean; tells?: number; ownerText?: string; resent?: ReadonlySet<string>; done?: readonly string[]; startedAt?: number; asked?: ReadonlySet<string>; looked?: boolean;
-  others?: readonly OtherAsk[]; lastSent?: SentTell; dropped?: readonly DroppedTodo[]; plan?: readonly PlanItem[] }
+  others?: readonly OtherAsk[]; lastSent?: SentTell; dropped?: readonly DroppedTodo[]; plan?: readonly PlanItem[]; unfinished?: string }
 /**
  * A For you todo the chat added, then removed or checked itself with no answer from the owner: an ask it took back. `swappedFor` holds the
  * todos the same call added. A call in the running step has no result yet, so `swappedAfter` holds the highest todo number the chat had
@@ -313,9 +313,22 @@ const PROGRESS_MARK = "Not sent, it reports work still going";
  * before the page. measured: over the 2,714 lines sent from 10-09 to 10-23 those words match that line and no other
  * (~/work/tell-owner-noise-p942/replay.md). A fix still underway is the same: AI harness sent "the fix is underway (p932)" with the cause of the
  * Usage chart hang at 04:46Z on 10-23. measured: a replay of the 2,714 lines sent from 10-09 to 10-23 refuses that line and no other one more
- * (~/work/progress-relay-watch/replay-new.json).
+ * (~/work/progress-relay-watch/replay-new.json). One part of a result whose other parts come later is the same: on 10-29 at 19:38Z a chat sent
+ * landing version B with "Versions A and C follow when they render", 9 min before the line that said all three were ready to pick.
+ * measured: over the 1,706 lines sent from 10-19 to 10-29 the follow and step 1 words match that line and one more, sent on an owner turn
+ * that is never held (~/work/tell-owner-progress-trickle/replay.md).
  */
-const PROGRESS = /\bstill being \w+ed\b|\binterim\b|\b(?:I['’]ll|I will|we['’]ll|we will)\b[^.?!]*\b(?:after that|later|once)\b|\b(?:starts|started|begins) now\b|\bstepping up\b|\b\d+ (?:open|remaining) (?:steps|items|jobs|tasks)\b|\b(?:steps|items|jobs|tasks) (?:left|remain(?:ing)?)\b|\b(?:I['’]m|I am|we['’]re|we are) (?:putting|writing|drafting|preparing|pulling)\b[^.?!]*\b(?:page|doc|write-?up|report|together)\b|\b(?:fix|fixes|work|change|changes|rebuild|rewrite) (?:is|are) (?:now )?(?:underway|under way|in progress)\b/i;
+const PROGRESS = /\bstill being \w+ed\b|\binterim\b|\b(?:I['’]ll|I will|we['’]ll|we will)\b[^.?!]*\b(?:after that|later|once)\b|\b(?:starts|started|begins) now\b|\bstepping up\b|\b\d+ (?:open|remaining) (?:steps|items|jobs|tasks)\b|\b(?:steps|items|jobs|tasks) (?:left|remain(?:ing)?)\b|\b(?:I['’]m|I am|we['’]re|we are) (?:putting|writing|drafting|preparing|pulling)\b[^.?!]*\b(?:page|doc|write-?up|report|together)\b|\b(?:fix|fixes|work|change|changes|rebuild|rewrite) (?:is|are) (?:now )?(?:underway|under way|in progress)\b|\b(?:follow|come) (?:when|once|after|as soon as)\b|\bstep 1 (?:of \d+ )?(?:is )?(?:done|finished|complete)\b/i;
+/**
+ * Words in a job's report that say its run goes on: a part still on its first render, step 1 of several done. A tell_owner on the turn that
+ * report woke passes on one part while the rest still runs. On 10-29 api landing redesign reported variants B and A one at a time with "A and C
+ * are still on their first render" and "C is still on its first render", and the chat sent each to the owner at 19:38Z and 19:39Z, 8 min
+ * before all three were ready; vercel builds to metal reported "Step 1 is done" at 17:34Z, and the chat sent it 3 h before the result. d11
+ * labelled all three progress on a goal still going. measured: over the 489 lines sent from 10-19 to 10-29 on turns a job report woke, these
+ * words mark those 3 and no other (~/work/tell-owner-progress-trickle/replay.md).
+ */
+const JOB_GOES_ON = /\bstill on (?:its|their) first\b|\bstep 1 (?:of \d+ )?(?:is )?(?:done|finished|complete)\b|\b(?:the )?(?:rest|others|other \d* ?\w+|remaining \w+) (?:are |is )?still (?:rendering|running|building|on)\b/i;
+const JOB_REPORT = "[agent-message from child:";
 /**
  * A done that names a step (p57) on staging and says nothing of prod: the step is finished but its goal waits on prod, so the result is not in.
  * On 10-23 at 10:17Z a chat sent "Google search is upgraded on staging (p57)" while its goal p18 ("works through api.virev.ai on prod") stayed
@@ -580,8 +593,10 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
     ?? before.findLast(message => message.role === "user" || message.role === "custom")?.timestamp;
   const lastSent = typeof startedAt === "number" ? sent.findLast(tell => tell.at >= startedAt) : undefined;
   const dropped = droppedTodos(messages);
+  const unfinished = before.slice(settledAt + 1).filter((message): message is Extract<ThreadMessage, { role: "custom" }> => message.role === "custom" && message.customType === "agent_message")
+    .map(message => messageText(message)).filter(text => text.startsWith(JOB_REPORT)).map(text => JOB_GOES_ON.exec(text)?.[0]).find(Boolean);
   return { owner: unanswered || byOwner, ownerIds, byOwner, tells, ownerText, resent, done, looked, ...(typeof startedAt === "number" ? { startedAt } : {}), ...(lastSent ? { lastSent } : {}),
-    ...(dropped.length ? { dropped } : {}) };
+    ...(dropped.length ? { dropped } : {}), ...(unfinished ? { unfinished } : {}) };
 }
 
 /**
@@ -595,7 +610,8 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
  * hands him a 5180 link or a screenshot (`UI_HANDOFF`) when no tool result showed the chat an image since the turn's last owner message or
  * report is refused once the same way, so the chat opens the shots and compares them with the accepted Staging app first (c118). A decision or
  * blocker that asks what another chat's open For you todo already asks (`sameAsk`, `turn.others`) is refused once the same way, and so is
- * a text that reports work still going (`PROGRESS`), a text that takes back the chat's own ask (`WITHDRAW`), and a decision or blocker that
+ * a text that reports work still going (`PROGRESS`) or comes on a turn whose job report says the job's run goes on (`JOB_GOES_ON`),
+ * a text that takes back the chat's own ask (`WITHDRAW`), and a decision or blocker that
  * asks an ok for work no owner rule keeps for him (`NEEDLESS_OK`). So is an answer or done that comes within `SPLIT_MS` of one the turn
  * already sent (`lastSent`), a decision or blocker whose about another chat's open todo holds (`sameAbout`), that sends him to another chat's
  * list (`OTHER_LIST`) or that swaps a todo for a new one (`REPLACED`, `swappedIn`), a blocker whose only "you" promises to tell him later, a
@@ -629,6 +645,10 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now(), pa
   if (!turn.owner && (answers || declared) && !turn.resent?.has(told) && PROGRESS.test(told)) return { kind: "refused", text: `${PROGRESS_MARK} ("${PROGRESS.exec(told)![0]}"). ` +
     "Progress on work that is not finished is update, so put it on the board and tell him once the result is in, in one message. If he must " +
     "see this now as it is, send the very same text again and it goes out (c117)." };
+  if (!turn.owner && (answers || declared) && !turn.resent?.has(told) && turn.unfinished) return { kind: "refused", text: `${PROGRESS_MARK}, ` +
+    `the job report that woke this turn says its run goes on ("${turn.unfinished}"). One part of a result whose rest still runs is update, so ` +
+    "put it on the board and tell him once every part is in, in one message. If this part is what he must see now, send the very same text " +
+    "again and it goes out (c117)." };
   if (!turn.owner && input.why === "done" && declared && !turn.resent?.has(told) && stagingStep(told, input.about as string)) return { kind: "refused",
     text: `${PROGRESS_MARK}, a step on staging while its goal waits on prod. Put it in the step's note on the board and tell him once the goal ` +
       "is done, in one message. If this step finishes what he asked for, send the very same text again and it goes out (c117)." };

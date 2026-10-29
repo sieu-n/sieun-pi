@@ -345,6 +345,28 @@ test("an ask for the go of a product prod deploy is no needless ok, since he wal
     about: "prod billing fix" }, turn).kind, "sent");
 });
 
+test("on a turn the owner did not start, one part of a result whose rest still runs is refused once, and the very same text again goes out", () => {
+  // 10-29: a chat sent landing versions B (19:38Z) and A (19:39Z) one at a time while its job said the others were still on their first
+  // render, 8 min before all three were ready, and CI and RepoOps sent the job's "Step 1 is done" 3 h before the result. d11 labelled all three
+  // progress on a goal still going.
+  const variant = { text: "Landing version A, today's page cleaned up section by section, is on localhost:15175/?v=a.", why: "decision", about: "pick a landing page version" };
+  const woke = tellTurn([...settled, job("Variant A (polish) renders on ?v=a. C is still on its first render.", "19:39:00")]);
+  assert.equal(woke.unfinished, "still on its first");
+  const refused = tellOwner(variant, woke);
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /reports work still going, the job report that woke this turn says its run goes on \("still on its first"\)/);
+  const later = tellTurn([...settled, job("Variant A renders. C is still on its first render.", "19:39:00"), tell("v1", variant, "19:39:10"), result("v1", refused.text, "19:39:11")]);
+  assert.equal(tellOwner(variant, later).kind, "sent", "the very same text again goes out");
+  assert.equal(tellOwner(variant, { ...woke, owner: true }).kind, "sent", "his own turn is never held");
+  const step = tellTurn([...settled, job("Step 1 is done: all 19 projects have Vercel builds off.", "17:34:00")]);
+  assert.equal(tellOwner({ text: "Vercel builds are off on all 19 projects, and a push right after started no build.", why: "answer", about: "stop Vercel builds" }, step).kind, "refused");
+  const follows = { text: "Landing version B is ready to look at on localhost:15175/?v=b. Versions A and C follow when they render.", why: "decision", about: "pick a landing page version" };
+  const plain = tellTurn([...settled, job("Variant B renders.", "19:38:00")]);
+  assert.match(tellOwner(follows, plain).text, /reports work still going \("follow when"\)/);
+  const all = { text: "Landing version C is on localhost:15175/?v=c, so all three are ready to pick.", why: "decision", about: "pick a landing page version" };
+  assert.equal(tellOwner(all, tellTurn([...settled, job("Variant C renders, all three are done.", "19:47:00")])).kind, "sent", "the whole result goes out");
+});
+
 test("on a turn the owner did not start, an answer that says its page is still being written is refused once as progress", () => {
   // 10-22 15:44Z: AI harness sent an interim Prime under load verdict with "I'm putting the bugs and fix options on one page for our talk".
   const turn = tellTurn([...settled, job("the load review found 25 bugs", "07:00:00")]);
