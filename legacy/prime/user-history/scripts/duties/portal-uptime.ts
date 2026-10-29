@@ -13,6 +13,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * auto-sns-agent scripts/duties/crawler/crawler-pipeline.mjs does. The Convex cron "api health probe" (apps/virev-demo/convex/apiPortal/healthProbe.ts)
  * probes crawler /health, crawler /health/schema and the portal's /openapi.json every minute (every 5 min before auto-sns-agent 2e687fa79), and Prometheus scrapes the result every 60 s
  * from job api-portal-health with the label env="production" (labels checked on 2026-10-12: env, instance, job, target).
+ * The 24 h uptime and its newest failed round come from the probe rows in prod Convex instead (PROD_CONVEX below), which an outage of
+ * us-metal01, where that Prometheus runs, cannot hide.
  * It also makes one free signed-out GET of https://api.virev.ai/openapi.json as a second view that does not depend on Convex.
  * It reads the api-portal env files apps/api-portal/.env and .env.staging from GitHub at main (what prod runs) and dev/sieun (what the next
  * promote ships) and counts the key names staging has and prod lacks. Each deploy decrypts its tier's blob (scripts/repo/env/vercel-blobs.mjs),
@@ -40,21 +42,57 @@ export const UNMEASURED = 999999;
 export const UNMEASURED_PCT = -1;
 export const TARGETS = ["crawler_health", "crawler_schema", "portal_openapi"] as const;
 const SEL = 'env="production",job="api-portal-health"';
+/**
+ * The 24 h uptime and the newest failed round come from the prod Convex table apiPortalHealthProbes, which the probe cron writes and keeps
+ * 7 days, not from Prometheus. On 10-29 the docker move on us-metal01 stopped the crawler and the estate Prometheus beside it from 02:55 to
+ * 05:01Z, the Convex rows hold 127 failed rounds per crawler target, and avg_over_time(api_probe_up[24h]) still read 99.92% because it
+ * skips a gap with no scrapes. The rows live on Convex's own hosts, so an outage of us-metal01 cannot hide in them.
+ */
+export const PROD_CONVEX = "befitting-sparrow-356";
+export const PROBE_TABLE = "apiPortalHealthProbes";
+/** One probe run per minute for each target, so 24 h holds at most this many rows (apps/virev-demo/convex/crons.ts "api health probe", every minute). */
+export const ROWS_24H = 1440 * 3;
+const DAY_MS = 24 * 3_600_000;
 /** The PromQL per measure. `age` adds the time since the last scrape, so a scrape that stopped still ages the probe. */
 export const QUERIES = {
   up: `api_probe_up{${SEL}}`,
-  uptime: `avg_over_time(api_probe_up{${SEL}}[24h])`,
   age: `api_probe_age_seconds{${SEL}} + (time() - timestamp(api_probe_age_seconds{${SEL}}))`,
   p90: `quantile_over_time(0.9, api_probe_latency_ms{${SEL},target="portal_openapi"}[24h])`,
-  /** Per target, the newest minute of the last 24 h whose scrapes hold a failed probe, as a unix time in seconds; no series when none failed. */
-  lastDown: `max_over_time(timestamp(min_over_time(api_probe_up{${SEL}}[1m]) < 1)[24h:1m])`,
 } as const;
 export type QueryName = keyof typeof QUERIES;
+/** Every measure: the Prometheus queries plus the two read from the Convex probe rows. */
+export type Measure = QueryName | "uptime" | "lastDown";
+/** What each measure reads, for a flagged row that says which source gave no answer. */
+export const SOURCES: Record<Measure, string> = {
+  ...QUERIES,
+  uptime: `the ${PROBE_TABLE} rows of the last 24 h on Convex ${PROD_CONVEX} (passing rows over all rows, per target)`,
+  lastDown: `the newest failed ${PROBE_TABLE} row of the last 24 h on Convex ${PROD_CONVEX}`,
+};
 
 /** One Prometheus series from an instant query: its labels and its value. */
 export interface Series { labels: Record<string, string>; value: number }
-/** The answer to each query, or the error text when Grafana gave none. */
-export type Answers = Record<QueryName, Series[] | { error: string }>;
+/** The answer to each measure, or the error text when its source gave none. */
+export type Answers = Record<Measure, Series[] | { error: string }>;
+
+/** One apiPortalHealthProbes row, the fields the uptime needs. */
+export interface ProbeRow { target: string; ok: boolean; createdAt: number }
+
+/**
+ * Per target, the share of passing probe rows in the 24 h before `now` (uptime) and the unix second of the newest failed one (lastDown,
+ * no series when none failed). A target with no row in the window has no uptime series, so the duty flags it as missing.
+ */
+export function rowUptime(rows: readonly ProbeRow[], now: number): { uptime: Series[]; lastDown: Series[] } {
+  const uptime: Series[] = [];
+  const lastDown: Series[] = [];
+  for (const target of TARGETS) {
+    const mine = rows.filter(row => row.target === target && row.createdAt > now - DAY_MS && row.createdAt <= now);
+    if (!mine.length) continue;
+    const failed = mine.filter(row => !row.ok);
+    uptime.push({ labels: { target }, value: (mine.length - failed.length) / mine.length });
+    if (failed.length) lastDown.push({ labels: { target }, value: Math.max(...failed.map(row => row.createdAt)) / 1000 });
+  }
+  return { uptime, lastDown };
+}
 /**
  * Sources for the targets in portal-uptime.duty.json (the JSON cannot hold comments):
  * - probes_down_now <= 0 and probe_uptime_24h_pct >= 100: the Grafana rule api-portal-probe-down (auto-sns-agent apps/infra/grafana/alerts.yaml)
@@ -106,14 +144,14 @@ export const blobFingerprint = (text: string): string =>
 export function uptimeMetrics(answers: Answers, direct: { status: number; ms: number; error?: string }, at: number, env: EnvFiles = {}, live?: LiveProd): PrecheckOutput {
   const flagged: FlaggedSlice[] = [];
   let sourceErrors = 0;
-  /** The series of one query, or undefined after flagging why there are none. */
-  const read = (name: QueryName, needTargets: readonly string[]): Series[] | undefined => {
+  /** The series of one measure, or undefined after flagging why there are none. */
+  const read = (name: Measure, needTargets: readonly string[]): Series[] | undefined => {
     const answer = answers[name];
-    if ("error" in answer) { sourceErrors++; flagged.push({ at, kind: "source_error", excerpt: `Grafana gave no answer to ${QUERIES[name]}: ${answer.error}`.slice(0, 300) }); return undefined; }
+    if ("error" in answer) { sourceErrors++; flagged.push({ at, kind: "source_error", excerpt: `no answer from ${SOURCES[name]}: ${answer.error}`.slice(0, 300) }); return undefined; }
     const missing = needTargets.filter(target => !answer.some(series => series.labels.target === target));
     if (!answer.length || missing.length) {
       sourceErrors++;
-      flagged.push({ at, kind: "series_missing", excerpt: `${QUERIES[name]} has no series${missing.length ? ` for ${missing.join(", ")}` : ""}; the api-portal-health scrape or the Convex cron "api health probe" may have stopped` });
+      flagged.push({ at, kind: "series_missing", excerpt: `${SOURCES[name]} has no series${missing.length ? ` for ${missing.join(", ")}` : ""}; the api-portal-health scrape or the Convex cron "api health probe" may have stopped` });
       return undefined;
     }
     return answer;
@@ -126,11 +164,11 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
 
   const uptime = read("uptime", TARGETS);
   metrics.probe_uptime_24h_pct = uptime ? round(100 * uptime.reduce((sum, series) => sum + series.value, 0) / uptime.length, 2) : UNMEASURED_PCT;
-  for (const series of uptime ?? []) if (series.value < 1) flagged.push({ at, kind: "uptime", excerpt: `prod api probe ${series.labels.target} passed ${round(100 * series.value, 2)}% of scrapes over 24 h` });
+  for (const series of uptime ?? []) if (series.value < 1) flagged.push({ at, kind: "uptime", excerpt: `prod api probe ${series.labels.target} passed ${round(100 * series.value, 2)}% of its probe rounds over 24 h` });
   const lastEventAt: Record<string, number> = {};
   const lastDown = answers.lastDown;
   if (uptime && metrics.probe_uptime_24h_pct < 100) {
-    if ("error" in lastDown) { sourceErrors++; flagged.push({ at, kind: "source_error", excerpt: `Grafana gave no answer to ${QUERIES.lastDown}: ${lastDown.error}`.slice(0, 300) }); }
+    if ("error" in lastDown) { sourceErrors++; flagged.push({ at, kind: "source_error", excerpt: `no answer from ${SOURCES.lastDown}: ${lastDown.error}`.slice(0, 300) }); }
     else if (lastDown.length) lastEventAt.probe_uptime_24h_pct = 1000 * Math.max(...lastDown.map(series => series.value));
   }
 
@@ -235,6 +273,27 @@ async function liveProdSource(env: EnvFiles): Promise<LiveProd> {
   } catch (error) { return { error: errorText(error) }; }
 }
 
+/** The env the Convex CLI runs with: no self-hosted or deployment keys, so --deployment-name picks the cloud deployment from the Convex login. */
+const cloudEnv = (): NodeJS.ProcessEnv => {
+  const env = { ...process.env };
+  for (const key of ["CONVEX_SELF_HOSTED_URL", "CONVEX_SELF_HOSTED_ADMIN_KEY", "CONVEX_DEPLOYMENT", "CONVEX_DEPLOY_KEY"]) delete env[key];
+  return env;
+};
+
+/**
+ * The newest ROWS_24H apiPortalHealthProbes rows on prod Convex, through the auto-sns-agent Convex CLI and the Convex login in
+ * ~/.convex/config.json. It runs from the home folder, because the checkout's .env.local names the self-hosted local backend and the CLI
+ * then refuses --deployment-name. measured: 4320 rows were 967,955 bytes and 2.8 s on 10-29 from us-metal02.
+ */
+export const probeRows = () => new Promise<ProbeRow[]>((resolve, reject) => {
+  execFile(join(REPO, "node_modules/.bin/convex"), ["data", PROBE_TABLE, "--deployment-name", PROD_CONVEX, "--limit", String(ROWS_24H), "--order", "desc", "--format", "jsonLines"],
+    // measured: 967,955 bytes for 4320 rows on 10-29, so 8 MiB holds eight times that.
+    { cwd: homedir(), env: cloudEnv(), encoding: "utf8", maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) return reject(new Error(`convex data ${PROBE_TABLE}: ${String(stderr).trim().slice(-160) || error.message}`));
+      resolve(stdout.split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line) as ProbeRow));
+    });
+});
+
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("portal-uptime: OUTPUT_FILE is not set\n"); process.exit(2); }
@@ -248,6 +307,12 @@ async function main(): Promise<void> {
   } catch (error) {
     const message = errorText(error);
     answers = Object.fromEntries(names.map(name => [name, { error: message }])) as Answers;
+  }
+  try {
+    Object.assign(answers, rowUptime(await probeRows(), now));
+  } catch (error) {
+    const message = errorText(error);
+    Object.assign(answers, { uptime: { error: message }, lastDown: { error: message } });
   }
   const start = Date.now();
   const direct = await fetch(PORTAL_OPENAPI, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })

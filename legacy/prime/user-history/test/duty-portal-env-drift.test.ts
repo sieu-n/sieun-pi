@@ -2,7 +2,7 @@
 // not, so prod's batch routes ran without the secret staging used (board p9), and no duty metric counted it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { blobFingerprint, ENV_REFS, uptimeMetrics } from "../scripts/duties/portal-uptime.ts";
+import { blobFingerprint, ENV_REFS, rowUptime, uptimeMetrics } from "../scripts/duties/portal-uptime.ts";
 
 const UP = [{ labels: { target: "crawler_health" }, value: 1 }, { labels: { target: "crawler_schema" }, value: 1 }, { labels: { target: "portal_openapi" }, value: 1 }];
 const ANSWERS = { up: UP, uptime: UP, age: UP.map(series => ({ ...series, value: 60 })), p90: [{ labels: { target: "portal_openapi" }, value: 400 }], lastDown: [] };
@@ -75,4 +75,32 @@ test("the 24 h uptime gives the time of its newest failed probe minute, and a fu
 // Owner rule c119: us-metal02 moved from sieun/dev to dev/sieun on 2026-10-27 08:17Z, so the next promote's env files are read at dev/sieun.
 test("the env files are compared at main and at dev/sieun", () => {
   assert.deepEqual(ENV_REFS, ["main", "dev/sieun"]);
+});
+
+// On 10-29 the docker move on us-metal01 stopped the crawler and the estate Prometheus together from 02:55 to 05:01Z. The prod Convex
+// probe rows held 127 failed rounds per crawler target, and avg_over_time(api_probe_up[24h]) read 99.92% because it skips a gap.
+test("the 24 h uptime counts every Convex probe row, so an outage with no Prometheus scrape still lowers it (10-29 docker move)", () => {
+  const now = 1_793_251_200_000;
+  const rows = [];
+  for (let minute = 1; minute <= 1440; minute++) {
+    const createdAt = now - minute * 60_000 + 1;
+    const down = minute > 60 && minute <= 187;
+    rows.push({ target: "crawler_health", ok: !down, createdAt }, { target: "crawler_schema", ok: !down, createdAt }, { target: "portal_openapi", ok: true, createdAt });
+  }
+  rows.push({ target: "crawler_health", ok: false, createdAt: now - 86_400_000 - 1 });
+  const { uptime, lastDown } = rowUptime(rows, now);
+  assert.deepEqual(uptime.map(series => [series.labels.target, Math.round(series.value * 10_000)]), [["crawler_health", 9118], ["crawler_schema", 9118], ["portal_openapi", 10_000]]);
+  assert.deepEqual(lastDown.map(series => series.labels.target), ["crawler_health", "crawler_schema"]);
+  assert.equal(lastDown[0]!.value, (now - 61 * 60_000 + 1) / 1000);
+  const output = uptimeMetrics({ ...ANSWERS, uptime, lastDown }, DIRECT, 0);
+  assert.equal(output.metrics.probe_uptime_24h_pct, 94.12);
+  assert.equal(output.lastEventAt?.probe_uptime_24h_pct, now - 61 * 60_000 + 1);
+});
+
+test("a target with no probe row in 24 h has no uptime series, so the duty flags it missing", () => {
+  const { uptime } = rowUptime([{ target: "portal_openapi", ok: true, createdAt: 5 }], 10);
+  assert.deepEqual(uptime.map(series => series.labels.target), ["portal_openapi"]);
+  const output = uptimeMetrics({ ...ANSWERS, uptime }, DIRECT, 0);
+  assert.equal(output.metrics.probe_uptime_24h_pct, -1);
+  assert.ok(output.flagged!.some(flag => flag.kind === "series_missing" && flag.excerpt.includes("crawler_health")));
 });
