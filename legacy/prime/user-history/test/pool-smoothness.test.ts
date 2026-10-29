@@ -172,3 +172,40 @@ test("a park whose wait vends the tree's own account meanwhile is served, and a 
   const refused = readSmoothness(lines([limited(OPS, "00:59:58")]), new Set(), ...window);
   assert.deepEqual(refused.overtaken, [{ session: LATER, minutes: 0 }, { session: OPS, minutes: 5.7 }]);
 });
+
+
+// 10-28 on us-metal02: 01a18453 waited as high from 21:12:18Z for claude-virev5, its chat moved it to normal at 21:23:27Z, and 01a17edb, a high
+// tree that parked at 21:14:30Z, entered claude-virev5 at 21:24:00Z. pi-pool ranks a waiter by its priority now, so a high tree went first; d7's
+// 00:21Z run on 10-29 read 01a18453 as passed for 163.5 min because its parked lines up to then said high.
+test("a park reads the priority line its chat wrote while it waited", () => {
+  const priority = (session: string, ts: string, value: string, previous: string): string =>
+    JSON.stringify({ ts, event: "priority", session, priority: value, previous });
+  const smooth = readSmoothness([
+    parked("a", "10:00:00", "high"), parked("hi", "10:05:00", "high"), priority("a", "2026-10-21T10:09:00", "normal", "high"),
+    unparked("hi", "10:10:00"), unparked("a", "10:52:00"),
+  ], new Set(), FROM, RUN);
+  assert.deepEqual(smooth.overtaken, [{ session: "a", minutes: 0 }]);
+});
+
+// 10-28 on us-metal02: 01a11d25 parked at 21:12:02Z for claude-virev5's 21:20Z cell with vend claude5, its turn ran on claude5 and ended at
+// 21:12:12Z, and it asked nothing until 00:19:29Z, when claude5 refused it and it entered krenerd77 38 s later. d7's 00:21Z run on 10-29 read it
+// as passed for 186.1 min by 01a14210, which entered claude-virev5 at 21:14:01Z while 01a11d25 ran on claude5.
+test("a park that ran on its own account is held only from the 429 on that account", () => {
+  const wait = (session: string, clock: string, vend: string): string =>
+    JSON.stringify({ ts: `2026-10-21T${clock}`, event: "wait", provider: "anthropic", session, account: "claude5@slack.green", slot_at: "x", priority: "normal", vend, left: "depleted" });
+  const limited = (session: string, clock: string): string =>
+    JSON.stringify({ ts: `2026-10-21T${clock}`, event: "limited", provider: "anthropic", account: "claude21@slack.green", session, until: "x", next: null });
+  const idle = readSmoothness([
+    parked("a", "10:00:00"), wait("a", "10:00:00", "claude21@slack.green"),
+    parked("b", "10:02:00"), unparked("b", "10:05:00"),
+    parked("a", "10:40:00"), wait("a", "10:40:00", "claude21@slack.green"), limited("a", "10:40:00"), unparked("a", "10:41:00"),
+  ], new Set(), FROM, RUN).overtaken;
+  assert.deepEqual(idle, [{ session: "a", minutes: 0 }]);
+  // A tree that parked later and got in after the 429 still passes it.
+  const passed = readSmoothness([
+    parked("a", "10:00:00"), wait("a", "10:00:00", "claude21@slack.green"), parked("c", "10:03:00"),
+    parked("a", "10:20:00"), wait("a", "10:20:00", "claude21@slack.green"), limited("a", "10:20:00"),
+    unparked("c", "10:30:00"), unparked("a", "10:45:00"),
+  ], new Set(), FROM, RUN).overtaken;
+  assert.deepEqual(passed, [{ session: "c", minutes: 0 }, { session: "a", minutes: 15 }]);
+});
