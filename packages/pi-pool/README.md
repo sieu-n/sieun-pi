@@ -397,6 +397,11 @@ by `retry.provider.waitForUsage.maxWaitMs` and `maxAttempts`. When the tree's ow
 serves again before its slot, the hook gives no token, and the extension turns that hook
 failure into the same wait.
 
+A pi-durable thread's tree (`pi-durable:<thread id>`) never gets its refused account. Its provider retries a 429 on
+pi-durable's backoff, which asks again each minute and not at the slot, so the hook answers it exit 75 with the slot
+time, which the provider stores as a sleep until then. On 10-29 pi-durable:72ba1ed2 took a claude8 token at each ask from
+07:59Z to 10:12Z, and 136 of its requests came back 429.
+
 A slot holds one tree. A tree that ranks ahead (higher priority, or the same priority and an
 earlier wait start) may take a slot a later tree was promised; that tree finds its slot taken
 when it wakes and is given the next one. A tree that comes back after its slot's cell passed

@@ -850,11 +850,11 @@ class Cli(unittest.TestCase):
 
 
 class SwitchLog(unittest.TestCase):
-    def run_vend(self, state, accounts):
+    def run_vend(self, state, accounts, key=KEY):
         logged = []
         with contextlib.ExitStack() as stack:
             for module, name, value in ((base, "config", CFG), (registry, "load_index", accounts),
-                                        (registry, "session_key", KEY), (registry, "load_state", state),
+                                        (registry, "session_key", key), (registry, "load_state", state),
                                         (vending, "credential_for", ("fixture-token", "store")),
                                         (base, "proc_info", {"start": "s"})):
                 stack.enter_context(unittest.mock.patch.object(module, name, return_value=value))
@@ -890,6 +890,24 @@ class SwitchLog(unittest.TestCase):
         logged, out = self.run_vend(state, [acct("a", five=100), acct("b", five=100)])
         self.assertEqual(out, "fixture-token")
         self.assertEqual([e for e, _ in logged if e in ("wait", "switch")], ["wait"])
+
+    def test_a_durable_tree_that_waits_for_a_cell_gets_no_token_of_the_account_it_left(self):
+        """10-29: pi-durable:72ba1ed2 waited from 07:59Z to 10:12Z for a krenerd77 cell with room on krenerd77. Each ask took a
+        claude8 token, whose request came back 429 a minute later, since its provider waits for a slot only on exit 75."""
+        accounts = [acct("a", five=21), acct("b", five=40, limited_until=NOW + 300)]
+        for key in (KEY, tree_key("pi-durable:72ba1ed2")):
+            with self.subTest(tree=key.key):
+                state = empty_state()
+                put(state, key, on="b")
+                state["providers"][P]["admissions"] = {"a": [[NOW, "busy"]]}
+                if key is KEY:
+                    self.assertEqual(self.run_vend(state, accounts, key)[1], "fixture-token")
+                else:
+                    with self.assertRaises(base.SlotWait) as wait:
+                        self.run_vend(state, accounts, key)
+                    self.assertGreater(wait.exception.slot_at, NOW)
+                self.assertEqual(state["sessions"][key.key]["wait"][P]["account"], "a")
+                self.assertEqual(state["sessions"][key.key]["vends"][P]["account_id"], "b")
 
     def test_a_waiting_tree_with_no_refused_account_gets_no_token(self):
         state = empty_state()

@@ -640,6 +640,18 @@ def refill_left(state, tree, provider, accounts, cfg, now):
         refill(state, provider, tree.wait[0], accounts, cfg, now)
 
 
+# The root of a pi-durable thread's tree (packages/pi-host/src/durable/README.md). Its provider waits for a slot only on the
+# hook's exit 75 and retries a 429 on pi-durable's backoff, so a token for its refused account sends one more 429 a minute.
+DURABLE_TREE_PREFIX = "pi-durable:"
+
+
+def waits_by_exit(key):
+    """True for a tree whose caller waits for its slot on the hook's exit 75 alone and gets no token of its refused account
+    meanwhile. On 10-29 pi-durable:72ba1ed2 waited from 07:59Z to 10:12Z for a cell, took a claude8 token at each ask and sent
+    136 requests that came back 429, one a minute, since its provider retried each 429 after 60 s and not at its slot."""
+    return key is not None and key.key.startswith(DURABLE_TREE_PREFIX)
+
+
 # How far ahead a tree's cell has to be for its leaving to open it to another tree: own_cell lets a tree enter its cell 2 s early.
 OWN_CELL_EARLY_SEC = 2
 # The trees `refill` found in line for a cell that opened, one list per opened cell, for `flush_wakes` to wake once the pool flock is free.
@@ -717,8 +729,9 @@ def vend(provider):
 
     A tree that waits gets its own account while the provider refuses it, so the
     request comes back as a 429 that writes no cache and `pi-pool limited` hands
-    the extension the slot time. With no such account the hook exits non-zero
-    with no token, and the extension turns that failure into the same wait.
+    the extension the slot time. With no such account, or for a pi-durable tree
+    (`waits_by_exit`), the hook exits non-zero with no token, and the extension
+    or the durable provider turns that failure into the same wait.
     """
     from . import remote
     deadline = time.monotonic() + remote.TOKEN_WAIT_SEC
@@ -798,7 +811,7 @@ def vend(provider):
                   if d.reason == "cooldown" else d.reason)
         raise RuntimeError(f"pinned {provider} account {label}: {reason}")
     if isinstance(d, sched.Wait):
-        if d.vend is not None:
+        if d.vend is not None and not waits_by_exit(key):
             try:
                 token, _ = credential_for(d.vend, cfg)
             except Exception as e:
