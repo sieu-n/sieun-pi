@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { loadHosts, roleUrl } from "../../src/hosts.ts";
@@ -380,6 +380,25 @@ export async function crawlerBootCause(deps: Pick<UptimeDeps, "exec">): Promise<
   return undefined;
 }
 
+/**
+ * Why a pm2 dev app that answers 5xx fails: the newest `Error:` line of its pm2 error log, which keeps the time stamp, and for a missing
+ * module the importer's `git status --porcelain` line. On 10-29 the 20:40Z take-in 5b30292754 deleted apps/search/src/lib/org-access-claim.ts
+ * while an uncommitted edit of org-access.ts still imported it, and :5174 answered `{"message":"Internal Error"}` on every page, a body that
+ * names nothing.
+ */
+export function newestErrorLine(log: string): string | undefined {
+  return log.split("\n").findLast(line => /^\d{4}-\d\d-\d\dT[\d:]+: \w*Error: /.test(line))?.trim();
+}
+
+export async function devServerCause(deps: Pick<UptimeDeps, "read" | "exec" | "pm2">, app: string): Promise<string | undefined> {
+  const line = newestErrorLine(await deps.read(join(deps.pm2.home, "logs", `${app}-error.log`)));
+  if (!line) return undefined;
+  const importer = /imported from '([^']+)'/.exec(line)?.[1];
+  if (!importer) return line;
+  const status = (await deps.exec("git", ["-C", dirname(importer), "status", "--porcelain", "--", importer]).catch(() => "")).trimEnd();
+  return `${line}; importer ${status ? `has uncommitted work (git status '${status.slice(0, 2)}')` : "matches HEAD"}`;
+}
+
 export async function measureUptime(deps: UptimeDeps, previous: UptimeState | undefined): Promise<{ output: PrecheckOutput; state?: UptimeState }> {
   const flagged: FlaggedSlice[] = [];
   const metrics: Record<string, number> & { servers_not_answering: number; restarts: number } = { servers_not_answering: 0, restarts: 0 };
@@ -402,6 +421,11 @@ export async function measureUptime(deps: UptimeDeps, previous: UptimeState | un
   if (answers.some(answer => answer.kind === "down" && answer.excerpt.startsWith("crawler:"))) {
     const cause = await crawlerBootCause(deps).catch((error: unknown) => `container log read failed: ${error instanceof Error ? error.message : String(error)}`);
     if (cause) flagged.push({ at, kind: "crawler_boot", excerpt: `crawler: ${cause}`.slice(0, 300) });
+  }
+  for (const app of ["search", "api-portal"]) {
+    if (!answers.some(answer => answer.kind === "down" && answer.excerpt.startsWith(`${app}: GET`))) continue;
+    const cause = await devServerCause(deps, app).catch((error: unknown) => `pm2 error log read failed: ${error instanceof Error ? error.message : String(error)}`);
+    if (cause) flagged.push({ at, kind: "dev_error", excerpt: `${app}: ${cause}` });
   }
   const { metrics: macMetrics, flagged: macFlagged, ...windows } = await mac;
   Object.assign(metrics, macMetrics);
