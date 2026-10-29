@@ -54,7 +54,7 @@ classDiagram
     brief.md responsibility
     skills
     host and home dir
-    model and commModel
+    model
   }
   class Board {
     plan steps
@@ -111,7 +111,7 @@ classDiagram
 Rules that keep it simple:
 
 1. One agent has exactly one main work thread at a time. The comm threads of all its rooms delegate to it, so the owner's DM and a channel never fight over two copies of the work.
-2. A comm thread never runs coding tools that write. It may read files in the agent's home, read the agent's state, and post. Its context stays small (soft cap 40k tokens, then compaction), and it may run a cheaper model than the work thread.
+2. A comm thread never runs coding tools that write. It may read files in the agent's home, read the agent's state, and post. Its context stays small (soft cap 40k tokens, then compaction). It runs Opus 5.5 at high thinking, as every thread does (owner rule c31).
 3. A work thread never posts to a room. It writes to the board and calls `report`, and the comm thread decides whether to speak (owner rule c117: on a turn the owner did not start, the default is to say nothing).
 4. Room messages belong to the chat server. A thread holds copies of the posts it was given as inputs, and the room never reads its timeline from a thread.
 
@@ -230,7 +230,7 @@ Every invited agent hears every post, and each speaks only when it has something
 | `subagent` | as today | no | yes | yes | pi-host `durable/subagent.ts` |
 | coding tools | as today | read, ls, grep only (tools filter) | all | all | pi-durable `CodingTools` |
 
-The comm thread stays thin because its tools are few and cheap, its inputs are only its room's posts and work notices, and the system prompt tells it to answer from state and delegate anything over a minute (today's chat brief rule c52). It runs `commModel`, which defaults to Sonnet 5.5 at low thinking (see open question 1); work stays on Opus 5.5 high (c31).
+The comm thread stays thin because its tools are few and cheap, its inputs are only its room's posts and work notices, and the system prompt tells it to answer from state and delegate anything over a minute (today's chat brief rule c52). Comm, work and job threads all run Opus 5.5 at high thinking (owner rule c31).
 
 `send_message` keeps `tell_owner`'s rules from `legacy/prime/user-history/src/chat-brief.ts`: one point per message, short plain sentences (c104), no message on a turn the owner did not start unless something finished that he asked for, a decision, a blocker or an answer (c117), and `replyTo` only for a wake-up that answers an older message. The text a turn ends with is not posted; it shows in the comm thread's fold.
 
@@ -240,7 +240,7 @@ The agent folder lives on the agent's host, at `~/.pi/agent/agents/<slug>/`, nex
 
 | Path | Holds | Written by | Loaded into |
 |---|---|---|---|
-| `agent.json` | `{id, name, host, home, model, thinkingLevel, commModel, skills[], workThread, createdAt}` | the chat server, through the relay | every thread of the agent |
+| `agent.json` | `{id, name, host, home, model, thinkingLevel, skills[], workThread, createdAt}` | the chat server, through the relay | every thread of the agent |
 | `brief.md` | The responsibility, in the owner's words, with what done looks like | the owner (Agents page), the agent with a `[board]`-style note to him | `agent` section of every thread |
 | `memory/MEMORY.md` | A short index of what the agent learned. Soft cap 2,000 tokens; an overrun is flagged and still loads (c98). | work and job threads | `memory` section of every thread |
 | `memory/*.md` | Topic notes, read on demand with `memory_read` | work and job threads | no, only on demand |
@@ -331,7 +331,7 @@ The chat server dials `ws://<box>:7791/v2/agents` with the box's bearer token fr
 | Today | Becomes |
 |---|---|
 | A root thread of kind chat ("agent factory", "vent", the VPs) | An Agent `ag_<slug>`. Its thread becomes its first work thread with all its history, its cwd becomes its home, its host is us-metal02, and its first message (today's `purpose`) seeds `brief.md` for the owner to edit. |
-| A DM with that chat | Room `dm_<slug>`. The old thread's owner messages and its text answers (no tool calls) are copied in as posts with their original times, and older history sits behind "Earlier, in the work thread" (open question 2). |
+| A DM with that chat | Room `dm_<slug>`. The old thread's owner messages and its text answers (no tool calls) are copied in as posts with their original times, and older history sits behind "Earlier, in the work thread" (open question 1). |
 | A chat listed under Solo today | The same as a DM: an agent with a DM room. The Solo group starts empty and holds agenda rooms only. |
 | A job (`<thread>:<n>`) or a root job with a parent | A job of that agent. Duty threads are the agent's jobs, with kind `duty`. |
 | `chat.board` doc per chat | `agents/<id>/board.json`, copied once. Ids stay, so p12 and t4 keep working. |
@@ -402,7 +402,7 @@ Built by another subagent in `packages/pi-host/src/durable/registry.ts`, plus a 
 ### Phase 4: Comm and work split
 
 1. pi-host `durable/comm.ts` (`agent_status`, `delegate`, `steer_work`, `room_history` through the chat server) and `durable/work.ts` (`report`, `start_job`, `wake`). Work-done notices go back to the comm thread that delegated, keyed `n:<thread>:<submission>`.
-2. `server/relay/` (in the chat server for now) maps (agent, room) to a comm thread and creates it on first delivery with `role: "comm"` and the agent's `commModel`.
+2. `server/relay/` (in the chat server for now) maps (agent, room) to a comm thread and creates it on first delivery with `role: "comm"` and the agent's model, Opus 5.5 at high thinking (c31).
 3. DM deliveries go to the comm thread. The web shows the comm thread's turns in the fold and adds a "Work" pill when work is running.
 
 **Done when** asking "so what is status?" during a long work turn gets an answer within one comm turn while the work thread's entries show no new input, and a finished delegated task reaches the owner only if he asked for it.
@@ -429,8 +429,7 @@ Built by another subagent in `packages/pi-host/src/durable/registry.ts`, plus a 
 
 Each has a default, so work goes on without an answer.
 
-1. **Which model runs comm threads?** Default: Sonnet 5.5 at low thinking for comm threads and Opus 5.5 high for work (c31), changeable per agent on the Agents page.
-2. **How much DM history moves into the new rooms?** Default: the owner's messages and the agents' text answers from the last 30 days are copied in as posts, and anything older sits behind "Earlier, in the work thread".
-3. **May agents write their own memory without asking?** Default: yes. Every write is a git commit in the agent folder, the Agents page shows the history, and the owner reverts with one click.
-4. **In a Solo room, does every agent hear every post, or only when mentioned?** Default: every invited agent hears every post and speaks only when it adds something, with the 6-hop cap; a channel keeps mention-only.
-5. **May the owner talk to a work thread directly?** Default: yes, from "Open work thread", where his message goes in as a labeled steer. The DM always goes through the comm thread.
+1. **How much DM history moves into the new rooms?** Default: the owner's messages and the agents' text answers from the last 30 days are copied in as posts, and anything older sits behind "Earlier, in the work thread".
+2. **May agents write their own memory without asking?** Default: yes. Every write is a git commit in the agent folder, the Agents page shows the history, and the owner reverts with one click.
+3. **In a Solo room, does every agent hear every post, or only when mentioned?** Default: every invited agent hears every post and speaks only when it adds something, with the 6-hop cap; a channel keeps mention-only.
+4. **May the owner talk to a work thread directly?** Default: yes, from "Open work thread", where his message goes in as a labeled steer. The DM always goes through the comm thread.
