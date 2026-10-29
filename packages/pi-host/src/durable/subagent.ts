@@ -3,6 +3,7 @@ import { Type, type AssistantMessage } from "@earendil-works/pi-ai";
 import { AssistantEntry, configure, defineExtension, defineTool, type ConversationId, type EntryId, type Extension, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import { randomBytes } from "node:crypto";
 import { agentIdOf, artifactDirOf, DeliverTask, RlmChildDoc } from "./children.ts";
+import { jobTitle } from "./job-title.ts";
 import { PrimeChatName } from "./prime-chat.ts";
 import { SendMessage } from "./send-message.ts";
 
@@ -32,13 +33,16 @@ export function subagentExtension(thread: { id: string; file?: string }): Extens
       defineTool({
         name: "subagent",
         description: "Delegate a self-contained task to a subagent. The call returns at once; the subagent's answer arrives later as a new message.",
-        parameters: Type.Object({ task: Type.String({ description: "What the subagent should do" }) }),
+        parameters: Type.Object({
+          task: Type.String({ description: "What the subagent should do" }),
+          name: Type.Optional(Type.String({ description: "A short title for the subagent, a few words, shown in the owner's lists" })),
+        }),
         // A rerun after a crash would start a second child, so a cut-off call ends `interrupted`; a call from before this change kept "safe".
         replay: "unsafe",
         execute: async (args, api, context) => {
           const owned = await api.commit(async tx => (await tx.scanConversations({ ownerTaskId: api.taskId }, 1)).items[0]?.id, context);
           if (owned !== undefined) return foreground(api, owned, args.task, context);
-          const name = args.task.split("\n")[0]!.trim().slice(0, 80) || "subagent";
+          const name = args.name?.trim() || jobTitle(args.task) || "subagent";
           const child = await api.commit(async tx => {
             const task = await tx.createTask(DeliverTask, {
               parent: api.conversationId, thread: thread.id, name, content: args.task, from: agentIdOf(thread.id, api.conversationId),

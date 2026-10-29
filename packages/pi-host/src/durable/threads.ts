@@ -31,6 +31,7 @@ import { headFor, parseSession } from "./import.ts";
 import { AgentMessageEntry, ChatDoc, threadEnv, threadRegistry } from "./registry.ts";
 import { SPEAKING_TOOLS, type PrimeChat } from "./prime-chat.ts";
 import { PrimeRoots } from "./prime-roots.ts";
+import { jobTitle } from "./job-title.ts";
 import { rlmChildName, type DurableRlm, type RlmThread, type RootRow } from "./rlm.ts";
 import { deliverHarnessDigest, type PrimePromptOptions } from "./prime-prompt.ts";
 
@@ -740,7 +741,7 @@ export class DurableThreads {
       const agent = await conversation.agent(context);
       nodes.push({
         id: record.id, parent: record.owner?.conversationId ?? null, ownerTask: record.owner?.taskId ?? null,
-        name: record.id === ROOT_CONVERSATION_ID ? this.info(id).name : (await rlmChildName(open.harness, record.id, context)) ?? (described?.text ?? "").split("\n")[0]!.slice(0, 80),
+        name: record.id === ROOT_CONVERSATION_ID ? this.info(id).name : (await rlmChildName(open.harness, record.id, context)) ?? jobTitle(described?.text ?? ""),
         depth: depthOf(record.id), status: live?.run ? "running" : "idle", model: agent.model ? `${agent.model.provider}/${agent.model.modelId}` : null,
         createdAt: described?.at ?? null,
       });

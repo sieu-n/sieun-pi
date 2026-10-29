@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { after, describe, test } from "node:test";
 import type { EntryRecord } from "@earendil-works/pi-durable";
 import { CHILD_TASK, FAUX_CHILD_ANSWER, INPUT, textOf } from "./crash-scenario.ts";
+import { jobTitle } from "../../src/durable/job-title.ts";
 import { SUBAGENT_STARTED } from "../../src/durable/subagent.ts";
 import { label } from "../../../pi-rlm/src/pi/children.ts";
 import { HostClient } from "../../src/client.ts";
@@ -118,7 +119,7 @@ async function crashCase(name: string, mode: "faux" | "real", killOn: "child-str
     assert.equal(tree.conversations.length, 2, JSON.stringify(tree));
     const childNode = tree.conversations.find(node => node.parent === 1)!;
     assert.equal(childNode.depth, 1);
-    assert.equal(childNode.name, CHILD_TASK.slice(0, 80));
+    assert.equal(childNode.name, jobTitle(CHILD_TASK));
 
     const root = await allEntries(b, thread.id, 1);
     const child = await allEntries(b, thread.id, childNode.id);
@@ -135,7 +136,7 @@ async function crashCase(name: string, mode: "faux" | "real", killOn: "child-str
     if (mode === "faux") assert.equal(childText, FAUX_CHILD_ANSWER);
     const reports = root.filter(entry => entry.kind === "agent.message");
     assert.equal(reports.length, 1, kinds(root));
-    assert.equal(textOf(reports[0]!.model![0]!.content as never), `[subagent-answer child:${label(CHILD_TASK.slice(0, 80))}]\n\n${childText}`);
+    assert.equal(textOf(reports[0]!.model![0]!.content as never), `[subagent-answer child:${label(jobTitle(CHILD_TASK))}]\n\n${childText}`);
     assert.equal(root.filter(entry => entry.kind === "pi.assistant" && (entry.model![0] as { stopReason: string }).stopReason === "stop").length, 2, kinds(root));
 
     assert.deepEqual(await call(b, { type: "durable_doc_get", thread: thread.id, name: "chat.meta" }), { value: { title: "crash test", kind: "solo" } });

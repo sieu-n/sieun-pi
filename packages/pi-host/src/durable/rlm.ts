@@ -42,6 +42,7 @@ import piRlm, { baseEnv, BUSY_NO_UI, formatCell, KERNEL_RESET, noticeMessage, re
 import { conversationHarnessDir, threadAgent } from "./agent-profile.ts";
 import { CHAT_URL_ENV, DEFAULT_CHAT_URL } from "./chat-app.ts";
 import { agentIdOf, artifactDirOf, DeliverTask, RlmChildDoc, sessionOf, textOfMessage, type RlmChild } from "./children.ts";
+import { childTitle } from "./job-title.ts";
 import { durableTool, loadPiExtension, type PiTool, type PiToolResult } from "./pi-extensions.ts";
 import { PrimeChatName } from "./prime-chat.ts";
 import { piThreadHeader } from "./prime-roots.ts";
@@ -921,8 +922,11 @@ export class DurableRlm {
   }
 }
 
-/** The name an rlm child goes by in the thread's tree, or undefined for a conversation that is no rlm child. */
+/**
+ * The title an rlm child goes by in the thread's tree: its spawn name, or its task's gist for a child named by its task's first line; undefined
+ * for a conversation that is no rlm child.
+ */
 export async function rlmChildName(harness: Harness, conversation: ConversationId, ctx: Context = context): Promise<string | undefined> {
   const doc = await harness.snapshot(RlmChildDoc, conversation, ctx);
-  return doc?.id ? doc.name : undefined;
+  return doc?.id ? childTitle(doc.name, doc.task) : undefined;
 }
