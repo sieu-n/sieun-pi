@@ -1,6 +1,6 @@
 # The agent model: agents, rooms, and comm and work threads
 
-Status: design, for the owner's review. Phases 1 to 4 are built; the rest is not, except where a line says "today".
+Status: design, for the owner's review. Phases 1 to 5 are built; phase 6 is not, except where a line says "today".
 
 ## The answer
 
@@ -11,7 +11,7 @@ Status: design, for the owner's review. Phases 1 to 4 are built; the rest is not
 5. "So what is status?" asked mid-work starts a turn in the comm thread only. That turn reads the work thread's state and answers, and the worker's context never sees the question.
 6. The sidebar shows Solo rooms, Channels and DMs, and the DMs list holds agents only. Work threads, comm threads and jobs open from the Agents page and from job pills, never from the sidebar.
 7. There are three tiers. The chat server runs on metal only and owns messaging. A relay on each box delivers room messages to that box's pi-host and carries `send_message` back. pi-host runs the threads.
-8. We build it in six phases, each shippable alone. Phases 1 to 4 are built: `send_message`, DMs as rooms the chat server owns, the agent folder with its brief and memory, and the comm and work split.
+8. We build it in six phases, each shippable alone. Phases 1 to 5 are built: `send_message`, DMs as rooms the chat server owns, the agent folder with its brief and memory, the comm and work split, and Solo rooms with channels on rooms.
 
 ## What the owner asked for
 
@@ -35,7 +35,7 @@ Status: design, for the owner's review. Phases 1 to 4 are built; the rest is not
 | Agent | Each root pi-host thread is an agent, and its id is the thread id. A job is `<thread>:<conversation>` or a root thread of kind `job` with a parent. | `server/threads.ts`, `server/store.ts` (`ThreadMeta`) |
 | DM | A root chat the owner opened with `openDm`. Its timeline is built from the thread's entries. | `server/threads.ts`, `server/timeline.ts` |
 | Owner send to a thread | Lands in the chat server's outbox at once, then goes to pi-host with retries. | `server/outbox.ts` |
-| Channel | A room whose posts the chat server stores. A mention goes to the agent's thread as an `agent.message` input, and the turn's final answer is posted back. Hop cap 6. | `server/channels.ts`, `<data dir>/channels/<id>.jsonl` |
+| Channel and Solo room | Rooms whose posts the chat server stores. A post goes to each woken member's comm thread for the room, and its tell_owner calls come back as posts. Hop cap 6. | `server/group-rooms.ts`, `<data dir>/rooms/<id>.jsonl` |
 | Board | The `chat.board` doc of each chat's root conversation in pi-host. | `server/boards.ts` |
 | Duties, check-in | `<data dir>/boards/<chat>/duties.json`. | `server/boards.ts`, `server/duty-run.ts` |
 | Agent config | Read from pi-host's thread row and the agent folder: the brief, the agent's harness store and Prime's global one, and the instruction files Prime's loader takes, each marked loaded. | `server/agent-config.ts`, `server/agent-folder.ts` |
@@ -445,6 +445,19 @@ pi-host writes each role into the root conversation's agent in the commit that w
 
 **Done when** the owner opens a Solo room with two agents and an agenda, both answer in it, the 6-hop cap stops an agent loop, and closing the room stops deliveries.
 **Tests:** server specs for wakeOn all, hops and close; sequence (d) in the fixture; the existing channel specs pass on rooms.
+
+Built and live on 2026-10-29: pi-host 67e75a84 as release-67e75a8, and apps/chat 3a133eaf, live in release-af03a11, with the walk test flag in 7503152d.
+
+1. `server/group-rooms.ts` holds channels and Solo rooms. Each post wakes every member whose `wakeOn` is `all` plus each member it mentions, and each woken member gets one delivery to its comm thread for that room (`Agents.ensureComm(record, room)`, named `<agent> · #<channel>` or `<agent> · Solo <name>`), keyed `d:<room>:<post>:<agent>`. An owner post goes in as the owner's turn, and an agent post as an `agent.message` with `{from, via, post, hops}`.
+2. The feed reads each group comm thread from `rooms.commFeed`, with the reader `rooms.ts` shares with the DM. Each tell_owner call becomes the agent's post with hops one more than the post that started the turn, and that post is delivered on. A post 6 hops from the owner's last post gets `stopped` deliveries. A closed or archived room refuses owner posts and delivers nothing.
+3. A Solo room's agenda is its first owner post. `/api/rooms` replaced `/api/channels`, and `scripts/migrate-channels.ts` moved `channels.json` onto rooms, keeping every post and mapping members from thread ids to agent ids.
+4. pi-host's `commInstructions` gives a `ch_` or `so_` comm thread the group text: speak only when the post concerns the agent or adds something, with why and about on an agent's post. `workInstructions` tells the work thread to report to the comm thread that handed it the task.
+5. The web has the Solo group with a Done fold, the create-Solo dialog that lists registered agents only, the pinned agenda, member chips with add and remove, close and reopen, and the members' boards in the side panel.
+6. `POST /api/agents {test: true}` and `POST /api/rooms {test: true}` make a walk's agent or room, which no owner list, live event or badge shows.
+
+**Tests:** pi-host comm 6/6 and agent-profile 4/4; apps/chat group-rooms 7/7, test-flag 3/3, migrate-channels 5/5, rooms 9/9, comm 7/7, fixture 23/23 and agents-only 13/13, with the full server run at 151/154 (send and search-shape fail only under load, and wakes fails without this change); Playwright test/solo, test/channel, test/shell, test/dm and test/agents 109/110, where nav.spec failed on another session's Accounts tab.
+
+**Live walk** on :5184 with throwaway agents "p5 walk orchard" and "p5 walk weather" in Solo room so_951b68a2 (`/home/sieun/work/phase5/live-proof.md`). Both agents stayed quiet on the agenda post. The owner's question about the orchard got "The orchard has 17 trees, and its codeword is QUINCE-42." from orchard's comm thread at hops 1. Weather's comm thread read the question and orchard's answer and sent nothing, and both work threads held 0 entries at the end.
 
 ### Phase 6: Relay tier and the Mac
 
