@@ -4,7 +4,7 @@
 // dashboards drawing ("Check the Observability and Metrics"), where on 10-19 at 15:55Z two panels read No data.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type BoardItem, GOOD_ROWS, REFRESH_SEEDS, type ThroughputData, backlogged, blankPanels, boardGoal, deploySlots, geonodeHours, geonodeMbps, goalLine, goalRows, grew, interpolate, lastHalfHour,
+import { type BoardItem, GOOD_ROWS, REFRESH_SEEDS, REFRESH_WANT, type ThroughputData, backlogged, blankPanels, boardGoal, deploySlots, geonodeHours, geonodeMbps, goalLine, goalRows, grew, interpolate, lastHalfHour,
   lagSlots, missed, panelQueries, panelState, refreshShares, refreshSql, report, slowestHour, writerLagAtRate } from "../scripts/duties/throughput-goal.ts";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
 
@@ -212,10 +212,11 @@ test("a panel runs as Grafana draws it: quoted variables, hidden targets an expr
   assert.equal(panelState({ results: { A: frame([[3]]) } }, ["A"]).state, "ok");
 });
 
-test("the refresh age sums three 0.1% samples, leaves GONE rows out, reads 10k+ past 7 days and the rest past 30, and reads unmeasured when none answered (p683 10-26)", () => {
-  assert.equal(REFRESH_SEEDS.length, 3);
+test("the refresh age sums three 0.05% samples read one at a time, leaves GONE rows out, reads 10k+ past 7 days and the rest past 30, and reads unmeasured when none answered (p683 10-26)", () => {
+  assert.equal(REFRESH_WANT, 3);
+  assert.ok(REFRESH_SEEDS.length > REFRESH_WANT);
   assert.equal(refreshSql(103).match(/state <> 'gone'/g)!.length, 4);
-  assert.match(refreshSql(103), /SYSTEM\(0\.1\) REPEATABLE\(103\)/);
+  assert.match(refreshSql(103), /SYSTEM\(0\.05\) REPEATABLE\(103\)/);
   assert.match(refreshSql(103), /interval '30 days' AND state <> 'gone' AND NOT coalesce\(followers, 0\) >= 10000\) AS "past30Rest"/);
   const shares = refreshShares([HALF, { ...HALF, past30Rest: 127 }])!;
   // 120 of 40,000 10k+ rows past 7 days, 253 of 357,538 others past 30.

@@ -22,7 +22,7 @@ import { type DsQuery, HOUR, MINUTE, PG, PROM, grafanaClient, num, promInstant, 
  * - Meta Ads advertiser re-reads (p850, every due advertiser read within 7 days): advertiser walks finished a minute over 24 h (prod Postgres
  *   meta_ads_walks, as auto-sns-agent scripts/duties/crawler/meta-ads-crawl.mjs reads it) against the walks due now spread over the 7 days;
  * - Instagram re-reads (p683, owner 10-26: "1k+ every month, 10K+ every week" and "under 1k also monthly", at most 1% of read accounts with
- *   10,000+ followers past 7 days and at most 1% of the rest past 30 days): three 0.1% samples of prod instagram_census (REFRESH_SEEDS).
+ *   10,000+ followers past 7 days and at most 1% of the rest past 30 days): three 0.05% samples of prod instagram_census, read one at a time (REFRESH_SEEDS, REFRESH_WANT).
  *   p829's 14-day line left on 10-26, when the owner's t65 answer replaced it with p683 and the board dropped p829.
  * Each goal number comes from the board item at run time: its target, or the number in its title when it has none. Platforms that crawl on
  * prod with no goal on the board (crawler.job_run_events crawl_profile, and Instagram posts) are listed in the run detail and left out of the count.
@@ -107,12 +107,15 @@ export const WRITER_LAG_EXPR = 'max(max_over_time(crawler_v3_bus_group_lag_recor
 
 /**
  * The refresh age of read Instagram accounts (p683, owner 10-26: "1k+ every month, 10K+ every week", "under 1k also monthly"). One 1% TABLESAMPLE
- * of instagram_census timed out under grafana_ro's 30 s statement_timeout on 10-20, so the read sums 0.1% samples with fixed seeds, all at once,
- * and keeps the ones that answered. Ten seeds read two at a time timed out on 10-29 at 22:47Z with the precheck at 134 s; one seed alone took 14.6 s
- * cold at 00:50Z and held 200,851 read rows of a 347M-row table, so three seeds hold about 600,000, more than the 397,538 ten held on 10-21.
+ * of instagram_census timed out under grafana_ro's 30 s statement_timeout on 10-20, so the read sums small samples with fixed seeds and keeps the
+ * ones that answered. Three 0.1% seeds read at once all timed out in the 07:05Z run of 10-29; at 07:3xZ six 0.05% seeds read at once took 26 to
+ * 41 s and two failed, while 0.05% seeds read one after another took 5.1, 8.0, 9.7 and 21.9 s and each held about 100,000 read rows and 4,600
+ * 10k+ rows of a 347M-row table. So the read takes one seed at a time and stops at REFRESH_WANT answers, about 300,000 read rows.
  * A GONE row is an account Instagram no longer serves (the two-surface rule, auto-sns-agent census crawl.py), so it is left out.
  */
-export const REFRESH_SEEDS: readonly number[] = [101, 102, 103];
+export const REFRESH_SEEDS: readonly number[] = [101, 102, 103, 104, 105, 106];
+export const REFRESH_WANT = 3;
+export const REFRESH_SAMPLE_PCT = 0.05;
 /** The weekly tier's floor (owner 10-26, "10K+ every week"), as the census reads it: no follower count reads as 0 (auto-sns-agent census policy.cadence). */
 export const WEEKLY_MIN_FOLLOWERS = 10_000;
 const BIG = `coalesce(followers, 0) >= ${WEEKLY_MIN_FOLLOWERS}`;
@@ -121,7 +124,7 @@ export const refreshSql = (seed: number): string => `SELECT
   count(*) FILTER (WHERE last_ok_at IS NOT NULL AND state <> 'gone' AND ${BIG}) AS "readBig",
   count(*) FILTER (WHERE last_ok_at < now() - interval '7 days' AND state <> 'gone' AND ${BIG}) AS "past7Big",
   count(*) FILTER (WHERE last_ok_at < now() - interval '30 days' AND state <> 'gone' AND NOT ${BIG}) AS "past30Rest"
-FROM instagram_census TABLESAMPLE SYSTEM(0.1) REPEATABLE(${seed})`;
+FROM instagram_census TABLESAMPLE SYSTEM(${REFRESH_SAMPLE_PCT}) REPEATABLE(${seed})`;
 export interface RefreshSample { read: number; readBig: number; past7Big: number; past30Rest: number }
 export interface RefreshShares { big7Pct: number | null; rest30Pct: number | null; sum: RefreshSample }
 /** Sums the samples; null when none answered, so the metrics stay unmeasured instead of reading 0%. A tier with no sampled row reads null. */
@@ -608,9 +611,13 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
         const row = (await sqlRows(query, PG.prod, refreshSql(seed)))[0] ?? {};
         return { read: num(row.read) ?? 0, readBig: num(row.readBig) ?? 0, past7Big: num(row.past7Big) ?? 0, past30Rest: num(row.past30Rest) ?? 0 };
       };
-      const settled = await Promise.allSettled(REFRESH_SEEDS.map(read));
-      const out = settled.flatMap(s => s.status === "fulfilled" ? [s.value] : []);
-      if (!out.length) throw settled.find((s): s is PromiseRejectedResult => s.status === "rejected")?.reason ?? new Error("no refresh sample answered");
+      const out: RefreshSample[] = [];
+      let lastError: unknown = new Error("no refresh sample answered");
+      for (const seed of REFRESH_SEEDS) {
+        if (out.length >= REFRESH_WANT) break;
+        try { out.push(await read(seed)); } catch (error) { lastError = error; }
+      }
+      if (!out.length) throw lastError;
       return out;
     }),
   ]);
