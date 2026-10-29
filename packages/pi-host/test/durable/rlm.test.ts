@@ -14,6 +14,7 @@
  *    the free stops it waits for a new kernel instead of attaching to the relay that is ending. A marker an older pi-host left after
  *    such a free brings no reset note either, and a marker of a kernel stopped mid-cell does.
  * 8. The kernel's harness store is the agent's in a thread with an `agent.ref`, and the thread's own otherwise.
+ * 9. `model.info` answers with the id, provider and input types Prime gives, which attach_image reads before it loads an image.
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
@@ -30,6 +31,7 @@ import { ChatDoc } from "../../src/durable/registry.ts";
 import { artifactDirOf } from "../../src/durable/children.ts";
 import { DurableRlm, IPYTHON_TOOL, loadIpythonTool } from "../../src/durable/rlm.ts";
 import { SUBAGENT_STARTED } from "../../src/durable/subagent.ts";
+import { MODEL } from "./crash-scenario.ts";
 import { call, cell, context, entriesOf, firstUser, inputs, lastText, openThread, results, rlmOptions, say, until } from "./rlm-rig.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "pi-host-rlm-"));
@@ -76,6 +78,18 @@ test("every conversation is offered ipython with pi-rlm's own definition, and th
   assert.deepEqual(ipython, toToolDeclaration({ name: tool.name, description: tool.description, parameters: tool.parameters as never }));
   assert.ok(tools.some(t => t.name === "subagent"));
   assert.deepEqual(out.map(r => [r.name, r.text.trim(), r.isError]), [[IPYTHON_TOOL, "set module", false], [IPYTHON_TOOL, "42", false]]);
+});
+
+test("model.info answers as Prime does, with the model's input types, so attach_image loads images", async () => {
+  const { harness, root } = await openThread(join(dir, "threads", "model-info.sqlite"), "model-info", rlm, ({ messages }) => {
+    if (lastText(messages) === "info") return cell("import json\nfrom rlm import host_request\nprint(json.dumps(await host_request('model.info')))");
+    return say("done");
+  }, dir);
+  await (await root.submit({ type: "input", content: "info" }, context)).wait(context);
+  const out = results(await entriesOf(harness));
+  await harness.close(context);
+  await rlm.closeThread("model-info", "idle");
+  assert.deepEqual(JSON.parse(out[0]!.text), { id: MODEL.modelId, provider: MODEL.provider, input: ["text", "image"] });
 });
 
 test("the kernel's RLM_HARNESS_STATE_DIR is the agent's store in an agent's thread and the thread's own store otherwise", async () => {

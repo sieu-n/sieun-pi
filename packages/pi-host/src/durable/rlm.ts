@@ -30,6 +30,7 @@ import { basename, dirname, join } from "node:path";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Message, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { Models } from "@earendil-works/pi-ai/models";
 import {
   configure, defineExtension, LiveDoc, ROOT_CONVERSATION_ID, type ConversationId, type ConversationRecord, type Extension, type Harness, type ModelRef, type ToolExecutionApi,
 } from "@earendil-works/pi-durable";
@@ -77,6 +78,8 @@ export interface RlmThread {
   name: () => string;
   cwd: string;
   harness: () => Harness | undefined;
+  /** The thread's model registry, for host requests that come outside an ipython cell. */
+  models?: Models;
   /** Admits an input to a conversation of this thread; default the conversation's own submit. pi-host passes `DurableThreads.submit`. */
   submit?: (input: RlmSubmit) => Promise<unknown>;
   /**
@@ -546,8 +549,10 @@ export class DurableRlm {
       case "compact.status":
         return { tokens: null, context_window: null, percent: null, scheduled: false };
       case "model.info": {
-        const agent = await (await this.harnessOf(slot.thread).conversation(slot.conversation as ConversationId, context))?.agent(context);
-        return agent?.model ? { provider: agent.model.provider, id: agent.model.modelId } : { provider: null, id: null };
+        // Prime's answer, whose `input` attach_image reads to decide that the model sees images.
+        const ref = (await (await this.harnessOf(slot.thread).conversation(slot.conversation as ConversationId, context))?.agent(context))?.model;
+        const model = ref && (slot.call?.api.models ?? slot.thread.models)?.getModel(ref.provider, ref.modelId);
+        return { id: ref?.modelId ?? null, provider: ref?.provider ?? null, input: model?.input ?? [] };
       }
       default:
         throw new Error(`${type} does not run in pi-host durable threads yet (docs/prime-pi-prompt-parity.md lists what does)`);

@@ -322,11 +322,12 @@ export class DurableThreads {
       };
       const prompt = this.options.prompt && { ...this.options.prompt, thread: { id, file, name, get cwd() { return cwd(); }, harness: () => openHarness }, log: (line: string) => this.log(`${id} ${line}`) };
       const comm = commExtension(this.commHost(id));
+      const models = this.options.models(id);
       const harness = await Harness.open(storage, {
-        models: this.options.models(id),
+        models,
         registry: threadRegistry(prompt, chat, {
           thread: { id, file }, comm: comm.extension,
-          ...(this.options.rlm ? { rlm: this.options.rlm.extension(this.rlmThread(id, file, name, cwd, () => openHarness)) } : {}),
+          ...(this.options.rlm ? { rlm: this.options.rlm.extension(this.rlmThread(id, file, name, cwd, () => openHarness, models)) } : {}),
         }),
         env: threadEnv(cwd),
         ...(this.options.settings === undefined ? {} : { settings: this.options.settings(id) }),
@@ -354,9 +355,9 @@ export class DurableThreads {
   }
 
   /** The thread as the RLM runtime reaches it: its conversations' inputs, the other threads' roots, and new threads for `rlm.create_session`. */
-  private rlmThread(id: string, file: string, name: () => string, cwd: () => string, harness: () => Harness | undefined): RlmThread {
+  private rlmThread(id: string, file: string, name: () => string, cwd: () => string, harness: () => Harness | undefined, models: Models): RlmThread {
     return {
-      id, file, name, harness,
+      id, file, name, harness, models,
       get cwd() { return cwd(); },
       submit: input => this.submit(id, { conversation: input.conversation, text: input.text, requestId: input.requestId, whenBusy: input.whenBusy, entry: input.entry }),
       roots: async () => {

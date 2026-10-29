@@ -215,7 +215,8 @@ The kernel's host requests are answered from the thread file:
 | `agent_message.send` | An `agent.message` input with Prime's header, `[agent-message from <relationship>:<name>]`. A message to a child runs the same task, so its run's end notifies the parent as Prime's `owesNotice` does. |
 | `agent_observe.list`, `get`, `recent` | The thread's agents and the other threads' roots, with Prime's reach rule (pi-rlm `bus/family.ts`). |
 | `bash.completed` | `[bash-done pid:<pid> exit:<code>]` as an input, held until a running cell or run ends, and dropped when a live cell read the handle first. |
-| `compact.run`, `model.info` | pi-durable's compaction, the conversation's model. |
+| `compact.run` | pi-durable's compaction. |
+| `model.info` | Prime's `id`, `provider` and `input`, with `input` from the thread's model registry, so attach_image sees that the model takes images. |
 | `goal.*`, `refine.*`, `heartbeat.*` and anything else | An error that says the request does not run in durable threads yet. |
 
 The `subagent` tool now starts its child the same way and returns at once with `Started the subagent...`; the child's whole answer arrives later as `[subagent-answer child:<first line of the task>]`.
