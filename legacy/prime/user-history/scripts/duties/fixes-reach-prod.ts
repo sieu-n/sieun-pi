@@ -89,18 +89,35 @@ export async function readRuns(deps: ReachDeps, workflow: string, filters: reado
   return (JSON.parse(out) as RunRow[]).map(runOf);
 }
 
-/** The API lists a commit's statuses newest first, so the first of each context is the one promote.yml's gates take. */
-export async function readHeadStatuses(deps: ReachDeps, sha: string): Promise<HeadStatuses> {
-  const out = await deps.exec("gh", ["api", `repos/${REPO}/commits/${sha}/statuses?per_page=100`, "--jq",
-    `[.[] | select(.creator.login == "github-actions[bot]") | {context, state, url: .target_url}]`]);
-  const rows = JSON.parse(out) as { context: string; state: string; url: string }[];
-  const newest = (context: string): Status | undefined => {
-    const row = rows.find(item => item.context === context);
-    return row ? { state: row.state, url: row.url } : undefined;
-  };
-  const deploy = newest(DEPLOY_STATUS);
-  const verify = newest(VERIFY_STATUS);
-  return { sha, ...(deploy ? { deploy } : {}), ...(verify ? { verify } : {}) };
+/** GitHub ends a GraphQL query at 10 s (vendor limit). measured: on 10-30 one query for 60 staging shas' statuses took 4.1 s and 205 KB, while the
+ *  REST statuses read d4 used before took 1.8 s per sha, so its walk over 343 staging shas ran 284 s and one 502 dropped the whole gate read. */
+const STATUS_BATCH = 60;
+/** Staging shas whose full verify is judged at once. GitHub allows 100 concurrent requests per token (vendor limit), and one judge reads up to about
+ *  9 job logs at once (release-evidence.mjs jobsOf), so 8 judges stay near 72. measured: on 10-30 the walk judged 34 full verifies one at a time
+ *  in 480 s, about 14 s each, and 8 at once took the whole precheck to 94 s. */
+const JUDGE_WINDOW = 8;
+const [OWNER, NAME] = REPO.split("/") as [string, string];
+interface StatusContext { context: string; state: string; targetUrl: string | null; creator: { login: string } | null }
+
+/** The deploy/staging and verify-dev/probe statuses of each sha from one GraphQL query. A commit's status contexts hold the newest status of each
+ *  context, which is the one promote.yml's gates take, so a sha with no status at all reads as one with neither. */
+export async function readStatusBatch(deps: ReachDeps, shas: readonly string[]): Promise<Map<string, HeadStatuses>> {
+  const objects = shas.map((sha, i) => `c${i}: object(oid: "${sha}") { ... on Commit { oid status { contexts { context state targetUrl creator { login } } } } }`);
+  const out = await deps.exec("gh", ["api", "graphql", "-f", `query=query { repository(owner: "${OWNER}", name: "${NAME}") { ${objects.join(" ")} } }`]);
+  const repo = (JSON.parse(out) as { data: { repository: Record<string, { oid: string; status: { contexts: StatusContext[] } | null } | null> } }).data.repository;
+  const read = new Map<string, HeadStatuses>();
+  for (const commit of Object.values(repo)) {
+    if (!commit) continue;
+    const rows = (commit.status?.contexts ?? []).filter(row => row.creator?.login === "github-actions");
+    const newest = (context: string): Status | undefined => {
+      const row = rows.find(item => item.context === context);
+      return row ? { state: row.state.toLowerCase(), url: row.targetUrl ?? "" } : undefined;
+    };
+    const deploy = newest(DEPLOY_STATUS);
+    const verify = newest(VERIFY_STATUS);
+    read.set(commit.oid, { sha: commit.oid, ...(deploy ? { deploy } : {}), ...(verify ? { verify } : {}) });
+  }
+  return read;
 }
 
 /** The commit a full verify tested, from its run name "probe <sha>" (auto-sns-agent scripts/ci/is-probe.mjs). */
@@ -298,13 +315,23 @@ export function promotableFlags(candidates: readonly Candidate[] | undefined, ve
   return flagged;
 }
 
-/** Judges staging's commits main lacks, newest first, and stops at the first promotable one, the newest sha a promote can take. */
+/** Judges staging's commits main lacks, newest first, and stops at the first promotable one, the newest sha a promote can take. A sha whose
+ *  statuses or full verify could not be read is refused with the read error, and the walk goes on to the older shas. */
 export async function readCandidates(deps: ReachDeps, compare: Compare): Promise<Candidate[]> {
   const candidates: Candidate[] = [];
-  for (const commit of [...compare.commits].reverse()) {
-    const candidate = await judgeCandidate(await readHeadStatuses(deps, commit.sha), compare.mainSha, deps.judgeVerify);
-    candidates.push(candidate);
-    if (!candidate.refusals.length) break;
+  const newestFirst = [...compare.commits].reverse();
+  for (let start = 0; start < newestFirst.length; start += STATUS_BATCH) {
+    const batch = newestFirst.slice(start, start + STATUS_BATCH);
+    const read = await readStatusBatch(deps, batch.map(commit => commit.sha)).catch((error: unknown) => message(error));
+    for (let at = 0; at < batch.length; at += JUDGE_WINDOW) {
+      const judged = await Promise.all(batch.slice(at, at + JUDGE_WINDOW).map(async (commit): Promise<Candidate> => typeof read === "string"
+        ? { sha: commit.sha, refusals: [`its gate statuses could not be read: ${read}`] }
+        : await judgeCandidate(read.get(commit.sha) ?? { sha: commit.sha }, compare.mainSha, deps.judgeVerify)
+          .catch((error: unknown) => ({ sha: commit.sha, refusals: [`its full verify could not be read: ${message(error)}`] }))));
+      const passing = judged.findIndex(candidate => !candidate.refusals.length);
+      if (passing >= 0) return [...candidates, ...judged.slice(0, passing + 1)];
+      candidates.push(...judged);
+    }
   }
   return candidates;
 }

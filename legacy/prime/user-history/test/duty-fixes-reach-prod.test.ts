@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { type Candidate, type Compare, type FailedJob, type HeadStatuses, type Run, type VerifyJudge, judgeCandidate, loadPromoteCi, measureReach, newestPerBranch,
-  reachMetrics, readFailedJobs, verifyJudge } from "../scripts/duties/fixes-reach-prod.ts";
+  reachMetrics, readCandidates, readFailedJobs, verifyJudge } from "../scripts/duties/fixes-reach-prod.ts";
 
 const NOW = Date.parse("2026-10-23T03:50:00Z");
 const HEAD = "6e71eb047898f76ecba23e8e5d002f4a4e018be2";
@@ -17,6 +17,11 @@ const run = (id: number, conclusion: string, at: string, extra: Partial<Run> = {
   ({ id, status: "completed", conclusion, createdAt: Date.parse(at), branch: "sieun/dev", sha: HEAD, url: `https://github.com/r/${id}`, ...extra });
 const LAND_JOBS: FailedJob[] = [{ name: "land / light", steps: ["basics / search build, types and lint of the squash"] }];
 const DEPLOY_JOBS: FailedJob[] = [{ name: "scope / light", steps: ["gate / staging release.env sets every variable compose requires"] }];
+/** A GraphQL answer for staging shas' statuses: each sha maps to its deploy/staging state, or null for a sha with no status. */
+const graphqlStatuses = (deploys: Record<string, string | null>) => JSON.stringify({ data: { repository: Object.fromEntries(Object.entries(deploys).map(([sha, deploy], i) =>
+  [`c${i}`, { oid: sha, status: deploy === null ? null : { contexts: [
+    { context: "verify-dev/probe", state: "FAILURE", targetUrl: "https://github.com/sieu-n/auto-sns-agent/actions/runs/40067724892", creator: { login: "github-actions" } },
+    { context: "deploy/staging", state: deploy.toUpperCase(), targetUrl: "https://github.com/sieu-n/auto-sns-agent/actions/runs/39856360527/attempts/1", creator: { login: "github-actions" } }] } }])) } });
 const kinds = (flagged: { kind: string }[] | undefined) => (flagged ?? []).map(flag => flag.kind);
 const line = (flagged: { kind: string; excerpt: string }[] | undefined, kind: string) => (flagged ?? []).find(flag => flag.kind === kind)?.excerpt ?? "";
 
@@ -55,8 +60,7 @@ test("measureReach reads the decided land, the last successful land and the stag
     createdAt: new Date(item.createdAt).toISOString(), headBranch: item.branch, headSha: item.sha, url: item.url })));
   const exec = async (_file: string, args: readonly string[]): Promise<string> => {
     calls.push([...args]);
-    if (args[1]?.includes("/statuses")) return JSON.stringify([{ context: "verify-dev/probe", state: "failure", url: "https://github.com/sieu-n/auto-sns-agent/actions/runs/40067724892" },
-      { context: "deploy/staging", state: "success", url: "https://github.com/sieu-n/auto-sns-agent/actions/runs/39856360527/attempts/1" }]);
+    if (args[1] === "graphql") return graphqlStatuses({ [HEAD]: "success" });
     if (args[1]?.startsWith("repos/")) return JSON.stringify({ main: COMPARE.mainSha, ahead: 1, behind: 0, commits: [{ sha: HEAD, at: "2026-10-22T17:08:03Z", title: "land 60" }] });
     if (args[0] === "run" && args[1] === "view") {
       const jobs = args[2] === "39856360527" ? [{ name: "scope / light", conclusion: "failure", steps: [{ name: DEPLOY_JOBS[0]!.steps[0]!, conclusion: "failure" }] }]
@@ -80,7 +84,7 @@ test("measureReach reads the decided land, the last successful land and the stag
   assert.match(line(output.flagged, "staging_deploy_failed"), /gate \/ staging release.env/);
   assert.ok(calls.some(args => args.includes("--branch") && args.includes("staging")));
   assert.ok(calls.some(args => args.includes("--limit") && args.includes("100")));
-  assert.ok(calls.some(args => args[0] === "api" && args[1] === `repos/sieu-n/auto-sns-agent/commits/${HEAD}/statuses?per_page=100`));
+  assert.ok(calls.some(args => args[0] === "api" && args[1] === "graphql" && args[3]!.includes(`object(oid: "${HEAD}")`)));
   assert.deepEqual(judged, [HEAD]);
   assert.match(line(output.flagged, "no_promotable_staging_sha"), /6e71eb0478: sha 6e71eb0478 has staging check 40067724892 still in_progress/);
 });
@@ -156,4 +160,28 @@ test("a failed promote that a later green promote followed leaves failed_promote
   const later = reachMetrics({ compare: COMPARE, promotes: [run(40200000000, "failure", "2026-10-25T20:00:00Z"), ...promotes], lands: [], failedJobs: new Map(), health: [], errors: [] }, at);
   assert.equal(later.metrics.failed_promotes_24h, 1);
   assert.deepEqual(later.lastEventAt, { failed_promotes_24h: Date.parse("2026-10-25T20:00:00Z") });
+});
+
+// 10-30 07:25 KST: d4's walk read each staging sha's statuses over REST, 1.8 s a sha, so 343 shas main lacked ran 284 s, and one 502 on the jobs of
+// run 40800812060 turned the whole gate read into a source_error. Statuses now come 60 shas to a GraphQL query, and a read error refuses one sha.
+test("a sha whose full verify read fails is refused with the error and the walk goes on to an older promotable sha", async () => {
+  const older = "1111111111111111111111111111111111111111";
+  const middle = "2222222222222222222222222222222222222222";
+  const compare: Compare = { ...COMPARE, aheadBy: 3, commits: [{ sha: older, at: 1, title: "a" }, { sha: middle, at: 2, title: "b" }, { sha: HEAD, at: 3, title: "c" }] };
+  const exec = async (): Promise<string> => graphqlStatuses({ [HEAD]: "success", [middle]: null, [older]: "success" });
+  const judgeVerify: VerifyJudge = async sha => {
+    if (sha === HEAD) throw new Error("gh api repos/sieu-n/auto-sns-agent/actions/runs/40800812060/attempts/1/jobs: Server Error (HTTP 502)");
+    return { miss: null, run: 7 };
+  };
+  const candidates = await readCandidates({ exec, fetch: globalThis.fetch, now: () => NOW, judgeVerify }, compare);
+  assert.deepEqual(candidates, [
+    { sha: HEAD, refusals: ["its full verify could not be read: gh api repos/sieu-n/auto-sns-agent/actions/runs/40800812060/attempts/1/jobs: Server Error (HTTP 502)"] },
+    { sha: middle, refusals: ["it has no deploy/staging status"] },
+    { sha: older, refusals: [], verifyRun: 7 }]);
+});
+
+test("a failed status read refuses its batch's shas with the error instead of dropping every gate", async () => {
+  const exec = async (): Promise<string> => { throw new Error("gh api graphql: Server Error (HTTP 502)"); };
+  const candidates = await readCandidates({ exec, fetch: globalThis.fetch, now: () => NOW, judgeVerify: async () => ({ miss: null }) }, COMPARE);
+  assert.deepEqual(candidates, [{ sha: HEAD, refusals: ["its gate statuses could not be read: gh api graphql: Server Error (HTTP 502)"] }]);
 });
