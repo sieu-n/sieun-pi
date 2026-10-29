@@ -22,7 +22,7 @@ import { type DsQuery, HOUR, MINUTE, PG, PROM, grafanaClient, num, promInstant, 
  * - Meta Ads advertiser re-reads (p850, every due advertiser read within 7 days): advertiser walks finished a minute over 24 h (the crawler's
  *   crawler_v3_meta_ads_finished_1h gauge in prod Prometheus) against the walks due now, from a page sample of prod meta_ads_walks, spread over the 7 days;
  * - Instagram re-reads (p683, owner 10-26: "1k+ every month, 10K+ every week" and "under 1k also monthly", at most 1% of read accounts with
- *   10,000+ followers past 7 days and at most 1% of the rest past 30 days): three 0.05% samples of prod instagram_census, read one at a time (REFRESH_SEEDS, REFRESH_WANT, REFRESH_BUDGET_MS).
+ *   10,000+ followers past 7 days and at most 1% of the rest past 30 days): a page sample of prod instagram_census (REFRESH_SAMPLE_PCT).
  *   p829's 14-day line left on 10-26, when the owner's t65 answer replaced it with p683 and the board dropped p829.
  * Each goal number comes from the board item at run time: its target, or the number in its title when it has none. Platforms that crawl on
  * prod with no goal on the board (crawler.job_run_events crawl_profile, and Instagram posts) are listed in the run detail and left out of the count.
@@ -106,44 +106,43 @@ export const WRITER_LAG_LINE = 5_000;
 export const WRITER_LAG_EXPR = 'max(max_over_time(crawler_v3_bus_group_lag_records{world="prod",group="instagram-census-pg"}[5m]))';
 
 /**
- * The refresh age of read Instagram accounts (p683, owner 10-26: "1k+ every month, 10K+ every week", "under 1k also monthly"). One 1% TABLESAMPLE
- * of instagram_census timed out under grafana_ro's 30 s statement_timeout on 10-20, so the read sums small samples with fixed seeds and keeps the
- * ones that answered. Three 0.1% seeds read at once all timed out in the 07:05Z run of 10-29; at 07:3xZ six 0.05% seeds read at once took 26 to
- * 41 s and two failed, while 0.05% seeds read one after another took 5.1, 8.0, 9.7 and 21.9 s and each held about 100,000 read rows and 4,600
- * 10k+ rows of a 347M-row table. So the read takes one seed at a time and stops at REFRESH_WANT answers, about 300,000 read rows.
+ * `runs` disjoint [first, past) page runs that together hold `percent` of `pages`: the table split into `runs` equal stretches with one run at a
+ * random place in each, so the sample spans the whole table. Empty when the table is too small to split.
+ */
+export function pageRuns(pages: number, percent: number, runs: number, random: () => number = Math.random): [number, number][] {
+  const per = Math.floor(Math.ceil((pages * percent) / 100) / runs);
+  const stretch = Math.floor(pages / runs);
+  if (per < 1 || stretch < per) return [];
+  return Array.from({ length: runs }, (_, index): [number, number] => {
+    const first = index * stretch + Math.floor(random() * (stretch - per + 1));
+    return [first, first + per];
+  });
+}
+/** SELECT `columns` FROM `table` over the page runs, each a TID range scan. */
+export const pageRunsSql = (table: string, columns: string, runs: readonly [number, number][]): string =>
+  runs.map(([first, past]) => `SELECT ${columns} FROM ${table} WHERE ctid >= '(${first},0)'::tid AND ctid < '(${past},0)'::tid`).join("\n  UNION ALL ");
+/**
+ * The refresh age of read Instagram accounts (p683, owner 10-26: "1k+ every month, 10K+ every week", "under 1k also monthly"), from a page sample of
+ * instagram_census: REFRESH_SAMPLE_PCT of its pages read as REFRESH_SAMPLE_RUNS runs of whole pages, like the Meta Ads due count (pageRuns).
+ * measured: TABLESAMPLE SYSTEM's random pages hit grafana_ro's 30 s statement_timeout at 1% on 10-20, at three 0.1% seeds in the 07:05Z run of 10-29,
+ * and at 0.05% seeds read one after another in the 16:02Z run, which spent 180 s on six of them; 64 id-range windows of 0.02% timed out too at
+ * 16:5xZ, since rows with near ids sit on scattered pages (2,570 rows in 8.1 s). grafana_ro reads ctid there since the metal box owner's grant
+ * at 17:1xZ (auto-sns-agent 38fc80e86). At 17:2xZ 0.2% as 64 runs answered in 4.9, 7.0 and 8.8 s and held about 415,000 read rows and 18,000 to
+ * 20,500 10k+ rows each, more than the three 0.05% seeds it replaces (300,000 and 13,800); 0.05% took 2.4 s and 0.1% 4.4 s.
  * A GONE row is an account Instagram no longer serves (the two-surface rule, auto-sns-agent census crawl.py), so it is left out.
  */
-export const REFRESH_SEEDS: readonly number[] = [101, 102, 103, 104, 105, 106];
-export const REFRESH_WANT = 3;
-/**
- * No seed starts once the samples have read this long, so a timed-out seed costs at most this plus one 30 s statement_timeout. measured: the
- * 10-29 16:02Z run (d9-261030-0102) took 221 s against the 120 s precheck target because all six seeds timed out one after another (180 s), and
- * the dashboard panels that run after the goal reads took 39 s at 16:3xZ. The answered seeds took 5.1 to 21.9 s each at 07:3xZ, so three fit.
- */
-export const REFRESH_BUDGET_MS = 30_000;
-/** Reads seeds one at a time until `want` answered or the budget ran out, keeping the ones that answered; throws the last error when none did. */
-export async function readSamples<T>(seeds: readonly number[], read: (seed: number) => Promise<T>, want = REFRESH_WANT, budgetMs = REFRESH_BUDGET_MS,
-  clock: () => number = Date.now): Promise<T[]> {
-  const start = clock();
-  const out: T[] = [];
-  let lastError: unknown = new Error("no refresh sample answered");
-  for (const seed of seeds) {
-    if (out.length >= want || clock() - start >= budgetMs) break;
-    try { out.push(await read(seed)); } catch (error) { lastError = error; }
-  }
-  if (!out.length) throw lastError;
-  return out;
-}
-export const REFRESH_SAMPLE_PCT = 0.05;
+export const REFRESH_SAMPLE_PCT = 0.2;
+export const REFRESH_SAMPLE_RUNS = 64;
+export const REFRESH_PAGES_SQL = "SELECT pg_relation_size('instagram_census') / current_setting('block_size')::bigint AS pages";
 /** The weekly tier's floor (owner 10-26, "10K+ every week"), as the census reads it: no follower count reads as 0 (auto-sns-agent census policy.cadence). */
 export const WEEKLY_MIN_FOLLOWERS = 10_000;
 const BIG = `coalesce(followers, 0) >= ${WEEKLY_MIN_FOLLOWERS}`;
-export const refreshSql = (seed: number): string => `SELECT
+export const refreshSql = (runs: readonly [number, number][]): string => `SELECT
   count(*) FILTER (WHERE last_ok_at IS NOT NULL AND state <> 'gone') AS read,
   count(*) FILTER (WHERE last_ok_at IS NOT NULL AND state <> 'gone' AND ${BIG}) AS "readBig",
   count(*) FILTER (WHERE last_ok_at < now() - interval '7 days' AND state <> 'gone' AND ${BIG}) AS "past7Big",
   count(*) FILTER (WHERE last_ok_at < now() - interval '30 days' AND state <> 'gone' AND NOT ${BIG}) AS "past30Rest"
-FROM instagram_census TABLESAMPLE SYSTEM(${REFRESH_SAMPLE_PCT}) REPEATABLE(${seed})`;
+FROM (${pageRunsSql("instagram_census", "last_ok_at, state, followers", runs)}) AS sampled`;
 export interface RefreshSample { read: number; readBig: number; past7Big: number; past30Rest: number }
 export interface RefreshShares { big7Pct: number | null; rest30Pct: number | null; sum: RefreshSample }
 /** Sums the samples; null when none answered, so the metrics stay unmeasured instead of reading 0%. A tier with no sampled row reads null. */
@@ -552,25 +551,17 @@ export const META_FINISHED_EXPR = 'sum(avg_over_time(crawler_v3_meta_ads_finishe
  * META_SAMPLE_PCT of the table's pages read as META_SAMPLE_RUNS runs of whole pages, TID range scans that read each run in order with readahead, as
  * the crawler's health reads do (control/metrics/snapshot.py sample_page_ranges).
  * measured: at 10-29 16:30Z TABLESAMPLE SYSTEM hit grafana_ro's 30 s statement_timeout at 0.1%, 0.2% and 1% alike, and so did the exact count on
- * ix_meta_ads_walks_due at 10-30 01:3xZ KST (16:3xZ); 1% as 64 page runs then answered in 1.5 to 5.2 s over 6 draws and read 3.53M to 4.28M due,
- * against 4.13M from the 1% TABLESAMPLE at 12:2xZ, while 16 runs spread 3.29M to 5.06M. The row's margin then was about 40% (796k finished a day
+ * ix_meta_ads_walks_due at 16:3xZ; 1% as 64 page runs then answered in 1.5 to 5.2 s over 6 draws and read 3.53M to 4.28M due, against 4.13M
+ * from the 1% TABLESAMPLE at 12:2xZ, while 16 runs spread 3.29M to 5.06M. With one run in each 64th of the table (pageRuns), 6 draws at 17:1xZ
+ * read 3.74M to 4.28M in 2.3 to 5.4 s. The row's margin then was about 40% (796k finished a day
  * against about 570k due a day over 7 days), so the draw's spread does not flip it.
  */
 export const META_SAMPLE_PCT = 1;
 export const META_SAMPLE_RUNS = 64;
 export const META_PAGES_SQL = "SELECT pg_relation_size('meta_ads_walks') / current_setting('block_size')::bigint AS pages";
-/** `runs` disjoint [first, past) page runs that together hold `percent` of `pages`, with random starts; empty when the table is too small to split. */
-export function pageRuns(pages: number, percent: number, runs: number, random: () => number = Math.random): [number, number][] {
-  const per = Math.floor(Math.ceil((pages * percent) / 100) / runs);
-  const slots = per >= 1 ? Math.floor(pages / per) : 0;
-  if (slots < runs) return [];
-  const picked = new Set<number>();
-  while (picked.size < runs) picked.add(Math.floor(random() * slots));
-  return [...picked].sort((a, b) => a - b).map(slot => [slot * per, slot * per + per]);
-}
 /** Advertiser walks idle and due now over the page runs, and how many pages they hold. */
 export const metaDueSql = (runs: readonly [number, number][]): string => `SELECT count(*) FILTER (WHERE kind = 'advertiser' AND state = 'idle' AND next_run_at <= now()) AS due
-FROM (${runs.map(([first, past]) => `SELECT kind, state, next_run_at FROM meta_ads_walks WHERE ctid >= '(${first},0)'::tid AND ctid < '(${past},0)'::tid`).join("\n  UNION ALL ")}) AS sampled`;
+FROM (${pageRunsSql("meta_ads_walks", "kind, state, next_run_at", runs)}) AS sampled`;
 /** The due count the sample stands for: its due walks times the table's pages over the pages it read. */
 export const scaleDue = (due: number, runs: readonly [number, number][], pages: number): number =>
   Math.round((due * pages) / runs.reduce((sum, [first, past]) => sum + past - first, 0));
@@ -659,12 +650,13 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
       }
       return out;
     }),
-    step("refresh age", async () => {
-      const read = async (seed: number): Promise<RefreshSample> => {
-        const row = (await sqlRows(query, PG.prod, refreshSql(seed)))[0] ?? {};
-        return { read: num(row.read) ?? 0, readBig: num(row.readBig) ?? 0, past7Big: num(row.past7Big) ?? 0, past30Rest: num(row.past30Rest) ?? 0 };
-      };
-      return readSamples(REFRESH_SEEDS, read);
+    step("refresh age", async (): Promise<RefreshSample[]> => {
+      const pages = num((await sqlRows(query, PG.prod, REFRESH_PAGES_SQL))[0]?.pages);
+      const runs = pages ? pageRuns(pages, REFRESH_SAMPLE_PCT, REFRESH_SAMPLE_RUNS) : [];
+      if (!runs.length) throw new Error("instagram_census answered no page count");
+      const row = (await sqlRows(query, PG.prod, refreshSql(runs)))[0];
+      if (!row) throw new Error("the instagram_census page sample answered no row");
+      return [{ read: num(row.read) ?? 0, readBig: num(row.readBig) ?? 0, past7Big: num(row.past7Big) ?? 0, past30Rest: num(row.past30Rest) ?? 0 }];
     }),
   ]);
   const [panels, panelDeployLock] = await Promise.all([step("dashboards", () => readPanels(api)),

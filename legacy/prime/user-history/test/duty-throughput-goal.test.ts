@@ -4,8 +4,8 @@
 // dashboards drawing ("Check the Observability and Metrics"), where on 10-19 at 15:55Z two panels read No data.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type BoardItem, GOOD_ROWS, META_FINISHED_EXPR, META_SAMPLE_PCT, META_SAMPLE_RUNS, REFRESH_BUDGET_MS, REFRESH_SEEDS, REFRESH_WANT, type ThroughputData, backlogged, blankPanels, boardGoal, deploySlots, geonodeHours, geonodeMbps, goalLine, goalRows, grew, interpolate, lastHalfHour,
-  lagSlots, metaDueSql, missed, pageRuns, panelQueries, panelState, readSamples, refreshShares, refreshSql, report, scaleDue, slowestHour, writerLagAtRate } from "../scripts/duties/throughput-goal.ts";
+import { type BoardItem, GOOD_ROWS, META_FINISHED_EXPR, META_SAMPLE_PCT, META_SAMPLE_RUNS, REFRESH_SAMPLE_PCT, REFRESH_SAMPLE_RUNS, type ThroughputData, backlogged, blankPanels, boardGoal, deploySlots, geonodeHours, geonodeMbps, goalLine, goalRows, grew, interpolate, lastHalfHour,
+  lagSlots, metaDueSql, missed, pageRuns, panelQueries, panelState, refreshShares, refreshSql, report, scaleDue, slowestHour, writerLagAtRate } from "../scripts/duties/throughput-goal.ts";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
 
 const METRICS: DutyMetric[] = [
@@ -212,12 +212,16 @@ test("a panel runs as Grafana draws it: quoted variables, hidden targets an expr
   assert.equal(panelState({ results: { A: frame([[3]]) } }, ["A"]).state, "ok");
 });
 
-test("the refresh age sums three 0.05% samples read one at a time, leaves GONE rows out, reads 10k+ past 7 days and the rest past 30, and reads unmeasured when none answered (p683 10-26)", () => {
-  assert.equal(REFRESH_WANT, 3);
-  assert.ok(REFRESH_SEEDS.length > REFRESH_WANT);
-  assert.equal(refreshSql(103).match(/state <> 'gone'/g)!.length, 4);
-  assert.match(refreshSql(103), /SYSTEM\(0\.05\) REPEATABLE\(103\)/);
-  assert.match(refreshSql(103), /interval '30 days' AND state <> 'gone' AND NOT coalesce\(followers, 0\) >= 10000\) AS "past30Rest"/);
+test("the refresh age reads a page sample as TID page runs, leaves GONE rows out, reads 10k+ past 7 days and the rest past 30, and reads unmeasured when none answered (p683 10-26)", () => {
+  // instagram_census held 8,974,842 pages on 10-30 01:4xZ KST.
+  let seed = 11;
+  const spread = pageRuns(8_974_842, REFRESH_SAMPLE_PCT, REFRESH_SAMPLE_RUNS, () => (seed = (seed * 16_807) % 2_147_483_647) / 2_147_483_647);
+  assert.equal(spread.length, 64);
+  const sql = refreshSql(spread);
+  assert.equal(sql.match(/state <> 'gone'/g)!.length, 4);
+  assert.equal(sql.match(/FROM instagram_census WHERE ctid >= /g)!.length, 64);
+  assert.doesNotMatch(sql, /tablesample/i);
+  assert.match(sql, /interval '30 days' AND state <> 'gone' AND NOT coalesce\(followers, 0\) >= 10000\) AS "past30Rest"/);
   const shares = refreshShares([HALF, { ...HALF, past30Rest: 127 }])!;
   // 120 of 40,000 10k+ rows past 7 days, 253 of 357,538 others past 30.
   assert.equal(shares.big7Pct, 0.3);
@@ -303,7 +307,9 @@ test("the Meta Ads row reads finished walks from the crawler gauge and due walks
   assert.equal(runs.length, 64);
   assert.ok(runs.every(([first, past]) => past - first === 381 && first >= 0 && past <= pages));
   assert.ok(runs.every(([first], index) => index === 0 || first >= runs[index - 1]![1]));
+  assert.ok(runs.every(([first], index) => first >= index * Math.floor(pages / 64) && first < (index + 1) * Math.floor(pages / 64)));
   assert.deepEqual(pageRuns(100, 1, 64), []);
+  assert.deepEqual(pageRuns(6_400, 100, 64, () => 0.99).at(-1), [6_300, 6_400]);
   const sql = metaDueSql(runs.slice(0, 2));
   assert.equal(sql.match(/ctid >= '\(\d+,0\)'::tid AND ctid < '\(\d+,0\)'::tid/g)!.length, 2);
   assert.match(sql, /kind = 'advertiser' AND state = 'idle' AND next_run_at <= now\(\)/);
@@ -315,17 +321,4 @@ test("the Meta Ads row reads finished walks from the crawler gauge and due walks
   assert.equal(Math.round(row.goal!), 409);
   assert.equal(missed(row), false);
   assert.match(row.extra!, /about 4\.1M advertiser walks due now from a 1% page sample, read within 7 days/);
-});
-
-test("the refresh samples start no seed after the budget, so six 30 s timeouts no longer take 180 s (10-29 16:02Z run, 221 s)", async () => {
-  let now = 0;
-  const timedOut = async (): Promise<number> => { now += 30_000; throw new Error("canceling statement due to statement timeout"); };
-  await assert.rejects(readSamples(REFRESH_SEEDS, timedOut, REFRESH_WANT, REFRESH_BUDGET_MS, () => now), /statement timeout/);
-  assert.equal(now, 30_000);
-  now = 0;
-  const tried: number[] = [];
-  const slowThenOk = async (seed: number): Promise<number> => { tried.push(seed); now += seed === 101 ? 30_000 : 8_000; if (seed === 101) throw new Error("timeout"); return seed; };
-  assert.deepEqual(await readSamples(REFRESH_SEEDS, slowThenOk, REFRESH_WANT, 60_000, () => now), [102, 103, 104]);
-  now = 0;
-  assert.deepEqual(await readSamples(REFRESH_SEEDS, async seed => { now += 5_000; return seed; }, REFRESH_WANT, REFRESH_BUDGET_MS, () => now), [101, 102, 103]);
 });
