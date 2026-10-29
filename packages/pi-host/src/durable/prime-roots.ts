@@ -4,14 +4,15 @@
  *
  * The listing is the two halves a Prime root's own roster has (user-history `message-limit-check.py`): this box's roots from its Prime
  * daemon's `list` (the live roster, top-level rows only), and the other boxes' roots from the chat service's `api/agent/siblings`, which
- * answers from its catalog of every box (src/cross-host-message.ts `otherBoxRoots`, archived roots left out) for a root of this box. A full
- * daemon list would also give this box's saved roots, but the Mac's took 11.0 s for 38 MB on 10-18 (src/session-peer.ts), so the live roster
- * it is, as in Prime.
+ * answers from its catalog of every box (src/cross-host-message.ts `otherBoxRoots`, archived roots left out) for a root of this box. This
+ * box's saved roots come from the same route, asked for a root of another box: a full daemon list would give them too, but the Mac's took
+ * 11.0 s for 38 MB on 10-18 (src/session-peer.ts).
  *
  * A send is a POST of `api/agent/notice` {to, message, root}: the outbox keeps it on disk, finds the box that runs the session, opens an
  * unloaded one from its file, retries, and sends a copy only once while an identical one waits (src/agent-outbox.ts `deliver`).
  */
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { chatService, serviceCall, throughRestart, type ChatService } from "../../../../legacy/prime/user-history/src/chat-host.ts";
@@ -48,12 +49,16 @@ export function piThreadHeader(name: string, id: string): string {
   return `${header(name, "sibling").slice(0, -1)} (${id}, a pi-host thread); answer with agent_message.send(text, receiver_role="sibling", receiver_name=${JSON.stringify(id)})]`;
 }
 
-/** Every listing is read fresh: one took 0.25 to 0.33 s on us-metal02 on 10-29 with 237 roots, at a load average near 300. */
+/** Every listing is read fresh: one took 1.03 s on us-metal02 on 10-29 with 1,072 roots (836 of them saved), at a load average near 300. */
 export class PrimeRoots {
   constructor(private readonly options: PrimeRootsOptions = {}) {}
 
+  private chatDataDir(): string {
+    return this.options.chatDataDir ?? process.env.AGENT_CHAT_SHARED_DIR ?? join(homedir(), ".prime/agent/browser-chat");
+  }
+
   private service(): Promise<ChatService | null> {
-    return chatService(this.options.chatDataDir ?? process.env.AGENT_CHAT_SHARED_DIR ?? join(homedir(), ".prime/agent/browser-chat"));
+    return chatService(this.chatDataDir());
   }
 
   /** Every Prime root a thread's root may reach. */
@@ -80,17 +85,33 @@ export class PrimeRoots {
           const service = await this.service();
           if (!service) throw new Error("no chat service is set up on this box or in hosts.json");
           there = await this.siblings(service, anchor.id);
-          // The chat names this box's roots too, from the first message in each session file where the daemon has no name (catalog
-          // `sessionTitle`), asked for a root of another box. The daemon's `firstMessage` is a later message after a compaction or a resume.
+          // Asked for a root of another box, the chat gives this box's roots too, saved ones included. It names each from the first message
+          // in its session file where the daemon has no name (catalog `sessionTitle`); the daemon's `firstMessage` is a later message after a
+          // compaction or a resume. A saved root that is one of the chat's chats is listed as idle, and every other one is reached by full id
+          // only, since the outbox opens a saved root from its file.
           const away = there[0];
-          const titles = away ? new Map((await this.siblings(service, away.id).catch(() => [])).filter(root => root.box === box).map(root => [root.id, root.name])) : new Map<string, string>();
+          const home = away ? await this.siblings(service, away.id).catch(() => [] as PrimeRootRow[]) : [];
+          const titles = new Map(home.filter(root => root.box === box).map(root => [root.id, root.name]));
           for (const root of here) root.name = titles.get(root.id) ?? root.name;
+          const live = new Set(here.map(root => root.id));
+          const chats = service.remote ? new Set<string>() : await this.chatIds();
+          for (const root of home) {
+            if (root.box !== box || live.has(root.id)) continue;
+            here.push(chats.has(root.id) ? { ...root, status: "idle" } : { ...root, status: "idle", unlisted: true });
+          }
         } catch (error) {
           missing.push(`the other boxes' roots did not list (${message(error)})`);
         }
       }
     }
     return { roots: [...here, ...there], ...(missing.length ? { missing: missing.join("; ") } : {}) };
+  }
+
+  /** The session ids the chat service shows as chats (chats.ts `index`); none when its file does not read. */
+  private async chatIds(): Promise<Set<string>> {
+    const raw = await readFile(join(this.chatDataDir(), "chats.json"), "utf8").catch(() => "{}");
+    const ids = (JSON.parse(raw) as { ids?: unknown }).ids;
+    return new Set(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : []);
   }
 
   /** The chat service's roots on every box but the one that runs root `session`. */

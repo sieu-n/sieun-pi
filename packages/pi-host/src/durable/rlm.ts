@@ -87,8 +87,13 @@ export interface RlmThread {
 
 /** Another pi-host thread's root. */
 export interface PiRootRow { kind: "pi"; id: string; name: string; cwd?: string; status?: string }
-/** A Prime root session on some box; `activeId` is its active session id, which a send may name as well. */
-export interface PrimeRootRow { kind: "prime"; id: string; activeId?: string; name: string; box: string; status: string }
+/**
+ * A Prime root session on some box; `activeId` is its active session id, which a send may name as well. An `unlisted` root is a saved one
+ * that is no chat: no roster lists it, and only its full id reaches it.
+ */
+export interface PrimeRootRow { kind: "prime"; id: string; activeId?: string; name: string; box: string; status: string; unlisted?: true }
+
+const unlisted = (known: Known): boolean => known.root?.kind === "prime" && known.root.unlisted === true;
 export type RootRow = PiRootRow | PrimeRootRow;
 
 /** A member of the thread's family: a conversation of this thread, or another root, whose row says where a send to it goes. */
@@ -776,7 +781,7 @@ export class DurableRlm {
     if (role !== "parent" && (typeof name !== "string" || !name.trim())) throw new Error("agent_message.send receiver_name is required for sibling and child messages");
     const wanted = typeof name === "string" ? name.trim() : undefined;
     // A full id or the exact name, never an id prefix (owner rule c149); a Prime root also answers to its full active session id.
-    const matches = members.filter(m => m.relationship === role && (role === "parent" || m.item.member.name === wanted || m.item.member.id === wanted
+    const matches = members.filter(m => m.relationship === role && (role === "parent" || (m.item.member.name === wanted && !unlisted(m.item)) || m.item.member.id === wanted
       || (m.item.root?.kind === "prime" && m.item.root.activeId === wanted)));
     if (matches.length === 0) {
       const why = role === "sibling" && listed.missing ? ` (${listed.missing})` : "";
@@ -863,7 +868,7 @@ export class DurableRlm {
     const { all, missing } = await this.members(slot.thread, slot.conversation === ROOT_CONVERSATION_ID);
     const self = all.find(m => m.thread === slot.thread.id && m.conversation === slot.conversation);
     if (!self) throw new Error("agent observation is not available in this conversation");
-    const members = family(self.member, all);
+    const members = family(self.member, all).filter(m => !unlisted(m.item));
     return {
       current: await this.agentRow(slot.thread, self, true),
       agents: await Promise.all(members.map(m => this.agentRow(slot.thread, m.item, false, m.relationship))),
@@ -877,12 +882,12 @@ export class DurableRlm {
     const wanted = target.trim();
     if (wanted === self.member.id || wanted === self.member.name) return { known: self, isCurrent: true };
     const members = family(self.member, all);
-    const exact = members.filter(m => m.item.member.id === wanted || m.item.member.name === wanted);
+    const exact = members.filter(m => m.item.member.id === wanted || (m.item.member.name === wanted && !unlisted(m.item)));
     // The id suffix a child's agent id ends in (`<thread>:<conversation>`) stays a match for pi-host's own agents only (owner rule c149).
     const hits = exact.length > 0 ? exact : members.filter(m => m.item.root?.kind !== "prime" && wanted.length >= 4 && m.item.member.id.endsWith(wanted));
     if (hits.length === 1) return { known: hits[0]!.item, rel: hits[0]!.relationship, isCurrent: false };
     if (hits.length > 1) throw new Error(`agent selector ${JSON.stringify(target)} is ambiguous: it names ${hits.map(m => described(m.item)).join(" and ")}`);
-    if (all.some(m => m.member.id === wanted || m.member.name === wanted)) throw new Error("Agent reach is limited to parent, siblings, and children");
+    if (all.some(m => m.member.id === wanted || (m.member.name === wanted && !unlisted(m)))) throw new Error("Agent reach is limited to parent, siblings, and children");
     throw new Error(`No agent matches ${JSON.stringify(target)}`);
   }
 

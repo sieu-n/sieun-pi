@@ -7,6 +7,8 @@
  *    origin, and its first line is the shared wire header that names the pi thread's full id.
  * 3. An id prefix matches nothing, and a name that a pi thread and a Prime root share is ambiguous, with both full ids in the error.
  * 4. agent_observe.get_agent and recent_messages on a Prime root give its row and no messages.
+ * 5. A chat the chat service shows that no daemon has loaded is listed as idle and reached by its name, and a saved root that is no chat is
+ *    left out of the list and reached by its full id only.
  */
 import { strict as assert } from "node:assert";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -37,6 +39,9 @@ const OWNER = "01aaaaaa-0000-7000-8000-000000000001";
 const RELEASE = "01aaaaaa-0000-7000-8000-000000000002";
 const FABLE = "01bbbbbb-0000-7000-8000-000000000003";
 const MAC_VENT = "01bbbbbb-0000-7000-8000-000000000004";
+/** A chat that is not loaded now, which the chat shows, and a saved root that is no chat, which only its full id reaches. */
+const UNLOADED_CHAT = "01aaaaaa-0000-7000-8000-000000000009";
+const SAVED = "01aaaaaa-0000-7000-8000-000000000008";
 const TOKEN = "csrf-test-token";
 const CAPABILITY = "cap-test";
 
@@ -57,7 +62,8 @@ const SIBLINGS: Record<string, { sessionId: string; activeSessionId?: string; se
   [FABLE]: [
     { sessionId: OWNER, sessionName: "metal box owner", status: "working", host: "box-a" },
     { sessionId: RELEASE, sessionName: "release owner", status: "idle", host: "box-a" },
-    { sessionId: "01aaaaaa-0000-7000-8000-000000000008", sessionName: "a saved root", status: "idle", host: "box-a" },
+    { sessionId: SAVED, sessionName: "a saved root", status: "idle", host: "box-a" },
+    { sessionId: UNLOADED_CHAT, sessionName: "slack green guy", status: "idle", host: "box-a" },
   ],
 };
 
@@ -109,6 +115,7 @@ before(async () => {
   const chatDir = join(dir, "browser-chat");
   mkdirSync(chatDir);
   writeFileSync(join(chatDir, "configuration.json"), JSON.stringify({ csrfToken: TOKEN, port, capability: CAPABILITY }));
+  writeFileSync(join(chatDir, "chats.json"), JSON.stringify({ ids: [UNLOADED_CHAT, OWNER], at: "2026-10-29T01:00:00.000Z" }));
   const host = (name: string, box: string, daemonSocket: string, roles: Record<string, unknown>) =>
     ({ name, hostname: box, address: "127.0.0.1", relayPort: 7790, token: "file:relay-token", daemonSocket, ssh: null, roles });
   const hostsFile = join(dir, "hosts.json");
@@ -138,7 +145,7 @@ async def attempt(name):
     except Exception as e:
         return {"error": str(e)}
 out["sends"] = {}
-for name in ["${FABLE}", "release owner", "bbbb00000003", "${FABLE.slice(0, 13)}", "vent"]:
+for name in ["${FABLE}", "release owner", "bbbb00000003", "${FABLE.slice(0, 13)}", "vent", "slack green guy", "${SAVED}", "a saved root"]:
     out["sends"][name] = await attempt(name)
 got = await agent_observe.get_agent("${FABLE}")
 got = got.get("agent", got)
@@ -184,6 +191,7 @@ test("a thread's root lists Prime roots as siblings and sends to one by full id 
     [vent.id]: ["vent", "sibling", "pi", null, "idle"],
     [OWNER]: ["metal box owner", "sibling", "prime", "box-a", "running"],
     [RELEASE]: ["release owner", "sibling", "prime", "box-a", "idle"],
+    [UNLOADED_CHAT]: ["slack green guy", "sibling", "prime", "box-a", "idle"],
     [FABLE]: ["Fable", "sibling", "prime", "mac", "running"],
     [MAC_VENT]: ["vent", "sibling", "prime", "mac", "idle"],
   });
@@ -192,6 +200,9 @@ test("a thread's root lists Prime roots as siblings and sends to one by full id 
   assert.deepEqual(out.sends["release owner"], { ok: RELEASE, host: "box-a" });
   assert.deepEqual(out.sends["bbbb00000003"], { ok: FABLE, host: "mac" });
   assert.match(out.sends[FABLE.slice(0, 13)]!.error!, new RegExp(`No sibling matches "${FABLE.slice(0, 13)}"`));
+  assert.deepEqual(out.sends["slack green guy"], { ok: UNLOADED_CHAT, host: "box-a" });
+  assert.deepEqual(out.sends[SAVED], { ok: SAVED, host: "box-a" });
+  assert.match(out.sends["a saved root"]!.error!, /No sibling matches "a saved root"/);
   const ambiguous = out.sends.vent!.error!;
   assert.match(ambiguous, /sibling selector "vent" is ambiguous/);
   assert.ok(ambiguous.includes(`vent (${vent.id}, a pi-host thread)`), ambiguous);
@@ -202,6 +213,8 @@ test("a thread's root lists Prime roots as siblings and sends to one by full id 
     [FABLE, FABLE, `${header}\n\nhello from pi`, TOKEN, `http://127.0.0.1:${(chat.address() as { port: number }).port}`],
     [RELEASE, RELEASE, `${header}\n\nhello from pi`, TOKEN, `http://127.0.0.1:${(chat.address() as { port: number }).port}`],
     [FABLE, FABLE, `${header}\n\nhello from pi`, TOKEN, `http://127.0.0.1:${(chat.address() as { port: number }).port}`],
+    [UNLOADED_CHAT, UNLOADED_CHAT, `${header}\n\nhello from pi`, TOKEN, `http://127.0.0.1:${(chat.address() as { port: number }).port}`],
+    [SAVED, SAVED, `${header}\n\nhello from pi`, TOKEN, `http://127.0.0.1:${(chat.address() as { port: number }).port}`],
   ]);
 
   assert.deepEqual(out.get, { sessionId: FABLE, kind: "prime", host: "mac", status: "running" });
