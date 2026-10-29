@@ -609,7 +609,10 @@ def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
     elif tree.wait and admit_now:
         base.log("unparked", provider=provider, session=key.key, at=round(now, 1), account=d.account.label, **manual_mark(tree))
     if isinstance(d, sched.Admit) and admit_now:
-        writer.admit(key, provider, d.account.id, now)
+        # A tree that enters its own cell up to 2 s early (own_cell) books that cell, so it does not read free. On 10-28 01a15427
+        # entered its 21:14:00Z claude-virev5 cell at 21:13:58.7Z, and 01a14210 took the cell at 21:14:01Z ahead of four trees.
+        own = tree.wait is not None and tree.wait[0] == d.account.id and now < tree.wait[1] <= now + 2
+        writer.admit(key, provider, d.account.id, tree.wait[1] if own else now)
         return d, tree, True
     if isinstance(d, sched.Admit):
         writer.set_wait(key, provider, d.account.id, now, now)

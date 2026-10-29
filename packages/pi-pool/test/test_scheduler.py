@@ -374,6 +374,24 @@ class R5Wait(unittest.TestCase):
         self.assertEqual(request(state, early, [x, out], cell + 11).account.id, "x")
         self.assertEqual(request(state, late, [x, out], cell + sp).account.id, "x")
 
+    def test_a_tree_that_enters_its_own_cell_early_books_that_cell(self):
+        """10-28 on claude-virev5 (120 s cells): 01a15427 entered its 21:14:00Z cell at 21:13:58.7Z, which own_cell allows
+        2 s early, and the admission went into the 21:12:00Z cell. The 21:14:00Z cell read free, and at 21:14:01Z
+        01a14210, waiting since 21:12:15Z for 21:24:00Z, took it ahead of four trees that ranked before it. Its 21:24:00Z
+        cell then went to 01a17edb, waiting since 21:14:30Z, ahead of 01a1164b, 01a11bd7 and 01a11ba8, whose cells
+        never came because claude-virev5 ran out at 21:29Z; d7 read them as passed for 96 to 100 min."""
+        state = empty_state()
+        x = acct("x", five=10, tier="max 5x")
+        out = acct("y", five=100, five_reset_in=FIVE)
+        sp = sched.slot_spacing(x, CFG)
+        cell = math.ceil(NOW / sp) * sp
+        early, behind = put(state, tree_key("early"), on="y"), put(state, tree_key("behind"), on="y")
+        state["sessions"][early.key]["wait"] = {P: {"account": "x", "slot_at": cell, "since": NOW - 400}}
+        state["sessions"][behind.key]["wait"] = {P: {"account": "x", "slot_at": cell + 5 * sp, "since": NOW - 300}}
+        self.assertEqual(request(state, early, [x, out], cell - 1.3).account.id, "x")
+        d = request(state, behind, [x, out], cell + 1)
+        self.assertEqual((type(d), d.slot_at), (sched.Wait, cell + 5 * sp))
+
     def test_a_tree_back_late_still_enters_a_cell_nobody_holds(self):
         state = empty_state()
         sp = CFG["admit_slot_sec"]
