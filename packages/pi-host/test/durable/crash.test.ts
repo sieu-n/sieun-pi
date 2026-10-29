@@ -20,7 +20,7 @@ function fauxCase(name: string, pool: Record<string, unknown> = {}) {
   const dir = join(scratch, name);
   mkdirSync(join(dir, "pool"), { recursive: true });
   writeFileSync(join(dir, "pool", "state.json"), JSON.stringify({ accounts: ["a1", "a2"], current: 0, ...pool }));
-  return { file: join(dir, "session.sqlite"), env: { FAKE_POOL_DIR: join(dir, "pool"), PI_OFFLINE: "1", PI_TELEMETRY: "0" }, calls: () => readFileSync(join(dir, "pool", "calls.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as { argv: string[]; key: string | null; protocol: string | null }) };
+  return { file: join(dir, "session.sqlite"), env: { FAKE_POOL_DIR: join(dir, "pool"), PI_OFFLINE: "1", PI_TELEMETRY: "0" }, calls: () => readFileSync(join(dir, "pool", "calls.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as { at: number; argv: string[]; key: string | null; protocol: string | null }) };
 }
 
 function assertWhole(result: CrashResult) {
@@ -52,7 +52,7 @@ describe("pi-durable crash and resume, faux", () => {
 
   test("SIGKILL during a pool slot wait; the stored sleep resumes and sends the request at the slot", async () => {
     const waitSec = 4;
-    const c = fauxCase("slot-wait", { waitUntil: Date.now() / 1000 + waitSec });
+    const c = fauxCase("slot-wait", { waitSec });
     const result = await crashAndResume(c.file, "faux", c.env, "root-slot-wait");
     const root = result.before.find(x => x.owner === null)!;
     assert.ok((root.live as { generation?: { deferred?: unknown } }).generation?.deferred, "the slot wait is a stored sleep before the restart");
@@ -61,7 +61,7 @@ describe("pi-durable crash and resume, faux", () => {
     assert.equal(after.entries.filter(e => e.error === SLOT_OPEN_TEXT).length, 1, shape(result.after).join("\n"));
     const vends = c.calls().filter(call => call.argv[0] === "--provider");
     assert.ok(vends.length >= 3 && vends.every(call => call.protocol === "1"), `vends ${vends.length}`);
-    assert.ok(result.resume.endedAt >= (result.start.startedAt + waitSec * 1000), "the request waited for the slot");
+    assert.ok(result.resume.endedAt >= vends[0]!.at + waitSec * 1000, "the request waited for the slot");
   });
 });
 

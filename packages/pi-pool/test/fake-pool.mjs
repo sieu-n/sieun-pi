@@ -15,6 +15,11 @@ const auto = { mode: "auto" };
 
 if (argv[0] !== "--cli") {
   const provider = argv[1] ?? "anthropic";
+  // waitSec starts the slot wait at the first vend, so a slow worker start cannot use it up before the request.
+  if (state.waitSec !== undefined && state.waitUntil === undefined) {
+    state.waitUntil = now + state.waitSec;
+    save();
+  }
   if ((state.waitUntil ?? 0) > now) {
     process.stdout.write(JSON.stringify({ retryAt: state.waitUntil, message: "waiting for an account slot" }));
     process.exit(75);
