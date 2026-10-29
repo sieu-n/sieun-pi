@@ -208,9 +208,11 @@ def cmd_priority(rest):
         prev = (state["sessions"].get(key.key) or {}).get("priority") or "normal"
         now = time.time()
         vending.IntentWriter(state).set_priority(key, positional[0], now, labeled)
-        # A tree that drops a class keeps its cell only against trees still behind it; the trees now ahead of it
-        # that wait for later cells are woken in order to take it (`refill`).
-        if sched.PRIORITY_RANK[positional[0]] > sched.PRIORITY_RANK.get(prev, 1):
+        # A class change moves the tree in line: a tree that drops one opens its cell to the trees now ahead of it, and a
+        # tree that gains one may take an earlier cell. Each tree in line that would get an earlier cell is woken in
+        # order (`refill`). On 10-29 01a11d24 went from normal to high at 04:02:26Z and slept until its 04:24:00Z cell,
+        # while high trees that parked after it entered claude-virev10 from 04:06Z.
+        if positional[0] != prev:
             cfg = base.config()
             for provider, wait in ((state["sessions"][key.key].get("wait") or {}).items()):
                 if wait.get("account") and wait["slot_at"] > now + vending.OWN_CELL_EARLY_SEC:

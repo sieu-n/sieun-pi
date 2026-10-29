@@ -1185,6 +1185,22 @@ class RefillOpenedCell(unittest.TestCase):
         self.assertEqual((type(d), d.account.id), (sched.Admit, "z"))
         self.assertEqual(vending._wakes, [["first"]], "the tree entered z ahead of its x cell, which opens to the next tree")
 
+    def test_a_tree_raised_to_high_is_first_in_line_for_an_earlier_cell(self):
+        """10-29 on claude-virev10: 01a11d24 parked as normal at 04:02:04Z for 04:24:00Z and went high at 04:02:26Z; high trees
+        that parked after it entered from 04:06Z while it slept until its own cell."""
+        state = empty_state()
+        x, out = acct("x", five=10, tier="max 5x"), acct("y", five=100, five_reset_in=FIVE)
+        sp = sched.slot_spacing(x, CFG)
+        cell = math.ceil(NOW / sp) * sp
+        raised, later = put(state, tree_key("raised"), on="y"), put(state, tree_key("later"), on="y", priority="high")
+        state["sessions"]["raised"]["wait"] = {P: {"account": "x", "slot_at": cell + 4 * sp, "since": NOW - 600}}
+        state["sessions"]["later"]["wait"] = {P: {"account": "x", "slot_at": cell + sp, "since": NOW - 300}}
+        state["providers"][P]["admissions"] = {"x": [[NOW, "busy0"], [cell, "busy1"]]}
+        vending.IntentWriter(state).set_priority(raised, "high", NOW)
+        self.assertEqual(vending.refill(state, P, "x", [x, out], CFG, NOW)[0], "raised")
+        d = request(state, raised, [x, out], NOW + 1)
+        self.assertEqual((type(d), d.slot_at), (sched.Wait, cell + sp), "it waited longer, so as high it goes before the later high tree")
+
     def test_a_tree_in_line_whose_sessions_do_not_answer_passes_the_wake_on(self):
         turns = {"working": {}, "queued": {}, "owner": {}, "lead": [], "kept": {
             "sub-a": {"since": NOW - 900, "slot_at": NOW + 600, "tree": "a"},
