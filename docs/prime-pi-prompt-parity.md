@@ -113,7 +113,7 @@ On 2026-10-28 at 18:35 UTC `scripts/prompt-parity.mjs` compared every tool of Pr
 | `agent_observe` | Python skill | pi-rlm's skill over the thread's conversations and the other threads' roots | equivalent; `tool_use_count` and `activity` are null |
 | `board` (`board.wake`, `board.corrections`, `board.own`) | Python skill | the same module: a kernel with `PI_HOST_THREAD` reads the thread's board from apps/chat and sets run, time and check wakes through `POST /api/threads/<thread>/wakes` | none |
 | `edit` | Python skill | pi-rlm's copy in the kernel, and the `edit` tool | equivalent |
-| `attach_image` | Python skill | on the kernel's path but not installed, because it needs Prime's `prime-agent-runtime` package, so the kernel lists it under `[python-skills-unavailable]`; `read` returns an image file as an image | different |
+| `attach_image` | Python skill | the same skill, installed with Pillow and the vendored `prime-agent-runtime`; `model.info` gives the model's input types | equivalent |
 | `goal`, `compact`, `rlm_heartbeat` | Python skills | `compact.run` asks pi-durable to compact; `goal.*` and `rlm_heartbeat.*` answer that they do not run in durable threads yet | missing except `compact` |
 | `websearch`, `aside_browser`, the `mcp` object for `aside` | Python skills and REPL | the agent dir's `websearch` and `aside_browser` load in the kernel, and `mcp` is the vendored runtime's | equivalent as far as their own code goes |
 | markdown skills (`unslop`, `how`, `why`, `spec-report`, `setup-pstack`, `typescript-best-practices`, `resume-paused-sessions`, `skill-creator`, `mcp`) | read with ipython | read with ipython or `read` at the same `<location>` | equivalent |
@@ -186,6 +186,8 @@ Every conversation of a thread offers Prime's `ipython`, with the definition pi-
 The cell runs on pi-rlm's own kernel code: `Kernel` and `kernel_relay.py` under a `systemd-run --user --scope` unit (`pi-rlm-kernel-*.scope`), the bootstrap cell, and the Python skills the prompt lists, with pi-rlm's copies of `goal`, `compact`, `edit`, `agent_message` and `agent_observe`.
 The result text is pi-rlm's (`formatCell`, `<ipython_kernel_reset>`, `[python-state-restored]`, `[python-skills-unavailable]`).
 The kernels use their own venv, `<agent dir>/pi-host/durable/rlm/kernel-venv`, so the skill set of durable kernels and of pi-host's other sessions never rebuild each other's venv.
+That venv gets Prime's package set: pi-rlm's `kernelPackages` reads Prime's runtime, `dill` and default packages from prime-agent's `core/kernel/bootstrap.js`, and every Python skill the prompt lists is installed with them.
+`packages/pi-host/test/durable/kernel-venv.test.ts` compares the packages Prime's spec pulls into both venvs on a box that has both.
 
 ```mermaid
 flowchart TD
@@ -284,7 +286,7 @@ A thread from before this change keeps its first system message, the old preambl
 | Gap | Recommendation |
 |---|---|
 | A pi thread offers `read`, `write`, `edit`, `bash`, `subagent` and `send_message` beside Prime's tools. | Drop them once durable `ipython` has run in production, so the tool list is Prime's. |
-| `goal.*`, `refine.*` and `rlm_heartbeat.*` fail in a durable kernel, and `attach_image` is not installed there. | Map goals to pi-durable's `onYield`, refine to pi-harness, heartbeats to apps/chat's clock; install attach_image's Pillow without Prime's runtime package. |
+| `goal.*`, `refine.*` and `rlm_heartbeat.*` fail in a durable kernel. | Map goals to pi-durable's `onYield`, refine to pi-harness, heartbeats to apps/chat's clock. |
 | A depth-2 child's prompt says depth 1 and names the thread as its parent. | Compute the depth from the conversation's owners in `prime-prompt.ts`. |
 | `send_message` beside `tell_owner`. | Move apps/chat's channel and duty texts to `tell_owner`, teach the guard a channel turn, then drop the alias. |
 | No `[correction check]` after an owner message that reads as a correction. | Port the legacy server's `correctionStep` to apps/chat. |

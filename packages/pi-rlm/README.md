@@ -17,7 +17,7 @@ pi -e ./packages/pi-rlm                         # one run only, no settings chan
 pi -e ./packages/pi-rlm/src/pi/index.ts         # the kernel without messaging
 ```
 
-The kernel needs a Python 3.11+ with `dill`, `tyro` and `mcp`.
+The kernel needs a Python 3.11+ with Prime's kernel packages: the vendored runtime in `python/`, `dill` and Prime's default packages (`kernelPackages` in `src/core/python.ts`).
 Set `PI_RLM_PYTHON` to one, or let pi-rlm build a uv venv at `<agent dir>/rlm/kernel-venv` on first use, which is `~/.pi/agent/rlm/kernel-venv` unless `PI_CODING_AGENT_DIR` moves the agent dir.
 That build needs `uv` on `PATH`.
 
@@ -65,7 +65,7 @@ pi-rlm reaches pi-host only through the host API table in `@sieun-pi/pi-family/h
 ## Python
 
 The kernel runs the vendored Prime runtime in `python/`, listed with its hashes and changes in `PROVENANCE.md`.
-Set `PI_RLM_PYTHON` to a Python 3.11+ that has `dill`, `tyro` and `mcp`, or let pi-rlm build a uv venv at `<agent dir>/rlm/kernel-venv`.
+Set `PI_RLM_PYTHON` to a Python 3.11+ that has those packages, or let pi-rlm build a uv venv at `<agent dir>/rlm/kernel-venv`.
 Every loaded Pi skill with a `pyproject.toml` and `src/<import name>/` is installed in that venv and imported by name when the kernel starts.
 
 ## Children

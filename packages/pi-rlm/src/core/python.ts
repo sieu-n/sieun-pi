@@ -14,7 +14,14 @@ export const RLM_SKILLS = ["goal", "compact", "edit"].map(name => join(SKILLS_DI
 /** The skills the agent bus extension returns from `resources_discover`. */
 export const BUS_SKILLS = ["agent-message", "agent-observe"].map(name => join(SKILLS_DIR, name));
 
-const BASE_PACKAGES = ["dill", "tyro", "mcp>=2,<3"];
+/**
+ * What Prime installs into its kernel venv before any skill (prime-agent `core/kernel/bootstrap.js`): its runtime package, here the vendored
+ * copy, `dill` for state snapshots and its default packages, read from Prime's own module so the two lists cannot drift.
+ */
+export async function kernelPackages(): Promise<string[]> {
+  const bootstrap = (await import(new URL("./core/kernel/bootstrap.js", import.meta.resolve("prime-agent")).href)) as { DEFAULT_RLM_EXTRA_UV_ARGS: string[] };
+  return [RUNTIME_DIR, "dill", ...bootstrap.DEFAULT_RLM_EXTRA_UV_ARGS];
+}
 
 /** A loaded Pi skill that carries a Python package, so the kernel imports it by name at start. */
 export interface PythonSkill {
@@ -49,9 +56,10 @@ function run(cmd: string, args: string[], env: NodeJS.ProcessEnv): Promise<void>
 
 const building = new Map<string, Promise<string>>();
 
-function fingerprint(skills: PythonSkill[]): string {
+function fingerprint(packages: string[], skills: PythonSkill[]): string {
   const h = createHash("sha256");
-  h.update(JSON.stringify(BASE_PACKAGES));
+  h.update(JSON.stringify(packages));
+  h.update(readFileSync(join(RUNTIME_DIR, "pyproject.toml")));
   for (const skill of [...skills].sort((a, b) => a.dir.localeCompare(b.dir))) {
     const pyproject = join(skill.dir, "pyproject.toml");
     h.update(`${skill.dir}\0${readFileSync(pyproject, "utf8")}\0`);
@@ -82,8 +90,9 @@ async function withLock<T>(lockDir: string, fn: () => Promise<T>): Promise<T> {
 }
 
 /**
- * The kernel's Python. `PI_RLM_PYTHON` wins. Otherwise pi-rlm keeps a uv venv at `<agentDir>/rlm/kernel-venv` with dill, tyro, mcp and every
- * Python skill installed, and rebuilds it when the skill set's `pyproject.toml` files change.
+ * The kernel's Python. `PI_RLM_PYTHON` wins. Otherwise pi-rlm keeps a uv venv at `<agentDir>/rlm/kernel-venv` with Prime's package set
+ * (`kernelPackages`) and every Python skill installed. When that set or a skill's `pyproject.toml` changes, it installs into the same venv,
+ * which only adds packages, so a kernel already running on it keeps going.
  */
 export async function kernelPython(agentDir: string, skills: PythonSkill[], onProgress: (text: string) => void = () => {}): Promise<{ python: string; binDir?: string }> {
   const override = process.env.PI_RLM_PYTHON?.trim();
@@ -91,7 +100,8 @@ export async function kernelPython(agentDir: string, skills: PythonSkill[], onPr
   const venv = join(agentDir, "rlm", "kernel-venv");
   const python = join(venv, "bin", "python");
   const marker = join(venv, ".pi-rlm-fingerprint");
-  const want = fingerprint(skills);
+  const packages = await kernelPackages();
+  const want = fingerprint(packages, skills);
   const current = () => existsSync(python) && existsSync(marker) && readFileSync(marker, "utf8") === want;
   if (current()) return { python, binDir: join(venv, "bin") };
   let job = building.get(venv);
@@ -103,7 +113,7 @@ export async function kernelPython(agentDir: string, skills: PythonSkill[], onPr
       onProgress("Creating the Python kernel environment...");
       if (!existsSync(python)) await run("uv", ["venv", "--quiet", "--python", "3.11", venv], env);
       onProgress("Installing Python kernel packages...");
-      await run("uv", ["pip", "install", "--quiet", "--python", python, ...BASE_PACKAGES, ...skills.map(s => s.dir)], env);
+      await run("uv", ["pip", "install", "--quiet", "--python", python, ...packages, ...skills.map(s => s.dir)], env);
       writeFileSync(marker, want);
       return python;
     }).finally(() => building.delete(venv));

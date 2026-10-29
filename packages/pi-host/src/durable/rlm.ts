@@ -300,10 +300,7 @@ export class DurableRlm {
     mkdirSync(slot.artifactDir, { recursive: true });
     progress("Starting Python kernel...");
     const skills = await this.pythonSkills(slot.thread.cwd);
-    // A skill that needs Prime's own runtime package (attach_image) cannot be installed here; it stays importable from its folder and is
-    // reported unavailable when its imports fail.
-    const installable = skills.filter(skill => !readFileSync(join(skill.dir, "pyproject.toml"), "utf8").includes("prime-agent-runtime"));
-    const { python, binDir } = await kernelPython(this.options.venvRoot ?? join(this.options.agentDir, "pi-host", "durable"), installable, progress);
+    const { python, binDir } = await kernelPython(this.options.venvRoot ?? join(this.options.agentDir, "pi-host", "durable"), skills, progress);
     const paths = relayPaths(slot.artifactDir, slot.session);
     let leftover = false;
     if (!slot.cleared) {
