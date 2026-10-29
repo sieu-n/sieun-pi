@@ -521,10 +521,16 @@ export const lagSlots = (points: readonly [number, number][]): Slot[] =>
 export const lastHalfHour = (slots: readonly Slot[], to: number): number =>
   Math.round(slots.filter(s => s.slot >= to - 30 * MINUTE && s.slot < to).reduce((sum, s) => sum + s.good, 0) / 30);
 
-/** Prod Meta advertiser walks due now and finished in 24 h, in one scan of meta_ads_walks with the columns grafana_ro may read. */
-export const META_SQL = `select count(*) filter (where kind = 'advertiser' and state = 'idle' and next_run_at <= now()) as due,
-  count(*) filter (where kind = 'advertiser' and last_finished_at > now() - interval '1 day') as finished
-from meta_ads_walks`;
+/**
+ * Prod Meta advertiser walks due now and finished in 24 h, estimated from a 1% page sample of meta_ads_walks with the columns grafana_ro may read.
+ * measured: on 10-29 12:07-12:25Z the full scan (49M rows, 25 GB) hit grafana_ro's 30 s statement_timeout on 3 tries while the media online move's
+ * 6 backfill sessions held the disk, and so did the due count alone on ix_meta_ads_walks_due; the 1% sample answered in 10-13 s and read
+ * 4.13M due and 730k finished, against 4.0M and 706k from the last full scan at 07:05Z.
+ */
+export const META_SAMPLE_PCT = 1;
+export const META_SQL = `select count(*) filter (where kind = 'advertiser' and state = 'idle' and next_run_at <= now()) * ${100 / META_SAMPLE_PCT} as due,
+  count(*) filter (where kind = 'advertiser' and last_finished_at > now() - interval '1 day') * ${100 / META_SAMPLE_PCT} as finished
+from meta_ads_walks tablesample system (${META_SAMPLE_PCT})`;
 
 /** Good results a minute per crawl with no board goal: crawl_profile jobs per platform and Instagram posts, by full hour over 24 h. */
 export const OTHERS_SQL = `SELECT kind, if(countIf(hr >= cur - INTERVAL 6 HOUR) < 6, 0, minIf(v, hr >= cur - INTERVAL 6 HOUR)) AS slowest6h, sum(v) / 24 AS average24h
