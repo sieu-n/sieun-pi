@@ -9,6 +9,10 @@
  * join to the exact string Prime's builder returns for the same inputs (`primeSystemPrompt`); `rules` and `corrections` follow them, where
  * Prime sends the same texts as messages. A thread's root conversation gets the harness digest where Prime puts it, as a message before
  * the turn's input (`prime-harness.ts`); a child conversation still gets it as the `harness` section.
+ *
+ * A thread that belongs to an agent (an `agent.ref` doc in its root conversation, `agent-profile.ts`) differs in two ways, in every one of its
+ * conversations: the agent's `brief.md` is one more Prime context file after the AGENTS.md files Prime's loader found, so Prime's builder
+ * renders it in "# Project Context" and an edit reaches the next request; and the local harness store is the agent's, not the thread's.
  */
 import { existsSync, opendirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -18,7 +22,8 @@ import { defineExtension, GenerationTask, hook, LiveDoc, ROOT_CONVERSATION_ID, s
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, jobReplyGuideline, personaGuideline } from "../../../../legacy/prime/user-history/src/chat-brief.ts";
 import { jobLedgerPrompt, ledgerPrompt, parseLedger, type Ledger } from "../../../../legacy/prime/user-history/src/chat-corrections.ts";
 import { SessionRules } from "../../../pi-claude-rules/src/core/rules.ts";
-import { contextTail, contextTexts, digestFlags, digestQueryTerms, HarnessDigestDoc, mergedHarnessState, nextDelivery, placeDeliveries, threadHarnessDir, withDigests } from "./prime-harness.ts";
+import { agentHarnessDir, briefFile, conversationHarnessDir, threadAgent, type ContextFile } from "./agent-profile.ts";
+import { contextTail, contextTexts, digestFlags, digestQueryTerms, HarnessDigestDoc, mergedHarnessState, nextDelivery, placeDeliveries, withDigests } from "./prime-harness.ts";
 import { formatHarnessStateForPrompt, HARNESS_DIGEST_PREFIX, HARNESS_DIGEST_SUFFIX } from "./vendor/prime-harness.ts";
 
 /**
@@ -65,8 +70,10 @@ export interface PrimePromptInput {
   brief?: readonly string[];
   /** The folder of the corrections ledger (`corrections.json`); default `chatDataDir(agentDir)`. */
   ledgerDir?: string;
-  /** The conversation's local harness store (`threadHarnessDir`), merged over the global one in the digest. */
+  /** The conversation's local harness store (`conversationHarnessDir`), merged over the global one in the digest. */
   harnessDir?: string;
+  /** The thread's agent's `brief.md` (`briefFile`), rendered after the AGENTS.md files in "# Project Context". */
+  agentBrief?: ContextFile;
   /** Leave out the parts Prime sends as messages: claude-rules, the harness digest and the corrections block. */
   primeOnly?: boolean;
   /** Extra parts not to build, such as pinned ones a conversation already shows. */
@@ -81,7 +88,6 @@ export interface PrimePromptInput {
 // runs, so the digest comes from `vendor/prime-harness.ts`, copied from the source of the running release.
 
 interface Skill { name: string; filePath: string; disableModelInvocation?: boolean }
-interface ContextFile { path: string; content: string }
 interface PrimeModules {
   buildSystemPrompt(options: Record<string, unknown>): string;
   formatSkillsForPrompt(skills: Skill[]): string;
@@ -245,7 +251,7 @@ export async function primePromptParts(input: PrimePromptInput): Promise<PromptP
     cwd: input.cwd,
     messagesPath: input.messagesPath,
     skills: resources.skills,
-    contextFiles: resources.contextFiles,
+    contextFiles: input.agentBrief ? [...resources.contextFiles, input.agentBrief] : resources.contextFiles,
     selectedTools: tools,
     promptGuidelines: guidelines(input),
     allowRecursion: true,
@@ -352,32 +358,40 @@ export function promptTools(env: NodeJS.ProcessEnv = process.env): PromptTools {
  */
 export function primePrompt(options: PrimePromptOptions): Extension {
   const builds = new WeakMap<object, Promise<Map<PromptKey, string>>>();
-  const build = (input: PromptInput): Promise<Map<PromptKey, string>> => {
+  const parts = async (input: PromptInput, context: Context): Promise<Map<PromptKey, string>> => {
+    const depth = input.conversationId === ROOT_CONVERSATION_ID ? 0 : 1;
+    const cwd = input.agent.cwd ?? (input.env as { cwd?: string } | undefined)?.cwd ?? options.thread?.cwd ?? process.cwd();
+    const thread = options.thread;
+    const agent = await threadAgent(input.read, context);
+    const brief = agent && briefFile(agent);
+    const harnessDir = thread ? conversationHarnessDir(thread, input.conversationId, agent) : agent && agentHarnessDir(agent);
+    const built = await primePromptParts({
+      agentDir: options.agentDir,
+      cwd,
+      ...(thread ? { messagesPath: thread.file, parentName: thread.name(), session: `${thread.id}-${input.conversationId}` } : {}),
+      ...(harnessDir ? { harnessDir } : {}),
+      ...(brief ? { agentBrief: brief } : {}),
+      depth,
+      tools: options.tools ?? "prime",
+      skip: new Set([...PINNED_SECTIONS].filter(key => input.shown[key] !== undefined || (key === "harness" && depth === 0))),
+      ...(options.bundledSkillsDir ? { bundledSkillsDir: options.bundledSkillsDir } : {}),
+      ...(options.ledgerDir ? { ledgerDir: options.ledgerDir } : {}),
+    });
+    return new Map(built.map(part => [part.key, part.text]));
+  };
+  const build = (input: PromptInput, context: Context): Promise<Map<PromptKey, string>> => {
     let pending = builds.get(input);
     if (!pending) {
-      const depth = input.conversationId === ROOT_CONVERSATION_ID ? 0 : 1;
-      const cwd = input.agent.cwd ?? (input.env as { cwd?: string } | undefined)?.cwd ?? options.thread?.cwd ?? process.cwd();
-      const thread = options.thread;
-      const session = thread && `${thread.id}-${input.conversationId}`;
-      pending = primePromptParts({
-        agentDir: options.agentDir,
-        cwd,
-        ...(thread ? { messagesPath: thread.file, parentName: thread.name(), session: session!, harnessDir: threadHarnessDir(thread.file, session!) } : {}),
-        depth,
-        tools: options.tools ?? "prime",
-        skip: new Set([...PINNED_SECTIONS].filter(key => input.shown[key] !== undefined || (key === "harness" && depth === 0))),
-        ...(options.bundledSkillsDir ? { bundledSkillsDir: options.bundledSkillsDir } : {}),
-        ...(options.ledgerDir ? { ledgerDir: options.ledgerDir } : {}),
-      }).then(parts => new Map(parts.map(part => [part.key, part.text])));
+      pending = parts(input, context);
       pending.catch(error => options.log?.(`prime prompt failed: ${error instanceof Error ? error.message : String(error)}`));
       builds.set(input, pending);
     }
     return pending;
   };
-  const render = (key: PromptKey) => async (input: PromptInput): Promise<string | undefined> => {
+  const render = (key: PromptKey) => async (input: PromptInput, context: Context): Promise<string | undefined> => {
     if (key === "harness" && input.conversationId === ROOT_CONVERSATION_ID) return undefined;
     if (PINNED_SECTIONS.has(key) && input.shown[key] !== undefined) return input.shown[key];
-    return (await build(input)).get(key);
+    return (await build(input, context)).get(key);
   };
   return defineExtension({
     name: "prime-prompt",
@@ -411,7 +425,7 @@ export async function deliverHarnessDigest(options: PrimePromptOptions & { threa
   const cwd = (await conversation.agent(context)).cwd ?? options.thread.cwd;
   const tools = TOOLS[options.tools ?? "prime"].root;
   const { skills } = await primeResources(options.agentDir, cwd, options.bundledSkillsDir ?? bundledSkillsDir());
-  const state = mergedHarnessState(options.agentDir, threadHarnessDir(options.thread.file, options.thread.id));
+  const state = mergedHarnessState(options.agentDir, conversationHarnessDir(options.thread, conversationId, await threadAgent(harness, context)));
   await conversation.commit(async tx => {
     const doc = await tx.doc(HarnessDigestDoc, conversationId);
     const kept = placeDeliveries(view, doc.deliveries).map(placed => placed.delivery);

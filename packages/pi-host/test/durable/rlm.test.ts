@@ -12,6 +12,7 @@
  * 6. A thread whose cwd changed moves its live kernel to the new folder before the next cell.
  * 7. A kernel freed when idle comes back on the next call with Prime's restore line and no reset note, and a cell that comes while
  *    the free stops it waits for a new kernel instead of attaching to the relay that is ending.
+ * 8. The kernel's harness store is the agent's in a thread with an `agent.ref`, and the thread's own otherwise.
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
@@ -21,9 +22,10 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { Message } from "@earendil-works/pi-ai";
 import { getCurrentTools, toToolDeclaration } from "@earendil-works/pi-ai/utils/transcript";
-import { LiveDoc } from "@earendil-works/pi-durable";
+import { LiveDoc, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { testPython } from "@sieun-pi/pi-rlm/test-helpers";
 import { KERNEL_RESET } from "../../../pi-rlm/src/pi/index.ts";
+import { ChatDoc } from "../../src/durable/registry.ts";
 import { DurableRlm, IPYTHON_TOOL, loadIpythonTool } from "../../src/durable/rlm.ts";
 import { SUBAGENT_STARTED } from "../../src/durable/subagent.ts";
 import { call, cell, context, entriesOf, firstUser, inputs, lastText, openThread, results, rlmOptions, say, until } from "./rlm-rig.ts";
@@ -72,6 +74,24 @@ test("every conversation is offered ipython with pi-rlm's own definition, and th
   assert.deepEqual(ipython, toToolDeclaration({ name: tool.name, description: tool.description, parameters: tool.parameters as never }));
   assert.ok(tools.some(t => t.name === "subagent"));
   assert.deepEqual(out.map(r => [r.name, r.text.trim(), r.isError]), [[IPYTHON_TOOL, "set module", false], [IPYTHON_TOOL, "42", false]]);
+});
+
+test("the kernel's RLM_HARNESS_STATE_DIR is the agent's store in an agent's thread and the thread's own store otherwise", async () => {
+  const where = async (id: string, ref?: unknown) => {
+    const { harness, root } = await openThread(join(dir, "threads", `${id}.sqlite`), id, rlm, ({ messages }) => {
+      if (lastText(messages) === "where") return cell("import os\nprint(os.environ['RLM_HARNESS_STATE_DIR'])");
+      return say("done");
+    }, dir);
+    if (ref) await harness.commit(async tx => { (await tx.doc(ChatDoc, ROOT_CONVERSATION_ID, "agent.ref", null)).value = ref as never; }, context);
+    await (await root.submit({ type: "input", content: "where" }, context)).wait(context);
+    const out = results(await entriesOf(harness));
+    await harness.close(context);
+    await rlm.closeThread(id, "idle");
+    return out[0]?.text.trim();
+  };
+  const folder = join(dir, "agents", "vent");
+  assert.equal(await where("agent", { agent: "ag_vent", dir: folder, role: "work" }), join(folder, "harness"));
+  assert.equal(await where("plain"), join(dir, "session-artifacts", "plain", "harness"));
 });
 
 test("a thread whose cwd changed moves its live kernel there before the next cell", async () => {

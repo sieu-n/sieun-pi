@@ -1,7 +1,8 @@
 /**
  * Prime's `ipython` tool and its RLM runtime in a durable thread: pi-rlm's tool definition, loaded through the adapter in
  * `pi-extensions.ts` so its text is the extension's own, run on pi-rlm's kernel (`Kernel`, the relay under a systemd scope, the bootstrap
- * cell, the Python skills) with the kernel's host requests answered from the thread file.
+ * cell, the Python skills) with the kernel's host requests answered from the thread file. The kernel's `RLM_HARNESS_STATE_DIR` is the
+ * conversation's local harness store, which is the agent's for a thread that belongs to one (`agent-profile.ts`).
  *
  * One kernel per conversation, started at its first `ipython` call and kept across turns while pi-host runs. A kernel is snapshotted
  * (`kernel-state.dill`, pi-rlm's format) after each settled run and freed once its conversation has had no cell and no run for
@@ -38,12 +39,12 @@ import { Kernel, KernelBusyError, relayPaths, type CellResult, type HostRequest,
 import { BUS_SKILLS, kernelPython, pythonSkillOf, RLM_SKILLS, RUNTIME_SRC, type PythonSkill } from "../../../pi-rlm/src/core/python.ts";
 import { NOTE_INTERVAL_MS } from "../../../pi-rlm/src/pi/children.ts";
 import piRlm, { baseEnv, BUSY_NO_UI, formatCell, KERNEL_RESET, noticeMessage, restoreLine, SNAPSHOT_LIMITS, STILL_RUNNING, type Notice } from "../../../pi-rlm/src/pi/index.ts";
+import { conversationHarnessDir, threadAgent } from "./agent-profile.ts";
 import { CHAT_URL_ENV, DEFAULT_CHAT_URL } from "./chat-app.ts";
 import { agentIdOf, artifactDirOf, DeliverTask, RlmChildDoc, sessionOf, textOfMessage, type RlmChild } from "./children.ts";
 import { durableTool, loadPiExtension, type PiTool, type PiToolResult } from "./pi-extensions.ts";
 import { PrimeChatName } from "./prime-chat.ts";
 import { piThreadHeader } from "./prime-roots.ts";
-import { threadHarnessDir } from "./prime-harness.ts";
 import { bundledSkillsDir, primeResources } from "./prime-prompt.ts";
 import { SendMessage } from "./send-message.ts";
 import { Subagent } from "./subagent.ts";
@@ -279,7 +280,7 @@ export class DurableRlm {
       PYTHONUNBUFFERED: "1",
       ...(binDir ? { PATH: [binDir, env.PATH].filter(Boolean).join(sep) } : {}),
       RLM_SESSION_DIR: slot.artifactDir,
-      RLM_HARNESS_STATE_DIR: threadHarnessDir(slot.thread.file, slot.session),
+      RLM_HARNESS_STATE_DIR: conversationHarnessDir(slot.thread, slot.conversation, await threadAgent(slot.thread.harness(), context)),
       RLM_DEPTH: String(depth),
       RLM_MAX_DEPTH: String(this.maxDepth),
       PI_CODING_AGENT_DIR: this.options.agentDir,

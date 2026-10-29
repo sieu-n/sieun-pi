@@ -5,7 +5,9 @@
  * `[harness-digest]` message before the turn's input; a context whose newest digest has another state fingerprint gets a
  * `[harness-digest update]` with the lines that changed, and earlier digests stay where they are, so the cached prefix holds. The state is
  * the global store merged with the session's local one, and the entries are ranked by the turn's input, the goal and the last four
- * messages. All of it runs here with Prime's own code (`vendor/prime-harness.ts`, copied by `scripts/vendor-prime-harness.mjs`).
+ * messages. A conversation's local store is its thread's own (`threadHarnessDir`), or, in a thread that belongs to an agent, the agent's
+ * store, which every conversation of that thread shares (`agent-profile.ts` `conversationHarnessDir`). All of it runs here with Prime's
+ * own code (`vendor/prime-harness.ts`, copied by `scripts/vendor-prime-harness.mjs`).
  *
  * pi-durable stores no message that is not an entry, and an entry with a user message would show in the chat and its search as one the owner
  * sent. So each delivery goes in the conversation's `prime.harness-digests` document, anchored after the newest entry the context held, and a

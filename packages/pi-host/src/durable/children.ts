@@ -15,7 +15,7 @@ import { label, PREVIEW } from "../../../pi-rlm/src/pi/children.ts";
 export const agentIdOf = (thread: string, conversation: number): string => (conversation === ROOT_CONVERSATION_ID ? thread : `${thread}:${conversation}`);
 /** The session id a conversation's prompt and artifacts use (prime-prompt.ts `session`). */
 export const sessionOf = (thread: string, conversation: number): string => `${thread}-${conversation}`;
-/** Where a conversation's kernel snapshot, relay log and local harness store live, next to the thread files as `threadHarnessDir` puts them. */
+/** Where a conversation's kernel snapshot and relay log live, next to the thread files; its harness store is `conversationHarnessDir`'s. */
 export const artifactDirOf = (threadFile: string, thread: string, conversation: number): string =>
   join(dirname(dirname(threadFile)), "session-artifacts", sessionOf(thread, conversation));
 

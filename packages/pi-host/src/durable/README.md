@@ -43,12 +43,24 @@ H-->>C: the same submission, nothing admitted twice
 | `prime-chat.ts`, `chat-app.ts` | Prime's chat extension (user-history) in a thread's root conversation: `search_history`, `chat_board`, `tell_owner`, `correction_add`, `poteto_mode` and the `[message id]` and `[not from the owner]` wrappers, with `chat_board` and `tell_owner` on apps/chat's board API; `docs/prime-pi-prompt-parity.md` lists each binding and what is skipped. |
 | `prime-prompt.ts` | A Prime chat's system prompt, built by prime-agent's own `buildSystemPrompt` from the agent dir's AGENTS.md files, skills, chat brief and corrections ledger, as pi-durable sections; `docs/prime-pi-prompt-parity.md` maps each part. |
 | `prime-harness.ts`, `vendor/prime-harness.ts` | Prime's harness digest and its updates from the global store and the thread's local one, sent as messages before the inputs they go with, with Prime's own code copied by `scripts/vendor-prime-harness.mjs`. |
+| `agent-profile.ts` | The agent a thread belongs to, read from the `agent.ref` doc of its root conversation, and what that agent's folder gives the thread: the brief as a Prime context file and the agent's harness store as the local store. |
 | `open.ts` | `openDurableHost()` for one file and the Prime preamble extension. |
 | `@sieun-pi/pi-pool/durable` | `poolProvider()` in `packages/pi-pool/src/durable/pool-provider.ts`: a pi-ai Provider that vends each request's account through pi-pool and turns a slot wait into a stored sleep. |
 | `subagent.ts` | The `subagent` tool: the call starts a child conversation through an `rlm.deliver` task and returns at once, and the child's whole answer reaches the parent later as an input. A call from before this change still owns its child and returns its answer. `ForegroundSubagent` keeps the old tool for `openDurableHost`. |
 | `rlm.ts`, `children.ts` | Prime's `ipython` on pi-rlm's kernel, one kernel per conversation, with `rlm.spawn`, `agent_message` and `agent_observe` answered from the thread file; the `rlm.child` document and the `rlm.deliver` task. `docs/prime-pi-prompt-parity.md` describes both. |
 | `send-message.ts` | The `send_message` tool, the one way an agent speaks to people: `{text, to?}`, result "Sent.", no effect outside the thread. |
 | `import.ts` | `parseSession()`: a Prime or Pi session file's active branch as entry drafts, for `durable_import`. |
+
+## Threads that belong to an agent
+
+apps/chat writes an `agent.ref` chat.doc, `{agent, dir, role}`, into the root conversation of each agent's work thread (role `work`) and of each root job thread filed under an agent (role `job`), through `durable_doc_put`.
+A value of any other shape reads as no agent.
+Every conversation of such a thread, its root and each child conversation, differs from a plain thread in two ways.
+
+1. The agent's `<dir>/brief.md` is one more Prime context file after the AGENTS.md and CLAUDE.md files Prime's resource loader found, so Prime's own `buildSystemPrompt` renders it in "# Project Context" under its path. That is the `context` section, which is not pinned, so an edit reaches the next request of every thread of the agent as a new `context` section alone, and an unchanged brief sends nothing new. A missing or blank brief adds nothing.
+2. The local harness store is the agent's, `<dir>/harness`, in place of the thread's own `session-artifacts/<thread>[-<conversation>]/harness`. The root's digest and a child's `harness` section merge it over the global store, and every kernel of the thread gets it as `RLM_HARNESS_STATE_DIR`, so `rlm.harness.create_memory(...)` and `refine.run()` write the agent's memory, and `global_=True` still writes the global store.
+
+A thread with no ref keeps its own store, whose root conversation is `session-artifacts/<thread>/harness` for both the digest and the root's kernel, and gets no brief. A kernel reads the ref when it starts, so a ref written while a kernel runs reaches that kernel at its next start.
 
 ## Socket commands
 
