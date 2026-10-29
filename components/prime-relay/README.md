@@ -31,6 +31,23 @@ Run `node components/prime-relay/install.mjs --ref <commit>` from a sieun-pi che
 
 The sieun-pi side lives in `legacy/prime/user-history/src/hosts.ts`. It reads `~/.config/sieun-pi/hosts.json`, opens `~/.local/state/sieun-pi/hosts/<host>.sock` for every other host so `new DaemonClient(path)` reaches that host unchanged, and reads remote session files with `readHostFile`. `sieun-pi hosts list|start|read|transcript` drives the same code from a shell.
 
+## /v2/agents, the agent relay
+
+`agents/main.ts` is the agent relay that runs as `pi-host-relay.service` on Linux and `com.sieun.pi-host-relay` on macOS, from the pi-host release tree, so it finds `ws` in that tree's node_modules. It serves every v1 route above through `createRelay`, and the same port also takes the `/v2/agents` WebSocket with the same bearer token. The frames are in `agents/protocol.ts`, and `apps/chat/docs/agent-model.md` section 4 has the design.
+
+1. The chat server dials `ws://<box>:7791/v2/agents`. The relay opens one pi-host socket connection for the link and sends `hello` with the box's info, which holds its home, the project checkouts that exist and `agentsDir`.
+2. After the server's `welcome {feedAfter}`, the relay starts pi-host's `durable_feed` after that seq and forwards each row as an `event` frame. The server keeps the cursor, and the relay only counts `ack` frames.
+3. A `call` with a `durable_*` op goes to pi-host as that command, and its answer comes back as `result`. A command that never reached pi-host's socket answers with `unsent: true`.
+4. A `watch` call opens a `durable_watch` and forwards its events as `watch_event` under the server's watch id, and `unwatch` closes it. `check` runs a wake's shell command with `sh -c` from home and answers `{ok, code, output}`. `box_info` answers the hello's info.
+5. `file_get {path}` and `file_put {path, text}` or `{path, delete: true}` read and write files under `agentsDir` only, and any other path gets an error.
+6. When pi-host's socket closes, the relay closes the link with code 1011, so the server dials again and sets up its watches after the next `hello`.
+
+The relay also listens on `127.0.0.1:<chatProxyPort>` (7792 by default). Each request there goes up the newest live link as a `chat_http` call, and the server's result becomes the answer. With no live link, it answers 503 with a JSON error.
+
+relay.json takes four keys beside the v1 ones. `piHostSocket` is pi-host's socket and defaults to `daemonSocket`, `chatProxyPort` defaults to 7792, `box` is this box's name in `~/.config/sieun-pi/hosts.json`, and `agentsDir` defaults to `~/.pi/agent/agents`.
+
+Run `node components/prime-relay/agents/install.mjs --box <name>` on the box, with `--listen`, `--port` and `--pi-host-socket` the first time. It merges the flags into `~/.config/pi-host-relay/relay.json`, writes the service to run `node ~/.local/share/pi-host/current/components/prime-relay/agents/main.ts ~/.config/pi-host-relay/relay.json`, restarts the relay unit only and prints its health. The test is `node --test --test-force-exit --test-isolation=none components/prime-relay/test/agents-relay.test.mjs`, which runs a real pi-host child with a faux model against a fake chat server.
+
 ## Moving a chat to another box
 
 Prime finds a stopped subagent through its per-box spawn ledger (`~/.prime/agent/rlm-ledger/<hash>.jsonl`), and a chat tree copied in from another box brings its children's files but no ledger edges, so the daemon answers `Unknown active session` for each of them. After the copy, run `python3 components/prime-relay/adopt-moved-subagents.py --apply` on the receiving box. It appends one spawn edge per child that has none, and it adds ` before move` to a child whose name the parent already gave to a fresh copy. Without `--apply` it only prints the edges, and a second run appends nothing.
