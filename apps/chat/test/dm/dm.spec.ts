@@ -5,7 +5,7 @@ import { VENT, composerInput, conversation, open, row, tag } from "../channel/he
 const DM = "dm_vent";
 const sidebar = (page: Page) => page.getByRole("navigation", { name: "Conversations" });
 
-test("the sidebar's Direct messages hold one row per agent, no Solo group and no job", async ({ page, request }) => {
+test("the sidebar's Direct messages hold one row per agent and no job", async ({ page, request }) => {
   const listed = (await (await request.get("/api/sidebar")).json()) as { solo: unknown[]; dms: { id: string; agent?: string; name: string }[] };
   const all = (await (await request.get("/api/conversations")).json()) as { id: string; kind: string; name: string; archived: boolean }[];
   await open(page, `#/c/${DM}`);
@@ -15,8 +15,9 @@ test("the sidebar's Direct messages hold one row per agent, no Solo group and no
     expect(dm.agent).toBe(`ag_${dm.id.slice(3)}`);
     await expect(sidebar(page).locator(`a[href="#/c/${dm.id}"]`)).toBeVisible();
   }
-  expect(listed.solo).toHaveLength(0);
-  await expect(sidebar(page).locator('[data-section="solo"]')).toHaveCount(0);
+  // The fixture's one untitled root chat is no agent, so it sits in Solo and never among the DMs.
+  expect(listed.solo.map((c) => (c as { name: string }).name)).toEqual(["New thread"]);
+  expect(listed.dms.some((dm) => dm.name === "New thread")).toBe(false);
   const jobs = all.filter((c) => c.kind === "job" && !c.archived);
   expect(jobs.length).toBeGreaterThan(0);
   for (const job of jobs) await expect(sidebar(page).locator(`a[href="#/c/${encodeURIComponent(job.id)}"]`)).toHaveCount(0);

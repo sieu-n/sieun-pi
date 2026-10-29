@@ -23,7 +23,7 @@ export type Person = {
   kind: "owner" | "agent";
   avatar?: string | undefined;
   conversationId?: string | undefined;
-  /** The row's second line, such as "Job of Vent". */
+  /** The row's second line, such as "Agent · working now". */
   detail?: string | undefined;
   /** Other names the picker matches, such as "owner" and "me" for the owner. */
   aliases?: readonly string[] | undefined;

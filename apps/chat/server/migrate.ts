@@ -1,6 +1,6 @@
 /**
- * The move from today's thread-shaped chats to agents and DM rooms (apps/chat/docs/agent-model.md, section 5): one agent per root chat, its
- * root jobs as aliases, the last `days` of its DM copied in as room posts, the feed cursor set after the newest entry read, its boards folder
+ * The move from today's thread-shaped chats to agents and DM rooms (apps/chat/docs/agent-model.md, section 5): one agent per root chat with a
+ * name (an untitled one stays a solo chat), its root jobs as aliases, the last `days` of its DM copied in as room posts, the feed cursor set after the newest entry read, its boards folder
  * copied and its read mark moved. It only reads pi-host (`threads`, `entries`) and writes through `agent-store.ts`, so it runs while the old
  * server runs, and a second run writes nothing, because an agent's record is written last and every post has its `h:` requestId.
  */
@@ -8,7 +8,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, relative } from "node:path";
 import type { AgentId, Item, Ms, Principal } from "../web/src/lib/api/types.ts";
-import { AgentStore, freeSlug, type AgentRecord, type FeedCursor, type RoomId, type RoomPost } from "./agent-store.ts";
+import { AgentStore, freeSlug, isUntitled, type AgentRecord, type FeedCursor, type RoomId, type RoomPost } from "./agent-store.ts";
 import type { DurableThread, EntryRecord, Host } from "./host/types.ts";
 import { ownerText } from "./rooms.ts";
 import { readJson, writeJson, type StateFile, type Store } from "./store.ts";
@@ -42,6 +42,8 @@ export interface MigrationReport {
   agents: AgentMigration[];
   /** Aliases this run adds: thread id to agent id. */
   aliases: Record<string, AgentId>;
+  /** Untitled root chats left as solo chats. */
+  skipped: { thread: string; name: string }[];
   ms: number;
 }
 
@@ -65,13 +67,18 @@ export async function migrateAgents(host: Host, dataDir: string, opts: MigrateOp
   const store = opts.store ?? new AgentStore(dataDir);
   const state: StateFile = opts.state?.state ?? readJson<StateFile>(join(dataDir, "state.json"), { v: 1, threads: {}, reads: {} });
   const rows = (await host.threads()).filter(row => !row.archived);
-  const report: MigrationReport = { apply: opts.apply, since, agents: [], aliases: {}, ms: 0 };
+  const report: MigrationReport = { apply: opts.apply, since, agents: [], aliases: {}, skipped: [], ms: 0 };
   const taken = new Set(store.agents.agents.map(a => a.slug));
   const planned: AgentRecord[] = [];
 
   for (const row of rows.sort((a, b) => a.createdAt - b.createdAt)) {
     if (state.threads[row.id]?.kind === "job") continue;
     const existing = store.agentOf(row.id);
+    // An untitled root chat is a solo chat, not an agent: three "New thread" chats became ag_new-thread to -4 on 10-29 this way.
+    if (!existing && isUntitled(row.name)) {
+      report.skipped.push({ thread: row.id, name: row.name });
+      continue;
+    }
     if (existing) {
       report.agents.push({ id: existing.id, name: existing.name, thread: row.id, room: existing.room, created: false, posts: [], copied: [], entriesRead: 0 });
       continue;

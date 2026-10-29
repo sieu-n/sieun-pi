@@ -135,11 +135,8 @@ describe("on the fixture", () => {
     await s.close();
   });
 
-  const newThread = async (name: string): Promise<string> => {
-    const id = host.addThread({ name, createdAt: Date.now() }).row.id;
-    await s.app.threads.refresh();
-    return id;
-  };
+  /** A registered agent's work thread, since only a registered agent joins a channel. */
+  const newThread = async (name: string): Promise<string> => ((await s.send("POST", "/api/agents", { name })).body as { thread: string }).thread;
 
   test("a live answer shows its first message before the second is sent, then a quiet turn is only a fold", async () => {
     host.wordMs = 20;

@@ -1,23 +1,20 @@
 <script lang="ts">
   import { onDestroy, onMount } from "svelte";
-  import { agents, api, connection, type AgentSummary, type ModelCatalog, type ThinkingLevel } from "$lib/api";
-  import { Button, EmptyState, Menu, PanelHeader, Skeleton, Tabs, toast, type Anchor, type MenuEntry } from "$lib/ui";
+  import { agents, api, connection, jobs, type AgentSummary, type ModelCatalog, type ThinkingLevel } from "$lib/api";
+  import { Button, EmptyState, Menu, PanelHeader, Skeleton, toast, type Anchor, type MenuEntry } from "$lib/ui";
   import { router, hrefFor } from "$lib/router.svelte";
   import { sidePanel } from "$lib/shell/side-panel.svelte";
   import AgentCard from "./AgentCard.svelte";
   import AgentConfigPanel from "./AgentConfigPanel.svelte";
   import CreateAgentDialog from "./CreateAgentDialog.svelte";
   import NewAgentTile from "./NewAgentTile.svelte";
-  import {
-    ACTION_LABEL, TABS, actionsFor, agentFromRoute, agentsIn, countsByTab, jobCounts, jobGroups, jobsLabel, openTarget, sectionFromParams, tabFromRoute,
-    type AgentsTab, type ConfigSection,
-  } from "./agents-model";
+  import { ACTION_LABEL, actionsFor, agentFromRoute, agentsShown, jobCounts, jobsLabel, openTarget, sectionFromParams, type ConfigSection } from "./agents-model";
 
-  /** `#/agents/<id>` opens that agent's configuration in the side panel, over the tab it belongs to. */
+  /** `#/agents/<id>` opens that agent's configuration in the side panel, or a job's, which its agent's Swarm links to. */
   const configId = $derived(agentFromRoute(router.route.rest));
   const section = $derived(sectionFromParams(router.route.params));
   let catalog = $state<ModelCatalog | null>(null);
-  /** The first list over HTTP, so the page can show an error when the live socket never connects. */
+  /** The first list of registered agents over HTTP, so the page can show an error when the live socket never connects. */
   let fetched = $state<AgentSummary[] | null>(null);
   let loadError = $state("");
   let creating = $state(false);
@@ -30,14 +27,10 @@
 
   const ready = $derived(agents.ready || fetched !== null);
   const all = $derived(agents.ready ? agents.list : (fetched ?? []));
-  const configAgent = $derived(configId ? (all.find((agent) => agent.id === configId) ?? null) : null);
-  const tab = $derived(tabFromRoute(router.route.rest, configAgent));
-  /** Your agents is one grid; Jobs groups each agent's jobs under its name, and the cards keep that order for the arrow keys. */
-  const groups = $derived(tab === "jobs" ? jobGroups(all) : [{ parent: null, jobs: agentsIn(all, tab) }]);
-  const shown = $derived(groups.flatMap((group) => group.jobs));
-  const jobsOf = $derived(jobCounts(all));
-  const counts = $derived(countsByTab(all));
-  const tabItems = $derived(TABS.map((item) => ({ ...item, badge: counts[item.id] || null, href: hrefFor("agents", item.id === "jobs" ? ["jobs"] : []) })));
+  const configAgent = $derived(configId ? (all.find((agent) => agent.id === configId) ?? jobs.byId(configId) ?? null) : null);
+  /** One card per registered agent; its jobs show only as the count on its card and in its Swarm section. */
+  const shown = $derived(agentsShown(all));
+  const jobsOf = $derived(jobCounts(jobs.list));
 
   async function load() {
     loadError = "";
@@ -54,15 +47,12 @@
     return () => clearInterval(timer);
   });
 
-  function setTab(next: AgentsTab) {
-    router.navigate(hrefFor("agents", next === "jobs" ? ["jobs"] : []));
-  }
   /** A card opens its configuration; Message opens its conversation. */
   function configure(agent: AgentSummary) {
     router.navigate(hrefFor("agents", [agent.id]));
   }
   function closeConfig() {
-    router.navigate(hrefFor("agents", tab === "jobs" ? ["jobs"] : []));
+    router.navigate(hrefFor("agents", []));
   }
   function setSection(next: ConfigSection) {
     router.setParams({ section: next === "overview" ? null : next }, { replace: true });
@@ -175,10 +165,10 @@
 <div class="inventory">
   <div class="content">
     <div class="toolbar">
-      <Tabs items={tabItems} value={tab} variant="underline" label="Agent tabs" onchange={setTab} />
+      <h2 class="heading t-label">Your agents</h2>
       <Button variant="primary" size="sm" icon="plus" onclick={() => (creating = true)}>New agent</Button>
     </div>
-    <div id="agents-{tab}" role="tabpanel" aria-label={tab === "jobs" ? "Jobs" : "Your agents"}>
+    <div>
       {#if loadError && !ready}
         <EmptyState icon="warning" title="Agents could not load" description={loadError}>
           {#snippet action()}<Button size="sm" icon="refresh" onclick={load}>Retry</Button>{/snippet}
@@ -187,23 +177,14 @@
         <div class="grid" aria-busy="true" aria-label="Loading agents">
           {#each { length: 6 } as _, i (i)}<div class="skeleton"><Skeleton width="100%" height="244px" radius="var(--radius-container)" /></div>{/each}
         </div>
-      {:else if shown.length === 0 && tab === "yours"}
+      {:else if shown.length === 0}
         <div class="starts">
           <NewAgentTile label="Create your first agent" onclick={() => (creating = true)} />
-          {#if counts.jobs > 0}<NewAgentTile label="See your jobs" secondary seeds={["jobs a", "jobs b", "jobs c", "jobs d", "jobs e", "jobs f", "jobs g", "jobs h"]} onclick={() => setTab("jobs")} />{/if}
         </div>
-      {:else if shown.length === 0}
-        <EmptyState icon="robot" title="No jobs yet." description="Jobs your agents start show up here, live while they work." />
       {:else}
-        <div bind:this={grid} class="grid" role="grid" aria-label={tab === "jobs" ? "Jobs" : "Your agents"} tabindex="-1" onkeydown={onGridKey}>
+        <div bind:this={grid} class="grid" role="grid" aria-label="Your agents" tabindex="-1" onkeydown={onGridKey}>
           <div role="row" class="row">
-            {#each groups as group (group.parent?.id ?? "")}
-            {#if tab === "jobs"}
-              <h2 class="group t-label-sm" data-jobs-of={group.parent?.id ?? ""}>
-                {#if group.parent}<a href={hrefFor("agents", [group.parent.id])}>{group.parent.name}</a>{:else}Other jobs{/if}
-              </h2>
-            {/if}
-            {#each group.jobs as agent (agent.id)}
+            {#each shown as agent (agent.id)}
               <AgentCard
                 bind:this={cards[agent.id]}
                 bind:element={elements[agent.id]}
@@ -216,9 +197,8 @@
                 onopen={() => configure(agent)}
                 onmenu={(anchor) => (menu = { agent, anchor })}
                 onmodel={(model, level) => setModel(agent, model, level)}
-                jobs={agent.kind === "chat" ? jobsLabel(jobsOf.get(agent.id)) : null}
+                jobs={jobsLabel(jobsOf.get(agent.id))}
               />
-            {/each}
             {/each}
           </div>
         </div>
@@ -271,21 +251,9 @@
   .row {
     display: contents;
   }
-  .group {
-    grid-column: 1 / -1;
-    margin: var(--space-4) 0 0;
-    color: var(--text-subtle);
-  }
-  .group:first-child {
-    margin-top: 0;
-  }
-  .group a {
-    color: inherit;
-    text-decoration: none;
-  }
-  .group a:hover {
+  .heading {
+    margin: 0;
     color: var(--text-standard);
-    text-decoration: underline;
   }
   .starts {
     display: grid;

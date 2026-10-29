@@ -1,5 +1,6 @@
 /**
- * Moves today's chats to agents and DM rooms (server/migrate.ts). A dry run by default: it prints the agents, aliases, posts per room,
+ * Moves today's chats to agents and DM rooms (server/migrate.ts). An untitled root chat ("New thread", "Untitled" or no name) stays a solo
+ * chat. The server never runs this on its own; a root chat becomes an agent only here or through `POST /api/agents`. A dry run by default: it prints the agents, aliases, posts per room,
  * cursors and board files it would write, and writes nothing. `--apply` writes them; a second run writes nothing new.
  *
  *   node --import tsx scripts/migrate-agents.ts [--data-dir <dir>] [--socket <pi-host socket>] [--apply] [--days 30] [--samples 5]
@@ -46,6 +47,8 @@ try {
       for (const post of agent.posts.slice(-samples)) console.log(line(post));
     }
   }
+  console.log(`\nuntitled root chats left as solo chats: ${report.skipped.length}`);
+  for (const chat of report.skipped) console.log(`  ${chat.thread} "${chat.name}"`);
   const aliases = Object.entries(report.aliases);
   console.log(`\naliases ${verb}: ${aliases.length}`);
   for (const [thread, agent] of aliases) console.log(`  ${thread} -> ${agent}`);

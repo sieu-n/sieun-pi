@@ -103,6 +103,9 @@ export interface RoomsFile { v: 1; rooms: RoomRow[]; feed: Record<AgentId, FeedC
 export const slugOf = (name: string): string =>
   name.normalize("NFKD").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "agent";
 
+/** A name pi-host gives a thread nobody named: empty, "New thread" or "Untitled". Such a root chat is no agent. */
+export const isUntitled = (name: string | undefined): boolean => /^(new thread|untitled)?$/i.test((name ?? "").trim());
+
 /** A slug no agent in `taken` uses: the name's, else with -2, -3 after it. */
 export function freeSlug(name: string, taken: ReadonlySet<string>): string {
   const base = slugOf(name);

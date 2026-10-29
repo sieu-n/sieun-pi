@@ -2,7 +2,8 @@
  * Channels after ~/work/slack-layer-design/channels.md sections 3 and 4. A channel is a named room with members and one post log in the
  * chat server's data dir. A post that @mentions an agent goes to that agent's conversation as an `agent.message` input, and what the agent
  * sends with send_message in the turn it starts comes back into the post's thread, one post per call. Each mention is one delivery with its
- * own state. Members and mentions are stored as conversation ids, so an agent id (`ag_<slug>`) given here stands for its work thread.
+ * own state. Members and mentions are stored as conversation ids, so an agent id (`ag_<slug>`) given here stands for its work thread. Only a
+ * registered agent joins a channel or gets a mention (`Threads.registered`); a job or a thread no agent owns gets neither.
  */
 import { randomUUID } from "node:crypto";
 import type {
@@ -102,7 +103,7 @@ export class Channels {
     const now = Date.now();
     const row: ChannelRow = {
       id: `ch_${randomUUID().slice(0, 8)}`, name, purpose: input.purpose ?? "", ...(input.homeChat ? { homeChat: input.homeChat } : {}), createdAt: now, archived: false,
-      members: [{ principal: "owner", role: "owner", wakeOn: "all", addedAt: now }, ...(input.members ?? []).map(id => ({ principal: this.threads.conversationOf(id), role: "member" as const, wakeOn: "mention" as const, addedAt: now }))],
+      members: [{ principal: "owner", role: "owner", wakeOn: "all", addedAt: now }, ...[...new Set((input.members ?? []).map(id => this.memberKey(id)))].map(principal => ({ principal, role: "member" as const, wakeOn: "mention" as const, addedAt: now }))],
     };
     this.store.channels.push(row);
     this.store.saveChannels();
@@ -124,9 +125,8 @@ export class Channels {
 
   addMembers(id: string, agents: AgentId[], wakeOn: "mention" | "all" | "none" = "mention"): Channel {
     const row = this.require(id);
-    for (const given of agents) {
-      if (!this.threads.agent(given)) throw new Error(`No agent ${given}.`);
-      const agent = this.threads.conversationOf(given);
+    const keys = agents.map(given => this.memberKey(given));
+    for (const agent of keys) {
       if (!row.members.some(m => m.principal === agent)) row.members.push({ principal: agent, role: "member", wakeOn, addedAt: Date.now() });
     }
     this.store.saveChannels();
@@ -141,6 +141,18 @@ export class Channels {
     this.store.saveChannels();
     this.changed(row);
     return this.view(row);
+  }
+
+  /** The work thread a registered agent is stored by as a member; a job or a thread no agent owns is refused. */
+  private memberKey(id: string): string {
+    const record = this.threads.registered(id);
+    if (!record) throw new Error(`No agent ${id}: only a registered agent joins a channel, not a job or a thread.`);
+    return record.workThread;
+  }
+
+  /** Where a mention or a member's wake goes: a registered agent's work thread, or nothing for a job or a thread no agent owns. */
+  private target(id: string): string | undefined {
+    return this.threads.registered(id)?.workThread;
   }
 
   private require(id: string): ChannelRow {
@@ -214,7 +226,10 @@ export class Channels {
     const repeat = posts.find(p => p.requestId === request.requestId && p.author === author);
     if (repeat) return { item: this.item(repeat), deliveries: repeat.deliveries.map(publicDelivery) };
     if (request.threadRoot && !posts.some(p => p.id === request.threadRoot && !p.threadRoot)) throw new Error(`No thread ${request.threadRoot} in #${row.name}.`);
-    const mentions = [...new Set((request.mentions ?? []).map(m => this.threads.conversationOf(m)))].filter(m => m !== author);
+    const mentions = [...new Set((request.mentions ?? []).flatMap(m => {
+      const to = m === "owner" ? m : this.target(m);
+      return to ? [to] : [];
+    }))].filter(m => m !== author);
     for (const target of mentions) {
       if (target === "owner") continue;
       if (!row.members.some(m => m.principal === target)) {
@@ -230,7 +245,8 @@ export class Channels {
     if (author === "owner") this.store.state.reads[row.id] = { at: post.at, seq };
     const targets = mentions.filter(m => m !== "owner");
     for (const member of row.members) {
-      if (member.wakeOn === "all" && member.principal !== "owner" && member.principal !== author && !post.threadRoot && !targets.includes(member.principal)) targets.push(member.principal);
+      if (member.wakeOn !== "all" || member.principal === "owner" || member.principal === author || post.threadRoot || targets.includes(member.principal)) continue;
+      if (this.target(member.principal)) targets.push(member.principal);
     }
     for (const target of targets) {
       const { thread, conversation } = parseConversationId(target);

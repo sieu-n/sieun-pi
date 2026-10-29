@@ -328,7 +328,7 @@ export class Boards {
   chatAgents(id: string): ChatAgent[] {
     const chat = this.chatId(id);
     const thread = this.threadOf(chat);
-    return this.threads.agents({ archived: false }).filter(a => a.kind === "job" && ((a.thread === thread && a.conversation !== 1) || a.parent?.id === chat)).map(a => ({
+    return this.threads.allSummaries({ archived: false }).filter(a => a.kind === "job" && ((a.thread === thread && a.conversation !== 1) || a.parent?.id === chat)).map(a => ({
       key: `thread:${a.id}`, sessionId: a.id, name: a.name, job: a.name, sender: a.name, link: a.thread === thread ? "subagent" as const : "root" as const,
       state: a.status === "working" ? "working" as const : a.status === "failed" ? "failed" as const : "idle" as const,
       ...(a.preview ? { activity: a.preview } : {}), lastActivityAt: new Date(a.updatedAt).toISOString(), steps: [],
@@ -405,7 +405,7 @@ export class Boards {
     this.save(chat, before);
     const dir = join(this.dir(chat), "duties");
     const thread = this.threadOf(chat);
-    const working = new Set(this.threads.agents().filter(a => a.status === "working").map(a => a.name));
+    const working = new Set(this.threads.allSummaries().filter(a => a.status === "working").map(a => a.name));
     const { record, brief } = await measure({
       duty, chat: { id: chat, name: this.nameOf(chat) }, dir, trigger, previous: before.runs[dutyId] ?? [], board: await this.board(chat),
       liveJob: job => working.has(job), boardApi: `${this.selfUrl}/api/threads/${thread}/board`, log: this.log,

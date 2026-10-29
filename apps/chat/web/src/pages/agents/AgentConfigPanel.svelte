@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type AgentConfig, type AgentFolder, type AgentSummary, type ConfigFile, type ModelCatalog, type ProjectList, type RunStatus, type ThinkingLevel } from "$lib/api";
+  import { agents, api, type AgentConfig, type AgentFolder, type AgentSummary, type ConfigFile, type ModelCatalog, type ProjectList, type RunStatus, type ThinkingLevel } from "$lib/api";
   import { Avatar, Badge, Button, Chip, EmptyState, IconButton, LoadingText, Meter, ModelPicker, StatusDot, Tabs, TypingDots, stampLabel, toast } from "$lib/ui";
   import { conversationHref, hrefFor } from "$lib/router.svelte";
   import {
@@ -92,7 +92,8 @@
   );
   const folder = $derived(config?.folder ?? null);
   const ownFolder = $derived(!!folder && folder.agent === agentId);
-  const folderName = $derived(ownFolder ? (agent?.name ?? "") : (config?.swarm.parent?.name ?? agent?.parent?.name ?? "its agent"));
+  /** A job loads the folder of the registered agent it works for, which may sit above a job that started it. */
+  const folderName = $derived(ownFolder ? (agent?.name ?? "") : (agent?.agent?.name ?? (folder ? agents.byId(folder.agent)?.name : undefined) ?? "its agent"));
   function setFolder(next: AgentFolder) {
     if (config && next.agent === config.folder?.agent) config = { ...config, folder: next };
   }

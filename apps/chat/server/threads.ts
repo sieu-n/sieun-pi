@@ -8,6 +8,7 @@ import type {
 } from "../web/src/lib/api/types.ts";
 import type { AgentEvent, DurableEvent, DurableThread, EntryRecord, Host, TreeNode } from "./host/types.ts";
 import type { Store } from "./store.ts";
+import type { AgentRecord } from "./agent-store.ts";
 import { agentSummary, isAgentId, isRoomId, type Agents } from "./agents.ts";
 import { buildItems, earliest, entryOf, firstSendIn, isInput, itemIdFor, sentMessages, speaks, speaksThroughSendMessage, type TimelineContext } from "./timeline.ts";
 
@@ -59,7 +60,10 @@ interface LiveConversation {
 }
 
 export interface ThreadEvents {
+  /** Registered agents only. */
   agents(changed: AgentSummary[], removed: AgentId[]): void;
+  /** Jobs that work for a registered agent (`jobList`). */
+  jobList(changed: AgentSummary[], removed: AgentId[]): void;
   conversations(changed: ConversationSummary[]): void;
   items(conversation: ConversationId, items: Item[]): void;
   partial(conversation: ConversationId, partial: LivePartial | null): void;
@@ -74,6 +78,7 @@ export class Threads {
   private list = new Map<string, DurableThread>();
   private trees = new Map<string, { updatedAt: number; nodes: TreeNode[] }>();
   private agentCache = new Map<AgentId, string>();
+  private jobCache = new Map<AgentId, string>();
   private convCache = new Map<ConversationId, string>();
   private readonly live = new Map<ConversationId, LiveConversation>();
   /** Each conversation's first entry id, which never changes once it exists. */
@@ -146,17 +151,19 @@ export class Threads {
       }
     }
     this.list = next;
+    this.agentRecords?.dropUntitled(next);
     this.agentRecords?.follow(next);
     const cache = JSON.stringify({ threads, trees: [...this.trees] } satisfies ThreadsCache);
     if (cache !== this.cached) {
       this.cached = cache;
       this.store.saveCache(THREADS_CACHE, JSON.parse(cache));
     }
-    const agents = this.agents({ archived: true });
-    const changed = agents.filter(a => this.agentCache.get(a.id) !== JSON.stringify(a));
-    const removed = [...this.agentCache.keys()].filter(id => !agents.some(a => a.id === id));
-    this.agentCache = new Map(agents.map(a => [a.id, JSON.stringify(a)]));
-    if (changed.length || removed.length) this.events.agents(changed, removed);
+    const agents = diff(this.agentCache, this.agents({ archived: true }));
+    this.agentCache = agents.cache;
+    if (agents.changed.length || agents.removed.length) this.events.agents(agents.changed, agents.removed);
+    const jobs = diff(this.jobCache, this.jobList({ archived: true }));
+    this.jobCache = jobs.cache;
+    if (jobs.changed.length || jobs.removed.length) this.events.jobList(jobs.changed, jobs.removed);
     const conversations = this.threadConversations();
     const convChanged = conversations.filter(c => this.convCache.get(c.id) !== JSON.stringify(c));
     this.convCache = new Map(conversations.map(c => [c.id, JSON.stringify(c)]));
@@ -192,15 +199,27 @@ export class Threads {
     return node ? statusOf(node.status) : "idle";
   }
 
+  /** Who an id or a name is. A name finds a registered agent before any job or thread of the same name. */
   principal(id: string): Principal {
     if (id === "owner") return OWNER;
     const agent = this.agent(id);
     if (agent) return { id: agent.id, kind: agent.kind, name: agent.name, avatar: agent.avatar, ...(agent.parent ? { parent: agent.parent.id } : {}) };
     const record = this.agentRecords?.record(id);
     if (record) return { id: record.id, kind: "chat", name: record.name, avatar: avatarOf(record.name) };
-    const byName = this.agents({ archived: true }).find(a => a.name === id);
+    const byName = this.agents({ archived: true }).find(a => a.name === id) ?? this.allSummaries({ archived: true }).find(a => a.name === id);
     if (byName) return this.principal(byName.id);
     return { id, kind: "job", name: id, avatar: avatarOf(id) };
+  }
+
+  /**
+   * The registered agent a mention or a channel member names: an agent id, its DM room id, its work thread id or its name. A job, a root
+   * job thread, a thread no agent holds and a name only a job has name none, so nothing is delivered to them.
+   */
+  registered(id: string): AgentRecord | undefined {
+    const records = this.agentRecords;
+    if (!records) return undefined;
+    if (isAgentId(id) || isRoomId(id)) return records.record(id);
+    return records.ofWorkThread(id) ?? records.list().find(r => (this.list.get(r.workThread)?.name || r.name) === id);
   }
 
   /**
@@ -223,6 +242,20 @@ export class Threads {
   /** The pi-host conversation an id names: an agent's or a DM room's work thread, and any other id as it is. */
   conversationOf(id: string): ConversationId {
     return (isAgentId(id) || isRoomId(id)) ? this.agentRecords?.record(id)?.workThread ?? id : id;
+  }
+
+  /**
+   * The registered agent a thread works for: its own record when it is a work thread, the record it is aliased to, or for a root job thread
+   * the agent its kind's parent names.
+   */
+  private ownerOf(row: DurableThread): AgentRecord | undefined {
+    const records = this.agentRecords;
+    if (!records) return undefined;
+    const direct = records.ofWorkThread(row.id) ?? records.record(row.id);
+    if (direct) return direct;
+    const meta = this.meta(row.id);
+    if (meta.kind !== "job" || !meta.parent) return undefined;
+    return records.record(meta.parent) ?? records.record(parseConversationId(meta.parent).thread);
   }
 
   /** The agent a root job thread belongs to, from its kind's parent, through the agent's aliases. */
@@ -248,6 +281,9 @@ export class Threads {
         thread: row.id, conversation: 1, archived: row.archived, createdAt: row.createdAt, updatedAt: row.updatedAt,
         preview: row.preview.split("\n").find(line => line.trim()) ?? "", channels: this.channelsOf(row.id), host: this.box,
       };
+    const owner = this.ownerOf(row);
+    const worksFor = owner ? { id: owner.id, name: this.list.get(owner.workThread)?.name || owner.name } : undefined;
+    if (worksFor && !record) root.agent = worksFor;
     const out = [root];
     for (const node of this.tree(row.id)) {
       if (node.parent === null) continue;
@@ -258,13 +294,34 @@ export class Threads {
         id, kind: "job", name: node.name, avatar: avatarOf(node.name), model: modelRef(node.model), thinkingLevel: root.thinkingLevel,
         status: statusOf(node.status), parent: { id: parentId, name: parentName }, thread: row.id, conversation: node.id, archived: row.archived,
         createdAt: node.createdAt ?? row.createdAt, updatedAt: row.updatedAt, preview: "", channels: this.channelsOf(id), host: this.box,
+        ...(worksFor ? { agent: worksFor } : {}),
       });
     }
     return out;
   }
 
+  /**
+   * Every thread and every conversation in it as a summary, registered or not, newest first. Lookups read it; no list the owner sees does,
+   * because it holds threads no agent owns.
+   */
+  allSummaries(opts: { archived?: boolean } = {}): AgentSummary[] {
+    return [...this.list.values()].filter(t => opts.archived || !t.archived).flatMap(t => this.agentsOf(t)).sort(newestFirst);
+  }
+
+  /** The registered agents (`agents.json`), newest first. A thread is an agent only through a record. */
   agents(opts: { archived?: boolean } = {}): AgentSummary[] {
-    return [...this.list.values()].filter(t => opts.archived || !t.archived).flatMap(t => this.agentsOf(t)).sort((a, b) => b.updatedAt - a.updatedAt);
+    return (this.agentRecords?.list() ?? []).flatMap(record => {
+      const agent = this.agent(record.id);
+      return agent && (opts.archived || !agent.archived) ? [agent] : [];
+    }).sort(newestFirst);
+  }
+
+  /**
+   * The jobs of registered agents, newest first: each child conversation of an agent's work thread or of its root job threads, and each root
+   * job thread, with `agent` set. A job of a thread no agent owns is not in it.
+   */
+  jobList(opts: { archived?: boolean } = {}): AgentSummary[] {
+    return this.allSummaries(opts).filter(a => a.kind === "job" && a.agent !== undefined);
   }
 
   jobs(thread: string): JobNode[] {
@@ -563,6 +620,14 @@ export class Threads {
   private emitItems(id: ConversationId, live: LiveConversation): void {
     this.events.items(id, buildItems(live.recent, this.context(live.thread, live.conversation, live)));
   }
+}
+
+const newestFirst = (a: AgentSummary, b: AgentSummary): number => b.updatedAt - a.updatedAt;
+
+/** The summaries that differ from `cache`, the ids gone from it, and the next cache. */
+function diff(cache: ReadonlyMap<AgentId, string>, list: AgentSummary[]): { changed: AgentSummary[]; removed: AgentId[]; cache: Map<AgentId, string> } {
+  const next = new Map(list.map(a => [a.id, JSON.stringify(a)]));
+  return { changed: list.filter(a => cache.get(a.id) !== next.get(a.id)), removed: [...cache.keys()].filter(id => !next.has(id)), cache: next };
 }
 
 /** An entry the page sees at once: an input, an answer with text, or a tell_owner or send_message call, whose message shows the moment it is sent. */

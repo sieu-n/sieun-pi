@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { agents, api, boardStore, me, timeline, type Item } from "$lib/api";
+  import { agents, api, boardStore, jobs, me, timeline, type Item } from "$lib/api";
+  import { openTarget } from "$pages/agents/agents-model";
   import BoardPanel from "$pages/board/BoardPanel.svelte";
   import { boardHref, boardTitles, rememberTitles } from "$pages/board/chips";
   import { conversationHref, router } from "$lib/router.svelte";
@@ -62,7 +63,7 @@
   const jobsOf = (item: Item) => (item.kind === "turn" ? item.jobs : item.kind === "message" ? (item.jobs ?? []) : []);
 
   function statusOf(principal: string): Status | null {
-    const status = agents.byId(principal)?.status;
+    const status = (agents.byId(principal) ?? jobs.byId(principal))?.status;
     return status === "working" ? "online" : status === "sleeping" ? "away" : status === "failed" ? "busy" : null;
   }
 
@@ -76,7 +77,7 @@
       return text ? (text.length > 40 ? `${text.slice(0, 39)}…` : text) : "Thread";
     }
     for (const item of store.items) for (const job of jobsOf(item)) if (job.conversation === threadParam) return job.name;
-    return agents.byId(threadParam)?.name ?? "Thread";
+    return jobs.byId(threadParam)?.name ?? "Thread";
   });
 
   /** `?board=<id>` opens the chat's board in the side pane focused on that id, and `?board=1` opens it unfocused. */
@@ -163,8 +164,9 @@
     const value = restParts.join(":");
     if (scheme === "job") {
       for (const item of store.items) for (const job of jobsOf(item)) if (job.name === value || job.conversation.endsWith(`:${value}`)) return openThread(job.conversation);
-      const byName = agents.list.find((a) => a.kind === "job" && a.name === value);
-      if (byName) router.openConversation(byName.id);
+      const byName = jobs.list.find((job) => job.name === value);
+      const place = byName && openTarget(byName, (agent) => agents.room(agent));
+      if (place) router.openConversation(place.id, place.thread ? { thread: place.thread } : {});
       else toast.show(`No job named ${value} in this chat`);
     } else if (scheme === "thread") {
       router.openConversation(value);

@@ -124,7 +124,7 @@ test("an unknown agent is a 404", async () => {
 test("Direct messages hold one row per agent; work threads, a duty thread, a root job and a job open by link", async () => {
   const sidebar = await s.get<Sidebar>("/api/sidebar");
   assert.deepEqual(sidebar.dms.map(c => c.id).sort(), ["dm_ai-harness-developer-environment-vp", "dm_crawler-vp", "dm_frontend-bro", "dm_vent"]);
-  assert.deepEqual(sidebar.solo, []);
+  assert.deepEqual(sidebar.solo.map(c => c.id), [ids.solo], "only the root chat no agent holds is solo");
   const all = await s.get<ConversationSummary[]>("/api/conversations");
   const duty = all.find(c => c.id === ids.uptimeDuty);
   assert.equal(duty?.kind, "job");

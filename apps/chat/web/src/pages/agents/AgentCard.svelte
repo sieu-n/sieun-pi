@@ -4,6 +4,7 @@
   import { STATUS_LABEL, levelsFor, modelKey, modelOptions } from "./agents-model";
 
   type Props = {
+    /** A registered agent; its jobs show only as the `jobs` line. */
     agent: AgentSummary;
     catalog: ModelCatalog | null;
     focusable: boolean;
@@ -66,7 +67,7 @@
   role="gridcell"
   tabindex={focusable ? 0 : -1}
   aria-selected={selected}
-  aria-label="{agent.name}, {agent.kind === 'job' ? 'job' : 'chat'}, {STATUS_LABEL[agent.status]}"
+  aria-label="{agent.name}, agent, {STATUS_LABEL[agent.status]}"
   data-agent-id={agent.id}
   data-status={agent.status}
   style:--backdrop={backdrop}
@@ -91,7 +92,6 @@
         <span class="fail-dot" aria-hidden="true"></span>
       {/if}
       <span class="status-text">{status}</span>
-      {#if agent.parent}<span class="sep">·</span><span class="parent" title="Started by {agent.parent.name}">in {agent.parent.name}</span>{/if}
       {#if jobs}<span class="sep">·</span><span class="jobs" data-jobs>{jobs}</span>{/if}
     </span>
     <span class="model" data-card-control>
@@ -206,7 +206,6 @@
   .status[data-status="failed"] .status-text {
     color: var(--text-danger);
   }
-  .parent,
   .jobs {
     overflow: hidden;
     text-overflow: ellipsis;

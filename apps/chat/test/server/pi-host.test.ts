@@ -73,8 +73,8 @@ describe("pi-host end to end", { skip: !real && "set APPS_CHAT_REAL=1 to run on 
     assert.match(pill.jobs[0]!.conversation, new RegExp(`^${thread}:\\d+$`));
     const job = await s.get<TimelinePage>(`/api/c/${encodeURIComponent(pill.jobs[0]!.conversation)}/items`);
     assert.match(turns(job).at(-1)!.text, /kiwi/i);
-    const agents = await s.get<any[]>("/api/agents");
-    assert.ok(agents.some(a => a.id === pill.jobs[0]!.conversation && a.parent?.id === thread));
+    const listed = await s.get<any[]>("/api/jobs");
+    assert.ok(listed.some(a => a.id === pill.jobs[0]!.conversation && a.parent?.id === thread));
   });
 
   test("a channel mention reaches the thread and the answer comes back", { timeout: 300_000 }, async () => {

@@ -347,8 +347,7 @@ export class Rooms {
   private async readFeed(record: AgentRecord): Promise<void> {
     let cursor = this.store.rooms.feed[record.id];
     if (!cursor) {
-      // The migration sets the cursor of each agent it makes; until it runs, a record without one starts at the thread's newest entry.
-      if (this.deps.agents.migrationRunning) return;
+      // The migrate CLI sets the cursor of each agent it makes; a record without one starts at the thread's newest entry.
       const newest = (await this.deps.host.entries(record.workThread, { conversation: 1, limit: 1 })).entries[0]?.id ?? 0;
       cursor = this.store.rooms.feed[record.id] ??= { entry: newest, open: {} };
       this.store.saveRooms();

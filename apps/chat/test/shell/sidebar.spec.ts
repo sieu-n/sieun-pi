@@ -10,15 +10,15 @@ test.beforeEach(async ({ page }) => {
   await expect(sidebar(page)).toBeVisible();
 });
 
-test("All hides an empty Solo and shows Team, Solo hides Team, Team hides Solo", async ({ page }) => {
+test("All shows Team and the fixture's untitled solo chat, Solo hides Team, Team hides Solo", async ({ page }) => {
   const solo = sidebar(page).locator('[data-section="solo"]');
   const team = sidebar(page).locator('[data-section="team"]');
   await expect(team).toBeVisible();
-  await expect(solo).toHaveCount(0);
+  await expect(solo).toContainText("New thread");
 
   await filter(page, "Solo").click();
   await expect(solo).toBeVisible();
-  await expect(solo).toContainText("No solo rooms yet.");
+  await expect(solo).toContainText("New thread");
   await expect(team).toHaveCount(0);
 
   await filter(page, "Team").click();

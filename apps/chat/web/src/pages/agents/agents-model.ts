@@ -1,41 +1,17 @@
 import type { AgentSummary, ModelCatalog, RunStatus } from "$lib/api";
 import type { ModelOption } from "$lib/ui";
 
-export type AgentsTab = "yours" | "jobs";
-export const TABS: readonly { id: AgentsTab; label: string }[] = [
-  { id: "yours", label: "Your agents" },
-  { id: "jobs", label: "Jobs" },
-];
 /**
- * `#/agents` and `#/agents/jobs` are the two tabs; `#/agents/<id>` opens that agent's configuration over the tab it belongs to, so a link
- * names one agent and back closes it.
+ * `#/agents` lists the registered agents; `#/agents/<id>` opens one configuration over it, an agent's or a job's from its agent's Swarm, so
+ * a link names one and back closes it.
  */
-export const agentFromRoute = (rest: readonly string[]): string | null => (rest[0] && rest[0] !== "jobs" ? rest[0] : null);
-export function tabFromRoute(rest: readonly string[], agent?: AgentSummary | null): AgentsTab {
-  if (rest[0] === "jobs") return "jobs";
-  return agent ? tabOf(agent) : "yours";
-}
+export const agentFromRoute = (rest: readonly string[]): string | null => rest[0] ?? null;
 
 export type CardAction = "open" | "model" | "stop" | "archive";
 
-const STATUS_RANK: Record<RunStatus, number> = { working: 0, sleeping: 1, failed: 2, idle: 3 };
-
-export const tabOf = (agent: AgentSummary): AgentsTab => (agent.kind === "chat" ? "yours" : "jobs");
-
-/** Chats by newest activity; jobs working first, then by newest activity. */
-export function agentsIn(agents: readonly AgentSummary[], tab: AgentsTab): AgentSummary[] {
-  const shown = agents.filter((agent) => !agent.archived && tabOf(agent) === tab);
-  return shown.sort((a, b) =>
-    tab === "jobs" && STATUS_RANK[a.status] !== STATUS_RANK[b.status]
-      ? STATUS_RANK[a.status] - STATUS_RANK[b.status]
-      : b.updatedAt - a.updatedAt || a.name.localeCompare(b.name),
-  );
-}
-
-export function countsByTab(agents: readonly AgentSummary[]): Record<AgentsTab, number> {
-  const counts: Record<AgentsTab, number> = { yours: 0, jobs: 0 };
-  for (const agent of agents) if (!agent.archived) counts[tabOf(agent)]++;
-  return counts;
+/** Live agents by newest activity. */
+export function agentsShown(agents: readonly AgentSummary[]): AgentSummary[] {
+  return agents.filter((agent) => !agent.archived).sort((a, b) => b.updatedAt - a.updatedAt || a.name.localeCompare(b.name));
 }
 
 export const STATUS_LABEL: Record<RunStatus, string> = {
@@ -61,36 +37,24 @@ export const ACTION_LABEL: Record<CardAction, string> = {
 };
 
 /**
- * Where Message goes: an agent's DM, or a job's pane beside its agent's DM. `room` names the DM of an agent id (the `agents` store's
- * `room`), and the agent's own `room` wins when the summary has one.
+ * Where Message goes: an agent's DM, or a job's pane beside the DM of the agent it works for, also for a job a job started. `room` names
+ * the DM of an agent id (the `agents` store's `room`), and the agent's own `room` wins when the summary has one.
  */
 export function openTarget(agent: AgentSummary, room: (id: string) => string = (id) => id): { id: string; thread?: string } {
-  if (agent.kind === "job" && agent.parent) return { id: room(agent.parent.id), thread: agent.id };
+  const owner = agent.kind === "job" ? (agent.agent ?? agent.parent) : null;
+  if (owner) return { id: room(owner.id), thread: agent.id };
   return { id: agent.room ?? room(agent.id) };
 }
 
-/** The Jobs tab: each agent's jobs under it, the agent with the newest job first, and in each group working jobs first. */
-export function jobGroups(agents: readonly AgentSummary[]): { parent: { id: string; name: string } | null; jobs: AgentSummary[] }[] {
-  const groups = new Map<string, { parent: { id: string; name: string } | null; jobs: AgentSummary[] }>();
-  for (const job of agentsIn(agents, "jobs")) {
-    const key = job.parent?.id ?? "";
-    const group = groups.get(key) ?? { parent: job.parent, jobs: [] };
-    group.jobs.push(job);
-    groups.set(key, group);
-  }
-  const newest = (jobs: readonly AgentSummary[]) => Math.max(...jobs.map((job) => job.updatedAt));
-  return [...groups.values()].sort((a, b) => (a.parent ? 0 : 1) - (b.parent ? 0 : 1) || newest(b.jobs) - newest(a.jobs));
-}
-
-/** How many live jobs each agent runs, and how many of them work now, for the line on its card. */
-export function jobCounts(agents: readonly AgentSummary[]): Map<string, { total: number; working: number }> {
+/** How many live jobs each registered agent runs, and how many of them work now, for the line on its card. */
+export function jobCounts(jobs: readonly AgentSummary[]): Map<string, { total: number; working: number }> {
   const counts = new Map<string, { total: number; working: number }>();
-  for (const job of agents) {
-    if (job.kind !== "job" || job.archived || !job.parent) continue;
-    const count = counts.get(job.parent.id) ?? { total: 0, working: 0 };
+  for (const job of jobs) {
+    if (job.archived || !job.agent) continue;
+    const count = counts.get(job.agent.id) ?? { total: 0, working: 0 };
     count.total++;
     if (job.status === "working") count.working++;
-    counts.set(job.parent.id, count);
+    counts.set(job.agent.id, count);
   }
   return counts;
 }

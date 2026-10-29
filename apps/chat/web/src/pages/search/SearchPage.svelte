@@ -155,7 +155,7 @@
     { id: "agents", label: "Agents only", icon: "robot", detail: "Everyone but you" },
     ...agents.list
       .filter(agent => !agent.archived)
-      .map(agent => ({ id: agent.id, label: agent.name, group: "Agents", avatar: { name: agent.name, kind: "agent" as const, seed: agent.id }, ...(agent.parent ? { trailing: agent.parent.name } : {}) })),
+      .map(agent => ({ id: agent.id, label: agent.name, group: "Agents", avatar: { name: agent.name, kind: "agent" as const, seed: agent.id } })),
   ]);
   const inItems = $derived<PickerItem[]>([
     { id: "", label: "Anywhere", icon: "search" },

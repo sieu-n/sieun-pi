@@ -10,13 +10,22 @@ export interface Agent {
   status: "working" | "idle" | "sleeping" | "failed";
   parent: { id: string; name: string } | null;
   archived: boolean;
+  /** For a job: the registered agent it works for. */
+  agent?: { id: string; name: string };
 }
 
-/** The server's own list through the dev proxy, so each spec checks the page against the same data in fixture mode and on pi-host. */
+/** The server's own list of registered agents through the dev proxy, so each spec checks the page against the same data in fixture mode and on pi-host. */
 export async function listAgents(request: APIRequestContext): Promise<Agent[]> {
   const response = await request.get("/api/agents");
   expect(response.ok()).toBeTruthy();
   return ((await response.json()) as Agent[]).filter((agent) => !agent.archived);
+}
+
+/** Each live job that works for a registered agent. */
+export async function listJobs(request: APIRequestContext): Promise<Agent[]> {
+  const response = await request.get("/api/jobs");
+  expect(response.ok()).toBeTruthy();
+  return ((await response.json()) as Agent[]).filter((job) => !job.archived);
 }
 
 /** An agent's DM room: `ag_<slug>` talks in `dm_<slug>`; a job opens as itself. */
@@ -26,9 +35,9 @@ export const grid = (page: Page) => page.getByRole("grid");
 export const card = (page: Page, agent: Pick<Agent, "id">) => page.locator(`[role="gridcell"][data-agent-id="${agent.id}"]`);
 
 /** The first load in a fresh browser pulls every module from the dev server, which can take longer than the default 5 s. */
-export async function openAgents(page: Page, tab: "yours" | "jobs" = "yours") {
-  await page.goto(tab === "jobs" ? "/#/agents/jobs" : "/#/agents");
-  await expect(page.getByRole("tab", { name: tab === "jobs" ? /Jobs/ : /Your agents/ })).toHaveAttribute("aria-selected", "true", { timeout: 20_000 });
+export async function openAgents(page: Page) {
+  await page.goto("/#/agents");
+  await expect(page.getByRole("heading", { name: "Your agents" })).toBeVisible({ timeout: 20_000 });
 }
 
 /** A name no other run uses, so parallel specs and reruns never collide. */

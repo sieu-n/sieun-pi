@@ -3,21 +3,18 @@
 
   type Props = {
     label: string;
-    /** A quieter label, for a tile beside a more important one. */
-    secondary?: boolean;
-    /** Seeds for the mascots scattered behind the label. */
-    seeds?: string[];
     onclick: () => void;
   };
+  /** Seeds for the mascots scattered behind the label. */
   const SEEDS = ["Vent", "Crawler VP", "frontend bro", "slack green guy", "chat shell", "search page", "pi durable fit", "usage and hosts"];
-  let { label, secondary = false, seeds = SEEDS, onclick }: Props = $props();
+  let { label, onclick }: Props = $props();
 </script>
 
 <button type="button" class="tile" {onclick}>
   <span class="art" aria-hidden="true">
-    {#each seeds.slice(0, 8) as seed, i (seed)}<span class="m m{i + 1}"><Mascot {seed} size={72} id="tile-{i}-{secondary ? 'b' : 'a'}" /></span>{/each}
+    {#each SEEDS as seed, i (seed)}<span class="m m{i + 1}"><Mascot {seed} size={72} id="tile-{i}" /></span>{/each}
   </span>
-  <span class="label t-label-sm" data-tone={secondary ? "secondary" : undefined}>{label}</span>
+  <span class="label t-label-sm">{label}</span>
 </button>
 
 <style>
@@ -63,9 +60,5 @@
     border-radius: var(--radius-pill);
     color: var(--text-on-prominent);
     background: var(--affordance-prominent);
-  }
-  .label[data-tone="secondary"] {
-    color: var(--text-standard);
-    background: var(--affordance-subtle);
   }
 </style>

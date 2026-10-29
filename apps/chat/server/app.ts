@@ -71,6 +71,10 @@ export class App {
         for (const id of removed) this.broadcast({ type: "agent_removed", id });
         this.sidebarSoon();
       },
+      jobList: (changed, removed) => {
+        for (const job of changed) this.broadcast({ type: "job", job });
+        for (const id of removed) this.broadcast({ type: "job_removed", id });
+      },
       conversations: changed => this.conversationsChanged(changed),
       items: (conversation, items) => {
         this.toWatchers(conversation, { type: "items", conversation, items });
@@ -103,7 +107,6 @@ export class App {
     this.threads.testSendsOf = thread => this.rooms.testSendsOf(thread);
     this.threads.onRefresh = () => {
       this.rooms.poll();
-      this.migrateSoon();
       this.sweepRefs();
     };
     this.channels = new Channels(this.store, host, this.threads, {
@@ -192,15 +195,6 @@ export class App {
     this.conversationsChanged(changed);
   }
 
-  /** A root chat with no agent record yet becomes an agent with a DM, in the background (migrate.ts). */
-  private migrateSoon(): void {
-    void this.agents.migrateIfNeeded(this.threads.threadsList(), this.config.dataDir, () => {
-      this.roomsChanged();
-      this.sweepRefs();
-      void this.threads.refresh().catch(() => undefined);
-    });
-  }
-
   /** Points each listed thread of each agent at its folder with an `agent.ref` doc (agents.ts), in the background. */
   private sweepRefs(): void {
     void this.agents.sweepRefs(thread => this.threads.thread(thread) !== undefined);
@@ -268,7 +262,12 @@ export class App {
   async send(id: ConversationId, request: SendRequest): Promise<SendResult> {
     if (!request.text?.trim() && !request.images?.length) throw new Error("A message needs text or an image.");
     if (!request.requestId) throw new Error("A send needs a requestId, so a retry lands once.");
-    if (isRoomId(id)) return this.rooms.post(this.roomAgent(id), request);
+    if (isRoomId(id)) {
+      const record = this.roomAgent(id);
+      const result = this.rooms.post(record, request);
+      if (request.mentions?.length) void this.deliverMentions({ requestId: request.requestId, conversation: id, text: request.text ?? "", mentions: request.mentions });
+      return result;
+    }
     if (this.isChannel(id)) {
       const images = (request.images ?? []).map(image => this.saveUpload(image));
       return this.channels.post(id, "owner", { ...request, images: undefined as never }, images);
@@ -310,20 +309,27 @@ export class App {
     this.outbox.discard(requestId);
   }
 
-  /** Each @mention in a thread send goes to that agent as an agent message from the owner, once the send reached pi-host. */
-  private async deliverMentions(row: OutboxRow): Promise<Delivery[]> {
+  /**
+   * Each @mention in a thread send or a DM post goes to the mentioned agent's work thread as an agent message from the owner, once the send
+   * reached pi-host. Only a registered agent is a target (`Threads.registered`): a mention of a job, a bare thread or a name only a job has
+   * is not delivered.
+   */
+  private async deliverMentions(row: Pick<OutboxRow, "requestId" | "conversation" | "text" | "mentions">): Promise<Delivery[]> {
     const deliveries: Delivery[] = [];
-    for (const target of row.mentions.filter(m => m !== row.conversation && m !== "owner")) {
-      const where = parseConversationId(target);
+    const targets = new Map(row.mentions.flatMap(m => {
+      const record = this.threads.registered(m);
+      return record && record.workThread !== row.conversation && record.room !== row.conversation ? [[record.id, record] as const] : [];
+    }));
+    for (const [target, record] of targets) {
       const name = this.threads.principal(target).name;
       try {
-        const sent = await this.host.submit(where.thread, {
-          ...(where.conversation === 1 ? {} : { conversation: where.conversation }), text: row.text, requestId: `${row.requestId}:${target}`, whenBusy: "followUp",
+        const sent = await this.host.submit(record.workThread, {
+          text: row.text, requestId: `${row.requestId}:${target}`, whenBusy: "followUp",
           entry: { kind: "agent.message", data: { from: "owner", via: row.conversation } }, ownerTurn: true,
         });
         const place = waitingPlace(sent.ticket?.place);
         deliveries.push({ target, name, state: place?.state === "queued" ? "queued" : "delivered", at: Date.now(), ...(place ? { queue: place } : {}) });
-        this.queues.follow(target, sent.ticket?.place ?? null);
+        this.queues.follow(record.workThread, sent.ticket?.place ?? null);
       } catch (error) {
         deliveries.push({ target, name, state: "failed", at: Date.now(), error: error instanceof Error ? error.message : String(error) });
       }
@@ -447,7 +453,7 @@ export class App {
   private connect(socket: WebSocket): void {
     const client: Client = { socket, watching: new Set() };
     this.clients.add(client);
-    void this.sidebar().then(sidebar => this.send1(client, { type: "hello", me: this.me(), sidebar, agents: this.threads.agents(), conversations: this.threads.conversations() }));
+    void this.sidebar().then(sidebar => this.send1(client, { type: "hello", me: this.me(), sidebar, agents: this.threads.agents(), jobs: this.threads.jobList(), conversations: this.threads.conversations() }));
     socket.on("message", data => {
       let command: LiveCommand;
       try {

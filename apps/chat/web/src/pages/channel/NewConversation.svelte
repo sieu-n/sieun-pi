@@ -17,13 +17,11 @@
   type Props = { kind: string };
   let { kind }: Props = $props();
 
+  /** Registered agents only: a job works inside its agent and is never a member or a DM of its own. */
   const live = $derived(directory.agents.filter((a) => !a.archived));
-  const pickItems = $derived<PickerItem[]>(
-    live.map((a) => ({ id: a.id, label: a.name, detail: a.kind === "job" ? `job${a.parent ? ` of ${a.parent.name}` : ""}` : "chat", avatar: { name: a.name, kind: "agent", seed: a.id } })),
+  const agentItems = $derived<PickerItem[]>(
+    live.map((a) => ({ id: a.id, label: a.name, ...(a.status === "working" ? { detail: "working now" } : {}), avatar: { name: a.name, kind: "agent", seed: a.id } })),
   );
-  /** A DM is with an agent; its jobs open beside its DM, never as a DM of their own. */
-  const dmAgents = $derived(live.filter((a) => a.kind === "chat"));
-  const dmItems = $derived<PickerItem[]>(dmAgents.map((a) => ({ id: a.id, label: a.name, avatar: { name: a.name, kind: "agent", seed: a.id } })));
   const fail = (error: unknown) => toast.error(error instanceof Error ? error.message : "That did not work");
 
   async function startChat(out: Outgoing) {
@@ -84,7 +82,7 @@
         {#each memberRows as agent (agent.id)}
           <Chip label={agent.name} onremove={() => (members = members.filter((m) => m !== agent.id))} />
         {/each}
-        <Button variant="ghost" size="sm" icon="plus" bind:element={addButton} onclick={() => (pickerOpen = true)}>Add chats and jobs</Button>
+        <Button variant="ghost" size="sm" icon="plus" bind:element={addButton} onclick={() => (pickerOpen = true)}>Add agents</Button>
       </div>
     </div>
     <div class="buttons">
@@ -94,7 +92,7 @@
   <Picker
     bind:open={pickerOpen}
     anchor={addButton}
-    items={pickItems}
+    items={agentItems}
     value={members}
     multiple
     searchable
@@ -109,7 +107,7 @@
       <Button variant="outline" size="sm" trailingIcon="chevron-down" onclick={() => (dmOpen = true)}>Choose an agent</Button>
     </div>
     <div class="recent">
-      {#each dmAgents.slice(0, 8) as agent (agent.id)}
+      {#each live.slice(0, 8) as agent (agent.id)}
         <button type="button" class="agent" onclick={() => openDm(agent.id)}>
           <Avatar name={agent.name} kind="agent" seed={agent.id} size={28} />
           <span>{agent.name}</span>
@@ -117,7 +115,7 @@
       {/each}
     </div>
   </div>
-  <Picker bind:open={dmOpen} anchor={dmAnchor} items={dmItems} searchable label="Message" onselect={(id) => openDm(id)} />
+  <Picker bind:open={dmOpen} anchor={dmAnchor} items={agentItems} searchable label="Message" onselect={(id) => openDm(id)} />
 {:else}
   <PanelHeader title="New chat" icon="chat" level={1} divider />
   <div class="draft">

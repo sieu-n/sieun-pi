@@ -81,9 +81,10 @@ export function routes(app: App): Route[] {
     route("GET", "/api/me", async () => app.me()),
     route("GET", "/api/sidebar", async () => app.sidebar()),
     route("GET", "/api/conversations", async (_r, _p, q) => app.threads.conversations().filter(c => q.get("archived") === "1" || !c.archived)),
-    route("GET", "/api/directory", async () => ({ agents: app.threads.agents(), channels: app.channels.list() })),
+    route("GET", "/api/directory", async () => ({ agents: app.threads.agents(), jobs: app.threads.jobList(), channels: app.channels.list() })),
     route("GET", "/api/models", async () => MODELS),
     route("GET", "/api/agents", async (_r, _p, q) => app.threads.agents({ archived: q.get("archived") === "1" })),
+    route("GET", "/api/jobs", async (_r, _p, q) => app.threads.jobList({ archived: q.get("archived") === "1" })),
     route("GET", "/api/agents/:id/config", async (_r, p) => agentConfig(app, p.id!)),
     route("GET", "/api/agents/:id/folder", async (_r, p) => readAgentFolder(app.config.agentsDir, folderAgent(p.id!))),
     route("PUT", "/api/agents/:id/brief", async (_r, p, _q, body) => {

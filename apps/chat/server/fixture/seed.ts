@@ -1,6 +1,7 @@
 /**
- * The fixture world: four agents with their DM rooms and work threads, a root job, jobs inside threads, two channels, boards with plans and
- * asks, duties and a check-in, spread over the last five days with repeated words (canary, relay, migration) so search can rank, filter by date and by author.
+ * The fixture world: four agents with their DM rooms and work threads, a root job, jobs inside threads (one nested under another job), a
+ * root chat no agent holds with a job of its own, two channels, boards with plans and asks, duties and a check-in, spread over the last five
+ * days with repeated words (canary, relay, migration) so search can rank, filter by date and by author.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,6 +24,8 @@ export const FIXTURE_IDS = {
   cutover: "0f1e0000-0000-4000-8000-000000000005",
   archived: "0f1e0000-0000-4000-8000-000000000006",
   uptimeDuty: "0f1e0000-0000-4000-8000-000000000007",
+  /** An untitled root chat no agent holds: a solo chat, which no agent or job list shows, nor its job. */
+  solo: "0f1e0000-0000-4000-8000-000000000008",
   cutoverChannel: "ch_cutover",
   generalChannel: "ch_general",
 };
@@ -93,6 +96,10 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
   const ventTell = assistant(vent, 1, [{ type: "toolCall", id: "call_v4", name: "tell_owner", arguments: { text: "No. The Mac sleeps every night, so a page would wake you for nothing; I log it and flag a gap over an hour on the board.", why: "answer" } }], at(0, -1.99), "toolUse");
   toolResult(vent, 1, "call_v4", "tell_owner", "told the owner", at(0, -1.98));
   assistant(vent, 1, [], at(0, -1.97));
+  // A job of the job: Vent's log reader handed the timestamp check on. Seeded last, so the entry ids above stay as the specs know them.
+  const ventNested = host.addChild(vent, ventJob.id, "error timestamps", at(1, 3.035));
+  agentMsg(vent, ventNested.id, `${ids.vent}:${ventJob.id}`, "spawn", "List the times of both errors.", at(1, 3.036));
+  assistant(vent, ventNested.id, [{ type: "text", text: "01:52 and 02:10, both while the Mac slept." }], at(1, 3.037));
 
   // AI harness VP: a running job and a turn that streams for as long as the fixture runs.
   const harness = host.addThread({ id: ids.harness, name: "AI harness developer environment VP", createdAt: at(4) });
@@ -134,6 +141,14 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
   const uptimeDuty = host.addThread({ id: ids.uptimeDuty, name: `Relay uptime duty ${runStamp(dutyAt)}`, createdAt: dutyAt });
   agentMsg(uptimeDuty, 1, ids.harness, "duty d1", "You are the duty job of the chat \"AI harness developer environment VP\". Uptime measured 97.2% against a target of at least 99%. Find the cause and fix it, then report in at most 3 lines.", dutyAt);
   assistant(uptimeDuty, 1, [{ type: "text", text: "Uptime dipped while the Mac slept for 41 minutes. Nothing to fix on this box; the next run should meet the target." }], dutyAt + 0.2 * HOUR);
+
+  // A root chat the owner opened and never named, with a job of its own: neither is an agent, and the chat stays in the sidebar's solo group.
+  const solo = host.addThread({ id: ids.solo, name: "New thread", createdAt: at(0, -6) });
+  user(solo, 1, "What time zone does the box use?", at(0, -6));
+  assistant(solo, 1, [{ type: "text", text: "Asia/Seoul. A job is checking the clock source too." }], at(0, -5.99));
+  const soloJob = host.addChild(solo, 1, "clock source check", at(0, -5.98));
+  user(solo, soloJob.id, "Check which clock source the box syncs from.", at(0, -5.98));
+  assistant(solo, soloJob.id, [{ type: "text", text: "chrony, from the two pool servers." }], at(0, -5.97));
 
   const archived = host.addThread({ id: ids.archived, name: "old relay probe", createdAt: at(6), archived: true });
   const archivedAsk = user(archived, 1, "ping the relay", at(6, 1));
@@ -243,7 +258,7 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
   const member = (principal: string, wakeOn: "mention" | "all" = "mention") => ({ principal, role: principal === "owner" ? "owner" as const : "member" as const, wakeOn, addedAt: at(3) });
   const channels: ChannelRow[] = [
     { id: ids.cutoverChannel, name: "pi-cutover", purpose: "Move :5182 onto pi-host (p1128)", homeChat: ids.harness, createdAt: at(3), archived: false,
-      members: [member("owner", "all"), member(ids.harness), member(ids.crawler), member(ids.cutover), member(ids.frontend)] },
+      members: [member("owner", "all"), member(ids.harness), member(ids.crawler), member(ids.frontend)] },
     { id: ids.generalChannel, name: "general", purpose: "Anything for every agent", createdAt: at(5), archived: false, members: [member("owner", "all"), member(ids.vent), member(ids.frontend)] },
   ];
   writeJson(join(dataDir, "channels.json"), { channels });

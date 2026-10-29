@@ -24,7 +24,7 @@ const turnText = (page: TimelinePage) => page.items.filter(i => i.kind === "turn
 describe("conversations", () => {
   test("the sidebar groups channels and one DM per agent", async () => {
     const sidebar = await s.get<Sidebar>("/api/sidebar");
-    assert.deepEqual(sidebar.solo, [], "every root chat is an agent");
+    assert.deepEqual(sidebar.solo.map(c => c.id), [ids.solo], "a root chat no agent holds stays solo");
     assert.deepEqual(sidebar.channels.map(c => c.name), ["general", "pi-cutover"]);
     // One row per agent: a root job, a duty run's thread, a work thread and a job inside a thread stay out.
     assert.deepEqual(sidebar.dms.map(c => c.name).sort(), ["AI harness developer environment VP", "Crawler VP", "Vent", "frontend bro"]);
@@ -143,8 +143,8 @@ describe("live turns", () => {
     const page = await until(() => s.get<TimelinePage>(`/api/c/${ids.frontend}/items`), p => p.items.some(i => i.kind === "turn" && i.jobs.length > 0));
     const pill = page.items.find(i => i.kind === "turn" && i.jobs.length) as Extract<Item, { kind: "turn" }>;
     assert.match(pill.jobs[0]!.name, /canary relay/);
-    const list = await s.get<any[]>("/api/agents");
-    assert.ok(list.some(a => a.id === pill.jobs[0]!.conversation && a.kind === "job" && a.parent.id === agents.frontend));
+    const list = await s.get<any[]>("/api/jobs");
+    assert.ok(list.some(a => a.id === pill.jobs[0]!.conversation && a.kind === "job" && a.parent.id === agents.frontend && a.agent.id === agents.frontend));
     live.close();
   });
 });
@@ -274,7 +274,7 @@ describe("boards", () => {
     assert.equal(run.verdict, "missed");
     assert.equal(run.metrics.up.value, 90);
     assert.match(run.job.name, /^Spec uptime duty /);
-    const list = await s.get<any[]>("/api/agents");
+    const list = await s.get<any[]>("/api/jobs");
     assert.equal(list.find(a => a.id === run.job.id).parent.id, agents.frontend);
     await until(() => s.get<TimelinePage>(`/api/c/${ids.frontend}/items?limit=200`), p => p.items.some(i => i.kind === "message" && i.text.startsWith("[duty d9]") && i.author.id === run.job.id));
     await s.send("POST", `/api/threads/${ids.frontend}/duties`, { duty: "d9", action: "run" });

@@ -63,8 +63,8 @@
         id: agent.id,
         name: agent.name,
         kind: "agent" as const,
-        conversationId: agent.id,
-        detail: agent.kind === "job" ? (agent.parent ? `Job of ${agent.parent.name}` : "Job") : "Chat",
+        conversationId: agents.room(agent.id),
+        detail: agent.status === "working" ? "Agent · working now" : "Agent",
       })),
   ]);
   const scopeConversation = $derived(scopeId ? conversations.byId(scopeId) : undefined);

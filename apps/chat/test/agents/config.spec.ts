@@ -107,7 +107,7 @@ test("a duty run's configuration names its coordinator and shares its chat's boa
   test.skip(!duty, "no duty runs on this server");
   await page.goto(`/#/agents/${encodeURIComponent(duty!.id)}`);
   await expect(panel(page)).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByRole("tab", { name: /Jobs/ })).toHaveAttribute("aria-selected", "true");
+  await expect(card(page, { id: duty!.id })).toHaveCount(0);
   await expect(panel(page)).toContainText("duty run");
   await expect(panel(page).locator('[data-fact="board"]')).toContainText(`Board of ${duty!.chat.name}`);
   await section(page, "Swarm").click();

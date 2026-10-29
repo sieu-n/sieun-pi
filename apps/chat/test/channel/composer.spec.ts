@@ -36,7 +36,7 @@ test("Stop ends a running answer, and the work thread's turn reads Response stop
   await expect(conversation(page).getByText("Response stopped").last()).toBeVisible({ timeout: 8_000 });
 });
 
-test("@ opens the chat and job typeahead, a pick becomes a chip and a recipient, and the send routes the mention", async ({ page }) => {
+test("@ opens the agent typeahead, a pick becomes a chip and a recipient, and the send routes the mention", async ({ page }) => {
   await open(page, `#/c/${FRONTEND}`);
   const input = composerInput(conversation(page));
   await input.click();

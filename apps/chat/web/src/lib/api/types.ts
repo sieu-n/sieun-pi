@@ -72,6 +72,8 @@ export interface AgentSummary {
   room?: RoomId;
   /** An agent's home folder: its work thread's cwd when the agent was made. */
   home?: string;
+  /** For a job: the registered agent it works for, even when its `parent` is another job. */
+  agent?: { id: AgentId; name: string };
 }
 
 /** One row of the conversation directory, which the sidebar, search and the # typeahead read. */
@@ -425,10 +427,13 @@ export interface Me { owner: Principal; host: string; fixture: boolean; wikiBase
 
 /** Server to page, over the one WebSocket at /api/live. */
 export type LiveEvent =
-  | { type: "hello"; me: Me; sidebar: Sidebar; agents: AgentSummary[]; conversations: ConversationSummary[] }
+  /** `agents` holds registered agents only (`ag_<slug>`); `jobs` holds each job and child conversation that works for one of them. */
+  | { type: "hello"; me: Me; sidebar: Sidebar; agents: AgentSummary[]; jobs: AgentSummary[]; conversations: ConversationSummary[] }
   | { type: "sidebar"; sidebar: Sidebar }
   | { type: "agent"; agent: AgentSummary }
   | { type: "agent_removed"; id: AgentId }
+  | { type: "job"; job: AgentSummary }
+  | { type: "job_removed"; id: AgentId }
   | { type: "conversation"; conversation: ConversationSummary }
   /** Only for a conversation the page watches. */
   | { type: "items"; conversation: ConversationId; items: Item[]; /** Ids to drop, such as a pending send that landed or was discarded. */ removed?: string[] }

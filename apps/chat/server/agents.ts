@@ -1,15 +1,14 @@
 /**
  * Agents as the chat server keeps them (apps/chat/docs/agent-model.md, phase 2): each `AgentRecord` in `agents.json` joined with its work
  * thread's live row into the `AgentSummary` the pages see, the thread ids that belong to each agent, new agents with their work thread and DM
- * room, the migration that turns a root chat with no record into an agent (`migrate.ts`), and the `agent.ref` doc that points each of an
- * agent's threads at its folder (phase 3, `agent-folder.ts`).
+ * room, and the `agent.ref` doc that points each of an agent's threads at its folder (phase 3, `agent-folder.ts`). A root chat becomes an
+ * agent only through `POST /api/agents` or the migrate CLI (`scripts/migrate-agents.ts`); the server never registers one on its own.
  */
 import type { AgentId, AgentSummary, RunStatus, ThinkingLevel } from "../web/src/lib/api/types.ts";
 import { AGENT_REF_DOC, agentRef, sameRef, type AgentRef } from "./agent-folder.ts";
-import { freeSlug, type AgentRecord, type AgentStore } from "./agent-store.ts";
+import { freeSlug, isUntitled, type AgentRecord, type AgentStore } from "./agent-store.ts";
 import type { Config } from "./config.ts";
 import type { DurableThread, Host, TreeNode } from "./host/types.ts";
-import { migrateAgents } from "./migrate.ts";
 import type { Store } from "./store.ts";
 
 export const isAgentId = (id: string): boolean => id.startsWith("ag_");
@@ -50,9 +49,8 @@ export function agentSummary(record: AgentRecord, rows: AgentRows, extra: { mode
 }
 
 export class Agents {
-  private migrating?: Promise<void>;
-  /** Root chats the last migration left without a record, so the poll does not start it again for them. */
-  private tried = new Set<string>();
+  /** Whether `dropUntitled` ran on this server's first thread list. */
+  private cleaned = false;
   /** The `agent.ref` each thread holds as this server last read or wrote it, so a sweep reads a thread once per run. */
   private refs = new Map<string, AgentRef>();
   private sweeping?: Promise<void>;
@@ -172,32 +170,32 @@ export class Agents {
     return changed;
   }
 
+  /**
+   * Once per server start, on the first thread list: drops each record the old poll-time migration made from an untitled root chat whose
+   * work thread is still untitled, with its aliases, and archives its DM room, so the thread shows again as a solo chat. That migration made
+   * ag_new-thread through ag_new-thread-4 on 10-29 from three "New thread" chats. A record with no `migrated` mark came from
+   * `POST /api/agents` and stays, even with an untitled name. A second run finds nothing, since the record is gone.
+   */
+  dropUntitled(rows: ReadonlyMap<string, DurableThread>): AgentRecord[] {
+    if (this.cleaned) return [];
+    this.cleaned = true;
+    const dropped = this.store.agents.agents.filter(record => {
+      const row = rows.get(record.workThread);
+      return record.migrated !== undefined && isUntitled(record.name) && row !== undefined && isUntitled(row.name);
+    });
+    if (!dropped.length) return [];
+    const ids = new Set(dropped.map(r => r.id));
+    this.store.agents.agents = this.store.agents.agents.filter(r => !ids.has(r.id));
+    for (const [thread, id] of Object.entries(this.store.agents.aliases)) if (ids.has(id)) delete this.store.agents.aliases[thread];
+    for (const room of this.store.rooms.rooms) if (ids.has(room.agent)) room.archived = true;
+    this.store.saveAgents();
+    this.store.saveRooms();
+    for (const record of dropped) this.log(`dropped ${record.id} (${record.name}): an untitled root chat the old migration made an agent; ${record.workThread} is a solo chat again`);
+    return dropped;
+  }
+
   /** Root chats that belong to no agent: not archived, not a job, and in no record or alias. */
   unrecorded(rows: Iterable<DurableThread>): DurableThread[] {
     return [...rows].filter(t => !t.archived && this.state.state.threads[t.id]?.kind !== "job" && !this.store.agents.aliases[t.id] && !this.ofWorkThread(t.id));
-  }
-
-  get migrationRunning(): boolean {
-    return this.migrating !== undefined;
-  }
-
-  /**
-   * Runs the migration in the background when a root chat has no record yet, at start and whenever the poll finds a new one, one run at a
-   * time. It writes through this server's own store and state, so nothing here reads its files again. `done` runs after a run that changed
-   * anything.
-   */
-  migrateIfNeeded(rows: Iterable<DurableThread>, dataDir: string, done: () => void): Promise<void> | undefined {
-    if (this.migrating) return this.migrating;
-    const missing = this.unrecorded(rows).filter(t => !this.tried.has(t.id));
-    if (!missing.length) return undefined;
-    const before = this.store.agents.agents.length;
-    this.migrating = migrateAgents(this.host, dataDir, { apply: true, log: this.log, store: this.store, state: this.state })
-      .then(() => {
-        for (const thread of missing) if (!this.ofWorkThread(thread.id) && !this.store.agents.aliases[thread.id]) this.tried.add(thread.id);
-        if (this.store.agents.agents.length !== before) done();
-      })
-      .catch(error => this.log(`agents migration failed: ${error instanceof Error ? error.stack : String(error)}`))
-      .finally(() => { this.migrating = undefined; });
-    return this.migrating;
   }
 }

@@ -31,12 +31,9 @@ test("an error shows the reason and Retry loads the list", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Create your first agent" })).toBeVisible();
 });
 
-test("empty tabs show the first-run tile and the no-jobs line", async ({ page }) => {
+test("an empty list shows the first-run tile", async ({ page }) => {
   await page.route("**/api/agents", (route) => route.fulfill({ json: [] }));
   await openAgents(page);
   await page.getByRole("button", { name: "Create your first agent" }).click();
   await expect(page.getByRole("dialog", { name: "Create agent" })).toBeVisible();
-  await page.keyboard.press("Escape");
-  await openAgents(page, "jobs");
-  await expect(page.getByText("No jobs yet.")).toBeVisible();
 });

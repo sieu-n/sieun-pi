@@ -12,6 +12,7 @@
 
   type Props = {
     placeholder: string;
+    /** Registered agents, the only rows the @ picker lists. */
     agents: AgentSummary[];
     channels: Channel[];
     /** The agent works now: Stop shows beside Send. */
@@ -44,8 +45,8 @@
   type Candidate = { id: string; name: string; kind: string; detail: string; target: ChipTarget };
   const agentCandidates = $derived<Candidate[]>(
     agents.filter((a) => !a.archived).map((a) => ({
-      id: a.id, name: a.name, kind: a.kind,
-      detail: a.kind === "job" && a.parent ? `job of ${a.parent.name}` : a.status === "working" ? "working now" : "",
+      id: a.id, name: a.name, kind: "agent",
+      detail: a.status === "working" ? "working now" : "",
       target: { id: a.id, name: a.name, kind: "agent" },
     })),
   );
@@ -278,7 +279,7 @@
         <AvatarStack members={recipients.map((r) => ({ id: r.id, name: r.name, kind: "agent" }))} size={28} max={4} />
       </span>
     {/if}
-    <IconButton icon="at" label="Mention a chat or job" size="sm" onclick={mentionButton} />
+    <IconButton icon="at" label="Mention an agent" size="sm" onclick={mentionButton} />
     <IconButton icon="paperclip" label="Attach images" size="sm" onclick={() => fileInput?.click()} />
     <input bind:this={fileInput} type="file" accept="image/*" multiple hidden onchange={(e) => {
       const input = e.currentTarget as HTMLInputElement;
@@ -299,7 +300,7 @@
   items={pickerItems}
   placement="top-start"
   width={340}
-  label={query?.trigger === "#" ? "Channels" : "Chats and jobs"}
+  label={query?.trigger === "#" ? "Channels" : "Agents"}
   typeahead={box && query ? { query: "", keys: box } : undefined}
   onselect={(id) => pick(id)}
   onclose={() => (query = null)}

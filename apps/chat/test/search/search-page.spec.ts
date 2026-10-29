@@ -105,7 +105,8 @@ test("filter chips narrow the results through the address, and back undoes them"
 test("a card shows the messages around it and opens its message in the conversation", async ({ page }) => {
   await page.goto("/#/search?q=canary%20relay%20drop");
   const { hits } = await search(page, { q: "canary relay drop" });
-  const ask = hits.find(hit => hit.author.kind === "owner" && hit.conversation.kind === "solo")!;
+  // The owner's ask sits in Vent's work thread, which is a registered agent's, so it is no solo chat.
+  const ask = hits.find(hit => hit.author.kind === "owner" && hit.conversation.name === "Vent")!;
   const card = page.locator(`[data-result-card][data-hit-id="${ask.id}"]`);
   await card.locator("[data-result-more]").click();
   await expect(card.locator("[data-context=after]")).toContainText("Vent");

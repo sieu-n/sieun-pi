@@ -59,10 +59,12 @@ export const api = {
   me: () => call<Me>("GET", "/api/me"),
   sidebar: () => call<Sidebar>("GET", "/api/sidebar"),
   conversations: (opts: { archived?: boolean } = {}) => call<ConversationSummary[]>("GET", `/api/conversations${query({ archived: opts.archived ? 1 : undefined })}`),
-  directory: () => call<{ agents: AgentSummary[]; channels: Channel[] }>("GET", "/api/directory"),
+  /** Registered agents only, and each job that works for one of them. */
+  directory: () => call<{ agents: AgentSummary[]; jobs: AgentSummary[]; channels: Channel[] }>("GET", "/api/directory"),
   models: () => call<ModelCatalog>("GET", "/api/models"),
 
   agents: (opts: { archived?: boolean } = {}) => call<AgentSummary[]>("GET", `/api/agents${query({ archived: opts.archived ? 1 : undefined })}`),
+  jobs: (opts: { archived?: boolean } = {}) => call<AgentSummary[]>("GET", `/api/jobs${query({ archived: opts.archived ? 1 : undefined })}`),
   /** A new agent with its work thread and DM room (`room`); `kind` "job" with a `parent` files a root thread under that agent as a job instead. */
   createAgent: (input: { name?: string; model?: string; thinkingLevel?: ThinkingLevel; cwd?: string; kind?: "chat" | "job"; parent?: AgentId }) =>
     call<AgentSummary>("POST", "/api/agents", input),
@@ -98,7 +100,7 @@ export const api = {
   rename: (id: ConversationId, name: string) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { name }),
   archive: (id: ConversationId, archived = true) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { archived }),
   read: (id: ConversationId, seq?: number) => call<{ ok: true }>("POST", `/api/c/${enc(id)}/read`, seq === undefined ? {} : { seq }),
-  jobs: (thread: string) => call<JobNode[]>("GET", `/api/threads/${enc(thread)}/jobs`),
+  threadJobs: (thread: string) => call<JobNode[]>("GET", `/api/threads/${enc(thread)}/jobs`),
   openDm: (agent: AgentId) => call<ConversationSummary>("POST", "/api/dms", { agent }),
 
   channels: () => call<Channel[]>("GET", "/api/channels"),

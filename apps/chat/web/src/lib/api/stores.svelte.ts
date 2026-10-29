@@ -1,6 +1,6 @@
 /**
- * Svelte 5 live stores over the one /api/live socket. Global stores (`me`, `sidebar`, `agents`, `conversations`, `forYou`) start on first
- * use; per-view stores (`timeline`, `replies`, `boardStore`, `jobsStore`) start with their factory call and stop with `close()`.
+ * Svelte 5 live stores over the one /api/live socket. Global stores (`me`, `sidebar`, `agents`, `jobs`, `conversations`, `forYou`) start on
+ * first use; per-view stores (`timeline`, `replies`, `boardStore`) start with their factory call and stop with `close()`.
  * Every item update is an upsert by id, so a turn's new entries replace the item in place.
  * A send shows at once as the owner's message `r:<requestId>` (sending, then sent), as in Slack, and the real message replaces it when it
  * lands; nothing waits on the network before the composer takes the next message.
@@ -8,7 +8,7 @@
 import { api, ApiError, roomOf } from "./client.ts";
 import { live } from "./live.svelte.ts";
 import type {
-  AgentId, AgentSummary, BoardOp, BoardView, ConversationHeader, ConversationId, ConversationSummary, ForYouItem, ImageUpload, Item, JobNode, Me,
+  AgentId, AgentSummary, BoardOp, BoardView, ConversationHeader, ConversationId, ConversationSummary, ForYouItem, ImageUpload, Item, Me,
   RunStatus, SendRequest, SendResult, Sidebar, TurnPlace,
 } from "./types.ts";
 
@@ -148,10 +148,15 @@ class Sends {
   }
 }
 
+/** Replaces the summary with the same id in place, or puts a new one first, so the newest stays on top. */
+const upsert = (list: AgentSummary[], next: AgentSummary): AgentSummary[] =>
+  list.some(a => a.id === next.id) ? list.map(a => (a.id === next.id ? next : a)) : [next, ...list];
+
 class Global {
   me = $state<Me | null>(null);
   sidebar = $state<Sidebar | null>(null);
   agents = $state<AgentSummary[]>([]);
+  jobs = $state<AgentSummary[]>([]);
   conversations = $state<ConversationSummary[]>([]);
   forYouCount = $state(0);
   ready = $state(false);
@@ -166,6 +171,7 @@ class Global {
           this.me = event.me;
           this.sidebar = event.sidebar;
           this.agents = event.agents;
+          this.jobs = event.jobs;
           this.conversations = event.conversations;
           this.forYouCount = event.sidebar.forYou;
           this.ready = true;
@@ -174,14 +180,17 @@ class Global {
           this.sidebar = event.sidebar;
           this.forYouCount = event.sidebar.forYou;
           break;
-        case "agent": {
-          const index = this.agents.findIndex(a => a.id === event.agent.id);
-          if (index >= 0) this.agents[index] = event.agent;
-          else this.agents = [event.agent, ...this.agents];
+        case "agent":
+          this.agents = upsert(this.agents, event.agent);
           break;
-        }
         case "agent_removed":
           this.agents = this.agents.filter(a => a.id !== event.id);
+          break;
+        case "job":
+          this.jobs = upsert(this.jobs, event.job);
+          break;
+        case "job_removed":
+          this.jobs = this.jobs.filter(j => j.id !== event.id);
           break;
         case "conversation": {
           const index = this.conversations.findIndex(c => c.id === event.conversation.id);
@@ -192,6 +201,8 @@ class Global {
         case "status": {
           const agent = this.agents.find(a => a.id === event.conversation || a.room === event.conversation);
           if (agent) agent.status = event.status;
+          const job = this.jobs.find(j => j.id === event.conversation);
+          if (job) job.status = event.status;
           const conversation = this.conversations.find(c => c.id === event.conversation);
           if (conversation) conversation.status = event.status;
           break;
@@ -228,7 +239,7 @@ export const sidebar = {
   },
 };
 
-/** Every chat and job as an Agents card, newest first, live. Archived ones come from `api.agents({ archived: true })`. */
+/** Registered agents (`ag_<slug>`), newest first, live: the Agents cards and every agent picker. Archived ones come from `api.agents({ archived: true })`. */
 export const agents = {
   get list() {
     global.start();
@@ -240,7 +251,7 @@ export const agents = {
   },
   /**
    * The conversation that opens for an agent: its DM room, from its summary or, before the page has it, from its id. Any other id (a root
-   * thread no agent owns yet, a job) opens as itself.
+   * thread no agent owns, a job) opens as itself.
    */
   room(id: AgentId): ConversationId {
     global.start();
@@ -249,6 +260,23 @@ export const agents = {
   get ready() {
     global.start();
     return global.ready;
+  },
+};
+
+/** Each job that works for a registered agent, newest first, live. A job shows only inside its agent; archived ones come from `api.jobs({ archived: true })`. */
+export const jobs = {
+  get list() {
+    global.start();
+    return global.jobs;
+  },
+  byId(id: AgentId): AgentSummary | undefined {
+    global.start();
+    return global.jobs.find(j => j.id === id);
+  },
+  /** The jobs of one registered agent, nested ones included. */
+  of(agent: AgentId): AgentSummary[] {
+    global.start();
+    return global.jobs.filter(j => j.agent?.id === agent);
   },
 };
 
@@ -443,22 +471,6 @@ export class Replies {
 }
 
 export const replies = (channel: ConversationId, root: string): Replies => new Replies(channel, root);
-
-/** A thread's job tree, live. */
-export class JobsStore {
-  jobs = $state<JobNode[]>([]);
-  private stopListen: () => void;
-  constructor(readonly thread: string) {
-    this.stopListen = live.on(event => {
-      if (event.type === "jobs" && event.thread === thread) this.jobs = event.jobs;
-    });
-    void api.jobs(thread).then(jobs => (this.jobs = jobs)).catch(() => undefined);
-  }
-  close(): void {
-    this.stopListen();
-  }
-}
-export const jobsStore = (thread: string): JobsStore => new JobsStore(thread);
 
 /** One chat's board, live: the server sends the whole board on each change, so the store replaces it. */
 export class BoardStore {
