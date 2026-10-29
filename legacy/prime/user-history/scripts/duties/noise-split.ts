@@ -40,6 +40,8 @@ export const NOISE_FIXES: readonly { kind: string; fix: string }[] = [
   { kind: "re-ask of an open For you todo", fix: "c083958b" },
   // The t34 nudge of 10-25 10:57:42Z went out as a resend after that same re-ask refusal, so c083958b's text covers it too.
   { kind: "same incident asked again by another chat", fix: "c083958b" },
+  // The one-part-of-several check of 10-29, which refuses landing versions sent one at a time and a job's "Step 1 is done" (~/work/tell-owner-progress-trickle/replay.md).
+  { kind: "progress on a goal still going", fix: "958ccd0a" },
 ];
 
 /** A labelled noise line: `at` is when it went out, `labelled` when the duty run wrote its label (the LABELS row's `at`). */
