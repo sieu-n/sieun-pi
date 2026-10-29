@@ -27,6 +27,7 @@ import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { Leases, SessionLockedError } from "../lease.ts";
 import { statusOf, ThreadIndex, type IndexedEntry, type SearchPage, type SearchQuery, type ThreadRow, type ThreadStatus, type UsageRow, type UsageTotal } from "./index-db.ts";
+import { speechOf } from "./feed.ts";
 import { headFor, parseSession } from "./import.ts";
 import { AgentMessageEntry, ChatDoc, threadEnv, threadRegistry } from "./registry.ts";
 import { SPEAKING_TOOLS, type PrimeChat } from "./prime-chat.ts";
@@ -493,7 +494,7 @@ export class DurableThreads {
     const task = isInput(entry) ? tasks.get(entry.conversationId) : undefined;
     if (task && task.entry === undefined) task.entry = entry.kind === "pi.user" ? entry.id : NO_TASK_INPUT;
     if (described && task?.entry === entry.id) described.author = taskAuthor(thread, task.owner);
-    if (described) entries.push({ thread, conversation: entry.conversationId, entryId: entry.id, kind: entry.kind, ...described });
+    if (described) entries.push({ thread, conversation: entry.conversationId, entryId: entry.id, kind: entry.kind, ...described, ...speechOf(entry) });
     const row = usageOf(entry, thread, now);
     if (row) usage.push(row);
   }

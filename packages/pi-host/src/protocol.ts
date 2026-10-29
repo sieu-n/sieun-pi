@@ -12,6 +12,7 @@
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
+import type { FeedRow } from "../../../components/prime-relay/agents/protocol.ts";
 import type { Job } from "./schedule.ts";
 
 export const PROTOCOL_NAME = "prime-agent.daemon";
@@ -341,6 +342,7 @@ export type Outbound =
   | { type: "daemon_closing"; reason: "shutdown" }
   | { type: "heartbeats_changed" }
   | { type: "durable_event"; thread: string; watch: string; event: unknown }
+  | { type: "durable_feed_event"; feed: string; row: FeedRow }
   | { type: "roster_update"; changed: RosterEntry[]; removed?: string[]; resync?: true }
   | { type: "session_event"; activeSessionId: string; event: { type: string; [key: string]: unknown }; meta: EventMeta }
   | { type: "session_snapshot_begin"; activeSessionId: string; snapshotId: string; snapshot: Omit<SessionSnapshot, "messages">; messageCount: number; targetChunkBytes: number; purpose: "attach" }

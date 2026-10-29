@@ -36,7 +36,8 @@ H-->>C: the same submission, nothing admitted twice
 | Path | What it holds |
 |---|---|
 | `threads.ts` | `DurableThreads`: open, recover, submit, wait, abort, watch, tree, entries, documents and idle close. |
-| `index-db.ts` | `ThreadIndex`: the thread rows, each thread's last wake, the FTS5 search rows and the usage rows, all derived from the thread files. |
+| `index-db.ts` | `ThreadIndex`: the thread rows, each thread's last wake, the FTS5 search rows, the usage rows and the outbox, all derived from the thread files. |
+| `feed.ts` | The outbox's reading of speaking calls (`speechOf`) and the `durable_feed` streams per connection. |
 | `commands.ts` | `DurableCommands`: the `durable_*` socket commands and the watches per connection. |
 | `registry.ts` | What every thread runs with: Prime's prompt (or the preamble alone without an agent dir), pi-durable's coding tools in the thread's cwd, the subagent tool, the `send_message` tool, Prime's chat extension when the host loaded it, Prime's `ipython` when the host loaded it, the `rlm.deliver` task, `agent.message` entries and `chat.doc` documents. |
 | `pi-extensions.ts` | The adapter that runs a pi coding-agent extension in pi-host: a recording `ExtensionAPI`, its events fired with a thread's pi context, and each registered tool as a pi-durable tool with the extension's own definition. |
@@ -127,6 +128,9 @@ Each command is one JSON line with `type` and `id`, and the response is a v7 `re
 | `durable_doc_put` | `thread`, `name`, `value`, `conversation?` | |
 | `durable_set` | `thread`, `name?`, `model?`, `thinkingLevel?`, `archived?`, `cwd?` (an absolute folder on this box; the thread's next request runs its tools, prompt and kernels there) | `thread` |
 | `durable_import` | `path` (a Prime or Pi session JSONL), `name?`, `model?`, `cwd?` | `thread` with `imported` and `skipped` counts. |
+| `durable_feed` | `after?` (an outbox seq, default 0) | `feed`, written before any row; then `durable_feed_event` lines. |
+| `durable_feed_stop` | `feed` | `stopped` |
+| `durable_feed_read` | `after?`, `limit?` (default 500) | `rows`: the outbox rows after `after` in seq order; `more`. |
 
 A `durable_event` line is `{type: "durable_event", thread, watch, event}`, and `event` is one of these.
 
@@ -137,6 +141,17 @@ A `durable_event` line is `{type: "durable_event", thread, watch, event}`, and `
 5. `{type: "closed", reason}` ends the watch when the file closes at shutdown.
 
 Every entry reaches a watcher once, so a client that reconnects with `fromEntry` set to the newest id it has misses nothing.
+
+## The outbox and durable_feed
+
+`index.sqlite` keeps one `outbox` row for each speaking call that went out, host-wide, so the agent relay forwards it to the chat server as an `event` frame (`components/prime-relay/agents/protocol.ts`, apps/chat/docs/agent-model.md section 4 point 2). `feed.ts` reads entries and keeps the streams.
+
+1. A `send_message` or `tell_owner` call with text in a thread's root conversation counts, as apps/chat `rooms.ts` reads the room feed; a child conversation's calls add no row.
+2. The call waits in `outbox_calls` from the commit of its assistant entry until the commit of its result. A result that is not an error and not tell_owner's held note (`TELL_OWNER_HELD`) adds the row, with the result's time as `at`.
+3. A row's `requestId` is `m:<thread>:<toolCallId>` and is unique, so a call pi-durable replays after a crash, or a thread whose index rows are read again, adds no second row.
+4. Rows are written in the same index transaction as the entries, from both the commit listener and the backfill at open, so a row a crash missed comes in on the thread's next open and needs no hook in pi-durable.
+5. A result older than the index's outbox (`outbox_meta.since`) adds no row, so the first release with the outbox and a rebuild of the index never feed old messages to the chat server as new ones.
+6. A `durable_feed_event` line is `{type: "durable_feed_event", feed, row}`, and `row` is a `FeedRow`: seq, thread, conversation, entry (the assistant entry), toolCallId, toolName, requestId, text, to?, why?, at. A feed writes its rows after `after` in seq order and then each new row live, with no gap and no row twice, until `durable_feed_stop` or the connection closes. A connection may hold several feeds.
 
 ## Speaking through send_message
 

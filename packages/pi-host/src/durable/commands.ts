@@ -7,11 +7,13 @@ import type { ModelRef, SubmissionId } from "@earendil-works/pi-durable";
 import { randomUUID } from "node:crypto";
 import { fail, ok, type Response } from "../protocol.ts";
 import type { Sink } from "../session.ts";
+import { FeedStreams } from "./feed.ts";
 import type { DurableThreads, SubmitInput } from "./threads.ts";
 
 export const DURABLE_COMMANDS = new Set([
   "durable_threads", "durable_create", "durable_submit", "durable_wait", "durable_watch", "durable_unwatch", "durable_abort", "durable_tree",
   "durable_entries", "durable_search", "durable_usage", "durable_doc_get", "durable_doc_put", "durable_set", "durable_import", "durable_ticket",
+  "durable_feed", "durable_feed_stop", "durable_feed_read",
 ]);
 
 type Command = { id?: string; type: string; [key: string]: unknown };
@@ -50,13 +52,19 @@ export class DurableCommands {
   /** Watches by connection, so a closed socket stops its streams. */
   private readonly watches = new Map<string, Map<string, () => Promise<void>>>();
 
-  constructor(readonly threads: DurableThreads) {}
+  /** The `durable_feed` streams over the host's outbox, by connection. */
+  private readonly feeds: FeedStreams;
+
+  constructor(readonly threads: DurableThreads) {
+    this.feeds = new FeedStreams(threads.index);
+  }
 
   handles(type: string): boolean {
     return DURABLE_COMMANDS.has(type);
   }
 
-  async handle(command: Command, sink: Sink): Promise<Response> {
+  /** Answers one command, or undefined when it wrote its own response first, as `durable_feed` does before its backlog rows. */
+  async handle(command: Command, sink: Sink): Promise<Response | undefined> {
     const id = command.id;
     const done = (data?: unknown) => ok(id, command.type, data);
     try {
@@ -108,6 +116,19 @@ export class DurableCommands {
           this.watches.get(sink.clientId)?.delete(watchId);
           await stop?.();
           return done({ stopped: stop !== undefined });
+        }
+        case "durable_feed": {
+          const after = optNum(command, "after") ?? 0;
+          const feed = `durable-feed:${randomUUID()}`;
+          sink.write(done({ feed }));
+          this.feeds.open(sink, feed, after);
+          return undefined;
+        }
+        case "durable_feed_stop":
+          return done({ stopped: this.feeds.stop(sink.clientId, str(command, "feed")) });
+        case "durable_feed_read": {
+          const limit = optNum(command, "limit");
+          return done(this.threads.index.readOutbox(optNum(command, "after") ?? 0, limit === undefined ? undefined : Math.max(1, Math.floor(limit))));
         }
         case "durable_abort":
           await this.threads.abort(str(command, "thread"), optNum(command, "conversation"));
@@ -180,6 +201,7 @@ export class DurableCommands {
   }
 
   async disconnect(clientId: string): Promise<void> {
+    this.feeds.disconnect(clientId);
     const mine = this.watches.get(clientId);
     this.watches.delete(clientId);
     for (const stop of mine?.values() ?? []) await stop().catch(() => undefined);

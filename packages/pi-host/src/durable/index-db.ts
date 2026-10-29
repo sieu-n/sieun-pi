@@ -4,6 +4,7 @@
  * thread files, so a lost or stale index is rebuilt from them (`DurableThreads.reindex`).
  */
 import { DatabaseSync } from "node:sqlite";
+import type { FeedRow } from "../../../../components/prime-relay/agents/protocol.ts";
 
 export type ThreadStatus = "idle" | "running" | "sleeping" | "failed";
 
@@ -83,6 +84,19 @@ export interface IndexedEntry {
   author: string;
   at: number;
   text: string;
+  /** The speaking calls of a root assistant entry (feed.ts `speechOf`), kept until their results are indexed. */
+  calls?: SpokenCall[];
+  /** The outcome of a root speaking call's result: a sent one adds its outbox row. */
+  result?: { toolCallId: string; sent: boolean };
+}
+
+/** One `send_message` or `tell_owner` call with its message, as the outbox keeps it until its result. */
+export interface SpokenCall {
+  toolCallId: string;
+  toolName: string;
+  text: string;
+  to?: string;
+  why?: string;
 }
 
 export interface UsageRow {
@@ -135,9 +149,26 @@ CREATE TABLE IF NOT EXISTS usage (
   PRIMARY KEY (thread, entry_id)
 );
 CREATE INDEX IF NOT EXISTS usage_at ON usage (at);
+CREATE TABLE IF NOT EXISTS outbox (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, thread TEXT NOT NULL, conversation INTEGER NOT NULL, entry INTEGER NOT NULL, tool_call_id TEXT NOT NULL,
+  tool_name TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE, text TEXT NOT NULL, to_room TEXT, why TEXT, at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS outbox_calls (
+  thread TEXT NOT NULL, tool_call_id TEXT NOT NULL, conversation INTEGER NOT NULL, entry INTEGER NOT NULL, tool_name TEXT NOT NULL,
+  text TEXT NOT NULL, to_room TEXT, why TEXT, PRIMARY KEY (thread, tool_call_id)
+);
+CREATE TABLE IF NOT EXISTS outbox_meta (id INTEGER PRIMARY KEY CHECK (id = 1), since INTEGER NOT NULL);
 `;
 
 type Row = Record<string, string | number | bigint | null | Uint8Array>;
+
+function feedRowOf(row: Row): FeedRow {
+  return {
+    seq: Number(row.seq), thread: String(row.thread), conversation: Number(row.conversation), entry: Number(row.entry), toolCallId: String(row.tool_call_id),
+    toolName: String(row.tool_name), requestId: String(row.request_id), text: String(row.text), ...(row.to_room === null ? {} : { to: String(row.to_room) }),
+    ...(row.why === null ? {} : { why: String(row.why) }), at: Number(row.at),
+  };
+}
 
 function threadOf(row: Row): ThreadRow {
   return {
@@ -271,6 +302,12 @@ export class ThreadIndex {
   private readonly db: DatabaseSync;
   /** Set when this open changed the schema of derived rows, so every thread's search and usage rows are read again. */
   readonly rebuilt: boolean = false;
+  /**
+   * When this index first had an outbox. A result from before it adds no row, so the first release with the outbox, a rebuild of the
+   * index or `resetEntries` never feeds a thread's old messages to the chat server as new ones.
+   */
+  readonly outboxSince: number;
+  private readonly outboxListeners = new Set<(row: FeedRow) => void>();
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -289,6 +326,8 @@ export class ThreadIndex {
       this.db.exec(`DELETE FROM entries; DELETE FROM usage; UPDATE threads SET indexed_entry = 0; PRAGMA user_version = ${TASK_AUTHOR_VERSION};`);
       this.rebuilt = true;
     }
+    this.db.prepare("INSERT OR IGNORE INTO outbox_meta (id, since) VALUES (1, ?)").run(Date.now());
+    this.outboxSince = Number((this.db.prepare("SELECT since FROM outbox_meta WHERE id = 1").get() as Row).since);
   }
 
   close(): void {
@@ -359,7 +398,10 @@ export class ThreadIndex {
     return row ? Number(row.indexed_entry) : 0;
   }
 
-  /** Adds entries and usage rows once each: an entry at or below the thread's indexed mark is already in. */
+  /**
+   * Adds entries and usage rows once each: an entry at or below the thread's indexed mark is already in. A speaking call waits in
+   * `outbox_calls` until its result, and a sent result adds its outbox row once per requestId; listeners hear each new row after the commit.
+   */
   addEntries(thread: string, entries: readonly IndexedEntry[], usage: readonly UsageRow[]): void {
     const mark = this.indexedEntry(thread);
     const fresh = entries.filter(entry => entry.entryId > mark);
@@ -369,9 +411,14 @@ export class ThreadIndex {
     const insert = this.db.prepare("INSERT INTO entries (text, thread, conversation, entry_id, kind, author, at) VALUES (?, ?, ?, ?, ?, ?, ?)");
     const insertUsage = this.db.prepare(`INSERT OR IGNORE INTO usage (thread, conversation, entry_id, model, at, input, output, cache_read, cache_write, cost,
       cost_input, cost_output, cost_cache_read, cost_cache_write) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const added: FeedRow[] = [];
     this.db.exec("BEGIN");
     try {
       for (const entry of fresh) if (entry.text) insert.run(entry.text, entry.thread, entry.conversation, entry.entryId, entry.kind, entry.author, entry.at);
+      for (const entry of [...fresh].sort((a, b) => a.entryId - b.entryId)) {
+        const row = this.speech(thread, entry);
+        if (row) added.push(row);
+      }
       for (const row of freshUsage) insertUsage.run(row.thread, row.conversation, row.entryId, row.model, row.at, row.input, row.output, row.cacheRead, row.cacheWrite, row.cost,
         row.costInput, row.costOutput, row.costCacheRead, row.costCacheWrite);
       this.db.prepare("UPDATE threads SET indexed_entry = ? WHERE id = ?").run(top, thread);
@@ -380,6 +427,46 @@ export class ThreadIndex {
       this.db.exec("ROLLBACK");
       throw error;
     }
+    for (const row of added) {
+      for (const listener of this.outboxListeners) {
+        try {
+          listener(row);
+        } catch {
+          // A feed whose connection broke stops on its disconnect; the row stays in the table for its next durable_feed.
+        }
+      }
+    }
+  }
+
+  /** Keeps an entry's speaking calls, or turns a sent result into its outbox row; answers the row when one was added. */
+  private speech(thread: string, entry: IndexedEntry): FeedRow | undefined {
+    for (const call of entry.calls ?? []) {
+      this.db.prepare(`INSERT OR REPLACE INTO outbox_calls (thread, tool_call_id, conversation, entry, tool_name, text, to_room, why)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(thread, call.toolCallId, entry.conversation, entry.entryId, call.toolName, call.text, call.to ?? null, call.why ?? null);
+    }
+    const result = entry.result;
+    if (!result) return undefined;
+    const call = this.db.prepare("SELECT * FROM outbox_calls WHERE thread = ? AND tool_call_id = ?").get(thread, result.toolCallId) as Row | undefined;
+    if (!call) return undefined;
+    this.db.prepare("DELETE FROM outbox_calls WHERE thread = ? AND tool_call_id = ?").run(thread, result.toolCallId);
+    if (!result.sent || entry.at < this.outboxSince) return undefined;
+    const added = this.db.prepare(`INSERT OR IGNORE INTO outbox (thread, conversation, entry, tool_call_id, tool_name, request_id, text, to_room, why, at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(thread, Number(call.conversation), Number(call.entry), result.toolCallId, String(call.tool_name),
+      `m:${thread}:${result.toolCallId}`, String(call.text), call.to_room, call.why, entry.at);
+    if (!added.changes) return undefined;
+    return feedRowOf(this.db.prepare("SELECT * FROM outbox WHERE seq = ?").get(Number(added.lastInsertRowid)) as Row);
+  }
+
+  /** Up to `limit` outbox rows after `after`, in seq order, and whether more follow. */
+  readOutbox(after: number, limit = 500): { rows: FeedRow[]; more: boolean } {
+    const rows = (this.db.prepare("SELECT * FROM outbox WHERE seq > ? ORDER BY seq LIMIT ?").all(after, limit + 1) as Row[]).map(feedRowOf);
+    return { rows: rows.slice(0, limit), more: rows.length > limit };
+  }
+
+  /** Calls `listener` with each outbox row added from now on, in seq order; answers the unsubscribe. */
+  onOutbox(listener: (row: FeedRow) => void): () => void {
+    this.outboxListeners.add(listener);
+    return () => this.outboxListeners.delete(listener);
   }
 
   search(query: SearchQuery): SearchPage {
