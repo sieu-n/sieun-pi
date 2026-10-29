@@ -8,19 +8,15 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { join, relative } from "node:path";
 import type { AgentId, Item, Ms, Principal } from "../web/src/lib/api/types.ts";
-import { serverNote } from "../web/src/lib/api/shared/chat-feed.ts";
 import { AgentStore, freeSlug, type AgentRecord, type FeedCursor, type RoomId, type RoomPost } from "./agent-store.ts";
 import type { DurableThread, EntryRecord, Host } from "./host/types.ts";
+import { ownerText } from "./rooms.ts";
 import { readJson, writeJson, type StateFile, type Store } from "./store.ts";
 import { buildItems, firstSendIn, isInput, sentMessage, sentMessages, TURN_KINDS, type TimelineContext } from "./timeline.ts";
 
 const DAY_MS = 86_400_000;
 const PAGE = 500;
 const CONVERSATION = 1;
-/** Prime expands `/skill:<name>` into the skill's whole file before the owner's text; the room shows what he typed. */
-const SKILL_BLOCK = /<skill\b[^>]*>[\s\S]*?<\/skill>/g;
-/** The line the old chat server sent for each of the owner's board clicks ("[board] Owner chose ..."); the room has no post for a click. */
-const BOARD_LINE = "[board] ";
 
 export type PostDraft = Omit<RoomPost, "id" | "seq" | "room">;
 
@@ -247,7 +243,7 @@ async function readHistory(host: Host, row: DurableThread, record: AgentRecord, 
   for (const item of items) {
     if (item.kind === "message") {
       const entry = byId.get(Number(item.id.slice(1)))!;
-      const text = ownerText(entry, item);
+      const text = ownerText(entry);
       if (text === undefined) continue;
       posts.push({ author: "owner", text, images: item.images, at: item.at, requestId: `h:${row.id}:${entry.id}`, imported: true });
     } else if (item.kind === "turn") {
@@ -267,15 +263,6 @@ async function readHistory(host: Host, row: DurableThread, record: AgentRecord, 
     }
   }
   return { posts, cursor, read: entries.length };
-}
-
-/** An owner input as the room shows it: what he typed, with Prime's skill expansion taken off; undefined for a server or Prime note. */
-function ownerText(entry: EntryRecord, item: Extract<Item, { kind: "message" }>): string | undefined {
-  if (entry.kind !== "pi.user") return undefined;
-  const raw = item.text.trim();
-  if (serverNote(raw) !== undefined || raw.startsWith(BOARD_LINE)) return undefined;
-  const text = raw.replace(SKILL_BLOCK, " ").trim();
-  return text || item.images.length ? text : undefined;
 }
 
 /** Each turn's entries by the key `buildItems` gives the turn: the input before it, or its own first entry. */
