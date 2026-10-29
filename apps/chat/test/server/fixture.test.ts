@@ -170,10 +170,25 @@ describe("channels and mentions", () => {
     assert.equal((s.host as FixtureHost).threadsById.get(ids.frontend)!.entries.length, workEntries, "the work thread gets no input");
   });
 
-  test("a mention of a non-member is refused", async () => {
-    const sent = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "@Vent hi", mentions: [ids.vent], requestId: "mention-2" });
-    assert.equal(sent.status, 400);
-    assert.match(sent.body.error, /Vent is not in #pi-cutover/);
+  test("a mention of an agent outside the channel adds it and delivers the post with the channel's earlier posts and images", async () => {
+    const created = await s.send("POST", "/api/rooms", { kind: "channel", name: "dev-admin-app" });
+    assert.deepEqual(created.body.members.map((m: any) => m.principal.id), ["owner"]);
+    const channel = created.body.id as string;
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    const first = await s.send("POST", `/api/c/${channel}/send`, { text: "plan adjust here, who owns plan data?", images: [{ data: png, mimeType: "image/png" }], requestId: "join-1" });
+    assert.equal(first.status, 200);
+    const sent = await s.send("POST", `/api/c/${channel}/send`, { text: "@Vent which table holds the org plan?", mentions: [agents.vent], requestId: "join-2" });
+    assert.equal(sent.status, 200, sent.body.error);
+    assert.equal(sent.body.deliveries.length, 1);
+    const joined = (await s.get<any[]>("/api/rooms")).find(r => r.id === channel);
+    assert.deepEqual(joined.members.map((m: any) => [m.principal.id, m.wakeOn]), [["owner", "all"], [agents.vent, "mention"]]);
+    const comm = await until(async () => s.app.agents.record(agents.vent)!.comm?.[channel], c => !!c);
+    const copyOf = (page: TimelinePage) => page.items.find(i => i.kind === "message" && i.text.startsWith("[#dev-admin-app · post 2 from You (owner)")) as Extract<Item, { kind: "message" }> | undefined;
+    const copy = copyOf(await until(() => s.get<TimelinePage>(`/api/c/${comm}/items`), p => !!copyOf(p)))!;
+    assert.match(copy.text, /\(channel before this post\)\n1 You: plan adjust here, who owns plan data\? \[1 image attached\]/);
+    assert.equal(copy.images.length, 1, "the earlier post's image goes with the delivery");
+    const again = await s.send("POST", `/api/c/${channel}/send`, { text: "@Vent which table holds the org plan?", mentions: [agents.vent], requestId: "join-2" });
+    assert.equal(again.body.item.id, sent.body.item.id, "a retry of the same send lands once");
   });
 
   test("channels create, add members and keep read marks", async () => {

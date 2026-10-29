@@ -340,7 +340,7 @@ The chat server dials `ws://<box>:7791/v2/agents` with the box's bearer token fr
 | `chat.board` doc per chat | `agents/<id>/board.json`, copied once. Ids stay, so p12 and t4 keep working. |
 | `boards/<chat>/duties.json`, check-in, wakes | Under `agents/<id>/`. Wakes fire on the agent's box from phase 6. |
 | Channel members (thread ids) | Agent ids. The thread-id-to-agent map is kept, so old links `#/c/<thread id>` open the agent's DM. |
-| A channel mention | A delivery to that agent's comm thread for the channel. Until phase 4, it goes to the work thread as today. |
+| A channel mention | A delivery to that agent's comm thread for the channel. Until phase 4, it goes to the work thread as today. A mention of an agent that is not a member adds it to the channel first, as in Slack. |
 
 The migration is one script, `apps/chat/scripts/migrate-agents.ts`, and the server never runs it on its own: on 10-29 a poll-time run had made ag_new-thread to ag_new-thread-4 from untitled chats, and the server drops such records on its first thread list after a start. The script is dry-run by default, writes `agents.json` and the folders, never changes a thread file, and can be undone by deleting what it wrote.
 

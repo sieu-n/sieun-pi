@@ -12,6 +12,8 @@
  *    into the agent's posts here, with hops one more than the post that started its turn, and those posts are delivered on in turn.
  * 4. A closed Solo room, or an archived room, refuses the owner's posts, stores agent posts with no deliveries, and stops deliveries still
  *    on their way.
+ * 5. As in Slack, the owner's mention of a registered agent that is not a member adds it to the room, as `addMembers` does, and delivers
+ *    the post. A channel root post's delivery carries the root posts its target missed since its last one, with their images.
  */
 import { randomUUID } from "node:crypto";
 import type {
@@ -323,9 +325,8 @@ export class GroupRooms {
       const record = this.deps.threads.registered(m);
       return record ? [record.id] : [];
     }))];
-    for (const agent of mentions) {
-      if (!row.members.some(m => m.agent === agent)) throw new Error(`${this.deps.threads.principal(agent).name} is not in ${roomLabel(row)}. Add it to the room first.`);
-    }
+    const joining = mentions.filter(agent => !row.members.some(m => m.agent === agent));
+    if (joining.length) this.addMembers(row.id, joining);
     const images = (request.images ?? []).map(image => this.deps.saveUpload(image));
     return this.ownerPost(row, { text: request.text ?? "", requestId: request.requestId, images, mentions, ...(request.threadRoot ? { threadRoot: request.threadRoot } : {}) });
   }
@@ -428,13 +429,14 @@ export class GroupRooms {
       return;
     }
     this.inflight.add(key);
-    const images = post.images.map(ref => this.deps.readUpload(ref)).filter((image): image is { data: string; mimeType: string } => !!image);
+    const missed = this.missed(row, post, target);
+    const images = [...missed, post].flatMap(p => p.images).map(ref => this.deps.readUpload(ref)).filter((image): image is { data: string; mimeType: string } => !!image);
     try {
       const thread = await this.commThread(row, record);
       const from = post.author === "owner"
         ? { ownerTurn: true, whenBusy: "steer" as const }
         : { whenBusy: "followUp" as const, entry: { kind: "agent.message" as const, data: { from: post.author, via: row.id, post: post.id, hops: post.hops ?? 0 } } };
-      const result = await this.deps.host.submit(thread, { text: this.envelope(row, post), ...(images.length ? { images } : {}), requestId: delivery.requestId, ...from });
+      const result = await this.deps.host.submit(thread, { text: this.envelope(row, post, missed), ...(images.length ? { images } : {}), requestId: delivery.requestId, ...from });
       this.setDelivery(post, target, { target, state: "delivered", attempts: delivery.attempts + 1, at: Date.now(), requestId: delivery.requestId, submission: result.submission, thread });
       this.deps.events.submitted(thread, result);
     } catch (error) {
@@ -468,22 +470,36 @@ export class GroupRooms {
   }
 
   /**
-   * The text a member reads: `[<label> · post <seq> from <author>[ (owner)] · hops <n>]`, a blank line and the post. A Solo room's label
-   * carries its agenda and members; a channel reply adds up to five earlier posts of its thread.
+   * A channel's root posts before a root post that `target` has not had: those after the last root post it wrote or got, at most the last
+   * few, so an agent a mention just added reads what the channel said before.
    */
-  envelope(row: GroupRoom, post: RoomPost): string {
+  private missed(row: GroupRoom, post: RoomPost, target: AgentId): RoomPost[] {
+    if (row.kind !== "channel" || post.threadRoot) return [];
+    const roots = this.store.postsOf(row.id).filter(p => !p.threadRoot && p.seq < post.seq);
+    const last = roots.findLastIndex(p => p.author === target || p.deliveries?.some(d => d.target === target));
+    return roots.slice(last + 1).slice(-CONTEXT_POSTS);
+  }
+
+  /**
+   * The text a member reads: `[<label> · post <seq> from <author>[ (owner)] · hops <n>]`, a blank line and the post. A Solo room's label
+   * carries its agenda and members; a channel root post adds the root posts its target missed, and a channel reply adds up to five earlier
+   * posts of its thread.
+   */
+  envelope(row: GroupRoom, post: RoomPost, missed: RoomPost[] = []): string {
     const author = this.deps.threads.principal(post.author);
     const label = row.kind === "channel"
       ? `#${row.name}`
       : `Solo "${row.name}" (${row.id}): ${row.agenda.length > AGENDA_CLIP ? `${row.agenda.slice(0, AGENDA_CLIP)}…` : row.agenda} · with ${row.members.map(m => this.deps.threads.principal(m.agent).name).join(", ")}`;
     const lines = [`[${label.replace(/\n+/g, " ")} · post ${post.seq} from ${author.name}${author.kind === "owner" ? " (owner)" : ""} · hops ${post.hops ?? 0}]`, "", post.text];
+    const context = (p: RoomPost) => {
+      const images = p.images.length ? ` [${p.images.length} image${p.images.length > 1 ? "s" : ""} attached]` : "";
+      return `${p.seq} ${this.deps.threads.principal(p.author).name}: ${p.text.slice(0, CONTEXT_CLIP)}${images}`;
+    };
+    if (missed.length) lines.push("", "(channel before this post)", ...missed.map(context));
     if (row.kind === "channel") {
       const rootId = post.threadRoot ?? post.id;
       const thread = this.store.postsOf(row.id).filter(p => (p.id === rootId || p.threadRoot === rootId) && p.seq < post.seq).slice(-CONTEXT_POSTS);
-      if (thread.length) {
-        lines.push("", "(thread so far)");
-        for (const p of thread) lines.push(`${p.seq} ${this.deps.threads.principal(p.author).name}: ${p.text.slice(0, CONTEXT_CLIP)}`);
-      }
+      if (thread.length) lines.push("", "(thread so far)", ...thread.map(context));
     }
     return lines.join("\n");
   }
