@@ -22,8 +22,8 @@ import { type DsQuery, HOUR, MINUTE, PG, PROM, grafanaClient, num, promInstant, 
  * - Meta Ads advertiser re-reads (p850, every due advertiser read within 7 days): advertiser walks finished a minute over 24 h (prod Postgres
  *   meta_ads_walks, as auto-sns-agent scripts/duties/crawler/meta-ads-crawl.mjs reads it) against the walks due now spread over the 7 days;
  * - Instagram re-reads (p683, owner 10-26: "1k+ every month, 10K+ every week" and "under 1k also monthly", at most 1% of read accounts with
- *   10,000+ followers past 7 days and at most 1% of the rest past 30 days; p829, every profile re-read within 14 days): ten 0.1% samples of
- *   prod instagram_census (REFRESH_SEEDS).
+ *   10,000+ followers past 7 days and at most 1% of the rest past 30 days): three 0.1% samples of prod instagram_census (REFRESH_SEEDS).
+ *   p829's 14-day line left on 10-26, when the owner's t65 answer replaced it with p683 and the board dropped p829.
  * Each goal number comes from the board item at run time: its target, or the number in its title when it has none. Platforms that crawl on
  * prod with no goal on the board (crawler.job_run_events crawl_profile, and Instagram posts) are listed in the run detail and left out of the count.
  * The supporting metrics keep the rest of the owner's 10-19 duties for crawler-v3 (msg mvfe8foz): "Geonode mbps >=100mbps always", "nothing is
@@ -44,11 +44,6 @@ export const SETTLE_MS = 5 * MINUTE;
 export const GEONODE_HOURS = 24;
 /** The hold the goals read: p826's "held 6 h straight", and the same window on the dashboard's TikTok Shop stat. */
 export const HOLD_MS = 6 * HOUR;
-/**
- * p829 asks that every profile be re-read within 14 days. A 1% sample of over 390,000 read rows held 3 past 14 days on 10-21, all in a failing
- * streak of 8 to 16 reads, so the duty kept its line at 99.99% since 10-21 rather than the board's 100.
- */
-export const WITHIN_14D_PCT = 99.99;
 /**
  * p696's line since 10-23: the share of live US TikTok Shop products with an ok read in the last 7 days, the owner's "each re-read every week"
  * for p681. Crawler ops set it at 99.5% on 10-23 04:5xZ. A product read rate swings with how many are due (c67): on 10-23 the lane read about
@@ -111,33 +106,31 @@ export const WRITER_LAG_LINE = 5_000;
 export const WRITER_LAG_EXPR = 'max(max_over_time(crawler_v3_bus_group_lag_records{world="prod",group="instagram-census-pg"}[5m]))';
 
 /**
- * The refresh age of read Instagram accounts (p683, owner 10-18: "all refreshed at least weekly"; p829, owner 10-19: "Every Instagram profile is
- * re-read at least once every 2 weeks"). One 1% TABLESAMPLE of instagram_census timed out under grafana_ro's 30 s statement_timeout on 10-20, so
- * the read sums ten 0.1% samples with fixed seeds, about 1% of rows, read two at a time. A GONE row is an account Instagram no longer serves (the
- * two-surface rule, auto-sns-agent census crawl.py), so it is left out. On 10-21 at 06:05Z the samples held 397,538 read rows: 253 past 7 days
- * (0.064%) and 3 past 14 days, all three in a failing streak of 8 to 16 reads (a route-deadline block, a status-only shell, a logged-out null root).
+ * The refresh age of read Instagram accounts (p683, owner 10-26: "1k+ every month, 10K+ every week", "under 1k also monthly"). One 1% TABLESAMPLE
+ * of instagram_census timed out under grafana_ro's 30 s statement_timeout on 10-20, so the read sums 0.1% samples with fixed seeds, all at once,
+ * and keeps the ones that answered. Ten seeds read two at a time timed out on 10-29 at 22:47Z with the precheck at 134 s; one seed alone took 14.6 s
+ * cold at 00:50Z and held 200,851 read rows of a 347M-row table, so three seeds hold about 600,000, more than the 397,538 ten held on 10-21.
+ * A GONE row is an account Instagram no longer serves (the two-surface rule, auto-sns-agent census crawl.py), so it is left out.
  */
-export const REFRESH_SEEDS: readonly number[] = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110];
+export const REFRESH_SEEDS: readonly number[] = [101, 102, 103];
 /** The weekly tier's floor (owner 10-26, "10K+ every week"), as the census reads it: no follower count reads as 0 (auto-sns-agent census policy.cadence). */
 export const WEEKLY_MIN_FOLLOWERS = 10_000;
 const BIG = `coalesce(followers, 0) >= ${WEEKLY_MIN_FOLLOWERS}`;
 export const refreshSql = (seed: number): string => `SELECT
   count(*) FILTER (WHERE last_ok_at IS NOT NULL AND state <> 'gone') AS read,
-  count(*) FILTER (WHERE last_ok_at < now() - interval '14 days' AND state <> 'gone') AS past14,
   count(*) FILTER (WHERE last_ok_at IS NOT NULL AND state <> 'gone' AND ${BIG}) AS "readBig",
   count(*) FILTER (WHERE last_ok_at < now() - interval '7 days' AND state <> 'gone' AND ${BIG}) AS "past7Big",
   count(*) FILTER (WHERE last_ok_at < now() - interval '30 days' AND state <> 'gone' AND NOT ${BIG}) AS "past30Rest"
 FROM instagram_census TABLESAMPLE SYSTEM(0.1) REPEATABLE(${seed})`;
-export interface RefreshSample { read: number; past14: number; readBig: number; past7Big: number; past30Rest: number }
-export interface RefreshShares { big7Pct: number | null; rest30Pct: number | null; within14Pct: number; sum: RefreshSample }
+export interface RefreshSample { read: number; readBig: number; past7Big: number; past30Rest: number }
+export interface RefreshShares { big7Pct: number | null; rest30Pct: number | null; sum: RefreshSample }
 /** Sums the samples; null when none answered, so the metrics stay unmeasured instead of reading 0%. A tier with no sampled row reads null. */
 export function refreshShares(samples: readonly RefreshSample[]): RefreshShares | null {
-  const sum = samples.reduce((acc, s) => ({ read: acc.read + s.read, past14: acc.past14 + s.past14, readBig: acc.readBig + s.readBig,
-    past7Big: acc.past7Big + s.past7Big, past30Rest: acc.past30Rest + s.past30Rest }), { read: 0, past14: 0, readBig: 0, past7Big: 0, past30Rest: 0 });
+  const sum = samples.reduce((acc, s) => ({ read: acc.read + s.read, readBig: acc.readBig + s.readBig,
+    past7Big: acc.past7Big + s.past7Big, past30Rest: acc.past30Rest + s.past30Rest }), { read: 0, readBig: 0, past7Big: 0, past30Rest: 0 });
   if (!sum.read) return null;
   const pct = (n: number, of: number): number | null => (of ? Math.round((100_000 * n) / of) / 1000 : null);
-  return { big7Pct: pct(sum.past7Big, sum.readBig), rest30Pct: pct(sum.past30Rest, sum.read - sum.readBig),
-    within14Pct: Math.round(100_000 - (100_000 * sum.past14) / sum.read) / 1000, sum };
+  return { big7Pct: pct(sum.past7Big, sum.readBig), rest30Pct: pct(sum.past30Rest, sum.read - sum.readBig), sum };
 }
 
 /** The Instagram pipeline queues: Kafka consumer lag, dead letters, search sync outbox and Redis stream lag. */
@@ -364,8 +357,6 @@ export function goalRows(d: ThroughputData): GoalRow[] {
     { platform: "Instagram under-10k monthly re-reads", item: "p683", value: shares?.rest30Pct ?? null, op: "<=", unit: "%",
       reads: "of the other sampled read accounts last read over 30 days ago", ...goal("p683"),
       extra: shares ? `(${shares.sum.past30Rest.toLocaleString("en-US")} of ${(shares.sum.read - shares.sum.readBig).toLocaleString("en-US")})` : undefined },
-    { platform: "Instagram 2-week re-reads", item: "p829", value: shares?.within14Pct ?? null, op: ">=", unit: "%", goal: WITHIN_14D_PCT, source: "duty",
-      reads: "of sampled read accounts re-read within 14 days", extra: shares ? `(${shares.sum.past14} past 14 days; the duty's line, the board item says 100%)` : undefined },
     writerLagRow(d, goal("p826").goal),
   ];
 }
@@ -615,13 +606,11 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
     step("refresh age", async () => {
       const read = async (seed: number): Promise<RefreshSample> => {
         const row = (await sqlRows(query, PG.prod, refreshSql(seed)))[0] ?? {};
-        return { read: num(row.read) ?? 0, past14: num(row.past14) ?? 0, readBig: num(row.readBig) ?? 0, past7Big: num(row.past7Big) ?? 0,
-          past30Rest: num(row.past30Rest) ?? 0 };
+        return { read: num(row.read) ?? 0, readBig: num(row.readBig) ?? 0, past7Big: num(row.past7Big) ?? 0, past30Rest: num(row.past30Rest) ?? 0 };
       };
-      const half = REFRESH_SEEDS.length / 2;
-      const lanes = [REFRESH_SEEDS.slice(0, half), REFRESH_SEEDS.slice(half)];
-      const out: RefreshSample[] = [];
-      await Promise.all(lanes.map(async seeds => { for (const seed of seeds) out.push(await read(seed)); }));
+      const settled = await Promise.allSettled(REFRESH_SEEDS.map(read));
+      const out = settled.flatMap(s => s.status === "fulfilled" ? [s.value] : []);
+      if (!out.length) throw settled.find((s): s is PromiseRejectedResult => s.status === "rejected")?.reason ?? new Error("no refresh sample answered");
       return out;
     }),
   ]);

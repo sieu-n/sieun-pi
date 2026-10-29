@@ -27,7 +27,7 @@ const BOARD: BoardItem[] = [
   { id: "p680", text: "Meta Ads", children: [{ id: "p850", text: "Stop Meta Ads advertiser walks from going more than a day overdue", target: { target: 7 } }] },
   { id: "p683", status: "done", text: "Refresh every read Instagram account at least weekly", target: { target: 1 } },
 ];
-const HALF = { read: 198_769, past14: 1, readBig: 20_000, past7Big: 60, past30Rest: 126 };
+const HALF = { read: 198_769, readBig: 20_000, past7Big: 60, past30Rest: 126 };
 // A census writer that kept up: one slot at 11,000 Instagram profiles a minute with 2,613 records of lag, and no deploy.
 const LAG_OK: Partial<ThroughputData> = { igSlots24h: [{ slot: Date.parse("2026-10-22T19:45:00Z"), good: 55_000 }],
   writerLag: [{ slot: Date.parse("2026-10-22T19:45:00Z"), good: 2_613 }], deploys24h: [] };
@@ -88,9 +88,9 @@ test("Instagram counts profile rows on every read path, the table p826's target 
 });
 
 test("every throughput goal on the board is one row, and the headline counts the rows prod misses", () => {
-  const data = base({ board: BOARD, igSlowest: 5_157, ttsSlowest: 1_960, ttsWeekly: { read: 5_900_000, live: 6_000_000 }, meta: { due: 2_780_536, finished24h: 53_570 }, refresh: [HALF, { ...HALF, past30Rest: 127, past14: 2 }], ...LAG_OK });
+  const data = base({ board: BOARD, igSlowest: 5_157, ttsSlowest: 1_960, ttsWeekly: { read: 5_900_000, live: 6_000_000 }, meta: { due: 2_780_536, finished24h: 53_570 }, refresh: [HALF, { ...HALF, past30Rest: 127 }], ...LAG_OK });
   const rows = goalRows(data);
-  assert.deepEqual(rows.map(row => [row.item, missed(row)]), [["p826", true], ["p696", true], ["p850", true], ["p683", false], ["p683", false], ["p829", false], ["p895", false]]);
+  assert.deepEqual(rows.map(row => [row.item, missed(row)]), [["p826", true], ["p696", true], ["p850", true], ["p683", false], ["p683", false], ["p895", false]]);
   assert.equal(Math.round(rows[2]!.goal!), 276);
   const out = report(data, METRICS);
   assert.equal(out.metrics.throughput_goals_missed, 3);
@@ -212,24 +212,23 @@ test("a panel runs as Grafana draws it: quoted variables, hidden targets an expr
   assert.equal(panelState({ results: { A: frame([[3]]) } }, ["A"]).state, "ok");
 });
 
-test("the refresh age sums ten 0.1% samples, leaves GONE rows out, reads 10k+ past 7 days and the rest past 30, and reads unmeasured when none answered (p683 10-26, p829)", () => {
-  assert.equal(REFRESH_SEEDS.length, 10);
-  assert.equal(refreshSql(103).match(/state <> 'gone'/g)!.length, 5);
+test("the refresh age sums three 0.1% samples, leaves GONE rows out, reads 10k+ past 7 days and the rest past 30, and reads unmeasured when none answered (p683 10-26)", () => {
+  assert.equal(REFRESH_SEEDS.length, 3);
+  assert.equal(refreshSql(103).match(/state <> 'gone'/g)!.length, 4);
   assert.match(refreshSql(103), /SYSTEM\(0\.1\) REPEATABLE\(103\)/);
   assert.match(refreshSql(103), /interval '30 days' AND state <> 'gone' AND NOT coalesce\(followers, 0\) >= 10000\) AS "past30Rest"/);
-  const shares = refreshShares([HALF, { ...HALF, past30Rest: 127, past14: 2 }])!;
+  const shares = refreshShares([HALF, { ...HALF, past30Rest: 127 }])!;
   // 120 of 40,000 10k+ rows past 7 days, 253 of 357,538 others past 30.
   assert.equal(shares.big7Pct, 0.3);
   assert.equal(shares.rest30Pct, 0.071);
-  assert.equal(shares.within14Pct, 99.999);
   assert.equal(refreshShares([{ ...HALF, readBig: 0, past7Big: 0 }])!.big7Pct, null);
   assert.equal(refreshShares([]), null);
-  const read = goalRows(base({ board: BOARD, refresh: [HALF] })).filter(row => row.item === "p683" || row.item === "p829");
-  assert.deepEqual(read.map(row => [row.platform, missed(row)]), [["Instagram 10k+ weekly re-reads", false], ["Instagram under-10k monthly re-reads", false], ["Instagram 2-week re-reads", false]]);
+  const read = goalRows(base({ board: BOARD, refresh: [HALF] })).filter(row => row.item === "p683");
+  assert.deepEqual(read.map(row => [row.platform, missed(row)]), [["Instagram 10k+ weekly re-reads", false], ["Instagram under-10k monthly re-reads", false]]);
   const late = goalRows(base({ board: BOARD, refresh: [{ ...HALF, past7Big: 400 }] })).filter(row => row.item === "p683");
   assert.deepEqual(late.map(row => missed(row)), [true, false]);
   const failed = goalRows(base({ board: BOARD, errors: [{ source: "refresh age", message: "Grafana HTTP 400: canceling statement due to statement timeout" }] }));
-  assert.deepEqual(failed.filter(row => row.item === "p683" || row.item === "p829").map(row => row.value), [null, null, null]);
+  assert.deepEqual(failed.filter(row => row.item === "p683").map(row => row.value), [null, null]);
 });
 
 test("the census writer's worst lag counts only slots at p826's rate outside deploys (p895, 10-22 06:00-08:00Z)", () => {
