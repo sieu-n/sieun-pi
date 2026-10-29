@@ -197,7 +197,8 @@
     }
   }
 
-  const current = $derived(view ? (view.providers.find(entry => entry.provider === tab) ?? threadProvider(view.providers, threadInfo?.model?.provider)) : undefined);
+  /** The route's provider, else the thread's, else the first one, Claude, so a bare #/accounts never jumps to Codex because Claude has no free account. */
+  const current = $derived(view ? (view.providers.find(entry => entry.provider === tab) ?? (thread ? threadProvider(view.providers, threadInfo?.model?.provider) : view.providers[0])) : undefined);
   const resolution = $derived(current?.resolution ?? null);
   const refresh = $derived(current ? refreshes[current.provider] : undefined);
   const refreshing = $derived(refresh?.status === "running");
