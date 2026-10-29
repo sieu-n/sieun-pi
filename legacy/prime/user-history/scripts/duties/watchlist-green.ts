@@ -289,7 +289,7 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
     detail.staging_posts_green_pct = posts.rows ? round1(100 * posts.green / posts.rows) : 0;
     detail.staging_tagged_not_green = tagged.rows - tagged.green;
     flagged.push({ at, kind: "staging_monitor_rows", excerpt: `${staging.green} of ${staging.rows} unpaused staging monitor rows read ok in 24 h: posts ${posts.green} of ${posts.rows}, collabs ${tagged.green} of ${tagged.rows}` +
-      (staging.why.length ? `; not green: ${listWhy(staging.why)}` : "") + (staging.young ? `; ${staging.young} added under 24 h ago and not read ok yet` : "") + `; ${owned.length - staging.rows} paused or other rows are left out (t17: "only like 10 accounts" in staging)` });
+      (staging.why.length ? `; not green: ${listWhy(staging.why)}` : "") + (staging.young ? `; ${staging.young} added under 24 h ago and not read ok yet` : "") + `; ${owned.length - staging.rows} rows of other kinds are left out, and paused rows are not read (t17: "only like 10 accounts" in staging)` });
     const leaking = rowsGreen(others, now);
     detail.staging_other_org_unpaused = leaking.rows;
     if (leaking.rows) flagged.push({ at, kind: "staging_other_orgs", excerpt: `${leaking.rows} unpaused staging monitor rows (posts ${leaking.byKind.posts!.rows}, collabs ${leaking.byKind.tagged!.rows}) belong to no key of ${STAGING_OWNER_ORG}; they are not scored in staging_green_pct, and a test org left after its check shows here` });
@@ -520,9 +520,10 @@ const RENAMED_SQL = "case when w.platform <> 'instagram' or w.last_batch_id is n
 /** Prod reads unpaused rows alone, through the partial index ix_watch_targets_monitor_due: prod watch_targets holds 13.0 M rows (6.0 GB) since the census
  *  tier, and the tier filter alone seq-scans it, which ran past the 30 s statement_timeout at 09:23Z on 2026-10-29 while census and meta-ads writers held
  *  88 backends in DataFileRead. The offset 0 above keeps the renamed check a per-row pk lookup instead of a hashed seq scan of crawl_batch_targets (1.2 GB).
- *  The read took 3.8 to 4.6 s this way against 5.6 to 13.6 s before. Prod held 13 paused monitor rows then; a paused owner watch reads "no unpaused monitor row". */
+ *  The read took 3.8 to 4.6 s this way against 5.6 to 13.6 s before. Prod held 13 paused monitor rows then; a paused owner watch reads "no unpaused monitor row".
+ *  Staging's read (1.5 M rows, 981 MB) timed out in the same minute, so it reads unpaused rows the same way (2.6 s for 940 rows). */
 const PROD_ROWS_SQL = ROWS_SQL + RENAMED_SQL + " and not w.paused";
-const STAGING_ROWS_SQL = ROWS_SQL + "'f' as renamed from watch_targets w where w.tier = 'monitor'";
+const STAGING_ROWS_SQL = ROWS_SQL + "'f' as renamed from watch_targets w where w.tier = 'monitor' and not w.paused";
 /** ROWS_SQL's columns in parseRows order, to print Grafana's table rows as the lines psql prints. */
 const ROW_COLUMNS = ["platform", "kind", "target", "paused", "last_outcome", "last_run_at", "last_stop_reason", "last_error_code", "is_private", "err_streak", "due", "last_ok_at", "added_at", "renamed"];
 export const rowLines = (rows: Record<string, unknown>[]): string => rows.map(row => ROW_COLUMNS.map(column => String(row[column] ?? "")).join("\t")).join("\n");
