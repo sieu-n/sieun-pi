@@ -463,9 +463,15 @@ export function wakeLabel(wakes: readonly Wake[]): string {
  * on runs 39084595194 and 39084587449 and its siblings on their own wakes.
  */
 export function treeWakes(session: string, below: (session: string) => readonly string[], wakes: readonly Wake[]): Wake[] {
+  const sessions = treeSessions(session, below);
+  return wakes.filter(wake => sessions.has(wake.session));
+}
+
+/** `session` and every session below it at any depth (`below` gives a session's child sessions). */
+export function treeSessions(session: string, below: (session: string) => readonly string[]): Set<string> {
   const sessions = new Set([session]);
   for (const id of sessions) for (const child of below(id)) sessions.add(child);
-  return wakes.filter(wake => sessions.has(wake.session));
+  return sessions;
 }
 
 /** A job's wakes in the Agents card's words, soonest time first: "waits for run 39080016700", "waits for 14:40Z", "waits for run 1 and 15:00Z". */

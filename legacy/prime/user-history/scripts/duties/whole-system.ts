@@ -18,7 +18,7 @@ import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-mi
 import type { HungCall } from "../../src/hung-calls.ts";
 import type { StoppedCall } from "../../src/hung-stop.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
-import { beatStale, type CacheBeat, pendingWakes, readBeat, treeWakes } from "../../src/wakes.ts";
+import { beatStale, type CacheBeat, pendingWakes, readBeat, treeSessions, treeWakes } from "../../src/wakes.ts";
 import { processEvidence } from "../../src/proc-evidence.ts";
 import { harnessSlow, slowChatRead, workerMisses } from "../../src/harness-slow.ts";
 import { chatNamer, type DaemonFault, faultWords, type ListedSession, listedSessions, type QueueOverrun, readQueueOverruns, readReopenedSends, readServiceFaults, readSupervisorFaults, SLOW_MS } from "../../src/daemon-faults.ts";
@@ -1717,20 +1717,47 @@ async function ownerActivity(agentDir: string, boards: ReadonlyMap<string, ChatB
 /** How much of a transcript's end `poolWaitingOwners` reads: in 1,448 job transcripts on 10-18 the last assistant line started at most 155 KB before the end. */
 export const POOL_TAIL_BYTES = 1_000_000;
 /**
+ * A session's child sessions on this box's disk: a root's subagents sit in `session-artifacts/<root>/sub-*`, and a subagent's own subagents in
+ * the `sub-*` folders inside its folder. Each session found is remembered with its folder, so a chat's jobs are found below once `below(chat)`
+ * ran. A job has no `session-artifacts/<job>` folder: on 10-29 ops guy's job "staging convex io cut" sat in `<chat>/sub-f276551c/` and its
+ * subagent io-contactfind in `<chat>/sub-f276551c/sub-d4d8b912/`.
+ */
+export function diskBelow(agentDir: string): (session: string) => string[] {
+  const folders = new Map<string, string>();
+  const list = (dir: string): string[] => { try { return readdirSync(dir); } catch { return []; } };
+  return session => {
+    const dir = folders.get(session) ?? join(agentDir, "session-artifacts", session);
+    return list(dir).filter(name => name.startsWith("sub-")).flatMap(sub => list(join(dir, sub)).flatMap(name => {
+      const id = name.endsWith(".jsonl") ? name.slice(0, -".jsonl".length) : "";
+      if (!SESSION_ID.test(id)) return [];
+      folders.set(id, join(dir, sub));
+      return [id];
+    }));
+  };
+}
+
+/**
  * The step owners whose transcript, a root's under sessions or a job's under its chat's session-artifacts, waits for a pi-pool slot
  * (`slotParkOf` with this box's pool line, which the Mac's jobs use too). Since load.2 such a turn ends on "this run waits for a working slot,
  * place 134 of 139", which the old `POOL_WAIT` test ("waits for its slot") missed, so d9 read every parked job's steps as stuck.
+ * An owner is live too while it or a session below it (`diskBelow`) holds a pi-pool turn, queued or working: at 12:04Z on 10-29 d9 counted
+ * ops guy's p613, whose job "staging convex io cut" had ended its turn to wait on io-contactfind and io-brands, both queued in a full pool
+ * (40 of 40 working) until 12:09:52Z and 12:10:08Z.
  */
 export async function poolWaitingOwners(agentDir: string, boards: ReadonlyMap<string, ChatBoard | null>, named: Inputs["named"] = new Map(),
   readPool: () => Promise<PoolQueue | null> = readPoolQueue, now = Date.now()): Promise<Set<string>> {
   const out = new Set<string>();
   const pool = await readPool();
+  const below = diskBelow(agentDir);
+  const pooled = (session: string) => pool !== null && (pool.queued.has(session) || pool.working.has(session));
   for (const [chat, board] of boards) {
     const owners = new Set<string>();
     walk(board?.plan ?? [], item => { if (OPEN.has(item.status)) for (const session of stepSessions(item, named.get(chat) ?? new Map())) owners.add(session); });
     if (owners.size === 0) continue;
+    below(chat);
     const subs = (await readdir(join(agentDir, "session-artifacts", chat)).catch(() => [] as string[])).filter(name => name.startsWith("sub-"));
     for (const session of owners) {
+      if ([...treeSessions(session, below)].some(pooled)) { out.add(session); continue; }
       const files = [join(agentDir, "sessions", `${session}.jsonl`), ...subs.map(sub => join(agentDir, "session-artifacts", chat, sub, `${session}.jsonl`))];
       const found = (await Promise.all(files.map(async file => ({ file, at: (await stat(file).catch(() => null))?.mtimeMs })))).filter(entry => entry.at !== undefined);
       const newest = found.sort((a, b) => b.at! - a.at!)[0];
@@ -1742,21 +1769,16 @@ export async function poolWaitingOwners(agentDir: string, boards: ReadonlyMap<st
 
 /**
  * The step owners that sleep on an owed board.wake, they or a subagent below them: launch main bro's deep walks 99 (p137) and hand run lanes
- * autoscale (p145) slept on CI run wakes on 10-18 and wrote nothing while they waited.
+ * autoscale (p145) slept on CI run wakes on 10-18 and wrote nothing while they waited. Until 10-29 it looked for a job's subagents in
+ * `session-artifacts/<job>`, which no job has, so a wake set by a job's subagent never made the job live (`diskBelow`).
  */
-async function wakingOwners(agentDir: string, wakesDir: string, boards: ReadonlyMap<string, ChatBoard | null>, now: number, named: Inputs["named"] = new Map()): Promise<Set<string>> {
+export async function wakingOwners(agentDir: string, wakesDir: string, boards: ReadonlyMap<string, ChatBoard | null>, now: number, named: Inputs["named"] = new Map()): Promise<Set<string>> {
   const wakes = await pendingWakes(wakesDir, now);
   const out = new Set<string>();
   if (!wakes.length) return out;
-  const below = (session: string): string[] => {
-    const dir = join(agentDir, "session-artifacts", session);
-    try {
-      return readdirSync(dir).filter(name => name.startsWith("sub-")).flatMap(sub => {
-        try { return readdirSync(join(dir, sub)).filter(name => name.endsWith(".jsonl")).map(name => name.slice(0, -".jsonl".length)); } catch { return []; }
-      });
-    } catch { return []; }
-  };
+  const below = diskBelow(agentDir);
   for (const [chat, board] of boards) {
+    below(chat);
     walk(board?.plan ?? [], item => {
       if (!OPEN.has(item.status)) return;
       for (const session of stepSessions(item, named.get(chat) ?? new Map())) if (!out.has(session) && treeWakes(session, below, wakes).length) out.add(session);

@@ -3,7 +3,7 @@ import { slotParkWords, type SlotPark } from "./slot-park.ts";
 import { createdSessions } from "./shared/created-sessions.ts";
 import { sortAgents } from "./shared/sessions-delta.ts";
 import type { AgentLink, AgentState, ChatAgent, ChatBoard, ChildAgent, PlanItem, QueuePlace, SessionRow, ThreadMessage, TokenRate } from "./shared/types.ts";
-import { treeWakes, type Wake, wakeWait } from "./wakes.ts";
+import { treeSessions, treeWakes, type Wake, wakeWait } from "./wakes.ts";
 
 /** A thread the chat exchanged agent messages with this long ago still counts as linked. */
 export const CONTACT_WINDOW_MS = 24 * 60 * 60_000;
@@ -549,6 +549,21 @@ export function withWaits(agents: readonly ChatAgent[], wakes: readonly Wake[], 
   return agents.map(agent => {
     const owed = agent.sessionId && agent.state !== "working" ? treeWakes(agent.sessionId, below, wakes) : [];
     return owed.length ? { ...agent, state: "working", wait: wakeWait(owed) } : agent;
+  });
+}
+
+/**
+ * The agents not at work with a session below them, at any depth (`below`), queued in pi-pool's line (`places`): state working, with the wait in
+ * words, "waits on a subagent queued 3 of 21 for a working slot". A job that ended its turn to wait on its subagents moves while they wait for
+ * their slots: at 12:04Z on 10-29 ops guy's job "staging convex io cut" read idle while io-contactfind and io-brands sat in a full pool's line.
+ */
+export function withPoolBelow(agents: readonly ChatAgent[], places: ReadonlyMap<string, QueuePlace>, below: (session: string) => readonly string[]): ChatAgent[] {
+  if (!places.size) return [...agents];
+  return agents.map(agent => {
+    if (!agent.sessionId || agent.state === "working") return agent;
+    const place = [...treeSessions(agent.sessionId, below)].filter(session => session !== agent.sessionId).map(session => places.get(session))
+      .filter((each): each is QueuePlace => each !== undefined).sort((a, b) => a.position - b.position)[0];
+    return place ? { ...agent, state: "working", wait: `waits on a subagent queued ${place.position} of ${place.total} for a working slot` } : agent;
   });
 }
 

@@ -5,7 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { parseSkillBlock, type SessionSummary } from "prime-agent";
 import { DaemonClient } from "./daemon-sdk.ts";
 import type { ChatLabels } from "./chat-labels.ts";
-import { keptChatAgents, stepSessions, withQueue, withRates, withSlotParks, withWaits, type AgentRow, type SubagentSession } from "./chat-agents.ts";
+import { keptChatAgents, stepSessions, withPoolBelow, withQueue, withRates, withSlotParks, withWaits, type AgentRow, type SubagentSession } from "./chat-agents.ts";
 import { type FileSlotPark, heldSlotParkReads, poolPark, readRowSlotPark, type SlotPark, takeSlotParkReads } from "./slot-park.ts";
 import { type Cut, cutActivity, SessionCuts, type CutSource } from "./cut-end.ts";
 import { planCounts } from "./shared/chat-board.ts";
@@ -1179,7 +1179,7 @@ export class Catalog {
     }
     const below = (session: string) => (children.get(session) ?? []).map(child => child.sessionId);
     await breathe();
-    for (const row of chatRows) row.agents = withWaits(withQueue(withRates(row.agents ?? [], rates), queued), wakes, below);
+    for (const row of chatRows) row.agents = withPoolBelow(withWaits(withQueue(withRates(row.agents ?? [], rates), queued), wakes, below), queued, below);
     const parks = await wait(this.slotParks(chatRows.flatMap(row => row.agents ?? []), queued, now));
     for (const row of chatRows) row.agents = withSlotParks(row.agents ?? [], parks);
     await breathe();
