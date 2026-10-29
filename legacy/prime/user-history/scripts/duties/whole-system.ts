@@ -28,6 +28,7 @@ import { deliveryCandidates, outboxLandings, readSessionMarks, type SlotWaitTime
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { effectiveRun, metricStreaks, missStreak, newestReading } from "../../src/shared/duty-streak.ts";
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
+import { boardMetricsClean } from "../../src/checkin-findings.ts";
 import { dutyHold, withLinkedBoards } from "../../src/shared/todo-hold.ts";
 import type { HostHold } from "../../src/shared/host-hold.ts";
 import { readsTheShare } from "./duty-fleet.ts";
@@ -1018,13 +1019,14 @@ export function unreadWindows(missed: readonly string[], metrics: DutyRunRecord[
  * and its d6 repeated_design_notes_24h 14 from a 17:33Z note, and d9 counted both as stuck from 03:29Z to 06:16Z on 10-20. A windowed count
  * with no `lastEventAt` reads as such a lagging window too (`unreadWindows`), and d9's push asks its chat to add the field. A check-in's
  * stuck_steps owes none once none of the steps it flagged is stuck on the live board (`liveStuck`, which stuck_steps_all reads): launch main
- * bro's and CI and RepoOps' check-ins counted at 03:29Z and 03:52Z while stuck_steps_all read 0.
+ * bro's and CI and RepoOps' check-ins counted at 03:29Z and 03:52Z while stuck_steps_all read 0. Nor does a board metric the live board reads
+ * clean (`boardMetricsClean`), the keys `liveClean` holds.
  */
-export function owedKeys(missed: readonly string[], runs: readonly DutyRunRecord[], stepsMoving: boolean): string[] {
+export function owedKeys(missed: readonly string[], runs: readonly DutyRunRecord[], liveClean: ReadonlySet<string>): string[] {
   const quiet = new Set(metricStreaks(runs).filter(streak => streak.quietSince !== undefined).map(streak => streak.key));
   const newest = newestReading(runs);
   const unread = new Set(newest ? unreadWindows(missed, effectiveRun(newest).metrics) : []);
-  return missed.filter(key => !quiet.has(key) && !unread.has(key) && !(stepsMoving && key === "stuck_steps"));
+  return missed.filter(key => !quiet.has(key) && !unread.has(key) && !liveClean.has(key));
 }
 
 /**
@@ -1132,11 +1134,15 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
       `Add lastEventAt, the time in ms of the newest event each count counts, to the duty's precheck output, so a count no new event raised reads quiet and a fresh one reads live` });
     const missed = missedKeys(effectiveRun(newest));
     const fresh = chat.everyMs === undefined || input.now - (newest.after?.at ?? newest.at) <= chat.everyMs;
-    const owed = owedKeys(missed, own, duty.id === CHECK_IN_DUTY_ID && fresh && !stuck.some(entry => entry.chat.id === chat.id));
+    const board = input.boards?.get(chat.id);
+    // A check-in's no_done_line and plan_risks read the board, so the live board answers them now: at 02:25Z on 10-29 d9 owed CI and RepoOps a
+    // fix for the no_done_line 1 of its 02:21Z after-job measure while every open goal on its board had a "Done when" line.
+    const liveClean = duty.id !== CHECK_IN_DUTY_ID ? new Set<string>() : new Set([...fresh && !stuck.some(entry => entry.chat.id === chat.id) ? ["stuck_steps"] : [],
+      ...boardMetricsClean(board)]);
+    const owed = owedKeys(missed, own, liveClean);
     if (missed.length && !owed.length) return [];
     // Each owed metric whose open fix step an open For you todo holds (`dutyHold`) waits on the owner and leaves the line: at 11:25Z on 10-24
     // d9 named d5/owner_fixes, whose p919 waited on t97, beside d5/skills_or_tools_to_fix, the one miss nobody owned.
-    const board = input.boards?.get(chat.id);
     const linked = board ? withLinkedBoards(board, chat.id, input.boards!) : undefined;
     const holds = owed.map(key => ({ key, hold: dutyHold(duty.id, [key], linked) }));
     const waits = holds.filter(entry => entry.hold).map(entry => `${entry.key} waits on the owner (${entry.hold})`).join(", ");

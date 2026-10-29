@@ -32,7 +32,7 @@ const inputs = (runs: DutyRunRecord[], duty: { id: string; name: string }, now: 
 test("a windowed count with no new event since the run before owes no fix job, as the duty job's brief says (frontend bro d6, 06:16Z)", () => {
   const runs = [designRun("06:07", 14), designRun("05:52", 15)];
   assert.equal(metricStreaks(runs)[0]!.quietSince, NOTE_AT);
-  assert.deepEqual(owedKeys(["repeated_design_notes_24h"], runs, false), []);
+  assert.deepEqual(owedKeys(["repeated_design_notes_24h"], runs, new Set()), []);
   assert.equal(planCounts(inputs(runs, { id: "d6", name: "Staging design rules" }, at("06:16"))).redDuties.length, 0);
   const fresh = [{ ...designRun("06:07", 15), metrics: { repeated_design_notes_24h: { value: 15, target: 0, op: "<=" as const, met: false, lastEventAt: at("06:00") } } },
     designRun("05:52", 15)];
@@ -174,4 +174,16 @@ test("a duty whose newest job ended on a pool wait the runner has not recorded a
   assert.equal(read([run], [run.job!.id]), 0);
   assert.equal(read([run], []), 1, "a job that ended with no pool wait owes the fix");
   assert.equal(read([{ ...run, trigger: "rerun", rerunOf: at("05:00") }], [run.job!.id]), 0, "a rerun that ended on a pool wait waits for its own rerun");
+});
+
+test("a check-in's board metric the live board reads clean owes no fix, though its after-job measure missed it (CI and RepoOps, 10-29 02:25Z)", () => {
+  const day = (clock: string) => Date.parse(`2026-10-29T${clock}Z`);
+  const zero = { value: 0, target: 0, op: "<=" as const, met: true };
+  const run: DutyRunRecord = { duty: "checkin", at: day("02:21:54"), trigger: "schedule", ms: 1, verdict: "missed", summary: "",
+    metrics: { stuck_steps: { value: 1, target: 0, op: "<=", met: false }, no_done_line: zero, plan_risks: zero }, job: { id: "j1", name: "check-in CI and RepoOps 11:21" },
+    after: { at: day("02:25:25"), verdict: "missed", summary: "", metrics: { stuck_steps: zero, no_done_line: { value: 1, target: 0, op: "<=", met: false }, plan_risks: zero } } };
+  const goal = (note: string) => ({ ...empty, plan: [{ id: "p1", text: "Push verdict p90 under 10 min", status: "doing", note, children: [] }] }) as unknown as ChatBoard;
+  const read = (board: ChatBoard) => planCounts({ ...inputs([run], { id: "checkin", name: "Check-in" }, day("02:25:30"), 60 * MIN), boards: new Map([[FRONTEND, board]]) });
+  assert.equal(read(goal("Done when p90 reads under 10 min on main")).redDuties.length, 0, "every open goal has a done line now");
+  assert.deepEqual(read(goal("")).redDuties.map(red => red.keys), [["no_done_line"]], "a goal with no done line still owes a fix");
 });

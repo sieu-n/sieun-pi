@@ -26,6 +26,9 @@ import { GOAL_PUSH_LINK, type GoalPush } from "./checkin-goals.ts";
  */
 const hasDoneLine = (goal: PlanItem): boolean => !!goal.target || /\bdone when\b/i.test(goal.note ?? "");
 export const goalsWithoutDoneLine = (board: ChatBoard | null): PlanItem[] => openGoals(board?.plan ?? []).filter(goal => !hasDoneLine(goal));
+/** The check-in's board metrics a readable board reads clean now: no_done_line with no goal missing a done line, plan_risks with no risk step. */
+export const boardMetricsClean = (board: ChatBoard | null | undefined): string[] => !board ? [] :
+  [...goalsWithoutDoneLine(board).length ? [] : ["no_done_line"], ...planRiskSteps(board).length ? [] : ["plan_risks"]];
 /** The goal the alert bridge filed firing alerts under until 10-18; the bridge now starts a triage job per firing rule and files no step. */
 export const ALERT_GOAL_TEXT = "Firing prod alerts";
 /**
