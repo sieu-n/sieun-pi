@@ -85,10 +85,9 @@ describe("owner posts and the feed", () => {
     live.close();
   });
 
-  test("a held or refused tell_owner posts nothing, an owner input typed in the thread shows once, and jobs attach to the turn's post", async () => {
+  test("a held or refused tell_owner and a plain input a job wrote into the thread post nothing, and jobs attach to the turn's post", async () => {
     const before = (await posts(s)).length;
-    const input = `typed in the thread ${Date.now()}`;
-    typed(input);
+    typed(`Test from the apps/chat build job ${Date.now()}`);
     assistant([{ type: "toolCall", id: "c_held", name: "tell_owner", arguments: { text: "held text" } }]);
     result("c_held", "tell_owner", `${TELL_OWNER_HELD}. The owner did not start this turn.`);
     assistant([{ type: "toolCall", id: "c_err", name: "tell_owner", arguments: { text: "refused text" } }]);
@@ -100,11 +99,11 @@ describe("owner posts and the feed", () => {
     await s.app.rooms.feed(vent());
     const page = await posts(s);
     const added = page.slice(before);
-    assert.deepEqual(added.map(p => [p.author.id, p.text]), [["owner", input], [agents.vent, "Sent with a job."]]);
-    assert.equal(added[1]!.why, "update");
-    assert.deepEqual(added[1]!.jobs!.map(j => j.conversation), [`${ids.vent}:777`, `${ids.vent}:778`, `${ids.vent}:779`]);
+    assert.deepEqual(added.map(p => [p.author.id, p.text]), [[agents.vent, "Sent with a job."]]);
+    assert.equal(added[0]!.why, "update");
+    assert.deepEqual(added[0]!.jobs!.map(j => j.conversation), [`${ids.vent}:777`, `${ids.vent}:778`, `${ids.vent}:779`]);
 
-    // The same entries read again land nothing twice: the same toolCallId and the same input entry.
+    // The same entries read again land nothing twice: the same toolCallId.
     const cursor = s.app.agentStore.rooms.feed[agents.vent]!;
     cursor.entry -= 12;
     await s.app.rooms.feed(vent());

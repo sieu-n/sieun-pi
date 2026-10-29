@@ -3,8 +3,9 @@
  *
  * 1. An owner post is written and shown at once, then delivered to the agent's work thread with retries; its delivery state is a `set` line.
  * 2. The feed reads the work thread's entries after its cursor and turns each speaking call (`tell_owner`, `send_message` with no `to`) whose
- *    result says it went out into an agent post, the jobs its turn started into the post's job pills, and an owner input typed outside the
- *    room into an owner post. A turn a channel post started speaks to the channel (channels.ts), so it posts nothing here.
+ *    result says it went out into an agent post, and the jobs its turn started into the post's job pills. Only these calls and the owner's own
+ *    room posts become posts: a plain input a job, a script or another chat submits to the work thread is the thread's, not the room's. A turn
+ *    a channel post started speaks to the channel (channels.ts), so it posts nothing here.
  * 3. A restart resumes each cursor and delivers every post still `sending` again with the same request id, which pi-host keeps once.
  *
  * Every post has one dedup key (`requestId`), so a repeated send or a re-read page lands nothing twice.
@@ -22,8 +23,6 @@ import { isInput, sentMessage } from "./timeline.ts";
 const PAGE = 40;
 /** Entries the feed reads per pi-host call. */
 const FEED_PAGE = 200;
-/** An owner input this far before its post, or after its delivery, is not the post's; the chat server and pi-host share one clock. */
-const LAND_SLACK_MS = 10_000;
 
 export interface RoomEvents {
   /** New or changed posts, for the room's watchers. */
@@ -58,7 +57,7 @@ const SKILL_BLOCK = /<skill\b[^>]*>[\s\S]*?<\/skill>/g;
 const withoutSkills = (text: string): string => text.replace(SKILL_BLOCK, " ").trim();
 
 /**
- * The text a room shows for an input the owner typed into the thread, or undefined when the entry is not one. Only a `pi.user` entry
+ * The text the migration (`migrate.ts`) copies into a room for an old owner input, or undefined when the entry is not one. Only a `pi.user` entry
  * counts, and not a notice that a tool, a job or Prime wrote: a bracket tag such as `[job] ...`, or a note `serverNote` knows (check-ins,
  * `<provider_quota_resumed>`, Prime's restart line). Prime's skill expansions (`<skill name=...>...</skill>`) before his words drop out.
  */
@@ -91,8 +90,6 @@ export class Rooms {
   /** The work thread's `updatedAt` at the last feed read per agent. */
   private readonly seen = new Map<string, number>();
   private readonly statuses = new Map<RoomId, RunStatus>();
-  /** Owner posts each agent's feed already paired with an input, so two posts of one text land as two inputs. */
-  private readonly matched = new Map<string, Set<string>>();
 
   constructor(private readonly deps: RoomDeps) {}
 
@@ -277,8 +274,6 @@ export class Rooms {
     const thread = record.workThread;
     if (isInput(entry)) {
       cursor.turn = { input: entry.id, channel: entry.kind === "agent.message" && isChannelVia((entry.data as { via?: unknown } | undefined)?.via) };
-      const text = ownerText(entry);
-      if (text !== undefined) this.ownerInput(record, entry, text, touched);
       return;
     }
     if (cursor.turn?.channel) return;
@@ -319,24 +314,6 @@ export class Rooms {
         touched.set(last.id, last);
       }
     } else cursor.turn.jobs = [...new Set([...(cursor.turn.jobs ?? []), ...jobs])];
-  }
-
-  /** An owner input no room post delivered: one he typed in the work thread itself becomes his post here. */
-  private ownerInput(record: AgentRecord, entry: EntryRecord, text: string, touched: Map<string, RoomPost>): void {
-    const message = entry.model?.[0];
-    const at = message?.timestamp ?? 0;
-    const used = this.matched.get(record.id) ?? new Set<string>();
-    this.matched.set(record.id, used);
-    const mine = this.store.postsOf(record.room).find(p =>
-      p.author === "owner" && p.delivery && !used.has(p.id) && withoutSkills(p.text) === text && at >= p.at - LAND_SLACK_MS && at <= p.delivery.at + LAND_SLACK_MS);
-    if (mine) {
-      used.add(mine.id);
-      if (used.size > 400) this.matched.set(record.id, new Set([...used].slice(-200)));
-      return;
-    }
-    const images = blocks(message).flatMap((b, index) => (b.type === "image" ? [{ url: `/api/images/${record.workThread}/${entry.id}/${index}`, mimeType: b.mimeType }] : []));
-    const { post, created } = this.store.append({ room: record.room, author: "owner", text, images, at: at || Date.now(), requestId: `i:${record.workThread}:${entry.id}` });
-    if (created) touched.set(post.id, post);
   }
 
   // Reading
