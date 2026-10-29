@@ -25,7 +25,6 @@
 
   let config = $state<AgentConfig | null>(null);
   let error = $state("");
-  let pickerOpen = $state(false);
   let moving = $state(false);
   let projects = $state<ProjectList | null>(null);
   let nextCwd = $state("");
@@ -149,13 +148,12 @@
         <span class="t-caption line" data-status={agent.status}>
           {#if running}<TypingDots mode={agent.status === "working" ? "working" : "waiting"} size={4} />{/if}
           <span>{STATUS_LABEL[agent.status]}</span>
-          <span>·</span>
-          <span>{config?.identity.duty ? "duty run" : agent.kind === "chat" ? "agent" : "job"}</span>
+          {#if agent.kind !== "chat"}<span>·</span><span>{config?.identity.duty ? "duty run" : "job"}</span>{/if}
           {#if agent.parent}<span>· in</span><a href={hrefFor("agents", [agent.parent.id])}>{agent.parent.name}</a>{/if}
         </span>
         <span class="model">
           {#if agent.model}
-            <ModelPicker bind:open={pickerOpen} models={options} value={current} efforts={levelsFor(catalog, current)} effort={agent.thinkingLevel ?? undefined}
+            <ModelPicker models={options} value={current} efforts={levelsFor(catalog, current)} effort={agent.thinkingLevel ?? undefined}
               onchange={(next) => onmodel(agent, next.model, next.effort as ThinkingLevel | undefined)} />
           {:else}
             <span class="t-caption">No model yet</span>
@@ -166,7 +164,6 @@
     <div class="actions" role="toolbar" aria-label="Agent actions">
       <Button size="sm" variant="primary" icon="chat" onclick={() => onmessage(agent)}>Message</Button>
       {#if boardHref}<Button size="sm" icon="board" href={boardHref}>Open board</Button>{/if}
-      <Button size="sm" icon="cpu" onclick={() => (pickerOpen = true)} disabled={!agent.model}>Change model</Button>
       {#if running}<Button size="sm" icon="stop" onclick={() => onstop(agent)}>Stop</Button>{/if}
       {#if canArchive(agent) && !agent.archived}<Button size="sm" variant="ghost" icon="trash" onclick={() => onarchive(agent)}>Archive</Button>{/if}
     </div>

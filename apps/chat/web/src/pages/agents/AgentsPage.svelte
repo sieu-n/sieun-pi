@@ -88,7 +88,7 @@
   let leaving = false;
   $effect(() => {
     const id = configId;
-    const title = configAgent?.name ?? "Agent";
+    const title = configAgent && configAgent.kind !== "chat" ? "Job" : "Agent";
     if (!id) {
       if (paneKey) sidePanel.close(paneKey);
       paneKey = null;

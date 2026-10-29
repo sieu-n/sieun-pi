@@ -78,6 +78,22 @@ test("the configuration shows its host, home directory, board and memory, and ea
   }
 });
 
+test("the profile header names the agent once, shows only its state and has one model control", async ({ page, request }) => {
+  const chat = (await listAgents(request)).find((agent) => agent.kind === "chat" && agent.model);
+  test.skip(!chat, "no chat with a model on this server");
+  await openAgents(page);
+  await page.goto(`/#/agents/${chat!.id}`);
+  await expect(panel(page)).toBeVisible();
+  const side = page.getByTestId("side-panel");
+  await expect(side).toHaveAttribute("aria-label", "Agent");
+  await expect(side.getByRole("heading", { name: "Agent", exact: true })).toBeVisible();
+  await expect(side.getByRole("heading", { name: chat!.name, exact: true })).toHaveCount(1);
+  const line = panel(page).locator(".identity .line");
+  await expect(line).toHaveText({ working: "Working", sleeping: "Waiting", failed: "Failed", idle: "Idle" }[chat!.status]);
+  await expect(panel(page).getByRole("toolbar", { name: "Agent actions" }).getByRole("button", { name: "Change model" })).toHaveCount(0);
+  await expect(panel(page).locator(".identity .model")).toContainText(chat!.model!.label);
+});
+
 test("a configuration link opens on its own, back closes it and forward opens it again", async ({ page, request }) => {
   const chat = (await listAgents(request)).find((agent) => agent.kind === "chat");
   test.skip(!chat, "no chats on this server");

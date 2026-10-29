@@ -12,9 +12,9 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { createModels } from "@earendil-works/pi-ai/models";
-import { durableSettings, poolProvider, TurnQueue } from "@sieun-pi/pi-pool/durable";
+import { durableSettings, TurnQueue } from "@sieun-pi/pi-pool/durable";
 import { DurableCommands, DurableThreads } from "./durable/index.ts";
+import { durableModels } from "./durable/models.ts";
 import { loadPrimeChat, type PrimeChat } from "./durable/prime-chat.ts";
 import { promptTools } from "./durable/prime-prompt.ts";
 import { DurableRlm } from "./durable/rlm.ts";
@@ -90,11 +90,7 @@ if (!values["no-durable"] && process.env.PI_HOST_RLM !== "0") {
 }
 const durable = values["no-durable"] ? undefined : new DurableCommands(new DurableThreads({
   dir: values["durable-dir"] ? resolve(values["durable-dir"]) : join(dataDir, "durable"),
-  models: threadId => {
-    const models = createModels();
-    models.setProvider(poolProvider({ treeKey: `pi-durable:${threadId}`, agentDir, turns }));
-    return models;
-  },
+  models: threadId => durableModels(threadId, { agentDir, turns }),
   defaultModel: values.model ? { provider, modelId: modelId.join("/") } : { provider: "anthropic", modelId: "claude-opus-5-5" },
   defaultThinkingLevel: "high",
   defaultCwd: values.cwd ? resolve(values.cwd) : homedir(),
