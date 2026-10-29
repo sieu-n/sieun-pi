@@ -5,8 +5,11 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { durableModels } from "../../../../packages/pi-host/src/durable/models.ts";
 import { MODELS } from "../../server/app.ts";
+
+// pi-host's registry, imported by a path tsc does not follow, because apps/chat does not install pi-host's pi-ai dependency.
+const source = "../../../../packages/pi-host/src/durable/models.ts";
+const { durableModels } = (await import(source)) as { durableModels: (threadId: string) => { getModel(provider: string, id: string): unknown } };
 
 test("pi-host's durable threads can run every model /api/models offers", () => {
   const models = durableModels("models-run-test");
