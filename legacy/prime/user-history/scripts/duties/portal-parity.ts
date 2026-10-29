@@ -84,7 +84,7 @@ export function perMinute(orgs: readonly unknown[]): number {
 /** Response keys that carry the next page, and the query parameter that takes it back. */
 const CURSOR_KEYS = ["next_cursor", "cursor", "continuationToken", "continuation_token", "next_page_id"] as const;
 
-interface Param { name: string; in: string; required?: boolean; example?: unknown; schema?: { example?: unknown }; examples?: Record<string, { value?: unknown }> }
+interface Param { name: string; in: string; required?: boolean; example?: unknown; schema?: { example?: unknown; default?: unknown }; examples?: Record<string, { value?: unknown }> }
 export interface Operation { parameters?: Param[]; requestBody?: { content?: Record<string, { example?: unknown; examples?: Record<string, { value?: unknown }>; schema?: { example?: unknown } }> }; "x-example-query"?: Record<string, unknown> }
 export type OpenApi = { paths?: Record<string, Record<string, Operation>> };
 /**
@@ -211,7 +211,9 @@ const exampleOf = (param: Param) => param.example ?? param.schema?.example ?? Ob
 
 /**
  * The docs example request of an operation: the curated `x-example-query` when the docs carry one, else every required parameter's example,
- * else the first optional parameter with an example (for one-of pairs like id or url, where sending both is a 400). Null names what is missing.
+ * else the first optional parameter with an example that is not its schema default (for one-of pairs like id or url, where sending both is
+ * a 400). Null names what is missing. Since auto-sns-agent 65b326e63e the docs show each optional parameter's default as an unticked example,
+ * and on 10-29 at 22:19Z the run sent the snapshot read's default `part=0` alone, which the docs say needs `batch_size`, and got 400.
  */
 export function buildRequest(op: string, operation: Operation, ids: Record<string, string> = {}): ProbeRequest | { missing: string } {
   const [method, template] = op.split(" ") as [string, string];
@@ -231,7 +233,7 @@ export function buildRequest(op: string, operation: Operation, ids: Record<strin
       query[param.name] = String(value);
     }
     if (!Object.keys(query).length) {
-      const first = params.find(p => p.in === "query" && exampleOf(p) !== undefined);
+      const first = params.find(p => p.in === "query" && exampleOf(p) !== undefined && exampleOf(p) !== p.schema?.default);
       if (first) query[first.name] = String(exampleOf(first));
     }
   }

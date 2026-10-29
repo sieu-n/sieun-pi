@@ -1,7 +1,7 @@
 // 10-20: staging runs of Portal matches crawler started POST /v1/jobs/{job_id}/cancel together with the reads of the same job, and when the cancel won, GET /v1/jobs/{job_id}/results read a cancelled job and answered 502 upstream_error, so staging_working_pct read 99.4%.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BATCH_DEADLINE_MS, BATCH_POLL_MS, QUERY_CHAINS, batchRowsBroken, firstItemId, readsThenWrites, untilBatchEnds } from "../scripts/duties/portal-parity.ts";
+import { BATCH_DEADLINE_MS, BATCH_POLL_MS, QUERY_CHAINS, batchRowsBroken, buildRequest, firstItemId, readsThenWrites, untilBatchEnds, type Operation } from "../scripts/duties/portal-parity.ts";
 
 test("no chained write starts before every chained read of the run has answered", async () => {
   const log: string[] = [];
@@ -49,4 +49,16 @@ test("a finished job whose every row failed is broken, and one with a ready row 
   assert.equal(batchRowsBroken({ status: "ready", rows_total: 3, rows_ready: 0, rows_failed: 3 }), "every row of the job failed (rows_failed 3 of 3)");
   assert.equal(batchRowsBroken({ status: "ready", rows_total: 3, rows_ready: 1, rows_failed: 2 }), null);
   assert.equal(batchRowsBroken(undefined), null);
+});
+
+// 10-29 22:19Z: staging's docs show the snapshot read's default part=0 as an unticked example, the run sent it alone and got 400.
+test("the snapshot read sends no optional default, and a one-of example with no default is still sent", () => {
+  const snapshot: Operation = { parameters: [
+    { name: "snapshot_id", in: "path", required: true },
+    { name: "batch_size", in: "query", schema: {} },
+    { name: "part", in: "query", schema: { default: 0 }, examples: { default: { value: 0 } } },
+  ] };
+  assert.deepEqual(buildRequest("GET /v1/batch/snapshot/{snapshot_id}", snapshot, { snapshot_id: "s_1" }), { method: "GET", path: "/v1/batch/snapshot/s_1", query: {} });
+  const event: Operation = { parameters: [{ name: "id", in: "query", examples: { default: { value: "298448234317243" } } }, { name: "url", in: "query", example: "https://facebook.com/events/1" }] };
+  assert.deepEqual(buildRequest("GET /v1/facebook/live/event", event), { method: "GET", path: "/v1/facebook/live/event", query: { id: "298448234317243" } });
 });
