@@ -78,8 +78,9 @@ describe("RelayHost", () => {
       sleepy.freeze();
       await until(async () => sleeper.state().state, state => state === "away");
       await assert.rejects(sleeper.threads(), HostAway);
+      assert.equal(await sleeper.whenUp(50), false);
       sleepy.down = false;
-      await until(async () => sleeper.state().state, state => state === "up");
+      assert.equal(await sleeper.whenUp(5000), true);
       assert.deepEqual(links, ["up", "away", "up"]);
     } finally {
       await sleeper.close();

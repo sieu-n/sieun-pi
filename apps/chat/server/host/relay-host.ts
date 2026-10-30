@@ -116,6 +116,23 @@ export class RelayHost implements Host {
     return { ...this.link };
   }
 
+  /** Resolves true once the link is up, or false after `timeoutMs`. */
+  whenUp(timeoutMs: number): Promise<boolean> {
+    if (this.ready) return Promise.resolve(true);
+    return new Promise(resolve => {
+      const timer = setTimeout(() => {
+        off();
+        resolve(false);
+      }, timeoutMs);
+      const off = this.onLink(link => {
+        if (link.state !== "up") return;
+        clearTimeout(timer);
+        off();
+        resolve(true);
+      });
+    });
+  }
+
   /** Calls `listener` on every change between up and away. */
   onLink(listener: (link: LinkState) => void): () => void {
     this.listeners.add(listener);

@@ -43,6 +43,9 @@ export const MODELS: ModelCatalog = {
   default: { model: DEFAULT_MODEL, thinkingLevel: "high" },
 };
 
+/** How long the start waits for this box's own relay, PiHost's wait for a pi-host restart (RESTART_WAIT_MS in host/pi-host.ts). */
+const OWN_RELAY_WAIT_MS = 30_000;
+
 /** `watching` maps each conversation a page watches to the thread conversations that watch holds open. */
 type Client = { socket: WebSocket; watching: Map<ConversationId, ConversationId[]> };
 
@@ -202,6 +205,9 @@ export class App {
 
   async start(): Promise<void> {
     for (const relay of this.routing?.relays() ?? []) relay.start();
+    // This box's own agents go through its relay too; its first thread list waits for the hello, as PiHost waits for a pi-host restart.
+    const own = this.routing?.relays().find(relay => relay.name === this.config.box);
+    if (own && !(await own.whenUp(OWN_RELAY_WAIT_MS))) this.log(`relay ${own.name}: no hello in ${OWN_RELAY_WAIT_MS / 1000} s, starting with its agents away`);
     await this.threads.start(this.config.fixture ? 1000 : 2000);
     this.rooms.start();
     this.groups.start();
