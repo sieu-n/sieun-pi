@@ -62,7 +62,8 @@ export function agentContacts(messages: readonly ThreadMessage[], since: number)
       const header = /^\s*\[agent-message from\s+([^\]]+)\]/.exec(text);
       if (!header) continue;
       contacts.push({ who: header[1]!.trim(), at: message.timestamp, direction: "received", text: firstLine(text.slice(header[0].length)) });
-    } else if (message.role === "toolResult") {
+    } else if (message.role === "toolResult" && message.toolName === "ipython") {
+      // A search_history result can quote another session's receipt, which is no send of this chat (duty-job-report.ts, 10-30).
       for (const part of message.content) {
         if (part.type !== "text") continue;
         for (const match of part.text.matchAll(RECEIPT)) contacts.push({ who: match[1]!, at: message.timestamp, direction: "sent", text: "" });

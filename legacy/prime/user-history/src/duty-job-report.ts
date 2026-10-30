@@ -20,11 +20,14 @@ export function reportMarks(lines: readonly string[], chatId: string, from: Repo
   let { promptAt, reportAt } = from;
   for (const line of lines) {
     if (!line.startsWith('{"type":"message"')) continue;
-    let entry: { timestamp?: unknown; message?: { role?: unknown; timestamp?: unknown; content?: unknown } };
+    let entry: { timestamp?: unknown; message?: { role?: unknown; toolName?: unknown; timestamp?: unknown; content?: unknown } };
     try { entry = JSON.parse(line); } catch { continue; }
     const role = entry.message?.role;
     if (role === "user") { promptAt = Math.max(promptAt, entryTime(entry)); continue; }
-    if (role !== "toolResult" || !Array.isArray(entry.message?.content)) continue;
+    // Only the kernel's own tool result holds a send receipt. A search_history result can quote another job's receipt to the chat: on 10-30
+    // the Wiki dream's 02:18 job read the 01:30 job's report through search_history at 17:23:56Z, read as reported, and the 17:42Z run
+    // retired it mid-round, so its final precheck, ledger entry and report for 21 rechecked pages were lost.
+    if (role !== "toolResult" || entry.message?.toolName !== "ipython" || !Array.isArray(entry.message?.content)) continue;
     for (const part of entry.message.content as unknown[]) {
       const text = typeof part === "object" && part !== null && "text" in part ? String((part as { text: unknown }).text) : "";
       if ([...text.matchAll(RECEIPT)].some(match => match[1] === chatId)) reportAt = Math.max(reportAt, entryTime(entry));

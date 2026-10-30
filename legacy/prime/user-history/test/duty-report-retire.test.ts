@@ -31,6 +31,10 @@ test("a job's report is in once it sent the chat a message after its last prompt
   assert.equal(reportedSince(reportMarks(done, CHAT)), true, "late notices after the report leave it in");
   assert.equal(reportedSince(reportMarks([...done, user("2026-10-24T05:30:00Z", "The Wiki dream run found 5 flagged items")], CHAT)), false,
     "a new prompt after the report asks for more work");
+  const quoted = JSON.stringify({ type: "message", timestamp: "2026-10-30T17:23:56Z", message: { role: "toolResult", toolName: "search_history", content: [{ type: "text",
+    text: `wiki dream 10-31 01:30 tool_result (ipython): {'id': 'agentmsg_9', 'source': 'agent_message', 'target': {'activeSessionId': '93616f97f71b', 'sessionId': '${CHAT}', 'sessionName': 'AI harness developer environment VP'` }] } });
+  assert.equal(reportedSince(reportMarks([user("2026-10-30T17:23:34Z", "# wiki dream AI harness developer environment 02:18"), quoted], CHAT)), false,
+    "an older job's receipt quoted in a search_history result is no report");
 
   const dir = await mkdtemp(join(tmpdir(), "duty-report-"));
   try {
