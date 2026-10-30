@@ -91,12 +91,14 @@ export async function hostsReport(host: Host, threads: Threads, box: string, soc
   }
   const routing = host instanceof MultiHost ? host : undefined;
   const names = [...new Set([box, ...registry.map(h => h.name), ...(routing?.list().map(b => b.box) ?? [])])];
+  // The link is read in the same tick as the ping, before the machine relay reads, so a box's pi-host and link state agree.
   const ping = await host.ping();
   const rows = threads.threadsList().filter(t => !t.archived);
   const views = await Promise.all(names.map(async (name): Promise<HostView> => {
     const self = name === box;
     const entry = registry.find(h => h.name === name);
     const relay = routing?.relay(name);
+    const agentRelay = relay ? agentRelayLink(relay) : null;
     const boxPing = ping.boxes?.[name] ?? (self ? ping : undefined);
     const piHost: HostView["piHost"] = boxPing ? piHostView(boxPing, self ? socket : undefined) : { state: "absent" };
     let machine: MachineView | null = null;
@@ -112,7 +114,7 @@ export async function hostsReport(host: Host, threads: Threads, box: string, soc
     }
     return {
       name, address: entry?.address ?? (self ? "127.0.0.1" : "unknown"), self, relay: machineRelay, piHost,
-      agentRelay: relay ? agentRelayLink(relay) : null, machine,
+      agentRelay, machine,
       threads: piHost.state === "absent" ? [] : rows.filter(t => (t.box ?? box) === name)
         .map(t => ({ id: t.id, name: t.name, status: statusOf(t.status), model: `${t.provider}/${t.modelId}`, updatedAt: t.updatedAt, children: t.children })),
     };
