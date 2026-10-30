@@ -4,7 +4,7 @@
 // its readers die more often than the rest.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type DayPages, type Death, deathExcessP, provenRate } from "../scripts/duties/engage-reads.ts";
+import { type DayPages, type Death, deathExcessP, provenRates } from "../scripts/duties/engage-reads.ts";
 
 const at = (iso: string): number => Date.parse(iso);
 const verdict = (accountId: number, iso: string, code: string, pages24h: number): Death =>
@@ -31,7 +31,7 @@ test("verdicts at low page counts no longer cap the canary's rate (prod 10-28 an
     verdict(148, "2026-10-29T20:22:34Z", "account_suspended", 251), verdict(219, "2026-10-29T20:24:21Z", "account_suspended", 142),
     verdict(179, "2026-10-29T20:24:22Z", "account_suspended", 157),
   ];
-  const proof = provenRate(days, deaths, 11);
+  const proof = provenRates(days, deaths, 11).newest;
   assert.equal(proof?.rate, 665);
   assert.deepEqual(proof?.days, ["2026-10-28", "2026-10-29"]);
   assert.deepEqual([proof?.hiDays, proof?.hiDeaths, proof?.loDays, proof?.loDeaths], [22, 0, 201, 4], "163 counts once, at its first verdict");
@@ -43,8 +43,8 @@ test("two verdicts among few high readers unprove their rate, and the rate under
     verdict(1, "2026-10-29T10:00:00Z", "account_suspended", 640), verdict(2, "2026-10-29T11:00:00Z", "account_suspended", 640),
     verdict(20, "2026-10-29T12:00:00Z", "account_suspended", 150), verdict(21, "2026-10-29T13:00:00Z", "account_suspended", 150),
   ];
-  assert.equal(provenRate(days, deaths, 11)?.rate, 150);
-  assert.equal(provenRate(days, deaths.slice(1), 11)?.rate, 640, "one verdict among 26 high account-days is within chance");
+  assert.equal(provenRates(days, deaths, 11).newest?.rate, 150);
+  assert.equal(provenRates(days, deaths.slice(1), 11).newest?.rate, 640, "one verdict among 26 high account-days is within chance");
 });
 
 test("a verdict with no page in its last 24 h and a cause that is not Instagram's say nothing about a rate", () => {
@@ -53,9 +53,22 @@ test("a verdict with no page in its last 24 h and a cause that is not Instagram'
     verdict(1, "2026-10-29T10:00:00Z", "login_redirect", 0), verdict(2, "2026-10-29T11:00:00Z", "transport", 640),
     verdict(3, "2026-10-29T12:00:00Z", "bad_password", 640),
   ];
-  assert.equal(provenRate(days, deaths, 11)?.rate, 640);
+  assert.equal(provenRates(days, deaths, 11).newest?.rate, 640);
 });
 
 test("no rate is proven when fewer than a cohort read on a day", () => {
-  assert.equal(provenRate([...fleet("2026-10-28", [[10, 640]]), ...fleet("2026-10-29", [[13, 640]])], [], 11), null);
+  const rates = provenRates([...fleet("2026-10-28", [[10, 640]]), ...fleet("2026-10-29", [[13, 640]])], [], 11);
+  assert.deepEqual(rates, { newestDays: ["2026-10-28", "2026-10-29"], newest: null, best: null });
+});
+
+test("the headline is the newest window, and an older higher proof is only the best (launch VP, 10-30)", () => {
+  const days = [
+    ...fleet("2026-10-15", [[11, 1459], [100, 300]]), ...fleet("2026-10-16", [[11, 1500], [100, 300]]),
+    ...fleet("2026-10-28", [[11, 678], [100, 150]]), ...fleet("2026-10-29", [[11, 638], [100, 200]]),
+  ];
+  const { newestDays, newest, best } = provenRates(days, [], 11);
+  assert.deepEqual(newestDays, ["2026-10-28", "2026-10-29"]);
+  assert.equal(newest?.rate, 638);
+  assert.equal(best?.rate, 1459);
+  assert.deepEqual(best?.days, ["2026-10-15", "2026-10-16"]);
 });

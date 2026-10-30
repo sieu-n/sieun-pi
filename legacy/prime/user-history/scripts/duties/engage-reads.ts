@@ -47,7 +47,7 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.du
  *   run until it moves on: on 10-19 the metric read 100% while 32 open walks sat on cursor_provenance_missing. The run detail
  *   deep_walks_open_stuck counts them. An open walk that errored and started inside one cadence is retrying, so it is left out, and the
  *   deep_walks flag shows those as their own count with their codes. NOT_PAGINATION below names the codes left out of the stops.
- * - canary_ig_deaths_1h, canary_accounts_short, staging_due_wait_min, deep_walks_open_stuck, paced_busy_hour_share, paced_accts_200plus and source_errors are run detail:
+ * - canary_ig_deaths_1h, canary_accounts_short, staging_due_wait_min, deep_walks_open_stuck, paced_busy_hour_share, paced_accts_200plus, best_proven_rate and source_errors are run detail:
  *   report() writes them to the output, the server does not judge them, and the canary_short, staging_stall and busy_hour_share flags carry them to the fix jobs.
  * - paced_busy_hour_share keeps closed goal p229 ("Engage accounts spread their pages across the day on prod, busiest hour at most a tenth of the
  *   day", 0.074 on 10-28) as run detail, because c75 holds d1 at one headline and 3 supporting metrics. Over BUSY_HOUR_SHARE_MAX the busy_hour_share
@@ -252,21 +252,25 @@ export interface Proof { rate: number; days: string[]; hiDays: number; hiDeaths:
  * unsafe. Until 10-30 any verdict at v pages unproved every rate of v or more, so prod 163 at 91 pages held the proven rate at 90 while 12 canary
  * accounts read up to 665 a day with 0 verdicts; DEATH_EXCESS_P has the data that retired it. A verdict on an account that read no page in its
  * last 24 h says nothing about a read rate and is left out (prod 55 and 74 on 10-12: every read answered 302 to login, so they read 0 pages
- * before Instagram killed the session). The rates tried are the day totals accounts read. Returns the best rate with its evidence, or null.
+ * before Instagram killed the session). The rates tried are the day totals accounts read.
+ *
+ * `newest` is the proof of the newest window, the last PROOF_DAYS full UTC days with reads, and it is the headline: the launch VP, 10-30, "the
+ * headline must be today's capacity, not a two-week-old window", because the fleet, its seller lots and the pace changed after the 10-15 and
+ * 10-16 pair proved 1,459. `best` is the highest rate any window proved, a later window winning ties, kept as run detail.
  */
-export function provenRate(days: readonly DayPages[], deaths: readonly Death[], cohort: number): Proof | null {
-  if (cohort < 1) return null;
+export interface ProvenRates { newestDays: string[] | null; newest: Proof | null; best: Proof | null }
+
+/** The newest window's proof and the best one, as ProvenRates says. */
+export function provenRates(days: readonly DayPages[], deaths: readonly Death[], cohort: number): ProvenRates {
+  if (cohort < 1) return { newestDays: null, newest: null, best: null };
   const byDay = new Map<string, number[]>();
   for (const row of days) if (row.pages > 0) byDay.set(row.day, [...byDay.get(row.day) ?? [], row.pages]);
   for (const pages of byDay.values()) pages.sort((a, b) => b - a);
   const firstVerdicts = new Map<number, Death>();
   for (const death of [...deaths].sort((a, b) => a.at - b.at))
     if (causeOf(death) === "instagram" && death.pages24h > 0 && !firstVerdicts.has(death.accountId)) firstVerdicts.set(death.accountId, death);
-  let best: Proof | null = null;
-  for (const first of [...byDay.keys()].sort()) {
-    const run = [first];
-    while (run.length < PROOF_DAYS && byDay.has(nextDay(run.at(-1)!))) run.push(nextDay(run.at(-1)!));
-    if (run.length < PROOF_DAYS) continue;
+  const proofOf = (run: string[]): Proof | null => {
+    const first = run[0]!;
     const start = Date.parse(`${first}T00:00:00Z`);
     const verdicts = [...firstVerdicts.values()].filter(death => death.at >= start).map(death => death.pages24h);
     const accountDays = [...byDay].filter(([day]) => day >= first).flatMap(([, pages]) => pages);
@@ -277,12 +281,21 @@ export function provenRate(days: readonly DayPages[], deaths: readonly Death[], 
       const hiDeaths = verdicts.filter(pages => pages >= rate).length;
       const evidence = { hiDays, hiDeaths, loDays: accountDays.length - hiDays, loDeaths: verdicts.length - hiDeaths };
       const p = deathExcessP(evidence.hiDays, evidence.hiDeaths, evidence.loDays, evidence.loDeaths);
-      if (p < DEATH_EXCESS_P) continue;
-      if (!best || rate > best.rate || (rate === best.rate && first > best.days[0]!)) best = { rate, days: run, ...evidence, p };
-      break;
+      if (p >= DEATH_EXCESS_P) return { rate, days: run, ...evidence, p };
     }
+    return null;
+  };
+  const result: ProvenRates = { newestDays: null, newest: null, best: null };
+  for (const first of [...byDay.keys()].sort()) {
+    const run = [first];
+    while (run.length < PROOF_DAYS && byDay.has(nextDay(run.at(-1)!))) run.push(nextDay(run.at(-1)!));
+    if (run.length < PROOF_DAYS) continue;
+    const proof = proofOf(run);
+    result.newestDays = run;
+    result.newest = proof;
+    if (proof && (!result.best || proof.rate >= result.best.rate)) result.best = proof;
   }
-  return best;
+  return result;
 }
 
 const fmt = (value: number): string => value.toLocaleString("en-US");
@@ -347,18 +360,20 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
     const pauses = Object.entries(data.config).filter(([key, value]) => key.startsWith("pause.engage") && value === "true").map(([key]) => key);
     if (pauses.length) flagged.push({ at, kind: "pause", excerpt: `prod pause keys on: ${pauses.join(", ")}` });
     if (data.days && data.healthy !== undefined && data.lapsed) {
-      const proof = provenRate(data.days, data.deaths, want);
+      const { newestDays, newest: proof, best } = provenRates(data.days, data.deaths, want);
       const rate = proof?.rate ?? 0;
       const healthy = data.healthy + data.lapsed.waiting;
       const counted = `${healthy} healthy prod accounts (${data.healthy} admissible now${data.lapsed.waiting ? `, ${data.lapsed.waiting} waiting on a proxy session renewal` : ""})`;
       metrics.prod_capacity_pages_day = healthy * rate;
+      metrics.best_proven_rate = best?.rate ?? 0;
       const onHand = onHandOf(data.accounts).length;
       const need = rate ? Math.ceil(PAGES_A_DAY_GOAL / rate) : null;
+      const older = best && best !== proof ? ` The best older window, ${best.days.join(" and ")}, proved ${fmt(best.rate)} (run detail only, not the headline).` : "";
       flagged.push({ at, kind: "capacity", excerpt: (proof
-        ? `${counted} x ${fmt(rate)} pages a day per account, proven on ${proof.days.join(" and ")} (the ${want}th busiest account read that much each day; since then ${proof.hiDeaths} Instagram verdicts in ${fmt(proof.hiDays)} account-days at or over it and ${proof.loDeaths} in ${fmt(proof.loDays)} under it, p ${proof.p.toFixed(2)}) = ${fmt(healthy * rate)} pages a day. `
-          + `${need! > healthy ? `${need! - healthy} more healthy accounts at that rate reach ${fmt(PAGES_A_DAY_GOAL)}. ` : ""}`
-          + `${onHand} prod accounts on hand (not dead, not moved to another world) x ${fmt(rate)} = ${fmt(onHand * rate)}${onHand * rate < PAGES_A_DAY_GOAL ? `, short of ${fmt(PAGES_A_DAY_GOAL)}: only more accounts or a higher proven rate reach it` : ", enough once they are healthy"}.`
-        : `${counted}, and no rate is proven: no ${PROOF_DAYS} consecutive full UTC days had ${want} accounts read at one rate whose readers did not die more often than the rest.`).slice(0, 600) });
+        ? `${counted} x ${fmt(rate)} pages a day per account, proven on the newest window ${proof.days.join(" and ")} (the ${want}th busiest account read that much each day; since then ${proof.hiDeaths} Instagram verdicts in ${fmt(proof.hiDays)} account-days at or over it and ${proof.loDeaths} in ${fmt(proof.loDays)} under it, p ${proof.p.toFixed(2)}) = ${fmt(healthy * rate)} pages a day. `
+          + `${need! > healthy ? `${need! - healthy} more healthy accounts at that rate, or ${fmt(Math.ceil(PAGES_A_DAY_GOAL / Math.max(1, healthy)))} pages a day on these, reach ${fmt(PAGES_A_DAY_GOAL)}. ` : ""}`
+          + `${onHand} prod accounts on hand (not dead, not moved to another world) x ${fmt(rate)} = ${fmt(onHand * rate)}${onHand * rate < PAGES_A_DAY_GOAL ? `, short of ${fmt(PAGES_A_DAY_GOAL)}` : ", enough once they are healthy"}.${older}`
+        : `${counted}, and the newest window ${newestDays ? newestDays.join(" and ") : "(none)"} proves no rate: it had no ${want} accounts read at one rate whose readers did not die more often than the rest.${older}`).slice(0, 800) });
     }
     if (data.lapsed && (data.lapsed.waiting || data.lapsed.blocked)) flagged.push({ at, kind: "lapsed_bindings", excerpt: (`${data.lapsed.waiting + data.lapsed.blocked} active prod accounts have no live proxy session binding, the oldest since ${utc(data.lapsed.oldestAt!)}. `
       + `${data.lapsed.waiting} wait on the renewal loop and count as capacity: they read again once the proxy answers (a GeoNode supply hold or neutral_address_unresolved renewals point at the proxy). `
