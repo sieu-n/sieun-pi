@@ -74,7 +74,7 @@
         "(too|so|fat|needlessly|stop|less|in general)\\W{0,3}gr[ae]y",
         "gr[ae]y (fat|pill|track)",
         "회색[^.\\n?]{0,12}(너무|많|빼|없애|줄|싫|칙칙)",
-      "(너무|칙칙)[^.\\n?]{0,12}회색",
+        "(너무|칙칙)[^.\\n?]{0,12}회색",
         "희미"
       ],
       "tests": [
@@ -361,6 +361,29 @@
         "e745ef9f6ca"
       ],
       "why": "DM compose note 'polish wise doesn't feel like Virev design - too ugly,fat/tall, need nice transition/animation ... Style Should be consistent with all the other Instagram Account search places': the shared-components, less-padding and smooth-motion lines were already in the skill, b7660c97151 gives New DM a From pick, grouped search and an account preview, 22b2b354839 gives the Channels rail type icons and a row pen, 307f246ebee puts email compose on the same From pick and grouped To rows, and e745ef9f6ca puts Staging inbox on inbox/compose-polish (p405)."
+    },
+    {
+      "at": "2026-10-29T17:05:12.638Z",
+      "commits": [
+        "1e6e8c28ef8",
+        "4502b69e78b",
+        "38680d45f97",
+        "1830bf19651"
+      ],
+      "why": "AI Chat note 'ai chat is rather good, but still needs alot of polish! it isn't \"Virev-style\", and many aspects are unintentional' with the ask to redesign every component on a generative-UI framework: the nothing-unintentional line was already in the skill, 1e6e8c28ef8 moves Staging AI Chat to chat/openui (rebuilt on @openuidev/svelte-lang), 4502b69e78b folds tool steps, 38680d45f97 makes the plan a light checklist, and 1830bf19651 re-freezes Staging on the finish round (p421)."
+    },
+    {
+      "at": "2026-10-29T18:34:39.014Z",
+      "commits": [
+        "4502b69e78b",
+        "b42a158f9db",
+        "59cc4b3e778",
+        "251bca73f14",
+        "38680d45f97",
+        "a84b8e9c40c",
+        "1830bf19651"
+      ],
+      "why": "AI Chat list 'tool calling 막 다 길게 뜨는거, AI Chat라고 하는 왼쪽 위 title, chat history needs tag/hover UI, ttile should be more intelligently generated, Chat icon remove does nothing. OUtputs and Plan is kinda too rigid': the shared-components line was already in the skill, 4502b69e78b folds tool steps to one line, b42a158f9db gives history rows shared Tag chips and a delete that sticks, 59cc4b3e778 and 251bca73f14 write short unique titles, 38680d45f97 and a84b8e9c40c make the plan a light checklist and Outputs a pill, and 1830bf19651 re-freezes Staging on chat/openui (p421)."
     }
   ]
 }
