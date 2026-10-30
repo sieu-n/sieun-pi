@@ -490,6 +490,8 @@ While a pi-host turn runs on the Mac, and for 2 min after, the agent relay holds
 
 The Mac fetches from GitHub again, and at 11:33Z on 10-30 it installed pi-host and its relay as release-199338a over release-875c5fb (`~/work/phase6-gaps/mac-awake/mac-install.log`).
 
+One gap is still open. For a Mac agent, the Agents page still shows the thread file path, `hostKind` and system text from metal, because `runs.threadFile` points into metal's durable dir and the preamble comes from metal's pi-host.
+
 ## 7. Open questions for the owner
 
 Each has a default, so work goes on without an answer.
