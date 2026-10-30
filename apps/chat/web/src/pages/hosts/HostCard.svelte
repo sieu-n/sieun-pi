@@ -76,7 +76,7 @@
 
   <CardGroup title="Services">
     <NavItem variant="card" label="pi-host" detail={piHostText(host)}>
-      {#snippet leading()}<StatusDot status={host.piHost.state === "answering" ? "online" : host.piHost.state === "down" ? "busy" : "offline"} />{/snippet}
+      {#snippet leading()}<StatusDot status={host.agentRelay?.state === "away" ? "away" : host.piHost.state === "answering" ? "online" : host.piHost.state === "down" ? "busy" : "offline"} />{/snippet}
     </NavItem>
     {#if host.agentRelay}
       <NavItem variant="card" label="Agent relay" detail={agentRelayText(host, now)} data-testid="agent-relay-{host.name}">

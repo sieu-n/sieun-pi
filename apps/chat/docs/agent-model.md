@@ -480,7 +480,9 @@ Each has a def
 4. A delivery to an away box reads "queued, <box> is offline". When the box comes back, the waiting posts for one comm thread go as one input with requestId `b:<first post>:<agent>`, and the bundle's members are saved before the submit.
 5. `scripts/install-pi-host-box.mjs` builds and starts a pi-host release on Linux or macOS. `POST /api/agents {host}` makes an agent on another box, and `GET /api/agent-hosts` lists the boxes.
 
-The routing stayed in the chat server instead of moving into the relay, because the feed reader already keeps one post per requestId and the relay then needs no state of its own. Open gaps: search reads only metal's index, a Mac agent's instruction files on the Agents page are read on metal's disk, channel and Solo deliveries to an away box go one by one with no bundle, and `/api/hosts` does not show link state yet. The live walk is in `~/work/phase6/mac-walk.md`.
+The routing stayed in the chat server instead of moving into the relay, because the feed reader already keeps one post per requestId and the relay then needs no state of its own. Open gaps: search reads only metal's index, a Mac agent's instruction files on the Agents page are read on metal's disk, and channel and Solo deliveries to an away box go one by one with no bundle. The live walk is in `~/work/phase6/mac-walk.md`.
+
+`GET /api/hosts` and the Hosts page now show each box's agent relay link as its `RelayHost` holds it in memory, with up or away since when, the last pong, the relay and pi-host versions from the last hello, and the feed cursor (`~/work/phase6-gaps/hosts-link/proof.md`).
 
 ault, so work goes on without an answer.
 
