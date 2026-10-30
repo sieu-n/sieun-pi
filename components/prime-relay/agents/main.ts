@@ -15,6 +15,7 @@ import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { createRelay } from "../relay.mjs";
+import { holdAwakeForPiHost, type AwakeOptions } from "./awake.ts";
 import { createChatProxy } from "./chat-proxy.ts";
 import { loadAgentConfig, relayVersion, type AgentRelayConfig } from "./config.ts";
 import { AgentLink } from "./link.ts";
@@ -37,13 +38,14 @@ export interface AgentRelay {
  * Builds the relay without listening. relay.mjs refuses every upgrade but `/v1/daemon`, so its upgrade listener moves behind this one, which
  * takes `/v2/agents` and hands every other path to it.
  */
-export function createAgentRelay(config: AgentRelayConfig, log: (line: string) => void, relayOptions?: Parameters<typeof createRelay>[2]): AgentRelay {
+export function createAgentRelay(config: AgentRelayConfig, log: (line: string) => void, relayOptions?: Parameters<typeof createRelay>[2], awakeOptions?: AwakeOptions): AgentRelay {
   const relay = createRelay(config, log, relayOptions) as Server;
   const v1Upgrades = relay.listeners("upgrade") as ((request: IncomingMessage, socket: Duplex, head: Buffer) => void)[];
   relay.removeAllListeners("upgrade");
   const wss = new WebSocketServer({ noServer: true });
   const links = new Set<AgentLink>();
   const version = relayVersion();
+  const awake = holdAwakeForPiHost(config.piHostSocket, log, awakeOptions);
   relay.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     if (new URL(request.url ?? "/", "http://relay").pathname !== AGENT_RELAY_PATH) {
       for (const listener of v1Upgrades) listener.call(relay, request, socket, head);
@@ -55,7 +57,7 @@ export function createAgentRelay(config: AgentRelayConfig, log: (line: string) =
     }
     wss.handleUpgrade(request, socket, head, ws => {
       log(`agents link opened from ${request.socket.remoteAddress}`);
-      const link: AgentLink = new AgentLink(ws, { box: config.box, home: config.home, agentsDir: config.agentsDir, piHostSocket: config.piHostSocket, version, log }, () => links.delete(link));
+      const link: AgentLink = new AgentLink(ws, { box: config.box, home: config.home, agentsDir: config.agentsDir, piHostSocket: config.piHostSocket, version, log, onSubmit: () => void awake.check() }, () => links.delete(link));
       links.add(link);
     });
   });
@@ -64,6 +66,7 @@ export function createAgentRelay(config: AgentRelayConfig, log: (line: string) =
   return {
     relay, proxy, links,
     async close() {
+      awake.stop();
       for (const link of links) link.close("relay stopping");
       wss.close();
       await Promise.all([relay, proxy].map(server => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); })));

@@ -15,6 +15,8 @@ export interface LinkOptions {
   piHostSocket: string;
   version: string;
   log: (line: string) => void;
+  /** Runs after pi-host takes a `durable_submit`, so the Mac's sleep hold starts with the turn (awake.ts). */
+  onSubmit?: () => void;
 }
 
 const durableOps = new Set<string>(DURABLE_OPS);
@@ -136,7 +138,9 @@ export class AgentLink {
     const piHost = this.piHost;
     if (durableOps.has(op)) {
       if (!piHost) return { ok: false, error: "pi-host is not connected", unsent: true };
-      return piHost.call(op, args);
+      const answer = await piHost.call(op, args);
+      if (op === "durable_submit" && answer.ok) this.options.onSubmit?.();
+      return answer;
     }
     switch (op) {
       case "watch": {

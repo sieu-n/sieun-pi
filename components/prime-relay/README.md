@@ -45,6 +45,8 @@ The sieun-pi side lives in `legacy/prime/user-history/src/hosts.ts`. It reads `~
 
 The relay also listens on `127.0.0.1:<chatProxyPort>` (7792 by default). Each request there goes up the newest live link as a `chat_http` call, and the server's result becomes the answer. With no live link, it answers 503 with a JSON error.
 
+On macOS the agent relay keeps the Mac awake while pi-host runs a turn (`agents/awake.ts`). Every 30 s, and right after each `durable_submit`, it reads pi-host's `durable_threads` on its own connection. While a thread reads `running`, and for 2 min after the last one, it holds one `caffeinate -i -s -w <relay pid>`. `-i` stops idle sleep, and `-s` keeps a Mac on AC power in dark wake when its lid closes, while on battery a closed lid still sleeps it. `-w` ends caffeinate with the relay, so a crashed or stopped relay leaves no hold behind. On Linux the relay does none of this.
+
 relay.json takes four keys beside the v1 ones. `piHostSocket` is pi-host's socket and defaults to `daemonSocket`, `chatProxyPort` defaults to 7792, `box` is this box's name in `~/.config/sieun-pi/hosts.json`, and `agentsDir` defaults to `~/.pi/agent/agents`.
 
 Run `node components/prime-relay/agents/install.mjs --box <name>` on the box, with `--listen`, `--port` and `--pi-host-socket` the first time. It merges the flags into `~/.config/pi-host-relay/relay.json`, writes the service to run `node ~/.local/share/pi-host/current/components/prime-relay/agents/main.ts ~/.config/pi-host-relay/relay.json`, restarts the relay unit only and prints its health. The test is `node --test --test-force-exit --test-isolation=none components/prime-relay/test/agents-relay.test.mjs`, which runs a real pi-host child with a faux model against a fake chat server.

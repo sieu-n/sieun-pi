@@ -285,32 +285,41 @@ const AWAKE_RELEASE_MS = 2 * 60_000;
 const AWAKE_POLL_MS = 30_000;
 
 /**
- * On macOS, `caffeinate -i -w <relay pid>` runs while the box's daemon has a session at work and until AWAKE_RELEASE_MS after the last one, so a
- * turn on this Mac never idle-sleeps when the chat service runs on another box. Lid-close sleep still happens.
+ * On macOS, `caffeinate -i -s -w <relay pid>` runs while `working()` says the box has work in a turn and until AWAKE_RELEASE_MS after the last,
+ * so a turn on this Mac never idle-sleeps when the chat service runs on another box. `-s` also holds the Mac on AC power in dark wake when the
+ * lid closes (pmset -g log on the owner's Mac, 10-26 to 10-30: each 'Clamshell Sleep' under a `caffeinate -s` stayed in DarkWake while on AC
+ * and slept only on battery). `-w` ends caffeinate with the relay, so a crashed relay leaves no hold behind. `working` defaults to the Prime
+ * daemon's `list`; the agent relay passes pi-host's durable threads (agents/awake.ts). `check()` runs one reading now, after the ones before.
  */
 export function holdAwake(socketPath, log, options = {}) {
-  if ((options.platform ?? process.platform) !== "darwin") return () => {};
+  if ((options.platform ?? process.platform) !== "darwin") return { check: async () => {}, stop: () => {} };
+  const working = options.working ?? (() => daemonWorking(socketPath));
+  const start = options.spawn ?? spawn;
   let hold = null;
   let lastWorkAt = null;
-  const check = async () => {
-    const working = await daemonWorking(socketPath);
+  let stopped = false;
+  const once = async () => {
+    const busy = await working();
     const now = Date.now();
-    if (working) lastWorkAt = now;
-    if (working && !hold) {
-      hold = spawn("caffeinate", ["-i", "-w", String(process.pid)], { stdio: "ignore" });
+    if (busy) lastWorkAt = now;
+    if (stopped) return;
+    if (busy && !hold) {
+      hold = start("caffeinate", ["-i", "-s", "-w", String(process.pid)], { stdio: "ignore" });
       const child = hold;
       child.once("exit", () => { if (hold === child) hold = null; });
       child.once("error", error => log(`awake: caffeinate: ${error.message}`));
-      log("awake: a session works; holding idle sleep off");
-    } else if (!working && hold && (lastWorkAt === null || now - lastWorkAt >= AWAKE_RELEASE_MS)) {
+      log("awake: work is running; holding sleep off");
+    } else if (!busy && hold && (lastWorkAt === null || now - lastWorkAt >= AWAKE_RELEASE_MS)) {
       hold.kill();
       hold = null;
-      log("awake: nothing has worked for 2 min; idle sleep allowed again");
+      log("awake: nothing has worked for 2 min; sleep allowed again");
     }
   };
+  let queue = Promise.resolve();
+  const check = () => (queue = queue.then(once).catch(error => log(`awake: ${error instanceof Error ? error.message : String(error)}`)));
   void check();
   const timer = setInterval(() => { void check(); }, AWAKE_POLL_MS);
-  return () => { clearInterval(timer); hold?.kill(); };
+  return { check, stop: () => { stopped = true; clearInterval(timer); hold?.kill(); hold = null; } };
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) {
