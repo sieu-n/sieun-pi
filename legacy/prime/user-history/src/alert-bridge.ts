@@ -205,6 +205,13 @@ function pruned(state: BridgeState): BridgeState {
   return { ...state, jobs: Object.fromEntries(Object.entries(state.jobs).filter(([id]) => named.has(id))) };
 }
 
+/** Whether `alert` names a fault its open rule holds no instance of, by the label the rule's `incident_by` label names (`advance` step 5). */
+const newFault = (rule: Tracked, alert: FiringAlert): boolean => {
+  const by = alert.labels.incident_by;
+  if (!by || isResolved(rule)) return false;
+  return !Object.values(rule.instances).some(instance => instance.resolvedAt === undefined && instance.labels[by] === alert.labels[by]);
+};
+
 /**
  * The state after this tick's firing list, and the rules that fired: new, or back after they resolved. Each alert rule firing in an owning
  * chat is one entry, and every label set of it (lane, env and so on) is an instance of that entry. On 10-18 one proxy rule firing in 6 lanes
@@ -220,6 +227,9 @@ function pruned(state: BridgeState): BridgeState {
  * 3. An instance missing from the list resolves, and the rule resolves once every instance has.
  * 4. A rule that fired sets `wokeAt`, so its job owes the fire (`owed`). A new label set on a rule that still fires is the same incident, and
  *    so is a fire within REFIRE_MS of the rule resolving, which keeps the rule's entry and its job and fires nothing.
+ * 5. A rule whose label `incident_by` names one of its labels, such as `spec`, holds one fault per value of that label: a new label set whose
+ *    value no open instance of the rule has fires the rule again, so its job owes it. On 10-30 at 17:06Z hosted-app-chat.spec.ts went red on
+ *    ci-staging-proof-spec-red while hosted-inbox-whatsapp-dm.spec.ts, held red on Meta's name approval, kept the rule open, and no job got it.
  */
 export function advance(alerts: readonly FiringAlert[], state: BridgeState, route: Router, now: number): { state: BridgeState; fired: Set<string> } {
   const rules: Record<string, Tracked> = structuredClone(state.rules);
@@ -259,6 +269,7 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
       }
     }
     const rule = rules[key]!;
+    if (!fired.has(key) && newFault(rule, alert)) fired.add(key);
     for (const [id, instance] of Object.entries(rule.instances)) if (instance.resolvedAt !== undefined && id.startsWith(`${alert.fingerprint}@`)) delete rule.instances[id];
     rule.instances[alertKey(alert)] = { startsAt: alert.startsAt, labels: alert.labels };
     if (fired.has(key) && alert.startsAt < rule.startsAt) rule.startsAt = alert.startsAt;
