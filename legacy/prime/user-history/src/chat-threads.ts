@@ -1652,11 +1652,16 @@ export class ThreadHub {
     await this.use(id, async () => {
       const { live } = await this.current(id, trigger);
       if (!live) return;
-      const state = await live.connection.getState();
-      if (state.isCompacting) await live.connection.abortCompaction();
-      if (state.isBashRunning) await live.connection.abortBash();
-      if (state.retryAttempt) await live.connection.abortRetry();
-      await live.connection.abort();
+      const stop = async (): Promise<void> => {
+        const state = await live.connection.getState();
+        if (state.isCompacting) await live.connection.abortCompaction();
+        if (state.isBashRunning) await live.connection.abortBash();
+        if (state.retryAttempt) await live.connection.abortRetry();
+        await live.connection.abort();
+      };
+      // A session that closes meanwhile is waited out (src/worker-move.ts), and one the close took runs nothing left to stop. From 10-17 to
+      // 10-27 the check-in's job restarts logged 57 "Active session ... is closing" failures (service.log, "check-in could not restart job").
+      await afterMove(stop, () => this.stateOf(id, live.activeSessionId)).catch(error => { if (!isReopenable(error)) throw error; });
     });
   }
 
@@ -1666,8 +1671,10 @@ export class ThreadHub {
    */
   async resumeQueue(id: string): Promise<void> {
     const { live } = await this.requireResumed(id, "resume_queue");
-    const response = await (await this.daemon(id)).request({ type: "resume_queue", activeSessionId: live.activeSessionId }, undefined, { recoverable: false });
-    if (!response.success && response.error !== "No queued work to resume") throw new ThreadError(502, response.error);
+    await afterMove(async () => {
+      const response = await (await this.daemon(id)).request({ type: "resume_queue", activeSessionId: live.activeSessionId }, undefined, { recoverable: false });
+      if (!response.success && response.error !== "No queued work to resume") throw new ThreadError(502, response.error);
+    }, () => this.stateOf(id, live.activeSessionId));
   }
 
   /**
