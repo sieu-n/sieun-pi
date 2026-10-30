@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,12 +9,15 @@ import test from "node:test";
 // per-job `git worktree` copies on the owner's Mac at about 1 GB each in red minutes. These commands are only fed to the handlers.
 const root = realpathSync(mkdtempSync(join(tmpdir(), "global-rules-copy-")));
 const saved = process.env.GLOBAL_RULES_LOG;
+const savedHome = process.env.HOME;
 process.env.GLOBAL_RULES_LOG = join(root, "global-rules.log");
+process.env.HOME = root;
 const guard = await import("../packages/sieun-rules/src/guard.ts");
 const sendCheck = await import("../packages/sieun-rules/src/send-check.ts");
 test.after(() => {
   if (saved === undefined) delete process.env.GLOBAL_RULES_LOG;
   else process.env.GLOBAL_RULES_LOG = saved;
+  process.env.HOME = savedHome;
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -111,5 +115,44 @@ test("an install, build, dev server, type check or test inside an existing workt
   for (const [cwd, text] of [[repo, "pnpm install"], [repo, "npx tsc --noEmit -p ."], [boxRun, "pnpm install"], [wt, "git status"],
     [wt, "ls node_modules"], [wt, "cat package.json"], [root, `cd ${repo} && pnpm build`], [wt, "git worktree list"]]) {
     assert.equal(at(cwd, "bash", text), undefined, `${cwd}: ${text}`);
+  }
+});
+
+// On 10-30 the guard refused Prime's only checkout on us-metal02, /home/sieun/work/prime-agent-fix-p8/repo, as "a copy of all.bundle",
+// because it was cloned from a bundle file and so was not named after its origin.
+test("the one main checkout passes wherever its origin points, and a second clone or a worktree of it is refused", () => {
+  const git = (...args) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main", ...args], { stdio: "pipe" });
+  const seed = join(root, "seed", "prime");
+  mkdirSync(seed, { recursive: true });
+  git("-C", seed, "init", "-q");
+  writeFileSync(join(seed, "a.txt"), "a\n");
+  git("-C", seed, "add", "a.txt");
+  git("-C", seed, "commit", "-qm", "a");
+  const p8 = join(root, "work", "prime-agent-fix-p8");
+  mkdirSync(p8, { recursive: true });
+  git("-C", seed, "bundle", "create", join(p8, "all.bundle"), "--all");
+  mkdirSync(join(root, "elsewhere"));
+  git("-C", seed, "bundle", "create", join(root, "elsewhere", "other.bundle"), "--all");
+  const main = join(p8, "repo");
+  git("clone", "-q", join(p8, "all.bundle"), main);
+  const second = join(root, "scratch", "x", "repo");
+  git("clone", "-q", main, second);
+  const sameBundle = join(p8, "repo-2");
+  git("clone", "-q", join(p8, "all.bundle"), sameBundle);
+  const sameRoot = join(p8, "repo-3");
+  git("clone", "-q", join(root, "elsewhere", "other.bundle"), sameRoot);
+  const wt = join(p8, "wt-pr");
+  git("-C", main, "worktree", "add", "-q", wt);
+  const lone = join(root, "Github", "sg-renamed");
+  mkdirSync(join(lone, ".git"), { recursive: true });
+  writeFileSync(join(lone, ".git", "config"), '[remote "origin"]\n\turl = git@github.com:sieu-n/lone-repo.git\n');
+  const at = (cwd, text) => guard.onToolCall(event("bash", text), { cwd });
+  for (const cwd of [main, lone]) assert.equal(at(cwd, "npx vitest --run test/a.test.ts"), undefined, cwd);
+  assert.equal(at(root, `cd ${main} && npx tsgo --noEmit`), undefined);
+  for (const [cwd, why] of [[second, /is a clone of the checkout/], [sameBundle, /the main checkout of that repo/],
+    [sameRoot, /the main checkout of that repo/], [wt, /is a git worktree/]]) {
+    const result = at(cwd, "npx vitest --run test/a.test.ts");
+    assert.equal(result?.block, true, cwd);
+    assert.match(result.reason, why, cwd);
   }
 });

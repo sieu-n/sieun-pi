@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { Verdict } from "./guard.ts";
@@ -11,8 +12,8 @@ import { SHELLS, effective, lex, shellScript, stripHeredocs } from "./shell.ts";
  * owner's Mac, which held 79 slack-green worktrees at 17:20Z. This rule refuses `git worktree add`, a `git clone` whose source is a local
  * path, and `git archive` into a folder, in every repo on every host. A clone from a remote URL passes.
  * It also refuses an install, build, dev server, type check or test run inside a copy that already exists: a git worktree (its `.git` is a
- * file) or a checkout whose folder is not named after its origin repo. At 12:04Z on 10-30 a slack green guy job refused a new worktree
- * reused the old worktree slack-green-trial-banner-checkout, ran `pnpm install` there, and its tree held 6.6 GB while the Mac read
+ * file), a clone of another checkout on this host, or a clone beside the repo's main checkout (copyAt). At 12:04Z on 10-30 a slack
+ * green guy job refused a new worktree reused the old worktree slack-green-trial-banner-checkout, ran `pnpm install` there, and its tree held 6.6 GB while the Mac read
  * 9,981 swap-outs a second. box-run.sh's own box checkout (~/box-run/<mac>/repo) is no copy.
  * Hard limit: the owner set this ban himself (c193).
  */
@@ -55,25 +56,111 @@ function checkoutOf(dir: string): { top: string; worktree: boolean } | null {
 	return null;
 }
 
-/** The origin repo name of the checkout at `top` (`slack-green` for .../slack-green.git), or null. */
-function originName(top: string): string | null {
+/** The origin URL of the checkout at `top`, or null. */
+function originUrl(top: string): string | null {
 	try {
 		const config = readFileSync(join(top, ".git", "config"), "utf8");
-		const url = /\[remote "origin"\][^[]*?\burl\s*=\s*(\S+)/.exec(config)?.[1];
-		return url ? basename(url).replace(/\.git$/, "") : null;
+		return /\[remote "origin"\][^[]*?\burl\s*=\s*(\S+)/.exec(config)?.[1] ?? null;
 	} catch {
 		return null;
 	}
 }
 
-/** Why the checkout holding `dir` is a copy of a repo, or null when it is the repo's own checkout or no checkout. */
+/** The folder or bundle file a local origin names, resolved from `top`, or null for a remote URL. */
+function localOrigin(top: string, url: string | null): string | null {
+	if (!url || !localSource(url)) return null;
+	return resolve(top, url.replace(/^file:\/\//, "")).replace(/\/\.git\/?$|\/+$/, "");
+}
+
+/** One key for every spelling of the same origin: `github.com/sieu-n/slack-green` for its https, ssh and scp forms, or the local path. */
+function originKey(top: string, url: string | null): string | null {
+	if (!url) return null;
+	const local = localOrigin(top, url);
+	if (local) return local;
+	const m = /^(?:[\w+.-]+:\/\/)?(?:[^@/]+@)?([^/:]+)[:/](.+?)(?:\.git)?\/?$/.exec(url);
+	return m ? `${m[1].toLowerCase()}/${m[2]}` : url;
+}
+
+const roots = new Map<string, string>();
+/** The root commits of the checkout at `top`, which every clone of a repo shares wherever its origin points, or "" when git cannot read them. */
+function rootsOf(top: string): string {
+	let found = roots.get(top);
+	if (found === undefined) {
+		const run = spawnSync("git", ["-C", top, "rev-list", "--max-parents=0", "HEAD"], { encoding: "utf8" });
+		found = run.status === 0 ? run.stdout.split("\n").filter(Boolean).sort().join(" ") : "";
+		roots.set(top, found);
+	}
+	return found;
+}
+
+/** Whether `dir` is a checkout with its own `.git` folder, so not a worktree. */
+function ownCheckout(dir: string): boolean {
+	try {
+		return statSync(join(dir, ".git")).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+/** When the checkout at `top` was made: its `.git` folder's birth time, or the clone-time file `.git/description` where birth times are missing. */
+function born(top: string): number {
+	const git = statSync(join(top, ".git"));
+	if (git.birthtimeMs > 0) return git.birthtimeMs;
+	try {
+		return statSync(join(top, ".git", "description")).mtimeMs;
+	} catch {
+		return git.ctimeMs;
+	}
+}
+
+const BOX_RUN = /\/box-run\/[^/]+\/repo$/;
+
+/**
+ * The main checkout of the repo that `top` holds when `top` is not it, or null. The main one is the checkout named after its origin repo,
+ * then the oldest. Candidates are the folders beside `top` and beside a bundle it was cloned from; a candidate is the same repo when its
+ * origin or its root commits match. A clone from a URL elsewhere passes, as `git clone <url>` itself does.
+ */
+function mainOf(top: string, url: string | null): string | null {
+	const local = localOrigin(top, url);
+	const name = url ? basename(local ?? url).replace(/\.(?:git|bundle)$/, "") : basename(top);
+	const key = originKey(top, url);
+	const places = new Set<string>([dirname(top), ...(local ? [dirname(local)] : [])]);
+	const candidates = new Set<string>();
+	for (const place of places) {
+		try {
+			for (const entry of readdirSync(place)) candidates.add(join(place, entry));
+		} catch {}
+	}
+	const rank = (dir: string): [number, number] => [basename(dir) === name ? 0 : 1, born(dir)];
+	const mine = rank(top);
+	for (const dir of candidates) {
+		if (dir === top || BOX_RUN.test(dir) || !ownCheckout(dir)) continue;
+		const theirs = originUrl(dir);
+		if (localOrigin(dir, theirs) === top) continue;
+		const same = (key !== null && originKey(dir, theirs) === key) || (rootsOf(top) !== "" && rootsOf(dir) === rootsOf(top));
+		const other = rank(dir);
+		if (same && (other[0] < mine[0] || (other[0] === mine[0] && other[1] < mine[1]))) return dir;
+	}
+	return null;
+}
+
+/**
+ * Why the checkout holding `dir` is a copy of a repo, or null when it is the repo's main checkout or no checkout. A worktree is a copy, a
+ * clone of another checkout on this host is a copy, and so is a clone when another checkout of the same repo beside it is the main
+ * one. The one main checkout passes wherever its origin points: a bundle, a local path or a URL.
+ * On 10-30 the guard refused Prime's only checkout on us-metal02, /home/sieun/work/prime-agent-fix-p8/repo, because it was cloned from
+ * all.bundle and so was not named after its origin.
+ */
 export function copyAt(dir: string): string | null {
 	const checkout = checkoutOf(dir);
 	if (!checkout) return null;
-	if (/\/box-run\/[^/]+\/repo$/.test(checkout.top)) return null;
+	if (BOX_RUN.test(checkout.top)) return null;
 	if (checkout.worktree) return `${checkout.top} is a git worktree`;
-	const name = originName(checkout.top);
-	return name && basename(checkout.top) !== name ? `${checkout.top} is a copy of ${name}` : null;
+	const url = originUrl(checkout.top);
+	const local = localOrigin(checkout.top, url);
+	if (local && local !== checkout.top && existsSync(join(local, ".git"))) return `${checkout.top} is a clone of the checkout ${local}`;
+	const main = mainOf(checkout.top, url);
+	return main ? `${checkout.top} is a copy of ${main}, the main checkout of that repo` : null;
 }
 
 const home = () => process.env.HOME || homedir();
