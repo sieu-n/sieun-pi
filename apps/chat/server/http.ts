@@ -4,7 +4,8 @@
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
-import type { ConversationPatch, MemoryInput, RoomInput, RoomPatch, SendRequest } from "../web/src/lib/api/types.ts";
+import type { ConversationPatch, DutyAction, MemoryInput, RoomInput, RoomPatch, SendRequest } from "../web/src/lib/api/types.ts";
+import { parseSchedule } from "../web/src/lib/api/shared/chat-duties.ts";
 import { agentConfig, agentRecordOf } from "./agent-config.ts";
 import { EntryExists, EntryMissing, HARNESS_KINDS, type HarnessKind } from "./agent-folder.ts";
 import type { AgentRecord, WakeOn } from "./agent-store.ts";
@@ -62,6 +63,21 @@ function memoryInput(body: unknown): MemoryInput {
   if (typeof content !== "string" || !content.trim()) throw new BadRequest("A memory needs content, a string that is not blank.");
   if (path !== undefined && (typeof path !== "string" || !path.trim())) throw new BadRequest("A memory's path is a string that is not blank when given.");
   return { title, content, ...(path === undefined ? {} : { path }) };
+}
+
+/** A duties POST body: `set` with a duty definition, which upsertDuty checks, or another action with the duty's id. */
+function dutyAction(body: unknown): DutyAction {
+  const { action, duty, schedule } = (body ?? {}) as Record<string, unknown>;
+  if (action === "set") {
+    if (typeof duty !== "object" || duty === null) throw new BadRequest("A set takes the duty definition as duty.");
+    return { action, duty };
+  }
+  if (typeof duty !== "string" || !duty) throw new BadRequest("A duty action names the duty's id as duty.");
+  if (action === "run" || action === "pause" || action === "resume" || action === "remove") return { action, duty };
+  if (action === "schedule") {
+    try { return { action, duty, schedule: parseSchedule(schedule) }; } catch (error) { throw new BadRequest(error instanceof Error ? error.message : String(error)); }
+  }
+  throw new BadRequest("A duty action is set, run, pause, resume, schedule or remove.");
 }
 
 /** `?kind=` of a harness entry, memory when absent. */
@@ -174,7 +190,14 @@ export function routes(app: App): Route[] {
       }),
       route("GET", `/api/${scope}/:id/agents`, async (_r, p) => ({ agents: app.boards.chatAgents(p.id!) })),
       route("GET", `/api/${scope}/:id/duties`, async (_r, p) => ({ duties: app.boards.duties(p.id!) })),
-      route("POST", `/api/${scope}/:id/duties`, async (_r, p, _q, body) => ({ duties: await app.boards.dutyAction(p.id!, (await body()) as never) })),
+      route("POST", `/api/${scope}/:id/duties`, async (_r, p, _q, body) => {
+        const action = dutyAction(await body());
+        if (!app.boards.has(p.id!)) throw new NotFound(`No agent or thread ${p.id}.`);
+        // A duty definition upsertDuty refuses, or a duty id the board lacks, is the caller's error.
+        return app.boards.dutyAction(p.id!, action).catch(error => {
+          throw new BadRequest(error instanceof Error ? error.message : String(error));
+        });
+      }),
       route("GET", `/api/${scope}/:id/check-in`, async (_r, p) => app.boards.checkIn(p.id!)),
       route("POST", `/api/${scope}/:id/check-in`, async (_r, p, _q, body) => app.boards.setCheckIn(p.id!, (await body()) as never)),
     ]),

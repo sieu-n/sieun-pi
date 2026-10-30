@@ -102,10 +102,10 @@ The duties hold the upkeep in his words.
 
 ## Fix the duties
 
-1. List the chat's duties in `~/.prime/agent/browser-chat/duties/<chat session id>.json`.
+1. List the chat's duties, which a Prime chat keeps in `~/.prime/agent/browser-chat/duties/<chat session id>.json` and a pi agent reads with `GET http://127.0.0.1:5184/api/agents/<agent id>/duties`.
 2. Each duty keeps one thing that breaks easily in good shape, named after that system in the owner's terms, such as "Crawler working" or "CI working" ([check-ins](check-ins.md) 7 and 8).
 3. Each metric reads what the owner would check by hand, such as the dashboard he opens or the page he loads, never a count of runs or files.
-4. Every upkeep item and every risk page from the plan has a metric that checks it. Add the missing ones with `legacy/prime/user-history/scripts/duties/add.ts` ([check-ins](check-ins.md) 6).
+4. Every upkeep item and every risk page from the plan has a metric that checks it. Add the missing ones with `legacy/prime/user-history/scripts/duties/add.ts <chat> <duty.json>`, where `<chat>` is a Prime chat's session id or a pi agent's id or thread id ([check-ins](check-ins.md) 6). It writes a Prime chat's duty to Prime's store and sends a pi agent's duty to the new chat on :5184, which runs it.
 5. When a goal reaches its done line, check the real state, close the goal, and add a duty metric that keeps it met. When that metric misses later, its fix step goes back on the plan with a job ([check-ins](check-ins.md) 12).
 
 ## How a duty run works

@@ -128,7 +128,8 @@ export const api = {
     call<{ board: boolean; duties: number; runs: number; checkInMs: number | null }>("POST", `/api/threads/${enc(chat)}/import-prime`, { prime }),
   chatAgents: (chat: string) => call<{ agents: ChatAgent[] }>("GET", `${boardBase(chat)}/agents`),
   duties: (chat: string) => call<{ duties: DutyRow[] }>("GET", `${boardBase(chat)}/duties`),
-  dutyAction: (chat: string, action: DutyAction) => call<{ duties: DutyRow[] }>("POST", `${boardBase(chat)}/duties`, action),
+  /** `result` says what a set or remove did, such as "added d3", "updated d1", "unchanged d1" or "removed d2". */
+  dutyAction: (chat: string, action: DutyAction) => call<{ duties: DutyRow[]; result?: string }>("POST", `${boardBase(chat)}/duties`, action),
   checkIn: (chat: string) => call<CheckInView>("GET", `${boardBase(chat)}/check-in`),
   setCheckIn: (chat: string, patch: CheckInPatch) => call<CheckInView>("POST", `${boardBase(chat)}/check-in`, patch),
   forYou: (signal?: AbortSignal) => call<{ items: ForYouItem[] }>("GET", "/api/for-you", undefined, signal),

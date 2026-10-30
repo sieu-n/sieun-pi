@@ -5,11 +5,11 @@
  * pi-host's `chat_board` tool reads it there. Duties and the check-in clock live in the chat server's data dir under `agents/<agent id>/`,
  * and a due duty, check-in or wake reaches the work thread as an input from "board". Wakes are server/wakes.ts.
  */
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import type { BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyRow, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
-import type { Duty, DutyRunRecord, DutySchedule, DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
+import { morningTime, upsertDuty, type Duty, type DutyRunRecord, type DutySchedule, type DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
 import { DEFAULT_MODEL } from "./config.ts";
 import { asAfter, measure, measureAfter, runStamp } from "./duty-run.ts";
 import { dutyCard, judgedRun, missStreak } from "../web/src/lib/api/shared/duty-card.ts";
@@ -359,19 +359,63 @@ export class Boards {
     });
   }
 
-  async dutyAction(id: string, action: DutyAction): Promise<DutyRow[]> {
+  /** Whether an id names an agent, a thread or a root chat this server knows, so a duty is never filed under a typo. */
+  has(id: string): boolean {
+    const chat = this.chatId(id);
+    return this.agents.record(chat) !== undefined || this.threads.thread(chat) !== undefined;
+  }
+
+  async dutyAction(id: string, action: DutyAction): Promise<{ duties: DutyRow[]; result?: string }> {
+    if (action.action === "set") return this.setDuty(id, action.duty);
+    if (action.action === "remove") return this.removeDuty(id, action.duty);
     const chat = this.chatId(id);
     const file = this.file(chat);
     const duty = file.duties.find(d => d.id === action.duty);
     if (!duty) throw new Error(`No duty ${action.duty} on this chat.`);
     if (action.action === "pause") duty.status = "paused";
     else if (action.action === "resume") duty.status = "active";
-    else if (action.action === "schedule") duty.schedule = action.schedule as DutySchedule;
+    else if (action.action === "schedule") duty.schedule = action.schedule;
     duty.updatedAt = Date.now();
     this.save(chat, file);
     if (action.action === "run") void this.runDuty(chat, duty, "owner");
     else this.events.duties(chat, this.duties(chat));
-    return this.duties(chat);
+    return { duties: this.duties(chat) };
+  }
+
+  /**
+   * Adds a duty, or updates the definition of the board's duty with the same name and keeps its id, runs, run state and schedule
+   * (`upsertDuty`, as Prime's scripts/duties/add.ts does). With no `schedule`, a new duty runs daily at a free minute of the high morning band
+   * (`morningTime`), the band of a chat, among the daily times of every board here. `result` is "added d3", "updated d1" or "unchanged d1".
+   */
+  private setDuty(id: string, definition: unknown, now = Date.now()): { duties: DutyRow[]; result: string } {
+    const cwd = (definition as { precheck?: { cwd?: unknown } } | null)?.precheck?.cwd;
+    if (typeof cwd === "string" && !isAbsolute(cwd)) throw new Error(`precheck.cwd ${cwd} is relative; add.ts resolves it against the duty file's folder.`);
+    const chat = this.chatId(id);
+    const taken = new Set(this.chats().flatMap(other => this.file(other).duties.flatMap(duty => duty.schedule.kind === "daily" ? [duty.schedule.at] : [])));
+    const file = this.file(chat);
+    const result = upsertDuty(file.duties, definition, now, morningTime(taken, "high", Math.random));
+    if (!result.startsWith("unchanged")) {
+      this.save(chat, file);
+      this.events.duties(chat, this.duties(chat));
+    }
+    return { duties: this.duties(chat), result };
+  }
+
+  /** Deletes a duty for good, as Prime's scripts/duties/remove.ts does: its definition, its runs and its precheck state and outputs. */
+  private removeDuty(id: string, dutyId: string): { duties: DutyRow[]; result: string } {
+    const chat = this.chatId(id);
+    const file = this.file(chat);
+    const at = file.duties.findIndex(duty => duty.id === dutyId);
+    if (at < 0) return { duties: this.duties(chat), result: `no duty ${dutyId}` };
+    file.duties.splice(at, 1);
+    delete file.runs[dutyId];
+    this.save(chat, file);
+    const stateDir = join(this.dir(chat), "duties");
+    let names: string[] = [];
+    try { names = readdirSync(stateDir); } catch { names = []; }
+    for (const name of names) if (name.startsWith(`${dutyId}.`) || name.startsWith(`${dutyId}-`)) rmSync(join(stateDir, name), { force: true });
+    this.events.duties(chat, this.duties(chat));
+    return { duties: this.duties(chat), result: `removed ${dutyId}` };
   }
 
   private readonly dutyRuns = new Map<string, Promise<void>>();

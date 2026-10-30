@@ -7,6 +7,7 @@ import { ChatLabels } from "../../src/chat-labels.ts";
 import { DutyStore } from "../../src/chat-duty-store.ts";
 import { chatPoolPriority } from "../../src/chat-pool-priority.ts";
 import { morningTime, upsertDuty } from "../../src/shared/chat-duties.ts";
+import { appsChatDuties, dutiesCall } from "./apps-chat.ts";
 
 /**
  * `node --import tsx scripts/duties/add.ts <chatId> <duty.json> [--data-dir <dir>]`: adds the duty to the chat, or updates the definition of the
@@ -20,6 +21,8 @@ import { morningTime, upsertDuty } from "../../src/shared/chat-duties.ts";
  * Leave out `schedule` and a new duty runs daily at a random free morning minute in its chat's priority band (`morningTime`; the chat's
  * sidebar label in labels.json, none is high), and an update keeps the duty's schedule. Keep a duty daily unless the owner asks for another
  * cadence (c66). It prints the schedule and the chat's priority.
+ * A chat the new chat holds (a :5184 agent or thread, `apps-chat.ts`) gets the duty through its `POST /api/agents/:id/duties {action: "set"}`,
+ * which upserts it the same way, with the high band of a chat. With `--data-dir`, add.ts writes that Prime store and skips the new chat.
  */
 const FLAGS = ["--data-dir"] as const;
 const args = process.argv.slice(2);
@@ -44,12 +47,23 @@ if (missing.length) {
   process.stderr.write(`refused ${file}: precheck ${missing.join(", ")} not found from ${precheck!.cwd}\n`);
   process.exit(1);
 }
+const name = (definition as { name?: string }).name;
+const appsChat = flags.has("--data-dir") ? null : await appsChatDuties(chatId);
+if (appsChat) {
+  const { duties, result } = await dutiesCall(appsChat, { action: "set", duty: definition }).catch((error: unknown) => {
+    process.stderr.write(`refused ${file}: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  });
+  const schedule = duties.find(row => row.duty.name === name?.trim())?.schedule;
+  const when = !schedule ? "" : schedule.kind === "daily" ? ` daily ${schedule.at}` : ` every ${schedule.minutes} min`;
+  process.stdout.write(`${result} "${name}" in ${chatId}${when}, on the new chat ${appsChat}\n`);
+  process.exit(0);
+}
 const store = new DutyStore(dataDir);
 const priority = chatPoolPriority((await new ChatLabels(join(dataDir, "labels.json")).snapshot()).threads[chatId]?.priority ?? 0);
 const taken = new Set<string>();
 for (const chat of await store.chats()) for (const duty of await store.list(chat)) if (duty.schedule.kind === "daily") taken.add(duty.schedule.at);
 const now = Date.now();
-const name = (definition as { name?: string }).name;
 const { result, schedule } = await store.update(chatId, duties => {
   const result = upsertDuty(duties, definition, now, morningTime(taken, priority, Math.random));
   return { result, schedule: duties.find(duty => duty.name === name?.trim())!.schedule };

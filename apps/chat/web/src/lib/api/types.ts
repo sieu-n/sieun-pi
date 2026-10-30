@@ -3,7 +3,7 @@
  * apps/chat/API.md describes each endpoint and event in words.
  */
 import type { BoardOp, ChatBoard, CheckInPause, CheckInView, ChatAgent, OwnerTodo, PlanStatus, AccountsView, MachineView } from "./shared/types.ts";
-import type { DutyView } from "./shared/chat-duties.ts";
+import type { DutySchedule, DutyView } from "./shared/chat-duties.ts";
 import type { DutyCardModel } from "./shared/duty-card.ts";
 
 export type { BoardOp, ChatBoard, CheckInPause, CheckInView, ChatAgent, OwnerTodo, PlanItem, PlanStatus, AccountsView, MachineView } from "./shared/types.ts";
@@ -334,7 +334,14 @@ export interface BoardRow {
   chatId: string; chatName: string; rev: number; progress: { done: number; total: number }; openAsks: number; needsGo: number;
   checkIn?: { nextAt: Ms | null; paused: boolean }; duties: { id: string; name: string; nextAt: Ms | null; lastVerdict: string | null }[];
 }
-export interface DutyAction { duty: string; action: "run" | "pause" | "resume" | "schedule"; schedule?: unknown }
+/**
+ * A change to a board's duties. `set` takes a whole duty definition, Prime's duty JSON, and adds it or updates the duty with the same name;
+ * `remove` deletes a duty with its runs and precheck state; the rest name a duty by id.
+ */
+export type DutyAction =
+  | { action: "run" | "pause" | "resume" | "remove"; duty: string }
+  | { action: "schedule"; duty: string; schedule: DutySchedule }
+  | { action: "set"; duty: unknown };
 export interface CheckInPatch { everyMs?: number; pause?: CheckInPause | null }
 
 export interface UsageRow {
