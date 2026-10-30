@@ -1,15 +1,12 @@
-import { realpathSync } from "node:fs";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { type FlaggedSlice, type PrecheckOutput, PRECHECK_TARGET_MS } from "../../src/shared/chat-duties.ts";
-import { vercelToken } from "./vercel-login.ts";
 
 /**
- * The slack green guy's Slack green deploys duty's precheck (`node --import tsx scripts/duties/slack-green-deploys.ts`). No model call.
- * Its headline, commits_not_live, counts slack-green main commits pushed over DEPLOY_MINUTES ago that are not live on the Railway worker
+ * The deploy reader of slack green guy's Slack Green services work duty (slack-green-services.ts), which folded in the Slack green deploys
+ * duty (d4) on 10-30. No model call. commits_not_live counts slack-green main commits pushed over DEPLOY_MINUTES ago that are not live on the Railway worker
  * (when the commit changes a railway.toml watch path) or on Vercel production. A commit is live on a side when the commit that side runs
  * contains it, so the count reads the real state whoever deployed: Railway's GitHub trigger, the CI Backend job's deploy_worker.py
  * (slack-green #253), or this precheck. GitHub's compare API lists the main commits the live commit lacks, which also covers a live commit
@@ -310,29 +307,16 @@ export async function measureDeploys(deps: DeployDeps, previous: DeployState): P
 
 /** Each command stops 10 s before the runner's PRECHECK_TARGET_MS, so a hung call still ends as a source error with every metric written. */
 const COMMAND_TIMEOUT_MS = PRECHECK_TARGET_MS - 10_000;
-const exec: Exec = (file, args, options) => new Promise((resolve, reject) => {
+export const exec: Exec = (file, args, options) => new Promise((resolve, reject) => {
   execFile(file, [...args], { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, cwd: options?.cwd },
     (error, stdout, stderr) => error ? reject(new Error(`${file} ${args[0] ?? ""}: ${error.message} ${stderr}`.trim())) : resolve(stdout));
 });
 
 /** RAILWAY_API_TOKEN when set, else the railway CLI's login, which the `railway deployment list` call just refreshed. */
-const railwayToken = async (): Promise<string> => {
+export const railwayToken = async (): Promise<string> => {
   if (process.env.RAILWAY_API_TOKEN) return process.env.RAILWAY_API_TOKEN;
   const user = (JSON.parse(await readFile(join(homedir(), ".railway/config.json"), "utf8")) as { user?: { accessToken?: string; token?: string } }).user;
   const token = user?.accessToken ?? user?.token;
   if (!token) throw new Error("no Railway token: RAILWAY_API_TOKEN is unset and ~/.railway/config.json has no login");
   return token;
 };
-
-async function main(): Promise<void> {
-  const output = process.env.OUTPUT_FILE;
-  if (!output) { process.stderr.write("slack-green-deploys: OUTPUT_FILE is not set\n"); process.exit(2); }
-  const stateFile = process.env.STATE_FILE;
-  const saved = stateFile ? await readFile(stateFile, "utf8").then(text => JSON.parse(text) as Partial<DeployState>, () => undefined) : undefined;
-  const result = await measureDeploys({ exec, fetch, now: Date.now, railwayToken, vercelToken },
-    { redeployed: saved?.redeployed && typeof saved.redeployed === "object" ? saved.redeployed : {} });
-  await writeFile(output, JSON.stringify(result.output, null, 2) + "\n");
-  if (stateFile) await writeFile(stateFile, JSON.stringify(result.state) + "\n");
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main();

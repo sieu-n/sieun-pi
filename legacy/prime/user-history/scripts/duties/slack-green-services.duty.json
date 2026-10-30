@@ -1,0 +1,47 @@
+{
+  "name": "Slack Green services work",
+  "ownerWords": "야 쳐 부서졌잖아 빨리 고쳐\n\nwhat was issue? and add it to 3-hourly duty, all services working. vercel, railway working and 실제 내 슬랙 계정 초록색인지",
+  "goal": "Every Slack Green service works the way the owner would check it by hand. The slack.green pages render in a real browser (home, signup, a blog post, pricing, and the dashboard signed in as an sg-qa- user), the Railway worker runs main and keeps workspaces active, the add-on and CLI routes answer, and his own Slack (Papers with Code) shows green. On 10-30 prod served HTTP 200 for hours while every page threw 'Missing Supabase environment variables' in the browser, because the us-metal02 prebuilt build had no NEXT_PUBLIC_SUPABASE_* values, and no duty saw it until he sent a screenshot. This duty also holds the old Slack green deploys duty (d4): worker commits not live after 20 min and failed main CI runs.",
+  "metrics": [
+    {
+      "key": "pages_failing",
+      "label": "slack.green pages that fail in a real browser, of 5 (non-200, uncaught error, or error screen)",
+      "op": "<=",
+      "target": 0,
+      "headline": true
+    },
+    {
+      "key": "deploy_problems",
+      "label": "Railway worker crashed or silent 10 min, main commits not on the worker after 20 min, failed main CI runs in 24 h",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "owner_slack_green",
+      "label": "The owner's own Slack (ppwc) reads active",
+      "op": ">=",
+      "target": 1
+    },
+    {
+      "key": "api_routes_failing",
+      "label": "Add-on and CLI API routes that fail, plus /api/ routes that answered 5xx during the page walk",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "schedule": {
+    "kind": "every",
+    "minutes": 180
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/slack-green-services.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 180000
+  },
+  "onMiss": "If a source_error is flagged, fix the precheck or its login first (Supabase key in slack-green scripts/seo-agent/.env, the railway or gh login, the box runner at ~/.prime/agent/skills/aside-browser/box), because that metric is unmeasured until then. pages_failing: open each page_failing URL in the us-metal02 box Chrome (aside-browser) and read the error. A prod outage comes first: when the newest slack.green prod deploy broke it, roll Vercel prod back to the last deployment that renders (`vercel rollback <dpl> --scope sieuns-projects`, then rerun this precheck to see it render), tell the chat in one line, and start one fix job on the build cause, or message the VP of CI's 'vercel builds to metal' job when the cause is the us-metal02 build. Rollback is the only prod change this duty makes; never use the deploy hook, a Git redeploy or a non-prebuilt `vercel deploy` (c200). Point SLACK_GREEN_BASE at a deployment URL to walk it before it goes live. deploy_problems: a worker_problem slice means the worker crashed or stopped logging presence checks; read `railway logs` and redeploy main's head once, then start one fix job on the cause. For railway_not_live, redeploy main's head unless the redeploy slice shows this precheck did it. A main_checks_runner slice is ops guy (+observability)'s M1 Air runner: message that thread with the run link; a main_checks_repo slice gets one fix job built as a PR. vercel_behind_main is information only, because each prod deploy waits for the release owner (c154). owner_slack_green 0: read the owner_not_green slice and the worker logs for [ppwc]; a token rejection means his ppwc session needs a reconnect, which goes on his For you list ready to click, and a worker fault gets one fix job. api_routes_failing: read the route's answer and start one fix job built as a PR. If a live job already owns a cause (agent_observe.list_agents), message it instead of starting a second one. Never merge, email users or change the owner's Slack. All on target: end the turn with no message."
+}
