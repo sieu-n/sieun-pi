@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { dutyShapeProblem, type DutyMetric } from "../src/shared/chat-duties.ts";
-import { boxLocations, inScope, removedProviderRefs, TEST_SENDS_SQL, TIP, UNMEASURED, VENT_SHARE, ventMetrics, webhookVerdicts, type ShareResult, type VentReads } from "../scripts/duties/vent-gateway.ts";
+import { boxLocations, inScope, providerKey, removedProviderRefs, TEST_SENDS_SQL, TIP, UNMEASURED, VENT_SHARE, ventMetrics, webhookVerdicts, type ShareResult, type VentReads } from "../scripts/duties/vent-gateway.ts";
 
 const site = (row: number, status: string, extra: object = {}) => ({ row, app: "convex", provider: "Stripe", runs_in: "Convex staging, prod", status, ...extra });
 const TABLES = 'INTEGRATIONS: dict[str, Integration] = {\n    "zernio": Integration(ZERNIO, "ZERNIO_API_KEY"),\n    "cliproxy-openai": Integration(OPENAI, "CLIPROXY_API_KEY"),\n}\n';
@@ -117,6 +117,26 @@ test("the infra tier copy virev-services loads counts its Vercel and Railway tok
     "unit virev-services.service still holds RAILWAY_API_TOKEN, VERCEL_TOKEN",
   ]);
   assert.equal(output.metrics.key_locations_with_leaks, 2);
+});
+
+// On 10-30 e1e4a1114b copied the prod Clerk, Resend, Stripe, Zernio, OpenRouter, Railway and Vercel keys under *_USAGE_* names into the
+// infra tier and /srv/obs/secrets/vendor-usage.env on us-metal01, and d1 read provider_keys_outside_vent 0 on 10-31.
+test("a provider key copied under another name counts in tier files and box env files", () => {
+  const locations: Record<string, string[]> = {};
+  const usage = ["CLERK_USAGE_KEY", "OPENROUTER_USAGE_KEY", "RESEND_USAGE_KEY", "STRIPE_USAGE_KEY", "ZERNIO_USAGE_KEY", "RAILWAY_USAGE_TOKEN", "VERCEL_USAGE_TOKEN", "CONVEX_USAGE_TOKEN", "VENDOR_USAGE_B2_APP_KEY", "VENDOR_USAGE_VENT_KEY"];
+  boxLocations({ files: { "/srv/obs/secrets/vendor-usage.env": usage }, docker: {}, units: { "virev-vendor-usage.service": usage } }, locations);
+  locations["tier apps/infra/.env"] = [...usage, "STRIPE_READ_VENT_KEY"];
+  locations["tier apps/ci-e2e/.env.staging"] = ["CLERK_CI_SECRET_KEY"];
+  locations["convex staging tremendous-eel-825"] = ["GOOGLE_PICKER_API_KEY", "CLERK_JWT_KEY", "PUBLIC_CLERK_PUBLISHABLE_KEY", "GMAIL_OAUTH_STATE_SECRET"];
+  const output = ventMetrics(reads({ keys: { locations, unreadable: {} } }), 0);
+  assert.deepEqual(output.flagged!.filter(flag => flag.kind === "key_outside_vent").map(flag => flag.excerpt), [
+    "box /srv/obs/secrets/vendor-usage.env still holds CLERK_USAGE_KEY, OPENROUTER_USAGE_KEY, RESEND_USAGE_KEY, STRIPE_USAGE_KEY, ZERNIO_USAGE_KEY, RAILWAY_USAGE_TOKEN, VERCEL_USAGE_TOKEN",
+    "unit virev-vendor-usage.service still holds CLERK_USAGE_KEY, OPENROUTER_USAGE_KEY, RESEND_USAGE_KEY, STRIPE_USAGE_KEY, ZERNIO_USAGE_KEY, RAILWAY_USAGE_TOKEN, VERCEL_USAGE_TOKEN",
+    "tier apps/infra/.env still holds CLERK_USAGE_KEY, OPENROUTER_USAGE_KEY, RESEND_USAGE_KEY, STRIPE_USAGE_KEY, ZERNIO_USAGE_KEY",
+  ]);
+  assert.equal(output.metrics.provider_keys_outside_vent, 19);
+  assert.equal(providerKey("STRIPE_USAGE_KEY"), true);
+  assert.equal(providerKey("STRIPE_READ_VENT_KEY"), false);
 });
 
 // On 10-24 at 04:28Z the share script exited non-zero on a ClickHouse TIMEOUT_EXCEEDED, the precheck wrote through_vent_pct -1 and the

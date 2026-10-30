@@ -16,8 +16,9 @@ import { clickhouse } from "./vent-integrations.ts";
  *   runs, goes through Vent with no direct call (owner rule c67: the code path, never demand). Row 63
  *   (GeoNode proxy egress) is the one allowed exception and leaves the count. The 4 Convex inbound webhooks count when main's
  *   convex/http.ts no longer routes the provider's own path and convex/webhooks/vent.ts takes the source.
- * - provider_keys_outside_vent: (location, key name) pairs where a provider key still sits in a deployment other than Vent, read with the
- *   cutover's env-name listers (sessions/2026/10/18/1610-vent-cutover-all-callers/data) plus Convex env lists and the tier files at origin/main.
+ * - provider_keys_outside_vent: (location, key name) pairs where a provider key, or a copy of one under another name (providerKey), still
+ *   sits in a deployment other than Vent, read with the cutover's env-name listers (sessions/2026/10/18/1610-vent-cutover-all-callers/data)
+ *   plus Convex env lists, the tier files at origin/main and the dev/sieun tip, and us-metal01's env files, containers and units.
  * - no_prod_traffic_sites, shown with no target: of the through sites that run in prod (not CODE_ONLY_ROWS), how many prod Vent logged no
  *   successful vent.call for in the share script's last 7 days. It proves use, so it swings with demand (c67); the duty JSON lists no metric
  *   for it, so it never misses (10-22: it read 3 for Notion, Telegram and the Slack incoming webhook, which no customer had connected yet).
@@ -78,12 +79,25 @@ export const PROVIDER_KEYS = new Set([
   "RESEND_WEBHOOK_SECRET", "ZERNIO_WEBHOOK_SECRET",
   // Found by the p61 env key audit (10-22): the CLIProxy management key.
   "CLIPROXY_MANAGEMENT_KEY",
+  // Vent's openrouter integration secret (apps/vent/src/vent/tables.py).
+  "OPENROUTER_API_KEY",
 ]);
+
+/**
+ * A provider key copied under another name: a KEY, TOKEN or SECRET name whose first word is the vendor of a PROVIDER_KEYS name, such as
+ * STRIPE_USAGE_KEY. On 10-30 e1e4a1114b put copies of the prod Clerk, Resend, Stripe, Zernio and OpenRouter keys under *_USAGE_KEY names
+ * in the infra tier and /srv/obs/secrets/vendor-usage.env on us-metal01, and d1 read provider_keys_outside_vent 0. Vent caller keys,
+ * browser-public keys, the Clerk JWT public key and our own OAuth state secrets are not provider keys.
+ */
+const PROVIDER_VENDORS = new Set([...PROVIDER_KEYS].map(name => name.split("_")[0]!));
+const NOT_PROVIDER = /_VENT_KEY$|_PUBLISHABLE_KEY$|^CLERK_JWT_KEY$|_OAUTH_STATE_SECRET$|^GOOGLE_PICKER_API_KEY$/;
+export const providerKey = (name: string): boolean =>
+  PROVIDER_KEYS.has(name) || (PROVIDER_VENDORS.has(name.split("_")[0]!) && /_(KEY|TOKEN|SECRET)$/.test(name) && !NOT_PROVIDER.test(name));
 
 /** Vercel and Railway tokens count on the box, where the host services exporter (virev-services) calls those APIs at runtime: until 10-24
  *  from /srv/obs/secrets/services.env, since 1b0fa0fd17 from the prod infra tier copy /usr/local/lib/virev-services/infra.env, which the key
  *  scan's BOX_READER reads. In tier files and GitHub, Vercel or Railway stores they are deploy credentials. */
-export const BOX_PLATFORM = /^(VERCEL|RAILWAY)_(API_)?TOKEN$/;
+export const BOX_PLATFORM = /^(VERCEL|RAILWAY)_([A-Z0-9]+_)*TOKEN$/;
 const onBox = (location: string) => /^(box|container|unit) /.test(location);
 
 /**
@@ -92,8 +106,11 @@ const onBox = (location: string) => /^(box|container|unit) /.test(location);
  */
 /** The repo secret CLERK_SECRET_KEY reaches only the CI job-local Vent: auto-sns-agent scripts/ci/tasks/search-e2e.sh unsets it
  *  and passes it to `vent-mock up` alone (26a36a614f; search / e2e green in verify run 39284928208), as vent-key-scan.mjs exempts it
- *  (2d058da12). Only that name, only as a repo secret. */
-export const CI_VENT_INPUT = (location: string, name: string) => location === "github secrets repo" && name === "CLERK_SECRET_KEY";
+ *  (2d058da12). Only that name, only as a repo secret. CLERK_CI_SECRET_KEY, the key of the CI-only Clerk instance, takes the same path
+ *  from apps/ci-e2e/.env.staging, which vent-key-scan.mjs exempts too. */
+export const CI_VENT_INPUT = (location: string, name: string) =>
+  (location === "github secrets repo" && name === "CLERK_SECRET_KEY")
+  || (name === "CLERK_CI_SECRET_KEY" && (location === "github secrets repo" || location === "tier apps/ci-e2e/.env.staging"));
 export const ALARM_FALLBACK = /^(unit (opensearch|pgbackrest|redis|clickhouse)[a-z0-9-]*@[a-z]+\.service|tier apps\/infra\/\.env|unit virev-services\.service|box \/usr\/local\/lib\/virev-services\/infra\.env|tier apps\/infra\/metal\/watch\/\.env\.watch|box \/srv\/obs\/secrets\/obs\.env|box \/srv\/[^/]+\/current\/apps\/infra\/metal\/watch\/\.env\.watch|container virev-obs-grafana|railway auto-sns-crawler\/[^/]+\/metal-watch)$/;
 
 /** Vent's own homes: its Railway service, its tier files, its secrets on the box and its containers. */
@@ -330,7 +347,7 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
   const leaks: string[] = [];
   for (const [location, names] of Object.entries(reads.keys.locations)) {
     if (!inScope(location)) continue;
-    const here = names.filter(name => (PROVIDER_KEYS.has(name) || (BOX_PLATFORM.test(name) && onBox(location))) && !(name === "SLACK_BOT_TOKEN_DEV" && ALARM_FALLBACK.test(location)) && !CI_VENT_INPUT(location, name));
+    const here = names.filter(name => (providerKey(name) || (BOX_PLATFORM.test(name) && onBox(location))) && !(name === "SLACK_BOT_TOKEN_DEV" && ALARM_FALLBACK.test(location)) && !CI_VENT_INPUT(location, name));
     for (const name of here) leaks.push(`${location} ${name}`);
     if (here.length) flagged.push({ at, kind: "key_outside_vent", item: location, excerpt: `${location} still holds ${here.join(", ")}`.slice(0, 300) });
   }
@@ -419,7 +436,7 @@ export function boxLocations(out: BoxReaderOut, locations: Record<string, string
   for (const [unit, names] of Object.entries(out.units ?? {})) locations[`unit ${unit}`] = names;
 }
 
-/** Every location's env names: the cutover listers, both Convex deployments, the tier files at main and us-metal01 through the key scan's BOX_READER. Values never leave this function. */
+/** Every location's env names: the cutover listers, both Convex deployments, the tier files at main and the tip and us-metal01 through the key scan's BOX_READER. Values never leave this function. */
 async function keyListing(): Promise<KeyListing> {
   const locations: Record<string, string[]> = {};
   const unreadable: Record<string, string> = {};
@@ -435,11 +452,15 @@ async function keyListing(): Promise<KeyListing> {
       locations[`convex ${tier} ${name}`] = [...stdout.matchAll(/^([A-Za-z_][A-Za-z0-9_]*)=/gm)].map(match => match[1]!);
     }, (error: unknown) => { unreadable[`convex ${tier} ${name}`] = errorText(error); }));
   }
-  tasks.push((async () => {
-    const files = (await run("git", ["ls-tree", "-r", "--name-only", REF])).split("\n")
+  // A tier file's names at main, which prod runs, and at the tip, where a new copy lands first (the *_USAGE_KEY copies of 10-30).
+  for (const ref of [REF, TIP]) tasks.push((async () => {
+    const files = (await run("git", ["ls-tree", "-r", "--name-only", ref])).split("\n")
       .filter(path => /(^|\/)\.env(\.[\w-]+)?$/.test(path) && !/\.env\.(example|local|keys)$/.test(path) && !path.startsWith("apps/llm-wiki/content/"));
-    for (const path of files) locations[`tier ${path}`] = envNames(await run("git", ["show", `${REF}:${path}`]));
-  })().catch((error: unknown) => { unreadable[`tier files at ${REF}`] = errorText(error); }));
+    for (const path of files) {
+      const names = envNames(await run("git", ["show", `${ref}:${path}`]));
+      locations[`tier ${path}`] = [...new Set([...(locations[`tier ${path}`] ?? []), ...names])];
+    }
+  })().catch((error: unknown) => { unreadable[`tier files at ${ref}`] = errorText(error); }));
   tasks.push(run("node", ["--input-type=module", "-e", `import(${JSON.stringify(join(REPO, "scripts/ci/vent-key-scan.mjs"))}).then(m => process.stdout.write(m.BOX_READER))`])
     .then(reader => run("ssh", ["-o", "BatchMode=yes", BOX, "python3", "-"], { input: reader }))
     .then(stdout => { boxLocations(JSON.parse(stdout.trim().split("\n").pop()!) as BoxReaderOut, locations); },
