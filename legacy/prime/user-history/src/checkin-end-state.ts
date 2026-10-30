@@ -319,7 +319,21 @@ const NEXT: Record<EndState, string> = {
   stalled_call: "stop the process it names, then steer the job with the call you stopped and the step's next action, or start a new job if it does not write again",
   no_owner: "start a job on it, do it yourself, or ask the owner in For you",
 };
+/**
+ * A wait on a prod promote the release owner walks with the owner (c154): its first clause names a prod promote, release or deploy, and the release
+ * owner or a walk with the owner. No job of this chat drives that promote.
+ */
+const WALKED_PROMOTE = /\bprod(?:uction)?\s+(?:promotes?|releases?|deploys?)\b/i;
+const WALKED_BY = /\brelease\s+owner\b|\bwalk(?:s|ed)?\s+with\s+the\s+owner\b/i;
+export const walkedPromote = (waitFor: string | undefined): boolean => { const head = firstClause(waitFor ?? ""); return WALKED_PROMOTE.test(head) && WALKED_BY.test(head); };
+/**
+ * What a stuck step on a walked prod promote needs. The step that carries the promote on the release owner's chat (`handedStep`) counts as its
+ * live owner. On 10-30 sep launch!!'s p125 and p130 waited for "the release owner's next prod promote, walked with the owner", and the release
+ * hint told the chat to give each a live owner that drives the land, a promote no job of the chat may ship (c154).
+ */
+const WALKED_NEXT = "start its waitFor with the release owner's step that carries the promote (\"<chat session id> p123\" or \"<chat name>'s p123\"), " +
+  "which counts as its live owner. This chat does not drive a prod promote (c154)";
 /** The precheck line of one stuck step: id, title, why it is stuck, how long it has not changed, and what it needs. */
 export const stuckLine = ({ view, state, reason }: EndStateView, now: number): string =>
   `${view.item.id} ${quote(view.item.text)} is stuck (${state}): ${reason}${view.item.waitFor ? `; waits for ${quote(clip(view.item.waitFor, 80))}` : ""}, ` +
-  `last change ${ago(now - view.changedAt)} ago: ${NEXT[state]}`;
+  `last change ${ago(now - view.changedAt)} ago: ${state === "release" && walkedPromote(view.item.waitFor) ? WALKED_NEXT : NEXT[state]}`;

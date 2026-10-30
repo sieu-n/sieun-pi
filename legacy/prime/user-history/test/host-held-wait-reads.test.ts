@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkInPrecheck, checkInPrecheckText, convergenceMisses, type CheckInMemory } from "../src/chat-checkin.ts";
+import { stuckLine } from "../src/checkin-end-state.ts";
 import { flagStreaks } from "../src/checkin-repeats.ts";
 import type { JobFact } from "../src/checkin-steps.ts";
 import { hostHolds } from "../src/shared/host-hold.ts";
@@ -65,4 +66,27 @@ test("p125, whose wait is the release owner's prod promote, reads by that wait a
   assert.equal(entry.state, "release");
   assert.equal(entry.hold, undefined);
   assert.match(entry.reason, /a land, promote or release.*runs on mac, offline on Tailscale/);
+});
+
+// The follow-up the same morning: p125 then read stuck (release) with the hint "give it a live owner that drives the land", a prod promote the
+// release owner walks with the owner (c154), which no job of sep launch!! may ship. The hint now names the release owner's step that carries the
+// promote, VP of CI's p476, and a wait that starts with it reads moving.
+const CI = "01a1180e-6567-747f-bf44-452520ebdd1b";
+const p476: PlanItem = { id: "p476", text: "The next production release goes out with the owner's go", status: "todo", job: "01a10810-34b5-710f-88fe-3d369f89a8c9", children: [] };
+
+test("p125's stuck line points at the release owner's promote step and not at driving the land", () => {
+  const { precheck } = fourRuns();
+  const line = stuckLine(precheck.end.find(found => found.view.item.id === "p125")!, start + 90 * MIN);
+  assert.match(line, /start its waitFor with the release owner's step that carries the promote/);
+  assert.doesNotMatch(line, /drives the land/);
+});
+
+test("p125 reads moving once its waitFor starts with VP of CI's p476", () => {
+  const handed = { ...p125, waitFor: `${CI} p476 (the release owner's next prod promote, walked with the owner); job prod data move runs the 12 steps after` };
+  const plan = [{ ...p2, children: [p124, handed] }];
+  const linked = new Map([[CI, { v: 2, rev: 1, updatedAt: "", todos: [], plan: [p476] } as unknown as ChatBoard]]);
+  const precheck = checkInPrecheck(undefined, facts, { ...board, plan } as ChatBoard, start, { self: [SEP], rows, hosts: { chatHost: "mac", held }, linked });
+  const entry = precheck.end.find(found => found.view.item.id === "p125")!;
+  assert.equal(entry.state, "moving");
+  assert.match(entry.reason, /its wait is on p476/);
 });
