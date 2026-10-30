@@ -20,8 +20,8 @@ import { readFiringRules } from "../../src/alert-bridge.ts";
  * and reads this box's /proc/vmstat when Prometheus has no series for it; it keeps the hold of p456, after us-metal02 had 45 kills since its
  * 10-14 boot, 40 of them from 13:14Z to 16:52Z on 10-19. It leaves out heavy_scope_kills, the kills on this box inside a scope of the `heavy`
  * wrapper (deploy/linux/memory/heavy), which hit the MemoryMax that job chose, not box pressure: two 8G scopes died at 17:26Z and 17:27Z on 10-19
- * with memory pressure full at 0.00. The user journal names the unit of each kill but not its count, so each heavy scope's line counts as one kill
- * and any other kill counts as outside. The duty file's explainedKills list names, per box, the fix step that explains its kills up to a time, and
+ * with memory pressure full at 0.00. The kernel log's oom-kill lines name the cgroup of each killed process, one line per kill, so a kill
+ * whose cgroup is a heavy scope counts as heavy and any other kill counts as outside. The duty file's explainedKills list names, per box, the fix step that explains its kills up to a time, and
  * oom_kills_24h counts only the kills after the newest such time inside the 24 h window, so a fixed cause stops holding the number over 0 for a
  * day (p468: p456's 41 kills up to 16:52Z on 10-19 kept it at 41 until 16:52Z on 10-20). oom_kills_explained counts the kills left out.
  * The owner, 10-18: standing risks live on a risk page that a duty checks, not on the plan.
@@ -112,31 +112,32 @@ export function parseExplained(value: unknown): Map<string, Explained> {
   });
   return newest;
 }
-export interface OomLine { at: number; unit: string }
+export interface OomLine { at: number; units: string[] }
 
-const OOM_LINE = /^(\d+)(?:\.\d+)? \S+ systemd\[\d+\]: (\S+): The kernel OOM killer killed some processes in this unit\.$/;
+const OOM_LINE = /^(\d+)(?:\.\d+)? \S+ kernel: oom-kill:\S*?task_memcg=([^,]*),/;
 const HEAVY_START = /^Started (run-\S+\.scope) - \[systemd-run\] \S*choom -n 500 -- /;
 
 /**
- * The kills of the journal's OOM lines inside heavy scopes, the other leaf units it names, and the time of the newest of those other lines;
- * a slice line only echoes a kill below it.
+ * The kernel's kills inside heavy scopes, the leaf cgroups of the other kills, and the time of the newest other kill. The kernel writes one
+ * oom-kill line per killed process, while systemd's unit line can stand for several: on 10-30 four heavy vitest scopes had 12 kills and 6 unit
+ * lines, so the 6 kills over the unit lines read as outside heavy scopes.
  */
-export function splitOomLines(journal: string, starts: string): { heavy: number; units: string[]; outsideAt?: number } {
+export function splitOomLines(kernel: string, starts: string): { heavy: number; units: string[]; outsideAt?: number } {
   const heavyScopes = new Set(starts.split("\n").flatMap(line => HEAVY_START.exec(line)?.[1] ?? []));
-  const lines = journal.split("\n").flatMap((line): OomLine[] => {
+  const lines = kernel.split("\n").flatMap((line): OomLine[] => {
     const match = OOM_LINE.exec(line);
-    return match ? [{ at: Number(match[1]) * 1000, unit: match[2]! }] : [];
+    return match ? [{ at: Number(match[1]) * 1000, units: match[2]!.split("/").filter(Boolean) }] : [];
   });
-  const outside = lines.filter(line => !line.unit.endsWith(".slice") && !heavyScopes.has(line.unit));
-  const units = new Set(outside.map(line => line.unit));
-  return { heavy: lines.filter(line => heavyScopes.has(line.unit)).length, units: [...units], ...outside.length ? { outsideAt: Math.max(...outside.map(line => line.at)) } : {} };
+  const outside = lines.filter(line => !line.units.some(unit => heavyScopes.has(unit)));
+  const units = new Set(outside.map(line => line.units.at(-1) ?? "/"));
+  return { heavy: lines.length - outside.length, units: [...units], ...outside.length ? { outsideAt: Math.max(...outside.map(line => line.at)) } : {} };
 }
 
 const stamp = (ms: number): string => `${new Date(ms).toISOString().slice(11, 16)}Z on ${new Date(ms).toISOString().slice(5, 10)}`;
 
 /**
  * The OOM kills of both boxes outside heavy scopes and after the time a fix step explains summed, the heavy scope and explained kills apart, and
- * one line for each box with a kill outside or an explained kill, naming its count, its last kill, the units the journal names and the step.
+ * one line for each box with a kill outside or an explained kill, naming its count, its last kill, the cgroups the kernel log names and the step.
  * `lastEventAt` is the newest counted kill over the boxes with one: the newest outside journal line on this box, else the box's newest kill in
  * Prometheus, else this run when only /proc/vmstat counts it. A count of 0 gives none. AI harness d9 asked for it on 10-22, because without it
  * a count of old kills read the same as a fresh one. `windowMs` is the day the count covers, which d9 needs with `lastEventAt` to read a red
@@ -148,7 +149,7 @@ export function oomKills24h(boxes: readonly OomKills[], at: number): { kills: nu
   const counted = boxes.map(entry => ({ ...entry, outside: Math.max(0, entry.kills - (entry.explained ?? 0) - (entry.heavy ?? 0)) }));
   const flagged = counted.flatMap((entry): FlaggedSlice[] => {
     const heavy = entry.heavy ? ` and ${entry.heavy} more inside heavy scopes` : "";
-    const units = entry.units?.length ? `; the journal names ${entry.units.join(", ")}` : "";
+    const units = entry.units?.length ? `; the kernel log names ${entry.units.join(", ")}` : "";
     const fix = entry.explained && entry.by ? `${entry.by.step} explains ${entry.explained === 1 ? "the 1 kill" : `the ${entry.explained} kills`} up to ${stamp(entry.by.until)}` : "";
     if (!entry.outside && fix) return [{ at, kind: "oom_explained", excerpt: `${entry.box}: no OOM kill outside heavy scopes${entry.heavy ? ` (${entry.heavy} inside)` : ""} since ${stamp(entry.by!.until)}; ${fix}` }];
     if (!entry.outside) return entry.heavy ? [{ at, kind: "oom_heavy", excerpt: `${entry.box}: ${entry.heavy} OOM kills in the last 24 h, all inside heavy scopes that hit their own MemoryMax` }] : [];
@@ -218,10 +219,10 @@ async function oomBoxes(at: number): Promise<OomKills[]> {
   if (!(BOXES as readonly string[]).includes(here)) return boxes;
   if (!kills.has(here)) boxes.push(await procOomKills(here));
   const entry = boxes.find(box => box.box === here)!;
-  const journal = (args: string[]): Promise<string> => run("journalctl", ["--user", "--no-pager", ...args]);
+  const journal = (args: string[]): Promise<string> => run("journalctl", ["--no-pager", ...args]);
   const since = entry.sinceBootAt ? new Date(entry.sinceBootAt).toISOString() : entry.explained !== undefined ? new Date(entry.by!.until).toISOString() : "-24h";
-  const [lines, starts] = await Promise.all([journal(["--since", since, "-o", "short-unix",
-    "-g", "OOM killer killed some processes in this unit"]), journal(["--since", "-7d", "-o", "cat", "-g", "^Started run-.*choom -n 500"])]);
+  const [lines, starts] = await Promise.all([journal(["-k", "--since", since, "-o", "short-unix", "-g", "oom-kill:"]),
+    journal(["--user", "--since", "-7d", "-o", "cat", "-g", "^Started run-.*choom -n 500"])]);
   Object.assign(entry, splitOomLines(lines, starts));
   return boxes;
 }

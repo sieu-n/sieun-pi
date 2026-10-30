@@ -48,25 +48,29 @@ test("oom_kills_24h sums both boxes, names each box with a kill and its last kil
 
 // Guards the ops chat's 10-19 check-in: two 8G heavy scopes died at 17:26Z and 17:27Z with memory pressure full 0.00, so a kill a job's own
 // MemoryMax caused counts apart as heavy_scope_kills, and oom_kills_24h counts only the kills outside heavy scopes.
-test("a kill inside a heavy scope counts as heavy_scope_kills, a slice line only echoes a kill below it, and any other unit counts as outside", () => {
+test("a kill inside a heavy scope counts as heavy_scope_kills, one per kernel oom-kill line, and any other cgroup counts as outside", () => {
   const starts = [
     "Started run-p436970-i92146936.scope - [systemd-run] /usr/bin/choom -n 500 -- bash /home/sieun/scratch/connect-push-10-20/fullcheck.sh.",
     "Started run-p904848-i92945148.scope - [systemd-run] /usr/bin/choom -n 500 -- npx jest --ci.",
     "Started run-p1-i2.scope - [systemd-run] /usr/bin/node build.mjs.",
   ].join("\n");
-  const line = (at: number, unit: string) => `${at}.5 us-metal02 systemd[257985]: ${unit}: The kernel OOM killer killed some processes in this unit.`;
-  const journal = [line(1792430774, "run-p436970-i92146936.scope"), line(1792430848, "app.slice"), line(1792430861, "run-p904848-i92945148.scope"),
-    line(1792430901, "-.slice")].join("\n");
-  assert.deepEqual(splitOomLines(journal, starts), { heavy: 2, units: [] });
-  const heavyOnly = oomKills24h([{ box: "us-metal01", kills: 0 }, { box: "us-metal02", kills: 2, ...splitOomLines(journal, starts) }], 0);
+  const app = "/user.slice/user-1001.slice/user@1001.service/app.slice";
+  const line = (at: number, memcg: string) => `${at}.5 us-metal02 kernel: oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),cpuset=user.slice,` +
+    `mems_allowed=0-1,oom_memcg=${memcg},task_memcg=${memcg},task=node-MainThread,pid=3965704,uid=1001`;
+  const kernel = [line(1792430774, `${app}/run-p436970-i92146936.scope`), `1792430774.6 us-metal02 kernel: Memory cgroup out of memory: Killed process 3965704`,
+    line(1792430775, `${app}/run-p436970-i92146936.scope`), line(1792430861, `${app}/run-p904848-i92945148.scope`)].join("\n");
+  assert.deepEqual(splitOomLines(kernel, starts), { heavy: 3, units: [] });
+  const heavyOnly = oomKills24h([{ box: "us-metal01", kills: 0 }, { box: "us-metal02", kills: 3, ...splitOomLines(kernel, starts) }], 0);
   assert.equal(heavyOnly.kills, 0);
-  assert.equal(heavyOnly.heavy, 2);
+  assert.equal(heavyOnly.heavy, 3);
   assert.deepEqual(heavyOnly.flagged.map(slice => slice.kind), ["oom_heavy"]);
-  const mixed = splitOomLines([journal, line(1792430990, "prime-agent-daemon.service"), line(1792430991, "run-p1-i2.scope")].join("\n"), starts);
-  assert.deepEqual(mixed, { heavy: 2, units: ["prime-agent-daemon.service", "run-p1-i2.scope"], outsideAt: 1792430991000 });
-  const outside = oomKills24h([{ box: "us-metal01", kills: 0 }, { box: "us-metal02", kills: 4, ...mixed }], 0);
+  const global = "1792430990.1 us-metal02 kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0-1,global_oom," +
+    "task_memcg=/user.slice/user-1001.slice/user@1001.service/app.slice/prime-agent-daemon.service,task=node,pid=1,uid=1001";
+  const mixed = splitOomLines([kernel, global, line(1792430991, `${app}/run-p1-i2.scope`)].join("\n"), starts);
+  assert.deepEqual(mixed, { heavy: 3, units: ["prime-agent-daemon.service", "run-p1-i2.scope"], outsideAt: 1792430991000 });
+  const outside = oomKills24h([{ box: "us-metal01", kills: 0 }, { box: "us-metal02", kills: 5, ...mixed }], 0);
   assert.equal(outside.kills, 2);
-  assert.match(outside.flagged[0]!.excerpt, /^us-metal02: 2 OOM kills outside heavy scopes and 2 more inside heavy scopes in the last 24 h; the journal names prime-agent-daemon.service, run-p1-i2.scope$/);
+  assert.match(outside.flagged[0]!.excerpt, /^us-metal02: 2 OOM kills outside heavy scopes and 3 more inside heavy scopes in the last 24 h; the kernel log names prime-agent-daemon.service, run-p1-i2.scope$/);
 });
 
 // Guards p468 (10-20): p456 fixed the us-metal02 kills up to 16:52Z on 10-19, yet they held oom_kills_24h at 41 for a whole day and the duty
@@ -84,7 +88,7 @@ test("oom_kills_24h leaves out the kills up to the newest until a fix step expla
   const newer = oomKills24h([{ box: "us-metal01", kills: 0 }, { box: "us-metal02", kills: 43, explained: 41, units: ["sf-bill-q.service"], by }], 0);
   assert.equal(newer.kills, 2);
   assert.equal(newer.flagged[0]!.kind, "oom");
-  assert.match(newer.flagged[0]!.excerpt, /^us-metal02: 2 OOM kills outside heavy scopes since 16:52Z on 10-19; the journal names sf-bill-q.service; p456 explains the 41 kills/);
+  assert.match(newer.flagged[0]!.excerpt, /^us-metal02: 2 OOM kills outside heavy scopes since 16:52Z on 10-19; the kernel log names sf-bill-q.service; p456 explains the 41 kills/);
 });
 
 test("the checked-in duty file names p557 for the us-metal02 kills up to 15:14:52Z on 10-27 and p1054 for the us-metal01 global OOM at 02:31:24Z on 10-28", async () => {
