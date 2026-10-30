@@ -59,6 +59,11 @@ export class FakeRelay {
     for (const socket of this.sockets) socket.terminate();
   }
 
+  /** Stops reading every live link without closing it, as a Mac that went to sleep: no frame and no pong comes back. */
+  freeze(): void {
+    for (const socket of this.sockets) (socket as unknown as { _socket: { pause(): void } })._socket.pause();
+  }
+
   /** Sends a feed row up every live link. */
   feed(row: FeedRow): void {
     for (const socket of this.sockets) this.send(socket, { type: "event", kind: "message", row });

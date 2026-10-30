@@ -30,6 +30,11 @@ const COMMAND_TIMEOUT_MS = 120_000;
 const RECONNECT_WAIT_MS = 30_000;
 /** Redial waits double from 1 s to this and stay there, PiHost's reconnect ceiling; the client dials forever. */
 const MAX_REDIAL_MS = 10_000;
+/**
+ * A sleeping Mac keeps no TCP state, so its half-open link answers nothing and never closes. The client pings at this pace and drops a link
+ * that missed a whole interval's pong, and a dial that has not upgraded in one interval gives up, so a sleep reads as away within 30 s.
+ */
+const LIVENESS_MS = 15_000;
 
 export type LinkState = { state: "up" | "away"; since: number };
 /** A shell check's result on the box, legacy wakes.ts `CheckResult` with the exit code the relay adds. */
@@ -51,6 +56,8 @@ export interface RelayHostOptions {
   log?: (line: string) => void;
   /** The wait before redial `attempt` (1, 2, ...); a test shortens it. */
   redialWait?: (attempt: number) => number;
+  /** The ping pace and dial limit, LIVENESS_MS by default; a test shortens it. */
+  livenessMs?: number;
 }
 
 type Pending = {
@@ -80,6 +87,10 @@ export class RelayHost implements Host {
   private closed = false;
   private attempt = 0;
   private redialTimer?: NodeJS.Timeout;
+  private livenessTimer?: NodeJS.Timeout;
+  private get liveness(): number {
+    return this.options.livenessMs ?? LIVENESS_MS;
+  }
   private feedChain: Promise<void> = Promise.resolve();
   /** Set when a feed row's handler failed: later rows wait for the next `welcome`, which replays from the saved cursor. */
   private feedHalted = false;
@@ -133,8 +144,23 @@ export class RelayHost implements Host {
 
   private dial(): void {
     if (this.closed) return;
-    const socket = new WebSocket(this.options.url, { headers: { authorization: `Bearer ${this.options.token}` } });
+    const socket = new WebSocket(this.options.url, { headers: { authorization: `Bearer ${this.options.token}` }, handshakeTimeout: this.liveness });
     this.socket = socket;
+    let alive = true;
+    socket.on("pong", () => (alive = true));
+    socket.once("open", () => {
+      clearInterval(this.livenessTimer);
+      this.livenessTimer = setInterval(() => {
+        if (socket !== this.socket) return;
+        if (!alive) {
+          this.log(`relay ${this.name}: no pong in ${this.liveness / 1000} s, dropping the link`);
+          socket.terminate();
+          return;
+        }
+        alive = false;
+        socket.ping();
+      }, this.liveness);
+    });
     socket.on("message", data => this.onMessage(socket, String(data)));
     socket.on("close", () => this.onClose(socket));
     // An offline box fails every redial; its first failure is logged, and the link state says the rest.
@@ -256,6 +282,7 @@ export class RelayHost implements Host {
 
   private onClose(socket: WebSocket): void {
     if (socket !== this.socket) return;
+    clearInterval(this.livenessTimer);
     this.socket = undefined;
     this.ready = false;
     this.setLink("away");
@@ -400,6 +427,7 @@ export class RelayHost implements Host {
   async close(): Promise<void> {
     this.closed = true;
     clearTimeout(this.redialTimer);
+    clearInterval(this.livenessTimer);
     for (const id of [...this.pending.keys()]) this.fail(id, new Error(`relay client for ${this.name} is closed`));
     this.socket?.close();
     this.socket = undefined;

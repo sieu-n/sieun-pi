@@ -65,6 +65,28 @@ describe("RelayHost", () => {
     assert.equal((await client.check("true", 1000)).ok, true);
   });
 
+  test("a link that stops answering pings reads as away, as a Mac that went to sleep, and comes back up after it wakes", async () => {
+    const sleepy = new FakeRelay("sleepy", TOKEN);
+    await sleepy.listening;
+    const sleeper = new RelayHost({ box: "sleepy", url: sleepy.url, token: TOKEN, dataDir: dir, redialWait: fast, livenessMs: 100 });
+    try {
+      const links: string[] = [];
+      sleeper.onLink(link => links.push(link.state));
+      sleeper.start();
+      await until(async () => sleeper.state().state, state => state === "up");
+      sleepy.down = true;
+      sleepy.freeze();
+      await until(async () => sleeper.state().state, state => state === "away");
+      await assert.rejects(sleeper.threads(), HostAway);
+      sleepy.down = false;
+      await until(async () => sleeper.state().state, state => state === "up");
+      assert.deepEqual(links, ["up", "away", "up"]);
+    } finally {
+      await sleeper.close();
+      await sleepy.close();
+    }
+  });
+
   test("a watch gets its events, and after a reconnect it opens again from the newest entry it saw", async () => {
     const thread = (await client.create({ name: "watched" })).id;
     const seen: number[] = [];
