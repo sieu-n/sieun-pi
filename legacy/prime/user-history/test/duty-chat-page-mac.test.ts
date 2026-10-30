@@ -7,7 +7,7 @@ import type { AddressInfo } from "node:net";
 import { WebSocketServer } from "ws";
 import type { Repl } from "../scripts/duties/aside-repl.ts";
 import { browseInAside, PROBE_LIB, type ProbeConfig } from "../scripts/duties/chat-page-mac-probe.ts";
-import { browserReadings, median, parseLoadavg, parsePing, releaseBreaks, replyExtra, sendProbe, type SendTiming } from "../scripts/duties/chat-page-mac.ts";
+import { browserReadings, droppedBeforeLogin, median, parseLoadavg, parsePing, releaseBreaks, replyExtra, sendProbe, type SendTiming } from "../scripts/duties/chat-page-mac.ts";
 import { MAC_HOST, macAwayItem, macTailnet } from "../scripts/duties/mac-reach.ts";
 import { HOST_AWAY } from "../src/shared/chat-duties.ts";
 
@@ -20,6 +20,13 @@ test("median and ping parsing", () => {
   assert.equal(parsePing("--- 100.83.139.73 ping statistics ---\n5 packets transmitted, 5 packets received, 0.0% packet loss\nround-trip min/avg/max/stddev = 189.151/191.666/194.255/2.115 ms\n"), 191.666);
   assert.equal(parsePing("rtt min/avg/max/mdev = 0.020/0.031/0.045/0.008 ms"), 0.031);
   assert.equal(parsePing("ping: cannot resolve us-metal02-dev: Unknown host"), undefined);
+});
+
+test("an ssh the Mac dropped before login is told apart from a failed command", () => {
+  assert.equal(droppedBeforeLogin("timeout 40 ssh -o: kex_exchange_identification: read: Connection reset by peer\r\nConnection reset by 100.66.173.18 port 22"), true);
+  assert.equal(droppedBeforeLogin("timeout 40 ssh -o: Connection closed by 100.66.173.18 port 22"), true);
+  assert.equal(droppedBeforeLogin("timeout 40 ssh -o: cat: .prime/agent/sessions/x.jsonl: No such file or directory"), false);
+  assert.equal(droppedBeforeLogin("timeout 40 ssh -o: ssh: connect to host 100.66.173.18 port 22: Operation timed out"), false);
 });
 
 test("cold loads take the median shown time in seconds, and a switch that never painted counts as the timeout", () => {

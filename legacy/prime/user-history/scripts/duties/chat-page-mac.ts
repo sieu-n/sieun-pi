@@ -203,9 +203,18 @@ const exec: Exec = (file, args, options = {}) => new Promise((resolve, reject) =
     (error, stdout, stderr) => error ? reject(new Error(`${file} ${args.slice(0, 3).join(" ")}: ${(stderr || error.message).trim().slice(0, 300)}`)) : resolve(stdout));
   if (options.input !== undefined) child.stdin!.end(options.input);
 });
-/** One ssh to the Mac, bounded on the box, since the Mac has no `timeout` command. */
-const onMac = (command: string, seconds: number, input?: string): Promise<string> =>
+/**
+ * The Mac's sshd hung up before login. On 10-30 at 11:13Z and 11:15Z, while the Mac woke with a 1-min load of 72 and every duty's host-back
+ * run reached it at once, it dropped this probe's session read ("Connection closed by ... port 22") and ping ("kex_exchange_identification:
+ * read: Connection reset by peer"), and the same ssh answered right after. sshd's default MaxStartups drops new connections that way.
+ */
+export const droppedBeforeLogin = (message: string): boolean =>
+  /kex_exchange_identification|Connection (reset by peer|closed by \S+ port)/.test(message);
+const sshOnce = (command: string, seconds: number, input?: string): Promise<string> =>
   exec("timeout", [String(seconds), "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", MAC, command], { timeoutMs: (seconds + 5) * 1000, ...(input === undefined ? {} : { input }) });
+/** One ssh to the Mac, bounded on the box, since the Mac has no `timeout` command, sent again once when sshd dropped it before login. */
+const onMac = (command: string, seconds: number, input?: string): Promise<string> =>
+  sshOnce(command, seconds, input).catch((error: Error) => droppedBeforeLogin(error.message) ? sshOnce(command, seconds, input) : Promise.reject(error));
 
 export interface ChatConfig { port: number; capability: string; csrfToken: string; publicOrigin?: string }
 
