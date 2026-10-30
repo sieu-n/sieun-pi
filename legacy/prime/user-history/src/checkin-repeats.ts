@@ -44,9 +44,11 @@ export function sentAfter(sent: Readonly<Record<string, string>> | undefined, fl
 /**
  * Kinds Flagged again leaves out. A stuck step shows its streak in the Stuck steps section. An off-pace goal with a live owner is steered from
  * the goal section on its push schedule (quietPush) and is not judged (board skill check-ins.md item 11), so no board op clears it: on 10-21
- * Crawler VP's check-ins listed p828, p826, p681 and p146 under Flagged again 6 runs in a row while the goal section said to send nothing.
+ * Crawler VP's check-ins listed p828, p826, p681 and p146 under Flagged again 6 runs in a row while the goal section said to send nothing. A step
+ * held on an offline box (`host_held`) asks for no board op and no message until the box is back: on 10-30 sep launch!!'s check-ins listed p124
+ * under Flagged again 7 runs in a row while the Mac slept.
  */
-const NOT_REPEATED: ReadonlySet<string> = new Set(["stuck_steps", "goals_off_pace"]);
+const NOT_REPEATED: ReadonlySet<string> = new Set(["stuck_steps", "goals_off_pace", "host_held"]);
 /** The findings flagged in REPEAT_RUNS or more runs in a row, longest streak first, each with its count. */
 export function repeatLines(streaks: Readonly<Record<string, number>>, flagged: readonly FlaggedSlice[]): string[] {
   const seen = new Set<string>();

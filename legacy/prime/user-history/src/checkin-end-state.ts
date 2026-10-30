@@ -75,7 +75,9 @@ export interface EndStateView { view: StepView; state: EndState; reason: string;
  * that Tailscale reads offline is held there (`hostHeld`), whatever its job's state reads: nothing on that box moves, wakes or reports until it
  * is back, and its row is the last copy the box sent. On 10-29 from 19:30Z sep launch!!'s p133 and p137 read moving on their jobs' failed
  * pi-pool slot waits on the sleeping Mac, so the check-in flagged them orphan four runs in a row and its job asked the owner on t65 to wake
- * the Mac (c178). Then a step whose owner is a working job or a working thread, a step whose wait names a working job of this chat
+ * the Mac (c178). A held step whose wait names other work than its box (`waitsPastBox`) reads by that wait instead (`byWait`): on 10-30
+ * sep launch!!'s p125 waited for the release owner's next prod promote, and its job on the sleeping Mac read host_held in 7 check-ins in a row.
+ * Then a step whose owner is a working job or a working thread, a step whose wait names a working job of this chat
  * (`waitCarrier`, from `facts`) and a step whose wait hands it to another chat's open step (`handedStep`) are fine; a step the chat owns is
  * moving when it changed within STEP_STALE_MS and waits on nothing. Next an explicit For you link (`heldByTodo`). Every other step is stuck,
  * by what it waits on: the owner with no todo, a release, a CI run, another thread, an event, a time; else its job ended or is gone, else it
@@ -87,7 +89,12 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
   const out = (state: EndState, reason: string): EndStateView => ({ view, state, reason });
   if (cls === "parked") return out("parked", `parked by ${view.parked ?? "an owner correction"}`);
   const hold = hostHeld(view, rows, movers.hosts);
-  if (hold) return { ...out("host", `${owner ? ownerLabel(owner) : `its job ${item.job}`} runs on ${holdWords(hold)}`), hold };
+  const away = hold && `${owner ? ownerLabel(owner) : `its job ${item.job}`} runs on ${holdWords(hold)}`;
+  if (hold) {
+    const handed = movers.linked ? handedStep(item, self, movers.linked, rows) : undefined;
+    if (handed) return out("moving", `its wait is on ${handed.item.id} ${quote(handed.item.text)} of chat ${rows.find(row => row.id === handed.chat)?.name ?? handed.chat}, which owns it`);
+    return waitsPastBox(item, hold, rows, self) ? byWait(item, todos, rows, self, false, out, `; ${away}`)! : { ...out("host", away!), hold };
+  }
   if (owner?.stalled) return out("stalled_call", `${ownerLabel(owner)} ${stallWords(owner.stalled, now)}`);
   if (owner?.state === "working") return out("moving", `${ownerLabel(owner)} ${capacityWait(owner) ?? (owner.wake ? `sleeps on ${owner.wake}` : "works on it")}`);
   if (poolWait(owner)) return out("moving", `${ownerLabel(owner!)} waits for its slot in the token pool`);
@@ -105,18 +112,42 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
   const mover = outsideMover(view, movers, rows, self, now);
   if (mover) return out("moving", mover);
   if (mine && !wait && !item.waitUntil && now - view.changedAt < STEP_STALE_MS) return out("moving", "the chat changed it within 2 h");
-  if (heldByTodo(item, todos)) return out("foryou", "an open For you todo links it");
-  if (wait ? OWNER_WAIT.test(firstClause(wait)) : waitsOnOwner(item)) return out("owner_no_todo", "waits on the owner and no open For you todo links it");
-  const thread = owner?.key.startsWith("thread:") === true;
-  if (wait || item.waitUntil || thread) {
-    const head = firstClause(wait);
-    const on = wait && RELEASE.test(head) ? "release" : wait && CI.test(head) ? "ci" : (wait && waitTarget(wait, rows, self)) || thread ? "thread" : wait ? "event" : "time";
-    const what = { release: "a land, promote or release", ci: "a CI run", thread: thread && !wait ? `${ownerLabel(owner!)} (idle)` : "another thread", event: "an event", time: "a time" }[on];
-    return out(on, `waits on ${what} and no live job of this chat watches it`);
-  }
+  const waited = byWait(item, todos, rows, self, owner?.key.startsWith("thread:") === true ? owner : undefined, out);
+  if (waited) return waited;
   if (owner) return out("job_ended", `${ownerLabel(owner)} ${owner.cancelled ? "was cancelled" : owner.state === "failed" ? "failed" : "ended"} and the step is open`);
   if (item.job && !mine) return out("job_ended", `its job ${item.job} is gone`);
   return out("no_owner", mine ? `the chat owns it and it has not moved for ${ago(now - view.changedAt)}` : "no job, todo or wait");
+}
+
+/**
+ * A step by what it waits on once no live owner moves it: an open For you todo, the owner, a land, a CI run, another thread (`thread`, an idle
+ * thread owner), an event or a time. A step with no wait, no waitUntil and no thread owner gets none. `tail` ends the stuck reason.
+ */
+function byWait(item: PlanItem, todos: Parameters<typeof heldByTodo>[1], rows: Parameters<typeof waitTarget>[1], self: ReadonlySet<string>,
+  thread: JobFact | false | undefined, out: (state: EndState, reason: string) => EndStateView, tail = ""): EndStateView | undefined {
+  const wait = item.waitFor ?? "";
+  if (heldByTodo(item, todos)) return out("foryou", "an open For you todo links it");
+  if (wait ? OWNER_WAIT.test(firstClause(wait)) : waitsOnOwner(item)) return out("owner_no_todo", `waits on the owner and no open For you todo links it${tail}`);
+  if (!wait && !item.waitUntil && !thread) return undefined;
+  const head = firstClause(wait);
+  const on = wait && RELEASE.test(head) ? "release" : wait && CI.test(head) ? "ci" : (wait && waitTarget(wait, rows, self)) || thread ? "thread" : wait ? "event" : "time";
+  const what = { release: "a land, promote or release", ci: "a CI run", thread: thread && !wait ? `${ownerLabel(thread)} (idle)` : "another thread", event: "an event", time: "a time" }[on];
+  return out(on, `waits on ${what} and no live job of this chat watches it${tail}`);
+}
+
+/**
+ * Whether a held step waits on someone off its box: the first clause of its waitFor names the owner or the release owner (`OFF_BOX_OWNER`), or
+ * another thread (`waitTarget`), and no part of it names the box, Tailscale or "offline". Work its own job on that box runs or watches (a run, a
+ * check, a deploy) still waits for the box. sep launch!! 10-30: p125 waited for "the release owner's next prod promote, walked with the owner",
+ * and p124 for "the Mac (offline on Tailscale since about 23:19Z): ...", its box; p43 for "full run j20", which its job on the Mac runs; p140
+ * for its own job's read of "owner phone steps", whose "adapters wait on the offline Mac".
+ */
+const OFF_BOX_OWNER = /\b(?:the|release)\s+owner\b|\bowner['\u2019]s\b|\bsieun\b/i;
+export function waitsPastBox(item: Pick<PlanItem, "waitFor">, hold: HostHold, rows: Parameters<typeof waitTarget>[1], self: ReadonlySet<string>): boolean {
+  const wait = item.waitFor ?? "";
+  const head = firstClause(wait);
+  const box = new RegExp(`\\b(?:${hold.host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}|tailscale|offline)\\b`, "i");
+  return !box.test(wait) && (OFF_BOX_OWNER.test(head) || waitTarget(head, rows, self) !== undefined);
 }
 
 /**
