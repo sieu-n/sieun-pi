@@ -65,7 +65,7 @@ export interface InspectVerdict { at: number; verdict: string | null; coverage_s
 export interface ArticlesState { articles: Record<string, ArticleState>; indexed: Record<string, string>; inspected?: Record<string, InspectVerdict> }
 export interface InspectRow { url: string; http: number; verdict?: string | null; coverage_state?: string | null; error?: string | null }
 export interface InspectRead { rows: InspectRow[]; not_asked: string[]; quota_left_before?: number }
-export interface LedgerEntry { worker?: string; url?: string; check_date?: string; result?: string; result_date?: string }
+export interface LedgerEntry { date?: string; worker?: string; kind?: string; url?: string; check_date?: string; result?: string; result_date?: string; check_of?: string }
 export interface ArticlesDeps {
   fetch: typeof fetch;
   inspect: (urls: string[]) => Promise<InspectRead>;
@@ -159,10 +159,32 @@ export function requestedUrls(log: string): Set<string> {
   return out;
 }
 
-/** Overdue checks (no result, check date before today) and the win share of checks scored in the last 30 days. */
+/** Whether a `check_of` line ("<date> <worker> <kind> line ...") names this entry; a worker may be named without its "group/" prefix. */
+function namesEntry(checkOf: string, entry: LedgerEntry): boolean {
+  if (!entry.date || !entry.worker || !entry.kind) return false;
+  return [entry.worker, entry.worker.split("/").pop()].some(worker => checkOf.startsWith(`${entry.date} ${worker} ${entry.kind} line`));
+}
+
+/**
+ * Overdue checks (no result, check date before today) and the win share of checks scored in the last 30 days. A scorer may append a
+ * `check_of` line instead of filling the checked line; its result, dated on or after the check date, is that check's result, and the
+ * line itself is not scored again. A `check_of` line dated before the check date is a liveness note, not the score.
+ */
 export function ledgerStats(entries: readonly LedgerEntry[], today: string): { overdue: LedgerEntry[]; scored: number; wins: number } {
-  const overdue = entries.filter(entry => !entry.result && typeof entry.check_date === "string" && entry.check_date < today);
-  const scored = entries.filter(entry => entry.result && entry.result_date && daysBetween(entry.result_date, today) <= WIN_WINDOW_DAYS);
+  const resolved = entries.map(entry => ({ ...entry }));
+  const merged = new Set<number>();
+  entries.forEach((line, index) => {
+    if (!line.check_of || !line.result || !line.date) return;
+    const target = resolved.find(entry => !entry.check_of && entry.check_date && line.date! >= entry.check_date && namesEntry(line.check_of!, entry));
+    if (!target) return;
+    merged.add(index);
+    if (target.result) return;
+    target.result = line.result;
+    target.result_date = line.result_date ?? line.date;
+  });
+  const lines = resolved.filter((_, index) => !merged.has(index));
+  const overdue = lines.filter(entry => !entry.result && typeof entry.check_date === "string" && entry.check_date < today);
+  const scored = lines.filter(entry => entry.result && entry.result_date && daysBetween(entry.result_date, today) <= WIN_WINDOW_DAYS);
   return { overdue, scored: scored.length, wins: scored.filter(entry => entry.result === "win").length };
 }
 
