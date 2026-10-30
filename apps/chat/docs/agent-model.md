@@ -468,10 +468,6 @@ Built and live on 2026-10-29: pi-host 67e75a84 as release-67e75a8, and apps/chat
 **Done when** an agent whose host is the Mac answers in its DM, a Mac offline for an hour gets its queued posts as one bundled input on return, and nothing lands twice.
 **Tests:** a relay test with a real pi-host child process and a fake chat server (drop the socket mid-delivery, then reconnect, and check exactly-once), a 6 h offline replay on fake clocks, and a live check on the Mac in an isolated profile before the coordinator installs it.
 
-## 7. Open questions for the owner
-
-Each has a def
-
 **Built (10-30).** The relay tier runs on metal and the Mac.
 
 1. `components/prime-relay/agents/main.ts` is the agent relay. It wraps `createRelay`, so the v1 routes stay, and adds `/v2/agents` (frames in `protocol.ts`), a local chat proxy on 127.0.0.1:7792 for the box's threads, and the `check`, `file_get` and `file_put` ops. It runs from the pi-host release tree, as `pi-host-relay.service` on metal and `com.sieun.pi-host-relay` on the Mac, both installed by `agents/install.mjs`.
@@ -484,7 +480,9 @@ The routing stayed in the chat server instead of moving into the relay, because 
 
 `GET /api/hosts` and the Hosts page now show each box's agent relay link as its `RelayHost` holds it in memory, with up or away since when, the last pong, the relay and pi-host versions from the last hello, and the feed cursor (`~/work/phase6-gaps/hosts-link/proof.md`).
 
-ault, so work goes on without an answer.
+## 7. Open questions for the owner
+
+Each has a default, so work goes on without an answer.
 
 1. **How much DM history moves into the new rooms?** Default: the owner's messages and the agents' text answers from the last 30 days are copied in as posts, and anything older sits behind "Earlier, in the work thread".
 2. **May agents write their own memory without asking?** Default: yes, through Prime's `rlm.harness` as in Prime. The Agents card shows each entry with its author and time, and the owner deletes one there.
