@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -78,4 +78,38 @@ test("the kernel half refuses a worktree add whose command the cell builds at ru
   assert.equal(result.block, true);
   assert.match(result.reason, /repo copy guard/);
   assert.deepEqual(sendCheck.judgeCheck({ kind: "shell", text: "git worktree list", cwd: root }), { block: false });
+});
+
+// At 12:04Z on 10-30 a slack green guy job that the guard refused a new worktree ran `pnpm install` in an old one, and its tree held 6.6 GB.
+test("an install, build, dev server, type check or test inside an existing worktree or renamed clone is refused", () => {
+  const repo = join(root, "Github", "slack-green");
+  const wt = join(root, "Github", "slack-green-trial-banner-checkout");
+  const renamed = join(root, "Github", "slack-green-p2");
+  const boxRun = join(root, "box-run", "mac", "repo");
+  for (const dir of [repo, renamed, boxRun]) {
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    writeFileSync(join(dir, ".git", "config"), '[remote "origin"]\n\turl = https://github.com/sieu-n/slack-green.git\n');
+  }
+  mkdirSync(join(wt, "packages", "frontend"), { recursive: true });
+  writeFileSync(join(wt, ".git"), `gitdir: ${repo}/.git/worktrees/x\n`);
+  const at = (cwd, toolName, text) => guard.onToolCall(event(toolName, text), { cwd });
+  for (const [cwd, text] of [
+    [wt, 'pnpm install --frozen-lockfile --filter "@slack-green/frontend..."'],
+    [join(wt, "packages", "frontend"), "npx tsc --noEmit -p ."],
+    [root, `cd ${wt} && pnpm -C packages/frontend dev`],
+    [root, `pnpm -C ${wt} install`],
+    [renamed, "pnpm test"],
+    [renamed, "node node_modules/.bin/next dev"],
+    [root, `bash -lc 'cd ${renamed} && yarn build'`],
+  ]) {
+    const result = at(cwd, "bash", text);
+    assert.equal(result?.block, true, text);
+    assert.match(result.reason, /runs in a copy of the repo/);
+  }
+  const cellResult = at(root, "ipython", `import os\nos.chdir(${JSON.stringify(wt)})\nh = bash('pnpm install --frozen-lockfile')`);
+  assert.equal(cellResult?.block, true, "a cell that chdirs into the worktree");
+  for (const [cwd, text] of [[repo, "pnpm install"], [repo, "npx tsc --noEmit -p ."], [boxRun, "pnpm install"], [wt, "git status"],
+    [wt, "ls node_modules"], [wt, "cat package.json"], [root, `cd ${repo} && pnpm build`], [wt, "git worktree list"]]) {
+    assert.equal(at(cwd, "bash", text), undefined, `${cwd}: ${text}`);
+  }
 });
