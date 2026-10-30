@@ -5,7 +5,7 @@
  *   node scripts/install-pi-host-box.mjs [--ref origin/main] [--chat-url <url>] [--prepare-only] [--no-restart]
  *
  * 1. It exports the commit to ~/.local/share/pi-host/release-<sha7>, with its own node_modules in the root, packages and
- *    legacy/prime/user-history. A folder whose package.json and package-lock.json match the current release or the sieun-pi runtime
+ *    legacy/prime/user-history. A folder whose dependencies and package-lock.json match the current release or the sieun-pi runtime
  *    reuses that node_modules as hard links (Linux) or clones (APFS); any other folder gets `npm ci --ignore-scripts`.
  * 2. It boots the release on a temp socket with temp session, data and durable dirs, and asks `durable_threads` there.
  * 3. It writes the unit or plist, points `current` at the release and restarts the service a few seconds later from a detached process, so
@@ -131,12 +131,14 @@ WantedBy=default.target
 }
 
 const same = (a, b, name) => { try { return readFileSync(join(a, name)).equals(readFileSync(join(b, name))); } catch { return false; } };
+/** package.json without its "pi" key, which install-runtime.mjs rewrites in a sieun-pi runtime release. */
+const deps = dir => { try { const { pi: _pi, ...rest } = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")); return JSON.stringify(rest); } catch { return undefined; } };
 
 /** A node_modules folder whose package.json and package-lock.json match `dir`'s, from the current release or the sieun-pi runtime. */
 function donorModules(home, current, dir, staged) {
   for (const base of [current, join(home, ".local/share/sieun-pi-runtime/current")]) {
     const from = join(base, dir);
-    if (!existsSync(join(from, "node_modules")) || !same(from, staged, "package.json") || !same(from, staged, "package-lock.json")) continue;
+    if (!existsSync(join(from, "node_modules")) || deps(from) === undefined || deps(from) !== deps(staged) || !same(from, staged, "package-lock.json")) continue;
     return realpathSync(join(from, "node_modules"));
   }
   return undefined;
@@ -246,7 +248,8 @@ function delayedRestart(platform, sha7, unitFile, delaySec = 5) {
 export async function installPiHost({ repo = checkout, ref = "origin/main", home = homedir(), node = process.execPath, chatUrl, prepareOnly = false, restart = true } = {}) {
   const platform = process.platform;
   if (platform !== "darwin" && platform !== "linux") throw new Error(`pi-host installs on Linux and macOS, not ${platform}`);
-  if (ref.startsWith("origin/")) run("git", ["fetch", "--quiet", "origin"], repo);
+  // prime-sync fetches every box's checkout each minute, so a failed fetch (the Mac reached no github.com on 10-30) builds the last fetched ref.
+  if (ref.startsWith("origin/")) { try { run("git", ["fetch", "--quiet", "origin"], repo); } catch (error) { process.stderr.write(`git fetch failed, using the last fetched ${ref}: ${error.message}\n`); } }
   const sha = run("git", ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], repo, true);
   const sha7 = sha.slice(0, 7);
   const paths = layout(home, platform);
