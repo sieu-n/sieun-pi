@@ -6,13 +6,20 @@ the Mac slept filled launchd's limit of 42 sshd copies. The Mac's sshd sends not
 (ClientAliveInterval 0), so it never notices a client that left while the Mac could not hear the FIN. The server-side
 fix (ClientAliveInterval in sshd_config) needs sudo and is the owner's todo t100; this agent works with or without it.
 
-launchd agent ai.virev.sshd-reap runs this every 5 minutes as the user, without sudo. Each run:
+launchd agent ai.virev.sshd-reap keeps this running as the user (KeepAlive), without sudo. Every TICK_S it compares
+the wall clock with the monotonic clock, which stops while the Mac sleeps. A run starts every INTERVAL_S, and at once
+when the Mac slept more than SLEPT_S since the last tick. After such a wake it runs every tick until a run reaches
+every PEER_SSH host it had to ask, since the network comes back some seconds after the wake. On 10-30 the Mac slept from 18:38Z 10-29 to a lid wake at 11:13:22Z,
+launchd's StartInterval 300 ran the old one-shot version only at 02:45Z and 10:52Z in dark wakes and not yet at
+11:13:48Z, so 42 sessions held launchd's limit and 40% of fresh box logins got "kex_exchange_identification".
+Each run:
   1. lists this user's sshd sessions (sshd-session: <user>, or <user>@<tty> once a channel opened), skipping the
      session this run is part of;
   2. reads each session's TCP socket and state from lsof and its received bytes from netstat -anb;
   3. marks a session dead when it has no ESTABLISHED socket, or when no byte arrived since the last run and the peer
      host, asked over ssh, holds no TCP connection with that 4-tuple;
-  4. ends a dead session whose received bytes last changed DEAD_FOR_S or more ago (SIGTERM, then SIGKILL after 5 s).
+  4. ends every dead session whose received bytes last changed DEAD_FOR_S or more ago at once (SIGTERM to all, then
+     SIGKILL to any left after 5 s).
 A received-bytes change is seen only at a run, so a dead session ends 10 to 15 minutes after its last byte.
 A session whose bytes move, whose peer still holds the connection, or whose peer cannot be asked is kept.
 Box clients send a keepalive every 15 s (ServerAliveInterval 15 in sieun-pi deploy/linux/ssh-mac.conf), so a live
@@ -25,8 +32,9 @@ Install (from sieun-pi on a box that reaches the Mac):
   scp deploy/mac/sshd-reap.py mac:.local/share/sshd-reap/sshd-reap.py
   scp deploy/mac/ai.virev.sshd-reap.plist mac:Library/LaunchAgents/
   ssh mac 'launchctl bootout gui/$(id -u)/ai.virev.sshd-reap; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.virev.sshd-reap.plist'
-Log: ~/.local/state/sshd-reap/log.jsonl, one JSON line per run and one per ended session.
-`sshd-reap.py --dry-run` prints what a run would end, without ending it, logging or saving state.
+Log: ~/.local/state/sshd-reap/log.jsonl, one JSON line per run (with why it ran), per wake and per ended session.
+`sshd-reap.py --once` does one run and exits. `sshd-reap.py --dry-run` prints what one run would end, without ending
+it, logging or saving state.
 """
 import json
 import os
@@ -38,6 +46,9 @@ import time
 from datetime import datetime, timezone
 
 DEAD_FOR_S = 600
+TICK_S = 5
+INTERVAL_S = 300
+SLEPT_S = 30
 PEER_SSH = {"100.83.139.73": "us-metal02"}
 STATE_DIR = os.path.expanduser("~/.local/state/sshd-reap")
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
@@ -136,21 +147,43 @@ def peer_ports(peer_ip, my_ip):
     return ports
 
 
-def end_session(pid):
+def end_sessions(pids):
+    """pid -> the signal that ended it: SIGTERM to all at once, then SIGKILL to any still there after 5 s."""
+    done = {}
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            done[pid] = "gone"
+    left = [pid for pid in pids if pid not in done]
+    deadline = time.monotonic() + 5
+    while left and time.monotonic() < deadline:
+        time.sleep(0.1)
+        left = [pid for pid in left if alive(pid)]
+    for pid in pids:
+        if pid in done:
+            continue
+        if pid in left:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            done[pid] = "SIGKILL"
+        else:
+            done[pid] = "SIGTERM"
+    return done
+
+
+def alive(pid):
     try:
-        os.kill(pid, signal.SIGTERM)
-        for _ in range(50):
-            time.sleep(0.1)
-            os.kill(pid, 0)
-        os.kill(pid, signal.SIGKILL)
-        return "SIGKILL"
+        os.kill(pid, 0)
+        return True
     except ProcessLookupError:
-        return "SIGTERM"
+        return False
 
 
-def main():
-    dry_run = "--dry-run" in sys.argv[1:]
-    os.makedirs(STATE_DIR, exist_ok=True)
+def reap(why, dry_run=False):
+    """One run; returns how many PEER_SSH hosts it had to ask and could not reach."""
     try:
         with open(STATE_FILE) as fh:
             state = json.load(fh)
@@ -183,7 +216,8 @@ def main():
         for my_ip in my_ips:
             held[(peer_ip, my_ip)] = peer_ports(peer_ip, my_ip)
 
-    new_state, ended, dead_now, unknown = {}, [], 0, 0
+    unreached = sum(1 for (peer_ip, _), ports in held.items() if ports is None and peer_ip in PEER_SSH)
+    new_state, dead, dead_now, unknown = {}, [], 0, 0
     for pid, view in views.items():
         reason = None
         if view["tcp"] != "ESTABLISHED":
@@ -198,24 +232,68 @@ def main():
         if reason:
             dead_now += 1
         if reason and now - view["since"] >= DEAD_FOR_S:
-            entry = {"event": "ended", "pid": pid, "priv_parent": sessions[pid]["ppid"], "peer": view["peer"],
-                     "reason": reason, "quiet_for_s": int(now - view["since"])}
-            if dry_run:
-                entry["event"] = "would_end"
-            else:
-                entry["signal"] = end_session(pid)
-            log(entry, dry_run)
-            ended.append(pid)
+            dead.append((pid, reason))
             continue
         new_state[view["key"]] = {"rx": view["rx"], "since": view["since"]}
 
-    log({"event": "run", "sessions": len(sessions), "dead": dead_now, "ended": len(ended),
-         "peer_unknown": unknown}, dry_run)
+    signals = {} if dry_run else end_sessions([pid for pid, _ in dead])
+    for pid, reason in dead:
+        view = views[pid]
+        entry = {"event": "would_end" if dry_run else "ended", "pid": pid, "priv_parent": sessions[pid]["ppid"],
+                 "peer": view["peer"], "reason": reason, "quiet_for_s": int(now - view["since"])}
+        if not dry_run:
+            entry["signal"] = signals[pid]
+        log(entry, dry_run)
+
+    log({"event": "run", "why": why, "sessions": len(sessions), "dead": dead_now, "ended": len(dead),
+         "peer_unknown": unknown, "peer_unreached": unreached, "took_s": round(time.time() - now, 1)}, dry_run)
     if not dry_run:
         tmp = STATE_FILE + ".tmp"
         with open(tmp, "w") as fh:
             json.dump(new_state, fh)
         os.replace(tmp, STATE_FILE)
+    return unreached
+
+
+def plan(asleep_s, since_run_s, catching_up):
+    """(why a run is due or None, whether a wake catch-up is on) from the seconds the Mac slept since the last tick and
+    the wall-clock seconds since the last run."""
+    if asleep_s > SLEPT_S:
+        return "wake", True
+    if catching_up:
+        return "after wake", True
+    if since_run_s >= INTERVAL_S:
+        return "interval", False
+    return None, False
+
+
+def loop():
+    """time.monotonic() is mach_absolute_time on macOS, which stops while the Mac sleeps, so the wall clock running
+    ahead of it between two ticks is the time the Mac slept."""
+    last_wall, last_mono, last_run, catching_up = time.time(), time.monotonic(), 0.0, False
+    while True:
+        wall, mono = time.time(), time.monotonic()
+        asleep_s = (wall - last_wall) - (mono - last_mono)
+        last_wall, last_mono = wall, mono
+        why, catching_up = plan(asleep_s, wall - last_run, catching_up)
+        if why == "wake":
+            log({"event": "wake", "slept_s": int(asleep_s)}, False)
+        if why:
+            last_run = wall
+            try:
+                catching_up = catching_up and reap(why) > 0
+            except Exception as error:
+                log({"event": "error", "why": why, "error": repr(error)[:300]}, False)
+        time.sleep(TICK_S)
+
+
+def main():
+    os.makedirs(STATE_DIR, exist_ok=True)
+    args = sys.argv[1:]
+    if "--dry-run" in args or "--once" in args:
+        reap("once", dry_run="--dry-run" in args)
+    else:
+        loop()
 
 
 if __name__ == "__main__":
