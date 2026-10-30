@@ -267,23 +267,30 @@ def plan(asleep_s, since_run_s, catching_up):
     return None, False
 
 
+def tick(state, wall, mono, run):
+    """The loop's state after one tick at wall-clock `wall` and monotonic `mono`, calling `run(why)` when a run is due.
+    time.monotonic() is mach_absolute_time on macOS, which stops while the Mac sleeps, so the wall clock running ahead
+    of it between two ticks is the time the Mac slept."""
+    asleep_s = (wall - state["wall"]) - (mono - state["mono"])
+    why, catching_up = plan(asleep_s, wall - state["run"], state["catching_up"])
+    new = {"wall": wall, "mono": mono, "run": state["run"], "catching_up": catching_up}
+    if why == "wake":
+        log({"event": "wake", "slept_s": int(asleep_s)}, False)
+    if why:
+        new["run"] = wall
+        try:
+            unreached = run(why)
+        except Exception as error:
+            log({"event": "error", "why": why, "error": repr(error)[:300]}, False)
+        else:
+            new["catching_up"] = catching_up and unreached > 0
+    return new
+
+
 def loop():
-    """time.monotonic() is mach_absolute_time on macOS, which stops while the Mac sleeps, so the wall clock running
-    ahead of it between two ticks is the time the Mac slept."""
-    last_wall, last_mono, last_run, catching_up = time.time(), time.monotonic(), 0.0, False
+    state = {"wall": time.time(), "mono": time.monotonic(), "run": 0.0, "catching_up": False}
     while True:
-        wall, mono = time.time(), time.monotonic()
-        asleep_s = (wall - last_wall) - (mono - last_mono)
-        last_wall, last_mono = wall, mono
-        why, catching_up = plan(asleep_s, wall - last_run, catching_up)
-        if why == "wake":
-            log({"event": "wake", "slept_s": int(asleep_s)}, False)
-        if why:
-            last_run = wall
-            try:
-                catching_up = catching_up and reap(why) > 0
-            except Exception as error:
-                log({"event": "error", "why": why, "error": repr(error)[:300]}, False)
+        state = tick(state, time.time(), time.monotonic(), reap)
         time.sleep(TICK_S)
 
 
