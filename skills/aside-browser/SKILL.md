@@ -170,6 +170,7 @@ On a Linux box the default is the box's own headful Chrome:
 5. `agent()`, `memory_search()` and the site skill globals (`gmail`, `slack`, `googleDocs` and the rest) run in Aside, because they exist only there.
 6. When a box page lands on a sign-in page, the result says so, and only then you open it again with `open_tab(url, browser="aside")`.
 7. When an Aside page lands on a sign-in page, click its Sign in, Continue or Google button yourself before you decide no login is saved, because Chrome hides the owner's saved email and password from scripts and snapshots until a real click. On 10-19 a job read empty boxes on Cloudflare's sign-in page in Aside and asked the owner to sign in while Aside held his saved login (c129), so `open_tab` now says this on every Aside sign-in page.
+8. Never copy the owner's Google cookies out of Aside into a box Chrome or any other browser, even under c169's rule to copy a live credential, because Google ties the session to the device and revokes it everywhere on first use. On 10-30 a job copied 33 Google cookies for Search Console from Aside into a us-metal02 Chrome profile, Google cleared them there within seconds, and 16 s later it signed sieunpark77@gmail.com and sieun@virev.ai out of Aside, which only his passkey could undo. Google-signed-in work stays in Aside, or the box signs in to Google on its own.
 
 On the owner's Mac the same split holds, and the box is us-metal02 (`ASIDE_BROWSER_BOX_HOST`):
 
