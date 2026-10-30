@@ -65,11 +65,12 @@ test("a roster row without taskState clears a kept waiting verdict and credentia
   const live = { ...resident, id: "a1", lifecycle: "live", activity: "idle", isSessionActive: false, isStreaming: false, isCompacting: false, attachedClients: 0,
     sessionFile: `/tmp/${ID}.jsonl` } as unknown as SessionSummary;
   const agents = new Map<string, string>();
-  const first = applyRosterUpdate(new Map(), agents, { changed: [{ agentId: agentIdOf(live), status: "running", summary: live }] }).rows;
-  assert.notEqual(primePark(first.get(rowKey(live))), undefined);
+  const rows = new Map<string, SessionSummary>();
+  applyRosterUpdate(rows, agents, { changed: [{ agentId: agentIdOf(live), status: "running", summary: live }] });
+  assert.notEqual(primePark(rows.get(rowKey(live))), undefined);
   const { taskState: _, credentialPark: __, ...ran } = live as SessionSummary & { credentialPark?: unknown };
-  const next = applyRosterUpdate(first, agents, { changed: [{ agentId: agentIdOf(live), status: "running", summary: { ...ran, summary: "Writes the page" } as SessionSummary }] }).rows;
-  assert.equal(primePark(next.get(rowKey(live))), undefined);
+  applyRosterUpdate(rows, agents, { changed: [{ agentId: agentIdOf(live), status: "running", summary: { ...ran, summary: "Writes the page" } as SessionSummary }] });
+  assert.equal(primePark(rows.get(rowKey(live))), undefined);
 });
 
 test("a subagent whose rlm snapshot waits shows what it waits for, with list_subagents's epoch-ms times left alone", () => {

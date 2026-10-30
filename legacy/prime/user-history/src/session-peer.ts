@@ -89,27 +89,34 @@ export function liveAgents(rows: ReadonlyMap<string, SessionSummary>): Map<strin
 export type RosterUpdate = { changed?: { agentId: string; status?: string; summary: Partial<SessionSummary> & { sessionId: string } }[]; removed?: string[]; resync?: true };
 
 /**
- * A roster_update laid over the rows: a changed agent's summary replaces or joins its row, and a removed one's row is saved. `unknown` is true
- * when the update names an agent the rows cannot place, so the caller lists the roster to catch up.
+ * A roster_update laid over the rows in place: a changed agent's summary replaces or joins its row, and a removed one's row is saved. It returns
+ * true when the update names an agent the rows cannot place, so the caller lists the roster to catch up.
+ *
+ * Until 10-30 each update copied the whole map first. With 7,876 rows on us-metal02 and about 330 updates a minute, that copy was 375 MB of
+ * the 1,012 MB a minute a scratch serve on a copy of the live data dir allocated, and the live chat ran a major GC nearly every minute.
  */
-export function applyRosterUpdate(rows: ReadonlyMap<string, SessionSummary>, agents: Map<string, string>, update: RosterUpdate): { rows: Map<string, SessionSummary>; unknown: boolean } {
-  const next = new Map(rows);
+export function applyRosterUpdate(rows: Map<string, SessionSummary>, agents: Map<string, string>, update: RosterUpdate): boolean {
   let unknown = update.resync === true;
   for (const entry of update.changed ?? []) {
     const row = { ...entry.summary, ...(entry.status ? { rosterStatus: entry.status } : {}) } as SessionSummary;
     const key = rowKey(row);
-    dropStarting(next, row);
-    next.set(key, merged(next.get(key), row));
+    dropStarting(rows, row);
+    rows.set(key, merged(rows.get(key), row));
     agents.set(entry.agentId, key);
   }
   for (const agentId of update.removed ?? []) {
-    const key = agents.get(agentId) ?? [...next.entries()].find(([, row]) => agentIdOf(row) === agentId)?.[0];
-    const row = key === undefined ? undefined : next.get(key);
+    const key = agents.get(agentId) ?? keyOfAgent(rows, agentId);
+    const row = key === undefined ? undefined : rows.get(key);
     if (key === undefined || !row) { unknown = true; continue; }
-    next.set(key, saved(row));
+    rows.set(key, saved(row));
     agents.delete(agentId);
   }
-  return { rows: next, unknown };
+  return unknown;
+}
+
+function keyOfAgent(rows: ReadonlyMap<string, SessionSummary>, agentId: string): string | undefined {
+  for (const [key, row] of rows) if (agentIdOf(row) === agentId) return key;
+  return undefined;
 }
 
 /**
@@ -395,8 +402,7 @@ export class SessionPeer {
   private onRoster(update: RosterUpdate): void {
     if (!this.listed) return;
     this.counts.updates++;
-    const { rows, unknown } = applyRosterUpdate(this.rows, this.agents, update);
-    this.rows = rows;
+    const unknown = applyRosterUpdate(this.rows, this.agents, update);
     this.changed();
     if (unknown) this.catchUp();
   }

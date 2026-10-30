@@ -18,11 +18,12 @@ const row = (rows: ReadonlyMap<string, SessionSummary>) => rows.get(rowKey(base)
 
 test("a roster update without waitingFor clears the wait, so the run that got its slot reads working", () => {
   const agents = new Map<string, string>();
-  const first = applyRosterUpdate(new Map(), agents, { changed: [{ agentId: agentIdOf(queued), status: "running", summary: queued }] }).rows;
-  assert.equal(agentState(row(first)), "retry");
-  const next = applyRosterUpdate(first, agents, { changed: [{ agentId: agentIdOf(base), status: "running", summary: base }] }).rows;
-  assert.equal(agentState(row(next)), "working");
-  for (const field of ["waitingFor", "waitingSince", "directAttachedClients", "holdsDetachedProcesses"]) assert.equal(field in row(next), false, field);
+  const rows = new Map<string, SessionSummary>();
+  applyRosterUpdate(rows, agents, { changed: [{ agentId: agentIdOf(queued), status: "running", summary: queued }] });
+  assert.equal(agentState(row(rows)), "retry");
+  applyRosterUpdate(rows, agents, { changed: [{ agentId: agentIdOf(base), status: "running", summary: base }] });
+  assert.equal(agentState(row(rows)), "working");
+  for (const field of ["waitingFor", "waitingSince", "directAttachedClients", "holdsDetachedProcesses"]) assert.equal(field in row(rows), false, field);
 });
 
 test("a roster list without waitingFor clears it too", () => {

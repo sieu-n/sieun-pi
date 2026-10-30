@@ -1003,7 +1003,7 @@ export class Catalog {
   private index(rows: readonly SessionSummary[]): void {
     const next = new Map<string, SessionSummary>();
     const children: SessionSummary[] = [];
-    ({ own: this.own, ownActive: this.ownActive } = ownIds(rows));
+    ({ own: this.own, ownActive: this.ownActive } = this.ownNow());
     for (const row of this.hosts ? [...rows, ...this.hosts.rows()] : rows) {
       if (!isTopLevel(row)) { children.push(row); continue; }
       const existing = next.get(row.sessionId);
@@ -1563,8 +1563,8 @@ export class Catalog {
   }
 
   /** This box's session ids and active session ids from its last list, and the ones of them with a worker now. */
-  private own = new Set<string>();
-  private ownActive = new Set<string>();
+  private own: ReadonlySet<string> = new Set<string>();
+  private ownActive: ReadonlySet<string> = new Set<string>();
   /** Sessions already logged as running on two boxes. */
   private readonly duplicates = new Set<string>();
   /** The box of each session id and active session id this server started on another box, until that box's list names it (`place`). */

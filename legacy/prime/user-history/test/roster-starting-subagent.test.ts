@@ -20,10 +20,11 @@ const children = (rows: ReadonlyMap<string, SessionSummary>) => [...rows.values(
 
 test("a starting subagent's roster row gives way to its real row in a roster update", () => {
   const agents = new Map<string, string>();
-  const first = applyRosterUpdate(new Map(), agents, { changed: [{ agentId: agentIdOf(starting), status: "running", summary: starting }] }).rows;
-  assert.deepEqual(children(first), ["sub-54809f40"]);
-  const next = applyRosterUpdate(first, agents, { changed: [{ agentId: agentIdOf(real), status: "running", summary: real }] }).rows;
-  assert.deepEqual(children(next), ["01a14dce-3425-7478-9b5f-a1a7a116b6c7"]);
+  const rows = new Map<string, SessionSummary>();
+  applyRosterUpdate(rows, agents, { changed: [{ agentId: agentIdOf(starting), status: "running", summary: starting }] });
+  assert.deepEqual(children(rows), ["sub-54809f40"]);
+  applyRosterUpdate(rows, agents, { changed: [{ agentId: agentIdOf(real), status: "running", summary: real }] });
+  assert.deepEqual(children(rows), ["01a14dce-3425-7478-9b5f-a1a7a116b6c7"]);
 });
 
 test("a roster list drops the starting row its real row replaces, and keeps another parent's starting row with the same child id", () => {
