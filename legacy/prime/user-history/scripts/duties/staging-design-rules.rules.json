@@ -351,6 +351,16 @@
         "d9cb9779405"
       ],
       "why": "For you note 'Get started doesn't feel virev AT ALL. button ugly, no icon, super fat as fuc, super round as fuck' and '이 이상한 animation 치우고': f03c2be6ff8 writes the shared-Button-with-icon and no-ambient-animation lines into the skill, 17b60db5534 redraws Get started as a plain PageSection with hairline icon rows and small @virev/ui Buttons and drops the moving setup timeline, and d9cb9779405 puts Staging home on home/tidy-1029, a fork of home/get-started; checked in Aside on 5180 at 00:40Z."
+    },
+    {
+      "at": "2026-10-29T12:09:01.011Z",
+      "commits": [
+        "b7660c97151",
+        "22b2b354839",
+        "307f246ebee",
+        "e745ef9f6ca"
+      ],
+      "why": "DM compose note 'polish wise doesn't feel like Virev design - too ugly,fat/tall, need nice transition/animation ... Style Should be consistent with all the other Instagram Account search places': the shared-components, less-padding and smooth-motion lines were already in the skill, b7660c97151 gives New DM a From pick, grouped search and an account preview, 22b2b354839 gives the Channels rail type icons and a row pen, 307f246ebee puts email compose on the same From pick and grouped To rows, and e745ef9f6ca puts Staging inbox on inbox/compose-polish (p405)."
     }
   ]
 }
