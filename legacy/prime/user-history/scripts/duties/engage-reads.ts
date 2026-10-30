@@ -216,30 +216,71 @@ const nextDay = (day: string): string => new Date(Date.parse(`${day}T00:00:00Z`)
 export const NOT_PAGINATION: ReadonlySet<string> = new Set(["profile_not_found", "fleet_exhausted"]);
 
 /**
- * The highest pages a day one account is proven to read safely. A rate R is proven over PROOF_DAYS consecutive full UTC days when on each of
- * them at least `cohort` accounts (a canary's worth) read R pages or more, and every Instagram verdict from the first of those days on hit an
- * account that read more than R in the 24 h before it: a verdict at v pages unproves every rate of v or more, so a canary death at a higher
- * rate leaves a lower rate proven. A verdict on an account that read no page in its last 24 h says nothing about a read rate and is left out
- * (prod 55 and 74 on 10-12: every read answered 302 to login, so they read 0 pages before Instagram killed the session). The rates tried are
- * the day totals accounts read. Returns the best rate and its days, or null.
+ * The significance level of deathExcessP() at which a rate counts as unsafe: the conventional 5% one-sided level. Measured on prod 10-30 over the
+ * full UTC days 10-12 to 10-29, 2,224 account-days and 16 Instagram verdicts on accounts that had served a page in their last 24 h, the verdicts
+ * per 100 account-days by the pages the account read that day were 0.11 under 100, 1.35 at 100 to 199, 2.03 at 200 to 299, 1.27 at 300 to 399,
+ * 0.62 at 400 to 599, 1.31 at 600 to 799 and 0 in 215 account-days at 800 or more. By an account's busiest day, 5 of 42 that never read over 300
+ * died, 0 of 27 at 301 to 600, 7 of 80 at 601 to 1,000 and 4 of 31 over 1,000. Deaths did not rise with pages, so a verdict proves a rate unsafe
+ * only when the accounts reading it die more often than the rest.
  */
-export function provenRate(days: readonly DayPages[], deaths: readonly Death[], cohort: number): { rate: number; days: string[] } | null {
+export const DEATH_EXCESS_P = 0.05;
+
+/**
+ * One-sided Fisher exact test: the chance that `hiDays` account-days drawn at random from all `hiDays + loDays` hold `hiDeaths` or more of the
+ * `hiDeaths + loDeaths` verdicts. A small value says the account-days at the higher rate died more often than chance allows.
+ */
+export function deathExcessP(hiDays: number, hiDeaths: number, loDays: number, loDeaths: number): number {
+  const total = hiDays + loDays;
+  const deaths = hiDeaths + loDeaths;
+  if (hiDeaths <= 0) return 1;
+  const logFact = [0];
+  for (let n = 1; n <= total; n++) logFact.push(logFact[n - 1]! + Math.log(n));
+  const logChoose = (n: number, k: number): number => logFact[n]! - logFact[k]! - logFact[n - k]!;
+  let p = 0;
+  for (let k = hiDeaths; k <= Math.min(deaths, hiDays); k++) p += Math.exp(logChoose(deaths, k) + logChoose(total - deaths, hiDays - k) - logChoose(total, hiDays));
+  return Math.min(1, p);
+}
+
+/** A proven rate, its days, and the death evidence it passed: account-days at or over the rate and under it since its first day, and the verdicts on each side. */
+export interface Proof { rate: number; days: string[]; hiDays: number; hiDeaths: number; loDays: number; loDeaths: number; p: number }
+
+/**
+ * The highest pages a day one account is proven to read safely. A rate R is proven over PROOF_DAYS consecutive full UTC days when on each of
+ * them at least `cohort` accounts (a canary's worth) read R pages or more, and from the first of those days on the accounts reading R or more
+ * did not die more often than the accounts reading less: each account's first Instagram verdict counts at the pages it read in the 24 h before
+ * it, every full UTC day an account read a page counts as one account-day at that day's pages, and deathExcessP() under DEATH_EXCESS_P makes R
+ * unsafe. Until 10-30 any verdict at v pages unproved every rate of v or more, so prod 163 at 91 pages held the proven rate at 90 while 12 canary
+ * accounts read up to 665 a day with 0 verdicts; DEATH_EXCESS_P has the data that retired it. A verdict on an account that read no page in its
+ * last 24 h says nothing about a read rate and is left out (prod 55 and 74 on 10-12: every read answered 302 to login, so they read 0 pages
+ * before Instagram killed the session). The rates tried are the day totals accounts read. Returns the best rate with its evidence, or null.
+ */
+export function provenRate(days: readonly DayPages[], deaths: readonly Death[], cohort: number): Proof | null {
   if (cohort < 1) return null;
-  const verdicts = deaths.filter(death => causeOf(death) === "instagram");
   const byDay = new Map<string, number[]>();
   for (const row of days) if (row.pages > 0) byDay.set(row.day, [...byDay.get(row.day) ?? [], row.pages]);
   for (const pages of byDay.values()) pages.sort((a, b) => b - a);
-  let best: { rate: number; days: string[] } | null = null;
+  const firstVerdicts = new Map<number, Death>();
+  for (const death of [...deaths].sort((a, b) => a.at - b.at))
+    if (causeOf(death) === "instagram" && death.pages24h > 0 && !firstVerdicts.has(death.accountId)) firstVerdicts.set(death.accountId, death);
+  let best: Proof | null = null;
   for (const first of [...byDay.keys()].sort()) {
     const run = [first];
     while (run.length < PROOF_DAYS && byDay.has(nextDay(run.at(-1)!))) run.push(nextDay(run.at(-1)!));
     if (run.length < PROOF_DAYS) continue;
     const start = Date.parse(`${first}T00:00:00Z`);
-    const unsafe = Math.min(Infinity, ...verdicts.filter(death => death.at >= start && death.pages24h > 0).map(death => death.pages24h));
-    const rates = run.map(day => byDay.get(day)!.slice(cohort - 1).find(pages => pages < unsafe));
-    if (rates.some(rate => rate === undefined)) continue;
-    const rate = Math.min(...rates as number[]);
-    if (!best || rate > best.rate || (rate === best.rate && first > best.days[0]!)) best = { rate, days: run };
+    const verdicts = [...firstVerdicts.values()].filter(death => death.at >= start).map(death => death.pages24h);
+    const accountDays = [...byDay].filter(([day]) => day >= first).flatMap(([, pages]) => pages);
+    const ceiling = Math.min(...run.map(day => byDay.get(day)![cohort - 1] ?? 0));
+    const rates = [...new Set(run.flatMap(day => byDay.get(day)!))].filter(rate => rate <= ceiling).sort((a, b) => b - a);
+    for (const rate of rates) {
+      const hiDays = accountDays.filter(pages => pages >= rate).length;
+      const hiDeaths = verdicts.filter(pages => pages >= rate).length;
+      const evidence = { hiDays, hiDeaths, loDays: accountDays.length - hiDays, loDeaths: verdicts.length - hiDeaths };
+      const p = deathExcessP(evidence.hiDays, evidence.hiDeaths, evidence.loDays, evidence.loDeaths);
+      if (p < DEATH_EXCESS_P) continue;
+      if (!best || rate > best.rate || (rate === best.rate && first > best.days[0]!)) best = { rate, days: run, ...evidence, p };
+      break;
+    }
   }
   return best;
 }
@@ -314,10 +355,10 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
       const onHand = onHandOf(data.accounts).length;
       const need = rate ? Math.ceil(PAGES_A_DAY_GOAL / rate) : null;
       flagged.push({ at, kind: "capacity", excerpt: (proof
-        ? `${counted} x ${fmt(rate)} pages a day per account, proven on ${proof.days.join(" and ")} (the ${want}th busiest account read that much each day, 0 Instagram verdicts at or under it) = ${fmt(healthy * rate)} pages a day. `
+        ? `${counted} x ${fmt(rate)} pages a day per account, proven on ${proof.days.join(" and ")} (the ${want}th busiest account read that much each day; since then ${proof.hiDeaths} Instagram verdicts in ${fmt(proof.hiDays)} account-days at or over it and ${proof.loDeaths} in ${fmt(proof.loDays)} under it, p ${proof.p.toFixed(2)}) = ${fmt(healthy * rate)} pages a day. `
           + `${need! > healthy ? `${need! - healthy} more healthy accounts at that rate reach ${fmt(PAGES_A_DAY_GOAL)}. ` : ""}`
           + `${onHand} prod accounts on hand (not dead, not moved to another world) x ${fmt(rate)} = ${fmt(onHand * rate)}${onHand * rate < PAGES_A_DAY_GOAL ? `, short of ${fmt(PAGES_A_DAY_GOAL)}: only more accounts or a higher proven rate reach it` : ", enough once they are healthy"}.`
-        : `${counted}, and no rate is proven: no ${PROOF_DAYS} consecutive full UTC days had ${want} accounts read at one rate with 0 Instagram verdicts at or under it.`).slice(0, 600) });
+        : `${counted}, and no rate is proven: no ${PROOF_DAYS} consecutive full UTC days had ${want} accounts read at one rate whose readers did not die more often than the rest.`).slice(0, 600) });
     }
     if (data.lapsed && (data.lapsed.waiting || data.lapsed.blocked)) flagged.push({ at, kind: "lapsed_bindings", excerpt: (`${data.lapsed.waiting + data.lapsed.blocked} active prod accounts have no live proxy session binding, the oldest since ${utc(data.lapsed.oldestAt!)}. `
       + `${data.lapsed.waiting} wait on the renewal loop and count as capacity: they read again once the proxy answers (a GeoNode supply hold or neutral_address_unresolved renewals point at the proxy). `
