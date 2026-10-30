@@ -9,4 +9,26 @@ size=$1; shift
 if [ "$1" = "--" ]; then shift; fi
 if [ $# -eq 0 ]; then echo "usage: heavy <size such as 8G> -- <cmd> [args]" >&2; exit 2; fi
 if ! command -v systemd-run >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then exec "$@"; fi
+# A vitest run in the box sizes its pool to SIZE at one worker per GiB, instead of vitest's default of one per core
+# but one, which is 79 on us-metal02. measured: on 10-30 the 191-file apps/virev-demo unit suite peaked at 4.7 to
+# 5.6 GiB on 8 workers over 4 runs under heavy 8G (0.7 GiB a worker), while 1 of 2 runs on 13 workers and the runs on
+# 79 hit 8 GiB and were OOM-killed. It took 111 s on 8 workers and 102 s on 16, and 47 root Convex integration files
+# took 55 s on 8, 16 and 45 workers alike. A VITEST_MAX_WORKERS or --maxWorkers the caller sets wins.
+gib() {
+	n=${1%[KkMmGgTt]}
+	case $n in '' | *[!0-9]*) return 1 ;; esac
+	case $1 in
+	*[Tt]) echo $((n * 1024)) ;; *[Gg]) echo "$n" ;; *[Mm]) echo $((n / 1024)) ;; *[Kk]) echo $((n / 1048576)) ;;
+	*) echo $((n / 1073741824)) ;;
+	esac
+}
+if [ -z "${VITEST_MAX_WORKERS:-}" ] && workers=$(gib "$size"); then
+	set_workers=1
+	for arg in "$@"; do case $arg in --maxWorkers* | --max-workers*) set_workers= ;; esac; done
+	if [ -n "$set_workers" ]; then
+		[ "$workers" -ge 1 ] || workers=1
+		VITEST_MAX_WORKERS=$workers
+		export VITEST_MAX_WORKERS
+	fi
+fi
 exec systemd-run --user --scope --quiet -p MemoryMax="$size" -p MemorySwapMax=0 -- choom -n 500 -- "$@"

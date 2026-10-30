@@ -161,6 +161,24 @@ class Heavy(unittest.TestCase):
         self.assertEqual(self.run_heavy("1G", "--", path="/usr/bin:/bin").returncode, 2)
         self.assertEqual(self.run_heavy("1G", path="/usr/bin:/bin").returncode, 2)
 
+    @unittest.skipUnless(Path("/run/systemd/system").is_dir(), "heavy runs CMD as is without systemd")
+    def test_vitest_gets_one_worker_per_gib_of_the_size(self):
+        def workers(size: str, *cmd: str, env: dict | None = None) -> str:
+            with tempfile.TemporaryDirectory() as tmp:
+                fake = Path(tmp) / "systemd-run"
+                fake.write_text('#!/bin/sh\necho "${VITEST_MAX_WORKERS:-unset}"\n')
+                fake.chmod(0o755)
+                done = subprocess.run(["/bin/sh", str(MEM / "heavy"), size, "--", *cmd], capture_output=True, text=True, env={"PATH": f"{tmp}:/usr/bin:/bin", **(env or {})})
+            return done.stdout.strip()
+
+        self.assertEqual(workers("8G", "npx", "vitest", "run"), "8")
+        self.assertEqual(workers("24G", "pnpm", "test"), "24")
+        self.assertEqual(workers("1T", "x"), "1024")
+        self.assertEqual(workers("512M", "x"), "1")
+        self.assertEqual(workers("8G", "x", env={"VITEST_MAX_WORKERS": "3"}), "3")
+        self.assertEqual(workers("8G", "npx", "vitest", "run", "--maxWorkers=2"), "unset")
+        self.assertEqual(workers("50%", "x"), "unset")
+
 
 class ThpDefrag(unittest.TestCase):
     def test_defer_at_boot_and_from_setup(self):
