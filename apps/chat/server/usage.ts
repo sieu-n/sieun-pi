@@ -5,8 +5,10 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { HostsReport, HostView, MachineView, UsageReport, UsageRow } from "../web/src/lib/api/types.ts";
-import type { Host, UsageTotal } from "./host/types.ts";
+import type { AgentRelayLink, HostsReport, HostView, MachineView, UsageReport, UsageRow } from "../web/src/lib/api/types.ts";
+import { MultiHost } from "./host/multi-host.ts";
+import type { RelayHost } from "./host/relay-host.ts";
+import type { Host, Ping, UsageTotal } from "./host/types.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
 import { statusOf, type Threads } from "./threads.ts";
 
@@ -63,31 +65,57 @@ async function relayHost(h: RegistryHost): Promise<{ pingMs: number; machine: Ma
   return { pingMs: Date.now() - started, machine: body?.machine ?? null };
 }
 
-/** The hosts registry (~/.config/sieun-pi/hosts.json), this box first. */
-export async function hostsReport(host: Host, threads: Threads, box: string, socket: string): Promise<HostsReport> {
+/** What the box's `RelayHost` holds about its link, read from memory with no call to the box. */
+export function agentRelayLink(relay: RelayHost): AgentRelayLink {
+  const link = relay.state();
+  return {
+    state: link.state, since: link.since, lastPongAt: relay.lastPongAt ?? null, version: relay.hello?.version ?? null,
+    piHost: relay.hello?.piHost ?? null, feedCursor: relay.cursor(),
+  };
+}
+
+const piHostView = (ping: NonNullable<Ping["boxes"]>[string], socket?: string): HostView["piHost"] =>
+  ping.ok ? { state: "answering", version: ping.version, ...(socket ? { socket } : {}) } : { state: "down", error: ping.error };
+
+/**
+ * Every box in the hosts registry and every box the chat server routes agents to, this box first. The machine figures come from each box's
+ * machine relay; the agent relay link and a remote pi-host come from the `RelayHost` in memory.
+ */
+export async function hostsReport(host: Host, threads: Threads, box: string, socket: string, hostsFile: string): Promise<HostsReport> {
   let registry: RegistryHost[] = [];
   let registryError: string | null = null;
   try {
-    registry = (JSON.parse(readFileSync(join(homedir(), ".config/sieun-pi/hosts.json"), "utf8")) as { hosts: RegistryHost[] }).hosts;
+    registry = (JSON.parse(readFileSync(hostsFile, "utf8")) as { hosts: RegistryHost[] }).hosts;
   } catch (error) {
     registryError = error instanceof Error ? error.message : String(error);
   }
-  const self = registry.find(h => h.name === box) ?? { name: box, address: "127.0.0.1" };
-  const others = registry.filter(h => h.name !== box);
+  const routing = host instanceof MultiHost ? host : undefined;
+  const names = [...new Set([box, ...registry.map(h => h.name), ...(routing?.list().map(b => b.box) ?? [])])];
   const ping = await host.ping();
-  const mine: HostView = {
-    name: self.name, address: self.address, self: true, relay: { state: "up", pingMs: 0 },
-    piHost: ping.ok ? { state: "answering", version: ping.version, socket } : { state: "down", error: ping.error },
-    machine: registry.some(h => h.name === box) ? await relayHost(self).then(r => r.machine).catch(() => null) : null,
-    threads: threads.threadsList().filter(t => !t.archived).map(t => ({ id: t.id, name: t.name, status: statusOf(t.status), model: `${t.provider}/${t.modelId}`, updatedAt: t.updatedAt, children: t.children })),
-  };
-  const views = await Promise.all(others.map(async (h): Promise<HostView> => {
-    try {
-      const read = await relayHost(h);
-      return { name: h.name, address: h.address, self: false, relay: { state: "up", pingMs: read.pingMs }, piHost: { state: "absent" }, machine: read.machine, threads: [] };
-    } catch (error) {
-      return { name: h.name, address: h.address, self: false, relay: { state: "unreachable", error: error instanceof Error ? error.message : String(error) }, piHost: { state: "absent" }, machine: null, threads: [] };
+  const rows = threads.threadsList().filter(t => !t.archived);
+  const views = await Promise.all(names.map(async (name): Promise<HostView> => {
+    const self = name === box;
+    const entry = registry.find(h => h.name === name);
+    const relay = routing?.relay(name);
+    const boxPing = ping.boxes?.[name] ?? (self ? ping : undefined);
+    const piHost: HostView["piHost"] = boxPing ? piHostView(boxPing, self ? socket : undefined) : { state: "absent" };
+    let machine: MachineView | null = null;
+    let machineRelay: HostView["relay"] = self ? { state: "up", pingMs: 0 } : { state: "unreachable", error: `${name} is not in ${hostsFile}` };
+    if (entry) {
+      try {
+        const read = await relayHost(entry);
+        machine = read.machine;
+        if (!self) machineRelay = { state: "up", pingMs: read.pingMs };
+      } catch (error) {
+        if (!self) machineRelay = { state: "unreachable", error: error instanceof Error ? error.message : String(error) };
+      }
     }
+    return {
+      name, address: entry?.address ?? (self ? "127.0.0.1" : "unknown"), self, relay: machineRelay, piHost,
+      agentRelay: relay ? agentRelayLink(relay) : null, machine,
+      threads: piHost.state === "absent" ? [] : rows.filter(t => (t.box ?? box) === name)
+        .map(t => ({ id: t.id, name: t.name, status: statusOf(t.status), model: `${t.provider}/${t.modelId}`, updatedAt: t.updatedAt, children: t.children })),
+    };
   }));
-  return { checkedAt: Date.now(), registryError, hosts: [mine, ...views] };
+  return { checkedAt: Date.now(), registryError, hosts: views };
 }

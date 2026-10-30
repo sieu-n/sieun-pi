@@ -352,10 +352,23 @@ export interface UsageRow {
 export interface UsageReport { at: Ms; since: Ms; until: Ms; rows: UsageRow[]; days: { start: Ms; byModel: Record<string, number> }[]; previous: { cost: number; complete: boolean } }
 
 export interface HostThread { id: string; name: string; status: RunStatus; model: string | null; updatedAt: Ms; children: number }
+/**
+ * The chat server's link to a box's agent relay (`/v2/agents`), as its `RelayHost` holds it in memory: up or away since when, the last pong
+ * to its 15 s liveness ping, what the relay's last `hello` said, and the feed cursor the server saved for the box.
+ */
+export interface AgentRelayLink {
+  state: "up" | "away"; since: Ms; lastPongAt: Ms | null; version: string | null;
+  piHost: { up: boolean; version?: string; error?: string } | null;
+  feedCursor: number;
+}
 export interface HostView {
   name: string; address: string; self: boolean;
+  /** The machine relay (`/v1/host`, relayPort) that the page reads the machine figures from. */
   relay: { state: "up"; pingMs: number } | { state: "unreachable"; error: string };
-  piHost: { state: "answering"; version: string; socket: string } | { state: "down"; error: string } | { state: "absent" };
+  /** `socket` is set on the chat server's own box. A box with an agent relay reads pi-host from the relay's last `hello`. */
+  piHost: { state: "answering"; version: string; socket?: string } | { state: "down"; error: string } | { state: "absent" };
+  /** Null when the chat server dials no agent relay for the box. */
+  agentRelay: AgentRelayLink | null;
   machine: MachineView | null;
   threads: HostThread[];
 }

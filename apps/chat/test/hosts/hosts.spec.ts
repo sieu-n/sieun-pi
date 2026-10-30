@@ -3,7 +3,8 @@ import { expect, test } from "@playwright/test";
 type Host = {
   name: string; address: string; self: boolean;
   relay: { state: "up"; pingMs: number } | { state: "unreachable"; error: string };
-  piHost: { state: "answering"; version: string; socket: string } | { state: "down"; error: string } | { state: "absent" };
+  piHost: { state: "answering"; version: string; socket?: string } | { state: "down"; error: string } | { state: "absent" };
+  agentRelay?: { state: "up" | "away"; since: number; lastPongAt: number | null; version: string | null; piHost: { up: boolean; version?: string } | null; feedCursor: number } | null;
   machine: { cpu: { percent: number }; memory: { usedBytes: number; totalBytes: number } } | null;
   threads: { id: string; name: string; status: string }[];
 };
@@ -66,4 +67,33 @@ test("a failed hosts read shows the reason and Try again", async ({ page }) => {
   fail = false;
   await page.getByRole("button", { name: "Try again" }).click();
   await expect(page.getByTestId("hosts-summary")).toBeVisible();
+});
+
+test("a box's agent relay link shows up with its last pong and feed cursor, and away with the hello it last heard", async ({ page }) => {
+  await page.route("**/api/hosts", async route => {
+    const response = await route.fetch();
+    const data = (await response.json()) as Report;
+    const now = data.checkedAt;
+    const linked: Host = {
+      name: "linked-box", address: "100.64.0.10", self: false, relay: { state: "unreachable", error: "no machine relay" }, piHost: { state: "answering", version: "0.1.0" },
+      agentRelay: { state: "up", since: now - 600_000, lastPongAt: now - 4_000, version: "0.1.0", piHost: { up: true, version: "0.1.0" }, feedCursor: 7 }, machine: null, threads: [],
+    };
+    const away: Host = {
+      ...linked, name: "away-box", piHost: { state: "down", error: "away-box is offline" },
+      agentRelay: { state: "away", since: now - 20_000, lastPongAt: now - 31_000, version: "0.1.0", piHost: { up: true, version: "0.1.0" }, feedCursor: 7 },
+    };
+    await route.fulfill({ response, json: { ...data, hosts: [...data.hosts, linked, away] } });
+  });
+  await page.goto("/#/settings/hosts");
+  const linked = page.getByTestId("agent-relay-linked-box");
+  await expect(linked).toContainText("Linked since");
+  await expect(linked).toContainText("last pong 4 s ago");
+  await expect(linked).toContainText("feed cursor 7");
+  const away = page.getByTestId("host-away-box");
+  await expect(away.getByTestId("agent-relay-away-box")).toContainText("Away since");
+  await expect(away.getByTestId("agent-relay-away-box")).toContainText("last pong 31 s ago");
+  await expect(away.getByText("Away", { exact: true })).toBeVisible();
+  await expect(away.getByText("lost its link to this box's agent relay")).toBeVisible();
+  await expect(away.getByText("its last hello said answering, version 0.1.0")).toBeVisible();
+  await page.unrouteAll({ behavior: "ignoreErrors" });
 });

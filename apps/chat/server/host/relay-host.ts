@@ -96,6 +96,8 @@ export class RelayHost implements Host {
   private feedHalted = false;
   /** What the relay said in its last `hello`. */
   hello?: Extract<RelayFrame, { type: "hello" }>;
+  /** When the box last answered a liveness ping, kept after the link drops. */
+  lastPongAt?: number;
   onFeed?: (row: FeedRow) => Promise<void>;
   private readonly log: (line: string) => void;
   private readonly cursorFile: string;
@@ -164,7 +166,10 @@ export class RelayHost implements Host {
     const socket = new WebSocket(this.options.url, { headers: { authorization: `Bearer ${this.options.token}` }, handshakeTimeout: this.liveness });
     this.socket = socket;
     let alive = true;
-    socket.on("pong", () => (alive = true));
+    socket.on("pong", () => {
+      alive = true;
+      this.lastPongAt = Date.now();
+    });
     socket.once("open", () => {
       clearInterval(this.livenessTimer);
       this.livenessTimer = setInterval(() => {

@@ -2,7 +2,7 @@
   import type { HostView } from "$lib/api";
   import { conversationHref } from "$lib/router.svelte";
   import { ageLabel, Avatar, Badge, CardGroup, Disclosure, Meter, NavItem, PageHeader, StatusDot } from "$lib/ui";
-  import { gb, glance, hostStatus, piHostText, ramOf, relayText, RUN_LABEL, RUN_TONE, sparkPoints } from "./hosts";
+  import { agentRelayText, gb, glance, hostStatus, piHostText, ramOf, relayText, RUN_LABEL, RUN_TONE, sparkPoints } from "./hosts";
 
   /** One box: its figures, its machine meters, its services and the threads its pi-host holds. */
   let { host, cpuHistory, historyLength, now }: { host: HostView; cpuHistory: readonly number[]; historyLength: number; now: number } = $props();
@@ -26,7 +26,9 @@
       <Badge value={STATE_LABEL[hostStatus(host)]} tone={STATE_TONE[hostStatus(host)]} />
     {/snippet}
   </PageHeader>
-  {#if host.relay.state === "unreachable"}
+  {#if host.agentRelay?.state === "away"}
+    <p class="problem" role="status">The chat server lost its link to this box's agent relay, so posts to its agents wait until the link is back.</p>
+  {:else if host.relay.state === "unreachable" && !host.agentRelay}
     <p class="problem" role="status">The box did not answer at {host.address}: {host.relay.error}</p>
   {:else if host.piHost.state === "down"}
     <p class="problem" role="status">pi-host on this box does not answer, so its threads cannot run: {host.piHost.error}</p>
@@ -76,7 +78,12 @@
     <NavItem variant="card" label="pi-host" detail={piHostText(host)}>
       {#snippet leading()}<StatusDot status={host.piHost.state === "answering" ? "online" : host.piHost.state === "down" ? "busy" : "offline"} />{/snippet}
     </NavItem>
-    <NavItem variant="card" label="Relay" detail={relayText(host)}>
+    {#if host.agentRelay}
+      <NavItem variant="card" label="Agent relay" detail={agentRelayText(host, now)} data-testid="agent-relay-{host.name}">
+        {#snippet leading()}<StatusDot status={host.agentRelay?.state === "up" ? "online" : "away"} />{/snippet}
+      </NavItem>
+    {/if}
+    <NavItem variant="card" label="Machine relay" detail={relayText(host)}>
       {#snippet leading()}<StatusDot status={host.relay.state === "up" ? "online" : "offline"} />{/snippet}
     </NavItem>
   </CardGroup>

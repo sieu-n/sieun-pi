@@ -2,6 +2,7 @@
   import { api, type HostsReport } from "$lib/api";
   import { Button, EmptyState, IconButton, LoadingText, Page, PanelHeader } from "$lib/ui";
   import HostCard from "./HostCard.svelte";
+  import { reachable } from "./hosts";
 
   /** Hosts: every box in hosts.json with its machine, its pi-host and relay, and the threads on it, read every 2 s while open. */
   const POLL_MS = 2000;
@@ -38,7 +39,7 @@
     return () => clearInterval(timer);
   });
 
-  const answering = $derived(view?.hosts.filter(host => host.relay.state === "up").length ?? 0);
+  const answering = $derived(view?.hosts.filter(reachable).length ?? 0);
   const threads = $derived(view?.hosts.reduce((sum, host) => sum + host.threads.length, 0) ?? 0);
   const working = $derived(view?.hosts.reduce((sum, host) => sum + host.threads.filter(thread => thread.status === "working").length, 0) ?? 0);
 </script>
