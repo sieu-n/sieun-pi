@@ -480,6 +480,10 @@ The routing stayed in the chat server instead of moving into the relay, because 
 
 `GET /api/hosts` and the Hosts page now show each box's agent relay link as its `RelayHost` holds it in memory, with up or away since when, the last pong, the relay and pi-host versions from the last hello, and the feed cursor (`~/work/phase6-gaps/hosts-link/proof.md`).
 
+While a pi-host turn runs on the Mac, and for 2 min after, the agent relay holds `caffeinate -i -s -w <relay pid>` (`components/prime-relay/agents/awake.ts`), and on Linux it holds nothing. `-s` keeps the Mac in dark wake on AC power when its lid closes, a closed lid on battery still sleeps it, and a relay killed with `kill -9` left no caffeinate behind (`~/work/phase6-gaps/mac-awake/proof.md`).
+
+The Mac fetches from GitHub again, and at 11:33Z on 10-30 it installed pi-host and its relay as release-199338a over release-875c5fb (`~/work/phase6-gaps/mac-awake/mac-install.log`).
+
 ## 7. Open questions for the owner
 
 Each has a default, so work goes on without an answer.
