@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
-import { errorCounts, parts, report, type AutopairEvidence, type DmRow, type E2eEvidence } from "../scripts/duties/dm-extension.ts";
+import { errorCounts, parts, report, senderFits, type AutopairEvidence, type DmRow, type E2eEvidence } from "../scripts/duties/dm-extension.ts";
 
 const METRICS = (JSON.parse(readFileSync(new URL("../scripts/duties/dm-extension.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] }).metrics;
 const NOW = Date.parse("2026-10-30T12:00:00Z");
@@ -23,14 +23,30 @@ const E2E: E2eEvidence = {
   bReply: { text: "reply from @glenmyftiu945 09:52Z", onInstagram: true },
   replyInStore: { threadId: "t1", messageId: "m2" },
   replyInInboxUi: true,
-  inboxCard: { sent: false, error: "no New Instagram outreach card at https://staging.virev.ai/app/inbox" },
+  inboxCard: { sent: false, error: "no DM window at https://staging.virev.ai/app/inbox?outreach=1&to_handle=glenmyftiu945" },
 };
 
 test("all four parts hold: e2e_pass 1, and an unrelated autopair check is a slice, not a miss", () => {
   const out = report({ now: NOW, autopair: AUTOPAIR, e2e: E2E, rows: { messages: [], devices: [], truncated: false }, errors: [] }, METRICS);
   assert.deepEqual(out.metrics, { e2e_pass: 1, maybe_sent_24h: 0, send_restricted_24h: 0, unknown_username_24h: 0 });
   assert.ok(out.flagged?.some(slice => slice.kind === "autopair_check" && slice.excerpt.includes("5a")));
-  assert.ok(out.flagged?.some(slice => slice.kind === "inbox_card"));
+  assert.ok(out.flagged?.some(slice => slice.kind === "inbox_card" && slice.excerpt.includes("Inbox DM window")));
+});
+
+test("a sender with too few sends left reads sender_daily_limit and an unmeasured e2e_pass, never a fake 0", () => {
+  const sender = { username: "caiyiting8674", sentToday: 8, dailyLimit: 8 };
+  assert.equal(senderFits(sender), false);
+  const out = report({ now: NOW, autopair: AUTOPAIR, sender, rows: { messages: [], devices: [], truncated: false }, errors: [] }, METRICS);
+  assert.ok(out.metrics.e2e_pass! < 0);
+  assert.ok(out.flagged?.some(slice => slice.kind === "sender_daily_limit" && slice.excerpt.includes("8 of its daily limit of 8")));
+  assert.ok(!out.flagged?.some(slice => slice.kind === "e2e_part"));
+});
+
+test("a fresh org's sender row fits a run, and the four parts decide e2e_pass", () => {
+  assert.equal(senderFits({ username: "caiyiting8674", sentToday: 5, dailyLimit: 8 }), true);
+  assert.equal(senderFits({ username: "caiyiting8674", sentToday: 6, dailyLimit: 8 }), false);
+  const out = report({ now: NOW, autopair: AUTOPAIR, e2e: E2E, sender: { username: "caiyiting8674", sentToday: 0, dailyLimit: 8 }, errors: [] }, METRICS);
+  assert.equal(out.metrics.e2e_pass, 1);
 });
 
 test("a reply in another thread fails the reply part", () => {

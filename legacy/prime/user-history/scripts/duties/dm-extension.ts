@@ -17,11 +17,16 @@ import { DAY, REPO, settle, unmeasuredFlag, utc } from "./estate-reads.ts";
  *    the dev zip of the same tree, which holds the same files with the repo manifest, and a `build` slice says so.
  * 2. It reads the sender's and the replier's saved Instagram sessions from the prod crawler's Postgres on us-metal01 (ig_engage_browser_jars
  *    with ig_engage_accounts and proxy_endpoints, world prod), where the crawler keeps them fresh, into a mode 700 temp folder it deletes.
- * 3. It starts a staging clean world (scripts/dev/search-clean-world.mjs up --target staging) for its staging env, and runs the two
- *    real-Instagram rigs in it as test@konti.bot in Virev Test (RIG_ORG) with DM_EXTENSION_DIR set to the unpacked zip:
+ * 3. It starts a staging clean world (scripts/dev/search-clean-world.mjs up --target staging --allow-features instagramDm), a fresh
+ *    Clerk user and org approved on staging with the instagramDm allow, and runs the two real-Instagram rigs in it as that user and org
+ *    (the world's `run` hands them E2E_USER_EMAIL and E2E_ORG_ID) with DM_EXTENSION_DIR set to the unpacked zip:
  *    tests/autopair-real-ig.mjs (pair with no click, account found in the popup and on Connections) and tests/staging-real-ig.mjs (a
  *    test DM from Connections settles sent, the replier answers on Instagram, the reply lands in the store and the Inbox). Evidence and
- *    screenshots go to .cache/duties/dm-extension/latest in auto-sns-agent. `down` deletes the world's own user and org.
+ *    screenshots go to .cache/duties/dm-extension/latest in auto-sns-agent. `down` deletes the org's staging rows through
+ *    search/orgCascade:cascadeDeleteOrg (its devices, Instagram account rows, threads and messages), then the Clerk org and user.
+ *    Between the two rigs it reads the sender's daily count in the world's org from Connections' own query, and runs the sending rig
+ *    only when SENDS_PER_RUN sends fit under the sender's daily limit; otherwise a sender_daily_limit slice says so and e2e_pass reads
+ *    unmeasured instead of a fake 0.
  * 4. It reads staging's searchEmailMessages and searchDmDevices for the 24 h counts below, before the world goes down.
  * The headline e2e_pass is 1 only when all four parts hold, each read from the rigs' evidence.json, which they fill from staging rows.
  *
@@ -43,12 +48,17 @@ export const SENDER_ID = 206;
 export const REPLIER_ID = 264;
 export const WORLD = "dm-ext-duty";
 /**
- * The rigs sign in as test@konti.bot in Virev Test, not in the world's fresh org: the 206 and 264 Instagram thread belongs to Virev Test
- * (thread wn79y5y74ezgd2etqfscg9xeh18h4c31 since the 10-29 proof), and observe skips a thread another workspace holds (auto-sns-agent
- * 56113a07c), so a fresh org never gets the reply (dm-first-reading run 3 on 10-30). Virev Test holds the instagramDm allow.
+ * The rigs run as the world's own fresh user and org. They ran in Virev Test until 10-30, because observe skipped an Instagram thread
+ * another workspace held, so a fresh org never got the reply (dm-first-reading run 3 on 10-30). auto-sns-agent 555db4055 gives each
+ * workspace that sent in a shared thread its own copy, so the fresh org gets the reply too.
+ * A fresh org also gets a fresh searchSocialAccounts row for the sender, keyed by org and Instagram id (convex/search/dmDevices.ts
+ * syncAccounts), so earlier proof runs in other workspaces never use up its daily count. measured: on 10-30 Virev Test's row of 206
+ * (@caiyiting8674) read sentToday 8 of dailyLimit 8 and 285 (@gimnayeon1396) 4 of 8 (search/dmDevices:listOutreach), and the queued
+ * Inbox reply of that day's proof stayed scheduled.
  */
-export const RIG_ORG = "org_3F1Cqxz2TTx7bluJtHoP48Gdn6W";
-export const RIG_USER = "test@konti.bot";
+/** Sends one run makes from the sender in staging-real-ig.mjs: the test DM from Connections, the Inbox DM window send (?outreach=1) and
+ *  the Inbox reply. The autopair rig sends none. */
+export const SENDS_PER_RUN = 3;
 export const STAGING_DEPLOYMENT = "tremendous-eel-825";
 export const STAGING_HOST = "https://staging.virev.ai/*";
 /** measured: `convex data` on tremendous-eel-825 returned 16,384 and refused 50,001 ("Requested too many items") on 10-30, with 6,066 rows in searchEmailMessages. */
@@ -63,9 +73,11 @@ export const PARTS: Readonly<Record<Part, string>> = {
   sent: "a test DM enqueued from Connections settled sent",
   reply: "the replier's answer landed in the same Inbox thread and shows there",
 };
-export type Source = "build" | "jars" | "world" | "autopair" | "e2e" | "staging rows";
+export type Source = "build" | "jars" | "world" | "autopair" | "sender" | "e2e" | "staging rows";
 export const FEEDS: Readonly<Record<Source, readonly string[]>> = {
   build: ["e2e_pass"], jars: ["e2e_pass"], world: ["e2e_pass"], autopair: ["e2e_pass"], e2e: ["e2e_pass"],
+  // A failed read of the sender's count blocks nothing: the sending rig still runs, and the server's own limit refuses past it.
+  sender: [],
   "staging rows": ["maybe_sent_24h", "send_restricted_24h", "unknown_username_24h"],
 };
 
@@ -83,11 +95,16 @@ export interface E2eEvidence {
 export interface DmRow { _id: string; _creationTime: number; status: string; errorCode?: string; lastError?: string; orgId: string; dm?: { transport?: string; lastAttemptAt?: number } }
 export interface DeviceRow { _id: string; orgId: string; updatedAt?: number; unregistered?: { platformUserId: string; username: string | null; reason: string }[] }
 export interface Build { sha: string; loaded: "store" | "dev"; dirty: string[]; sameFiles: boolean; version: string }
+/** The sender's row in the world's org, as Connections reads it: today's sends and the effective daily limit (warm-up and override). */
+export interface Sender { username: string; sentToday: number; dailyLimit: number }
+
+export const senderFits = (sender: Sender): boolean => sender.dailyLimit - sender.sentToday >= SENDS_PER_RUN;
 
 export interface DutyData {
   now: number;
   build?: Build;
   autopair?: AutopairEvidence;
+  sender?: Sender;
   e2e?: E2eEvidence;
   e2eExit?: number;
   rows?: { messages: DmRow[]; devices: DeviceRow[]; truncated: boolean };
@@ -145,7 +162,13 @@ export function report(data: DutyData, dutyMetrics: readonly DutyMetric[]): Prec
     const { sha, loaded, dirty, sameFiles, version } = data.build;
     flagged.push({ at, kind: "build", excerpt: `${version} from auto-sns-agent ${sha.slice(0, 10)}: ${loaded === "dev" ? "the store zip lists no staging host, so the run loaded the dev zip of the same tree" : "the run loaded the store zip"}${sameFiles ? ", same files in both zips" : "; the store and dev zips hold DIFFERENT files"}${dirty.length ? `; uncommitted in apps/dm-extension: ${dirty.join(", ")}` : ""}`.slice(0, 300) });
   }
-  if (data.autopair || data.e2e) {
+  const blocked = data.sender !== undefined && !senderFits(data.sender);
+  if (data.sender && blocked) {
+    const { username, sentToday, dailyLimit } = data.sender;
+    unmeasured.add("e2e_pass");
+    flagged.push({ at, kind: "sender_daily_limit", excerpt: `sender ${SENDER_ID} @${username} had sent ${sentToday} of its daily limit of ${dailyLimit} in the world's org, and a run sends ${SENDS_PER_RUN}, so the sending rig did not run and the e2e parts are not measured` });
+  }
+  if (!blocked && (data.autopair || data.e2e)) {
     const held = parts(data.autopair, data.e2e);
     metrics.e2e_pass = Object.values(held).every(part => part.ok) ? 1 : 0;
     for (const [part, { ok, why }] of Object.entries(held) as [Part, { ok: boolean; why: string }][])
@@ -153,7 +176,7 @@ export function report(data: DutyData, dutyMetrics: readonly DutyMetric[]): Prec
     const failedChecks = (data.autopair?.checks ?? []).filter(c => !c.ok && !/^[23][ab]? /.test(c.name)).map(c => c.name);
     if (failedChecks.length) flagged.push({ at, kind: "autopair_check", excerpt: `other autopair checks that failed: ${failedChecks.join("; ")}`.slice(0, 300) });
     const card = data.e2e?.inboxCard;
-    if (card && card.sent === false) flagged.push({ at, kind: "inbox_card", excerpt: `the Inbox's New Instagram outreach card did not send (not one of the four parts): ${card.error ?? card.text ?? ""}`.slice(0, 300) });
+    if (card && card.sent === false) flagged.push({ at, kind: "inbox_card", excerpt: `the Inbox DM window (?outreach=1) did not send (not one of the four parts): ${card.error ?? card.text ?? ""}`.slice(0, 300) });
     if (data.e2eExit && metrics.e2e_pass === 1) flagged.push({ at, kind: "e2e_tail", excerpt: `staging-real-ig.mjs exited ${data.e2eExit} after the four parts held: the Inbox reply step after them failed; see ${OUT}/e2e.log`.slice(0, 300) });
   }
   if (data.rows) {
@@ -212,7 +235,7 @@ export async function build(tmp: string): Promise<{ build: Build; dir: string }>
 }
 
 /** The two accounts' saved sessions from the prod crawler's Postgres, as the rigs' jar files (mode 600). Prints no cookie. */
-export async function jars(tmp: string): Promise<{ sender: string; replier: string; notes: string[] }> {
+export async function jars(tmp: string): Promise<{ sender: string; senderIgId: string; replier: string; notes: string[] }> {
   const sql = `begin read only;
 select json_build_object('id', a.id, 'username', a.username, 'ig_user_id', a.ig_user_id, 'cookies', j.cookies::json, 'user_agent', j.user_agent,
   'proxy_url', e.proxy_url, 'status', a.status, 'valid', j.valid, 'jar_at', j.updated_at)::text
@@ -220,7 +243,7 @@ from ig_engage_accounts a join ig_engage_browser_jars j on j.account_id = a.id j
 where a.world = 'prod' and a.id in (${SENDER_ID}, ${REPLIER_ID});
 commit;`;
   const out = await sh("ssh", ["-o", "BatchMode=yes", "us-metal01", "docker exec -i virev-prod-postgres psql -U crawler -d crawler_v3 -At -v ON_ERROR_STOP=1"], { input: sql });
-  const rows = out.split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line) as { id: number; username: string; status: string; valid: boolean; jar_at: string });
+  const rows = out.split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line) as { id: number; username: string; ig_user_id: string; status: string; valid: boolean; jar_at: string });
   const notes: string[] = [];
   const files: Record<number, string> = {};
   for (const row of rows) {
@@ -229,7 +252,20 @@ commit;`;
     if (row.status !== "active" || !row.valid) notes.push(`${row.id} @${row.username} is ${row.status}, jar ${row.valid ? "valid" : "invalid"} (saved ${row.jar_at})`);
   }
   for (const id of [SENDER_ID, REPLIER_ID]) if (!files[id]) throw new Error(`the prod crawler has no saved session for account ${id}`);
-  return { sender: files[SENDER_ID]!, replier: files[REPLIER_ID]!, notes };
+  return { sender: files[SENDER_ID]!, senderIgId: String(rows.find(row => row.id === SENDER_ID)!.ig_user_id), replier: files[REPLIER_ID]!, notes };
+}
+
+/** The sender's row in the world's org from Connections' own read (search/dmDevices:listOutreach), as an admin of that org. */
+async function senderCount(igUserId: string): Promise<Sender> {
+  const env = await sh("node", ["scripts/dev/search-clean-world.mjs", "env", "--name", WORLD]);
+  const org = /^export E2E_ORG_ID="(.+)"$/m.exec(env)?.[1];
+  if (!org) throw new Error(`search-clean-world env --name ${WORLD} names no E2E_ORG_ID`);
+  const identity = JSON.stringify({ tokenIdentifier: `dm-extension-duty|${org}`, subject: "dm-extension-duty", orgId: org, orgRole: "org:admin" });
+  const out = JSON.parse(await sh("node", ["scripts/repo/convex/call.mjs", STAGING_DEPLOYMENT, "query", "search/dmDevices:listOutreach", "{}", identity])) as
+    { value: { accounts: { platformUserId: string | null; username: string; sentToday: number; dailyLimit: number }[] } };
+  const row = out.value.accounts.find(account => account.platformUserId === igUserId);
+  if (!row) throw new Error(`Connections of the world's org ${org} lists no account ${igUserId} after autopair`);
+  return { username: row.username, sentToday: row.sentToday, dailyLimit: row.dailyLimit };
 }
 
 /** Waits while another real-Instagram rig runs on this box, so two browsers never drive one account at once. */
@@ -273,13 +309,17 @@ async function measure(now: number): Promise<DutyData> {
       else {
         const env = { ...process.env, DM_EXTENSION_DIR: built.dir };
         // `run` starts its command in apps/search, so the rig path is absolute.
-        const run = (rig: string, args: string[], name: string) => logged([...world, "run", "--name", WORLD, "--", "env", `E2E_ORG_ID=${RIG_ORG}`, `E2E_USER_EMAIL=${RIG_USER}`, "node", join(REPO, "apps/dm-extension/tests", rig), ...args, "--out", join(OUT, name)], join(OUT, `${name}.log`), env);
+        const run = (rig: string, args: string[], name: string) => logged([...world, "run", "--name", WORLD, "--", "node", join(REPO, "apps/dm-extension/tests", rig), ...args, "--out", join(OUT, name)], join(OUT, `${name}.log`), env);
         await run("autopair-real-ig.mjs", ["--a", jarFiles.sender], "autopair");
         const autopair = await step("autopair", async () => JSON.parse(await readFile(join(OUT, "autopair/evidence.json"), "utf8")) as AutopairEvidence);
         if (autopair) data.autopair = autopair;
-        data.e2eExit = await run("staging-real-ig.mjs", ["--a", jarFiles.sender, "--b", jarFiles.replier], "e2e");
-        const e2e = await step("e2e", async () => JSON.parse(await readFile(join(OUT, "e2e/evidence.json"), "utf8")) as E2eEvidence);
-        if (e2e) data.e2e = e2e;
+        const sender = await step("sender", () => senderCount(jarFiles.senderIgId));
+        if (sender) data.sender = sender;
+        if (!sender || senderFits(sender)) {
+          data.e2eExit = await run("staging-real-ig.mjs", ["--a", jarFiles.sender, "--b", jarFiles.replier], "e2e");
+          const e2e = await step("e2e", async () => JSON.parse(await readFile(join(OUT, "e2e/evidence.json"), "utf8")) as E2eEvidence);
+          if (e2e) data.e2e = e2e;
+        }
         // The rigs' Chromium profiles hold the accounts' Instagram cookies, so none stays on disk.
         for (const name of ["autopair", "e2e"]) for (const entry of await readdir(join(OUT, name)).catch(() => [])) if (entry.startsWith("profile-")) await rm(join(OUT, name, entry), { recursive: true, force: true });
       }
