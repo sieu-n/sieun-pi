@@ -29,6 +29,11 @@ test("routes cover the public database pages and their media, and leave out mark
   for (const [name] of ROUTES) assert.match(requestsSql(1_793_300_000_000), new RegExp(`'${name}'`));
 });
 
+test("calls from our own boxes count as wanted, whatever UA our jobs send", () => {
+  assert.deepEqual(classify(row({ ip: "155.254.27.166", ua: "curl/8.18.0", refk: "none", route: "profile" }), 149, googleOnly), { kind: "wanted", who: "our own box" });
+  assert.equal(classify(row({ ip: "155.254.27.167", ua: "curl/8.18.0", refk: "none", route: "profile" }), 149, googleOnly).kind, "automated");
+});
+
 test("the 10-29 scraper's calls read as automated and a person's calls read as human", () => {
   const typical = 149;
   assert.deepEqual(classify(row({ refk: "bare_self", ref: "https://virev.ai/", ua: WIN(133) }), typical, googleOnly).kind, "automated");

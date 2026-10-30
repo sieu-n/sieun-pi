@@ -78,6 +78,8 @@ export const ENGINES: readonly Engine[] = [
 ];
 /** Link preview fetchers that render a shared page once. They count as wanted on pages and as automated on image and API routes. */
 export const PREVIEW_UA = /facebookexternalhit|Twitterbot|Slackbot-LinkExpanding|LinkedInBot|Discordbot|TelegramBot|WhatsApp|kakaotalk-scrap|Pinterestbot/i;
+/** The public IPs of our own boxes, us-metal02 and us-metal01, whose jobs check these pages (10-29: 2,900 calls from 155.254.27.166 by curl, node, python and test UAs). */
+export const OWN_IPS: ReadonlySet<string> = new Set(["155.254.27.166", "64.34.205.243"]);
 export const BOT_UA = /bot\b|bot\/|crawl|spider|slurp|scrap|python|curl|wget|go-http|java\/|okhttp|axios|node-fetch|undici|headless|phantom|httpclient|libwww|^node$|externalhit|externalagent|fetcher/i;
 
 export interface Row { route: string; refk: string; ref: string; ua: string; ip: string; status: number; origin: boolean; calls: number; last: number }
@@ -98,6 +100,7 @@ export function typicalChrome(rows: readonly Row[]): number | null {
 
 /** Who made one call group, by the features the 10-29 study separated scrapers with: UA, referer and IP. */
 export function classify(row: Row, typical: number | null, verify: Verify): Verdict {
+  if (OWN_IPS.has(row.ip)) return { kind: "wanted", who: "our own box" };
   const ua = row.ua.trim();
   const engine = ENGINES.find(candidate => candidate.ua.test(ua));
   if (engine) {
@@ -180,7 +183,7 @@ function summarize(rows: readonly Row[], verify: Verify, at: number, metrics: Re
   if (origin) {
     metrics.scraper_share_pct = pct(automated, origin);
     flagged.push({ at, kind: "reading", item: "scraper_share_pct", excerpt: `${automated} of ${origin} origin calls to the public database pages and their images were automated ` +
-      `clients we do not want, ${wanted} came from verified search engines and link previews, and ${origin - automated - wanted} from people. ` +
+      `clients we do not want, ${wanted} came from verified search engines, link previews and our own boxes, and ${origin - automated - wanted} from people. ` +
       `The Vercel Firewall denied ${denied} more before origin${deniedBy.size ? ` (${[...deniedBy].map(([route, calls]) => `${route} ${calls}`).join(", ")})` : ""}.` });
   } else flagged.push({ at, kind: "source_error", excerpt: "otel.otel_logs holds no prod origin call to the public database routes in the 24 h, so the Vercel drain or the query is broken" });
   if (humanImg) {
