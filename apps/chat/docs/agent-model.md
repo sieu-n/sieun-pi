@@ -1,6 +1,6 @@
 # The agent model: agents, rooms, and comm and work threads
 
-Status: design, for the owner's review. Phases 1 to 5 are built; phase 6 is not, except where a line says "today".
+Status: design, for the owner's review. Phases 1 to 6 are built.
 
 ## The answer
 
@@ -470,7 +470,19 @@ Built and live on 2026-10-29: pi-host 67e75a84 as release-67e75a8, and apps/chat
 
 ## 7. Open questions for the owner
 
-Each has a default, so work goes on without an answer.
+Each has a def
+
+**Built (10-30).** The relay tier runs on metal and the Mac.
+
+1. `components/prime-relay/agents/main.ts` is the agent relay. It wraps `createRelay`, so the v1 routes stay, and adds `/v2/agents` (frames in `protocol.ts`), a local chat proxy on 127.0.0.1:7792 for the box's threads, and the `check`, `file_get` and `file_put` ops. It runs from the pi-host release tree, as `pi-host-relay.service` on metal and `com.sieun.pi-host-relay` on the Mac, both installed by `agents/install.mjs`.
+2. pi-host keeps an `outbox` table of speaking calls that went out and serves `durable_feed {after}` (packages/pi-host/src/durable/README.md).
+3. The chat server has `server/host/relay-host.ts` and `server/host/multi-host.ts`. Each box with `roles.agents` in hosts.json gets a `RelayHost`, and metal uses its own relay too. A feed row makes the server read that room's feed, then it saves the box's cursor and acks. A link that misses a pong for 15 s reads as away.
+4. A delivery to an away box reads "queued, <box> is offline". When the box comes back, the waiting posts for one comm thread go as one input with requestId `b:<first post>:<agent>`, and the bundle's members are saved before the submit.
+5. `scripts/install-pi-host-box.mjs` builds and starts a pi-host release on Linux or macOS. `POST /api/agents {host}` makes an agent on another box, and `GET /api/agent-hosts` lists the boxes.
+
+The routing stayed in the chat server instead of moving into the relay, because the feed reader already keeps one post per requestId and the relay then needs no state of its own. Open gaps: search reads only metal's index, a Mac agent's instruction files on the Agents page are read on metal's disk, channel and Solo deliveries to an away box go one by one with no bundle, and `/api/hosts` does not show link state yet. The live walk is in `~/work/phase6/mac-walk.md`.
+
+ault, so work goes on without an answer.
 
 1. **How much DM history moves into the new rooms?** Default: the owner's messages and the agents' text answers from the last 30 days are copied in as posts, and anything older sits behind "Earlier, in the work thread".
 2. **May agents write their own memory without asking?** Default: yes, through Prime's `rlm.harness` as in Prime. The Agents card shows each entry with its author and time, and the owner deletes one there.
