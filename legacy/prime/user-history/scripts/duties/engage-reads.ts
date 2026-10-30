@@ -422,7 +422,7 @@ const ACCOUNTS_SQL = "select id, status, status_reason as reason from ig_engage_
 const DEATHS_SQL = `select e.account_id, extract(epoch from e.at) * 1000 as at, e.outcome, e.error_code, e.transition,
   exists (select 1 from ig_engage_read_log l where l.account_id = e.account_id and l.pages > 0 and l.at < e.at) as read_before,
   (select coalesce(sum(l.pages), 0) from ig_engage_read_log l where l.account_id = e.account_id and l.at <= e.at and l.at > e.at - interval '24 hours') as pages_24h
-from ig_engage_account_events e join ig_engage_accounts a on a.id = e.account_id where a.world = 'prod' and e.outcome in ${DEAD_SQL} order by e.at`;
+from ig_engage_account_events e join ig_engage_accounts a on a.id = e.account_id where a.world = 'prod' and (e.outcome in ${DEAD_SQL} or (e.outcome = 'active' and e.transition)) order by e.at, e.id`;
 /** The lapsed session bindings, as lapsedOf parses them; the 60 s is READ_PAGE_TIMEOUT_SECONDS, the margin the egress admission keeps. */
 export const LAPSED_SQL = `select count(*) filter (where r.status is distinct from 'blocked') as waiting, count(*) filter (where r.status = 'blocked') as blocked,
   coalesce(round(extract(epoch from min(b.expires_at)) * 1000), 0) as oldest_ms
@@ -582,10 +582,25 @@ export const accountsOf = (rows: Record<string, unknown>[]): Account[] => rows.m
 export const stagingPausesOf = (rows: Record<string, unknown>[]): StagingPause[] => rows.map(row => ({
   key: String(row.key), auditId: num(row.id), at: num(row.at), actor: row.actor == null ? null : String(row.actor), reason: row.reason == null ? null : String(row.reason),
 }));
-export const deathsOf = (rows: Record<string, unknown>[]): Death[] => rows.map(row => ({
-  accountId: Number(row.account_id), at: Number(row.at), status: String(row.outcome), code: row.error_code == null ? null : String(row.error_code),
-  readBefore: row.read_before === true, pages24h: Number(row.pages_24h ?? 0), transition: row.transition === true,
-}));
+/**
+ * The deaths from DEATHS_SQL rows, each account's Instagram death once: a dead-status row after an Instagram verdict on the same account, with no
+ * move back to active between them, is the same death written again and is left out. Prod 163 went relogin_gone on 10-28 09:53Z and was disabled
+ * with that code on 10-29 05:04Z after its profile read "does not exist", and until 10-30 d1 counted that one death in the 24 h windows after both.
+ */
+export const deathsOf = (rows: Record<string, unknown>[]): Death[] => {
+  const killed = new Set<number>();
+  const deaths: Death[] = [];
+  for (const row of rows) {
+    const accountId = Number(row.account_id);
+    if (row.outcome === "active") { killed.delete(accountId); continue; }
+    if (killed.has(accountId)) continue;
+    const death: Death = { accountId, at: Number(row.at), status: String(row.outcome), code: row.error_code == null ? null : String(row.error_code),
+      readBefore: row.read_before === true, pages24h: Number(row.pages_24h ?? 0), transition: row.transition === true };
+    if (causeOf(death) === "instagram") killed.add(accountId);
+    deaths.push(death);
+  }
+  return deaths;
+};
 export function deepWalksOf(tsv: string): DeepWalks {
   const walks: DeepWalks = { reached: 0, errors: {}, stuck: {}, retrying: {} };
   for (const line of tsv.split("\n").filter(Boolean)) {
