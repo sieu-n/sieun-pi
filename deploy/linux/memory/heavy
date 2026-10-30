@@ -13,7 +13,8 @@ if ! command -v systemd-run >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; the
 # but one, which is 79 on us-metal02. measured: on 10-30 the 191-file apps/virev-demo unit suite peaked at 4.7 to
 # 5.6 GiB on 8 workers over 4 runs under heavy 8G (0.7 GiB a worker), while 1 of 2 runs on 13 workers and the runs on
 # 79 hit 8 GiB and were OOM-killed. It took 111 s on 8 workers and 102 s on 16, and 47 root Convex integration files
-# took 55 s on 8, 16 and 45 workers alike. A VITEST_MAX_WORKERS or --maxWorkers the caller sets wins.
+# took 55 s on 8, 16 and 45 workers alike. Prime's packages/coding-agent suite under heavy 24G took 134 and 140 s at
+# 11.7 GiB on 24 workers against 151 and 153 s at 17.2 GiB on 79. A VITEST_MAX_WORKERS or --maxWorkers the caller sets wins.
 gib() {
 	n=${1%[KkMmGgTt]}
 	case $n in '' | *[!0-9]*) return 1 ;; esac
