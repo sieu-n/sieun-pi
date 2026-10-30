@@ -73,7 +73,8 @@
       "match": [
         "(too|so|fat|needlessly|stop|less|in general)\\W{0,3}gr[ae]y",
         "gr[ae]y (fat|pill|track)",
-        "회색",
+        "회색[^.\\n?]{0,12}(너무|많|빼|없애|줄|싫|칙칙)",
+      "(너무|칙칙)[^.\\n?]{0,12}회색",
         "희미"
       ],
       "tests": [

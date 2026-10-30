@@ -463,10 +463,14 @@ function judgeCounted(metrics: readonly DutyMetric[], output: PrecheckOutput): {
   return { verdict: "missed", metrics: results, summary: end((lead ? [lead, ...misses] : misses).join(", ")) };
 }
 
-/** How many runs in a row, newest first, ended in error. */
+/**
+ * How many runs in a row, newest first, ended in a precheck error. A run whose host was away (`hostAway`) measured nothing and failed nothing,
+ * so it neither counts nor ends the streak: on 10-30 frontend bro's d6 read "failed 16 runs in a row" at 11:13Z, and 15 of those runs were
+ * host_away records of a sleeping Mac.
+ */
 export function errorStreak(runs: readonly DutyRunRecord[]): number {
   let count = 0;
-  for (const run of runs) { if (run.verdict === "skipped") continue; if (run.verdict !== "error") break; count++; }
+  for (const run of runs) { if (run.verdict === "skipped" || run.hostAway) continue; if (run.verdict !== "error") break; count++; }
   return count;
 }
 
