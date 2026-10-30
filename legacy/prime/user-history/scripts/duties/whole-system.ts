@@ -494,8 +494,43 @@ export interface Smoothness {
    * queue's order at fault, since chat heads go first (pi-pool lead). A head that waited with no such start waited for the box's slot count.
    */
   headWaits: { session: string; waitedS: number; passed: boolean }[];
-  /** Per park that ended in the window: minutes it stayed parked after a tree of its priority or lower that parked later got an account. */
-  overtaken: { session: string; minutes: number }[];
+  /**
+   * Per park that ended in the window: minutes it stayed parked after a tree of its priority or lower that parked later got an account, less the
+   * minutes its tree's box read offline (`offline`, set when there were any).
+   */
+  overtaken: { session: string; minutes: number; offline?: number }[];
+}
+
+/** How long a tree's box read offline in [from, to) (`treeOffline`); absent: every tree's box read online throughout. */
+export type TreeOffline = (session: string, from: number, to: number) => number;
+
+/**
+ * How long Tailscale read `box` offline within [from, to) by the watch lines: a line that reads it offline covers the time to the next line,
+ * at most OFFLINE_SPAN_MS. A watch line is written each minute.
+ */
+export function offlineMs(watch: readonly WatchLine[], box: string, from: number, to: number): number {
+  let total = 0;
+  for (const [i, line] of watch.entries()) {
+    const at = Date.parse(line.at);
+    const next = i + 1 < watch.length ? Date.parse(watch[i + 1]!.at) : at + MINUTE;
+    const end = Math.min(next, at + OFFLINE_SPAN_MS, to);
+    if (end <= from || at >= to || !hostViews(line).some(view => view.name === box && view.offline)) continue;
+    total += end - Math.max(at, from);
+  }
+  return total;
+}
+const OFFLINE_SPAN_MS = 2 * MINUTE;
+
+/**
+ * The offline time of each tree's box (`offlineMs`), by the box its catalog copy lists (`copyHosts`). A tree on a sleeping box asks pi-pool
+ * nothing, so pi-pool cannot unpark it: sep launch!! (01a15427), on the owner's Mac, parked at 00:43:56Z on 10-30 in a dark wake, the Mac slept
+ * until 01:13:42Z, and d7 read it as passed for 27.9 min.
+ */
+export function treeOffline(watch: readonly WatchLine[], hosts: ReadonlyMap<string, string>): TreeOffline {
+  return (session, from, to) => {
+    const box = hosts.get(session);
+    return box ? offlineMs(watch, box, from, to) : 0;
+  };
 }
 const RANK: Readonly<Record<string, number>> = { high: 0, normal: 1, low: 2 };
 const KST_MS = 9 * 60 * MINUTE;
@@ -504,7 +539,7 @@ const KST_MS = 9 * 60 * MINUTE;
  * pi-pool stamps `ts` in its writer's local time, and on 10-21 about 45,000 of the lines since 10-19 were KST. `at` on parked and unparked lines is
  * epoch seconds, so each other line takes whichever of its `ts` read as UTC or as KST lies nearer the last `at` before it.
  */
-export function readSmoothness(lines: readonly string[], heads: ReadonlySet<string>, from: number, to: number): Smoothness {
+export function readSmoothness(lines: readonly string[], heads: ReadonlySet<string>, from: number, to: number, offline?: TreeOffline): Smoothness {
   const headWaits: Smoothness["headWaits"] = [];
   // Each head run in line, from its turn_queued line on, and whether a job run started from the queue since. pi-pool logs each turn.lock
   // holder's lines right after it lets go, so the log's order is the queue's: on 10-22 at 15:16:00Z a job run took the slot 01a11a24's ending
@@ -620,10 +655,19 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
     if (park.served) return { session: park.session, minutes: 0 };
     const passed = ended.find(other => !other.led && other.end < park.end && other.end > park.from && other.start > park.start &&
       rankAt(other, other.end) >= rankAt(park, other.end) && !heldAt(park, other.end));
-    return { session: park.session, minutes: passed ? Math.round((park.end - passed.end) / MINUTE * 10) / 10 : 0 };
+    if (!passed) return { session: park.session, minutes: 0 };
+    const away = offline?.(park.session, passed.end, park.end) ?? 0;
+    const tenths = (ms: number) => Math.round(ms / MINUTE * 10) / 10;
+    return { session: park.session, minutes: tenths(Math.max(0, park.end - passed.end - away)), ...away > 0 ? { offline: tenths(away) } : {} };
   });
   return { headWaits, overtaken };
 }
+
+/** The parks whose box read offline while they waited, whose offline minutes left the count (`readSmoothness`); "" when none. */
+const offlineWords = (overtaken: Smoothness["overtaken"]): string => {
+  const slept = overtaken.filter(park => park.offline);
+  return slept.length ? ` Left out as their box read offline: ${slept.slice(0, 5).map(park => `${park.session.slice(0, 8)} ${park.offline} min`).join(", ")}.` : "";
+};
 
 /**
  * A chat head run that waits longer than this in pi-pool's turn queue counts in queue_holds_30. With heads first, a replay of the 10-20 and 10-21
@@ -1201,6 +1245,14 @@ export function copyHosts(copies: readonly { host: string | null; rows: readonly
   return out;
 }
 
+/** The box of each session and chat in every box's catalog copy and mirror (`copyHosts`), as the Chat system duty reads it; `self` names this box. */
+export async function sessionHosts(dataDir: string, self: string): Promise<Map<string, string>> {
+  const parsed = (await catalogCopyFiles(dataDir)).map(copy => {
+    try { return { host: copy.host, rows: (JSON.parse(copy.text) as { rows?: { sessionId?: string }[] }).rows ?? [] }; } catch { return { host: copy.host, rows: [] }; }
+  });
+  return copyHosts([...parsed, ...await mirroredSessions()], self);
+}
+
 /**
  * Each other box's sessions whose files or job folders this box keeps copies of (`mirrorPath` in src/host-catalogs.ts), as a copy with that box's
  * name, for `copyHosts` to read after the catalog copies. The chat service prunes them after each full list, so only a box that listed the session
@@ -1462,7 +1514,7 @@ export function measure(input: Inputs): PrecheckOutput {
       (slow.length ? ` (${slow.slice(0, 5).map(run => `${run.session.slice(0, 8)} ${run.waitedS} s${run.passed ? " behind a job run" : ""}`).join(", ")})` : "") +
       `, ${slowHeads.length} of them passed by a job run and the rest waited for a free slot, p90 ${metrics.head_queue_wait_p90_s} s. ` +
       `${input.smooth.overtaken.length} parked trees got an account, and ${late.length} of them stayed parked over ${HOLD_MS / MINUTE} min after a tree of their priority or lower that parked later got one` +
-      (late.length ? ` (${late.slice(0, 5).map(park => `${park.session.slice(0, 8)} ${park.minutes} min`).join(", ")})` : "") + `, p90 ${metrics.parked_overtaken_min_p90} min.` });
+      (late.length ? ` (${late.slice(0, 5).map(park => `${park.session.slice(0, 8)} ${park.minutes} min`).join(", ")})` : "") + `, p90 ${metrics.parked_overtaken_min_p90} min.` + offlineWords(input.smooth.overtaken) });
   }
   for (const [name, reading] of worstByHost) {
     const key = name.replace(/[^A-Za-z0-9]+/g, "_");
@@ -1908,7 +1960,7 @@ async function main(): Promise<void> {
     // The heads are the sessions pi-pool leads, as its turns.json lists them, beside the owner's chats. At 03:31:09Z on 10-23 "three things 3"
     // (01a1664f), a lead the owner chat list did not name, started ahead of 01a1164b and read as a job run that passed a head. An archived chat
     // still runs jobs but leads nothing: counting archived chats as heads read 01a14210's 2,330 s wait as a head held at the 10:21Z run.
-    smooth: readSmoothness(poolLines, new Set([...live, ...poolLead]), now - WINDOW_MS, now),
+    smooth: readSmoothness(poolLines, new Set([...live, ...poolLead]), now - WINDOW_MS, now, treeOffline(day, await sessionHosts(dataDir, box))),
     daemonFaults,
     primeUpdates: [...(await readUpdateSpans(join(dataDir, ".."))).map(update => ({ ...update, host: box })), ...await otherBoxUpdates(box, now - WINDOW_MS - 2 * MINUTE)],
     workerMisses: workerPolls,
