@@ -54,6 +54,19 @@ export function slowChatRead(own: boolean, latency: unknown): ChatLatency | unde
 }
 
 /**
+ * The chat service's own slow minute on the box that timed it: a read over SLOW_READ_MS, or an event loop stall over it that a major GC made up
+ * most of. A major GC's length follows the chat's own old-space heap: at 02:44Z on 10-30 the loop stalled 1.3 s in a 975 ms major GC, and d7
+ * booked the minute on the apps' side for their cores. Another stall stays with the cores or the memory stall that caused it, as a 5.3 s minor
+ * GC did while CI and RepoOps' jobs filled swap on 10-26.
+ */
+export function slowChat(own: boolean, latency: unknown): ChatLatency | undefined {
+  const read = own ? chatLatency(latency) : undefined;
+  if (!read) return undefined;
+  const majorGc = read.gc === "major" && read.gcMs !== undefined && read.gcMs * 2 > read.loopMs;
+  return read.readMs > SLOW_READ_MS || (read.loopMs > SLOW_READ_MS && majorGc) ? read : undefined;
+}
+
+/**
  * What made the harness slow in [from, to) on `box`, in the flag's words; empty when it stayed fast. `own` says whether `box` wrote the line,
  * since only that box's chat service timed its reads and only its supervisor log was read.
  */

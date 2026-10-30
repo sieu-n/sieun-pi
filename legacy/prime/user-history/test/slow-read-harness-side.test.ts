@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { LinuxUsable } from "../../../../components/prime-relay/host-stats.ts";
 import { measure } from "../scripts/duties/whole-system.ts";
-import { slowChatRead } from "../src/harness-slow.ts";
+import { slowChat, slowChatRead } from "../src/harness-slow.ts";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
 
 const RUN = Date.parse("2026-10-24T20:44:10Z");
@@ -27,4 +27,18 @@ test("only the box that timed the read owns it, and only past the slow line", ()
   assert.equal(slowChatRead(true, { readMs: 2836, read: "api/threads/x/agents", loopMs: 1 })?.readMs, 2836);
   assert.equal(slowChatRead(false, { readMs: 2836, loopMs: 1 }), undefined);
   assert.equal(slowChatRead(true, { readMs: 900, loopMs: 1 }), undefined);
+});
+
+// At 02:44Z on 10-30 the chat's event loop stalled 1.3 s in a 975 ms major GC, with no slow read, and d7 booked it on the apps' side.
+test("a CPU minute whose chat event loop stalled over 1 s in a major GC is the harness's too", () => {
+  const fast = { readMs: 60, read: "api/agent/siblings", loopMs: 130 };
+  const lines = Array.from({ length: 30 }, (_, minute) => line(minute, minute === 28 ? { readMs: 0, loopMs: 1303, gcMs: 975, gc: "major" } : fast));
+  const { metrics } = measure({ now: RUN, watch: lines, log: { holds: [] }, chats: [] });
+  assert.equal(metrics.harness_unusable_min_30, 1);
+  assert.equal(metrics.other_unusable_min_30, 0);
+  assert.equal(slowChat(true, { readMs: 0, loopMs: 1303, gcMs: 975, gc: "major" })?.loopMs, 1303);
+  assert.equal(slowChat(false, { readMs: 0, loopMs: 1303, gcMs: 975, gc: "major" }), undefined);
+  assert.equal(slowChat(true, { readMs: 900, loopMs: 900, gcMs: 800, gc: "major" }), undefined);
+  assert.equal(slowChat(true, { readMs: 0, loopMs: 1260, gcMs: 121, gc: "minor" }), undefined, "00:25Z on 10-30: no GC made the stall, so the cores decide");
+  assert.equal(slowChat(true, { readMs: 0, loopMs: 1500 }), undefined);
 });
