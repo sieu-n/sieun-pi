@@ -10,8 +10,8 @@
  * entry, and replaces the file through a temp file in the same folder.
  */
 import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import type { AgentFolder, AgentId, ConfigFile, HarnessEntryView, MemoryInput } from "../web/src/lib/api/types.ts";
 import type { AgentRecord, RoomId } from "./agent-store.ts";
 
@@ -68,6 +68,32 @@ export function fileInfo(label: string, path: string, opts: { preview?: boolean;
   }
   if (opts.loaded !== undefined) out.loaded = opts.loaded;
   if (opts.note) out.note = opts.note;
+  return out;
+}
+
+/**
+ * The context files Prime's resource loader finds for `cwd` on this box, nearest first, then the agent dir's global AGENTS.md. The loader
+ * takes one file per folder, AGENTS.md before CLAUDE.md, so a CLAUDE.md beside an AGENTS.md is listed as not loaded. For an agent on
+ * another box, that box's agent relay runs this function (its `instructions` op).
+ */
+export function instructionFiles(cwd: string, agentDir: string): ConfigFile[] {
+  const out: ConfigFile[] = [];
+  let dir = resolve(cwd || "/");
+  for (;;) {
+    let taken = false;
+    for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+      const path = join(dir, name);
+      if (!existsSync(path)) continue;
+      const label = dir === resolve(cwd) ? `${name} in its cwd` : `${name} above its cwd`;
+      out.push(fileInfo(label, path, { preview: true, loaded: !taken, ...(taken ? { note: "Prime loads one file per folder, and the AGENTS.md beside it comes first." } : {}) }));
+      taken = true;
+    }
+    const up = dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
+  const global = join(agentDir, "AGENTS.md");
+  if (existsSync(global)) out.push(fileInfo("Prime's global AGENTS.md", global, { preview: true, loaded: true }));
   return out;
 }
 
@@ -230,7 +256,11 @@ export interface BoxFiles {
  * file back, as Prime's writer does here.
  */
 export class AgentFolders {
-  constructor(private readonly where: (agent: AgentRecord) => { agentsDir: string; files?: BoxFiles }) {}
+  private readonly where: (agent: AgentRecord) => { agentsDir: string; files?: BoxFiles };
+
+  constructor(where: (agent: AgentRecord) => { agentsDir: string; files?: BoxFiles }) {
+    this.where = where;
+  }
 
   async read(agent: AgentRecord): Promise<AgentFolder> {
     const { agentsDir, files } = this.where(agent);

@@ -11,7 +11,7 @@
  * | duties, check-in | `<data dir>/agents/<agent>/duties.json`, and each duty's precheck state in `<data dir>/agents/<agent>/duties/` |
  * | folder | its agent's folder, `<agents dir>/<slug>/` with `brief.md` and the harness store (`agent-folder.ts`) |
  * | memory | Prime's harness digest in pi-host: Prime's global store merged with the agent's store, or with the thread's own store when no agent holds it |
- * | instructions | AGENTS.md or CLAUDE.md in its cwd and each folder above it, and `<agent dir>/AGENTS.md`, which pi-host loads through Prime's resource loader |
+ * | instructions | AGENTS.md or CLAUDE.md in its cwd and each folder above it, and `<agent dir>/AGENTS.md`, which pi-host loads through Prime's resource loader, read on the box that runs the thread |
  * | usage | pi-host's `durable_usage` sums for the thread over the last 7 days |
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -19,7 +19,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { AgentConfig, AgentId, ChatBoard, ConfigFile, PlanItem } from "../web/src/lib/api/types.ts";
 import type { Duty, DutyRunRecord } from "../web/src/lib/api/shared/chat-duties.ts";
-import { fileInfo } from "./agent-folder.ts";
+import { fileInfo, instructionFiles } from "./agent-folder.ts";
 import type { AgentRecord } from "./agent-store.ts";
 import { NotFound, type App } from "./app.ts";
 import { judgedRun } from "../web/src/lib/api/shared/duty-card.ts";
@@ -68,28 +68,18 @@ export function readPreamble(files = preambleFiles()): { text: string | null; so
 }
 
 /**
- * The context files Prime's resource loader finds for `cwd`, nearest first, then the agent dir's global AGENTS.md. The loader takes one file
- * per folder, AGENTS.md before CLAUDE.md, so a CLAUDE.md beside an AGENTS.md is listed as not loaded.
+ * The instruction files the thread loads, read on the box that runs it: this box's disk, or that box's agent relay (`instructions` op). A box
+ * that is away gives no files and a note that says so.
  */
-export function instructionFiles(cwd: string, agentDir: string): ConfigFile[] {
-  const out: ConfigFile[] = [];
-  let dir = resolve(cwd || "/");
-  for (;;) {
-    let taken = false;
-    for (const name of ["AGENTS.md", "CLAUDE.md"]) {
-      const path = join(dir, name);
-      if (!existsSync(path)) continue;
-      const label = dir === resolve(cwd) ? `${name} in its cwd` : `${name} above its cwd`;
-      out.push(fileInfo(label, path, { preview: true, loaded: !taken, ...(taken ? { note: "Prime loads one file per folder, and the AGENTS.md beside it comes first." } : {}) }));
-      taken = true;
-    }
-    const up = dirname(dir);
-    if (up === dir) break;
-    dir = up;
+async function instructionsOn(app: App, thread: string, cwd: string, agentDir: string): Promise<{ cwdExists: boolean; files: ConfigFile[]; away?: string }> {
+  const box = app.routing?.boxOf(thread);
+  const relay = box && box !== app.config.box ? app.routing?.relay(box) : undefined;
+  if (!relay) return { cwdExists: existsSync(cwd), files: instructionFiles(cwd, agentDir) };
+  try {
+    return await relay.instructions(cwd);
+  } catch (error) {
+    return { cwdExists: true, files: [], away: `${box} did not answer (${error instanceof Error ? error.message : String(error)}), so its instruction files are not listed now.` };
   }
-  const global = join(agentDir, "AGENTS.md");
-  if (existsSync(global)) out.push(fileInfo("Prime's global AGENTS.md", global, { preview: true, loaded: true }));
-  return out;
 }
 
 /** A harness store with its memory count and newest three memory titles, read as `{entries: {memory, prompt, ...}}`. */
@@ -180,11 +170,12 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
     }
   }
 
-  const [first, ping, usage, board] = await Promise.all([
+  const [first, ping, usage, board, instructions] = await Promise.all([
     app.host.entries(thread, { conversation, after: 0, limit: FIRST_INPUT_SCAN }).then(got => got.entries.find(isFirstInput), () => undefined),
     app.host.ping().catch(error => ({ ok: false as const, error: String(error) })),
     app.host.usage({ since: Date.now() - 7 * DAY, threads: [thread] }).catch(() => null),
     chat ? app.boards.board(chat).catch(() => null) : Promise.resolve(null),
+    instructionsOn(app, thread, row.cwd, agentDir),
   ]);
 
   let purpose: AgentConfig["identity"]["purpose"] = null;
@@ -273,7 +264,7 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
       wakeAt: conversation === 1 ? (row.wakeAt ?? null) : null,
     },
     runs: {
-      host: record && app.routing?.has(record.host) ? record.host : app.config.box, hostKind: app.host.name, hostVersion: ping.ok ? ping.version : null, socket: app.config.socket, cwd: row.cwd, cwdExists: existsSync(row.cwd),
+      host: record && app.routing?.has(record.host) ? record.host : app.config.box, hostKind: app.host.name, hostVersion: ping.ok ? ping.version : null, socket: app.config.socket, cwd: row.cwd, cwdExists: instructions.cwdExists,
       project: !isNoProject(row.cwd, app.config.home), canMove: conversation === 1, thread, conversation, threadFile, dataDir: app.store.dir,
     },
     board: chat && board ? { chat, chatName: app.boards.nameOf(chat), own: chat === agent.id, ...boardSummary(board) } : null,
@@ -289,9 +280,10 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
       related,
     },
     instructions: {
-      files: instructionFiles(row.cwd, agentDir),
+      files: instructions.files,
       note: "pi-host builds its system prompt with Prime's own builder, which puts these files in the Project Context part as Prime's resource loader finds "
-        + "them, global first, then each folder down to its cwd, and its agent's brief.md after them. An edit shows in its next request.",
+        + "them, global first, then each folder down to its cwd, and its agent's brief.md after them. An edit shows in its next request."
+        + (instructions.away ? ` ${instructions.away}` : ""),
     },
     swarm: {
       parent: agent.parent ?? null, jobs,

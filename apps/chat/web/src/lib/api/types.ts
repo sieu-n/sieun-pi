@@ -314,7 +314,10 @@ export interface SearchHit {
   /** The longer text "Show more" opens, up to 2,000 characters in the same form, only when it holds more than the snippet. */
   text?: string;
 }
-export interface SearchResult { hits: SearchHit[]; total: number; nextCursor?: string }
+/** A box whose threads a search could not read, such as a Mac that is offline, with the line the page shows. */
+export interface SearchMissing { box: string; note: string }
+/** `missing` names each box whose threads are not in `hits` or `total`. */
+export interface SearchResult { hits: SearchHit[]; total: number; nextCursor?: string; missing?: SearchMissing[] }
 /**
  * `from` is `owner`, `agents` (anyone but the owner) or one agent id; `type` keeps only messages (no tool output) or only tool output;
  * `in` is a conversation id; `after` and `before` are YYYY-MM-DD in KST.

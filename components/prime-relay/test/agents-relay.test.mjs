@@ -206,6 +206,22 @@ test("file ops stay inside agentsDir, and check runs a shell command from home",
   await server.close();
 });
 
+test("instructions lists the AGENTS.md chain for a cwd as this box reads it", async () => {
+  const server = new FakeServer();
+  await server.welcome(alphaSeq);
+  const project = join(dir, "project");
+  mkdirSync(join(project, "sub"), { recursive: true });
+  writeFileSync(join(project, "AGENTS.md"), "# Box-only rule\n\nRead me on this box.\n");
+  const answer = await server.call("instructions", { cwd: join(project, "sub") });
+  assert.equal(answer.ok, true);
+  assert.equal(answer.data.cwdExists, true);
+  const file = answer.data.files.find(f => f.path === join(project, "AGENTS.md"));
+  assert.deepEqual([file.label, file.loaded, file.preview], ["AGENTS.md above its cwd", true, "# Box-only rule\nRead me on this box."]);
+  assert.equal((await server.call("instructions", { cwd: join(project, "gone") })).data.cwdExists, false);
+  assert.equal((await server.call("instructions", { cwd: "relative/path" })).ok, false);
+  await server.close();
+});
+
 test("a link dropped mid-delivery, then the same requestId again: pi-host keeps one input and the feed sends one row", async () => {
   const first = new FakeServer();
   await first.welcome(alphaSeq);

@@ -16,7 +16,8 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import WebSocket from "ws";
 import {
-  AGENT_RELAY_PROTOCOL, parseFrame, type BoxInfo, type ChatHttpArgs, type ChatHttpResult, type FeedRow, type RelayFrame, type ServerFrame, type ServerOp,
+  AGENT_RELAY_PROTOCOL, parseFrame, type BoxInfo, type ChatHttpArgs, type ChatHttpResult, type FeedRow, type InstructionsAnswer, type RelayFrame, type ServerFrame,
+  type ServerOp,
 } from "../../../../components/prime-relay/agents/protocol.ts";
 import { writeJson } from "../store.ts";
 import {
@@ -439,6 +440,10 @@ export class RelayHost implements Host {
   /** Writes the file on the box, or removes it with `text` null. */
   async filePut(path: string, text: string | null): Promise<void> {
     await this.call("file_put", text === null ? { path, delete: true } : { path, text });
+  }
+  /** The instruction files a thread with this cwd loads on the box, read there. */
+  async instructions(cwd: string): Promise<InstructionsAnswer> {
+    return (await this.call("instructions", { cwd })) as InstructionsAnswer;
   }
   async ping(): Promise<Ping> {
     if (!this.ready) return { ok: false, error: `${this.name} is offline since ${new Date(this.link.since).toISOString()}` };

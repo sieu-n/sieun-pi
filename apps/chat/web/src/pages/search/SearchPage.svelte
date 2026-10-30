@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
-  import { agents, api, conversations, type SearchHit } from "$lib/api";
+  import { agents, api, conversations, type SearchHit, type SearchMissing } from "$lib/api";
   import { hrefFor, router } from "$lib/router.svelte";
   import { search as searchDialog } from "$lib/shell/search.svelte";
   import Button from "$lib/ui/Button.svelte";
@@ -26,6 +26,7 @@
   let status = $state<State>({ state: "idle" });
   let hits = $state<SearchHit[]>([]);
   let total = $state(0);
+  let missing = $state<SearchMissing[]>([]);
   let cursor = $state<string | undefined>();
   let loadingMore = $state(false);
   let focusedIndex = $state(0);
@@ -45,6 +46,7 @@
       draft = params.q;
       hits = [];
       total = 0;
+      missing = [];
       cursor = undefined;
       focusedIndex = 0;
       expanded.clear();
@@ -57,6 +59,7 @@
         if (mine !== generation) return;
         hits = result.hits;
         total = result.total;
+        missing = result.missing ?? [];
         cursor = result.nextCursor;
         status = { state: "ready" };
       },
@@ -76,6 +79,7 @@
       const seen = new Set(hits.map(hit => hit.id));
       hits = [...hits, ...result.hits.filter(hit => !seen.has(hit.id))];
       total = result.total;
+      missing = result.missing ?? [];
       cursor = result.nextCursor;
     } catch (error) {
       if (mine === generation) status = { state: "error", message: error instanceof Error ? error.message : String(error) };
@@ -276,6 +280,9 @@
   {/snippet}
 
   <section class="results" aria-label="Search results" bind:this={list} data-search-results>
+    {#if status.state === "ready"}
+      {#each missing as box (box.box)}<p class="missing" data-testid="search-missing">{box.note}</p>{/each}
+    {/if}
     {#if status.state === "idle"}
       <p class="note">Type what to look for and press Enter. Cmd K searches from anywhere.</p>
     {:else if status.state === "loading"}
@@ -392,6 +399,11 @@
     gap: 8px;
   }
   .note,
+  .missing {
+    margin: 0;
+    color: var(--text-subtle);
+    font: var(--text-body-sm);
+  }
   .end {
     margin: 24px 0;
     color: var(--text-subtle);

@@ -130,6 +130,14 @@ export class FakeRelay {
         else this.files.set(rest.path as string, rest.text as string);
         return {};
       }
+      case "instructions": {
+        const cwd = rest.cwd as string;
+        const files = [...this.files].filter(([path]) => /\/(AGENTS|CLAUDE)\.md$/.test(path) && cwd.startsWith(path.slice(0, path.lastIndexOf("/"))));
+        return {
+          cwdExists: this.info.projects.includes(cwd),
+          files: files.map(([path, text]) => ({ label: "AGENTS.md in its cwd", path, exists: true, size: text.length, modifiedAt: 1, preview: text, loaded: true })),
+        };
+      }
       default: throw new Error(`unknown op ${call.op}`);
     }
   }

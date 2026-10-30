@@ -8,7 +8,8 @@
  *    `durable_feed` after it.
  * 2. The server sends `call` frames. An op in `DURABLE_OPS` goes to pi-host as that command with `args` as its fields, and its answer comes
  *    back as `result`. `watch` and `unwatch` open and close a `durable_watch`, whose events come back as `watch_event` under the server's
- *    own watch id. `check` runs a wake's shell check on this box.
+ *    own watch id. `check` runs a wake's shell check on this box, and `instructions` lists the AGENTS.md files a thread with that cwd
+ *    loads there.
  * 3. pi-host's feed rows come up as `event` frames in seq order. The server reads the posts they name and answers `ack`.
  * 4. A thread on this box reaches the chat server's HTTP API through the relay's local port (`chatProxy`), which goes up as a `call` with op
  *    `chat_http`, and the server answers with `result`.
@@ -16,6 +17,8 @@
  * Idempotency is per hop: a delivery is a `durable_submit` with requestId `d:<post>:<agent>` (or `b:<first post>:<agent>` for a bundle),
  * which pi-host keeps once, and a speaking call's post has requestId `m:<thread>:<toolCallId>`, which the chat server stores once.
  */
+
+import type { ConfigFile } from "../../../apps/chat/web/src/lib/api/types.ts";
 
 /** The relay protocol's version; `hello` carries it, and the server refuses a relay with another major. */
 export const AGENT_RELAY_PROTOCOL = 1;
@@ -64,7 +67,11 @@ export interface BoxInfo {
   agentsDir: string;
 }
 
-export type ServerOp = DurableOp | "watch" | "unwatch" | "check" | "box_info" | "file_get" | "file_put";
+/** The instruction files Prime loads for a thread whose cwd is `cwd` on this box, as the Agents page lists them (`instructions` op). */
+export interface InstructionsArgs { cwd: string }
+export interface InstructionsAnswer { cwdExists: boolean; files: ConfigFile[] }
+
+export type ServerOp = DurableOp | "watch" | "unwatch" | "check" | "box_info" | "file_get" | "file_put" | "instructions";
 export type RelayOp = "chat_http";
 
 export type RelayFrame =

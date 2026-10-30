@@ -40,7 +40,8 @@ The sieun-pi side lives in `legacy/prime/user-history/src/hosts.ts`. It reads `~
 3. A `call` with a `durable_*` op goes to pi-host as that command, and its answer comes back as `result`. A command that never reached pi-host's socket answers with `unsent: true`.
 4. A `watch` call opens a `durable_watch` and forwards its events as `watch_event` under the server's watch id, and `unwatch` closes it. `check` runs a wake's shell command with `sh -c` from home and answers `{ok, code, output}`. `box_info` answers the hello's info.
 5. `file_get {path}` and `file_put {path, text}` or `{path, delete: true}` read and write files under `agentsDir` only, and any other path gets an error.
-6. When pi-host's socket closes, the relay closes the link with code 1011, so the server dials again and sets up its watches after the next `hello`.
+6. `instructions {cwd}` answers `{cwdExists, files}`, the AGENTS.md and CLAUDE.md files Prime loads for that cwd on this box and `~/.prime/agent/AGENTS.md`, each with its first lines, so the Agents page shows a Mac agent's files as the Mac reads them.
+7. When pi-host's socket closes, the relay closes the link with code 1011, so the server dials again and sets up its watches after the next `hello`.
 
 The relay also listens on `127.0.0.1:<chatProxyPort>` (7792 by default). Each request there goes up the newest live link as a `chat_http` call, and the server's result becomes the answer. With no live link, it answers 503 with a JSON error.
 

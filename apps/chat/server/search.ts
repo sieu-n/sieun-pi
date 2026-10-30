@@ -5,14 +5,15 @@
  * A comm thread (phase 4) has no rows of its own: its entries are left out, and the DM posts whose words it holds are searched as the DM's
  * posts instead, so a hit opens the DM at the post. Channel and Solo room posts are searched as posts of their room (phase 5).
  */
-import type { ConversationKind, ConversationSummary, SearchHit, SearchResult } from "../web/src/lib/api/types.ts";
+import type { ConversationKind, ConversationSummary, SearchHit, SearchMissing, SearchResult } from "../web/src/lib/api/types.ts";
 import { CHANNEL_COPY_LIKE, type GroupRooms } from "./group-rooms.ts";
 import { describe, fullText, searchTerms, snippet } from "./search-snippet.ts";
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { openIndexReadOnly, searchIndex } from "../../../packages/pi-host/src/durable/index-db.ts";
 import { safeSnippet } from "./search-snippet.ts";
-import type { Host, SearchHit as HostHit, SearchPage, SearchQuery } from "./host/types.ts";
+import type { LinkState } from "./host/relay-host.ts";
+import { HostAway, isHostAway, type Host, type SearchHit as HostHit, type SearchPage, type SearchQuery } from "./host/types.ts";
 import { conversationIdOf, parseConversationId, type Threads } from "./threads.ts";
 import type { AgentRecord, RoomPost } from "./agent-store.ts";
 import { isAgentId, isRoomId } from "./agents.ts";
@@ -81,6 +82,17 @@ type Ranked = { tier: number; score: number; at: number; build: () => SearchHit 
 /** A work-thread input that was a job's test send typed into the owner's DM (rooms.ts `allTestSends`). */
 export interface TestSendEntry { thread: string; entry: number; by: string; reason: string }
 
+/** Another box whose threads search reads through its agent relay (`MultiHost`). */
+export interface SearchBox { box: string; link(): LinkState; search(query: SearchQuery): Promise<SearchPage> }
+
+const clock = (at: number): string => new Date(at).toISOString().slice(11, 16) + "Z";
+
+/** Why a box's threads are not in the results. */
+function missingNote(box: string, error: unknown): string {
+  if (isHostAway(error)) return `${box} is offline since ${clock(error.since)}, so its threads are not in these results.`;
+  return `${box} did not answer the search (${error instanceof Error ? error.message : String(error)}), so its threads are not in these results.`;
+}
+
 /** A DM post search reads as a post (rooms.ts `searchPosts`). */
 export interface DmPost { room: string; agent: AgentRecord; post: RoomPost }
 
@@ -92,8 +104,13 @@ export class Search {
   commThreads: () => string[] = () => [];
   /** The DM posts whose words live in a comm thread. */
   dmPosts: () => DmPost[] = () => [];
+  /** The other boxes agents run on; `host` is this box's own. Set by the app when it runs over several boxes. */
+  boxes: () => SearchBox[] = () => [];
 
-  /** With `indexPath`, thread hits come from pi-host's index.sqlite on a read-only connection, so search never waits on pi-host. */
+  /**
+   * `host` is this box's pi-host. With `indexPath`, this box's thread hits come from pi-host's index.sqlite on a read-only connection, so
+   * search never waits on pi-host; the other boxes' hits come from `boxes`.
+   */
   constructor(readonly host: Host, readonly threads: Threads, readonly groups: GroupRooms, private readonly indexPath?: string) {}
 
   close(): void {
@@ -105,7 +122,7 @@ export class Search {
    * pi-host's search rules on the chat's own read-only connection: after a restart on 10-28, pi-host took 7 to 12 s to listen, and every
    * search waited for it. pi-host's socket answers only while the file is missing or unreadable.
    */
-  private threadSearch(query: SearchQuery): Promise<SearchPage> {
+  private localSearch(query: SearchQuery): Promise<SearchPage> {
     if (!this.index && this.indexPath && existsSync(this.indexPath)) {
       try {
         this.index = openIndexReadOnly(this.indexPath);
@@ -123,6 +140,34 @@ export class Search {
     return this.host.search(query);
   }
 
+  /**
+   * This box's hits with every other box's, each through its relay's `durable_search`. By relevance the boxes' hits interleave by their rank
+   * in each box, since bm25 scores of two indexes do not compare; by `recent` they sort newest first. A box that is away or fails gives no
+   * hits and a `missing` note instead.
+   */
+  private async threadSearch(query: SearchQuery): Promise<SearchPage & { missing: SearchMissing[] }> {
+    const others = this.boxes();
+    const [local, ...answers] = await Promise.all([
+      this.localSearch(query),
+      ...others.map(box => (box.link().state === "up" ? box.search(query) : Promise.reject(new HostAway(box.box, box.link().since))).then(
+        page => ({ ok: true as const, page }), (error: unknown) => ({ ok: false as const, error }),
+      )),
+    ]);
+    const pages = [local];
+    const missing: SearchMissing[] = [];
+    answers.forEach((answer, i) => {
+      if (answer.ok) pages.push(answer.page);
+      else missing.push({ box: others[i]!.box, note: missingNote(others[i]!.box, answer.error) });
+    });
+    let hits: HostHit[];
+    if (query.sort === "recent") hits = pages.flatMap(page => page.hits).sort((a, b) => b.at - a.at);
+    else {
+      hits = [];
+      for (let rank = 0; pages.some(page => rank < page.hits.length); rank++) for (const page of pages) if (rank < page.hits.length) hits.push(page.hits[rank]!);
+    }
+    return { hits: query.limit === undefined ? hits : hits.slice(0, query.limit), total: pages.reduce((sum, page) => sum + page.total, 0), missing };
+  }
+
   async run(params: SearchParams): Promise<SearchResult> {
     const query = parseQuery(params);
     const words = terms(query.q);
@@ -135,6 +180,7 @@ export class Search {
     const limit = Math.min(Math.max(query.limit ?? 20, 1), 100);
     const ranked: Ranked[] = [];
     let total = 0;
+    let missing: SearchMissing[] = [];
 
     const inId = query.in;
     const inChannel = inId ? this.groups.row(inId) : undefined;
@@ -161,6 +207,7 @@ export class Search {
       // The merged page holds at most offset + limit thread hits, so the host builds snippets for those rows only.
       const page = await this.threadSearch({ ...filters, limit: offset + limit + skipped, withText: true });
       total += page.total - skipped;
+      missing = page.missing;
       const summaries = new Map(this.threads.conversations().map(c => [c.id, c]));
       page.hits.filter(hit => !commSet.has(hit.thread)).slice(0, offset + limit).forEach((hit, rank) => ranked.push({
         tier: sort === "relevance" && TOOL_KINDS.includes(hit.kind) ? 1 : 0, score: fused(rank), at: hit.at,
@@ -215,7 +262,7 @@ export class Search {
     let hits = ranked.slice(offset, offset + limit).map(row => row.build());
     // An answer whose match sits only in a tool call's arguments is found by its text, so it sinks below the messages of its own page.
     if (sort === "relevance") hits = [...hits.filter(hit => hit.role !== "tool"), ...hits.filter(hit => hit.role === "tool")];
-    return { hits, total, ...(offset + limit < total ? { nextCursor: String(offset + limit) } : {}) };
+    return { hits, total, ...(offset + limit < total ? { nextCursor: String(offset + limit) } : {}), ...(missing.length ? { missing } : {}) };
   }
 
   /** A thread hit opens at its entry: the timeline's `around=e<id>` answers with the item that holds it as `focus`. */

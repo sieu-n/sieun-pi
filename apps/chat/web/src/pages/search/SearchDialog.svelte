@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { agents, api, conversations, me, type SearchResult } from "$lib/api";
+  import { agents, api, conversations, me, type SearchMissing, type SearchResult } from "$lib/api";
   import { hrefFor, router } from "$lib/router.svelte";
   import type { SearchScope } from "$lib/shell/search.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
@@ -35,6 +35,8 @@
   let sort = $state<Sort>("relevance");
   let messages = $state<Messages>({ state: "idle" });
   let cursor = $state<string | undefined>();
+  /** The boxes whose threads the last search could not read, such as a Mac that is offline. */
+  let missing = $state<SearchMissing[]>([]);
   let active = $state<string | undefined>();
   let input = $state<HTMLInputElement>();
   let sortButton = $state<HTMLButtonElement>();
@@ -124,6 +126,7 @@
     // A conversation that grows between two pages shifts the offsets, so a hit can come twice.
     const seen = new Set(before.map(hit => hit.id));
     cursor = result.nextCursor;
+    missing = result.missing ?? [];
     messages = { state: "ready", hits: [...before, ...result.hits.filter(hit => !seen.has(hit.id))], total: result.total, more: !!result.nextCursor, loadingMore: false };
   }
 
@@ -320,6 +323,9 @@
               {#each group.rows as row (row.key)}
                 {@render result(row)}
               {/each}
+              {#if group.label === messageLabel && messages.state === "ready"}
+                {#each missing as box (box.box)}<p class="empty" data-testid="search-missing">{box.note}</p>{/each}
+              {/if}
               {#if !group.rows.length && group.empty}
                 {#if messages.state === "loading" && group.label === messageLabel}
                   <p class="empty"><LoadingText text={group.empty} /></p>

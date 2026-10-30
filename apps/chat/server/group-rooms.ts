@@ -6,6 +6,7 @@
  * 1. A post wakes every member whose `wakeOn` is `all`, plus every member it mentions, minus its author; in a channel a thread reply wakes
  *    only the members it mentions. Each woken member gets one delivery to its comm thread for the room (`Agents.ensureComm`), never to its
  *    work thread, keyed `d:<room>:<post>:<agent>`, with retries; a restart resubmits every delivery still `sending` with the same key.
+ *    Deliveries that waited for an offline box go as one bundled input per member when the box is back, keyed `b:<room>:<first post>:<agent>`.
  * 2. An owner post goes in as the owner's turn; an agent post goes in as an `agent.message` whose data names the author, the room, the post
  *    and its hops. A post `MAX_HOPS` agent hops from the owner's last post gets `stopped` deliveries and is never submitted.
  * 3. Each comm thread has a feed cursor in `rooms.commFeed`; the shared feed reader (rooms.ts `readFeedThread`) turns its speaking calls
@@ -23,7 +24,7 @@ import { isGroupRoom, type AgentRecord, type AgentStore, type FeedCursor, type G
 import type { Agents } from "./agents.ts";
 import { isHostAway, type EntryRecord, type Host, type Submitted } from "./host/types.ts";
 import { refusedForGood, retryWait } from "./outbox.ts";
-import { agentPostParts, queuedNote, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
+import { agedPost, agentPostParts, queuedNote, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
 import type { Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
 
@@ -419,29 +420,63 @@ export class GroupRooms {
     this.store.set(post, { deliveries: (post.deliveries ?? []).map(d => (d.target === target ? next : d)) });
   }
 
+  /** The posts a bundle to `target` names, oldest first; a member the log lacks drops out. */
+  private bundleMembers(post: RoomPost, target: AgentId): RoomPost[] {
+    const bundle = post.deliveries?.find(d => d.target === target)?.bundle;
+    if (!bundle) return [post];
+    const posts = this.store.postsOf(post.room);
+    return bundle.members.flatMap(id => posts.find(p => p.id === id) ?? []);
+  }
+
   private async deliver(post: RoomPost, target: AgentId): Promise<void> {
+    const bundle = post.deliveries?.find(d => d.target === target)?.bundle;
+    // A bundle goes as its first post's delivery; any other member's turn hands over to it.
+    if (bundle && bundle.members[0] !== post.id) {
+      const head = this.store.postsOf(post.room).find(p => p.id === bundle.members[0]);
+      if (head && head !== post) return this.deliver(head, target);
+    }
     const key = `${post.room}/${post.id}/${target}`;
     this.timers.delete(key);
     const delivery = post.deliveries?.find(d => d.target === target);
     const row = this.row(post.room);
     if (this.stopped || !delivery || delivery.state !== "sending" || this.inflight.has(key) || !row) return;
+    const members = this.bundleMembers(post, target);
+    const set = (patch: (d: RoomDelivery) => RoomDelivery) => {
+      for (const member of members) {
+        const d = member.deliveries?.find(x => x.target === target);
+        if (d) this.setDelivery(member, target, patch(d));
+      }
+    };
     const record = this.deps.agents.record(target);
     const refused = refusal(row);
     if (!record || refused) {
-      this.setDelivery(post, target, { ...delivery, state: record ? "stopped" : "failed", at: Date.now(), error: refused ?? `No agent ${target}.` });
-      this.emit(row, [post]);
+      set(d => ({ ...d, state: record ? "stopped" : "failed", at: Date.now(), error: refused ?? `No agent ${target}.` }));
+      this.emit(row, members);
       return;
     }
     this.inflight.add(key);
     const missed = this.missed(row, post, target);
-    const images = [...missed, post].flatMap(p => p.images).map(ref => this.deps.readUpload(ref)).filter((image): image is { data: string; mimeType: string } => !!image);
+    const images = [...missed, ...members].flatMap(p => p.images).map(ref => this.deps.readUpload(ref)).filter((image): image is { data: string; mimeType: string } => !!image);
     try {
       const thread = await this.commThread(row, record);
-      const from = post.author === "owner"
+      const last = members.at(-1)!;
+      // A bundle with any owner post goes as the owner's turn; one of agent posts only goes as an agent message that names its newest post.
+      const from = members.some(p => p.author === "owner")
         ? { ownerTurn: true, whenBusy: "steer" as const }
-        : { whenBusy: "followUp" as const, entry: { kind: "agent.message" as const, data: { from: post.author, via: row.id, post: post.id, hops: post.hops ?? 0 } } };
-      const result = await this.deps.host.submit(thread, { text: this.envelope(row, post, missed), ...(images.length ? { images } : {}), requestId: delivery.requestId, ...from });
-      this.setDelivery(post, target, { target, state: "delivered", attempts: delivery.attempts + 1, at: Date.now(), requestId: delivery.requestId, submission: result.submission, thread });
+        : {
+          whenBusy: "followUp" as const,
+          entry: { kind: "agent.message" as const, data: { from: last.author, via: row.id, post: last.id, hops: Math.max(...members.map(p => p.hops ?? 0)) } },
+        };
+      const now = Date.now();
+      const text = bundle
+        ? this.bundleText(row, members, missed, record.host, now)
+        : delivery.waited ? agedPost(this.envelope(row, post, missed), post.at, record.host, now) : this.envelope(row, post, missed);
+      const requestId = bundle?.requestId ?? delivery.requestId;
+      const result = await this.deps.host.submit(thread, { text, ...(images.length ? { images } : {}), requestId, ...from });
+      set(d => ({
+        target, state: "delivered", attempts: d.attempts + 1, at: Date.now(), requestId: d.requestId, submission: result.submission, thread,
+        ...(d.waited ? { waited: true as const } : {}), ...(d.bundle ? { bundle: d.bundle } : {}),
+      }));
       this.deps.events.submitted(thread, result);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -450,32 +485,59 @@ export class GroupRooms {
       if (away) {
         // It waits with no timer until the box's link comes back (`release`).
         this.deps.log(`rooms: ${row.id} ${post.id} to ${target} waits, ${away} is offline`);
-        this.setDelivery(post, target, { ...delivery, at: Date.now(), away, error: queuedNote(away) });
+        set(d => ({ ...d, at: Date.now(), away, error: queuedNote(away) }));
       } else if (refusedForGood(message)) {
         this.deps.log(`rooms: ${row.id} ${post.id} to ${target} refused: ${message}`);
-        this.setDelivery(post, target, { ...delivery, state: "failed", attempts, at: Date.now(), error: message });
+        set(d => ({ ...d, state: "failed", attempts, at: Date.now(), error: message }));
       } else {
         const wait = this.backoff(attempts);
         this.deps.log(`rooms: ${row.id} ${post.id} to ${target} attempt ${attempts} failed, retry in ${wait} ms: ${message}`);
-        this.setDelivery(post, target, { ...delivery, attempts, at: Date.now(), ...(attempts >= 3 ? { error: message } : {}) });
+        set(d => {
+          const { away: _away, error: _error, ...rest } = d;
+          return { ...rest, attempts, at: Date.now(), ...(attempts >= 3 ? { error: message } : {}) };
+        });
         this.schedule(post, target, wait);
       }
     } finally {
       this.inflight.delete(key);
     }
-    this.emit(row, [post]);
+    this.emit(row, members);
   }
 
-  /** `box`'s link came back: each delivery that waited for it goes again, in post order per room. */
-  release(box: string): void {
+  /**
+   * The posts of one bundle in one input, as rooms.ts `bundlePosts` writes a DM's: a line that says how many, then each post's envelope under
+   * its place and age. The channel posts its target missed before the first one go with that first envelope.
+   */
+  private bundleText(row: GroupRoom, members: RoomPost[], missed: RoomPost[], box: string, now: number): string {
+    return [`[${members.length} posts in ${roomLabel(row)} waited while ${box} was offline and go together in this one input, oldest first]`,
+      ...members.map((p, index) => `${agedPost(this.envelope(row, p, index === 0 ? missed : []), p.at, box, now).replace(/^\[written /, `[${index + 1} of ${members.length}, written `)}`)].join("\n\n");
+  }
+
+  /**
+   * `box`'s link came back: per room and member, the deliveries that waited for it go again in post order. A bundle saved before goes again as
+   * it is; the other waiting posts go as one new bundle, `b:<room>:<first post>:<agent>`, saved on each member before the submit, or alone
+   * when only one waits.
+   */
+  async release(box: string): Promise<void> {
+    const now = Date.now();
     for (const row of this.rows()) {
+      const waiting = new Map<AgentId, RoomPost[]>();
       for (const post of this.store.postsOf(row.id)) {
-        for (const d of post.deliveries ?? []) {
-          if (d.state !== "sending" || d.away !== box) continue;
-          const { away: _away, error: _error, ...rest } = d;
-          this.setDelivery(post, d.target, { ...rest, at: Date.now() });
-          this.schedule(post, d.target, 0);
+        for (const d of post.deliveries ?? []) if (d.state === "sending" && d.away === box) waiting.set(d.target, [...(waiting.get(d.target) ?? []), post]);
+      }
+      for (const [target, posts] of waiting) {
+        const delivery = (post: RoomPost) => post.deliveries!.find(d => d.target === target)!;
+        const fresh = posts.filter(p => !delivery(p).bundle);
+        const bundle = fresh.length > 1 ? { requestId: `b:${row.id}:${fresh[0]!.id}:${target}`, members: fresh.map(p => p.id) } : undefined;
+        for (const post of posts) {
+          const { away: _away, error: _error, ...rest } = delivery(post);
+          this.setDelivery(post, target, { ...rest, waited: true, at: now, ...(bundle && fresh.includes(post) ? { bundle } : {}) });
         }
+        const heads = posts.filter(p => {
+          const b = delivery(p).bundle;
+          return !b || b.members[0] === p.id;
+        });
+        for (const head of heads) await this.deliver(head, target);
       }
     }
   }
@@ -616,14 +678,22 @@ export class GroupRooms {
     };
   }
 
-  /** The owner post a `pi.user` input in a comm thread carries: by the seq in its header, else the newest owner post delivered there. */
+  /**
+   * The owner post a `pi.user` input in a comm thread carries: by the seq in its header (the newest owner header of a bundle), else the newest
+   * owner post delivered there.
+   */
   private ownerPostOf(row: GroupRoom, record: AgentRecord, thread: string, entry: EntryRecord): string | undefined {
     const content = entry.model?.[0]?.content;
     const text = typeof content === "string" ? content : (content ?? []).flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n");
-    const seq = /· post (\d+) from [^\n]* · hops \d+\]$/.exec(text.split("\n")[0] ?? "")?.[1];
+    const header = /· post (\d+) from [^\n]* · hops \d+\]$/;
+    const lines = text.split("\n");
+    // A post that waited for its box, alone or in a bundle, opens with its age; then its newest owner envelope names the post.
+    const seqs = header.test(lines[0] ?? "") ? [lines[0]!] : /^\[(written |\d+ posts in )/.test(lines[0] ?? "") ? lines.filter(line => header.test(line)).reverse() : [];
     const posts = this.store.postsOf(row.id);
-    const named = seq ? posts.find(p => p.seq === Number(seq) && p.author === "owner") : undefined;
-    if (named) return named.id;
+    for (const line of seqs) {
+      const named = posts.find(p => p.seq === Number(header.exec(line)![1]) && p.author === "owner");
+      if (named) return named.id;
+    }
     return posts.findLast(p => p.author === "owner" && p.deliveries?.some(d => d.target === record.id && d.thread === thread))?.id;
   }
 

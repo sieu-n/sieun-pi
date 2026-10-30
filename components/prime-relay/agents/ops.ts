@@ -1,11 +1,15 @@
-/** The ops the agent relay answers on its own box: a wake's shell check, the box's info, and reads and writes of agent folders. */
+/**
+ * The ops the agent relay answers on its own box: a wake's shell check, the box's info, reads and writes of agent folders, and the
+ * instruction files a thread's cwd loads.
+ */
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { basename, dirname, isAbsolute, join, sep } from "node:path";
+import { instructionFiles } from "../../../apps/chat/server/agent-folder.ts";
 import { defaultProjects } from "../../../apps/chat/server/config.ts";
-import type { BoxInfo } from "./protocol.ts";
+import type { BoxInfo, InstructionsAnswer } from "./protocol.ts";
 
 /** How much of a check's output comes back; the same tail as legacy wakes.ts CHECK_TAIL. */
 const CHECK_TAIL = 1500;
@@ -77,4 +81,10 @@ export async function filePut(args: Record<string, unknown>, agentsDir: string):
   await writeFile(temp, text);
   await rename(temp, path);
   return {};
+}
+
+/** The AGENTS.md chain for `cwd` on this box and Prime's global AGENTS.md in `<home>/.prime/agent`, the agent dir pi-host runs with here. */
+export function instructions(args: Record<string, unknown>, home: string): InstructionsAnswer {
+  if (typeof args.cwd !== "string" || !isAbsolute(args.cwd)) throw new Error("instructions needs an absolute cwd");
+  return { cwdExists: existsSync(args.cwd), files: instructionFiles(args.cwd, join(home, ".prime", "agent")) };
 }

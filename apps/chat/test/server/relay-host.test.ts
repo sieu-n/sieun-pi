@@ -9,7 +9,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, mock, test } from "node:test";
-import type { AgentHostList, AgentSummary, Item, TimelinePage } from "../../web/src/lib/api/types.ts";
+import type { AgentHostList, AgentSummary, Item, Room, SearchResult, TimelinePage } from "../../web/src/lib/api/types.ts";
 import { App } from "../../server/app.ts";
 import { fixtureFolders, readConfig } from "../../server/config.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
@@ -238,6 +238,15 @@ describe("agents on another box", () => {
     assert.equal(store.entries.memory.mac_sleeps.title, "Mac sleeps");
   });
 
+  test("its instruction files on the Agents page are read on the Mac through its relay", async () => {
+    s.relay.files.set("/Users/test/src/sieun-pi/AGENTS.md", "Mac-only rule");
+    const config = (await s.call("GET", `/api/agents/${agent.id}/config`)).body;
+    assert.equal(config.runs.cwd, "/Users/test/src/sieun-pi");
+    assert.equal(config.runs.cwdExists, true, "the cwd exists on the Mac, though not on this box");
+    assert.deepEqual(config.instructions.files.map((f: { path: string; preview?: string }) => [f.path, f.preview]), [["/Users/test/src/sieun-pi/AGENTS.md", "Mac-only rule"]]);
+    s.relay.files.delete("/Users/test/src/sieun-pi/AGENTS.md");
+  });
+
   test("a DM post goes to a comm thread made on the Mac, and a feed row from the relay is read and acked", async () => {
     const room = agent.room!;
     const sent = await s.call("POST", `/api/c/${room}/send`, { text: "hi from metal", requestId: "mac-1" });
@@ -249,6 +258,23 @@ describe("agents on another box", () => {
     s.relay.feed({ seq: 1, thread: comm, conversation: 1, entry: 1, toolCallId: "c1", toolName: "send_message", requestId: `m:${comm}:c1`, text: "x", at: Date.now() });
     await until(async () => s.relay.acks, acks => acks.includes(1));
     await until(() => s.posts(room), page => page.some(p => p.author.id === agent.id));
+  });
+
+  test("search finds a word that only a thread on the Mac holds, and a Mac that is away reads as missing with a note", async () => {
+    await s.relay.host.submit(agent.thread, { text: "zebracorn lives only on the mac", requestId: "search-mac-1" });
+    const found = (await s.call<SearchResult>("GET", "/api/search?q=zebracorn")).body;
+    assert.ok(found.total >= 1);
+    assert.equal(found.hits.length, found.total);
+    assert.ok(found.hits.every(hit => hit.conversation.id === agent.thread), "every hit is in the Mac agent's work thread");
+    assert.equal(found.missing, undefined);
+    s.relay.drop(true);
+    await until(async () => s.remote.state().state, state => state === "away");
+    const away = (await s.call<SearchResult>("GET", "/api/search?q=zebracorn")).body;
+    assert.deepEqual([away.total, away.hits.length], [0, 0]);
+    assert.deepEqual(away.missing?.map(m => m.box), ["mac"]);
+    assert.match(away.missing![0]!.note, /^mac is offline since \d\d:\d\dZ, so its threads are not in these results\.$/);
+    s.relay.down = false;
+    await until(async () => s.remote.state().state, state => state === "up");
   });
 
   test("while the Mac is away, posts read as queued and wait with no retries; back, they go as one bundled input with their ages", async () => {
@@ -283,6 +309,39 @@ describe("agents on another box", () => {
     const submits = s.relay.calls.filter(c => c.op === "durable_submit" && String(c.args.requestId).startsWith("b:"));
     assert.deepEqual(submits.map(c => c.args.requestId), [`b:${first.id}:${agent.id}`]);
     for (const post of stored) assert.deepEqual(post.delivery!.bundle, { requestId: `b:${first.id}:${agent.id}`, members: stored.map(p => p.id) });
+  });
+
+  test("a Solo room's posts that waited for the Mac go to the agent's comm thread there as one bundled input with their ages", async () => {
+    const made = await s.call<Room>("POST", "/api/rooms", { kind: "solo", agenda: "plan on the mac", members: [agent.id] });
+    assert.equal(made.status, 200, JSON.stringify(made.body));
+    const room = made.body.id;
+    await until(() => s.posts(room), page => page[0]?.deliveries[0]?.state !== "queued");
+    const comm = s.app.agents.record(agent.id)!.comm![room]!;
+    assert.ok(s.relay.host.threadsById.has(comm), "the room's comm thread is on the Mac");
+    s.relay.drop(true);
+    await until(async () => s.remote.state().state, state => state === "away");
+    const texts = ["solo one while away", "solo two while away", "solo three while away"];
+    for (const [i, text] of texts.entries()) assert.equal((await s.call("POST", `/api/c/${room}/send`, { text, requestId: `solo-away-${i}` })).status, 200);
+    await until(() => s.posts(room), page => texts.every(t => page.find(p => p.text === t)?.deliveries[0]?.error === "queued, mac is offline"));
+    const stored = s.app.agentStore.postsOf(room).filter(p => texts.includes(p.text));
+    assert.ok(stored.every(p => p.deliveries![0]!.attempts === 0), "an away box costs no delivery attempt");
+
+    s.relay.down = false;
+    await until(() => s.posts(room), page => texts.every(t => page.find(p => p.text === t)?.deliveries[0]?.state !== "queued"));
+    const got = inputs(s.relay.host, comm).filter(e => textOf(e).includes("while away"));
+    assert.equal(got.length, 1, "one input for the three posts");
+    const text = (got[0]!.model![0]!.content as { text: string }[])[0]!.text;
+    assert.match(text, /^\[3 posts in Solo "plan on the mac" waited while mac was offline and go together in this one input, oldest first\]/);
+    for (const [i, post] of stored.entries()) {
+      assert.match(text, new RegExp(`\\[${i + 1} of 3, written \\d+ min ago at \\d\\d:\\d\\dZ; the chat server held it while mac was offline\\]\\n\\n\\[Solo "plan on the mac" \\(${room}\\): [^\\n]* · post ${post.seq} from You \\(owner\\) · hops 0\\]\\n\\n${post.text}`));
+    }
+    const first = stored[0]!;
+    const submits = s.relay.calls.filter(c => c.op === "durable_submit" && String(c.args.requestId).startsWith(`b:${room}:`));
+    assert.deepEqual(submits.map(c => [c.args.requestId, c.args.ownerTurn]), [[`b:${room}:${first.id}:${agent.id}`, true]]);
+    for (const post of stored) {
+      assert.deepEqual(post.deliveries![0]!.bundle, { requestId: `b:${room}:${first.id}:${agent.id}`, members: stored.map(p => p.id) });
+      assert.equal(post.deliveries![0]!.state, "delivered");
+    }
   });
 
   test("a waiting post to an agent archived meanwhile is dropped with a note", async () => {

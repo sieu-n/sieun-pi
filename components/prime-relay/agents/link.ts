@@ -4,7 +4,7 @@
  * Either side closing ends both, so the chat server redials and sets up its watches again.
  */
 import type { WebSocket } from "ws";
-import { boxInfo, fileGet, filePut, runCheck } from "./ops.ts";
+import { boxInfo, fileGet, filePut, instructions, runCheck } from "./ops.ts";
 import { PiHostSocket, type Answer, type PiHostLine } from "./pi-host-socket.ts";
 import { AGENT_RELAY_PROTOCOL, DURABLE_OPS, parseFrame, type BoxInfo, type ChatHttpArgs, type FeedRow, type RelayFrame, type ServerFrame } from "./protocol.ts";
 
@@ -166,6 +166,8 @@ export class AgentLink {
         return { ok: true, data: await fileGet(args, this.options.agentsDir) };
       case "file_put":
         return { ok: true, data: await filePut(args, this.options.agentsDir) };
+      case "instructions":
+        return { ok: true, data: instructions(args, this.options.home) };
       default:
         return { ok: false, error: `unknown op ${op}` };
     }

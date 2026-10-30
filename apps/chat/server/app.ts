@@ -176,14 +176,17 @@ export class App {
         const refreshed = this.threads.refresh().catch(error => this.log(`thread refresh after ${box} went ${link.state} failed: ${String(error)}`));
         if (link.state === "up") {
           void refreshed.then(() => this.rooms.release(box)).catch(error => this.log(`rooms: release of ${box} failed: ${String(error)}`));
-          void refreshed.then(() => this.groups.release(box));
+          void refreshed.then(() => this.groups.release(box)).catch(error => this.log(`group rooms: release of ${box} failed: ${String(error)}`));
         }
       });
     }
     this.threads.onDoc = (thread, name, value) => {
       if (name === "chat.board") this.boards.docChanged(thread, value);
     };
-    this.search = new Search(host, this.threads, this.groups, config.fixture ? undefined : config.durableIndex);
+    this.search = new Search(routing?.list()[0]!.host ?? host, this.threads, this.groups, config.fixture ? undefined : config.durableIndex);
+    if (routing) {
+      this.search.boxes = () => routing.list().filter(b => b.box !== config.box).map(b => ({ box: b.box, link: () => routing.link(b.box), search: query => b.host.search(query) }));
+    }
     this.search.testSends = () => this.rooms.allTestSends();
     this.search.commThreads = () => this.agents.list().flatMap(record => Object.values(record.comm ?? {}));
     this.search.dmPosts = () => this.rooms.searchPosts();
