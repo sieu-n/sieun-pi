@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { readdir, stat } from "node:fs/promises";
+import { statSync, type Stats } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { clockTime } from "./checkin-settings.ts";
@@ -178,15 +179,25 @@ export async function readRowSlotPark(row: { sessionFile?: string | undefined } 
   return file ? readFileSlotPark(file) : { complete: true };
 }
 
+/** A session file's stat, or null for one that cannot be read. */
+function statOf(file: string): Stats | null {
+  try { return statSync(file, { throwIfNoEntry: false }) ?? null; } catch { return null; }
+}
+
 const fileReads = new Map<string, { key: string; read: FileSlotPark }>();
 
 /**
  * `fileSlotPark` of a session file, reading longer tails until one holds a clear, and read again only after the file changed (its size or
  * mtime): the catalog asks for every chat's stopped jobs at each projection, every 2 s while an agent works (RATES_MS), and a parked session
  * writes nothing. A file that cannot be read has no wait.
+ *
+ * The size and mtime come from a stat on the main thread. Each projection checks about 1,500 stopped jobs' files: through the thread pool
+ * their stats took 57 to 78 ms of CPU and 24 to 37 ms per round on us-metal02 on 10-31 against 6 to 11 ms in-line, and at 22:40:04Z on 10-30,
+ * with CI on 48 cores, their answers came back in one 1.7 s run of Stats objects and a 0.66 s minor GC, while the chat's other file reads
+ * waited 1.5 s behind them in the pool and d7 counted the minute dirty.
  */
 export async function readFileSlotPark(file: string): Promise<FileSlotPark> {
-  const info = await stat(file).catch(() => null);
+  const info = statOf(file);
   if (!info) return { complete: true };
   const key = `${info.size}:${info.mtimeMs}`;
   const known = fileReads.get(file);
