@@ -484,8 +484,11 @@ export class DurableRlm {
     const slot = this.slots.get(`${threadId}:${conversation}`);
     if (!slot?.kernel?.alive) return;
     await this.snapshot(slot, 60_000);
-    for (const notice of [...slot.notices.values()]) await this.sendNotice(slot, notice);
+    const pending = [...slot.notices.values()];
     slot.notices.clear();
+    // This settle runs inside the conversation's slot release, and a submit waits for that release, so awaiting the notices here would
+    // never end and would hang every later submit to the conversation (10-30: two agent factory jobs sat 5 h in agent_message.send).
+    void pending.reduce((sent, notice) => sent.then(() => this.sendNotice(slot, notice)), Promise.resolve());
     this.armIdle(slot);
   }
 
