@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { AlertBridge, ESCALATE_MS, REFIRE_MS, REOPEN_MS, TRIAGE_WORK, firingRules, parseAlerts, parseOwners, parseState, ruleKey } from "../src/alert-bridge.ts";
 import { ALERT_ROUTES } from "../src/alert-routes.ts";
-import { entriesTurnSince, type TurnSince } from "../src/held-turns.ts";
+import { entriesTurnSince, threadTurnSince, type TurnSince } from "../src/held-turns.ts";
+import { TICK_MS } from "../src/wakes.ts";
 
 const NOW = Date.parse("2026-10-29T03:00:00Z");
 const VENT = "230bbdbf-4d84-475f-95d2-63db2f90ca34";
@@ -118,6 +119,39 @@ test("a thread with no turn after a fire escalates it to ops guy once at ESCALAT
   await held.bridge.tick();
   assert.equal(escalations(held).length, 0);
   assert.equal((await held.state()).jobs[VENT]!.ranAt, NOW);
+});
+
+test("a thread that pi-pool holds for an account slot keeps its fire until a tick past the slot, then escalates", async () => {
+  const f = await fixture();
+  const slot = NOW + ESCALATE_MS + 9 * 60_000;
+  f.turns.set(VENT, { ran: false, slotAt: slot, provider: "anthropic" });
+  f.set([alert()]);
+  await f.bridge.tick();
+  f.at(NOW + ESCALATE_MS);
+  await f.bridge.tick();
+  f.at(slot);
+  await f.bridge.tick();
+  assert.equal(escalations(f).length, 0, "the pool's wait is no lost fire while its slot is ahead");
+  f.at(slot + TICK_MS);
+  await f.bridge.tick();
+  assert.equal(escalations(f).length, 1);
+});
+
+test("a thread's turn read adds its tree's pool slot only when no turn ran, no failed call names one, and the slot is ahead", async () => {
+  const asked: string[] = [];
+  const freeAt = (at: number | null) => async (provider: string) => { asked.push(provider); return at; };
+  const sent = { kind: "agent.message", model: [{ role: "user", content: [{ type: "text", text: "[alert] ..." }], timestamp: NOW + 1000 }] };
+  const earlier = { kind: "pi.assistant", model: [{ role: "assistant", provider: "anthropic", content: [{ type: "text", text: "done" }], stopReason: "stop", timestamp: NOW - 5000 }] };
+  const slot = NOW + 39 * 60_000;
+  assert.deepEqual(await threadTurnSince([sent, earlier], NOW, freeAt(slot), NOW + 2000), { ran: false, slotAt: slot, provider: "anthropic" });
+  assert.deepEqual(asked, ["anthropic"]);
+  assert.deepEqual(await threadTurnSince([sent, earlier], NOW, freeAt(NOW), NOW + 2000), { ran: false }, "a slot that is not ahead holds nothing");
+  assert.deepEqual(await threadTurnSince([sent, earlier], NOW, async () => { throw new Error("pi-pool did not answer"); }, NOW + 2000), { ran: false });
+  asked.length = 0;
+  const replied = { kind: "pi.assistant", model: [{ role: "assistant", provider: "anthropic", content: [{ type: "text", text: "on it" }], stopReason: "stop", timestamp: NOW + 3000 }] };
+  assert.deepEqual(await threadTurnSince([replied, sent, earlier], NOW, freeAt(slot), NOW + 4000), { ran: true, at: NOW + 3000 });
+  assert.deepEqual(asked, [], "a turn that ran asks the pool nothing");
+  assert.deepEqual(await threadTurnSince([sent], NOW, freeAt(slot), NOW + 2000), { ran: false }, "no provider to ask about");
 });
 
 test("a thread's rule that still fires REOPEN_MS after the thread took it goes to the thread again", async () => {

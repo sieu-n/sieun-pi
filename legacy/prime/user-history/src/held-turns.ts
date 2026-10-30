@@ -209,6 +209,33 @@ export function entriesTurnSince(entries: readonly unknown[], since: number): Tu
   return turnSince(messages.map(message => JSON.stringify({ type: "message", timestamp: new Date(message.timestamp).toISOString(), message })).join("\n"), since);
 }
 
+/**
+ * `entriesTurnSince`, plus the pi-pool slot of the thread's tree when no turn ran and no failed call names one. A thread's turn that waits for
+ * an account has no entry yet: vent took vent-paid-fallback-stg at 05:31:23Z on 10-30, `pi-pool who --session pi-durable:230bbdbf-...` held
+ * it for claude-virev15 at slot_at 06:10:00Z, and the bridge escalated it to ops guy at 06:01:24Z as a thread with no model turn. The provider
+ * is the one the thread's newest assistant message used; `freeAt` is `treeFreeAt` for its tree.
+ */
+export async function threadTurnSince(entries: readonly unknown[], since: number, freeAt: (provider: string) => Promise<number | null>, now: number): Promise<TurnSince> {
+  const turn = entriesTurnSince(entries, since);
+  if (turn.ran || turn.slotAt !== undefined) return turn;
+  const provider = turn.provider ?? entriesProvider(entries);
+  if (!provider) return turn;
+  const at = await freeAt(provider).catch(() => null);
+  return at !== null && at > now ? { ...turn, slotAt: at, provider } : turn;
+}
+
+/** The provider of the newest assistant message in durable_entries order (newest first). */
+function entriesProvider(entries: readonly unknown[]): string | undefined {
+  for (const entry of entries) {
+    const model = typeof entry === "object" && entry !== null ? (entry as { model?: unknown }).model : undefined;
+    for (const message of Array.isArray(model) ? model : []) {
+      const said = message as { role?: unknown; provider?: unknown } | null;
+      if (said?.role === "assistant" && typeof said.provider === "string") return said.provider;
+    }
+  }
+  return undefined;
+}
+
 /** `turnSince` over the transcript at `file`; a missing file has no turn. */
 export async function readTurnSince(file: string, since: number): Promise<TurnSince> {
   return turnSince(await readFile(file, "utf8").catch(() => ""), since);
