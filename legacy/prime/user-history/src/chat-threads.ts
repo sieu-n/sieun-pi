@@ -1089,7 +1089,7 @@ export class ThreadHub {
     const host = this.catalog.hostOf(id);
     const log = () => process.stderr.write(`open ${id.slice(0, 8)}${host ? ` on ${host}` : ""} ${thread.live ? "live" : "saved"} ${thread.state.messages.length} messages: ${marks.join(", ")}, total ${Math.round(performance.now() - started)}ms\n`);
     try {
-      // A worker that is stopping or starting is waited out outside the attach queue, then attached once (src/worker-move.ts).
+      // A worker that is stopping, starting or closing is waited out outside the attach queue, then attached again (src/worker-move.ts).
       const live = activeSessionId === undefined ? null : await afterMove(() => this.attaches.run(id, background, async () => {
         mark("queue");
         const connection = await this.attach(activeSessionId, host).catch(error => {

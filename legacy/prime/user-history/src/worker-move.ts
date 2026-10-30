@@ -21,15 +21,20 @@ export type StateAnswer = { success: true; data?: unknown } | { success: false; 
 
 /**
  * Runs `act`, and when the daemon refuses it because the worker moves, reads get_state until it answers anything but another move refusal (the
- * worker runs, or the session is gone with it), then runs `act` once more. `waited` hears what the worker was doing and how long the wait took.
+ * worker runs, or the session is gone with it), then runs `act` again, until `act` meets no move. `waited` hears what the worker was doing and
+ * how long each wait took. get_state can read a closing session fine while the attach is still refused: at 18:57:35Z on 10-30 on us-metal02
+ * the idle unload was stopping job 01a18e22 while its wake opened it, get_state answered after 174 ms, the one retry met "Active session
+ * 73eb82401fc1 is closing" again, and the wake failed, a dirty d7 minute. So a retry that meets a move waits MOVE_READ_MS before it reads again.
  */
 export async function afterMove<T>(act: () => Promise<T>, getState: () => Promise<StateAnswer>, waited?: (doing: string, ms: number) => void,
   sleep: (ms: number) => Promise<void> = ms => new Promise(done => setTimeout(done, ms)), now: () => number = Date.now): Promise<T> {
-  let doing: string | undefined;
-  try { return await act(); } catch (error) { if ((doing = moveOf(error)) === undefined) throw error; }
-  const from = now();
   const still = async (): Promise<boolean> => moveOf(await getState().then(answer => answer.success ? "" : answer.error, (error: unknown) => text(error))) !== undefined;
-  while (await still()) await sleep(MOVE_READ_MS);
-  waited?.(doing, now() - from);
-  return act();
+  for (let retry = false; ; retry = true) {
+    let doing: string | undefined;
+    try { return await act(); } catch (error) { if ((doing = moveOf(error)) === undefined) throw error; }
+    const from = now();
+    if (retry) await sleep(MOVE_READ_MS);
+    while (await still()) await sleep(MOVE_READ_MS);
+    waited?.(doing, now() - from);
+  }
 }
