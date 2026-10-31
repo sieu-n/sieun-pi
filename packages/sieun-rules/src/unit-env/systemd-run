@@ -47,4 +47,7 @@ if [ -n "${RLM_SESSION_DIR:-}" ]; then
     [ "$given" = x ] && set -- -E "$name" "$@"
   done
 fi
+# LC_PRIME_SESSION (<session id>@<host>, set by kernel-own.py) names the session that started the unit, also for a Mac job's unit started over
+# ssh, where ~/.bashrc puts this folder first on PATH. The d2 orphan reaper stops a unit once that session ended (user-history orphan-reaper.ts).
+[ -n "${LC_PRIME_SESSION:-}" ] && set -- -E LC_PRIME_SESSION "$@"
 exec "$real" "$@"

@@ -30,6 +30,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -352,9 +353,37 @@ def recording_system(original):
     return system
 
 
+SESSION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def session_id(folder: str) -> str | None:
+    """The session id of a session folder: a root chat's folder is named for it, and a job's rlm-subagent.json names its transcript."""
+    name = os.path.basename(folder.rstrip("/"))
+    if SESSION_ID.match(name):
+        return name
+    try:
+        with open(os.path.join(folder, "rlm-subagent.json")) as file:
+            transcript = json.load(file).get("sessionFile")
+    except (OSError, ValueError, AttributeError):
+        return None
+    name = os.path.basename(transcript) if isinstance(transcript, str) else ""
+    return name[:-6] if SESSION_ID.match(name[:-6]) and name.endswith(".jsonl") else None
+
+
+def tag_processes() -> None:
+    """Sets LC_PRIME_SESSION=<session id>@<host> for every process this kernel starts. ssh sends LC_* variables and us-metal02's sshd accepts
+    them, so a command a Mac job runs on the box over ssh carries its owner too, and the sieun-rules systemd-run shim passes it to a unit.
+    The d2 orphan reaper (legacy/prime/user-history/src/orphan-reaper.ts) reads it: on 10-28 a Mac job's Chrome driver ran 2 days on us-metal02
+    after the job ended, and nothing on the box named its owner."""
+    found = session_id(SESSION)
+    if found:
+        os.environ["LC_PRIME_SESSION"] = f"{found}@{socket.gethostname().split('.')[0]}"
+
+
 def install() -> None:
     if not SESSION:
         return
+    tag_processes()
     if not getattr(os.mkdir, "records_owner", False):
         os.mkdir = recording_mkdir(os.mkdir)
     if not getattr(os.system, "records_owner", False):

@@ -156,3 +156,19 @@ time.sleep(2.5)
   assert.deepEqual(Object.keys(record.hosts), ["far"]);
   assert.deepEqual(record.hosts.far.sort(), ["~/scratch/bg-far", "~/scratch/far-job", "~/scratch/old-far/x", "~/scratch/system-far"]);
 });
+
+
+// p661 (10-31): a Mac job's Chrome driver ran 2 days on us-metal02 after its job ended, and nothing on the box named its owner. The kernel sets
+// LC_PRIME_SESSION, which ssh sends to the box with the other LC_* variables, so the d2 orphan reaper knows whose process it is.
+test("the kernel tags the processes it starts with its session id and host, read from the job's rlm-subagent.json", () => {
+  const id = "01a183f7-0a0b-725c-984d-d59f150e6420";
+  mkdirSync(session, { recursive: true });
+  writeFileSync(join(session, "rlm-subagent.json"), JSON.stringify({ sessionFile: join(session, `${id}.jsonl`) }));
+  const run = kernel(`
+import os, socket, subprocess
+print(subprocess.run(["sh", "-c", "echo $LC_PRIME_SESSION"], capture_output=True, text=True).stdout.strip() == f"${id}@{socket.gethostname().split('.')[0]}")
+`);
+  assert.equal(run.stdout.trim(), "True");
+  const rooted = kernel(`import os; print(os.environ.get("LC_PRIME_SESSION", "").split("@")[0])`, { RLM_SESSION_DIR: join(home, ".prime/agent/session-artifacts/01a10000-0000-7000-8000-000000000000") });
+  assert.equal(rooted.stdout.trim(), "01a10000-0000-7000-8000-000000000000");
+});

@@ -58,3 +58,13 @@ test("a unit on the public socket or with no prime-agent keeps the kernel's dirs
     assert.ok(ran.args.includes("PRIME_AGENT_CODING_AGENT_DIR"), command.join(" "));
   }
 });
+
+
+// p661 (10-31): a unit a Mac job starts over ssh gets no RLM_SESSION_DIR, so the shim passes the LC_PRIME_SESSION tag ssh carried in.
+test("a unit gets LC_PRIME_SESSION when the caller has it, with or without RLM_SESSION_DIR", () => {
+  const ran = spawnSync("sh", [wrapper, ...unit, "sleep", "1"], { encoding: "utf8",
+    env: { HOME: home, PATH: `${bin}:/usr/bin:/bin`, LC_PRIME_SESSION: "01a183f7-0a0b-725c-984d-d59f150e6420@Sieuns-MacBook-Pro" } });
+  assert.equal(ran.status, 0, ran.stderr);
+  assert.deepEqual(ran.stdout.trim().split("\n").slice(0, 2), ["-E", "LC_PRIME_SESSION"]);
+  assert.ok(!run([...unit, "sleep", "1"]).args.includes("LC_PRIME_SESSION"));
+});
