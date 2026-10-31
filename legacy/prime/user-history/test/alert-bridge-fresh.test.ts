@@ -13,10 +13,11 @@ const CI = ALERT_ROUTES.find(route => route.chat === "VP of CI")!.session;
 const RULE = "ci-staging-proof-spec-red";
 const HELD_AT = Date.parse("2026-10-31T15:41:51Z");
 const NOW = Date.parse("2026-10-31T18:31:56Z");
-const raw = (fingerprint: string, spec: string, startsAt: string, summary: string) => ({ fingerprint, startsAt, generatorURL: `https://obs.virev.ai/alerting/grafana/${RULE}/view`,
-  labels: { __alert_rule_uid__: RULE, alertname: "CI staging-proof spec red 2 runs in a row", grafana_folder: "metal", incident_by: "spec", spec },
+const raw = (fingerprint: string, spec: string, startsAt: string, summary: string, alertname = "CI staging-proof spec red 2 runs in a row") => ({ fingerprint, startsAt, generatorURL: `https://obs.virev.ai/alerting/grafana/${RULE}/view`,
+  labels: { __alert_rule_uid__: RULE, alertname, grafana_folder: "metal", incident_by: "spec", spec },
   annotations: { summary }, status: { state: "active", silencedBy: [], inhibitedBy: [] } });
-const SCREENING = raw("72ae24c1ae28d21c", "hosted-campaign-screening.spec.ts", "2026-10-31T15:41:10.000Z", "hosted-campaign-screening.spec.ts is red 6 in a row.");
+const SCREENING = raw("72ae24c1ae28d21c", "hosted-campaign-screening.spec.ts", "2026-10-31T15:41:10.000Z", "hosted-campaign-screening.spec.ts is red 6 in a row.",
+  "CI staging-proof spec red 3 runs in a row");
 const MONITOR = raw("54f0b1d7bfa8250a", "hosted-zz-monitor-flow.spec.ts", "2026-10-31T18:31:10.000Z", "hosted-zz-monitor-flow.spec.ts is red 1 in a row.");
 
 test("a new spec on a rule that holds an announced spec gives the job only the new spec, with its own labels and summary", async () => {
@@ -31,8 +32,8 @@ test("a new spec on a rule that holds an announced spec gives the job only the n
   now = NOW;
   await bridge.tick();
   assert.equal(sent.length, 1);
-  assert.match(sent[0]!, /fired at 2026-10-31T18:31Z\. Labels: spec=hosted-zz-monitor-flow\.spec\.ts\. Summary: hosted-zz-monitor-flow\.spec\.ts is red 1 in a row\. You are/);
-  assert.doesNotMatch(sent[0]!, /campaign-screening|6 in a row/);
+  assert.match(sent[0]!, /spec-red \(CI staging-proof spec red 2 runs in a row, firing since 2026-10-31T15:41Z, 2 label sets\) fired at 2026-10-31T18:31Z\. Labels: spec=hosted-zz-monitor-flow\.spec\.ts\. Summary: hosted-zz-monitor-flow\.spec\.ts is red 1 in a row\. You are/);
+  assert.doesNotMatch(sent[0]!, /campaign-screening|6 in a row|3 runs/);
 });
 
 test("a new rule names each label set that fired with it, and a reopen with no new label set names every firing one", () => {
@@ -40,11 +41,11 @@ test("a new rule names each label set that fired with it, and a reopen with no n
   const firing = new Map([screening, monitor].map(alert => [`${alert.fingerprint}@${alert.startsAt}`, alert]));
   const both = advance([screening, monitor], emptyState(), () => CI, NOW).state;
   const line = alertLine(both.rules[ruleKey(CI, RULE)]!, firing);
-  assert.deepEqual(line.fires.map(fire => fire.labels), [{ spec: "hosted-campaign-screening.spec.ts" }, { spec: "hosted-zz-monitor-flow.spec.ts" }]);
+  assert.deepEqual(line.fires.map(fire => fire.labels), [{ alertname: "CI staging-proof spec red 3 runs in a row", spec: "hosted-campaign-screening.spec.ts" }, { spec: "hosted-zz-monitor-flow.spec.ts" }]);
   assert.ok(alertRulesText([line]).includes("  Fired: spec=hosted-zz-monitor-flow.spec.ts\n  Summary: hosted-zz-monitor-flow.spec.ts is red 1 in a row.\n"));
   const reopened = { ...both.rules[ruleKey(CI, RULE)]!, wokeAt: NOW + 86_400_000 };
   const again = alertLine(reopened, firing);
   assert.equal(again.fresh, false);
   assert.equal(again.fires.length, 2);
-  assert.match(alertRulesText([again]), /  Firing: spec=hosted-campaign-screening\.spec\.ts/);
+  assert.match(alertRulesText([again]), /  Firing: alertname=CI staging-proof spec red 3 runs in a row, spec=hosted-campaign-screening\.spec\.ts/);
 });

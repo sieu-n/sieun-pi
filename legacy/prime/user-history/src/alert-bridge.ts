@@ -340,15 +340,19 @@ const shownLabels = (labels: Record<string, string>, alertname: string): Record<
  * The rule as its job reads it, with the label sets of this tick's list that the bridge first saw at or after the rule's last fire, each with
  * its own summary. With none, such as a reopen, every firing label set. Every CI rule keeps an instance firing 30 min after it clears
  * (keepFiringFor, auto-sns-agent 25e5f33e58), and on 10-31 at 18:31Z ci-staging-proof-spec-red fired for hosted-zz-monitor-flow.spec.ts
- * with the summary of the held hosted-campaign-screening.spec.ts instance, "6 in a row", because the line took the oldest instance.
+ * with the summary of the held hosted-campaign-screening.spec.ts instance, "6 in a row", because the line took the oldest instance. The title
+ * is the newest shown label set's alertname, since a rule's alertname can carry a count: at 19:12Z that day the entry, open from 10-30, still
+ * held "CI staging-proof spec red 3 runs in a row" while the spec that fired was red 2 runs.
  */
 export function alertLine(rule: Tracked, firing: ReadonlyMap<string, FiringAlert>): AlertLine {
   const live = Object.entries(rule.instances).flatMap(([id, instance]) => firing.has(id) ? [{ alert: firing.get(id)!, instance }] : [])
     .sort((a, b) => a.alert.startsAt.localeCompare(b.alert.startsAt));
   const fresh = live.filter(({ instance }) => instance.seenAt !== undefined && instance.seenAt >= rule.wokeAt);
-  const fires = (fresh.length ? fresh : live).map(({ alert }): AlertFire => ({ labels: shownLabels(alert.labels, rule.alertname), summary: alert.summary, url: alert.url,
+  const shown = fresh.length ? fresh : live;
+  const alertname = shown.at(-1)?.alert.alertname ?? rule.alertname;
+  const fires = shown.map(({ alert }): AlertFire => ({ labels: shownLabels(alert.labels, alertname), summary: alert.summary, url: alert.url,
     ...alert.values ? { values: alert.values } : {} }));
-  return { rule: rule.rule, alertname: rule.alertname, startsAt: rule.startsAt, firedAt: rule.wokeAt, sets: firingSets(rule), fresh: fresh.length > 0, fires };
+  return { rule: rule.rule, alertname, startsAt: rule.startsAt, firedAt: rule.wokeAt, sets: firingSets(rule), fresh: fresh.length > 0, fires };
 }
 
 const labelText = (labels: Record<string, string>): string => Object.entries(labels).map(([name, value]) => `${name}=${value}`).join(", ");
