@@ -532,6 +532,20 @@
           "contact_points."
         ]
       }
+    },
+    {
+      "id": "F35",
+      "title": "enrich.llm_daily_limit kept a 5,000-call code default on staging after staging enrichment moved to bought Codex credits, so the day's enrichment stopped until a hand raise",
+      "designs": [
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p281",
+        "commit:5336ca115"
+      ],
+      "owner": "Prospect feature bro (01a11bd7), step p281, filed by d3 at 10-31 12:00Z: Crawler ops' enrich quota job (session 01a1903b) raised staging enrich.llm_daily_limit to 200,000 by hand at 05:01Z (config_audit 17801), the old control bound, because staging's one Codex Pro account was at 100% of its week and calls spent bought credits (39,685 left at 0.0166 a call, about 2.4M calls), so the 5,000 line guarded nothing. Commit 5336ca115 (on staging since land Land-From 40a0ddbe5) sets the staging tier default to 300,000 in crawler-v3 settings._STAGING_CONTROL_DEFAULTS and the control bound to 2.4M, so a deploy carries the right line and no hand raise is needed. A hand write of enrich.llm_daily_limit after this design is on prod is a repeat, unless it quotes an owner order or runs as a control trial.",
+      "match": {
+        "config_key_prefixes": [
+          "enrich.llm_daily_limit"
+        ]
+      }
     }
   ],
   "exempt": {

@@ -302,6 +302,14 @@ test("a control trial's arm writes by the API's trial sweep are automatic", asyn
   assert.equal(classifyConfig({ actor: "", keys: ["control.trials"], text: "control trial stopped: proxy.census_answer_cap_ms back to its tier default; done" }, await registry()).kind, "exempt");
 });
 
+// Staging audit 17801 on 10-31 raised enrich.llm_daily_limit by hand and filed a fault without a job until F35 listed it (design 5336ca115).
+test("a hand write of enrich.llm_daily_limit is fault F35", async () => {
+  const raise: AuditRow = { id: 17801, ts: Date.parse("2026-10-31T05:01:00Z"), actor: "api-key", source: "ops-api", key: "enrich.llm_daily_limit",
+    reason: "Crawler ops / enrich quota job: staging enrichment spends bought Codex credits" };
+  const verdict = classifyConfig(groupAudit("staging", [raise])[0]!, await registry());
+  assert.equal(verdict.kind === "fault" ? verdict.fault.id : verdict.kind, "F35");
+});
+
 // F1 as it stood on 10-19, designed by p170 alone, before later designs (p235, p246 and their commits) joined it.
 const asOf1019 = async () => { const reg = await registry(); return { ...reg, faults: reg.faults.map(fault => fault.id === "F1" ? { ...fault, designs: [P170] } : fault) }; };
 
