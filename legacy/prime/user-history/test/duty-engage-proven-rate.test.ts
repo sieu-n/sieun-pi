@@ -4,7 +4,7 @@
 // its readers die more often than the rest.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type DayPages, type Death, deathExcessP, provenRates } from "../scripts/duties/engage-reads.ts";
+import { CAPACITY_WINDOW_MS, type DayPages, type Death, type EngageData, deathExcessP, provenRates, report } from "../scripts/duties/engage-reads.ts";
 
 const at = (iso: string): number => Date.parse(iso);
 const verdict = (accountId: number, iso: string, code: string, pages24h: number): Death =>
@@ -71,4 +71,16 @@ test("the headline is the newest window, and an older higher proof is only the b
   assert.equal(newest?.rate, 638);
   assert.equal(best?.rate, 1459);
   assert.deepEqual(best?.days, ["2026-10-15", "2026-10-16"]);
+});
+
+test("the capacity headline reports its window: lastEventAt is the newest window day's end and windowMs two days (launch VP, 10-31)", () => {
+  const days = [...fleet("2026-10-29", [[14, 600], [100, 150]]), ...fleet("2026-10-30", [[13, 1100], [1, 472], [100, 150]])];
+  const accounts = Array.from({ length: 138 }, (_, i) => ({ id: i + 1, status: "active" }));
+  const output = report({ now: at("2026-10-31T02:00:00Z"), errors: [], accounts, config: {}, deaths: [], days, healthy: 138,
+    lapsed: { waiting: 0, blocked: 0, oldestAt: null } } satisfies EngageData, []);
+  assert.equal(output.metrics.prod_capacity_pages_day, 138 * 472);
+  assert.equal(output.lastEventAt?.prod_capacity_pages_day, at("2026-10-31T00:00:00Z"));
+  assert.equal(output.windowMs?.prod_capacity_pages_day, CAPACITY_WINDOW_MS);
+  const line = output.flagged?.find(flag => flag.kind === "capacity")?.excerpt ?? "";
+  assert.match(line, /reads the window 2026-10-29 and 2026-10-30, .* the newest window day leaves at 11-02 00:00Z/);
 });

@@ -66,6 +66,12 @@ export const PAGES_A_DAY_GOAL = 100_000;
 export const CANARY_SHARE = 0.1;
 /** The owner's "over at least 2 full UTC days" rule for a proven rate (10-14). */
 export const PROOF_DAYS = 2;
+/**
+ * prod_capacity_pages_day's trailing window: the PROOF_DAYS full UTC days its proof reads. Its lastEventAt is the end of the newest window day, so d9
+ * reads a headline that holds a bad day as a lagging window until that day leaves (the launch VP, 10-31: the 10-30 day, when 3 persona-held canary
+ * members read 0, held the number at 66,552 and 65,136 through 7 runs while the canary read about 1,100 a day).
+ */
+export const CAPACITY_WINDOW_MS = PROOF_DAYS * DAY;
 /** Dead statuses, as `_DEAD_STATUSES` in apps/crawler-v3/src/control/metrics/health.py. */
 export const DEAD = ["challenged", "frozen", "disabled"] as const;
 /** A prod row parked by auto-sns-agent's scripts/engage_world_move.py export: the account reads in another world now, so prod no longer has it on hand.
@@ -324,6 +330,7 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
   const { now } = data;
   const at = now;
   const metrics: Record<string, number> = {};
+  const lastEventAt: Record<string, number> = {};
   const flagged: FlaggedSlice[] = data.errors.map(error => ({ at, kind: "source_error", excerpt: `${error.source}: ${error.message}`.slice(0, 400) }));
   if (data.stagingLastReadAt === null) flagged.push({ at, kind: "never_read", excerpt: "staging ig_engage_read_log has no read with pages > 0 at all" });
   if (data.stagingDue) metrics.staging_due_wait_min = data.stagingDue.waitMin;
@@ -366,15 +373,18 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
       const healthy = data.healthy + data.lapsed.waiting;
       const counted = `${healthy} healthy prod accounts (${data.healthy} admissible now${data.lapsed.waiting ? `, ${data.lapsed.waiting} waiting on a proxy session renewal` : ""})`;
       metrics.prod_capacity_pages_day = healthy * rate;
+      const windowEnd = newestDays ? Date.parse(`${nextDay(newestDays.at(-1)!)}T00:00:00Z`) : undefined;
+      if (windowEnd !== undefined) lastEventAt.prod_capacity_pages_day = windowEnd;
       metrics.best_proven_rate = best?.rate ?? 0;
       const onHand = onHandOf(data.accounts).length;
       const need = rate ? Math.ceil(PAGES_A_DAY_GOAL / rate) : null;
+      const lag = windowEnd !== undefined ? ` This reads the window ${newestDays!.join(" and ")}, and each day leaves it ${PROOF_DAYS} days after it ends: the newest window day leaves at ${utc(windowEnd + CAPACITY_WINDOW_MS)}.` : "";
       const older = best && best !== proof ? ` The best older window, ${best.days.join(" and ")}, proved ${fmt(best.rate)} (run detail only, not the headline).` : "";
       flagged.push({ at, kind: "capacity", excerpt: (proof
         ? `${counted} x ${fmt(rate)} pages a day per account, proven on the newest window ${proof.days.join(" and ")} (the ${want}th busiest account read that much each day; since then ${proof.hiDeaths} Instagram verdicts in ${fmt(proof.hiDays)} account-days at or over it and ${proof.loDeaths} in ${fmt(proof.loDays)} under it, p ${proof.p.toFixed(2)}) = ${fmt(healthy * rate)} pages a day. `
           + `${need! > healthy ? `${need! - healthy} more healthy accounts at that rate, or ${fmt(Math.ceil(PAGES_A_DAY_GOAL / Math.max(1, healthy)))} pages a day on these, reach ${fmt(PAGES_A_DAY_GOAL)}. ` : ""}`
-          + `${onHand} prod accounts on hand (not dead, not moved to another world) x ${fmt(rate)} = ${fmt(onHand * rate)}${onHand * rate < PAGES_A_DAY_GOAL ? `, short of ${fmt(PAGES_A_DAY_GOAL)}` : ", enough once they are healthy"}.${older}`
-        : `${counted}, and the newest window ${newestDays ? newestDays.join(" and ") : "(none)"} proves no rate: it had no ${want} accounts read at one rate whose readers did not die more often than the rest.${older}`).slice(0, 800) });
+          + `${onHand} prod accounts on hand (not dead, not moved to another world) x ${fmt(rate)} = ${fmt(onHand * rate)}${onHand * rate < PAGES_A_DAY_GOAL ? `, short of ${fmt(PAGES_A_DAY_GOAL)}` : ", enough once they are healthy"}.${lag}${older}`
+        : `${counted}, and the newest window ${newestDays ? newestDays.join(" and ") : "(none)"} proves no rate: it had no ${want} accounts read at one rate whose readers did not die more often than the rest.${lag}${older}`).slice(0, 1000) });
     }
     if (data.lapsed && (data.lapsed.waiting || data.lapsed.blocked)) flagged.push({ at, kind: "lapsed_bindings", excerpt: (`${data.lapsed.waiting + data.lapsed.blocked} active prod accounts have no live proxy session binding, the oldest since ${utc(data.lapsed.oldestAt!)}. `
       + `${data.lapsed.waiting} wait on the renewal loop and count as capacity: they read again once the proxy answers (a GeoNode supply hold or neutral_address_unresolved renewals point at the proxy). `
@@ -421,7 +431,7 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
     replaced.push(metric.key);
   }
   if (replaced.length) flagged.push({ at, kind: "unmeasured", excerpt: `A source failed, so these read 0 (at least) or ${UNMEASURED} (at most) and miss: ${replaced.join(", ")}. Fix the read each source_error line names.`.slice(0, 300) });
-  return { metrics, flagged };
+  return { metrics, flagged, ...Object.keys(lastEventAt).length ? { lastEventAt, windowMs: { prod_capacity_pages_day: CAPACITY_WINDOW_MS } } : {} };
 }
 
 const DEAD_SQL = `('${DEAD.join("', '")}')`;

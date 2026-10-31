@@ -9,7 +9,8 @@
       "op": ">=",
       "target": 100000,
       "unit": " pages",
-      "headline": true
+      "headline": true,
+      "windowMs": 172800000
     },
     {
       "key": "fleet_ig_killed_pct",
