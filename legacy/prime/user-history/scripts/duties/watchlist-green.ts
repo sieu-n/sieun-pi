@@ -531,7 +531,7 @@ export const screenFailed = (chunks: readonly ScreenChunk[]): ScreenChunk[] => c
 
 const ROWS_SQL = "select w.platform, w.kind, lower(w.target) as target, case when w.paused then 't' else 'f' end as paused, coalesce(w.last_outcome, '') as last_outcome, " +
   "coalesce((extract(epoch from w.last_run_at) * 1000)::bigint::text, '') as last_run_at, coalesce(w.last_stop_reason, '') as last_stop_reason, coalesce(w.last_error_code, '') as last_error_code, " +
-  "case when w.platform = 'instagram' and exists (select 1 from instagram_accounts a where a.username = w.target and a.is_private) then 't' else 'f' end as is_private, " +
+  "case when w.platform = 'instagram' and exists (select 1 from instagram_accounts a where a.username = w.target and a.is_private offset 0) then 't' else 'f' end as is_private, " +
   "w.err_streak, case when w.next_due_at is null then 'f' else 't' end as due, " +
   "coalesce((extract(epoch from case when w.last_outcome = 'ok' then w.last_run_at else (select max(c.settled_at) from watch_target_claims c " +
   "where c.platform = w.platform and c.kind = w.kind and c.target = w.target and c.outcome = 'ok') end) * 1000)::bigint::text, '') as last_ok_at, " +
@@ -549,6 +549,9 @@ const RENAMED_SQL = "case when w.platform <> 'instagram' or w.last_batch_id is n
  *  88 backends in DataFileRead. The offset 0 above keeps the renamed check a per-row pk lookup instead of a hashed seq scan of crawl_batch_targets (1.2 GB).
  *  The read took 3.8 to 4.6 s this way against 5.6 to 13.6 s before. Prod held 13 paused monitor rows then; a paused owner watch reads "no unpaused monitor row".
  *  Staging's read (1.5 M rows, 981 MB) timed out in the same minute, so it reads unpaused rows the same way (2.6 s for 940 rows). */
+/** The offset 0 in ROWS_SQL's private check keeps it a per-row username lookup. Without it staging planned a hashed parallel seq scan of
+ *  instagram_accounts for is_private, and the staging read took 23.6 s against 2.4 s with it at 23:30Z on 2026-10-31, past the 30 s
+ *  statement_timeout in the d2 runs of 23:19Z and 23:27Z. Prod read 5.5 s against 5.0 s with it. */
 const PROD_ROWS_SQL = ROWS_SQL + RENAMED_SQL + " and not w.paused";
 const STAGING_ROWS_SQL = ROWS_SQL + "'f' as renamed from watch_targets w where w.tier = 'monitor' and not w.paused";
 /** ROWS_SQL's columns in parseRows order, to print Grafana's table rows as the lines psql prints. */
