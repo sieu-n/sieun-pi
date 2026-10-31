@@ -27,6 +27,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { createConnection } from "node:net";
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
+import { hostname } from "node:os";
+import { fileURLToPath } from "node:url";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Message, ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -52,6 +54,18 @@ import { piThreadHeader } from "./prime-roots.ts";
 import { bundledSkillsDir, primeResources } from "./prime-prompt.ts";
 import { SendMessage } from "./send-message.ts";
 import { Subagent } from "./subagent.ts";
+
+/** The folder of the tag-only systemd-run shim (`unit-tag/systemd-run`), first on each kernel's PATH. */
+export const UNIT_TAG_DIR = fileURLToPath(new URL("./unit-tag", import.meta.url));
+
+/**
+ * The owner tag of a kernel's processes: LC_PRIME_SESSION=<thread id>@<host>, as sieun-rules kernel-own.py sets for a Prime kernel, and PATH
+ * with the shim that passes it to a systemd-run unit. ssh sends LC_* variables, so a command a kernel runs on another box carries it too. The d2
+ * orphan reaper stops a process once its thread is archived; on 10-31 the units vent-lat-cold and dmext-slow-b of pi threads named no owner.
+ */
+export function ownerTag(threadId: string, path: string, sep: string, host = hostname()): { LC_PRIME_SESSION: string; PATH: string } {
+  return { LC_PRIME_SESSION: `${threadId}@${host.split(".")[0]}`, PATH: [UNIT_TAG_DIR, path].filter(Boolean).join(sep) };
+}
 
 const context: Context = BACKGROUND_CONTEXT;
 export const RLM_EXTENSION = "rlm";
@@ -312,7 +326,7 @@ export class DurableRlm {
     Object.assign(env, {
       PYTHONPATH: [RUNTIME_SRC, ...skills.map(s => s.src), env.PYTHONPATH].filter(Boolean).join(sep),
       PYTHONUNBUFFERED: "1",
-      ...(binDir ? { PATH: [binDir, env.PATH].filter(Boolean).join(sep) } : {}),
+      ...ownerTag(slot.thread.id, [binDir, env.PATH].filter(Boolean).join(sep), sep),
       RLM_SESSION_DIR: slot.artifactDir,
       RLM_HARNESS_STATE_DIR: conversationHarnessDir(slot.thread, slot.conversation, await threadAgent(slot.thread.harness(), context)),
       RLM_DEPTH: String(depth),

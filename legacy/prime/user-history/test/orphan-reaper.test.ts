@@ -5,7 +5,8 @@ import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { ENDED_FOR_MS, KILL_AFTER_MS, type Group, type ProcRow, type Verdict, decide, groupProcesses, hostMatcher, ownerOf, readVerdicts, stopGroups, unitFileNames, unitOf, verdict } from "../src/orphan-reaper.ts";
+import { DatabaseSync } from "node:sqlite";
+import { ENDED_FOR_MS, KILL_AFTER_MS, type Group, type ProcRow, type Verdict, decide, groupProcesses, hostMatcher, ownerOf, piThreadRow, readVerdicts, stopGroups, unitFileNames, unitOf, verdict } from "../src/orphan-reaper.ts";
 
 const JOB = "01a183f7-0a0b-725c-984d-d59f150e6420";
 const LIVE = "01a190a3-1b2e-74ad-88ca-f217e0f956a8";
@@ -119,10 +120,36 @@ test("a job's dir names its transcript, a pending wake keeps it live, and a live
     await mkdir(join(dataDir, "wakes"), { recursive: true });
     await writeFile(join(dataDir, "wakes", `${ids.parent}-time-1.json`), JSON.stringify({ session: ids.parent, on: { kind: "time", at: 9e15 }, note: "", since: 1 }));
     const groups: Group[] = [childDir, loneDir].map(dir => ({ key: dir, root: 1, pids: [1], bytes: 0, started: 0, command: "", owners: [{ session: "", host: "us-metal02", dir }] }));
-    const verdicts = await readVerdicts(groups, { here: "us-metal02", home, dataDir, now: 5_000_000, remote: async () => "",
+    const verdicts = await readVerdicts(groups, { here: "us-metal02", home, dataDir, now: 5_000_000, remote: async () => "", piThread: async () => null,
       list: async () => JSON.stringify({ sessions: [{ sessionId: ids.child, rosterStatus: "inactive" }] }) });
     assert.equal(verdicts.get(`us-metal02/${ids.child}`)?.state, "live");
     assert.match((verdicts.get(`us-metal02/${ids.child}`) as { why: string }).why, /parent job 01a18aa9.*board\.wake/);
     assert.deepEqual(verdicts.get(`us-metal02/${ids.lone}`), { state: "ended", at: 1_000_000, why: "it is not resident and nothing waits to wake it" });
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+// The pi-host half of p661: a pi thread's kernel tags its processes with LC_PRIME_SESSION=<thread id>@<host> (pi-host rlm.ts ownerTag), and a
+// thread is the owner's chat, so its processes stop only once it is archived.
+test("a pi-host thread from the durable index is live until it is archived, and an archived one has ended at its last update", async () => {
+  const home = await mkdtemp(join(tmpdir(), "orphan-reaper-pi-"));
+  try {
+    const file = join(home, "index.sqlite");
+    const db = new DatabaseSync(file);
+    db.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, archived INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL)");
+    const live = "39ca7bbb-37a8-47e5-a06a-d6cea515b3cc";
+    const archived = "230bbdbf-1111-4222-8333-444455556666";
+    db.prepare("INSERT INTO threads VALUES (?, ?, ?)").run(live, 0, 1_000);
+    db.prepare("INSERT INTO threads VALUES (?, ?, ?)").run(archived, 1, 2_000);
+    db.close();
+    assert.deepEqual(piThreadRow(file, live), { archived: false, updatedAt: 1_000 });
+    assert.equal(piThreadRow(file, "01a10000-0000-7000-8000-000000000000"), null);
+    assert.equal(piThreadRow(join(home, "none.sqlite"), live), null);
+    const groups: Group[] = [live, archived].map(session => ({ key: session, root: 1, pids: [1], bytes: 0, started: 0, command: "", owners: [{ session, host: "us-metal02" }] }));
+    const verdicts = await readVerdicts(groups, { here: "us-metal02", home, dataDir: join(home, "chat"), now: 9_000_000, remote: async () => "",
+      list: async () => JSON.stringify({ sessions: [] }), piThread: async id => piThreadRow(file, id) });
+    assert.equal(verdicts.get(`us-metal02/${live}`)?.state, "live");
+    assert.deepEqual(verdicts.get(`us-metal02/${archived}`), { state: "ended", at: 2_000, why: "it is archived" });
+    const tagged = group([row(80, 4578, "/usr/bin/sh -c python drive.py cold", { cgroup: `${USER}/vent-lat-cold.service`, lcSession: `${live}@us-metal02` })]);
+    assert.deepEqual(tagged[0]!.owners, [{ session: live, host: "us-metal02" }]);
   } finally { await rm(home, { recursive: true, force: true }); }
 });

@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { jobLive, livePaths } from "./job-live.ts";
 
 /**
@@ -189,7 +191,10 @@ async function dirSession(dir: string, home: string): Promise<{ session: string;
 }
 
 /** `list` prints a host's `prime-agent list --json` (with `--all` for every saved session), `remote` runs a shell command on another host. */
-export interface ReadContext { here: string; home: string; dataDir: string; now: number; list: (host: string, all: boolean) => Promise<string>; remote: (host: string, command: string) => Promise<string> }
+/** `piThread` reads a pi-host thread's row from its durable index, null when no thread has that id. */
+export interface ReadContext { here: string; home: string; dataDir: string; now: number; list: (host: string, all: boolean) => Promise<string>; remote: (host: string, command: string) => Promise<string>;
+  piThread: (id: string) => Promise<PiThread | null> }
+export interface PiThread { archived: boolean; updatedAt: number }
 
 /** The verdict of every owner the groups name, with each owner's session id filled in from its dir. */
 export async function readVerdicts(groups: Group[], context: ReadContext): Promise<Map<string, Verdict>> {
@@ -245,6 +250,9 @@ async function boxFactsById(session: string, context: ReadContext, roster: (host
   const top = join(context.home, ".prime", "agent", "sessions", `${session}.jsonl`);
   const topAt = await mtime(top);
   if (topAt !== null) return { rosterStatus: row?.rosterStatus, topLevel: true, archived: (await all()).get(session)?.lifecycle === "archived", endedAt: topAt };
+  // A pi-host thread (LC_PRIME_SESSION from pi-host's rlm.ts) is the owner's chat like a top-level Prime chat: live until it is archived.
+  const thread = await context.piThread(session);
+  if (thread) return { topLevel: true, archived: thread.archived, endedAt: thread.updatedAt };
   return { rosterStatus: row?.rosterStatus, topLevel: false, endedAt: null };
 }
 
@@ -256,6 +264,16 @@ async function remoteFacts(owner: Owner, context: ReadContext, roster: (host: st
   const line = listing.split("\n").find(entry => entry.trim());
   const [seconds, file] = line ? line.trim().split(" ") : [];
   return { rosterStatus: row?.rosterStatus, topLevel: file?.startsWith("sessions/") ?? false, endedAt: seconds ? Number(seconds) * 1000 : null };
+}
+
+/** A thread's row in pi-host's durable index (packages/pi-host/src/durable/index-db.ts), read only; null with no index or no such thread. */
+export function piThreadRow(file: string, id: string): PiThread | null {
+  if (!existsSync(file)) return null;
+  const db = new DatabaseSync(file, { readOnly: true });
+  try {
+    const row = db.prepare("SELECT archived, updated_at FROM threads WHERE id = ?").get(id) as { archived: number; updated_at: number } | undefined;
+    return row ? { archived: Number(row.archived) === 1, updatedAt: Number(row.updated_at) } : null;
+  } finally { db.close(); }
 }
 
 // ---- stop ----
@@ -313,6 +331,6 @@ export async function readOrphans(context: ReadContext, hostOf: (address: string
 /** The box's own Prime is `prime-agent` on PATH; another box's wrapper is not on its ssh PATH, so it runs by its install path there. */
 export const defaultContext = (here: string, now: number): ReadContext => {
   const remote = (host: string, command: string): Promise<string> => run("ssh", ["-o", "BatchMode=yes", host, command]);
-  return { here, home: homedir(), dataDir: join(homedir(), ".prime", "agent", "browser-chat"), now, remote,
+  return { here, home: homedir(), dataDir: join(homedir(), ".prime", "agent", "browser-chat"), now, remote, piThread: async id => piThreadRow(join(homedir(), ".prime", "agent", "pi-host", "durable", "index.sqlite"), id),
     list: (host, all) => host === here ? run("prime-agent", ["list", ...all ? ["--all"] : [], "--json"]) : remote(host, `~/.local/share/prime-agent/bin/prime-agent list${all ? " --all" : ""} --json`) };
 };

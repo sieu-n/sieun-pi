@@ -1,0 +1,16 @@
+#!/bin/sh
+# A systemd-run unit starts from the user manager's environment, so a unit a pi-host kernel starts would lose the LC_PRIME_SESSION tag
+# (<thread id>@<host>) the kernel carries. pi-host puts this folder first on the kernel's PATH, and this file runs the next systemd-run on
+# PATH with -E LC_PRIME_SESSION, so the d2 orphan reaper (legacy/prime/user-history/src/orphan-reaper.ts) knows the unit's thread. On 10-31
+# the units vent-lat-cold and dmext-slow-b of two pi threads named no owner on us-metal02.
+here=$(cd "$(dirname "$0")" && pwd -P)
+real=""
+rest=$PATH
+while [ -n "$rest" ]; do
+  dir=${rest%%:*}
+  case $rest in *:*) rest=${rest#*:} ;; *) rest="" ;; esac
+  [ -n "$dir" ] && [ -x "$dir/systemd-run" ] && [ "$(cd "$dir" 2>/dev/null && pwd -P)" != "$here" ] && { real=$dir/systemd-run; break; }
+done
+[ -n "$real" ] || { echo "systemd-run: command not found" >&2; exit 127; }
+[ -n "${LC_PRIME_SESSION:-}" ] && set -- -E LC_PRIME_SESSION "$@"
+exec "$real" "$@"
