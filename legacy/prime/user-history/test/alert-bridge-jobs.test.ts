@@ -64,7 +64,7 @@ test("a firing alert starts one triage job of its chat, files no step, and count
   assert.equal(f.started.length, 1);
   assert.equal(f.started[0]!.chat, CI);
   assert.equal(f.started[0]!.line.rule, "ci-history-stale");
-  assert.equal(f.started[0]!.line.summary, "CI history ingest has not read GitHub for 15 min is firing.");
+  assert.equal(f.started[0]!.line.fires[0]!.summary, "CI history ingest has not read GitHub for 15 min is firing.");
   const raw = JSON.parse(await readFile(f.file, "utf8")) as { v: number; rules: Record<string, Record<string, unknown>> };
   assert.equal(raw.v, 4);
   assert.ok(Object.values(raw.rules).every(rule => !("step" in rule)), "the state holds no board step");

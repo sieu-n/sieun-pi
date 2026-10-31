@@ -36,8 +36,11 @@ export const GRAFANA_ALERTS_PATH = "/api/alertmanager/grafana/api/v2/alerts?acti
 export const GRAFANA_RULES_PATH = "/api/prometheus/grafana/api/v1/rules?limit_alerts=0";
 
 export interface FiringAlert { fingerprint: string; startsAt: string; alertname: string; labels: Record<string, string>; summary: string; url: string; values?: string }
-/** One firing label set of a rule, keyed in `Tracked.instances` by alertKey (fingerprint@startsAt). */
-export interface Instance { startsAt: string; labels: Record<string, string>; resolvedAt?: number }
+/**
+ * One firing label set of a rule, keyed in `Tracked.instances` by alertKey (fingerprint@startsAt). `seenAt` is when the bridge first listed
+ * it, so a fire names the label sets it saw at or after the rule's `wokeAt` (`alertLine`). A state saved before 10-31 has none.
+ */
+export interface Instance { startsAt: string; labels: Record<string, string>; seenAt?: number; resolvedAt?: number }
 /** A triage job the bridge started for a chat: its session id and name. */
 export interface AlertJob { id: string; name: string }
 /** The triage job a rule's fire went to, and when the bridge gave it (started the job with it, or sent it by message). */
@@ -77,8 +80,13 @@ export interface BridgeState { v: 4; rules: Record<string, Tracked>; jobs: Recor
 export interface OwnerRoute { name: string; match: Record<string, string>; owner: string }
 export interface OwnerMap { owners: Record<string, string>; fallback: string; routes: OwnerRoute[] }
 export type Router = (alert: FiringAlert) => string;
-/** One firing rule as its triage job reads it. */
-export interface AlertLine { rule: string; alertname: string; startsAt: string; firedAt: number; sets: number; summary: string; url: string; values?: string }
+/** One label set of a fire as its triage job reads it: the labels that tell it apart, its own summary, values and Grafana link. */
+export interface AlertFire { labels: Record<string, string>; summary: string; url: string; values?: string }
+/**
+ * One firing rule as its triage job reads it, with the label sets of its fire: those that newly fired (`fresh`), or every firing one when
+ * the fire is a reopen or an escalation with no new label set.
+ */
+export interface AlertLine { rule: string; alertname: string; startsAt: string; firedAt: number; sets: number; fresh: boolean; fires: AlertFire[] }
 
 export const emptyState = (): BridgeState => ({ v: 4, rules: {}, jobs: {}, chats: {} });
 export const alertKey = (alert: Pick<FiringAlert, "fingerprint" | "startsAt">): string => `${alert.fingerprint}@${alert.startsAt}`;
@@ -244,7 +252,8 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
     const rule = rules[key]!;
     delete rule.resolvedAt;
     rule.rule = ruleOf(alert);
-    rule.instances[id] = { startsAt: alert.startsAt, labels: alert.labels };
+    const seen = rule.instances[id]!.seenAt;
+    rule.instances[id] = { startsAt: alert.startsAt, labels: alert.labels, ...seen === undefined ? {} : { seenAt: seen } };
   }
   for (const alert of rest) {
     const chat = route(alert);
@@ -271,7 +280,7 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
     const rule = rules[key]!;
     if (!fired.has(key) && newFault(rule, alert)) fired.add(key);
     for (const [id, instance] of Object.entries(rule.instances)) if (instance.resolvedAt !== undefined && id.startsWith(`${alert.fingerprint}@`)) delete rule.instances[id];
-    rule.instances[alertKey(alert)] = { startsAt: alert.startsAt, labels: alert.labels };
+    rule.instances[alertKey(alert)] = { startsAt: alert.startsAt, labels: alert.labels, seenAt: now };
     if (fired.has(key) && alert.startsAt < rule.startsAt) rule.startsAt = alert.startsAt;
   }
   for (const rule of Object.values(rules)) {
@@ -323,20 +332,38 @@ export function dueEscalations(state: BridgeState, boarded: ReadonlySet<string>,
 const ruleIn = (title: string, alertname: string): string => title.includes(alertname) ? "" : `${alertname}, `;
 const minute = (at: string | number): string => `${new Date(at).toISOString().slice(0, 16)}Z`;
 
-/** The rule as its job reads it, from its first firing label set in this tick's list. */
+/** The labels of a label set a reader needs: Grafana's own and the bridge's routing labels go, and the alertname when it is the rule's. */
+const shownLabels = (labels: Record<string, string>, alertname: string): Record<string, string> => Object.fromEntries(Object.entries(labels)
+  .filter(([name, value]) => !name.startsWith("__") && name !== "grafana_folder" && name !== "incident_by" && !(name === "alertname" && value === alertname)));
+
+/**
+ * The rule as its job reads it, with the label sets of this tick's list that the bridge first saw at or after the rule's last fire, each with
+ * its own summary. With none, such as a reopen, every firing label set. Every CI rule keeps an instance firing 30 min after it clears
+ * (keepFiringFor, auto-sns-agent 25e5f33e58), and on 10-31 at 18:31Z ci-staging-proof-spec-red fired for hosted-zz-monitor-flow.spec.ts
+ * with the summary of the held hosted-campaign-screening.spec.ts instance, "6 in a row", because the line took the oldest instance.
+ */
 export function alertLine(rule: Tracked, firing: ReadonlyMap<string, FiringAlert>): AlertLine {
-  const alert = Object.keys(rule.instances).map(id => firing.get(id)).filter(alert => alert !== undefined).sort((a, b) => a.startsAt.localeCompare(b.startsAt))[0];
-  return { rule: rule.rule, alertname: rule.alertname, startsAt: rule.startsAt, firedAt: rule.wokeAt, sets: firingSets(rule), summary: alert?.summary ?? "", url: alert?.url ?? "",
-    ...alert?.values ? { values: alert.values } : {} };
+  const live = Object.entries(rule.instances).flatMap(([id, instance]) => firing.has(id) ? [{ alert: firing.get(id)!, instance }] : [])
+    .sort((a, b) => a.alert.startsAt.localeCompare(b.alert.startsAt));
+  const fresh = live.filter(({ instance }) => instance.seenAt !== undefined && instance.seenAt >= rule.wokeAt);
+  const fires = (fresh.length ? fresh : live).map(({ alert }): AlertFire => ({ labels: shownLabels(alert.labels, rule.alertname), summary: alert.summary, url: alert.url,
+    ...alert.values ? { values: alert.values } : {} }));
+  return { rule: rule.rule, alertname: rule.alertname, startsAt: rule.startsAt, firedAt: rule.wokeAt, sets: firingSets(rule), fresh: fresh.length > 0, fires };
 }
+
+const labelText = (labels: Record<string, string>): string => Object.entries(labels).map(([name, value]) => `${name}=${value}`).join(", ");
 
 /** One rule in a line of text: its uid, its title when that differs, and since when it fires. */
 export const ruleText = (line: Pick<AlertLine, "rule" | "alertname" | "startsAt" | "sets">): string =>
   `${line.rule} (${ruleIn(line.rule, line.alertname)}firing since ${minute(line.startsAt)}${line.sets > 1 ? `, ${line.sets} label sets` : ""})`;
 
-/** Each rule a triage job takes, with its summary, values and Grafana link: the rule list of a Prime triage brief and of a pi-host thread's alert message. */
-export const alertRulesText = (lines: readonly AlertLine[]): string => lines.map(line => [`- ${ruleText(line)}`, line.summary ? `  Summary: ${line.summary}` : "",
-  line.values ? `  Values: ${line.values}.` : "", line.url ? `  Grafana: ${line.url}` : ""].filter(Boolean).join("\n")).join("\n");
+/**
+ * Each rule a triage job takes, with the labels, summary, values and Grafana link of each label set of its fire: the rule list of a Prime
+ * triage brief and of a pi-host thread's alert message.
+ */
+export const alertRulesText = (lines: readonly AlertLine[]): string => lines.map(line => [`- ${ruleText(line)}`, ...line.fires.flatMap(fire => [
+  Object.keys(fire.labels).length ? `  ${line.fresh ? "Fired" : "Firing"}: ${labelText(fire.labels)}` : "", fire.summary ? `  Summary: ${fire.summary}` : "",
+  fire.values ? `  Values: ${fire.values}.` : "", fire.url ? `  Grafana: ${fire.url}` : ""])].filter(Boolean).join("\n")).join("\n");
 
 /** How a triage job works its rules, in a Prime triage brief and in a pi-host thread's alert message. */
 export const TRIAGE_WORK = "Group the rules by cause first: several rules often fire on one fault. Find each cause from evidence: the Grafana rule and its query, the " +
@@ -363,7 +390,9 @@ export const threadRequestId = (lines: readonly AlertLine[]): string => `alert:$
 
 /** The message that gives a chat's triage job the fires of its chat that came after its brief. */
 export function firedAgainText(lines: readonly AlertLine[]): string {
-  const one = (line: AlertLine): string => `${ruleText(line)} fired at ${minute(line.firedAt)}${line.summary ? `. Summary: ${line.summary.replace(/\.+$/, "")}` : ""}`;
+  const fire = (item: AlertFire): string[] => [Object.keys(item.labels).length ? `Labels: ${labelText(item.labels)}` : "",
+    item.summary ? `Summary: ${item.summary.replace(/\.+$/, "")}` : ""];
+  const one = (line: AlertLine): string => [`${ruleText(line)} fired at ${minute(line.firedAt)}`, ...line.fires.flatMap(fire)].filter(Boolean).join(". ");
   return `[alert] ${lines.length === 1 ? `A rule of your chat, ${one(lines[0]!)}.` : `${lines.length} rules of your chat fired: ${lines.map(one).join("; ")}.`} ` +
     "You are this chat's triage job, so take each into your work: say whether it shares a cause with a fire you already have, and in your " +
     "report say for each rule whether your fix covers it.";
