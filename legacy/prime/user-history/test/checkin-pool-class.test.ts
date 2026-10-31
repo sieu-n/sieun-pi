@@ -33,6 +33,19 @@ test("a duty job's first request carries normal for a check-in and low for every
   assert.equal(dutyJobPriority("alert frontend bro 19:05", "high"), "low");
 });
 
+test("a Wiki dream job runs normal under its chat, so it gets a turn inside d4's 70 min follow window", () => {
+  // 10-31 16:34Z: "wiki dream AI harness developer environment 01:29" parked as low until 18:00Z with no account under 50% of its 5h window,
+  // a normal tree got claude12 at 16:36:30Z, and the 18:01Z run replaced the job unserved and read wiki_problems 3.
+  const name = dutyJobName("Wiki dream", "AI harness developer environment", Date.UTC(2026, 9, 31, 16, 29));
+  assert.equal(dutyJobPriority(name, "high"), "normal");
+  assert.equal(dutyJobPriority(name, "low"), "low", "a chat labelled Low keeps its dream job low");
+  assert.equal(dutyJobPriority("wiki changes report SEO guy 01:30", "high"), "low", "another wiki duty stays low");
+  const classes = poolPriorities([row("chat-ai", "AI harness developer environment", { chat: true, agents: [root("dream")] }), row("dream", name), row("dream-new", name)],
+    new Set(["dream", "dream-new"]));
+  assert.equal(classes.get("dream"), "normal");
+  assert.equal(classes.get("dream-new"), "normal", "a dream job the roster does not list yet is normal too");
+});
+
 test("an alert triage job runs in its chat's class, so a firing rule gets its turn at once", () => {
   // 10-19 18:01Z: "alert triage CI and RepoOps 03:01" went in low, met the low admission cap and backoff, and ran its first turn 136 min later.
   const name = dutyJobName(ALERT_TRIAGE_DUTY, "CI and RepoOps", Date.UTC(2026, 9, 19, 18, 1));

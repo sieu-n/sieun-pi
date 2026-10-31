@@ -11,8 +11,8 @@ export const chatPoolPriority = (label: Priority): PoolPriority => LABEL_POOL_PR
 /**
  * The pool class of every live root thread, first match wins (pi-pool scheduler design, "Priority"):
  * 1. its own sidebar priority label, when set (LABEL_POOL_PRIORITY);
- * 2. a duty job (`duties`, the session ids the duty runner registered) is low, except a check-in job (`isCheckInJob`), which is normal
- *    (`checkInClass`), and low only under a chat labelled Low, so a chat roster that has not listed the new job yet cannot drop it to low,
+ * 2. a duty job (`duties`, the session ids the duty runner registered) is low, except a check-in job (`isCheckInJob`) or a Wiki dream job
+ *    (`isWikiDreamJob`), which is normal (`checkInClass`), and low only under a chat labelled Low, so a chat roster that has not listed the new job yet cannot drop it to low,
  *    and an alert triage job (`isAlertJob`), which takes its chat's class, high when the roster does not list it yet;
  * 3. a chat is high;
  * 4. a job a chat started (an Agents entry linked as root) or gave a step to (linked as step) takes the highest class among those chats;
@@ -66,10 +66,23 @@ export const ALERT_TRIAGE_DUTY = "alert triage";
  */
 export const isAlertJob = (name: string): boolean => name.trim().toLowerCase().startsWith(`${ALERT_TRIAGE_DUTY} `);
 
+/** The AI harness chat's d4 duty, whose job names start with it ("wiki dream AI harness developer environment 01:29"). */
+export const WIKI_DREAM_DUTY = "Wiki dream";
+
+/**
+ * Whether a duty job is a Wiki dream job. A page behind its code counts in d4's wiki_problems 70 min after it fell behind (FOLLOW_WINDOW_MS in
+ * scripts/duties/wiki-dream.ts), so the job must get its first turn well inside that. As low, it waits whenever every account is past pi-pool's
+ * low_admit_5h_max_pct (50%): the 10-31 16:34Z job parked with no account open to low until claude9's 18:00Z reset, while a normal tree got
+ * claude12 at 16:36:30Z, and the 18:01Z run read wiki_problems 3. From 10-24 to 10-31, 9 of d4's 77 missed runs read while the live dream job
+ * still waited for its first model call, and normal trees parked within 10 min of each such job's start waited 56 min at most (pi-pool.log,
+ * ~/work/d4-first-reply-stall-1101/FINDINGS.md).
+ */
+export const isWikiDreamJob = (name: string): boolean => name.trim().toLowerCase().startsWith(`${WIKI_DREAM_DUTY.toLowerCase()} `);
+
 /** The class a duty job's first request carries: its chat's class for an alert triage job (`isAlertJob`), `checkInClass` of its chat for a
- * check-in job (`isCheckInJob`), low for every other duty job. */
+ * check-in job (`isCheckInJob`) or a Wiki dream job (`isWikiDreamJob`), low for every other duty job. */
 export const dutyJobPriority = (name: string, chat: PoolPriority): PoolPriority =>
-  isAlertJob(name) ? chat : isCheckInJob(name) ? checkInClass(chat) : "low";
+  isAlertJob(name) ? chat : isCheckInJob(name) || isWikiDreamJob(name) ? checkInClass(chat) : "low";
 
 /** What a sync needs: the catalog rows, the duty job ids, the read of the classes the pool holds, and the pi-pool call that sets one root's class. */
 export interface PoolPrioritySource {
