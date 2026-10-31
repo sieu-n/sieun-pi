@@ -296,6 +296,10 @@ test("a control trial's arm writes by the API's trial sweep are automatic", asyn
   const arm: AuditRow = { id: 18900, ts: Date.parse("2026-10-31T03:00:00Z"), actor: "control-trial", source: "control-trial", key: "proxy.census_answer_cap_ms",
     reason: "control trial block 2 of 4: proxy.census_answer_cap_ms=4000; cap A/B (by d2 job)" };
   assert.equal(classifyConfig(groupAudit("prod", [arm])[0]!, await registry()).kind, "automatic");
+  // Its start is one operator decision, like a named A/B: staging audit 17729 on 10-31 was filed as a fault without a job.
+  const start: AuditRow = { ...arm, id: 17729, actor: "api-key", key: "control.trials", reason: "control trial start, block 1 of 2: proxy.census_answer_cap_ms=7000; d3 p277 staging check" };
+  assert.equal(classifyConfig(groupAudit("staging", [start])[0]!, await registry()).kind, "exempt");
+  assert.equal(classifyConfig({ actor: "", keys: ["control.trials"], text: "control trial stopped: proxy.census_answer_cap_ms back to its tier default; done" }, await registry()).kind, "exempt");
 });
 
 // F1 as it stood on 10-19, designed by p170 alone, before later designs (p235, p246 and their commits) joined it.
