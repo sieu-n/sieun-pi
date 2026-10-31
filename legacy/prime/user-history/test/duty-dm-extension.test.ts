@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
-import { errorCounts, parts, report, senderFits, type AutopairEvidence, type DmRow, type E2eEvidence } from "../scripts/duties/dm-extension.ts";
+import { errorCounts, jarIgUserId, parts, report, senderFits, type AutopairEvidence, type DmRow, type E2eEvidence, type JarRow } from "../scripts/duties/dm-extension.ts";
 
 const METRICS = (JSON.parse(readFileSync(new URL("../scripts/duties/dm-extension.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] }).metrics;
 const NOW = Date.parse("2026-10-30T12:00:00Z");
@@ -69,11 +69,11 @@ test("no rig evidence reads unmeasured, never green", () => {
 
 test("24 h counts take extension rows of the last day by their last attempt", () => {
   const row = (id: string, status: string, hoursAgo: number, extra: Partial<DmRow> = {}): DmRow =>
-    ({ _id: id, _creationTime: NOW - 72 * HOUR, status, orgId: "org", dm: { transport: "extension", lastAttemptAt: NOW - hoursAgo * HOUR }, ...extra });
+    ({ _id: id, _creationTime: NOW - 72 * HOUR, status, orgId: "org", queue: { transport: "extension", lastAttemptAt: NOW - hoursAgo * HOUR }, ...extra });
   const counts = errorCounts({
     messages: [
       row("a", "delivery_unknown", 2), row("b", "delivery_unknown", 30), row("c", "scheduled", 1, { errorCode: "send_restricted" }),
-      row("d", "delivery_unknown", 1, { dm: { transport: "fleet", lastAttemptAt: NOW - HOUR } }),
+      row("d", "delivery_unknown", 1, { queue: { transport: "fleet", lastAttemptAt: NOW - HOUR } }),
     ],
     devices: [
       { _id: "d1", orgId: "org", updatedAt: NOW - HOUR, unregistered: [{ platformUserId: "1", username: null, reason: "unknown_username" }, { platformUserId: "2", username: "x", reason: "limit" }] },
@@ -83,4 +83,11 @@ test("24 h counts take extension rows of the last day by their last attempt", ()
   assert.deepEqual(counts.maybeSent.map(r => r._id), ["a"]);
   assert.deepEqual(counts.restricted.map(r => r._id), ["c"]);
   assert.deepEqual(counts.unknown.map(u => u.platformUserId), ["1"]);
+});
+
+test("a jar with a null ig_user_id is named by its ds_user_id cookie, as on 10-31 for 206", () => {
+  const jar = (ig_user_id: string | null, cookies: JarRow["cookies"]): JarRow => ({ id: 206, username: "caiyiting8674", ig_user_id, cookies, status: "active", valid: true, jar_at: "2026-10-31" });
+  assert.equal(jarIgUserId(jar(null, [{ name: "csrftoken", value: "x" }, { name: "ds_user_id", value: "29063885913" }])), "29063885913");
+  assert.equal(jarIgUserId(jar("29063885913", null)), "29063885913");
+  assert.throws(() => jarIgUserId(jar(null, [])), /no ds_user_id/);
 });

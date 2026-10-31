@@ -27,7 +27,7 @@ import { DAY, REPO, settle, unmeasuredFlag, utc } from "./estate-reads.ts";
  *    Between the two rigs it reads the sender's daily count in the world's org from Connections' own query, and runs the sending rig
  *    only when SENDS_PER_RUN sends fit under the sender's daily limit; otherwise a sender_daily_limit slice says so and e2e_pass reads
  *    unmeasured instead of a fake 0.
- * 4. It reads staging's searchEmailMessages and searchDmDevices for the 24 h counts below, before the world goes down.
+ * 4. It reads staging's searchDmMessages and searchDmDevices for the 24 h counts below, before the world goes down.
  * The headline e2e_pass is 1 only when all four parts hold, each read from the rigs' evidence.json, which they fill from staging rows.
  *
  * Targets in dm-extension.duty.json (the JSON cannot hold comments):
@@ -92,7 +92,8 @@ export interface E2eEvidence {
   replyInInboxUi?: boolean;
   inboxCard?: { sent?: boolean; error?: string; text?: string };
 }
-export interface DmRow { _id: string; _creationTime: number; status: string; errorCode?: string; lastError?: string; orgId: string; dm?: { transport?: string; lastAttemptAt?: number } }
+/** A searchDmMessages row; `queue` is on the rows the send queue writes (auto-sns-agent 8d9fea2be2 moved every DM writer there on 10-30). */
+export interface DmRow { _id: string; _creationTime: number; status: string; errorCode?: string; lastError?: string; orgId: string; queue?: { transport?: string; lastAttemptAt?: number } }
 export interface DeviceRow { _id: string; orgId: string; updatedAt?: number; unregistered?: { platformUserId: string; username: string | null; reason: string }[] }
 export interface Build { sha: string; loaded: "store" | "dev"; dirty: string[]; sameFiles: boolean; version: string }
 /** The sender's row in the world's org, as Connections reads it: today's sends and the effective daily limit (warm-up and override). */
@@ -137,11 +138,11 @@ export function parts(autopair: AutopairEvidence | undefined, e2e: E2eEvidence |
   };
 }
 
-const lastTouch = (row: DmRow): number => row.dm?.lastAttemptAt ?? row._creationTime;
+const lastTouch = (row: DmRow): number => row.queue?.lastAttemptAt ?? row._creationTime;
 
 /** The extension's settle and register errors of the 24 h before `now`. */
 export function errorCounts(rows: { messages: DmRow[]; devices: DeviceRow[] }, now: number) {
-  const recent = rows.messages.filter(row => row.dm?.transport === "extension" && lastTouch(row) >= now - DAY);
+  const recent = rows.messages.filter(row => row.queue?.transport === "extension" && lastTouch(row) >= now - DAY);
   const maybeSent = recent.filter(row => row.status === "delivery_unknown");
   const restricted = recent.filter(row => row.errorCode === "send_restricted");
   const unknown = rows.devices.filter(device => (device.updatedAt ?? 0) >= now - DAY)
@@ -188,7 +189,7 @@ export function report(data: DutyData, dutyMetrics: readonly DutyMetric[]): Prec
     if (maybeSent.length) flagged.push({ at, kind: "maybe_sent", excerpt: `${maybeSent.length} staging extension DMs settled delivery_unknown in 24 h: ${rowList(maybeSent)}`.slice(0, 300) });
     if (restricted.length) flagged.push({ at, kind: "send_restricted", excerpt: `${restricted.length} staging extension DMs hit send_restricted in 24 h: ${rowList(restricted)}`.slice(0, 300) });
     if (unknown.length) flagged.push({ at, kind: "unknown_username", excerpt: `${unknown.length} accounts a paired Chrome reported in 24 h are unregistered for unknown_username: ${unknown.map(entry => `${entry.platformUserId} on device ${entry.device} (${entry.org})`).join(", ")}`.slice(0, 300) });
-    if (data.rows.truncated) flagged.push({ at, kind: "rows_truncated", excerpt: `searchEmailMessages returned the ${ROWS_LIMIT} newest rows, the CLI's most; older rows attempted in 24 h are not counted. Read by index instead.` });
+    if (data.rows.truncated) flagged.push({ at, kind: "rows_truncated", excerpt: `searchDmMessages returned the ${ROWS_LIMIT} newest rows, the CLI's most; older rows attempted in 24 h are not counted. Read by index instead.` });
   }
   const replaced = settle(dutyMetrics, metrics, unmeasured);
   if (replaced.length) flagged.push(unmeasuredFlag(replaced, at));
@@ -234,6 +235,16 @@ export async function build(tmp: string): Promise<{ build: Build; dir: string }>
   return { build: { sha, loaded, dirty, sameFiles: store.files.join() === dev.files.join(), version: manifest.version }, dir };
 }
 
+export interface JarRow { id: number; username: string; ig_user_id: string | null; cookies: { name: string; value: string }[] | null; status: string; valid: boolean; jar_at: string }
+
+/** The Instagram id a jar is signed in as. ig_engage_accounts.ig_user_id is null for 206 on 10-31, so the session's
+ *  ds_user_id cookie names it, as the rigs read it (apps/dm-extension/tests/lib/real-world.mjs). */
+export function jarIgUserId(row: JarRow): string {
+  const id = row.ig_user_id ?? row.cookies?.find(cookie => cookie.name === "ds_user_id")?.value;
+  if (!id) throw new Error(`account ${row.id} @${row.username} has no ig_user_id and its jar no ds_user_id cookie`);
+  return String(id);
+}
+
 /** The two accounts' saved sessions from the prod crawler's Postgres, as the rigs' jar files (mode 600). Prints no cookie. */
 export async function jars(tmp: string): Promise<{ sender: string; senderIgId: string; replier: string; notes: string[] }> {
   const sql = `begin read only;
@@ -243,7 +254,7 @@ from ig_engage_accounts a join ig_engage_browser_jars j on j.account_id = a.id j
 where a.world = 'prod' and a.id in (${SENDER_ID}, ${REPLIER_ID});
 commit;`;
   const out = await sh("ssh", ["-o", "BatchMode=yes", "us-metal01", "docker exec -i virev-prod-postgres psql -U crawler -d crawler_v3 -At -v ON_ERROR_STOP=1"], { input: sql });
-  const rows = out.split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line) as { id: number; username: string; ig_user_id: string; status: string; valid: boolean; jar_at: string });
+  const rows = out.split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line) as JarRow);
   const notes: string[] = [];
   const files: Record<number, string> = {};
   for (const row of rows) {
@@ -252,7 +263,7 @@ commit;`;
     if (row.status !== "active" || !row.valid) notes.push(`${row.id} @${row.username} is ${row.status}, jar ${row.valid ? "valid" : "invalid"} (saved ${row.jar_at})`);
   }
   for (const id of [SENDER_ID, REPLIER_ID]) if (!files[id]) throw new Error(`the prod crawler has no saved session for account ${id}`);
-  return { sender: files[SENDER_ID]!, senderIgId: String(rows.find(row => row.id === SENDER_ID)!.ig_user_id), replier: files[REPLIER_ID]!, notes };
+  return { sender: files[SENDER_ID]!, senderIgId: jarIgUserId(rows.find(row => row.id === SENDER_ID)!), replier: files[REPLIER_ID]!, notes };
 }
 
 /** The sender's row in the world's org from Connections' own read (search/dmDevices:listOutreach), as an admin of that org. */
@@ -325,9 +336,9 @@ async function measure(now: number): Promise<DutyData> {
       }
     }
     const rows = await step("staging rows", async () => {
-      const messages = (await staging("searchEmailMessages", ROWS_LIMIT, tmp)) as DmRow[];
+      const messages = (await staging("searchDmMessages", ROWS_LIMIT, tmp)) as DmRow[];
       const devices = (await staging("searchDmDevices", ROWS_LIMIT, tmp)) as DeviceRow[];
-      return { messages: messages.filter(row => row.dm), devices, truncated: messages.length >= ROWS_LIMIT };
+      return { messages: messages.filter(row => row.queue), devices, truncated: messages.length >= ROWS_LIMIT };
     });
     if (rows) data.rows = rows;
   } finally {
