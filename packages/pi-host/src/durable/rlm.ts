@@ -44,7 +44,9 @@ import { Kernel, KernelBusyError, relayPaths, type CellResult, type HostRequest,
 import { BUS_SKILLS, kernelPython, pythonSkillOf, RLM_SKILLS, RUNTIME_SRC, type PythonSkill } from "../../../pi-rlm/src/core/python.ts";
 import { NOTE_INTERVAL_MS } from "../../../pi-rlm/src/pi/children.ts";
 import piRlm, { baseEnv, BUSY_NO_UI, formatCell, KERNEL_RESET, noticeMessage, restoreLine, SNAPSHOT_LIMITS, STILL_RUNNING, type Notice } from "../../../pi-rlm/src/pi/index.ts";
-import { conversationHarnessDir, dropAgentRole, threadAgent } from "./agent-profile.ts";
+import { JOURNAL_CHILD_DIR, JOURNAL_PRELUDE } from "../../../sieun-rules/src/kernel-guard.ts";
+import { enabled } from "../../../sieun-rules/src/log.ts";
+import { conversationHarnessDir, dropAgentRole, harnessSessionOf, threadAgent } from "./agent-profile.ts";
 import { CHAT_URL_ENV, DEFAULT_CHAT_URL } from "./chat-app.ts";
 import { agentIdOf, artifactDirOf, DeliverTask, RlmChildDoc, sessionOf, textOfMessage, type RlmChild } from "./children.ts";
 import { childTitle } from "./job-title.ts";
@@ -209,6 +211,13 @@ export async function loadIpythonTool(): Promise<PiTool> {
   return tool;
 }
 
+/**
+ * Whether a durable kernel journals its writes into a shared auto-sns-agent checkout, as sieun-rules' prelude makes a Prime kernel do (p1330).
+ * A durable thread runs none of sieun-rules' tool_call handlers, so the kernel loads kernel-journal.py from JOURNAL_CHILD_DIR's sitecustomize,
+ * and each cell starts with JOURNAL_PRELUDE. `GLOBAL_RULES_GUARD=off` turns it off, as it turns off Prime's prelude.
+ */
+const journalOn = (): boolean => enabled("GLOBAL_RULES_GUARD");
+
 /** Kills a relay a previous pi-host left for this socket and waits until it is gone. */
 async function killLeftover(socket: string): Promise<boolean> {
   if (!existsSync(socket)) return false;
@@ -323,8 +332,9 @@ export class DurableRlm {
     }
     const sep = process.platform === "win32" ? ";" : ":";
     const env = baseEnv();
+    const journal = journalOn();
     Object.assign(env, {
-      PYTHONPATH: [RUNTIME_SRC, ...skills.map(s => s.src), env.PYTHONPATH].filter(Boolean).join(sep),
+      PYTHONPATH: [journal ? JOURNAL_CHILD_DIR : "", RUNTIME_SRC, ...skills.map(s => s.src), env.PYTHONPATH].filter(Boolean).join(sep),
       PYTHONUNBUFFERED: "1",
       ...ownerTag(slot.thread.id, [binDir, env.PATH].filter(Boolean).join(sep), sep),
       RLM_SESSION_DIR: slot.artifactDir,
@@ -338,6 +348,7 @@ export class DurableRlm {
       PI_RLM_RELAY_TTL_S: String(Math.max(60, Math.round(this.idleMs / 1000))),
       PI_HOST_THREAD: slot.thread.id,
       PI_HOST_CONVERSATION: String(slot.conversation),
+      PI_HOST_SESSION_ID: harnessSessionOf(slot.thread.id, slot.conversation),
       PI_HOST_CHAT_URL: this.options.chatUrl ?? process.env[CHAT_URL_ENV] ?? DEFAULT_CHAT_URL,
     });
     const cwd = slot.thread.cwd;
@@ -392,7 +403,8 @@ export class DurableRlm {
       }
       let r: CellResult;
       try {
-        r = await start.kernel.execute(String(params.code ?? ""), {
+        const code = String(params.code ?? "");
+        r = await start.kernel.execute(journalOn() ? JOURNAL_PRELUDE + code : code, {
           ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
           onStream: text => {
             if (text.startsWith(streamed) && text.length > streamed.length) api.output(text.slice(streamed.length));

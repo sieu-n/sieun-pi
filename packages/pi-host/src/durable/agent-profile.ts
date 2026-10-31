@@ -189,8 +189,15 @@ export const agentHarnessDir = (ref: AgentRef): string => getLocalHarnessStateDi
  */
 export function conversationHarnessDir(thread: { id: string; file: string }, conversation: number, ref: AgentRef | undefined): string {
   if (ref) return agentHarnessDir(ref);
-  return threadHarnessDir(thread.file, conversation === ROOT_CONVERSATION_ID ? thread.id : `${thread.id}-${conversation}`);
+  return threadHarnessDir(thread.file, harnessSessionOf(thread.id, conversation));
 }
+
+/**
+ * A conversation's session id by Prime's rule: the thread for the root conversation, `<thread>-<conversation>` for a child. A kernel gets it as
+ * `PI_HOST_SESSION_ID`, which the write journal and auto-sns-agent's commit.mjs read when the harness dir is an agent's and names no session.
+ */
+export const harnessSessionOf = (thread: string, conversation: number): string =>
+  conversation === ROOT_CONVERSATION_ID ? thread : `${thread}-${conversation}`;
 
 export interface ContextFile { path: string; content: string }
 const briefs = new Map<string, { stamp: string; file: ContextFile | undefined }>();
