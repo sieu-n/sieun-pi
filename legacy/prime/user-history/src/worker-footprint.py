@@ -13,7 +13,8 @@ It stops each stdio MCP server whose kernel is gone (`stray_servers`, SIGTERM, t
 Each pm2 God Daemon is listed with its home and the processes it runs (`pm2_daemons`), so the whole-system duty flags one that runs none.
 `--session <id>[,<id>...]` prints the processes those sessions' kernels left detached (`strays`), which the service stops once their job is deleted or archived (src/job-leftovers.ts); `--handles` reads
 "<kernel pid> <since epoch s>" lines and prints the bash() handles those kernels started since then (`handles`), which the watch stops when the call hangs (src/hung-stop.ts); `--started <pid>`
-prints a process's start time, and `--inside` prints the processes that run in or hold the dirs it reads on stdin, one per line (`inside`), and a
+prints a process's start time, `--owners` prints every process with the owner signals its env and cgroup carry (`owners`), which the d2 orphan
+reaper reads (src/orphan-reaper.ts), and `--inside` prints the processes that run in or hold the dirs it reads on stdin, one per line (`inside`), and a
 cleanup keeps a dir any of them uses and signals none of them.
 """
 import ctypes
@@ -302,6 +303,44 @@ def strays(table, sessions):
     return [entry for entry in found if entry]
 
 
+def env_value(env, name):
+    prefix = name + "="
+    return next((entry[len(prefix):] for entry in env if entry.startswith(prefix)), None)
+
+
+def linux_link(pid, name):
+    try:
+        return os.readlink(f"/proc/{pid}/{name}")
+    except OSError:
+        return None
+
+
+def cgroup_of(pid):
+    try:
+        with open(f"/proc/{pid}/cgroup") as file:
+            return file.read().strip().split("::", 1)[-1]
+    except OSError:
+        return None
+
+
+def owners(table):
+    """Every process with the facts that tie it to a session: RLM_SESSION_DIR, the session RLM_HARNESS_STATE_DIR names, LC_PRIME_SESSION (a
+    kernel's session id, which ssh sends to the box as one of its LC_* variables), the address of SSH_CONNECTION, its cgroup and cwd, and
+    whether it is a Prime process or a shared service. Chrome overwrites its own environ with its title, so it carries none of them."""
+    found = []
+    for pid, (ppid, _, start, args) in table.items():
+        if pid == os.getpid() or not args:
+            continue
+        env = args[1]
+        ssh = env_value(env, "SSH_CONNECTION")
+        text = " ".join(args[0])
+        found.append({"pid": pid, "ppid": ppid, "started": start, "bytes": footprint(pid), "command": command(args),
+                      "sessionDir": env_value(env, "RLM_SESSION_DIR"), "harnessSession": (harness(env) or ("", ""))[1] or None,
+                      "lcSession": env_value(env, "LC_PRIME_SESSION"), "sshFrom": ssh.split()[0] if ssh else None,
+                      "prime": bool(PRIME.search(text)), "shared": bool(SHARED.search(text)), "cgroup": cgroup_of(pid), "cwd": linux_link(pid, "cwd")})
+    return found
+
+
 def handles(table, wanted):
     """The Prime bash() handles each hung call started (src/hung-stop.ts): every shell a kernel of `wanted` ((kernel pid, since in epoch seconds)
     pairs) started at or after `since`, with the pids of the shell and of every descendant that is no Prime process or shared service, the shell first.
@@ -546,6 +585,9 @@ if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] == "--handles":
         wanted = [(int(kernel), int(since)) for kernel, since in (line.split() for line in sys.stdin if len(line.split()) == 2)]
         print(json.dumps({"handles": handles(scan(), wanted), "cpu_s": cpu()}))
+        sys.exit(0)
+    if len(sys.argv) == 2 and sys.argv[1] == "--owners":
+        print(json.dumps({"processes": owners(scan()), "cpu_s": cpu()}))
         sys.exit(0)
     if len(sys.argv) == 3 and sys.argv[1] == "--session":
         print(json.dumps({"strays": strays(scan(), set(sys.argv[2].split(","))), "cpu_s": cpu()}))

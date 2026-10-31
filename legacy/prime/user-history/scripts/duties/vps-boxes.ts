@@ -8,6 +8,8 @@ import { type FiringAlert, readGrafanaAlerts } from "../../src/alert-bridge.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { BRIDGE_FILE, alertsFiring } from "./prod-alerts.ts";
 import { readFiringRules } from "../../src/alert-bridge.ts";
+import { loadHosts, selfHost } from "../../src/hosts.ts";
+import { type Reading, defaultContext, describe, hostMatcher, liveStopSource, readOrphans, stopGroups } from "../../src/orphan-reaper.ts";
 
 /**
  * The precheck of the ops chat's duty "VPS and dev boxes" (`node --import tsx scripts/duties/vps-boxes.ts`). The chat's risk list
@@ -24,6 +26,9 @@ import { readFiringRules } from "../../src/alert-bridge.ts";
  * whose cgroup is a heavy scope counts as heavy and any other kill counts as outside. The duty file's explainedKills list names, per box, the fix step that explains its kills up to a time, and
  * oom_kills_24h counts only the kills after the newest such time inside the 24 h window, so a fixed cause stops holding the number over 0 for a
  * day (p468: p456's 41 kills up to 16:52Z on 10-19 kept it at 41 until 16:52Z on 10-20). oom_kills_explained counts the kills left out.
+ * orphan_processes counts the processes on us-metal02 whose owning Prime session ended over 1 h ago, read before this run stops them
+ * (src/orphan-reaper.ts, p661): on 10-28 a Mac job's Chrome driver ran 2 days after its job ended and made 2,320 staging Convex failures.
+ * orphan_processes_unknown in the run detail counts the processes left by their parent that name no owner, which the run lists and never stops.
  * The owner, 10-18: standing risks live on a risk page that a duty checks, not on the plan.
  */
 
@@ -227,6 +232,25 @@ async function oomBoxes(at: number): Promise<OomKills[]> {
   return boxes;
 }
 
+/** One flagged line per group the run stops and per group with no owner, largest first, and one line with what the stop signalled. */
+export function orphanLines(reading: Reading, stopped: { signalled: number[]; killed: number[] } | null, at: number): FlaggedSlice[] {
+  const bySize = <T extends { bytes: number }>(groups: readonly T[]): T[] => [...groups].sort((a, b) => b.bytes - a.bytes);
+  const lines: FlaggedSlice[] = bySize(reading.stop).map(group => ({ at, kind: "orphan", excerpt: describe(group, at, reading.verdicts).slice(0, 600) }));
+  lines.push(...bySize(reading.unknown).map(group => ({ at, kind: "orphan_unknown", excerpt: `${describe(group, at, reading.verdicts)}; listed, not stopped`.slice(0, 600) })));
+  if (stopped) lines.push({ at, kind: "orphan_stopped", excerpt: `sent SIGTERM to ${stopped.signalled.length} orphan processes and SIGKILL to the ${stopped.killed.length} still running 10 s later` });
+  return lines;
+}
+
+/** Reads the orphans of this box and stops the ones whose owner ended over 1 h ago; only us-metal02 runs it, the box this chat owns. */
+async function orphans(at: number): Promise<{ reading: Reading; lines: FlaggedSlice[] } | null> {
+  const registry = await loadHosts();
+  const here = selfHost(registry)?.name;
+  if (here !== "us-metal02") return null;
+  const { rows, reading } = await readOrphans(defaultContext(here, at), hostMatcher(registry.hosts));
+  const stopped = reading.stop.length ? await stopGroups(reading.stop, rows, liveStopSource) : null;
+  return { reading, lines: orphanLines(reading, stopped, at) };
+}
+
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("vps-boxes: OUTPUT_FILE is not set\n"); process.exit(2); }
@@ -257,6 +281,14 @@ async function main(): Promise<void> {
     if (counted.lastEventAt !== undefined) result.lastEventAt = { oom_kills_24h: counted.lastEventAt };
     result.flagged!.push(...counted.flagged);
   } catch (error) { flag("source_error", `oom_kills_24h: ${error instanceof Error ? error.message : String(error)}`); }
+  try {
+    const found = await orphans(at);
+    if (found) {
+      result.metrics.orphan_processes = found.reading.orphan_processes;
+      result.metrics.orphan_processes_unknown = found.reading.orphan_unknown;
+      result.flagged!.push(...found.lines);
+    }
+  } catch (error) { flag("source_error", `orphan_processes: ${error instanceof Error ? error.message : String(error)}`); }
   try { result.metrics.air_runners_online = await instant(AIR_RUNNERS_QUERY); }
   catch (error) { flag("source_error", `air_runners_online: ${error instanceof Error ? error.message : String(error)}`); }
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
