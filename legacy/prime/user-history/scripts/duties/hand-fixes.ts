@@ -690,10 +690,20 @@ export function parseControlDefaults(settings: string, tuning: string, world: Wo
 export function gitDeclaredCaps(git: (args: string[]) => Promise<string>): (world: World, at: number) => Promise<Map<string, number[]>> {
   const shown = new Map<string, Promise<string>>();
   const show = (sha: string, path: string) => { const id = `${sha}:${path}`; if (!shown.has(id)) shown.set(id, git(["show", id])); return shown.get(id)!; };
+  // One path-limited log per dev ref, picked from in memory per write: one `git log -1 --before` per row and ref was 88 git calls and
+  // 21 s for 16 rows on us-metal02 at 10-31 02:20Z, and with the release reads it pushed the run past SOURCE_DEADLINE_MS.
+  const logs = new Map<string, Promise<{ sha: string; at: number }[]>>();
+  const history = (ref: string) => {
+    if (!logs.has(ref)) logs.set(ref, git(["log", "--format=%H %ct", ref, "--", SETTINGS_PATH, TUNING_PATH]).then(out => out.split("\n").flatMap(line => {
+      const [sha, seconds] = line.split(" ");
+      return sha && seconds ? [{ sha, at: Number(seconds) * 1000 }] : [];
+    }), () => []));
+    return logs.get(ref)!;
+  };
   return async (world, at) => {
     const out = new Map<string, number[]>();
-    for (const ref of DEV_REFS) {
-      const sha = (await git(["log", "-1", "--format=%H", `--before=${new Date(at).toISOString()}`, ref, "--", SETTINGS_PATH, TUNING_PATH]).catch(() => "")).trim();
+    for (const commits of await Promise.all(DEV_REFS.map(history))) {
+      const sha = commits.find(commit => commit.at <= at)?.sha;
       if (!sha) continue;
       for (const [key, value] of parseControlDefaults(await show(sha, SETTINGS_PATH), await show(sha, TUNING_PATH), world)) out.set(key, [...out.get(key) ?? [], value]);
     }
@@ -708,15 +718,25 @@ export function gitReleaseHolds(git: (args: string[]) => Promise<string>): (rele
     for (const [sha, tree] of out.split("\n").map(line => line.split(" "))) if (sha && tree) map.set(tree, [...map.get(tree) ?? [], sha]);
     return map;
   });
-  return async (release, commit) => {
-    const sha = (await git(["rev-parse", "--verify", `${commit}^{commit}`])).trim();
-    const tip = (await git(["rev-parse", "--verify", `${release}^{commit}`])).trim();
+  // Each read is one git call per release, head or commit, kept for the run: a merge-base and a grep log per commit and head were 465 git
+  // calls and 22 s for 40 design commits on two releases on us-metal02 at 10-31 02:20Z, and the run's deadline cut them off ("prod deploys:
+  // The operation was aborted", d3 at 02:07Z).
+  const once = <T>(cache: Map<string, Promise<T>>, key: string, read: () => Promise<T>) => cache.get(key) ?? cache.set(key, read()).get(key)!;
+  const shas = new Map<string, Promise<string>>(), heads = new Map<string, Promise<string[]>>();
+  const ancestors = new Map<string, Promise<Set<string>>>(), picks = new Map<string, Promise<Set<string>>>();
+  const full = (ref: string) => once(shas, ref, async () => (await git(["rev-parse", "--verify", `${ref}^{commit}`])).trim());
+  const headsOf = (release: string) => once(heads, release, async () => {
+    const tip = await full(release);
     const tree = (await git(["rev-parse", "--verify", `${tip}^{tree}`])).trim();
-    for (const head of new Set([tip, ...(await byTree()).get(tree) ?? []])) {
-      if (await git(["merge-base", "--is-ancestor", sha, head]).then(() => true, () => false)) return true;
-      // A crawler-only cut picks dev commits onto prod's line and names each one in a Crawler-Cut-Pick trailer (cut p1026, 7d0de6ae3d, 10-28).
-      if ((await git(["log", "-1", "--format=%H", "--fixed-strings", `--grep=Replayed-From: ${sha}`, `--grep=Crawler-Cut-Pick: ${sha}`, head])).trim()) return true;
-    }
+    return [...new Set([tip, ...(await byTree()).get(tree) ?? []])];
+  });
+  const below = (head: string) => once(ancestors, head, async () => new Set((await git(["rev-list", head])).split("\n").filter(Boolean)));
+  // A crawler-only cut picks dev commits onto prod's line and names each one in a Crawler-Cut-Pick trailer (cut p1026, 7d0de6ae3d, 10-28).
+  const picked = (head: string) => once(picks, head, async () =>
+    new Set([...(await git(["log", "--format=%B", head])).matchAll(/(?:Replayed-From|Crawler-Cut-Pick): ([0-9a-f]{40})/g)].map(match => match[1]!)));
+  return async (release, commit) => {
+    const sha = await full(commit);
+    for (const head of await headsOf(release)) if ((await below(head)).has(sha) || (await picked(head)).has(sha)) return true;
     return false;
   };
 }

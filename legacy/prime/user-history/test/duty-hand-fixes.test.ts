@@ -257,20 +257,27 @@ test("the box read lists each ok prod deploy from deploy.log, and a release hold
   const { deploys } = parseBox(["D\t2026-10-15T10:24:30Z\ta8f85b420699", "D\t2026-10-18T12:31:13Z\t43490e7e9f94", "D\tnot-a-time\tabc"].join("\n"));
   assert.deepEqual(deploys, DEPLOYS);
   assert.equal(releaseAt(DEPLOYS, Date.parse("2026-10-18T12:31:12Z"))!.release, "a8f85b420699");
+  const object = "0b".repeat(20), picked = "c1".repeat(20), other = "d2".repeat(20);
   const ancestors: Record<string, string[]> = { land38: ["land37"], pin: ["e0d09f5a42", "replay"] };
+  const bodies: Record<string, string> = { pin: `fix: x\n\nReplayed-From: ${object}\n`, land38: `land 38\n\nCrawler-Cut-Pick: ${picked} (p1026)\n`, land37: "" };
+  const calls: string[] = [];
   const git = async (args: string[]): Promise<string> => {
+    calls.push(args[0]!);
     if (args[0] === "log" && args[1] === "--all") return "land38 T38\npin T38\nland37 T37\n";
     if (args[0] === "rev-parse") { const [ref, kind] = args[2]!.split("^"); return `${kind === "{tree}" ? "T38" : ref}\n`; }
-    if (args[0] === "merge-base") { if (ancestors[args[3]!]?.includes(args[2]!)) return ""; throw new Error("exit 1"); }
-    if (args[0] === "log" && args.at(-1) === "pin" && args.includes("--grep=Replayed-From: object")) return "replay\n";
-    if (args[0] === "log") return args.at(-1) === "land38" && args.includes("--grep=Crawler-Cut-Pick: picked") ? "land38\n" : "";
+    if (args[0] === "rev-list") return [args[1]!, ...ancestors[args[1]!] ?? []].join("\n") + "\n";
+    if (args[0] === "log" && args[1] === "--format=%B") return bodies[args[2]!] ?? "";
     throw new Error(`unexpected git ${args.join(" ")}`);
   };
   const holds = gitReleaseHolds(git);
   assert.equal(await holds("land38", "e0d09f5a42"), true);
-  assert.equal(await holds("land38", "object"), true);
-  assert.equal(await holds("land38", "picked"), true);
-  assert.equal(await holds("land38", "other"), false);
+  assert.equal(await holds("land38", object), true);
+  assert.equal(await holds("land38", picked), true);
+  assert.equal(await holds("land38", other), false);
+  // One git call per release, head and commit for the whole run: 465 calls for 40 commits on two releases ran the 10-31 02:07Z run past its deadline.
+  const before = calls.length;
+  assert.equal(await holds("land38", other), false);
+  assert.equal(calls.length, before);
 });
 
 // Guards the d3 read of 10-19 15:35Z: the Crawler VP closed F1's p170 at 15:15Z, and repeats_after_design read 588, every F1 row of the day
@@ -455,8 +462,14 @@ test("a declared cap write counts only when its value differs from the default c
   const files: Record<string, string> = {
     "a1:apps/crawler-v3/src/settings.py": SETTINGS, "a1:apps/crawler-v3/src/control/tuning.py": "CENSUS_CRAWL_SLOTS_MAX = 80\n",
     "b2:apps/crawler-v3/src/settings.py": SETTINGS, "b2:apps/crawler-v3/src/control/tuning.py": "CENSUS_CRAWL_SLOTS_MAX = 48\n" };
+  // Each ref's history, newest first: z9 lands after every write, so no write reads it.
+  const logs: string[] = [];
   const git = async (args: string[]) => {
-    if (args[0] === "log") { const sha = commits[args[4]!]; if (!sha) throw new Error(`fatal: bad revision '${args[4]}'`); return `${sha}\n`; }
+    if (args[0] === "log") {
+      logs.push(args[2]!);
+      const sha = commits[args[2]!]; if (!sha) throw new Error(`fatal: bad revision '${args[2]}'`);
+      return `z9 ${AT / 1000 + 86_400}\n${sha} ${AT / 1000 - 60}\n`;
+    }
     return files[args[1]!] ?? "";
   };
   const write = (id: number, value: string): AuditRow => ({ id, ts: AT + id * 120_000, actor: "api-key", source: "ops-api", key: "instagram_census.crawl_concurrency",
@@ -465,6 +478,8 @@ test("a declared cap write counts only when its value differs from the default c
   await markDeclared(data, new RegExp(reg.exempt.declared_cap_regex!), gitDeclaredCaps(git));
   const verdicts = groupAudit("prod", data.audit.prod!).map(fix => { const verdict = classifyConfig(fix, reg); return verdict.kind === "fault" ? verdict.fault.id : verdict.kind; });
   assert.deepEqual(verdicts, ["exempt", "exempt", "F31"]);
+  // One log per dev ref for every row: a log per row and ref was 88 git calls and 21 s for 16 rows on 10-31.
+  assert.equal(logs.length, new Set(logs).size);
 });
 
 test("the audit read selects each row's new value", () => {
