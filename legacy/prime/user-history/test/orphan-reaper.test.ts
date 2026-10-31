@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { ENDED_FOR_MS, KILL_AFTER_MS, type Group, type ProcRow, type Verdict, decide, groupProcesses, hostMatcher, ownerOf, piThreadRow, readVerdicts, stopGroups, unitFileNames, unitOf, verdict } from "../src/orphan-reaper.ts";
+import { ENDED_FOR_MS, KILL_AFTER_MS, type Group, type ProcRow, type Verdict, decide, groupProcesses, hostMatcher, ownerOf, piThreadRow, readUnitHolds, readVerdicts, stopGroups, unitFileNames, unitOf, verdict } from "../src/orphan-reaper.ts";
 
 const JOB = "01a183f7-0a0b-725c-984d-d59f150e6420";
 const LIVE = "01a190a3-1b2e-74ad-88ca-f217e0f956a8";
@@ -152,4 +152,82 @@ test("a pi-host thread from the durable index is live until it is archived, and 
     const tagged = group([row(80, 4578, "/usr/bin/sh -c python drive.py cold", { cgroup: `${USER}/vent-lat-cold.service`, lcSession: `${live}@us-metal02` })]);
     assert.deepEqual(tagged[0]!.owners, [{ session: live, host: "us-metal02" }]);
   } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+// The 10-31 miss: d2 stopped check4-sampler.service at 20:38Z. Its starter, the subagent 01a1935f-4388 (sub-af91d8cb) of the top-level chat
+// 01a1935d, ended at 19:37Z, while 01a1935d recorded the unit with board.own and waited on a board.wake to read it after the next promote.
+const CHAT = "01a1935d-b65f-752c-9215-65d1e346f5e5";
+const STARTER = "01a1935f-4388-77ab-afa0-7cb13d3bbe9d";
+const SAMPLER = "check4-sampler.service";
+async function check4Rig(options: { wake: boolean; nested?: boolean }): Promise<{ home: string; dataDir: string; chatDir: string; ownerDir: string }> {
+  const home = await mkdtemp(join(tmpdir(), "orphan-reaper-1031-"));
+  const chatDir = join(home, ".prime/agent/session-artifacts", CHAT);
+  const subDir = join(chatDir, "sub-af91d8cb");
+  await mkdir(subDir, { recursive: true });
+  await writeFile(join(subDir, `${STARTER}.jsonl`), "{}\n");
+  await writeFile(join(subDir, "rlm-subagent.json"), JSON.stringify({ sessionFile: join(subDir, `${STARTER}.jsonl`) }));
+  await utimes(join(subDir, `${STARTER}.jsonl`), 1_000, 1_000);
+  const nestedDir = join(chatDir, "session-artifacts", STARTER);
+  await mkdir(nestedDir, { recursive: true });
+  await writeFile(join(chatDir, "owned.json"), JSON.stringify({ paths: [], units: [SAMPLER] }));
+  const dataDir = join(home, "browser-chat");
+  await mkdir(join(dataDir, "wakes"), { recursive: true });
+  if (options.wake) await writeFile(join(dataDir, "wakes", `${CHAT}-check-1793473866766.json`),
+    JSON.stringify({ session: CHAT, on: { kind: "check", command: "false", every: 300_000, at: 9e15 }, note: "p122 promote", since: 1793473866766 }));
+  return { home, dataDir, chatDir, ownerDir: options.nested ? nestedDir : subDir };
+}
+const check4Context = (home: string, dataDir: string, chatStatus = "idle") => ({ here: "us-metal02", home, dataDir, now: 10 * ENDED_FOR_MS, remote: async () => "",
+  piThread: async () => null, list: async () => JSON.stringify({ sessions: [{ sessionId: CHAT, rosterStatus: chatStatus }, { sessionId: STARTER, rosterStatus: "inactive" }] }) });
+const samplerGroup = (owners: Group["owners"]): Group => ({ key: `unit:${SAMPLER}`, unit: SAMPLER, root: 1, pids: [1, 2], bytes: 0, started: 0, command: "/usr/bin/sh -c python3 check4-sampler.py", owners });
+
+test("10-31: a job in <chat>/sub-<x> is held by its top-level chat's pending wake, which the walk past sub- dirs used to miss", async () => {
+  const rig = await check4Rig({ wake: true });
+  try {
+    const group = samplerGroup([{ session: "", host: "us-metal02", dir: rig.ownerDir }]);
+    const verdicts = await readVerdicts([group], check4Context(rig.home, rig.dataDir));
+    const read = verdicts.get(`us-metal02/${STARTER}`);
+    assert.equal(read?.state, "live");
+    assert.match((read as { why: string }).why, new RegExp(`parent chat ${CHAT} is live: its board\\.wake is pending`));
+    assert.deepEqual(decide([group], verdicts, 10 * ENDED_FOR_MS).stop, []);
+  } finally { await rm(rig.home, { recursive: true, force: true }); }
+});
+
+test("10-31: a child in <chat>/session-artifacts/<uuid> finds its transcript in the chat's sub- dir and is held by the chat's wake", async () => {
+  const rig = await check4Rig({ wake: true, nested: true });
+  try {
+    const group = samplerGroup([{ session: "", host: "us-metal02", dir: rig.ownerDir }]);
+    const verdicts = await readVerdicts([group], check4Context(rig.home, rig.dataDir));
+    assert.equal(group.owners[0]!.session, STARTER);
+    assert.equal(verdicts.get(`us-metal02/${STARTER}`)?.state, "live");
+  } finally { await rm(rig.home, { recursive: true, force: true }); }
+});
+
+test("an idle, unarchived top-level chat with no wake does not hold its ended job's leftovers, and a running one does", async () => {
+  const rig = await check4Rig({ wake: false });
+  try {
+    const group = samplerGroup([{ session: "", host: "us-metal02", dir: rig.ownerDir }]);
+    assert.deepEqual(await readVerdicts([group], check4Context(rig.home, rig.dataDir)), new Map([[`us-metal02/${STARTER}`,
+      { state: "ended", at: 1_000_000, why: "it is not resident and nothing waits to wake it" }]]));
+    const running = await readVerdicts([samplerGroup([{ session: "", host: "us-metal02", dir: rig.ownerDir }])], check4Context(rig.home, rig.dataDir, "running"));
+    assert.match((running.get(`us-metal02/${STARTER}`) as { why: string }).why, /parent chat .* its roster status is running/);
+  } finally { await rm(rig.home, { recursive: true, force: true }); }
+});
+
+test("10-31: a unit a live session recorded with board.own is held even when the owner its env names ended, and only while that session is live", async () => {
+  const ended = new Map<string, Verdict>([[`us-metal02/${STARTER}`, { state: "ended", at: 0, why: "" }]]);
+  const live = await check4Rig({ wake: true });
+  try {
+    const group = samplerGroup([{ session: STARTER, host: "us-metal02" }]);
+    const holds = await readUnitHolds([group, { ...samplerGroup([]), key: "unit:other.service", unit: "other.service" }], check4Context(live.home, live.dataDir));
+    assert.deepEqual([...holds.keys()], [SAMPLER]);
+    assert.match(holds.get(SAMPLER)!, new RegExp(`${CHAT} recorded ${SAMPLER} with board\\.own and is live`));
+    const decision = decide([group, samplerGroup([])], ended, 10 * ENDED_FOR_MS, holds);
+    assert.deepEqual([decision.stop.length, decision.held.length, decision.unknown.length], [0, 2, 0]);
+  } finally { await rm(live.home, { recursive: true, force: true }); }
+  const gone = await check4Rig({ wake: false });
+  try {
+    const archived = { ...check4Context(gone.home, gone.dataDir, "inactive"), list: async (_host: string, all: boolean) =>
+      JSON.stringify({ sessions: all ? [{ sessionId: CHAT, lifecycle: "archived" }] : [] }) };
+    assert.equal((await readUnitHolds([samplerGroup([])], archived)).size, 0);
+  } finally { await rm(gone.home, { recursive: true, force: true }); }
 });

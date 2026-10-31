@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -44,7 +44,7 @@ export interface SessionFacts {
   rosterStatus?: string | undefined; live?: string | null; topLevel: boolean; archived?: boolean | undefined;
   /** The transcript's mtime in ms, null when no transcript was found. */
   endedAt: number | null;
-  /** Why a job above it (never the top-level chat) is live, else null: a live parent job may still use its child's rig. */
+  /** Why a session above it is live, else null: a live parent may still use its child's rig. A top-level parent counts only while it runs or a wake or queued run waits. */
   parentLive?: string | null;
 }
 
@@ -122,7 +122,7 @@ export function sessionOfDir(dir: string): string | null {
   return UUID.test(name) ? name : null;
 }
 
-/** Whether a session's processes may stop: live while its roster says running or idle, a wake or queued run waits, it is an unarchived top-level chat, or a job above it is live. */
+/** Whether a session's processes may stop: live while its roster says running or idle, a wake or queued run waits, it is an unarchived top-level chat, or a session above it is live. */
 export function verdict(facts: SessionFacts): Verdict {
   if (facts.rosterStatus === "running" || facts.rosterStatus === "idle") return { state: "live", why: `its roster status is ${facts.rosterStatus}` };
   if (facts.live) return { state: "live", why: facts.live };
@@ -135,13 +135,17 @@ export function verdict(facts: SessionFacts): Verdict {
 export interface Decision { stop: Group[]; held: { group: Group; why: string }[]; unknown: Group[] }
 
 /**
- * Splits the groups: stop a group when every owner it names ended over ENDED_FOR_MS ago, hold it when any owner is live or ended more recently,
+ * Splits the groups: stop a group when every owner it names ended over ENDED_FOR_MS ago, hold it when any owner is live or ended more recently
+ * or when `unitHolds` names its unit (a live session recorded the unit with board.own; on 10-31 a child started check4-sampler.service and
+ * ended, and its parent 01a1935d recorded the unit and still waited on a wake to use it),
  * and list a group with no owner or an owner with no transcript as unknown. Only a group whose root left its parent (now under systemd --user,
  * pid 1 or an sshd) or that is a transient unit is listed as unknown, so a terminal's own shell is no unknown orphan.
  */
-export function decide(groups: readonly Group[], verdicts: ReadonlyMap<string, Verdict>, now: number): Decision {
+export function decide(groups: readonly Group[], verdicts: ReadonlyMap<string, Verdict>, now: number, unitHolds: ReadonlyMap<string, string> = new Map()): Decision {
   const decision: Decision = { stop: [], held: [], unknown: [] };
   for (const group of groups) {
+    const owned = group.unit ? unitHolds.get(group.unit) : undefined;
+    if (owned) { decision.held.push({ group, why: owned }); continue; }
     if (!group.owners.length) { decision.unknown.push(group); continue; }
     const read = group.owners.map(owner => ({ owner, verdict: verdicts.get(ownerKey(owner)) ?? { state: "unknown", why: "not read" } as Verdict }));
     const live = read.find(entry => entry.verdict.state === "live");
@@ -187,7 +191,15 @@ async function dirSession(dir: string, home: string): Promise<{ session: string;
   if (own && dirname(dir) === artifacts(home)) return { session: own, transcript: join(home, ".prime", "agent", "sessions", `${own}.jsonl`), topLevel: true };
   const record = await readFile(join(dir, "rlm-subagent.json"), "utf8").then(text => JSON.parse(text) as { sessionFile?: unknown }, () => null);
   const file = typeof record?.sessionFile === "string" ? record.sessionFile : null;
-  return file ? { session: basename(file, ".jsonl"), transcript: file, topLevel: false } : null;
+  if (file) return { session: basename(file, ".jsonl"), transcript: file, topLevel: false };
+  // A child's `<parent>/session-artifacts/<uuid>` dir holds its kernel state; its transcript lies in the parent's `sub-<x>` dir.
+  if (!own || basename(dirname(dir)) !== "session-artifacts") return null;
+  const parent = dirname(dirname(dir));
+  for (const entry of await readdir(parent).catch(() => [] as string[])) {
+    const transcript = join(parent, entry, `${own}.jsonl`);
+    if (entry.startsWith("sub-") && await mtime(transcript) !== null) return { session: own, transcript, topLevel: false };
+  }
+  return null;
 }
 
 /** `list` prints a host's `prime-agent list --json` (with `--all` for every saved session), `remote` runs a shell command on another host. */
@@ -196,9 +208,15 @@ export interface ReadContext { here: string; home: string; dataDir: string; now:
   piThread: (id: string) => Promise<PiThread | null> }
 export interface PiThread { archived: boolean; updatedAt: number }
 
-/** The verdict of every owner the groups name, with each owner's session id filled in from its dir. */
-export async function readVerdicts(groups: Group[], context: ReadContext): Promise<Map<string, Verdict>> {
-  const verdicts = new Map<string, Verdict>();
+/** The roster reads one d2 run shares: each host's resident sessions, this box's full list, and whether a session is about to run. */
+interface Reader {
+  roster: (host: string) => Promise<Map<string, RosterRow>>;
+  all: () => Promise<Map<string, RosterRow>>;
+  /** Why a session counts as live for the sessions below it: running, idle when it is a job, or a wake or queued run waits (job-live.ts). */
+  liveAbove: (session: string, host: string, topLevel: boolean) => Promise<string | null>;
+}
+
+export function reader(context: ReadContext): Reader {
   const paths = livePaths(context.dataDir, context.home);
   const rosters = new Map<string, Promise<Map<string, RosterRow>>>();
   const roster = (host: string): Promise<Map<string, RosterRow>> => {
@@ -207,11 +225,18 @@ export async function readVerdicts(groups: Group[], context: ReadContext): Promi
   };
   let archive: Promise<Map<string, RosterRow>> | null = null;
   const all = (): Promise<Map<string, RosterRow>> => archive ??= context.list(context.here, true).then(rosterOf);
-  const liveJob = async (session: string, host: string): Promise<string | null> => {
-    const row = (await roster(host)).get(session);
-    if (row?.rosterStatus === "running" || row?.rosterStatus === "idle") return `its roster status is ${row.rosterStatus}`;
+  // A top-level chat stays resident and idle long after its last turn, so only a running one holds its subagents' leftovers.
+  const liveAbove = async (session: string, host: string, topLevel: boolean): Promise<string | null> => {
+    const status = (await roster(host)).get(session)?.rosterStatus;
+    if (status === "running" || (status === "idle" && !topLevel)) return `its roster status is ${status}`;
     return jobLive(paths, session, context.now);
   };
+  return { roster, all, liveAbove };
+}
+
+/** The verdict of every owner the groups name, with each owner's session id filled in from its dir. */
+export async function readVerdicts(groups: Group[], context: ReadContext, read: Reader = reader(context)): Promise<Map<string, Verdict>> {
+  const verdicts = new Map<string, Verdict>();
   for (const group of groups) for (const owner of group.owners) {
     let facts: SessionFacts | null = null;
     if (owner.dir) {
@@ -219,33 +244,78 @@ export async function readVerdicts(groups: Group[], context: ReadContext): Promi
       if (!found) { owner.session ||= basename(owner.dir); verdicts.set(ownerKey(owner), { state: "unknown", why: `${owner.dir} names no transcript` }); continue; }
       owner.session = found.session;
       if (verdicts.has(ownerKey(owner))) continue;
-      facts = await boxFacts(found, owner.dir, context, roster, all, liveJob);
+      facts = await boxFacts(found, owner.dir, context, read);
     } else {
       if (verdicts.has(ownerKey(owner))) continue;
-      try { facts = owner.host === context.here ? await boxFactsById(owner.session, context, roster, all) : await remoteFacts(owner, context, roster); }
+      try { facts = owner.host === context.here ? await boxFactsById(owner.session, context, read) : await remoteFacts(owner, context, read); }
       catch (error) { verdicts.set(ownerKey(owner), { state: "unknown", why: `${owner.host} did not answer: ${error instanceof Error ? error.message.slice(0, 160) : String(error)}` }); continue; }
     }
-    if (facts.rosterStatus !== "running" && facts.rosterStatus !== "idle" && !facts.live) facts.live = await jobLive(paths, owner.session, context.now);
-    verdicts.set(ownerKey(owner), verdict(facts));
+    verdicts.set(ownerKey(owner), await settle(facts, owner.session, context));
   }
   return verdicts;
 }
 
-async function boxFacts(found: { session: string; transcript: string; topLevel: boolean }, dir: string, context: ReadContext,
-  roster: (host: string) => Promise<Map<string, RosterRow>>, all: () => Promise<Map<string, RosterRow>>, liveJob: (session: string, host: string) => Promise<string | null>): Promise<SessionFacts> {
-  const row = (await roster(context.here)).get(found.session);
-  const archived = found.topLevel && !row ? (await all()).get(found.session)?.lifecycle === "archived" : undefined;
+const settle = async (facts: SessionFacts, session: string, context: ReadContext): Promise<Verdict> => {
+  if (facts.rosterStatus !== "running" && facts.rosterStatus !== "idle" && !facts.live) facts.live = await jobLive(livePaths(context.dataDir, context.home), session, context.now);
+  return verdict(facts);
+};
+
+/** The session dirs above a box session dir, nearest first: a job sits in `<parent>/sub-<x>` and a child may sit in `<parent>/session-artifacts/<uuid>`. */
+export function ancestorDirs(dir: string, home: string): string[] {
+  const root = artifacts(home);
+  const dirs: string[] = [];
+  for (let up = dirname(dir); up.startsWith(`${root}/`); up = dirname(up)) if (basename(up) !== "session-artifacts") dirs.push(up);
+  return dirs;
+}
+
+async function boxFacts(found: { session: string; transcript: string; topLevel: boolean }, dir: string, context: ReadContext, read: Reader): Promise<SessionFacts> {
+  const row = (await read.roster(context.here)).get(found.session);
+  const archived = found.topLevel && !row ? (await read.all()).get(found.session)?.lifecycle === "archived" : undefined;
   let parentLive: string | null = null;
-  for (let up = dirname(dir); /^sub-/.test(basename(up)) && !parentLive; up = dirname(up)) {
+  for (const up of ancestorDirs(dir, context.home)) {
     const parent = await dirSession(up, context.home);
-    const why = parent ? await liveJob(parent.session, context.here) : null;
-    if (parent && why) parentLive = `its parent job ${parent.session} is live: ${why}`;
+    const why = parent ? await read.liveAbove(parent.session, context.here, parent.topLevel) : null;
+    if (parent && why) { parentLive = `its parent ${parent.topLevel ? "chat" : "job"} ${parent.session} is live: ${why}`; break; }
   }
   return { rosterStatus: row?.rosterStatus, topLevel: found.topLevel, archived, endedAt: await mtime(found.transcript), parentLive };
 }
 
+/**
+ * The units a live box session recorded with board.own (`owned.json` in its session dir, `units`), each with why it holds. The 10-31 d2 run
+ * stopped check4-sampler.service, which the live chat 01a1935d had recorded while it waited on a wake to read it after the next promote.
+ */
+export async function readUnitHolds(groups: readonly Group[], context: ReadContext, read: Reader = reader(context)): Promise<Map<string, string>> {
+  const holds = new Map<string, string>();
+  const units = new Set(groups.flatMap(group => group.unit ? [group.unit] : []));
+  if (!units.size) return holds;
+  for (const dir of await ownedDirs(artifacts(context.home))) {
+    const record = await readFile(join(dir, "owned.json"), "utf8").then(text => JSON.parse(text) as { units?: unknown }, () => null);
+    const named = Array.isArray(record?.units) ? record.units.filter((unit): unit is string => typeof unit === "string" && units.has(unit) && !holds.has(unit)) : [];
+    if (!named.length) continue;
+    const found = await dirSession(dir, context.home);
+    if (!found) continue;
+    const state = await settle(await boxFacts(found, dir, context, read), found.session, context);
+    if (state.state === "live") for (const unit of named) holds.set(unit, `${found.session} recorded ${unit} with board.own and is live: ${state.why}`);
+  }
+  return holds;
+}
+
+/** The box session dirs that hold an owned.json: each `<uuid>` under session-artifacts and, below it, its `sub-*` jobs and `session-artifacts/<uuid>` children. */
+export async function ownedDirs(root: string): Promise<string[]> {
+  const dirs: string[] = [];
+  const below = async (dir: string): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      const path = join(dir, entry.name);
+      if (entry.name === "owned.json" && entry.isFile()) dirs.push(dir);
+      else if (entry.isDirectory() && (entry.name.startsWith("sub-") || UUID.test(entry.name) || entry.name === "session-artifacts")) await below(path);
+    }
+  };
+  await below(root);
+  return dirs;
+}
+
 /** A box session known only by id (RLM_HARNESS_STATE_DIR, or LC_PRIME_SESSION with no RLM_SESSION_DIR): a top-level chat or a job found in the full list. */
-async function boxFactsById(session: string, context: ReadContext, roster: (host: string) => Promise<Map<string, RosterRow>>, all: () => Promise<Map<string, RosterRow>>): Promise<SessionFacts> {
+async function boxFactsById(session: string, context: ReadContext, { roster, all }: Reader): Promise<SessionFacts> {
   const row = (await roster(context.here)).get(session);
   const top = join(context.home, ".prime", "agent", "sessions", `${session}.jsonl`);
   const topAt = await mtime(top);
@@ -257,7 +327,7 @@ async function boxFactsById(session: string, context: ReadContext, roster: (host
 }
 
 /** A session on another box: its roster there and its transcript's mtime there, a top-level chat's under sessions/ and a job's two levels under session-artifacts. */
-async function remoteFacts(owner: Owner, context: ReadContext, roster: (host: string) => Promise<Map<string, RosterRow>>): Promise<SessionFacts> {
+async function remoteFacts(owner: Owner, context: ReadContext, { roster }: Reader): Promise<SessionFacts> {
   const row = (await roster(owner.host)).get(owner.session);
   const id = owner.session;
   const listing = await context.remote(owner.host, `cd ~/.prime/agent && for f in sessions/${id}.jsonl session-artifacts/*/sub-*/${id}.jsonl session-artifacts/*/sub-*/sub-*/${id}.jsonl; do [ -f "$f" ] && echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f") $f"; done; true`);
@@ -316,8 +386,9 @@ export async function readOrphans(context: ReadContext, hostOf: (address: string
   const [rows, unitFiles] = await Promise.all([readProcesses(), readUnitFiles()]);
   const groups = groupProcesses(rows, unitFiles, hostOf, context.here);
   const owned = groups.filter(group => group.owners.length);
-  const verdicts = await readVerdicts(owned, context);
-  const decision = decide(groups, verdicts, context.now);
+  const read = reader(context);
+  const verdicts = await readVerdicts(owned, context, read);
+  const decision = decide(groups, verdicts, context.now, await readUnitHolds(groups, context, read));
   const byPid = new Map(rows.map(row => [row.pid, row]));
   const orphaned = (group: Group): boolean => {
     const ppid = byPid.get(group.root)?.ppid ?? 0;
