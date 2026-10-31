@@ -37,8 +37,11 @@ import { DAY, REPO, settle, unmeasuredFlag, utc } from "./estate-reads.ts";
  * - unknown_username_24h <= 0: a paired Chrome reported an account the server could not register because it had no handle, so Connections
  *   shows it stuck (dmDevices.heartbeat `unregistered`).
  * A source that failed makes the metrics it feeds read missValue() and adds a source_error flag.
- * The duty's timeoutMs of 600 s is its soft target. measured: the first full run on 10-30 took 504 s (04:08:30Z to 04:16:54Z), with the
- * staging row reads about 40 s of it.
+ * The duty's timeoutMs of 1,200 s is its soft target: one run's own work plus one wait for another run. measured: the first full run on
+ * 10-30 took 504 s (04:08:30Z to 04:16:54Z), with the staging row reads about 40 s of it. The 10-31 06:49Z run took 874 s: the zips
+ * (0.1 s each) and the jar read over ssh (about 1 s) took seconds, then it waited about 332 s for a fix job's own run of this precheck
+ * to finish its e2e rig, and its own world down, world up, rigs and row reads took 542 s (06:54:47Z to 07:03:47Z), 458 s of it the e2e rig.
+ * A `waited` slice names any such wait.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -65,6 +68,8 @@ export const STAGING_HOST = "https://staging.virev.ai/*";
 export const ROWS_LIMIT = 16_384;
 const OUT = join(REPO, ".cache/duties/dm-extension/latest");
 const RIG = /tests\/(autopair|staging)-real-ig\.mjs/;
+/** Another copy of this precheck, such as a fix job's own run of it (10-31 06:33Z to 06:54Z). */
+const DUTY_RUN = /scripts\/duties\/dm-extension\.ts/;
 
 export type Part = "pair" | "found" | "sent" | "reply";
 export const PARTS: Readonly<Record<Part, string>> = {
@@ -108,6 +113,8 @@ export interface DutyData {
   sender?: Sender;
   e2e?: E2eEvidence;
   e2eExit?: number;
+  /** Time spent waiting for another copy of this precheck or a rig, and what it waited on. */
+  waited?: { ms: number; on: string[] };
   rows?: { messages: DmRow[]; devices: DeviceRow[]; truncated: boolean };
   errors: { source: Source; message: string }[];
 }
@@ -163,6 +170,7 @@ export function report(data: DutyData, dutyMetrics: readonly DutyMetric[]): Prec
     const { sha, loaded, dirty, sameFiles, version } = data.build;
     flagged.push({ at, kind: "build", excerpt: `${version} from auto-sns-agent ${sha.slice(0, 10)}: ${loaded === "dev" ? "the store zip lists no staging host, so the run loaded the dev zip of the same tree" : "the run loaded the store zip"}${sameFiles ? ", same files in both zips" : "; the store and dev zips hold DIFFERENT files"}${dirty.length ? `; uncommitted in apps/dm-extension: ${dirty.join(", ")}` : ""}`.slice(0, 300) });
   }
+  if (data.waited) flagged.push({ at, kind: "waited", excerpt: `waited ${Math.round(data.waited.ms / 1000)} s for another run on this box before its own work: ${data.waited.on.join("; ")}`.slice(0, 300) });
   const blocked = data.sender !== undefined && !senderFits(data.sender);
   if (data.sender && blocked) {
     const { username, sentToday, dailyLimit } = data.sender;
@@ -279,11 +287,37 @@ async function senderCount(igUserId: string): Promise<Sender> {
   return { username: row.username, sentToday: row.sentToday, dailyLimit: row.dailyLimit };
 }
 
-/** Waits while another real-Instagram rig runs on this box, so two browsers never drive one account at once. */
-async function waitForOtherRigs(): Promise<void> {
+/** The `pgrep -af node` lines of another copy of this precheck or a real-Instagram rig, leaving out this run and its parents. */
+export function otherRuns(pgrepLines: string, own: ReadonlySet<number>): string[] {
+  return pgrepLines.split("\n").filter(line => {
+    const pid = Number(/^\s*(\d+)\s/.exec(line)?.[1]);
+    return Number.isInteger(pid) && !own.has(pid) && (RIG.test(line) || DUTY_RUN.test(line));
+  });
+}
+
+/** This process and its parents, so a run started through `sh -c '... dm-extension.ts'` does not wait on its own shell. */
+async function ownPids(): Promise<Set<number>> {
+  const pids = new Set<number>();
+  for (let pid = process.pid; pid > 1 && !pids.has(pid);) {
+    pids.add(pid);
+    const stat = await readFile(`/proc/${pid}/stat`, "utf8").catch(() => "");
+    pid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+  }
+  return pids;
+}
+
+/**
+ * Waits while another copy of this precheck or a real-Instagram rig runs on this box, so two browsers never drive one account at once and
+ * two runs never share OUT and the dm-ext-duty world. Resolves the ms it waited and what it waited on.
+ */
+async function waitForOtherRuns(): Promise<{ ms: number; on: string[] }> {
+  const start = Date.now();
+  const own = await ownPids();
+  const on = new Set<string>();
   for (;;) {
-    const running = await sh("pgrep", ["-af", "node"]).catch(() => "");
-    if (!running.split("\n").some(line => RIG.test(line))) return;
+    const others = otherRuns(await sh("pgrep", ["-af", "node"]).catch(() => ""), own);
+    if (!others.length) return { ms: Date.now() - start, on: [...on] };
+    for (const line of others) on.add(line.replace(/^\s*\d+\s+/, "").replace(REPO + "/", "").slice(0, 80));
     // measured: one rig run took 56 s (autopair) to 278 s (staging-real-ig) on 10-30, so a look every 30 s adds little to the wait.
     await sleep(30_000);
   }
@@ -305,6 +339,9 @@ async function measure(now: number): Promise<DutyData> {
   const world = ["node", "scripts/dev/search-clean-world.mjs"];
   let up = false;
   try {
+    // Before OUT is cleared, so a run still going keeps its evidence.
+    const waited = await waitForOtherRuns();
+    if (waited.ms >= 1_000) data.waited = waited;
     await rm(OUT, { recursive: true, force: true });
     await mkdir(OUT, { recursive: true });
     const built = await step("build", () => build(tmp));
@@ -312,7 +349,9 @@ async function measure(now: number): Promise<DutyData> {
     const jarFiles = await step("jars", () => jars(tmp));
     if (jarFiles?.notes.length) data.errors.push({ source: "jars", message: jarFiles.notes.join("; ") });
     if (built && jarFiles) {
-      await waitForOtherRigs();
+      // A rig a job started while this run built and fetched the jars.
+      const again = await waitForOtherRuns();
+      if (again.ms >= 1_000) data.waited = { ms: (data.waited?.ms ?? 0) + again.ms, on: [...new Set([...(data.waited?.on ?? []), ...again.on])] };
       await logged([...world, "down", "--name", WORLD], join(OUT, "world-down-before.log"), process.env);
       const upCode = await logged([...world, "up", "--target", "staging", "--name", WORLD, "--allow-features", "instagramDm", "--owner-pid", String(process.pid)], join(OUT, "world-up.log"), process.env);
       up = upCode === 0;

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
-import { errorCounts, jarIgUserId, parts, report, senderFits, type AutopairEvidence, type DmRow, type E2eEvidence, type JarRow } from "../scripts/duties/dm-extension.ts";
+import { errorCounts, jarIgUserId, otherRuns, parts, report, senderFits, type AutopairEvidence, type DmRow, type E2eEvidence, type JarRow } from "../scripts/duties/dm-extension.ts";
 
 const METRICS = (JSON.parse(readFileSync(new URL("../scripts/duties/dm-extension.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] }).metrics;
 const NOW = Date.parse("2026-10-30T12:00:00Z");
@@ -90,4 +90,19 @@ test("a jar with a null ig_user_id is named by its ds_user_id cookie, as on 10-3
   assert.equal(jarIgUserId(jar(null, [{ name: "csrftoken", value: "x" }, { name: "ds_user_id", value: "29063885913" }])), "29063885913");
   assert.equal(jarIgUserId(jar("29063885913", null)), "29063885913");
   assert.throws(() => jarIgUserId(jar(null, [])), /no ds_user_id/);
+});
+
+test("the precheck waits on another copy of itself or a rig, never on itself or its own shell, and says how long it waited", () => {
+  const lines = [
+    "100 node --import tsx scripts/duties/dm-extension.ts",
+    "90 sh -c cd x && OUTPUT_FILE=y node --import tsx scripts/duties/dm-extension.ts > z",
+    "200 node --import tsx scripts/duties/dm-extension.ts",
+    "300 node /repo/apps/dm-extension/tests/staging-real-ig.mjs --a jar",
+    "400 node --test test/duty-dm-extension.test.ts",
+  ].join("\n");
+  assert.deepEqual(otherRuns(lines, new Set([100, 90])).map(line => line.split(" ")[0]), ["200", "300"]);
+  assert.deepEqual(otherRuns(lines.split("\n").slice(0, 2).join("\n"), new Set([100, 90])), []);
+  const out = report({ now: NOW, autopair: AUTOPAIR, e2e: E2E, waited: { ms: 332_400, on: ["node --import tsx scripts/duties/dm-extension.ts"] }, errors: [] }, METRICS);
+  assert.equal(out.metrics.e2e_pass, 1);
+  assert.ok(out.flagged?.some(slice => slice.kind === "waited" && slice.excerpt.startsWith("waited 332 s")));
 });
