@@ -208,9 +208,23 @@ export function parseStale(value: unknown): StalePage[] {
  * How long a page may be behind its code before it counts in pages_behind_code: one push run plus one rewrite, each at its p90. The d4 push
  * runs of 10-19 came 16.5 min apart at p90 (38 gaps under an hour). A rewrite from the run's start to the page landing took 52.7 min at p90 over
  * four cycles weighted alike (10-19 14:40Z 53 to 63 min, 20:38Z 34 to 39, 10-20 00:46Z 26, 03:58Z 10 to 20). A page behind for less is
- * `wiki_problems_following`, a part the verdict leaves out and a push run still goes after (src/duty-push.ts), the way `unlanded` waits 30 min.
+ * followed, the way `unlanded` waits 30 min. A followed page within FOLLOW_LEAD_MS of its window end is `wiki_problems_following`, a part the
+ * verdict leaves out and a push run goes after (src/duty-push.ts); an earlier one counts in info `pages_waiting`.
  */
 export const FOLLOW_WINDOW_MS = 70 * 60_000;
+
+/**
+ * How long before its window end a followed page makes a push run start a job. A page with more time left waits, flagged with no `handOff`, so
+ * the pages one burst of code commits puts behind go to one job, which takes every flagged page. Until 11-01 any followed page started a job,
+ * and d4 started 25 and 26 jobs on 10-30 and 10-31 (KST), 84 of the week's 105 for followed pages alone. measured: after the 15-min reads
+ * began (10-29 22:57Z), a page handed to a job landed 12.1 min later at p90 (n=187), so a lead must cover that plus one 15-min read gap. A
+ * replay of 10-25 to 10-31 gave 23.0 jobs a day today against 14.6 at 40 min, with no extra page past its window at a p90 of 12.1 or 20 min;
+ * 30 min gave 13.1 jobs a day but 48 extra crossings at a p90 of 20 min (~/work/wiki-checks-batch/measure.md).
+ */
+export const FOLLOW_LEAD_MS = 40 * 60_000;
+
+/** Whether a page that fell behind at `fell` is followed now and still has more than FOLLOW_LEAD_MS of its window left. */
+export const waits = (fell: number, now: number): boolean => fell > 0 && now - fell <= FOLLOW_WINDOW_MS - FOLLOW_LEAD_MS;
 
 /**
  * The newest time each path left HEAD's first-parent history, from `git log --first-parent --diff-filter=D --format=%x1e%ct --name-only`.
@@ -529,8 +543,9 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   const metrics: Record<string, number> = {};
   for (const key of HEALTH_METRICS) metrics[key] = health?.facts[key] ?? UNMEASURED;
   const following = stalePages?.filter(page => { const fell = behindSince(page); return fell > 0 && now - fell <= FOLLOW_WINDOW_MS; });
+  const waiting = new Set(stalePages?.filter(page => waits(behindSince(page), now)).map(page => page.path));
   metrics.pages_behind_code = stalePages && following ? stalePages.length - following.length : UNMEASURED;
-  if (following) metrics.wiki_problems_following = following.length;
+  if (following) metrics.wiki_problems_following = following.length - waiting.size;
   metrics.unlanded = box ? box.pages.filter(page => !page.session && !page.held).length : UNMEASURED;
   metrics.wiki_problems = PROBLEM_METRICS.some(key => metrics[key] === UNMEASURED) ? UNMEASURED : PROBLEM_METRICS.reduce((sum, key) => sum + metrics[key]!, 0);
   const lintFailing = health?.facts.lint_failing_pages;
@@ -558,6 +573,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
     box_runs_24h: box?.runs ?? UNMEASURED, unlanded_sessions: box ? box.pages.filter(page => page.session).length : UNMEASURED,
     unlanded_ahead: box ? box.pages.filter(page => page.held).length : UNMEASURED,
     recurred_7d: classes?.recurred.length ?? UNMEASURED, dream_commits_7d: commits.filter(commit => !isRevert(commit.subject)).length,
+    pages_waiting: stalePages ? waiting.size : UNMEASURED,
   };
 
   const slices: FlaggedSlice[] = [...errors];
@@ -604,7 +620,8 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   }
   for (const pair of unjudged ?? []) slices.push({ kind: "dup_pair", item: pairKey(pair.a, pair.b), excerpt: `${pair.a} and ${pair.b} look alike (score ${pair.score})` });
 
-  return { metrics: { ...metrics }, flagged: pickFlagged(slices).map(slice => PROBLEM_KINDS.has(slice.kind) ? { ...slice, handOff: true as const } : slice), info };
+  const handOff = (slice: FlaggedSlice): boolean => PROBLEM_KINDS.has(slice.kind) && !(slice.kind === "stale_vs_code" && waiting.has(slice.item ?? ""));
+  return { metrics: { ...metrics }, flagged: pickFlagged(slices).map(slice => handOff(slice) ? { ...slice, handOff: true as const } : slice), info };
 }
 
 /** The metrics the duty judges (wiki-dream.duty.json). A run that cannot measure one of them fails, so the runner records an error, not 999999. */

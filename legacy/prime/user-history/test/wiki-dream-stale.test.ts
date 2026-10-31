@@ -54,7 +54,8 @@ test("a page behind for longer than the follow window counts, a missing ref at o
   assert.equal(FOLLOW_WINDOW_MS, 70 * 60_000);
   assert.equal(result.metrics.pages_behind_code, 2, "behind since 02:14:30Z is 75.5 min, and a missing ref counts at once");
   assert.equal(result.metrics.wiki_problems, 2);
-  assert.equal(result.metrics.wiki_problems_following, 1, "behind since 03:00Z is 30 min");
+  assert.equal(result.metrics.wiki_problems_following, 0, "behind since 03:00Z is 30 min, so it waits");
+  assert.equal(result.info.pages_waiting, 1);
   assert.equal(result.metrics.source_errors, 0);
   const stale = (result.flagged ?? []).filter(slice => slice.kind === "stale_vs_code");
   assert.deepEqual(stale.map(slice => slice.item), ["domains/architecture/telemetry-map.html", "domains/architecture/outside-calls.html", "domains/devops/ci-time/index.html"],
@@ -100,7 +101,7 @@ test("a missing ref whose file a commit in the follow window deleted is followed
   assert.equal(calls.length, 1, "one git log reads every deletion of the follow window");
   assert.ok(calls[0]!.includes("--first-parent") && calls[0]!.includes(`--since=${new Date(NOW - FOLLOW_WINDOW_MS).toISOString()}`));
   assert.equal(result.metrics.pages_behind_code, 1, "only outside-calls, behind since 02:14:30Z, counts");
-  assert.equal(result.metrics.wiki_problems_following, 2, "telemetry-map fell behind at 03:10Z, when its README changed and gone.py was deleted");
+  assert.equal(result.metrics.wiki_problems_following! + result.info.pages_waiting!, 2, "telemetry-map fell behind at 03:10Z, when its README changed and gone.py was deleted");
   const telemetry = (result.flagged ?? []).find(slice => slice.item === "domains/architecture/telemetry-map.html");
   assert.match(telemetry!.excerpt, /behind since 03:10Z, counted from 04:20Z; .*apps\/vent\/gone\.py \(missing\)/);
 });
