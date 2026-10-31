@@ -238,7 +238,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     started: async (id, chat, name) => poolPriorities.set(id, dutyJobPriority(name, chatPoolPriority((await labels.snapshot()).threads[chat.id]?.priority ?? 0))) });
   const duties = new Duties(new DutyStore(dataDir), { isChat: async id => (await chats.ids()).has(id), log: dutyLog, ...quiet ? { tickMs: 0 } : {},
     ...replay ? { precheckCommand: () => ["/bin/sh", "-c", 'printf \'{"metrics":{}}\' > "$OUTPUT_FILE"'] } : {},
-    board: id => boards.read(id), applyBoard: async (id, ops) => { await boards.apply(id, ops, "agent"); },
+    board: id => boards.read(id), chats: async () => catalog.rows(), applyBoard: async (id, ops) => { await boards.apply(id, ops, "agent"); },
     fixLive: fixLiveReader({ rows: () => catalog.rows(), asleep: async now => (await pendingWakes(join(dataDir, "wakes"), now)).map(wake => wake.session),
       pool: poolWaiting, held: () => chats.poolHeldSessions(),
       stalls }),

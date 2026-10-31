@@ -1761,7 +1761,7 @@ export class Chats {
     const read = (chat: string) => this.source.board(chat);
     const hosts = await this.hostHolds(id, rows);
     const linked = board ? await linkedBoards(board, id, read, rows) : new Map<string, ChatBoard | null>();
-    const precheck = checkInPrecheck(previous, facts, board ? withLinkedBoards(board, id, linked) : board, at,
+    const precheck = checkInPrecheck(previous, facts, board ? withLinkedBoards(board, id, linked, rows) : board, at,
       { self, rows, linked, ...await this.ledger(id), everyMs, doneFacts, ...(duties ? { duties } : {}), ...(noDuties ? { noDuties } : {}), jobs, subagents: this.subagents, heartbeats, queued, asleep, wakes, carried, ...(train ? { train } : {}), ...(boardError !== undefined ? { boardError } : {}),
         ...(hosts ? { hosts } : {}),
         paused: await this.ownerPaused(at),

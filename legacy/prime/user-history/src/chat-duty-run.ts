@@ -17,7 +17,7 @@ import { transientTurnError } from "./turn-error.ts";
 import type { TellSource } from "./clean-room-subjects.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
 import { closedFixes, dutyFixes, type FixLiveness, missedKeys, verifyNoteOps } from "./shared/duty-fixes.ts";
-import { holdingTodo, todoName, withBoardLinks } from "./shared/todo-hold.ts";
+import { holdingTodo, type NamedChat, todoName, withBoardLinks } from "./shared/todo-hold.ts";
 import { effectiveRun, metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
 import { type BoardOp, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type CheckInView, type PlanItem, type PoolPriority } from "./shared/types.ts";
 
@@ -68,6 +68,8 @@ export interface DutyHost {
   priority?: (chatId: string) => Promise<PoolPriority>;
   /** The chat's board, where each missed metric's fix step lives (`dutyFixes`); absent: runs record no fixes. */
   board?: (chatId: string) => Promise<ChatBoard | null>;
+  /** The catalog's chats, which resolve a wait that names another chat by its name (`withBoardLinks`); absent: only a session id links one. */
+  chats?: () => Promise<readonly NamedChat[]>;
   /** Whether a fix step's job is at work now, or the stall of its session when it sits in one tool call (`fixJobState`); absent: no fix counts as live. */
   fixLive?: (chatId: string, item: PlanItem) => Promise<FixLiveness>;
   /** Applies board ops to the chat's board, for each measured run's goal readings (`goalReadingOps`); absent: runs write no reading. */
@@ -629,7 +631,7 @@ export class Duties {
   private async fixesOn(board: ChatBoard | null, chatId: string, dutyId: string, metrics: readonly string[], flagged: readonly FlaggedSlice[] = [], goal?: string): Promise<Record<string, FixLink>> {
     const live = this.host.fixLive;
     const read = this.host.board;
-    const todos = board && read ? (await withBoardLinks(board, chatId, read)).todos : board?.todos ?? [];
+    const todos = board && read ? (await withBoardLinks(board, chatId, read, await this.host.chats?.().catch(() => []) ?? [])).todos : board?.todos ?? [];
     const held = (item: PlanItem) => { const todo = holdingTodo(item, todos); return todo && todoName(todo); };
     return dutyFixes(board, dutyId, metrics, item => live ? live(chatId, item).catch(() => false) : Promise.resolve(false), flagged, goal, held);
   }

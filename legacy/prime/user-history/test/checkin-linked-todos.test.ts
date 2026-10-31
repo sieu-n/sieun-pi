@@ -19,19 +19,19 @@ const board = { v: 2, rev: 1, updatedAt: "2026-10-19T17:00:00Z", plan: [p5], tod
 const t6 = (done: boolean): OwnerTodo => ({ id: "t6", text: "One update window? It names p5 and p18 of its own plan.", done, from: "agent", at: "2026-10-19T16:30:00Z", step: "p5" });
 
 test("a wait naming another chat's id and todo id is a linked todo", () => {
-  assert.deepEqual(linkedTodoRefs(board.plan), [{ chat: other, id: "t6" }]);
-  assert.deepEqual(linkedTodoRefs([{ ...p5, waitFor: "chat-057a's t6", children: [{ ...p18, waitFor: "chat-057a's t6" }] }]), []);
+  assert.deepEqual(linkedTodoRefs(board.plan, []), [{ chat: other, id: "t6", holds: ["p5", "p18"] }]);
+  assert.deepEqual(linkedTodoRefs([{ ...p5, waitFor: "chat-057a's t6", children: [{ ...p18, waitFor: "chat-057a's t6" }] }], []), []);
 });
 
 test("an open todo of another chat that the goal waits on holds the goal, and a done one does not", () => {
-  const held = goalPushes(withLinkedTodos(board, [{ chat: other, todo: t6(false) }]), [], undefined, 30 * 60_000, now).pushes[0];
+  const held = goalPushes(withLinkedTodos(board, [{ chat: other, todo: t6(false) }], []), [], undefined, 30 * 60_000, now).pushes[0];
   assert.equal(held?.act, "owner");
-  const open = goalPushes(withLinkedTodos(board, [{ chat: other, todo: t6(true) }]), [], undefined, 30 * 60_000, now).pushes[0];
+  const open = goalPushes(withLinkedTodos(board, [{ chat: other, todo: t6(true) }], []), [], undefined, 30 * 60_000, now).pushes[0];
   assert.notEqual(open?.act, "owner");
 });
 
 test("a linked todo keeps only its id, so the other chat's step ids hold nothing here", () => {
-  const [todo] = withLinkedTodos(board, [{ chat: other, todo: t6(false) }]).todos;
+  const [todo] = withLinkedTodos(board, [{ chat: other, todo: t6(false) }], []).todos;
   assert.equal(todo?.step, undefined);
   assert.doesNotMatch(todo?.text ?? "", /\bp\d+\b/);
 });
@@ -50,17 +50,17 @@ const endOf = (item: PlanItem, board: ChatBoard): string => {
 };
 
 test("a step waiting on another thread's open todo is For you, and stuck again once that todo is done", () => {
-  assert.equal(endOf(p919, withLinkedTodos(harness([ownT11(true)]), [{ chat: breach, todo: signIn(false) }])), "foryou");
-  assert.equal(endOf(p919, withLinkedTodos(harness([ownT11(true)]), [{ chat: breach, todo: signIn(true) }])), "event");
+  assert.equal(endOf(p919, withLinkedTodos(harness([ownT11(true)]), [{ chat: breach, todo: signIn(false) }], [])), "foryou");
+  assert.equal(endOf(p919, withLinkedTodos(harness([ownT11(true)]), [{ chat: breach, todo: signIn(true) }], [])), "event");
 });
 
 test("this chat's own todo of the same id holds no wait on another thread's todo", () => {
-  assert.equal(heldByTodo(p919, withLinkedTodos(harness([ownT11(false)]), [{ chat: breach, todo: signIn(true) }]).todos), false);
+  assert.equal(heldByTodo(p919, withLinkedTodos(harness([ownT11(false)]), [{ chat: breach, todo: signIn(true) }], []).todos), false);
 });
 
 test("another thread's todo holds no bare wait on this chat's todo of the same id", () => {
   const own: PlanItem = { id: "p5", text: "Delete the old Slack app", status: "blocked", children: [], waitFor: "t11", sessionId: CHAT };
-  const board = withLinkedTodos(harness([ownT11(true)], [p919, own]), [{ chat: breach, todo: signIn(false) }]);
+  const board = withLinkedTodos(harness([ownT11(true)], [p919, own]), [{ chat: breach, todo: signIn(false) }], []);
   assert.equal(heldByTodo(own, board.todos), false);
   assert.equal(heldByTodo(p919, board.todos), true);
 });

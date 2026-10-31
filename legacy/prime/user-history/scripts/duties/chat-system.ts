@@ -927,7 +927,7 @@ async function main(): Promise<void> {
       return { chat: entry.chat.id, id, text: text(entry.chat.id, id) ?? "", ...waitsOn ? { waitsOn } : {} }; })
     : [{ chat: entry.chat.id, count: entry.value }]);
   const upkeep = plan.chats.filter(chat => !plan.pausedChats.has(chat.id)).flatMap(chat => planUpkeep(chat.id, plan.boards.get(chat.id) ?? null));
-  const fleet = await dutyFleet({ dataDir, now, sessions: daemonSessions });
+  const fleet = await dutyFleet({ dataDir, now, sessions: daemonSessions, chats: plan.chats });
   const runsOf = (chat: string, duty: string) => (runsByChat.get(chat) ?? []).filter(run => run.duty === duty);
   const wakes = await pendingWakes(join(dataDir, "wakes"), now);
   const store = new DutyStore(dataDir);
@@ -954,7 +954,7 @@ async function main(): Promise<void> {
     return { ...entry, ...waits.length && hides ? { windowWait: Math.max(...waits) } : {} };
   }));
   // A wait that names another chat's open todo holds its step, wherever that chat runs (`withLinkedBoards`).
-  const linked = (chat: string): ChatBoard | null => { const board = plan.boards.get(chat); return board ? withLinkedBoards(board, chat, plan.boards) : null; };
+  const linked = (chat: string): ChatBoard | null => { const board = plan.boards.get(chat); return board ? withLinkedBoards(board, chat, plan.boards, plan.chats) : null; };
   const goalGaps = plan.chats.map(chat => ({ chat: chat.id, goals: goalsWithNoJob(linked(chat.id),
     { now, named: plan.named.get(chat.id) ?? new Map(), jobs: jobs.get(chat.id) ?? [], activity: plan.ownerActivity, waking: plan.waking, poolWaiting: plan.poolWaiting,
       onHost: new Set(hostHeld.filter(step => step.chat === chat.id).map(step => step.id)) }) }));

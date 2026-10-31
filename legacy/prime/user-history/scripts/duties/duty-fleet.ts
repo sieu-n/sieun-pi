@@ -14,7 +14,7 @@ import { CHECK_IN_DUTY, CHECK_IN_DUTY_ID, headlineMetric, type DutyMetric, type 
 import { CHANGE_APPROACH_MISSES, effectiveRun, metricStreaks, missStreak, newestReading, type MetricStreak } from "../../src/shared/duty-streak.ts";
 import type { ChatBoard, ChildAgent, PlanItem, SessionRow } from "../../src/shared/types.ts";
 import { fixJobLive } from "../../src/shared/duty-fixes.ts";
-import { dutyHold, withBoardLinks } from "../../src/shared/todo-hold.ts";
+import { dutyHold, type NamedChat, withBoardLinks } from "../../src/shared/todo-hold.ts";
 import { pendingWakes } from "../../src/wakes.ts";
 import { countWindowMs } from "../../src/duty-push.ts";
 import { daemonList, listRows } from "../../src/daemon-list.ts";
@@ -237,7 +237,7 @@ function boardSteps(board: ChatBoard | null): { byId: Map<string, PlanItem>; lin
   return { byId, linked };
 }
 
-export async function dutyFleet(options: { dataDir: string; now: number; sessions: () => DaemonSession[] | Promise<DaemonSession[]> }): Promise<DutyFleet> {
+export async function dutyFleet(options: { dataDir: string; now: number; sessions: () => DaemonSession[] | Promise<DaemonSession[]>; chats: readonly NamedChat[] }): Promise<DutyFleet> {
   const { dataDir, now } = options;
   const ids = await ownerChats(dataDir);
   const store = new DutyStore(dataDir);
@@ -285,7 +285,7 @@ export async function dutyFleet(options: { dataDir: string; now: number; session
         // from p952 to p998, and d5's 21:24Z run, its newest for a day, kept naming p952, so d9 asked to replace a fix already replaced.
         const carries = (fix: FixLink, key: string): boolean => open(fix.step) && (board === null || byId.get(fix.step)?.duty === `${duty.id}/${key}`);
         if (entry.metric?.fix && !carries(entry.metric.fix, entry.metric.key)) delete entry.metric.fix;
-        held ??= board ? await withBoardLinks(board, id, other => boards.read(other)) : null;
+        held ??= board ? await withBoardLinks(board, id, other => boards.read(other), options.chats) : null;
         const hold = dutyHold(duty.id, streaks.map(item => item.key), held);
         if (hold) entry.held = hold;
         // Every red duty not held names its live fix, and only a long streak with none is stuck: at 02:13Z on 10-26 d9 listed api portal vp's
@@ -357,7 +357,7 @@ async function main(): Promise<void> {
   const sessionsFile = arg("--sessions");
   const loaded = sessionsFile ? parseLooseJson(await readFile(sessionsFile, "utf8")) as { sessions?: DaemonSession[] } | DaemonSession[] : undefined;
   const sessions = (): DaemonSession[] | Promise<DaemonSession[]> => loaded ? (Array.isArray(loaded) ? loaded : loaded.sessions ?? []) : daemonSessions();
-  process.stdout.write(JSON.stringify(await dutyFleet({ dataDir, now, sessions }), null, 2) + "\n");
+  process.stdout.write(JSON.stringify(await dutyFleet({ dataDir, now, sessions, chats: sessionRows(await Promise.resolve().then(sessions).catch((): DaemonSession[] => [])) }), null, 2) + "\n");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main();

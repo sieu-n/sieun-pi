@@ -26,7 +26,7 @@ test("the duty that reads duties_green_pct stays out of the share, so it can rea
     const store = new DutyStore(dataDir);
     await store.appendRun(harness, run("d9", "duties_green_pct", 98.3, 100, ">=", false, 1_000) as never);
     await store.appendRun(other, run("d1", "errors", 0, 0, "<=", true, 1_000) as never);
-    const fleet = await dutyFleet({ dataDir, now: 2_000, sessions: () => [] });
+    const fleet = await dutyFleet({ dataDir, now: 2_000, sessions: () => [], chats: [] });
     assert.equal(readsTheShare(d9), true);
     // The built-in check-ins have no run here, so they are pending and outside the share.
     assert.deepEqual(fleet.duties.filter(entry => entry.duty !== "checkin").map(entry => `${entry.chat}/${entry.duty}`), ["chat-other/d1"]);
@@ -46,7 +46,7 @@ test("an unreadable session list marks the fleet's session data missing and stil
     const store = new DutyStore(dataDir);
     for (let at = 1; at <= CHANGE_APPROACH_MISSES; at++) await store.appendRun(chat, run("d1", "errors", 5, 0, "<=", false, at * 1_000) as never);
     await store.appendRun(chat, run("d2", "ok", 1, 1, ">=", true, 1_000) as never);
-    const fleet = await dutyFleet({ dataDir, now: 10_000, sessions: () => { throw new Error(`reading the daemon's session list failed twice: ${HANDSHAKE}`); } });
+    const fleet = await dutyFleet({ dataDir, now: 10_000, sessions: () => { throw new Error(`reading the daemon's session list failed twice: ${HANDSHAKE}`); }, chats: [] });
     assert.match(fleet.sessionsMissing ?? "", /handshake/);
     assert.deepEqual(fleet.flagged.map(slice => slice.kind), ["fleet_data_missing"]);
     assert.equal(fleet.metrics.duties_green_pct, 50);
@@ -85,7 +85,7 @@ test("a duty red on skipped runs' measures alone names their missed metric and c
     await store.appendRun(chat, run("checkin", "stuck_steps", 0, 0, "<=", true, 1_000) as never);
     await store.appendRun(chat, skipped(3, 2_000) as never);
     await store.appendRun(chat, skipped(2, 3_000) as never);
-    const fleet = await dutyFleet({ dataDir, now: 4_000, sessions: () => [] });
+    const fleet = await dutyFleet({ dataDir, now: 4_000, sessions: () => [], chats: [] });
     const checkin = fleet.duties.find(entry => entry.duty === "checkin")!;
     assert.deepEqual([checkin.green, checkin.misses, checkin.skipped, checkin.metric?.key, checkin.metric?.value, checkin.metric?.misses, checkin.metric?.moved],
       [false, 2, true, "stuck_steps", 2, 2, true]);
@@ -111,7 +111,7 @@ test("a red duty's line counts the runs in a row its named metric missed, not th
       metrics: { needed_pct_24h: { value: needed, target: 90, op: ">=", met: needed >= 90 }, unlabeled_lines: { value: unlabeled, target: 0, op: "<=", met: unlabeled <= 0 } }, summary: "d11" });
     for (let at = 1; at <= 10; at++) await store.appendRun(chat, both(87, 0, at * 1_000) as never);
     await store.appendRun(chat, both(90.3, 1, 11_000) as never);
-    const fleet = await dutyFleet({ dataDir, now: 12_000, sessions: () => [] });
+    const fleet = await dutyFleet({ dataDir, now: 12_000, sessions: () => [], chats: [] });
     const entry = fleet.duties.find(item => item.duty === "d11")!;
     assert.deepEqual([entry.green, entry.metric?.key, entry.misses, missRuns(entry)], [false, "unlabeled_lines", 1, "1 run"]);
     assert.equal(fleet.metrics.stuck_duties, 0, "one miss of its metric is no stuck duty");
@@ -135,7 +135,7 @@ test("a recorded fix whose step no longer carries the duty link gives way to the
     for (let at = 1; at <= CHANGE_APPROACH_MISSES; at++) await store.appendRun(chat, { ...run("d5", "crawler_risks_firing", 1, 0, "<=", false, at * 1_000),
       fixes: { crawler_risks_firing: { step: "p952", job: "nvme0 and root disk writes root cause", live: true } } } as never);
     const sessions = [{ sessionId: root, activity: "working", lastActivityAt: new Date(now).toISOString() }];
-    const fleet = await dutyFleet({ dataDir, now, sessions: () => sessions });
+    const fleet = await dutyFleet({ dataDir, now, sessions: () => sessions, chats: [] });
     const d5 = fleet.duties.find(entry => entry.duty === "d5")!;
     assert.deepEqual([d5.fix, d5.metric?.fix?.step, d5.stuck], ["p998", "p998", false]);
   } finally { await rm(dataDir, { recursive: true, force: true }); }
@@ -155,7 +155,7 @@ test("a red duty one run old names the linked step whose job works, and a short 
     await store.appendRun(chat, run("d1", "probe_uptime_24h_pct", 99.9, 100, ">=", false, 1_000) as never);
     await store.appendRun(chat, run("d2", "prod_working_pct", 99.4, 100, ">=", false, 2_000) as never);
     const sessions = [{ sessionId: root, activity: "working", lastActivityAt: new Date(now).toISOString() }];
-    const fleet = await dutyFleet({ dataDir, now, sessions: () => sessions });
+    const fleet = await dutyFleet({ dataDir, now, sessions: () => sessions, chats: [] });
     const d1 = fleet.duties.find(entry => entry.duty === "d1")!, d2 = fleet.duties.find(entry => entry.duty === "d2")!;
     assert.deepEqual([d1.fix, d1.stuck, d2.fix, d2.stuck, fleet.metrics.stuck_duties], ["p71", false, undefined, false, 0]);
   } finally { await rm(dataDir, { recursive: true, force: true }); }

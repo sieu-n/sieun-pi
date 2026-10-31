@@ -27,7 +27,7 @@ async function fleetAt(now: number) {
     await writeFile(join(dataDir, "duties", `${chat}.json`), JSON.stringify({ version: 1, duties: [D10] }));
     const store = new DutyStore(dataDir);
     for (let i = CHANGE_APPROACH_MISSES + 1; i > 0; i--) await store.appendRun(chat, { ...RUN, at: RUN.at - i * 3_600_000, slot: RUN.at - i * 3_600_000 } as never);
-    return (await dutyFleet({ dataDir, now, sessions: () => [] })).duties.find(entry => entry.duty === "d10")!;
+    return (await dutyFleet({ dataDir, now, sessions: () => [], chats: [] })).duties.find(entry => entry.duty === "d10")!;
   } finally { await rm(dataDir, { recursive: true, force: true }); }
 }
 

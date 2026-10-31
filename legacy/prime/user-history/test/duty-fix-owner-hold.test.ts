@@ -24,7 +24,7 @@ const signIn = (done: boolean): OwnerTodo => ({ id: "t11", text: "Sign fhnyq29tw
 const ownT11: OwnerTodo = { id: "t11", text: "Delete the old Slack app?", done: true, from: "agent", at: "2026-10-08T07:46:05Z", reply: "just delete now" };
 const board = (plan: PlanItem[], todos: OwnerTodo[] = [ownT11]): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-10-23T03:00:00Z", plan, todos });
 const breach = (done: boolean): ChatBoard => board([], [signIn(done)]);
-const linked = (plan: PlanItem[], done = false, todos?: OwnerTodo[]) => withLinkedBoards(board(plan, todos), HARNESS, new Map([[BREACH, breach(done)]]));
+const linked = (plan: PlanItem[], done = false, todos?: OwnerTodo[]) => withLinkedBoards(board(plan, todos), HARNESS, new Map([[BREACH, breach(done)]]), []);
 
 test("the duty run's fix link carries the todo that holds its open fix step", async () => {
   const todos = linked([p919]).todos;

@@ -21,7 +21,7 @@ const board = (todos: OwnerTodo[], plan: PlanItem[] = []): ChatBoard => ({ v: 2,
 const ci = board([keyLock], [p420]);
 const self = new Set([CI, "CI and RepoOps"]);
 const met = (others: Map<string, ChatBoard | null>) =>
-  waitsMet([stepView(p420, now - 3_600_000, self, [], [], [], now)], withLinkedBoards(ci, CI, others), [], self, others).map(({ view, over }) => [view.item.id, over]);
+  waitsMet([stepView(p420, now - 3_600_000, self, [], [], [], now)], withLinkedBoards(ci, CI, others, []), [], self, others).map(({ view, over }) => [view.item.id, over]);
 
 test("p420's wait on another chat's open t17 is not over, though this chat's own t17 is done", () => {
   assert.deepEqual(met(new Map([[TYPESAFE, board([topUp(false)])]])), []);
@@ -48,10 +48,10 @@ test("waitRefs ties each form of another chat's id to that chat, and leaves a pl
 });
 
 test("d9's linked todos read the same forms, and this chat's own t17 holds no wait on another chat's t17", async () => {
-  assert.deepEqual(linkedTodoRefs([p420]), [{ chat: TYPESAFE, id: "t17" }]);
-  assert.deepEqual(linkedTodoRefs([{ ...p420, waitFor: `${SEP} t30` }]), [{ chat: SEP, id: "t30" }]);
-  const others = await linkedBoards(ci, CI, async chat => chat === TYPESAFE ? board([topUp(false)]) : null);
+  assert.deepEqual(linkedTodoRefs([p420], []), [{ chat: TYPESAFE, id: "t17", holds: ["p420"] }]);
+  assert.deepEqual(linkedTodoRefs([{ ...p420, waitFor: `${SEP} t30` }], []), [{ chat: SEP, id: "t30", holds: ["p420"] }]);
+  const others = await linkedBoards(ci, CI, async chat => chat === TYPESAFE ? board([topUp(false)]) : null, []);
   assert.deepEqual([...others.keys()], [TYPESAFE]);
-  assert.equal(heldByTodo(p420, withLinkedBoards(ci, CI, others).todos), true);
+  assert.equal(heldByTodo(p420, withLinkedBoards(ci, CI, others, []).todos), true);
   assert.equal(heldByTodo(p420, board([{ id: "t17", text: keyLock.text, done: false, from: "agent", at: keyLock.at }]).todos), false);
 });
