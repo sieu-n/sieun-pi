@@ -28,7 +28,8 @@ import { type Reading, defaultContext, describe, hostMatcher, liveStopSource, re
  * day (p468: p456's 41 kills up to 16:52Z on 10-19 kept it at 41 until 16:52Z on 10-20). oom_kills_explained counts the kills left out.
  * orphan_processes counts the processes on us-metal02 whose owning Prime session ended over 1 h ago, read before this run stops them
  * (src/orphan-reaper.ts, p661): on 10-28 a Mac job's Chrome driver ran 2 days after its job ended and made 2,320 staging Convex failures.
- * orphan_processes_unknown counts the processes left by their parent that name no owner, which the run lists and never stops (p664).
+ * orphan_processes_unknown in the run detail counts the processes left by their parent that name no owner, which the run lists, one orphan_unknown
+ * line per group, and never stops (p664).
  * The owner, 10-18: standing risks live on a risk page that a duty checks, not on the plan.
  */
 
