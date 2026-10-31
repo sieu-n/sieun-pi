@@ -55,7 +55,8 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.du
  * - canary_accounts_short: the owner, 10-12 13:33Z, "ALWAYS RUN ~10% account as CANARY"; CANARY_SHARE below.
  * - staging_due_wait_min: staging stays a working test bed, so a due staging collab read starts within STAGING_WAIT_MIN. The owner keeps about
  *   10 monitored accounts on staging (t17, 10-12), so staging reads come in bursts hours apart by design, and the time since the last read
- *   says nothing; the wait of the oldest due, unpaused, unclaimed tagged row does. The 60 min is the launch VP's number, not the owner's.
+ *   says nothing; the wait of the oldest due, unpaused, unclaimed tagged row does, counted from its due time or its last settled claim
+ *   (STAGING_DUE_SQL). The 60 min is the launch VP's number, not the owner's.
  * - A source that failed fails the run: every metric it feeds (FEEDS below) reads unmeasured() and a source_error flag names it.
  * The schedule is daily (owner rule c66). The duty's timeoutMs 120000 is the runner's soft target, PRECHECK_TARGET_MS in src/shared/chat-duties.ts.
  */
@@ -546,9 +547,16 @@ export function stuckOf(tsv: string): StuckAccount[] {
   return stuck;
 }
 
-/** The oldest due staging collab read, as stagingDueOf parses it: tagged rows past next_due_at, unpaused and with no open claim. */
-export const STAGING_DUE_SQL = `select count(*) as due, coalesce(round((extract(epoch from now() - min(w.next_due_at)) / 60)::numeric, 1), 0) as wait_min
-from watch_targets w where w.platform = 'instagram' and w.kind = 'tagged' and not w.paused and w.next_due_at < now()
+/**
+ * The oldest due staging collab read, as stagingDueOf parses it: tagged rows past next_due_at, unpaused and with no open claim. A row waits from
+ * its due time or its last settled claim, whichever is later, because a walk chunk settles due again at once and keeps the walk's first due time
+ * as next_due_at until the walk ends. On staging 10-31 00:2xZ viralnation kept next_due_at 10-28 20:11 after an ok chunk at 10-30 20:38, so the
+ * plain next_due_at read 3,115 min where the longest real wait was 1,782 min.
+ */
+export const STAGING_DUE_SQL = `select count(*) as due, coalesce(round((extract(epoch from now() - min(greatest(w.next_due_at, s.settled_at))) / 60)::numeric, 1), 0) as wait_min
+from watch_targets w left join lateral (select max(c.settled_at) as settled_at from watch_target_claims c
+  where c.platform = w.platform and c.kind = w.kind and c.target = w.target) s on true
+where w.platform = 'instagram' and w.kind = 'tagged' and not w.paused and w.next_due_at < now()
   and not exists (select 1 from watch_target_claims c where c.platform = w.platform and c.kind = w.kind and c.target = w.target and c.settled_at is null)`;
 
 export function stagingDueOf(rows: Record<string, unknown>[]): StagingDue {
