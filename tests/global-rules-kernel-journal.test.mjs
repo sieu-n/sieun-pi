@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 // On 10-29 three auto-sns-agent commits (250b096c5, 7d5726a419, f856a11257) took other sessions' hunks, because the edit skill, open() in a cell
@@ -257,4 +257,76 @@ assert open(c + "/src/quiet.txt").read() == "two"
 `);
   assert.equal(readFileSync(join(checkout, "src/loud.txt"), "utf8"), "one");
   rmSync(join(checkout, ".cache"), { recursive: true, force: true });
+});
+
+test("a convex/ save queues the checkout's Convex save check, and a later cell's prelude prints its result once", async () => {
+  reset();
+  const script = join(checkout, "scripts/repo/agent/convex-save-check.mjs");
+  mkdirSync(dirname(script), { recursive: true });
+  // The stub stands in for auto-sns-agent's runner and take: run turns the queue into result.json, take prints it once.
+  writeFileSync(script, `import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+const [cmd, , root, , session] = process.argv.slice(2);
+const dir = root + "/.cache/convex-save-check/" + session;
+if (cmd === "run") { renameSync(dir + "/queue", dir + "/q"); writeFileSync(dir + "/result.json", readFileSync(dir + "/q", "utf8")); rmSync(dir + "/q"); }
+else if (existsSync(dir + "/result.json")) { console.log("convex save check: broken in " + readFileSync(dir + "/result.json", "utf8").trim().split("\\n").join(",")); rmSync(dir + "/result.json"); }
+`);
+  const folder = join(checkout, ".cache/convex-save-check", session);
+  try {
+    kernel(`
+c = ${JSON.stringify(checkout)}
+open(c + "/convex/a.ts", "w").write("export const a = 1;\\n") if __import__("os").makedirs(c + "/convex", exist_ok=True) is None else None
+open(c + "/convex/_generated/api.d.ts", "w").write("x") if __import__("os").makedirs(c + "/convex/_generated", exist_ok=True) is None else None
+open(c + "/src/b.ts", "w").write("b")
+`, { GLOBAL_RULES_AUTO_SNS_AGENT: checkout });
+    while (!existsSync(join(folder, "result.json"))) await new Promise((resolve) => setTimeout(resolve, 20));
+    const next = kernel("x = 1\n", { GLOBAL_RULES_AUTO_SNS_AGENT: checkout });
+    assert.equal(next.stderr, "convex save check: broken in convex/a.ts\n");
+    assert.equal(kernel("x = 2\n", { GLOBAL_RULES_AUTO_SNS_AGENT: checkout }).stderr, "");
+    assert.deepEqual(journal().map((r) => r.path), ["convex/a.ts", "convex/_generated/api.d.ts", "src/b.ts"]);
+  } finally {
+    rmSync(join(checkout, "scripts"), { recursive: true, force: true });
+    rmSync(join(checkout, "convex"), { recursive: true, force: true });
+  }
+});
+
+test("a convex/ write over ssh that the box queued a check for is asked for its result at each later cell until the box has it", () => {
+  reset();
+  const bin = join(root, "fake-ssh-take-bin");
+  const calls = join(root, "ssh-take-calls.jsonl");
+  const takes = join(root, "takes");
+  mkdirSync(bin, { recursive: true });
+  rmSync(takes, { force: true });
+  writeFileSync(join(bin, "ssh"), `#!/usr/bin/env python3
+import json, os, sys
+open(${JSON.stringify(calls)}, "a").write(json.dumps(sys.argv[1:]) + "\\n")
+script = sys.argv[-1]
+if "journal.mjs" in script:
+    print("queued the Convex type check of convex/x.ts" if "/convex/" in script else "")
+    print("recorded 1 write(s)")
+elif "convex-save-check.mjs" in script:
+    n = len(open(${JSON.stringify(takes)}).read()) if os.path.exists(${JSON.stringify(takes)}) else 0
+    open(${JSON.stringify(takes)}, "a").write("x")
+    if n == 0:
+        sys.exit(3)
+    print("convex save check: this save breaks the local Convex push for every job on this box.")
+`);
+  writeFileSync(join(bin, "scp"), "#!/bin/sh\nexit 0\n");
+  for (const name of ["ssh", "scp"]) chmodSync(join(bin, name), 0o755);
+  const repo = "/home/sieun/Documents/Github/auto-sns-agent";
+  rmSync(calls, { force: true });
+  const run = kernel(`
+import subprocess, sys
+subprocess.run(["scp", "/tmp/x.ts", "us-metal02:${repo}/convex/x.ts"], check=True)
+subprocess.run(["scp", "/tmp/y.ts", "far:${repo}/apps/y.ts"], check=True)
+print("cell 2", file=sys.stderr)
+${PRELUDE.trim()}
+print("cell 3", file=sys.stderr)
+${PRELUDE.trim()}
+print("cell 4", file=sys.stderr)
+${PRELUDE.trim()}
+`, { PATH: `${bin}:${process.env.PATH}` });
+  assert.equal(run.stderr, "cell 2\ncell 3\nconvex save check: this save breaks the local Convex push for every job on this box.\ncell 4\n");
+  const asked = readFileSync(calls, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((argv) => argv.at(-1).includes("convex-save-check.mjs"));
+  assert.deepEqual(asked, Array(2).fill(["-o", "BatchMode=yes", "us-metal02",
+    `exec "\${SHELL:-sh}" -lc 'r=$(git -C "$(dirname ${repo}/convex/x.ts)" rev-parse --show-toplevel) && exec node "$r/scripts/repo/agent/convex-save-check.mjs" take --root "$r" --session ${session}'`]));
 });

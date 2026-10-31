@@ -16,6 +16,12 @@ the nearest folder D above the file's realpath with a .git folder whose .git/age
 the last /session-artifacts/<id>/harness in RLM_HARNESS_STATE_DIR, else CLAUDE_CODE_SESSION_ID or CODEX_THREAD_ID when only one is set, as in
 journal.mjs agentId; with none this file records nothing. The prelude in kernel-guard.ts runs it once per kernel, and python-child/sitecustomize.py
 once per Python a kernel starts. A journal failure prints one line to stderr and leaves the write alone.
+
+3. A write of a convex/ source file also queues that checkout's scripts/repo/agent/convex-save-check.mjs, the Convex type check the local
+   watcher runs before each push, and a remote record that answers `queued the Convex type check` marks that box as owing a result. The
+   check runs detached, since one file took 33 s at load 64 to 83 on us-metal02 on 10-31, and the prelude's call to report() at each cell
+   prints its result once: `take` in the checkout for a local write, over ssh for a remote one. One broken uncommitted convex/ save stops the
+   watcher's push for every job on the box, which happened at least 9 times from 10-30 11:43Z to 10-31 06:00Z.
 """
 
 import builtins
@@ -24,6 +30,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -224,10 +231,59 @@ def record(target) -> None:
             os.write(fd, line.encode("utf-8"))
         finally:
             os.close(fd)
+        if CONVEX_SOURCE.match(path):
+            request_check(root, path)
     except Exception as error:
         warn(f"global-rules: could not journal the write to {target[2]}: {error}")
     finally:
         busy.on = False
+
+
+# The convex/ sources the watcher type checks, as convex-typecheck.mjs CONVEX_TS names them.
+CONVEX_SOURCE = re.compile(r"^convex/(?!_generated/).*\.(?:ts|tsx|mts|cts)$")
+SAVE_CHECK = os.path.join("scripts", "repo", "agent", "convex-save-check.mjs")
+checked_roots: set = set()
+# The box's shared checkout, where a convex/ save by a Python this kernel started queues its check.
+DEFAULT_CHECKOUT = os.environ.get("GLOBAL_RULES_AUTO_SNS_AGENT") or os.path.expanduser("~/Documents/Github/auto-sns-agent")
+pending_remote: dict = {}
+
+
+def check_dir(root: str) -> str:
+    return os.path.join(root, ".cache", "convex-save-check", SESSION)
+
+
+def runner_live(folder: str) -> bool:
+    try:
+        with io.FileIO(os.path.join(folder, "running", "pid")) as handle:
+            pid = int(handle.read().decode().strip())
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def request_check(root: str, path: str) -> None:
+    """Queues a convex/ save for the checkout's convex-save-check.mjs and starts its detached runner unless one is live, as requestCheck does."""
+    script = os.path.join(root, SAVE_CHECK)
+    if not os.path.exists(script):
+        return
+    node = shutil.which("node")
+    if node is None:
+        warn(f"global-rules: no node on PATH, so the Convex type check of {path} did not start")
+        return
+    folder = check_dir(root)
+    os.makedirs(folder, exist_ok=True)
+    fd = _os_open(os.path.join(folder, "queue"), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, (path + "\n").encode("utf-8"))
+    finally:
+        os.close(fd)
+    checked_roots.add(root)
+    if not runner_live(folder):
+        subprocess.Popen([node, script, "run", "--root", root, "--session", SESSION], cwd=root, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
 
 
 def stamp(raw):
@@ -403,6 +459,58 @@ def record_command(destination: str, options: tuple, paths: list) -> list:
     return ["ssh", "-o", "BatchMode=yes", *options, destination, f'exec "${{SHELL:-sh}}" -lc {shlex.quote(script)}']
 
 
+def take_command(destination: str, options: tuple, path: str) -> list:
+    """The ssh argv that asks the box for this session's newest Convex save check result, in the checkout that holds the path."""
+    script = (f'r=$(git -C "$(dirname {remote_word(path)})" rev-parse --show-toplevel) && exec node "$r/{SAVE_CHECK}" take --root "$r" '
+              f"--session {shlex.quote(SESSION)}")
+    return ["ssh", "-o", "BatchMode=yes", *options, destination, f'exec "${{SHELL:-sh}}" -lc {shlex.quote(script)}']
+
+
+STILL_RUNNING = 3
+
+
+def take_local(root: str) -> None:
+    folder = check_dir(root)
+    if runner_live(folder) or not (os.path.exists(os.path.join(folder, "result.json")) or os.path.exists(os.path.join(folder, "queue"))):
+        return
+    run = subprocess.run([shutil.which("node") or "node", os.path.join(root, SAVE_CHECK), "take", "--root", root, "--session", SESSION],
+                         capture_output=True, text=True, stdin=subprocess.DEVNULL, check=False)
+    if run.stdout.strip():
+        warn(run.stdout.rstrip())
+    elif run.returncode not in (0, STILL_RUNNING):
+        warn(f"global-rules: the Convex save check result in {root} could not be read: {(run.stderr.strip().splitlines() or [f'exit {run.returncode}'])[-1]}")
+
+
+def take_remote(destination: str, options: tuple, path: str) -> None:
+    run = subprocess.run(take_command(destination, options, path), capture_output=True, text=True, stdin=subprocess.DEVNULL, check=False)
+    if run.returncode == STILL_RUNNING:
+        return
+    del pending_remote[(destination, options)]
+    if run.stdout.strip():
+        warn(run.stdout.rstrip())
+    elif run.returncode != 0:
+        warn(f"global-rules: {destination} did not answer the Convex save check: {(run.stderr.strip().splitlines() or [f'exit {run.returncode}'])[-1]}")
+
+
+def report() -> None:
+    """Prints each Convex save check result this session owes, once. The prelude calls it before each cell; with nothing queued it costs a
+    few stat calls, and a remote box is asked over ssh only while it owes a result."""
+    if not SESSION or getattr(busy, "on", False):
+        return
+    busy.on = True
+    try:
+        if not checked_roots:
+            checked_roots.add(checkout_of(os.path.realpath(DEFAULT_CHECKOUT)) or "")
+        for root in {found for found in checked_roots | set(roots.values()) if found}:
+            take_local(root)
+        for (destination, options), path in list(pending_remote.items()):
+            take_remote(destination, options, path)
+    except Exception as error:
+        warn(f"global-rules: the Convex save check report failed: {error}")
+    finally:
+        busy.on = False
+
+
 def record_remote(writes: list) -> None:
     """Has each box record the paths written there. A failure prints one line and lets the command's result stand."""
     if getattr(busy, "on", False):
@@ -419,6 +527,8 @@ def record_remote(writes: list) -> None:
                 if run.returncode != 0:
                     detail = (run.stderr.strip().splitlines() or [f"exit {run.returncode}"])[-1]
                     warn(f"global-rules: {destination} did not journal {', '.join(paths)}: {detail}")
+                elif "queued the Convex type check" in run.stdout:
+                    pending_remote[(destination, options)] = paths[0]
             except Exception as error:
                 warn(f"global-rules: {destination} did not journal {', '.join(paths)}: {error}")
     finally:
@@ -487,6 +597,7 @@ def journaling_system(original):
 def install() -> None:
     if not SESSION or getattr(builtins.open, "journals_writes", False):
         return
+    sys.global_rules_convex_report = report
     builtins.open = io.open = journaling_open(builtins.open)
     for name in ("replace", "rename"):
         setattr(os, name, journaling_move(getattr(os, name)))
