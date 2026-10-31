@@ -22,6 +22,7 @@ catalog, status and relay paths that stay open.
 Code in a sieun-pi tree, a skill folder or the Prime release passes, so the board module, agent_observe, resume_paused.py and the d7, d9
 and d10 prechecks still read what they read. Listing a folder (ls, find without a reader, os.listdir) and counting lines (wc) pass too,
 since they show catalog metadata and no content. With no RLM_SESSION_DIR below session-artifacts (CI, a person's shell) nothing is judged.
+A pi-host durable conversation's folder counts too, and its family is its thread (family_root).
 Each refusal is one JSON line in ~/.prime/agent/logs/transcript-refusals.jsonl.
 """
 
@@ -108,6 +109,21 @@ def folder_of(session_dir: str) -> str:
 
 def under(path: str, root: str) -> bool:
     return path == root or path.startswith(root + os.sep)
+
+
+# A pi-host durable conversation's kernel folder is <agent dir>/pi-host/durable/session-artifacts/<thread>-<conversation>, and all the
+# conversations of one thread are one family, named by the thread id (p1331, 11-01).
+DURABLE = re.compile(r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-\d+$")
+
+
+def family_root(folder: str) -> str:
+    """The root that names a session folder's family: the folder after session-artifacts/, or a durable conversation's thread; "" for none."""
+    if not folder:
+        return ""
+    if under(folder, ARTIFACTS) and folder != ARTIFACTS:
+        return os.path.relpath(folder, ARTIFACTS).split(os.sep)[0]
+    match = DURABLE.match(os.path.basename(folder))
+    return match.group(1) if match and os.path.basename(os.path.dirname(folder)) == "session-artifacts" else ""
 
 
 def prime_of(real: str):
@@ -305,7 +321,7 @@ def in_family(path: str, sid: str, folder: str) -> bool:
     if not folder:
         return True
     real = os.path.realpath(path)
-    mine = os.path.relpath(folder, ARTIFACTS).split(os.sep)[0]
+    mine = family_root(folder)
     theirs = root_of(real, sid)
     if theirs == mine or chat_of(theirs, False) == chat_of(mine, False):
         return True
@@ -335,7 +351,7 @@ def outside_in(directory: str, folder: str):
 
 
 def allowed_paths(folder: str) -> str:
-    mine = os.path.relpath(folder, ARTIFACTS).split(os.sep)[0] if folder else ""
+    mine = family_root(folder)
     chat = chat_of(mine, False) if mine else ""
     return (f"the transcripts of its own chat {chat}: the chat, its jobs and their subagents under {os.path.join(ARTIFACTS, chat)}, "
             "and the root jobs that chat started") if chat else "its own chat's transcripts"
@@ -573,7 +589,7 @@ def any_tool_frame() -> bool:
 
 
 FOLDER = folder_of(os.environ.get("RLM_SESSION_DIR", ""))
-ACTIVE = bool(FOLDER) and under(FOLDER, ARTIFACTS) and FOLDER != ARTIFACTS
+ACTIVE = bool(family_root(FOLDER))
 _open = builtins.open
 _os_open = os.open
 
@@ -671,7 +687,7 @@ def judge_tool(request: dict):
     """The tool_call half (transcript-guard.ts): the reason to refuse a `read`, `grep` or `bash` tool call, or None."""
     _fresh["done"] = False
     folder = folder_of(request.get("session", ""))
-    if not folder or not under(folder, ARTIFACTS) or folder == ARTIFACTS:
+    if not family_root(folder):
         return None
     cwd = request.get("cwd") or os.getcwd()
     if request.get("tool") == "bash":

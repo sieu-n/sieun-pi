@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { sessionDirOf } from "./paths.ts";
+import { contextSessionDir, sessionDirOf } from "./paths.ts";
 import { PY_STRING, balancedSlice } from "./shell.ts";
 
 /*
@@ -23,7 +23,11 @@ export { sessionDirOf };
 
 /** The cwd the session's live kernel last reported, or null when there is no report, its kernel is gone or it came from another host. */
 export function kernelCwd(sessionFile: string | null | undefined): string | null {
-	const dir = sessionDirOf(sessionFile);
+	return kernelCwdIn(sessionDirOf(sessionFile));
+}
+
+/** The cwd the live kernel of the kernel folder `dir` last reported, or null. */
+function kernelCwdIn(dir: string | null): string | null {
 	if (!dir) return null;
 	try {
 		const report = JSON.parse(readFileSync(join(dir, KERNEL_CWD_FILE), "utf8")) as { pid?: unknown; host?: unknown; cwd?: unknown };
@@ -35,8 +39,6 @@ export function kernelCwd(sessionFile: string | null | undefined): string | null
 	}
 }
 
-type CtxLike = { cwd?: string; sessionManager?: { getSessionFile?(): string | null | undefined } } | null | undefined;
-
 /** Where an ipython cell starts: the kernel's reported cwd, else ctx.cwd, else this process's cwd. A stale ctx throws on every read. */
 export function cellStart(ctx: unknown): string {
 	const read = <T>(get: () => T): T | undefined => {
@@ -46,8 +48,7 @@ export function cellStart(ctx: unknown): string {
 			return undefined;
 		}
 	};
-	const c = ctx as CtxLike;
-	return kernelCwd(read(() => c?.sessionManager?.getSessionFile?.())) ?? read(() => c?.cwd) ?? process.cwd();
+	return kernelCwdIn(read(() => contextSessionDir(ctx)) ?? null) ?? read(() => (ctx as { cwd?: string } | null | undefined)?.cwd) ?? process.cwd();
 }
 
 const expandHome = (p: string) => p.replace(/^(?:~|\$HOME|\$\{HOME\})(?=\/|$)/, homedir());

@@ -38,3 +38,13 @@ export function sessionDirOf(sessionFile: string | null | undefined, sessionId?:
 	if (!piId) return basename(dir) === "sessions" ? join(dirname(dir), "session-artifacts", basename(sessionFile, ".jsonl")) : null;
 	return join(piAgentDir(), "session-artifacts", sessionId || piId);
 }
+
+/**
+ * The kernel folder of an extension context: `ctx.rlmSessionDir` when the host names it, as pi-host's durable threads do, whose thread file is
+ * no transcript, else the folder of the transcript (sessionDirOf).
+ */
+export function contextSessionDir(ctx: unknown): string | null {
+	const c = ctx as { rlmSessionDir?: unknown; sessionManager?: { getSessionFile?(): string | null | undefined; getSessionId?(): string | null | undefined } } | null | undefined;
+	if (typeof c?.rlmSessionDir === "string" && c.rlmSessionDir) return c.rlmSessionDir;
+	return sessionDirOf(c?.sessionManager?.getSessionFile?.(), c?.sessionManager?.getSessionId?.());
+}

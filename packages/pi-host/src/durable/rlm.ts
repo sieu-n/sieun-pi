@@ -44,7 +44,7 @@ import { Kernel, KernelBusyError, relayPaths, type CellResult, type HostRequest,
 import { BUS_SKILLS, kernelPython, pythonSkillOf, RLM_SKILLS, RUNTIME_SRC, type PythonSkill } from "../../../pi-rlm/src/core/python.ts";
 import { NOTE_INTERVAL_MS } from "../../../pi-rlm/src/pi/children.ts";
 import piRlm, { baseEnv, BUSY_NO_UI, formatCell, KERNEL_RESET, noticeMessage, restoreLine, SNAPSHOT_LIMITS, STILL_RUNNING, type Notice } from "../../../pi-rlm/src/pi/index.ts";
-import { JOURNAL_CHILD_DIR, JOURNAL_PRELUDE } from "../../../sieun-rules/src/kernel-guard.ts";
+import { withKernelGuard } from "../../../sieun-rules/src/kernel-guard.ts";
 import { enabled } from "../../../sieun-rules/src/log.ts";
 import { conversationHarnessDir, dropAgentRole, harnessSessionOf, threadAgent } from "./agent-profile.ts";
 import { CHAT_URL_ENV, DEFAULT_CHAT_URL } from "./chat-app.ts";
@@ -212,11 +212,11 @@ export async function loadIpythonTool(): Promise<PiTool> {
 }
 
 /**
- * Whether a durable kernel journals its writes into a shared auto-sns-agent checkout, as sieun-rules' prelude makes a Prime kernel do (p1330).
- * A durable thread runs none of sieun-rules' tool_call handlers, so the kernel loads kernel-journal.py from JOURNAL_CHILD_DIR's sitecustomize,
- * and each cell starts with JOURNAL_PRELUDE. `GLOBAL_RULES_GUARD=off` turns it off, as it turns off Prime's prelude.
+ * Whether each cell starts with sieun-rules' kernel prelude, as kernel-guard.ts's tool_call handler starts a Prime cell (p1330, p1331): the run-time
+ * send guard (c37), the cwd report, the ~/scratch owner record, the transcript guard and the write journal, in the kernel and every Python it
+ * starts. The prelude goes to the kernel only, so the thread keeps the cell as the model wrote it. `GLOBAL_RULES_GUARD=off` turns it off.
  */
-const journalOn = (): boolean => enabled("GLOBAL_RULES_GUARD");
+const guardOn = (): boolean => enabled("GLOBAL_RULES_GUARD");
 
 /** Kills a relay a previous pi-host left for this socket and waits until it is gone. */
 async function killLeftover(socket: string): Promise<boolean> {
@@ -332,9 +332,8 @@ export class DurableRlm {
     }
     const sep = process.platform === "win32" ? ";" : ":";
     const env = baseEnv();
-    const journal = journalOn();
     Object.assign(env, {
-      PYTHONPATH: [journal ? JOURNAL_CHILD_DIR : "", RUNTIME_SRC, ...skills.map(s => s.src), env.PYTHONPATH].filter(Boolean).join(sep),
+      PYTHONPATH: [RUNTIME_SRC, ...skills.map(s => s.src), env.PYTHONPATH].filter(Boolean).join(sep),
       PYTHONUNBUFFERED: "1",
       ...ownerTag(slot.thread.id, [binDir, env.PATH].filter(Boolean).join(sep), sep),
       RLM_SESSION_DIR: slot.artifactDir,
@@ -404,7 +403,7 @@ export class DurableRlm {
       let r: CellResult;
       try {
         const code = String(params.code ?? "");
-        r = await start.kernel.execute(journalOn() ? JOURNAL_PRELUDE + code : code, {
+        r = await start.kernel.execute(guardOn() ? withKernelGuard(code) ?? code : code, {
           ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
           onStream: text => {
             if (text.startsWith(streamed) && text.length > streamed.length) api.output(text.slice(streamed.length));

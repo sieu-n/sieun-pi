@@ -62,18 +62,6 @@ if _convex_report:
 /** One line, so the cell's own line numbers in a traceback move by one. */
 export const PRELUDE = `exec(compile(${JSON.stringify(PRELUDE_SOURCE)}, "<global-rules send guard>", "exec"), {})\n`;
 
-/**
- * The write journal alone, for a runtime that runs none of this extension's tool_call handlers: pi-host's durable threads (p1330, 11-01).
- * JOURNAL_CHILD_DIR goes first on the kernel's PYTHONPATH, so its sitecustomize.py loads kernel-journal.py in the kernel and in every Python
- * the kernel starts, and JOURNAL_PRELUDE goes before each cell, so the cell prints a queued Convex save check's result as PRELUDE's end does.
- */
-export const JOURNAL_CHILD_DIR = join(HERE, "python-journal");
-export const JOURNAL_PRELUDE = `exec(compile(${JSON.stringify(`import sys
-_convex_report = getattr(sys, "global_rules_convex_report", None)
-if _convex_report:
-    _convex_report()
-`)}, "<global-rules write journal>", "exec"), {})\n`;
-
 export function withKernelGuard(code: unknown): string | undefined {
 	if (typeof code !== "string" || code.startsWith(PRELUDE)) return undefined;
 	return PRELUDE + code;

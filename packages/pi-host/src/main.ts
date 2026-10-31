@@ -16,6 +16,7 @@ import { durableSettings, TurnQueue } from "@sieun-pi/pi-pool/durable";
 import { DurableCommands, DurableThreads } from "./durable/index.ts";
 import { durableModels } from "./durable/models.ts";
 import { loadPrimeChat, type PrimeChat } from "./durable/prime-chat.ts";
+import { DurableRules } from "./durable/rules.ts";
 import { promptTools } from "./durable/prime-prompt.ts";
 import { DurableRlm } from "./durable/rlm.ts";
 import { fileURLToPath } from "node:url";
@@ -88,6 +89,13 @@ if (!values["no-durable"] && process.env.PI_HOST_RLM !== "0") {
   rlm = await DurableRlm.load({ agentDir, log: line => process.stderr.write(`${line}\n`) })
     .catch(error => { process.stderr.write(`durable ipython failed to load: ${error instanceof Error ? error.stack : String(error)}\n`); return undefined; });
 }
+// sieun-rules' send, repo and transcript guards around every durable tool call, as every Prime session has them (p1331). PI_HOST_RULES=0
+// leaves them out, and a failed load leaves them out too, which the host log says.
+let rules: DurableRules | undefined;
+if (!values["no-durable"] && process.env.PI_HOST_RULES !== "0") {
+  rules = await DurableRules.load({ log: line => process.stderr.write(`${line}\n`) })
+    .catch(error => { process.stderr.write(`durable sieun-rules failed to load: ${error instanceof Error ? error.stack : String(error)}\n`); return undefined; });
+}
 const durable = values["no-durable"] ? undefined : new DurableCommands(new DurableThreads({
   dir: values["durable-dir"] ? resolve(values["durable-dir"]) : join(dataDir, "durable"),
   models: threadId => durableModels(threadId, { agentDir, turns }),
@@ -104,6 +112,7 @@ const durable = values["no-durable"] ? undefined : new DurableCommands(new Durab
   prompt: { agentDir, tools: promptTools() },
   ...(chat ? { chat } : {}),
   ...(rlm ? { rlm } : {}),
+  ...(rules ? { rules } : {}),
   log: line => host.log(line),
 }));
 

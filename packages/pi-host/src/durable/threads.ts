@@ -34,6 +34,7 @@ import { SPEAKING_TOOLS, type PrimeChat } from "./prime-chat.ts";
 import { PrimeRoots } from "./prime-roots.ts";
 import { jobTitle } from "./job-title.ts";
 import { rlmChildName, type DurableRlm, type PiRootView, type RlmThread, type RootRow } from "./rlm.ts";
+import type { DurableRules } from "./rules.ts";
 import { AGENT_REF_DOC, applyAgentRole, parseAgentRef, threadAgent } from "./agent-profile.ts";
 import { RlmChildDoc } from "./children.ts";
 import { commExtension, noteHeard, type CommHost, type CommSubmit } from "./comm.ts";
@@ -73,6 +74,8 @@ export interface DurableThreadsOptions {
   chat?: PrimeChat;
   /** Prime's `ipython` and its RLM runtime (`DurableRlm.load`): every conversation then offers it, with one kernel each. */
   rlm?: DurableRlm;
+  /** sieun-rules' tool guards (`DurableRules.load`): every tool call of every conversation then passes the send, repo and transcript guards. */
+  rules?: DurableRules;
   /** The Prime root sessions a thread's root reaches with `agent_message` and `agent_observe`; default `new PrimeRoots()` with `rlm`, none for null. */
   primeRoots?: PrimeRoots | null;
 }
@@ -329,6 +332,7 @@ export class DurableThreads {
         registry: threadRegistry(prompt, chat, {
           thread: { id, file }, comm: comm.extension,
           ...(this.options.rlm ? { rlm: this.options.rlm.extension(this.rlmThread(id, file, name, cwd, () => openHarness, models)) } : {}),
+          ...(this.options.rules ? { rules: this.options.rules.extension({ id, file, name, cwd }) } : {}),
         }),
         env: threadEnv(cwd),
         ...(this.options.settings === undefined ? {} : { settings: this.options.settings(id) }),

@@ -15,9 +15,8 @@ filter, text or eol attribute counts as commit.mjs counts it. A checkout is
 the nearest folder D above the file's realpath with a .git folder whose .git/agent-shared-checkout names D on its first line. The session id is
 the last /session-artifacts/<id>/harness in RLM_HARNESS_STATE_DIR, else CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID or PI_HOST_SESSION_ID when only one
 is set, as in journal.mjs agentId; with none this file records nothing. pi-host sets PI_HOST_SESSION_ID for a durable thread's kernel, whose
-harness dir is its agent's store and names no session. The prelude in kernel-guard.ts runs it once per Prime kernel, python-child/sitecustomize.py
-once per Python a Prime kernel starts, and python-journal/sitecustomize.py once per Python of a pi-host durable kernel, the kernel included.
-A journal failure prints one line to stderr and leaves the write alone.
+harness dir is its agent's store and names no session. The prelude in kernel-guard.ts runs it once per kernel, a Prime one or a pi-host
+durable one, and python-child/sitecustomize.py once per Python a kernel starts. A journal failure prints one line to stderr and leaves the write alone.
 
 3. A write of a convex/ source file also queues that checkout's scripts/repo/agent/convex-save-check.mjs, the Convex type check the local
    watcher runs before each push, and a remote record that answers `queued the Convex type check` marks that box as owing a result. The

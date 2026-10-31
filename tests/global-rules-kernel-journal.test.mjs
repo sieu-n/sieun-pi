@@ -7,7 +7,7 @@ import test from "node:test";
 
 // On 10-29 three auto-sns-agent commits (250b096c5, 7d5726a419, f856a11257) took other sessions' hunks, because the edit skill, open() in a cell
 // and Mac jobs' scp into us-metal02's checkout left no record in the write journal commit.mjs reads. kernel-journal.py records those writes.
-const { PRELUDE, JOURNAL_CHILD_DIR, JOURNAL_PRELUDE } = await import("../packages/sieun-rules/src/kernel-guard.ts");
+const { PRELUDE } = await import("../packages/sieun-rules/src/kernel-guard.ts");
 const root = realpathSync(mkdtempSync(join(tmpdir(), "global-rules-kernel-journal-")));
 const home = join(root, "home");
 const checkout = join(root, "checkout");
@@ -129,17 +129,14 @@ subprocess.run([sys.executable, "-c", "open(%r, 'w').write('x = 1')" % ${JSON.st
   assert.deepEqual(records.map((r) => [r.session_id, r.path, r.blob]), [["claude-1", "src/child.py", hashObject(join(checkout, "src/child.py"))]]);
 });
 
-test("python-journal/sitecustomize.py journals a pi-host durable kernel and its child Pythons under PI_HOST_SESSION_ID, with no send guard", () => {
+test("a pi-host durable kernel, whose harness dir is its agent's store, journals it and its child Pythons under PI_HOST_SESSION_ID", () => {
   reset();
-  const run = spawnSync("python3", ["-B", "-c", `${JOURNAL_PRELUDE}
+  kernel(`
 import subprocess, sys
 from pathlib import Path
 Path(${JSON.stringify(join(checkout, "src/durable.ts"))}).write_text("export const d = 1;\\n")
 subprocess.run([sys.executable, "-c", "open(%r, 'w').write('x = 1')" % ${JSON.stringify(join(checkout, "src/durable-child.py"))}], check=True)
-print(getattr(sys, "global_rules_send_guard", None), getattr(sys, "global_rules_kernel_journal", None))
-`], { env: env({ RLM_HARNESS_STATE_DIR: join(home, ".pi/agent/agents/vent/harness"), PI_HOST_SESSION_ID: "pi-thread-1", PYTHONPATH: JOURNAL_CHILD_DIR }), encoding: "utf8", timeout: 60_000 });
-  assert.equal(run.status, 0, run.stderr);
-  assert.equal(run.stdout.trim(), "None True");
+`, { RLM_HARNESS_STATE_DIR: join(home, ".pi/agent/agents/vent/harness"), PI_HOST_SESSION_ID: "pi-thread-1" });
   assert.deepEqual(journal().map((r) => [r.session_id, r.path, r.blob]).sort(), [
     ["pi-thread-1", "src/durable-child.py", hashObject(join(checkout, "src/durable-child.py"))],
     ["pi-thread-1", "src/durable.ts", hashObject(join(checkout, "src/durable.ts"))]]);

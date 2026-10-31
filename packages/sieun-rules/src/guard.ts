@@ -136,7 +136,7 @@ export function onToolCall(event: ToolCallEvent, ctx: Partial<Pick<ExtensionCont
 		const text = event.toolName === "bash" ? input.command : input.code;
 		if (typeof text !== "string") return undefined;
 		const judged = event.toolName === "bash" ? judgeShellText(text, cwd) : judgeCell(text, cwd);
-		const sessionPath = ctx?.sessionManager?.getSessionFile?.() ?? process.env.RLM_SESSION_DIR;
+		const sessionPath = (ctx as { rlmSessionDir?: string } | undefined)?.rlmSessionDir ?? ctx?.sessionManager?.getSessionFile?.() ?? process.env.RLM_SESSION_DIR;
 		const verdicts = applyOwnerOk(judged, text);
 		for (const v of verdicts) log("guard", `block rule=${v.rule} cwd=${cwd} :: ${v.command}`);
 		recordSends(judged, verdicts, event.toolName, text, sessionPath);

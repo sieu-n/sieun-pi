@@ -2,7 +2,7 @@
  * What every durable thread runs with: Prime's system prompt (`prime-prompt.ts`) when the host knows Prime's agent dir, else Prime's
  * preamble alone, pi-durable's coding tools in the thread's cwd, the subagent tool (which returns at once, `subagent.ts`), the
  * `send_message` tool, and, when the host loaded it, Prime's chat extension (`prime-chat.ts`: `tell_owner`, `chat_board`, `correction_add`,
- * `search_history`, `poteto_mode` and the turn wrappers) and Prime's `ipython` with its RLM runtime (`rlm.ts`), plus the chat's own
+ * `search_history`, `poteto_mode` and the turn wrappers), Prime's `ipython` with its RLM runtime (`rlm.ts`) and sieun-rules' tool guards (`rules.ts`), plus the chat's own
  * document and entry kinds, the child delivery task (`children.ts`), and the comm thread's hand-over task and `stop_work` (`comm.ts`).
  * Each thread file gets its own registry, so its prompt can name its file.
  */
@@ -39,6 +39,8 @@ export interface ThreadExtras {
   rlm?: Extension;
   /** The comm thread's hand-over task and `stop_work` (`comm.ts` `commExtension`). */
   comm?: Extension;
+  /** sieun-rules' guards around every tool call (`rules.ts` `DurableRules.extension`). */
+  rules?: Extension;
 }
 
 export function threadRegistry(prompt?: PrimePromptOptions, chat?: { chat: PrimeChat; thread: ChatThread }, extras: ThreadExtras = {}): Registry {
@@ -52,6 +54,7 @@ export function threadRegistry(prompt?: PrimePromptOptions, chat?: { chat: Prime
   registry.install(ChildTasks);
   if (extras.rlm) registry.install(extras.rlm);
   if (extras.comm) registry.install(extras.comm);
+  if (extras.rules) registry.install(extras.rules);
   return registry;
 }
 

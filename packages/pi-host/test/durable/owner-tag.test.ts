@@ -29,3 +29,21 @@ test("the shim passes LC_PRIME_SESSION to the next systemd-run on PATH, and adds
     assert.deepEqual(run({}).stdout.trim().split("\n"), ["--user", "--unit=t", "sleep", "1"]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+// p1331 (11-01): sieun-rules' unit-env shim and this unit-tag shim each skipped only itself, so with both on PATH they exec'd each other
+// until the argument list overflowed, and a pi-host kernel's relay never started. Each now skips every file with the shim marker line.
+test("with sieun-rules' unit-env shim and the unit-tag shim both on PATH, either order runs the real systemd-run once", () => {
+  const root = mkdtempSync(join(tmpdir(), "unit-tag-"));
+  try {
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "systemd-run"), "#!/bin/sh\nprintf '%s\\n' \"$@\"\n", { mode: 0o755 });
+    const unitEnv = join(import.meta.dirname, "../../../sieun-rules/src/unit-env");
+    for (const first of [[unitEnv, UNIT_TAG_DIR], [UNIT_TAG_DIR, unitEnv]]) {
+      const run = spawnSync(join(first[0]!, "systemd-run"), ["--user", "--unit=t", "sleep", "1"],
+        { encoding: "utf8", timeout: 10_000, env: { PATH: `${first.join(":")}:${bin}:/usr/bin:/bin`, HOME: root, LC_PRIME_SESSION: `${THREAD}@us-metal02` } });
+      assert.equal(run.status, 0, run.stderr);
+      assert.deepEqual(run.stdout.trim().split("\n"), ["-E", "LC_PRIME_SESSION", "--user", "--unit=t", "sleep", "1"]);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
