@@ -15,8 +15,10 @@ import { DAY, REPO, settle, unmeasuredFlag, utc } from "./estate-reads.ts";
  * 1. It builds the store zip and the dev zip from the auto-sns-agent checkout with apps/dm-extension/scripts/package.mjs. The store zip drops
  *    staging.virev.ai from host_permissions, externally_connectable and the page bridge, so it cannot pair with staging; the run then loads
  *    the dev zip of the same tree, which holds the same files with the repo manifest, and a `build` slice says so.
- * 2. It reads the sender's and the replier's saved Instagram sessions from the prod crawler's Postgres on us-metal01 (ig_engage_browser_jars
- *    with ig_engage_accounts and proxy_endpoints, world prod), where the crawler keeps them fresh, into a mode 700 temp folder it deletes.
+ * 2. It reads the sender's and the replier's saved Instagram sessions from the crawler's Postgres on us-metal01 (ig_engage_browser_jars
+ *    with ig_engage_accounts and proxy_endpoints), each from the one world, prod or staging, where that handle's row is active, because
+ *    the crawler keeps only an active row's session and exit fresh. They go into a mode 700 temp folder it deletes, and an `accounts`
+ *    slice names each account's world, row and endpoint.
  * 3. It starts a staging clean world (scripts/dev/search-clean-world.mjs up --target staging --allow-features instagramDm), a fresh
  *    Clerk user and org approved on staging with the instagramDm allow, and runs the two real-Instagram rigs in it as that user and org
  *    (the world's `run` hands them E2E_USER_EMAIL and E2E_ORG_ID) with DM_EXTENSION_DIR set to the unpacked zip:
@@ -37,18 +39,28 @@ import { DAY, REPO, settle, unmeasuredFlag, utc } from "./estate-reads.ts";
  * - unknown_username_24h <= 0: a paired Chrome reported an account the server could not register because it had no handle, so Connections
  *   shows it stuck (dmDevices.heartbeat `unregistered`).
  * A source that failed makes the metrics it feeds read missValue() and adds a source_error flag.
- * The duty's timeoutMs of 1,200 s is its soft target: one run's own work plus one wait for another run. measured: the first full run on
- * 10-30 took 504 s (04:08:30Z to 04:16:54Z), with the staging row reads about 40 s of it. The 10-31 06:49Z run took 874 s: the zips
- * (0.1 s each) and the jar read over ssh (about 1 s) took seconds, then it waited about 332 s for a fix job's own run of this precheck
- * to finish its e2e rig, and its own world down, world up, rigs and row reads took 542 s (06:54:47Z to 07:03:47Z), 458 s of it the e2e rig.
+ * The duty's timeoutMs of 2,618 s is its soft target: one run's own work on a slow Instagram exit plus one wait for another run. The rigs'
+ * page loads wait while a page still gets bytes (apps/dm-extension/tests/lib/ig-load.mjs), so the precheck hands them DM_RIG_DEADLINE,
+ * its start plus timeoutMs less TAIL_MS, and every wait ends by then. measured: the 10-31 14:22:43Z run at DM_RIG_IG_KBPS=12 took
+ * 2,286 s to 15:00:49Z, its sign-in loads 101 to 159 s and the sender's inbox 376 s, and the 10-31 06:49Z run waited 332 s for a fix
+ * job's own run of this precheck. On a fast exit the 06:49Z run's own work took 542 s (06:54:47Z to 07:03:47Z), 458 s of it the e2e rig.
+ * A slow_exit or instagram_refused slice names a rig run stopped by the account's exit or by Instagram (evidence.stoppedOn).
  * A `waited` slice names any such wait.
  */
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DUTY_FILE = join(HERE, "dm-extension.duty.json");
-/** The prod crawler account ids of the two test accounts. 206 sent and 264 replied in the 10-29 staging proof; 202 is signed out since 10-29. */
-export const SENDER_ID = 206;
-export const REPLIER_ID = 264;
+/**
+ * The two test accounts by handle. The crawler moves an account between its prod and staging worlds (an engage_world_move parks the
+ * old row), so each run reads the one row that is active in either world, and never drives a session from the exit of a parked row.
+ * measured: on 10-31 @caiyiting8674 was active as prod 206 (endpoint 8078) and parked as staging 179, and @glenmyftiu945 was parked as
+ * prod 264 since 09:43:46Z and active as staging 334 (endpoint 1388), so the replier now comes from staging.
+ */
+export const SENDER = "caiyiting8674";
+export const REPLIER = "glenmyftiu945";
+/** Each world's crawler Postgres container on us-metal01. */
+export const WORLDS = { prod: "virev-prod-postgres", staging: "virev-staging-postgres" } as const;
+export type World = keyof typeof WORLDS;
 export const WORLD = "dm-ext-duty";
 /**
  * The rigs run as the world's own fresh user and org. They ran in Virev Test until 10-30, because observe skipped an Instagram thread
@@ -87,7 +99,14 @@ export const FEEDS: Readonly<Record<Source, readonly string[]>> = {
 };
 
 export interface Check { name: string; ok: boolean; detail?: unknown }
-export interface AutopairEvidence { checks?: Check[] }
+/**
+ * Why a rig run stopped (evidence.stoppedOn, apps/dm-extension/tests/lib/ig-load.mjs): slow_exit when an Instagram page or a send wait
+ * on it stalled or was still loading at its ceiling, instagram_refused when Instagram sent the account to a login page, a challenge or
+ * a checkpoint or answered send_restricted, and other for anything else. `step` is where the run stopped and `causeStep` where the
+ * cause happened.
+ */
+export interface Stop { step: string; kind: "slow_exit" | "instagram_refused" | "other"; reason?: string; exit?: string; kb?: number; code?: number; causeStep?: string | null }
+export interface AutopairEvidence { checks?: Check[]; stoppedOn?: Stop }
 export interface E2eEvidence {
   connectionsRow?: string | null;
   firstOutreach?: { id: string; status: string; errorCode?: string; error?: string; threadId?: string } | null;
@@ -96,6 +115,7 @@ export interface E2eEvidence {
   replyInStore?: { threadId: string; messageId: string } | null;
   replyInInboxUi?: boolean;
   inboxCard?: { sent?: boolean; error?: string; text?: string };
+  stoppedOn?: Stop;
 }
 /** A searchDmMessages row; `queue` is on the rows the send queue writes (auto-sns-agent 8d9fea2be2 moved every DM writer there on 10-30). */
 export interface DmRow { _id: string; _creationTime: number; status: string; errorCode?: string; lastError?: string; orgId: string; queue?: { transport?: string; lastAttemptAt?: number } }
@@ -109,6 +129,8 @@ export const senderFits = (sender: Sender): boolean => sender.dailyLimit - sende
 export interface DutyData {
   now: number;
   build?: Build;
+  /** Which crawler world and endpoint each test account came from. */
+  accounts?: string;
   autopair?: AutopairEvidence;
   sender?: Sender;
   e2e?: E2eEvidence;
@@ -145,6 +167,18 @@ export function parts(autopair: AutopairEvidence | undefined, e2e: E2eEvidence |
   };
 }
 
+const STOP_WORDS: Readonly<Record<Exclude<Stop["kind"], "other">, string>> = { slow_exit: "a slow Instagram exit", instagram_refused: "an Instagram refusal" };
+
+/** The slice that names a rig run stopped by a slow Instagram exit or by Instagram refusing the account, apart from an extension failure. */
+export function stopSlice(rig: "autopair" | "e2e", stop: Stop | undefined, at: number): FlaggedSlice | undefined {
+  if (!stop || stop.kind === "other") return undefined;
+  const where = stop.causeStep && stop.causeStep !== stop.step ? `${stop.causeStep} (it stopped at ${stop.step})` : stop.step;
+  const excerpt = stop.kind === "slow_exit"
+    ? `the ${rig} rig failed on a slow Instagram exit at ${where}, not on the extension: ${stop.reason ?? ""}`
+    : `the ${rig} rig stopped because Instagram refused the account at ${where}: ${stop.reason ?? ""}`;
+  return { at, kind: stop.kind, item: rig, excerpt: excerpt.slice(0, 300) };
+}
+
 const lastTouch = (row: DmRow): number => row.queue?.lastAttemptAt ?? row._creationTime;
 
 /** The extension's settle and register errors of the 24 h before `now`. */
@@ -170,18 +204,26 @@ export function report(data: DutyData, dutyMetrics: readonly DutyMetric[]): Prec
     const { sha, loaded, dirty, sameFiles, version } = data.build;
     flagged.push({ at, kind: "build", excerpt: `${version} from auto-sns-agent ${sha.slice(0, 10)}: ${loaded === "dev" ? "the store zip lists no staging host, so the run loaded the dev zip of the same tree" : "the run loaded the store zip"}${sameFiles ? ", same files in both zips" : "; the store and dev zips hold DIFFERENT files"}${dirty.length ? `; uncommitted in apps/dm-extension: ${dirty.join(", ")}` : ""}`.slice(0, 300) });
   }
+  if (data.accounts) flagged.push({ at, kind: "accounts", excerpt: data.accounts.slice(0, 300) });
   if (data.waited) flagged.push({ at, kind: "waited", excerpt: `waited ${Math.round(data.waited.ms / 1000)} s for another run on this box before its own work: ${data.waited.on.join("; ")}`.slice(0, 300) });
   const blocked = data.sender !== undefined && !senderFits(data.sender);
   if (data.sender && blocked) {
     const { username, sentToday, dailyLimit } = data.sender;
     unmeasured.add("e2e_pass");
-    flagged.push({ at, kind: "sender_daily_limit", excerpt: `sender ${SENDER_ID} @${username} had sent ${sentToday} of its daily limit of ${dailyLimit} in the world's org, and a run sends ${SENDS_PER_RUN}, so the sending rig did not run and the e2e parts are not measured` });
+    flagged.push({ at, kind: "sender_daily_limit", excerpt: `sender @${username} had sent ${sentToday} of its daily limit of ${dailyLimit} in the world's org, and a run sends ${SENDS_PER_RUN}, so the sending rig did not run and the e2e parts are not measured` });
   }
   if (!blocked && (data.autopair || data.e2e)) {
     const held = parts(data.autopair, data.e2e);
     metrics.e2e_pass = Object.values(held).every(part => part.ok) ? 1 : 0;
+    const stops = [data.autopair?.stoppedOn, data.e2e?.stoppedOn];
+    for (const [rig, stop] of [["autopair", stops[0]], ["e2e", stops[1]]] as const) {
+      const slice = stopSlice(rig, stop, at);
+      if (slice) flagged.push(slice);
+    }
+    const stopKind = stops.map(stop => stop?.kind).find(kind => kind === "slow_exit" || kind === "instagram_refused");
+    const cause = stopKind ? ` The run stopped on ${STOP_WORDS[stopKind]} (${stopKind} slice).` : "";
     for (const [part, { ok, why }] of Object.entries(held) as [Part, { ok: boolean; why: string }][])
-      if (!ok) flagged.push({ at, kind: "e2e_part", item: part, excerpt: `${PARTS[part]}: NO. ${why}. Evidence: ${OUT}`.slice(0, 300) });
+      if (!ok) flagged.push({ at, kind: "e2e_part", item: part, excerpt: `${PARTS[part]}: NO.${cause} ${why}. Evidence: ${OUT}`.slice(0, 300) });
     const failedChecks = (data.autopair?.checks ?? []).filter(c => !c.ok && !/^[23][ab]? /.test(c.name)).map(c => c.name);
     if (failedChecks.length) flagged.push({ at, kind: "autopair_check", excerpt: `other autopair checks that failed: ${failedChecks.join("; ")}`.slice(0, 300) });
     const card = data.e2e?.inboxCard;
@@ -243,7 +285,7 @@ export async function build(tmp: string): Promise<{ build: Build; dir: string }>
   return { build: { sha, loaded, dirty, sameFiles: store.files.join() === dev.files.join(), version: manifest.version }, dir };
 }
 
-export interface JarRow { id: number; username: string; ig_user_id: string | null; cookies: { name: string; value: string }[] | null; status: string; valid: boolean; jar_at: string }
+export interface JarRow { world: World; id: number; username: string; ig_user_id: string | null; cookies: { name: string; value: string }[] | null; status: string; valid: boolean; jar_at: string | null; endpoint: number }
 
 /** The Instagram id a jar is signed in as. ig_engage_accounts.ig_user_id is null for 206 on 10-31, so the session's
  *  ds_user_id cookie names it, as the rigs read it (apps/dm-extension/tests/lib/real-world.mjs). */
@@ -253,25 +295,41 @@ export function jarIgUserId(row: JarRow): string {
   return String(id);
 }
 
-/** The two accounts' saved sessions from the prod crawler's Postgres, as the rigs' jar files (mode 600). Prints no cookie. */
-export async function jars(tmp: string): Promise<{ sender: string; senderIgId: string; replier: string; notes: string[] }> {
-  const sql = `begin read only;
-select json_build_object('id', a.id, 'username', a.username, 'ig_user_id', a.ig_user_id, 'cookies', j.cookies::json, 'user_agent', j.user_agent,
-  'proxy_url', e.proxy_url, 'status', a.status, 'valid', j.valid, 'jar_at', j.updated_at)::text
+/** The one row of `username` that is active in either crawler world. */
+export function activeRow(rows: readonly JarRow[], username: string): JarRow {
+  const mine = rows.filter(row => row.username === username);
+  const active = mine.filter(row => row.status === "active");
+  if (active.length === 1) return active[0]!;
+  const seen = mine.map(row => `${row.world} ${row.id} ${row.status}`).join(", ") || "no row";
+  throw new Error(`@${username} is active in ${active.length} crawler worlds (${seen}); a run needs exactly one`);
+}
+
+const jarSql = (world: World) => `begin read only;
+select json_build_object('world', '${world}', 'id', a.id, 'username', a.username, 'ig_user_id', a.ig_user_id, 'cookies', j.cookies::json,
+  'user_agent', j.user_agent, 'proxy_url', e.proxy_url, 'endpoint', e.id, 'status', a.status, 'valid', j.valid, 'jar_at', j.updated_at)::text
 from ig_engage_accounts a join ig_engage_browser_jars j on j.account_id = a.id join proxy_endpoints e on e.id = a.proxy_endpoint_id
-where a.world = 'prod' and a.id in (${SENDER_ID}, ${REPLIER_ID});
+where a.world = '${world}' and a.username in ('${SENDER}', '${REPLIER}');
 commit;`;
-  const out = await sh("ssh", ["-o", "BatchMode=yes", "us-metal01", "docker exec -i virev-prod-postgres psql -U crawler -d crawler_v3 -At -v ON_ERROR_STOP=1"], { input: sql });
-  const rows = out.split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line) as JarRow);
-  const notes: string[] = [];
-  const files: Record<number, string> = {};
-  for (const row of rows) {
-    files[row.id] = join(tmp, `jar-${row.id}.json`);
-    await writeFile(files[row.id]!, JSON.stringify(row), { mode: 0o600 });
-    if (row.status !== "active" || !row.valid) notes.push(`${row.id} @${row.username} is ${row.status}, jar ${row.valid ? "valid" : "invalid"} (saved ${row.jar_at})`);
+
+/** The two accounts' saved sessions, each from the crawler world where it is active, as the rigs' jar files (mode 600). Prints no cookie. */
+export async function jars(tmp: string): Promise<{ sender: string; senderIgId: string; replier: string; accounts: string; notes: string[] }> {
+  const rows: JarRow[] = [];
+  for (const [world, container] of Object.entries(WORLDS) as [World, string][]) {
+    const out = await sh("ssh", ["-o", "BatchMode=yes", "us-metal01", `docker exec -i ${container} psql -U crawler -d crawler_v3 -At -v ON_ERROR_STOP=1`], { input: jarSql(world) });
+    rows.push(...out.split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line) as JarRow));
   }
-  for (const id of [SENDER_ID, REPLIER_ID]) if (!files[id]) throw new Error(`the prod crawler has no saved session for account ${id}`);
-  return { sender: files[SENDER_ID]!, senderIgId: jarIgUserId(rows.find(row => row.id === SENDER_ID)!), replier: files[REPLIER_ID]!, notes };
+  const notes: string[] = [];
+  const file = async (row: JarRow) => {
+    const path = join(tmp, `jar-${row.world}-${row.id}.json`);
+    await writeFile(path, JSON.stringify(row), { mode: 0o600 });
+    if (!row.valid) notes.push(`${row.world} ${row.id} @${row.username} has an invalid jar (saved ${row.jar_at ?? "at an unknown time"})`);
+    return path;
+  };
+  const sender = activeRow(rows, SENDER);
+  const replier = activeRow(rows, REPLIER);
+  const describe = (role: string, row: JarRow) => `${role} @${row.username} is ${row.world} ${row.id} on endpoint ${row.endpoint}`;
+  const accounts = `${describe("sender", sender)}; ${describe("replier", replier)}`;
+  return { sender: await file(sender), senderIgId: jarIgUserId(sender), replier: await file(replier), accounts, notes };
 }
 
 /** The sender's row in the world's org from Connections' own read (search/dmDevices:listOutreach), as an admin of that org. */
@@ -329,7 +387,17 @@ async function staging(table: string, limit: number, cwd: string): Promise<unkno
   return out.split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line) as unknown);
 }
 
-async function measure(now: number): Promise<DutyData> {
+/**
+ * The time the precheck keeps after its rigs end, for the staging row reads and the world's down.
+ * measured: run 8 on 10-31 read its rows and took its world down in 61 s after the e2e rig ended (09:41:01Z to 09:42:02Z).
+ */
+export const TAIL_MS = 61_000;
+
+/** The time by which the rigs must end their Instagram waits, so the run ends near its soft target: the precheck's start plus the
+ *  duty's timeoutMs, less the tail. The rigs read it as DM_RIG_DEADLINE (apps/dm-extension/tests/lib/ig-load.mjs ceilingMs). */
+export const rigDeadline = (start: number, budgetMs: number): number => start + budgetMs - TAIL_MS;
+
+async function measure(now: number, budgetMs: number): Promise<DutyData> {
   const data: DutyData = { now, errors: [] };
   const step = async <T>(source: Source, run: () => Promise<T>): Promise<T | undefined> => {
     try { return await run(); } catch (error) { data.errors.push({ source, message: message(error) }); return undefined; }
@@ -347,6 +415,7 @@ async function measure(now: number): Promise<DutyData> {
     const built = await step("build", () => build(tmp));
     if (built) data.build = built.build;
     const jarFiles = await step("jars", () => jars(tmp));
+    if (jarFiles) data.accounts = jarFiles.accounts;
     if (jarFiles?.notes.length) data.errors.push({ source: "jars", message: jarFiles.notes.join("; ") });
     if (built && jarFiles) {
       // A rig a job started while this run built and fetched the jars.
@@ -357,7 +426,7 @@ async function measure(now: number): Promise<DutyData> {
       up = upCode === 0;
       if (!up) data.errors.push({ source: "world", message: `search-clean-world up --target staging exited ${upCode}; see ${OUT}/world-up.log` });
       else {
-        const env = { ...process.env, DM_EXTENSION_DIR: built.dir };
+        const env = { ...process.env, DM_EXTENSION_DIR: built.dir, DM_RIG_DEADLINE: String(rigDeadline(now, budgetMs)) };
         // `run` starts its command in apps/search, so the rig path is absolute.
         const run = (rig: string, args: string[], name: string) => logged([...world, "run", "--name", WORLD, "--", "node", join(REPO, "apps/dm-extension/tests", rig), ...args, "--out", join(OUT, name)], join(OUT, `${name}.log`), env);
         await run("autopair-real-ig.mjs", ["--a", jarFiles.sender], "autopair");
@@ -390,8 +459,8 @@ async function measure(now: number): Promise<DutyData> {
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("dm-extension: OUTPUT_FILE is not set\n"); process.exit(2); }
-  const dutyMetrics = (JSON.parse(await readFile(DUTY_FILE, "utf8")) as { metrics: DutyMetric[] }).metrics;
-  const result = report(await measure(Date.now()), dutyMetrics);
+  const duty = JSON.parse(await readFile(DUTY_FILE, "utf8")) as { metrics: DutyMetric[]; precheck: { timeoutMs: number } };
+  const result = report(await measure(Date.now(), duty.precheck.timeoutMs), duty.metrics);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   process.stdout.write(`dm-extension: ${Object.entries(result.metrics).map(([key, value]) => `${key}=${value}`).join(" ")}\n`);
 }

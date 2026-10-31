@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
-import { errorCounts, jarIgUserId, otherRuns, parts, report, senderFits, type AutopairEvidence, type DmRow, type E2eEvidence, type JarRow } from "../scripts/duties/dm-extension.ts";
+import { activeRow, errorCounts, jarIgUserId, otherRuns, parts, report, rigDeadline, senderFits, TAIL_MS, type AutopairEvidence, type DmRow, type E2eEvidence, type JarRow } from "../scripts/duties/dm-extension.ts";
 
 const METRICS = (JSON.parse(readFileSync(new URL("../scripts/duties/dm-extension.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] }).metrics;
 const NOW = Date.parse("2026-10-30T12:00:00Z");
@@ -86,7 +86,7 @@ test("24 h counts take extension rows of the last day by their last attempt", ()
 });
 
 test("a jar with a null ig_user_id is named by its ds_user_id cookie, as on 10-31 for 206", () => {
-  const jar = (ig_user_id: string | null, cookies: JarRow["cookies"]): JarRow => ({ id: 206, username: "caiyiting8674", ig_user_id, cookies, status: "active", valid: true, jar_at: "2026-10-31" });
+  const jar = (ig_user_id: string | null, cookies: JarRow["cookies"]): JarRow => ({ world: "prod", id: 206, username: "caiyiting8674", ig_user_id, cookies, status: "active", valid: true, jar_at: "2026-10-31", endpoint: 8078 });
   assert.equal(jarIgUserId(jar(null, [{ name: "csrftoken", value: "x" }, { name: "ds_user_id", value: "29063885913" }])), "29063885913");
   assert.equal(jarIgUserId(jar("29063885913", null)), "29063885913");
   assert.throws(() => jarIgUserId(jar(null, [])), /no ds_user_id/);
@@ -105,4 +105,36 @@ test("the precheck waits on another copy of itself or a rig, never on itself or 
   const out = report({ now: NOW, autopair: AUTOPAIR, e2e: E2E, waited: { ms: 332_400, on: ["node --import tsx scripts/duties/dm-extension.ts"] }, errors: [] }, METRICS);
   assert.equal(out.metrics.e2e_pass, 1);
   assert.ok(out.flagged?.some(slice => slice.kind === "waited" && slice.excerpt.startsWith("waited 332 s")));
+});
+
+test("each account comes from the one world where its row is active, as @glenmyftiu945 moved to staging 334 on 10-31", () => {
+  const row = (world: JarRow["world"], id: number, username: string, status: string): JarRow =>
+    ({ world, id, username, ig_user_id: null, cookies: null, status, valid: true, jar_at: null, endpoint: id + 1000 });
+  const rows = [row("prod", 206, "caiyiting8674", "active"), row("staging", 179, "caiyiting8674", "parked"), row("prod", 264, "glenmyftiu945", "parked"), row("staging", 334, "glenmyftiu945", "active")];
+  assert.equal(activeRow(rows, "caiyiting8674").id, 206);
+  assert.equal(activeRow(rows, "glenmyftiu945").world, "staging");
+  assert.throws(() => activeRow(rows.slice(0, 3), "glenmyftiu945"), /active in 0 crawler worlds \(prod 264 parked\)/);
+  assert.throws(() => activeRow([...rows, row("prod", 206, "glenmyftiu945", "active")], "glenmyftiu945"), /active in 2/);
+});
+
+test("a run stopped by a slow exit names it in a slow_exit slice and in each failed part, and a refusal in an instagram_refused slice", () => {
+  const slow: E2eEvidence = {
+    connectionsRow: "@caiyiting8674",
+    firstOutreach: { id: "m1", status: "scheduled", threadId: "t1" },
+    stoppedOn: { kind: "slow_exit", step: "test DM", causeStep: "test DM", code: 11, exit: "residential-unlimited-us-08-proxy.geonode.io", reason: "A's Instagram tab was still loading when the wait ended" },
+  };
+  const out = report({ now: NOW, autopair: AUTOPAIR, e2e: slow, errors: [] }, METRICS);
+  assert.equal(out.metrics.e2e_pass, 0);
+  const slice = out.flagged?.find(s => s.kind === "slow_exit");
+  assert.ok(slice?.excerpt.startsWith("the e2e rig failed on a slow Instagram exit at test DM, not on the extension: A's Instagram tab"));
+  assert.ok(out.flagged?.some(s => s.kind === "e2e_part" && s.item === "sent" && s.excerpt.includes("stopped on a slow Instagram exit")));
+  const refused = report({ now: NOW, autopair: { checks: [], stoppedOn: { kind: "instagram_refused", step: "instagram sign-in", reason: "Instagram sent the page to /challenge/" } }, errors: [] }, METRICS);
+  assert.ok(refused.flagged?.some(s => s.kind === "instagram_refused" && s.excerpt.includes("/challenge/")));
+  assert.ok(!refused.flagged?.some(s => s.kind === "slow_exit"));
+  const other = report({ now: NOW, autopair: AUTOPAIR, e2e: { ...slow, stoppedOn: { kind: "other", step: "connect", code: 3 } }, errors: [] }, METRICS);
+  assert.ok(!other.flagged?.some(s => s.kind === "slow_exit" || s.kind === "instagram_refused"));
+});
+
+test("the rigs end their Instagram waits the tail before the budget runs out", () => {
+  assert.equal(rigDeadline(NOW, 1_800_000), NOW + 1_800_000 - TAIL_MS);
 });
