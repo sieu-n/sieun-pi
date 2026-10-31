@@ -63,18 +63,38 @@ export async function writeResumePending(dataDir: string, runs: readonly Pick<In
  * listed them running, the check-in read "working, no activity for 58 min" and steered them, and the steers sat in their queues.
  */
 export function lastTurnError(tail: string): string | undefined {
+  return failedRun(tail)?.error;
+}
+
+/**
+ * The run of failed replies a transcript ends on (`lastTurnError`): the last one's error, when the first one was written (null when no line
+ * of the run carries a time), and whether a later failed reply came at or after a pi-pool slot an earlier one named ("waits for its slot at"),
+ * so pi-pool parked the session again at its slot. From 04:24Z to 06:09Z on 10-31 01a19034 failed 2 replies every 3 to 4.5 min this way,
+ * each naming the next slot, while only claude12 and krenerd77 took trees.
+ */
+export interface FailedRun { error: string; since: number | null; rolled: boolean }
+
+const SLOT_AT = /waits for its slot at (\d{4}-\d\d-\d\dT[\d:.]+Z)/;
+
+export function failedRun(tail: string): FailedRun | undefined {
   const lines = tail.split("\n");
+  const run: { at: number; slot: number }[] = [];
+  let error: string | undefined;
   for (let index = lines.length - 1; index >= 0; index--) {
-    let line: { type?: unknown; customType?: unknown; message?: { role?: unknown; stopReason?: unknown; errorMessage?: unknown; diagnostics?: unknown } };
+    let line: { type?: unknown; customType?: unknown; timestamp?: unknown; message?: { role?: unknown; stopReason?: unknown; errorMessage?: unknown; diagnostics?: unknown } };
     try { line = JSON.parse(lines[index]!); } catch { continue; }
-    if (line.type === "custom" && line.customType === "pi-pool-queue") return undefined;
-    if (line.type === "custom_message" && line.customType === "agent_message") return undefined;
+    if (line.type === "custom" && line.customType === "pi-pool-queue") break;
+    if (line.type === "custom_message" && line.customType === "agent_message") break;
     if (line.type !== "message" || !line.message) continue;
-    if (line.message.role !== "assistant" || line.message.stopReason !== "error") return undefined;
-    const error = turnError(line.message);
-    return error?.trim() ? error : "error";
+    if (line.message.role !== "assistant" || line.message.stopReason !== "error") break;
+    const text = turnError(line.message);
+    error ??= text?.trim() ? text : "error";
+    run.unshift({ at: typeof line.timestamp === "string" ? Date.parse(line.timestamp) : NaN, slot: Date.parse(SLOT_AT.exec(text ?? "")?.[1] ?? "") });
   }
-  return undefined;
+  if (error === undefined) return undefined;
+  const times = run.map(entry => entry.at).filter(Number.isFinite);
+  const rolled = run.some((entry, index) => run.slice(0, index).some(before => entry.at >= before.slot));
+  return { error, since: times.length ? Math.min(...times) : null, rolled };
 }
 
 const TAIL_BYTES = 64 * 1024;

@@ -2,7 +2,7 @@ import { dirname } from "node:path";
 import type { SessionSummary } from "prime-agent";
 import type { DaemonClient } from "./daemon-sdk.ts";
 import { accountSlot, poolFreeAt, type PoolStatus, type PoolThread, type ThreadParts, threadKey } from "./chat-pool.ts";
-import { lastTurnError } from "./held-turns.ts";
+import { type FailedRun, failedRun } from "./held-turns.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
 import type { UnloadReceipt } from "./unloaded.ts";
 import { afterMove, moveOf } from "./worker-move.ts";
@@ -218,7 +218,8 @@ export function unloadPlan(rows: readonly SessionSummary[], input: PlanInput): S
  * the pool would serve sooner is left to Prime's retry and the job sweep's abort (ab65b511), which continue it in place. No hold is too long
  * to stop on: a chat's revive and the job sweep's resume pass (`resumeJobs`, --since-minutes 0) ask pi-pool again with no look-back.
  * A session that already waited the unload's minutes (`waitedMs`, since its last activity) stops on any hold the pool does not lift now, near
- * or not, unless its tree holds its own pi-pool slot (`ownSlot`, epoch ms) within the unload's minutes. A stop there only delays the turn
+ * or not, unless its tree holds its own pi-pool slot (`ownSlot`, epoch ms) within the unload's minutes and pi-pool has not yet parked it again
+ * at an earlier slot (`providerWaits` passes null then). A stop there only delays the turn
  * (c88): the session comes back through the resume pass after its slot, and a tree that started waiting later takes the cell. From 12:00Z on
  * 10-28 to 02:17Z on 10-29 45 of the 55 pool-wait stops on us-metal02 came with the tree's slot under 15 min ahead, 01a1748f's 91 s and 3 s
  * ahead at 00:34:29Z and 02:17:27Z, and the 19 that asked again did so 25 to 458 s after their slot; at 00:36:30Z 01a18508, parked later,
@@ -428,9 +429,12 @@ export interface WaitReads {
 }
 
 /**
- * Of `rows` (`retryCandidates`), each one of this box whose transcript ends on a failed reply (`lastTurnError`) and whose tree, keyed by its
+ * Of `rows` (`retryCandidates`), each one of this box whose transcript ends on a failed reply (`failedRun`) and whose tree, keyed by its
  * root session as pi-pool keys it, the pool serves next only past the unload's minutes (`poolFreeAt`, `poolHoldsPast`), with when that
- * is. The trees are read WAIT_READ_TREES at a time.
+ * is. The trees are read WAIT_READ_TREES at a time. The wait counts from the run's first failed reply, since each retry Prime makes moves the
+ * row's lastActivityAt, and a slot of the tree's own keeps the session only until pi-pool parks it again at a slot (`FailedRun.rolled`).
+ * From 05:10Z to 06:00Z on 10-31 17 quiet trees on us-metal02 held 10.5 GB this way with no pool-wait stop: pi-pool parked each one again
+ * every 3 to 4.5 min, so its lastActivityAt never read 15 min old and its next slot was always under 15 min ahead.
  */
 export async function providerWaits(rows: readonly SessionSummary[], now: number, idleMs: number, reads: WaitReads): Promise<Map<string, number | null>> {
   const byId = new Map(reads.all.map(row => [row.sessionId, row] as const));
@@ -440,9 +444,12 @@ export async function providerWaits(rows: readonly SessionSummary[], now: number
     for (let up = byId.get(top.parentSessionId ?? ""); up && !seen.has(up.sessionId); up = byId.get(up.parentSessionId ?? "")) { seen.add(up.sessionId); top = up; }
     return top.sessionId;
   };
-  const failed = await Promise.all(rows.filter(row => reads.local(row) && row.sessionFile && row.model?.provider)
-    .map(async row => lastTurnError(await reads.tail(row.sessionFile!).catch(() => "")) === undefined ? [] : [row]));
-  const waiting = failed.flat();
+  const runs = new Map<string, FailedRun>();
+  await Promise.all(rows.filter(row => reads.local(row) && row.sessionFile && row.model?.provider).map(async row => {
+    const run = failedRun(await reads.tail(row.sessionFile!).catch(() => ""));
+    if (run) runs.set(row.sessionId, run);
+  }));
+  const waiting = rows.filter(row => runs.has(row.sessionId));
   if (!waiting.length) return new Map();
   const trees = [...new Set(waiting.map(rootOf))].map(session => ({ session, model: null }));
   const found = new Map<string, ThreadParts>();
@@ -452,9 +459,10 @@ export async function providerWaits(rows: readonly SessionSummary[], now: number
   return new Map(waiting.flatMap(row => {
     const parts = found.get(threadKey({ session: rootOf(row), model: null }));
     if (!parts) return [];
+    const run = runs.get(row.sessionId)!;
     const freeAt = poolFreeAt(parts, row.model!.provider, now);
-    const waited = now - Date.parse(row.lastActivityAt ?? "");
-    const slot = accountSlot(parts, row.model!.provider);
+    const waited = now - (run.since ?? Date.parse(row.lastActivityAt ?? ""));
+    const slot = run.rolled ? null : accountSlot(parts, row.model!.provider);
     return poolHoldsPast(freeAt, now, idleMs, Number.isFinite(waited) ? waited : 0, slot) ? [[row.sessionId, freeAt] as const] : [];
   }));
 }
