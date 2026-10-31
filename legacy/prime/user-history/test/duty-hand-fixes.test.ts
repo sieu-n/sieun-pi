@@ -284,6 +284,13 @@ test("the lane rate controller's writes are F1's design at work, not hand fixes"
   assert.equal(classifyConfig(groupAudit("prod", [controller(14850, CLOSED + 60_000)])[0]!, await registry()).kind, "automatic");
 });
 
+// The crawler API's control trial sweep (auto-sns-agent df6e089e6) steps an A/B by itself, so its arm writes are design, not hand fixes.
+test("a control trial's arm writes by the API's trial sweep are automatic", async () => {
+  const arm: AuditRow = { id: 18900, ts: Date.parse("2026-10-31T03:00:00Z"), actor: "control-trial", source: "control-trial", key: "proxy.census_answer_cap_ms",
+    reason: "control trial block 2 of 4: proxy.census_answer_cap_ms=4000; cap A/B (by d2 job)" };
+  assert.equal(classifyConfig(groupAudit("prod", [arm])[0]!, await registry()).kind, "automatic");
+});
+
 // F1 as it stood on 10-19, designed by p170 alone, before later designs (p235, p246 and their commits) joined it.
 const asOf1019 = async () => { const reg = await registry(); return { ...reg, faults: reg.faults.map(fault => fault.id === "F1" ? { ...fault, designs: [P170] } : fault) }; };
 
