@@ -154,7 +154,8 @@ export function itemsAbove(board: ChatBoard | null, id: string): string[] {
 
 /**
  * The windows a duty's precheck declares on its checked-in metrics (`DutyMetric.windowMs`), from the `.duty.json` beside the precheck script;
- * empty when it has none. Runs recorded before a precheck reported windowMs still carry its dated miss (`lastEventAt`), and d9 reads them now.
+ * empty when it has none. d9 reads it for every red metric whose runs carry no windowMs, dated or not: at 02:27Z on 10-31 it asked Prospect feature
+ * bro to replace p269 on d1's prod_capacity_pages_day, a two-day window, while the runs on record came before 1f0a8ce0 declared that window.
  */
 export async function precheckWindows(precheck: DutyPrecheck): Promise<Record<string, number>> {
   const script = precheck.command.find(part => /\.(ts|mjs)$/.test(part));
@@ -937,7 +938,7 @@ async function main(): Promise<void> {
     const until = agingUntil(own);
     let step: PlanItem | undefined;
     if (duty.fix) walk(board?.plan ?? [], item => { if (item.id === duty.fix) step = item; });
-    const precheck = duty.metric && duty.metric.windowMs === undefined && duty.metric.lastEventAt !== undefined
+    const precheck = duty.metric && duty.metric.windowMs === undefined
       ? (await store.read(duty.chat).catch(() => null))?.duties.find(entry => entry.id === duty.duty)?.precheck : undefined;
     const declared = duty.metric && precheck ? (await precheckWindows(precheck))[duty.metric.key] : undefined;
     const metric = duty.metric && declared !== undefined ? { ...duty.metric, windowMs: declared } : duty.metric;
