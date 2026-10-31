@@ -56,13 +56,16 @@ function run(cmd: string, args: string[], env: NodeJS.ProcessEnv): Promise<void>
 
 const building = new Map<string, Promise<string>>();
 
-function fingerprint(packages: string[], skills: PythonSkill[]): string {
+/**
+ * What the venv holds: the package set and each skill's `pyproject.toml` by import name. Folder paths stay out, so a new Prime release
+ * folder or pi-host release folder with the same packages keeps the venv; the kernel reads each skill's code from its `src` on PYTHONPATH.
+ */
+export function kernelFingerprint(packages: string[], skills: PythonSkill[]): string {
   const h = createHash("sha256");
-  h.update(JSON.stringify(packages));
+  h.update(JSON.stringify(packages.map(p => (p === RUNTIME_DIR ? "<runtime>" : p))));
   h.update(readFileSync(join(RUNTIME_DIR, "pyproject.toml")));
-  for (const skill of [...skills].sort((a, b) => a.dir.localeCompare(b.dir))) {
-    const pyproject = join(skill.dir, "pyproject.toml");
-    h.update(`${skill.dir}\0${readFileSync(pyproject, "utf8")}\0`);
+  for (const skill of [...skills].sort((a, b) => a.importName.localeCompare(b.importName))) {
+    h.update(`${skill.importName}\0${readFileSync(join(skill.dir, "pyproject.toml"), "utf8")}\0`);
   }
   return h.digest("hex");
 }
@@ -101,7 +104,7 @@ export async function kernelPython(agentDir: string, skills: PythonSkill[], onPr
   const python = join(venv, "bin", "python");
   const marker = join(venv, ".pi-rlm-fingerprint");
   const packages = await kernelPackages();
-  const want = fingerprint(packages, skills);
+  const want = kernelFingerprint(packages, skills);
   const current = () => existsSync(python) && existsSync(marker) && readFileSync(marker, "utf8") === want;
   if (current()) return { python, binDir: join(venv, "bin") };
   let job = building.get(venv);

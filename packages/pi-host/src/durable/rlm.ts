@@ -215,7 +215,6 @@ export class DurableRlm {
   private readonly slots = new Map<string, Slot>();
   private readonly idleMs: number;
   private readonly maxDepth: number;
-  private skills: Promise<PythonSkill[]> | undefined;
 
   private constructor(readonly tool: PiTool, private readonly options: DurableRlmOptions) {
     this.idleMs = options.idleMs ?? 10 * 60_000;
@@ -265,28 +264,28 @@ export class DurableRlm {
 
   // ---- The kernel.
 
-  /** The Python skills the prompt lists, with pi-rlm's own copies for the ones it ships, which answer the host requests answered here. */
-  private pythonSkills(cwd: string): Promise<PythonSkill[]> {
-    this.skills ??= (async () => {
-      const own = new Map<string, PythonSkill>();
-      for (const dir of [...RLM_SKILLS, ...BUS_SKILLS]) {
-        const skill = pythonSkillOf(basename(dir), dir);
-        if (skill) own.set(skill.importName, skill);
+  /**
+   * The Python skills the prompt lists, with pi-rlm's own copies for the ones it ships, which answer the host requests answered here.
+   * Read at each kernel start, because a Prime update moves its bundled skills to a new release folder and deletes the old one.
+   */
+  private async pythonSkills(cwd: string): Promise<PythonSkill[]> {
+    const own = new Map<string, PythonSkill>();
+    for (const dir of [...RLM_SKILLS, ...BUS_SKILLS]) {
+      const skill = pythonSkillOf(basename(dir), dir);
+      if (skill) own.set(skill.importName, skill);
+    }
+    const out = new Map<string, PythonSkill>();
+    try {
+      const resources = await primeResources(this.options.agentDir, cwd, this.options.bundledSkillsDir ?? bundledSkillsDir());
+      for (const skill of resources.skills) {
+        const py = pythonSkillOf(skill.name, dirname(skill.filePath));
+        if (py && !out.has(py.importName)) out.set(py.importName, own.get(py.importName) ?? py);
       }
-      const out = new Map<string, PythonSkill>();
-      try {
-        const resources = await primeResources(this.options.agentDir, cwd, this.options.bundledSkillsDir ?? bundledSkillsDir());
-        for (const skill of resources.skills) {
-          const py = pythonSkillOf(skill.name, dirname(skill.filePath));
-          if (py && !out.has(py.importName)) out.set(py.importName, own.get(py.importName) ?? py);
-        }
-      } catch (error) {
-        this.log(`skills not read: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      for (const [name, skill] of own) if (!out.has(name)) out.set(name, skill);
-      return [...out.values()];
-    })();
-    return this.skills;
+    } catch (error) {
+      this.log(`skills not read: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    for (const [name, skill] of own) if (!out.has(name)) out.set(name, skill);
+    return [...out.values()];
   }
 
   private async ensure(slot: Slot, depth: number, progress: (text: string) => void): Promise<Start> {
