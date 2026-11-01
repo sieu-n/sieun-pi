@@ -16,7 +16,7 @@ The recommended architecture. Give the data structures first, then how data flow
 
 ## Synthesis decision
 
-[Arena](../../arena/SKILL.md) fills this in. Record which candidate became the base and why, what came from each other candidate, and what was rejected and why.
+[Phase B](../SKILL.md#phase-b-sketch) fills this in. Record which candidate became the base and why, what came from each other candidate, and what was rejected and why.
 
 ## Tradeoffs accepted
 

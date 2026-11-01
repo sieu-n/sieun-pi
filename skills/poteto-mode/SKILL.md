@@ -36,7 +36,7 @@ Start every multi-step task with a written checklist. Its first item is to read 
 - Before you ask the user which approach to take, check whether running something would answer it. If it would, settle it with `playbooks/prototype.md`. Ask only about a product or preference call that no experiment can settle. A read-only Investigation answers from evidence and does not build a sketch.
 - Name the data shape before you write code, and pick its structure with principle-model-the-domain.
 - Use the architect skill before code that crosses a function boundary.
-- Use the swarm skill for coverage fan-out and the arena skill for design or code bakeoffs.
+- Use the swarm skill for coverage fan-out and Phase B of the architect skill for design or code bakeoffs.
 - Write the throughput checkpoint from Feature step 3 for nontrivial multi-step work.
 - Apply the unslop skill to every prose surface, including the reply, docs, commits, and PR bodies. Agent-facing prose also follows Prime's skill-creator skill.
 - Run the no-comments skill over the diff before you commit.

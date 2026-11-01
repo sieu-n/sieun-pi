@@ -9,15 +9,6 @@
   ]
  },
  {
-  "id": "skill-arena",
-  "tool": "skill arena",
-  "probes": [
-   {
-    "path": "~/.prime/agent/skills/arena/SKILL.md"
-   }
-  ]
- },
- {
   "id": "skill-figure-it-out",
   "tool": "skill figure-it-out",
   "probes": [

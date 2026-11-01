@@ -13,13 +13,6 @@
       "target": ".prime/agent/skills/architect"
     },
     {
-      "id": "skill:arena",
-      "kind": "link",
-      "source": "skills/arena",
-      "scope": "home",
-      "target": ".prime/agent/skills/arena"
-    },
-    {
       "id": "skill:aside-browser",
       "kind": "link",
       "source": "skills/aside-browser",

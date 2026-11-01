@@ -380,7 +380,7 @@ Merge this into `~/.prime/agent/settings.json`. Replace `<you>` with your macOS 
 
 `pstack-models.json` is the one place that says which model each kind of subagent runs on.
 
-- It lists roles such as feature work, bug fixes, `how` and `why` investigators, arena runners, swarm workers, reviewers and frontend work.
+- It lists roles such as feature work, bug fixes, `how` and `why` investigators, architect runners, swarm workers, reviewers and frontend work.
 - Every role is set to `inherit-parent`, so a subagent runs on the same model as the session that started it.
 - The `allowed` list names the models a spawn may pick by hand, and a `banned` rule names model families never to use.
 - Frontend work may name `anthropic/claude-opus-5-5` instead of inheriting.

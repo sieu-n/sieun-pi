@@ -43,7 +43,9 @@
       "upstream_path": "pstack/skills/arena/SKILL.md",
       "upstream_sha256": "8d431f7b1aa19daf6300366fc876c4d1aadac06417ec5502407345ffaf4e90d9",
       "import_sha256": "0f514c8102dc2da6abcfa2be5a585f2ef1572f718061c2615b2fa038e82e4bb9",
-      "unchanged_at_comparison": false
+      "unchanged_at_comparison": false,
+      "merged_into": "skills/architect/SKILL.md",
+      "merged_on": "2026-11-01"
     },
     {
       "path": "skills/create-verification-skill/SKILL.md",

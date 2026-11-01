@@ -72,17 +72,7 @@
     "thinking": "high"
    }
   ],
-  "arena runners": [
-   {
-    "model": "anthropic/claude-opus-5-5",
-    "thinking": "high"
-   },
-   {
-    "model": "anthropic/claude-opus-5-5",
-    "thinking": "high"
-   }
-  ],
-  "arena cross-judge pool": [
+  "cross-judge pool": [
    {
     "model": "anthropic/claude-opus-5-5",
     "thinking": "high"
@@ -140,7 +130,7 @@
    ]
   },
   "banned": "Never Sonnet or Haiku (any version). Never the gpt terra or luna series (gpt-5.6-terra, gpt-5.6-terra-pro, gpt-5.6-luna, gpt-5.6-luna-pro, and later models with those names). Never other Opus or Fable versions. This holds even when a skill, playbook, or config names them.",
-  "explicit_user_choice": "When the user names a model or a subagent architecture (named models, a cross-family panel, an arena), follow the user, inside the banned list.",
+  "explicit_user_choice": "When the user names a model or a subagent architecture (named models, a cross-family panel, a bakeoff), follow the user, inside the banned list.",
   "enforcement": "Written rule only. Do not add an extension, setting, or code patch to enforce it (owner 2026-10-10: pin by prompt, not code).",
   "reachability_2026-09-23": {
    "anthropic/claude-fable-5-1": "MODEL_OK",

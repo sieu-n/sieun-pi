@@ -1,6 +1,6 @@
 ---
 name: architect
-description: "Sketch types, signatures, and module structure before code, then stay in the loop while implementation fills in. Use for `architect`, 'architect this', 'design this', or non-trivial work where jumping to code would lock in the wrong shape."
+description: "Sketch types, signatures, and module structure before code by comparing several candidate designs, then stay in the loop while implementation fills in. Use for `architect`, 'architect this', 'design this', `arena` or 'arena this', or non-trivial work where jumping to code would lock in the wrong shape."
 disable-model-invocation: true
 ---
 
@@ -28,15 +28,24 @@ Skip Phase A only for greenfield work with no surrounding system.
 
 ## Phase B: Sketch
 
-Run the `arena` skill with the design-sketch task and the Phase A artifacts. Give each runner [`references/runner-prompt.md`](references/runner-prompt.md) as its prompt. Each candidate writes a design package shaped per [`references/rationale-template.md`](references/rationale-template.md).
+Run several runners at the same design task, pick the strongest candidate as the base, and graft the best ideas of the others into it. These steps also serve a bakeoff of any other artifact, such as code with several valid shapes or a contested decomposition. Then the artifact replaces the design package and the rubric replaces the red flags.
 
-Take the runner list from the `architect runners` role in `~/.prime/agent/pstack-models.json` (repo default `config/pstack-models.json`). At the `RLM_MAX_DEPTH` ceiling, write the candidates yourself.
+Spawn and drain children per `../setup-pstack/references/prime-agent-runtime.md`. At the `RLM_MAX_DEPTH` ceiling, write the candidates yourself one after another.
+
+1. Write a rubric of 3 to 6 gradeable criteria for this task. `Adds a --dry-run flag that skips writes` is gradeable, and `code is correct` is not. Only you and the judge see the rubric.
+2. Take the runner list from the `architect runners` role in `~/.prime/agent/pstack-models.json` (repo default `config/pstack-models.json`). With no entry, spawn two runners on the parent's model.
+3. Give each runner its own output path, a git worktree when the task touches a repo, otherwise its own scratch directory.
+4. Spawn every runner from one cell with the same brief. The brief names the task, the Phase A artifacts, the runner's output path and [`references/runner-prompt.md`](references/runner-prompt.md). Each candidate writes a design package shaped per [`references/rationale-template.md`](references/rationale-template.md), whose rationale names the alternatives it rejected and why. If a runner produces nothing, continue with the rest and record the dropout.
+5. After every runner has finished, spawn one judge from the `cross-judge pool` role, or on the parent's model when that role is missing. The judge gets the rubric and the candidates by path label, scores each criterion, recommends a base with reasons, and never edits a file.
+6. Read every candidate end to end while the judge runs, and score each one against the rubric yourself. If you and the judge disagree on the base, read both rationales before you decide.
 
 Require at least two structurally different candidates, even when the first looks good enough. Two variants of one shape count as one candidate.
 
-Screen every candidate against [`references/design-red-flags.md`](references/design-red-flags.md) before synthesis, and revise or reject the ones that fail. Among the rest, prefer the one that hides the most complexity behind the smallest public interface.
+Screen every candidate against [`references/design-red-flags.md`](references/design-red-flags.md), and revise or reject the ones that fail. Among the rest, pick as the base the one that hides the most complexity behind the smallest public interface, which a future maintainer can extend without breaking its invariants. On a tie, take the smaller interface per principle-laziness-protocol.
 
-Arena returns one synthesized design package. Its pick fills the rationale's "Synthesis decision" section.
+Walk each other candidate once more and fold its one or two best ideas into the base by hand, as if they had been in the design from day one. If the candidates converge on one shape, keep it and record the convergence. If they diverge widely, the task was under-specified, so reframe it and re-run this phase instead of averaging.
+
+The result is one synthesized design package. Its "Synthesis decision" section names the base and why, the judge's verdict, each graft with its source candidate, each rejected idea with the reason, and any dropouts.
 
 ## Phase C: Agree (opt-in)
 
@@ -74,7 +83,7 @@ When you scrap:
 1. Re-run the `how` skill over what you built, so the lessons enter the new design as inputs.
 2. Redesign as if the new constraints had been there from day one.
 3. Make the new sketch smaller than the old one before it grows.
-4. Return to Phase B and re-run arena.
+4. Return to Phase B and re-run it.
 
 ## Outputs
 

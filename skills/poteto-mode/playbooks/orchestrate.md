@@ -48,7 +48,7 @@ Shrink the template to one paragraph for a one-command unit, keeping goal, scope
 
 #### Steps
 
-1. Frame the program. State the done predicate as a count, such as "all 126 units merged, each `unit-test-verified` or better". Estimate units, effort, and wall-clock budget. If one agent fits the budget, stop and use Autonomous run. Plan to stop spawning at about 70% of the budget and land what is verified. Put a contested decomposition through the arena skill.
+1. Frame the program. State the done predicate as a count, such as "all 126 units merged, each `unit-test-verified` or better". Estimate units, effort, and wall-clock budget. If one agent fits the budget, stop and use Autonomous run. Plan to stop spawning at about 70% of the budget and land what is verified. Put a contested decomposition through Phase B of the architect skill.
 2. Run `orch init`, open the decision trail, write the standing orders, and seed the frontier if a Graphite stack exists.
 3. Push one pilot unit through brief, worker, verification, ledger row, and merge, and fix the template from what it shows. For near-identical cheap units, the first unit is the pilot.
 4. Spawn workers as a rolling window up to the in-flight cap. Paste upstream reports into the briefs of dependent units. Siblings talk only through you.

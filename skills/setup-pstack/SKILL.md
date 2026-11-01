@@ -24,7 +24,7 @@ model = entries[0]["model"]                        # "provider/model" selector
 thinking = entries[0].get("thinking")              # off|minimal|low|medium|high|xhigh|max
 ```
 
-A panel role (`how critics`, `arena runners`, `architect runners`, `arena cross-judge pool`) has one entry per subagent, so the list length sets the fan-out.
+A panel role (`how critics`, `architect runners`, `cross-judge pool`) has one entry per subagent, so the list length sets the fan-out.
 For an entry of `{"model": "inherit-parent"}`, omit `model=` in `rlm.spawn(...)`. It still counts toward the fan-out.
 
 ## Steps
@@ -62,7 +62,7 @@ Show every role with its current model. Mark each selector that failed step 1 as
 Ask in chat whether to keep the config or change specific roles. Give a short numbered list of the reachable models plus `inherit-parent`, and mark the default.
 
 `swarm workers` is the model for every worker unless a race or comparison sets a model per arm.
-Arena picks one entry from `arena cross-judge pool`, from a model family other than the parent's when it can.
+Phase B of the architect skill picks one entry from `cross-judge pool`, from a model family other than the parent's when it can.
 
 ### 4. Validate
 
@@ -91,7 +91,7 @@ Overwrite the whole file, so a re-run gives the same result.
 Copy the `policy` block over unchanged unless the user changes the policy. Do not copy it into AGENTS.md or a skill.
 
 Use these role labels exactly:
-`feature, refactoring`, `bug-fix`, `perf-issue`, `hillclimb`, `judgment and prose`, `hardest tasks`, `how explorer`, `how explainer`, `how critics`, `why investigators`, `why synthesizer`, `arena runners`, `arena cross-judge pool`, `swarm workers`, `architect runners`, `frontend`.
+`feature, refactoring`, `bug-fix`, `perf-issue`, `hillclimb`, `judgment and prose`, `hardest tasks`, `how explorer`, `how explainer`, `how critics`, `why investigators`, `why synthesizer`, `cross-judge pool`, `swarm workers`, `architect runners`, `frontend`.
 
 ### 6. Confirm
 

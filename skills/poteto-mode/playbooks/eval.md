@@ -17,8 +17,8 @@ For testing how a skill, structure, or prompt change affects agent behavior befo
 1. Name the variant under test and what success looks like. Write a rubric of 3 to 6 concrete criteria for the judge only.
 2. Give each candidate its own working directory with the variant in place and the context a real task would have.
 3. Write one ordinary prompt and give it to every candidate.
-4. Spawn the candidates on different models per Phase B of the arena skill.
-5. Spawn one blind judge on a different model family per Phase C of the arena skill.
+4. Spawn every candidate from one cell, each on a different model and in its own directory.
+5. After every candidate has finished, spawn one blind judge on a different model family. The judge gets the rubric and the outputs under neutral labels, scores each criterion, and never edits a file.
 6. Read each candidate's transcript at `~/.prime/agent/session-artifacts/<this-session-id>/sub-<child>/<child-id>.jsonl`, or preview it with `await agent_observe.recent_messages(<child-name>)`. Do not search `~/.prime/agent/sessions/`, which holds other projects' chats. Grade from the files each candidate opened and the code it wrote.
 7. Read every output yourself and compare it with the judge. A disagreement means a biased model or an unclear rubric.
 

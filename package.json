@@ -51,7 +51,6 @@
     ],
     "skills": [
       "./skills/architect/SKILL.md",
-      "./skills/arena/SKILL.md",
       "./skills/aside-browser/SKILL.md",
       "./skills/board/SKILL.md",
       "./skills/create-verification-skill/SKILL.md",
