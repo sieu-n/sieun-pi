@@ -309,6 +309,20 @@ test("pool_codex keeps an email-code account's new sign-in the agent's fix", asy
   assert.ok(outcome.status === "fail" && outcome.fixer === "agent", JSON.stringify(outcome));
 });
 
+// 11-01: sieunpark77's Codex week (100% until 11-04 06:38Z) and ungsugoe5's free 30d window were both used up by real work, and pool_codex
+// called it an agent fix for 4 runs, though no agent can add room before the resets.
+test("pool_codex reads a pool that real use has spent as off with its reset, and keeps an unknown stall the agent's fix", async () => {
+  const now = Date.parse("2026-11-01T19:32:00Z");
+  const run = (rows: object[]) => poolCodex.run({ ...poolDeps(rows), now: () => now });
+  const week = { email: "sieunpark77@gmail.com", reason: "depleted", windows: [{ pct: 100, resets_at: 1793774325 }] };
+  const month = { email: "ungsugoe5@gmail.com", reason: "depleted", windows: [{ pct: 100, resets_at: 1795269348 }] };
+  const apple = { email: "fhnyq29tw5@privaterelay.appleid.com", reason: "disabled", disabled: true };
+  const spent = await run([apple, month, week]);
+  assert.ok(spent.status === "off" && spent.detail.includes("sieunpark77@gmail.com until 11-04 06:38Z") && spent.detail.endsWith("serves again at 11-04 06:38Z"), JSON.stringify(spent));
+  const unknown = await run([month, { email: "sieunpark77@gmail.com", reason: "depleted", windows: [{ pct: 100, resets_at: null }] }]);
+  assert.ok(unknown.status === "fail" && unknown.fixer === "agent", JSON.stringify(unknown));
+});
+
 // 10-24 to 10-26: sieunpark77's Claude sign-in, which needs the owner's Aside and no password or 2FA from him, counted in owner_fixes for 28
 // runs while his Mac was offline, so no todo could hold it and the dead account fell out of skills_or_tools_to_fix.
 const poolClaude = CHECKS.find(check => check.id === "pool_claude")!;

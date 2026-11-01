@@ -287,7 +287,7 @@ const utcMinute = (ms: number) => `${new Date(ms).toISOString().slice(5, 16).rep
 async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise<Outcome> {
   const result = await deps.exec("pi-pool", ["ls", "--json", ...(provider === "anthropic" ? [] : ["--provider", provider])], { timeoutMs: CALL_TIMEOUT_MS });
   if (result.code !== 0) return FAIL("agent", `pi-pool ls ${failText(result)}`, "reinstall pi-pool with packages/pi-pool/install.py in sieun-pi");
-  type Row = { id?: string; email?: string; tier?: string; usable?: boolean; reason?: string | null; cooldown_reason?: string | null; disabled?: boolean; limited_until?: number | null; cooldown_until?: number | null; windows?: { resets_at?: number | null }[] };
+  type Row = { id?: string; email?: string; tier?: string; usable?: boolean; reason?: string | null; cooldown_reason?: string | null; disabled?: boolean; limited_until?: number | null; cooldown_until?: number | null; windows?: { pct?: number | null; resets_at?: number | null }[] };
   const rows = (parseJson(result.stdout) as { rows?: Row[] }).rows ?? [];
   const live = rows.filter(row => row.disabled !== true);
   // A team org that already refuses a member for having no seat has more members than seats, so signing in a revoked member gives it no
@@ -320,6 +320,19 @@ async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise
     const mac = await macReach(deps);
     return FAIL("agent", `${reauth.join(", ")} need a new sign-in (${counts})${mac.online ? "" : `; ${mac.detail}`}`,
       `copy a live login of the account if a box has one, else run \`pi-pool login <email> --provider ${provider}\` in the owner's Aside once his Mac is online; never \`pi-pool off\` the account, since he turns accounts on and off in Settings, Accounts and his last choice stands; a password or 2FA prompt makes it an owner item`);
+  }
+  // Every account used up its own window by real work and serves again at a known time, so nothing waits on a fix: on 11-01 sieunpark77's
+  // Codex week, spent from 10-28 06:38Z to 10-31 00Z by two Prime chats and Vent's CLIProxy traffic, reset on 11-04, and the check called it
+  // an agent fix for 4 runs.
+  const spentUntil = (row: Row) => {
+    const ends = [row.limited_until, ...(row.windows ?? []).filter(window => (window.pct ?? 0) >= 100).map(window => window.resets_at)]
+      .filter((at): at is number => typeof at === "number" && at > nowSec);
+    return ends.length ? Math.max(...ends) : undefined;
+  };
+  const spent = live.map(row => ({ row, until: spentUntil(row) }));
+  if (!usable && live.length && spent.every(({ row, until }) => row.reason === "depleted" && until !== undefined)) {
+    const first = Math.min(...spent.map(({ until }) => until!));
+    return { status: "off", detail: `every live ${provider} account has used up its window (${spent.map(({ row, until }) => `${row.email ?? "?"} until ${utcMinute(until! * 1000)}`).join(", ")}; ${counts}), so the pool serves again at ${utcMinute(first * 1000)}` };
   }
   if (!usable && !soon) return FAIL("agent", `no ${provider} account is usable and none resets within 24 h (${counts})`, "read `pi-pool ls --json` and find why every account is stuck");
   return PASS(counts);
