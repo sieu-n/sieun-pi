@@ -256,7 +256,40 @@ function entriesProvider(entries: readonly unknown[]): string | undefined {
   return undefined;
 }
 
+const TAIL_CHUNK = 4 * 1024 * 1024;
+/** An entry's own stamp at the head of its line; a stamp quoted in a tool result sits inside a string, after the line's head. */
+const HEAD_STAMP = /^\{"type":"[a-z_]+","id":"[^"]*","parentId":(?:"[^"]*"|null),"timestamp":"(\d{4}-\d\d-\d\dT[\d:.]+Z)"/m;
+
+/**
+ * The whole lines of a transcript from its end back to the first chunk whose first stamp is before `since`, so a read decodes and splits
+ * only the tail a turn after `since` can be in. The alert bridge reads each watched job's transcript on its 30 s tick (alert-bridge.ts
+ * `watch`); a whole read of a 131 MB transcript took 870 to 1,010 ms of main thread on 11-01, and the chat's CPU profile held the loop
+ * 443 ms at 05:02:41Z and 510 ms at 05:23:45Z in one such read.
+ */
+export async function transcriptTail(file: string, since: number, chunk = TAIL_CHUNK): Promise<string> {
+  const handle = await open(file, "r");
+  try {
+    const { size } = await handle.stat();
+    const parts: Buffer[] = [];
+    for (let end = size; end > 0;) {
+      const start = Math.max(0, end - chunk);
+      const buffer = Buffer.alloc(end - start);
+      await handle.read(buffer, 0, buffer.length, start);
+      end = start;
+      parts.unshift(buffer);
+      if (start === 0) break;
+      const lineStart = buffer.indexOf(10) + 1;
+      if (lineStart === 0) continue;
+      const stamp = HEAD_STAMP.exec(buffer.toString("utf8", lineStart));
+      if (stamp && Date.parse(stamp[1]!) < since) { parts[0] = buffer.subarray(lineStart); break; }
+    }
+    return Buffer.concat(parts).toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
 /** `turnSince` over the transcript at `file`; a missing file has no turn. */
 export async function readTurnSince(file: string, since: number): Promise<TurnSince> {
-  return turnSince(await readFile(file, "utf8").catch(() => ""), since);
+  return turnSince(await transcriptTail(file, since).catch(() => ""), since);
 }
