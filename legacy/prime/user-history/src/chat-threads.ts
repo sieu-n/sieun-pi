@@ -407,9 +407,14 @@ export class ThreadHub {
    */
   private resting(thread: Thread): boolean {
     const { queue } = thread.state;
-    return !isThreadBusy({ ...thread.state, children: holding(thread.state.children, this.dormant.now()) }) &&
+    return !isThreadBusy({ ...thread.state, children: holding(thread.state.children, this.dormant.now(), this.listedChildren(thread.id)) }) &&
       queue.steering.length === 0 && queue.followUp.length === 0 &&
       !this.resuming.has(thread.id) && !this.opening.has(thread.id) && !this.using.has(thread.id);
+  }
+
+  /** The rlm children the daemon lists below the chat, by rlm child id, with whether each row is loaded (`holding`). */
+  private listedChildren(id: string): Map<string, boolean> {
+    return new Map(this.catalog.tree(id).flatMap(row => row.rlmChildId ? [[row.rlmChildId, row.activeSessionId !== undefined] as const] : []));
   }
 
   /**

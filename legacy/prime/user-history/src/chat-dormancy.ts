@@ -52,9 +52,14 @@ export const unsilent = (children: readonly ChildAgent[], now: number): ChildAge
  * frontend bro sat attached, loaded alone on its Mac worker and idle 18 to 48 min, while pi-pool held seven of its stopped jobs until 06:00Z,
  * and from 05:49Z to 06:00Z Crawler VP did the same behind one stopped job held until 06:01:30Z, so the idle unload left both and d7 read them
  * as lingering sessions.
+ * The roster's activity time is not always dropped at a stop, so the daemon's list wins where it names the child (`listed`, by rlm child id,
+ * with whether its row is loaded). On 11-01 api portal vp's roster kept portal-logs and staging rate check unavailable running with their
+ * 16:36Z activity times after the idle unload stopped both at 17:04Z and 17:15Z, and CI and RepoOps kept dashboards home loading at 17:43Z
+ * while its row was not loaded; both chats sat attached and loaded alone on their workers (0.66 and 0.80 GB) from about 17:56Z, idle 67 and
+ * 70 min by their own work at d7's 18:48Z run, and would have until CHILD_SILENT_MS ran out.
  */
-export const holding = (children: readonly ChildAgent[], now: number): ChildAgent[] =>
-  children.filter(child => child.lastActivityAt !== undefined && silentSince(child, children, now) === null);
+export const holding = (children: readonly ChildAgent[], now: number, listed: ReadonlyMap<string, boolean> = new Map()): ChildAgent[] =>
+  children.filter(child => child.lastActivityAt !== undefined && listed.get(child.id) !== false && silentSince(child, children, now) === null);
 
 /** The one line a chat gets for a silent child when it detaches; the id and the time it went silent make the line its own key. */
 export function silentNotice(child: ChildAgent, since: number, now: number): string {

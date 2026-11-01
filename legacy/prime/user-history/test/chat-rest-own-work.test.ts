@@ -14,9 +14,9 @@ const CHAT = "01a11bd7-072f-7591-ad1d-f123c276cde5";
 const ownWork = Date.parse("2026-11-01T09:08:00Z");
 
 /** A hub on a 15 min idle time whose clock the test moves, with one pinned chat whose session last worked at `ownWork`. */
-function hub() {
+function hub(tree: () => object[] = () => []) {
   const clock = { now: ownWork };
-  const catalog = { summary: async (id: string) => ({ sessionId: id, activeSessionId: "a-" + id, cwd: "/", lifecycle: "live", lastActivityAt: new Date(ownWork).toISOString() }),
+  const catalog = { tree, summary: async (id: string) => ({ sessionId: id, activeSessionId: "a-" + id, cwd: "/", lifecycle: "live", lastActivityAt: new Date(ownWork).toISOString() }),
     hostOf: () => null, daemonPath: (row: { sessionFile?: string }) => row.sessionFile, subscribe: () => () => {} } as unknown as Catalog;
   const threads = new ThreadHub("/nonexistent.sock", catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }), async () => undefined,
     { minutes: () => 15, now: () => clock.now });
@@ -72,5 +72,19 @@ test("a job's steps hold the chat only while the job runs, and the chat rests fr
   assert.equal(await restAt(ownWork + 16 * MIN), false, "a running job holds its chat");
   broadcast({ type: "children", children: [{ ...job, status: "done", lastActivityAt: ownWork + 16 * MIN }] });
   assert.equal(await restAt(ownWork + 16 * MIN + 1000), true, "the job's steps do not restart the chat's 15 min");
+  await threads.close();
+});
+
+test("a job the roster still reads running holds its chat only while the daemon lists it loaded", async () => {
+  // The 18:48Z state of api portal vp: its roster kept portal-logs running with its 16:36:40Z activity time after the idle unload stopped it.
+  let loaded = false;
+  const { threads, clock, restAt, broadcast } = hub(() => [{ sessionId: "job-row", rlmChildId: "sub-b9040225", ...loaded ? { activeSessionId: "a-job" } : {} }]);
+  clock.now = ownWork + MIN;
+  await threads.resume(CHAT, true, "catalog");
+  broadcast({ type: "children", children: [{ id: "sub-b9040225", label: "portal-logs", status: "running", lastActivityAt: ownWork + 10 * MIN }] });
+  loaded = true;
+  assert.equal(await restAt(ownWork + 16 * MIN), false, "a loaded running job holds its chat");
+  loaded = false;
+  assert.equal(await restAt(ownWork + 17 * MIN), true, "the daemon lists the job unloaded, so its stale roster entry holds nothing");
   await threads.close();
 });
