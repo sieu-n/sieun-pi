@@ -21,7 +21,7 @@ import { chatDataDir } from "../../src/owner-ok.ts";
 import { beatStale, type CacheBeat, pendingWakes, readBeat, treeSessions, treeWakes } from "../../src/wakes.ts";
 import { processEvidence } from "../../src/proc-evidence.ts";
 import { harnessSlow, slowChat, workerMisses } from "../../src/harness-slow.ts";
-import { chatNamer, type DaemonFault, faultWords, type ListedSession, listedSessions, type QueueOverrun, readQueueOverruns, readReopenedSends, readServiceFaults, readSupervisorFaults, SLOW_MS } from "../../src/daemon-faults.ts";
+import { blameSupervisorStalls, chatNamer, type DaemonFault, faultWords, type ListedSession, listedSessions, type QueueOverrun, readQueueOverruns, readReopenedSends, readServiceFaults, readSupervisorFaults, readSupervisorStalls, SLOW_MS } from "../../src/daemon-faults.ts";
 import { readRecords } from "../../src/orphan-services.ts";
 import { hostUpdateSpans, readUpdateSpans, type UpdateSpan } from "../../src/prime-update.ts";
 import { deliveryCandidates, outboxLandings, readSessionMarks, type SlotWaitTimeout, splitSlotWaits } from "../../src/slot-wait-timeouts.ts";
@@ -1995,8 +1995,8 @@ async function main(): Promise<void> {
   const box = watch.at(-1)?.host ?? hostname();
   const workerPolls = supervisorLogs.flatMap(workerMisses).filter(at => at >= now - WINDOW_MS - 2 * MINUTE);
   const reopened = readReopenedSends(serviceLines);
-  const allFaults = [...readServiceFaults(serviceLines, box), ...supervisorLogs.flatMap(lines => readSupervisorFaults(lines, box, reopened))]
-    .filter(fault => fault.at >= now - WINDOW_MS - 2 * MINUTE);
+  const allFaults = blameSupervisorStalls([...readServiceFaults(serviceLines, box), ...supervisorLogs.flatMap(lines => readSupervisorFaults(lines, box, reopened))]
+    .filter(fault => fault.at >= now - WINDOW_MS - 2 * MINUTE), supervisorLogs.flatMap(readSupervisorStalls), box);
   const queueOverruns = readQueueOverruns(serviceLines, box).filter(entry => entry.at >= now - WINDOW_MS - 2 * MINUTE);
   const listed = listedSessions(await catalogCopies(dataDir), [...allFaults.flatMap(fault => fault.session ? [fault.session.slice(0, 8)] : []), ...queueOverruns.map(entry => entry.session)]);
   const marks = await readSessionMarks(deliveryCandidates(allFaults), short => listed.get(short)?.file, box, now);

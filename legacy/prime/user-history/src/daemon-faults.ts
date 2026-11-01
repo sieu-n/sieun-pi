@@ -147,6 +147,40 @@ const BUN_PANIC = /^\[(\S+Z)\] supervisor: Session worker (\w+) stderr: panic\((
  */
 const WORKER_HUNG = /^\[(\S+Z)\] supervisor: Killing unresponsive session worker (\w+) pid=(\d+): no frame for ([\d.]+) s/;
 
+/**
+ * The supervisor's own event loop stall, which Prime logs from load.3.9-test.20 on (`recordStall` in daemon-supervisor.ts). At 22:16Z on 11-01
+ * it answered no call from 22:16:14Z to 22:16:33Z and from 22:16:36Z to 22:16:55Z while it serialized 350 MB of passive schedule rows, and a
+ * send_message that resumed rg37-convex timed out at 30 s. d7 booked the minute on the box's CPU and read 0 Prime faults.
+ */
+const SUPERVISOR_STALL = /^\[(\S+Z)\] supervisor: event loop stalled (\d+) ms since (\S+Z)$/;
+
+/** A span the supervisor's own event loop answered nothing in, from the tick before it to the late tick. */
+export interface SupervisorStall { from: number; to: number; ms: number }
+
+export function readSupervisorStalls(lines: readonly string[]): SupervisorStall[] {
+  const stalls: SupervisorStall[] = [];
+  for (const line of lines) {
+    const found = SUPERVISOR_STALL.exec(line);
+    if (!found) continue;
+    const from = Date.parse(found[3]!), to = Date.parse(found[1]!);
+    if (Number.isFinite(from) && Number.isFinite(to)) stalls.push({ from, to, ms: Number(found[2]) });
+  }
+  return stalls;
+}
+
+/**
+ * Names a daemon call of this box whose wait overlapped a supervisor stall as a Prime fault: the call waited from its timeout's start (or
+ * SLOW_MS before its line) to its line, and the supervisor answered nothing in part of that time.
+ */
+export function blameSupervisorStalls(faults: readonly DaemonFault[], stalls: readonly SupervisorStall[], local: string): DaemonFault[] {
+  return faults.map(fault => {
+    if (fault.prime || fault.host !== local) return fault;
+    const from = fault.at - (fault.timedOut?.ms ?? SLOW_MS);
+    const stall = stalls.find(span => span.from < fault.at && span.to > from);
+    return stall ? { ...fault, prime: `the supervisor's event loop stalled ${Math.round(stall.ms / 1000)} s` } : fault;
+  });
+}
+
 /** A worker the supervisor killed as hung: from its last frame to the kill. */
 export interface WorkerHang { worker: string; pid: number; from: number; to: number }
 
