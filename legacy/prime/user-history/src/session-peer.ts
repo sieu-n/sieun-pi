@@ -174,6 +174,11 @@ export type PeerOptions = {
    * Each 30 min resync held the idle checks on that link 7.9 to 21.8 s the same way that day.
    */
   fullClient?: () => DaemonClient;
+  /**
+   * The full list off the main thread, as the daemon's `{ sessions }` (src/full-list.ts); when it returns a promise, that runs instead of a
+   * request on `fullClient` or `client`. This box's 65 MB list held the chat's event loop 777 ms and a major GC 814 ms more at 06:24Z on 11-01.
+   */
+  fullList?: () => Promise<unknown> | null;
   /** Where the copy is kept across restarts; null keeps it in memory only. */
   file: string | null;
   /** Deadlines of the socket connect, the daemon hello and roster_subscribe on this link. */
@@ -338,6 +343,8 @@ export class SessionPeer {
   }
 
   private async request(all: boolean): Promise<SessionSummary[]> {
+    const listed = all ? this.options.fullList?.() : null;
+    if (listed) return parseSummaries(await listed);
     const own = all ? this.options.fullClient?.() : undefined;
     try {
       if (own) {

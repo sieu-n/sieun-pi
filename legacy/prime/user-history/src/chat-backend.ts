@@ -165,8 +165,9 @@ export function chatDefaultsStore(agentDir: string): ChatDefaultsStore {
  * `hosts`: the other boxes in hosts.json, whose sessions join the catalog and whose commands go to their own daemons.
  * `copyFile`: where this box's session copy is kept across restarts (`SessionPeer`), so a restart serves the sidebar before any list.
  * `saveAgents`: the chats' agents go to AGENTS_FILE in the data dir at the stop, so the next start answers agents reads before its first projection.
+ * `listInWorker`: each full list of this box's sessions runs in a worker thread (`Catalog.listsInWorker`).
  */
-export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string; ownChatsOnly?: boolean; scratch?: boolean; replay?: boolean; hosts?: HostCatalogs | null; copyFile?: string | null; saveAgents?: boolean } = {}): Promise<ChatBackend> {
+export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string; ownChatsOnly?: boolean; scratch?: boolean; replay?: boolean; hosts?: HostCatalogs | null; copyFile?: string | null; saveAgents?: boolean; listInWorker?: boolean } = {}): Promise<ChatBackend> {
   const scratch = options.scratch === true;
   // A replay serve runs the loops a live start runs whose only effects are daemon commands, which all reach the recorded fake daemon, and
   // writes in its data dir copy. Whatever reaches past those (job leftovers, GitHub, the spawn ledger, Grafana, duty measures,
@@ -192,6 +193,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const dutyLog = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
   const relays = relayRecord(join(dataDir, "relayed.json"));
   const catalog = new Catalog(socketPath, readState, labels, { ids: () => chats.ids(), checkIns: () => chats.checkIns(), links: (id, name) => chats.links(id, name), briefs: () => chats.briefs(), archivedIds: () => chats.archivedIds(), roster: children => { if (!quiet) void relayHops(relays, [...children.values()].flat(), dutyLog).catch(error => dutyLog(`relay: hops: ${error instanceof Error ? error.message : String(error)}`)); return chats.roster(children); } }, new ThreadOrigins(created, cleanRoomChats), options.hosts ?? null, options.copyFile ?? null, options.saveAgents ? join(dataDir, AGENTS_FILE) : null);
+  catalog.listsInWorker = options.listInWorker === true;
   const boards = new BoardStore(dataDir);
   const corrections = new CorrectionLedger(sharedDataDir(dataDir));
   const threads = new ThreadHub(socketPath, catalog, () => defaults.read(), async id => (await chats.ids()).has(id) ? boards.read(id) : undefined,

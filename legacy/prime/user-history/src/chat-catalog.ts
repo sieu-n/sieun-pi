@@ -3,7 +3,8 @@ import { readdir, rename, writeFile } from "node:fs/promises";
 import { performance as loopPerformance } from "node:perf_hooks";
 import { basename, dirname, join } from "node:path";
 import { parseSkillBlock, type SessionSummary } from "prime-agent";
-import { DaemonClient } from "./daemon-sdk.ts";
+import { DaemonClient, onPiHost } from "./daemon-sdk.ts";
+import { fullListInWorker } from "./full-list.ts";
 import type { ChatLabels } from "./chat-labels.ts";
 import { keptChatAgents, stepSessions, withPoolBelow, withQueue, withRates, withSlotParks, withWaits, type AgentRow, type SubagentSession } from "./chat-agents.ts";
 import { type FileSlotPark, heldSlotParkReads, poolPark, readRowSlotPark, type SlotPark, takeSlotParkReads } from "./slot-park.ts";
@@ -852,6 +853,8 @@ export class Catalog {
     if (line) process.stderr.write(`${new Date().toISOString()} ${line}\n`);
   }, PROJECTION_LOG_MS).unref();
   private closed = false;
+  /** Each full list of this box runs in a worker thread (src/full-list.ts); the live serve sets it, and a test that fakes `client` leaves it off. */
+  listsInWorker = false;
 
   constructor(private readonly socketPath: string, private readonly readState: ChatReadState, private readonly labels: ChatLabels, private readonly chats: Pick<Chats, "ids" | "checkIns" | "links"> & Partial<Pick<Chats, "briefs" | "archivedIds" | "roster">>,
     private readonly origins: ThreadOrigins, private readonly hosts: HostCatalogs | null = null, copyFile: string | null = null, private readonly agentsFile: string | null = null) {
@@ -864,6 +867,7 @@ export class Catalog {
     // to this box's daemon that failed on the hello by 10-27, the link's own syncs and the service commands that went through it, while probes got
     // the supervisor's hello after 3 to 7 s (~/work/prime-under-load/LOGS.md).
     this.peer = new SessionPeer({ name: hosts?.selfName ?? "this box", client: this.client, file: copyFile, deadlines: { socketMs: CATALOG_LINK_MS, helloMs: CATALOG_LINK_MS }, changeMs: 150,
+      fullList: () => this.listsInWorker && !onPiHost ? fullListInWorker(socketPath, { socketMs: CATALOG_LINK_MS, helloMs: CATALOG_LINK_MS }) : null,
       reconnectMs: 2000, log: line => process.stderr.write(`catalog: ${line}\n`), onChange: () => this.peerChanged(),
       onHello: hello => {
         this.observedDaemonVersion = { version: hello.appVersion };
