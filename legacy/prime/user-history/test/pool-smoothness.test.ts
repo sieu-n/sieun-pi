@@ -11,8 +11,9 @@ const HEAD = "01a115e2-9544-7204-b8db-8ce4d5319048";
 const admitted = (session: string, ts: string, waited: number): string =>
   JSON.stringify({ ts, event: "turn_admitted", session, tree: session, kind: "slot", waited_s: waited });
 const queued = (session: string, ts: string): string => JSON.stringify({ ts, event: "turn_queued", session, tree: session, working: 12, queued: 100 });
+// Each refusal gives a cell past the run, so no tree here sleeps past its own cell (test/pool-park-asleep.test.ts).
 const parked = (session: string, clock: string, priority = "normal"): string =>
-  JSON.stringify({ ts: "local", event: "parked", provider: "anthropic", session, at: at(clock), account: "claude5@slack.green", slot_at: at(clock) + 60, priority, room: [] });
+  JSON.stringify({ ts: "local", event: "parked", provider: "anthropic", session, at: at(clock), account: "claude5@slack.green", slot_at: at("12:00:00"), priority, room: [] });
 const unparked = (session: string, clock: string): string =>
   JSON.stringify({ ts: "local", event: "unparked", provider: "anthropic", session, at: at(clock), account: "claude5@slack.green" });
 
@@ -161,11 +162,12 @@ test("a vend with no unparked line before it ends the park, as 01a15ede's claude
 // 10-24 on us-metal02: the ops guy chat 01a11af8 parked at 00:59:37Z for claude-virev7 at 01:00Z, and the wait line named vend claude20, so its
 // head's two requests went out on claude20 and its turn ended at 00:59:57Z. Its tree asked again only at 01:12:26Z, a job run that left the
 // turn queue after 1,114 s, while 01a1692f, parked at 01:00Z, entered claude12 at 01:06:46Z; d7's 01:31Z run read 01a11af8 as passed for 12.5 min.
+// Here the refusals name a 01:15Z cell, so the tree is not read as asleep past its own cell (test/pool-park-asleep.test.ts).
 test("a park whose wait vends the tree's own account meanwhile is served, and a 429 on that account makes it a hold again", () => {
   const OPS = "01a11af8-962e-773d-a19a-ee4104011987", LATER = "01a1692f-c189-716e-8951-d0eb45e758e3";
   const day = (clock: string): number => Date.parse(`2026-10-24T${clock}Z`) / 1000;
   const park = (session: string, clock: string, account: string): string =>
-    JSON.stringify({ ts: `2026-10-24T${clock}`, event: "parked", provider: "anthropic", session, at: day(clock), account, slot_at: day("01:00:00"), priority: "normal", room: [account] });
+    JSON.stringify({ ts: `2026-10-24T${clock}`, event: "parked", provider: "anthropic", session, at: day(clock), account, slot_at: day("01:15:00"), priority: "normal", room: [account] });
   const wait = (session: string, clock: string, account: string, vend: string | null): string =>
     JSON.stringify({ ts: `2026-10-24T${clock}`, event: "wait", provider: "anthropic", session, account, slot_at: "2026-10-24T01:00:00", priority: "normal", vend, left: vend ? "budget_overrun" : null });
   const enter = (session: string, clock: string, account: string): string =>

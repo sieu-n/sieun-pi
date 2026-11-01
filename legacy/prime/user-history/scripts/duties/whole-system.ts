@@ -524,9 +524,10 @@ export interface Smoothness {
   headWaits: { session: string; waitedS: number; passed: boolean }[];
   /**
    * Per park that ended in the window: minutes it stayed parked after a tree of its priority or lower that parked later got an account, less the
-   * minutes its tree's box read offline (`offline`, set when there were any).
+   * minutes its tree's box read offline (`offline`, set when there were any) and the minutes its tree asked pi-pool nothing after the cell it
+   * was given came due (`asleep`, set when there were any).
    */
-  overtaken: { session: string; minutes: number; offline?: number }[];
+  overtaken: { session: string; minutes: number; offline?: number; asleep?: number }[];
 }
 
 /** How long a tree's box read offline in [from, to) (`treeOffline`); absent: every tree's box read online throughout. */
@@ -581,10 +582,16 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
   // `held` is whether R6, the move budget, held the tree on its own account at each refusal (the parked line's `budget`): such a tree waits
   // outside R5's order across accounts, so a later tree that entered another account meanwhile did not pass it. 01a17e52, out of moves,
   // parked for claude-virev12's 20:10Z reset at 19:15Z on 10-29 and read as passed for 23.5 min by trees that entered claude22.
+  // `slot` is the cell the tree's latest refusal gave it, and `asleep` each span from such a cell to the tree's next ask: pi-pool admits only a
+  // tree that asks, so a tree that slept past its own cell waited on itself. SEO guy (01a11a24), low, was given claude16's 09:15:30Z cell on
+  // 11-01 at 09:14:40Z, asked nothing until 09:25:42Z, and d7 read it as passed for 11.2 min by 01a19659, low, which entered at 09:14:31Z.
   const parks = new Map<string, { start: number; last: number; from?: number; ranks: { at: number; rank: number }[]; held: { at: number; budget: boolean }[];
-    manual: boolean; served?: boolean }>();
+    manual: boolean; served?: boolean; slot: number | undefined; asleep: [number, number][] }>();
   const ended: { session: string; start: number; from: number; end: number; ranks: { at: number; rank: number }[]; held: { at: number; budget: boolean }[];
-    led: boolean; served: boolean }[] = [];
+    led: boolean; served: boolean; asleep: [number, number][] }[] = [];
+  const woke = (park: { slot: number | undefined; asleep: [number, number][] }, at: number): void => {
+    if (park.slot !== undefined && at > park.slot) park.asleep.push([park.slot, at]);
+  };
   // Whether each session's latest wait line named an account the hook vends meanwhile (`vend`, sched.Wait): such a tree's requests go out on
   // its own account while it waits for a better one, so it is served, and only a 429 on it (a `limited` line) leaves it unserved. At 00:59:37Z
   // on 10-24 the ops guy chat 01a11af8 parked for claude-virev7 at 01:00Z with vend claude20 (left budget_overrun), its head's turn ran on
@@ -601,7 +608,7 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
     if (!line.includes('"turn_admitted"') && !line.includes('"turn_queued"') && !line.includes('"turn_dropped"') && !line.includes('"parked"') &&
       !line.includes('"unparked"') && !line.includes('"vend"') && !line.includes('"wait"') && !line.includes('"limited"') && !line.includes('"priority"')) continue;
     let entry: { ts?: unknown; event?: unknown; session?: unknown; at?: unknown; waited_s?: unknown; priority?: unknown; provider?: unknown; reason?: unknown; manual?: unknown;
-      vend?: unknown; budget?: unknown };
+      vend?: unknown; budget?: unknown; slot_at?: unknown };
     try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
     if (typeof entry.session !== "string") continue;
     const head = heads.has(entry.session);
@@ -662,7 +669,9 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
     // pinned to claude8, waited from 15:19Z for its 16:30Z reset and read as passed for 70 min by Auto trees that entered claude19.
     const manual = entry.manual === true;
     if (entry.event === "parked") {
-      const park = parks.get(entry.session) ?? { start: at, last: at, ranks: [], held: [], manual };
+      const park = parks.get(entry.session) ?? { start: at, last: at, ranks: [], held: [], manual, slot: undefined, asleep: [] };
+      woke(park, at);
+      park.slot = typeof entry.slot_at === "number" ? entry.slot_at * 1000 : undefined;
       park.last = at;
       park.ranks.push({ at, rank: RANK[String(entry.priority)] ?? 1 });
       park.held.push({ at, budget: entry.budget === true });
@@ -671,9 +680,10 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
     } else if (entry.event === "unparked") {
       const park = parks.get(entry.session);
       parks.delete(entry.session);
+      if (park) woke(park, at);
       if (park && !park.manual && !manual) {
         ended.push({ session: entry.session, start: park.start, from: park.from ?? park.start, end: at, ranks: park.ranks, held: park.held, led: led.get(entry.session) ?? false,
-          served: park.served ?? vends.get(entry.session) ?? false });
+          served: park.served ?? vends.get(entry.session) ?? false, asleep: park.asleep });
       }
     }
   }
@@ -685,16 +695,27 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
       rankAt(other, other.end) >= rankAt(park, other.end) && !heldAt(park, other.end));
     if (!passed) return { session: park.session, minutes: 0 };
     const away = offline?.(park.session, passed.end, park.end) ?? 0;
+    // A span the box read offline counts once, as offline.
+    const asleep = park.asleep.reduce((sum, [a, b]) => {
+      const from = Math.max(a, passed.end), to = Math.min(b, park.end);
+      return to > from ? sum + to - from - (offline?.(park.session, from, to) ?? 0) : sum;
+    }, 0);
     const tenths = (ms: number) => Math.round(ms / MINUTE * 10) / 10;
-    return { session: park.session, minutes: tenths(Math.max(0, park.end - passed.end - away)), ...away > 0 ? { offline: tenths(away) } : {} };
+    return { session: park.session, minutes: tenths(Math.max(0, park.end - passed.end - away - asleep)), ...away > 0 ? { offline: tenths(away) } : {},
+      ...asleep > 0 ? { asleep: tenths(asleep) } : {} };
   });
   return { headWaits, overtaken };
 }
 
-/** The parks whose box read offline while they waited, whose offline minutes left the count (`readSmoothness`); "" when none. */
+/**
+ * The parks whose box read offline while they waited, and the parks that read as held over HOLD_MS only with the minutes their tree slept past
+ * its own cell, minutes that left the count (`readSmoothness`); "" when none.
+ */
 const offlineWords = (overtaken: Smoothness["overtaken"]): string => {
   const slept = overtaken.filter(park => park.offline);
-  return slept.length ? ` Left out as their box read offline: ${slept.slice(0, 5).map(park => `${park.session.slice(0, 8)} ${park.offline} min`).join(", ")}.` : "";
+  const late = overtaken.filter(park => park.asleep && (park.minutes + park.asleep) * MINUTE > HOLD_MS);
+  return (slept.length ? ` Left out as their box read offline: ${slept.slice(0, 5).map(park => `${park.session.slice(0, 8)} ${park.offline} min`).join(", ")}.` : "") +
+    (late.length ? ` Left out as their tree asked pi-pool nothing after its own cell came due: ${late.slice(0, 5).map(park => `${park.session.slice(0, 8)} ${park.asleep} min`).join(", ")}.` : "");
 };
 
 /**

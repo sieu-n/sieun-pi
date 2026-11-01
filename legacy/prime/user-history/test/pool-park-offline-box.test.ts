@@ -10,8 +10,8 @@ const RUN = Date.parse("2026-10-30T01:22:00Z");
 const FROM = RUN - 30 * 60_000;
 const SEP = "01a15427-145f-751d-ba15-d27b6c30f65f";
 const at = (clock: string): number => Date.parse(`2026-10-30T${clock}Z`) / 1000;
-const parked = (session: string, clock: string): string =>
-  JSON.stringify({ ts: "local", event: "parked", provider: "anthropic", session, at: at(clock), account: "claude-virev13@slack.green", slot_at: at(clock) + 8, priority: "high", room: [] });
+const parked = (session: string, clock: string, slot = at(clock) + 8): string =>
+  JSON.stringify({ ts: "local", event: "parked", provider: "anthropic", session, at: at(clock), account: "claude-virev13@slack.green", slot_at: slot, priority: "high", room: [] });
 const unparked = (session: string, clock: string): string =>
   JSON.stringify({ ts: "local", event: "unparked", provider: "anthropic", session, at: at(clock), account: "claude-virev14@slack.green" });
 const box = { kind: "linux", memSomeAvg10: 0, memFullAvg10: 0, cpuSomeAvg10: 0, swapoutsPerS: 0, runnablePerCore: 0.4, allowedCpus: 80 } as const;
@@ -26,6 +26,8 @@ const minutes = (first: string, last: string): string[] => {
 };
 const pool = [parked(SEP, "00:43:52"), parked(SEP, "00:43:56"), parked("01a18a1d-0d8c-7399-8bf1-3ce0cbb5d1d1", "00:44:20"),
   unparked("01a18a1d-0d8c-7399-8bf1-3ce0cbb5d1d1", "00:45:48"), unparked(SEP, "01:13:42")];
+// The same park with SEP's last refusal naming a cell after its entry, so SEP never sleeps past its own cell (test/pool-park-asleep.test.ts).
+const waiting = [parked(SEP, "00:43:52"), parked(SEP, "00:43:56", at("01:20:00")), ...pool.slice(2)];
 const hosts = new Map([[SEP, "mac"]]);
 
 test("a park of a tree whose box Tailscale read offline the whole time it was passed counts no minutes", () => {
@@ -40,7 +42,7 @@ test("a park of a tree whose box Tailscale read offline the whole time it was pa
 
 test("only the minutes the box read online count, so a park held while its box was up is still a hold", () => {
   const watch = minutes("00:40:30", "01:21:30").map(clock => watchLine(clock, clock < "00:58:00"));
-  const smooth = readSmoothness(pool, new Set(), FROM, RUN, treeOffline(watch, hosts));
+  const smooth = readSmoothness(waiting, new Set(), FROM, RUN, treeOffline(watch, hosts));
   const park = smooth.overtaken.find(entry => entry.session === SEP);
   // Offline from 00:45:48Z to the 00:58:30Z line, online from there to 01:13:42Z.
   assert.equal(park?.minutes, 15.2);
@@ -49,7 +51,7 @@ test("only the minutes the box read online count, so a park held while its box w
 
 test("a tree on a box with no offline reading, or on no listed box, keeps its passed minutes", () => {
   const watch = minutes("00:40:30", "01:21:30").map(clock => watchLine(clock, true));
-  assert.equal(readSmoothness(pool, new Set(), FROM, RUN, treeOffline(watch, new Map())).overtaken.find(park => park.session === SEP)?.minutes, 27.9);
+  assert.equal(readSmoothness(waiting, new Set(), FROM, RUN, treeOffline(watch, new Map())).overtaken.find(park => park.session === SEP)?.minutes, 27.9);
   assert.equal(offlineMs(watch, "us-metal02", Date.parse("2026-10-30T00:45:48Z"), Date.parse("2026-10-30T01:13:42Z")), 0);
 });
 
