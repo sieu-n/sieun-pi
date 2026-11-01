@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { type CutJob, measure, poolHeldCuts } from "../scripts/duties/whole-system.ts";
 import { loadRecord } from "../src/chat-brief.ts";
 import { CHECK_IN_TICK_MS, Chats, SUPERVISOR_RESUME_MS } from "../src/chats.ts";
-import { type Cut, cutSpans, resumesNow, SessionCuts } from "../src/cut-end.ts";
+import { CUT_OFF_GRACE_MS, type Cut, cutPasses, cutSpans, resumesNow, SessionCuts } from "../src/cut-end.ts";
 import { IdIndex } from "../src/id-index.ts";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
 import type { SessionRow } from "../src/shared/types.ts";
@@ -126,6 +126,48 @@ test("a cut seen brings the pass over interrupted jobs to the next tick, and a l
     release();
     await chats.settled();
     assert.equal(passes, 4, "the cuts seen while it ran wait as one more pass, not one per tick");
+    chats.close();
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a cut mid-tool gets a pass once resume_paused.py's grace is over, even after an earlier pass (posts index write cost, 11-01 22:09Z)", async () => {
+  // Its parent's next tool call read "The operation was aborted." at 22:09:25.947Z. The pass its cut brought forward ran 45 s later, inside the
+  // 2 min grace, and its continue waited for the 10 min sweep until 22:20:15Z, which d7 counted as an 11 min hold.
+  const day = (clock: string) => Date.parse(`2026-11-01T${clock}Z`);
+  const cut: Cut = { at: day("22:09:25.947"), cause: "mid-tool" };
+  assert.deepEqual(cutPasses(cut, day("22:09:31")), [day("22:09:31"), day("22:11:25.947")]);
+  assert.deepEqual(cutPasses(cut, day("22:12:00")), [day("22:12:00")], "a cut seen after its grace needs one pass");
+  assert.deepEqual(cutPasses({ at: day("22:09:25.947"), cause: "error" }, day("22:09:31")), [day("22:09:31")]);
+  const dir = await mkdtemp(join(tmpdir(), "cut-resume-"));
+  try {
+    const index = new IdIndex(join(dir, "chats.json"), "Chat index");
+    await index.add("c1");
+    let now = day("22:00:10");
+    const rows = (): SessionRow[] => [row("c1", "2026-11-01T22:00:00Z", { chat: true, agents: [] })];
+    const continued: string[] = [];
+    let passes = 0;
+    // resume_paused.py's classify: a cut off turn younger than CUT_OFF_GRACE_MS is left alone.
+    const chats = new Chats(index, fakeThreads([]), async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")),
+      { ...source(dir, {}, () => now, rows), interrupted: async () => {
+        passes++;
+        if (now - cut.at >= CUT_OFF_GRACE_MS && !continued.length) continued.push(new Date(now).toISOString());
+        return null;
+      } }, () => {});
+    await chats.adopt();
+    const step = async (ms: number) => { now += ms; await chats.tick(); await chats.settled(); };
+    await step(0);
+    assert.equal(passes, 1);
+    now = day("22:09:31");
+    for (const due of cutPasses(cut, now)) chats.interruptedAt(due);
+    await step(0);
+    assert.equal(passes, 2);
+    assert.deepEqual(continued, [], "the pass inside the grace skips the cut");
+    chats.interruptedSoon(0);
+    await step(CHECK_IN_TICK_MS);
+    assert.equal(passes, 3, "another cut's pass runs before the grace ends");
+    while (now < day("22:12:00")) await step(CHECK_IN_TICK_MS);
+    assert.equal(passes, 4);
+    assert.deepEqual(continued, ["2026-11-01T22:11:31.000Z"], "the continue goes out at the first tick after the grace, not at 22:20Z");
     chats.close();
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

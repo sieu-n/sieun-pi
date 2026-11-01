@@ -36,7 +36,7 @@ import { POOL_LOG, TURN_HISTORY_FILE, turnHistory } from "./turn-history.ts";
 import { briefCheckRecord, deletedJobRecord, heldNoticeRecord, jobRegistry, checkRecord, quietJobRecord, relayRecord } from "./chat-sources.ts";
 import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
-import { resumesNow, tailLines } from "./cut-end.ts";
+import { cutPasses, resumesNow, tailLines } from "./cut-end.ts";
 import { IdleUnloader, parkChanges, providerWaits, SWEEP_EVERY_MS, takesKillOrigin, unloadRequest } from "./idle-unload.ts";
 import { messageHold, parkedUntil, readRowSlotPark } from "./slot-park.ts";
 import { handOff, handoffSend, handsOffRow, systemPorts } from "./detached-handoff.ts";
@@ -299,7 +299,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       ...(lead ? { lead: ids => lead(ids, true) } : { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") }), ...quiet ? { tickMs: 0 } : {} },
     line => process.stderr.write(line + "\n"));
   chats.briefChanged = () => { void catalog.notify().catch(() => {}); };
-  catalog.onCut(cut => { if (resumesNow(cut, Date.now())) chats.interruptedSoon(0); });
+  catalog.onCut(cut => {
+    const now = Date.now();
+    if (resumesNow(cut, now)) for (const at of cutPasses(cut, now)) chats.interruptedAt(at);
+  });
   catalog.onSupervisorChange(() => {
     dutyLog("chats: the Prime daemon has a new supervisor; the pass over interrupted jobs runs soon");
     chats.interruptedSoon();

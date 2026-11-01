@@ -266,6 +266,8 @@ export class Chats {
    * had then: a root that runs again (an agent message resumes it) gets a newer stamp and is looked at again.
    */
   private rootsSweptAt = -Infinity;
+  /** The times a pass over interrupted jobs is due before the next sweep (`interruptedAt`), each kept until a pass starts at or after it. */
+  private passesDue: number[] = [];
   private passWaits = false;
   /**
    * True once the #jobs pass of the first tick and the #interrupted pass it queued ended; check-in lanes can run minutes and are left out. GET /ready answers it,
@@ -1113,7 +1115,16 @@ export class Chats {
    * census writer speed, cut by the 06:46:02Z update on 10-18, waited 29 min.
    */
   interruptedSoon(inMs = SUPERVISOR_RESUME_MS): void {
-    this.rootsSweptAt = Math.min(this.rootsSweptAt, this.now() - JOB_CLEANUP_EVERY_MS + inMs);
+    this.interruptedAt(this.now() + inMs);
+  }
+
+  /**
+   * The pass over interrupted jobs runs at the first tick at or after `at`, even when another pass runs before then. A cut mid-tool waits out
+   * resume_paused.py's grace (`CUT_OFF_GRACE_MS`): on 11-01 posts index write cost was cut at 22:09:25.947Z, the pass its cut brought forward ran
+   * 45 s later and left it to the grace, and the next pass came with the 10 min sweep, so its continue went out at 22:20:15Z.
+   */
+  interruptedAt(at: number): void {
+    this.passesDue.push(at);
   }
 
   /**
@@ -1135,8 +1146,10 @@ export class Chats {
     }
     if ((await this.heldJobs.admitted(this.now())).length) this.interruptedSoon(0);
     // A pass waiting behind a running one already covers every cut seen since: one run per pass at most stays queued, however many jobs are cut.
-    if (this.now() - this.rootsSweptAt >= JOB_CLEANUP_EVERY_MS && !this.passWaits) {
-      this.rootsSweptAt = this.now();
+    const sweptAt = this.now();
+    if ((sweptAt - this.rootsSweptAt >= JOB_CLEANUP_EVERY_MS || this.passesDue.some(due => due <= sweptAt)) && !this.passWaits) {
+      this.rootsSweptAt = sweptAt;
+      this.passesDue = this.passesDue.filter(due => due > sweptAt);
       if (this.source.interrupted || this.source.resumes) {
         const resume = this.source.interrupted;
         const swept = chatRows.filter(row => active.has(row.id));

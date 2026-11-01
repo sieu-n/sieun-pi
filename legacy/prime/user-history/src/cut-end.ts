@@ -246,6 +246,16 @@ export async function readCut(file: string): Promise<Cut | null> {
  */
 export const resumesNow = (cut: Cut, now: number): boolean => cut.cause !== "archived" && !(cut.slotAt !== undefined && cut.slotAt > now);
 
+/**
+ * How long resume_paused.py leaves a turn cut after a tool result alone (`CUT_OFF_GRACE_MIN`), since its next model call may still come. A
+ * pass inside the grace skips the cut, so it needs a pass after the grace too.
+ */
+export const CUT_OFF_GRACE_MS = 2 * 60_000;
+
+/** When the pass over interrupted jobs runs for a cut `resumesNow` passes: at once, and for a cut mid-tool again when its grace is over. */
+export const cutPasses = (cut: Cut, now: number): number[] =>
+  cut.cause === "mid-tool" && cut.at + CUT_OFF_GRACE_MS > now ? [now, cut.at + CUT_OFF_GRACE_MS] : [now];
+
 /** A session file to check and the key that changes when the session gets a new message (the daemon row's `modified` and message count). */
 export interface CutSource { file: string; key: string }
 
