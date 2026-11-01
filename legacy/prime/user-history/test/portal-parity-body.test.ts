@@ -2,7 +2,7 @@
 // answered GET /v1/tiktok/live/profile 200 with no data (req_20a6dc07f84b09204e9ab4510ff863f1) and d2, which judged the status alone, read 82.2.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bodyGap, type Operation } from "../scripts/duties/portal-parity.ts";
+import { bodyGap, docsDriftOps, type Operation, type Route } from "../scripts/duties/portal-parity.ts";
 
 const documented = (data: unknown): Operation => ({ responses: { "200": { content: { "application/json": { example: { data, meta: {} } } } } } });
 const profile = documented({ platform: "tiktok", username: "flighthouse", follower_count: 1 });
@@ -24,4 +24,14 @@ test("an operation whose docs show no data example is not judged on its body", (
   assert.equal(bodyGap(documented("ok"), { data: 1 }), null);
   const examples: Operation = { responses: { "200": { content: { "application/json": { examples: { one: { value: { data: { a: 1 } } } } } } } } };
   assert.match(bodyGap(examples, { data: { b: 1 } })!, /data lacks a/);
+});
+
+test("a route marked docs drift on an env names its operations there with the reason, and nowhere else", () => {
+  const drift = { envs: ["prod" as const], reason: "docs show a list" };
+  const routes: Route[] = [
+    { crawler: "GET /api/tiktok/profiles/{username}/videos", group: "tiktok", portal: ["GET /v1/tiktok/videos"], docsDrift: drift },
+    { crawler: "GET /api/tiktok/profiles/{username}", group: "tiktok", portal: ["GET /v1/tiktok/profile"] },
+  ];
+  assert.deepEqual([...docsDriftOps(routes, "prod")], [["GET /v1/tiktok/videos", "docs show a list"]]);
+  assert.equal(docsDriftOps(routes, "staging").size, 0);
 });
