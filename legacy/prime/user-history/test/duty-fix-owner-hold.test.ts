@@ -6,10 +6,12 @@ import { test } from "node:test";
 import { fixNotMoving, type RedDuty } from "../scripts/duties/chat-system.ts";
 import { type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
 import { missLine } from "../src/chat-duty-job.ts";
+import { endState } from "../src/checkin-end-state.ts";
+import { stepView } from "../src/checkin-steps.ts";
 import type { DutyRunRecord, MetricResult } from "../src/shared/chat-duties.ts";
 import { dutyFixes } from "../src/shared/duty-fixes.ts";
 import type { MetricStreak } from "../src/shared/duty-streak.ts";
-import { dutyHold, holdingTodo, todoName, withLinkedBoards } from "../src/shared/todo-hold.ts";
+import { dutyHold, holdingTodo, OWNER_PROMPT_HOLD, stepHold, todoName, withLinkedBoards } from "../src/shared/todo-hold.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "../src/shared/types.ts";
 
 const HARNESS = "01a1164b-4a2d-742d-b27a-82f086ed0200";
@@ -68,4 +70,28 @@ test("d9 counts a held red duty in neither stuck_duties nor fix_not_moving", () 
     underFix: { misses: 5, moved: false } };
   assert.equal(fixNotMoving([red], () => "AI harness").length, 1);
   assert.equal(fixNotMoving([{ ...red, held: `p919 on t11 on thread ${BREACH}` }], () => "AI harness").length, 0);
+});
+
+// AI harness 11-02: p1318 waited on the owner's passkey at Google for claude4's magic link, which c178 keeps off For you, and each d5 run
+// asked for a new fix job on it.
+test("the duty run reads a blocked fix step that waits on the owner's own passkey as held with no todo, and asks for no job", async () => {
+  const p1318: PlanItem = { id: "p1318", text: "claude4@slack.green signs in to the pool again", status: "blocked", children: [], duty: "d5/owner_fixes",
+    job: "d5 claude4 reauth", waitFor: "the owner's passkey at Google sign-in for sieunpark77@gmail.com in his Aside (c178: noted here, no For you)" };
+  const fixes = await dutyFixes(board([p1318], []), "d5", ["owner_fixes"], async () => false, [], undefined, item => stepHold(item, []));
+  assert.deepEqual(fixes.owner_fixes, { step: "p1318", job: "d5 claude4 reauth", live: false, hold: OWNER_PROMPT_HOLD });
+  const line = missLine("d5", { key: "owner_fixes", misses: 6, moved: false, since: at("00:00:00"), value: 1, target: 0, op: "<=", stuck: true, fix: fixes.owner_fixes }, "Fails that only the owner can fix");
+  assert.match(line, /p1318 waits on the owner's own sign-in prompt its wait names \(c178\)/);
+  assert.match(line, /Start no job/);
+  assert.doesNotMatch(line, /rlm\.create_session|Change approach|open For you todo/);
+  assert.equal(stepHold({ ...p1318, waitFor: "the owner's sign-in in Aside" }, []), undefined, "a plain sign-in names no prompt only he can pass");
+  assert.equal(dutyHold("d5", ["owner_fixes"], board([p1318], [])), `p1318 on ${OWNER_PROMPT_HOLD}`);
+});
+
+test("the check-in reads a blocked step that waits on the owner's own passkey as held, and one that waits on his plain sign-in as stuck", () => {
+  const now = at("04:00:00");
+  const self = new Set([HARNESS]);
+  const state = (waitFor: string) => endState(stepView({ id: "p1318", text: "claude4@slack.green signs in to the pool again", status: "blocked", children: [], waitFor },
+    now, self, [], [], [], now), [], [], self, now).state;
+  assert.equal(state("the owner's passkey at Google sign-in for sieunpark77@gmail.com in his Aside"), "foryou");
+  assert.equal(state("the owner's sign-in in Aside"), "owner_no_todo");
 });

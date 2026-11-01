@@ -32,7 +32,7 @@ test("d9 names only the metric nobody owns and lists the one that waits on the o
   assert.match(counts.redDuties[0]!.line, /\(duty field d5\/skills_or_tools_to_fix\) has a live owner now, while owner_fixes waits on the owner \(p919 on t97\)/);
   assert.doesNotMatch(counts.redDuties[0]!.line, /d5\/owner_fixes/);
   assert.deepEqual(counts.ownerHeld.map(entry => entry.line),
-    ["AI harness developer environment VP: Skills and tools (d5) owner_fixes waits on the owner (p919 on t97), an open For you todo, so it owes no fix job"]);
+    ["AI harness developer environment VP: Skills and tools (d5) owner_fixes waits on the owner (p919 on t97), so it owes no fix job"]);
 });
 
 test("a duty red only on the held metric is no stuck duty and still shows as waiting on the owner", () => {
@@ -54,4 +54,18 @@ test("once the owner answers t97, owner_fixes owes a fix again", () => {
   const counts = planCounts(inputs(0, { ...t97, done: true }));
   assert.equal(counts.ownerHeld.length, 0);
   assert.match(counts.redDuties[0]!.line, /\(duty field d5\/owner_fixes\) has a live owner now$/);
+});
+
+// AI harness 11-02: claude4@slack.green's sign-in waited on the owner's passkey at Google, which c178 keeps off For you, so its step p1318 had
+// no todo to link and d9 would read d5's owner_fixes as a duty nobody owned.
+test("a blocked fix step whose wait names the owner's own passkey holds owner_fixes with no todo, and a wait on his go does not", () => {
+  const p1318: PlanItem = { id: "p1318", text: "claude4@slack.green signs in to the pool again", status: "blocked", children: [], duty: "d5/owner_fixes",
+    waitFor: "the owner's passkey at Google sign-in for sieunpark77@gmail.com in his Aside, which gets claude4's magic link (c178: noted here, no For you)" };
+  const on = (item: PlanItem) => planCounts({ ...inputs(0), boards: new Map([[HARNESS, { ...board(t97), plan: [item], todos: [] }]]) });
+  const held = on(p1318);
+  assert.equal(held.redDuties.length, 0);
+  assert.deepEqual(held.ownerHeld.map(entry => entry.line),
+    ["AI harness developer environment VP: Skills and tools (d5) owner_fixes waits on the owner (p1318 on the owner's own sign-in prompt its wait names (c178)), so it owes no fix job"]);
+  assert.equal(on({ ...p1318, waitFor: "the owner's go on the release" }).redDuties.length, 1);
+  assert.equal(on({ ...p1318, status: "todo" }).redDuties.length, 1, "only a blocked step holds");
 });

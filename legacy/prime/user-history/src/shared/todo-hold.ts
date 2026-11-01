@@ -104,6 +104,22 @@ export const heldByTodo = (item: Pick<PlanItem, "id" | "text" | "waitFor" | "not
 export const todoName = (todo: Pick<HoldingTodo, "id" | "chat">): string => todo.chat ? `${todo.id} on thread ${todo.chat}` : todo.id;
 
 /**
+ * A blocked step whose wait's first clause names a password, 2FA code, passkey, security key or Touch ID of the owner's own: only he can pass
+ * it, and c178 keeps such a small ask about his own sign-in off For you ("이런거 하나한 물어보지 마 알아서 할게", 10-27), so the note on the step is
+ * the whole hold. AI harness p1318 waited for "the owner's passkey at Google sign-in for sieunpark77@gmail.com", and with no todo to link,
+ * every d5 run read it as a fix nobody owned. A wait on his go, answer or a plain sign-in still needs a todo.
+ */
+const OWNER_PROMPT = /\b(?:the\s+owner|owner['’]s|his|sieun['’]s)\s+(?:own\s+)?(?:google\s+|apple\s+(?:id\s+)?)?(?:passkey|password|2fa|two-factor|security\s+key|touch\s+id)\b/i;
+export const ownerPromptWait = (item: Pick<PlanItem, "status" | "waitFor">): boolean => item.status === "blocked" && OWNER_PROMPT.test(firstClause(item.waitFor ?? ""));
+/** How a hold by `ownerPromptWait` reads in a line. */
+export const OWNER_PROMPT_HOLD = "the owner's own sign-in prompt its wait names (c178)";
+/** What holds a step for the owner: the open For you todo that links it (`todoName`), or the owner's own sign-in prompt its wait names. */
+export function stepHold(item: Pick<PlanItem, "id" | "text" | "waitFor" | "note" | "status">, todos: readonly HoldingTodo[]): string | undefined {
+  const todo = holdingTodo(item, todos);
+  return todo ? todoName(todo) : ownerPromptWait(item) ? OWNER_PROMPT_HOLD : undefined;
+}
+
+/**
  * The For you todos of other chats that this board's waits name, each with the ids of the steps whose waits name it (`holds`): a wait with a
  * chat's session id and then a todo id, like "chat-057a's For you (01a14210-4e7d-72c3-aa67-e3d476f4e728 t6)", or a chat's name from `chats`
  * and then a todo id, like "CI and RepoOps's t108". mac-management 10-19: p5 "Token usage reaches LGTM" waited on chat-057a's t6, the owner's
@@ -170,8 +186,9 @@ export async function linkedBoards(board: ChatBoard, self: string, read: (chat: 
 
 const OPEN: ReadonlySet<PlanItem["status"]> = new Set(["todo", "doing", "blocked"]);
 /**
- * The fix steps and their holding todos when an open For you todo holds an open fix step (`duty` "<dutyId>/<metricKey>") of every one of
- * `keys` (`holdingTodo`, an explicit link only, c88), like "p919 on t11 on thread 01a16213-54c6-73fa-b399-20e2713c41ba"; otherwise undefined.
+ * The fix steps and their holds when an open For you todo or the owner's own sign-in prompt holds an open fix step (`duty`
+ * "<dutyId>/<metricKey>") of every one of `keys` (`stepHold`, an explicit link only, c88), like "p919 on t11 on thread
+ * 01a16213-54c6-73fa-b399-20e2713c41ba"; otherwise undefined.
  * Give it the board with its linked todos (`withLinkedBoards`, with the chat catalog). Such a red duty waits on the owner: d9 counts it in no stuck_duties and no
  * fix_not_moving. On 10-23 d9 pushed the AI harness chat to replace p919's fix 5 runs in a row, while p919 waited only on the owner's Apple
  * sign-in, Railway Breach's open t11.
@@ -182,8 +199,8 @@ export function dutyHold(duty: string, keys: readonly string[], board: ChatBoard
     let found: string | undefined;
     const visit = (items: readonly PlanItem[]): void => {
       for (const item of items) {
-        const todo = !found && item.duty === `${duty}/${key}` && OPEN.has(item.status) ? holdingTodo(item, board.todos) : undefined;
-        if (todo) found = `${item.id} on ${todoName(todo)}`;
+        const hold = !found && item.duty === `${duty}/${key}` && OPEN.has(item.status) ? stepHold(item, board.todos) : undefined;
+        if (hold) found = `${item.id} on ${hold}`;
         visit(item.children);
       }
     };

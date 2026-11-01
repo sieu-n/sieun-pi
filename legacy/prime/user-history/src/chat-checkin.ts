@@ -20,7 +20,7 @@ import { upkeepWords } from "./shared/upkeep-title.ts";
 import { CHECK_IN_MS, clockTime, localTime } from "./checkin-settings.ts";
 import { turnErrorCause } from "./turn-error.ts";
 import { agentMessageHead } from "./no-report.ts";
-import { heldByTodo } from "./shared/todo-hold.ts";
+import { heldByTodo, ownerPromptWait } from "./shared/todo-hold.ts";
 import { endState, endStateKpi, endStateLine, type EndStateView, hostHeld, type Movers, OK_STATES, stepCarrier, stepCarriers, stuckLine, withWaitHolds } from "./checkin-end-state.ts";
 import { goalDueLine, goalGap, type GoalMemo, goalLine, goalPromptLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded, threadPaused } from "./checkin-goals.ts";
 import { type JobMemo, type JobPush, jobPushes } from "./checkin-jobs.ts";
@@ -147,7 +147,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     const isOpen = OPEN.has(item.status);
     if (!isOpen || openBelow) return isOpen || openBelow;
     views.push(stepView(item, memo.at, self, facts, openTodos, context.rows ?? [], now, active));
-    if (waitsOnOwner(item) && parkedBy(item, active) === undefined && !todoForStep(item, openTodos) && !todoForStep(item, answeredTodos)) notes.push(`${item.id} ${quote(item.text)} waits on the owner but For you has no question for it`);
+    if (waitsOnOwner(item) && !ownerPromptWait(item) && parkedBy(item, active) === undefined && !todoForStep(item, openTodos) && !todoForStep(item, answeredTodos)) notes.push(`${item.id} ${quote(item.text)} waits on the owner but For you has no question for it`);
     const leave = stepGoWait(item);
     if (leave) notes.push(`${item.id} ${quote(item.text)} ${goWaitText(leave)}, a wait nobody needs (c47): take the action now and clear the waitFor`);
     return true;

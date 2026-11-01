@@ -1,6 +1,6 @@
 import { OWNER_WAIT } from "./shared/chat-board.ts";
 import { type HostHold, holdWords } from "./shared/host-hold.ts";
-import { handedStep, heldByTodo } from "./shared/todo-hold.ts";
+import { handedStep, heldByTodo, OWNER_PROMPT_HOLD, ownerPromptWait } from "./shared/todo-hold.ts";
 import type { ChatBoard, OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import { landWaitCommits, type WakeWatch } from "./checkin-load.ts";
 import { zTime } from "./checkin-goals.ts";
@@ -79,7 +79,8 @@ export interface EndStateView { view: StepView; state: EndState; reason: string;
  * sep launch!!'s p125 waited for the release owner's next prod promote, and its job on the sleeping Mac read host_held in 7 check-ins in a row.
  * Then a step whose owner is a working job or a working thread, a step whose wait names a working job of this chat
  * (`waitCarrier`, from `facts`) and a step whose wait hands it to another chat's open step (`handedStep`) are fine; a step the chat owns is
- * moving when it changed within STEP_STALE_MS and waits on nothing. Next an explicit For you link (`heldByTodo`). Every other step is stuck,
+ * moving when it changed within STEP_STALE_MS and waits on nothing. Next an explicit For you link (`heldByTodo`) or a wait on the owner's own
+ * sign-in prompt (`ownerPromptWait`, c178). Every other step is stuck,
  * by what it waits on: the owner with no todo, a release, a CI run, another thread, an event, a time; else its job ended or is gone, else it
  * has no owner.
  */
@@ -127,6 +128,7 @@ function byWait(item: PlanItem, todos: Parameters<typeof heldByTodo>[1], rows: P
   thread: JobFact | false | undefined, out: (state: EndState, reason: string) => EndStateView, tail = ""): EndStateView | undefined {
   const wait = item.waitFor ?? "";
   if (heldByTodo(item, todos)) return out("foryou", "an open For you todo links it");
+  if (ownerPromptWait(item)) return out("foryou", `waits on ${OWNER_PROMPT_HOLD}, which takes no For you todo`);
   if (wait ? OWNER_WAIT.test(firstClause(wait)) : waitsOnOwner(item)) return out("owner_no_todo", `waits on the owner and no open For you todo links it${tail}`);
   if (!wait && !item.waitUntil && !thread) return undefined;
   const head = firstClause(wait);

@@ -1249,12 +1249,12 @@ export function planCounts(input: PlanInputs): { stuck: StuckSteps[]; redDuties:
       ...boardMetricsClean(board)]);
     const owed = owedKeys(missed, own, liveClean);
     if (missed.length && !owed.length) return [];
-    // Each owed metric whose open fix step an open For you todo holds (`dutyHold`) waits on the owner and leaves the line: at 11:25Z on 10-24
+    // Each owed metric whose open fix step an open For you todo or the owner's own sign-in prompt holds (`dutyHold`) waits on the owner and leaves the line: at 11:25Z on 10-24
     // d9 named d5/owner_fixes, whose p919 waited on t97, beside d5/skills_or_tools_to_fix, the one miss nobody owned.
     const linked = board ? withLinkedBoards(board, chat.id, input.boards!, input.chats) : undefined;
     const holds = owed.map(key => ({ key, hold: dutyHold(duty.id, [key], linked) }));
     const waits = holds.filter(entry => entry.hold).map(entry => `${entry.key} waits on the owner (${entry.hold})`).join(", ");
-    if (waits) ownerHeld.push({ chat: chat.id, duty: duty.id, line: `${chat.name}: ${duty.name} (${duty.id}) ${waits}, an open For you todo, so it owes no fix job` });
+    if (waits) ownerHeld.push({ chat: chat.id, duty: duty.id, line: `${chat.name}: ${duty.name} (${duty.id}) ${waits}, so it owes no fix job` });
     const left = holds.filter(entry => !entry.hold).map(entry => entry.key);
     if (owed.length && !left.length) return [];
     if (liveFix(newest, duty.id, board, input.ownerActivity ?? new Map(), live, input.named?.get(chat.id))) return [];

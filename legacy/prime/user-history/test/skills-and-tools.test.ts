@@ -342,6 +342,39 @@ test("pool_claude keeps a new sign-in the agent's fix while the Mac is offline, 
   assert.ok(back.status === "fail" && back.fixer === "agent" && !back.detail.includes("offline") && back.fix.includes("Aside"), JSON.stringify(back));
 });
 
+// 10-30 to 11-02: claude4@slack.green's magic link sat in sieunpark77's Gmail, whose Google sign-in in Aside stopped on his passkey at
+// 10-30 20:11Z, and pool_claude counted it an agent fix for 6 runs, each starting a job that could not act.
+test("pool_claude makes an account whose sign-in reached a recorded passkey prompt the owner's fix, and keeps every other sign-in the agent's", async () => {
+  const PROMPTS = "/home/sieun/.config/sieun-pi/sign-in-prompts.json";
+  const passkey = { provider: "anthropic", account: "claude4@slack.green", prompt: "passkey", at: "2026-10-30T20:11:00Z",
+    where: "Google sign-in for sieunpark77@gmail.com in Aside", evidence: "us-metal02:01a18e6d" };
+  const stale = { ...passkey, account: "a@gmail.com", prompt: "password" };
+  const run = async (rows: object[], prompts: object[]) => {
+    const mac = macDeps(false, TIMED_OUT, []);
+    const writes: string[] = [];
+    const outcome = await poolClaude.run({ ...mac,
+      exec: async (file, args, options) => file === "pi-pool" ? { code: 0, stdout: JSON.stringify({ rows }), stderr: "", ms: 0 } : mac.exec(file, args, options),
+      readFile: async path => { if (path === PROMPTS) return JSON.stringify({ prompts }); throw new Error(`no ${path}`); },
+      writeFile: async (path, text) => { assert.equal(path, PROMPTS); writes.push(String(text)); } });
+    return { outcome, writes };
+  };
+  const claude4 = { email: "claude4@slack.green", reason: "needs-reauth" };
+  const live = { email: "a@gmail.com", usable: true };
+  const { outcome: owner, writes } = await run([claude4, live], [passkey, stale]);
+  assert.ok(owner.status === "fail" && owner.fixer === "owner" && owner.detail.startsWith("claude4@slack.green, whose sign-in reached a passkey prompt at 10-30 20:11Z")
+    && owner.detail.includes("waits on the owner") && owner.fix.includes("c178"), JSON.stringify(owner));
+  const tools = toOutput([{ check: poolClaude, outcome: owner, ms: 0 }], 0);
+  assert.equal(withHarness(tools, { metrics: { skills_to_prune: 0 }, flagged: [] }).metrics.skills_or_tools_to_fix, 0);
+  assert.equal(tools.metrics.owner_fixes, 1);
+  assert.ok(tools.flagged!.some(slice => slice.kind === "fail_owner" && slice.excerpt!.includes("passkey prompt")));
+  assert.deepEqual(JSON.parse(writes[0]!).prompts, [passkey], "a@gmail.com signs in again, so its old prompt drops");
+  const { outcome: mixed } = await run([claude4, { email: "b@gmail.com", reason: "needs-reauth" }, live], [passkey]);
+  assert.ok(mixed.status === "fail" && mixed.fixer === "agent" && mixed.detail.startsWith("b@gmail.com need a new sign-in")
+    && mixed.detail.includes("claude4@slack.green, whose sign-in reached a passkey prompt") && mixed.fix.includes("scripts/sign-in-prompt.ts"), JSON.stringify(mixed));
+  const { outcome: none } = await run([claude4, live], []);
+  assert.ok(none.status === "fail" && none.fixer === "agent", "with no recorded prompt it stays the agent's fix");
+});
+
 // 10-23 and 10-25: jobs following the fix text ran `pi-pool off` on krenerd77 and sieunpark77 after the owner had turned them on in Settings.
 test("pool_claude's sign-in fix never tells a job to turn the account off", async () => {
   const outcome = await poolClaude.run(poolMacDeps(true));

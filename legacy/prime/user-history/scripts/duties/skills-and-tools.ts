@@ -8,6 +8,7 @@ import { peerReach, seenAgo } from "../../src/host-reach.ts";
 import { hostTools, loadHosts, selfHost, type HostTool } from "../../src/hosts.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { PIN_FILE, type PinResult, pinSkillPaths } from "../kernel-skill-paths.ts";
+import { parsePrompts, promptFor, promptsText, promptWords, type SignInPrompt, signInPromptsFile } from "../../src/sign-in-prompts.ts";
 
 /**
  * The Skills and tools duty's precheck (`node --import tsx scripts/duties/skills-and-tools.ts [--only id,id]`): whether every skill and tool agents
@@ -284,6 +285,20 @@ async function accountOrgs(deps: Deps): Promise<Map<string, string>> {
 
 const utcMinute = (ms: number) => `${new Date(ms).toISOString().slice(5, 16).replace("T", " ")}Z`;
 
+/**
+ * The sign-in prompts (src/sign-in-prompts.ts) that still hold: the file loses each of the provider's prompts whose account pi-pool lists and
+ * no longer needs a sign-in (`needing`, lowercased emails), so a prompt reached before an account's last sign-in never makes a later one the
+ * owner's.
+ */
+async function currentPrompts(deps: Deps, provider: string, rows: readonly { email?: string }[], needing: ReadonlySet<string>): Promise<SignInPrompt[]> {
+  const file = signInPromptsFile(deps.home);
+  const prompts = parsePrompts(await deps.readFile(file).catch(() => undefined));
+  const listed = new Set(rows.flatMap(row => row.email ? [row.email.toLowerCase()] : []));
+  const kept = prompts.filter(row => row.provider !== provider || !listed.has(row.account.toLowerCase()) || needing.has(row.account.toLowerCase()));
+  if (kept.length < prompts.length) await deps.writeFile(file, promptsText(kept)).catch(() => undefined);
+  return kept;
+}
+
 async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise<Outcome> {
   const result = await deps.exec("pi-pool", ["ls", "--json", ...(provider === "anthropic" ? [] : ["--provider", provider])], { timeoutMs: CALL_TIMEOUT_MS });
   if (result.code !== 0) return FAIL("agent", `pi-pool ls ${failText(result)}`, "reinstall pi-pool with packages/pi-pool/install.py in sieun-pi");
@@ -300,26 +315,34 @@ async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise
   const ends = provider === "anthropic" ? await grantEnds(deps, live.flatMap(row => row.reason !== "needs-reauth" && row.id ? [row.id] : [])) : new Map<string, number>();
   const ending = live.flatMap(row => {
     const at = row.id === undefined ? undefined : ends.get(row.id);
-    return at !== undefined && at - deps.now() <= GRANT_WARN_MS ? [`${row.email ?? "?"} (grant ends ${utcMinute(at)})`] : [];
+    return at !== undefined && at - deps.now() <= GRANT_WARN_MS ? [{ email: row.email ?? "?", text: `${row.email ?? "?"} (grant ends ${utcMinute(at)})` }] : [];
   });
-  const reauth = [...live.filter(row => row.reason === "needs-reauth" && !noSeat.includes(row)).map(row => row.email ?? "?"), ...ending];
+  const reauth = [...live.filter(row => row.reason === "needs-reauth" && !noSeat.includes(row)).map(row => ({ email: row.email ?? "?", text: row.email ?? "?" })), ...ending];
+  const prompts = await currentPrompts(deps, provider, rows, new Set(reauth.map(entry => entry.email.toLowerCase())));
   const usable = live.filter(row => row.usable).length;
   const nowSec = deps.now() / 1000;
   const soon = live.some(row => [row.limited_until, row.cooldown_until, ...(row.windows ?? []).map(window => window.resets_at)]
     .some(at => typeof at === "number" && at > nowSec && at - nowSec <= 86_400));
   const counts = `${usable} of ${live.length} usable, ${rows.length - live.length} off${noSeat.length ? `, ${noSeat.length} revoked in a team with no free seat (${noSeat.map(row => row.email ?? "?").join(", ")}), which gain room only when the owner gives them a seat` : ""}`;
-  if (reauth.length && reauth.every(email => email.endsWith(APPLE_RELAY))) return FAIL("owner", `${reauth.join(", ")} need a new sign-in (${counts})`,
+  if (reauth.length && reauth.every(entry => entry.text.endsWith(APPLE_RELAY))) return FAIL("owner", `${reauth.map(entry => entry.text).join(", ")} need a new sign-in (${counts})`,
     `the owner clicks Sign in again on the account in Settings, Accounts and signs in with Apple; Apple asks for his Apple ID password and a 2FA code on his devices, which no agent holds`);
-  if (reauth.length) {
+  // An account whose sign-in by an agent reached a password, 2FA or passkey prompt (src/sign-in-prompts.ts) waits on the owner, and every
+  // other one stays an agent fix: from 10-30 claude4@slack.green's magic link sat in sieunpark77's Gmail behind his passkey, and 6 runs in a
+  // row started a job on it that could not act.
+  const gated = reauth.flatMap(entry => { const row = promptFor(prompts, provider, entry.email); return row ? [`${entry.text}, whose sign-in reached ${promptWords(row)}`] : []; });
+  const open = reauth.filter(entry => !promptFor(prompts, provider, entry.email)).map(entry => entry.text);
+  if (reauth.length && !open.length) return FAIL("owner", `${gated.join("; ")}: waits on the owner (${counts})`,
+    `only the owner can pass that prompt, so it waits on him with no For you todo (c178); once he has, an agent finishes with \`pi-pool login <email> --provider ${provider}\`, and the prompt record drops itself when the account no longer needs a sign-in`);
+  if (open.length) {
     // The fix never offers `pi-pool off`: jobs that followed it turned off krenerd77 (10-23 13:43Z) and sieunpark77 (10-25 19:49Z) after the
     // owner had turned them on in Settings, and he turned both on again at 12:12Z on 10-26.
-    // Only a password, 2FA, key or macOS grant is the owner's fix, and this sign-in needs none of them (c129): it runs in his Aside, which holds
-    // his Google login, since claude.ai showed the box Chrome an hCaptcha on its email link (us-metal02, 10-24 12:36Z). With his Mac offline it
-    // stays an agent fix with the Mac's state in the detail, because 28 runs from 10-24 counted sieunpark77's sign-in in owner_fixes, where no
-    // todo could hold it and the dead account fell out of skills_or_tools_to_fix.
+    // Only a password, 2FA, key or macOS grant is the owner's fix, and a sign-in counts as one only once an agent's attempt reached its prompt
+    // (c129): it runs in his Aside, which holds his Google login, since claude.ai showed the box Chrome an hCaptcha on its email link (us-metal02,
+    // 10-24 12:36Z). With his Mac offline it stays an agent fix with the Mac's state in the detail, because 28 runs from 10-24 counted
+    // sieunpark77's sign-in in owner_fixes, where no todo could hold it and the dead account fell out of skills_or_tools_to_fix.
     const mac = await macReach(deps);
-    return FAIL("agent", `${reauth.join(", ")} need a new sign-in (${counts})${mac.online ? "" : `; ${mac.detail}`}`,
-      `copy a live login of the account if a box has one, else run \`pi-pool login <email> --provider ${provider}\` in the owner's Aside once his Mac is online; never \`pi-pool off\` the account, since he turns accounts on and off in Settings, Accounts and his last choice stands; a password or 2FA prompt makes it an owner item`);
+    return FAIL("agent", `${open.join(", ")} need a new sign-in (${counts})${gated.length ? `; ${gated.join("; ")}: waits on the owner` : ""}${mac.online ? "" : `; ${mac.detail}`}`,
+      `copy a live login of the account if a box has one, else run \`pi-pool login <email> --provider ${provider}\` in the owner's Aside once his Mac is online; never \`pi-pool off\` the account, since he turns accounts on and off in Settings, Accounts and his last choice stands; when the attempt reaches a password, 2FA or passkey prompt, record it with \`node --import tsx scripts/sign-in-prompt.ts <email> --provider ${provider} --prompt <password|2fa|passkey> --where <page> --evidence <screenshot>\` in sieun-pi's user-history, which makes it the owner's item`);
   }
   // Every account used up its own window by real work and serves again at a known time, so nothing waits on a fix: on 11-01 sieunpark77's
   // Codex week, spent from 10-28 06:38Z to 10-31 00Z by two Prime chats and Vent's CLIProxy traffic, reset on 11-04, and the check called it

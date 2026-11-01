@@ -17,7 +17,7 @@ import { transientTurnError } from "./turn-error.ts";
 import type { TellSource } from "./clean-room-subjects.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
 import { closedFixes, dutyFixes, type FixLiveness, missedKeys, verifyNoteOps } from "./shared/duty-fixes.ts";
-import { holdingTodo, type NamedChat, todoName, withBoardLinks } from "./shared/todo-hold.ts";
+import { type NamedChat, stepHold, withBoardLinks } from "./shared/todo-hold.ts";
 import { effectiveRun, metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
 import { type BoardOp, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type CheckInView, type PlanItem, type PoolPriority } from "./shared/types.ts";
 
@@ -651,7 +651,7 @@ export class Duties {
     const live = this.host.fixLive;
     const read = this.host.board;
     const todos = board && read ? (await withBoardLinks(board, chatId, read, await this.host.chats?.().catch(() => []) ?? [])).todos : board?.todos ?? [];
-    const held = (item: PlanItem) => { const todo = holdingTodo(item, todos); return todo && todoName(todo); };
+    const held = (item: PlanItem) => stepHold(item, todos);
     return dutyFixes(board, dutyId, metrics, item => live ? live(chatId, item).catch(() => false) : Promise.resolve(false), flagged, goal, held);
   }
 
