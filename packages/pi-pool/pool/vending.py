@@ -620,15 +620,16 @@ def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
         # entered its 21:14:00Z claude-virev5 cell at 21:13:58.7Z, and 01a14210 took the cell at 21:14:01Z ahead of four trees.
         own = tree.wait is not None and tree.wait[0] == d.account.id and now < tree.wait[1] <= now + 2
         writer.admit(key, provider, d.account.id, tree.wait[1] if own else now)
-        if tree.wait and tree.wait[0] and tree.wait[1] > now + OWN_CELL_EARLY_SEC:
-            # The tree enters ahead of the cell it waited for, which opens to the next tree in line. Its wait moves to the cell
-            # it enters until the vend drops it, so it no longer holds the old one, and it keeps its place if the vend fails.
+        if tree.wait and tree.wait[0] and (tree.wait[1] > now + OWN_CELL_EARLY_SEC or tree.wait[0] != d.account.id):
+            # The tree enters ahead of the cell it waited for, or another account, so its cell opens to the next tree in line. Its
+            # wait moves to the cell it enters until the vend drops it, so it no longer holds the old one, and it keeps its place
+            # if the vend fails.
             writer.set_wait(key, provider, d.account.id, now, now)
-            refill_left(state, tree, provider, accounts, cfg, now)
+            refill_left(state, tree, provider, accounts, cfg, now, d.account.id)
         return d, tree, True
     if isinstance(d, sched.Admit):
         writer.set_wait(key, provider, d.account.id, now, now)
-        refill_left(state, tree, provider, accounts, cfg, now)
+        refill_left(state, tree, provider, accounts, cfg, now, d.account.id)
         return d, tree, True
     if isinstance(d, sched.Wait) and (tree.wait is None or tree.wait[:2] != (d.slot_account.id, d.slot_at)):
         writer.set_wait(key, provider, d.slot_account.id, d.slot_at, now)
@@ -640,10 +641,18 @@ def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
     return d, tree, False
 
 
-def refill_left(state, tree, provider, accounts, cfg, now):
-    """`refill` the account of the cell `tree` held before this request, when that cell is still ahead: the tree now waits for
-    another cell or entered an account."""
-    if tree.wait and tree.wait[0] and tree.wait[1] > now + OWN_CELL_EARLY_SEC:
+def refill_left(state, tree, provider, accounts, cfg, now, entered=None):
+    """`refill` the account of the cell `tree` held before this request, when that cell is still ahead, or is the current cell
+    and the tree did not enter that account (`entered`): the tree now waits for another cell or entered an account. On 11-01
+    01a115e2, high, held claude16's 04:00:00Z cell and at 04:00:01Z R6 kept it waiting on claude-virev18. The cell was due, so no
+    refill ran, and pi-durable:25129c13, normal and waiting since 02:00:19Z, took it at 04:00:01.8Z on its 30 s retry while
+    01a191fb, normal and waiting since 01:45:15Z, slept until its 04:02:00Z cell."""
+    if not (tree.wait and tree.wait[0]):
+        return
+    held = next((a for a in accounts if a.id == tree.wait[0]), None)
+    current = (held is not None and tree.wait[0] != entered
+               and int(tree.wait[1] // sched.slot_spacing(held, cfg)) >= int(now // sched.slot_spacing(held, cfg)))
+    if tree.wait[1] > now + OWN_CELL_EARLY_SEC or current:
         refill(state, provider, tree.wait[0], accounts, cfg, now)
 
 

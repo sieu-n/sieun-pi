@@ -1215,6 +1215,44 @@ class RefillOpenedCell(unittest.TestCase):
         self.assertEqual((type(d), d.account.id), (sched.Admit, "z"))
         self.assertEqual(vending._wakes, [["first"]], "the tree entered z ahead of its x cell, which opens to the next tree")
 
+    def test_a_tree_that_leaves_its_cell_as_it_falls_due_opens_it(self):
+        """11-01 on claude16: 01a115e2, high, held the 04:00:00Z cell, and at 04:00:01Z R6 kept it waiting on claude-virev18. The
+        cell was due, so no refill ran, and pi-durable:25129c13, normal and waiting since 02:00:19Z, took it at 04:00:01.8Z while
+        01a191fb, normal and waiting since 01:45:15Z, slept until its 04:02:00Z cell."""
+        state = empty_state()
+        x, own, out = acct("x", five=10, tier="max 5x"), acct("own", five=10, tier="max 5x"), acct("out", five=100, five_reset_in=FIVE)
+        sp = sched.slot_spacing(x, CFG)
+        cell = math.ceil(NOW / sp) * sp
+        leaver = put(state, tree_key("leaver"), on="own", at=cell - 600, priority="high",
+                     moves=tuple(cell - 3600 + n for n in range(CFG["max_moves_per_day"]["high"])))
+        first, later = put(state, tree_key("first"), on="out"), put(state, tree_key("later"), on="out")
+        state["sessions"]["leaver"]["wait"] = {P: {"account": "x", "slot_at": cell, "since": cell - 300}}
+        state["sessions"]["first"]["wait"] = {P: {"account": "x", "slot_at": cell + 4 * sp, "since": cell - 8000}}
+        state["sessions"]["later"]["wait"] = {P: {"account": "x", "slot_at": cell + 9 * sp, "since": cell - 7000}}
+        state["providers"][P]["admissions"] = {"own": [[cell, "busy0"]],
+                                               "x": [[cell + n * sp, f"busy{n}"] for n in (1, 2, 3)]}
+        d = request(state, leaver, [x, own, out], cell + 1)
+        self.assertEqual((type(d), d.slot_account.id, d.budget), (sched.Wait, "own", True), d)
+        self.assertEqual(vending._wakes, [["first", "later"]], "the due cell it left opens to the first tree in line")
+        d = request(state, first, [x, own, out], cell + 2)
+        self.assertEqual((type(d), d.account.id), (sched.Admit, "x"), "the woken tree takes the cell")
+        d = request(state, later, [x, own, out], cell + 3)
+        self.assertIsInstance(d, sched.Wait, "the later tree waits for a later cell")
+
+    def test_a_tree_that_enters_another_account_as_its_cell_falls_due_opens_it(self):
+        state = empty_state()
+        x, z, out = acct("x", five=10, tier="max 5x"), acct("z", five=10, tier="max 5x"), acct("out", five=100, five_reset_in=FIVE)
+        sp = sched.slot_spacing(x, CFG)
+        cell = math.ceil(NOW / sp) * sp
+        leaver, first = put(state, tree_key("leaver"), on="out", priority="high"), put(state, tree_key("first"), on="out")
+        state["sessions"]["leaver"]["wait"] = {P: {"account": "x", "slot_at": cell, "since": cell - 300}}
+        state["sessions"]["first"]["wait"] = {P: {"account": "x", "slot_at": cell + 3 * sp, "since": cell - 1200}}
+        state["providers"][P]["admissions"] = {"x": [[cell + n * sp, f"busy{n}"] for n in (1, 2)]}
+        with unittest.mock.patch.object(sched, "score", lambda a, *rest: {"z": 2.0, "x": 1.0}.get(a.id, 0.0)):
+            d = request(state, leaver, [x, z, out], cell + 1)
+        self.assertEqual((type(d), d.account.id), (sched.Admit, "z"), d)
+        self.assertEqual(vending._wakes, [["first"]], "the tree entered z as its x cell fell due, which opens to the next tree")
+
     def test_a_tree_raised_to_high_is_first_in_line_for_an_earlier_cell(self):
         """10-29 on claude-virev10: 01a11d24 parked as normal at 04:02:04Z for 04:24:00Z and went high at 04:02:26Z; high trees
         that parked after it entered from 04:06Z while it slept until its own cell."""
