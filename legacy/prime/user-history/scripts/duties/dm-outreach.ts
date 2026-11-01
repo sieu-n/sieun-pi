@@ -20,8 +20,10 @@ import { REPO, SOURCE_DEADLINE_MS, grafanaClient, prodReader, readGrafanaAuth, s
  *    leaves one out if it ever does.
  *
  * Targets in dm-outreach.duty.json (the JSON cannot hold comments):
- * - sending_available >= 1: 1 when prod's sendingState says available, 0 for paused or unknown. The owner's p17 done line is Start conversation
- *   enabled with no Paused line.
+ * - sending_available >= 1: 0 when prod's sendingState says paused, else 1. The owner's p17 done line is Start conversation enabled with no
+ *   Paused line, and the playground page disables Start only for paused (canStart in its +page.svelte), so unknown still lets a customer start.
+ *   Unknown keeps its own flag: on 11-02 prod 416fae9ac8 read per-login-mode census bands that the crawler stopped serving after 0210
+ *   (auto-sns-agent a2ac03c64f), so its page could no longer show Paused, while prod sent DMs on 10-29 and 10-30.
  * - sendable_accounts >= 1: sendingState's own rule, one new or active account is enough to start an outreach.
  * - failed_sends_24h <= 0: a failed send is a customer's message that did not go out. 3 of 4 prod sends went out on 10-15 and the 4th failed
  *   ui_no_compose, so no failure is normal.
@@ -130,8 +132,10 @@ export function report(data: DmData, dutyMetrics: readonly DutyMetric[]): Preche
   }
   const sha = data.sha?.slice(0, 10) ?? "unknown";
   if (data.sending) {
-    metrics.sending_available = data.sending === "available" ? 1 : 0;
-    if (data.sending !== "available") flagged.push({ at, kind: data.sending, excerpt: `the prod DM playground shows ${data.sending === "paused" ? "Paused" : "an unknown sending state"}: sendingState at prod's deployed ${sha} answers ${data.sending}${data.census ? ` while the census holds ${sendableOf(data.census)} new or active accounts (${JSON.stringify({ new: data.census.new, active: data.census.active })})` : ""}` });
+    metrics.sending_available = data.sending === "paused" ? 0 : 1;
+    const held = data.census ? ` while the census holds ${sendableOf(data.census)} new or active accounts (${JSON.stringify({ new: data.census.new, active: data.census.active })})` : "";
+    if (data.sending === "paused") flagged.push({ at, kind: "paused", excerpt: `the prod DM playground shows Paused: sendingState at prod's deployed ${sha} answers paused${held}` });
+    if (data.sending === "unknown") flagged.push({ at, kind: "unknown", excerpt: `sendingState at prod's deployed ${sha} answers unknown${held}, so the page keeps Start conversation enabled but cannot show Paused when the census empties` });
   }
   if (data.census) {
     metrics.sendable_accounts = sendableOf(data.census);

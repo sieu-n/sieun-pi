@@ -54,6 +54,14 @@ test("a Paused page misses the headline while the census has capacity, and the 1
   assert.equal(codeOf("daily_send_limit_reached"), "daily_send_limit_reached");
 });
 
+test("an unknown sending state keeps Start enabled, as the page does, and still flags that Paused cannot show (prod 416fae9ac8, 11-02)", async () => {
+  const flat = { status: 200, body: { ok: true, data: { census: { new: 0, active: 113 } } } };
+  assert.equal(await runSendingState(FIXED, flat), "unknown");
+  const output = report({ now: NOW, sha: "416fae9ac80c0886171058687372ae577a214bba", sending: "unknown", census: flat.body.data.census, failed: [], errors: [] }, METRICS);
+  assert.deepEqual(output.metrics, { sending_available: 1, sendable_accounts: 113, failed_sends_24h: 0 });
+  assert.match(output.flagged!.find(flag => flag.kind === "unknown")!.excerpt, /deployed 416fae9ac8 answers unknown while the census holds 113 new or active accounts/);
+});
+
 test("an unread source misses every metric it feeds instead of reading green", () => {
   const output = report({ now: NOW, failed: [], errors: [{ source: "crawler engage health", message: "HTTP 502" }] }, METRICS);
   assert.ok(output.metrics.sending_available! < 1);
