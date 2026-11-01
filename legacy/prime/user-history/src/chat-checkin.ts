@@ -21,7 +21,7 @@ import { CHECK_IN_MS, clockTime, localTime } from "./checkin-settings.ts";
 import { turnErrorCause } from "./turn-error.ts";
 import { agentMessageHead } from "./no-report.ts";
 import { heldByTodo } from "./shared/todo-hold.ts";
-import { endState, endStateKpi, endStateLine, type EndStateView, type Movers, OK_STATES, stepCarrier, stepCarriers, stuckLine, withWaitHolds } from "./checkin-end-state.ts";
+import { endState, endStateKpi, endStateLine, type EndStateView, hostHeld, type Movers, OK_STATES, stepCarrier, stepCarriers, stuckLine, withWaitHolds } from "./checkin-end-state.ts";
 import { goalDueLine, goalGap, type GoalMemo, goalLine, goalPromptLine, type GoalPush, goalPushes, goalsDetail, goalsHeadline, pushNeeded, threadPaused } from "./checkin-goals.ts";
 import { type JobMemo, type JobPush, jobPushes } from "./checkin-jobs.ts";
 import type { Wake } from "./wakes.ts";
@@ -166,7 +166,8 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   const goaled = withGoals(views, board);
   const since = previous?.since ?? previous?.at ?? now;
   const queued = context.queued ?? new Map<string, unknown>();
-  const carriers = stepCarriers(board, goaled, item => self.has(stepOwner(item) ?? "") ? undefined : ownerOf(item, facts));
+  const itemOwner = (item: PlanItem): JobFact | undefined => self.has(stepOwner(item) ?? "") ? undefined : ownerOf(item, facts);
+  const carriers = stepCarriers(board, goaled, itemOwner);
   // A chase whose wait names a plan item that a live owner carries waits on that owner's work, as its end state reads it moving: chat-2572's p8
   // and p10 read "chase it now" for 16 h while p6's release job was live.
   for (const view of goaled) if (view.cls === "stale-chase" && stepCarrier(view.item, carriers)) { view.cls = "waiting"; delete view.target; }
@@ -188,7 +189,8 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
   // read p229 "no live job owns it" in two check-ins in a row, after the chat dropped the push step p241 the first one added for that same job.
   const ownJob = (fact: JobFact): boolean => fact.chat !== true || roots.has(fact.name) || roots.has(fact.key.slice("thread:".length));
   const goals = context.boardError ? { pushes: [], memos: previous?.goals ?? {} }
-    : goalPushes(board, goaled, previous?.goals, context.everyMs ?? CHECK_IN_MS, now, doneFacts.metrics, new Set(fold.map(entry => entry.goal.id)), paused, ownJob, carriers, context.owner ?? []);
+    : goalPushes(board, goaled, previous?.goals, context.everyMs ?? CHECK_IN_MS, now, doneFacts.metrics, new Set(fold.map(entry => entry.goal.id)), paused, ownJob, carriers, context.owner ?? [],
+      { ownerOf: itemOwner, held: view => hostHeld(view, context.rows ?? [], context.hosts) });
   const pushed = context.boardError ? { pushes: [], memos: previous?.jobs ?? {} }
     : jobPushes(facts, goaled, previous?.jobs, context.everyMs ?? CHECK_IN_MS, now,
       fact => !fact.name.startsWith("check-in ") && ownJob(fact),

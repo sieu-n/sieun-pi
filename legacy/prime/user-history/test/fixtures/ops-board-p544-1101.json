@@ -1,0 +1,42 @@
+{
+ "v": 2,
+ "rev": 6418,
+ "updatedAt": "2026-11-01T19:18:31.287Z",
+ "plan": [
+  {
+   "id": "p544",
+   "text": "Cut us-metal01's CPU waits under 35% of each 30 minutes, so prod search stops slowing down",
+   "status": "doing",
+   "job": "metal01 cpu cuts",
+   "sessionId": "01a15eeb-592f-71db-a938-8fd43588213b",
+   "note": "Done when CPU waits stay under 35% of each 30 minutes. 10:30-12:00Z on 11-01, with p1266 then p1268/p1269 (live 11:38Z, db45e1de08): pressure 48-52% per 30 min, box 70.2-70.5 of 72 busy, free memory 71-126 GB after p1266's memory fixes. Prod search p95 is back to 1.0-2.5 s per 10 min. Prod ClickHouse fell 8.1 -> 4.5 cores; the collab edge lookups cost about 0.03 cores on the new keys table, against 2.3 before. Prod OpenSearch rose to 10.5-12.2 (backlog 9.1 -> 12.6M rows at 12:00Z with the collab rollup back on), prod crawler-worker 11-13, staging crawler-api 5.8-7.1, staging ClickHouse 3.7-5.9. Jobs running: prod crawler-worker cpu (census writers and search-sync idle floor, py-spy via box owner), prod clickhouse cuts (census last-counts, census rank without FINAL, incremental TikTok Shop rollups, account posts reads), screening refresh calls (Convex refreshBrands calling /api/search/creators 1,644 times in 30 min on staging).",
+   "children": [
+    {
+     "id": "p677",
+     "text": "Cut the prod ClickHouse load from our own charts, alerts and checks",
+     "status": "doing",
+     "job": "obs clickhouse query cost",
+     "note": "Handed back: job obs clickhouse query cost reported at 20:08 with this step open, so the step is the chat's.\nAbout 0.5 core cut so far (93f274757, e7701ae6a). Four CI alerts and two freshness alerts no longer scan a whole month or day each run, and the CI chart reads less. Our charts and alerts took 1.16 cores before. At 00:27 KST on 11-02 the job was writing the last three cuts: smaller rollup tables for the heaviest alert and chart reads, switched over once an hour of data fills in. Done when those three reads are cut and merges can be measured. The crawler's own reads (1.57 cores) went to the Crawler VP. The job's turn failed on a pi-pool slot wait; the chat restarted it at 04:07 KST on 11-02 and it is running.",
+     "children": [],
+     "waitFor": "obs clickhouse query cost commits and deploys the vercel_http, error_logs and two daily ci_test rollups plus the agent_ro grants, and sends the metal box owner the root commands for the merge logs",
+     "sessionId": "01a19692-bc8f-7777-993c-4c9029abfad1"
+    }
+   ],
+   "target": {
+    "metric": "cpu_pressure_worst_30m_pct",
+    "target": 35,
+    "unit": "%",
+    "current": 51,
+    "measuredAt": "2026-11-01T12:00:00.000Z",
+    "source": "metal01 cpu cuts, Prometheus 100*rate(node_pressure_cpu_waiting_seconds_total{box=us-metal01}[30m]), 10:30-12:00Z on 11-01 (52, 48, 48, 51)",
+    "direction": "down"
+   },
+   "waitFor": "Crawler VP's prod search-engine fixes in p1259 (live about 16:15 KST) and p1260 let the backlog drain, with a read at about 16:35 KST. The staging swap fix comes next."
+  }
+ ],
+ "todos": [],
+ "lastIds": {
+  "p": 682,
+  "t": 49
+ }
+}

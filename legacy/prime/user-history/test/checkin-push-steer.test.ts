@@ -137,9 +137,11 @@ test("a goal whose job waits for its account slot waits with it, and the check-i
   assert.equal(goalDueLine(push!), null);
   const [other] = goalPushes(board, [{ ...waiting[0]!, owner: { ...runtime("failed"), error: "Provider returned 500" } } as StepView], memo as never, 30 * 60_000, before).pushes;
   assert.equal(other?.act, "start");
-  // Past the slot the goal is pushed again, so a job the resume pass missed gets its restart.
+  // Past the slot the goal is pushed again through that same job, which d9 still reads as moving (`ownerMoves`), so a job the resume pass
+  // missed gets its restart and no second job starts.
   const [late] = goalPushes(board, waiting, memo as never, 30 * 60_000, Date.parse("2026-10-22T05:20:00Z")).pushes;
-  assert.equal(late?.act, "start");
+  assert.equal(late?.act, "steer");
+  assert.equal(late?.owner?.error, error);
 });
 
 // VP of CI p1 "push to verdict p90" (at most 10 min) swung between 249.5 and 298 min on 10-22 and got a steer at each swing either way.

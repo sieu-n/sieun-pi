@@ -6,7 +6,7 @@ import { landWaitCommits, type WakeWatch } from "./checkin-load.ts";
 import { zTime } from "./checkin-goals.ts";
 import { stallWords } from "./shared/stalled-calls.ts";
 import { WAKE_LATE_MS } from "./wakes.ts";
-import { ago, capacityWait, clip, firstClause, type JobFact, OPEN, ownerLabel, waitBoundJob, poolWait, quote, STEP_STALE_MS, type StepView, stepOwner, waitCarrier, waitsOnOwner, waitTarget, walk } from "./checkin-steps.ts";
+import { ago, capacityWait, clip, firstClause, type JobFact, OPEN, ownerLabel, ownerMoves, waitBoundJob, quote, STEP_STALE_MS, type StepView, stepOwner, waitCarrier, waitsOnOwner, waitTarget, walk } from "./checkin-steps.ts";
 
 /**
  * The owner's end state for a board (owner 10-14: "all the PLAN list should clear or be stuck in FOR YOU right? check in duty should push forward
@@ -41,12 +41,12 @@ export function stepCarriers(board: { plan: readonly PlanItem[] } | null, views:
   visit(board?.plan ?? []);
   const carriers = new Map<string, JobFact[]>();
   const carry = (from: string, owner: JobFact) => { for (let id: string | undefined = from; id !== undefined; id = parents.get(id)) carriers.set(id, [...carriers.get(id) ?? [], owner]); };
-  for (const view of views) if (view.owner?.state === "working") carry(view.item.id, view.owner);
+  for (const view of views) if (view.owner && ownerMoves(view.owner)) carry(view.item.id, view.owner);
   const leaves = new Set(views.map(view => view.item.id));
   walk(board?.plan ?? [], item => {
     if (!OPEN.has(item.status) || leaves.has(item.id)) return;
     const owner = ownerOf(item);
-    if (owner?.state === "working") carry(item.id, owner);
+    if (owner && ownerMoves(owner)) carry(item.id, owner);
   });
   return carriers;
 }
@@ -96,8 +96,8 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
     return waitsPastBox(item, hold, rows, self) ? byWait(item, todos, rows, self, false, out, `; ${away}`)! : { ...out("host", away!), hold };
   }
   if (owner?.stalled) return out("stalled_call", `${ownerLabel(owner)} ${stallWords(owner.stalled, now)}`);
-  if (owner?.state === "working") return out("moving", `${ownerLabel(owner)} ${capacityWait(owner) ?? (owner.wake ? `sleeps on ${owner.wake}` : "works on it")}`);
-  if (poolWait(owner)) return out("moving", `${ownerLabel(owner!)} waits for its slot in the token pool`);
+  if (owner && ownerMoves(owner)) return out("moving", owner.state !== "working" ? `${ownerLabel(owner)} waits for its slot in the token pool`
+    : `${ownerLabel(owner)} ${capacityWait(owner) ?? (owner.wake ? `sleeps on ${owner.wake}` : "works on it")}`);
   if (owner?.state === "unstarted" && owner.unstarted) return out("job_ended", `${ownerLabel(owner)} never started: Prime admitted it at ${zTime(owner.unstarted.at)} and its ` +
     `session has no first prompt${owner.unstarted.sentAt !== undefined ? `, though the chat service sent its brief at ${zTime(owner.unstarted.sentAt)}` : ""}`);
   const waits = waitBoundJob(view);

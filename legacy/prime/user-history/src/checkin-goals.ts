@@ -1,12 +1,13 @@
 import type { MetricFact } from "./checkin-done.ts";
 import { keyNamesGoal } from "./goal-readings.ts";
 import { stepCarrier, stepCarriers } from "./checkin-end-state.ts";
+import { type HostHold, holdWords } from "./shared/host-hold.ts";
 import { heldByTodo } from "./shared/todo-hold.ts";
 import { GOAL_PUSH_LINK, openGoals, targetOp, targetStaleMs, walkGoal } from "./shared/chat-board.ts";
 import { CHECK_IN_DUTY_ID } from "./shared/chat-duties.ts";
 import { parseDutyLink, sessionBornAt } from "./shared/duty-fixes.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "./shared/types.ts";
-import { type JobFact, ownerLabel, ownerState, waitBound, waitBoundJob, poolWait, quote, type StepView, walk } from "./checkin-steps.ts";
+import { type JobFact, ownerLabel, ownerMoves, ownerState, waitBound, waitBoundJob, poolWait, quote, type StepView, walk } from "./checkin-steps.ts";
 import { ownerMessageId, poolSlot } from "./shared/chat-feed.ts";
 import { ownerSaid } from "./chat-corrections.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
@@ -111,7 +112,7 @@ function goalLinks(goal: PlanItem): Set<string> {
   return links;
 }
 
-const working = (view: StepView): boolean => view.owner?.state === "working" && !view.owner.cancelled;
+const working = (view: StepView): boolean => ownerMoves(view.owner) && !view.owner?.cancelled;
 
 /** The open steps with a job that fix a goal's gap: a step on one of its duty metrics (`goalLinks`), or a step under it whose job works. */
 function fixViews(goal: PlanItem, views: readonly StepView[]): StepView[] {
@@ -259,19 +260,38 @@ export const offPace = (trend: GoalTrend, stale: boolean): boolean =>
   trend.kind === "met" ? false : stale || trend.kind !== "moving" || trend.etaMs === null || trend.etaMs > PACE_MS;
 
 /**
- * The live job that owns a goal's number, with the check-in's liveness (`JobFact.state`, a job asleep on a board.wake included), first found of:
- * the job of the goal's push step (`GOAL_PUSH_LINK`), the job of the goal itself when it is a leaf (slack green guy p151), a live job on a step
- * under it linked to the goal's own duty metric, a live job on another of its own steps, and a live job on any open step under a goal below it.
- * AI harness 10-20 02:19Z: p717 (d7/quiet_agent_gb) read "no live job owns it" while p779's thread worked on that same metric under it, and the
- * check-in told the chat to steer p769's job, asleep on another metric. An off-pace goal with such an owner is steered through it (`pushNeeded`).
+ * How the check-in reads the jobs of a goal's open items that have open steps under them, which have no step view: `ownerOf` gives an item's
+ * own job, and `held` the offline box that job runs on (`hostHeld`). Absent: those items have no job and no box is offline.
  */
-export function goalOwner(goal: PlanItem, views: readonly StepView[]): JobFact | undefined {
+export interface ItemOwners { ownerOf?: (item: PlanItem) => JobFact | undefined; held?: (view: Pick<StepView, "item" | "owner">) => HostHold | undefined }
+
+/**
+ * The live job that owns a goal's number, with d9's liveness (`ownerMoves`, a job asleep on a board.wake or waiting for a pi-pool slot
+ * included, or a job held on an offline box), first found of: the job of the goal's push step (`GOAL_PUSH_LINK`), the job of the goal itself,
+ * as a leaf step (slack green guy p151) or as an item with open steps under it (`ItemOwners`), a live job on a step under it linked to the
+ * goal's own duty metric, a live job on another of its own steps, a live job on any open step under a goal below it, and the own job of an
+ * open item under it. AI harness 10-20 02:19Z: p717 (d7/quiet_agent_gb) read "no live job owns it" while p779's thread worked on that same
+ * metric under it, and the check-in told the chat to steer p769's job, asleep on another metric. ops guy 11-01: p544's own job "metal01 cpu
+ * cuts" slept on a board.wake above its step p677, and goal_gaps read p544 "no live job owns it" in 5 check-ins in a row. An off-pace goal
+ * with such an owner is steered through it (`pushNeeded`).
+ */
+export function goalOwner(goal: PlanItem, views: readonly StepView[], items: ItemOwners = {}): JobFact | undefined {
   const under = new Set([goal.id]);
-  walk(goal.children, item => under.add(item.id));
-  const live = views.filter(view => under.has(view.item.id) && view.owner?.state === "working");
+  const nested: PlanItem[] = [goal];
+  walk(goal.children, item => { under.add(item.id); nested.push(item); });
+  const moves = (view: Pick<StepView, "item" | "owner">): boolean => ownerMoves(view.owner) || (view.owner !== undefined && items.held?.(view) !== undefined);
+  const live = views.filter(view => under.has(view.item.id) && moves(view));
+  const leaves = new Set(views.map(view => view.item.id));
+  const inner: Pick<StepView, "item" | "owner">[] = [];
+  for (const item of nested) {
+    if (!OPEN_ITEM.has(item.status) || leaves.has(item.id)) continue;
+    const owner = items.ownerOf?.(item);
+    if (owner && moves({ item, owner })) inner.push({ item, owner });
+  }
   const own = goal.duty === GOAL_PUSH_LINK ? undefined : goal.duty;
   return (live.find(view => view.goal?.id === goal.id && view.item.duty === GOAL_PUSH_LINK) ?? live.find(view => view.item.id === goal.id) ??
-    live.find(view => own !== undefined && view.item.duty === own) ?? live.find(view => view.goal?.id === goal.id) ?? live[0])?.owner;
+    inner.find(view => view.item.id === goal.id) ?? live.find(view => own !== undefined && view.item.duty === own) ??
+    live.find(view => view.goal?.id === goal.id) ?? live[0] ?? inner[0])?.owner;
 }
 
 /**
@@ -310,6 +330,15 @@ export function slotWait(owner: JobFact | undefined, now: number): string | unde
 }
 
 /**
+ * The wait of a goal whose owner job runs on a box Tailscale reads offline (`ItemOwners.held`), or undefined: d9 reads a step held there as no
+ * stuck step, and a steer cannot reach that job until the box is back.
+ */
+export function hostWait(owner: JobFact | undefined, goal: PlanItem, items: ItemOwners): string | undefined {
+  const hold = owner ? items.held?.({ item: goal, owner }) : undefined;
+  return hold ? `on ${ownerLabel(owner!)}, which runs on ${holdWords(hold)}` : undefined;
+}
+
+/**
  * What a goal waits on, so no job can push its number now, or undefined: a waitUntil still ahead on the goal or its push step, or the owner's
  * pause of the thread that owns its push step (`paused`, the chats whose check-in he paused). The owner's focus pause at 23:03Z on 10-17 stopped
  * every chat but frontend bro, and the check-ins went on asking for jobs on goals whose owners he had stopped.
@@ -326,7 +355,7 @@ export function goalWait(goal: PlanItem, push: StepView | undefined, now: number
   // 12:26 KST check-in started a push job on p563 and p566.
   const others = views.filter(view => view.goal?.id === goal.id && view.item.id !== goal.id && view.item.id !== push?.item.id);
   const carried = others.map(view => stepCarrier(view.item, carriers));
-  if (others.length && carried.some(Boolean) && others.every((view, index) => carried[index] || view.owner?.state === "working" || view.cls === "foryou" || view.cls === "parked")) {
+  if (others.length && carried.some(Boolean) && others.every((view, index) => carried[index] || ownerMoves(view.owner) || view.cls === "foryou" || view.cls === "parked")) {
     const first = carried.find(Boolean)!;
     return `on ${first.id}, which ${first.owners.length === 1 ? `${first.owners[0]!.name} carries` : `${first.owners.length} live jobs carry`}`;
   }
@@ -414,17 +443,18 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
   everyMs: number, now: number, metrics: ReadonlyMap<string, MetricFact> = new Map(),
   folded: ReadonlySet<string> = new Set(), paused: ReadonlySet<string> = new Set(),
   ownJob: (fact: JobFact) => boolean = () => true, carriers: ReadonlyMap<string, readonly JobFact[]> = stepCarriers(board, views),
-  said: readonly OwnerMessage[] = []): { pushes: GoalPush[]; memos: Record<string, GoalMemo> } {
+  said: readonly OwnerMessage[] = [], items: ItemOwners = {}): { pushes: GoalPush[]; memos: Record<string, GoalMemo> } {
   const todos: readonly OwnerTodo[] = board?.todos ?? [];
   const kept: Record<string, GoalMemo> = {};
   // The goal's message goes only to a job of this chat, so a step another chat owns names no owner or holder.
   const mine = views.filter(view => !view.owner || ownJob(view.owner));
+  const mineItems: ItemOwners = { ...items, ownerOf: item => { const owner = items.ownerOf?.(item); return owner && ownJob(owner) ? owner : undefined; } };
   const pushes = openGoals(board?.plan ?? []).flatMap((goal): GoalPush[] => {
     if (folded.has(goal.id)) return [];
     const { words, paraphrased } = goalWords(goal, said);
     const fixes = goalFixes(goal, mine);
     // A live fix step on the goal's duty metric outside the goal owns the number too: steer it rather than start a second job.
-    const owner = goalOwner(goal, mine) ?? fixViews(goal, mine).find(working)?.owner;
+    const owner = goalOwner(goal, mine, mineItems) ?? fixViews(goal, mine).find(working)?.owner;
     const pushView = views.find(view => view.goal?.id === goal.id && view.item.duty === GOAL_PUSH_LINK);
     const step = pushView?.item.id;
     const under = mine.filter(view => view.goal?.id === goal.id && view.item.id !== goal.id && view.item.job);
@@ -440,7 +470,8 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     const stale = number.measuredAt === undefined || now - number.measuredAt > number.staleMs;
     const left = trend.kind === "met" ? openUnder(goal).map(item => item.id) : [];
     const asks = trend.kind !== "met" || left.length ? held : undefined;
-    const waits = trend.kind === "met" || asks ? undefined : goalWait(goal, pushView, now, paused, views, carriers) ?? slotWait(owner ?? holder?.owner, now);
+    const waits = trend.kind === "met" || asks ? undefined : goalWait(goal, pushView, now, paused, views, carriers) ?? slotWait(owner ?? holder?.owner, now) ??
+      hostWait(owner, goal, items);
     const act: GoalAct = trend.kind === "met" ? "on_pace" : asks ? "owner" : waits ? "waiting" : !owner ? "start" : offPace(trend, stale) ? "steer" : "on_pace";
     // goalTrend's memo is a new object, so the push time carries over from the saved one.
     const before = memos?.[goal.id]?.pushed;

@@ -232,6 +232,13 @@ export const owns = (fact: JobFact, owner: string): boolean => fact.key === owne
  */
 export const POOL_WAIT = /\bpi-pool:[^]*?\bwaits for (?:its|a(?: working)?) slot\b|from shell command: \S*pi-pool-token\b/;
 export const poolWait = (fact: Pick<JobFact, "error"> | undefined): boolean => fact?.error !== undefined && POOL_WAIT.test(fact.error);
+/**
+ * Whether a job moves the work it owns now: it works, sleeps on a board.wake, sits in pi-pool's queue or a quota park (each of which the
+ * check-in's load reads as working), or waits for its slot in the token pool (`poolWait`). d9's stuck steps (`endState`) and the check-in's
+ * goal_gaps (`goalOwner`) read liveness only through this. On 11-01 ops guy's p544 read "no live job owns it" in 5 check-ins in a row, while
+ * its own job thread "metal01 cpu cuts" slept on a board.wake and waited for a working slot.
+ */
+export const ownerMoves = (owner: JobFact | undefined): boolean => owner?.state === "working" || poolWait(owner);
 
 export const ownerOf = (item: PlanItem, facts: readonly JobFact[]): JobFact | undefined => {
   const owner = stepOwner(item);
