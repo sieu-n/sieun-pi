@@ -56,31 +56,6 @@ export const unsilent = (children: readonly ChildAgent[], now: number): ChildAge
 export const holding = (children: readonly ChildAgent[], now: number): ChildAgent[] =>
   children.filter(child => child.lastActivityAt !== undefined && silentSince(child, children, now) === null);
 
-/**
- * Whether a child's new entry shows work: a new status other than a cancel, a reply, new preview, recap or error words, a later activity time or
- * a new activity. An entry that only drops its activity time or activity is the daemon unloading the idle child, and a cancel of a job that
- * ran no turn is the cleanup deleting it.
- */
-function childWorked(was: ChildAgent, child: ChildAgent): boolean {
-  const said = (key: "answerPreview" | "recap" | "error") => child[key] !== undefined && child[key] !== was[key];
-  return (child.status !== was.status && (child.status !== "cancelled" || was.status === "running" || was.status === "queued")) ||
-    (child.repliedSinceTask === true && was.repliedSinceTask !== true) || said("answerPreview") || said("recap") || said("error") ||
-    (child.lastActivityAt !== undefined && child.lastActivityAt > (was.lastActivityAt ?? -Infinity)) ||
-    (child.activity !== undefined && JSON.stringify(child.activity) !== JSON.stringify(was.activity));
-}
-
-/**
- * Whether a change of a chat's children shows work: a child added, a child that worked (`childWorked`), or a running or queued child gone, none
- * of them silent. A snapshot that repeats the list, a silent child's entry, an unload or a finished job's delete does not, so it leaves the
- * chat's idle time alone.
- */
-export function childrenStirred(before: readonly ChildAgent[], after: readonly ChildAgent[], now: number): boolean {
-  const was = new Map(before.map(child => [child.id, child] as const));
-  const ids = new Set(after.map(child => child.id));
-  return after.some(child => { const old = was.get(child.id); return (old === undefined || childWorked(old, child)) && silentSince(child, after, now) === null; }) ||
-    before.some(child => !ids.has(child.id) && (child.status === "running" || child.status === "queued") && silentSince(child, before, now) === null);
-}
-
 /** The one line a chat gets for a silent child when it detaches; the id and the time it went silent make the line its own key. */
 export function silentNotice(child: ChildAgent, since: number, now: number): string {
   return `${JOB_NOTICE_PREFIX}${childName(child)} (${child.id}) is silent since ${clockTime(since)}, ${Math.floor((now - since) / 60_000)} min, so it no longer holds this ` +
@@ -130,11 +105,18 @@ export class Dormancy {
     this.before = new Map(this.file ? Object.entries(readClocks(this.file)) : []);
   }
 
-  /** The idle clock of a chat that attaches now: its activity time saved before this service start, once, else now. */
-  attachedAt(id: string): number {
+  /**
+   * The idle clock of a chat that attaches now: the later of its own last work (`lastWork`, the session's activity time in epoch ms) and the
+   * clock saved before this service start, which is read once, else now. An attach is no work of the chat's: until 11-01 each one restarted
+   * the clock, so a chat the catalog woke for a job below it, or a tab opened again after a service restart, stayed attached 15 min past that
+   * attach while the idle unload and d7 counted from its own last work. From 09:23Z on 11-01 Prospect feature bro sat loaded on worker 2652166
+   * (0.68 GB, the whole of d7's quiet_agent_gb) after the 09:23:10Z restart reopened its tab, quiet since 09:08Z, until its stop at 09:39:17Z.
+   */
+  attachedAt(id: string, lastWork = Number.NaN): number {
     const before = this.before.get(id);
     this.before.delete(id);
-    return before === undefined ? this.now() : Math.min(before, this.now());
+    const known = [before ?? Number.NaN, lastWork].filter(Number.isFinite);
+    return known.length ? Math.min(Math.max(...known), this.now()) : this.now();
   }
 
   /** Writes each chat's idle clock (`activeAt`) when it changed, with the saved times of chats not attached since the start. */

@@ -7,7 +7,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type Catalog, parseSummaries } from "./chat-catalog.ts";
 import { waitedOnHost } from "./chat-latency.ts";
 import type { SubagentDelete } from "./chat-sources.ts";
-import { childrenStirred, Dormancy, holding, type IdleDetach, showsWork } from "./chat-dormancy.ts";
+import { Dormancy, holding, type IdleDetach, showsWork } from "./chat-dormancy.ts";
 import "./daemon-snapshot-count.ts";
 import { CHAT_FLAG, OWNER_THREAD_FLAG, ownerStopSinceActive } from "./chat-guard.ts";
 import { QUIET_MINUTES } from "./quiet-minutes.ts";
@@ -102,8 +102,10 @@ class Thread {
   idleSince: number | null = Date.now();
   /** When the session last sent an event, or the attach; the server's hung-turn check reads it (`quietSince`). */
   lastEventAt = Date.now();
-  /** The hub clock at the thread's last attach, session event, children change or tab close: its idle time for `rest` counts from here. */
+  /** The hub clock at the chat's own last work, a send or a tab's first open: its idle time for `rest` counts from here. */
   activeAt = Date.now();
+  /** The hub clock at a tab's last first open (`ThreadHub.subscribe`), which the attach it starts keeps as the idle clock. */
+  openedAt = Number.NEGATIVE_INFINITY;
   private pendingUpdate: { timer: ReturnType<typeof setTimeout>; event: ProjectedSessionEvent | null } | undefined;
   constructor(readonly id: string, snapshot: ThreadSnapshot, private readonly onChildren: (thread: Thread, before: readonly ChildAgent[]) => void) { this.state = threadStateFromSnapshot(snapshot); }
   /**
@@ -400,7 +402,7 @@ export class ThreadHub {
   /**
    * Nothing in the thread's tree runs or waits: no turn, tool or session action, no queued input, no running or queued child but a silent one
    * (`silentSince`) or one the daemon stopped (`holding`). At 08:17 KST on 10-14, 8 of 9 chat trees held a running or stale "working" child, so they never detached. An open tab
-   * does not hold the chat: its open and close count as activity (`subscribe`), and it gets the snapshot when the chat attaches again. A tab
+   * does not hold the chat: only its first open counts as activity (`subscribe`), and it gets the snapshot when the chat attaches again. A tab
    * left open on frontend bro from 16:02Z on 10-14 held its 4.3 GB worker through a 74 min idle spell, and the worker stayed up 31 h.
    */
   private resting(thread: Thread): boolean {
@@ -535,9 +537,13 @@ export class ThreadHub {
     for (const observer of [...this.observers]) observer.live(thread.id, thread.state.children);
   }
 
-  /** A change that shows work restarts the idle time; a silent child's repeated entry does not (`childrenStirred`), or its chat would never detach. */
+  /**
+   * A child's work holds its chat attached only while it runs (`resting`, `holding`); it does not restart the chat's idle clock, which counts
+   * from the chat's own work as the idle unload and d7 count (src/mac-usable-watch.ts `lingerLines`). Until 11-01 each child entry that showed
+   * work restarted it, so a chat stayed attached 15 min past its job's last step: from 08:45Z to 08:55Z on 11-01 d7 named metal-management,
+   * idle 30 to 40 min by its own work, with nothing below it at work.
+   */
   private childrenChanged(thread: Thread, before: readonly ChildAgent[]): void {
-    if (childrenStirred(before, thread.state.children, this.dormant.now())) thread.activeAt = this.dormant.now();
     for (const observer of [...this.observers]) observer.children(thread.id, thread.state.children);
   }
 
@@ -941,10 +947,10 @@ export class ThreadHub {
 
   /**
    * An attach restarts the quiet time: a chat that woke from dormancy mid-turn read as hung for its dormant minutes and lost that turn (10-14 00:47Z).
-   * Its idle clock restarts too, except at the first attach after a service start, which keeps the clock saved before it (`attachedAt`).
+   * Its idle clock goes to its own last work (`lastWork`, epoch ms), or the clock saved before a service start when that is later (`attachedAt`).
    */
-  private bind(thread: Thread, connection: DaemonAgentConnection, activeSessionId: string): void {
-    thread.activeAt = this.dormant.attachedAt(thread.id);
+  private bind(thread: Thread, connection: DaemonAgentConnection, activeSessionId: string, lastWork: number): void {
+    thread.activeAt = Math.max(thread.openedAt, this.dormant.attachedAt(thread.id, lastWork));
     thread.lastEventAt = Date.now();
     const unsubscribe = connection.subscribe(event => { void this.onNativeEvent(thread, event); });
     thread.live = { connection, activeSessionId, unsubscribe };
@@ -1119,7 +1125,7 @@ export class ThreadHub {
       }
       mark("snapshot+project");
       this.evict("live");
-      this.bind(thread, live.connection, activeSessionId!);
+      this.bind(thread, live.connection, activeSessionId!, Date.parse(summary.lastActivityAt ?? ""));
       thread.broadcast({ type: "snapshot", snapshot: this.merged(thread, live.snapshot) });
       this.firstPage(thread);
       log();
@@ -1137,23 +1143,25 @@ export class ThreadHub {
 
   /**
    * `background` for a listener no person waits on (the Slack bridge): its attach waits its turn in the queue, and it neither wakes a dormant
-   * chat nor counts as activity. A tab's open and close count as activity, so the chat rests its idle time from the later one. The tab gets
-   * the newest page at once, from what the thread holds or from the session file, and the live snapshot when the attach lands.
+   * chat nor counts as activity. A tab's first open counts as activity and wakes a dormant chat. A page that subscribes again (`have.last`,
+   * after a service restart or a dropped socket) and a tab's close do neither: from 09:23Z on 11-01 the tabs that reopened after the 09:23:10Z
+   * restart held Prospect feature bro attached 16 min past its 15 quiet minutes. The tab gets the newest page at once, from what the thread
+   * holds or from the session file, and the live snapshot when the attach lands.
    */
   /** `have` is what a reconnecting page holds (chat-socket.ts `ThreadHave`): it gets the messages after its newest, and the board only when it changed. */
   async subscribe(id: string, listener: Listener, background = false, have?: ThreadHave, delta = false): Promise<() => void> {
     const thread = await this.start(id, background, true);
     thread.listeners.add(listener);
     if (delta) thread.deltas.add(listener);
-    if (!background) thread.activeAt = this.dormant.now();
+    const opened = !background && have?.last === undefined;
+    if (opened) thread.activeAt = thread.openedAt = this.dormant.now();
     thread.idleSince = null;
     thread.send(listener, true, undefined, have?.last === undefined, have);
     if (thread.state.connection !== "connected") listener({ type: "status", connection: thread.state.connection, ...(thread.state.error ? { error: thread.state.error } : {}) });
-    if (!background && this.dormant.has(id)) void this.resume(id, false, "open").catch(error => { process.stderr.write(`wake ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); });
+    if (opened && this.dormant.has(id)) void this.resume(id, false, "open").catch(error => { process.stderr.write(`wake ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); });
     return () => {
       thread.listeners.delete(listener);
       if (thread.listeners.size === 0) thread.idleSince = Date.now();
-      if (!background) thread.activeAt = this.dormant.now();
     };
   }
 
@@ -1329,7 +1337,7 @@ export class ThreadHub {
       throw new ThreadError(409, "This thread was closed while it was resuming.");
     }
     this.evict("live");
-    this.bind(thread, connection, activeSessionId);
+    this.bind(thread, connection, activeSessionId, Date.parse(summary.lastActivityAt ?? ""));
     thread.broadcast({ type: "snapshot", snapshot: this.merged(thread, snapshot) });
     this.attached(thread);
     return thread;
@@ -1519,7 +1527,7 @@ export class ThreadHub {
     let thread: Thread;
     try {
       thread = new Thread(data.sessionId, await this.liveSnapshot(connection, data), (candidate, before) => this.childrenChanged(candidate, before));
-      this.bind(thread, connection, activeSessionId);
+      this.bind(thread, connection, activeSessionId, this.dormant.now());
     } catch (error) { await disposeConnection(connection); throw error; }
     this.threads.set(thread.id, thread);
     void this.catalog.refresh().catch(() => {});
@@ -1582,6 +1590,9 @@ export class ThreadHub {
     // (src/worker-move.ts `afterMove`). On 10-21 at 11:21Z, during the restore after a Prime update, the check-in restart of chat 01a14d31
     // (metal-management) failed with "Session worker is starting", a dirty d7 minute.
     const send = (target: string) => afterMove(() => prompt(target), () => this.stateOf(id, target));
+    // A send is the chat's work: its attach above set the idle clock to the chat's last work, and the turn's first event may come later.
+    const sending = this.threads.get(id);
+    if (sending) sending.activeAt = this.dormant.now();
     try { await send(activeSessionId); } catch (error) {
       if (activeSessionId !== listed || !isReopenable(error)) throw error;
       if (held) await this.reopenFailed(id);
