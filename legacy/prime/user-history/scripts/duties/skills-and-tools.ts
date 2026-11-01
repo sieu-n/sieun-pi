@@ -615,7 +615,7 @@ export const CHECKS: readonly Check[] = [
     return status.loggedIn === true ? PASS(`${status.email} ${status.subscriptionType}`)
       : FAIL("agent", `claude auth status: ${failText(result)}`, "sign in with `claude auth login` in the owner's Aside browser; a password prompt makes it an owner item");
   } },
-  { id: "claude_peer", group: "peers", tool: "claude-in-codex helper", run: async deps => {
+  { id: "claude_peer", group: "peers", tool: "claude-sdk-session.py", run: async deps => {
     const result = await deps.exec("uv", ["run", "--script", "scripts/claude-sdk-session.py", "--help"], { cwd: deps.repo, timeoutMs: 60_000 });
     return result.code === 0 && result.stdout.includes("usage: claude-sdk-session.py") ? PASS("--help starts")
       : FAIL("agent", `claude-sdk-session.py --help: ${failText(result)}`, "fix the script's inline dependency or the uv cache");
@@ -679,7 +679,7 @@ export const CHECKS: readonly Check[] = [
     if (skills.code !== 0 || links.code !== 0) return FAIL("agent", `git ls-tree: ${failText(skills.code ? skills : links)}`, "run git ls-tree in auto-sns-agent and read the error");
     const expected = skills.stdout.split("\n").flatMap(line => {
       const repoSkill = /^\.agents\/skills\/(.+\/.+)\/SKILL\.md$/.exec(line)?.[1];
-      if (repoSkill) return repoSkill === "workflows/common/claude-in-codex" ? [] : [repoSkill.replaceAll("/", "-")];
+      if (repoSkill) return [repoSkill.replaceAll("/", "-")];
       return /^\.claude\/skills-native\/([^/]+)\/SKILL\.md$/.exec(line)?.slice(1, 2) ?? [];
     });
     const actual = links.stdout.split("\n").map(line => line.replace(/^\.claude\/skills\//, "").trim()).filter(name => name && name !== "README.md");
