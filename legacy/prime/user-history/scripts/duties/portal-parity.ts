@@ -92,20 +92,7 @@ export type OpenApi = { paths?: Record<string, Record<string, Operation>> };
  * One crawler route and the /v1 operations that reach it. `envs` limits the entry to those envs, for a route whose crawler path stayed while
  * the portal side changed on one env only, such as the Douyin stored reads that prod still pauses by design and staging serves.
  */
-export interface Route { crawler: string; group: string; portal: string[]; aliases?: string[]; byDesign?: string; envs?: Env[]; docsDrift?: DocsDrift }
-
-/**
- * A portal route whose docs example on `envs` shows a shape its callers do not get, where the answer is right and the docs are wrong: a body
- * gap there keeps the answer working and names the drift in its note. On 11-01 prod's portal (main 416fae9ac8) documented GET
- * /v1/tiktok/videos and /v1/youtube/videos as a list while main's portal and the promote's portal both answer {videos, next_cursor, has_more},
- * so the body check read two working routes as broken until the promote ships main's corrected docs (api portal vp, 11-01 07:4xZ).
- */
-export interface DocsDrift { envs: Env[]; reason: string }
-
-/** The portal operations whose body gap on `env` is docs drift, each with its reason. */
-export function docsDriftOps(routes: readonly Route[], env: Env): Map<string, string> {
-  return new Map(routes.filter(route => route.docsDrift?.envs.includes(env)).flatMap(route => route.portal.map(op => [baseOp(op), route.docsDrift!.reason] as const)));
-}
+export interface Route { crawler: string; group: string; portal: string[]; aliases?: string[]; byDesign?: string; envs?: Env[] }
 export interface ProbeRequest { method: string; path: string; query: Record<string, string>; body?: unknown }
 export type Verdict = "ok" | "crawler" | "portal" | "unprobed" | "skipped";
 export interface ProbeResult { op: string; verdict: Verdict; status: number; ms: number; code?: string | undefined; note: string; costUsd?: number }
@@ -602,7 +589,6 @@ interface ProbeTarget { env: Env; base: string; doc: OpenApi; orgs: Org[]; heade
 async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<ProbeResult[]> {
   const { env, base, doc, orgs, skip } = target;
   routes = routes.filter(route => appliesTo(route, env));
-  const drifted = docsDriftOps(routes, env);
   const slot = target.perMinute ? pacedSlot(target.perMinute) : async () => {};
   // Another caller on the same key, such as a second run of this duty, also fills the portal's minute: on 10-19 at 15:10Z a push run of d2
   // and a hand run together got 52 prod answers of 429 rate_limit_exceeded. So a 429 rate_limit_exceeded waits its Retry-After and calls again.
@@ -681,10 +667,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
     const org = orgs[index % orgs.length]!;
     const answer = await call(org, op, request, "docs example");
     const gap = answer.verdict === "ok" && answer.status === 200 ? bodyGap(operation, answer.body) : null;
-    const drift = gap ? drifted.get(baseOp(op)) : undefined;
-    const result = !gap ? answer
-      : drift ? { ...answer, note: `${answer.note}, docs drift (${drift}): ${gap}` }
-      : { ...answer, verdict: "portal" as const, code: "body_shape", note: `${answer.note}: ${gap}` };
+    const result = gap ? { ...answer, verdict: "portal" as const, code: "body_shape", note: `${answer.note}: ${gap}` } : answer;
     const next = result.verdict === "ok" ? nextPage(operation, result.body) : null;
     if (next) pageTwoRuns.push(call(org, `${op} page 2`, { ...request, query: { ...request.query, [next.param]: next.value } }, `page 2 with its own ${next.param}`)
       .then(second => { pageTwo.set(op, second); }));

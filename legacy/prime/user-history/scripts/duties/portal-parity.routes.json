@@ -234,13 +234,7 @@
    "group": "tiktok",
    "portal": [
     "GET /v1/tiktok/videos"
-   ],
-   "docsDrift": {
-    "envs": [
-     "prod"
-    ],
-    "reason": "prod portal main 416fae9ac8's docs show a list, but main's and the promote's portal both answer {videos, next_cursor, has_more}; the promote ships the corrected docs"
-   }
+   ]
   },
   {
    "crawler": "GET /api/tiktok/profiles/{username}/stats",
@@ -454,13 +448,7 @@
    "group": "youtube_channel",
    "portal": [
     "GET /v1/youtube/videos"
-   ],
-   "docsDrift": {
-    "envs": [
-     "prod"
-    ],
-    "reason": "prod portal main 416fae9ac8's docs show a list, but main's and the promote's portal both answer {videos, next_cursor, has_more}; the promote ships the corrected docs"
-   }
+   ]
   },
   {
    "crawler": "GET /api/youtube/profiles/{handle}/stats",
