@@ -85,7 +85,8 @@ export function perMinute(orgs: readonly unknown[]): number {
 const CURSOR_KEYS = ["next_cursor", "cursor", "continuationToken", "continuation_token", "next_page_id"] as const;
 
 interface Param { name: string; in: string; required?: boolean; example?: unknown; schema?: { example?: unknown; default?: unknown }; examples?: Record<string, { value?: unknown }> }
-export interface Operation { parameters?: Param[]; requestBody?: { content?: Record<string, { example?: unknown; examples?: Record<string, { value?: unknown }>; schema?: { example?: unknown } }> }; "x-example-query"?: Record<string, unknown> }
+type MediaExample = { example?: unknown; examples?: Record<string, { value?: unknown }>; schema?: { example?: unknown } };
+export interface Operation { parameters?: Param[]; requestBody?: { content?: Record<string, MediaExample> }; responses?: Record<string, { content?: Record<string, MediaExample> }>; "x-example-query"?: Record<string, unknown> }
 export type OpenApi = { paths?: Record<string, Record<string, Operation>> };
 /**
  * One crawler route and the /v1 operations that reach it. `envs` limits the entry to those envs, for a route whose crawler path stayed while
@@ -276,6 +277,27 @@ export function classify(status: number, body: unknown): { verdict: Verdict; cod
   if (status === 0 || status === 429 || status === 402) return { verdict: "unprobed", code };
   if (code?.startsWith("upstream_") || code === CRAWLER_CAPACITY || code === CRAWLER_CLOSED) return { verdict: "crawler", code };
   return { verdict: "portal", code };
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+
+/**
+ * Why a 200 answer does not have the body its docs promise, or null when it does or the docs show no example: the answer's `data` must be
+ * the same kind as the 200 example's `data` (object or list) and hold every top-level field that example shows. A status alone missed this:
+ * on 11-01 after 05:20Z prod crawler 0b7addc2cb answered the old /api/live paths in their successors' flat shape, and prod's portal (main
+ * 416fae9ac8) answered GET /v1/tiktok/live/profile 200 with no data and billed it (req_20a6dc07f84b09204e9ab4510ff863f1), while d2 read 82.2.
+ */
+export function bodyGap(operation: Operation, body: unknown): string | null {
+  const media = operation.responses?.["200"]?.content?.["application/json"];
+  const example = media?.example ?? Object.values(media?.examples ?? {})[0]?.value ?? media?.schema?.example;
+  if (!isRecord(example) || !("data" in example)) return null;
+  const want = example.data;
+  const got = isRecord(body) ? body.data : undefined;
+  if (Array.isArray(want)) return Array.isArray(got) ? null : `data is ${got === undefined ? "missing" : typeof got}, the docs example shows a list`;
+  if (!isRecord(want)) return null;
+  if (!isRecord(got)) return `data is ${got === undefined ? "missing" : Array.isArray(got) ? "a list" : String(got)}, the docs example shows fields ${Object.keys(want).slice(0, 6).join(", ")}`;
+  const missing = Object.keys(want).filter(key => !(key in got));
+  return missing.length ? `data lacks ${missing.slice(0, 6).join(", ")}${missing.length > 6 ? ` and ${missing.length - 6} more` : ""} that the docs example shows` : null;
 }
 
 /**
@@ -643,7 +665,9 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
     const request = buildRequest(op, operation);
     if ("missing" in request) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: request.missing, body: null };
     const org = orgs[index % orgs.length]!;
-    const result = await call(org, op, request, "docs example");
+    const answer = await call(org, op, request, "docs example");
+    const gap = answer.verdict === "ok" && answer.status === 200 ? bodyGap(operation, answer.body) : null;
+    const result = gap ? { ...answer, verdict: "portal" as const, code: "body_shape", note: `${answer.note}: ${gap}` } : answer;
     const next = result.verdict === "ok" ? nextPage(operation, result.body) : null;
     if (next) pageTwoRuns.push(call(org, `${op} page 2`, { ...request, query: { ...request.query, [next.param]: next.value } }, `page 2 with its own ${next.param}`)
       .then(second => { pageTwo.set(op, second); }));
