@@ -131,6 +131,8 @@ export function overlaps(skills: readonly Skill[], min = OVERLAP_MIN): { a: stri
   return pairs.sort((x, y) => y.score - x.score);
 }
 
+/** The `name:` line that opens a SKILL.md frontmatter, as a tool result shows the file. A diff or a table row of it does not match. */
+const FRONTMATTER_NAME = /(?:^|\n)---\nname: *["']?([\w.:-]+)["']? *\n/g;
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const strings = (value: unknown): string[] => typeof value === "string" ? [value] : Array.isArray(value) ? value.flatMap(strings) : isRecord(value) ? Object.values(value).flatMap(strings) : [];
@@ -138,13 +140,15 @@ const strings = (value: unknown): string[] => typeof value === "string" ? [value
 /** What transcriptReads keeps between runs: the bytes of each transcript already read and the newest read of each skill. */
 export interface ReadState { version: number; offsets: Record<string, number>; reads: Record<string, string> }
 /** Bump when the read rules change, so the next run reads every transcript again. */
-export const READS_VERSION = 1;
+export const READS_VERSION = 2;
 export const READS_FILE = "harness-skill-reads.json";
 
 /**
  * The reads of `transcripts` root skills in Prime Agent transcripts since `since`, as view events with the path `<skill id>/`: an assistant tool
- * call whose arguments name `skills/<name>/...` (a SKILL.md, a reference, a script) or call `<importName>.<function>(`, and a user message that
- * loads `<skill name="<name>"` (Prime's `/skill:<name>`). A path in a brief or a tool result is no read.
+ * call whose arguments name `skills/<name>/...` (a SKILL.md, a reference, a script) or call `<importName>.<function>(`, a user message that
+ * loads `<skill name="<name>"` (Prime's `/skill:<name>`), and a tool result that shows the skill's SKILL.md frontmatter (`---\nname: <name>`).
+ * A path in a brief or a tool result is no read. The frontmatter rule catches a path the call builds from a list of names, such as
+ * f'.../skills/{n}/SKILL.md', which is how er-truthset read principle-sequence-verifiable-units on 10-28 while d5 flagged it unread.
  * It reads each file from the offset `state` holds and moves the offsets and reads forward, because 14 days of transcripts were 8 GB on
  * 10-15 and a full read took 44 s, while a day's appended bytes are about a seventh of that.
  */
@@ -156,12 +160,13 @@ export async function transcriptReads(files: readonly string[], skills: readonly
   const path = new RegExp(`skills/(${[...byName.keys()].map(escape).join("|")})(?![\\w-])`, "g");
   const call = byImport.size ? new RegExp(`(?<![\\w.])(${[...byImport.keys()].map(escape).join("|")})\\.\\w+\\(`, "g") : null;
   const read = (id: string | undefined, ts: string) => { if (id && ts > (state.reads[id] ?? "")) state.reads[id] = ts; };
-  const needles = ["skills/", "<skill name=", ...[...byImport.keys()].map(name => `${name}.`)].map(text => ({ text }));
+  const needles = ["skills/", "<skill name=", "\\nname: ", ...[...byImport.keys()].map(name => `${name}.`)].map(text => ({ text }));
   const offsets: Record<string, number> = {};
   for (const file of files) {
     const { offset } = await readAppended(file, state.offsets[file] ?? 0, needles, line => {
       const head = line.slice(0, 400);
-      if (!head.includes('"role":"assistant"') && !head.includes('"role":"user"')) return;
+      const result = head.includes('"role":"toolResult"');
+      if (result ? !line.includes("\\nname: ") : !head.includes('"role":"assistant"') && !head.includes('"role":"user"')) return;
       let entry: unknown;
       try { entry = JSON.parse(line); } catch { return; }
       if (!isRecord(entry) || entry.type !== "message" || !isRecord(entry.message) || typeof entry.timestamp !== "string") return;
@@ -180,6 +185,10 @@ export async function transcriptReads(files: readonly string[], skills: readonly
       } else if (role === "user") {
         for (const block of content) {
           if (isRecord(block) && typeof block.text === "string") for (const match of block.text.matchAll(/<skill name="([^"]+)"/g)) read(byName.get(match[1]!), ts);
+        }
+      } else if (role === "toolResult") {
+        for (const block of content) {
+          if (isRecord(block) && typeof block.text === "string") for (const match of block.text.matchAll(FRONTMATTER_NAME)) read(byName.get(match[1]!), ts);
         }
       }
     });
