@@ -1,5 +1,5 @@
 {
- "_about": "Customer crawler-v3 routes (DM left out) and the /v1 operations that reach them, from the 2026-10-12 parity audit inventory (auto-sns-agent apps/llm-wiki/content/sessions/2026/10/12/2140-api-portal-crawler-parity/data/inventory.json). When a job adds a /v1 route for a crawler route, it adds the operation here as \"METHOD /v1/path\". byDesign names the board decision that keeps a route out of the portal. An entry ending in \" job\" is the operation in job mode (max_pages above 1), which is how the portal reaches the crawler jobs routes. Each env scores only the entries its own crawler openapi lists (crawler.virev.ai for prod, staging-crawler.virev.ai for staging), and an entry scores where that openapi lists its \"crawler\" path or one of its \"aliases\", the paths a rename replaced, so a renamed read is one entry that keeps its old /v1 operations beside the new ones and scores once on a crawler that serves either name or both (the 11-01 p1249 deploy and its alias release); an entry the grammar dropped with no crawler successor (the YouTube batch POSTs, now POST /v1/batch, auto-sns-agent 4f494781d9; LinkedIn search/location, 3203dd2d90) scores only while prod lists it and then shows as crawler_route_gone. \"envs\" limits an entry to the envs it names.",
+ "_about": "Customer crawler-v3 routes (DM left out) and the /v1 operations that reach them, from the 2026-10-12 parity audit inventory (auto-sns-agent apps/llm-wiki/content/sessions/2026/10/12/2140-api-portal-crawler-parity/data/inventory.json). When a job adds a /v1 route for a crawler route, it adds the operation here as \"METHOD /v1/path\". byDesign names the board decision that keeps a route out of the portal. An entry ending in \" job\" is the operation in job mode (max_pages above 1), which is how the portal reaches the crawler jobs routes. Each env scores only the entries its own crawler openapi lists (crawler.virev.ai for prod, staging-crawler.virev.ai for staging), and an entry scores where that openapi lists its \"crawler\" path or one of its \"aliases\", the paths a rename replaced, so a renamed read is one entry that keeps its old /v1 operations beside the new ones and scores once on a crawler that serves either name or both (the 11-01 p1249 deploy and its alias release); an entry the grammar dropped with no crawler successor leaves the map once neither crawler openapi lists it, as the YouTube batch POSTs (now POST /v1/batch, auto-sns-agent 4f494781d9) and LinkedIn search/location (3203dd2d90, whose guest typeahead answers places with no names, crawler BLOCKERS[\"search_location\"]) did on 11-01. The old live Xiaohongshu and Douyin reads (discovery, profile, note, posts) are aliases of their op entries, and their old /v1 operations stay hidden from prod's docs (board s5, api portal vp p53), so they score nothing there. \"envs\" limits an entry to the envs it names.",
  "routes": [
   {
    "crawler": "POST /api/crawl/fetch",
@@ -418,13 +418,6 @@
    ]
   },
   {
-   "crawler": "POST /api/live/youtube/channels",
-   "group": "youtube_channel",
-   "portal": [
-    "POST /v1/youtube/live/channels"
-   ]
-  },
-  {
    "crawler": "GET /api/live/youtube/playlist",
    "aliases": [
     "GET /api/live/youtube/playlist/items"
@@ -548,20 +541,6 @@
    "portal": [
     "GET /v1/youtube/live/video",
     "GET /v1/youtube/video"
-   ]
-  },
-  {
-   "crawler": "POST /api/live/youtube/transcripts",
-   "group": "youtube_video",
-   "portal": [
-    "POST /v1/youtube/live/transcripts"
-   ]
-  },
-  {
-   "crawler": "POST /api/live/youtube/videos",
-   "group": "youtube_video",
-   "portal": [
-    "POST /v1/youtube/live/videos"
    ]
   },
   {
@@ -704,13 +683,6 @@
    ]
   },
   {
-   "crawler": "GET /api/live/linkedin/search/location",
-   "group": "linkedin",
-   "portal": [
-    "GET /v1/linkedin/live/search/location"
-   ]
-  },
-  {
    "crawler": "GET /api/live/linkedin/ads_search",
    "aliases": [
     "GET /api/live/linkedin/ads/search"
@@ -843,34 +815,6 @@
    ]
   },
   {
-   "crawler": "GET /api/live/xiaohongshu/discovery",
-   "group": "xiaohongshu_douyin",
-   "portal": [
-    "GET /v1/xiaohongshu/live/discovery"
-   ],
-   "byDesign": "live Xiaohongshu routes are hidden from the docs because Xiaohongshu forces login and we hold no account (board s5, 2026-10-12)"
-  },
-  {
-   "crawler": "GET /api/live/xiaohongshu/profile",
-   "group": "xiaohongshu_douyin",
-   "portal": [],
-   "byDesign": "live Xiaohongshu routes are hidden from the docs because Xiaohongshu forces login and we hold no account (board s5, 2026-10-12)"
-  },
-  {
-   "crawler": "GET /api/live/xiaohongshu/note",
-   "group": "xiaohongshu_douyin",
-   "portal": [],
-   "byDesign": "live Xiaohongshu routes are hidden from the docs because Xiaohongshu forces login and we hold no account (board s5, 2026-10-12)"
-  },
-  {
-   "crawler": "GET /api/live/douyin/posts",
-   "group": "xiaohongshu_douyin",
-   "portal": [
-    "GET /v1/douyin/live/profile/posts"
-   ],
-   "byDesign": "Douyin refuses its posts query without the WebSecSDK signature the crawler does not make: 403 'Uifid Not Found' or 'Signature Not Found' on 6 of 6 direct calls from us-metal02 and 502 douyin_signature_rejected on 13 of 14 prod calls to 2026-10-21 07:00Z, then HTTP 200 status_code 3170 on 5 of 5 prod docs-example calls at 09:5xZ, while live profile and related answer 200. Douyin is a platform we have not integrated (crawler board p672 under p670), so the docs hide the route (auto-sns-agent 5c50fdfb16) and the portal answers every failed call 503 source_paused unbilled (67f81d85d8, ba01650aa); api portal vp p53"
-  },
-  {
    "crawler": "GET /api/xiaohongshu/notes/{note_id}",
    "group": "xiaohongshu_douyin",
    "portal": [
@@ -938,13 +882,20 @@
   },
   {
    "crawler": "GET /api/live/xiaohongshu/explore",
+   "aliases": [
+    "GET /api/live/xiaohongshu/discovery"
+   ],
    "group": "xiaohongshu_douyin",
    "portal": [
-    "GET /v1/xiaohongshu/explore"
+    "GET /v1/xiaohongshu/explore",
+    "GET /v1/xiaohongshu/live/discovery"
    ]
   },
   {
    "crawler": "GET /api/live/xiaohongshu/note_detail",
+   "aliases": [
+    "GET /api/live/xiaohongshu/note"
+   ],
    "group": "xiaohongshu_douyin",
    "portal": [
     "GET /v1/xiaohongshu/note_detail"
@@ -952,6 +903,9 @@
   },
   {
    "crawler": "GET /api/live/xiaohongshu/user_profile",
+   "aliases": [
+    "GET /api/live/xiaohongshu/profile"
+   ],
    "group": "xiaohongshu_douyin",
    "portal": [
     "GET /v1/xiaohongshu/user_profile"
@@ -959,9 +913,13 @@
   },
   {
    "crawler": "GET /api/live/douyin/aweme_post",
+   "aliases": [
+    "GET /api/live/douyin/posts"
+   ],
    "group": "xiaohongshu_douyin",
    "portal": [
-    "GET /v1/douyin/aweme_post"
+    "GET /v1/douyin/aweme_post",
+    "GET /v1/douyin/live/profile/posts"
    ]
   },
   {
