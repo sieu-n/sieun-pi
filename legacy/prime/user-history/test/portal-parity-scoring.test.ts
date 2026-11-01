@@ -45,6 +45,25 @@ test("each env scores the routes its own crawler lists, so old paths score on pr
   assert.equal(flagged.filter(slice => slice.kind === "crawler_route_gone").length, 0);
 });
 
+test("a renamed read with aliases scores once on prod whether its crawler serves the old name, the new one or both", () => {
+  // 11-01: prod crawler c9d8d290b7 served only the new names while prod's portal (main 416fae9) called the old ones; the rollback serves the old
+  // names and the alias release both. Prod's portal documents only the old /v1 operation, staging's only the new one.
+  const MERGED: Route = { crawler: NEW.crawler, aliases: [OLD.crawler], group: "tiktok", portal: [...NEW.portal, ...OLD.portal] };
+  const base = { routes: [MERGED, SAME], docs, probes };
+  const prodOn = (...paths: string[]) => run({ ...base, crawler: { ...crawler, prod: doc(...paths, SAME.crawler) } }).metrics;
+  for (const metrics of [prodOn(OLD.crawler), prodOn(OLD.crawler, NEW.crawler)]) {
+    assert.equal(metrics.prod_routes_scored, 2);
+    assert.equal(metrics.prod_working_pct, 100);
+    assert.equal(metrics.routes_failing_portal, 0);
+  }
+  const broken = run({ ...base, crawler: { ...crawler, prod: doc(NEW.crawler, SAME.crawler) },
+    probes: { ...probes, prod: [{ op: OLD.portal[0]!, verdict: "portal", status: 404, ms: 5, code: "not_found", note: "docs example" }, ok("GET /v1/youtube/live/channel")] } }).metrics;
+  assert.equal(broken.prod_routes_scored, 2);
+  assert.equal(broken.prod_working_pct, 50);
+  assert.equal(broken.routes_failing_portal, 1);
+  assert.equal(run({ ...base }).metrics.staging_working_pct, 100);
+});
+
 test("a route the staging portal lost while the staging crawler still serves it is missing on staging only", () => {
   const { metrics, flagged } = run({ docs: { ...docs, staging: doc("GET /v1/youtube/channel", "GET /v1/douyin/stored/profile") } });
   assert.equal(metrics.staging_routes_missing, 1);
@@ -77,6 +96,8 @@ test("the route map holds unique entries per env and names only real envs", () =
   for (const env of ["prod", "staging"] as const) {
     const keys = routes.filter(route => !route.envs || route.envs.includes(env)).map(route => route.crawler);
     assert.deepEqual(keys.filter((key, index) => keys.indexOf(key) !== index), [], `duplicate crawler entries on ${env}`);
+    const aliases = routes.filter(route => !route.envs || route.envs.includes(env)).flatMap(route => route.aliases ?? []);
+    assert.deepEqual(aliases.filter(alias => keys.includes(alias) || aliases.indexOf(alias) !== aliases.lastIndexOf(alias)), [], `an alias another entry scores on ${env}`);
   }
   for (const route of routes) for (const env of route.envs ?? []) assert.ok(env === "prod" || env === "staging");
 });

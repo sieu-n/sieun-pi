@@ -91,7 +91,7 @@ export type OpenApi = { paths?: Record<string, Record<string, Operation>> };
  * One crawler route and the /v1 operations that reach it. `envs` limits the entry to those envs, for a route whose crawler path stayed while
  * the portal side changed on one env only, such as the Douyin stored reads that prod still pauses by design and staging serves.
  */
-export interface Route { crawler: string; group: string; portal: string[]; byDesign?: string; envs?: Env[] }
+export interface Route { crawler: string; group: string; portal: string[]; aliases?: string[]; byDesign?: string; envs?: Env[] }
 export interface ProbeRequest { method: string; path: string; query: Record<string, string>; body?: unknown }
 export type Verdict = "ok" | "crawler" | "portal" | "unprobed" | "skipped";
 export interface ProbeResult { op: string; verdict: Verdict; status: number; ms: number; code?: string | undefined; note: string; costUsd?: number }
@@ -330,8 +330,16 @@ export const appliesTo = (route: Route, env: Env) => !route.envs || route.envs.i
  * (`crawlerOps` null) every applying route counts, and the env's share is unmeasured.
  */
 export function scoredRoutes(routes: readonly Route[], env: Env, crawlerOps: Map<string, Operation> | null): Route[] {
-  return routes.filter(route => !route.byDesign && appliesTo(route, env) && (!crawlerOps || crawlerOps.has(route.crawler)));
+  return routes.filter(route => !route.byDesign && appliesTo(route, env) && (!crawlerOps || listedBy(route, crawlerOps)));
 }
+
+/**
+ * Whether a crawler openapi serves a route under its own path or one of its `aliases`, the paths a rename replaced. One entry per read keeps a
+ * crawler that serves both names from scoring the read twice: on 11-01 prod crawler c9d8d290b7 served only the new names while prod's portal
+ * called the old ones, and an alias release would serve both, which split entries read as 75 new routes missing on prod.
+ */
+export const listedBy = (route: Route, crawlerOps: Map<string, Operation>) =>
+  crawlerOps.has(route.crawler) || (route.aliases ?? []).some(alias => crawlerOps.has(alias));
 
 /** A route's verdict on one env from that env's documented operations (null when unread) and that env's probe results. */
 export function routeVerdict(route: Route, ops: Map<string, Operation> | null, byOp: ReadonlyMap<string, ProbeResult>): RouteVerdict {
@@ -361,7 +369,7 @@ export function parityMetrics(input: {
   const cleanupErrors = input.cleanupErrors ?? [];
   const flagged: FlaggedSlice[] = [...input.sourceErrors, ...cleanupErrors].map(excerpt => ({ at, kind: "source_error", excerpt: excerpt.slice(0, 300) }));
   const crawlerOps = Object.fromEntries(ENVS.map(env => [env, input.crawler[env] && operations(input.crawler[env]!)])) as Record<Env, Map<string, Operation> | null>;
-  const listedSomewhere = (route: Route) => ENVS.some(env => appliesTo(route, env) && (!crawlerOps[env] || crawlerOps[env]!.has(route.crawler)));
+  const listedSomewhere = (route: Route) => ENVS.some(env => appliesTo(route, env) && (!crawlerOps[env] || listedBy(route, crawlerOps[env]!)));
   for (const route of routes) if (!listedSomewhere(route)) flagged.push({ at, kind: "crawler_route_gone", excerpt: `${route.crawler} is in neither crawler openapi it applies to; drop it from portal-parity.routes.json if that is meant` });
   for (const route of routes) if (route.byDesign && listedSomewhere(route)) flagged.push({ at, kind: "by_design", excerpt: `${route.crawler}${route.envs ? ` on ${route.envs.join(", ")}` : ""}: ${route.byDesign}` });
   const scoredBy = Object.fromEntries(ENVS.map(env => [env, scoredRoutes(routes, env, crawlerOps[env])])) as Record<Env, Route[]>;

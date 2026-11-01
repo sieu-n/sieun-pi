@@ -1,5 +1,5 @@
 {
- "_about": "Customer crawler-v3 routes (DM left out) and the /v1 operations that reach them, from the 2026-10-12 parity audit inventory (auto-sns-agent apps/llm-wiki/content/sessions/2026/10/12/2140-api-portal-crawler-parity/data/inventory.json). When a job adds a /v1 route for a crawler route, it adds the operation here as \"METHOD /v1/path\". byDesign names the board decision that keeps a route out of the portal. An entry ending in \" job\" is the operation in job mode (max_pages above 1), which is how the portal reaches the crawler jobs routes. Each env scores only the entries its own crawler openapi lists (crawler.virev.ai for prod, staging-crawler.virev.ai for staging), so an entry for a crawler route that a rename replaced scores where that route is still served and the successor entry scores where the new route is served; an entry the grammar dropped with no crawler successor (the YouTube batch POSTs, now POST /v1/batch, auto-sns-agent 4f494781d9; LinkedIn search/location, 3203dd2d90) scores only while prod lists it and then shows as crawler_route_gone. \"envs\" limits an entry to the envs it names.",
+ "_about": "Customer crawler-v3 routes (DM left out) and the /v1 operations that reach them, from the 2026-10-12 parity audit inventory (auto-sns-agent apps/llm-wiki/content/sessions/2026/10/12/2140-api-portal-crawler-parity/data/inventory.json). When a job adds a /v1 route for a crawler route, it adds the operation here as \"METHOD /v1/path\". byDesign names the board decision that keeps a route out of the portal. An entry ending in \" job\" is the operation in job mode (max_pages above 1), which is how the portal reaches the crawler jobs routes. Each env scores only the entries its own crawler openapi lists (crawler.virev.ai for prod, staging-crawler.virev.ai for staging), and an entry scores where that openapi lists its \"crawler\" path or one of its \"aliases\", the paths a rename replaced, so a renamed read is one entry that keeps its old /v1 operations beside the new ones and scores once on a crawler that serves either name or both (the 11-01 p1249 deploy and its alias release); an entry the grammar dropped with no crawler successor (the YouTube batch POSTs, now POST /v1/batch, auto-sns-agent 4f494781d9; LinkedIn search/location, 3203dd2d90) scores only while prod lists it and then shows as crawler_route_gone. \"envs\" limits an entry to the envs it names.",
  "routes": [
   {
    "crawler": "POST /api/crawl/fetch",
@@ -223,104 +223,6 @@
    ]
   },
   {
-   "crawler": "GET /api/live/tiktok/profile",
-   "group": "tiktok",
-   "portal": [
-    "GET /v1/tiktok/live/profile"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/tiktok/profile/region",
-   "group": "tiktok",
-   "portal": [
-    "GET /v1/tiktok/live/profile/region"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/tiktok/profile/videos",
-   "group": "tiktok",
-   "portal": [
-    "GET /v1/tiktok/live/profile/videos"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/tiktok/mentions",
-   "group": "tiktok",
-   "portal": [
-    "GET /v1/tiktok/live/mentions"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/tiktok/post",
-   "group": "tiktok",
-   "portal": [
-    "GET /v1/tiktok/live/post"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/tiktok/post/transcript",
-   "group": "tiktok",
-   "portal": [
-    "GET /v1/tiktok/live/post/transcript"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/tiktok/hashtag",
-   "group": "tiktok",
-   "portal": [
-    "GET /v1/tiktok/live/hashtag"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/tiktok/music",
-   "group": "tiktok",
-   "portal": [
-    "GET /v1/tiktok/live/music"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/tiktok/search/users",
-   "group": "tiktok",
-   "portal": [
-    "GET /v1/tiktok/live/search/users"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/tiktok/profile/followers",
-   "group": "tiktok",
-   "portal": [
-    "GET /v1/tiktok/live/profile/followers"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/tiktok/profile/following",
-   "group": "tiktok",
-   "portal": [
-    "GET /v1/tiktok/live/profile/following"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/tiktok/profile/playlists",
-   "group": "tiktok",
-   "portal": [
-    "GET /v1/tiktok/live/profile/playlists"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/tiktok/post/comments",
-   "group": "tiktok",
-   "portal": [
-    "GET /v1/tiktok/live/post/comments"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/tiktok/post/related",
-   "group": "tiktok",
-   "portal": [
-    "GET /v1/tiktok/live/post/related"
-   ]
-  },
-  {
    "crawler": "GET /api/tiktok/profiles/{username}",
    "group": "tiktok",
    "portal": [
@@ -350,93 +252,147 @@
   },
   {
    "crawler": "GET /api/live/tiktok/user_detail",
+   "aliases": [
+    "GET /api/live/tiktok/profile",
+    "GET /api/live/tiktok/profile/region"
+   ],
    "group": "tiktok",
    "portal": [
-    "GET /v1/tiktok/user_detail"
+    "GET /v1/tiktok/user_detail",
+    "GET /v1/tiktok/live/profile",
+    "GET /v1/tiktok/live/profile/region"
    ]
   },
   {
    "crawler": "GET /api/live/tiktok/item_list",
+   "aliases": [
+    "GET /api/live/tiktok/profile/videos"
+   ],
    "group": "tiktok",
    "portal": [
-    "GET /v1/tiktok/item_list"
+    "GET /v1/tiktok/item_list",
+    "GET /v1/tiktok/live/profile/videos"
    ]
   },
   {
    "crawler": "GET /api/live/tiktok/search_item_full",
+   "aliases": [
+    "GET /api/live/tiktok/mentions"
+   ],
    "group": "tiktok",
    "portal": [
-    "GET /v1/tiktok/search_item_full"
+    "GET /v1/tiktok/search_item_full",
+    "GET /v1/tiktok/live/mentions"
    ]
   },
   {
    "crawler": "GET /api/live/tiktok/item_detail",
+   "aliases": [
+    "GET /api/live/tiktok/post"
+   ],
    "group": "tiktok",
    "portal": [
-    "GET /v1/tiktok/item_detail"
+    "GET /v1/tiktok/item_detail",
+    "GET /v1/tiktok/live/post"
    ]
   },
   {
    "crawler": "GET /api/live/tiktok/item_transcript",
+   "aliases": [
+    "GET /api/live/tiktok/post/transcript"
+   ],
    "group": "tiktok",
    "portal": [
-    "GET /v1/tiktok/item_transcript"
+    "GET /v1/tiktok/item_transcript",
+    "GET /v1/tiktok/live/post/transcript"
    ]
   },
   {
    "crawler": "GET /api/live/tiktok/challenge_item_list",
+   "aliases": [
+    "GET /api/live/tiktok/hashtag"
+   ],
    "group": "tiktok",
    "portal": [
-    "GET /v1/tiktok/challenge_item_list"
+    "GET /v1/tiktok/challenge_item_list",
+    "GET /v1/tiktok/live/hashtag"
    ]
   },
   {
    "crawler": "GET /api/live/tiktok/music_item_list",
+   "aliases": [
+    "GET /api/live/tiktok/music"
+   ],
    "group": "tiktok",
    "portal": [
-    "GET /v1/tiktok/music_item_list"
+    "GET /v1/tiktok/music_item_list",
+    "GET /v1/tiktok/live/music"
    ]
   },
   {
    "crawler": "GET /api/live/tiktok/search_user_full",
+   "aliases": [
+    "GET /api/live/tiktok/search/users"
+   ],
    "group": "tiktok",
    "portal": [
-    "GET /v1/tiktok/search_user_full"
+    "GET /v1/tiktok/search_user_full",
+    "GET /v1/tiktok/live/search/users"
    ]
   },
   {
    "crawler": "GET /api/live/tiktok/followers",
+   "aliases": [
+    "GET /api/live/tiktok/profile/followers"
+   ],
    "group": "tiktok",
    "portal": [
-    "GET /v1/tiktok/followers"
+    "GET /v1/tiktok/followers",
+    "GET /v1/tiktok/live/profile/followers"
    ]
   },
   {
    "crawler": "GET /api/live/tiktok/following",
+   "aliases": [
+    "GET /api/live/tiktok/profile/following"
+   ],
    "group": "tiktok",
    "portal": [
-    "GET /v1/tiktok/following"
+    "GET /v1/tiktok/following",
+    "GET /v1/tiktok/live/profile/following"
    ]
   },
   {
    "crawler": "GET /api/live/tiktok/user_playlist",
+   "aliases": [
+    "GET /api/live/tiktok/profile/playlists"
+   ],
    "group": "tiktok",
    "portal": [
-    "GET /v1/tiktok/user_playlist"
+    "GET /v1/tiktok/user_playlist",
+    "GET /v1/tiktok/live/profile/playlists"
    ]
   },
   {
    "crawler": "GET /api/live/tiktok/comment_list",
+   "aliases": [
+    "GET /api/live/tiktok/post/comments"
+   ],
    "group": "tiktok",
    "portal": [
-    "GET /v1/tiktok/comment_list"
+    "GET /v1/tiktok/comment_list",
+    "GET /v1/tiktok/live/post/comments"
    ]
   },
   {
    "crawler": "GET /api/live/tiktok/related_item_list",
+   "aliases": [
+    "GET /api/live/tiktok/post/related"
+   ],
    "group": "tiktok",
    "portal": [
-    "GET /v1/tiktok/related_item_list"
+    "GET /v1/tiktok/related_item_list",
+    "GET /v1/tiktok/live/post/related"
    ]
   },
   {
@@ -462,41 +418,6 @@
    ]
   },
   {
-   "crawler": "GET /api/live/youtube/channel/videos",
-   "group": "youtube_channel",
-   "portal": [
-    "GET /v1/youtube/live/channel/videos"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/youtube/channel/shorts",
-   "group": "youtube_channel",
-   "portal": [
-    "GET /v1/youtube/live/channel/shorts"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/youtube/channel/lives",
-   "group": "youtube_channel",
-   "portal": [
-    "GET /v1/youtube/live/channel/lives"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/youtube/channel/playlists",
-   "group": "youtube_channel",
-   "portal": [
-    "GET /v1/youtube/live/channel/playlists"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/youtube/channel/community-posts",
-   "group": "youtube_channel",
-   "portal": [
-    "GET /v1/youtube/live/channel/community-posts"
-   ]
-  },
-  {
    "crawler": "POST /api/live/youtube/channels",
    "group": "youtube_channel",
    "portal": [
@@ -504,32 +425,15 @@
    ]
   },
   {
-   "crawler": "GET /api/live/youtube/community-post",
-   "group": "youtube_channel",
-   "portal": [
-    "GET /v1/youtube/live/community-post"
-   ]
-  },
-  {
    "crawler": "GET /api/live/youtube/playlist",
+   "aliases": [
+    "GET /api/live/youtube/playlist/items"
+   ],
    "group": "youtube_channel",
    "portal": [
     "GET /v1/youtube/live/playlist",
-    "GET /v1/youtube/playlist"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/youtube/playlist/items",
-   "group": "youtube_channel",
-   "portal": [
+    "GET /v1/youtube/playlist",
     "GET /v1/youtube/live/playlist/items"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/youtube/profile/full",
-   "group": "youtube_channel",
-   "portal": [
-    "GET /v1/youtube/live/profile/full"
    ]
   },
   {
@@ -555,51 +459,79 @@
   },
   {
    "crawler": "GET /api/live/youtube/channel_videos",
+   "aliases": [
+    "GET /api/live/youtube/channel/videos"
+   ],
    "group": "youtube_channel",
    "portal": [
-    "GET /v1/youtube/channel_videos"
+    "GET /v1/youtube/channel_videos",
+    "GET /v1/youtube/live/channel/videos"
    ]
   },
   {
    "crawler": "GET /api/live/youtube/channel_shorts",
+   "aliases": [
+    "GET /api/live/youtube/channel/shorts"
+   ],
    "group": "youtube_channel",
    "portal": [
-    "GET /v1/youtube/channel_shorts"
+    "GET /v1/youtube/channel_shorts",
+    "GET /v1/youtube/live/channel/shorts"
    ]
   },
   {
    "crawler": "GET /api/live/youtube/channel_lives",
+   "aliases": [
+    "GET /api/live/youtube/channel/lives"
+   ],
    "group": "youtube_channel",
    "portal": [
-    "GET /v1/youtube/channel_lives"
+    "GET /v1/youtube/channel_lives",
+    "GET /v1/youtube/live/channel/lives"
    ]
   },
   {
    "crawler": "GET /api/live/youtube/channel_playlists",
+   "aliases": [
+    "GET /api/live/youtube/channel/playlists"
+   ],
    "group": "youtube_channel",
    "portal": [
-    "GET /v1/youtube/channel_playlists"
+    "GET /v1/youtube/channel_playlists",
+    "GET /v1/youtube/live/channel/playlists"
    ]
   },
   {
    "crawler": "GET /api/live/youtube/channel_community_posts",
+   "aliases": [
+    "GET /api/live/youtube/channel/community-posts"
+   ],
    "group": "youtube_channel",
    "portal": [
-    "GET /v1/youtube/channel_community_posts"
+    "GET /v1/youtube/channel_community_posts",
+    "GET /v1/youtube/live/channel/community-posts"
    ]
   },
   {
    "crawler": "GET /api/live/youtube/community_post",
+   "aliases": [
+    "GET /api/live/youtube/community-post"
+   ],
    "group": "youtube_channel",
    "portal": [
-    "GET /v1/youtube/community_post"
+    "GET /v1/youtube/community_post",
+    "GET /v1/youtube/live/community-post"
    ]
   },
   {
    "crawler": "GET /api/live/youtube/profile_full",
+   "aliases": [
+    "GET /api/live/youtube/profile/full"
+   ],
    "group": "youtube_channel",
    "portal": [
-    "GET /v1/youtube/profile_full"
+    "GET /v1/youtube/profile_full",
+    "GET /v1/youtube/live/profile/full"
    ]
   },
   {
@@ -611,46 +543,11 @@
    ]
   },
   {
-   "crawler": "GET /api/live/youtube/search/hashtag",
-   "group": "youtube_video",
-   "portal": [
-    "GET /v1/youtube/live/search/hashtag"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/youtube/search/suggestions",
-   "group": "youtube_video",
-   "portal": [
-    "GET /v1/youtube/live/search/suggestions"
-   ]
-  },
-  {
    "crawler": "GET /api/live/youtube/video",
    "group": "youtube_video",
    "portal": [
     "GET /v1/youtube/live/video",
     "GET /v1/youtube/video"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/youtube/video/comments",
-   "group": "youtube_video",
-   "portal": [
-    "GET /v1/youtube/live/video/comments"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/youtube/video/comment/replies",
-   "group": "youtube_video",
-   "portal": [
-    "GET /v1/youtube/live/video/comment/replies"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/youtube/video/transcript",
-   "group": "youtube_video",
-   "portal": [
-    "GET /v1/youtube/live/video/transcript"
    ]
   },
   {
@@ -661,20 +558,6 @@
    ]
   },
   {
-   "crawler": "GET /api/live/youtube/video/sponsors",
-   "group": "youtube_video",
-   "portal": [
-    "GET /v1/youtube/live/video/sponsors"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/youtube/video/thumbnails",
-   "group": "youtube_video",
-   "portal": [
-    "GET /v1/youtube/live/video/thumbnails"
-   ]
-  },
-  {
    "crawler": "POST /api/live/youtube/videos",
    "group": "youtube_video",
    "portal": [
@@ -682,59 +565,80 @@
    ]
   },
   {
-   "crawler": "GET /api/youtube/videos/{video_id}/comments",
-   "group": "youtube_video",
-   "portal": [
-    "GET /v1/youtube/video/comments"
-   ]
-  },
-  {
    "crawler": "GET /api/live/youtube/search_hashtag",
+   "aliases": [
+    "GET /api/live/youtube/search/hashtag"
+   ],
    "group": "youtube_video",
    "portal": [
-    "GET /v1/youtube/search_hashtag"
+    "GET /v1/youtube/search_hashtag",
+    "GET /v1/youtube/live/search/hashtag"
    ]
   },
   {
    "crawler": "GET /api/live/youtube/search_suggestions",
+   "aliases": [
+    "GET /api/live/youtube/search/suggestions"
+   ],
    "group": "youtube_video",
    "portal": [
-    "GET /v1/youtube/search_suggestions"
+    "GET /v1/youtube/search_suggestions",
+    "GET /v1/youtube/live/search/suggestions"
    ]
   },
   {
    "crawler": "GET /api/live/youtube/video_comments",
+   "aliases": [
+    "GET /api/live/youtube/video/comments"
+   ],
    "group": "youtube_video",
    "portal": [
-    "GET /v1/youtube/video_comments"
+    "GET /v1/youtube/video_comments",
+    "GET /v1/youtube/live/video/comments"
    ]
   },
   {
    "crawler": "GET /api/live/youtube/video_comment_replies",
+   "aliases": [
+    "GET /api/live/youtube/video/comment/replies"
+   ],
    "group": "youtube_video",
    "portal": [
-    "GET /v1/youtube/video_comment_replies"
+    "GET /v1/youtube/video_comment_replies",
+    "GET /v1/youtube/live/video/comment/replies"
    ]
   },
   {
    "crawler": "GET /api/live/youtube/video_transcript",
+   "aliases": [
+    "GET /api/live/youtube/video/transcript"
+   ],
    "group": "youtube_video",
    "portal": [
-    "GET /v1/youtube/video_transcript"
+    "GET /v1/youtube/video_transcript",
+    "GET /v1/youtube/live/video/transcript"
    ]
   },
   {
    "crawler": "GET /api/live/youtube/video_sponsors",
+   "aliases": [
+    "GET /api/live/youtube/video/sponsors"
+   ],
    "group": "youtube_video",
    "portal": [
-    "GET /v1/youtube/video_sponsors"
+    "GET /v1/youtube/video_sponsors",
+    "GET /v1/youtube/live/video/sponsors"
    ]
   },
   {
    "crawler": "GET /api/live/youtube/video_thumbnails",
+   "aliases": [
+    "GET /api/live/youtube/video/thumbnails"
+   ],
    "group": "youtube_video",
    "portal": [
-    "GET /v1/youtube/video_thumbnails"
+    "GET /v1/youtube/video_thumbnails",
+    "GET /v1/youtube/live/video/thumbnails"
    ]
   },
   {
@@ -746,9 +650,13 @@
   },
   {
    "crawler": "GET /api/youtube/posts/{video_id}/comments",
+   "aliases": [
+    "GET /api/youtube/videos/{video_id}/comments"
+   ],
    "group": "youtube_video",
    "portal": [
-    "GET /v1/youtube/stored/post/comments"
+    "GET /v1/youtube/stored/post/comments",
+    "GET /v1/youtube/video/comments"
    ]
   },
   {
@@ -760,32 +668,11 @@
    ]
   },
   {
-   "crawler": "GET /api/live/linkedin/ads/search",
-   "group": "linkedin",
-   "portal": [
-    "GET /v1/linkedin/live/ads/search"
-   ]
-  },
-  {
    "crawler": "GET /api/live/linkedin/company",
    "group": "linkedin",
    "portal": [
     "GET /v1/linkedin/live/company",
     "GET /v1/linkedin/company"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/linkedin/company/job-count",
-   "group": "linkedin",
-   "portal": [
-    "GET /v1/linkedin/live/company/job-count"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/linkedin/company/jobs",
-   "group": "linkedin",
-   "portal": [
-    "GET /v1/linkedin/live/company/jobs"
    ]
   },
   {
@@ -806,31 +693,14 @@
   },
   {
    "crawler": "GET /api/live/linkedin/profile",
+   "aliases": [
+    "GET /api/live/linkedin/profile/stats"
+   ],
    "group": "linkedin",
    "portal": [
     "GET /v1/linkedin/live/profile",
-    "GET /v1/linkedin/profile"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/linkedin/profile/stats",
-   "group": "linkedin",
-   "portal": [
+    "GET /v1/linkedin/profile",
     "GET /v1/linkedin/live/profile/stats"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/linkedin/profile/full",
-   "group": "linkedin",
-   "portal": [
-    "GET /v1/linkedin/live/company/full"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/linkedin/search/jobs",
-   "group": "linkedin",
-   "portal": [
-    "GET /v1/linkedin/live/search/jobs"
    ]
   },
   {
@@ -842,37 +712,57 @@
   },
   {
    "crawler": "GET /api/live/linkedin/ads_search",
+   "aliases": [
+    "GET /api/live/linkedin/ads/search"
+   ],
    "group": "linkedin",
    "portal": [
-    "GET /v1/linkedin/ads_search"
+    "GET /v1/linkedin/ads_search",
+    "GET /v1/linkedin/live/ads/search"
    ]
   },
   {
    "crawler": "GET /api/live/linkedin/company_job_count",
+   "aliases": [
+    "GET /api/live/linkedin/company/job-count"
+   ],
    "group": "linkedin",
    "portal": [
-    "GET /v1/linkedin/company_job_count"
+    "GET /v1/linkedin/company_job_count",
+    "GET /v1/linkedin/live/company/job-count"
    ]
   },
   {
    "crawler": "GET /api/live/linkedin/company_jobs",
+   "aliases": [
+    "GET /api/live/linkedin/company/jobs"
+   ],
    "group": "linkedin",
    "portal": [
-    "GET /v1/linkedin/company_jobs"
+    "GET /v1/linkedin/company_jobs",
+    "GET /v1/linkedin/live/company/jobs"
    ]
   },
   {
    "crawler": "GET /api/live/linkedin/company_full",
+   "aliases": [
+    "GET /api/live/linkedin/profile/full"
+   ],
    "group": "linkedin",
    "portal": [
-    "GET /v1/linkedin/company_full"
+    "GET /v1/linkedin/company_full",
+    "GET /v1/linkedin/live/company/full"
    ]
   },
   {
    "crawler": "GET /api/live/linkedin/search_jobs",
+   "aliases": [
+    "GET /api/live/linkedin/search/jobs"
+   ],
    "group": "linkedin",
    "portal": [
-    "GET /v1/linkedin/search_jobs"
+    "GET /v1/linkedin/search_jobs",
+    "GET /v1/linkedin/live/search/jobs"
    ]
   },
   {
@@ -973,26 +863,12 @@
    "byDesign": "live Xiaohongshu routes are hidden from the docs because Xiaohongshu forces login and we hold no account (board s5, 2026-10-12)"
   },
   {
-   "crawler": "GET /api/live/douyin/profile",
-   "group": "xiaohongshu_douyin",
-   "portal": [
-    "GET /v1/douyin/live/profile"
-   ]
-  },
-  {
    "crawler": "GET /api/live/douyin/posts",
    "group": "xiaohongshu_douyin",
    "portal": [
     "GET /v1/douyin/live/profile/posts"
    ],
    "byDesign": "Douyin refuses its posts query without the WebSecSDK signature the crawler does not make: 403 'Uifid Not Found' or 'Signature Not Found' on 6 of 6 direct calls from us-metal02 and 502 douyin_signature_rejected on 13 of 14 prod calls to 2026-10-21 07:00Z, then HTTP 200 status_code 3170 on 5 of 5 prod docs-example calls at 09:5xZ, while live profile and related answer 200. Douyin is a platform we have not integrated (crawler board p672 under p670), so the docs hide the route (auto-sns-agent 5c50fdfb16) and the portal answers every failed call 503 source_paused unbilled (67f81d85d8, ba01650aa); api portal vp p53"
-  },
-  {
-   "crawler": "GET /api/live/douyin/related",
-   "group": "xiaohongshu_douyin",
-   "portal": [
-    "GET /v1/douyin/live/post/related"
-   ]
   },
   {
    "crawler": "GET /api/xiaohongshu/notes/{note_id}",
@@ -1026,16 +902,24 @@
   },
   {
    "crawler": "GET /api/live/douyin/user_profile",
+   "aliases": [
+    "GET /api/live/douyin/profile"
+   ],
    "group": "xiaohongshu_douyin",
    "portal": [
-    "GET /v1/douyin/user_profile"
+    "GET /v1/douyin/user_profile",
+    "GET /v1/douyin/live/profile"
    ]
   },
   {
    "crawler": "GET /api/live/douyin/aweme_related",
+   "aliases": [
+    "GET /api/live/douyin/related"
+   ],
    "group": "xiaohongshu_douyin",
    "portal": [
-    "GET /v1/douyin/aweme_related"
+    "GET /v1/douyin/aweme_related",
+    "GET /v1/douyin/live/post/related"
    ]
   },
   {
@@ -1112,27 +996,6 @@
    ],
    "envs": [
     "staging"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/facebook/adlibrary/company/ads",
-   "group": "meta_ads_tiktok_shop",
-   "portal": [
-    "GET /v1/facebook/live/adlibrary/company/ads"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/facebook/adlibrary/search/ads",
-   "group": "meta_ads_tiktok_shop",
-   "portal": [
-    "GET /v1/facebook/live/adlibrary/search/ads"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/facebook/adlibrary/search/companies",
-   "group": "meta_ads_tiktok_shop",
-   "portal": [
-    "GET /v1/facebook/live/adlibrary/search/companies"
    ]
   },
   {
@@ -1261,23 +1124,35 @@
   },
   {
    "crawler": "GET /api/live/meta_ads/company_ads",
+   "aliases": [
+    "GET /api/live/facebook/adlibrary/company/ads"
+   ],
    "group": "meta_ads_tiktok_shop",
    "portal": [
-    "GET /v1/meta_ads/company_ads"
+    "GET /v1/meta_ads/company_ads",
+    "GET /v1/facebook/live/adlibrary/company/ads"
    ]
   },
   {
    "crawler": "GET /api/live/meta_ads/search_ads",
+   "aliases": [
+    "GET /api/live/facebook/adlibrary/search/ads"
+   ],
    "group": "meta_ads_tiktok_shop",
    "portal": [
-    "GET /v1/meta_ads/search_ads"
+    "GET /v1/meta_ads/search_ads",
+    "GET /v1/facebook/live/adlibrary/search/ads"
    ]
   },
   {
    "crawler": "GET /api/live/meta_ads/search_companies",
+   "aliases": [
+    "GET /api/live/facebook/adlibrary/search/companies"
+   ],
    "group": "meta_ads_tiktok_shop",
    "portal": [
-    "GET /v1/meta_ads/search_companies"
+    "GET /v1/meta_ads/search_companies",
+    "GET /v1/facebook/live/adlibrary/search/companies"
    ]
   },
   {
@@ -1295,53 +1170,11 @@
    ]
   },
   {
-   "crawler": "GET /api/live/facebook/event/details",
-   "group": "facebook",
-   "portal": [
-    "GET /v1/facebook/live/event"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/facebook/events/search",
-   "group": "facebook",
-   "portal": [
-    "GET /v1/facebook/live/events/search"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/facebook/group/posts",
-   "group": "facebook",
-   "portal": [
-    "GET /v1/facebook/live/group/posts"
-   ]
-  },
-  {
    "crawler": "GET /api/live/facebook/post",
    "group": "facebook",
    "portal": [
     "GET /v1/facebook/live/post",
     "GET /v1/facebook/post"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/facebook/post/comment/replies",
-   "group": "facebook",
-   "portal": [
-    "GET /v1/facebook/live/post/comment/replies"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/facebook/post/comments",
-   "group": "facebook",
-   "portal": [
-    "GET /v1/facebook/live/post/comments"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/facebook/post/transcript",
-   "group": "facebook",
-   "portal": [
-    "GET /v1/facebook/live/post/transcript"
    ]
   },
   {
@@ -1353,87 +1186,102 @@
    ]
   },
   {
-   "crawler": "GET /api/live/facebook/profile/events",
-   "group": "facebook",
-   "portal": [
-    "GET /v1/facebook/live/profile/events"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/facebook/profile/photos",
-   "group": "facebook",
-   "portal": [
-    "GET /v1/facebook/live/profile/photos"
-   ]
-  },
-  {
-   "crawler": "GET /api/live/facebook/profile/reels",
-   "group": "facebook",
-   "portal": [
-    "GET /v1/facebook/live/profile/reels"
-   ]
-  },
-  {
    "crawler": "GET /api/live/facebook/event_details",
+   "aliases": [
+    "GET /api/live/facebook/event/details"
+   ],
    "group": "facebook",
    "portal": [
-    "GET /v1/facebook/event_details"
+    "GET /v1/facebook/event_details",
+    "GET /v1/facebook/live/event"
    ]
   },
   {
    "crawler": "GET /api/live/facebook/events_search",
+   "aliases": [
+    "GET /api/live/facebook/events/search"
+   ],
    "group": "facebook",
    "portal": [
-    "GET /v1/facebook/events_search"
+    "GET /v1/facebook/events_search",
+    "GET /v1/facebook/live/events/search"
    ]
   },
   {
    "crawler": "GET /api/live/facebook/group_posts",
+   "aliases": [
+    "GET /api/live/facebook/group/posts"
+   ],
    "group": "facebook",
    "portal": [
-    "GET /v1/facebook/group_posts"
+    "GET /v1/facebook/group_posts",
+    "GET /v1/facebook/live/group/posts"
    ]
   },
   {
    "crawler": "GET /api/live/facebook/post_comment_replies",
+   "aliases": [
+    "GET /api/live/facebook/post/comment/replies"
+   ],
    "group": "facebook",
    "portal": [
-    "GET /v1/facebook/post_comment_replies"
+    "GET /v1/facebook/post_comment_replies",
+    "GET /v1/facebook/live/post/comment/replies"
    ]
   },
   {
    "crawler": "GET /api/live/facebook/post_comments",
+   "aliases": [
+    "GET /api/live/facebook/post/comments"
+   ],
    "group": "facebook",
    "portal": [
-    "GET /v1/facebook/post_comments"
+    "GET /v1/facebook/post_comments",
+    "GET /v1/facebook/live/post/comments"
    ]
   },
   {
    "crawler": "GET /api/live/facebook/post_transcript",
+   "aliases": [
+    "GET /api/live/facebook/post/transcript"
+   ],
    "group": "facebook",
    "portal": [
-    "GET /v1/facebook/post_transcript"
+    "GET /v1/facebook/post_transcript",
+    "GET /v1/facebook/live/post/transcript"
    ]
   },
   {
    "crawler": "GET /api/live/facebook/profile_events",
+   "aliases": [
+    "GET /api/live/facebook/profile/events"
+   ],
    "group": "facebook",
    "portal": [
-    "GET /v1/facebook/profile_events"
+    "GET /v1/facebook/profile_events",
+    "GET /v1/facebook/live/profile/events"
    ]
   },
   {
    "crawler": "GET /api/live/facebook/profile_photos",
+   "aliases": [
+    "GET /api/live/facebook/profile/photos"
+   ],
    "group": "facebook",
    "portal": [
-    "GET /v1/facebook/profile_photos"
+    "GET /v1/facebook/profile_photos",
+    "GET /v1/facebook/live/profile/photos"
    ]
   },
   {
    "crawler": "GET /api/live/facebook/profile_reels",
+   "aliases": [
+    "GET /api/live/facebook/profile/reels"
+   ],
    "group": "facebook",
    "portal": [
-    "GET /v1/facebook/profile_reels"
+    "GET /v1/facebook/profile_reels",
+    "GET /v1/facebook/live/profile/reels"
    ]
   },
   {
