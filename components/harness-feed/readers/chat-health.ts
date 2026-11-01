@@ -51,7 +51,7 @@ type Hold = { what: string; from: number; to: number };
 type PoolHold = { session: string; from: number; to: number; room: readonly string[]; cell: boolean };
 type HostView = { name: string; usable: HostUsable | null; workers: number; workerGb: number; top: readonly WorkerLine[]; serviceGb?: number; agents?: AgentLine;
   error?: string; offline?: true; testBrowsers?: readonly TestBrowserLine[] };
-type MinuteSide = "harness" | "other" | "unknown";
+type MinuteSide = "harness" | "ci" | "other" | "unknown";
 type Tail = { offset: number; rest: Buffer };
 type Stamped<T> = { at: number; value: T };
 
@@ -204,7 +204,9 @@ function minuteSide(view: HostView, previous?: { view: HostView; gapMs: number }
   if (usable && isLinuxReading(usable)) {
     if (!usable.cpuCores || !unusable(usable).includes("cpu")) return "unknown";
     const { harness, ...rest } = usable.cpuCores;
-    return harness > 0 && Object.values(rest).every(cores => cores <= harness) ? "harness" : "other";
+    if (harness > 0 && Object.values(rest).every(cores => cores <= harness)) return "harness";
+    const { ci } = usable.cpuCores;
+    return ci > 0 && Object.values(usable.cpuCores).every(cores => cores <= ci) ? "ci" : "other";
   }
   if (!feedGroups(usable)) return "unknown";
   const now = memoryShares(view);
@@ -505,7 +507,7 @@ async function readD7(state: State, dutiesDir: string): Promise<void> {
 
 export interface Minutes {
   clean: number; unknown: number; unwatched: number; held: number; freeSlot: number; cellWait: number; daemonFail: number; cpuBusy: number;
-  harness: number; other: number; unattributed: number; offline: number; usable: number;
+  harness: number; ci: number; other: number; unattributed: number; offline: number; usable: number;
   perHost: Map<string, { usable: number; unusable: number; unknown: number; offline: number }>;
   queueHolds: number; cellHolds: number;
 }
@@ -520,7 +522,7 @@ export function judgeMinutes(input: { now: number; watch: readonly WatchLine[]; 
   const poolAt = (from: number, to: number, cell: boolean) => poolHeld.find(hold => hold.cell === cell && hold.from + HOLD_MS < to && hold.to >= from);
   const heldAt = (at: number) => queueHolds.some(hold => hold.from + HOLD_MS <= at && hold.to >= at - MINUTE);
   const side = sideOf(input.watch);
-  const out: Minutes = { clean: 0, unknown: 0, unwatched: 0, held: 0, freeSlot: 0, cellWait: 0, daemonFail: 0, cpuBusy: 0, harness: 0, other: 0, unattributed: 0,
+  const out: Minutes = { clean: 0, unknown: 0, unwatched: 0, held: 0, freeSlot: 0, cellWait: 0, daemonFail: 0, cpuBusy: 0, harness: 0, ci: 0, other: 0, unattributed: 0,
     offline: 0, usable: 0, perHost: new Map(), queueHolds: queueHolds.length + poolHeld.filter(hold => !hold.cell).length, cellHolds: poolHeld.filter(hold => hold.cell).length };
   const hostCount = (name: string) => { const known = out.perHost.get(name) ?? { usable: 0, unusable: 0, unknown: 0, offline: 0 }; out.perHost.set(name, known); return known; };
   for (let minute = 0; minute < 30; minute++) {
@@ -548,6 +550,7 @@ export function judgeMinutes(input: { now: number; watch: readonly WatchLine[]; 
     if (line && !unknown && !sides.size) out.usable++;
     if (sides.has("harness")) out.harness++;
     else if (sides.has("unknown")) out.unattributed++;
+    else if (sides.has("ci")) out.ci++;
     else if (sides.size) out.other++;
     if (heldAt(to)) { out.held++; dirty = true; }
     const waited = line && freeSlotWait(line);
@@ -1113,7 +1116,7 @@ export async function read(ctx: Context): Promise<Sample[]> {
   const out: Sample[] = [...sidebar];
   const kinds: [string, number][] = [["clean", minutes.clean], ["unknown", minutes.unknown], ["unwatched", minutes.unwatched], ["usable", minutes.usable], ["held", minutes.held],
     ["free_slot", minutes.freeSlot], ["cell_wait", minutes.cellWait], ["daemon_fail", minutes.daemonFail], ["cpu_busy", minutes.cpuBusy], ["harness_unusable", minutes.harness],
-    ["other_unusable", minutes.other], ["unattributed_unusable", minutes.unattributed], ["offline", minutes.offline]];
+    ["ci_unusable", minutes.ci], ["other_unusable", minutes.other], ["unattributed_unusable", minutes.unattributed], ["offline", minutes.offline]];
   for (const [kind, value] of kinds) out.push(gauge("harness.chat.minutes_30", help30, value, { kind }));
   for (const [host, tally] of minutes.perHost) for (const [state_, value] of Object.entries(tally))
     out.push(gauge("harness.chat.box_minutes_30", "Minutes of the last 30 each box read usable, unusable, unknown or offline in the watch.", value, { host, state: state_ }));

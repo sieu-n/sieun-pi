@@ -190,7 +190,8 @@ const leads = (shares: ReadonlyMap<MemoryGroupId, number>): boolean => {
 /**
  * Whose minute an unusable reading of `view` is. On the Mac it is the harness's when agent sessions hold the largest footprint of the box, or
  * the largest growth since `previous` (the same box in the line before) when that line is at most 2 minutes older. On a Linux box it is the
- * harness's when a CPU miss came with the harness's cgroups using the most cores (host-stats.ts `cpuSides`). A reading with nothing to
+ * harness's when a CPU miss came with the harness's cgroups using the most cores (host-stats.ts `cpuSides`), and CI's when CI's guests used
+ * the most (`ciWords` names their ramp; CI outranks the dev box by the owner's t68 answer, deploy/linux/README.md layer 1). A reading with nothing to
  * compare is unknown, never the apps': a Mac line with no groups, a Linux line from before cpuCores, or a Linux memory-only miss. d7 at 06:21Z
  * on 10-18 put all 11 CPU minutes on us-metal02 on the app and owner side, since Linux readings never carry the Mac's memory groups. A Linux
  * memory stall (`MEMORY_STALL_PCT`) goes to the group that held the most memory (AgentLine `largest`), whoever used the most cores, and Jobs'
@@ -200,10 +201,12 @@ export function minuteSide(view: HostView, previous?: { view: HostView; gapMs: n
   const usable = view.usable;
   if (usable && isLinuxReading(usable)) {
     const largest = view.agents?.largest;
-    if (memoryStalled(usable) && largest) return largest === "agents" || largest === "services" || largest === "jobs" ? "harness" : "other";
+    if (memoryStalled(usable) && largest) return largest === "agents" || largest === "services" || largest === "jobs" ? "harness" : largest === "ci" ? "ci" : "other";
     if (!usable.cpuCores || !unusable(usable).includes("cpu")) return "unknown";
     const { harness, ...rest } = usable.cpuCores;
-    return harness > 0 && Object.values(rest).every(cores => cores <= harness) ? "harness" : "other";
+    if (harness > 0 && Object.values(rest).every(cores => cores <= harness)) return "harness";
+    const { ci } = usable.cpuCores;
+    return ci > 0 && Object.values(usable.cpuCores).every(cores => cores <= ci) ? "ci" : "other";
   }
   if (!feedGroups(usable)) return "unknown";
   const now = memoryShares(view);
@@ -213,7 +216,32 @@ export function minuteSide(view: HostView, previous?: { view: HostView; gapMs: n
   const growth = new Map([...now].map(([id, gb]) => [id, gb - (before.get(id) ?? 0)] as const));
   return (growth.get("agents") ?? 0) > 0 && leads(growth) ? "harness" : "other";
 }
-export type MinuteSide = "harness" | "other" | "unknown";
+export type MinuteSide = "harness" | "ci" | "other" | "unknown";
+
+/** How far back `ciWords` looks for the low CI's cores rose from. */
+export const CI_RAMP_MS = 5 * 60_000;
+
+/**
+ * A minute CI's side led, in the flag's words: CI's cores and, when they at least doubled within CI_RAMP_MS on the same box, the low they rose
+ * from. At 00:08Z on 11-01 the chat's event loop stalled 1.4 s on us-metal02 while CI rose from 2.48 cores at 00:05Z to 43.3 as guests cig-22,
+ * cig-37 and cig-29 started, and d7 named only the harness's 23.32 cores and booked the minute on the app or owner side.
+ */
+export function ciWords(lines: readonly WatchLine[]): (line: WatchLine, view: HostView) => string {
+  return (line, view) => {
+    const usable = view.usable;
+    if (!usable || !isLinuxReading(usable) || !usable.cpuCores) return "";
+    const at = Date.parse(line.at);
+    let low: { cores: number; at: number } | undefined;
+    for (const before of lines) {
+      const when = Date.parse(before.at);
+      if (when >= at || when < at - CI_RAMP_MS) continue;
+      const same = hostViews(before).find(candidate => candidate.name === view.name)?.usable;
+      if (same && isLinuxReading(same) && same.cpuCores && (!low || same.cpuCores.ci < low.cores)) low = { cores: same.cpuCores.ci, at: when };
+    }
+    const ci = usable.cpuCores.ci;
+    return `; CI ${ci} of ${usable.allowedCpus} cores${low && low.cores * 2 <= ci ? `, up from ${low.cores} at ${clock(low.at)}` : ""}`;
+  };
+}
 
 /**
  * A Linux CPU miss's harness cores in the flag's words: its own work and the rigs jobs started (rig-cpu.ts), with the 3 owners whose rigs used
@@ -1359,10 +1387,11 @@ export function measure(input: Inputs): PrecheckOutput {
   let offlineAny = 0, offlineFaults = 0;
   const flappedMin: string[] = [];
   const darkMin: number[] = [];
-  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, cellWait = 0, harness = 0, rigMin = 0, busyMin = 0, other = 0, unattributed = 0, daemonFail = 0, primeMin = 0;
+  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, cellWait = 0, harness = 0, rigMin = 0, busyMin = 0, ciMin = 0, other = 0, unattributed = 0, daemonFail = 0, primeMin = 0;
   const faultName = chatNamer(input.chats, input.named, input.listed);
   const slotWaits = (input.slotWaits ?? []).filter(wait => wait.fault.at >= start && wait.fault.at < start + WINDOW_MS);
   const side = sideOf(input.watch);
+  const ciAt = ciWords(input.watch);
   const dirty: string[] = [];
   const busy: string[] = [];
   const unknownLines: string[] = [];
@@ -1401,17 +1430,18 @@ export function measure(input: Inputs): PrecheckOutput {
       }
       if (!miss.length) { count.usable++; continue; }
       count.unusable++;
-      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${memoryWords(view)}${asideWords(view)}${rigWords(view, faultName)})`);
       // A slow read or loop stall of the chat service is the harness's own code, whoever used the most cores: at 20:32Z on 10-24
       // api/threads/<id>/agents took 2.8 s waiting for a projection at 1.09 runnable a core, and the minute went to the apps' side for their
       // 21.99 cores to the harness's 20.12; at 02:44Z on 10-30 a 975 ms major GC stalled the loop 1.3 s and went there too.
       const read = found.includes("cpu") && slowChat(own, line.chat) ? "harness" : side(line, view);
+      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${memoryWords(view)}${asideWords(view)}${read === "ci" ? ciAt(line, view) : ""}${rigWords(view, faultName)})`);
       sides.add(read);
       if (read === "harness" && rigsLead(view)) rigged = true;
     }
     if (line && !unknown.length) { fed++; if (!sides.size) usable++; }
     if (sides.has("harness")) { harness++; if (rigged) rigMin++; }
     else if (sides.has("unknown")) unattributed++;
+    else if (sides.has("ci")) ciMin++;
     else if (sides.size) other++;
     if (heldAt(to)) { held++; why.push("a start, wake or parked job held over 10 min"); }
     const waited = line && freeSlotWait(line);
@@ -1489,6 +1519,7 @@ export function measure(input: Inputs): PrecheckOutput {
     harness_unusable_min_30: harness,
     harness_rig_unusable_min_30: rigMin,
     cpu_busy_min_30: busyMin,
+    ci_unusable_min_30: ciMin,
     other_unusable_min_30: other,
     unattributed_unusable_min_30: unattributed,
     held_min_30: held,
@@ -1538,7 +1569,7 @@ export function measure(input: Inputs): PrecheckOutput {
   }
   const byHost = [...perHost].map(([name, count]) => `${name} read usable in ${count.usable}, unusable in ${count.unusable}, unknown in ${count.unknown} and offline in ${count.offline}`).join("; ");
   flagged.push({ kind: "minutes", excerpt: `${clean} of the last 30 minutes ran clean and ${unknownMin} are unknown. ${byHost || "No box was read"} ` +
-    `(${harness} unusable minutes on the harness side, ${other} on the app or owner side, ${unattributed} with no cause read, ${unwatched} with no watch line, and ${rigMin} harness minutes went mostly to job rigs); a start, wake or parked job was held over ` +
+    `(${harness} unusable minutes on the harness side, ${ciMin} on CI's side, ${other} on the app or owner side, ${unattributed} with no cause read, ${unwatched} with no watch line, and ${rigMin} harness minutes went mostly to job rigs); a start, wake or parked job was held over ` +
     `10 min in ${held}; a turn sat queued while pi-pool had ${FREE_SLOTS} or more slots it could give it, or pi-pool refused a tree for over 10 min while an account took its class, in ${freeSlot}; ` +
     `a tree waited over 10 min for a pi-pool cell at R4's pace, not counted dirty, in ${cellWait}; ` +
     `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}, ${primeMin} of them a Prime fault, a worker crash or hang or a create Prime took over ${SLOW_MS / 1000} s to answer.` +
