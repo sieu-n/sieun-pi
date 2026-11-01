@@ -1,7 +1,7 @@
 // Guards the Chat system duty's precheck (d9), built 10-19 for the owner's rule that a plan holds only tasks that finish (msg mvfb7zt0).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agingSince, chatSystemOutput, failingTurns, fixNotMoving, manualSelection, goalsWithNoJob, downRoutes, jobPushRecords, jobPushTells, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushSettled, pushTells, spotAuditLines, spotPick, spread, unknownOwners, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
+import { agingSince, chatSystemOutput, failingTurns, fixNotMoving, manualSelection, goalsWithNoJob, downRoutes, jobPushRecords, jobPushTells, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushSettled, pushesSince, pushTells, spotAuditLines, spotPick, spread, unknownOwners, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
 import { type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
 import type { MetricStreak } from "../src/shared/duty-streak.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
@@ -430,4 +430,14 @@ test("a down chat's stuck step owned by a subagent or by no job is named as a mo
   const slices = out.flagged!.filter(slice => slice.kind === "move_step");
   assert.deepEqual(slices.map(slice => slice.item), ["p334", "p341"]);
   assert.match(slices[0]!.excerpt, /^frontend bro: p334 "A prod brand dashboard opens on the first try" is stuck in a chat that cannot take a turn, and its job is a subagent of the chat, .*with this one call, .*: await rlm\.create_session\(/);
+});
+
+test("a pushes line a run recorded as not sent is no push to follow up", () => {
+  const text = [
+    JSON.stringify({ at: 100, chat: "c1", tag: "[d9 push A]", items: ["d3"] }),
+    JSON.stringify({ at: 200, chat: "c1", tag: "[d9 push B]", items: ["d3"], kind: "push_followup", delivery: "not sent", why: "the chat answered" }),
+    JSON.stringify({ at: 50, chat: "c2", tag: "[d9 push C]", items: ["p1"] }),
+    "not json",
+  ].join("\n");
+  assert.deepEqual(pushesSince(text, 60).map(push => push.tag), ["[d9 push A]"]);
 });
