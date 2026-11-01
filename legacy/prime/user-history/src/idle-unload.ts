@@ -1,7 +1,7 @@
 import { dirname } from "node:path";
 import type { SessionSummary } from "prime-agent";
 import type { DaemonClient } from "./daemon-sdk.ts";
-import { accountSlot, poolFreeAt, type PoolStatus, type PoolThread, type ThreadParts, threadKey } from "./chat-pool.ts";
+import { accountSlot, POOL_LEAD_MS, poolFreeAt, type PoolStatus, type PoolThread, type ThreadParts, threadKey } from "./chat-pool.ts";
 import { type FailedRun, failedRun } from "./held-turns.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
 import type { UnloadReceipt } from "./unloaded.ts";
@@ -432,7 +432,9 @@ export interface WaitReads {
  * Of `rows` (`retryCandidates`), each one of this box whose transcript ends on a failed reply (`failedRun`) and whose tree, keyed by its
  * root session as pi-pool keys it, the pool serves next only past the unload's minutes (`poolFreeAt`, `poolHoldsPast`), with when that
  * is. The trees are read WAIT_READ_TREES at a time. The wait counts from the run's first failed reply, since each retry Prime makes moves the
- * row's lastActivityAt, and a slot of the tree's own keeps the session only until pi-pool parks it again at a slot (`FailedRun.rolled`).
+ * row's lastActivityAt, and a slot of the tree's own keeps the session only until pi-pool parks it again at a slot (`FailedRun.rolled`), unless
+ * that slot comes within POOL_LEAD_MS, when the stopped tree's resume would start it again at once. On 11-01 the unload stopped SEO guy
+ * (01a11a24) at 09:09:30Z, 90 s before its 09:11:00Z cell, and the tree's next asks came after its cells until 09:25:42Z.
  * From 05:10Z to 06:00Z on 10-31 17 quiet trees on us-metal02 held 10.5 GB this way with no pool-wait stop: pi-pool parked each one again
  * every 3 to 4.5 min, so its lastActivityAt never read 15 min old and its next slot was always under 15 min ahead.
  */
@@ -462,7 +464,8 @@ export async function providerWaits(rows: readonly SessionSummary[], now: number
     const run = runs.get(row.sessionId)!;
     const freeAt = poolFreeAt(parts, row.model!.provider, now);
     const waited = now - (run.since ?? Date.parse(row.lastActivityAt ?? ""));
-    const slot = run.rolled ? null : accountSlot(parts, row.model!.provider);
+    const own = accountSlot(parts, row.model!.provider);
+    const slot = run.rolled && !(own !== null && own <= now + POOL_LEAD_MS) ? null : own;
     return poolHoldsPast(freeAt, now, idleMs, Number.isFinite(waited) ? waited : 0, slot) ? [[row.sessionId, freeAt] as const] : [];
   }));
 }

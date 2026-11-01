@@ -1431,6 +1431,10 @@ def prefetch_hooks(pairs, cache):
 # ids in us-metal02's pi-pool.log, each a held job whose slot the pass did not read.
 CREDENTIAL_PROTOCOL_ENV = "PRIME_CREDENTIAL_COMMAND_PROTOCOL"
 SLOT_WAIT_EXIT = 75
+# A held run whose pi-pool cell comes within this many seconds gets its continue now, so its first model call reaches the pool by the cell and
+# Prime's credential wait sleeps the rest of the way (chat-pool.ts POOL_LEAD_MS has the measurements). Continued only after its cell, a run
+# asked late and lost it: on 11-01 this pass asked for SEO guy's tree at 09:11:32Z for its 09:11:00Z cell, and pi-pool parked it at 09:13:00Z.
+POOL_LEAD_S = 120
 
 
 def hook_slot_at(ran):
@@ -1463,7 +1467,7 @@ def hook_blocker(root_session_id, provider, cache):
                                  stdin=subprocess.DEVNULL, capture_output=True, timeout=HOOK_TIMEOUT_S)
             gave = ran.returncode == 0 and bool(ran.stdout.strip())
             slot_at = hook_slot_at(ran)
-            cache[(root_session_id, provider)] = (None if gave else slot_wait_text(slot_at) if slot_at
+            cache[(root_session_id, provider)] = (None if gave or (slot_at and slot_at <= time.time() + POOL_LEAD_S) else slot_wait_text(slot_at) if slot_at
                                                   else f"the token hook gave no {provider} token (exit {ran.returncode})")
         except subprocess.TimeoutExpired:
             cache[(root_session_id, provider)] = f"the token hook gave no {provider} token in {HOOK_TIMEOUT_S} s"
@@ -1477,14 +1481,16 @@ def pool_bin():
     return found if Path(found).exists() else None
 
 
-def account_blocker(root_session_id, provider, cache, strict=False):
+def account_blocker(root_session_id, provider, cache, strict=False, lead=0):
     """Why the account this tree's next request gets cannot serve and when pi-pool says that ends (pool_free_at, epoch seconds or None), or
     (None, None) when it can serve (or there is no pool to ask).
 
     A run that stopped on a rate limit or a used-up account fails again at once if it resumes on the same account,
     so it stays off the list until pi-pool has an account for it. With `strict` (the abort of a run asleep in its provider retry) a pooled
     provider whose answer could not be read, or a resolved account `pi-pool ls` does not list, gives "unknown: ..." instead of None, since an
-    unknown answer is no proof the account can serve. A provider pi-pool does not pool gives None either way.
+    unknown answer is no proof the account can serve. A provider pi-pool does not pool gives None either way. A wait whose slot comes within
+    `lead` seconds holds nothing: a stopped run passes POOL_LEAD_S, so its continue goes out ahead of its cell, while a run asleep in Prime's
+    retry passes none, since it asks at its slot by itself.
     """
     unknown = (lambda why: (f"unknown: {why}", None)) if strict else (lambda why: (None, None))
     if provider is None:
@@ -1517,6 +1523,8 @@ def account_blocker(root_session_id, provider, cache, strict=False):
     if wait.get("reserved") is False:
         return None, None
     if isinstance(wait.get("slot_at"), (int, float)) and wait["slot_at"] > time.time():
+        if wait["slot_at"] <= time.time() + lead:
+            return None, None
         return f"pi-pool holds the tree until {dt.datetime.fromtimestamp(wait['slot_at'], dt.timezone.utc).isoformat(timespec='seconds')}", free_at
     account = resolved.get("account")
     if not account:
@@ -1557,13 +1565,13 @@ def pool_free_at(resolved, rows, now):
     return min(frees, default=None)
 
 
-def own_slot_at(error, now):
+def own_slot_at(error, now, lead=0):
     """The slot time pi-pool gave this session itself, when the run's last error is that slot wait and the time is still ahead, in epoch
-    seconds; else None. The hold sits on the tree key pi-pool used for that turn, which can differ from the tree pool_tree names: on 10-22
+    seconds; else None, also when it comes within `lead` seconds (POOL_LEAD_S for a stopped run, whose continue then goes now). The hold sits on the tree key pi-pool used for that turn, which can differ from the tree pool_tree names: on 10-22
     pi-pool keyed lrv-w4-hb (01a15ff2) under 2030e00a5d43, be57bb50f3fb and then itself, the 00:12:5xZ pass asked about its chat's tree
     01a14210, which had an account, and the continue reopened the probe at 00:12:55Z, 1 h 57 min before its 02:09:30Z slot."""
     ahead = [stamp.timestamp() for stamp in map(parse_ts, SLOT_WAIT_ERROR.findall(error)) if stamp and stamp.timestamp() > now]
-    return max(ahead, default=None)
+    return max(ahead) if ahead and max(ahead) > now + lead else None
 
 
 def own_slot_hold(slot_at):
@@ -2269,14 +2277,14 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
             if redriven and redriven > ts:
                 continue  # someone sent the head a message after the interruption
         root_id, provider = pool_tree(s, by_id.get(head, s)), run_provider(entries_of(sid))
-        slot_at = own_slot_at(verdict[1], time.time()) if verdict[0] == "error" else None
+        slot_at = own_slot_at(verdict[1], time.time(), POOL_LEAD_S) if verdict[0] == "error" else None
         if slot_at:
             blocker, free_at = own_slot_hold(slot_at), slot_at
         elif verdict[0] == "error" and TOKEN_HOOK_ERROR.search(verdict[1]):
             blocker = hook_blocker(root_id, provider, hooks) if check_hook else None
             free_at = error_free_at(blocker, time.time()) if blocker else None
         else:
-            blocker, free_at = account_blocker(root_id, provider, accounts)
+            blocker, free_at = account_blocker(root_id, provider, accounts, lead=POOL_LEAD_S)
         if blocker:
             free_at = free_at or error_free_at(verdict[1], time.time())
             HELD.append({"id": sid, "session_id": full, "name": s.get("sessionName") or "(unnamed)", "head": head, "head_session_id": head_session(head, s),

@@ -63,17 +63,18 @@ test("the transcript's failed run names its first failed reply and the slot pi-p
   assert.equal(failedRun(`${transcript(at).tail}\n${JSON.stringify({ type: "message", message: { role: "toolResult" } })}`), undefined);
 });
 
-test("a tree pi-pool parks again every 3 to 4.5 min stops as a pool wait once its run is 15 min old, not before", async () => {
-  // Each sweep minute that reads lastActivityAt 2 min or more old (ENDED_MS), as the minute-by-minute sweep did from 04:25Z to 05:32Z.
+test("a tree pi-pool parks again every 3 to 4.5 min keeps its worker, since each next cell is under 2 min ahead at every sweep minute", async () => {
+  // Each sweep minute that reads lastActivityAt 2 min or more old (ENDED_MS), as the minute-by-minute sweep did from 04:25Z to 05:32Z. Prime
+  // asked about 70 s after each slot, so 2 min later the next slot was at most 1.3 min ahead. A stop there freed the worker for one 30 s chat
+  // tick before the resume, which now starts a tree POOL_LEAD_MS before its cell, loaded it again, and until 11-01 made the tree ask after its
+  // cell. A re-parked tree whose next cell is further out still stops (stopped-tree-lead.test.ts).
   const minutes = Array.from({ length: 67 }, (_, n) => Date.parse("2026-10-31T04:26:00Z") + n * MIN)
     .filter(now => now - transcript(now).last >= 2 * MIN);
   assert.ok(minutes.length > 20, `${minutes.length} sweep minutes`);
-  const stopped: number[] = [];
-  for (const now of minutes) if (await stops(now)) stopped.push(now);
-  assert.ok(stopped.length, "no sweep stopped it");
-  assert.ok(stopped[0]! - start >= QUIET, `stopped at ${iso(stopped[0]!)}, under 15 min into its wait`);
-  assert.ok(stopped[0]! - start <= QUIET + 5 * MIN, `first stop at ${iso(stopped[0]!)}`);
-  for (const now of minutes.filter(now => now >= stopped[0]!)) assert.equal(await stops(now), true, `kept at ${iso(now)}`);
+  for (const now of minutes) {
+    assert.ok(transcript(now).slot <= now + 2 * MIN, `slot ${iso(transcript(now).slot)} at ${iso(now)}`);
+    assert.equal(await stops(now), false, `stopped at ${iso(now)}`);
+  }
 });
 
 test("a tree whose first slot has not passed keeps its worker for that slot, however long ago it first failed", async () => {

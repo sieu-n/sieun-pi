@@ -564,12 +564,38 @@ export async function poolHoldsTree(tree: string, read: typeof readPoolStatus = 
   } catch { return null; }
 }
 
-/** `poolAdmitsNow` for the tree rooted at `tree`, from a fresh shared read; false when the pool cannot be read. */
+/**
+ * How long before its pi-pool cell a stopped tree is started again (`poolResumes`), so its first model call reaches the pool by that cell and
+ * Prime's credential wait sleeps the rest of the way to it. A resume goes out at the first 30 s chat tick (CHECK_IN_TICK_MS) in the lead, and
+ * the daemon answered 737 resumes from 10-29 to 11-01 in 2.7 s median, 18.7 s p99 and 35.5 s at most; a job's resume also runs its
+ * resume_paused.py pass first. Resumed only at or after its cell, as before, a tree asked after it: on 11-01 the pass asked for SEO guy's tree at
+ * 09:11:32Z for its 09:11:00Z cell and pi-pool parked it again at 09:13:00Z. An early resume costs one worker held under 2 min.
+ */
+export const POOL_LEAD_MS = 120_000;
+
+/**
+ * Whether to start a stopped tree again now: pi-pool admits it now (`poolAdmitsNow`), or the cell its next request gets (`who`'s wait, its own
+ * or a dry run) comes within `leadMs`. A dry run slot after the tree's own cell passed is the next cell the pool would give it; until 11-01 only
+ * an admit now counted, which a tree whose cell passed with no ask never read, and SEO guy (01a11a24) slept from its 09:15:30Z cell to 09:25:42Z.
+ */
+export function poolResumesBy(parts: Pick<ThreadParts, "who" | "ls">, provider: string, now: number, leadMs = POOL_LEAD_MS): boolean {
+  if (poolAdmitsNow(parts, provider, now)) return true;
+  if (!isPooled(provider)) return false;
+  try {
+    const who: unknown = JSON.parse(partOut(parts.who));
+    const said = isRecord(who) && isRecord(who.providers) ? who.providers[provider] : null;
+    if (!isRecord(said) || text(said.error)) return false;
+    const slotAt = epochMs(isRecord(said.wait) ? said.wait.slot_at : null);
+    return slotAt !== null && slotAt <= now + leadMs;
+  } catch { return false; }
+}
+
+/** `poolResumesBy` for the tree rooted at `tree`, from a fresh shared read; false when the pool cannot be read. */
 export async function poolAdmits(tree: string, provider: string, read: typeof readPoolStatus = readPoolStatus, now: () => number = Date.now): Promise<boolean> {
   const thread = { session: tree, model: null };
   try {
     const parts = (await read([thread], { maxAgeMs: 0 })).threads.get(threadKey(thread));
-    return parts ? poolAdmitsNow(parts, provider, now()) : false;
+    return parts ? poolResumesBy(parts, provider, now()) : false;
   } catch { return false; }
 }
 

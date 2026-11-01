@@ -349,7 +349,7 @@ export interface CheckInSource {
   noReportGraceMs?: number;
   /** The pool's account availability, null when the pool cannot be read. */
   claude?: () => Promise<ClaudeState | null>;
-  /** Whether pi-pool would give the tree rooted at `tree` a `provider` account now (`poolAdmits`); absent or failing: it holds. */
+  /** Whether pi-pool gives the tree rooted at `tree` a `provider` account now or a cell within POOL_LEAD_MS (`poolAdmits`); absent or failing: it holds. */
   poolAdmits?: (tree: string, provider: string) => Promise<boolean>;
   /** Where the sessions of the cut jobs pi-pool holds are kept across restarts (`PoolHeldJobs`); absent: kept in memory only. */
   poolHeldFile?: string;

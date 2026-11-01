@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findCutJobs } from "../scripts/duties/whole-system.ts";
 import { JOB_CLEANUP_EVERY_MS } from "./chat-checkin.ts";
+import { POOL_LEAD_MS } from "./chat-pool.ts";
 import { WAIT_READ_TREES } from "./idle-unload.ts";
 import type { InterruptedReport, InterruptedRun, JobOf, PoolHeldRun, RecordedStop } from "./shared/interrupted.ts";
 import { turnErrorCause } from "./turn-error.ts";
@@ -351,8 +352,8 @@ function heldSessionsIn(file: string): string[] {
 }
 
 /**
- * The jobs the last pass left because pi-pool held their tree (`InterruptedReport.held`). At the first chat tick (CHECK_IN_TICK_MS) at or after
- * a run's pool time, or at each tick for a run with none, `admits` (`poolAdmits`, the same rule as resume_paused.py account_blocker) asks the
+ * The jobs the last pass left because pi-pool held their tree (`InterruptedReport.held`). At the first chat tick (CHECK_IN_TICK_MS) from
+ * POOL_LEAD_MS before a run's pool time, or at each tick for a run with none, `admits` (`poolAdmits`, the same rule as resume_paused.py account_blocker) asks the
  * pool for its tree, and the chat runs the next pass at once for a tree it admits, instead of up to JOB_CLEANUP_EVERY_MS later. That pass checks
  * the pool again before it sends. A run on another box is left to that box's pool. On 10-19 twitch index gaps sat on its 429 until the
  * 06:06:14Z pass, 6 min after claude7 served again at 06:00Z.
@@ -404,7 +405,7 @@ export class PoolHeldJobs {
    */
   async admitted(now: number): Promise<PoolHeldRun[]> {
     const key = (run: PoolHeldRun): string => `${run.tree}|${run.provider}`;
-    const due = this.runs.filter(run => !(Date.parse(run.pool_at ?? "") > now) && this.answered.get(run.session_id) !== answerOf(run));
+    const due = this.runs.filter(run => !(Date.parse(run.pool_at ?? "") > now + POOL_LEAD_MS) && this.answered.get(run.session_id) !== answerOf(run));
     const trees = [...new Map(due.map(run => [key(run), run] as const)).values()];
     const open = new Set<string>();
     for (let from = 0; from < trees.length; from += WAIT_READ_TREES) {

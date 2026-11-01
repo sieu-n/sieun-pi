@@ -4,7 +4,7 @@ import { basename, join } from "node:path";
 import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName, inTurnQueue } from "./chat-duty-job.ts";
 import { type CheckInActor, CHECK_IN_MS } from "./checkin-settings.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
-import { type PoolHold, pooledProviders } from "./chat-pool.ts";
+import { POOL_LEAD_MS, type PoolHold, pooledProviders } from "./chat-pool.ts";
 import { WAIT_READ_TREES } from "./idle-unload.ts";
 import { GOAL_PUSH_LINK } from "./checkin-goals.ts";
 import { goalReadingOps } from "./goal-readings.ts";
@@ -80,7 +80,7 @@ export interface DutyHost {
    * duty (`routedTell`). Absent: the runner sends none.
    */
   tell?: (chatId: string, text: string, from: TellSource, session?: string) => Promise<boolean | void>;
-  /** Whether pi-pool would give the tree rooted at `tree` a `provider` account now (`poolAdmits`), for a cut run's rerun; absent: it admits. */
+  /** Whether pi-pool gives the tree rooted at `tree` a `provider` account now or a cell within POOL_LEAD_MS (`poolAdmits`), for a cut run's rerun; absent: it admits. */
   poolAdmits?: (tree: string, provider: string) => Promise<boolean>;
   /**
    * Where pi-pool holds the tree rooted at `tree` (`poolHoldsTree`): "line" while its wait holds a cell, "admits" when it gets an account now, or
@@ -565,8 +565,8 @@ export class Duties {
    * Reruns each cut run once. A duty's run to look at is its newest run that started a job, after that job ended (the run has an after-job
    * measure or a cut). It reruns when its job ended cut (`cutOf`), the run is no rerun or its cut is transient (`cutReruns`), so a rerun cut
    * on a lost connection or a token hook with no token reruns again until a model call gets through, no rerun names it (`rerunOf`), no run of the
-   * duty goes now, the duty is active, the slot pi-pool gave the cut job has come (`DutyCut.slotAt`), and pi-pool admits the cut job's tree
-   * (`poolAdmits`; a duty job is the root of its tree), asked WAIT_READ_TREES trees at a time. `who` reserves nothing, so without the slot
+   * duty goes now, the duty is active, the slot pi-pool gave the cut job comes within POOL_LEAD_MS (`DutyCut.slotAt`), and pi-pool admits the cut job's tree
+   * or its next cell comes within that lead (`poolAdmits`; a duty job is the root of its tree), asked WAIT_READ_TREES trees at a time. `who` reserves nothing, so without the slot
    * every cut tree read as admitted the moment one account freed: at 14:40:07Z on 10-19 claude-virev4 came back, 40 cut runs reran in that
    * tick, and each rerun's job met a new slot wait by 14:48Z. The slots pi-pool hands out spread the reruns the way it spreads the jobs. A newer run that started a job becomes the run to look at, so a cut run whose duty ran again first, like
    * a wiki dream push run 15 min later, gets no rerun. The rerun is a run with the trigger "rerun" and `rerunOf`, and the check-in's goes
@@ -585,7 +585,7 @@ export class Duties {
           runs.some(other => other.duty === run.duty && other.rerunOf === run.at)) continue;
         const ended = run as DutyRunRecord & { job: DutyJobRef };
         const cut = await this.cutOf(chatId, ended);
-        if (cut && cutReruns(run, cut) && !(cut.slotAt !== undefined && cut.slotAt > this.now()) && await this.dutyActive(chatId, run.duty)) found.push({ chatId, run: ended, cut });
+        if (cut && cutReruns(run, cut) && !(cut.slotAt !== undefined && cut.slotAt > this.now() + POOL_LEAD_MS) && await this.dutyActive(chatId, run.duty)) found.push({ chatId, run: ended, cut });
       }
     }
     const admits = this.host.poolAdmits;

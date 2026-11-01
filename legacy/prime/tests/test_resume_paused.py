@@ -1081,10 +1081,10 @@ class ResumePausedTests(unittest.TestCase):
 
 
     def test_a_run_the_idle_unload_stopped_in_a_credential_wait_is_resumed(self):
+        # Its 17:32:00Z slot is 4 s ahead, inside POOL_LEAD_S, so its continue goes now and its own credential wait sleeps the rest.
         report = self.run_marked()
-        self.assertEqual(report["paused"], [])
-        self.assertEqual([(h["session_id"], h["pool_at"]) for h in resume_paused.HELD], [(self.MARKED, "2026-10-20T17:32:00+00:00")])
-        resume_paused.HELD.clear()
+        self.assertEqual([(p["reason"], p["target"]) for p in report["paused"]], [("error", self.MARKED)])
+        self.assertEqual(resume_paused.HELD, [])
         report = self.run_marked(now=dt.datetime(2026, 10, 20, 17, 32, 5, tzinfo=dt.timezone.utc))
         self.assertEqual([(p["reason"], p["target"], p["errored_at"]) for p in report["paused"]],
                          [("error", self.MARKED, "2026-10-20T17:30:08.140Z")])
@@ -1679,6 +1679,34 @@ class ResumePausedTests(unittest.TestCase):
         self.assertIn("holds the tree", who({"account": "acct1", "slot_at": later, "reserved": True}))
         # 10-23 04:49:39Z: 01a1641e's 04:46:30Z cell had passed and `who` read a fresh slot at 04:50Z that no cell held.
         self.assertIsNone(who({"account": "acct1", "slot_at": later, "reserved": False}, account=None))
+
+    def test_a_stopped_run_is_continued_within_the_lead_before_its_cell(self):
+        # SEO guy's tree, 11-01: stopped at 09:09:30Z for its 09:11:00Z cell, and this pass's first ask came at 09:11:32Z, after the cell.
+        now = dt.datetime(2026, 11, 1, 9, 9, 30, tzinfo=dt.timezone.utc).timestamp()
+        cell = now + 90
+
+        def blocker(lead):
+            def run(cmd, **kwargs):
+                body = {"rows": [{"id": "claude16", "usable": True}]} if cmd[1] == "ls" else \
+                    {"providers": {"anthropic": {"account": None, "wait": {"account": "claude16", "slot_at": cell, "reserved": True}}}}
+                return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps(body), "")
+            with patch.object(resume_paused, "pool_bin", return_value="pi-pool"), patch.object(resume_paused.subprocess, "run", side_effect=run), \
+                    patch.object(resume_paused.time, "time", return_value=now):
+                return resume_paused.account_blocker("01a11a24-a46e-77ff-adf7-671d01d462e2", "anthropic", {}, lead=lead)[0]
+
+        self.assertIn("holds the tree until", blocker(0), "a run asleep in its retry asks at its cell by itself")
+        self.assertIsNone(blocker(resume_paused.POOL_LEAD_S))
+        error = "pi-pool: this session waits for its slot at 2026-11-01T09:11:00.000Z."
+        self.assertEqual(resume_paused.own_slot_at(error, now), cell)
+        self.assertIsNone(resume_paused.own_slot_at(error, now, resume_paused.POOL_LEAD_S))
+        self.assertEqual(resume_paused.own_slot_at(error, now - 600, resume_paused.POOL_LEAD_S), cell, "10 min before its cell it still waits")
+        hook = resume_paused.subprocess.CompletedProcess([], resume_paused.SLOT_WAIT_EXIT, json.dumps({"retryAt": cell}), "")
+        with patch.object(resume_paused, "TOKEN_HOOK", Path("/bin/true")), patch.object(resume_paused.subprocess, "run", return_value=hook), \
+                patch.object(resume_paused.time, "time", return_value=now):
+            self.assertIsNone(resume_paused.hook_blocker("01a11a24-a46e-77ff-adf7-671d01d462e2", "anthropic", {}))
+        with patch.object(resume_paused, "TOKEN_HOOK", Path("/bin/true")), patch.object(resume_paused.subprocess, "run", return_value=hook), \
+                patch.object(resume_paused.time, "time", return_value=now - 600):
+            self.assertIn("waits for its slot", resume_paused.hook_blocker("01a11a24-a46e-77ff-adf7-671d01d462e2", "anthropic", {}))
 
     def test_retry_wait_names_the_error_a_hung_run_sleeps_on(self):
         # ssh tailnet only, 10-18: its last entry is the 08:20:32Z 429, and it showed working for 146 min after it.
