@@ -4,7 +4,7 @@ import { basename, join } from "node:path";
 import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName, inTurnQueue } from "./chat-duty-job.ts";
 import { type CheckInActor, CHECK_IN_MS } from "./checkin-settings.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
-import { pooledProviders } from "./chat-pool.ts";
+import { type PoolHold, pooledProviders } from "./chat-pool.ts";
 import { WAIT_READ_TREES } from "./idle-unload.ts";
 import { GOAL_PUSH_LINK } from "./checkin-goals.ts";
 import { goalReadingOps } from "./goal-readings.ts";
@@ -82,6 +82,11 @@ export interface DutyHost {
   tell?: (chatId: string, text: string, from: TellSource, session?: string) => Promise<boolean | void>;
   /** Whether pi-pool would give the tree rooted at `tree` a `provider` account now (`poolAdmits`), for a cut run's rerun; absent: it admits. */
   poolAdmits?: (tree: string, provider: string) => Promise<boolean>;
+  /**
+   * Where pi-pool holds the tree rooted at `tree` (`poolHoldsTree`): "line" while its wait holds a cell, "admits" when it gets an account now, or
+   * null. A run keeps the duty's last job in the line, and a cut one pi-pool admits (`IN_POOL_LINE`); absent: no job is kept for its tree.
+   */
+  poolHolds?: (tree: string) => Promise<PoolHold | null>;
   /**
    * The Prime update restoring the daemon's sessions now (`primeUpdateRunning`), or null; absent: none. While one runs no duty job is stopped,
    * archived or retired: a restored root reads idle until the coordinator restores its subagents, and from 03:08:28Z to 03:09:07Z on 10-20
@@ -166,6 +171,20 @@ export const STUCK_MAX_MS = 12 * 60 * 60_000;
 export function stuckAfterMs(schedule: DutySchedule): number {
   return Math.min(Math.max(intervalMs(schedule), STUCK_MIN_MS), STUCK_MAX_MS);
 }
+
+/**
+ * Why a run keeps the duty's last job whose report is not in, up to STUCK_MAX_MS after its run started, and hands it the run's items: pi-pool
+ * holds its tree in line for an account, or admits the tree of a job whose turn was cut (`DutyHost.poolHolds`). pi-pool ranks waiting trees
+ * by class and then by wait start (rule R5, packages/pi-pool/pool/sched.py), so a new job of the same class queues behind the old one. On 11-01
+ * the d4 push run of 03:30:15Z retired "wiki dream AI harness developer environment 10:36", cut by a 429 at 01:43Z and in line since then,
+ * whose 03:30:07Z wait held a 03:36:00Z cell on claude-virev18. Its new job asked at 03:35:19Z behind the 15 trees waiting on that account and
+ * got its first account at 04:16:33Z. On 10-29 the 12:04Z rerun of a cut run, started because pi-pool admitted the cut job's tree, which
+ * held a 12:10:30Z cell, replaced that job, and the new one got its first account at 12:21:03Z. On 10-31 the 18:01Z run replaced a stalled
+ * job whose cell was 18:08:00Z, and the new one got in at 18:10:00Z. measured: from 10-25 to 11-01 (KST) every one of the 10 duty jobs of
+ * any chat replaced while its tree held a cell got its first account later than that cell, 165 min in all, p50 11.3 and p90 27.0 min
+ * (~/work/d4-slot-wait-1101). The words hold " is kept," so the push rule counts the run as the duty's read (src/duty-push.ts KEPT).
+ */
+export const IN_POOL_LINE = "is kept, since pi-pool holds its tree in line for an account and a new job would queue behind it";
 
 /** The time between two slots of a schedule; a daily duty's is a day. */
 export const intervalMs = (schedule: DutySchedule): number => schedule.kind === "every" ? schedule.minutes * 60_000 : 24 * 60 * 60_000;
@@ -1052,7 +1071,8 @@ export class Duties {
    * (`inTurnQueue`) still takes the run's hand-off as `working`: from 10-23 10:27Z to 10-24 05:18Z, 18 missed runs on 4 chats skipped beside
    * a job in that queue and handed it nothing, among them d4 at 00:26Z and 05:18Z with 5 and 12 wiki problems. A run that would retire the
    * last job skips instead while an older job of the duty works again (`olderLive`), and hands that job its items. A job whose tree wrote no
-   * model reply for STALLED_MS is replaced as stalled, however a pool wait or a quota park keeps it (`stalled`).
+   * model reply for STALLED_MS is replaced as stalled, however a pool wait or a quota park keeps it (`stalled`), unless pi-pool holds its tree
+   * in its line for an account (`IN_POOL_LINE`).
    */
   private async previous(chatId: string, dutyId: string, schedule: DutySchedule, slot: number): Promise<Previous> {
     const runs = (await this.store.runs(chatId)).filter(run => run.duty === dutyId);
@@ -1061,6 +1081,11 @@ export class Duties {
     const last = started?.job;
     if (!started || !last) return {};
     const reported = await this.reported(chatId, last);
+    // A check-in's items go to the chat, since its job takes no message until its slot (`handToChat`).
+    if (!reported && this.now() - started.at <= STUCK_MAX_MS && await this.inPoolLine(last, started.cut !== undefined)) {
+      return { skipped: `${STILL_WORKING} (job ${last.name} ${IN_POOL_LINE})`, held: { job: last, why: IN_POOL_LINE },
+        ...dutyId === CHECK_IN_DUTY_ID ? {} : { working: last } };
+    }
     const kept = await this.kept(last, reported);
     const working = kept !== null || await this.host.jobs.working(last);
     // A Prime update or a failed hold read keeps the job whatever its replies ("is kept ..."); a pool wait or a quota park does not.
@@ -1085,6 +1110,15 @@ export class Duties {
     }
     const live = await this.olderLive(chatId, runs, last, schedule);
     return live ? { skipped: `${STILL_WORKING} (job ${live.name}, an older job of this duty)`, working: live } : next;
+  }
+
+  /**
+   * Whether pi-pool holds the job's tree in its line (`DutyHost.poolHolds` "line"), or admits the tree of a job whose turn was cut, which the
+   * job sweep's resume pass continues once pi-pool admits it (src/chat-resume.ts PoolHeldJobs). A failed read is no.
+   */
+  private async inPoolLine(job: DutyJobRef, cut: boolean): Promise<boolean> {
+    const hold = await this.host.poolHolds?.(job.id).catch(error => { this.log(`duty job ${job.name}: read its pi-pool line: ${message(error)}`); return null; }) ?? null;
+    return hold === "line" || (cut && hold === "admits");
   }
 
   /** Whether the job of a run that started at `startedAt` has written no model reply in its tree for STALLED_MS; a failed read is no stall. */

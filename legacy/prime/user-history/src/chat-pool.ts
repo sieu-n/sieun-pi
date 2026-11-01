@@ -541,6 +541,29 @@ export async function treeFreeAt(tree: string, provider: string, read: typeof re
   } catch { return null; }
 }
 
+/**
+ * Where pi-pool holds the tree rooted at `tree` on a pooled provider, from a fresh shared read: "line" when `who` names a wait that holds the
+ * tree's own cell (`reserved`, a cell the tree's wait on file took), "admits" when pi-pool gives the tree an account now (`poolAdmitsNow`), else
+ * null. A wait `who` only dry-runs for a tree that asks no more is not reserved: pi-pool drops a wait's cell WAIT_STALE_SEC (15 min) past its
+ * slot with no request. Null when the pool cannot be read.
+ */
+export type PoolHold = "line" | "admits";
+export async function poolHoldsTree(tree: string, read: typeof readPoolStatus = readPoolStatus, now: () => number = Date.now): Promise<PoolHold | null> {
+  const thread = { session: tree, model: null };
+  try {
+    const parts = (await read([thread], { maxAgeMs: 0 })).threads.get(threadKey(thread));
+    if (!parts) return null;
+    const who: unknown = JSON.parse(partOut(parts.who));
+    const providers = isRecord(who) && isRecord(who.providers) ? who.providers : {};
+    const reserved = pooledProviders.some(provider => {
+      const said = providers[provider];
+      return isRecord(said) && isRecord(said.wait) && said.wait.reserved === true && parsePoolWait(said.wait) !== null;
+    });
+    if (reserved) return "line";
+    return pooledProviders.some(provider => poolAdmitsNow(parts, provider, now())) ? "admits" : null;
+  } catch { return null; }
+}
+
 /** `poolAdmitsNow` for the tree rooted at `tree`, from a fresh shared read; false when the pool cannot be read. */
 export async function poolAdmits(tree: string, provider: string, read: typeof readPoolStatus = readPoolStatus, now: () => number = Date.now): Promise<boolean> {
   const thread = { session: tree, model: null };
