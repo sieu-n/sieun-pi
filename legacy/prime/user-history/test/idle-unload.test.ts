@@ -247,6 +247,43 @@ test("a stale row whose active session the daemon does not know is not asked aga
   assert.equal(calls.length, 2, "a row that changed is planned again");
 });
 
+// er-prod-watch (01a19d73) on 11-02: stopped at 18:23:54Z, then loaded again in worker 1033222 by Prime update 1016610's restore with the same
+// activeSessionId and lastActivityAt 18:21:17Z, and no sweep stopped it from 18:27Z to 18:44Z.
+test("a stopped session that loads again in a new worker with no new activity is stopped again, and the stale row after its kill is not", async () => {
+  const rows = [{ ...quietRoot("reloaded", TEN_MIN + MIN), workerPid: 1016000 } as SessionSummary];
+  const { unloader, calls, stopped, clock } = harness(rows);
+  await unloader.sweep();
+  await unloader.settled();
+  clock.now += MIN;
+  await unloader.sweep();
+  await unloader.settled();
+  assert.deepEqual(stopped, ["reloaded"], "the stale row listed right after the kill is not asked again");
+  rows[0] = { ...rows[0]!, workerPid: 1033222 } as SessionSummary;
+  clock.now += MIN;
+  await unloader.sweep();
+  await unloader.settled();
+  assert.deepEqual(stopped, ["reloaded", "reloaded"], "the reloaded session is stopped again");
+  assert.equal(calls.filter(call => call.type === "kill").length, 2);
+});
+
+test("a stopped session seen unloaded and then loaded again in the same worker with no new activity is stopped again", async () => {
+  const quiet = { ...quietRoot("same-worker", TEN_MIN + MIN), workerPid: 1031130 } as SessionSummary;
+  const rows: SessionSummary[] = [quiet];
+  const { unloader, stopped, clock } = harness(rows);
+  await unloader.sweep();
+  await unloader.settled();
+  const { activeSessionId: _gone, ...unloaded } = quiet;
+  rows[0] = unloaded as SessionSummary;
+  clock.now += MIN;
+  await unloader.sweep();
+  await unloader.settled();
+  rows[0] = quiet;
+  clock.now += MIN;
+  await unloader.sweep();
+  await unloader.settled();
+  assert.deepEqual(stopped, ["same-worker", "same-worker"]);
+});
+
 // Native run DU-fix at 17:51Z on 10-18 on the detached-bash fix build a59cdba2: a session that ran `nohup python3 -m http.server ... &` ended its
 // turn and its row read idle, isSessionActive false, taskState needs_input and holdsDetachedProcesses true. 138 s later the sweep planned it,
 // get_state read it idle, and the kill took the server from HTTP 200 to connection refused.

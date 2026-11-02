@@ -538,7 +538,10 @@ const skipUntilRowChanges = (error: string): boolean => /Unknown active session|
 export class IdleUnloader {
   /** The stop under way for each session id. */
   private readonly out = new Map<string, Promise<boolean>>();
-  /** Rows the daemon no longer knows or that were stopped, by active session id and lastActivityAt, so a stale row is not asked again. */
+  /**
+   * Rows the daemon no longer knows or that were stopped (`goneKey`), so a stale row is not asked again. Each sweep drops a key that no loaded
+   * row carries any more, so a session that loads again after its stop is judged fresh.
+   */
   private readonly gone = new Set<string>();
   private readonly running = new Set<Promise<unknown>>();
   /** The sessions `quieted` named that its plan under way has not read yet, and that plan. */
@@ -577,6 +580,8 @@ export class IdleUnloader {
     const now = source.now();
     const waking = only ? new Set<string>() : await source.waking(now);
     lap("wakes");
+    const listed = new Set(source.rows().filter(loaded).map(goneKey));
+    for (const key of this.gone) if (!listed.has(key)) this.gone.delete(key);
     const input: PlanInput = { attached, pool, now, idleMs, chats, waking, handoff: row => this.handsOff(row), ...source.sessionsDir === undefined ? {} : { sessionsDir: source.sessionsDir } };
     const fresh = (row: SessionSummary): boolean => (!only || only.has(row.sessionId)) && !this.out.has(row.sessionId) && !this.gone.has(goneKey(row));
     const candidates = retryCandidates(source.rows(), input).filter(fresh);
@@ -781,5 +786,10 @@ export class IdleUnloader {
   }
 }
 
-/** A row's active session at its last activity; a reload or new work changes it, so only the stale row itself is skipped. */
-const goneKey = (row: SessionSummary): string => `${row.activeSessionId ?? ""}@${row.lastActivityAt ?? ""}`;
+/**
+ * A row's active session, worker and last activity; new work or a load in a new worker changes it, so only the stale row itself is skipped.
+ * The active session id equals the session id and survives a reload, so it alone did not tell a reload apart: er-prod-watch (01a19d73), stopped
+ * at 18:23:54Z on 11-02, was loaded again in worker 1033222 by Prime update 1016610's restore with the same lastActivityAt 18:21:17Z, and no
+ * sweep stopped it from 18:27Z to 18:44Z while that worker held 0.95 GB.
+ */
+const goneKey = (row: SessionSummary): string => `${row.activeSessionId ?? ""}@${row.workerPid ?? ""}@${row.lastActivityAt ?? ""}`;
