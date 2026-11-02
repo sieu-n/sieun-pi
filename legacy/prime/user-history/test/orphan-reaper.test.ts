@@ -231,3 +231,23 @@ test("10-31: a unit a live session recorded with board.own is held even when the
     assert.equal((await readUnitHolds([samplerGroup([])], archived)).size, 0);
   } finally { await rm(gone.home, { recursive: true, force: true }); }
 });
+
+// Guards 11-02: the Mac's login shell is zsh, whose nomatch error failed every remote transcript lookup with an unmatched glob, so each Mac
+// owner read "unknown" and d2 listed 22 orphan_unknown. bash -O failglob fails the same way zsh does; the lookup runs under sh -c, so it passes.
+test("a Mac owner's transcript is found through a login shell that fails on an unmatched glob, and the host name matches in any case", async () => {
+  const { execFile } = await import("node:child_process");
+  const home = await mkdtemp(join(tmpdir(), "reaper-mac-"));
+  try {
+    const file = join(home, ".prime", "agent", "session-artifacts", "chat", "sub-a", `${JOB}.jsonl`);
+    await mkdir(join(file, ".."), { recursive: true });
+    await writeFile(file, "{}\n");
+    await utimes(file, 1_000, 1_000);
+    const remote = (_host: string, command: string): Promise<string> => new Promise((done, fail) =>
+      execFile("bash", ["-O", "failglob", "-c", command], { env: { ...process.env, HOME: home } }, (error, stdout) => error ? fail(error) : done(stdout)));
+    const groups: Group[] = [{ key: "g", root: 1, pids: [1], bytes: 0, started: 0, command: "", owners: [{ session: JOB, host: "mac" }] }];
+    const verdicts = await readVerdicts(groups, { here: "us-metal02", home: tmpdir(), dataDir: join(home, "chat"), now: 9_000_000, remote,
+      list: async () => JSON.stringify({ sessions: [] }), piThread: async () => null });
+    assert.equal(verdicts.get(`mac/${JOB}`)?.state, "ended");
+    assert.equal(hosts("Mac"), "mac");
+  } finally { await rm(home, { recursive: true, force: true }); }
+});

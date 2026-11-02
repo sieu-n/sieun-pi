@@ -113,7 +113,7 @@ export function ownerOf(row: ProcRow, hostOf: (address: string) => string, here:
 /** The hosts.json name of a box from its hostname (`LC_PRIME_SESSION`'s host) or its address (`SSH_CONNECTION`), else the text itself. */
 export function hostMatcher(hosts: readonly { name: string; hostname: string; address: string }[]): (text: string) => string {
   const short = (name: string): string => name.split(".")[0]!.toLowerCase();
-  return text => hosts.find(host => host.address === text || short(host.hostname) === short(text) || host.name === text)?.name ?? text;
+  return text => hosts.find(host => host.address === text || short(host.hostname) === short(text) || host.name.toLowerCase() === text.toLowerCase())?.name ?? text;
 }
 
 /** A root chat's dir is `session-artifacts/<uuid>`, whose name is its id; a job's dir `.../sub-<x>` gets its id from rlm-subagent.json, read later. */
@@ -330,7 +330,8 @@ async function boxFactsById(session: string, context: ReadContext, { roster, all
 async function remoteFacts(owner: Owner, context: ReadContext, { roster }: Reader): Promise<SessionFacts> {
   const row = (await roster(owner.host)).get(owner.session);
   const id = owner.session;
-  const listing = await context.remote(owner.host, `cd ~/.prime/agent && for f in sessions/${id}.jsonl session-artifacts/*/sub-*/${id}.jsonl session-artifacts/*/sub-*/sub-*/${id}.jsonl; do [ -f "$f" ] && echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f") $f"; done; true`);
+  // sh -c, because the Mac's login shell is zsh, whose nomatch error failed every lookup with a glob that matched nothing (11-02, d2's 22 orphan_unknown).
+  const listing = await context.remote(owner.host, `sh -c 'cd ~/.prime/agent && for f in sessions/${id}.jsonl session-artifacts/*/sub-*/${id}.jsonl session-artifacts/*/sub-*/sub-*/${id}.jsonl; do [ -f "$f" ] && echo "$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f") $f"; done; true'`);
   const line = listing.split("\n").find(entry => entry.trim());
   const [seconds, file] = line ? line.trim().split(" ") : [];
   return { rosterStatus: row?.rosterStatus, topLevel: file?.startsWith("sessions/") ?? false, endedAt: seconds ? Number(seconds) * 1000 : null };
