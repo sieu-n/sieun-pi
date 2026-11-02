@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { Verdict } from "./guard.ts";
@@ -82,13 +82,44 @@ function originKey(top: string, url: string | null): string | null {
 }
 
 const roots = new Map<string, string>();
-/** The root commits of the checkout at `top`, which every clone of a repo shares wherever its origin points, or "" when git cannot read them. */
+/** Root commits a checkout's own `.git` folder keeps for this guard, after the folder's inode, so a new `.git` at the same path reads none. */
+const ROOTS_FILE = "global-rules-roots";
+
+/**
+ * The root commits of the checkout at `top`, which every clone of a repo shares wherever its origin points, or "" when git cannot read
+ * them. The guard compares every checkout beside the one a command runs in, so a fresh Prime worker forked one `git rev-list` per
+ * neighbor on its first check. On 2026-11-02 at 21:41Z those forks waited in the kernel's fork lock under load 400 and held a worker's
+ * event loop for 9.0 s. The result now stays in the checkout's `.git` folder, so each checkout forks git once on this host, not once
+ * per worker.
+ */
 function rootsOf(top: string): string {
 	let found = roots.get(top);
 	if (found === undefined) {
-		const run = spawnSync("git", ["-C", top, "rev-list", "--max-parents=0", "HEAD"], { encoding: "utf8" });
-		found = run.status === 0 ? run.stdout.split("\n").filter(Boolean).sort().join(" ") : "";
+		found = savedRoots(top) ?? readRoots(top);
 		roots.set(top, found);
+	}
+	return found;
+}
+
+function savedRoots(top: string): string | undefined {
+	try {
+		const [ino, ...found] = readFileSync(join(top, ".git", ROOTS_FILE), "utf8").trim().split(" ");
+		return ino === String(statSync(join(top, ".git")).ino) ? found.join(" ") : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function readRoots(top: string): string {
+	const run = spawnSync("git", ["-C", top, "rev-list", "--max-parents=0", "HEAD"], { encoding: "utf8" });
+	if (run.status !== 0) return "";
+	const found = run.stdout.split("\n").filter(Boolean).sort().join(" ");
+	try {
+		const file = join(top, ".git", ROOTS_FILE);
+		writeFileSync(`${file}.${process.pid}`, `${statSync(join(top, ".git")).ino} ${found}\n`);
+		renameSync(`${file}.${process.pid}`, file);
+	} catch {
+		// A read-only checkout forks again in the next process.
 	}
 	return found;
 }

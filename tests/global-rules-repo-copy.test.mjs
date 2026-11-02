@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -155,4 +155,35 @@ test("the one main checkout passes wherever its origin points, and a second clon
     assert.equal(result?.block, true, cwd);
     assert.match(result.reason, why, cwd);
   }
+});
+
+// On 11-02 at 21:41Z a fresh worker forked one `git rev-list` per checkout beside the one it judged, and the forks waited 9.0 s in the
+// kernel's fork lock under load 400. The root commits now stay in each checkout's .git folder, so a later process reads them without git.
+test("a checkout's saved root commits stand in for git, and a run fills them in", () => {
+  const place = join(root, "roots-place");
+  const main = join(place, "proj");
+  const copy = join(place, "proj-renamed");
+  for (const [dir, url] of [[main, "https://github.com/a/proj.git"], [copy, "https://github.com/b/other.git"]]) {
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    writeFileSync(join(dir, ".git", "config"), `[remote "origin"]\n\turl = ${url}\n`);
+    writeFileSync(join(dir, ".git", "global-rules-roots"), `${statSync(join(dir, ".git")).ino} 1111111111111111111111111111111111111111\n`);
+  }
+  // Neither folder is a git repo, so only the saved roots can say they share history.
+  const result = guard.onToolCall(event("bash", "pnpm test"), { cwd: copy });
+  assert.equal(result?.block, true);
+  assert.match(result.reason, /proj-renamed is a copy of .*\/proj, the main checkout/);
+  const git = (...args) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main", ...args], { stdio: "pipe" });
+  const fresh = join(root, "roots-fresh", "lib");
+  mkdirSync(fresh, { recursive: true });
+  git("-C", fresh, "init", "-q");
+  writeFileSync(join(fresh, "a.txt"), "a\n");
+  git("-C", fresh, "add", "a.txt");
+  git("-C", fresh, "commit", "-qm", "a");
+  const twin = join(root, "roots-fresh", "lib-twin");
+  git("clone", "-q", "--no-local", fresh, twin);
+  git("-C", twin, "remote", "set-url", "origin", "https://github.com/c/other-lib.git");
+  assert.equal(guard.onToolCall(event("bash", "pnpm test"), { cwd: twin })?.block, true);
+  const head = execFileSync("git", ["-C", fresh, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  for (const dir of [fresh, twin]) assert.ok(existsSync(join(dir, ".git", "global-rules-roots")), dir);
+  assert.equal(execFileSync("cat", [join(twin, ".git", "global-rules-roots")], { encoding: "utf8" }).trim().split(" ")[1], head);
 });
