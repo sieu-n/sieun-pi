@@ -34,7 +34,12 @@ export const FLAGGED_MAX = 80;
  * (wiki-dream.duty.json) is 600 s to match.
  */
 const HEALTH_TIMEOUT_MS = 480_000;
-const GIT_TIMEOUT_MS = 20_000;
+/**
+ * The 7-day (wiki-dream) git log of auto-sns-agent timed out at the old 20 s inside the prechecks at 23:33Z and 23:52Z on 2026-11-02, which put
+ * 999999 on dream_reverts and pages_retouched, and alone at 23:53Z it took 16.8 s for 7,225 lines with us-metal02 at load 244 to 285 on 80 cores.
+ * The limit is about four times that, well inside the duty's 600 s precheck limit.
+ */
+const GIT_TIMEOUT_MS = 60_000;
 /** journalctl read this unit's last 48 h (11,603 lines) in under 1 s on us-metal02 on 2026-10-19. */
 const JOURNAL_TIMEOUT_MS = 20_000;
 /** The wiki host batch's systemd user unit (auto-sns-agent scripts/repo/agent/wiki-box-commit.mjs, every 5 min). */
