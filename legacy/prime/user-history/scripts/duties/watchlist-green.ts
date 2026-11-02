@@ -78,10 +78,10 @@ export const STAGING_OWNER_ORG = "org_3FLEJTtegZpZqZPYYByywRFfDjI";
 /** The unread-records fill of a stream's byte cap that the bus-unread-near-cap alert fires at (crawler-bus-retention.yaml, 2b5d936b50). */
 export const BUS_FILL_LIMIT = 0.8;
 
-export type Source = "grafana auth" | "prod gauges" | "prod config" | "convex keys" | "prod rows" | "staging rows" | "prod streams" | "screen read" | "staging keys";
+export type Source = "grafana auth" | "prod gauges" | "prod config" | "convex keys" | "prod rows" | "prod receipts" | "staging rows" | "prod streams" | "screen read" | "staging keys";
 export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
   owner_green_pct: ["convex keys", "prod rows"], staging_green_pct: ["staging rows"],
-  prod_read_error_pct: ["prod rows", "grafana auth", "prod gauges", "prod config"],
+  prod_read_error_pct: ["prod receipts", "grafana auth", "prod gauges", "prod config"],
   watchlist_risks: ["convex keys", "prod rows", "grafana auth", "prod streams", "screen read"],
 };
 
@@ -337,7 +337,7 @@ export function parseRows(text: string): WatchRow[] {
   return rows;
 }
 
-/** The `receipt<TAB>outcome<TAB>runs` lines the prod read prints after the rows: watch runs settled in the last 24 h, per outcome. */
+/** The `receipt<TAB>outcome<TAB>runs` lines of the prod receipts read (RECEIPTS_SQL): watch runs settled in the last 24 h, per outcome. */
 export function parseReceipts(text: string): Record<string, number> {
   const receipts: Record<string, number> = {};
   for (const line of text.split("\n")) {
@@ -559,14 +559,23 @@ const RENAMED_SQL = "case when w.platform <> 'instagram' or w.last_batch_id is n
  *  implicit transaction and never reaches another panel's query. */
 export const NO_JIT = "set local jit = off; ";
 export const PROD_ROWS_SQL = NO_JIT + ROWS_SQL + RENAMED_SQL + " and not w.paused";
+/**
+ * The prod rows read runs as PROD_ROW_PARTS reads of a hash slice each, one after another, so no one statement does the whole read. With JIT
+ * off it took 1.5 s for 20,134 rows at 09:5xZ on 2026-11-02, but the duty's own run at 09:55Z hit the 30 s statement_timeout on the box at
+ * 65 to 70 of 72 busy cores, while 4 slices took 0.7 to 0.8 s each. `hashtext(...) & 7` is never negative, unlike abs() of it, and the 8
+ * slices cover every row once.
+ */
+export const PROD_ROW_PARTS = 8;
+export const prodRowsSql = (part: number): string => `${PROD_ROWS_SQL} and (hashtext(w.target) & ${PROD_ROW_PARTS - 1}) = ${part}`;
 export const STAGING_ROWS_SQL = NO_JIT + ROWS_SQL + "'f' as renamed from watch_targets w where w.tier = 'monitor' and not w.paused";
 /** ROWS_SQL's columns in parseRows order, to print Grafana's table rows as the lines psql prints. */
 const ROW_COLUMNS = ["platform", "kind", "target", "paused", "last_outcome", "last_run_at", "last_stop_reason", "last_error_code", "is_private", "err_streak", "due", "last_ok_at", "added_at", "renamed"];
 export const rowLines = (rows: Record<string, unknown>[]): string => rows.map(row => ROW_COLUMNS.map(column => String(row[column] ?? "")).join("\t")).join("\n");
-const RECEIPTS_SQL = "select 'receipt' as kind, outcome, count(*) as runs from watch_target_claims where settled_at > now() - interval '24 hours' and outcome is not null group by outcome";
+export const RECEIPTS_SQL = "select 'receipt' as kind, outcome, count(*) as runs from watch_target_claims where settled_at > now() - interval '24 hours' and outcome is not null group by outcome";
 
 export interface WatchDeps {
-  query: DsQuery | null; authError: string | null; keys: () => Promise<string[]>; rows: () => Promise<string>; staging: () => Promise<string>;
+  query: DsQuery | null; authError: string | null; keys: () => Promise<string[]>; rows: () => Promise<string>; receipts: () => Promise<string>;
+  staging: () => Promise<string>;
   stagingKeys: () => Promise<string[]>;
   screen: (keys: string[]) => Promise<ScreenChunk[]>; now: number;
 }
@@ -582,10 +591,11 @@ export async function measure(deps: WatchDeps): Promise<WatchData> {
     for (const source of ["prod gauges", "prod config"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
   }
   const keysRead = step("convex keys", deps.keys);
-  const [keys, screen, prodText, stagingText, prod, pause, streams, stagingKeys] = await Promise.all([
+  const [keys, screen, prodText, receiptText, stagingText, prod, pause, streams, stagingKeys] = await Promise.all([
     keysRead,
     keysRead.then(read => read?.length ? step("screen read", () => deps.screen(screenKeys(read))) : undefined),
     step("prod rows", deps.rows),
+    step("prod receipts", deps.receipts),
     step("staging rows", deps.staging),
     query ? step("prod gauges", () => gauges(query)) : undefined,
     query ? step("prod config", async () => String((await sqlRows(query, PG.prod, "select value from config where key = 'pause.watch'"))[0]?.value ?? "")) : undefined,
@@ -597,7 +607,7 @@ export async function measure(deps: WatchDeps): Promise<WatchData> {
   if (rows && !rows.length) data.errors.push({ source: "prod rows", message: "the estate_pg_prod read returned no prod watch_targets monitor row" });
   if (staging && !staging.length) data.errors.push({ source: "staging rows", message: "estate_pg_stg returned no staging watch_targets monitor row" });
   if (screen && !screen.length) data.errors.push({ source: "screen read", message: "the screen read sent no chunk to crawler.virev.ai" });
-  Object.assign(data, keys && { keys }, screen?.length && { screen }, rows?.length && { rows, receipts: parseReceipts(prodText!) }, staging?.length && { staging }, stagingKeys?.length && { stagingKeys },
+  Object.assign(data, keys && { keys }, screen?.length && { screen }, rows?.length && { rows }, receiptText !== undefined && { receipts: parseReceipts(receiptText) }, staging?.length && { staging }, stagingKeys?.length && { stagingKeys },
     prod && { prod }, pause !== undefined && { pauseWatch: pause }, streams && { streams });
   return data;
 }
@@ -620,8 +630,11 @@ async function main(): Promise<void> {
     rows: async () => {
       if (!query) throw new Error("not read: no Grafana login");
       const read = prodReader(query);
-      return await read(PROD_ROWS_SQL) + await read(RECEIPTS_SQL);
+      let text = "";
+      for (let part = 0; part < PROD_ROW_PARTS; part++) text += await read(prodRowsSql(part));
+      return text;
     },
+    receipts: async () => { if (!query) throw new Error("not read: no Grafana login"); return prodReader(query)(RECEIPTS_SQL); },
     staging: async () => { if (!query) throw new Error("not read: no Grafana login"); return rowLines(await sqlRows(query, PG.staging, STAGING_ROWS_SQL)); },
     screen: async keys => screenRead(fetch, await readCrawlerKey(), keys, signal) });
   const result = report(data, dutyMetrics);

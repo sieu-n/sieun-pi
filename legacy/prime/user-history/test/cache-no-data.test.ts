@@ -69,7 +69,7 @@ test("an LGTM 502 leaves both shares unmeasured, with the reason, and never 0", 
   assert.deepEqual(cache.metrics, {});
   for (const key of keys) assert.match(cache.flagged.find(slice => slice.excerpt.startsWith(key))!.excerpt, /not measured: LGTM did not answer: LGTM query failed \(HTTP 502\)/);
   const verdict = judge(duty.metrics, withHarness(tools, { metrics: { skills_to_prune: 0, ...cache.metrics }, flagged: cache.flagged }));
-  assert.equal(verdict.verdict, "met");
+  assert.equal(verdict.verdict, "error", "an unmeasured metric never counts as met");
   for (const key of keys) assert.equal(verdict.metrics[key], undefined);
   assert.match(verdict.summary, /not measured: the precheck gave no value for cache_read_ratio_1h, cache_read_ratio_24h \(cache_read_ratio_1h not measured: LGTM did not answer/);
 });

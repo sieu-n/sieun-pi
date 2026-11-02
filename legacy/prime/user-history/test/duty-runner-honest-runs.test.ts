@@ -75,7 +75,8 @@ test("a placeholder 999999 is not measured, never a missed metric, and the summa
   assert.deepEqual(Object.keys(judged.metrics).sort(), ["retry_extra_s", "supply_hold_minutes"]);
   assert.doesNotMatch(judged.summary, /working_exits_dropped 999999/);
   assert.match(judged.summary, /not measured: the precheck wrote the placeholder 999999 for working_exits_dropped \(working_exits_dropped: prod ClickHouse has no crawler\.sticky_walks table yet\)/);
-  assert.equal(judge(GEONODE, { metrics: { retry_extra_s: 1, supply_hold_minutes: 0, working_exits_dropped: 999_999 }, flagged: [GAP] }).verdict, "met");
+  assert.equal(judge(GEONODE, { metrics: { retry_extra_s: 1, supply_hold_minutes: 0, working_exits_dropped: 999_999 }, flagged: [GAP] }).verdict, "error",
+    "an unmeasured metric never counts as met");
 });
 
 test("a run whose counted metrics are all placeholders is an error that names the source errors", () => {

@@ -340,9 +340,9 @@ function sourceReasons(output: PrecheckOutput): string {
 }
 
 /**
- * The verdict of one precheck output against the duty's targets: met when every counted metric (`verdictMetrics`) it gives is on target,
- * missed when one is off, error when it gives none. A counted metric it leaves out or writes as the `PLACEHOLDER` is not measured: it gets no
- * result, so it is neither met nor missed, and the summary names it with the precheck's source errors as the reason. Other numbers in the
+ * The verdict of one precheck output against the duty's targets: met when every counted metric (`verdictMetrics`) is measured and on target,
+ * missed when one is off, error when it gives none, or when it measured no miss and left one out. A counted metric it leaves out or writes as
+ * the `PLACEHOLDER` is not measured: it gets no result, and the summary names it with the precheck's source errors as the reason. Other numbers in the
  * output never change it. The summary leads with the headline, names each miss with its target or says the measured ones are on target, and
  * ends with the `shapeNote` of a duty over the shape rule. On 10-18 a GitHub 403 left Apps reach staging without demo_ci_ok, and the run must
  * still judge apps_picked and open_review_max_h; a run with no counted metric measured is an error, which counts toward ERROR_RUNS_TARGET.
@@ -425,7 +425,7 @@ export function judge(metrics: readonly DutyMetric[], output: PrecheckOutput, hi
   const parts = metricParts(metrics, output);
   const items = outputItems(output);
   const judged = judgeCounted(metrics, output);
-  if (judged.verdict === "error") return judged;
+  if (judged.verdict === "error" && !Object.keys(judged.metrics).length) return judged;
   const stale = history ? staleHeadline(metrics, output, history) : null;
   if (stale) return { verdict: "error", metrics: judged.metrics, summary: `${stale}; ${judged.summary}` };
   return { ...judged, ...parts ? { parts } : {}, ...items ? { items } : {} };
@@ -459,6 +459,9 @@ function judgeCounted(metrics: readonly DutyMetric[], output: PrecheckOutput): {
   }
   const lead = headline && results[headline.key]!.met ? `${headline.key} ${show(headline, results[headline.key]!.value)} (on target)` : undefined;
   const all = `all ${measured.length}${absent.length ? " measured" : ""} on target`;
+  // A run that measured no miss but left a counted metric unmeasured is no met: on 11-02 at 09:55Z d2 read met on staging_green_pct alone while
+  // a prod read timed out and owner_green_pct, prod_read_error_pct and watchlist_risks had no value.
+  if (!misses.length && absent.length) return { verdict: "error", metrics: results, summary: end(lead ? `${lead}; ${all}` : all) };
   if (!misses.length) return { verdict: "met", metrics: results, summary: end(lead ? `${lead}; ${all}` : all) };
   return { verdict: "missed", metrics: results, summary: end((lead ? [lead, ...misses] : misses).join(", ")) };
 }

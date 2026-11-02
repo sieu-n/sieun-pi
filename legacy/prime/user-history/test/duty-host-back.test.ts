@@ -24,7 +24,7 @@ const run = (at: number, metrics: DutyRunRecord["metrics"], after?: DutyRunRecor
   ({ duty: "d1", at, trigger: "schedule", ms: 1, verdict: "met", metrics, summary: "", ...after ? { after } : {} });
 const away = { kind: "host_away", host: "mac", excerpt: "the Mac (100.66.173.18) is offline on the tailnet, asleep or shut, so tool rows are not measured" };
 
-test("a headline unmeasured for over 24 h reads error with the reason first, and one measured within 24 h keeps the run met", () => {
+test("a headline unmeasured for over 24 h reads error with the reason first, and one measured within 24 h reads error without that reason", () => {
   const now = Date.parse("2026-10-26T15:00:00Z");
   const output = { metrics: { resource_limits_set: 0 }, flagged: [away] };
   const stale = judge(METRICS, output, { now, runs: [run(now - 24 * HOUR, { resource_limits_set: result(0) }), run(now - 25 * HOUR, { tool_rows_off: result(0), resource_limits_set: result(0) })] });
@@ -32,15 +32,17 @@ test("a headline unmeasured for over 24 h reads error with the reason first, and
   assert.match(stale.summary, /^unmeasured: tool_rows_off, the headline, has no value since its last measure at 2026-10-25T14:00Z, 25 h ago, over the 24 h limit; /);
   assert.match(stale.summary, /offline on the tailnet/, "the summary names why it is unmeasured");
   assert.deepEqual(stale.metrics.resource_limits_set, result(0), "the metrics it measured keep their results");
+  // An unmeasured metric never counts as met (11-02): within 24 h the run still reads error, only without the stale-headline reason first.
   const fresh = judge(METRICS, output, { now, runs: [run(now - 23 * HOUR, { tool_rows_off: result(0) })] });
-  assert.equal(fresh.verdict, "met");
-  assert.equal(judge(METRICS, output).verdict, "met", "with no history the verdict is the measure's");
+  assert.equal(fresh.verdict, "error");
+  assert.doesNotMatch(fresh.summary, /^unmeasured:/);
+  assert.equal(judge(METRICS, output).verdict, "error", "with no history the verdict is the measure's");
   const afterJob = judge(METRICS, output, { now, runs: [run(now - 30 * HOUR, {}, { at: now - 2 * HOUR, verdict: "met", metrics: { tool_rows_off: result(0) }, summary: "" })] });
-  assert.equal(afterJob.verdict, "met", "an after-job measure counts as a measure");
+  assert.doesNotMatch(afterJob.summary, /^unmeasured:/, "an after-job measure counts as a measure");
   const never = judge(METRICS, output, { now, runs: [run(now - 30 * HOUR, { resource_limits_set: result(0) })] });
   assert.equal(never.verdict, "error");
   assert.match(never.summary, /has no value in any run since 2026-10-25T09:00Z, 30 h ago/);
-  assert.equal(judge(METRICS, output, { now, runs: [] }).verdict, "met", "a new duty gets its first day");
+  assert.doesNotMatch(judge(METRICS, output, { now, runs: [] }).summary, /^unmeasured:/, "a new duty gets its first day");
   assert.equal(judge(METRICS, { metrics: { tool_rows_off: 0, resource_limits_set: 0 } }, { now, runs: [run(now - 40 * HOUR, {})] }).verdict, "met");
   assert.equal(UNMEASURED_HEADLINE_MS, 24 * HOUR);
 });
@@ -86,7 +88,7 @@ test("a run that waited on the offline Mac reruns once Tailscale reads it online
     await duties.runNow(CHAT, "d1");
     await duties.settled();
     const waited = await newest();
-    assert.equal(waited.verdict, "met", "a headline measured an hour ago leaves the run met");
+    assert.equal(waited.verdict, "error", "an unmeasured headline never reads met, even one measured an hour ago");
     assert.equal(waited.hostAway, "mac");
     const lastRunAt = (await store.list(CHAT))[0]!.lastRunAt;
 

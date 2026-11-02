@@ -33,7 +33,7 @@ test("the 10-19 readings miss every target", () => {
   assert.deepEqual(Object.values(verdict.metrics).map(result => result.met), [false, false, false]);
 });
 
-test("readings at the targets are met, and a failed query is not measured instead of missed", () => {
+test("readings at the targets are met, and a failed query is not measured instead of missed, so the run reads error", () => {
   assert.equal(judge(duty.metrics, headroom({ profiles_p95_s: one(0.4), nvme0_tb_24h: one(4e12) }, [], 1)).verdict, "met");
   const output = headroom({ profiles_p95_s: one(0.2), nvme0_tb_24h: new Error("timeout") }, new Error("Grafana answered 502 for the alert list"), 1);
   assert.equal(output.metrics.nvme0_tb_24h, undefined);
@@ -41,7 +41,7 @@ test("readings at the targets are met, and a failed query is not measured instea
   assert.ok(output.flagged!.some(item => item.kind === "source_error" && item.excerpt === "disk_health_alerts_firing: Grafana answered 502 for the alert list"));
   assert.ok(output.flagged!.some(item => item.kind === "source_error" && item.excerpt.includes("timeout")));
   const verdict = judge(duty.metrics, output);
-  assert.equal(verdict.verdict, "met");
+  assert.equal(verdict.verdict, "error");
   assert.match(verdict.summary, /not measured/);
 });
 
