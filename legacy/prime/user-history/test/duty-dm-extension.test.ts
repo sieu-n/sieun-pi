@@ -26,6 +26,16 @@ const E2E: E2eEvidence = {
   inboxCard: { sent: false, error: "no DM window at https://staging.virev.ai/app/inbox?outreach=1&to_handle=glenmyftiu945" },
 };
 
+test("the reply part reads the test DM's thread after the fold, and names the settle-time thread when they differ", () => {
+  const settledOnPlaceholder = { ...E2E, firstOutreach: { id: "m1", status: "sent", threadId: "placeholder", finalThreadId: "t1" } };
+  const held = parts(AUTOPAIR, settledOnPlaceholder).reply;
+  assert.equal(held.ok, true);
+  assert.match(held.why, /test DM thread t1 \(placeholder at its settle\)/);
+  const split = parts(AUTOPAIR, { ...E2E, firstOutreach: { id: "m1", status: "sent", threadId: "t1", finalThreadId: "other" } }).reply;
+  assert.equal(split.ok, false);
+  assert.equal(parts(AUTOPAIR, { ...E2E, firstOutreach: { id: "m1", status: "sent", threadId: "t1", finalThreadId: null } }).reply.ok, true);
+});
+
 test("all four parts hold: e2e_pass 1, and an unrelated autopair check is a slice, not a miss", () => {
   const out = report({ now: NOW, autopair: AUTOPAIR, e2e: E2E, rows: { messages: [], devices: [], truncated: false }, errors: [] }, METRICS);
   assert.deepEqual(out.metrics, { e2e_pass: 1, maybe_sent_24h: 0, send_restricted_24h: 0, unknown_username_24h: 0 });

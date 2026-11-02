@@ -109,7 +109,7 @@ export interface Stop { step: string; kind: "slow_exit" | "instagram_refused" | 
 export interface AutopairEvidence { checks?: Check[]; stoppedOn?: Stop }
 export interface E2eEvidence {
   connectionsRow?: string | null;
-  firstOutreach?: { id: string; status: string; errorCode?: string; error?: string; threadId?: string } | null;
+  firstOutreach?: { id: string; status: string; errorCode?: string; error?: string; threadId?: string; finalThreadId?: string | null } | null;
   bThread?: unknown;
   bReply?: { text: string; onInstagram: boolean };
   replyInStore?: { threadId: string; messageId: string } | null;
@@ -150,7 +150,8 @@ export function parts(autopair: AutopairEvidence | undefined, e2e: E2eEvidence |
   const listed = check(autopair, "3b ");
   const first = e2e?.firstOutreach;
   const reply = e2e?.replyInStore;
-  const sameThread = Boolean(reply?.threadId && first?.threadId && reply.threadId === first.threadId);
+  const firstThread = first?.finalThreadId ?? first?.threadId;
+  const sameThread = Boolean(reply?.threadId && firstThread && reply.threadId === firstThread);
   return {
     pair: { ok: pair?.ok === true, why: pair ? `autopair "${pair.name}": ${JSON.stringify(pair.detail ?? null)}` : "autopair wrote no pair check" },
     found: {
@@ -162,7 +163,7 @@ export function parts(autopair: AutopairEvidence | undefined, e2e: E2eEvidence |
       ok: sameThread && e2e?.replyInInboxUi === true,
       why: !e2e?.bReply ? "the replier never answered on Instagram (the rig stopped earlier)"
         : !reply ? `reply "${e2e.bReply.text}" never reached the store`
-        : `reply thread ${reply.threadId}, test DM thread ${first?.threadId ?? "none"}, shown in the Inbox ${e2e.replyInInboxUi === true}`,
+        : `reply thread ${reply.threadId}, test DM thread ${firstThread ?? "none"}${first?.finalThreadId && first.finalThreadId !== first.threadId ? ` (${first.threadId} at its settle)` : ""}, shown in the Inbox ${e2e.replyInInboxUi === true}`,
     },
   };
 }
