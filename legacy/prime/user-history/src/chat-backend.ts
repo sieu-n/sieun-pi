@@ -339,6 +339,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     log: dutyLog,
     tell: (session, root, text) => agentOutbox.deliver(session, text, root) });
   const stopWatch = ownChatsOnly && !replay ? async () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
+    idleClock: id => threads.idleClock(id),
     queue: queueReading, log: dutyLog, calls, ...scratch ? {} : { stop }, host: catalog.selfHostName() ?? hostname().split(".")[0]!.toLowerCase(),
     remotes: () => catalog.remoteHosts().map(({ host, rows }) => ({ name: host.name, rows, read: pids => relayWatch(host, pids), reach: () => reach.reach(host.name) })) });
   // Every agent message the service sends waits on disk until the daemon takes it, and one that may have gone is looked for before it goes

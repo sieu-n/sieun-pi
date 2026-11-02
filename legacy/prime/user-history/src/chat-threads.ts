@@ -533,6 +533,15 @@ export class ThreadHub {
   /** Whether `rest` detached the pinned chat and nothing has woken it since. */
   isDormant(id: string): boolean { return this.dormant.has(id); }
 
+  /**
+   * The idle clock (`activeAt`, epoch ms) of a pinned chat the hub holds attached; undefined for any other session. The idle unload stops such
+   * a chat only after `rest` detaches it, once this clock is idleEvictionMinutes old, so d7's lingering count reads its idle time from here too.
+   */
+  idleClock(id: string): number | undefined {
+    const thread = this.threads.get(id);
+    return this.pinned.has(id) && thread?.live && !this.dormant.has(id) ? thread.activeAt : undefined;
+  }
+
   observe(observer: ThreadObserver): () => void {
     this.observers.add(observer);
     return () => { this.observers.delete(observer); };

@@ -37,6 +37,20 @@ test("a loaded session idle past the unload window lingers, and an archived or l
   assert.equal(line(rows.slice(0, 3)).lingering, undefined);
 });
 
+// At 11:12:24Z on 11-02 an open tab woke 6 chats, and the hub's idle clock restarted at the open, yet d7 named ops guy, Prospect feature bro
+// and api portal vp as lingering from 11:13Z by their old lastActivityAt, until the idle unload stopped them as designed about 17.5 min later.
+test("a chat reopened in a tab lingers only once its idle clock passes the unload window, whatever its old lastActivityAt", async () => {
+  const reopened = (minutes: number) => (id: string) => id === "chat" ? now - minutes * 60_000 : undefined;
+  const lingers = (minutes: number) => watchLine({ now, rows, footprints, queue: null, chats: new Set(["chat"]), title: () => null, cpuMs: 0, idleClock: reopened(minutes) })
+    .lingering?.map(row => [row.session, row.idleMin]);
+  assert.deepEqual(lingers(5), [["finished", 40]]);
+  assert.deepEqual(lingers(16), [["finished", 40]]);
+  assert.deepEqual(lingers(20), [["finished", 40], ["chat", 20]]);
+  assert.deepEqual(lingers(45), [["finished", 40], ["chat", 30]]);
+  const mac = await hostWatchLine({ name: "mac", rows, read: async () => ({ usable: null, footprints }) }, { now, chats: new Set(["chat"]), title: () => null, idleClock: reopened(5) });
+  assert.deepEqual(mac.lingering?.map(row => row.session), ["finished"]);
+});
+
 test("d7 reads lingering sessions on the Mac through its relay, and names each box it read", async () => {
   const mac = await hostWatchLine({ name: "mac", rows, read: async () => ({ usable: null, footprints }) }, { now, chats: new Set(["chat"]), title: () => null });
   assert.deepEqual(mac.lingering?.map(row => row.session), ["finished", "chat"]);

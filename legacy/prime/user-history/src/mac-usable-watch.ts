@@ -160,12 +160,21 @@ export interface LingerLine { session: string; name: string; tree: string; worke
 /** The quiet window plus two 60 s unload sweeps. */
 export const LINGER_MS = (QUIET_MINUTES + 2) * MINUTE;
 
-/** Every loaded idle session past LINGER_MS (`LingerLine`), the longest idle first. */
-export function lingerLines(rows: readonly unknown[], now: number, chats: ReadonlySet<string>, tree: (id: string) => string): LingerLine[] {
+/**
+ * The idle clock the chat service keeps for a chat it holds attached (`ThreadHub.idleClock`, epoch ms), undefined for any other session. A tab
+ * open restarts it, and the idle unload stops such a chat only after the hub detaches it, idleEvictionMinutes past that clock. At 11:12:24Z on
+ * 11-02 an open tab woke 6 chats quiet for 17 to 57 min; from 11:13Z d7 named ops guy, Prospect feature bro and api portal vp as lingering by
+ * their lastActivityAt, and the unload stopped the last two at 11:29:59Z as designed.
+ */
+export type IdleClock = (id: string) => number | undefined;
+
+/** Every loaded idle session past LINGER_MS (`LingerLine`) by the later of its last activity and its `idleClock`, the longest idle first. */
+export function lingerLines(rows: readonly unknown[], now: number, chats: ReadonlySet<string>, tree: (id: string) => string, idleClock: IdleClock = () => undefined): LingerLine[] {
   const busy = busyAncestors(rows.filter((raw): raw is UnloadRow => isRecord(raw) && typeof raw.sessionId === "string"));
   return rows.flatMap((raw): LingerLine[] => {
     if (agentState(raw) !== "idle" || !isRecord(raw) || typeof raw.sessionId !== "string" || typeof raw.workerPid !== "number" || busy.has(raw.sessionId)) return [];
-    const idleMs = now - (typeof raw.lastActivityAt === "string" ? Date.parse(raw.lastActivityAt) : NaN);
+    const times = [typeof raw.lastActivityAt === "string" ? Date.parse(raw.lastActivityAt) : NaN, idleClock(raw.sessionId) ?? NaN].filter(Number.isFinite);
+    const idleMs = now - Math.max(...times);
     const clients = typeof raw.attachedClients === "number" ? raw.attachedClients : 0;
     if (!(idleMs > LINGER_MS) || clients > (chats.has(raw.sessionId) ? 1 : 0) || raw.hasRegisteredHeartbeat === true || raw.hasRegisteredCronJob === true) return [];
     return [{ session: raw.sessionId, name: typeof raw.sessionName === "string" ? raw.sessionName : "", tree: tree(raw.sessionId), worker: raw.workerPid, idleMin: Math.round(idleMs / MINUTE) }];
@@ -395,7 +404,9 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
   /** The box's memory by group (host-stats.ts `memoryByGroup`), for `agents`; absent, the line has none. */
   memory?: { groups: readonly MemoryGroup[] | null; cacheBytes?: number | null } | null;
   /** The hung calls' sessions, which `agents` counts as hung. */
-  hung?: ReadonlySet<string> }): WatchLine {
+  hung?: ReadonlySet<string>;
+  /** The chat service's idle clocks, for `lingering`; absent, each session's lastActivityAt alone. */
+  idleClock?: IdleClock }): WatchLine {
   const rows = input.rows.map(parseRow).filter((row): row is Row => row !== null);
   const byId = new Map(rows.map(row => [row.id, row]));
   const tree = treeOf(byId, input.title);
@@ -431,7 +442,7 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
   const lingering = lingerLines(input.rows, input.now, input.chats, id => {
     const row = byId.get(id);
     return row ? tree(row).tree : id.slice(0, 8);
-  });
+  }, input.idleClock);
   const idlePm2 = strayPm2(input.footprints.pm2_daemons ?? []).map((daemon): IdlePm2Line => ({ pid: daemon.pid, started: daemon.started, home: daemon.home,
     apps: daemon.apps, mb: Math.round(daemon.bytes / 2 ** 20), ...daemon.root || daemon.session ? owner(daemon.session, daemon.root) : { root: "", tree: "" }, session: daemon.session }));
   return {
@@ -596,6 +607,8 @@ export interface WatchSource {
   rows: () => readonly unknown[];
   chats: () => Promise<ReadonlySet<string>>;
   title: (id: string) => string | null;
+  /** The chat service's idle clock of each chat it holds attached (`ThreadHub.idleClock`), for `lingering`; absent, lastActivityAt alone. */
+  idleClock?: IdleClock;
   /** The Mac-wide turn queue, from the service's shared pi-pool read. */
   queue: () => Promise<QueueReading>;
   log: (line: string) => void;
@@ -632,7 +645,7 @@ const workerPids = (rows: readonly unknown[]): number[] => [...new Set(rows.map(
  * reading and no footprints keeps the reading, and its worker numbers are unknown. Its `agents` come from the Mac pressure feed's groups, the
  * reading its Hosts card draws (host-stats.ts `memoryGroups`); a Linux box's relay sends no groups, so its `gb` is null.
  */
-export async function hostWatchLine(remote: RemoteWatch, input: { now: number; chats: ReadonlySet<string>; title: (id: string) => string | null }): Promise<HostWatchLine> {
+export async function hostWatchLine(remote: RemoteWatch, input: { now: number; chats: ReadonlySet<string>; title: (id: string) => string | null; idleClock?: IdleClock }): Promise<HostWatchLine> {
   try {
     const reach = await remote.reach?.().catch(() => null);
     if (reach && !reach.online)
@@ -642,7 +655,8 @@ export async function hostWatchLine(remote: RemoteWatch, input: { now: number; c
     const agents = agentLine(usable && !isLinuxReading(usable) && usable.groups ? { groups: [{ id: "agents", label: "", bytes: (usable.groups.agents ?? 0) * GB, top: [] },
       ...usable.groups.services !== undefined ? [{ id: "services" as const, label: "", bytes: usable.groups.services * GB, top: [] }] : []] } : null, remote.rows);
     if (answer.footprints === null) return { name: remote.name, usable, workers: 0, workerGb: 0, top: [], live: 0, working: 0, agents, swapGb: null, error: answer.error.slice(0, 200) };
-    const line = watchLine({ now: input.now, rows: remote.rows, footprints: answer.footprints, queue: null, chats: input.chats, title: input.title, cpuMs: 0, usable });
+    const line = watchLine({ now: input.now, rows: remote.rows, footprints: answer.footprints, queue: null, chats: input.chats, title: input.title, cpuMs: 0, usable,
+      ...input.idleClock ? { idleClock: input.idleClock } : {} });
     const asideTabs = parseAsideTabs(answer.footprints.aside_tabs);
     return { name: remote.name, usable, workers: line.workers, workerGb: line.workerGb, top: line.top, ...line.byWorker ? { byWorker: line.byWorker } : {}, live: line.live,
       working: line.working, agents, swapGb: line.mac.swapGb,
@@ -690,7 +704,7 @@ export async function sample(source: WatchSource, stopping?: Promise<void>): Pro
     read("queue", () => source.queue().catch(() => null)), chatIds,
     (source.feed ?? readUsable)(at, cut, unread), read("memory", () => (source.memory ?? memoryByGroup)().catch(() => null)),
     chatIds.then(ids => Promise.all((source.remotes?.() ?? []).map(remote => {
-      const read = hostWatchLine(remote, { now: at, chats: ids, title: source.title });
+      const read = hostWatchLine(remote, { now: at, chats: ids, title: source.title, ...source.idleClock ? { idleClock: source.idleClock } : {} });
       return stopping ? Promise.race([read, stopping.then(() => unreadHost(remote.name))]) : read;
     }))), read("services", () => (source.services ?? listOrphanServices)().catch(() => [])),
     read("uplink", () => (source.uplink ?? readUplinkDark)(at).catch(() => false))]);
@@ -707,7 +721,7 @@ export async function sample(source: WatchSource, stopping?: Promise<void>): Pro
   })) ?? { stopped: [], left: judged } : { stopped: [], left: judged };
   clearTimeout(minuteEnd);
   const line = { ...source.host ? { host: source.host } : {}, ...watchLine({ now: at, rows, footprints, queue: queue ?? null, chats, title: source.title, cpuMs: 0, usable, memory: memory ?? null,
-    hung: new Set(hung.map(call => call.session)) }),
+    hung: new Set(hung.map(call => call.session)), ...source.idleClock ? { idleClock: source.idleClock } : {} }),
     ...hosts.length ? { hosts } : {}, serviceGb: round(process.memoryUsage().rss / GB), ...latency ? { chat: latency } : {},
     ...marks.length ? { calls: marks } : {}, ...hung.length ? { hung } : {}, ...stopped.length ? { stopped } : {}, ...handed ? { services: handed } : {},
     ...unread.length ? { unread } : {}, ...dark ? { uplinkDark: true as const } : {} };
