@@ -1469,8 +1469,11 @@ export function measure(input: Inputs): PrecheckOutput {
       // A slow read or loop stall of the chat service is the harness's own code, whoever used the most cores: at 20:32Z on 10-24
       // api/threads/<id>/agents took 2.8 s waiting for a projection at 1.09 runnable a core, and the minute went to the apps' side for their
       // 21.99 cores to the harness's 20.12; at 02:44Z on 10-30 a 975 ms major GC stalled the loop 1.3 s and went there too.
-      const read = found.includes("cpu") && slowChat(own, line.chat) ? "harness" : side(line, view);
-      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${memoryWords(view)}${asideWords(view)}${read === "ci" ? ciAt(line, view) : ""}${rigWords(view, faultName)})`);
+      // The flag still names CI's cores when CI led a minute booked to the harness: at 22:38Z on 11-02 a 1.5 s chat read went to the harness
+      // with CI at 41.23 cores against its 28.94, the flag named only the harness, and the check-in read the stall as one at a low load.
+      const led = side(line, view);
+      const read = found.includes("cpu") && slowChat(own, line.chat) ? "harness" : led;
+      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${memoryWords(view)}${asideWords(view)}${led === "ci" ? ciAt(line, view) : ""}${rigWords(view, faultName)})`);
       sides.add(read);
       if (read === "harness" && rigsLead(view)) rigged = true;
     }

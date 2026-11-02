@@ -48,3 +48,12 @@ test("CI's words leave out a ramp when CI's cores did not double, and only CI le
   assert.equal(read({ harness: 20, apps: 30, ci: 25 }), "other");
   assert.equal(read({ harness: 41, apps: 10, ci: 25 }), "harness");
 });
+
+test("a slow chat read under CI's lead goes to the harness and its flag still names CI's cores", () => {
+  // 22:38Z on 11-02: api/agent/siblings answered in 1.5 s with CI at 41.23 cores and the harness at 28.94.
+  const lines = watch().map((watched, minute) => minute === 25 ? { ...watched, chat: { readMs: 1530, read: "api/agent/siblings", loopMs: 1636 } } : watched);
+  const { metrics, flagged } = measure({ now: RUN, watch: lines, log: { holds: [] }, chats: [] });
+  assert.equal(metrics.harness_unusable_min_30, 1);
+  assert.equal(metrics.ci_unusable_min_30, 0);
+  assert.match(flagged?.find(slice => slice.kind === "dirty_minutes")?.excerpt ?? "", /00:08Z us-metal02 unusable \(cpu: the chat answered api\/agent\/siblings in 1\.5 s[^)]*; CI 43\.3 of 80 cores, up from 2\.48 at 00:05Z/);
+});
