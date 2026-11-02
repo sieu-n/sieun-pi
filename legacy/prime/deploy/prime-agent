@@ -6,6 +6,8 @@
 # session-c155369.scope at oom_score_adj -500. Its workers and kernels grew to about 80 GB there, outside the unit's
 # limits, and hung the box at 15:14Z (~/work/update-empty-box/CAUSE.md). So when this socket has no live daemon, the
 # wrapper starts prime-agent-daemon.service first and runs the CLI after it, so the CLI finds the unit's daemon.
+# The PIDFile names the dead predecessor while an update restores sessions, so that step and the hook below go through
+# prime-agent-daemon-start, which waits out a running reload instead of queuing a second one (11-02, test.23 and test.25).
 # From Prime load.3 on, the CLI and a worker that find no supervisor run PRIME_AGENT_DAEMON_LAUNCH_COMMAND instead,
 # when PRIME_AGENT_DAEMON_LAUNCH_FOR_SOCKET names their socket (Prime docs/daemon.md). The wrapper exports both for
 # the public socket, so a stale idle daemon that the CLI replaces is also restarted in the unit. The start-first step
@@ -23,7 +25,10 @@ unit=${PRIME_AGENT_DAEMON_UNIT:-prime-agent-daemon.service}
 uid=$(id -u)
 pidfile=${PRIME_AGENT_DAEMON_PIDFILE:-${XDG_RUNTIME_DIR:-/run/user/$uid}/prime-agent-daemon.pid}
 public=${PRIME_AGENT_DAEMON_SOCKET:-/tmp/prime-agent-$uid/daemon.sock}
-: "${PRIME_AGENT_DAEMON_LAUNCH_COMMAND:=systemctl --user start $unit}" "${PRIME_AGENT_DAEMON_LAUNCH_FOR_SOCKET:=$public}"
+# prime-agent-daemon-start sends no start job while the unit reloads, because systemd would run that reload again.
+starter=${PRIME_AGENT_DAEMON_STARTER:-$HOME/.local/bin/prime-agent-daemon-start}
+[ -x "$starter" ] && start_command="$starter $unit" || start_command="systemctl --user start $unit"
+: "${PRIME_AGENT_DAEMON_LAUNCH_COMMAND:=$start_command}" "${PRIME_AGENT_DAEMON_LAUNCH_FOR_SOCKET:=$public}"
 export PRIME_AGENT_DAEMON_LAUNCH_COMMAND PRIME_AGENT_DAEMON_LAUNCH_FOR_SOCKET
 
 case $(cat /proc/self/cgroup 2>/dev/null) in */"$unit") exec "$real" "$@" ;; esac
@@ -57,7 +62,7 @@ case $command in shutdown|update|help) skip=1 ;; esac
 pid=$(cat "$pidfile" 2>/dev/null)
 if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then exec "$real" "$@"; fi
 echo "prime-agent: no daemon runs on $public, so this starts $unit first" >&2
-if [ -n "$PRIME_AGENT_DAEMON_START" ]; then sh -c "$PRIME_AGENT_DAEMON_START"; else systemctl --user start "$unit"; fi
+if [ -n "$PRIME_AGENT_DAEMON_START" ]; then sh -c "$PRIME_AGENT_DAEMON_START"; else $start_command; fi
 if [ $? -ne 0 ]; then
   echo "prime-agent: could not start $unit; see journalctl --user -u $unit. The CLI does not start a daemon of its own here." >&2
   exit 1

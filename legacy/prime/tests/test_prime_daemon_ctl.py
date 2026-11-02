@@ -67,7 +67,7 @@ FAKE = textwrap.dedent(
             if os.environ.get("PRIME_AGENT_INTERACTIVE_SELF_UPDATE") != "1":
                 print("the ctl must install without the restart", file=sys.stderr)
                 sys.exit(9)
-            print("Updated Prime Agent from v1 to v2")
+            print(os.environ.get("FAKE_UPDATE_TEXT", "Updated Prime Agent from v1 to v2"))
             sys.exit(int(os.environ.get("FAKE_UPDATE_CODE", "0")))
         sock = sys.argv[sys.argv.index("--daemon-socket") + 1]
         status_path = sys.argv[sys.argv.index("--internal-update-restart-status") + 1]
@@ -546,6 +546,18 @@ class DaemonCtlTest(unittest.TestCase):
         result = self.ctl("update", str(self.fake), self.sock, self.pidfile, env=dict(self.env, FAKE_UPDATE_CODE="75"))
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("result=failed prime-agent update installed nothing", result.stdout)
+        self.assertEqual([c for c in self.calls() if "--internal-update-restart-coordinator" in c["argv"]], [])
+        self.assertEqual(self.pid_in_file(), old.pid)
+
+    def test_a_reload_that_finds_the_release_already_up_to_date_exits_0_and_restarts_nothing(self):
+        # 11-02 06:51:36Z (test.23) and 18:27:25Z (test.25): a second ExecReload after a good install found the release
+        # current, exited 1 and made systemd log "Reload failed", so the install wrapper reported install_rc=1.
+        old = self.serve()
+        text = "prime-agent is already up to date (v0.9.8-daemon-fix.1-mem.4.2-s3int.9-crc.2-load.2.1-upd.3-load.3.9-test.25)"
+        result = self.ctl("update", str(self.fake), self.sock, self.pidfile, env=dict(self.env, FAKE_UPDATE_CODE="75", FAKE_UPDATE_TEXT=text))
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("result=ok already up to date", result.stdout)
+        self.assertNotIn("result=failed", result.stdout)
         self.assertEqual([c for c in self.calls() if "--internal-update-restart-coordinator" in c["argv"]], [])
         self.assertEqual(self.pid_in_file(), old.pid)
 
@@ -1171,39 +1183,143 @@ class DaemonUnitTest(unittest.TestCase):
 
 LAUNCH_KEYS = ("PRIME_AGENT_DAEMON_LAUNCH_COMMAND", "PRIME_AGENT_DAEMON_LAUNCH_FOR_SOCKET")
 ENV_D = ROOT / "legacy/prime/deploy/environment.d/60-prime-agent-launch.conf"
+STARTER = ROOT / "legacy/prime/deploy/prime-agent-daemon-start"
 
 
 class LaunchHookEnvTest(unittest.TestCase):
     """Prime load.3 runs PRIME_AGENT_DAEMON_LAUNCH_COMMAND for the socket that PRIME_AGENT_DAEMON_LAUNCH_FOR_SOCKET names."""
 
-    def expected(self):
-        return {LAUNCH_KEYS[0]: "systemctl --user start prime-agent-daemon.service", LAUNCH_KEYS[1]: f"/tmp/prime-agent-{os.getuid()}/daemon.sock"}
+    def expected(self, starter):
+        return {LAUNCH_KEYS[0]: f"{starter} prime-agent-daemon.service", LAUNCH_KEYS[1]: f"/tmp/prime-agent-{os.getuid()}/daemon.sock"}
 
     def test_the_unit_sets_both_for_its_supervisor_and_workers(self):
         env = {}
         for line in UNIT.read_text().splitlines():
             if line.startswith("Environment="):
                 key, value = shlex.split(line.removeprefix("Environment="))[0].split("=", 1)
-                env[key] = value.replace("%n", UNIT.name).replace("%U", str(os.getuid()))
-        self.assertEqual({k: env.get(k) for k in LAUNCH_KEYS}, self.expected())
-        # No re-entry: the command is systemctl, never a prime-agent client that could run the hook again.
-        self.assertEqual(shlex.split(env[LAUNCH_KEYS[0]])[:3], ["systemctl", "--user", "start"])
+                env[key] = value.replace("%n", UNIT.name).replace("%U", str(os.getuid())).replace("%h", "/home/u")
+        self.assertEqual({k: env.get(k) for k in LAUNCH_KEYS}, self.expected("/home/u/.local/bin/prime-agent-daemon-start"))
+        # No re-entry: the command is the start helper, a sh script that runs systemctl and never a prime-agent client.
+        self.assertNotIn("prime-agent ", STARTER.read_text().split("\nunit=", 1)[1])
 
     def test_the_installed_environment_d_file_sets_both_for_every_user_service(self):
-        rendered = ENV_D.read_text().replace("@UID@", str(os.getuid()))
+        rendered = ENV_D.read_text().replace("@UID@", str(os.getuid())).replace("@HOME@", "/home/u")
         env = dict(line.split("=", 1) for line in rendered.splitlines() if line and not line.startswith("#"))
-        self.assertEqual(env, self.expected())
+        self.assertEqual(env, self.expected("/home/u/.local/bin/prime-agent-daemon-start"))
 
     def test_the_wrapper_exports_both_to_a_login_caller(self):
         with tempfile.TemporaryDirectory() as tmp:
             fake = Path(tmp) / "prime-agent"
             fake.write_text("#!/bin/sh\nenv\n")
             fake.chmod(0o755)
-            env = {"PATH": os.environ["PATH"], "HOME": os.environ["HOME"], "PRIME_AGENT_REAL_BIN": str(fake)}
+            env = {"PATH": os.environ["PATH"], "HOME": os.environ["HOME"], "PRIME_AGENT_REAL_BIN": str(fake), "PRIME_AGENT_DAEMON_STARTER": str(STARTER)}
             done = subprocess.run([str(WRAPPER), "--version"], env=env, capture_output=True, text=True, timeout=10)
-        self.assertEqual(done.returncode, 0, done.stderr)
-        seen = dict(line.split("=", 1) for line in done.stdout.splitlines() if "=" in line)
-        self.assertEqual({k: seen.get(k) for k in LAUNCH_KEYS}, self.expected())
+            seen = dict(line.split("=", 1) for line in done.stdout.splitlines() if "=" in line)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual({k: seen.get(k) for k in LAUNCH_KEYS}, self.expected(STARTER))
+            missing = dict(env, PRIME_AGENT_DAEMON_STARTER=str(Path(tmp) / "absent"))
+            done = subprocess.run([str(WRAPPER), "--version"], env=missing, capture_output=True, text=True, timeout=10)
+            seen = dict(line.split("=", 1) for line in done.stdout.splitlines() if "=" in line)
+            self.assertEqual(seen.get(LAUNCH_KEYS[0]), "systemctl --user start prime-agent-daemon.service", "a box without the helper keeps the plain start")
+
+
+FAKE_STARTER_SYSTEMCTL = textwrap.dedent(
+    """\
+    #!/bin/bash
+    # ActiveState comes from the file $FAKE_STATE/state, a queued job from $FAKE_STATE/job, and every start is logged.
+    S=$FAKE_STATE
+    case "$*" in
+      *"-p ActiveState"*) cat $S/state;;
+      *list-jobs*) cat $S/job 2>/dev/null;;
+      *" start "*) echo "$*" >> $S/starts;;
+    esac
+    """
+)
+
+
+class StartHelperTest(unittest.TestCase):
+    """prime-agent-daemon-start sends no start job while the unit reloads, starts or stops (11-02, test.23 and test.25)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="pad-starter-", dir="/tmp")
+        self.addCleanup(tmp.cleanup)
+        self.state = Path(tmp.name)
+        fake = self.state / "systemctl"
+        fake.write_text(FAKE_STARTER_SYSTEMCTL)
+        fake.chmod(0o755)
+        self.log = self.state / "notes"
+        self.env = {"PATH": "/usr/bin:/bin", "FAKE_STATE": str(self.state), "PRIME_AGENT_SYSTEMCTL": str(fake),
+                    "PRIME_AGENT_DAEMON_START_POLL": "0.1", "PRIME_AGENT_DAEMON_START_LOG": str(self.log)}
+
+    def run_helper(self, state, job="", then=None, after=0.5):
+        (self.state / "state").write_text(state + "\n")
+        (self.state / "job").write_text(job)
+        proc = subprocess.Popen([str(STARTER), "pad-unit.service"], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if then:
+            time.sleep(after)
+            self.assertIsNone(proc.poll(), "the helper must wait while the job runs")
+            (self.state / "job").write_text("")
+            (self.state / "state").write_text(then + "\n")
+        out, err = proc.communicate(timeout=10)
+        starts = (self.state / "starts").read_text().splitlines() if (self.state / "starts").exists() else []
+        return proc.returncode, starts, self.log.read_text()
+
+    def test_a_call_during_a_reload_waits_for_it_and_sends_no_start(self):
+        code, starts, notes = self.run_helper("reloading", then="active")
+        self.assertEqual(code, 0)
+        self.assertEqual(starts, [])
+        self.assertIn("pad-unit.service is reloading with a job running", notes)
+        self.assertIn("is active after the job; no start sent", notes)
+        self.assertIn("caller pid", notes)
+
+    def test_a_queued_job_on_an_active_unit_counts_as_busy(self):
+        code, starts, _ = self.run_helper("active", job="7 pad-unit.service reload running\n", then="active")
+        self.assertEqual((code, starts), (0, []))
+
+    def test_a_unit_that_is_down_after_its_job_gets_started(self):
+        code, starts, notes = self.run_helper("deactivating", then="failed")
+        self.assertEqual(code, 0)
+        self.assertEqual(starts, ["--user start pad-unit.service"])
+        self.assertIn("is failed after the job, so this starts it", notes)
+
+    def test_an_idle_unit_gets_the_plain_start(self):
+        for state in ("inactive", "failed", "active"):
+            (self.state / "starts").unlink(missing_ok=True)
+            code, starts, _ = self.run_helper(state)
+            self.assertEqual((state, code, starts), (state, 0, ["--user start pad-unit.service"]))
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "needs a systemd user manager")
+class StartDuringReloadTest(unittest.TestCase):
+    """The systemd behaviour behind the 11-02 "Reload failed" reports, on a scratch unit with a slow ExecReload."""
+
+    def reload_runs(self, starter):
+        if subprocess.call(["systemd-run", "--user", "--scope", "--quiet", "true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
+            self.skipTest("no systemd user manager to make a unit in")
+        tmp = tempfile.TemporaryDirectory(prefix="pad-merge-", dir="/tmp")
+        self.addCleanup(tmp.cleanup)
+        runs = Path(tmp.name) / "runs"
+        unit = f"pad-merge-{os.getpid()}-{time.monotonic_ns()}.service"
+        self.addCleanup(subprocess.call, ["systemctl", "--user", "stop", unit], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["systemd-run", "--user", "--quiet", "--collect", f"--unit={unit}", "-p", "Type=simple",
+                        "-p", f"ExecReload=/bin/sh -c 'echo run >> {runs}; sleep 3'", "/bin/sleep", "60"], check=True, timeout=30)
+        subprocess.run(["systemctl", "--user", "reload", "--no-block", unit], check=True, timeout=30)
+        deadline = time.time() + 10
+        while not runs.exists() and time.time() < deadline:
+            time.sleep(0.1)
+        env = dict(os.environ, PRIME_AGENT_DAEMON_START_LOG=str(Path(tmp.name) / "notes"), PRIME_AGENT_DAEMON_START_POLL="0.2")
+        subprocess.run([*starter, unit], env=env, check=True, timeout=60, capture_output=True)
+        state = lambda: subprocess.run(["systemctl", "--user", "show", "-p", "ActiveState", "--value", unit], capture_output=True, text=True).stdout.strip()
+        deadline = time.time() + 20
+        while (state() == "reloading" or subprocess.run(["systemctl", "--user", "list-jobs", "--no-legend", unit], capture_output=True, text=True).stdout.strip()) and time.time() < deadline:
+            time.sleep(0.2)
+        return runs.read_text().split()
+
+    def test_a_plain_start_during_a_reload_runs_the_reload_twice(self):
+        self.assertEqual(self.reload_runs(["systemctl", "--user", "start"]), ["run", "run"])
+
+    def test_the_start_helper_during_a_reload_leaves_it_at_one_run(self):
+        self.assertEqual(self.reload_runs([str(STARTER)]), ["run"])
 
 
 FAKE_SYSTEMCTL = textwrap.dedent(
@@ -1272,6 +1388,15 @@ class InstallScriptTest(unittest.TestCase):
         log = Path(out.stdout.splitlines()[0])
         self.assertEqual(self.wait_for_result(log), "result=restore-failed-successor-adopted rc=1\n", log.read_text())
         self.assertIn("the coordinator's restore failed (restored 0 of 91)", log.read_text())
+
+    def test_a_second_reload_after_this_one_does_not_decide_the_result(self):
+        # 11-02 test.23 and test.25: systemd ran the reload again for a merged start, and that run's
+        # "result=failed ... installed nothing" was the last ctl line, so a good install reported rc=1.
+        lines = "prime-agent-daemon-ctl: result=ok updated\nprime-agent-daemon-ctl: result=failed prime-agent update installed nothing: no newer release"
+        out = subprocess.run([str(INSTALL), str(self.feed), "python"], env=dict(self.env, FAKE_RELOAD_SECONDS="1", FAKE_RESULT_LINE=lines), capture_output=True, text=True, timeout=30)
+        log = Path(out.stdout.splitlines()[0])
+        self.assertEqual(self.wait_for_result(log), "result=ok rc=0\n", log.read_text())
+        self.assertIn("a later reload after this one: prime-agent-daemon-ctl: result=failed", log.read_text())
 
     def test_a_good_update_deletes_the_releases_nothing_runs(self):
         # 10-18: us-metal02 held six Prime releases of about 165 MB each, and nothing ran four of them.

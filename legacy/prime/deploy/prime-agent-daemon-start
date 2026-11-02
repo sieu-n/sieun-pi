@@ -1,0 +1,49 @@
+#!/bin/sh
+# usage: prime-agent-daemon-start [<unit>]
+# ~/.local/bin/prime-agent-daemon-start on us-metal02, installed from sieun-pi legacy/prime/deploy/prime-agent-daemon-start.
+# Prime load.3's daemon launch hook (PRIME_AGENT_DAEMON_LAUNCH_COMMAND) and the start-first step of the prime-agent wrapper
+# run this in place of a bare `systemctl --user start prime-agent-daemon.service`.
+#
+# systemd merges a start request that arrives while the unit's reload job runs into that job and runs the reload again
+# when it ends. A start sent during `prime-install.sh`'s reload therefore ran prime-agent-daemon-ctl update a second
+# time with the env file already emptied. That run found the new build "already up to date", exited 1 and made systemd
+# log "Reload failed" on the test.23 install (11-02 06:51:36Z) and the test.25 install (18:27:25Z), both good installs.
+# A scratch unit with a 6 s ExecReload showed it on 11-02: one `systemctl --user start` sent 2 s into the reload ran
+# ExecReload twice. The PIDFile names the dead predecessor for the whole restore, so the wrapper's start-first step
+# fires for every call from outside the unit in that window, and so does the hook of any client that misses the socket.
+#
+# So when the unit is reloading, starting or stopping, or has a job queued, this waits for that to end and sends no start
+# job, and it exits 0 if the unit is then active. Otherwise it runs `systemctl --user start` as before. Each call writes
+# one journal line (tag prime-agent-daemon-start) that names the caller's pid, command line and cgroup, so the next
+# start during an update names its sender.
+# Tests set PRIME_AGENT_SYSTEMCTL, PRIME_AGENT_DAEMON_START_POLL and PRIME_AGENT_DAEMON_START_LOG.
+unit=${1:-${PRIME_AGENT_DAEMON_UNIT:-prime-agent-daemon.service}}
+systemctl=${PRIME_AGENT_SYSTEMCTL:-systemctl}
+poll=${PRIME_AGENT_DAEMON_START_POLL:-1}
+
+note() {
+  if [ -n "$PRIME_AGENT_DAEMON_START_LOG" ]; then echo "$*" >> "$PRIME_AGENT_DAEMON_START_LOG"
+  else logger -t prime-agent-daemon-start -- "$*" 2>/dev/null; fi
+  echo "prime-agent-daemon-start: $*" >&2
+}
+state() { $systemctl --user show -p ActiveState --value "$unit" 2>/dev/null; }
+queued() { [ -n "$($systemctl --user list-jobs --no-legend "$unit" 2>/dev/null)" ]; }
+busy() { case $(state) in reloading|activating|deactivating) return 0;; esac; queued; }
+
+cmd=$(tr '\0' ' ' < /proc/$PPID/cmdline 2>/dev/null | cut -c1-200)
+group=$(sed -n 's/^0:://p' /proc/$PPID/cgroup 2>/dev/null)
+caller="caller pid $PPID (${cmd:-unknown}) in ${group:-unknown cgroup}"
+
+if busy; then
+  note "$unit is $(state) with a job running, so this waits for it and sends no start, which systemd would merge into a running reload and run that reload again; $caller"
+  while busy; do sleep "$poll"; done
+  now=$(state)
+  if [ "$now" = active ]; then
+    note "$unit is active after the job; no start sent; $caller"
+    exit 0
+  fi
+  note "$unit is $now after the job, so this starts it; $caller"
+else
+  note "starting $unit, which is $(state); $caller"
+fi
+exec $systemctl --user start "$unit"

@@ -79,8 +79,11 @@ echo "reload queued, exit $?"
 while [ "$(systemctl --user show -p ActiveState --value $UNIT)" = reloading ] || [ -n "$(systemctl --user list-jobs --no-legend $UNIT.service)" ]; do sleep 5; done
 journalctl --user -u $UNIT --since "$SINCE" --no-pager > $LOG.update 2>&1; grep -v "^.*tar: Ignoring" $LOG.update | tail -20
 : > "$ENVF"
-RESULT=$(grep -o "prime-agent-daemon-ctl: result=[a-z-]*" $LOG.update | tail -1 | cut -d= -f2)
+# The first ctl result is this run's reload. A later one is another reload systemd ran after it, such as the one a start
+# merged into this reload queued on 11-02 (test.23 and test.25), so it is printed and does not decide the result.
+RESULT=$(grep -o "prime-agent-daemon-ctl: result=[a-z-]*" $LOG.update | head -1 | cut -d= -f2)
 echo "ctl result ${RESULT:-none}"
+grep "prime-agent-daemon-ctl: result=" $LOG.update | tail -n +2 | sed 's/^/a later reload after this one: /'
 readlink ~/.local/share/prime-agent/bin/prime-agent
 NOW=$(prime-agent --version)
 PID=$(systemctl --user show -p MainPID --value $UNIT)

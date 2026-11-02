@@ -116,6 +116,10 @@ STATUS_FLAG = "--internal-update-restart-status"
 # Prime's exit code for an install-only update that installed nothing: no newer release, a refused downgrade or an
 # unreachable feed.
 NOT_ATTEMPTED = 75
+# Prime's line for the one NOT_ATTEMPTED case that is no failure: the installed release is the feed's newest. A reload the
+# install already did prints it, such as the second ExecReload systemd ran for a start merged into the test.23 and test.25
+# reloads on 11-02, which exited 1 and logged "Reload failed" after good installs.
+UP_TO_DATE = "is already up to date"
 
 # Exit codes for update, one per outcome, so prime-install.sh and the journal tell them apart.
 OK = 0
@@ -449,10 +453,13 @@ def start(prime_agent, sock, pidfile):
 def classify(code, output):
     """Name the outcome of the install and restart from the last exit code and their joined output.
 
-    The install exits 1 when the busy-session confirmation refuses without a TTY and 75 when it installed nothing.
+    The install exits 1 when the busy-session confirmation refuses without a TTY and 75 when it installed nothing. A 75
+    whose output says the release is already up to date is OK: the unit runs the current release and stays as it is.
     The coordinator exits 1 when it fails, and restart_report then names the failure in Prime's words, including a
     prepare refusal, where the running daemon declined the restart.
     """
+    if code == NOT_ATTEMPTED and UP_TO_DATE in output:
+        return OK, "already up to date: prime-agent update found the running release current, installed nothing and restarted nothing"
     if code == NOT_ATTEMPTED:
         return FAILED, "prime-agent update installed nothing: no newer release, a refused downgrade or an unreachable feed"
     if "Could not prepare daemon sessions for automatic resume" in output:
