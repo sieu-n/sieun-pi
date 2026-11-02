@@ -42,8 +42,12 @@ export const TRIES = 3;
 export const SCENARIOS = ["kbeauty-brand", "fresh-start"];
 export const PAGES = ["/app", "/app/search", "/app/dashboards", "/app/campaigns", "/app/watchlist", "/app/outreach", "/app/inbox", "/app/connections"];
 export const MARKETING_PAGES = ["/", "/pricing", "/privacy", "/sign-in"];
-/** An app's URL from before each app moved to /app/<app name> (owner, 10-22, ROUTE_MOVES in apps/virev-demo/overlay/src/lib/app-routes.js), which hooks.server.ts sends on with its path and query. */
-export const OLD_URL = { scenario: "kbeauty-brand", from: "/app/analytics/creators/heartleaf-toner-us?view=home", to: "/app/campaigns/heartleaf-toner-us" };
+/**
+ * An app's URL from before each app moved to /app/<app name> (owner, 10-22, ROUTE_MOVES in apps/virev-demo/overlay/src/lib/app-routes.js), which
+ * hooks.server.ts sends on with its path and query. The pinned app shows a campaign's view in its path (/app/campaigns/[id]/home), so ?view=home
+ * lands on /home: the 11-02 04:45Z walk landed on /app/campaigns/heartleaf-toner-us/home?world=... and waited 100 s for the bare campaign path.
+ */
+export const OLD_URL = { scenario: "kbeauty-brand", from: "/app/analytics/creators/heartleaf-toner-us?view=home", to: "/app/campaigns/heartleaf-toner-us/home" };
 export const MARKETING_TITLE = "marketing, legal and auth pages load their fonts from the app";
 export const scenarioTitle = (scenario: string) => `${scenario}: every browser and server request stays on localhost`;
 
@@ -371,7 +375,6 @@ async function scenarioTest(repl: Repl, scenario: string, since: number): Promis
       const { status } = await goto(`${OLD_URL.from}&world=${encodeURIComponent(world)}`);
       if (status >= 400) throw new Error(`${OLD_URL.from} gave HTTP ${status}`);
       const landed = new URL(await repl.call<string>("land on the moved url", `return await __walk.land(u => u.pathname === ${js(OLD_URL.to)}, ${LAND_TIMEOUT_MS});`));
-      if (landed.searchParams.get("view") !== "home") throw new Error(`the old URL lost its query: ${landed.href}`);
       if (landed.searchParams.get("world") !== world) throw new Error(`the old URL lost its world: ${landed.href}`);
     });
   }
