@@ -552,8 +552,14 @@ const RENAMED_SQL = "case when w.platform <> 'instagram' or w.last_batch_id is n
 /** The offset 0 in ROWS_SQL's private check keeps it a per-row username lookup. Without it staging planned a hashed parallel seq scan of
  *  instagram_accounts for is_private, and the staging read took 23.6 s against 2.4 s with it at 23:30Z on 2026-10-31, past the 30 s
  *  statement_timeout in the d2 runs of 23:19Z and 23:27Z. Prod read 5.5 s against 5.0 s with it. */
-const PROD_ROWS_SQL = ROWS_SQL + RENAMED_SQL + " and not w.paused";
-const STAGING_ROWS_SQL = ROWS_SQL + "'f' as renamed from watch_targets w where w.tier = 'monitor' and not w.paused";
+/** Both rows reads turn JIT off for their own statement. The planner costs the prod read near 957k, past jit_above_cost, and JIT spent
+ *  3.2 s of its 6.2 s compiling at 07:5xZ on 2026-11-02, on a box that runs 65 to 70 of 72 cores busy. The read ran 9.1 to 14.3 s with JIT
+ *  and 4.2 to 6.2 s without it, and staging's 1.8 to 1.9 s against 2.0 to 4.3 s. It hit the 30 s statement_timeout at 06:45Z and 07:52Z on
+ *  11-02, and wrote 999999 for three metrics each time. Grafana pools its connections, so the SET is LOCAL to the statement's own
+ *  implicit transaction and never reaches another panel's query. */
+export const NO_JIT = "set local jit = off; ";
+export const PROD_ROWS_SQL = NO_JIT + ROWS_SQL + RENAMED_SQL + " and not w.paused";
+export const STAGING_ROWS_SQL = NO_JIT + ROWS_SQL + "'f' as renamed from watch_targets w where w.tier = 'monitor' and not w.paused";
 /** ROWS_SQL's columns in parseRows order, to print Grafana's table rows as the lines psql prints. */
 const ROW_COLUMNS = ["platform", "kind", "target", "paused", "last_outcome", "last_run_at", "last_stop_reason", "last_error_code", "is_private", "err_streak", "due", "last_ok_at", "added_at", "renamed"];
 export const rowLines = (rows: Record<string, unknown>[]): string => rows.map(row => ROW_COLUMNS.map(column => String(row[column] ?? "")).join("\t")).join("\n");
