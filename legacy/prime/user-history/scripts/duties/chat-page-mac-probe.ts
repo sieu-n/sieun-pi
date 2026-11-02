@@ -21,6 +21,7 @@ import type { BrowserLoad, BrowserOutput, BrowserSwitch } from "./chat-page-mac.
  * - A new tab is no new browser profile: the app's hashed assets (cache-control immutable) can come from Aside's cache, and the connection
  *   to the box can be reused. Each load lists how many assets came from the cache and how many over the network, counted once the page's
  *   load event has passed, since the prepainted lines show before app.js arrives.
+ * When the Aside CLI's own request to Aside drops ("fetch failed"), the tab switches run once more in a new tab, whose chats are cold again.
  */
 
 /** Aside ends each REPL call at 120 s (`aside guide repl`), so a call starts no switch that could run past it. */
@@ -169,19 +170,21 @@ globalThis.__chatProbe = (() => {
 const js = (value: unknown) => JSON.stringify(value);
 const message = (error: unknown) => String(error instanceof Error ? error.message : error).split("\n")[0]!.slice(0, 300);
 
-/** Runs the cold loads, then the tab switches, through `repl`, in the shape chat-page-mac.ts reads (BrowserOutput, less the Mac's load). */
-export async function browseInAside(repl: Repl, config: ProbeConfig): Promise<Omit<BrowserOutput, "load">> {
-  const started = Date.now();
-  const options = js({ ...config, callMs: REPL_CALL_MS });
-  await repl.call("define the chat page probe", PROBE_LIB.replace(/"ok";\s*$/, "") + "return 'ok';");
-  const loads: BrowserLoad[] = [];
-  for (let index = 0; index < config.loads; index++) {
-    loads.push(await repl.call<BrowserLoad>(`cold load ${index + 1}`, `return await __chatProbe.load(${js(config.url)}, ${options});`).catch(error => ({ error: message(error) })));
-  }
-  let tabs: BrowserOutput["tabs"];
+/** The REPL call body that defines `__chatProbe`; it replaces an earlier one, so it also restores a scope that Aside lost. */
+const DEFINE = PROBE_LIB.replace(/"ok";\s*$/, "") + "return 'ok';";
+
+/**
+ * The Aside CLI's own request to Aside failed. At 04:40Z on 11-02 "fetch failed: other side closed" took the tab switches of a run whose
+ * whole precheck took 143 s, its sends 17 s and its cold loads at least 9 s of that, so the call ended short of Aside's 120 s limit. The Mac
+ * was at load 237.6 just after it woke, and a rerun by hand at 04:44Z measured all 10 switches.
+ */
+const droppedConnection = (error: string) => /^fetch failed\b/.test(error);
+
+/** The tab switches in one new tab, closed at the end; any failure comes back as `{ error }`, so no failed call reads as a time. */
+async function tabSwitches(repl: Repl, url: string, options: string): Promise<BrowserOutput["tabs"]> {
   try {
     type Part = { done: BrowserSwitch[]; left: string[] };
-    const first = await repl.call<Part & { settle: { frames: number; medianMs: number | null } }>("tab switches", `return await __chatProbe.openSwitches(${js(config.url)}, ${options});`);
+    const first = await repl.call<Part & { settle: { frames: number; medianMs: number | null } }>("tab switches", `return await __chatProbe.openSwitches(${js(url)}, ${options});`);
     const switches = [...first.done];
     for (let left = first.left; left.length; ) {
       const more = await repl.call<Part>("more tab switches", `return await __chatProbe.moreSwitches(${js(left)}, ${options});`);
@@ -189,11 +192,28 @@ export async function browseInAside(repl: Repl, config: ProbeConfig): Promise<Om
       switches.push(...more.done);
       left = more.left;
     }
-    tabs = { switches, banner: await repl.call<string | null>("read the banner", "return await __chatProbe.banner();"), settle: first.settle };
+    return { switches, banner: await repl.call<string | null>("read the banner", "return await __chatProbe.banner();"), settle: first.settle };
   } catch (error) {
-    tabs = { error: message(error) };
+    return { error: message(error) };
   } finally {
     await repl.call("close the switch tab", "return await __chatProbe.close();").catch(() => undefined);
+  }
+}
+
+/** Runs the cold loads, then the tab switches, through `repl`, in the shape chat-page-mac.ts reads (BrowserOutput, less the Mac's load). */
+export async function browseInAside(repl: Repl, config: ProbeConfig): Promise<Omit<BrowserOutput, "load">> {
+  const started = Date.now();
+  const options = js({ ...config, callMs: REPL_CALL_MS });
+  await repl.call("define the chat page probe", DEFINE);
+  const loads: BrowserLoad[] = [];
+  for (let index = 0; index < config.loads; index++) {
+    loads.push(await repl.call<BrowserLoad>(`cold load ${index + 1}`, `return await __chatProbe.load(${js(config.url)}, ${options});`).catch(error => ({ error: message(error) })));
+  }
+  let tabs = await tabSwitches(repl, config.url, options);
+  if ("error" in tabs && droppedConnection(tabs.error)) {
+    const first = tabs.error;
+    tabs = await repl.call("define the chat page probe again", DEFINE).then(() => tabSwitches(repl, config.url, options), error => ({ error: message(error) }));
+    if ("error" in tabs) tabs = { error: `${tabs.error}, on a second try after the first dropped (${first})` };
   }
   return { loads, tabs, ms: Date.now() - started };
 }

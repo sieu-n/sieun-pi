@@ -124,6 +124,31 @@ test("switches that fail still close the switch tab, and a call that fits no swi
   assert.equal(stuck.titles.at(-1), "close the switch tab");
 });
 
+test("a dropped connection to Aside on the first try of the tab switches gives a second try in a new tab, which yields the measured value", async () => {
+  let tries = 0;
+  const repl = fakeRepl(title => {
+    if (title === "tab switches") return ++tries === 1 ? new Error("fetch failed: other side closed") : { settle: { frames: 12, medianMs: 210 }, done: [switched("a", 131), switched("b", 140), switched("c", 120)], left: [] };
+    if (title === "read the banner") return null;
+    return "ok";
+  });
+  const output = await browseInAside(repl, { ...probeConfig, loads: 0 });
+  assert.deepEqual(repl.titles, ["define the chat page probe", "tab switches", "close the switch tab", "define the chat page probe again", "tab switches", "read the banner", "close the switch tab"]);
+  assert.deepEqual(output.tabs, { switches: [switched("a", 131), switched("b", 140), switched("c", 120)], banner: null, settle: { frames: 12, medianMs: 210 } });
+  const { tabs } = browserReadings({ ...output, load: 5 }, at, 10_000);
+  assert.equal(tabs.value, 131);
+});
+
+test("a second dropped connection, or a failure that is no dropped connection, leaves the switches unmeasured with no time", async () => {
+  const twice = fakeRepl(title => title === "tab switches" ? new Error("fetch failed: other side closed") : "ok");
+  const dropped = await browseInAside(twice, { ...probeConfig, loads: 0 });
+  assert.deepEqual(dropped.tabs, { error: "fetch failed: other side closed, on a second try after the first dropped (fetch failed: other side closed)" });
+  assert.equal(twice.titles.filter(title => title === "tab switches").length, 2);
+  assert.equal(browserReadings({ ...dropped, load: 5 }, at, 10_000).tabs.value, undefined);
+  const sidebar = fakeRepl(title => title === "tab switches" ? new Error("Error: the sidebar listed 2 chats within 20000 ms, fewer than 4") : "ok");
+  await browseInAside(sidebar, { ...probeConfig, loads: 0 });
+  assert.equal(sidebar.titles.filter(title => title === "tab switches").length, 1);
+});
+
 test("tab switches that did not run leave the metric out with a source error", () => {
   const { tabs } = browserReadings({ loads: [{ shown: 900 }], tabs: { error: "locator.click: Timeout 5000ms exceeded" } }, at, 10_000);
   assert.equal(tabs.value, undefined);
