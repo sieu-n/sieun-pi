@@ -15,6 +15,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * the calls themselves. The key is apps/vent's POSTHOG_PERSONAL_API_KEY (query:read only), read through dotenvx in the auto-sns-agent checkout.
  * PostHog missed every event from 03:48 to 06:19Z on 11-01 while prod Vent was down (p1257), so the run also names the day's longest stretch
  * with no api_request event at all as detail; it judges nothing, and a reader checks Vercel's request logs for that stretch.
+ * slow_route_p90_s keeps board goal p111 met (owner 10-30: "이거 왜 20초 30초나 걸리냐"): the slowest p90 durationMs of the day's customer calls
+ * to SLOW_ROUTES, 3.30 s after crawler p1381 at 20:36Z on 11-02 against 5 s, while Bing's p90 over all orgs read 30.7 s from 00:00 to 20:42Z that day.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
@@ -23,8 +25,14 @@ const CUSTOMER_ORGS = "select org_id from api_portal_orgs where is_internal = 0"
 /** The "could not measure" value, the same one portal-uptime.ts prints, so a missing source can never look on target. */
 export const UNMEASURED = 999999;
 const DAY_MS = 86_400_000;
+/** The operations of /v1/search/bing, /v1/crawl/google/play-app and /v1/crawl/google/news (apps/api-portal/src/lib/server/operations.ts). */
+export const SLOW_ROUTES = ["search.bing", "crawl.google.play_app", "crawl.google.news"] as const;
+/** The brief's floor for one route's p90: under 20 calls the p90 rests on the day's slowest one or two calls, so it reads as unknown. */
+export const MIN_ROUTE_CALLS = 20;
 
 export interface DayCounts { completed: number; failed: number; failed5xx: number }
+/** One operation's calls of the day that carry durationMs, and their p90 in ms (null with no call). */
+export interface RouteLatency { endpoint: string; calls: number; p90Ms: number | null }
 export interface FailedCall { at: string; endpoint: string; status: number; errorCode: string; handle: string | null; requestId: string; orgId: string }
 
 /** The last full UTC day before `now`, as [start, end) ISO strings without the zone, the form HogQL's toDateTime reads. */
@@ -38,8 +46,23 @@ export function lastFullDay(now: number): { start: string; end: string } {
 export const handleOf = (crawlerPath: string | null | undefined): string | null =>
   /[?&]handle=([^&]+)/.exec(crawlerPath ?? "")?.[1] ?? null;
 
+const routeP90 = (rows: RouteLatency[], endpoint: string): number => {
+  const row = rows.find(candidate => candidate.endpoint === endpoint);
+  return !row || row.calls < MIN_ROUTE_CALLS || row.p90Ms === null ? UNMEASURED : Math.round(row.p90Ms / 10) / 100;
+};
+
+/** The slowest customer p90 of SLOW_ROUTES in seconds; a route under MIN_ROUTE_CALLS makes it UNMEASURED, so a quiet route never passes. */
+export const slowRouteP90 = (customer: RouteLatency[]): number => Math.max(...SLOW_ROUTES.map(endpoint => routeP90(customer, endpoint)));
+
+const latencyLine = (rows: RouteLatency[]): string => SLOW_ROUTES.map(endpoint => {
+  const row = rows.find(candidate => candidate.endpoint === endpoint);
+  const p90 = row?.p90Ms === null || row?.p90Ms === undefined ? "none" : `${Math.round(row.p90Ms / 10) / 100} s`;
+  return `${endpoint} ${row?.calls ?? 0} calls p90 ${p90}`;
+}).join(", ");
+
 /** The day's metrics and one flagged slice per 5xx, grouped in the excerpt by operation and error code. */
-export function report(counts: DayCounts, failed: FailedCall[], day: { start: string }, gapMin: number | null): PrecheckOutput {
+export function report(counts: DayCounts, failed: FailedCall[], day: { start: string }, gapMin: number | null,
+  latency: { customer: RouteLatency[]; all: RouteLatency[] }): PrecheckOutput {
   const attempts = counts.completed + counts.failed;
   const share = attempts > 0 ? Math.round((counts.failed5xx / attempts) * 10_000) / 100 : 0;
   const flagged: FlaggedSlice[] = failed.map(call => ({
@@ -49,7 +72,10 @@ export function report(counts: DayCounts, failed: FailedCall[], day: { start: st
   }));
   flagged.unshift({ kind: "day", excerpt: `${day.start.slice(0, 10)} UTC: ${counts.failed5xx} customer 5xx of ${attempts} attempts (${share}%); ` +
     `longest stretch with no api_request event: ${gapMin === null ? "not read" : `${gapMin} min`}` });
-  return { metrics: { customer_5xx_share_pct: share, source_errors: 0 }, flagged };
+  const slow = slowRouteP90(latency.customer);
+  flagged.splice(1, 0, { kind: "slow_routes", excerpt: `slowest customer p90: ${slow === UNMEASURED ? `unknown, a route has under ${MIN_ROUTE_CALLS} calls` : `${slow} s`}; ` +
+    `customers: ${latencyLine(latency.customer)}; all orgs: ${latencyLine(latency.all)}` });
+  return { metrics: { customer_5xx_share_pct: share, slow_route_p90_s: slow, source_errors: 0 }, flagged };
 }
 
 // ---- I/O ----
@@ -87,10 +113,16 @@ export async function measure(now: number): Promise<PrecheckOutput> {
       at: String(at), endpoint: String(endpoint), status: Number(status), errorCode: String(errorCode ?? ""), handle: handleOf(path as string | null),
       requestId: String(requestId ?? ""), orgId: String(orgId ?? ""),
     }));
+    const durations = `select properties.endpoint, count(), quantileExact(0.9)(toFloat(properties.durationMs)) from events where ${calls} and ${window} ` +
+      `and properties.endpoint in (${SLOW_ROUTES.map(endpoint => `'${endpoint}'`).join(", ")}) and properties.durationMs is not null`;
+    const latencyRows = (rows: unknown[][]): RouteLatency[] => rows.map(([endpoint, count, p90]) =>
+      ({ endpoint: String(endpoint), calls: Number(count), p90Ms: p90 === null || p90 === undefined ? null : Number(p90) }));
+    const customer = latencyRows(await hog(key, `${durations} and properties.orgId in (${CUSTOMER_ORGS}) group by 1`));
+    const all = latencyRows(await hog(key, `${durations} group by 1`));
     const gapMin = gap[0]?.[0] === null || gap[0]?.[0] === undefined ? null : Number(gap[0][0]);
-    return report({ completed: Number(completed), failed: Number(failed), failed5xx: Number(failed5xx) }, failedCalls, day, gapMin);
+    return report({ completed: Number(completed), failed: Number(failed), failed5xx: Number(failed5xx) }, failedCalls, day, gapMin, { customer, all });
   } catch (error) {
-    return { metrics: { customer_5xx_share_pct: UNMEASURED, source_errors: 1 },
+    return { metrics: { customer_5xx_share_pct: UNMEASURED, slow_route_p90_s: UNMEASURED, source_errors: 1 },
       flagged: [{ kind: "source_error", excerpt: `PostHog read failed: ${error instanceof Error ? error.message : String(error)}` }] };
   }
 }
