@@ -69,8 +69,13 @@ export function pushMisses(runs: readonly DutyRunRecord[], counted: ReadonlySet<
   const measured = effectiveRun(holder);
   if (measured.verdict === "missed") {
     const keys = missedKeys(measured).filter(key => counted.has(key));
-    if (now - newest.at >= everyMs) return keys.length ? keys : null;
-    const quiet = new Set(metricStreaks(runs).filter(streak => streak.quietSince !== undefined).map(streak => streak.key));
+    const streaks = metricStreaks(runs);
+    const quiet = new Set(streaks.filter(streak => streak.quietSince !== undefined).map(streak => streak.key));
+    // A quiet windowed count only waits for its old events to leave the window (`agedOut` pushes once they have), so the interval push skips
+    // it. From 11-01 12Z to 11-02 12Z the AI harness chat's d10 got 14 hourly push runs, each starting a job, on repeat_corrections_7d and
+    // repeats_after_fix_7d with no repeat newer than 10-29 07:35Z.
+    const aging = new Set(streaks.filter(streak => quiet.has(streak.key) && countWindowMs(streak.key, streak) !== undefined).map(streak => streak.key));
+    if (now - newest.at >= everyMs) { const due = keys.filter(key => !aging.has(key)); return due.length ? due : null; }
     const owed = endedUnpushed(runs) ? keys.filter(key => !quiet.has(key)) : [];
     return owed.length ? owed : null;
   }
