@@ -79,7 +79,10 @@ export function harnessSlow(input: { box: string; own: boolean; latency: unknown
     const gc = latency.gcMs !== undefined && latency.gcMs > SLOW_READ_MS / 2 ? ` (a ${latency.gc} GC took ${seconds(latency.gcMs)})` : "";
     out.push(`the chat's event loop stalled ${seconds(latency.loopMs)}${gc}`);
   }
-  if (latency?.poolMs !== undefined && latency.poolMs > SLOW_READ_MS) out.push(`the chat's file reads waited ${seconds(latency.poolMs)} for a thread-pool thread`);
+  // The pool probe's end runs on the main thread (chat-latency.ts `probePool`), so its wait holds the loop's own stall too, and only a wait
+  // longer than the loop's by SLOW_READ_MS is the pool's: at 22:39Z on 11-02 the line read a 1.2 s pool wait beside a 1.1 s loop stall, the
+  // pool held 16 threads, and the main thread sat runnable 908 ms from 22:38:50.967Z while CI went to 39 cores.
+  if (latency?.poolMs !== undefined && latency.poolMs > SLOW_READ_MS && latency.poolMs > latency.loopMs + SLOW_READ_MS) out.push(`the chat's file reads waited ${seconds(latency.poolMs)} for a thread-pool thread`);
   const misses = input.own ? input.misses.filter(at => at >= input.from && at < input.to).length : 0;
   if (misses) out.push(`${misses} worker poll${misses === 1 ? "" : "s"} went unanswered`);
   const slow = input.faults.filter(fault => fault.host === input.box && fault.at >= input.from && fault.at < input.to && waitedOnCpu(fault.what)).length;

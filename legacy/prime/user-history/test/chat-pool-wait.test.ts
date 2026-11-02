@@ -25,3 +25,9 @@ test("a thread-pool wait over 1 s is named beside the slow read it explains", ()
     ["the chat answered api/accounts in 2.3 s", "the chat's file reads waited 2.1 s for a thread-pool thread"]);
   assert.deepEqual(harnessSlow({ box: "us-metal02", own: true, latency: { readMs: 40, loopMs: 144, poolMs: 30 }, from: 0, to: 1, misses: [], faults: [] }), []);
 });
+
+test("a pool wait the loop's own stall covers is not named as the pool's", () => {
+  // 22:39Z on 11-02: a 1.2 s pool wait beside a 1.1 s loop stall, with the main thread runnable 908 ms under a CI ramp.
+  assert.deepEqual(harnessSlow({ box: "us-metal02", own: true, latency: { readMs: 246, read: "api/agent/siblings", loopMs: 1093, poolMs: 1155 }, from: 0, to: 1, misses: [], faults: [] }),
+    ["the chat's event loop stalled 1.1 s"]);
+});
