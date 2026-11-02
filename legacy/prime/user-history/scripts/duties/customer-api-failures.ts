@@ -15,8 +15,9 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * the calls themselves. The key is apps/vent's POSTHOG_PERSONAL_API_KEY (query:read only), read through dotenvx in the auto-sns-agent checkout.
  * PostHog missed every event from 03:48 to 06:19Z on 11-01 while prod Vent was down (p1257), so the run also names the day's longest stretch
  * with no api_request event at all as detail; it judges nothing, and a reader checks Vercel's request logs for that stretch.
- * slow_route_p90_s keeps board goal p111 met (owner 10-30: "이거 왜 20초 30초나 걸리냐"): the slowest p90 durationMs of the day's customer calls
- * to SLOW_ROUTES, 3.30 s after crawler p1381 at 20:36Z on 11-02 against 5 s, while Bing's p90 over all orgs read 30.7 s from 00:00 to 20:42Z that day.
+ * slow_route_p90_s keeps board goal p111 met (owner 10-30: "이거 왜 20초 30초나 걸리냐"): the slowest p90 durationMs of the day's calls to
+ * SLOW_ROUTES by every org, internal ones included, because no is_internal = 0 org called them from 10-20 to 11-02 and the owner's own calls come
+ * from internal orgs; 3.30 s after crawler p1381 at 20:36Z on 11-02 against 5 s, while Bing's p90 over all orgs read 30.7 s from 00:00 to 20:42Z that day.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
@@ -51,8 +52,8 @@ const routeP90 = (rows: RouteLatency[], endpoint: string): number => {
   return !row || row.calls < MIN_ROUTE_CALLS || row.p90Ms === null ? UNMEASURED : Math.round(row.p90Ms / 10) / 100;
 };
 
-/** The slowest customer p90 of SLOW_ROUTES in seconds; a route under MIN_ROUTE_CALLS makes it UNMEASURED, so a quiet route never passes. */
-export const slowRouteP90 = (customer: RouteLatency[]): number => Math.max(...SLOW_ROUTES.map(endpoint => routeP90(customer, endpoint)));
+/** The slowest p90 of SLOW_ROUTES in seconds; a route under MIN_ROUTE_CALLS makes it UNMEASURED, so a quiet route never passes. */
+export const slowRouteP90 = (routes: RouteLatency[]): number => Math.max(...SLOW_ROUTES.map(endpoint => routeP90(routes, endpoint)));
 
 const latencyLine = (rows: RouteLatency[]): string => SLOW_ROUTES.map(endpoint => {
   const row = rows.find(candidate => candidate.endpoint === endpoint);
@@ -62,7 +63,7 @@ const latencyLine = (rows: RouteLatency[]): string => SLOW_ROUTES.map(endpoint =
 
 /** The day's metrics and one flagged slice per 5xx, grouped in the excerpt by operation and error code. */
 export function report(counts: DayCounts, failed: FailedCall[], day: { start: string }, gapMin: number | null,
-  latency: { customer: RouteLatency[]; all: RouteLatency[] }): PrecheckOutput {
+  latency: RouteLatency[]): PrecheckOutput {
   const attempts = counts.completed + counts.failed;
   const share = attempts > 0 ? Math.round((counts.failed5xx / attempts) * 10_000) / 100 : 0;
   const flagged: FlaggedSlice[] = failed.map(call => ({
@@ -72,9 +73,9 @@ export function report(counts: DayCounts, failed: FailedCall[], day: { start: st
   }));
   flagged.unshift({ kind: "day", excerpt: `${day.start.slice(0, 10)} UTC: ${counts.failed5xx} customer 5xx of ${attempts} attempts (${share}%); ` +
     `longest stretch with no api_request event: ${gapMin === null ? "not read" : `${gapMin} min`}` });
-  const slow = slowRouteP90(latency.customer);
-  flagged.splice(1, 0, { kind: "slow_routes", excerpt: `slowest customer p90: ${slow === UNMEASURED ? `unknown, a route has under ${MIN_ROUTE_CALLS} calls` : `${slow} s`}; ` +
-    `customers: ${latencyLine(latency.customer)}; all orgs: ${latencyLine(latency.all)}` });
+  const slow = slowRouteP90(latency);
+  flagged.splice(1, 0, { kind: "slow_routes", excerpt: `slowest p90, all orgs: ${slow === UNMEASURED ? `unknown, a route has under ${MIN_ROUTE_CALLS} calls` : `${slow} s`}; ` +
+    latencyLine(latency) });
   return { metrics: { customer_5xx_share_pct: share, slow_route_p90_s: slow, source_errors: 0 }, flagged };
 }
 
@@ -117,10 +118,9 @@ export async function measure(now: number): Promise<PrecheckOutput> {
       `and properties.endpoint in (${SLOW_ROUTES.map(endpoint => `'${endpoint}'`).join(", ")}) and properties.durationMs is not null`;
     const latencyRows = (rows: unknown[][]): RouteLatency[] => rows.map(([endpoint, count, p90]) =>
       ({ endpoint: String(endpoint), calls: Number(count), p90Ms: p90 === null || p90 === undefined ? null : Number(p90) }));
-    const customer = latencyRows(await hog(key, `${durations} and properties.orgId in (${CUSTOMER_ORGS}) group by 1`));
-    const all = latencyRows(await hog(key, `${durations} group by 1`));
+    const latency = latencyRows(await hog(key, `${durations} group by 1`));
     const gapMin = gap[0]?.[0] === null || gap[0]?.[0] === undefined ? null : Number(gap[0][0]);
-    return report({ completed: Number(completed), failed: Number(failed), failed5xx: Number(failed5xx) }, failedCalls, day, gapMin, { customer, all });
+    return report({ completed: Number(completed), failed: Number(failed), failed5xx: Number(failed5xx) }, failedCalls, day, gapMin, latency);
   } catch (error) {
     return { metrics: { customer_5xx_share_pct: UNMEASURED, slow_route_p90_s: UNMEASURED, source_errors: 1 },
       flagged: [{ kind: "source_error", excerpt: `PostHog read failed: ${error instanceof Error ? error.message : String(error)}` }] };
