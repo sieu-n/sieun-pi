@@ -815,6 +815,44 @@ export function linkStepSessions(board: ChatBoard, links: ReadonlyMap<string, { 
   return plan === board.plan ? null : { ...board, plan, rev: board.rev + 1, updatedAt: now };
 }
 
+/**
+ * The board after a write with each wait and answer stamped: a step whose waitFor text is new or changed gets `waitForAt` now, and a todo that
+ * turned answered (checked, or a reply) or got a new reply gets `answeredAt` now. Others keep their stamps, and a cleared wait or answer drops
+ * its stamp. wait_met reads them (`waitsMet`), since a wait set after a todo's answer is not waiting on that answer.
+ */
+export function stampBoard(before: ChatBoard | null, after: ChatBoard, now: string): ChatBoard {
+  const waits = new Map<string, Pick<PlanItem, "waitFor" | "waitForAt">>();
+  walk(before?.plan ?? [], item => { waits.set(item.id, item); });
+  const stamp = (items: PlanItem[]): PlanItem[] => {
+    let changed = false;
+    const out = items.map(item => {
+      const children = stamp(item.children);
+      const was = waits.get(item.id);
+      const at = item.waitFor === undefined ? undefined : was?.waitFor === item.waitFor ? was.waitForAt : now;
+      if (children === item.children && at === item.waitForAt) return item;
+      changed = true;
+      const next = { ...item, children };
+      if (at === undefined) delete next.waitForAt; else next.waitForAt = at;
+      return next;
+    });
+    return changed ? out : items;
+  };
+  const answered = (todo: OwnerTodo) => todo.done || (todo.reply ?? "").trim() !== "";
+  const asked = new Map((before?.todos ?? []).map(todo => [todo.id, todo]));
+  let todosChanged = false;
+  const todos = after.todos.map(todo => {
+    const was = asked.get(todo.id);
+    const at = !answered(todo) ? undefined : was && answered(was) && was.reply === todo.reply ? was.answeredAt : now;
+    if (at === todo.answeredAt) return todo;
+    todosChanged = true;
+    const next = { ...todo };
+    if (at === undefined) delete next.answeredAt; else next.answeredAt = at;
+    return next;
+  });
+  const plan = stamp(after.plan);
+  return plan === after.plan && !todosChanged ? after : { ...after, plan, todos };
+}
+
 /** A wait on the owner: its first clause names his answer, go, ok, login, review or merge. */
 export const OWNER_WAIT = /\b(?:owner|sieun|you)(?:'s|r)?\b.*\b(?:go|ok|approval|answer|decision|choice|login|sign[ -]?in|review|reply|merge|says|decides|confirms|approves|picks)\b/i;
 /** The first clause of a wait: what it waits on before "then". */

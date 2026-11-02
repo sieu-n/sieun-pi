@@ -118,6 +118,8 @@ export type PlanStatus = "todo" | "doing" | "done" | "blocked" | "dropped";
  */
 export interface PlanItem {
   id: string; text: string; status: PlanStatus; job?: string; note?: string; waitUntil?: string; waitFor?: string;
+  /** When `waitFor` last got its current text (ISO), stamped by the board store (`stampBoard`); absent on a wait set before 11-03. */
+  waitForAt?: string;
   /** The session id of the thread that owns the step (a job of the chat or another thread), kept when the job is deleted or renamed; `job` keeps what the chat wrote. */
   sessionId?: string;
   /** The step ships, ports, deploys, merges to a shared app, or moves demo work to a real app: it needs the owner's go (`stepGo`), which the board and the check-in show. Once set, it stays. */
@@ -172,6 +174,8 @@ export interface OwnerTodo {
   step?: string;
   /** Who wrote `reply`. Only the owner answers; a reply without it predates the field and is no go. */
   answeredBy?: "owner";
+  /** When the todo was last checked or given its current answer (ISO), stamped by the board store (`stampBoard`); absent on one answered before 11-03. */
+  answeredAt?: string;
   /** The pages the owner opens to answer it; a review ask needs one here or an http URL in its text (`reviewAskWithoutLink`). */
   links?: ArtifactLink[];
 }

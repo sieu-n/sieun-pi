@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { missing, readJsonFile, transactJsonFile, type JsonFile } from "./locked-json.ts";
 import { DutyStore } from "./chat-duty-store.ts";
 import { dutyKeys } from "./shared/duty-fixes.ts";
-import { applyBoardOp, emptyBoard, idsTop, linkStepSessions, nextIds, parseBoard, releaseClosedAsks } from "./shared/chat-board.ts";
+import { applyBoardOp, emptyBoard, idsTop, linkStepSessions, nextIds, parseBoard, releaseClosedAsks, stampBoard } from "./shared/chat-board.ts";
 import type { BoardActor, BoardOp, ChatBoard } from "./shared/types.ts";
 
 const sessionIdPattern = /^[a-zA-Z0-9_-]{1,128}$/;
@@ -65,7 +65,7 @@ export class BoardStore {
       }
       const released = releaseClosedAsks(state, board, id, now);
       if (released) { board = released.board; summaries.push(...released.summaries); }
-      Object.assign(state, board);
+      Object.assign(state, stampBoard(state, board, now));
       return summaries;
     });
     return { board: state, summaries: result };

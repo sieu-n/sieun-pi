@@ -179,7 +179,9 @@ export const heldLine = ({ goal, steps }: HeldGoal): string => `${goal.id} ${quo
  * board's done p8. Such an id, and one tied to a chat's session id ("t17 in chat <id>", `waitRefs`), is read on that chat's board (`others`),
  * and the wait is not over while one cannot be read: CI and RepoOps p420's "t17 in chat 01a16213-..." read the chat's own done t17. The ids
  * are `stepIds` with `dropAfterName`, so a percentile word ("drain search_ms p50 is back"), an id in a ref or one after a name word ("queue
- * cuts t9") is no board id. A clause that names a CI run id and an awaited "green" stays open whatever ids it also names ("is green (run
+ * cuts t9") is no board id. A bare todo id answered before the waitFor got its text (`answeredAt` before `waitForAt`) is unresolved, since the
+ * wait cannot be on that answer: sep launch!! p144 waited for "walk 28; t52 Jev credits", meant the credits todo on another chat, and three
+ * check-ins on 11-02 read this board's t52, answered 10-28, as the wait over. A clause that names a CI run id and an awaited "green" stays open whatever ids it also names ("is green (run
  * 38289995168)" is a run already seen). A waitFor that names another thread is left out, since its ids may be that thread's. The step is due
  * now, whatever its waitUntil.
  */
@@ -200,11 +202,13 @@ export function waitsMet(views: readonly StepView[], board: ChatBoard | null, ro
   const own = index(board);
   const { items } = own;
   const merges = [...items.values()].filter(item => item.status === "done" && mergeStep(item.text));
-  const met = (id: string, { items, todos }: ReturnType<typeof index>, on = ""): string[] => {
+  const met = (id: string, { items, todos }: ReturnType<typeof index>, on = "", setAt?: string): string[] => {
     const item = items.get(id);
     if (item) return CLOSED.has(item.status) ? [`${id}${on} is ${item.status}`] : [];
     const todo = todos.get(id);
-    return todo && (todo.done || (todo.reply ?? "").trim() !== "") ? [`${id}${on} is answered (read the answer: a hold is not a go)`] : [];
+    if (!todo || !(todo.done || (todo.reply ?? "").trim() !== "")) return [];
+    // A wait set after this todo's answer waits on something else, so the id stays unresolved; a todo with no stamp was answered before any.
+    return setAt && (todo.answeredAt ?? "") < setAt ? [] : [`${id}${on} is answered (read the answer: a hold is not a go)`];
   };
   return views.flatMap(view => {
     const { waitFor } = view.item;
@@ -222,7 +226,7 @@ export function waitsMet(views: readonly StepView[], board: ChatBoard | null, ro
     const unchecked = scoped.split(/[,;]|\bthen\b/).some(clause => UNCHECKED_NAME.test(clause) || CI_RUN_ID.test(clause) && AWAITED_GREEN.test(clause) ||
       UNCHECKED_EVENT.test(clause) && !boardIds(clause).some(id => id !== view.item.id) && !prNumbers(clause).length);
     if (unchecked) return [];
-    const over = named.flatMap(id => met(id, own));
+    const over = named.flatMap(id => met(id, own, "", view.item.waitForAt));
     const merged = prs.flatMap(pr => { const by = merges.find(item => namesPr(item.text, pr)); return by ? [`#${pr} is merged (${by.id} is done)`] : []; });
     return over.length + merged.length + linked.length > 0 && over.length === named.length && merged.length === prs.length && linked.every(found => found.length)
       ? [{ view, over: [...over, ...linked.flat(), ...merged] }] : [];
