@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { readWalk, slowestPage } from "../scripts/duties/demo-sandbox.ts";
 import { asideRepl, type Repl } from "../scripts/duties/aside-repl.ts";
-import { BROWSER_URL, egressLines, MARKETING_TITLE, REPL_LIB, runWalk, scenarioTitle, testErrors, walkRepl, walkReport } from "../scripts/duties/demo-sandbox-walk.ts";
+import { BROWSER_URL, egressLines, MARK_OLD, MARKETING_TITLE, NEW_TEXT, REPL_LIB, runWalk, scenarioTitle, testErrors, walkRepl, walkReport } from "../scripts/duties/demo-sandbox-walk.ts";
 import { BASE_URL } from "../scripts/duties/demo-sandbox.ts";
 
 const clean = { outside: [], violations: [], failed: [] };
@@ -97,6 +97,33 @@ test("a call that finds the walk gone defines it again, opens a new tab and runs
   await repl.call("open a tab for x", "return await __walk.open();");
   assert.deepEqual(titles, ["open a tab for x", "define the walk", "open a tab for x"]);
   await assert.rejects(repl.call("other", "boom"), /Error: boom/);
+});
+
+interface FakeNode { nodeType: number; textContent?: string; shown?: boolean; attrs?: Set<string>; childNodes?: FakeNode[] }
+const el = (shown: boolean, ...childNodes: FakeNode[]): FakeNode => ({ nodeType: 1, shown, attrs: new Set(), childNodes });
+const text = (value: string): FakeNode => ({ nodeType: 3, textContent: value });
+const page = (node: FakeNode): unknown => node.nodeType === 3 ? node : {
+  nodeType: 1,
+  checkVisibility: () => node.shown,
+  setAttribute: (name: string) => node.attrs!.add(name),
+  hasAttribute: (name: string) => node.attrs!.has(name),
+  get childNodes() { return node.childNodes!.map(page); },
+  get children() { return node.childNodes!.filter(child => child.nodeType === 1).map(page); },
+};
+
+test("a kept view that a switch shows again counts as shown, while the view on screen at the click stays old", () => {
+  const newText = new Function(`return ${NEW_TEXT}`)() as (element: unknown) => boolean;
+  const markOld = new Function(`return ${MARK_OLD}`)() as (element: unknown) => void;
+  const dashboards = el(true, el(true, text("Updated 22s ago")));
+  const campaigns = el(false, el(true, text("Campaigns")));
+  const main = el(true, dashboards, campaigns);
+  for (const child of main.childNodes!) markOld(page(child));
+  assert.equal(newText(page(main)), false);
+  dashboards.shown = false;
+  assert.equal(newText(page(main)), false);
+  campaigns.shown = true;
+  assert.equal(newText(page(main)), true);
+  assert.ok(REPL_LIB.includes(NEW_TEXT) && REPL_LIB.includes(MARK_OLD));
 });
 
 test("the REPL side of the walk is valid JavaScript with no TypeScript left in it", () => {

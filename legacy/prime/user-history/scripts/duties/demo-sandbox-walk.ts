@@ -52,6 +52,28 @@ export const MARKETING_TITLE = "marketing, legal and auth pages load their fonts
 export const scenarioTitle = (scenario: string) => `${scenario}: every browser and server request stays on localhost`;
 
 /**
+ * Page-side source, put into REPL_LIB, that finds the first text a switch brought onto the screen. Since 10-31 (auto-sns-agent 1fecbea26) the 5180
+ * /app layout keeps Home, Campaigns, the Watchlist, the Inbox and more mounted inside <main> and hides each with content-visibility: hidden, so a
+ * rail switch back shows a hidden node again instead of making new ones. When the walk marked every node in <main> as old, a kept view's own
+ * text stayed old and the switch read as never shown. On 11-02 in the owner's Aside, kept Campaigns, Watchlist and Inbox showed 31 to 33 ms
+ * after the click while the old test still saw no new text 10 s later. Only a node on screen when the click lands is old, and only text on
+ * screen counts. A node checkVisibility() rejects (display: none or a content-visibility: hidden ancestor) is skipped with its subtree.
+ */
+export const MARK_OLD = String.raw`function markOld(element) {
+  if (!element.checkVisibility()) return;
+  element.setAttribute("data-walk-old", "");
+  for (const child of element.children) markOld(child);
+}`;
+export const NEW_TEXT = String.raw`function newText(element) {
+  if (!element.checkVisibility()) return false;
+  for (const child of element.childNodes) {
+    if (child.nodeType === 3 && child.textContent?.trim() && !element.hasAttribute("data-walk-old")) return true;
+    if (child.nodeType === 1 && newText(child)) return true;
+  }
+  return false;
+}`;
+
+/**
  * The REPL side of the walk, defined once as `globalThis.__walk`. Functions passed to `evaluate` run in the page. It keeps what every document
  * of the current test showed in `seen`, read before each navigation and at the end of each step.
  */
@@ -69,6 +91,8 @@ globalThis.__walk = (() => {
     try { performance.setResourceTimingBufferSize(100000); } catch {}
     w.__walkLong = [];
     new PerformanceObserver((list) => { for (const entry of list.getEntries()) w.__walkLong.push([entry.startTime, entry.duration]); }).observe({ type: "longtask", buffered: true });
+    const newText = ${NEW_TEXT};
+    const markOld = ${MARK_OLD};
     const BUSY = '.skeleton, [aria-busy="true"]';
     const busy = new Map();
     const onScreen = new IntersectionObserver((entries) => { for (const entry of entries) if (busy.has(entry.target)) busy.set(entry.target, entry.isIntersecting); });
@@ -84,10 +108,9 @@ globalThis.__walk = (() => {
       if (!main) return false;
       if (dirty) { dirty = false; sync(main); }
       for (const shown of busy.values()) if (shown !== false) return false;
-      const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT);
-      for (let node = walker.nextNode(); node; node = walker.nextNode()) if (node.textContent?.trim() && !node.parentElement?.hasAttribute("data-walk-old")) return true;
-      return false;
+      return newText(main);
     };
+    w.__walkMarkOld = () => { for (const element of document.querySelectorAll("main [data-walk-old]")) element.removeAttribute("data-walk-old"); for (const child of document.querySelector("main")?.children ?? []) markOld(child); };
     w.__walkFirstShown = null;
     const watch = () => { if (w.__walkShows()) w.__walkFirstShown = performance.now(); else requestAnimationFrame(watch); };
     requestAnimationFrame(watch);
@@ -136,7 +159,7 @@ globalThis.__walk = (() => {
    */
   async function pageSwitchStart({ path, timeout, clickKey, retryMs }) {
     const clock = window;
-    for (const element of document.querySelectorAll("main *")) element.setAttribute("data-walk-old", "");
+    clock.__walkMarkOld();
     const world = new URLSearchParams(location.search).get("world");
     const href = world ? path + "?world=" + encodeURIComponent(world) : path;
     const begin = performance.now();
