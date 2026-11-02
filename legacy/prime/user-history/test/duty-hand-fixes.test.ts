@@ -494,6 +494,19 @@ test("a declared cap write counts only when its value differs from the default c
   assert.equal(logs.length, new Set(logs).size);
 });
 
+// Prod audits 20110 and 20111 (11-02 00:15Z) set the canary's roster share and hour divisor; e2d40153171 commits both as prod defaults.
+test("the canary share and hour writes of 11-02 are F15, wait on its prod release, and are declared caps", async () => {
+  const reg = await registry();
+  const verdict = classifyConfig({ actor: "api-key", writer: "ops-api", keys: ["engage.canary_hourly_divisor"], text: "The canary's hour cap of 55" }, reg);
+  assert.equal(verdict.kind === "fault" && verdict.fault.id, "F15");
+  const f15 = reg.faults.find(item => item.id === "F15")!;
+  const at = Date.parse("2026-11-02T00:15:37Z");
+  const deploys: Deploy[] = [{ at: Date.parse("2026-11-01T20:00:00Z"), release: "d4daa1eaed30" }];
+  assert.equal(designOnProd(f15, at, deploys, new Map([["d4daa1eaed30", new Set(["commit:c88ec81859"])]])), "not_live");
+  const cap = new RegExp(reg.exempt.declared_cap_regex!);
+  assert.ok(cap.test("engage.canary_roster_pct") && cap.test("engage.canary_hourly_divisor") && !cap.test("engage.canary_daily_pages"));
+});
+
 test("the audit read selects each row's new value", () => {
   assert.match(auditSql(undefined, AT), /coalesce\(new_value, ''\) as new_value/);
 });
