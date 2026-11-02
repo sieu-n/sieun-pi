@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { readWalk, slowestPage } from "../scripts/duties/demo-sandbox.ts";
 import { asideRepl, type Repl } from "../scripts/duties/aside-repl.ts";
-import { BROWSER_URL, egressLines, MARKETING_TITLE, REPL_LIB, runWalk, scenarioTitle, testErrors, walkReport } from "../scripts/duties/demo-sandbox-walk.ts";
+import { BROWSER_URL, egressLines, MARKETING_TITLE, REPL_LIB, runWalk, scenarioTitle, testErrors, walkRepl, walkReport } from "../scripts/duties/demo-sandbox-walk.ts";
 import { BASE_URL } from "../scripts/duties/demo-sandbox.ts";
 
 const clean = { outside: [], violations: [], failed: [] };
@@ -74,6 +74,29 @@ test("the walk opens every page on BROWSER_URL", async () => {
   await runWalk(repl);
   assert.ok(opened.length > 20);
   assert.deepEqual(opened.filter(url => !url.startsWith(`${BROWSER_URL}/`)), []);
+});
+
+// 11-02 04:42Z: Aside's REPL lost its scope 3 min after the Mac booted, and every later call of the walk read "'__walk' is not defined".
+test("a call that finds the walk gone defines it again, opens a new tab and runs once more", async () => {
+  const titles: string[] = [];
+  let defined = false;
+  const repl = walkRepl({
+    async call<T>(title: string, code: string): Promise<T> {
+      titles.push(title);
+      if (title === "define the walk") { defined = true; return "ok" as T; }
+      if (!defined) throw new Error("Error: ReferenceError: '__walk' is not defined");
+      if (code.includes("boom")) throw new Error("Error: boom");
+      return title as T;
+    },
+    stop() {},
+  });
+  assert.equal(await repl.call<string>("time the load", "return await __walk.timeLoad(30000);"), "time the load");
+  assert.deepEqual(titles, ["time the load", "define the walk", "new tab", "time the load"]);
+  titles.length = 0;
+  defined = false;
+  await repl.call("open a tab for x", "return await __walk.open();");
+  assert.deepEqual(titles, ["open a tab for x", "define the walk", "open a tab for x"]);
+  await assert.rejects(repl.call("other", "boom"), /Error: boom/);
 });
 
 test("the REPL side of the walk is valid JavaScript with no TypeScript left in it", () => {

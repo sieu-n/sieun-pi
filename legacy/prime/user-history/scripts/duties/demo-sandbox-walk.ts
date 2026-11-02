@@ -463,12 +463,37 @@ async function marketingTest(repl: Repl, since: number): Promise<WalkTest> {
   return { title: MARKETING_TITLE, annotations, errors: testErrors(walk.failures, MARKETING_PAGES.length, seen, await serverEgress(since)) };
 }
 
+/**
+ * A REPL call that ran after Aside's REPL lost its scope. On 11-02 at 04:42Z, 3 min after the Mac booted at load 237, one call ended
+ * "fetch failed: other side closed" and every later call of that walk read "'__walk' is not defined", so all 3 tests failed unrun.
+ */
+const walkLost = (error: unknown) => /__walk'? is not defined/.test(String(error));
+
+/** The REPL with the walk defined in it: a call that finds the walk gone defines it again, opens a new tab and runs once more. */
+export function walkRepl(repl: Repl): Repl {
+  const define = () => repl.call("define the walk", REPL_LIB.replace(/"ok";\s*$/, "") + "return 'ok';");
+  return {
+    async call<T>(title: string, body: string): Promise<T> {
+      try { return await repl.call<T>(title, body); }
+      catch (error) {
+        if (!walkLost(error)) throw error;
+        progress(`${title}: the REPL lost the walk, so it is defined again on a new tab`);
+        await define();
+        if (!body.includes("__walk.open()")) await repl.call("new tab", "return await __walk.open();");
+        return repl.call<T>(title, body);
+      }
+    },
+    stop: () => repl.stop(),
+  };
+}
+
 /** A test that could not run at all, such as one whose tab never opened, as one failed spec. */
 const brokenTest = (title: string, error: unknown): WalkTest => ({ title, annotations: [], errors: [`the test did not run: ${firstLine(error)}`] });
 
-export async function runWalk(repl: Repl, now: () => number = Date.now): Promise<WalkReport> {
+export async function runWalk(aside: Repl, now: () => number = Date.now): Promise<WalkReport> {
   const startedAt = now();
-  await repl.call("define the walk", REPL_LIB.replace(/"ok";\s*$/, "") + "return 'ok';");
+  const repl = walkRepl(aside);
+  await aside.call("define the walk", REPL_LIB.replace(/"ok";\s*$/, "") + "return 'ok';");
   const tests: WalkTest[] = [];
   for (const scenario of SCENARIOS) tests.push(await scenarioTest(repl, scenario, startedAt).catch(error => brokenTest(scenarioTitle(scenario), error)));
   tests.push(await marketingTest(repl, startedAt).catch(error => brokenTest(MARKETING_TITLE, error)));
