@@ -8,6 +8,7 @@ import { inputRoots, precheckDir, pushesFile, serviceLogFile } from "./inputs.ts
 import { DELIVERY, STAMP } from "./run-archive.ts";
 import { firstClause, parseBoard, planJob } from "../../src/shared/chat-board.ts";
 import { D9_PUSH_PREFIX, NUDGE_PREFIX } from "../../src/shared/chat-feed.ts";
+import { stepIds } from "../../src/shared/step-ids.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { ownedDescendants, readSessionFile, sessionFile, sessionFiles, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
 
@@ -132,7 +133,7 @@ function owners(item: PlanItem): string[] {
 }
 const matches = (agent: Agent, owner: string): boolean => agent.sessionId === owner || agent.name === owner || agent.job === owner;
 const live = (agents: readonly Agent[], owner: string): boolean => agents.some(agent => agent.state === "working" && matches(agent, owner));
-const waitsOn = (item: PlanItem): string[] => (firstClause(item.waitFor ?? "").match(/\bp\d+\b/g) ?? []).filter(id => id !== item.id);
+const waitsOn = (item: PlanItem): string[] => stepIds(firstClause(item.waitFor ?? "")).filter(id => id.startsWith("p") && id !== item.id);
 /** What a step's age compares, as the check-in's stepSig does, plus its owner's place: a change to any of them starts its wait again. */
 const shape = (entry: Entry): string => JSON.stringify([entry.item.status, entry.item.text, ownerOf(entry.item) ?? "", entry.parent ?? ""]);
 const subtree = (item: PlanItem): string[] => [item.id, ...item.children.flatMap(subtree)];

@@ -4,6 +4,7 @@ import { clockTime, localTime } from "./checkin-settings.ts";
 import { savedStatePath } from "./job-resume.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
 import type { StalledCall } from "./shared/stalled-calls.ts";
+import { stepIds } from "./shared/step-ids.ts";
 import { slotParkWords, type SlotPark } from "./slot-park.ts";
 
 /** The check-in's step classes: the chat's job facts, the class of each open plan step (`stepClass`), and the line the duty job reads for it. */
@@ -169,7 +170,7 @@ export function readyReviews(board: ChatBoard | null, active?: ReadonlySet<strin
  */
 function waitOver(step: PlanItem, items: ReadonlyMap<string, PlanItem>, todos: readonly OwnerTodo[]): boolean {
   if (!step.waitFor?.trim()) return true;
-  const named = step.waitFor.match(/\b[pt]\d+\b/g) ?? [];
+  const named = stepIds(step.waitFor);
   return named.length > 0 && named.every(id => {
     const item = items.get(id);
     if (item) return CLOSED.has(item.status);

@@ -5,17 +5,20 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { waitsMet } from "../src/checkin-findings.ts";
 import { stepView } from "../src/checkin-steps.ts";
+import { stepIds } from "../src/shared/step-ids.ts";
+import { waitsOnStep } from "../scripts/duties/chat-system.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 
 const CRAWLER = "01a115e2-9544-7204-b8db-8ce4d5319048";
 const now = Date.parse("2026-10-28T06:10:00Z");
 const self = new Set([CRAWLER, "Crawler VP"]);
 const p95: PlanItem = { id: "p95", text: "Census reads its queue from Postgres", status: "done", children: [] };
+const p50: PlanItem = { id: "p50", text: "Index Instagram posts", status: "done", children: [] };
 const p1022: PlanItem = { id: "p1022", text: "Find the census pg writer root cause", status: "done", children: [] };
 const step = (waitFor: string): PlanItem => ({ id: "p1057", text: "Make the ranked widget sums exact", status: "doing", children: [], job: "crawler ops train", waitFor });
 const met = (waitFor: string) => {
   const item = step(waitFor);
-  const board = { v: 2, rev: 1, updatedAt: "2026-10-28T06:00:00Z", plan: [p95, p1022, item], todos: [] } as unknown as ChatBoard;
+  const board = { v: 2, rev: 1, updatedAt: "2026-10-28T06:00:00Z", plan: [p95, p50, p1022, item], todos: [] } as unknown as ChatBoard;
   return waitsMet([stepView(item, now - 3_600_000, self, [], [], [], now)], board, [], self).map(({ view, over }) => [view.item.id, over]);
 };
 
@@ -28,9 +31,33 @@ test("a percentile next to a number or after a name word is no step id", () => {
     "release p1022 deploys"]) assert.deepEqual(met(waitFor), [], waitFor);
 });
 
-test("a real step id in a waitFor still counts, p95 included", () => {
-  assert.deepEqual(met("p95 lands, then start"), [["p1057", ["p95 is done"]]]);
-  assert.deepEqual(met("p1022 and p95"), [["p1057", ["p1022 is done", "p95 is done"]]]);
-  assert.deepEqual(met("the queue move (p95)"), [["p1057", ["p95 is done"]]]);
-  assert.deepEqual(met("p95 8236b27bc7 is done"), [["p1057", ["p95 is done"]]]);
+const P1131 = "brand report terms read: rereading the prod field fill now on the new drain defaults (shard_lanes 2, pass_rows 1250, 133-143k " +
+  "rows/min since about 01:10Z), raising lookup concurrency if drain search_ms p50 is back near its 10-31 level, then days left at the new rate";
+
+test("p1131's wait on the field fill reread is not over because its waitFor names a search_ms p50", () => {
+  assert.deepEqual(met(P1131), []);
+  assert.deepEqual(stepIds(P1131), []);
+});
+
+test("a percentile word is never a step id, whatever follows it", () => {
+  for (const waitFor of ["p50 is back near its 10-31 level", "p95 lands, then start", "the queue move (p95)", "p99 then p90 and p75"]) {
+    assert.deepEqual(met(waitFor), [], waitFor);
+    assert.deepEqual(stepIds(waitFor), [], waitFor);
+  }
+});
+
+test("a real step id in a waitFor still counts next to a percentile", () => {
+  assert.deepEqual(met("p1022 lands, then start"), [["p1057", ["p1022 is done"]]]);
+  assert.deepEqual(met("p1022 and p50"), [["p1057", ["p1022 is done"]]]);
+  assert.deepEqual(met("the queue move (p1022)"), [["p1057", ["p1022 is done"]]]);
+  assert.deepEqual(stepIds("ships inside p980's deploy when p95 is under 2 s"), ["p980"]);
+});
+
+test("d9 reads no percentile word as the open step a blocked step waits on", () => {
+  const open = (id: string): PlanItem => ({ id, text: `step ${id}`, status: "doing", children: [] });
+  const blocked: PlanItem = { id: "p1131", text: "brand report", status: "blocked", children: [], waitFor: "p1140 drains, then search_ms p50 under 2 s" };
+  const board = { v: 2, rev: 1, updatedAt: "2026-11-02T07:00:00Z", plan: [open("p50"), open("p1140"), blocked], todos: [] } as unknown as ChatBoard;
+  assert.equal(waitsOnStep(board, "p1131"), "p1140");
+  blocked.waitFor = "drain search_ms p50 is back near its 10-31 level";
+  assert.equal(waitsOnStep(board, "p1131"), undefined);
 });

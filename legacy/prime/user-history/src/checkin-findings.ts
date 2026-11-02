@@ -4,6 +4,7 @@ import { CHECK_IN_DUTY_ID, type Duty, type DutyRunRecord } from "./shared/chat-d
 import { areaWords, BOARD_LIMITS, buildGoal, coversStep, goalBelow, isBuildStep, mergedPrs, mergeStep, namesPr, needsGo, openGoals, openTops, planJob, prNumbers,
   requirementGaps, stepGo, targetMet, walkItems } from "./shared/chat-board.ts";
 import type { BoardOp, ChatBoard, OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
+import { stepIds } from "./shared/step-ids.ts";
 import { upkeepWords } from "./shared/upkeep-title.ts";
 import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, ownerState, owns, parkedBy, plural, quote, type StepMemo, stepOwner, type StepView, waitTarget,
   walk } from "./checkin-steps.ts";
@@ -176,14 +177,11 @@ export const heldLine = ({ goal, steps }: HeldGoal): string => `${goal.id} ${quo
  * not over (Crawler VP 10-13: p144 waited for "hold11 lifts, then the ... runs rerun green for land 34"). A step id after another board's
  * possessive ("the API portal's own p8", "VP of CI's p134", "its p128") is that board's step: p144's "the API portal's own p8" read as this
  * board's done p8. Such an id, and one tied to a chat's session id ("t17 in chat <id>", `waitRefs`), is read on that chat's board (`others`),
- * and the wait is not over while one cannot be read: CI and RepoOps p420's "t17 in chat 01a16213-..." read the chat's own done t17. A `t9` or `p9` right after a name word or inside a ref ("queue cuts t9", "ci/queue-cuts-t9") is a push or version name,
- * not a board id; an id counts standalone or after a small word ("todo t9", "For you t9", "on t18", "p8 and p9"). After a hyphenated name
- * with a number ("land-39 p3") it is a part of that land: Crawler VP 10-16 p535 waited for "land-39 p3 20880ecc10 green" and read done goal p3. A
- * name word in an open bracket still counts, and a percentile followed by a number ("p95 2.5 s", "p99 under 1 s") is a latency: Crawler VP 10-28
- * p1057 waited for "2bdb47f274 (cold p95 2.5 s, from 11 s) ride crawler cut 1024", and two check-ins read done p95. VP of CI 10-14: p135 waited
- * for "run 38414179195 (queue cuts t9 on f0a8ed462f) green", and four check-ins read that t9 as answered todo t9. A clause that names a CI run
- * id and an awaited "green" stays open whatever ids it also names ("is green (run 38289995168)" is a run already seen). A waitFor that names
- * another thread is left out, since its ids may be that thread's. The step is due now, whatever its waitUntil.
+ * and the wait is not over while one cannot be read: CI and RepoOps p420's "t17 in chat 01a16213-..." read the chat's own done t17. The ids
+ * are `stepIds` with `dropAfterName`, so a percentile word ("drain search_ms p50 is back"), an id in a ref or one after a name word ("queue
+ * cuts t9") is no board id. A clause that names a CI run id and an awaited "green" stays open whatever ids it also names ("is green (run
+ * 38289995168)" is a run already seen). A waitFor that names another thread is left out, since its ids may be that thread's. The step is due
+ * now, whatever its waitUntil.
  */
 export interface WaitMet { view: StepView; over: string[]; run?: CiRun }
 const SEE_IDS = /\bsee\s+(?:also\s+)?[pt]\d+(?:\s*(?:,|and)\s*[pt]\d+)*\b/gi;
@@ -191,17 +189,7 @@ const UNCHECKED_NAME = /\b(?:hold|land)[\s-]*\d+\b/i;
 const UNCHECKED_EVENT = /\b(?:lifts?|lifted|green|re-?runs?|lands?|landed|deploy(?:s|ed)?|promote[sd]?)\b/i;
 const CI_RUN_ID = /\b\d{9,}\b/;
 const AWAITED_GREEN = /(?<!\b(?:is|was|are|were|went|turned|stayed)\s+)\bgreen\b/i;
-const ID_WORDS = new Set(["a", "the", "on", "of", "for", "to", "at", "in", "by", "from", "after", "before", "until", "till", "with", "and", "or", "nor",
-  "plus", "then", "see", "also", "via", "once", "when", "while", "both", "is", "are", "was", "were", "answer", "answers", "answered", "await", "awaits",
-  "wait", "waits", "you", "todo", "todos", "step", "steps", "plan", "goal"]);
-const PERCENTILE = /^p(?:50|75|90|95|99|999)$/;
-const MEASURE_AFTER = /^\s*(?:(?:under|below|over|above|at|near|around|of|is|was|from|to|latency)\s+){0,2}[<>=~:]?\s*\d+(?:[.,]\d+)*\s*(?:ms|s|sec|min|%)?\b/i;
-const boardIds = (text: string): string[] => [...new Set([...text.matchAll(/\b[pt]\d+\b/g)].filter(({ 0: id, index }) => {
-  const word = (/(\S+)\s+$/.exec(text.slice(0, index))?.[1] ?? "").replace(/^[("'\u2018\u201c[]+/, "");
-  const after = text.slice(index + id.length);
-  return !/[-/_.]$/.test(text.slice(0, index)) && !/^(?:[-/_]|\.\w)/.test(after) && !(PERCENTILE.test(id) && MEASURE_AFTER.test(after)) &&
-    !(/^[a-z]+$/i.test(word) && !ID_WORDS.has(word.toLowerCase())) && !/^[a-z]+-\d+[a-z]?$/i.test(word);
-}).map(([id]) => id))];
+const boardIds = (text: string): string[] => stepIds(text, { dropAfterName: true });
 export function waitsMet(views: readonly StepView[], board: ChatBoard | null, rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>,
   others: ReadonlyMap<string, ChatBoard | null | undefined> = new Map()): WaitMet[] {
   const index = (of: ChatBoard | null | undefined) => {
@@ -417,7 +405,7 @@ export function goalsToFold(board: ChatBoard | null, facts: readonly JobFact[], 
         const same = job === workJob(goal) ? undefined : first(item => workJob(item) === job);
         return same ? { home: same.goal, why: `${where(same)} has its job ${job}` } : undefined;
       }
-      for (const id of step.waitFor?.match(/\bp\d+\b/g) ?? []) {
+      for (const id of stepIds(step.waitFor ?? "")) {
         const home = homes.find(entry => entry.item.id === id);
         if (home) return { home: home.goal, why: `it waits for ${where(home)}` };
       }

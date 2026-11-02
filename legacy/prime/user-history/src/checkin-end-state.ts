@@ -5,6 +5,7 @@ import type { ChatBoard, OwnerTodo, PlanItem, SessionRow } from "./shared/types.
 import { landWaitCommits, type WakeWatch } from "./checkin-load.ts";
 import { zTime } from "./checkin-goals.ts";
 import { stallWords } from "./shared/stalled-calls.ts";
+import { stepIds } from "./shared/step-ids.ts";
 import { WAKE_LATE_MS } from "./wakes.ts";
 import { ago, capacityWait, clip, firstClause, type JobFact, OPEN, ownerLabel, ownerMoves, waitBoundJob, quote, STEP_STALE_MS, type StepView, stepOwner, waitCarrier, waitsOnOwner, waitTarget, walk } from "./checkin-steps.ts";
 
@@ -56,7 +57,7 @@ export function stepCarriers(board: { plan: readonly PlanItem[] } | null, views:
  * push job on it; the 12:15 d7 run did the same with 'chats move to metal02'.
  */
 export function stepCarrier(item: Pick<PlanItem, "id" | "waitFor">, carriers: ReadonlyMap<string, readonly JobFact[]>): { id: string; owners: readonly JobFact[] } | undefined {
-  for (const id of firstClause(item.waitFor ?? "").match(/\bp\d+\b/g) ?? []) {
+  for (const id of stepIds(firstClause(item.waitFor ?? ""))) {
     const owners = id === item.id ? undefined : carriers.get(id);
     if (owners?.length) return { id, owners };
   }
@@ -272,7 +273,7 @@ export function waitHolds(steps: readonly Pick<PlanItem, "id" | "waitFor">[], he
   for (let grew = true; grew;) {
     grew = false;
     for (const step of steps) {
-      const on = holds.has(step.id) ? undefined : (step.waitFor?.match(/\bp\d+\b/g) ?? []).find(id => id !== step.id && holds.has(id));
+      const on = holds.has(step.id) ? undefined : stepIds(step.waitFor ?? "").find(id => id !== step.id && holds.has(id));
       if (on === undefined) continue;
       holds.set(step.id, holds.get(on)!);
       out.set(step.id, { on, hold: holds.get(on)! });

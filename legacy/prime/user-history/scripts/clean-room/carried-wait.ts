@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { firstClause, planJob } from "../../src/shared/chat-board.ts";
 import type { ChatAgent, ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { nextIds } from "../../src/shared/chat-board.ts";
+import { stepIds } from "../../src/shared/step-ids.ts";
 import { ownedDescendants, readSession, type RunState, type Scenario, type SessionEvent, sessionFile, type Verdict } from "./session-read.ts";
 import { type Delivery, readDelivery, steering, type TrialSession } from "./unrelated-ci-wait.ts";
 
@@ -47,7 +48,7 @@ function owners(item: PlanItem): string[] {
 const live = (agents: readonly ChatAgent[], owner: string): boolean =>
   agents.some(agent => agent.state === "working" && (agent.sessionId === owner || agent.name === owner || agent.job === owner));
 const shape = (entry: { item: PlanItem; parent?: string }): string => `${ownerOf(entry.item) ?? ""}|${entry.item.sessionId ?? ""}|${entry.parent ?? ""}`;
-const waitsOn = (item: PlanItem): string[] => (firstClause(item.waitFor ?? "").match(/\bp\d+\b/g) ?? []).filter(id => id !== item.id);
+const waitsOn = (item: PlanItem): string[] => stepIds(firstClause(item.waitFor ?? "")).filter(id => id.startsWith("p") && id !== item.id);
 
 /** The carried waits of the board at `at`: each open step whose wait names an open step a working job carries, with how long it has waited so. */
 function carriedAt(snaps: readonly Snapshot[], agents: readonly { at: number; list: ChatAgent[] }[], at: number): Carried[] {

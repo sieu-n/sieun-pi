@@ -1,4 +1,5 @@
 import { coversStep, firstClause } from "./chat-board.ts";
+import { stepIds } from "./step-ids.ts";
 import type { ChatBoard, OwnerTodo, PlanItem } from "./types.ts";
 
 /**
@@ -32,7 +33,7 @@ export type NamedChat = { id: string; name: string; archived?: boolean };
  */
 export function waitRefs(text: string, chats: readonly NamedChat[] = []): { refs: WaitRef[]; rest: string } {
   const refs: WaitRef[] = [];
-  const add = (ids: string, chat: string | null): void => { for (const id of ids.match(/[pt]\d+/gi) ?? []) refs.push({ id: id.toLowerCase(), chat }); };
+  const add = (ids: string, chat: string | null): void => { for (const id of stepIds(ids.toLowerCase())) refs.push({ id, chat }); };
   const rest = text
     .replace(CHAT_THEN_IDS, (_, chat: string, ids: string) => { add(ids, chat.toLowerCase()); return " "; })
     .replace(IDS_THEN_CHAT, (_, ids: string, chat: string) => { add(ids, chat.toLowerCase()); return " "; })

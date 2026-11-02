@@ -36,6 +36,7 @@ import { checkInSettings } from "../../src/checkin-settings.ts";
 import { CLEAN_ROOM_CHATS_FILE } from "../../src/chat-corrections.ts";
 import { peerReach, readTailscaleStatus } from "../../src/host-reach.ts";
 import { type AwayHost, hostHolds } from "../../src/shared/host-hold.ts";
+import { stepIds } from "../../src/shared/step-ids.ts";
 
 /**
  * The precheck of the AI harness chat's Chat system duty (d9). The owner on 10-19 (msg mvfb7zt0): "plan should be tasks all eventually clear -
@@ -502,7 +503,7 @@ export function waitsOnStep(board: ChatBoard | null, id: string): string | undef
   walk(board?.plan ?? [], item => { items.set(item.id, item); });
   const step = items.get(id);
   if (step?.status !== "blocked") return undefined;
-  return (step.waitFor?.match(/\bp\d+\b/g) ?? []).find(named => named !== id && OPEN.has(items.get(named)?.status ?? "done"));
+  return stepIds(step.waitFor ?? "").find(named => named !== id && OPEN.has(items.get(named)?.status ?? "done"));
 }
 
 /** The push d9 sends a down chat's root job straight: the chat, the job's session and name, and the stuck steps it owns. */
