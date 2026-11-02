@@ -253,7 +253,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       set: async (id, change, actor) => { const view = await chats.setCheckIn(id, change, actor); if (view) await catalog.notify(); return view; } } });
   // A gone job's leftovers end on the box whose daemon runs its folder's session; a replay serve stops nothing anywhere.
   const jobEnds = hostLeftovers({ local: replay ? dryLeftoverSource : leftoverSource, remote: replay ? undefined : sshLeftovers, self: () => catalog.selfHostName(),
-    hostNamed: name => catalog.remoteHosts().find(({ host }) => host.name === name)?.host ?? null,
+    hostNamed: name => catalog.remoteHosts().find(({ host }) => host.name === name)?.host ?? null, online: async host => (await reach.reach(host.name)).online,
     hostOf: id => { const name = catalog.hostOf(id); return name ? catalog.remoteHosts().find(({ host }) => host.name === name)?.host ?? null : null; } });
   // Only the serve that owns the live chats writes the turn queues' lead lists: each box gets the chats it runs, this one locally, the others
   // through their relays.
@@ -270,7 +270,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       briefChecks: briefCheckRecord(join(dataDir, "brief-checks.json")), deletedJobs: deletedJobRecord(join(dataDir, "deleted-jobs.json")), quietJobs: quietJobRecord(join(dataDir, "quiet-jobs.json")),
       heldNotices: heldNoticeRecord(join(dataDir, "held-notices.json")), notices, cancels: jobCancelRecord(join(dataDir, JOB_CANCELS_FILE)),
       leftovers: (dir, session) => jobEnds.leftovers(dir, session),
-      deletedLeftovers: chat => jobEnds.deleted(chat),
+      deletedLeftovers: (chat, away) => jobEnds.deleted(chat, away),
       waking: session => waking(join(dataDir, "wakes"), session), relayed: relays, updating: () => primeUpdateRunning(agentDir, socketPath), wakes: now => pendingWakes(join(dataDir, "wakes"), now), stalls,
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
       // resume_paused.py hands its continues to the live chat service's agent outbox, so a replay serve only reads the cut jobs.

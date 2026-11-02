@@ -379,8 +379,11 @@ export interface CheckInSource {
    * processes in them, once the cleanup deleted or archived it. Absent: nothing is stopped.
    */
   leftovers?: (dir: string, session?: string) => Promise<Leftovers>;
-  /** Stops what the subagents the daemon marked deleted under a chat left (`deletedFolders`, `endLeftovers`). Absent: no sweep. */
-  deletedLeftovers?: (chat: string) => Promise<Leftovers>;
+  /**
+   * Stops what the subagents the daemon marked deleted under a chat left (`deletedFolders`, `endLeftovers`). Absent: no sweep. `away` holds the
+   * boxes this pass could not reach; a chat on one of them gives null with no try.
+   */
+  deletedLeftovers?: (chat: string, away: Set<string>) => Promise<Leftovers | null>;
   /** Whether a session holds a pending `board.wake` (src/wakes.ts); the cleanup keeps such a job, since its wake would reopen it. */
   waking?: (session: string) => Promise<boolean>;
   /** The messages sent to stopped subagents through their parents (`<data dir>/relayed.json`); the cleanup keeps a job owed one. Absent: none. */

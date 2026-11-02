@@ -848,12 +848,23 @@ const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * since a Mac record could not name a box path.
  */
 export function hostLeftovers(options: { local: LeftoverSource; hostOf: (session: string) => Host | null; remote?: RemoteLeftovers | undefined;
-  self?: () => string | null; hostNamed?: (name: string) => Host | null }): {
-  leftovers: (dir: string, session?: string) => Promise<Leftovers>; deleted: (chat: string) => Promise<Leftovers>;
+  self?: () => string | null; hostNamed?: (name: string) => Host | null; online?: (host: Host) => Promise<boolean> }): {
+  leftovers: (dir: string, session?: string) => Promise<Leftovers>; deleted: (chat: string, away?: Set<string>) => Promise<Leftovers | null>;
 } {
   const { local, hostOf, remote } = options;
-  const there = async (host: Host, args: readonly string[]): Promise<Leftovers> => {
-    const left = await remote!(host, args);
+  // A box Tailscale reads offline, or whose ssh could not connect, joins `away`, and the rest of the pass leaves it alone.
+  const reached = async (host: Host, away: Set<string>, args: readonly string[]): Promise<Leftovers> => {
+    if (options.online && !await options.online(host).catch(() => true)) {
+      away.add(host.name);
+      throw new HostUnreachable(`job leftovers on ${host.name}: ${host.name} is offline`);
+    }
+    try { return await remote!(host, args); } catch (error) {
+      if (error instanceof HostUnreachable) away.add(host.name);
+      throw error;
+    }
+  };
+  const there = async (host: Host, args: readonly string[], away = new Set<string>()): Promise<Leftovers> => {
+    const left = await reached(host, away, args);
     const stopped = left.elsewhere?.length ? await local.stopUnits(left.elsewhere).catch(() => []) ?? [] : [];
     const self = options.self?.() ?? null;
     const folders = (left.sessions ?? []).filter(session => SESSION.test(session)).flatMap(session => jobFolders(session, homedir()));
@@ -866,13 +877,13 @@ export function hostLeftovers(options: { local: LeftoverSource; hostOf: (session
       ...removedContainers.length ? { containers: removedContainers } : {} };
   };
   // The paths the records name on a third box, such as the Mac's for a box job that made trees there over ssh, end on that box.
-  const far = async (left: Leftovers): Promise<Leftovers> => {
+  const far = async (left: Leftovers, away = new Set<string>()): Promise<Leftovers> => {
     const self = options.self?.() ?? null;
     const owned = [...left.owned];
     const kept = [...left.kept ?? []];
     for (const [name, paths] of Object.entries(left.away ?? {})) {
-      const host = name !== self && remote ? options.hostNamed?.(name) ?? null : null;
-      const answer = host && paths.length ? await remote!(host, ["away", ...paths]).catch(() => null) : null;
+      const host = name !== self && remote && !away.has(name) ? options.hostNamed?.(name) ?? null : null;
+      const answer = host && paths.length ? await reached(host, away, ["away", ...paths]).catch(() => null) : null;
       owned.push(...answer?.owned ?? []);
       kept.push(...answer?.kept ?? []);
     }
@@ -884,12 +895,22 @@ export function hostLeftovers(options: { local: LeftoverSource; hostOf: (session
       const host = remote && ARTIFACT_PATH.test(path) ? hostOf(path.split("/")[0]!) : null;
       return far(host ? await there(host, ["end", path, ...session && SESSION.test(session) ? [session] : []]) : await endLeftovers(local, dir, session));
     },
-    deleted: async chat => {
+    deleted: async (chat, away = new Set<string>()) => {
       const host = remote && SESSION.test(chat) ? hostOf(chat) : null;
-      return far(host ? await there(host, ["deleted", chat]) : await endLeftovers(local, await deletedFolders(join(artifactsRoot(), chat))));
+      if (host && away.has(host.name)) return null;
+      return far(host ? await there(host, ["deleted", chat], away) : await endLeftovers(local, await deletedFolders(join(artifactsRoot(), chat))), away);
     },
   };
 }
+
+/**
+ * ssh could not reach the box. Each such try waits out ConnectTimeout=10: from 10-23 to 11-02 the Mac was offline for hours at a time, and each
+ * 10 min sweep of deleted jobs sshed to it once per Mac chat, 59 tries of 10 s back to back, 37,233 failed tries in service.log.
+ */
+export class HostUnreachable extends Error {}
+
+/** ssh's own exit code for a failure of its own, such as a connect timeout, as against the remote command's. */
+const SSH_FAILED = 255;
 
 /**
  * The CLI over ssh in the other box's own sieun-pi checkout (`sieun-pi source`), as Settings > Tools and skills runs its checks there
@@ -900,7 +921,8 @@ export const sshLeftovers: RemoteLeftovers = (host, args) => new Promise((resolv
   const command = `PATH="$HOME/.local/bin:$PATH"; s="$(sieun-pi source)"; { cd "$s/legacy/prime/user-history" 2>/dev/null || cd "$s/components/user-history"; } && exec node --import tsx src/job-leftovers.ts ${args.map(arg => `'${arg.replace(/'/g, "'\\''")}'`).join(" ")}`;
   hostExecFile("ssh", ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host.ssh, command], { maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
     try { if (!error) { resolve(JSON.parse(String(stdout).trim().split("\n").at(-1) ?? "") as Leftovers); return; } } catch { /* reported below */ }
-    reject(new Error(`job leftovers on ${host.name}: ${(String(stderr) || String(stdout)).replace(/\s+/g, " ").trim().slice(0, 300) || error?.message || "no answer"}`));
+    const message = `job leftovers on ${host.name}: ${(String(stderr) || String(stdout)).replace(/\s+/g, " ").trim().slice(0, 300) || error?.message || "no answer"}`;
+    reject(error?.code === SSH_FAILED ? new HostUnreachable(message) : new Error(message));
   });
 });
 

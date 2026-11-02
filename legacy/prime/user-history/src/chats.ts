@@ -1382,14 +1382,18 @@ export class Chats {
   private async sweepDeleted(): Promise<void> {
     if (!this.source.deletedLeftovers) return;
     const archived = new Set(await this.mine([...await this.archivedIds()]).catch(() => []));
+    const away = new Set<string>();
+    let skipped = 0;
     for (const id of new Set([...this.chatIds, ...archived])) {
       const name = `chat ${id.slice(0, 8)}${this.chatIds.has(id) ? "" : " (archived)"}`;
-      const left: Leftovers = await this.source.deletedLeftovers(id).catch(error => {
+      const left: Leftovers | null = await this.source.deletedLeftovers(id, away).catch(error => {
         this.log(`${name}: deleted job leftovers: ${error instanceof Error ? error.message : String(error)}`);
         return { stopped: [], tabs: 0, copies: [], artifacts: [], owned: [], units: [] };
       });
+      if (!left) { skipped++; continue; }
       if (left.stopped.length || left.tabs || left.copies.length || left.artifacts.length || left.owned.length || left.units.length || left.kept?.length || left.containers?.length) this.log(`${name}: deleted jobs ended; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
     }
+    if (skipped) this.log(`chats: deleted job leftovers: could not reach ${[...away].join(", ")}, so ${skipped} more chats there wait for the next pass`);
   }
 
   private messages(id: string): readonly ThreadMessage[] | undefined { return this.threads.state?.(id)?.messages; }
