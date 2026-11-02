@@ -1763,7 +1763,7 @@
   "box": [
    {
     "panel": "pool_claude",
-    "shared": "need a new sign-in \\(|^no \\S+ account is usable"
+    "shared": "need a new sign-in \\(|^no \\S+ account is usable|, whose sign-in reached "
    }
   ],
   "note": "The Mac reads the box's pi-pool through ~/.config/pi-pool/remote.json, so an account that needs a new sign-in or a pool with no usable account is the same on both hosts; the Skills and tools duty flags it."
@@ -1779,7 +1779,7 @@
   "box": [
    {
     "panel": "pool_codex",
-    "shared": "need a new sign-in \\(|^no \\S+ account is usable"
+    "shared": "need a new sign-in \\(|^no \\S+ account is usable|, whose sign-in reached "
    }
   ],
   "note": "The Mac reads the box's pi-pool through ~/.config/pi-pool/remote.json, so an account that needs a new sign-in or a pool with no usable account is the same on both hosts; the Skills and tools duty flags it."

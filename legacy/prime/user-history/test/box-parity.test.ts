@@ -107,6 +107,7 @@ test("the pi-pool panel rows take an account that needs a new sign-in as shared,
   const off = (codex: string, search?: string) => judgeRows(rows, mac, box, fail(codex, search)).off.map(verdict => verdict.row.id).sort();
   assert.deepEqual(off("fhnyq29tw5@privaterelay.appleid.com need a new sign-in (2 of 3 usable, 0 off)"), []);
   assert.deepEqual(off("no openai-codex account is usable and none resets within 24 h (0 of 3 usable, 0 off)"), []);
+  assert.deepEqual(off("claude4@slack.green, whose sign-in reached a passkey prompt at 10-30 20:11Z (0 of 1 usable)"), []);
   assert.deepEqual(off("pi-pool ls exited 127: command not found"), ["tools-panel-check-pool-codex"]);
   assert.deepEqual(off("pi-pool ls exited 127: command not found", "Virev search error (500); Google is down on the Virev search backend"), ["tools-panel-check-pool-codex", "tools-panel-check-websearch-query"]);
 });
