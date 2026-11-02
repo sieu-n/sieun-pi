@@ -13,7 +13,7 @@ const saved = process.env.HOME;
 process.env.HOME = first;
 const { copyPath, mirrorDir, mirrorPath, remotePath } = await import("../src/host-catalogs.ts");
 const { HostBridge, bridgeDir, parseHosts } = await import("../src/hosts.ts");
-const { artifactsRoot, ownedRoots } = await import("../src/job-leftovers.ts");
+const { artifactsRoot, clearedFile, ownedRoots } = await import("../src/job-leftovers.ts");
 const { wikiContentDir } = await import("../src/chat-wiki.ts");
 const { orphanServicesDir } = await import("../src/orphan-services.ts");
 
@@ -31,6 +31,7 @@ test("a module loaded under one HOME writes under the HOME of the test that runs
     bridge: new HostBridge(registry, { self: registry.hosts[0]! }).socketPath("mac"),
     bridgeDir: bridgeDir(),
     artifacts: artifactsRoot(),
+    cleared: clearedFile(),
     owned: ownedRoots().filter(root => root !== "/tmp").join(" "),
     wiki: wikiContentDir(),
     orphans: orphanServicesDir(),

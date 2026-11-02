@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { hostExecFile } from "./spawn-host.ts";
 import { existsSync } from "node:fs";
-import { appendFile, lstat, mkdir, open, readdir, readFile, readlink, unlink, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, open, readdir, readFile, readlink, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, normalize, relative } from "node:path";
 import { loadHosts, selfHost, type Host } from "./hosts.ts";
@@ -621,9 +621,49 @@ console.log("LEFTOVER_CLOSED " + __leftoverIds.filter(id => __leftoverOpen.has(i
   });
 }
 
-/** Transcripts whose wiki session folders and session-artifacts copies were already cleared, so the sweep of deleted jobs reads each transcript once. */
-const copiesCleared = new Set<string>();
-const artifactsCleared = new Set<string>();
+/** The file where the sweep of deleted jobs keeps the transcripts it already cleared (`clearedTranscripts`). */
+export const clearedFile = (): string => join(homedir(), ".local", "state", "sieun-pi", "leftovers-cleared.json");
+
+export type ClearedKind = "copies" | "artifacts";
+export interface ClearedTranscripts {
+  /** The transcripts of `transcripts` not cleared yet for `kind`, now marked cleared and saved to the file. */
+  fresh(kind: ClearedKind, transcripts: readonly string[]): Promise<string[]>;
+}
+
+/**
+ * Transcripts whose wiki session folders (`copies`) and session-artifacts copies (`artifacts`) were already cleared, kept in `file` so each one
+ * is read once on this box, not once per service start. A gone job's transcript does not change. When only a Set in memory held them, each
+ * start read every deleted job's transcript again: in the CPU profile of the run started at 01:33:46Z on 11-02, openedWikiSessions held the main
+ * thread 6.6 s in the first 4 minutes and 0.2 s in the 3 hours after, while the main thread ran 89.7 s of the first 3 minutes against 70.2 s of
+ * 3 minutes at 02:30Z. An unreadable file reads as empty, so the next sweep reads everything once more.
+ */
+export function clearedTranscripts(file = clearedFile()): ClearedTranscripts {
+  let sets: Promise<Record<ClearedKind, Set<string>>> | null = null;
+  let saving: Promise<void> = Promise.resolve();
+  const list = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  const load = () => sets ??= readFile(file, "utf8").then(text => {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    return { copies: new Set(list(parsed.copies)), artifacts: new Set(list(parsed.artifacts)) };
+  }).catch(() => ({ copies: new Set<string>(), artifacts: new Set<string>() }));
+  return {
+    async fresh(kind, transcripts) {
+      const known = await load();
+      const fresh = transcripts.filter(transcript => !known[kind].has(transcript));
+      if (!fresh.length) return [];
+      for (const transcript of fresh) known[kind].add(transcript);
+      const temp = `${file}.${process.pid}.tmp`;
+      saving = saving.then(async () => {
+        await mkdir(dirname(file), { recursive: true });
+        await writeFile(temp, JSON.stringify({ copies: [...known.copies], artifacts: [...known.artifacts] }));
+        await rename(temp, file);
+      }).catch(() => {});
+      await saving;
+      return fresh;
+    },
+  };
+}
+let cleared: ClearedTranscripts | null = null;
+const clearedNow = (): ClearedTranscripts => cleared ??= clearedTranscripts();
 
 /** The real source: the footprint helper, process.kill, `aside repl`, timers that do not hold the service open and `removeRepoCopies`. */
 export const leftoverSource: LeftoverSource = {
@@ -635,11 +675,7 @@ export const leftoverSource: LeftoverSource = {
   kill: (pid, signal) => { process.kill(pid, signal); },
   closeTabs: ids => closeAsideTabs(ids),
   later: (ms, run) => { setTimeout(run, ms).unref(); },
-  removeCopies: transcripts => {
-    const fresh = transcripts.filter(file => !copiesCleared.has(file));
-    for (const file of fresh) copiesCleared.add(file);
-    return removeRepoCopies(fresh);
-  },
+  removeCopies: async transcripts => removeRepoCopies(await clearedNow().fresh("copies", transcripts)),
   inside: async dirs => {
     const answer = await helper(["--inside"], dirs.join("\n") + "\n") as { inside?: InsideProcess[] };
     return Array.isArray(answer?.inside) ? answer.inside : [];
@@ -666,17 +702,17 @@ export const leftoverSource: LeftoverSource = {
     return removed;
   },
   writeOwned: (file, record) => writeFile(file, JSON.stringify(record)),
-  artifactCopies: transcripts => {
-    const fresh = transcripts.filter(file => !artifactsCleared.has(file));
-    for (const file of fresh) artifactsCleared.add(file);
-    return fresh.length ? artifactCopies(fresh) : Promise.resolve([]);
+  artifactCopies: async transcripts => {
+    const fresh = await clearedNow().fresh("artifacts", transcripts);
+    return fresh.length ? artifactCopies(fresh) : [];
   },
   kernelStates: transcripts => kernelStates(transcripts),
   stopServices: sessions => stopOrphanServices(sessions),
 };
 
-/** A replay serve's source (`serve --replay-daemon`): the same reads, with no kill, unit stop, tab close, delete or record write, and a tab count of -1 so no tab record is emptied. */
+/** A replay serve's source (`serve --replay-daemon`): the same reads, with no kill, unit stop, tab close, delete, record write or cleared-file write, and a tab count of -1 so no tab record is emptied. */
 export const dryLeftoverSource: LeftoverSource = { ...leftoverSource, kill: () => {}, closeTabs: async () => -1, removeCopies: async () => [], removeTmp: async () => [],
+  artifactCopies: transcripts => artifactCopies(transcripts),
   stopContainers: async () => [], stopUnits: async () => [], writeOwned: async () => {} };
 
 /**
