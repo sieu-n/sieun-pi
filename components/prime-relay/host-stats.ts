@@ -798,9 +798,26 @@ export async function linuxUsable(now = Date.now(), cut?: Promise<unknown>, unre
     ...sides ? { cpuCores: sides } : {}, ...split ? { harnessSplit: split } : {} };
 }
 
-/** What a box reads for its usability: the raw pressure feed on macOS (the chat service parses it), the LinuxUsable reading on Linux. */
-export type UsableRaw = { platform: "darwin"; feed: unknown } | { platform: "linux"; reading: LinuxUsable | null };
+/** A laptop's battery: its charge in percent and whether it draws from AC. */
+export interface Battery { pct: number; ac: boolean }
+/** The battery in `pmset -g batt` output; null when it names no internal battery, as on a desktop Mac. */
+export function parsePmsetBatt(text: string): Battery | null {
+  const source = /Now drawing from '([^']+)'/.exec(text)?.[1];
+  const pct = /InternalBattery-\d+[^\n]*?\t(\d{1,3})%;/.exec(text)?.[1];
+  return source === undefined || pct === undefined ? null : { pct: Number(pct), ac: source === "AC Power" };
+}
+/** This Mac's battery, or null when pmset fails or the Mac has none. */
+export const macBattery = (): Promise<Battery | null> => run("/usr/bin/pmset", ["-g", "batt"]).then(out => parsePmsetBatt(out.stdout), () => null);
+
+/**
+ * What a box reads for its usability: the raw pressure feed and the battery on macOS (the chat service parses both), the LinuxUsable reading
+ * on Linux.
+ */
+export type UsableRaw = { platform: "darwin"; feed: unknown; battery: Battery | null } | { platform: "linux"; reading: LinuxUsable | null };
 export async function usableRaw(now = Date.now()): Promise<UsableRaw> {
-  if (process.platform === "darwin") return { platform: "darwin", feed: await readFile(PRESSURE_FEED, "utf8").then(text => JSON.parse(text) as unknown).catch(() => null) };
+  if (process.platform === "darwin") {
+    const [feed, battery] = await Promise.all([readFile(PRESSURE_FEED, "utf8").then(text => JSON.parse(text) as unknown).catch(() => null), macBattery()]);
+    return { platform: "darwin", feed, battery };
+  }
   return { platform: "linux", reading: await linuxUsable(now) };
 }

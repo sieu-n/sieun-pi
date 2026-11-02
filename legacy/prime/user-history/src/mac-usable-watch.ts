@@ -7,7 +7,7 @@ import { type ChatLatency, takeLatency } from "./chat-latency.ts";
 import { type PeerReach, seenAgo } from "./host-reach.ts";
 import { listOrphanServices, type OrphanServiceLine } from "./orphan-services.ts";
 import { bounded } from "../../../../components/prime-relay/kernel-read.ts";
-import { CPU_SIDES, type CpuSides, FEED_FRESH_MS, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable, type MemoryGroup, memoryByGroup, type SchedstatMark, schedstatMark, seedSchedstat } from "../../../../components/prime-relay/host-stats.ts";
+import { type Battery, CPU_SIDES, type CpuSides, FEED_FRESH_MS, macBattery, PRESSURE_FEED, groupOf, linuxUsable, type LinuxUsable, type MemoryGroup, memoryByGroup, type SchedstatMark, schedstatMark, seedSchedstat } from "../../../../components/prime-relay/host-stats.ts";
 import { type AgentCounts, agentCounts, agentState } from "./agent-states.ts";
 import { busyAncestors, type UnloadRow } from "./idle-unload.ts";
 import { QUIET_MINUTES } from "./quiet-minutes.ts";
@@ -42,7 +42,9 @@ export interface UsableReading { pressureLevel: number; swapoutsPerS: number; ke
   /** The feed's FEED_OWNERS largest owners by footprint, so a minute names the processes behind it; absent when the feed has none. */
   owners?: FeedOwner[];
   /** Every feed owner summed by Settings > Hosts' groups (components/prime-relay/host-stats.ts), in GB; absent on lines written before 10-18 01:40Z. */
-  groups?: Partial<Record<MemoryGroupId, number>> }
+  groups?: Partial<Record<MemoryGroupId, number>>;
+  /** The Mac's battery from pmset (host-stats.ts `macBattery`); absent on a Mac with none, when pmset failed and on lines written before 11-02. */
+  battery?: Battery }
 /** One feed owner: `chat:<root>`, `pm2:<app>`, `browser:<name>` or `other:<name>`, its label and its footprint. */
 export interface FeedOwner { owner: string; label: string; gb: number }
 /** Owners kept a minute: the feed lists about 50, and the largest 8 held 41 of its 57 GB at 08:52Z on 10-15. */
@@ -96,7 +98,7 @@ export function unusable(reading: HostUsable): UsableMiss[] {
 /** This box's reading now: ops guy's feed on macOS, the kernel's pressure, swap and load on Linux. */
 /** This box's reading now, by `cut` (kernel-read.ts `bounded`), with each read the cut passed named in `unread`. */
 export const readUsable = async (now: number, cut?: Promise<unknown>, unread?: string[]): Promise<HostUsable | null> => process.platform === "darwin"
-  ? await bounded("feed", () => readPressureFeed(now), cut, unread) ?? null : await linuxUsable(now, cut, unread);
+  ? await bounded("feed", async () => withBattery(await readPressureFeed(now), await macBattery()), cut, unread) ?? null : await linuxUsable(now, cut, unread);
 
 const count = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 /**
@@ -124,10 +126,16 @@ export function parseHarnessSplit(value: unknown): HarnessSplit | undefined {
   return { own: value.own, rigs: value.rigs, top };
 }
 
+/** `reading` with `battery` when that is a charge from 0 to 100 and an AC flag; `reading` alone otherwise. */
+export function withBattery(reading: UsableReading | null, battery: unknown): UsableReading | null {
+  if (!reading || !isRecord(battery) || !count(battery.pct) || battery.pct > 100 || typeof battery.ac !== "boolean") return reading;
+  return { ...reading, battery: { pct: battery.pct, ac: battery.ac } };
+}
+
 /** Another box's reading as its relay sent it (host-stats.ts `usableRaw`), checked at the edge; null when absent or malformed. */
 export function parseUsableRaw(value: unknown, now: number): HostUsable | null {
   if (!isRecord(value)) return null;
-  if (value.platform === "darwin") return parseFeed(value.feed, now);
+  if (value.platform === "darwin") return withBattery(parseFeed(value.feed, now), value.battery);
   return value.platform === "linux" ? parseLinuxReading(value.reading) : null;
 }
 

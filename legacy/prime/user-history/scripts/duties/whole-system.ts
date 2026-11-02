@@ -13,7 +13,7 @@ import { type PoolQueue, readPoolQueue, slotParkOf } from "../../src/slot-park.t
 import { stepSessions, unmovedSteps } from "../../src/unmoved-steps.ts";
 import { waitHolds } from "../../src/checkin-end-state.ts";
 import type { ChatBoard, MemoryGroupId, PlanItem } from "../../src/shared/types.ts";
-import { type AgentLine, type AsideTabs, type HostUsable, LINGER_MS, type LingerLine, isLinuxReading, parseLinuxReading, readWatch, type StrayServerLine, type IdlePm2Line, type TestBrowserLine, UNREAD_AT_STOP, unusable, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
+import { type AgentLine, type AsideTabs, type HostUsable, LINGER_MS, type LingerLine, isLinuxReading, parseLinuxReading, readWatch, type StrayServerLine, type IdlePm2Line, type TestBrowserLine, UNREAD_AT_STOP, unusable, type UsableReading, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
 import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-minutes.ts";
 import type { HungCall } from "../../src/hung-calls.ts";
 import type { StoppedCall } from "../../src/hung-stop.ts";
@@ -119,6 +119,18 @@ export function offlineAround(watch: readonly WatchLine[], box: string, from: nu
  * to its sessions, and Tailscale first read it offline at 01:41:30Z, last seen 1 min before; d7 counted 01:38Z and 01:39Z dirty.
  */
 const OFFLINE_LAG_READS = 3;
+
+/**
+ * A Mac on battery at this charge or less is out of service that minute, like a box Tailscale reads offline, so its daemon calls are left
+ * out. On 11-02 the MacBook Pro ran on battery from 10:54Z, read 7% at 13:58Z with its workers running smoothly and 4% at 14:01:13Z (its pmset
+ * log), both its Prime workers' event loops stalled 5 to 38 s with no span from 14:01:51Z, opens to it took 50 to 57 s at 14:05Z and 14:06Z,
+ * and the stalls ended when it took AC at 14:07:39Z, at 2%.
+ */
+export const FLAT_BATTERY_PCT = 4;
+export const flatBattery = (usable: HostUsable | null): UsableReading["battery"] => {
+  const battery = usable && !isLinuxReading(usable) ? usable.battery : undefined;
+  return battery && !battery.ac && battery.pct <= FLAT_BATTERY_PCT ? battery : undefined;
+};
 
 /** The boxes of a watch line, the writer first. Since 04:20Z on 10-18 the chat runs on us-metal02 and reads the Mac through its relay. */
 export function hostViews(line: WatchLine): HostView[] {
@@ -1403,10 +1415,11 @@ export function measure(input: Inputs): PrecheckOutput {
   // outbox handshake timeouts made every minute a daemon fault while us-metal02 read usable in all of them. A line whose box read both its
   // gateways down (`uplinkDark`, src/uplink-dark.ts) had no network, so every box in it is offline that minute: from 14:28Z to 14:42Z on 10-27
   // the provider dropped both of us-metal02's address blocks, its Tailscale still read the Mac online, and d7 counted 8 minutes dirty from
-  // handshake timeouts to the Mac.
+  // handshake timeouts to the Mac. A Mac on a flat battery (`flatBattery`) is offline that minute too.
   const offlineMin = new Map<string, number[]>();
   let offlineAny = 0, offlineFaults = 0;
   const flappedMin: string[] = [];
+  const flatMin: string[] = [];
   const darkMin: number[] = [];
   let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, cellWait = 0, harness = 0, rigMin = 0, busyMin = 0, ciMin = 0, other = 0, unattributed = 0, daemonFail = 0, primeMin = 0;
   const faultName = chatNamer(input.chats, input.named, input.listed);
@@ -1431,9 +1444,11 @@ export function measure(input: Inputs): PrecheckOutput {
     else for (const view of hostViews(line)) {
       const count = hostCount(view.name);
       const flapped = !view.offline && !view.usable && (UNREACHED.test(view.error ?? "") || view.error === UNREAD_AT_STOP) && offlineAround(input.watch, view.name, from, to);
-      if (view.offline || flapped || line.uplinkDark) {
+      const flat = flatBattery(view.usable);
+      if (view.offline || flapped || line.uplinkDark || flat) {
         count.offline++; offline.add(view.name); offlineMin.set(view.name, [...offlineMin.get(view.name) ?? [], from]);
         if (flapped) flappedMin.push(`${clock(from)} ${view.name}`);
+        else if (flat && !view.offline && !line.uplinkDark) flatMin.push(`${clock(from)} ${view.name} at ${flat.pct}%`);
         continue;
       }
       if (!view.usable && view.error === UNREAD_AT_STOP && usableAround(input.watch, view.name, from, to)) { count.usable++; continue; }
@@ -1607,7 +1622,8 @@ export function measure(input: Inputs): PrecheckOutput {
     "Read ~/.prime/agent/orphan-services/<session>.json and the service log's \"idle unload: <session>\" lines." });
   if (offlineMin.size) flagged.push({ kind: "offline_minutes", excerpt: [...offlineMin].map(([name, at]) => `${name} offline ${spans(at)}`).join("; ") +
     (flappedMin.length ? `; ${flappedMin.length} of these the relay could not read next to a minute Tailscale read offline (${flappedMin.join(", ")})` : "") +
-    (darkMin.length ? `; ${darkMin.length} of these the watch's box read both its gateways down, so no box was reachable (${spans(darkMin)})` : "") });
+    (darkMin.length ? `; ${darkMin.length} of these the watch's box read both its gateways down, so no box was reachable (${spans(darkMin)})` : "") +
+    (flatMin.length ? `; ${flatMin.length} of these a Mac ran on battery at ${FLAT_BATTERY_PCT}% or less, which stalls its workers (${flatMin.join(", ")})` : "") });
   for (const wait of slotWaits) {
     const fault = wait.fault;
     flagged.push({ kind: "slot_wait_timeout", excerpt: `${clock(fault.at)} ${faultName(fault) ?? `session ${fault.session!.slice(0, 8)}`} on ${fault.host}: ${fault.what}, ` +
