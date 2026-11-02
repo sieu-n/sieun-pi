@@ -167,6 +167,12 @@ test("the run reads every metric, and a failed source misses instead of reading 
   assert.equal(broken.flagged![0]!.kind, "unmeasured");
 });
 
+test("the backlog line names every backlogged queue, so the fix job sees each consumer (11-02 10:1xZ: 7 backlogs, the line cut after 3)", () => {
+  const queues = Array.from({ length: 7 }, (_, i) => ({ family: "kafka lag", name: `instagram.observed/consumer-number-${i}`, now: 4_600_000, ago6h: 1_300_000, slope6h: 1e5 }));
+  const line = report(base({ board: BOARD, queues }), METRICS).flagged!.find(item => item.kind === "backlog")!.excerpt;
+  for (const queue of queues) assert.ok(line.includes(queue.name), queue.name);
+});
+
 test("No data panels under prod's deploy lock are left out of crawler_panels_blank, and errors still count (10-24 22:47Z, metal-deploy 40139546438)", () => {
   const panels: ThroughputData["panels"] = [
     { dashboard: "Crawler · Health", title: "Write backlog", state: "no data", detail: "" },
