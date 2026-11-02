@@ -18,7 +18,7 @@ Never batch the edits and check once at the end. Run the check per unit even whe
 
 ## Delivery
 
-- Put the failing test in the first commit and the fix in the next one, so a reviewer sees the bug and then the proof.
+- When the repo's own test rules ask for a test, put the failing test in the first commit and the fix in the next one, so a reviewer sees the bug and then the proof.
 - Use the same order for other work: the deletion before the reshape, the baseline capture before the change, and the scaffold before the feature.
 - Make each commit build on its own, so a reviewer can check out any commit in the stack.
 

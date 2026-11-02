@@ -24,7 +24,7 @@ Read the callers, callees, types, and sibling modules to see which layer owns th
 ## Verification
 
 - Check that tests cover behavior, not implementation details.
-- Check that a bug fix has a test for the bug.
+- Check that a bug fix is proven by the test the repo's own test rules ask for, in the file they name, and flag a new test file beside one that already tests the same module.
 - Check that a change to an integration boundary tests the full path.
 - Flag checks that read a proxy, such as a file mtime or cached state, instead of the real value, per `principle-prove-it-works`.
 - Flag async or delegated work that trusts a self-report instead of the output artifact.

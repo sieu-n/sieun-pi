@@ -6,7 +6,7 @@ Delegate the investigation and the fix to subagents, and stay in the lead. Every
 2. Binary-search the cause. Seed hypotheses with the how skill over the subsystem and the why skill for regression history. Take the split that removes the most of the search space, get runtime evidence, and rule hypotheses out. Add logging when program state is unclear. Confirm the surviving mechanism with runtime evidence before you design the fix.
 3. Plan the fix. Use the architect skill if it crosses a function boundary. Delegate the change to a subagent with a narrow scope, using the bug-fix role from the model policy in Subagents. Review the diff.
 4. Verify on the same surface that the original repro now passes. An inconclusive result or a different surface is not a pass. Unit tests alone do not prove the bug is gone.
-5. Commit the failing repro before the fix when a cheap local test exists. Skip the test when it would be expensive or unclear.
+5. Commit the failing repro before the fix when the repo's own test rules ask for a test and a cheap local one exists, in the file those rules name. Skip the test when it would be expensive or unclear.
 6. Run `playbooks/opening-a-pr.md`.
 
 Reply with what was broken, the root cause, the fix, and how you verified it. Paste the failing and passing repro output.
