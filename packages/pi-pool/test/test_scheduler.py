@@ -850,7 +850,7 @@ class Cli(unittest.TestCase):
 
 
 class SwitchLog(unittest.TestCase):
-    def run_vend(self, state, accounts, key=KEY):
+    def run_vend(self, state, accounts, key=KEY, provider=P):
         logged = []
         with contextlib.ExitStack() as stack:
             for module, name, value in ((base, "config", CFG), (registry, "load_index", accounts),
@@ -865,7 +865,7 @@ class SwitchLog(unittest.TestCase):
             stack.enter_context(unittest.mock.patch.object(base, "log", side_effect=lambda e, **kw: logged.append((e, kw))))
             out = io.StringIO()
             stack.enter_context(contextlib.redirect_stdout(out))
-            vending.vend(P)
+            vending.vend(provider)
         return logged, out.getvalue()
 
     def test_a_move_logs_why_and_the_scores(self):
@@ -908,6 +908,21 @@ class SwitchLog(unittest.TestCase):
                     self.assertGreater(wait.exception.slot_at, NOW)
                 self.assertEqual(state["sessions"][key.key]["wait"][P]["account"], "a")
                 self.assertEqual(state["sessions"][key.key]["vends"][P]["account_id"], "b")
+
+    def test_a_waiting_tree_on_a_spent_codex_account_gets_no_token(self):
+        """10-30 to 11-02: tree 01a14210 parked on sieunpark77, whose Codex week read 100%, took its token at each turn, and
+        ChatGPT billed the account's paid credits and answered 200 instead of the 429 that makes the tree wait."""
+        codex = "openai-codex"
+        state = empty_state()
+        put(state, KEY)
+        state["sessions"][KEY.key]["vends"][codex] = dict(vend_record("b", at=NOW - 60), **{"from": NOW - 60})
+        spent = dataclasses.replace(acct("b", week=100, week_reset_in=86400, tier="pro"), provider=codex)
+        with self.assertRaises(base.SlotWait) as wait:
+            self.run_vend(state, [spent], provider=codex)
+        self.assertGreater(wait.exception.slot_at, NOW)
+        with_plan = dataclasses.replace(acct("b", week=40, tier="pro"), provider=codex)
+        self.assertFalse(vending.bills_credits(codex, with_plan))
+        self.assertFalse(vending.bills_credits(P, acct("b", five=100, week=100)))
 
     def test_a_waiting_tree_with_no_refused_account_gets_no_token(self):
         state = empty_state()

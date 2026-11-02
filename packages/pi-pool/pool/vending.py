@@ -668,6 +668,14 @@ def waits_by_exit(key):
     return key is not None and key.key.startswith(DURABLE_TREE_PREFIX)
 
 
+def bills_credits(provider, account):
+    """True for a Codex account whose plan is used up. ChatGPT bills such a request to the account's paid credits and
+    answers 200, so a waiting tree that got its token would run on credits instead of getting the 429 that makes it wait.
+    From 10-30 to 11-02 tree 01a14210 logged "parked" on sieunpark77, whose week read 100%, at each turn and ran
+    gpt-6-astra anyway, and ChatGPT billed its session id 2,042 credits (wham/usage/credit-usage-events)."""
+    return provider == "openai-codex" and max(account.session_pct, account.weekly_pct) >= 100
+
+
 # How far ahead a tree's cell has to be for its leaving to open it to another tree: own_cell lets a tree enter its cell 2 s early.
 OWN_CELL_EARLY_SEC = 2
 # The trees `refill` found in line for a cell that opened, one list per opened cell, for `flush_wakes` to wake once the pool flock is free.
@@ -745,8 +753,9 @@ def vend(provider):
 
     A tree that waits gets its own account while the provider refuses it, so the
     request comes back as a 429 that writes no cache and `pi-pool limited` hands
-    the extension the slot time. With no such account, or for a pi-durable tree
-    (`waits_by_exit`), the hook exits non-zero with no token, and the extension
+    the extension the slot time. With no such account, for a pi-durable tree
+    (`waits_by_exit`), or when that account would bill credits instead of refusing
+    (`bills_credits`), the hook exits non-zero with no token, and the extension
     or the durable provider turns that failure into the same wait.
     """
     from . import remote
@@ -827,7 +836,7 @@ def vend(provider):
                   if d.reason == "cooldown" else d.reason)
         raise RuntimeError(f"pinned {provider} account {label}: {reason}")
     if isinstance(d, sched.Wait):
-        if d.vend is not None and not waits_by_exit(key):
+        if d.vend is not None and not waits_by_exit(key) and not bills_credits(provider, d.vend):
             try:
                 token, _ = credential_for(d.vend, cfg)
             except Exception as e:
