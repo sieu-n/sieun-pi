@@ -18,6 +18,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * slow_route_p90_s keeps board goal p111 met (owner 10-30: "이거 왜 20초 30초나 걸리냐"): the slowest p90 durationMs of the day's calls to
  * SLOW_ROUTES by every org, internal ones included, because no is_internal = 0 org called them from 10-20 to 11-02 and the owner's own calls come
  * from internal orgs; 3.30 s after crawler p1381 at 20:36Z on 11-02 against 5 s, while Bing's p90 over all orgs read 30.7 s from 00:00 to 20:42Z that day.
+ * Both day metrics name the next UTC midnight as their rollsAt, so the runner starts no push or verify run that would read the same day again.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
@@ -76,7 +77,9 @@ export function report(counts: DayCounts, failed: FailedCall[], day: { start: st
   const slow = slowRouteP90(latency);
   flagged.splice(1, 0, { kind: "slow_routes", excerpt: `slowest p90, all orgs: ${slow === UNMEASURED ? `unknown, a route has under ${MIN_ROUTE_CALLS} calls` : `${slow} s`}; ` +
     latencyLine(latency) });
-  return { metrics: { customer_5xx_share_pct: share, slow_route_p90_s: slow, source_errors: 0 }, flagged };
+  const rollsAt = Date.parse(`${day.start.replace(" ", "T")}Z`) + 2 * DAY_MS;
+  return { metrics: { customer_5xx_share_pct: share, slow_route_p90_s: slow, source_errors: 0 }, flagged,
+    rollsAt: { customer_5xx_share_pct: rollsAt, slow_route_p90_s: rollsAt } };
 }
 
 // ---- I/O ----

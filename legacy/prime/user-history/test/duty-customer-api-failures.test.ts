@@ -17,6 +17,8 @@ test("the share is 5xx over completed plus failed, and each 5xx is flagged with 
   assert.equal(out.metrics.source_errors, 0);
   assert.match(out.flagged![0]!.excerpt, /5 customer 5xx of 1576 attempts \(0\.32%\).*151 min/);
   assert.match(out.flagged![2]!.excerpt, /@dinkey727 req_a/);
+  const rollsAt = Date.parse("2026-11-03T00:00:00Z");
+  assert.deepEqual(out.rollsAt, { customer_5xx_share_pct: rollsAt, slow_route_p90_s: rollsAt }, "the 11-01 reading holds until 11-02 rolls over");
 });
 
 test("a day with no calls reads 0, not a miss", () => {

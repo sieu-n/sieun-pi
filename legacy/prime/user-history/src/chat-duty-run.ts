@@ -12,7 +12,7 @@ import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue,
   type DutyCut, type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, type PrecheckOverrun, STILL_WORKING, verdictMetrics } from "./shared/chat-duties.ts";
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { CHECK_IN_PREFIX } from "./shared/chat-feed.ts";
-import { agedOut, pushMisses } from "./duty-push.ts";
+import { agedOut, closedUntil, pushMisses } from "./duty-push.ts";
 import { transientTurnError } from "./turn-error.ts";
 import type { TellSource } from "./clean-room-subjects.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
@@ -695,6 +695,12 @@ export class Duties {
         continue;
       }
       if (!(await this.store.list(chatId)).some(duty => duty.id === dutyId)) continue;
+      const own = (await this.store.runs(chatId)).filter(run => run.duty === dutyId);
+      const until = closedUntil(own, closed.filter(fix => fix.duty === dutyId).map(fix => fix.metric), this.now());
+      if (until !== undefined) {
+        this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: fix ${steps} closed on a window that rolls over at ${new Date(until).toISOString()}; the push then measures it`);
+        continue;
+      }
       const started = this.start(chatId, dutyId, "verify", null);
       this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: fix ${steps} closed; ${started ? "a verify run starts" : "a run is going, so no verify run starts"}`);
     }

@@ -75,14 +75,47 @@ export function pushMisses(runs: readonly DutyRunRecord[], counted: ReadonlySet<
     // it. From 11-01 12Z to 11-02 12Z the AI harness chat's d10 got 14 hourly push runs, each starting a job, on repeat_corrections_7d and
     // repeats_after_fix_7d with no repeat newer than 10-29 07:35Z.
     const aging = new Set(streaks.filter(streak => quiet.has(streak.key) && countWindowMs(streak.key, streak) !== undefined).map(streak => streak.key));
-    if (now - newest.at >= everyMs) { const due = keys.filter(key => !aging.has(key)); return due.length ? due : null; }
-    const owed = endedUnpushed(runs) ? keys.filter(key => !quiet.has(key)) : [];
+    // A miss on a closed window that has not rolled over reads the same number on any rerun, so it gets no push until the window rolls, and
+    // one push right after. On 11-02 api portal vp's d4 got push runs at 21:42Z and 21:58Z, each with a job, on slow_route_p90_s, which reads
+    // the last full UTC day and could not change before 00:00Z on 11-03.
+    const open = keys.filter(key => windowState(measured, key, newest.at, now) !== "closed");
+    if (open.some(key => windowState(measured, key, newest.at, now) === "rolled")) return open;
+    if (now - newest.at >= everyMs) { const due = open.filter(key => !aging.has(key)); return due.length ? due : null; }
+    const owed = endedUnpushed(runs) ? open.filter(key => !quiet.has(key)) : [];
     return owed.length ? owed : null;
   }
   const parts = Object.fromEntries(Object.entries(measured.parts ?? {}).filter(([key]) => [...counted].some(metric => key.startsWith(`${metric}_`))));
   if (!Object.keys(parts).length) return null;
   if (now - newest.at < Math.min(everyMs, PART_READ_MS)) return null;
   return missedKeys({ metrics: parts });
+}
+
+/**
+ * Where the closed window a metric of `measured` reads stands (`MetricResult.rollsAt`): "closed" before it rolls over, when a rerun reads the
+ * same number, "rolled" once it has with no run since `newestAt`, else undefined: the metric reads no closed window, or a run read the new one.
+ */
+export function windowState(measured: Pick<DutyRunRecord, "metrics">, key: string, newestAt: number, now: number): "closed" | "rolled" | undefined {
+  const rollsAt = measured.metrics[key]?.rollsAt;
+  if (rollsAt === undefined) return undefined;
+  if (now < rollsAt) return "closed";
+  return newestAt < rollsAt ? "rolled" : undefined;
+}
+
+/**
+ * When every one of `keys` reads a closed window in the duty's newest reading that has not rolled over, the time the last one rolls, else
+ * undefined. A verify run before then reads the same numbers as the run before it: at 22:08:56Z on 11-02 api portal vp's d4 verify run of p111
+ * read slow_route_p90_s 8.97 s on 11-01 again and started a job, and the push after the roll measures the fix.
+ */
+export function closedUntil(runs: readonly DutyRunRecord[], keys: readonly string[], now: number): number | undefined {
+  const holder = newestReading(runs);
+  if (!holder || !keys.length) return undefined;
+  const measured = effectiveRun(holder);
+  let until = 0;
+  for (const key of keys) {
+    if (windowState(measured, key, runs[0]!.at, now) !== "closed") return undefined;
+    until = Math.max(until, measured.metrics[key]!.rollsAt!);
+  }
+  return until;
 }
 
 /**

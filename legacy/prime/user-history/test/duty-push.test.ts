@@ -3,7 +3,7 @@
 // verdict leaves out would otherwise never start the push run that rewrites those pages.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PART_READ_MS, pushMisses } from "../src/duty-push.ts";
+import { closedUntil, PART_READ_MS, pushMisses } from "../src/duty-push.ts";
 import type { DutyRunRecord, MetricResult } from "../src/shared/chat-duties.ts";
 
 const MIN = 60_000;
@@ -99,4 +99,30 @@ test("a met run with parts is read again after PART_READ_MS when the check-in in
   assert.equal(pushMisses(met(PART_READ_MS - MIN, 3), COUNTED, hourly, NOW), null, "not before 15 min");
   assert.deepEqual(pushMisses(met(10 * MIN, 0), COUNTED, 10 * MIN, NOW), [], "a shorter check-in interval still wins");
   assert.equal(pushMisses([run(NOW - 30 * MIN, "met", { wiki_problems: 0, open_mistakes: 0 })], COUNTED, hourly, NOW), null, "no parts: the interval holds");
+});
+
+// api portal vp's d4 runs of 11-02, newest first, with the 11-02 precheck's rollsAt added: slow_route_p90_s reads the last full UTC day, 8.97 s
+// on 11-01, so no run before 00:00Z on 11-03 can read another number. The old rule pushed at 21:42:41Z and 21:58:24Z, each push with a job, and
+// the 22:08:56Z verify run of p111 started a fourth job on the same day.
+test("a miss on a closed window gets no push until the window rolls over, then one push", () => {
+  const at = (time: string) => Date.parse(`2026-11-0${time}Z`);
+  const rollsAt = at("3T00:00:00");
+  const day = (value: number, rolls = rollsAt): Record<string, MetricResult> => ({
+    customer_5xx_share_pct: { value: 0.32, target: 1, op: "<=", met: true, rollsAt: rolls },
+    slow_route_p90_s: { value, target: 5, op: "<=", met: value <= 5, rollsAt: rolls }, source_errors: result(0) });
+  const counted = new Set(["customer_5xx_share_pct", "slow_route_p90_s", "source_errors"]);
+  const red = (time: string, trigger: DutyRunRecord["trigger"], ended: string): DutyRunRecord => ({ duty: "d4", at: at(time), trigger, ms: 6000,
+    verdict: "missed", summary: "", metrics: day(8.97), job: { id: time, name: time }, after: { at: at(ended), verdict: "missed", metrics: day(8.97), summary: "" } });
+  const scheduled = red("2T21:33:09", "schedule", "2T21:42:10");
+  const pushed = red("2T21:42:41", "push", "2T21:58:12");
+  const verify: DutyRunRecord = { duty: "d4", at: at("2T18:35:47"), trigger: "verify", ms: 3800, verdict: "met", summary: "", metrics: { source_errors: result(0) } };
+  assert.equal(pushMisses([scheduled, verify], counted, EVERY, at("2T21:42:41")), null, "no push when the schedule job ends");
+  assert.equal(pushMisses([pushed, scheduled, verify], counted, EVERY, at("2T21:58:24")), null, "no push at the check-in interval");
+  assert.equal(closedUntil([pushed, scheduled], ["slow_route_p90_s"], at("2T22:08:56")), rollsAt, "no verify run of p111 before the roll");
+  assert.deepEqual(pushMisses([pushed, scheduled], counted, EVERY, rollsAt + 30_000), ["slow_route_p90_s"], "one push right after the roll");
+  const next: DutyRunRecord = { duty: "d4", at: rollsAt + 40_000, trigger: "push", ms: 6000, verdict: "missed", summary: "", metrics: day(6.1, at("4T00:00:00")) };
+  assert.equal(pushMisses([next, pushed, scheduled], counted, EVERY, rollsAt + 60 * MIN), null, "a run read the new day, so it waits for 11-04");
+  const { after: _ended, ...unended } = scheduled;
+  const live: DutyRunRecord = { ...unended, metrics: { ...scheduled.metrics, slow_route_p90_s: result(9) } };
+  assert.deepEqual(pushMisses([live], counted, EVERY, at("2T21:58:24")), ["slow_route_p90_s"], "a miss with no closed window keeps its push");
 });

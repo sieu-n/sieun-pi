@@ -78,6 +78,11 @@ export interface PrecheckOutput { metrics: Record<string, number>; flagged?: Fla
    */
   windowMs?: Record<string, number>;
   /**
+   * When the closed window each metric reads rolls over, in ms: until then a run reads the same window and the same number. The Customer API
+   * failures precheck reads the last full UTC day, so its rollsAt is the next UTC midnight (`windowRolled` and `pushMisses` in src/duty-push.ts).
+   */
+  rollsAt?: Record<string, number>;
+  /**
    * The number of each board item a counted metric counts, by plan item id, read against that item's own target (`judge` keeps the valid
    * ones as `DutyRunRecord.items`). A fix of one item is judged on it (`fixStepStreak`): on 10-24 Crawler VP's d9 throughput_goals_missed went
    * 3 to 4 under p942 because p826 began to miss, while p850, the goal p942 works, went from 135 to 159 walks a minute against 252.
@@ -143,8 +148,11 @@ export const STILL_WORKING = "skipped: previous run still working";
 /** `host-back`: the rerun of a run that waited on a box Tailscale read offline (`DutyRunRecord.hostAway`), at the first tick it reads online. */
 export type DutyTrigger = "schedule" | "catch-up" | "owner" | "verify" | "push" | "rerun" | "host-back";
 export type DutyVerdict = "met" | "missed" | "error" | "skipped";
-/** `lastEventAt` is the precheck's time of the newest event a windowed count counts (`PrecheckOutput.lastEventAt`), `windowMs` its window. */
-export interface MetricResult { value: number; target: number; op: DutyMetric["op"]; met: boolean; lastEventAt?: number; windowMs?: number }
+/**
+ * `lastEventAt` is the precheck's time of the newest event a windowed count counts (`PrecheckOutput.lastEventAt`), `windowMs` its window, and
+ * `rollsAt` when the closed window the metric reads rolls over (`PrecheckOutput.rollsAt`).
+ */
+export interface MetricResult { value: number; target: number; op: DutyMetric["op"]; met: boolean; lastEventAt?: number; windowMs?: number; rollsAt?: number }
 /** A duty job the server started: its session id and name. */
 export interface DutyJobRef { id: string; name: string }
 /**
@@ -453,8 +461,10 @@ function judgeCounted(metrics: readonly DutyMetric[], output: PrecheckOutput): {
     const value = output.metrics[metric.key]!;
     const lastEventAt = output.lastEventAt?.[metric.key];
     const windowMs = output.windowMs?.[metric.key];
+    const rollsAt = output.rollsAt?.[metric.key];
     results[metric.key] = { value, target: metric.target, op: metric.op, met: met(metric, value), ...typeof lastEventAt === "number" && Number.isFinite(lastEventAt) ? { lastEventAt } : {},
-      ...typeof windowMs === "number" && windowMs > 0 && Number.isFinite(windowMs) ? { windowMs } : {} };
+      ...typeof windowMs === "number" && windowMs > 0 && Number.isFinite(windowMs) ? { windowMs } : {},
+      ...typeof rollsAt === "number" && Number.isFinite(rollsAt) ? { rollsAt } : {} };
     if (!results[metric.key]!.met) misses.push(`${metric.key} ${show(metric, value)} (target ${metric.op === "<=" ? "at most" : "at least"} ${show(metric, metric.target)})`);
   }
   const lead = headline && results[headline.key]!.met ? `${headline.key} ${show(headline, results[headline.key]!.value)} (on target)` : undefined;
