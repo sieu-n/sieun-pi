@@ -77,7 +77,7 @@ export async function measure(now: number): Promise<PrecheckOutput> {
     const key = (await sh("node_modules/.bin/dotenvx get POSTHOG_PERSONAL_API_KEY -f apps/vent/.env", REPO)).trim().split("\n").at(-1)!.trim();
     const [[completed, failed, failed5xx]] = (await hog(key, `select countIf(event = 'api_request_completed'), countIf(event = 'api_request_failed'), ` +
       `countIf(event = 'api_request_failed' and toInt(properties.status) >= 500) from events where ${calls} and ${window} ` +
-      `and properties.orgId in (${CUSTOMER_ORGS})`)) as number[][];
+      `and properties.orgId in (${CUSTOMER_ORGS})`)) as [[number, number, number]];
     const rows = await hog(key, `select timestamp, properties.endpoint, toInt(properties.status), properties.errorCode, properties.crawlerPath, ` +
       `properties.requestId, properties.orgId from events where event = 'api_request_failed' and toInt(properties.status) >= 500 and ${window} ` +
       `and properties.orgId in (${CUSTOMER_ORGS}) order by timestamp`);
