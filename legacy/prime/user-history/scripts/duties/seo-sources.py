@@ -125,6 +125,22 @@ def _retry_after_s(value: str | None) -> float | None:
         return None
 
 
+def _warm_vent() -> None:
+    """Reads Vent's URL and the seo caller key once, before the 32 inspection threads start.
+
+    virev_seo.vent.vent() is a functools.cache with no lock, so 32 threads that call it at once each run its setup: Vent /healthz, two
+    `npx dotenvx get` and a `git fetch` when Vent's version is not local. measured 11-02 on us-metal02: one setup took 25.0 s and one
+    inspection 6.8 s, and a d2 run whose 32 threads each ran the setup spent 61 s in inspect for 31 URLs, 3 min 21 s of CPU.
+    A setup that fails here fails again in each call, which reports it per URL, so the error is left to those rows.
+    """
+    from virev_seo import vent
+
+    try:
+        vent.vent()
+    except Exception:
+        pass
+
+
 def inspect(urls: list[str]) -> dict[str, Any]:
     from virev_seo import gsc
     from virev_seo.config import GSC_SITE, INSPECT_DAILY_QUOTA
@@ -133,6 +149,7 @@ def inspect(urls: list[str]) -> dict[str, Any]:
     left = INSPECT_DAILY_QUOTA - gsc._quota_used(day)
     asked = urls[: max(0, left)]
     sess = gsc.session()
+    _warm_vent()
     stop = threading.Event()
     retry_after: list[float] = []
 

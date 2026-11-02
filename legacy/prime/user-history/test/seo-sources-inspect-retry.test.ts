@@ -5,6 +5,9 @@
 // scope per call. seo-sources.py inspect still called gsc.session(write=True) after it, so every d2 run read source_errors 1.
 // Like virev_seo.gsc.VentSession.post since auto-sns-agent 64f4b0ac4, the stub session counts each inspection POST itself, so the quota
 // assertions also catch seo-sources.py counting a POST a second time.
+// The stub's vent.vent() is an unlocked functools.cache whose setup takes 0.2 s, like virev_seo.vent.vent(), whose setup took 25.0 s on
+// 11-02. On 11-02 at 01:20Z the d2 precheck took 318 s against its 120 s target, and a timed run of it spent 61 s and 3 min 21 s of CPU
+// in the 32 inspection threads, each of which ran that setup itself.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -50,6 +53,8 @@ class _Resp:
 
 class _Session:
     def post(self, url, json=None):
+        from virev_seo import vent
+        vent.vent()
         with _lock:
             if url == INSPECT_URL:
                 _quota_add(quota_day(), 1)
@@ -68,6 +73,16 @@ def session():
     return _Session()
 `;
 
+const stubVent = (dir: string): string => `
+import functools, threading
+@functools.cache
+def vent():
+    with open(${JSON.stringify(join(dir, "vent-setups.txt"))}, "a") as f:
+        f.write("setup\\n")
+    threading.Event().wait(0.2)
+    return "https://vent.test", "key"
+`;
+
 const sitecustomize = (dir: string): string => `
 import time
 def _sleep(seconds):
@@ -82,6 +97,7 @@ async function stubRoot(failFirst: number, retryAfter: string | null, failStatus
   await writeFile(join(dir, "virev_seo/__init__.py"), "");
   await writeFile(join(dir, "virev_seo/config.py"), `GSC_SITE = "sc-domain:virev.ai"\nINSPECT_DAILY_QUOTA = 2000\n`);
   await writeFile(join(dir, "virev_seo/gsc.py"), stubGsc(dir, failFirst, retryAfter, failStatus));
+  await writeFile(join(dir, "virev_seo/vent.py"), stubVent(dir));
   await writeFile(join(dir, "sitecustomize.py"), sitecustomize(dir));
   return dir;
 }
@@ -164,4 +180,14 @@ test("after a 429 any run asks one URL first, asks no more while Google refuses,
     assert.ok(read.rows.every(row => row.http === 200));
     assert.equal(await readFile(join(ok, "inspect-refused.json"), "utf8").catch(() => "gone"), "gone");
   } finally { await rm(ok, { recursive: true, force: true }); }
+});
+
+test("Vent's caller setup runs once per inspect run, not once in each of the 32 threads", async () => {
+  const dir = await stubRoot(0, null);
+  try {
+    const urls = Array.from({ length: 32 }, (_, i) => `https://virev.ai/blog/page-${i}`);
+    const read = await runInspect(dir, urls);
+    assert.ok(read.rows.every(row => row.http === 200));
+    assert.equal((await lines(join(dir, "vent-setups.txt"))).length, 1);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
