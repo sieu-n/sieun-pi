@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
+import { hostAwayOf, judge, type DutyMetric, type FlaggedSlice } from "../src/shared/chat-duties.ts";
 import { convexCommand, convexPushStale, LOCAL_CONVEX_COMMAND, MAC_COMMAND, measureLocalConvex, MAC_RETRY_MS, MAC_WINDOW_MS, macDown, macUnusableMinutes, measureMac, measureStoreBox, parseConvexReading, parseMacReading, parseStoreBox, STORE_BOX, STORE_COMMAND } from "../scripts/duties/local-dev-uptime.ts";
 
 const push = (outcome: string, at: string, lastGoodAt: string | null) =>
@@ -151,4 +152,28 @@ test("the shell line keeps a failed push's multi-line reason on one convex-push 
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
+});
+
+// Since c97f586c (11-02) a run that leaves a counted metric unmeasured reads error. ops guy's d1 left mac_servers_not_answering unmeasured on each
+// run the Mac slept through, with no host_away item, so those runs read a plain error that no host-back rerun would follow.
+test("a Mac ssh and tailscale ping both miss is flagged host_away, so d1's error run waits for the Mac and reruns when it is back", async () => {
+  const asleep = Object.assign(new Error("Command failed: ssh mac"), { code: 255 });
+  const away: FlaggedSlice = { at: 0, kind: "host_away", host: "mac", excerpt: "the Mac answered no ssh and no tailscale ping" };
+  const asked: string[] = [];
+  const result = await measureMac({ platform: "linux", exec: async () => { throw asleep; }, watch: async () => [minute(25)], wait: async () => {},
+    macAway: async what => { asked.push(what); return away; } }, 0);
+  assert.equal(asked.length, 1);
+  assert.equal(hostAwayOf({ metrics: result.metrics, flagged: result.flagged }), "mac");
+  const metrics: DutyMetric[] = [{ key: "servers_not_answering", label: "s", op: "<=", target: 0, headline: true }, { key: "mac_unusable_min", label: "m", op: "<=", target: 0 },
+    { key: "mac_servers_not_answering", label: "n", op: "<=", target: 0 }];
+  const judged = judge(metrics, { metrics: { servers_not_answering: 0, ...result.metrics }, flagged: result.flagged });
+  assert.equal(judged.verdict, "error");
+  assert.ok(Object.values(judged.metrics).every(item => item.met), "every number it read is on target, so the runner reads the run as waiting");
+});
+
+test("a Mac that answers a tailscale ping but not ssh gets no host_away, so its failed read stays a source error", async () => {
+  const asleep = Object.assign(new Error("Command failed: ssh mac"), { code: 255 });
+  const result = await measureMac({ platform: "linux", exec: async () => { throw asleep; }, watch: async () => [], wait: async () => {}, macAway: async () => undefined }, 0);
+  assert.equal(hostAwayOf({ metrics: result.metrics, flagged: result.flagged }), undefined);
+  assert.deepEqual(result.flagged.map(item => item.kind), ["mac_read", "mac_unreachable"]);
 });

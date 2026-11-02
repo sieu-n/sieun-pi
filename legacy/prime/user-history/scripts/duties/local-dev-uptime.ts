@@ -11,6 +11,7 @@ import { treeMb, treePids } from "./demo-sandbox.ts";
 import { isLinuxReading, readWatch, type UsableMiss, unusable, type WatchLine } from "../../src/mac-usable-watch.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { hostViews } from "./whole-system.ts";
+import { macSilent } from "./mac-reach.ts";
 
 /**
  * The local dev uptime duty's precheck (`node --import tsx scripts/duties/local-dev-uptime.ts`): how many of the 5 dev services gave no
@@ -231,8 +232,11 @@ export interface MacResult extends Pick<PrecheckOutput, "lastEventAt" | "windowM
 /**
  * Reads the Mac over ssh (or in place when this run is on the Mac). ssh exits 255 when it cannot reach the host, which is a sleeping or
  * offline Mac: that sets mac_unreachable and leaves mac_servers_not_answering unmeasured. mac_unusable_min comes from the watch lines either way.
+ * When the Mac also answers no tailscale ping, the run flags it `host_away`, so the runner holds the run and reruns it once the Mac is back. Since
+ * c97f586c (11-02) a run that leaves a counted metric unmeasured reads error, and ops guy's d1 left mac_servers_not_answering unmeasured on
+ * every run the Mac slept through with no host_away item, so those runs read error with no host-back rerun.
  */
-export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "watch" | "wait">, at: number): Promise<MacResult> {
+export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "watch" | "wait" | "macAway">, at: number): Promise<MacResult> {
   const day = macUnusableMinutes(await deps.watch().catch(() => []));
   const windows: Pick<MacResult, "lastEventAt" | "windowMs"> = day.read
     ? { windowMs: { mac_unusable_min: MAC_WINDOW_MS }, ...day.lastAt === undefined ? {} : { lastEventAt: { mac_unusable_min: day.lastAt } } } : {};
@@ -250,7 +254,11 @@ export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "w
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if ((error as { code?: unknown }).code === 255) return { ...windows, metrics: { ...watched, mac_unreachable: 1 }, flagged: [usable, { at, kind: "mac_unreachable", excerpt: `Mac: ssh ${MAC_HOST} could not reach it (asleep or offline), so its dev servers were not read: ${message}`.slice(0, 300) }] };
+    if ((error as { code?: unknown }).code === 255) {
+      const away = await deps.macAway?.("its dev servers were", at).catch(() => undefined);
+      return { ...windows, metrics: { ...watched, mac_unreachable: 1 }, flagged: [usable, { at, kind: "mac_unreachable", excerpt: `Mac: ssh ${MAC_HOST} could not reach it (asleep or offline), so its dev servers were not read: ${message}`.slice(0, 300) },
+        ...away ? [away] : []] };
+    }
     return { ...windows, metrics: watched, flagged: [usable, { at, kind: "mac_read", excerpt: `Mac: read failed: ${message}`.slice(0, 300) }] };
   }
   const reading = parseMacReading(text);
@@ -271,7 +279,9 @@ export const PM2_NAMES = ["llm-wiki", "search"] as const;
 export type Exec = (file: string, args: readonly string[], env?: Record<string, string>) => Promise<string>;
 /** `platform` is the OS of the host whose pm2 and localhost services this run measures; `read` gives a file's text or throws; `watch` gives the last 24 h of Mac usable watch lines; `wait` sleeps. */
 export interface UptimeDeps { fetch: typeof fetch; exec: Exec; read: (path: string) => Promise<string>; platform: NodeJS.Platform; now: () => number; watch: () => Promise<WatchLine[]>; wait: (ms: number) => Promise<void>;
-  pm2: { bin: string; home: string }; env: Record<string, string>; wiki: string }
+  pm2: { bin: string; home: string }; env: Record<string, string>; wiki: string;
+  /** The `host_away` item when the Mac ssh could not reach answers no tailscale ping either (mac-reach.ts `macSilent`); absent in tests that fake no Tailscale. */
+  macAway?: (what: string, at: number) => Promise<FlaggedSlice | undefined> }
 /** The restart count per pm2 process name or systemd unit, kept between runs; a unit also keeps its InvocationID, which changes at each start. */
 export interface UptimeState { restarts: Record<string, { restartTime: number; at: number; invocation?: string }> }
 interface Pm2Process { name?: string; pid?: number; pm2_env?: { restart_time?: number; status?: string } }
@@ -505,7 +515,7 @@ async function main(): Promise<void> {
   const wiki = roleUrl(await loadHosts(), "wiki");
   if (!wiki) { process.stderr.write("local-dev-uptime: no host holds the wiki role in hosts.json\n"); process.exit(2); }
   const watch = () => readWatch(chatDataDir(), Date.now() - MAC_WINDOW_MS, Date.now());
-  const result = await measureUptime({ fetch, exec, read: path => readFile(path, "utf8"), platform: process.platform, now: Date.now, watch, wait: ms => delay(ms), env, wiki, pm2: { bin: join(REPO, "node_modules/.bin/pm2"), home: join(REPO, ".cache/pm2-dev") } },
+  const result = await measureUptime({ fetch, exec, read: path => readFile(path, "utf8"), platform: process.platform, now: Date.now, watch, wait: ms => delay(ms), macAway: (what, at) => macSilent(MAC_HOST, what, at), env, wiki, pm2: { bin: join(REPO, "node_modules/.bin/pm2"), home: join(REPO, ".cache/pm2-dev") } },
     previous?.restarts ? previous : undefined);
   await writeFile(output, JSON.stringify(result.output, null, 2) + "\n");
   if (stateFile && result.state) await writeFile(stateFile, JSON.stringify(result.state) + "\n");
