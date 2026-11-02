@@ -55,6 +55,7 @@ test("leafHolder names jobs' transient units, installed services and the units t
   assert.deepEqual(leafHolder(app + "auto-sns-dev-pm2.service", transient), { id: "dev", label: "auto-sns-dev-pm2" });
   assert.deepEqual(leafHolder(app + "ci-cache.service", transient), { id: "ci", label: "ci-cache" });
   assert.equal(leafHolder(DAEMON, transient), "by-process");
+  assert.equal(leafHolder(app + "prime-agent-tools.scope", new Set(["prime-agent-tools.scope"])), "by-process", "the kernels and their commands since 11-02");
   assert.equal(leafHolder("user.slice/user-1001.slice/session-c922.scope", transient), "by-process");
   assert.equal((leafHolder("system.slice/system-virev\\x2dci\\x2dvirt.slice/virev-ci-virt@g1.service", transient) as { id: string }).id, "ci");
   assert.deepEqual(leafHolder("dev.slice/docker-" + "ab".repeat(32) + ".scope", transient), { id: "docker", label: "docker-abababababab" });

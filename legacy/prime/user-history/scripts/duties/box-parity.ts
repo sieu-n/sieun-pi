@@ -21,9 +21,10 @@ import { CHECKS, type Outcome, realDeps, runChecks } from "./skills-and-tools.ts
  * - `resource_limits_set`: memory, CPU, IO, task and priority settings on the box's systemd units, Docker containers and systemd manager files that
  *   no vendor file ships (owner rule c107: "remove all the bullshit i didn't explicitly asked for"), one per setting and unit name with its numbers
  *   folded, plus services whose main process runs at a nice level its unit does not set. A limit at or above the box's RAM limits nothing.
- *   A setting the owner asked for is listed as `owner_asked` with its layer and not counted: a CPUWeight setup-cpu.sh sets (CPU layer 1), the
- *   daemon's nice from cpu-protect.py (CPU layer 2), and a `heavy` scope (memory layer 4), all in deploy/linux/README.md after the owner's 10-19
- *   asks and his t84 answer. `parseLayers` reads them from those scripts, so a value that differs from its script still counts.
+ *   A setting the owner asked for is listed as `owner_asked` with its layer and not counted: a CPUWeight setup-cpu.sh sets (CPU layer 1) and a
+ *   `heavy` scope (memory layer 4), both in deploy/linux/README.md after the owner's 10-19 asks and his t84 answer. CPU layer 2 sets no unit
+ *   property since 11-02: cpu-protect.py moves the daemon's commands into prime-agent-tools.scope at the default weight. `parseLayers` reads
+ *   them from those scripts, so a value that differs from its script still counts.
  * - `rcu_boost_off`: 1 when rcu-boost.service (CPU layer 3) is not running or rcu_cpu_stall_timeout differs from its STALL_TIMEOUT_S, see rcuBoostOff.
  * - `public_ssh_open`: 1 when port 22 on the box's public address answers from us-metal01 (METAL_SSH_HOST), or ssh-public-guard.service is not
  *   active; the probe also dials a closed port, so a refused answer proves the path reaches the box.
@@ -250,10 +251,9 @@ export const LIMIT_PROPS: readonly { prop: string; directive: string; unset: rea
 export const SHOW_PROPS = ["Id", "FragmentPath", "DropInPaths", "ActiveState", "MainPID", "Description", ...LIMIT_PROPS.map(limit => limit.prop)];
 const VENDOR = /^\/(usr\/)?lib\//;
 
-/** The settings the owner asked for on the box, as their scripts set them: unit weights keyed by scope and unit, the daemon's nice and `heavy`'s scope. */
+/** The settings the owner asked for on the box, as their scripts set them: unit weights keyed by scope and unit and `heavy`'s scope. */
 export interface Layers {
   weights: ReadonlyMap<string, string>;
-  nice: { unit: string; value: number };
   heavy: { swapMax: string; score: number };
   rcuBoost: { unit: string; policy: string; stallTimeoutS: number };
 }
@@ -270,26 +270,22 @@ const MEMORY_LAYERS = "of deploy/linux/README.md, which the owner asked for on 1
 const POLICY_NUMBERS: Record<string, string> = { other: "0", fifo: "1", rr: "2", batch: "3", idle: "5" };
 
 /**
- * The owner-asked layers from deploy/linux/cpu/setup-cpu.sh (its SYSTEM_WEIGHTS and USER_WEIGHTS tables, `$uid` as the box user's), cpu-protect.py
- * (DAEMON and CORE_NICE), memory/heavy (its systemd-run line) and rcu-boost.service with rcu-boost.py (its policy and STALL_TIMEOUT_S). A script
+ * The owner-asked layers from deploy/linux/cpu/setup-cpu.sh (its SYSTEM_WEIGHTS and USER_WEIGHTS tables, `$uid` as the box user's), memory/heavy (its systemd-run line) and rcu-boost.service with rcu-boost.py (its policy and STALL_TIMEOUT_S). A script
  * whose shape changed throws, so the metric says not measured.
  */
-export function parseLayers(setupCpu: string, cpuProtect: string, heavy: string, uid: number, rcuBoostUnit: string, rcuBoost: string): Layers {
+export function parseLayers(setupCpu: string, heavy: string, uid: number, rcuBoostUnit: string, rcuBoost: string): Layers {
   const weights = new Map<string, string>();
   for (const [table, scope] of [["SYSTEM_WEIGHTS", "system"], ["USER_WEIGHTS", "user"]] as const) {
     const body = new RegExp(`^declare -A ${table}=\\(([^)]*)\\)`, "m").exec(setupCpu)?.[1];
     if (!body) throw new Error(`setup-cpu.sh has no ${table} table`);
     for (const [, unit, weight] of body.matchAll(/\[([^\]]+)\]=(\d+)/g)) weights.set(`${scope} ${unit!.replace("$uid", String(uid))}`, weight!);
   }
-  const unit = /^DAEMON = "([^"]+)"/m.exec(cpuProtect)?.[1];
-  const nice = /^CORE_NICE = (-?\d+)/m.exec(cpuProtect)?.[1];
-  if (!unit || !nice) throw new Error("cpu-protect.py has no DAEMON or CORE_NICE");
   const run = /systemd-run --user --scope .*-p MemoryMax="\$size" -p MemorySwapMax=(\S+) -- choom -n (-?\d+) --/.exec(heavy);
   if (!run) throw new Error("heavy has no systemd-run --user --scope line with MemoryMax, MemorySwapMax and choom");
   const policy = POLICY_NUMBERS[/^CPUSchedulingPolicy=(\w+)$/m.exec(rcuBoostUnit)?.[1] ?? ""];
   const stall = /^STALL_TIMEOUT_S = (\d+)$/m.exec(rcuBoost)?.[1];
   if (!policy || !stall) throw new Error("rcu-boost.service has no CPUSchedulingPolicy or rcu-boost.py no STALL_TIMEOUT_S");
-  return { weights, nice: { unit, value: Number(nice) }, heavy: { swapMax: run[1]!, score: Number(run[2]) },
+  return { weights, heavy: { swapMax: run[1]!, score: Number(run[2]) },
     rcuBoost: { unit: "rcu-boost.service", policy, stallTimeoutS: Number(stall) } };
 }
 
@@ -337,9 +333,7 @@ export function unitLimits(unit: Record<string, string>, context: LimitContext):
   const pid = Number(unit.MainPID);
   if (unit.ActiveState === "active" && pid > 0 && unit.Nice === "0") {
     const nice = context.niceOf(pid);
-    const asked = context.scope === "user" && unit.Id === context.layers.nice.unit && nice === context.layers.nice.value;
-    if (nice) findings.push({ key: `${context.scope} ${foldName(unit.Id!)} nice`, excerpt: `${context.scope} unit ${unit.Id}: its main process ${pid} runs at nice ${nice}, which the unit does not set`,
-      ...asked ? { ownerAsked: `cpu-protect.py sets it as CPU layer 2 ${CPU_LAYERS}` } : {} });
+    if (nice) findings.push({ key: `${context.scope} ${foldName(unit.Id!)} nice`, excerpt: `${context.scope} unit ${unit.Id}: its main process ${pid} runs at nice ${nice}, which the unit does not set` });
   }
   return findings;
 }
@@ -408,9 +402,9 @@ const PROBE = join(HERE, "box-parity-probe.py");
 const DEPLOY = join(HERE, "../../../../../deploy/linux");
 
 async function readLayers(): Promise<Layers> {
-  const [setupCpu, cpuProtect, heavy, rcuUnit, rcuBoost] = await Promise.all(["cpu/setup-cpu.sh", "cpu/cpu-protect.py", "memory/heavy", "cpu/rcu-boost.service", "cpu/rcu-boost.py"]
+  const [setupCpu, heavy, rcuUnit, rcuBoost] = await Promise.all(["cpu/setup-cpu.sh", "memory/heavy", "cpu/rcu-boost.service", "cpu/rcu-boost.py"]
     .map(file => readFile(join(DEPLOY, file), "utf8")));
-  return parseLayers(setupCpu!, cpuProtect!, heavy!, process.getuid!(), rcuUnit!, rcuBoost!);
+  return parseLayers(setupCpu!, heavy!, process.getuid!(), rcuUnit!, rcuBoost!);
 }
 
 const probeArg = (host: "mac" | "box", rows: readonly Row[], known: Record<string, unknown>) =>

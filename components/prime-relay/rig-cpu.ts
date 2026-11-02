@@ -8,29 +8,33 @@ import { kernelDir, kernelFile } from "./kernel-read.ts";
  * unusable from 11:23Z to 11:32Z, when scratch chat services, test rigs and iso builds of jobs held most of the harness's cores).
  *
  * Own work is the Prime workers and kernels, the live chat service, pi-pool, the relay and every other unit installed under the user's app.slice.
- * A rig is what a job started: every other process in prime-agent-daemon.service (the commands kernels run, such as tests, builds and scratch
- * chat services), every transient unit (systemd-run, such as the p8iso-* units of the prime-agent fix job) and every ssh login's
- * session-<n>.scope under the user slice. The daemon unit's rigs are its cgroup time less its own processes' time, so a test that starts and
- * ends inside one window still counts as a rig. The ssh scopes count since 10-19: from 15:41Z to 15:48Z the chat read 12 to 24 cores as the
+ * A rig is what a job started: every other process in prime-agent-daemon.service and in prime-agent-tools.scope, where the commands kernels
+ * run go since 11-02 (tests, builds and scratch chat services), every other transient unit (systemd-run, such as the p8iso-* units of the
+ * prime-agent fix job) and every ssh login's session-<n>.scope under the user slice. The rigs of those two units are their cgroup time less
+ * their own processes' time, so a test that starts and ends inside one window still counts as a rig. The ssh scopes count since 10-19: from 15:41Z to 15:48Z the chat read 12 to 24 cores as the
  * harness's own while the supervisor, workers and kernels used about 5, and about 11 of the rest were Mac jobs' box Chromium, svelte-check and
  * tsc runs that came in over ssh (box-cpu-waste job, /proc sample 15:46:50Z to 15:51:57Z).
  */
 export interface RigLine { owner: string; cores: number; command: string }
 export interface HarnessSplit { own: number; rigs: number; top: RigLine[] }
 
-/** How a unit under app.slice counts: wholly own, wholly a rig, or the daemon unit whose own processes are told apart from its rigs. */
+/** How a unit under app.slice counts: wholly own, wholly a rig, or one of SPLIT_UNITS, whose own processes are told apart from its rigs. */
 export type UnitRole = "own" | "rig" | "split";
 export interface Proc { start: number; ticks: number; unit: string; own: boolean; owner?: string; command: string }
 export interface Snapshot { at: number; units: Map<string, { role: UnitRole; usec: number }>; procs: Map<number, Proc> }
 
 export const DAEMON_UNIT = "prime-agent-daemon.service";
+/** The scope the commands of the daemon's workers run in since 11-02 (sieun-pi deploy/linux/cpu/cpu-protect.py): kernels, their commands and their rigs. */
+export const TOOLS_UNIT = "prime-agent-tools.scope";
+/** The units whose own processes are told apart from their rigs. */
+const SPLIT_UNITS: ReadonlySet<string> = new Set([DAEMON_UNIT, TOOLS_UNIT]);
 /** The owner of every process in an ssh login's scope, such as a Mac job's box browser or check, which carries no session in its environ. */
 export const SSH_OWNER = "ssh logins";
 const SSH_SCOPE = /^session-[^/]+\.scope$/;
 /** The owner of a daemon-unit process with no session in its environ or its parents', such as a server whose job's shell ended. */
 export const NO_OWNER = "no live owner";
 const OWN_COMMAND = /(?:^|\/)prime-agent --mode daemon\b|\s-m rlm\.repl\b|(?:^|\/)pi-pool-token\b/;
-/** A process of the daemon unit that is the harness's own: a Prime worker or the supervisor, a kernel, or a pi-pool token helper. */
+/** A process of a split unit that is the harness's own: a Prime worker or the supervisor, a kernel, or a pi-pool token helper. */
 export const ownCommand = (command: string): boolean => OWN_COMMAND.test(command);
 
 /** ppid, start (clock ticks after boot) and utime+stime ticks of a /proc/<pid>/stat text; null when it does not parse. */
@@ -50,7 +54,7 @@ export function ownerOf(sessionDir: string, jobName: string | undefined): string
 
 /**
  * The split between two snapshots, `harness` the side's cores over the same window (host-stats.ts `cpuSides`). Rigs are the rig units' time plus
- * the daemon unit's time less its own processes', capped at the harness; own is the rest. `top` names the 5 owners whose live rig processes
+ * the split units' time less their own processes', capped at the harness; own is the rest. `top` names the 5 owners whose live rig processes
  * used the most, each with its busiest command. A process alive at both ends counts its ticks between them, one started in the window all of them.
  */
 export function harnessSplit(before: Snapshot, after: Snapshot, harness: number, tickHz = 100): HarnessSplit | null {
@@ -70,7 +74,7 @@ export function harnessSplit(before: Snapshot, after: Snapshot, harness: number,
   const owners = new Map<string, { seconds: number; command: string; top: number }>();
   for (const [pid, proc] of after.procs) {
     const seconds = procSeconds(pid, proc);
-    if (proc.own) { daemonOwn += proc.unit === DAEMON_UNIT ? seconds : 0; continue; }
+    if (proc.own) { daemonOwn += SPLIT_UNITS.has(proc.unit) ? seconds : 0; continue; }
     if (!(seconds > 0)) continue;
     const owner = proc.owner ?? proc.unit;
     const entry = owners.get(owner) ?? { seconds: 0, command: proc.command, top: 0 };
@@ -78,7 +82,8 @@ export function harnessSplit(before: Snapshot, after: Snapshot, harness: number,
     if (seconds > entry.top) Object.assign(entry, { top: seconds, command: proc.command });
     owners.set(owner, entry);
   }
-  if (after.units.get(DAEMON_UNIT)?.role === "split") rigSeconds += Math.max(0, used(DAEMON_UNIT) - daemonOwn);
+  const split = [...after.units].filter(([, { role }]) => role === "split").map(([unit]) => unit);
+  if (split.length) rigSeconds += Math.max(0, split.reduce((sum, unit) => sum + used(unit), 0) - daemonOwn);
   const rigs = Math.min(harness, cores(rigSeconds));
   const top = [...owners].sort((a, b) => b[1].seconds - a[1].seconds).slice(0, 5)
     .map(([owner, entry]) => ({ owner, cores: cores(entry.seconds), command: entry.command })).filter(line => line.cores > 0);
@@ -134,8 +139,8 @@ export function unitOf(cgroup: string, app: string): string | null {
 
 /**
  * Reads the units under `app` (a cgroup path such as user.slice/user-1001.slice/user@1001.service/app.slice) less `excluded` (another side's
- * units), the ssh login scopes beside it in the user slice, and the processes of the daemon unit and of every rig unit. A unit is a rig when
- * systemd has it under /run/user/<uid>/systemd/transient, and an ssh login scope is always one.
+ * units), the ssh login scopes beside it in the user slice, and the processes of the split units and of every rig unit. A unit is a rig when
+ * systemd has it under /run/user/<uid>/systemd/transient and is no split unit, and an ssh login scope is always one.
  */
 export async function snapshot(app: string, excluded: ReadonlySet<string>, uid: number, at = Date.now()): Promise<Snapshot> {
   const units = new Map<string, { role: UnitRole; usec: number }>();
@@ -146,7 +151,7 @@ export async function snapshot(app: string, excluded: ReadonlySet<string>, uid: 
   await Promise.all([...names.map(async name => {
     const usec = await usage(join(app, name));
     if (!Number.isFinite(usec)) return;
-    const role: UnitRole = name === DAEMON_UNIT ? "split" : existsSync(`/run/user/${uid}/systemd/transient/${name}`) ? "rig" : "own";
+    const role: UnitRole = SPLIT_UNITS.has(name) ? "split" : existsSync(`/run/user/${uid}/systemd/transient/${name}`) ? "rig" : "own";
     units.set(name, { role, usec });
   }), ...scopes.map(async name => {
     const usec = await usage(join(slice, name));
@@ -165,8 +170,8 @@ export async function snapshot(app: string, excluded: ReadonlySet<string>, uid: 
   const procs = new Map<number, Proc>();
   await Promise.all([...stats].map(async ([pid, stat]) => {
     const command = await kernel(`/proc/${pid}/cmdline`);
-    const own = stat.unit === DAEMON_UNIT && ownCommand(command.replaceAll("\0", " "));
-    const owner = own ? undefined : await envOwner(pid, stats) ?? (stat.unit === DAEMON_UNIT ? NO_OWNER : SSH_SCOPE.test(stat.unit) ? SSH_OWNER : stat.unit);
+    const own = SPLIT_UNITS.has(stat.unit) && ownCommand(command.replaceAll("\0", " "));
+    const owner = own ? undefined : await envOwner(pid, stats) ?? (SPLIT_UNITS.has(stat.unit) ? NO_OWNER : SSH_SCOPE.test(stat.unit) ? SSH_OWNER : stat.unit);
     procs.set(pid, { start: stat.start, ticks: stat.ticks, unit: stat.unit, own, command: shortCommand(command), ...owner ? { owner } : {} });
   }));
   return { at, units, procs };

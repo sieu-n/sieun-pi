@@ -15,16 +15,33 @@ def weights(kind: str) -> dict[str, int]:
     return {unit.replace("$uid", "1001"): int(value) for unit, value in re.findall(r"\[([^\]]+)\]=(\d+)", line)}
 
 
+PUBLIC = "/tmp/prime-agent-1001"
+SUPERVISOR = ["/home/sieun/.local/share/prime-agent/releases/r1/prime-agent", "/$bunfs/root/prime-agent", "--mode", "daemon", "--daemon-socket", f"{PUBLIC}/daemon.sock"]
+WORKER = ["/home/sieun/.local/share/prime-agent/releases/r1/prime-agent", "--mode", "daemon", "--daemon-socket", f"{PUBLIC}/worker-ee92e1d8c39e-6106871d6519.sock"]
+CTL = ["/usr/bin/python3", "-B", "/home/sieun/.local/bin/prime-agent-daemon-ctl", "update"]
+
+
 class CpuProtectPlan(unittest.TestCase):
-    def test_workers_go_to_minus_10_and_their_inherited_children_back_to_0(self):
-        threads = {10: ("prime-agent", 0), 11: ("prime-agent", 0), 12: ("prime-agent", -10), 20: ("python", -10), 21: ("bash", -10), 22: ("node", 0)}
-        self.assertEqual(cpu.plan(threads), {10: -10, 11: -10, 20: 0, 21: 0})
+    """The worker f2f8b4ebd885 stall of 11-02 18:08Z (5,049 ms, 1,418 ms waiting for a CPU) in a daemon cgroup of 253 processes."""
 
-    def test_a_job_that_niced_itself_up_keeps_its_value_and_a_converged_unit_needs_no_writes(self):
-        self.assertEqual(cpu.plan({10: ("prime-agent", -10), 20: ("vitest", 10), 21: ("python", 0)}), {})
+    def test_the_supervisor_and_workers_stay_and_every_command_they_start_moves_to_the_tools_scope(self):
+        daemon = {10: (1, SUPERVISOR), 11: (10, WORKER), 20: (11, ["/home/sieun/.prime/agent/kernel-venv/bin/python", "-m", "rlm.repl"]),
+                  21: (20, ["/bin/bash", "-c", "pytest"]), 22: (1, ["node", "server.mjs"]), 23: (11, ["/usr/local/bin/pi-pool-token", "get"])}
+        self.assertEqual(cpu.plan(daemon, {}, PUBLIC), ([20, 21, 22], []))
 
-    def test_minus_10_weighs_10_to_1_inside_the_daemon(self):
-        self.assertEqual(cpu.CORE_NICE, -10)
+    def test_a_reload_keeps_the_ctl_and_what_it_starts_in_the_unit(self):
+        daemon = {10: (1, SUPERVISOR), 30: (1, CTL), 31: (30, ["/home/sieun/.local/bin/prime-agent", "update", "--self"])}
+        self.assertEqual(cpu.plan(daemon, {}, PUBLIC), ([], []))
+
+    def test_a_supervisor_started_from_the_tools_scope_goes_back_and_a_test_daemon_stays_a_command(self):
+        test_daemon = ["/home/sieun/.local/share/prime-agent/releases/r1/prime-agent", "--mode", "daemon", "--daemon-socket", "/tmp/x/prime-agent-1001/daemon.sock"]
+        daemon = {40: (20, test_daemon)}
+        self.assertEqual(cpu.plan(daemon, {12: (1, SUPERVISOR), 41: (20, test_daemon)}, PUBLIC), ([40], [12]))
+
+    def test_the_tools_scope_runs_at_the_default_weight_with_no_cap(self):
+        text = (CPU / "cpu-protect.py").read_text()
+        self.assertNotIn('"CPUWeight"', text)
+        self.assertIn('"OOMPolicy", "s", "continue"', text)
 
 
 class Setup(unittest.TestCase):
@@ -32,7 +49,8 @@ class Setup(unittest.TestCase):
         self.assertEqual(weights("SYSTEM"), {"ssh.service": 1000, "tailscaled.service": 1000, "user.slice": 1000, "user@1001.service": 10000,
                                              "virev.slice": 4000, "virev-prod.slice": 300, "virev-ci.slice": 300,
                                              "system.slice": 400, "dev.slice": 400})
-        self.assertEqual(weights("USER"), {"sieun-pi-chat.service": 10000, "pi-history.service": 10000, "pi-pool-serve.service": 1000, "pi-pool-hookd.service": 1000,
+        self.assertEqual(weights("USER"), {"sieun-pi-chat.service": 10000, "pi-history.service": 10000, "llm-wiki.service": 10000,
+                                           "auto-sns-dev-pm2.service": 10000, "pi-pool-serve.service": 1000, "pi-pool-hookd.service": 1000,
                                            "prime-agent-daemon.service": 10000})
 
     def test_the_chat_path_is_outweighed_below_the_root_at_no_level(self):

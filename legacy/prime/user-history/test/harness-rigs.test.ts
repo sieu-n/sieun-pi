@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { DAEMON_UNIT, harnessSplit, NO_OWNER, ownerOf, parseProcStat, type Proc, shortCommand, snapshot, type Snapshot, SSH_OWNER, unitOf } from "../../../../components/prime-relay/rig-cpu.ts";
+import { DAEMON_UNIT, harnessSplit, NO_OWNER, ownerOf, parseProcStat, type Proc, shortCommand, snapshot, type Snapshot, SSH_OWNER, TOOLS_UNIT, unitOf } from "../../../../components/prime-relay/rig-cpu.ts";
 import type { LinuxUsable } from "../../../../components/prime-relay/host-stats.ts";
 import { measure } from "../scripts/duties/whole-system.ts";
 import { parseUsableRaw, type UsableReading, type WatchLine } from "../src/mac-usable-watch.ts";
@@ -28,6 +28,10 @@ test("rigs are the rig units' cores plus the daemon unit's cores less its worker
     { owner: NO_OWNER, cores: 0.3, command: "vite dev" },
   ] });
   assert.equal(harnessSplit(after, after, 40), null, "an empty window reads nothing");
+  // From 11-02 the kernel and the commands run in the tools scope beside the unit (sieun-pi deploy/linux/cpu/cpu-protect.py), and the split holds.
+  const moved = (s: Snapshot, usec: number): Snapshot => ({ ...s, units: new Map([...s.units, [DAEMON_UNIT, { role: "split" as const, usec: usec / 10 }],
+    [TOOLS_UNIT, { role: "split" as const, usec: usec * 0.9 }]]), procs: new Map([...s.procs].map(([pid, p]) => [pid, { ...p, unit: pid === 10 ? DAEMON_UNIT : TOOLS_UNIT }])) });
+  assert.deepEqual(harnessSplit(moved(before, 0), moved(after, 300e6), 40), split);
   assert.equal(harnessSplit(before, after, 20)?.rigs, 20, "rigs never pass the harness side's cores");
 });
 

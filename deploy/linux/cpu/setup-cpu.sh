@@ -55,7 +55,8 @@ done
 "${user_ctl[@]}" daemon-reload
 for unit in "${!USER_WEIGHTS[@]}"; do "${user_ctl[@]}" set-property --runtime "$unit" "CPUWeight=${USER_WEIGHTS[$unit]}"; done
 
-# 2. cpu-protect gives the Prime supervisor and its workers nice -10.
+# 2. cpu-protect keeps the Prime supervisor and its workers alone in prime-agent-daemon.service and moves the commands they start into
+# prime-agent-tools.scope, a sibling in app.slice at the default weight. Its start puts the threads the old nice layer set to -10 back to 0.
 install -d /usr/local/lib/cpu-protect
 install -m 755 "$here/cpu-protect.py" /usr/local/lib/cpu-protect/cpu-protect.py
 install -m 644 "$here/cpu-protect.service" /etc/systemd/system/cpu-protect.service
@@ -74,6 +75,6 @@ sleep 3
 app=user.slice/user-$uid.slice/user@$uid.service/app.slice
 for unit in "${!SYSTEM_WEIGHTS[@]}"; do echo "$unit cpu.weight $(cat "/sys/fs/cgroup$(systemctl show -p ControlGroup --value "$unit")/cpu.weight")"; done
 for unit in "${!USER_WEIGHTS[@]}"; do echo "$unit cpu.weight $(cat "/sys/fs/cgroup/$app/$unit/cpu.weight")"; done
-echo "prime-agent threads at nice -10: $(ps -L -o ni=,args= -u "$DEV_USER" | awk '$2 ~ /prime-agent$/ && $1 == -10' | wc -l) of $(ps -L -o args= -u "$DEV_USER" | awk '$1 ~ /prime-agent$/' | wc -l)"
+echo "processes in $app/prime-agent-daemon.service: $(wc -l < "/sys/fs/cgroup/$app/prime-agent-daemon.service/cgroup.procs"), in prime-agent-tools.scope: $(cat "/sys/fs/cgroup/$app/prime-agent-tools.scope/cgroup.procs" 2>/dev/null | wc -l)"
 echo "cpu-protect $(systemctl is-active cpu-protect)"
 echo "rcu-boost $(systemctl is-active rcu-boost), rcu_cpu_stall_timeout $(cat /sys/module/rcupdate/parameters/rcu_cpu_stall_timeout)"

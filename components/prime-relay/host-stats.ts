@@ -5,7 +5,8 @@ import { cpus, freemem, homedir, loadavg, totalmem } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { bounded, kernelDir, kernelFile } from "./kernel-read.ts";
-import { DAEMON_UNIT, envOwner, harnessSplit, type HarnessSplit, NO_OWNER, ownCommand, snapshot as rigSnapshot, type Snapshot as RigSnapshot, SSH_OWNER } from "./rig-cpu.ts";
+import { DAEMON_UNIT, envOwner, harnessSplit, type HarnessSplit, NO_OWNER, ownCommand, snapshot as rigSnapshot, type Snapshot as RigSnapshot, SSH_OWNER,
+  TOOLS_UNIT } from "./rig-cpu.ts";
 import { type CpuGroup, cpuGroups, cpuSnapshot, type CpuSnapshot } from "./cpu-groups.ts";
 
 /**
@@ -260,8 +261,9 @@ export function transientUnits(now = Date.now()): ReadonlySet<string> {
 
 /**
  * Who holds a memory leaf (`memoryLeaves`), or "by-process" for a leaf whose processes split between groups: prime-agent-daemon.service runs
- * the supervisor, workers and kernels beside the tests, builds, servers and browsers jobs start there, and an ssh login's session scope runs
- * Prime itself on some days (12:56Z to 16:46Z on 10-27) and Mac jobs' box checks on others. `processHolder` names each of their processes.
+ * the supervisor and workers, prime-agent-tools.scope the kernels beside the tests, builds, servers and browsers jobs start (all of them ran in
+ * the daemon unit until 11-02), and an ssh login's session scope runs Prime itself on some days (12:56Z to 16:46Z on 10-27) and Mac jobs' box
+ * checks on others. `processHolder` names each of their processes.
  *
  * Under app.slice an installed unit is an agent service unless INSTALLED_UNITS gives it another group, a kernel's own pi-rlm-kernel scope is an
  * agent session, and every other transient unit is a job's (`transient`, `transientUnits`). Until 10-28 a path matched only CGROUP_RULES, so
@@ -271,7 +273,7 @@ export function leafHolder(path: string, transient: ReadonlySet<string> = transi
   const label = cgroupLabel(path);
   const unit = APP_UNIT.exec(path)?.[1];
   if (unit !== undefined) {
-    if (unit === DAEMON_UNIT) return "by-process";
+    if (unit === DAEMON_UNIT || unit === TOOLS_UNIT) return "by-process";
     if (unit.startsWith("pi-rlm-kernel-")) return { id: "agents", label: "Prime kernels" };
     if (transient.has(unit)) return { id: "jobs", label };
     return { id: INSTALLED_UNITS.find(([, rule]) => rule.test(unit))?.[0] ?? "services", label };
@@ -285,7 +287,7 @@ const SUPERVISOR_COMMAND = /(?:^|\/)prime-agent --mode daemon --daemon-socket \S
  * Who holds a process of a by-process leaf, from its command line (NULs as spaces) and its owner (rig-cpu.ts `envOwner`: the job its environ or
  * a parent's names). The supervisor is the daemon process on daemon.sock and a worker any other `ownCommand` process, both with no owner, since a
  * job's test daemon carries its job's session; a kernel (`-m rlm.repl`) is an agent session's. Every other process is a job's, named by its
- * owner, else NO_OWNER in the daemon's unit and SSH_OWNER in a login scope.
+ * owner, else NO_OWNER in the daemon's unit and the tools scope and SSH_OWNER in a login scope.
  */
 export function processHolder(path: string, proc: { command: string; owner?: string }): Holder {
   if (/\s-m rlm\.repl\b/.test(proc.command)) return { id: "agents", label: "Prime kernels" };
@@ -428,7 +430,8 @@ export async function leafCgroups(root = "/sys/fs/cgroup", transient: ReadonlySe
     if (!held || !(held.bytes > 0 || held.cacheBytes > 0 || held.fileBytes > 0)) return null;
     const holder = leafHolder(path, transient);
     if (holder === "by-process") {
-      const fallback: Holder = LOGIN_SCOPE.test(path) ? { id: "jobs", label: SSH_OWNER } : { id: "agents", label: "Prime workers" };
+      const fallback: Holder = LOGIN_SCOPE.test(path) ? { id: "jobs", label: SSH_OWNER } : APP_UNIT.exec(path)?.[1] === TOOLS_UNIT ? { id: "jobs", label: NO_OWNER }
+        : { id: "agents", label: "Prime workers" };
       return { path, ...held, holders: processShares(held, held.bytes > 0 && procs !== null ? await processesOf(path, procs) : [], fallback) };
     }
     const owner = holder.id === "jobs" && procs !== null ? await unitOwner(procs) : undefined;

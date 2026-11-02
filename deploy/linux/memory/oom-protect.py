@@ -34,6 +34,8 @@ import time
 
 USER = os.environ.get("OOM_PROTECT_USER", "sieun")
 DAEMON = "prime-agent-daemon.service"
+# The commands the daemon's workers start run in this scope since 11-02 (CPU layer 2, deploy/linux/cpu/cpu-protect.py), and count as the daemon's here.
+TOOLS = "prime-agent-tools.scope"
 CORE_UNITS = (DAEMON, "sieun-pi-chat.service", "pi-pool-serve.service", "pi-pool-hookd.service")
 DEV_UNITS = ("auto-sns-dev-pm2.service", "llm-wiki.service")
 SSH_CARRIERS = ("tailscaled", "sshd", "sshd-session")
@@ -125,8 +127,9 @@ def snapshot(uid: int) -> tuple[dict[str, dict[int, str]], dict[int, int]]:
     app = f"{user_slice}/user@{uid}.service/app.slice"
     logins = sorted(name for name in os.listdir(user_slice) if is_login_scope(name))
     units, current = {}, {}
-    for unit, path in [(unit, f"{app}/{unit}") for unit in CORE_UNITS + DEV_UNITS] + [(name, f"{user_slice}/{name}") for name in logins]:
-        procs = {}
+    paths = [(unit, f"{app}/{unit}") for unit in CORE_UNITS + DEV_UNITS] + [(DAEMON, f"{app}/{TOOLS}")]
+    for unit, path in paths + [(name, f"{user_slice}/{name}") for name in logins]:
+        procs = units.setdefault(unit, {})
         pids = []
         for cg, _, _ in os.walk(path):
             pids += (read(f"{cg}/cgroup.procs") or "").split()
@@ -137,7 +140,6 @@ def snapshot(uid: int) -> tuple[dict[str, dict[int, str]], dict[int, int]]:
                 continue
             procs[pid] = comm.strip()
             current[pid] = int(adj)
-        units[unit] = procs
     return units, current
 
 

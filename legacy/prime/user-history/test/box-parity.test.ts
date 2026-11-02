@@ -113,8 +113,7 @@ test("the pi-pool panel rows take an account that needs a new sign-in as shared,
 });
 
 const deploy = join(import.meta.dirname, "../../../../deploy/linux");
-const layers = parseLayers(readFileSync(join(deploy, "cpu/setup-cpu.sh"), "utf8"), readFileSync(join(deploy, "cpu/cpu-protect.py"), "utf8"),
-  readFileSync(join(deploy, "memory/heavy"), "utf8"), 1001, readFileSync(join(deploy, "cpu/rcu-boost.service"), "utf8"), readFileSync(join(deploy, "cpu/rcu-boost.py"), "utf8"));
+const layers = parseLayers(readFileSync(join(deploy, "cpu/setup-cpu.sh"), "utf8"), readFileSync(join(deploy, "memory/heavy"), "utf8"), 1001, readFileSync(join(deploy, "cpu/rcu-boost.service"), "utf8"), readFileSync(join(deploy, "cpu/rcu-boost.py"), "utf8"));
 const context = (files: Record<string, string>, nice: Record<number, number> = {}, scope: "system" | "user" = "user"): LimitContext =>
   ({ scope, defaultTasksMax: "272774", memTotal: 1000, layers, read: path => files[path], niceOf: pid => nice[pid] });
 
@@ -137,7 +136,7 @@ test("unitLimits counts our unit files and runtime settings, and skips vendor fi
 test("unitLimits lists a setting the deploy/linux layer scripts set as owner-asked, and counts one that differs from them (owner's t84 answer 10-19)", () => {
   assert.equal(layers.weights.get("system user@1001.service"), "10000");
   assert.equal(layers.weights.get("user sieun-pi-chat.service"), "10000");
-  assert.deepEqual([layers.nice, layers.heavy], [{ unit: "prime-agent-daemon.service", value: -10 }, { swapMax: "0", score: 500 }]);
+  assert.deepEqual(layers.heavy, { swapMax: "0", score: 500 });
   const asked = (unit: Record<string, string>, ...rest: Parameters<typeof context>) => unitLimits(unit, context(...rest)).map(finding => [finding.key, Boolean(finding.ownerAsked)]);
   const dropin = "/etc/systemd/system/ssh.service.d/cpu-weight.conf";
   assert.deepEqual(asked({ Id: "ssh.service", DropInPaths: dropin, CPUWeight: "1000" }, { [dropin]: "CPUWeight=1000\n" }, {}, "system"), [["system ssh.service CPUWeight", true]]);
@@ -146,8 +145,8 @@ test("unitLimits lists a setting the deploy/linux layer scripts set as owner-ask
   assert.deepEqual(asked({ Id: "user@1001.service", CPUWeight: "10000" }, {}, {}, "system"), [["system user@N.service CPUWeight", true]]);
   assert.deepEqual(asked({ Id: "dev.slice", CPUWeight: "300" }, {}, {}, "system"), [["system dev.slice CPUWeight", false]]);
   const daemon = { Id: "prime-agent-daemon.service", ActiveState: "active", MainPID: "7", Nice: "0", CPUWeight: "10000" };
-  assert.deepEqual(asked(daemon, {}, { 7: -10 }), [["user prime-agent-daemon.service CPUWeight", true], ["user prime-agent-daemon.service nice", true]]);
-  assert.deepEqual(asked({ ...daemon, CPUWeight: "[not set]" }, {}, { 7: -5 }), [["user prime-agent-daemon.service nice", false]]);
+  assert.deepEqual(asked(daemon, {}, {}), [["user prime-agent-daemon.service CPUWeight", true]]);
+  assert.deepEqual(asked(daemon, {}, { 7: -10 }), [["user prime-agent-daemon.service CPUWeight", true], ["user prime-agent-daemon.service nice", false]]);
   const chat = unitLimits({ ...daemon, Id: "sieun-pi-chat.service", CPUWeight: "[not set]" }, context({}, { 7: -10 }));
   assert.equal(chat[0]!.ownerAsked, undefined);
   const heavy = { Id: "run-p904848-i92945148.scope", Description: "[systemd-run] /usr/bin/choom -n 500 -- npx jest --ci", MemoryMax: "800", MemorySwapMax: "0" };
@@ -174,12 +173,11 @@ test("rcu-boost.service's FIFO is owner-asked CPU layer 3, and rcu_boost_off fla
 });
 
 test("parseLayers refuses a layer script whose shape it does not know", () => {
-  assert.throws(() => parseLayers("declare -A OTHER=([a]=1)\n", "", "", 1001, "", ""), /no SYSTEM_WEIGHTS table/);
+  assert.throws(() => parseLayers("declare -A OTHER=([a]=1)\n", "", 1001, "", ""), /no SYSTEM_WEIGHTS table/);
   const cpu = "declare -A SYSTEM_WEIGHTS=([a]=1)\ndeclare -A USER_WEIGHTS=([b]=2)\n";
-  assert.throws(() => parseLayers(cpu, "DAEMON = \"x\"\n", "", 1001, "", ""), /no DAEMON or CORE_NICE/);
-  assert.throws(() => parseLayers(cpu, "DAEMON = \"x\"\nCORE_NICE = -10\n", "exec systemd-run --user --scope -- \"$@\"\n", 1001, "", ""), /heavy has no systemd-run/);
+  assert.throws(() => parseLayers(cpu, "exec systemd-run --user --scope -- \"$@\"\n", 1001, "", ""), /heavy has no systemd-run/);
   const heavy = readFileSync(join(deploy, "memory/heavy"), "utf8");
-  assert.throws(() => parseLayers(cpu, "DAEMON = \"x\"\nCORE_NICE = -10\n", heavy, 1001, "[Service]\n", "STALL_TIMEOUT_S = 21\n"), /rcu-boost.service has no CPUSchedulingPolicy/);
+  assert.throws(() => parseLayers(cpu, heavy, 1001, "[Service]\n", "STALL_TIMEOUT_S = 21\n"), /rcu-boost.service has no CPUSchedulingPolicy/);
 });
 
 test("foldName folds instance numbers and ids so one setting on many units counts once", () => {
