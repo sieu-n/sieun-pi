@@ -8,6 +8,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { getHeapStatistics } from "node:v8";
 import type { InsideProcess } from "../src/job-leftovers.ts";
 import { keepersOf, namedIn, namedSince, pruneCaches, sweepTmp, tmpEntries, type TmpEntry, type TmpSweepSource } from "../src/tmp-sweep.ts";
 
@@ -140,4 +141,21 @@ test("naming the entries of a 64 MB transcript never holds the event loop 100 ms
   clearInterval(tick);
   assert.equal(named.size, 2000);
   assert.ok(longest < 100, `the main thread ran ${longest.toFixed(0)} ms of CPU between two timer ticks (longest wall gap ${longestWall.toFixed(0)} ms)`);
+});
+
+// 11-02 us-metal02: at 14:25Z the sweep read 375 MB of the 36 loaded transcripts back to 10-28, the birth of its oldest stale entry, and decoded
+// each 4 MB chunk to a string, and the chat's loop stalled 1,009 ms around a 542 ms major GC (d7 clean_min_30). The chunks are searched as bytes.
+test("naming the entries of a 32 MB transcript allocates under an eighth of it on the JS heap", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "tmp-sweep-heap-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "s.jsonl");
+  const block = Array.from({ length: 1000 }, (_, i) => JSON.stringify({ type: "message", timestamp: "2026-10-18T12:00:00.000Z",
+    message: { content: [{ type: "text", text: `ran /tmp/job-${i}/run.py ` + "y".repeat(400) }] } })).join("\n") + "\n";
+  const size = 32 * 1024 ** 2;
+  writeFileSync(file, block.repeat(Math.ceil(size / block.length)));
+  const before = getHeapStatistics().total_allocated_bytes;
+  const named = await namedSince(file, Date.parse("2026-10-18T11:00:00Z"), "/tmp");
+  const allocated = getHeapStatistics().total_allocated_bytes - before;
+  assert.equal(named.size, 1000);
+  assert.ok(allocated < size / 8, `namedSince allocated ${(allocated / 1024 ** 2).toFixed(1)} MB on the JS heap for a ${size / 1024 ** 2} MB transcript`);
 });

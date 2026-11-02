@@ -131,31 +131,58 @@ export async function pruneCaches(root: string, beforeMs: number): Promise<numbe
 }
 
 const CHUNK = 4 * 1024 * 1024;
-const STAMP = /"timestamp":"(\d{4}-\d\d-\d\dT[\d:.]+Z)"/;
+const STAMP_KEY = Buffer.from('"timestamp":"');
+const STAMP = /^"timestamp":"(\d{4}-\d\d-\d\dT[\d:.]+Z)"/;
+/** The bytes of a name `namedIn` matches: TMP_NAME's characters. */
+const NAME_BYTE = new Uint8Array(128).map((_, code) => /[A-Za-z0-9._+@-]/.test(String.fromCharCode(code)) ? 1 : 0);
+
+/** Adds the names `namedIn` finds in `bytes` to `named`, searching the UTF-8 bytes so only the names are decoded. */
+function namesIn(bytes: Buffer, prefix: Buffer, named: Set<string>): void {
+  for (let at = bytes.indexOf(prefix); at !== -1;) {
+    let end = at + prefix.length;
+    while (end < bytes.length && NAME_BYTE[bytes[end]!] === 1) end++;
+    if (end > at + prefix.length) named.add(bytes.toString("latin1", at + prefix.length, end));
+    at = bytes.indexOf(prefix, Math.max(end, at + 1));
+  }
+}
+
+/** The first timestamp STAMP reads in `bytes`, in ms, or null. */
+function stampIn(bytes: Buffer): number | null {
+  for (let at = bytes.indexOf(STAMP_KEY); at !== -1; at = bytes.indexOf(STAMP_KEY, at + 1)) {
+    const stamp = STAMP.exec(bytes.toString("latin1", at, Math.min(bytes.length, at + 64)));
+    if (stamp) return Date.parse(stamp[1]!);
+  }
+  return null;
+}
 
 /**
  * The entries of `root` a transcript names in its tail back to the first line stamped before `sinceMs`, read from the end one chunk of whole
- * lines at a time, so each decode and match covers one chunk and a read sits between them. On 10-24 decoding and matching the whole tail at
- * once held the chat's event loop up to 298 ms (CPU profile pid626077).
+ * lines at a time into one buffer, so a read sits between two chunks' searches. On 10-24 decoding and matching the whole tail at once held the
+ * chat's event loop up to 298 ms (CPU profile pid626077). The bytes are searched as they are: at 14:25Z on 11-02 a sweep read 375 MB of 36
+ * transcripts back to 10-28, and decoding each chunk to a string preceded a 542 ms major GC in a 1,009 ms loop stall.
  */
 export async function namedSince(file: string, sinceMs: number, root: string, chunk = CHUNK): Promise<Set<string>> {
   const named = new Set<string>();
+  const prefix = Buffer.from(`${root}/`);
   const handle = await open(file, "r");
   try {
     const { size } = await handle.stat();
-    let rest = Buffer.alloc(0);
-    for (let end = size; end > 0;) {
-      const start = Math.max(0, end - chunk);
-      const buffer = Buffer.alloc(end - start);
-      await handle.read(buffer, 0, buffer.length, start);
-      end = start;
-      const lineStart = start === 0 ? 0 : buffer.indexOf(10) + 1;
-      if (start > 0 && lineStart === 0) { rest = Buffer.concat([buffer, rest]); continue; }
-      const text = Buffer.concat([buffer.subarray(lineStart), rest]).toString("utf8");
-      rest = buffer.subarray(0, lineStart);
-      for (const name of namedIn(text, root)) named.add(name);
-      const stamp = STAMP.exec(text.slice(0, 64 * 1024));
-      if (stamp && Date.parse(stamp[1]!) < sinceMs) break;
+    let buffer = Buffer.allocUnsafe(Math.max(1, Math.min(chunk, size)));
+    // A line longer than a chunk is read again with a chunk more room, and the chunk after it gets the usual room.
+    for (let end = size, room = chunk; end > 0;) {
+      const start = Math.max(0, end - room);
+      if (end - start > buffer.length) buffer = Buffer.allocUnsafe(end - start);
+      const read = buffer.subarray(0, end - start);
+      await handle.read(read, 0, read.length, start);
+      // `end` is the start of a line, so the bytes before the first newline belong to a line the next chunk reads whole.
+      const lineStart = start === 0 ? 0 : read.indexOf(10) + 1;
+      if (start > 0 && (lineStart === 0 || lineStart === read.length)) { room += chunk; continue; }
+      room = chunk;
+      const lines = read.subarray(lineStart);
+      namesIn(lines, prefix, named);
+      end = start + lineStart;
+      const stamp = stampIn(lines.subarray(0, 64 * 1024));
+      if (stamp !== null && stamp < sinceMs) break;
     }
     return named;
   } finally {

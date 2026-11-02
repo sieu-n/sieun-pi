@@ -260,25 +260,36 @@ function walk(items: readonly PlanItem[], visit: (item: PlanItem) => void): void
 }
 
 /**
- * Looks a row up by session id or name, as the first row that has either, the way `rows.find` would. The index is built once per rows array,
- * which every chat of one catalog projection shares: on 10-18 a linear find per open plan step over 2,582 rows took 45% of chatAgents and a
- * fifth of the chat service's main thread.
+ * Looks a row up by session id or name, as the first row that has either, the way `rows.find` would. On 10-18 a linear find per open plan step
+ * over 2,582 rows took 45% of chatAgents and a fifth of the chat service's main thread. Every chat of one catalog projection shares one rows
+ * array, and the next projection's rows update the same two maps in place: on 11-02 building them new for each projection's 8,900 rows was the
+ * largest share of what the chat promoted to the old generation (278 of 1,596 MB in 6 min on a scratch serve with the live chats), and the
+ * live chat ran a major GC nearly every minute.
  */
-const rowIndexes = new WeakMap<readonly AgentRow[], { byId: Map<string, number>; byName: Map<string, number> }>();
-function rowFinder(rows: readonly AgentRow[]): (who: string) => AgentRow | undefined {
-  let index = rowIndexes.get(rows);
-  if (!index) {
-    index = { byId: new Map(), byName: new Map() };
-    for (const [at, entry] of rows.entries()) {
-      if (!index.byId.has(entry.row.id)) index.byId.set(entry.row.id, at);
-      if (!index.byName.has(entry.row.name)) index.byName.set(entry.row.name, at);
-    }
-    rowIndexes.set(rows, index);
+const rowIndex = { rows: undefined as readonly AgentRow[] | undefined, byId: new Map<string, number>(), byName: new Map<string, number>(), mark: 0 };
+/** Each map's value is a row's position times two plus the mark of the rows it was set for, so a key the new rows lack is found and dropped. */
+function indexRows(rows: readonly AgentRow[]): void {
+  if (rowIndex.rows === rows) return;
+  const mark = rowIndex.mark ^ 1;
+  const { byId, byName } = rowIndex;
+  for (let at = 0; at < rows.length; at++) {
+    const { row } = rows[at]!;
+    const id = byId.get(row.id);
+    if (id === undefined || (id & 1) !== mark) byId.set(row.id, at * 2 + mark);
+    const name = byName.get(row.name);
+    if (name === undefined || (name & 1) !== mark) byName.set(row.name, at * 2 + mark);
   }
-  const { byId, byName } = index;
+  const drop = (value: number, key: string, map: Map<string, number>) => { if ((value & 1) !== mark) map.delete(key); };
+  byId.forEach(drop);
+  byName.forEach(drop);
+  rowIndex.rows = rows;
+  rowIndex.mark = mark;
+}
+function rowFinder(rows: readonly AgentRow[]): (who: string) => AgentRow | undefined {
   return who => {
-    const at = Math.min(byId.get(who) ?? Infinity, byName.get(who) ?? Infinity);
-    return at === Infinity ? undefined : rows[at];
+    indexRows(rows);
+    const at = Math.min(rowIndex.byId.get(who) ?? Infinity, rowIndex.byName.get(who) ?? Infinity);
+    return at === Infinity ? undefined : rows[at >> 1];
   };
 }
 
