@@ -133,6 +133,11 @@ export const pageRunsSql = (table: string, columns: string, runs: readonly [numb
  */
 export const REFRESH_SAMPLE_PCT = 0.2;
 export const REFRESH_SAMPLE_RUNS = 64;
+/**
+ * measured: on 11-02 the 64 runs read as one statement hit the 30 s statement_timeout at 22:47Z with prod Postgres at load 400 to 700, and
+ * at 22:5xZ the same 0.2% read as 8 statements of 8 runs answered in 5.1 to 9.6 s each, so each statement stays under the timeout.
+ */
+export const REFRESH_SAMPLE_CHUNKS = 8;
 export const REFRESH_PAGES_SQL = "SELECT pg_relation_size('instagram_census') / current_setting('block_size')::bigint AS pages";
 /** The weekly tier's floor (owner 10-26, "10K+ every week"), as the census reads it: no follower count reads as 0 (auto-sns-agent census policy.cadence). */
 export const WEEKLY_MIN_FOLLOWERS = 10_000;
@@ -654,9 +659,17 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
       const pages = num((await sqlRows(query, PG.prod, REFRESH_PAGES_SQL))[0]?.pages);
       const runs = pages ? pageRuns(pages, REFRESH_SAMPLE_PCT, REFRESH_SAMPLE_RUNS) : [];
       if (!runs.length) throw new Error("instagram_census answered no page count");
-      const row = (await sqlRows(query, PG.prod, refreshSql(runs)))[0];
-      if (!row) throw new Error("the instagram_census page sample answered no row");
-      return [{ read: num(row.read) ?? 0, readBig: num(row.readBig) ?? 0, past7Big: num(row.past7Big) ?? 0, past30Rest: num(row.past30Rest) ?? 0 }];
+      const size = Math.ceil(runs.length / REFRESH_SAMPLE_CHUNKS);
+      const samples: RefreshSample[] = [];
+      let failure: unknown = null;
+      for (let at = 0; at < runs.length; at += size) {
+        try {
+          const row = (await sqlRows(query, PG.prod, refreshSql(runs.slice(at, at + size))))[0];
+          if (row) samples.push({ read: num(row.read) ?? 0, readBig: num(row.readBig) ?? 0, past7Big: num(row.past7Big) ?? 0, past30Rest: num(row.past30Rest) ?? 0 });
+        } catch (error) { failure ??= error; }
+      }
+      if (!samples.length) throw failure ?? new Error("the instagram_census page sample answered no row");
+      return samples;
     }),
   ]);
   const [panels, panelDeployLock] = await Promise.all([step("dashboards", () => readPanels(api)),
