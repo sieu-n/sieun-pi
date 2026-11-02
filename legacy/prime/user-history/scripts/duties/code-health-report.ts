@@ -181,6 +181,8 @@ shutil.copyfile(store, copy)
 if os.path.exists(store + ".wal"):
     shutil.copyfile(store + ".wal", copy + ".wal")
 con = duckdb.connect(copy, read_only=True)
+# DuckDB draws its progress bar on stdout for a query past 2 s, and on 2026-11-02 22:37Z that bar broke this JSON line.
+con.execute("SET enable_progress_bar = false")
 days = {}
 for n in range(count):
     day = today - dt.timedelta(days=n)
