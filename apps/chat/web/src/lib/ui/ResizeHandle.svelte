@@ -25,11 +25,13 @@
     const startX = e.clientX;
     const startSize = size;
     const target = e.currentTarget as HTMLElement;
+    // clientX is in client pixels and size in CSS pixels; the interface size's root zoom (lib/shell/zoom.ts) makes one CSS pixel this many.
+    const scale = target.offsetWidth ? target.getBoundingClientRect().width / target.offsetWidth : 1;
     target.setPointerCapture(e.pointerId);
     dragging = true;
     let last = startSize;
     const move = (ev: PointerEvent) => {
-      const dx = ev.clientX - startX;
+      const dx = (ev.clientX - startX) / scale;
       last = clamp(edge === "start" ? startSize + dx : startSize - dx);
       onresize(last);
     };

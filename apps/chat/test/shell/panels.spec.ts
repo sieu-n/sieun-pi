@@ -34,6 +34,18 @@ test("the sidebar is 260 px, drags between 220 and 520 px, and keeps its width",
   expect(await width(page, nav)).toBe(220);
 });
 
+test("at 120% interface size the sidebar edge follows the pointer", async ({ page }) => {
+  await page.evaluate(() => localStorage.setItem("chat.interfaceScale", "1.2"));
+  await page.goto("/#/c/ch_general");
+  await page.reload();
+  const nav = 'nav[aria-label="Conversations"]';
+  await expect(page.locator(nav)).toBeVisible({ timeout: 15_000 });
+  const before = await width(page, nav);
+  expect(before).toBe(312);
+  await drag(page, "Resize sidebar", 120);
+  expect(await width(page, nav)).toBe(before + 120);
+});
+
 test("the sidebar toggle hides and shows the sidebar", async ({ page }) => {
   await page.goto("/#/c/ch_general");
   await page.getByRole("button", { name: "Hide sidebar" }).click();
