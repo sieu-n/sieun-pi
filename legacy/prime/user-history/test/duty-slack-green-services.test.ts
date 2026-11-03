@@ -23,3 +23,18 @@ test("the 10-30 outage reads every page failing while the worker and the owner's
   assert.equal(output.metrics.deploy_problems, 0);
   assert.equal(output.metrics.owner_slack_green, 1);
 });
+
+test("failed main runs alone make deploy_problems a day's window that ages out, and a live problem does not", () => {
+  const base = { pages: PAGES.map(spec => page(spec.key)), routes: [], errors: [], presence: { presence: "active", online: true, connectionCount: 1 },
+    worker: { status: "SUCCESS", deployAt: NOW - 3_600_000, lastActiveAt: NOW - 30_000, activeLines: 200 } };
+  const failedAt = NOW - 2 * 3_600_000;
+  const checks = servicesOutput({ ...base, deploys: { metrics: { commits_not_live: 0, main_checks_failed_24h: 4, railway_not_live: 0, vercel_not_live: 0, source_errors: 0 },
+    flagged: [], lastEventAt: { main_checks_failed_24h: failedAt } } }, NOW);
+  assert.equal(checks.metrics.deploy_problems, 4);
+  assert.deepEqual(checks.lastEventAt, { deploy_problems: failedAt });
+  assert.deepEqual(checks.windowMs, { deploy_problems: 24 * 3_600_000 });
+  const late = servicesOutput({ ...base, deploys: { metrics: { commits_not_live: 1, main_checks_failed_24h: 4, railway_not_live: 1, vercel_not_live: 0, source_errors: 0 },
+    flagged: [], lastEventAt: { main_checks_failed_24h: failedAt } } }, NOW);
+  assert.equal(late.metrics.deploy_problems, 5);
+  assert.equal(late.windowMs, undefined);
+});

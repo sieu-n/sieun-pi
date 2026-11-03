@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { type DeployDeps, type DeployState, type Exec, exec, measureDeploys, railwayToken } from "./slack-green-deploys.ts";
+import { CHECKS_WINDOW_MS, type DeployDeps, type DeployState, type Exec, exec, measureDeploys, railwayToken } from "./slack-green-deploys.ts";
 import { parseEnv } from "./local-dev-uptime.ts";
 import { vercelToken } from "./vercel-login.ts";
 
@@ -109,8 +109,12 @@ export function servicesOutput(read: Readings, now: number): PrecheckOutput {
   for (const hit of walked5xx) flagged.push({ at: now, kind: "api_failing", excerpt: `${hit} during the page walk` });
 
   const failedAt = deploys?.lastEventAt?.main_checks_failed_24h;
+  // When failed main runs are all deploy_problems counts, it is a day's window that ages out, so it names that window: without it, d9 and
+  // duty-fleet read the 4 failed runs of 11-03 (a vercel-render-check timeout fixed by 97dd3a2 at 14:52Z) as a stuck duty with no clear time.
+  const onlyChecks = deployProblems > 0 && deployProblems === checksFailed;
   return { metrics: { pages_failing: pagesFailing, deploy_problems: deployProblems, owner_slack_green: green, api_routes_failing: routesFailing,
-    source_errors: read.errors.length }, flagged, ...failedAt === undefined ? {} : { lastEventAt: { deploy_problems: failedAt } } };
+    source_errors: read.errors.length }, flagged, ...failedAt === undefined ? {} : { lastEventAt: { deploy_problems: failedAt } },
+    ...onlyChecks && failedAt !== undefined ? { windowMs: { deploy_problems: CHECKS_WINDOW_MS } } : {} };
 }
 
 /** The aside-browser box runner: a headful Chrome on its own Xvfb display, driven by JSON lines on stdin and stdout. */
