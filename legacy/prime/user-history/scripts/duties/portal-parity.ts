@@ -368,11 +368,13 @@ export function routeVerdict(route: Route, ops: Map<string, Operation> | null, b
   if (!ops) return "unprobed";
   const listed = route.portal.filter(op => ops.has(baseOp(op)));
   if (!listed.length) return "missing";
+  // A route works only when none of its called operations fails: 18 /v1/crawl presets share POST /api/crawl/fetch, and on 11-02 from 21:20Z
+  // GET /v1/crawl/taplink/page answered 502 on prod while the other 17 passed, so "any ok" scored the route working and d2 read 100.
   const results = listed.map(op => byOp.get(op));
-  if (results.some(result => result?.verdict === "ok")) return "works";
-  if (results.every(result => result?.verdict === "skipped")) return "skipped";
   if (results.some(result => result?.verdict === "portal")) return "portal";
   if (results.some(result => result?.verdict === "crawler")) return "crawler";
+  if (results.some(result => result?.verdict === "ok")) return "works";
+  if (results.every(result => result?.verdict === "skipped")) return "skipped";
   return "unprobed";
 }
 

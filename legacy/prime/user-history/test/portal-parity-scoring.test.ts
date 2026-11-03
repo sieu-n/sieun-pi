@@ -91,6 +91,20 @@ test("an env whose crawler openapi is unread has an unmeasured share and adds no
   assert.equal(metrics.prod_working_pct, 100);
 });
 
+test("a route whose presets share one crawler path fails when one preset fails, even while the others work", () => {
+  // 11-02 21:20Z on: prod GET /v1/crawl/taplink/page answered 502 while the other POST /api/crawl/fetch presets passed, and d2 read 100.
+  const FETCH: Route = { crawler: "POST /api/crawl/fetch", group: "jobs_crawl", portal: ["GET /v1/crawl/linktree/page", "GET /v1/crawl/taplink/page"] };
+  const both = doc("GET /v1/crawl/linktree/page", "GET /v1/crawl/taplink/page");
+  const broken: ProbeResult = { op: "GET /v1/crawl/taplink/page", verdict: "crawler", status: 502, ms: 24600, code: "upstream_error", note: "docs example" };
+  const { metrics } = run({
+    routes: [FETCH], crawler: { prod: doc(FETCH.crawler), staging: doc(FETCH.crawler) }, docs: { prod: both, staging: both },
+    probes: { prod: [ok("GET /v1/crawl/linktree/page"), broken], staging: [ok("GET /v1/crawl/linktree/page"), ok("GET /v1/crawl/taplink/page")] },
+  });
+  assert.equal(metrics.prod_working_pct, 0);
+  assert.equal(metrics.staging_working_pct, 100);
+  assert.equal(metrics.routes_failing_crawler, 1);
+});
+
 test("the route map holds unique entries per env and names only real envs", () => {
   const { routes } = JSON.parse(readFileSync(new URL("../scripts/duties/portal-parity.routes.json", import.meta.url), "utf8")) as { routes: Route[] };
   for (const env of ["prod", "staging"] as const) {
