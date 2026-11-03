@@ -10,15 +10,15 @@
  * It also runs Prime's own refinement.ts from that commit, unchanged, on the fixture in packages/pi-host/test/fixtures/prime-harness and writes
  * its digests, fingerprints and update to expected.json there, which test/durable/prime-harness.test.ts holds pi-host's digest to.
  *
- * --repo defaults to ~/work/prime-agent-fix-p8/repo. --ref defaults to the commit whose message is `build: version <v>`, where <v> is the
- * version in the folder name of the release `~/.local/share/prime-agent/bin/prime-agent` points to. --check writes nothing and exits 1
- * when the file differs from what the ref gives, so a Prime update that changes the digest code shows up.
+ * --repo defaults to ~/work/prime-agent-fix-p8/repo. --ref defaults to the buildId that `prime-agent status --json` reports for the default
+ * daemon, which is the commit its release was built from. --check writes nothing and exits 1 when the file differs from what the ref gives,
+ * so a Prime update that changes the digest code shows up.
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { tsImport } from "tsx/esm/api";
 
@@ -29,11 +29,17 @@ const out = join(root, "packages/pi-host/src/durable/vendor/prime-harness.ts");
 const fixture = join(root, "packages/pi-host/test/fixtures/prime-harness");
 const git = (...args) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", maxBuffer: 64 << 20 });
 
-const release = basename(dirname(realpathSync(join(homedir(), ".local/share/prime-agent/bin/prime-agent"))));
-const version = /^(.*)-linux-x64-[0-9a-f]+$/.exec(release)?.[1] ?? release;
-const ref = values.ref ?? git("log", "--all", "--format=%H", "-1", "--fixed-strings", `--grep=build: version ${version}`).trim();
-if (!ref) throw new Error(`no commit "build: version ${version}" in ${repo}; pass --ref`);
-const sha = git("rev-parse", `${ref}^{commit}`).trim();
+const daemons = JSON.parse(execFileSync(join(homedir(), ".local/share/prime-agent/bin/prime-agent"), ["status", "--json"], { encoding: "utf8" }));
+const daemon = daemons.find(d => d.isDefault) ?? daemons[0];
+if (!values.ref && !/^[0-9a-f]{40}$/.test(daemon?.buildId ?? "")) throw new Error(`prime-agent status --json names no default daemon with a commit buildId; pass --ref`);
+const version = daemon?.version ?? "unknown";
+const ref = values.ref ?? daemon.buildId;
+let sha;
+try {
+  sha = git("rev-parse", "--verify", "--quiet", `${ref}^{commit}`).trim();
+} catch {
+  throw new Error(`commit ${ref} (${version}) is not in ${repo}; fetch it there or pass --ref`);
+}
 
 /** The file's top-level declarations by name, each with the comment right above it, as the source writes them. */
 function declarations(path) {
@@ -69,7 +75,8 @@ const SOURCES = {
     "CJK_TERM_PATTERN", "CJK_TERM_SPLIT", "WORD_RUN", "COMPOUND_RUN", "HARNESS_QUERY_STOPWORDS", "HARNESS_BM25_K1", "HARNESS_BM25_B",
     "DIGITS_ONLY", "isCjkSegment", "isNumberedPhrase", "stemHarnessWord", "restoreStemEnd", "isConsonant", "hasVowel", "porterMeasure",
     "endsConsonantVowelConsonant", "harnessQueryTerms", "harnessDigestQueryTerms", "SearchableField", "SearchableEntry", "searchableField",
-    "searchableEntry", "countSubstring", "termCount", "TermMatch", "termMatch", "entryMatches", "corpusIdf", "scoreHarnessEntries",
+    "stemCache", "STEM_CACHE_WORDS", "cachedStem", "searchableFieldCache", "SEARCHABLE_FIELD_CACHE_TEXTS", "cachedSearchableField",
+    "searchableEntry", "countSubstring", "ScannedTerm", "scannedTerm", "scannedCount", "TermMatch", "entryMatches", "corpusIdf", "scoreHarnessEntries",
     "compareHarnessEntryIdentity", "formatHarnessStateForPrompt", "harnessEntryKey", "formatHarnessEntryLine", "formatHarnessRefinementLine",
     "RENDERED_ENTRY_LINE", "REMOVED_ENTRY_LINE", "deliveredHarnessEntryLines", "changedAtOrAfter", "formatHarnessDigestDelta",
     "harnessDigestFingerprint",
