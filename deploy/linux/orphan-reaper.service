@@ -1,0 +1,8 @@
+[Unit]
+Description=orphan-reaper: stop the processes whose owning Prime session ended over 1 h ago, the d2 reaper of the VPS and dev boxes duty (src/orphan-reaper.ts)
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/src/sieun-pi/legacy/prime/user-history
+ExecStart=%h/.local/node/bin/node --import tsx scripts/orphan-reap.ts

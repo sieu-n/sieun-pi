@@ -1,7 +1,8 @@
 // Guards p661 (10-31): a Mac job's Chrome driver ran 2 days on us-metal02 after its job ended, so d2 stops a process only when its own env or its
 // group names a session that ended over 1 h ago, and lists a group with no owner without signalling it.
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -250,4 +251,15 @@ test("a Mac owner's transcript is found through a login shell that fails on an u
     assert.equal(verdicts.get(`mac/${JOB}`)?.state, "ended");
     assert.equal(hosts("Mac"), "mac");
   } finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test("the reaper runs on its own timer at least once per ENDED_FOR_MS, not only in the daily d2 run", async () => {
+  // 11-03: box Chrome runners of Mac jobs that ended 1 to 10.6 h before still held 2.2 GB, because only the daily d2 run reaped.
+  const deploy = new URL("../../../../deploy/linux/", import.meta.url);
+  const timer = await readFile(new URL("orphan-reaper.timer", deploy), "utf8");
+  const minutes = Number(/^OnUnitInactiveSec=(\d+)min$/m.exec(timer)?.[1]);
+  assert.ok(minutes > 0 && minutes * 60_000 <= ENDED_FOR_MS, `orphan-reaper.timer runs every ${minutes} min`);
+  const service = await readFile(new URL("orphan-reaper.service", deploy), "utf8");
+  const script = /^ExecStart=.* (scripts\/\S+\.ts)$/m.exec(service)?.[1];
+  assert.ok(script && existsSync(new URL(`../${script}`, import.meta.url)), `orphan-reaper.service runs ${script}`);
 });

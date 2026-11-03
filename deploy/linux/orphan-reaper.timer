@@ -1,0 +1,11 @@
+[Unit]
+Description=Run orphan-reaper 15 minutes after the last run ends, so a leftover stops within about 1 h 15 min of its owner's end instead of at the next daily d2 run
+
+[Timer]
+OnBootSec=10min
+# measured: on 2026-11-03 at 11:40Z box Chrome runners of Mac jobs that ended 1 to 10.6 h before held 2.2 GB under the daily d2 run, and one read took 62 s wall, so a pass 15 min after the last costs about 7% of one of the box's 80 cores
+OnUnitInactiveSec=15min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
