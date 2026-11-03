@@ -128,6 +128,37 @@ print("ok")
   assert.ok(!existsSync(outside));
 });
 
+test("a pi-host job deletes its own ~/scratch/<thread>-<conversation> folder and the trees its owned.json records, and nothing of another pi job", () => {
+  // 11-03: pi jobs 72ba1ed2-...-24920 and -24956 could not rm -r their own folders, even after board.own recorded them, since the guard looked
+  // for session folders only under ~/.prime/agent/session-artifacts and pi-host keeps them under pi-host/durable/session-artifacts.
+  const thread = "72ba1ed2-e04e-4284-a4da-3547edb6a3d9";
+  const artifacts = join(home, ".prime/agent/pi-host/durable/session-artifacts");
+  const own = join(artifacts, `${thread}-24920`);
+  const other = join(artifacts, `${thread}-24956`);
+  for (const dir of [own, other]) mkdirSync(dir, { recursive: true });
+  for (const name of [`${thread}-24920/walk`, "pi-rig/tree", `${thread}-24956/pw`, "pi-other-rig/tree"]) mkdirSync(join(scratch, name), { recursive: true });
+  writeFileSync(join(own, "owned.json"), JSON.stringify({ paths: [join(scratch, "pi-rig")], units: [] }));
+  writeFileSync(join(other, "owned.json"), JSON.stringify({ paths: [join(scratch, "pi-other-rig")], units: [] }));
+  const run = kernel(`
+import os, shutil, subprocess
+def attempt(label, call):
+    try:
+        call()
+        print(label, "ran")
+    except PermissionError as error:
+        print(label, "refused", type(error).__name__, "${thread}-24956" in str(error))
+os.makedirs(os.path.expanduser("~/scratch/${thread}-24920/made"))
+attempt("own", lambda: subprocess.run("rm -rf ~/scratch/${thread}-24920", shell=True, check=True))
+attempt("recorded", lambda: shutil.rmtree(os.path.expanduser("~/scratch/pi-rig")))
+attempt("sibling", lambda: subprocess.run(["rm", "-r", os.path.expanduser("~/scratch/${thread}-24956")]))
+attempt("sibling-record", lambda: os.system("rm -rf ~/scratch/pi-other-rig"))
+`, { RLM_SESSION_DIR: own, PRIME_AGENT_CODING_AGENT_DIR: join(home, ".prime/agent"), PI_HOST_SESSION_ID: `${thread}-24920` });
+  assert.deepEqual(run.stdout.trim().split("\n").map((line) => line.trim()), ["own ran", "recorded ran", "sibling refused TreeRefused True", "sibling-record refused TreeRefused True"]);
+  assert.deepEqual(JSON.parse(readFileSync(join(own, "owned.json"), "utf8")).paths, [join(scratch, "pi-rig")]);
+  for (const name of [`${thread}-24920`, "pi-rig"]) assert.ok(!existsSync(join(scratch, name)), name);
+  for (const name of [`${thread}-24956/pw`, "pi-other-rig/tree"]) assert.ok(existsSync(join(scratch, name)), name);
+});
+
 test("a command over ssh to another box in hosts.json records the ~/scratch trees it made there for that box, and nothing that was there or it only named", () => {
   // 10-20: Mac jobs held 22.4 GB of trees on us-metal02 that they made over ssh, such as ~/scratch/flow-at-scale-convex-scale, and no record named.
   mkdirSync(session, { recursive: true });

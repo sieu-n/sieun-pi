@@ -296,11 +296,19 @@ async function keepReason(path: string, start: number): Promise<string | null> {
   return null;
 }
 
-/** The ownership records under `artifactsRoot` other than `own`, read for the paths they name (`readOwned`). */
+/** The outermost session-artifacts folder above a record, such as pi-host's `<agent dir>/pi-host/durable/session-artifacts`, or null. */
+function artifactsAbove(file: string): string | null {
+  const cut = file.indexOf("/session-artifacts/");
+  return cut > 0 ? file.slice(0, cut + "/session-artifacts".length) : null;
+}
+
+/** The ownership records under `artifactsRoot`, and under the session-artifacts folders that hold `own`, other than `own`, read for the paths they name (`readOwned`). */
 function otherRecords(own: readonly string[]): Promise<string[]> {
   const skip = new Set(own);
+  const roots = [...new Set([artifactsRoot(), ...own.map(artifactsAbove).filter((root): root is string => root !== null)])].filter(root => existsSync(root));
+  if (!roots.length) return Promise.resolve([]);
   return new Promise(resolve => {
-    hostExecFile("find", [artifactsRoot(), "-name", OWNED_FILE, "-type", "f"], { maxBuffer: 16 * 1024 * 1024 }, async (_error, stdout) => {
+    hostExecFile("find", [...roots, "-name", OWNED_FILE, "-type", "f"], { maxBuffer: 16 * 1024 * 1024 }, async (_error, stdout) => {
       const files = String(stdout).split("\n").filter(file => file && !skip.has(file));
       const records = await Promise.all(files.map(file => readOwned(file).then(record => ({ file, paths: record.paths }))));
       resolve(records.flatMap(record => record.paths.map(path => `${path}\0${dirname(record.file)}`)));
@@ -320,7 +328,7 @@ const keptNotes = (kept: ReadonlyMap<string, string>): string[] => [...kept].map
  * boxes come back as `away` and stay in the records, for the box that runs the cleanup over ssh (`hostLeftovers`).
  */
 async function endOwned(source: LeftoverSource, files: readonly string[], dirs: readonly string[], sessions: readonly string[]): Promise<{ owned: readonly string[]; units: readonly string[]; elsewhere: readonly string[]; away: Record<string, string[]>; kept: readonly string[]; containers: readonly string[] }> {
-  const folders = sessions.filter(session => SESSION.test(session)).flatMap(session => jobFolders(session, homedir()));
+  const folders = sessions.filter(session => JOB_SESSION.test(session)).flatMap(session => jobFolders(session, homedir()));
   if (!files.length && !folders.length) return { owned: [], units: [], elsewhere: [], away: {}, kept: [], containers: [] };
   const records = await Promise.all(files.map(file => readOwned(file, dirs)));
   const wanted = [...new Set(records.flatMap(record => record.units))];
@@ -837,6 +845,8 @@ export type RemoteLeftovers = (host: Host, args: readonly string[]) => Promise<L
 /** A session-artifacts path below `artifactsRoot` as the CLI takes it, `<session>[/sub-...]`; null for anything else. */
 const ARTIFACT_PATH = /^[0-9a-f-]{36}(\/sub-[0-9a-f]+)*$/;
 const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** A job's session id whose own folders its end deletes: Prime's, or a pi-host job's `<thread>-<conversation>` (pi-host agent-profile.ts `harnessSessionOf`). */
+const JOB_SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(-[0-9]+)?$/;
 
 /**
  * Ends a gone job's leftovers on the box whose daemon runs the session that owns its folder, the first name below `artifactsRoot` (a chat for its

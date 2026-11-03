@@ -43,8 +43,10 @@ KERNEL = os.getpid()
 NAMED = re.compile(r"(?:~|\$HOME\b|\$\{HOME\}|" + re.escape(HOME) + r")/scratch/[^\s'\"`;|&()<>{}]+")
 GLOB = re.compile(r"[*?\[]")
 # ~/scratch/<session id>/ is the folder the job line gives a job (chat-brief.ts jobScratch), and that job's end deletes it, so a subagent that
-# makes its job's folder first never records it as its own.
-SESSION_FOLDER = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+# makes its job's folder first never records it as its own. A pi-host job's session id is <thread>-<conversation> (agent-profile.ts
+# harnessSessionOf), which its kernel gets as PI_HOST_SESSION_ID.
+SESSION_FOLDER = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:-[0-9]+)?$")
+PI_SESSION = os.environ.get("PI_HOST_SESSION_ID", "")
 watched: dict = {}
 mine: set = set()
 lock = threading.Lock()
@@ -178,7 +180,7 @@ def remote_missing(text: str) -> list:
                 break
             current += "/" + part
             chain.append(current)
-        if chain and not SESSION_FOLDER.match(chain[0][len("scratch/"):]):
+        if chain and not SESSION_ID.match(chain[0][len("scratch/"):]):
             named.append(chain)
     if not named:
         return []
@@ -403,7 +405,12 @@ def install() -> None:
 # the first one named.
 _ARTIFACT_DIRS = list(dict.fromkeys(os.path.join(os.path.expanduser(d), "session-artifacts") for d in (
     os.environ.get("PRIME_AGENT_CODING_AGENT_DIR"), os.environ.get("PI_CODING_AGENT_DIR"), os.path.join(HOME, ".prime", "agent")) if d))
-ARTIFACTS = next((d for d in _ARTIFACT_DIRS if os.path.normpath(SESSION).startswith(d + "/")), _ARTIFACT_DIRS[0])
+# pi-host keeps a conversation's folder in <agent dir>/pi-host/durable/session-artifacts/<thread>-<conversation>, which none of those holds, so
+# the outermost session-artifacts folder above the session comes next. Before it, a pi job's guard read no owned.json at all and refused on 11-03
+# the rm -r of ~/scratch/72ba1ed2-e04e-4284-a4da-3547edb6a3d9-24920, which that job had recorded with board.own.
+_SESSION_PARTS = os.path.normpath(SESSION).split("/")
+ARTIFACTS = next((d for d in _ARTIFACT_DIRS if os.path.normpath(SESSION).startswith(d + "/")),
+                 "/".join(_SESSION_PARTS[:_SESSION_PARTS.index("session-artifacts") + 1]) if "session-artifacts" in _SESSION_PARTS[:-1] else _ARTIFACT_DIRS[0])
 # Prime names a transcript <id>.jsonl, and Pi names a root's <timestamp>_<id>.jsonl.
 TRANSCRIPT_NAME = re.compile(r"^(?:[^_/]+_)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
 SUBAGENT_FOLDER = re.compile(r"^sub-[0-9a-f]+$")
@@ -490,6 +497,8 @@ def refusal(path: str):
     for folder in dirs:
         allowed.update(owned_in(folder))
         allowed.update(os.path.join(SCRATCH, sid) for sid in session_ids(folder))
+    if SESSION_FOLDER.match(PI_SESSION):
+        allowed.add(os.path.join(SCRATCH, PI_SESSION))
     if path != SCRATCH and within(path, allowed):
         return None
     owner = other_owner(path, dirs)

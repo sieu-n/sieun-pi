@@ -771,7 +771,7 @@ export class DurableThreads {
    * request reads for the tools' environment and Prime's prompt, and into the row, which the open file's chat extension and kernels read.
    */
   async set(id: string, change: { name?: string; model?: ModelRef; thinkingLevel?: ModelThinkingLevel; archived?: boolean; cwd?: string }): Promise<ThreadInfo> {
-    this.info(id);
+    const before = this.info(id);
     if (change.cwd !== undefined) {
       if (!isAbsolute(change.cwd)) throw new Error(`cwd must be an absolute path, got ${JSON.stringify(change.cwd)}`);
       if (!existsSync(change.cwd) || !statSync(change.cwd).isDirectory()) throw new Error(`cwd ${change.cwd} is not a folder on this box`);
@@ -791,6 +791,8 @@ export class DurableThreads {
       ...(change.archived === undefined ? {} : { archived: change.archived }),
       updatedAt: this.now(),
     });
+    // An archive ends the thread's jobs, as Prime's chat service ends an archived job's leftovers (`DurableRlm.endThread`).
+    if (change.archived === true && !before.archived) void this.options.rlm?.endThread(id, this.fileOf(id)).catch(error => this.log(`${id} job ends failed: ${error instanceof Error ? error.message : String(error)}`));
     return this.info(id);
   }
 

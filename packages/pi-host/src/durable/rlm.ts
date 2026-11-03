@@ -23,7 +23,7 @@
  * `agent_observe` reads another pi-host thread's root through `RlmThread.observeRoot` (its run, messages, live rlm children and turn-queue
  * place) without submitting anything to it; a listing reads only the files already open.
  */
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
@@ -44,6 +44,7 @@ import { Kernel, KernelBusyError, relayPaths, type CellResult, type HostRequest,
 import { BUS_SKILLS, kernelPython, pythonSkillOf, RLM_SKILLS, RUNTIME_SRC, type PythonSkill } from "../../../pi-rlm/src/core/python.ts";
 import { NOTE_INTERVAL_MS } from "../../../pi-rlm/src/pi/children.ts";
 import piRlm, { baseEnv, BUSY_NO_UI, formatCell, KERNEL_RESET, noticeMessage, restoreLine, SNAPSHOT_LIMITS, STILL_RUNNING, type Notice } from "../../../pi-rlm/src/pi/index.ts";
+import type { Leftovers, LeftoverSource } from "../../../../legacy/prime/user-history/src/job-leftovers.ts";
 import { withKernelGuard } from "../../../sieun-rules/src/kernel-guard.ts";
 import { enabled } from "../../../sieun-rules/src/log.ts";
 import { conversationHarnessDir, dropAgentRole, harnessSessionOf, threadAgent } from "./agent-profile.ts";
@@ -200,6 +201,8 @@ export interface DurableRlmOptions {
   venvRoot?: string;
   /** apps/chat's URL, which the board skill reads and writes this thread's board through; default `PI_HOST_CHAT_URL`, else :5184. */
   chatUrl?: string;
+  /** What a job's end stops and deletes through (`endJob`); default Prime's `leftoverSource`. */
+  leftovers?: LeftoverSource;
   log?: (line: string) => void;
 }
 
@@ -781,7 +784,43 @@ export class DurableRlm {
     await harness.commit(async tx => { Object.assign(await tx.doc(RlmChildDoc, child.id as ConversationId), { deleted: true, status: "cancelled", endedAt: Date.now() }); }, context);
     await (await harness.conversation(child.id as ConversationId, context))?.abort(context, { background: true });
     await this.closeSlot(slot.thread.id, child.id);
+    const parents = new Map((await this.records(slot.thread)).map(record => [record.id as number, record.owner?.conversationId as number | undefined]));
+    const under = (id: number) => { for (let at = parents.get(id), n = 0; at !== undefined && n < 64; at = parents.get(at), n++) if (at === child.id) return true; return false; };
+    for (const id of [child.id, ...[...parents.keys()].filter(under)]) {
+      if (id !== child.id && (await harness.snapshot(LiveDoc, id as ConversationId, context))?.run) continue;
+      if (id !== child.id) await this.closeSlot(slot.thread.id, id);
+      await this.endJob(slot.thread.id, slot.thread.file, id);
+    }
     return { ...row, status: "completed", active_session_id: null };
+  }
+
+  /**
+   * A job's end, as Prime's chat service ends a deleted or archived job (user-history src/job-leftovers.ts `endLeftovers`): it stops the units
+   * and deletes the paths the conversation's owned.json records, and deletes its own ~/scratch/<session id> and /drive2/<user>/scratch/<session id>
+   * folders, keeping a path a process still uses. Before this, a pi job's end deleted nothing, and on 11-03 jobs 24920 and 24956 of thread
+   * 72ba1ed2 left their folders. A failure is logged and never fails the delete or archive.
+   */
+  async endJob(threadId: string, threadFile: string, conversation: number): Promise<Leftovers | undefined> {
+    const session = harnessSessionOf(threadId, conversation);
+    try {
+      const leftovers = await import("../../../../legacy/prime/user-history/src/job-leftovers.ts");
+      const left = await leftovers.endLeftovers(this.options.leftovers ?? leftovers.leftoverSource, artifactDirOf(threadFile, threadId, conversation), session);
+      if (left.owned.length || left.units.length || left.kept?.length) this.log(`${session} ended: deleted ${left.owned.join(", ") || "nothing"}${left.units.length ? `, stopped ${left.units.join(", ")}` : ""}${left.kept?.length ? `, kept ${left.kept.join("; ")}` : ""}`);
+      return left;
+    } catch (error) {
+      this.log(`${session}: job end failed: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  }
+
+  /** The end of every conversation of an archived thread that has a session folder (`endJob`). */
+  async endThread(threadId: string, threadFile: string): Promise<void> {
+    const prefix = `${threadId}-`;
+    const dir = join(dirname(dirname(threadFile)), "session-artifacts");
+    for (const entry of existsSync(dir) ? readdirSync(dir, { withFileTypes: true }) : []) {
+      const conversation = entry.isDirectory() && entry.name.startsWith(prefix) ? Number(entry.name.slice(prefix.length)) : NaN;
+      if (Number.isInteger(conversation) && conversation > 0) await this.endJob(threadId, threadFile, conversation);
+    }
   }
 
   private async closeSlot(threadId: string, conversation: number): Promise<void> {
