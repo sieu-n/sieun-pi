@@ -207,7 +207,8 @@ export class GroupRooms {
     const posts = this.store.postsOf(row.id);
     const mark = this.deps.state.state.reads[row.id]?.seq ?? 0;
     const last = posts.at(-1);
-    const unseen = posts.filter(p => p.seq > mark && p.author !== "owner");
+    // As in Slack, a thread reply leaves the room read: the thread's reply count and For you show it, and opening the room marks read only its top-level posts.
+    const unseen = posts.filter(p => p.seq > mark && p.author !== "owner" && !p.threadRoot);
     const working = this.commThreads(row).filter(c => this.deps.threads.statusOfConversation(c.thread, 1) === "working")
       .map(c => ({ id: c.agent.id, name: this.deps.threads.principal(c.agent.id).name }));
     // In a Solo room every post is about the owner's agenda; in a channel only a post that names him counts as unread.
