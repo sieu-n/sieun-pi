@@ -27,7 +27,7 @@ import { hostUpdateSpans, readUpdateSpans, type UpdateSpan } from "../../src/pri
 import { deliveryCandidates, outboxLandings, readSessionMarks, type SlotWaitTimeout, splitSlotWaits } from "../../src/slot-wait-timeouts.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { effectiveRun, metricStreaks, missStreak, newestReading } from "../../src/shared/duty-streak.ts";
-import { readCallLogs, readPrimeCalls } from "./prime-call-logs.ts";
+import { type PrimeEvent, primeWords, readCallLogs, readPrimeEvents } from "./prime-call-logs.ts";
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
 import { boardMetricsClean } from "../../src/checkin-findings.ts";
 import { dutyHold, withLinkedBoards } from "../../src/shared/todo-hold.ts";
@@ -367,13 +367,14 @@ export function sideOf(lines: readonly WatchLine[]): (line: WatchLine, view: Hos
  * The Whole system duty's precheck (`node --import tsx scripts/duties/whole-system.ts`), run every 30 minutes on the owner's 10-15 ask
  * ("reorganize duties have a 30 minute trigger that checks all this", mva1wt2h). It reads files the chat service and pi-pool already write and
  * makes no daemon call: the usable watch, whose lines carry each box's pi-pool limits and queue, service.log, and every chat's duty
- * runs. One supporting metric is how many of the last 30 minutes ran clean (clean_min_30): a minute is clean when the watch read every box that Tailscale read online usable (a CPU miss counts
+ * runs. The headline is how many of the last 30 minutes ran clean (clean_min_30): a minute is clean when the watch read every box that Tailscale read online usable (a CPU miss counts
  * only when the harness itself was slow in it, src/harness-slow.ts, and is a busy_minutes detail line otherwise), no start, wake or parked
  * job had waited over HOLD_MS, and no turn sat queued while pi-pool had a slot it was allowed to give it (`freeSlotWait`), and no open, status read, send or worker start
  * failed or ran over 30 s on any box (src/daemon-faults.ts), leaving out a timed-out send or status read whose session waited for a pi-pool
  * slot and went through, which is a slot_wait_timeout detail line (src/slot-wait-timeouts.ts), and a call inside a Prime update restart its
- * box's coordinator recorded, which is a prime_update detail line (src/prime-update.ts `updateSpan`). The other two are queue holds and open steps nobody
- * moves in all chats. The headline is what Settings > Hosts reads for Agent sessions once no session has worked for the quiet window
+ * box's coordinator recorded, which is a prime_update detail line (src/prime-update.ts `updateSpan`), no Prime worker or supervisor event loop
+ * stalled 5 s or more and no session rename took over 1 s (prime-call-logs.ts), and the watch line named no hung tool call (src/hung-calls.ts).
+ * One supporting metric is queue holds. The other is what Settings > Hosts reads for Agent sessions once no session has worked for the quiet window
  * (`quietAgents`, owner c92 and his words of 10-19: "when everybody's asleep it should drop ram"). The rest is detail, with each
  * harness process far above its normal size (`oversized`).
  * A job whose last turn was cut (`cutEnd`) and that got no new input since is a start that waits too: after the restart at 00:19:57Z on 10-16 the
@@ -1090,6 +1091,8 @@ export interface Inputs {
   ciCache?: CacheBeat | null;
   /** The Prime update restarts each box's coordinator recorded (src/prime-update.ts `readUpdateSpans`), by that box's name. */
   primeUpdates?: readonly (UpdateSpan & { host: string })[];
+  /** This box's Prime stalls of 5 s or more and renames over 1 s from its daemon call logs (prime-call-logs.ts), each a dirty minute. */
+  prime?: { host: string; events: readonly PrimeEvent[] };
 }
 
 /**
@@ -1472,6 +1475,8 @@ export function measure(input: Inputs): PrecheckOutput {
   const updates = input.primeUpdates ?? [];
   const updateOf = (fault: DaemonFault) => fault.prime ? undefined : updates.find(update => update.host === fault.host && fault.at >= update.from && fault.at <= update.to);
   const allFaults = nameHungWorkers(input.daemonFaults ?? [], input.watch);
+  const primeHost = input.prime?.host;
+  const primeEvents = (input.prime?.events ?? []).filter(event => !updates.some(update => update.host === primeHost && event.from <= update.to && event.to >= update.from));
   const daemonFaults = allFaults.filter(fault => !updateOf(fault));
   const updateFaults = allFaults.filter(fault => updateOf(fault));
   // The 30 whole wall-clock minutes before `now`'s, each read by the watch line in it; the watch samples at each minute's middle (`nextSampleAt`).
@@ -1508,7 +1513,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const flappedMin: string[] = [];
   const flatMin: string[] = [];
   const darkMin: number[] = [];
-  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, cellWait = 0, harness = 0, rigMin = 0, busyMin = 0, ciMin = 0, other = 0, unattributed = 0, daemonFail = 0, primeMin = 0;
+  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, cellWait = 0, harness = 0, rigMin = 0, busyMin = 0, ciMin = 0, other = 0, unattributed = 0, daemonFail = 0, primeMin = 0, primeStallMin = 0, slowRenameMin = 0, hungMin = 0;
   const faultName = chatNamer(input.chats, input.named, input.listed);
   const rigOwner = rigOwners(input.chats, input.named, input.listed);
   const rigHeld = new Map<string, { at: number[]; gb: number; dir: string; command: string; box: string }>();
@@ -1602,6 +1607,19 @@ export function measure(input: Inputs): PrecheckOutput {
       if (prime.length) primeMin++;
       why.push(`${prime.length ? `a Prime fault, ${prime.join(" and ")}: ` : ""}daemon calls failed or ran over ${SLOW_MS / 1000} s for ${faultWords(faults, faultName)}`);
     }
+    // A Prime stall of 5 s or more, a rename over 1 s or a hung tool call is felt in the chat, so its minute is dirty (owner c133: one headline
+    // read the way he checks by hand). Until 11-04 they were the separate metrics worker_stalls_24h, rename_p90_6h and hung_calls.
+    const primeHere = primeHost !== undefined && !offline.has(primeHost) ? primeEvents.filter(event => event.from < to && event.to >= from) : [];
+    if (primeHere.length) {
+      if (primeHere.some(event => event.kind === "stall")) primeStallMin++;
+      if (primeHere.some(event => event.kind === "rename")) slowRenameMin++;
+      why.push(`${primeHost} ${primeWords(primeHere)}`);
+    }
+    const hungHere = line?.hung ?? [];
+    if (hungHere.length) {
+      hungMin++;
+      why.push(`${hungHere.length} tool call${hungHere.length === 1 ? "" : "s"} hung (${hungHere.slice(0, 3).map(call => `${call.name} ${call.silentMin} min`).join(", ")}${hungHere.length > 3 ? ` and ${hungHere.length - 3} more` : ""})`);
+    }
     if (why.length) dirty.push(`${clock(from)} ${why.join(", ")}`);
     else if (unknown.length) { unknownMin++; unknownLines.push(`${clock(from)} ${unknown.join(", ")}`); }
     else clean++;
@@ -1669,6 +1687,9 @@ export function measure(input: Inputs): PrecheckOutput {
     cell_wait_min_30: cellWait,
     daemon_fail_min_30: daemonFail,
     prime_fault_min_30: primeMin,
+    prime_stall_min_30: primeStallMin,
+    slow_rename_min_30: slowRenameMin,
+    hung_call_min_30: hungMin,
     prime_update_min_30: updateMin,
     slot_wait_timeouts_30: slotWaits.length,
     offline_min_30: offlineAny,
@@ -1714,7 +1735,8 @@ export function measure(input: Inputs): PrecheckOutput {
     `(${harness} unusable minutes on the harness side, ${ciMin} on CI's side, ${other} on the app or owner side, ${unattributed} with no cause read, ${unwatched} with no watch line, and ${rigMin} harness minutes went mostly to job rigs); a start, wake or parked job was held over ` +
     `10 min in ${held}; a turn sat queued while pi-pool had ${FREE_SLOTS} or more slots it could give it, or pi-pool refused a tree for over 10 min while an account took its class, in ${freeSlot}; ` +
     `a tree waited over 10 min for a pi-pool cell at R4's pace, not counted dirty, in ${cellWait}; ` +
-    `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}, ${primeMin} of them a Prime fault, a worker crash or hang or a create Prime took over ${SLOW_MS / 1000} s to answer.` +
+    `an open, status read, send or worker start failed or ran over ${SLOW_MS / 1000} s in ${daemonFail}, ${primeMin} of them a Prime fault, a worker crash or hang or a create Prime took over ${SLOW_MS / 1000} s to answer; ` +
+    `a Prime worker or supervisor event loop stalled 5 s or more in ${primeStallMin}, a Prime session rename took over 1 s in ${slowRenameMin}, and a tool call sat hung in ${hungMin}.` +
     (offlineMin.size ? ` Tailscale read ${[...offlineMin].map(([name, at]) => `${name} offline in ${at.length}`).join(" and ")}, and ${offlineFaults} daemon calls to a box while it was offline are left out.` :
       offlineFaults ? ` ${offlineFaults} daemon calls that failed because the service read their box offline are left out.` : "") });
   if (input.ciCache) {
@@ -1737,6 +1759,10 @@ export function measure(input: Inputs): PrecheckOutput {
       `${Math.round((wait.deliveredAt - wait.sentAt) / 1000)} s after it went; a queue wait, not a daemon fault.` });
   }
   if (dirty.length) flagged.push({ kind: "dirty_minutes", excerpt: dirty.slice(-10).join("; ") });
+  const primeIn = primeEvents.filter(event => event.to >= start);
+  if (primeIn.length) flagged.push({ kind: "prime_calls", excerpt: `${primeHost}'s Prime call logs (~/.prime/agent/logs/*.calls.jsonl) hold ` +
+    primeIn.map(event => `${clock(event.to)} ${event.kind === "stall" ? `${event.src === "worker" ? `worker ${event.source}` : "supervisor"} stall` : `rename of ${event.target ?? "a session"}`} ${(event.ms / 1000).toFixed(1)} s`).join(", ") +
+    "; a stall's line carries its CPU profile and a rename's its parts (ready, find, check, worker)." });
   // A Mac minute its job rigs held is the job's to fix, so the run steers that chat in one line.
   for (const held of rigHeld.values()) {
     const owner = rigOwner(held.dir);
@@ -2146,6 +2172,7 @@ async function main(): Promise<void> {
     smooth: readSmoothness(poolLines, new Set(live), now - WINDOW_MS, now, treeOffline(day, await sessionHosts(dataDir, box))),
     daemonFaults,
     primeUpdates: [...(await readUpdateSpans(join(dataDir, ".."))).map(update => ({ ...update, host: box })), ...await otherBoxUpdates(box, now - WINDOW_MS - 2 * MINUTE)],
+    prime: { host: box, events: readPrimeEvents(await readCallLogs(join(dataDir, "..", "logs"), now - WINDOW_MS - 2 * MINUTE), now - WINDOW_MS - 2 * MINUTE, now) },
     workerMisses: workerPolls,
     chatStarts: readChatStarts(serviceLines),
     queueOverruns,
@@ -2168,16 +2195,6 @@ async function main(): Promise<void> {
     const slice = result.flagged?.find(item => item.kind === "oversized" && item.excerpt === entry.text);
     if (slice) slice.excerpt += `; its memory map and threads: ${file}`;
   }
-  // Prime renames (p1373) and worker stalls (p1360), from this box's daemon call logs (prime-call-logs.ts).
-  const prime = readPrimeCalls(await readCallLogs(join(dataDir, "..", "logs"), now), now);
-  if (prime.renameP90S !== undefined) result.metrics.rename_p90_6h = prime.renameP90S;
-  result.metrics.worker_stalls_24h = prime.workerStalls;
-  if (prime.lastStallAt !== undefined) result.lastEventAt = { ...result.lastEventAt, worker_stalls_24h: prime.lastStallAt };
-  // A slice only on a miss, so a clean run sends nothing.
-  if ((prime.renameP90S ?? 0) > 1 || prime.workerStalls > 0) (result.flagged ??= []).push({ kind: "prime_calls", excerpt: `${prime.renames} session renames in 6 h on ${box}` +
-    (prime.renameP90S !== undefined ? `, p90 ${prime.renameP90S} s, slowest ${prime.renameMaxS} s` : "") +
-    `; ${prime.workerStalls} worker stalls of 5 s or more outside box-wide bursts` + (prime.stallLines.length ? ` (${prime.stallLines.slice(-5).join(", ")})` : "") +
-    `, ${prime.burstStalls} in bursts of 3 or more workers and ${prime.supervisorStalls} in the supervisor` });
   // The Chat system duty (d9, chat-system.ts) has counted stuck steps and stuck duties since 10-19, so this duty's job gets neither.
   delete result.metrics.stuck_steps_all;
   delete result.metrics.stuck_duties;

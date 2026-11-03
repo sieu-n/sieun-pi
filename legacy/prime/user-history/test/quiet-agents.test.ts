@@ -75,7 +75,7 @@ test("the 23:46Z state reads red: Agent sessions held 101 GB 26 min after the la
   const verdict = judge(duty.metrics, output);
   assert.equal(verdict.verdict, "missed");
   assert.equal(verdict.metrics.quiet_agent_gb?.met, false);
-  assert.match(verdict.summary, /^quiet_agent_gb 101\.3 GB \(target at most 5 GB\)/);
+  assert.match(verdict.summary, /quiet_agent_gb 101\.3 GB \(target at most 5 GB\)/);
   assert.match(output.flagged?.find(slice => slice.kind === "quiet_agents")?.excerpt ?? "",
     /^us-metal02's Agent sessions held 101\.26 GB \(6\.6 GB of it in swap\) with 59\.9 GB of file cache beside it, with 0 sessions working, 220 waiting on the provider or the pool, 0 on their subagents and 8 idle at 23:46Z, 25 min into a stretch with no session working that began by 23:21Z/);
 });
@@ -85,7 +85,6 @@ test("a quiet stretch where the box dropped its agents' memory reads green", () 
   assert.equal(output.metrics.quiet_agent_gb, 3.2);
   const verdict = judge(duty.metrics, output);
   assert.equal(verdict.metrics.quiet_agent_gb?.met, true);
-  assert.match(verdict.summary, /^quiet_agent_gb 3\.2 GB \(on target\)/);
 });
 
 test("the quiet window is one setting: minutes inside it are not judged, and a box at work all window leaves the metric unmeasured", () => {
@@ -97,7 +96,7 @@ test("the quiet window is one setting: minutes inside it are not judged, and a b
     "a box at work whose lines list its workers reads what its quiet trees hold, here none (test/quiet-trees.test.ts)");
   const busy = measure({ now: RUN, watch: busyLines.map(({ byWorker: _byWorker, ...line }) => line), log: { holds: [] }, chats: [], quietMs: 15 * MIN });
   assert.equal(busy.metrics.quiet_agent_gb, undefined);
-  assert.match(judge(duty.metrics, busy).summary, /not measured: the precheck gave no value for quiet_agent_gb(, \w+)* \(No box line in the last 30 minutes listed its workers or went 15 min with no session working/);
+  assert.match(judge(duty.metrics, busy).summary, /not measured: the precheck gave no value for quiet_agent_gb \(No box line in the last 30 minutes listed its workers or went 15 min with no session working/);
   const gap = evening(101.26, at => at <= lastTurn).filter(line => Date.parse(line.at) < Date.parse("2026-10-18T23:30:00Z") || Date.parse(line.at) > Date.parse("2026-10-18T23:34:00Z"));
   assert.ok(quietAgents(gap, RUN - 31 * MIN, RUN, 15 * MIN).every(minute => minute.since >= Date.parse("2026-10-18T23:34:00Z")), "a watch gap restarts the stretch");
 });

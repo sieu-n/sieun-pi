@@ -1,48 +1,28 @@
 {
   "name": "Whole system",
   "ownerWords": "F*UCKING WATCH THIS!QQQQ!!!!!!!!!!!!!!!!!!!!!!!! \n\nreorganize duties have a 30 minute trigger that checks all this",
-  "goal": "When nobody works, agent RAM drops: once no session has streamed or run a tool for the quiet window (15 min by default), Settings > Hosts shows Agent sessions under 5 GB. Every minute of the last 30 runs clean too: the boxes stay usable, no start or wake waits over 10 minutes, and no turn waits while slots are free. No tool call sits an hour with no output and no progress. Open steps that nobody moves moved to the Chat system duty on 10-19, so this duty keeps one headline and 3 metrics (c75). queue_holds_30 also counts jobs cut off by a token or account error that did not resume within 10 minutes, the problem the owner raised on 10-11, 10-12 twice, 10-15 and 10-19; the board goal p711 holds its fix steps and closes into this metric. quiet_agent_gb and clean_min_30 are the board goal p717's numbers and stay here once it closes. rename_p90_6h and worker_stalls_24h are the board goals p1373 and p1360 (Prime session renames and worker stalls on us-metal02) and stay here once they close.",
+  "goal": "Every minute of the last 30 runs clean, the number the owner feels: the boxes stay usable, no start or wake waits over 10 minutes, no turn waits while slots are free, no daemon call fails or runs over 30 s, no Prime worker or supervisor event loop stalls 5 s or more, no session rename takes over 1 s, and no tool call sits an hour with no output and no progress. Each dirty minute names its cause in the dirty_minutes line, and the prime_calls and hung_call lines hold the detail. When nobody works, agent RAM drops: once no session has streamed or run a tool for the quiet window (15 min by default), Settings > Hosts shows Agent sessions under 5 GB. queue_holds_30 also counts jobs cut off by a token or account error that did not resume within 10 minutes, the problem the owner raised on 10-11, 10-12 twice, 10-15 and 10-19; the board goal p711 holds its fix steps and closes into this metric. This duty keeps one headline and 2 supporting metrics (c75, c133). Hung calls, Prime renames (p1373) and worker stalls (p1360) were separate metrics until 11-04 and now count as dirty minutes of clean_min_30.",
   "metrics": [
+    {
+      "key": "clean_min_30",
+      "label": "Minutes in the last 30 the system ran clean: boxes usable, no hold, no failed or slow daemon call, no Prime stall of 5 s or more, no rename over 1 s, no hung tool call",
+      "op": ">=",
+      "target": 30,
+      "unit": " min",
+      "headline": true
+    },
     {
       "key": "quiet_agent_gb",
       "label": "Agent sessions GB on Settings > Hosts once nobody worked for the quiet window",
       "op": "<=",
       "target": 5,
-      "unit": " GB",
-      "headline": true
-    },
-    {
-      "key": "clean_min_30",
-      "label": "Minutes in the last 30 the system ran clean",
-      "op": ">=",
-      "target": 30,
-      "unit": " min"
+      "unit": " GB"
     },
     {
       "key": "queue_holds_30",
       "label": "Starts, wakes or cut-off jobs held over 10 min, chat turns queued over 30 s, or jobs parked over 10 min after a later job got an account",
       "op": "<=",
       "target": 0
-    },
-    {
-      "key": "hung_calls",
-      "label": "Tool calls that wrote nothing for an hour with no progress, or a kernel burning CPU with no output",
-      "op": "<=",
-      "target": 0
-    },
-    {
-      "key": "rename_p90_6h",
-      "label": "p90 of us-metal02's Prime session renames in the last 6 h (p1373)",
-      "op": "<=",
-      "target": 1,
-      "unit": " s"
-    },
-    {
-      "key": "worker_stalls_24h",
-      "label": "us-metal02 Prime worker event-loop stalls of 5 s or more in the last 24 h, outside bursts of 3 or more workers (p1360)",
-      "op": "<=",
-      "target": 0,
-      "windowMs": 86400000
     }
   ],
   "schedule": {
@@ -59,5 +39,5 @@
     "cwd": "../..",
     "timeoutMs": 60000
   },
-  "onMiss": "Per the owner's 10-27 words (c173), a d7 run builds and ships the fix for any slow create, send timeout or hello deadline it finds, with a test. Read the detail first. Each missed metric gets one fix job: if its plan step (duty \"<dutyId>/<metricKey>\") has a live job, message that job with this run's numbers; else start one with await rlm.create_session(brief, name=..., cwd=\"/Users/sieunpark/Documents/Github/sieun-pi\") and set it on the step. Unusable minutes on the harness side and queue holds: the job fixes pi-pool's queue or the chat service's start path with a test and releases, and adds no RAM gate, hold or cap (c88). Unusable minutes on the app or owner side: find the holder, and when it is the owner's own dev setup on the Mac (an editor or extension, a watcher, an indexer, a dev server nobody uses, a leftover process), start one fix job that applies the low-risk, reversible fix itself without asking first (workspace or extension settings, watcher and index excludes, stopping an unused dev server the normal way), never quits, reloads, focuses or opens his windows (c103), measures before and after, logs how to undo it, and tells this chat after (c69, owner 10-22: 'do these aggressive dummy optimizations'); only a change that alters how he works or can't be undone goes to him as a todo. Other app-side minutes: one line to this chat with the minutes and the owner, for ops guy. Quiet agent GB: the job reads the quiet_agents and agents_now detail, finds what the agent sessions still hold with nobody working (workers and kernels of sessions in a provider or pool wait, a hung worker, orphan processes), fixes why it was not freed with a test, and releases; a fix inside Prime goes to the chat as a native change (c92, c93). Oversized processes: one line to this chat with the numbers. Hung calls: for each hung_call line, message the chat it names (its chat id is the line's chat) with the session, its minutes and its command, and ask it to interrupt that call (its rlm handle or the session's own kernel) or fix what it waits on; send nothing to stop it yourself. Prime renames and worker stalls: read the prime_calls detail line; for a rename p90 over 1 s, read the slow renames' parts (ready, find, check, worker) in ~/.prime/agent/logs/daemon.sock.*.calls.jsonl, and for a worker stall, read its profile in the worker's calls.jsonl line; the job fixes the slow code in Prime with a test that fails on the old code and installs it. Never kill a session mid-turn or restart the Prime daemon or :5182. All on target: end with no message."
+  "onMiss": "Per the owner's 10-27 words (c173), a d7 run builds and ships the fix for any slow create, send timeout or hello deadline it finds, with a test. Read the detail first. Each missed metric gets one fix job: if its plan step (duty \"<dutyId>/<metricKey>\") has a live job, message that job with this run's numbers; else start one with await rlm.create_session(brief, name=..., cwd=\"/Users/sieunpark/Documents/Github/sieun-pi\") and set it on the step. Unusable minutes on the harness side and queue holds: the job fixes pi-pool's queue or the chat service's start path with a test and releases, and adds no RAM gate, hold or cap (c88). Unusable minutes on the app or owner side: find the holder, and when it is the owner's own dev setup on the Mac (an editor or extension, a watcher, an indexer, a dev server nobody uses, a leftover process), start one fix job that applies the low-risk, reversible fix itself without asking first (workspace or extension settings, watcher and index excludes, stopping an unused dev server the normal way), never quits, reloads, focuses or opens his windows (c103), measures before and after, logs how to undo it, and tells this chat after (c69, owner 10-22: 'do these aggressive dummy optimizations'); only a change that alters how he works or can't be undone goes to him as a todo. Other app-side minutes: one line to this chat with the minutes and the owner, for ops guy. Quiet agent GB: the job reads the quiet_agents and agents_now detail, finds what the agent sessions still hold with nobody working (workers and kernels of sessions in a provider or pool wait, a hung worker, orphan processes), fixes why it was not freed with a test, and releases; a fix inside Prime goes to the chat as a native change (c92, c93). Oversized processes: one line to this chat with the numbers. Dirty minutes from a hung call: for each hung_call line, message the chat it names (its chat id is the line's chat) with the session, its minutes and its command, and ask it to interrupt that call (its rlm handle or the session's own kernel) or fix what it waits on; send nothing to stop it yourself. Dirty minutes from a Prime stall or slow rename: read the prime_calls detail line; for a rename over 1 s, read its parts (ready, find, check, worker) in ~/.prime/agent/logs/daemon.sock.*.calls.jsonl, and for a stall, read its profile in the worker's or supervisor's calls.jsonl line; the job fixes the slow code in Prime with a test that fails on the old code and installs it (fix steps p1397, p1360 and p1354 hold this work under d7/clean_min_30). Never kill a session mid-turn or restart the Prime daemon or :5182. All on target: end with no message."
 }
