@@ -17,6 +17,13 @@
       "op": "<=",
       "target": 0,
       "unit": ""
+    },
+    {
+      "key": "direct_to_google_ratio",
+      "label": "virev.ai pageviews with no referrer ($direct) per pageview from Google search in PostHog, last 7 full UTC days (owner 11-03: normal is the two about equal; 10-27 to 11-02 read 30.77, 17,695 against 575)",
+      "op": "<=",
+      "target": 2,
+      "unit": "x"
     }
   ],
   "schedule": {

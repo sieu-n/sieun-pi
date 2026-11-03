@@ -250,6 +250,24 @@ export async function measure(query: DsQuery, end: number, signal: AbortSignal):
   return weeklyClients({ rows, asns, accounts, judge, errors, end });
 }
 
+/**
+ * Adds direct_to_google_ratio: virev.ai pageviews with PostHog $referring_domain $direct over those from Google, last 7 full UTC days, read by
+ * auto-sns-agent scripts/duties/search/direct-to-google.mjs. The owner on 11-03: "normal behaviour is  these two being essentially similar."
+ */
+export async function withDirectRatio(output: PrecheckOutput, at: number): Promise<PrecheckOutput> {
+  try {
+    const ratio = await import(pathToFileURL(join(REPO, "scripts/duties/search/direct-to-google.mjs")).href);
+    const read = ratio.measure(await ratio.readDays(7));
+    return { ...output, metrics: { ...output.metrics, direct_to_google_ratio: read.metrics.direct_to_google_ratio },
+      flagged: [...(output.flagged ?? []), { at, kind: "reading", item: "direct_to_google_ratio",
+        excerpt: `PostHog virev.ai pageviews in the last 7 full UTC days: ${read.direct} $direct, ${read.google} from Google, ratio ${read.metrics.direct_to_google_ratio}.` }],
+      windowMs: { ...output.windowMs, direct_to_google_ratio: WEEK } };
+  } catch (error) {
+    return { ...output, flagged: [...(output.flagged ?? []), { at, kind: "source_error", item: "direct_to_google_ratio",
+      excerpt: `PostHog direct_to_google_ratio: ${error instanceof Error ? error.message : String(error)}`.slice(0, 600) }] };
+  }
+}
+
 async function main(): Promise<void> {
   const end = process.env.WEEKLY_SCRAPERS_END ? Date.parse(process.env.WEEKLY_SCRAPERS_END) : Date.now();
   let output: PrecheckOutput;
@@ -260,6 +278,7 @@ async function main(): Promise<void> {
   } catch (error) {
     output = { metrics: {}, flagged: [{ at: Date.now(), kind: "source_error", excerpt: `prod ClickHouse: ${error instanceof Error ? error.message : String(error)}`.slice(0, 600) }] };
   }
+  output = await withDirectRatio(output, Date.now());
   const text = JSON.stringify(output, null, 2) + "\n";
   if (process.env.OUTPUT_FILE) await writeFile(process.env.OUTPUT_FILE, text);
   else process.stdout.write(text);
