@@ -2,9 +2,13 @@
 // as the 10-29 proof read them (send row sent, the reply in the test DM's thread), and the 24 h counts read only extension rows of 24 h.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
-import { activeRow, errorCounts, jarIgUserId, otherRuns, parts, report, rigDeadline, senderFits, TAIL_MS, type AutopairEvidence, type DmRow, type E2eEvidence, type JarRow } from "../scripts/duties/dm-extension.ts";
+import { activeRow, errorCounts, jarIgUserId, jars, otherRuns, parts, report, rigDeadline, senderFits, TAIL_MS, type AutopairEvidence, type DmRow, type E2eEvidence, type JarRow } from "../scripts/duties/dm-extension.ts";
+import { type DsQuery, PG } from "../scripts/duties/estate-reads.ts";
 
 const METRICS = (JSON.parse(readFileSync(new URL("../scripts/duties/dm-extension.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] }).metrics;
 const NOW = Date.parse("2026-10-30T12:00:00Z");
@@ -125,6 +129,32 @@ test("each account comes from the one world where its row is active, as @glenmyf
   assert.equal(activeRow(rows, "glenmyftiu945").world, "staging");
   assert.throws(() => activeRow(rows.slice(0, 3), "glenmyftiu945"), /active in 0 crawler worlds \(prod 264 parked\)/);
   assert.throws(() => activeRow([...rows, row("prod", 206, "glenmyftiu945", "active")], "glenmyftiu945"), /active in 2/);
+});
+
+test("jars reads both crawler worlds through Grafana's estate_pg datasources and the two-account view, never ssh (p245, 2026-11-03)", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "dm-ext-jars-"));
+  const sent: Record<string, unknown>[] = [];
+  const cell = (world: JarRow["world"], id: number, username: string, status: string) => JSON.stringify({ world, id, username, ig_user_id: null,
+    cookies: [{ name: "ds_user_id", value: String(id * 10) }], user_agent: "ua", proxy_url: "http://exit", endpoint: id + 1000, status, valid: true, jar_at: "2026-11-03T00:00:00Z" });
+  const byUid: Record<string, string[]> = {
+    [PG.prod]: [cell("prod", 206, "caiyiting8674", "active"), cell("prod", 264, "glenmyftiu945", "parked")],
+    [PG.staging]: [cell("staging", 179, "caiyiting8674", "parked"), cell("staging", 334, "glenmyftiu945", "active")],
+  };
+  const query: DsQuery = async q => {
+    sent.push(q);
+    const uid = (q.datasource as { uid: string }).uid;
+    return [{ schema: { fields: [{ name: "j" }] }, data: { values: [byUid[uid] ?? []] } }];
+  };
+  try {
+    const out = await jars(tmp, query);
+    assert.deepEqual(sent.map(q => (q.datasource as { uid: string }).uid), [PG.prod, PG.staging]);
+    for (const q of sent) assert.match(String(q.rawSql), /from dm_extension_test_accounts where world = '(prod|staging)'/);
+    assert.equal(out.senderIgId, "2060");
+    assert.equal(out.accounts, "sender @caiyiting8674 is prod 206 on endpoint 1206; replier @glenmyftiu945 is staging 334 on endpoint 1334");
+    assert.equal(JSON.parse(await readFile(out.replier, "utf8")).cookies[0].value, "3340");
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
 });
 
 test("a run stopped by a slow exit names it in a slow_exit slice and in each failed part, and a refusal in an instagram_refused slice", () => {

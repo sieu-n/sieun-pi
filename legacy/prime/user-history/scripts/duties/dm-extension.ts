@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { DAY, REPO, settle, unmeasuredFlag, utc } from "./estate-reads.ts";
+import { DAY, type DsQuery, grafanaClient, PG, readGrafanaAuth, REPO, settle, SOURCE_DEADLINE_MS, sqlRows, unmeasuredFlag, utc } from "./estate-reads.ts";
 
 /**
  * The chrome extension chat's "DM extension working" precheck (`node --import tsx scripts/duties/dm-extension.ts`). No model call. It sends
@@ -15,10 +15,12 @@ import { DAY, REPO, settle, unmeasuredFlag, utc } from "./estate-reads.ts";
  * 1. It builds the store zip and the dev zip from the auto-sns-agent checkout with apps/dm-extension/scripts/package.mjs. The store zip drops
  *    staging.virev.ai from host_permissions, externally_connectable and the page bridge, so it cannot pair with staging; the run then loads
  *    the dev zip of the same tree, which holds the same files with the repo manifest, and a `build` slice says so.
- * 2. It reads the sender's and the replier's saved Instagram sessions from the crawler's Postgres on us-metal01 (ig_engage_browser_jars
- *    with ig_engage_accounts and proxy_endpoints), each from the one world, prod or staging, where that handle's row is active, because
- *    the crawler keeps only an active row's session and exit fresh. They go into a mode 700 temp folder it deletes, and an `accounts`
- *    slice names each account's world, row and endpoint.
+ * 2. It reads the sender's and the replier's saved Instagram sessions from the crawler's Postgres of both worlds through Grafana
+ *    (estate_pg_prod and estate_pg_stg, as grafana_ro) and the view dm_extension_test_accounts, which joins ig_engage_browser_jars,
+ *    ig_engage_accounts and proxy_endpoints for these two handles only (auto-sns-agent apps/infra/metal/config/postgres/grafana-ro-*.sql;
+ *    grafana_ro reads no other account's cookies or exit). It takes each handle from the one world, prod or staging, where its row is
+ *    active, because the crawler keeps only an active row's session and exit fresh. They go into a mode 700 temp folder it deletes, and
+ *    an `accounts` slice names each account's world, row and endpoint.
  * 3. It starts a staging clean world (scripts/dev/search-clean-world.mjs up --target staging --allow-features instagramDm), a fresh
  *    Clerk user and org approved on staging with the instagramDm allow, and runs the two real-Instagram rigs in it as that user and org
  *    (the world's `run` hands them E2E_USER_EMAIL and E2E_ORG_ID) with DM_EXTENSION_DIR set to the unpacked zip:
@@ -55,12 +57,13 @@ const DUTY_FILE = join(HERE, "dm-extension.duty.json");
  * old row), so each run reads the one row that is active in either world, and never drives a session from the exit of a parked row.
  * measured: on 10-31 @caiyiting8674 was active as prod 206 (endpoint 8078) and parked as staging 179, and @glenmyftiu945 was parked as
  * prod 264 since 09:43:46Z and active as staging 334 (endpoint 1388), so the replier now comes from staging.
+ * A new handle here also goes in the username list of the view dm_extension_test_accounts in both grafana-ro files, which the metal box
+ * owner applies on each tier, because grafana_ro reads no other account's jar.
  */
 export const SENDER = "caiyiting8674";
 export const REPLIER = "glenmyftiu945";
-/** Each world's crawler Postgres container on us-metal01. */
-export const WORLDS = { prod: "virev-prod-postgres", staging: "virev-staging-postgres" } as const;
-export type World = keyof typeof WORLDS;
+/** The crawler worlds, each read through its Grafana Postgres datasource. */
+export type World = keyof typeof PG;
 export const WORLD = "dm-ext-duty";
 /**
  * The rigs run as the world's own fresh user and org. They ran in Virev Test until 10-30, because observe skipped an Instagram thread
@@ -305,19 +308,15 @@ export function activeRow(rows: readonly JarRow[], username: string): JarRow {
   throw new Error(`@${username} is active in ${active.length} crawler worlds (${seen}); a run needs exactly one`);
 }
 
-const jarSql = (world: World) => `begin read only;
-select json_build_object('world', '${world}', 'id', a.id, 'username', a.username, 'ig_user_id', a.ig_user_id, 'cookies', j.cookies::json,
-  'user_agent', j.user_agent, 'proxy_url', e.proxy_url, 'endpoint', e.id, 'status', a.status, 'valid', j.valid, 'jar_at', j.updated_at)::text
-from ig_engage_accounts a join ig_engage_browser_jars j on j.account_id = a.id join proxy_endpoints e on e.id = a.proxy_endpoint_id
-where a.world = '${world}' and a.username in ('${SENDER}', '${REPLIER}');
-commit;`;
+export const jarSql = (world: World) => `select json_build_object('world', world, 'id', id, 'username', username, 'ig_user_id', ig_user_id,
+  'cookies', cookies, 'user_agent', user_agent, 'proxy_url', proxy_url, 'endpoint', endpoint, 'status', status, 'valid', valid, 'jar_at', jar_at)::text as j
+from dm_extension_test_accounts where world = '${world}' and username in ('${SENDER}', '${REPLIER}')`;
 
 /** The two accounts' saved sessions, each from the crawler world where it is active, as the rigs' jar files (mode 600). Prints no cookie. */
-export async function jars(tmp: string): Promise<{ sender: string; senderIgId: string; replier: string; accounts: string; notes: string[] }> {
+export async function jars(tmp: string, query: DsQuery): Promise<{ sender: string; senderIgId: string; replier: string; accounts: string; notes: string[] }> {
   const rows: JarRow[] = [];
-  for (const [world, container] of Object.entries(WORLDS) as [World, string][]) {
-    const out = await sh("ssh", ["-o", "BatchMode=yes", "us-metal01", `docker exec -i ${container} psql -U crawler -d crawler_v3 -At -v ON_ERROR_STOP=1`], { input: jarSql(world) });
-    rows.push(...out.split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line) as JarRow));
+  for (const world of Object.keys(PG) as World[]) {
+    rows.push(...(await sqlRows(query, PG[world], jarSql(world))).map(row => JSON.parse(String(row.j)) as JarRow));
   }
   const notes: string[] = [];
   const file = async (row: JarRow) => {
@@ -415,7 +414,7 @@ async function measure(now: number, budgetMs: number): Promise<DutyData> {
     await mkdir(OUT, { recursive: true });
     const built = await step("build", () => build(tmp));
     if (built) data.build = built.build;
-    const jarFiles = await step("jars", () => jars(tmp));
+    const jarFiles = await step("jars", async () => jars(tmp, grafanaClient(fetch, await readGrafanaAuth(), now, AbortSignal.timeout(SOURCE_DEADLINE_MS))));
     if (jarFiles) data.accounts = jarFiles.accounts;
     if (jarFiles?.notes.length) data.errors.push({ source: "jars", message: jarFiles.notes.join("; ") });
     if (built && jarFiles) {

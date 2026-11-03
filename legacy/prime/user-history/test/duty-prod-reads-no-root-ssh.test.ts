@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { type DsQuery, PG, frameLines, prodReader } from "../scripts/duties/estate-reads.ts";
 
-const DUTIES = ["estate-reads", "engage-reads", "watchlist-green", "dm-outreach"];
+const DUTIES = ["estate-reads", "engage-reads", "watchlist-green", "dm-outreach", "dm-extension"];
 
 test("the estate read prechecks open no ssh to us-metal01, no docker exec and no wg-prod psql", () => {
   for (const name of DUTIES) {
