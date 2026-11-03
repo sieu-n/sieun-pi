@@ -151,7 +151,7 @@ Draw with mermaid or inline `<svg>`, style with `style=` attributes, and get int
 A page holds a live view as an empty slot `div` that the page script fills, because a script in the page is stripped.
 
 1. `<div data-wiki-git-status></div>` draws the branch state right now: each dev branch, `staging`, `main`, the newest lands and the release runs going now, refreshed every minute.
-2. It reads `/api/git-status`, which runs `scripts/ci/git-status.mjs` on this box's git refs and the CI cache file, so it makes no GitHub call.
+2. It reads `/api/git-status`, which runs auto-sns-agent's `scripts/ci/git-status.mjs` on this box's git refs and the CI cache file, so it makes no GitHub call.
 3. Put a numbered line inside the slot as a fallback, because an agent reading the page as text sees only that line.
 4. The git rules page `sessions/2026/10/27/1107-git-branch-rules-explainer/git-branch-rules.html` holds one.
 

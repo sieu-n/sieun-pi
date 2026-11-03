@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { loadSkillsFromDir, parseFrontmatter } from "prime-agent";
 import type { Skill, SkillRoot, SkillSmoke } from "./harness-health.ts";
 
@@ -57,34 +57,41 @@ async function markdownFiles(dir: string, top = dir): Promise<string[]> {
 /**
  * The relative paths a markdown file names: markdown link targets outside code, and backticked paths that start with a skill folder prefix
  * (STRICT) or that end in a file extension under a folder that exists. URLs, anchors, home and absolute paths, and placeholders are left out,
- * and so is a link to a bare slug with no slash or dot, such as `[snippet](snippet)` in docs copied from a docs site.
+ * and so is a link to a bare slug with no slash or dot, such as `[snippet](snippet)` in docs copied from a docs site. Each path carries its line.
  */
-export function namedPaths(markdown: string): { path: string; strict: boolean }[] {
+export function namedPaths(markdown: string): { path: string; strict: boolean; line: string }[] {
   const prose = markdown.replace(/^([ \t]*)(```|~~~)[\s\S]*?^\1\2/gm, "");
-  const found: { path: string; strict: boolean }[] = [];
-  const add = (raw: string, link: boolean) => {
+  const found: { path: string; strict: boolean; line: string }[] = [];
+  const add = (raw: string, link: boolean, line: string) => {
     const path = raw.split("#")[0]!.split("?")[0]!.replace(/:\d+(?:-\d+)?$/, "");
     if (!path || /^[a-z][a-z0-9+.-]*:/i.test(path) || /^[/~$]/.test(path) || /[<>{}*$|[\]]|\.\.\./.test(path)) return;
-    if (link) return /[/.]/.test(path) ? found.push({ path, strict: true }) : undefined;
+    if (link) return /[/.]/.test(path) ? found.push({ path, strict: true, line }) : undefined;
     if (!path.replace(/\/$/, "").includes("/")) return;
     const strict = STRICT.some(prefix => path.startsWith(prefix));
-    if (strict || FILE_EXT.test(path)) found.push({ path, strict });
+    if (strict || FILE_EXT.test(path)) found.push({ path, strict, line });
   };
-  for (const match of prose.replace(/`[^`\n]*`/g, "").matchAll(/\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) add(match[1]!, true);
-  for (const match of prose.matchAll(/`([^`\s]+)`/g)) add(match[1]!, false);
+  for (const line of prose.split("\n")) {
+    for (const match of line.replace(/`[^`]*`/g, "").matchAll(/\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)) add(match[1]!, true, line);
+    for (const match of line.matchAll(/`([^`\s]+)`/g)) add(match[1]!, false, line);
+  }
   return found;
 }
 
-/** The paths a skill's markdown names that resolve against none of: the naming file's folder, the skill folder, the repo root. */
-export async function missingPaths(dir: string): Promise<string[]> {
+/**
+ * The paths a skill's markdown names that resolve against none of: the naming file's folder, the skill folder, the skill's repo root, and
+ * the root of each of `repos` whose folder name the same line names, as in "auto-sns-agent's `scripts/repo/release.mjs`".
+ */
+export async function missingPaths(dir: string, repos: readonly string[] = []): Promise<string[]> {
   const repo = await gitRoot(dir);
   const missing: string[] = [];
   for (const file of await markdownFiles(dir)) {
-    const bases = [dirname(file), dir, ...(repo ? [repo] : [])];
     const seen = new Set<string>();
-    for (const { path, strict } of namedPaths(await readFile(file, "utf8"))) {
-      if (seen.has(path)) continue;
-      seen.add(path);
+    for (const { path, strict, line } of namedPaths(await readFile(file, "utf8"))) {
+      const named = repos.filter(other => line.includes(basename(other)));
+      const bases = [dirname(file), dir, ...(repo ? [repo] : []), ...named];
+      const key = [path, ...named].join("\0");
+      if (seen.has(key)) continue;
+      seen.add(key);
       if (!strict && !(await Promise.all(bases.map(base => exists(join(base, path.split("/")[0]!))))).some(Boolean)) continue;
       if (!(await Promise.all(bases.map(base => exists(join(base, path))))).some(Boolean)) missing.push(`${relative(dir, file)} names ${path}`);
     }
@@ -99,14 +106,14 @@ export function declaredScripts(pyproject: string): string[] {
 }
 
 /** One skill's smoke result: every problem an agent would hit, joined, or a pass. */
-export async function smokeSkill(skill: Skill, root: SkillRoot | undefined, env: SmokeEnv): Promise<SkillSmoke> {
+export async function smokeSkill(skill: Skill, root: SkillRoot | undefined, env: SmokeEnv, repos: readonly string[] = []): Promise<SkillSmoke> {
   const problems: string[] = [];
   const loaded = loadSkillsFromDir({ dir: skill.dir, source: "path" });
   const prime = loaded.skills[0];
   if (!prime) problems.push(`Prime does not load it: ${loaded.diagnostics.map(diagnostic => diagnostic.message).join(", ") || "no SKILL.md"}`);
   else if (!String(parseFrontmatter(await readFile(prime.filePath, "utf8")).frontmatter.name ?? "").trim()) problems.push("the frontmatter has no name");
   for (const diagnostic of loaded.diagnostics) if (prime && diagnostic.message.startsWith("python skill")) problems.push(diagnostic.message);
-  problems.push(...(await missingPaths(skill.dir)).map(line => `missing path: ${line}`));
+  problems.push(...(await missingPaths(skill.dir, repos)).map(line => `missing path: ${line}`));
   if (prime?.kind === "python") {
     const module = prime.python.importName;
     const imported = await run(env.python, ["-c", `import ${module}`]);
@@ -127,9 +134,10 @@ export async function smokeSkill(skill: Skill, root: SkillRoot | undefined, env:
 /** Smoke results for every skill, CONCURRENCY at a time, in the skills' order. */
 export async function smokeSkills(skills: readonly Skill[], roots: readonly SkillRoot[], env: SmokeEnv): Promise<SkillSmoke[]> {
   const results: SkillSmoke[] = new Array(skills.length);
+  const repos = [...new Set(roots.flatMap(root => root.repo ? [root.repo] : []))];
   let next = 0;
   const worker = async () => {
-    for (let at = next++; at < skills.length; at = next++) results[at] = await smokeSkill(skills[at]!, roots.find(root => root.name === skills[at]!.root), env);
+    for (let at = next++; at < skills.length; at = next++) results[at] = await smokeSkill(skills[at]!, roots.find(root => root.name === skills[at]!.root), env, repos);
   };
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
   return results;

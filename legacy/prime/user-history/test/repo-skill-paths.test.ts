@@ -5,12 +5,13 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { AUTO_SNS } from "../scripts/duties/harness-health.ts";
 import { missingPaths } from "../scripts/duties/skill-smoke.ts";
 
 const skills = fileURLToPath(new URL("../../../../skills/", import.meta.url));
 
 test("every repo skill names only paths that exist", async () => {
   const dirs = readdirSync(skills, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => join(skills, entry.name));
-  const missing = (await Promise.all(dirs.map(async dir => (await missingPaths(dir)).map(line => `${dir}: ${line}`)))).flat();
+  const missing = (await Promise.all(dirs.map(async dir => (await missingPaths(dir, [AUTO_SNS])).map(line => `${dir}: ${line}`)))).flat();
   assert.deepEqual(missing, []);
 });
