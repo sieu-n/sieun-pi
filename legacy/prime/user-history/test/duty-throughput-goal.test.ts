@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { type BoardItem, GOOD_ROWS, META_FINISHED_EXPR, META_SAMPLE_PCT, META_SAMPLE_RUNS, REFRESH_SAMPLE_PCT, REFRESH_SAMPLE_RUNS, type ThroughputData, backlogged, blankPanels, boardGoal, deploySlots, geonodeHours, geonodeMbps, goalLine, goalRows, grew, interpolate, lastHalfHour,
-  lagSlots, metaDueSql, QUEUES, missed, pageRuns, panelQueries, panelState, refreshShares, refreshSql, report, scaleDue, slowestHour, writerLagAtRate } from "../scripts/duties/throughput-goal.ts";
+  type Dashboard, folderBoards, folderFiles, lagSlots, metaDueSql, PROVIDERS, QUEUES, missed, readPanels, pageRuns, panelQueries, panelState, refreshShares, refreshSql, report, scaleDue, slowestHour, writerLagAtRate } from "../scripts/duties/throughput-goal.ts";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
 
 const METRICS: DutyMetric[] = [
@@ -334,4 +334,31 @@ test("the search sync outbox reads its live rows only", () => {
   const outbox = QUEUES.find((q) => q.family === "search sync outbox");
   assert.equal(outbox?.expr, 'max by (kind) (crawler_v3_search_sync_outbox_live_rows{world="prod",kind=~"profile|content"})');
   assert.equal(outbox?.wait, 'max by (kind) (crawler_v3_search_sync_outbox_oldest_age_seconds{world="prod",kind=~"profile|content"})');
+});
+
+test("readPanels reads the folder's boards from the provider file and fails on none, since the agent org's empty search read 0 of 0 panels on 11-03 21:11Z", async () => {
+  const providers = [
+    "providers:", "- name: virev-crawler-throughput", "  orgId: 1", "  folder: Crawler and data", "  options:", "    path: /var/lib/grafana/dashboards/crawler/03-crawler-throughput.json",
+    "- name: crawler-v3", "  orgId: 1", "  folder: Crawler · Archive", "  options:", "    path: /var/lib/grafana/dashboards/crawler/01-crawler-overview.json",
+    "- name: virev-crawler-sources", "  folder: \"Crawler and data\"", "  options:", "    path: /var/lib/grafana/dashboards/crawler/07-crawler-sources.json",
+  ].join("\n");
+  assert.deepEqual(folderFiles(providers, "Crawler and data"), ["apps/infra/grafana/dashboards/crawler/03-crawler-throughput.json", "apps/infra/grafana/dashboards/crawler/07-crawler-sources.json"]);
+  const files: Record<string, Dashboard> = {
+    "apps/infra/grafana/dashboards/crawler/03-crawler-throughput.json": { uid: "t", title: "Throughput", tags: ["owner:crawler"],
+      panels: [{ type: "row", panels: [{ id: 1, title: "Profiles", targets: [{ refId: "A", datasource: { uid: "estate_prometheus" } }] }] },
+        { id: 2, title: "Gone source", targets: [{ refId: "A", datasource: { uid: "estate_gone" } }] }] },
+    "apps/infra/grafana/dashboards/crawler/07-crawler-sources.json": { uid: "s", title: "Lookup", tags: ["owner:crawler"], templating: { list: [{ name: "id", type: "query" }] },
+      panels: [{ id: 3, title: "One", targets: [{ refId: "A" }] }] },
+  };
+  const boards = await folderBoards(async path => path === PROVIDERS ? providers : JSON.stringify(files[path]), "Crawler and data");
+  assert.deepEqual(boards.map(board => board.uid), ["t", "s"]);
+  const api = async (_path: string, body?: unknown) => (body as { queries: { datasource: { uid: string } }[] }).queries[0]!.datasource.uid === "estate_gone"
+    ? { message: "Data source not found" } : { results: { A: { frames: [{ data: { values: [[1], [5]] } }] } } };
+  assert.deepEqual(await readPanels(boards, api), [
+    { dashboard: "Throughput", title: "Profiles", state: "ok", detail: "" },
+    { dashboard: "Throughput", title: "Gone source", state: "error", detail: "Data source not found" },
+  ]);
+  await assert.rejects(readPanels([], api), /no owner:crawler or owner:crawler-v3 dashboard/);
+  await assert.rejects(readPanels([boards[1]!], api), /no owner:crawler/);
+  await assert.rejects(readPanels([{ uid: "e", title: "Empty", tags: ["owner:crawler"], panels: [{ type: "text" }] }], api), /hold no queried panel/);
 });

@@ -1,10 +1,12 @@
+import { execFile } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { type DsQuery, HOUR, MINUTE, PG, PROM, grafanaClient, num, promInstant, promRange, readGrafanaAuth, round1, settle, sqlRows, unmeasuredFlag, utc } from "./estate-reads.ts";
+import { type DsQuery, HOUR, MINUTE, PG, PROM, REPO, grafanaClient, num, promInstant, promRange, readGrafanaAuth, round1, settle, sqlRows, unmeasuredFlag, utc } from "./estate-reads.ts";
 
 /**
  * The Throughput goal achieved duty's precheck for the Crawler VP chat (`node --import tsx scripts/duties/throughput-goal.ts`). Code only, reads only.
@@ -177,6 +179,9 @@ const GRAFANA = "https://obs.virev.ai";
  * The crawler dashboards the owner opens: the "Crawler and data" folder's dashboards tagged for the crawler owner whose variables all hold a
  * set value. That leaves out the Engage fleet (owner:crawler-engage, the Engage chat's) and the profile and live trace lookups, whose query
  * variables wait for a key the owner types. On 10-19 at 15:55Z it picked 6 dashboards with 124 queried panels.
+ * The boards come from auto-sns-agent at the obs release obs.virev.ai serves, the source apps/infra/grafana/panel_health.py reads, because
+ * GRAFANA_AGENT_TOKEN's org "Agents (read-only)" holds no dashboards: after sieun-pi ebc3b3ee moved this read to that token, Grafana search
+ * answered [] and the 11-03 21:11Z run read 0 blank of 0 panels.
  */
 export const DASHBOARD_FOLDER = "Crawler and data";
 export const DASHBOARD_TAGS: readonly string[] = ["owner:crawler", "owner:crawler-v3"];
@@ -184,7 +189,7 @@ export const DASHBOARD_TAGS: readonly string[] = ["owner:crawler", "owner:crawle
 export type GrafanaApi = (path: string, body?: unknown) => Promise<unknown>;
 export interface PanelTarget { refId?: string; hide?: boolean; datasource?: { type?: string; uid?: string } | null; [field: string]: unknown }
 export interface DashPanel { id?: number; type?: string; title?: string; datasource?: PanelTarget["datasource"]; targets?: PanelTarget[]; panels?: DashPanel[] }
-export interface Dashboard { uid: string; title: string; time?: { from?: string; to?: string }; panels?: DashPanel[];
+export interface Dashboard { uid: string; title: string; tags?: string[]; time?: { from?: string; to?: string }; panels?: DashPanel[];
   templating?: { list?: { name: string; type?: string; current?: { value?: unknown; text?: unknown } }[] } }
 export interface PanelRead { dashboard: string; title: string; state: "ok" | "no data" | "error"; detail: string }
 
@@ -236,15 +241,47 @@ export function panelState(answer: QueryAnswer | null, shown: readonly string[])
   return empty === shown.length ? { state: "no data", detail: "" } : { state: "ok", detail: "" };
 }
 
+/** The provider file that puts each board file in its Grafana folder, and where its paths point in the repo. */
+export const PROVIDERS = "apps/infra/metal/config/obs/grafana/dashboards/estate.yaml";
+const SERVED_DIR = "/var/lib/grafana/dashboards/";
+const BOARDS_DIR = "apps/infra/grafana/dashboards/";
+export const OBS_RELEASE_EXPR = 'virev_release_current_info{tier="obs"}';
+
+/** The repo paths of the board files the provider file puts in `folder`. */
+export function folderFiles(providers: string, folder: string): string[] {
+  const field = (block: string, name: string): string | undefined => new RegExp(`^\\s*${name}:\\s*(.+?)\\s*$`, "m").exec(block)?.[1]?.replace(/^(["'])(.*)\1$/, "$2");
+  return providers.split(/^- /m).flatMap(block => {
+    const path = field(block, "path");
+    return field(block, "folder") === folder && path?.startsWith(SERVED_DIR) ? [BOARDS_DIR + path.slice(SERVED_DIR.length)] : [];
+  });
+}
+
+/** The boards in `folder`, read through `show` (a repo path to its text). */
+export async function folderBoards(show: (path: string) => Promise<string>, folder: string): Promise<Dashboard[]> {
+  return Promise.all(folderFiles(await show(PROVIDERS), folder).map(async path => JSON.parse(await show(path)) as Dashboard));
+}
+
+/** The sha obs.virev.ai serves (virev_release_current_info, written from /srv/obs/current on us-metal01 every 30 s); throws unless one sha. */
+export async function servedObsRev(query: DsQuery): Promise<string> {
+  const revisions = [...new Set((await promInstant(query, PROM.prod, OBS_RELEASE_EXPR)).map(series => series.labels.revision))];
+  if (revisions.length === 1 && /^[0-9a-f]{40}$/.test(revisions[0] ?? "")) return revisions[0]!;
+  throw new Error(`${OBS_RELEASE_EXPR} names ${revisions.join(", ") || "no release"}`);
+}
+
+/** A reader of auto-sns-agent files at `rev`, fetching it from origin when the checkout lacks it. */
+export async function repoAt(rev: string): Promise<(path: string) => Promise<string>> {
+  const git = (...args: string[]) => promisify(execFile)("git", args, { cwd: REPO, maxBuffer: 64 * 1024 * 1024 });
+  await git("cat-file", "-e", `${rev}^{commit}`).catch(() => git("fetch", "-q", "origin", rev));
+  return async path => (await git("show", `${rev}:${path}`)).stdout;
+}
+
 /** Runs every panel of the owner's crawler dashboards the way Grafana draws it, over the dashboard's own time range. */
-export async function readPanels(api: GrafanaApi): Promise<PanelRead[]> {
-  const found = await api("/api/search?type=dash-db") as { uid: string; folderTitle?: string; tags?: string[] }[];
-  const uids = found.filter(hit => hit.folderTitle === DASHBOARD_FOLDER && hit.tags?.some(tag => DASHBOARD_TAGS.includes(tag))).map(hit => hit.uid);
+export async function readPanels(boards: readonly Dashboard[], api: GrafanaApi): Promise<PanelRead[]> {
+  const picked = boards.filter(dash => dash.tags?.some(tag => DASHBOARD_TAGS.includes(tag)) && !(dash.templating?.list ?? []).some(v => v.type === "query"));
+  if (!picked.length) throw new Error(`no ${DASHBOARD_TAGS.join(" or ")} dashboard without query variables among ${boards.length} in ${DASHBOARD_FOLDER}`);
   const reads: PanelRead[] = [];
-  for (const uid of uids) {
-    const dash = ((await api(`/api/dashboards/uid/${uid}`)) as { dashboard: Dashboard }).dashboard;
+  for (const dash of picked) {
     const variables = dash.templating?.list ?? [];
-    if (variables.some(v => v.type === "query")) continue;
     const first = (cell: unknown): string => String(Array.isArray(cell) ? cell[0] ?? "" : cell ?? "");
     const vars = new Map(variables.flatMap(v => [[v.name, first(v.current?.value)], ...(v.current?.text === undefined ? [] : [[`${v.name}:text`, first(v.current.text)]])] as [string, string][]));
     const range = { from: dash.time?.from ?? "now-6h", to: dash.time?.to ?? "now" };
@@ -254,6 +291,7 @@ export async function readPanels(api: GrafanaApi): Promise<PanelRead[]> {
       return { dashboard: dash.title, title: panel.title ?? `panel ${panel.id}`, ...panelState(answer as QueryAnswer, shown) };
     })));
   }
+  if (!reads.length) throw new Error(`the ${picked.length} crawler dashboards hold no queried panel`);
   return reads;
 }
 
@@ -676,7 +714,7 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
       return samples;
     }),
   ]);
-  const [panels, panelDeployLock] = await Promise.all([step("dashboards", () => readPanels(api)),
+  const [panels, panelDeployLock] = await Promise.all([step("dashboards", async () => readPanels(await folderBoards(await repoAt(await servedObsRev(query)), DASHBOARD_FOLDER), api)),
     step("prod deploy lock now", async () => (await promInstant(query, PROM.prod, DEPLOY_EXPR))[0]?.value ?? 0)]);
   if (census && proxy) {
     const hours = new Map<number, GeoHour>();
