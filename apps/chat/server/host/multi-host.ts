@@ -14,7 +14,7 @@ import { readJson, writeJson } from "../store.ts";
 import { join } from "node:path";
 import { RelayHost, type LinkState } from "./relay-host.ts";
 import type {
-  CreateOptions, DurableEvent, DurableThread, EntriesQuery, EntryRecord, Host, Ping, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageTotal,
+  CreateOptions, DurableEvent, DurableThread, EntriesQuery, EntryRecord, Host, Ping, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageRange, UsageTotal,
 } from "./types.ts";
 
 interface RoutesFile {
@@ -183,7 +183,7 @@ export class MultiHost implements Host {
   }
 
   /** Every up box's hits: the newest first for `sort: "recent"`, else each box's in its own rank order, the chat's box first. */
-  async usage(range: { since?: number; until?: number; threads?: string[] }): Promise<UsageTotal[]> {
+  async usage(range: UsageRange): Promise<UsageTotal[]> {
     const boxes = this.upBoxes();
     const answers = await Promise.allSettled(boxes.map(b => b.host.usage(range)));
     return answers.flatMap((answer, i) => {

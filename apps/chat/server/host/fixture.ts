@@ -15,7 +15,7 @@ import type { TurnPlace } from "../../web/src/lib/api/types.ts";
 import { DEFAULT_MODEL } from "../config.ts";
 import type { IndexRead } from "../../../../packages/pi-host/src/durable/index-db.ts";
 import type { EntryRow } from "../search-engine.ts";
-import type { ContentBlock, DurableEvent, DurableThread, EntryRecord, Host, Message, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageTotal } from "./types.ts";
+import type { ContentBlock, DurableEvent, DurableThread, EntryRecord, Host, Message, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageRange, UsageTotal } from "./types.ts";
 
 interface FakeThread {
   row: DurableThread;
@@ -310,7 +310,7 @@ export class FixtureHost implements Host {
     return this.readIndex(cursor);
   }
 
-  async usage(range: { since?: number; until?: number; threads?: string[] }): Promise<UsageTotal[]> {
+  async usage(range: UsageRange): Promise<UsageTotal[]> {
     const rows = new Map<string, UsageTotal>();
     for (const thread of this.threadsById.values()) {
       if (range.threads && !range.threads.includes(thread.row.id)) continue;
@@ -321,8 +321,9 @@ export class FixtureHost implements Host {
         if (range.since !== undefined && at < range.since) continue;
         if (range.until !== undefined && at >= range.until) continue;
         const model = `${message.provider}/${message.model}`;
-        const key = `${thread.row.id} ${model}`;
-        const row = rows.get(key) ?? { thread: thread.row.id, model, turns: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, costInput: 0, costOutput: 0, costCacheRead: 0, costCacheWrite: 0 };
+        const bucket = range.bucketMs && range.since !== undefined ? range.since + Math.floor((at - range.since) / range.bucketMs) * range.bucketMs : undefined;
+        const key = `${bucket ?? ""} ${thread.row.id} ${model}`;
+        const row = rows.get(key) ?? { ...(bucket === undefined ? {} : { bucket }), thread: thread.row.id, model, turns: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, costInput: 0, costOutput: 0, costCacheRead: 0, costCacheWrite: 0 };
         row.turns += 1;
         row.input += message.usage.input;
         row.output += message.usage.output;

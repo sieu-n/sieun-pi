@@ -60,7 +60,10 @@ export type DurableEvent =
 
 /** One entry search found, as search.ts builds its hit from an index document. */
 export interface SearchHit { thread: string; conversation: number; entryId: number; kind: string; author: string; at: number; snippet: string; text?: string }
+/** pi-host's `durable_usage` range; with `bucketMs` and `since` each row sums one bucket of that length and names its start in `bucket`. */
+export type UsageRange = { since?: number; until?: number; threads?: string[]; bucketMs?: number };
 export interface UsageTotal {
+  bucket?: number;
   thread: string; model: string; turns: number; input: number; output: number; cacheRead: number; cacheWrite: number;
   cost: number; costInput: number; costOutput: number; costCacheRead: number; costCacheWrite: number;
 }
@@ -116,7 +119,7 @@ export interface Host {
   /** Newest first with `before`, oldest first with `after`. */
   entries(thread: string, opts: EntriesQuery): Promise<{ entries: EntryRecord[]; more: boolean }>;
   watch(thread: string, opts: { conversation?: number; fromEntry?: number }, sink: (event: DurableEvent) => void): Promise<() => Promise<void>>;
-  usage(range: { since?: number; until?: number; threads?: string[] }): Promise<UsageTotal[]>;
+  usage(range: UsageRange): Promise<UsageTotal[]>;
   docGet(thread: string, name: string): Promise<unknown>;
   docPut(thread: string, name: string, value: unknown): Promise<void>;
   /** `cwd` moves the thread: pi-host runs its next request's tools, prompt and kernels there. */

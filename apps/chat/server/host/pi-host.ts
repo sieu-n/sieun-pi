@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { connect, type Socket } from "node:net";
 import type { IndexRead } from "../../../../packages/pi-host/src/durable/index-db.ts";
-import type { DurableEvent, DurableThread, EntriesQuery, EntryRecord, Host, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageTotal } from "./types.ts";
+import type { DurableEvent, DurableThread, EntriesQuery, EntryRecord, Host, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageRange, UsageTotal } from "./types.ts";
 
 type Pending = { resolve: (data: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout };
 type Watch = { thread: string; conversation?: number; fromEntry?: number; sink: (event: DurableEvent) => void; hostId?: string; stopped: boolean };
@@ -204,7 +204,7 @@ export class PiHost implements Host {
   async indexRead(cursor: string | undefined): Promise<IndexRead> {
     return (await this.call("durable_index_read", cursor === undefined ? {} : { cursor })) as IndexRead;
   }
-  async usage(range: { since?: number; until?: number; threads?: string[] }): Promise<UsageTotal[]> {
+  async usage(range: UsageRange): Promise<UsageTotal[]> {
     return ((await this.call("durable_usage", range)) as { usage: UsageTotal[] }).usage;
   }
   async docGet(thread: string, name: string): Promise<unknown> {

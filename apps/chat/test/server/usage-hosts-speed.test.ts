@@ -1,6 +1,6 @@
 /**
  * api/hosts answers from each box's last machine reading and reads it again behind the answer (server/usage.ts `MachineReads`), and
- * api/usage asks every range in one round (`usageReport`). On 11-03 on us-metal02 the two took 1.1 s and 2.4 s.
+ * api/usage reads every range in one bucketed call (`usageReport`). On 11-03 on us-metal02 the two took 1.1 s and 2.4 s.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/usage-hosts-speed.test.ts
  */
 import assert from "node:assert/strict";
@@ -49,10 +49,33 @@ test("a machine reading answers at once within the tick, and past it answers the
   assert.ok("error" in down && down.error === "connect ECONNREFUSED", "a relay that stops answering reads as unreachable at the next poll");
 });
 
-test("api/usage asks for the period, each day and the period before in one round", async () => {
+test("api/usage reads the period, each day and the period before in one bucketed call", async () => {
+  const DAY = 86_400_000;
+  const calls: { since?: number; until?: number; bucketMs?: number }[] = [];
+  const row = (bucket: number, thread: string, cost: number): UsageTotal => ({ bucket, thread, model: "m", turns: 1, input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost,
+    costInput: 0, costOutput: 0, costCacheRead: 0, costCacheWrite: 0 });
+  const host = {
+    async usage(range: { since?: number; until?: number; bucketMs?: number }): Promise<UsageTotal[]> {
+      calls.push(range);
+      const since = range.since!;
+      return [row(since, "t", 5), ...Array.from({ length: 7 }, (_, i) => row(since + (7 + i) * DAY, "t", 1)), row(since + 13 * DAY, "u", 2)];
+    },
+  } as unknown as Host;
+  const threads = { thread: () => undefined, threadsList: () => [] } as unknown as Threads;
+  const report = await usageReport(host, threads, "box", { days: 7 });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.bucketMs, DAY);
+  assert.equal(calls[0]!.until! - calls[0]!.since!, 14 * DAY, "the period and the one before");
+  assert.equal(report.days.length, 7);
+  assert.deepEqual(report.days.map(day => day.byModel.m), [1, 1, 1, 1, 1, 1, 3]);
+  assert.deepEqual(report.rows.map(r => [r.thread, r.turns, r.cost.total]), [["t", 7, 7], ["u", 1, 2]]);
+  assert.equal(report.previous.cost, 5);
+});
+
+test("api/usage from a pi-host without buckets asks each range in one round", async () => {
   let open = 0, most = 0;
   const host = {
-    async usage(range: { since?: number; until?: number }): Promise<UsageTotal[]> {
+    async usage(range: { since?: number; until?: number; bucketMs?: number }): Promise<UsageTotal[]> {
       open++;
       most = Math.max(most, open);
       await new Promise(resolve => setTimeout(resolve, 20));
@@ -64,7 +87,6 @@ test("api/usage asks for the period, each day and the period before in one round
   const threads = { thread: () => undefined, threadsList: () => [] } as unknown as Threads;
   const report = await usageReport(host, threads, "box", { days: 7 });
   assert.equal(most, 9, "the period, 7 days and the period before all go out before any answers");
-  assert.equal(report.days.length, 7);
   assert.ok(report.days.every(day => day.byModel.m === 1));
   assert.equal(report.rows[0]!.cost.total, 7);
   assert.equal(report.previous.cost, 7);

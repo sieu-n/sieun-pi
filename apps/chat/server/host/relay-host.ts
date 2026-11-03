@@ -23,7 +23,7 @@ import {
 import { writeJson } from "../store.ts";
 import {
   HostAway, type CreateOptions, type DurableEvent, type DurableThread, type EntriesQuery, type EntryRecord, type Host, type Ping,
-  type SubmissionRecord, type Submitted, type SubmitInput, type Ticket, type TreeNode, type UsageTotal,
+  type SubmissionRecord, type Submitted, type SubmitInput, type Ticket, type TreeNode, type UsageRange, type UsageTotal,
 } from "./types.ts";
 
 /** The same answer limit PiHost gives a pi-host command. */
@@ -420,7 +420,7 @@ export class RelayHost implements Host {
   async indexRead(cursor: string | undefined): Promise<IndexRead> {
     return (await this.call("durable_index_read", cursor === undefined ? {} : { cursor })) as IndexRead;
   }
-  async usage(range: { since?: number; until?: number; threads?: string[] }): Promise<UsageTotal[]> {
+  async usage(range: UsageRange): Promise<UsageTotal[]> {
     return ((await this.call("durable_usage", range)) as { usage: UsageTotal[] }).usage;
   }
   async docGet(thread: string, name: string): Promise<unknown> {
