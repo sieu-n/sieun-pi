@@ -33,11 +33,12 @@ class RepoGuardAtRunTime(KernelGuardBase):
         self.checkout = self.tmp.resolve() / "auto-sns-agent"
         shutil.copytree(SOURCE, self.checkout / "scripts/repo/agent/guards", ignore=shutil.ignore_patterns("*.test.mjs"))
         # guards/agent-branch.mjs loads the dev-branch rule from HEAD's scripts/ci/branches.mjs, and guards/commands.mjs loads
-        # scripts/ci/land-dispatch.mjs the same way since auto-sns-agent b73a860092.
-        (self.checkout / "scripts/ci").mkdir(parents=True)
-        for name in ("branches.mjs", "land-dispatch.mjs"):
-            if (SOURCE.parents[2] / "ci" / name).exists():
-                shutil.copy(SOURCE.parents[2] / "ci" / name, self.checkout / "scripts/ci" / name)
+        # scripts/ci/land-dispatch.mjs the same way since auto-sns-agent b73a860092. guards/dev-servers.mjs requires
+        # scripts/dev/dev-apps.cjs from the checkout since c8a05742e8, and without it the guard does not load and the kernel refuses nothing.
+        for name in ("ci/branches.mjs", "ci/land-dispatch.mjs", "dev/dev-apps.cjs"):
+            if (SOURCE.parents[2] / name).exists():
+                (self.checkout / "scripts" / name).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(SOURCE.parents[2] / name, self.checkout / "scripts" / name)
         subprocess.run(["/usr/bin/git", "init", "-q", "-b", "dev/sieun", str(self.checkout)], check=True)
         subprocess.run(["/usr/bin/git", "-C", str(self.checkout), "remote", "add", "origin", "https://github.com/sieu-n/auto-sns-agent"], check=True)
         self.commit_guards()
@@ -46,7 +47,7 @@ class RepoGuardAtRunTime(KernelGuardBase):
     def commit_guards(self):
         """The guard loads from the checkout's HEAD, so the fixture commits its guard files."""
         git = ["/usr/bin/git", "-C", str(self.checkout), "-c", "user.name=t", "-c", "user.email=t@t"]
-        subprocess.run([*git, "add", "-A", "scripts/repo/agent/guards", "scripts/ci"], check=True)
+        subprocess.run([*git, "add", "-A", "scripts"], check=True)
         subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "guards"], check=True)
 
     def run_in_checkout(self, session_dir, command):

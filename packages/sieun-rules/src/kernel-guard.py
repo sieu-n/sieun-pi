@@ -234,14 +234,15 @@ class Judge:
             cwd = None
         path = self.socket_path(env)
         line = json.dumps({"id": 1, "cwd": cwd, "env": env, "check": check}).encode() + b"\n"
+        # OSError also covers a judge that dies mid-check, which closes or resets a connection it had already taken.
         try:
             return self.over(path, line)
-        except (FileNotFoundError, ConnectionRefusedError):
+        except OSError:
             pass
         if self.start(path, env):
             try:
                 return self.over(path, line)
-            except (FileNotFoundError, ConnectionRefusedError):
+            except OSError:
                 pass
         return one_shot(check)
 

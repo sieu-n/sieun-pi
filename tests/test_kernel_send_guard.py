@@ -613,8 +613,10 @@ printf '%s\\n' "$*" >> "$NODE_LOG"
 exec {real} "$@"
 """
 
+# The judge stops and dies 1 s later, so the next check connects into its backlog and loses the connection mid-check. A SIGKILLed node
+# frees its memory before it closes its socket, so a plain SIGKILL left that window open at random, and on 11-03 this case failed 6 of 6 runs.
 KILL_JUDGE = (
-    "import os, signal, time\n"
+    "import os, signal, threading, time\n"
     "for pid in [p for p in os.listdir('/proc') if p.isdigit()]:\n"
     "    try:\n"
     "        stat = open(f'/proc/{pid}/stat').read().rsplit(')', 1)[1].split()\n"
@@ -622,7 +624,8 @@ KILL_JUDGE = (
     "    except OSError:\n"
     "        continue\n"
     "    if int(stat[1]) == os.getpid() and b'--serve' in cmd:\n"
-    "        os.kill(int(pid), signal.SIGKILL)\n"
+    "        os.kill(int(pid), signal.SIGSTOP)\n"
+    "        threading.Timer(1, os.kill, (int(pid), signal.SIGKILL)).start()\n"
     "        RESULT = 'killed'\n"
 )
 
