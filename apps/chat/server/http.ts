@@ -9,6 +9,7 @@ import type { ConversationPatch, DutyAction, MemoryInput, RoomInput, RoomPatch, 
 import { parseSchedule } from "../web/src/lib/api/shared/chat-duties.ts";
 import { agentConfig, agentRecordOf } from "./agent-config.ts";
 import { EntryExists, EntryMissing, HARNESS_KINDS, type HarnessKind } from "./agent-folder.ts";
+import { parseItemId } from "./for-me.ts";
 import type { AgentRecord, WakeOn } from "./agent-store.ts";
 import { App, MODELS, NotFound } from "./app.ts";
 import { LocalImageError, readLocalImage } from "./local-image.ts";
@@ -107,6 +108,18 @@ export function routes(app: App): Route[] {
     route("GET", "/api/agents", async (_r, _p, q) => app.threads.agents({ archived: q.get("archived") === "1", test: q.get("test") === "1" })),
     route("GET", "/api/jobs", async (_r, _p, q) => app.threads.jobList({ archived: q.get("archived") === "1" })),
     route("GET", "/api/agents/:id/config", async (_r, p) => agentConfig(app, p.id!)),
+    route("GET", "/api/agents/:id/for-me", async (_r, p, q) => {
+      const status = q.get("status") ?? "pending";
+      if (status !== "pending" && status !== "completed" && status !== "all") throw new BadRequest("A For list's status is pending, completed or all.");
+      return app.forMeList(p.id!, status);
+    }),
+    route("POST", "/api/agents/:id/for-me", async (_r, p, _q, body) => {
+      const { messageId, completed } = ((await body()) ?? {}) as { messageId?: unknown; completed?: unknown };
+      const item = parseItemId(messageId);
+      if (!item) throw new BadRequest(`${JSON.stringify(messageId ?? "")} is no For item id; pass messageId as <room id>/<post id>, such as dm_vent/p41 or ch_1a2b3c4d/p12.`);
+      if (typeof completed !== "boolean") throw new BadRequest("A mark's completed is true to mark the item completed or false to make it pending again.");
+      return app.markForMe(p.id!, `${item.room}/${item.post}`, completed);
+    }),
     route("GET", "/api/agents/:id/folder", async (_r, p) => app.folders.read(folderAgent(p.id!))),
     route("PUT", "/api/agents/:id/brief", async (_r, p, _q, body) => {
       const agent = folderAgent(p.id!);
