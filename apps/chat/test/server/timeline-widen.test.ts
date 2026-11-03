@@ -1,11 +1,11 @@
 /**
  * A thread page reads back to the input that starts its oldest turn: a short turn takes one pi-host read, and a turn longer than one read
- * takes as many as it needs, with the same items either way.
+ * takes as many as it needs, with the same items either way. A tool step's output stays out of the page and loads by its own read.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/timeline-widen.test.ts
  */
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import type { Item, TimelinePage } from "../../web/src/lib/api/types.ts";
+import type { Item, Step, TimelinePage } from "../../web/src/lib/api/types.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
 import { start, type Running } from "./helpers.ts";
 
@@ -62,4 +62,29 @@ test("a turn longer than one read is read whole, oldest first, and the older pag
   const older = await s.get<TimelinePage>(`/api/c/${id}/items?before=${page.older}&limit=10`);
   assert.deepEqual(shape(older), ["e2", "t2:3"]);
   assert.equal(older.older, undefined);
+});
+
+test("a tool step carries an outputRef in place of its output, and GET /api/c/:id/output/:entry reads the output", async () => {
+  const thread = host.addThread({ name: "outputs", createdAt: 1 });
+  host.append(thread, 1, { kind: "pi.user", model: [{ role: "user", content: "ask", timestamp: 1 }] } as never);
+  host.append(thread, 1, { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } }, { type: "toolCall", id: "c2", name: "bash", arguments: { command: "true" } }], provider: "p", model: "m", timestamp: 2 }] } as never);
+  const long = host.append(thread, 1, { kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "c1", toolName: "bash", content: [{ type: "text", text: "y".repeat(5000) }], timestamp: 3 }] } as never);
+  host.append(thread, 1, { kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "c2", toolName: "bash", content: [{ type: "text", text: "" }], timestamp: 4 }] } as never);
+  host.append(thread, 1, { kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "done" }], provider: "p", model: "m", timestamp: 5 }] } as never);
+  const id = thread.row.id;
+  const page = await s.get<TimelinePage>(`/api/c/${id}/items`);
+  const turn = page.items.find((i): i is Extract<Item, { kind: "turn" }> => i.kind === "turn")!;
+  const [withOutput, empty] = turn.steps as Extract<Step, { kind: "tool" }>[];
+  assert.deepEqual(withOutput!.outputRef, { conversation: id, entry: long.id });
+  assert.equal(empty!.outputRef, undefined, "an empty output gets no Output button");
+  assert.ok(!JSON.stringify(page).includes("yyyy"), "the page carries no output text");
+  const read = await s.get<{ output: string }>(`/api/c/${id}/output/${long.id}`);
+  assert.equal(read.output, `${"y".repeat(4000)}\n...`);
+});
+
+test("an output read of an entry that is no tool result is a 404", async () => {
+  const thread = host.addThread({ name: "no output", createdAt: 1 });
+  const input = host.append(thread, 1, { kind: "pi.user", model: [{ role: "user", content: "ask", timestamp: 1 }] } as never);
+  const res = await s.send("GET", `/api/c/${thread.row.id}/output/${input.id}`);
+  assert.equal(res.status, 404);
 });

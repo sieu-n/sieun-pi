@@ -196,7 +196,13 @@ export type Step =
   | { kind: "thinking"; text: string }
   /** A turn's own text when the agent talks through send_message: a private working note, shown only in the fold. */
   | { kind: "note"; text: string }
-  | { kind: "tool"; id: string; name: string; summary: string; status: "running" | "done" | "error"; output?: string; job?: ConversationId };
+  | { kind: "tool"; id: string; name: string; summary: string; status: "running" | "done" | "error"; outputRef?: StepOutputRef; job?: ConversationId };
+
+/**
+ * Where a tool step's output is: `GET /api/c/<conversation>/output/<entry>` reads it when the owner opens it, so a page carries no output
+ * text. On 11-03 a job's 277-step turn made a 450 KB page, 305 KB of it output the fold hides.
+ */
+export interface StepOutputRef { conversation: ConversationId; entry: number }
 
 /**
  * One row of a timeline. Every item has a stable id, and a live update replaces the item with the same id.

@@ -10,7 +10,7 @@ import type { AgentEvent, CreateOptions, DurableEvent, DurableThread, EntryRecor
 import type { Store } from "./store.ts";
 import type { AgentRecord } from "./agent-store.ts";
 import { agentSummary, isAgentId, isRoomId, type AgentRows, type Agents } from "./agents.ts";
-import { buildItems, earliest, entryOf, firstSendIn, isInput, itemIdFor, sentMessages, speaks, speaksThroughSendMessage, type TimelineContext } from "./timeline.ts";
+import { buildItems, earliest, entryOf, firstSendIn, isInput, itemIdFor, sentMessages, speaks, speaksThroughSendMessage, stepOutputOf, type TimelineContext } from "./timeline.ts";
 
 export const OWNER: Principal = { id: "owner", kind: "owner", name: "You", avatar: { initials: "Me", hue: 210 } };
 
@@ -610,6 +610,14 @@ export class Threads {
     this.noteSends(thread, conversation, page.entries);
     const items = buildItems(page.entries, { ...this.context(thread, conversation, live), ...(before === undefined ? {} : { running: false }) });
     return { items, ...(page.more && page.entries[0] ? { older: `e${page.entries[0].id}` } : {}) };
+  }
+
+  /** A tool step's output (`Step.outputRef`), the text of the conversation's tool result entry `entry`; undefined when it is no such entry. */
+  async stepOutput(id: ConversationId, entry: number): Promise<{ output: string } | undefined> {
+    const { thread, conversation } = parseConversationId(id);
+    const found = (await this.host.entries(thread, { conversation, before: entry + 1, limit: 1, lean: true })).entries[0];
+    const message = found?.id === entry ? found.model?.[0] : undefined;
+    return message?.role === "toolResult" ? { output: stepOutputOf(message) } : undefined;
   }
 
   // Live side

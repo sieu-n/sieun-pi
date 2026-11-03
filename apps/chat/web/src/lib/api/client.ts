@@ -5,7 +5,7 @@
 import type {
   AgentConfig, AgentFolder, AgentHostList, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
   ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, ImageRef, Item, JobNode, Me, MemoryInput, ModelCatalog, ProjectList, SearchQuery, SearchResult, SendRequest,
-  ReactionRequest, Room, RoomInput, RoomPatch, SendResult, Sidebar, ThinkingLevel, TimelinePage, UsageReport, AccountsView,
+  ReactionRequest, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, TimelinePage, UsageReport, AccountsView,
 } from "./types.ts";
 
 export class ApiError extends Error {
@@ -146,6 +146,8 @@ export const api = {
   items: (id: ConversationId, opts: { before?: string; after?: string; around?: string; limit?: number } = {}) =>
     call<TimelinePage>("GET", `/api/c/${enc(id)}/items${query(opts)}`),
   replies: (id: ConversationId, root: string) => call<{ root: Item; items: Item[] }>("GET", `/api/c/${enc(id)}/replies/${enc(root)}`),
+  /** A tool step's output, which a page leaves out until the owner opens it. */
+  stepOutput: (ref: StepOutputRef) => call<{ output: string }>("GET", `/api/c/${enc(ref.conversation)}/output/${ref.entry}`),
   /** Keeps an image's bytes on the server; a send names the ref it answers (`attach`). */
   upload: (file: Blob) => call<ImageRef>("POST", "/api/uploads", file),
   send: (id: ConversationId, request: SendRequest) => call<SendResult>("POST", `/api/c/${enc(id)}/send`, request),

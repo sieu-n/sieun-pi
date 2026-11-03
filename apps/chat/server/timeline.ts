@@ -121,6 +121,12 @@ function blocks(message: Message | undefined): ContentBlock[] {
 }
 const textOf = (message: Message | undefined): string => blocks(message).flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n");
 
+/** A tool result's text as the fold shows it, cut at 4000 characters. */
+export function stepOutputOf(message: Message | undefined): string {
+  const output = textOf(message);
+  return output.length > 4000 ? `${output.slice(0, 4000)}\n...` : output;
+}
+
 export function isInput(entry: EntryRecord): boolean {
   if (INPUT_KINDS.has(entry.kind)) return true;
   return entry.model?.[0]?.role === "user" && !TURN_KINDS.has(entry.kind);
@@ -199,14 +205,14 @@ function buildTurn(draft: TurnDraft, ctx: TimelineContext, live: boolean, firstS
     } else if (message.role === "toolResult") {
       if (message.toolCallId && sendCalls.has(message.toolCallId)) continue;
       const index = message.toolCallId ? toolIndex.get(message.toolCallId) : undefined;
-      const output = textOf(message);
+      const hasOutput = textOf(message).length > 0;
       const childId = typeof message.details?.conversationId === "number" ? (message.details.conversationId as number) : undefined;
       // An ipython cell that ran rlm.spawn lists every child it started; the step links the first and the turn shows a pill for each.
       const more = Array.isArray(message.details?.conversations) ? (message.details.conversations as unknown[]).filter((id): id is number => typeof id === "number" && id !== childId) : [];
       if (index !== undefined) {
         const step = steps[index] as Extract<Step, { kind: "tool" }>;
         step.status = message.isError ? "error" : "done";
-        step.output = output.length > 4000 ? `${output.slice(0, 4000)}\n...` : output;
+        if (hasOutput) step.outputRef = { conversation: ctx.conversation === 1 ? ctx.thread : `${ctx.thread}:${ctx.conversation}`, entry: entry.id };
         if (childId !== undefined) step.job = `${ctx.thread}:${childId}`;
       }
       extraJobs.push(...more);

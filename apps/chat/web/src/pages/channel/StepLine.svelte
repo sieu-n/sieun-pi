@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Step } from "$lib/api";
+  import { api, type Step } from "$lib/api";
   import Icon from "$lib/ui/Icon.svelte";
   import Spinner from "$lib/ui/Spinner.svelte";
   import { stepsSummary } from "./present";
@@ -10,6 +10,19 @@
 
   let open = $state(false);
   let shownOutput = $state<Record<string, boolean>>({});
+  /** Each opened step's output by step id, read once on its first open; null while the read runs. */
+  let outputs = $state<Record<string, string | null>>({});
+
+  async function toggleOutput(step: Extract<Step, { kind: "tool" }>): Promise<void> {
+    shownOutput[step.id] = !shownOutput[step.id];
+    if (!shownOutput[step.id] || !step.outputRef || step.id in outputs) return;
+    outputs[step.id] = null;
+    try {
+      outputs[step.id] = (await api.stepOutput(step.outputRef)).output;
+    } catch (error) {
+      outputs[step.id] = `The output did not load: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
   const summary = $derived(live && liveLabel ? liveLabel : live && !steps.length ? "Working" : (label ?? stepsSummary(steps)));
 </script>
 
@@ -38,11 +51,11 @@
               {:else}
                 <span class="summary-text">{step.summary}</span>
               {/if}
-              {#if step.output}
-                <button type="button" class="more" aria-expanded={!!shownOutput[step.id]} onclick={() => (shownOutput[step.id] = !shownOutput[step.id])}>{shownOutput[step.id] ? "Hide" : "Output"}</button>
+              {#if step.outputRef}
+                <button type="button" class="more" aria-expanded={!!shownOutput[step.id]} onclick={() => toggleOutput(step)}>{shownOutput[step.id] ? "Hide" : "Output"}</button>
               {/if}
             </div>
-            {#if step.output && shownOutput[step.id]}<pre class="output">{step.output}</pre>{/if}
+            {#if step.outputRef && shownOutput[step.id]}<pre class="output">{outputs[step.id] ?? "Loading…"}</pre>{/if}
           </li>
         {/if}
       {/each}

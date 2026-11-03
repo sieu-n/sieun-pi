@@ -171,6 +171,13 @@ export function routes(app: App): Route[] {
       const opts = { before: str(q.get("before")), after: str(q.get("after")), around: str(q.get("around")), limit: num(q.get("limit")) };
       return app.items(p.id!, opts);
     }),
+    route("GET", "/api/c/:id/output/:entry", async (_r, p) => {
+      const entry = Number(p.entry);
+      if (!Number.isSafeInteger(entry) || entry < 0) throw new BadRequest(`An output names a tool result entry id, a whole number, got ${p.entry}.`);
+      const output = await app.threads.stepOutput(p.id!, entry);
+      if (!output) throw new NotFound(`No tool result ${entry} in ${p.id}.`);
+      return output;
+    }),
     route("GET", "/api/c/:id/replies/:root", async (_r, p) => app.groups.replies(p.id!, p.root!)),
     route("POST", "/api/uploads", async req => app.upload(req.headers["content-type"] ?? "", await readBytes(req))),
     route("POST", "/api/c/:id/send", async (_r, p, _q, body) => app.send(p.id!, (await body()) as SendRequest)),
