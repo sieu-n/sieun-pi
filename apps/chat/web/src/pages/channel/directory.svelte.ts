@@ -2,7 +2,7 @@ import { agents, api, live, type Room } from "$lib/api";
 
 /** Channels and Solo rooms, fetched once and kept current from the live socket's room events. */
 class RoomDirectory {
-  list = $state<Room[]>([]);
+  list = $state.raw<Room[]>([]);
   private started = false;
 
   start(): void {

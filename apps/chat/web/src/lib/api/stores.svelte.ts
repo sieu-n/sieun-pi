@@ -159,12 +159,36 @@ class Sends {
 const upsert = (list: AgentSummary[], next: AgentSummary): AgentSummary[] =>
   list.some(a => a.id === next.id) ? list.map(a => (a.id === next.id ? next : a)) : [next, ...list];
 
+/** The list with `item` swapped for a copy that has `status`, or the same list when there is no change. */
+const withStatus = <T extends { status: RunStatus }>(list: T[], item: T | undefined, status: RunStatus): T[] =>
+  item && item.status !== status ? list.map(x => (x === item ? { ...x, status } : x)) : list;
+
+const indexBy = <T extends { id: string }>(list: readonly T[]): Map<string, T> => new Map(list.map(item => [item.id, item]));
+
+/**
+ * The hello snapshot and its live updates. The lists are raw state, replaced whole on each change: on 11-03 the hello held 349 jobs and
+ * 485 conversations (363 KB), and deep proxies over them made each message row's job and agent lookups cost up to 1.1 s of a thread open.
+ */
 class Global {
   me = $state<Me | null>(null);
-  sidebar = $state<Sidebar | null>(null);
-  agents = $state<AgentSummary[]>([]);
-  jobs = $state<AgentSummary[]>([]);
-  conversations = $state<ConversationSummary[]>([]);
+  sidebar = $state.raw<Sidebar | null>(null);
+  agents = $state.raw<AgentSummary[]>([]);
+  jobs = $state.raw<AgentSummary[]>([]);
+  conversations = $state.raw<ConversationSummary[]>([]);
+  readonly agentsById = $derived(indexBy(this.agents));
+  readonly jobsById = $derived(indexBy(this.jobs));
+  readonly conversationsById = $derived(indexBy(this.conversations));
+  readonly jobsByAgent = $derived.by(() => {
+    const out = new Map<string, AgentSummary[]>();
+    for (const job of this.jobs) {
+      const agent = job.agent?.id;
+      if (!agent) continue;
+      const list = out.get(agent);
+      if (list) list.push(job);
+      else out.set(agent, [job]);
+    }
+    return out;
+  });
   forYouCount = $state(0);
   ready = $state(false);
   private started = false;
@@ -201,19 +225,16 @@ class Global {
           this.jobs = this.jobs.filter(j => j.id !== event.id);
           break;
         case "conversation": {
-          const index = this.conversations.findIndex(c => c.id === event.conversation.id);
-          if (index >= 0) this.conversations[index] = event.conversation;
-          else this.conversations = [...this.conversations, event.conversation];
+          const next = event.conversation;
+          this.conversations = this.conversationsById.has(next.id) ? this.conversations.map(c => (c.id === next.id ? next : c)) : [...this.conversations, next];
           break;
         }
         case "status": {
+          const { conversation: id, status } = event;
           // A split agent's DM status counts its comm thread too, so only its work thread's own status moves the agent's.
-          const agent = this.agents.find(a => a.id === event.conversation || a.thread === event.conversation || (a.room === event.conversation && !a.comm?.length));
-          if (agent) agent.status = event.status;
-          const job = this.jobs.find(j => j.id === event.conversation);
-          if (job) job.status = event.status;
-          const conversation = this.conversations.find(c => c.id === event.conversation);
-          if (conversation) conversation.status = event.status;
+          this.agents = withStatus(this.agents, this.agents.find(a => a.id === id || a.thread === id || (a.room === id && !a.comm?.length)), status);
+          this.jobs = withStatus(this.jobs, this.jobsById.get(id), status);
+          this.conversations = withStatus(this.conversations, this.conversationsById.get(id), status);
           break;
         }
         case "for_you":
@@ -256,7 +277,7 @@ export const agents = {
   },
   byId(id: AgentId): AgentSummary | undefined {
     global.start();
-    return global.agents.find(a => a.id === id);
+    return global.agentsById.get(id);
   },
   /**
    * The conversation that opens for an agent: its DM room, from its summary or, before the page has it, from its id. Any other id (a root
@@ -264,7 +285,7 @@ export const agents = {
    */
   room(id: AgentId): ConversationId {
     global.start();
-    return global.agents.find(a => a.id === id)?.room ?? roomOf(id);
+    return global.agentsById.get(id)?.room ?? roomOf(id);
   },
   get ready() {
     global.start();
@@ -280,12 +301,12 @@ export const jobs = {
   },
   byId(id: AgentId): AgentSummary | undefined {
     global.start();
-    return global.jobs.find(j => j.id === id);
+    return global.jobsById.get(id);
   },
   /** The jobs of one registered agent, nested ones included. */
-  of(agent: AgentId): AgentSummary[] {
+  of(agent: AgentId): readonly AgentSummary[] {
     global.start();
-    return global.jobs.filter(j => j.agent?.id === agent);
+    return global.jobsByAgent.get(agent) ?? [];
   },
 };
 
@@ -297,7 +318,7 @@ export const conversations = {
   },
   byId(id: ConversationId): ConversationSummary | undefined {
     global.start();
-    return global.conversations.find(c => c.id === id);
+    return global.conversationsById.get(id);
   },
 };
 
@@ -374,9 +395,10 @@ export function prefetchThread(channel: ConversationId | null, key: string): voi
 
 /** One conversation's timeline: the newest page, older pages on demand, live upserts, status, send and Stop. Nothing streams. */
 export class Timeline {
-  items = $state<Item[]>([]);
+  /** Raw state: each change replaces the list, and a job page measured 434 KB on 11-03, too big to proxy deeply. */
+  items = $state.raw<Item[]>([]);
   older = $state<string | undefined>(undefined);
-  header = $state<ConversationHeader | null>(null);
+  header = $state.raw<ConversationHeader | null>(null);
   status = $state<RunStatus>("idle");
   /** While the run waits for a working slot: its place in pi-pool's turn queue ("queued, 3 of 7"); null once it works. */
   queue = $state<TurnPlace | null>(null);
@@ -523,8 +545,8 @@ export const timeline = (id: ConversationId, opts: { around?: string } = {}): Ti
 
 /** A channel thread (root post and replies), live. A reply shows at once as sending, as in the main timeline. */
 export class Replies {
-  root = $state<Item | null>(null);
-  items = $state<Item[]>([]);
+  root = $state.raw<Item | null>(null);
+  items = $state.raw<Item[]>([]);
   loading = $state(true);
   error = $state<string | null>(null);
   private stopWatch: (() => void) | undefined;
@@ -586,7 +608,8 @@ export const replies = (channel: ConversationId, root: string): Replies => new R
 
 /** One chat's board, live: the server sends the whole board on each change, so the store replaces it. */
 export class BoardStore {
-  view = $state<BoardView | null>(null);
+  /** Raw state, replaced whole on each change; a board measured 60 KB on 11-03. */
+  view = $state.raw<BoardView | null>(null);
   loading = $state(true);
   error = $state<string | null>(null);
   private stopListen: () => void;

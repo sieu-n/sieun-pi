@@ -406,11 +406,22 @@ const loopbackLinks: TokenizerAndRendererExtension = {
   },
 };
 
+/** A job name list's join, kept per list, since marked asks `start` at each inline token and a room's agents had 349 jobs on 11-03. */
+const joinedNames = new WeakMap<readonly string[], string>();
+function namesKey(names: readonly string[]): string {
+  let key = joinedNames.get(names);
+  if (key === undefined) {
+    key = names.join("\u0001");
+    joinedNames.set(names, key);
+  }
+  return key;
+}
+
 const jobPatterns = new Map<string, { start: RegExp; at: RegExp }>();
 /** The start and match patterns for a list of job names, longest name first, so a name that starts another loses to it. */
 function jobPattern(names: readonly string[]): { start: RegExp; at: RegExp } | null {
   if (!names.length) return null;
-  const key = names.join("\u0001");
+  const key = namesKey(names);
   let hit = jobPatterns.get(key);
   if (!hit) {
     const alt = [...new Set(names)].sort((a, b) => b.length - a.length).map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
@@ -636,7 +647,7 @@ function cached(key: string, make: () => string): string {
   return html;
 }
 function contextKey(c: MarkdownContext): string {
-  return [c.plain ? 1 : 0, c.cwd ?? "", c.board ? `${c.board.chatId}:${c.board.titles.size}` : "", c.mentions ? c.mentions.size : "", c.jobs?.join("\u0001") ?? ""].join("|");
+  return [c.plain ? 1 : 0, c.cwd ?? "", c.board ? `${c.board.chatId}:${c.board.titles.size}` : "", c.mentions ? c.mentions.size : "", c.jobs ? namesKey(c.jobs) : ""].join("|");
 }
 
 /** A link a post previews as a card under its text: a wiki page, or a web page as Slack unfurls it. */
