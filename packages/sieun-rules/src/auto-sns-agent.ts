@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -32,31 +32,54 @@ interface Adapter {
  * below the checkout like the original, so the guards' REPO_ROOT still names the checkout.
  */
 const GUARDS_PATH = "scripts/repo/agent/guards";
-const git = (...args: string[]): Buffer =>
-	execFileSync("/usr/bin/git", ["-C", CHECKOUT, ...args], { stdio: ["ignore", "pipe", "ignore"], maxBuffer: 64 * 1024 * 1024 });
+/*
+ * git runs through execFile, never execFileSync: on 11-03 at 00:10:36Z a worker creating a session sat 7.8 s in this
+ * file's sync git calls, and every session on that worker waited.
+ */
+const git = (...args: string[]): Promise<Buffer> =>
+	new Promise((resolve, reject) => {
+		execFile("/usr/bin/git", ["-C", CHECKOUT, ...args], { encoding: "buffer", maxBuffer: 64 * 1024 * 1024 }, (error, stdout) =>
+			error ? reject(error) : resolve(stdout),
+		);
+	});
 
 /** HEAD's commit id, from .git/HEAD and its loose ref, else from git. */
-function headId(): string {
+async function headId(): Promise<string> {
 	try {
 		const head = readFileSync(join(CHECKOUT, ".git/HEAD"), "utf8").trim();
 		return head.startsWith("ref: ") ? readFileSync(join(CHECKOUT, ".git", head.slice(5)), "utf8").trim() : head;
 	} catch {
-		return git("rev-parse", "--verify", "-q", "HEAD").toString().trim();
+		return (await git("rev-parse", "--verify", "-q", "HEAD")).toString().trim();
 	}
 }
 
+let snapshotting: { head: string; prime: Promise<string> } | null = null;
+
+/** One snapshot per HEAD at a time, so concurrent events on a new commit share its git calls. */
+function snapshotOnce(head: string): Promise<string> {
+	if (snapshotting?.head === head) return snapshotting.prime;
+	const prime = snapshot(head);
+	snapshotting = { head, prime };
+	prime.catch(() => {
+		if (snapshotting?.prime === prime) snapshotting = null;
+	});
+	return prime;
+}
+
+let copies = 0;
+
 /** The guard files HEAD holds, copied once per guard tree id; returns the copy's prime.mjs. */
-function snapshot(head: string): string {
-	const tree = git("rev-parse", `${head}:${GUARDS_PATH}`).toString().trim();
+async function snapshot(head: string): Promise<string> {
+	const tree = (await git("rev-parse", `${head}:${GUARDS_PATH}`)).toString().trim();
 	const dir = join(CHECKOUT, ".cache/repo-guard", tree.slice(0, 16));
 	if (!existsSync(join(dir, "guards/prime.mjs"))) {
-		const tmp = `${dir}.${process.pid}`;
+		const tmp = `${dir}.${process.pid}.${++copies}`;
 		mkdirSync(join(tmp, "guards"), { recursive: true });
-		for (const entry of git("ls-tree", "-z", tree).toString().split("\0")) {
+		for (const entry of (await git("ls-tree", "-z", tree)).toString().split("\0")) {
 			const [meta, name] = entry.split("\t");
 			const [, type, blob] = meta?.split(" ") ?? [];
 			if (type !== "blob" || !name?.endsWith(".mjs") || name.endsWith(".test.mjs")) continue;
-			writeFileSync(join(tmp, "guards", name), git("cat-file", "blob", blob!));
+			writeFileSync(join(tmp, "guards", name), await git("cat-file", "blob", blob!));
 		}
 		try {
 			renameSync(tmp, dir);
@@ -89,9 +112,10 @@ async function importGuard(prime: string): Promise<Guard> {
  */
 async function loadGuard(): Promise<Guard> {
 	try {
-		const head = headId();
+		const head = await headId();
 		if (loaded?.head === head) return await loaded.guard;
-		const prime = snapshot(head);
+		const prime = await snapshotOnce(head);
+		if (loaded?.head === head) return await loaded.guard;
 		if (loaded?.prime === prime) {
 			loaded = { ...loaded, head };
 			return await loaded.guard;
