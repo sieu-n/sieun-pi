@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { classify, ENGINES, inRanges, rangeList, requestsSql, ROUTES, routeOf, type Row, scrapers, SHED_MIN_503, typicalChrome, type Verify } from "../scripts/duties/public-page-scrapers.ts";
+import { classify, ENGINES, humanIps, inRanges, rangeList, requestsSql, ROUTES, routeOf, type Row, scrapers, SHED_MIN_503, typicalChrome, type Verify } from "../scripts/duties/public-page-scrapers.ts";
 import { type DutyMetric, judge } from "../src/shared/chat-duties.ts";
 import { DAY } from "../scripts/duties/estate-reads.ts";
 import { type Asn, isHosting, parseCymru } from "../scripts/duties/ip-asn.ts";
@@ -124,4 +124,13 @@ test("a bulk whois answer maps each IP to its network and skips NA rows", () => 
   assert.equal(isHosting(KT.name), false);
   assert.equal(isHosting("CLOUDFLARENET - Cloudflare, Inc., US"), false, "iCloud Private Relay and WARP users exit through Cloudflare");
   assert.match(weeklySql(10 * DAY), /max_threads = 2/);
+});
+
+test("the daily share counts a browser UA from a hosting network as automated, and the same UA from a home line as a person", () => {
+  const rows = [row({ route: "profile", refk: "none", ref: "", ua: SAFARI, ip: "64.227.101.252", calls: 30 }), row({ route: "profile", ua: SAFARI, ip: "183.108.170.148", calls: 70 })];
+  assert.deepEqual([...humanIps(rows, googleOnly)].sort(), ["183.108.170.148", "64.227.101.252"]);
+  const output = scrapers({ end: 1, errors: [], verify: googleOnly, shed: [], rows, asns: new Map([["64.227.101.252", DO], ["183.108.170.148", KT]]) });
+  assert.equal(output.metrics.scraper_share_pct, 30);
+  assert.match(output.flagged!.find(slice => slice.kind === "scraper_pattern")!.excerpt, /browser UA from a hosting network \(AS14061\).*30 origin calls from 1 IPs/);
+  assert.equal(scrapers({ end: 1, errors: [], verify: googleOnly, shed: [], rows }).metrics.scraper_share_pct, 0, "with no network lookup the calls stay a person's");
 });

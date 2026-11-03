@@ -5,6 +5,7 @@ import { BlockList, isIPv4, isIPv6 } from "node:net";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { DAY, type DsQuery, grafanaClient, readGrafanaAuth, SOURCE_DEADLINE_MS, sqlRows } from "./estate-reads.ts";
+import { type Asn, asnOf, isHosting } from "./ip-asn.ts";
 
 /**
  * The precheck of ops guy's duty "Public page scrapers" (`node --import tsx scripts/duties/public-page-scrapers.ts`). It reads 24 h of prod
@@ -129,10 +130,20 @@ export function uaFamily(ua: string): string {
   return `${os} ${browser}`;
 }
 
+/**
+ * A person's verdict from an IP of a hosting or cloud network turns automated: on 11-03 a plain Safari 26.0.1 UA loaded 4,169 /profile pages in
+ * 24 h from 2,304 DigitalOcean IPs, and classify() alone read every call as a person.
+ */
+export function hostingBrowser(verdict: Verdict, asn: Asn | undefined): Verdict {
+  return verdict.kind === "human" && asn && isHosting(asn.name) ? { kind: "automated", why: `browser UA from a hosting network (AS${asn.asn})` } : verdict;
+}
+
 const pct = (part: number, whole: number): number => Math.round((part / whole) * 1000) / 10;
 const utcMin = (ms: number): string => `${new Date(ms).toISOString().slice(5, 16).replace("T", " ")}Z`;
 
-export interface Inputs { rows: readonly Row[] | Error; shed: readonly { minute: number; s503: number }[] | Error; verify: Verify; errors: readonly string[]; end: number }
+export interface Inputs { rows: readonly Row[] | Error; shed: readonly { minute: number; s503: number }[] | Error; verify: Verify; errors: readonly string[]; end: number;
+  /** The network of each IP whose calls classify() reads as human; a browser UA from a hosting network counts as automated. */
+  asns?: ReadonlyMap<string, Asn> }
 
 /** The three numbers and the rows a duty run reads to find and block the next scraper pattern. */
 export function scrapers(input: Inputs): PrecheckOutput {
@@ -140,7 +151,7 @@ export function scrapers(input: Inputs): PrecheckOutput {
   const metrics: Record<string, number> = {};
   const flagged: FlaggedSlice[] = input.errors.map(excerpt => ({ at, kind: "source_error", excerpt: excerpt.slice(0, 600) }));
   if (input.rows instanceof Error) flagged.push({ at, kind: "source_error", excerpt: `search requests: ${input.rows.message}`.slice(0, 600) });
-  else summarize(input.rows, input.verify, at, metrics, flagged);
+  else summarize(input.rows, input.verify, input.asns ?? new Map(), at, metrics, flagged);
   if (input.shed instanceof Error) flagged.push({ at, kind: "source_error", excerpt: `crawler 503s: ${input.shed.message}`.slice(0, 600) });
   else {
     const minutes = input.shed.filter(minute => minute.s503 >= SHED_MIN_503).sort((a, b) => a.minute - b.minute);
@@ -152,7 +163,7 @@ export function scrapers(input: Inputs): PrecheckOutput {
   return { metrics, flagged, windowMs: { scraper_share_pct: DAY, crawler_shed_min: DAY, real_user_image_ok_pct: DAY } };
 }
 
-function summarize(rows: readonly Row[], verify: Verify, at: number, metrics: Record<string, number>, flagged: FlaggedSlice[]): void {
+function summarize(rows: readonly Row[], verify: Verify, asns: ReadonlyMap<string, Asn>, at: number, metrics: Record<string, number>, flagged: FlaggedSlice[]): void {
   const typical = typicalChrome(rows);
   let origin = 0, automated = 0, wanted = 0, humanImg = 0, humanImgOk = 0, denied = 0;
   const patterns = new Map<string, { calls: number; ips: Set<string>; routes: Map<string, number>; refs: Map<string, number>; majors: Set<number>; ua: string; last: number; e5xx: number }>();
@@ -160,7 +171,7 @@ function summarize(rows: readonly Row[], verify: Verify, at: number, metrics: Re
   for (const row of rows) {
     if (!row.origin) { if (row.status === 403) { denied += row.calls; deniedBy.set(row.route, (deniedBy.get(row.route) ?? 0) + row.calls); } continue; }
     origin += row.calls;
-    const verdict = classify(row, typical, verify);
+    const verdict = hostingBrowser(classify(row, typical, verify), asns.get(row.ip));
     if (verdict.kind === "wanted") { wanted += row.calls; continue; }
     if (verdict.kind === "human") {
       if (row.route === "img") { humanImg += row.calls; if (row.status < 500) humanImgOk += row.calls; }
@@ -280,6 +291,12 @@ export async function verifier(rows: readonly Row[], errors: string[], signal: A
   return { engine: (engine, ip) => answers.get(`${engine.name} ${ip}`) ?? null };
 }
 
+/** The IPs of the origin calls classify() reads as a person's, the only ones whose network can change a verdict. */
+export function humanIps(rows: readonly Row[], verify: Verify): Set<string> {
+  const typical = typicalChrome(rows);
+  return new Set(rows.filter(row => row.origin && classify(row, typical, verify).kind === "human").map(row => row.ip));
+}
+
 export async function measure(query: DsQuery, end: number, signal: AbortSignal): Promise<PrecheckOutput> {
   const asError = (error: unknown): Error => error instanceof Error ? error : new Error(String(error));
   const [raw, shed] = await Promise.all([
@@ -290,7 +307,11 @@ export async function measure(query: DsQuery, end: number, signal: AbortSignal):
     ip: String(row.ip ?? ""), status: Number(row.status), origin: Boolean(Number(row.origin)), calls: Number(row.calls), last: Number(row.last) }));
   const errors: string[] = [];
   const verify = rows instanceof Error ? { engine: () => null } : await verifier(rows, errors, signal);
-  return scrapers({ rows, shed, verify, errors, end });
+  const asns = rows instanceof Error ? new Map<string, Asn>() : await asnOf(humanIps(rows, verify), signal).catch((error: unknown) => {
+    errors.push(`whois.cymru.com: ${asError(error).message}, so no browser UA counts as hosting`);
+    return new Map<string, Asn>();
+  });
+  return scrapers({ rows, shed, verify, errors, end, asns });
 }
 
 async function main(): Promise<void> {
