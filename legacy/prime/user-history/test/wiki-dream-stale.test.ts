@@ -11,11 +11,6 @@ import { judge, type DutyMetric } from "../src/shared/chat-duties.ts";
 const DUTY = JSON.parse(readFileSync(new URL("../scripts/duties/wiki-dream.duty.json", import.meta.url), "utf8")) as { metrics: unknown[] };
 
 const NOW = Date.parse("2026-10-20T03:30:00Z");
-const sec = (iso: string): string => (Date.parse(iso) / 1000).toFixed(6);
-const JOURNAL = [
-  `${sec("2026-10-20T02:55:00Z")} us-metal02 systemd[1]: Starting wiki-box-commit.service - wiki-box-commit`,
-  `${sec("2026-10-20T02:55:10Z")} us-metal02 systemd[1]: Finished wiki-box-commit.service - wiki-box-commit`,
-].join("\n");
 const STALE = {
   checkable: 4, count: 3,
   stale: [
@@ -41,7 +36,6 @@ function deps(): DreamDeps {
     readText: async path => files[path]!,
     exec: async (file, args) => {
       if (file === "node") return JSON.stringify({ facts, items: [], errors: [], dupPairs: [], signals: [], stale: STALE });
-      if (file === "journalctl") return JOURNAL;
       if (args.includes("--first-parent")) return `\x1e${Date.parse("2026-10-20T02:14:30Z") / 1000}\napps/vent/src/vent/tables.py\napps/vent/README.md\n`;
       if (args.includes("ls-tree")) return "apps/vent/src/vent/tables.py\0apps/vent/README.md\0";
       return "";
@@ -80,7 +74,7 @@ test("a stale row with no verified_at, from a cited path git lacks, names its la
 // unnamed while the duty counted them. A replay of the stale check over 10-20 07:51Z to 10-22 07:51Z put 424 of 1,221 counted page-hours past the 30th.
 test("every page behind code is flagged, past the old cap of 30 and past FLAGGED_MAX, and the capped kinds still stop at FLAGGED_MAX", () => {
   const many = (kind: string, count: number) => Array.from({ length: count }, (_, index) => ({ kind, item: `${kind}-${index}`, excerpt: kind }));
-  const capped = ["source_error", "unlanded_session", "recurred", "open_class", "dup_pair", "revert", "retouched", "correction", "signal", "refinement",
+  const capped = ["source_error", "recurred", "open_class", "dup_pair", "revert", "retouched", "correction", "signal", "refinement",
     "trial_memory", "memory", "lint_page", "archive_candidate"].flatMap(kind => many(kind, 20));
   const stale = many("stale_vs_code", 95);
   const dead = many("dead_link", 12);

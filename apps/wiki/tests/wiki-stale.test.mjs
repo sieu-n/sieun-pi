@@ -7,13 +7,13 @@ import { test } from 'node:test';
 import { definitionText } from '../src/lib/definitions.mjs';
 import { entryKeys, knownMembers, memberKeys, namedEntries } from '../src/lib/stale-rules.mjs';
 import { pageRepo } from './page-repo.mjs';
-import { committedTree, engineReports } from '../scripts/wiki-health.mjs';
+import { engineReports, snapshotTree } from '../scripts/wiki-health.mjs';
 
 // A git repo with wiki pages (page-repo.mjs); stale() runs the stale report on its tip.
 function fixture(t, name = 'wiki-stale-') {
 	const repo = pageRepo(t, name);
 	const stale = () => {
-		const root = committedTree(repo.dir);
+		const root = snapshotTree(path.join(repo.dir, 'apps/llm-wiki/content'), repo.dir);
 		t.after(() => rmSync(root, { recursive: true, force: true }));
 		return engineReports(root, repo.dir).stale;
 	};

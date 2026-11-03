@@ -11,10 +11,6 @@ const MIN = 60_000;
 const ago = (min: number): string => new Date(NOW - min * MIN).toISOString();
 const page = (path: string, behindMin: number) => ({ path, title: path, last_verified: ago(200), verified_at: ago(200),
   staleRefs: [{ ref: `apps/x/${path}.ts`, modified: ago(behindMin), since: ago(behindMin) }] });
-const JOURNAL = [
-  `${((NOW - 5 * MIN) / 1000).toFixed(6)} us-metal02 systemd[1]: Starting wiki-box-commit.service - wiki-box-commit`,
-  `${((NOW - 5 * MIN + 10_000) / 1000).toFixed(6)} us-metal02 systemd[1]: Finished wiki-box-commit.service - wiki-box-commit`,
-].join("\n");
 
 function deps(stale: object[]): DreamDeps {
   const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: stale.length, lint_failing_pages: 0 };
@@ -25,8 +21,7 @@ function deps(stale: object[]): DreamDeps {
     now: NOW, node: "node", repos: { wiki: "/wiki", pi: "/pi" },
     files: { corrections: "corrections", harness: "harness", ledger: "ledger", agentDir: "/nonexistent-agent-dir" },
     readText: async path => files[path]!,
-    exec: async file => file === "node" ? JSON.stringify({ facts, items: [], errors: [], dupPairs: [], signals: [], stale: { stale } })
-      : file === "journalctl" ? JOURNAL : "",
+    exec: async file => file === "node" ? JSON.stringify({ facts, items: [], errors: [], dupPairs: [], signals: [], stale: { stale } }) : "",
   };
 }
 

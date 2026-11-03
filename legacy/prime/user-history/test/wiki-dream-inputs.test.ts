@@ -6,10 +6,6 @@ import { test } from "node:test";
 import { measureDream, UNMEASURED, type DreamDeps } from "../scripts/duties/wiki-dream.ts";
 
 const NOW = Date.parse("2026-10-19T17:00:00Z");
-const JOURNAL = [
-  `${NOW / 1000 - 60} us-metal02 systemd[1]: Starting wiki-box-commit.service - wiki-box-commit...`,
-  `${NOW / 1000 - 30} us-metal02 systemd[1]: Finished wiki-box-commit.service - wiki-box-commit.`,
-].join("\n");
 
 const deps: DreamDeps = {
   now: NOW, node: "node", repos: { wiki: "/wiki", pi: "/pi" },
@@ -17,7 +13,6 @@ const deps: DreamDeps = {
   readText: async path => ({ corrections: "{}", harness: "[]", ledger: "[]" })[path]!,
   exec: async file => {
     if (file === "node") return JSON.stringify({ items: [] });
-    if (file === "journalctl") return JOURNAL;
     return "";
   },
 };

@@ -8,13 +8,15 @@ import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shar
 
 /**
  * The Wiki dream duty's precheck (`node --import tsx scripts/duties/wiki-dream.ts`). It is a thin adapter with no model call:
- * - the wiki facts come from `node apps/llm-wiki/scripts/wiki-health.mjs --since <last run>` in auto-sns-agent, which owns the wiki rules;
+ * - the wiki facts come from `node apps/wiki/scripts/wiki-health.mjs --since <last run>` in this sieun-pi checkout, the wiki engine's home,
+ *   which reads the pages from the content root in ~/.config/sieun-pi/wiki.json;
  * - the mistake signal comes from the owner corrections ledger and the continual-harness memories and refinements made since the last run;
  * - the duty's own ledger says which duplicate pairs were judged and which mistake classes are open, fixed or back;
  * - `git log` in both repos says which `(wiki-dream)` commits were reverted and which files the dream edited twice in 7 days;
- * - wiki-health's stale list says which pages are behind their code, both sides dated on the first-parent history of auto-sns-agent's HEAD;
- * - the wiki host batch's journal (`journalctl --user -u wiki-box-commit`) says which written pages it keeps leaving out of git (unlandedPages).
- * wiki-health judges the pages as committed at HEAD, so an uncommitted page edit in the shared checkout neither hides nor adds a problem.
+ * - wiki-health's stale list says which pages are behind their code, both sides dated on the first-parent history of auto-sns-agent's HEAD.
+ * wiki-health judges a copy of the pages on disk, where the page API writes. Until 2026-11-03 it judged the pages as committed at HEAD of
+ * auto-sns-agent, and this precheck also read the wiki host batch's journal (wiki-box-commit) for pages the batch left out of git; the pages
+ * left that repo for the content root, so no batch decides what counts.
  * The headline `wiki_problems` adds up the sync problems the owner asked to keep at 0; the run detail file keeps every other number.
  * An input it cannot read counts in `source_errors` and writes 999999 for the metrics that input feeds, so the run misses and says why.
  */
@@ -40,23 +42,6 @@ const HEALTH_TIMEOUT_MS = 480_000;
  * The limit is about four times that, well inside the duty's 600 s precheck limit.
  */
 const GIT_TIMEOUT_MS = 60_000;
-/** journalctl read this unit's last 48 h (11,603 lines) in under 1 s on us-metal02 on 2026-10-19. */
-const JOURNAL_TIMEOUT_MS = 20_000;
-/** The wiki host batch's systemd user unit (auto-sns-agent scripts/repo/agent/wiki-box-commit.mjs, every 5 min). */
-export const BOX_UNIT = "wiki-box-commit";
-/**
- * A page counts as unlanded when the batch has left it out in every finished run for at least this long, up to its latest run. In the
- * 48 h of journal up to 2026-10-19 16:51Z (439 runs), 15 of 39 finished left-out streaks ended within 15 min, as the writer
- * fixed the page, and none ended between 15 and 30 min. The long ones held pages out for hours: email-finder-round4 for
- * 950 min, then its fix was reset on disk and lost while wiki_problems read 0.
- */
-export const UNLANDED_MS = 30 * 60_000;
-/**
- * The reason page-gate.mjs `aheadOfTipRows` gives when the batch holds a page that cites code the tip lacks, so the page lands in the same
- * commit as that code (auto-sns-agent wiki-box-commit.mjs `aheadRows`, runbook wiki-dream.md Phase 3 step 28).
- */
-const AHEAD = /^it cites (.+), which the tip does not have yet; /;
-
 /** Runs a program with no shell in `cwd` and gives its stdout; throws on a nonzero exit or a timeout. */
 export type Exec = (file: string, args: readonly string[], options: { cwd: string; timeoutMs: number }) => Promise<string>;
 export interface DreamDeps {
@@ -65,6 +50,7 @@ export interface DreamDeps {
   readText: (path: string) => Promise<string>;
   /** The node binary that runs wiki-health.mjs. */
   node: string;
+  /** `wiki` is the code repo the pages describe (auto-sns-agent), whose git dates deletions and dream commits; `pi` runs wiki-health. */
   repos: { wiki: string; pi: string };
   /** `agentDir` is Prime's agent folder, which holds the clean-room indexes under browser-chat and the session transcripts. */
   files: { corrections: string; harness: string; ledger: string; agentDir: string };
@@ -378,77 +364,6 @@ export function freshCorrections(file: unknown, since: number): FlaggedSlice[] {
   return slices.sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
 }
 
-const CONTENT = "apps/llm-wiki/content/";
-const LEFT_OUT = /^wiki-box-commit: left out (\S+): (.*)$/;
-/** One finished run of the wiki host batch: its start time, whether systemd marked it failed, and the pages it left out (wiki-content paths) with the batch's reason. */
-export interface BoxRun { at: number; failed: boolean; leftOut: Map<string, string> }
-
-/**
- * Parses `journalctl -o short-unix` output of the wiki-box-commit unit into its finished runs, oldest first. A run starts at
- * systemd's "Starting" line and ends at its "Finished" or "Failed with result" line; lines outside a run are skipped.
- */
-export function parseBoxJournal(text: string): BoxRun[] {
-  const runs: BoxRun[] = [];
-  let open: BoxRun | undefined;
-  for (const line of text.split("\n")) {
-    const match = /^(\d+(?:\.\d+)?) \S+ [^:]+: (.*)$/.exec(line);
-    if (!match) continue;
-    const at = Number(match[1]) * 1000;
-    const body = match[2]!;
-    if (body.startsWith(`Starting ${BOX_UNIT}.service`)) open = { at, failed: false, leftOut: new Map() };
-    else if (open && body.startsWith(`Finished ${BOX_UNIT}.service`)) { runs.push(open); open = undefined; }
-    else if (open && body.startsWith(`${BOX_UNIT}.service: Failed with result`)) { runs.push({ ...open, failed: true }); open = undefined; }
-    else if (open) {
-      const left = LEFT_OUT.exec(body);
-      if (left) open.leftOut.set(left[1]!.startsWith(CONTENT) ? left[1]!.slice(CONTENT.length) : left[1]!, left[2]!);
-    }
-  }
-  return runs;
-}
-
-export interface UnlandedPage { path: string; reason: string; session: boolean; firstAt: number; lastAt: number; runs: number }
-
-/** The refs (`path`, `path::name` or `sieun-pi:path`) an ahead-of-code hold names, or undefined for any other reason. */
-export function aheadRefs(reason: string): string[] | undefined {
-  return AHEAD.exec(reason)?.[1]!.split(", ");
-}
-
-/**
- * Whether every ref is in the checkout on disk: the file exists, or is a folder, and holds `name` as a whole word for a `path::name` ref.
- * A `sieun-pi:` ref reads the sieun-pi checkout.
- */
-export async function refsOnDisk(refs: readonly string[], repos: DreamDeps["repos"], readText: DreamDeps["readText"]): Promise<boolean> {
-  const present = await Promise.all(refs.map(async ref => {
-    const sibling = /^sieun-pi:(.+)$/.exec(ref);
-    const [file, name] = (sibling ? sibling[1]! : ref).split("::");
-    const text = await readText(join(sibling ? repos.pi : repos.wiki, file!)).catch((error: NodeJS.ErrnoException) => error.code === "EISDIR" ? "" : undefined);
-    return text !== undefined && (name === undefined || new RegExp(`(?<![\\w$])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w$])`).test(text));
-  }));
-  return present.every(Boolean);
-}
-
-/**
- * Pages the latest run left out whose current left-out streak started at least UNLANDED_MS before it, with the latest reason. Session pages
- * are marked. A finished run that did not leave the page out ends the streak, since the page landed or had nothing to land then; a failed run
- * that did not name it may have stopped before reaching it, so it neither ends nor extends the streak. Until 10-28 the first run in 24 h that
- * left the page out started the clock, so the d4 after-measure at 14:34Z counted apps/search/brand-tracking.html, left out once at 10:29Z,
- * landed four times since, and left out again only from 14:20Z, and d9 read d4 as a stuck duty at 14:45Z. In 72 h of journal up to 10-28
- * 14:50Z, every finished run inside a left-out streak named the page.
- */
-export function unlandedPages(runs: readonly BoxRun[]): UnlandedPage[] {
-  const latest = runs[runs.length - 1];
-  if (!latest) return [];
-  return [...latest.leftOut].flatMap(([path, reason]) => {
-    let firstAt = latest.at;
-    let count = 0;
-    for (const run of [...runs].reverse()) {
-      if (run.leftOut.has(path)) { firstAt = run.at; count += 1; } else if (!run.failed) break;
-    }
-    if (latest.at - firstAt < UNLANDED_MS) return [];
-    return [{ path, reason, session: path.startsWith("sessions/"), firstAt, lastAt: latest.at, runs: count }];
-  });
-}
-
 /**
  * The order the job reads flagged items in, with a cap per kind; the capped kinds stop at FLAGGED_MAX in all. A kind wiki_problems counts has
  * no cap, so the job's list holds every problem the headline counts: at a cap of 30 pages behind code, listed by path, 424 of the 1,221 page-hours
@@ -456,7 +371,7 @@ export function unlandedPages(runs: readonly BoxRun[]): UnlandedPage[] {
  * (~/work/wiki-problems-follow-fix/replay_stale.py).
  */
 export const FLAG_ORDER: readonly [string, number][] = [
-  ["source_error", 6], ["unlanded", Infinity], ["unlanded_session", 10], ["unlanded_ahead", 10], ["recurred", 8], ["open_class", 10], ["hub_orphan", Infinity], ["dead_link", Infinity],
+  ["source_error", 6], ["recurred", 8], ["open_class", 10], ["hub_orphan", Infinity], ["dead_link", Infinity],
   ["superseded_linked", Infinity], ["session_link", Infinity], ["missing_meta", Infinity], ["stale_vs_code", Infinity], ["dup_pair", 5], ["revert", 5], ["retouched", 5],
   ["correction", 10], ["signal", 6], ["refinement", 6], ["trial_memory", 10], ["memory", 10], ["lint_page", 5], ["archive_candidate", 3],
 ];
@@ -490,14 +405,9 @@ export function pickFlagged(slices: readonly FlaggedSlice[]): FlaggedSlice[] {
 const HEALTH_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "stale_vs_code"] as const;
 /**
  * The sync problems wiki_problems adds up; pages_behind_code counts the pages of wiki-health's stale list (parseStale) behind for longer than
- * FOLLOW_WINDOW_MS, and unlanded counts
- * curated pages written on the wiki host that its batch keeps out of git, which wiki-health cannot see because it reads HEAD. A page held
- * until the code it cites is committed counts in info `unlanded_ahead` instead while every cited ref is on disk, because the tip's copy matches
- * the tip and the held copy matches the checkout. In the 72 h of journal up to 10-28 15:15Z (765 runs), all 7 finished ahead holds ended
- * within 60 min of their first held run, each in the first run after its code commit. Once a cited ref is gone from disk, no code commit
- * will land the page, so it counts again.
+ * FOLLOW_WINDOW_MS.
  */
-const PROBLEM_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "pages_behind_code", "unlanded"] as const;
+const PROBLEM_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "pages_behind_code"] as const;
 
 /**
  * Measures everything and builds the precheck output. Each input that fails to run or to parse adds a source_error item and 999999 for
@@ -510,7 +420,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   const fail = (source: string, error: unknown): undefined => { errors.push({ kind: "source_error", item: source, excerpt: clip(`${source}: ${message(error)}`) }); return undefined; };
   const readJson = async (path: string): Promise<unknown> => JSON.parse(await deps.readText(path)) as unknown;
 
-  const health = await deps.exec(deps.node, ["apps/llm-wiki/scripts/wiki-health.mjs", "--since", new Date(since).toISOString()], { cwd: deps.repos.wiki, timeoutMs: HEALTH_TIMEOUT_MS })
+  const health = await deps.exec(deps.node, ["apps/wiki/scripts/wiki-health.mjs", "--since", new Date(since).toISOString()], { cwd: deps.repos.pi, timeoutMs: HEALTH_TIMEOUT_MS })
     .then(parseHealth).catch(error => fail("wiki-health.mjs", error));
   const ledger = await readJson(deps.files.ledger).then(value => { if (!isRecord(value)) throw new Error("not an object"); return value as Ledger; }).catch(error => fail("ledger", error));
   const corrections = await readJson(deps.files.corrections).then(value => freshCorrections(value, since)).catch(error => fail("corrections.json", error));
@@ -525,19 +435,6 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
       { cwd: repo, timeoutMs: GIT_TIMEOUT_MS }).then(text => { commits.push(...parseGitLog(name, text)); }).catch(error => { gitOk = false; fail(`git log ${name}`, error); });
   }
 
-  const box = await deps.exec("journalctl", ["--user", "-u", BOX_UNIT, "--since", `@${Math.floor((now - DAY) / 1000)}`, "-o", "short-unix", "--no-pager"],
-    { cwd: deps.repos.wiki, timeoutMs: JOURNAL_TIMEOUT_MS }).then(text => {
-    const runs = parseBoxJournal(text);
-    if (!runs.length) throw new Error(`no finished ${BOX_UNIT} run in the last 24 h`);
-    return runs;
-  }).then(async runs => {
-    const pages = await Promise.all(unlandedPages(runs).map(async page => {
-      const refs = page.session ? undefined : aheadRefs(page.reason);
-      return { ...page, held: refs !== undefined && await refsOnDisk(refs, deps.repos, deps.readText) };
-    }));
-    return { runs: runs.length, pages };
-  }).catch(error => fail(`journalctl ${BOX_UNIT}`, error));
-
   const listed = health && (() => { try { return parseStale(health.stale); } catch (error) { return fail("wiki-health.mjs stale", error); } })();
   const undated = listed?.some(page => page.staleRefs.some(ref => ref.since === undefined && !Number.isFinite(Date.parse(ref.modified))));
   const stalePages = listed && undated
@@ -551,7 +448,6 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   const waiting = new Set(stalePages?.filter(page => waits(behindSince(page), now)).map(page => page.path));
   metrics.pages_behind_code = stalePages && following ? stalePages.length - following.length : UNMEASURED;
   if (following) metrics.wiki_problems_following = following.length - waiting.size;
-  metrics.unlanded = box ? box.pages.filter(page => !page.session && !page.held).length : UNMEASURED;
   metrics.wiki_problems = PROBLEM_METRICS.some(key => metrics[key] === UNMEASURED) ? UNMEASURED : PROBLEM_METRICS.reduce((sum, key) => sum + metrics[key]!, 0);
   const lintFailing = health?.facts.lint_failing_pages;
   metrics.lint_over_glide = lintFailing === undefined ? UNMEASURED : lintFailing - glide(LINT_GLIDE, now);
@@ -575,19 +471,11 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
     repo_fact_memories: harness?.repoFacts ?? UNMEASURED, memory_glide_plan: glide(MEMORY_GLIDE, now), new_corrections: corrections?.length ?? UNMEASURED,
     new_memories: harness?.fresh.length ?? UNMEASURED, trial_memories: harness?.trial.length ?? UNMEASURED, new_refinements: harness?.refinements.length ?? UNMEASURED, signals: health?.signals.length ?? UNMEASURED,
     open_session_logs: health?.facts.open_session_logs ?? UNMEASURED, open_classes: classes?.open.length ?? UNMEASURED,
-    box_runs_24h: box?.runs ?? UNMEASURED, unlanded_sessions: box ? box.pages.filter(page => page.session).length : UNMEASURED,
-    unlanded_ahead: box ? box.pages.filter(page => page.held).length : UNMEASURED,
     recurred_7d: classes?.recurred.length ?? UNMEASURED, dream_commits_7d: commits.filter(commit => !isRevert(commit.subject)).length,
     pages_waiting: stalePages ? waiting.size : UNMEASURED,
   };
 
   const slices: FlaggedSlice[] = [...errors];
-  const iso = (at: number): string => new Date(at).toISOString().slice(0, 16) + "Z";
-  for (const page of box?.pages ?? []) {
-    const held = page.held ? " (every cited ref is on disk in the checkout, so it waits on that code's commit)" : "";
-    slices.push({ kind: page.session ? "unlanded_session" : page.held ? "unlanded_ahead" : "unlanded", item: page.path, at: page.lastAt,
-      excerpt: clip(`the wiki host batch left it out of git in ${page.runs} runs from ${iso(page.firstAt)} to ${iso(page.lastAt)}${held}: ${page.reason}`, 400) });
-  }
   // Only a class back after its current fix is work: one that came back before it already has that fix, and recurred_7d counts it.
   for (const [slug, row] of classes?.back ?? []) {
     const when = row.fixedAt ? `after its current fix (${row.fixedAt})` : "with no fix date";

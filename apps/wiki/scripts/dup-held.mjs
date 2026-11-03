@@ -12,7 +12,7 @@ const CONTENT = 'apps/llm-wiki/content/';
 const SPACES = ['apps', 'domains', 'projects', 'experiments'];
 
 /** Every curated page on disk under `contentRoot`, as a map from content path to html. */
-function curatedOnDisk(contentRoot) {
+export function curatedOnDisk(contentRoot) {
 	const pages = new Map();
 	for (const space of SPACES) {
 		const dir = path.join(contentRoot, space);

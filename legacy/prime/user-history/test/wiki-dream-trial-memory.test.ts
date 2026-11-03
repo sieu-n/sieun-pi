@@ -72,7 +72,6 @@ function deps(dir: string): DreamDeps {
     readText: async path => files[path]!,
     exec: async file => {
       if (file === "node") return JSON.stringify({ facts, items: [], errors: [], dupPairs: [], signals: [], stale: { stale: [] } });
-      if (file === "journalctl") return `${NOW / 1000 - 60} us-metal02 systemd[1]: Starting wiki-box-commit.service\n${NOW / 1000 - 30} us-metal02 systemd[1]: Finished wiki-box-commit.service\n`;
       return "";
     },
   };

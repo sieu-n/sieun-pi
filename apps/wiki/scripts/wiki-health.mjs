@@ -8,18 +8,17 @@
  * pages cite come from the wiki config (src/lib/wiki-config.mjs), so it runs from any directory.
  * The link rules live in the engine (wiki-lint.ts, wiki-stale.ts) and the writing rules in prose-lint.mjs;
  * this script runs those and adds metadata, views, duplicate candidates and log signals.
- * Every page rule reads the pages as committed at HEAD, because other sessions edit the shared checkout and
- * an uncommitted page edit must neither hide nor add a finding.
+ * Every page rule reads a hard-linked snapshot of the content root on disk (snapshotTree), where the page API writes.
  * An input it could not read is named in `errors` and its facts are null.
  */
 import { spawnSync } from 'node:child_process';
-import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { kstDayFolder, kstWallClock } from '../src/lib/kst.mjs';
 import { siblingRef, siblingRepos } from '../src/lib/sibling-repos.mjs';
-import { codeRepoDir, contentGitRoot, wikiConfig } from '../src/lib/wiki-config.mjs';
+import { codeRepoDir, wikiConfig } from '../src/lib/wiki-config.mjs';
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
 const CONTENT = wikiConfig().contentRoot;
@@ -44,8 +43,14 @@ const DUP_MIN = 0.35;
 export const SETTLED_STATUS = new Set(['superseded', 'deprecated', 'archived']);
 const DAY = 24 * 60 * 60 * 1000;
 const VIEW_WINDOW_DAYS = 60;
-/** Where the content sits in the code repo's history, for page ages and the stale report's page commits. */
+/** Where the content sat in the code repo's history until 2026-11, for page ages. */
 const CONTENT_REL = 'apps/llm-wiki/content';
+/** The candidate prefix of a ref that names a wiki page, which resolves in the content root on disk. */
+const WIKI_REF = 'wiki:';
+/** The content's folder inside a snapshotTree, where it sat in the repo layout the engine's @code mirror expects beside it. */
+const SNAPSHOT_REL = CONTENT_REL;
+/** Files over this stay out of the snapshot: on 2026-11-03 the 3,459 curated files up to 1 MB held 108 MB and the rest 2.2 GB of experiment data. A copy, because the engine refuses a hard-linked page. */
+const SNAPSHOT_MAX_FILE = '1m';
 export const SIGNAL_PHRASES = [
 	['commit.mjs refused', /commit\.mjs refused/i],
 	['guard refused', /guard refused/i],
@@ -255,27 +260,27 @@ function run(file, args, options) {
 }
 
 /**
- * The wiki content and the @code mirror docs as committed at HEAD in `repo`, unpacked into a new temp folder
- * laid out like the repo. Session folders stay out, because no curated-page rule reads them.
+ * A fixed view for the engine reports: every top folder and file of the content root `content` except `sessions/` and the
+ * dot folders, hard-linked into a new folder under `content/.wiki` (the same file system, so no data is copied), and the
+ * @code mirror docs at HEAD of `mirrorRepo` beside them. Session folders stay out, because no curated-page rule reads them
+ * and the engine would index 93 GiB of them; a nested one, such as the `apps/llm-wiki/content/sessions/` that two writes with a
+ * disk prefix made on 2026-10-18, is no curated page either. Until 2026-11 this unpacked the content as committed at HEAD of auto-sns-agent;
+ * the pages left that repo, and the page API is the one writer, so the disk is the record.
  */
-export function committedTree(repo, rel = CONTENT_REL) {
-	const git = (args) => run('git', args, { cwd: repo });
-	const list = (buf) => String(buf).split('\0').filter(Boolean);
-	const apps = list(git(['ls-tree', '-z', '--name-only', 'HEAD', 'apps/']));
-	const appDocs = apps.flatMap((app) => [`${app}/CLAUDE.md`, `${app}/README.md`]);
-	const docs = list(git(['ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', ...MIRROR_DOCS, ...appDocs]));
-	const tar = git([
-		'archive',
-		'--format=tar',
-		'HEAD',
-		'--',
-		rel || '.',
-		`:(exclude)${rel ? `${rel}/` : ''}sessions`,
-		...docs,
-	]);
+export function snapshotTree(content = CONTENT, mirrorRepo = wikiConfig().mirrorDir) {
 	const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'wiki-health-')));
 	try {
-		run('tar', ['-x', '-C', root], { input: tar });
+		const into = path.join(root, SNAPSHOT_REL);
+		mkdirSync(into, { recursive: true });
+		run('rsync', ['-a', `--max-size=${SNAPSHOT_MAX_FILE}`, '--exclude=sessions/', '--exclude=.*', `${content}/`, `${into}/`]);
+		if (mirrorRepo) {
+			const git = (args) => run('git', args, { cwd: mirrorRepo });
+			const list = (buf) => String(buf).split('\0').filter(Boolean);
+			const apps = list(git(['ls-tree', '-z', '--name-only', 'HEAD', 'apps/']));
+			const appDocs = apps.flatMap((app) => [`${app}/CLAUDE.md`, `${app}/README.md`]);
+			const docs = list(git(['ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', ...MIRROR_DOCS, ...appDocs]));
+			if (docs.length) run('tar', ['-x', '-C', root], { input: git(['archive', '--format=tar', 'HEAD', '--', ...docs]) });
+		}
 	} catch (error) {
 		rmSync(root, { recursive: true, force: true });
 		throw error;
@@ -351,7 +356,7 @@ export function citedRefs(page) {
 		else
 			refs.set(ref, [
 				bare,
-				`${CONTENT_REL}/${bare}`,
+				`${WIKI_REF}${bare}`,
 				...apps.map((app) => `apps/${app}/${bare}`),
 				...(inCode ? [`*:${bare}`] : []),
 			]);
@@ -392,7 +397,8 @@ export function missingCodeRefs(pages, repo, siblings = new Map(), { rev = 'HEAD
 			if (component) addPaths(component[1], '*:');
 		}
 	}
-	const resolves = (c) => known.has(c) || (onDisk && existsSync(path.join(repo, c)));
+	const resolves = (c) =>
+		c.startsWith(WIKI_REF) ? existsSync(path.join(CONTENT, c.slice(WIKI_REF.length))) : known.has(c) || (onDisk && existsSync(path.join(repo, c)));
 	const unmeasured = (ref) => {
 		const sibling = siblingRef(ref);
 		return sibling !== null && !siblings.has(sibling.repo);
@@ -466,7 +472,7 @@ process.stdout.write(JSON.stringify({ lint, stale: await getStaleReport(repo) })
 `;
 
 /** The engine's lint and stale reports over the committed tree at `root`; stale compares refs against `repo`. */
-export function engineReports(root, repo = REPO, rel = CONTENT_REL) {
+export function engineReports(root, repo = REPO, rel = SNAPSHOT_REL) {
 	const out = run(process.execPath, ['--input-type=module', '-e', ENGINE_RUN, ENGINE, repo], {
 		cwd: root,
 		env: { ...process.env, WIKI_CONTENT_ROOT: path.join(root, rel), WIKI_MIRROR_ROOT: root, WIKI_AGENTS_ROOT: path.join(root, '.no-mounts') },
@@ -558,18 +564,15 @@ function itemsFor(kind, rows, toItem) {
 
 async function main() {
 	const args = parseArgs(process.argv.slice(2));
-	const git = contentGitRoot();
-	if (!git) throw new Error(`the content root ${CONTENT} is in no git repo, so there is no committed tree to measure`);
-	const rel = path.relative(git, CONTENT).split(path.sep).join('/');
-	const root = committedTree(git, rel);
+	const root = snapshotTree();
 	try {
-		process.stdout.write(`${JSON.stringify(await measure(args, root, rel), null, 1)}\n`);
+		process.stdout.write(`${JSON.stringify(await measure(args, root, SNAPSHOT_REL), null, 1)}\n`);
 	} finally {
 		rmSync(root, { recursive: true, force: true });
 	}
 }
 
-/** The report over the committed tree that committedTree unpacked at `root`. */
+/** The report over the snapshot that snapshotTree made at `root`. */
 async function measure(args, root, rel) {
 	const committed = path.join(root, rel);
 	const { lint, stale } = engineReports(root, REPO, rel);

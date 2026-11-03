@@ -46,6 +46,8 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { commitPages, isCuratedPath, landedCommits } from './dup-gate.mjs';
+import { curatedOnDisk } from './dup-held.mjs';
+import { wikiConfig } from '../src/lib/wiki-config.mjs';
 import { codeText } from '../src/lib/code-text.mjs';
 import { definitionCode, definitionText, symbolRef } from '../src/lib/definitions.mjs';
 import { siblingRef, siblingRepos } from '../src/lib/sibling-repos.mjs';
@@ -391,8 +393,20 @@ function git(root, args, input) {
 	return run.stdout;
 }
 
-/** Every curated page and the home page at `rev`, as a map from content path to html, read with one cat-file process. */
+/**
+ * Every curated page and the home page, as a map from content path to html. With a wiki config file the pages come from
+ * its content root on disk, where the page API writes, because the pages left auto-sns-agent's git on 2026-11-03 and a
+ * read at `rev` would find none there. With no config file, as in a test repo, they come from `rev` in `root`, read with
+ * one cat-file process.
+ */
 export function pagesAt(root, rev) {
+	const config = wikiConfig();
+	if (config.file) {
+		const pages = curatedOnDisk(config.contentRoot);
+		const home = path.join(config.contentRoot, HOME);
+		if (existsSync(home)) pages.set(HOME, readFileSync(home, 'utf8'));
+		return pages;
+	}
 	const blobs = String(
 		git(root, ['ls-tree', '-r', '-z', rev, '--', ...SPACES.map((s) => `${CONTENT}${s}/`), `${CONTENT}${HOME}`]),
 	)
