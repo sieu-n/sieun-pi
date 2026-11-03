@@ -46,6 +46,7 @@ H-->>C: the same submission, nothing admitted twice
 | `prime-harness.ts`, `vendor/prime-harness.ts` | Prime's harness digest and its updates from the global store and the thread's local one, sent as messages before the inputs they go with, with Prime's own code copied by `scripts/vendor-prime-harness.mjs`. |
 | `agent-profile.ts` | The agent a thread belongs to, read from the `agent.ref` doc of its root conversation, what that agent's folder gives the thread (the brief as a Prime context file and the agent's harness store as the local store), and the tools filter and instructions its role sets on the root conversation. |
 | `comm.ts` | A comm thread's link to its agent's work thread: the `comm.hand` task that hands the work thread a task and sends the work-done notice, and the `stop_work` tool. |
+| `comm-guard.ts`, `relay-line.ts` | What a comm thread may post: no post after its hand-over in the same turn but a question, no hand-over words, and no progress words on a turn the owner did not start. |
 | `open.ts` | `openDurableHost()` for one file and the Prime preamble extension. |
 | `@sieun-pi/pi-pool/durable` | `poolProvider()` in `packages/pi-pool/src/durable/pool-provider.ts`: a pi-ai Provider that vends each request's account through pi-pool and turns a slot wait into a stored sleep. |
 | `subagent.ts` | The `subagent` tool: the call starts a child conversation through an `rlm.deliver` task and returns at once, and the child's whole answer reaches the parent later as an input. A call from before this change still owns its child and returns its answer. `ForegroundSubagent` keeps the old tool for `openDurableHost`. |
@@ -102,6 +103,16 @@ H->>C: [work-done: no-reply agent:<work name>] unless W reported
 4. A failed input sends `[work-failed agent:<work name>]` with the error even after a report, as Prime's `[child-failed ...]` does.
 5. The task survives a restart: a phase cut by the shutdown reruns, and the request ids keep the task and the notice once. A call to the work thread that fails because pi-host is shutting down holds the phase until the comm file closes, so it never ends the task.
 6. `stop_work` aborts the work thread's root conversation. It is a deferred tool that only the comm role loads, and it refuses in any other thread.
+
+### What a comm thread may post
+
+A comm thread posts a result, an answer or a question, never a relay of its own work. `comm-guard.ts` checks each `tell_owner` and `send_message` call of a comm thread's root before it runs (a `ToolTask` hook in `prime-chat.ts`), and a refusal comes back as the call's error.
+
+1. The hand-over notes its time in the comm root's `comm.handed` document, in the commit that creates the `comm.hand` task. A post in the same turn, after the turn's input arrived, is refused unless it asks a question with no relay words, because the room already shows the post as in progress and the result comes once, from the work thread's report or the work-done notice.
+2. A post with hand-over words (`relay-line.ts`: "I passed it to the job", "I'll post the link once it's done") is refused on any turn.
+3. A post with progress words ("The vent thread is now listing every panel") is refused on a turn the owner did not start, and allowed on his turn, where it answers his status question.
+
+apps/chat's duty precheck `scripts/duties/relay-posts.ts` counts the same words in the agent posts of real rooms over 24 h, with a target of 0.
 
 `agent_observe` reads another thread's root through `RlmThread.observeRoot` (`DurableThreads.observe`) without submitting anything to it: its status, `messageCount`, `firstMessage`, `latestMessage`, `recent_messages`, its live rlm children with their progress notes as `children`, and its place in pi-pool's turn queue as `turnQueue`.
 `get_agent` and `recent_messages` open a closed file to read it, and `list_agents` reads only the files already open and gives the index row for the rest.

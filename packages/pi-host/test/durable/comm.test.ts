@@ -21,7 +21,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { AgentDoc, ROOT_CONVERSATION_ID, type CommitPublication, type EntryRecord } from "@earendil-works/pi-durable";
 import { testPython } from "@sieun-pi/pi-rlm/test-helpers";
 import { AgentRoleDoc, commInstructions, parseAgentRef, STOP_WORK_TOOL, workInstructions } from "../../src/durable/agent-profile.ts";
-import { HAND_TASK } from "../../src/durable/comm.ts";
+import { CommHandedDoc, HAND_TASK } from "../../src/durable/comm.ts";
 import { DurableRlm } from "../../src/durable/rlm.ts";
 import { DurableThreads } from "../../src/durable/threads.ts";
 import { MODEL } from "./crash-scenario.ts";
@@ -160,6 +160,9 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
     for (const name of ["write", "edit", "bash", "subagent"]) assert.ok(!tools.includes(name), name);
     assert.ok(tools.includes(STOP_WORK_TOOL) && tools.includes("read"), tools.join(", "));
     assert.match(commInstructions(comm), /comm thread in room dm_vent[\s\S]*receiver_name="w-1"[\s\S]*stop_work[\s\S]*c117[\s\S]*tell_owner/);
+    for (const room of ["dm_vent", "so_1a2b3c4d", "ch_1a2b3c4d"]) {
+      assert.match(commInstructions({ ...comm, room }), /When you hand a task over, post nothing in that turn[\s\S]*Post once, with the result[\s\S]*replaces the base prompt's progress updates/, room);
+    }
     for (const room of ["so_1a2b3c4d", "ch_1a2b3c4d"]) {
       const group = commInstructions({ ...comm, room });
       assert.match(group, new RegExp(`comm thread in room ${room}, a group chat[\\s\\S]*header[\\s\\S]*concerns your agent[\\s\\S]*without a message[\\s\\S]*tell_owner[\\s\\S]*@<name>[\\s\\S]*why and about[\\s\\S]*receiver_name="w-1"[\\s\\S]*stop_work[\\s\\S]*c117`));
@@ -174,7 +177,7 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
     await threads.docPut(thread.id, "agent.ref", work);
     const asWork = await state();
     assert.deepEqual([asWork.tools, asWork.modelTools, asWork.instructions], [{ remove: ["tell_owner"] }, undefined, workInstructions(work)]);
-    assert.match(workInstructions(work), /work thread[\s\S]*comm thread c-1[\s\S]*comm thread that handed it[\s\S]*sibling:<name>[\s\S]*receiver_name="c-1"/);
+    assert.match(workInstructions(work), /work thread[\s\S]*comm thread c-1[\s\S]*comm thread that handed it[\s\S]*no acknowledgment or progress note[\s\S]*sibling:<name>[\s\S]*receiver_name="c-1"/);
 
     await threads.docPut(thread.id, "agent.ref", { agent: "ag_vent", dir: folder, role: "work" });
     const plain = await state();
@@ -247,6 +250,10 @@ test("a handed task that settles with no reply sends the comm thread one work-do
     assert.deepEqual(notice!.data, { from: ids.work, via: "work.done" });
     const handed = inputs(await rootEntries(threads, ids.work)).find(input => input.text.endsWith("build the page"));
     assert.deepEqual(handed?.data, { from: ids.comm, via: "agent_message" });
+    const asked = (await rootEntries(threads, ids.comm)).map(entry => entry.model?.[0] as (Message & { timestamp: number }) | undefined)
+      .find(message => message?.role === "user" && textOf(message.content as never) === "do the page")!;
+    const handedAt = (await (await threads.thread(ids.comm)).harness.snapshot(CommHandedDoc, ROOT_CONVERSATION_ID, context))?.at ?? 0;
+    assert.ok(handedAt >= asked.timestamp, `the hand-over is noted in the turn it came from (${handedAt} >= ${asked.timestamp})`);
     await until("the hand-over to end", async () => (await handsLive(threads)) === 0);
 
     await ask(threads, ids.comm, "do the report");

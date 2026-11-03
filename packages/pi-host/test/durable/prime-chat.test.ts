@@ -3,7 +3,8 @@
  * `chat_board`, `correction_add`, `search_history` and `poteto_mode` with the definitions the user-history extension itself registers,
  * an owner input reaches the model with Prime's `[message id: ...]` and another sender's with Prime's `[not from the owner: ...]` while the
  * stored entries keep the raw text, tell_owner's guard holds a message on a turn the owner did not start, chat_board reads and writes the
- * new chat's board through its HTTP API, correction_add writes the shared ledger, and a subagent's child conversation gets none of them.
+ * new chat's board through its HTTP API, correction_add writes the shared ledger, and a subagent's child conversation gets none of them. In a
+ * comm thread, tell_owner refuses a post after the turn's hand-over and a relay line (`comm-guard.ts`) before Prime's guard reads it.
  */
 import { strict as assert } from "node:assert";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -19,10 +20,12 @@ import { Harness, ROOT_CONVERSATION_ID, type ContextView, type EntryRecord } fro
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { TELL_OWNER_DESCRIPTION, TELL_OWNER_PARAMETERS, WAKE_NOTE } from "../../../../legacy/prime/user-history/src/chat-guard.ts";
 import { messageIdNote, TELL_OWNER_HELD } from "../../../../legacy/prime/user-history/src/shared/chat-feed.ts";
+import { AGENT_REF_DOC } from "../../src/durable/agent-profile.ts";
 import { ChatApp } from "../../src/durable/chat-app.ts";
+import { CommHandedDoc } from "../../src/durable/comm.ts";
 import { loadPrimeChat, PRIME_CHAT_TOOLS, withTurnWrappers, type ChatThread, type PrimeChat } from "../../src/durable/prime-chat.ts";
 import { guidelines } from "../../src/durable/prime-prompt.ts";
-import { threadRegistry } from "../../src/durable/registry.ts";
+import { ChatDoc, threadRegistry } from "../../src/durable/registry.ts";
 import { SEND_MESSAGE_TOOL } from "../../src/durable/send-message.ts";
 import { MODEL, textOf } from "./crash-scenario.ts";
 
@@ -176,6 +179,52 @@ test("tell_owner sends on the owner's turn, refuses a call with no why on a chec
   assert.match(told[1]!.text, /^why is required on a turn the owner did not start/);
   assert.ok(told[2]!.text.startsWith(TELL_OWNER_HELD), told[2]!.text);
   assert.ok(calls.some(call => call.method === "GET" && call.path === "/api/threads/tell/board"), "the check read the thread's board");
+});
+
+test("in a comm thread, a post after the turn's hand-over and a relay line are refused, and a question and a result go out", async () => {
+  const steps: (Record<string, string> | null)[] = [
+    { text: "Makes sense, Accounts moves into a tab under Settings and leaves the top bar." },
+    { tool: SEND_MESSAGE_TOOL, text: "Makes sense, Accounts moves into a tab under Settings and leaves the top bar." },
+    { text: "Which repo should the panel list cover, auto-sns-agent only or every repo?" },
+    null,
+    { text: "The work thread is reading threads.ts now, the last of the 20 files." },
+    { text: "I'll post the wiki link here once the list is done." },
+    null,
+    { text: "The work thread is reading threads.ts now, the last of the 20 files.", why: "update", about: "summaries" },
+    { text: "summaries.md is done, with one line for each of the 20 files.", why: "done", about: "summaries" },
+    null,
+  ];
+  let made = 0;
+  const { harness, root } = await open("comm-guard", () => {
+    const step = steps[made++];
+    if (!step) return fauxAssistantMessage("");
+    const { tool = "tell_owner", ...args } = step;
+    return fauxAssistantMessage([fauxToolCall(tool, args)], { stopReason: "toolUse" });
+  });
+  const handAt = (at: number) => harness.commit(async tx => {
+    (await tx.doc(ChatDoc, ROOT_CONVERSATION_ID, AGENT_REF_DOC, null)).value = { agent: "ag_vent", dir: agentDir, role: "comm", room: "ch_1a2b3c4d", work: "w-1" };
+    (await tx.doc(CommHandedDoc, ROOT_CONVERSATION_ID)).at = at;
+  }, context);
+  // The hand-over is noted after the owner's post arrives, as threads.ts notes it while the turn runs.
+  await handAt(Date.now() + 3_600_000);
+  await (await root.submit({ type: "input", content: "@vent list every management panel" }, context)).wait(context);
+  await handAt(1);
+  await (await root.submit({ type: "input", content: "@vent how far is the list?" }, context)).wait(context);
+  await (await root.submit({ type: "input", content: "[agent-message from sibling:vent]\n\nreading threads.ts", entry: { kind: "agent.message", data: { from: "w-1", via: "agent_message" } } }, context)).wait(context);
+  const all = results(await entriesOf(root));
+  const told = all.filter(result => result.name === "tell_owner");
+  await harness.close(context);
+  const sent = all.find(result => result.name === SEND_MESSAGE_TOOL)!;
+  assert.equal(sent.isError, true);
+  assert.match(sent.text, /Not sent: you handed this to your work thread in this turn/, "send_message gets the same check");
+  assert.equal(told.length, 6);
+  assert.equal(told[0]!.isError, true);
+  assert.match(told[0]!.text, /Not sent: you handed this to your work thread in this turn/);
+  assert.equal(told[1]!.text, "told the owner", "a question goes out after the hand-over");
+  assert.equal(told[2]!.text, "told the owner", "progress answers the owner's own status question");
+  assert.match(told[3]!.text, /Not sent: "I'll post the wiki link here once" announces a hand-over/);
+  assert.match(told[4]!.text, /Not sent: "The work thread is reading" is progress on work still going/);
+  assert.doesNotMatch(told[5]!.text, /Not sent/, "the result passes the comm check");
 });
 
 test("chat_board writes through the chat server as the agent and reads the open plan back in Prime's words", async () => {

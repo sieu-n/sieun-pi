@@ -34,7 +34,7 @@
 import type { Context } from "@earendil-works/chord";
 import type { Message } from "@earendil-works/pi-ai";
 import {
-  defineExtension, GenerationTask, hook, ROOT_CONVERSATION_ID, type ContextView, type ConversationId, type EntryRecord, type Extension, type Harness, type ToolExecutionApi,
+  defineExtension, GenerationTask, hook, ROOT_CONVERSATION_ID, ToolTask, type ContextView, type ConversationId, type EntryRecord, type Extension, type Harness, type ToolExecutionApi,
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { join } from "node:path";
@@ -53,7 +53,10 @@ import { laneHoldFlag } from "../../../../legacy/prime/user-history/src/shared/l
 import { boardLimitFlag } from "../../../../legacy/prime/user-history/src/shared/reply-lint.ts";
 import type { ChatBoard, PlanItem, ThreadMessage } from "../../../../legacy/prime/user-history/src/shared/types.ts";
 import { SEARCH_HISTORY_TOOL } from "../../../pi-history/src/pi/index.ts";
+import { threadAgent } from "./agent-profile.ts";
 import { ChatApp } from "./chat-app.ts";
+import { CommHandedDoc } from "./comm.ts";
+import { commPostRefusal, turnStartedAt } from "./comm-guard.ts";
 import { durableTool, loadPiExtension, piContext, type LoadedPiExtension, type PiSession, type PiTool, type PiToolResult } from "./pi-extensions.ts";
 
 export const PRIME_CHAT_EXTENSION = "prime-chat";
@@ -244,6 +247,29 @@ async function chatBoard(chat: PrimeChat, thread: ChatThread, params: unknown, s
   return text([...changed, renderOpenPlan(board, thread.id, checkIn), ...agents]);
 }
 
+/**
+ * In a comm thread's root, why a speaking call (tell_owner or send_message) must not go out (`comm-guard.ts`): it came after a hand-over in
+ * the same turn, or it relays the work. Undefined in any other thread or conversation, and when the role, the turn or the hand-over cannot be
+ * read, so a read failure lets the post through as before.
+ */
+async function commRefusal(chat: PrimeChat, thread: ChatThread, call: { id: string; arguments?: unknown }, conversation: ConversationId, context: Context): Promise<string | undefined> {
+  const text = (call.arguments as { text?: unknown } | undefined)?.text;
+  const harness = thread.harness();
+  if (typeof text !== "string" || !harness || conversation !== ROOT_CONVERSATION_ID) return undefined;
+  try {
+    if ((await threadAgent(harness, context))?.role !== "comm") return undefined;
+    const view = await contextOf(thread, conversation, context);
+    if (!view) return undefined;
+    const messages = threadMessages(view, call.id);
+    const owner = (await liveGuard(chat.agentDir)).tellTurn(messages).owner;
+    const handedAt = (await harness.snapshot(CommHandedDoc, ROOT_CONVERSATION_ID, context))?.at ?? 0;
+    const startedAt = turnStartedAt(messages as never);
+    return commPostRefusal(text, { owner, handed: handedAt > 0 && startedAt !== undefined && handedAt >= startedAt });
+  } catch {
+    return undefined;
+  }
+}
+
 /** tell_owner as Prime's runs it (extension/index.ts), with the turn read from the thread and the asks from apps/chat's boards. */
 async function tellOwner(chat: PrimeChat, thread: ChatThread, params: unknown, api: ToolExecutionApi, context: Context): Promise<PiToolResult> {
   const guard = await liveGuard(chat.agentDir);
@@ -284,7 +310,13 @@ export function primeChat(chat: PrimeChat, thread: ChatThread): Extension {
   return defineExtension({
     name: PRIME_CHAT_EXTENSION,
     tools: primeChatTools(chat, thread),
-    hooks: [hook(GenerationTask, {
+    hooks: [hook(ToolTask, {
+      beforeTool: async (call, api, context) => {
+        if (!SPEAKING_TOOLS.has(call.name)) return undefined;
+        const refused = await commRefusal(chat, thread, call, api.conversationId, context);
+        return refused ? { block: refused } : undefined;
+      },
+    }), hook(GenerationTask, {
       beforeRequest: async ({ messages }, api, context) => {
         if (api.conversationId !== ROOT_CONVERSATION_ID) return undefined;
         let view: ContextView | undefined;

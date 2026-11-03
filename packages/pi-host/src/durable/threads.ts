@@ -37,7 +37,7 @@ import { rlmChildName, type DurableRlm, type PiRootView, type RlmThread, type Ro
 import type { DurableRules } from "./rules.ts";
 import { AGENT_REF_DOC, applyAgentRole, parseAgentRef, threadAgent } from "./agent-profile.ts";
 import { RlmChildDoc } from "./children.ts";
-import { commExtension, noteHeard, type CommHost, type CommSubmit } from "./comm.ts";
+import { commExtension, noteHanded, noteHeard, type CommHost, type CommSubmit } from "./comm.ts";
 import { deliverHarnessDigest, type PrimePromptOptions } from "./prime-prompt.ts";
 
 const context: Context = BACKGROUND_CONTEXT;
@@ -418,9 +418,11 @@ export class DurableThreads {
     const ref = await threadAgent(sender.harness, context);
     if (ref?.role === "comm" && ref.work === to) {
       this.index.markActive(from, this.now());
-      const task = await sender.harness.commit(tx => tx.createTask(sender.comm.hand, { work: to, ...input }, {
-        ownership: { kind: "conversation" }, conversationId: ROOT_CONVERSATION_ID, background: true,
-      }), context);
+      const at = this.now();
+      const task = await sender.harness.commit(async tx => {
+        await noteHanded(tx, at);
+        return tx.createTask(sender.comm.hand, { work: to, ...input }, { ownership: { kind: "conversation" }, conversationId: ROOT_CONVERSATION_ID, background: true });
+      }, context);
       this.onWake(sender, sender.harness.wake());
       return { task };
     }

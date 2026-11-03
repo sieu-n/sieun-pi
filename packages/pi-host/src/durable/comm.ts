@@ -64,6 +64,22 @@ export async function noteHeard(tx: Tx, from: string): Promise<void> {
   doc.from[from] = (doc.from[from] ?? 0) + 1;
 }
 
+/** When this comm thread last handed its work thread a task, by pi-host's clock; a post later in that turn is refused (`comm-guard.ts`). */
+export const CommHandedDoc = defineDoc<{ at: number }>({
+  kind: "comm.handed",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ at: 0 }),
+  checkpointWhen: () => true,
+});
+
+/** Notes a hand-over at `at` in the comm thread's root, in the commit that creates its `comm.hand` task. */
+export async function noteHanded(tx: Tx, at: number): Promise<void> {
+  (await tx.doc(CommHandedDoc, ROOT_CONVERSATION_ID)).at = at;
+}
+
 export type HandInput = { work: string } & CommSubmit;
 type HandState =
   | { phase: "deliver" }
