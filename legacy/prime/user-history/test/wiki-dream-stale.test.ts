@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { dateMissingRefs, FLAGGED_MAX, FOLLOW_WINDOW_MS, measureDream, parseDeletions, parseStale, pickFlagged, staleExcerpt, type DreamDeps } from "../scripts/duties/wiki-dream.ts";
+import { dateMissingRefs, FLAGGED_MAX, FOLLOW_WINDOW_MS, measureDream, parseDeletions, parseStale, piRef, pickFlagged, staleExcerpt, type DreamDeps } from "../scripts/duties/wiki-dream.ts";
 import { judge, type DutyMetric } from "../src/shared/chat-duties.ts";
 
 const DUTY = JSON.parse(readFileSync(new URL("../scripts/duties/wiki-dream.duty.json", import.meta.url), "utf8")) as { metrics: unknown[] };
@@ -110,4 +110,40 @@ test("dateMissingRefs matches a deleted file by its path, an app-relative or fol
     { ref: "convex/crons.ts", modified: "2026-10-27T04:51:00.000Z" },
   ] }], deleted);
   assert.deepEqual(page!.staleRefs.map(ref => ref.since), ["2026-10-27T08:36:10.000Z", "2026-10-27T08:36:10.000Z", undefined, undefined]);
+});
+
+// On 2026-11-03 sieun-pi 187b2866 (14:47Z) removed apps/chat/server/search.ts `missingNote`, and the 15:08Z run counted
+// domains/devops/sw-factory-threads/index.html at once, since no sieun-pi hook runs the follow gate that covers auto-sns-agent.
+test("a missing sieun-pi definition is followed from the sieun-pi commit that removed it, and a missing auto-sns-agent definition counts at once", async () => {
+  const now = Date.parse("2026-11-03T15:08:00Z");
+  const missing = "missing — ref no longer exists";
+  const stale = { stale: [
+    { path: "domains/devops/sw-factory-threads/index.html", last_verified: "2026-11-03T14:00Z", verified_at: "2026-11-03T14:00:00.000Z",
+      staleRefs: [{ ref: "sieun-pi:apps/chat/server/search.ts::run", modified: missing }, { ref: "sieun-pi:apps/chat/server/search.ts::missingNote", modified: missing }] },
+    { path: "apps/search/ads-library.html", last_verified: "2026-11-03T14:00Z", verified_at: "2026-11-03T14:00:00.000Z",
+      staleRefs: [{ ref: "convex/search/adLibrary.ts::pruneOrphanAds", modified: missing }] },
+  ] };
+  const base = deps();
+  const piLogs: string[][] = [];
+  const result = await measureDream({ ...base, now, exec: async (file, args, options) => {
+    if (file === "node") return JSON.stringify({ facts: { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 2, lint_failing_pages: 0 },
+      items: [], errors: [], dupPairs: [], signals: [], stale });
+    if (file === "git" && args[1] === "/pi" && args.includes("-n1")) { piLogs.push([...args]); return `${Date.parse("2026-11-03T14:47:00Z") / 1000}\n`; }
+    if (file === "git" && args.includes("--diff-filter=D")) return "";
+    return base.exec(file, args, options);
+  } }, []);
+  assert.equal(result.metrics.pages_behind_code, 1, "only the auto-sns-agent page counts, since the follow gate refuses such a commit there");
+  assert.equal(result.metrics.source_errors, 0);
+  assert.equal(piLogs.length, 2);
+  assert.ok(piLogs[0]!.includes("--first-parent") && piLogs[0]!.at(-1) === "apps/chat/server/search.ts" && piLogs[0]!.includes("--since=2026-11-03T14:00:00.000Z"),
+    "it reads commits after the page's check, which is inside the window");
+  assert.ok(piLogs.some(args => args.includes("-G(^|[^[:alnum:]_$])missingNote([^[:alnum:]_$]|$)")), "only a commit that changed a line naming the definition dates it");
+  const page = (result.flagged ?? []).find(slice => slice.item === "domains/devops/sw-factory-threads/index.html");
+  assert.match(page!.excerpt, /behind since 14:47Z, counted from 15:57Z; code changed since: sieun-pi:apps\/chat\/server\/search\.ts::run \(missing\)/);
+});
+
+test("piRef reads a sieun-pi file or definition ref and drops a line suffix", () => {
+  assert.deepEqual(piRef("sieun-pi:apps/chat/server/search.ts::run"), { path: "apps/chat/server/search.ts", name: "run" });
+  assert.deepEqual(piRef("sieun-pi:packages/pi-pool/install.py:12-30"), { path: "packages/pi-pool/install.py" });
+  assert.equal(piRef("convex/search/adLibrary.ts::pruneOrphanAds"), null);
 });
