@@ -1,4 +1,4 @@
-import { mkdir, open, readdir, readFile, rename, unlink } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ChatImage } from "./chat-images.ts";
 import type { WriteSlot } from "./daemon-write.ts";
@@ -33,6 +33,11 @@ export interface Stored extends OutboxEntry {
   kind?: AgentKind;
   /** Wakes only: when the session set the wake (`Wake.since`), so a wake an archived chat set after its archive still goes. */
   setAt?: number;
+  /**
+   * A delivered or obsolete entry read back from the stop's `doneFile` without its file: no text, bundle or images. A resend of its id reads
+   * the file for them (`submit`).
+   */
+  stub?: true;
   /**
    * Agent messages only: the queued messages that go in this entry's send, its own first, oldest first; `text` is their rendering
    * (src/agent-outbox.ts `bundleText`). Each keeps what its own entry held, so a resubmit of any of them finds this entry.
@@ -104,6 +109,20 @@ export class OutboxConflict extends Error {}
 class Closed extends Error {}
 
 const KEEP_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * The delivered and obsolete entries a stop saves beside the outbox folder, as stubs, so the next start reads none of their files. On 11-03 the
+ * agent outbox held 22,677 entry files (42 MB), 22,642 of them done, and reading them back took 1.3 s of the main thread in 7.7 to 10.4 s of
+ * each start, while the reopened tabs' api/threads/<id>/older pages waited 2.3 to 3.8 s behind the start (d7 07:34 and 07:37Z). Each entry
+ * stays in its own file for the readers outside the service; the file is deleted as it is read, so a start after a crash reads every file.
+ */
+export const doneFile = (dir: string): string => `${dir.replace(/\/+$/, "")}.done.json`;
+const isDone = (entry: Stored): boolean => entry.doneAt !== undefined && (entry.state === "delivered" || entry.state === "obsolete");
+function stubOf(entry: Stored): Stored {
+  // The fingerprint holds the text too (14 of the 21 MB of 11-03's stubs); only a resend reads it, from the file.
+  const { text: _text, bundle: _bundle, images: _images, write: _write, sentAt: _sentAt, fingerprint: _fingerprint, ...rest } = entry;
+  return { ...rest, text: "", fingerprint: "", images: [], stub: true };
+}
 /** The longest wait between two tries of one entry that failed in different ways. */
 export const MAX_BACKOFF_MS = 30_000;
 /**
@@ -154,7 +173,11 @@ export class Outbox {
    */
   async submit(input: OutboxSubmit): Promise<OutboxAccepted> {
     await this.ready;
-    const held = this.entries.get(input.id);
+    let held = this.entries.get(input.id);
+    if (held?.stub) {
+      const full = await readFile(join(this.deps.dir, `${held.id}.json`), "utf8").then(text => JSON.parse(text) as Stored, () => null);
+      if (full?.id === held.id) { held = full; this.entries.set(full.id, full); }
+    }
     if (held) {
       if (held.fingerprint !== input.fingerprint) throw new OutboxConflict("This request ID belongs to a different message.");
       await this.writes.get(input.id);
@@ -213,6 +236,10 @@ export class Outbox {
     for (const stop of [...this.timers]) stop();
     if (drain) await Promise.allSettled([...this.lanes].filter(([threadId]) => this.out.has(threadId)).map(([, lane]) => lane));
     await Promise.allSettled([...this.writes.values()]);
+    await this.ready.catch(() => {});
+    const file = doneFile(this.deps.dir), tmp = `${file}.${process.pid}.tmp`;
+    await writeFile(tmp, JSON.stringify([...this.entries.values()].filter(isDone).map(entry => entry.stub ? entry : stubOf(entry))))
+      .then(() => rename(tmp, file)).catch(error => this.deps.log(`outbox: save ${file}: ${message(error)}`));
   }
 
   private where(threadId: string): string { return this.deps.where?.(threadId) ?? threadId.slice(0, 8); }
@@ -354,10 +381,20 @@ export class Outbox {
   /** Reads every entry back after a service start and resumes the threads with sends left; a send that was in flight is looked for first. */
   private async load(): Promise<void> {
     await mkdir(this.deps.dir, { recursive: true, mode: 0o700 });
+    const saved = doneFile(this.deps.dir);
+    const stubs = new Map<string, Stored>();
+    const text = await readFile(saved, "utf8").catch(() => null);
+    if (text !== null) {
+      await unlink(saved).catch(error => this.deps.log(`outbox: delete ${saved}: ${message(error)}`));
+      try { for (const stub of JSON.parse(text) as Stored[]) if (typeof stub?.id === "string" && isDone(stub)) stubs.set(stub.id, { ...stub, stub: true }); }
+      catch (error) { this.deps.log(`outbox: skip ${saved}: ${message(error)}`); }
+    }
     for (const name of await readdir(this.deps.dir)) {
       const file = join(this.deps.dir, name);
       if (name.endsWith(".tmp")) { await unlink(file).catch(() => {}); continue; }
       if (!name.endsWith(".json")) continue;
+      const stub = stubs.get(name.slice(0, -".json".length));
+      if (stub) { this.entries.set(stub.id, stub); this.last = Math.max(this.last, stub.at); continue; }
       try {
         const entry = JSON.parse(await readFile(file, "utf8")) as Stored;
         if (typeof entry.id !== "string" || typeof entry.threadId !== "string" || typeof entry.at !== "number") continue;
