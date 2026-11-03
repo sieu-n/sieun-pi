@@ -556,8 +556,8 @@ export type HostQueueInput = { host: string } & Exclude<AgentQueueInput, { actio
  * browser, computer use), each run on that box with the Skills and tools duty's own checks (scripts/duties/skills-and-tools.ts).
  * `id` is that duty's check id; `off` is installed but out of reach on purpose (the Mac asleep).
  */
-export type { HostTool } from "../hosts.ts";
-import type { HostTool } from "../hosts.ts";
+/** The tools a box can be meant to have, in the order of hosts.ts `HOST_TOOLS`. */
+export type HostTool = "websearch" | "aside" | "cua-driver";
 export interface ToolCheck { id: string; tool: string; status: "pass" | "fail" | "off"; detail: string; fix?: string; ms: number }
 /** One tool on one box, with its checks, or `used: false` for a tool the box is not meant to have, which is never checked and never fails. */
 export type HostToolRow = { tool: HostTool; used: true; checks: ToolCheck[] } | { tool: HostTool; used: false };

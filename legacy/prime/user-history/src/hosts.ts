@@ -6,6 +6,7 @@ import { isAbsolute, join } from "node:path";
 import { DELTA_HEADER, decodeLineDeltas } from "../../../../components/prime-relay/line-delta.ts";
 import type { AgentQueueKey } from "./chat-pool.ts";
 import { waitedOnHost } from "./chat-latency.ts";
+import type { HostTool } from "./shared/types.ts";
 
 /**
  * The hosts registry, ~/.config/sieun-pi/hosts.json: every box sieun-pi drives, its relay and the services it holds.
@@ -34,8 +35,8 @@ const ROLES: readonly HostRole[] = ["pool", "wiki", "chat"];
  * so each host's `tools` lists its own. Agents browse only through Aside, so no headless browser is a tool here (owner c177, 10-27: "NEVER put
  * it back in"); test/no-headless-browser.test.ts fails if one comes back.
  */
-export const HOST_TOOLS = ["websearch", "aside", "cua-driver"] as const;
-export type HostTool = (typeof HOST_TOOLS)[number];
+export const HOST_TOOLS = ["websearch", "aside", "cua-driver"] as const satisfies readonly HostTool[];
+export type { HostTool };
 const NAME = /^[a-z0-9][a-z0-9-]*$/;
 export const CONFIG_DIR = join(homedir(), ".config/sieun-pi");
 export const HOSTS_FILE = join(CONFIG_DIR, "hosts.json");

@@ -124,10 +124,12 @@ async function archive(repo, sha, into) {
   const source = spawn("git", ["-C", repo, "archive", "--format=tar", sha, "apps/chat", "config/allowed-models.ts", "packages/pi-host/src/durable/index-db.ts", "deploy/linux/sieun-pi-apps-chat.service",
     // scripts/duties/relay-posts.ts counts room posts with pi-host's relay words, the ones its comm guard refuses.
     "packages/pi-host/src/durable/relay-line.ts",
-    // server/host/relay-host.ts speaks the agent relay's frames as protocol.ts defines them.
-    "components/prime-relay/agents/protocol.ts",
-    // server/wakes.ts imports today's chat's wake ticker and server/accounts.ts its pool code as they are; its package.json makes those files ES modules.
-    "legacy/prime/user-history/package.json", "legacy/prime/user-history/src/wakes.ts", "legacy/prime/user-history/src/chat-pool.ts", "legacy/prime/user-history/src/shared/pool-types.ts", "legacy/prime/user-history/src/spawn-host.ts", "legacy/prime/user-history/src/spawn-host-child.mjs"], { stdio: ["ignore", "pipe", "inherit"], env: gitEnv });
+    // server/host/relay-host.ts speaks the agent relay's frames as agents/protocol.ts defines them, and the legacy shared types the step rules
+    // import (server/step-owners.ts) name host-stats.ts's machine view.
+    "components/prime-relay",
+    // server/wakes.ts imports today's chat's wake ticker, server/accounts.ts its pool code and server/step-owners.ts d9's step rules
+    // (src/apps-step-owners.ts) as they are, so the release takes all of src; its package.json makes those files ES modules.
+    "legacy/prime/user-history/package.json", "legacy/prime/user-history/src"], { stdio: ["ignore", "pipe", "inherit"], env: gitEnv });
   source.stdout.pipe(tar.stdin);
   const codes = await Promise.all([source, tar].map(child => new Promise(done => child.on("close", done))));
   if (codes.some(code => code !== 0)) throw new Error(`git archive ${sha} | tar -x failed (${codes.join(", ")})`);

@@ -19,7 +19,7 @@ before(async () => {
   vent = (await s.send("POST", "/api/agents", { name: "owners vent" })).body;
   assert.ok(s.host instanceof FixtureHost);
   s.host.beforeSubmit = (thread, input) => {
-    if (input.requestId?.startsWith("owners:")) told.push({ thread, text: input.text });
+    if (input.requestId?.startsWith("owners:")) told.push({ thread, text: input.text ?? "" });
   };
   await until(async () => s.app.threads.thread(vent.thread)?.status, status => status !== "running");
 });
