@@ -143,7 +143,7 @@
     if (boardContext) rememberTitles(boardContext.chatId, boardContext.titles);
   });
   /** The room's agents, each with its own board and jobs, so the board ids and job names in its posts link to its own (MessageRow's withAuthor). */
-  const memberAgents = $derived(others.map((m) => m.principal.id).filter((agentId) => !!agents.byId(agentId)));
+  const memberAgents = $derived(others.filter((m) => m.principal.kind === "chat").map((m) => m.principal.id));
   const authorBoards = new AuthorBoards();
   /** The agent whose board is the room's own (a DM's agent, a channel's home chat), whose posts keep the room's board context. */
   const isHome = (agentId: string): boolean => agentId === boardChat || (!!boardChat && agents.byId(agentId)?.thread === boardChat);
