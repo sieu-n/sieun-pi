@@ -1,4 +1,4 @@
-/** Shapes the /specs page and its api routes share. The server builds them from apps/llm-wiki/specs/lib/specs.mjs. */
+/** Shapes the /specs page and its api routes share. The server builds them from apps/specs/lib/specs.mjs. */
 export type Env = 'local' | 'staging' | 'prod';
 export const ENV_LABEL: Record<Env, string> = { local: 'Local', staging: 'Staging', prod: 'Production' };
 
@@ -42,7 +42,7 @@ export type Spec = {
 	every: 'daily' | 'weekly' | 'manual';
 	journey: string;
 	notes: string;
-	/** path relative to apps/llm-wiki/specs */
+	/** path relative to apps/specs */
 	file: string;
 	folder: string;
 	criteria: Criterion[];

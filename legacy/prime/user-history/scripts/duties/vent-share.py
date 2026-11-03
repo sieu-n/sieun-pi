@@ -372,7 +372,7 @@ def mentions(provider: str, text: str) -> bool:
 # no Vent sign. A key name alone is no call (provider_keys_outside_vent counts keys), nor is a host in an error message or an input
 # placeholder. In a SvelteKit app only server modules count, since SvelteKit keeps private env out of the rest, which runs in the
 # browser (the coordinator's "browser call" rows are out of scope).
-CODE_ROOTS = re.compile(r"^(convex/|apps/[^/]+/src/|apps/infra/|apps/llm-wiki/specs/lib/|packages/[^/]+/src/)")
+CODE_ROOTS = re.compile(r"^(convex/|apps/[^/]+/src/|apps/infra/|apps/specs/lib/|apps/llm-wiki/specs/lib/|packages/[^/]+/src/)")
 SKIP = re.compile(r"(^apps/vent/|^apps/llm-wiki/content/|^apps/virev-demo/|/_generated/|\.test\.|\.spec\.|/tests?/|/test_[^/]*\.py$|\.md$|\.env)")
 CODE_FILE = re.compile(r"\.(ts|mts|js|mjs|cjs|py)$")
 SVELTE_SERVER = re.compile(r"(/lib/server/|/\+server\.[jt]s$|/\+(page|layout)\.server\.[jt]s$|/hooks\.server\.[jt]s$)")

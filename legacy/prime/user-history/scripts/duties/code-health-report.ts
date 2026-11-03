@@ -206,7 +206,10 @@ export type Exec = (file: string, args: readonly string[], timeoutMs: number) =>
 /** Store days from today back 15 days, so a newest day with rows for both repos is found after a week of missed days, read from a copy of the store so the timer's write lock never blocks the read. */
 async function storeDays(exec: Exec, now: number): Promise<Record<string, StoreDay>> {
   const module = join(tmpdir(), `code-health-page-${process.pid}.py`);
-  await writeFile(module, await exec("git", ["-C", CHECKOUT, "show", `${PAGE_MODULE_REF}:apps/llm-wiki/scripts/code_health_page.py`], 20_000));
+  // auto-sns-agent moved the page module from apps/llm-wiki/scripts to scripts/dev/code-health with the apps/llm-wiki delete
+  // of 2026-11-03; a ref from before that move still holds the old path.
+  const show = (path: string) => exec("git", ["-C", CHECKOUT, "show", `${PAGE_MODULE_REF}:${path}`], 20_000);
+  await writeFile(module, await show("scripts/dev/code-health/code_health_page.py").catch(() => show("apps/llm-wiki/scripts/code_health_page.py")));
   try {
     // measured 12 s on us-metal02 on 2026-10-18 for 9 days
     const out = await exec("uv", ["run", "-q", "--no-project", "--with", "duckdb", "python", "-c", HELPER, module, STORE, kstDay(now), "16"], 120_000);

@@ -59,12 +59,12 @@
 			{/each}
 		</section>
 	{:else}
-		<p class="banner">No spec files under <code>apps/llm-wiki/specs/</code>.</p>
+		<p class="banner">No spec files under <code>apps/specs/</code>.</p>
 	{/each}
 
 	<p class="foot">
-		Files live in <code>apps/llm-wiki/specs/&lt;folder&gt;/&lt;slug&gt;.md</code>. From a terminal:
-		<code>node apps/llm-wiki/specs/run.mjs --spec SPEC-n --env local</code>
+		Files live in <code>apps/specs/&lt;folder&gt;/&lt;slug&gt;.md</code>. From a terminal:
+		<code>node apps/specs/run.mjs --spec SPEC-n --env local</code>
 	</p>
 </div>
 

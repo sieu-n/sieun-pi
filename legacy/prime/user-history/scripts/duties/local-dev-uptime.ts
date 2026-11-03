@@ -17,7 +17,7 @@ import { macSilent } from "./mac-reach.ts";
  * The local dev uptime duty's precheck (`node --import tsx scripts/duties/local-dev-uptime.ts`): how many of the 5 dev services gave no
  * 200 within 5 s, the wiki's real memory against its cap, and restarts of the wiki and search since the last run. Each service's answer and time
  * goes into the flagged items as run detail. No model call. The wiki is the one server at the wiki host of hosts.json. On us-metal02 it runs as
- * llm-wiki.service under systemd (deploy/linux/llm-wiki.service) and elsewhere as the llm-wiki app of the pm2 dev stack, so its memory and
+ * sieun-pi-wiki.service under systemd (deploy/linux/sieun-pi-wiki.service, llm-wiki.service until 2026-11-03) and elsewhere as the llm-wiki app of the pm2 dev stack, so its memory and
  * restarts come from whichever of the two holds it.
  * Convex and the crawler API may run on another box behind local port forwards; their URLs are the ones the search dev app uses (apps/search/.env.local).
  * When that file points a service away from this machine (`pnpm dev:crawler staging`), the local one is off by design and does not count as down.
@@ -34,7 +34,7 @@ const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto
 export const ANSWER_TIMEOUT_MS = 5000;
 /** The wiki's memory cap, the one dev-guard kills it over. */
 export const CAP_MB = 4096;
-export const WIKI_UNIT = "llm-wiki.service";
+export const WIKI_UNIT = "sieun-pi-wiki.service";
 
 /** A service: its metric key prefix, and either a fixed URL or the search app's env key for its base URL plus the health path. */
 export type Service = { key: string; url: string } | { key: string; envKey: string; path: string };

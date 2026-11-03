@@ -17,7 +17,7 @@ import path from 'node:path';
  *   "betterleaks": "~/.local/bin/betterleaks",
  *   "backupRepo": "git@github.com:sieu-n/wiki-content.git",
  *   "gitStatusScript": "~/Documents/Github/auto-sns-agent/scripts/ci/git-status.mjs",
- *   "specsDir": "~/Documents/Github/auto-sns-agent/apps/llm-wiki/specs"
+ *   "specsDir": "~/Documents/Github/auto-sns-agent/apps/specs"
  * }
  *
  * With no file, the content root is ./content under the working directory and the repos are the checkouts of

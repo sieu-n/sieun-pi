@@ -2,8 +2,8 @@
 
 The issue keeps the explanation the owner needs, and the spec page holds the detail.
 When the target repo has its own wiki or page rules, follow that repo's skill for the page location and format.
-In auto-sns-agent the host is llm-wiki, and `build_page()` output opens with the `<!--wiki {json}-->` block it parses, status `draft` and owner `agent`.
-Run `node scripts/skills/read-skill.mjs apps/llm-wiki` there for where the page goes.
+For auto-sns-agent the host is the wiki (sieun-pi `apps/wiki`), and `build_page()` output opens with the `<!--wiki {json}-->` block it parses, status `draft` and owner `agent`.
+The `wiki` skill (sieun-pi `skills/wiki/SKILL.md`) says where the page goes.
 
 ## Page content
 

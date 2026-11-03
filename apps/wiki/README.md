@@ -18,4 +18,4 @@ A session opens under `sessions/YYYY/MM/DD/hhmm-<slug>/`. A job opens under `age
 
 The unit is `deploy/linux/sieun-pi-wiki.service`.
 
-The product specs and their runner stay in auto-sns-agent `apps/llm-wiki/specs`, because its CI runs them. The `/specs` page reads them through the `specsDir` key.
+The product specs and their runner stay in auto-sns-agent `apps/specs`, because its CI runs them. The `/specs` page reads them through the `specsDir` key.

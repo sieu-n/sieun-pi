@@ -5,7 +5,7 @@ import { measureUptime, unitRestartsSince, type UptimeDeps } from "../scripts/du
 
 const rollup = (pss: number) => `00400000-7ffda3845000 ---p 00000000 00:00 0  [rollup]\nRss:  1 kB\nPss:  ${pss} kB\nSwapPss:  0 kB\n`;
 const enoent = (path: string) => Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
-const CGROUP = "/user.slice/user-1001.slice/user@1001.service/app.slice/llm-wiki.service";
+const CGROUP = "/user.slice/user-1001.slice/user@1001.service/app.slice/sieun-pi-wiki.service";
 
 function deps(show: string, pm2: object[]): UptimeDeps {
   const files: Record<string, string> = {
@@ -28,12 +28,12 @@ const unit = (invocation: string, nRestarts: number) =>
   `LoadState=loaded\nActiveState=active\nControlGroup=${CGROUP}\nNRestarts=${nRestarts}\nInvocationID=${invocation}\nMemoryCurrent=1200000000\n`;
 const search = { name: "search", pid: 300, pm2_env: { restart_time: 6 } };
 
-test("on us-metal02 the wiki's memory and restarts come from llm-wiki.service", async () => {
-  const previous = { restarts: { "llm-wiki.service": { restartTime: 0, at: 0, invocation: "a" }, search: { restartTime: 6, at: 0 } } };
+test("on us-metal02 the wiki's memory and restarts come from sieun-pi-wiki.service", async () => {
+  const previous = { restarts: { "sieun-pi-wiki.service": { restartTime: 0, at: 0, invocation: "a" }, search: { restartTime: 6, at: 0 } } };
   const { output, state } = await measureUptime(deps(unit("b", 2), [search]), previous);
   assert.equal(output.metrics.wiki_footprint_mb, 750);
   assert.equal(output.metrics.restarts, 2);
-  assert.deepEqual(state?.restarts["llm-wiki.service"], { restartTime: 2, at: Date.parse("2026-10-18T16:20:00Z"), invocation: "b" });
+  assert.deepEqual(state?.restarts["sieun-pi-wiki.service"], { restartTime: 2, at: Date.parse("2026-10-18T16:20:00Z"), invocation: "b" });
   assert.ok(!output.flagged?.some(slice => slice.excerpt.includes("no live llm-wiki")), JSON.stringify(output.flagged));
 });
 

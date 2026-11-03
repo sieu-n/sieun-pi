@@ -42,7 +42,7 @@ export const CRAWLER_OPENAPI: Record<"prod" | "staging", string> = { prod: "http
 const PROD_OPENAPI = "https://api.virev.ai/openapi.json";
 /**
  * The prod org key: VIREV_API_KEY_PROD from the environment, else decrypted from apps/api-portal/.env with the repo's dotenvx.
- * The key source in apps/llm-wiki/specs/envs/prod.json exits 1 since auto-sns-agent 4a68dc4b85 (2026-10-18 11:28Z), which left
+ * The key source in apps/specs/envs/prod.json exits 1 since auto-sns-agent 4a68dc4b85 (2026-10-18 11:28Z), which left
  * the 12:36Z run with prod_working_pct -1 and 150 routes unprobed. The key is never printed.
  */
 const PROD_KEY_CMD = "cd apps/api-portal && npx dotenvx get VIREV_API_KEY_PROD -f .env";
@@ -732,11 +732,11 @@ const PAID = "prod-cost";
 const utcDay = (ms: number) => Math.floor(ms / 86_400_000);
 
 /**
- * The operations SPEC-93 never calls on prod, read from auto-sns-agent apps/llm-wiki/specs/lib/api-portal/<group>.mjs, the cases the prod
+ * The operations SPEC-93 never calls on prod, read from auto-sns-agent apps/specs/lib/api-portal/<group>.mjs, the cases the prod
  * spec run uses. An operation every case of which skips on prod for cost is `paid`; one with any other skip reason is in `skip`, with it.
  */
 async function prodSkips(): Promise<{ skip: Map<string, string>; paid: Set<string> }> {
-  const lib = join(REPO, "apps/llm-wiki/specs/lib");
+  const lib = join(REPO, "apps/specs/lib");
   const portal = await import(pathToFileURL(join(lib, "api-portal.mjs")).href) as { SKIP_REASONS: Record<string, string> };
   const cases: { op: string; skip?: { prod?: { reason: string } } }[] = [];
   for (const file of (await readdir(join(lib, "api-portal"))).filter(name => name.endsWith(".mjs")))
@@ -767,8 +767,8 @@ async function main(): Promise<void> {
     try { return await run(); } catch (error) { sourceErrors.push(`${what}: ${error instanceof Error ? error.message : String(error)}`); return null; }
   };
   type EnvFile = { urls: Record<string, string>; keySources: Record<string, { cmd: string }> };
-  const readEnv = (name: string) => attempt(`auto-sns-agent apps/llm-wiki/specs/envs/${name}.json`, async () =>
-    JSON.parse(await readFile(join(REPO, `apps/llm-wiki/specs/envs/${name}.json`), "utf8")) as EnvFile);
+  const readEnv = (name: string) => attempt(`auto-sns-agent apps/specs/envs/${name}.json`, async () =>
+    JSON.parse(await readFile(join(REPO, `apps/specs/envs/${name}.json`), "utf8")) as EnvFile);
   const [env, prodEnv] = await Promise.all([readEnv("staging"), readEnv("prod")]);
   const [crawlerProd, crawlerStaging, prod, bypass, secret, prodKey, skips] = await Promise.all([
     attempt(CRAWLER_OPENAPI.prod, () => getJson(CRAWLER_OPENAPI.prod)),
@@ -777,7 +777,7 @@ async function main(): Promise<void> {
     env ? attempt("VERCEL_AUTOMATION_BYPASS_SECRET key source", () => sh(env.keySources.VERCEL_AUTOMATION_BYPASS_SECRET!.cmd, REPO)) : null,
     env ? attempt("CONVEX_WEBHOOK_SECRET key source", () => sh(env.keySources.CONVEX_WEBHOOK_SECRET!.cmd, REPO)) : null,
     process.env.VIREV_API_KEY_PROD || attempt("VIREV_API_KEY_PROD from apps/api-portal/.env", () => sh(PROD_KEY_CMD, REPO)),
-    attempt("SPEC-93 prod skips in apps/llm-wiki/specs/lib/api-portal", prodSkips),
+    attempt("SPEC-93 prod skips in apps/specs/lib/api-portal", prodSkips),
   ]);
   const base = env?.urls.apiPortal ?? "";
   const staging = bypass ? await attempt(`${base}/openapi.json`, () => getJson(`${base}/openapi.json`, { "x-vercel-protection-bypass": bypass })) : null;

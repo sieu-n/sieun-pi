@@ -1,5 +1,5 @@
 // Spec file parser and result store readers, with no side effects beyond reading files. A copy of auto-sns-agent's
-// apps/llm-wiki/specs/lib/specs.mjs for the /specs page; the specs, their checks and run.mjs stay in auto-sns-agent,
+// apps/specs/lib/specs.mjs for the /specs page; the specs, their checks and run.mjs stay in auto-sns-agent,
 // whose CI runs them, and the wiki config's `specsDir` names that folder.
 // Contract: apps/llm-wiki/content/sessions/2026/10/03/0327-specs-framework-redesign/contract.md
 import { readFileSync, readdirSync, existsSync, statSync, realpathSync } from 'node:fs';
@@ -172,7 +172,7 @@ function walk(dir, out) {
 	return out;
 }
 
-/** Every spec file under apps/llm-wiki/specs, sorted by file path. */
+/** Every spec file under apps/specs, sorted by file path. */
 export function loadSpecs({ dir = SPECS_DIR } = {}) {
 	if (!existsSync(dir)) return [];
 	const specs = [];

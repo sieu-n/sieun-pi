@@ -8,7 +8,7 @@ const ENVS = new Set(['local', 'staging', 'prod']);
 const running = new Set<string>();
 
 /**
- * Starts `node apps/llm-wiki/specs/run.mjs --spec SPEC-n --env <envs> [--only <check>]` and streams its
+ * Starts `node apps/specs/run.mjs --spec SPEC-n --env <envs> [--only <check>]` and streams its
  * output as server-sent events: `data:` per output chunk, then `event: done` with the exit code.
  * One run at a time per spec; a second request answers 409.
  */

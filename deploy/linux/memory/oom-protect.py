@@ -6,7 +6,7 @@ units and writes their scores. A process forked from a protected one inherits it
 those units goes back to the user units' default of 200, the value systemd --user gave every unit on us-metal02 on 10-19.
 Prime workers spawn kernels and agent commands, which must stay killable.
 
-The dev servers (auto-sns-dev-pm2.service with every pm2 app, and llm-wiki.service) go to -500 in every process, so
+The dev servers (auto-sns-dev-pm2.service with every pm2 app, and sieun-pi-wiki.service) go to -500 in every process, so
 earlyoom takes them after the CI guests (qemu:ci-, avoided, about 390) and every adj-200 agent command (800). Every
 agent writes its session to the wiki on :5176, and search on :5174 takes 60 to 97 s to cold start (ops, 2026-10-26).
 
@@ -38,7 +38,7 @@ DAEMON = "prime-agent-daemon.service"
 # The commands the daemon's workers start run in this scope since 11-02 (CPU layer 2, deploy/linux/cpu/cpu-protect.py), and count as the daemon's here.
 TOOLS = "prime-agent-tools.scope"
 CORE_UNITS = (DAEMON, "sieun-pi-chat.service", "pi-pool-serve.service", "pi-pool-hookd.service")
-DEV_UNITS = ("auto-sns-dev-pm2.service", "llm-wiki.service")
+DEV_UNITS = ("auto-sns-dev-pm2.service", "sieun-pi-wiki.service")
 SSH_CARRIERS = ("tailscaled", "sshd", "sshd-session")
 MAIN_ADJ = -900
 WORKER_ADJ = -500

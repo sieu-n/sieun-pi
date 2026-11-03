@@ -23,7 +23,7 @@ export type Spec = {
 	journey: string;
 	notes: string;
 	criteria: Criterion[];
-	/** relative to apps/llm-wiki/specs */
+	/** relative to apps/specs */
 	file: string;
 	/** absolute path */
 	path: string;

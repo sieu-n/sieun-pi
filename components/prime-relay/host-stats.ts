@@ -226,7 +226,7 @@ export interface Holder { id: MemoryGroupId; label: string }
  * (the chat services, pi-pool, the relay, prime-sync, the watchdog, the feeds), and every transient unit is a job's (`leafHolder`).
  */
 const INSTALLED_UNITS: [MemoryGroupId, RegExp][] = [
-  ["dev", /^(auto-sns-dev-pm2|box-devserver-heal|llm-wiki|b2-viewer)\.service$/],
+  ["dev", /^(auto-sns-dev-pm2|box-devserver-heal|sieun-pi-wiki|b2-viewer)\.service$/],
   ["ci", /^ci-(cache|monitor)\.service$/],
   ["coding", /code-server|cursor|vscode/],
   ["system", /^(dbus|ssh-agent|gpg-agent[\w-]*|at-spi[\w-]*)\.(service|socket)$/],

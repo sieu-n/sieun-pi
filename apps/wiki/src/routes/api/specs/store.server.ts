@@ -1,4 +1,4 @@
-// Server side of the /specs page: reads through apps/llm-wiki/specs/lib/specs.mjs, writes one spec file, guards local-only routes.
+// Server side of the /specs page: reads through apps/specs/lib/specs.mjs, writes one spec file, guards local-only routes.
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -11,7 +11,7 @@ import type { Criterion, Folder, Row, Spec, SpecPatch, SpecsPage } from '$lib/co
 
 const run = promisify(execFile);
 export const REPO: string = lib.REPO;
-/** The specs folder as a path in REPO, such as apps/llm-wiki/specs. */
+/** The specs folder as a path in REPO, such as apps/specs. */
 export const SPECS_IN_REPO: string = relative(REPO, lib.SPECS_DIR).split('\\').join('/');
 export const SPEC_ID = /^SPEC-[A-Za-z0-9]{1,12}$/;
 /** The page's identity in the agent write journal: the same record .claude/hooks/record-file-write.mjs keeps for Claude writes. */
