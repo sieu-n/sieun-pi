@@ -115,17 +115,17 @@ export type PostPatch = Partial<Pick<RoomPost, "delivery" | "deliveries" | "jobs
 type LogLine = { t: "post"; post: RoomPost } | { t: "set"; post: string; patch: PostPatch };
 
 /**
- * Who in a room a post wakes (phase 5): `all` hears every post, `mention` only a post that names it, `none` nothing. A Solo room's members
- * are `all`, and a channel's are `mention` unless the owner sets otherwise. The owner is in every room and is never a member row.
+ * Who in a room a post wakes (phase 5): `all` hears every post, as if each one tagged it, and `none` (muted) hears nothing. A member of a
+ * channel or a Solo room is `all` unless the owner mutes it. The owner is in every room and is never a member row.
  */
-export type WakeOn = "all" | "mention" | "none";
+export type WakeOn = "all" | "none";
 export interface RoomMember { agent: AgentId; wakeOn: WakeOn; addedAt: Ms }
 
 /** `test`: a walk's throwaway room (`POST /api/rooms {test: true}`), which no owner list, live event or badge shows. */
 interface RoomBase { id: RoomId; createdAt: Ms; archived: boolean; test?: true }
 /**
  * A room the chat server owns. A DM (`dm_<slug>`) is the owner and one agent. A channel (`ch_<8 hex>`, the ids channels had before phase 5)
- * is a named room whose members wake on a mention. A Solo room (`so_<8 hex>`) is a group chat of invited agents around one agenda; every
+ * is a named room whose members hear every post. A Solo room (`so_<8 hex>`) is a group chat of invited agents around one agenda; every
  * member hears every post, and a closed Solo room takes no posts and delivers nothing.
  */
 export type RoomRow =
@@ -177,6 +177,8 @@ export class AgentStore {
   constructor(readonly dir: string) {
     this.agents = readJson<AgentsFile>(join(dir, "agents.json"), { v: 1, agents: [], aliases: {} });
     this.rooms = readJson<RoomsFile>(join(dir, "rooms.json"), { v: 1, rooms: [], feed: {} });
+    // Before 11-03 a channel member woke only on a mention; the owner asked that each one hear every post, so the old `mention` reads as `all`.
+    for (const row of this.rooms.rooms) if (isGroupRoom(row)) for (const m of row.members) if ((m.wakeOn as string) === "mention") m.wakeOn = "all";
   }
 
   saveAgents(): void {

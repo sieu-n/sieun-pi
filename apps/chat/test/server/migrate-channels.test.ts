@@ -87,9 +87,9 @@ test("a dry run reports the rooms, member mapping and post counts, and writes no
   assert.equal(build.roomExisted, false);
   assert.equal(build.ownerDropped, true);
   assert.deepEqual(build.members.map(m => [m.from, m.agent, m.wakeOn, m.mapped]), [
-    ["thread-alpha", "ag_alpha", "mention", true],
+    ["thread-alpha", "ag_alpha", "all", true],
     ["job-beta", "ag_beta", "all", true],
-    ["ghost-thread", "ghost-thread", "mention", false],
+    ["ghost-thread", "ghost-thread", "all", false],
   ]);
   assert.equal(build.posts, 4);
   assert.deepEqual(build.append, ["p1", "p2", "p3", "p4"]);
@@ -113,9 +113,9 @@ test("apply writes channel rooms and posts mapped to agent ids, and leaves the o
   assert.deepEqual(room, {
     id: CH, kind: "channel", name: "build", purpose: "ship it", homeChat: "thread-alpha", createdAt: T0, archived: false,
     members: [
-      { agent: "ag_alpha", wakeOn: "mention", addedAt: T0 + 1 },
+      { agent: "ag_alpha", wakeOn: "all", addedAt: T0 + 1 },
       { agent: "ag_beta", wakeOn: "all", addedAt: T0 + 2 },
-      { agent: "ghost-thread", wakeOn: "mention", addedAt: T0 + 3 },
+      { agent: "ghost-thread", wakeOn: "all", addedAt: T0 + 3 },
     ],
   });
   assert.deepEqual(store.rooms.rooms.find(r => r.id === EMPTY), { id: EMPTY, kind: "channel", name: "quiet", purpose: "", createdAt: T0, archived: true, members: [] });

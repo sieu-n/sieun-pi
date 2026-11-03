@@ -186,28 +186,29 @@ describe("a channel on rooms", () => {
     await s.close();
   });
 
-  test("a mention reaches only the mentioned member's comm thread; its answer is a thread reply that wakes nobody it does not name", async () => {
-    const submits: SubmitInput[] = [];
-    host.beforeSubmit = (_thread, input) => void submits.push(input);
-    const sent = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "@Crawler VP quiet check of the port", mentions: [agents.crawler], requestId: "ch-1" });
+  test("a post reaches every member's comm thread as if it tagged each one, and an agent's thread reply reaches every other member too", async () => {
+    const submits: { thread: string; input: SubmitInput }[] = [];
+    host.beforeSubmit = (thread, input) => void submits.push({ thread, input });
+    const sent = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "quiet check of the port", requestId: "ch-1" });
     assert.equal(sent.status, 200);
-    assert.deepEqual(sent.body.deliveries.map((d: { target: string }) => d.target), [agents.crawler], "members wake on a mention only");
+    assert.deepEqual(sent.body.deliveries.map((d: { target: string }) => d.target), [agents.harness, agents.crawler, agents.frontend], "a post with no mention wakes every member");
     const comm = await until(async () => commOf(s, agents.crawler, ids.cutoverChannel), id => id !== undefined);
-    await until(async () => submits.length, n => n === 1);
+    await until(async () => submits.length, n => n === 3);
     assert.equal(host.threadsById.get(comm!)!.row.name, "Crawler VP · #pi-cutover");
-    assert.match(submits[0]!.text!, /^\[#pi-cutover · post 8 from You \(owner\) · hops 0\]\n\n@Crawler VP quiet check/);
+    assert.match(submits.find(x => x.thread === comm)!.input.text!, /^\[#pi-cutover · post 8 from You \(owner\) · hops 0\]\n\nquiet check/);
 
-    told(host, comm!, "c1", "Still on the old port. @frontend bro can you check the relay page?");
+    told(host, comm!, "c1", "Still on the old port, quiet. @frontend bro can you check the relay page?");
     await s.app.groups.feed(comm!);
     const reply = stored(s, ids.cutoverChannel).find(p => p.requestId === `m:${comm}:c1`)!;
     assert.equal(reply.threadRoot, sent.body.item.id);
     assert.deepEqual(reply.mentions, [agents.frontend]);
-    assert.deepEqual(reply.deliveries?.map(d => d.target), [agents.frontend]);
-    await until(async () => submits.length, n => n === 2);
-    assert.match(submits[1]!.text!, /\(thread so far\)\n8 You: @Crawler VP quiet check/);
+    assert.deepEqual(reply.deliveries?.map(d => d.target), [agents.harness, agents.frontend], "a thread reply wakes every member but its author");
+    await until(async () => submits.length, n => n === 5);
+    for (const x of submits.slice(3)) assert.match(x.input.text!, /\(thread so far\)\n8 You: quiet check/);
     const thread = await s.get<{ root: Message; items: Message[] }>(`/api/c/${ids.cutoverChannel}/replies/${sent.body.item.id}`);
-    assert.equal(thread.root.deliveries[0]!.state, "answered");
-    assert.equal(thread.root.deliveries[0]!.answer, reply.id);
+    const crawler = thread.root.deliveries.find(d => d.target === agents.crawler)!;
+    assert.equal(crawler.state, "answered");
+    assert.equal(crawler.answer, reply.id);
     host.beforeSubmit = undefined;
   });
 });

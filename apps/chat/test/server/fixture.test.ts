@@ -154,15 +154,17 @@ describe("live turns", () => {
 });
 
 describe("channels and mentions", () => {
-  test("a mention routes to the agent's comm thread for the channel, never its work thread, and its answer comes back into the thread", async () => {
+  test("a post reaches every member's comm thread for the channel, never a work thread, and the answer comes back into the thread", async () => {
     const workEntries = (s.host as FixtureHost).threadsById.get(ids.frontend)!.entries.length;
     const sent = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "@frontend bro is the relay page fine?", mentions: [ids.frontend], requestId: "mention-1" });
     assert.equal(sent.status, 200);
-    assert.equal(sent.body.deliveries[0].state, "queued", "the post answers before its mention reaches the agent");
-    const thread = await until(() => s.get(`/api/c/${ids.cutoverChannel}/replies/${sent.body.item.id}`), t => t.root.deliveries[0].state === "answered");
-    assert.equal(thread.items[0].author.id, agents.frontend);
-    assert.equal(thread.root.thread.replies, 1);
-    assert.equal(thread.items[0].threadRoot, sent.body.item.id);
+    assert.deepEqual(sent.body.deliveries.map((d: any) => [d.target, d.state]), [[agents.harness, "queued"], [agents.crawler, "queued"], [agents.frontend, "queued"]],
+      "every member is tagged, and the post answers before it reaches them");
+    const answer = (t: any) => t.root.deliveries.find((d: any) => d.target === agents.frontend);
+    const thread = await until(() => s.get(`/api/c/${ids.cutoverChannel}/replies/${sent.body.item.id}`), t => answer(t).state === "answered");
+    const reply = thread.items.find((i: any) => i.id === answer(thread).answer);
+    assert.equal(reply.author.id, agents.frontend);
+    assert.equal(reply.threadRoot, sent.body.item.id);
     const comm = s.app.agents.record(agents.frontend)!.comm![ids.cutoverChannel]!;
     assert.equal((s.host as FixtureHost).threadsById.get(comm)!.row.name, "frontend bro · #pi-cutover");
     const entries = await s.get<TimelinePage>(`/api/c/${comm}/items`);
@@ -196,7 +198,7 @@ describe("channels and mentions", () => {
     assert.equal(created.body.name, "relay-ops");
     assert.match(created.body.id, /^ch_[0-9a-f]{8}$/);
     const added = await s.send("POST", `/api/rooms/${created.body.id}/members`, { agents: [agents.crawler] });
-    assert.deepEqual(added.body.members.map((m: any) => [m.principal.id, m.wakeOn]), [["owner", "all"], [agents.vent, "mention"], [agents.crawler, "mention"]]);
+    assert.deepEqual(added.body.members.map((m: any) => [m.principal.id, m.wakeOn]), [["owner", "all"], [agents.vent, "all"], [agents.crawler, "all"]]);
     assert.equal((await s.send("GET", "/api/channels")).status, 404, "the channel routes are gone");
     const read = await s.send("POST", `/api/c/${ids.cutoverChannel}/read`, {});
     assert.equal(read.status, 200);

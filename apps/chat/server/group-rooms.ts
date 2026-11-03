@@ -3,9 +3,9 @@
  * one post log per room under `rooms/`, written only through `AgentStore`. The owner is in every room; the member rows are registered
  * agents, each with a `wakeOn`.
  *
- * 1. A post wakes every member whose `wakeOn` is `all`, plus every member it mentions, minus its author; in a channel a thread reply wakes
- *    only the members it mentions. Each woken member gets one delivery to its comm thread for the room (`Agents.ensureComm`), never to its
- *    work thread, keyed `d:<room>:<post>:<agent>`, with retries; a restart resubmits every delivery still `sending` with the same key.
+ * 1. A post wakes every member whose `wakeOn` is `all`, minus its author, as if it tagged each one; in a channel a thread reply wakes them
+ *    too, and a muted member (`none`) wakes on nothing. Each woken member gets one delivery to its comm thread for the room
+ *    (`Agents.ensureComm`), never to its work thread, keyed `d:<room>:<post>:<agent>`, with retries; a restart resubmits every delivery still `sending` with the same key.
  *    Deliveries that waited for an offline box go as one bundled input per member when the box is back, keyed `b:<room>:<first post>:<agent>`.
  * 2. An owner post goes in as the owner's turn; an agent post goes in as an `agent.message` whose data names the author, the room, the post
  *    and its hops. A post `MAX_HOPS` agent hops from the owner's last post gets `stopped` deliveries and is never submitted.
@@ -70,7 +70,7 @@ export interface GroupDeps {
 type Draft = Omit<RoomPost, "id" | "seq" | "room" | "deliveries"> & { hops: number };
 
 const channelName = (name: string): string => name.trim().replace(/^#/, "").toLowerCase().replace(/[^a-z0-9-_]+/g, "-").replace(/^-+|-+$/g, "");
-const WAKE_ON: readonly WakeOn[] = ["all", "mention", "none"];
+const WAKE_ON: readonly WakeOn[] = ["all", "none"];
 
 /** A Solo room's default name: the agenda's first line, cut at a word near 48 characters. */
 function nameFromAgenda(agenda: string): string {
@@ -208,7 +208,7 @@ export class GroupRooms {
 
   /**
    * A new channel or Solo room. A Solo room needs an agenda and an agent, its members wake on every post, and its agenda becomes the owner's
-   * first post, delivered to each member. A channel needs a name no open channel has, and its members wake on a mention.
+   * first post, delivered to each member. A channel needs a name no open channel has, and its members wake on every post too.
    */
   create(input: RoomInput): Room {
     if (input?.kind !== "channel" && input?.kind !== "solo") throw new Error("A room's kind is channel or solo.");
@@ -221,7 +221,7 @@ export class GroupRooms {
       if (this.rows().some(r => r.kind === "channel" && r.name === name && !r.archived)) throw new Error(`A channel named #${name} already exists.`);
       row = {
         id: `ch_${randomUUID().slice(0, 8)}`, kind: "channel", name, purpose: input.agenda?.trim() ?? "", ...(input.homeChat ? { homeChat: input.homeChat } : {}),
-        createdAt: now, archived: false, members: agents.map(agent => ({ agent, wakeOn: "mention", addedAt: now })),
+        createdAt: now, archived: false, members: agents.map(agent => ({ agent, wakeOn: "all", addedAt: now })),
       };
     } else {
       const agenda = input.agenda?.trim() ?? "";
@@ -278,14 +278,14 @@ export class GroupRooms {
     return this.rows().some(r => r !== row && r.kind === "channel" && !r.archived && r.name === name);
   }
 
-  /** Adds registered agents; a Solo room's wake on every post, a channel's on a mention unless `wakeOn` says otherwise. */
+  /** Adds registered agents, who wake on every post unless `wakeOn` is `none`. */
   addMembers(id: string, agents: string[], wakeOn?: WakeOn): Room {
     const row = this.require(id);
     if (!Array.isArray(agents) || !agents.length) throw new Error("A member add needs agents, a list of agent ids.");
     if (wakeOn !== undefined && !WAKE_ON.includes(wakeOn)) throw new Error(`A member's wakeOn is one of ${WAKE_ON.join(", ")}.`);
     const now = Date.now();
     for (const agent of agents.map(given => this.memberId(given))) {
-      if (!row.members.some(m => m.agent === agent)) row.members.push({ agent, wakeOn: wakeOn ?? (row.kind === "solo" ? "all" : "mention"), addedAt: now } satisfies RoomMember);
+      if (!row.members.some(m => m.agent === agent)) row.members.push({ agent, wakeOn: wakeOn ?? "all", addedAt: now } satisfies RoomMember);
     }
     this.store.saveRooms();
     this.changed(row);
@@ -399,11 +399,10 @@ export class GroupRooms {
     }));
   }
 
-  /** Who a post wakes: every `all` member, and every member it mentions, minus its author; a channel thread reply wakes only its mentions. */
+  /** Who a post wakes: every `all` member minus its author, for a channel thread reply too. */
   private wakes(row: GroupRoom, draft: Draft): AgentId[] {
-    const reply = row.kind === "channel" && draft.threadRoot !== undefined;
     return row.members.filter(m =>
-      m.agent !== draft.author && m.wakeOn !== "none" && ((m.wakeOn === "all" && !reply) || draft.mentions?.includes(m.agent)) && this.deps.agents.record(m.agent) !== undefined,
+      m.agent !== draft.author && m.wakeOn === "all" && this.deps.agents.record(m.agent) !== undefined,
     ).map(m => m.agent);
   }
 

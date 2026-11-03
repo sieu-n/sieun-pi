@@ -266,15 +266,15 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
   // posts the old router left, with a root job ("pi cutover prep") as one author; the open Solo room holds sequence (d)'s first hops, and the
   // closed one sits under "Done".
   type Group = Extract<RoomsRow, { kind: "channel" | "solo" }>;
-  const member = (agent: string, wakeOn: "mention" | "all" = "mention") => ({ agent, wakeOn, addedAt: at(3) });
+  const member = (agent: string) => ({ agent, wakeOn: "all" as const, addedAt: at(3) });
   const a = FIXTURE_AGENTS;
   const groups: Group[] = [
     { id: ids.cutoverChannel, kind: "channel", name: "pi-cutover", purpose: "Move :5182 onto pi-host (p1128)", homeChat: ids.harness, createdAt: at(3), archived: false,
       members: [member(a.harness), member(a.crawler), member(a.frontend)] },
     { id: ids.generalChannel, kind: "channel", name: "general", purpose: "Anything for every agent", createdAt: at(5), archived: false, members: [member(a.vent), member(a.frontend)] },
-    { id: ids.soloRoom, kind: "solo", name: "relay protocol", agenda: SOLO_AGENDA, createdAt: at(0, -3), archived: false, members: [member(a.vent, "all"), member(a.frontend, "all")] },
+    { id: ids.soloRoom, kind: "solo", name: "relay protocol", agenda: SOLO_AGENDA, createdAt: at(0, -3), archived: false, members: [member(a.vent), member(a.frontend)] },
     { id: ids.closedSolo, kind: "solo", name: "wiki cleanup", agenda: "Move the wiki's session pages older than a month into the archive.", createdAt: at(2), archived: false,
-      members: [member(a.vent, "all"), member(a.crawler, "all")], closedAt: at(1, 2) },
+      members: [member(a.vent), member(a.crawler)], closedAt: at(1, 2) },
   ];
   store.rooms.rooms.push(...groups);
   // Crawler VP's comm thread in #pi-cutover is mid-turn on the owner's p5, so the channel row shows a member answering (typing dots).

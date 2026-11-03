@@ -14,7 +14,7 @@ import { readJson } from "./store.ts";
 
 // The shapes `server/store.ts` and `web/src/lib/api/types.ts` had before phase 5, copied here because phase 5 deletes them.
 type OldDeliveryState = "queued" | "delivered" | "read" | "answered" | "no_reply" | "stopped" | "failed";
-interface OldMember { principal: "owner" | string; role: "owner" | "member"; wakeOn: WakeOn; addedAt: Ms }
+interface OldMember { principal: "owner" | string; role: "owner" | "member"; wakeOn: WakeOn | "mention"; addedAt: Ms }
 interface OldChannel { id: string; name: string; purpose: string; homeChat?: string; createdAt: Ms; archived: boolean; members: OldMember[] }
 interface OldDelivery {
   target: string; name: string; state: OldDeliveryState; at: Ms; answer?: string; error?: string;
@@ -116,7 +116,7 @@ export function migrateChannels(dataDir: string, opts: { apply: boolean }): Migr
       if (member.principal === "owner") continue;
       const agent = agentOf(member.principal);
       if (members.some(m => m.agent === agent)) continue;
-      members.push({ from: member.principal, agent, wakeOn: member.wakeOn, mapped: !unmapped.has(member.principal) });
+      members.push({ from: member.principal, agent, wakeOn: member.wakeOn === "mention" ? "all" : member.wakeOn, mapped: !unmapped.has(member.principal) });
     }
     const existing = store.rooms.rooms.find(r => r.id === row.id);
     const room: ChannelRoom = existing?.kind === "channel" ? existing : {

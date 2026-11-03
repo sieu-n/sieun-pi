@@ -222,7 +222,7 @@ export interface TimelinePage {
   focus?: string;
 }
 
-export interface Member { principal: Principal; role: "owner" | "member"; wakeOn: "mention" | "all" | "none"; status?: RunStatus }
+export interface Member { principal: Principal; role: "owner" | "member"; wakeOn: "all" | "none"; status?: RunStatus }
 
 export interface ConversationHeader {
   summary: ConversationSummary;
