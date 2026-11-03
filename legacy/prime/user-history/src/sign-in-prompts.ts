@@ -9,7 +9,8 @@ import { join } from "node:path";
  * could not act on each of 6 runs. `scripts/sign-in-prompt.ts` writes it, and pool_claude drops an account's prompt once it no longer needs a
  * sign-in, so only a prompt reached since its last sign-in counts. A "payment" prompt is claude.ai's "Your subscription is paused. Pay your
  * invoice to restore access." on the OAuth Authorize click: on 11-03 01:50Z claude4@slack.green's magic link worked through a slack.green Email
- * Routing rule, and its Authorize answered 403 with that page, since its Max plan reads past_due and only the owner's payment brings it back.
+ * Routing rule, and its Authorize answered 403 with that page, since its Max plan reads past_due. The owner chose to leave unpaid plans as they
+ * are (t87, t92, t123), so pool_claude reads such an account as off for an unpaid plan, outside owner_fixes, until it no longer needs a sign-in.
  */
 export const PROMPT_KINDS = ["password", "2fa", "passkey", "payment"] as const;
 export type PromptKind = typeof PROMPT_KINDS[number];

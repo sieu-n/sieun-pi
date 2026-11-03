@@ -317,13 +317,23 @@ async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise
     const at = row.id === undefined ? undefined : ends.get(row.id);
     return at !== undefined && at - deps.now() <= GRANT_WARN_MS ? [{ email: row.email ?? "?", text: `${row.email ?? "?"} (grant ends ${utcMinute(at)})` }] : [];
   });
-  const reauth = [...live.filter(row => row.reason === "needs-reauth" && !noSeat.includes(row)).map(row => ({ email: row.email ?? "?", text: row.email ?? "?" })), ...ending];
-  const prompts = await currentPrompts(deps, provider, rows, new Set(reauth.map(entry => entry.email.toLowerCase())));
+  const needing = [...live.filter(row => row.reason === "needs-reauth" && !noSeat.includes(row)).map(row => ({ email: row.email ?? "?", text: row.email ?? "?" })), ...ending];
+  const prompts = await currentPrompts(deps, provider, rows, new Set(needing.map(entry => entry.email.toLowerCase())));
+  // An account whose sign-in reached claude.ai's "Your subscription is paused. Pay your invoice" page is off by the owner's standing choice,
+  // since he answered each unpaid plan on For you with "Leave it unpaid for now" (t87), "Wait it out" (t92) and "Leave it as is" (t123):
+  // from 11-03 claude4@slack.green's payment prompt held owner_fixes at 1, which only his payment could move. It counts again once it no
+  // longer needs a sign-in, because its record then drops.
+  const unpaidPrompt = (email: string) => { const row = promptFor(prompts, provider, email); return row?.prompt === "payment" ? row : undefined; };
+  const unpaid = needing.flatMap(entry => { const row = unpaidPrompt(entry.email); return row ? [`${entry.text} (subscription paused at ${utcMinute(Date.parse(row.at))})`] : []; });
+  const reauth = needing.filter(entry => !unpaidPrompt(entry.email));
+  const serving = live.filter(row => !unpaidPrompt(row.email ?? ""));
   const usable = live.filter(row => row.usable).length;
   const nowSec = deps.now() / 1000;
   const soon = live.some(row => [row.limited_until, row.cooldown_until, ...(row.windows ?? []).map(window => window.resets_at)]
     .some(at => typeof at === "number" && at > nowSec && at - nowSec <= 86_400));
-  const counts = `${usable} of ${live.length} usable, ${rows.length - live.length} off${noSeat.length ? `, ${noSeat.length} revoked in a team with no free seat (${noSeat.map(row => row.email ?? "?").join(", ")}), which gain room only when the owner gives them a seat` : ""}`;
+  const unpaidWords = `${unpaid.join(", ")} off for an unpaid plan, which the owner chose to leave as it is (t87, t92, t123)`;
+  const others = `${usable} of ${live.length} usable, ${rows.length - live.length} off${noSeat.length ? `, ${noSeat.length} revoked in a team with no free seat (${noSeat.map(row => row.email ?? "?").join(", ")}), which gain room only when the owner gives them a seat` : ""}`;
+  const counts = unpaid.length ? `${others}, ${unpaidWords}` : others;
   if (reauth.length && reauth.every(entry => entry.text.endsWith(APPLE_RELAY))) return FAIL("owner", `${reauth.map(entry => entry.text).join(", ")} need a new sign-in (${counts})`,
     `the owner clicks Sign in again on the account in Settings, Accounts and signs in with Apple; Apple asks for his Apple ID password and a 2FA code on his devices, which no agent holds`);
   // An account whose sign-in by an agent reached a password, 2FA or passkey prompt (src/sign-in-prompts.ts) waits on the owner, and every
@@ -352,12 +362,13 @@ async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise
       .filter((at): at is number => typeof at === "number" && at > nowSec);
     return ends.length ? Math.max(...ends) : undefined;
   };
-  const spent = live.map(row => ({ row, until: spentUntil(row) }));
-  if (!usable && live.length && spent.every(({ row, until }) => row.reason === "depleted" && until !== undefined)) {
+  const spent = serving.map(row => ({ row, until: spentUntil(row) }));
+  if (!usable && serving.length && spent.every(({ row, until }) => row.reason === "depleted" && until !== undefined)) {
     const first = Math.min(...spent.map(({ until }) => until!));
     return { status: "off", detail: `every live ${provider} account has used up its window (${spent.map(({ row, until }) => `${row.email ?? "?"} until ${utcMinute(until! * 1000)}`).join(", ")}; ${counts}), so the pool serves again at ${utcMinute(first * 1000)}` };
   }
   if (!usable && !soon) return FAIL("agent", `no ${provider} account is usable and none resets within 24 h (${counts})`, "read `pi-pool ls --json` and find why every account is stuck");
+  if (unpaid.length) return { status: "off", detail: `${unpaidWords}; each counts again once it no longer needs a sign-in, as after he pays and it signs in again (${others})` };
   return PASS(counts);
 }
 

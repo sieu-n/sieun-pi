@@ -377,20 +377,37 @@ test("pool_claude makes an account whose sign-in reached a recorded passkey prom
 });
 
 // 11-03: claude4@slack.green's magic link came through a slack.green Email Routing rule, and Authorize answered "Your subscription is paused".
-test("pool_claude makes an account whose sign-in reached a recorded payment prompt the owner's fix", async () => {
+// The owner had answered each unpaid plan with "leave it" (t87, t92, t123), so the account is off by his choice and owner_fixes leaves it out.
+test("pool_claude reads an account whose sign-in reached a recorded payment prompt as off for an unpaid plan, outside owner_fixes", async () => {
   const PROMPTS = "/home/sieun/.config/sieun-pi/sign-in-prompts.json";
   const payment = { provider: "anthropic", account: "claude4@slack.green", prompt: "payment", at: "2026-11-03T01:50:00Z",
     where: "claude.ai OAuth Authorize: Your subscription is paused, pay your invoice", evidence: "us-metal02:01a18e4c" };
   assert.deepEqual(parsePrompts(JSON.stringify({ prompts: [payment] })), [payment]);
-  const mac = macDeps(false, TIMED_OUT, []);
-  const outcome = await poolClaude.run({ ...mac,
-    exec: async (file, args, options) => file === "pi-pool"
-      ? { code: 0, stdout: JSON.stringify({ rows: [{ email: "claude4@slack.green", reason: "needs-reauth" }, { email: "a@gmail.com", usable: true }] }), stderr: "", ms: 0 }
-      : mac.exec(file, args, options),
-    readFile: async path => { if (path === PROMPTS) return JSON.stringify({ prompts: [payment] }); throw new Error(`no ${path}`); },
-    writeFile: async () => {} });
-  assert.ok(outcome.status === "fail" && outcome.fixer === "owner"
-    && outcome.detail.startsWith("claude4@slack.green, whose sign-in reached a payment prompt at 11-03 01:50Z"), JSON.stringify(outcome));
+  const run = async (rows: object[]) => {
+    const mac = macDeps(false, TIMED_OUT, []);
+    const writes: string[] = [];
+    const outcome = await poolClaude.run({ ...mac,
+      exec: async (file, args, options) => file === "pi-pool" ? { code: 0, stdout: JSON.stringify({ rows }), stderr: "", ms: 0 } : mac.exec(file, args, options),
+      readFile: async path => { if (path === PROMPTS) return JSON.stringify({ prompts: [payment] }); throw new Error(`no ${path}`); },
+      writeFile: async (_path, text) => { writes.push(String(text)); } });
+    return { outcome, writes };
+  };
+  const claude4 = { email: "claude4@slack.green", reason: "needs-reauth" };
+  const { outcome: off } = await run([claude4, { email: "a@gmail.com", usable: true }]);
+  assert.ok(off.status === "off" && off.detail.startsWith("claude4@slack.green (subscription paused at 11-03 01:50Z) off for an unpaid plan")
+    && off.detail.includes("t87, t92, t123"), JSON.stringify(off));
+  const tools = toOutput([{ check: poolClaude, outcome: off, ms: 0 }], 0);
+  assert.equal(tools.metrics.owner_fixes, 0);
+  assert.equal(withHarness(tools, { metrics: { skills_to_prune: 0 }, flagged: [] }).metrics.skills_or_tools_to_fix, 0);
+  assert.ok(tools.flagged!.some(slice => slice.kind === "off" && slice.excerpt!.includes("claude4@slack.green")), "the report still names the unpaid account");
+  const { outcome: mixed } = await run([claude4, { email: "b@gmail.com", reason: "needs-reauth" }, { email: "a@gmail.com", usable: true }]);
+  assert.ok(mixed.status === "fail" && mixed.fixer === "agent" && mixed.detail.startsWith("b@gmail.com need a new sign-in")
+    && mixed.detail.includes("claude4@slack.green (subscription paused at 11-03 01:50Z) off for an unpaid plan"), JSON.stringify(mixed));
+  const { outcome: spent } = await run([claude4, { email: "a@gmail.com", reason: "depleted", limited_until: 4_000_000_000 }]);
+  assert.ok(spent.status === "off" && spent.detail.startsWith("every live anthropic account has used up its window (a@gmail.com"), JSON.stringify(spent));
+  const { outcome: paid, writes } = await run([{ email: "claude4@slack.green", usable: true }]);
+  assert.ok(paid.status === "pass" && !paid.detail.includes("unpaid"), JSON.stringify(paid));
+  assert.deepEqual(JSON.parse(writes[0]!).prompts, [], "once the owner pays and it signs in again, its record drops and it counts again");
 });
 
 // 10-23 and 10-25: jobs following the fix text ran `pi-pool off` on krenerd77 and sieunpark77 after the owner had turned them on in Settings.
