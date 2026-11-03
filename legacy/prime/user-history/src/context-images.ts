@@ -7,20 +7,40 @@ import { Worker } from "node:worker_threads";
 // screenshot breaks every later turn of its thread.
 
 export interface ContextImage { type: "image"; data: string; mimeType: string }
-export type FitImage = (image: ContextImage) => Promise<ContextImage>;
+export type FitImage = (image: ContextImage, log: (line: string) => void) => Promise<ContextImage>;
 
 export const MAX_IMAGE_EDGE = 2000;
 export const IMAGE_CACHE_ENTRIES = 256;
 
 type WorkerReply = { fits: true } | { data: string; mimeType: string } | { error: string };
+type Photon = typeof import("@silvia-odwyer/photon-node");
+let loopPhoton: Promise<Photon> | undefined;
+
+const reason = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /**
  * The image shrunk so its longer edge is at most maxEdge. A header that shows the image fits skips the decode, and the shrink runs on a worker
- * thread: on 11-03 a photon resize on the event loop stalled Prime worker 597bd6f3376c for 5.6 s, 10.0 s, 9.4 s and 7.7 s.
+ * thread: on 11-03 a photon resize on the event loop stalled Prime worker 597bd6f3376c for 5.6 s, 10.0 s, 9.4 s and 7.7 s. When the worker
+ * fails, the shrink runs on the event loop instead, because a text line in place of the image loses what the owner showed.
  */
-export async function fitImageEdge(image: ContextImage, maxEdge = MAX_IMAGE_EDGE): Promise<ContextImage> {
+export async function fitImageEdge(image: ContextImage, log: (line: string) => void = () => {}, maxEdge = MAX_IMAGE_EDGE): Promise<ContextImage> {
   const size = imageSize(image);
   if (size && Math.max(size.width, size.height) <= maxEdge) return image;
+  let workerError: unknown;
+  try {
+    return await fitOnWorker(image, maxEdge);
+  } catch (error) {
+    workerError = error;
+  }
+  log(`context image worker failed, so the fit runs on the event loop: ${reason(workerError)}`);
+  try {
+    return await fitOnLoop(image, maxEdge);
+  } catch (error) {
+    throw new Error(`${reason(workerError)}; on the event loop: ${reason(error)}`);
+  }
+}
+
+async function fitOnWorker(image: ContextImage, maxEdge: number): Promise<ContextImage> {
   const reply = await new Promise<WorkerReply>((resolve, reject) => {
     const worker = new Worker(new URL("./context-images-worker.mjs", import.meta.url), { workerData: { data: image.data, mimeType: image.mimeType, maxEdge } });
     worker.once("message", resolve);
@@ -30,6 +50,29 @@ export async function fitImageEdge(image: ContextImage, maxEdge = MAX_IMAGE_EDGE
   if ("error" in reply) throw new Error(reply.error);
   if ("fits" in reply) return image;
   return { type: "image", data: reply.data, mimeType: reply.mimeType };
+}
+
+// The fit as it ran before the worker. jiti, which loads this file in Prime, resolves the dynamic import where Bun's own resolver finds nothing.
+async function fitOnLoop(image: ContextImage, maxEdge: number): Promise<ContextImage> {
+  loopPhoton ??= import("@silvia-odwyer/photon-node").then(module => ("default" in module ? module.default : module) as Photon);
+  const { PhotonImage, resize, SamplingFilter } = await loopPhoton;
+  const source = PhotonImage.new_from_byteslice(new Uint8Array(Buffer.from(image.data, "base64")));
+  try {
+    const width = source.get_width();
+    const height = source.get_height();
+    const scale = maxEdge / Math.max(width, height);
+    if (scale >= 1) return image;
+    const fitted = resize(source, Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale)), SamplingFilter.Triangle);
+    try {
+      const jpeg = image.mimeType === "image/jpeg";
+      const bytes = jpeg ? fitted.get_bytes_jpeg(85) : fitted.get_bytes();
+      return { type: "image", data: Buffer.from(bytes).toString("base64"), mimeType: jpeg ? "image/jpeg" : "image/png" };
+    } finally {
+      fitted.free();
+    }
+  } finally {
+    source.free();
+  }
 }
 
 /** The pixel size a PNG, GIF or JPEG header names, or undefined for another format or a header it cannot read. */
@@ -75,10 +118,10 @@ export class ImageFitter {
     const key = createHash("sha256").update(image.mimeType).update("\0").update(image.data).digest("hex");
     let fitted = this.cache.get(key);
     if (!fitted) {
-      fitted = this.fit(image).catch(error => {
+      fitted = this.fit(image, this.log).catch(error => {
         this.cache.delete(key);
         const size = imageSize(image);
-        const why = error instanceof Error ? error.message : String(error);
+        const why = reason(error);
         this.log(`context image ${key.slice(0, 12)} ${size ? `${size.width}x${size.height}` : "of unknown size"} (${image.mimeType}): fit failed: ${why}`);
         if (size && Math.max(size.width, size.height) <= MAX_IMAGE_EDGE) return image;
         return { type: "text" as const, text: `[An image${size ? ` of ${size.width} x ${size.height} px` : ""} was left out of this request: it may be over ` +

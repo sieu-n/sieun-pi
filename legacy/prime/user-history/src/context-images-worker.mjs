@@ -1,8 +1,25 @@
 // Shrinks one context image on its own thread for src/context-images.ts, so the decode, resize and encode never block a Prime worker's event loop.
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parentPort, workerData } from "node:worker_threads";
-import photon from "@silvia-odwyer/photon-node";
 
-const { PhotonImage, resize, SamplingFilter } = photon;
+/**
+ * photon-node's entry file in the nearest node_modules above this file, the one Node would pick. Bun's compiled binary, which runs Prime,
+ * resolves no package name from a file on disk, so from 03:40Z on 11-03 every fit failed with "Cannot find module
+ * '@silvia-odwyer/photon-node'" and the chat sent a text line in place of each image over 2000 px.
+ */
+function photonEntry() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  for (let dir = here; ; dir = dirname(dir)) {
+    const folder = join(dir, "node_modules", "@silvia-odwyer", "photon-node");
+    if (existsSync(join(folder, "package.json"))) return join(folder, JSON.parse(readFileSync(join(folder, "package.json"), "utf8")).main);
+    if (dirname(dir) === dir) throw new Error(`@silvia-odwyer/photon-node is in no node_modules above ${here}`);
+  }
+}
+
+const photon = await import(pathToFileURL(photonEntry()).href);
+const { PhotonImage, resize, SamplingFilter } = photon.default ?? photon;
 const { data, mimeType, maxEdge } = workerData;
 
 function fit() {
