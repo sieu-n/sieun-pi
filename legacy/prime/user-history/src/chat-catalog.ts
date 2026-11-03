@@ -1195,10 +1195,19 @@ export class Catalog {
       await breathe();
       row.agents = withPoolBelow(withWaits(withQueue(withRates(row.agents ?? [], rates), queued), wakes, below), queued, below);
     }
-    const parks = await wait(this.slotParks(chatRows.flatMap(row => row.agents ?? []), queued, now));
+    // Each park read stats its file in-line before its first await, and each spawned count below reads a folder in-line, so the loop gets a turn
+    // between agents in both passes: at 21:56:20Z on 11-03, with CI on 51 of 80 cores, these passes and a major GC held the main thread 1.3 s.
+    const pool = { queued, working: new Set<string>() };
+    const parkReads: Promise<(readonly [string, SlotPark])[]>[] = [];
+    for (const agent of chatRows.flatMap(row => row.agents ?? [])) {
+      await breathe();
+      parkReads.push(this.slotPark(agent, pool, now));
+    }
+    const parks = new Map((await wait(Promise.all(parkReads))).flat());
     for (const row of chatRows) row.agents = withSlotParks(row.agents ?? [], parks);
     await breathe();
     for (const agent of chatRows.flatMap(row => row.agents ?? [])) {
+      await breathe();
       const session = agent.sessionId ? this.find(agent.sessionId) : undefined;
       const folder = session ? subagentFolder(session) : undefined;
       const spawned = folder ? this.spawned.of(folder, now, agent.state === "idle") : 0;
@@ -1510,17 +1519,13 @@ export class Catalog {
   }
 
   /**
-   * The agents not at work that wait for a pi-pool slot, by session id: Prime's own park on each one's row, else its file (`readRowSlotPark`;
+   * The agent's wait for a pi-pool slot when it is not at work, by session id: Prime's own park on its row, else its file (`readRowSlotPark`;
    * a file is read again only when it changed), against the queue places this projection read.
    */
-  private async slotParks(agents: readonly ChatAgent[], queued: ReadonlyMap<string, QueuePlace>, now: number): Promise<Map<string, SlotPark>> {
-    const pool = { queued, working: new Set<string>() };
-    const found = await Promise.all(agents.map(async agent => {
-      const row = agent.sessionId && agent.state !== "working" ? this.find(agent.sessionId) : undefined;
-      const park = row ? poolPark((await readRowSlotPark(row).catch((): FileSlotPark => ({ complete: true }))).park, agent.sessionId!, now, pool) : null;
-      return park ? [[agent.sessionId!, park] as const] : [];
-    }));
-    return new Map(found.flat());
+  private async slotPark(agent: ChatAgent, pool: { queued: ReadonlyMap<string, QueuePlace>; working: Set<string> }, now: number): Promise<(readonly [string, SlotPark])[]> {
+    const row = agent.sessionId && agent.state !== "working" ? this.find(agent.sessionId) : undefined;
+    const park = row ? poolPark((await readRowSlotPark(row).catch((): FileSlotPark => ({ complete: true }))).park, agent.sessionId!, now, pool) : null;
+    return park ? [[agent.sessionId!, park] as const] : [];
   }
 
   private find(sessionId: string): SessionSummary | undefined {
