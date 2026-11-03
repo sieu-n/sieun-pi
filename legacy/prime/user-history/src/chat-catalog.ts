@@ -1614,14 +1614,14 @@ export class Catalog {
   }
 
   /**
-   * This box's session ids and active session ids as its copy holds them now, kept per copy version, so `hostOf` reads them without indexing
+   * This box's session ids and active session ids as its copy holds them now, kept per copy `idsVersion`, so `hostOf` reads them without indexing
    * every row. Until 10-27 each hostOf call after a copy change ran `settle`, a full index of every box's rows with the roster hand-on: the
    * daemon sent 331 roster updates in 60 s, the outbox, wake and unload paths asked hostOf between them, and in the 18:07Z to 18:55Z CPU
    * profile those settles held the main thread 108.5 s of 2,849 s, with the projections' own index on top.
    */
   private ownNow(): { own: ReadonlySet<string>; ownActive: ReadonlySet<string> } {
     if (!this.peer.listed) return { own: this.own, ownActive: this.ownActive };
-    if (this.ownAt?.version !== this.peer.version) this.ownAt = { version: this.peer.version, ...ownIds(this.peer.list()) };
+    if (this.ownAt?.version !== this.peer.idsVersion) this.ownAt = { version: this.peer.idsVersion, ...ownIds(this.peer.list()) };
     return this.ownAt;
   }
   private ownAt: { version: number; own: Set<string>; ownActive: Set<string> } | undefined;

@@ -92,17 +92,22 @@ export type RosterUpdate = { changed?: { agentId: string; status?: string; summa
 /**
  * A roster_update laid over the rows in place: a changed agent's summary replaces or joins its row, and a removed one's row is saved. It returns
  * true when the update names an agent the rows cannot place, so the caller lists the roster to catch up.
+ * It sets `ids.changed` when a row joined or left or a row's session id or active session id changed, so the caller's `idsVersion` moves.
  *
  * Until 10-30 each update copied the whole map first. With 7,876 rows on us-metal02 and about 330 updates a minute, that copy was 375 MB of
  * the 1,012 MB a minute a scratch serve on a copy of the live data dir allocated, and the live chat ran a major GC nearly every minute.
  */
-export function applyRosterUpdate(rows: Map<string, SessionSummary>, agents: Map<string, string>, update: RosterUpdate): boolean {
+export function applyRosterUpdate(rows: Map<string, SessionSummary>, agents: Map<string, string>, update: RosterUpdate, ids = { changed: false }): boolean {
   let unknown = update.resync === true;
   for (const entry of update.changed ?? []) {
     const row = keptFirst({ ...entry.summary, ...(entry.status ? { rosterStatus: entry.status } : {}) } as SessionSummary);
     const key = rowKey(row);
+    const size = rows.size;
     dropStarting(rows, row);
-    rows.set(key, merged(rows.get(key), row));
+    const before = rows.get(key);
+    const next = merged(before, row);
+    rows.set(key, next);
+    if (rows.size !== size || before?.sessionId !== next.sessionId || before?.activeSessionId !== next.activeSessionId) ids.changed = true;
     agents.set(entry.agentId, key);
   }
   for (const agentId of update.removed ?? []) {
@@ -110,6 +115,7 @@ export function applyRosterUpdate(rows: Map<string, SessionSummary>, agents: Map
     const row = key === undefined ? undefined : rows.get(key);
     if (key === undefined || !row) { unknown = true; continue; }
     rows.set(key, saved(row));
+    if (row.activeSessionId !== undefined) ids.changed = true;
     agents.delete(agentId);
   }
   return unknown;
@@ -224,6 +230,13 @@ export class SessionPeer {
   readonly counts = { full: 0, roster: 0, updates: 0 };
   /** Goes up on every change of the rows or the state, so a reader's index of them knows when to rebuild. */
   version = 0;
+  /**
+   * Goes up when the rows' session ids or active session ids may have changed: a row joined, left, started or stopped, or the state moved.
+   * Most of the ~330 roster updates a minute on us-metal02 change only a live row's status or activity, and until 11-04 each one made the
+   * catalog's `ownNow` and `isActive` build Sets of all ~8,400 rows' ids again: 2.4 s of main-thread time from 22:15:00Z to 22:17:27Z on 11-03,
+   * and Sets that size go to V8's large-object space, which only a major GC frees. That minute ended in an 847 ms major GC and a 1.4 s stall.
+   */
+  idsVersion = 0;
   private readonly loading: Promise<void>;
   private connecting: Promise<void> | undefined;
   private syncing: Promise<void> | undefined;
@@ -272,15 +285,15 @@ export class SessionPeer {
   /** True when the box's daemon runs the session (a session id or active session id) now. */
   isActive(id: string): boolean {
     if (this.state === "down") return false;
-    if (this.active?.version !== this.version) {
+    if (this.active?.version !== this.idsVersion) {
       const ids = new Set<string>();
       for (const row of this.rows.values()) if (row.activeSessionId !== undefined) { ids.add(row.sessionId); ids.add(row.activeSessionId); }
-      this.active = { version: this.version, ids };
+      this.active = { version: this.idsVersion, ids };
     }
     return this.active.ids.has(id);
   }
   /**
-   * The session ids and active session ids of the rows with a worker, as of `version`. Until 10-20 each call walked every row, and the catalog
+   * The session ids and active session ids of the rows with a worker, as of `idsVersion`. Until 10-20 each call walked every row, and the catalog
    * asks for each row this box and the Mac both list on every projection: 2.2 s of a 304 s profile of a scratch serve on a copy of the live data dir.
    */
   private active: { version: number; ids: Set<string> } | undefined;
@@ -410,8 +423,9 @@ export class SessionPeer {
   private onRoster(update: RosterUpdate): void {
     if (!this.listed) return;
     this.counts.updates++;
-    const unknown = applyRosterUpdate(this.rows, this.agents, update);
-    this.changed();
+    const ids = { changed: false };
+    const unknown = applyRosterUpdate(this.rows, this.agents, update, ids);
+    this.changed(ids.changed);
     if (unknown) this.catchUp();
   }
 
@@ -438,12 +452,13 @@ export class SessionPeer {
   private setState(state: PeerState): void {
     const changed = this.state !== state;
     this.state = state;
-    if (changed) this.version++;
+    if (changed) { this.version++; this.idsVersion++; }
     if (changed && !this.closed) this.options.onChange();
   }
 
-  private changed(): void {
+  private changed(ids = true): void {
     this.version++;
+    if (ids) this.idsVersion++;
     if (this.closed) return;
     if (!this.saveTimer && this.options.file) {
       this.saveTimer = setTimeout(() => { this.saveTimer = undefined; this.save(); }, SAVE_MS);
@@ -465,6 +480,7 @@ export class SessionPeer {
       this.listed = true;
       this.fullAt = typeof copy.fullAt === "number" ? copy.fullAt : 0;
       this.version++;
+      this.idsVersion++;
       this.options.log(`copy ${this.name}: ${rows.length} rows from ${file}, full list ${Math.round((Date.now() - this.fullAt) / 60_000)} min old`);
       this.options.onChange();
     } catch (error) {
