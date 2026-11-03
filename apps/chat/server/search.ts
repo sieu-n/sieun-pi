@@ -174,7 +174,9 @@ export class Search {
       parts.length ? this.engine.search(query.q, or(...parts), { sort, limit: offset + limit }) : Promise.resolve({ docs: [], total: 0 }),
       ...others.map(box => this.boxSearch(box, boxQuery!, comms)),
     ]);
-    const summaries = new Map(this.threads.conversations().map(c => [c.id, c]));
+    // Only the page's hits need their conversation's summary; every conversation's summaries took tens of ms to build on us-metal02.
+    const known = new Map<string, ConversationSummary | undefined>();
+    const summaries = { get: (id: string) => (known.has(id) ? known.get(id) : known.set(id, this.threads.conversation(id)).get(id)) };
     const lists: Row[][] = [mine.docs.map(doc => ({ at: doc.at, tier: sort === "relevance" ? doc.tier : 0, build: () => this.docHit(doc, scope?.thread, summaries, marks, testOf) }))];
     let total = mine.total;
     const missing: SearchMissing[] = [];
@@ -209,7 +211,7 @@ export class Search {
   }
 
   /** A document's hit: an entry opens in the scope's thread or the unarchived, newest thread that holds it, a post in its room. */
-  private docHit(doc: SearchDoc, scopeThread: string | undefined, summaries: Map<string, ConversationSummary>, marks: string[], testOf: Map<string, TestSendEntry>): SearchHit | undefined {
+  private docHit(doc: SearchDoc, scopeThread: string | undefined, summaries: { get(id: string): ConversationSummary | undefined }, marks: string[], testOf: Map<string, TestSendEntry>): SearchHit | undefined {
     if (doc.source === "post") return this.postHit(doc, marks);
     const thread = scopeThread ?? this.copyThread(doc);
     const conversation = Number(doc.convs.find(c => c.startsWith(`${thread}:`))?.slice(thread.length + 1) ?? 1);
