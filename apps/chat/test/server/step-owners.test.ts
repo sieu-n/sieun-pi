@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import type { AgentSummary, ChatBoard } from "../../web/src/lib/api/types.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
+import { StepOwners } from "../../server/step-owners.ts";
 import { start, until, type Running } from "./helpers.ts";
 
 let s: Running;
@@ -43,6 +44,8 @@ test("a step that waits with no job and no wake is told to its chat once a windo
   await idle();
   await s.app.boards.owners.tick(now + 60_000);
   assert.equal(mine().length, 1, "the same gap is not told again inside the live window");
+  await new StepOwners(s.app.boards).tick(now + 2 * 60_000);
+  assert.equal(mine().length, 1, "a restart keeps what the chat was told");
   await s.app.boards.owners.tick(now + 31 * 60_000);
   assert.equal(mine().length, 2, "the same gap is told again after the live window");
   await idle();
