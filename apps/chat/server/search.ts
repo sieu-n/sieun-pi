@@ -1,33 +1,30 @@
 /**
  * Full-text search over every thread entry and room post, with the filters from:, in:, after: and before:
- * (~/work/slack-layer-design/search.md section 5). This box's entries and every post live in one Meilisearch index (search-engine.ts); each
- * other box's threads come through its relay's `durable_search`. `total` is the exact count for the same filters (c191).
+ * (~/work/slack-layer-design/search.md section 5). Every box's entries and every post live in one Meilisearch index (search-engine.ts), so
+ * a search asks no other box; `total` is the exact count for the same filters (c191), and `missing` says when a box's newest rows may lack.
  *
  * A comm thread (phase 4) has no rows of its own: its entries are left out, and the DM posts whose words it holds are searched as the DM's
  * posts instead, so a hit opens the DM at the post. Channel and Solo room posts are searched as posts of their room (phase 5).
- *
- * With `local`, the answer leaves the other boxes out and names them in `pending`: on 11-03 the Mac's relay was 190 ms away, and the popup
- * shows this box's rows first, then the full answer with the exact count.
+
  */
 import type { ConversationKind, ConversationSummary, SearchHit, SearchMissing, SearchResult } from "../web/src/lib/api/types.ts";
 import { CHANNEL_COPY_LIKE, type GroupRooms } from "./group-rooms.ts";
 import { describe, fullText, searchTerms, snippet } from "./search-snippet.ts";
 import { safeSnippet } from "./search-snippet.ts";
 import type { LinkState } from "./host/relay-host.ts";
-import { HostAway, isHostAway, type SearchHit as HostHit, type SearchPage, type SearchQuery } from "./host/types.ts";
+import type { SearchHit as HostHit } from "./host/types.ts";
 import { conversationIdOf, parseConversationId, type Threads } from "./threads.ts";
 import type { AgentRecord, RoomPost } from "./agent-store.ts";
 import { isAgentId, isRoomId } from "./agents.ts";
 import { reactionsLine } from "./reactions.ts";
-import { and, eq, isIn, not, or, type Cond, type EntryDoc, type PostDoc, type SearchDoc, type SearchEngine } from "./search-engine.ts";
+import { and, eq, isIn, not, or, type BoxIndexState, type Cond, type EntryDoc, type PostDoc, type SearchDoc, type SearchEngine } from "./search-engine.ts";
 
 /** The owner reads dates in KST. */
 export const OWNER_ZONE_OFFSET_MS = 9 * 3600_000;
 
-/** `from` is `owner`, `agents` or one agent id, and `type` keeps messages only or tool output only; `local` leaves the other boxes for later. */
+/** `from` is `owner`, `agents` or one agent id, and `type` keeps messages only or tool output only. */
 export interface SearchParams {
   q: string; from?: string; in?: string; after?: string; before?: string; sort?: "relevance" | "recent"; type?: "messages" | "tools"; limit?: number; cursor?: string;
-  local?: boolean;
 }
 
 /** Tool output ranks after every message by relevance and is what `type` keeps or leaves out. */
@@ -64,19 +61,20 @@ function terms(q: string): string[] {
 /** A work-thread input that was a job's test send typed into the owner's DM (rooms.ts `allTestSends`). */
 export interface TestSendEntry { thread: string; entry: number; by: string; reason: string }
 
-/** Another box whose threads search reads through its agent relay (`MultiHost`). */
-export interface SearchBox { box: string; link(): LinkState; search(query: SearchQuery): Promise<SearchPage> }
+/** Another box whose rows the index reads through its agent relay (`MultiHost`). */
+export interface SearchBox { box: string; link(): LinkState }
 
 const clock = (at: number): string => new Date(at).toISOString().slice(11, 16) + "Z";
 
-/** Why a box's threads are not in the results. */
-function missingNote(box: string, error: unknown): string {
-  if (isHostAway(error)) return `${box} is offline since ${clock(error.since)}, so its threads are not in these results.`;
-  return `${box} did not answer the search (${error instanceof Error ? error.message : String(error)}), so its threads are not in these results.`;
+/** Why some of a box's threads may be missing from the results, or nothing when the index holds every row the box has. */
+function boxNote(box: SearchBox, state: BoxIndexState): string | undefined {
+  const link = box.link();
+  if (state === "indexing") return `${box.box}'s threads are still being indexed, so some are not in these results yet.`;
+  if (link.state === "up") return state === "unread" ? `${box.box}'s threads are not indexed yet, so they are not in these results.` : undefined;
+  return state === "unread"
+    ? `${box.box} is offline since ${clock(link.since)} and was never indexed, so its threads are not in these results.`
+    : `${box.box} is offline since ${clock(link.since)}, so its threads show what it wrote until then.`;
 }
-
-/** One ranked list of rows, this box's documents or one other box's page, merged by rank or by time. */
-type Row = { at: number; tier: number; build: () => SearchHit | undefined };
 
 export class Search {
   /** The test sends: `from:owner` leaves them out, and their hits name the job as the author. Set by the app once it has the rooms. */
@@ -89,24 +87,6 @@ export class Search {
   boxes: () => SearchBox[] = () => [];
 
   constructor(readonly threads: Threads, readonly groups: GroupRooms, readonly engine: SearchEngine, private readonly posts: (room: string) => readonly RoomPost[]) {}
-
-  /**
-   * Each other box's page through its relay, with its comm threads' own count asked at the same time and taken off. A box that is away or
-   * fails gives no hits and a `missing` note instead.
-   */
-  private async boxSearch(box: SearchBox, query: SearchQuery, comms: string[]): Promise<{ ok: true; page: SearchPage } | { ok: false; error: unknown }> {
-    try {
-      if (box.link().state !== "up") throw new HostAway(box.box, box.link().since);
-      const [skipped, page] = await Promise.all([
-        comms.length ? box.search({ ...query, threads: comms, limit: 0 }).then(p => p.total) : Promise.resolve(0),
-        box.search(query),
-      ]);
-      const commSet = new Set(comms);
-      return { ok: true, page: { hits: page.hits.filter(hit => !commSet.has(hit.thread)), total: page.total - skipped } };
-    } catch (error) {
-      return { ok: false, error };
-    }
-  }
 
   async run(params: SearchParams): Promise<SearchResult> {
     const query = parseQuery(params);
@@ -130,7 +110,6 @@ export class Search {
     const scope = !inChannel && inId ? parseConversationId(this.threads.conversationOf(inId)) : undefined;
     const comms = scope ? [] : this.commThreads();
     const testRooms = this.testRooms();
-    let boxQuery: SearchQuery | undefined;
     if (!inChannel) {
       const fromAgent = query.from && query.from !== "owner" && !agents ? parseConversationId(this.threads.conversationOf(query.from)) : undefined;
       parts.push(and(
@@ -141,15 +120,6 @@ export class Search {
         ...(fromAgent ? [or(and(eq("kind", "agent.message"), eq("author", query.from!)),
           and(not(eq("kind", "agent.message")), not(eq("author", "owner")), eq("convs", `${fromAgent.thread}:${fromAgent.conversation}`)))] : []),
       ));
-      boxQuery = {
-        q: query.q, sort, skipAgentMessages: CHANNEL_COPY_LIKE, withText: true, limit: offset + limit,
-        ...(sort === "relevance" ? { demoteKinds: TOOL_KINDS } : {}),
-        ...(query.type === "tools" ? { kinds: TOOL_KINDS } : query.type === "messages" ? { skipKinds: TOOL_KINDS } : {}),
-        ...(scope ? { threads: [scope.thread], conversation: scope.conversation } : {}),
-        ...(query.from === "owner" ? { from: "owner", ...(tests.length ? { skipEntries: tests.map(({ thread, entry }) => ({ thread, entry })) } : {}) } : agents ? { notFrom: "owner" } : {}),
-        ...(fromAgent ? { by: { thread: fromAgent.thread, conversation: fromAgent.conversation, id: query.from! } } : {}),
-        ...(after === undefined ? {} : { after }), ...(before === undefined ? {} : { before }),
-      };
     }
     if ((!inId || inChannel) && query.type !== "tools") {
       const fromId = query.from && query.from !== "owner" && !agents ? this.threads.registered(query.from)?.id ?? query.from : query.from;
@@ -169,44 +139,20 @@ export class Search {
       ));
     }
 
-    const others = boxQuery && !query.local ? this.boxes() : [];
-    const [mine, ...answers] = await Promise.all([
-      parts.length ? this.engine.search(query.q, or(...parts), { sort, limit: offset + limit }) : Promise.resolve({ docs: [], total: 0 }),
-      ...others.map(box => this.boxSearch(box, boxQuery!, comms)),
-    ]);
+    const mine = parts.length ? await this.engine.search(query.q, or(...parts), { sort, limit: offset + limit }) : { docs: [], total: 0 };
     // Only the page's hits need their conversation's summary; every conversation's summaries took tens of ms to build on us-metal02.
     const known = new Map<string, ConversationSummary | undefined>();
     const summaries = { get: (id: string) => (known.has(id) ? known.get(id) : known.set(id, this.threads.conversation(id)).get(id)) };
-    const lists: Row[][] = [mine.docs.map(doc => ({ at: doc.at, tier: sort === "relevance" ? doc.tier : 0, build: () => this.docHit(doc, scope?.thread, summaries, marks, testOf) }))];
-    let total = mine.total;
-    const missing: SearchMissing[] = [];
-    answers.forEach((answer, i) => {
-      if (!answer.ok) {
-        missing.push({ box: others[i]!.box, note: missingNote(others[i]!.box, answer.error) });
-        return;
-      }
-      total += answer.page.total;
-      lists.push(answer.page.hits.map(hit => ({
-        at: hit.at, tier: sort === "relevance" && TOOL_KINDS.includes(hit.kind) ? 1 : 0,
-        build: () => this.threadHit(hit, summaries.get(conversationIdOf(hit.thread, hit.conversation)), marks, hit.kind === "pi.user" ? testOf.get(`${hit.thread}:${hit.entryId}`) : undefined),
-      })));
+    const total = mine.total;
+    const missing: SearchMissing[] = inChannel ? [] : this.boxes().flatMap(box => {
+      const note = boxNote(box, this.engine.boxState(box.box));
+      return note ? [{ box: box.box, note }] : [];
     });
-    const pending = boxQuery && query.local ? this.boxes().filter(box => box.link().state === "up").map(box => box.box) : [];
-    for (const box of boxQuery && query.local ? this.boxes() : []) if (box.link().state !== "up") missing.push({ box: box.box, note: missingNote(box.box, new HostAway(box.box, box.link().since)) });
-
-    let merged: Row[];
-    if (sort === "recent") merged = lists.flat().sort((a, b) => b.at - a.at);
-    else {
-      merged = [];
-      // By relevance the lists interleave by their rank, since the scores of two engines do not compare.
-      for (let rank = 0; lists.some(list => rank < list.length); rank++) for (const list of lists) if (rank < list.length) merged.push(list[rank]!);
-      merged.sort((a, b) => a.tier - b.tier);
-    }
-    let hits = merged.slice(offset, offset + limit).flatMap(row => row.build() ?? []);
+    let hits = mine.docs.slice(offset, offset + limit).flatMap(doc => this.docHit(doc, scope?.thread, summaries, marks, testOf) ?? []);
     // An answer whose match sits only in a tool call's arguments is found by its text, so it sinks below the messages of its own page.
     if (sort === "relevance") hits = [...hits.filter(hit => hit.role !== "tool"), ...hits.filter(hit => hit.role === "tool")];
     return {
-      hits, total, ...(offset + limit < total ? { nextCursor: String(offset + limit) } : {}), ...(missing.length ? { missing } : {}), ...(pending.length ? { pending } : {}),
+      hits, total, ...(offset + limit < total ? { nextCursor: String(offset + limit) } : {}), ...(missing.length ? { missing } : {}),
     };
   }
 

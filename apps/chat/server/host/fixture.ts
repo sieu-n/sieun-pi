@@ -13,8 +13,9 @@
 import { randomUUID } from "node:crypto";
 import type { TurnPlace } from "../../web/src/lib/api/types.ts";
 import { DEFAULT_MODEL } from "../config.ts";
+import type { IndexRead } from "../../../../packages/pi-host/src/durable/index-db.ts";
 import type { EntryRow } from "../search-engine.ts";
-import type { ContentBlock, DurableEvent, DurableThread, EntryRecord, Host, Message, SearchHit, SearchPage, SearchQuery, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageTotal } from "./types.ts";
+import type { ContentBlock, DurableEvent, DurableThread, EntryRecord, Host, Message, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageTotal } from "./types.ts";
 
 interface FakeThread {
   row: DurableThread;
@@ -299,50 +300,14 @@ export class FixtureHost implements Host {
     return { rows, seen: next };
   }
 
-  async search(query: SearchQuery): Promise<SearchPage> {
-    const words = query.q.toLowerCase().split(/\s+/).map(w => w.replace(/^"|"$|\*$/g, "")).filter(Boolean);
-    type Match = { hit: Omit<SearchHit, "snippet">; text: string; score: number };
-    const matches: Match[] = [];
-    // pi-host's rules: a LIKE pattern leaves agent messages out, and copies of one entry show once, from an unarchived thread.
-    const skip = query.skipAgentMessages ? new RegExp(`^${query.skipAgentMessages.split("%").map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\\s\\S]*")}$`, "i") : undefined;
-    const copies = new Map<string, { archived: number; match: Match }>();
-    for (const thread of this.threadsById.values()) {
-      if (query.threads && !query.threads.includes(thread.row.id)) continue;
-      for (const entry of thread.entries) {
-        const row = fixtureIndexRow(thread.row.id, entry);
-        if (!row) continue;
-        const { text, at, author } = row;
-        const lower = text.toLowerCase();
-        const counts = words.map(w => lower.split(w).length - 1);
-        if (!words.length || counts.some(c => c === 0)) continue;
-        if (query.after !== undefined && at < query.after) continue;
-        if (query.before !== undefined && at >= query.before) continue;
-        if (query.from && author !== query.from) continue;
-        if (query.notFrom && author === query.notFrom) continue;
-        if (query.kinds?.length && !query.kinds.includes(entry.kind)) continue;
-        if (query.skipKinds?.includes(entry.kind)) continue;
-        if (query.skipEntries?.some(skip => skip.thread === thread.row.id && skip.entry === entry.id)) continue;
-        if (query.conversation !== undefined && entry.conversationId !== query.conversation) continue;
-        if (query.by && !(entry.kind === "agent.message" ? author === query.by.id : author !== "owner" && thread.row.id === query.by.thread && entry.conversationId === query.by.conversation)) continue;
-        if (skip && entry.kind === "agent.message" && skip.test(text)) continue;
-        const copyKey = `${entry.id} ${entry.kind} ${author} ${at}`;
-        const copy = copies.get(copyKey);
-        if (copy && (copy.archived <= Number(thread.row.archived))) continue;
-        if (copy) matches.splice(matches.indexOf(copy.match), 1);
-        const match: Match = { hit: { thread: thread.row.id, conversation: entry.conversationId, entryId: entry.id, kind: entry.kind, author, at }, text, score: counts.reduce((a, b) => a + b, 0) };
-        matches.push(match);
-        copies.set(copyKey, { archived: Number(thread.row.archived), match });
-      }
-    }
-    const tier = (m: Match) => (query.sort !== "recent" && query.demoteKinds?.includes(m.hit.kind) ? 1 : 0);
-    matches.sort((a, b) => (query.sort === "recent" ? b.hit.at - a.hit.at : tier(a) - tier(b) || b.score - a.score || b.hit.at - a.hit.at));
-    const offset = query.offset ?? 0;
-    const mark = new RegExp(`(${words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "gi");
-    const hits = matches.slice(offset, offset + (query.limit ?? 50)).map(({ hit, text }) => {
-      const start = Math.max(0, text.toLowerCase().indexOf(words[0]!) - 40);
-      return { ...hit, snippet: (start ? "…" : "") + text.slice(start, start + 160).replace(mark, "<mark>$1</mark>"), ...(query.withText ? { text } : {}) };
-    });
-    return { hits, total: matches.length };
+/** `durable_index_read` over the fixture's threads: the cursor is each thread's entry count read so far, as JSON. */
+  readIndex(cursor: string | undefined): IndexRead {
+    const read = this.indexRows(cursor === undefined ? {} : (JSON.parse(cursor) as Record<string, number>));
+    return { rows: read.rows, cursor: JSON.stringify(read.seen), more: false };
+  }
+
+  async indexRead(cursor: string | undefined): Promise<IndexRead> {
+    return this.readIndex(cursor);
   }
 
   async usage(range: { since?: number; until?: number; threads?: string[] }): Promise<UsageTotal[]> {

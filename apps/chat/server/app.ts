@@ -209,10 +209,10 @@ export class App {
     this.threads.onDoc = (thread, name, value) => {
       if (name === "chat.board") this.boards.docChanged(thread, value);
     };
-    this.searchEngine = this.newSearchEngine(routing?.list()[0]!.host ?? host);
+    this.searchEngine = this.newSearchEngine(routing?.list()[0]!.host ?? host, routing);
     this.search = new Search(this.threads, this.groups, this.searchEngine, room => this.agentStore.postsOf(room));
     if (routing) {
-      this.search.boxes = () => routing.list().filter(b => b.box !== config.box).map(b => ({ box: b.box, link: () => routing.link(b.box), search: query => b.host.search(query) }));
+      this.search.boxes = () => routing.list().filter(b => b.box !== config.box).map(b => ({ box: b.box, link: () => routing.link(b.box) }));
     }
     this.search.testSends = () => this.rooms.allTestSends();
     // Search leaves out every comm thread and every thread of a walk's test agent.
@@ -270,26 +270,32 @@ export class App {
    * Search's one Meilisearch index: meilisearch.service when the config names it, else a Meilisearch of this server's own, started on the
    * first search. Entries come from pi-host's index.sqlite, or from the fixture host's threads.
    */
-  private newSearchEngine(local: Host): SearchEngine {
+  private newSearchEngine(local: Host, routing: MultiHost | undefined): SearchEngine {
     const { config } = this;
-    const fixture = (local as Partial<Pick<FixtureHost, "indexRows">>).indexRows ? (local as FixtureHost) : undefined;
-    let seen: Record<string, number> = {};
-    const sqlite = !fixture && config.durableIndex ? new SqliteEntries(config.durableIndex) : undefined;
-    const entries: EntrySource = fixture
-      ? { read: cursor => { const read = fixture.indexRows(cursor === undefined ? {} : seen); seen = read.seen; return { rows: read.rows, cursor: "fixture" }; } }
-      : sqlite ?? { read: () => ({ rows: [], cursor: "0" }) };
+    const fixture = (local as Partial<Pick<FixtureHost, "readIndex">>).readIndex ? (local as FixtureHost) : undefined;
+    const sqlite = !fixture && config.durableIndex ? new SqliteEntries(config.box, config.durableIndex) : undefined;
+    const ownSource: EntrySource = sqlite ?? {
+      box: config.box, atSearch: true, up: () => true,
+      read: cursor => (fixture ? fixture.readIndex(cursor) : { rows: [], cursor: "0", more: false }),
+    };
+    // Every other box's rows come through its relay into the same index.
+    const others: EntrySource[] = (routing?.list() ?? []).flatMap(({ box }) => {
+      const relay = box === config.box ? undefined : routing!.relay(box);
+      return relay ? [{ box, atSearch: false, up: () => routing!.link(box).state === "up", read: (cursor: string | undefined) => relay.indexRead(cursor) }] : [];
+    });
     let own: OwnMeili | undefined;
-    let memory: string | undefined;
+    let memory: Record<string, string> = {};
     const file = join(config.dataDir, "search", "meili.json");
     if (config.meili) {
-      const saved = readJson<{ v?: number; cursor?: string }>(file, {});
-      if (saved.v === SEARCH_DOC_VERSION) memory = saved.cursor;
+      // `cursor` is this box's cursor as the file kept it before other boxes were indexed too.
+      const saved = readJson<{ v?: number; cursor?: string; cursors?: Record<string, string> }>(file, {});
+      if (saved.v === SEARCH_DOC_VERSION) memory = saved.cursors ?? (saved.cursor === undefined ? {} : { [config.box]: saved.cursor });
     }
-    const cursor = {
-      get: () => memory,
-      set: (next: string) => {
-        memory = next;
-        if (config.meili) writeJson(file, { v: SEARCH_DOC_VERSION, cursor: next });
+    const cursors = {
+      get: (box: string) => memory[box],
+      set: (box: string, next: string) => {
+        memory = { ...memory, [box]: next };
+        if (config.meili) writeJson(file, { v: SEARCH_DOC_VERSION, cursors: memory });
       },
     };
     const engine = new SearchEngine({
@@ -298,7 +304,7 @@ export class App {
         own = await startOwnMeili();
         return own.meili;
       },
-      entries, cursor, channelCopy: likeRegex(CHANNEL_COPY_LIKE), log: this.log,
+      sources: [ownSource, ...others], cursors, channelCopy: likeRegex(CHANNEL_COPY_LIKE), log: this.log,
       allPosts: () => [...this.groups.rows().map(row => row.id), ...this.agents.list().map(record => record.room)]
         .flatMap(room => this.agentStore.postsOf(room).flatMap(post => this.postDoc(room, post) ?? [])),
     });
@@ -314,6 +320,7 @@ export class App {
       }
     }
     this.searchStop = () => {
+      engine.stop();
       watcher?.close();
       sqlite?.close();
       own?.stop();

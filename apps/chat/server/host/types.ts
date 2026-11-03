@@ -58,22 +58,8 @@ export type DurableEvent =
   | { type: "doc"; conversation: number; name: string; value: unknown }
   | { type: "closed"; reason: string };
 
-/** `text` is the entry's whole indexed text, only when the query asked `withText`. */
+/** One entry search found, as search.ts builds its hit from an index document. */
 export interface SearchHit { thread: string; conversation: number; entryId: number; kind: string; author: string; at: number; snippet: string; text?: string }
-/** pi-host's durable_search: `from` matches the author column, `by` is what one agent said (its own entries and the agent messages it sent). */
-export interface SearchQuery {
-  q: string; threads?: string[]; conversation?: number; from?: string; by?: { thread: string; conversation: number; id: string };
-  /** A LIKE pattern: agent messages whose text matches it are left out, such as the copies of channel posts. */
-  skipAgentMessages?: string;
-  /** An author to leave out; `kinds` and `skipKinds` keep or leave out entry kinds; `demoteKinds` rank after every other match by relevance. */
-  notFrom?: string; kinds?: string[]; skipKinds?: string[]; demoteKinds?: string[];
-  /** Entries to leave out by thread and entry id, such as a job's test sends for `from: "owner"`. */
-  skipEntries?: { thread: string; entry: number }[];
-  withText?: boolean;
-  after?: number; before?: number; limit?: number; offset?: number; sort?: "relevance" | "recent";
-}
-/** One page of hits and the exact count of every match; copies of one entry in several threads count and show once. */
-export interface SearchPage { hits: SearchHit[]; total: number }
 export interface UsageTotal {
   thread: string; model: string; turns: number; input: number; output: number; cacheRead: number; cacheWrite: number;
   cost: number; costInput: number; costOutput: number; costCacheRead: number; costCacheWrite: number;
@@ -130,7 +116,6 @@ export interface Host {
   /** Newest first with `before`, oldest first with `after`. */
   entries(thread: string, opts: EntriesQuery): Promise<{ entries: EntryRecord[]; more: boolean }>;
   watch(thread: string, opts: { conversation?: number; fromEntry?: number }, sink: (event: DurableEvent) => void): Promise<() => Promise<void>>;
-  search(query: SearchQuery): Promise<SearchPage>;
   usage(range: { since?: number; until?: number; threads?: string[] }): Promise<UsageTotal[]>;
   docGet(thread: string, name: string): Promise<unknown>;
   docPut(thread: string, name: string, value: unknown): Promise<void>;

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { ThreadIndex } from "../../src/durable/index.ts";
-import { snippetOf, snippetTerms } from "../../src/durable/index-db.ts";
+import { readIndexRows, snippetOf, snippetTerms } from "../../src/durable/index-db.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "pi-host-index-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -100,6 +100,34 @@ test("a search returns one page with snippets and the exact count, and narrows t
   assert.equal(index.search({ q: "relay", by: { thread: "other", conversation: 2, id: "t2:2" } }).total, entries.filter(e => e.kind === "agent.message").length);
   assert.equal(index.search({ q: "relay", from: "owner" }).total, entries.filter(e => e.author === "owner").length);
   index.close();
+});
+
+test("durable_index_read gives the rows after a cursor a page at a time, and reads a rebuilt index from its first row", () => {
+  const index = new ThreadIndex(join(dir, "read.sqlite"));
+  index.insertThread({ id: "t3", name: "read", provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "high", cwd: "/", createdAt: 1, updatedAt: 1 });
+  const entry = (i: number) => ({ thread: "t3", conversation: 1, entryId: i, kind: "pi.user", author: "owner", at: 1000 + i, text: `row ${i} `.padEnd(100, "x") });
+  index.addEntries("t3", Array.from({ length: 10 }, (_, i) => entry(i + 1)), []);
+  const first = index.read(undefined);
+  assert.equal(first.more, false);
+  assert.deepEqual(first.rows.map(row => row.entryId), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  assert.deepEqual(first.rows[0], { thread: "t3", conversation: 1, entryId: 1, kind: "pi.user", author: "owner", at: 1001, text: entry(1).text });
+  assert.deepEqual(index.read(first.cursor).rows, []);
+  index.addEntries("t3", [entry(11)], []);
+  assert.deepEqual(index.read(first.cursor).rows.map(row => row.entryId), [11]);
+  index.close();
+
+  const db = new DatabaseSync(join(dir, "read.sqlite"), { readOnly: true });
+  const pages: number[][] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const page = readIndexRows(db, cursor, 350);
+    pages.push(page.rows.map(row => row.entryId));
+    cursor = page.cursor;
+    if (!page.more) break;
+  }
+  assert.deepEqual(pages, [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11]]);
+  assert.deepEqual(readIndexRows(db, "999").rows.length, 11, "a cursor past the last row means the index was rebuilt");
+  db.close();
 });
 
 test("copies of one entry in an imported thread and its archived source count and show once, from the unarchived thread", () => {

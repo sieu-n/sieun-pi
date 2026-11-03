@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { snippetPieces } from "../../web/src/pages/search/match.ts";
-import { answered, buildGroups, pendingNotes, SEE_ALL, type Conversation, type Hit, type Person, type SearchInput } from "../../web/src/pages/search/search-model.ts";
+import { answered, buildGroups, SEE_ALL, type Conversation, type Hit, type Person, type SearchInput } from "../../web/src/pages/search/search-model.ts";
 
 const conversations: Conversation[] = [
   { id: "c-vent", kind: "solo", name: "Vent", lastActivityAt: 5, preview: "tests pass" },
@@ -119,21 +119,7 @@ const hit = (id: string): Hit => ({
   author: { id: "owner", name: "Sieun", kind: "owner" }, at: new Date(2026, 9, 27).getTime(), kind: "message", snippet: `<mark>${id}</mark>`,
 });
 
-test("a this-box answer with pending boxes shows its hits, counts no number and offers no next page", () => {
-  const messages = answered({ hits: [hit("a")], total: 7, nextCursor: "20", pending: ["mac"] });
-  assert.deepEqual(messages, { state: "ready", hits: [hit("a")], total: "counting", more: false, loadingMore: false });
-  const groups = buildGroups({ ...base, text: "a", messages });
-  assert.equal(groups[0]!.rows[0]!.detail, "Counting…");
-  assert.equal(groups.at(-1)!.count, "counting");
-  assert.deepEqual(groups.at(-1)!.rows.map(row => row.key), ["hit:a"]);
-});
-
-test("a this-box answer with no hits yet still says it is searching while a box is pending", () => {
-  const messages = answered({ hits: [], total: 0, pending: ["mac"] });
-  assert.equal(buildGroups({ ...base, text: "a", messages }).at(-1)!.empty, "Searching messages…");
-});
-
-test("the full answer replaces the this-box hits with every box's hits, its exact total and its cursor", () => {
+test("an answer brings every box's hits, its exact total and its cursor", () => {
   const full = answered({ hits: [hit("mac1"), hit("a")], total: 9, nextCursor: "20" });
   assert.deepEqual(full, { state: "ready", hits: [hit("mac1"), hit("a")], total: 9, more: true, loadingMore: false });
   assert.equal(buildGroups({ ...base, text: "a", messages: full })[0]!.rows[0]!.detail, "9 results");
@@ -143,12 +129,6 @@ test("a next page appends only hits not already shown", () => {
   const next = answered({ hits: [hit("a"), hit("b")], total: 9 }, [hit("a")]);
   assert.deepEqual(next.hits.map(one => one.id), ["a", "b"]);
   assert.equal(next.more, false);
-});
-
-test("a pending box the full search could not bring gets the server's missing note", () => {
-  assert.deepEqual(pendingNotes(["mac"], new Error("timed out")), [
-    { box: "mac", note: "mac did not answer the search (timed out), so its threads are not in these results." },
-  ]);
 });
 
 test("a snippet reads as plain text, with Markdown's marks taken out and its matches kept", () => {

@@ -27,7 +27,7 @@ export const AGENT_RELAY_PATH = "/v2/agents";
 /** pi-host commands the relay passes through as they are (packages/pi-host/src/durable/commands.ts). */
 export const DURABLE_OPS = [
   "durable_threads", "durable_create", "durable_submit", "durable_wait", "durable_abort", "durable_tree", "durable_entries", "durable_search",
-  "durable_usage", "durable_doc_get", "durable_doc_put", "durable_set", "durable_import", "durable_ticket",
+  "durable_usage", "durable_doc_get", "durable_doc_put", "durable_set", "durable_import", "durable_ticket", "durable_index_read",
 ] as const;
 export type DurableOp = (typeof DURABLE_OPS)[number];
 

@@ -374,7 +374,7 @@ export interface SearchMissing { box: string; note: string }
  * `missing` names each box whose threads are not in `hits` or `total`. `pending`, only in a `local=1` answer, names the boxes whose hits
  * and count are still to come, so `total` is not final until the same request without `local=1` answers.
  */
-export interface SearchResult { hits: SearchHit[]; total: number; nextCursor?: string; missing?: SearchMissing[]; pending?: string[] }
+export interface SearchResult { hits: SearchHit[]; total: number; nextCursor?: string; missing?: SearchMissing[] }
 /**
  * `from` is `owner`, `agents` (anyone but the owner) or one agent id; `type` keeps only messages (no tool output) or only tool output;
  * `in` is a conversation id; `after` and `before` are YYYY-MM-DD in KST.

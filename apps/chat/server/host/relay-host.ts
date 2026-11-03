@@ -11,6 +11,7 @@
  *    `ack` sent, so a crash in between replays the row and the room feed's own dedup keeps one post.
  * 5. A thread on the box reaches this server's HTTP API through the relay as a `chat_http` call, which this client forwards to 127.0.0.1.
  */
+import type { IndexRead } from "../../../../packages/pi-host/src/durable/index-db.ts";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -21,7 +22,7 @@ import {
 } from "../../../../components/prime-relay/agents/protocol.ts";
 import { writeJson } from "../store.ts";
 import {
-  HostAway, type CreateOptions, type DurableEvent, type DurableThread, type EntriesQuery, type EntryRecord, type Host, type Ping, type SearchPage, type SearchQuery,
+  HostAway, type CreateOptions, type DurableEvent, type DurableThread, type EntriesQuery, type EntryRecord, type Host, type Ping,
   type SubmissionRecord, type Submitted, type SubmitInput, type Ticket, type TreeNode, type UsageTotal,
 } from "./types.ts";
 
@@ -415,8 +416,9 @@ export class RelayHost implements Host {
       if (watch.open && this.ready) await this.call("unwatch", { watch: watch.id }).catch(() => undefined);
     };
   }
-  async search(query: SearchQuery): Promise<SearchPage> {
-    return (await this.call("durable_search", { ...query })) as SearchPage;
+  /** The index rows after `cursor`, a page at a time, for the chat's one search index. */
+  async indexRead(cursor: string | undefined): Promise<IndexRead> {
+    return (await this.call("durable_index_read", cursor === undefined ? {} : { cursor })) as IndexRead;
   }
   async usage(range: { since?: number; until?: number; threads?: string[] }): Promise<UsageTotal[]> {
     return ((await this.call("durable_usage", range)) as { usage: UsageTotal[] }).usage;

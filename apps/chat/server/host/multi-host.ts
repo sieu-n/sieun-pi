@@ -14,7 +14,7 @@ import { readJson, writeJson } from "../store.ts";
 import { join } from "node:path";
 import { RelayHost, type LinkState } from "./relay-host.ts";
 import type {
-  CreateOptions, DurableEvent, DurableThread, EntriesQuery, EntryRecord, Host, Ping, SearchPage, SearchQuery, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageTotal,
+  CreateOptions, DurableEvent, DurableThread, EntriesQuery, EntryRecord, Host, Ping, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageTotal,
 } from "./types.ts";
 
 interface RoutesFile {
@@ -183,21 +183,6 @@ export class MultiHost implements Host {
   }
 
   /** Every up box's hits: the newest first for `sort: "recent"`, else each box's in its own rank order, the chat's box first. */
-  async search(query: SearchQuery): Promise<SearchPage> {
-    const boxes = this.upBoxes();
-    const answers = await Promise.allSettled(boxes.map(b => b.host.search(query)));
-    const hits: SearchPage["hits"] = [];
-    let total = 0;
-    answers.forEach((answer, i) => {
-      if (answer.status === "fulfilled") {
-        hits.push(...answer.value.hits);
-        total += answer.value.total;
-      } else this.log(`search on ${boxes[i]!.box} failed: ${String(answer.reason)}`);
-    });
-    if (query.sort === "recent") hits.sort((a, b) => b.at - a.at);
-    return { hits: query.limit ? hits.slice(0, query.limit) : hits, total };
-  }
-
   async usage(range: { since?: number; until?: number; threads?: string[] }): Promise<UsageTotal[]> {
     const boxes = this.upBoxes();
     const answers = await Promise.allSettled(boxes.map(b => b.host.usage(range)));

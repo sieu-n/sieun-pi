@@ -478,7 +478,7 @@ Built and live on 2026-10-29: pi-host 67e75a84 as release-67e75a8, and apps/chat
 
 The routing stayed in the chat server instead of moving into the relay, because the feed reader already keeps one post per requestId and the relay then needs no state of its own. The live walk is in `~/work/phase6/mac-walk.md`.
 
-Search reads this box's index and each other box's pi-host through its relay's `durable_search`, and a box that is away gives a `missing` note instead of hits (`~/work/phase6-gaps/relay-reads/proof.md`).
+Search reads one Meilisearch index that holds every box's rows: this box's from its index.sqlite, each other box's through its relay's `durable_index_read` every 5 s. A box that is away keeps its rows searchable and gives a `missing` note that its newest rows may lack.
 
 The Agents page lists a thread's AGENTS.md chain and `cwdExists` from the box that runs it, through the relay's `instructions` op.
 

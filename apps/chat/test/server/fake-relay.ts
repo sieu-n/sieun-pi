@@ -110,7 +110,7 @@ export class FakeRelay {
       case "durable_doc_put": await h.docPut(thread, rest.name as string, rest.value); return {};
       case "durable_set": return { thread: await h.set(thread, rest) };
       case "durable_usage": return { usage: await h.usage(call.args) };
-      case "durable_search": return h.search(call.args as never);
+      case "durable_index_read": return h.indexRead((call.args as { cursor?: string }).cursor);
       case "watch": {
         const id = rest.watch as string;
         const stop = await h.watch(thread, rest as { conversation?: number; fromEntry?: number }, (event: DurableEvent) => this.send(socket, { type: "watch_event", watch: id, event }));

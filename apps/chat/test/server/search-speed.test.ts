@@ -76,7 +76,7 @@ test("each keystroke answers in under 150 ms at the 90th percentile with the exa
   for (const q of Object.keys(expected)) {
     const runs: number[] = [];
     for (let round = 0; round < 3; round++) {
-      const { ms, body } = await timed(`/api/search?q=${q}&limit=20&local=1`);
+      const { ms, body } = await timed(`/api/search?q=${q}&limit=20`);
       runs.push(ms);
       assert.ok(body.total >= expected[q]!, `${q}: ${body.total}`);
       assert.equal(body.hits.length, 20);

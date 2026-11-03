@@ -20,7 +20,7 @@
   import { pieces } from "./match";
   import { resultParams } from "./results-model";
   import { absorb, chipLabel, filters, prompt, withOperator, withoutPrompt, type NamedOperator, type Operator } from "./operators";
-  import { answered, buildGroups, messageGroupLabel, pendingNotes, SEE_ALL, type Action, type Icon, type Messages, type Person, type Row, type Sort } from "./search-model";
+  import { answered, buildGroups, messageGroupLabel, SEE_ALL, type Action, type Icon, type Messages, type Person, type Row, type Sort } from "./search-model";
 
   type Props = { open: boolean; scope: SearchScope; query: string; onclose: () => void };
   let { open, scope, query, onclose }: Props = $props();
@@ -114,27 +114,13 @@
     const { signal } = controller;
     const timer = setTimeout(async () => {
       const ask = { ...params, limit: PAGE };
-      // This box answers first; the full search, asked at the same time, brings the other boxes with the exact count. On 11-03 the full
-      // search started only after the local answer, which added that answer's 33 to 698 ms to the exact count's wait.
-      let local: SearchResult | undefined;
-      let fullDone = false;
-      const full = api.search(ask, { signal }).then(result => {
-        fullDone = true;
-        if (mine === generation) show(result, false);
-        return result;
-      });
-      full.catch(() => undefined);
+      // One search answers for every box with the exact count: the index holds every box's rows (server/search-engine.ts).
       try {
-        local = await api.search(ask, { local: true, signal });
-        if (mine !== generation || fullDone) return;
-        show(local, false);
-        if (!local.pending?.length) return;
-        await full;
+        const result = await api.search(ask, { signal });
+        if (mine === generation) show(result, false);
       } catch (error) {
-        if (mine !== generation || signal.aborted || fullDone) return;
-        if (local?.pending?.length) {
-          show({ hits: local.hits, total: local.total, missing: [...(local.missing ?? []), ...pendingNotes(local.pending, error)] }, false);
-        } else messages = { state: "error", message: error instanceof Error ? error.message : String(error) };
+        if (mine !== generation || signal.aborted) return;
+        messages = { state: "error", message: error instanceof Error ? error.message : String(error) };
       }
     }, DEBOUNCE_MS);
     return () => {
@@ -144,7 +130,7 @@
   });
 
   function show(result: SearchResult, append: boolean) {
-    cursor = result.pending?.length ? undefined : result.nextCursor;
+    cursor = result.nextCursor;
     missing = result.missing ?? [];
     messages = answered(result, append && messages.state === "ready" ? messages.hits : []);
   }
@@ -338,7 +324,7 @@
               <h2 class="heading" class:sr-only={group.hideLabel}>
                 <span>{group.label}</span>
                 {#if group.count !== undefined}
-                  <span class="count" data-testid="search-count">{group.count === "counting" ? "Counting…" : `${group.count.toLocaleString("en-US")} ${group.count === 1 ? "message" : "messages"}`}</span>
+                  <span class="count" data-testid="search-count">{`${group.count.toLocaleString("en-US")} ${group.count === 1 ? "message" : "messages"}`}</span>
                 {/if}
               </h2>
               {#each group.rows as row (row.key)}
@@ -348,7 +334,7 @@
                 {#each missing as box (box.box)}<p class="empty" data-testid="search-missing">{box.note}</p>{/each}
               {/if}
               {#if !group.rows.length && group.empty}
-                {#if (messages.state === "loading" || (messages.state === "ready" && messages.total === "counting")) && group.label === messageLabel}
+                {#if messages.state === "loading" && group.label === messageLabel}
                   <p class="empty"><LoadingText text={group.empty} /></p>
                 {:else}
                   <p class="empty">{group.empty}</p>

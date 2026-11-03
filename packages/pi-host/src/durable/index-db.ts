@@ -285,6 +285,42 @@ export function searchIndex(db: DatabaseSync, query: SearchQuery): SearchPage {
 }
 
 
+/** One row of the index as `durable_index_read` gives it: the chat's Meilisearch index reads every box's rows (apps/chat/server/search-engine.ts). */
+export interface IndexRow { thread: string; conversation: number; entryId: number; kind: string; author: string; at: number; text: string }
+export interface IndexRead { rows: IndexRow[]; cursor: string; more: boolean }
+
+/**
+ * A read of a page's text stays under this many bytes: a tenth of the `ws` library's default 100 MiB maxPayload, which the agent relay's
+ * frames go through. pi-host's index on us-metal02 held 113 MB of text in 79,845 rows on 11-03, so its first read takes about 11 pages.
+ */
+export const INDEX_READ_BYTES = 10_000_000;
+
+/**
+ * The rows after rowid `cursor`, up to `maxBytes` of text but at least one, and the cursor to read on from. An index whose rows started over
+ * (a rebuild) is read again from its first row; `more` says rows past this page are already there.
+ */
+export function readIndexRows(db: DatabaseSync, cursor: string | undefined, maxBytes = INDEX_READ_BYTES): IndexRead {
+  const top = Number((db.prepare("SELECT rowid AS top FROM entries ORDER BY rowid DESC LIMIT 1").get() as { top: number } | undefined)?.top ?? 0);
+  let after = Number(cursor ?? 0) || 0;
+  if (top < after) after = 0;
+  // The bounds go in as BigInt: node:sqlite binds a number as REAL, and FTS5 then scans every row for the range (226 ms against 0.6 ms on 11-03).
+  const statement = db.prepare("SELECT rowid AS id, text, thread, conversation, entry_id, kind, author, at FROM entries WHERE rowid > ? AND rowid <= ? ORDER BY rowid");
+  const rows: IndexRow[] = [];
+  let bytes = 0;
+  let last = after;
+  for (const row of statement.iterate(BigInt(after), BigInt(top)) as Iterable<Record<string, string | number | bigint>>) {
+    const text = String(row.text);
+    if (rows.length && bytes + text.length > maxBytes) return { rows, cursor: String(last), more: true };
+    bytes += text.length;
+    last = Number(row.id);
+    rows.push({
+      thread: String(row.thread), conversation: Number(row.conversation), entryId: Number(row.entry_id), kind: String(row.kind), author: String(row.author),
+      at: Number(row.at), text,
+    });
+  }
+  return { rows, cursor: String(top), more: false };
+}
+
 /**
  * A read-only connection to pi-host's index.sqlite. In WAL mode a reader never waits for pi-host's writes and pi-host never waits for it,
  * so the chat searches while pi-host starts or works through its command queue.
@@ -502,6 +538,11 @@ export class ThreadIndex {
 
   search(query: SearchQuery): SearchPage {
     return searchIndex(this.db, query);
+  }
+
+  /** `durable_index_read`: the rows after `cursor`, a page at a time. */
+  read(cursor: string | undefined): IndexRead {
+    return readIndexRows(this.db, cursor);
   }
 
   /** Sums per thread and model; a range on whole hours, as the chat's days are, reads the hourly sums instead of every usage row. */

@@ -260,8 +260,10 @@ describe("agents on another box", () => {
     await until(() => s.posts(room), page => page.some(p => p.author.id === agent.id));
   });
 
-  test("search finds a word that only a thread on the Mac holds, and a Mac that is away reads as missing with a note", async () => {
+  test("search finds a word that only a thread on the Mac holds, and keeps finding it with a note while the Mac is away", async () => {
     await s.relay.host.submit(agent.thread, { text: "zebracorn lives only on the mac", requestId: "search-mac-1" });
+    // The Mac's rows reach the one index with its next read, which `settled` makes now.
+    await s.app.searchEngine.settled();
     const found = (await s.call<SearchResult>("GET", "/api/search?q=zebracorn")).body;
     assert.ok(found.total >= 1);
     assert.equal(found.hits.length, found.total);
@@ -270,9 +272,9 @@ describe("agents on another box", () => {
     s.relay.drop(true);
     await until(async () => s.remote.state().state, state => state === "away");
     const away = (await s.call<SearchResult>("GET", "/api/search?q=zebracorn")).body;
-    assert.deepEqual([away.total, away.hits.length], [0, 0]);
+    assert.deepEqual([away.total, away.hits.map(hit => hit.id)], [found.total, found.hits.map(hit => hit.id)]);
     assert.deepEqual(away.missing?.map(m => m.box), ["mac"]);
-    assert.match(away.missing![0]!.note, /^mac is offline since \d\d:\d\dZ, so its threads are not in these results\.$/);
+    assert.match(away.missing![0]!.note, /^mac is offline since \d\d:\d\dZ, so its threads show what it wrote until then\.$/);
     s.relay.down = false;
     await until(async () => s.remote.state().state, state => state === "up");
   });
