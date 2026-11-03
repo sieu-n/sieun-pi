@@ -102,15 +102,12 @@ export interface RoomPost {
   imported?: boolean;
   /** Set on an owner post that a job typed into the room to test it: the post reads as that job's, never as the owner's. */
   testSend?: TestSend;
-  /** The emoji under the post, oldest first: the owner's own, and the wip mark the chat server puts on for an agent (reactions.ts). */
+  /** The emoji the owner and agents put under the post, oldest first (reactions.ts). */
   reactions?: StoredReaction[];
 }
 
-/**
- * One emoji one principal put on a post. A wip mark also keeps the newest entry id of the agent's work thread when it went on (`mark`),
- * and once the turn handed work to that thread, the hand-over's input entry there (`work`), so a restart knows what the mark waits for.
- */
-export interface StoredReaction { emoji: string; by: "owner" | AgentId; at: Ms; mark?: number; work?: number }
+/** One emoji one principal put on a post. */
+export interface StoredReaction { emoji: string; by: "owner" | AgentId; at: Ms }
 
 /**
  * A job's test send. `by` names the job (a ConversationId `<thread>:<n>`, an agent id or a name). `entry` is the work-thread input the delivery

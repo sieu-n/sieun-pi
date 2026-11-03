@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import type {
-  AgentHostList, AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, Item, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, ProjectList, SendRequest, SendResult, Sidebar, ThinkingLevel,
+  AgentHostList, AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, Item, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, ProjectList, Reaction, SendRequest, SendResult, Sidebar, ThinkingLevel,
   TimelinePage,
 } from "../web/src/lib/api/types.ts";
 import type { AllowedModel } from "../../../config/allowed-models.ts";
@@ -15,12 +15,14 @@ import { AgentStore, type AgentRecord, type RoomPost } from "./agent-store.ts";
 import { Agents, isGroupRoomId, isRoomId, type SplitPlan } from "./agents.ts";
 import { Boards } from "./boards.ts";
 import { GroupRooms } from "./group-rooms.ts";
+import { ForMe } from "./for-me.ts";
+import type { ForMeItem, ForMeList, ForMeStatus } from "../web/src/lib/api/types.ts";
 import { DEFAULT_MODEL, type Config } from "./config.ts";
 import { MultiHost } from "./host/multi-host.ts";
 import type { Host } from "./host/types.ts";
 import { Outbox, type OutboxRow } from "./outbox.ts";
 import { boxCwd, projectCwd, projectList } from "./projects.ts";
-import { ownerReaction, WipReactions } from "./reactions.ts";
+import { agentPost, react, ReactionError, reactionInput, reactionsOf, reactionText } from "./reactions.ts";
 import { Rooms } from "./rooms.ts";
 import { Search } from "./search.ts";
 import { Store } from "./store.ts";
@@ -44,6 +46,9 @@ export const MODELS: ModelCatalog = {
   default: { model: DEFAULT_MODEL, thinkingLevel: "high" },
 };
 
+/** The watch prefix of an agent's For list: `for:<agent id>`. */
+const FOR_ME_WATCH = "for:";
+
 /** How long the start waits for this box's own relay, PiHost's wait for a pi-host restart (RESTART_WAIT_MS in host/pi-host.ts). */
 const OWN_RELAY_WAIT_MS = 30_000;
 
@@ -58,8 +63,6 @@ export class App {
   readonly threads: Threads;
   /** Channels and Solo rooms. */
   readonly groups: GroupRooms;
-  /** The wip mark on the post each agent works on (reactions.ts). */
-  readonly wip: WipReactions;
   readonly boards: Boards;
   readonly search: Search;
   readonly queues: QueueWatch;
@@ -68,6 +71,8 @@ export class App {
   readonly routing?: MultiHost;
   /** Each agent's folder, on this box's disk or through its box's relay. */
   readonly folders: AgentFolders;
+  /** Each agent's For list and its completed marks (for-me.ts). */
+  readonly forMe: ForMe;
   private readonly clients = new Set<Client>();
   private sidebarTimer?: NodeJS.Timeout;
   private lastSidebar = "";
@@ -87,6 +92,7 @@ export class App {
       this.agents.hostState = box => routing.link(box).state;
     }
     this.folders = new AgentFolders(record => ({ agentsDir: this.agents.agentsDirOf(record), ...(routing && record.host !== config.box ? { files: this.boxFiles(record.host) } : {}) }));
+    this.forMe = new ForMe({ store: this.agentStore, dataDir: config.dataDir, item: (row, post) => (row.kind === "dm" ? this.rooms.item(post) : this.groups.item(row, post)) });
     const linkOf = routing ? (box: string) => routing.link(box).state : undefined;
     this.threads = new Threads(host, this.store, {
       agents: (changed, removed) => {
@@ -128,7 +134,10 @@ export class App {
     this.rooms = new Rooms({
       store: this.agentStore, state: this.store, host, threads: this.threads, agents: this.agents,
       events: {
-        items: (room, items) => this.toWatchers(room, { type: "items", conversation: room, items }),
+        items: (room, items) => {
+          this.toWatchers(room, { type: "items", conversation: room, items });
+          this.forMeChanged();
+        },
         status: (room, status) => this.broadcast({ type: "status", conversation: room, status }),
         changed: () => this.roomsChanged(),
         thread: (record, thread) => this.watchRoomThread(record.room, thread),
@@ -141,13 +150,15 @@ export class App {
     this.threads.onRefresh = () => {
       this.rooms.poll();
       this.groups.poll();
-      this.wip.poll();
       this.sweepRefs();
     };
     this.groups = new GroupRooms({
       store: this.agentStore, state: this.store, host, threads: this.threads, agents: this.agents,
       events: {
-        items: (room, items) => this.toWatchers(room, { type: "items", conversation: room, items }),
+        items: (room, items) => {
+          this.toWatchers(room, { type: "items", conversation: room, items });
+          this.forMeChanged();
+        },
         room: room => this.broadcast({ type: "room", room }),
         conversations: changed => this.conversationsChanged(changed),
         status: (room, status) => this.broadcast({ type: "status", conversation: room, status }),
@@ -157,11 +168,6 @@ export class App {
       saveUpload: image => this.saveUpload(image), readUpload: ref => this.readUpload(ref), log, ...(linkOf ? { linkOf } : {}),
     });
     this.threads.groupSummaries = () => this.groups.summaries().filter(c => !this.agentStore.isTest(c.id));
-    this.wip = new WipReactions({
-      store: this.agentStore, agents: this.agents, threads: this.threads, host,
-      groupRooms: record => Object.keys(record.comm ?? {}).filter(room => this.groups.row(room) !== undefined),
-      emit: (room, posts) => this.emitPosts(room, posts), log,
-    });
     this.threads.roomsOf = agent => this.groups.memberRooms(agent).map(row => row.id);
     this.boards = new Boards(host, this.store, this.threads, this.agents, {
       board: (chatId, board, awaitingGo) => this.broadcast({ type: "board", chatId, board, awaitingGo }),
@@ -400,18 +406,44 @@ export class App {
     return this.rooms.markTestSend(this.roomAgent(id), postId, input);
   }
 
-  /** The owner puts an emoji on a room post or takes his own off (reactions.ts `ownerReaction`); the post's watchers get it at once. */
+  /** The owner puts an emoji on a room post or takes his own off (reactions.ts `react`); the post's watchers get it at once. */
   react(id: ConversationId, postId: string, input: { emoji?: unknown; on?: unknown }): { item: Item } {
     const room = isRoomId(id) ? this.roomAgent(id).room : this.groups.row(id)?.id;
     if (!room) throw new NotFound(`No room ${id}; reactions go on posts in a DM, a channel or a Solo room.`);
     const post = this.agentStore.postsOf(room).find(p => p.id === postId);
     if (!post) throw new NotFound(`No post ${postId} in ${id}.`);
-    const reactions = ownerReaction(post, input);
-    if (reactions) {
-      this.agentStore.set(post, { reactions });
-      this.emitPosts(room, [post]);
-    }
+    const { emoji, on } = reactionInput(input);
+    this.setReaction(room, post, "owner", emoji, on);
     return { item: this.postItem(room, post) };
+  }
+
+  /**
+   * An agent's set_emoji: the thread names the agent and its room (a comm thread its room's, the work thread the DM), and `message` names a
+   * post there, or `<room>/<post>` in another room the agent is in (reactions.ts `agentPost`). The answer's `text` is the tool's result.
+   */
+  reactAsAgent(thread: string, input: { message?: unknown; emoji?: unknown; on?: unknown }): { room: string; post: string; reactions: Reaction[]; text: string } {
+    const comm = this.agents.ofComm(thread);
+    const record = comm?.record ?? this.agents.ofWorkThread(thread);
+    if (!record) throw new ReactionError(404, `Thread ${thread} is no agent's comm thread or work thread; call set_emoji from the agent's own thread.`);
+    if (typeof input.message !== "string" || !input.message.trim()) {
+      throw new ReactionError(400, "A reaction names its post as message, such as p12, dm_vent/p12 or the [message id: ...] value after an owner message.");
+    }
+    const { emoji, on } = reactionInput(input);
+    const slash = input.message.indexOf("/");
+    const room = slash < 0 ? comm?.room ?? record.room : input.message.slice(0, slash).trim();
+    const roomThread = room === record.room ? this.agents.roomThread(record) : this.groups.row(room) ? record.comm?.[room] : undefined;
+    if (!roomThread) throw new ReactionError(404, `${record.name} is not in room ${room}; name a post in its DM ${record.room} or in a channel it is in, such as ${record.room}/p12.`);
+    const post = agentPost(this.agentStore.postsOf(room), record, slash < 0 ? thread : roomThread, room, input.message.slice(slash + 1));
+    this.setReaction(room, post, record.id, emoji, on);
+    const principal = (id: string) => this.threads.principal(id);
+    return { room, post: post.id, reactions: reactionsOf(principal, post).reactions ?? [], text: reactionText(principal, post, emoji, on, slash >= 0) };
+  }
+
+  private setReaction(room: string, post: RoomPost, by: "owner" | AgentRecord["id"], emoji: string, on: boolean): void {
+    const reactions = react(post, by, emoji, on);
+    if (!reactions) return;
+    this.agentStore.set(post, { reactions });
+    this.emitPosts(room, [post]);
   }
 
   /** Room posts whose state changed, re-read and sent to the room's watchers. */
@@ -618,6 +650,36 @@ export class App {
     return { plan, comm };
   }
 
+  /** The agent's For list (for-me.ts); `id` is its agent id or one of its thread ids, so a pi-host tool passes its own thread. */
+  forMeList(id: string, status: ForMeStatus | "all"): ForMeList {
+    return this.forMe.list(this.forMeAgent(id), status);
+  }
+
+  /** Marks an item on the agent's For list completed or pending; a page that watches the list hears of a change at once. */
+  markForMe(id: string, messageId: string, completed: boolean): { item: ForMeItem; pending: number } {
+    const record = this.forMeAgent(id);
+    const marked = this.forMe.mark(record, messageId, completed);
+    if (!marked) throw new NotFound(`${messageId} is not on ${record.name}'s For list; pass an id that GET /api/agents/${record.id}/for-me?status=all lists.`);
+    if (marked.changed) this.forMeChanged(record.id);
+    return { item: marked.item, pending: marked.pending };
+  }
+
+  private forMeAgent(id: string): AgentRecord {
+    const record = this.agents.record(id);
+    if (!record) throw new NotFound(`No agent ${id}; pass an agent id such as ag_vent, or the id of one of its threads.`);
+    return record;
+  }
+
+  /** Each page that watches `for:<agent>` gets the agent's pending count, computed only for agents some page watches. */
+  private forMeChanged(only?: AgentRecord["id"]): void {
+    const keys = new Set<string>();
+    for (const client of this.clients) for (const key of client.watching.keys()) if (key.startsWith(FOR_ME_WATCH)) keys.add(key);
+    for (const key of keys) {
+      const record = this.agents.record(key.slice(FOR_ME_WATCH.length));
+      if (record && (!only || record.id === only)) this.toWatchers(key, { type: "for_me", agent: record.id, pending: this.forMe.pending(record) });
+    }
+  }
+
   /** An agent's DM row; every agent has one. */
   openDm(agent: string): ConversationSummary {
     const record = this.agents.record(agent);
@@ -663,6 +725,13 @@ export class App {
   private async command(client: Client, command: LiveCommand): Promise<void> {
     if (command.type === "watch") {
       if (client.watching.has(command.conversation)) return;
+      // An agent's For list holds no thread open; the page gets its pending count now and on every change.
+      if (command.conversation.startsWith(FOR_ME_WATCH)) {
+        const record = this.forMeAgent(command.conversation.slice(FOR_ME_WATCH.length));
+        client.watching.set(command.conversation, []);
+        this.send1(client, { type: "for_me", agent: record.id, pending: this.forMe.pending(record) });
+        return;
+      }
       client.watching.set(command.conversation, []);
       if (isRoomId(command.conversation)) {
         const record = this.roomAgent(command.conversation);

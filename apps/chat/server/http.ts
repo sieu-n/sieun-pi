@@ -12,6 +12,7 @@ import { EntryExists, EntryMissing, HARNESS_KINDS, type HarnessKind } from "./ag
 import type { AgentRecord, WakeOn } from "./agent-store.ts";
 import { App, MODELS, NotFound } from "./app.ts";
 import { LocalImageError, readLocalImage } from "./local-image.ts";
+import { ReactionError } from "./reactions.ts";
 import { CwdRefused } from "./projects.ts";
 import { isHostAway } from "./host/types.ts";
 import { readJson } from "./store.ts";
@@ -158,6 +159,9 @@ export function routes(app: App): Route[] {
     route("POST", "/api/c/:id/posts/:post/reactions", async (_r, p, _q, body) => {
       return app.react(p.id!, p.post!, ((await body()) ?? {}) as { emoji?: unknown; on?: unknown });
     }),
+    route("POST", "/api/threads/:id/reactions", async (_r, p, _q, body) => {
+      return app.reactAsAgent(p.id!, ((await body()) ?? {}) as { message?: unknown; emoji?: unknown; on?: unknown });
+    }),
     route("POST", "/api/c/:id/abort", async (_r, p) => {
       await app.abort(p.id!);
       return { ok: true };
@@ -271,7 +275,7 @@ async function handle(app: App, table: Route[], req: IncomingMessage, res: Serve
     }
     return serveWeb(app, path, res);
   } catch (error) {
-    if (error instanceof PoolError && !res.headersSent) return json(res, error.status, { error: error.message });
+    if ((error instanceof PoolError || error instanceof ReactionError) && !res.headersSent) return json(res, error.status, { error: error.message });
     const message = error instanceof Error ? error.message : String(error);
     const status = isHostAway(error) ? 503 : error instanceof NotFound || error instanceof EntryMissing ? 404 : error instanceof EntryExists ? 409 : error instanceof BadRequest || error instanceof CwdRefused || /^(No |A |An |Dates|around|after|.* is not in (#|Solo "))/.test(message) ? 400 : 500;
     if (status === 500) app.log(`${req.method} ${path} failed: ${error instanceof Error ? error.stack : message}`);

@@ -17,6 +17,7 @@ import { HostAway, isHostAway, type Host, type SearchHit as HostHit, type Search
 import { conversationIdOf, parseConversationId, type Threads } from "./threads.ts";
 import type { AgentRecord, RoomPost } from "./agent-store.ts";
 import { isAgentId, isRoomId } from "./agents.ts";
+import { reactionsLine } from "./reactions.ts";
 
 /** The owner reads dates in KST. */
 export const OWNER_ZONE_OFFSET_MS = 9 * 3600_000;
@@ -234,7 +235,7 @@ export class Search {
               id: `${row.id}/${post.id}`, conversation: { id: row.id, kind: row.kind, name: row.name, ...(row.archived ? { archived: true } : {}) }, messageId: post.id,
               author: { id: author.id, name: author.name, kind: author.kind === "owner" ? "owner" : "agent" }, at: post.at, kind: "post",
               role: author.kind === "owner" ? "owner" : "agent", ...(post.threadRoot ? { threadRoot: post.threadRoot } : {}),
-              snippet: snippet(post.text, marks) || long, ...(post.text.length > 240 ? { text: long } : {}),
+              snippet: snippet(post.text, marks) || long, ...(post.text.length > 240 ? { text: long } : {}), ...this.reactionsOf(post),
             };
           },
         });
@@ -299,8 +300,14 @@ export class Search {
       id: `${room}/${post.id}`, conversation: { id: room, kind: "dm", name, ...(agent.archived ? { archived: true } : {}) }, messageId: post.id,
       author: { id: author.id, name: author.name, kind: owner ? "owner" : "agent" }, at: post.at, kind: "post", role: owner ? "owner" : "agent",
       ...(post.testSend ? { testSend: { reason: post.testSend.reason } } : {}),
-      snippet: snippet(post.text, marks) || long, ...(post.text.length > 240 ? { text: long } : {}),
+      snippet: snippet(post.text, marks) || long, ...(post.text.length > 240 ? { text: long } : {}), ...this.reactionsOf(post),
     };
+  }
+
+  /** A post hit's reactions in the form agents read them. */
+  private reactionsOf(post: RoomPost): { reactionsLine?: string } {
+    const line = reactionsLine(id => this.threads.principal(id), post);
+    return line ? { reactionsLine: line } : {};
   }
 
   private testAuthor(test: TestSendEntry): SearchHit["author"] {

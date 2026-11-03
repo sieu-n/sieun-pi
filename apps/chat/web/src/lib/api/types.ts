@@ -157,10 +157,7 @@ export interface Delivery {
   queue?: TurnPlace;
 }
 
-/**
- * One emoji under a room post and who put it there, in the order each emoji first came. `WIP_EMOJI` (shared/reactions.ts) by an agent
- * means that agent works on the post now; the chat server sets and clears it from the agent's run state.
- */
+/** One emoji under a room post and who put it there, the owner or agents (server/reactions.ts), in the order each emoji first came. */
 export interface Reaction { emoji: string; by: Principal[] }
 
 /**
@@ -236,7 +233,7 @@ export type Item =
       jobs?: JobRef[];
       /** A post or input a job typed into the owner's composer to test it: `author` is that job, and the page says it was a test send. */
       testSend?: { by: Principal; reason: string };
-      /** Room posts: the emoji under the post, such as the wip mark of an agent that works on it. */
+      /** Room posts: the emoji the owner and agents put under the post. */
       reactions?: Reaction[];
     }
   | {
@@ -354,6 +351,8 @@ export interface SearchHit {
   snippet: string;
   /** The longer text "Show more" opens, up to 2,000 characters in the same form, only when it holds more than the snippet. */
   text?: string;
+  /** A post's reactions as agents read them (server/reactions.ts `reactionsLine`), such as `[reactions: 👀 vent · 👍 Sieun (owner)]`. */
+  reactionsLine?: string;
 }
 /** A box whose threads a search could not read, such as a Mac that is offline, with the line the page shows. */
 export interface SearchMissing { box: string; note: string }

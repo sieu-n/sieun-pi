@@ -25,7 +25,7 @@ import { isGroupRoom, type AgentRecord, type AgentStore, type FeedCursor, type G
 import type { Agents } from "./agents.ts";
 import { isHostAway, type EntryRecord, type Host, type Submitted } from "./host/types.ts";
 import { refusedForGood, retryWait } from "./outbox.ts";
-import { reactionsOf } from "./reactions.ts";
+import { reactionsLine, reactionsOf } from "./reactions.ts";
 import { agedPost, agentPostParts, queuedNote, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
 import type { Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
@@ -590,7 +590,7 @@ export class GroupRooms {
   /**
    * The text a member reads: `[<label> · post <seq> from <author>[ (owner)] · hops <n>]`, a blank line and the post. A Solo room's label
    * carries its agenda and members; a channel root post adds the root posts its target missed, and a channel reply adds up to five earlier
-   * posts of its thread.
+   * posts of its thread. Each of those context lines ends with the post's reactions (reactions.ts `reactionsLine`).
    */
   envelope(row: GroupRoom, post: RoomPost, missed: RoomPost[] = []): string {
     const author = this.deps.threads.principal(post.author);
@@ -600,7 +600,8 @@ export class GroupRooms {
     const lines = [`[${label.replace(/\n+/g, " ")} · post ${post.seq} from ${author.name}${author.kind === "owner" ? " (owner)" : ""} · hops ${post.hops ?? 0}]`, "", post.text];
     const context = (p: RoomPost) => {
       const images = p.images.length ? ` [${p.images.length} image${p.images.length > 1 ? "s" : ""} attached]` : "";
-      return `${p.seq} ${this.deps.threads.principal(p.author).name}: ${p.text.slice(0, CONTEXT_CLIP)}${images}`;
+      const reactions = reactionsLine(id => this.deps.threads.principal(id), p);
+      return `${p.seq} ${this.deps.threads.principal(p.author).name}: ${p.text.slice(0, CONTEXT_CLIP)}${images}${reactions ? ` ${reactions}` : ""}`;
     };
     if (missed.length) lines.push("", "(channel before this post)", ...missed.map(context));
     if (row.kind === "channel") {
