@@ -4,9 +4,9 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { dutyFleet, readsTheShare, skippedMisses, verdictNow } from "../scripts/duties/duty-fleet.ts";
+import { dutyFleet, readsTheShare, skippedMisses } from "../scripts/duties/duty-fleet.ts";
 import { missRuns } from "../scripts/duties/chat-system.ts";
-import { CHANGE_APPROACH_MISSES } from "../src/shared/duty-streak.ts";
+import { CHANGE_APPROACH_MISSES, verdictNow } from "../src/shared/duty-streak.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 
 const duty = (id: string, key: string, op: ">=" | "<=", target: number) => ({ id, name: `duty ${id}`, ownerWords: "keep it working", goal: "It works.",

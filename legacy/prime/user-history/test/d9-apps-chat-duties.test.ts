@@ -3,7 +3,8 @@
 // with no push, since sw factory runs them, and stops counting the paused Prime copy of each chat that moved.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { appsChatDuties, appsOwnerReads, appsStuckSteps, greenPct, movedPrimeChats, readAppsChats } from "../scripts/duties/chat-system-apps.ts";
+import { greenPct, movedPrimeChats, readAppsChats } from "../scripts/duties/chat-system-apps.ts";
+import { appsChatDuties, appsOwnerReads, appsStuckSteps, type AppsChat, type AppsSession } from "../src/apps-step-owners.ts";
 import type { Wake } from "../src/wakes.ts";
 import { chatSystemOutput, type RedDuty } from "../scripts/duties/chat-system.ts";
 
@@ -143,4 +144,24 @@ test("a :5184 step the chat's own thread watches moves: a thread wake names it o
   assert.deepEqual(stuck("ag_seo", [{ ...wakes[1]!, session: `${VENT}--1` }, wakes[2]!]), ["p67"]);
   const vent = appsChatDuties(chat("ag_vent"), now, appsOwnerReads(chat("ag_vent"), sessions, wakes, now)).find(entry => entry.duty === "d2")!;
   assert.deepEqual([vent.fix, vent.metric?.fix?.step, vent.stuck], ["p123", "p123", false]);
+});
+
+test("a :5184 step whose job is a subagent of the chat's own duty job moves while that subagent works", () => {
+  // 11-03 09:16Z: d9 counted agent factory's p72 and p73 stuck while "fast agents list" and "fast accounts and usage", subagents of the chat's d2
+  // duty job, worked on them; the chat's job rows list no subagent of a root job, so only the conversation rows below the chat name them.
+  const at = Date.parse("2026-11-03T09:16:00Z");
+  const step = (id: string, job: string) => ({ id, text: id, status: "doing", children: [], job, duty: "d2/slowest_api_p90_ms" });
+  const chat: AppsChat = { id: "ag_agent-factory", name: "agent factory", thread: "72ba1ed2", duties: [], everyMs: 7_200_000,
+    board: { plan: [step("p72", "fast agents list"), step("p73", "fast accounts and usage")], todos: [] } as never,
+    jobs: [{ name: "sw factory stays snappy duty", state: "working", sessionId: "921268a2", lastActivityAt: new Date(at).toISOString() }] };
+  const sessions = (status: string, wrote: number): AppsSession[] => [
+    { id: "921268a2", name: "sw factory stays snappy duty", status, lastActivityAt: wrote, parent: "ag_agent-factory" },
+    { id: "921268a2:59", name: "fast agents list", status, lastActivityAt: wrote, parent: "921268a2" },
+    { id: "921268a2:71", name: "fast accounts and usage", status, lastActivityAt: wrote, parent: "921268a2" },
+    { id: "5dd8a232:9", name: "fast agents list", status: "working", lastActivityAt: wrote, parent: "ag_mcp" },
+  ];
+  const stuck = (rows: AppsSession[], now: number) => appsStuckSteps(chat, appsOwnerReads(chat, rows, [], now), now).map(item => item.id);
+  assert.deepEqual(stuck(sessions("working", at), at), []);
+  // An hour after the subagents went idle nobody moves either step, and a job of the same name under another chat does not move p72.
+  assert.deepEqual(stuck(sessions("idle", at), at + 3_600_000), ["p72", "p73"]);
 });

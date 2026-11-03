@@ -19,6 +19,7 @@ import type { Host } from "./host/types.ts";
 import { readJson, writeJson, type Store } from "./store.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
 import type { Threads } from "./threads.ts";
+import { StepOwners } from "./step-owners.ts";
 import { armWake, startThreadWakes, wakeTarget, type CheckResult } from "./wakes.ts";
 
 export const BOARD_DOC = "chat.board";
@@ -70,6 +71,8 @@ export class Boards {
   private readonly reading = new Map<string, Promise<ChatBoard | null>>();
   private timer?: NodeJS.Timeout;
   private stopWakes?: () => void;
+  /** Tells each chat what nobody owns on its board (server/step-owners.ts), on every tick. */
+  readonly owners: StepOwners;
 
   /** This server's own base URL, which a duty job's brief names for the board. */
   selfUrl = "http://127.0.0.1:5184";
@@ -86,6 +89,7 @@ export class Boards {
   ) {
     // The boards of the last run, read again on first use, so For you and the sidebar count answer while pi-host starts.
     for (const [chat, board] of Object.entries(store.cache<Record<string, ChatBoard | null>>(BOARDS_CACHE, {}))) this.cache.set(chat, { board, at: 0 });
+    this.owners = new StepOwners(this, log);
   }
 
   private remember(chat: string, board: ChatBoard | null): void {
@@ -637,13 +641,14 @@ export class Boards {
         void this.runDuty(chat, duty, "schedule");
       }
     }
+    void this.owners.tick(now).catch(error => this.log(`owners tick failed: ${String(error)}`));
   }
 
   /**
    * Whether a work thread's own conversation runs a turn. pi-host reads a thread as running while any job conversation in it runs, and on
    * 10-29 that kept agent factory's work thread, with two jobs live all day, from its first check-in for an hour after its turn ended.
    */
-  private rootRunning(thread: string): boolean {
+  rootRunning(thread: string): boolean {
     const root = this.threads.tree(thread).find(node => node.id === 1);
     return root ? root.status === "running" : this.threads.thread(thread)?.status === "running";
   }

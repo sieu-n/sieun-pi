@@ -11,12 +11,12 @@ import { stalledCalls } from "../../src/shared/stalled-calls.ts";
 import { activePause, checkInSettings } from "../../src/checkin-settings.ts";
 import { jobFacts, liveJobs, liveWindowMs, ownerOf, OPEN, walk } from "../../src/checkin-steps.ts";
 import { CHECK_IN_DUTY, CHECK_IN_DUTY_ID, headlineMetric, type DutyMetric, type DutyRunRecord, type FixLink, type FlaggedSlice, shownValue } from "../../src/shared/chat-duties.ts";
-import { CHANGE_APPROACH_MISSES, effectiveRun, metricStreaks, missStreak, newestReading, type MetricStreak } from "../../src/shared/duty-streak.ts";
+import { CHANGE_APPROACH_MISSES, effectiveRun, leadMetric, metricStreaks, missStreak, newestReading, type MetricStreak, verdictNow } from "../../src/shared/duty-streak.ts";
 import type { ChatBoard, ChildAgent, PlanItem, SessionRow } from "../../src/shared/types.ts";
 import { fixJobLive } from "../../src/shared/duty-fixes.ts";
 import { dutyHold, type NamedChat, withBoardLinks } from "../../src/shared/todo-hold.ts";
 import { pendingWakes } from "../../src/wakes.ts";
-import { countWindowMs } from "../../src/duty-push.ts";
+import { agingUntil } from "../../src/duty-push.ts";
 import { daemonList, listRows } from "../../src/daemon-list.ts";
 
 /**
@@ -142,21 +142,6 @@ export const readsTheShare = (duty: { metrics: readonly { key: string }[] }): bo
 const measured = (run: DutyRunRecord): boolean => { const verdict = effectiveRun(run).verdict; return verdict === "met" || verdict === "missed"; };
 
 /**
- * A duty's verdict now: that of its newest reading, a measured run's (after its job, when it has that measure) or a skipped run's that measured
- * all the same. A check-in whose last job still works records its next run as skipped with the board's measure, and until 10-22 the fleet read
- * the older run: over the 24 h to 07:40Z the newest measure would have changed the verdict at 126 of 2,592 chat samples, 51 to green and 75 to red.
- */
-export function verdictNow(runs: readonly DutyRunRecord[]): "met" | "missed" | undefined {
-  let best: { at: number; verdict: "met" | "missed" } | undefined;
-  for (const run of runs) {
-    const metrics = Object.values(run.metrics ?? {});
-    const read = measured(run) ? { at: run.after?.at ?? run.at, verdict: effectiveRun(run).verdict as "met" | "missed" }
-      : run.verdict === "skipped" && metrics.length ? { at: run.at, verdict: metrics.every(metric => metric.met) ? "met" as const : "missed" as const } : undefined;
-    if (read && (!best || read.at > best.at)) best = read;
-  }
-  return best?.verdict;
-}
-/**
  * The skipped runs in a row, newest first, whose own measure missed and came after the duty's newest measured reading: the readings that make
  * `verdictNow` red while no measured run missed. A check-in whose last job still works or waits on pi-pool records each slot this way. Until
  * 10-23 d9 listed such a duty as red with "0 runs in a row" and no metric: at 04:07Z sep launch!!'s check-in was red on stuck_steps 2 (p62 and
@@ -191,39 +176,6 @@ function skippedLead(metrics: readonly DutyMetric[], misses: readonly DutyRunRec
 const show = (value: number): string => String(Math.round(value * 10) / 10);
 const bound = (streak: MetricStreak): string => `${streak.op === "<=" ? "at most" : "at least"} ${show(streak.target)}`;
 
-/** The missed metric the line names: the duty's headline when it missed, else the one missed for the most runs in a row. */
-export function leadMetric(metrics: readonly DutyMetric[], streaks: readonly MetricStreak[]): MetricStreak | undefined {
-  const headline = headlineMetric(metrics);
-  return streaks.find(streak => streak.key === headline?.key) ?? [...streaks].sort((a, b) => b.misses - a.misses)[0];
-}
-
-/**
- * When a red duty misses only windowed counts with no new event since the run before (`MetricStreak.quietSince`, the duty runner's own quiet
- * read), the newest event any of them counts; otherwise undefined. Such a duty owes no fix job (`missLine` says to start none), but d9 listed
- * the AI harness chat's d10, repeat_corrections_7d 16 with every line before its fix, among its red examples, and its job pushed the chat for a
- * fix step on it at 07:50Z, 10:47Z and 14:12Z on 10-20. `runs` is the duty's own runs, newest first.
- */
-export function agingSince(runs: readonly DutyRunRecord[]): number | undefined {
-  const streaks = metricStreaks(runs);
-  if (!streaks.length || streaks.some(streak => streak.quietSince === undefined)) return undefined;
-  return Math.max(...streaks.map(streak => streak.quietSince!));
-}
-
-/**
- * When the last event an aging duty counts leaves its window (`countWindowMs` of each key), or undefined when a key names no window. The newest
- * event alone misled: at 22:25Z on 10-26 d9 said CI and RepoOps d5 aged out with its newest event at 02:35Z, and the chat read that as clearing
- * at 02:35Z on 10-27, while refused_lands_promotes_7d counts a refusal of 21:53Z on 10-25 until 21:53Z on 11-01.
- */
-export function agingUntil(runs: readonly DutyRunRecord[]): number | undefined {
-  if (agingSince(runs) === undefined) return undefined;
-  let until = 0;
-  for (const streak of metricStreaks(runs)) {
-    const window = countWindowMs(streak.key, streak);
-    if (window === undefined) return undefined;
-    until = Math.max(until, streak.quietSince! + window);
-  }
-  return until;
-}
 
 /** The board's steps by id, and its open steps by their `duty` link (`<dutyId>/<metricKey>`). */
 function boardSteps(board: ChatBoard | null): { byId: Map<string, PlanItem>; linked: Map<string, PlanItem[]> } {

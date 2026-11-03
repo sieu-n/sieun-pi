@@ -21,12 +21,12 @@ import { DutyStore } from "../../src/chat-duty-store.ts";
 import { D9_PUSH_PREFIX, serverNote } from "../../src/shared/chat-feed.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { CHANGE_APPROACH_MISSES, fixStepStreak } from "../../src/shared/duty-streak.ts";
-import { countWindowMs } from "../../src/duty-push.ts";
+import { agingSince, agingUntil, countWindowMs } from "../../src/duty-push.ts";
 import { pendingWakes, type Wake } from "../../src/wakes.ts";
 import { hasDoneLine, upkeepWords } from "../../src/shared/upkeep-title.ts";
 import { stalledSince } from "../../src/shared/stalled-calls.ts";
 import { transientTurnError, turnErrorCause } from "../../src/turn-error.ts";
-import { agingSince, agingUntil, daemonSessions, dutyFleet, type FleetDuty } from "./duty-fleet.ts";
+import { daemonSessions, dutyFleet, type FleetDuty } from "./duty-fleet.ts";
 export { agingSince, agingUntil };
 import { catalogCopyFiles, copyHosts, type HostHeldStep, mirroredSessions, planCounts, planInputs, POOL_TAIL_BYTES } from "./whole-system.ts";
 import { stepSessions, withDescendantActivity } from "../../src/unmoved-steps.ts";
@@ -38,7 +38,8 @@ import { CLEAN_ROOM_CHATS_FILE } from "../../src/chat-corrections.ts";
 import { peerReach, readTailscaleStatus } from "../../src/host-reach.ts";
 import { type AwayHost, hostHolds } from "../../src/shared/host-hold.ts";
 import { stepIds } from "../../src/shared/step-ids.ts";
-import { appsChatDuties, appsOwnerReads, appsStuckLine, appsStuckSteps, appsWakes, greenPct, movedPrimeChats, readAppsChats } from "./chat-system-apps.ts";
+import { appsStuckLine, appsWakes, greenPct, movedPrimeChats, readAppsChats } from "./chat-system-apps.ts";
+import { appsChatDuties, appsOwnerReads, appsStuckSteps } from "../../src/apps-step-owners.ts";
 
 /**
  * The precheck of the AI harness chat's Chat system duty (d9). The owner on 10-19 (msg mvfb7zt0): "plan should be tasks all eventually clear -

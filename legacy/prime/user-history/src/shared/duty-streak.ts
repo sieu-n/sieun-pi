@@ -1,4 +1,4 @@
-import type { DutyRunRecord, FixLink, MetricResult } from "./chat-duties.ts";
+import { headlineMetric, type DutyMetric, type DutyRunRecord, type FixLink, type MetricResult } from "./chat-duties.ts";
 
 /**
  * Miss streaks per metric, read from a duty's runs. A run's verdict is its measure after its own job ended when it has one (`effectiveRun`),
@@ -208,4 +208,26 @@ export function metricStreaks(runs: readonly DutyRunRecord[]): MetricStreak[] {
       ...(result.lastEventAt !== undefined ? { lastEventAt: result.lastEventAt } : {}), stuck: judged >= CHANGE_APPROACH_MISSES && !moved && !quiet });
   }
   return streaks;
+}
+
+/**
+ * A duty's verdict now: that of its newest reading, a measured run's (after its job, when it has that measure) or a skipped run's that measured
+ * all the same. A check-in whose last job still works records its next run as skipped with the board's measure, and until 10-22 the fleet read
+ * the older run: over the 24 h to 07:40Z the newest measure would have changed the verdict at 126 of 2,592 chat samples, 51 to green and 75 to red.
+ */
+export function verdictNow(runs: readonly DutyRunRecord[]): "met" | "missed" | undefined {
+  let best: { at: number; verdict: "met" | "missed" } | undefined;
+  for (const run of runs) {
+    const metrics = Object.values(run.metrics ?? {});
+    const read = measured(run) ? { at: run.after?.at ?? run.at, verdict: effectiveRun(run).verdict as "met" | "missed" }
+      : run.verdict === "skipped" && metrics.length ? { at: run.at, verdict: metrics.every(metric => metric.met) ? "met" as const : "missed" as const } : undefined;
+    if (read && (!best || read.at > best.at)) best = read;
+  }
+  return best?.verdict;
+}
+
+/** The missed metric the line names: the duty's headline when it missed, else the one missed for the most runs in a row. */
+export function leadMetric(metrics: readonly DutyMetric[], streaks: readonly MetricStreak[]): MetricStreak | undefined {
+  const headline = headlineMetric(metrics);
+  return streaks.find(streak => streak.key === headline?.key) ?? [...streaks].sort((a, b) => b.misses - a.misses)[0];
 }
