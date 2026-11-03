@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cpuSides, linuxUsable, parseCpusAllowed, parseSchedstat, parseUsageUsec, runnablePerCore, loadedCgroups, schedstatMark, seedSchedstat, userSlice } from "../../../../components/prime-relay/host-stats.ts";
+import { cpuSides, keptCgroups, linuxUsable, parseCpusAllowed, parseSchedstat, parseUsageUsec, runnablePerCore, loadedCgroups, schedstatMark, seedSchedstat, userSlice } from "../../../../components/prime-relay/host-stats.ts";
 import { parseLinuxReading, parseUsableRaw, startMacUsableWatch, type Footprints, type WatchSource, unusable, watchFile } from "../src/mac-usable-watch.ts";
 
 // The harness's CPU set on us-metal02 from /proc/<pid>/status, the same for prime-agent-daemon, sieun-pi-chat, pi-pool-serve and prime-relay.
@@ -164,4 +164,17 @@ test("on a Linux box in a user slice the reading carries each side's cores", { s
   assert.ok(reading?.cpuCores && reading.cpuCores.harness > 0, JSON.stringify(reading));
   assert.deepEqual(parseLinuxReading(reading), reading);
   assert.equal(parseLinuxReading({ ...reading, cpuCores: { harness: -1 } })?.cpuCores, undefined);
+});
+
+test("a reading whose cgroup read was cut keeps the last usage it read, so the next reading still has cores to count from", () => {
+  // 11-03: the chat's start sample at 18:59:24.971Z had its cgroup read cut, and the 18:59:30.353Z line had no cpuCores, so d7 read its 1.2 s
+  // loop stall with no cause.
+  const t0 = Date.parse("2026-11-03T18:58:30.017Z"), t1 = Date.parse("2026-11-03T18:59:24.971Z"), t2 = Date.parse("2026-11-03T18:59:30.353Z");
+  const read0 = new Map([["virev.slice/virev-ci.slice", 0]]);
+  const first = { at: t0, ...keptCgroups(null, t0, read0) };
+  const cut = { at: t1, ...keptCgroups(first, t1, undefined) };
+  assert.equal(cut.cgroups, read0, "the cut reading keeps the usage read at 18:58:30Z");
+  assert.equal(cut.cgroupsAt, t0);
+  assert.deepEqual(keptCgroups(cut, t2, new Map([["virev.slice/virev-ci.slice", 1]])).cgroupsAt, t2);
+  assert.deepEqual(keptCgroups(null, t1, undefined), {}, "with nothing read before there is nothing to keep");
 });

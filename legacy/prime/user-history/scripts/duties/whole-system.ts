@@ -1079,6 +1079,8 @@ export interface Inputs {
   slotWaits?: readonly SlotWaitTimeout[];
   /** When the supervisor's poll of a worker went unanswered on this box (src/harness-slow.ts `workerMisses`). */
   workerMisses?: readonly number[];
+  /** When this box's chat service started listening, from service.log (`readChatStarts`). */
+  chatStarts?: readonly number[];
   /** Sends that met a target over the daemon's pending message limit and waited in the agent outbox: detail, never a dirty minute (owner c98). */
   queueOverruns?: readonly QueueOverrun[];
   /** The sessions those faults name as the boxes' catalog copies list them, to name each one's chat (`listedSessions`). */
@@ -1447,6 +1449,20 @@ export function failedOffline(fault: DaemonFault): boolean {
   return fault.what.includes(`${fault.host} is offline (Tailscale last seen `);
 }
 
+/**
+ * How long after the chat service starts listening its slow read or loop stall is the start's own work, which d7 books on the harness side and
+ * names, still dirty (c172). From 11-02 00:00Z to 11-03 07:40Z, 7 of us-metal02's 37 chat starts were followed by a dirty minute, each 5 to 62 s
+ * after the start. At 18:59Z on 11-03 the loop stalled 1.2 s 10 s after a start whose CPU profile spent 9.5 s in fileOrigin and 4.0 s in
+ * scanFirst, because systemd had killed the last run's stop and its saved heads were gone; the line had no cpuCores, and d7 read no cause.
+ */
+export const CHAT_START_MS = 90_000;
+const CHAT_LISTENING = /^(\S+Z) serve: listening /;
+
+/** When this box's chat service started listening, from service.log's lines. */
+export function readChatStarts(lines: readonly string[]): number[] {
+  return lines.flatMap(line => { const at = Date.parse(CHAT_LISTENING.exec(line)?.[1] ?? ""); return Number.isFinite(at) ? [at] : []; });
+}
+
 export function measure(input: Inputs): PrecheckOutput {
   const { now } = input;
   // A call that failed inside a supported Prime update restart on its box met the update's planned stop, not a harness fault: at 20:10:21Z on
@@ -1543,9 +1559,13 @@ export function measure(input: Inputs): PrecheckOutput {
       // 21.99 cores to the harness's 20.12; at 02:44Z on 10-30 a 975 ms major GC stalled the loop 1.3 s and went there too.
       // The flag still names CI's cores when CI led a minute booked to the harness: at 22:38Z on 11-02 a 1.5 s chat read went to the harness
       // with CI at 41.23 cores against its 28.94, the flag named only the harness, and the check-in read the stall as one at a low load.
+      // The same holds within CHAT_START_MS of the chat's own start, whose work the line's stall or read waited on.
+      const lineAt = Date.parse(line.at);
+      const started = own && slow.some(words => words.startsWith("the chat")) ? (input.chatStarts ?? []).findLast(at => at <= lineAt && lineAt - at <= CHAT_START_MS) : undefined;
+      const startWords = started === undefined ? "" : `, ${Math.round((lineAt - started) / 1000)} s after the chat started at ${new Date(started).toISOString().slice(11, 19)}Z`;
       const led = side(line, view);
-      const read = found.includes("cpu") && slowChat(own, line.chat) ? "harness" : led;
-      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${memoryWords(view)}${asideWords(view)}${led === "ci" ? ciAt(line, view) : ""}${rigWords(view, faultName)}${jobRigWords(view, rigOwner)})`);
+      const read = found.includes("cpu") && (slowChat(own, line.chat) || started !== undefined) ? "harness" : led;
+      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${startWords}${memoryWords(view)}${asideWords(view)}${led === "ci" ? ciAt(line, view) : ""}${rigWords(view, faultName)}${jobRigWords(view, rigOwner)})`);
       sides.add(read);
       if (read === "harness" && rigsLead(view)) {
         rigged = true;
@@ -2126,6 +2146,7 @@ async function main(): Promise<void> {
     daemonFaults,
     primeUpdates: [...(await readUpdateSpans(join(dataDir, ".."))).map(update => ({ ...update, host: box })), ...await otherBoxUpdates(box, now - WINDOW_MS - 2 * MINUTE)],
     workerMisses: workerPolls,
+    chatStarts: readChatStarts(serviceLines),
     queueOverruns,
     slotWaits,
     listed,

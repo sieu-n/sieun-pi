@@ -728,7 +728,8 @@ export function runnablePerCore(before: ReadonlyMap<number, number>, after: Read
   return counted ? ns / (ms * 1e6 * cores.length) : null;
 }
 let lastSwap: { at: number; pages: number } | null = null;
-type Sched = { at: number; times: Map<number, number>; cgroups?: Map<string, number> };
+/** `cgroupsAt` is when `cgroups` was read, earlier than `at` when the last reading's cgroup read was cut and kept the one before. */
+type Sched = { at: number; times: Map<number, number>; cgroups?: Map<string, number>; cgroupsAt?: number };
 const loadSchedstat = (): Sched | null => {
   const times = parseSchedstat(readText("/proc/schedstat"));
   return times ? { at: Date.now(), times } : null;
@@ -743,16 +744,16 @@ const readRigs = async (now: number): Promise<RigSnapshot | null> => ownSlice &&
 let lastRigs: RigSnapshot | null = null;
 if (process.platform === "linux") void bounded("rigs", () => readRigs(Date.now())).then(read => { lastRigs ??= read ?? null; });
 /** Where the next linuxUsable window starts: the last reading's time, per-CPU nanoseconds and cgroup usage_usec; null before the module could read schedstat. */
-export type SchedstatMark = { at: number; times: Record<string, number>; cgroups?: Record<string, number> };
+export type SchedstatMark = { at: number; times: Record<string, number>; cgroups?: Record<string, number>; cgroupsAt?: number };
 export const schedstatMark = (): SchedstatMark | null => lastSched && { at: lastSched.at, times: Object.fromEntries(lastSched.times),
-  ...lastSched.cgroups ? { cgroups: Object.fromEntries(lastSched.cgroups) } : {} };
+  ...lastSched.cgroups ? { cgroups: Object.fromEntries(lastSched.cgroups), ...lastSched.cgroupsAt !== undefined ? { cgroupsAt: lastSched.cgroupsAt } : {} } : {} };
 /**
  * Starts the next linuxUsable window at `mark`, the last reading of the process before a restart, so the first line after it averages over the
  * same span as any other line. False, and the window stays at the module's load, when the mark is malformed, not older than this module's
  * baseline, or a counter went back since it (a reboot).
  */
 export function seedSchedstat(mark: unknown): boolean {
-  const { at, times, cgroups } = (mark ?? {}) as { at?: unknown; times?: unknown; cgroups?: unknown };
+  const { at, times, cgroups, cgroupsAt } = (mark ?? {}) as { at?: unknown; times?: unknown; cgroups?: unknown; cgroupsAt?: unknown };
   if (!lastSched || typeof at !== "number" || !(at < lastSched.at) || !times || typeof times !== "object") return false;
   const seeded = new Map<number, number>();
   for (const [cpu, ns] of Object.entries(times)) {
@@ -765,8 +766,17 @@ export function seedSchedstat(mark: unknown): boolean {
   // A cgroup the last process did not read starts at this module's load, never at 0: release-a71b8cb added virev-ci.slice, and its first
   // line on 10-18 at 07:54:12Z counted the slice's whole life since boot as 3874 cores of CI in one window.
   if (usage) for (const [path, usec] of lastSched.cgroups ?? []) if (!usage.has(path)) usage.set(path, usec);
-  lastSched = { at, times: seeded, ...usage ? { cgroups: usage } : {} };
+  lastSched = { at, times: seeded, ...usage ? { cgroups: usage, ...typeof cgroupsAt === "number" && cgroupsAt <= at ? { cgroupsAt } : {} } : {} };
   return true;
+}
+/**
+ * The cgroup usage the next reading's cores start from: this reading's, or when its cgroup read was cut, the last one read and its time. On 11-03
+ * the chat's start sample at 18:59:24.971Z had its cgroup read cut, the next line at 18:59:30.353Z then had no usage to start from and no
+ * cpuCores, and d7 read its 1.2 s loop stall with no cause.
+ */
+export function keptCgroups(before: Pick<Sched, "at" | "cgroups" | "cgroupsAt"> | null, now: number, cgroups: Map<string, number> | undefined): Pick<Sched, "cgroups" | "cgroupsAt"> {
+  if (cgroups) return { cgroups, cgroupsAt: now };
+  return before?.cgroups ? { cgroups: before.cgroups, cgroupsAt: before.cgroupsAt ?? before.at } : {};
 }
 /**
  * The box's LinuxUsable now. The first call's window starts at the mark seedSchedstat took, else when this module loaded, so the watch line
@@ -788,14 +798,14 @@ export async function linuxUsable(now = Date.now(), cut?: Promise<unknown>, unre
   const times = parseSchedstat(schedstat!);
   const before = lastSched;
   const cgroups = await bounded("cgroups", () => readCgroups(ownSlice), cut, unread);
-  lastSched = times ? { at: now, times, ...cgroups ? { cgroups } : {} } : null;
+  lastSched = times ? { at: now, times, ...keptCgroups(before, now, cgroups) } : null;
   const cores = parseCpusAllowed(status!);
   const runnable = times && before && cores ? runnablePerCore(before.times, times, cores, now - before.at) : null;
   if (memSome === null || memFull === null || runnable === null || !cores) return null;
-  const sides = ownSlice && cgroups && before?.cgroups ? cpuSides(before.cgroups, cgroups, ownSlice, now - before.at) : null;
+  const sides = ownSlice && cgroups && before?.cgroups ? cpuSides(before.cgroups, cgroups, ownSlice, now - (before.cgroupsAt ?? before.at)) : null;
   const rigs = await bounded("rigs", () => readRigs(now), cut, unread) ?? null;
   const split = sides && lastRigs && rigs ? harnessSplit(lastRigs, rigs, sides.harness) : null;
-  lastRigs = rigs;
+  if (rigs) lastRigs = rigs;
   return { kind: "linux", memSomeAvg10: memSome, memFullAvg10: memFull, cpuSomeAvg10: psiAvg10(cpu!, "some") ?? 0,
     swapoutsPerS: swapoutsPerS === null ? null : Math.round(swapoutsPerS), runnablePerCore: Math.round(100 * runnable) / 100, allowedCpus: cores.length,
     ...sides ? { cpuCores: sides } : {}, ...split ? { harnessSplit: split } : {} };
