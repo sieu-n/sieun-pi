@@ -4,8 +4,8 @@
  * drops the chat's own tools.
  *
  * `set_emoji` puts the agent's reaction on a post or takes it off, as Slack's `reactions.add` and `reactions.remove` do. The comm role text
- * asks the agent to mark the post it works on with 👀 and take it off with the result (`agent-profile.ts`); no code here treats an emoji
- * specially (contract: /home/sieun/work/slack-reactions/contract.md).
+ * asks the agent to mark the post it works on with 👀, swap it for ✅ once the work is done, and react the way people do in Slack
+ * (`agent-profile.ts`); no code here treats an emoji specially (contract: /home/sieun/work/slack-reactions/contract.md).
  *
  * `list_for_me_messages` and `mark_message` (`for-me.ts`) read the agent's For list and mark its items.
  */

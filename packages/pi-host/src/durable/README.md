@@ -77,7 +77,7 @@ The commit that writes an `agent.ref` also sets the root conversation's agent fo
 
 | Role | `tools` | `modelTools` | `instructions` |
 |---|---|---|---|
-| comm | `{remove: ["write", "edit", "bash", "subagent"]}` | `{add: ["stop_work"]}` | the comm role text, naming the agent, the room and the work thread; a DM (`dm_`) gets the DM text, and a channel (`ch_`) or Solo room (`so_`) gets the group text, which says to speak only when the post concerns the agent or adds something; both ask the agent to put 👀 on the post it starts on with `set_emoji` and take it off once it posts the result or decides to post nothing |
+| comm | `{remove: ["write", "edit", "bash", "subagent"]}` | `{add: ["stop_work"]}` | the comm role text, naming the agent, the room and the work thread; a DM (`dm_`) gets the DM text, and a channel (`ch_`) or Solo room (`so_`) gets the group text, which says to speak only when the post concerns the agent or adds something; both ask the agent to put 👀 on the post it starts on with `set_emoji`, swap it for ✅ once the work is done, and react with a fitting emoji such as 👍 in place of a post that only acknowledges |
 | work with `comm` | `{remove: ["tell_owner"]}` | unset | the work role text, naming the agent and its DM comm thread, with the rule to report to the comm thread that handed the task by the name in its message header |
 | work without `comm`, job | unset | unset | unset |
 
