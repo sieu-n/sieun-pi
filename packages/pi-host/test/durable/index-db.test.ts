@@ -34,6 +34,54 @@ test("an index without the cost split is rebuilt, and a current one is not", () 
   again.close();
 });
 
+// 11-03 on us-metal02: the chat's Usage page asked `usage` 9 times for 7 days, and each GROUP BY over the 36k usage rows took 23 to 276 ms.
+test("a range on whole hours sums the hourly table to the same totals as the usage rows, through adds, a reset and a reopen", () => {
+  const H = 3_600_000;
+  const path = join(dir, "hours.sqlite");
+  const index = new ThreadIndex(path);
+  for (const id of ["a", "b"]) index.insertThread({ id, name: id, provider: "anthropic", modelId: "m", thinkingLevel: "high", cwd: "/", createdAt: 1, updatedAt: 1 });
+  const row = (thread: string, entryId: number, at: number, model = "anthropic/m") => ({ thread, conversation: 1, entryId, model, at, input: entryId * 3,
+    output: entryId * 5, cacheRead: entryId * 7, cacheWrite: entryId, cost: entryId * 0.013, costInput: entryId * 0.001, costOutput: entryId * 0.01,
+    costCacheRead: entryId * 0.0007, costCacheWrite: entryId * 0.0013 });
+  const rows = Array.from({ length: 60 }, (_, i) => row(i % 2 ? "a" : "b", i + 1, 10 * H + i * 997_331, i % 3 ? "anthropic/m" : "openai/n"));
+  index.addEntries("a", [], rows.filter(r => r.thread === "a"));
+  index.addEntries("b", [], rows.filter(r => r.thread === "b"));
+  index.addEntries("a", [], rows.filter(r => r.thread === "a"));
+  const raw = (since: number, until: number, threads?: string[]) => index.usage({ since: since + 1, until: until + 1, ...(threads ? { threads } : {}) });
+  const expected = (since: number, until: number, threads?: string[]) => {
+    const kept = rows.filter(r => r.at >= since && r.at < until && (!threads || threads.includes(r.thread)));
+    const seen = new Map<string, { thread: string; model: string; turns: number; input: number; cost: number }>();
+    for (const r of kept) {
+      const sum = seen.get(`${r.thread}|${r.model}`) ?? { thread: r.thread, model: r.model, turns: 0, input: 0, cost: 0 };
+      seen.set(`${r.thread}|${r.model}`, { ...sum, turns: sum.turns + 1, input: sum.input + r.input, cost: sum.cost + r.cost });
+    }
+    return [...seen.values()].sort((x, y) => x.thread.localeCompare(y.thread) || x.model.localeCompare(y.model));
+  };
+  const check = (since: number, until: number, threads?: string[], idx: ThreadIndex = index) => {
+    const got = idx.usage({ since, until, ...(threads ? { threads } : {}) });
+    const want = expected(since, until, threads);
+    assert.deepEqual(got.map(t => [t.thread, t.model, t.turns, t.input]), want.map(t => [t.thread, t.model, t.turns, t.input]));
+    for (const [n, t] of got.entries()) assert.ok(Math.abs(t.cost - want[n]!.cost) < 1e-9, `${t.thread} ${t.model} cost ${t.cost} against ${want[n]!.cost}`);
+  };
+  check(10 * H, 27 * H);
+  check(12 * H, 15 * H);
+  check(11 * H, 20 * H, ["a"]);
+  assert.deepEqual(index.usage({ since: 13 * H, until: 14 * H }).map(t => t.turns), expected(13 * H, 14 * H).map(t => t.turns));
+  assert.ok(raw(12 * H, 15 * H).length > 0, "a range off the hour still reads the usage rows");
+  index.resetEntries("a");
+  rows.splice(0, rows.length, ...rows.filter(r => r.thread === "b"));
+  check(10 * H, 27 * H);
+  index.close();
+
+  const old = new DatabaseSync(path);
+  old.exec("DROP TRIGGER usage_hours_add; DROP TRIGGER usage_hours_drop; DROP TABLE usage_hours;");
+  old.close();
+  const reopened = new ThreadIndex(path);
+  assert.equal(reopened.rebuilt, false);
+  check(10 * H, 27 * H, undefined, reopened);
+  reopened.close();
+});
+
 test("a search returns one page with snippets and the exact count, and narrows to a conversation or to what one agent said", () => {
   const index = new ThreadIndex(join(dir, "search.sqlite"));
   index.insertThread({ id: "t2", name: "search", provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "high", cwd: "/", createdAt: 1, updatedAt: 1 });
