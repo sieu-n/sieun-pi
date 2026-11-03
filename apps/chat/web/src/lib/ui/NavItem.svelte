@@ -19,11 +19,12 @@
     /** Keyboard highlight in a list driven by arrow keys, separate from selection. */
     highlighted?: boolean;
     /**
-     * row: 32 px list row. search: 64 px two-line result row. card: a padded row inside a settings card.
+     * row: 32 px list row. search: 64 px two-line result row. palette: a 32 px one-line Cmd K row, with `detail` as a quiet suffix
+     * after the label. card: a padded row inside a settings card.
      * inbox: a top-aligned row with a 32 px lead, a heading with a trailing time that gives way to `action` on hover,
      * a two-line preview and a gray selected fill.
      */
-    variant?: "row" | "search" | "card" | "inbox";
+    variant?: "row" | "search" | "palette" | "card" | "inbox";
     /** Inbox rows: controls shown in place of `trailing` on hover or keyboard focus. */
     action?: Snippet;
     unread?: boolean;
@@ -89,7 +90,7 @@
   {...rest}
 >
   {#if leading || icon}
-    <span class="lead">{#if leading}{@render leading()}{:else if icon}<Icon name={icon} size={variant === "search" ? 20 : 18} />{/if}</span>
+    <span class="lead">{#if leading}{@render leading()}{:else if icon}<Icon name={icon} size={variant === "search" ? 20 : variant === "palette" ? 16 : 18} />{/if}</span>
   {/if}
   {#if variant === "inbox"}
     <span class="text">
@@ -136,6 +137,30 @@
     border-radius: var(--radius-control);
     gap: 12px;
     color: var(--text-standard);
+  }
+  .palette {
+    min-height: 32px;
+    padding: 4px 8px;
+    gap: 10px;
+    color: var(--text-standard);
+  }
+  .palette .text {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .palette .label {
+    flex: 0 0 auto;
+    max-width: 60%;
+  }
+  .palette .detail {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+  .palette .detail {
+    font: var(--text-caption);
+    letter-spacing: var(--tracking-caption);
+    color: var(--text-metadata);
   }
   .card {
     min-height: 52px;
@@ -194,6 +219,8 @@
   }
   .search:hover,
   .search.highlighted,
+  .palette:hover,
+  .palette.highlighted,
   .card:hover,
   .inbox:hover,
   .inbox.highlighted {
@@ -233,6 +260,9 @@
   }
   .search .lead {
     min-width: 24px;
+  }
+  .palette .lead {
+    min-width: 20px;
   }
   .text {
     display: flex;

@@ -19,17 +19,34 @@ const people: Person[] = [
 const base: SearchInput = { text: "", operators: [], sort: "relevance", conversations, people, messages: { state: "idle" }, now: new Date(2026, 9, 28) };
 const labels = (input: Partial<SearchInput>) => buildGroups({ ...base, ...input }).map(group => `${group.label}: ${group.rows.map(row => row.label).join(", ")}`);
 
-test("an empty field shows this conversation and the 4 newest live conversations", () => {
+test("an empty field shows a slim search-here row and the 4 newest live conversations", () => {
   assert.deepEqual(labels({ current: "c-cut" }), [
-    "This conversation: Search in pi-cutover",
+    "This conversation: Search in #pi-cutover",
     "Recent activity: pi-cutover, frontend bro, Vent, hosts relay job",
   ]);
 });
 
-test("plain text leads with See all results, then Conversations, Agents and Channels before messages, with live chats first", () => {
-  assert.deepEqual(labels({ text: "ven" }), ["All results: See all results for “ven”", "Conversations: Vent, Venue notes", "Agents: Venom checker", "Messages: "]);
-  assert.deepEqual(labels({ text: "relay" }), ["All results: See all results for “relay”", "Agents: hosts relay job", "Messages: "]);
-  assert.deepEqual(labels({ text: "cut" }), ["All results: See all results for “cut”", "Channels: pi-cutover", "Messages: "]);
+test("plain text leads with See all results, then at most 3 chats, agents and channels in one ranked group, live before archived", () => {
+  assert.deepEqual(labels({ text: "ven" }), ["All results: See all results for “ven”", "Conversations: Vent, Venom checker, Venue notes", "Messages: "]);
+  assert.deepEqual(labels({ text: "relay" }), ["All results: See all results for “relay”", "Conversations: hosts relay job", "Messages: "]);
+  assert.deepEqual(labels({ text: "cut" }), ["All results: See all results for “cut”", "Conversations: pi-cutover", "Messages: "]);
+  const many = Array.from({ length: 6 }, (_, i): Conversation => ({ id: `c-${i}`, kind: i % 2 ? "channel" : "solo", name: `deploy ${i}`, lastActivityAt: i }));
+  assert.deepEqual(labels({ text: "deploy", conversations: many }).slice(1, 2), ["Conversations: deploy 5, deploy 4, deploy 3"]);
+});
+
+test("in a conversation, typed text puts its search-here row with no heading right under See all results", () => {
+  const groups = buildGroups({ ...base, text: "ven", current: "c-cut" });
+  assert.deepEqual(groups.map(group => [group.label, !!group.hideLabel]), [["All results", true], ["This conversation", true], ["Conversations", false], ["Messages", false]]);
+  assert.deepEqual(groups[1]!.rows[0]!.action, { type: "scope", conversation: "c-cut" });
+});
+
+test("a message row's snippet starts near its first match, so a one-line row shows it", () => {
+  const groups = buildGroups({
+    ...base,
+    text: "rate",
+    messages: { state: "ready", total: 1, more: false, loadingMore: false, hits: [{ ...hit("x"), snippet: "…the deploy went out on time and then we hit a <mark>rate</mark> limit" }] },
+  });
+  assert.equal(groups.at(-1)!.rows[0]!.snippet!.map(piece => piece.text).join(""), "…time and then we hit a rate limit");
 });
 
 test("See all results is the first row, opens the full page and says how many there are", () => {
@@ -37,7 +54,7 @@ test("See all results is the first row, opens the full page and says how many th
   const first = groups[0]!.rows[0]!;
   assert.equal(first.key, SEE_ALL);
   assert.deepEqual(first.action, { type: "page" });
-  assert.equal(first.detail, "1,234 results · Enter opens the full page");
+  assert.equal(first.detail, "1,234 results");
   assert.equal(groups[0]!.hideLabel, true);
 });
 
@@ -105,7 +122,7 @@ test("a this-box answer with pending boxes shows its hits, counts no number and 
   const messages = answered({ hits: [hit("a")], total: 7, nextCursor: "20", pending: ["mac"] });
   assert.deepEqual(messages, { state: "ready", hits: [hit("a")], total: "counting", more: false, loadingMore: false });
   const groups = buildGroups({ ...base, text: "a", messages });
-  assert.equal(groups[0]!.rows[0]!.detail, "Counting… · Enter opens the full page");
+  assert.equal(groups[0]!.rows[0]!.detail, "Counting…");
   assert.equal(groups.at(-1)!.count, "counting");
   assert.deepEqual(groups.at(-1)!.rows.map(row => row.key), ["hit:a"]);
 });
@@ -118,7 +135,7 @@ test("a this-box answer with no hits yet still says it is searching while a box 
 test("the full answer replaces the this-box hits with every box's hits, its exact total and its cursor", () => {
   const full = answered({ hits: [hit("mac1"), hit("a")], total: 9, nextCursor: "20" });
   assert.deepEqual(full, { state: "ready", hits: [hit("mac1"), hit("a")], total: 9, more: true, loadingMore: false });
-  assert.equal(buildGroups({ ...base, text: "a", messages: full })[0]!.rows[0]!.detail, "9 results · Enter opens the full page");
+  assert.equal(buildGroups({ ...base, text: "a", messages: full })[0]!.rows[0]!.detail, "9 results");
 });
 
 test("a next page appends only hits not already shown", () => {

@@ -4,15 +4,18 @@
   import { author, location, what, type Hit } from "./hit-view";
 
   /** Who said a hit, an AGENT or SYSTEM badge, where (with its icon) and what kind of text holds the match. */
-  let { hit, showPlace = true, showThread = true }: { hit: Hit; showPlace?: boolean; showThread?: boolean } = $props();
+  type Props = { hit: Hit; showAuthor?: boolean; showPlace?: boolean; showWhat?: boolean; showThread?: boolean };
+  let { hit, showAuthor = true, showPlace = true, showWhat = true, showThread = true }: Props = $props();
   const who = $derived(author(hit));
   const where = $derived(location(hit.conversation));
-  const kind = $derived(!showThread && hit.threadRoot && hit.role !== "tool" ? undefined : what(hit));
+  const kind = $derived(!showWhat || (!showThread && hit.threadRoot && hit.role !== "tool") ? undefined : what(hit));
 </script>
 
 <span class="meta" data-hit-meta>
-  <span class="name" data-hit-author>{who.name}</span>
-  {#if who.badge}<Badge tone="outline">{who.badge}</Badge>{/if}
+  {#if showAuthor}
+    <span class="name" data-hit-author>{who.name}</span>
+    {#if who.badge}<Badge tone="outline">{who.badge}</Badge>{/if}
+  {/if}
   {#if showPlace}
     <span class="place" data-hit-place title={`${where.kind}: ${where.parent ? `${where.parent} › ` : ""}${where.name}`}>
       <Icon name={where.icon} size={14} label={where.kind} />

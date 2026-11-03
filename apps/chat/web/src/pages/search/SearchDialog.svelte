@@ -169,8 +169,8 @@
   );
   const rows = $derived(groups.flatMap(group => group.rows));
   const messageLabel = $derived(messageGroupLabel(sort, !!scopeId));
-  /** Shift Cmd 1 to 9 pick the rows under "See all results". */
-  const numbered = $derived(rows.filter(row => row.key !== SEE_ALL));
+  /** Shift Cmd 1 to 9 pick the conversations and messages, past "See all results" and the search-here row. */
+  const numbered = $derived(rows.filter(row => row.key !== SEE_ALL && row.action.type !== "scope"));
   const hasQuery = $derived(!!text.trim() || operators.length > 0);
 
   $effect(() => {
@@ -298,29 +298,31 @@
         <Menu bind:open={sortOpen} anchor={sortButton} items={sortItems} placement="bottom-end" label="Sort messages" />
       </div>
     {/if}
-    <SearchField
-      variant="palette"
-      placeholder="Search..."
-      {label}
-      bind:value={() => text, setText}
-      bind:element={input}
-      {onkeydown}
-      role="combobox"
-      aria-expanded="true"
-      aria-controls={listId}
-      aria-autocomplete="list"
-      aria-activedescendant={active ? optionId(active) : undefined}
-      maxlength={256}
-      data-autofocus
-    >
-      {#snippet prefix()}
-        {#if operators.length}
-          {#each operators as operator (operator.kind)}
-            <Chip label={chipLabel(operator)} onremove={() => removeOperator(operator)} removeLabel={`Remove ${chipLabel(operator)}`} />
-          {/each}
-        {/if}
-      {/snippet}
-    </SearchField>
+    <div class="field">
+      <SearchField
+        variant="palette"
+        placeholder="Search..."
+        {label}
+        bind:value={() => text, setText}
+        bind:element={input}
+        {onkeydown}
+        role="combobox"
+        aria-expanded="true"
+        aria-controls={listId}
+        aria-autocomplete="list"
+        aria-activedescendant={active ? optionId(active) : undefined}
+        maxlength={256}
+        data-autofocus
+      >
+        {#snippet prefix()}
+          {#if operators.length}
+            {#each operators as operator (operator.kind)}
+              <Chip label={chipLabel(operator)} onremove={() => removeOperator(operator)} removeLabel={`Remove ${chipLabel(operator)}`} />
+            {/each}
+          {/if}
+        {/snippet}
+      </SearchField>
+    </div>
     <div class="scroll" bind:this={list}>
       <div id={listId} role="listbox" aria-label="Search results" class="results">
         {#each groups as group (group.label)}
@@ -364,14 +366,14 @@
   {:else}
     {#snippet avatar()}
       {#if row.avatar}
-        <Avatar name={row.avatar.name} kind={row.avatar.shape === "circle" ? "person" : "agent"} seed={row.key.replace(/^person:/, "")} src={row.avatar.src ?? null} size={24} />
+        <Avatar name={row.avatar.name} kind={row.avatar.shape === "circle" ? "person" : "agent"} seed={row.key.replace(/^person:/, "")} src={row.avatar.src ?? null} size={20} />
       {/if}
     {/snippet}
     {#snippet enter()}
       {#if row.key === SEE_ALL}<kbd class="enter">Enter</kbd>{/if}
     {/snippet}
     <NavItem
-      variant="search"
+      variant="palette"
       role="option"
       id={optionId(row.key)}
       data-key={row.key}
@@ -394,12 +396,15 @@
 {/snippet}
 
 {#snippet hitRow(row: Row, hit: NonNullable<Row["hit"]>)}
-  {#snippet lead()}<HitAvatar {hit} size={24} />{/snippet}
-  {#snippet meta()}<HitMeta {hit} showPlace={!scopeId} />{/snippet}
+  {#snippet lead()}<HitAvatar {hit} size={20} />{/snippet}
+  {#snippet meta()}<span class="who"><HitMeta {hit} showPlace={false} showWhat={false} /></span>{/snippet}
   {#snippet text()}<span class="snippet" class:tool={hit.role === "tool"}><Highlight pieces={row.snippet ?? []} /></span>{/snippet}
-  {#snippet age()}<time class="age" datetime={new Date(hit.at).toISOString()} title={new Date(hit.at).toLocaleString()}>{shortAge(hit.at, now)}</time>{/snippet}
+  {#snippet age()}
+    <span class="place-cell"><HitMeta {hit} showAuthor={false} showPlace={!scopeId} /></span>
+    <time class="age" datetime={new Date(hit.at).toISOString()} title={new Date(hit.at).toLocaleString()}>{shortAge(hit.at, now)}</time>
+  {/snippet}
   <NavItem
-    variant="search"
+    variant="palette"
     role="option"
     id={optionId(row.key)}
     data-key={row.key}
@@ -425,43 +430,45 @@
     min-height: 0;
     max-height: calc(100vh - 128px - 48px);
   }
+  .field {
+    border-bottom: 1px solid var(--border-standard);
+  }
   .scope-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    padding: 12px 0 0;
+    padding: 8px 0 0;
   }
   .scroll {
     position: relative;
     flex: 1;
     min-height: 0;
-    max-height: min(55vh, calc(100dvh - 128px - 8rem));
+    max-height: min(60vh, calc(100dvh - 128px - 48px - 64px));
     overflow-x: hidden;
     overflow-y: auto;
-    padding: 0 0 12px;
+    padding: 6px 0 8px;
   }
   .results {
     display: flex;
     flex-direction: column;
-    gap: 24px;
+    gap: 6px;
   }
   .group {
     display: flex;
     flex-direction: column;
-    gap: 1px;
   }
   .heading {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    min-height: 28px;
+    min-height: 24px;
     margin: 0;
-    padding: 0 12px;
+    padding: 0 8px;
     color: var(--neutral-7);
-    font: var(--text-body-sm);
-    letter-spacing: var(--tracking-body-sm);
+    font: var(--text-caption);
+    letter-spacing: var(--tracking-caption);
     font-weight: 400;
   }
   .count {
@@ -469,7 +476,7 @@
   }
   .empty {
     margin: 4px 0;
-    padding: 0 12px;
+    padding: 0 8px;
     color: var(--text-subtle);
     font: var(--text-body-sm);
   }
@@ -478,11 +485,29 @@
   }
   .snippet {
     color: var(--text-standard);
+    font: var(--text-body-sm);
+    letter-spacing: var(--tracking-body-sm);
   }
   .snippet.tool {
     font-family: var(--font-mono);
     font-size: 12px;
     color: var(--text-subtle);
+  }
+  .who {
+    display: flex;
+  }
+  .who :global([data-hit-author]) {
+    max-width: 9rem;
+  }
+  .place-cell {
+    display: flex;
+    max-width: 10rem;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .place-cell :global([data-hit-place] .parent) {
+    flex: 0 1 auto;
+    min-width: 2em;
   }
   .age {
     color: var(--text-metadata);
@@ -491,9 +516,9 @@
     font-variant-numeric: tabular-nums;
   }
   .enter {
-    padding: 1px 6px;
+    padding: 0 5px;
     border: 1px solid var(--border-standard);
-    border-radius: 6px;
+    border-radius: 5px;
     color: var(--text-metadata);
     font: var(--text-caption);
   }

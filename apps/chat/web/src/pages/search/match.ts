@@ -56,6 +56,21 @@ export function pieces(label: string, positions: readonly number[] = []): Piece[
   return out;
 }
 
+/**
+ * Cuts a snippet's text before its first match down to about `keep` characters, starting at a word, with … in front, so a
+ * one-line row shows the match instead of the words that lead up to it.
+ */
+export function leadIn(pieces: readonly Piece[], keep = 24): Piece[] {
+  const first = pieces.findIndex(piece => piece.mark);
+  if (first <= 0) return [...pieces];
+  const before = pieces.slice(0, first).map(piece => piece.text).join("");
+  if (before.length <= keep) return [...pieces];
+  const tail = before.slice(-keep);
+  const word = tail.search(/\s\S/);
+  const cut = word >= 0 ? tail.slice(word + 1) : tail;
+  return [{ text: `…${cut}`, mark: false }, ...pieces.slice(first)];
+}
+
 const ENTITIES: Record<string, string> = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'" };
 const decode = (text: string) => text.replace(/&(?:amp|lt|gt|quot|#39);/g, entity => ENTITIES[entity]!);
 

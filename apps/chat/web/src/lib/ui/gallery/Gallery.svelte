@@ -232,6 +232,7 @@ flowchart LR
         <NavItem label="Vent" detail="2 jobs working" icon="chat" />
         <NavItem variant="search" label="general" detail="#general · 12 members" icon="hash" highlighted />
         <NavItem variant="search" label="Vent" detail="VP chat">{#snippet leading()}<Avatar name="Vent" seed="vent" size={24} />{/snippet}</NavItem>
+        <NavItem variant="palette" label="vent-dev" detail="Channel" icon="hash" highlighted />
         <NavItem variant="inbox" label="Vent" detail="The job found two relay errors, both while the Mac slept. The canary itself is fine, and the relay log is clean since 02:11." selected>
           {#snippet leading()}<Avatar name="Vent" seed="vent" size={32} />{/snippet}
           {#snippet trailing()}9:41 PM{/snippet}

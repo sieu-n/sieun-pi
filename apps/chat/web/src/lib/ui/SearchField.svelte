@@ -6,7 +6,7 @@
   type Props = {
     value?: string;
     placeholder?: string;
-    /** inline: a 32 px field for lists. palette: the 20 px search dialog input with no border. */
+    /** inline: a 32 px field for lists. palette: the 48 px search dialog input with no border. */
     variant?: "inline" | "palette";
     /** Chips before the text, for example from: and in: operators or a scope chip. */
     prefix?: Snippet;
@@ -14,7 +14,7 @@
     suffix?: Snippet;
     label?: string;
     clearable?: boolean;
-    /** Show the leading search icon. The palette variant hides it by default. */
+    /** Show the leading search icon. */
     icon?: boolean;
     element?: HTMLInputElement | undefined;
     oninput?: (value: string) => void;
@@ -29,7 +29,7 @@
     suffix,
     label = "Search",
     clearable = true,
-    icon,
+    icon = true,
     element = $bindable(),
     oninput,
     onkeydown,
@@ -38,7 +38,7 @@
 </script>
 
 <div class="search {variant}">
-  {#if icon ?? variant !== "palette"}<Icon name="search" size={variant === "palette" ? 20 : 16} />{/if}
+  {#if icon}<Icon name="search" size={variant === "palette" ? 18 : 16} />{/if}
   {#if prefix}<div class="prefix">{@render prefix()}</div>{/if}
   <input
     bind:this={element}
@@ -86,8 +86,9 @@
     box-shadow: inset 0 0 0 1px var(--border-prominent);
   }
   .palette {
-    min-height: 78px;
-    padding: 25px 12px 24px;
+    min-height: 48px;
+    padding: 8px 8px;
+    gap: 10px;
   }
   .prefix {
     display: flex;
@@ -105,8 +106,7 @@
     font: var(--text-body-sm);
   }
   .palette input {
-    font: 400 20px/28px var(--font-sans);
-    letter-spacing: -0.01em;
+    font: 400 16px/24px var(--font-sans);
   }
   input::placeholder {
     color: var(--text-metadata);

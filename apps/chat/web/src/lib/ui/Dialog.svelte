@@ -150,7 +150,7 @@
     width: 640px;
     max-height: calc(100vh - 128px - 48px);
     padding: 0 12px;
-    border-radius: 32px;
+    border-radius: var(--radius-control);
     box-shadow: var(--shadow-sm);
   }
   .dialog-header {

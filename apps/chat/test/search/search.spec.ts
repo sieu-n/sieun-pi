@@ -33,15 +33,16 @@ test("Cmd K opens on this conversation and recent activity, and Esc closes it", 
   await expect(palette(page)).toBeHidden();
 });
 
-test("text shows named groups before messages, with an exact count and underlined matches", async ({ page }) => {
+test("text shows at most 3 named rows before messages, with an exact count and underlined matches", async ({ page }) => {
   await page.keyboard.press(`${mod}+k`);
   await field(page).fill("relay");
   await expect(count(page)).toHaveText(messages(await total(page, { q: "relay" })));
   const names = await groupNames(page);
   expect(names[0]).toBe("All results");
   expect(names.at(-1)).toBe("Messages");
+  expect(names.indexOf("Conversations")).toBeGreaterThan(0);
   expect(names.indexOf("Conversations")).toBeLessThan(names.indexOf("Messages"));
-  expect(names.indexOf("Agents")).toBeLessThan(names.indexOf("Messages"));
+  expect(await palette(page).locator("[role=group][aria-label='Conversations'] [data-search-result]").count()).toBeLessThanOrEqual(3);
   const marks = await palette(page).locator("[role=group][aria-label='Messages'] mark").allInnerTexts();
   expect(marks.length).toBeGreaterThan(0);
   for (const mark of marks) expect(mark.toLowerCase()).toBe("relay");
@@ -158,7 +159,17 @@ test("Show more pages through every hit up to the exact count", async ({ page })
 test("Shift Cmd 1 opens the first row", async ({ page }) => {
   await page.keyboard.press(`${mod}+k`);
   await field(page).fill("pi-cutover");
-  await expect(palette(page).locator("[role=group][aria-label='Channels']")).toBeVisible();
+  await expect(palette(page).locator("[role=group][aria-label='Conversations'] [data-key='conversation:ch_cutover']")).toBeVisible();
   await page.keyboard.press(`Shift+${mod}+Digit1`);
   await expect(page).toHaveURL(/#\/c\/ch_cutover$/);
+});
+
+test("Cmd K rows are one line and 32 px tall, so message hits show above the fold", async ({ page }) => {
+  await page.setViewportSize({ width: 1180, height: 720 });
+  await page.keyboard.press(`${mod}+k`);
+  await field(page).fill("relay");
+  const hits = palette(page).locator("[role=group][aria-label='Messages'] [data-search-result]");
+  await expect(hits.first()).toBeInViewport();
+  const heights = await palette(page).locator("[data-search-result]").evaluateAll(rows => rows.map(row => row.getBoundingClientRect().height));
+  for (const height of heights) expect(height).toBeLessThanOrEqual(34);
 });

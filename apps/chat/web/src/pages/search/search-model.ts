@@ -4,7 +4,7 @@
  */
 import { avatarOf } from "../channel/present.ts";
 import { author, locationText, what, type Hit } from "./hit-view.ts";
-import { matchName, snippetPieces, type Piece } from "./match.ts";
+import { leadIn, matchName, snippetPieces, type Piece } from "./match.ts";
 import { datePresets, filters, prompt, searchText, type Operator } from "./operators.ts";
 
 export type { Hit } from "./hit-view.ts";
@@ -104,7 +104,7 @@ export type SearchInput = {
   now: Date;
 };
 
-/** Name matches stay few, so the messages show without a scroll; the full results page holds every message. */
+/** At most 3 name matches across chats, agents and channels, so the messages show without a scroll; the full results page holds every message. */
 const NAMED_ROWS = 3;
 const RECENT_ROWS = 4;
 
@@ -157,7 +157,7 @@ function messageRows(input: SearchInput): Row[] {
   const rows: Row[] = input.messages.hits.map(hit => ({
     key: `hit:${hit.id}`,
     label: snippetPieces(hit.snippet).map(piece => piece.text).join(""),
-    snippet: snippetPieces(hit.snippet),
+    snippet: leadIn(snippetPieces(hit.snippet)),
     detail: [author(hit).name, input.scope ? undefined : locationText(hit.conversation), what(hit), formatDay(hit.at, input.now)].filter(Boolean).join(" · "),
     icon: "chat",
     hit,
@@ -179,7 +179,7 @@ function seeAll(input: SearchInput): Group {
     rows: [{
       key: SEE_ALL,
       label: q ? `See all results for “${q}”` : "See all results",
-      detail: count ? `${count} · Enter opens the full page` : "Enter opens the full page",
+      detail: count,
       icon: "search",
       action: { type: "page" },
     }],
@@ -250,16 +250,20 @@ export function buildGroups(input: SearchInput): Group[] {
   if (input.scope) return hasQuery ? [seeAll(input), messages] : [messages];
 
   const current = input.current ? input.conversations.find(conversation => conversation.id === input.current) : undefined;
-  const scopeRows: Row[] = current
+  // One slim row with no heading, under See all results when something is typed.
+  const thisConversation: Group[] = current
     ? [{
-        key: `scope:${current.id}`,
-        label: `Search ${current.kind === "channel" ? "in" : "conversation with"} ${current.name}`,
-        detail: "Search messages in this conversation",
-        icon: "search",
-        action: { type: "scope", conversation: current.id },
+        label: "This conversation",
+        hideLabel: true,
+        rows: [{
+          key: `scope:${current.id}`,
+          label: `Search in ${current.kind === "channel" ? `#${current.name.replace(/^#/, "")}` : current.name}`,
+          detail: "This conversation only",
+          icon: "search",
+          action: { type: "scope", conversation: current.id },
+        }],
       }]
     : [];
-  const thisConversation: Group[] = scopeRows.length ? [{ label: "This conversation", rows: scopeRows }] : [];
 
   if (!hasQuery) {
     const recent = input.conversations
@@ -272,23 +276,24 @@ export function buildGroups(input: SearchInput): Group[] {
 
   if (input.operators.length) return [seeAll(input), ...thisConversation, messages];
 
-  const byName = ranked(input.conversations, conversation => conversation.name, text, (a, b) =>
-    Number(!!a.archived) - Number(!!b.archived) || activity(b) - activity(a));
-  const chats = byName.filter(conversation => conversation.kind === "solo" || conversation.kind === "dm").slice(0, NAMED_ROWS);
-  const channels = byName.filter(conversation => conversation.kind === "channel").slice(0, NAMED_ROWS);
-  const shown = new Set(chats.map(conversation => conversation.id));
-  const agents = ranked(
-    input.people.filter(person => person.kind === "agent" && person.conversationId && !shown.has(person.conversationId)),
-    person => person.name,
-    text,
-    (a, b) => a.name.localeCompare(b.name),
-  )
+  // Chats, DMs, channels and agents rank together: live before archived, then by how well the name matches, then by activity.
+  type Named = { row: Row; name: string; archived: boolean; at: number };
+  const listed: Named[] = input.conversations
+    .filter(conversation => conversation.kind !== "job")
+    .map(conversation => ({ row: conversationRow(conversation, text), name: conversation.name, archived: !!conversation.archived, at: activity(conversation) }));
+  const listedIds = new Set(input.conversations.filter(conversation => conversation.kind !== "job").map(conversation => conversation.id));
+  const lastAt = new Map(input.conversations.map(conversation => [conversation.id, activity(conversation)]));
+  const agents: Named[] = input.people
+    .filter(person => person.kind === "agent" && person.conversationId && !listedIds.has(person.conversationId))
+    .map(person => ({
+      row: personRow(person, text, { type: "open", conversation: person.conversationId! }, person.detail ?? "Agent"),
+      name: person.name,
+      archived: false,
+      at: lastAt.get(person.conversationId!) ?? 0,
+    }));
+  const named = ranked([...listed, ...agents], one => one.name, text, (a, b) => b.at - a.at)
+    .sort((a, b) => Number(a.archived) - Number(b.archived))
     .slice(0, NAMED_ROWS)
-    .map(person => personRow(person, text, { type: "open", conversation: person.conversationId! }, person.detail ?? "Agent"));
-  const named: Group[] = [
-    { label: "Conversations", rows: chats.map(conversation => conversationRow(conversation, text)) },
-    { label: "Agents", rows: agents },
-    { label: "Channels", rows: channels.map(conversation => conversationRow(conversation, text)) },
-  ].filter(group => group.rows.length);
-  return [seeAll(input), ...named, ...thisConversation, messages];
+    .map(one => one.row);
+  return [seeAll(input), ...thisConversation, ...(named.length ? [{ label: "Conversations", rows: named }] : []), messages];
 }
