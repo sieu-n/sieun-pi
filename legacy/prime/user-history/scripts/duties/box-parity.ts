@@ -14,7 +14,8 @@ import { CHECKS, type Outcome, realDeps, runChecks } from "./skills-and-tools.ts
  * - `tool_rows_off`: rows of box-parity.rows.json (the 167 rows of the 10-18 audit, /home/sieun/box-tools-parity/gap-table.md) where the box lacks
  *   what the Mac has: a file, folder entry, config hash, CLI version, port, service, or a real call that fails on the box. box-parity-probe.py reads
  *   both sides, the Mac over one `ssh mac` that only reads (see the probe's docstring). The Mac is the standard, so a Mac value that is absent or
- *   failing asks nothing of the box, a set on the box may hold more than the Mac's, and a CLI version on the box may be newer. A probe with `intended` (Poppler), a row with `byDesign`
+ *   failing asks nothing of the box, a set on the box may hold more than the Mac's, and a CLI version on the box may be newer. The global
+ *   harness entries count only a Mac entry the shared state still holds, so a deletion the Mac has not synced yet is no box gap (syncedShortfall). A probe with `intended` (Poppler), a row with `byDesign`
  *   and a Mac commit the Mac never pushed to origin (`mac_unpushed`) are listed and never counted. Rows with a `panel` probe run that Skills and tools check (skills-and-tools.ts) here, without its fixes; a fail
  *   whose detail the probe's `shared` regex matches comes from a service both hosts use, such as Google on Virev or an account in the box's
  *   pi-pool, which the Mac reads through ~/.config/pi-pool/remote.json, so it is no box gap.
@@ -64,6 +65,7 @@ export function shortfall(mac: string | undefined, box: string | undefined): str
   if (mac!.startsWith("commits:")) return commitShortfall(mac!, box);
   if (mac!.startsWith("blobs:")) return blobShortfall(mac!, box);
   const macSet = setOf(mac!);
+  if (macSet && box.startsWith("synced:")) return syncedShortfall(macSet, box);
   if (macSet) {
     const boxSet = setOf(box);
     if (!boxSet) return `Mac has ${macSet.length} entries, box ${box.slice(0, 120)}`;
@@ -72,6 +74,20 @@ export function shortfall(mac: string | undefined, box: string | undefined): str
   }
   if (mac!.startsWith("v:") && box.startsWith("v:") && compareVersions(box.slice(2), mac!.slice(2)) >= 0) return null;
   return mac === box ? null : `Mac ${mac!.slice(0, 80)}, box ${box.slice(0, 160)}`;
+}
+
+/**
+ * The global harness entries the box lacks, from a box `synced:` value: only the Mac entries the shared state (prime-shared-state, as the box's
+ * prime-sync last fetched it) still holds. A Mac entry the shared state lacks was deleted on a host that synced, or made on the Mac and not
+ * pushed yet, so the stale side is the Mac: on 11-03 the Mac, asleep since the box deleted 4 entries at 22:36Z, kept them until its prime-sync
+ * ran at 00:56Z, a minute after d1 read it.
+ */
+export function syncedShortfall(macSet: readonly string[], box: string): string | null {
+  const { have, shared } = JSON.parse(box.slice(7)) as { have: string[]; shared: string[] };
+  const boxHas = new Set(have);
+  const sharedHas = new Set(shared);
+  const missing = macSet.filter(entry => !boxHas.has(entry) && sharedHas.has(entry));
+  return missing.length ? `box lacks ${missing.length} of the Mac's ${macSet.length} that the shared state holds: ${listed(missing)}` : null;
 }
 
 /**

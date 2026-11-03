@@ -1,7 +1,7 @@
 // Owner 10-18 (goal p1): us-metal02 matches the owner's MacBook Pro for every tool; these cases pin how the Box tools parity duty judges a row, a limit and port 22.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -299,6 +299,38 @@ test("the audit rows keep the box's dropped cua-driver out of tool_rows_off, and
     output("box", { [tip.id]: [`commits:${JSON.stringify({ ids: [], patches: [], bytes: [], fetched: [] })}`] }), new Map());
   assert.equal(judge(true).off.length, 1);
   assert.deepEqual([judge(false).off.length, judge(false).unpushed.length], [0, 1]);
+});
+
+test("the harness row skips a Mac entry the box deleted and synced, which the sleeping Mac still held in d1-261103-0955, and counts one the shared state holds", () => {
+  const row = (JSON.parse(readFileSync(join(import.meta.dirname, "../scripts/duties/box-parity.rows.json"), "utf8")) as Row[]).find(r => r.id === "global-harness-entries")!;
+  const probe = (host: "mac" | "box", memories: string[], shared?: string[], fetchedAgo = 0) => {
+    const home = mkdtempSync(join(tmpdir(), `box-parity-harness-${host}-`));
+    mkdirSync(join(home, ".prime/agent/harness"), { recursive: true });
+    const entries = { memory: Object.fromEntries(memories.map(id => [id, { created_at: "2026-11-02T00:00:00Z" }])), prompt: { p: {} } };
+    writeFileSync(join(home, ".prime/agent/harness/harness_state.json"), JSON.stringify({ schema: 1, entries }));
+    if (shared) {
+      const state = join(home, ".local/share/prime-sync/state");
+      mkdirSync(join(state, "harness/memory"), { recursive: true });
+      mkdirSync(join(state, "harness/prompt"), { recursive: true });
+      for (const id of shared) writeFileSync(join(state, `harness/memory/${id}.json`), "{}\n");
+      writeFileSync(join(state, "harness/prompt/p.json"), "{}\n");
+      const git = (...args: string[]) => execFileSync("git", ["-C", state, ...args], { env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
+      git("init", "-q", "-b", "main");
+      git("add", ".");
+      git("commit", "-q", "-m", "sync from us-metal02");
+      git("update-ref", "refs/remotes/origin/main", "HEAD");
+      writeFileSync(join(state, ".git/FETCH_HEAD"), "");
+      const at = new Date(Date.now() - fetchedAgo * 1000);
+      utimesSync(join(state, ".git/FETCH_HEAD"), at, at);
+    }
+    const arg = Buffer.from(JSON.stringify({ host, rows: [row], known: {} })).toString("base64");
+    return JSON.parse(execFileSync("python3", [join(import.meta.dirname, "../scripts/duties/box-parity-probe.py"), arg], { env: { ...process.env, HOME: home }, encoding: "utf8" })) as ProbeOutput;
+  };
+  const mac = probe("mac", ["kept", "deleted-on-box", "missed-by-box"]);
+  const judge = (box: ProbeOutput) => judgeRows([row], mac, box, new Map()).off.map(verdict => verdict.why);
+  assert.deepEqual(judge(probe("box", ["kept"], ["kept", "missed-by-box"])), ["box lacks 1 of the Mac's 4 that the shared state holds: memory/missed-by-box"]);
+  assert.deepEqual(judge(probe("box", ["kept", "missed-by-box"], ["kept", "missed-by-box"])), []);
+  assert.deepEqual(judge(probe("box", ["kept"], ["kept", "missed-by-box"], 3600)), ["box lacks 2 of the Mac's 4: memory/deleted-on-box, memory/missed-by-box"]);
 });
 
 test("the AGENTS.md row matches when the Mac's file is one the box checkout held at an ancestor of its HEAD, and stays off for content the box never had", () => {

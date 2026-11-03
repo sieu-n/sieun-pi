@@ -6,7 +6,8 @@ npm package.json); a CLI whose path carries no version is run with `--version` o
 On the box it also makes the real calls: logins, kernel imports and MCP initialize plus tools/list. Python 3.9 stdlib, because ssh on the
 Mac starts /usr/bin/python3.
 Usage: python3 box-parity-probe.py <base64 of {"host": "mac"|"box", "rows": [...], "known": {cli: version read}}>
-A value is "ok", "absent", "fail: <why>", "v:<version>", "=<output>", "sha:<hex>", "blobs:<json list>" or "set:<json list>".
+A value is "ok", "absent", "fail: <why>", "v:<version>", "=<output>", "sha:<hex>", "blobs:<json list>", "set:<json list>"
+or "synced:<json of the box's entries and the shared state's>".
 """
 import base64, configparser, glob, hashlib, json, os, re, select, socket, subprocess, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor
@@ -102,7 +103,26 @@ def distinfo(pattern):
     return names(found)
 
 
-def keys(path, at=None, depth=1):
+# prime-sync.timer fetches the shared state each minute, and its block watch alerts after 600 s with no progress, so an older fetch reads as stalled.
+SYNC_FRESH_S = 600
+
+
+def synced_keys(repo):
+    """The harness entries ("kind/id") of the shared state the box last fetched, or None when its prime-sync has not fetched for SYNC_FRESH_S."""
+    repo = expand(repo)
+    try:
+        if time.time() - os.stat(os.path.join(repo, ".git", "FETCH_HEAD")).st_mtime > SYNC_FRESH_S:
+            return None
+    except OSError:
+        return None
+    done = subprocess.run(["git", "-C", repo, "ls-tree", "-r", "--name-only", "refs/remotes/origin/main", "harness/"],
+                          capture_output=True, text=True, timeout=TIMEOUT_S, env=ENV)
+    if done.returncode != 0:
+        return None
+    return [path[len("harness/"):-len(".json")] for path in done.stdout.splitlines() if path.endswith(".json") and not path.startswith("harness/refinements/")]
+
+
+def keys(path, at=None, depth=1, synced=None):
     try:
         data = json.load(open(expand(path)))
     except FileNotFoundError:
@@ -113,7 +133,11 @@ def keys(path, at=None, depth=1):
         data = data.get(at, {})
     if depth == 1:
         return names(data)
-    return names("%s/%s" % (kind, key) for kind, value in data.items() if isinstance(value, dict) for key in value)
+    have = ["%s/%s" % (kind, key) for kind, value in data.items() if isinstance(value, dict) for key in value]
+    shared = synced_keys(synced) if synced else None
+    if shared is None:
+        return names(have)
+    return "synced:" + json.dumps({"have": sorted(have), "shared": sorted(shared)})
 
 
 def gitconfig(key):
@@ -405,7 +429,7 @@ def blobs(path, host):
 
 
 def probe(spec, host):
-    kind = next(k for k in spec if k not in ("expect", "cwd", "pattern", "at", "depth", "key", "names", "atTip", "intended", "shared", "follow"))
+    kind = next(k for k in spec if k not in ("expect", "cwd", "pattern", "at", "depth", "key", "names", "atTip", "intended", "shared", "follow", "synced"))
     if host == "mac" and kind not in READS:
         return "fail: %s is not a read, so the Mac side never runs it" % kind
     if kind == "const":
@@ -427,7 +451,7 @@ def probe(spec, host):
     if kind == "ls":
         return entries(spec["ls"], spec.get("pattern"))
     if kind == "keys":
-        return keys(spec["keys"], spec.get("at"), spec.get("depth", 1))
+        return keys(spec["keys"], spec.get("at"), spec.get("depth", 1), spec.get("synced"))
     if kind == "sha":
         try:
             return "sha:" + hashlib.sha256(open(expand(spec["sha"]), "rb").read()).hexdigest()[:16]
