@@ -4,6 +4,7 @@
   import Tabs from "$lib/ui/Tabs.svelte";
   import Menu from "$lib/ui/Menu.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
+  import { OWNER_ID, OWNER_NAME } from "$lib/owner";
   import type { MenuEntry } from "$lib/ui/menu";
   import { isMac } from "$lib/ui/keyboard";
   import { tooltip } from "$lib/ui/tooltip";
@@ -16,7 +17,7 @@
 
   /** `hasSidebar` is false on a page with no left sidebar, which hides the sidebar button. */
   type Props = { ownerName?: string; hasSidebar?: boolean };
-  let { ownerName = "Sieun", hasSidebar = true }: Props = $props();
+  let { ownerName = OWNER_NAME, hasSidebar = true }: Props = $props();
 
   let newOpen = $state(false);
   let newAnchor = $state<HTMLButtonElement>();
@@ -64,7 +65,7 @@
   <div class="right">
     <IconButton icon="settings" label="Settings" pressed={router.route.page === "settings"} onclick={() => router.navigate(hrefFor("settings", ["usage"]))} />
     <button bind:this={profileAnchor} class="profile" type="button" aria-label="Profile, appearance and settings" onclick={() => (profileOpen = !profileOpen)}>
-      <Avatar name={ownerName} kind="person" size={28} status="online" />
+      <Avatar name={ownerName} kind="person" seed={OWNER_ID} size={28} status="online" />
     </button>
   </div>
 </header>

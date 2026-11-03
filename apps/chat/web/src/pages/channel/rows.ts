@@ -10,8 +10,11 @@ export type Row<I extends RowSource> =
   | { kind: "system"; key: string; item: I }
   | { kind: "post"; key: string; item: I; first: boolean; last: boolean };
 
-/** Lays items, oldest first, out as day dividers, system lines and posts, where `first` shows the byline, and the avatar in slack layout, and `last` the avatar in bubble layout. */
-export function layoutRows<I extends RowSource>(items: readonly I[]): Row<I>[] {
+/**
+ * Lays items, oldest first, out as day dividers, system lines and posts, where `first` shows the byline, and the avatar in slack layout, and `last` the avatar in bubble layout.
+ * The post after `breakAfter` starts a new group, as a thread's first reply does under its root.
+ */
+export function layoutRows<I extends RowSource>(items: readonly I[], breakAfter?: string): Row<I>[] {
   const rows: Row<I>[] = [];
   let previous: I | null = null;
   let lastPost: Extract<Row<I>, { kind: "post" }> | null = null;
@@ -29,6 +32,7 @@ export function layoutRows<I extends RowSource>(items: readonly I[]): Row<I>[] {
       lastPost = { kind: "post", key: item.id, item, first: !joins, last: true };
       rows.push(lastPost);
     }
+    if (item.id === breakAfter) lastPost = null;
     previous = item;
   }
   return rows;

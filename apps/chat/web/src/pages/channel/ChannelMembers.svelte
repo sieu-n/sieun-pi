@@ -4,7 +4,7 @@
   import Button from "$lib/ui/Button.svelte";
   import Picker from "$lib/ui/Picker.svelte";
   import type { PickerItem } from "$lib/ui/types";
-  import { avatarKind } from "./present";
+  import { avatarKind, avatarOf } from "./present";
 
   type Props = {
     /** Every member of the room, the owner included, as Slack counts them. */
@@ -19,7 +19,7 @@
 
   const statusText: Record<RunStatus, string> = { working: "Working now", idle: "Idle", sleeping: "Waiting for a model slot", failed: "Last run failed" };
   const agentsFirst = $derived([...members].sort((a, b) => Number(a.principal.id === "owner") - Number(b.principal.id === "owner")));
-  const stack = $derived(agentsFirst.map((m) => ({ id: m.principal.id, name: m.principal.name, kind: avatarKind(m.principal) })));
+  const stack = $derived(agentsFirst.map((m) => avatarOf(m.principal)));
   const label = $derived(`${members.length} ${members.length === 1 ? "member" : "members"}`);
   const items = $derived<PickerItem[]>(
     agentsFirst.map((m) => {
@@ -29,7 +29,7 @@
         label: m.principal.name,
         ...(status ? { detail: statusText[status] } : {}),
         group: label,
-        avatar: { name: m.principal.name, kind: avatarKind(m.principal), seed: m.principal.id },
+        avatar: { name: avatarOf(m.principal).name, kind: avatarKind(m.principal), seed: m.principal.id },
       };
     }),
   );

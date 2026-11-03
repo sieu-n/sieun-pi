@@ -32,7 +32,7 @@
   import Timeline from "./Timeline.svelte";
   import { directory } from "./directory.svelte";
   import { AuthorBoards } from "./author-boards.svelte";
-  import { agentPickerItems, avatarKind, mentionContext, placeText, type Outgoing } from "./present";
+  import { agentPickerItems, avatarOf, mentionContext, placeText, type Outgoing } from "./present";
 
   type Props = { id: string; around?: string };
   let { id, around }: Props = $props();
@@ -346,7 +346,7 @@
     <ChannelMembers members={header.members} onopen={(agentId) => router.openConversation(agents.room(agentId))} />
   {:else if others.length}
     <span class="members" title={others.map((m) => m.principal.name).join(", ")}>
-      <AvatarStack members={others.map((m) => ({ id: m.principal.id, name: m.principal.name, kind: avatarKind(m.principal) }))} size={20} max={3} />
+      <AvatarStack members={others.map((m) => avatarOf(m.principal))} size={20} max={3} />
     </span>
   {/if}
   {#if workThread}
@@ -477,6 +477,8 @@
     display: none;
   }
   .purpose {
+    flex: 1 1 0;
+    min-width: 0;
     margin-left: 10px;
     overflow: hidden;
     text-overflow: ellipsis;

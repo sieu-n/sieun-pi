@@ -256,16 +256,6 @@
   ondragleave={() => (dragging = false)}
   {ondrop}
 >
-  {#if attachments.length}
-    <div class="attachments">
-      {#each attachments as a, index (a.url)}
-        <div class="thumb">
-          <img src={a.url} alt={a.file.name} />
-          <span class="remove"><IconButton icon="close" label="Remove {a.file.name}" size="xs" variant="glass" onclick={() => removeAttachment(index)} /></span>
-        </div>
-      {/each}
-    </div>
-  {/if}
   <div
     bind:this={box}
     class="input"
@@ -282,6 +272,16 @@
     {onkeydown}
     {onpaste}
   ></div>
+  {#if attachments.length}
+    <div class="attachments">
+      {#each attachments as a, index (a.url)}
+        <div class="thumb">
+          <img src={a.url} alt={a.file.name} />
+          <span class="remove"><IconButton icon="close" label="Remove {a.file.name}" size="xs" variant="glass" onclick={() => removeAttachment(index)} /></span>
+        </div>
+      {/each}
+    </div>
+  {/if}
   <div class="tools">
     {#if recipients.length}
       <span class="recipients" title="Sends to {recipients.map((r) => r.name).join(', ')}">

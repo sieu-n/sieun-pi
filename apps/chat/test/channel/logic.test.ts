@@ -31,6 +31,16 @@ test("a new day starts with a divider and breaks the stack", () => {
   assert.deepEqual(rows.map(row => row.kind === "post" ? (row.first ? "F" : "-") : row.kind), ["day", "F", "day", "F"]);
 });
 
+test("a thread's first reply starts its own group under the root, with its byline", () => {
+  const owner = { id: "owner" };
+  const rows = layoutRows([
+    { id: "root", at: at(28, 10), kind: "message", author: owner },
+    { id: "r1", at: at(28, 10, 1), kind: "message", author: owner },
+    { id: "r2", at: at(28, 10, 2), kind: "message", author: owner },
+  ], "root");
+  assert.deepEqual(rows.map(row => row.kind === "post" ? `${row.key}:${row.first ? "F" : ""}${row.last ? "L" : ""}` : row.kind), ["day", "root:FL", "r1:F", "r2:L"]);
+});
+
 test("openQuery finds @ and # at the caret and ignores emails and closed names", () => {
   assert.deepEqual(openQuery("hi @cra", 7), { trigger: "@", start: 3, text: "cra" });
   assert.deepEqual(openQuery("@Crawler V", 10), { trigger: "@", start: 0, text: "Crawler V" });

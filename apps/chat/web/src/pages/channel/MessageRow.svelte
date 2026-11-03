@@ -19,7 +19,7 @@
   import DeletePostDialog from "./DeletePostDialog.svelte";
   import PostEditor from "./PostEditor.svelte";
   import { offlineText } from "$pages/agents/host-badge";
-  import { avatarKind, deliveryText, isOwn, placeText, QUIET_TURN, runningTool } from "./present";
+  import { avatarKind, avatarOf, deliveryText, isOwn, placeText, QUIET_TURN, runningTool } from "./present";
 
   type Props = {
     item: Exclude<Item, { kind: "system" }>;
@@ -207,7 +207,7 @@
     <ThreadPill
       {own}
       {layout}
-      members={message.thread.authors.map((a) => ({ id: a.id, name: a.name, kind: avatarKind(a) }))}
+      members={message.thread.authors.map(avatarOf)}
       label=""
       replies={message.thread.replies}
       lastAt={message.thread.lastAt}
@@ -221,7 +221,7 @@
   <li bind:this={rowEl} class="row slack" class:own class:first class:pending class:picking data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined}>
     <div class="gutter">
       {#if first}
-        <Avatar name={item.author.name} kind={avatarKind(item.author)} seed={item.author.id} size={36} status={statusOf?.(item.author.id) ?? null} />
+        <Avatar name={avatarOf(item.author).name} kind={avatarKind(item.author)} seed={item.author.id} size={36} status={statusOf?.(item.author.id) ?? null} />
       {:else}
         <time class="clock" datetime={new Date(item.at).toISOString()} title={stampLabel(item.at)}>{clockLabel(item.at)}</time>
       {/if}
@@ -280,7 +280,7 @@
     <div class="line">
       <div class="gutter">
         {#if last}
-          <Avatar name={item.author.name} kind={avatarKind(item.author)} seed={item.author.id} size={32} status={statusOf?.(item.author.id) ?? null} />
+          <Avatar name={avatarOf(item.author).name} kind={avatarKind(item.author)} seed={item.author.id} size={32} status={statusOf?.(item.author.id) ?? null} />
         {/if}
       </div>
       <div class="stack">
@@ -694,13 +694,15 @@
     padding: 0;
   }
   .slack .images {
+    container-type: inline-size;
+    align-self: stretch;
     margin-top: 4px;
   }
   .slack .image {
     border-radius: 8px;
   }
   .slack .image img {
-    max-width: 360px;
+    max-width: min(360px, calc(100cqi - 2px));
     max-height: 360px;
   }
   .slack .actions {

@@ -8,7 +8,7 @@
   import type { MarkdownContext } from "$lib/ui/markdown";
   import type { Status } from "$lib/ui/types";
   import MessageRow from "./MessageRow.svelte";
-  import { avatarKind, waitingSend } from "./present";
+  import { avatarOf, waitingSend } from "./present";
   import { layoutRows } from "./rows";
 
   type Props = {
@@ -54,7 +54,7 @@
 
   /** A post the owner deleted goes, as in Slack, except a channel root that keeps its replies, and the root atop a thread pane. */
   const shown = $derived(items.filter((item, index) => !(item.kind === "message" && item.deleted && !item.thread && !(replyCount !== null && index === 0))));
-  const rows = $derived(layoutRows(shown));
+  const rows = $derived(layoutRows(shown, replyCount ? shown[0]?.id : undefined));
   const slack = $derived(layout === "slack");
   const intro = $derived(slack && beginning && !hasOlder && !loadingOlder ? beginning : null);
   const introName = $derived(intro ? (intro.kind === "solo" ? intro.name : `#${intro.name}`) : "");
@@ -101,6 +101,7 @@
       if (stick) toBottom();
     });
     observer.observe(rowsEl);
+    if (scroller) observer.observe(scroller);
     return () => observer.disconnect();
   });
 
@@ -172,7 +173,7 @@
             <li data-message-id={row.item.id}>
               <SystemLine
                 text={row.item.text}
-                members={row.item.kind === "system" ? row.item.avatars.map((a) => ({ id: a.id, name: a.name, kind: avatarKind(a) })) : []}
+                members={row.item.kind === "system" ? row.item.avatars.map(avatarOf) : []}
               />
             </li>
           {:else if row.item.kind !== "system"}
@@ -225,9 +226,13 @@
     min-height: 0;
     overflow-y: auto;
     overflow-anchor: none;
+    display: flex;
+    flex-direction: column;
     padding: 0 var(--space-panel-inset) 16px;
     scrollbar-gutter: stable;
-    scrollbar-width: thin;
+  }
+  .feed > * {
+    flex: none;
   }
   .compact .feed {
     padding: 0 16px 12px;
@@ -245,7 +250,9 @@
   }
   .edge {
     display: flex;
+    flex: none;
     justify-content: center;
+    margin-top: auto;
     min-height: 16px;
     padding-top: 12px;
     color: var(--text-subtle);

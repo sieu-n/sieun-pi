@@ -2,6 +2,7 @@ import type { AgentSummary, Delivery, ImageUpload, Item, Principal, Room, Step, 
 import type { MarkdownContext } from "$lib/ui/markdown";
 import { offlineText } from "../agents/host-badge.ts";
 import type { PickerItem } from "$lib/ui/types";
+import { OWNER_NAME } from "../../lib/owner.ts";
 
 export type TurnItem = Extract<Item, { kind: "turn" }>;
 export type MessageItem = Extract<Item, { kind: "message" }>;
@@ -57,6 +58,13 @@ export function mentionContext(agents: readonly AgentSummary[], channels: readon
 export const isOwn = (item: Item): boolean => item.kind !== "system" && item.author.id === "owner";
 
 export const avatarKind = (principal: Principal): "person" | "agent" => (principal.kind === "owner" ? "person" : "agent");
+
+/** A principal as an avatar draws it: the owner as the top bar's "S" in his own color, an agent as its art. */
+export const avatarOf = (principal: Principal): { id: string; name: string; kind: "person" | "agent" } => ({
+  id: principal.id,
+  name: principal.kind === "owner" ? OWNER_NAME : principal.name,
+  kind: avatarKind(principal),
+});
 
 /** What a composer hands its page on send. */
 export type Outgoing = { text: string; mentions: string[]; images: ImageUpload[] };
