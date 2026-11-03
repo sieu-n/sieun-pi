@@ -29,7 +29,33 @@ export const isSoloRoom = (id: ConversationId): boolean => id.startsWith("so_");
  */
 const boardBase = (chat: string): string => (chat.startsWith("ag_") ? `/api/agents/${enc(chat)}` : `/api/threads/${enc(chat)}`);
 
+/**
+ * How long the page waited for each call, posted in batches to POST /api/timings for the daily speed duty (server/request-log.ts). It holds
+ * what the server's own timing misses: the network and the wait while another request blocks the server.
+ */
+const timings: { m: string; p: string; s: number; ms: number }[] = [];
+let timingsTimer: ReturnType<typeof setTimeout> | undefined;
+
+function sendTimings(): void {
+  clearTimeout(timingsTimer);
+  timingsTimer = undefined;
+  if (!timings.length) return;
+  const body = JSON.stringify({ samples: timings.splice(0) });
+  if (!navigator.sendBeacon?.("/api/timings", new Blob([body], { type: "application/json" }))) {
+    void fetch("/api/timings", { method: "POST", headers: { "content-type": "application/json" }, body, keepalive: true }).catch(() => {});
+  }
+}
+
+function recordTiming(m: string, path: string, s: number, ms: number): void {
+  if (typeof window === "undefined") return;
+  timings.push({ m, p: path.split("?")[0]!, s, ms: Math.round(ms) });
+  timingsTimer ??= setTimeout(sendTimings, 10_000);
+}
+
+if (typeof window !== "undefined") addEventListener("pagehide", sendTimings);
+
 async function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  const started = performance.now();
   const response = await fetch(path, {
     method,
     headers: body === undefined ? {} : { "content-type": "application/json" },
@@ -37,6 +63,7 @@ async function call<T>(method: string, path: string, body?: unknown, signal?: Ab
     ...(signal ? { signal } : {}),
   });
   const text = await response.text();
+  recordTiming(method, path, response.status, performance.now() - started);
   const value = text ? (JSON.parse(text) as unknown) : undefined;
   if (!response.ok) throw new ApiError(response.status, (value as { error?: string } | undefined)?.error ?? `${method} ${path} failed with ${response.status}`);
   return value as T;

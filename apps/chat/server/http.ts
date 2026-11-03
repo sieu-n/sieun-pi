@@ -18,12 +18,13 @@ import { CwdRefused } from "./projects.ts";
 import { isHostAway } from "./host/types.ts";
 import { readJson } from "./store.ts";
 import { usageReport, hostsReport } from "./usage.ts";
+import { clientTimings, RequestLog } from "./request-log.ts";
 import { accountRoutes, PoolError } from "./accounts.ts";
 import { serveWiki } from "./wiki/routes.ts";
 
 type Params = Record<string, string>;
 type Handler = (req: IncomingMessage, params: Params, query: URLSearchParams, body: () => Promise<unknown>) => Promise<unknown>;
-type Route = { method: string; pattern: RegExp; keys: string[]; handler: Handler };
+type Route = { method: string; path: string; pattern: RegExp; keys: string[]; handler: Handler };
 
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg",
@@ -39,7 +40,15 @@ function route(method: string, path: string, handler: Handler): Route {
     keys.push(key);
     return "([^/]+)";
   })}$`);
-  return { method, pattern, keys, handler };
+  return { method, path, pattern, keys, handler };
+}
+
+/** The route pattern a request's path matches, such as `/api/c/:id/items`, for the request log. */
+function routeLabel(table: Route[], method: string, path: string): string {
+  const found = table.find(r => r.method === method && r.pattern.test(path));
+  if (found) return found.path;
+  const prefix = ["/api/images/", "/api/uploads/"].find(start => path.startsWith(start));
+  return prefix ? `${prefix}*` : path === "/api/local-image" ? path : "unmatched";
 }
 
 async function readBody(req: IncomingMessage): Promise<unknown> {
@@ -247,7 +256,19 @@ export function routes(app: App): Route[] {
 
 export function serve(app: App): Server {
   const table = routes(app);
-  const server = createServer((req, res) => void handle(app, table, req, res));
+  const requests = new RequestLog(join(app.config.dataDir, "requests"), app.log);
+  const server = createServer((req, res) => {
+    const path = (req.url ?? "/").split("?")[0]!;
+    const method = req.method ?? "GET";
+    if (path === "/api/timings" && method === "POST") return void takeTimings(table, requests, req, res);
+    if (path.startsWith("/api/")) {
+      const started = performance.now();
+      res.once("close", () => requests.write({
+        at: Date.now(), src: "server", m: method, r: routeLabel(table, method, path), p: path, s: res.writableFinished ? res.statusCode : 0, ms: performance.now() - started,
+      }));
+    }
+    void handle(app, table, req, res);
+  });
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url ?? "/", "http://x");
     if (url.pathname !== "/api/live") {
@@ -257,6 +278,18 @@ export function serve(app: App): Server {
     app.wss.handleUpgrade(req, socket, head, ws => app.wss.emit("connection", ws, req));
   });
   return server;
+}
+
+/** POST /api/timings: the web client's wait for each call it made (request-log.ts), with each path named by its route. */
+async function takeTimings(table: Route[], requests: RequestLog, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  try {
+    const at = Date.now();
+    const samples = clientTimings(await readBody(req));
+    for (const sample of samples) requests.write({ at, src: "client", ...sample, r: routeLabel(table, sample.m, sample.p) });
+    json(res, 200, { taken: samples.length });
+  } catch (error) {
+    json(res, 400, { error: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 function json(res: ServerResponse, status: number, value: unknown): void {

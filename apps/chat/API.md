@@ -169,6 +169,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | `api.pool()` | `GET /api/pool` | `AccountsView` with no thread, from the pi-pool reading the Accounts endpoints share. |
 | `api.hosts()` | `GET /api/hosts` | `HostsReport`: each box's relay, pi-host, machine reading and threads. |
 | `api.corrections()` | `GET /api/corrections` | The owner's corrections ledger, read only. |
+| none, `call()` posts it | `POST /api/timings` | `{samples: [{m, p, s, ms}]}`, the page's wait for each call; the server logs it with its own handler time per /api request in `<data dir>/requests/<UTC day>.jsonl`, which `scripts/duties/api-speed.ts` reads. |
 
 1. Usage totals and each kind's cost (input, output, cache read, cache write) are pi-host's own sums from each answer's usage (`durable_usage`), with no estimate.
 
