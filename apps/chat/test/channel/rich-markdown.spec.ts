@@ -141,6 +141,18 @@ test("a wiki link opens the page in the viewer popup over the chat, and Esc or B
   await expect(dialog).toBeHidden();
   await expect(page).toHaveURL(before);
   await expect(composerInput(conversation(page))).toBeVisible();
+  // A wiki link clicked inside the frame loads in place, so Back still closes the popup.
+  await link.click();
+  await expect.poll(() => page.frames().length).toBeGreaterThan(1);
+  const length = await page.evaluate(() => history.length);
+  const inner = frame.contentFrame();
+  await inner.locator("body").evaluate((body) => body.insertAdjacentHTML("afterbegin", '<a id="walk-link" href="/wiki/apps/index.html">apps</a>'));
+  await inner.locator("#walk-link").click();
+  await expect.poll(() => inner.locator("body").evaluate(() => location.pathname)).toBe("/wiki/apps/index.html");
+  expect(await page.evaluate(() => history.length)).toBe(length);
+  await page.goBack();
+  await expect(dialog).toBeHidden();
+  await expect(page).toHaveURL(before);
   // An entry the page in the frame pushes does not turn Esc into a step back inside the frame.
   await link.click();
   await expect(frame).toBeVisible();

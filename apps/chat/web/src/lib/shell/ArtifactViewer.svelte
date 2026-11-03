@@ -120,7 +120,9 @@
     // A wiki link loads in the frame in place, since an entry the frame pushed would make Back and closeView's history.back() step the
     // frame instead of closing. A link out of the wiki opens in a tab, and a link into this app opens here.
     doc.addEventListener("click", (event) => {
-      const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
+      // The frame's nodes belong to its own window, so `instanceof Element` of this window is false for them.
+      const { Element: FrameElement } = win as Window & typeof globalThis;
+      const link = event.target instanceof FrameElement ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
       if (!link || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
       let url: URL;
       try {
