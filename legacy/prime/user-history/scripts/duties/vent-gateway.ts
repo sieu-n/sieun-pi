@@ -485,7 +485,7 @@ async function keyListing(): Promise<KeyListing> {
     .then(stdout => { boxLocations(JSON.parse(stdout.trim().split("\n").pop()!) as BoxReaderOut, locations); },
       (error: unknown) => { unreadable[`${BOX} box reader`] = errorText(error); }));
   await Promise.all(tasks);
-  return { locations, unreadable, classOf };
+  return { locations, unreadable, ...classOf ? { classOf } : {} };
 }
 
 /** The tip's lines that name a removed provider, read with git grep (wiki content and binaries skipped), and tables.py at the tip. Exit 1 is no match. */
