@@ -143,6 +143,7 @@ export class DurableCommands {
             ...(optNum(command, "before") === undefined ? {} : { before: optNum(command, "before")! }),
             ...(optNum(command, "after") === undefined ? {} : { after: optNum(command, "after")! }),
             ...(optNum(command, "limit") === undefined ? {} : { limit: optNum(command, "limit")! }),
+            ...(command.lean === true ? { lean: true } : {}),
           }));
         case "durable_search":
           return done(this.threads.search({

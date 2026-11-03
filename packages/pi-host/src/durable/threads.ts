@@ -28,6 +28,7 @@ import { isAbsolute, join } from "node:path";
 import { Leases, SessionLockedError } from "../lease.ts";
 import { statusOf, ThreadIndex, type IndexedEntry, type SearchPage, type SearchQuery, type ThreadRow, type ThreadStatus, type UsageRow, type UsageTotal } from "./index-db.ts";
 import { speechOf } from "./feed.ts";
+import { leanEntry } from "./lean.ts";
 import { headFor, parseSession } from "./import.ts";
 import { AgentMessageEntry, ChatDoc, threadEnv, threadRegistry } from "./registry.ts";
 import { SPEAKING_TOOLS, type PrimeChat } from "./prime-chat.ts";
@@ -797,7 +798,7 @@ export class DurableThreads {
   }
 
   /** Entries newest first: `before` is an exclusive entry id, so the timeline loads the newest page and scrolls up. */
-  async entries(id: string, query: { conversation?: number; before?: number; after?: number; limit?: number }): Promise<{ entries: EntryRecord[]; more: boolean }> {
+  async entries(id: string, query: { conversation?: number; before?: number; after?: number; limit?: number; lean?: boolean }): Promise<{ entries: EntryRecord[]; more: boolean }> {
     const open = await this.thread(id);
     const conversation = await this.conversation(open, query.conversation);
     const limit = Math.min(query.limit ?? 50, PAGE_MAX);
@@ -806,7 +807,7 @@ export class DurableThreads {
       ...(query.before === undefined ? {} : { maxEntryId: (query.before - 1) as EntryRecord["id"] }),
       ...(query.after === undefined ? {} : { minEntryId: (query.after + 1) as EntryRecord["id"] }),
     }, limit, undefined, context);
-    return { entries: [...page.items], more: page.next !== undefined };
+    return { entries: query.lean ? page.items.map(leanEntry) : [...page.items], more: page.next !== undefined };
   }
 
   async tree(id: string): Promise<TreeNode[]> {
