@@ -2,10 +2,11 @@
 // the TLS handshake and 112 provider keys still sat outside Vent, and the duty has to read those as misses, never as a pass.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { dutyShapeProblem, type DutyMetric } from "../src/shared/chat-duties.ts";
-import { boxLocations, inScope, providerKey, removedProviderRefs, TEST_SENDS_SQL, TIP, UNMEASURED, VENT_SHARE, ventMetrics, webhookVerdicts, type ShareResult, type VentReads } from "../scripts/duties/vent-gateway.ts";
+import { boxLocations, inScope, providerKey, removedProviderRefs, STORE_NAMES, TEST_SENDS_SQL, TIP, UNMEASURED, VENT_SHARE, ventMetrics, webhookVerdicts, type ShareResult, type VentReads } from "../scripts/duties/vent-gateway.ts";
 
 const site = (row: number, status: string, extra: object = {}) => ({ row, app: "convex", provider: "Stripe", runs_in: "Convex staging, prod", status, ...extra });
 const TABLES = 'INTEGRATIONS: dict[str, Integration] = {\n    "zernio": Integration(ZERNIO, "ZERNIO_API_KEY"),\n    "cliproxy-openai": Integration(OPENAI, "CLIPROXY_API_KEY"),\n}\n';
@@ -382,6 +383,11 @@ test("removed_provider_refs skips ElevenLabs' crawler in a user-agent pattern an
   const result = removedProviderRefs({ grep, tables: TABLES }, 0);
   assert.ok(!("error" in result));
   assert.deepEqual(result.flagged.map(flag => flag.item), ["apps/research-agent-be/src/voice.py"]);
+});
+
+test("the store lister ships beside the duty, because the wiki session copy stopped resolving its repo imports on 11-04", () => {
+  assert.ok(existsSync(STORE_NAMES));
+  assert.doesNotMatch(STORE_NAMES, /llm-wiki/);
 });
 
 // Owner rule c119: us-metal02 moved from sieun/dev to dev/sieun on 2026-10-27 08:17Z, and origin/sieun/dev stopped moving.

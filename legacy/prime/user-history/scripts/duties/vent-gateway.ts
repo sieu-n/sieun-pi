@@ -39,9 +39,9 @@ import { clickhouse } from "./vent-integrations.ts";
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
-const SESSIONS = "apps/llm-wiki/content/sessions/2026/10/18";
 export const VENT_SHARE = join(dirname(fileURLToPath(import.meta.url)), "vent-share.py");
-const LISTERS = `${SESSIONS}/1610-vent-cutover-all-callers/data`;
+/** Lists the Railway, Vercel and GitHub store names. It ran from the cutover wiki session until the wiki left the repo, which d1 read as unmeasured on 11-04. */
+export const STORE_NAMES = join(dirname(fileURLToPath(import.meta.url)), "vent-store-names.mjs");
 export const REF = "origin/main";
 /** us-metal02's dev branch dev/sieun (c119), where the cutover lands first: its by-code count shows the code ahead of the next prod promote. */
 export const TIP_BRANCH = "dev/sieun";
@@ -453,7 +453,7 @@ async function keyListing(): Promise<KeyListing> {
   const locations: Record<string, string[]> = {};
   const unreadable: Record<string, string> = {};
   const tasks: Promise<void>[] = [];
-  tasks.push(run("node", [`${LISTERS}/list-store-names.mjs`]).then(stdout => {
+  tasks.push(run("node", [STORE_NAMES]).then(stdout => {
     const listed = JSON.parse(stdout) as { out: Record<string, string[]>; unreadable: Record<string, string> };
     Object.assign(locations, listed.out);
     // sieu-n is a user account, so the org secrets call answers 404 and there is no org store to read.
