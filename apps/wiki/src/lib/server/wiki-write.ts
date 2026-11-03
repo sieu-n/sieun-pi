@@ -178,7 +178,7 @@ export async function commitPage(input: {
 	diff: string;
 	linesAdded: number;
 	linesRemoved: number;
-	/** Page gate rule 6 warnings: a source_ref this write adds changed after the page's last_verified. */
+	/** Page gate warnings (rules 6 and 7): a source_ref this write adds, or a commit its new last_verified hides, changed after the page's last_verified. */
 	warnings?: string[];
 }> {
 	const { rel, full } = resolveWritePath(input.rawPath);
@@ -222,7 +222,7 @@ export async function commitPage(input: {
 	}
 	await assertPageInvariants(rel, exists ? before : null, input.content);
 	const code = codeRepoDir();
-	const warnings = isCuratedPath(rel) && code ? pageWriteWarnings(code, rel, exists ? before : null, input.content) : [];
+	const warnings = isCuratedPath(rel) && code ? pageWriteWarnings(code, rel, exists ? before : null, input.content, input.summary) : [];
 	const written = await writeLogged({
 		rel,
 		full,

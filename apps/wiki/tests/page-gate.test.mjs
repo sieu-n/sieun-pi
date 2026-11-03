@@ -66,6 +66,49 @@ function codeRepo() {
 	return { repo, env, git, write, page, commit };
 }
 
+// 2026-11-03: session push-verdict-tail-11-03 checked 4 pages against its revert 1e85d90226 only and set last_verified at
+// 08:02Z, which hid 65328f3db6 (07:18Z) and 17778738bc (07:26Z) from the stale report. Rule 7 names the hidden commits in the
+// page API answer and lets the write through (c98).
+test('the page gate warns on a write whose later last_verified hides a commit the page does not name, and lets it through', (t) => {
+	const f = codeRepo();
+	t.after(() => rmSync(f.repo, { recursive: true, force: true }));
+	const at = (when, ...files) => {
+		f.git('add', ...files);
+		execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'c'], {
+			cwd: f.repo,
+			env: { ...f.env, GIT_AUTHOR_DATE: when, GIT_COMMITTER_DATE: when },
+		});
+		return f.git('rev-parse', 'HEAD');
+	};
+	const PUSH = 'domains/devops/stability-pipeline/push-ci.html';
+	const PLAN = 'scripts/ci/plan.mjs';
+	const plan = (shards, legs) => `export function searchE2e() {\n\treturn ${shards};\n}\nexport function searchUnit() {\n\treturn ${legs};\n}\n`;
+	const push = (verified, body) =>
+		html({ title: 'Push CI', description: 'd', last_verified: verified, source_refs: [`${PLAN}::searchE2e`, `${PLAN}::searchUnit`] }, body);
+	const before = push('2026-11-03T07:10Z', '<p>search / e2e runs on one leg, and search unit tests on two.</p>');
+	at('2026-11-03T07:00:00Z', f.write(PLAN, plan(1, 2)), f.page(PUSH, before));
+	const split = at('2026-11-03T07:18:56Z', f.write(PLAN, plan(2, 2)));
+	const revert = at('2026-11-03T07:59:38Z', f.write(PLAN, plan(2, 1)));
+
+	const stamped = push('2026-11-03T08:02Z', '<p>search / e2e runs on one leg, and search unit tests on one again since 1e85d90226.</p>');
+	assert.deepEqual(pageWriteReasons(f.repo, PUSH, before, stamped), [], 'rule 7 never refuses');
+	const warned = pageWriteWarnings(f.repo, PUSH, before, stamped).join('\n');
+	assert.match(
+		warned,
+		new RegExp(`it moves last_verified from 2026-11-03T07:10Z to 2026-11-03T08:02Z past ${split.slice(0, 10)}, ${revert.slice(0, 10)}, which`),
+	);
+	const named = push('2026-11-03T08:02Z', `<p>search / e2e runs on two shard legs since ${split.slice(0, 10)}, and search unit tests on one since ${revert.slice(0, 10)}.</p>`);
+	assert.deepEqual(pageWriteWarnings(f.repo, PUSH, before, named), [], 'a write that names each commit it checked passes');
+	assert.deepEqual(
+		pageWriteWarnings(f.repo, PUSH, before, stamped, `wiki-dream: checked ${split.slice(0, 10)} and ${revert.slice(0, 10)}`),
+		[],
+		'a summary that names each commit counts too',
+	);
+	assert.deepEqual(pageWriteWarnings(f.repo, PUSH, before, before), [], 'a write that keeps last_verified passes');
+	const early = push('2026-11-03T07:15Z', '<p>search / e2e runs on one leg.</p>');
+	assert.deepEqual(pageWriteWarnings(f.repo, PUSH, before, early), [], 'a last_verified before the commits hides none');
+});
+
 // A relative link to a .py or .mjs file in git is a dead_link, because the index serves no .py or .mjs page.
 const SCALE = 'projects/multi-platform-crawl-scale/index.html';
 const scale = (body) => html({ title: 'Multi-platform crawl scale', description: 'd', last_verified: DAY }, body);
@@ -131,7 +174,7 @@ test('the page gate warns on a source_ref a write adds whose file changed after 
 	const printed = t.mock.method(process.stderr, 'write', () => true);
 	assert.equal(pageStackRefusal(f.repo, changed, landed), null);
 	assert.match(printed.mock.calls.map((call) => call.arguments[0]).join(''), reason);
-	assert.deepEqual(pageWriteWarnings(f.repo, MOCK, before, mock(NEW, '2026-10-30T22:49Z')), [], 'a recheck after the change passes');
+	assert.deepEqual(pageWriteWarnings(f.repo, MOCK, before, mock(NEW, '2026-10-30T22:49Z'), `checked ${changed.slice(0, 10)}`), [], 'a recheck after the change passes');
 	assert.deepEqual(pageWriteWarnings(f.repo, MOCK, swapped, swapped), [], 'a ref the page already cited is the stale report\'s');
 	f.page(MOCK, before);
 	const reverted = at('2026-10-30T22:51:00Z', page);

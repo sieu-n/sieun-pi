@@ -18,6 +18,9 @@
  *      (stale_vs_code). When a first-parent commit at <rev> changed the ref's file, or for `path::name` that definition,
  *      after the page's check (`verifiedAt`), the write goes through and the gate prints the page, the ref and that commit,
  *      so its writer re-verifies the page. Owner rules c81 and c98 keep a new rule soft until the d4 runs show it repeat.
+ *   7. A warning, not a refusal, in the page API answer only: a write that moves `last_verified` past a first-parent commit that
+ *      changed what the page states names that commit's sha in the page or its summary (hiddenCommitsReason), because the stale report reads only commits
+ *      after `last_verified`. A page behind code guards no data, money, auth, outside send or vendor limit (owner rule c98).
  * Rules 3 to 6 judge only what the write adds, because 265 of 296 curated pages had no `last_verified` on 2026-10-19
  * and a rule on the whole page would refuse every edit to them.
  *
@@ -53,6 +56,7 @@ import { definitionCode, definitionText, symbolRef } from '../src/lib/definition
 import { siblingRef, siblingRepos } from '../src/lib/sibling-repos.mjs';
 import { citedWords, dayStart, under, verifiedAt, words } from '../src/lib/stale-rules.mjs';
 import { citedRefs, SETTLED_STATUS, hrefsOf, missingCodeRefs, parseMeta, resolveHref } from './wiki-health.mjs';
+import { checkedAt, commitsBehind } from './behind-commits.mjs';
 
 const CONTENT = 'apps/llm-wiki/content/';
 const HOME = 'index.html';
@@ -657,11 +661,40 @@ export function pageGateWarnings(rev, files) {
 	return behindRows(root, rev, changed, Date.now());
 }
 
-/** The rule 6 warning reasons for one page API write, which wiki-write.ts returns with the write. */
-export function pageWriteWarnings(root, page, before, after) {
+/**
+ * Why the write of `html` over `old` moves the page's `last_verified` past first-parent commits of `rev` that changed what the
+ * page states (behind-commits.mjs commitsBehind) that neither the page nor the write's `summary` names by a short sha, or null. The stale report
+ * reads only commits after the new `last_verified`, so the write hides each such commit unless its writer checked it.
+ * Why: on 2026-11-03 at 08:02Z a session set last_verified on 4 pages after checking only its revert 1e85d90226, and the stamp
+ * hid 65328f3db6 (07:18Z) and 17778738bc (07:26Z) from the stale report until the wiki dream rewrote the pages at 08:04Z to
+ * 08:06Z. A wiki dream writer did the same to retrieval.html on 2026-11-02.
+ */
+export function hiddenCommitsReason(root, rev, page, old, html, writtenAt, summary = '') {
+	const was = String(parseMeta(old ?? '')?.last_verified ?? '');
+	const now = String(parseMeta(html)?.last_verified ?? '');
+	if (page === HOME || !VERIFIED.test(was) || !VERIFIED.test(now) || was === now) return null;
+	const from = checkedAt(root, rev, page, was);
+	const to = checkedAt(root, rev, page, now, writtenAt);
+	if (to <= from) return null;
+	const hidden = commitsBehind(root, rev, page, html, from, to)
+		.map((c) => c.sha.slice(0, 10))
+		.filter((sha) => !html.includes(sha.slice(0, 7)) && !summary.includes(sha.slice(0, 7)));
+	if (!hidden.length) return null;
+	return (
+		`it moves last_verified from ${was} to ${now} past ${hidden.join(', ')}, which changed code its source_refs state and ` +
+		`which the page does not name; a later last_verified hides each from the stale report, so read the page against ` +
+		`each of those diffs, fix what they changed, and name each sha you checked in the page or the write's summary`
+	);
+}
+
+/** The page gate warning reasons for one page API write (rule 6 and hiddenCommitsReason), which wiki-write.ts returns with the write. */
+export function pageWriteWarnings(root, page, before, after, summary = '') {
 	if (page === HOME || !isCuratedPath(`${CONTENT}${page}`)) return [];
-	const reason = behindRefReason(root, 'HEAD', page, before ?? undefined, after, Date.now());
-	return reason ? [reason] : [];
+	const writtenAt = Date.now();
+	return [
+		behindRefReason(root, 'HEAD', page, before ?? undefined, after, writtenAt),
+		hiddenCommitsReason(root, 'HEAD', page, before ?? undefined, after, writtenAt, summary),
+	].filter(Boolean);
 }
 
 const REFUSAL = 'page gate: this commit adds wiki problems the page API refuses';

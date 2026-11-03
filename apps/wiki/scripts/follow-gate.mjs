@@ -26,10 +26,10 @@
  */
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { codeText } from '../src/lib/code-text.mjs';
-import { definitionCode, definitionText, symbolRef } from '../src/lib/definitions.mjs';
+import { definitionText, symbolRef } from '../src/lib/definitions.mjs';
 import { siblingRef, siblingRepos } from '../src/lib/sibling-repos.mjs';
-import { changedLines, citedWords, citesLines, followed, linesTouch, under } from '../src/lib/stale-rules.mjs';
+import { under } from '../src/lib/stale-rules.mjs';
+import { blobsAt, checkedAt, commitsBehind, refBehind } from './behind-commits.mjs';
 import { pagesAt } from './page-gate.mjs';
 import { citedRefs, missingCodeRefs, parseMeta } from './wiki-health.mjs';
 import { wikiConfig } from '../src/lib/wiki-config.mjs';
@@ -179,64 +179,15 @@ export function followRefusal(root, before, after, siblings = siblingRepos()) {
 	].join('\n');
 }
 
-/** The text of each `rev:path` spec, read with one `git cat-file --batch` process; a spec git lacks is left out. */
-function blobsAt(root, specs) {
-	const texts = new Map();
-	if (!specs.length) return texts;
-	const run = spawnSync('git', ['-C', root, 'cat-file', '--batch'], { input: specs.join('\n') + '\n', maxBuffer: Infinity });
-	if (run.error || run.status !== 0) throw new Error(`git cat-file failed: ${String(run.stderr ?? run.error).trim()}`);
-	const out = run.stdout;
-	let at = 0;
-	for (const spec of specs) {
-		const eol = out.indexOf(10, at);
-		const header = String(out.subarray(at, eol));
-		at = eol + 1;
-		if (header.endsWith(' missing') || header.endsWith(' ambiguous')) continue;
-		const size = Number(header.split(' ')[2]);
-		texts.set(spec, String(out.subarray(at, at + size)));
-		at += size + 1;
-	}
-	return texts;
-}
-
 /**
- * Whether one commit from `before` to `after` changes what the page `html` states through its cited `ref`, read by the rules the
- * stale report (wiki-stale.ts) applies to each commit after a page's check: a `path::name` ref when the code of that definition
- * changed, or for a table only the entries the page names, or for a class all but a field added with a default the page does not
- * name; a whole-file or folder ref when the page cites its line numbers, or a
- * changed code line holds a distinctive word or a whole path of the page's `<code>` spans, or a definition the page names changed.
- */
-function refBehind(html, ref, changed, before, after, read) {
-	const symbol = symbolRef(ref);
-	if (siblingRef(ref) || /^[a-z][a-z0-9+.-]*:/i.test(symbol?.file ?? ref)) return false;
-	const files = changed.filter((file) => under(symbol?.file ?? ref, file));
-	if (!files.length) return false;
-	const definitionAt = (rev, file, name) => definitionCode(read(rev, file), name, file);
-	if (symbol) {
-		const was = definitionAt(before, symbol.file, symbol.name);
-		const now = definitionAt(after, symbol.file, symbol.name);
-		if (was === null || now === null) return false;
-		const follow = followed(html, was);
-		return follow(was) !== follow(now);
-	}
-	const lines = citesLines(html, ref);
-	const cited = citedWords(html);
-	return files.some((file) => {
-		if (lines) return read(before, file) !== read(after, file);
-		const was = read(before, file);
-		const now = read(after, file);
-		const wasCode = was === null ? null : codeText(was, file);
-		const nowCode = now === null ? null : codeText(now, file);
-		if (wasCode === nowCode) return false;
-		if (linesTouch(changedLines(wasCode, nowCode), cited)) return true;
-		return [...cited.names].some((name) => definitionAt(before, file, name) !== definitionAt(after, file, name));
-	});
-}
-
-/**
- * One `{ page, refs }` row per curated page with a `last_verified` that this commit leaves out while it changes code the page
- * cites in `source_refs`, by the stale report's rules (refBehind). The stale report reads a page changed in the same commit as
- * checked against that commit's code, so such a page passes.
+ * One `{ page, refs, lastVerified, earlier }` row per curated page with a `last_verified` that this commit leaves out while it
+ * changes code the page cites in `source_refs`, by the stale report's rules (refBehind). The stale report reads a page changed in
+ * the same commit as checked against that commit's code, so such a page passes. `earlier` holds the short shas of the
+ * first-parent commits of `before` after the page's check that changed what it states too (commitsBehind), oldest first, empty
+ * when `before` is a tree.
+ * Why: on 2026-11-03 at 08:02Z a session followed this warning for its revert 1e85d90226 and set last_verified on 4 pages that
+ * were already behind 65328f3db6 (07:18Z) and 17778738bc (07:26Z), and the later stamp hid both from the stale report until the
+ * wiki dream rewrote the pages at 08:04Z to 08:06Z. The warning named only the one commit, so its writer checked only that one.
  */
 export function behindPages(root, before, after) {
 	const changed = [...changedPaths(root, before, after).keys()];
@@ -248,6 +199,7 @@ export function behindPages(root, before, after) {
 	);
 	const texts = blobsAt(root, changed.flatMap((file) => [`${before}:${file}`, `${after}:${file}`]));
 	const read = (rev, file) => texts.get(`${rev}:${file}`) ?? null;
+	const isCommit = git(root, ['cat-file', '-t', before]).trim() === 'commit';
 	const rows = [];
 	for (const [page, html] of pagesAt(root, after)) {
 		if (inCommit.has(`${CONTENT}${page}`)) continue;
@@ -256,7 +208,10 @@ export function behindPages(root, before, after) {
 		const refs = meta.source_refs.filter(
 			(ref) => typeof ref === 'string' && refBehind(html, ref, changed, before, after, read),
 		);
-		if (refs.length) rows.push({ page, refs });
+		if (!refs.length) continue;
+		const checked = isCommit ? checkedAt(root, before, page, String(meta.last_verified)) : null;
+		const earlier = checked === null ? [] : commitsBehind(root, before, page, html, checked).map((c) => c.sha.slice(0, 10));
+		rows.push({ page, refs, lastVerified: String(meta.last_verified), earlier });
 	}
 	return rows;
 }
@@ -275,9 +230,15 @@ export function behindWarning(root, before, after) {
 	const terms = pageTerms();
 	return [
 		'follow gate warning: this commit changes code that curated wiki pages state and leaves the pages out, so they will read as behind their code',
-		...rows.map((row) => `  ${terms.name(row.page)}: cites ${row.refs.join(', ')}`),
-		`Read each page against this diff and update it ${terms.fix} next: fix each fact the diff changed, or set last_verified to the current`,
-		`UTC minute, such as ${new Date().toISOString().slice(0, 16)}Z, when the diff changes nothing the page states (sieun-pi apps/wiki/scripts/follow-gate.mjs).`,
+		...rows.map((row) => {
+			const line = `  ${terms.name(row.page)}: cites ${row.refs.join(', ')}`;
+			if (!row.earlier.length) return line;
+			return `${line}, and is already behind ${row.earlier.join(', ')} since its last_verified ${row.lastVerified}`;
+		}),
+		`Read each page against this diff, and against each commit it is already behind, and update it ${terms.fix} next: fix each`,
+		`fact those diffs changed. Set last_verified to the current UTC minute, such as ${new Date().toISOString().slice(0, 16)}Z, only once every one`,
+		'of those diffs is in the page or changes nothing it states, because a later last_verified hides each older commit from the',
+		'stale report (sieun-pi apps/wiki/scripts/follow-gate.mjs).',
 	].join('\n');
 }
 
