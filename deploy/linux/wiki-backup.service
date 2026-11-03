@@ -1,0 +1,9 @@
+[Unit]
+Description=wiki-backup: commit the wiki's .html and .md pages to the private repo sieu-n/wiki-content
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/src/sieun-pi
+ExecStart=%h/.local/node/bin/node scripts/wiki-storage/backup.mjs
