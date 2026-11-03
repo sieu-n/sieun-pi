@@ -83,7 +83,9 @@ export const STAGING_HOST = "https://staging.virev.ai/*";
 /** measured: `convex data` on tremendous-eel-825 returned 16,384 and refused 50,001 ("Requested too many items") on 10-30, with 6,066 rows in searchEmailMessages. */
 export const ROWS_LIMIT = 16_384;
 const OUT = join(REPO, ".cache/duties/dm-extension/latest");
-const RIG = /tests\/(autopair|staging)-real-ig\.mjs/;
+/** Every real-Instagram rig in apps/dm-extension/tests drives the two test accounts on their exits. On 11-03 13:43Z this run
+ *  started while multi-account-real-ig.mjs drove @caiyiting8674 through the same exit, and A's sign-in failed ERR_TUNNEL_CONNECTION_FAILED. */
+const RIG = /tests\/[a-z-]+-real-ig\.mjs/;
 /** Another copy of this precheck, such as a fix job's own run of it (10-31 06:33Z to 06:54Z). */
 const DUTY_RUN = /scripts\/duties\/dm-extension\.ts/;
 

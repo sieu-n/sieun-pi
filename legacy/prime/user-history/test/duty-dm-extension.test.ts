@@ -123,8 +123,9 @@ test("the precheck waits on another copy of itself or a rig, never on itself or 
     "200 node --import tsx scripts/duties/dm-extension.ts",
     "300 node /repo/apps/dm-extension/tests/staging-real-ig.mjs --a jar",
     "400 node --test test/duty-dm-extension.test.ts",
+    "500 node /repo/apps/dm-extension/tests/multi-account-real-ig.mjs --a jar",
   ].join("\n");
-  assert.deepEqual(otherRuns(lines, new Set([100, 90])).map(line => line.split(" ")[0]), ["200", "300"]);
+  assert.deepEqual(otherRuns(lines, new Set([100, 90])).map(line => line.split(" ")[0]), ["200", "300", "500"]);
   assert.deepEqual(otherRuns(lines.split("\n").slice(0, 2).join("\n"), new Set([100, 90])), []);
   const out = report({ now: NOW, autopair: AUTOPAIR, e2e: E2E, waited: { ms: 332_400, on: ["node --import tsx scripts/duties/dm-extension.ts"] }, errors: [] }, METRICS);
   assert.equal(out.metrics.e2e_pass, 1);
