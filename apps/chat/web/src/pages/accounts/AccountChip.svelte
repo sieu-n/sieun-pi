@@ -180,4 +180,14 @@
       display: none;
     }
   }
+  @container conversation (max-width: 1000px) {
+    .meters {
+      display: none;
+    }
+  }
+  @container conversation (max-width: 640px) {
+    .name {
+      display: none;
+    }
+  }
 </style>
