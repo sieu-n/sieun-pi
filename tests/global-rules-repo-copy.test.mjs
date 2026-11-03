@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 
 // The repo copy guard (packages/sieun-rules/src/repo-copy.ts), owner rule c193. On 10-29 slack green guy's jobs ran tsc and next dev in
 // per-job `git worktree` copies on the owner's Mac at about 1 GB each in red minutes. These commands are only fed to the handlers.
@@ -197,4 +198,51 @@ test("a checkout's saved root commits stand in for git, and a run fills them in"
   const head = execFileSync("git", ["-C", fresh, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   for (const dir of [fresh, twin]) assert.ok(existsSync(join(dir, ".git", "global-rules-roots")), dir);
   assert.equal(execFileSync("cat", [join(twin, ".git", "global-rules-roots")], { encoding: "utf8" }).trim().split(" ")[1], head);
+});
+
+// At 21:02Z and 21:10Z on 11-03 the guard statted .git in each of the 249 folders beside /home/sieun/work/prime-agent-fix-p8/repo on every
+// tsgo and vitest call, and held a Prime worker's event loop 16.2 s and 7.7 s at box load near 300.
+test("each folder beside a checkout is statted once per host, so a later check or a new neighbor costs a few stats", () => {
+  const place = join(root, "big-place");
+  const origin = (dir, url) => {
+    mkdirSync(join(dir, ".git"), { recursive: true });
+    writeFileSync(join(dir, ".git", "config"), `[remote "origin"]\n\turl = ${url}\n`);
+  };
+  origin(join(place, "proj"), "https://github.com/a/proj.git");
+  const copy = join(place, "proj-renamed");
+  origin(copy, "https://github.com/a/proj.git");
+  for (let i = 0; i < 2000; i++) mkdirSync(join(place, `plain-${i}`));
+  for (let i = 0; i < 500; i++) writeFileSync(join(place, `file-${i}.log`), "");
+  const lib = join(place, "lib");
+  mkdirSync(lib);
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(place, old, old);
+  const fs = createRequire(import.meta.url)("node:fs");
+  const realStat = fs.statSync;
+  let stats = 0;
+  const counted = (fn) => {
+    stats = 0;
+    fs.statSync = (...args) => (stats++, realStat(...args));
+    syncBuiltinESMExports();
+    try {
+      return fn();
+    } finally {
+      fs.statSync = realStat;
+      syncBuiltinESMExports();
+    }
+  };
+  const blocked = (cwd) => guard.onToolCall(event("bash", "pnpm test"), { cwd })?.block === true;
+  assert.equal(counted(() => blocked(copy)), true);
+  assert.ok(stats >= 2000, `the first check judges every folder once: ${stats} stats`);
+  assert.equal(counted(() => blocked(copy)), true);
+  assert.ok(stats < 20, `a second check stats no neighbor: ${stats} stats`);
+  mkdirSync(join(place, "new-folder"));
+  assert.equal(counted(() => blocked(copy)), true);
+  assert.ok(stats < 20, `a new neighbor costs its own stat only: ${stats} stats`);
+  // git clone into lib, a folder made earlier, leaves big-place's times as they were; a command run there lists it.
+  origin(lib, "https://github.com/c/lib.git");
+  origin(join(place, "lib-copy"), "https://github.com/c/lib.git");
+  utimesSync(join(place, "lib-copy", ".git"), old, old);
+  assert.equal(blocked(lib), false, "lib is the main checkout, named after its origin");
+  assert.equal(blocked(join(place, "lib-copy")), true);
 });

@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { type Dirent, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { Verdict } from "./guard.ts";
@@ -146,6 +147,85 @@ function born(top: string): number {
 }
 
 /**
+ * The checkouts with their own `.git` folder directly in `place`. Finding them stats `.git` in each folder there. At 21:02Z and 21:10Z on
+ * 11-03 a job's tsgo and vitest in /home/sieun/work/prime-agent-fix-p8/repo made the guard stat all 249 folders beside it on every
+ * call, at box load near 300, and that held a Prime worker's event loop 16.2 s and 7.7 s. ~/work held 2,002 folders then.
+ * So each folder is judged once per host: the list of judged names and of checkouts stays in memory and in a file under ~/.cache, keyed
+ * by the folder's inode and modified time. When those change, one readdir finds the names, files and new names are told apart by their
+ * directory entry, and only new folders are statted. A folder that looked plain while `place` changed in the last SETTLED_MS is judged
+ * again, so a clone that has made its folder but not yet its `.git` is not kept as plain.
+ */
+function checkoutsIn(place: string): Set<string> {
+	let info: ReturnType<typeof statSync>;
+	try {
+		info = statSync(place);
+	} catch {
+		return new Set();
+	}
+	const stamp = `${info.ino} ${info.mtimeMs}`;
+	let kept = listed.get(place) ?? savedList(place);
+	if (kept?.stamp === stamp) return kept.checkouts;
+	let entries: Dirent[] = [];
+	try {
+		entries = readdirSync(place, { withFileTypes: true });
+	} catch {}
+	const settled = Date.now() - info.mtimeMs >= SETTLED_MS;
+	const next: Listing = { stamp, judged: new Set(), checkouts: new Set() };
+	for (const entry of entries) {
+		if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+		const known = kept?.judged.has(entry.name);
+		const checkout = known ? kept!.checkouts.has(entry.name) : ownCheckout(join(place, entry.name));
+		if (checkout) next.checkouts.add(entry.name);
+		if (known || checkout || settled) next.judged.add(entry.name);
+	}
+	listed.set(place, next);
+	saveList(place, next);
+	return next.checkouts;
+}
+
+/** How long a folder must go unchanged before a plain folder in it is kept as plain (checkoutsIn): git clone makes `.git` within a second of its folder. */
+const SETTLED_MS = 10_000;
+type Listing = { stamp: string; judged: Set<string>; checkouts: Set<string> };
+const listed = new Map<string, Listing>();
+const listFile = (place: string) => join(home(), ".cache", "global-rules", "checkouts", `${createHash("sha1").update(place).digest("hex")}.json`);
+
+function savedList(place: string): Listing | undefined {
+	try {
+		const saved = JSON.parse(readFileSync(listFile(place), "utf8")) as { place?: unknown; stamp?: unknown; judged?: unknown; checkouts?: unknown };
+		const names = (value: unknown) => new Set(Array.isArray(value) ? value.filter((name): name is string => typeof name === "string") : []);
+		if (saved.place !== place || typeof saved.stamp !== "string") return undefined;
+		return { stamp: saved.stamp, judged: names(saved.judged), checkouts: names(saved.checkouts) };
+	} catch {
+		return undefined;
+	}
+}
+
+function saveList(place: string, list: Listing): void {
+	const file = listFile(place);
+	try {
+		mkdirSync(dirname(file), { recursive: true });
+		writeFileSync(`${file}.${process.pid}`, JSON.stringify({ place, stamp: list.stamp, judged: [...list.judged], checkouts: [...list.checkouts] }));
+		renameSync(`${file}.${process.pid}`, file);
+	} catch {
+		// An unwritable cache judges the new folders again in the next process.
+	}
+}
+
+/**
+ * Record that `top` is a checkout in its folder. A `.git` made inside a folder that was judged plain leaves the folder's own modified time
+ * as it was, as when `git clone` fills a folder made earlier, so checkoutsIn would not see it; every checkout a guarded command runs in
+ * is added here.
+ */
+function noteCheckout(top: string): void {
+	const place = dirname(top);
+	const list = listed.get(place);
+	if (!list || list.checkouts.has(basename(top))) return;
+	list.checkouts.add(basename(top));
+	list.judged.add(basename(top));
+	saveList(place, list);
+}
+
+/**
  * The main checkout of the repo that `top` holds when `top` is not it, or null. The main one is the checkout named after its origin repo,
  * then the oldest. Candidates are the folders beside `top` and beside a bundle it was cloned from; a candidate is the same repo when its
  * origin or its root commits match. A clone from a URL elsewhere passes, as `git clone <url>` itself does.
@@ -156,15 +236,12 @@ function mainOf(top: string, url: string | null): string | null {
 	const key = originKey(top, url);
 	const places = new Set<string>([dirname(top), ...(local ? [dirname(local)] : [])]);
 	const candidates = new Set<string>();
-	for (const place of places) {
-		try {
-			for (const entry of readdirSync(place)) candidates.add(join(place, entry));
-		} catch {}
-	}
+	for (const place of places) for (const name of checkoutsIn(place)) candidates.add(join(place, name));
+	noteCheckout(top);
 	const rank = (dir: string): [number, number] => [basename(dir) === name ? 0 : 1, born(dir)];
 	const mine = rank(top);
 	for (const dir of candidates) {
-		if (dir === top || !ownCheckout(dir)) continue;
+		if (dir === top) continue;
 		const theirs = originUrl(dir);
 		if (localOrigin(dir, theirs) === top) continue;
 		const same = (key !== null && originKey(dir, theirs) === key) || (rootsOf(top) !== "" && rootsOf(dir) === rootsOf(top));
