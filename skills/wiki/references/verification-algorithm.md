@@ -64,6 +64,6 @@ curl -s "$WIKI/api/agent/health" | jq .
 ```
 
 If the wiki does not answer, check `systemctl --user status sieun-pi-wiki.service` on us-metal02 (`ssh sieun@100.83.139.73`).
-If `http://127.0.0.1:5176/wiki/api/agent/health` on us-metal02 answers and `:5184/wiki/...` does not, check `sieun-pi-apps-chat.service`, which fronts the engine.
-The Local dev servers duty probes the `wiki` url in `~/.config/sieun-pi/hosts.json`, so read that file first when the duty and the public URL disagree. On 2026-10-18 at 03:09Z a local edit pointed it at `http://localhost:5176`, a stray Mac vite, and the duty missed the public outage.
+If the engine's `/wiki/api/agent/health` on its loopback port (`systemctl --user cat sieun-pi-wiki.service`) answers and `:5184/wiki/...` does not, check `sieun-pi-apps-chat.service`, which fronts the engine.
+The Local dev servers duty probes the `wiki` url in `~/.config/sieun-pi/hosts.json`, so read that file first when the duty and the public URL disagree. On 2026-10-18 at 03:09Z a local edit pointed it at a localhost port, a stray Mac vite, and the duty missed the public outage.
 Check the page in the running server, because a page write needs no build.

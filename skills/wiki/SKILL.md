@@ -9,7 +9,7 @@ The wiki is our work written down as notes that must be true today.
 Query it before you re-derive a fact from code, and write what you learn back to it.
 
 One wiki serves every box at `https://us-metal02-dev.tail0c093d.ts.net:5184/wiki/<path>`.
-The engine is sieun-pi `apps/wiki`, the `sieun-pi-wiki.service` unit on us-metal02 at 127.0.0.1:5176, and the apps/chat server on :5184 fronts it.
+The engine is sieun-pi `apps/wiki`, the `sieun-pi-wiki.service` unit on us-metal02, which listens on loopback only, and the apps/chat server on :5184 fronts it.
 The pages live on us-metal02 under one content root, `~/.pi/wiki/content`, named by `contentRoot` in `~/.config/sieun-pi/wiki.json`, and an agent's space `agents/<slug>/` is its folder `~/.pi/agent/agents/<slug>/`.
 Agents on every box, the Mac too, read and write pages only through the API, because a file written straight into a folder skips the gates, the index and the backup.
 
@@ -46,7 +46,7 @@ wiki.close("what changed", no_durable_knowledge=True)  # or graduated_to=[...] o
 3. A write names its conversation in the `x-pi-conversation` header, and a write without one is stamped `unknown`.
 4. `POST /api/c/<conversation>/workspace` opens the folder, `.../workspace/events` appends a log event and `.../workspace/close` closes it.
 5. Every other `/wiki/*` path passes through to the engine, so the engine's agent API answers at `/wiki/api/agent/*`, such as `/wiki/api/agent/search?q=` and `/wiki/api/agent/sessions`.
-6. Old links and calls on `https://us-metal02-dev.tail0c093d.ts.net:5176` (`/page/<path>`, `/raw/<path>`, `/api/agent/*`) still answer, because the engine puts `/wiki` in front of a path that lacks it.
+6. Old links and calls on the engine's old tailnet port (`/page/<path>`, `/raw/<path>`, `/api/agent/*`) still answer, because the engine puts `/wiki` in front of a path that lacks it, but every new link and call uses `:5184/wiki/`.
 
 ## The page format
 
@@ -73,7 +73,7 @@ This list is the single source for these rules.
 11. Query through the API instead of raw file reads, cite the pages you used, and write the page for any question the wiki could not answer.
 12. Write pages as HTML (`<!--wiki {json}-->`, one `<h1>`, `<wiki-tldr>`) per `references/page-authoring.md`, and always set `description`.
 13. Never edit `@code/` (the read-only repo mirror), another agent's folder or a closed log.
-14. Every wiki path starts at the content root, such as `sessions/...`, `agents/...` or `apps/...`, and the API answers 400 to a path that starts with a disk prefix such as `apps/llm-wiki/content/` or `content/`.
+14. Every wiki path starts at the content root, such as `sessions/...`, `agents/...` or `apps/...`, and the API answers 400 to a path that starts with a disk prefix such as `content/` or the old repo folder.
 15. Mask a raw `ps` capture or any command output before you save it, because app command lines carry keys, and the page API refuses a page that betterleaks flags.
 16. Close with `wiki.close(outcome, ...)`, which needs `graduated_to`, `gaps_created` or `no_durable_knowledge`, and a closed folder answers 403 to every write except `supersede`.
 17. A curated page links a workspace log (`index.html`) or a page it graduated, never another file in a folder, and the prose lint rule `session-link` refuses such a link.
