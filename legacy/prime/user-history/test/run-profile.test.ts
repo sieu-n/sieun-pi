@@ -34,7 +34,9 @@ const heldBy = (node: HeapNode, name: string): number =>
 test("the heap profile beside the cpu profile names the code that holds memory at the stop", async () => {
   const dir = await mkdtemp(join(tmpdir(), "run-profile-"));
   const held: string[][] = [];
-  const holdRows = (): void => { for (let at = 0; at < 200; at++) held.push(Array.from({ length: 1000 }, (_, index) => `row ${at} ${index}`)); };
+  function holdRows(): void {
+    for (let at = 0; at < 200; at++) { const rows: string[] = []; for (let index = 0; index < 1000; index++) rows.push(`row ${at} ${index}`); held.push(rows); }
+  }
   try {
     await mkdir(join(dir, CPU_PROFILE_DIR));
     const profile = await startRunProfile({ dataDir: dir, log: () => {} });
