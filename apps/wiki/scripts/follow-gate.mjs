@@ -9,7 +9,9 @@
  * A `source_refs` entry counts on every page the stale report reads, experiment and settled pages included (lostSourceRefs),
  * while a `<code>` path on an experiment or settled page stays history, as in missingCodeRefs.
  *
- * commit.mjs runs followRefusal on the tree it is about to commit, and land-object.mjs runs it on the stack it lands. The
+ * auto-sns-agent's commit-run.mjs runs followRefusal on the tree it is about to commit, and its land-object.mjs runs it on the
+ * stack it lands, both loading this file through scripts/repo/agent/wiki-follow.mjs from the sieun-pi checkout the wiki config
+ * names. `root` is the code repo, and the pages come from pagesAt, the content root on disk when a wiki config exists. The
  * page gate (page-gate.mjs) judges only page writes, so before this gate a code commit could leave a page behind with no check.
  *
  * Why: the wiki dream's wiki_problems missed 0 in its runs of 2026-10-19 and 2026-10-20 because code commits removed paths
@@ -30,8 +32,20 @@ import { siblingRef, siblingRepos } from '../src/lib/sibling-repos.mjs';
 import { changedLines, citedWords, citesLines, followed, linesTouch, under } from '../src/lib/stale-rules.mjs';
 import { pagesAt } from './page-gate.mjs';
 import { citedRefs, missingCodeRefs, parseMeta } from './wiki-health.mjs';
+import { wikiConfig } from '../src/lib/wiki-config.mjs';
 
 const CONTENT = 'apps/llm-wiki/content/';
+
+/**
+ * How a gate message names a page and its fix. With a wiki config file the pages live under its content root and change
+ * through the page API, so a commit can never carry one; with none, as in a test repo, they sit in git under CONTENT.
+ */
+function pageTerms() {
+	const config = wikiConfig();
+	if (config.file)
+		return { name: (page) => `wiki ${page}`, fix: 'through the wiki page API (wiki.write or PUT /wiki/<path>)' };
+	return { name: (page) => `${CONTENT}${page}`, fix: 'in this commit' };
+}
 
 function git(root, args) {
 	const run = spawnSync('git', ['-C', root, ...args], { maxBuffer: Infinity });
@@ -156,11 +170,12 @@ export function brokenCitations(root, before, after, siblings = siblingRepos()) 
 export function followRefusal(root, before, after, siblings = siblingRepos()) {
 	const rows = brokenCitations(root, before, after, siblings);
 	if (!rows.length) return null;
+	const terms = pageTerms();
 	return [
 		'follow gate: this commit removes repo paths or definitions that curated wiki pages cite, so the pages would describe code that is gone',
-		...rows.map((row) => `  ${CONTENT}${row.page}: cites ${row.refs.join(', ')}`),
-		'Update each page in this commit: point the line at the new path or name, say on the same line that the path was removed, or drop',
-		'the source_refs entry, then commit again (apps/llm-wiki/scripts/follow-gate.mjs).',
+		...rows.map((row) => `  ${terms.name(row.page)}: cites ${row.refs.join(', ')}`),
+		`Update each page ${terms.fix}: point the line at the new path or name, say on the same line that the path was removed, or drop`,
+		'the source_refs entry, then commit again (sieun-pi apps/wiki/scripts/follow-gate.mjs).',
 	].join('\n');
 }
 
@@ -257,18 +272,19 @@ export function behindPages(root, before, after) {
 export function behindWarning(root, before, after) {
 	const rows = behindPages(root, before, after);
 	if (!rows.length) return null;
+	const terms = pageTerms();
 	return [
 		'follow gate warning: this commit changes code that curated wiki pages state and leaves the pages out, so they will read as behind their code',
-		...rows.map((row) => `  ${CONTENT}${row.page}: cites ${row.refs.join(', ')}`),
-		'Read each page against this diff and commit it next: fix each fact the diff changed, or set last_verified to the current',
-		`UTC minute, such as ${new Date().toISOString().slice(0, 16)}Z, when the diff changes nothing the page states (apps/llm-wiki/scripts/follow-gate.mjs).`,
+		...rows.map((row) => `  ${terms.name(row.page)}: cites ${row.refs.join(', ')}`),
+		`Read each page against this diff and update it ${terms.fix} next: fix each fact the diff changed, or set last_verified to the current`,
+		`UTC minute, such as ${new Date().toISOString().slice(0, 16)}Z, when the diff changes nothing the page states (sieun-pi apps/wiki/scripts/follow-gate.mjs).`,
 	].join('\n');
 }
 
 function main() {
 	const [before, after] = process.argv.slice(2);
 	if (!before || !after) {
-		process.stderr.write('usage: node apps/llm-wiki/scripts/follow-gate.mjs <before rev> <after rev>\n');
+		process.stderr.write('usage: node apps/wiki/scripts/follow-gate.mjs <before rev> <after rev>, run in the code repo\n');
 		return 2;
 	}
 	let text;
