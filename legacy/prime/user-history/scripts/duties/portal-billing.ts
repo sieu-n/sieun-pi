@@ -235,7 +235,7 @@ const sh = (command: string, cwd: string, signal: AbortSignal) => new Promise<st
 const lastLine = (text: string) => text.trim().split("\n").at(-1)?.trim() ?? "";
 
 interface EnvFile { urls: { apiPortal: string; convex: string }; keySources: Record<string, { cmd: string }> }
-const envFile = async (name: Env): Promise<EnvFile> => JSON.parse(await readFile(join(REPO, `apps/llm-wiki/specs/envs/${name}.json`), "utf8")) as EnvFile;
+const envFile = async (name: Env): Promise<EnvFile> => JSON.parse(await readFile(join(REPO, `apps/specs/envs/${name}.json`), "utf8")) as EnvFile;
 /** The Convex deployment name of an env's site URL: https://befitting-sparrow-356.convex.site is befitting-sparrow-356. */
 const deploymentOf = (env: EnvFile) => new URL(env.urls.convex).hostname.split(".")[0]!;
 

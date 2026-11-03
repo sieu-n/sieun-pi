@@ -164,7 +164,7 @@ async function measure(now: number, signal: AbortSignal): Promise<DmData> {
   const step = async <T>(source: Source, run: () => Promise<T>): Promise<T | undefined> => {
     try { return await run(); } catch (error) { data.errors.push({ source, message: error instanceof Error ? error.message : String(error) }); return undefined; }
   };
-  const prod = JSON.parse(await readFile(join(REPO, "apps/llm-wiki/specs/envs/prod.json"), "utf8")) as { urls: { crawler: string }; keySources: Record<string, { cmd: string }> };
+  const prod = JSON.parse(await readFile(join(REPO, "apps/specs/envs/prod.json"), "utf8")) as { urls: { crawler: string }; keySources: Record<string, { cmd: string }> };
   const [sha, health, failed] = await Promise.all([
     step("prod deployment", async () => {
       const vercel = await import(pathToFileURL(join(REPO, "scripts/repo/env/vercel-blobs.mjs")).href) as {
