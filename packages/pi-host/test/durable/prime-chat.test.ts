@@ -5,7 +5,7 @@
  * stored entries keep the raw text, tell_owner's guard holds a message on a turn the owner did not start, chat_board reads and writes the
  * new chat's board through its HTTP API, correction_add writes the shared ledger, and a subagent's child conversation gets none of them. In a
  * comm thread, tell_owner refuses a post after the turn's hand-over and a relay line (`comm-guard.ts`) before Prime's guard reads it.
- * A DM comm thread's answer left as text on the owner's turn continues once with the note that asks it to post (`comm-reply.ts`).
+ * A DM comm thread's answer left as text on the owner's turn queues one note that asks it to post (`comm-reply.ts`), also when his next post waits.
  * `set_emoji` (`room-tools.ts`) posts the thread's reaction to the chat server and passes its answer or its error through.
  */
 import { strict as assert } from "node:assert";
@@ -26,7 +26,7 @@ import type { ThreadMessage } from "../../../../legacy/prime/user-history/src/sh
 import { AGENT_REF_DOC } from "../../src/durable/agent-profile.ts";
 import { ChatApp } from "../../src/durable/chat-app.ts";
 import { CommHandedDoc } from "../../src/durable/comm.ts";
-import { UNPOSTED_REPLY, unpostedReply, unpostedReplyNote } from "../../src/durable/comm-reply.ts";
+import { UNPOSTED_REPLY, unpostedReply, unpostedReplyNote, unpostedReplyRequest } from "../../src/durable/comm-reply.ts";
 import { LIST_FOR_ME_TOOL, MARK_MESSAGE_TOOL } from "../../src/durable/for-me.ts";
 import { loadPrimeChat, PRIME_CHAT_TOOLS, withTurnWrappers, type ChatThread, type PrimeChat } from "../../src/durable/prime-chat.ts";
 import { guidelines } from "../../src/durable/prime-prompt.ts";
@@ -95,13 +95,18 @@ const lastUser = (messages: readonly Message[]) => [...messages].reverse().find(
 async function open(name: string, respond: FauxResponseFactory) {
   const file = join(dir, `${name}.sqlite`);
   let harness: Harness | undefined;
-  const thread: ChatThread = { id: name, name: () => name, file, cwd: dir, harness: () => harness };
+  let rootOf: Awaited<ReturnType<Harness["root"]>> | undefined;
+  const thread: ChatThread = {
+    id: name, name: () => name, file, cwd: dir, harness: () => harness,
+    submit: (text, requestId) => rootOf!.submit({ type: "input", content: text, requestId, whenBusy: "followUp" }, context),
+  };
   const models = createModels();
   const faux = fauxProvider({ provider: MODEL.provider, models: [{ id: MODEL.modelId }], tokensPerSecond: 0 });
   faux.setResponses(Array.from({ length: 32 }, () => respond));
   models.setProvider(faux.provider);
   harness = await Harness.open(await openNodeSqliteStorage(file), { models, registry: threadRegistry(undefined, { chat, thread }) }, context);
   const root = await harness.root(context, { agent: { model: MODEL, thinkingLevel: "off" } });
+  rootOf = root;
   return { harness, root };
 }
 
@@ -238,29 +243,51 @@ test("in a comm thread, a post after the turn's hand-over and a relay line are r
   assert.doesNotMatch(told[5]!.text, /Not sent/, "the result passes the comm check");
 });
 
-test("in a DM comm thread, an answer left as text on the owner's turn gets one note and then posts, and a handed, posted, notice or group turn gets none", async () => {
+test("in a DM comm thread, an answer left as text on the owner's turn queues one note and then posts, also past his next post, and a handed, posted, notice or group turn gets none", async () => {
   const markdown = "The dashboards are on [Grafana dashboards](wiki:apps/infra/grafana-boards.html).";
-  const { harness, root } = await open("comm-reply", ({ messages }) => {
-    const at = messages.findLastIndex(m => m.role === "user");
-    const text = textOf(messages[at]!.content);
-    const answered = messages.slice(at + 1).some(m => m.role === "toolResult");
-    if (text.startsWith(UNPOSTED_REPLY)) {
-      if (answered || text.includes("thanks")) return fauxAssistantMessage("");
-      return fauxAssistantMessage([fauxToolCall("tell_owner", { text: markdown })], { stopReason: "toolUse" });
+  let steer: Promise<unknown> | undefined;
+  const { harness, root } = await open("comm-reply", async ({ messages }) => {
+    // The inputs since the last settled answer, as one turn: the model answers each of them once.
+    const settled = messages.findLastIndex(m => m.role === "assistant" && m.stopReason !== "toolUse");
+    const turn = messages.slice(settled + 1);
+    if (turn.some(m => m.role === "toolResult")) return fauxAssistantMessage("");
+    const texts = turn.filter(m => m.role === "user").map(m => textOf(m.content));
+    const posts: string[] = [];
+    for (const text of texts) {
+      if (text.startsWith(UNPOSTED_REPLY)) {
+        if (text.includes("ALPHA")) posts.push("ALPHA");
+        else if (!text.includes("thanks")) posts.push(markdown);
+      } else if (text.includes("17 times 23")) posts.push("391.");
+      else if (text.includes("post first")) posts.push("Here it is.");
     }
-    if (text.includes("post first")) return answered ? fauxAssistantMessage("I posted it.") : fauxAssistantMessage([fauxToolCall("tell_owner", { text: "Here it is." })], { stopReason: "toolUse" });
+    if (posts.length) return fauxAssistantMessage(posts.map(text => fauxToolCall("tell_owner", { text })), { stopReason: "toolUse" });
+    const text = texts.at(-1) ?? "";
+    if (text.includes("ALPHA")) {
+      // His next post arrives while this turn runs, so it waits at the run's end.
+      steer = root.submit({ type: "input", content: "What is 17 times 23?", whenBusy: "steer" }, context);
+      await steer;
+      return fauxAssistantMessage("ALPHA");
+    }
     if (text.includes("thanks")) return fauxAssistantMessage("I put 🙏 on your thanks.");
     if (text.includes("hand this")) return fauxAssistantMessage("I handed it to the work thread.");
+    if (text.startsWith(UNPOSTED_REPLY) || text.includes("post first")) return fauxAssistantMessage("");
     return fauxAssistantMessage(markdown);
   });
   const refIn = (room: string, handedAt: number) => harness.commit(async tx => {
     (await tx.doc(ChatDoc, ROOT_CONVERSATION_ID, AGENT_REF_DOC, null)).value = { agent: "ag_vent", dir: agentDir, role: "comm", room, work: "w-1" };
     (await tx.doc(CommHandedDoc, ROOT_CONVERSATION_ID)).at = handedAt;
   }, context);
-  const ask = async (content: string, entry?: { kind: string; data: { from: string; via: string } }) => (await root.submit({ type: "input", content, ...(entry ? { entry } : {}) }, context)).wait(context);
+  const idle = () => harness.waitForIdle(context);
+  const ask = async (content: string, entry?: { kind: string; data: { from: string; via: string } }) => {
+    await (await root.submit({ type: "input", content, ...(entry ? { entry } : {}) }, context)).wait(context);
+    await idle();
+  };
   await refIn("dm_vent", 0);
   await ask("Reply with exactly the markdown and nothing else, no tools.");
   await ask("nice, thanks!");
+  await ask("Reply with exactly the word ALPHA and nothing else, no tools.");
+  await steer;
+  await idle();
   // The hand-over is noted after the owner's post arrives, as threads.ts notes it while the turn runs.
   await refIn("dm_vent", Date.now() + 3_600_000);
   await ask("hand this to the work thread");
@@ -272,12 +299,15 @@ test("in a DM comm thread, an answer left as text on the owner's turn gets one n
   const entries = await entriesOf(root);
   await harness.close(context);
   const notes = entries.filter(entry => entry.kind === "pi.user").map(entry => textOf((entry.model![0] as Message).content)).filter(text => text.startsWith(UNPOSTED_REPLY));
-  assert.deepEqual(notes, [unpostedReplyNote("Reply with exactly the markdown and nothing else, no tools."), unpostedReplyNote("nice, thanks!")]);
+  assert.deepEqual(notes, [
+    unpostedReplyNote("Reply with exactly the markdown and nothing else, no tools."), unpostedReplyNote("nice, thanks!"),
+    unpostedReplyNote("Reply with exactly the word ALPHA and nothing else, no tools."),
+  ]);
   assert.match(notes[0]!, /The owner's message is still unanswered: "Reply with exactly the markdown/);
-  const told = results(entries).filter(result => result.name === "tell_owner");
-  assert.deepEqual(told.map(result => result.text), ["told the owner", "told the owner"], "the note's turn posts the answer as the owner's turn, and the posted turn's own call goes out");
   const posts = entries.flatMap(entry => (entry.model?.[0] as Message | undefined)?.role === "assistant" ? ((entry.model![0] as Message).content as { type: string; name?: string; arguments?: { text?: string } }[]).filter(part => part.type === "toolCall" && part.name === "tell_owner").map(part => part.arguments!.text) : []);
-  assert.deepEqual(posts, [markdown, "Here it is."]);
+  assert.deepEqual(posts.sort(), [markdown, "391.", "ALPHA", "Here it is."].sort());
+  const told = results(entries).filter(result => result.name === "tell_owner");
+  assert.deepEqual(told.map(result => result.text), ["told the owner", "told the owner", "told the owner", "told the owner"], "the note's turn is the owner's, so each post goes out");
 });
 
 test("the unposted reply check reads only the turn since the last settled answer, and a turn its note started gets no second note", () => {
@@ -285,16 +315,18 @@ test("the unposted reply check reads only the turn since the last settled answer
   const user = (text: string, timestamp = 10) => ({ role: "user", content: [{ type: "text", text }], timestamp }) as unknown as ThreadMessage;
   const said = (text: string, stopReason = "stop") => ({ role: "assistant", content: [{ type: "text", text }], stopReason, timestamp: 11 }) as unknown as ThreadMessage;
   const answer = { content: [{ type: "text", text: "the answer" }] };
-  assert.equal(unpostedReply([user("what is up?")], answer, 0, speaking), unpostedReplyNote("what is up?"));
-  assert.equal(unpostedReply([user("what is up?")], { content: [{ type: "text", text: "  " }] }, 0, speaking), undefined, "an empty answer needs no post");
-  assert.equal(unpostedReply([user("what is up?"), said("old answer"), user(unpostedReplyNote("what is up?"), 12)], answer, 0, speaking), undefined);
-  assert.equal(unpostedReply([user("what is up?", 10)], answer, 10, speaking), undefined, "a hand-over in the turn waits for the work-done notice");
-  assert.equal(unpostedReply([user("what is up?", 10)], answer, 9, speaking), unpostedReplyNote("what is up?"), "a hand-over of an earlier turn does not count");
+  const note = (messages: ThreadMessage[], handedAt = 0, reply = answer) => unpostedReply(messages, reply, handedAt, speaking)?.note;
+  assert.deepEqual(unpostedReply([user("what is up?")], answer, 0, speaking), { note: unpostedReplyNote("what is up?"), ownerAt: 10 });
+  assert.equal(note([user("what is up?")], 0, { content: [{ type: "text", text: "  " }] }), undefined, "an empty answer needs no post");
+  assert.equal(note([user("what is up?"), said("old answer"), user(unpostedReplyNote("what is up?"), 12)]), undefined);
+  assert.equal(note([user("what is up?"), said("", "error")]), unpostedReplyNote("what is up?"), "a failed request the pool retries ends no turn");
+  assert.equal(note([user("what is up?", 10)], 10), undefined, "a hand-over in the turn waits for the work-done notice");
+  assert.equal(note([user("what is up?", 10)], 9), unpostedReplyNote("what is up?"), "a hand-over of an earlier turn does not count");
   const held = { role: "toolResult", toolName: "tell_owner", content: [{ type: "text", text: `${TELL_OWNER_HELD}. why` }], isError: false, timestamp: 11 } as unknown as ThreadMessage;
-  assert.equal(unpostedReply([user("what is up?"), held], answer, 0, speaking), unpostedReplyNote("what is up?"), "a held post reached nobody");
-  assert.equal(unpostedReply([user("[check-in] Re-check the board.")], answer, 0, speaking), undefined, "a server note is no owner post");
-  const long = "x".repeat(400);
-  assert.ok(unpostedReplyNote(long).length < 600);
+  assert.equal(note([user("what is up?"), held]), unpostedReplyNote("what is up?"), "a held post reached nobody");
+  assert.equal(note([user("[check-in] Re-check the board.")]), undefined, "a server note is no owner post");
+  assert.equal(unpostedReplyRequest("t1", 10), "unposted:t1:10");
+  assert.ok(unpostedReplyNote("x".repeat(400)).length < 600);
 });
 
 test("chat_board writes through the chat server as the agent and reads the open plan back in Prime's words", async () => {

@@ -323,7 +323,10 @@ export class DurableThreads {
       const cwd = () => this.index.get(id)?.cwd ?? row.cwd;
       const chat = this.options.chat && {
         chat: this.options.chat,
-        thread: { id, file, name, get cwd() { return cwd(); }, harness: () => openHarness, boardDoc: () => this.docGet(id, "chat.board"), log: (line: string) => this.log(`${id} ${line}`) },
+        thread: {
+          id, file, name, get cwd() { return cwd(); }, harness: () => openHarness, boardDoc: () => this.docGet(id, "chat.board"), log: (line: string) => this.log(`${id} ${line}`),
+          submit: (text: string, requestId: string) => this.submit(id, { text, requestId, whenBusy: "followUp", ownerTurn: true }),
+        },
       };
       const prompt = this.options.prompt && { ...this.options.prompt, thread: { id, file, name, get cwd() { return cwd(); }, harness: () => openHarness }, log: (line: string) => this.log(`${id} ${line}`) };
       const comm = commExtension(this.commHost(id));

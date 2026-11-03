@@ -18,8 +18,8 @@
  * | `correction_add` | the extension's execute | the shared ledger Prime chats write (`AGENT_CHAT_SHARED_DIR`, else `<agentDir>/browser-chat`), or the chat host's corrections route, as Prime | unsafe: a rerun could add the correction twice |
  * | `poteto_mode` | the extension's execute | none | safe |
  *
- * In a DM comm thread's root, a final answer with text on the owner's turn, with no post and no hand-over, continues the turn once with
- * Prime's note for his unanswered message (`comm-reply.ts`), since the room shows only what a speaking call posts.
+ * In a DM comm thread's root, a final answer with text on the owner's turn, with no post and no hand-over, queues Prime's note for his
+ * unanswered message as the next input (`comm-reply.ts`), since the room shows only what a speaking call posts.
  *
  * Skipped, with the reason:
  * - The `[corrections]` block of the context hook (`deliverCorrections`): `prime-prompt.ts` sends the same `ledgerPrompt` text as its
@@ -60,7 +60,7 @@ import { threadAgent } from "./agent-profile.ts";
 import { ChatApp } from "./chat-app.ts";
 import { CommHandedDoc } from "./comm.ts";
 import { commPostRefusal, turnStartedAt } from "./comm-guard.ts";
-import { unpostedReply } from "./comm-reply.ts";
+import { unpostedReply, unpostedReplyRequest } from "./comm-reply.ts";
 import { durableTool, loadPiExtension, piContext, type LoadedPiExtension, type PiSession, type PiTool, type PiToolResult } from "./pi-extensions.ts";
 
 export const PRIME_CHAT_EXTENSION = "prime-chat";
@@ -200,6 +200,8 @@ export interface ChatThread {
   cwd: string;
   /** The thread's Harness once open; the hook and tell_owner read the conversation's entries through it. */
   harness: () => Harness | undefined;
+  /** Queues an input on the root as the owner's follow-up, once per request id (`DurableThreads.submit`). */
+  submit?: (text: string, requestId: string) => Promise<unknown>;
   /** The thread's `chat.board` document, read when the chat server does not answer. */
   boardDoc?: () => Promise<unknown>;
   log?: (line: string) => void;
@@ -275,22 +277,23 @@ async function commRefusal(chat: PrimeChat, thread: ChatThread, call: { id: stri
 }
 
 /**
- * In a DM comm thread's root, the note that continues a turn whose final answer the owner cannot see (`comm-reply.ts`). Undefined in any other
- * thread, room or conversation, and when the turn or the hand-over cannot be read, so a read failure ends the turn as before.
+ * In a DM comm thread's root, queues the note for a final answer the owner cannot see (`comm-reply.ts`) as the thread's next input. Nothing
+ * in any other thread, room or conversation, in a thread that cannot submit, and when the turn or the hand-over cannot be read, so a read
+ * failure ends the turn as before.
  */
-async function unpostedNote(thread: ChatThread, answer: { content: unknown }, api: { conversationId: ConversationId }, context: Context): Promise<string | undefined> {
+async function queueUnpostedNote(thread: ChatThread, answer: { content: unknown }, api: { conversationId: ConversationId }, context: Context): Promise<void> {
   const harness = thread.harness();
-  if (!harness || api.conversationId !== ROOT_CONVERSATION_ID) return undefined;
+  if (!harness || !thread.submit || api.conversationId !== ROOT_CONVERSATION_ID) return;
   try {
     const ref = await threadAgent(harness, context);
-    if (ref?.role !== "comm" || !ref.room.startsWith("dm_")) return undefined;
+    if (ref?.role !== "comm" || !ref.room.startsWith("dm_")) return;
     const view = await contextOf(thread, api.conversationId, context);
-    if (!view) return undefined;
+    if (!view) return;
     const handedAt = (await harness.snapshot(CommHandedDoc, ROOT_CONVERSATION_ID, context))?.at ?? 0;
-    return unpostedReply(threadMessages(view), answer, handedAt, SPEAKING_TOOLS);
+    const found = unpostedReply(threadMessages(view), answer, handedAt, SPEAKING_TOOLS);
+    if (found) await thread.submit(found.note, unpostedReplyRequest(thread.id, found.ownerAt));
   } catch (error) {
-    thread.log?.(`unposted reply check read nothing: ${error instanceof Error ? error.message : String(error)}`);
-    return undefined;
+    thread.log?.(`unposted reply check failed: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -342,8 +345,8 @@ export function primeChat(chat: PrimeChat, thread: ChatThread): Extension {
       },
     }), hook(GenerationTask, {
       onYield: async (answer, api, context) => {
-        const note = await unpostedNote(thread, answer, api, context);
-        return note ? { continue: [{ type: "text", text: note }] } : undefined;
+        await queueUnpostedNote(thread, answer, api, context);
+        return undefined;
       },
       beforeRequest: async ({ messages }, api, context) => {
         if (api.conversationId !== ROOT_CONVERSATION_ID) return undefined;
