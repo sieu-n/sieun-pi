@@ -65,10 +65,14 @@ export interface Deps {
   env?: NodeJS.ProcessEnv;
   /** A page's body, or "" when it does not load; absent in tests that do not cover it. */
   fetchText?: (url: string) => Promise<string>;
+  /** The Convex team's usageState ("Default" when healthy, "Disabled" when unpaid); throws when it cannot be read. Absent reads as a failed read. */
+  convexUsageState?: () => Promise<string>;
 }
 
 /** The bare-metal box the repo skills reach as root: an ssh config alias (us-metal01 by default) or METAL_SSH_HOST, so no address lives in this repo. */
 const METAL_HOST = process.env.METAL_SSH_HOST || "us-metal01";
+/** The Convex team behind the Virev API's key store (prod and staging), read with the Convex CLI's login token. */
+const CONVEX_TEAM = 453421;
 export const CHECK_TIMEOUT_MS = 90_000;
 /**
  * How long one CLI or MCP call may take before its check fails. The slowest call that finished on us-metal02 took 26.4 s (`prime-agent --offline
@@ -553,6 +557,16 @@ export const CHECKS: readonly Check[] = [
     const text = both(result);
     if (/no Virev API key|rejected the key \((401|403)|balance is empty \(402/.test(text))
       return FAIL("owner", brief(text.split("\n").find(line => /Virev/.test(line)) ?? text, 200), "put a working Virev API key in ~/.prime/agent/auth.json (virev) or top up its balance");
+    // The Virev API checks each key in Convex and answers this 503 when that call throws. On 11-04 Convex had disabled team 453421 for unpaid
+    // invoices since 11-03 18:13Z, and 2 runs in a row counted it as an agent fix and started jobs that could not act.
+    if (/\(503\): API key checks are temporarily unavailable/.test(text)) {
+      const line = brief(text.split("\n").find(line => /Virev/.test(line)) ?? text, 200).replace(/\.?$/, ".");
+      const state = await (deps.convexUsageState ?? (() => Promise.reject(new Error("no Convex state reader"))))().then(value => value, (error: Error) => error);
+      if (typeof state === "string" && state !== "Default") return FAIL("owner", `${line} Convex team ${CONVEX_TEAM} reads usageState ${state}`,
+        `the owner pays the Convex invoices (ops guy's t53), and the check passes once the team reads Default`);
+      return FAIL("agent", `${line} Convex team ${CONVEX_TEAM} ${typeof state === "string" ? "reads Default" : `state read failed: ${brief(state.message, 120)}`}`,
+        "read the api-portal key check error in auto-sns-agent apps/api-portal/src/lib/server/gateway.ts and the Convex logs");
+    }
     const outage = down.exec(text);
     if (outage) return FAIL("agent", `Google is down on the Virev search backend (${brief(outage[1]!, 160)})`, "report it to the crawler side; the key works");
     const results = /^Result \d+: /m.test(result.stdout);
@@ -917,6 +931,17 @@ export function realMcp(path: string): Deps["mcp"] {
   });
 }
 
+async function convexUsageState(home: string): Promise<string> {
+  const token = (JSON.parse(await readFile(join(home, ".convex/config.json"), "utf8")) as { accessToken?: string }).accessToken;
+  if (!token) throw new Error("~/.convex/config.json has no accessToken");
+  const response = await fetch(`https://api.convex.dev/api/dashboard/teams/${CONVEX_TEAM}/usage/team_usage_state`,
+    { headers: { Authorization: `Bearer ${token}`, Origin: "https://dashboard.convex.dev" }, signal: AbortSignal.timeout(CALL_TIMEOUT_MS) });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const state = (await response.json() as { usageState?: unknown }).usageState;
+  if (typeof state !== "string") throw new Error("the answer has no usageState");
+  return state;
+}
+
 export function realDeps(scratchDir: string): Deps {
   const home = homedir();
   const path = searchPath(home);
@@ -940,6 +965,7 @@ export function realDeps(scratchDir: string): Deps {
     platform: process.platform,
     pinSkillPaths: () => pinSkillPaths({ home }),
     fetchText: url => fetch(url, { signal: AbortSignal.timeout(CALL_TIMEOUT_MS) }).then(response => response.ok ? response.text() : "").catch(() => ""),
+    convexUsageState: () => convexUsageState(home),
   };
 }
 

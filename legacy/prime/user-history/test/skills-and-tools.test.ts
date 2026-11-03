@@ -183,6 +183,25 @@ test("websearch_query searches once when Google answers the first time", async (
   assert.equal(calls.n, 1);
 });
 
+// 11-04: Convex disabled team 453421 for unpaid invoices, and the Virev key check answered 503 on every search.
+const KEY_CHECK_DOWN = { code: 1, stdout: "", stderr: "RuntimeError: Virev search error (503): API key checks are temporarily unavailable\n", ms: 0 };
+const keyCheckDeps = (convexUsageState: () => Promise<string>): Deps => ({ ...searchDeps([KEY_CHECK_DOWN], { n: 0 }), convexUsageState });
+
+test("websearch_query's 503 key check failure is the owner's while the Convex team reads Disabled", async () => {
+  const outcome = await websearchQuery.run(keyCheckDeps(async () => "Disabled"));
+  assert.ok(outcome.status === "fail" && outcome.fixer === "owner" && outcome.detail.includes("usageState Disabled") && outcome.fix.includes("t53"), JSON.stringify(outcome));
+});
+
+test("websearch_query's 503 key check failure stays an agent fix while the Convex team reads Default", async () => {
+  const outcome = await websearchQuery.run(keyCheckDeps(async () => "Default"));
+  assert.ok(outcome.status === "fail" && outcome.fixer === "agent" && outcome.detail.includes("reads Default"), JSON.stringify(outcome));
+});
+
+test("websearch_query's 503 key check failure stays an agent fix with the error when the Convex state read fails", async () => {
+  const outcome = await websearchQuery.run(keyCheckDeps(async () => { throw new Error("HTTP 401"); }));
+  assert.ok(outcome.status === "fail" && outcome.fixer === "agent" && outcome.detail.includes("state read failed: HTTP 401"), JSON.stringify(outcome));
+});
+
 const skillMap = CHECKS.find(check => check.id === "skill_map")!;
 const skillPaths = CHECKS.find(check => check.id === "skill_paths")!;
 const LS_TREE = [".agents/skills/apps/web/SKILL.md", ".agents/skills/apps/web/inner/SKILL.md", ".agents/skills/repo/.hidden/x/SKILL.md", ".claude/skills-native/gh/SKILL.md"].join("\n");
