@@ -82,6 +82,15 @@ class RepoGuardAtRunTime(KernelGuardBase):
         self.assertIn("repo guard (git-hazard)", out["refused"] or "")
         self.assertEqual(self.fake_runs(), [])
 
+    def test_a_guard_that_cannot_load_lets_the_command_run_and_names_the_error_on_stderr(self):
+        # 10-29 to 11-03: this fixture lacked scripts/dev/dev-apps.cjs, so the guard never loaded and the kernel half went silent.
+        (self.checkout / "scripts/dev/dev-apps.cjs").unlink()
+        cell = f"import io, os, sys\nos.chdir({str(self.checkout)!r})\nsys.stderr = io.StringIO()\nawait bash('git stash')\nRESULT = sys.stderr.getvalue()\n"
+        out = self.run_cells(cell, env={"RLM_SESSION_DIR": CRAWLER_OPS, "GLOBAL_RULES_AUTO_SNS_AGENT": str(self.checkout), "REPO_GUARD_LOG": str(self.repo_log)})
+        self.assert_passed(out)
+        self.assertEqual(self.fake_runs(), ["git stash"])
+        self.assertRegex(out["result"], r"global-rules: the auto-sns-agent repo guard did not load, so this command ran unjudged: Cannot find module .*dev-apps\.cjs")
+
     def mark_shared(self):
         """The full marker: HEAD holds the shared-index rule and .git/agent-shared-checkout holds the checkout's path."""
         rule = self.checkout / "scripts/repo/agent/shared-index.mjs"

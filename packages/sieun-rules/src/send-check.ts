@@ -39,10 +39,16 @@ export function judgeCheck(check: Check, record = false): { block: false } | { b
 }
 
 /** A git write the kernel starts (`repo: true`) also goes through auto-sns-agent's repo guard with the kernel's real cwd. */
-export async function judgeKernelCheck(check: Check): Promise<{ block: false } | { block: true; reason: string }> {
+export async function judgeKernelCheck(check: Check): Promise<{ block: false; warning?: string } | { block: true; reason: string }> {
 	const result = judgeCheck(check, true);
 	if (result.block || check.kind !== "shell" || !check.repo) return result;
-	return (await judgeKernelShell(check.text, check.cwd, process.env.RLM_SESSION_DIR)) ?? result;
+	try {
+		return (await judgeKernelShell(check.text, check.cwd, process.env.RLM_SESSION_DIR)) ?? result;
+	} catch (error) {
+		// It still fails open, and the kernel prints the warning, because a stale test fixture hid a guard that never loaded for 5 days (10-29 to 11-03).
+		const message = (error instanceof Error ? error.message : String(error)).split("\n")[0];
+		return { block: false, warning: `the auto-sns-agent repo guard did not load, so this command ran unjudged: ${message}` };
+	}
 }
 
 /*

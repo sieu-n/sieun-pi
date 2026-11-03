@@ -349,6 +349,8 @@ def judge(check: dict) -> None:
         state.busy = False
     if verdict.get("block"):
         raise SendRefused(verdict["reason"])
+    if verdict.get("warning"):
+        print(f"global-rules: {verdict['warning']}", file=sys.stderr)
 
 
 def shell_text(args) -> str:
