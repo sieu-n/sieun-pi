@@ -200,6 +200,39 @@ test('the page gate warns on a source_ref a write adds whose file changed after 
 	assert.match(pageWriteWarnings(f.repo, MOCK, before, symbol).join('\n'), new RegExp(`::niceTicks \\(changed in ${moved.slice(0, 10)} at 2026-10-30T23:20Z\\)`));
 });
 
+// 2026-11-03: the page API took apps/search/campaigns.html v81 with source_refs on convex/search/campaigns/settledDrains.ts
+// while that file sat untracked in the checkout, and the wiki dream precheck counted the page behind its code at once.
+test('the page API refuses a ref to a file or definition only the checkout holds, and passes once the code commit lands', (t) => {
+	const f = codeRepo();
+	const pi = process.env.SIEUN_PI_REPO;
+	process.env.SIEUN_PI_REPO = f.env.SIEUN_PI_REPO;
+	t.after(() => {
+		if (pi === undefined) delete process.env.SIEUN_PI_REPO;
+		else process.env.SIEUN_PI_REPO = pi;
+		rmSync(f.repo, { recursive: true, force: true });
+	});
+	const CAMPAIGNS = 'apps/search/campaigns.html';
+	const DRAINS = 'convex/search/campaigns/settledDrains.ts';
+	const MOVES = 'convex/search/campaigns/moves.ts';
+	const campaigns = (refs) =>
+		html({ title: 'Campaigns', description: 'd', last_verified: '2026-11-03T15:00Z', source_refs: refs }, '<p>Campaigns.</p>');
+	const before = campaigns([MOVES]);
+	f.commit(f.write(MOVES, 'export function applyMove() {\n\treturn 1;\n}\n'), f.page(CAMPAIGNS, before));
+	f.write(DRAINS, 'export function drainSettledMoves() {\n\treturn 1;\n}\n');
+	f.write(MOVES, 'export function applyMove() {\n\treturn 1;\n}\nexport function drainSettledJoins() {\n\treturn 1;\n}\n');
+	const v81 = campaigns([MOVES, `${DRAINS}::drainSettledMoves`, `${MOVES}::drainSettledJoins`]);
+	const [reason, ...rest] = pageWriteReasons(f.repo, CAMPAIGNS, before, v81);
+	assert.deepEqual(rest, []);
+	assert.match(
+		reason,
+		new RegExp(`it cites ${DRAINS}::drainSettledMoves, ${MOVES}::drainSettledJoins, which the checkout holds but its HEAD does not, so the file is not committed yet.*write the page after the code commit lands`),
+	);
+	assert.match(pageWriteReasons(f.repo, CAMPAIGNS, before, campaigns([MOVES, `${MOVES}::nowhere`]))[0], /::nowhere, which git does not have/);
+	assert.deepEqual(pageWriteReasons(f.repo, CAMPAIGNS, v81, v81), [], 'a ref the page already had passes as before');
+	f.commit(DRAINS, MOVES);
+	assert.deepEqual(pageWriteReasons(f.repo, CAMPAIGNS, before, v81), [], 'the write passes once the code commit lands');
+});
+
 // 2026-10-20: a bare last_verified day cannot tell a second check on the same day from no check, so a check sets the UTC time.
 test('a last_verified UTC time passes the last_verified rule, and a time in another form does not', () => {
 	const verified = (lastVerified) => runbook({ last_verified: lastVerified });

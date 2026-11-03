@@ -9,7 +9,8 @@
  *      write that adds a repo path citation to a page without one must set it.
  *   4. A repo path a write adds, in `<code>` or `source_refs`, exists (stale_vs_code), read with wiki-health.mjs
  *      missingCodeRefs: in the tree a commit.mjs commit sits on or in the checkout, or in the commit land-object.mjs lands.
- *      A line that says the path was removed or deleted is history and passes.
+ *      A line that says the path was removed or deleted is history and passes. The page API reads HEAD alone, with a
+ *      `path::name` definition too, and refuses a file the checkout holds uncommitted (pageWriteReasons).
  *   5. A link a write adds leads to a page the wiki index serves (dead_link): the target, resolved as wiki-health.mjs
  *      resolveHref does, is a file with a page extension in the tree or the checkout, or under sessions/, which the
  *      sessionLinks lint judges. A file that is not a page, such as a .py or .mjs script, is linked as /raw/<path>. A bare
@@ -187,8 +188,13 @@ export function behindRefReason(root, rev, page, old, html, writtenAt) {
 /**
  * Why the page API (src/lib/server/wiki-write.ts) refuses one write of the curated page `page` (a content path), from
  * rules 3 and 4, as one reason each; empty when the write passes. `before` is the page on disk, or null for a new page.
- * A cited path passes when the repo at `root` has it at HEAD or on disk. Most page writes come through the API, and on
- * 2026-10-19 it took the pages behind 37 of the 47 stale_vs_code items with no check.
+ * A repo path or `path::name` definition the write adds must be in the repo at `root` at HEAD (lackingRefs); a wiki
+ * page path still resolves on disk. Most page writes come through the API, and on 2026-10-19 it took the pages behind
+ * 37 of the 47 stale_vs_code items with no check.
+ * Why HEAD and not the checkout: on 2026-11-03 at 15:11Z the API took apps/search/campaigns.html v81 with the new
+ * source_refs convex/search/campaigns/settledDrains.ts::drainSettledMoves and ::drainSettledJoins while that file sat
+ * untracked in the auto-sns-agent checkout, and the wiki dream precheck counted the page at once, because the stale
+ * report reads a ref HEAD lacks as missing. Pages left git that day, so no batch holds a page back until its code lands.
  */
 export function pageWriteReasons(root, page, before, after) {
 	if (page === HOME || !isCuratedPath(`${CONTENT}${page}`)) return [];
@@ -197,9 +203,29 @@ export function pageWriteReasons(root, page, before, after) {
 	const unverified = unverifiedReason(page, old, after);
 	if (unverified) reasons.push(unverified);
 	if (!addedRefs(page, old, after).length) return reasons;
-	const prior = old === undefined ? new Map() : new Map([[page, old]]);
-	const dead = deadRefRows(root, prior, new Map([[page, after]]), { rev: 'HEAD', onDisk: true });
-	return [...reasons, ...dead.map((row) => row.reason)];
+	const shaped = pageOf(page, after);
+	const lacking = lackingRefs(root, 'HEAD', [{ page: shaped, had: old === undefined ? [] : [old] }]).get(page) ?? [];
+	const cited = citedRefs(shaped);
+	const inCheckout = (ref) => {
+		const file = (cited.get(ref) ?? [])
+			.filter((at) => !/^[^/]*:/.test(at))
+			.map((at) => path.join(root, at))
+			.find((at) => existsSync(at) && statSync(at).isFile());
+		const symbol = symbolRef(ref);
+		return file !== undefined && (!symbol || definitionText(readFileSync(file, 'utf8'), symbol.name) !== null);
+	};
+	const uncommitted = lacking.filter(inCheckout);
+	const dead = lacking.filter((ref) => !uncommitted.includes(ref));
+	if (dead.length)
+		reasons.push(
+			`it cites ${dead.join(', ')}, which git does not have; fix the path, leave it out, or say on the same line that it was removed`,
+		);
+	if (uncommitted.length)
+		reasons.push(
+			`it cites ${uncommitted.join(', ')}, which the checkout holds but its HEAD does not, so the file is not committed ` +
+				`yet and the wiki dream would count the page behind its code at once; write the page after the code commit lands`,
+		);
+	return reasons;
 }
 
 const PAGE_FILE = /\.(md|mdx|txt|ya?ml|json|html)$/i;
