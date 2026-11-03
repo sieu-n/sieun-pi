@@ -272,8 +272,8 @@ export class PoolStatusReader {
   private base: { at: number; queue: PoolPart; config: PoolPart } | null = null;
   private readonly threads = new Map<string, { at: number; parts: ThreadParts }>();
   private readonly pending = new Map<string, PoolThread>();
-  /** The read of one thread by itself (`alone`) in flight, by thread key. */
-  private readonly alone = new Map<string, Promise<void>>();
+  /** The read of one thread by itself (`alone`) in flight, by thread key, with the epoch ms it started. */
+  private readonly alone = new Map<string, { at: number; reading: Promise<void> }>();
   /**
    * When this service last changed a session's record (`forgetSession`), and how many reads had started by then: a reading of the session
    * from one of those reads is old. The count decides, since a read can start in the same millisecond as the change.
@@ -297,10 +297,11 @@ export class PoolStatusReader {
     const stale = threads.filter(thread => !((this.threads.get(threadKey(thread))?.at ?? -Infinity) >= since));
     if (this.base && this.base.at >= since && !stale.length) return Promise.resolve(this.status(threads));
     const generation = this.generation;
-    const missing = alone ? stale.filter(thread => !this.threads.has(threadKey(thread))) : [];
+    // A fresh ask waited up to a tick for the shared read: on 11-03 api/accounts?fresh=1 on us-metal02 took 2.0 s, and a read of one thread 0.06 to 0.48 s.
+    const missing = alone ? stale.filter(thread => maxAgeMs <= 0 || !this.threads.has(threadKey(thread))) : [];
     if (missing.length) {
       // On 10-26 at 07:26, 07:27 and 07:42Z api/accounts on us-metal02 took 1.7 to 2.1 s waiting behind the shared read after a restart or a job start.
-      return Promise.all(missing.map(thread => this.readAlone(thread)))
+      return Promise.all(missing.map(thread => this.readAlone(thread, since)))
         .then(() => generation === this.generation ? this.status(threads) : this.current(threads, { maxAgeMs, alone }));
     }
     for (const thread of stale) this.pending.set(threadKey(thread), thread);
@@ -364,15 +365,15 @@ export class PoolStatusReader {
     while (this.threads.size > KEPT_THREADS) this.threads.delete(this.threads.keys().next().value!);
   }
 
-  private readAlone(thread: PoolThread): Promise<void> {
+  /** Reads `thread` by itself, or joins its read in flight when that read started at `since` or later. */
+  private readAlone(thread: PoolThread, since: number): Promise<void> {
     const key = threadKey(thread);
-    let reading = this.alone.get(key);
-    if (!reading) {
-      const generation = this.generation, at = this.now(), reads = ++this.started;
-      reading = this.read([thread]).then(snapshot => this.land(generation, at, reads, snapshot), error => { if (generation === this.generation) this.error = error; })
-        .finally(() => this.alone.delete(key));
-      this.alone.set(key, reading);
-    }
+    const out = this.alone.get(key);
+    if (out && out.at >= since) return out.reading;
+    const generation = this.generation, at = this.now(), reads = ++this.started;
+    const reading: Promise<void> = this.read([thread]).then(snapshot => this.land(generation, at, reads, snapshot), error => { if (generation === this.generation) this.error = error; })
+      .finally(() => { if (this.alone.get(key)?.reading === reading) this.alone.delete(key); });
+    this.alone.set(key, { at, reading });
     return reading;
   }
 
@@ -436,8 +437,7 @@ export function accountsView(sessionId: string | null, parts: ThreadParts & { at
 /**
  * `model` names the model the chat runs, so a spent per-model cap (Fable) only marks an account depleted for that model. With a reading for
  * the thread and model it answers at once with it, and asks for the thread in the next shared read; the accounts frame of a thread feed thus
- * starts no pi-pool process of its own. Without one it reads the thread by itself at once, not behind the shared read; with `fresh` and a
- * reading it waits for the next shared read.
+ * starts no pi-pool process of its own. Without one, or with `fresh`, it reads the thread by itself at once, not behind the shared read.
  */
 export function listAccounts(sessionId: string | null, model: string | null = null, { fresh = false, status = poolStatus }: { fresh?: boolean; status?: PoolStatusReader } = {}): Promise<AccountsView> {
   const thread = { session: sessionId, model };

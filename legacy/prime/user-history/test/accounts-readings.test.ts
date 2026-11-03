@@ -176,6 +176,35 @@ test("a read that starts in the same millisecond as a class set, after it, lands
   assert.equal(email(await view), "call1@a");
 });
 
+// 11-03 on us-metal02: api/accounts?fresh=1 took 2.0 s, most of it waiting for the shared read's 2 s tick, while a read of one thread took 0.06 to 0.48 s.
+test("a fresh ask for a thread with a reading reads it alone at once, and does not join a read that started before the ask", async () => {
+  const pool = fakePool(), time = clock();
+  const status = new PoolStatusReader(pool.read, 2000, time.now, time.sleep);
+  const first = listAccounts("t1", "opus", { status });
+  await settle();
+  pool.calls[0]!.answer();
+  assert.equal(email(await first), "call1@a");
+  time.advance(100);
+  const fresh = listAccounts("t1", "opus", { status, fresh: true });
+  await settle();
+  assert.equal(pool.calls.length, 2, "the fresh read starts inside the tick, with no wait");
+  assert.deepEqual(pool.calls[1]!.threads.map(threadKey), ["t1|opus"]);
+  time.advance(10);
+  const again = listAccounts("t1", "opus", { status, fresh: true });
+  await settle();
+  assert.equal(pool.calls.length, 3, "a fresh ask after a read started does not take that read's answer");
+  pool.calls[1]!.answer();
+  assert.equal(email(await fresh), "call2@a");
+  pool.calls[2]!.answer();
+  assert.equal(email(await again), "call3@a");
+  time.advance(10);
+  const joined = [listAccounts("t1", "opus", { status, fresh: true }), listAccounts("t1", "opus", { status, fresh: true })];
+  await settle();
+  assert.equal(pool.calls.length, 4, "two fresh asks in the same millisecond share one read");
+  pool.calls[3]!.answer();
+  assert.ok((await Promise.all(joined)).every(view => email(view) === "call4@a"));
+});
+
 test("a pool change drops the readings, so the next ask waits for a new one", async () => {
   const pool = fakePool(), time = clock();
   const status = new PoolStatusReader(pool.read, 2000, time.now, time.sleep);
