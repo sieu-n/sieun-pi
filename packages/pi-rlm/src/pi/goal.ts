@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /**
  * The thread goal, Prime's `ThreadGoalState` (prime-agent 0.9.8 `dist/core/goals.js`, MIT): an objective the session keeps pursuing across
  * turns until `goal.complete()`, a pause, its token budget or an error ends it.
  */
-export interface Goal {
+export type Goal = {
   goal_id: string;
   objective: string;
   status: "active" | "paused" | "budget_limited" | "complete" | "error";
@@ -18,13 +18,20 @@ export interface Goal {
   /** When the goal last became active; the time since counts toward `time_used_seconds` on the next save. */
   active_since: number | null;
   last_reason?: string;
-}
+};
 
 export const GOAL_ENTRY = "rlm_goal";
 export const GOAL_CONTEXT = "goal_context";
 const MAX_OBJECTIVE_CHARS = 4000;
 
 type ContextKind = "continuation" | "budget_limit";
+
+/** Why `goal.create` refuses while a goal is pending, Prime's words for each status. */
+const PENDING = {
+  active: "this thread already has an active goal; run `await goal.complete()` when it is achieved, or ask the user to clear it with /goal clear",
+  paused: "a paused goal exists; ask the user to resume it with /goal resume or clear it with /goal clear",
+  budget_limited: "a budget-limited goal exists; ask the user to resume it with /goal resume or clear it with /goal clear",
+} as const;
 
 const escapeXml = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
@@ -47,11 +54,14 @@ function upgrade(saved: Record<string, unknown> | null): Goal | null {
   };
 }
 
-/** Goal state for one session, kept as `rlm_goal` custom entries so it survives reload, compaction and a host restart. */
+/**
+ * Goal state for one session. `persist` stores each change: pi-rlm appends an `rlm_goal` custom entry so the goal survives reload,
+ * compaction and a host restart, and pi-host's durable threads write a conversation document (`packages/pi-host/src/durable/goal.ts`).
+ */
 export class GoalState {
   goal: Goal | null = null;
 
-  constructor(private readonly pi: ExtensionAPI) {}
+  constructor(private readonly persist: (goal: Goal | null) => void) {}
 
   load(ctx: ExtensionContext): void {
     this.goal = null;
@@ -69,7 +79,7 @@ export class GoalState {
   private set(status: Goal["status"], reason?: string): void {
     const g = this.goal!;
     const now = Date.now();
-    if (g.active_since !== null) g.time_used_seconds += Math.max(0, Math.round((now - g.active_since) / 1000));
+    if (g.active_since !== null) g.time_used_seconds += Math.max(0, Math.floor((now - g.active_since) / 1000));
     g.active_since = status === "active" ? now : null;
     g.status = status;
     if (reason) g.last_reason = reason;
@@ -79,8 +89,7 @@ export class GoalState {
 
   private save(): void {
     if (this.goal) this.goal.updated_at = Date.now();
-    this.pi.appendEntry(GOAL_ENTRY, this.goal);
-    this.pi.events.emit("rlm:goal", this.goal);
+    this.persist(this.goal);
   }
 
   /**
@@ -112,7 +121,7 @@ export class GoalState {
   view(includeReport = false): Record<string, unknown> {
     const g = this.goal;
     if (!g) return { goal: null, remaining_tokens: null, completion_budget_report: null };
-    const time = g.time_used_seconds + (g.active_since !== null ? Math.round((Date.now() - g.active_since) / 1000) : 0);
+    const time = g.time_used_seconds + (g.active_since !== null ? Math.floor((Date.now() - g.active_since) / 1000) : 0);
     const parts = [g.token_budget !== null ? `tokens used: ${g.tokens_used} of ${g.token_budget}` : "", time > 0 ? `time used: ${time} seconds` : ""].filter(Boolean);
     return {
       goal: { goal_id: g.goal_id, objective: g.objective, status: g.status, token_budget: g.token_budget, tokens_used: g.tokens_used, time_used_seconds: time, created_at: g.created_at, updated_at: g.updated_at },
@@ -121,15 +130,17 @@ export class GoalState {
     };
   }
 
+  /** Prime's `goal.create` host request, with its checks and error texts (`handleGoalHostRequest`, `_createGoalFromHost`). */
   create(payload: Record<string, unknown>): Record<string, unknown> {
-    const objective = typeof payload.objective === "string" ? payload.objective.trim() : "";
+    if (typeof payload.objective !== "string") throw new Error("goal.create objective must be a string");
+    const budget = payload.token_budget ?? undefined;
+    if (budget !== undefined && typeof budget !== "number") throw new Error("goal.create token_budget must be an integer when provided");
+    const pending = this.goal ? PENDING[this.goal.status as keyof typeof PENDING] : undefined;
+    if (pending) throw new Error(`cannot create a new goal because ${pending}`);
+    const objective = payload.objective.trim();
     if (!objective) throw new Error("Goal objective must not be empty.");
     if ([...objective].length > MAX_OBJECTIVE_CHARS) throw new Error(`Goal objective must be at most ${MAX_OBJECTIVE_CHARS} characters.`);
-    const budget = payload.token_budget;
-    if (budget !== undefined && budget !== null && (typeof budget !== "number" || !Number.isInteger(budget) || budget <= 0)) throw new Error("Goal token budget must be a positive integer.");
-    if (this.goal && (this.goal.status === "active" || this.goal.status === "paused" || this.goal.status === "budget_limited")) {
-      throw new Error("a goal is still pending; complete it before you create another");
-    }
+    if (budget !== undefined && (!Number.isInteger(budget) || budget <= 0)) throw new Error("Goal token budget must be a positive integer.");
     const now = Date.now();
     this.goal = {
       goal_id: randomUUID(), objective, status: "active", token_budget: (budget as number | undefined) ?? null, tokens_used: 0, time_used_seconds: 0,
@@ -140,7 +151,7 @@ export class GoalState {
   }
 
   complete(): Record<string, unknown> {
-    if (!this.goal) throw new Error("no goal is set");
+    if (!this.goal) throw new Error("cannot complete goal because this thread has no goal");
     this.set("complete", "Goal achieved");
     return this.view(true);
   }

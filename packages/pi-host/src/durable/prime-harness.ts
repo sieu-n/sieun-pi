@@ -125,12 +125,14 @@ export function contextTexts(view: ContextView): string[] {
  */
 export function nextDelivery(input: {
   state: HarnessState; flags: DigestFlags; input: readonly string[]; recent: readonly string[]; delivered: readonly DigestDelivery[]; after: number; now: number;
+  /** The conversation's goal objective, which Prime ranks entries by at weight 3. */
+  goal?: string;
 }): DigestDelivery | undefined {
   const stateFingerprint = harnessDigestFingerprint(input.state, input.flags);
   const latest = input.delivered.at(-1);
   // Ranking a large store takes most of a second, so a fresh context skips it; Prime renders first and compares after, with the same result.
   if (latest?.stateFingerprint === stateFingerprint) return undefined;
-  const digest = formatHarnessStateForPrompt(input.state, { ...input.flags, queryTerms: digestQueryTerms(input.input, input.recent) });
+  const digest = formatHarnessStateForPrompt(input.state, { ...input.flags, queryTerms: digestQueryTerms(input.input, input.recent, input.goal) });
   const full = HARNESS_DIGEST_PREFIX + digest + HARNESS_DIGEST_SUFFIX;
   if (!latest) return { after: input.after, at: input.now, text: full, digest, stateFingerprint };
   const delta = formatHarnessDigestDelta(input.state, input.delivered.map(delivery => delivery.text), latest.at);

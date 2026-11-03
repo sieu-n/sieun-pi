@@ -20,7 +20,7 @@ import { sessionArtifactDir } from "@sieun-pi/pi-family/paths";
 import { dormantOf, get as registryGet, identityOf, type Identity } from "@sieun-pi/pi-family/registry";
 import { bootstrapCode, parseSkillImportErrors } from "../core/bootstrap.ts";
 import { ChildManager, childRecordOf, closingReason, setClosingReason, type ChildRecord, type CloseReason } from "./children.ts";
-import { GoalState } from "./goal.ts";
+import { GOAL_ENTRY, GoalState } from "./goal.ts";
 import { createSession } from "../core/host-client.ts";
 import { hostApi, HOST_SOCKET_ENV } from "@sieun-pi/pi-family/host-api";
 import { Kernel, KernelBusyError, relayPaths, type CellResult, type HostRequest, type KernelOptions, type RestoreResult } from "../core/kernel.ts";
@@ -135,7 +135,10 @@ class RlmSession {
     this.identity = identityOf(this.id, ctx.sessionManager.getSessionName() ?? this.id);
     this.agentDir = getAgentDir();
     this.artifactDir = sessionArtifactDir(this.id, ctx.sessionManager.getSessionFile(), this.agentDir) ?? join(tmpdir(), `pi-rlm-${this.id}`);
-    this.goal = new GoalState(pi);
+    this.goal = new GoalState(goal => {
+      pi.appendEntry(GOAL_ENTRY, goal);
+      pi.events.emit("rlm:goal", goal);
+    });
     this.goal.load(ctx);
   }
 

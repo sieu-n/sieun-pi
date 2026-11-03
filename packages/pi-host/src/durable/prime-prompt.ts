@@ -23,6 +23,7 @@ import { BRIEF_CORRECTIONS, CHAT_BRIEF, jobReplyGuideline, personaGuideline } fr
 import { jobLedgerPrompt, ledgerPrompt, parseLedger, type Ledger } from "../../../../legacy/prime/user-history/src/chat-corrections.ts";
 import { SessionRules } from "../../../pi-claude-rules/src/core/rules.ts";
 import { agentHarnessDir, briefFile, conversationHarnessDir, threadAgent, type ContextFile } from "./agent-profile.ts";
+import { goalObjective } from "./goal.ts";
 import { contextTail, contextTexts, digestFlags, digestQueryTerms, HarnessDigestDoc, mergedHarnessState, nextDelivery, placeDeliveries, withDigests } from "./prime-harness.ts";
 import { formatHarnessStateForPrompt, HARNESS_DIGEST_PREFIX, HARNESS_DIGEST_SUFFIX } from "./vendor/prime-harness.ts";
 
@@ -426,10 +427,11 @@ export async function deliverHarnessDigest(options: PrimePromptOptions & { threa
   const tools = TOOLS[options.tools ?? "prime"].root;
   const { skills } = await primeResources(options.agentDir, cwd, options.bundledSkillsDir ?? bundledSkillsDir());
   const state = mergedHarnessState(options.agentDir, conversationHarnessDir(options.thread, conversationId, await threadAgent(harness, context)));
+  const goal = await goalObjective(harness, conversationId);
   await conversation.commit(async tx => {
     const doc = await tx.doc(HarnessDigestDoc, conversationId);
     const kept = placeDeliveries(view, doc.deliveries).map(placed => placed.delivery);
-    const next = nextDelivery({ state, flags: digestFlags(tools, skills), input: [input.text], recent: contextTexts(view), delivered: kept, after: contextTail(view), now });
+    const next = nextDelivery({ state, flags: digestFlags(tools, skills), input: [input.text], recent: contextTexts(view), goal, delivered: kept, after: contextTail(view), now });
     if (next || kept.length !== doc.deliveries.length) doc.deliveries = [...kept, ...(next ? [next] : [])];
   }, context);
 }

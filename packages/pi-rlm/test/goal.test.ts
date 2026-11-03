@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { GOAL_ENTRY, GoalState } from "../src/pi/goal.ts";
 
 function fakePi() {
   const entries: { customType: string; data: unknown }[] = [];
-  const pi = { appendEntry: (customType: string, data: unknown) => entries.push({ customType, data: structuredClone(data) }), events: { emit: () => {} } } as unknown as ExtensionAPI;
+  const pi = (goal: unknown) => void entries.push({ customType: GOAL_ENTRY, data: structuredClone(goal) });
   return { pi, entries };
 }
 
