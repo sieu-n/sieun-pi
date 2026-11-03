@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { missingPaths } from "../scripts/duties/skill-smoke.ts";
 
-test("a path on a line that names another checkout resolves there, and a path it lacks stays missing", async t => {
+test("a path on a line that names another checkout resolves there, a path it lacks stays missing, and no checkout leaves it out", async t => {
   const root = mkdtempSync(join(tmpdir(), "skill-smoke-repos-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const other = join(root, "auto-sns-agent");
@@ -25,4 +25,6 @@ test("a path on a line that names another checkout resolves there, and a path it
     "3. Run auto-sns-agent's `scripts/gone.mjs` too.",
   ].join("\n"));
   assert.deepEqual(await missingPaths(skill, [other]), ["SKILL.md names scripts/deploy.mjs", "SKILL.md names scripts/gone.mjs"]);
+  rmSync(other, { recursive: true });
+  assert.deepEqual(await missingPaths(skill, [other]), ["SKILL.md names scripts/deploy.mjs"]);
 });

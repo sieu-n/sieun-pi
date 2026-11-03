@@ -79,7 +79,8 @@ export function namedPaths(markdown: string): { path: string; strict: boolean; l
 
 /**
  * The paths a skill's markdown names that resolve against none of: the naming file's folder, the skill folder, the skill's repo root, and
- * the root of each of `repos` whose folder name the same line names, as in "auto-sns-agent's `scripts/repo/release.mjs`".
+ * the root of each of `repos` whose folder name the same line names, as in "auto-sns-agent's `scripts/repo/release.mjs`". A path on a line
+ * that names a repo with no checkout here is left out, as in the release check's private HOME.
  */
 export async function missingPaths(dir: string, repos: readonly string[] = []): Promise<string[]> {
   const repo = await gitRoot(dir);
@@ -88,6 +89,7 @@ export async function missingPaths(dir: string, repos: readonly string[] = []): 
     const seen = new Set<string>();
     for (const { path, strict, line } of namedPaths(await readFile(file, "utf8"))) {
       const named = repos.filter(other => line.includes(basename(other)));
+      if (!(await Promise.all(named.map(exists))).every(Boolean)) continue;
       const bases = [dirname(file), dir, ...(repo ? [repo] : []), ...named];
       const key = [path, ...named].join("\0");
       if (seen.has(key)) continue;
