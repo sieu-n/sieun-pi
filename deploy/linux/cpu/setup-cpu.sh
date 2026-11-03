@@ -33,7 +33,11 @@ declare -A SYSTEM_WEIGHTS=([ssh.service]=1000 [tailscaled.service]=1000 [user.sl
 # measured: on 10-29 at load 200 and weight 100, per CPU-second used the wiki waited 0.35 s and pm2 0.32 s against 0.02 s for the
 # chat at 10000; at load 230 :5174 answered in 12.7 s and the wiki in up to 1.1 s while the chat took 0.13 s, and d1 at 06:06Z saw
 # the wiki miss its 5 s probe. The wiki's cgroup had waited 220 s on CPU and 0.25 s on memory since its start, so the wait is CPU.
-declare -A USER_WEIGHTS=([sieun-pi-chat.service]=10000 [pi-history.service]=10000 [sieun-pi-wiki.service]=10000 [auto-sns-dev-pm2.service]=10000 [pi-pool-serve.service]=1000 [pi-pool-hookd.service]=1000 [prime-agent-daemon.service]=10000)
+# sieun-pi-apps-chat (sw factory on :5184), pi-host and pi-host-relay run at 10000 for the same reason as sieun-pi-chat, whose place the
+# first one takes: each page call reads through the relay and pi-host. measured: on 11-03 at 10:53Z at load 434 and weight 100, per
+# CPU-second used the apps-chat main thread waited 3.02 s in the run queue, pi-host 2.36 s and the relay 4.15 s, against 0.39 s for
+# sieun-pi-chat at 10000, and the agent page's calls waited 1 to 4.3 s in the browser while their handlers took 1 to 44 ms.
+declare -A USER_WEIGHTS=([sieun-pi-chat.service]=10000 [sieun-pi-apps-chat.service]=10000 [pi-host.service]=10000 [pi-host-relay.service]=10000 [pi-history.service]=10000 [sieun-pi-wiki.service]=10000 [auto-sns-dev-pm2.service]=10000 [pi-pool-serve.service]=1000 [pi-pool-hookd.service]=1000 [prime-agent-daemon.service]=10000)
 
 dropin() {
   printf '# CPU layer 1 of deploy/linux/README.md (owner'"'"'s t84 answer 10-19, after https://cho.sh/ko/1983DC). A weight is no cap.\n[%s]\nCPUWeight=%s\n' "$1" "$2"
