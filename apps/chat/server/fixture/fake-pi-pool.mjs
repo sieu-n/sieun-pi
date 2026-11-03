@@ -24,8 +24,9 @@ const DAY = 86400;
 const CONFIG = {
   refresh_skew_sec: 900, admit_5h_max_pct: 100, low_admit_5h_max_pct: 50, seven_day_max_pct: 98, admit_slot_sec: 120, cooldown_sec: 1200,
   active_session_sec: 3600, refused_cooldown_sec: 86400, agent_queue_on: 1, working_max: 40, tree_working_max: 60,
-  tier_units: { "max 20x": 4, "max 5x": 1 }, switch_models: ["fable"],
+  tier_units: { "max 20x": 4, "max 5x": 1 }, switch_models: ["fable"], no_model_room: "wait",
 };
+const CHOICES = { no_model_room: ["wait", "switch", "fail"] };
 
 function seed(now = Date.now() / 1000) {
   const account = (provider, id, extra = {}) => ({
@@ -67,7 +68,7 @@ function seed(now = Date.now() / 1000) {
     const wait = record.wait ? { [record.wait.provider]: { account: record.wait.account, slot_at: now + record.wait.inSec } } : {};
     trees[tree] = { priority: record.priority ?? "normal", pins: record.pins ?? {}, current: {}, wait };
   }
-  return { providers: { anthropic: { pin: "claude-pinned" }, "openai-codex": { pin: null } }, accounts, trees, added: 0 };
+  return { providers: { anthropic: { pin: "claude-pinned" }, "openai-codex": { pin: null } }, accounts, trees, added: 0, config: {}, set_by: {} };
 }
 
 function noGrant(now) {
@@ -96,7 +97,7 @@ function flags(args) {
     else if (arg === "--timeout") out.timeout = Number(args[++i]);
     else if (arg === "--thread") out.threads.push({ session: args[++i] || null, model: args[++i] || null });
     else if (arg === "--tree") out.trees.push(args[++i]);
-    else if (arg === "--by") i++;
+    else if (arg === "--by") out.by = args[++i];
     else if (arg === "--json") out.json = true;
     else if (arg === "--follow") out.follow = true;
     else if (arg === "--new-session") out.newSession = true;
@@ -179,6 +180,18 @@ function who(state, f) {
   return { session: f.session ?? null, priority: tree?.priority ?? "normal", providers };
 }
 
+const config = state => ({ ...CONFIG, ...state.config, set_by: state.set_by });
+
+/** `pi-pool set <key> <value> --by <who>`: refuses a key the pool does not know and a value outside a key's choices, on stderr like the pool. */
+function set(state, f) {
+  const [key, value] = f.positional;
+  if (!(key in CONFIG)) return { error: `unknown key ${key}; known: ${Object.keys(CONFIG).sort().join(", ")}` };
+  if (CHOICES[key] && !CHOICES[key].includes(value)) return { error: `${key} takes ${CHOICES[key].join(", ")}` };
+  state.config[key] = typeof CONFIG[key] === "number" ? Number(value) : value;
+  state.set_by[key] = { by: f.by ?? null, at: Math.round(Date.now() / 1000) };
+  return { out: `${key} = ${JSON.stringify(state.config[key])}\n` };
+}
+
 const queue = () => ({ enabled: true, working_max: 40, working_max_set: null, tree_working_max: 60, working: [], queued: [] });
 
 /** One command as {code, out, err}, the way `pi-pool snapshot` reports each of its parts. */
@@ -195,7 +208,7 @@ function snapshot(state, f) {
     return { trees: f.trees.map(session => ({ session, priority: state.trees[session]?.priority ?? null, label: null })) };
   }
   return {
-    queue: part(() => json(queue())), config: part(() => json(CONFIG)),
+    queue: part(() => json(queue())), config: part(() => json(config(state))),
     threads: f.threads.map(thread => {
       const g = { ...f, session: thread.session ?? undefined, model: thread.model };
       return {
@@ -354,7 +367,12 @@ async function main(argv) {
     case "ls": return write(json(ls(state, f)), false);
     case "who": return write(json(who(state, f)), false);
     case "queue": return write(json(queue()), false);
-    case "config": return write(json(CONFIG), false);
+    case "config": return write(json(config(state)), false);
+    case "set": {
+      const said = set(state, f);
+      if (said.error) { process.stderr.write(said.error + "\n"); return 1; }
+      return write(said.out);
+    }
     case "use": return write(use(state, f));
     case "pin": { const account = needAccount(state, f); state.providers[f.provider].pin = account.id; return write(`${account.email} pinned for all sessions\n`); }
     case "unpin": state.providers[f.provider].pin = null; return write("unpinned\n");

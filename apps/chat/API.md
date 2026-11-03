@@ -183,12 +183,15 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | `accountsApi.cancelLogin(id)` | `POST /api/accounts/login/cancel` | `{id}`: the login, which ends as cancelled. |
 | `accountsApi.refreshes()` | `GET /api/accounts/refresh` | `UsageRefresh[]`, the last run per provider. |
 | `accountsApi.startRefresh(provider, account)` | `POST /api/accounts/refresh` | `{provider, account}`, where a null account reads all; the new `UsageRefresh`. |
+| `accountsApi.noModelRoom()` | `GET /api/accounts/no-model-room` | `NoModelRoomSetting`, the pool's `no_model_room` from `pi-pool config`, with `set` from its `set_by` entry, or null while it holds the default. |
+| `accountsApi.setNoModelRoom(value)` | `POST /api/accounts/no-model-room` | `{value}` with wait, switch or fail; runs `pi-pool set no_model_room <value> --by "the Settings pane"` and answers the `NoModelRoomSetting` read back. |
 
 1. The page polls the login and the refresh once a second while one runs; the server pushes nothing for them.
 2. A pi-pool failure answers 400 with the pool's message in `error`; a second login or refresh while one runs answers 409, and a paste to an ended login 404.
 3. A tree that never sent a request has no pool record. Its view is the pool's with a sentence in each resolution's `error`, and `use`, `follow` and a class set on it answer 409, because pi-pool takes a new tree only as a session uuid.
 4. Each POST writes one service log line with the action, the account, the thread and its tree, and the client's address and user agent.
 5. pi-host has no command that runs a failed turn again, so a thread moved to another account takes it at its next request or its next pool poll.
+6. `no_model_room` decides what a sw factory agent's turn does when no account has room for its model: wait for one (the default), switch to a model the account has for that request, or fail. Prime sessions keep Prime's own wait. Any other value answers 400, and a pi-pool without the key answers 400 with a sentence that says so.
 
 ## Live stores
 

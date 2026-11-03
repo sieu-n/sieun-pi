@@ -3,7 +3,7 @@
  * thread is named by any sw factory id: a conversation id, an agent id `ag_<slug>` or a DM room `dm_<slug>`, which the server reads as the
  * agent's work thread.
  */
-import type { AccountAction, AccountLogin, AccountsView, PoolPriority, UsageRefresh } from "$lib/api/shared/types.ts";
+import type { AccountAction, AccountLogin, AccountsView, NoModelRoom, NoModelRoomSetting, PoolPriority, UsageRefresh } from "$lib/api/shared/types.ts";
 
 export type Provider = "anthropic" | "openai-codex";
 
@@ -37,4 +37,6 @@ export const accountsApi = {
   cancelLogin: (id: string) => call<AccountLogin>("POST", "/api/accounts/login/cancel", { id }),
   refreshes: () => call<UsageRefresh[]>("GET", "/api/accounts/refresh"),
   startRefresh: (provider: Provider, account: string | null) => call<UsageRefresh>("POST", "/api/accounts/refresh", { provider, account }),
+  noModelRoom: () => call<NoModelRoomSetting>("GET", "/api/accounts/no-model-room"),
+  setNoModelRoom: (value: NoModelRoom) => call<NoModelRoomSetting>("POST", "/api/accounts/no-model-room", { value }),
 };

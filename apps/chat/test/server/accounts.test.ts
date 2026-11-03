@@ -4,7 +4,8 @@
  */
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
-import type { AccountLogin, AccountsView, UsageRefresh } from "../../web/src/lib/api/shared/types.ts";
+import type { AccountLogin, AccountsView, NoModelRoomSetting, UsageRefresh } from "../../web/src/lib/api/shared/types.ts";
+import { parseNoModelRoom } from "../../../../legacy/prime/user-history/src/chat-pool.ts";
 import { actionLine } from "../../server/accounts.ts";
 import { FIXTURE_IDS } from "../../server/fixture/seed.ts";
 import { start, until, type Running } from "./helpers.ts";
@@ -200,6 +201,33 @@ test("the fixture's reset puts the seed state back", async () => {
   const state = await s.send<{ accounts: { id: string }[] }>("POST", "/api/fixture/pi-pool/reset");
   assert.ok(state.body.accounts.some(entry => entry.id === "claude-ready"));
   assert.ok(row(await s.get<AccountsView>("/api/pool"), "claude-ready"));
+});
+
+test("GET /api/accounts/no-model-room reads the pool's default, and a set stores the value with the Settings pane as its writer", async () => {
+  assert.deepEqual(await s.get<NoModelRoomSetting>("/api/accounts/no-model-room"), { value: "wait", set: null });
+  const before = Date.now() - 1000;
+  const set = await s.send<NoModelRoomSetting>("POST", "/api/accounts/no-model-room", { value: "fail" });
+  assert.equal(set.status, 200);
+  assert.equal(set.body.value, "fail");
+  assert.equal(set.body.set!.by, "the Settings pane");
+  assert.ok(set.body.set!.at >= before);
+  assert.equal((await s.get<NoModelRoomSetting>("/api/accounts/no-model-room")).value, "fail");
+  assert.equal((await s.send<NoModelRoomSetting>("POST", "/api/accounts/no-model-room", { value: "switch" })).body.value, "switch");
+});
+
+test("a no-model-room value outside wait, switch and fail is refused and changes nothing", async () => {
+  for (const value of ["maybe", "", 1, null]) {
+    const refused = await s.send<{ error: string }>("POST", "/api/accounts/no-model-room", { value });
+    assert.equal(refused.status, 400, String(value));
+    assert.match(refused.body.error, /wait, switch or fail/);
+  }
+  assert.deepEqual(await s.get<NoModelRoomSetting>("/api/accounts/no-model-room"), { value: "wait", set: null });
+});
+
+test("a pi-pool config with no no_model_room key reads as an error that says so", () => {
+  assert.throws(() => parseNoModelRoom({ working_max: 40, set_by: {} }), /has no no_model_room setting/);
+  assert.deepEqual(parseNoModelRoom({ no_model_room: "switch", set_by: { no_model_room: { by: "the Settings pane", at: 1793700000 } } }),
+    { value: "switch", set: { by: "the Settings pane", at: 1793700000000 } });
 });
 
 test("the log line names the action, the account, the thread and the caller", () => {

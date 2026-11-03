@@ -78,6 +78,11 @@ export interface AgentQueueWorking extends AgentQueueSession { kind: TurnKind }
 export interface AgentQueuedSession extends AgentQueueSession { position: number; total: number; waitMs: number; parked?: true }
 /** Who last ran `pi-pool set` on a key and when, in epoch ms. `by` is null for a value written before pi-pool recorded writers; `at` is then config.json's file time. */
 export interface PoolSetRecord { by: string | null; at: number }
+/** What a sw factory agent's turn does when no account has room for its model: wait for one, switch to a model the account has, or fail. */
+export const NO_MODEL_ROOM = ["wait", "switch", "fail"] as const;
+export type NoModelRoom = typeof NO_MODEL_ROOM[number];
+/** pi-pool's `no_model_room` as `pi-pool config` prints it. `set` is null while it holds pi-pool's default. */
+export interface NoModelRoomSetting { value: NoModelRoom; set: PoolSetRecord | null }
 /**
  * `pi-pool queue --json` as parsed. `enabled` is the `agent_queue_on` switch; the two limits keep their numbers while it is off.
  * `workingMaxSet` is null while the Mac limit holds pi-pool's default.

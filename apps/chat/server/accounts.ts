@@ -6,9 +6,9 @@
  */
 import type { IncomingMessage } from "node:http";
 import {
-  AccountLogins, forgetAccountReadings, listAccounts, PoolError, runAccountAction, setPoolPriority, UsageRefreshes,
+  AccountLogins, forgetAccountReadings, listAccounts, PoolError, readNoModelRoom, runAccountAction, setNoModelRoom, setPoolPriority, UsageRefreshes,
 } from "../../../legacy/prime/user-history/src/chat-pool.ts";
-import { POOL_PRIORITIES, type AccountAction, type AccountsView, type PoolPriority } from "../web/src/lib/api/shared/types.ts";
+import { NO_MODEL_ROOM, POOL_PRIORITIES, type AccountAction, type AccountsView, type NoModelRoom, type PoolPriority } from "../web/src/lib/api/shared/types.ts";
 import type { App } from "./app.ts";
 import { fakePoolState, reseedFakePool, useFakePool } from "./fixture/pool.ts";
 import { parseConversationId } from "./threads.ts";
@@ -146,6 +146,14 @@ export function accountRoutes<R>(app: App, route: (method: string, path: string,
       await treeWrite(tree, () => setPoolPriority(tree, input.priority as PoolPriority));
       app.log(`accounts: priority ${String(input.priority)} on ${thread} (${tree}) ${caller(req)}`);
       return accountsView(tree, null, false);
+    })),
+    route("GET", "/api/accounts/no-model-room", handled(async () => readNoModelRoom())),
+    route("POST", "/api/accounts/no-model-room", handled(async (req, _p, _q, body) => {
+      const value = (await object(body)).value;
+      if (!NO_MODEL_ROOM.some(choice => choice === value)) throw new PoolError(400, "value must be wait, switch or fail.");
+      const setting = await setNoModelRoom(value as NoModelRoom);
+      app.log(`accounts: no_model_room ${setting.value} ${caller(req)}`);
+      return setting;
     })),
     route("GET", "/api/accounts/login", async () => logins.current()),
     route("POST", "/api/accounts/login", handled(async (req, _p, _q, body) => {

@@ -4,7 +4,7 @@ import { realpath } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { POOL_PRIORITIES, TURN_KINDS, type AccountAction, type AgentQueueReading, type AgentQueueSession, type AgentQueueWorking, type AgentQueuedSession, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider, type PoolSetRecord,
+import { NO_MODEL_ROOM, POOL_PRIORITIES, TURN_KINDS, type NoModelRoom, type NoModelRoomSetting, type AccountAction, type AgentQueueReading, type AgentQueueSession, type AgentQueueWorking, type AgentQueuedSession, type AccountLogin, type AccountResets, type AccountsView, type PoolAccount, type PoolConfig, type PoolPriority, type PoolProvider, type PoolSetRecord,
   type PoolResolution, type PoolSelection, type TurnKind, type PoolWait, type PoolWindow, type UsageRefresh, type UsageRefreshAccount, type ClaudeState } from "./shared/pool-types.ts";
 
 /**
@@ -614,7 +614,7 @@ export const poolCommand = {
   refresh: (provider: string, account: string | null) => ["refresh", ...(account ? [account] : []), "--provider", provider, "--stream"],
   login: (provider: string, account: string | null, seconds: number, off = false) => ["login", ...(account ? [account] : []), "--provider", provider, "--timeout", String(seconds), ...(off ? ["--off"] : [])],
   priority: (sessionId: string, priority: PoolPriority) => ["priority", priority, "--session", sessionId],
-  set: (key: string, value: number) => ["set", key, String(value), "--by", "the Settings pane"],
+  set: (key: string, value: number | string) => ["set", key, String(value), "--by", "the Settings pane"],
   ownerTurn: (sessionId: string) => ["owner-turn", sessionId],
   lead: (sessionIds: readonly string[]) => ["lead", ...sessionIds],
 };
@@ -650,10 +650,10 @@ export function parseAgentQueue(value: unknown): AgentQueueReading {
   return { enabled: value.enabled, workingMax, workingMaxSet: setRecord(value.working_max_set), treeWorkingMax, working: value.working.map(workingSession), queued };
 }
 
-function setRecord(value: unknown): PoolSetRecord | null {
+function setRecord(value: unknown, name = "working_max_set"): PoolSetRecord | null {
   if (value === null || value === undefined) return null;
   const at = isRecord(value) ? epochMs(value.at) : null;
-  if (!isRecord(value) || at === null || (value.by !== null && !text(value.by))) throw new Error("pi-pool returned an invalid working_max_set");
+  if (!isRecord(value) || at === null || (value.by !== null && !text(value.by))) throw new Error(`pi-pool returned an invalid ${name}`);
   return { by: value.by as string | null, at };
 }
 
@@ -670,6 +670,24 @@ export async function latestAgentQueue(): Promise<AgentQueueReading> {
 export type AgentQueueKey = "agent_queue_on" | "working_max" | "tree_working_max";
 export async function setPoolKey(key: AgentQueueKey, value: number): Promise<void> {
   try { await run(poolCommand.set(key, value)); } finally { forgetAccountReadings(); }
+}
+
+const isNoModelRoom = (value: unknown): value is NoModelRoom => NO_MODEL_ROOM.some(choice => choice === value);
+
+/** `no_model_room` and its `set_by` entry from `pi-pool config`. Throws when the installed pi-pool has no such key yet. */
+export function parseNoModelRoom(config: unknown): NoModelRoomSetting {
+  if (!isRecord(config) || !isNoModelRoom(config.no_model_room)) throw new Error("The installed pi-pool has no no_model_room setting yet.");
+  return { value: config.no_model_room, set: setRecord(isRecord(config.set_by) ? config.set_by.no_model_room : null, "set_by.no_model_room") };
+}
+
+export async function readNoModelRoom(): Promise<NoModelRoomSetting> {
+  return parseNoModelRoom(JSON.parse(await run(["config"])));
+}
+
+/** `pi-pool set no_model_room <value> --by "the Settings pane"`, then the value as the pool reads it back. */
+export async function setNoModelRoom(value: NoModelRoom): Promise<NoModelRoomSetting> {
+  await run(poolCommand.set("no_model_room", value));
+  return readNoModelRoom();
 }
 
 /**
