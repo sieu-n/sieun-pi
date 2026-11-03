@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Prose lint CLI for llm-wiki pages. The rules live in src/lib/prose-lint.mjs.
 //
-//   node apps/llm-wiki/scripts/prose-lint.mjs <file|dir>...        lint pages, exit 1 on any error
-//   node apps/llm-wiki/scripts/prose-lint.mjs --recent 20          the 20 newest session pages (sessions/2026/10/*)
+//   node apps/wiki/scripts/prose-lint.mjs <file|dir|wiki path>...  lint pages, exit 1 on any error; a target that is
+//        not an existing path is read from the content root (wikiConfig().contentRoot), so apps/search/campaigns.html works
+//   node apps/wiki/scripts/prose-lint.mjs --recent 20              the 20 newest session pages of the newest month folder
 //   node apps/llm-wiki/scripts/prose-lint.mjs --json ...           JSON instead of text
 //   node apps/llm-wiki/scripts/prose-lint.mjs --ratchet <before|-> <file>
 //        exit 1 only if <file> has more errors of some rule than <before>; "-" reads before from stdin,
@@ -20,14 +21,17 @@ import { fileURLToPath } from 'node:url';
 import { STANDARD_FILE, isLintedPath, lintHtml, ratchet } from '../src/lib/prose-lint.mjs';
 import { gateRefusal } from './dup-gate.mjs';
 import { pageGateRefusal, pageGateWarnings, warningText } from './page-gate.mjs';
+import { wikiConfig } from '../src/lib/wiki-config.mjs';
 
-const APP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const CONTENT = path.join(APP, 'content');
-const RECENT_ROOT = path.join(CONTENT, 'sessions', '2026', '10');
+const CONTENT = wikiConfig().contentRoot;
+/** The newest folder by name under dir, such as sessions/2026 under sessions, or null. */
+const newest = (dir) =>
+	existsSync(dir) ? (readdirSync(dir).filter((n) => /^\d+$/.test(n)).sort().map((n) => path.join(dir, n)).pop() ?? null) : null;
+const RECENT_ROOT = newest(newest(path.join(CONTENT, 'sessions')) ?? '') ?? '';
 const SKIP_DIRS = new Set(['data', 'assets', 'node_modules', '.git']);
 
 function usage(msg) {
-	process.stderr.write(`prose-lint: ${msg}\nsee the header of apps/llm-wiki/scripts/prose-lint.mjs for usage\n`);
+	process.stderr.write(`prose-lint: ${msg}\nsee the header of apps/wiki/scripts/prose-lint.mjs for usage\n`);
 	process.exit(2);
 }
 
@@ -51,7 +55,7 @@ if (argv.includes('--recent') && !(recent > 0)) usage('--recent needs a positive
 if (argv.includes('--ratchet') && !ratchetBefore) usage('--ratchet needs <before-file|->');
 if (argv.includes('--ratchet-git') && !ratchetRev) usage('--ratchet-git needs <rev>');
 
-/** Content-relative path when the file sits under apps/llm-wiki/content, else the path as given. */
+/** Content-relative path when the file sits under the content root, else the path as given. */
 function relOf(file) {
 	const abs = path.resolve(file);
 	return abs.startsWith(CONTENT + path.sep) ? path.relative(CONTENT, abs) : file;
@@ -190,8 +194,9 @@ if (ratchetBefore !== null || ratchetRev !== null) {
 
 let files = [];
 if (recent) files.push(...recentPages(recent));
-for (const t of targets) {
-	if (!existsSync(t)) usage(`no such file or directory: ${t}`);
+for (let t of targets) {
+	if (!existsSync(t) && existsSync(path.join(CONTENT, t))) t = path.join(CONTENT, t);
+	if (!existsSync(t)) usage(`no such file or directory: ${t} (also looked under ${CONTENT})`);
 	if (statSync(t).isDirectory()) files.push(...walkHtml(path.resolve(t), []));
 	else files.push(t);
 }

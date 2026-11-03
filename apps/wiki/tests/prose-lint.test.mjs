@@ -2,7 +2,10 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lintHtml, parsePage, ratchet } from '../src/lib/prose-lint.mjs';
 
@@ -79,4 +82,36 @@ test('the page API ratchet refuses a write that adds a future date and keeps a p
 	assert.equal(added.ok, false);
 	assert.deepEqual(Object.keys(added.grown).sort(), ['future-meta-date', 'future-utc-time']);
 	assert.equal(ratchet(dbaf, dbaf.replace('LinkedIn field,', 'LinkedIn field itself,'), { now: WRITE }).ok, true);
+});
+
+// On 2026-11-04 32 wiki dream writers ran `prose-lint.mjs apps/search/campaigns.html` and got "no such file", because the
+// CLI looked under the checkout instead of the content root.
+test('the CLI lints a page by wiki path and --recent from the content root', () => {
+	const root = mkdtempSync(path.join(tmpdir(), 'prose-lint-root-'));
+	const elsewhere = mkdtempSync(path.join(tmpdir(), 'prose-lint-cwd-'));
+	try {
+		const bad = '<!--wiki\n{"title": "Campaigns"}\n-->\n<h1>Campaigns</h1>\n<p>The page lists campaigns \u2014 one per row.</p>\n';
+		mkdirSync(path.join(root, 'apps/search'), { recursive: true });
+		writeFileSync(path.join(root, 'apps/search/campaigns.html'), bad);
+		mkdirSync(path.join(root, 'sessions/2026/11/04/0509-dream'), { recursive: true });
+		writeFileSync(path.join(root, 'sessions/2026/11/04/0509-dream/notes.html'), bad);
+		const cli = fileURLToPath(new URL('../scripts/prose-lint.mjs', import.meta.url));
+		const run = (...args) =>
+			spawnSync(process.execPath, [cli, '--json', ...args], {
+				cwd: elsewhere,
+				encoding: 'utf8',
+				env: { ...process.env, WIKI_CONTENT_ROOT: root, WIKI_CONFIG: path.join(elsewhere, 'none.json') },
+			});
+		for (const args of [['apps/search/campaigns.html'], ['--recent', '5']]) {
+			const out = run(...args);
+			assert.equal(out.status, 1, out.stderr);
+			const { results } = JSON.parse(out.stdout);
+			assert.equal(results.length, 1, out.stdout);
+			assert.ok(results[0].counts.byRule['em-dash']?.errors >= 1, JSON.stringify(results[0].counts));
+		}
+		assert.equal(run('apps/search/missing.html').status, 2);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+		rmSync(elsewhere, { recursive: true, force: true });
+	}
 });
