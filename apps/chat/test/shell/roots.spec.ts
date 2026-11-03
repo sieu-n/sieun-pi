@@ -15,7 +15,6 @@ test("each root shows its own sidebar, and the Messages sidebar is gone on Agent
   for (const [name, root] of [
     ["Agents", "agents"],
     ["Board", "board"],
-    ["Accounts", "accounts"],
   ] as const) {
     await tab(page, name).click();
     await expect(sidebar(page)).toHaveAttribute("data-root", root);

@@ -21,15 +21,16 @@ test("top bar pills open each page and mark the current one", async ({ page }) =
   await expect(page).toHaveURL(/#\/c\/ch_general$/);
 });
 
-test("the top bar holds only Messages, Agents, Board and Accounts, with Usage and Hosts behind Settings", async ({ page }) => {
+test("the top bar holds only Messages, Agents and Board, with Usage, Hosts and Accounts behind Settings", async ({ page }) => {
   const nav = page.getByRole("navigation", { name: "Pages" });
-  await expect(nav.getByRole("tab")).toHaveText(["Messages", "Agents", "Board", "Accounts"]);
+  await expect(nav.getByRole("tab")).toHaveText(["Messages", "Agents", "Board"]);
   const bar = page.locator("header.topbar");
   await expect(bar.getByText("Usage")).toHaveCount(0);
   await expect(bar.getByText("Hosts")).toHaveCount(0);
+  await expect(bar.getByText("Accounts")).toHaveCount(0);
 });
 
-test("the Settings button opens Settings at Usage, and its sidebar switches to Hosts", async ({ page }) => {
+test("the Settings button opens Settings at Usage, and its sidebar switches to Hosts and Accounts", async ({ page }) => {
   await page.locator("header.topbar").getByRole("button", { name: "Settings", exact: true }).click();
   await expect(page).toHaveURL(/#\/settings\/usage$/);
   const sections = page.getByRole("navigation", { name: "Settings" });
@@ -41,6 +42,11 @@ test("the Settings button opens Settings at Usage, and its sidebar switches to H
   await expect(page).toHaveURL(/#\/settings\/hosts$/);
   await expect(sections.getByRole("link", { name: "Hosts" })).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("heading", { name: "Hosts", level: 1 })).toBeVisible();
+  await sections.getByRole("link", { name: "Accounts" }).click();
+  await expect(page).toHaveURL(/#\/settings\/accounts$/);
+  await expect(sections.getByRole("link", { name: "Accounts" })).toHaveAttribute("aria-current", "page");
+  await expect(page.getByRole("heading", { name: "Accounts", level: 1 })).toBeVisible();
+  await expect(page.getByRole("tablist", { name: "Account providers" }).getByRole("tab", { name: /^Claude\b/ })).toHaveAttribute("aria-selected", "true", { timeout: 15_000 });
 });
 
 test("the avatar menu opens Settings", async ({ page }) => {
@@ -49,7 +55,7 @@ test("the avatar menu opens Settings", async ({ page }) => {
   await expect(page).toHaveURL(/#\/settings\/usage$/);
 });
 
-test("old #/usage and #/hosts links land in their Settings section with the query kept", async ({ page }) => {
+test("old #/usage, #/hosts and #/accounts links land in their Settings section with the query kept", async ({ page }) => {
   await page.goto("/#/usage?days=7");
   await expect(page).toHaveURL(/#\/settings\/usage\?days=7$/);
   await expect(page.getByRole("combobox", { name: "Period", exact: true })).toHaveValue("7");
@@ -57,6 +63,9 @@ test("old #/usage and #/hosts links land in their Settings section with the quer
   await expect(page).toHaveURL(/#\/settings\/hosts$/);
   await expect(page.getByRole("navigation", { name: "Settings" }).getByRole("link", { name: "Hosts" })).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("heading", { name: "Hosts", level: 1 })).toBeVisible();
+  await page.goto("/#/accounts/codex?thread=ag_x");
+  await expect(page).toHaveURL(/#\/settings\/accounts\/codex\?thread=ag_x$/);
+  await expect(page.getByRole("navigation", { name: "Settings" }).getByRole("link", { name: "Accounts" })).toHaveAttribute("aria-current", "page");
 });
 
 test("the capsule is 40 px tall and centered in a 56 px top bar", async ({ page }) => {

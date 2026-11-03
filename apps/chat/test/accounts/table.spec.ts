@@ -196,7 +196,7 @@ test("11 the page shows loading, then Accounts unavailable with Retry, and Retry
     }
     return route.fallback();
   });
-  await page.goto("/#/accounts");
+  await page.goto("/#/settings/accounts");
   await expect(page.getByText("Loading accounts")).toBeVisible({ timeout: 15_000 });
   release();
   await expect(page.getByText(/Accounts unavailable/)).toBeVisible();

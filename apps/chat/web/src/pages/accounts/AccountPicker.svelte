@@ -1,16 +1,17 @@
 <script lang="ts">
   import type { PoolProvider } from "$lib/api/shared/types.ts";
+  import { hrefFor } from "$lib/router.svelte";
   import Badge from "$lib/ui/Badge.svelte";
   import Button from "$lib/ui/Button.svelte";
   import Picker from "$lib/ui/Picker.svelte";
   import type { Anchor } from "$lib/ui/floating";
   import type { PickerItem } from "$lib/ui/types";
-  import { accountState, planText, PROVIDER_LABEL, STATE_LABEL, staleText, type Tone } from "./model";
+  import { accountState, planText, PROVIDER_LABEL, PROVIDER_SLUG, STATE_LABEL, staleText, type Tone } from "./model";
   import UsageMeters from "./UsageMeters.svelte";
 
   /**
    * The account picker of one provider: Auto with the pool's next pick, then every account with its plan, usage meters, stale note and
-   * state badge. `value` is the manual account, null for Auto. `thread` names the thread the footer opens on the Accounts tab.
+   * state badge. `value` is the manual account, null for Auto. `thread` names the thread the footer opens in Settings > Accounts.
    */
   let {
     open = $bindable(),
@@ -50,7 +51,7 @@
       keywords: [row.email, row.id],
     })),
   ]);
-  const href = $derived(thread ? `#/accounts?thread=${encodeURIComponent(thread)}` : "#/accounts");
+  const href = $derived(hrefFor("settings", ["accounts", PROVIDER_SLUG[provider.provider]], { thread }));
 </script>
 
 {#snippet rowEnd(item: PickerItem)}
@@ -67,7 +68,7 @@
 {#snippet footer({ close }: { query: string; close: () => void })}
   <div class="footer">
     {#if !provider.rows.length}<p class="empty t-caption">{provider.error ?? `No ${name} accounts in the pool.`}</p>{/if}
-    <Button variant="ghost" size="sm" icon="external" {href} onclick={close}>Open the Accounts tab</Button>
+    <Button variant="ghost" size="sm" icon="external" {href} onclick={close}>Open Accounts in Settings</Button>
   </div>
 {/snippet}
 

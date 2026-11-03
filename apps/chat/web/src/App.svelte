@@ -14,7 +14,6 @@
   import AgentsPage from "$pages/agents/AgentsPage.svelte";
   import BoardPage from "$pages/board/BoardPage.svelte";
   import ForYouPage from "$pages/board/ForYouPage.svelte";
-  import AccountsPage from "$pages/accounts/AccountsPage.svelte";
   import SettingsPage from "$pages/settings/SettingsPage.svelte";
   import SearchDialog from "$pages/search/SearchDialog.svelte";
   import SearchPage from "$pages/search/SearchPage.svelte";
@@ -62,8 +61,6 @@
     <AgentsPage />
   {:else if router.route.page === "board"}
     <BoardPage />
-  {:else if router.route.page === "accounts"}
-    <AccountsPage />
   {:else if router.route.page === "settings"}
     <SettingsPage />
   {:else if router.route.page === "search"}

@@ -9,7 +9,7 @@ export type ProviderId = PoolProvider["provider"];
 
 export const PROVIDER_LABEL: Record<ProviderId, string> = { anthropic: "Claude", "openai-codex": "Codex" };
 
-/** The path segment of each provider's page, `#/accounts/claude` and `#/accounts/codex`. */
+/** The path segment of each provider's page, `#/settings/accounts/claude` and `#/settings/accounts/codex`. */
 export const PROVIDER_SLUG: Record<ProviderId, string> = { anthropic: "claude", "openai-codex": "codex" };
 
 export function providerFromSlug(slug: string | undefined): ProviderId | null {

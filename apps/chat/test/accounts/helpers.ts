@@ -43,11 +43,11 @@ export async function poolState(request: APIRequestContext): Promise<Record<stri
 }
 
 /**
- * Opens the Accounts tab, for one thread when `thread` is set. The box's Chrome sometimes drops a cold dev-server module load with
+ * Opens Settings > Accounts, for one thread when `thread` is set. The box's Chrome sometimes drops a cold dev-server module load with
  * ERR_NETWORK_CHANGED, so a page that never mounts gets one reload.
  */
 export async function openAccounts(page: Page, thread: string | null = null): Promise<void> {
-  await page.goto(`/#/accounts${thread ? `?thread=${encodeURIComponent(thread)}` : ""}`);
+  await page.goto(`/#/settings/accounts${thread ? `?thread=${encodeURIComponent(thread)}` : ""}`);
   const ready = providerTab(page, "anthropic");
   try {
     await ready.waitFor({ timeout: 15_000 });
@@ -57,13 +57,13 @@ export async function openAccounts(page: Page, thread: string | null = null): Pr
   }
 }
 
-/** The provider's row in the Accounts sidebar, which names it and counts its accounts. */
+/** The provider's tab on the Accounts page, which names it and counts its accounts. */
 export const providerTab = (page: Page, provider: ProviderId): Locator =>
-  page.getByRole("navigation", { name: "Accounts" }).getByRole("link", { name: new RegExp(`^${PROVIDER_LABEL[provider]}\\b`) });
+  page.getByRole("tablist", { name: "Account providers" }).getByRole("tab", { name: new RegExp(`^${PROVIDER_LABEL[provider]}\\b`) });
 
 export async function showProvider(page: Page, provider: ProviderId): Promise<void> {
   await providerTab(page, provider).click();
-  await expect(providerTab(page, provider)).toHaveAttribute("aria-current", "page");
+  await expect(providerTab(page, provider)).toHaveAttribute("aria-selected", "true");
 }
 
 /** One account's table row, found by its label shown on its own. */

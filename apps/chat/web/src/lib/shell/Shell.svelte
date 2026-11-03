@@ -8,7 +8,6 @@
   import AgentsSidebar from "$pages/agents/AgentsSidebar.svelte";
   import BoardSidebar from "$pages/board/BoardSidebar.svelte";
   import SettingsSidebar from "$pages/settings/SettingsSidebar.svelte";
-  import AccountsSidebar from "$pages/accounts/AccountsSidebar.svelte";
 
   type Props = { children: Snippet; ownerName?: string };
   let { children, ownerName }: Props = $props();
@@ -20,7 +19,6 @@
     agents: AgentsSidebar,
     board: BoardSidebar,
     settings: SettingsSidebar,
-    accounts: AccountsSidebar,
     ui: null,
   };
   const Nav = $derived(SIDEBARS[router.route.page]);

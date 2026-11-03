@@ -8,17 +8,17 @@
  *   #/c/for-you, #/c/for-you/<chat>/<todo>  Messages, For you, optionally with one ask open
  *   #/agents, #/agents/<sub>                Agents
  *   #/board, #/board/<chat>                 Board, the index or one chat's board
- *   #/accounts?thread=<id>                  Accounts, the pi-pool accounts, optionally for one thread
- *   #/settings/<section>                    Settings, one section such as usage or hosts, opened from the avatar menu
+ *   #/settings/<section>                    Settings, one section: usage, hosts or accounts, opened from the Settings button
+ *   #/settings/accounts/<provider>?thread=<id>   Settings > Accounts, the pi-pool accounts of claude or codex, optionally for one thread
  *   #/search?q=&from=&in=&after=&before=&sort=&type=   Full search results, opened with Enter in the Cmd K search
  *   #/ui                                    The lib/ui gallery, not in the top bar
  *
- * Messages, Agents, Board and Accounts are the roots in the top bar; each picks its own left sidebar in lib/shell/Shell.svelte.
- * The old #/usage, #/hosts and #/board/for-you links redirect to #/settings/usage, #/settings/hosts and #/c/for-you with the rest
- * of their path and their query kept.
+ * Messages, Agents and Board are the roots in the top bar; each picks its own left sidebar in lib/shell/Shell.svelte.
+ * The old #/usage, #/hosts, #/accounts and #/board/for-you links redirect to #/settings/usage, #/settings/hosts, #/settings/accounts
+ * and #/c/for-you with the rest of their path and their query kept.
  */
 
-export type PageId = "messages" | "agents" | "board" | "accounts" | "settings" | "search" | "ui";
+export type PageId = "messages" | "agents" | "board" | "settings" | "search" | "ui";
 
 export type Route = {
   page: PageId;
@@ -32,7 +32,6 @@ export const PAGES: readonly { id: PageId; label: string; segment: string; icon:
   { id: "messages", label: "Messages", segment: "c", icon: "messages" },
   { id: "agents", label: "Agents", segment: "agents", icon: "robot" },
   { id: "board", label: "Board", segment: "board", icon: "board" },
-  { id: "accounts", label: "Accounts", segment: "accounts", icon: "users" },
 ];
 
 /** Pages reachable by URL but not shown in the top bar. */
@@ -47,10 +46,11 @@ const ALL_PAGES = [...PAGES, ...HIDDEN_PAGES];
 const MOVED: readonly (readonly [from: string, to: string])[] = [
   ["usage", "settings/usage"],
   ["hosts", "settings/hosts"],
+  ["accounts", "settings/accounts"],
   ["board/for-you", "c/for-you"],
 ];
 
-/** The new link for an old hash such as `#/usage` or `#/board/for-you/<chat>/<todo>`, or null when the hash did not move. */
+/** The new link for an old hash such as `#/usage`, `#/accounts/codex` or `#/board/for-you/<chat>/<todo>`, or null when the hash did not move. */
 export function movedHash(hash: string): string | null {
   const raw = hash.replace(/^#\/?/, "");
   for (const [from, to] of MOVED) {

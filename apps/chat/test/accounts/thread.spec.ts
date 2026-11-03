@@ -6,7 +6,7 @@ import { DM, escape, openAccounts, showProvider, providerOf, readView, serveView
 test.describe.configure({ timeout: 60_000 });
 
 /**
- * The thread's sentence on `#/accounts?thread=<id>` (FEATURES.md 30), for every case the pool can answer. Each spec serves one reading,
+ * The thread's sentence on `#/settings/accounts?thread=<id>` (FEATURES.md 30), for every case the pool can answer. Each spec serves one reading,
  * the fake's own or a copy with the resolution changed, so the sentence never moves under it.
  */
 async function threadView(page: import("@playwright/test").Page): Promise<AccountsView> {

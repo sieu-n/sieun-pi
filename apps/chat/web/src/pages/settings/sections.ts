@@ -1,9 +1,10 @@
 import { router } from "$lib/router.svelte";
 
-/** Settings: the admin pages behind the avatar menu, one row each in the Settings sidebar, each at #/settings/<id>. */
+/** Settings: the admin pages behind the Settings button and the avatar menu, one row each in the Settings sidebar, each at #/settings/<id>. */
 export const SETTINGS_SECTIONS = [
   { id: "usage", label: "Usage", icon: "chart-bar" },
   { id: "hosts", label: "Hosts", icon: "server" },
+  { id: "accounts", label: "Accounts", icon: "users" },
 ] as const;
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"];

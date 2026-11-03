@@ -1,6 +1,7 @@
 <script lang="ts">
   import UsagePage from "$pages/usage/UsagePage.svelte";
   import HostsPage from "$pages/hosts/HostsPage.svelte";
+  import AccountsPage from "$pages/accounts/AccountsPage.svelte";
   import { openSection } from "./sections";
 
   const section = $derived(openSection());
@@ -9,6 +10,8 @@
 <div class="section" data-testid="settings-section" data-section={section}>
   {#if section === "usage"}
     <UsagePage />
+  {:else if section === "accounts"}
+    <AccountsPage />
   {:else}
     <HostsPage />
   {/if}

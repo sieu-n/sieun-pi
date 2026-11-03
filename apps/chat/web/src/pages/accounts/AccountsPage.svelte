@@ -4,20 +4,20 @@
   import { POOL_PRIORITIES } from "$lib/api/shared/types.ts";
   import { tick } from "svelte";
   import { hrefFor, router } from "$lib/router.svelte";
-  import { Button, Dialog, EmptyState, IconButton, Input, LoadingText, Menu, Page, PanelHeader, Picker, toast, tooltip, type MenuEntry, type PickerItem } from "$lib/ui";
+  import { Button, Dialog, EmptyState, IconButton, Input, LoadingText, Menu, Page, PanelHeader, Picker, Tabs, toast, tooltip, type MenuEntry, type PickerItem } from "$lib/ui";
   import AccountLogin from "./AccountLogin.svelte";
   import AccountRow from "./AccountRow.svelte";
+  import NoModelRoom from "./NoModelRoom.svelte";
   import PoolMeters from "./PoolMeters.svelte";
   import { accountsApi } from "./api";
-  import { accountsShown } from "./shown.svelte";
   import {
     accountState, isManualAccount, pendingReset, POOL_PRIORITY_HINT, POOL_PRIORITY_LABEL, PROVIDER_LABEL, PROVIDER_SLUG, providerFromSlug, resetConfirm, resolutionSentence, sortedRows,
     threadProvider, usableGrant, windowColumns, type ProviderId,
   } from "./model";
 
   /**
-   * The Accounts tab: pi-pool's Claude and Codex accounts with every action the old Prime chat had (legacy AccountsSettings.svelte).
-   * `#/accounts?thread=<id>` opens it for one thread: its sentence, its pool class, Auto, and Use in this thread on each row.
+   * Settings > Accounts: pi-pool's Claude and Codex accounts with every action the old Prime chat had (legacy AccountsSettings.svelte).
+   * `#/settings/accounts?thread=<id>` opens it for one thread: its sentence, its pool class, Auto, and Use in this thread on each row.
    */
   type Confirm = { title: string; body: string; label: string; action: AccountAction; danger?: boolean; typed?: string };
 
@@ -35,9 +35,10 @@
   let view = $state<AccountsView | null>(null);
   let loading = $state(false);
   let error = $state<string | null>(null);
-  /** The provider the route names, `#/accounts/claude` or `#/accounts/codex`. With none, the page follows the thread's model. */
-  const tab = $derived(providerFromSlug(router.route.rest[0]));
-  const showProvider = (provider: ProviderId) => router.navigate(hrefFor("accounts", [PROVIDER_SLUG[provider]], { thread }), { replace: true });
+  /** The provider the route names, `#/settings/accounts/claude` or `#/settings/accounts/codex`. With none, the page follows the thread's model. */
+  const tab = $derived(providerFromSlug(router.route.rest[1]));
+  const providerHref = (provider: ProviderId) => hrefFor("settings", ["accounts", PROVIDER_SLUG[provider]], { thread });
+  const showProvider = (provider: ProviderId) => router.navigate(providerHref(provider), { replace: true });
   let acting = $state<string | null>(null);
   let confirm = $state<Confirm | null>(null);
   let confirmOpen = $state(false);
@@ -197,7 +198,7 @@
     }
   }
 
-  /** The route's provider, else the thread's, else the first one, Claude, so a bare #/accounts never jumps to Codex because Claude has no free account. */
+  /** The route's provider, else the thread's, else the first one, Claude, so a bare #/settings/accounts never jumps to Codex because Claude has no free account. */
   const current = $derived(view ? (view.providers.find(entry => entry.provider === tab) ?? (thread ? threadProvider(view.providers, threadInfo?.model?.provider) : view.providers[0])) : undefined);
   const resolution = $derived(current?.resolution ?? null);
   const refresh = $derived(current ? refreshes[current.provider] : undefined);
@@ -206,10 +207,8 @@
   const shownLogin = $derived(login && (running(login) || login.id === watched) ? login : null);
   const columns = $derived(current ? windowColumns(current.rows) : []);
   const rows = $derived(current ? sortedRows(current) : []);
-  $effect(() => {
-    accountsShown.view = view;
-    accountsShown.provider = current?.provider ?? null;
-  });
+  /** One tab per provider, each counting its accounts. */
+  const providerTabs = $derived((view?.providers ?? []).map(entry => ({ id: entry.provider, label: PROVIDER_LABEL[entry.provider], badge: entry.rows.length, href: providerHref(entry.provider) })));
   const priorityItems: PickerItem[] = POOL_PRIORITIES.map(level => ({ id: level, label: POOL_PRIORITY_LABEL[level] }));
   const waiting = $derived(Boolean(thread && current && (current.wait || !resolution?.email)));
 
@@ -276,7 +275,7 @@
 
 <Page measure="wide">
   {#snippet header()}
-    <PanelHeader title={current ? `${PROVIDER_LABEL[current.provider]} accounts` : "Accounts"} icon="users" level={1}>
+    <PanelHeader title="Accounts" icon="users" level={1}>
       {#snippet actions()}
         <IconButton icon="refresh" label="Read the pool again" size="sm" loading={loading} onclick={() => void load(true)} />
       {/snippet}
@@ -291,6 +290,7 @@
     <LoadingText text="Loading accounts" delay={300} spinner />
   {:else}
     <div class="body" data-testid="accounts-page">
+      <Tabs items={providerTabs} value={current.provider} variant="underline" size="sm" label="Account providers" />
       <PoolMeters {view} {now} />
 
       <div class="uses" class:warning={waiting} data-testid="accounts-thread">
@@ -383,6 +383,7 @@
       {/if}
     </div>
   {/if}
+  <NoModelRoom />
 </Page>
 
 <Menu bind:open={menuOpen} anchor={menu?.anchor} items={menuItems} placement="bottom-end" width={220} label={menu ? `Actions for ${menu.row.label}` : "Actions"} />
