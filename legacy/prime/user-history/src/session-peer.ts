@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 import type { SessionSummary } from "prime-agent";
 import type { DaemonClient } from "./daemon-sdk.ts";
 import { parseSummaries, PROJECTION_SLICE_MS } from "./chat-catalog.ts";
+import { keptFirst } from "./first-task.ts";
 
 /**
  * The live fields Prime's daemon row carries only while they are set: `waitingFor` and `waitingSince` during an extension's wait,
@@ -98,7 +99,7 @@ export type RosterUpdate = { changed?: { agentId: string; status?: string; summa
 export function applyRosterUpdate(rows: Map<string, SessionSummary>, agents: Map<string, string>, update: RosterUpdate): boolean {
   let unknown = update.resync === true;
   for (const entry of update.changed ?? []) {
-    const row = { ...entry.summary, ...(entry.status ? { rosterStatus: entry.status } : {}) } as SessionSummary;
+    const row = keptFirst({ ...entry.summary, ...(entry.status ? { rosterStatus: entry.status } : {}) } as SessionSummary);
     const key = rowKey(row);
     dropStarting(rows, row);
     rows.set(key, merged(rows.get(key), row));

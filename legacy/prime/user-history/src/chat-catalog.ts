@@ -3,6 +3,7 @@ import { readdir, rename, writeFile } from "node:fs/promises";
 import { performance as loopPerformance } from "node:perf_hooks";
 import { basename, dirname, join } from "node:path";
 import { parseSkillBlock, type SessionSummary } from "prime-agent";
+import { FIRST_TASK_CHARS, keptFirst, taskText } from "./first-task.ts";
 import { DaemonClient, onPiHost } from "./daemon-sdk.ts";
 import { fullListInWorker } from "./full-list.ts";
 import type { ChatLabels } from "./chat-labels.ts";
@@ -192,7 +193,7 @@ export function firstTask(row: Pick<SessionSummary, "firstMessage"> & Partial<Pi
     if (noTask.get(row.sessionFile) !== key) {
       const file = { ...row, sessionFile: row.sessionFile };
       const first = row.parentSessionId ? subagentPrompt(row.sessionFile) || storedFirst(file) : storedFirst(file) || subagentPrompt(row.sessionFile);
-      if (first) { const cut = taskText(first).slice(0, 2000); fileFirsts.set(row.sessionFile, cut); noTask.delete(row.sessionFile); return cut; }
+      if (first) { const cut = taskText(first).slice(0, FIRST_TASK_CHARS); fileFirsts.set(row.sessionFile, cut); noTask.delete(row.sessionFile); return cut; }
       noTask.set(row.sessionFile, key);
     }
   }
@@ -200,8 +201,6 @@ export function firstTask(row: Pick<SessionSummary, "firstMessage"> & Partial<Pi
 }
 /** The daemon's `firstMessage` for a session with no message yet: a placeholder, not a task. */
 const NO_MESSAGES = "(no messages)";
-/** A skill invocation stored expanded reads as what the person typed. */
-const taskText = (first: string): string => first.trimStart().startsWith("<skill") ? parseSkillBlock(first)?.userMessage ?? "" : first;
 /** A subagent's session file holds no user message: its task is the `prompt` of the rlm-subagent.json beside it. */
 function subagentPrompt(sessionFile: string): string {
   try {
@@ -698,7 +697,8 @@ export function parseSchedules(value: unknown): Map<string, ThreadSchedule> {
 
 export function parseSummaries(value: unknown): SessionSummary[] {
   if (!isRecord(value) || !Array.isArray(value.sessions)) throw new Error("Invalid daemon session catalog");
-  return value.sessions.filter((row: unknown): row is SessionSummary => isRecord(row) && typeof row.sessionId === "string" && typeof row.cwd === "string");
+  return value.sessions.filter((row: unknown): row is SessionSummary => isRecord(row) && typeof row.sessionId === "string" && typeof row.cwd === "string")
+    .map(keptFirst);
 }
 
 /**
