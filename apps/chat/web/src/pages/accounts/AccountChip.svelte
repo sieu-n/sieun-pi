@@ -168,6 +168,12 @@
   .meters {
     display: inline-flex;
     gap: 8px;
+    margin-left: 2px;
+    padding-left: 8px;
+    border-left: 1px solid var(--border-standard);
+  }
+  .meters:empty {
+    display: none;
   }
   @media (max-width: 720px) {
     .meters {

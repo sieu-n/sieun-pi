@@ -98,13 +98,14 @@
 <style>
   .row {
     display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; column-gap: var(--space-4);
-    padding: var(--space-2) var(--space-3); border-top: 1px solid var(--border-standard); border-radius: var(--radius-row);
+    position: relative; padding: var(--space-2) var(--space-3); border-radius: var(--radius-row);
     transition: background-color var(--duration-fast, 0.12s);
   }
-  .row:hover { background: var(--affordance-ghost-hover); border-top-color: transparent; }
-  .row:hover + :global(.row) { border-top-color: transparent; }
-  .row.in-use { background: var(--affordance-sidebar-hover); border-top-color: transparent; }
-  .row.in-use + :global(.row) { border-top-color: transparent; }
+  .row::before { content: ""; position: absolute; top: 0; inset-inline: var(--space-3); border-top: 1px solid var(--border-standard); }
+  .row:hover { background: var(--affordance-ghost-hover); }
+  .row:hover::before, .row:hover + :global(.row)::before { border-top-color: transparent; }
+  .row.in-use { background: var(--affordance-sidebar-hover); }
+  .row.in-use::before, .row.in-use + :global(.row)::before { border-top-color: transparent; }
   .row.off .who, .row.off .cell, .row.dead .who, .row.dead .cell { opacity: 0.5; }
   .row.busy { opacity: 0.7; }
   .who { min-width: 0; }

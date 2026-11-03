@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import { api, boardStore, live, type BoardOp, type ChatAgent, type CheckInView, type DutyRow } from "$lib/api";
-  import { Button, EmptyState, LoadingText } from "$lib/ui";
+  import { Button, EmptyState, Icon, LoadingText } from "$lib/ui";
   import AskCard from "./AskCard.svelte";
   import PlanTree from "./PlanTree.svelte";
   import DutyList from "./DutyList.svelte";
@@ -89,7 +89,7 @@
           <p class="none t-body-sm">Nothing waiting on you.</p>
         {/if}
         {#if asks.done.length}
-          <button type="button" class="fold t-caption" aria-expanded={doneOpen} onclick={() => { doneOpen = !doneOpen; }}>{doneOpen ? "Hide done" : `Done (${asks.done.length})`}</button>
+          <button type="button" class="fold t-caption" aria-expanded={doneOpen} onclick={() => { doneOpen = !doneOpen; }}><Icon name={doneOpen ? "chevron-down" : "chevron-right"} size={14} />Done <span class="count">{asks.done.length}</span></button>
           {#if doneOpen}
             <ul class="asks">
               {#each asks.done as ask (ask.id)}
@@ -135,6 +135,6 @@
   .ask-row:last-child { border-bottom: 0; }
   .ask-row.focused { background: var(--affordance-sidebar-hover); border-radius: var(--radius-row); padding-inline: var(--space-2); }
   .none { margin: 0; color: var(--text-subtle); }
-  .fold { justify-self: start; border: 0; background: none; padding: var(--space-1) 0; color: var(--text-subtle); cursor: pointer; font: inherit; }
+  .fold { justify-self: start; display: inline-flex; align-items: center; gap: var(--space-1); border: 0; background: none; padding: var(--space-1) 0; color: var(--text-subtle); cursor: pointer; font: inherit; }
   .fold:hover { color: var(--text-standard); }
 </style>

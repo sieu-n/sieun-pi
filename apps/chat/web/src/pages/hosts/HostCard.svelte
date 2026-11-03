@@ -48,9 +48,12 @@
           <span class="metric-name">CPU</span>
           <span class="caption">Load {machine.cpu.load[0].toFixed(1)} over the last minute on {machine.cpu.cores} cores</span>
         </div>
-        <svg class="spark" viewBox="0 0 100 32" preserveAspectRatio="none" role="img" aria-label="CPU use over the last minute">
-          {#if line}<polygon points={area} class="fill" /><polyline points={line} class="stroke" vector-effect="non-scaling-stroke" />{/if}
-        </svg>
+        <div class="chart">
+          <svg class="spark" viewBox="0 0 100 32" preserveAspectRatio="none" role="img" aria-label="CPU use over the last minute">
+            {#if line}<polygon points={area} class="fill" /><polyline points={line} class="stroke" vector-effect="non-scaling-stroke" />{/if}
+          </svg>
+          {#if !line}<span class="caption pending">Drawing the last minute of CPU use…</span>{/if}
+        </div>
       </div>
       <div class="metric">
         <Meter percent={memPercent} label="Memory" value="{gb(machine.memory.usedBytes)} of {gb(machine.memory.totalBytes)} GB" />
@@ -119,7 +122,9 @@
   .metric { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--space-4); }
   .metric-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-4); }
   .metric-name { font: var(--text-caption); color: var(--text-subtle); }
-  .spark { width: 100%; height: 32px; overflow: visible; }
+  .chart { position: relative; border-radius: 6px; background: var(--surface-inset); overflow: hidden; }
+  .pending { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+  .spark { display: block; width: 100%; height: 32px; }
   .spark .stroke { fill: none; stroke: var(--text-standard); stroke-width: 1.5; stroke-linejoin: round; }
   .spark .fill { fill: var(--text-standard); opacity: 0.08; }
   .group { display: grid; grid-template-columns: minmax(0, 1fr) minmax(8rem, 14rem); align-items: start; gap: var(--space-4); padding: var(--space-2) var(--space-4); }

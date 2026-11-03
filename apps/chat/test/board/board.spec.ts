@@ -39,7 +39,7 @@ test("an ask answered on the board leaves the open list and the server keeps the
   await expect(asks.locator(".ask-row")).toHaveCount(1);
   const board = await (await request.get(`${process.env.CHAT_SERVER_URL ?? "http://127.0.0.1:5186"}/api/threads/${HARNESS}/board`)).json();
   expect(board.board.todos.find((todo: { id: string }) => todo.id === "t1")).toMatchObject({ done: true, reply: "Friday 09:00" });
-  await asks.getByRole("button", { name: "Done (2)" }).click();
+  await asks.getByRole("button", { name: "Done 2" }).click();
   await expect(asks).toContainText("You: Friday 09:00");
 });
 

@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { agents, api, type AgentConfig, type AgentFolder, type AgentSummary, type ConfigFile, type ModelCatalog, type ProjectList, type RunStatus, type ThinkingLevel } from "$lib/api";
-  import { Avatar, Badge, Button, Chip, EmptyState, IconButton, LoadingText, Menu, Meter, ModelPicker, PanelHeader, StatusDot, Tabs, TypingDots, stampLabel, toast, type MenuEntry } from "$lib/ui";
+  import { agents, api, conversations, type AgentConfig, type AgentFolder, type AgentSummary, type ConfigFile, type ModelCatalog, type ProjectList, type RunStatus, type ThinkingLevel } from "$lib/api";
+  import { Avatar, Badge, Button, Chip, EmptyState, IconButton, LoadingText, Markdown, Menu, Meter, ModelPicker, PanelHeader, StatusDot, Tabs, TypingDots, stampLabel, toast, type MenuEntry } from "$lib/ui";
   import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import {
     JOB_KIND_LABEL, SECTIONS, STATUS_LABEL, bytesLabel, canArchive, everyLabel, forLabel, hasForList, levelsFor, modelKey, modelOptions, shortPath, type ConfigSection,
@@ -118,7 +118,12 @@
     if (config && next.agent === config.folder?.agent) config = { ...config, folder: next };
   }
   /** A comm thread is named by its room, never as an agent or a job. */
-  const commLabel = (room: string) => (room.startsWith("dm_") ? "DM comm thread" : `Comm thread in ${room}`);
+  const commLabel = (room: string) => {
+    if (room.startsWith("dm_")) return "DM comm thread";
+    const known = conversations.byId(room);
+    const name = known?.name ?? config?.swarm.rooms.find((r) => r.id === room)?.name ?? room;
+    return `Comm thread in ${known?.kind === "channel" || (!known && room.startsWith("ch_")) ? "#" : ""}${name}`;
+  };
   const dotOf = (status: RunStatus) => (status === "working" ? "online" : status === "sleeping" ? "away" : status === "failed" ? "busy" : "offline");
 
   function copy(path: string) {
@@ -238,7 +243,7 @@
       <section class="block" aria-label="Purpose">
         <h3 class="t-caption heading">First input</h3>
         {#if config.identity.purpose}
-          <p class="purpose t-body-sm">{config.identity.purpose.text}</p>
+          <div class="purpose t-body-sm"><Markdown text={config.identity.purpose.text} /></div>
           <span class="t-caption meta">
             First input from {config.identity.purpose.from.name}{config.identity.purpose.via ? ` via ${config.identity.purpose.via}` : ""}, {stampLabel(config.identity.purpose.at)}
           </span>
@@ -254,7 +259,7 @@
         {#if agent?.comm?.length}
           <dt>Threads</dt>
           <dd data-fact="threads">
-            <a href={conversationHref(agent.thread)} data-work-thread={agent.thread}>Work thread</a>
+            <span class="comm"><StatusDot status={dotOf(agent.status)} label={STATUS_LABEL[agent.status]} /><a href={conversationHref(agent.thread)} data-work-thread={agent.thread}>Work thread</a></span>
             {#each agent.comm as comm (comm.thread)}
               <span class="comm" data-comm-thread={comm.thread} data-room={comm.room}>
                 <StatusDot status={dotOf(comm.status)} label={STATUS_LABEL[comm.status]} />
@@ -424,8 +429,8 @@
             <li data-job-id={job.id} style:padding-left="{Math.max(0, job.depth - 1) * 12}px">
               <StatusDot status={dotOf(job.status)} label={STATUS_LABEL[job.status]} />
               <a class="grow" href={hrefFor("agents", [job.id])}>{job.name}</a>
-              <Chip size="sm" label={JOB_KIND_LABEL[job.kind]} />
-              <span class="t-caption meta">{job.createdAt ? stampLabel(job.createdAt) : ""}</span>
+              {#if job.kind !== "job"}<Chip size="sm" label={JOB_KIND_LABEL[job.kind]} />{/if}
+              <span class="t-caption meta when">{job.createdAt ? stampLabel(job.createdAt) : ""}</span>
             </li>
           {:else}
             <li class="t-caption meta">No jobs yet.</li>
@@ -552,7 +557,6 @@
     margin: 0;
     max-height: 240px;
     overflow: auto;
-    white-space: pre-wrap;
     overflow-wrap: anywhere;
     color: var(--text-standard);
   }
@@ -705,6 +709,12 @@
   }
   .block-line {
     display: block;
+  }
+  .when {
+    flex: none;
+    min-width: 72px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
   }
   .id {
     flex: none;

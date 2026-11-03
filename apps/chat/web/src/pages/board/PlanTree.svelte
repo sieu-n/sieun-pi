@@ -154,9 +154,8 @@
 </div>
 
 <style>
-  .plan { display: grid; gap: var(--space-6); container-type: inline-size; }
-  .plan-tools { display: flex; justify-content: flex-end; height: 0; overflow: visible; position: relative; z-index: 1; }
-  .plan-tools .tool { position: absolute; right: 0; top: 0; }
+  .plan { position: relative; display: grid; gap: var(--space-6); container-type: inline-size; }
+  .plan-tools { position: absolute; top: 0; right: 0; z-index: 1; }
   .tool, .fold-done, .fold-group { border: 0; background: none; padding: 0; color: var(--text-subtle); cursor: pointer; display: inline-flex; align-items: center; gap: var(--space-1); font: inherit; }
   .tool:hover, .fold-done:hover, .fold-group:hover { color: var(--text-standard); }
   .group { display: grid; }

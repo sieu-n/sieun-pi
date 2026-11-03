@@ -77,11 +77,11 @@
 <style>
   .duties { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); }
   .card { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2) var(--space-1) var(--space-1); border: 1px solid var(--border-standard); border-radius: var(--radius-container); }
-  .summary { display: flex; align-items: center; gap: var(--space-3); min-width: 0; padding: var(--space-2); border: 0; border-radius: var(--radius-row); background: var(--surface-inset); color: inherit; font: inherit; text-align: start; cursor: pointer; }
-  .summary:hover { background: var(--affordance-subtle-hover); }
+  .summary { display: flex; align-items: center; gap: var(--space-3); min-width: 0; padding: var(--space-2); border: 0; border-radius: var(--radius-row); background: none; color: inherit; font: inherit; text-align: start; cursor: pointer; }
+  .summary:hover { background: var(--affordance-ghost-hover); }
   .paused .summary { opacity: 0.7; }
   .flow { display: inline-flex; align-items: center; gap: 4px; color: var(--text-subtle); flex: none; }
-  .node { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--surface-panel); color: var(--text-standard); }
+  .node { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--surface-inset); color: var(--text-standard); }
   .text { display: grid; min-width: 0; }
   .name { color: var(--text-standard); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .meta { color: var(--text-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

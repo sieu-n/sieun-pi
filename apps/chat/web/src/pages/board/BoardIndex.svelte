@@ -57,12 +57,14 @@
                   <Avatar name={row.chatName} kind="agent" seed={row.chatId} size={28} />
                   <span class="plan-main">
                     <span class="name t-body-sm">{row.chatName}</span>
-                    <span class="meter"><Meter percent={row.progress.total ? (100 * row.progress.done) / row.progress.total : 0} compact warn={101} danger={101} label="{row.progress.done} of {row.progress.total} done" /></span>
+                    {#if row.openAsks || row.needsGo}
+                      <span class="badges">
+                        {#if row.openAsks}<Badge value={`${row.openAsks} for you`} tone="accent" />{/if}
+                        {#if row.needsGo}<Badge value={`${row.needsGo} need your go`} tone="strong" />{/if}
+                      </span>
+                    {/if}
                   </span>
-                  <span class="badges">
-                    {#if row.openAsks}<Badge value={`${row.openAsks} for you`} tone="accent" />{/if}
-                    {#if row.needsGo}<Badge value={`${row.needsGo} need your go`} tone="strong" />{/if}
-                  </span>
+                  <span class="meter"><Meter percent={row.progress.total ? (100 * row.progress.done) / row.progress.total : 0} compact warn={101} danger={101} label="{row.progress.done} of {row.progress.total} done" /></span>
                 </a>
               </li>
             {/each}
@@ -110,20 +112,20 @@
   .plan { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-1); color: inherit; text-decoration: none; border-radius: var(--radius-row); }
   .plan:hover, .due-main:hover .due-name { color: var(--text-standard); }
   .plan:hover { background: var(--surface-inset); }
-  .plan-main { display: grid; gap: var(--space-1); min-width: 0; }
+  .plan-main { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
   .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-standard); }
-  .meter { max-width: 20rem; }
+  .meter { width: 14rem; }
   .chat { color: var(--text-subtle); white-space: nowrap; }
-  .badges { display: flex; gap: var(--space-1); }
+  .badges { display: flex; flex: none; gap: var(--space-1); }
   .due-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto; align-items: center; gap: var(--space-2); padding-block: var(--space-2); }
   .lead { display: grid; place-items: center; width: 28px; color: var(--text-subtle); }
   .due-main { display: grid; min-width: 0; color: inherit; text-decoration: none; }
   .due-name { color: var(--text-standard); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .verdict { color: var(--text-subtle); margin-inline-start: 0.3em; }
   .due { color: var(--text-subtle); white-space: nowrap; padding: 2px 10px; }
-  .due.overdue { color: var(--text-danger); font-weight: 500; border: 1px dashed var(--border-danger); border-radius: var(--radius-pill); }
+  .due.overdue { color: var(--text-danger); font-weight: 500; }
   @container (max-width: 30rem) {
     .plan { grid-template-columns: auto minmax(0, 1fr); }
-    .badges { grid-column: 2; }
+    .meter { grid-column: 2; width: auto; }
   }
 </style>

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type AccountsView, type UsageReport } from "$lib/api";
+  import { agents, api, type AccountsView, type UsageReport } from "$lib/api";
   import { hrefFor, router } from "$lib/router.svelte";
   import { Avatar, Button, CardGroup, EmptyState, Icon, IconButton, LoadingText, Page, PageHeader, PanelHeader, Select } from "$lib/ui";
   import DailyCostChart from "./DailyCostChart.svelte";
@@ -16,6 +16,8 @@
   const PERIOD_LABEL: Record<Period, string> = { "1": "Today", "7": "Last 7 days", "30": "Last 30 days", "90": "Last 90 days" };
   const ALL = "all";
   const REFRESH_MS = 60_000;
+  /** The agent a pi-host thread belongs to, as its work thread or one of its comm threads, so its row shows that agent's mascot. */
+  const ownerOf = (thread: string) => agents.list.find((agent) => agent.thread === thread || agent.comm?.some((comm) => comm.thread === thread));
 
   const params = $derived(router.route.params);
   const period = $derived<Period>(PERIODS.includes(params.days as Period) ? (params.days as Period) : "30");
@@ -208,11 +210,12 @@
           <PageHeader title="By chat" size="section" />
           <ul class="list" data-testid="usage-by-chat">
             {#each summary.chats as chat (chat.thread)}
+              {@const owner = ownerOf(chat.thread)}
               <li>
                 <a class="chat-row" href={hrefFor("messages", [chat.thread])} title="{chat.name}, {full(chat.turns)} turns, {exactCost(chat.cost.total)}. Open chat">
-                  <Avatar name={chat.name} seed={chat.thread} kind="agent" size={24} />
+                  <Avatar name={chat.name} seed={owner?.id ?? chat.thread} kind="agent" size={24} />
                   <span class="row-text">
-                    <span class="name">{chat.name}</span>
+                    <span class="name">{chat.name}{#if owner && owner.thread !== chat.thread}<span class="role"> · comm thread</span>{/if}</span>
                     <span class="caption">{[modelName(chat.model), chat.host, `${full(chat.turns)} ${chat.turns === 1 ? "turn" : "turns"}`].join(" · ")}</span>
                     <span class="track" aria-hidden="true"><span class="bar" style:width="{maxChat ? (chat.cost.total / maxChat) * 100 : 0}%"></span></span>
                   </span>
@@ -274,6 +277,7 @@
   .chat-row:hover { background: var(--affordance-subtle); }
   .row-text { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: var(--space-1); }
   .name { overflow: hidden; color: var(--text-standard); font: var(--text-body); text-overflow: ellipsis; white-space: nowrap; }
+  .role { color: var(--text-subtle); }
   .row-text .caption { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .track { display: block; margin-top: var(--space-1); height: 4px; }
   .bar { display: block; min-width: 4px; height: 100%; border-radius: 0 2px 2px 0; background: var(--chart-series-1); }
