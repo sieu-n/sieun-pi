@@ -20,6 +20,7 @@ start the unit while the workers it left behind under KillMode=process still run
 enabled controllers refuse a process, and the start fails with EBUSY.
 """
 import os
+import pwd
 import subprocess
 import sys
 import time
@@ -102,8 +103,12 @@ def nice_to_zero(pid: int) -> None:
 
 
 def start_scope(pid: int) -> None:
-    """Starts the tools scope in the user's manager with pid as its first process."""
-    subprocess.run(["busctl", f"--machine={USER}@.host", "--user", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+    """Starts the tools scope in the user's manager with pid as its first process. It calls the user's bus as the user through setpriv, since
+    `--machine=<user>@.host` starts a unit and a session scope of its own for each call. It names the bus by path, because `busctl --user`
+    follows an inherited DBUS_SESSION_BUS_ADDRESS, and from a root ssh login that names root's bus and fails with EPERM (11-02 23:47Z)."""
+    entry = pwd.getpwnam(USER)
+    subprocess.run(["setpriv", f"--reuid={entry.pw_uid}", f"--regid={entry.pw_gid}", "--init-groups",
+                    "busctl", f"--address=unix:path=/run/user/{entry.pw_uid}/bus", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
                     "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))", TOOLS, "fail", "5",
                     "PIDs", "au", "1", str(pid), "Delegate", "b", "true", "OOMPolicy", "s", "continue", "Slice", "s", "app.slice",
                     "Description", "s", "Commands the Prime workers start, CPU layer 2 of sieun-pi deploy/linux/README.md", "0"],
@@ -141,7 +146,6 @@ def nice_reset(app: str) -> None:
 
 
 if __name__ == "__main__":
-    import pwd
     uid = pwd.getpwnam(USER).pw_uid
     app = f"/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/app.slice"
     public_dir = f"/tmp/prime-agent-{uid}"

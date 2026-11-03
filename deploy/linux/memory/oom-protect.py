@@ -28,6 +28,7 @@ of RAM and swap that neither earlyoom nor the kernel would pick, and earlyoom ki
 and more instead.
 """
 import os
+import pwd
 import subprocess
 import sys
 import time
@@ -156,7 +157,12 @@ def session_and_memory(pids) -> tuple[dict[int, int], dict[int, int]]:
 
 
 def main_pids() -> dict[str, int]:
-    out = subprocess.run(["systemctl", "--user", f"--machine={USER}@", "show", "-p", "MainPID", "--value", *CORE_UNITS],
+    """Asks the user's manager as the user through setpriv. `systemctl --machine=<user>@` starts a run-*.service and a PAM session scope
+    per call, 35,507 units a day at one call every 5 s (journal, 24 h to 11-02 22:26Z), and each unit start is a cgroup migration that
+    blocks every fork on the box on a kernel without favordynmods (~/work/cgroup-favordynmods)."""
+    entry = pwd.getpwnam(USER)
+    out = subprocess.run(["setpriv", f"--reuid={entry.pw_uid}", f"--regid={entry.pw_gid}", "--init-groups", "env",
+                          f"XDG_RUNTIME_DIR=/run/user/{entry.pw_uid}", "systemctl", "--user", "show", "-p", "MainPID", "--value", *CORE_UNITS],
                          capture_output=True, text=True).stdout
     values = [line for line in out.split("\n") if line.strip()]
     return {unit: int(value) for unit, value in zip(CORE_UNITS, values) if value.isdigit()}
@@ -207,7 +213,6 @@ def units_comm(units: dict[str, dict[int, str]], pid: int) -> str:
 
 
 if __name__ == "__main__":
-    import pwd
     uid = pwd.getpwnam(USER).pw_uid
     while True:
         run_once(uid)

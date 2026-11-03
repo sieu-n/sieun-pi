@@ -70,6 +70,17 @@ install -m 644 "$here/rcu-boost.service" /etc/systemd/system/rcu-boost.service
 systemctl daemon-reload
 systemctl enable rcu-boost.service >/dev/null
 systemctl restart rcu-boost.service
+# 4. favordynmods on the cgroup2 hierarchy, live now and from the kernel line at each boot. Without it every cgroup migration (each unit
+# start, each cpu-protect move) waits out an RCU grace period while holding cgroup_threadgroup_rwsem for writing, and every fork on the box
+# waits behind it. measured (~/work/cgroup-favordynmods, 10 min windows, box 98 to 99% busy in all four): before, threads sat in
+# percpu_rwsem_wait in 9.6 to 12.5% of 200 ms samples, up to 143 at once, a /bin/true spawn took p99 358 to 479 ms and up to 8.0 s, and
+# cpu-protect spent 1.9 to 2.6 s in state D; after, with more CI unit starts (2,980 and 3,271 against 2,294 and 2,673), 1 of 5,743 samples
+# held a waiter, spawn p99 was 56 to 83 ms, and cpu-protect spent 0 s in state D. A remount needs the current options, since cgroup2
+# clears each flag the remount leaves out.
+install -m 644 "$here/90-cgroup-favordynmods.cfg" /etc/default/grub.d/90-cgroup-favordynmods.cfg
+update-grub
+opts=$(findmnt -no OPTIONS /sys/fs/cgroup)
+case ",$opts," in *,favordynmods,*) ;; *) mount -o "remount,$opts,favordynmods" /sys/fs/cgroup ;; esac
 sleep 3
 
 app=user.slice/user-$uid.slice/user@$uid.service/app.slice
@@ -78,3 +89,4 @@ for unit in "${!USER_WEIGHTS[@]}"; do echo "$unit cpu.weight $(cat "/sys/fs/cgro
 echo "processes in $app/prime-agent-daemon.service: $(wc -l < "/sys/fs/cgroup/$app/prime-agent-daemon.service/cgroup.procs"), in prime-agent-tools.scope: $(cat "/sys/fs/cgroup/$app/prime-agent-tools.scope/cgroup.procs" 2>/dev/null | wc -l)"
 echo "cpu-protect $(systemctl is-active cpu-protect)"
 echo "rcu-boost $(systemctl is-active rcu-boost), rcu_cpu_stall_timeout $(cat /sys/module/rcupdate/parameters/rcu_cpu_stall_timeout)"
+echo "cgroup2 $(findmnt -no OPTIONS /sys/fs/cgroup), grub lines with cgroup_favordynmods=true: $(grep -c cgroup_favordynmods=true /boot/grub/grub.cfg)"
