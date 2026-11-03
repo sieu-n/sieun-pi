@@ -374,7 +374,7 @@ export const OUTSIDE_ACTION_RULE = "Before any outside action (an email, a ticke
 /** The rules a job reads as short lines: outside sends, vendor support, acting directly, dropping cautious settings, the model and no model fallback, writing, Convex, merges and staging. */
 export const JOB_RULES: ReadonlySet<string> = new Set(["c18", "c20", "c30", "c31", "c35", "c37", "c47", "c49", "c50", "c72", "c79"]);
 export function jobLedgerPrompt(ledger: Ledger | null, brief: string = ""): string {
-  const lines = [uiRuleLine(brief), chatWebRuleLine(brief), tokenCostRuleLine(brief)].filter((line): line is string => line !== null);
+  const lines = [uiRuleLine(brief), chatWebRuleLine(brief), tokenCostRuleLine(brief), heavyComputeRuleLine(brief)].filter((line): line is string => line !== null);
   return [`[corrections] The owner's corrections that bind jobs, live from the ledger; every other correction holds in this job too. ${OUTSIDE_ACTION_RULE} ${READ_RULE}`,
     ...(ledger ? liveRules(ledger).filter(entry => JOB_RULES.has(entry.id)).map(shortLine) : []), ...lines].join("\n");
 }
@@ -411,6 +411,23 @@ export function tokenCostRuleLine(brief: string): string | null {
   const tokenUse = MODEL_TOKENS.test(brief.replace(OTHER_TOKENS, "")) && USE_WORD.test(brief);
   const cost = COST_WORD.test(brief) && MODEL_WORD.test(brief) && !NAMES_CACHE_READ.test(brief);
   return tokenUse || cost ? TOKEN_COST_RULE_LINE : null;
+}
+
+/** A brief that trains, fine-tunes, benchmarks or runs a model: a word for model training or inference, or for the GPU stack it runs on. */
+const HEAVY_COMPUTE = /\bfine-?tun\w*|\b(?:train|trains|training|distil\w*)\b(?!\.jsonl)|\bbatch inference\b|\bLoRA\b|\bMPS\b|\bGPUs?\b|\bCUDA\b|\bnvidia-smi\b|\b(?:py)?torch\b|\bhugging ?face\b/iu;
+export const HEAVY_COMPUTE_RULE_LINE = "- d1 This job trains, benchmarks or runs a model, so run that compute on us-metal02 (80 cores, 247 GB), never on " +
+  "the owner's Mac over ssh or in a Mac kernel, also when this brief, its parent or the owner names his MacBook, MPS or its GPU. Give a MacBook " +
+  "number from a published benchmark of its chip, marked as an estimate (c202). The owner made a usable Mac a duty on 10-09, and on 11-03 MPS " +
+  "model runs a job started there over ssh held up to 30.8 GB of its 32 GB and made 43 minutes unusable.";
+/**
+ * The d1 line for a job's [corrections] block: HEAVY_COMPUTE_RULE_LINE when its brief trains, benchmarks or runs a model, else null. On 11-03
+ * at 12:21Z Crawler VP's brief told its small model classify job to "train headless on the owner's MacBook Pro with PyTorch MPS through the Mac
+ * host" when no box had an NVIDIA GPU, and the job's contract sent its subagents' runs there. From 12:38Z to 15:14Z their run_mps_bench.sh and
+ * train.py held 10.4 to 30.8 GB of the Mac, swap-outs reached 35,511 a second and kernel_task 171% of a core, and d1 read all 43 of its day's
+ * unusable minutes then.
+ */
+export function heavyComputeRuleLine(brief: string): string | null {
+  return HEAVY_COMPUTE.test(brief) ? HEAVY_COMPUTE_RULE_LINE : null;
 }
 
 /** A brief about one of auto-sns-agent's app screens: it names the demo or its shared UI, and a word for building or styling a screen. */
