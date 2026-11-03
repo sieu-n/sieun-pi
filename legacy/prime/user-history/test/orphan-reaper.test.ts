@@ -268,7 +268,7 @@ test("11-03: a vitest fork worker or a multiprocessing forkserver that lost its 
   const live = new Map<string, Verdict>([[`us-metal02/${LIVE}`, { state: "live", why: "its roster status is idle" }]]);
   const owners = [{ session: LIVE, host: "us-metal02" }];
   const at = (command: string): Group => ({ key: command, root: 1, pids: [1], bytes: 0, started: 0, command, owners });
-  const vitest = at("node --require /repo/node_modules/vitest/suppress-warnings.cjs /repo/node_modules/vitest/dist/workers/forks.js");
+  const vitest = at("/home/sieun/.local/node-v26.12.1-linux-x64/bin/node --experimental-import-meta-resolve --require /home/sieun/Documents/Github/auto-sns-agent/node_modules/vitest/suppress-warnings.cjs --conditions node".slice(0, 200));
   const forkserver = at("python -c import sys; from multiprocessing.forkserver import main; main(29, 30, ['__main__'])");
   const driver = at("node /scratch/chrome.mjs --user-data-dir=/scratch/profile");
   const decision = decide([vitest, forkserver, driver], live, 2 * ENDED_FOR_MS);

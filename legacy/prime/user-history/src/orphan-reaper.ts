@@ -140,7 +140,8 @@ export interface Decision { stop: Group[]; held: { group: Group; why: string }[]
  * crawler-v3's test_account_fill_db.py (5 to 12 h old, about 300 MB each) and four vitest fork workers (0.5 to 0.7 GB each) sat under
  * systemd --user, held because the chats their env named were still live.
  */
-const PARENT_ONLY = /node_modules\/vitest\/dist\/workers\/(forks|threads)\.js|from multiprocessing\.(forkserver|resource_tracker) import main/;
+// worker-footprint.py cuts a command at 200 characters, before a vitest worker's forks.js, so the vitest form is the --require it starts with.
+const PARENT_ONLY = /--require \S*node_modules\/vitest\/suppress-warnings\.cjs|from multiprocessing\.(forkserver|resource_tracker) import main/;
 
 /**
  * Splits the groups: stop a parent-only worker that lost its parent (PARENT_ONLY) and is over ENDED_FOR_MS old, and a group when every owner it names ended over ENDED_FOR_MS ago, hold it when any owner is live or ended more recently
