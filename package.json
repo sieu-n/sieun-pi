@@ -80,7 +80,8 @@
       "./skills/typescript-best-practices/SKILL.md",
       "./skills/unslop/SKILL.md",
       "./skills/websearch/SKILL.md",
-      "./skills/why/SKILL.md"
+      "./skills/why/SKILL.md",
+      "./skills/wiki/SKILL.md"
     ]
   },
   "files": [

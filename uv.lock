@@ -247,6 +247,7 @@ dependencies = [
     { name = "pillow" },
     { name = "pyyaml" },
     { name = "websearch" },
+    { name = "wiki" },
 ]
 
 [package.metadata]
@@ -258,6 +259,7 @@ requires-dist = [
     { name = "pillow" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "websearch", editable = "skills/websearch" },
+    { name = "wiki", editable = "skills/wiki" },
 ]
 
 [[package]]
@@ -279,3 +281,8 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "httpx" }]
+
+[[package]]
+name = "wiki"
+version = "1.0.0"
+source = { editable = "skills/wiki" }

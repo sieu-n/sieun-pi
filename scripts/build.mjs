@@ -16,7 +16,7 @@ try {
   run(process.execPath, ["scripts/check.mjs"]);
   const output = join(root, "dist");
   mkdirSync(output, { recursive: true });
-  for (const skill of ["websearch", "linear-ticket", "aside-browser", "board"]) {
+  for (const skill of ["websearch", "linear-ticket", "aside-browser", "board", "wiki"]) {
     run("uv", ["build", "--wheel", "--project", `skills/${skill}`, "--out-dir", output]);
   }
   console.log(`\nBuilt Python wheels in ${output}:`);

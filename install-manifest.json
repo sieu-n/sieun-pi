@@ -202,6 +202,13 @@
       "target": ".prime/agent/skills/why"
     },
     {
+      "id": "skill:wiki",
+      "kind": "link",
+      "source": "skills/wiki",
+      "scope": "home",
+      "target": ".prime/agent/skills/wiki"
+    },
+    {
       "id": "agent-rules",
       "kind": "link",
       "source": "config/AGENTS.md",
