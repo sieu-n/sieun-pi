@@ -58,6 +58,11 @@ import { piThreadHeader } from "./prime-roots.ts";
 import { bundledSkillsDir, primeResources } from "./prime-prompt.ts";
 import { SendMessage } from "./send-message.ts";
 import { Subagent } from "./subagent.ts";
+import type { HostCall, HostModule } from "./host-modules.ts";
+import { goalModule } from "./goal.ts";
+import { heartbeatModule } from "./heartbeat.ts";
+import { mcpModule } from "./mcp.ts";
+import { refineModule } from "./refine.ts";
 
 /** The folder of the tag-only systemd-run shim (`unit-tag/systemd-run`), first on each kernel's PATH. */
 export const UNIT_TAG_DIR = fileURLToPath(new URL("./unit-tag", import.meta.url));
@@ -204,6 +209,8 @@ export interface DurableRlmOptions {
   chatUrl?: string;
   /** What a job's end stops and deletes through (`endJob`); default Prime's `leftoverSource`. */
   leftovers?: LeftoverSource;
+  /** The modules that answer the `goal`, `refine`, `rlm_heartbeat` and `mcp` host requests; default all four (`host-modules.ts`). */
+  modules?: HostModule[];
   log?: (line: string) => void;
 }
 
@@ -242,8 +249,11 @@ export class DurableRlm {
   private readonly slots = new Map<string, Slot>();
   private readonly idleMs: number;
   private readonly maxDepth: number;
+  private readonly modules: HostModule[];
 
   private constructor(readonly tool: PiTool, private readonly options: DurableRlmOptions) {
+    const moduleOptions = { agentDir: options.agentDir, log: (line: string) => this.log(line) };
+    this.modules = options.modules ?? [goalModule(moduleOptions), refineModule(moduleOptions), heartbeatModule(moduleOptions), mcpModule(moduleOptions)];
     this.idleMs = options.idleMs ?? 10 * 60_000;
     const env = Number(process.env.RLM_MAX_DEPTH ?? "2");
     this.maxDepth = options.maxDepth ?? (Number.isInteger(env) && env >= 0 ? env : 2);
@@ -510,6 +520,12 @@ export class DurableRlm {
    */
   async settled(threadId: string, conversation: number): Promise<void> {
     const slot = this.slots.get(`${threadId}:${conversation}`);
+    if (slot) {
+      const call = await this.hostCall(slot, false);
+      for (const module of this.modules) {
+        await module.settled?.(call).catch(error => this.log(`${slot.session}: ${module.name} settle failed: ${error instanceof Error ? error.message : String(error)}`));
+      }
+    }
     if (!slot?.kernel?.alive) return;
     await this.snapshot(slot, 60_000);
     const pending = [...slot.notices.values()];
@@ -527,11 +543,35 @@ export class DurableRlm {
       await this.free(slot, reason === "shutdown" ? 5_000 : 60_000);
       this.slots.delete(key);
     }));
+    await Promise.all(this.modules.map(module => module.closeThread?.(threadId).catch(() => undefined)));
   }
 
   async shutdown(): Promise<void> {
     await Promise.all([...this.slots.values()].map(slot => this.free(slot, 5_000)));
     this.slots.clear();
+    await Promise.all(this.modules.map(module => module.shutdown?.().catch(() => undefined)));
+  }
+
+  /** The conversation as a host module reaches it; `inCell` gives it the ipython call running now. */
+  private async hostCall(slot: Slot, inCell = true): Promise<HostCall> {
+    const thread = slot.thread;
+    const harness = this.harnessOf(thread);
+    const api = inCell ? slot.call?.api : undefined;
+    const models = api?.models ?? thread.models;
+    return {
+      thread, conversation: slot.conversation, session: harnessSessionOf(thread.id, slot.conversation), harness,
+      harnessDir: conversationHarnessDir(thread, slot.conversation, await threadAgent(harness, context)),
+      ...(api ? { api } : {}), ...(models ? { models } : {}),
+      running: () => this.running(slot),
+      workOut: async () => {
+        for (const child of await this.children(thread, slot.conversation)) {
+          if (child.doc.status === "running" || (await harness.snapshot(LiveDoc, child.id as ConversationId, context))?.run) return true;
+        }
+        return slot.kernel ? (await this.liveHandles(slot.kernel)) > 0 : false;
+      },
+      submit: input => this.submit(thread, { ...input, conversation: slot.conversation }),
+      log: line => this.log(`${slot.session}: ${line}`),
+    };
   }
 
   // ---- Host requests.
@@ -582,8 +622,11 @@ export class DurableRlm {
         const model = ref && (slot.call?.api.models ?? slot.thread.models)?.getModel(ref.provider, ref.modelId);
         return { id: ref?.modelId ?? null, provider: ref?.provider ?? null, input: model?.input ?? [] };
       }
-      default:
+      default: {
+        const module = this.modules.find(m => m.types.includes(type));
+        if (module) return module.request(await this.hostCall(slot), type, payload);
         throw new Error(`${type} does not run in pi-host durable threads yet (docs/prime-pi-prompt-parity.md lists what does)`);
+      }
     }
   }
 
