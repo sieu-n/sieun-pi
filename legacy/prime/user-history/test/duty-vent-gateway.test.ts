@@ -371,6 +371,19 @@ test("vent-share.py reads prod traffic one day per query and merges the days, be
   assert.deepEqual(got.merged.map(r => [r.caller, r.calls, r.last]), [["virev", 5, 100], ["search", 1, 70]]);
 });
 
+test("removed_provider_refs skips ElevenLabs' crawler in a user-agent pattern and still counts an ElevenLabs call", () => {
+  const line = (path: string, text: string) => `origin/dev/sieun:${path}\0${1}\0${text}`;
+  const grep = [
+    line("ops/schema/vercel-requests.sql", "match(ua_raw, '(?i)gptbot|timpibot|omgili|ai2bot|elevenlabs'), 'AI bot',"),
+    line("apps/infra/metal/config/obs/grafana/alerting/crawling.yaml", "# under 0.1%, on 3 days: ElevenlabsCrawler (3.8%) and a Firefox 151 UA (1.0%) on 10-29"),
+    line("apps/infra/bots.ts", "const AI_BOTS = /elevenlabs|gptbot/i;"),
+    line("apps/research-agent-be/src/voice.py", "requests.post('https://api.elevenlabs.io/v1/text-to-speech', headers={'xi-api-key': ELEVENLABS_API_KEY})"),
+  ].join("\n");
+  const result = removedProviderRefs({ grep, tables: TABLES }, 0);
+  assert.ok(!("error" in result));
+  assert.deepEqual(result.flagged.map(flag => flag.item), ["apps/research-agent-be/src/voice.py"]);
+});
+
 // Owner rule c119: us-metal02 moved from sieun/dev to dev/sieun on 2026-10-27 08:17Z, and origin/sieun/dev stopped moving.
 test("the gateway and vent-share.py read the tip at origin/dev/sieun", () => {
   assert.equal(TIP, "origin/dev/sieun");

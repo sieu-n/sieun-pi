@@ -193,7 +193,8 @@ export interface RemovedProvider { name: string; grep: string; code: RegExp; int
 export const REMOVED_PROVIDERS: readonly RemovedProvider[] = [
   { name: "OmniHuman", grep: "omnihuman", code: /omnihuman/i, integrations: [] },
   { name: "AIMLAPI", grep: "aimlapi", code: /aimlapi/i, integrations: ["aimlapi"] },
-  { name: "ElevenLabs", grep: "eleven_?labs", code: /eleven_?labs/i, integrations: ["elevenlabs"] },
+  // A user-agent alternation such as `ai2bot|elevenlabs'` and the bot name ElevenlabsCrawler classify ElevenLabs' crawler in our own traffic (11-03 obs work), which calls nothing.
+  { name: "ElevenLabs", grep: "eleven_?labs", code: /(?<!\|)eleven_?labs(?!\||crawler)/i, integrations: ["elevenlabs"] },
   { name: "HeyGen", grep: "heygen", code: /heygen/i, integrations: [] },
   { name: "Pexels", grep: "pexels", code: /pexels/i, integrations: ["pexels"] },
   { name: "Sora", grep: "sora|/v1/videos", code: /\bsora[- ]?2\b|\b(generate|download|check)_sora|\bsora_(video|status|general)|\/v1\/videos\b/i, integrations: ["openai"] },
