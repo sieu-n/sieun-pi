@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { Worker } from "node:worker_threads";
 
 // Prime resizes terminal pastes and @file images, but not images sent through the
 // daemon prompt API (browser chat) or returned by tools. Anthropic rejects any image
@@ -11,34 +12,24 @@ export type FitImage = (image: ContextImage) => Promise<ContextImage>;
 export const MAX_IMAGE_EDGE = 2000;
 export const IMAGE_CACHE_ENTRIES = 256;
 
-type Photon = typeof import("@silvia-odwyer/photon-node");
-let photon: Promise<Photon> | undefined;
+type WorkerReply = { fits: true } | { data: string; mimeType: string } | { error: string };
 
-// A dynamic import: Prime's own createRequire-based photon loader returns null inside the Bun binary.
-function loadPhoton(): Promise<Photon> {
-  photon ??= import("@silvia-odwyer/photon-node").then(module => ("default" in module ? module.default : module) as Photon);
-  return photon;
-}
-
+/**
+ * The image shrunk so its longer edge is at most maxEdge. A header that shows the image fits skips the decode, and the shrink runs on a worker
+ * thread: on 11-03 a photon resize on the event loop stalled Prime worker 597bd6f3376c for 5.6 s, 10.0 s, 9.4 s and 7.7 s.
+ */
 export async function fitImageEdge(image: ContextImage, maxEdge = MAX_IMAGE_EDGE): Promise<ContextImage> {
-  const { PhotonImage, resize, SamplingFilter } = await loadPhoton();
-  const source = PhotonImage.new_from_byteslice(new Uint8Array(Buffer.from(image.data, "base64")));
-  try {
-    const width = source.get_width();
-    const height = source.get_height();
-    const scale = maxEdge / Math.max(width, height);
-    if (scale >= 1) return image;
-    const fitted = resize(source, Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale)), SamplingFilter.Lanczos3);
-    try {
-      const jpeg = image.mimeType === "image/jpeg";
-      const bytes = jpeg ? fitted.get_bytes_jpeg(85) : fitted.get_bytes();
-      return { type: "image", data: Buffer.from(bytes).toString("base64"), mimeType: jpeg ? "image/jpeg" : "image/png" };
-    } finally {
-      fitted.free();
-    }
-  } finally {
-    source.free();
-  }
+  const size = imageSize(image);
+  if (size && Math.max(size.width, size.height) <= maxEdge) return image;
+  const reply = await new Promise<WorkerReply>((resolve, reject) => {
+    const worker = new Worker(new URL("./context-images-worker.mjs", import.meta.url), { workerData: { data: image.data, mimeType: image.mimeType, maxEdge } });
+    worker.once("message", resolve);
+    worker.once("error", reject);
+    worker.once("exit", code => reject(new Error(`the image worker exited with code ${code} before it replied`)));
+  });
+  if ("error" in reply) throw new Error(reply.error);
+  if ("fits" in reply) return image;
+  return { type: "image", data: reply.data, mimeType: reply.mimeType };
 }
 
 /** The pixel size a PNG, GIF or JPEG header names, or undefined for another format or a header it cannot read. */
@@ -63,10 +54,21 @@ export function imageSize(image: ContextImage): { width: number; height: number 
  */
 export type Fitted = ContextImage | { type: "text"; text: string };
 
-export class ImageFitter {
-  private readonly cache = new Map<string, Promise<Fitted>>();
+const PROCESS_CACHE = Symbol.for("sieun-pi.context-images.cache");
 
-  constructor(private readonly fit: FitImage = fitImageEdge, private readonly limit = IMAGE_CACHE_ENTRIES, private readonly log: (line: string) => void = () => {}) {}
+// Prime loads the extension with jiti's module cache off, so each load gets a fresh module; one map on globalThis lets every session of a worker
+// reuse a fit instead of shrinking the same image again.
+function processCache(): Map<string, Promise<Fitted>> {
+  const holder = globalThis as { [PROCESS_CACHE]?: Map<string, Promise<Fitted>> };
+  return holder[PROCESS_CACHE] ??= new Map();
+}
+
+export class ImageFitter {
+  private readonly cache: Map<string, Promise<Fitted>>;
+
+  constructor(private readonly fit: FitImage = fitImageEdge, private readonly limit = IMAGE_CACHE_ENTRIES, private readonly log: (line: string) => void = () => {}) {
+    this.cache = fit === fitImageEdge ? processCache() : new Map();
+  }
 
   /** The image fitted to MAX_IMAGE_EDGE. A failed fit is not kept, so the next call tries again. */
   image(image: ContextImage): Promise<Fitted> {

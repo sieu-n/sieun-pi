@@ -58,3 +58,33 @@ test("the real fit shrinks a wide PNG to the edge limit", async () => {
   const fitted = await fitImageEdge(image);
   assert.deepEqual(imageSize(fitted), { width: MAX_IMAGE_EDGE, height: 22 });
 });
+
+// Guards 11-03: a photon resize on the event loop stalled Prime worker 597bd6f3376c for 5.6 s at 01:23:51Z, 10.0 s at 02:19:51Z and 9.4 s at 02:44:27Z.
+test("fitting a big screenshot keeps the event loop ticking, and a second fitter reuses the fit", async () => {
+  const { PhotonImage } = await import("@silvia-odwyer/photon-node");
+  const width = 3600, height = 2214;
+  const pixels = new Uint8Array(width * height * 4);
+  for (let at = 0; at < pixels.length; at += 4) {
+    const x = (at >> 2) % width, y = Math.floor((at >> 2) / width);
+    pixels[at] = (x * 7 + y) & 255; pixels[at + 1] = ((x >> 4) ^ (y >> 3)) & 255; pixels[at + 2] = (x * y) & 255; pixels[at + 3] = 255;
+  }
+  const source = new PhotonImage(pixels, width, height);
+  const image: ContextImage = { type: "image", data: Buffer.from(source.get_bytes()).toString("base64"), mimeType: "image/png" };
+  source.free();
+  let last = performance.now(), worst = 0;
+  const tick = setInterval(() => { const now = performance.now(); worst = Math.max(worst, now - last); last = now; }, 10);
+  const fitted = await new ImageFitter().image(image);
+  worst = Math.max(worst, performance.now() - last);
+  clearInterval(tick);
+  assert.deepEqual(imageSize(fitted as ContextImage), { width: MAX_IMAGE_EDGE, height: 1230 });
+  assert.ok(worst < 200, `the event loop stalled ${Math.round(worst)} ms`);
+  let fits = 0;
+  await new ImageFitter(async image => { fits++; return image; }).image(image);
+  assert.equal(fits, 1, "a fitter with its own fit keeps its own cache");
+  assert.equal(await new ImageFitter().image(image), fitted);
+});
+
+test("an image whose header shows it fits comes back without a decode", async () => {
+  const image = pngHeader(1200, 800);
+  assert.equal(await fitImageEdge(image), image);
+});
