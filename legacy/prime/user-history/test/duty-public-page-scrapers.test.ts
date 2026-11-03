@@ -8,7 +8,7 @@ import { classify, ENGINES, humanIps, inRanges, rangeList, requestsSql, ROUTES, 
 import { type DutyMetric, judge } from "../src/shared/chat-duties.ts";
 import { DAY } from "../scripts/duties/estate-reads.ts";
 import { type Asn, isHosting, parseCymru } from "../scripts/duties/ip-asn.ts";
-import { lookupIps, type WeekRow, weeklyClients, weeklySql } from "../scripts/duties/weekly-scraper-blocks.ts";
+import { accountsSql, ACCOUNT_VIEWS_MAX, FLEET_MIN_IPS, fleetKeys, parseFirewall, type WeekRow, weeklyClients, weeklySql } from "../scripts/duties/weekly-scraper-blocks.ts";
 
 const duty = JSON.parse(readFileSync(new URL("../scripts/duties/public-page-scrapers.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] };
 const WIN = (major: number | string) => `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}${typeof major === "number" ? ".0.0.0" : ""} Safari/537.36`;
@@ -89,31 +89,52 @@ test("a source that fails leaves its numbers out with a source error", () => {
   assert.deepEqual(output.flagged!.filter(slice => slice.kind === "source_error").map(slice => slice.excerpt), ["Bing IP ranges: fetch failed", "search requests: Grafana HTTP 502"]);
 });
 
-// 11-03 KST: a plain Safari 26.0.1 UA pulled 425 /profile pages in an hour from 264 IPs, mostly DigitalOcean, and the owner asked for a weekly
-// job that blocks every client at 1% or more ("even 1%"). These cases pin which clients the weekly precheck lists.
+// 11-03 KST: a plain Safari 26.0.1 UA pulled /profile pages from DigitalOcean IPs and a Windows Chrome 151 UA opened one profile page per home
+// IP, and the owner asked for a weekly job that blocks "any sort of crawling for data extraction". These cases pin which clients it lists.
 const SAFARI = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0.1 Safari/605.1.15";
 const DO: Asn = { asn: 14061, name: "DIGITALOCEAN-ASN - DigitalOcean, LLC, US", cc: "US" };
 const KT: Asn = { asn: 4766, name: "KIXS-AS-KR-KR - Korea Telecom, KR", cc: "KR" };
+const FIREWALL = parseFirewall({ allow: [{ ua: "Googlebot" }, { ua: "facebookexternalhit" }], deny: [{ ua: "ChatGPT-User" }], bot_patterns: ["[Bb]ot[^a-z]", "[Pp]ython"],
+  own_ips: ["155.254.27.166"] });
 const week = (part: Partial<WeekRow>): WeekRow => ({ ua: WIN(150), ip: "1.2.3.4", refk: "page", page: true, state: "origin", calls: 1, last: 10 * DAY, ...part });
+const weekly = (rows: WeekRow[], asns: Map<string, Asn>, end = 10 * DAY) => weeklyClients({ rows, asns, accounts: [], judge: { verify: googleOnly, firewall: FIREWALL }, errors: [], end });
+const listed = (output: ReturnType<typeof weeklyClients>) => output.flagged!.filter(slice => slice.kind.startsWith("scraper_client")).map(slice => [slice.kind, slice.sig]);
 
-test("the weekly list names a browser UA from a hosting network and a rotating bot, and never a person, a verified engine or a blocked client", () => {
+test("the weekly list names every crawler whatever its size, and never a person, an allowed indexer or our own box", () => {
   const rows = [
     ...Array.from({ length: 30 }, (_, index) => week({ ua: SAFARI, ip: `64.227.101.${index}`, refk: "none", calls: 2 })),
-    week({ ua: SAFARI, ip: "183.108.170.148", calls: 400 }),
+    week({ ua: SAFARI, ip: "183.108.170.148", calls: 4000 }),
     week({ ua: GOOGLEBOT, ip: "66.249.66.1", calls: 300 }),
+    week({ ua: "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ChatGPT-User/1.0; +https://openai.com/bot", ip: "20.63.180.103", calls: 3 }),
     week({ ua: "python-requests/2.32", ip: "9.9.9.9", refk: "none", calls: 40, last: 8 * DAY }),
-    week({ ua: "Go-http-client/1.1", ip: "8.8.4.4", refk: "none", calls: 500, state: "denied" }),
+    week({ ua: "curl/8.18.0", ip: "155.254.27.166", refk: "none", calls: 90 }),
     week({ calls: 200 }),
   ];
   const asns = new Map([...Array.from({ length: 30 }, (_, index): [string, Asn] => [`64.227.101.${index}`, DO]), ["183.108.170.148", KT]]);
-  assert.ok(lookupIps(rows, googleOnly).has("64.227.101.7"));
-  const output = weeklyClients({ rows, asns, verify: googleOnly, errors: [], end: 10 * DAY });
-  const listed = output.flagged!.filter(slice => slice.kind.startsWith("scraper_client")).map(slice => [slice.kind, slice.sig]);
-  assert.deepEqual(listed, [["scraper_client", `browser UA from a hosting network | ${SAFARI}`], ["scraper_client_stopped", "bot or HTTP library UA | other OS python-requests/2.32"]]);
-  assert.deepEqual(output.metrics, { unblocked_scrapers: 1 });
+  const output = weekly(rows, asns);
+  assert.deepEqual(listed(output), [["scraper_client", `browser UA from a hosting network | ${SAFARI}`], ["scraper_client_stopped", "bot, AI or HTTP library UA | other OS python-requests/2.32"],
+    ["scraper_client", "bot, AI or HTTP library UA | ChatGPT-User"]]);
+  assert.equal(output.metrics.unblocked_crawlers, 2);
   assert.match(output.flagged!.find(slice => slice.kind === "scraper_client")!.excerpt, /from 30 IPs.*AS14061.*--ua-sub '.*Version\/26\.0\.1 Safari\/605\.1\.15' --asn 14061/);
-  const blocked = weeklyClients({ rows: [...rows, week({ ua: SAFARI, ip: "64.227.101.3", refk: "none", state: "denied", calls: 5, last: 10 * DAY + 1 })], asns, verify: googleOnly, errors: [], end: 10 * DAY + 2 });
-  assert.equal(blocked.metrics.unblocked_scrapers, 0, "a client the firewall denies after its last passed call reads as blocked the same day");
+  const blocked = weekly([...rows, week({ ua: SAFARI, ip: "64.227.101.3", refk: "none", state: "denied", calls: 5, last: 10 * DAY + 1 })], asns, 10 * DAY + 2);
+  assert.equal(listed(blocked)[0]![0], "scraper_client_stopped", "a client the firewall denies after its last passed call reads as blocked the same day");
+});
+
+test("a browser UA whose home IPs each open one page with no referer is a fleet, and the same UA with referers stays a person", () => {
+  const fleet = Array.from({ length: FLEET_MIN_IPS }, (_, index) => week({ ua: WIN(151), ip: `73.0.0.${index}`, refk: "none" }));
+  const people = [...Array.from({ length: 10 }, (_, index) => week({ ua: WIN(151), ip: `98.0.0.${index}`, refk: "other", calls: 3 }))];
+  const output = weekly([...fleet, ...people], new Map());
+  assert.deepEqual(listed(output), [["scraper_client", `one or two pages per IP with no referer, rotating IPs | ${WIN(151)}`]]);
+  assert.match(output.flagged!.find(slice => slice.kind === "scraper_client")!.excerpt, /\(20 calls, 20 pages\) from 20 IPs/);
+  assert.equal(fleetKeys([...fleet.slice(0, FLEET_MIN_IPS - 1), ...people]).size, 0, "fewer lone IPs than the line is no fleet");
+});
+
+test("a signed-in account over the daily profile line is listed for a ban check", () => {
+  const output = weeklyClients({ rows: [week({ calls: 5 })], asns: new Map(), judge: { verify: googleOnly, firewall: FIREWALL }, errors: [], end: 10 * DAY,
+    accounts: [{ user: "user_heavy", day: "2026-11-02", views: ACCOUNT_VIEWS_MAX + 1, ips: 3 }, { user: "user_normal", day: "2026-11-02", views: 7, ips: 1 }] });
+  assert.equal(output.metrics.heavy_view_accounts, 1);
+  assert.deepEqual(output.flagged!.filter(slice => slice.kind === "heavy_view_account").map(slice => slice.sig), ["account user_heavy"]);
+  assert.match(accountsSql(10 * DAY), /startsWith\(Body, 'profile_view '\)/);
 });
 
 test("a bulk whois answer maps each IP to its network and skips NA rows", () => {

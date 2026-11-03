@@ -12,7 +12,7 @@ export interface Asn { asn: number; name: string; cc: string }
  * Cloudflare, Akamai and Fastly stay out: iCloud Private Relay and Cloudflare WARP send people's browsers out through them.
  */
 export const HOSTING = new RegExp([
-  "DIGITALOCEAN", "AMAZON", "\\bAWS\\b", "GOOGLE-CLOUD", "MICROSOFT", "AZURE", "OVH", "HETZNER", "LINODE", "VULTR", "CHOOPA", "TENCENT",
+  "DIGITALOCEAN", "AMAZON-", "Amazon\\.com", "\\bAWS\\b", "GOOGLE-CLOUD", "MICROSOFT", "AZURE", "OVH", "HETZNER", "LINODE", "VULTR", "CHOOPA", "TENCENT",
   "ALIBABA", "ALIYUN", "ORACLE", "CONTABO", "M247", "LEASEWEB", "DATACAMP", "CDN77", "IONOS", "SCALEWAY", "HOSTINGER", "HUAWEI-CLOUD", "HWCLOUDS",
   "ZENLAYER", "CHERRY ?SERVERS", "HOSTWINDS", "COLOCROSSING", "QUADRANET", "PSYCHZ", "SERVERS\\.COM", "G-CORE", "GCORE",
   "STARK INDUSTRIES", "PQ HOSTING", "AEZA", "IP VOLUME", "\\bHOSTING\\b", "DATA ?CENT(?:ER|RE)", "\\bVPS\\b", "\\bSERVER",
