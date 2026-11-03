@@ -8,7 +8,7 @@ const dir = process.env.FAKE_POOL_DIR;
 const statePath = join(dir, "state.json");
 const state = JSON.parse(readFileSync(statePath, "utf8"));
 const argv = process.argv.slice(2);
-appendFileSync(join(dir, "calls.jsonl"), JSON.stringify({ at: Date.now(), argv, key: process.env.PI_POOL_SESSION_KEY ?? null, protocol: process.env.PRIME_CREDENTIAL_COMMAND_PROTOCOL ?? null, agentDir: process.env.PRIME_AGENT_CODING_AGENT_DIR ?? null }) + "\n");
+appendFileSync(join(dir, "calls.jsonl"), JSON.stringify({ at: Date.now(), argv, key: process.env.PI_POOL_SESSION_KEY ?? null, protocol: process.env.PRIME_CREDENTIAL_COMMAND_PROTOCOL ?? null, agentDir: process.env.PRIME_AGENT_CODING_AGENT_DIR ?? null, model: process.env.PI_POOL_MODEL ?? null }) + "\n");
 const save = () => writeFileSync(statePath, JSON.stringify(state));
 const now = Date.now() / 1000;
 const auto = { mode: "auto" };
@@ -24,6 +24,19 @@ if (argv[0] !== "--cli") {
     process.stdout.write(JSON.stringify({ retryAt: state.waitUntil, message: "waiting for an account slot" }));
     process.exit(75);
   }
+  // modelWait: {<model>: <until epoch sec>}, a slot wait for a request on that model only, as the pool gives a tree whose
+  // model only a full account serves. final: the pool ends the turn (no_model_room "fail"). switchModels: the token comes
+  // from an account that lacks the model and lists these (no_model_room "switch").
+  const modelUntil = state.modelWait?.[process.env.PI_POOL_MODEL ?? ""];
+  if ((modelUntil ?? 0) > now) {
+    process.stdout.write(JSON.stringify({ retryAt: modelUntil, message: "waiting for an account slot" }));
+    process.exit(75);
+  }
+  if (state.final) {
+    process.stderr.write(`pi-pool-token: no token (no_model_room)\npi-pool-token: final: ${state.final}\n`);
+    process.exit(1);
+  }
+  if (state.switchModels) process.stderr.write(`pi-pool-token: models: ${JSON.stringify(state.switchModels)}\n`);
   if ((state.failTimes ?? 0) > 0) {
     state.failTimes--;
     save();

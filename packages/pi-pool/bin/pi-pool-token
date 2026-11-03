@@ -14,6 +14,10 @@ or a transcript, so the token path refuses a TTY and refuses unknown arguments
 When the session tree waits for a slot and Prime set PRIME_CREDENTIAL_COMMAND_PROTOCOL=1, the token path
 exits 75 with {"retryAt": <slot time, epoch seconds>, "message": "waiting for an account slot"} on stdout.
 
+For a pi-durable tree, no_model_room adds two stderr lines: `pi-pool-token: models: [<id>, ...]` next to a token
+of an account that lacks the tree's model ("switch"), and `pi-pool-token: final: <reason>` after
+`no token (no_model_room)` ("fail").
+
 A failed invocation writes fixed reason codes and elapsed times to the pool log.
 Credential values and exception messages never enter that record.
 """
@@ -84,6 +88,8 @@ def failure_reason(error):
         return "remote_timeout"
     if "remote pool refused" in text:
         return "remote_refused"
+    if isinstance(error, SystemExit) and "no_model_room is fail" in text:
+        return "no_model_room"
     holder = re.search(r"pi-pool-token: no token \((\w+)\)", text)
     if holder:
         return holder.group(1)
@@ -216,7 +222,11 @@ def run_token(source, argv, vend=None):
                 original.flush()
                 raise SystemExit(TEMPORARY_EXIT) from None
             else:
-                no_token(failure_reason(error), exit_code=error.code if isinstance(error.code, int) else 1)
+                reason = failure_reason(error)
+                no_token(reason, exit_code=error.code if isinstance(error.code, int) else 1)
+                if reason == "no_model_room":
+                    said = re.search(r"pi-pool-token: final: (.*)", str(error.code))
+                    say(f"pi-pool-token: final: {said.group(1) if said else error.code}\n")
         raise SystemExit(error.code if isinstance(error.code, int) else (0 if error.code is None else 1)) from None
     except BaseException as error:
         kind = type(error).__name__ if type(error).__module__ == "builtins" else "Exception"

@@ -1009,6 +1009,102 @@ class SwitchLog(unittest.TestCase):
                 self.assertEqual(status_view.switches_today("openai-codex", NOW), (1, 1))
 
 
+class NoModelRoom(unittest.TestCase):
+    """no_model_room for a pi-durable tree whose model only a full account serves. From 10-30 22:32Z to 11-01 12:00Z
+    pi-durable:4a871e83 on gpt-6.1-sol took the free Codex account ungsugoe5, whose plan lacks the model, and each turn
+    failed in about 1 s, since its provider never named the model to the pool."""
+
+    CODEX = "openai-codex"
+    MODEL = "gpt-6.1-sol"
+    TREE = registry.SessionKey("pi-durable:4a871e83", "pi-durable:4a871e83", "pi-durable:4a871e83")
+
+    def accounts(self):
+        free = dataclasses.replace(acct("free", five=5, tier="free"), provider=self.CODEX, plan="free",
+                                   models=("gpt-6-sol-mini", "gpt-6-astra-mini"))
+        pro = dataclasses.replace(acct("pro", five=100, five_reset_in=3600, tier="pro"), provider=self.CODEX, plan="pro")
+        return [free, pro]
+
+    def state(self, key):
+        state = empty_state()
+        put(state, key)
+        state["sessions"][key.key]["vends"][self.CODEX] = dict(vend_record("free", at=NOW - 60), **{"from": NOW - 60})
+        return state
+
+    def run_vend(self, mode, key=None, model=MODEL):
+        key = key or self.TREE
+        state = self.state(key)
+        cfg = dict(CFG, no_model_room=mode)
+        logged = []
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for module, name, value in ((base, "config", cfg), (registry, "load_index", self.accounts()),
+                                        (registry, "session_key", key), (registry, "load_state", state),
+                                        (vending, "credential_for", ("fixture-token", "store")),
+                                        (base, "proc_info", {"start": "s"})):
+                stack.enter_context(unittest.mock.patch.object(module, name, return_value=value))
+            stack.enter_context(unittest.mock.patch.object(base, "Flock", lambda *a, **kw: contextlib.nullcontext()))
+            stack.enter_context(unittest.mock.patch.object(time, "time", return_value=NOW))
+            stack.enter_context(unittest.mock.patch.object(base, "save_json"))
+            stack.enter_context(unittest.mock.patch.object(base, "log", side_effect=lambda e, **kw: logged.append((e, kw))))
+            stack.enter_context(unittest.mock.patch.dict(os.environ, {base.MODEL_ENV: model} if model else {}))
+            stack.enter_context(contextlib.redirect_stdout(out))
+            stack.enter_context(contextlib.redirect_stderr(err))
+            try:
+                vending.vend(self.CODEX)
+                raised = None
+            except SystemExit as e:
+                raised = e
+        return state, out.getvalue(), err.getvalue(), raised, logged
+
+    def test_wait_holds_the_tree_for_the_account_that_serves_its_model(self):
+        state, out, err, raised, _ = self.run_vend("wait")
+        self.assertEqual(out, "", "no token of the account that lacks the model")
+        self.assertIsInstance(raised, base.SlotWait)
+        self.assertAlmostEqual(raised.slot_at, NOW + 3600, delta=CFG["admit_slot_sec"])
+        rec = state["sessions"][self.TREE.key]
+        self.assertEqual(rec["wait"][self.CODEX]["account"], "pro")
+        self.assertEqual(rec["models"][self.CODEX], {self.TREE.active_id: {"model": self.MODEL, "at": NOW}})
+        self.assertEqual(registry.session_models(state, self.TREE, self.CODEX, CFG, NOW + CFG["pin_ttl_sec"] - 1), [self.MODEL])
+
+    def test_fail_ends_the_turn_and_names_each_account(self):
+        state, out, _, raised, logged = self.run_vend("fail")
+        self.assertEqual(out, "")
+        self.assertIsInstance(raised, base.NoModelRoom)
+        self.assertEqual(str(raised), "pi-pool: no openai-codex account with room serves gpt-6.1-sol, and no_model_room is fail: "
+                         "free@x does not serve gpt-6.1-sol, pro@x has its first free slot at "
+                         + vending.utc(NOW + 3600) + ".")
+        self.assertNotIn("wait", state["sessions"][self.TREE.key])
+        self.assertEqual([e for e, _ in logged if e == "no_model_room"], ["no_model_room"])
+
+    def test_switch_vends_the_account_with_room_and_lists_its_models(self):
+        state, out, err, raised, _ = self.run_vend("switch")
+        self.assertIsNone(raised)
+        self.assertEqual(out, "fixture-token")
+        self.assertEqual(err, 'pi-pool-token: models: ["gpt-6-sol-mini", "gpt-6-astra-mini"]\n')
+        self.assertEqual(state["sessions"][self.TREE.key]["vends"][self.CODEX]["account_id"], "free")
+        with self.subTest("a Prime tree keeps its wait"):
+            prime = registry.SessionKey("01a0-prime", "01a0-prime", "01a0-prime")
+            state, out, err, raised, _ = self.run_vend("switch", key=prime)
+            self.assertEqual((out, err), ("", ""))
+            self.assertIsInstance(raised, base.SlotWait)
+
+    def test_set_takes_only_the_three_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "config.json")
+            with contextlib.ExitStack() as stack:
+                stack.enter_context(unittest.mock.patch.object(base, "CONFIG", path))
+                stack.enter_context(unittest.mock.patch.object(base, "LOG", os.path.join(tmp, "log")))
+                stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                self.assertEqual(base.config()["no_model_room"], "wait")
+                with self.assertRaises(SystemExit):
+                    vend.cli(["set", "no_model_room", "later", "--by", "the Settings pane"])
+                self.assertFalse(os.path.exists(path))
+                vend.cli(["set", "no_model_room", "fail", "--by", "the Settings pane"])
+                saved = base.load_json(path)
+                self.assertEqual((saved["no_model_room"], saved["set_by"]["no_model_room"]["by"]), ("fail", "the Settings pane"))
+                self.assertEqual(base.config()["no_model_room"], "fail")
+
+
 # The Virev team seat on 2026-10-13, as the account index held it: one 5h sample
 # from 2026-10-12 06:05Z (100%, reset 07:40Z) and its Fable week. The sampler of the
 # time skipped team seats, so at 22:40 KST the sample was 31.6 h old and read as 0%.

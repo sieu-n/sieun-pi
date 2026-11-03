@@ -87,6 +87,20 @@ test("a 403 refusal moves on, and a plain failure stays as it was", async () => 
   assert.equal(await rewriteFailure({ ...failed("x"), stopReason: "stop" }, answering({}), undefined), undefined);
 });
 
+test("Codex's model refusal with no status line goes to pi-pool refused and retries", async () => {
+  const text = "Codex error: The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.";
+  const pool = answering({ selection: { mode: "auto" }, account: "ungsugoe5", reason: "does not serve gpt-6.1-sol", next: null, retry_at: 1_800_000_000 });
+  const out = await rewriteFailure({ ...failed(text), provider: "openai-codex" }, pool, undefined);
+  assert.deepEqual(pool.seen, [["refused", "--provider", "openai-codex", text]]);
+  assert.match(out!.errorMessage!, /ungsugoe5 is out of the pool \(does not serve gpt-6.1-sol\).*waits for its slot/);
+  assert.ok(isRetryableAssistantError(out!), out!.errorMessage);
+});
+
+test("readVend reads the models of a switch and the pool's end of a turn", () => {
+  assert.deepEqual(readVend({ code: 0, stdout: "codex-token", stderr: 'pi-pool-token: models: ["gpt-6-sol-mini"]\n' }), { kind: "token", token: "codex-token", models: ["gpt-6-sol-mini"] });
+  assert.deepEqual(readVend({ code: 1, stdout: "", stderr: "pi-pool-token: no token (no_model_room)\npi-pool-token: final: pi-pool: no room.\n" }), { kind: "final", message: "pi-pool: no room." });
+});
+
 test("a hook failure becomes a retryable error", async () => {
   const out = await rewriteFailure(failed("401 invalid bearer token"), answering({}), "no_account");
   assert.match(out!.errorMessage!, /no token \(no_account\)/);

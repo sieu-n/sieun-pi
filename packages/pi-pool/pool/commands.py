@@ -104,6 +104,8 @@ def cmd_set(rest):
             raise SystemExit(f"{key} takes a JSON object, like {json.dumps(d)}")
     else:
         val = value
+    if key in base.CHOICES and val not in base.CHOICES[key]:
+        raise SystemExit(f"{key} takes one of {', '.join(base.CHOICES[key])}, not {value!r}")
     cur = base.load_json(base.CONFIG, {}) or {}
     was, by = base.config().get(key), by or setter()
     cur[key] = val

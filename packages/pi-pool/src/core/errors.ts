@@ -64,6 +64,13 @@ async function poolJson<T extends { selection: Selection }>(pool: PoolCall, args
   }
 }
 
+/**
+ * Codex's refusal of a model on a ChatGPT plan, which pool/base.py model_refusal reads. pi-ai reports it with no status
+ * line: from 10-30 22:32Z to 11-01 12:00Z each turn of pi-durable:4a871e83 on ungsugoe5 failed with "Codex error: The
+ * 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account." and no `pi-pool refused` ran.
+ */
+const MODEL_REFUSAL = /The '[^']+' model is not supported when using Codex/;
+
 /** A 429 with no reset time still marks the account, for this long. */
 const DEFAULT_RESET_MS = 5 * 60_000;
 
@@ -72,7 +79,8 @@ const DEFAULT_RESET_MS = 5 * 60_000;
  *
  * A 429 reports the account to the pool (`pi-pool limited`) and becomes a retryable rate-limit error, so Pi's own
  * retry runs and its header hook vends the next account, or waits there for the session's slot. A 400 or 403 that
- * the pool reads as an account-level refusal (`pi-pool refused`) takes the account out and moves on the same way.
+ * the pool reads as an account-level refusal (`pi-pool refused`), or Codex's model refusal with no status, takes the
+ * account out (for that model only, in the second case) and moves on the same way.
  * `hookFailure` is the reason the header hook gave no token for this request, which also retries. `pooled` is told when the pool
  * took the failure on (an auto selection moved on or set a slot wait), which keeps the retry off Pi's budget (pi-family/retries.ts).
  */
@@ -97,7 +105,7 @@ export async function rewriteFailure(message: AssistantMessage, pool: PoolCall, 
     const said = reply.stale ? "pi-pool: this 429 came from the account the session already left" : `pi-pool: ${reply.account} is limited until ${iso(reply.until)}`;
     return { ...message, errorMessage: retryable(429, failure.text, `${said}; the retry uses ${reply.next}.`) };
   }
-  if (failure.status === 400 || failure.status === 403) {
+  if (failure.status === 400 || failure.status === 403 || MODEL_REFUSAL.test(original)) {
     const reply = await poolJson<RefusedReply>(pool, ["refused", "--provider", message.provider, original]);
     if (!reply || !reply.reason) return undefined;
     if (reply.selection.mode === "manual") return undefined;

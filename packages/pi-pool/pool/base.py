@@ -51,6 +51,11 @@ class SlotWait(SystemExit):
         super().__init__(text)
         self.slot_at = slot_at
 
+
+class NoModelRoom(SystemExit):
+    """No account with room serves the tree's model and no_model_room is "fail": the turn ends with this text."""
+
+
 DEFAULTS = {
     # refresh a parked credential when it expires within this many seconds
     "refresh_skew_sec": 900,
@@ -108,7 +113,16 @@ DEFAULTS = {
     # one turn over the 3 days to 10-14 08 KST: p99 157 s, p99.9 1,508 s, and 110 over
     # 1,800 s (0735-agent-queue-design/data/measure_gaps.py).
     "lease_s": 1800,
+    # What a pi-durable tree's request does when no account with room serves its model: "wait" for the first slot on an
+    # account that serves it, "switch" to an account with room and run on the first model in that account's list, or
+    # "fail" the turn with the reason. The owner set this as a Settings choice on 11-03 (For you todo t2). Prime trees keep
+    # Prime's own retry.provider.waitForUsage.
+    "no_model_room": "wait",
 }
+# The values `pi-pool set` takes for a key with a fixed set of them.
+CHOICES = {"no_model_room": ("wait", "switch", "fail")}
+# The model a pi-durable request runs, which its provider passes to the token hook (packages/pi-pool/src/core/pool-cli.ts).
+MODEL_ENV = "PI_POOL_MODEL"
 
 
 def log(event, **kw):

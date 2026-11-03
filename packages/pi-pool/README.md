@@ -496,6 +496,23 @@ with an error that names each account's reason. On 10-28 from 06:03Z to 06:41Z t
 account ungsugoe5 took two gpt-6-astra trees while the pro account was full, and every
 turn failed in about 2 s.
 
+A pi-durable thread has no `/account` extension, so its provider names each request's model
+to the hook in `PI_POOL_MODEL`, and the hook files it as `pi-pool model` would. The
+`no_model_room` setting decides what such a tree does when no account with room serves its
+model, and the owner picks it in sw factory's Settings pane (`pi-pool set no_model_room
+<value> --by "the Settings pane"`).
+
+1. `wait`, the default, keeps the slot wait on the first account that serves the model.
+2. `switch` vends the account with room, prints its models on stderr as `pi-pool-token:
+   models: [...]`, and the provider runs that request on the first of them it knows.
+3. `fail` gives no token, prints `pi-pool-token: final: <reason>` on stderr after `no token
+   (no_model_room)`, and the provider ends the turn with that reason.
+
+Prime trees keep Prime's own `retry.provider.waitForUsage`. Codex reports its model refusal
+with no status line, so the providers send any error with that text to `pi-pool refused`.
+From 10-30 22:32Z to 11-01 12:00Z pi-durable:4a871e83 on gpt-6.1-sol took ungsugoe5, and
+each turn failed in about 1 s with no refusal on file.
+
 ## Auto retries can rotate accounts
 
 Manual mode keeps the original provider failure and diagnostics. It never rewrites a
@@ -737,7 +754,8 @@ Rollout: `install.py` runs the Python tests and checks only the token hooks, and
 `admit_per_unit`, `tier_units`, `max_moves_per_day`, `cooldown_sec`,
 `switch_models`, `pin_ttl_sec`, `active_session_sec`,
 `refused_cooldown_sec`, `probe_interval_sec`, and the turn queue's `agent_queue_on`,
-`working_max`, `tree_working_max` and `lease_s`. `pi-pool set` takes a JSON object for
+`working_max`, `tree_working_max` and `lease_s`, and `no_model_room` (`wait`, `switch` or
+`fail`, the only values `pi-pool set` takes for it). `pi-pool set` takes a JSON object for
 `tier_units` and `max_moves_per_day`. `five_hour_max_pct`, the runway keys
 (`burn_5h_pct_per_hour`, `burn_week_pct_per_hour`, `runway_horizon_hours`,
 `min_runway_hours`), the R2 projection keys `tree_5h_pct_per_min` and `spending_tree_sec`, `allow_active_account`, the prod keys `prod_deploy_owners`, `prod_runs_file`, `alert_bridge_file` and `prod_turns_on`, the queue key `queue_aging_s`, the R5 backoff key `depleted_backoff_max_sec`, the memory keys `memory_governor_on`, `spawn_hold_on` and `pressure_working_max`, and v1's `hold_sec`, `switch_improvement`, `assignment_scope` and `mode`

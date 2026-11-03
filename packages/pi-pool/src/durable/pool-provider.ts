@@ -7,6 +7,11 @@
  * its time. When a poll finds the slot open, the poll ends with a retryable error, and the generation's retry sends
  * the request with the new token.
  *
+ * Each request names its model to the hook, which files it for the tree, so the pool gives the tree no account whose
+ * plan lacks the model. When no account with room serves it, the pool's no_model_room setting decides: "wait" is the
+ * slot wait above, "fail" ends the turn with the hook's reason, and "switch" runs the request on the first model of the
+ * account's list that `inner` knows.
+ *
  * Every request also takes its run's place in this machine's turn queue (pi-pool `turns.py`), the one line that every
  * Prime and Pi run on the box waits in. A queued run is deferred the same way and polls its place; the run's slot is
  * held until `TurnQueue.release`, which pi-host calls when the conversation's input settles.
@@ -290,21 +295,35 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
     return { ok: run.code === 0, out: out || (run.code === 0 ? "" : "pi-pool-token failed") };
   };
 
+  /** The model a token runs: the request's, or for an account that lacks it the first of the account's models `inner` knows. */
+  const runsOn = (model: Model<Api>, listed: readonly string[] | undefined): Model<Api> | undefined => {
+    if (!listed) return model;
+    const known = inner.getModels();
+    for (const id of listed) {
+      const found = known.find(m => m.id === id);
+      if (found) return found;
+    }
+    return undefined;
+  };
+
   /** Vends, then streams through `inner` with the token; a 429 or an account refusal goes back to the pool as in ../pool. */
-  const send = <O extends StreamOptions>(model: Model<Api>, options: O | undefined, run: (options: O) => AssistantMessageEventStream): AssistantMessageEventStream => {
+  const send = <O extends StreamOptions>(model: Model<Api>, options: O | undefined, run: (model: Model<Api>, options: O) => AssistantMessageEventStream): AssistantMessageEventStream => {
     const out = createAssistantMessageEventStream();
     void (async () => {
       const env = envOf(options);
       let final: AssistantMessage;
       try {
         const place = opts.turns ? await opts.turns.enter(keyOf(options)) : ({ kind: "go" } as const);
-        const got = place.kind === "wait" ? undefined : await vendOnce(bin, model.provider, env, options?.signal);
+        const got = place.kind === "wait" ? undefined : await vendOnce(bin, model.provider, env, options?.signal, model.id);
+        const on = got?.kind === "token" ? runsOn(model, got.models) : undefined;
         if (place.kind === "wait" || got === undefined) final = turnWait(model, keyOf(options), place as Extract<TurnPlace, { kind: "wait" }>);
         else if (options?.signal?.aborted) final = message(model, { stopReason: "aborted", errorMessage: "Request aborted" });
         else if (got.kind === "wait") final = slotWait(model, keyOf(options), got, now());
         else if (got.kind === "failed") final = noToken(model, got.reason);
+        else if (got.kind === "final") final = message(model, { stopReason: "error", errorMessage: got.message });
+        else if (on === undefined) final = message(model, { stopReason: "error", errorMessage: `pi-pool: the account with room lacks ${model.id} and lists no model this provider knows (${(got.models ?? []).join(", ")}).` });
         else {
-          const events = run({ ...options, apiKey: got.token } as O);
+          const events = run(on, { ...options, apiKey: got.token } as O);
           for await (const event of events as AsyncIterable<AssistantMessageEvent>) {
             if (event.type !== "done" && event.type !== "error") out.push(event);
           }
@@ -330,8 +349,8 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
     // The pool vends each request's token, so the provider is always configured and Models adds no credential.
     auth: { apiKey: { name: "pi-pool", resolve: async () => ({ auth: {}, source: "pi-pool" }) } },
     getModels: () => inner.getModels(),
-    stream: (model, context, options) => send(model, options, o => inner.stream(model, context, o)),
-    streamSimple: (model, context, options) => send(model, options, o => inner.streamSimple(model, context, o)),
+    stream: (model, context, options) => send(model, options, (on, o) => inner.stream(on, context, o)),
+    streamSimple: (model, context, options) => send(model, options, (on, o) => inner.streamSimple(on, context, o)),
     // Only slot and turn waits are deferred here: a poll asks the pool again, and an open slot ends the poll with a retryable error.
     fetchDeferred: (model, handle, options) => {
       if (handle.id === TURN_HANDLE_ID) {
@@ -354,9 +373,12 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
         // The poll's options carry no session id, so the wait's handle names the session that asked.
         const data = (handle.data ?? {}) as { session?: unknown };
         const key: TreeKey = { root: opts.treeKey, session: typeof data.session === "string" ? data.session : keyOf(options).session };
-        const got = await vendOnce(bin, model.provider, poolEnv(key, opts.agentDir), options?.signal);
+        const got = await vendOnce(bin, model.provider, poolEnv(key, opts.agentDir), options?.signal, model.id);
         if (got.kind === "token") countPooled(key);
-        const final = got.kind === "wait" ? slotWait(model, key, got, now()) : got.kind === "failed" ? noToken(model, got.reason) : message(model, { stopReason: "error", errorMessage: SLOT_OPEN_TEXT });
+        const final = got.kind === "wait" ? slotWait(model, key, got, now())
+          : got.kind === "failed" ? noToken(model, got.reason)
+          : got.kind === "final" ? message(model, { stopReason: "error", errorMessage: got.message })
+          : message(model, { stopReason: "error", errorMessage: SLOT_OPEN_TEXT });
         const replay = ended(final);
         for await (const event of replay as AsyncIterable<AssistantMessageEvent>) out.push(event);
         out.end(final);

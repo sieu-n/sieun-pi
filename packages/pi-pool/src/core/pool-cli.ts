@@ -49,15 +49,33 @@ export function runPool(bin: string, args: string[], env: NodeJS.ProcessEnv, opt
   });
 }
 
-/** One `pi-pool-token --provider <p>` answer. */
+/**
+ * One `pi-pool-token --provider <p>` answer. `models` comes with a token of an account that lacks the request's model,
+ * the account's own models, best first (no_model_room "switch"). `final` is a turn the pool ends (no_model_room "fail").
+ */
 export type Vend =
-  | { kind: "token"; token: string }
+  | { kind: "token"; token: string; models?: readonly string[] }
   | { kind: "wait"; retryAt: number; message: string }
+  | { kind: "final"; message: string }
   | { kind: "failed"; reason: string };
 
-/** Reads one token-hook run: a token, the exit-75 slot wait, or the hook's own `no token (<reason>)` line. */
+function listedModels(stderr: string): readonly string[] | undefined {
+  const line = /^pi-pool-token: models: (.*)$/m.exec(stderr)?.[1];
+  if (line === undefined) return undefined;
+  try {
+    const models: unknown = JSON.parse(line);
+    return Array.isArray(models) && models.every(m => typeof m === "string") ? models : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Reads one token-hook run: a token, the exit-75 slot wait, the pool's end of the turn, or the hook's own `no token (<reason>)` line. */
 export function readVend(run: Run): Vend {
-  if (run.code === 0 && run.stdout.trim()) return { kind: "token", token: run.stdout.trim() };
+  if (run.code === 0 && run.stdout.trim()) {
+    const models = listedModels(run.stderr);
+    return models ? { kind: "token", token: run.stdout.trim(), models } : { kind: "token", token: run.stdout.trim() };
+  }
   if (run.code === SLOT_WAIT_EXIT) {
     try {
       const reply = JSON.parse(run.stdout) as { retryAt?: unknown; message?: unknown };
@@ -67,12 +85,20 @@ export function readVend(run: Run): Vend {
     }
   }
   const said = /no token \((\w+)\)/.exec(run.stderr)?.[1];
+  if (said === "no_model_room") {
+    const message = /^pi-pool-token: final: (.*)$/m.exec(run.stderr)?.[1];
+    return { kind: "final", message: message ?? "pi-pool: no account with room serves this model, and no_model_room is fail." };
+  }
   const reason = said ?? (run.code === 0 ? "empty_result" : run.code === null ? (run.stderr.split("\n")[0] || "killed") : `exit ${run.code}`);
   return { kind: "failed", reason };
 }
 
-export async function vendOnce(bin: string, provider: string, env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<Vend> {
-  return readVend(await runPool(bin, ["--provider", provider], { ...env, [PROTOCOL_ENV]: "1" }, { timeoutMs: 30_000, signal }));
+/** The model a request runs, which the hook files for the tree (pool/vending.py note_model). */
+const MODEL_ENV = "PI_POOL_MODEL";
+
+export async function vendOnce(bin: string, provider: string, env: NodeJS.ProcessEnv, signal?: AbortSignal, model?: string): Promise<Vend> {
+  const asked = { ...env, [PROTOCOL_ENV]: "1", ...(model ? { [MODEL_ENV]: model } : {}) };
+  return readVend(await runPool(bin, ["--provider", provider], asked, { timeoutMs: 30_000, signal }));
 }
 
 /** Resolves after `ms`, or at once when `signal` aborts. Returns false on an abort. */
@@ -120,6 +146,7 @@ export async function credential(
     const answer = await vend(signal);
     if (signal?.aborted) return done({ kind: "aborted" });
     if (answer.kind === "token") return done(answer);
+    if (answer.kind === "final") return done({ kind: "failed", reason: "no_model_room" });
     if (answer.kind === "wait") {
       failures = 0;
       waited = true;

@@ -1,6 +1,6 @@
 """The token hook: state writers, credentials, the fallback login and adopt-logins, the
 refusal probe, and vend()."""
-import dataclasses, os, subprocess, sys, time
+import dataclasses, json, os, subprocess, sys, time
 
 from . import base, limited, registry, sched
 
@@ -560,13 +560,80 @@ def last_vend_account(state, key, provider, accounts, now):
     return account
 
 
+@dataclasses.dataclass(frozen=True)
+class NoRoom:
+    """No account with room serves the tree's model, and no_model_room is "fail"."""
+    text: str
+
+
 def decision(state, key, provider, accounts, cfg, now):
-    """(`decide` for this tree on `state`, the tree), with nothing written."""
+    """(`decide` for this tree on `state`, the tree), with nothing written. A pi-durable tree that would wait, or find no
+    account, because the accounts with room lack its model follows no_model_room: "switch" takes the account with room
+    that lists other models, and "fail" gives a NoRoom that names each account's reason."""
     accounts = registry.with_pool_state(accounts, state, provider)
     accounts = registry.with_models(accounts, registry.session_models(state, key, provider, cfg, now), cfg)
     tree = sched.tree_for(state, key, provider)
     cooldowns = dict(state["providers"][provider]["cooldowns"])
-    return sched.decide(tree, accounts, sched.book_for(state, provider, key, cfg, now), cooldowns, cfg, now), tree
+    book = sched.book_for(state, provider, key, cfg, now)
+    d = sched.decide(tree, accounts, book, cooldowns, cfg, now)
+    mode = cfg["no_model_room"]
+    if mode == "wait" or not waits_by_exit(key) or not (d is None or isinstance(d, sched.Wait)):
+        return d, tree
+    lacking = {a.id: a for a in accounts if a.unserved and a.models}
+    other = sched.decide(tree, [dataclasses.replace(a, unserved=None) if a.id in lacking else a for a in accounts],
+                         book, cooldowns, cfg, now)
+    if not isinstance(other, (sched.Stay, sched.Admit)) or other.account.id not in lacking:
+        return d, tree
+    if mode == "switch":
+        return other, tree
+    model = lacking[other.account.id].unserved
+    why = []
+    for a in accounts:
+        if a.unserved:
+            why.append(f"{a.label} does not serve {a.unserved}")
+        elif isinstance(d, sched.Wait) and a.id == d.slot_account.id:
+            why.append(f"{a.label} has its first free slot at {utc(d.slot_at)}")
+        else:
+            why.append(f"{a.label} is {sched.admit_reason(a, cooldowns, cfg, now, tree.priority) or 'busy'}")
+    return NoRoom(f"pi-pool: no {provider} account with room serves {model}, and no_model_room is fail: "
+                  + ", ".join(why) + "."), tree
+
+
+def utc(epoch):
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+
+
+def note_model(state, key, provider, model, cfg, now):
+    """File the model one request of the tree runs, as `pi-pool model` does for a Prime session, unless the record names
+    it already. pi-host's durable provider names it in MODEL_ENV on each request: from 10-30 22:32Z to 11-01 12:00Z
+    pi-durable:4a871e83 recorded no model and took ungsugoe5, whose plan lacks gpt-6.1-sol, and each turn failed in
+    about 1 s. Returns whether state changed."""
+    if key is None or not model:
+        return False
+    source = key.active_id or key.key
+    rec = HookWriter(state)._rec(key, now)
+    models = rec.setdefault("models", {})
+    entry = (models.get(provider) or {}).get(source) or {}
+    if entry.get("model") == model and now - (entry.get("at") or 0) <= cfg["pin_ttl_sec"]:
+        return False
+    for entries in models.values():
+        entries.pop(source, None)
+    models.setdefault(provider, {})[source] = {"model": model, "at": now}
+    for p in [p for p, entries in models.items() if not entries]:
+        del models[p]
+    return True
+
+
+def say_models(state, key, provider, account, cfg, now):
+    """For a pi-durable tree that no_model_room "switch" put on an account that lacks its model, the account's models on
+    stderr, so its provider runs the request on the first of them it knows."""
+    if not waits_by_exit(key):
+        return
+    fitted = registry.with_models(registry.with_pool_state([dataclasses.replace(account, unserved=None)], state, provider),
+                                  registry.session_models(state, key, provider, cfg, now), cfg)[0]
+    if fitted.unserved and fitted.models:
+        sys.stderr.write(f"pi-pool-token: models: {json.dumps(list(fitted.models))}\n")
+        sys.stderr.flush()
 
 
 def no_account_error(state, key, provider, accounts, cfg, now):
@@ -604,7 +671,7 @@ def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
     and whether state changed."""
     d, tree = decision(state, key, provider, accounts, cfg, now)
     writer = HookWriter(state)
-    if key is None or d is None or isinstance(d, sched.Blocked):
+    if key is None or d is None or isinstance(d, (sched.Blocked, NoRoom)):
         return d, tree, False
     if isinstance(d, sched.Wait):
         # One line per refused request, for the Whole system duty: `room` names the accounts the rules let this
@@ -771,16 +838,19 @@ def vend(provider):
             state = registry.load_state()
             now = time.time()
             pruned = HookWriter(state).prune(cfg, now)
+            noted = note_model(state, key, provider, os.environ.get(base.MODEL_ENV), cfg, now)
             d, tree, wrote = schedule(state, key, provider, accounts, cfg, now)
             reads = reads_due(state, provider, accounts, cfg, now)
             HookWriter(state).start_reads(provider, [a.id for a in reads], now)
             token = stay_now(state, d, tree, key, provider, cfg, now, parent)
-            if pruned or wrote or reads or token:
+            if pruned or noted or wrote or reads or token:
                 base.save_json(base.STATE, state)
     except TimeoutError:
         # save_json replaces state.json in one rename, so an unlocked read sees a whole file. A 429 still in the
         # limited spool counts, so the tree does not get back an account the provider just refused.
-        account = last_vend_account(limited.unlocked_state(), key, provider, accounts, time.time())
+        unlocked = limited.unlocked_state()
+        note_model(unlocked, key, provider, os.environ.get(base.MODEL_ENV), cfg, time.time())
+        account = last_vend_account(unlocked, key, provider, accounts, time.time())
         if account is None:
             raise
         token, source = credential_for(account, cfg)
@@ -795,8 +865,12 @@ def vend(provider):
         except OSError as e:
             base.log("usage_read_failed", provider=provider, error=str(e))
     if token:
+        say_models(state, key, provider, d.account, cfg, now)
         sys.stdout.write(token)
         return
+    if isinstance(d, NoRoom):
+        base.log("no_model_room", provider=provider, session=key.key, text=d.text)
+        raise base.NoModelRoom(d.text)
     if d is None:
         raise RuntimeError(no_account_error(state, key, provider, accounts, cfg, now))
     revalidated = None
@@ -899,6 +973,7 @@ def vend(provider):
             base.log("switch", provider=provider, session=key.key, previous=prev.get("email"),
                      account=account.label, reason=reason, why=switch_why(d, account),
                      scores=dict(getattr(d, "scores", ())[:6]))
+        say_models(state, key, provider, account, cfg, now)
         sys.stdout.write(token)
         return
 

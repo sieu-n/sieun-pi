@@ -161,6 +161,12 @@ class HookNoToken(unittest.TestCase):
         self.outcome("raise TimeoutError('fixture-secret')", "operation_timeout")
         self.outcome("raise TimeoutError('could not lock fixture-secret')", "lock_wait_timeout")
 
+    def test_a_turn_the_pool_ends_names_its_reason_on_stderr(self):
+        text = "pi-pool: no openai-codex account with room serves gpt-6.1-sol, and no_model_room is fail: free@x does not serve gpt-6.1-sol."
+        event, run = self.outcome(f"raise SystemExit({text!r})", "no_model_room", "openai-codex")
+        self.assertEqual(run.returncode, 1)
+        self.assertEqual(run.stderr, f"pi-pool-token: no token (no_model_room)\npi-pool-token: final: {text}\n")
+
     def test_an_exit_number_is_not_evidence_of_a_signal(self):
         self.outcome("raise SystemExit(143)", "exit_nonzero")
 
