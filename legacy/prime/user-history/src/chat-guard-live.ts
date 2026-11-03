@@ -1,4 +1,4 @@
-import { realpathSync, statSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
 import * as loaded from "./chat-guard.ts";
@@ -14,7 +14,10 @@ export type Guard = Pick<typeof loaded, "tellTurn" | "tellOwner"> & Partial<Pick
 export function liveRulesFile(agentDir: string, home = homedir()): string {
   const linked = realpathSync(join(agentDir, "extensions", "user-history"));
   const dir = linked.split(sep).includes("releases") ? linked : realpathSync(join(home, ".local", "share", "sieun-pi-chat", "current", "legacy", "prime", "user-history"));
-  return realpathSync(join(dir, "src", "chat-guard.ts"));
+  // A release carries the rules prebuilt as one module (chat-service-bundle.mjs `bundleChatGuard`), which jiti loads in about 30 ms against
+  // 4.5 to 5.1 s for compiling the .ts source and its imports in each worker after each release.
+  const bundled = join(dir, "src", "chat-guard.bundle.mjs");
+  return realpathSync(existsSync(bundled) ? bundled : join(dir, "src", "chat-guard.ts"));
 }
 
 /**

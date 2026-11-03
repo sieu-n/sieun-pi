@@ -37,8 +37,19 @@ export async function bundleChatService({ entry = join(SRC, "chat-service.ts"), 
   return outfile;
 }
 
+/**
+ * The tell_owner rules (src/chat-guard.ts and the 29 modules it imports, 541 KB of source) in one file, src/chat-guard.bundle.mjs, which
+ * chat-guard-live.ts loads when it exists. Prime loads extension code through jiti, which compiled that source again in every worker on its
+ * first tell_owner after each release: 4.5 to 5.1 s for the .ts and 23 to 39 ms for the bundle in node on us-metal02 on 11-03, and the worker
+ * stall of 01:53Z that day spent 66% of 8.2 s in that import while the supervisor's poll of the worker timed out.
+ */
+export const GUARD_BUNDLE = "chat-guard.bundle.mjs";
+export const bundleChatGuard = ({ entry = join(SRC, "chat-guard.ts"), outfile = join(SRC, GUARD_BUNDLE) } = {}) => bundleChatService({ entry, outfile });
+
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
-  const started = performance.now();
-  const file = await bundleChatService();
-  process.stdout.write(`chat service bundle: ${file} in ${Math.round(performance.now() - started)} ms\n`);
+  for (const [name, bundle] of [["chat service", bundleChatService], ["chat guard", bundleChatGuard]]) {
+    const started = performance.now();
+    const file = await bundle();
+    process.stdout.write(`${name} bundle: ${file} in ${Math.round(performance.now() - started)} ms\n`);
+  }
 }

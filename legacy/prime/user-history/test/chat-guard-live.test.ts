@@ -54,3 +54,27 @@ test("two tell_owner calls in one step both get the live rules when jiti loads t
   const calls = await Promise.allSettled([1, 2].map(async () => (await live.liveGuard(agentDir, home)).tellOwner({ text: "x" }, { owner: true, ownerIds: new Set() }).text));
   assert.deepEqual(calls.map(call => call.status === "fulfilled" ? call.value : String(call.reason)), ["answer", "answer"]);
 });
+
+test("a release's prebuilt rules bundle is what tell_owner loads, and the .ts stays the rules where no bundle was built", async () => {
+  // 11-03 01:53Z: a worker spent 66% of an 8.2 s stall in jiti compiling chat-guard.ts and its 29 imports after a release, and the
+  // supervisor's poll of it timed out. The prebuilt bundle loads in about 30 ms.
+  const home = mkdtempSync(join(tmpdir(), "live-guard-bundle-"));
+  const agentDir = join(home, ".prime", "agent");
+  mkdirSync(join(agentDir, "extensions"), { recursive: true });
+  const release = join(home, "runtime", "releases", "abc", "components", "user-history");
+  rules(release, "source rules");
+  symlinkSync(release, join(agentDir, "extensions", "user-history"));
+  assert.equal(liveRulesFile(agentDir, home), join(release, "src", "chat-guard.ts"));
+  writeFileSync(join(release, "src", "chat-guard.bundle.mjs"), 'export const tellTurn = () => ({ owner: true, ownerIds: new Set() });\nexport const tellOwner = () => ({ kind: "sent", text: "bundled rules" });\n');
+  assert.equal(liveRulesFile(agentDir, home), join(release, "src", "chat-guard.bundle.mjs"));
+  assert.equal((await liveGuard(agentDir, home)).tellOwner({ text: "x" }, { owner: true, ownerIds: new Set() }).text, "bundled rules");
+});
+
+test("the guard bundle built from this checkout holds the same tell_owner as the source", async () => {
+  const { bundleChatGuard } = await import("../src/chat-service-bundle.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "guard-bundle-"));
+  const file = await bundleChatGuard({ outfile: join(dir, "chat-guard.bundle.mjs") });
+  const bundled = await import(file) as typeof import("../src/chat-guard.ts");
+  const turn = { owner: true, ownerIds: new Set<string>() };
+  for (const input of [{ text: "" }, { text: "Done, the fix is live." }]) assert.deepEqual(bundled.tellOwner(input, turn), tellOwner(input, turn));
+});
