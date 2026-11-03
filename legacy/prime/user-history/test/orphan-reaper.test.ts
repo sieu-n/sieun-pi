@@ -263,3 +263,15 @@ test("the reaper runs on its own timer at least once per ENDED_FOR_MS, not only 
   const script = /^ExecStart=.* (scripts\/\S+\.ts)$/m.exec(service)?.[1];
   assert.ok(script && existsSync(new URL(`../${script}`, import.meta.url)), `orphan-reaper.service runs ${script}`);
 });
+
+test("11-03: a vitest fork worker or a multiprocessing forkserver that lost its parent stops even while the chat its env names is live", () => {
+  const live = new Map<string, Verdict>([[`us-metal02/${LIVE}`, { state: "live", why: "its roster status is idle" }]]);
+  const owners = [{ session: LIVE, host: "us-metal02" }];
+  const at = (command: string): Group => ({ key: command, root: 1, pids: [1], bytes: 0, started: 0, command, owners });
+  const vitest = at("node --require /repo/node_modules/vitest/suppress-warnings.cjs /repo/node_modules/vitest/dist/workers/forks.js");
+  const forkserver = at("python -c import sys; from multiprocessing.forkserver import main; main(29, 30, ['__main__'])");
+  const driver = at("node /scratch/chrome.mjs --user-data-dir=/scratch/profile");
+  const decision = decide([vitest, forkserver, driver], live, 2 * ENDED_FOR_MS);
+  assert.deepEqual(decision.stop.map(group => group.key), [vitest.key, forkserver.key]);
+  assert.deepEqual(decision.held.map(entry => entry.group.key), [driver.key]);
+});

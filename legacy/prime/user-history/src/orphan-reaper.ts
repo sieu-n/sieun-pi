@@ -135,7 +135,15 @@ export function verdict(facts: SessionFacts): Verdict {
 export interface Decision { stop: Group[]; held: { group: Group; why: string }[]; unknown: Group[] }
 
 /**
- * Splits the groups: stop a group when every owner it names ended over ENDED_FOR_MS ago, hold it when any owner is live or ended more recently
+ * Workers that serve only the process that started them: a vitest fork worker and Python's multiprocessing forkserver and resource tracker.
+ * One at a group's root has lost that process, so nothing can reach it whoever its owner is. On 11-03 eleven forkserver groups of
+ * crawler-v3's test_account_fill_db.py (5 to 12 h old, about 300 MB each) and four vitest fork workers (0.5 to 0.7 GB each) sat under
+ * systemd --user, held because the chats their env named were still live.
+ */
+const PARENT_ONLY = /node_modules\/vitest\/dist\/workers\/(forks|threads)\.js|from multiprocessing\.(forkserver|resource_tracker) import main/;
+
+/**
+ * Splits the groups: stop a parent-only worker that lost its parent (PARENT_ONLY) and is over ENDED_FOR_MS old, and a group when every owner it names ended over ENDED_FOR_MS ago, hold it when any owner is live or ended more recently
  * or when `unitHolds` names its unit (a live session recorded the unit with board.own; on 10-31 a child started check4-sampler.service and
  * ended, and its parent 01a1935d recorded the unit and still waited on a wake to use it),
  * and list a group with no owner or an owner with no transcript as unknown. Only a group whose root left its parent (now under systemd --user,
@@ -146,6 +154,7 @@ export function decide(groups: readonly Group[], verdicts: ReadonlyMap<string, V
   for (const group of groups) {
     const owned = group.unit ? unitHolds.get(group.unit) : undefined;
     if (owned) { decision.held.push({ group, why: owned }); continue; }
+    if (PARENT_ONLY.test(group.command) && group.started !== null && now - group.started * 1000 >= ENDED_FOR_MS) { decision.stop.push(group); continue; }
     if (!group.owners.length) { decision.unknown.push(group); continue; }
     const read = group.owners.map(owner => ({ owner, verdict: verdicts.get(ownerKey(owner)) ?? { state: "unknown", why: "not read" } as Verdict }));
     const live = read.find(entry => entry.verdict.state === "live");
