@@ -13,8 +13,9 @@
  *    into the agent's posts here, with hops one more than the post that started its turn, and those posts are delivered on in turn.
  * 4. A closed Solo room, or an archived room, refuses the owner's posts, stores agent posts with no deliveries, and stops deliveries still
  *    on their way.
- * 5. As in Slack, the owner's mention of a registered agent that is not a member adds it to the room, as `addMembers` does, and delivers
- *    the post. A channel root post's delivery carries the root posts its target missed since its last one, with their images.
+ * 5. As in Slack, a mention reaches any registered agent: one that is not a member gets the post in its comm thread for the room, made on
+ *    demand, and answers in the room, without joining it. A channel root post's delivery carries the root posts its target missed since its
+ *    last one, with their images.
  */
 import { randomUUID } from "node:crypto";
 import type {
@@ -330,8 +331,6 @@ export class GroupRooms {
       const record = this.deps.threads.registered(m);
       return record ? [record.id] : [];
     }))];
-    const joining = mentions.filter(agent => !row.members.some(m => m.agent === agent));
-    if (joining.length) this.addMembers(row.id, joining);
     const images = (request.images ?? []).map(image => this.deps.saveUpload(image));
     return this.ownerPost(row, { text: request.text ?? "", requestId: request.requestId, images, mentions, ...(request.threadRoot ? { threadRoot: request.threadRoot } : {}) });
   }
@@ -399,11 +398,17 @@ export class GroupRooms {
     }));
   }
 
-  /** Who a post wakes: every `all` member minus its author, for a channel thread reply too. */
+  /**
+   * Who a post wakes: every `all` member and every registered agent it mentions that is not a member, minus its author, for a channel thread
+   * reply too.
+   */
   private wakes(row: GroupRoom, draft: Draft): AgentId[] {
-    return row.members.filter(m =>
+    const woken = row.members.filter(m =>
       m.agent !== draft.author && m.wakeOn === "all" && this.deps.agents.record(m.agent) !== undefined,
     ).map(m => m.agent);
+    const outside = (draft.mentions ?? []).filter((agent): agent is AgentId =>
+      agent !== "owner" && agent !== draft.author && !row.members.some(m => m.agent === agent) && this.deps.agents.record(agent) !== undefined);
+    return [...woken, ...outside];
   }
 
   // Delivery
@@ -696,11 +701,12 @@ export class GroupRooms {
     return posts.findLast(p => p.author === "owner" && p.deliveries?.some(d => d.target === record.id && d.thread === thread))?.id;
   }
 
-  /** The members, and the owner, an agent's post names as `@<name>`. */
+  /** The registered agents, members or not, and the owner, an agent's post names as `@<name>`. */
   private mentionsIn(row: GroupRoom, text: string, author: AgentId): (AgentId | "owner")[] {
     const out: (AgentId | "owner")[] = [];
-    for (const member of row.members) {
-      if (member.agent !== author && text.includes(`@${this.deps.threads.principal(member.agent).name}`)) out.push(member.agent);
+    const agents = [...new Set([...row.members.map(m => m.agent), ...this.deps.agents.list().filter(a => !a.archived).map(a => a.id)])];
+    for (const agent of agents) {
+      if (agent !== author && text.includes(`@${this.deps.threads.principal(agent).name}`)) out.push(agent);
     }
     if (/@(owner|You)\b/.test(text)) out.push("owner");
     return out;

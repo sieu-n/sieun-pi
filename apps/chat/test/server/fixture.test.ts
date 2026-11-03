@@ -172,7 +172,7 @@ describe("channels and mentions", () => {
     assert.equal((s.host as FixtureHost).threadsById.get(ids.frontend)!.entries.length, workEntries, "the work thread gets no input");
   });
 
-  test("a mention of an agent outside the channel adds it and delivers the post with the channel's earlier posts and images", async () => {
+  test("a mention of an agent outside the channel delivers the post with the channel's earlier posts and images, and its answer lands in the thread without a join", async () => {
     const created = await s.send("POST", "/api/rooms", { kind: "channel", name: "dev-admin-app" });
     assert.deepEqual(created.body.members.map((m: any) => m.principal.id), ["owner"]);
     const channel = created.body.id as string;
@@ -182,8 +182,8 @@ describe("channels and mentions", () => {
     const sent = await s.send("POST", `/api/c/${channel}/send`, { text: "@Vent which table holds the org plan?", mentions: [agents.vent], requestId: "join-2" });
     assert.equal(sent.status, 200, sent.body.error);
     assert.equal(sent.body.deliveries.length, 1);
-    const joined = (await s.get<any[]>("/api/rooms")).find(r => r.id === channel);
-    assert.deepEqual(joined.members.map((m: any) => [m.principal.id, m.wakeOn]), [["owner", "all"], [agents.vent, "all"]]);
+    const after = (await s.get<any[]>("/api/rooms")).find(r => r.id === channel);
+    assert.deepEqual(after.members.map((m: any) => m.principal.id), ["owner"], "a mention does not add the agent to the channel");
     const comm = await until(async () => s.app.agents.record(agents.vent)!.comm?.[channel], c => !!c);
     const copyOf = (page: TimelinePage) => page.items.find(i => i.kind === "message" && i.text.startsWith("[#dev-admin-app · post 2 from You (owner)")) as Extract<Item, { kind: "message" }> | undefined;
     const copy = copyOf(await until(() => s.get<TimelinePage>(`/api/c/${comm}/items`), p => !!copyOf(p)))!;
@@ -191,6 +191,9 @@ describe("channels and mentions", () => {
     assert.equal(copy.images.length, 1, "the earlier post's image goes with the delivery");
     const again = await s.send("POST", `/api/c/${channel}/send`, { text: "@Vent which table holds the org plan?", mentions: [agents.vent], requestId: "join-2" });
     assert.equal(again.body.item.id, sent.body.item.id, "a retry of the same send lands once");
+    const answered = await until(() => s.get<any>(`/api/c/${channel}/replies/${sent.body.item.id}`), t => t.root.deliveries[0].state === "answered");
+    assert.equal(answered.items[0].author.id, agents.vent);
+    assert.equal(answered.items[0].threadRoot, sent.body.item.id);
   });
 
   test("channels create, add members and keep read marks", async () => {

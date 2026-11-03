@@ -16,6 +16,8 @@
     agents: AgentSummary[];
     /** Channels, the only rows the # picker lists. */
     channels: Room[];
+    /** The channel or Solo room this box posts into: its members lead the @ picker, and an agent outside it reads "not in <label>". */
+    room?: { label: string; members: string[] } | null;
     /** The agent works now: Stop shows beside Send. */
     working?: boolean;
     /** localStorage key for the draft, one per conversation. */
@@ -26,7 +28,7 @@
     onsend: (out: Outgoing) => Promise<void>;
     onstop?: () => void;
   };
-  let { placeholder, agents, channels, working = false, draftKey, autofocus = false, compact = false, onsend, onstop }: Props = $props();
+  let { placeholder, agents, channels, room = null, working = false, draftKey, autofocus = false, compact = false, onsend, onstop }: Props = $props();
 
   type Attachment = { file: File; url: string };
   let box = $state<HTMLDivElement>();
@@ -46,11 +48,15 @@
 
   type Candidate = { id: string; name: string; kind: string; detail: string; target: ChipTarget };
   const agentCandidates = $derived<Candidate[]>(
-    agents.filter((a) => !a.archived).map((a) => ({
-      id: a.id, name: a.name, kind: "agent",
-      detail: a.status === "working" ? "working now" : "",
-      target: { id: a.id, name: a.name, kind: "agent" },
-    })),
+    agents
+      .filter((a) => !a.archived)
+      .map((a) => ({ a, outside: !!room && !room.members.includes(a.id) }))
+      .sort((x, y) => Number(x.outside) - Number(y.outside))
+      .map(({ a, outside }) => ({
+        id: a.id, name: a.name, kind: "agent",
+        detail: outside ? `not in ${room!.label}` : a.status === "working" ? "working now" : "",
+        target: { id: a.id, name: a.name, kind: "agent" },
+      })),
   );
   const channelCandidates = $derived<Candidate[]>(
     channels.filter((c) => !c.archived).map((c) => ({ id: c.id, name: c.name, kind: "channel", detail: c.agenda || `${c.members.length} members`, target: { id: c.id, name: c.name, kind: "channel" } })),

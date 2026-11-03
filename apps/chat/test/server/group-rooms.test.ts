@@ -211,6 +211,23 @@ describe("a channel on rooms", () => {
     assert.equal(crawler.answer, reply.id);
     host.beforeSubmit = undefined;
   });
+
+  test("an agent's mention of an agent outside the channel reaches that agent's comm thread for the channel, and it stays out of the members", async () => {
+    const submits: { thread: string; input: SubmitInput }[] = [];
+    host.beforeSubmit = (thread, input) => void submits.push({ thread, input });
+    const comm = commOf(s, agents.crawler, ids.cutoverChannel)!;
+    told(host, comm, "c2", "@Vent quiet, which box runs the relay now?");
+    await s.app.groups.feed(comm);
+    const post = stored(s, ids.cutoverChannel).find(p => p.requestId === `m:${comm}:c2`)!;
+    assert.deepEqual(post.mentions, [agents.vent]);
+    assert.deepEqual(post.deliveries?.map(d => d.target), [agents.harness, agents.frontend, agents.vent], "every member, then the agent it mentions");
+    const ventComm = await until(async () => commOf(s, agents.vent, ids.cutoverChannel), id => id !== undefined);
+    await until(async () => submits.filter(x => x.thread === ventComm).length, n => n === 1);
+    assert.equal(host.threadsById.get(ventComm!)!.row.name, "Vent · #pi-cutover");
+    const room = (await s.get<Room[]>("/api/rooms")).find(r => r.id === ids.cutoverChannel)!;
+    assert.ok(!room.members.some(m => m.principal.id === agents.vent), "a mention does not add the agent to the channel");
+    host.beforeSubmit = undefined;
+  });
 });
 
 describe("the room feed across a restart", () => {

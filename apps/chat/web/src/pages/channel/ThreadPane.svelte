@@ -34,6 +34,10 @@
     posts?.close();
   });
 
+  const channelRoom = $derived.by(() => {
+    const row = channel ? directory.channels.find((c) => c.id === channel) : undefined;
+    return row ? { label: `#${row.name}`, members: row.members.map((m) => m.principal.id) } : null;
+  });
   const items = $derived(job ? job.items : posts?.root ? [rootOnly(posts.root), ...posts.items] : []);
   let retry = $state(0);
 
@@ -89,6 +93,7 @@
     placeholder={layout === "slack" ? "Reply…" : "Reply to thread"}
     agents={directory.agents}
     channels={directory.channels}
+    room={channelRoom}
     working={job?.status === "working"}
     draftKey="thread:{threadKey}"
     compact

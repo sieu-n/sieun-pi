@@ -436,6 +436,7 @@
     placeholder={isChannel ? `Message #${name}` : name ? `Message ${name}` : "Message"}
     agents={directory.agents}
     channels={directory.channels}
+    room={isChannel || isSolo ? { label: isChannel ? `#${name}` : "this room", members: others.map((m) => m.principal.id) } : null}
     {working}
     draftKey={id}
     autofocus
