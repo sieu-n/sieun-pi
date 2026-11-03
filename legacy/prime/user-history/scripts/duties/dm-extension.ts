@@ -24,7 +24,8 @@ import { DAY, type DsQuery, grafanaClient, PG, readGrafanaAuth, REPO, settle, SO
  * 3. It starts a staging clean world (scripts/dev/search-clean-world.mjs up --target staging --allow-features instagramDm), a fresh
  *    Clerk user and org approved on staging with the instagramDm allow, and runs the two real-Instagram rigs in it as that user and org
  *    (the world's `run` hands them E2E_USER_EMAIL and E2E_ORG_ID) with DM_EXTENSION_DIR set to the unpacked zip:
- *    tests/autopair-real-ig.mjs (pair with no click, account found in the popup and on Connections) and tests/staging-real-ig.mjs (a
+ *    tests/autopair-real-ig.mjs (pair with no click, account listed in the popup with a Link button, linked by a Link press and on
+ *    Connections, unlinked and linked again) and tests/staging-real-ig.mjs (Link pressed in the popup, then a
  *    test DM from Connections settles sent, the replier answers on Instagram, the reply lands in the store and the Inbox). Evidence and
  *    screenshots go to .cache/duties/dm-extension/latest in auto-sns-agent. `down` deletes the org's staging rows through
  *    search/orgCascade:cascadeDeleteOrg (its devices, Instagram account rows, threads and messages), then the Clerk org and user.
@@ -149,6 +150,8 @@ const check = (evidence: AutopairEvidence | undefined, prefix: string): Check | 
 /** Each of the four parts, held or not, with the evidence that decided it. */
 export function parts(autopair: AutopairEvidence | undefined, e2e: E2eEvidence | undefined): Record<Part, { ok: boolean; why: string }> {
   const pair = check(autopair, "2 ");
+  // Owner, 2026-11-03: an account links to a workspace only from the popup's Link button, so "found" needs the offer and the press.
+  const offer = check(autopair, "3 ");
   const popup = check(autopair, "3a ");
   const listed = check(autopair, "3b ");
   const first = e2e?.firstOutreach;
@@ -158,8 +161,8 @@ export function parts(autopair: AutopairEvidence | undefined, e2e: E2eEvidence |
   return {
     pair: { ok: pair?.ok === true, why: pair ? `autopair "${pair.name}": ${JSON.stringify(pair.detail ?? null)}` : "autopair wrote no pair check" },
     found: {
-      ok: popup?.ok === true && listed?.ok === true && Boolean(e2e?.connectionsRow),
-      why: `autopair popup ${popup?.ok ?? "no check"}, Connections ${listed?.ok ?? "no check"}; e2e Connections row ${e2e?.connectionsRow ?? "none"}`,
+      ok: offer?.ok === true && popup?.ok === true && listed?.ok === true && Boolean(e2e?.connectionsRow),
+      why: `autopair Link offered ${offer?.ok ?? "no check"}, linked ${popup?.ok ?? "no check"}, Connections ${listed?.ok ?? "no check"}; e2e Connections row ${e2e?.connectionsRow ?? "none"}`,
     },
     sent: { ok: first?.status === "sent", why: first ? `row ${first.id} ${first.status}${first.errorCode ? ` ${first.errorCode}` : ""}${first.error ? `: ${first.error}` : ""}` : "no outbound row for the test DM" },
     reply: {

@@ -17,7 +17,8 @@ const HOUR = 3_600_000;
 const AUTOPAIR: AutopairEvidence = { checks: [
   { name: "1 the unpaired popup offers only Open virev", ok: true },
   { name: "2 the signed-in /app page paired the extension with no click", ok: true, detail: { pairStatus: 200 } },
-  { name: "3a the account in front is registered from the heartbeat and the popup says so", ok: true },
+  { name: "3 the account in front is listed with a Link button, and the heartbeat added no workspace row", ok: true },
+  { name: "3a Link registers the account in the org and the popup says so", ok: true },
   { name: "3b Connections lists @caiyiting8674", ok: true },
   { name: "5a an Instagram sign-out reaches the popup in seconds", ok: false },
 ] };
@@ -61,6 +62,15 @@ test("a fresh org's sender row fits a run, and the four parts decide e2e_pass", 
   assert.equal(senderFits({ username: "caiyiting8674", sentToday: 6, dailyLimit: 8 }), false);
   const out = report({ now: NOW, autopair: AUTOPAIR, e2e: E2E, sender: { username: "caiyiting8674", sentToday: 0, dailyLimit: 8 }, errors: [] }, METRICS);
   assert.equal(out.metrics.e2e_pass, 1);
+});
+
+test("an account that joined with no Link press fails the found part", () => {
+  // Owner, 2026-11-03: an account links to a workspace only when the user presses Link in the popup.
+  const noOffer = { checks: AUTOPAIR.checks!.map(c => c.name.startsWith("3 ") ? { ...c, ok: false } : c) };
+  const found = parts(noOffer, E2E).found;
+  assert.equal(found.ok, false);
+  assert.match(found.why, /Link offered false/);
+  assert.equal(parts(AUTOPAIR, E2E).found.ok, true);
 });
 
 test("a reply in another thread fails the reply part", () => {
