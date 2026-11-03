@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { WIKI_CONTENT_HOME, wikiLinkPath } from "./shared/artifact-link.ts";
-import { chatLines, CHECK_IN_PREFIX, messageIdNote, ownerMessageId, serverNote, TELL_OWNER_HELD, TELL_OWNER_TOOL, TELL_WHY, type TellWhy, turnStarter } from "./shared/chat-feed.ts";
+import { chatLines, CHECK_IN_PREFIX, messageIdNote, ownerMessageId, ownerTyped, serverNote, TELL_OWNER_HELD, TELL_OWNER_TOOL, TELL_WHY, type TellWhy, turnStarter } from "./shared/chat-feed.ts";
 import { messageText } from "./shared/turns.ts";
 import type { PlanItem, ThreadMessage } from "./shared/types.ts";
 import { targetMet } from "./shared/chat-board.ts";
@@ -581,8 +581,11 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
     }
   }
   const before = messages.at(-1)?.role === "assistant" ? messages.slice(0, -1) : messages;
-  const lines = chatLines(before);
-  const unanswered = lines.findLastIndex(line => line.kind === "user") > lines.findLastIndex(line => line.kind === "agent");
+  // His last message is unanswered when no agent line follows it. A message he typed restarts the feed's turn tracking, so the feed of the
+  // messages from it on has the same agent lines as the whole feed. On 11-03 the whole feed of a 36,000-message chat took 0.3 to 0.5 s of
+  // each call, and up to 2 s inside 6 to 8 s worker stalls.
+  const ownerAt = before.findLastIndex(ownerTyped);
+  const unanswered = ownerAt >= 0 && !chatLines(before.slice(ownerAt)).some(line => line.kind === "agent");
   const byOwner = turnStarter(messages.filter(message => !(message.role === "user" && revival(messageText(message).trim())))) === "owner";
   const last = messages.at(-1);
   const tells = last?.role === "assistant" ? last.content.filter(part => part.type === "toolCall" && part.name === TELL_OWNER_TOOL).length : 0;
