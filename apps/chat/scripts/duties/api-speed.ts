@@ -26,7 +26,7 @@ const sourceOf = (t: RequestTiming): SpeedSource => (t.src === "client" && t.via
  * One route's speed from one source. `netP50` and `netP90` come from the client lines that carry the browser's network time, so a client
  * p90 far above its `netP90` is the page's own main thread, not the server or the network.
  */
-export interface RouteSpeed { route: string; src: SpeedSource; count: number; p50: number; p90: number; max: number; slowestPath: string; netP50?: number; netP90?: number }
+export interface RouteSpeed { route: string; src: SpeedSource; count: number; p50: number; p90: number; max: number; slowestPath: string; netCount?: number; netP50?: number; netP90?: number }
 
 /** The routes each metric reads, by `<method> <route pattern>`. */
 export const ROUTES = {
@@ -72,7 +72,7 @@ export function routeSpeeds(timings: readonly RequestTiming[]): RouteSpeed[] {
     const net = group.flatMap(t => (t.net === undefined ? [] : [t.net])).sort((a, b) => a - b);
     return {
       route: `${group[0]!.m} ${group[0]!.r}`, src: sourceOf(group[0]!), count: group.length, p50: percentile(sorted, 0.5), p90: percentile(sorted, 0.9), max: sorted.at(-1)!, slowestPath: slowest.p,
-      ...(net.length ? { netP50: percentile(net, 0.5), netP90: percentile(net, 0.9) } : {}),
+      ...(net.length ? { netCount: net.length, netP50: percentile(net, 0.5), netP90: percentile(net, 0.9) } : {}),
     };
   }).sort((a, b) => b.p90 - a.p90);
 }
@@ -106,7 +106,7 @@ export function apiSpeed(dir: string, now: number, windowMs: number) {
     flagged: slowest.map(s => ({
       kind: "slow_api", sig: `${s.src}:${s.route}`,
       excerpt: `${s.route} p90 ${s.p90} ms, p50 ${s.p50} ms, max ${s.max} ms over ${s.count} ${s.src} requests; the slowest was ${s.slowestPath}${
-        s.netP90 === undefined ? "" : `; its network time, the server's included, was p90 ${s.netP90} ms, p50 ${s.netP50} ms, and the page's main thread held the rest`}`,
+        s.netP90 === undefined ? "" : `; on the ${s.netCount} of them that carry the network time, the server's included, it was p90 ${s.netP90} ms, p50 ${s.netP50} ms, and the page's main thread held the rest`}`,
     })),
   };
 }

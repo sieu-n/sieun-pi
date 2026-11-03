@@ -94,7 +94,7 @@ test("the precheck reads each metric from the client's lines, falls back to the 
   assert.equal(out.metricSources.send, "server, 1 requests");
   assert.deepEqual(out.slowest.map(s => s.route), ["GET /api/c/:id/replies/:root", "GET /api/search", "GET /api/c/:id/items"]);
   assert.equal(out.flagged.length, 3);
-  assert.match(out.flagged[0]!.excerpt, /replies.*p90 2500 ms.*dm_x\/replies\/p1; its network time, the server's included, was p90 30 ms, p50 8 ms/);
+  assert.match(out.flagged[0]!.excerpt, /replies.*p90 2500 ms.*dm_x\/replies\/p1; on the 2 of them that carry the network time, the server's included, it was p90 30 ms, p50 8 ms/);
   assert.doesNotMatch(out.flagged[1]!.excerpt, /network/, "a route with no network times names none");
 });
 
