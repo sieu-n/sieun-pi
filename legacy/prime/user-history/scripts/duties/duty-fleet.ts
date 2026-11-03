@@ -192,7 +192,7 @@ const show = (value: number): string => String(Math.round(value * 10) / 10);
 const bound = (streak: MetricStreak): string => `${streak.op === "<=" ? "at most" : "at least"} ${show(streak.target)}`;
 
 /** The missed metric the line names: the duty's headline when it missed, else the one missed for the most runs in a row. */
-function leadMetric(metrics: readonly DutyMetric[], streaks: readonly MetricStreak[]): MetricStreak | undefined {
+export function leadMetric(metrics: readonly DutyMetric[], streaks: readonly MetricStreak[]): MetricStreak | undefined {
   const headline = headlineMetric(metrics);
   return streaks.find(streak => streak.key === headline?.key) ?? [...streaks].sort((a, b) => b.misses - a.misses)[0];
 }

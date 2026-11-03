@@ -3,7 +3,7 @@
  * data dir, `<data dir>/agents/<agent id>/duties.json`, and changes them through `POST /api/agents/:id/duties`. add.ts and remove.ts send a
  * duty there when that chat answers `GET /api/agents/<id>/config` for the id, and write Prime's store for any other chat.
  */
-const BASE = (process.env.PI_HOST_CHAT_URL || "http://127.0.0.1:5184").replace(/\/+$/, "");
+export const BASE = (process.env.PI_HOST_CHAT_URL || "http://127.0.0.1:5184").replace(/\/+$/, "");
 
 /** The duties URL of a chat the new chat holds, or null for a Prime chat (a 404) or when the new chat does not answer. */
 export async function appsChatDuties(chatId: string): Promise<string | null> {
