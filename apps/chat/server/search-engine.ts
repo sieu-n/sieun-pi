@@ -392,7 +392,8 @@ export class SearchEngine {
     if (this.filling) await this.checkFill().catch(() => undefined);
     if (!this.filling) {
       await this.ready;
-      await this.settle();
+      // The pending list as it stands is enough for this answer: a document Meilisearch already holds is read from memory once more.
+      void this.settle().catch(error => this.deps.log(`search: ${String(error)}`));
     }
     const words = queryWords(q);
     const local = [...this.pending.values()].flatMap(p => (p.doc && holds(where, p.doc) ? [{ doc: p.doc, score: docMatches(p.doc, words) }] : [])).filter(m => m.score > 0);
