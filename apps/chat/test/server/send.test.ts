@@ -168,10 +168,11 @@ describe("channel posts", () => {
     assert.ok(ms < 1000, `post took ${ms} ms`);
     assert.match(sent.body.item.id, /^p\d+$/);
     assert.equal(sent.body.item.requestId, "post-fast-1");
-    assert.equal(sent.body.deliveries[0].state, "queued");
+    assert.ok(sent.body.deliveries.every((d: { state: string }) => d.state === "queued"));
     release();
-    const thread = await until(() => s.get(`/api/c/${ids.cutoverChannel}/replies/${sent.body.item.id}`), t => t.root.deliveries[0].state === "answered");
-    assert.equal(thread.items[0].author.id, agents.frontend);
+    const frontend = (t: any) => t.root.deliveries.find((d: { target: string }) => d.target === agents.frontend);
+    const thread = await until(() => s.get(`/api/c/${ids.cutoverChannel}/replies/${sent.body.item.id}`), t => frontend(t).state === "answered");
+    assert.equal(thread.items.find((i: { id: string }) => i.id === frontend(thread).answer).author.id, agents.frontend);
     host.beforeSubmit = undefined;
   });
 });

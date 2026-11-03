@@ -35,6 +35,9 @@ interface FakeThread {
 
 type Sink = { conversation?: number; sink: (event: DurableEvent) => void };
 
+/** An agent message's data as pi-host stores it (packages/pi-host durable/commands.ts): `from` and `via` only. */
+const agentMessageData = (data: { from: string; via?: string }): { from: string; via?: string } => ({ from: data.from, ...(data.via !== undefined ? { via: data.via } : {}) });
+
 const USAGE = (output: number) => ({ input: 40, output, cacheRead: 12_000, cacheWrite: 800, cost: { input: 0.00016, output: output * 0.00002, cacheRead: 0.0024, cacheWrite: 0.0064, total: 0.00896 + output * 0.00002 } });
 
 export class FixtureHost implements Host {
@@ -135,7 +138,7 @@ export class FixtureHost implements Host {
     if (!thread.nodes.some(n => n.id === conversation)) throw new Error(`No conversation ${conversation} in ${id}`);
     const content: ContentBlock[] = [{ type: "text", text: input.text ?? "" }, ...(input.images ?? []).map(i => ({ type: "image" as const, data: i.data, mimeType: i.mimeType }))];
     const user: Message = { role: "user", content, timestamp: this.now() };
-    const entry = this.append(thread, conversation, input.entry ? { kind: "agent.message", model: [user], data: input.entry.data } : { kind: "pi.user", model: [user] });
+    const entry = this.append(thread, conversation, input.entry ? { kind: "agent.message", model: [user], data: agentMessageData(input.entry.data) } : { kind: "pi.user", model: [user] });
     const submission: SubmissionRecord = { id: thread.nextId++, conversationId: conversation, ...(input.requestId ? { requestId: input.requestId } : {}), type: "input", status: "placed", entry: entry.id };
     thread.submissions.set(submission.id, submission);
     if (input.requestId) thread.byRequest.set(input.requestId, submission.id);

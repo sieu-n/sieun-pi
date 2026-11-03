@@ -74,6 +74,23 @@ type Draft = Omit<RoomPost, "id" | "seq" | "room" | "deliveries"> & { hops: numb
 const channelName = (name: string): string => name.trim().replace(/^#/, "").toLowerCase().replace(/[^a-z0-9-_]+/g, "-").replace(/^-+|-+$/g, "");
 const WAKE_ON: readonly WakeOn[] = ["all", "none"];
 
+const HEADER = /· post (\d+) from [^\n]* · hops (\d+)\]$/;
+
+/**
+ * The envelope headers of a comm thread input, newest first: its first line, or each post's header in a post that waited for its box, alone
+ * or in a bundle, which opens with its age.
+ */
+function envelopeHeaders(entry: EntryRecord): { seq: number; hops: number }[] {
+  const content = entry.model?.[0]?.content;
+  const text = typeof content === "string" ? content : (content ?? []).flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n");
+  const lines = text.split("\n");
+  const named = HEADER.test(lines[0] ?? "") ? [lines[0]!] : /^\[(written |\d+ posts in )/.test(lines[0] ?? "") ? lines.filter(line => HEADER.test(line)).reverse() : [];
+  return named.map(line => {
+    const [, seq, hops] = HEADER.exec(line)!;
+    return { seq: Number(seq), hops: Number(hops) };
+  });
+}
+
 /** A Solo room's default name: the agenda's first line, cut at a word near 48 characters. */
 function nameFromAgenda(agenda: string): string {
   const line = agenda.trim().split("\n")[0]!.trim();
@@ -470,7 +487,7 @@ export class GroupRooms {
         ? { ownerTurn: true, whenBusy: "steer" as const }
         : {
           whenBusy: "followUp" as const,
-          entry: { kind: "agent.message" as const, data: { from: last.author, via: row.id, post: last.id, hops: Math.max(...members.map(p => p.hops ?? 0)) } },
+          entry: { kind: "agent.message" as const, data: { from: last.author, via: row.id } },
         };
       const now = Date.now();
       const text = bundle
@@ -649,8 +666,8 @@ export class GroupRooms {
   }
 
   /**
-   * The group room's side of the feed. An owner input names its post in its header; an agent message from this room carries its post and
-   * hops; any other input, such as a work-done notice, keeps the turn's. Every speaking call posts here with the turn's hops plus one.
+   * The group room's side of the feed. An owner input names its post in its header; an agent message from this room names its post and
+   * hops in its headers, because pi-host keeps only `from` and `via` of its data; any other input, such as a work-done notice, keeps the turn's. Every speaking call posts here with the turn's hops plus one.
    */
   private side(row: GroupRoom, record: AgentRecord, thread: string): FeedSide {
     return {
@@ -662,7 +679,9 @@ export class GroupRooms {
           return { input: entry.id, channel: false, hops: 0, ...(post ? { post } : {}) };
         }
         if (entry.kind === "agent.message" && data?.via === row.id) {
-          return { input: entry.id, channel: false, ...(typeof data.post === "string" ? { post: data.post } : {}), hops: typeof data.hops === "number" ? data.hops : 0 };
+          const headers = envelopeHeaders(entry);
+          const post = headers.map(h => this.store.postsOf(row.id).find(p => p.seq === h.seq)).find(p => p !== undefined);
+          return { input: entry.id, channel: false, ...(post ? { post: post.id } : {}), hops: Math.max(0, ...headers.map(h => h.hops)) };
         }
         return { input: entry.id, channel: false, ...(previous?.post ? { post: previous.post } : {}), ...(previous?.hops !== undefined ? { hops: previous.hops } : {}) };
       },
@@ -688,15 +707,9 @@ export class GroupRooms {
    * owner post delivered there.
    */
   private ownerPostOf(row: GroupRoom, record: AgentRecord, thread: string, entry: EntryRecord): string | undefined {
-    const content = entry.model?.[0]?.content;
-    const text = typeof content === "string" ? content : (content ?? []).flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n");
-    const header = /· post (\d+) from [^\n]* · hops \d+\]$/;
-    const lines = text.split("\n");
-    // A post that waited for its box, alone or in a bundle, opens with its age; then its newest owner envelope names the post.
-    const seqs = header.test(lines[0] ?? "") ? [lines[0]!] : /^\[(written |\d+ posts in )/.test(lines[0] ?? "") ? lines.filter(line => header.test(line)).reverse() : [];
     const posts = this.store.postsOf(row.id);
-    for (const line of seqs) {
-      const named = posts.find(p => p.seq === Number(header.exec(line)![1]) && p.author === "owner");
+    for (const { seq } of envelopeHeaders(entry)) {
+      const named = posts.find(p => p.seq === seq && p.author === "owner");
       if (named) return named.id;
     }
     return posts.findLast(p => p.author === "owner" && p.deliveries?.some(d => d.target === record.id && d.thread === thread))?.id;

@@ -35,8 +35,8 @@ function told(host: FixtureHost, thread: string, id: string, text: string): void
 /** An agent message from `from`, as a delivery of `post` in `room` at `hops`, typed straight into a comm thread. */
 function delivered(host: FixtureHost, thread: string, from: string, room: string, post: string, hops: number): void {
   host.append(host.threadsById.get(thread)!, 1, {
-    kind: "agent.message", model: [{ role: "user", content: [{ type: "text", text: `[test · post 1 from x · hops ${hops}]\n\nquiet` }], timestamp: Date.now() }],
-    data: { from, via: room, post, hops },
+    kind: "agent.message", model: [{ role: "user", content: [{ type: "text", text: `[test · post ${post.slice(1)} from x · hops ${hops}]\n\nquiet` }], timestamp: Date.now() }],
+    data: { from, via: room },
   });
 }
 
@@ -106,7 +106,7 @@ describe("a Solo room", () => {
     assert.equal(sent.thread, frontComm);
     assert.equal(sent.input.whenBusy, "followUp");
     assert.equal(sent.input.ownerTurn, undefined);
-    assert.deepEqual(sent.input.entry, { kind: "agent.message", data: { from: agents.vent, via: room.id, post: p2.id, hops: 1 } });
+    assert.deepEqual(sent.input.entry, { kind: "agent.message", data: { from: agents.vent, via: room.id } });
     assert.match(sent.input.text!, new RegExp(`· post ${p2.seq} from Vent · hops 1\\]\\n\\nWebSocket per box`));
 
     // frontend bro's turn on that post speaks: its post carries hops 2 and wakes Vent.
@@ -205,6 +205,14 @@ describe("a channel on rooms", () => {
     assert.deepEqual(reply.deliveries?.map(d => d.target), [agents.harness, agents.frontend], "a thread reply wakes every member but its author");
     await until(async () => submits.length, n => n === 5);
     for (const x of submits.slice(3)) assert.match(x.input.text!, /\(thread so far\)\n8 You: quiet check/);
+
+    // pi-host keeps only from and via of an agent message, so frontend bro's answer finds the thread and its hops in the envelope header.
+    const frontComm = commOf(s, agents.frontend, ids.cutoverChannel)!;
+    told(host, frontComm, "f1", "Relay page is fine, quiet.");
+    await s.app.groups.feed(frontComm);
+    const answer = stored(s, ids.cutoverChannel).find(p => p.requestId === `m:${frontComm}:f1`)!;
+    assert.equal(answer.threadRoot, sent.body.item.id, "an answer to an agent's thread reply stays in the thread");
+    assert.equal(answer.hops, 2);
     const thread = await s.get<{ root: Message; items: Message[] }>(`/api/c/${ids.cutoverChannel}/replies/${sent.body.item.id}`);
     const crawler = thread.root.deliveries.find(d => d.target === agents.crawler)!;
     assert.equal(crawler.state, "answered");

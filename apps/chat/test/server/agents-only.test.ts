@@ -109,10 +109,10 @@ describe("mentions and members", () => {
     assert.equal(mentionsIn(ids.solo, "dm_vent").length, 0);
   });
 
-  test("a channel mention of a job is dropped and starts no delivery", async () => {
+  test("a channel mention of a job is dropped, and the post reaches only the channel's agents", async () => {
     const sent = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "@pi cutover prep status?", mentions: [ids.cutover], requestId: "ao-ch-1" });
     assert.equal(sent.status, 200);
-    assert.deepEqual(sent.body.deliveries, []);
+    assert.deepEqual(sent.body.deliveries.map((d: { target: string }) => d.target), [agents.harness, agents.crawler, agents.frontend]);
     assert.deepEqual(sent.body.item.mentions, []);
   });
 
