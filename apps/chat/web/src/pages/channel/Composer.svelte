@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { imageUpload, type AgentSummary, type Room } from "$lib/api";
+  import { attach, type AgentSummary, type Attached, type Room } from "$lib/api";
   import AvatarStack from "$lib/ui/AvatarStack.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import Picker from "$lib/ui/Picker.svelte";
@@ -30,14 +30,13 @@
   };
   let { placeholder, agents, channels, room = null, working = false, draftKey, autofocus = false, compact = false, onsend, onstop }: Props = $props();
 
-  type Attachment = { file: File; url: string };
+  /** An attached image, whose upload starts as it is attached (`attach`). */
+  type Attachment = { file: File; image: Attached };
   let box = $state<HTMLDivElement>();
   let empty = $state(true);
   let mentions = $state<string[]>([]);
   let attachments = $state<Attachment[]>([]);
   let query = $state<Query | null>(null);
-  /** Only while attached images are read; the network never holds the next send. */
-  let encoding = $state(false);
   let dragging = $state(false);
   let fileInput = $state<HTMLInputElement>();
   /** Where the query Escape closed starts, so it stays closed while that query goes on and a new @ opens the card again. */
@@ -157,7 +156,7 @@
     }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
-      void submit();
+      submit();
     } else if (e.key === "Enter" && e.shiftKey) {
       e.preventDefault();
       document.execCommand("insertLineBreak");
@@ -171,13 +170,13 @@
         toast.error(`${file.name} is not an image. Only images attach for now.`);
         continue;
       }
-      attachments = [...attachments, { file, url: URL.createObjectURL(file) }];
+      attachments = [...attachments, { file, image: attach(file) }];
     }
   }
 
   function removeAttachment(index: number) {
     const [gone] = attachments.splice(index, 1);
-    if (gone) URL.revokeObjectURL(gone.url);
+    if (gone) URL.revokeObjectURL(gone.image.preview);
     attachments = [...attachments];
   }
 
@@ -198,30 +197,14 @@
     addFiles(e.dataTransfer.files);
   }
 
-  async function submit() {
-    if (!box || encoding) return;
+  function submit() {
+    if (!box) return;
     const draft = readDraft(box);
     if (!draft.text.trim() && !attachments.length) return;
-    const files = attachments;
+    const images: Outgoing["images"] = attachments.map((a) => a.image);
     box.innerHTML = "";
     attachments = [];
     sync();
-    let images: Outgoing["images"] = [];
-    if (files.length) {
-      encoding = true;
-      try {
-        images = await Promise.all(files.map((a) => imageUpload(a.file)));
-      } catch (error) {
-        if (!readDraft(box).text) box.textContent = draft.text;
-        attachments = [...files, ...attachments];
-        sync();
-        toast.error(error instanceof Error ? error.message : "Could not read the image");
-        return;
-      } finally {
-        encoding = false;
-      }
-      for (const a of files) URL.revokeObjectURL(a.url);
-    }
     onsend({ text: draft.text, mentions: draft.mentions, images }).catch((error: unknown) => {
       if (box && !readDraft(box).text) {
         box.textContent = draft.text;
@@ -274,9 +257,9 @@
   ></div>
   {#if attachments.length}
     <div class="attachments">
-      {#each attachments as a, index (a.url)}
+      {#each attachments as a, index (a.image.preview)}
         <div class="thumb">
-          <img src={a.url} alt={a.file.name} />
+          <img src={a.image.preview} alt={a.file.name} />
           <span class="remove"><IconButton icon="close" label="Remove {a.file.name}" size="xs" variant="glass" onclick={() => removeAttachment(index)} /></span>
         </div>
       {/each}
@@ -299,7 +282,7 @@
     {#if working && onstop}
       <IconButton icon="stop" label="Stop" size="md" variant="outline" onclick={onstop} data-testid="stop" />
     {/if}
-    <IconButton icon="arrow-up" label="Send" size="md" variant={hasContent ? "accent" : "ghost"} disabled={!hasContent} loading={encoding} onclick={submit} data-testid="send" />
+    <IconButton icon="arrow-up" label="Send" size="md" variant={hasContent ? "accent" : "ghost"} disabled={!hasContent} onclick={submit} data-testid="send" />
   </div>
 </div>
 

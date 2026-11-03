@@ -131,8 +131,6 @@ export interface Sidebar {
 }
 
 export interface ImageRef { url: string; mimeType: string; width?: number; height?: number }
-/** An image the composer attaches, base64 without the data: prefix. */
-export interface ImageUpload { data: string; mimeType: string }
 
 /**
  * Where a conversation's run stands in pi-pool's turn queue: working (kind owner, ahead, slot and so on), queued at a position, marked as
@@ -303,7 +301,8 @@ export interface LivePartial { itemId: string; text: string; thinking: string; t
 
 export interface SendRequest {
   text: string;
-  images?: ImageUpload[];
+  /** Refs POST /api/uploads answered: the composer uploads an image when it is attached, so the send itself carries no image bytes. */
+  images?: ImageRef[];
   mentions?: AgentId[];
   /** Channel thread replies. */
   threadRoot?: string;

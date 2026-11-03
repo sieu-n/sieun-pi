@@ -19,7 +19,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type {
-  AgentId, ConversationSummary, Delivery, ImageRef, ImageUpload, Item, Member, Room, RoomInput, RoomPatch, RunStatus, SendRequest, SendResult, TimelinePage,
+  AgentId, ConversationSummary, Delivery, ImageRef, Item, Member, Room, RoomInput, RoomPatch, RunStatus, SendRequest, SendResult, TimelinePage,
 } from "../web/src/lib/api/types.ts";
 import { isGroupRoom, type AgentRecord, type AgentStore, type FeedCursor, type GroupRoom, type RoomDelivery, type RoomId, type RoomMember, type RoomPost, type WakeOn } from "./agent-store.ts";
 import type { Agents } from "./agents.ts";
@@ -63,7 +63,8 @@ export interface GroupDeps {
   threads: Threads;
   agents: Agents;
   events: GroupEvents;
-  saveUpload(image: ImageUpload): ImageRef;
+  /** A send's image ref, checked against the files POST /api/uploads kept. */
+  uploaded(ref: ImageRef): ImageRef;
   readUpload(ref: ImageRef): { data: string; mimeType: string } | undefined;
   log(line: string): void;
   /** Whether the server has a live link to a box; absent on a server with one box. */
@@ -351,7 +352,7 @@ export class GroupRooms {
       const record = this.deps.threads.registered(m);
       return record ? [record.id] : [];
     }))];
-    const images = (request.images ?? []).map(image => this.deps.saveUpload(image));
+    const images = (request.images ?? []).map(image => this.deps.uploaded(image));
     return this.ownerPost(row, { text: request.text ?? "", requestId: request.requestId, images, mentions, ...(request.threadRoot ? { threadRoot: request.threadRoot } : {}) });
   }
 

@@ -14,7 +14,7 @@
  * Every post has one dedup key (`requestId`), so a repeated send or a re-read page lands nothing twice. The feed reader (`readFeedThread`) is
  * shared with the channels and Solo rooms in group-rooms.ts, which give their own `FeedSide`.
  */
-import type { ConversationSummary, Delivery, ImageRef, ImageUpload, Item, JobRef, RunStatus, SendRequest, SendResult, TimelinePage } from "../web/src/lib/api/types.ts";
+import type { ConversationSummary, Delivery, ImageRef, Item, JobRef, RunStatus, SendRequest, SendResult, TimelinePage } from "../web/src/lib/api/types.ts";
 import { serverNote, TELL_OWNER_HELD, TELL_OWNER_TOOL } from "../web/src/lib/api/shared/chat-feed.ts";
 import type { AgentRecord, AgentStore, FeedCursor, RoomId, RoomPost, TestSend } from "./agent-store.ts";
 import type { Agents } from "./agents.ts";
@@ -49,7 +49,8 @@ export interface RoomDeps {
   threads: Threads;
   agents: Agents;
   events: RoomEvents;
-  saveUpload(image: ImageUpload): ImageRef;
+  /** A send's image ref, checked against the files POST /api/uploads kept. */
+  uploaded(ref: ImageRef): ImageRef;
   readUpload(ref: ImageRef): { data: string; mimeType: string } | undefined;
   log(line: string): void;
   /** Whether the server has a live link to a box; absent on a server with one box, whose box is always up. */
@@ -304,7 +305,7 @@ export class Rooms {
   post(record: AgentRecord, request: SendRequest): SendResult {
     const existing = this.store.byRequestId(record.room, request.requestId);
     if (existing) return existing.delivery?.state === "failed" ? this.retry(record, existing.requestId) : this.result(existing);
-    const images = (request.images ?? []).map(image => this.deps.saveUpload(image));
+    const images = (request.images ?? []).map(image => this.deps.uploaded(image));
     const { post } = this.store.append({ room: record.room, author: "owner", text: request.text ?? "", images, at: Date.now(), requestId: request.requestId });
     this.store.set(post, { delivery: this.newDelivery(post, record) });
     this.deps.state.state.reads[record.room] = { at: post.at, seq: post.seq };

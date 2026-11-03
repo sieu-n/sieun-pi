@@ -4,7 +4,7 @@
  */
 import type {
   AgentConfig, AgentFolder, AgentHostList, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
-  ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, Item, JobNode, Me, MemoryInput, ModelCatalog, ProjectList, SearchQuery, SearchResult, SendRequest,
+  ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, ImageRef, Item, JobNode, Me, MemoryInput, ModelCatalog, ProjectList, SearchQuery, SearchResult, SendRequest,
   ReactionRequest, Room, RoomInput, RoomPatch, SendResult, Sidebar, ThinkingLevel, TimelinePage, UsageReport, AccountsView,
 } from "./types.ts";
 
@@ -54,12 +54,14 @@ function recordTiming(m: string, path: string, s: number, ms: number): void {
 
 if (typeof window !== "undefined") addEventListener("pagehide", sendTimings);
 
+/** A Blob body goes as its own bytes with its own type, any other body as JSON. */
 async function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const started = performance.now();
+  const blob = body instanceof Blob;
   const response = await fetch(path, {
     method,
-    headers: body === undefined ? {} : { "content-type": "application/json" },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    headers: body === undefined ? {} : { "content-type": blob ? body.type || "application/octet-stream" : "application/json" },
+    ...(body === undefined ? {} : { body: blob ? body : JSON.stringify(body) }),
     ...(signal ? { signal } : {}),
   });
   const text = await response.text();
@@ -77,12 +79,20 @@ const query = (params: Record<string, string | number | boolean | undefined | nu
 /** A fresh id for `SendRequest.requestId`, so a retried send lands once. */
 export const requestId = (): string => (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
-/** Reads a File as `{data, mimeType}` for `SendRequest.images`. */
-export async function imageUpload(file: Blob): Promise<{ data: string; mimeType: string }> {
-  const buffer = new Uint8Array(await file.arrayBuffer());
-  let binary = "";
-  for (let i = 0; i < buffer.length; i += 0x8000) binary += String.fromCharCode(...buffer.subarray(i, i + 0x8000));
-  return { data: btoa(binary), mimeType: file.type || "image/png" };
+/**
+ * An image the owner attached. Its bytes go to POST /api/uploads the moment it is attached, while he types, so the send names only the ref
+ * and answers at once. `preview` shows it before the upload ends, and `ref()` is that upload, started again after a failure.
+ */
+export interface Attached { preview: string; mimeType: string; ref: () => Promise<ImageRef> }
+
+export function attach(file: Blob): Attached {
+  let upload: Promise<ImageRef> | undefined;
+  const ref = (): Promise<ImageRef> => (upload ??= api.upload(file).catch((error: unknown) => {
+    upload = undefined;
+    throw error;
+  }));
+  void ref().catch(() => undefined);
+  return { preview: URL.createObjectURL(file), mimeType: file.type || "image/png", ref };
 }
 
 export const api = {
@@ -123,6 +133,8 @@ export const api = {
   items: (id: ConversationId, opts: { before?: string; after?: string; around?: string; limit?: number } = {}) =>
     call<TimelinePage>("GET", `/api/c/${enc(id)}/items${query(opts)}`),
   replies: (id: ConversationId, root: string) => call<{ root: Item; items: Item[] }>("GET", `/api/c/${enc(id)}/replies/${enc(root)}`),
+  /** Keeps an image's bytes on the server; a send names the ref it answers (`attach`). */
+  upload: (file: Blob) => call<ImageRef>("POST", "/api/uploads", file),
   send: (id: ConversationId, request: SendRequest) => call<SendResult>("POST", `/api/c/${enc(id)}/send`, request),
   /** Tries a pending send that failed again now. */
   retrySend: (id: ConversationId, requestId: string) => call<SendResult>("POST", `/api/c/${enc(id)}/send/${enc(requestId)}/retry`),

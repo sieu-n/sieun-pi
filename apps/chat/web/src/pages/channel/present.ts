@@ -1,4 +1,4 @@
-import type { AgentSummary, Delivery, ImageUpload, Item, Room, Step, TurnPlace } from "$lib/api";
+import type { AgentSummary, Attached, Delivery, Item, Room, Step, TurnPlace } from "$lib/api";
 import type { MarkdownContext } from "$lib/ui/markdown";
 import { offlineText } from "../agents/host-badge.ts";
 import type { PickerItem } from "$lib/ui/types";
@@ -70,7 +70,7 @@ export const avatarOf = (principal: Who): { id: string; name: string; kind: "per
 });
 
 /** What a composer hands its page on send. */
-export type Outgoing = { text: string; mentions: string[]; images: ImageUpload[] };
+export type Outgoing = { text: string; mentions: string[]; images: Attached[] };
 
 /** A waiting run's place in pi-pool's turn queue as words, or null when it does not wait. */
 export function placeText(place: TurnPlace | null | undefined): string | null {

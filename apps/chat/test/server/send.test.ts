@@ -176,3 +176,43 @@ describe("channel posts", () => {
     host.beforeSubmit = undefined;
   });
 });
+
+describe("send speed", () => {
+  test("a send answers in under 150 ms while every delivery hangs, whatever its fan-out, and names its image by upload ref", { timeout: 10_000 }, async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => (release = resolve));
+    let submits = 0;
+    host.beforeSubmit = async () => {
+      submits++;
+      await gate;
+    };
+    try {
+      const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+      const upload = await fetch(`${s.base}/api/uploads`, { method: "POST", headers: { "content-type": "image/png" }, body: png });
+      assert.equal(upload.status, 200);
+      const image = await upload.json() as { url: string; mimeType: string };
+      assert.match(image.url, /^\/api\/uploads\/[\w-]+\.png$/);
+      assert.deepEqual(Buffer.from(await (await fetch(s.base + image.url)).arrayBuffer()), png);
+      const everyone = Object.values(agents);
+      const channel = (await s.send("POST", "/api/rooms", { kind: "channel", name: `fan-out-${Date.now()}`, members: everyone })).body.id as string;
+      const sends: [string, Record<string, unknown>][] = [
+        ["dm_vent", { text: "dm with an image @frontend bro", mentions: [agents.frontend], images: [image] }],
+        [channel, { text: "channel post to every member", mentions: everyone, images: [image] }],
+        [ids.frontend, { text: "thread send", images: [image] }],
+      ];
+      for (const [conversation, body] of sends) {
+        const { value: sent, ms } = await timed(() => s.send("POST", `/api/c/${conversation}/send`, { ...body, requestId: `speed-${conversation}` }));
+        assert.equal(sent.status, 200, sent.body.error);
+        assert.ok(ms < 150, `a send to ${conversation} took ${Math.round(ms)} ms`);
+        assert.deepEqual(sent.body.item.images.map((i: { url: string }) => i.url), [image.url]);
+      }
+      await until(async () => submits, n => n > 0);
+      const refused = await s.send("POST", "/api/c/dm_vent/send", { text: "no bytes", images: [{ url: "/api/uploads/nothing.png", mimeType: "image/png" }], requestId: "speed-missing" });
+      assert.equal(refused.status, 400);
+      assert.match(refused.body.error, /POST \/api\/uploads/);
+    } finally {
+      host.beforeSubmit = undefined;
+      release();
+    }
+  });
+});

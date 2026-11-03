@@ -51,7 +51,7 @@ function routeLabel(table: Route[], method: string, path: string): string {
   return prefix ? `${prefix}*` : path === "/api/local-image" ? path : "unmatched";
 }
 
-async function readBody(req: IncomingMessage): Promise<unknown> {
+async function readBytes(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
@@ -59,9 +59,14 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
     if (size > MAX_BODY) throw new BadRequest("The request body is over 40 MB.");
     chunks.push(chunk as Buffer);
   }
-  if (!size) return {};
+  return Buffer.concat(chunks);
+}
+
+async function readBody(req: IncomingMessage): Promise<unknown> {
+  const bytes = await readBytes(req);
+  if (!bytes.length) return {};
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    return JSON.parse(bytes.toString("utf8"));
   } catch {
     throw new BadRequest("The request body is not JSON.");
   }
@@ -167,6 +172,7 @@ export function routes(app: App): Route[] {
       return app.items(p.id!, opts);
     }),
     route("GET", "/api/c/:id/replies/:root", async (_r, p) => app.groups.replies(p.id!, p.root!)),
+    route("POST", "/api/uploads", async req => app.upload(req.headers["content-type"] ?? "", await readBytes(req))),
     route("POST", "/api/c/:id/send", async (_r, p, _q, body) => app.send(p.id!, (await body()) as SendRequest)),
     route("POST", "/api/c/:id/send/:requestId/retry", async (_r, p) => app.retrySend(p.id!, p.requestId!)),
     route("DELETE", "/api/c/:id/send/:requestId", async (_r, p) => {

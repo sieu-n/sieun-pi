@@ -177,7 +177,7 @@ test("the live feed starts at the cursor: the open call and a later call post on
     agents: { migrationRunning: false, record: () => record, list: () => [record], roomThread: () => record.workThread },
     threads: { tree: () => [], principal: (id: string) => ({ id, kind: "chat", name: id, avatar: { initials: "AG", hue: 0 } }), statusOfConversation: () => "idle", agent: () => undefined },
     events: { items() {}, status() {}, changed() {}, submitted() {} },
-    saveUpload: () => { throw new Error("no uploads"); }, readUpload: () => undefined, log() {},
+    uploaded: () => { throw new Error("no uploads"); }, readUpload: () => undefined, log() {},
   };
   const rooms = new Rooms(deps as unknown as ConstructorParameters<typeof Rooms>[0]);
   await rooms.feed(record);

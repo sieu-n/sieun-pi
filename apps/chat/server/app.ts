@@ -1,7 +1,8 @@
 /**
  * Wires the host seam, the chat server's store and the services, and holds the one live hub every page connects to over /api/live.
  */
-import { mkdirSync, readFileSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, watch, type FSWatcher } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
@@ -153,7 +154,7 @@ export class App {
         thread: (record, thread) => this.watchRoomThread(record.room, thread),
         submitted: (thread, result) => this.queues.follow(thread, result.ticket?.place ?? null),
       },
-      saveUpload: image => this.saveUpload(image), readUpload: ref => this.readUpload(ref), log, ...(linkOf ? { linkOf } : {}),
+      uploaded: ref => this.uploaded(ref), readUpload: ref => this.readUpload(ref), log, ...(linkOf ? { linkOf } : {}),
     });
     this.threads.roomSummaries = () => this.rooms.summaries().filter(c => !this.agentStore.isTest(c.id));
     this.threads.testSendsOf = thread => this.rooms.testSendsOf(thread);
@@ -175,7 +176,7 @@ export class App {
         thread: (room, thread) => this.watchRoomThread(room, thread),
         submitted: (thread, result) => this.queues.follow(thread, result.ticket?.place ?? null),
       },
-      saveUpload: image => this.saveUpload(image), readUpload: ref => this.readUpload(ref), log, ...(linkOf ? { linkOf } : {}),
+      uploaded: ref => this.uploaded(ref), readUpload: ref => this.readUpload(ref), log, ...(linkOf ? { linkOf } : {}),
     });
     this.threads.groupSummaries = () => this.groups.summaries().filter(c => !this.agentStore.isTest(c.id));
     this.threads.roomsOf = agent => this.groups.memberRooms(agent).map(row => row.id);
@@ -449,7 +450,8 @@ export class App {
   /**
    * A send lands in the chat server and answers at once, as in Slack: a post in a DM, a channel or a Solo room is written and delivered behind the answer,
    * and a send into a work thread's transcript goes to the outbox, which shows it on every watching page and hands it to pi-host with
-   * retries (server/outbox.ts).
+   * retries (server/outbox.ts). Its images are refs that POST /api/uploads gave when the owner attached them, so no image bytes ride on the
+   * send: on 11-03 a send that carried a 318 KB screenshot took 7.9 s to read off the owner's link.
    */
   async send(id: ConversationId, request: SendRequest): Promise<SendResult> {
     if (!request.text?.trim() && !request.images?.length) throw new Error("A message needs text or an image.");
@@ -465,7 +467,7 @@ export class App {
     if (!this.threads.thread(thread)) throw new NotFound(`No thread ${thread}.`);
     const open = this.outbox.get(request.requestId);
     if (open && open.conversation !== id) throw new Error(`A requestId names one send; ${request.requestId} went to ${open.conversation}.`);
-    const images = open ? open.images : (request.images ?? []).map(image => this.saveUpload(image));
+    const images = open ? open.images : (request.images ?? []).map(image => this.uploaded(image));
     const item = this.outbox.add({
       requestId: request.requestId, conversation: id, text: request.text ?? "", images, mentions: (request.mentions ?? []).filter(m => m !== id && m !== "owner"),
       whenBusy: request.whenBusy ?? "steer",
@@ -645,11 +647,23 @@ export class App {
     return pending.length ? { ...page, items: [...page.items, ...pending] } : page;
   }
 
-  private saveUpload(image: { data: string; mimeType: string }): ImageRef {
-    const ext = image.mimeType.split("/")[1]?.replace(/[^a-z0-9]/g, "") || "bin";
-    const name = `${randomUUID()}.${ext}`;
-    writeFileSync(this.store.imagePath(name), Buffer.from(image.data, "base64"));
-    return { url: `/api/uploads/${name}`, mimeType: image.mimeType };
+  /** POST /api/uploads: an image's bytes, kept under a fresh name; a send names the ref it returns. */
+  async upload(contentType: string, bytes: Buffer): Promise<ImageRef> {
+    const mimeType = contentType.split(";")[0]!.trim().toLowerCase();
+    if (!mimeType.startsWith("image/")) throw new Error("An upload is an image; post its bytes with its image/* content-type.");
+    if (!bytes.length) throw new Error("An upload needs the image's bytes.");
+    const name = `${randomUUID()}.${mimeType.split("/")[1]!.replace(/[^a-z0-9]/g, "") || "bin"}`;
+    await writeFile(this.store.imagePath(name), bytes);
+    return { url: `/api/uploads/${name}`, mimeType };
+  }
+
+  /** A send's image: a ref POST /api/uploads gave, whose file is here. */
+  private uploaded(ref: ImageRef): ImageRef {
+    const name = typeof ref?.url === "string" && ref.url.startsWith("/api/uploads/") ? ref.url.slice("/api/uploads/".length).replace(/[^\w.-]/g, "") : "";
+    if (!name || !existsSync(this.store.imagePath(name))) {
+      throw new Error(`No upload ${String(ref?.url)}; post the image to POST /api/uploads first and send the {url, mimeType} it answers.`);
+    }
+    return { url: `/api/uploads/${name}`, mimeType: ref.mimeType };
   }
 
   private readUpload(ref: ImageRef): { data: string; mimeType: string } | undefined {

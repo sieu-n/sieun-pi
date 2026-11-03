@@ -25,7 +25,8 @@
     // A new chat is a solo root chat, never an agent: untitled agents filled every picker on 10-29.
     const agent = await api.createAgent({ kind: "solo" });
     const room = agent.room ?? agent.id;
-    await api.send(room, { text: out.text, images: out.images, mentions: out.mentions, requestId: crypto.randomUUID() });
+    const images = await Promise.all(out.images.map((image) => image.ref()));
+    await api.send(room, { text: out.text, images, mentions: out.mentions, requestId: crypto.randomUUID() });
     router.openConversation(room);
   }
 

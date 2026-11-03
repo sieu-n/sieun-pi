@@ -3,19 +3,22 @@
  * first use; per-view stores (`timeline`, `replies`, `boardStore`) start with their factory call and stop with `close()`.
  * Every item update is an upsert by id, so a turn's new entries replace the item in place.
  * A send shows at once as the owner's message `r:<requestId>` (sending, then sent), as in Slack, and the real message replaces it when it
- * lands; nothing waits on the network before the composer takes the next message.
+ * lands; nothing waits on the network before the composer takes the next message. An attached image shows from its preview while its
+ * upload ends, and the post names the uploaded ref.
  */
-import { api, ApiError, roomOf } from "./client.ts";
+import { api, ApiError, roomOf, type Attached } from "./client.ts";
 import { live } from "./live.svelte.ts";
 import type {
-  AgentId, AgentSummary, BoardOp, BoardView, ConversationHeader, ConversationId, ConversationSummary, ForYouItem, ImageUpload, Item, Me,
+  AgentId, AgentSummary, BoardOp, BoardView, ConversationHeader, ConversationId, ConversationSummary, ForYouItem, Item, Me,
   RunStatus, SendRequest, SendResult, Sidebar, TurnPlace,
 } from "./types.ts";
 
 const byTime = (a: Item, b: Item) => a.at - b.at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-type SendOpts = { images?: ImageUpload[]; mentions?: AgentId[]; threadRoot?: string; whenBusy?: "steer" | "followUp" };
+type SendOpts = { images?: Attached[]; mentions?: AgentId[]; threadRoot?: string; whenBusy?: "steer" | "followUp" };
+/** A send as the page holds it: a `SendRequest` whose images may still be uploading. */
+type SendDraft = Omit<SendRequest, "images"> & { images?: Attached[] };
 /** Tries after the first when the chat server cannot be reached, each with the same requestId, so a send lands once. */
 const SEND_RETRIES = 3;
 /** A real owner message replaces a pending send with its text only if it is no older than this before it, so history never does. */
@@ -26,10 +29,10 @@ const isRoom = (id: ConversationId): boolean => id.startsWith("dm_");
 const sameText = (a: string, b: string): boolean => a.trim() === b.trim();
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-function optimistic(request: SendRequest): Item {
+function optimistic(request: SendDraft): Item {
   return {
     kind: "message", id: `r:${request.requestId}`, at: Date.now(), author: global.me?.owner ?? { id: "owner", kind: "owner", name: "You", avatar: { initials: "Me", hue: 210 } },
-    text: request.text, images: (request.images ?? []).map(image => ({ url: `data:${image.mimeType};base64,${image.data}`, mimeType: image.mimeType })),
+    text: request.text, images: (request.images ?? []).map(image => ({ url: image.preview, mimeType: image.mimeType })),
     mentions: request.mentions ?? [], deliveries: [], pending: true, send: "sending", requestId: request.requestId,
     ...(request.threadRoot ? { threadRoot: request.threadRoot } : {}),
   };
@@ -80,11 +83,15 @@ function merge(items: readonly Item[], incoming: readonly Item[], landed: Set<st
   return next.sort(byTime);
 }
 
-/** Posts a send, trying again with the same requestId while the chat server cannot be reached; a refused send throws at once. */
-async function post(conversation: ConversationId, request: SendRequest): Promise<SendResult> {
+/**
+ * Posts a send once its images are uploaded, trying again with the same requestId while the chat server cannot be reached; a refused send
+ * throws at once.
+ */
+async function post(conversation: ConversationId, draft: SendDraft): Promise<SendResult> {
   for (let attempt = 0; ; attempt++) {
     try {
-      return await api.send(conversation, request);
+      const images = await Promise.all((draft.images ?? []).map(image => image.ref()));
+      return await api.send(conversation, { ...draft, images });
     } catch (error) {
       const unreachable = !(error instanceof ApiError) || error.status >= 500;
       if (!unreachable || attempt >= SEND_RETRIES) throw error;
@@ -95,7 +102,7 @@ async function post(conversation: ConversationId, request: SendRequest): Promise
 
 /** The optimistic side of sending, shared by a timeline and a channel thread: requests by id, landed ids, and failure marks. */
 class Sends {
-  readonly requests = new Map<string, SendRequest>();
+  readonly requests = new Map<string, SendDraft>();
   readonly landed = new Set<string>();
 
   constructor(private readonly conversation: ConversationId, private readonly read: () => Item[], private readonly write: (items: Item[]) => void) {}
@@ -106,7 +113,7 @@ class Sends {
   }
 
   /** Shows the send at once and posts it behind; the promise settles when the chat server has it or it failed. */
-  async send(request: SendRequest, show = true): Promise<SendResult | undefined> {
+  async send(request: SendDraft, show = true): Promise<SendResult | undefined> {
     this.requests.set(request.requestId, request);
     if (show) this.merge([optimistic(request)]);
     try {
@@ -474,12 +481,12 @@ export class Timeline {
    * behind with retries, and a send that cannot reach the chat server stays on screen as failed, with Retry and Discard.
    */
   send(text: string, opts: SendOpts = {}): Promise<void> {
-    const request: SendRequest = { text, requestId: crypto.randomUUID(), ...opts };
+    const request: SendDraft = { text, requestId: crypto.randomUUID(), ...opts };
     void this.sends.send(request, !opts.threadRoot).then(result => this.sent(result, request));
     return Promise.resolve();
   }
 
-  private sent(result: SendResult | undefined, request: SendRequest): void {
+  private sent(result: SendResult | undefined, request: SendDraft): void {
     if (!result) return;
     if (result.queue !== undefined) this.queue = result.queue;
     if (!request.threadRoot) this.upsert([result.item]);
@@ -550,8 +557,8 @@ export class Replies {
     }).catch(error => (this.error = message(error))).finally(() => (this.loading = false));
   }
 
-  send(text: string, opts: { images?: ImageUpload[]; mentions?: AgentId[] } = {}): Promise<void> {
-    const request: SendRequest = { text, requestId: crypto.randomUUID(), threadRoot: this.rootId, ...opts };
+  send(text: string, opts: { images?: Attached[]; mentions?: AgentId[] } = {}): Promise<void> {
+    const request: SendDraft = { text, requestId: crypto.randomUUID(), threadRoot: this.rootId, ...opts };
     void this.sends.send(request).then(result => {
       if (result) this.sends.merge([result.item]);
     });

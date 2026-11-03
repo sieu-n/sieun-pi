@@ -179,7 +179,8 @@ describe("channels and mentions", () => {
     assert.deepEqual(created.body.members.map((m: any) => m.principal.id), ["owner"]);
     const channel = created.body.id as string;
     const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
-    const first = await s.send("POST", `/api/c/${channel}/send`, { text: "plan adjust here, who owns plan data?", images: [{ data: png, mimeType: "image/png" }], requestId: "join-1" });
+    const upload = await fetch(`${s.base}/api/uploads`, { method: "POST", headers: { "content-type": "image/png" }, body: Buffer.from(png, "base64") });
+    const first = await s.send("POST", `/api/c/${channel}/send`, { text: "plan adjust here, who owns plan data?", images: [await upload.json()], requestId: "join-1" });
     assert.equal(first.status, 200);
     const sent = await s.send("POST", `/api/c/${channel}/send`, { text: "@Vent which table holds the org plan?", mentions: [agents.vent], requestId: "join-2" });
     assert.equal(sent.status, 200, sent.body.error);
