@@ -265,7 +265,7 @@ def resolve_session_arg(id_str, state):
     hits = [k for k, rec in state["sessions"].items()
             if rec.get("active_id") == id_str or k.startswith(id_str)]
     if not hits:
-        hits = [k for k, rec in each_archived() if rec.get("active_id") == id_str or k.startswith(id_str)]
+        hits = [k for k, active in archived_active_ids().items() if active == id_str or k.startswith(id_str)]
     if len(hits) == 1:
         rec = state["sessions"][hits[0]]
         return SessionKey(hits[0], rec.get("uuid"), rec.get("active_id"))
@@ -480,6 +480,56 @@ def pid_alive(pid):
     except PermissionError:
         pass
     return True
+
+
+def archive_index_path():
+    return os.path.join(base.POOL, "sessions-archive-index.json")
+
+
+# A folder's mtime comes from the kernel's coarse clock, so a change within one tick of it can leave it as it was.
+_CLOCK_TICK_NS = int(time.clock_getres(getattr(time, "CLOCK_REALTIME_COARSE", time.CLOCK_REALTIME)) * 1e9)
+
+
+def archived_active_ids():
+    """{key: active_id} for every archived record, from the index file beside the archive. The index keeps each
+    file's inode, so a read loads only the files written since the last one, and none while the folder's mtime
+    has not moved. On us-metal02 on 11-03 each --session lookup that missed state.json read all 5,768 archived
+    records, about 300 ms, and `snapshot` makes three of them per thread, so the chat's accounts frame of a thread
+    with no record took about 1 s."""
+    folder = archive_dir()
+    try:
+        stat = os.stat(folder)
+    except FileNotFoundError:
+        return {}
+    mtime = stat.st_mtime_ns
+    saved = base.load_json(archive_index_path())
+    files = saved.get("files") if isinstance(saved, dict) and saved.get("folder") == stat.st_ino and isinstance(saved.get("files"), dict) else None
+    if files is not None and saved.get("mtime_ns") == mtime and saved.get("read_ns", 0) - mtime > 2 * _CLOCK_TICK_NS:
+        return {key: entry[1] for key, entry in files.items()}
+    read_ns = time.time_ns()
+    try:
+        names = [(entry.name[:-5], entry.inode()) for entry in os.scandir(folder) if entry.name.endswith(".json")]
+    except FileNotFoundError:
+        return {}
+    files = files or {}
+    kept = {}
+    for key, inode in names:
+        entry = files.get(key)
+        if isinstance(entry, list) and len(entry) == 2 and entry[0] == inode:
+            kept[key] = entry
+            continue
+        rec = base.load_json(os.path.join(folder, key + ".json"))
+        if isinstance(rec, dict):
+            kept[key] = [inode, rec.get("active_id")]
+    tmp = f"{archive_index_path()}.tmp.{os.getpid()}"
+    try:
+        with open(tmp, "w") as f:
+            f.write(json.dumps({"folder": stat.st_ino, "mtime_ns": mtime, "read_ns": read_ns, "files": kept}, separators=(",", ":")))
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, archive_index_path())
+    except OSError:
+        pass
+    return {key: entry[1] for key, entry in kept.items()}
 
 
 def each_archived():

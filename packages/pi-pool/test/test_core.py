@@ -686,6 +686,32 @@ class SessionArchive(unittest.TestCase):
         state = {"sessions": self.sessions({})}
         self.assertEqual(registry.resolve_session_arg("abc123abc123", state).key, "01a0-archived")
 
+    def test_a_session_arg_reads_only_archived_records_written_since_the_last_lookup(self):
+        """us-metal02, 11-03: each lookup that missed state.json read all 5,768 archived records, about 300 ms,
+        three times per thread in a snapshot, so the chat's accounts frame of a thread with no record took 1 s."""
+        for n in range(20):
+            registry.archive_record(f"01a0-{n}", {"uuid": f"01a0-{n}", "active_id": f"act{n}", "last_seen": NOW - 7200, "pins": {}})
+        state = {"sessions": self.sessions({})}
+        self.assertEqual(registry.resolve_session_arg("act7", state).key, "01a0-7")
+        real_load = base.load_json
+        read = []
+
+        def counted(path, *args, **kwargs):
+            if path.startswith(registry.archive_dir() + os.sep):
+                read.append(os.path.basename(path))
+            return real_load(path, *args, **kwargs)
+
+        with unittest.mock.patch.object(base, "load_json", counted):
+            self.assertIsNone(registry.resolve_session_arg("pi-durable:never-seen", {"sessions": self.sessions({})}))
+            self.assertEqual(read, [], "a miss reads no archived record")
+            registry.archive_record("01a0-new", {"uuid": "01a0-new", "active_id": "actnew", "last_seen": NOW - 7200, "pins": {}})
+            registry.archive_record("01a0-3", {"uuid": "01a0-3", "active_id": "act3b", "last_seen": NOW - 3600, "pins": {}})
+            self.assertEqual(registry.resolve_session_arg("actnew", {"sessions": self.sessions({})}).key, "01a0-new")
+            self.assertEqual(set(read) - {"actnew.json"}, {"01a0-new.json", "01a0-3.json"}, "the next lookup reads only the two files written since")
+            self.assertEqual(registry.resolve_session_arg("act3b", {"sessions": self.sessions({})}).key, "01a0-3")
+            self.assertIsNone(registry.resolve_session_arg("act3", {"sessions": self.sessions({})}), "a rewritten record answers to its new active id only")
+            self.assertEqual(registry.resolve_session_arg("01a0-1", {"sessions": self.sessions({})}).key, "01a0-1")
+
 class IndexWindows(unittest.TestCase):
     """Index windows, classified by windowSeconds and name
     rather than array position, for both providers."""
