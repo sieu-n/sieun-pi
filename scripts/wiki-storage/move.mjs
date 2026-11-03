@@ -51,6 +51,17 @@ function trackedUnder(dir) {
   return out.split('\n').filter(Boolean).length;
 }
 
+// A copy into the root while it moves would land half at the old path, so run waits for it (data integrity).
+function writersUnder(dir) {
+  const hits = [];
+  for (const pid of readdirSync('/proc').filter((n) => /^\d+$/.test(n))) {
+    let cmd;
+    try { cmd = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').join(' '); } catch { continue; }
+    if (/(^|\/)(rsync|cp|scp|tar)\b/.test(cmd) && (cmd.includes(dir) || cmd.includes('llm-wiki/content'))) hits.push(`${pid} ${cmd.slice(0, 160)}`);
+  }
+  return hits;
+}
+
 /** The steps still left, from what is on disk now: an empty list means the move is done. */
 function pending(p) {
   const steps = [];
@@ -153,6 +164,10 @@ function dryRun() {
 }
 
 if (mode === 'plan') run(paths(), false);
-else if (mode === 'run') run(paths(), true);
+else if (mode === 'run') {
+  const writers = writersUnder(paths().from);
+  if (writers.length) die(`a copy is writing under the content root; run again after it ends:\n${writers.join('\n')}`);
+  run(paths(), true);
+}
 else if (mode === 'dry-run') dryRun();
 else die('usage: move.mjs plan|dry-run|run [--from <dir>] [--to <dir>] [--agents <dir>] [--config <file>] [--sandbox <dir>] [--sample <wiki path>]');
