@@ -96,6 +96,21 @@
   const deleted = $derived(message?.deleted ?? false);
   let editing = $state(false);
   let deleting = $state(false);
+  let rowEl = $state<HTMLElement>();
+
+  /** The Up arrow in an empty composer opens the owner's last post in the same conversation in its editor, as in Slack. */
+  function editLast(e: Event) {
+    const composer = (e as CustomEvent<HTMLElement>).detail;
+    const scope = composer.closest("section.conversation");
+    if (!editable || !rowEl || !scope?.contains(rowEl) || [...scope.querySelectorAll("[data-own-post]")].at(-1) !== rowEl) return;
+    editing = true;
+    rowEl.scrollIntoView({ block: "nearest" });
+  }
+  $effect(() => {
+    if (!editable) return;
+    window.addEventListener("chat:edit-last", editLast);
+    return () => window.removeEventListener("chat:edit-last", editLast);
+  });
   let reactions = $state<Reactions>();
   let reactButton = $state<HTMLButtonElement>();
   let picking = $state(false);
@@ -203,7 +218,7 @@
 {/snippet}
 
 {#if slack}
-  <li class="row slack" class:own class:first class:pending class:picking data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined}>
+  <li bind:this={rowEl} class="row slack" class:own class:first class:pending class:picking data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined}>
     <div class="gutter">
       {#if first}
         <Avatar name={item.author.name} kind={avatarKind(item.author)} seed={item.author.id} size={36} status={statusOf?.(item.author.id) ?? null} />
@@ -254,7 +269,7 @@
     {@render actionBar()}
   </li>
 {:else}
-  <li class="row" class:own class:first class:pending class:picking data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined}>
+  <li bind:this={rowEl} class="row" class:own class:first class:pending class:picking data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined}>
     {#if first}
       <div class="byline">
         {#if !own && item.author.kind !== "owner"}<Icon name="robot" size={13} />{/if}

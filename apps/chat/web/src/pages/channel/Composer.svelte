@@ -149,6 +149,12 @@
       dismiss();
       return;
     }
+    // Slack's Up arrow in an empty box edits the owner's last post here (MessageRow listens).
+    if (e.key === "ArrowUp" && !hasContent && !query && box) {
+      e.preventDefault();
+      window.dispatchEvent(new CustomEvent("chat:edit-last", { detail: box }));
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       void submit();

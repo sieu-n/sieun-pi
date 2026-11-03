@@ -45,6 +45,22 @@ test("the owner edits his own DM post in place, Enter saves it, and it shows (ed
   await expect(row(page, id).locator(".msg-text")).toContainText(`final ${word}`);
 });
 
+test("the Up arrow in an empty composer opens the owner's last post in its editor, as in Slack", async ({ page, request }) => {
+  const word = tag();
+  await post(request, `older ${word}`);
+  const id = await post(request, `newest ${word}`);
+  await open(page, `#/c/${ROOM}`);
+  const box = page.getByTestId("composer-input").first();
+  await box.click();
+  await box.press("ArrowUp");
+  const editor = row(page, id).getByRole("textbox", { name: "Edit message" });
+  await expect(editor).toHaveValue(`newest ${word}`, { timeout: 15_000 });
+  await editor.press("Escape");
+  await box.fill("not empty");
+  await box.press("ArrowUp");
+  await expect(page.locator("[data-post-editor]")).toHaveCount(0);
+});
+
 test("Escape cancels an edit and keeps the post as it was", async ({ page, request }) => {
   const word = tag();
   const id = await post(request, `keep ${word}`);
@@ -59,10 +75,7 @@ test("Escape cancels an edit and keeps the post as it was", async ({ page, reque
 
 test("a deleted channel post with replies stays as a stub over its thread, as in Slack", async ({ page, request }) => {
   const id = await post(request, `wrong room ${tag()}`);
-  await expect.poll(async () => {
-    const page_ = (await (await request.get(`/api/c/${ROOM}/items?around=${id}`)).json()) as { items: { id: string; thread?: { replies: number } }[] };
-    return page_.items.find((i) => i.id === id)?.thread?.replies ?? 0;
-  }, { timeout: 15_000 }).toBeGreaterThan(0);
+  await request.post(`/api/c/${ROOM}/send`, { data: { text: "a reply that keeps the thread", requestId: crypto.randomUUID(), threadRoot: id } });
   await open(page, `#/c/${ROOM}`);
   await action(row(page, id), "[data-delete-post]", page.locator("[data-confirm-delete]"));
   await page.locator("[data-confirm-delete]").click();
