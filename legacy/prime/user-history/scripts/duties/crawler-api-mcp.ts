@@ -13,7 +13,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * auto-sns-agent scripts/duties/crawler/crawler-api.mjs from the API portal chat's d2 detail file, plus each Query MCP call that fails on
  * prod https://virev.ai/mcp on either tier. The 3 supporting counts come from the same crawler-api.mjs run: minutes the API and its health
  * snapshots were down in 24 h (prod Prometheus through obs.virev.ai), and the onboarding renders that keep p1076, 3 shop page renders fired
- * at once at the prod crawler and counted when they answer under onboarding's 60 s render limit. A duty holds one headline and at most 3
+ * at once at the prod crawler and counted when they answer under onboarding's 60 s render limit. A fourth supporting count, from the same run, is the percent of prod
+ * Instagram profile docs with 1 to 4 posts that show an engagement rate and a views median (t89, p1168, 11-03), read from prod OpenSearch. A duty holds one headline and at most 3
  * supporting metrics (c75, c133), so the Instagram posts behind the prod OpenSearch alias crawler_v3_posts, which keep p689 (closed on 10-24
  * at 1,411.8M against 1,007M), are a detail line of each run, and a low count from crawler-api.mjs shows as a detail line too.
  * The MCP half calls prod the way a customer's agent does (JSON-RPC over Streamable HTTP, a bearer token): describe, a sql count, a search
@@ -162,6 +163,7 @@ export function report(api: PrecheckOutput | Error, mcp: Record<string, CallResu
     api_down_minutes_24h: read("api_down_minutes_24h"),
     health_snapshot_down_minutes_24h: read("health_snapshot_down_minutes_24h"),
     onboarding_renders_3x_under_60s: read("onboarding_renders_3x_under_60s", -UNMEASURED),
+    ig_few_post_stats_pct: read("ig_few_post_stats_pct", -UNMEASURED),
   };
   const unmeasured = Object.entries(metrics).filter(([, value]) => Math.abs(value) === UNMEASURED).map(([key]) => key);
   if (unmeasured.length) flagged.push({ at: now, kind: "unmeasured", excerpt: `Not measured this run, so the value is ${UNMEASURED} or -${UNMEASURED} and counts as a miss: ${unmeasured.join(", ")}. Fix the source error first.` });
