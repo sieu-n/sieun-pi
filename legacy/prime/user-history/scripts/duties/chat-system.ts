@@ -38,7 +38,7 @@ import { CLEAN_ROOM_CHATS_FILE } from "../../src/chat-corrections.ts";
 import { peerReach, readTailscaleStatus } from "../../src/host-reach.ts";
 import { type AwayHost, hostHolds } from "../../src/shared/host-hold.ts";
 import { stepIds } from "../../src/shared/step-ids.ts";
-import { appsChatDuties, appsStuckLine, greenPct, movedPrimeChats, readAppsChats } from "./chat-system-apps.ts";
+import { appsChatDuties, appsOwnerReads, appsStuckLine, appsStuckSteps, appsWakes, greenPct, movedPrimeChats, readAppsChats } from "./chat-system-apps.ts";
 
 /**
  * The precheck of the AI harness chat's Chat system duty (d9). The owner on 10-19 (msg mvfb7zt0): "plan should be tasks all eventually clear -
@@ -839,13 +839,20 @@ async function main(): Promise<void> {
   };
   const hostHeld = owned.hostHeld.map((step: HostHeldStep) => ({ chat: step.chat.id, id: step.id, host: step.host,
     text: step.duty ?? text(step.chat.id, step.id) ?? "", ...step.waitsOn ? { waitsOn: step.waitsOn } : {}, ...step.duty ? { duty: step.duty } : {} }));
-  const stuck = counts.stuck.filter(entry => !moved.has(entry.chat.id)).flatMap((entry): ChatSystemFacts["stuck"] => entry.items.length
+  const primeStuck = counts.stuck.filter(entry => !moved.has(entry.chat.id)).flatMap((entry): ChatSystemFacts["stuck"] => entry.items.length
     ? entry.items.map(id => { const waitsOn = waitsOnStep(plan.boards.get(entry.chat.id) ?? null, id);
       return { chat: entry.chat.id, id, text: text(entry.chat.id, id) ?? "", ...waitsOn ? { waitsOn } : {} }; })
     : [{ chat: entry.chat.id, count: entry.value }]);
+  // A :5184 chat's open steps nobody moves, read as a paused Prime chat's are, with waits that may hand a step to any chat's board.
+  const appsWaking = await appsWakes(now);
+  const appsReads = new Map(apps.chats.map(chat => [chat.id, appsOwnerReads(chat, apps.sessions, appsWaking, now)] as const));
+  const links = { others: new Map([...plan.boards, ...apps.chats.map(chat => [chat.id, chat.board] as const)]),
+    chats: [...plan.chats.map(chat => ({ id: chat.id, name: chat.name })), ...apps.chats.map(chat => ({ id: chat.id, name: chat.name }))] };
+  const stuck: ChatSystemFacts["stuck"] = [...primeStuck, ...apps.chats.flatMap(chat => appsStuckSteps(chat, appsReads.get(chat.id)!, now, { self: chat.id, ...links })
+    .map(item => { const waitsOn = waitsOnStep(chat.board, item.id); return { chat: chat.id, id: item.id, text: item.text, ...waitsOn ? { waitsOn } : {} }; }))];
   const upkeep = plan.chats.filter(chat => !plan.pausedChats.has(chat.id) && !moved.has(chat.id)).flatMap(chat => planUpkeep(chat.id, plan.boards.get(chat.id) ?? null));
   const fleet = await dutyFleet({ dataDir, now, sessions: daemonSessions, chats: plan.chats });
-  const appsDuties = apps.chats.flatMap(chat => appsChatDuties(chat, now));
+  const appsDuties = apps.chats.flatMap(chat => appsChatDuties(chat, now, appsReads.get(chat.id)));
   const fleetDuties = [...fleet.duties.filter(counted), ...appsDuties];
   for (const chat of apps.chats) runsByChat.set(chat.id, chat.duties.flatMap(row => row.runs).sort((a, b) => b.at - a.at));
   const boardOf = (chat: string): ChatBoard | null => plan.boards.get(chat) ?? apps.chats.find(entry => entry.id === chat)?.board ?? null;

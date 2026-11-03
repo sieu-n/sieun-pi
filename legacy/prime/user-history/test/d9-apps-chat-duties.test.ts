@@ -3,7 +3,8 @@
 // with no push, since sw factory runs them, and stops counting the paused Prime copy of each chat that moved.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { appsChatDuties, greenPct, movedPrimeChats, readAppsChats } from "../scripts/duties/chat-system-apps.ts";
+import { appsChatDuties, appsOwnerReads, appsStuckSteps, greenPct, movedPrimeChats, readAppsChats } from "../scripts/duties/chat-system-apps.ts";
+import type { Wake } from "../src/wakes.ts";
 import { chatSystemOutput, type RedDuty } from "../scripts/duties/chat-system.ts";
 
 const now = Date.parse("2026-11-03T07:20:00Z");
@@ -15,7 +16,8 @@ const run = (duty: string, at: number, results: Record<string, number>, extra: R
 const day = 86_400_000;
 const duty = (id: string, name: string, keys: string[], runs: unknown[]) => ({ duty: { id, name, status: "active",
   metrics: keys.map((key, index) => { const { value: _value, ...rest } = metric(key, 0, index === 0); return rest; }) }, paused: false, running: false, runs });
-const board = (plan: unknown[]) => ({ board: { v: 2, rev: 1, updatedAt: "2026-11-03T00:00:00Z", todos: [], plan } });
+const board = (plan: unknown[]) => ({ board: { v: 2, rev: 1, updatedAt: "2026-11-03T00:00:00Z", plan,
+  todos: [{ id: "t3", text: "Sign in Search Console", done: false, step: "p90" }] } });
 
 const FIXTURE: Record<string, unknown> = {
   "/api/agents": [{ id: "ag_vent", name: "vent", kind: "chat" }, { id: "ag_seo", name: "seo", kind: "chat" }, { id: "ag_mcp", name: "mcp", kind: "chat" },
@@ -34,13 +36,19 @@ const FIXTURE: Record<string, unknown> = {
     duty("d2", "New articles get indexed", ["new_unindexed_3d"], [12, 31].map((value, index) => run("d2", now - (index + 1) * day, { new_unindexed_3d: value }))),
   ] },
   "/api/agents/ag_seo/board": board([{ id: "p56", text: "Reach 10,000 visits a day", status: "doing", children: [
-    { id: "p117", text: "dropped_pages back to 0", status: "doing", duty: "d1/dropped_pages", job: "seo dropped pages", children: [] },
+    { id: "p67", text: "Lift visits with new reach", status: "doing", children: [] },
+    { id: "p90", text: "Request indexing from the owner's Mac", status: "blocked", waitFor: "the owner's answer on t3", children: [] },
+    { id: "p117", text: "dropped_pages back to 0", status: "doing", duty: "d1/dropped_pages", job: "seo dropped pages", sessionId: "b99a7650-d2bd-4712-825e-eae6b96595f8", children: [] },
     { id: "p121", text: "Get the 12 articles indexed", status: "doing", duty: "d2/new_unindexed_3d", job: "unindexed articles 11-03",
-      waitUntil: "2026-11-04T02:45:00Z", children: [] }] }]),
+      sessionId: "67e9709a-1aa7-45f4-ac89-fc43d0b578d8", waitUntil: "2026-11-04T02:45:00Z", children: [] }] }]),
   "/api/agents/ag_seo/agents": { agents: [{ name: "seo dropped pages", state: "idle" }] },
   "/api/agents/ag_mcp/duties": { duties: [duty("d1", "Prod MCP", ["mcp_failing"], [run("d1", now - day, { mcp_failing: 0 })])] },
   "/api/agents/ag_mcp/board": board([]),
   "/api/agents/ag_mcp/agents": { agents: [] },
+  "/api/conversations": [{ id: "b99a7650-d2bd-4712-825e-eae6b96595f8", kind: "solo", name: "seo dropped pages", status: "idle", lastActivityAt: now - 5 * 3_600_000 },
+    { id: "67e9709a-1aa7-45f4-ac89-fc43d0b578d8", kind: "solo", name: "unindexed articles 11-03", status: "idle", lastActivityAt: now - 4 * 3_600_000 },
+    { id: "67e9709a-1aa7-45f4-ac89-fc43d0b578d8:12", kind: "job", name: "ja caption page", status: "idle", lastActivityAt: now - 60_000, parent: "67e9709a-1aa7-45f4-ac89-fc43d0b578d8" }],
+  ...Object.fromEntries(["ag_vent", "ag_seo", "ag_mcp"].map(id => [`/api/agents/${id}/check-in`, { everyMs: 7_200_000 }])),
 };
 const get = async (url: string): Promise<unknown> => {
   const path = url.replace("http://chat.test", "");
@@ -64,7 +72,7 @@ test("d9 reads the :5184 chats' duties: vent d2 and seo d1 are red with no fix, 
 
 test("a :5184 chat that does not answer reads as an error and adds no duty", async () => {
   const out = await readAppsChats("http://chat.test", async () => { throw new Error("fetch failed"); });
-  assert.deepEqual(out, { chats: [], error: "fetch failed" });
+  assert.deepEqual(out, { chats: [], sessions: [], error: "fetch failed" });
 });
 
 test("the Prime copies of moved chats leave the count, by their imported runs or their name", async () => {
@@ -83,5 +91,23 @@ test("a :5184 red duty counts in red_duty and stuck_duties, and no push goes to 
   assert.equal(out.metrics.duties_green_pct, 40);
   assert.equal(out.metrics.stuck_duties, 2);
   assert.match(out.flagged!.find(slice => slice.kind === "red_duty")!.excerpt, /^3 red duties in 2 chats/);
+  assert.equal(out.flagged!.some(slice => slice.kind === "push"), false);
+});
+
+test("d9 counts a :5184 chat's open steps nobody moves, as a paused Prime chat's, and a wake or a subagent at work moves a step", async () => {
+  const { chats, sessions } = await readAppsChats("http://chat.test", get);
+  const wakes = [{ session: "b99a7650-d2bd-4712-825e-eae6b96595f8--1", on: { kind: "time", at: now + 3_600_000 }, note: "", since: now - day }] as Wake[];
+  const stuck = (id: string, owed: readonly Wake[]) => { const chat = chats.find(entry => entry.id === id)!;
+    return appsStuckSteps(chat, appsOwnerReads(chat, sessions, owed, now), now).map(item => item.id); };
+  // p117's job sleeps on a wake, p121's job has a subagent that wrote a minute ago, p90 waits on the open todo t3, and p67 has no owner.
+  assert.deepEqual(stuck("ag_seo", wakes), ["p67"]);
+  assert.deepEqual(stuck("ag_seo", []), ["p67", "p117"]);
+  assert.deepEqual(stuck("ag_vent", wakes), ["p123"]);
+  const seo = chats.find(entry => entry.id === "ag_seo")!;
+  const fixed = appsChatDuties(seo, now, appsOwnerReads(seo, sessions, wakes, now)).find(entry => entry.duty === "d1")!;
+  assert.deepEqual([fixed.fix, fixed.stuck], ["p117", false]);
+  const out = chatSystemOutput({ names: new Map([["ag_seo", "seo (:5184)"]]), upkeep: [], fleet: { pct: 100, red: [] }, idleGoals: [], followUps: [],
+    detail: "/tmp/d9.md", noPush: new Set(["ag_seo"]), stuckDuties: [], stuck: [{ chat: "ag_seo", id: "p67", text: "Lift visits with new reach" }] });
+  assert.equal(out.metrics.stuck_steps_all, 1);
   assert.equal(out.flagged!.some(slice => slice.kind === "push"), false);
 });

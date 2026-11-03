@@ -1,7 +1,11 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { OPEN, walk } from "../../src/checkin-steps.ts";
 import type { DutyMetric, DutyRunRecord } from "../../src/shared/chat-duties.ts";
 import { effectiveRun, metricStreaks, missStreak } from "../../src/shared/duty-streak.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
+import { type OwnerReads, stepSessions, unmovedSteps, type WaitLinks, withDescendantActivity } from "../../src/unmoved-steps.ts";
+import { pendingWakes, type Wake } from "../../src/wakes.ts";
 import { BASE } from "./apps-chat.ts";
 import { agingUntil, leadMetric, type FleetDuty, verdictNow } from "./duty-fleet.ts";
 
@@ -17,9 +21,19 @@ export interface AppsDutyRow {
   duty: { id: string; name: string; status: string; metrics: DutyMetric[] };
   paused: boolean; running: boolean; runs: DutyRunRecord[];
 }
-/** One job of a chat as `GET /api/agents/:id/agents` lists it: its name and whether it works now. */
-export interface AppsJobRow { name: string; state: string }
-export interface AppsChat { id: string; name: string; board: ChatBoard | null; duties: AppsDutyRow[]; jobs: AppsJobRow[] }
+/** One job of a chat as `GET /api/agents/:id/agents` lists it: its name, whether it works now, its session and its last write. */
+export interface AppsJobRow { name: string; state: string; sessionId?: string; sender?: string; lastActivityAt?: string }
+export interface AppsChat {
+  id: string; name: string; board: ChatBoard | null; duties: AppsDutyRow[]; jobs: AppsJobRow[];
+  /** The chat's own work thread, whether it works now and when it last wrote, as `GET /api/agents` lists it. */
+  thread?: string; working?: boolean; updatedAt?: number;
+  /** Its check-in interval (`GET /api/agents/:id/check-in`), which sets the live window its steps' owners get, as a Prime chat's does. */
+  everyMs?: number;
+}
+/** One thread or job as `GET /api/conversations` lists it: its id (`<thread>` or `<thread>:<conversation>`), name, state, last write and parent. */
+export interface AppsSession { id: string; name?: string; status?: string; lastActivityAt?: number; parent?: string }
+/** The app's wakes folder (apps/chat server/wakes.ts, `<data dir>/wakes`), read only. */
+export const APPS_WAKES_DIR = join(process.env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat"), "wakes");
 
 type Get = (url: string) => Promise<unknown>;
 const getJson: Get = async url => {
@@ -29,18 +43,21 @@ const getJson: Get = async url => {
 };
 
 /** Every chat the :5184 app lists (not archived, no test agent) with its board, duties and jobs; `error` names the read that failed. */
-export async function readAppsChats(base = BASE, get: Get = getJson): Promise<{ chats: AppsChat[]; error?: string }> {
+export async function readAppsChats(base = BASE, get: Get = getJson): Promise<{ chats: AppsChat[]; sessions: AppsSession[]; error?: string }> {
   try {
-    const agents = await get(`${base}/api/agents`) as { id: string; name: string; kind?: string; archived?: boolean }[];
+    const sessions = (await get(`${base}/api/conversations`) as AppsSession[]).filter(row => typeof row.id === "string");
+    const agents = await get(`${base}/api/agents`) as { id: string; name: string; kind?: string; archived?: boolean; thread?: string; status?: string; updatedAt?: number }[];
     const chats = await Promise.all(agents.filter(agent => agent.kind === "chat" && !agent.archived).map(async (agent): Promise<AppsChat> => {
       const at = `${base}/api/agents/${encodeURIComponent(agent.id)}`;
-      const [board, duties, jobs] = await Promise.all([get(`${at}/board`), get(`${at}/duties`), get(`${at}/agents`)]) as
-        [{ board?: ChatBoard | null }, { duties?: AppsDutyRow[] }, { agents?: AppsJobRow[] }];
-      return { id: agent.id, name: agent.name, board: board.board ?? null, duties: duties.duties ?? [], jobs: jobs.agents ?? [] };
+      const [board, duties, jobs, checkIn] = await Promise.all([get(`${at}/board`), get(`${at}/duties`), get(`${at}/agents`), get(`${at}/check-in`)]) as
+        [{ board?: ChatBoard | null }, { duties?: AppsDutyRow[] }, { agents?: AppsJobRow[] }, { everyMs?: number }];
+      return { id: agent.id, name: agent.name, board: board.board ?? null, duties: duties.duties ?? [], jobs: jobs.agents ?? [],
+        ...agent.thread ? { thread: agent.thread } : {}, working: agent.status === "working", ...agent.updatedAt ? { updatedAt: agent.updatedAt } : {},
+        ...typeof checkIn.everyMs === "number" ? { everyMs: checkIn.everyMs } : {} };
     }));
-    return { chats };
+    return { chats, sessions };
   } catch (error) {
-    return { chats: [], error: error instanceof Error ? error.message : String(error) };
+    return { chats: [], sessions: [], error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -49,15 +66,17 @@ const measured = (run: DutyRunRecord): boolean => { const verdict = effectiveRun
 /**
  * A chat's active duties as d9's fleet reads a Prime chat's (`dutyFleet`): green by the newest reading (`verdictNow`), pending before the first
  * measured run, and for a red one its lead metric, its miss streak and its fix. A fix is an open step linked `<dutyId>/<metricKey>` whose job
- * works now, or that waits on a time still ahead (`waitUntil`) with a job named, as a Prime fix job asleep on its board.wake counts as live.
+ * works now or sleeps on a wake the app owes (`appsOwnerReads`), or that waits on a time still ahead (`waitUntil`) with a job named, as a Prime
+ * fix job asleep on its board.wake counts as live.
  * `stuck` marks a red duty with no fix and no duty job at work, unless it is red only on counts that age out.
  */
-export function appsChatDuties(chat: AppsChat, now: number): FleetDuty[] {
+export function appsChatDuties(chat: AppsChat, now: number, reads: OwnerReads = appsOwnerReads(chat, [], [], now)): FleetDuty[] {
   const working = new Set(chat.jobs.filter(job => job.state === "working").map(job => job.name));
   const steps: PlanItem[] = [];
   walk(chat.board?.plan ?? [], item => { steps.push(item); });
-  const live = (item: PlanItem, link: string): boolean => OPEN.has(item.status) && item.duty === link && item.job !== undefined &&
-    (working.has(item.job) || Date.parse(item.waitUntil ?? "") > now);
+  const awake = (item: PlanItem): boolean => stepSessions(item, reads.named).some(session => reads.live.has(session) || (reads.activity.get(session) ?? -Infinity) >= now);
+  const live = (item: PlanItem, link: string): boolean => OPEN.has(item.status) && item.duty === link && (awake(item) ||
+    (item.job !== undefined && (working.has(item.job) || Date.parse(item.waitUntil ?? "") > now)));
   return chat.duties.filter(row => !row.paused && row.duty.status === "active").map(row => {
     const runs = [...row.runs].sort((a, b) => b.at - a.at);
     const own = runs.filter(measured);
@@ -91,7 +110,7 @@ export function appsStuckLine(duty: FleetDuty, chatName: string): string {
   const metric = duty.metric;
   return `${chatName}: ${duty.name} (${duty.duty}) read off target in ${duty.misses === 1 ? "its last run" : `its last ${duty.misses} runs`}` +
     `${metric ? `, ${metric.key} ${metric.value} against ${metric.op} ${metric.target}` : ""}, and no open step linked to it ` +
-    `(duty field ${duty.duty}/${metric?.key ?? "<metricKey>"}) has a job at work or waiting on a time; sw factory runs this chat, so d9 counts it and sends no push`;
+    `(duty field ${duty.duty}/${metric?.key ?? "<metricKey>"}) has a job at work, asleep on a wake or waiting on a time; sw factory runs this chat, so d9 counts it and sends no push`;
 }
 
 const plainName = (name: string): string => name.replace(/[([][^)\]]*[)\]]/g, "").trim().toLowerCase();
@@ -115,3 +134,43 @@ export function greenPct(duties: readonly Pick<FleetDuty, "green" | "pending">[]
   const judged = duties.filter(duty => !duty.pending);
   return judged.length ? Math.floor(1000 * judged.filter(duty => duty.green).length / judged.length) / 10 : 100;
 }
+
+/**
+ * A :5184 wake's session (`<thread>--<conversation>`, server/wakes.ts `wakeSession`) as the app's job rows name it: the thread alone for its
+ * first conversation, a root job or the chat itself, and `<thread>:<conversation>` for a subagent in it.
+ */
+export const wakeRowSession = (session: string): string => {
+  const at = session.lastIndexOf("--");
+  const conversation = at > 0 ? Number(session.slice(at + 2)) : NaN;
+  if (!Number.isInteger(conversation)) return session;
+  return conversation === 1 ? session.slice(0, at) : `${session.slice(0, at)}:${conversation}`;
+};
+
+/**
+ * A :5184 chat's owner reads, as `rowOwnerReads` builds a Prime chat's from its catalog row: the chat and each job wrote at its last activity,
+ * or now while it works, each job's name and sender name its session, and a session asleep on a wake the app still owes is live.
+ */
+export function appsOwnerReads(chat: AppsChat, sessions: readonly AppsSession[], wakes: readonly Wake[], now: number): OwnerReads {
+  const activity = new Map<string, number>();
+  const named = new Map<string, string[]>();
+  const wrote = (session: string, at: number) => { if (Number.isFinite(at) && at > (activity.get(session) ?? -Infinity)) activity.set(session, at); };
+  if (chat.thread) wrote(chat.thread, chat.working ? now : chat.updatedAt ?? NaN);
+  // Every thread and job of the app, so a step owned by a root job (a solo thread no chat row lists) reads its job's last write.
+  for (const row of sessions) wrote(row.id, row.status === "working" ? now : row.lastActivityAt ?? NaN);
+  for (const job of chat.jobs) {
+    if (job.sessionId === undefined) continue;
+    wrote(job.sessionId, job.state === "working" ? now : Date.parse(job.lastActivityAt ?? ""));
+    for (const name of new Set([job.name, job.sender])) if (name && !named.get(name)?.includes(job.sessionId)) named.set(name, [...named.get(name) ?? [], job.sessionId]);
+  }
+  // A job waiting on its own subagents moves its step while they work (`withDescendantActivity`).
+  const parents = new Map(sessions.flatMap(row => row.parent ? [[row.id, row.parent] as const] : []));
+  return { activity: withDescendantActivity(activity, parents), live: new Set(wakes.map(wake => wakeRowSession(wake.session))), named };
+}
+
+/** The open steps of a :5184 chat that nobody moves, read as a paused Prime chat's are (`unmovedSteps`), with its own owner reads. */
+export function appsStuckSteps(chat: AppsChat, reads: OwnerReads, now: number, links?: WaitLinks): PlanItem[] {
+  return unmovedSteps(chat.board, now, chat.everyMs, reads, links);
+}
+
+/** The wakes the app still owes, from its wakes folder. */
+export const appsWakes = (now: number, dir = APPS_WAKES_DIR): Promise<Wake[]> => pendingWakes(dir, now);
