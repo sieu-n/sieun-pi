@@ -383,13 +383,14 @@ export class Outbox {
     await mkdir(this.deps.dir, { recursive: true, mode: 0o700 });
     const saved = doneFile(this.deps.dir);
     const stubs = new Map<string, Stored>();
-    const text = await readFile(saved, "utf8").catch(() => null);
+    // Read beside the folder list, so a start with no saved file takes no more steps before `ready` than before.
+    const [text, names] = await Promise.all([readFile(saved, "utf8").catch(() => null), readdir(this.deps.dir)]);
     if (text !== null) {
       await unlink(saved).catch(error => this.deps.log(`outbox: delete ${saved}: ${message(error)}`));
       try { for (const stub of JSON.parse(text) as Stored[]) if (typeof stub?.id === "string" && isDone(stub)) stubs.set(stub.id, { ...stub, stub: true }); }
       catch (error) { this.deps.log(`outbox: skip ${saved}: ${message(error)}`); }
     }
-    for (const name of await readdir(this.deps.dir)) {
+    for (const name of names) {
       const file = join(this.deps.dir, name);
       if (name.endsWith(".tmp")) { await unlink(file).catch(() => {}); continue; }
       if (!name.endsWith(".json")) continue;
