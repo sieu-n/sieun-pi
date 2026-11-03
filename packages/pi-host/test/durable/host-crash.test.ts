@@ -152,7 +152,8 @@ async function crashCase(name: string, mode: "faux" | "real", killOn: "child-str
     assert.equal(row.status, "idle");
     // A settled input gives its slot back right after the settle commit, so the last release can trail durable_wait a little.
     const readCalls = () => readFileSync(join(dir, "pool", "calls.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as PoolCall);
-    const released = (calls: PoolCall[]) => calls.some(call => call.argv[1] === "release" && call.argv[2] === calls.find(c => c.argv[1] === "admit")?.argv[2]);
+    // A run that meets a slot wait releases its slot and asks again after it, so the wait is for the last turn call to be a release.
+    const released = (calls: PoolCall[]) => calls.filter(call => (call.argv[1] === "admit" || call.argv[1] === "release") && call.argv[2] === calls.find(c => c.argv[1] === "admit")?.argv[2]).at(-1)?.argv[1] === "release";
     let calls = mode === "faux" ? readCalls() : [];
     for (let tries = 0; mode === "faux" && !released(calls) && tries < 50; tries++) {
       await new Promise(resolve => setTimeout(resolve, 100));

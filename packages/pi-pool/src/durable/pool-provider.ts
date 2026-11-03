@@ -14,7 +14,8 @@
  *
  * Every request also takes its run's place in this machine's turn queue (pi-pool `turns.py`), the one line that every
  * Prime and Pi run on the box waits in. A queued run is deferred the same way and polls its place; the run's slot is
- * held until `TurnQueue.release`, which pi-host calls when the conversation's input settles.
+ * held until `TurnQueue.release`, which pi-host calls when the conversation's input settles, and which a slot wait calls
+ * first, so a run that waits for an account holds no working slot and keeps its place for the retry.
  */
 import {
   createAssistantMessageEventStream,
@@ -318,7 +319,13 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
         const on = got?.kind === "token" ? runsOn(model, got.models) : undefined;
         if (place.kind === "wait" || got === undefined) final = turnWait(model, keyOf(options), place as Extract<TurnPlace, { kind: "wait" }>);
         else if (options?.signal?.aborted) final = message(model, { stopReason: "aborted", errorMessage: "Request aborted" });
-        else if (got.kind === "wait") final = slotWait(model, keyOf(options), got, now());
+        else if (got.kind === "wait") {
+          // A run lets its working slot go while its tree waits for an account, as a Prime run does, and the pool keeps its place
+          // in line for the retry (pool/turns.py `leave`). On 11-03 pi-host held 839 slot-minutes this way and Prime 152, and at
+          // 08:25Z 20 of the box's 40 working slots sat in pi-host account waits while about 24 runs queued (pi-pool.log).
+          if (opts.turns?.holds(keyOf(options).session)) await opts.turns.release(keyOf(options));
+          final = slotWait(model, keyOf(options), got, now());
+        }
         else if (got.kind === "failed") final = noToken(model, got.reason);
         else if (got.kind === "final") final = message(model, { stopReason: "error", errorMessage: got.message });
         else if (on === undefined) final = message(model, { stopReason: "error", errorMessage: `pi-pool: the account with room lacks ${model.id} and lists no model this provider knows (${(got.models ?? []).join(", ")}).` });
