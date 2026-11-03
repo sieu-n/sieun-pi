@@ -70,7 +70,7 @@ import { startBridgeWatch } from "./alert-bridge-health.ts";
 import { startAlertPoll } from "./alert-poll.ts";
 import { startUptimeWatch } from "./uptime-watch.ts";
 import { promptView, sessionFileFor } from "./prompt-view.ts";
-import { sessionFileOf, targetStateOf, type TargetState, treeFilesOf } from "./send-once.ts";
+import { boxSessionFile, sessionFileOf, targetStateOf, type TargetState, treeFilesOf } from "./send-once.ts";
 import { AgentOutbox, stopRecords } from "./agent-outbox.ts";
 import { noticeOutbox } from "./notice-outbox.ts";
 import { relayHops, rowSubagent } from "./subagent-relay.ts";
@@ -228,10 +228,13 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // The sessions in one tool call past STALL_MS on every box, with the process this box's watch (`calls`) sees under each, for the duty
   // runner's fix steps and the check-in's owners (src/shared/stalled-calls.ts).
   const stalls = (now: number) => stalledCalls([...catalog.daemonRows(), ...catalog.remoteHosts().flatMap(({ rows }) => rows)], now, session => calls.process(session));
+  const fileOfSession = (id: string) => boxSessionFile(id, { agentDir, elsewhere: session => !!catalog.hostOf(session),
+    copy: async session => { const summary = await catalog.summary(session); return summary ? catalog.localFile(summary) : null; },
+    listed: async session => (await catalog.summary(session))?.sessionFile });
   const dutyJobs = dutyJobHost({ threads, archives, rows: () => catalog.rows(), refresh: () => catalog.refresh(), registry,
-    saved: async id => { const file = await sessionFileOf(id, agentDir); return file ? savedChat(file) : null; }, sessionFile: id => sessionFileOf(id, agentDir),
+    saved: async id => { const file = await fileOfSession(id); return file ? savedChat(file) : null; }, sessionFile: fileOfSession,
     treeFiles: id => treeFilesOf(id, agentDir),
-    ...quiet ? {} : { briefs: serviceBriefs(join(dataDir, BRIEFS_DIR), id => sessionFileOf(id, agentDir)) },
+    ...quiet ? {} : { briefs: serviceBriefs(join(dataDir, BRIEFS_DIR), fileOfSession) },
     schedules: () => catalog.schedulesNow(), held: () => chats.poolHeldSessions(), queue: hostsReading,
     waking: async id => { const owed = (await pendingWakes(join(dataDir, "wakes"), Date.now())).filter(wake => wake.session === id || wake.root === id); return owed.length ? `waits on ${wakeLabel(owed)}` : null; },
     treeWait: (id, scheduled) => treeWait(id, { sessions: tree => catalog.tree(tree), queue: workerQueue, relay: sessions => agentOutbox.outbox.pending(entry => sessions.has(entry.threadId) || (entry.root !== undefined && sessions.has(entry.root))),

@@ -141,6 +141,20 @@ export async function sessionFileOf(sessionId: string, agentDir: string): Promis
   return null;
 }
 
+/**
+ * A session's file as this box can open it: the copy this box holds for another box's session, else the file the daemon lists, else the walk of
+ * `sessionFileOf`. That walk reads every folder up to three levels under session-artifacts, 8,147 roots on us-metal02 on 11-03, and took 8.2
+ * to 11.2 s for an id it never finds. When the Mac came back at 00:54:51Z on 11-03 the duty reruns of its chats walked it for Mac sessions,
+ * whose files are not on this box: 6.7 s of the chat's main thread from 00:54:50 to 00:57:30Z, and d7 read 00:55, 00:56 and 00:57Z dirty.
+ */
+export async function boxSessionFile(sessionId: string, input: { agentDir: string; elsewhere: (id: string) => boolean;
+  copy: (id: string) => Promise<string | null | undefined>; listed: (id: string) => Promise<string | null | undefined> }): Promise<string | null> {
+  if (input.elsewhere(sessionId)) return (await input.copy(sessionId).catch(() => null)) ?? null;
+  const listed = await input.listed(sessionId).catch(() => null);
+  if (listed && await stat(listed).then(() => true, () => false)) return listed;
+  return sessionFileOf(sessionId, input.agentDir);
+}
+
 /** The transcript files of a root session and of every subagent below it: `sessions/<id>.jsonl` and each `<sub>.jsonl` up to three `sub-*` levels under its artifacts. */
 export async function treeFilesOf(rootId: string, agentDir: string): Promise<string[]> {
   const root = join(agentDir, "sessions", `${rootId}.jsonl`);
