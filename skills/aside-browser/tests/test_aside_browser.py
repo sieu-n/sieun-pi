@@ -302,6 +302,18 @@ class TabOwnershipTests(Base):
         self.assertEqual(self.call(ab.close_own_tabs()), [])
         self.assertEqual(mcp.calls, [])
 
+    def test_walk_closes_the_aside_tabs_opened_inside_it_even_on_an_error(self):
+        ab._remember(["BEFORE"], "https://example.com/old")
+        mcp = self.fake('{"title":"Example","url":"https://example.com/","targetId":"INSIDE"}', '{"closed":["INSIDE"],"left":[]}')
+        async def flow():
+            async with ab.walk():
+                await ab.open_tab("https://example.com", browser="aside", keep=True)
+                raise ValueError("walk failed")
+        with self.assertRaises(ValueError):
+            self.call(flow())
+        self.assertIn('["INSIDE"]', mcp.calls[1]["code"])
+        self.assertEqual(list(ab._owned_tabs()), ["BEFORE"])
+
     def test_tabs_opened_inside_run_become_owned_and_marker_is_hidden(self):
         self.fake("hello\n__ASIDE_OPENED__:[\"T9\"]")
         out = self.call(ab.run("const p = await openTab('https://example.com'); console.log('hello')"))
@@ -568,6 +580,40 @@ class BoxBrowserTests(Base):
         self.assertEqual(sorted(after_keep), ["box-2", "box-3"])
         self.assertEqual(after_close, ["box-2"])
         self.assertEqual(mcp.calls, [])
+
+    def test_a_turn_end_close_from_another_process_stops_the_kernels_box_chrome(self):
+        """11-02: walk orgs read 41 GB of staging Convex in reruns of box tabs left open in kernels that outlived their turn."""
+        self.fake()
+        self.call(ab.open_tab(self.url))
+        runner = ab._box.proc
+        src = os.path.dirname(os.path.dirname(os.path.abspath(ab.__file__)))
+        closer = subprocess.run(
+            [sys.executable, "-B", "-c", "import asyncio, aside_browser; print(asyncio.run(aside_browser.close_own_tabs()))"],
+            capture_output=True, text=True, env={**os.environ, "PYTHONPATH": src},
+        )
+        self.assertEqual(closer.stdout.strip(), f"['box-runner:{runner.pid}']", closer.stderr)
+        # measured: on 2026-11-03 on us-metal02 a runner with a staging tab exited 0.07 to 0.08 s after its SIGTERM (3 runs).
+        runner.wait(timeout=10)
+        self.assertFalse(os.path.exists(ab._box_record_path()))
+        out = self.call(ab.run("return 1"))
+        self.assertIn("box Chrome had stopped", out)
+        self.assertEqual(self.call(ab.run("return 2")), "2")
+
+    def test_walk_stops_the_box_chrome_it_started_and_keeps_tabs_from_before(self):
+        self.fake()
+        async def started_inside():
+            async with ab.walk():
+                await ab.open_tab(self.url)
+                raise ValueError("walk failed")
+        with self.assertRaises(ValueError):
+            self.call(started_inside())
+        self.assertFalse(ab._box.running())
+        async def running_before():
+            await ab.open_tab(self.url)
+            async with ab.walk():
+                await ab.open_tab(self.url + "?inside", keep=True)
+            return [t["targetId"] for t in await ab.tabs("box")]
+        self.assertEqual(self.call(running_before()), ["box-1"])
 
     def test_the_box_browser_is_headful_on_its_own_display_and_leaves_nothing_when_killed(self):
         if not os.path.exists(os.path.expanduser("~/.local/opt/xvfb/usr/bin/Xvfb-localxkb")) and not shutil.which("Xvfb"):

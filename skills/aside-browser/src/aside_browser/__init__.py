@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import atexit
 import base64
+import contextlib
 import datetime
 import hashlib
 import json
@@ -36,6 +38,7 @@ import re
 import shutil
 import select
 import shlex
+import signal
 import socket
 import subprocess
 import sys
@@ -863,17 +866,52 @@ def _node() -> str | None:
     return found if found and os.path.exists(found) else None
 
 
+def _box_record_path(key: str | None = None) -> str:
+    """The file that names this session's box runner process, beside its Aside tab record, so a close from another process finds it."""
+    return _registry_path(key)[: -len(".json")] + ".box"
+
+
 class _BoxRunner:
-    """One `node box.mjs` per kernel, here or on _box_host() over ssh. It exits, and its tabs close, when the kernel's end of stdin closes."""
+    """One `node box.mjs` per kernel, here or on _box_host() over ssh. It exits, and its tabs close, when the kernel's end of stdin closes.
+
+    Its pid sits in _box_record_path(), because a finished job's kernel stays alive with its box tabs open, and the close that sieun-rules'
+    aside-tabs.ts starts at the turn end runs in another process (stop_box()).
+    """
 
     def __init__(self) -> None:
         self.proc: subprocess.Popen[str] | None = None
         self.log = ""
         self.lock = threading.Lock()
         self.next = 0
+        self.stopped = False
 
     def running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
+
+    def stop(self) -> None:
+        """End the runner, which closes its Chrome, every tab and the browser context with its cookies. The next call starts a new one."""
+        proc, self.proc = self.proc, None
+        if proc is None:
+            return
+        self.stopped = True
+        try:
+            if proc.stdin:
+                proc.stdin.close()
+            proc.wait(timeout=BOX_STOP_S)
+        except (OSError, subprocess.TimeoutExpired):
+            proc.kill()
+            proc.wait()
+        if proc.stdout:
+            proc.stdout.close()
+        _drop_box_record(proc.pid)
+
+    def _write_record(self, proc: subprocess.Popen[str]) -> None:
+        path = _box_record_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".aside-box-", dir=os.path.dirname(path))
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"owner": owner_key(), "host": socket.gethostname(), "pid": proc.pid, "start": _process_start(proc.pid)}, fh)
+        os.replace(tmp, path)
 
     def _command(self) -> tuple[list[str], str | None]:
         host = _box_host()
@@ -896,10 +934,13 @@ class _BoxRunner:
             )
         finally:
             os.close(fd)
+        self._write_record(self.proc)
         return self.proc
 
     def call(self, code: str, timeout: float = 120) -> str:
         with self.lock:
+            restarted = self.proc is not None and not self.running() or self.stopped
+            self.stopped = False
             proc = self.proc if self.running() else self._start()
             self.next += 1
             assert proc.stdin and proc.stdout
@@ -917,11 +958,35 @@ class _BoxRunner:
                 if reply.get("id") == self.next:
                     break
         if "error" in reply:
-            raise AsideError(str(reply["error"]))
-        return str(reply.get("out", ""))
+            raise AsideError((_BOX_GONE + "\n" if restarted and "openTab(" not in code else "") + str(reply["error"]))
+        out = str(reply.get("out", ""))
+        return _BOX_GONE + "\n" + out if restarted and "openTab(" not in code else out
+
+
+# measured: on 2026-11-03 on us-metal02 a runner with one staging.virev.ai tab exited 0.16 to 0.28 s after its stdin closed (3 runs),
+# so a runner still up after 5 s counts as hung and gets a kill.
+BOX_STOP_S = 5
+_BOX_GONE = (
+    "[aside-browser] This kernel's box Chrome had stopped, after a turn end, a walk(), close_own_tabs() or a crash, so this call ran in"
+    " a new one with no tab and no cookies. Open the page again with open_tab()."
+)
+
+
+def _drop_box_record(pid: int | None = None) -> None:
+    """Remove this session's box runner record, or only the record of runner `pid`."""
+    path = _box_record_path()
+    try:
+        if pid is not None:
+            with open(path, encoding="utf-8") as fh:
+                if json.load(fh).get("pid") != pid:
+                    return
+        os.remove(path)
+    except (OSError, ValueError):
+        pass
 
 
 _box = _BoxRunner()
+atexit.register(_box.stop)
 
 
 async def _box_call(code: str) -> str:
@@ -1381,23 +1446,94 @@ async def _close_open(ids: list[str], title: str, opened: dict[str, float]) -> t
     return [str(t) for t in found.get("closed") or []], left + _still_loading([str(t) for t in found.get("unlisted") or []], opened)
 
 
-async def close_own_tabs() -> list[str]:
-    """Close every still-open tab this agent session opened, Aside and box. Returns the closed targetIds."""
-    _drop_parked()
-    closed: list[str] = []
+async def _box_ids() -> list[str]:
+    found = _json_line(await _repl(_scoped("console.log(JSON.stringify({ids: tabs.map(t => t.targetId)}))"), "list box tabs", browser="box"))
+    return [str(t) for t in found.get("ids") or []]
+
+
+async def stop_box() -> list[str]:
+    """Stop this session's box Chrome, which closes every box tab and the browser context with its cookies. Returns the closed targetIds.
+
+    It works from any process of the session, such as the detached close that sieun-rules' aside-tabs.ts starts at every turn end, which
+    stops the runner the kernel started and returns ["box-runner:<pid>"]. On 11-02 walk orgs read 41 GB of staging Convex in reruns of
+    pages left open after walks, in box tabs of kernels that outlived their turn. The next box call starts a new Chrome.
+    """
     if _box.running():
-        found = _json_line(await _repl(
-            _scoped("const __ids = tabs.map(t => t.targetId); for (const t of [...tabs]) await closeTab(t); console.log(JSON.stringify({closed: __ids}))"),
-            "close own box tabs",
-            browser="box",
-        ))
-        closed += [str(t) for t in found.get("closed") or []]
+        try:
+            return await _box_ids()
+        except AsideError:
+            return []
+        finally:
+            await asyncio.to_thread(_box.stop)
+    return _stop_recorded_box()
+
+
+def _stop_recorded_box() -> list[str]:
+    """SIGTERM the box runner this session's record names, when it still runs on this host. On the Mac that is the ssh process, whose end
+    closes the remote runner's stdin."""
+    try:
+        with open(_box_record_path(), encoding="utf-8") as fh:
+            entry = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    pid = entry.get("pid")
+    stopped: list[str] = []
+    if entry.get("owner") == owner_key() and entry.get("host") == socket.gethostname() and isinstance(pid, int) and _alive(entry):
+        try:
+            os.kill(pid, signal.SIGTERM)
+            stopped.append(f"box-runner:{pid}")
+        except ProcessLookupError:
+            pass
+    _drop_box_record()
+    return stopped
+
+
+async def close_own_tabs() -> list[str]:
+    """Close every still-open tab this agent session opened, Aside and box, and stop its box Chrome (stop_box()). Returns the closed
+    targetIds."""
+    _drop_parked()
+    closed = await stop_box()
     owned = list(_owned_tabs())
     if owned:
         done, left = await _close_open(owned, "close own tabs", _opened.get(owner_key(), {}))
         closed += done
         _forget([t for t in owned if t not in left])
     return closed
+
+
+@contextlib.asynccontextmanager
+async def walk():
+    """`async with aside_browser.walk():` closes every tab opened inside the block when it ends, even on an error, Aside and box alike.
+
+    A box Chrome the block started stops with it, browser context and cookies included; one already running before keeps the tabs it had.
+    """
+    box_before = set(await _box_ids()) if _box.running() else None
+    aside_before = set(_owned_tabs())
+    try:
+        yield
+    finally:
+        try:
+            mine = [t for t in _owned_tabs() if t not in aside_before]
+            if mine:
+                _, left = await _close_open(mine, "close walk tabs", _opened.get(owner_key(), {}))
+                _forget([t for t in mine if t not in left])
+        finally:
+            if box_before is None:
+                await stop_box()
+            elif _box.running():
+                await _close_box_tabs_except(box_before)
+
+
+async def _close_box_tabs_except(keep: set[str]) -> None:
+    """Close the box tabs not in keep, and stop the runner when that close fails, so no tab of the walk stays open."""
+    try:
+        await _repl(
+            _scoped(f"const __keep = {json.dumps(sorted(keep))}; for (const t of tabs.filter(t => !__keep.includes(t.targetId))) await closeTab(t);"),
+            "close walk box tabs",
+            browser="box",
+        )
+    except AsideError:
+        await asyncio.to_thread(_box.stop)
 
 
 async def sweep_stale_tabs() -> list[str]:

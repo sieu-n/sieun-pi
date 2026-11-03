@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { closeJobTabs, jobSessionDir, onAgentEnd, registryPath } from "../src/aside-tabs.ts";
+import { boxRecordPath, closeTabs, jobSessionDir, onAgentEnd, registryPath } from "../src/aside-tabs.ts";
 
 let root: string;
 let ran: string;
@@ -53,9 +53,21 @@ test("a top-level chat keeps its tabs and a job with no tab record starts nothin
 	assert.equal(chatDir, null);
 	record(join(root, "agent", "session-artifacts", "root-2"));
 	onAgentEnd(session(chat, {}));
-	assert.equal(closeJobTabs(join(root, "agent", "session-artifacts", "root-3", "sub-none")), false);
+	assert.equal(closeTabs(join(root, "agent", "session-artifacts", "root-3", "sub-none"), "all"), false);
 	await new Promise((r) => setTimeout(r, 200));
 	assert.equal((await ranLines(1)).length, 1);
+});
+
+test("a top-level chat's turn end stops its box Chrome, which nobody looks at, since 11-02 walk tabs reran 41 GB of staging Convex", async () => {
+	const chat = join(root, "agent", "sessions", "root-4.jsonl");
+	const dir = join(root, "agent", "session-artifacts", "root-4");
+	writeFileSync(boxRecordPath(dir), JSON.stringify({ owner: dir, pid: 1 }));
+	assert.match(boxRecordPath(dir), /\/[0-9a-f]{16}\.box$/);
+	onAgentEnd(session(chat, {}));
+	const lines = await ranLines(2);
+	const [ranDir, , code] = lines[lines.length - 1].split("|");
+	assert.equal(ranDir, dir);
+	assert.match(code, /aside_browser\.stop_box\(\)/);
 });
 
 test("depth from the header counts as well as a sub-<n> folder", () => {

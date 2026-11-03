@@ -6,18 +6,25 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionContext } from "prime-agent";
 import { enabled, log, logPath } from "./log.ts";
-import { agentDir, sessionDirOf } from "./paths.ts";
+import { agentDir, contextSessionDir, sessionDirOf } from "./paths.ts";
 
 /*
- * Closes a job's own Aside tabs when its turn ends. aside_browser's sweep closes a tab only after the kernel that opened it exits, and a
+ * Closes a session's own tabs when its turn ends. aside_browser's sweep closes a tab only after the kernel that opened it exits, and a
  * finished job's kernel lives on while its session stays loaded, so on 10-29 15 of the 17 tabs in the owner's Aside (10.6 GB) were tabs of
- * jobs that had ended their turn. A top-level chat keeps its tabs, because it may open a page for the owner to look at.
- * The close runs aside_browser.close_own_tabs() in a detached kernel-venv python, so agent_end does not wait for the Mac.
+ * jobs that had ended their turn, and on 11-02 walk orgs read 41 GB of staging Convex in reruns of box tabs left open after walks.
+ * A job closes its Aside and box tabs. A top-level chat keeps its Aside tabs, because it may open a page for the owner to look at, and stops
+ * its box Chrome, which renders on a hidden display nobody looks at.
+ * The close runs aside_browser in a detached kernel-venv python, so agent_end does not wait for the Mac. That python stops the box runner
+ * the kernel started through the runner's pid record (stop_box()).
  */
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
 /** The aside_browser of this same release, because the kernel venv's editable install can point at an older one. */
 const SKILL_SRC = resolve(HERE, "../../../skills/aside-browser/src");
-const CLOSE = "import asyncio, aside_browser; print('[aside-tabs] closed', asyncio.run(aside_browser.close_own_tabs()), flush=True)";
+const CLOSE = {
+	all: "import asyncio, aside_browser; print('[aside-tabs] closed', asyncio.run(aside_browser.close_own_tabs()), flush=True)",
+	box: "import asyncio, aside_browser; print('[aside-tabs] stopped', asyncio.run(aside_browser.stop_box()), flush=True)",
+} as const;
+type Scope = keyof typeof CLOSE;
 
 type Ctx = Partial<Pick<ExtensionContext, "sessionManager">> | undefined;
 
@@ -37,13 +44,24 @@ export function registryPath(sessionDir: string, env: NodeJS.ProcessEnv = proces
 	return join(state, `${createHash("sha1").update(sessionDir).digest("hex").slice(0, 16)}.json`);
 }
 
-/** Starts the detached close when the session has a tab record. Returns whether it started one. */
-export function closeJobTabs(sessionDir: string, env: NodeJS.ProcessEnv = process.env): boolean {
-	if (!existsSync(registryPath(sessionDir, env)) && !existsSync(join(sessionDir, "aside-browser-tabs.json"))) return false;
+/** aside_browser's _box_record_path(): the pid record of the session's box runner, beside its tab record. */
+export function boxRecordPath(sessionDir: string, env: NodeJS.ProcessEnv = process.env): string {
+	return registryPath(sessionDir, env).replace(/\.json$/, ".box");
+}
+
+function hasRecord(sessionDir: string, scope: Scope, env: NodeJS.ProcessEnv): boolean {
+	if (existsSync(boxRecordPath(sessionDir, env))) return true;
+	return scope === "all" && (existsSync(registryPath(sessionDir, env)) || existsSync(join(sessionDir, "aside-browser-tabs.json")));
+}
+
+/** Starts the detached close when the session has a record for that scope: "all" closes Aside and box tabs, "box" stops only the box
+ * Chrome. Returns whether it started one. */
+export function closeTabs(sessionDir: string, scope: Scope, env: NodeJS.ProcessEnv = process.env): boolean {
+	if (!hasRecord(sessionDir, scope, env)) return false;
 	const python = env.GLOBAL_RULES_ASIDE_PYTHON || join(agentDir(env), "kernel-venv", "bin", "python");
 	const out = openSync(logPath(), "a");
 	try {
-		const child = spawn(python, ["-B", "-c", CLOSE], {
+		const child = spawn(python, ["-B", "-c", CLOSE[scope]], {
 			detached: true,
 			stdio: ["ignore", out, out],
 			env: { ...env, RLM_SESSION_DIR: sessionDir, PYTHONPATH: existsSync(SKILL_SRC) ? SKILL_SRC : "" },
@@ -60,8 +78,9 @@ export function closeJobTabs(sessionDir: string, env: NodeJS.ProcessEnv = proces
 export function onAgentEnd(ctx: Ctx): void {
 	try {
 		if (!enabled("GLOBAL_RULES_ASIDE_TABS")) return;
-		const dir = jobSessionDir(ctx);
-		if (dir && closeJobTabs(dir)) log("aside-tabs", `closing the tabs of ${dir}`);
+		const job = jobSessionDir(ctx);
+		const dir = job ?? contextSessionDir(ctx);
+		if (dir && closeTabs(dir, job ? "all" : "box")) log("aside-tabs", `closing the ${job ? "tabs" : "box Chrome"} of ${dir}`);
 	} catch (err) {
 		log("aside-tabs", `handler error, tabs stay open :: ${err instanceof Error ? err.stack : String(err)}`);
 	}

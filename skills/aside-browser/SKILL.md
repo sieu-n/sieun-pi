@@ -49,7 +49,10 @@ await aside_browser.snapshot(interactive=True)   # a11y tree with [ref=eN]; then
 await aside_browser.screenshot('/abs/path.png', full_page=False, annotated=False)  # copies the PNG out of the sandbox
 await aside_browser.close_tab()                  # current tab, only if this session opened it
 await aside_browser.close_tab(target_id)         # one owned tab; force=True closes any tab
-await aside_browser.close_own_tabs()             # every tab this session opened, Aside and box
+await aside_browser.close_own_tabs()             # every tab this session opened, Aside and box, and stops its box Chrome
+await aside_browser.stop_box()                   # stop this session's box Chrome: all box tabs, the context and its cookies
+async with aside_browser.walk():                 # closes every tab opened inside the block when it ends, even on an error
+    ...
 await aside_browser.owned_tabs()                 # open tabs this session opened
 await aside_browser.sweep_stale_tabs()           # close Aside tabs whose agent kernel has exited
 await aside_browser.agent("Find the unread Slack message from Alex")   # delegate to the Aside agent; returns session_id
@@ -101,7 +104,9 @@ The module records owned Aside tabs, with the kernel's pid, in one file per sess
 - `open_tab()` closes this session's earlier tabs in the same browser, so a job holds one tab at a time. Pass `keep=True` only when you need two pages open at once. On 2026-10-28 jobs held up to 4 Aside tabs each, and 36 tabs used 8.3 GB on the owner's Mac.
 - A job's Aside tab on a local app, such as `http://[::1]:5180`, closes after 120 s with no aside_browser call, and the next `run()`, `snapshot()` or `screenshot()` opens its last URL again and prints a line that says so. Clicks, scroll and typed text from before that line are gone, so redo them. A top-level chat's tabs and the tab the Aside window shows stay open.
 - Go to another page in your tab with `page.goto(url)` when you can, instead of opening a new one.
-- A job's Aside tabs close when its turn ends, because sieun-rules' `aside-tabs.ts` runs `close_own_tabs()` for any subagent session at `agent_end`. On 2026-10-29 the kernels of finished jobs stayed alive, and 15 of the 17 tabs in the owner's Aside belonged to jobs that had ended their turn.
+- A job's tabs close when its turn ends, Aside and box alike, because sieun-rules' `aside-tabs.ts` runs `close_own_tabs()` for any subagent session at `agent_end`. On 2026-10-29 the kernels of finished jobs stayed alive, and 15 of the 17 tabs in the owner's Aside belonged to jobs that had ended their turn.
+- A top-level chat's box Chrome stops at each turn end too, through `stop_box()`, because it renders on a hidden display that nobody looks at. On 11-02 walk orgs read 41 GB of staging Convex in reruns of pages left open after walks. The close runs in another process, so the box runner's pid sits in a `.box` record beside the tab record, and the next box call in the kernel starts a new Chrome with no tab and no cookies and says so.
+- Wrap a walk in `async with aside_browser.walk():` to close its tabs when the block ends, even on an error. A box Chrome the block started stops with it, cookies included.
 - A top-level chat keeps its tabs after its turn ends, so it can leave a page open for the owner, and it closes them with `close_own_tabs()` when he is done.
 - `open_tab()` and `tabs()` also close the Aside tabs of any agent kernel on this host that has exited.
 - Tabs the owner opened have no record, so no sweep or close touches them.
