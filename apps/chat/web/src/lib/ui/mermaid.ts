@@ -108,6 +108,10 @@ export function drawMermaid(source: string): Promise<string> {
 const observers = new WeakMap<Element, IntersectionObserver>();
 let viewportObserver: IntersectionObserver | undefined;
 const pending = new Map<Element, () => void>();
+/** Elements that wait for the next frame to find their scroll box, so a timeline that mounts many posts reads computed style once, not once per post. */
+const waiting = new Set<Element>();
+const watchedBy = new Map<Element, IntersectionObserver>();
+let frame = 0;
 
 function scrollBox(el: Element): Element | null {
   for (let node = el.parentElement; node; node = node.parentElement) {
@@ -117,36 +121,52 @@ function scrollBox(el: Element): Element | null {
   return null;
 }
 
+function observerFor(root: Element | null): IntersectionObserver {
+  const known = root ? observers.get(root) : viewportObserver;
+  if (known) return known;
+  const made = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const run = pending.get(entry.target);
+        pending.delete(entry.target);
+        watchedBy.delete(entry.target);
+        made.unobserve(entry.target);
+        run?.();
+      }
+    },
+    { root, rootMargin: "400px 0px" },
+  );
+  if (root) observers.set(root, made);
+  else viewportObserver = made;
+  return made;
+}
+
+function watchWaiting() {
+  frame = 0;
+  const els = [...waiting];
+  waiting.clear();
+  for (const el of els) {
+    if (!pending.has(el)) continue;
+    const observer = observerFor(scrollBox(el));
+    watchedBy.set(el, observer);
+    observer.observe(el);
+  }
+}
+
 /** Calls `draw` once when `el` is near the view of its scroll box; the returned function cancels it. */
 export function whenVisible(el: Element, draw: () => void): () => void {
   if (typeof IntersectionObserver === "undefined") {
     draw();
     return () => {};
   }
-  const root = scrollBox(el);
-  let observer = root ? observers.get(root) : viewportObserver;
-  if (!observer) {
-    const made = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          const run = pending.get(entry.target);
-          pending.delete(entry.target);
-          made.unobserve(entry.target);
-          run?.();
-        }
-      },
-      { root, rootMargin: "400px 0px" },
-    );
-    if (root) observers.set(root, made);
-    else viewportObserver = made;
-    observer = made;
-  }
   pending.set(el, draw);
-  observer.observe(el);
-  const owner = observer;
+  waiting.add(el);
+  if (!frame) frame = requestAnimationFrame(watchWaiting);
   return () => {
     pending.delete(el);
-    owner.unobserve(el);
+    waiting.delete(el);
+    watchedBy.get(el)?.unobserve(el);
+    watchedBy.delete(el);
   };
 }

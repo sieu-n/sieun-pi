@@ -55,8 +55,15 @@
   /** A post the owner deleted goes, as in Slack, except a channel root that keeps its replies, and the root atop a thread pane. */
   const shown = $derived(items.filter((item, index) => !(item.kind === "message" && item.deleted && !item.thread && !(replyCount !== null && index === 0))));
   const rows = $derived(layoutRows(shown, replyCount ? shown[0]?.id : undefined));
+  /**
+   * An open draws its newest rows first and the history above them a task later, so the bottom of the timeline paints before every older
+   * row is built. When the newest rows do not fill the view, the rest draw in the same frame, so the view never shows a gap.
+   */
+  const FIRST_ROWS = 16;
+  let full = $state(false);
+  const drawn = $derived(full ? rows : rows.slice(-FIRST_ROWS));
   const slack = $derived(layout === "slack");
-  const intro = $derived(slack && beginning && !hasOlder && !loadingOlder ? beginning : null);
+  const intro = $derived(slack && full && beginning && !hasOlder && !loadingOlder ? beginning : null);
   const introName = $derived(intro ? (intro.kind === "solo" ? intro.name : `#${intro.name}`) : "");
   const firstPost = $derived(rows.find((row) => row.kind === "post")?.key ?? null);
   const waitingId = $derived(queue ? waitingSend(items) : null);
@@ -72,14 +79,37 @@
     return last ? `${items.length}:${last.id}:${last.kind === "system" ? "" : last.text.length}:${last.kind === "turn" ? last.steps.length : 0}` : "";
   });
 
+  /** A new row scrolls in the frame's own layout, which the rows' ResizeObserver also reads, rather than forcing a layout of every row in the render task. */
+  let bottomFrame = 0;
   $effect(() => {
     void lastKey;
-    if (!scroller || loading || !stick) return;
-    void tick().then(() => toBottom());
+    if (!scroller || loading || !stick || bottomFrame) return;
+    bottomFrame = requestAnimationFrame(() => {
+      bottomFrame = 0;
+      if (stick) toBottom();
+    });
+  });
+  $effect(() => () => cancelAnimationFrame(bottomFrame));
+
+  $effect(() => {
+    if (full || loading || !scroller) return;
+    if (rows.length <= FIRST_ROWS) {
+      full = true;
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const frame = requestAnimationFrame(() => {
+      if (!scroller || scroller.scrollHeight <= scroller.clientHeight) full = true;
+      else timer = setTimeout(() => void drawAll());
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+    };
   });
 
   $effect(() => {
-    if (!scroller || loading || !focus || focused === focus) return;
+    if (!scroller || loading || !full || !focus || focused === focus) return;
     focused = focus;
     const id = focus;
     void tick().then(() => {
@@ -111,6 +141,14 @@
     onbottom?.();
   }
 
+  /** Draws the rows above the first ones and keeps the view where it was, before a scroll event can read the new height as a scroll up. */
+  async function drawAll() {
+    const before = scroller?.scrollHeight ?? 0;
+    full = true;
+    await tick();
+    if (scroller) scroller.scrollTop += scroller.scrollHeight - before;
+  }
+
   async function older() {
     if (!scroller || loadingOlder || !hasOlder) return;
     const before = scroller.scrollHeight;
@@ -126,7 +164,7 @@
     stick = distance < 80;
     showJump = distance > 400;
     if (stick && !wasStuck) onbottom?.();
-    if (scroller.scrollTop < 240 && hasOlder && !loadingOlder) void older();
+    if (scroller.scrollTop < 240 && full && hasOlder && !loadingOlder) void older();
   }
 
   function jump() {
@@ -152,9 +190,9 @@
       </div>
     {:else}
       <div class="edge">
-        {#if loadingOlder}
+        {#if full && loadingOlder}
           <LoadingText text="Loading older…" delay={300} />
-        {:else if hasOlder}
+        {:else if full && hasOlder}
           <Button variant="ghost" size="sm" onclick={older}>Load older messages</Button>
         {/if}
       </div>
@@ -166,7 +204,7 @@
         </div>
       {/if}
       <ol class="rows" bind:this={rowsEl}>
-        {#each rows as row (row.key)}
+        {#each drawn as row (row.key)}
           {#if row.kind === "day"}
             {#if !(slack && compact)}<li class="day"><DayDivider at={row.at} variant={slack ? "pill" : "calendar"} /></li>{/if}
           {:else if row.kind === "system"}

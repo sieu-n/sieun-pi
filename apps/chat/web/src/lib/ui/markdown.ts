@@ -614,8 +614,15 @@ const PURIFY = {
   ADD_TAGS: ["button", "details", "summary"],
 };
 
+/** One DOMPurify set up once, since `sanitize(html, config)` parses the config again on every post. */
+let purifier: ReturnType<typeof DOMPurify> | undefined;
 function sanitize(html: string): string {
-  return typeof window === "undefined" ? html : DOMPurify.sanitize(html, PURIFY);
+  if (typeof window === "undefined") return html;
+  if (!purifier) {
+    purifier = DOMPurify(window);
+    purifier.setConfig(PURIFY);
+  }
+  return purifier.sanitize(html);
 }
 
 const cache = new Map<string, string>();

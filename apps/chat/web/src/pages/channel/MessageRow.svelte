@@ -114,6 +114,9 @@
   let reactions = $state<Reactions>();
   let reactButton = $state<HTMLButtonElement>();
   let picking = $state(false);
+  /** The hover bar and an empty reactions bar mount on the row's first hover or focus, so a timeline does not build them for every row it draws. */
+  let active = $state(false);
+  const activate = () => (active = true);
 
   function copyText() {
     void navigator.clipboard.writeText(item.text).then(() => {
@@ -159,7 +162,7 @@
 {/snippet}
 
 {#snippet tail()}
-  {#if reactable && room}<Reactions bind:this={reactions} bind:picking item={reactable} {room} />{/if}
+  {#if reactable && room && (active || reactable.reactions?.length)}<Reactions bind:this={reactions} bind:picking item={reactable} {room} />{/if}
   {#if offline}
     <p class="send-state queued" role="status" data-send-state="queued" title="It goes when the box is back.">{offline}</p>
   {:else if sendState === "failed"}
@@ -218,7 +221,7 @@
 {/snippet}
 
 {#if slack}
-  <li bind:this={rowEl} class="row slack" class:own class:first class:pending class:picking data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined}>
+  <li bind:this={rowEl} class="row slack" class:own class:first class:pending class:picking data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate}>
     <div class="gutter">
       {#if first}
         <Avatar name={avatarOf(item.author).name} kind={avatarKind(item.author)} seed={item.author.id} size={36} status={statusOf?.(item.author.id) ?? null} />
@@ -266,10 +269,10 @@
       {@render images()}
       {@render tail()}
     </div>
-    {@render actionBar()}
+    {#if active}{@render actionBar()}{/if}
   </li>
 {:else}
-  <li bind:this={rowEl} class="row" class:own class:first class:pending class:picking data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined}>
+  <li bind:this={rowEl} class="row" class:own class:first class:pending class:picking data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate}>
     {#if first}
       <div class="byline">
         {#if !own && item.author.kind !== "owner"}<Icon name="robot" size={13} />{/if}
@@ -313,7 +316,7 @@
           </Bubble>
         {/if}
         {@render images()}
-        {@render actionBar()}
+        {#if active}{@render actionBar()}{/if}
       </div>
     </div>
     {@render tail()}
@@ -476,6 +479,12 @@
   .actions:focus-within {
     opacity: 1;
     pointer-events: auto;
+  }
+  /* The bar mounts on the first hover, so it fades in from there as it does on every later hover. */
+  @starting-style {
+    .row:hover .actions {
+      opacity: 0;
+    }
   }
   .quick {
     display: grid;
