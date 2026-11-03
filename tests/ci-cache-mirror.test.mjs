@@ -1,16 +1,34 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { createServer, connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-const MIRROR = path.join(path.dirname(fileURLToPath(import.meta.url)), '../deploy/mac/ci-cache-mirror.mjs');
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const MIRROR = path.join(HERE, '../deploy/mac/ci-cache-mirror.mjs');
+const RSYNCD_CONF = path.join(HERE, '../deploy/linux/ci-cache-rsyncd.conf');
 
-function once(source, dir) {
-	execFileSync(process.execPath, [MIRROR, '--once'], { env: { ...process.env, CI_CACHE_SOURCE: source, CI_CACHE_DIR: dir }, stdio: 'pipe' });
+function once(source, dir, home = path.dirname(dir)) {
+	execFileSync(process.execPath, [MIRROR, '--once'], { env: { ...process.env, HOME: home, CI_CACHE_SOURCE: source, CI_CACHE_DIR: dir }, stdio: 'pipe' });
 }
+
+const freePort = () =>
+	new Promise((resolve) => {
+		const server = createServer().listen(0, '127.0.0.1', () => {
+			const { port } = server.address();
+			server.close(() => resolve(port));
+		});
+	});
+
+const accepts = (port) =>
+	new Promise((resolve) => {
+		const socket = connect(port, '127.0.0.1');
+		socket.once('connect', () => resolve(socket.end() && true));
+		socket.once('error', () => resolve(false));
+	});
 
 test('ci-cache-mirror copies the box cache with rsync, follows changes and drops stamps the box dropped', () => {
 	const root = mkdtempSync(path.join(tmpdir(), 'ci-mirror-'));
@@ -46,6 +64,37 @@ test('ci-cache-mirror copies the box cache with rsync, follows changes and drops
 		assert.deepEqual(readdirSync(path.join(box, 'ci-wants')), ['42']);
 		assert.deepEqual(readdirSync(path.join(mac, 'ci-wants')), []);
 	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test('ci-cache-mirror pulls through the box rsync daemon config with no ssh, hands wants to its ci-wants module and mirrors the chat host bridge file (11-03 session scopes)', async () => {
+	const root = mkdtempSync(path.join(tmpdir(), 'ci-mirror-d-'));
+	const boxHome = path.join(root, 'box');
+	const box = path.join(boxHome, '.cache/virev');
+	const macHome = path.join(root, 'mac');
+	const mac = path.join(macHome, '.cache/virev');
+	mkdirSync(path.join(box, 'ci-runs.d'), { recursive: true });
+	mkdirSync(path.join(box, 'ci-wants'), { recursive: true });
+	mkdirSync(path.join(mac, 'ci-wants'), { recursive: true });
+	mkdirSync(path.join(macHome, '.config/sieun-pi'), { recursive: true });
+	writeFileSync(path.join(macHome, '.config/sieun-pi/hosts.json'), JSON.stringify({ hosts: [{ name: 'us-metal02', address: '127.0.0.1', roles: { chat: {} } }] }));
+	writeFileSync(path.join(box, 'ci-runs.json'), '{"runs":[7]}');
+	writeFileSync(path.join(box, 'alert-bridge-status.json'), '{"ts":"2026-11-03T03:25:07.811Z"}');
+	writeFileSync(path.join(box, 'ci-runs.d', '7.stamp'), 's');
+	writeFileSync(path.join(mac, 'ci-wants', '99'), '');
+	const port = await freePort();
+	const rsyncd = spawn('rsync', ['--daemon', '--no-detach', `--config=${RSYNCD_CONF}`, '--address=127.0.0.1', `--port=${port}`], { env: { ...process.env, HOME: boxHome }, stdio: 'ignore' });
+	try {
+		while (!(await accepts(port))) await new Promise((resolve) => setImmediate(resolve));
+		once(`rsync://127.0.0.1:${port}`, mac, macHome);
+		assert.equal(readFileSync(path.join(mac, 'ci-runs.json'), 'utf8'), '{"runs":[7]}');
+		assert.equal(readFileSync(path.join(mac, 'alert-bridge-status.json'), 'utf8'), '{"ts":"2026-11-03T03:25:07.811Z"}');
+		assert.deepEqual(readdirSync(path.join(mac, 'ci-runs.d')), ['7.stamp']);
+		assert.deepEqual(readdirSync(path.join(box, 'ci-wants')), ['99']);
+		assert.deepEqual(readdirSync(path.join(mac, 'ci-wants')), []);
+	} finally {
+		rsyncd.kill();
 		rmSync(root, { recursive: true, force: true });
 	}
 });

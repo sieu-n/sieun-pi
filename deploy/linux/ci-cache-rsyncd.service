@@ -1,0 +1,12 @@
+[Unit]
+Description=ci-cache-rsyncd: an rsync daemon on 127.0.0.1:8873 serving ~/.cache/virev to the Mac's ci-cache-mirror, so a 15 s pull opens no ssh login session (deploy/linux/ci-cache-rsyncd.conf)
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/mkdir -p %h/.cache/virev/ci-wants
+ExecStart=/usr/bin/rsync --daemon --no-detach --config=%h/.config/ci-cache-rsyncd.conf --address=127.0.0.1 --port=8873
+ExecStartPost=-/usr/bin/tailscale serve --bg --tcp 8873 tcp://127.0.0.1:8873
+Restart=always
+
+[Install]
+WantedBy=default.target

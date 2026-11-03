@@ -4,14 +4,18 @@
 // sieu-n token's 5,000/h GitHub quota is spent once. Mac readers (ci-run-status, the gh shim, gh run watch, ci-monitor,
 // commit.mjs --probed, the repo rules duty, login-health) read the local files as before and need no change.
 //   node ci-cache-mirror.mjs [host name in ~/.config/sieun-pi/hosts.json, default us-metal02] [--once]
-// Every 15 s, over one shared ssh connection (ControlMaster):
-//   1. hands the Mac's ci-wants (runs a reader asked for and did not find) to the box;
+// Every 15 s, through the box's rsync daemon (deploy/linux/ci-cache-rsyncd.service, port 8873 on the tailnet):
+//   1. hands the Mac's ci-wants (runs a reader asked for and did not find) to the box's ci-wants module;
 //   2. runs one `rsync -az` of the mirrored box files into ~/.cache/virev/.mirror, which keeps the last copy as rsync's
 //      delta basis. The poller rewrites the 32 MB ci-runs.json every cycle, and a whole copy through the relay took
 //      longer than the 15 s cycle at the 360 KB/s one flow gets from Korea, so the old mirror streamed it without pause;
 //      the rsync delta of one cycle is about 140 KB;
 //   3. clones the changed files into place in the old order: the whole files, the logs, the ci-runs.d stamps, and the
 //      heartbeat last. rsync reads ci-runs.d before ci-runs.json on the box, so a stamp never runs ahead of ci-runs.json.
+// It speaks to the daemon and never runs ssh, because each Tailscale SSH command opens a logind session and a
+// session-*.scope on the box: the ssh pulls made 240 of its 427 session scopes from 02:23Z to 03:23Z on 11-03.
+// When the box holds hosts.json roles.chat, it also mirrors the alert bridge's alert-bridge-status.json for the Mac's
+// mac_alert_bridge_* series (auto-sns-agent ops/dev-boxes/mac-pressure-textfile.sh).
 // Each file is cloned to a temp name, given the box file's mtime and renamed into place, so readers never see half a
 // file. When the box or the tailnet is down the copy stops moving, and readers report a late cache as they do when the
 // poller is late.
@@ -24,25 +28,30 @@ const DIR = process.env.CI_CACHE_DIR || path.join(homedir(), '.cache/virev');
 const STAGE = path.join(DIR, '.mirror');
 const CONFIG = path.join(homedir(), '.config/sieun-pi');
 const INTERVAL_MS = 15_000;
-const WHOLE = ['ci-runs.json', 'infra-rerun-state.json', 'release-runner-state.json'];
 const APPEND = ['infra-rerun.log', 'release-runner-toggle.log', 'quota-low.jsonl', 'ci-cache.log'];
 const HEARTBEAT = 'ci-cache.heartbeat.json';
 const STAMPS = 'ci-runs.d';
 const RSYNC = ['/opt/homebrew/bin/rsync', '/usr/local/bin/rsync'].find((p) => existsSync(p)) ?? 'rsync';
-const SSH = ['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=30', '-o', 'ControlMaster=auto', '-o', `ControlPath=${homedir()}/.ssh/cm-ci-cache-mirror-%C`, '-o', 'ControlPersist=10m'];
+const RSYNCD_PORT = 8873;
 
 const args = process.argv.slice(2);
 const once = args.includes('--once');
 const hostName = args.find((a) => !a.startsWith('--')) ?? 'us-metal02';
-// CI_CACHE_SOURCE (a local folder or user@host:folder) replaces the hosts.json lookup, for tests.
-const source = process.env.CI_CACHE_SOURCE || (() => {
-	const host = JSON.parse(readFileSync(path.join(CONFIG, 'hosts.json'), 'utf8')).hosts.find((h) => h.name === hostName);
+const readHost = () => {
+	const file = path.join(CONFIG, 'hosts.json');
+	if (!existsSync(file)) return null;
+	return JSON.parse(readFileSync(file, 'utf8')).hosts.find((h) => h.name === hostName) ?? null;
+};
+const host = readHost();
+// CI_CACHE_SOURCE (a local folder or an rsync://host:port daemon) replaces the hosts.json address, for tests.
+const source = (process.env.CI_CACHE_SOURCE || (() => {
 	if (!host) throw new Error(`no host ${hostName} in ${CONFIG}/hosts.json`);
-	return `${host.ssh}:${process.env.CI_CACHE_REMOTE_DIR || '.cache/virev'}`;
-})();
-const sep = source.indexOf(':');
-const remoteHost = sep > 0 ? source.slice(0, sep) : null;
-const remoteDir = sep > 0 ? source.slice(sep + 1) : source;
+	return `rsync://${host.address}:${RSYNCD_PORT}`;
+})()).replace(/\/$/, '');
+const daemon = source.startsWith('rsync://');
+const pullFrom = daemon ? `${source}/virev/` : `${source}/`;
+const wantsTo = `${source}/ci-wants/`;
+const WHOLE = ['ci-runs.json', 'infra-rerun-state.json', 'release-runner-state.json', ...(host?.roles?.chat ? ['alert-bridge-status.json'] : [])];
 
 const run = (cmd, argv) =>
 	new Promise((resolve, reject) =>
@@ -81,16 +90,14 @@ async function handWants() {
 	const dir = path.join(DIR, 'ci-wants');
 	const wants = existsSync(dir) ? readdirSync(dir).filter((id) => /^\d+$/.test(id)) : [];
 	if (!wants.length) return;
-	const touch = `mkdir -p ${remoteDir}/ci-wants && cd ${remoteDir}/ci-wants && touch ${wants.join(' ')}`;
-	if (remoteHost) await run(SSH[0], [...SSH.slice(1), '-n', remoteHost, touch]);
-	else await run('sh', ['-c', touch]);
+	await run(RSYNC, ['-a', '--timeout=60', ...wants.map((id) => path.join(dir, id)), wantsTo]);
 	for (const id of wants) rmSync(path.join(dir, id), { force: true });
 	console.log(`${new Date().toISOString()} asked the box poller for ${wants.join(' ')}`);
 }
 
 async function pull() {
 	const filters = [`/${STAMPS}/`, `/${STAMPS}/*`, ...[...WHOLE, ...APPEND, HEARTBEAT].map((f) => `/${f}`)].flatMap((f) => ['--include', f]);
-	await run(RSYNC, ['-az', '--delete', '--timeout=60', ...(remoteHost ? ['-e', SSH.join(' ')] : []), ...filters, '--exclude', '*', `${source.replace(/\/?$/, '/')}`, `${STAGE}/`]);
+	await run(RSYNC, ['-az', '--delete', '--timeout=60', ...filters, '--exclude', '*', pullFrom, `${STAGE}/`]);
 }
 
 async function cycle() {
