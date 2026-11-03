@@ -302,6 +302,29 @@ open(c + "/src/b.ts", "w").write("b")
   }
 });
 
+test("a finished Convex save check result is printed while a later save's runner of the session is still live", () => {
+  reset();
+  const script = join(checkout, "scripts/repo/agent/convex-save-check.mjs");
+  mkdirSync(dirname(script), { recursive: true });
+  writeFileSync(script, `import { existsSync, readFileSync, rmSync } from "node:fs";
+const [cmd, , root, , session] = process.argv.slice(2);
+const dir = root + "/.cache/convex-save-check/" + session;
+if (cmd === "take" && existsSync(dir + "/result.json")) { console.log("convex save check: broken in " + readFileSync(dir + "/result.json", "utf8").trim()); rmSync(dir + "/result.json"); }
+`);
+  // 11-03: session 01a19e2d's red sat in result.json from 05:03Z for 44 min, because a later commit's runner held running/ and take_local returned early.
+  const folder = join(checkout, ".cache/convex-save-check", session);
+  mkdirSync(join(folder, "running"), { recursive: true });
+  writeFileSync(join(folder, "running", "pid"), `${process.pid}\n`);
+  writeFileSync(join(folder, "result.json"), "convex/a.ts\n");
+  try {
+    assert.equal(kernel("x = 1\n", { GLOBAL_RULES_AUTO_SNS_AGENT: checkout }).stderr, "convex save check: broken in convex/a.ts\n");
+    assert.equal(existsSync(join(folder, "running", "pid")), true);
+    assert.equal(kernel("x = 2\n", { GLOBAL_RULES_AUTO_SNS_AGENT: checkout }).stderr, "");
+  } finally {
+    rmSync(join(checkout, "scripts"), { recursive: true, force: true });
+  }
+});
+
 test("a convex/ write over ssh that the box queued a check for is asked for its result at each later cell until the box has it", () => {
   reset();
   const bin = join(root, "fake-ssh-take-bin");

@@ -472,7 +472,9 @@ STILL_RUNNING = 3
 
 def take_local(root: str) -> None:
     folder = check_dir(root)
-    if runner_live(folder) or not (os.path.exists(os.path.join(folder, "result.json")) or os.path.exists(os.path.join(folder, "queue"))):
+    # A finished result is claimed even while a later save's runner is live, as auto-sns-agent 03891509aa's take does: on 11-03 session
+    # 01a19e2d's red sat in result.json from 05:03Z for 44 min while the runner of its later commits held running/.
+    if not os.path.exists(os.path.join(folder, "result.json")) and (runner_live(folder) or not os.path.exists(os.path.join(folder, "queue"))):
         return
     run = subprocess.run([shutil.which("node") or "node", os.path.join(root, SAVE_CHECK), "take", "--root", root, "--session", SESSION],
                          capture_output=True, text=True, stdin=subprocess.DEVNULL, check=False)
