@@ -39,6 +39,7 @@ async function fixture(options: { state?: unknown; failStarts?: boolean; jobLive
   const retried: string[] = [];
   const freeAt = new Map<string, number>();
   const queue = new Map<string, QueuePlace>();
+  const leads: string[][] = [];
   const bridge = new AlertBridge({ file, now: () => now, log: () => {}, alerts: async () => parseAlerts(list), owners: async () => OWNERS,
     hasBoard: async session => session !== METAL,
     deliver: async (session, text) => { sent.push({ session, text }); },
@@ -52,8 +53,9 @@ async function fixture(options: { state?: unknown; failStarts?: boolean; jobLive
     jobWorking: async job => working.has(job.id),
     jobTurn: async (job, since) => turns.get(job.id) ?? { ran: true, at: since },
     retryJob: job => { retried.push(job.id); }, poolFreeAt: async tree => freeAt.get(tree) ?? null, turnQueued: async session => queue.get(session) ?? null,
+    lead: async jobs => { leads.push([...jobs]); },
     ...options.jobLive ? { jobLive: options.jobLive } : {} });
-  return { file, bridge, started, sent, working, turns, retried, freeAt, queue, set: (alerts: unknown[]) => { list = alerts; }, at: (ms: number) => { now = ms; },
+  return { file, bridge, started, sent, working, turns, retried, freeAt, queue, leads, set: (alerts: unknown[]) => { list = alerts; }, at: (ms: number) => { now = ms; },
     state: async () => parseState(JSON.parse(await readFile(file, "utf8"))) };
 }
 
@@ -74,6 +76,17 @@ test("a firing alert starts one triage job of its chat, files no step, and count
   f.set([]); f.at(NOW + 150_000);
   await f.bridge.tick();
   assert.equal(firingRules(await f.state(), CI).length, 0);
+});
+
+// 10-27: "alert triage CI and RepoOps 23:43" (01a17dd0) queued at 14:43:38Z behind 73 runs and had its first turn 524 min later.
+test("a triage job leads pi-pool's turn queue while its rule fires and leaves the lead list once the rule resolves", async () => {
+  const f = await fixture();
+  f.set([ciAlert()]);
+  for (let tick = 0; tick < 3; tick++) { f.at(NOW + tick * 30_000); await f.bridge.tick(); }
+  assert.deepEqual(f.leads, [[], ["job-1"]], "the list is written once at start and once when the job takes the fire, not every poll");
+  f.set([]); f.at(NOW + 150_000);
+  await f.bridge.tick();
+  assert.deepEqual(f.leads.at(-1), [], "a resolved rule whose job had its turn no longer leads");
 });
 
 test("a second fire of the same rule uid goes to its live job by message and starts no second job, and a fire after the job ended starts a new job that reads the old one", async () => {

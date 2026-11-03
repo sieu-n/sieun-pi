@@ -187,6 +187,15 @@ export function parseState(value: unknown): BridgeState {
 const isResolved = (rule: Tracked): boolean => rule.resolvedAt !== undefined;
 const firingSets = (rule: Tracked): number => Object.values(rule.instances).filter(instance => instance.resolvedAt === undefined).length;
 
+/**
+ * The Prime triage jobs that hold a fire someone must still work: a rule that fires, or one whose fire resolved before its job had a turn
+ * (`waiting`). The chat service puts them on pi-pool's lead list beside the chat heads, so their queued runs start before other job runs. A
+ * pi-host thread is its own triage job (its job id is its chat) and leads through pi-host. On 10-27 "alert triage CI and RepoOps 23:43"
+ * (01a17dd0) queued at 14:43:38Z behind 73 runs and had its first turn 524 min later, 147 of them in the turn queue (pi-pool.log).
+ */
+export const leadJobs = (state: BridgeState, now: number): string[] => [...new Set(Object.values(state.rules).flatMap(rule =>
+  rule.job && rule.job.id !== rule.chat && (!isResolved(rule) || waiting(state, rule, now)) ? [rule.job.id] : []))].sort();
+
 /** The rules of `chat` that fire now: the count its duty reads. */
 export const firingRules = (state: BridgeState, chat: string): Tracked[] => Object.values(state.rules).filter(rule => rule.chat === chat && !isResolved(rule));
 
@@ -478,6 +487,8 @@ export interface AlertBridgeDeps {
   jobLive?: (session: string, now: number) => Promise<string | null>;
   /** The session's place in pi-pool's turn queue (`pi-pool queue --json`), null when its run does not wait there. */
   turnQueued?: (session: string) => Promise<QueuePlace | null>;
+  /** Puts these triage jobs (`leadJobs`) on the turn queue's lead list in place of the ones it last put there. */
+  lead?: (jobs: readonly string[]) => Promise<void>;
   now?: () => number;
   log: (line: string) => void;
 }
@@ -512,6 +523,8 @@ export class AlertBridge {
   private readonly handing = new Map<string, number>();
   /** Each chat's last failed hand-off, until one succeeds. */
   private readonly startErrors = new Map<string, string>();
+  /** The triage jobs the lead list last took, one per line; null before the first write. */
+  private leading: string | null = null;
   constructor(private readonly deps: AlertBridgeDeps) { this.now = deps.now ?? Date.now; }
 
   /** One poll and then one dispatch, as one timer tick did before they ran apart. */
@@ -814,10 +827,23 @@ export class AlertBridge {
       const before = await this.read();
       const after = await change(before);
       if (JSON.stringify(after) !== JSON.stringify(before)) await this.write(after);
+      await this.leadTo(after);
       return after;
     });
     this.queue = next.catch(() => undefined);
     return next;
+  }
+
+  /** Hands the lead list the triage jobs of `state` when they differ from the last list it took; a failed write goes again next update. */
+  private async leadTo(state: BridgeState): Promise<void> {
+    if (!this.deps.lead) return;
+    const jobs = leadJobs(state, this.now());
+    const key = jobs.join("\n");
+    if (key === this.leading) return;
+    try {
+      await this.deps.lead(jobs);
+      this.leading = key;
+    } catch (error) { this.deps.log(`alerts: turn queue lead list: ${message(error)}; tried again next update`); }
   }
 
   private async read(): Promise<BridgeState> {

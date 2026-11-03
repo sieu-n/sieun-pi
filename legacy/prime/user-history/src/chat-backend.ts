@@ -262,6 +262,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // through their relays.
   const lead = ownChatsOnly ? null : leadWriter({ hostOf: id => catalog.hostOf(id), remotes: () => catalog.remoteHosts().map(({ host }) => host), local: leadSessions, log: dutyLog,
     current: host => leadNow(host, poolQueueNow), store: leadStore(join(dataDir, "lead-written.json")) });
+  // The alert bridge's triage jobs that hold a fire lead beside the chat heads (`leadJobs` in src/alert-bridge.ts), on the box each runs on.
+  let alertLead: readonly string[] = [];
+  const writeLead = (ids: readonly string[], every?: boolean) => lead!([...ids, ...alertLead], every);
   // The server's notices to chats wait on disk until the daemon takes them (src/notice-outbox.ts); a scratch serve keeps its own folder.
   const notices = noticeOutbox(join(dataDir, quiet ? "notice-outbox-scratch" : "notice-outbox"), threads, dutyLog, {
     held: async entry => { const host = catalog.hostOf(entry.threadId); return !!host && !(await reach.reach(host)).online; } });
@@ -299,7 +302,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       dutyJobs: async id => (await duties.store.runs(id)).flatMap(run => run.job ? [run.job.id] : []),
       dutyRuns: id => duties.store.runs(id), prs: replay ? async () => new Map() : prStates(),
       archived: new IdIndex(join(dataDir, "archived-chats.json"), "Archived chat index"), cleanRoomChats,
-      ...(lead ? { lead: ids => lead(ids, true) } : { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") }), ...quiet ? { tickMs: 0 } : {} },
+      ...(lead ? { lead: ids => writeLead(ids, true) } : { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") }), ...quiet ? { tickMs: 0 } : {} },
     line => process.stderr.write(line + "\n"));
   chats.briefChanged = () => { void catalog.notify().catch(() => {}); };
   catalog.onCut(cut => {
@@ -409,7 +412,8 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       return file ? readTurnSince(file, since) : { ran: false };
     },
     retryJob: () => chats.interruptedSoon(0), poolFreeAt: (tree, provider) => treeFreeAt(tree, provider),
-    turnQueued: async session => (await queued()).queued.get(session) ?? null, jobLive: (session, now) => jobLive(livePaths(dataDir), session, now),
+    turnQueued: async session => (await queued()).queued.get(session) ?? null,
+    ...lead ? { lead: async (jobs: readonly string[]) => { alertLead = jobs; await writeLead([...await chats.ids()]); } } : {}, jobLive: (session, now) => jobLive(livePaths(dataDir), session, now),
     log: dutyLog, ...agentMessage });
   const stopBridgeWatch = !alertPoll ? () => {} : startBridgeWatch({ health: alertPoll.health, statusFile, configFile: grafanaConfig,
     alerting: alerting => alertPoll.alerting(alerting), log: dutyLog, ...agentMessage });
@@ -489,7 +493,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // A row that reads parked on its provider quota between sweeps is planned for at once, so the session stops seconds after its park.
   const parkSeen = new Map<string, string>();
   // A chat that moves box leaves or joins this box's rows, so each row change splits the chat list again and writes the two boxes it changed.
-  const stopLeadWatch = !lead ? () => {} : catalog.onDaemonRows(() => { void chats.ids().then(ids => lead([...ids])).catch(() => {}); });
+  const stopLeadWatch = !lead ? () => {} : catalog.onDaemonRows(() => { void chats.ids().then(ids => writeLead([...ids])).catch(() => {}); });
   const stopQuietWatch = !unloader ? () => {} : catalog.onDaemonRows(() => { void unloader_.quieted(parkChanges(parkSeen, catalog.daemonRows())); });
   // /tmp is a tmpfs on Linux, so what nobody holds or names there is RAM or swap that no work uses (src/tmp-sweep.ts).
   const stopTmpSweep = ownChatsOnly || process.platform !== "linux" ? () => {} : startTmpSweep({ rows: () => catalog.daemonRows(),
