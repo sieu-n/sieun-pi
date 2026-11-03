@@ -169,6 +169,7 @@ class Global {
       switch (event.type) {
         case "hello":
           this.me = event.me;
+          document.body.dataset.wiki = event.me.wikiBase;
           this.sidebar = event.sidebar;
           this.agents = event.agents;
           this.jobs = event.jobs;

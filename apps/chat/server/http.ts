@@ -1,5 +1,6 @@
 /**
- * The HTTP side: every endpoint under /api (apps/chat/API.md), the live socket at /api/live, and the built web client for any other path.
+ * The HTTP side: every endpoint under /api (apps/chat/API.md), the live socket at /api/live, the wiki under /wiki (server/wiki), and the built
+ * web client for any other path.
  */
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -16,6 +17,7 @@ import { isHostAway } from "./host/types.ts";
 import { readJson } from "./store.ts";
 import { usageReport, hostsReport } from "./usage.ts";
 import { accountRoutes, PoolError } from "./accounts.ts";
+import { serveWiki } from "./wiki/routes.ts";
 
 type Params = Record<string, string>;
 type Handler = (req: IncomingMessage, params: Params, query: URLSearchParams, body: () => Promise<unknown>) => Promise<unknown>;
@@ -250,6 +252,7 @@ async function handle(app: App, table: Route[], req: IncomingMessage, res: Serve
   const url = new URL(req.url ?? "/", "http://x");
   const path = url.pathname;
   try {
+    if (await serveWiki(app, req, res, url)) return;
     if (path.startsWith("/api/images/")) return await serveEntryImage(app, path, res);
     if (path.startsWith("/api/uploads/")) return serveFile(res, app.store.imagePath(path.slice("/api/uploads/".length).replace(/[^\w.-]/g, "")), true);
     if (path === "/api/local-image" && req.method === "GET") return await serveLocalImage(url.searchParams.get("path") ?? "", res);

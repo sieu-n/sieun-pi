@@ -35,14 +35,14 @@ export function escapeHtml(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
-const DEFAULT_WIKI = "https://us-metal02-dev.tail0c093d.ts.net:5176";
-/** The wiki origin: `<body data-wiki>` from the server, VITE_WIKI_ORIGIN, or the box default. */
+const DEFAULT_WIKI = "https://us-metal02-dev.tail0c093d.ts.net:5184/wiki";
+/** The wiki base: `<body data-wiki>`, which the client sets from the server's `Me.wikiBase`, VITE_WIKI_ORIGIN, or the box default. */
 export function wikiOrigin(): string {
   const fromBody = typeof document !== "undefined" ? document.body?.dataset.wiki : undefined;
   // import.meta.env is Vite's; the node unit tests of this file run without it.
   return (fromBody || (import.meta.env?.VITE_WIKI_ORIGIN as string | undefined) || DEFAULT_WIKI).replace(/\/+$/, "");
 }
-export const wikiUrl = (path: string): string => `${wikiOrigin()}/page/${path.replace(/^\/+/, "")}`;
+export const wikiUrl = (path: string): string => `${wikiOrigin()}/${path.replace(/^\/+/, "")}`;
 
 /** Where an image loads from, or null to show it as text. */
 export function imageSource(href: string, cwd = ""): string | null {

@@ -194,6 +194,36 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 5. pi-host has no command that runs a failed turn again, so a thread moved to another account takes it at its next request or its next pool poll.
 6. `no_model_room` decides what a sw factory agent's turn does when no account has room for its model: wait for one (the default), switch to a model the account has for that request, or fail. Prime sessions keep Prime's own wait. Any other value answers 400, and a pi-pool without the key answers 400 with a sentence that says so.
 
+## Wiki
+
+`/wiki` fronts the wiki engine (sieun-pi apps/wiki) on `APPS_CHAT_WIKI_ENGINE`, default `http://127.0.0.1:5176`, under its SvelteKit base `APPS_CHAT_WIKI_ENGINE_BASE` ("" today, "/wiki" after the engine's cutover). Code: `server/wiki/`.
+
+| Route | What it does |
+|---|---|
+| `GET /wiki/<path>` | The rendered page, from the engine's page view. A file in a content space that is not a page answers its bytes. |
+| `GET /wiki/<path>?format=md` | Markdown made with Turndown from the stored HTML, under a YAML header of `key: <json>` lines that starts with `path` and `version`. `Accept: text/markdown` does the same, and `section` and `lines` pass on to the engine. |
+| `GET /wiki/<path>?format=html` | The stored HTML with its `<!--wiki {json}-->` frontmatter; `format=raw` answers it as text/plain. |
+| `PUT /wiki/<path>` | Creates or replaces a page through `POST /api/agent/page`. The body is HTML, markdown (`text/markdown` or `?format=md`, which `marked` turns into HTML and whose header becomes the frontmatter, its `version` the `baseVersion`) or JSON `{content, summary?, baseVersion?, allowTruncate?}`. |
+| `POST /wiki/<path>` | Creates the page, and answers 409 when it exists. |
+| `PATCH /wiki/<path>` | JSON `{edits, summary?, baseVersion?}`, through `PATCH /api/agent/page`. |
+| any other `/wiki/*` | Passes through to the engine: UI, assets, `/wiki/raw/<path>`, `/wiki/api/agent/*`. |
+
+1. A write names its caller in the `x-pi-conversation` header, `<thread>` or `<thread>:<n>` (or the kernel's `<thread>-<n>`).
+2. The server checks the conversation against pi-host's threads and agents.json and stamps the engine's `author` as `<slug> (<conversation>)`.
+3. A missing or unknown conversation still writes, as `unknown`, and a successful answer then carries a `warning`.
+4. The engine's status and error JSON come back unchanged; a successful write's JSON adds `author`.
+
+A job's workspace is its wiki session folder.
+
+| Route | What it does |
+|---|---|
+| `POST /api/c/:id/workspace` | Opens the job's folder through `POST /api/agent/sessions` with `agent`, `conversation`, `parent`, `host` and `root: agents/<slug>/jobs` stamped, and answers the same folder (`opened: false`) on every later call until it closes. Body: `slug?`, `goal?`, `title?`, `description?`, `apps?`, `projects?`, `domains?`, `tags?`. An agent's work thread answers its notebook `agents/<slug>/work/` and opens nothing. |
+| `GET /api/c/:id/workspace` | The folder this server opened for the conversation, 404 when none. |
+| `POST /api/c/:id/workspace/events` | `{summary, html?}`, appended to the folder's log. |
+| `POST /api/c/:id/workspace/close` | `{outcome, graduated_to?, gaps_created?, no_durable_knowledge?}`. |
+
+The conversation-to-folder map lives in `<data dir>/wiki-workspaces.json` until the engine answers `GET /api/agent/sessions?conversation=`.
+
 ## Live stores
 
 | Store | What it holds |

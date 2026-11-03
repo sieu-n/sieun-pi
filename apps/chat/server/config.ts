@@ -24,7 +24,10 @@ export interface Config {
   box: string;
   /** Prime's shared chat data, read only: the corrections ledger and the hosts registry. */
   sharedDir: string;
+  /** Where a `wiki:<path>` link opens: this server's `/wiki` surface (server/wiki). */
   wikiBase: string;
+  /** The wiki engine this server's `/wiki` surface fronts (server/wiki/engine.ts). */
+  wikiEngine: WikiEngineConfig;
   version: string;
   /** The home folder, which the server refuses as a thread's cwd: no project's AGENTS.md, skills or rules load there. */
   home: string;
@@ -40,6 +43,15 @@ export interface Config {
   /** The hosts registry: `SIEUN_PI_HOSTS`, else `~/.config/sieun-pi/hosts.json`. */
   hostsFile: string;
 }
+
+/**
+ * The wiki engine (sieun-pi apps/wiki) on loopback. `base` is the engine's SvelteKit `paths.base`: "" while it serves `/page/<path>` at its
+ * root, "/wiki" once it serves `/wiki/page/<path>`. `spaces` are the content root's top folders, so `/wiki/<space>/...` names a page and
+ * any other `/wiki/...` path is one of the engine's own routes.
+ */
+export interface WikiEngineConfig { origin: string; base: string; spaces: string[] }
+
+export const WIKI_SPACES = ["index.html", "apps", "domains", "projects", "experiments", "archive", "sessions", "agents", "@code"];
 
 /** One box whose agent relay this server dials: each host in the registry with `roles.agents` and an `agentRelayPort`. */
 export interface AgentHostConfig { box: string; label: string; url: string; token: string; self: boolean }
@@ -120,7 +132,12 @@ export function readConfig(argv = process.argv.slice(2), env = process.env): Con
     webDir: resolve(values["web-dir"] ?? join(appDir, "web/dist")),
     box: env.APPS_CHAT_BOX ?? hostname(),
     sharedDir: env.AGENT_CHAT_SHARED_DIR ?? join(homedir(), ".prime/agent/browser-chat"),
-    wikiBase: env.APPS_CHAT_WIKI_BASE ?? "https://us-metal02-dev.tail0c093d.ts.net:5176",
+    wikiBase: env.APPS_CHAT_WIKI_BASE ?? "https://us-metal02-dev.tail0c093d.ts.net:5184/wiki",
+    wikiEngine: {
+      origin: (env.APPS_CHAT_WIKI_ENGINE ?? "http://127.0.0.1:5176").replace(/\/+$/, ""),
+      base: (env.APPS_CHAT_WIKI_ENGINE_BASE ?? "").replace(/\/+$/, ""),
+      spaces: env.APPS_CHAT_WIKI_SPACES ? env.APPS_CHAT_WIKI_SPACES.split(":").filter(Boolean) : WIKI_SPACES,
+    },
     version: values.version ?? env.APPS_CHAT_VERSION ?? releaseVersion(appDir),
     home,
     projects: env.APPS_CHAT_PROJECTS ? env.APPS_CHAT_PROJECTS.split(":").filter(Boolean) : defaultProjects(home),
