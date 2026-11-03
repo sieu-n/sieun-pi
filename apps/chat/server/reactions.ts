@@ -8,6 +8,8 @@
  * 2. When that turn ends, the mark comes off, unless the turn handed work to the agent's work thread: an agent message from the comm thread
  *    among the work thread's entries after the mark's `mark` entry. Then the mark keeps that entry as `work` and stays until the work thread
  *    has answered it and the agent works no more.
+ * 3. While the answering thread waits for a model slot, every mark stays as it is, so the gap between the work thread's report and the
+ *    comm thread's turn on it shows the mark too.
  *
  * Every mark keeps its state on the post, so a restart picks it up where it was.
  */
@@ -85,9 +87,11 @@ export class WipReactions {
   private room(record: AgentRecord, room: RoomId): void {
     const thread = room === record.room ? this.deps.agents.roomThread(record) : record.comm?.[room];
     if (!thread) return;
-    const answering = !record.archived && this.deps.threads.statusOfConversation(thread, 1) === "working";
+    const status = record.archived ? "idle" : this.deps.threads.statusOfConversation(thread, 1);
     const held = this.heldIn(room);
-    if (answering) {
+    // A thread that waits for a model slot, such as for its turn on the work thread's report, keeps its marks as they are.
+    if (status === "sleeping") return;
+    if (status === "working") {
       for (const post of this.targets(record, room, thread)) {
         this.put(room, post, [...(post.reactions ?? []), { emoji: WIP_EMOJI, by: record.id, at: Date.now() }]);
         if (thread !== record.workThread) void this.markWork(record, room, post);

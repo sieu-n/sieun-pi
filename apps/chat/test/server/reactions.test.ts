@@ -96,6 +96,11 @@ describe("the wip mark", () => {
     assert.ok(r.wip(p), "no answer to the hand-over yet, so it stays");
     r.work.push({ id: 3, conversationId: 1, kind: "pi.assistant" });
     r.state.updatedAt = 2;
+    r.status.set("C", "sleeping");
+    wip.poll();
+    await flush();
+    assert.ok(r.wip(p), "the comm thread waits for a slot to answer the report, so it stays");
+    r.status.set("C", "idle");
     wip.poll();
     await flush();
     assert.equal(r.wip(p), undefined);
