@@ -35,7 +35,7 @@ test("GET /wiki/<path> renders the engine's page, with its links routed back und
   assert.match(response.headers.get("content-type") ?? "", /text\/html/);
   const html = await response.text();
   assert.match(html, /<title>search · virev\.ai/);
-  if (!engine.base) assert.ok(html.includes('href="/wiki/timeline"') && !html.includes('href="/timeline"'));
+  assert.ok(html.includes('href="/wiki/timeline"') && !html.includes('href="/timeline"'));
 });
 
 test("?format=md and Accept: text/markdown answer markdown with the frontmatter as a YAML header", { skip }, async () => {
@@ -61,17 +61,17 @@ test("an engine route under /wiki passes through to the engine", { skip }, async
   assert.ok(health.pageCount > 0);
 });
 
-test("a job opens its workspace, writes, edits and closes it, and every write names the job", { skip }, async () => {
-  const opened = await server.send("POST", `/api/c/${job}/workspace`, { slug: "apps-chat-wiki-test", goal: "Check the /wiki routes of apps/chat end to end.", tags: ["test"] });
+test("a conversation opens its workspace, writes, edits and closes it, and every write names its caller", { skip }, async () => {
+  // The fixture's solo chat holds no agent, so its folder lands in sessions/ and no real agent's space (agents/<slug>/) gets a test folder.
+  const solo = FIXTURE_IDS.solo;
+  const opened = await server.send("POST", `/api/c/${solo}/workspace`, { slug: "apps-chat-wiki-test", goal: "Check the /wiki routes of apps/chat end to end.", tags: ["test"] });
   assert.equal(opened.status, 201, JSON.stringify(opened.body));
-  assert.equal(opened.body.conversation, job);
-  assert.equal(opened.body.agent, "ag_vent");
-  assert.equal(opened.body.opened, true);
+  assert.deepEqual([opened.body.conversation, opened.body.agent, opened.body.opened], [solo, null, true]);
   const folder: string = opened.body.id;
-  const again = await server.send("POST", `/api/c/${job}/workspace`, {});
+  const again = await server.send("POST", `/api/c/${solo}/workspace`, {});
   assert.deepEqual([again.status, again.body.id, again.body.opened], [200, folder, false]);
   const log = await (await fetch(`${server.base}/wiki/${folder}/index.html?format=html`)).text();
-  assert.match(log, /"agent": ?"vent"/);
+  assert.match(log, new RegExp(`"conversation": ?"${solo}"`));
 
   const as = { "x-pi-conversation": job };
   const page = `${folder}/notes.html`;
@@ -101,9 +101,9 @@ test("a job opens its workspace, writes, edits and closes it, and every write na
   assert.equal(unknown.author, "unknown");
   assert.match(unknown.warning, /x-pi-conversation/);
 
-  const event = await server.send("POST", `/api/c/${job}/workspace/events`, { summary: "Wrote two pages through /wiki." });
+  const event = await server.send("POST", `/api/c/${solo}/workspace/events`, { summary: "Wrote two pages through /wiki." });
   assert.equal(event.status, 201, JSON.stringify(event.body));
-  const closed = await server.send("POST", `/api/c/${job}/workspace/close`, { outcome: "The /wiki routes read and write.", no_durable_knowledge: true });
+  const closed = await server.send("POST", `/api/c/${solo}/workspace/close`, { outcome: "The /wiki routes read and write.", no_durable_knowledge: true });
   assert.equal(closed.status, 200, JSON.stringify(closed.body));
 
   const frozen = await fetch(`${server.base}/wiki/${page}`, { method: "PUT", headers: as, body: "<h1>Late</h1>" });

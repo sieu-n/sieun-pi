@@ -45,8 +45,8 @@ export interface Config {
 }
 
 /**
- * The wiki engine (sieun-pi apps/wiki) on loopback. `base` is the engine's SvelteKit `paths.base`: "" while it serves `/page/<path>` at its
- * root, "/wiki" once it serves `/wiki/page/<path>`. `spaces` are the content root's top folders, so `/wiki/<space>/...` names a page and
+ * The wiki engine (sieun-pi apps/wiki) on loopback. `base` is the engine's SvelteKit `paths.base`, "/wiki", so this server's `/wiki/<x>`
+ * and the engine's are the same path; an engine at its root takes "". `spaces` are the content root's top folders, so `/wiki/<space>/...` names a page and
  * any other `/wiki/...` path is one of the engine's own routes.
  */
 export interface WikiEngineConfig { origin: string; base: string; spaces: string[] }
@@ -135,7 +135,7 @@ export function readConfig(argv = process.argv.slice(2), env = process.env): Con
     wikiBase: env.APPS_CHAT_WIKI_BASE ?? "https://us-metal02-dev.tail0c093d.ts.net:5184/wiki",
     wikiEngine: {
       origin: (env.APPS_CHAT_WIKI_ENGINE ?? "http://127.0.0.1:5176").replace(/\/+$/, ""),
-      base: (env.APPS_CHAT_WIKI_ENGINE_BASE ?? "").replace(/\/+$/, ""),
+      base: (env.APPS_CHAT_WIKI_ENGINE_BASE ?? "/wiki").replace(/\/+$/, ""),
       spaces: env.APPS_CHAT_WIKI_SPACES ? env.APPS_CHAT_WIKI_SPACES.split(":").filter(Boolean) : WIKI_SPACES,
     },
     version: values.version ?? env.APPS_CHAT_VERSION ?? releaseVersion(appDir),

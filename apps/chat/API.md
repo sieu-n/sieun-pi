@@ -196,7 +196,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 
 ## Wiki
 
-`/wiki` fronts the wiki engine (sieun-pi apps/wiki) on `APPS_CHAT_WIKI_ENGINE`, default `http://127.0.0.1:5176`, under its SvelteKit base `APPS_CHAT_WIKI_ENGINE_BASE` ("" today, "/wiki" after the engine's cutover). Code: `server/wiki/`.
+`/wiki` fronts the wiki engine (sieun-pi apps/wiki) on `APPS_CHAT_WIKI_ENGINE`, default `http://127.0.0.1:5176`, under its SvelteKit base `APPS_CHAT_WIKI_ENGINE_BASE`, default "/wiki". Code: `server/wiki/`.
 
 | Route | What it does |
 |---|---|
@@ -218,11 +218,11 @@ A job's workspace is its wiki session folder.
 | Route | What it does |
 |---|---|
 | `POST /api/c/:id/workspace` | Opens the job's folder through `POST /api/agent/sessions` with `agent`, `conversation`, `parent`, `host` and `root: agents/<slug>/jobs` stamped, and answers the same folder (`opened: false`) on every later call until it closes. Body: `slug?`, `goal?`, `title?`, `description?`, `apps?`, `projects?`, `domains?`, `tags?`. An agent's work thread answers its notebook `agents/<slug>/work/` and opens nothing. |
-| `GET /api/c/:id/workspace` | The folder this server opened for the conversation, 404 when none. |
+| `GET /api/c/:id/workspace` | The conversation's open folder, 404 when none. |
 | `POST /api/c/:id/workspace/events` | `{summary, html?}`, appended to the folder's log. |
 | `POST /api/c/:id/workspace/close` | `{outcome, graduated_to?, gaps_created?, no_durable_knowledge?}`. |
 
-The conversation-to-folder map lives in `<data dir>/wiki-workspaces.json` until the engine answers `GET /api/agent/sessions?conversation=`.
+The log frontmatter is the record, so the open folder of a conversation comes from the engine's `GET /api/agent/sessions?status=open&conversation=`.
 
 ## Live stores
 
