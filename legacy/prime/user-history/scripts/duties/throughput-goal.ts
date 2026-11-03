@@ -246,6 +246,7 @@ export const PROVIDERS = "apps/infra/metal/config/obs/grafana/dashboards/estate.
 const SERVED_DIR = "/var/lib/grafana/dashboards/";
 const BOARDS_DIR = "apps/infra/grafana/dashboards/";
 export const OBS_RELEASE_EXPR = 'virev_release_current_info{tier="obs"}';
+const OBS_HOST = process.env.METAL_SSH_HOST || "us-metal01";
 
 /** The repo paths of the board files the provider file puts in `folder`. */
 export function folderFiles(providers: string, folder: string): string[] {
@@ -268,11 +269,16 @@ export async function servedObsRev(query: DsQuery): Promise<string> {
   throw new Error(`${OBS_RELEASE_EXPR} names ${revisions.join(", ") || "no release"}`);
 }
 
-/** A reader of auto-sns-agent files at `rev`, fetching it from origin when the checkout lacks it. */
+/**
+ * A reader of auto-sns-agent files at `rev`, fetching it from origin when the checkout lacks it. When origin answers
+ * "not our ref", it reads the files from the release us-metal01 installed for `rev`, as deploy-obs.mjs servedRef does:
+ * on 11-03 obs served 8d477d2bfc and then 4e3ee75b4b, release commits no origin branch holds, and the dashboards read failed.
+ */
 export async function repoAt(rev: string): Promise<(path: string) => Promise<string>> {
   const git = (...args: string[]) => promisify(execFile)("git", args, { cwd: REPO, maxBuffer: 64 * 1024 * 1024 });
-  await git("cat-file", "-e", `${rev}^{commit}`).catch(() => git("fetch", "-q", "origin", rev));
-  return async path => (await git("show", `${rev}:${path}`)).stdout;
+  const local = await git("cat-file", "-e", `${rev}^{commit}`).then(() => true, () => git("fetch", "-q", "origin", rev).then(() => true, () => false));
+  if (local) return async path => (await git("show", `${rev}:${path}`)).stdout;
+  return async path => (await promisify(execFile)("ssh", ["-o", "BatchMode=yes", OBS_HOST, "cat", `/srv/obs/releases/${rev}/${path}`], { maxBuffer: 64 * 1024 * 1024 })).stdout;
 }
 
 /** Runs every panel of the owner's crawler dashboards the way Grafana draws it, over the dashboard's own time range. */
