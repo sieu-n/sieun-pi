@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CODE_FOLD_LINES, renderInline, renderMarkdown } from "../../web/src/lib/ui/markdown.ts";
+import { CODE_FOLD_LINES, renderInline, renderMarkdown, wikiLinkPath, wikiPages, withAuthor } from "../../web/src/lib/ui/markdown.ts";
 import { readable } from "../../web/src/lib/ui/mermaid.ts";
 
 const board = { chatId: "vent", titles: new Map([["p2", "Watch the week"]]) };
@@ -108,4 +108,58 @@ test("a mention chip takes the longest known name, commas, spaces and a trailing
   assert.match(html, /data-mention-id="ag_search-product-misc">.*<span class="text">Search product, misc\.<\/span><\/button> research/s);
   assert.match(html, /data-mention-id="ag_vent">.*<span class="text">Vent<\/span><\/button>\. Not @Ventura or @Searching\./s);
   assert.equal(html.match(/data-mention-id/g)?.length, 2);
+});
+
+test("every wiki form a chat writes names the page's content path, and a content-folder path is a wiki link", () => {
+  for (const form of ["domains/x.html", "/domains/x.html", "page/domains/x.html", "wiki/page/domains/x.html", "host.ts.net:5176/page/domains/x.html#top", "https://h.ts.net:5176/page/domains/x.html", "https://h.ts.net:5184/wiki/domains/x.html?q=1"]) {
+    assert.equal(wikiLinkPath(form), "domains/x.html", form);
+  }
+  assert.equal(wikiLinkPath("https://example.com/domains/x.html"), null);
+  assert.equal(wikiLinkPath("../etc/passwd"), null);
+  const html = renderMarkdown("[page](wiki:https://h.ts.net:5176/page/domains/x.html), apps/llm-wiki/content/domains/y.html and ~/.pi/wiki/content/domains/z.html");
+  for (const page of ["x", "y", "z"]) assert.ok(html.includes(`data-target="wiki:domains/${page}.html"`), page);
+});
+
+test("a code span that is one target or one job name is its link, and bare absolute paths are pills or images", () => {
+  const html = renderMarkdown("`wiki:a/b.html`, `thread:abc-1`, `job:x`, `fast search` and `npm test`; /home/sieun/work/post-parity/ and ~/work/x, /tmp/shot.png, but not and/or or /s.", { jobs: ["fast search"] });
+  for (const target of ["wiki:a/b.html", "thread:abc-1", "job:x", "job:fast search", "file:/home/sieun/work/post-parity/", "file:~/work/x"]) assert.ok(html.includes(`data-target="${target}"`), target);
+  assert.ok(html.includes("<code>npm test</code>"));
+  assert.match(html, /<img class="md-image thumb" src="\/api\/local-image\?path=%2Ftmp%2Fshot\.png"/);
+  assert.ok(html.includes("but not and/or or /s."));
+});
+
+test("a job named as a whole word is a job link, but not inside a word, a hyphenated word, quotes or a link", () => {
+  const html = renderMarkdown('Ask fast search, then fast-search-x, "fast search", [fast search](https://e.com) and xfast search.', { jobs: ["fast", "fast search"] });
+  assert.equal(html.match(/data-target="job:fast search"/g)?.length, 1);
+  assert.doesNotMatch(html, /data-target="job:fast"/);
+});
+
+test("loopback links keep their port and draw a server icon, not a favicon, and links into this app open in place", () => {
+  const html = renderMarkdown("Open localhost:5180/campaigns and http://127.0.0.1:8080/x.", { plain: true });
+  assert.match(html, /<a class="web-link local-link" href="http:\/\/localhost:5180\/campaigns"[^>]*><svg[^>]*>.*?<\/svg><span class="link-text">localhost:5180\/campaigns<\/span><\/a>/);
+  assert.ok(html.includes('href="http://127.0.0.1:8080/x"'));
+  assert.doesNotMatch(html, /favicon/);
+  const mentions = new Map([["vent-dev", { id: "ch_181e61a3", kind: "channel" as const }], ["vent", { id: "ag_vent", kind: "agent" as const }]]);
+  const app = renderMarkdown("https://h.ts.net:5184/#/c/ch_181e61a3 and https://h.ts.net:5184/#/c/dm_vent", { mentions });
+  assert.match(app, /<a class="artifact-link app-link" href="#\/c\/ch_181e61a3"[^>]*>.*<span class="link-text">#vent-dev<\/span>/);
+  assert.match(app, /href="#\/c\/dm_vent"[^>]*>.*?<span class="link-text">vent<\/span>/);
+  assert.doesNotMatch(app, /target="_blank"/);
+});
+
+test("a post's board ids and job names resolve against its author's board and jobs", () => {
+  const room = { board, jobs: ["room job"], authors: new Map([["ag_other", { board: { chatId: "other", titles: new Map([["p9", "Other step"]]) }, jobs: ["other job"] }]]) };
+  const own = renderMarkdown("p9, p2, other job and room job", withAuthor(room, "ag_other"));
+  assert.ok(own.includes('data-board-id="p9" data-chat-id="other"'));
+  assert.doesNotMatch(own, /data-board-id="p2"/);
+  assert.ok(own.includes('data-target="job:other job"'));
+  assert.doesNotMatch(own, /job:room job/);
+  assert.equal(withAuthor(room, "owner"), room);
+});
+
+test("wikiPages lists each linked page once, with no images and no other targets", () => {
+  assert.deepEqual(
+    wikiPages("wiki:a/b.html and [x](wiki:a/b.html), [[c/d.md]], https://h:5184/wiki/e.html ![i](wiki:f.png) `apps/llm-wiki/content/g.html` ~/.pi/wiki/content/h.html [j](job:x)"),
+    ["a/b.html", "c/d.md", "e.html", "g.html", "h.html"],
+  );
+  assert.deepEqual(wikiPages("no pages here"), []);
 });

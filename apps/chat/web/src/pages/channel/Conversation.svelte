@@ -31,6 +31,7 @@
   import ThreadPane from "./ThreadPane.svelte";
   import Timeline from "./Timeline.svelte";
   import { directory } from "./directory.svelte";
+  import { AuthorBoards } from "./author-boards.svelte";
   import { agentPickerItems, avatarKind, mentionContext, placeText, type Outgoing } from "./present";
 
   type Props = { id: string; around?: string };
@@ -141,7 +142,22 @@
   $effect(() => {
     if (boardContext) rememberTitles(boardContext.chatId, boardContext.titles);
   });
-  const context = $derived({ mentions: mentionContext(directory.agents, directory.channels, me.value?.owner.name ?? ""), board: boardContext, plain: true });
+  /** The room's agents, each with its own board and jobs, so the board ids and job names in its posts link to its own (MessageRow's withAuthor). */
+  const memberAgents = $derived(others.map((m) => m.principal.id).filter((agentId) => !!agents.byId(agentId)));
+  const authorBoards = new AuthorBoards();
+  /** The agent whose board is the room's own (a DM's agent, a channel's home chat), whose posts keep the room's board context. */
+  const isHome = (agentId: string): boolean => agentId === boardChat || (!!boardChat && agents.byId(agentId)?.thread === boardChat);
+  $effect(() => authorBoards.sync(memberAgents.filter((agentId) => !isHome(agentId))));
+  $effect(() => () => authorBoards.close());
+  const jobNames = (agentId: string): string[] => jobs.of(agentId).map((job) => job.name);
+  const authors = $derived(new Map(memberAgents.map((agentId) => [agentId, { board: isHome(agentId) ? boardContext : authorBoards.board(agentId), jobs: jobNames(agentId) }])));
+  const context = $derived({
+    mentions: mentionContext(directory.agents, directory.channels, me.value?.owner.name ?? ""),
+    board: boardContext,
+    jobs: memberAgents.flatMap(jobNames),
+    authors,
+    plain: true,
+  });
 
   let composer = $state<Composer>();
   let menuOpen = $state(false);

@@ -6,9 +6,10 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import Lightbox from "$lib/ui/Lightbox.svelte";
   import Markdown from "$lib/ui/Markdown.svelte";
+  import WikiCards from "$lib/ui/WikiCards.svelte";
   import TypingDots from "$lib/ui/TypingDots.svelte";
   import { clockLabel, stampLabel, timeLabel } from "$lib/ui/datetime";
-  import type { MarkdownContext } from "$lib/ui/markdown";
+  import { wikiUrl, withAuthor, type MarkdownContext } from "$lib/ui/markdown";
   import type { Status } from "$lib/ui/types";
   import { conversationHref, router } from "$lib/router.svelte";
   import { frequentEmoji } from "./frequent-emoji.svelte";
@@ -46,9 +47,11 @@
     onboardid?: (id: string, chatId: string, e: MouseEvent) => void;
     onartifact?: (target: string, e: MouseEvent) => void;
   };
-  let { item, first, last, layout = "bubble", fullTime = false, context, liveLabel = null, queue = null, flash = false, openThread = null, canReply = false, statusOf, onretrysend, ondiscardsend, onthread, oncopylink, onmention, onboardid, onartifact }: Props = $props();
+  let { item, first, last, layout = "bubble", fullTime = false, context: roomContext, liveLabel = null, queue = null, flash = false, openThread = null, canReply = false, statusOf, onretrysend, ondiscardsend, onthread, oncopylink, onmention, onboardid, onartifact }: Props = $props();
 
   const own = $derived(isOwn(item));
+  /** Board ids and job names in a post chip against its author's board and jobs, so p12 in vent's post is vent's p12. */
+  const context = $derived(withAuthor(roomContext, item.author.id));
   const slack = $derived(layout === "slack");
   const turn = $derived(item.kind === "turn" ? item : null);
   const message = $derived(item.kind === "message" ? item : null);
@@ -123,6 +126,9 @@
         </button>
       {/each}
     </div>
+  {/if}
+  {#if !live && (sent?.length || item.text)}
+    <WikiCards text={sent ? sent.join("\n\n") : item.text} onopen={(path, e) => (onartifact ? onartifact(`wiki:${path}`, e) : window.open(wikiUrl(path), "_blank", "noopener"))} />
   {/if}
 {/snippet}
 
