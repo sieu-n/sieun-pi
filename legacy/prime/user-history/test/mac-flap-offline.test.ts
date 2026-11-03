@@ -64,3 +64,30 @@ test("a daemon call whose error is the service's offline read of its box is left
   const otherBox = run(back, [{ ...offlineRead, host: "us-metal03" }]);
   assert.equal(otherBox.metrics.clean_min_30, 29, "the error must name the call's own box");
 });
+
+// Guards d7's 20:34Z minute on 11-03: the Mac read offline to 20:33Z, usable at 20:34:30Z, "fetch failed" at 20:35:30Z and offline from 20:36Z,
+// and at 20:34:48Z the wake and pin of 01a11b0b answered "Connection to the Prime Agent daemon closed", which d7 counted dirty, 29 of 30 clean.
+const closed = (minute: number, what = "keeping it open failed, the daemon connection closed") => ({ at: minuteAt(minute) + 48_000, host: "mac", session: "01a11b0b", what });
+const sleepAgain = (minute: number): MacRead => minute < 6 ? "offline" : minute === 6 ? "usable" : minute === 7 ? "fetch failed" : "offline";
+
+test("a daemon call that lost its link to a box which reads offline the next minute is left out, and the offline line names it", () => {
+  const out = run(Array.from({ length: 30 }, (_, minute) => line(minute, sleepAgain(minute))), [closed(6), closed(6, "a job's wake failed, the daemon connection closed")]);
+  assert.equal(out.metrics.clean_min_30, 30);
+  assert.equal(out.metrics.daemon_fail_min_30, 0);
+  const flag = out.flagged?.find(slice => slice.kind === "offline_minutes")?.excerpt ?? "";
+  assert.match(flag, new RegExp(`in 1 more minute a box read online, daemon calls lost their link to it .*\\(${new Date(minuteAt(6)).toISOString().slice(11, 16)}Z mac\\)`));
+  const shaking = run(Array.from({ length: 30 }, (_, minute) => line(minute, minute < 7 ? "usable" : "offline")), [handshake(6)]);
+  assert.equal(shaking.metrics.clean_min_30, 30, "a handshake timeout the minute before Tailscale reads the box offline is left out too");
+});
+
+test("a closed connection to a box that reads online the next minute, or a slow call before it sleeps, stays dirty", () => {
+  const online = run(Array.from({ length: 30 }, (_, minute) => line(minute, minute < 6 ? "offline" : "usable")), [closed(6)]);
+  assert.equal(online.metrics.clean_min_30, 29);
+  assert.equal(online.metrics.daemon_fail_min_30, 1);
+  const later = run(Array.from({ length: 30 }, (_, minute) => line(minute, minute < 9 ? "usable" : "offline")), [closed(6)]);
+  assert.equal(later.metrics.clean_min_30, 29, "a box that sleeps 3 minutes later was awake when the call lost its link");
+  const slow = run(Array.from({ length: 30 }, (_, minute) => line(minute, sleepAgain(minute))), [closed(6, "opening it took 45 s")]);
+  assert.equal(slow.metrics.daemon_fail_min_30, 1, "a call the box answered late is no lost link");
+  const unread = run(Array.from({ length: 30 }, (_, minute) => line(minute, minute < 9 ? "fetch failed" : "offline")), [closed(5)]);
+  assert.equal(unread.metrics.daemon_fail_min_30, 1, "a minute the relay could not read is offlineAround's, three lines from an offline read");
+});

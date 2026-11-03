@@ -1453,6 +1453,38 @@ export function failedOffline(fault: DaemonFault): boolean {
   return fault.what.includes(`${fault.host} is offline (Tailscale last seen `);
 }
 
+/** A daemon call that lost its link to the box, in `faultReason`'s words, as against one the box's daemon answered late or refused. */
+const LOST_LINK = /the daemon connection closed|the handshake timed out|the daemon did not connect|Prime Agent daemon is not connected/;
+
+/** How the watch read `box` in the minute from `from`, with the line that read it. */
+function viewIn(watch: readonly WatchLine[], box: string, from: number): { line: WatchLine; view: HostView } | undefined {
+  const line = watch.findLast(entry => { const at = Date.parse(entry.at); return at >= from && at < from + MINUTE; });
+  const view = line && hostViews(line).find(candidate => candidate.name === box);
+  return line && view ? { line, view } : undefined;
+}
+
+/** Whether `box` counts offline in the minute from `from`, the way `measure` reads each box: Tailscale's read, a flap, a dark uplink or a flat battery. */
+function offlineIn(watch: readonly WatchLine[], box: string, from: number): boolean {
+  const read = viewIn(watch, box, from);
+  return !!read && (!!read.view.offline || flapped(watch, read.view, from) || !!read.line.uplinkDark || !!flatBattery(read.view.usable));
+}
+
+const flapped = (watch: readonly WatchLine[], view: HostView, from: number): boolean => !view.offline && !view.usable &&
+  (UNREACHED.test(view.error ?? "") || view.error === UNREAD_AT_STOP) && offlineAround(watch, view.name, from, from + MINUTE);
+
+/**
+ * Whether the call lost its link to a box that read usable in the call's minute and counts offline the next minute, so the box was falling
+ * asleep under it. A minute the relay could not read is `offlineAround`'s to judge, within its OFFLINE_LAG_READS. At 20:34:18Z on 11-03
+ * the service read the Mac back after 8 min offline, the watch read it usable at 20:34:30Z, and at 20:34:48Z the wake and pin of 01a11b0b and
+ * the background full list answered "Connection to the Prime Agent daemon closed"; from 20:34:56Z the relay did not answer in 10 s, the watch
+ * read "fetch failed" at 20:35:30Z and offline from 20:36:30Z, and d7 counted 20:34Z dirty, 29 of 30 clean. A lost link to a box that reads
+ * online the next minute stays a fault.
+ */
+export function failedAsleep(watch: readonly WatchLine[], fault: DaemonFault): boolean {
+  const from = Math.floor(fault.at / MINUTE) * MINUTE;
+  return LOST_LINK.test(fault.what) && !!viewIn(watch, fault.host, from)?.view.usable && offlineIn(watch, fault.host, from + MINUTE);
+}
+
 /**
  * How long after the chat service starts listening its slow read or loop stall is the start's own work, which d7 books on the harness side and
  * names, still dirty (c172). From 11-02 00:00Z to 11-03 07:40Z, 7 of us-metal02's 37 chat starts were followed by a dirty minute, each 5 to 62 s
@@ -1511,6 +1543,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const offlineMin = new Map<string, number[]>();
   let offlineAny = 0, offlineFaults = 0;
   const flappedMin: string[] = [];
+  const asleepMin: string[] = [];
   const flatMin: string[] = [];
   const darkMin: number[] = [];
   let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, cellWait = 0, harness = 0, rigMin = 0, busyMin = 0, ciMin = 0, other = 0, unattributed = 0, daemonFail = 0, primeMin = 0, primeStallMin = 0, slowRenameMin = 0, hungMin = 0;
@@ -1537,11 +1570,11 @@ export function measure(input: Inputs): PrecheckOutput {
     if (!line) { unwatched++; unknown.push("no watch line"); }
     else for (const view of hostViews(line)) {
       const count = hostCount(view.name);
-      const flapped = !view.offline && !view.usable && (UNREACHED.test(view.error ?? "") || view.error === UNREAD_AT_STOP) && offlineAround(input.watch, view.name, from, to);
+      const flap = flapped(input.watch, view, from);
       const flat = flatBattery(view.usable);
-      if (view.offline || flapped || line.uplinkDark || flat) {
+      if (view.offline || flap || line.uplinkDark || flat) {
         count.offline++; offline.add(view.name); offlineMin.set(view.name, [...offlineMin.get(view.name) ?? [], from]);
-        if (flapped) flappedMin.push(`${clock(from)} ${view.name}`);
+        if (flap) flappedMin.push(`${clock(from)} ${view.name}`);
         else if (flat && !view.offline && !line.uplinkDark) flatMin.push(`${clock(from)} ${view.name} at ${flat.pct}%`);
         continue;
       }
@@ -1599,7 +1632,9 @@ export function measure(input: Inputs): PrecheckOutput {
     if (parked) why.push(`pi-pool refused ${parked.session.slice(0, 8)} for over 10 min while ${parked.room.join(", ")} took its class`);
     if (offline.size) offlineAny++;
     const minuteFaults = daemonFaults.filter(fault => fault.at >= from && fault.at < to);
-    const faults = minuteFaults.filter(fault => !offline.has(fault.host) && !failedOffline(fault));
+    const asleep = minuteFaults.filter(fault => !offline.has(fault.host) && failedAsleep(input.watch, fault));
+    for (const host of new Set(asleep.map(fault => fault.host))) asleepMin.push(`${clock(from)} ${host}`);
+    const faults = minuteFaults.filter(fault => !offline.has(fault.host) && !failedOffline(fault) && !asleep.includes(fault));
     offlineFaults += minuteFaults.length - faults.length;
     if (faults.length) {
       daemonFail++;
@@ -1748,10 +1783,11 @@ export function measure(input: Inputs): PrecheckOutput {
   if (stuckHandoffs.length) flagged.push({ kind: "handoff_stuck", excerpt: `${stuckHandoffs.length} detached-service handoffs stayed open over ${WINDOW_MS / MINUTE} min, ` +
     `though each idle unload sweep resumes them: ${stuckHandoffs.slice(0, 5).map(entry => `${entry.session.slice(0, 8)} ${entry.state} since ${clock(entry.at)}`).join(", ")}. ` +
     "Read ~/.prime/agent/orphan-services/<session>.json and the service log's \"idle unload: <session>\" lines." });
-  if (offlineMin.size) flagged.push({ kind: "offline_minutes", excerpt: [...offlineMin].map(([name, at]) => `${name} offline ${spans(at)}`).join("; ") +
+  if (offlineMin.size || asleepMin.length) flagged.push({ kind: "offline_minutes", excerpt: ([...offlineMin].map(([name, at]) => `${name} offline ${spans(at)}`).join("; ") +
     (flappedMin.length ? `; ${flappedMin.length} of these the relay could not read next to a minute Tailscale read offline (${flappedMin.join(", ")})` : "") +
     (darkMin.length ? `; ${darkMin.length} of these the watch's box read both its gateways down, so no box was reachable (${spans(darkMin)})` : "") +
-    (flatMin.length ? `; ${flatMin.length} of these a Mac ran on battery at ${FLAT_BATTERY_PCT}% or less, which stalls its workers (${flatMin.join(", ")})` : "") });
+    (flatMin.length ? `; ${flatMin.length} of these a Mac ran on battery at ${FLAT_BATTERY_PCT}% or less, which stalls its workers (${flatMin.join(", ")})` : "") +
+    (asleepMin.length ? `; in ${asleepMin.length} more minute${asleepMin.length === 1 ? "" : "s"} a box read online, daemon calls lost their link to it and it read offline the next minute, so it was falling asleep and those calls are left out (${asleepMin.join(", ")})` : "")).replace(/^; /, "") });
   for (const wait of slotWaits) {
     const fault = wait.fault;
     flagged.push({ kind: "slot_wait_timeout", excerpt: `${clock(fault.at)} ${faultName(fault) ?? `session ${fault.session!.slice(0, 8)}`} on ${fault.host}: ${fault.what}, ` +
