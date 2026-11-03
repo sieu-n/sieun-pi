@@ -207,13 +207,13 @@ export function routes(app: App): Route[] {
       q: q.get("q") ?? "", from: str(q.get("from")), in: str(q.get("in")), after: str(q.get("after")), before: str(q.get("before")),
       sort: q.get("sort") === "recent" ? "recent" : "relevance", limit: num(q.get("limit")), cursor: str(q.get("cursor")),
       ...(q.get("type") === "messages" || q.get("type") === "tools" ? { type: q.get("type") as "messages" | "tools" } : {}),
+      ...(q.get("local") === "1" ? { local: true } : {}),
     })),
     // An agent's board, duties, check-in and jobs by agent id. The thread routes take a thread id and resolve it to its agent through the
     // aliases, because pi-host's chat_board tool and the duty briefs name the thread.
     ...(["agents", "threads"] as const).flatMap(scope => [
       route("GET", `/api/${scope}/:id/board`, async (_r, p) => app.boards.view(p.id!)),
       route("POST", `/api/${scope}/:id/board`, async (_r, p, _q, body) => {
-      ...(q.get("local") === "1" ? { local: true } : {}),
         const input = (await body()) as { ops: unknown; actor?: string };
         // A refused op (a bad shape, or an agent answering a todo) is the caller's error.
         return app.boards.apply(p.id!, input.ops, input.actor === "agent" ? "agent" : "owner").catch(error => {

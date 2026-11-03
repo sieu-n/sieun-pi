@@ -178,12 +178,12 @@ export class AgentStore {
   agents: AgentsFile;
   rooms: RoomsFile;
   private readonly posts = new Map<RoomId, RoomPost[]>();
+  /** Hears each post added or changed, after it is written; search indexes it. */
+  onPost: (post: RoomPost) => void = () => {};
 
   constructor(readonly dir: string) {
     this.agents = readJson<AgentsFile>(join(dir, "agents.json"), { v: 1, agents: [], aliases: {} });
     this.rooms = readJson<RoomsFile>(join(dir, "rooms.json"), { v: 1, rooms: [], feed: {} });
-  /** Hears each post added or changed, after it is written; search indexes it. */
-  onPost: (post: RoomPost) => void = () => {};
     // Before 11-03 a channel member woke only on a mention; the owner asked that each one hear every post, so the old `mention` reads as `all`.
     for (const row of this.rooms.rooms) if (isGroupRoom(row)) for (const m of row.members) if ((m.wakeOn as string) === "mention") m.wakeOn = "all";
   }
@@ -274,17 +274,17 @@ export class AgentStore {
     list.push(post);
     mkdirSync(join(this.dir, "rooms"), { recursive: true });
     appendFileSync(this.logFile(input.room), `${JSON.stringify({ t: "post", post } satisfies LogLine)}\n`);
+    this.onPost(post);
     return { post, created: true };
   }
 
   set(post: RoomPost, patch: PostPatch): void {
-    this.onPost(post);
     Object.assign(post, patch);
     appendFileSync(this.logFile(post.room), `${JSON.stringify({ t: "set", post: post.id, patch } satisfies LogLine)}\n`);
+    this.onPost(post);
   }
 
   private logFile(room: RoomId): string {
     return join(this.dir, "rooms", `${room.replace(/[^\w.-]/g, "_")}.jsonl`);
-    this.onPost(post);
   }
 }

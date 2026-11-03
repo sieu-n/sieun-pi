@@ -244,8 +244,8 @@ export class App {
     this.groups.start();
     this.boards.start();
     this.outbox.start();
-  }
     if (this.config.meili) void this.searchEngine.refresh().catch(error => this.log(`search: ${String(error)}`));
+  }
 
   async stop(): Promise<void> {
     this.rooms.stop();
