@@ -103,7 +103,10 @@ export function groupProcesses(rows: readonly ProcRow[], unitFiles: ReadonlySet<
 
 /** The owner a process's env names: its RLM_SESSION_DIR, the session of RLM_HARNESS_STATE_DIR, or LC_PRIME_SESSION from the box its ssh came from. */
 export function ownerOf(row: ProcRow, hostOf: (address: string) => string, here: string): Owner | null {
-  if (row.sessionDir && row.sshFrom === null && row.sessionDir.includes("/session-artifacts/")) return { session: sessionOfDir(row.sessionDir) ?? "", host: here, dir: row.sessionDir };
+  // A pi-host thread's kernel dir (`pi-host/durable/session-artifacts/<uuid>-<pid>`) names no Prime transcript, so its LC_PRIME_SESSION tag decides:
+  // on 11-04 four convex-save-check runners of two live pi-host threads read as orphan_unknown through that dir.
+  const prime = row.sessionDir !== null && row.sessionDir.includes("/session-artifacts/") && !row.sessionDir.includes("/pi-host/durable/");
+  if (prime && row.sshFrom === null) return { session: sessionOfDir(row.sessionDir!) ?? "", host: here, dir: row.sessionDir! };
   if (row.harnessSession && UUID.test(row.harnessSession) && row.sshFrom === null) return { session: row.harnessSession, host: here };
   const tag = /^([0-9a-f-]{36})(?:@(.+))?$/.exec(row.lcSession ?? "");
   if (tag && UUID.test(tag[1]!)) return { session: tag[1]!, host: tag[2] ? hostOf(tag[2]) : row.sshFrom ? hostOf(row.sshFrom) : here };

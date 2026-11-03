@@ -66,6 +66,13 @@ test("RLM_SESSION_DIR on this box wins over the ssh tag, and a tag with no host 
   assert.equal(ownerOf(row(1, 0, "x", { harnessSession: "95399ef6-9e52-4b9e-8d71-737332eee4dd-6769" }), hosts, "us-metal02"), null);
 });
 
+test("a pi-host thread's kernel dir defers to its LC_PRIME_SESSION tag", () => {
+  // 11-04: convex-save-check runners of live pi-host threads read as orphan_unknown, because their kernel dir names no Prime transcript.
+  const thread = "39ca7bbb-37a8-47e5-a06a-d6cea515b3cc";
+  const dir = `/home/sieun/.prime/agent/pi-host/durable/session-artifacts/${thread}-15158`;
+  assert.deepEqual(ownerOf(row(1, 0, "x", { sessionDir: dir, lcSession: `${thread}@us-metal02` }), hosts, "us-metal02"), { session: thread, host: "us-metal02" });
+});
+
 test("a session is live while its roster says running or idle, a wake waits, it is an unarchived chat or a job above it is live", () => {
   assert.equal(verdict({ rosterStatus: "idle", topLevel: false, endedAt: 1 }).state, "live");
   assert.equal(verdict({ rosterStatus: "inactive", live: "its board.wake is pending", topLevel: false, endedAt: 1 }).state, "live");
