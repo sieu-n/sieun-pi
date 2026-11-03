@@ -24,18 +24,25 @@ async function send(scope: Locator, page: Page, text: string): Promise<void> {
   await page.keyboard.press("Enter");
 }
 
-/** Checks a drawn diagram in `block`: an SVG with the given label, and Expand opens it in the lightbox wider than the inline drawing. */
+/** Checks a drawn diagram in `block`: an SVG with the given label, and Expand draws it inline in the lightbox, larger than in the post with no label clipped. */
 async function expectDrawn(page: Page, block: Locator, label: string): Promise<void> {
   await block.scrollIntoViewIfNeeded();
   const svg = block.locator(".diagram-slot svg");
   await expect(svg).toBeVisible({ timeout: 20_000 });
   await expect(svg.getByText(label).first()).toBeVisible();
   await expect(block.locator("pre")).toBeHidden();
-  const inline = (await svg.boundingBox())!.width;
+  const area = (box: { width: number; height: number } | null) => box!.width * box!.height;
+  const inline = area(await svg.boundingBox());
   await block.getByRole("button", { name: "Expand" }).click();
   const lightbox = page.getByRole("dialog", { name: "Diagram" });
-  await expect(lightbox.locator("img")).toBeVisible();
-  expect(await lightbox.locator("img").evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(inline);
+  const big = lightbox.locator(".svg-frame svg");
+  await expect(big).toBeVisible();
+  expect(area(await big.boundingBox())).toBeGreaterThan(inline);
+  const clipped = await big.evaluate((svg) => [...svg.querySelectorAll("foreignObject")].filter((fo) => {
+    const label = fo.firstElementChild as HTMLElement | null;
+    return !!label && label.scrollWidth > (fo as SVGForeignObjectElement).width.baseVal.value + 1;
+  }).length);
+  expect(clipped).toBe(0);
   await page.keyboard.press("Escape");
   await expect(lightbox).toBeHidden();
 }

@@ -22,7 +22,7 @@
   let { text, inline = false, context = {}, streaming = false, onartifact, onboardid, onmention, class: className = "" }: Props = $props();
 
   let root = $state<HTMLElement>();
-  let lightbox = $state<{ src: string; alt: string } | null>(null);
+  let lightbox = $state<{ src: string; alt: string; svg?: string } | null>(null);
   const html = $derived(inline ? renderInline(text, context) : renderMarkdown(text, context));
 
   /** A diagram that does not parse falls back to its code block, with mermaid's first error line above it. */
@@ -86,7 +86,10 @@
     return () => el.removeEventListener("error", onError, true);
   });
 
-  /** A drawn diagram opens in the lightbox at twice its size, as an SVG file of its own on a panel-colored ground. */
+  /**
+   * A drawn diagram opens in the lightbox at twice its size on a panel-colored ground. The lightbox draws it inline, because an SVG file in an
+   * img cannot load the page's Inter, and its labels, sized for Inter, clip in a fallback font; Open original opens the SVG file.
+   */
   function openDiagram(svg: SVGSVGElement) {
     const clone = svg.cloneNode(true) as SVGSVGElement;
     const box = svg.viewBox.baseVal;
@@ -97,7 +100,9 @@
     clone.style.maxWidth = "none";
     clone.style.background = getComputedStyle(document.documentElement).getPropertyValue("--surface-panel").trim() || "#fff";
     const url = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(clone)], { type: "image/svg+xml" }));
-    lightbox = { src: url, alt: "Diagram" };
+    clone.style.removeProperty("max-width");
+    clone.style.removeProperty("min-width");
+    lightbox = { src: url, alt: "Diagram", svg: clone.outerHTML };
   }
 
   function closeLightbox() {
@@ -184,4 +189,4 @@
   {@html html}
 </svelte:element>
 
-<Lightbox src={lightbox?.src ?? null} alt={lightbox?.alt ?? ""} onclose={closeLightbox} />
+<Lightbox src={lightbox?.src ?? null} alt={lightbox?.alt ?? ""} svg={lightbox?.svg} onclose={closeLightbox} />

@@ -33,10 +33,11 @@ test("the diagram's Source shows the mermaid text, Copy copies it, and Expand op
   await block.getByRole("button", { name: "Copy" }).click();
   await expect(block.getByRole("button", { name: "Copied" })).toBeVisible();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toContain("specs -- pass --> ok");
+  const inline = (await block.locator(".diagram-slot svg").boundingBox())!.height;
   await block.getByRole("button", { name: "Expand" }).click();
   const lightbox = page.getByRole("dialog", { name: "Diagram" });
-  await expect(lightbox.locator("img")).toBeVisible();
-  expect(await lightbox.locator("img").evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(500);
+  await expect(lightbox.locator(".svg-frame svg")).toBeVisible();
+  expect((await lightbox.locator(".svg-frame svg").boundingBox())!.height).toBeGreaterThan(inline);
   await page.keyboard.press("Escape");
   await expect(lightbox).toBeHidden();
 });
