@@ -463,8 +463,26 @@ export function wakeLabel(wakes: readonly Wake[]): string {
  * on runs 39084595194 and 39084587449 and its siblings on their own wakes.
  */
 export function treeWakes(session: string, below: (session: string) => readonly string[], wakes: readonly Wake[]): Wake[] {
-  const sessions = treeSessions(session, below);
-  return wakes.filter(wake => sessions.has(wake.session));
+  const index = wakeIndex(wakes);
+  if (!index.size) return [];
+  const places: number[] = [];
+  for (const id of treeSessions(session, below)) for (const at of index.get(id) ?? []) places.push(at);
+  return places.sort((a, b) => a - b).map(at => wakes[at]!);
+}
+
+/**
+ * The places of each session's wakes in `wakes`, built once for each list. A catalog projection asks `treeWakes` for every agent of every chat
+ * against the same list, and filtering the whole list each time held the chat's event loop 632 ms of the 1.3 s stall d7 read 16 s after the
+ * 20:50:13Z start on 11-03 (cpu-profiles/2026-11-03T20-50-12-128Z), with 252 wakes pending.
+ */
+const wakeIndexes = new WeakMap<readonly Wake[], ReadonlyMap<string, readonly number[]>>();
+function wakeIndex(wakes: readonly Wake[]): ReadonlyMap<string, readonly number[]> {
+  const known = wakeIndexes.get(wakes);
+  if (known) return known;
+  const index = new Map<string, number[]>();
+  wakes.forEach((wake, at) => { const places = index.get(wake.session); if (places) places.push(at); else index.set(wake.session, [at]); });
+  wakeIndexes.set(wakes, index);
+  return index;
 }
 
 /** `session` and every session below it at any depth (`below` gives a session's child sessions). */

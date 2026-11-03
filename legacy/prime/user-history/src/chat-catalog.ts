@@ -1191,8 +1191,10 @@ export class Catalog {
       else rows[at] = { ...row, pulse };
     }
     const below = (session: string) => (children.get(session) ?? []).map(child => child.sessionId);
-    await breathe();
-    for (const row of chatRows) row.agents = withPoolBelow(withWaits(withQueue(withRates(row.agents ?? [], rates), queued), wakes, below), queued, below);
+    for (const row of chatRows) {
+      await breathe();
+      row.agents = withPoolBelow(withWaits(withQueue(withRates(row.agents ?? [], rates), queued), wakes, below), queued, below);
+    }
     const parks = await wait(this.slotParks(chatRows.flatMap(row => row.agents ?? []), queued, now));
     for (const row of chatRows) row.agents = withSlotParks(row.agents ?? [], parks);
     await breathe();
