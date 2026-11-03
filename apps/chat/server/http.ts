@@ -18,7 +18,7 @@ import { CwdRefused } from "./projects.ts";
 import { isHostAway } from "./host/types.ts";
 import { readJson } from "./store.ts";
 import { usageReport, hostsReport } from "./usage.ts";
-import { clientTimings, RequestLog } from "./request-log.ts";
+import { type ClientVia, clientTimings, RequestLog } from "./request-log.ts";
 import { accountRoutes, PoolError } from "./accounts.ts";
 import { serveWiki } from "./wiki/routes.ts";
 
@@ -298,7 +298,8 @@ async function takeTimings(table: Route[], requests: RequestLog, req: IncomingMe
   try {
     const at = Date.now();
     const samples = clientTimings(await readBody(req));
-    for (const sample of samples) requests.write({ at, src: "client", ...sample, r: routeLabel(table, sample.m, sample.p) });
+    const via: ClientVia = req.headers["tailscale-user-login"] ? "tailnet" : "local";
+    for (const sample of samples) requests.write({ at, src: "client", ...sample, r: routeLabel(table, sample.m, sample.p), via });
     json(res, 200, { taken: samples.length });
   } catch (error) {
     json(res, 400, { error: error instanceof Error ? error.message : String(error) });

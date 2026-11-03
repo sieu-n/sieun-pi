@@ -11,10 +11,17 @@ import { join } from "node:path";
 export type TimingSource = "server" | "client";
 
 /**
- * One request: when it ended, who measured it, its method, route pattern (`/api/c/:id/items`), path, status and duration. A client line
- * also has `net`, the browser's network time for the call when it had one, so `ms - net` is the time the page's own main thread held it.
+ * Where a client line's page ran: `tailnet` for a browser that came through tailscale serve, which sets Tailscale-User-Login and drops a
+ * client's own, so the owner's devices; `local` for a browser on the box itself, such as a job's box Chrome walk.
  */
-export interface RequestTiming { at: number; src: TimingSource; m: string; r: string; p: string; s: number; ms: number; net?: number }
+export type ClientVia = "tailnet" | "local";
+
+/**
+ * One request: when it ended, who measured it, its method, route pattern (`/api/c/:id/items`), path, status and duration. A client line
+ * also has `net`, the browser's network time for the call when it had one, so `ms - net` is the time the page's own main thread held it, and
+ * `via`, where that page ran.
+ */
+export interface RequestTiming { at: number; src: TimingSource; m: string; r: string; p: string; s: number; ms: number; net?: number; via?: ClientVia }
 
 /** A client sample as POST /api/timings takes it; the server names its route. */
 export interface ClientTiming { m: string; p: string; s: number; ms: number; net?: number }

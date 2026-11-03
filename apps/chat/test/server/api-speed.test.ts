@@ -37,6 +37,11 @@ test("the server logs each /api request by route and takes the client's waits", 
       { m: "GET", p: "/api/me", s: 200, ms: "slow" },
     ] });
     assert.deepEqual(posted, { status: 200, body: { taken: 2 } });
+    const viaTailnet = await fetch(`${chat.base}/api/timings`, {
+      method: "POST", headers: { "content-type": "application/json", "tailscale-user-login": "owner@example.com" },
+      body: JSON.stringify({ samples: [{ m: "GET", p: "/api/rooms", s: 200, ms: 30, net: 4 }] }),
+    });
+    assert.equal(viaTailnet.status, 200);
     await new Promise(resolve => setTimeout(resolve, 50));
     const logged = lines(dataDir);
     const server = logged.find(line => line.src === "server" && line.p === `/api/c/${room}/items`);
@@ -45,7 +50,9 @@ test("the server logs each /api request by route and takes the client's waits", 
     assert.ok(server!.ms >= 0);
     assert.ok(!logged.some(line => line.p === "/api/timings"), "the timings post itself is not logged");
     const client = logged.filter(line => line.src === "client");
-    assert.deepEqual(client.map(line => [line.r, line.p, line.ms, line.net]), [["/api/c/:id/items", `/api/c/${room}/items`, 420, 12], ["/api/search", "/api/search", 90, undefined]]);
+    assert.deepEqual(client.map(line => [line.r, line.p, line.ms, line.net, line.via]), [
+      ["/api/c/:id/items", `/api/c/${room}/items`, 420, 12, "local"], ["/api/search", "/api/search", 90, undefined, "local"], ["/api/rooms", "/api/rooms", 30, 4, "tailnet"],
+    ]);
   } finally {
     await chat.close();
   }
@@ -89,4 +96,17 @@ test("the precheck reads each metric from the client's lines, falls back to the 
   assert.equal(out.flagged.length, 3);
   assert.match(out.flagged[0]!.excerpt, /replies.*p90 2500 ms.*dm_x\/replies\/p1; its network time, the server's included, was p90 30 ms, p50 8 ms/);
   assert.doesNotMatch(out.flagged[1]!.excerpt, /network/, "a route with no network times names none");
+});
+
+test("the precheck reads the owner's devices first, then any page, then the server", () => {
+  const dir = tempDir();
+  mkdirSync(join(dir, "requests"));
+  const now = Date.UTC(2026, 10, 3, 9);
+  const row = (src: string, ms: number, via?: string) => JSON.stringify({ at: now - 60_000, src, m: "GET", r: "/api/c/:id/items", p: "/api/c/dm_x/items", s: 200, ms, ...(via ? { via } : {}) });
+  writeFileSync(join(dir, "requests", "2026-11-03.jsonl"), `${[row("client", 2000, "local"), row("client", 1500), row("client", 80, "tailnet"), row("server", 5)].join("\n")}\n`);
+  const out = apiSpeed(dir, now, 24 * 3600_000);
+  assert.equal(out.metrics.thread_open_p90_ms_messages, 80);
+  assert.equal(out.metrics.slowest_api_p90_ms, 80);
+  assert.equal(out.metricSources.messages, "tailnet, 1 requests");
+  assert.deepEqual(out.routes.map(s => [s.src, s.count, s.p90]), [["client", 2, 2000], ["tailnet", 1, 80], ["server", 1, 5]]);
 });

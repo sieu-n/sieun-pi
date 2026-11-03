@@ -12,13 +12,21 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import type { RequestTiming, TimingSource } from "../../server/request-log.ts";
+import type { RequestTiming } from "../../server/request-log.ts";
+
+/**
+ * Who measured a line: the server's handler time, or a page's wait, `tailnet` for the owner's devices and `client` for a browser on the box,
+ * such as a job's walk, or a line from before the server named where the page ran. On 11-03 a thread open in the box Chrome waited 32 ms at
+ * p50 for GET /api/rooms at a box load of 12, and up to 2,135 ms while the load sat near 300, so a walk says little about the owner's wait.
+ */
+export type SpeedSource = "server" | "client" | "tailnet";
+const sourceOf = (t: RequestTiming): SpeedSource => (t.src === "client" && t.via === "tailnet" ? "tailnet" : t.src);
 
 /**
  * One route's speed from one source. `netP50` and `netP90` come from the client lines that carry the browser's network time, so a client
  * p90 far above its `netP90` is the page's own main thread, not the server or the network.
  */
-export interface RouteSpeed { route: string; src: TimingSource; count: number; p50: number; p90: number; max: number; slowestPath: string; netP50?: number; netP90?: number }
+export interface RouteSpeed { route: string; src: SpeedSource; count: number; p50: number; p90: number; max: number; slowestPath: string; netP50?: number; netP90?: number }
 
 /** The routes each metric reads, by `<method> <route pattern>`. */
 export const ROUTES = {
@@ -53,7 +61,7 @@ export function readTimings(dir: string, now: number, windowMs: number): Request
 export function routeSpeeds(timings: readonly RequestTiming[]): RouteSpeed[] {
   const groups = new Map<string, RequestTiming[]>();
   for (const timing of timings) {
-    const key = `${timing.src} ${timing.m} ${timing.r}`;
+    const key = `${sourceOf(timing)} ${timing.m} ${timing.r}`;
     const group = groups.get(key);
     if (group) group.push(timing);
     else groups.set(key, [timing]);
@@ -63,20 +71,21 @@ export function routeSpeeds(timings: readonly RequestTiming[]): RouteSpeed[] {
     const slowest = group.reduce((a, b) => (b.ms > a.ms ? b : a));
     const net = group.flatMap(t => (t.net === undefined ? [] : [t.net])).sort((a, b) => a - b);
     return {
-      route: `${group[0]!.m} ${group[0]!.r}`, src: group[0]!.src, count: group.length, p50: percentile(sorted, 0.5), p90: percentile(sorted, 0.9), max: sorted.at(-1)!, slowestPath: slowest.p,
+      route: `${group[0]!.m} ${group[0]!.r}`, src: sourceOf(group[0]!), count: group.length, p50: percentile(sorted, 0.5), p90: percentile(sorted, 0.9), max: sorted.at(-1)!, slowestPath: slowest.p,
       ...(net.length ? { netP50: percentile(net, 0.5), netP90: percentile(net, 0.9) } : {}),
     };
   }).sort((a, b) => b.p90 - a.p90);
 }
 
-/** A route's speed as the owner sees it: the client's lines, else the server's. */
+const PREFERRED: readonly SpeedSource[] = ["tailnet", "client", "server"];
+
+/** A route's speed as the owner sees it: his own devices' lines, else any page's, else the server's. */
 const speedOf = (speeds: readonly RouteSpeed[], route: string): RouteSpeed | undefined =>
-  speeds.find(s => s.src === "client" && s.route === route) ?? speeds.find(s => s.src === "server" && s.route === route);
+  PREFERRED.map(src => speeds.find(s => s.src === src && s.route === route)).find(Boolean);
 
 export function apiSpeed(dir: string, now: number, windowMs: number) {
   const speeds = routeSpeeds(readTimings(dir, now, windowMs));
-  const client = speeds.filter(s => s.src === "client");
-  const seen = client.length ? client : speeds;
+  const seen = PREFERRED.map(src => speeds.filter(s => s.src === src)).find(list => list.length) ?? [];
   const metrics: Record<string, number> = {};
   if (seen.length) metrics.slowest_api_p90_ms = seen[0]!.p90;
   const search = speedOf(speeds, ROUTES.search);
