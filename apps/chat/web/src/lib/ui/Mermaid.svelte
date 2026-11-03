@@ -8,6 +8,12 @@
     onerror?: (message: string) => void;
   };
   let { source, onerror }: Props = $props();
+
+  /** Mermaid's first error line as a sentence: "Parse error on line 2:" reads "Parse error on line 2." */
+  function firstLine(e: unknown): string {
+    const line = (e instanceof Error ? e.message : String(e)).split("\n")[0]!.trim().replace(/[:.]$/, "");
+    return `${line}.`;
+  }
   let svg = $state("");
   let error = $state("");
   let colorMode = $state(document.documentElement.dataset.colorMode);
@@ -26,7 +32,7 @@
       (out) => live && (svg = out),
       (e: unknown) => {
         if (!live) return;
-        error = e instanceof Error ? e.message.split("\n")[0]! : String(e);
+        error = firstLine(e);
         onerror?.(error);
       },
     );

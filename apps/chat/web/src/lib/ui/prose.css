@@ -312,9 +312,12 @@
 .prose .diagram-slot svg {
   cursor: zoom-in;
 }
+/* The 1 px margin keeps the block's inset border visible around the drawing on a panel-colored page, such as a channel row. */
 .prose .diagram-slot {
   min-height: 96px;
+  margin: 0 1px 1px;
   padding: 8px 14px 14px;
+  border-radius: 0 0 calc(var(--radius-row) - 1px) calc(var(--radius-row) - 1px);
   background: var(--surface-panel);
 }
 .prose .diagram-slot[hidden] {
