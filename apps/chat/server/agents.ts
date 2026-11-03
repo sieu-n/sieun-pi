@@ -13,7 +13,7 @@ import type { AgentHostState, AgentId, AgentSummary, RunStatus, ThinkingLevel } 
 import { AGENT_REF_DOC, agentRef, commRef, sameRef, type AgentRef } from "./agent-folder.ts";
 import { freeSlug, isUntitled, type AgentRecord, type AgentStore, type RoomId } from "./agent-store.ts";
 import { DEFAULT_MODEL, type Config } from "./config.ts";
-import type { DurableThread, Host, TreeNode } from "./host/types.ts";
+import type { CreateOptions, DurableThread, Host, TreeNode } from "./host/types.ts";
 import type { Store } from "./store.ts";
 
 export const isAgentId = (id: string): boolean => id.startsWith("ag_");
@@ -84,6 +84,12 @@ export class Agents {
   private sweeping?: Promise<void>;
   /** The comm thread being made per `<agent id>/<room>`, so two deliveries at once make one. */
   private readonly making = new Map<string, Promise<string>>();
+  /** Makes a thread and claims it before a thread list read lists it; the App sets it to `Threads.create`. */
+  createThread = async (opts: CreateOptions, claim: (thread: DurableThread) => void): Promise<DurableThread> => {
+    const thread = await this.host.create(opts);
+    claim(thread);
+    return thread;
+  };
   /** Whether the server has a live link to a box; undefined on a server with one box. The App sets it over its `MultiHost`. */
   hostState: (box: string) => AgentHostState | undefined = () => undefined;
 
@@ -173,11 +179,10 @@ export class Agents {
       let making = this.making.get(key);
       if (!making) {
         // A comm thread runs on its agent's box.
-        making = this.commCreate(record, room).then(create => this.host.create({ ...create, box: record.host })).then(created => {
+        making = this.commCreate(record, room).then(create => this.createThread({ ...create, box: record.host }, created => {
           record.comm = { ...record.comm, [room]: created.id };
           this.store.saveAgents();
-          return created.id;
-        }).finally(() => this.making.delete(key));
+        })).then(created => created.id).finally(() => this.making.delete(key));
         this.making.set(key, making);
       }
       thread = await making;

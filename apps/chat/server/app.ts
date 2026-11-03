@@ -124,6 +124,7 @@ export class App {
       jobs: (thread, jobs) => this.broadcast({ type: "jobs", thread, jobs }),
     }, config.box, log);
     this.threads.agentRecords = this.agents;
+    this.agents.createThread = (opts, claim) => this.threads.create(opts, claim);
     this.rooms = new Rooms({
       store: this.agentStore, state: this.store, host, threads: this.threads, agents: this.agents,
       events: {
@@ -197,7 +198,11 @@ export class App {
       this.search.boxes = () => routing.list().filter(b => b.box !== config.box).map(b => ({ box: b.box, link: () => routing.link(b.box), search: query => b.host.search(query) }));
     }
     this.search.testSends = () => this.rooms.allTestSends();
-    this.search.commThreads = () => this.agents.list().flatMap(record => Object.values(record.comm ?? {}));
+    // Search leaves out every comm thread and every thread of a walk's test agent.
+    this.search.commThreads = () => [
+      ...this.agents.list().flatMap(record => Object.values(record.comm ?? {})),
+      ...Object.keys(this.agentStore.agents.aliases).filter(thread => this.agentStore.isTest(thread)),
+    ];
     this.search.dmPosts = () => this.rooms.searchPosts();
     this.queues = new QueueWatch(host, this.threads, (conversation, place) => {
       this.toWatchers(conversation, { type: "queue", conversation, place });
@@ -572,23 +577,25 @@ export class App {
       cwd = boxCwd(info, input.cwd);
       agentsDir = info.agentsDir;
     }
-    const created = await this.host.create({
+    let record: AgentRecord | undefined;
+    const created = await this.threads.create({
       ...(input.name ? { name: input.name } : {}), model: input.model ?? MODELS.default.model, thinkingLevel: input.thinkingLevel ?? MODELS.default.thinkingLevel, cwd,
       ...(box === this.config.box ? {} : { box }),
+    }, thread => {
+      if (input.kind === "solo") return;
+      if (input.kind === "job" || input.parent) {
+        this.store.state.threads[thread.id] = { kind: "job", ...(input.parent ? { parent: this.agents.record(input.parent)?.id ?? input.parent } : {}) };
+        this.store.saveState();
+        if (input.parent) this.agents.alias(thread.id, input.parent);
+        return;
+      }
+      record = this.agents.add(thread, agentsDir);
+      if (input.test === true) this.agents.markTest(record);
     });
-    if (input.kind === "solo") {
+    if (!record) {
       await this.threads.refresh();
       return this.threads.agent(created.id)!;
     }
-    if (input.kind === "job" || input.parent) {
-      this.store.state.threads[created.id] = { kind: "job", ...(input.parent ? { parent: this.agents.record(input.parent)?.id ?? input.parent } : {}) };
-      this.store.saveState();
-      if (input.parent) this.agents.alias(created.id, input.parent);
-      await this.threads.refresh();
-      return this.threads.agent(created.id)!;
-    }
-    const record = this.agents.add(created, agentsDir);
-    if (input.test === true) this.agents.markTest(record);
     await this.threads.refresh();
     this.roomsChanged();
     return this.threads.agent(record.id)!;
@@ -717,7 +724,8 @@ export class App {
 
   private aboutTest(event: LiveEvent): boolean {
     const id = event.type === "agent" ? event.agent.id : event.type === "job" ? event.job.agent?.id ?? event.job.id
-      : event.type === "conversation" ? event.conversation.id : event.type === "room" ? event.room.id : event.type === "status" ? event.conversation : undefined;
+      : event.type === "conversation" ? event.conversation.agent ?? event.conversation.id : event.type === "room" ? event.room.id
+      : event.type === "status" ? event.conversation : event.type === "jobs" ? event.thread : event.type === "board" || event.type === "duties" ? event.chatId : undefined;
     return id !== undefined && this.agentStore.isTest(id);
   }
 

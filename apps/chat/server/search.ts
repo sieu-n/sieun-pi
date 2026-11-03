@@ -100,7 +100,7 @@ export class Search {
   private index?: DatabaseSync;
   /** The test sends: `from:owner` leaves them out, and their hits name the job as the author. Set by the app once it has the rooms. */
   testSends: () => TestSendEntry[] = () => [];
-  /** Every agent's comm threads, whose entries search leaves out. */
+  /** Every agent's comm threads and every thread of a walk's test agent, whose entries search leaves out. */
   commThreads: () => string[] = () => [];
   /** The DM posts whose words live in a comm thread. */
   dmPosts: () => DmPost[] = () => [];
@@ -218,7 +218,7 @@ export class Search {
       const posts: Ranked[] = [];
       const fromId = query.from && query.from !== "owner" && !agents ? this.threads.registered(query.from)?.id ?? query.from : query.from;
       for (const { row, post } of this.groups.allPosts()) {
-        if (inChannel && row.id !== inChannel.id) continue;
+        if (inChannel ? row.id !== inChannel.id : row.test) continue;
         if (agents ? post.author === "owner" : fromId && post.author !== fromId) continue;
         if (after !== undefined && post.at < after) continue;
         if (before !== undefined && post.at >= before) continue;
@@ -245,7 +245,7 @@ export class Search {
       const posts: Ranked[] = [];
       const fromRecord = query.from && query.from !== "owner" && !agents ? this.threads.agentRecords?.record(query.from) : undefined;
       for (const { room, agent, post } of this.dmPosts()) {
-        if (inRoom && agent.id !== inRoom.id) continue;
+        if (inRoom ? agent.id !== inRoom.id : agent.test) continue;
         const byOwner = post.author === "owner" && !post.testSend;
         if (query.from === "owner" ? !byOwner : agents ? byOwner : query.from && post.author !== query.from && post.author !== fromRecord?.id) continue;
         if (after !== undefined && post.at < after) continue;

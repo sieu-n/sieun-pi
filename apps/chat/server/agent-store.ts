@@ -218,11 +218,13 @@ export class AgentStore {
 
   /**
    * Whether an id belongs to a walk's test agent or test room: an agent id, any thread id of a test agent (work, job or comm thread, or a
-   * conversation `<thread>:<n>` in one), a test agent's DM room, or a test channel or Solo room.
+   * conversation `<thread>:<n>` in one), any agent's comm thread in a test room, a test agent's DM room, or a test channel or Solo room.
    */
   isTest(id: string): boolean {
     if (this.rooms.rooms.some(r => r.id === id && r.test)) return true;
     const thread = /^(.*):\d+$/.exec(id)?.[1] ?? id;
+    const comm = this.commOwner(thread);
+    if (comm && this.rooms.rooms.some(r => r.id === comm.room && r.test)) return true;
     return !!(this.agentOf(thread)?.test || this.agentByRoom(id)?.test);
   }
 

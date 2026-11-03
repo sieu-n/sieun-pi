@@ -463,10 +463,11 @@ export class Boards {
       try {
         // The duty job works where its precheck runs, else in its chat's project folder, so it reads that folder's AGENTS.md chain.
         const cwd = duty.precheck.cwd || this.threads.thread(thread)?.cwd;
-        const job = await this.host.create({ name, model: DEFAULT_MODEL, thinkingLevel: "high", ...(cwd ? { cwd } : {}) });
-        this.store.state.threads[job.id] = { kind: "job", parent: chat };
-        this.store.saveState();
-        this.agents.alias(job.id, chat);
+        const job = await this.threads.create({ name, model: DEFAULT_MODEL, thinkingLevel: "high", ...(cwd ? { cwd } : {}) }, made => {
+          this.store.state.threads[made.id] = { kind: "job", parent: chat };
+          this.store.saveState();
+          this.agents.alias(made.id, chat);
+        });
         await this.threads.refresh().catch(() => undefined);
         const submitted = await this.host.submit(job.id, { text: brief, requestId: `duty:${chat}:${duty.id}:${record.at}`, entry: { kind: "agent.message", data: { from: chat, via: `duty ${duty.id}` } } });
         record.job = { id: job.id, name };

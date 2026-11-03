@@ -6,7 +6,7 @@
 import type {
   AgentId, AgentSummary, ConversationId, ConversationSummary, Item, JobNode, LivePartial, ModelRef, Principal, RunStatus, ThinkingLevel, TimelinePage,
 } from "../web/src/lib/api/types.ts";
-import type { AgentEvent, DurableEvent, DurableThread, EntryRecord, Host, TreeNode } from "./host/types.ts";
+import type { AgentEvent, CreateOptions, DurableEvent, DurableThread, EntryRecord, Host, TreeNode } from "./host/types.ts";
 import type { Store } from "./store.ts";
 import type { AgentRecord } from "./agent-store.ts";
 import { agentSummary, isAgentId, isRoomId, type AgentRows, type Agents } from "./agents.ts";
@@ -106,6 +106,8 @@ export class Threads {
 
   private refreshing?: Promise<void>;
   private cached = "";
+  /** Thread creates in flight (`create`); a thread list read meanwhile holds back each thread it has not listed before. */
+  private creating = 0;
 
   constructor(readonly host: Host, readonly store: Store, readonly events: ThreadEvents, readonly box: string, private readonly log: (line: string) => void = () => {}) {
     const cache = store.cache<ThreadsCache>(THREADS_CACHE, { threads: [], trees: [] });
@@ -137,9 +139,27 @@ export class Threads {
     for (const live of this.live.values()) await live.stop?.().catch(() => undefined);
   }
 
+  /**
+   * Makes a thread and runs `claim` on it (its agent record, alias, job meta or comm thread) before any thread list read lists it. A read
+   * during the create listed the new thread as a root chat no agent holds, so on 11-03 a walk's test DM and channel comm threads went to
+   * the owner's page as Solo rows.
+   */
+  async create(opts: CreateOptions, claim: (thread: DurableThread) => void = () => {}): Promise<DurableThread> {
+    this.creating += 1;
+    try {
+      const thread = await this.host.create(opts);
+      claim(thread);
+      return thread;
+    } finally {
+      this.creating -= 1;
+    }
+  }
+
   /** Reads the thread list, and the tree of every thread whose file changed, and sends what changed. */
   async refresh(): Promise<void> {
-    const threads = await this.host.threads();
+    const read = await this.host.threads();
+    // A thread new to this read may be one a create in flight has not claimed yet; the next read lists it.
+    const threads = this.creating ? read.filter(t => this.list.has(t.id)) : read;
     const next = new Map(threads.map(t => [t.id, t]));
     for (const thread of threads) {
       const tree = this.trees.get(thread.id);
@@ -166,8 +186,11 @@ export class Threads {
     if (jobs.changed.length || jobs.removed.length) this.events.jobList(jobs.changed, jobs.removed);
     const conversations = this.threadConversations();
     const convChanged = conversations.filter(c => this.convCache.get(c.id) !== JSON.stringify(c));
-    this.convCache = new Map(conversations.map(c => [c.id, JSON.stringify(c)]));
-    if (convChanged.length) this.events.conversations(convChanged);
+    const convNext = new Map(conversations.map(c => [c.id, JSON.stringify(c)]));
+    const convGone = [...this.convCache.keys()].some(id => !convNext.has(id));
+    this.convCache = convNext;
+    // A row that leaves the list (a thread an agent claimed) sends the sidebar again too.
+    if (convChanged.length || convGone) this.events.conversations(convChanged);
     for (const live of this.live.values()) {
       const status = this.statusOfConversation(live.thread, live.conversation);
       if ((status === "working") !== live.running && !live.recent.length) {
@@ -355,18 +378,19 @@ export class Threads {
   /**
    * A row per thread and job for the directory, search and the transcript view. A root chat no agent holds yet is `solo`; an agent's work
    * thread and every job are `job`, under the agent's DM room or their parent, so no thread sits in the sidebar beside its agent's DM. A
-   * comm thread and its jobs have no row here; `conversation` still finds them, so they open as a transcript by id.
+   * comm thread and its jobs, and every thread of a walk's test agent, have no row here; `conversation` still finds them, so they open as a
+   * transcript by id.
    */
   threadConversations(): ConversationSummary[] {
-    return [...this.list.values()].filter(row => !this.isComm(row.id)).flatMap(row => this.rowConversations(row));
+    return [...this.list.values()].filter(row => !this.isComm(row.id) && !this.agentRecords?.store.isTest(row.id)).flatMap(row => this.rowConversations(row));
   }
 
-  /** The summary of any conversation by id: a DM room, a channel or Solo room, a thread or job, or a comm thread or one of its jobs. */
+  /** The summary of any conversation by id: a DM room, a channel or Solo room, a thread or job, or a comm or test thread or one of its jobs. */
   conversation(id: ConversationId): ConversationSummary | undefined {
     const listed = this.conversations().find(c => c.id === id);
     if (listed) return listed;
     const row = this.list.get(parseConversationId(id).thread);
-    return row && this.isComm(row.id) ? this.rowConversations(row).find(c => c.id === id) : undefined;
+    return row ? this.rowConversations(row).find(c => c.id === id) : undefined;
   }
 
   private rowConversations(row: DurableThread): ConversationSummary[] {
