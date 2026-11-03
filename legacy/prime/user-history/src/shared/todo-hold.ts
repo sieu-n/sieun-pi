@@ -43,20 +43,43 @@ export function waitRefs(text: string, chats: readonly NamedChat[] = []): { refs
     });
   return { refs, rest };
 }
+/**
+ * Each `chats` array's open chats by name, lower-cased and trimmed, full and short, with the longest name's length, built once per array. Until
+ * 11-04 every possessive ref scanned every catalog row: at 21:55:36Z on 11-03 a duty's `withBoardLinks` read about 8,400 rows' names per ref
+ * on each of its three passes over the board, and the chat's event loop stalled 1.1 s while CI rose to 51 of 80 cores (d7's one dirty minute).
+ */
+const nameIndexes = new WeakMap<readonly NamedChat[], { ids: Map<string, string | null>; longest: number }>();
+/** Each open chat's full and short name to its id, or to null when two chats carry it. */
+function nameIndex(chats: readonly NamedChat[]): { ids: Map<string, string | null>; longest: number } {
+  const known = nameIndexes.get(chats);
+  if (known) return known;
+  const index = { ids: new Map<string, string | null>(), longest: 0 };
+  const add = (name: string, id: string): void => {
+    if (!name) return;
+    const held = index.ids.get(name);
+    index.ids.set(name, held === undefined || held === id ? id : null);
+    if (name.length > index.longest) index.longest = name.length;
+  };
+  for (const chat of chats) {
+    if (chat.archived) continue;
+    const name = chat.name;
+    add(name.trim().toLowerCase(), chat.id);
+    const short = name.indexOf(" (");
+    if (short >= 0) add(name.slice(0, short).trim().toLowerCase(), chat.id);
+  }
+  nameIndexes.set(chats, index);
+  return index;
+}
 /** The one chat whose name ends `before` as whole words (the longest name wins), or null when none or several do. */
 function chatNamed(before: string, chats: readonly NamedChat[]): string | null {
   const text = before.toLowerCase().trimEnd();
-  let best = 0;
-  let found = new Set<string>();
-  for (const chat of chats) {
-    if (chat.archived) continue;
-    for (const name of new Set([chat.name.trim().toLowerCase(), chat.name.split(" (")[0]!.trim().toLowerCase()])) {
-      if (!name || name.length < best || !text.endsWith(name) || /[a-z0-9]/.test(text[text.length - name.length - 1] ?? "")) continue;
-      if (name.length > best) { best = name.length; found = new Set(); }
-      found.add(chat.id);
-    }
+  const { ids, longest } = nameIndex(chats);
+  for (let at = Math.max(0, text.length - longest); at < text.length; at++) {
+    if (at > 0 && /[a-z0-9]/.test(text[at - 1]!)) continue;
+    const found = ids.get(text.slice(at));
+    if (found !== undefined) return found;
   }
-  return found.size === 1 ? [...found][0]! : null;
+  return null;
 }
 /**
  * The open step on another chat's board that the first clause of a step's wait names (`waitRefs`: "<session id> p476", "CI and RepoOps's
