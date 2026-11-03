@@ -59,7 +59,7 @@ import { SEARCH_HISTORY_TOOL } from "../../../pi-history/src/pi/index.ts";
 import { threadAgent } from "./agent-profile.ts";
 import { ChatApp } from "./chat-app.ts";
 import { CommHandedDoc } from "./comm.ts";
-import { commPostRefusal, turnStartedAt } from "./comm-guard.ts";
+import { commPostRefusal, turnAsked, turnStartedAt } from "./comm-guard.ts";
 import { unpostedReply, unpostedReplyRequest } from "./comm-reply.ts";
 import { durableTool, loadPiExtension, piContext, type LoadedPiExtension, type PiSession, type PiTool, type PiToolResult } from "./pi-extensions.ts";
 
@@ -270,7 +270,7 @@ async function commRefusal(chat: PrimeChat, thread: ChatThread, call: { id: stri
     const owner = (await liveGuard(chat.agentDir)).tellTurn(messages).owner;
     const handedAt = (await harness.snapshot(CommHandedDoc, ROOT_CONVERSATION_ID, context))?.at ?? 0;
     const startedAt = turnStartedAt(messages as never);
-    return commPostRefusal(text, { owner, handed: handedAt > 0 && startedAt !== undefined && handedAt >= startedAt });
+    return commPostRefusal(text, { owner, asked: turnAsked(messages as never), handed: handedAt > 0 && startedAt !== undefined && handedAt >= startedAt });
   } catch {
     return undefined;
   }

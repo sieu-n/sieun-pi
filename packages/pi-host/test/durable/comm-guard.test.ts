@@ -1,11 +1,11 @@
 /**
  * `relay-line.ts` and `comm-guard.ts` on the agent posts of apps/chat's room logs (11-03): the relay lines are marked with their kind, and
  * the results and answers beside them are not; a comm thread's post after its hand-over in the same turn is refused unless it asks a question,
- * hand-over words are refused on any turn, and progress words only on a turn the owner did not start.
+ * hand-over words are refused on any turn, and progress words unless the owner started the turn with a question.
  */
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { commPostRefusal, turnStartedAt } from "../../src/durable/comm-guard.ts";
+import { asks, commPostRefusal, turnAsked, turnStartedAt } from "../../src/durable/comm-guard.ts";
 import { relayWords } from "../../src/durable/relay-line.ts";
 
 /** Agent posts from the room logs that relay the agent's own work, with the kind each one reads as. */
@@ -22,6 +22,7 @@ const RELAYS: [string, "handoff" | "progress"][] = [
   ["I asked the vent work thread to build the full list.", "handoff"],
   ["I sent the task to the work thread.", "handoff"],
   ["On it.", "handoff"],
+  ["The catch is Chrome shares one Instagram login, so your open Instagram tabs would flip accounts for those seconds. A job is testing whether that can be avoided.", "progress"],
   ["지금 konti domain finish가 그 로그인으로 직접 들어가서 konti.bot 리다이렉트 걸고, 끝나면 결과만 알려드릴게요.", "handoff"],
 ];
 
@@ -41,29 +42,48 @@ const RESULTS = [
   "Stopped. The Railway job and its helpers are shut down, and I sent the Railway Breach thread where things stand.",
 ];
 
+/** On 11-03, an answer to the owner's status question (ch_14ad7a70 p39 and p40), which may go out. */
+const ANSWERED: [string, string] = ["are you working on Meilisearch then?", "Yes, the search job (p56) is timing Meilisearch against our fixed SQLite search on the real data now."];
+
 test("the relay lines of the room logs read as hand-over or progress, and the results and answers beside them read as neither", () => {
   for (const [text, kind] of RELAYS) assert.equal(relayWords(text)?.kind, kind, text);
   for (const text of RESULTS) assert.equal(relayWords(text), undefined, text);
 });
 
 test("a comm thread's post after its hand-over in the turn is refused unless it is a plain question", () => {
-  const handed = { owner: true, handed: true };
+  const handed = { owner: true, asked: false, handed: true };
   assert.match(commPostRefusal("Makes sense, Accounts moves into a tab under Settings and leaves the top bar.", handed)!, /^Not sent: you handed this to your work thread in this turn/);
   assert.match(commPostRefusal(RELAYS[0]![0], handed)!, /handed this to your work thread/);
   assert.equal(commPostRefusal("Which repo should the panel list cover, auto-sns-agent only or every repo?", handed), undefined);
   assert.match(commPostRefusal("The vent thread is listing the panels now, want the logins too?", handed)!, /handed this to your work thread/);
 });
 
-test("hand-over words are refused on any turn, and progress words only on a turn the owner did not start", () => {
-  const owner = { owner: true, handed: false };
-  const notice = { owner: false, handed: false };
-  assert.match(commPostRefusal("I'll post the wiki link here once the list is done.", owner)!, /^Not sent: "I'll post the wiki link here once" announces a hand-over/);
-  assert.equal(commPostRefusal("summaries.md isn't written yet. The work thread is reading threads.ts, the last of the 20 files.", owner), undefined);
+test("hand-over words are refused on any turn, and progress words unless the owner started the turn with a question", () => {
+  const owner = { owner: true, asked: false, handed: false };
+  const asked = { owner: true, asked: true, handed: false };
+  const notice = { owner: false, asked: true, handed: false };
+  assert.match(commPostRefusal("I'll post the wiki link here once the list is done.", asked)!, /^Not sent: "I'll post the wiki link here once" announces a hand-over/);
+  assert.equal(commPostRefusal("summaries.md isn't written yet. The work thread is reading threads.ts, the last of the 20 files.", asked), undefined);
+  assert.equal(commPostRefusal(ANSWERED[1], { ...owner, asked: asks(ANSWERED[0]) }), undefined);
+  assert.match(commPostRefusal(RELAYS.find(([text]) => text.startsWith("The catch is Chrome"))![0], { ...owner, asked: asks("proxy가 아니라 근데 Client browser에서") })!,
+    /^Not sent: "job is testing" is progress on work still going/);
   assert.match(commPostRefusal("The work thread is reading threads.ts, the last of the 20 files.", notice)!, /is progress on work still going/);
   assert.equal(commPostRefusal("summaries.md is done, with one line for each of the 20 files.", notice), undefined);
+});
+
+test("an owner post asks when a line ends in a question, and a statement or a question mid-line before a task does not", () => {
+  for (const text of ["are you working on Meilisearch then?", "done??? @agent factory", "remove zerobounce . \n\nwhat's slack-sales?\ntheres a whole bunch", "이거 어때", "다 끝났나요", "지금 할까\n", "로그인 됐니~"]) {
+    assert.equal(asks(text), true, text);
+  }
+  for (const text of ["proxy가 아니라 근데 Client browser에서", "ㅇㅇ 그렇게 좀 해줘.", "Delete 안보임", "@agent factory  이딴건 말하면 안되겠지? 계속 usage pattern 감시하고, 실제 slack처럼 동작하도록 해."]) {
+    assert.equal(asks(text), false, text);
+  }
 });
 
 test("the turn starts at the newest owner or agent message before the call", () => {
   assert.equal(turnStartedAt([{ role: "user", timestamp: 1 }, { role: "assistant", timestamp: 2 }, { role: "custom", timestamp: 3 }, { role: "toolResult", timestamp: 4 }, { role: "assistant", timestamp: 5 }]), 3);
   assert.equal(turnStartedAt([{ role: "assistant", timestamp: 2 }]), undefined);
+  assert.equal(turnAsked([{ role: "user", content: "how far is the list?" }, { role: "assistant", content: [{ type: "text", text: "On it?" }] }]), true);
+  assert.equal(turnAsked([{ role: "user", content: "how far?" }, { role: "custom", content: [{ type: "text", text: "reading threads.ts" }] }]), false);
+  assert.equal(turnAsked([{ role: "user", content: [{ type: "image" }, { type: "text", text: "이거 어때" }] }]), true);
 });

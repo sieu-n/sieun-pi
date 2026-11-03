@@ -2,7 +2,9 @@
  * Duty precheck: relay and progress posts in the owner's real rooms (owner's words, #sw-factory-build, 11-03, msg mw02d0du: "이딴건 말하면
  * 안되겠지? 계속 usage pattern 감시하고, 실제 slack처럼 동작하도록 해"). It reads apps/chat's room logs and counts the agent posts of the last
  * 24 h that relay the agent's own work instead of giving a result (`packages/pi-host/src/durable/relay-line.ts`), such as vent's "The vent
- * thread is now listing every panel, ...". The target is 0. A walk's test rooms and test agents, and archived rooms, are left out.
+ * thread is now listing every panel, ...". It counts as pi-host's comm guard refuses (`comm-guard.ts`): a hand-over post always, and a
+ * progress post unless the owner's newest post before it in the same reply thread (else the room) asks a question. The target is 0. A walk's
+ * test rooms and test agents, and archived rooms, are left out.
  *
  * Usage: OUTPUT_FILE=<file> node --import tsx scripts/duties/relay-posts.ts [--data-dir <dir>] [--hours 24]
  * The data dir defaults to APPS_CHAT_DATA_DIR, else ~/.pi/agent/chat. Without OUTPUT_FILE the result prints to stdout.
@@ -11,10 +13,18 @@ import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { asks } from "../../../../packages/pi-host/src/durable/comm-guard.ts";
 import { relayWords } from "../../../../packages/pi-host/src/durable/relay-line.ts";
-import { AgentStore } from "../../server/agent-store.ts";
+import { AgentStore, type RoomPost } from "../../server/agent-store.ts";
 
 export interface RelayFinding { room: string; post: string; author: string; at: number; kind: string; words: string; text: string }
+
+/** Whether the owner's newest post before `post` in its reply thread, else in the room, asks a question; a job's test send asks nothing. */
+function ownerAsked(posts: readonly RoomPost[], post: RoomPost): boolean {
+  const thread = post.threadRoot;
+  const last = posts.findLast(p => p.author === "owner" && p.at <= post.at && (!thread || p.threadRoot === thread || p.id === thread));
+  return !!last && !last.testSend && asks(last.text);
+}
 
 /** The relay posts of every real room in the window ending at `now`, and how many agent posts the window held. */
 export function relayPosts(dir: string, now: number, windowMs: number): { findings: RelayFinding[]; agentPosts: number } {
@@ -23,11 +33,12 @@ export function relayPosts(dir: string, now: number, windowMs: number): { findin
   let agentPosts = 0;
   for (const room of store.rooms.rooms) {
     if (room.archived || store.isTest(room.id)) continue;
-    for (const post of store.postsOf(room.id)) {
+    const posts = store.postsOf(room.id);
+    for (const post of posts) {
       if (post.author === "owner" || post.testSend || store.isTest(post.author) || post.at < now - windowMs || post.at > now) continue;
       agentPosts++;
       const relay = relayWords(post.text);
-      if (relay) findings.push({ room: room.id, post: post.id, author: post.author, at: post.at, kind: relay.kind, words: relay.words, text: post.text });
+      if (relay && !(relay.kind === "progress" && ownerAsked(posts, post))) findings.push({ room: room.id, post: post.id, author: post.author, at: post.at, kind: relay.kind, words: relay.words, text: post.text });
     }
   }
   return { findings: findings.sort((a, b) => a.at - b.at), agentPosts };

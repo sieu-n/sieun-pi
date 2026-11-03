@@ -9,7 +9,10 @@
  *    ...", and the agent factory comm thread answered the owner's complaint about that line with "Got it, ..." and "The agent factory work
  *    thread is building all five now, ...", both after its hand-over in the same turn.
  * 2. A post with hand-over words (`relay-line.ts`) is refused on any turn.
- * 3. A post with progress words is refused on a turn the owner did not start; on his turn it may answer his status question.
+ * 3. A post with progress words is refused unless the owner started the turn with a question (`asks`), which the progress may answer. On
+ *    11-03 chrome extension answered the owner's "proxy가 아니라 근데 Client browser에서" with "... A job is testing whether that can be
+ *    avoided.", a relay nobody asked for, and agent factory answered his "are you working on Meilisearch then?" with "Yes, the search job
+ *    (p56) is timing Meilisearch ...", which answers him.
  */
 import { relayWords } from "./relay-line.ts";
 
@@ -18,14 +21,25 @@ export interface CommPostTurn {
   owner: boolean;
   /** Whether this comm thread handed its work thread a task after the turn's input arrived. */
   handed: boolean;
+  /** Whether the post that started the turn asks something (`asks`). */
+  asked: boolean;
 }
 
-const asks = (text: string): boolean => text.includes("?");
+/**
+ * A line that ends in a question: a "?" with at most a trailing @mention after it, or a Korean question ending the owner writes without one.
+ * Of his 449 room posts by 11-03, 73 held a "?", and 52 of those end a line with it. The rest put the "?" mid-line before a task or a format
+ * note, as in "이딴건 말하면 안되겠지? 계속 usage pattern 감시하고, ...", which handed agent factory five tasks and asked no status. None asked
+ * with only a Korean ending, so that list stays to endings that read as a question and never as a statement.
+ */
+const QUESTION_LINE = /(?:[?？][\s)"”.~!ㅋㅎ]*(?:@.*)?|(?:어때|나요|까요?|니)[\s.~!ㅋㅎ]*)$/mu;
+
+/** Whether the owner's post asks something, so progress may answer it. apps/chat's relay-posts precheck counts with it too. */
+export const asks = (text: string): boolean => QUESTION_LINE.test(text);
 
 /** Why a comm thread's post must not go out, or undefined when it may. */
 export function commPostRefusal(text: string, turn: CommPostTurn): string | undefined {
   const relay = relayWords(text);
-  if (turn.handed && (relay || !asks(text))) {
+  if (turn.handed && (relay || !text.includes("?"))) {
     return "Not sent: you handed this to your work thread in this turn. Your 👀 on the post already shows that you are on it, so post nothing " +
       "about the hand-over and end the turn now. Post the result once, when the work thread's report or the [work-done ...] notice brings it. " +
       "Only a question the owner must answer before the work can go on goes out now.";
@@ -34,18 +48,29 @@ export function commPostRefusal(text: string, turn: CommPostTurn): string | unde
     return `Not sent: "${relay.words}" announces a hand-over or a result to come. Your 👀 on the post already shows that the work runs, so post ` +
       "nothing until the result is in, then post the result once.";
   }
-  if (relay && !turn.owner) {
+  if (relay && !(turn.owner && turn.asked)) {
     return `Not sent: "${relay.words}" is progress on work still going, and nobody asked for it on this turn. End the turn with no ` +
       "message, and post once when the result is in.";
   }
   return undefined;
 }
 
-/** The time the current turn's input arrived: the newest owner or agent message before the call, by its timestamp. */
-export function turnStartedAt(messages: readonly { role: string; timestamp?: unknown }[]): number | undefined {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i]!;
-    if (message.role === "user" || message.role === "custom") return typeof message.timestamp === "number" ? message.timestamp : undefined;
-  }
-  return undefined;
+interface TurnMessage { role: string; timestamp?: unknown; content?: unknown }
+
+/** The current turn's input: the newest owner or agent message before the call. */
+const turnInput = (messages: readonly TurnMessage[]): TurnMessage | undefined =>
+  messages.findLast(message => message.role === "user" || message.role === "custom");
+
+/** The time the current turn's input arrived, by its timestamp. */
+export function turnStartedAt(messages: readonly TurnMessage[]): number | undefined {
+  const timestamp = turnInput(messages)?.timestamp;
+  return typeof timestamp === "number" ? timestamp : undefined;
+}
+
+/** Whether the current turn's input asks something (`asks`). */
+export function turnAsked(messages: readonly TurnMessage[]): boolean {
+  const content = turnInput(messages)?.content;
+  if (typeof content === "string") return asks(content);
+  const blocks = Array.isArray(content) ? (content as { type?: unknown; text?: unknown }[]) : [];
+  return blocks.some(block => block.type === "text" && typeof block.text === "string" && asks(block.text));
 }
