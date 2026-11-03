@@ -186,6 +186,7 @@ On the owner's Mac the same split holds, and the box is us-metal02 (`ASIDE_BROWS
 
 On 2026-10-29 the Mac read unusable from 14:42Z while agents' Aside tabs held 12 of 25 tabs at 4.22 GB (15:06Z) and 16 of 31 at 5.34 GB (15:21Z), nearly all on `localhost:5180` and `:5174`, and at 16:40Z at least 5 of the agents' local-app tabs had no owner record, so no park, job end or sweep could close them.
 A Mac page load takes longer this way, because each request crosses the ssh tunnel at about 190 ms: on 10-29 the 5174 landing page with 250 resources loaded in 22 s, and staging.virev.ai in 5.7 s.
+Chrome reaches that tunnel through an HTTP/2 proxy in the runner (`box/loopback.mjs`), because Chrome keeps only 6 HTTP/1.1 connections per host. On 11-03 a reload of 5180's /app/inbox, which loads about 875 Vite modules, hydrated in 25 to 40 s over plain SOCKS and in 8 to 16 s through the proxy, measured on the Mac path at box load 200.
 With `ASIDE_BROWSER_BOX=0` every page opens in Aside, and nothing else may open a window on the Mac.
 An agent on the Mac never launches a Playwright, Puppeteer or Chrome for Testing browser there either, headless included, because Mac browsers pushed its load to 110 to 170 and froze 5180 on 10-19.
 

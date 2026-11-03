@@ -31,7 +31,7 @@ if (!hasDisplayServer()) {
 }
 const screen = await startDisplay();
 const loopback = process.env.BOX_LOOPBACK_VIA ? await startLoopbackTunnel(process.env.BOX_LOOPBACK_VIA) : null;
-const proxy = loopback ? { proxy: loopback.proxy } : {};
+const proxy = loopback ? { proxy: loopback.proxy, args: loopback.args } : {};
 const chrome = process.env.BOX_CHROME || (fs.existsSync("/usr/bin/google-chrome") ? "/usr/bin/google-chrome" : chromium.executablePath());
 const env = { ...process.env, DISPLAY: screen.display };
 // Chromium fails every in-flight request with ERR_NETWORK_CHANGED when a host interface changes address. On us-metal02
