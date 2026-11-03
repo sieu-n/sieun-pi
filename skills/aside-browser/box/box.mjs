@@ -114,7 +114,12 @@ async function run(code) {
   return lines.join("\n");
 }
 
+// The runner exits as soon as stdin closes, even while a command still runs. On 2026-11-03 a box started from a Mac
+// kernel stayed up 2.9 h with its Chrome, Xvfb and 13 processes after that kernel and its ssh end were gone: no process
+// held the write end of its stdin, but the loop sat in an await that never returned and never read the end. Chrome
+// exits on its own when this process's debugging pipe closes.
 const rl = createInterface({ input: process.stdin });
+rl.on("close", () => { closing = true; screen.close(); loopback?.close(); cleanup(); process.exit(0); });
 for await (const line of rl) {
   let msg;
   try { msg = JSON.parse(line); } catch { continue; }
@@ -124,8 +129,3 @@ for await (const line of rl) {
     process.stdout.write(JSON.stringify({ id: msg.id, error: String((e && e.stack) || e) }) + "\n");
   }
 }
-closing = true;
-await browser.close();
-screen.close();
-loopback?.close();
-cleanup();
