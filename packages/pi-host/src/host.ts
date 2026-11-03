@@ -36,6 +36,7 @@ import schedulerExtension from "./scheduler-extension.ts";
 import { withPoolRetries } from "@sieun-pi/pi-family/retries";
 import type { Job } from "./schedule.ts";
 import type { DurableCommands } from "./durable/commands.ts";
+import { reopenDurableHeartbeat } from "./durable/heartbeat.ts";
 
 export interface HostOptions {
   agentDir: string;
@@ -350,6 +351,9 @@ export class PiHost implements HostApi {
    * waking the child's dormant row, which pi-rlm registers when the root's children index loads.
    */
   private async reopenFor(job: Job): Promise<void> {
+    // A durable conversation's rlm_heartbeat: a handle that submits through the thread list, which opens the thread file itself.
+    const threads = this.options.durable?.threads;
+    if (threads && reopenDurableHeartbeat(this.scheduler, job, threads, line => this.log(line))) return;
     if (job.runtimeKind === "subagent") {
       if (job.rootSessionId && !this.sessions.has(job.rootSessionId)) await this.ensure(job.rootSessionId);
       const row = registry.dormantOf(job.activeSessionId);
