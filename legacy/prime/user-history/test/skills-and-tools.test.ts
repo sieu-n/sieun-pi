@@ -122,6 +122,20 @@ test("railway_auth keeps the fail and its Fix line when status.railway.com shows
   }
 });
 
+// 11-03: the pi-host canary chat's unit loads no EnvironmentFile, so its run had no RAILWAY_API_TOKEN while agent.env held a working one.
+test("railway_auth reads RAILWAY_API_TOKEN from agent.env when the env lacks it", async () => {
+  const read: string[] = [];
+  const tokens: (string | undefined)[] = [];
+  const outcome = await railwayAuth.run({
+    ...railwayDeps(undefined),
+    readFile: async path => { read.push(path); return '# account token\nexport FOO=1\nRAILWAY_API_TOKEN="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"\n'; },
+    exec: async (_file, _args, options) => { tokens.push(options.env?.RAILWAY_API_TOKEN); return { code: 0, stdout: "Logged in as Sieun Park (sieunpark77@gmail.com)", stderr: "", ms: 0 }; },
+  });
+  assert.equal(outcome.status, "pass", JSON.stringify(outcome));
+  assert.deepEqual(read, ["/home/sieun/.config/sieun-pi/agent.env"]);
+  assert.deepEqual(tokens, ["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"]);
+});
+
 test("railway_auth without RAILWAY_API_TOKEN keeps the OAuth whoami", async () => {
   const outcome = await railwayAuth.run(railwayDeps(undefined));
   assert.equal(outcome.status, "pass", JSON.stringify(outcome));

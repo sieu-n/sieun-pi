@@ -389,9 +389,28 @@ async function cliLogin(deps: Deps, file: string, args: string[], ok: (result: E
 }
 
 /** railway prefers RAILWAY_API_TOKEN to the OAuth login in ~/.railway/config.json and passes on the login for an hour after each refresh, so a broken env token hid there on 10-18. With the token set, whoami runs under an empty HOME, so only the token can pass. */
+/**
+ * A key from the env, else from ~/.config/sieun-pi/agent.env (or SIEUN_PI_AGENT_ENV), parsed like systemd's EnvironmentFile as
+ * skills/board/src/sieun_pi_agent_env.py does. On 11-03 the pi-host canary chat (sieun-pi-chat-pi.service), whose unit loads no
+ * EnvironmentFile, ran railway_auth with no RAILWAY_API_TOKEN and failed on the empty OAuth login while the token in agent.env worked.
+ */
+async function agentEnvValue(deps: Deps, key: string): Promise<string | undefined> {
+  const env = deps.env ?? process.env;
+  if (env[key]) return env[key];
+  const text = await deps.readFile(env.SIEUN_PI_AGENT_ENV || join(deps.home, ".config/sieun-pi/agent.env")).catch(() => "");
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    const at = line.indexOf("=");
+    if (at < 0 || line.startsWith("#") || line.startsWith(";") || line.slice(0, at).trim() !== key) continue;
+    const value = line.slice(at + 1).trim();
+    return value.length >= 2 && value[0] === value.at(-1) && (value[0] === '"' || value[0] === "'") ? value.slice(1, -1) : value;
+  }
+  return undefined;
+}
+
 async function railwayAuth(deps: Deps): Promise<Outcome> {
   const loggedIn = (result: ExecResult) => both(result).includes("Logged in as");
-  const token = (deps.env ?? process.env).RAILWAY_API_TOKEN;
+  const token = await agentEnvValue(deps, "RAILWAY_API_TOKEN");
   if (!token) return cliLogin(deps, "railway", ["whoami"], loggedIn, "run `railway login --browserless` in the owner's Aside browser");
   const env = { RAILWAY_API_TOKEN: token, RAILWAY_NO_AUTO_UPDATE: "1", HOME: join(deps.scratchDir, `railway-token-home-${process.pid}`) };
   const whoami = () => deps.exec("railway", ["whoami"], { env, timeoutMs: CALL_TIMEOUT_MS });
