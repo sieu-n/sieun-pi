@@ -20,6 +20,7 @@ import type { AgentRecord, AgentStore, FeedCursor, RoomId, RoomPost, TestSend } 
 import type { Agents } from "./agents.ts";
 import { isHostAway, type ContentBlock, type EntryRecord, type Host, type Message, type Submitted } from "./host/types.ts";
 import { refusedForGood, retryWait } from "./outbox.ts";
+import { reactionsOf } from "./reactions.ts";
 import type { Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
 import { isInput, sentMessage } from "./timeline.ts";
@@ -557,7 +558,8 @@ export class Rooms {
     });
   }
 
-  private changed(record: AgentRecord, posts: RoomPost[]): void {
+  /** Sends the posts to the room's watchers and its row to the sidebar. */
+  changed(record: AgentRecord, posts: RoomPost[]): void {
     this.deps.events.items(record.room, posts.map(post => this.item(post)));
     this.deps.events.changed();
   }
@@ -628,7 +630,10 @@ export class Rooms {
 
   item(post: RoomPost): Item {
     const record = this.deps.agents.record(post.room);
-    const base = { kind: "message" as const, id: post.id, seq: post.seq, at: post.at, text: post.text, images: post.images, mentions: [] };
+    const base = {
+      kind: "message" as const, id: post.id, seq: post.seq, at: post.at, text: post.text, images: post.images, mentions: [],
+      ...reactionsOf(id => this.deps.threads.principal(id), post),
+    };
     if (post.author === "owner") {
       const d = post.delivery;
       const test = post.testSend ? { by: this.deps.threads.principal(post.testSend.by), reason: post.testSend.reason } : undefined;

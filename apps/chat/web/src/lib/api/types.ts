@@ -157,6 +157,12 @@ export interface Delivery {
   queue?: TurnPlace;
 }
 
+/**
+ * One emoji under a room post and who put it there, in the order each emoji first came. `WIP_EMOJI` (shared/reactions.ts) by an agent
+ * means that agent works on the post now; the chat server sets and clears it from the agent's run state.
+ */
+export interface Reaction { emoji: string; by: Principal[] }
+
 /** A job a turn spawned, drawn as a thread pill under that turn. */
 export interface JobRef { conversation: ConversationId; name: string; status: RunStatus; replies: number; lastAt: Ms }
 
@@ -199,6 +205,8 @@ export type Item =
       jobs?: JobRef[];
       /** A post or input a job typed into the owner's composer to test it: `author` is that job, and the page says it was a test send. */
       testSend?: { by: Principal; reason: string };
+      /** Room posts: the emoji under the post, such as the wip mark of an agent that works on it. */
+      reactions?: Reaction[];
     }
   | {
       kind: "turn"; id: string; at: Ms; author: Principal; text: string; live: boolean; steps: Step[]; images: ImageRef[]; jobs: JobRef[];
@@ -263,6 +271,8 @@ export interface SendRequest {
   whenBusy?: "steer" | "followUp";
 }
 export interface SendResult { item: Item; deliveries: Delivery[]; queue?: TurnPlace | null }
+/** `POST /api/c/:id/posts/:post/reactions`: the owner adds (`on`, the default) or takes off his own `emoji` on a room post. */
+export interface ReactionRequest { emoji: string; on?: boolean }
 
 /**
  * A channel (`ch_<id>`) or a Solo room (`so_<id>`), as `/api/rooms` returns it (agent-model.md phase 5). `agenda` is a Solo room's agenda

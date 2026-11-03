@@ -25,6 +25,7 @@ import { isGroupRoom, type AgentRecord, type AgentStore, type FeedCursor, type G
 import type { Agents } from "./agents.ts";
 import { isHostAway, type EntryRecord, type Host, type Submitted } from "./host/types.ts";
 import { refusedForGood, retryWait } from "./outbox.ts";
+import { reactionsOf } from "./reactions.ts";
 import { agedPost, agentPostParts, queuedNote, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
 import type { Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
@@ -714,7 +715,8 @@ export class GroupRooms {
 
   // Reading
 
-  private emit(row: GroupRoom, posts: RoomPost[]): void {
+  /** Sends the posts, with the roots of the replies among them, to the room's watchers, and the room's row to the sidebar. */
+  emit(row: GroupRoom, posts: RoomPost[]): void {
     const all = this.store.postsOf(row.id);
     const ids = new Set(posts.map(p => p.id));
     for (const post of posts) if (post.threadRoot && !ids.has(post.threadRoot)) ids.add(post.threadRoot);
@@ -743,7 +745,7 @@ export class GroupRooms {
       mentions: (post.mentions ?? []) as AgentId[], ...(post.threadRoot ? { threadRoot: post.threadRoot } : {}),
       ...(post.author === "owner" ? { requestId: post.requestId } : agentPostParts(this.deps.threads, post)),
       ...(replies.length ? { thread: { replies: replies.length, lastAt: replies.at(-1)!.at, authors } } : {}),
-      deliveries: (post.deliveries ?? []).map(d => this.publicDelivery(row, post, d, all)),
+      deliveries: (post.deliveries ?? []).map(d => this.publicDelivery(row, post, d, all)), ...reactionsOf(id => this.deps.threads.principal(id), post),
     };
   }
 

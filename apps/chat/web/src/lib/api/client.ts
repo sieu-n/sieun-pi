@@ -5,7 +5,7 @@
 import type {
   AgentConfig, AgentFolder, AgentHostList, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
   ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForYouItem, HarnessEntryView, HostsReport, Item, JobNode, Me, MemoryInput, ModelCatalog, ProjectList, SearchQuery, SearchResult, SendRequest,
-  Room, RoomInput, RoomPatch, SendResult, Sidebar, ThinkingLevel, TimelinePage, UsageReport, AccountsView,
+  ReactionRequest, Room, RoomInput, RoomPatch, SendResult, Sidebar, ThinkingLevel, TimelinePage, UsageReport, AccountsView,
 } from "./types.ts";
 
 export class ApiError extends Error {
@@ -102,6 +102,9 @@ export const api = {
   /** Drops a pending send that failed. */
   discardSend: (id: ConversationId, requestId: string) => call<{ ok: true }>("DELETE", `/api/c/${enc(id)}/send/${enc(requestId)}`),
   abort: (id: ConversationId) => call<{ ok: true }>("POST", `/api/c/${enc(id)}/abort`),
+  /** Puts the owner's emoji on a room post, or with `on` false takes it off; the room's live `items` event carries the change too. */
+  react: (id: ConversationId, post: string, emoji: string, on = true) =>
+    call<{ item: Item }>("POST", `/api/c/${enc(id)}/posts/${enc(post)}/reactions`, { emoji, on } satisfies ReactionRequest),
   patch: (id: ConversationId, patch: ConversationPatch) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, patch),
   rename: (id: ConversationId, name: string) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { name }),
   archive: (id: ConversationId, archived = true) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { archived }),

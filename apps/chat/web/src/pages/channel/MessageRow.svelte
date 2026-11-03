@@ -11,6 +11,7 @@
   import type { MarkdownContext } from "$lib/ui/markdown";
   import type { Status } from "$lib/ui/types";
   import { conversationHref, router } from "$lib/router.svelte";
+  import Reactions from "./Reactions.svelte";
   import StepLine from "./StepLine.svelte";
   import ThreadPill from "./ThreadPill.svelte";
   import { offlineText } from "$pages/agents/host-badge";
@@ -81,6 +82,11 @@
   ]);
   let lightbox = $state<string | null>(null);
   let copied = $state(false);
+  /** A stored post of the open DM, channel or Solo room takes reactions; a thread's transcript and a pending send do not. */
+  const room = $derived(router.conversationId && /^(dm|ch|so)_/.test(router.conversationId) ? router.conversationId : null);
+  const reactable = $derived(message && room && message.seq !== undefined && !pending ? message : null);
+  let reactions = $state<Reactions>();
+  let reactButton = $state<HTMLButtonElement>();
 
   function copyText() {
     void navigator.clipboard.writeText(item.text).then(() => {
@@ -92,6 +98,7 @@
 
 {#snippet actionBar()}
   <div class="actions" role="toolbar" aria-label="Message actions">
+    {#if reactable}<IconButton icon="smile" label="Add reaction" size="sm" bind:element={reactButton} onclick={() => reactButton && reactions?.pick(reactButton)} data-add-reaction />{/if}
     {#if canReply}<IconButton icon="reply" label="Reply in thread" size="sm" onclick={() => onthread(item.id)} />{/if}
     {#if workHref && !why}<IconButton icon="robot" label="Show work" size="sm" onclick={() => workHref && router.navigate(workHref)} data-show-work />{/if}
     <IconButton icon="link" label="Copy link" size="sm" onclick={() => oncopylink(item)} />
@@ -112,6 +119,7 @@
 {/snippet}
 
 {#snippet tail()}
+  {#if reactable && room}<Reactions bind:this={reactions} item={reactable} {room} />{/if}
   {#if offline}
     <p class="send-state queued" role="status" data-send-state="queued" title="It goes when the box is back.">{offline}</p>
   {:else if sendState === "failed"}
@@ -409,6 +417,13 @@
   .own:not(.slack) .note {
     align-self: flex-end;
     margin: 4px calc(var(--gutter) + var(--gap) + 16px) 0 0;
+  }
+  .row:not(.slack) :global([data-reactions]) {
+    margin-left: calc(var(--gutter) + var(--gap));
+  }
+  .own:not(.slack) :global([data-reactions]) {
+    align-self: flex-end;
+    margin: 4px calc(var(--gutter) + var(--gap)) 0 0;
   }
   .send-state {
     display: flex;

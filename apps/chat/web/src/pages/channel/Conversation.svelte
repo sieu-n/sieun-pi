@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { agents, api, boardStore, conversations, isSoloRoom, jobs, me, timeline, type Item } from "$lib/api";
+  import { agents, api, boardStore, isSoloRoom, jobs, me, timeline, type Item } from "$lib/api";
   import { openTarget } from "$pages/agents/agents-model";
   import BoardPanel from "$pages/board/BoardPanel.svelte";
   import { boardHref, boardTitles, rememberTitles } from "$pages/board/chips";
@@ -68,19 +68,9 @@
   const working = $derived(store.status === "working");
   /** The agent's live card: its work thread's own status and its comm threads. */
   const liveAgent = $derived(agent ? (agents.byId(agent.id) ?? agent) : null);
-  /** A split agent's comm thread for this DM answers the owner here; absent while the work thread still answers him itself. */
-  const commStatus = $derived(isDm ? (liveAgent?.comm?.find((c) => c.room === id)?.status ?? conversations.byId(id)?.commStatus ?? summary?.commStatus) : undefined);
   /** The Work pill shows while the agent's work thread or one of its jobs runs. */
   const workRunning = $derived(
     isDm && !!workThread && !!liveAgent && (liveAgent.status === "working" || jobs.of(liveAgent.id).some((job) => job.status === "working")),
-  );
-  /** In a DM the dots show only while the agent answers the owner's turn: the thread that answers him runs, and the newest post is his. */
-  const ownerTurn = $derived(items.findLast((item) => item.kind !== "system")?.author.id === "owner");
-  const answering = $derived(commStatus === undefined ? working : commStatus === "working");
-  const workingNames = $derived(
-    isDm
-      ? answering && ownerTurn && agent ? [agent.name] : []
-      : summary?.working.length ? summary.working.map((w) => w.name) : working && agent ? [agent.name] : working && others.length === 1 ? [others[0]!.principal.name] : [],
   );
   const boardChat = $derived(isChannel ? (header?.homeChat ?? null) : agent?.kind === "chat" ? agent.id : null);
   /** A Solo room's side panel shows the board of one invited agent at a time, picked by a tab. */
@@ -410,10 +400,7 @@
     onbottom={markRead}
   />
   <div class="typing" aria-live="polite">
-    {#if workingNames.length}
-      <TypingDots mode="working" />
-      <span>{commStatus === undefined ? `${workingNames.length > 2 ? "Agents" : workingNames.join(" and ")} working now` : `${workingNames[0]} is answering`}</span>
-    {:else if waitText && agent}
+    {#if waitText && agent}
       <TypingDots mode="waiting" />
       <span>{agent.name} {waitText}</span>
     {:else if waiting && agent}

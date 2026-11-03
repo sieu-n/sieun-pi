@@ -70,7 +70,7 @@ test("a link with m= opens the conversation at that message and flashes it for a
   await expect(target).not.toHaveAttribute("data-flash", "", { timeout: 4_000 });
 });
 
-test("a live turn shows typing dots, never half-written text, and the typing row names the agent", async ({ page }) => {
+test("a live turn shows typing dots and never half-written text", async ({ page }) => {
   await open(page, `#/c/${VP}`);
   const live = conversation(page).locator("[data-live]").last();
   await expect(live).toBeVisible({ timeout: 10_000 });
@@ -78,7 +78,6 @@ test("a live turn shows typing dots, never half-written text, and the typing row
   await expect(live.locator(".msg-text")).toHaveCount(0);
   await page.waitForTimeout(1_000);
   await expect(live.locator(".msg-text")).toHaveCount(0);
-  await expect(page.locator(".typing")).toContainText("working now");
   await expect(page.getByTestId("header-stop")).toBeVisible();
 });
 

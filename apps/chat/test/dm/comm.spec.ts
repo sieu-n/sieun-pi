@@ -45,11 +45,11 @@ async function splitVent(page: Page): Promise<{ set: (next: Split) => void; send
 }
 
 const ownerPost = (text: string) => ({
-  kind: "message", id: "p999", at: Date.now(), author: { id: "owner", kind: "owner", name: "You", avatar: { initials: "Me", hue: 210 } },
+  kind: "message", id: "p999", seq: 999, at: Date.now(), author: { id: "owner", kind: "owner", name: "You", avatar: { initials: "Me", hue: 210 } },
   text, images: [], mentions: [], deliveries: [],
 });
 
-test("typing dots show while the comm thread answers, and the Work pill while the work thread runs", async ({ page }) => {
+test("the wip mark the server sends shows on the owner's post with no typing line, and the Work pill shows while the work thread runs", async ({ page }) => {
   const vent = await splitVent(page);
   await open(page, `#/c/${DM}`);
   const typing = page.locator(".typing");
@@ -59,17 +59,17 @@ test("typing dots show while the comm thread answers, and the Work pill while th
   await expect(pill).toHaveCount(0);
 
   vent.set({ comm: "working", work: "idle" });
-  await expect(typing).toContainText("Vent is answering");
+  const wipBy = { id: "ag_vent", kind: "chat", name: "Vent", avatar: { initials: "Ve", hue: 120 } };
+  vent.send({ type: "items", conversation: DM, items: [{ ...ownerPost("so what is status?"), reactions: [{ emoji: "⏳", by: [wipBy] }] }] });
+  await expect(row(page, "p999").locator("[data-wip]")).toHaveAccessibleName("Vent working on this");
+  await expect(typing).not.toContainText("answering");
   await expect(pill).toHaveCount(0);
 
   vent.set({ comm: "idle", work: "working" });
+  vent.send({ type: "items", conversation: DM, items: [ownerPost("so what is status?")] });
+  await expect(row(page, "p999").locator("[data-wip]")).toHaveCount(0);
   await expect(pill).toBeVisible();
-  await expect(typing).not.toContainText("answering");
   await expect(typing).not.toContainText("working now");
-
-  vent.set({ comm: "working", work: "working" });
-  await expect(typing).toContainText("Vent is answering");
-  await expect(pill).toBeVisible();
 
   await pill.click();
   await expect(page).toHaveURL(new RegExp(`#/c/${VENT}$`));

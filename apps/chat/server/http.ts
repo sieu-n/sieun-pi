@@ -153,6 +153,9 @@ export function routes(app: App): Route[] {
       if (!testSend || typeof testSend !== "object" || Object.keys(rest).length) throw new BadRequest("A post patch carries only testSend: {by, reason}.");
       return app.markTestSend(p.id!, p.post!, testSend);
     }),
+    route("POST", "/api/c/:id/posts/:post/reactions", async (_r, p, _q, body) => {
+      return app.react(p.id!, p.post!, ((await body()) ?? {}) as { emoji?: unknown; on?: unknown });
+    }),
     route("POST", "/api/c/:id/abort", async (_r, p) => {
       await app.abort(p.id!);
       return { ok: true };

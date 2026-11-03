@@ -51,16 +51,9 @@ test("Show work opens the work thread at the turn behind the post", async ({ pag
   await expect(conversation(page).locator("[data-flash]")).toHaveCount(1);
 });
 
-test("an owner send shows at once, typing dots show while the agent works on it, its reply post arrives, and a reload keeps both", async ({ page }) => {
+test("an owner send shows at once, its reply post arrives, and a reload keeps both", async ({ page }) => {
   await open(page, "#/c/dm_frontend-bro");
   const text = `Is the relay up now? ${tag()}`;
-  // The dots can come and go within a busy run's poll, so the page records whether they ever showed.
-  await page.evaluate(() => {
-    const typing = document.querySelector(".typing")!;
-    new MutationObserver(() => {
-      if (typing.textContent?.includes("frontend bro working now")) (window as unknown as { sawTyping: boolean }).sawTyping = true;
-    }).observe(typing, { childList: true, subtree: true, characterData: true });
-  });
   await composerInput(page).fill(text);
   await composerInput(page).press("Enter");
   const mine = conversation(page).locator(".row.own[data-message-id]").filter({ hasText: text });
@@ -70,14 +63,40 @@ test("an owner send shows at once, typing dots show while the agent works on it,
   const seq = Number(id!.slice(1));
   const reply = row(page, `p${seq + 1}`);
   await expect(reply).toBeVisible({ timeout: 10_000 });
-  expect(await page.evaluate(() => (window as unknown as { sawTyping?: boolean }).sawTyping)).toBe(true);
   await expect(reply).not.toHaveClass(/own/);
-  await expect(page.locator(".typing")).not.toContainText("working now", { timeout: 10_000 });
   const answer = (await reply.locator(".msg-text").first().innerText()).trim();
   await page.reload();
   await expect(row(page, id!)).toContainText(text, { timeout: 15_000 });
   await expect(row(page, `p${seq + 1}`)).toContainText(answer.slice(0, 30));
   await expect(row(page, id!).locator("[data-send-state]")).toHaveCount(0);
+});
+
+test("a running turn puts the agent's wip mark on the owner's post, Stop takes it off, and the owner's own emoji toggles", async ({ page }) => {
+  // A slow turn, a Stop and a reload in one walk.
+  test.slow();
+  // Crawler VP's DM, which no other spec posts to, so no other post joins the turn.
+  await open(page, "#/c/dm_crawler-vp");
+  const text = `slow wip check ${tag()}`;
+  await composerInput(page).fill(text);
+  await composerInput(page).press("Enter");
+  const mine = conversation(page).locator(".row.own[data-message-id]").filter({ hasText: text });
+  await expect(mine).toHaveAttribute("data-message-id", /^p\d+$/, { timeout: 5_000 });
+  const wip = mine.locator("[data-wip]");
+  await expect(wip).toBeVisible({ timeout: 10_000 });
+  await expect(wip).toHaveAccessibleName("Crawler VP working on this");
+  await expect(page.locator(".typing")).not.toContainText("working");
+  await page.getByTestId("header-stop").click();
+  await expect(wip).toHaveCount(0, { timeout: 10_000 });
+
+  await mine.hover();
+  await mine.locator("[data-add-reaction]").click();
+  await page.getByRole("button", { name: "React with 👍" }).click();
+  const thumbs = mine.locator('[data-reaction="👍"]');
+  await expect(thumbs).toHaveAttribute("aria-pressed", "true");
+  await page.reload();
+  await expect(thumbs).toContainText("1", { timeout: 15_000 });
+  await thumbs.click();
+  await expect(thumbs).toHaveCount(0);
 });
 
 test("Open work thread opens the agent's transcript", async ({ page }) => {

@@ -11,7 +11,7 @@ import type {
 import type { AllowedModel } from "../../../config/allowed-models.ts";
 import type { FeedRow } from "../../../components/prime-relay/agents/protocol.ts";
 import { AgentFolders, type BoxFiles } from "./agent-folder.ts";
-import { AgentStore, type AgentRecord } from "./agent-store.ts";
+import { AgentStore, type AgentRecord, type RoomPost } from "./agent-store.ts";
 import { Agents, isGroupRoomId, isRoomId, type SplitPlan } from "./agents.ts";
 import { Boards } from "./boards.ts";
 import { GroupRooms } from "./group-rooms.ts";
@@ -20,6 +20,7 @@ import { MultiHost } from "./host/multi-host.ts";
 import type { Host } from "./host/types.ts";
 import { Outbox, type OutboxRow } from "./outbox.ts";
 import { boxCwd, projectCwd, projectList } from "./projects.ts";
+import { ownerReaction, WipReactions } from "./reactions.ts";
 import { Rooms } from "./rooms.ts";
 import { Search } from "./search.ts";
 import { Store } from "./store.ts";
@@ -57,6 +58,8 @@ export class App {
   readonly threads: Threads;
   /** Channels and Solo rooms. */
   readonly groups: GroupRooms;
+  /** The wip mark on the post each agent works on (reactions.ts). */
+  readonly wip: WipReactions;
   readonly boards: Boards;
   readonly search: Search;
   readonly queues: QueueWatch;
@@ -137,6 +140,7 @@ export class App {
     this.threads.onRefresh = () => {
       this.rooms.poll();
       this.groups.poll();
+      this.wip.poll();
       this.sweepRefs();
     };
     this.groups = new GroupRooms({
@@ -152,6 +156,11 @@ export class App {
       saveUpload: image => this.saveUpload(image), readUpload: ref => this.readUpload(ref), log, ...(linkOf ? { linkOf } : {}),
     });
     this.threads.groupSummaries = () => this.groups.summaries().filter(c => !this.agentStore.isTest(c.id));
+    this.wip = new WipReactions({
+      store: this.agentStore, agents: this.agents, threads: this.threads, host,
+      groupRooms: record => Object.keys(record.comm ?? {}).filter(room => this.groups.row(room) !== undefined),
+      emit: (room, posts) => this.emitPosts(room, posts), log,
+    });
     this.threads.roomsOf = agent => this.groups.memberRooms(agent).map(row => row.id);
     this.boards = new Boards(host, this.store, this.threads, this.agents, {
       board: (chatId, board, awaitingGo) => this.broadcast({ type: "board", chatId, board, awaitingGo }),
@@ -384,6 +393,33 @@ export class App {
   markTestSend(id: ConversationId, postId: string, input: { by?: unknown; reason?: unknown }): SendResult {
     if (!isRoomId(id)) throw new Error("A test send mark is for a DM post; name its room, such as dm_vent.");
     return this.rooms.markTestSend(this.roomAgent(id), postId, input);
+  }
+
+  /** The owner puts an emoji on a room post or takes his own off (reactions.ts `ownerReaction`); the post's watchers get it at once. */
+  react(id: ConversationId, postId: string, input: { emoji?: unknown; on?: unknown }): { item: Item } {
+    const room = isRoomId(id) ? this.roomAgent(id).room : this.groups.row(id)?.id;
+    if (!room) throw new NotFound(`No room ${id}; reactions go on posts in a DM, a channel or a Solo room.`);
+    const post = this.agentStore.postsOf(room).find(p => p.id === postId);
+    if (!post) throw new NotFound(`No post ${postId} in ${id}.`);
+    const reactions = ownerReaction(post, input);
+    if (reactions) {
+      this.agentStore.set(post, { reactions });
+      this.emitPosts(room, [post]);
+    }
+    return { item: this.postItem(room, post) };
+  }
+
+  /** Room posts whose state changed, re-read and sent to the room's watchers. */
+  private emitPosts(room: string, posts: RoomPost[]): void {
+    const record = this.agents.record(room);
+    if (record?.room === room) return this.rooms.changed(record, posts);
+    const group = this.groups.row(room);
+    if (group) this.groups.emit(group, posts);
+  }
+
+  private postItem(room: string, post: RoomPost): Item {
+    const group = this.groups.row(room);
+    return group ? this.groups.item(group, post) : this.rooms.item(post);
   }
 
   /** Drops a pending send the owner gave up on. A DM post is stored, so it stays. */
