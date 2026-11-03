@@ -169,7 +169,9 @@ describe("channels and mentions", () => {
     assert.equal((s.host as FixtureHost).threadsById.get(comm)!.row.name, "frontend bro · #pi-cutover");
     const entries = await s.get<TimelinePage>(`/api/c/${comm}/items`);
     assert.ok(entries.items.some(i => i.kind === "message" && i.author.id === "owner" && i.text.startsWith("[#pi-cutover · post 8 from You (owner) · hops 0]")));
-    assert.equal((s.host as FixtureHost).threadsById.get(ids.frontend)!.entries.length, workEntries, "the work thread gets no input");
+    // The app's own notices, such as the step owners' (server/step-owners.ts), may reach the work thread meanwhile; the post never does.
+    const workInputs = (s.host as FixtureHost).threadsById.get(ids.frontend)!.entries.slice(workEntries).map(entry => JSON.stringify(entry));
+    assert.equal(workInputs.filter(entry => entry.includes("is the relay page fine?")).length, 0, "the work thread gets no input of the post");
   });
 
   test("a mention of an agent outside the channel delivers the post with the channel's earlier posts and images, and its answer lands in the thread without a join", async () => {
