@@ -1,4 +1,4 @@
-import type { AgentSummary, ModelCatalog, RunStatus } from "$lib/api";
+import type { AgentSummary, ForMeItem, ForMeList, ForMeReason, ForMeStatus, ModelCatalog, RunStatus } from "$lib/api";
 import type { ModelOption } from "$lib/ui";
 
 /**
@@ -112,15 +112,54 @@ export function levelsFor(catalog: ModelCatalog | null, key: string): string[] {
 export const canArchive = (agent: AgentSummary): boolean => agent.conversation === 1;
 
 /** The tabs of an agent's page, as apps/chat/docs/agent-model.md names them. */
-export type ConfigSection = "overview" | "work" | "jobs" | "board" | "memory" | "instructions";
+export type ConfigSection = "overview" | "for" | "work" | "jobs" | "board" | "memory" | "instructions";
+/** `for` is the agent's For list; its tab reads "For <agent name>" (forLabel) and shows only for a registered agent (hasForList). */
 export const SECTIONS: readonly { id: ConfigSection; label: string }[] = [
   { id: "overview", label: "Overview" },
+  { id: "for", label: "For" },
   { id: "work", label: "Work" },
   { id: "jobs", label: "Jobs" },
   { id: "board", label: "Board" },
   { id: "memory", label: "Memory" },
   { id: "instructions", label: "Instructions" },
 ];
+/** Only a registered agent (`ag_<slug>`) has a For list; a job or a root thread with no agent record has none. */
+export const hasForList = (id: string): boolean => id.startsWith("ag_");
+export const forLabel = (name: string): string => `For ${name}`;
+
+export type ForFilter = ForMeStatus | "all";
+export const FOR_FILTERS: readonly ForFilter[] = ["pending", "completed", "all"];
+export const FOR_FILTER_LABEL: Record<ForFilter, string> = { pending: "Pending", completed: "Completed", all: "All" };
+export const forCount = (list: Pick<ForMeList, "pending" | "completed"> | null, filter: ForFilter): number | null =>
+  list ? (filter === "all" ? list.pending + list.completed : list[filter]) : null;
+export const forEmpty = (name: string, filter: ForFilter): string =>
+  filter === "pending" ? `Nothing waits for ${name}.` : filter === "completed" ? `${name} has completed nothing yet.` : `No messages involve ${name} yet.`;
+
+export const REASON_LABEL: Record<ForMeReason, string> = { dm: "DM", mention: "Mention", member: "Member", thread: "Thread reply", reaction: "Reaction" };
+/** The reason chips of a row; a DM row's room already reads DM, so it shows no `dm` chip. */
+export const reasonChips = (item: Pick<ForMeItem, "roomKind" | "reasons">): ForMeReason[] =>
+  item.roomKind === "dm" ? item.reasons.filter((reason) => reason !== "dm") : item.reasons;
+
+/**
+ * Where a row opens, as a search hit opens its post: the room at the post. A channel reply opens its thread beside the room, with the room
+ * at the thread's root post.
+ */
+export function forTarget(item: Pick<ForMeItem, "room" | "post" | "threadRoot">): { id: string; messageId: string; thread?: string } {
+  return item.threadRoot ? { id: item.room, messageId: item.threadRoot, thread: item.threadRoot } : { id: item.room, messageId: item.post };
+}
+
+/** A post's text as plain lines for a short preview: markdown marks out, link text kept, code blocks named, blank runs folded. */
+export function previewText(text: string): string {
+  return text
+    .replace(/```[\s\S]*?(```|$)/g, "[code]")
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/(\*\*|__|`)/g, "")
+    .replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+)/gm, "")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
+}
+
 /** Old `?section=` ids from the side panel: Host became Work and Swarm became Jobs. */
 const RENAMED: Record<string, ConfigSection> = { runs: "work", swarm: "jobs" };
 /** The new id an old `?section=` link names, so the page rewrites the address once; null when the link is current. */

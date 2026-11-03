@@ -43,7 +43,7 @@ test("the agent's page shows its host, home directory, board and memory, and eac
   await card(page, chat).click({ position: { x: 40, y: 120 } });
   await expect(panel(page)).toBeVisible();
   await expect(page.getByTestId("main-panel").getByTestId("agent-config")).toHaveAttribute("data-agent-id", chat.id);
-  await expect(panel(page).getByRole("tab")).toHaveText(["Overview", "Work", "Jobs", "Board", "Memory", "Instructions"]);
+  await expect(panel(page).getByRole("tab")).toHaveText(["Overview", ...(chat.id.startsWith("ag_") ? [`For ${chat.name}`] : []), "Work", "Jobs", "Board", "Memory", "Instructions"]);
 
   await expect(panel(page).locator('[data-fact="host"]')).toContainText(config.runs.host);
   await expect(panel(page).locator('[data-fact="cwd"] code')).toHaveAttribute("title", config.runs.cwd);

@@ -3,10 +3,11 @@
   import { Avatar, Badge, Button, Chip, EmptyState, IconButton, LoadingText, Menu, Meter, ModelPicker, PanelHeader, StatusDot, Tabs, TypingDots, stampLabel, toast, type MenuEntry } from "$lib/ui";
   import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import {
-    JOB_KIND_LABEL, SECTIONS, STATUS_LABEL, bytesLabel, canArchive, everyLabel, levelsFor, modelKey, modelOptions, shortPath, type ConfigSection,
+    JOB_KIND_LABEL, SECTIONS, STATUS_LABEL, bytesLabel, canArchive, everyLabel, forLabel, hasForList, levelsFor, modelKey, modelOptions, shortPath, type ConfigSection,
   } from "./agents-model";
   import AccountChip from "$pages/accounts/AccountChip.svelte";
   import AgentBrief from "./AgentBrief.svelte";
+  import AgentForMe from "./AgentForMe.svelte";
   import AgentMemory from "./AgentMemory.svelte";
   import ProjectPicker from "./ProjectPicker.svelte";
 
@@ -101,7 +102,11 @@
     }
     return items;
   });
-  const tabs = SECTIONS.map((item) => ({ ...item }));
+  const forList = $derived(hasForList(agentId));
+  const forName = $derived(agent?.name ?? config?.agent.name ?? "");
+  const tabs = $derived(
+    SECTIONS.filter((item) => item.id !== "for" || forList).map((item) => (item.id === "for" ? { ...item, label: forLabel(forName) } : { ...item })),
+  );
   const hostLine = $derived(
     config ? (config.runs.hostVersion && config.runs.hostVersion !== config.runs.hostKind ? `${config.runs.hostKind} ${config.runs.hostVersion}` : config.runs.hostKind) : "",
   );
@@ -193,14 +198,16 @@
     <Tabs items={tabs} value={section} variant="underline" size="sm" label="Configuration sections" onchange={onsection} />
   </div>
 
-  <div class="body" role="tabpanel" aria-label={SECTIONS.find((s) => s.id === section)?.label}>
-    {#if error && !config}
+  <div class="body" role="tabpanel" aria-label={tabs.find((s) => s.id === section)?.label}>
+    {#if section === "for" && forList}
+      <AgentForMe {agentId} name={forName || agentId} />
+    {:else if error && !config}
       <EmptyState icon="warning" title="The configuration could not load" description={error} size="sm">
         {#snippet action()}<Button size="sm" icon="refresh" onclick={() => load(agentId)}>Retry</Button>{/snippet}
       </EmptyState>
     {:else if !config}
       <div class="loading"><LoadingText text="Reading its configuration…" /></div>
-    {:else if section === "overview"}
+    {:else if section === "overview" || section === "for"}
       <section class="block project" aria-label="Project folder" data-fact="cwd" data-project={config.runs.project ? "yes" : "no"}>
         <div class="project-head">
           <h3 class="t-caption heading">Project folder</h3>

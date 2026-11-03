@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ACTION_LABEL, actionsFor, agentFromRoute, agentGroups, agentOfRoute, agentsShown, bytesLabel, canArchive, everyLabel, jobCounts, jobsLabel, levelsFor, modelOptions, openTarget, renamedSection, sectionFromParams, shortPath } from "../../web/src/pages/agents/agents-model.ts";
+import { ACTION_LABEL, actionsFor, agentFromRoute, agentGroups, agentOfRoute, agentsShown, bytesLabel, canArchive, everyLabel, forCount, forTarget, hasForList, jobCounts, jobsLabel, levelsFor, modelOptions, openTarget, previewText, reasonChips, renamedSection, sectionFromParams, shortPath } from "../../web/src/pages/agents/agents-model.ts";
 
 type Agent = Parameters<typeof agentsShown>[0][number];
 const agent = (over: Partial<Agent>): Agent => ({
@@ -61,6 +61,7 @@ test("#/agents/<id> names the agent or job whose page is open, and old section i
   assert.equal(agentFromRoute(["t1:4"]), "t1:4");
   assert.equal(sectionFromParams({ section: "memory" }), "memory");
   assert.equal(sectionFromParams({ section: "jobs" }), "jobs");
+  assert.equal(sectionFromParams({ section: "for" }), "for");
   assert.equal(sectionFromParams({ section: "nope" }), "overview");
   assert.equal(sectionFromParams({}), "overview");
   assert.equal(sectionFromParams({ section: "runs" }), "work");
@@ -106,4 +107,17 @@ test("sizes, home paths and check-in intervals read short", () => {
   assert.equal(shortPath("/Users/sieunpark/x"), "/Users/sieunpark/x");
   assert.equal(everyLabel(6 * 3600_000), "every 6 h");
   assert.equal(everyLabel(90 * 60_000), "every 90 min");
+});
+
+test("the For tab shows for a registered agent only, counts each filter, and opens a row at its post or its thread", () => {
+  assert.equal(hasForList("ag_vent"), true);
+  assert.equal(hasForList("t1:4"), false);
+  assert.equal(forCount(null, "pending"), null);
+  assert.equal(forCount({ pending: 2, completed: 5 }, "pending"), 2);
+  assert.equal(forCount({ pending: 2, completed: 5 }, "all"), 7);
+  assert.deepEqual(forTarget({ room: "dm_vent", post: "p13" }), { id: "dm_vent", messageId: "p13" });
+  assert.deepEqual(forTarget({ room: "ch_general", post: "p9", threadRoot: "p3" }), { id: "ch_general", messageId: "p3", thread: "p3" });
+  assert.deepEqual(reasonChips({ roomKind: "dm", reasons: ["dm", "reaction"] }), ["reaction"]);
+  assert.deepEqual(reasonChips({ roomKind: "channel", reasons: ["mention", "member"] }), ["mention", "member"]);
+  assert.equal(previewText("Check the **relay**\n\nSee [three drops](https://x.test) and `p12`.\n```\nlog\n```"), "Check the relay\nSee three drops and p12.\n[code]");
 });
