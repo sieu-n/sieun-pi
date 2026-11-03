@@ -272,7 +272,7 @@ export function snapshotTree(content = CONTENT, mirrorRepo = wikiConfig().mirror
 	try {
 		const into = path.join(root, SNAPSHOT_REL);
 		mkdirSync(into, { recursive: true });
-		run('rsync', ['-a', `--max-size=${SNAPSHOT_MAX_FILE}`, '--exclude=sessions/', '--exclude=.*', `${content}/`, `${into}/`]);
+		run('rsync', ['-a', `--max-size=${SNAPSHOT_MAX_FILE}`, '--exclude=sessions/', '--exclude=/.*', `${content}/`, `${into}/`]);
 		if (mirrorRepo) {
 			const git = (args) => run('git', args, { cwd: mirrorRepo });
 			const list = (buf) => String(buf).split('\0').filter(Boolean);
@@ -353,6 +353,8 @@ export function citedRefs(page) {
 		const bare = ref.replace(/(?::\d+(?:-\d+)?|::.*)$/, '').replace(/\/+$/, '');
 		const sibling = siblingRef(bare);
 		if (sibling) refs.set(ref, [`${sibling.repo}:${sibling.path}`]);
+		// The wiki content by its old repo path: a page's own file, which left git on 2026-11-03 and resolves on disk.
+		else if (bare.startsWith(`${CONTENT_REL}/`)) refs.set(ref, [`${WIKI_REF}${bare.slice(CONTENT_REL.length + 1)}`]);
 		else
 			refs.set(ref, [
 				bare,

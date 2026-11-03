@@ -22,6 +22,9 @@ test('the health snapshot copies the curated pages of a content root in no git r
 	put('sessions/2026/11/03/0000-x/index.html', '<h1>log</h1>\n');
 	put('experiments/e/data/big.json', 'x'.repeat(1_100_000));
 	put('.wiki/wiki.db', 'db');
+	put('apps/b.html', '<!--wiki {"title":"B","description":"d","kind":"reference","last_verified":"2026-11-01T00:00Z","source_refs":["apps/llm-wiki/content/apps/b-data/run.py","apps/llm-wiki/content/apps/b-data/.gitignore"]}-->\n<h1>B</h1>\n');
+	put('apps/b-data/run.py', 'x = 1\n');
+	put('apps/b-data/.gitignore', '*.csv\n');
 	const root = snapshotTree(content, null);
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const copy = path.join(root, 'apps/llm-wiki/content');
@@ -33,7 +36,9 @@ test('the health snapshot copies the curated pages of a content root in no git r
 	const git = (...args) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args]);
 	git('init', '-q');
 	git('commit', '-q', '--allow-empty', '-m', 'root');
-	const { lint } = engineReports(root, repo);
+	const { lint, stale } = engineReports(root, repo);
 	assert.equal(lint.brokenLinks.length, 0);
-	assert.equal(lint.pageCount, 2, 'the engine indexed the two curated pages of the copy and no session page');
+	assert.equal(lint.pageCount, 3, 'the engine indexed the three curated pages of the copy and no session page');
+	// A source ref by the content's old repo path names the page's own file on disk, which no code commit dates.
+	assert.deepEqual(stale.stale.map((row) => row.path), []);
 });

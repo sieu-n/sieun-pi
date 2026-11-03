@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -410,6 +411,12 @@ export async function getStaleReport(
 				const at = await commitTime(root, (await siblingPin(root)).sha, sibling.path);
 				if (at === null) staleRefs.push({ ref, modified: MISSING });
 				else if (at > checked) staleRefs.push({ ref, modified: new Date(at).toISOString() });
+				continue;
+			}
+			// A ref into the wiki content by its old repo path names a page's own file, which left git with the content on
+			// 2026-11-03: it resolves on disk under the content root, and no code commit dates it.
+			if (fileOf(ref).startsWith(PAGES)) {
+				if (!existsSync(diskPath(fileOf(ref).slice(PAGES.length)))) staleRefs.push({ ref, modified: MISSING });
 				continue;
 			}
 			if (!local(ref)) continue;
