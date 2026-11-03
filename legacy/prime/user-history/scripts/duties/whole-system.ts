@@ -1009,8 +1009,6 @@ export interface Inputs {
   slotWaits?: readonly SlotWaitTimeout[];
   /** When the supervisor's poll of a worker went unanswered on this box (src/harness-slow.ts `workerMisses`). */
   workerMisses?: readonly number[];
-  /** When this box's chat service started listening, from service.log (`readChatStarts`): each release-chat.mjs restart and any other start. */
-  chatStarts?: readonly number[];
   /** Sends that met a target over the daemon's pending message limit and waited in the agent outbox: detail, never a dirty minute (owner c98). */
   queueOverruns?: readonly QueueOverrun[];
   /** The sessions those faults name as the boxes' catalog copies list them, to name each one's chat (`listedSessions`). */
@@ -1379,20 +1377,6 @@ export function failedOffline(fault: DaemonFault): boolean {
   return fault.what.includes(`${fault.host} is offline (Tailscale last seen `);
 }
 
-/**
- * How long after the chat service starts listening a slow chat read or loop stall is the start's own work. From 11-02 00:00Z to 11-03 07:40Z,
- * 7 of the box's 37 chat starts were followed by a dirty minute, each a read 5 to 62 s after the start: api/threads/<id>/older 2.3 to 3.8 s in 5,
- * a 1.1 s read and one 2.1 s loop stall. The CPU profile of the 07:33:35Z start held the main thread 17.5 s of its first 23 s against 13.4 s
- * for 23 s two minutes later, spread over the projections, the older pages the reopened tabs asked for, cache loads and GC, with no one task to cut.
- */
-export const CHAT_WARMUP_MS = 90_000;
-const CHAT_LISTENING = /^(\S+Z) serve: listening /;
-
-/** When this box's chat service started listening, from service.log's lines. */
-export function readChatStarts(lines: readonly string[]): number[] {
-  return lines.flatMap(line => { const found = CHAT_LISTENING.exec(line); const at = found ? Date.parse(found[1]!) : NaN; return Number.isFinite(at) ? [at] : []; });
-}
-
 export function measure(input: Inputs): PrecheckOutput {
   const { now } = input;
   // A call that failed inside a supported Prime update restart on its box met the update's planned stop, not a harness fault: at 20:10:21Z on
@@ -1437,8 +1421,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const flappedMin: string[] = [];
   const flatMin: string[] = [];
   const darkMin: number[] = [];
-  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, cellWait = 0, harness = 0, rigMin = 0, busyMin = 0, ciMin = 0, other = 0, unattributed = 0, daemonFail = 0, primeMin = 0, warmMin = 0;
-  const warm: string[] = [];
+  let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, cellWait = 0, harness = 0, rigMin = 0, busyMin = 0, ciMin = 0, other = 0, unattributed = 0, daemonFail = 0, primeMin = 0;
   const faultName = chatNamer(input.chats, input.named, input.listed);
   const slotWaits = (input.slotWaits ?? []).filter(wait => wait.fault.at >= start && wait.fault.at < start + WINDOW_MS);
   const side = sideOf(input.watch);
@@ -1475,12 +1458,6 @@ export function measure(input: Inputs): PrecheckOutput {
       const slow = found.includes("cpu")
         ? harnessSlow({ box: view.name, own, latency: line.chat, from, to, misses: input.workerMisses ?? [], faults: daemonFaults }) : [];
       // A CPU miss the harness stayed fast through is real job work on a busy box, a detail line and no fault (harness-slow.ts).
-      // A chat start is a planned stop, as a Prime update is: a slow chat read or loop stall within CHAT_WARMUP_MS of it, with no worker poll
-      // miss or daemon fault beside it, is the start's own minute.
-      const lineAt = Date.parse(line.at);
-      const started = own && slow.length > 0 && slow.every(words => words.startsWith("the chat")) && !found.some(kind => kind !== "cpu")
-        ? (input.chatStarts ?? []).findLast(at => at <= lineAt && at + CHAT_WARMUP_MS >= lineAt - MINUTE) : undefined;
-      if (started !== undefined) { warmMin++; warm.push(`${clock(from)} ${view.name} ${slow.join(", ")}, ${Math.round((lineAt - started) / 1000)} s after the chat started at ${clock(started)}`); count.usable++; continue; }
       const miss = found.filter(kind => kind !== "cpu" || slow.length > 0);
       if (found.includes("cpu") && !slow.length) {
         busyMin++;
@@ -1529,8 +1506,6 @@ export function measure(input: Inputs): PrecheckOutput {
   const inWindow = updates.filter(update => update.to >= start && update.from < start + WINDOW_MS);
   const updateMin = Array.from({ length: 30 }, (_, minute) => start + minute * MINUTE)
     .filter(from => inWindow.some(update => update.from < from + MINUTE && update.to >= from)).length;
-  if (warm.length) flagged.push({ kind: "chat_start", excerpt: `${warm.length} minute${warm.length === 1 ? "" : "s"} the chat was slow within ` +
-    `${CHAT_WARMUP_MS / 1000} s of its own start, counted as the start's planned work, not dirty: ${warm.join("; ")}` });
   if (inWindow.length) flagged.push({ kind: "prime_update", excerpt: inWindow.map(update => {
     const left = updateFaults.filter(fault => fault.host === update.host && fault.at >= update.from && fault.at <= update.to);
     return `Prime update ${update.requestId} restarted the ${update.host} daemon from ${clock(update.from)} to ${clock(update.to)}; ` +
@@ -1592,7 +1567,6 @@ export function measure(input: Inputs): PrecheckOutput {
     daemon_fail_min_30: daemonFail,
     prime_fault_min_30: primeMin,
     prime_update_min_30: updateMin,
-    chat_start_min_30: warmMin,
     slot_wait_timeouts_30: slotWaits.length,
     offline_min_30: offlineAny,
     unwatched_min_30: unwatched,
@@ -2062,7 +2036,6 @@ async function main(): Promise<void> {
     daemonFaults,
     primeUpdates: [...(await readUpdateSpans(join(dataDir, ".."))).map(update => ({ ...update, host: box })), ...await otherBoxUpdates(box, now - WINDOW_MS - 2 * MINUTE)],
     workerMisses: workerPolls,
-    chatStarts: readChatStarts(serviceLines),
     queueOverruns,
     slotWaits,
     listed,
