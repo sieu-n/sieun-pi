@@ -12,10 +12,11 @@ import type {
 import type { AllowedModel } from "../../../config/allowed-models.ts";
 import type { FeedRow } from "../../../components/prime-relay/agents/protocol.ts";
 import { AgentFolders, type BoxFiles } from "./agent-folder.ts";
-import { AgentStore, type AgentRecord, type RoomPost } from "./agent-store.ts";
+import { AgentStore, type AgentRecord, type RoomDelivery, type RoomPost } from "./agent-store.ts";
 import { Agents, isGroupRoomId, isRoomId, type SplitPlan } from "./agents.ts";
 import { Boards } from "./boards.ts";
-import { CHANNEL_COPY_LIKE, GroupRooms } from "./group-rooms.ts";
+import { CHANNEL_COPY_LIKE, GroupRooms, roomLabel } from "./group-rooms.ts";
+import { assertOwnPost, deleteNotice, deliveriesOf, editNotice } from "./post-edits.ts";
 import { ForMe } from "./for-me.ts";
 import type { ForMeItem, ForMeList, ForMeStatus } from "../web/src/lib/api/types.ts";
 import { DEFAULT_MODEL, type Config } from "./config.ts";
@@ -25,6 +26,7 @@ import { Outbox, type OutboxRow } from "./outbox.ts";
 import { boxCwd, projectCwd, projectList } from "./projects.ts";
 import { agentPost, react, ReactionError, reactionInput, reactionList, reactionsOf, reactionText } from "./reactions.ts";
 import { Rooms } from "./rooms.ts";
+import { Unfurler } from "./unfurl.ts";
 import { Search } from "./search.ts";
 import { likeRegex, postDocId, SEARCH_DOC_VERSION, SearchEngine, SqliteEntries, type EntrySource, type PostDoc } from "./search-engine.ts";
 import { Meili, startOwnMeili, type OwnMeili } from "./meili.ts";
@@ -85,6 +87,8 @@ export class App {
   /** Each DM room's summary as last sent, so a room event goes out only when its row changed. */
   private roomCache = new Map<string, string>();
   readonly wss = new WebSocketServer({ noServer: true });
+  /** Slack-style link previews of the web links posts hold (unfurl.ts). */
+  readonly unfurl = new Unfurler();
 
   constructor(readonly config: Config, readonly host: Host, readonly log: (line: string) => void = line => console.log(line)) {
     this.store = new Store(config.dataDir);
@@ -511,6 +515,60 @@ export class App {
     this.setReaction(room, post, record.id, emoji, on);
     const principal = (id: string) => this.threads.principal(id);
     return { room, post: post.id, reactions: reactionsOf(principal, post).reactions ?? [], text: reactionText(principal, post, emoji, on, slash >= 0) };
+  }
+
+  /** The owner's own post in a DM, a channel or a Solo room, with the room it is in. */
+  private ownPost(id: ConversationId, postId: string): { room: string; post: RoomPost } {
+    const room = isRoomId(id) ? this.roomAgent(id).room : this.groups.row(id)?.id;
+    if (!room) throw new NotFound(`No room ${id}; you edit and delete posts in a DM, a channel or a Solo room.`);
+    const post = this.agentStore.postsOf(room).find(p => p.id === postId);
+    if (!post) throw new NotFound(`No post ${postId} in ${id}.`);
+    assertOwnPost(post);
+    return { room, post };
+  }
+
+  /** Slack's Edit message on the owner's own post (post-edits.ts): a delivery on its way carries the new text, and an agent that read it gets the edit. */
+  editPost(id: ConversationId, postId: string, input: { text?: unknown }): { item: Item } {
+    const { room, post } = this.ownPost(id, postId);
+    if (typeof input.text !== "string") throw new Error("A post edit carries text, a string.");
+    const text = input.text.trim();
+    if (!text && !post.images.length) throw new Error("A post needs text or an image; delete it instead of clearing it.");
+    if (text !== post.text) {
+      const before = post.text;
+      this.agentStore.set(post, { text, editedAt: Date.now() });
+      this.emitPosts(room, [post]);
+      void this.tellReaders(room, post, `e${post.editedAt}`, place => editNotice(post, place, before));
+    }
+    return { item: this.postItem(room, post) };
+  }
+
+  /** Slack's Delete message on the owner's own post (post-edits.ts): its words go, a delivery on its way stops, and an agent that read it is told. */
+  deletePost(id: ConversationId, postId: string): { item: Item } {
+    const { room, post } = this.ownPost(id, postId);
+    const before = post.text;
+    const now = Date.now();
+    const stop = (d: RoomDelivery): RoomDelivery => (d.state === "sending" ? { ...d, state: "stopped", at: now, error: "You deleted this post before it was delivered." } : d);
+    this.agentStore.set(post, {
+      text: "", images: [], deletedAt: now,
+      ...(post.delivery ? { delivery: stop(post.delivery) } : {}), ...(post.deliveries ? { deliveries: post.deliveries.map(stop) } : {}),
+    });
+    this.emitPosts(room, [post]);
+    void this.tellReaders(room, post, `x${now}`, place => deleteNotice(post, place, before));
+    return { item: this.postItem(room, post) };
+  }
+
+  /** Each agent that already got the post gets `notice` as an owner input in the thread it got the post in. */
+  private async tellReaders(room: string, post: RoomPost, key: string, notice: (place: string) => string): Promise<void> {
+    const group = this.groups.row(room);
+    const text = notice(group ? roomLabel(group) : "your DM");
+    for (const d of deliveriesOf(post)) {
+      if (d.state !== "delivered" || !d.thread) continue;
+      try {
+        await this.host.submit(d.thread, { text, requestId: `${key}:${room}:${post.id}:${d.target}`, whenBusy: "steer", ownerTurn: true });
+      } catch (error) {
+        this.log(`posts: telling ${d.target} about ${room} ${post.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
   }
 
   private setReaction(room: string, post: RoomPost, by: "owner" | AgentRecord["id"], emoji: string, on: boolean): void {

@@ -252,6 +252,16 @@ export type Item =
     }
   | { kind: "system"; id: string; at: Ms; text: string; avatars: Principal[] };
 
+/** `GET /api/unfurl?url=`: what a web page's <head> states, drawn as a Slack-style card under a post that links it (server/unfurl.ts). */
+export interface LinkPreview {
+  url: string;
+  site: string;
+  title: string;
+  description?: string;
+  /** An https image the page names, absolute. */
+  image?: string;
+}
+
 export interface TimelinePage {
   items: Item[];
   /** Pass as `before` to read the page above; absent at the start. */

@@ -52,7 +52,9 @@
     statusOf, onretry, onretrysend, ondiscardsend, onthread, oncopylink, onmention, onboardid, onartifact, onbottom,
   }: Props = $props();
 
-  const rows = $derived(layoutRows(items));
+  /** A post the owner deleted goes, as in Slack, except a channel root that keeps its replies, and the root atop a thread pane. */
+  const shown = $derived(items.filter((item, index) => !(item.kind === "message" && item.deleted && !item.thread && !(replyCount !== null && index === 0))));
+  const rows = $derived(layoutRows(shown));
   const slack = $derived(layout === "slack");
   const intro = $derived(slack && beginning && !hasOlder && !loadingOlder ? beginning : null);
   const introName = $derived(intro ? (intro.kind === "solo" ? intro.name : `#${intro.name}`) : "");

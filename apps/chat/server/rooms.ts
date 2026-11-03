@@ -20,6 +20,7 @@ import type { AgentRecord, AgentStore, FeedCursor, RoomId, RoomPost, TestSend } 
 import type { Agents } from "./agents.ts";
 import { isHostAway, type ContentBlock, type EntryRecord, type Host, type Message, type Submitted } from "./host/types.ts";
 import { refusedForGood, retryWait } from "./outbox.ts";
+import { postState } from "./post-edits.ts";
 import { reactionsOf } from "./reactions.ts";
 import type { Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
@@ -628,7 +629,7 @@ export class Rooms {
     const record = this.deps.agents.record(post.room);
     const base = {
       kind: "message" as const, id: post.id, seq: post.seq, at: post.at, text: post.text, images: post.images, mentions: [],
-      ...reactionsOf(id => this.deps.threads.principal(id), post),
+      ...reactionsOf(id => this.deps.threads.principal(id), post), ...postState(post),
     };
     if (post.author === "owner") {
       const d = post.delivery;

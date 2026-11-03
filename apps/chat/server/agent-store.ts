@@ -104,6 +104,10 @@ export interface RoomPost {
   testSend?: TestSend;
   /** The emoji the owner and agents put under the post, oldest first (reactions.ts). */
   reactions?: StoredReaction[];
+  /** When the owner last edited his post (post-edits.ts). */
+  editedAt?: Ms;
+  /** When the owner deleted his post; its text and images are gone (post-edits.ts). */
+  deletedAt?: Ms;
 }
 
 /** One emoji one principal put on a post. */
@@ -116,7 +120,7 @@ export interface StoredReaction { emoji: string; by: "owner" | AgentId; at: Ms }
  */
 export interface TestSend { by: string; reason: string; at: Ms; entry?: number; notice?: Ms }
 
-export type PostPatch = Partial<Pick<RoomPost, "delivery" | "deliveries" | "jobs" | "text" | "testSend" | "reactions">>;
+export type PostPatch = Partial<Pick<RoomPost, "delivery" | "deliveries" | "jobs" | "text" | "testSend" | "reactions" | "images" | "editedAt" | "deletedAt">>;
 type LogLine = { t: "post"; post: RoomPost } | { t: "set"; post: string; patch: PostPatch };
 
 /**

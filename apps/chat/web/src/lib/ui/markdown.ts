@@ -631,30 +631,57 @@ function contextKey(c: MarkdownContext): string {
   return [c.plain ? 1 : 0, c.cwd ?? "", c.board ? `${c.board.chatId}:${c.board.titles.size}` : "", c.mentions ? c.mentions.size : "", c.jobs?.join("\u0001") ?? ""].join("|");
 }
 
-const pageCache = new Map<string, string[]>();
+/** A link a post previews as a card under its text: a wiki page, or a web page as Slack unfurls it. */
+export type PreviewLink = { kind: "wiki"; path: string } | { kind: "web"; url: string };
+
 /**
- * The wiki pages a text links, in order and once each: `[label](wiki:<path>)`, `wiki:<path>`, `[[path]]`, a wiki URL or a content path.
- * An image is not a page. A post shows a card for each under its text, as legacy/prime/user-history's WikiEmbeds does.
+ * A web link Slack would unfurl and the text draws as a plain link: not a GitHub card, an image, a loopback address or a link into this
+ * app, which the text already draws as a card, the image or a pill.
  */
-export function wikiPages(text: string): string[] {
-  if (!/wiki|\[\[|content\//.test(text)) return [];
-  const hit = pageCache.get(text);
+function unfurlable(href: string): boolean {
+  if (!/^https?:\/\//i.test(href) || GITHUB.test(href) || IMAGE_FILE.test(href.replace(/[?#].*$/, ""))) return false;
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return false;
+  }
+  if (LOOPBACK_HOST.test(url.hostname) || url.port === "5184") return false;
+  return !(typeof location !== "undefined" && url.origin === location.origin);
+}
+
+const previewCache = new Map<string, PreviewLink[]>();
+/**
+ * The links a text previews, in order and once each. A wiki page it links (`[label](wiki:<path>)`, `wiki:<path>`, `[[path]]`, a wiki URL
+ * or a content path) gets a card, as legacy/prime/user-history's WikiEmbeds does; an image is not a page. Every other web link gets one,
+ * as Slack unfurls every link in a message by default (docs.slack.dev/messaging/unfurling-links-in-messages). A link in code gets none.
+ */
+export function previewLinks(text: string): PreviewLink[] {
+  if (!/wiki|\[\[|content\/|https?:\/\//.test(text)) return [];
+  const hit = previewCache.get(text);
   if (hit) return hit;
-  const pages: string[] = [];
-  const add = (target: unknown) => {
+  const links: PreviewLink[] = [];
+  const wiki = (target: unknown) => {
     const path = typeof target === "string" && target.startsWith("wiki:") ? target.slice(5) : null;
-    if (path && !IMAGE_FILE.test(path) && !pages.includes(path)) pages.push(path);
+    if (path && !IMAGE_FILE.test(path) && !links.some((l) => l.kind === "wiki" && l.path === path)) links.push({ kind: "wiki", path });
+  };
+  const web = (href: string) => {
+    const url = href.replace(/#.*$/, "");
+    if (unfurlable(url) && !links.some((l) => l.kind === "web" && l.url === url)) links.push({ kind: "web", url });
   };
   marked.walkTokens(marked.lexer(text), (token) => {
     const t = token as Tokens.Generic;
-    if (t.type === "link") add(artifactTarget(String(t.href)));
-    else if (t.type === "wikiLink") add(t.target ?? `wiki:${String(t.path)}`);
-    else if (t.type === "spacedLink" || t.type === "filePath") add(t.target);
-    else if (t.type === "codespan") add(bareTarget(String(t.text)));
+    if (t.type === "link") {
+      const target = artifactTarget(String(t.href));
+      if (target) wiki(target);
+      else web(String(t.href));
+    } else if (t.type === "wikiLink") wiki(t.target ?? `wiki:${String(t.path)}`);
+    else if (t.type === "spacedLink" || t.type === "filePath") wiki(t.target);
+    else if (t.type === "codespan") wiki(bareTarget(String(t.text)));
   });
-  pageCache.set(text, pages);
-  if (pageCache.size > 3000) pageCache.delete(pageCache.keys().next().value!);
-  return pages;
+  previewCache.set(text, links);
+  if (previewCache.size > 3000) previewCache.delete(previewCache.keys().next().value!);
+  return links;
 }
 
 /** Block markdown to sanitized HTML. */

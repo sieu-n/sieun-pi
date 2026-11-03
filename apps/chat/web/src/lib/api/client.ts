@@ -132,6 +132,10 @@ export const api = {
   /** Puts the owner's emoji on a room post, or with `on` false takes it off; the room's live `items` event carries the change too. */
   react: (id: ConversationId, post: string, emoji: string, on = true) =>
     call<{ item: Item }>("POST", `/api/c/${enc(id)}/posts/${enc(post)}/reactions`, { emoji, on } satisfies ReactionRequest),
+  /** Slack's Edit message on the owner's own room post. */
+  editPost: (id: ConversationId, post: string, text: string) => call<{ item: Item }>("PATCH", `/api/c/${enc(id)}/posts/${enc(post)}`, { text }),
+  /** Slack's Delete message on the owner's own room post. */
+  deletePost: (id: ConversationId, post: string) => call<{ item: Item }>("DELETE", `/api/c/${enc(id)}/posts/${enc(post)}`),
   patch: (id: ConversationId, patch: ConversationPatch) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, patch),
   rename: (id: ConversationId, name: string) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { name }),
   archive: (id: ConversationId, archived = true) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { archived }),

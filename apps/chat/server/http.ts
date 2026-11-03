@@ -174,10 +174,17 @@ export function routes(app: App): Route[] {
       return { ok: true };
     }),
     route("PATCH", "/api/c/:id/posts/:post", async (_r, p, _q, body) => {
-      const { testSend, ...rest } = ((await body()) ?? {}) as { testSend?: { by?: unknown; reason?: unknown } };
+      const input = ((await body()) ?? {}) as { text?: unknown; testSend?: { by?: unknown; reason?: unknown } };
+      if ("text" in input) {
+        if (Object.keys(input).length > 1) throw new BadRequest("A post edit carries only text.");
+        return app.editPost(p.id!, p.post!, input);
+      }
+      const { testSend, ...rest } = input;
       if (!testSend || typeof testSend !== "object" || Object.keys(rest).length) throw new BadRequest("A post patch carries only testSend: {by, reason}.");
       return app.markTestSend(p.id!, p.post!, testSend);
     }),
+    route("DELETE", "/api/c/:id/posts/:post", async (_r, p) => app.deletePost(p.id!, p.post!)),
+    route("GET", "/api/unfurl", async (_r, _p, q) => ({ preview: await app.unfurl.get(q.get("url") ?? "") })),
     route("POST", "/api/c/:id/posts/:post/reactions", async (_r, p, _q, body) => {
       return app.react(p.id!, p.post!, ((await body()) ?? {}) as { emoji?: unknown; on?: unknown });
     }),

@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CODE_FOLD_LINES, renderInline, renderMarkdown, wikiLinkPath, wikiPages, withAuthor } from "../../web/src/lib/ui/markdown.ts";
+import { CODE_FOLD_LINES, previewLinks, renderInline, renderMarkdown, wikiLinkPath, withAuthor } from "../../web/src/lib/ui/markdown.ts";
 import { readable } from "../../web/src/lib/ui/mermaid.ts";
 
 const board = { chatId: "vent", titles: new Map([["p2", "Watch the week"]]) };
@@ -156,10 +156,10 @@ test("a post's board ids and job names resolve against its author's board and jo
   assert.equal(withAuthor(room, "owner"), room);
 });
 
-test("wikiPages lists each linked page once, with no images and no other targets", () => {
+test("previewLinks lists each linked wiki page once, with no images and no other targets", () => {
   assert.deepEqual(
-    wikiPages("wiki:a/b.html and [x](wiki:a/b.html), [[c/d.md]], https://h:5184/wiki/e.html ![i](wiki:f.png) `apps/llm-wiki/content/g.html` ~/.pi/wiki/content/h.html [j](job:x)"),
-    ["a/b.html", "c/d.md", "e.html", "g.html", "h.html"],
+    previewLinks("wiki:a/b.html and [x](wiki:a/b.html), [[c/d.md]], https://h:5184/wiki/e.html ![i](wiki:f.png) `apps/llm-wiki/content/g.html` ~/.pi/wiki/content/h.html [j](job:x)"),
+    ["a/b.html", "c/d.md", "e.html", "g.html", "h.html"].map((path) => ({ kind: "wiki", path })),
   );
-  assert.deepEqual(wikiPages("no pages here"), []);
+  assert.deepEqual(previewLinks("no pages here"), []);
 });

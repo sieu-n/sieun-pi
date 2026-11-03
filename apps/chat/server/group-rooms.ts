@@ -25,6 +25,7 @@ import { isGroupRoom, type AgentRecord, type AgentStore, type FeedCursor, type G
 import type { Agents } from "./agents.ts";
 import { isHostAway, type EntryRecord, type Host, type Submitted } from "./host/types.ts";
 import { refusedForGood, retryWait } from "./outbox.ts";
+import { postState } from "./post-edits.ts";
 import { reactionsLine, reactionsOf } from "./reactions.ts";
 import { agedPost, agentPostParts, queuedNote, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
 import type { Store } from "./store.ts";
@@ -583,7 +584,7 @@ export class GroupRooms {
    */
   private missed(row: GroupRoom, post: RoomPost, target: AgentId): RoomPost[] {
     if (row.kind !== "channel" || post.threadRoot) return [];
-    const roots = this.store.postsOf(row.id).filter(p => !p.threadRoot && p.seq < post.seq);
+    const roots = this.store.postsOf(row.id).filter(p => !p.threadRoot && p.seq < post.seq && p.deletedAt === undefined);
     const last = roots.findLastIndex(p => p.author === target || p.deliveries?.some(d => d.target === target));
     return roots.slice(last + 1).slice(-CONTEXT_POSTS);
   }
@@ -607,7 +608,7 @@ export class GroupRooms {
     if (missed.length) lines.push("", "(channel before this post)", ...missed.map(context));
     if (row.kind === "channel") {
       const rootId = post.threadRoot ?? post.id;
-      const thread = this.store.postsOf(row.id).filter(p => (p.id === rootId || p.threadRoot === rootId) && p.seq < post.seq).slice(-CONTEXT_POSTS);
+      const thread = this.store.postsOf(row.id).filter(p => (p.id === rootId || p.threadRoot === rootId) && p.seq < post.seq && p.deletedAt === undefined).slice(-CONTEXT_POSTS);
       if (thread.length) lines.push("", "(thread so far)", ...thread.map(context));
     }
     return lines.join("\n");
@@ -753,7 +754,7 @@ export class GroupRooms {
   }
 
   item(row: GroupRoom, post: RoomPost, all = this.store.postsOf(row.id)): Item {
-    const replies = row.kind === "channel" && !post.threadRoot ? all.filter(p => p.threadRoot === post.id) : [];
+    const replies = row.kind === "channel" && !post.threadRoot ? all.filter(p => p.threadRoot === post.id && p.deletedAt === undefined) : [];
     const authors = [...new Set(replies.map(r => r.author))].slice(0, 3).map(a => this.deps.threads.principal(a));
     return {
       kind: "message", id: post.id, seq: post.seq, at: post.at, author: this.deps.threads.principal(post.author), text: post.text, images: post.images,
@@ -761,6 +762,7 @@ export class GroupRooms {
       ...(post.author === "owner" ? { requestId: post.requestId } : agentPostParts(this.deps.threads, post)),
       ...(replies.length ? { thread: { replies: replies.length, lastAt: replies.at(-1)!.at, authors } } : {}),
       deliveries: (post.deliveries ?? []).map(d => this.publicDelivery(row, post, d, all)), ...reactionsOf(id => this.deps.threads.principal(id), post),
+      ...postState(post),
     };
   }
 

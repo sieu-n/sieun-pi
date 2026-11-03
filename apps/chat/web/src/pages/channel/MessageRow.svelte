@@ -6,7 +6,7 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import Lightbox from "$lib/ui/Lightbox.svelte";
   import Markdown from "$lib/ui/Markdown.svelte";
-  import WikiCards from "$lib/ui/WikiCards.svelte";
+  import LinkCards from "$lib/ui/LinkCards.svelte";
   import TypingDots from "$lib/ui/TypingDots.svelte";
   import { clockLabel, stampLabel, timeLabel } from "$lib/ui/datetime";
   import { wikiUrl, withAuthor, type MarkdownContext } from "$lib/ui/markdown";
@@ -16,6 +16,8 @@
   import Reactions from "./Reactions.svelte";
   import StepLine from "./StepLine.svelte";
   import ThreadPill from "./ThreadPill.svelte";
+  import DeletePostDialog from "./DeletePostDialog.svelte";
+  import PostEditor from "./PostEditor.svelte";
   import { offlineText } from "$pages/agents/host-badge";
   import { avatarKind, deliveryText, isOwn, placeText, QUIET_TURN, runningTool } from "./present";
 
@@ -88,7 +90,12 @@
   let copied = $state(false);
   /** A stored post of the open DM, channel or Solo room takes reactions; a thread's transcript and a pending send do not. */
   const room = $derived(router.conversationId && /^(dm|ch|so)_/.test(router.conversationId) ? router.conversationId : null);
-  const reactable = $derived(message && room && message.seq !== undefined && !pending ? message : null);
+  const reactable = $derived(message && room && message.seq !== undefined && !pending && !message.deleted ? message : null);
+  /** The owner's own stored post takes Slack's Edit message and Delete message; a deleted one is a stub. */
+  const editable = $derived(reactable && reactable.author.kind === "owner" && !reactable.testSend ? reactable : null);
+  const deleted = $derived(message?.deleted ?? false);
+  let editing = $state(false);
+  let deleting = $state(false);
   let reactions = $state<Reactions>();
   let reactButton = $state<HTMLButtonElement>();
   let picking = $state(false);
@@ -114,6 +121,10 @@
     {#if workHref && !why}<IconButton icon="robot" label="Show work" size="sm" onclick={() => workHref && router.navigate(workHref)} data-show-work />{/if}
     <IconButton icon="link" label="Copy link" size="sm" onclick={() => oncopylink(item)} />
     <IconButton icon={copied ? "check" : "copy"} label={copied ? "Copied" : "Copy message"} size="sm" onclick={copyText} />
+    {#if editable}
+      <IconButton icon="edit" label="Edit message" size="sm" onclick={() => (editing = true)} data-edit-post />
+      <IconButton icon="trash" label="Delete message" size="sm" onclick={() => (deleting = true)} data-delete-post />
+    {/if}
   </div>
 {/snippet}
 
@@ -128,7 +139,7 @@
     </div>
   {/if}
   {#if !live && (sent?.length || item.text)}
-    <WikiCards text={sent ? sent.join("\n\n") : item.text} onopen={(path, e) => (onartifact ? onartifact(`wiki:${path}`, e) : window.open(wikiUrl(path), "_blank", "noopener"))} />
+    <LinkCards text={sent ? sent.join("\n\n") : item.text} onopen={(path, e) => (onartifact ? onartifact(`wiki:${path}`, e) : window.open(wikiUrl(path), "_blank", "noopener"))} />
   {/if}
 {/snippet}
 
@@ -224,9 +235,14 @@
             <StepLine steps={turn.steps} {live} liveLabel={stepLabel} onjob={onthread} />
           </div>
         {/if}
-        {#if item.text}
+        {#if editing && editable && room}
+          <PostEditor {room} post={item.id} text={item.text} ondone={() => (editing = false)} ondelete={() => ((editing = false), (deleting = true))} />
+        {:else if deleted}
+          <p class="deleted" data-deleted>This message was deleted.</p>
+        {:else if item.text}
           <div class="text t-message">
             <Markdown text={item.text} {context} {onmention} {onboardid} {onartifact} class="msg-text" />
+            {#if message?.editedAt}<span class="edited" title="Edited {stampLabel(message.editedAt)}" data-edited>(edited)</span>{/if}
           </div>
         {:else if live && !stepLabel}
           <span class="waiting"><TypingDots mode="working" label="Writing" /></span>
@@ -269,8 +285,13 @@
             {#if turn && (turn.steps.length || (live && stepLabel))}
               <StepLine steps={turn.steps} {live} liveLabel={stepLabel} onjob={onthread} />
             {/if}
-            {#if item.text}
+            {#if editing && editable && room}
+              <PostEditor {room} post={item.id} text={item.text} ondone={() => (editing = false)} ondelete={() => ((editing = false), (deleting = true))} />
+            {:else if deleted}
+              <span class="deleted" data-deleted>This message was deleted.</span>
+            {:else if item.text}
               <Markdown text={item.text} {context} {onmention} {onboardid} {onartifact} class="msg-text" />
+              {#if message?.editedAt}<span class="edited" title="Edited {stampLabel(message.editedAt)}" data-edited>(edited)</span>{/if}
             {:else if live && !stepLabel}
               <span class="waiting"><TypingDots mode="working" label="Writing" /></span>
             {/if}
@@ -285,8 +306,29 @@
 {/if}
 
 <Lightbox src={lightbox} onclose={() => (lightbox = null)} />
+{#if editable && room}<DeletePostDialog bind:open={deleting} {room} post={item.id} text={item.text} />{/if}
 
 <style>
+  /* "(edited)" sits at the end of the post's last paragraph, as in Slack; after a list, a table or a code block it takes a line of its own. */
+  .edited {
+    color: var(--text-metadata);
+    font: var(--text-caption);
+    letter-spacing: var(--tracking-caption);
+  }
+  .row :global(.msg-text:has(> p:last-child) + .edited) {
+    display: none;
+  }
+  .row :global(.msg-text:has(+ .edited) > p:last-child::after) {
+    content: " (edited)";
+    color: var(--text-metadata);
+    font: var(--text-caption);
+    letter-spacing: var(--tracking-caption);
+  }
+  .deleted {
+    margin: 0;
+    color: var(--text-metadata);
+    font-style: italic;
+  }
   .row {
     --gutter: 32px;
     --gap: 12px;
