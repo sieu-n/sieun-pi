@@ -3,7 +3,7 @@
 // must not count, and one main does ship must.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { docsIsScalar, uptimeMetrics } from "../scripts/duties/portal-uptime.ts";
+import { docsIsScalar, rowUptime, uptimeMetrics } from "../scripts/duties/portal-uptime.ts";
 
 const UP = [{ labels: { target: "crawler_health" }, value: 1 }, { labels: { target: "crawler_schema" }, value: 1 }, { labels: { target: "portal_openapi" }, value: 1 }];
 const ANSWERS = { up: UP, uptime: UP, age: UP.map(series => ({ ...series, value: 60 })), p90: [{ labels: { target: "portal_openapi" }, value: 400 }], lastDown: [] };
@@ -61,4 +61,29 @@ test("an offline Mac leaves probes_down_now unmeasured and does not blame /docs"
   const output = uptimeMetrics(answers, { status: 0, ms: 5, error: "fetch failed (ENETUNREACH)" }, 0, {}, undefined, { status: 0, ms: 5, scalar: false, error: "fetch failed (ENETUNREACH)", main: { error: "fetch failed" } });
   assert.equal(output.metrics.probes_down_now, 999999);
   assert.equal(kinds(output).some(kind => kind.startsWith("public_docs")), false);
+});
+
+// 11-03: Convex disabled the team at 18:11Z, the probe cron wrote no row after it, and d1 read 100% uptime with probes_down_now unmeasured at 23:24Z.
+test("a Convex outage that stops the probe cron reads as skipped rounds, a stale probe and a failing key check", () => {
+  const minute = 60_000;
+  const stop = 19 * 60 * minute;
+  const rows = ["crawler_health", "crawler_schema", "portal_openapi"].flatMap(target =>
+    Array.from({ length: 19 * 60 }, (_, index) => ({ target, ok: true, createdAt: stop - index * minute })));
+  const now = 24 * 60 * minute;
+  const read = rowUptime(rows, now);
+  assert.ok(read.uptime.every(series => series.value > 0.79 && series.value < 0.8));
+  assert.ok(read.lastDown.every(series => series.value === now / 1000));
+  const missing = { error: "no series" };
+  const output = uptimeMetrics({ up: [], age: [], p90: missing, ...read } as never, DIRECT, now, {}, undefined, undefined,
+    { status: 503, ms: 300, code: "auth_unavailable" });
+  assert.ok(output.metrics.probe_uptime_24h_pct! < 80);
+  assert.equal(output.metrics.probe_age_min, 300);
+  assert.equal(output.metrics.probes_down_now, 1);
+  assert.match(output.flagged!.find(row => row.kind === "portal_auth")!.excerpt, /gave HTTP 503 auth_unavailable/);
+});
+
+test("a key check refused with 401 counts nothing", () => {
+  const output = uptimeMetrics(ANSWERS, DIRECT, 0, {}, undefined, undefined, { status: 401, ms: 120, code: "invalid_api_key" });
+  assert.equal(output.metrics.probes_down_now, 0);
+  assert.equal(kinds(output).includes("portal_auth"), false);
 });

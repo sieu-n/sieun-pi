@@ -48,6 +48,21 @@ export const PUBLIC_DOCS = "https://api.virev.ai/docs";
 export const SCALAR_MARKERS = ["ApiDocsExplorer", "Loading interactive reference"] as const;
 /** True when a /docs page is the Scalar reference: it carries at least one of SCALAR_MARKERS. */
 export const docsIsScalar = (html: string): boolean => SCALAR_MARKERS.some(marker => html.includes(marker));
+/**
+ * The customer path behind every paid call: a key check on Convex. The run sends one well-formed key that no org holds, which a working
+ * gateway refuses with 401 invalid_api_key before any crawl or charge (apps/api-portal/src/lib/server/gateway.ts). The openapi and /docs
+ * GETs never touch Convex, so on 11-03 from 18:11Z, when Convex disabled the team, they stayed 200 while this call answered 503 auth_unavailable.
+ */
+export const PORTAL_AUTH_URL = "https://api.virev.ai/v1/instagram/profile?q=instagram";
+export const UNKNOWN_KEY = `kb_live_${"0".repeat(32)}`;
+/** The signed GET of PORTAL_AUTH_URL with UNKNOWN_KEY: its status, the error code in its body, its time, the fetch error when it got no answer. */
+export interface AuthCheck { status: number; ms: number; code?: string; error?: string }
+/** What the key check adds to probes_down_now: 1 when it got no answer or a 5xx, else 0. */
+export function authVerdict(auth: AuthCheck, at: number): { down: number; flag?: FlaggedSlice } {
+  if (auth.status !== 0 && auth.status < 500) return { down: 0 };
+  const got = auth.error ?? `HTTP ${auth.status}${auth.code ? ` ${auth.code}` : ""}`;
+  return { down: 1, flag: { at, kind: "portal_auth", excerpt: `portal_auth: GET ${PORTAL_AUTH_URL} with an unknown well-formed key gave ${got} after ${auth.ms} ms, so every customer key check fails and paid calls get no data.` } };
+}
 /** The public docs route in auto-sns-agent; main ships the Scalar docs when this file renders ApiDocsExplorer. */
 export const DOCS_ROUTE = "apps/api-portal/src/routes/(marketing)/docs/+page.svelte";
 /** Whether main's DOCS_ROUTE renders ApiDocsExplorer, or the error text when GitHub gave no file. */
@@ -94,13 +109,15 @@ export const QUERIES = {
   p90: `quantile_over_time(0.9, api_probe_latency_ms{${SEL},target="portal_openapi"}[24h])`,
 } as const;
 export type QueryName = keyof typeof QUERIES;
-/** Every measure: the Prometheus queries plus the two read from the Convex probe rows. */
-export type Measure = QueryName | "uptime" | "lastDown";
+/** Every measure: the Prometheus queries plus the four read from the Convex probe rows. */
+export type Measure = QueryName | "uptime" | "lastDown" | "rowUp" | "rowAge";
 /** What each measure reads, for a flagged row that says which source gave no answer. */
 export const SOURCES: Record<Measure, string> = {
   ...QUERIES,
   uptime: `the ${PROBE_TABLE} rows of the last 24 h on Convex ${PROD_CONVEX} (passing rows over all rows, per target)`,
-  lastDown: `the newest failed ${PROBE_TABLE} row of the last 24 h on Convex ${PROD_CONVEX}`,
+  lastDown: `the newest failed ${PROBE_TABLE} row or skipped round of the last 24 h on Convex ${PROD_CONVEX}`,
+  rowUp: `the newest ${PROBE_TABLE} row per target on Convex ${PROD_CONVEX}`,
+  rowAge: `the age of the newest ${PROBE_TABLE} row per target on Convex ${PROD_CONVEX}`,
 };
 
 /** One Prometheus series from an instant query: its labels and its value. */
@@ -111,21 +128,45 @@ export type Answers = Record<Measure, Series[] | { error: string }>;
 /** One apiPortalHealthProbes row, the fields the uptime needs. */
 export interface ProbeRow { target: string; ok: boolean; createdAt: number }
 
+const MINUTE_MS = 60_000;
 /**
- * Per target, the share of passing probe rows in the 24 h before `now` (uptime) and the unix second of the newest failed one (lastDown,
- * no series when none failed). A target with no row in the window has no uptime series, so the duty flags it as missing.
+ * Probe rounds the cron skipped in a gap of `gapMs` between two rows of one target (or a row and now). measured: of 1,438 gaps between
+ * portal_openapi rows on prod from 11-02 to 11-03, every one was 54 to 67 s, so a gap rounds to whole minutes with no jitter miscount.
  */
-export function rowUptime(rows: readonly ProbeRow[], now: number): { uptime: Series[]; lastDown: Series[] } {
+export const skippedRounds = (gapMs: number): number => Math.max(0, Math.round(gapMs / MINUTE_MS) - 1);
+
+/**
+ * Per target, over the 24 h before `now`: the share of probe rounds that passed (uptime), the unix second of the newest failed or skipped
+ * round (lastDown, no series when none), the newest row's verdict (rowUp, 1 or 0) and the seconds since it (rowAge). A round the cron skipped
+ * counts as failed, because the cron runs on Convex and stops when Convex does: from 18:11Z on 11-03 Convex disabled the team, every key check on
+ * api.virev.ai answered 503 auth_unavailable, the cron wrote no row, and a share of the rows that exist still read 100% at 23:24Z.
+ * A target with no row in the window has no series, so the duty flags it as missing.
+ */
+export function rowUptime(rows: readonly ProbeRow[], now: number): { uptime: Series[]; lastDown: Series[]; rowUp: Series[]; rowAge: Series[] } {
   const uptime: Series[] = [];
   const lastDown: Series[] = [];
+  const rowUp: Series[] = [];
+  const rowAge: Series[] = [];
   for (const target of TARGETS) {
-    const mine = rows.filter(row => row.target === target && row.createdAt > now - DAY_MS && row.createdAt <= now);
+    const mine = rows.filter(row => row.target === target && row.createdAt > now - DAY_MS && row.createdAt <= now).sort((a, b) => a.createdAt - b.createdAt);
     if (!mine.length) continue;
-    const failed = mine.filter(row => !row.ok);
-    uptime.push({ labels: { target }, value: (mine.length - failed.length) / mine.length });
-    if (failed.length) lastDown.push({ labels: { target }, value: Math.max(...failed.map(row => row.createdAt)) / 1000 });
+    const newest = mine.at(-1)!;
+    const leading = skippedRounds(mine[0]!.createdAt - (now - DAY_MS));
+    let skipped = skippedRounds(now - newest.createdAt);
+    let lastBad = skipped ? now : Math.max(leading ? mine[0]!.createdAt - MINUTE_MS : 0, ...mine.filter(row => !row.ok).map(row => row.createdAt));
+    skipped += leading;
+    for (let index = 1; index < mine.length; index++) {
+      const gap = skippedRounds(mine[index]!.createdAt - mine[index - 1]!.createdAt);
+      skipped += gap;
+      if (gap) lastBad = Math.max(lastBad, mine[index]!.createdAt - MINUTE_MS);
+    }
+    const passed = mine.filter(row => row.ok).length;
+    uptime.push({ labels: { target }, value: passed / (mine.length + skipped) });
+    if (lastBad) lastDown.push({ labels: { target }, value: lastBad / 1000 });
+    rowUp.push({ labels: { target }, value: newest.ok ? 1 : 0 });
+    rowAge.push({ labels: { target }, value: (now - newest.createdAt) / 1000 });
   }
-  return { uptime, lastDown };
+  return { uptime, lastDown, rowUp, rowAge };
 }
 /**
  * Sources for the targets in portal-uptime.duty.json (the JSON cannot hold comments):
@@ -175,7 +216,7 @@ export const blobFingerprint = (text: string): string =>
   createHash("sha256").update(`${text.replace(/\s+$/, "")}\n`).digest("hex").slice(0, 16);
 
 /** The duty's metrics from the query answers, the direct GET and the env files, with a flagged slice for each down target, gap and unread source. */
-export function uptimeMetrics(answers: Answers, direct: { status: number; ms: number; error?: string }, at: number, env: EnvFiles = {}, live?: LiveProd, docs?: DocsCheck): PrecheckOutput {
+export function uptimeMetrics(answers: Answers, direct: { status: number; ms: number; error?: string }, at: number, env: EnvFiles = {}, live?: LiveProd, docs?: DocsCheck, auth?: AuthCheck): PrecheckOutput {
   const flagged: FlaggedSlice[] = [];
   let sourceErrors = 0;
   /** The series of one measure, or undefined after flagging why there are none. */
@@ -192,12 +233,24 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
   };
   const metrics: Record<string, number> = {};
 
-  const up = read("up", TARGETS);
+  /** The series of a Convex row measure when it has every target, with no flag: the uptime read already flags a missing row source. */
+  const rowSeries = (name: "rowUp" | "rowAge"): Series[] | undefined => {
+    const answer = answers[name];
+    return answer && !("error" in answer) && TARGETS.every(target => answer.some(series => series.labels.target === target)) ? answer : undefined;
+  };
+  const rowAge = rowSeries("rowAge");
+  const rowsFresh = rowAge !== undefined && rowAge.every(series => series.value <= STALE_MIN * 60);
+  // The Prometheus scrape reads the same Convex rows through an http action, so with no scrape the newest fresh rows stand in for it.
+  const up = read("up", TARGETS) ?? (rowsFresh ? rowSeries("rowUp") : undefined);
   const offline = direct.status === 0 && Object.values(answers).every(answer => "error" in answer && !answer.error.startsWith("HTTP "));
   const docsRead = !offline && docs !== undefined ? docsVerdict(docs, at) : { down: 0 };
   if (docsRead.flag) flagged.push(docsRead.flag);
   if (docsRead.sourceError) sourceErrors++;
-  metrics.probes_down_now = up && docsRead.down !== UNMEASURED ? up.filter(series => series.value < 1).length + docsRead.down : UNMEASURED;
+  const authRead = !offline && auth !== undefined ? authVerdict(auth, at) : { down: 0 };
+  if (authRead.flag) flagged.push(authRead.flag);
+  const known = authRead.down + (docsRead.down === UNMEASURED ? 0 : docsRead.down);
+  // A known failure is a floor on probes_down_now even when the probe targets were not read, so a dead Convex never reads as unmeasured only.
+  metrics.probes_down_now = up && docsRead.down !== UNMEASURED ? up.filter(series => series.value < 1).length + known : known > 0 ? known : UNMEASURED;
   for (const series of up ?? []) if (series.value < 1) flagged.push({ at, kind: "down", excerpt: `prod api probe ${series.labels.target} fails now (api_probe_up 0)` });
 
   const uptime = read("uptime", TARGETS);
@@ -211,8 +264,10 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
   }
 
   const age = read("age", TARGETS);
-  metrics.probe_age_min = age ? round(Math.min(...age.map(series => series.value)) / 60) : UNMEASURED;
-  if (age && metrics.probe_age_min > STALE_MIN) flagged.push({ at, kind: "stale", excerpt: `the newest prod api probe is ${metrics.probe_age_min} min old; the Convex cron runs every minute` });
+  // The stalest of the two views: the newest Convex row shows a stopped cron, the Prometheus age a stopped scrape.
+  const ages = [age, rowAge].filter(series => series !== undefined).map(series => Math.min(...series.map(item => item.value)));
+  metrics.probe_age_min = ages.length ? round(Math.max(...ages) / 60) : UNMEASURED;
+  if (ages.length && metrics.probe_age_min > STALE_MIN) flagged.push({ at, kind: "stale", excerpt: `the newest prod api probe is ${metrics.probe_age_min} min old; the Convex cron runs every minute` });
 
   const p90 = read("p90", ["portal_openapi"]);
   metrics.portal_openapi_p90_ms = p90 ? Math.round(p90[0]!.value) : UNMEASURED;
@@ -340,7 +395,7 @@ async function main(): Promise<void> {
     Object.assign(answers, rowUptime(await probeRows(), now));
   } catch (error) {
     const message = errorText(error);
-    Object.assign(answers, { uptime: { error: message }, lastDown: { error: message } });
+    Object.assign(answers, { uptime: { error: message }, lastDown: { error: message }, rowUp: { error: message }, rowAge: { error: message } });
   }
   const start = Date.now();
   const direct = await fetch(PORTAL_OPENAPI, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
@@ -350,6 +405,12 @@ async function main(): Promise<void> {
   const page = await fetch(PUBLIC_DOCS, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
     .then(async response => ({ status: response.status, scalar: docsIsScalar(await response.text()), ms: Date.now() - docsStart }),
       (error: unknown) => ({ status: 0, scalar: false, ms: Date.now() - docsStart, error: errorText(error) }));
+  const authStart = Date.now();
+  const auth: AuthCheck = await fetch(PORTAL_AUTH_URL, { headers: { authorization: `Bearer ${UNKNOWN_KEY}` }, signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
+    .then(async response => {
+      const body = await response.json().catch(() => null) as { error?: { code?: string } } | null;
+      return { status: response.status, ms: Date.now() - authStart, ...body?.error?.code ? { code: body.error.code } : {} };
+    }, (error: unknown) => ({ status: 0, ms: Date.now() - authStart, error: errorText(error) }));
   const main: MainDocs = await githubRaw(DOCS_ROUTE, "main").then(text => text.includes("ApiDocsExplorer"), (error: unknown) => ({ error: errorText(error) }));
   const docs: DocsCheck = { ...page, main };
   const env: EnvFiles = Object.fromEntries(await Promise.all(ENV_REFS.map(async ref => {
@@ -358,7 +419,7 @@ async function main(): Promise<void> {
       return [ref, { prod: prod!, staging: staging! }] as const;
     } catch (error) { return [ref, { error: errorText(error) }] as const; }
   })));
-  await writeFile(output, JSON.stringify(uptimeMetrics(answers, direct, now, env, await liveProdSource(env), docs), null, 2) + "\n");
+  await writeFile(output, JSON.stringify(uptimeMetrics(answers, direct, now, env, await liveProdSource(env), docs, auth), null, 2) + "\n");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main();
