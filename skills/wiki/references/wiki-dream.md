@@ -42,6 +42,7 @@ The owner asked for it in these words: "a daily job that cleans wiki, find anti-
 3. Every flagged item gets its subagent in the same run, all started at once, with no daily cap. The 2026-10-15 01:30 run fixed 50 missing dates (missing_meta 51 to 1) and judged 30 pairs in one go, and none of its commits was reverted.
 4. Each page writer brief carries the standard line from `writing.md`, the target path, the flagged item, the sources to read, and this write path, and the job writes each brief fresh from this file, never from a brief of an earlier run, because on 2026-11-03 the 16:09Z run copied an old brief that told writers to commit pages with `commit.mjs` under `apps/llm-wiki/content/`.
    - The writer edits the page only through the wiki module (`wiki.read`, `wiki.edit`, `wiki.write`) or `PATCH`/`PUT https://us-metal02-dev.tail0c093d.ts.net:5184/wiki/<path>`.
+   - It takes each `wiki.edit` old string from `wiki.read(path, html=True)`, passes (old, new) pairs and calls the module with no `await`, because on 2026-11-03 four writers matched the markdown view's YAML header, got 422 and lost edit answers to a TypeError.
    - It names the page by its wiki path, such as `apps/search/onboarding-orgs.html`, with no `apps/llm-wiki/content/` or `content/` prefix.
    - It commits nothing, because a page lives only in the content root and `wiki-backup.timer` backs it up.
    - Its write summary starts with `wiki-dream:`, because the precheck counts a page's dream revisions in `wiki.db` by that mark.

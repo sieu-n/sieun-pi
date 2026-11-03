@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import json
 import os
@@ -41,6 +42,12 @@ class FakeChat(BaseHTTPRequestHandler):
             self.send_header("content-type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"error": "close needs graduated_to, gaps_created or no_durable_knowledge"}).encode())
+            return
+        elif self.command == "PATCH" and b'"old_string": "missing"' in body:
+            self.send_response(422)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "edit 0: old_string not found"}).encode())
             return
         elif "format=md" in self.path:
             self.send_response(200)
@@ -129,6 +136,20 @@ class WikiSkillTests(unittest.TestCase):
         self.assertIn('name="path"\r\n\r\nsessions/2026/11/03/1250-x/data/run.log', calls[2]["body"])
         self.assertEqual(calls[-1]["path"], "/wiki/api/agent/sessions/sessions/2026/11/03/1250-x/close")
         self.assertFalse(json.loads((session / "wiki-workspace.json").read_text()).get("workspace"))
+
+    def test_an_edit_is_safe_to_await_and_a_missed_old_string_names_the_html_read(self):
+        with self.env(RLM_SESSION_DIR=self.tmp.name, WIKI_AUTHOR="prime job check"):
+            wiki = load_wiki()
+
+            async def awaited():
+                return await wiki.edit("apps/x/a.html", [("a", "b")]), await wiki.read("apps/x/a.html")
+
+            edited, page = asyncio.run(awaited())
+            self.assertEqual((edited["ok"], edited["path"], page), (True, "apps/x/a.html", "# Page\n"))
+            with self.assertRaises(wiki.WikiError) as refused:
+                wiki.edit("apps/x/a.html", [("missing", "b")])
+            self.assertEqual(refused.exception.status, 422)
+            self.assertIn("wiki.read(path, html=True)", str(refused.exception))
 
     def test_a_disk_prefixed_path_is_refused(self):
         with self.env(RLM_SESSION_DIR=self.tmp.name):

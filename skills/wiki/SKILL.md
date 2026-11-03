@@ -23,7 +23,7 @@ A Prime session has no pi-host conversation, so it passes `author=` once or sets
 ws = wiki.workspace("what this job does")    # opens the folder on the first call; later calls return it
 wiki.write("plan.html", html)                # a page in the workspace; a full path such as apps/x/index.html also works
 wiki.write("notes.html", md, markdown=True)  # markdown in, stored as HTML (pi-host threads)
-wiki.edit("plan.html", [(old, new)])         # exact-string edits
+wiki.edit("plan.html", [(old, new)])         # exact-string edits against the stored HTML
 wiki.put("data/run.log", "/path/run.log")    # any file that is not a page
 wiki.log("ran the bench, 3 of 4 green")      # an event on the workspace log
 wiki.read("apps/search/index.html")          # markdown made from the stored HTML; html=True gives the HTML
@@ -36,8 +36,9 @@ wiki.close("what changed", no_durable_knowledge=True)  # or graduated_to=[...] o
 1. A pi-host job's folder is `agents/<slug>/jobs/YYYY/MM/DD/hhmm-<job>/` (KST day), and an agent's work thread gets its standing notebook `agents/<slug>/work/`, which never closes.
 2. A Prime session's folder is `sessions/YYYY/MM/DD/hhmm-<slug>/`, and its first `wiki.workspace(goal, author=...)` call names the goal.
 3. A refused write raises `wiki.WikiError` with the server's status and its reason, such as 422 for a prose-lint error or a duplicate page, 409 for a stale `base_version` and 403 for a closed folder.
-4. The module keeps the open folder in `wiki-workspace.json` under `RLM_SESSION_DIR`, so a resumed kernel finds it again.
-5. A link for the owner is the `url` each call returns, such as `https://us-metal02-dev.tail0c093d.ts.net:5184/wiki/agents/vent/jobs/2026/11/03/1250-x/plan.html`, never a disk path.
+4. Take each `wiki.edit` old string from `wiki.read(path, html=True)`, the stored HTML with its `<!--wiki {json}-->` header, and call the module with no `await`, because its calls are sync. On 2026-11-03 four wiki-dream writers copied old strings from the markdown view, which shows that header as YAML, and got 422 `old_string not found`. Several of them also lost the edit answer and its `commitsBehind` warning to the TypeError that `await wiki.edit(...)` raised. Each edit is a list of (old, new) pairs, and since that day an awaited call returns its answer and a missed old string names the HTML read. The markdown view refuses a page over 64 KiB with 413, while `html=True` and `/wiki/raw/<path>` return every byte.
+5. The module keeps the open folder in `wiki-workspace.json` under `RLM_SESSION_DIR`, so a resumed kernel finds it again.
+6. A link for the owner is the `url` each call returns, such as `https://us-metal02-dev.tail0c093d.ts.net:5184/wiki/agents/vent/jobs/2026/11/03/1250-x/plan.html`, never a disk path.
 
 ## HTTP for scripts and other tools
 

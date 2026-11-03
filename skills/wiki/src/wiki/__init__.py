@@ -9,6 +9,7 @@ pi-host conversation; it calls the engine's agent API through /wiki/api/agent/* 
 
 from __future__ import annotations
 
+import functools
 import json
 import mimetypes
 import os
@@ -229,10 +230,16 @@ def edit(name: str, edits, *, summary: str | None = None, base_version: int | No
     path = _path(name)
     rows = [e if isinstance(e, dict) else {"old_string": e[0], "new_string": e[1]} for e in edits]
     body = {"edits": rows, **({"summary": summary} if summary else {}), **({"baseVersion": base_version} if base_version is not None else {})}
-    if conversation():
-        got = _call("PATCH", f"/wiki/{_quote(path)}", body)
-    else:
-        got = _call("PATCH", "/wiki/api/agent/page", {"path": path, "author": _author(author), **body})
+    try:
+        if conversation():
+            got = _call("PATCH", f"/wiki/{_quote(path)}", body)
+        else:
+            got = _call("PATCH", "/wiki/api/agent/page", {"path": path, "author": _author(author), **body})
+    except WikiError as error:
+        if error.status == 422 and "old_string not found" in str(error):
+            error.args = (f"{error.args[0]} Copy old strings from wiki.read(path, html=True), the stored HTML with its "
+                          "<!--wiki {json}--> header; the default markdown view shows that header as YAML.",)
+        raise
     return {**got, "path": path, "url": _url(path)}
 
 
@@ -309,3 +316,37 @@ def supersede(old: str, new: str, *, summary: str | None = None, author: str | N
     """Mark old (even in a closed folder) as replaced by new."""
     who = _author(author) if not conversation() else author or f"conversation {conversation()}"
     return _call("POST", "/wiki/api/agent/supersede", {"path": old, "by": new, "author": who, **({"summary": summary} if summary else {})})
+
+
+class _Answer:
+    """Makes an answer safe to await: the calls are sync, and on 2026-11-03 `await wiki.edit(...)` saved the edit, raised TypeError
+    and lost the answer with its commitsBehind warning for four wiki-dream writers."""
+
+    def __await__(self):
+        yield from ()
+        return self
+
+
+class _Dict(_Answer, dict):
+    pass
+
+
+class _List(_Answer, list):
+    pass
+
+
+class _Str(_Answer, str):
+    pass
+
+
+def _awaitable(call):
+    @functools.wraps(call)
+    def wrapped(*args, **kwargs):
+        got = call(*args, **kwargs)
+        kind = _Dict if isinstance(got, dict) else _List if isinstance(got, list) else _Str if isinstance(got, str) else None
+        return kind(got) if kind else got
+    return wrapped
+
+
+for _name in ("workspace", "write", "edit", "put", "log", "close", "publish", "search", "read", "supersede"):
+    globals()[_name] = _awaitable(globals()[_name])
