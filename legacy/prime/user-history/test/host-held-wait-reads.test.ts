@@ -104,7 +104,7 @@ const p148: PlanItem = { id: "p148", text: "Old tables, old data and old code ar
 function releaseRun(owner: JobFact["state"]) {
   const plan = [{ ...p2, children: [p147, p148] }];
   const jobs: JobFact[] = [{ key: `thread:${RELEASE}`, name: "release owner", state: owner, sessionId: RELEASE, activityAt: start - MIN },
-    { key: "child-p148", name: "old tables and code gone", state: "idle", sessionId: p148.sessionId!, activityAt: start - 4 * 60 * MIN }];
+    { key: "child-p148", name: "old tables and code gone", state: "ended", sessionId: p148.sessionId!, activityAt: start - 4 * 60 * MIN }];
   const threads = [...rows, { id: RELEASE, name: "release owner", host: "us-metal02" }] as unknown as SessionRow[];
   const precheck = checkInPrecheck(undefined, jobs, { ...board, plan } as ChatBoard, start, { self: [SEP], rows: threads, hosts: { chatHost: "mac", held } });
   return precheck.end.find(found => found.view.item.id === "p148")!;
@@ -117,6 +117,6 @@ test("p148, held on the offline Mac, reads moving while the release owner thread
 });
 
 test("p148 still reads stuck (release) once nobody moves p147", () => {
-  const entry = releaseRun("idle");
+  const entry = releaseRun("ended");
   assert.equal(entry.state, "release", entry.reason);
 });
