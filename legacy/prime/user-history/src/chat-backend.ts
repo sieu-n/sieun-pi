@@ -397,12 +397,16 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const stopAlerts = !alertPoll ? () => {} : startAlertBridge({ file: join(dataDir, "alert-bridge.json"),
     alerts: () => alertPoll.alerts(),
     owners: () => readOwnersFor(grafanaConfig, homedir()), hasBoard: async session => (await boards.read(session)) !== null,
-    startJob: async (chatId, lines, previous) => {
+    startJob: async (chatId, lines, previous, call) => {
       const chat = await dutyJobs.chat(chatId);
       if (!chat) throw new Error(`no chat ${chatId.slice(0, 8)}`);
       const at = Date.now();
       const name = dutyJobName(ALERT_TRIAGE_DUTY, chat.name, at);
-      return await dutyJobs.start(chat, name, alertJobBrief(chat, name, at, lines, previous), at);
+      return await dutyJobs.start(chat, name, alertJobBrief(chat, name, at, lines, previous, call), at);
+    },
+    firingCall: async chatId => {
+      const duty = (await duties.store.list(chatId)).find(duty => duty.status === "active" && duty.firingCall);
+      return duty?.firingCall ? { command: duty.firingCall, cwd: duty.precheck.cwd } : null;
     },
     threads: { list: async () => threadNames(await piHostRoutes()), send: async (thread, text, requestId) => sendAlert(await piHostRoutes(), thread, text, requestId),
       turn: async (thread, since) => threadTurnSince(await threadEntries(await piHostRoutes(), thread), since, provider => treeFreeAt(`pi-durable:${thread}`, provider), Date.now()) },

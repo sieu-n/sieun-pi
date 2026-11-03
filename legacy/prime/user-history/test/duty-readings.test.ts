@@ -32,3 +32,14 @@ test("a reading that is also a metric or has no label is refused", () => {
   assert.throws(() => upsertDuty([], definition([{ key: "signup_to_workspace_pct" }]), 1), /readings\[0\]/);
   assert.throws(() => upsertDuty([], definition({ key: "x" }), 1), /readings: a list/);
 });
+
+test("a duty keeps its firingCall, refuses one without <key>, and a definition without it drops it", () => {
+  const duties: Duty[] = [];
+  const firingCall = `node verdict.mjs '{"firing":"<key>","fault":true|false}'`;
+  assert.equal(upsertDuty(duties, { ...definition(), firingCall }, 1), "added d1");
+  assert.equal(duties[0]!.firingCall, firingCall);
+  assert.equal(upsertDuty(duties, { ...definition(), firingCall }, 2), "unchanged d1");
+  assert.throws(() => upsertDuty([], { ...definition(), firingCall: "node verdict.mjs" }, 3), /firingCall/);
+  assert.equal(upsertDuty(duties, definition(), 4), "updated d1");
+  assert.equal(duties[0]!.firingCall, undefined);
+});

@@ -119,6 +119,13 @@ export interface Duty {
   onMiss: string;
   /** The plan item the fixes go under. */
   boardGoal?: string;
+  /**
+   * The command that writes this duty's fault call for one alert firing of the chat, with `<key>` where the firing key goes, run in the
+   * precheck's cwd. The alert bridge names it and each firing key in the chat's triage brief and in each later fire it sends that job. CI and
+   * RepoOps' d4 counts a firing with no call as a false alert, and its triage jobs found every cause but wrote no call, since no brief named the
+   * key or the command: its 03:06 KST run on 11-04 read 14 such firings and wrote all 14 calls by hand.
+   */
+  firingCall?: string;
   status: "active" | "paused";
   createdAt: number;
   updatedAt: number;
@@ -502,12 +509,13 @@ export function parseSchedule(schedule: unknown): DutySchedule {
  */
 export function parseDutyInput(value: unknown, id: string, now: number, schedule?: DutySchedule): Duty {
   if (!isRecord(value)) throw new Error("A duty is an object.");
-  const { name, ownerWords, goal, metrics, readings, precheck, onMiss, boardGoal } = value;
+  const { name, ownerWords, goal, metrics, readings, precheck, onMiss, boardGoal, firingCall } = value;
   if (!str(name)) throw new Error("name: the system the duty looks after, in plain words.");
   if (!str(ownerWords)) throw new Error("ownerWords: the owner's words, verbatim.");
   if (!str(goal)) throw new Error("goal: what good means, in plain words.");
   if (!str(onMiss)) throw new Error("onMiss: what the duty job does about a miss.");
   if (boardGoal !== undefined && !(typeof boardGoal === "string" && /^p\d+$/.test(boardGoal))) throw new Error("boardGoal: a plan item id like p87.");
+  if (firingCall !== undefined && !(typeof firingCall === "string" && firingCall.includes("<key>"))) throw new Error("firingCall: the command that writes one firing's fault call, with <key> where the firing key goes.");
   if (!Array.isArray(metrics) || !metrics.length) throw new Error("metrics: at least one, with the headline marked.");
   const parsedMetrics = metrics.map((metric: unknown, index): DutyMetric => {
     if (!isRecord(metric) || typeof metric.key !== "string" || !KEY.test(metric.key) || !str(metric.label) || (metric.op !== "<=" && metric.op !== ">=") ||
@@ -531,7 +539,7 @@ export function parseDutyInput(value: unknown, id: string, now: number, schedule
   const timeoutMs = typeof precheck.timeoutMs === "number" && precheck.timeoutMs > 0 ? precheck.timeoutMs : PRECHECK_TARGET_MS;
   return { id, name: name.trim(), ownerWords, goal: goal.trim(), metrics: parsedMetrics, ...(parsedReadings.length ? { readings: parsedReadings } : {}), schedule: parsedSchedule,
     precheck: { command: precheck.command as string[], cwd: precheck.cwd, timeoutMs }, onMiss: onMiss.trim(), ...(boardGoal ? { boardGoal } : {}),
-    status: "active", createdAt: now, updatedAt: now, runCount: 0 };
+    ...(typeof firingCall === "string" ? { firingCall: firingCall.trim() } : {}), status: "active", createdAt: now, updatedAt: now, runCount: 0 };
 }
 
 /**
@@ -550,10 +558,11 @@ export function upsertDuty(duties: Duty[], definition: unknown, now: number, mor
   const existing = duties.find(duty => duty.name === parsed.name);
   if (!existing) { duties.push(parsed); return `added ${parsed.id}`; }
   const { id: _id, status: _status, createdAt: _createdAt, updatedAt: _updatedAt, runCount: _runCount, ...fields } = parsed;
-  // A definition with no readings drops the duty's old ones.
-  if (JSON.stringify({ ...existing, ...fields, readings: fields.readings, updatedAt: existing.updatedAt }) === JSON.stringify(existing)) return `unchanged ${existing.id}`;
+  // A definition with no readings or firingCall drops the duty's old ones.
+  if (JSON.stringify({ ...existing, ...fields, readings: fields.readings, firingCall: fields.firingCall, updatedAt: existing.updatedAt }) === JSON.stringify(existing)) return `unchanged ${existing.id}`;
   Object.assign(existing, fields, { updatedAt: now });
   if (!fields.readings) delete existing.readings;
+  if (!fields.firingCall) delete existing.firingCall;
   return `updated ${existing.id}`;
 }
 

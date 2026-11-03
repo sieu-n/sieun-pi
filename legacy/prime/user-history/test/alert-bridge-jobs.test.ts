@@ -4,7 +4,8 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { AlertBridge, ESCALATE_MS, startAlertBridge, REFIRE_MS, REOPEN_MS, firingRules, parseAlerts, parseOwners, parseState, readFiringRules, ruleKey, type AlertLine, type BridgeState, type RuleJob, type TriageJob } from "../src/alert-bridge.ts";
+import { AlertBridge, ESCALATE_MS, startAlertBridge, REFIRE_MS, REOPEN_MS, firingRules, parseAlerts, parseOwners, parseState, readFiringRules, ruleKey, type AlertLine, type BridgeState, type FiringCall, type RuleJob, type TriageJob } from "../src/alert-bridge.ts";
+import { alertJobBrief } from "../src/chat-duty-job.ts";
 import { ALERT_ROUTES } from "../src/alert-routes.ts";
 import { turnSince, type TurnSince } from "../src/held-turns.ts";
 import { jobLive, RESENT_MS } from "../src/job-live.ts";
@@ -26,13 +27,13 @@ const OWNERS = parseOwners({ owners: { "metal box owner": METAL, "ops guy": OPS 
 
 const ref = (job: RuleJob | TriageJob | undefined) => job && { id: job.id, name: job.name, at: job.at };
 
-async function fixture(options: { state?: unknown; failStarts?: boolean; jobLive?: (session: string, now: number) => Promise<string | null> } = {}) {
+async function fixture(options: { state?: unknown; failStarts?: boolean; jobLive?: (session: string, now: number) => Promise<string | null>; firingCall?: (chat: string) => Promise<FiringCall | null> } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "alert-bridge-jobs-"));
   const file = join(dir, "alert-bridge.json");
   if (options.state) await writeFile(file, JSON.stringify(options.state));
   let now = NOW;
   let list: unknown[] = [];
-  const started: { chat: string; line: AlertLine; lines: readonly AlertLine[]; previous?: TriageJob }[] = [];
+  const started: { chat: string; line: AlertLine; lines: readonly AlertLine[]; previous?: TriageJob; call?: FiringCall }[] = [];
   const sent: { session: string; text: string }[] = [];
   const working = new Set<string>();
   const turns = new Map<string, TurnSince>();
@@ -43,9 +44,9 @@ async function fixture(options: { state?: unknown; failStarts?: boolean; jobLive
   const bridge = new AlertBridge({ file, now: () => now, log: () => {}, alerts: async () => parseAlerts(list), owners: async () => OWNERS,
     hasBoard: async session => session !== METAL,
     deliver: async (session, text) => { sent.push({ session, text }); },
-    startJob: async (chat, lines, previous) => {
+    startJob: async (chat, lines, previous, call) => {
       if (options.failStarts) throw new Error("Timed out after 10000ms waiting for the Prime Agent daemon handshake.");
-      started.push({ chat, line: lines[0]!, lines, ...previous ? { previous } : {} });
+      started.push({ chat, line: lines[0]!, lines, ...previous ? { previous } : {}, ...call ? { call } : {} });
       const id = `job-${started.length}`;
       working.add(id);
       return { id, name: `alert ${lines[0]!.rule} ${started.length}` };
@@ -54,7 +55,7 @@ async function fixture(options: { state?: unknown; failStarts?: boolean; jobLive
     jobTurn: async (job, since) => turns.get(job.id) ?? { ran: true, at: since },
     retryJob: job => { retried.push(job.id); }, poolFreeAt: async tree => freeAt.get(tree) ?? null, turnQueued: async session => queue.get(session) ?? null,
     lead: async jobs => { leads.push([...jobs]); },
-    ...options.jobLive ? { jobLive: options.jobLive } : {} });
+    ...options.jobLive ? { jobLive: options.jobLive } : {}, ...options.firingCall ? { firingCall: options.firingCall } : {} });
   return { file, bridge, started, sent, working, turns, retried, freeAt, queue, leads, set: (alerts: unknown[]) => { list = alerts; }, at: (ms: number) => { now = ms; },
     state: async () => parseState(JSON.parse(await readFile(file, "utf8"))) };
 }
@@ -585,6 +586,32 @@ test("one triage job per owner chat carries all of its fires, and a later fire o
   assert.match(f.sent[0]!.text, /^\[alert\] 2 rules of your chat fired: crawler-d .*; crawler-e /);
   const state = await f.state();
   assert.deepEqual(new Set(Object.values(state.rules).filter(rule => rule.chat === CRAWLER).map(rule => rule.job!.id)), new Set([id]));
+});
+
+// Guards 11-04: d4 of CI and RepoOps counts an alert firing with no fault call as a false alert, and its 03:06 KST run read 14 firings whose
+// triage jobs had found each cause and written no call, since neither the brief nor a later fire named the firing key or the command.
+test("a chat whose duty keeps fault calls gets each firing key and the call command in its triage brief and in each later fire, and other chats get neither", async () => {
+  const call: FiringCall = { command: `node scripts/duties/ci/ci-monitoring.mjs verdict '{"firing":"<key>","fault":true|false,"why":"..."}'`, cwd: "/repo/auto-sns-agent" };
+  const f = await fixture({ firingCall: async chat => chat === CI ? call : null });
+  f.set([ciAlert(), crawler("cccc000000000001", "crawler-a")]);
+  await f.bridge.tick();
+  const ci = f.started.find(start => start.chat === CI)!;
+  assert.deepEqual(ci.call, call);
+  assert.equal(f.started.find(start => start.chat === CRAWLER)!.call, undefined);
+  const chat = { id: CI, name: "CI and RepoOps", cwd: "/repo", board: "/home/u/.prime/agent/browser-chat/boards/ci.json" };
+  const brief = alertJobBrief(chat, "alert triage CI and RepoOps 01:00", NOW, ci.lines, undefined, call);
+  assert.ok(brief.includes(`in /repo/auto-sns-agent, run \`${call.command}\` with <key> set to the firing key`));
+  assert.ok(brief.includes("The firing key is ci-history-stale@2026-10-18T16:00:00Z."));
+  assert.ok(!alertJobBrief(chat, "alert triage CI and RepoOps 01:00", NOW, ci.lines).includes("firing key"));
+  f.set([ciAlert(), raw("aaaa000000000002", { alertname: "CI jobs waiting", __alert_rule_uid__: "ci-jobs-waiting" }, "2026-10-18T16:01:00.000Z"),
+    crawler("cccc000000000001", "crawler-a"), crawler("cccc000000000002", "crawler-b")]);
+  f.at(NOW + 61_000);
+  await f.bridge.tick();
+  const state = await f.state();
+  const again = f.sent.find(({ session }) => session === state.chats[CI])!;
+  assert.ok(again.text.includes(`run \`${call.command}\``));
+  assert.ok(again.text.includes("The firing key is ci-jobs-waiting@2026-10-18T16:01:01Z."));
+  assert.ok(!f.sent.find(({ session }) => session === state.chats[CRAWLER])!.text.includes("firing key"));
 });
 
 test("a version 3 state with one never-ran job per rule moves every such rule to the chat's newest job, which gets them in one message", async () => {

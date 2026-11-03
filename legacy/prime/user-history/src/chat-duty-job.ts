@@ -1,5 +1,5 @@
 import { replaceableLine } from "./agent-outbox.ts";
-import { type AlertJob, type AlertLine, alertRulesText, TRIAGE_WORK } from "./alert-bridge.ts";
+import { type AlertJob, type AlertLine, alertRulesText, type FiringCall, firingCallText, TRIAGE_WORK } from "./alert-bridge.ts";
 import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -195,9 +195,9 @@ export const ALERT_OWNER_WORDS = "One place to monitor and debug everything, and
  * The brief of the triage job the alert bridge starts for an owner chat, with every fire of that chat no job holds. Later fires of the chat
  * come to this job by message while it lives. The bridge files no plan step for it (owner 10-18: "stop being paranoid in plan under p45,
  * p221"); the chat's duty counts the rules that fire, and this job holds them until they stop. On 10-19 one job per rule had made 78 fires
- * into 78 jobs across 4 chats.
+ * into 78 jobs across 4 chats. With `call`, the chat's duty keeps a fault call per firing, and the brief names each firing key and the command.
  */
-export function alertJobBrief(chat: DutyChat, job: string, at: number, lines: readonly AlertLine[], previous?: AlertJob & { at: number }): string {
+export function alertJobBrief(chat: DutyChat, job: string, at: number, lines: readonly AlertLine[], previous?: AlertJob & { at: number }, call?: FiringCall): string {
   const agentDir = dirname(dirname(dirname(chat.board)));
   return [
     `# ${job}: the firing alerts of the chat "${chat.name}"`,
@@ -209,6 +209,7 @@ export function alertJobBrief(chat: DutyChat, job: string, at: number, lines: re
     previous ? `The chat's last triage job was "${previous.name}" (session ${previous.id}), started ${localTime(previous.at)}, and it has ended while ` +
       "these rules fire. Read its conversation first and start from what it found." : "",
     `${TRIAGE_WORK} Put no step on the chat's plan: the chat's duty counts the rules that fire, and you hold them.`,
+    call ? firingCallText(lines, at, call) : "",
     "## How to act",
     [
       `Read ${join(agentDir, "skills/poteto-mode/SKILL.md")} and ${join(agentDir, "skills/unslop/SKILL.md")} first.`,

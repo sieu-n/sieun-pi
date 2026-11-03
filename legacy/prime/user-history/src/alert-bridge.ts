@@ -409,17 +409,32 @@ export const threadAlertText = (lines: readonly AlertLine[]): string => [
     `when no turn of this thread ends within ${ESCALATE_MS / 60_000} min of it.`,
 ].join("\n\n");
 
+/** How a chat's duty writes the fault call of one alert firing (`Duty.firingCall`): the command, with `<key>` where the firing key goes, and its folder. */
+export interface FiringCall { command: string; cwd: string }
+
+/** A firing's key as a chat's duty reads it from the bridge's log line of the hand-off: the rule uid and the second of the hand-off. */
+export const firingKey = (rule: string, at: number): string => `${rule}@${new Date(at).toISOString().slice(0, 19)}Z`;
+
+/** The lines that ask a triage job to write the fault call of each firing it got at `at`. */
+export const firingCallText = (lines: readonly AlertLine[], at: number, call: FiringCall): string =>
+  `Write the fault call of each firing once you know its cause, since the chat's duty counts a firing with no call as a false alert: in ${call.cwd}, ` +
+  `run \`${call.command}\` with <key> set to the firing key and the rest from what you found. ` +
+  `${lines.length === 1 ? "The firing key is" : "The firing keys are"} ${lines.map(line => firingKey(line.rule, at)).join(", ")}.`;
+
 /** The request id of one hand-off to a thread: the same fires give the same id, so a send repeated after a failed save lands once. */
 export const threadRequestId = (lines: readonly AlertLine[]): string => `alert:${lines.map(line => `${line.rule}@${line.firedAt}`).join(",")}`;
 
-/** The message that gives a chat's triage job the fires of its chat that came after its brief. */
-export function firedAgainText(lines: readonly AlertLine[]): string {
+/**
+ * The message that gives a chat's triage job the fires of its chat that came after its brief, with the line that asks for each fire's fault
+ * call when the chat's duty has a `firingCall`.
+ */
+export function firedAgainText(lines: readonly AlertLine[], call?: { at: number; call: FiringCall }): string {
   const fire = (item: AlertFire): string[] => [Object.keys(item.labels).length ? `Labels: ${labelText(item.labels)}` : "",
     item.summary ? `Summary: ${item.summary.replace(/\.+$/, "")}` : ""];
   const one = (line: AlertLine): string => [`${ruleText(line)} fired at ${minute(line.firedAt)}`, ...line.fires.flatMap(fire)].filter(Boolean).join(". ");
   return `[alert] ${lines.length === 1 ? `A rule of your chat, ${one(lines[0]!)}.` : `${lines.length} rules of your chat fired: ${lines.map(one).join("; ")}.`} ` +
     "You are this chat's triage job, so take each into your work: say whether it shares a cause with a fire you already have, and in your " +
-    "report say for each rule whether your fix covers it.";
+    `report say for each rule whether your fix covers it.${call ? ` ${firingCallText(lines, call.at, call.call)}` : ""}`;
 }
 
 /** The message to a job that had a rule the chat's triage job now owns. */
@@ -472,7 +487,9 @@ export interface AlertBridgeDeps {
   owners?: () => Promise<OwnerMap | null>;
   hasBoard?: (session: string) => Promise<boolean>;
   /** Starts the triage job of `chat` for its owed fires; `previous` is the chat's last triage job, which has ended. Absent, fires escalate to ops guy. */
-  startJob?: (chat: string, lines: readonly AlertLine[], previous?: TriageJob) => Promise<AlertJob>;
+  startJob?: (chat: string, lines: readonly AlertLine[], previous?: TriageJob, call?: FiringCall) => Promise<AlertJob>;
+  /** How the chat's duty writes a firing's fault call, which its triage brief and each later fire name; null for a chat whose duties keep no calls. */
+  firingCall?: (chat: string) => Promise<FiringCall | null>;
   /**
    * The pi-host threads, which Prime's daemon does not know (c93). A thread that owns a rule is its own triage job: each owed fire goes to it
    * as one agent message (`threadAlertText`), and a root turn of it that ends after the fire holds the fire, so dedupe, refire, reopen,
@@ -662,6 +679,7 @@ export class AlertBridge {
       this.deps.log(`alerts: ${chat.slice(0, 8)}: sent ${rules} to pi-host thread ${thread}`);
       return current?.id === chat ? current : { id: chat, name: thread, chat, at: this.now() };
     }
+    const call = await this.firingCall(chat);
     const keep = async (job: TriageJob): Promise<boolean> => {
       if (await this.deps.jobWorking?.(job)) return true;
       if (!this.deps.jobTurn || this.now() - (job.ranAt ?? job.at) >= REOPEN_MS) return false;
@@ -669,11 +687,11 @@ export class AlertBridge {
       return job.ranAt === undefined ? !turn.ran : !turn.ran && (turn.slotAt !== undefined || (turn.error !== undefined && transientTurnError(turn.error)));
     };
     if (current && current.replacedAt === undefined && await keep(current)) {
-      await this.deps.deliver(current.id, firedAgainText(lines));
+      await this.deps.deliver(current.id, firedAgainText(lines, call ? { at: this.now(), call } : undefined));
       this.deps.log(`alerts: ${chat.slice(0, 8)}: sent ${rules} to triage job ${current.name} (${current.id.slice(0, 8)})`);
       return current;
     }
-    const started = await this.deps.startJob!(chat, lines, current);
+    const started = await this.deps.startJob!(chat, lines, current, call ?? undefined);
     this.deps.log(`alerts: ${chat.slice(0, 8)}: started triage job ${started.name} (${started.id.slice(0, 8)}) for ${rules}`);
     return { id: started.id, name: started.name, chat, at: this.now() };
   }
@@ -824,6 +842,15 @@ export class AlertBridge {
     } catch (error) {
       this.deps.log(`alerts: escalation: ${message(error)}; tried again next tick`);
       return state;
+    }
+  }
+
+  /** How the chat's duty writes a firing's fault call; a failed read gives none, so the hand-off still goes out. */
+  private async firingCall(chat: string): Promise<FiringCall | null> {
+    try { return (await this.deps.firingCall?.(chat)) ?? null; }
+    catch (error) {
+      this.deps.log(`alerts: firing call of ${chat.slice(0, 8)}: ${message(error)}`);
+      return null;
     }
   }
 
