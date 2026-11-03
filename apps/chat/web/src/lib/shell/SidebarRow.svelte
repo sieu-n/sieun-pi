@@ -15,11 +15,11 @@
     unread?: number;
     /** New activity since the read mark: bold label and a dot when there is no count. */
     fresh?: boolean;
-    /** Agents working here now; non-empty shows typing dots in place of the badge. */
+    /** Agents working here now; non-empty shows typing dots, with the count after them when there is one. */
     working?: string[];
     title?: string;
     oncontextmenu?: (e: MouseEvent) => void;
-    /** A hover button at the right end, such as the row's "..." menu; the badge or typing dots move left of it. */
+    /** A hover button at the right end, such as the row's "..." menu; it takes the place of the badge or typing dots while it shows. */
     actions?: Snippet;
     /** Makes the row draggable, for moving a channel between sidebar sections. */
     ondragstart?: (e: DragEvent) => void;
@@ -55,11 +55,12 @@
     <span class="trail">
       {#if working.length}
         <span class="working" title={workingLabel}><TypingDots label={workingLabel} /></span>
-      {:else if unread > 0}
+      {/if}
+      {#if unread > 0}
         <Badge value={unread} title="{unread} unread" />
-      {:else if fresh}
+      {:else if fresh && !working.length}
         <Badge dot title="New activity" />
-      {:else if trailing}
+      {:else if trailing && !working.length}
         {@render trailing()}
       {/if}
     </span>
@@ -118,6 +119,7 @@
   .trail {
     display: inline-flex;
     align-items: center;
+    gap: 6px;
     flex: none;
   }
   .working {
@@ -141,7 +143,8 @@
     transform: translateY(-50%);
     opacity: 0;
   }
-  .item:hover .row:not(.selected) {
+  .item:hover .row:not(.selected),
+  .item:has(.actions :global([aria-expanded="true"])) .row:not(.selected) {
     background: var(--affordance-sidebar-hover);
     color: var(--text-sidebar-hover);
   }
@@ -149,6 +152,11 @@
   .item:focus-within .row,
   .item:has(.actions :global([aria-expanded="true"])) .row {
     padding-right: 28px;
+  }
+  .item:hover .trail,
+  .item:focus-within .trail,
+  .item:has(.actions :global([aria-expanded="true"])) .trail {
+    display: none;
   }
   .item:hover .actions,
   .item:focus-within .actions,

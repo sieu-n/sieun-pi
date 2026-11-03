@@ -77,9 +77,9 @@ export function groupChannels(rows: readonly ConversationSummary[], model: Secti
   return { sections, rest };
 }
 
-/** The rows a section shows: all of them, or only the open conversation while it is folded. */
-export function visibleRows<T extends { id: string }>(rows: readonly T[], collapsed: boolean, current: string | null): T[] {
-  return collapsed ? rows.filter((row) => row.id === current) : [...rows];
+/** The rows a section shows: all of them, or only the ones `keep` names while it is folded, such as the open and the unread conversations. */
+export function visibleRows<T>(rows: readonly T[], collapsed: boolean, keep: (row: T) => boolean): T[] {
+  return collapsed ? rows.filter(keep) : [...rows];
 }
 
 function sameName(a: string, b: string): boolean {

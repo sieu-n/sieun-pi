@@ -20,7 +20,7 @@ function write(key: string, value: string): void {
   } catch {}
 }
 
-/** The Solo group's three parts: open Solo rooms, closed ones under "Done", then the untitled root chats no agent holds. */
+/** The Solo group's three parts: open Solo rooms, the untitled root chats no agent holds, then closed rooms under "Done". */
 export type SoloGroups = { open: ConversationSummary[]; done: ConversationSummary[]; chats: ConversationSummary[] };
 
 /** Splits the server's Solo rows, keeping its order inside each part. */

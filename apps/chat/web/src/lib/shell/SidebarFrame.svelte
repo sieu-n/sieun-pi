@@ -1,5 +1,11 @@
+<script lang="ts" module>
+  /** The frame's load state for its SidebarSection blocks, which hold their empty text until the list has loaded. */
+  export const FRAME_STATE = Symbol("sidebar-frame");
+  export type FrameState = { readonly loading: boolean };
+</script>
+
 <script lang="ts">
-  import type { Snippet } from "svelte";
+  import { setContext, type Snippet } from "svelte";
   import LoadingText from "$lib/ui/LoadingText.svelte";
   import ResizeHandle from "$lib/ui/ResizeHandle.svelte";
   import { sidebar, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN } from "./sidebar.svelte";
@@ -25,6 +31,11 @@
     children: Snippet;
   };
   let { title, root, label, actions, head, state = "ready", loadingText = "Loading…", offlineText = "Offline · Showing the last list.", children }: Props = $props();
+  setContext<FrameState>(FRAME_STATE, {
+    get loading() {
+      return state === "loading";
+    },
+  });
 </script>
 
 <nav class="sidebar" aria-label={label ?? title} data-root={root} data-testid="sidebar">
@@ -100,7 +111,14 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 4px 12px 12px;
+    scrollbar-gutter: stable;
+    padding: 4px 2px 12px 12px;
+  }
+  .scroll::-webkit-scrollbar-thumb {
+    background-color: transparent;
+  }
+  .scroll:hover::-webkit-scrollbar-thumb {
+    background-color: var(--neutral-4);
   }
   .note {
     padding: 8px;

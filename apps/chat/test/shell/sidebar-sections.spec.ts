@@ -27,7 +27,7 @@ test.beforeEach(async ({ page }) => {
   await expect(channel(page, "general")).toBeVisible({ timeout: 15_000 });
 });
 
-test("a section takes channels by menu and drag, renames, folds with the built-in sections, survives a reload and gives its channels back", async ({ page }) => {
+test("a section takes channels by menu and drag, renames, folds to its open and unread rows with the built-in sections, survives a reload and gives its channels back", async ({ page }) => {
   test.slow();
   await block(page, "channels").getByRole("heading", { name: "Channels" }).hover();
   await sidebar(page).getByRole("button", { name: "Channels options" }).click();
@@ -45,7 +45,7 @@ test("a section takes channels by menu and drag, renames, folds with the built-i
 
   await rowMenu(page, "general");
   await page.getByRole("menuitem", { name: "Move to" }).click();
-  await page.getByRole("menuitemradio", { name: "Projects" }).click();
+  await page.getByRole("menuitem", { name: "Projects" }).click();
   await expect(page.getByRole("menu")).toHaveCount(0);
   await expect(section(page, "Projects").locator(link("general"))).toBeVisible();
 
@@ -66,20 +66,23 @@ test("a section takes channels by menu and drag, renames, folds with the built-i
     await fold(page, name).click();
     await expect(fold(page, name)).toHaveAttribute("aria-expanded", "false");
   }
-  await expect(section(page, "Work").getByRole("link")).toHaveCount(0);
-  const dms = sidebar(page).locator('[data-section="dms"] a[href^="#/c/dm_"]');
+  const readWork = section(page, "Work").locator("a:not([data-unread])");
+  await expect(readWork).toHaveCount(0);
+  await expect(section(page, "Work").locator(link("general"))).toHaveCount(0);
+  const dms = sidebar(page).locator('[data-section="dms"] a[href^="#/c/dm_"]:not([data-unread])');
   await expect(dms).toHaveCount(1);
   await expect(dms).toHaveAttribute("href", "#/c/dm_vent");
+  await expect(sidebar(page).locator('[data-section="dms"] a[data-unread]').first()).toBeVisible();
 
   await page.reload();
   await expect(section(page, "Work")).toBeVisible({ timeout: 15_000 });
   for (const name of ["Work", "Channels", "Direct messages"]) await expect(fold(page, name)).toHaveAttribute("aria-expanded", "false");
-  await expect(section(page, "Work").getByRole("link")).toHaveCount(0);
+  await expect(readWork).toHaveCount(0);
   await expect(dms).toHaveCount(1);
 
   await page.goto("/#/c/ch_general");
   await expect(section(page, "Work").locator(link("general"))).toHaveAttribute("aria-current", "page", { timeout: 15_000 });
-  await expect(section(page, "Work").getByRole("link")).toHaveCount(1);
+  await expect(readWork).toHaveCount(1);
 
   await section(page, "Work").getByRole("heading", { name: "Work" }).hover();
   await sidebar(page).getByRole("button", { name: "Work options" }).click();
@@ -141,4 +144,17 @@ test("a bad saved value or a placement naming a missing section leaves the chann
   await page.evaluate(() => localStorage.setItem("chat.sidebarSections", "{not json"));
   await page.reload();
   await expect(block(page, "channels").locator(link("general"))).toBeVisible({ timeout: 15_000 });
+});
+
+test("every row's menu copies its link, offers Mark as read only when unread, and Move to leaves out the channel's own section", async ({ page }) => {
+  await sidebar(page).locator('[data-section="dms"] a[data-unread]').first().click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "Copy link" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Mark as read" })).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await rowMenu(page, "general");
+  await expect(page.getByRole("menuitem", { name: "Mark as read" })).toHaveCount(0);
+  await page.getByRole("menuitem", { name: "Move to" }).click();
+  await expect(page.getByRole("menuitem", { name: "Channels", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "New section…" })).toBeVisible();
 });
