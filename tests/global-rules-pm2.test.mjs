@@ -46,6 +46,26 @@ test("a pm2 command with a relative PM2_HOME is refused, the 10-22 and 10-26 for
   ]);
 });
 
+// On 11-03 a bare `npx pm2 jlist` in a kernel on us-metal02 started an empty God Daemon in ~/.pm2 that stayed up until a hand kill.
+test("the extension sets an unset PM2_HOME to auto-sns-agent's dev home, so a bare pm2 command in a kernel reads the real apps", async () => {
+  const { defaultPm2Home } = await import("../packages/sieun-rules/src/pm2.ts");
+  const { mkdirSync } = await import("node:fs");
+  const { execFileSync } = await import("node:child_process");
+  const checkout = join(root, "auto-sns-agent");
+  assert.equal(defaultPm2Home({}, checkout), undefined, "no dev home on this box, no default");
+  mkdirSync(join(checkout, ".cache", "pm2-dev"), { recursive: true });
+  assert.equal(defaultPm2Home({}, checkout), join(checkout, ".cache", "pm2-dev"));
+  assert.equal(defaultPm2Home({ PM2_HOME: "/srv/other/.pm2" }, checkout), undefined, "a PM2_HOME the session set stays");
+  const index = new URL("../packages/sieun-rules/src/index.ts", import.meta.url).href;
+  const script = `const pi = { on() {}, registerMcpServer: undefined }; await (await import(${JSON.stringify(index)})).default(pi);
+const { execFileSync } = await import("node:child_process");
+process.stdout.write(execFileSync("python3", ["-c", "import os; print(os.environ.get('PM2_HOME'))"], { env: { ...process.env }, encoding: "utf8" }));`;
+  const env = { ...process.env, GLOBAL_RULES_AUTO_SNS_AGENT: checkout, GLOBAL_RULES_LOG: join(root, "index.log") };
+  delete env.PM2_HOME;
+  const out = execFileSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", env, cwd: root });
+  assert.equal(out.trim(), join(checkout, ".cache", "pm2-dev"));
+});
+
 test("an absolute, home-relative or computed PM2_HOME passes, and so does text that only names one", () => {
   allowed("bash", [
     "PM2_HOME=/Users/sieunpark/Documents/Github/auto-sns-agent/.cache/pm2-dev node_modules/.bin/pm2 restart virev-demo",

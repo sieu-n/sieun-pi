@@ -28,6 +28,14 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	}
 
 	try {
+		const pm2: typeof import("./pm2.ts") = await import(join(dir, "pm2.ts"));
+		const home = pm2.defaultPm2Home(process.env);
+		if (home) process.env.PM2_HOME = home;
+	} catch (error) {
+		loadFailed("pm2.ts", error);
+	}
+
+	try {
 		const guard: typeof import("./guard.ts") = await import(join(dir, "guard.ts"));
 		pi.on("tool_call", (event, ctx) => guard.onToolCall(event, ctx));
 	} catch (error) {

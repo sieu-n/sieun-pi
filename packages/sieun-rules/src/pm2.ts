@@ -1,6 +1,22 @@
-import { basename } from "node:path";
+import { existsSync } from "node:fs";
+import { basename, join } from "node:path";
+import { CHECKOUT } from "./auto-sns-agent.ts";
 import type { Verdict } from "./guard.ts";
 import { SHELLS, effective, expandVars, lex, shellScript, stripHeredocs } from "./shell.ts";
+
+/*
+ * A bare pm2 command reads ~/.pm2 and starts an empty God Daemon there that nothing stops. On 11-03 on us-metal02 Crawler VP session
+ * 01a1a022's `npx pm2 jlist` started one at 06:51Z that stayed up 55 min, and a vent session's started at 18:42Z held 71 MB for 3.5 h
+ * until a hand kill at 22:16Z. Every pm2 app on the boxes runs under auto-sns-agent's dev home, and ~/.pm2 on us-metal02 holds no
+ * dump.pm2, so index.ts sets PM2_HOME to that home in the worker when it is unset. Prime starts each kernel with the worker's env,
+ * so a bare `pm2 list` in a cell reads the real apps, and the repo's dev-server-kill guard, which reads PM2_HOME from the worker's
+ * env, still refuses a bare `pm2 kill`.
+ */
+export function defaultPm2Home(env: NodeJS.ProcessEnv, checkout: string = CHECKOUT): string | undefined {
+	if (env.PM2_HOME) return undefined;
+	const home = join(checkout, ".cache", "pm2-dev");
+	return existsSync(home) ? home : undefined;
+}
 
 /*
  * A pm2 command reads the God Daemon in its PM2_HOME and starts an empty one there when none runs. A relative PM2_HOME is a folder under the
