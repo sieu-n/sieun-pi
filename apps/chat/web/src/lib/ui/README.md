@@ -65,7 +65,7 @@ Colors, chart series (`--chart-series-1` to `4`), type, radii, shadows, spacing,
 | `Menu` | A menu of actions, radios, checkboxes, labels, separators and submenus. A point anchor makes it a context menu. A pick inside a submenu closes the whole menu. | `bind:open`, `anchor`, `items: MenuEntry[]`, `placement` |
 | `Picker` | The one shared picker for models, agents, channels and any other choice, with groups, a filter and keyboard moves. With `typeahead` it filters by an outside query, never takes focus and reads arrow keys, Enter and Tab from the text box, as the composer's @ and # lists need. | `bind:open`, `anchor`, `items: PickerItem[]`, `value`, `multiple`, `searchable`, `typeahead`, `onselect`, `footer`, `rowEnd` for meters or a badge at the right of a row |
 | `ModelPicker` | A trigger plus a Picker grouped by model family, with a thinking effort control and a custom model id. | `models`, `value`, `efforts`, `effort`, `variant` pill or field, `bind:open`, `onchange` |
-| `Dialog` | A modal card, or the search palette anchored 128 px from the top. An outside click leaves a dirty dialog open. | `bind:open`, `title`, `description`, `presentation` center or search, `dirty`, `initialFocus`, `actions` |
+| `Dialog` | A modal card, the search palette anchored 128 px from the top, or a sheet as tall as the window for reading. An outside click leaves a dirty dialog open. | `bind:open`, `title`, `description`, `presentation` center, search or sheet, `dirty`, `initialFocus`, `actions`, `headerActions` |
 | `toast` | `toast.show(text)`, `toast.success(text)`, `toast.error(text, { action })`. `Toaster` is mounted once in App. | |
 | `tooltip` | `use:tooltip={"Close"}` or `use:tooltip={{ text, shortcut, placement }}`. A line break in the text starts a new line. | |
 
@@ -93,8 +93,9 @@ Colors, chart series (`--chart-series-1` to `4`), type, radii, shadows, spacing,
 
 ## Shell
 
-The shell in `src/lib/shell` uses these parts. Pages reach it through three small stores.
+The shell in `src/lib/shell` uses these parts. Pages reach it through four small stores.
 
 1. `router` in `$lib/router.svelte` gives `router.route`, `router.conversationId`, `navigate`, `openConversation(id, { thread, messageId })` and `setParams`.
 2. `sidePanel` in `$lib/shell/side-panel.svelte` opens one 420 px resizable pane with `sidePanel.open({ key, title, body })`.
 3. `search` in `$lib/shell/search.svelte` holds the Cmd K and Cmd F search state that pages/search reads.
+4. `openView` in `$lib/shell/viewer.svelte` opens a wiki page, a conversation or a chat's board in the viewer popup over any page, kept in the route's `view` param so Back and Esc close it; a `Markdown` with no `onartifact` sends its wiki and thread links there.

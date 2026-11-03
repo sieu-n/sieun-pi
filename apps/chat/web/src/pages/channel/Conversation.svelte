@@ -1,13 +1,13 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import { agents, api, boardStore, isSoloRoom, jobs, me, timeline, type Item } from "$lib/api";
-  import { openTarget } from "$pages/agents/agents-model";
   import BoardPanel from "$pages/board/BoardPanel.svelte";
   import { boardHref, boardTitles, rememberTitles } from "$pages/board/chips";
   import { conversationHref, router } from "$lib/router.svelte";
   import { renameDialog } from "$lib/shell/rename-dialog.svelte";
   import { search } from "$lib/shell/search.svelte";
   import { sidePanel } from "$lib/shell/side-panel.svelte";
+  import { openArtifactTarget, openView } from "$lib/shell/viewer.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import AvatarStack from "$lib/ui/AvatarStack.svelte";
   import Button from "$lib/ui/Button.svelte";
@@ -21,7 +21,6 @@
   import PanelHeader from "$lib/ui/PanelHeader.svelte";
   import TypingDots from "$lib/ui/TypingDots.svelte";
   import { modKey } from "$lib/ui/keyboard";
-  import { wikiUrl } from "$lib/ui/markdown";
   import type { MenuEntry } from "$lib/ui/menu";
   import { toast } from "$lib/ui/toast.svelte";
   import type { Status } from "$lib/ui/types";
@@ -182,22 +181,19 @@
     if (scheme === "job") {
       for (const item of store.items) for (const job of jobsOf(item)) if (job.name === value || job.conversation.endsWith(`:${value}`)) return openThread(job.conversation);
       const byName = jobs.list.find((job) => job.name === value);
-      const place = byName && openTarget(byName, (agent) => agents.room(agent));
-      if (place) router.openConversation(place.id, place.thread ? { thread: place.thread } : {});
+      if (byName) openView({ kind: "thread", id: byName.id });
       else toast.show(`No job named ${value} in this chat`);
-    } else if (scheme === "thread") {
-      router.openConversation(value);
-    } else if (scheme === "wiki") {
-      window.open(wikiUrl(value), "_blank", "noopener");
-    } else {
+    } else if (scheme === "file") {
       e.preventDefault();
       void navigator.clipboard.writeText(value).then(() => toast.show("Path copied"));
+    } else {
+      openArtifactTarget(target);
     }
   }
 
   function onboardid(boardId: string, chatId: string) {
     if (!chatId || chatId === boardChat) openBoard(boardId);
-    else router.navigate(boardHref(chatId, boardId));
+    else openView({ kind: "board", chatId, focus: boardId });
   }
 
   function send(out: Outgoing): Promise<void> {

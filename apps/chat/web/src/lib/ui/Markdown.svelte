@@ -2,6 +2,7 @@
   import { mount, unmount } from "svelte";
   import Lightbox from "./Lightbox.svelte";
   import Mermaid from "./Mermaid.svelte";
+  import { openArtifact } from "./artifact-opener";
   import { renderInline, renderMarkdown, type MarkdownContext } from "./markdown";
   import { whenVisible } from "./mermaid";
 
@@ -12,7 +13,7 @@
     context?: MarkdownContext;
     /** Draw a blinking caret after the text while it streams; diagrams wait until streaming stops. */
     streaming?: boolean;
-    /** An artifact link was clicked: `job:<name>`, `thread:<id>`, `file:<path>` or `wiki:<path>`. Without it wiki links open in a tab. */
+    /** An artifact link was clicked: `job:<name>`, `thread:<id>`, `file:<path>` or `wiki:<path>`. Without it a wiki or thread link opens in the viewer popup (lib/ui/artifact-opener.ts). */
     onartifact?: (target: string, e: MouseEvent) => void;
     onboardid?: (id: string, chatId: string, e: MouseEvent) => void;
     onmention?: (id: string, kind: string, e: MouseEvent) => void;
@@ -163,12 +164,16 @@
       return;
     }
     const link = el.closest<HTMLElement>(".artifact-link");
-    if (link?.dataset.target) {
+    const target = link?.dataset.target;
+    if (link && target) {
       const newTab = e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0;
-      if (link.hasAttribute("target") && (newTab || !onartifact)) return;
-      e.preventDefault();
-      if (onartifact) onartifact(link.dataset.target, e);
-      else if (link.dataset.target.startsWith("file:")) void navigator.clipboard.writeText(link.dataset.target.slice(5));
+      if (link.hasAttribute("target") && newTab) return;
+      // Without a page handler a wiki or thread link opens in the shell's viewer popup; with no viewer the browser follows the link.
+      if (onartifact || openArtifact(target)) e.preventDefault();
+      else if (link.hasAttribute("target")) return;
+      else e.preventDefault();
+      if (onartifact) onartifact(target, e);
+      else if (target.startsWith("file:")) void navigator.clipboard.writeText(target.slice(5));
     }
   }
 </script>

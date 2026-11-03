@@ -18,11 +18,13 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": { target: chatServer, changeOrigin: true, ws: true },
+      "/wiki": { target: chatServer, changeOrigin: true },
     },
   },
   preview: {
     proxy: {
       "/api": { target: chatServer, changeOrigin: true, ws: true },
+      "/wiki": { target: chatServer, changeOrigin: true },
     },
   },
   build: {

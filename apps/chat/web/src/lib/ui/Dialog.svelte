@@ -12,8 +12,8 @@
     description?: string;
     /** Accessible name when there is no visible title. */
     label?: string;
-    /** center: a 28 px radius card in the middle. search: a 640 px palette anchored 128 px from the top. */
-    presentation?: "center" | "search";
+    /** center: a 28 px radius card in the middle. search: a 640 px palette anchored 128 px from the top. sheet: a reader as tall as the window, up to 1200 px wide, with an unpadded body. */
+    presentation?: "center" | "search" | "sheet";
     width?: number;
     /** Esc and an outside click close the dialog. With `dirty`, an outside click is ignored so typed input is never lost. */
     dismissible?: boolean;
@@ -24,6 +24,8 @@
     onclose?: () => void;
     /** Footer buttons, right aligned. */
     actions?: Snippet;
+    /** Header buttons, drawn before the close button. */
+    headerActions?: Snippet;
     children: Snippet;
   };
   let {
@@ -39,6 +41,7 @@
     showClose = true,
     onclose,
     actions,
+    headerActions,
     children,
   }: Props = $props();
 
@@ -101,7 +104,12 @@
             <h2 id={titleId}>{title}</h2>
             {#if description}<p>{description}</p>{/if}
           </div>
-          {#if showClose && dismissible}<IconButton icon="close" label="Close" size="sm" onclick={close} />{/if}
+          {#if headerActions || (showClose && dismissible)}
+            <div class="dialog-header-actions">
+              {#if headerActions}{@render headerActions()}{/if}
+              {#if showClose && dismissible}<IconButton icon="close" label="Close" size="sm" onclick={close} />{/if}
+            </div>
+          {/if}
         </header>
       {/if}
       <div class="dialog-body">{@render children()}</div>
@@ -168,6 +176,39 @@
   }
   .center .dialog-body {
     padding: 8px 24px 16px;
+  }
+  .dialog-header-actions {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 4px;
+  }
+  .dialog.sheet {
+    width: 1200px;
+    height: calc(100vh - 48px);
+  }
+  .sheet .dialog-header {
+    align-items: center;
+    padding: 10px 12px 10px 20px;
+    border-bottom: 1px solid var(--border-standard);
+  }
+  .sheet .dialog-header > div:first-child {
+    min-width: 0;
+  }
+  .sheet .dialog-header h2 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sheet .dialog-header p {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sheet .dialog-body {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
   .dialog-actions {
     display: flex;

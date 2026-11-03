@@ -17,6 +17,7 @@
   import SettingsPage from "$pages/settings/SettingsPage.svelte";
   import SearchDialog from "$pages/search/SearchDialog.svelte";
   import SearchPage from "$pages/search/SearchPage.svelte";
+  import ArtifactViewer from "$lib/shell/ArtifactViewer.svelte";
 
   trackKeyboardNavigation();
   initZoom();
@@ -73,4 +74,5 @@
 <SearchDialog open={search.isOpen} scope={search.scope} query={search.query} onclose={() => search.close()} />
 <CreateSoloDialog open={soloDialog.isOpen} onclose={() => soloDialog.close()} />
 {#if renameDialog.target}<RenameChannelDialog target={renameDialog.target} onclose={() => renameDialog.close()} />{/if}
+<ArtifactViewer />
 <Toaster />

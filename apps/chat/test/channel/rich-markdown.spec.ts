@@ -101,7 +101,7 @@ test("internal links render as pills and GitHub links as cards, and the pills na
   const file = row.locator(".artifact-link.path-pill");
   await expect(file).toHaveText("apps/chat/web/src/pages/board/BoardPanel.svelte:48");
   await expect(row.locator(".artifact-link.wiki-link")).toHaveText("the board panel page");
-  await expect(row.locator(".artifact-link.wiki-link")).toHaveAttribute("href", /\/page\/sessions\/2026\/10\/28\/board-panel\.md$/);
+  await expect(row.locator(".artifact-link.wiki-link")).toHaveAttribute("href", /\/wiki\/sessions\/2026\/10\/28\/board-panel\.md$/);
   await expect(row.locator('[data-board-id="p1"]')).toBeVisible();
   const cards = row.locator(".gh-card");
   await expect(cards).toHaveCount(2);
@@ -113,7 +113,34 @@ test("internal links render as pills and GitHub links as cards, and the pills na
   await expect(page.getByText("Path copied")).toBeVisible();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("apps/chat/web/src/pages/board/BoardPanel.svelte:48");
   await row.locator(".artifact-link.thread-link").click();
-  await expect(page).toHaveURL(new RegExp(`#/c/${VENT_JOB.replace(":", "(:|%3A)")}`));
+  const viewer = page.getByTestId("artifact-viewer");
+  await expect(viewer).toHaveAttribute("data-view", "thread");
+  await expect(viewer.getByTestId("thread-pane")).toHaveAttribute("data-thread", VENT_JOB);
+  await page.getByRole("button", { name: "Go to conversation" }).click();
+  await expect(page).toHaveURL(new RegExp(`#/c/${VENT_JOB.replace(":", "(:|%3A)")}$`));
+  await expect(viewer).toHaveCount(0);
+});
+
+test("a wiki link opens the page in the viewer popup over the chat, and Esc or Back returns to the chat", async ({ page }) => {
+  await open(page, `#/c/${CRAWLER}`);
+  const before = page.url();
+  const link = rich(page).locator(".artifact-link.wiki-link");
+  await link.click();
+  const dialog = page.getByRole("dialog").filter({ has: page.getByTestId("artifact-viewer") });
+  const frame = dialog.locator("iframe.wiki-frame");
+  await expect(frame).toHaveAttribute("src", "/wiki/sessions/2026/10/28/board-panel.md");
+  await expect(page).toHaveURL(/[?&]view=wiki%3Asessions%2F2026%2F10%2F28%2Fboard-panel\.md/);
+  await expect(dialog.getByRole("link", { name: "Open in new tab" })).toHaveAttribute("href", /\/sessions\/2026\/10\/28\/board-panel\.md$/);
+  await expect(dialog.getByRole("link", { name: "Open in new tab" })).toHaveAttribute("target", "_blank");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(page).toHaveURL(before);
+  await link.click();
+  await expect(frame).toBeVisible();
+  await page.goBack();
+  await expect(dialog).toBeHidden();
+  await expect(page).toHaveURL(before);
+  await expect(composerInput(conversation(page))).toBeVisible();
 });
 
 test("the screenshot loads from the box through /api/local-image and opens in the lightbox", async ({ page }) => {
