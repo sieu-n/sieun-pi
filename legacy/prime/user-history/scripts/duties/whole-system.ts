@@ -27,6 +27,7 @@ import { hostUpdateSpans, readUpdateSpans, type UpdateSpan } from "../../src/pri
 import { deliveryCandidates, outboxLandings, readSessionMarks, type SlotWaitTimeout, splitSlotWaits } from "../../src/slot-wait-timeouts.ts";
 import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { effectiveRun, metricStreaks, missStreak, newestReading } from "../../src/shared/duty-streak.ts";
+import { readCallLogs, readPrimeCalls } from "./prime-call-logs.ts";
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
 import { boardMetricsClean } from "../../src/checkin-findings.ts";
 import { dutyHold, withLinkedBoards } from "../../src/shared/todo-hold.ts";
@@ -2167,6 +2168,16 @@ async function main(): Promise<void> {
     const slice = result.flagged?.find(item => item.kind === "oversized" && item.excerpt === entry.text);
     if (slice) slice.excerpt += `; its memory map and threads: ${file}`;
   }
+  // Prime renames (p1373) and worker stalls (p1360), from this box's daemon call logs (prime-call-logs.ts).
+  const prime = readPrimeCalls(await readCallLogs(join(dataDir, "..", "logs"), now), now);
+  if (prime.renameP90S !== undefined) result.metrics.rename_p90_6h = prime.renameP90S;
+  result.metrics.worker_stalls_24h = prime.workerStalls;
+  if (prime.lastStallAt !== undefined) result.lastEventAt = { ...result.lastEventAt, worker_stalls_24h: prime.lastStallAt };
+  // A slice only on a miss, so a clean run sends nothing.
+  if ((prime.renameP90S ?? 0) > 1 || prime.workerStalls > 0) (result.flagged ??= []).push({ kind: "prime_calls", excerpt: `${prime.renames} session renames in 6 h on ${box}` +
+    (prime.renameP90S !== undefined ? `, p90 ${prime.renameP90S} s, slowest ${prime.renameMaxS} s` : "") +
+    `; ${prime.workerStalls} worker stalls of 5 s or more outside box-wide bursts` + (prime.stallLines.length ? ` (${prime.stallLines.slice(-5).join(", ")})` : "") +
+    `, ${prime.burstStalls} in bursts of 3 or more workers and ${prime.supervisorStalls} in the supervisor` });
   // The Chat system duty (d9, chat-system.ts) has counted stuck steps and stuck duties since 10-19, so this duty's job gets neither.
   delete result.metrics.stuck_steps_all;
   delete result.metrics.stuck_duties;
