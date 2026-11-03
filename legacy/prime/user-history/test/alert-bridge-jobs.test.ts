@@ -170,6 +170,27 @@ test("a rule that still fires a day after its job took it and ended gets a new j
   assert.equal(f.started[1]!.previous?.id, "job-1");
 });
 
+// 11-02 18:01Z to 11-03: ci-dev-branch-warn-red took 75 label sets from 44 first runs while its triage job had ended, and none reached a job.
+test("a new label set on a firing rule whose job ended goes to a new job at once, and one on a rule whose job still works starts none", async () => {
+  const f = await fixture();
+  f.set([ciAlert()]);
+  await f.bridge.tick();
+  f.set([ciAlert(), ciAlert("aaaa000000000004", "2026-10-18T16:30:00.000Z")]); f.at(NOW + 30 * 60_000);
+  await f.bridge.tick();
+  assert.equal(f.started.length, 1, "the live job keeps the rule");
+  assert.equal(f.sent.length, 0);
+  f.working.clear();
+  f.set([ciAlert(), ciAlert("aaaa000000000004", "2026-10-18T16:30:00.000Z"), ciAlert("aaaa000000000005", "2026-10-18T18:00:00.000Z")]); f.at(NOW + 2 * 3_600_000);
+  await f.bridge.tick();
+  assert.equal(f.started.length, 2, "the ended job's unread label sets start a new job without waiting REOPEN_MS");
+  assert.equal(f.started[1]!.previous?.id, "job-1");
+  assert.equal(f.started[1]!.line.fresh, true);
+  assert.equal(f.started[1]!.line.fires.length, 2, "the new job reads the two label sets job-1 never read");
+  f.at(NOW + 2 * 3_600_000 + 30_000);
+  await f.bridge.tick();
+  assert.equal(f.started.length, 2, "the new job holds them");
+});
+
 test("a fire whose job cannot start escalates to ops guy once after 30 min, and a rule of metal box owner, which has no board, is told to that session", async () => {
   const f = await fixture({ failStarts: true });
   f.set([ciAlert(), backup]);

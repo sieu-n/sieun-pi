@@ -65,7 +65,7 @@ export interface TriageJob extends AlertJob { chat: string;
  * every instance has resolved.
  */
 export interface Tracked { chat: string; rule: string; alertname: string; startsAt: string;
-  /** When the rule last fired: first seen, back after it resolved, or still firing REOPEN_MS after its job ended. A job whose `at` is older owes this fire. */
+  /** When the rule last fired: first seen, back after it resolved, or still firing REOPEN_MS or with an unread label set after its job ended. A job whose `at` is older owes this fire. */
   wokeAt: number;
   /** When this entry first fired; the boardless tells count from it (`dueTells`). */
   firstWokeAt: number;
@@ -243,7 +243,9 @@ const newFault = (rule: Tracked, alert: FiringAlert): boolean => {
  *    keeps its job, so a live job gets the next fire.
  * 3. An instance missing from the list resolves, and the rule resolves once every instance has.
  * 4. A rule that fired sets `wokeAt`, so its job owes the fire (`owed`). A new label set on a rule that still fires is the same incident, and
- *    so is a fire within REFIRE_MS of the rule resolving, which keeps the rule's entry and its job and fires nothing.
+ *    so is a fire within REFIRE_MS of the rule resolving, which keeps the rule's entry and its job and fires nothing here. Once that job has
+ *    ended, `reopen` fires the rule for the label sets it never read (`dueReopens`). A label set back within REFIRE_MS keeps the `seenAt` of
+ *    the instance it repeats, so a Grafana reset reopens nothing.
  * 5. A rule whose label `incident_by` names one of its labels, such as `spec`, holds one fault per value of that label: a new label set whose
  *    value no open instance of the rule has fires the rule again, so its job owes it. On 10-30 at 17:06Z hosted-app-chat.spec.ts went red on
  *    ci-staging-proof-spec-red while hosted-inbox-whatsapp-dm.spec.ts, held red on Meta's name approval, kept the rule open, and no job got it.
@@ -252,6 +254,7 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
   const rules: Record<string, Tracked> = structuredClone(state.rules);
   const firing = new Map(alerts.map(alert => [alertKey(alert), alert]));
   const fired = new Set<string>();
+  const blips = new Set<string>();
   const owner = new Map<string, string>();
   for (const [key, rule] of Object.entries(rules)) for (const instance of Object.keys(rule.instances)) owner.set(instance, key);
   const rest: FiringAlert[] = [];
@@ -281,6 +284,7 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
       if (blip) {
         const { resolvedAt: _resolved, ...same } = blip;
         rules[key] = { ...same, rule: name, alertname: alert.alertname };
+        blips.add(key);
       } else {
         rules[key] = { chat, rule: name, alertname: alert.alertname, startsAt: alert.startsAt, wokeAt: now, firstWokeAt: now, instances: {}, ...job ? { job } : {} };
         fired.add(key);
@@ -288,8 +292,10 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
     }
     const rule = rules[key]!;
     if (!fired.has(key) && newFault(rule, alert)) fired.add(key);
+    const labels = labelText(alert.labels);
+    const before = blips.has(key) ? Object.values(rule.instances).find(instance => labelText(instance.labels) === labels)?.seenAt : undefined;
     for (const [id, instance] of Object.entries(rule.instances)) if (instance.resolvedAt !== undefined && id.startsWith(`${alert.fingerprint}@`)) delete rule.instances[id];
-    rule.instances[alertKey(alert)] = { startsAt: alert.startsAt, labels: alert.labels, seenAt: now };
+    rule.instances[alertKey(alert)] = { startsAt: alert.startsAt, labels: alert.labels, seenAt: before ?? now };
     if (fired.has(key) && alert.startsAt < rule.startsAt) rule.startsAt = alert.startsAt;
   }
   for (const rule of Object.values(rules)) {
@@ -318,12 +324,17 @@ export const tellText = (rules: readonly Tracked[]): string =>
   `bridge tells you here: ${rules.map(rule => `${rule.rule} (${ruleIn(rule.rule, rule.alertname)}firing since ${rule.startsAt.slice(0, 16)}Z${firingSets(rule) > 1 ? `, ${firingSets(rule)} label sets` : ""})`).join("; ")}. ` +
   `Find the cause and fix it. The bridge tells you again in ${ESCALATE_MS / 60_000} min and then every ${REOPEN_MS / 3_600_000} h while ${rules.length === 1 ? "it fires" : "they fire"}.`;
 
+/** Whether the rule holds a firing label set the bridge first saw after it gave the rule to its job, so that job never read it. */
+const grown = (rule: Tracked): boolean => rule.job !== undefined &&
+  Object.values(rule.instances).some(instance => instance.resolvedAt === undefined && instance.seenAt !== undefined && instance.seenAt > rule.job!.at);
+
 /**
- * The rules that still fire REOPEN_MS after the bridge last gave them to a job, with a job at hand: `reopen` checks that job has ended. On
- * 10-16 prod backup alerts fired for over 3 days while nobody worked them.
+ * The rules with a job at hand that still fire REOPEN_MS after the bridge last gave them to it, or that hold a label set it never read
+ * (`grown`): `reopen` checks that job has ended. On 10-16 prod backup alerts fired for over 3 days while nobody worked them. From 11-02
+ * 18:01Z ci-dev-branch-warn-red took 75 label sets from 44 first runs while its triage job had ended, and none reached a job for 24 h.
  */
 export const dueReopens = (state: BridgeState, now: number): string[] =>
-  Object.entries(state.rules).flatMap(([key, rule]) => !isResolved(rule) && rule.job && !owed(state, rule) && now - rule.job.at >= REOPEN_MS ? [key] : []);
+  Object.entries(state.rules).flatMap(([key, rule]) => !isResolved(rule) && rule.job && !owed(state, rule) && (now - rule.job.at >= REOPEN_MS || grown(rule)) ? [key] : []);
 
 /**
  * The rules of chats with a board whose fire no job holds (`held`) ESCALATE_MS after it, once per fire: no job took it, or the job that took it
@@ -356,7 +367,7 @@ const shownLabels = (labels: Record<string, string>, alertname: string): Record<
 export function alertLine(rule: Tracked, firing: ReadonlyMap<string, FiringAlert>): AlertLine {
   const live = Object.entries(rule.instances).flatMap(([id, instance]) => firing.has(id) ? [{ alert: firing.get(id)!, instance }] : [])
     .sort((a, b) => a.alert.startsAt.localeCompare(b.alert.startsAt));
-  const fresh = live.filter(({ instance }) => instance.seenAt !== undefined && instance.seenAt >= rule.wokeAt);
+  const fresh = live.filter(({ instance }) => instance.seenAt !== undefined && (instance.seenAt >= rule.wokeAt || (rule.job !== undefined && instance.seenAt > rule.job.at)));
   const shown = fresh.length ? fresh : live;
   const alertname = shown.at(-1)?.alert.alertname ?? rule.alertname;
   const fires = shown.map(({ alert }): AlertFire => ({ labels: shownLabels(alert.labels, alertname), summary: alert.summary, url: alert.url,
@@ -752,17 +763,20 @@ export class AlertBridge {
   }
 
   /**
- * Marks each rule that still fires REOPEN_MS after its job took it, and whose job has ended, as fired now, so `dispatch` starts a new job. A
- * pi-host thread never ends, so its rule goes to it again.
+ * Marks each rule that `dueReopens` names and whose job has ended as fired now, so `dispatch` gives it to the chat's live triage job or a new
+ * one. A pi-host thread never ends, so its rule goes to it again after REOPEN_MS, and a new label set on it fires nothing, as on a live job.
  */
   private async reopen(state: BridgeState, boarded: ReadonlySet<string>, now: number): Promise<BridgeState> {
     const due = dueReopens(state, now).filter(key => boarded.has(state.rules[key]!.chat));
     if (!due.length) return state;
     const rules = { ...state.rules };
     for (const key of due) {
-      if (!this.threads.has(rules[key]!.job!.id) && await (this.deps.jobWorking?.(rules[key]!.job!) ?? Promise.resolve(false)).catch(() => true)) continue;
+      const job = rules[key]!.job!;
+      const day = now - job.at >= REOPEN_MS;
+      if (this.threads.has(job.id) ? !day : await (this.deps.jobWorking?.(job) ?? Promise.resolve(false)).catch(() => true)) continue;
       rules[key] = { ...rules[key]!, wokeAt: now };
-      this.deps.log(`alerts: ${rules[key]!.rule} still fires ${REOPEN_MS / 3_600_000} h after job ${rules[key]!.job!.name} took it, and that job ended`);
+      this.deps.log(day ? `alerts: ${rules[key]!.rule} still fires ${REOPEN_MS / 3_600_000} h after job ${job.name} took it, and that job ended`
+        : `alerts: ${rules[key]!.rule} has label sets job ${job.name} never read, and that job ended`);
     }
     return { ...state, rules };
   }
