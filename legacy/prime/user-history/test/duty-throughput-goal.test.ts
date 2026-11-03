@@ -329,10 +329,9 @@ test("the Meta Ads row reads finished walks from the crawler gauge and due walks
   assert.match(row.extra!, /about 4\.1M advertiser walks due now from a 1% page sample, read within 7 days/);
 });
 
-test("the search sync outbox reads its live rows and falls back to all rows until prod serves the live gauge", () => {
+test("the search sync outbox reads its live rows only", () => {
   // Crawler VP 11-03 (owner ruling c188): the backfill lane drains in spare passes, so d9 counts live rows only.
   const outbox = QUEUES.find((q) => q.family === "search sync outbox");
-  assert.equal(outbox?.expr, 'max by (kind) (crawler_v3_search_sync_outbox_live_rows{world="prod",kind=~"profile|content"})'
-    + ' or max by (kind) (crawler_v3_search_sync_outbox_rows{world="prod",kind=~"profile|content"})');
+  assert.equal(outbox?.expr, 'max by (kind) (crawler_v3_search_sync_outbox_live_rows{world="prod",kind=~"profile|content"})');
   assert.equal(outbox?.wait, 'max by (kind) (crawler_v3_search_sync_outbox_oldest_age_seconds{world="prod",kind=~"profile|content"})');
 });
