@@ -247,7 +247,6 @@ class Judge:
 
     def start(self, path: str, env: dict) -> bool:
         """Starts a judge on `path` and waits until it answers; false when it exits or does not answer within START_WAIT seconds."""
-        import socket
         import time
 
         os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
@@ -258,7 +257,7 @@ class Judge:
         self.started.append(proc)
         deadline = time.monotonic() + self.START_WAIT
         while time.monotonic() < deadline:
-            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            probe = raw_socket()
             try:
                 probe.connect(path)
                 return True
@@ -273,10 +272,9 @@ class Judge:
 
     def over(self, path: str, line: bytes) -> dict:
         import select
-        import socket
         import time
 
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock = raw_socket()
         try:
             sock.connect(path)
             fd, sent = sock.fileno(), 0
@@ -296,6 +294,23 @@ class Judge:
             return {} if not isinstance(reply, dict) or "error" in reply else reply
         finally:
             sock.close()
+
+
+def raw_socket():
+    """A Unix socket of the C type under socket.socket, so a test that patches socket.socket.connect, as auto-sns-agent's
+    research-agent-be unit conftest does, cannot reach the judge's own connection. On 11-03 that patch made the hook raise inside the
+    test's own Popen of dotenvx-start.sh."""
+    import _socket
+
+    return _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+
+
+def fail_open(error: BaseException) -> None:
+    """The guard's own failure never breaks the call it watches: one stderr line, and the call goes on."""
+    try:
+        print(f"global-rules: the send guard's own check failed and let the call through: {type(error).__name__}: {error}", file=sys.stderr)
+    except Exception:
+        pass
 
 
 def check_env() -> dict:
@@ -325,6 +340,9 @@ def judge(check: dict) -> None:
         check["approval"] = approval()
         verdict = JUDGE.ask(check)
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return
+    except Exception as error:
+        fail_open(error)
         return
     finally:
         state.busy = False
@@ -434,12 +452,17 @@ def on_connect(address) -> None:
 
 
 def hook(event: str, args: tuple) -> None:
-    if event == "subprocess.Popen":
-        on_shell(args[1], args[2], args[3], args[0])
-    elif event == "os.system":
-        on_shell(args[0], None, None)
-    elif event == "socket.connect":
-        on_connect(args[1])
+    try:
+        if event == "subprocess.Popen":
+            on_shell(args[1], args[2], args[3], args[0])
+        elif event == "os.system":
+            on_shell(args[0], None, None)
+        elif event == "socket.connect":
+            on_connect(args[1])
+    except SendRefused:
+        raise
+    except Exception as error:
+        fail_open(error)
 
 
 def request_body(request) -> str:

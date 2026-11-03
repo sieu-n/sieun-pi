@@ -628,6 +628,12 @@ KILL_JUDGE = (
 
 CURL_GET = "import subprocess\nsubprocess.run(['curl', '-sS', 'https://api.resend.com/emails/abc'])\n"
 CURL_POST = "import subprocess\nsubprocess.run(['curl', '-X', 'POST', 'https://api.resend.com/emails', '-d', 'x'])\n"
+BLOCK_CONNECT = (
+    "import socket\n"
+    "def blocked(self, address, *args, **kwargs):\n"
+    "    raise RuntimeError(f'Unit tests must not open network connections (tried to connect to {address!r})')\n"
+    "socket.socket.connect = blocked\n"
+)
 
 
 class OneJudgePerProcess(KernelGuardBase):
@@ -690,6 +696,12 @@ class OneJudgePerProcess(KernelGuardBase):
         (self.bin / "node").write_text("#!/bin/sh\nexit 127\n")
         out = self.cells(CURL_POST)
         self.assert_passed(out)
+        self.assertEqual(len(self.fake_runs()), 1)
+
+    def test_a_patched_socket_connect_breaks_no_popen_and_a_send_is_still_refused(self):
+        """11-03: research-agent-be's unit conftest patches socket.socket.connect, and the hook raised in its Popen of dotenvx-start.sh."""
+        out = self.cells(BLOCK_CONNECT + CURL_GET + CURL_POST)
+        self.assert_refused(out, "curl call writes to")
         self.assertEqual(len(self.fake_runs()), 1)
 
     def test_plain_git_on_hinted_paths_starts_no_judge(self):

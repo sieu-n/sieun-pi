@@ -197,7 +197,7 @@ The send guard misses a command decoded at run time and piped to a shell (`base6
 It also misses a desktop click on Send in a window that no snapshot has shown and that the guard cannot read, and a desktop click whose coordinates come from a downscaled `get_desktop_state` taken outside the proxy, such as a `cua-driver call` in a shell.
 In the Aside browser it misses Tab then Enter on a webmail page, selectors built at run time (`atob`), Gmail inside another site's iframe, and a mouse call through another name (`const m = page.mouse; m.click(x, y)`).
 The transcript guard misses a shell variable set earlier in the same command (`F=...; cat "$F"`), a Node process that reads a transcript, a Python started by the `bash` tool or by `systemd-run` named by its full path, `env -i`, `rg --hidden` or `grep -r` over the whole home folder, a script that a job puts inside a tool folder itself, and a read through a file descriptor it did not open by name.
-A handler error lets the call run and writes `handler error, failing open` to the log, because a bug here must not stop every tool call on the machine. The kernel guard also lets a call run when Node or `send-check.ts` cannot run.
+A handler error lets the call run and writes `handler error, failing open` to the log, because a bug here must not stop every tool call on the machine. The kernel guard also lets a call run when Node or `send-check.ts` cannot run, and its audit hooks let a subprocess or connect run after any error of their own and write one `global-rules:` line to stderr. The hook reaches the judge through `_socket.socket`, so a test that patches `socket.socket.connect`, as research-agent-be's unit conftest does, still has its refusals and its own Popen calls.
 
 ## Files
 

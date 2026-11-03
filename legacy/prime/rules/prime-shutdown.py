@@ -209,13 +209,17 @@ def program_argv(program, argv):
 
 
 def hook(event: str, args: tuple) -> None:
-    if event == "subprocess.Popen":
-        reason = refusal(program_argv(args[0], args[1]), args[2], args[3])
-    elif event == "os.system":
-        reason = refusal(args[0])
-    elif event in ("os.exec", "os.posix_spawn"):
-        reason = refusal(program_argv(args[0], args[1]), None, args[2])
-    else:
+    try:
+        if event == "subprocess.Popen":
+            reason = refusal(program_argv(args[0], args[1]), args[2], args[3])
+        elif event == "os.system":
+            reason = refusal(args[0])
+        elif event in ("os.exec", "os.posix_spawn"):
+            reason = refusal(program_argv(args[0], args[1]), None, args[2])
+        else:
+            return
+    except Exception as error:
+        print(f"global-rules: the prime-agent shutdown guard's own check failed and let the call through: {type(error).__name__}: {error}", file=sys.stderr)
         return
     if reason:
         raise PrimeShutdownRefused(message(reason))
