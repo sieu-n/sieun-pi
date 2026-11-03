@@ -43,7 +43,7 @@ test("a stop saves each job's cut, and the next start takes it without reading t
   // The next start must not need the file: only the saved reading can say it was cut.
   rmSync(file);
   const next = catalogIn(t, dir);
-  assert.equal(existsSync(join(dir, TAILS_FILE)), false, "the start deletes the file it took");
+  assert.equal(existsSync(join(dir, TAILS_FILE)), true, "the start keeps the file until its own stop writes it again, so a killed stop loses no reading");
   assert.deepEqual(next.cuts.of(file), cut);
   assert.equal(await next.cuts.update([{ file, key: "k1|4" }]), false, "an unchanged key reads nothing");
   assert.deepEqual(next.cuts.of(file), cut);

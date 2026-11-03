@@ -59,10 +59,26 @@ test("the next start takes the saved heads and reads no session file for them", 
   const file = join(dir, "gone", "root.jsonl");
   writeFileSync(join(dir, HEADS_FILE), JSON.stringify({ savedAt: "2026-10-25T06:17:12Z", origins: { [file]: "agent" }, firsts: { [file]: "Saved task" }, titles: { [file]: "Saved title" } }));
   const catalog = catalogOver(t, dir, [live("s2", file)]);
-  assert.equal(existsSync(join(dir, HEADS_FILE)), false, "the start deletes the file it took");
+  assert.equal(existsSync(join(dir, HEADS_FILE)), true, "the start keeps the file until its own stop writes it again");
   await catalog.refresh();
   const [row] = await catalog.rows();
   assert.equal(row?.origin, "agent");
   assert.equal(row?.name, "Saved title");
   await catalog.close();
+});
+
+test("a start after a run whose stop never saved still takes the heads the last saved stop wrote", async t => {
+  // 11-03: systemd killed the 18:57:45Z stop after 90 s, and the 18:59:16Z start read 9.5 s of file heads on the main thread.
+  const dir = mkdtempSync(join(tmpdir(), "heads-killed-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "gone", "root.jsonl");
+  writeFileSync(join(dir, HEADS_FILE), JSON.stringify({ savedAt: "2026-11-03T18:45:30Z", origins: { [file]: "agent" }, firsts: { [file]: "Saved task" }, titles: { [file]: "Saved title" } }));
+  // The killed run took the file and never reached its stop's save.
+  catalogOver(t, dir, [live("s3", file)]);
+  const next = catalogOver(t, dir, [live("s3", file)]);
+  await next.refresh();
+  const [row] = await next.rows();
+  assert.equal(row?.origin, "agent");
+  assert.equal(row?.name, "Saved title");
+  await next.close();
 });

@@ -49,7 +49,9 @@ function takeSavedAgents(path: string): ReadonlyMap<string, readonly ChatAgent[]
  * 3.1 s of fileDecides and 1.4 s of firstTask on the main thread between 3.5 and 10.2 s after the start, in blocks of 256 rows, and at the
  * 06:17:13Z start an api/threads/<id>/agents read in that window took 2.2 s (d7 counted 06:17Z dirty). On a scratch serve on a copy of
  * browser-chat on 10-25 the saved heads (10.7 MB for 5,544 rows) cut the first projection's own code from 3.4 and 4.4 s to 0.42 s. Each value
- * is final once read, so the start takes them as they are; the file is deleted as it is read, like AGENTS_FILE.
+ * is final once read, so the start takes them as they are, and the file stays until the next stop writes it again. Until 11-03 the start
+ * deleted it, so a run that never saved left none: systemd killed the 18:57:45Z stop after 90 s, and the 18:59:16Z start spent 9.5 s in
+ * fileOrigin and 4.0 s in scanFirst on the main thread against 60 to 93 ms and 150 to 290 ms at other starts that day, and its loop stalled 1.2 s.
  */
 export const HEADS_FILE = "chat-heads.json";
 
@@ -58,13 +60,13 @@ export const HEADS_FILE = "chat-heads.json";
  * start read the tail of every stopped job again, up to 4 MB each: in the CPU profile of the run started at 18:19:36Z on 10-28 that was 6.6 s
  * of readTail on the main thread between 6 and 25 s after the start, and an api/threads/<id>/older read in that window took 1.2 s. Each
  * reading carries the key it was read at (the daemon row's modified time and message count, or the file's size and mtime), so a file that
- * changed since is read again. The file is deleted as it is read, like AGENTS_FILE.
+ * changed since is read again. The file stays until the next stop writes it again, as HEADS_FILE does, so a stop that systemd killed costs
+ * only what changed since the last saved stop.
  */
 export const TAILS_FILE = "chat-tails.json";
 function takeSavedTails(path: string, cuts: SessionCuts): void {
   let text: string;
   try { text = readFileSync(path, "utf8"); } catch { return; }
-  try { unlinkSync(path); } catch (error) { process.stderr.write(`catalog: deleting ${path}: ${error instanceof Error ? error.message : String(error)}\n`); }
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch { return; }
   if (!isRecord(parsed)) return;
@@ -79,7 +81,6 @@ const strings = (value: unknown): [string, string][] => isRecord(value) ? Object
 function takeSavedHeads(path: string, origins: ThreadOrigins): void {
   let text: string;
   try { text = readFileSync(path, "utf8"); } catch { return; }
-  try { unlinkSync(path); } catch (error) { process.stderr.write(`catalog: deleting ${path}: ${error instanceof Error ? error.message : String(error)}\n`); }
   let parsed: unknown;
   try { parsed = JSON.parse(text); } catch { return; }
   if (!isRecord(parsed)) return;

@@ -475,7 +475,12 @@ async function serve(options: Options): Promise<void> {
         // Each part's time goes in the log, so a slow stop names what it waited on: 5 of 97 stops from 10-15 to 10-18 reached systemd's 90 s.
         const began = Date.now();
         const parts: string[] = [];
-        const timed = async (name: string, part: () => Promise<unknown> | unknown) => { const at = Date.now(); await part(); parts.push(`${name} ${Date.now() - at} ms`); };
+        let inPart = "";
+        const timed = async (name: string, part: () => Promise<unknown> | unknown) => { inPart = name; const at = Date.now(); await part(); parts.push(`${name} ${Date.now() - at} ms`); };
+        // systemd kills a stop at its default 90 s (TimeoutStopSec), before the summary line: on 11-03 the 18:57:45Z stop was killed at 18:59:15Z
+        // with no line naming what it waited on. This line comes 30 s before that kill.
+        const stuck = setTimeout(() => { process.stderr.write(`${new Date().toISOString()} stop: still in ${inPart} after 60 s, done: ${parts.join(", ") || "none"}\n`); }, 60_000);
+        stuck.unref();
         await timed("sends", () => backend.drainSends?.().catch(error => process.stderr.write(`drain sends: ${error instanceof Error ? error.message : String(error)}\n`)));
         stopPromptPrune(); keeper?.close(); remote.stop(); slack?.close();
         await timed("bridges", () => hosts?.bridge?.close());
@@ -483,6 +488,7 @@ async function serve(options: Options): Promise<void> {
         await timed("read-only", () => readOnly?.close());
         await timed("call log", () => primeCalls.flushed());
         await timed("cpu profile", () => runProfile.stop().catch(error => process.stderr.write(`cpu profile: ${error instanceof Error ? error.message : String(error)}\n`)));
+        clearTimeout(stuck);
         process.stderr.write(`${new Date().toISOString()} stop: ${Date.now() - began} ms: ${parts.join(", ")}\n`);
       }
     })().finally(() => { process.off("SIGTERM", stop); process.off("SIGINT", stop); stopped(); });
