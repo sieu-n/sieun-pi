@@ -114,8 +114,11 @@ test("arrow keys move the highlight, Enter opens the hit at its message", async 
 test("a hit opens the conversation scrolled to that message with a flash", async ({ page }) => {
   await page.keyboard.press(`${mod}+k`);
   await field(page).fill("relay");
-  // A channel post: its message id is its row's id. A thread hit's row is the turn that holds it, and the fixture's live turn keeps adding hits.
-  const hit = palette(page).locator("[role=group][aria-label='Messages'] [data-search-result][data-key^='hit:ch_']").first();
+  // A top-level channel post: its message id is its row's id. A thread hit's row is the turn that holds it, and the fixture's live turn keeps
+  // adding hits; a reply lives in its thread, not in the channel's timeline.
+  const { hits } = (await (await page.request.get("/api/search?q=relay&limit=20")).json()) as { hits: { id: string; kind: string; threadRoot?: string }[] };
+  const post = hits.find(h => h.kind === "post" && h.id.startsWith("ch_") && !h.threadRoot)!;
+  const hit = palette(page).locator(`[role=group][aria-label='Messages'] [data-key="hit:${post.id}"]`);
   await hit.click();
   const id = new URL(page.url().replace("#/", "")).searchParams.get("m");
   expect(id).toBeTruthy();

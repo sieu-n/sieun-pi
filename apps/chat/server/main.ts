@@ -39,6 +39,8 @@ const host = config.fixture ? new FixtureHost() : boxes(config);
 if (config.fixture) seedFixture(host as FixtureHost, config.dataDir, Date.now(), config.box);
 const app = new App(config, host, log);
 await app.start();
+// A fixture server fills its own search index at once, so its first search does not wait for it.
+if (config.fixture) void app.searchEngine.start().catch(() => undefined);
 const server = serve(app);
 server.listen(config.port, config.listen, () => log(`apps/chat on http://${config.listen}:${config.port} (${config.fixture ? "fixture" : `pi-host ${config.socket}`}, data ${config.dataDir})`));
 

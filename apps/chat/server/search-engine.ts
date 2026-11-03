@@ -5,6 +5,7 @@
  *
  * A change reaches Meilisearch as a task that took 1.5 to 3.1 s to finish on that box. Until its task is done a document sits in
  * `pending`, which search reads in memory and leaves out of the Meilisearch query by id, so a post or entry is found at once and counted once.
+ * An empty index's first fill is waited for instead, so a fresh server's counts are Meilisearch's from its first search.
  */
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -394,7 +395,17 @@ export class SearchEngine {
     if (!this.ready) void this.start().catch(() => undefined);
     this.readNew();
     void this.refresh().catch(error => this.deps.log(`search: ${String(error)}`));
-    if (this.filling) await this.checkFill().catch(() => undefined);
+    // A first fill is waited for, so every answer comes from Meilisearch's matching, typo tolerance included; memory answers only while
+    // Meilisearch cannot start, as on a box without its binary.
+    if (this.filling) {
+      try {
+        await this.ready;
+        for (const uid of this.fillTasks ?? []) await this.meili.waitTask({ taskUid: uid });
+        await this.checkFill();
+      } catch {
+        // Meilisearch did not open; `start` logged why.
+      }
+    }
     if (!this.filling) {
       await this.ready;
       // The pending list as it stands is enough for this answer: a document Meilisearch already holds is read from memory once more.
@@ -414,9 +425,10 @@ export class SearchEngine {
     if (opts.sort === "recent") docs = [...answer.hits, ...fresh].sort((a, b) => b.at - a.at);
     else {
       docs = [];
+      // Meilisearch's hit leads each rank, so a document that is only waiting to be indexed never moves the top hit between two searches.
       for (let rank = 0; rank < Math.max(answer.hits.length, fresh.length); rank++) {
-        if (rank < fresh.length) docs.push(fresh[rank]!);
         if (rank < answer.hits.length) docs.push(answer.hits[rank]!);
+        if (rank < fresh.length) docs.push(fresh[rank]!);
       }
       docs.sort((a, b) => a.tier - b.tier);
     }

@@ -11,7 +11,11 @@ import { FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { start, until, type Running } from "./helpers.ts";
 
 let s: Running;
-before(async () => { s = await start(); });
+before(async () => {
+  s = await start();
+  // The fixture's agents answer each other while a first fill runs, so the index is filled before the test posts.
+  await s.app.searchEngine.settled();
+});
 after(() => s.close());
 
 test("a mention is found once, as the post in its channel, with no routing header", async () => {
@@ -36,7 +40,10 @@ test("a thread imported beside its archived source shows each entry once, from t
   source.entries.push(...host.threadsById.get(ids.vent)!.entries.map(entry => ({ ...entry })));
   await s.app.searchEngine.settled();
   const after = await s.get<SearchResult>("/api/search?q=relay&limit=100");
-  assert.equal(after.total, before.total);
-  assert.deepEqual(after.hits.map(h => h.id), before.hits.map(h => h.id));
+  // The fixture's agents may post meanwhile, so the thread hits are compared; every hit fits on the page, so the total holds the posts too.
+  const entries = (result: SearchResult) => result.hits.filter(h => h.kind !== "post");
+  assert.ok(after.total <= 100);
+  assert.equal(after.total - (after.hits.length - entries(after).length), before.total - (before.hits.length - entries(before).length));
+  assert.deepEqual(entries(after).map(h => h.id).sort(), entries(before).map(h => h.id).sort());
   assert.ok(!after.hits.some(h => h.conversation.id.startsWith(source.row.id)));
 });

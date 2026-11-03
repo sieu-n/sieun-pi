@@ -47,12 +47,17 @@ test("Cmd K message rows show the author, an AGENT badge, the place and what kin
 });
 
 test("Enter on the query opens the full results page with the exact count and one card per hit", async ({ page }) => {
-  const { total, hits } = await search(page, { q: "relay" });
   await page.keyboard.press(`${mod}+k`);
   await field(page).fill("relay");
   await expect(palette(page).getByTestId("search-count")).toBeVisible();
   await expect(palette(page).locator("[aria-selected=true]")).toContainText("See all results for “relay”");
+  // The fixture's agents keep writing "relay" into their threads, so the count to match is the one in the page's own answer.
+  const answer = page.waitForResponse(r => {
+    const url = new URL(r.url());
+    return url.pathname === "/api/search" && url.searchParams.get("q") === "relay" && !url.searchParams.has("local") && !url.searchParams.has("cursor");
+  });
   await page.keyboard.press("Enter");
+  const { total, hits } = (await (await answer).json()) as Result;
   await expect(palette(page)).toBeHidden();
   await expect(page).toHaveURL(/#\/search\?q=relay$/);
   await expect(page.getByRole("heading", { name: "Results for: relay" })).toBeVisible();
@@ -113,7 +118,8 @@ test("a card shows the messages around it and opens its message in the conversat
   await expect(card.locator("[data-context=after]")).toContainText("lost the Mac");
 
   await page.goto("/#/search?q=relay&in=ch_cutover");
-  const post = (await search(page, { q: "relay", in: "ch_cutover" })).hits[0]!;
+  // A reply lives in its thread, not in the channel's timeline, so the card opened is a top-level post.
+  const post = (await search(page, { q: "relay", in: "ch_cutover" })).hits.find(hit => !(hit as { threadRoot?: string }).threadRoot)!;
   await page.locator(`[data-result-card][data-hit-id="${post.id}"] [data-result-open]`).click();
   await expect(page).toHaveURL(new RegExp(`#/c/${post.conversation.id}\\?m=${post.messageId}$`));
   const message = page.locator(`[data-message-id="${post.messageId}"]`);

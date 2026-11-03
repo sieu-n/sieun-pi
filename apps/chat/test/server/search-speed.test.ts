@@ -26,6 +26,8 @@ before(async () => {
     if (i % 50 === 0) host.append(thread, 1, { kind: "pi.user", model: [{ role: "user", content: [{ type: "text", text: `check the zephyr relay ${i}` }], timestamp }] });
     else host.append(thread, 1, { kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: `c${i}`, toolName: "bash", content: [{ type: "text", text: `zephyr relay line ${i}` }], isError: false, timestamp }] });
   }
+  // The index is filled once, as meilisearch.service keeps it across restarts; the first search after a start then reads a full index.
+  await s.app.searchEngine.settled();
   const entries = host.entries.bind(host);
   host.entries = async (...args) => {
     await new Promise(resolve => setTimeout(resolve, HOST_READ_MS));

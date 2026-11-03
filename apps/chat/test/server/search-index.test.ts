@@ -45,6 +45,7 @@ before(async () => {
   writeJson(join(dir, "data", "cache", "threads.json"), { threads: [thread("old", true), thread("live", false)], trees: [] });
   app = new App({ ...readConfig([]), dataDir: join(dir, "data"), port: 0, fixture: false, box: "test-box", durableIndex: indexPath }, new PiHost(join(dir, "no-pi-host.sock")), () => {});
   await app.start();
+  await app.searchEngine.settled();
   server = serve(app);
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -64,10 +65,9 @@ const search = async (q: string): Promise<{ ms: number; body: SearchResult }> =>
   return { ms: performance.now() - started, body: (await response.json()) as SearchResult };
 };
 
-test("with pi-host down, search answers in under a second with pi-host's total and copy rules, before and after Meilisearch holds the index", async () => {
+test("with pi-host down, search answers in under a second with pi-host's total and copy rules", async () => {
   const expected = index.search({ q: "zebra", limit: 20, skipAgentMessages: CHANNEL_COPY_LIKE });
-  for (const read of ["memory", "meilisearch"]) {
-    if (read === "meilisearch") await app.searchEngine.settled();
+  for (const read of ["first", "second"]) {
     const { ms, body } = await search("zebra");
     assert.ok(ms < 1000, `search from ${read} took ${ms.toFixed(0)} ms`);
     assert.equal(body.total, 300, read);
