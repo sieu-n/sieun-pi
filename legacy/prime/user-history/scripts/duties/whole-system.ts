@@ -1,5 +1,5 @@
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, join } from "node:path";
 import { readdirSync, realpathSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -618,12 +618,25 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
   let anchor: number | undefined;
   for (const line of lines) {
     if (!line.includes('"turn_admitted"') && !line.includes('"turn_queued"') && !line.includes('"turn_dropped"') && !line.includes('"parked"') &&
-      !line.includes('"unparked"') && !line.includes('"vend"') && !line.includes('"wait"') && !line.includes('"limited"') && !line.includes('"priority"')) continue;
+      !line.includes('"unparked"') && !line.includes('"vend"') && !line.includes('"wait"') && !line.includes('"limited"') && !line.includes('"priority"') &&
+      !line.includes('"turn_lead_set"')) continue;
     let entry: { ts?: unknown; event?: unknown; session?: unknown; at?: unknown; waited_s?: unknown; priority?: unknown; provider?: unknown; reason?: unknown; manual?: unknown;
-      vend?: unknown; budget?: unknown; slot_at?: unknown };
+      vend?: unknown; budget?: unknown; slot_at?: unknown; lead?: unknown; lead_s?: unknown; led?: unknown; unled?: unknown };
     try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
+    // A run leads from the moment pi-pool marks it (`mark_led` in packages/pi-pool/pool/turns.py): its turn_queued line says `lead` when its
+    // session was on the lead list as it queued, and a turn_lead_set line names the queued runs it put on the list (`led`) or took off
+    // (`unled`). d7's 14:18Z run on 11-03 took the lead list of that moment as the heads, which held 46 pi-host comm threads added from
+    // 14:10:16Z, and read 3 of their runs queued from 13:37Z as heads held behind job runs; its 14:37Z run read 5 alert triage job runs queued
+    // from 13:48Z the same way, after the chat service put their jobs on the list at 14:31:32Z.
+    if (entry.event === "turn_lead_set") {
+      const ids = (value: unknown): string[] => Array.isArray(value) ? value.filter((id): id is string => typeof id === "string") : [];
+      for (const session of ids(entry.led)) if (!inLine.has(session)) inLine.set(session, false);
+      for (const session of ids(entry.unled)) if (!heads.has(session)) inLine.delete(session);
+      continue;
+    }
     if (typeof entry.session !== "string") continue;
-    const head = heads.has(entry.session);
+    const head = heads.has(entry.session) || (entry.event === "turn_queued" && entry.lead === true) ||
+      (entry.event === "turn_admitted" && typeof entry.lead_s === "number");
     const lineAt = () => {
       const local = typeof entry.ts === "string" ? Date.parse(`${entry.ts}Z`) : NaN;
       return anchor === undefined || Math.abs(local - anchor) <= Math.abs(local - KST_MS - anchor) ? local : local - KST_MS;
@@ -651,7 +664,8 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
       if (head) {
         const passed = inLine.get(entry.session) ?? false;
         inLine.delete(entry.session);
-        if (typeof entry.waited_s === "number" && at >= from && at < to) headWaits.push({ session: entry.session, waitedS: entry.waited_s, passed });
+        const waited = heads.has(entry.session) ? entry.waited_s : entry.lead_s;
+        if (typeof waited === "number" && at >= from && at < to) headWaits.push({ session: entry.session, waitedS: waited, passed });
       }
       continue;
     }
@@ -2021,18 +2035,17 @@ async function main(): Promise<void> {
   const marks = await readSessionMarks(deliveryCandidates(allFaults), short => listed.get(short)?.file, box, now);
   const { faults: daemonFaults, slotWaits } = splitSlotWaits(allFaults, outboxLandings(serviceLines), fault => marks.get(fault.session!.slice(0, 8)));
   const poolLines = await tailLines(POOL_LOG, POOL_LOG_TAIL_BYTES);
-  const turns = (await readJson(join(dirname(POOL_LOG), "turns.json")) ?? {}) as { lead?: unknown };
-  const poolLead = Array.isArray(turns.lead) ? turns.lead.filter((id): id is string => typeof id === "string") : [];
   const result = measure({
     ...plan,
     watch, day, quietMs,
     daemonStarts: supervisorLogs.flatMap(readDaemonStarts).map(at => ({ host: box, at })),
     log: readServiceLog(serviceLines),
     pool: readPoolLog(poolLines, now),
-    // The heads are the sessions pi-pool leads, as its turns.json lists them, beside the owner's chats. At 03:31:09Z on 10-23 "three things 3"
-    // (01a1664f), a lead the owner chat list did not name, started ahead of 01a1164b and read as a job run that passed a head. An archived chat
-    // still runs jobs but leads nothing: counting archived chats as heads read 01a14210's 2,330 s wait as a head held at the 10:21Z run.
-    smooth: readSmoothness(poolLines, new Set([...live, ...poolLead]), now - WINDOW_MS, now, treeOffline(day, await sessionHosts(dataDir, box))),
+    // The heads are the owner's chats, beside each run pi-pool's log marks as led from its queue or lead lines (readSmoothness). At 03:31:09Z on
+    // 10-23 "three things 3" (01a1664f), a lead the owner chat list did not name, started ahead of 01a1164b and read as a job run that passed a
+    // head. An archived chat still runs jobs but leads nothing: counting archived chats as heads read 01a14210's 2,330 s wait as a head held at
+    // the 10:21Z run.
+    smooth: readSmoothness(poolLines, new Set(live), now - WINDOW_MS, now, treeOffline(day, await sessionHosts(dataDir, box))),
     daemonFaults,
     primeUpdates: [...(await readUpdateSpans(join(dataDir, ".."))).map(update => ({ ...update, host: box })), ...await otherBoxUpdates(box, now - WINDOW_MS - 2 * MINUTE)],
     workerMisses: workerPolls,

@@ -4,8 +4,8 @@ One run of one session holds one working slot, from the run's first model call t
 agent_end. turns.json keeps the queue under its own lock, turns.lock, apart from the
 account state.json and its lock:
 
-    working  {session: {tree, kind, since, queued_since, place, pid, lease_until, parked?}}
-    queued   {session: {tree, since, asked?, pid, waiter?, parked?}}
+    working  {session: {tree, kind, since, queued_since, place, pid, lease_until, parked?, led?}}
+    queued   {session: {tree, since, asked?, pid, waiter?, parked?, led?}}
     owner    {session: epoch sec of the owner-turn mark}
     lead     [session], the sessions whose queued runs go first (`lead`)
     kept     {session: {since, slot_at, reask?}}, the place of a run let go on an account wait or with input queued,
@@ -34,6 +34,10 @@ Waiting runs of the `lead` sessions start first, then every other run, each in t
 they asked, while the machine has fewer than working_max
 runs working and the run's tree fewer than tree_working_max. The owner sets both by hand
 in config.json, and nothing changes them (owner, 10-19: "NO auto-adjusting behaviour").
+
+A queued run carries `led`, the time it began to lead: when it queued with its session on the list, or when `lead` put the
+session there while it waited. Its turn_admitted line logs the seconds since as `lead_s`, so a reader of the log tells a chat
+head's wait from that of a run whose session joined the list later.
 
 Only the chat service marks an owner turn, with `owner-turn` right before it sends the
 owner's prompt to a session on this machine. That prompt starts the session's next run
@@ -203,7 +207,7 @@ def start(turns, session, kind, now, lease):
     parked = entry.get("parked")
     turns["working"][session] = {"tree": entry["tree"], "kind": kind, "since": now, "queued_since": asked(entry), "place": entry["since"],
                                  "pid": None if parked else entry.get("pid"), "lease_until": now + (WAKE_LEASE_SEC if parked else lease),
-                                 **({"parked": parked} if parked else {})}
+                                 **({"parked": parked} if parked else {}), **({"led": entry["led"]} if "led" in entry else {})}
 
 
 def unwake(turns, session, why):
@@ -211,7 +215,7 @@ def unwake(turns, session, why):
     session asks again at retry_at."""
     entry = turns["working"].pop(session)
     turns["queued"][session] = {"tree": entry["tree"], "since": entry["place"], "asked": entry["queued_since"], "pid": None,
-                                "parked": dict(entry["parked"], woke=why)}
+                                "parked": dict(entry["parked"], woke=why), **({"led": entry["led"]} if "led" in entry else {})}
 
 
 def admit_pass(turns, now, all_max, tree_max, lease):
@@ -330,18 +334,21 @@ def ask(turns, a, now, cfg, waiter=None):
         events.append(("turn_renewed_after_lapse", {"session": session, "tree": a["tree"]}))
     else:
         kept = turns["kept"].pop(session, None)
-        turns["queued"][session] = dict(entry, waiter=waiter, **({"since": kept["since"], "asked": now} if kept else {}))
+        led = session in turns["lead"]
+        turns["queued"][session] = dict(entry, waiter=waiter, **({"since": kept["since"], "asked": now} if kept else {}), **({"led": now} if led else {}))
         admitted += admit_pass(turns, now, all_max, tree_max, lease)
         if session in turns["queued"]:
             events.append(("turn_queued", {"session": session, "tree": a["tree"], "working": len(turns["working"]), "queued": len(turns["queued"]),
-                                           **({"kept_since": kept["since"]} if kept else {})}))
+                                           **({"kept_since": kept["since"]} if kept else {}), **({"lead": True} if led else {})}))
     return True, reply(turns, session), events + admitted_events(turns, admitted, now)
 
 
 def admitted_events(turns, admitted, now):
-    """turn_admitted lines; `wake` marks a parked run's slot, whose session `locked` wakes after the lock."""
+    """turn_admitted lines; `wake` marks a parked run's slot, whose session `locked` wakes after the lock, and `lead_s` the
+    seconds the run waited with its session on the lead list (`led`), absent for a run that did not lead when it started."""
     return [("turn_admitted", {"session": s, "tree": turns["working"][s]["tree"], "kind": kind,
                                "waited_s": round(now - turns["working"][s]["queued_since"], 1),
+                               **({"lead_s": round(now - turns["working"][s]["led"], 1)} if "led" in turns["working"][s] else {}),
                                **({"wake": True} if waking(turns["working"][s]) else {})}) for s, kind in admitted]
 
 
@@ -624,6 +631,21 @@ def lead_list(current, op, sessions):
     return sorted(set(current) - set(sessions))
 
 
+def mark_led(turns, now):
+    """Stamp `led` on each queued run whose session is on the lead list now, from now, and take it off each whose session left
+    it. Returns the sessions whose mark changed, as `led` and `unled`. d7 (scripts/duties/whole-system.ts) reads a run as a chat
+    head's from these marks: at its 14:18Z run on 11-03 it read the lead list of that moment, which held 46 pi-host comm threads
+    added from 14:10:16Z, and counted 3 of their runs queued from 13:37Z, before they led, as heads that waited behind job runs."""
+    lead, led, unled = set(turns["lead"]), [], []
+    for session, entry in turns["queued"].items():
+        if session in lead and "led" not in entry:
+            entry["led"] = now
+            led.append(session)
+        elif session not in lead and entry.pop("led", None) is not None:
+            unled.append(session)
+    return {**({"led": sorted(led)} if led else {}), **({"unled": sorted(unled)} if unled else {})}
+
+
 def cmd_lead(rest):
     """Replace the lead list with these sessions, whose queued runs start before every other run; no sessions clears it.
     `--add` and `--drop` change only the named sessions inside the lock, for a writer that shares the list: pi-host puts its comm
@@ -635,11 +657,13 @@ def cmd_lead(rest):
         raise SystemExit("usage: pi-pool lead [<session>...] | lead --add <session>... | lead --drop <session>...")
 
     def put(turns, now):
-        after = lead_list(turns["lead"], op, sessions)
+        before, after = set(turns["lead"]), lead_list(turns["lead"], op, sessions)
         if turns["lead"] == after:
             return False, {"lead": after}, []
         turns["lead"] = after
-        return True, {"lead": after}, [("turn_lead_set", {"sessions": len(after), **({op: len(sessions)} if op != "set" else {})})]
+        return True, {"lead": after}, [("turn_lead_set", {"sessions": len(after), **({op: len(sessions)} if op != "set" else {}),
+                                                          "added": sorted(set(after) - before), "dropped": sorted(before - set(after)),
+                                                          **mark_led(turns, now)})]
     emit(locked(put))
     return 0
 

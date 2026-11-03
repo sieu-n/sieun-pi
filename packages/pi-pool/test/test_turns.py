@@ -468,6 +468,31 @@ class Cli(unittest.TestCase):
         for bad in (["--add"], ["--drop"], ["--add", "-x"]):
             self.assertNotEqual(self.run_cli("lead", *bad, check=False).returncode, 0, bad)
 
+    def test_the_log_marks_a_run_as_led_only_from_when_its_session_leads(self):
+        """d7's 14:18Z run on 11-03 read three runs of pi-host comm threads queued from 13:37Z as chat heads held behind job runs,
+        because their sessions were on the lead list at 14:18Z; pi-host had added them at 14:10Z, after they had waited."""
+        for s in "ab":
+            self.admit(s, "--tree", s.upper())
+        self.run_cli("lead", "h")
+        self.admit("h", "--tree", "H")
+        self.admit("late", "--tree", "L")
+        self.admit("gone", "--tree", "G")
+        self.run_cli("lead", "--add", "late", "gone")
+        self.run_cli("lead", "--drop", "gone")
+        for s in ("a", "b", "h"):
+            self.run_cli("release", s)
+        with open(os.path.join(self.dir, "pi-pool.log")) as f:
+            lines = [json.loads(line) for line in f]
+        queued = {e["session"]: e.get("lead") for e in lines if e["event"] == "turn_queued"}
+        self.assertEqual(queued, {"h": True, "late": None, "gone": None})
+        sets = [(e.get("added"), e.get("dropped"), e.get("led"), e.get("unled")) for e in lines if e["event"] == "turn_lead_set"]
+        self.assertEqual(sets, [(["h"], [], None, None), (["gone", "late"], [], ["gone", "late"], None), ([], ["gone"], None, ["gone"])])
+        admitted = {e["session"]: e.get("lead_s") for e in lines if e["event"] == "turn_admitted" and e["session"] in ("h", "late", "gone")}
+        self.assertEqual(set(admitted), {"h", "late", "gone"})
+        self.assertIsInstance(admitted["h"], float)
+        self.assertIsInstance(admitted["late"], float)
+        self.assertIsNone(admitted["gone"], "a run whose session left the list before it started did not lead")
+
     def test_set_records_who_and_when_in_config_and_the_log(self):
         before = round(time.time())
         self.run_cli("set", "working_max", "30", "--by", "the Settings pane")

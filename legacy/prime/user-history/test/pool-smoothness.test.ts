@@ -222,3 +222,24 @@ test("a park that ran on its own account is held only from the 429 on that accou
   ], new Set(), FROM, RUN).overtaken;
   assert.deepEqual(passed, [{ session: "c", minutes: 0 }, { session: "a", minutes: 15 }]);
 });
+
+// 11-03 on us-metal02: d7's 14:18Z run took pi-pool's lead list of that moment as the heads. pi-host had put 46 comm threads on it from
+// 14:10:16Z, so 01a19f31's run, queued at 13:37:43Z and admitted at 13:53:27Z before its session led, read as a head held 944.5 s behind a job
+// run; its 14:37Z run read 5 alert triage job runs the same way after the chat service put their jobs on the list at 14:31:32Z.
+test("a run is a head's only from when pi-pool's log marks it led, never by the lead list at measure time", () => {
+  const COMM = "01a19f31-b78f-767c-abb6-d9013527ec96", LED = "01a1a1a9-8183-76ed-9667-93549e60b6de", LATE = "01a17e61-cb7c-72ae-b9c4-6b2e825fdaa7";
+  const line = (fields: object): string => JSON.stringify(fields);
+  const smooth = readSmoothness([
+    queued(COMM, "2026-10-21T10:31:00"),
+    line({ ts: "2026-10-21T10:31:01", event: "turn_queued", session: LED, tree: LED, working: 40, queued: 60, lead: true }),
+    queued(LATE, "2026-10-21T10:31:02"),
+    admitted("job", "2026-10-21T10:35:00", 900),
+    admitted(COMM, "2026-10-21T10:40:00", 540),
+    line({ ts: "2026-10-21T10:41:00", event: "turn_lead_set", sessions: 3, add: 2, added: [COMM, LATE], dropped: [], led: [LATE] }),
+    line({ ts: "2026-10-21T10:42:00", event: "turn_admitted", session: LED, tree: LED, kind: "slot", waited_s: 659, lead_s: 659 }),
+    line({ ts: "2026-10-21T10:42:30", event: "turn_admitted", session: LATE, tree: LATE, kind: "slot", waited_s: 688, lead_s: 90 }),
+  ], new Set(), FROM, RUN);
+  assert.deepEqual(smooth.headWaits, [{ session: LED, waitedS: 659, passed: true }, { session: LATE, waitedS: 90, passed: false }]);
+  const { metrics } = measure({ now: RUN, watch: [], log: { holds: [] }, chats: [], smooth });
+  assert.equal(metrics.head_waits_over_30s, 1);
+});
