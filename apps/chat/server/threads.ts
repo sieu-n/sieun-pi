@@ -80,6 +80,8 @@ export class Threads {
   private list = new Map<string, DurableThread>();
   private trees = new Map<string, { updatedAt: number; nodes: TreeNode[] }>();
   private agentCache = new Map<AgentId, string>();
+  /** Agent and thread ids by name, for `principal`; refresh drops it. */
+  private names?: Map<string, AgentId>;
   private jobCache = new Map<AgentId, string>();
   private convCache = new Map<ConversationId, string>();
   private readonly live = new Map<ConversationId, LiveConversation>();
@@ -173,6 +175,7 @@ export class Threads {
       }
     }
     this.list = next;
+    this.names = undefined;
     this.agentRecords?.dropUntitled(next);
     this.agentRecords?.follow(next);
     const cache = JSON.stringify({ threads, trees: [...this.trees] } satisfies ThreadsCache);
@@ -231,9 +234,21 @@ export class Threads {
     if (agent) return { id: agent.id, kind: agent.kind, name: agent.name, avatar: agent.avatar, ...(agent.parent ? { parent: agent.parent.id } : {}) };
     const record = this.agentRecords?.record(id);
     if (record) return { id: record.id, kind: "chat", name: record.name, avatar: avatarOf(record.name) };
-    const byName = this.agents({ archived: true }).find(a => a.name === id) ?? this.allSummaries({ archived: true }).find(a => a.name === id);
-    if (byName) return this.principal(byName.id);
+    const byName = this.idByName(id);
+    if (byName) return this.principal(byName);
     return { id, kind: "job", name: id, avatar: avatarOf(id) };
+  }
+
+  /**
+   * The id a name finds, a registered agent's before any thread's or job's, from an index built once per thread list read: a solo thread's
+   * page names its board's sender ("board") on dozens of inputs, and a scan of every thread and job for each took 300 ms on 11-03.
+   */
+  private idByName(name: string): AgentId | undefined {
+    if (!this.names) {
+      this.names = new Map();
+      for (const agent of [...this.agents({ archived: true }), ...this.allSummaries({ archived: true })]) if (!this.names.has(agent.name)) this.names.set(agent.name, agent.id);
+    }
+    return this.names.get(name);
   }
 
   /**
@@ -389,10 +404,8 @@ export class Threads {
 
   /** The summary of any conversation by id: a DM room, a channel or Solo room, a thread or job, or a comm or test thread or one of its jobs. */
   conversation(id: ConversationId): ConversationSummary | undefined {
-    const listed = this.conversations().find(c => c.id === id);
-    if (listed) return listed;
     const row = this.list.get(parseConversationId(id).thread);
-    return row ? this.rowConversations(row).find(c => c.id === id) : undefined;
+    return (row ? this.rowConversations(row).find(c => c.id === id) : undefined) ?? this.conversations().find(c => c.id === id);
   }
 
   private rowConversations(row: DurableThread): ConversationSummary[] {
