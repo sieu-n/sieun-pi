@@ -4,6 +4,8 @@
  * 1. An image block keeps its type and mimeType and loses its data, because the page loads each image by its own URL.
  * 2. A text block of a tool result or a system message keeps its first LEAN_TEXT characters and an ellipsis line, because the timeline cuts
  *    a tool's output at 4000 characters and draws no system message.
+ * 3. A thinking block loses its `thinkingSignature`, the provider's opaque replay token, which no page draws. On 11-03 the signatures were
+ *    389 KB of the 1.2 MB lean read of a job's 329-entry turn.
  *
  * On 11-03 a 100-entry page of a job that took screenshots was 2.0 MB, 1.76 MB of it image data, and took 0.3 to 1 s to cross pi-host, the
  * relay and the chat server under load; the same page lean is about 0.25 of the size.
@@ -13,12 +15,16 @@ import type { EntryRecord } from "@earendil-works/pi-durable";
 export const LEAN_TEXT = 4000;
 const CLIPPED_ROLES = new Set(["toolResult", "system"]);
 
-type Block = { type: string; text?: string; data?: string };
+type Block = { type: string; text?: string; data?: string; thinkingSignature?: string };
 
 const clip = (text: string): string => (text.length > LEAN_TEXT ? `${text.slice(0, LEAN_TEXT)}\n...` : text);
 
 function leanBlock(block: Block, clipText: boolean): Block {
   if (block.type === "image" && typeof block.data === "string" && block.data) return { ...block, data: "" };
+  if (block.type === "thinking" && block.thinkingSignature !== undefined) {
+    const { thinkingSignature: _, ...rest } = block;
+    return rest;
+  }
   if (clipText && block.type === "text" && typeof block.text === "string" && block.text.length > LEAN_TEXT) return { ...block, text: clip(block.text) };
   return block;
 }

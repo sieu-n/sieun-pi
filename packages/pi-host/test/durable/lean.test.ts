@@ -24,6 +24,13 @@ test("a lean entry cuts tool result and system text past LEAN_TEXT and keeps ass
   assert.equal(lean.model[3]!.content, long);
 });
 
+test("a lean entry drops a thinking block's signature and keeps its thinking text", () => {
+  const lean = leanEntry(entry([
+    { role: "assistant", content: [{ type: "thinking", thinking: "plan", thinkingSignature: "S".repeat(3000) }, { type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } }] },
+  ])) as unknown as { model: { content: unknown[] }[] };
+  assert.deepEqual(lean.model[0]!.content, [{ type: "thinking", thinking: "plan" }, { type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } }]);
+});
+
 test("an entry with nothing to cut comes back as the same object", () => {
   const plain = entry([{ role: "assistant", content: [{ type: "text", text: "hi" }] }]);
   assert.equal(leanEntry(plain), plain);
