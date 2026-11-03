@@ -103,6 +103,15 @@ test("an idle job that was not cut is retired though pi-pool would admit its tre
   assert.equal(started.length, 1);
 });
 
+// sep launch!! (product guy)'s check-in job of 11-03 09:16Z ended its turn at 11:38Z and was archived, with no cut on its run. Its tree kept a
+// reserved openai-codex wait for a 11-04 06:46Z cell while its anthropic account served it, and every check-in to 20:30Z skipped beside it.
+test("an ended duty job that was not cut is retired though pi-pool still reserves a wait for its tree (sep launch!! check-in, 11-03)", async () => {
+  const { latest, retired, started } = await runAt("2026-11-01T03:30:15.364Z", "line", null, reply("2026-11-01T01:50:00.000Z"));
+  assert.ok(!latest.summary.includes(IN_POOL_LINE), latest.summary);
+  assert.deepEqual(retired, [JOB.id]);
+  assert.equal(started.length, 1);
+});
+
 test("a job in pi-pool's line is replaced once its run is 12 h old (STUCK_MAX_MS)", async () => {
   const { retired, started } = await runAt("2026-11-01T13:40:00.000Z", "line");
   assert.deepEqual(retired, [JOB.id]);

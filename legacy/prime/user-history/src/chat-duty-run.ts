@@ -1120,9 +1120,13 @@ export class Duties {
 
   /**
    * Whether pi-pool holds the job's tree in its line (`DutyHost.poolHolds` "line"), or admits the tree of a job whose turn was cut, which the
-   * job sweep's resume pass continues once pi-pool admits it (src/chat-resume.ts PoolHeldJobs). A failed read is no.
+   * job sweep's resume pass continues once pi-pool admits it (src/chat-resume.ts PoolHeldJobs). A failed read is no. A job that was not cut
+   * and no longer works is in no line, whatever wait pi-pool still keeps for its tree: on 11-03 sep launch!!'s check-in job of 09:16Z ended at
+   * 11:38Z and was archived, but its tree kept a reserved openai-codex wait for a 11-04 06:46Z cell while its anthropic account served it, and
+   * 33 check-in runs to 20:30Z skipped beside it with stuck_steps missed until its 12 h limit.
    */
   private async inPoolLine(job: DutyJobRef, cut: boolean): Promise<boolean> {
+    if (!cut && !(await this.host.jobs.working(job).catch(() => false))) return false;
     const hold = await this.host.poolHolds?.(job.id).catch(error => { this.log(`duty job ${job.name}: read its pi-pool line: ${message(error)}`); return null; }) ?? null;
     return hold === "line" || (cut && hold === "admits");
   }
