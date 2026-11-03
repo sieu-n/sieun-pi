@@ -10,7 +10,7 @@ const row = (sessionId: string, firstMessage: string) => ({ sessionId, cwd: "/ho
 
 test("a listed row keeps its first message cut to what the task and title read, and both read the same", () => {
   const [long, skilled] = parseSummaries({ sessions: [row("a", brief), row("b", skill)] });
-  assert.equal(long!.firstMessage.length, 2000);
+  assert.equal(long!.firstMessage?.length, 2000);
   assert.equal(firstTask(long!), firstTask(row("a", brief)).slice(0, 2000));
   assert.equal(sessionTitle(long!), sessionTitle(row("a", brief)));
   assert.equal(skilled!.firstMessage, "check the Mac daemon");
@@ -26,5 +26,5 @@ test("a short first message keeps its row object", () => {
 test("a roster update keeps its row's first message cut the same way", () => {
   const rows = new Map<string, SessionSummary>();
   applyRosterUpdate(rows, new Map(), { changed: [{ agentId: "a", summary: row("a", brief) }] });
-  assert.equal(rows.get("id:a")!.firstMessage.length, 2000);
+  assert.equal(rows.get("id:a")!.firstMessage?.length, 2000);
 });
