@@ -163,6 +163,37 @@ export interface Delivery {
  */
 export interface Reaction { emoji: string; by: Principal[] }
 
+/**
+ * Why a message is on an agent's For list (server/for-me.ts): a post in its DM, a post that names it, a group room post delivered to it as
+ * a member, a reply in a channel thread it posted in, or someone's reaction on its own post.
+ */
+export type ForMeReason = "dm" | "mention" | "member" | "thread" | "reaction";
+export type ForMeStatus = "pending" | "completed";
+/** One message an agent is involved in, as its For <agent> tab and its `list_for_me_messages` tool show it. */
+export interface ForMeItem {
+  /** `<room id>/<post id>`, the messageId `mark_message` takes. */
+  id: string;
+  room: RoomId;
+  roomKind: "dm" | "channel" | "solo";
+  /** `#name` for a channel, the Solo room's name, or `DM`. */
+  roomName: string;
+  post: string;
+  /** Channels: the root post of the thread the post is in. */
+  threadRoot?: string;
+  author: Principal;
+  text: string;
+  at: Ms;
+  /** The newest time someone other than the agent touched the item: the post itself, or a reaction on the agent's own post. */
+  activityAt: Ms;
+  reasons: ForMeReason[];
+  reactions?: Reaction[];
+  status: ForMeStatus;
+  /** When the agent marked it completed; absent on a completed item from before the list existed. */
+  completedAt?: Ms;
+}
+/** `GET /api/agents/:id/for-me`: the agent's items, newest activity first, and its counts. */
+export interface ForMeList { agent: AgentId; items: ForMeItem[]; pending: number; completed: number }
+
 /** A job a turn spawned, drawn as a thread pill under that turn. */
 export interface JobRef { conversation: ConversationId; name: string; status: RunStatus; replies: number; lastAt: Ms }
 
@@ -523,9 +554,12 @@ export type LiveEvent =
   /** A chat's duty rows, sent when a run starts or ends and when a duty is paused, resumed or rescheduled. */
   | { type: "duties"; chatId: string; duties: DutyRow[] }
   | { type: "room"; room: Room }
+  /** Only to pages that watch `for:<agent id>`: the agent's For list changed, with its new pending count. */
+  | { type: "for_me"; agent: AgentId; pending: number }
   | { type: "error"; message: string };
 
 /** Page to server. `after` is the newest item id the page holds, so a reconnect sends only what it missed. */
 export type LiveCommand =
+  /** `conversation` may be `for:<agent id>`, which watches that agent's For list and gets its `for_me` events. */
   | { type: "watch"; conversation: ConversationId; after?: string }
   | { type: "unwatch"; conversation: ConversationId };
