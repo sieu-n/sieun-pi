@@ -146,11 +146,15 @@ test("a bad saved value or a placement naming a missing section leaves the chann
   await expect(block(page, "channels").locator(link("general"))).toBeVisible({ timeout: 15_000 });
 });
 
-test("every row's menu copies its link, offers Mark as read only when unread, and Move to leaves out the channel's own section", async ({ page }) => {
+test("every row's menu copies its link and offers Mark as read only when unread, a DM's opens its agent, and Move to leaves out the channel's own section", async ({ page }) => {
   await sidebar(page).locator('[data-section="dms"] a[data-unread]').first().click({ button: "right" });
   await expect(page.getByRole("menuitem", { name: "Copy link" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "Mark as read" })).toBeVisible();
   await page.keyboard.press("Escape");
+  await channel(page, "vent").click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Open agent" }).click();
+  await expect(page).toHaveURL(/#\/agents\/ag_vent/);
+  await page.goto("/#/c/ch_general");
 
   await rowMenu(page, "general");
   await expect(page.getByRole("menuitem", { name: "Mark as read" })).toHaveCount(0);

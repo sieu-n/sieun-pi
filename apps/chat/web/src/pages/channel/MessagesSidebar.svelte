@@ -58,6 +58,12 @@
     return items;
   }
 
+  function dmMenu(row: ConversationSummary): MenuEntry[] {
+    const agent = row.agent;
+    if (!agent) return rowMenu(row);
+    return [...rowMenu(row), { type: "separator" }, { id: "agent", label: "Open agent", icon: "robot", onselect: () => router.navigate(hrefFor("agents", [agent])) }];
+  }
+
   function channelMenu(row: ConversationSummary): MenuEntry[] {
     const at = sidebarSections.sectionOf(row.id);
     const to = (id: SectionId | null, label: string): MenuAction => ({ id: id ?? "channels", label, onselect: () => sidebarSections.move(row.id, id) });
@@ -194,9 +200,9 @@
         unread={row.unread}
         fresh={row.hasNew}
         working={names(row)}
-        oncontextmenu={(e) => contextMenu(e, row.id, rowMenu(row))}
+        oncontextmenu={(e) => contextMenu(e, row.id, dmMenu(row))}
       >
-        {#snippet actions()}{@render more(row.id, `${row.name} options`, () => rowMenu(row))}{/snippet}
+        {#snippet actions()}{@render more(row.id, `${row.name} options`, () => dmMenu(row))}{/snippet}
         {#snippet leading()}
           <Avatar name={row.name} kind="agent" seed={row.agent ?? row.id} size={20} status={row.status === "working" ? "online" : row.status === "failed" ? "busy" : null} />
         {/snippet}
