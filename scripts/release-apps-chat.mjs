@@ -122,6 +122,8 @@ async function takeLock(home, request) {
 async function archive(repo, sha, into) {
   const tar = spawn("tar", ["-x", "-C", into], { stdio: ["pipe", "inherit", "inherit"] });
   const source = spawn("git", ["-C", repo, "archive", "--format=tar", sha, "apps/chat", "config/allowed-models.ts", "packages/pi-host/src/durable/index-db.ts", "deploy/linux/sieun-pi-apps-chat.service",
+    // scripts/duties/relay-posts.ts counts room posts with pi-host's relay words, the ones its comm guard refuses.
+    "packages/pi-host/src/durable/relay-line.ts",
     // server/host/relay-host.ts speaks the agent relay's frames as protocol.ts defines them.
     "components/prime-relay/agents/protocol.ts",
     // server/wakes.ts imports today's chat's wake ticker and server/accounts.ts its pool code as they are; its package.json makes those files ES modules.
