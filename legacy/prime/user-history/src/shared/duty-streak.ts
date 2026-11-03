@@ -114,13 +114,18 @@ export interface WorkedMove { item: string; from: number; to: number; target: nu
  * holds the same target (`same`, `FixJudging.own`), else the step's own target as the run found it (`FixLink.target`), else the duty's reading of
  * the nearest item above the step (`above`, nearest first). The board target is the chat's copy of a duty read and goes stale between its edits:
  * Crawler VP's p1022 read 214,542 from 01:15Z on 10-27, while each Crawler d9 run read p895, the goal row p1022 replaced, itself.
+ * A step target measured at the time of one of the duty's own runs (`copiedTarget`) is that run's reading of the metric copied onto the board, so
+ * the step has no number of its own and each run that names it reads the metric itself (`found`): AI harness p1385 kept clean_min_30 26 from the 09:13Z d7 run on 11-03 while d7 read 29, 28, 28 and 29,
+ * and d9's 10:58Z run asked to replace it as "read 26, no closer than its 26".
  */
-function workedReading(run: DutyRunRecord, fix: FixLink | undefined, step: string, above: readonly string[], same: readonly string[] = []): WorkedReading | undefined {
+function workedReading(run: DutyRunRecord, fix: FixLink | undefined, step: string, above: readonly string[], same: readonly string[] = [],
+  found?: MetricResult, copiedTarget = false): WorkedReading | undefined {
   const items = effectiveRun(run).items ?? {};
   const own = items[step];
   if (own) return { item: step, value: own.value, target: own.target, op: own.op };
   const twin = same.find(entry => items[entry] !== undefined);
   if (twin !== undefined) return { item: twin, value: items[twin]!.value, target: items[twin]!.target, op: items[twin]!.op };
+  if (copiedTarget && found) return { item: step, value: found.value, target: found.target, op: found.op };
   if (fix?.step === step && fix.target) {
     const { current, target, direction } = fix.target;
     return { item: step, value: current, target, ...direction ? { op: direction === "down" ? "<=" as const : ">=" as const } : {} };
@@ -148,6 +153,7 @@ function workedReading(run: DutyRunRecord, fix: FixLink | undefined, step: strin
 export function fixStepStreak(runs: readonly DutyRunRecord[], key: string, step: string, above: readonly string[] = [], options: FixJudging = {}):
   { misses: number; moved: boolean; worked?: WorkedMove; judgedFrom?: number } {
   const own = options.own ?? [];
+  const copied = new Set(runs.map(run => new Date(run.at).toISOString()));
   const under: { run: DutyRunRecord; found: MetricResult; fix: FixLink }[] = [];
   for (const run of streakRuns(runs)) {
     const found = effectiveRun(run).metrics[key];
@@ -156,13 +162,14 @@ export function fixStepStreak(runs: readonly DutyRunRecord[], key: string, step:
     if (fix?.step !== step) continue;
     under.push({ run, found, fix });
   }
+  const copiedTarget = under.some(({ fix }) => fix.target?.measuredAt !== undefined && copied.has(fix.target.measuredAt));
   const start = under.at(-1)?.run.at;
   const judgedFrom = options.windowMs !== undefined && start !== undefined ? start + options.windowMs : undefined;
   const named: MetricResult[] = [];
   const readings: WorkedReading[] = [];
   for (const { run, found, fix } of under) {
     if (judgedFrom !== undefined && run.at < judgedFrom) continue;
-    const reading = workedReading(run, fix, step, above, own);
+    const reading = workedReading(run, fix, step, above, own, found, copiedTarget);
     if (reading && (named.length === 0 || reading.item === readings[0]?.item)) readings.push(reading);
     named.push(found);
   }
