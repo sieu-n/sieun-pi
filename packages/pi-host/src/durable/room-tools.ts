@@ -6,10 +6,13 @@
  * `set_emoji` puts the agent's reaction on a post or takes it off, as Slack's `reactions.add` and `reactions.remove` do. The comm role text
  * asks the agent to mark the post it works on with 👀 and take it off with the result (`agent-profile.ts`); no code here treats an emoji
  * specially (contract: /home/sieun/work/slack-reactions/contract.md).
+ *
+ * `list_for_me_messages` and `mark_message` (`for-me.ts`) read the agent's For list and mark its items.
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type Extension } from "@earendil-works/pi-durable";
 import type { ChatApp } from "./chat-app.ts";
+import { forMeTools } from "./for-me.ts";
 
 export const ROOM_TOOLS_EXTENSION = "room-tools";
 export const SET_EMOJI_TOOL = "set_emoji";
@@ -55,6 +58,7 @@ export function roomTools(app: ChatApp, thread: string): Extension {
           }
         },
       }),
+      ...forMeTools(app, thread),
     ],
   });
 }

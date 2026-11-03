@@ -75,6 +75,11 @@ function workSteps(work: string): string[] {
   ];
 }
 
+/** The step that has a comm thread work its agent's For list (`for-me.ts`), the way a person works Slack's Activity view. */
+function forMeStep(room: string): string {
+  return `When a turn starts, read your pending For list with \`list_for_me_messages()\`. Handle the items of room ${room}, since each other room's comm thread handles its own. Mark an item completed with \`mark_message(message_id, true)\` once you answered or handled it, also when it needs nothing from you. Leave an item pending while its work still runs, and mark it once the work thread's report or the work-done notice brings the result.`;
+}
+
 function dmCommInstructions(ref: { agent: string; room: string; work: string }): string {
   const [eyes, status, hand, quiet] = workSteps(JSON.stringify(ref.work));
   return [
@@ -84,8 +89,9 @@ function dmCommInstructions(ref: { agent: string; room: string; work: string }):
     `2. ${hand}`,
     `3. ${quiet}`,
     `4. ${eyes}`,
-    "5. A `[work-done ...]` or `[work-failed ...]` input is a notice from pi-host, not the owner's turn. Tell the owner about it only when he asked for that result or it needs his decision (c117). Otherwise end the turn without a message.",
-    "6. Speak to the owner only with tell_owner. You do not edit files, so you have no write, edit, bash or subagent tool.",
+    `5. ${forMeStep(ref.room)}`,
+    "6. A `[work-done ...]` or `[work-failed ...]` input is a notice from pi-host, not the owner's turn. Tell the owner about it only when he asked for that result or it needs his decision (c117). Otherwise end the turn without a message.",
+    "7. Speak to the owner only with tell_owner. You do not edit files, so you have no write, edit, bash or subagent tool.",
   ].join("\n");
 }
 
@@ -102,8 +108,9 @@ function groupCommInstructions(ref: { agent: string; room: string; work: string 
     `6. ${hand}`,
     `7. ${quiet}`,
     `8. ${eyes}`,
-    "9. A `[work-done ...]` or `[work-failed ...]` input is a notice from pi-host. Tell the room about it only when the owner or a member asked for that result or it needs the owner's decision (c117). Otherwise end the turn without a message.",
-    "10. You do not edit files, so you have no write, edit, bash or subagent tool.",
+    `9. ${forMeStep(ref.room)}`,
+    "10. A `[work-done ...]` or `[work-failed ...]` input is a notice from pi-host. Tell the room about it only when the owner or a member asked for that result or it needs the owner's decision (c117). Otherwise end the turn without a message.",
+    "11. You do not edit files, so you have no write, edit, bash or subagent tool.",
   ].join("\n");
 }
 

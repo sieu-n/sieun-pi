@@ -24,6 +24,7 @@ import { messageIdNote, TELL_OWNER_HELD } from "../../../../legacy/prime/user-hi
 import { AGENT_REF_DOC } from "../../src/durable/agent-profile.ts";
 import { ChatApp } from "../../src/durable/chat-app.ts";
 import { CommHandedDoc } from "../../src/durable/comm.ts";
+import { LIST_FOR_ME_TOOL, MARK_MESSAGE_TOOL } from "../../src/durable/for-me.ts";
 import { loadPrimeChat, PRIME_CHAT_TOOLS, withTurnWrappers, type ChatThread, type PrimeChat } from "../../src/durable/prime-chat.ts";
 import { guidelines } from "../../src/durable/prime-prompt.ts";
 import { ChatDoc, threadRegistry } from "../../src/durable/registry.ts";
@@ -128,7 +129,7 @@ test("a durable chat thread offers the extension's tools with its exact definiti
   });
   await (await root.submit({ type: "input", content: "hi" }, context)).wait(context);
   await harness.close(context);
-  assert.deepEqual(tools.map(tool => tool.name), ["read", "write", "edit", "bash", "subagent", SEND_MESSAGE_TOOL, ...PRIME_CHAT_TOOLS, SET_EMOJI_TOOL]);
+  assert.deepEqual(tools.map(tool => tool.name), ["read", "write", "edit", "bash", "subagent", SEND_MESSAGE_TOOL, ...PRIME_CHAT_TOOLS, SET_EMOJI_TOOL, LIST_FOR_ME_TOOL, MARK_MESSAGE_TOOL]);
   for (const name of PRIME_CHAT_TOOLS) {
     const registered = chat.loaded.tools.get(name)!;
     assert.deepEqual(tools.find(tool => tool.name === name), toToolDeclaration({ name, description: registered.description, parameters: registered.parameters as never }), name);

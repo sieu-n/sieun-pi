@@ -6,6 +6,7 @@
  */
 import type { CheckInSetting, CheckInSettings } from "../../../../legacy/prime/user-history/src/checkin-settings.ts";
 import type { ChatAgent, ChatBoard, OwnerTodo } from "../../../../legacy/prime/user-history/src/shared/types.ts";
+import type { ForMeItem, ForMeList, ForMeStatus } from "../../../../apps/chat/web/src/lib/api/types.ts";
 
 export const CHAT_URL_ENV = "PI_HOST_CHAT_URL";
 export const DEFAULT_CHAT_URL = "http://127.0.0.1:5184";
@@ -73,6 +74,16 @@ export class ChatApp {
     const body = await this.call<{ items?: { chatId: string; todo: OwnerTodo }[] }>("GET", "/api/for-you", undefined, signal);
     return (body.items ?? []).filter(item => item.chatId !== thread && !item.todo.done && item.todo.from === "agent")
       .map(item => ({ chat: item.chatId, id: item.todo.id, text: item.todo.text, at: item.todo.at }));
+  }
+
+  /** The For list of this thread's agent (`GET /api/agents/:id/for-me`): its items with `status`, newest activity first, and both counts. */
+  forMe(thread: string, status: ForMeStatus | "all", signal?: AbortSignal): Promise<ForMeList> {
+    return this.call<ForMeList>("GET", `/api/agents/${encodeURIComponent(thread)}/for-me?status=${status}`, undefined, signal);
+  }
+
+  /** Marks an item of this thread's agent's For list completed or pending again; the server's mark is idempotent. */
+  markForMe(thread: string, change: { messageId: string; completed: boolean }, signal?: AbortSignal): Promise<{ item: ForMeItem; pending: number }> {
+    return this.call<{ item: ForMeItem; pending: number }>("POST", `/api/agents/${encodeURIComponent(thread)}/for-me`, change, signal);
   }
 
   /**
