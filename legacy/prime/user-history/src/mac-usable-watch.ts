@@ -229,6 +229,8 @@ export interface HostWatchLine { name: string; usable: HostUsable | null; worker
   lingering?: LingerLine[];
   /** The Mac's open Aside tabs and the agents' share of them (`AsideTabs`); absent off macOS, when Aside did not answer and on lines written before 10-29. */
   asideTabs?: AsideTabs;
+  /** The box's job rigs by footprint (`JobRig`), at most 5; absent when there are none and on lines written before 11-03. */
+  jobRigs?: JobRig[];
   /** The box's chat trees by footprint with each one's largest process (`TreeLine`), at most 5; absent on lines written before 10-28 10:xxZ and when
    * none holds a kernel or orphan. On 10-28 the Mac's 09:15:30Z swap minute left d1 no process to name, because remote lines dropped them. */
   trees?: TreeLine[] }
@@ -334,7 +336,26 @@ export interface Footprints { workers: Record<string, { pids: number; bytes: num
   pm2_daemons?: RawPm2[];
   /** The Mac's open Aside tabs and how many of them agent sessions opened (`AsideTabs`); null when Aside did not answer, absent off macOS and from a helper older than 10-29. */
   aside_tabs?: AsideTabs | null;
+  /** The processes jobs started under ~/scratch/<session id>/ or ~/work/<job>/ outside every worker tree, by dir (`RawJobRig`); absent from a helper older than 11-03. */
+  job_rigs?: RawJobRig[];
   swap_used_bytes: number | null; pressure_level: number | null; cpu_s: number }
+/** One rig dir the helper names (`job_rigs`): `scratch/<session id>` or `work/<job>`, its processes, their summed footprint and the largest of them. */
+export interface RawJobRig { dir: string; pids: number; bytes: number; biggest: RawProcess | null }
+/**
+ * A job's rig on a box: its dir (`scratch/<session id>` or `work/<job>`), the footprint its processes held in GB, how many there were and the
+ * largest one's command. A Mac job that starts a run over ssh leaves no session in its env, so the pressure feed names it by its script.
+ */
+export interface JobRig { dir: string; gb: number; pids: number; command: string }
+/** Most rigs a line keeps, the largest first, as `trees` keeps 5. */
+const JOB_RIGS = 5;
+const RIG_DIR = /^(?:scratch|work)\/[^/]+$/;
+/** A helper's `job_rigs` checked at the edge: each a rig dir with whole counts, the largest JOB_RIGS of them; none for anything else. */
+export function parseJobRigs(value: unknown): JobRig[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((rig): JobRig[] => isRecord(rig) && typeof rig.dir === "string" && RIG_DIR.test(rig.dir) && tabCount(rig.pids) && tabCount(rig.bytes) && rig.bytes > 0
+    ? [{ dir: rig.dir, gb: round(rig.bytes / GB), pids: rig.pids, command: isRecord(rig.biggest) && typeof rig.biggest.command === "string" ? rig.biggest.command.slice(0, 120) : "" }] : [])
+    .sort((a, b) => b.gb - a.gb).slice(0, JOB_RIGS);
+}
 /** The owner's open Aside tabs (`all`) and how many of them agent sessions opened through aside_browser (`agent`), from worker-footprint.py `aside_tabs`. */
 export interface AsideTabs { agent: number; all: number }
 const tabCount = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0;
@@ -666,10 +687,12 @@ export async function hostWatchLine(remote: RemoteWatch, input: { now: number; c
     const line = watchLine({ now: input.now, rows: remote.rows, footprints: answer.footprints, queue: null, chats: input.chats, title: input.title, cpuMs: 0, usable,
       ...input.idleClock ? { idleClock: input.idleClock } : {} });
     const asideTabs = parseAsideTabs(answer.footprints.aside_tabs);
+    const jobRigs = parseJobRigs(answer.footprints.job_rigs);
     return { name: remote.name, usable, workers: line.workers, workerGb: line.workerGb, top: line.top, ...line.byWorker ? { byWorker: line.byWorker } : {}, live: line.live,
       working: line.working, agents, swapGb: line.mac.swapGb,
       ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {}, ...line.strayServers ? { strayServers: line.strayServers } : {}, ...line.idlePm2 ? { idlePm2: line.idlePm2 } : {},
-      ...line.lingering ? { lingering: line.lingering } : {}, ...line.trees?.length ? { trees: line.trees } : {}, ...asideTabs ? { asideTabs } : {} };
+      ...line.lingering ? { lingering: line.lingering } : {}, ...line.trees?.length ? { trees: line.trees } : {}, ...asideTabs ? { asideTabs } : {},
+      ...jobRigs.length ? { jobRigs } : {} };
   } catch (error) {
     return { name: remote.name, usable: null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, error: (error instanceof Error ? error.message : String(error)).slice(0, 200) };
   }

@@ -8,6 +8,7 @@ Each `python -m rlm.repl` kernel in a worker tree is reported with its session a
 the kernel process's own bytes (`own`) and its largest non-Prime descendant (`kernels`), and every process that carries RLM_HARNESS_STATE_DIR but sits under no kernel and no Prime process is an
 orphan of the root and session that path names (`orphans`): on 10-15 at 00:45Z a deleted job's nohup'd runner.py started a 30 GB script that way.
 A shared service (`SHARED`) and every process under it belong to no tree.
+Every process under ~/scratch/<session id>/ or ~/work/<job>/ that no worker tree holds and no session env names is a job's rig, summed by that dir (`job_rigs`).
 On macOS each Chrome for Testing or chrome-headless-shell main process is listed with the session that started it (`test_browsers`), since no agent browser may run there.
 It stops each stdio MCP server whose kernel is gone (`stray_servers`, SIGTERM, then SIGKILL after 3 s) and lists it, the one process it signals in a footprint read.
 Each pm2 God Daemon is listed with its home and the processes it runs (`pm2_daemons`), so the whole-system duty flags one that runs none.
@@ -82,6 +83,14 @@ if sys.platform == "darwin":
         parts = [part.decode("utf-8", "replace") for part in raw[4:].split(b"\0") if part]
         return parts[1:1 + argc], parts[1 + argc:]
 
+    PROC_PIDVNODEPATHINFO, VNODE_PATH_AT, VNODE_PATHINFO_SIZE = 9, 152, 2352
+
+    def cwd_of(pid, info=ctypes.create_string_buffer(VNODE_PATHINFO_SIZE)):
+        """A process's working directory from proc_vnodepathinfo (its pvi_cdir path after the 152-byte vnode_info), or None when unreadable."""
+        if lib.proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, ctypes.c_uint64(0), info, VNODE_PATHINFO_SIZE) != VNODE_PATHINFO_SIZE:
+            return None
+        return info.raw[VNODE_PATH_AT:VNODE_PATH_AT + 1024].split(b"\0", 1)[0].decode("utf-8", "replace") or None
+
     def bsdinfo(pid, info=ctypes.create_string_buffer(136)):
         """(ppid, pgid, start time in epoch seconds) from proc_bsdinfo, or None when the process is gone."""
         if lib.proc_pidinfo(pid, PROC_PIDTBSDINFO, ctypes.c_uint64(0), info, 136) != 136:
@@ -154,6 +163,13 @@ else:
         except OSError:
             return None
         return [part.decode("utf-8", "replace") for part in argv.split(b"\0") if part], [part.decode("utf-8", "replace") for part in env.split(b"\0") if part]
+
+    def cwd_of(pid):
+        """A process's working directory from /proc/<pid>/cwd, or None when unreadable."""
+        try:
+            return os.readlink(f"{PROC}/{pid}/cwd")
+        except OSError:
+            return None
 
     def bsdinfo(pid):
         """(ppid, pgid, start time in epoch seconds) from /proc/<pid>/stat, or None when the process is gone."""
@@ -293,6 +309,55 @@ def orphans(table, inside):
     found = (process(table, pid, {"root": root, "session": session}) for pid, (root, session) in tagged(table).items()
              if pid not in inside and detached(table, pid, inside) and not shared(table, pid))
     return [entry for entry in found if entry]
+
+
+# A job's rig dirs (config/AGENTS.md): every scratch tree goes under ~/scratch/<session id>/, and reports and helpers under ~/work/<job>/.
+HOME = os.path.expanduser("~")
+RIG_DIR = re.compile(r"(?:^|[=:\s,\"'])" + re.escape(HOME) + r"/(scratch|work)/([^/\s:,\"']+)")
+
+
+def rig_dir(text):
+    """`scratch/<id>` or `work/<job>` for the first rig dir a path or command line names, or None."""
+    match = RIG_DIR.search(text or "")
+    return f"{match.group(1)}/{match.group(2)}" if match else None
+
+
+def job_rigs(table, seen):
+    """The processes jobs started under a rig dir that no worker tree in `seen` holds and that carry no session env, by dir: a process runs
+    there (its cwd) or its command names a path there, and its descendants count with it. A Mac job that starts a run over ssh from another
+    box leaves no RLM_SESSION_DIR in it, so the pressure feed names it by its script: from 14:48Z to 14:57Z on 11-03 Crawler VP's
+    small model classify job held 30.81 GB of the Mac as other:run_mps_bench.sh under ~/scratch/01a1a15b-.../ and d7 booked 11 unusable
+    minutes to the owner. Each dir carries its pid count, summed footprint and largest process."""
+    def free(pid):
+        args = table[pid][3]
+        return bool(args) and pid not in seen and pid != os.getpid() and not PRIME.search(" ".join(args[0])) and \
+            not any(entry.startswith(("RLM_HARNESS_STATE_DIR=", "RLM_SESSION_DIR=")) for entry in args[1])
+    own = {}
+    for pid in table:
+        if free(pid):
+            found = rig_dir((cwd_of(pid) or "") + "/") or rig_dir(" ".join(table[pid][3][0]))
+            if found:
+                own[pid] = found
+
+    def rig_of(pid):
+        hops = 0
+        while pid > 1 and hops < 64 and pid in table:
+            if pid in own:
+                return own[pid]
+            pid, hops = table[pid][0], hops + 1
+        return None
+    rigs = {}
+    for pid in table:
+        dir_ = rig_of(pid) if free(pid) and not shared(table, pid) else None
+        bytes_ = footprint(pid) if dir_ else None
+        if bytes_ is None:
+            continue
+        rig = rigs.setdefault(dir_, {"dir": dir_, "pids": 0, "bytes": 0, "biggest": None})
+        rig["pids"] += 1
+        rig["bytes"] += bytes_
+        if rig["biggest"] is None or bytes_ > rig["biggest"]["bytes"]:
+            rig["biggest"] = {"pid": pid, "bytes": bytes_, "started": table[pid][2], "command": command(table[pid][3])}
+    return sorted(rigs.values(), key=lambda rig: -rig["bytes"])
 
 
 def strays(table, sessions):
@@ -595,5 +660,5 @@ if __name__ == "__main__":
     kernels, seen = [], set()
     workers = {line.strip(): tree(int(line), kernels, seen) for line in sys.stdin if line.strip().isdigit()}
     table = scan()
-    print(json.dumps({"workers": workers, "kernels": kernels, "orphans": orphans(table, seen), "test_browsers": test_browsers(table),
+    print(json.dumps({"workers": workers, "kernels": kernels, "orphans": orphans(table, seen), "job_rigs": job_rigs(table, seen), "test_browsers": test_browsers(table),
                       "stray_servers": reap(stray_servers(table)), "pm2_daemons": pm2_daemons(table), "aside_tabs": aside_tabs(), "swap_used_bytes": swap_used(), "pressure_level": pressure_level(), "cpu_s": cpu()}))

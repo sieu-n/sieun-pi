@@ -408,30 +408,53 @@ export function listedSessions(texts: readonly string[], shorts: Iterable<string
   return found;
 }
 
+/** A session's chat, by the title of its tree's root, and its job name when it is no chat itself. */
+export interface SessionOwner { chat: string; job?: string }
+
 /**
- * Names a fault's chat as the precheck names chats, by the title of its tree's root: the chat itself, or `<chat>, job <name>` for a job its
- * box's catalog copy lists (`listedSessions`) or a job of the chat (`named`); a create by its title; undefined when nothing names it. A short id
- * is a session id's first 8 characters, about a minute of a UUIDv7's clock, so two sessions can share one; the first match names it.
+ * Names a session as the precheck names chats, by the title of its tree's root: the chat itself, or the chat and job for a job its box's
+ * catalog copy lists (`listedSessions`) or a job of the chat (`named`), by session id or by job name (`byJob`); undefined when nothing names it.
+ * A short id is a session id's first 8 characters, about a minute of a UUIDv7's clock, so two sessions can share one; the first match names it.
  */
-export function chatNamer(chats: readonly { id: string; name: string }[], jobs: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>> = new Map(),
-  listed: ReadonlyMap<string, ListedSession> = new Map()): (fault: DaemonFault) => string | undefined {
+export function sessionOwners(chats: readonly { id: string; name: string }[], jobs: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>> = new Map(),
+  listed: ReadonlyMap<string, ListedSession> = new Map()): { bySession: (session: string) => SessionOwner | undefined; byJob: (name: string) => SessionOwner | undefined } {
   // The precheck names a chat no watch line titled by its short id; a catalog copy's name for it reads better.
   const byId = new Map(chats.filter(chat => chat.name !== chat.id.slice(0, 8)).map(chat => [chat.id, chat.name] as const));
-  const jobOf = new Map<string, string>();
-  for (const [chat, names] of jobs) for (const [job, sessions] of names) for (const session of sessions) jobOf.set(session, `${byId.get(chat) ?? chat.slice(0, 8)}, job ${job}`);
-  const find = (map: ReadonlyMap<string, string>, short: string) => { for (const [id, name] of map) if (id.startsWith(short)) return name; return undefined; };
-  return fault => {
-    if (fault.title) return fault.title;
-    if (!fault.session) return undefined;
-    const short = fault.session.slice(0, 8);
-    const own = find(byId, short) ?? find(jobOf, short);
-    if (own) return own;
-    const entry = listed.get(short);
-    if (!entry) return undefined;
-    const chat = byId.get(entry.root) ?? entry.rootName ?? `chat ${entry.root.slice(0, 8)}`;
-    return entry.root.startsWith(short) ? chat : `${chat}, job ${entry.name ?? short}`;
+  const jobOf = new Map<string, SessionOwner>();
+  const named = new Map<string, SessionOwner>();
+  for (const [chat, names] of jobs) for (const [job, sessions] of names) {
+    const owner = { chat: byId.get(chat) ?? chat.slice(0, 8), job };
+    if (!named.has(job)) named.set(job, owner);
+    for (const session of sessions) jobOf.set(session, owner);
+  }
+  const find = <T>(map: ReadonlyMap<string, T>, short: string): T | undefined => { for (const [id, value] of map) if (id.startsWith(short)) return value; return undefined; };
+  return {
+    bySession: session => {
+      const short = session.slice(0, 8);
+      const chat = find(byId, short);
+      if (chat !== undefined) return { chat };
+      const job = find(jobOf, short);
+      if (job) return job;
+      const entry = listed.get(short);
+      if (!entry) return undefined;
+      const root = byId.get(entry.root) ?? entry.rootName ?? `chat ${entry.root.slice(0, 8)}`;
+      return entry.root.startsWith(short) ? { chat: root } : { chat: root, job: entry.name ?? short };
+    },
+    byJob: name => named.get(name),
   };
 }
+
+/** A fault's chat in the flag's words (`sessionOwners`): `<chat>` or `<chat>, job <name>`, a create by its title; undefined when nothing names it. */
+export function chatNamer(chats: readonly { id: string; name: string }[], jobs: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>> = new Map(),
+  listed: ReadonlyMap<string, ListedSession> = new Map()): (fault: DaemonFault) => string | undefined {
+  const { bySession } = sessionOwners(chats, jobs, listed);
+  return fault => {
+    if (fault.title) return fault.title;
+    const owner = fault.session ? bySession(fault.session) : undefined;
+    return owner && (owner.job ? `${owner.chat}, job ${owner.job}` : owner.chat);
+  };
+}
+
 
 /**
  * One minute's faults in the flag's words: each chat once with its reasons, named chats first and then the busiest, at most `most` of them. A

@@ -13,7 +13,7 @@ import { type PoolQueue, readPoolQueue, slotParkOf } from "../../src/slot-park.t
 import { stepSessions, unmovedSteps } from "../../src/unmoved-steps.ts";
 import { waitHolds } from "../../src/checkin-end-state.ts";
 import type { ChatBoard, MemoryGroupId, PlanItem } from "../../src/shared/types.ts";
-import { type AgentLine, type AsideTabs, type HostUsable, LINGER_MS, type LingerLine, isLinuxReading, parseLinuxReading, readWatch, type StrayServerLine, type IdlePm2Line, type TestBrowserLine, UNREAD_AT_STOP, unusable, type UsableReading, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
+import { type AgentLine, type AsideTabs, type HostUsable, type JobRig, LINGER_MS, type LingerLine, isLinuxReading, parseLinuxReading, readWatch, type StrayServerLine, type IdlePm2Line, type TestBrowserLine, UNREAD_AT_STOP, unusable, type UsableReading, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
 import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-minutes.ts";
 import type { HungCall } from "../../src/hung-calls.ts";
 import type { StoppedCall } from "../../src/hung-stop.ts";
@@ -21,7 +21,7 @@ import { chatDataDir } from "../../src/owner-ok.ts";
 import { beatStale, type CacheBeat, pendingWakes, readBeat, treeSessions, treeWakes } from "../../src/wakes.ts";
 import { processEvidence } from "../../src/proc-evidence.ts";
 import { harnessSlow, slowChat, workerMisses } from "../../src/harness-slow.ts";
-import { blameSupervisorStalls, chatNamer, type DaemonFault, faultWords, type ListedSession, listedSessions, type QueueOverrun, readQueueOverruns, readReopenedSends, readServiceFaults, readSupervisorFaults, readSupervisorStalls, SLOW_MS } from "../../src/daemon-faults.ts";
+import { blameSupervisorStalls, chatNamer, type DaemonFault, type SessionOwner, sessionOwners, faultWords, type ListedSession, listedSessions, type QueueOverrun, readQueueOverruns, readReopenedSends, readServiceFaults, readSupervisorFaults, readSupervisorStalls, SLOW_MS } from "../../src/daemon-faults.ts";
 import { readRecords } from "../../src/orphan-services.ts";
 import { hostUpdateSpans, readUpdateSpans, type UpdateSpan } from "../../src/prime-update.ts";
 import { deliveryCandidates, outboxLandings, readSessionMarks, type SlotWaitTimeout, splitSlotWaits } from "../../src/slot-wait-timeouts.ts";
@@ -49,7 +49,9 @@ export interface HostView { name: string; usable: HostUsable | null; workers: nu
   /** The box's loaded sessions idle past the unload window that minute (HostWatchLine.lingering). */
   lingering?: readonly LingerLine[];
   /** The Mac's open Aside tabs and how many agents opened that minute (HostWatchLine.asideTabs). */
-  asideTabs?: AsideTabs }
+  asideTabs?: AsideTabs;
+  /** The box's job rigs that minute (HostWatchLine.jobRigs). */
+  jobRigs?: readonly JobRig[] }
 /** Lines written before 10-18 04:5xZ name no box, and the Mac wrote every one of them. */
 export const UNNAMED_HOST = "mac";
 /**
@@ -146,7 +148,8 @@ export function hostViews(line: WatchLine): HostView[] {
       return { name: host.name, usable: read.usable, workers: host.workers, workerGb: host.workerGb, top: host.top,
         ...host.agents ? { agents: host.agents } : {}, ...error ? { error } : {}, ...host.offline ? { offline: true as const } : {}, ...host.testBrowsers ? { testBrowsers: host.testBrowsers } : {},
         ...host.strayServers ? { strayServers: host.strayServers } : {}, ...host.idlePm2 ? { idlePm2: host.idlePm2 } : {},
-        ...host.byWorker ? { byWorker: host.byWorker } : {}, ...host.lingering ? { lingering: host.lingering } : {}, ...host.asideTabs ? { asideTabs: host.asideTabs } : {} };
+        ...host.byWorker ? { byWorker: host.byWorker } : {}, ...host.lingering ? { lingering: host.lingering } : {}, ...host.asideTabs ? { asideTabs: host.asideTabs } : {},
+        ...host.jobRigs ? { jobRigs: host.jobRigs } : {} };
     }),
   ];
 }
@@ -172,7 +175,59 @@ export function memoryShares(view: HostView): Map<MemoryGroupId, number> {
     shares.set("agents", shares.get("agents")! + tabs);
     shares.set("browsers", Math.max(0, (shares.get("browsers") ?? 0) - tabs));
   }
+  let rigs = jobRigGb(view);
+  shares.set("agents", shares.get("agents")! + rigs);
+  for (const id of RIG_GROUPS) {
+    const taken = Math.min(rigs, shares.get(id) ?? 0);
+    if (taken > 0) shares.set(id, (shares.get(id) ?? 0) - taken);
+    rigs -= taken;
+  }
   return shares;
+}
+
+/**
+ * The feed groups a job rig's processes fall in: the feed names a process no chat, pm2, browser or Docker owner holds by its script or app
+ * (`other:<name>`), and a dev server name such as vite or next-server reads Dev (host-stats.ts `groupOf`).
+ */
+const RIG_GROUPS: readonly MemoryGroupId[] = ["other", "dev"];
+
+/**
+ * What the Mac's job rigs held that minute in GB (HostView.jobRigs, worker-footprint.py `job_rigs`): the processes jobs started under
+ * ~/scratch/<session id>/ or ~/work/<job>/ outside every worker tree. They are the harness's, taken from the groups the feed put them in
+ * (`RIG_GROUPS`). 0 on a Linux box, whose rigs read by cgroup (rig-cpu.ts). From 14:48Z to 14:57Z on 11-03 Crawler VP's small model classify
+ * job ran MPS model runs it started over ssh, the feed named them other:run_mps_bench.sh at 30.81 GB, and d7 booked the minutes to the owner.
+ */
+export function jobRigGb(view: HostView): number {
+  if (!view.usable || isLinuxReading(view.usable)) return 0;
+  return Math.round(100 * (view.jobRigs ?? []).reduce((sum, rig) => sum + rig.gb, 0)) / 100;
+}
+
+/** Who a rig dir belongs to: the chat and job its session or job name reads as; undefined when nothing names it. */
+export type RigOwner = (dir: string) => SessionOwner | undefined;
+
+/** `RigOwner` from the chats, their jobs and the catalog copies' sessions: `scratch/<session id>` by its session, `work/<job>` by its job name. */
+export function rigOwners(...known: Parameters<typeof sessionOwners>): RigOwner {
+  const { bySession, byJob } = sessionOwners(...known);
+  return dir => {
+    const [kind, id = ""] = dir.split("/", 2);
+    return kind === "scratch" ? bySession(id) : byJob(id);
+  };
+}
+
+/** A rig's owner in the flag's words: `<chat>, job <job>`, else its short session id or job name. */
+export const rigOwnerWords = (dir: string, owner: RigOwner): string => {
+  const named = owner(dir);
+  if (named) return named.job ? `${named.chat}, job ${named.job}` : named.chat;
+  const [kind, id = ""] = dir.split("/", 2);
+  return kind === "scratch" ? `session ${id.slice(0, 8)}` : `job ${id}`;
+};
+
+/** The Mac's job rigs in the flag's words, the 3 largest each by its chat and job, its dir and its largest command; empty when they hold none. */
+export function jobRigWords(view: HostView, owner: RigOwner): string {
+  const gb = jobRigGb(view);
+  if (!(gb > 0)) return "";
+  const rigs = view.jobRigs!.slice(0, 3).map(rig => `${rigOwnerWords(rig.dir, owner)} ${rig.gb} GB in ~/${rig.dir.slice(0, 50)}${rig.command ? ` (${rig.command.slice(0, 60)})` : ""}`);
+  return `; job rigs ${gb} GB: ${rigs.join(", ")}`;
 }
 
 /**
@@ -290,9 +345,10 @@ export function memoryWords(view: HostView): string {
     (view.agents?.largest ? `, the ${view.agents.largest} group held the most memory` : "") + (most?.workGb ? `, the job processes of ${most.tree} ${most.workGb} GB` : "");
 }
 
-/** Whether a reading's harness cores went mostly to job rigs (rig-cpu.ts). */
+/** Whether a reading's harness cores went mostly to job rigs (rig-cpu.ts), or on the Mac whether job rigs held most of the harness's memory (`jobRigGb`). */
 export const rigsLead = (view: HostView): boolean => {
   const usable = view.usable;
+  if (usable && !isLinuxReading(usable)) { const rigs = jobRigGb(view); return rigs > 0 && 2 * rigs > (memoryShares(view).get("agents") ?? 0); }
   return !!usable && isLinuxReading(usable) && !!usable.harnessSplit && usable.harnessSplit.rigs > usable.harnessSplit.own;
 };
 
@@ -1437,6 +1493,8 @@ export function measure(input: Inputs): PrecheckOutput {
   const darkMin: number[] = [];
   let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, cellWait = 0, harness = 0, rigMin = 0, busyMin = 0, ciMin = 0, other = 0, unattributed = 0, daemonFail = 0, primeMin = 0;
   const faultName = chatNamer(input.chats, input.named, input.listed);
+  const rigOwner = rigOwners(input.chats, input.named, input.listed);
+  const rigHeld = new Map<string, { at: number[]; gb: number; dir: string; command: string; box: string }>();
   const slotWaits = (input.slotWaits ?? []).filter(wait => wait.fault.at >= start && wait.fault.at < start + WINDOW_MS);
   const side = sideOf(input.watch);
   const ciAt = ciWords(input.watch);
@@ -1487,9 +1545,19 @@ export function measure(input: Inputs): PrecheckOutput {
       // with CI at 41.23 cores against its 28.94, the flag named only the harness, and the check-in read the stall as one at a low load.
       const led = side(line, view);
       const read = found.includes("cpu") && slowChat(own, line.chat) ? "harness" : led;
-      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${memoryWords(view)}${asideWords(view)}${led === "ci" ? ciAt(line, view) : ""}${rigWords(view, faultName)})`);
+      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${memoryWords(view)}${asideWords(view)}${led === "ci" ? ciAt(line, view) : ""}${rigWords(view, faultName)}${jobRigWords(view, rigOwner)})`);
       sides.add(read);
-      if (read === "harness" && rigsLead(view)) rigged = true;
+      if (read === "harness" && rigsLead(view)) {
+        rigged = true;
+        const top = view.jobRigs?.[0];
+        if (top) {
+          const key = rigOwnerWords(top.dir, rigOwner);
+          const held = rigHeld.get(key) ?? { at: [], gb: 0, dir: top.dir, command: top.command, box: view.name };
+          held.at.push(from);
+          if (top.gb > held.gb) Object.assign(held, { gb: top.gb, dir: top.dir, command: top.command, box: view.name });
+          rigHeld.set(key, held);
+        }
+      }
     }
     if (line && !unknown.length) { fed++; if (!sides.size) usable++; }
     if (sides.has("harness")) { harness++; if (rigged) rigMin++; }
@@ -1648,6 +1716,14 @@ export function measure(input: Inputs): PrecheckOutput {
       `${Math.round((wait.deliveredAt - wait.sentAt) / 1000)} s after it went; a queue wait, not a daemon fault.` });
   }
   if (dirty.length) flagged.push({ kind: "dirty_minutes", excerpt: dirty.slice(-10).join("; ") });
+  // A Mac minute its job rigs held is the job's to fix, so the run steers that chat in one line.
+  for (const held of rigHeld.values()) {
+    const owner = rigOwner(held.dir);
+    const who = owner ? owner.job ? `${owner.chat}'s job ${owner.job}` : owner.chat : `The ${rigOwnerWords(held.dir, rigOwner)} that owns ~/${held.dir}`;
+    flagged.push({ kind: "job_rig_minutes", excerpt: `${who} held most of the harness's memory on ${held.box} with its rigs in ${held.at.length} unusable ` +
+      `${held.at.length === 1 ? "minute" : "minutes"} (${spans(held.at)}), up to ${held.gb} GB under ~/${held.dir}${held.command ? ` (${held.command.slice(0, 80)})` : ""}. ` +
+      (owner ? `Steer ${owner.chat} to run them with the box's memory free or on a Linux box.` : `Find its chat by that dir and steer it.`) });
+  }
   if (unknownLines.length) flagged.push({ kind: "unknown_minutes", excerpt: unknownLines.slice(-10).join("; ") });
   if (busy.length) flagged.push({ kind: "busy_minutes", excerpt: `${busy.length} minutes the box was CPU-busy and the harness stayed fast, not counted dirty: ${busy.slice(-10).join("; ")}` });
   const quietWords = Math.round(quietMs / MINUTE);
@@ -2031,7 +2107,8 @@ async function main(): Promise<void> {
   const allFaults = blameSupervisorStalls([...readServiceFaults(serviceLines, box), ...supervisorLogs.flatMap(lines => readSupervisorFaults(lines, box, reopened))]
     .filter(fault => fault.at >= now - WINDOW_MS - 2 * MINUTE), supervisorLogs.flatMap(readSupervisorStalls), box);
   const queueOverruns = readQueueOverruns(serviceLines, box).filter(entry => entry.at >= now - WINDOW_MS - 2 * MINUTE);
-  const listed = listedSessions(await catalogCopies(dataDir), [...allFaults.flatMap(fault => fault.session ? [fault.session.slice(0, 8)] : []), ...queueOverruns.map(entry => entry.session)]);
+  const listed = listedSessions(await catalogCopies(dataDir), [...allFaults.flatMap(fault => fault.session ? [fault.session.slice(0, 8)] : []), ...queueOverruns.map(entry => entry.session),
+    ...watch.flatMap(line => hostViews(line).flatMap(view => (view.jobRigs ?? []).flatMap(rig => rig.dir.startsWith("scratch/") ? [rig.dir.slice(8, 16)] : [])))]);
   const marks = await readSessionMarks(deliveryCandidates(allFaults), short => listed.get(short)?.file, box, now);
   const { faults: daemonFaults, slotWaits } = splitSlotWaits(allFaults, outboxLandings(serviceLines), fault => marks.get(fault.session!.slice(0, 8)));
   const poolLines = await tailLines(POOL_LOG, POOL_LOG_TAIL_BYTES);
