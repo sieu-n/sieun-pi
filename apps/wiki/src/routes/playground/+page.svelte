@@ -87,11 +87,6 @@
 			note: 'sign-in required',
 			description: 'api-portal admin console probing the raw IG wire through the crawler live surface.',
 		},
-		{
-			name: 'Crawler API console (Scalar)',
-			url: 'http://localhost:8787/scalar',
-			description: 'crawler-v3 — Scalar console over the whole crawler API surface (Swagger /docs is disabled).',
-		},
 	];
 </script>
 
