@@ -446,6 +446,41 @@ test('a path::name array table follows only the rows the page names, keyed by th
 	assert.deepEqual(rows['apps/whole.html'], [{ ref: ref[0], ...at('04', '06') }], 'a page naming no row follows the table');
 });
 
+// 2026-11-03: domains/architecture/telemetry-map.html cited prod.Caddyfile and staging.Caddyfile whole for their log and
+// /devbox/push blocks, because definitionText named no Caddyfile block, so 728073d946 and other route edits elsewhere in
+// those files flagged it 5 times in 7 days while the page stated none of them.
+test('a path::name Caddyfile ref names a site, snippet or directive block by its head and runs to its close brace', (t) => {
+	const caddy = (obs, hdx, comment = '') =>
+		`(redact) {\n\trequest>headers>Cookie replace REDACTED\n}\n\n{\n\tservers {\n\t\ttimeouts {\n\t\t\tread_body_idle -1s\n\t\t}\n\t}\n}\n\n# Grafana ${comment}\nobs.virev.ai, grafana.virev.ai {\n\t@browser {\n\t\tnot header Authorization *\n\t}\n\thandle /digest/* {\n\t\tfile_server\n\t}\n\tlog {\n\t\toutput stderr\n\t}\n\treverse_proxy grafana:3000 {\n\t\tlb_try_duration ${obs}s\n\t}\n}\nhdx.virev.ai {\n\tredir https://us-metal01.tail0c093d.ts.net:8443{uri} 302 # hold ${hdx}\n\trespond "a { b" 403\n}\n`;
+	const text = caddy(210, 1);
+	const site = definitionText(text, 'obs.virev.ai');
+	assert.equal(site, definitionText(text, 'grafana.virev.ai'), 'each address of a site line names the site');
+	assert.equal(site?.split('\n').length, 14);
+	assert.equal(definitionText(text, 'hdx.virev.ai')?.split('\n').length, 4, 'a brace in a quote or after a # is no brace');
+	assert.equal(definitionText(text, '(redact)')?.split('\n').length, 3);
+	assert.equal(definitionText(text, 'servers')?.split('\n').length, 5);
+	assert.equal(definitionText(text, 'handle /digest/*')?.split('\n').length, 3);
+	assert.equal(definitionText(text, '/digest/*'), definitionText(text, 'handle /digest/*'));
+	assert.equal(definitionText(text, '@browser')?.split('\n').length, 3);
+	assert.equal(definitionText(text, 'handle'), null, 'a bare word of a longer head names no block');
+	assert.equal(definitionText(text, 'grafana:3000'), definitionText(text, 'reverse_proxy grafana:3000'));
+
+	const w = fixture(t);
+	w.write('obs.Caddyfile', caddy(210, 1));
+	w.page('obs.html', ['obs.Caddyfile::obs.virev.ai'], { body: '<p>Caddy holds a call to Grafana for 210 s.</p>' });
+	w.page('hdx.html', ['obs.Caddyfile::hdx.virev.ai'], { body: '<p>A browser on hdx goes to the tailnet.</p>' });
+	w.init();
+	w.commit('2026-10-20T01:00:00Z', 'pages');
+	w.write('obs.Caddyfile', caddy(210, 2, 'board opens'));
+	w.commit('2026-10-20T04:00:00Z', 'hdx comment and a comment above obs');
+	w.write('obs.Caddyfile', caddy(240, 2, 'board opens'));
+	w.commit('2026-10-20T05:00:00Z', 'obs hold');
+
+	const rows = w.refsByPage();
+	assert.deepEqual(rows['apps/obs.html'], [{ ref: 'obs.Caddyfile::obs.virev.ai', ...at('05') }], 'an edit of another site is no change');
+	assert.equal(rows['apps/hdx.html'], undefined, 'a comment edit in the site is no change');
+});
+
 // 2026-10-30: 506e664d4f dropped two rows of the object-row table CASCADE_TABLES in convex/search/orgCascade.ts, and
 // apps/search/onboarding-orgs.html, which names other rows, was flagged; its recheck changed only last_verified.
 test('a path::name table of object rows follows only the rows whose quoted words the page names', (t) => {

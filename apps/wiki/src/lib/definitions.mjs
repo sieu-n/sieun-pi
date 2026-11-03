@@ -51,6 +51,8 @@ const closes = (line) => {
  * those, a Markdown heading `## name` runs to the next heading of its level or higher, because on the 7 days to 2026-10-28
  * 10:28Z commits to other sections of ops/runbooks/dev-boxes.md and apps/infra/metal/README.md flagged
  * domains/devops/local-store-box/index.html and domains/devops/aws-estate.html 11 times and none of them changed the page.
+ * Before the headings, a block that opens with `{` at the end of a line that names `name` runs to its matching close brace
+ * (`braceBlocks`), which names a Caddyfile site, snippet, matcher or directive block.
  * @param {string} text
  * @param {string} name
  * @returns {string | null}
@@ -91,6 +93,8 @@ export function definitionText(text, name) {
 		const top = pattern === patterns[0] ? blocks.filter((block) => block.top) : [];
 		if (blocks.length) return (top.length ? top : blocks).map((block) => block.text).join('\n');
 	}
+	const blocks = braceBlocks(lines, name);
+	if (blocks.length) return blocks.join('\n');
 	const heading = new RegExp(`^(#{1,6})\\s+${id}\\s*#*\\s*$`);
 	/** @type {string[]} */
 	const sections = [];
@@ -102,6 +106,45 @@ export function definitionText(text, name) {
 		sections.push(lines.slice(start, end).join('\n').trimEnd());
 	}
 	return sections.length ? sections.join('\n') : null;
+}
+
+/**
+ * A line with its quoted tokens and its `#` comment cut, the comment starting a token as in code-text.mjs `caddyfile`.
+ * @param {string} line
+ */
+const braceCode = (line) => line.replace(/(["`])(?:\\.|(?!\1).)*\1/g, '').replace(/(?:^|\s)#.*$/, '');
+
+/**
+ * Each block whose head line ends in `{` and names `name`, from that line to its matching close brace, such as a Caddyfile
+ * site `obs.virev.ai {`, a snippet `(crawler_hold) {`, a matcher `@browser {` or a directive `handle /devbox/push {` or
+ * `log {`. The name is the whole head or one token of it, such as one address of `a.virev.ai, b.virev.ai {`, and a bare
+ * word token names nothing, so the `log` of `log default {` names only the site `log {` blocks. Until 2026-11-03 no
+ * Caddyfile name resolved, and domains/architecture/telemetry-map.html cited prod.Caddyfile and staging.Caddyfile whole for
+ * their `log` and `/devbox/push` blocks, so in the 7 days to 2026-11-03 07:00Z route and Scalar edits elsewhere in those
+ * files flagged it 5 times while the page stated none of them (~/work/wiki-stale-caddyfile-sites/).
+ * @param {readonly string[]} lines
+ * @param {string} name
+ * @returns {string[]}
+ */
+function braceBlocks(lines, name) {
+	/** @type {string[]} */
+	const blocks = [];
+	for (let start = 0; start < lines.length; start += 1) {
+		if (!lines[start].includes(name)) continue;
+		const head = /^\s*([^\s#{}][^{}]*?)\s+\{\s*$/.exec(braceCode(lines[start]))?.[1];
+		if (!head) continue;
+		const tokens = head.split(/[\s,]+/).filter((token) => !/^[A-Za-z_]\w*$/.test(token));
+		if (head !== name && !tokens.includes(name)) continue;
+		let depth = 0;
+		let end = start;
+		for (; end < lines.length; end += 1) {
+			const code = braceCode(lines[end]);
+			depth += (code.match(/\{/g) ?? []).length - (code.match(/\}/g) ?? []).length;
+			if (depth <= 0) break;
+		}
+		blocks.push(lines.slice(start, end + 1).join('\n').trimEnd());
+	}
+	return blocks;
 }
 
 /**
