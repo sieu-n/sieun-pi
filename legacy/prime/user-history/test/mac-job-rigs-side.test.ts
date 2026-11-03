@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { test } from "node:test";
 import { type HostView, jobRigGb, measure, minuteSide } from "../scripts/duties/whole-system.ts";
 import type { LinuxUsable } from "../../../../components/prime-relay/host-stats.ts";
-import { type Footprints, hostWatchLine, type JobRig, type UsableReading, type WatchLine } from "../src/mac-usable-watch.ts";
+import { type Footprints, hostWatchLine, type JobRig, type RawJobRig, type UsableReading, type WatchLine } from "../src/mac-usable-watch.ts";
 
 const HELPER = new URL("../src/worker-footprint.py", import.meta.url).pathname;
 const CRAWLER = "01a115e2-9544-7204-b8db-8ce4d5319048";
@@ -45,7 +45,7 @@ test("d7 books the 14:48Z to 14:57Z Mac minutes to the harness and names the cha
 });
 
 test("the Mac's watch line keeps the helper's job rigs and drops a malformed one", async () => {
-  const footprints = (rigs: unknown): Footprints => ({ workers: {}, kernels: [], swap_used_bytes: 0, pressure_level: 2, cpu_s: 0, job_rigs: rigs as Footprints["job_rigs"] });
+  const footprints = (rigs: unknown): Footprints => ({ workers: {}, kernels: [], swap_used_bytes: 0, pressure_level: 2, cpu_s: 0, job_rigs: rigs as RawJobRig[] });
   const read = async (rigs: unknown) => await hostWatchLine({ name: "mac", rows: [], read: async () => ({ usable: null, footprints: footprints(rigs) }) },
     { now: RUN, chats: new Set(), title: () => null });
   const good = { dir: `scratch/${SMC}`, pids: 3, bytes: Math.round(30.81 * 1024 ** 3), biggest: { pid: 32283, bytes: 10 * 1024 ** 3, started: 0, command: "python train.py minilm_l256" } };
