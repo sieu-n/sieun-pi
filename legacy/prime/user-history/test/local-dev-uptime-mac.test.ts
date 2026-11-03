@@ -15,13 +15,13 @@ import { convexCommand, convexPushStale, LOCAL_CONVEX_COMMAND, MAC_COMMAND, meas
 
 const push = (outcome: string, at: string, lastGoodAt: string | null) =>
   `convex-push {  "count": 1,  "watchers": [],  "push": {    "outcome": "${outcome}",    "at": "${at}",    "reason": ${outcome === "failed" ? '"schema eval timed out (1s)"' : "null"},    "lastGoodAt": ${lastGoodAt ? `"${lastGoodAt}"` : "null"}  }}\n`;
-const reading = (load: string, free: number, codes: [string, string, string?, string?], convex = push("ok", "2026-10-28T02:44:38", "2026-10-28T02:44:38") + "convex-src 2026-10-28T02:40:00\n") =>
-  `{ ${load} 6.95 7.77 }\nThe system has 34359738368 (2097152 pages with a page size of 16384).\nSystem-wide memory free percentage: ${free}%\nport 5174 ${codes[0]}\nport 5180 ${codes[1]}\nport 8791 ${codes[2] ?? "200"}\nport 8787 ${codes[3] ?? "200"}\n${convex}`;
+const reading = (load: string, free: number, codes: [string, string, string?, string?, string?], convex = push("ok", "2026-10-28T02:44:38", "2026-10-28T02:44:38") + "convex-src 2026-10-28T02:40:00\n") =>
+  `{ ${load} 6.95 7.77 }\nThe system has 34359738368 (2097152 pages with a page size of 16384).\nSystem-wide memory free percentage: ${free}%\nport 5174 ${codes[0]}\nport 5180 ${codes[1]}\nport 8791 ${codes[2] ?? "200"}\nport 8787 ${codes[3] ?? "200"}\nport 3210 ${codes[4] ?? "200"}\n${convex}`;
 const minute = (kernelTaskPct: number, swapoutsPerS = 0, at = "2026-10-23T04:39:00.000Z"): WatchLine => ({ host: "us-metal02", at, usable: null, workers: 0, workerGb: 0, top: [],
   hosts: [{ name: "mac", usable: { pressureLevel: 1, swapoutsPerS, kernelTaskPct }, workers: 0, workerGb: 0, top: [] }] } as unknown as WatchLine);
 
 test("parses load, free memory and each dev server's code", () => {
-  assert.deepEqual(parseMacReading(reading("7.26", 37, ["200", "200"], "")), { load1: 7.26, freePct: 37, ports: { 5174: "200", 5180: "200", 8791: "200", 8787: "200" } });
+  assert.deepEqual(parseMacReading(reading("7.26", 37, ["200", "200"], "")), { load1: 7.26, freePct: 37, ports: { 5174: "200", 5180: "200", 8791: "200", 8787: "200", 3210: "200" } });
   assert.throws(() => parseMacReading("ssh banner only\n"), /unparsed Mac reading/);
 });
 
@@ -39,6 +39,11 @@ test("Vent :8791 is probed on /healthz, and a Vent with no answer counts as a se
 test("the crawler API :8787 is probed on /health, and a crawler with no 200 counts as a server down", () => {
   assert.match(MAC_COMMAND, /http:\/\/localhost:8787\/health;/);
   assert.deepEqual(macDown(parseMacReading(reading("7.26", 37, ["200", "200", "200", "000"]))), ["crawler API :8787 gave no answer"]);
+});
+
+test("the Convex forward :3210 counts as down when /version gives no HTTP answer in 5 s, though its socat accepts the connect (11-03)", () => {
+  assert.match(MAC_COMMAND, /curl -s -o \/dev\/null -m 5 -w 'port 3210 %\{http_code\}\\n' http:\/\/localhost:3210\/version;/);
+  assert.deepEqual(macDown(parseMacReading(reading("7.26", 37, ["200", "200", "200", "200", "000"]))), ["Convex :3210 gave no answer"]);
 });
 
 test("the Convex push is stale only when the newest push failed and no good push came after the newest convex/ change", () => {
