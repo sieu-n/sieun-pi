@@ -29,3 +29,32 @@ test("a spawned count answers at once from the last read and reads the folders a
   assert.equal(counts.of(dir, now + SPAWNED_MS + 1), 3);
   assert.equal(changes, 2);
 });
+
+test("an idle agent's count is read once after it settles and kept until it runs again (11-03 10:49Z)", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "spawned-idle-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const spawn = (path: string) => { mkdirSync(path, { recursive: true }); writeFileSync(join(path, "rlm-subagent.json"), "{}"); };
+  spawn(join(dir, "sub-a"));
+  let changed = (): void => {};
+  const counts = new SpawnedCounts(() => changed());
+  const read = () => new Promise<void>(resolve => { changed = resolve; });
+  const now = Date.parse("2026-11-03T10:49:00Z");
+  let landed = read();
+  counts.of(dir, now, false);
+  await landed;
+  spawn(join(dir, "sub-b"));
+  landed = read();
+  counts.of(dir, now + SPAWNED_MS, true);
+  await landed;
+  assert.equal(counts.of(dir, now + SPAWNED_MS + 1, true), 2, "the read after the agent settles takes its last spawns");
+  let reads = 0;
+  changed = () => { reads++; };
+  spawn(join(dir, "sub-c"));
+  assert.equal(counts.of(dir, now + 5 * SPAWNED_MS, true), 2, "a settled agent's folders are not read again");
+  await new Promise(resolve => setTimeout(resolve, 200));
+  assert.equal(reads, 0);
+  landed = read();
+  counts.of(dir, now + 6 * SPAWNED_MS, false);
+  await landed;
+  assert.equal(counts.of(dir, now + 6 * SPAWNED_MS + 1, false), 3, "a running agent's count is read again");
+});

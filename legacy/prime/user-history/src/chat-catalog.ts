@@ -599,32 +599,40 @@ function ownIds(rows: readonly SessionSummary[]): { own: Set<string>; ownActive:
 /** How long a folder's spawned count is reused; the daemon tree covers subagents spawned since. */
 export const SPAWNED_MS = 30_000;
 async function countSpawned(folder: string): Promise<number> {
+  return (await spawnedBelow(folder)).below;
+}
+/** Whether `folder` holds an rlm-subagent.json and how many spawned folders sit below it, from one listing of each folder. */
+async function spawnedBelow(folder: string): Promise<{ spawned: boolean; below: number }> {
   const entries = await readdir(folder, { withFileTypes: true }).catch(() => []);
-  const counts = await Promise.all(entries.filter(entry => entry.isDirectory() && entry.name.startsWith("sub-")).map(async entry => {
-    const child = join(folder, entry.name);
-    const inner = await readdir(child).catch(() => [] as string[]);
-    return (inner.includes("rlm-subagent.json") ? 1 : 0) + await countSpawned(child);
-  }));
-  return counts.reduce((sum, count) => sum + count, 0);
+  const children = entries.filter(entry => entry.isDirectory() && entry.name.startsWith("sub-")).map(entry => spawnedBelow(join(folder, entry.name)));
+  const spawned = entries.some(entry => entry.name === "rlm-subagent.json");
+  let below = 0;
+  for (const child of await Promise.all(children)) below += (child.spawned ? 1 : 0) + child.below;
+  return { spawned, below };
 }
 /**
  * Every subagent ever spawned below a folder at any depth, finished and deleted ones included: each `sub-*` folder holding an rlm-subagent.json.
  * The daemon drops a subagent from its list once rlm.delete_subagent removes it, but its folder stays. A count is read again in the background
  * once it is SPAWNED_MS old, and `onChange` runs when a read changes it, so a projection never waits for the folders: on 10-18 a scratch serve
  * at the live rate awaited a count for each of about 1,000 agents on every projection, and the reads of the counts that had expired held it.
+ *
+ * Only a running agent spawns, so an idle agent's count is read once after it settles and then kept until it runs again. On 11-03 the reads of
+ * every agent's folders every SPAWNED_MS took a median 1.4 s of the chat's main thread a minute (4.8% of its busy time from 10:24 to 11:38Z), and
+ * one burst of 1.6 s with the major GC after it held the event loop 1.1 s at 10:49:38Z.
  */
 export class SpawnedCounts {
-  private readonly counts = new Map<string, { at: number; count: number }>();
+  private readonly counts = new Map<string, { at: number; count: number; settled: boolean }>();
   private readonly reading = new Set<string>();
   constructor(private readonly onChange: () => void) {}
-  /** The last count of `folder`, 0 before its first read ends. */
-  of(folder: string, now = Date.now()): number {
+  /** The last count of `folder`, 0 before its first read ends. `settled` says the agent is idle, so a count read while it was idle stays. */
+  of(folder: string, now = Date.now(), settled = false): number {
     const known = this.counts.get(folder);
-    if ((!known || now - known.at >= SPAWNED_MS) && !this.reading.has(folder)) {
+    const stale = !known || (now - known.at >= SPAWNED_MS && !(settled && known.settled));
+    if (stale && !this.reading.has(folder)) {
       this.reading.add(folder);
       void countSpawned(folder).then(count => {
         this.reading.delete(folder);
-        this.counts.set(folder, { at: now, count });
+        this.counts.set(folder, { at: now, count, settled });
         if (count !== (known?.count ?? 0)) this.onChange();
       });
     }
@@ -1190,7 +1198,7 @@ export class Catalog {
     for (const agent of chatRows.flatMap(row => row.agents ?? [])) {
       const session = agent.sessionId ? this.find(agent.sessionId) : undefined;
       const folder = session ? subagentFolder(session) : undefined;
-      const spawned = folder ? this.spawned.of(folder, now) : 0;
+      const spawned = folder ? this.spawned.of(folder, now, agent.state === "idle") : 0;
       if (spawned > (agent.subagentsTotal ?? 0)) agent.subagentsTotal = spawned;
     }
     // A chat row that came out as the last projection built it is that projection's object again (`keptChat`).
