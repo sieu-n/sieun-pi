@@ -14,8 +14,11 @@ export type ArtifactTarget =
   | { kind: "file"; path: string }
   | { kind: "url"; url: string };
 
-/** The llm-wiki content folder under the home folder: the server reads pages from it, and the page loads a wiki image from it through api/local-image. */
-export const WIKI_CONTENT_HOME = "~/Documents/Github/auto-sns-agent/apps/llm-wiki/content";
+/**
+ * The wiki content folder under the home folder on the wiki host (`contentRoot` in ~/.config/sieun-pi/wiki.json): the server reads pages from
+ * it, and the page loads a wiki image from it through api/local-image. Until 2026-11-03 it was auto-sns-agent's apps/llm-wiki/content.
+ */
+export const WIKI_CONTENT_HOME = "~/.pi/wiki/content";
 const THREAD = /^([a-zA-Z0-9_-]{1,128})(?:@(\d{1,16}))?$/;
 /** A job's name: up to 128 characters, no slash or line break, spaces allowed inside (job names are plain words, 10-09: "browser to aside"). */
 const JOB = /^(?=.{1,128}$)[^\s/](?:[^/\n\r\t]*[^\s/])?$/;
@@ -25,6 +28,8 @@ export const isSessionId = (text: string): boolean => UUID.test(text);
 const CHAT_PORT = "5182";
 /** The wiki's port on every host that ever ran it (the Mac's localhost, the wiki host in hosts.json), so a pasted page URL from any of them is a wiki page. */
 const WIKI_PORT = "5176";
+/** The chat server that fronts the wiki at /wiki since 2026-11-03 (`https://<host>:5184/wiki/<path>`). */
+const WIKI_FRONT_PORT = "5184";
 const MAX_TARGET = 2048;
 const HOST_PORT = /^(?:[\w-]+\.)*[\w-]+:\d+(?=\/)/;
 
@@ -43,14 +48,15 @@ function wikiPath(path: string): string | null {
 function decode(text: string): string { try { return decodeURIComponent(text); } catch { return ""; } }
 /**
  * The content path of the page a `wiki:` link names, in every form a chat writes: `<path>` or `/<path>`, `page/<path>` or `raw/<path>` with or
- * without the slash, or a whole page URL on any host (`https://<host>:5176/page/<path>`). A `#hash` or `?query` is dropped, since the wiki's
+ * without the slash, any of them under `wiki/`, or a whole page URL on any host (`https://<host>:5176/page/<path>`, or since 2026-11-03
+ * `https://<host>:5184/wiki/<path>` and `/wiki/page/<path>`). A `#hash` or `?query` is dropped, since the wiki's
  * page route takes the path alone, and so is a `<host>:<port>` with no scheme in front. Null when it names no page. On 10-22 a chat sent `wiki:https://us-metal02-dev...:5176/page/sessions/...`,
  * and the card asked the wiki for `/page/https://...`, which answered Page not found (owner, 10-23: "often links to wrong page.").
  */
 export function wikiLinkPath(text: string): string | null {
   const url = webUrl(text);
   const path = decode(url ? url.pathname : text.replace(/[?#][\s\S]*$/, "").replace(HOST_PORT, "")).replace(/^\/+/, "");
-  const route = /^(?:page|raw)\//.exec(path);
+  const route = /^(?:wiki\/(?!api\/)(?:page\/|raw\/)?|page\/|raw\/)/.exec(path);
   if (url && !route) return null;
   return wikiPath(route ? path.slice(route[0].length) : path);
 }
@@ -72,7 +78,7 @@ export function parseArtifactTarget(target: string): ArtifactTarget | null {
 
 /**
  * The stored form of what the owner or the agent typed: a target as above, a pasted chat URL (`.../#<sessionId>@<ms>`), a pasted wiki URL
- * (`http://<host>:5176/page/<path>` or `/raw/<path>`), or a bare absolute path. A wiki link is stored as `wiki:<content path>` whatever form it
+ * (`http://<host>:5176/page/<path>` or `/raw/<path>`, or `https://<host>:5184/wiki/<path>`), or a bare absolute path. A wiki link is stored as `wiki:<content path>` whatever form it
  * came in. Null when it is none of these.
  */
 export function normalizeArtifactTarget(input: string): string | null {
@@ -83,7 +89,7 @@ export function normalizeArtifactTarget(input: string): string | null {
   if (url) {
     const hash = thread(decode(url.hash.slice(1)));
     if (hash?.kind === "thread" && (UUID.test(hash.sessionId) || url.port === CHAT_PORT)) return "thread:" + hash.sessionId + (hash.at !== undefined ? "@" + hash.at : "");
-    const path = url.port === WIKI_PORT ? wikiLinkPath(text) : null;
+    const path = url.port === WIKI_PORT || (url.port === WIKI_FRONT_PORT && url.pathname.startsWith("/wiki/")) ? wikiLinkPath(text) : null;
     if (path) return "wiki:" + path;
   }
   if (text.startsWith("job:") && text.includes("%")) {

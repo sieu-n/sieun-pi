@@ -46,10 +46,10 @@ export const diffLines = (text: string): { kind: DiffLineKind; text: string }[] 
 
 /**
  * The wiki page a job's report links, as the report's reader shows it under the text: the first `.html` or `.md` page named as a wiki
- * URL (`http://<host>:5176/page/<path>` or `/raw/<path>`), a `wiki:` link in any form `wikiLinkPath` reads, or a path through
- * `apps/llm-wiki/content/<path>` (absolute or from the repo root), with any `#hash` dropped. Null when the report names none.
+ * URL (`http://<host>:5176/page/<path>` or `/raw/<path>`, or `https://<host>:5184/wiki/<path>`), a `wiki:` link in any form `wikiLinkPath`
+ * reads, or a path through the content root, `~/.pi/wiki/content/<path>` or the old `apps/llm-wiki/content/<path>`, with any `#hash` dropped. Null when the report names none.
  */
-const WIKI_LINK = /(?:https?:\/\/[^\s\/`"'<>()]+:5176\/(?:page|raw)\/|wiki:|(?:^|[\s(\[<`"'])(?:\/[^\s`"'<>()]*?\/)?apps\/llm-wiki\/content\/)([^\s`"'<>()\[\]]+?\.(?:html|md))(?=[\s`"'<>()\[\].,;:#?]|$)/gi;
+const WIKI_LINK = /(?:https?:\/\/[^\s\/`"'<>()]+:5176\/(?:wiki\/)?(?:page|raw)\/|https?:\/\/[^\s\/`"'<>()]+:5184\/wiki\/(?:page\/|raw\/)?(?!api\/)|wiki:|(?:^|[\s(\[<`"'])(?:\/[^\s`"'<>()]*?\/)?(?:apps\/llm-wiki\/content|\.pi\/wiki\/content)\/)([^\s`"'<>()\[\]]+?\.(?:html|md))(?=[\s`"'<>()\[\].,;:#?]|$)/gi;
 export const reportWikiPage = (text: string): string | null => wikiPages(text)[0] ?? null;
 
 /** Every wiki page the text links, in the same forms as `reportWikiPage`, each once. */

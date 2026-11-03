@@ -8,7 +8,7 @@ import { ICONS } from "./icons";
  * (mermaid blocks, copy buttons, image lightbox, link and chip clicks).
  *
  * Beyond GFM it renders:
- * - wiki links: `[[path]]`, `[[path|label]]`, `wiki:path`, and links to `<wiki>/page/<path>`;
+ * - wiki links: `[[path]]`, `[[path|label]]`, `wiki:path`, and links to `<wiki>/page/<path>` or `https://<host>:5184/wiki/<path>`;
  * - artifact links: `job:<name>`, `thread:<id>`, `file:<path>`, carried as `data-target` for the page to open;
  * - board ids such as p12, t3 and d9 when the context names them, as the same chip IdChip draws;
  * - @mentions of known names, as the same chip MentionChip draws;
@@ -85,7 +85,7 @@ const ALLOWED_TAG = /^<(\/?)(details|summary|br)(\s+open(?:="")?)?\s*\/?>$/i;
 
 /** Normalize a link target: wiki URLs become `wiki:<path>`, artifact forms stay, anything else is null. */
 export function artifactTarget(href: string): string | null {
-  const wiki = /^https?:\/\/[^/\s]+:5176\/(?:page|raw)\/([^?#\s]+)/i.exec(href);
+  const wiki = /^https?:\/\/[^/\s]+(?::5176\/(?:wiki\/)?(?:page|raw)\/|:5184\/wiki\/(?:page\/|raw\/)?(?!api\/))([^?#\s]+)/i.exec(href);
   if (wiki) return `wiki:${decodeURIComponent(wiki[1]!)}`;
   if (ARTIFACT.test(href)) return href.replace(/^(\w+):/, (m) => m.toLowerCase());
   if (/^\/(?:home|Users|tmp)\//.test(href)) return `file:${href}`;

@@ -27,6 +27,10 @@ const FORMS = [
   `wiki:http://100.83.139.73:5176/raw/${PAGE}`,
   `wiki:us-metal02-dev.tail0c093d.ts.net:5176/page/${PAGE}`,
   `wiki:https://us-metal02-dev.tail0c093d.ts.net:5176/page/${PAGE.replaceAll("-", "%2D")}`,
+  // 2026-11-03: the chat server on :5184 fronts the wiki at /wiki, and the wiki skill hands out https://<host>:5184/wiki/<path>.
+  `wiki:https://us-metal02-dev.tail0c093d.ts.net:5184/wiki/${PAGE}`,
+  `wiki:https://us-metal02-dev.tail0c093d.ts.net:5184/wiki/page/${PAGE}`,
+  `wiki:/wiki/${PAGE}`,
 ];
 
 test("every form a chat writes a wiki link in names the one page", () => {
@@ -35,11 +39,12 @@ test("every form a chat writes a wiki link in names the one page", () => {
     assert.equal(normalizeArtifactTarget(form), `wiki:${PAGE}`, form);
   }
   assert.equal(normalizeArtifactTarget(`https://us-metal02-dev.tail0c093d.ts.net:5176/raw/${PAGE}`), `wiki:${PAGE}`);
+  assert.equal(normalizeArtifactTarget(`https://us-metal02-dev.tail0c093d.ts.net:5184/wiki/${PAGE}`), `wiki:${PAGE}`);
   assert.equal(parseArtifactTarget("wiki:domains/devops/index.html")?.kind, "wiki");
 });
 
 test("a wiki link that names no page is no target", () => {
-  for (const form of ["wiki:", "wiki:/page/", "wiki:https://us-metal02-dev.tail0c093d.ts.net:5176/", "wiki:https://x:5176/api/agent/page?path=a.html",
+  for (const form of ["wiki:", "wiki:/page/", "wiki:https://us-metal02-dev.tail0c093d.ts.net:5176/", "wiki:https://x:5176/api/agent/page?path=a.html", "wiki:https://x:5184/wiki/api/agent/page?path=a.html",
     "wiki:../secrets.html", "wiki:page/../x.html"]) assert.equal(parseArtifactTarget(form), null, form);
 });
 
@@ -52,6 +57,7 @@ test("the two links the owner got on 10-22 open their pages in the card, the chi
   assert.doesNotMatch(html, /page\/https/, html);
   assert.deepEqual(wikiPages(`[the page](wiki:/page/${PAGE}#why)`), [PAGE]);
   assert.deepEqual(wikiPages(`see http://localhost:5176/raw/${PAGE}#why`), [PAGE]);
+  assert.deepEqual(wikiPages(`see https://us-metal02-dev.tail0c093d.ts.net:5184/wiki/${PAGE} and ~/.pi/wiki/content/${PAGE}`), [PAGE]);
 });
 
 const at = (clock: string): number => Date.parse(`2026-10-23T${clock}Z`);

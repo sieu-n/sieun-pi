@@ -96,3 +96,16 @@ test("a job's end deletes the untracked copies in the session folders it opened 
   for (const kept of ["index.html", "report.md", "data/run.log", "data/fixture/apps/vent/src/app.py", "drafts/notes.md", "tool/package.json", "kept/pnpm-workspace.yaml"]) assert.ok(existsSync(join(content, SESSION, kept)), kept);
   assert.ok(existsSync(join(content, "sessions/2026/10/18/1950-tip-guard-reds/build/src/pnpm-workspace.yaml")));
 });
+
+// 2026-11-03: the content left auto-sns-agent's git for ~/.pi/wiki/content, where git fails on every path. Until then a failing git
+// counted as tracked, so a job's end would have kept every copy there.
+test("a content folder in no git repo tracks nothing, so a job's end deletes its copies with the real git", async () => {
+  const content = wiki();
+  const removed = await removeRepoCopies([], content);
+  assert.deepEqual(removed, []);
+  const dir = mkdtempSync(join(tmpdir(), "job-tree-"));
+  put(dir, "t.jsonl", opened);
+  const gone = await removeRepoCopies([join(dir, "t.jsonl")], content);
+  assert.ok(gone.some(path => path.endsWith("export-base")), gone.join(", "));
+  assert.ok(existsSync(join(content, SESSION, "report.md")));
+});

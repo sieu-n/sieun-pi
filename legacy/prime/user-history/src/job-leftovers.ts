@@ -442,14 +442,20 @@ async function isRepoCopy(path: string): Promise<boolean> {
     apps.some(app => app.isDirectory() && ["package.json", "pyproject.toml"].some(file => existsSync(join(path, "apps", app.name, file))));
 }
 
-/** Whether git tracks a file under this path of the wiki content (an export a job meant to keep, such as 1458-land37-staging-converge-fix/drafts/u2). A failing git counts as tracked. */
+/**
+ * Whether git tracks a file under this path of the wiki content (an export a job meant to keep, such as 1458-land37-staging-converge-fix/drafts/u2).
+ * A failing git counts as tracked, except a content folder in no git repo, where nothing is: the content left auto-sns-agent's git for
+ * ~/.pi/wiki/content on 2026-11-03, and its backup repo keeps only pages.
+ */
 function tracked(contentDir: string, path: string): Promise<boolean> {
   return new Promise(resolve => {
-    const git = spawn("git", ["-C", contentDir, "ls-files", "-z", "--", path], { stdio: ["ignore", "pipe", "ignore"] });
+    const git = spawn("git", ["-C", contentDir, "ls-files", "-z", "--", path], { stdio: ["ignore", "pipe", "pipe"] });
     let any = false;
+    let error = "";
     git.stdout.once("data", () => { any = true; git.kill(); });
+    git.stderr.on("data", (chunk: Buffer) => { error += chunk.toString(); });
     git.once("error", () => resolve(true));
-    git.once("close", code => resolve(any || code !== 0 && code !== null));
+    git.once("close", code => resolve(any || code !== 0 && code !== null && !/not a git repository/i.test(error)));
   });
 }
 
