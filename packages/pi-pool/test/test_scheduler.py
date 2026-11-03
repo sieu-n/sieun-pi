@@ -4,7 +4,7 @@ import collections, contextlib, dataclasses, io, json, math, os, tempfile, time,
 
 from fixture_isolation import isolate_test_module
 from test_core import CFG, KEY, NOW, account, vend, vend_record
-from vend.pool import base, limit_resets, registry, sched, status_view, vending
+from vend.pool import base, commands, limit_resets, registry, sched, status_view, vending
 from vend.pool import limited as limited_report
 from vend.pool import turns as turns_mod
 
@@ -1392,6 +1392,74 @@ class RefillOpenedCell(unittest.TestCase):
         tried = turns_mod.wake_slot(["a", "b", "c"], run=run, now=NOW, turns=turns)
         self.assertEqual(asked, ["sub-a", "sub-b"], "a kept place whose slot passed is no sleeping session")
         self.assertEqual([t for t, _ in tried], ["a", "b"])
+
+class BookOnRead(unittest.TestCase):
+    """R5 when a usage read shows room. At 08:32:28Z on 11-03 01a1a06a, normal and waiting since 08:27:18Z, was told to wait for
+    claude-virev4, whose 5h figure was stale, and its request started a read. The read landed in under a second, and 01a1a06a entered
+    claude-virev4 at 08:32:29Z, while six normal trees waiting since 08:23:29Z to 08:27:16Z slept until their own cells on other
+    accounts and got in 10 to 15 min later. A read that shows room now books the account's cells for the trees in line, first in line
+    first, and wakes them."""
+
+    def setUp(self):
+        vending._wakes.clear()
+        self.addCleanup(vending._wakes.clear)
+
+    def seat(self, read_at):
+        windows = (fresh_window(10, FIVE, NOW + 4 * 3600, read_at), window(10, WEEK, 3 * 86400))
+        return dataclasses.replace(acct("x", five=10, tier="team 5x"), windows=windows)
+
+    def refresh(self, state, accounts, fresh_accounts, now):
+        """`pi-pool refresh x`: the read lands, and the index holds the fresh figure from then on."""
+        index = {"accounts": accounts}
+
+        def read_many(selection, emit):
+            index["accounts"] = fresh_accounts
+            for a in fresh_accounts:
+                if a.id in (selection.get(P) or ()):
+                    emit({"event": "read", "provider": P, "id": a.id, "email": a.email, "label": a.label, "ok": True,
+                          "reason": None, "retry_at": None, "usage_at": now})
+            return {}
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(unittest.mock.patch.object(registry, "load_index", side_effect=lambda provider: index["accounts"]))
+            stack.enter_context(unittest.mock.patch.object(registry, "load_state", return_value=state))
+            stack.enter_context(unittest.mock.patch.object(base, "config", return_value=CFG))
+            stack.enter_context(unittest.mock.patch.object(base, "save_json"))
+            stack.enter_context(unittest.mock.patch.object(base, "log"))
+            stack.enter_context(unittest.mock.patch.object(limited_report, "pool_lock", contextlib.nullcontext))
+            stack.enter_context(unittest.mock.patch.object(vending, "flush_wakes"))
+            stack.enter_context(unittest.mock.patch.object(commands.usage, "read_many", side_effect=read_many))
+            stack.enter_context(unittest.mock.patch.object(time, "time", return_value=now))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            commands.cmd_refresh(["x", "--provider", P, "--json"])
+
+    def test_a_read_that_shows_room_books_the_trees_in_line_before_the_tree_that_started_it(self):
+        stale, fresh = self.seat(NOW - registry.STALE_USAGE_SEC - 60), self.seat(NOW)
+        full = acct("y", five=100, five_reset_in=FIVE)
+        sp = sched.slot_spacing(fresh, CFG)
+        state = empty_state()
+        first, second, asker = (put(state, tree_key(name), on="y") for name in ("first", "second", "asker"))
+        for name, since, n in (("first", NOW - 900, 0), ("second", NOW - 800, 1), ("asker", NOW - 300, 2)):
+            state["sessions"][name]["wait"] = {P: {"account": "y", "slot_at": NOW + FIVE + n * sp, "since": since}}
+        d = request(state, asker, [stale, full], NOW)
+        self.assertEqual((type(d), d.slot_account.id), (sched.Wait, "x"), "the stale figure holds the asker until a read lands")
+        self.refresh(state, [stale, full], [fresh, full], NOW + 0.5)
+        self.assertEqual(vending._wakes[-1], ["--each", "first", "second"], "each tree in line for an earlier cell is booked and woken")
+        d = request(state, asker, [fresh, full], NOW + 1)
+        self.assertIsInstance(d, sched.Wait, "the tree that started the read takes no cell a tree ahead of it was booked into")
+        self.assertEqual(int(d.slot_at // sp), int(NOW // sp) + 2, "it waits behind the cells of the two trees ahead of it")
+        d = request(state, first, [fresh, full], NOW + 5)
+        self.assertEqual((type(d), d.account.id), (sched.Admit, "x"), "the first tree in line takes the cell")
+        d = request(state, second, [fresh, full], NOW + 6)
+        self.assertEqual((type(d), d.slot_account.id), (sched.Wait, "x"))
+        self.assertLess(d.slot_at, NOW + FIVE, "the second tree waits for the next cell on x, not for y's reset")
+
+    def test_a_tree_woken_with_each_does_not_stop_the_wake_of_the_trees_after_it(self):
+        turns = {"working": {}, "queued": {}, "owner": {}, "lead": [], "kept": {}}
+        asked = []
+        tried = turns_mod.wake_slot(["a", "b"], run=lambda session: asked.append(session) or "timer", now=NOW, turns=turns, each=True)
+        self.assertEqual(asked, ["a", "b"])
+        self.assertEqual([t for t, _ in tried], ["a", "b"])
+
 
 if __name__ == "__main__":
     unittest.main()

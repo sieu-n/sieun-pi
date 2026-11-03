@@ -119,8 +119,9 @@ USAGE = """usage: pi-pool [command]
                                   slot came first (the extension asks after PARK_AFTER_MS)
   wake-parked <session>          run `prime-agent wake` for a parked run whose slot started, and put
                                   it back at its place when the wake fails (the pool starts this)
-  wake-slot <tree>...            run `prime-agent wake` for the sessions of the first tree in line for a
-                                  cell that opened that answers (the pool starts this)
+  wake-slot [--each] <tree>...   run `prime-agent wake` for the sessions of the first tree in line for a
+                                  cell that opened that answers, or of each tree with --each (the pool
+                                  starts this)
   owner-turn <session>           the session's next admit is the owner's and runs at once
   lead [<session>...]            replace the sessions whose queued runs start first; no
                                   sessions clears the list

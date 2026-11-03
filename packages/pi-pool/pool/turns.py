@@ -560,26 +560,29 @@ def sleeping(turns, tree, now):
     return found or [tree]
 
 
-def wake_slot(trees, run=run_wake, now=None, turns=None):
+def wake_slot(trees, run=run_wake, now=None, turns=None, each=False):
     """Wake the sessions of the first of `trees` (refill's line for a cell that opened) that any session answers for, so that
     tree asks now and takes the cell. A session in no credential wait answers "none", and the next tree in line is tried.
-    Returns [(tree, {session: woke})] for the trees tried."""
+    With `each` (book_line's trees, each booked into its own cell) every tree is woken. Returns [(tree, {session: woke})] for the
+    trees tried."""
     now = time.time() if now is None else now
     turns, tried = turns or current(), []
     for tree in trees:
         woke = {s: run(s) for s in sleeping(turns, tree, now)}
         tried.append((tree, woke))
         base.log("slot_wake", tree=tree, woke=woke)
-        if any(w in ("timer", "park") for w in woke.values()):
+        if not each and any(w in ("timer", "park") for w in woke.values()):
             break
     return tried
 
 
 def cmd_wake_slot(rest):
-    """`wake-slot <tree>...`: the wake that `vending.flush_wakes` starts for the trees in line for an opened cell."""
-    if not rest or any(tok.startswith("-") for tok in rest):
-        raise SystemExit("usage: pi-pool wake-slot <tree>...")
-    emit({"tried": [{"tree": tree, "woke": woke} for tree, woke in wake_slot(rest)]})
+    """`wake-slot [--each] <tree>...`: the wake that `vending.flush_wakes` starts for the trees in line for an opened cell."""
+    each = bool(rest) and rest[0] == "--each"
+    trees = rest[1:] if each else rest
+    if not trees or any(tok.startswith("-") for tok in trees):
+        raise SystemExit("usage: pi-pool wake-slot [--each] <tree>...")
+    emit({"tried": [{"tree": tree, "woke": woke} for tree, woke in wake_slot(trees, each=each)]})
     return 0
 
 

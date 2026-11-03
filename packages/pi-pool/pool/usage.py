@@ -298,9 +298,17 @@ def cmd_sample(rest=()):
             selection[provider] = ids
     if not selection:
         return 0
-    failed = []
-    read_many(selection, lambda e: failed.append(e.get("label")) if e.get("event") == "read" and not e.get("ok") else None)
+    failed, read = [], {}
+
+    def note(e):
+        if e.get("event") == "read" and not e.get("ok"):
+            failed.append(e.get("label"))
+        elif e.get("event") == "read":
+            read.setdefault(e["provider"], []).append(e["id"])
+    read_many(selection, note)
     base.log("usage_sample", accounts=sum(len(v) for v in selection.values()), failed=failed)
+    for provider, ids in read.items():
+        vending.book_read(provider, ids)
     failed_claude = set(selection.get("anthropic") or ()) & {a.id for a in registry.load_index("anthropic") if a.label in failed}
     if failed_claude:
         vending.probe_failed_reads(failed_claude)

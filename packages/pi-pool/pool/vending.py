@@ -774,8 +774,69 @@ def refill(state, provider, account_id, accounts, cfg, now):
     return line
 
 
+def book_line(state, provider, account_ids, accounts, cfg, now):
+    """A usage read of each of `account_ids` landed, so such an account may take trees before the cells the waiting trees hold. R5
+    gives its cells to the waiting trees by priority, then wait start, whatever account each one waits for, so each tree whose next
+    request would get an earlier cell on one of them, first in line first, is booked into that cell now, and the trees ranked behind
+    it see the cell taken. `flush_wakes` wakes each booked tree, and a cell a booked tree left on another account opens to that
+    account's line (`refill`). Before this, a read woke nobody, and the first tree that asked took the account's cells: at 08:32:28Z
+    on 11-03 01a1a06a, normal and waiting since 08:27:18Z, started a read of claude-virev4 that showed room and entered it a second
+    later, while six normal trees waiting since 08:23:29Z to 08:27:16Z slept until their own cells on other accounts, 10 to 15 min
+    more. Returns the trees booked, in line order."""
+    read = set(account_ids)
+    waiters = sorted((sched.PRIORITY_RANK.get(rec.get("priority") or "normal", 1), w["since"], k)
+                     for k, rec in state["sessions"].items()
+                     for w in [(rec.get("wait") or {}).get(provider) or {}]
+                     if w.get("account") and w["slot_at"] > now + OWN_CELL_EARLY_SEC)
+    booked, by_account, left = [], {}, set()
+    for _, _, k in waiters if read else ():
+        rec = state["sessions"][k]
+        key = registry.SessionKey(k, rec.get("uuid"), rec.get("active_id"))
+        d, tree = decision(state, key, provider, accounts, cfg, now)
+        if isinstance(d, sched.Admit) and d.account.id in read:
+            account_id, slot_at = d.account.id, now
+        elif isinstance(d, sched.Wait) and d.slot_account.id in read and d.slot_at < tree.wait[1]:
+            account_id, slot_at = d.slot_account.id, d.slot_at
+        else:
+            continue
+        HookWriter(state).set_wait(key, provider, account_id, slot_at, now)
+        booked.append(k)
+        by_account.setdefault(account_id, []).append(k)
+        if tree.wait[0] != account_id:
+            left.add(tree.wait[0])
+    if booked:
+        _wakes.append(["--each", *booked])
+    labels = {a.id: a.label for a in accounts}
+    for account_id, line in by_account.items():
+        base.log("cell_opened", provider=provider, account=labels.get(account_id, account_id), line=line, booked=True)
+    for held in sorted(left - read):
+        refill(state, provider, held, accounts, cfg, now)
+    return booked
+
+
+def book_read(provider, account_ids):
+    """`book_line` for the accounts a usage read just landed for, under the pool flock (`pi-pool refresh` and `sample`). A flock
+    that stays busy past STATE_LOCK_TIMEOUT skips the booking, and each tree takes the accounts' cells when it asks, as before."""
+    if not account_ids:
+        return []
+    cfg = base.config()
+    try:
+        accounts = registry.load_index(provider)
+        with limited.pool_lock():
+            state, now = registry.load_state(), time.time()
+            booked = book_line(state, provider, account_ids, accounts, cfg, now)
+            if booked:
+                base.save_json(base.STATE, state)
+    except TimeoutError:
+        base.log("book_read_busy", provider=provider, accounts=list(account_ids))
+        return []
+    flush_wakes()
+    return booked
+
+
 def flush_wakes():
-    """Start `pi-pool wake-slot` for each list `refill` made, apart from this process, once the caller let go of the pool flock."""
+    """Start `pi-pool wake-slot` for each list `refill` or `book_line` made, apart from this process, once the caller let go of the
+    pool flock."""
     from . import turns
     while _wakes:
         line = _wakes.pop(0)

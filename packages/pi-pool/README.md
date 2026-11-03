@@ -412,6 +412,15 @@ lost two cells before it got in at 15:32:03Z. So a reset admits the waiting tree
 high trees first. On 2026-10-12 15:30, 25 vends landed on claude7 in 4 seconds; at the
 2026-10-10 21:00 reset 26 trees landed on claude9 in 2 seconds.
 
+A usage read that lands (`pi-pool refresh`, which the hook starts for an account with a
+stale 5h figure, and the minute `pi-pool sample`) can show room the waiting trees did not
+know of when they took their slots. The read then books that account's cells for the trees
+in line, first in line first, for each tree whose next request would get an earlier cell
+there, and `pi-pool wake-slot --each` wakes each booked tree (`vending.book_line`). Before
+this, the first tree that asked took those cells: at 08:32:28Z on 11-03 01a1a06a, waiting
+since 08:27:18Z, started a read of claude-virev4 and entered it a second later, while six
+trees of its priority waiting since 08:23:29Z to 08:27:16Z slept 10 to 15 min more.
+
 A tree that asks no more within `WAIT_STALE_SEC` (15 min) of its slot gives up its cell, so
 the cell holds no one, but it keeps its wait start for `PLACE_KEEP_SEC` (3 h) after the slot.
 When it asks again it ranks where it ranked before. A run cut while it waits comes back when
