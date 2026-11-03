@@ -38,6 +38,8 @@ export type Location = {
 
 export function location(conversation: HitConversation): Location {
   const archived = !!conversation.archived;
+  // An agent's own thread sits under the agent of the same name, and "vent › vent" says nothing the name does not.
+  const parent = conversation.parent && conversation.parent.name !== conversation.name ? conversation.parent : undefined;
   switch (conversation.kind) {
     case "channel":
       return { icon: "hash", name: conversation.name.replace(/^#/, ""), kind: "Channel", archived };
@@ -47,10 +49,10 @@ export function location(conversation: HitConversation): Location {
         : { icon: "chat", name: conversation.name, kind: "Chat", archived };
     case "dm":
       return conversation.parent
-        ? { icon: "robot", parent: conversation.parent.name, name: conversation.name, kind: "Job", archived }
+        ? { icon: "robot", parent: parent?.name, name: conversation.name, kind: "Job", archived }
         : { icon: "lock", name: conversation.name, kind: "Direct message", archived };
     case "job":
-      return { icon: "robot", parent: conversation.parent?.name, name: conversation.name, kind: "Job", archived };
+      return { icon: "robot", parent: parent?.name, name: conversation.name, kind: "Job", archived };
   }
 }
 

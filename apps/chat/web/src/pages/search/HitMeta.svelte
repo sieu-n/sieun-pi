@@ -9,6 +9,8 @@
   const who = $derived(author(hit));
   const where = $derived(location(hit.conversation));
   const kind = $derived(!showWhat || (!showThread && hit.threadRoot && hit.role !== "tool") ? undefined : what(hit));
+  /** A thread reply shows as a quiet thread icon; tool text keeps its words, which name the tool. */
+  const reply = $derived(!!kind && !!hit.threadRoot && hit.role !== "tool");
 </script>
 
 <span class="meta" data-hit-meta>
@@ -24,7 +26,9 @@
       {#if where.archived}<span class="archived">(archived)</span>{/if}
     </span>
   {/if}
-  {#if kind}<span class="what" data-hit-what>{kind}</span>{/if}
+  {#if reply}
+    <span class="reply" data-hit-what title="Reply in thread"><Icon name="thread" size={14} label="Reply in thread" /></span>
+  {:else if kind}<span class="what" data-hit-what>{kind}</span>{/if}
 </span>
 
 <style>
@@ -72,6 +76,11 @@
     text-overflow: ellipsis;
   }
   .archived {
+    flex: none;
+    color: var(--text-metadata);
+  }
+  .reply {
+    display: inline-flex;
     flex: none;
     color: var(--text-metadata);
   }

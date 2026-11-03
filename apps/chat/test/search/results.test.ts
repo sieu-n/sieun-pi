@@ -17,6 +17,7 @@ test("a hit names its author with a badge, its place with an icon, and the kind 
   assert.equal(location({ id: "ch", kind: "channel", name: "pi-cutover" }).icon, "hash");
   assert.equal(locationText({ id: "ch", kind: "channel", name: "pi-cutover", archived: true }), "#pi-cutover (archived)");
   assert.equal(locationText({ id: "j", kind: "dm", name: "Vent integrations duty", parent: { id: "c1", name: "vent" } }), "vent › Vent integrations duty");
+  assert.equal(locationText({ id: "w", kind: "dm", name: "vent", parent: { id: "c1", name: "vent" } }), "vent");
   assert.equal(location({ id: "d", kind: "dm", name: "frontend bro" }).icon, "lock");
   assert.equal(what(hit({ role: "tool", kind: "tool", tool: "bash" })), "in tool output · bash");
   assert.equal(what(hit({ role: "tool", tool: "ipython", inCall: true })), "in a tool call · ipython");

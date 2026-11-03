@@ -1,6 +1,7 @@
 <script lang="ts">
   import { EMOJI, EMOJI_CATEGORIES, emojiName, emojiOf, searchEmoji, type EmojiInfo } from "$lib/api/shared/emoji";
-  import Icon from "$lib/ui/Icon.svelte";
+  import SearchField from "$lib/ui/SearchField.svelte";
+  import Tabs from "$lib/ui/Tabs.svelte";
   import type { IconName } from "$lib/ui/icons";
   import { frequentEmoji } from "./frequent-emoji.svelte";
 
@@ -101,38 +102,32 @@
 </script>
 
 <div class="picker" data-emoji-picker>
-  <label class="search">
-    <Icon name="search" size={16} />
-    <input
-      bind:this={input}
+  <div class="search">
+    <SearchField
       bind:value={query}
-      data-autofocus
-      type="text"
+      bind:element={input}
       placeholder="Search all emoji"
-      aria-label="Search emoji"
+      label="Search emoji"
+      clearable={false}
+      data-autofocus
       role="combobox"
       aria-expanded="true"
       aria-controls="{uid}-grid"
       aria-activedescendant={focused ? cellId(active.row, active.col) : undefined}
-      autocomplete="off"
-      spellcheck="false"
       {onkeydown}
     />
-  </label>
-  <div class="tabs" role="tablist" aria-label="Emoji categories">
-    {#each browse as section (section.label)}
-      <button
-        type="button"
-        class="tab"
-        role="tab"
-        tabindex="-1"
-        aria-selected={!query.trim() && current === section.label}
-        aria-label={section.label}
-        title={section.label}
-        onpointerdown={(e) => e.preventDefault()}
-        onclick={() => jump(section.label)}
-      ><Icon name={ICON[section.label] ?? "smile"} size={18} /></button>
-    {/each}
+  </div>
+  <div class="tabs">
+    <Tabs
+      items={browse.map(section => ({ id: section.label, label: section.label, icon: ICON[section.label] ?? "smile" }))}
+      value={query.trim() ? "" : current}
+      variant="underline"
+      size="sm"
+      label="Emoji categories"
+      full
+      iconOnly
+      onchange={jump}
+    />
   </div>
   <div class="grid" id="{uid}-grid" role="listbox" aria-label="Emoji" bind:this={grid} {onscroll}>
     {#if !rows.length}
@@ -180,53 +175,10 @@
     max-height: var(--popover-available-height, 432px);
   }
   .search {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 36px;
     margin: 12px 12px 4px;
-    padding: 0 10px;
-    border-radius: 10px;
-    background: var(--surface-inset);
-    box-shadow: inset 0 0 0 1px var(--border-standard);
-    color: var(--text-subtle);
-  }
-  .search:focus-within {
-    box-shadow: inset 0 0 0 1px var(--border-prominent);
-  }
-  .search input {
-    flex: 1;
-    min-width: 0;
-    border: 0;
-    outline: 0;
-    background: transparent;
-    color: var(--text-standard);
-    font: var(--text-body);
   }
   .tabs {
-    display: flex;
-    justify-content: space-between;
     padding: 0 8px;
-    border-bottom: 1px solid var(--border-standard);
-  }
-  .tab {
-    display: grid;
-    place-items: center;
-    width: 32px;
-    height: 34px;
-    padding: 0;
-    border: 0;
-    border-bottom: 2px solid transparent;
-    background: transparent;
-    color: var(--text-metadata);
-    cursor: pointer;
-  }
-  .tab:hover {
-    color: var(--text-standard);
-  }
-  .tab[aria-selected="true"] {
-    border-bottom-color: var(--text-standard);
-    color: var(--text-standard);
   }
   .grid {
     position: relative;

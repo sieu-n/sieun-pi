@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { snippetPieces } from "../../web/src/pages/search/match.ts";
 import { answered, buildGroups, pendingNotes, SEE_ALL, type Conversation, type Hit, type Person, type SearchInput } from "../../web/src/pages/search/search-model.ts";
 
 const conversations: Conversation[] = [
@@ -148,4 +149,13 @@ test("a pending box the full search could not bring gets the server's missing no
   assert.deepEqual(pendingNotes(["mac"], new Error("timed out")), [
     { box: "mac", note: "mac did not answer the search (timed out), so its threads are not in these results." },
   ]);
+});
+
+test("a snippet reads as plain text, with Markdown's marks taken out and its matches kept", () => {
+  const read = (snippet: string) => snippetPieces(snippet).map(piece => (piece.mark ? `[${piece.text}]` : piece.text)).join("");
+  assert.equal(read("**<mark>Decision</mark> for you:** I asked"), "[Decision] for you: I asked");
+  assert.equal(read("see [the docs](https://x.y/z) and `npm test`"), "see the docs and npm test");
+  assert.equal(read("## Heading\n&gt; quoted <mark>delete</mark>\n- item one\n1. first"), "Heading quoted [delete] item one first");
+  assert.equal(read("snake_case_name, 2 * 3, *em* and _u_"), "snake_case_name, 2 * 3, em and u");
+  assert.equal(read("a &amp; b &lt;tag&gt; ~~gone~~ #vent-dev"), "a & b <tag> gone #vent-dev");
 });

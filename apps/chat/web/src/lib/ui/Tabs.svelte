@@ -13,9 +13,11 @@
     full?: boolean;
     /** Drop the track fill and padding, for tabs that sit inside another capsule. */
     embedded?: boolean;
+    /** Show each tab's icon only, with its label as the tooltip and the accessible name, such as the emoji picker's categories. */
+    iconOnly?: boolean;
     onchange?: (value: T) => void;
   };
-  let { items, value = $bindable(), variant = "segmented", size = "md", label, full = false, embedded = false, onchange }: Props = $props();
+  let { items, value = $bindable(), variant = "segmented", size = "md", label, full = false, embedded = false, iconOnly = false, onchange }: Props = $props();
 
   function pick(item: TabItem<T>) {
     if (item.disabled) return;
@@ -34,7 +36,7 @@
   }
 </script>
 
-<div class="tabs {variant} {size}" class:full class:embedded role="tablist" aria-label={label} tabindex="-1" onkeydown={onKeydown}>
+<div class="tabs {variant} {size}" class:full class:embedded class:icon-only={iconOnly} role="tablist" aria-label={label} tabindex="-1" onkeydown={onKeydown}>
   {#each items as item (item.id)}
     {@const selected = item.id === value}
     <svelte:element
@@ -47,10 +49,11 @@
       aria-selected={selected}
       aria-disabled={item.disabled || undefined}
       tabindex={selected ? 0 : -1}
+      title={iconOnly ? item.label : undefined}
       onclick={() => pick(item)}
     >
       {#if item.icon}<Icon name={item.icon} size={size === "sm" ? 16 : 18} />{/if}
-      <span>{item.label}</span>
+      <span class:sr-only={iconOnly}>{item.label}</span>
       {#if item.badge != null && item.badge !== 0}<Badge value={item.badge} tone={variant === "chrome" ? "danger" : "neutral"} />{/if}
     </svelte:element>
   {/each}
@@ -149,6 +152,12 @@
     gap: 16px;
     height: 40px;
     border-bottom: 1px solid var(--border-standard);
+  }
+  .underline.sm {
+    height: 34px;
+  }
+  .underline.icon-only {
+    gap: 0;
   }
   .underline .tab {
     height: 100%;

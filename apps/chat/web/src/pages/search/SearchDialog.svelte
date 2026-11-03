@@ -499,15 +499,12 @@
   .who :global([data-hit-author]) {
     max-width: 9rem;
   }
+  /* The place shows in full up to 18rem, and the snippet before it gives way first. */
   .place-cell {
     display: flex;
-    max-width: 10rem;
+    max-width: 18rem;
     min-width: 0;
     overflow: hidden;
-  }
-  .place-cell :global([data-hit-place] .parent) {
-    flex: 0 1 auto;
-    min-width: 2em;
   }
   .age {
     color: var(--text-metadata);

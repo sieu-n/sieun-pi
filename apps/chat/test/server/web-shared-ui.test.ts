@@ -16,9 +16,16 @@ import { test } from "node:test";
 const SRC = join(import.meta.dirname, "../../web/src");
 const SHARED = "lib/ui/";
 
-const ALLOWED: Record<string, string> = {
-  "pages/search/SearchDialog.svelte":
-    "The Cmd-K search results: a list box whose rows are lib/ui NavItems, kept under the search field's focus while the list moves, which Menu does not do.",
+/** Each exception names the hand-made kinds it may draw, so any other control in that file still fails. */
+const ALLOWED: Record<string, { kinds: string[]; reason: string }> = {
+  "pages/search/SearchDialog.svelte": {
+    kinds: ['its own role="listbox"'],
+    reason: "The Cmd-K search results: a list box whose rows are lib/ui NavItems, kept under the search field's focus while the list moves, which Menu does not do.",
+  },
+  "pages/channel/EmojiPicker.svelte": {
+    kinds: ['its own role="listbox"'],
+    reason: "The emoji grid: a 9-column list box kept under the search field's focus while the arrows move in two directions, and lib/ui has no grid part.",
+  },
 };
 
 const CONTROL_ROLES = /^(?:menu|menubar|listbox|tablist|tab|radiogroup|radio|dialog|alertdialog)$/;
@@ -70,8 +77,8 @@ test("reads the pages of the chat web client", () => {
 });
 
 test("no page outside lib/ui draws its own menu, select, input, text area, tabs or dialog", () => {
-  const bad = pages.filter(file => !ALLOWED[file])
-    .map(file => [file, handMade(readFileSync(join(SRC, file), "utf8"))] as const)
+  const bad = pages
+    .map(file => [file, handMade(readFileSync(join(SRC, file), "utf8")).filter(kind => !ALLOWED[file]?.kinds.includes(kind))] as const)
     .filter(([, kinds]) => kinds.length > 0)
     .map(([file, kinds]) => `${file}: ${kinds.join(", ")}`);
   assert.deepEqual(bad, []);

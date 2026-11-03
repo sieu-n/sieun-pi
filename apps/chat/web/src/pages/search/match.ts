@@ -74,18 +74,35 @@ export function leadIn(pieces: readonly Piece[], keep = 24): Piece[] {
 const ENTITIES: Record<string, string> = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'" };
 const decode = (text: string) => text.replace(/&(?:amp|lt|gt|quot|#39);/g, entity => ENTITIES[entity]!);
 
+const OPEN = "\u0001";
+const CLOSE = "\u0002";
+
 /**
- * Splits a server snippet into runs. The server sends text with `<mark>` tags around matches, and this never renders
- * it as HTML, so a message that holds markup shows as text.
+ * Markdown's marks taken out of a snippet, so it reads as plain text: `**Decision**` reads Decision, `[docs](https://x)` reads docs, and a
+ * heading, quote or list marker at a line start goes. A snippet is a cut of a message, so a mark can lose its pair; each mark goes on its own.
+ */
+export function plainMarkdown(text: string): string {
+  return text
+    .replace(/```[\w-]*/g, "")
+    .replace(/!?\[([^\]\n]*)\]\([^)\s]*\)/g, "$1")
+    .replace(/^[ \t\u0001\u0002]*(?:#{1,6}|>+|[-*+]|\d+[.)])[ \t]+/gm, match => match.replace(/[^\u0001\u0002]/g, ""))
+    .replace(/\*\*|__|~~|`/g, "")
+    .replace(/(^|[\s(\u0001])[*_](?=[^\s*_])/g, "$1")
+    .replace(/([^\s*_])[*_](?=[\s).,!?:;\u0002]|$)/g, "$1");
+}
+
+/**
+ * Splits a server snippet into runs of plain text. The server sends text with `<mark>` tags around matches, and this never renders
+ * it as HTML, so a message that holds markup shows as text, with its Markdown marks taken out.
  */
 export function snippetPieces(snippet: string): Piece[] {
+  const text = plainMarkdown(decode(snippet.replace(/<mark>/g, OPEN).replace(/<\/mark>/g, CLOSE)));
   const out: Piece[] = [];
-  const parts = snippet.split(/(<mark>|<\/mark>)/);
   let mark = false;
-  for (const part of parts) {
-    if (part === "<mark>") mark = true;
-    else if (part === "</mark>") mark = false;
-    else if (part) out.push({ text: decode(part).replace(/\s+/g, " "), mark });
+  for (const part of text.split(/([\u0001\u0002])/)) {
+    if (part === OPEN) mark = true;
+    else if (part === CLOSE) mark = false;
+    else if (part) out.push({ text: part.replace(/\s+/g, " "), mark });
   }
   return out;
 }
