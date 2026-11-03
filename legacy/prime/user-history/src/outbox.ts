@@ -102,6 +102,8 @@ export interface OutboxDeps {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   keepMs?: number;
+  /** How long a draining close waits for the sends out now (DRAIN_MS). */
+  drainMs?: number;
 }
 
 export class OutboxConflict extends Error {}
@@ -123,6 +125,14 @@ function stubOf(entry: Stored): Stored {
   const { text: _text, bundle: _bundle, images: _images, write: _write, sentAt: _sentAt, fingerprint: _fingerprint, ...rest } = entry;
   return { ...rest, text: "", fingerprint: "", images: [], stub: true };
 }
+/**
+ * How long a draining close waits for the answers of the sends out now. The chat's daemon prompts from 10-27 to 11-03 (prime-calls.jsonl, 6,432
+ * of them) answered at p99 in 5.1 s on this box and 6.0 s on the Mac, and a prompt waits up to 24 h for its session to take it
+ * (PROMPT_REQUEST_MS). With no bound, the stops at 23:28Z on 10-29 and 18:57Z on 11-03 waited on a prompt to the Mac, whose relay had gone
+ * silent, until systemd killed the service 90 s later. A send still out after this stays `sending` on disk, and the next start looks for it
+ * (`copy`) before it goes again, as after a crash.
+ */
+export const DRAIN_MS = 6_000;
 /** The longest wait between two tries of one entry that failed in different ways. */
 export const MAX_BACKOFF_MS = 30_000;
 /**
@@ -225,7 +235,7 @@ export class Outbox {
   }
 
   /**
-   * Stops the loops and waits for the writes out now; the rest goes on at the next start. `drain` also waits for the deliveries out now, so a
+   * Stops the loops and waits for the writes out now; the rest goes on at the next start. `drain` also waits up to DRAIN_MS for the deliveries out now, so a
    * refusal that comes during a service stop is recorded as one: 10-18 06:33Z a release closed the daemon link under a wake's relay, the daemon
    * refused it, and a record that read it as maybe held kept the wake behind "the target is busy" until 06:43Z. A lane still before its send
    * (its room, obsolete and tree checks are daemon reads) is not waited for: its `sending()` refuses, so nothing goes out, and the entry waits
@@ -234,12 +244,26 @@ export class Outbox {
   async close(drain = false): Promise<void> {
     this.closed = true;
     for (const stop of [...this.timers]) stop();
-    if (drain) await Promise.allSettled([...this.lanes].filter(([threadId]) => this.out.has(threadId)).map(([, lane]) => lane));
+    if (drain) await this.drained(this.deps.drainMs ?? DRAIN_MS);
     await Promise.allSettled([...this.writes.values()]);
     await this.ready.catch(() => {});
     const file = doneFile(this.deps.dir), tmp = `${file}.${process.pid}.tmp`;
     await writeFile(tmp, JSON.stringify([...this.entries.values()].filter(isDone).map(entry => entry.stub ? entry : stubOf(entry))))
       .then(() => rename(tmp, file)).catch(error => this.deps.log(`outbox: save ${file}: ${message(error)}`));
+  }
+
+  /** Waits up to `ms` for the lanes with a send out now; a lane still out after it goes on and is named in the log. */
+  private async drained(ms: number): Promise<void> {
+    const out = [...this.lanes].filter(([threadId]) => this.out.has(threadId));
+    if (!out.length) return;
+    let timer: NodeJS.Timeout | undefined;
+    const late = await Promise.race([Promise.allSettled(out.map(([, lane]) => lane)).then(() => false),
+      new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(true), ms); })]);
+    clearTimeout(timer);
+    if (late) {
+      const left = out.filter(([threadId]) => this.out.has(threadId)).map(([threadId]) => this.where(threadId));
+      if (left.length) this.deps.log(`outbox: stop: ${left.join(", ")} had no answer ${ms / 1000} s into the stop; the next start looks for each before it sends again`);
+    }
   }
 
   private where(threadId: string): string { return this.deps.where?.(threadId) ?? threadId.slice(0, 8); }

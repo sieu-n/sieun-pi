@@ -46,3 +46,30 @@ test("a draining close waits for a send that is out, not for a delivery still on
   await next.close(true);
   assert.deepEqual(sent, ["out", "reads"], "the next start sends it once");
 });
+
+test("a draining close stops waiting for a send whose answer never comes, and the next start looks for that send before it goes again", { timeout: 30_000 }, async () => {
+  // 11-03 18:57:45Z: the stop's drain waited on a notice's prompt to the Mac, whose relay had gone silent, and systemd killed the service at
+  // 90 s, which ate release-chat's 60 s answer window. The same happened at 23:28Z on 10-29.
+  const dir = await mkdtemp(join(tmpdir(), "outbox-stop-"));
+  const lines: string[] = [];
+  const sent: string[] = [];
+  const looked: (number | undefined)[] = [];
+  const base = { dir, changed: () => {}, final: () => null, sleep: () => new Promise<void>(resolve => setImmediate(resolve)), drainMs: 200 };
+  let out = false;
+  const first = new Outbox({ ...base, log: line => lines.push(line), copy: async () => "absent",
+    deliver: async (_entry, sending) => { await sending(); out = true; await new Promise(() => {}); } });
+  await first.submit(send("m-1", "mac"));
+  while (!out) await new Promise(resolve => setImmediate(resolve));
+  const at = Date.now();
+  const ended = await Promise.race([first.close(true).then(() => "closed"), new Promise(resolve => setTimeout(() => resolve("still waiting"), 5_000))]);
+  assert.equal(ended, "closed", "the close ends though the send has no answer");
+  assert.ok(Date.now() - at < 2_000, `the close took ${Date.now() - at} ms`);
+  assert.ok(lines.some(line => /mac had no answer 0\.2 s into the stop/.test(line)), lines.join("\n"));
+  const next = new Outbox({ ...base, log: () => {}, copy: async (entry, since) => { looked.push(since); return "landed"; },
+    deliver: async entry => { sent.push(entry.id); } });
+  await next.idle();
+  await next.close(true);
+  assert.equal(looked.length, 1, "the next start looked for the send");
+  assert.equal(typeof looked[0], "number");
+  assert.deepEqual(sent, [], "and did not send it again");
+});

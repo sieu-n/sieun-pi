@@ -642,9 +642,12 @@ function restartService(home) {
 async function kickstart(home, before = null) {
   const id = liveRelease(home);
   const ran = (() => { try { return JSON.parse(readText(join(home, STARTED))).id; } catch { return null; } })();
-  const startedAt = Date.now();
+  // The windows count from the end of the restart, which systemctl and launchctl return only once the old process exited: on 11-03 at 18:57Z
+  // the old chat took 90 s to stop, and a count from before the restart failed release-d9f6745 on its 60 s answer window.
+  const restartAt = Date.now();
   restartService(home);
-  const failure = await checkStart(startedAt);
+  log(`the restart returned in ${seconds(Date.now() - restartAt)}`);
+  const failure = await checkStart(Date.now());
   if (!failure) {
     writeFileSync(join(home, STARTED), JSON.stringify({ id, at: new Date().toISOString() }) + "\n");
     return;
@@ -653,9 +656,8 @@ async function kickstart(home, before = null) {
   if (!back) throw new StartFailed(`the chat on ${id} ${failure}; no release before it to go back to`);
   log(`the chat on ${id} ${failure}; going back to ${back}`);
   flip(home, back);
-  const backAt = Date.now();
   restartService(home);
-  const again = await checkStart(backAt);
+  const again = await checkStart(Date.now());
   if (!again) writeFileSync(join(home, STARTED), JSON.stringify({ id: back, at: new Date().toISOString() }) + "\n");
   throw new StartFailed(`the chat on ${id} ${failure}, so current went back to ${back}${again ? `, and the chat on ${back} ${again} too` : ", which runs again"}`);
 }

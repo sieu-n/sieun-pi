@@ -67,6 +67,7 @@ else {
     res.writeHead(404); res.end(JSON.stringify({ error: "Not found.", release: path.basename(release) }));
   }).listen(Number(port), "127.0.0.1");
   if (behavior.answerThenExitMs !== undefined) setTimeout(() => process.exit(1), behavior.answerThenExitMs);
+  if (behavior.stopMs !== undefined) process.on("SIGTERM", () => setTimeout(() => process.exit(0), behavior.stopMs));
 }
 `;
 // The systemd socket: it holds the page port across chat restarts and hands each connection to the chat once one listens behind it.
@@ -312,6 +313,23 @@ test("a chat that answers but exits inside the hold, or never answers, sends cur
     assert.equal(await f.page(), id(f.c1));
     assert.equal(JSON.parse(readFileSync(path.join(f.home, "started.json"), "utf8")).id, id(f.c1));
   }
+});
+
+test("an old chat that is slow to stop does not count against the new chat's answer window, as on 11-03 at 18:57Z", { timeout: 120000 }, async (t) => {
+  // 11-03 18:57Z: the old chat took 90 s to stop, the 60 s window counted from before the restart, and release-d9f6745 went back.
+  const f = fixture(t);
+  f.write("chat-behavior.json", JSON.stringify({ stopMs: 2500 }));
+  const slow = f.commit("slow to stop");
+  f.publish();
+  assert.equal(f.release([slow]).status, 0);
+  f.write("chat-behavior.json", JSON.stringify({}));
+  const next = f.commit("next");
+  f.publish();
+  const result = await f.releaseAsync([next], { SIEUN_PI_CHAT_ANSWER_MS: "1500" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /the restart returned in [2-9]\.\d s/);
+  assert.equal(f.current(), id(next));
+  assert.equal(await f.page(), id(next));
 });
 
 test("a start that answers, passes the hold and dies in its first pass goes back to the release before it, as fbd5a0a0 did on 10-23 at 01:20Z", { timeout: 120000 }, async (t) => {
