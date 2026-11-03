@@ -183,7 +183,7 @@
   {#if turn?.stop || turn?.error}
     <p class="note danger" role="status">{turn.stop === "aborted" ? "Response stopped" : turn.error || "The answer failed"}</p>
   {/if}
-  {#each notes as note (note)}<p class="note" data-note>{note}</p>{/each}
+  {#each notes as note, index (index)}<p class="note" data-note>{note}</p>{/each}
   {#if why}
     <p class="meta" data-post-meta>
       <span class="why" data-why={message?.why}>{why}</span>
