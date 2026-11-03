@@ -111,3 +111,36 @@ test("d9 counts a :5184 chat's open steps nobody moves, as a paused Prime chat's
   assert.equal(out.metrics.stuck_steps_all, 1);
   assert.equal(out.flagged!.some(slice => slice.kind === "push"), false);
 });
+
+test("a :5184 step the chat's own thread watches moves: a thread wake names it or goes off at its waitUntil, or its red duty's next run is due before it", async () => {
+  // 11-03 07:51Z: d9 counted seo's p67, p68, p81 and p102 and vent's p117 stuck while the chat threads' own wakes named them or went off at
+  // their waitUntil, and vent's p123, the fix of red d2, waited until 21:50Z for d2's 21:44Z run.
+  const VENT = "230bbdbf-4d84-475f-95d2-63db2f90ca34", SEO = "95399ef6-9e52-4b9e-8d71-737332eee4dd";
+  const nextAt = Date.parse("2026-11-03T21:44:00Z");
+  const ventDuties = FIXTURE["/api/agents/ag_vent/duties"] as { duties: Record<string, unknown>[] };
+  const ventBoard = FIXTURE["/api/agents/ag_vent/board"] as { board: { plan: { children: unknown[] }[] } };
+  const fixture: Record<string, unknown> = { ...FIXTURE,
+    "/api/agents": (FIXTURE["/api/agents"] as Record<string, unknown>[]).map(row => ({ ...row, ...row.id === "ag_vent" ? { thread: VENT } : row.id === "ag_seo" ? { thread: SEO } : {} })),
+    "/api/agents/ag_vent/duties": { duties: ventDuties.duties.map(row => ({ ...row, nextAt, schedule: { kind: "daily", at: "06:44" } })) },
+    "/api/agents/ag_vent/board": { board: { ...ventBoard.board, plan: [{ ...ventBoard.board.plan[0], children: [...ventBoard.board.plan[0]!.children,
+      { id: "p117", text: "Remove the paid Anthropic fallback", status: "blocked", waitUntil: "2026-11-10T00:30:00.000Z", waitFor: "Nov 10; this chat's wake starts the job", children: [] }] }] } },
+  };
+  const { chats, sessions } = await readAppsChats("http://chat.test", async url => fixture[url.replace("http://chat.test", "")]);
+  const wakes = [
+    { session: `${VENT}--1`, on: { kind: "time", at: Date.parse("2026-11-10T00:30:00Z") }, note: "Paid Anthropic account lapses Nov 10. Start a job to remove the fallback.", since: now - day },
+    { session: `${SEO}--1`, on: { kind: "time", at: now + day }, note: "p67: read the 11-13 ledger lines; also p6 and p1170.", since: now - day },
+    { session: "b99a7650-d2bd-4712-825e-eae6b96595f8--1", on: { kind: "time", at: now + 3_600_000 }, note: "", since: now - day },
+  ] as Wake[];
+  const chat = (id: string) => chats.find(entry => entry.id === id)!;
+  const stuck = (id: string, owed: readonly Wake[], at = now) => appsStuckSteps(chat(id), appsOwnerReads(chat(id), sessions, owed, at), at).map(item => item.id);
+  assert.deepEqual(stuck("ag_vent", wakes), []);
+  assert.deepEqual(stuck("ag_seo", wakes), []);
+  // Without the thread's wakes p117 and p67 have no owner, and p123 stays held only until its waitUntil passes.
+  assert.deepEqual(stuck("ag_vent", []), ["p117"]);
+  assert.deepEqual(stuck("ag_seo", wakes.slice(2)), ["p67"]);
+  assert.deepEqual(stuck("ag_vent", wakes, Date.parse("2026-11-03T21:51:00Z")), ["p123"]);
+  // A wake of another chat's thread that names p67 does not hold seo's p67.
+  assert.deepEqual(stuck("ag_seo", [{ ...wakes[1]!, session: `${VENT}--1` }, wakes[2]!]), ["p67"]);
+  const vent = appsChatDuties(chat("ag_vent"), now, appsOwnerReads(chat("ag_vent"), sessions, wakes, now)).find(entry => entry.duty === "d2")!;
+  assert.deepEqual([vent.fix, vent.metric?.fix?.step, vent.stuck], ["p123", "p123", false]);
+});
