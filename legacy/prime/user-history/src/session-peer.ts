@@ -298,6 +298,28 @@ export class SessionPeer {
    */
   private active: { version: number; ids: Set<string> } | undefined;
 
+  /**
+   * The rows with a worker, as `list` holds them now; none while the box is down. Their keys are kept per `idsVersion`, so a status-only roster
+   * update costs a lookup per live row (a few hundred) instead of a pass over every row (about 8,400). At 23:21:49Z on 11-03 the idle unload's
+   * park watch walked `list` on each of these updates, and with CI on 38 of 80 cores that pass sat 0.8 s between two CPU samples inside a
+   * 1.3 s stall of the chat's event loop.
+   */
+  liveRows(): SessionSummary[] {
+    if (this.state === "down") return [];
+    if (this.liveKeys?.version !== this.idsVersion) {
+      const keys: string[] = [];
+      for (const [key, row] of this.rows) if (row.activeSessionId !== undefined) keys.push(key);
+      this.liveKeys = { version: this.idsVersion, keys };
+    }
+    const rows: SessionSummary[] = [];
+    for (const key of this.liveKeys.keys) {
+      const row = this.rows.get(key);
+      if (row?.activeSessionId !== undefined) rows.push(row);
+    }
+    return rows;
+  }
+  private liveKeys: { version: number; keys: string[] } | undefined;
+
   /** Changes the copy's row of a session this server changed itself, such as a saved session's new name. */
   patch(sessionId: string, fields: Partial<SessionSummary>): boolean {
     let found = false;

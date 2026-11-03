@@ -1504,6 +1504,11 @@ export class Catalog {
     return this.peer.listed ? this.peer.list() : [];
   }
 
+  /** This box's daemon rows with a worker (`SessionPeer.liveRows`), without a pass over every saved row; empty before the first full list. */
+  daemonLiveRows(): readonly SessionSummary[] {
+    return this.peer.listed ? this.peer.liveRows() : [];
+  }
+
   /** The local running rows asleep before their next model call (`asleepInRun`), each with its tree's root session and its provider. */
   private accountAsks(): AccountAsk[] {
     const asks: AccountAsk[] = [];

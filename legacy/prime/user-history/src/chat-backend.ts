@@ -498,7 +498,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const parkSeen = new Map<string, string>();
   // A chat that moves box leaves or joins this box's rows, so each row change splits the chat list again and writes the two boxes it changed.
   const stopLeadWatch = !lead ? () => {} : catalog.onDaemonRows(() => { void chats.ids().then(ids => writeLead([...ids])).catch(() => {}); });
-  const stopQuietWatch = !unloader ? () => {} : catalog.onDaemonRows(() => { void unloader_.quieted(parkChanges(parkSeen, catalog.daemonRows())); });
+  const stopQuietWatch = !unloader ? () => {} : catalog.onDaemonRows(() => { void unloader_.quieted(parkChanges(parkSeen, catalog.daemonLiveRows())); });
   // /tmp is a tmpfs on Linux, so what nobody holds or names there is RAM or swap that no work uses (src/tmp-sweep.ts).
   const stopTmpSweep = ownChatsOnly || process.platform !== "linux" ? () => {} : startTmpSweep({ rows: () => catalog.daemonRows(),
     waking: async () => new Set((await pendingWakes(join(dataDir, "wakes"), Date.now()).catch(() => [])).map(wake => wake.session)),
