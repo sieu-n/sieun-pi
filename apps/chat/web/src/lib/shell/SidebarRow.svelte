@@ -54,7 +54,7 @@
     {#if tag}{@render tag()}{/if}
     <span class="trail">
       {#if working.length}
-        <span class="working" title={workingLabel}><TypingDots label={workingLabel} /></span>
+        <span class="working" title={workingLabel}><TypingDots label={workingLabel} size={3} /></span>
       {/if}
       {#if unread > 0}
         <Badge value={unread} title="{unread} unread" />
@@ -124,13 +124,39 @@
   }
   .working {
     display: inline-flex;
-    color: var(--text-subtle);
+    align-items: center;
+    height: 16px;
+    padding: 0 6px;
+    border-radius: 9px 9px 9px 3px;
+    background: var(--accent-4);
+    color: var(--accent-link);
+  }
+  .working :global(i) {
+    animation: hop 1.2s ease-in-out infinite;
+  }
+  .working :global(i:nth-child(2)) {
+    animation-delay: 0.15s;
+  }
+  .working :global(i:nth-child(3)) {
+    animation-delay: 0.3s;
+  }
+  @keyframes hop {
+    0%,
+    60%,
+    100% {
+      transform: translateY(0);
+      opacity: 0.55;
+    }
+    30% {
+      transform: translateY(-2px);
+      opacity: 1;
+    }
   }
   .selected .trail :global(.dot) {
     background: var(--text-sidebar-selected);
   }
   .selected .working {
-    color: var(--text-sidebar-selected);
+    background: var(--surface-panel);
   }
   .item {
     position: relative;

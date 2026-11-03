@@ -66,8 +66,8 @@
   --affordance-ghost-pressed: rgb(0 0 0 / 8%);
   --interaction-selected: #e8e8e8;
 
-  --surface-sidebar-selected: #beda36;
-  --text-sidebar-selected: #000000;
+  --surface-sidebar-selected: var(--accent-4);
+  --text-sidebar-selected: var(--accent-12);
   --affordance-sidebar-hover: #f8fbef;
   --text-sidebar-hover: #2b3110;
 
@@ -233,6 +233,8 @@
 
   --affordance-sidebar-hover: #202413;
   --text-sidebar-hover: #edf7d2;
+  --surface-sidebar-selected: #343b1a;
+  --text-sidebar-selected: var(--accent-12);
 
   --affordance-prominent: #ffffff;
   --affordance-prominent-hover: #e8e8e8;

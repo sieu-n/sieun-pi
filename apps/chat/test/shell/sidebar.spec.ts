@@ -19,15 +19,15 @@ test("one list holds For you, Solo, Channels and Direct messages, with no All, S
   await expect(sidebar(page).locator('[data-section="solo"]')).toContainText("New thread");
 });
 
-test("a row opens its agent's DM and turns lime", async ({ page }) => {
+test("a row opens its agent's DM and takes the soft citrus fill", async ({ page }) => {
   const row = sidebar(page).getByRole("link", { name: "frontend bro" });
   await row.click();
   await expect(page).toHaveURL(/#\/c\/dm_frontend-bro$/);
   await expect(row).toHaveAttribute("aria-current", "page");
-  await expect(row).toHaveCSS("background-color", "rgb(190, 218, 54)");
+  await expect(row).toHaveCSS("background-color", "rgb(232, 240, 205)");
 });
 
-test("unread rows are bold and working rows show typing dots", async ({ page, request }) => {
+test("unread rows are bold and working rows show typing dots in a bubble", async ({ page, request }) => {
   const crawler = sidebar(page).locator('a[href="#/c/dm_crawler-vp"]');
   await expect(crawler).toHaveAttribute("data-unread", "true");
   await expect(crawler).toHaveCSS("font-weight", "500");
@@ -38,6 +38,7 @@ test("unread rows are bold and working rows show typing dots", async ({ page, re
   const cutover = sidebar(page).getByRole("link", { name: "pi-cutover" });
   await expect(cutover).toHaveAttribute("data-working", "true");
   await expect(cutover.getByRole("status")).toHaveAttribute("aria-label", /working in pi-cutover/);
+  await expect(cutover.getByRole("status").locator("..")).toHaveCSS("background-color", "rgb(232, 240, 205)");
 });
 
 test("Direct messages list only agents: a duty run's thread, a root job and a job inside a thread stay out and still open by link", async ({ page, request }) => {
