@@ -119,7 +119,7 @@ export class Agents {
 
   /** The record whose main work thread is `thread`. */
   ofWorkThread(thread: string): AgentRecord | undefined {
-    return this.store.agents.agents.find(a => a.workThread === thread);
+    return this.store.agentByWorkThread(thread);
   }
 
   /** Root job threads aliased to the agent. */

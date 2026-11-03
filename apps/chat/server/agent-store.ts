@@ -178,9 +178,25 @@ export function freeSlug(name: string, taken: ReadonlySet<string>): string {
   for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
 }
 
+interface StoreLookup {
+  version: number;
+  agents: AgentRecord[];
+  agentCount: number;
+  rooms: RoomRow[];
+  roomCount: number;
+  byId: Map<AgentId, AgentRecord>;
+  byRoom: Map<RoomId, AgentRecord>;
+  byWorkThread: Map<string, AgentRecord>;
+  byComm: Map<string, { record: AgentRecord; room: RoomId }>;
+  testRooms: Set<string>;
+}
+
 export class AgentStore {
   agents: AgentsFile;
   rooms: RoomsFile;
+  /** Counts the saves of agents.json and rooms.json; what reads the records keys its caches on it. */
+  version = 0;
+  private index?: StoreLookup;
   private readonly posts = new Map<RoomId, RoomPost[]>();
   /** Hears each post added or changed, after it is written; search indexes it. */
   onPost: (post: RoomPost) => void = () => {};
@@ -193,9 +209,11 @@ export class AgentStore {
   }
 
   saveAgents(): void {
+    this.version += 1;
     writeJson(join(this.dir, "agents.json"), this.agents);
   }
   saveRooms(): void {
+    this.version += 1;
     writeJson(join(this.dir, "rooms.json"), this.rooms);
   }
   /** `test-sends.json`: the work-thread inputs that were a job's test send, which pi-history's search reads as the job's too. */
@@ -206,17 +224,45 @@ export class AgentStore {
   /** The agent a thread id or agent id belongs to: its work thread, a root job thread aliased to it, or one of its comm threads. */
   agentOf(id: string): AgentRecord | undefined {
     const agentId = id.startsWith("ag_") ? id : this.agents.aliases[id];
-    return this.agents.agents.find(a => a.id === agentId) ?? (agentId ? undefined : this.commOwner(id)?.record);
+    return (agentId ? this.lookup().byId.get(agentId) : undefined) ?? (agentId ? undefined : this.commOwner(id)?.record);
   }
   /** The agent and room whose comm thread `thread` is. */
   commOwner(thread: string): { record: AgentRecord; room: RoomId } | undefined {
-    for (const record of this.agents.agents) {
-      for (const [room, comm] of Object.entries(record.comm ?? {})) if (comm === thread) return { record, room };
-    }
-    return undefined;
+    return this.lookup().byComm.get(thread);
   }
   agentByRoom(room: RoomId): AgentRecord | undefined {
-    return this.agents.agents.find(a => a.room === room);
+    return this.lookup().byRoom.get(room);
+  }
+  /** The record whose main work thread is `thread`. */
+  agentByWorkThread(thread: string): AgentRecord | undefined {
+    return this.lookup().byWorkThread.get(thread);
+  }
+
+  /**
+   * Maps over the records and rooms, built again after each save and whenever the record or room list is another array or another length.
+   * Each map keeps the first match, as the scans it replaced did. On 11-03 the scans took 3.5 s of the server's 15 s busy time in 100 s, as
+   * each 2 s thread list read and each board, duty and For you read asked them once per thread.
+   */
+  private lookup(): StoreLookup {
+    const { agents } = this.agents;
+    const { rooms } = this.rooms;
+    const cached = this.index;
+    if (cached && cached.version === this.version && cached.agents === agents && cached.agentCount === agents.length && cached.rooms === rooms && cached.roomCount === rooms.length) {
+      return cached;
+    }
+    const index: StoreLookup = {
+      version: this.version, agents, agentCount: agents.length, rooms, roomCount: rooms.length,
+      byId: new Map(), byRoom: new Map(), byWorkThread: new Map(), byComm: new Map(), testRooms: new Set(),
+    };
+    for (const record of agents) {
+      if (!index.byId.has(record.id)) index.byId.set(record.id, record);
+      if (!index.byRoom.has(record.room)) index.byRoom.set(record.room, record);
+      if (!index.byWorkThread.has(record.workThread)) index.byWorkThread.set(record.workThread, record);
+      for (const [room, comm] of Object.entries(record.comm ?? {})) if (!index.byComm.has(comm)) index.byComm.set(comm, { record, room });
+    }
+    for (const row of rooms) if (row.test) index.testRooms.add(row.id);
+    this.index = index;
+    return index;
   }
 
   /**
@@ -224,10 +270,11 @@ export class AgentStore {
    * conversation `<thread>:<n>` in one), any agent's comm thread in a test room, a test agent's DM room, or a test channel or Solo room.
    */
   isTest(id: string): boolean {
-    if (this.rooms.rooms.some(r => r.id === id && r.test)) return true;
+    const { testRooms } = this.lookup();
+    if (testRooms.has(id)) return true;
     const thread = /^(.*):\d+$/.exec(id)?.[1] ?? id;
     const comm = this.commOwner(thread);
-    if (comm && this.rooms.rooms.some(r => r.id === comm.room && r.test)) return true;
+    if (comm && testRooms.has(comm.room)) return true;
     return !!(this.agentOf(thread)?.test || this.agentByRoom(id)?.test);
   }
 

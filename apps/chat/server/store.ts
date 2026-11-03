@@ -44,7 +44,11 @@ export class Store {
     writeJson(join(this.dir, "cache", `${name}.json`), value);
   }
 
+  /** Counts the saves of state.json; what reads the thread kinds keys its caches on it. */
+  version = 0;
+
   saveState(): void {
+    this.version += 1;
     writeJson(join(this.dir, "state.json"), this.state);
   }
 

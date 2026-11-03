@@ -82,6 +82,9 @@ export class Threads {
   private agentCache = new Map<AgentId, string>();
   /** Agent and thread ids by name, for `principal`; refresh drops it. */
   private names?: Map<string, AgentId>;
+  /** Each thread's summaries (`agentsOf`) with the row they were built from, under `summariesKey`, the store versions they read. */
+  private readonly summaries = new Map<string, { row: DurableThread; out: AgentSummary[] }>();
+  private summariesKey = "";
   private jobCache = new Map<AgentId, string>();
   private convCache = new Map<ConversationId, string>();
   private readonly live = new Map<ConversationId, LiveConversation>();
@@ -161,6 +164,8 @@ export class Threads {
 
   /** Reads the thread list, and the tree of every thread whose file changed, and sends what changed. */
   async refresh(): Promise<void> {
+    // A box link that went up or down reads in hostState before the list does.
+    this.summaries.clear();
     const read = await this.host.threads();
     // A thread new to this read may be one a create in flight has not claimed yet; the next read lists it.
     const threads = this.creating ? read.filter(t => this.list.has(t.id)) : read;
@@ -171,11 +176,13 @@ export class Threads {
         const nodes = await this.host.tree(thread.id).catch(() => tree?.nodes ?? []);
         const before = JSON.stringify(tree?.nodes ?? []);
         this.trees.set(thread.id, { updatedAt: thread.updatedAt, nodes });
+        this.summaries.delete(thread.id);
         if (JSON.stringify(nodes) !== before) this.events.jobs(thread.id, this.jobs(thread.id));
       }
     }
     this.list = next;
     this.names = undefined;
+    this.summaries.clear();
     this.agentRecords?.dropUntitled(next);
     this.agentRecords?.follow(next);
     const cache = JSON.stringify({ threads, trees: [...this.trees] } satisfies ThreadsCache);
@@ -319,7 +326,25 @@ export class Threads {
     return { id: meta.parent, name: this.list.get(parseConversationId(meta.parent).thread)?.name ?? meta.parent };
   }
 
+  /**
+   * A thread's summaries, built once until the next thread list read, a tree read of that thread, or a save of the agent records, the rooms or
+   * the thread kinds. On 11-03 the 2 s thread list read, each board, duty and For you read and the step owners' tick built every thread's
+   * summaries again, up to once per chat, and held the event loop for 250 to 310 ms at a time.
+   */
   private agentsOf(row: DurableThread): AgentSummary[] {
+    const key = `${this.agentRecords?.store.version ?? 0}:${this.store.version}`;
+    if (key !== this.summariesKey) {
+      this.summaries.clear();
+      this.summariesKey = key;
+    }
+    const hit = this.summaries.get(row.id);
+    if (hit?.row === row) return hit.out;
+    const out = this.buildAgentsOf(row);
+    this.summaries.set(row.id, { row, out });
+    return out;
+  }
+
+  private buildAgentsOf(row: DurableThread): AgentSummary[] {
     const meta = this.meta(row.id);
     const rootModel = modelRef(`${row.provider}/${row.modelId}`);
     const record = this.agentRecords?.ofWorkThread(row.id);
@@ -339,11 +364,14 @@ export class Threads {
     const worksFor = owner ? { id: owner.id, name: this.list.get(owner.workThread)?.name || owner.name } : undefined;
     if (worksFor && !record) root.agent = worksFor;
     const out = [root];
-    for (const node of this.tree(row.id)) {
+    const nodes = this.tree(row.id);
+    const names = new Map<number, string>();
+    for (const node of nodes) if (!names.has(node.id)) names.set(node.id, node.name);
+    for (const node of nodes) {
       if (node.parent === null) continue;
       const id = conversationIdOf(row.id, node.id);
       const parentId = node.parent === 1 ? root.id : conversationIdOf(row.id, node.parent);
-      const parentName = node.parent === 1 ? root.name : this.tree(row.id).find(n => n.id === node.parent)?.name ?? parentId;
+      const parentName = node.parent === 1 ? root.name : names.get(node.parent) ?? parentId;
       out.push({
         id, kind: "job", name: node.name, avatar: avatarOf(node.name), model: modelRef(node.model), thinkingLevel: root.thinkingLevel,
         status: statusOf(node.status), parent: { id: parentId, name: parentName }, thread: row.id, conversation: node.id, archived: row.archived,
