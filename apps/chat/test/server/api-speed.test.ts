@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { apiSpeed } from "../../scripts/duties/api-speed.ts";
+import { apiSpeed, finding } from "../../scripts/duties/api-speed.ts";
 import { RequestLog, type RequestTiming } from "../../server/request-log.ts";
 import { start } from "./helpers.ts";
 
@@ -94,8 +94,8 @@ test("the precheck reads each metric from the client's lines, falls back to the 
   assert.equal(out.metricSources.send, "server, 1 requests");
   assert.deepEqual(out.slowest.map(s => s.route), ["GET /api/c/:id/replies/:root", "GET /api/search", "GET /api/c/:id/items"]);
   assert.equal(out.flagged.length, 3);
-  assert.match(out.flagged[0]!.excerpt, /replies.*p90 2500 ms.*dm_x\/replies\/p1; on the 2 of them that carry the network time, the server's included, it was p90 30 ms, p50 8 ms/);
-  assert.doesNotMatch(out.flagged[1]!.excerpt, /network/, "a route with no network times names none");
+  assert.equal(out.flagged[0]!.excerpt, "GET /api/c/:id/replies/:root p90 2500 ms, p50 10 ms, max 2500 ms over 2 requests from browsers on the box, such as job walks, or pages from before the server named where a page ran; on the 2 lines that carry the network time, the network and the server took p90 30 ms, p50 8 ms, so the page's main thread held the rest in long tasks; trace a page load in the box Chrome to find them; the slowest was /api/c/dm_x/replies/p1");
+  assert.match(out.flagged[1]!.excerpt, /no line carries the network time yet/);
 });
 
 test("the precheck reads the owner's devices first, then any page, then the server", () => {
@@ -109,4 +109,9 @@ test("the precheck reads the owner's devices first, then any page, then the serv
   assert.equal(out.metrics.slowest_api_p90_ms, 80);
   assert.equal(out.metricSources.messages, "tailnet, 1 requests");
   assert.deepEqual(out.routes.map(s => [s.src, s.count, s.p90]), [["client", 2, 2000], ["tailnet", 1, 80], ["server", 1, 5]]);
+});
+
+test("a finding whose wait is close to its network time blames the network or the server", () => {
+  const excerpt = finding({ route: "GET /api/usage", src: "tailnet", count: 4, p50: 300, p90: 390, max: 400, slowestPath: "/api/usage", netCount: 4, netP50: 290, netP90: 380 });
+  assert.match(excerpt, /^GET \/api\/usage p90 390 ms.*from the owner's devices; on the 4 lines .* p90 380 ms, p50 290 ms, so the network or the server held the wait;/);
 });

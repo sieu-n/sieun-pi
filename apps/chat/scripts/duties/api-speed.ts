@@ -83,6 +83,26 @@ const PREFERRED: readonly SpeedSource[] = ["tailnet", "client", "server"];
 const speedOf = (speeds: readonly RouteSpeed[], route: string): RouteSpeed | undefined =>
   PREFERRED.map(src => speeds.find(s => s.src === src && s.route === route)).find(Boolean);
 
+const WHO: Record<SpeedSource, string> = {
+  tailnet: "the owner's devices",
+  client: "browsers on the box, such as job walks, or pages from before the server named where a page ran",
+  server: "the server's own handler time",
+};
+
+/**
+ * A flagged route's finding: who measured it, then the network time, then where the rest went. A wait at least twice its network p90 was
+ * held by the page's main thread in long tasks (render, markdown, the hello lists), as GET /api/rooms was on 11-03 at 654 ms p50 against a
+ * 7.2 ms handler; otherwise the network or the server held it.
+ */
+export function finding(s: RouteSpeed): string {
+  const head = `${s.route} p90 ${s.p90} ms, p50 ${s.p50} ms, max ${s.max} ms over ${s.count} requests from ${WHO[s.src]}`;
+  const net = s.netP90 === undefined
+    ? s.src === "server" ? "" : "; no line carries the network time yet, so read the server's line for this route beside it"
+    : `; on the ${s.netCount} lines that carry the network time, the network and the server took p90 ${s.netP90} ms, p50 ${s.netP50} ms, so ${
+      s.p90 >= 2 * s.netP90 ? "the page's main thread held the rest in long tasks; trace a page load in the box Chrome to find them" : "the network or the server held the wait"}`;
+  return `${head}${net}; the slowest was ${s.slowestPath}`;
+}
+
 export function apiSpeed(dir: string, now: number, windowMs: number) {
   const speeds = routeSpeeds(readTimings(dir, now, windowMs));
   const seen = PREFERRED.map(src => speeds.filter(s => s.src === src)).find(list => list.length) ?? [];
@@ -103,11 +123,7 @@ export function apiSpeed(dir: string, now: number, windowMs: number) {
     slowest,
     metricSources: Object.fromEntries(Object.entries({ search, messages, replies, send }).flatMap(([key, speed]) => (speed ? [[key, `${speed.src}, ${speed.count} requests`]] : []))),
     routes: speeds,
-    flagged: slowest.map(s => ({
-      kind: "slow_api", sig: `${s.src}:${s.route}`,
-      excerpt: `${s.route} p90 ${s.p90} ms, p50 ${s.p50} ms, max ${s.max} ms over ${s.count} ${s.src} requests; the slowest was ${s.slowestPath}${
-        s.netP90 === undefined ? "" : `; on the ${s.netCount} of them that carry the network time, the server's included, it was p90 ${s.netP90} ms, p50 ${s.netP50} ms, and the page's main thread held the rest`}`,
-    })),
+    flagged: slowest.map(s => ({ kind: "slow_api", sig: `${s.src}:${s.route}`, excerpt: finding(s) })),
   };
 }
 
