@@ -21,7 +21,7 @@ import {
 } from "../../../../components/prime-relay/agents/protocol.ts";
 import { writeJson } from "../store.ts";
 import {
-  HostAway, type CreateOptions, type DurableEvent, type DurableThread, type EntryRecord, type Host, type Ping, type SearchPage, type SearchQuery,
+  HostAway, type CreateOptions, type DurableEvent, type DurableThread, type EntriesQuery, type EntryRecord, type Host, type Ping, type SearchPage, type SearchQuery,
   type SubmissionRecord, type Submitted, type SubmitInput, type Ticket, type TreeNode, type UsageTotal,
 } from "./types.ts";
 
@@ -397,7 +397,7 @@ export class RelayHost implements Host {
   async tree(thread: string): Promise<TreeNode[]> {
     return ((await this.call("durable_tree", { thread })) as { conversations: TreeNode[] }).conversations;
   }
-  async entries(thread: string, opts: { conversation?: number; before?: number; after?: number; limit?: number }): Promise<{ entries: EntryRecord[]; more: boolean }> {
+  async entries(thread: string, opts: EntriesQuery): Promise<{ entries: EntryRecord[]; more: boolean }> {
     return (await this.call("durable_entries", { thread, ...opts })) as { entries: EntryRecord[]; more: boolean };
   }
   async watch(thread: string, opts: { conversation?: number; fromEntry?: number }, sink: (event: DurableEvent) => void): Promise<() => Promise<void>> {

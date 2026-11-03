@@ -14,7 +14,7 @@ import { readJson, writeJson } from "../store.ts";
 import { join } from "node:path";
 import { RelayHost, type LinkState } from "./relay-host.ts";
 import type {
-  CreateOptions, DurableEvent, DurableThread, EntryRecord, Host, Ping, SearchPage, SearchQuery, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageTotal,
+  CreateOptions, DurableEvent, DurableThread, EntriesQuery, EntryRecord, Host, Ping, SearchPage, SearchQuery, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageTotal,
 } from "./types.ts";
 
 interface RoutesFile {
@@ -160,7 +160,7 @@ export class MultiHost implements Host {
   tree(thread: string): Promise<TreeNode[]> {
     return this.hostOf(thread).tree(thread);
   }
-  entries(thread: string, opts: { conversation?: number; before?: number; after?: number; limit?: number }): Promise<{ entries: EntryRecord[]; more: boolean }> {
+  entries(thread: string, opts: EntriesQuery): Promise<{ entries: EntryRecord[]; more: boolean }> {
     return this.hostOf(thread).entries(thread, opts);
   }
   watch(thread: string, opts: { conversation?: number; fromEntry?: number }, sink: (event: DurableEvent) => void): Promise<() => Promise<void>> {

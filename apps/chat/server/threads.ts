@@ -480,13 +480,13 @@ export class Threads {
     };
   }
 
-  /** Entries before `before` (exclusive), oldest first, widened up to the input that starts the oldest turn. */
+  /** Entries before `before` (exclusive), oldest first, widened up to the input that starts the oldest turn; lean, as a page draws them. */
   private async pageBefore(thread: string, conversation: number, before: number | undefined, limit: number): Promise<{ entries: EntryRecord[]; more: boolean }> {
-    const got = await this.host.entries(thread, { conversation, ...(before === undefined ? {} : { before }), limit });
+    const got = await this.host.entries(thread, { conversation, ...(before === undefined ? {} : { before }), limit, lean: true });
     const entries = [...got.entries];
     let more = got.more;
     while (more && entries.length && !isInput(entries.at(-1)!) && entries.length < TURN_READ_CAP) {
-      const next = await this.host.entries(thread, { conversation, before: entries.at(-1)!.id, limit: 100 });
+      const next = await this.host.entries(thread, { conversation, before: entries.at(-1)!.id, limit: 100, lean: true });
       if (!next.entries.length) {
         more = false;
         break;
@@ -504,7 +504,7 @@ export class Threads {
     const entries: EntryRecord[] = [];
     let cursor = after;
     for (;;) {
-      const got = await this.host.entries(thread, { conversation, after: cursor, limit: 100 });
+      const got = await this.host.entries(thread, { conversation, after: cursor, limit: 100, lean: true });
       for (const entry of got.entries) {
         if (entries.length >= limit && isInput(entry)) return { entries, more: true };
         entries.push(entry);
@@ -518,7 +518,7 @@ export class Threads {
   async loadFirstEntry(thread: string, conversation: number): Promise<void> {
     const id = conversationIdOf(thread, conversation);
     if (this.firstEntries.has(id)) return;
-    const first = (await this.host.entries(thread, { conversation, after: 0, limit: 1 })).entries[0];
+    const first = (await this.host.entries(thread, { conversation, after: 0, limit: 1, lean: true })).entries[0];
     if (first) this.firstEntries.set(id, first.id);
   }
 
@@ -590,7 +590,7 @@ export class Threads {
 
   private async attach(id: ConversationId, live: LiveConversation): Promise<void> {
     await this.loadFirstEntry(live.thread, live.conversation);
-    const tail = await this.host.entries(live.thread, { conversation: live.conversation, limit: 1 });
+    const tail = await this.host.entries(live.thread, { conversation: live.conversation, limit: 1, lean: true });
     const newest = tail.entries[0]?.id;
     if (newest !== undefined) {
       // A page, not only the newest turn, so a live quiet turn of a conversation that talks through send_message reads as one.

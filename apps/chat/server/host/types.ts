@@ -109,6 +109,12 @@ export class HostAway extends Error {
 
 export const isHostAway = (error: unknown): error is HostAway => error instanceof HostAway;
 
+/**
+ * One `durable_entries` page: `before` and `after` are exclusive entry ids. `lean` asks pi-host for the page form (packages/pi-host
+ * src/durable/lean.ts), without image data and with tool output cut at 4000 characters; a pi-host from before 11-03 sends whole entries.
+ */
+export interface EntriesQuery { conversation?: number; before?: number; after?: number; limit?: number; lean?: boolean }
+
 export interface Host {
   readonly name: string;
   threads(opts?: { archived?: boolean }): Promise<DurableThread[]>;
@@ -122,7 +128,7 @@ export interface Host {
   wait(thread: string, submission: number): Promise<SubmissionRecord>;
   tree(thread: string): Promise<TreeNode[]>;
   /** Newest first with `before`, oldest first with `after`. */
-  entries(thread: string, opts: { conversation?: number; before?: number; after?: number; limit?: number }): Promise<{ entries: EntryRecord[]; more: boolean }>;
+  entries(thread: string, opts: EntriesQuery): Promise<{ entries: EntryRecord[]; more: boolean }>;
   watch(thread: string, opts: { conversation?: number; fromEntry?: number }, sink: (event: DurableEvent) => void): Promise<() => Promise<void>>;
   search(query: SearchQuery): Promise<SearchPage>;
   usage(range: { since?: number; until?: number; threads?: string[] }): Promise<UsageTotal[]>;
