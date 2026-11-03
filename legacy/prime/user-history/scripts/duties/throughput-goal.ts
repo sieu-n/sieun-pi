@@ -159,11 +159,16 @@ export function refreshShares(samples: readonly RefreshSample[]): RefreshShares 
   return { big7Pct: pct(sum.past7Big, sum.readBig), rest30Pct: pct(sum.past30Rest, sum.read - sum.readBig), sum };
 }
 
-/** The Instagram pipeline queues: Kafka consumer lag, dead letters, search sync outbox and Redis stream lag. */
+/**
+ * The Instagram pipeline queues: Kafka consumer lag, dead letters, search sync outbox and Redis stream lag. The search sync outbox counts its
+ * live rows only, the gauge crawler_v3_search_sync_outbox_live_rows, because the backfill lane is planned work that drains in spare passes
+ * (Crawler VP 11-03, owner ruling c188). Until the crawler deploy that adds that gauge reaches prod, the read falls back to the rows gauge,
+ * which still counts the backfill lane, so the family never reads empty. Drop the fallback once prod serves the live gauge.
+ */
 export const QUEUES: { family: string; expr: string; by: string[]; wait?: string }[] = [
   { family: "kafka lag", by: ["topic", "group"], expr: 'max by (topic, group) (crawler_v3_bus_group_lag_records{world="prod",topic=~"instagram.*|media.fetch|crawl_profile.instagram|crawl[.](profiles|posts|related_profiles|videos)"})' },
   { family: "dead letters", by: ["topic"], expr: 'max by (topic) (crawler_v3_bus_topic_retained_records{world="prod",topic=~"(instagram.*|media.fetch|crawl_profile.instagram|crawl[.].*)[.]dlq"})' },
-  { family: "search sync outbox", by: ["kind"], expr: 'max by (kind) (crawler_v3_search_sync_outbox_rows{world="prod",kind=~"profile|content"})',
+  { family: "search sync outbox", by: ["kind"], expr: 'max by (kind) (crawler_v3_search_sync_outbox_live_rows{world="prod",kind=~"profile|content"}) or max by (kind) (crawler_v3_search_sync_outbox_rows{world="prod",kind=~"profile|content"})',
     wait: 'max by (kind) (crawler_v3_search_sync_outbox_oldest_age_seconds{world="prod",kind=~"profile|content"})' },
   { family: "redis stream lag", by: ["stream", "group"], expr: "max by (stream, group) (crawler_v3_stream_group_lag)" },
 ];
