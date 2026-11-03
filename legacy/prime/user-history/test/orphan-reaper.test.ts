@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { ENDED_FOR_MS, KILL_AFTER_MS, type Group, type ProcRow, type Verdict, decide, groupProcesses, hostMatcher, ownerOf, piThreadRow, readUnitHolds, readVerdicts, stopGroups, unitFileNames, unitOf, verdict } from "../src/orphan-reaper.ts";
+import { ENDED_FOR_MS, KILL_AFTER_MS, type Group, type ProcRow, type Verdict, decide, groupProcesses, hostMatcher, leftParent, ownerOf, piThreadRow, readUnitHolds, readVerdicts, stopGroups, unitFileNames, unitOf, verdict } from "../src/orphan-reaper.ts";
 
 const JOB = "01a183f7-0a0b-725c-984d-d59f150e6420";
 const LIVE = "01a190a3-1b2e-74ad-88ca-f217e0f956a8";
@@ -292,4 +292,18 @@ test("11-03: a vitest fork worker or a multiprocessing forkserver that lost its 
   const decision = decide([vitest, forkserver, driver], live, 2 * ENDED_FOR_MS);
   assert.deepEqual(decision.stop.map(group => group.key), [vitest.key, forkserver.key]);
   assert.deepEqual(decision.held.map(entry => entry.group.key), [driver.key]);
+});
+
+test("a crashpad handler that a live Chrome names stays with it, while one whose Chrome is gone left its parent (11-04)", () => {
+  // On 11-04 a Mac job's aside box on us-metal02 had two chrome_crashpad_handler under pid 1, listed as orphan_unknown while the Mac did not answer.
+  const handler = row(1561414, 1, "/opt/google/chrome/chrome_crashpad_handler --monitor-self --database=/home/sieun/.config/google-chrome/Crash Reports");
+  const chrome = row(1561424, 1561019, "/opt/google/chrome/chrome --type=zygote --no-sandbox --crashpad-handler-pid=1561414 --enable-crash-reporter=,");
+  const group = (root: ProcRow): Group => ({ key: `pid ${root.pid}`, root: root.pid, pids: [root.pid], bytes: 1 << 20, started: root.started, command: root.command, owners: [] });
+  assert.equal(leftParent(group(handler), [...base, handler, chrome]), false);
+  assert.equal(leftParent(group(handler), [...base, handler]), true);
+  const monitor = row(1561417, 1, "/opt/google/chrome/chrome_crashpad_handler --no-periodic-tasks --monitor-self-annotation=ptype=crashpad-handler", { started: handler.started });
+  assert.equal(leftParent(group(monitor), [...base, handler, monitor, chrome]), false);
+  assert.equal(leftParent(group(monitor), [...base, handler, monitor]), true);
+  const shell = row(700, 600, "bash");
+  assert.equal(leftParent(group(shell), [...base, row(600, 4578, "sshd"), shell]), false);
 });

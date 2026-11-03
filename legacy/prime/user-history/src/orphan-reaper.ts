@@ -399,6 +399,28 @@ export function describe(group: Group, now: number, verdicts?: ReadonlyMap<strin
   return `${group.unit ?? `pid ${group.root}`}: ${group.pids.length} processes, ${mb(group.bytes)}, ${age(group, now)}, ${group.command.slice(0, 120)}${owners.length ? `; owner ${owners.join(", ")}` : "; no owner signal"}`;
 }
 
+/**
+ * Whether a group's root left its parent: it is a transient unit, or it now sits under pid 1 or systemd --user. Chrome double-forks its
+ * chrome_crashpad_handler to pid 1 by design, so a handler that a live Chrome names with --crashpad-handler-pid stays with that Chrome. On 11-04
+ * two handlers of a Mac job's live aside box on us-metal02 read as orphan_unknown while the Mac did not answer.
+ */
+export function leftParent(group: Group, rows: readonly ProcRow[]): boolean {
+  if (group.unit !== undefined) return true;
+  const byPid = new Map(rows.map(row => [row.pid, row]));
+  const ppid = byPid.get(group.root)?.ppid ?? 0;
+  if (ppid !== 1 && !/(^|\/)systemd --user/.test(byPid.get(ppid)?.command ?? "")) return false;
+  return !heldHandler(group.root, rows, byPid);
+}
+
+/** A crashpad handler a live Chrome names, or the self-monitor (--no-periodic-tasks) such a handler started in the same second. */
+function heldHandler(pid: number, rows: readonly ProcRow[], byPid: ReadonlyMap<number, ProcRow>): boolean {
+  const named = (handler: number): boolean => rows.some(row => row.pid !== handler && row.command.split(/\s+/).includes(`--crashpad-handler-pid=${handler}`));
+  if (named(pid)) return true;
+  const self = byPid.get(pid);
+  if (!self || !/chrome_crashpad_handler .*--no-periodic-tasks/.test(self.command) || self.started === null) return false;
+  return rows.some(row => row.pid !== pid && row.command.includes("chrome_crashpad_handler") && row.started !== null && Math.abs(row.started - self.started!) <= 1 && named(row.pid));
+}
+
 export async function readOrphans(context: ReadContext, hostOf: (address: string) => string): Promise<{ rows: ProcRow[]; reading: Reading }> {
   const [rows, unitFiles] = await Promise.all([readProcesses(), readUnitFiles()]);
   const groups = groupProcesses(rows, unitFiles, hostOf, context.here);
@@ -406,12 +428,7 @@ export async function readOrphans(context: ReadContext, hostOf: (address: string
   const read = reader(context);
   const verdicts = await readVerdicts(owned, context, read);
   const decision = decide(groups, verdicts, context.now, await readUnitHolds(groups, context, read));
-  const byPid = new Map(rows.map(row => [row.pid, row]));
-  const orphaned = (group: Group): boolean => {
-    const ppid = byPid.get(group.root)?.ppid ?? 0;
-    return group.unit !== undefined || ppid === 1 || /(^|\/)systemd --user/.test(byPid.get(ppid)?.command ?? "");
-  };
-  const unknown = decision.unknown.filter(orphaned);
+  const unknown = decision.unknown.filter(group => leftParent(group, rows));
   return { rows, reading: { orphan_processes: decision.stop.reduce((sum, group) => sum + group.pids.length, 0), orphan_unknown: unknown.reduce((sum, group) => sum + group.pids.length, 0),
     stop: decision.stop, held: decision.held, unknown, verdicts } };
 }
