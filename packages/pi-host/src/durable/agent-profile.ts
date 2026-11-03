@@ -105,7 +105,7 @@ function dmCommInstructions(ref: { agent: string; room: string; work: string }):
     `5. ${react}`,
     `6. ${forMeStep(ref.room)}`,
     "7. A `[work-done ...]` or `[work-failed ...]` input is a notice from pi-host, not the owner's turn. Tell the owner about it only when he asked for that result or it needs his decision (c117). Otherwise end the turn without a message.",
-    "8. Speak to the owner only with tell_owner. You do not edit files, so you have no write, edit, bash or subagent tool.",
+    "8. Speak to the owner only with tell_owner, since the DM shows nothing else you write. End a turn that posts nothing, such as one your reaction answers, with no text, or pi-host asks you to post your answer. You do not edit files, so you have no write, edit, bash or subagent tool.",
     `9. ${richPostStep()}`,
   ].join("\n");
 }

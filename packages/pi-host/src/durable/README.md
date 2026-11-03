@@ -47,6 +47,7 @@ H-->>C: the same submission, nothing admitted twice
 | `agent-profile.ts` | The agent a thread belongs to, read from the `agent.ref` doc of its root conversation, what that agent's folder gives the thread (the brief as a Prime context file and the agent's harness store as the local store), and the tools filter and instructions its role sets on the root conversation. |
 | `comm.ts` | A comm thread's link to its agent's work thread: the `comm.hand` task that hands the work thread a task and sends the work-done notice, and the `stop_work` tool. |
 | `comm-guard.ts`, `relay-line.ts` | What a comm thread may post: no post after its hand-over in the same turn but a question, no hand-over words, and no progress words on a turn the owner did not start. |
+| `comm-reply.ts` | The note that continues a DM comm thread's owner turn once when it ended with text, no post and no hand-over, so the owner gets an answer he can see. |
 | `open.ts` | `openDurableHost()` for one file and the Prime preamble extension. |
 | `@sieun-pi/pi-pool/durable` | `poolProvider()` in `packages/pi-pool/src/durable/pool-provider.ts`: a pi-ai Provider that vends each request's account through pi-pool and turns a slot wait into a stored sleep. |
 | `subagent.ts` | The `subagent` tool: the call starts a child conversation through an `rlm.deliver` task and returns at once, and the child's whole answer reaches the parent later as an input. A call from before this change still owns its child and returns its answer. `ForegroundSubagent` keeps the old tool for `openDurableHost`. |
@@ -112,6 +113,8 @@ A comm thread posts a result, an answer or a question, never a relay of its own 
 1. The hand-over notes its time in the comm root's `comm.handed` document, in the commit that creates the `comm.hand` task. A post in the same turn, after the turn's input arrived, is refused unless it asks a question with no relay words, because the agent's 👀 on the post (set with `set_emoji`, as its role text asks) shows it is on it and the result comes once, from the work thread's report or the work-done notice.
 2. A post with hand-over words (`relay-line.ts`: "I passed it to the job", "I'll post the link once it's done") is refused on any turn.
 3. A post with progress words ("The vent thread is now listing every panel") is refused on a turn the owner did not start, and allowed on his turn, where it answers his status question.
+
+A room shows only what a speaking call posts, while a Prime chat shows the text of the owner's turn as his reply when no tell_owner went out. So when a DM comm thread's root yields a final answer with text on the owner's turn, with no post since his post and no hand-over in the turn, a `GenerationTask` `onYield` hook in `prime-chat.ts` continues the turn once with Prime's note for his unanswered message (`comm-reply.ts`: `[check-in] ... The owner's message is still unanswered: "..."`). The turn stays his, so the model posts through tell_owner and its guards, or ends with no text when its reaction answered. A group room gets no note, since a post there often needs nothing from the agent.
 
 apps/chat's duty precheck `scripts/duties/relay-posts.ts` counts the same words in the agent posts of real rooms over 24 h, with a target of 0.
 

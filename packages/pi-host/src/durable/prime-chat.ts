@@ -18,6 +18,9 @@
  * | `correction_add` | the extension's execute | the shared ledger Prime chats write (`AGENT_CHAT_SHARED_DIR`, else `<agentDir>/browser-chat`), or the chat host's corrections route, as Prime | unsafe: a rerun could add the correction twice |
  * | `poteto_mode` | the extension's execute | none | safe |
  *
+ * In a DM comm thread's root, a final answer with text on the owner's turn, with no post and no hand-over, continues the turn once with
+ * Prime's note for his unanswered message (`comm-reply.ts`), since the room shows only what a speaking call posts.
+ *
  * Skipped, with the reason:
  * - The `[corrections]` block of the context hook (`deliverCorrections`): `prime-prompt.ts` sends the same `ledgerPrompt` text as its
  *   pinned `corrections` section, so it would be there twice.
@@ -57,6 +60,7 @@ import { threadAgent } from "./agent-profile.ts";
 import { ChatApp } from "./chat-app.ts";
 import { CommHandedDoc } from "./comm.ts";
 import { commPostRefusal, turnStartedAt } from "./comm-guard.ts";
+import { unpostedReply } from "./comm-reply.ts";
 import { durableTool, loadPiExtension, piContext, type LoadedPiExtension, type PiSession, type PiTool, type PiToolResult } from "./pi-extensions.ts";
 
 export const PRIME_CHAT_EXTENSION = "prime-chat";
@@ -270,6 +274,26 @@ async function commRefusal(chat: PrimeChat, thread: ChatThread, call: { id: stri
   }
 }
 
+/**
+ * In a DM comm thread's root, the note that continues a turn whose final answer the owner cannot see (`comm-reply.ts`). Undefined in any other
+ * thread, room or conversation, and when the turn or the hand-over cannot be read, so a read failure ends the turn as before.
+ */
+async function unpostedNote(thread: ChatThread, answer: { content: unknown }, api: { conversationId: ConversationId }, context: Context): Promise<string | undefined> {
+  const harness = thread.harness();
+  if (!harness || api.conversationId !== ROOT_CONVERSATION_ID) return undefined;
+  try {
+    const ref = await threadAgent(harness, context);
+    if (ref?.role !== "comm" || !ref.room.startsWith("dm_")) return undefined;
+    const view = await contextOf(thread, api.conversationId, context);
+    if (!view) return undefined;
+    const handedAt = (await harness.snapshot(CommHandedDoc, ROOT_CONVERSATION_ID, context))?.at ?? 0;
+    return unpostedReply(threadMessages(view), answer, handedAt, SPEAKING_TOOLS);
+  } catch (error) {
+    thread.log?.(`unposted reply check read nothing: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
+}
+
 /** tell_owner as Prime's runs it (extension/index.ts), with the turn read from the thread and the asks from apps/chat's boards. */
 async function tellOwner(chat: PrimeChat, thread: ChatThread, params: unknown, api: ToolExecutionApi, context: Context): Promise<PiToolResult> {
   const guard = await liveGuard(chat.agentDir);
@@ -317,6 +341,10 @@ export function primeChat(chat: PrimeChat, thread: ChatThread): Extension {
         return refused ? { block: refused } : undefined;
       },
     }), hook(GenerationTask, {
+      onYield: async (answer, api, context) => {
+        const note = await unpostedNote(thread, answer, api, context);
+        return note ? { continue: [{ type: "text", text: note }] } : undefined;
+      },
       beforeRequest: async ({ messages }, api, context) => {
         if (api.conversationId !== ROOT_CONVERSATION_ID) return undefined;
         let view: ContextView | undefined;
