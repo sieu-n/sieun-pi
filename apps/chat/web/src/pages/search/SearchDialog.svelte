@@ -20,7 +20,7 @@
   import { pieces } from "./match";
   import { resultParams } from "./results-model";
   import { absorb, chipLabel, filters, prompt, withOperator, withoutPrompt, type NamedOperator, type Operator } from "./operators";
-  import { buildGroups, messageGroupLabel, SEE_ALL, type Action, type Icon, type Messages, type Person, type Row, type Sort } from "./search-model";
+  import { answered, buildGroups, messageGroupLabel, pendingNotes, SEE_ALL, type Action, type Icon, type Messages, type Person, type Row, type Sort } from "./search-model";
 
   type Props = { open: boolean; scope: SearchScope; query: string; onclose: () => void };
   let { open, scope, query, onclose }: Props = $props();
@@ -109,25 +109,37 @@
     }
     const mine = ++generation;
     messages = { state: "loading" };
+    // A newer keystroke or a close aborts this one's requests, and an aborted request shows no error.
+    const controller = new AbortController();
+    const { signal } = controller;
     const timer = setTimeout(async () => {
+      const ask = { ...params, limit: PAGE };
+      // This box answers first; the full search brings the boxes it names as pending, with the exact count.
+      let local: SearchResult | undefined;
       try {
-        const result = await api.search({ ...params, limit: PAGE });
+        local = await api.search(ask, { local: true, signal });
         if (mine !== generation) return;
-        show(result, false);
+        show(local, false);
+        if (!local.pending?.length) return;
+        const full = await api.search(ask, { signal });
+        if (mine === generation) show(full, false);
       } catch (error) {
-        if (mine === generation) messages = { state: "error", message: error instanceof Error ? error.message : String(error) };
+        if (mine !== generation || signal.aborted) return;
+        if (local?.pending?.length) {
+          show({ hits: local.hits, total: local.total, missing: [...(local.missing ?? []), ...pendingNotes(local.pending, error)] }, false);
+        } else messages = { state: "error", message: error instanceof Error ? error.message : String(error) };
       }
     }, DEBOUNCE_MS);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   });
 
   function show(result: SearchResult, append: boolean) {
-    const before = append && messages.state === "ready" ? messages.hits : [];
-    // A conversation that grows between two pages shifts the offsets, so a hit can come twice.
-    const seen = new Set(before.map(hit => hit.id));
-    cursor = result.nextCursor;
+    cursor = result.pending?.length ? undefined : result.nextCursor;
     missing = result.missing ?? [];
-    messages = { state: "ready", hits: [...before, ...result.hits.filter(hit => !seen.has(hit.id))], total: result.total, more: !!result.nextCursor, loadingMore: false };
+    messages = answered(result, append && messages.state === "ready" ? messages.hits : []);
   }
 
   async function loadMore() {
@@ -317,7 +329,7 @@
               <h2 class="heading" class:sr-only={group.hideLabel}>
                 <span>{group.label}</span>
                 {#if group.count !== undefined}
-                  <span class="count" data-testid="search-count">{group.count.toLocaleString("en-US")} {group.count === 1 ? "message" : "messages"}</span>
+                  <span class="count" data-testid="search-count">{group.count === "counting" ? "Counting…" : `${group.count.toLocaleString("en-US")} ${group.count === 1 ? "message" : "messages"}`}</span>
                 {/if}
               </h2>
               {#each group.rows as row (row.key)}
@@ -327,7 +339,7 @@
                 {#each missing as box (box.box)}<p class="empty" data-testid="search-missing">{box.note}</p>{/each}
               {/if}
               {#if !group.rows.length && group.empty}
-                {#if messages.state === "loading" && group.label === messageLabel}
+                {#if (messages.state === "loading" || (messages.state === "ready" && messages.total === "counting")) && group.label === messageLabel}
                   <p class="empty"><LoadingText text={group.empty} /></p>
                 {:else}
                   <p class="empty">{group.empty}</p>

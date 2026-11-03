@@ -54,7 +54,8 @@
       status = params.q ? { state: "loading" } : { state: "idle" };
     });
     if (!params.q) return;
-    api.search({ ...params, limit: PAGE }).then(
+    const controller = new AbortController();
+    api.search({ ...params, limit: PAGE }, { signal: controller.signal }).then(
       result => {
         if (mine !== generation) return;
         hits = result.hits;
@@ -64,9 +65,10 @@
         status = { state: "ready" };
       },
       error => {
-        if (mine === generation) status = { state: "error", message: error instanceof Error ? error.message : String(error) };
+        if (mine === generation && !controller.signal.aborted) status = { state: "error", message: error instanceof Error ? error.message : String(error) };
       },
     );
+    return () => controller.abort();
   });
 
   async function loadMore() {

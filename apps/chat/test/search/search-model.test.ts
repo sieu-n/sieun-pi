@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildGroups, SEE_ALL, type Conversation, type Person, type SearchInput } from "../../web/src/pages/search/search-model.ts";
+import { answered, buildGroups, pendingNotes, SEE_ALL, type Conversation, type Hit, type Person, type SearchInput } from "../../web/src/pages/search/search-model.ts";
 
 const conversations: Conversation[] = [
   { id: "c-vent", kind: "solo", name: "Vent", lastActivityAt: 5, preview: "tests pass" },
@@ -94,4 +94,41 @@ test("global search always reads Messages, whatever the scoped sort was", () => 
 test("loading says it is searching, and an error says search is unavailable", () => {
   assert.equal(buildGroups({ ...base, text: "a", messages: { state: "loading" } }).at(-1)!.empty, "Searching messages…");
   assert.equal(buildGroups({ ...base, text: "a", messages: { state: "error", message: "x" } }).at(-1)!.empty, "Message search is unavailable.");
+});
+
+const hit = (id: string): Hit => ({
+  id, conversation: { id: "c-cut", kind: "channel", name: "#pi-cutover" }, messageId: `m-${id}`,
+  author: { id: "owner", name: "Sieun", kind: "owner" }, at: new Date(2026, 9, 27).getTime(), kind: "message", snippet: `<mark>${id}</mark>`,
+});
+
+test("a this-box answer with pending boxes shows its hits, counts no number and offers no next page", () => {
+  const messages = answered({ hits: [hit("a")], total: 7, nextCursor: "20", pending: ["mac"] });
+  assert.deepEqual(messages, { state: "ready", hits: [hit("a")], total: "counting", more: false, loadingMore: false });
+  const groups = buildGroups({ ...base, text: "a", messages });
+  assert.equal(groups[0]!.rows[0]!.detail, "Counting… · Enter opens the full page");
+  assert.equal(groups.at(-1)!.count, "counting");
+  assert.deepEqual(groups.at(-1)!.rows.map(row => row.key), ["hit:a"]);
+});
+
+test("a this-box answer with no hits yet still says it is searching while a box is pending", () => {
+  const messages = answered({ hits: [], total: 0, pending: ["mac"] });
+  assert.equal(buildGroups({ ...base, text: "a", messages }).at(-1)!.empty, "Searching messages…");
+});
+
+test("the full answer replaces the this-box hits with every box's hits, its exact total and its cursor", () => {
+  const full = answered({ hits: [hit("mac1"), hit("a")], total: 9, nextCursor: "20" });
+  assert.deepEqual(full, { state: "ready", hits: [hit("mac1"), hit("a")], total: 9, more: true, loadingMore: false });
+  assert.equal(buildGroups({ ...base, text: "a", messages: full })[0]!.rows[0]!.detail, "9 results · Enter opens the full page");
+});
+
+test("a next page appends only hits not already shown", () => {
+  const next = answered({ hits: [hit("a"), hit("b")], total: 9 }, [hit("a")]);
+  assert.deepEqual(next.hits.map(one => one.id), ["a", "b"]);
+  assert.equal(next.more, false);
+});
+
+test("a pending box the full search could not bring gets the server's missing note", () => {
+  assert.deepEqual(pendingNotes(["mac"], new Error("timed out")), [
+    { box: "mac", note: "mac did not answer the search (timed out), so its threads are not in these results." },
+  ]);
 });

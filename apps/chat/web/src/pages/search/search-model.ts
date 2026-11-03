@@ -35,7 +35,35 @@ export type Messages =
   | { state: "idle" }
   | { state: "loading" }
   | { state: "error"; message: string }
-  | { state: "ready"; hits: readonly Hit[]; total: number; more: boolean; loadingMore: boolean };
+  /** `total` is "counting" while a box's hits and count are still to come, since a number without them would be wrong (c191). */
+  | { state: "ready"; hits: readonly Hit[]; total: number | "counting"; more: boolean; loadingMore: boolean };
+export type Ready = Extract<Messages, { state: "ready" }>;
+
+/** A search answer as the palette reads it: SearchResult in lib/api/types.ts. */
+export type Answer = { hits: readonly Hit[]; total: number; nextCursor?: string | undefined; pending?: readonly string[] | undefined };
+
+/**
+ * The messages an answer shows. `before` holds the hits already on screen when the answer is a next page. An answer with `pending` boxes
+ * shows its hits with the count as "counting" and no next page, because the full answer replaces it and brings its own cursor.
+ */
+export function answered(answer: Answer, before: readonly Hit[] = []): Ready {
+  // A conversation that grows between two pages shifts the offsets, so a hit can come twice.
+  const seen = new Set(before.map(hit => hit.id));
+  const counting = !!answer.pending?.length;
+  return {
+    state: "ready",
+    hits: [...before, ...answer.hits.filter(hit => !seen.has(hit.id))],
+    total: counting ? "counting" : answer.total,
+    more: !counting && !!answer.nextCursor,
+    loadingMore: false,
+  };
+}
+
+/** The notes for the boxes a full search failed to bring, worded as the server words a box that did not answer. */
+export function pendingNotes(pending: readonly string[], error: unknown): { box: string; note: string }[] {
+  const reason = error instanceof Error ? error.message : String(error);
+  return pending.map(box => ({ box, note: `${box} did not answer the search (${reason}), so its threads are not in these results.` }));
+}
 
 export type Action =
   | { type: "open"; conversation: string; messageId?: string }
@@ -58,7 +86,7 @@ export type Row = {
   hit?: Hit | undefined;
   action: Action;
 };
-export type Group = { label: string; rows: Row[]; empty?: string | undefined; count?: number | undefined; hideLabel?: boolean | undefined };
+export type Group = { label: string; rows: Row[]; empty?: string | undefined; count?: Ready["total"] | undefined; hideLabel?: boolean | undefined };
 
 /** The key of the "See all results" row, which leads the list and is the default choice, so Enter opens the full page. */
 export const SEE_ALL = "see-all";
@@ -142,7 +170,8 @@ function messageRows(input: SearchInput): Row[] {
 /** The first row once something is typed: Enter on it, the default, opens the full results page. */
 function seeAll(input: SearchInput): Group {
   const q = filters(input.text, input.operators).q;
-  const count = input.messages.state === "ready" ? `${input.messages.total.toLocaleString("en-US")} ${input.messages.total === 1 ? "result" : "results"}` : undefined;
+  const total = input.messages.state === "ready" ? input.messages.total : undefined;
+  const count = total === "counting" ? "Counting…" : total === undefined ? undefined : `${total.toLocaleString("en-US")} ${total === 1 ? "result" : "results"}`;
   return {
     label: "All results",
     hideLabel: true,
@@ -158,7 +187,7 @@ function seeAll(input: SearchInput): Group {
 
 function messageEmpty(input: SearchInput, hasText: boolean): string | undefined {
   const messages = input.messages;
-  if (messages.state === "loading") return "Searching messages…";
+  if (messages.state === "loading" || (messages.state === "ready" && messages.total === "counting")) return "Searching messages…";
   if (messages.state === "error") return "Message search is unavailable.";
   if (!hasText) return input.scope ? "Type to search messages in this conversation." : "Type to search messages.";
   return "No matching messages in accessible conversations.";

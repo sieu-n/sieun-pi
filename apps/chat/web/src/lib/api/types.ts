@@ -235,6 +235,10 @@ export type Item =
       testSend?: { by: Principal; reason: string };
       /** Room posts: the emoji the owner and agents put under the post. */
       reactions?: Reaction[];
+      /** Room posts: when the owner last edited his post; the page shows "(edited)". */
+      editedAt?: Ms;
+      /** Room posts: the owner deleted it, so it has no text; the page drops it, or shows a stub on a channel root with replies. */
+      deleted?: true;
     }
   | {
       kind: "turn"; id: string; at: Ms; author: Principal; text: string; live: boolean; steps: Step[]; images: ImageRef[]; jobs: JobRef[];
@@ -356,8 +360,11 @@ export interface SearchHit {
 }
 /** A box whose threads a search could not read, such as a Mac that is offline, with the line the page shows. */
 export interface SearchMissing { box: string; note: string }
-/** `missing` names each box whose threads are not in `hits` or `total`. */
-export interface SearchResult { hits: SearchHit[]; total: number; nextCursor?: string; missing?: SearchMissing[] }
+/**
+ * `missing` names each box whose threads are not in `hits` or `total`. `pending`, only in a `local=1` answer, names the boxes whose hits
+ * and count are still to come, so `total` is not final until the same request without `local=1` answers.
+ */
+export interface SearchResult { hits: SearchHit[]; total: number; nextCursor?: string; missing?: SearchMissing[]; pending?: string[] }
 /**
  * `from` is `owner`, `agents` (anyone but the owner) or one agent id; `type` keeps only messages (no tool output) or only tool output;
  * `in` is a conversation id; `after` and `before` are YYYY-MM-DD in KST.

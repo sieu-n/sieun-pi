@@ -148,8 +148,9 @@ export const api = {
   addMembers: (id: string, agents: AgentId[], wakeOn?: "all" | "none") => call<Room>("POST", `/api/rooms/${enc(id)}/members`, { agents, ...(wakeOn ? { wakeOn } : {}) }),
   removeMember: (id: string, agent: AgentId) => call<Room>("DELETE", `/api/rooms/${enc(id)}/members/${enc(agent)}`),
 
-  search: (params: SearchQuery) =>
-    call<SearchResult>("GET", `/api/search${query({ ...params })}`),
+  /** `local` asks for this box's hits only, a fast first answer whose `pending` names the boxes still to come. */
+  search: (params: SearchQuery, options: { local?: boolean; signal?: AbortSignal } = {}) =>
+    call<SearchResult>("GET", `/api/search${query({ ...params, ...(options.local ? { local: 1 } : {}) })}`, undefined, options.signal),
 
   board: (chat: string) => call<BoardView>("GET", `${boardBase(chat)}/board`),
   boardOps: (chat: string, ops: BoardOp[]) => call<BoardView>("POST", `${boardBase(chat)}/board`, { ops }),
