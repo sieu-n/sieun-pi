@@ -29,11 +29,11 @@
     },
     {
       "key": "ig_few_post_stats_pct",
-      "label": "Prod Instagram profile docs with 1 to 4 posts that show an engagement rate and a views median",
+      "label": "Sampled prod Instagram profile docs with 1 to 4 posts, where counts_stand holds, that show an engagement rate and a views median",
       "op": ">=",
       "target": 95,
       "unit": "%",
-      "why": "_count on prod crawler_v3_profiles through the Main Org datasource estate_os_prod_profiles: Instagram docs with total_content_count 1 to 4, and of those the ones with engagement_ratio and either median_views or no reel. The owner chose \"Always show it\" for creators under 5 counted posts on t89 (2026-11-03), and PROFILE_STATS_VERSION 3 shows them from 1 counted post. At 21:20Z on 11-03 it read 48.3% (2,419,282 of 5,007,477) before the prod profile_pass refill, against 78.5% (56,459 of 71,915) on docs already at version 3; the rest of those v3 docs hide likes on as many posts as show them, which counts_stand keeps hidden. The target sits at 95 until the refill shows where that hidden share settles."
+      "why": "A daily sample of 500 prod crawler_v3_profiles docs with total_content_count 1 to 4 (30 seeded three-character username prefixes, through Grafana ds/query on Main Org's estate_os_prod_profiles), and each one's counted and hidden like counts over its 240-post stats window from estate_pg_prod. A doc counts only where content_stats.counts_stand holds (more posts with a like count than posts whose author hides it), because a doc whose likes are mostly hidden shows no rate on purpose; the detail line names how many it leaves out. It shows both when it has engagement_ratio and either median_views or no reel. The owner chose \"Always show it\" for creators under 5 counted posts on t89 (2026-11-03). At 21:45Z on 11-03 it read 51.9% (214 of 412, 88 of 500 left out) before the prod profile_pass refill under PROFILE_STATS_VERSION 3."
     }
   ],
   "precheck": {
