@@ -76,6 +76,18 @@ function workSteps(work: string): string[] {
   ];
 }
 
+/**
+ * The step that has a comm thread shape its posts the way Prime's config/AGENTS.md rule 5 asks. Without it a comm thread followed the chat
+ * brief's line that a diagram the owner asks for lives on a wiki page: on 11-03 the owner asked vent in #vent-dev "idk can you explain in
+ * diagram", and vent's comm thread answered in prose and handed a wiki page to its work thread, reasoning that a mermaid block would not
+ * render in the room.
+ */
+function richPostStep(): string {
+  return "Shape each post for the eye, as config/AGENTS.md rule 5 says. The room renders markdown, tables, links, images and a ```mermaid block as a drawn diagram. " +
+    "When someone asks for a diagram or a picture, or a flow reads shorter as one, draw it yourself as a ```mermaid block in your post, with about 8 nodes of one to three words, and one short sentence beside it. " +
+    "This replaces the brief's line that a diagram or explanation he asks for goes on a wiki page. It goes in the post, and only a design or plan he must decide on goes on a page (c83).";
+}
+
 /** The step that has a comm thread work its agent's For list (`for-me.ts`), the way a person works Slack's Activity view. */
 function forMeStep(room: string): string {
   return `When a turn starts, read your pending For list with \`list_for_me_messages()\`. Handle the items of room ${room}, since each other room's comm thread handles its own. Mark an item completed with \`mark_message(message_id, true)\` once you answered or handled it, also when it needs nothing from you. Leave an item pending while its work still runs, and mark it once the work thread's report or the work-done notice brings the result.`;
@@ -94,6 +106,7 @@ function dmCommInstructions(ref: { agent: string; room: string; work: string }):
     `6. ${forMeStep(ref.room)}`,
     "7. A `[work-done ...]` or `[work-failed ...]` input is a notice from pi-host, not the owner's turn. Tell the owner about it only when he asked for that result or it needs his decision (c117). Otherwise end the turn without a message.",
     "8. Speak to the owner only with tell_owner. You do not edit files, so you have no write, edit, bash or subagent tool.",
+    `9. ${richPostStep()}`,
   ].join("\n");
 }
 
@@ -104,7 +117,7 @@ function groupCommInstructions(ref: { agent: string; room: string; work: string 
     "",
     "1. Each post arrives with a header that names the room, the post's author and its hops. A Solo room's header also gives its agenda and members.",
     "2. Every post reaches every member. Speak in the room only when the post concerns your agent or you add something no one said. Otherwise end the turn without a message, also when the owner's post is for another member or an agent's post needs nothing from you.",
-    "3. Speak only with tell_owner, one point per message in one or two short plain sentences. Name another member as @<name> to hand that member something.",
+    "3. Speak only with tell_owner, one point per message in one or two short sentences, plus the diagram, table or link that carries the point (step 13). Name another member as @<name> to hand that member something.",
     "4. An agent's post or a notice is not the owner's turn, so set why and about there. A message that answers the agenda or a question put to your agent is why \"answer\", with about naming that point.",
     `5. ${status}`,
     `6. ${hand}`,
@@ -114,6 +127,7 @@ function groupCommInstructions(ref: { agent: string; room: string; work: string 
     `10. ${forMeStep(ref.room)}`,
     "11. A `[work-done ...]` or `[work-failed ...]` input is a notice from pi-host. Tell the room about it only when the owner or a member asked for that result or it needs the owner's decision (c117). Otherwise end the turn without a message.",
     "12. You do not edit files, so you have no write, edit, bash or subagent tool.",
+    `13. ${richPostStep()}`,
   ].join("\n");
 }
 

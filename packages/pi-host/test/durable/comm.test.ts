@@ -166,6 +166,8 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
       assert.match(commInstructions({ ...comm, room }), /React to posts with fitting emoji[\s\S]*👍 to acknowledge[\s\S]*When a reaction says it all[\s\S]*react and post nothing\./, room);
       assert.match(commInstructions({ ...comm, room }), /Your 👀 on the post already shows that you are on it\./, room);
       assert.doesNotMatch(commInstructions({ ...comm, room }), /in progress/, room);
+      assert.match(commInstructions({ ...comm, room }), /rule 5[\s\S]*asks for a diagram[\s\S]*draw it yourself as a ```mermaid block in your post[\s\S]*replaces the brief's line/, room);
+      assert.doesNotMatch(commInstructions({ ...comm, room }), /short plain sentences/, room);
     }
     for (const room of ["so_1a2b3c4d", "ch_1a2b3c4d"]) {
       const group = commInstructions({ ...comm, room });
