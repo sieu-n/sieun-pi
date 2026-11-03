@@ -250,6 +250,8 @@ export class DurableRlm {
   private readonly idleMs: number;
   private readonly maxDepth: number;
   private readonly modules: HostModule[];
+  /** Each thread whose extension was built, so a settle reaches the host modules of a conversation that has no kernel slot yet. */
+  private readonly threads = new Map<string, RlmThread>();
 
   private constructor(readonly tool: PiTool, private readonly options: DurableRlmOptions) {
     const moduleOptions = { agentDir: options.agentDir, log: (line: string) => this.log(line) };
@@ -269,6 +271,7 @@ export class DurableRlm {
 
   /** The pi-durable extension a thread's conversations select: `ipython` with pi-rlm's definition, and the delivery task. */
   extension(thread: RlmThread): Extension {
+    this.threads.set(thread.id, thread);
     return defineExtension({
       name: RLM_EXTENSION,
       tools: [durableTool(this.tool, {
@@ -519,13 +522,14 @@ export class DurableRlm {
    * and start the idle clock. pi-host calls it from the thread's settle.
    */
   async settled(threadId: string, conversation: number): Promise<void> {
-    const slot = this.slots.get(`${threadId}:${conversation}`);
-    if (slot) {
-      const call = await this.hostCall(slot, false);
+    const thread = this.slots.get(`${threadId}:${conversation}`)?.thread ?? this.threads.get(threadId);
+    if (thread) {
+      const call = await this.hostCall(this.slot(thread, conversation), false);
       for (const module of this.modules) {
-        await module.settled?.(call).catch(error => this.log(`${slot.session}: ${module.name} settle failed: ${error instanceof Error ? error.message : String(error)}`));
+        await module.settled?.(call).catch(error => this.log(`${call.session}: ${module.name} settle failed: ${error instanceof Error ? error.message : String(error)}`));
       }
     }
+    const slot = this.slots.get(`${threadId}:${conversation}`);
     if (!slot?.kernel?.alive) return;
     await this.snapshot(slot, 60_000);
     const pending = [...slot.notices.values()];
@@ -543,6 +547,7 @@ export class DurableRlm {
       await this.free(slot, reason === "shutdown" ? 5_000 : 60_000);
       this.slots.delete(key);
     }));
+    this.threads.delete(threadId);
     await Promise.all(this.modules.map(module => module.closeThread?.(threadId).catch(() => undefined)));
   }
 
