@@ -65,7 +65,7 @@
     void shown.by.length;
     void tick().then(() => {
       if (!card || !chip.isConnected) return;
-      const at = place(chip.getBoundingClientRect(), card.getBoundingClientRect(), "top", 8);
+      const at = place(chip.getBoundingClientRect(), card, "top", 8);
       cardAt = { x: at.x, y: at.y };
     });
   });

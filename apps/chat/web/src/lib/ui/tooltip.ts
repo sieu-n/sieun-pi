@@ -35,8 +35,7 @@ export function tooltip(node: HTMLElement, options: TooltipOptions) {
         el.appendChild(kbd);
       }
       el.dataset.open = "";
-      const size = el.getBoundingClientRect();
-      const pos = place(node.getBoundingClientRect(), size, current.placement ?? "bottom", 6);
+      const pos = place(node.getBoundingClientRect(), el, current.placement ?? "bottom", 6);
       el.style.transform = `translate(${Math.round(pos.x)}px, ${Math.round(pos.y)}px)`;
     }, current.delay ?? 450);
   }

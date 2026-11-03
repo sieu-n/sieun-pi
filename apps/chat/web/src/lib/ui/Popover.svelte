@@ -1,11 +1,11 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { tick } from "svelte";
-  import { anchorRect, nextLayer, place, portal, type Anchor, type Placement } from "./floating";
+  import { anchorRect, cssWidth, nextLayer, place, portal, type Anchor, type Placement } from "./floating";
 
   type Props = {
     open: boolean;
-    /** The element or viewport point the popover sits next to. */
+    /** The element or viewport point the popover sits next to. A point, such as a right-click's, gets no gap, so a context menu opens at the pointer. */
     anchor: Anchor | null | undefined;
     placement?: Placement;
     gap?: number;
@@ -48,6 +48,7 @@
   let y = $state(0);
   let z = $state(1000);
   let side = $state("bottom");
+  let fit = $state(Infinity);
   let measured = $state(false);
   let returnFocus: HTMLElement | null = null;
 
@@ -58,16 +59,18 @@
 
   function reposition() {
     if (!element || !anchor) return;
-    const pos = place(anchorRect(anchor), element.getBoundingClientRect(), placement, gap);
+    const pos = place(anchorRect(anchor), element, placement, anchor instanceof HTMLElement ? gap : 0);
     x = pos.x;
     y = pos.y;
     side = pos.side;
+    fit = pos.maxHeight;
     measured = true;
   }
 
   $effect(() => {
     if (!open) {
       measured = false;
+      fit = Infinity;
       return;
     }
     z = nextLayer();
@@ -94,6 +97,11 @@
       }
     };
     const onResize = () => reposition();
+    const sizes = new ResizeObserver(onResize);
+    void tick().then(() => {
+      if (element) sizes.observe(element);
+      if (anchor instanceof HTMLElement) sizes.observe(anchor);
+    });
     document.addEventListener("pointerdown", onPointer, true);
     document.addEventListener("keydown", onKey, true);
     window.addEventListener("resize", onResize);
@@ -103,13 +111,15 @@
       document.removeEventListener("keydown", onKey, true);
       window.removeEventListener("resize", onResize);
       window.removeEventListener("scroll", onResize, true);
+      sizes.disconnect();
       if (returnFocus?.isConnected && element?.contains(document.activeElement)) returnFocus.focus({ preventScroll: true });
     };
   });
 
   const widthStyle = $derived(
-    width === "anchor" && anchor instanceof HTMLElement ? `${anchor.getBoundingClientRect().width}px` : typeof width === "number" ? `${width}px` : undefined,
+    width === "anchor" && anchor instanceof HTMLElement ? `${cssWidth(anchor.getBoundingClientRect())}px` : typeof width === "number" ? `${width}px` : undefined,
   );
+  const height = $derived(Math.min(maxHeight, fit));
 </script>
 
 {#if open}
@@ -123,7 +133,8 @@
     style:transform="translate({Math.round(x)}px, {Math.round(y)}px)"
     style:z-index={z}
     style:width={widthStyle}
-    style:max-height="{maxHeight}px"
+    style:max-height="{height}px"
+    style:--popover-available-height="{Math.max(0, height - 2 * padding)}px"
     style:padding="{padding}px"
     style:border-radius={radius === "row" ? "var(--radius-row)" : "var(--radius-container)"}
     {role}

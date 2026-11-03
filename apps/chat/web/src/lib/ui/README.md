@@ -61,7 +61,7 @@ Colors, chart series (`--chart-series-1` to `4`), type, radii, shadows, spacing,
 
 | Part | What it is | Main props |
 |---|---|---|
-| `Popover` | A glass or solid surface next to an element or a point. Esc and a press outside it close it; a press in a popover opened above it, such as a submenu, does not. | `bind:open`, `anchor`, `placement`, `surface`, `width`, `onclose` |
+| `Popover` | A glass or solid surface next to an element or a point. It flips to the other side at a window edge, shifts along its side to stay inside, takes a smaller height when neither side fits (its content reads that height as `--popover-available-height`), and keeps this at every interface size. Esc and a press outside it close it; a press in a popover opened above it, such as a submenu, does not. | `bind:open`, `anchor`, `placement`, `surface`, `width`, `onclose` |
 | `Menu` | A menu of actions, radios, checkboxes, labels, separators and submenus. A point anchor makes it a context menu. A pick inside a submenu closes the whole menu. | `bind:open`, `anchor`, `items: MenuEntry[]`, `placement` |
 | `Picker` | The one shared picker for models, agents, channels and any other choice, with groups, a filter and keyboard moves. With `typeahead` it filters by an outside query, never takes focus and reads arrow keys, Enter and Tab from the text box, as the composer's @ and # lists need. | `bind:open`, `anchor`, `items: PickerItem[]`, `value`, `multiple`, `searchable`, `typeahead`, `onselect`, `footer`, `rowEnd` for meters or a badge at the right of a row |
 | `ModelPicker` | A trigger plus a Picker grouped by model family, with a thinking effort control and a custom model id. | `models`, `value`, `efforts`, `effort`, `variant` pill or field, `bind:open`, `onchange` |

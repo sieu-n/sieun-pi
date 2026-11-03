@@ -188,7 +188,7 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
-    max-height: 440px;
+    max-height: min(440px, var(--popover-available-height, 440px));
   }
   .search {
     padding: 2px 2px 4px;

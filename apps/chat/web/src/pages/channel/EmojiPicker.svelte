@@ -177,6 +177,7 @@
     flex-direction: column;
     width: 356px;
     height: 432px;
+    max-height: var(--popover-available-height, 432px);
   }
   .search {
     display: flex;
