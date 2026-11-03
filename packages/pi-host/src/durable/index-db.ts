@@ -116,7 +116,15 @@ export interface UsageRow {
   costCacheWrite: number;
 }
 
+/**
+ * A `durable_usage` range. With `bucketMs` and `since`, each row also sums one bucket of that length from `since` on and names its start
+ * in `bucket`, so the chat's usage page reads its period, each day and the period before in one call instead of 32 for 30 days.
+ */
+export interface UsageRange { since?: number; until?: number; threads?: string[]; bucketMs?: number }
+
 export interface UsageTotal {
+  /** The start of the row's bucket, epoch ms, when the range asked for buckets. */
+  bucket?: number;
   thread: string;
   model: string;
   turns: number;
@@ -545,19 +553,26 @@ export class ThreadIndex {
     return readIndexRows(this.db, cursor);
   }
 
-  /** Sums per thread and model; a range on whole hours, as the chat's days are, reads the hourly sums instead of every usage row. */
-  usage(range: { since?: number; until?: number; threads?: string[] }): UsageTotal[] {
-    const hours = (range.since ?? 0) % HOUR_MS === 0 && (range.until ?? 0) % HOUR_MS === 0;
+  /**
+   * Sums per thread and model, and per bucket when the range asks for one; a range on whole hours, as the chat's days are, reads the hourly
+   * sums instead of every usage row.
+   */
+  usage(range: UsageRange): UsageTotal[] {
+    const bucketMs = range.since !== undefined && range.bucketMs !== undefined && range.bucketMs > 0 ? range.bucketMs : undefined;
+    const hours = (range.since ?? 0) % HOUR_MS === 0 && (range.until ?? 0) % HOUR_MS === 0 && (bucketMs ?? 0) % HOUR_MS === 0;
     const where: string[] = [];
     const values: (string | number)[] = [];
     const time = hours ? "hour" : "at";
     const scale = hours ? HOUR_MS : 1;
+    const bucket = bucketMs === undefined ? "" : `CAST((${time} - ${Math.trunc(range.since! / scale)}) / ${Math.trunc(bucketMs / scale)} AS INTEGER)`;
     if (range.since !== undefined) { where.push(`${time} >= ?`); values.push(range.since / scale); }
     if (range.until !== undefined) { where.push(`${time} < ?`); values.push(range.until / scale); }
     if (range.threads?.length) { where.push(`thread IN (${range.threads.map(() => "?").join(", ")})`); values.push(...range.threads); }
-    const sql = `SELECT thread, model, ${hours ? "SUM(turns)" : "COUNT(*)"} AS turns, ${USAGE_SUMS.map(name => `SUM(${name}) AS ${name}`).join(", ")}
-      FROM ${hours ? "usage_hours" : "usage"} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} GROUP BY thread, model ORDER BY thread, model`;
+    const sql = `SELECT ${bucket ? `${bucket} AS bucket, ` : ""}thread, model, ${hours ? "SUM(turns)" : "COUNT(*)"} AS turns, ${USAGE_SUMS.map(name => `SUM(${name}) AS ${name}`).join(", ")}
+      FROM ${hours ? "usage_hours" : "usage"} ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      GROUP BY ${bucket ? "bucket, " : ""}thread, model ORDER BY ${bucket ? "bucket, " : ""}thread, model`;
     return (this.db.prepare(sql).all(...values) as Row[]).map(row => ({
+      ...(bucketMs === undefined ? {} : { bucket: range.since! + Number(row.bucket) * bucketMs }),
       thread: String(row.thread), model: String(row.model), turns: Number(row.turns), input: Number(row.input), output: Number(row.output),
       cacheRead: Number(row.cache_read), cacheWrite: Number(row.cache_write), cost: Number(row.cost),
       costInput: Number(row.cost_input), costOutput: Number(row.cost_output), costCacheRead: Number(row.cost_cache_read), costCacheWrite: Number(row.cost_cache_write),

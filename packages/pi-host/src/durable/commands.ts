@@ -171,6 +171,7 @@ export class DurableCommands {
             ...(optNum(command, "since") === undefined ? {} : { since: optNum(command, "since")! }),
             ...(optNum(command, "until") === undefined ? {} : { until: optNum(command, "until")! }),
             ...(Array.isArray(command.threads) ? { threads: command.threads as string[] } : {}),
+            ...(optNum(command, "bucketMs") === undefined ? {} : { bucketMs: optNum(command, "bucketMs")! }),
           }) });
         case "durable_doc_get":
           return done({ value: await this.threads.docGet(str(command, "thread"), str(command, "name"), optNum(command, "conversation")) });

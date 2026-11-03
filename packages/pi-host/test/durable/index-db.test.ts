@@ -82,6 +82,31 @@ test("a range on whole hours sums the hourly table to the same totals as the usa
   reopened.close();
 });
 
+// 11-03 on us-metal02: the chat's Usage page asked `usage` 32 times for its 30-day default, one call per day, the period and the one before.
+test("a range with buckets sums each bucket apart, from the hourly table and from the usage rows alike", () => {
+  const H = 3_600_000;
+  const D = 24 * H;
+  const index = new ThreadIndex(join(dir, "buckets.sqlite"));
+  index.insertThread({ id: "a", name: "a", provider: "anthropic", modelId: "m", thinkingLevel: "high", cwd: "/", createdAt: 1, updatedAt: 1 });
+  const rows = Array.from({ length: 40 }, (_, i) => ({ thread: "a", conversation: 1, entryId: i + 1, model: i % 4 ? "anthropic/m" : "openai/n", at: 5 * H + i * 7_777_777,
+    input: i + 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: (i + 1) * 0.01, costInput: 0, costOutput: 0, costCacheRead: 0, costCacheWrite: 0 }));
+  index.addEntries("a", [], rows);
+  const want = (since: number, bucketMs: number, until: number) => {
+    const seen = new Map<string, { bucket: number; model: string; turns: number; input: number }>();
+    for (const r of rows.filter(r => r.at >= since && r.at < until)) {
+      const bucket = since + Math.floor((r.at - since) / bucketMs) * bucketMs;
+      const sum = seen.get(`${bucket}|${r.model}`) ?? { bucket, model: r.model, turns: 0, input: 0 };
+      seen.set(`${bucket}|${r.model}`, { ...sum, turns: sum.turns + 1, input: sum.input + r.input });
+    }
+    return [...seen.values()].sort((x, y) => x.bucket - y.bucket || x.model.localeCompare(y.model)).map(s => [s.bucket, s.model, s.turns, s.input]);
+  };
+  const got = (since: number, bucketMs: number, until: number) => index.usage({ since, until, bucketMs }).map(t => [t.bucket, t.model, t.turns, t.input]);
+  assert.deepEqual(got(2 * H, D, 2 * H + 4 * D), want(2 * H, D, 2 * H + 4 * D), "whole-hour days read the hourly table");
+  assert.deepEqual(got(2 * H + 5, D, 2 * H + 4 * D + 5), want(2 * H + 5, D, 2 * H + 4 * D + 5), "a range off the hour reads the usage rows");
+  assert.ok(index.usage({ since: 2 * H, until: 2 * H + 4 * D }).every(t => t.bucket === undefined), "no bucket asked, none named");
+  index.close();
+});
+
 test("a search returns one page with snippets and the exact count, and narrows to a conversation or to what one agent said", () => {
   const index = new ThreadIndex(join(dir, "search.sqlite"));
   index.insertThread({ id: "t2", name: "search", provider: "anthropic", modelId: "claude-opus-5-5", thinkingLevel: "high", cwd: "/", createdAt: 1, updatedAt: 1 });
