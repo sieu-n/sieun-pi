@@ -90,3 +90,33 @@ test("p125 reads moving once its waitFor starts with VP of CI's p476", () => {
   assert.equal(entry.state, "moving");
   assert.match(entry.reason, /its wait is on p476/);
 });
+
+// 11-04 d9 04:33 KST: p148 waited for "p147, the release owner's prod promote", while the release owner thread on us-metal02 worked p147. Its
+// own job ran on the sleeping Mac, so the check-in read it stuck (release) and d9 counted it 3 runs in a row; with the Mac online it read moving
+// on that carrier. A held step whose wait names a step a live owner off the box carries reads moving.
+const RELEASE = "01a10810-34b5-710f-88fe-3d369f89a8c9";
+const p147: PlanItem = { id: "p147", text: "The follow-up prod release after promote 22 ships, walked with the owner", status: "todo", sessionId: RELEASE,
+  waitFor: "release owner: the first staging land holding every committed probe fix, then preflight, pin and the go for the owner's word", children: [] };
+const p148: PlanItem = { id: "p148", text: "Old tables, old data and old code are completely gone after the migrations", status: "doing", job: "old tables and code gone",
+  sessionId: "01a19f81-c43b-7279-94de-26e633ea6216", waitFor: "p147, the release owner's prod promote; its post-promote list runs the p148 prod cleanups",
+  note: "Done when every old table holds 0 rows on prod, staging and local.", children: [] };
+
+function releaseRun(owner: JobFact["state"]) {
+  const plan = [{ ...p2, children: [p147, p148] }];
+  const jobs: JobFact[] = [{ key: `thread:${RELEASE}`, name: "release owner", state: owner, sessionId: RELEASE, activityAt: start - MIN },
+    { key: "child-p148", name: "old tables and code gone", state: "idle", sessionId: p148.sessionId!, activityAt: start - 4 * 60 * MIN }];
+  const threads = [...rows, { id: RELEASE, name: "release owner", host: "us-metal02" }] as unknown as SessionRow[];
+  const precheck = checkInPrecheck(undefined, jobs, { ...board, plan } as ChatBoard, start, { self: [SEP], rows: threads, hosts: { chatHost: "mac", held } });
+  return precheck.end.find(found => found.view.item.id === "p148")!;
+}
+
+test("p148, held on the offline Mac, reads moving while the release owner thread off the box works its p147", () => {
+  const entry = releaseRun("working");
+  assert.equal(entry.state, "moving", entry.reason);
+  assert.match(entry.reason, /its wait is on p147/);
+});
+
+test("p148 still reads stuck (release) once nobody moves p147", () => {
+  const entry = releaseRun("idle");
+  assert.equal(entry.state, "release", entry.reason);
+});

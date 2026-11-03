@@ -95,6 +95,11 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
   if (hold) {
     const handed = movers.linked ? handedStep(item, self, movers.linked, rows) : undefined;
     if (handed) return out("moving", `its wait is on ${handed.item.id} ${quote(handed.item.text)} of chat ${rows.find(row => row.id === handed.chat)?.name ?? handed.chat}, which owns it`);
+    // A wait on a step of this chat that a live owner off the box carries (`stepCarrier`) moves there, as it does with the box online: on 11-04
+    // sep launch!!'s p148 waited for "p147, the release owner's prod promote", which the release owner thread on us-metal02 worked, and with its
+    // job on the sleeping Mac it read stuck (release) in every check-in from 15:47Z on 11-03, so d9 counted it 3 runs in a row.
+    const carried = movers.steps ? stepCarrier(item, movers.steps) : undefined;
+    if (carried && carried.owners.some(owner => !hostHeld({ item, owner }, rows, movers.hosts))) return out("moving", carriedText(carried));
     return waitsPastBox(item, hold, rows, self) ? byWait(item, todos, rows, self, false, out, `; ${away}`)! : { ...out("host", away!), hold };
   }
   if (owner?.stalled) return out("stalled_call", `${ownerLabel(owner)} ${stallWords(owner.stalled, now)}`);
