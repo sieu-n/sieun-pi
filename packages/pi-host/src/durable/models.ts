@@ -7,19 +7,25 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import { poolProvider, type TurnQueue } from "@sieun-pi/pi-pool/durable";
+import { compactionLine, withPrimeWindows } from "./prime-compaction.ts";
 
 export interface DurableModelsOptions {
-  /** The agent dir whose auth.json pi-pool's `adopt-logins` reads. */
+  /** The agent dir whose auth.json pi-pool's `adopt-logins` reads, and whose models.json sets each model's window (prime-compaction.ts). */
   agentDir?: string;
   /** The machine's turn queue every request takes its place in. */
   turns?: TurnQueue;
 }
 
-/** One thread's model registry; the thread is its own pi-pool tree, `pi-durable:<thread id>`. */
+/** One thread's model registry with Prime's context windows; the thread is its own pi-pool tree, `pi-durable:<thread id>`. */
 export function durableModels(threadId: string, options: DurableModelsOptions = {}): ReturnType<typeof createModels> {
   const models = createModels();
   for (const inner of [anthropicProvider(), openaiCodexProvider()]) {
-    models.setProvider(poolProvider({ treeKey: `pi-durable:${threadId}`, agentDir: options.agentDir, turns: options.turns, inner }));
+    models.setProvider(poolProvider({ treeKey: `pi-durable:${threadId}`, agentDir: options.agentDir, turns: options.turns, inner: withPrimeWindows(inner, options.agentDir) }));
   }
   return models;
+}
+
+/** The host log's line of where each model Prime sets a window for compacts on this host. */
+export function durableCompactionLine(agentDir: string): string {
+  return compactionLine(agentDir, [...anthropicProvider().getModels(), ...openaiCodexProvider().getModels()]);
 }

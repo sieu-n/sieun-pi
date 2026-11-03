@@ -190,6 +190,17 @@ Every root thread has `send_message {text, to?}`, and without the chat extension
 
 This job's own Prime transcript of 260 lines imported in 138 ms, and claude-opus-5-5 through pi-pool answered a question about it from the imported context.
 
+## When a thread compacts
+
+A durable thread compacts where a Prime chat on the same host does, which `prime-compaction.ts` sets up.
+
+1. Prime and pi-durable both compact when a request's context passes the model's context window minus `compaction.reserveTokens`, 16,384 by default.
+2. A model's window comes from the host's Prime `~/.prime/agent/models.json` first, then from `PRIME_WINDOWS` in pi-host, then from Prime's fetched catalog, then from pi-ai's catalog.
+3. `PRIME_WINDOWS` holds what models.json set on us-metal02 and the Mac on 11-03, so a new host with no models.json still compacts Claude Opus 5.5 at 483,616 tokens.
+4. The reserve, the kept tokens and `enabled` come from `compaction` in Prime's `settings.json`, and both files are read again when they change.
+5. pi-durable also starts a background compaction 32,768 tokens before that point, which does not hold the turn.
+6. The host log prints each model's point at start, in a line that begins with `durable compaction at window - reserve`.
+
 ## How a request gets its account
 
 ```mermaid

@@ -14,7 +14,8 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { durableSettings, TurnQueue } from "@sieun-pi/pi-pool/durable";
 import { DurableCommands, DurableThreads } from "./durable/index.ts";
-import { durableModels } from "./durable/models.ts";
+import { durableCompactionLine, durableModels } from "./durable/models.ts";
+import { withPrimeCompaction } from "./durable/prime-compaction.ts";
 import { loadPrimeChat, type PrimeChat } from "./durable/prime-chat.ts";
 import { DurableRules } from "./durable/rules.ts";
 import { promptTools } from "./durable/prime-prompt.ts";
@@ -102,7 +103,8 @@ const durable = values["no-durable"] ? undefined : new DurableCommands(new Durab
   defaultModel: values.model ? { provider, modelId: modelId.join("/") } : { provider: "anthropic", modelId: "claude-opus-5-5" },
   defaultThinkingLevel: "high",
   defaultCwd: values.cwd ? resolve(values.cwd) : homedir(),
-  settings: threadId => durableSettings(`pi-durable:${threadId}`),
+  // Compacts where a Prime chat on this host does: Prime's window minus Prime's reserve (prime-compaction.ts).
+  settings: threadId => withPrimeCompaction(durableSettings(`pi-durable:${threadId}`), agentDir),
   inputSettled: (threadId, session, runContinues) => turns.release({ root: `pi-durable:${threadId}`, session }, runContinues),
   turns: {
     ownerTurn: (threadId, session) => turns.ownerTurn({ root: `pi-durable:${threadId}`, session }),
@@ -132,6 +134,7 @@ const server = await listen(host, socketPath, { scratchChatMark: values["scratch
 await durable?.threads.start().catch(error => host.log(`durable recovery failed: ${error instanceof Error ? error.stack : String(error)}`));
 void host.warmProviders().then(rows => host.log(`provider modules loaded: ${rows.map(row => `${row.api} ${row.ms} ms${row.error ? ` (${row.error})` : ""}`).join(", ")}`));
 host.log(`listening on ${socketPath} (pid ${process.pid}, agent dir ${agentDir}, ${extensions.length} extensions)`);
+if (durable) host.log(durableCompactionLine(agentDir));
 await host.recoverInboxes().catch(error => host.log(`inbox recovery failed: ${error instanceof Error ? error.message : String(error)}`));
 
 let stopping = false;
