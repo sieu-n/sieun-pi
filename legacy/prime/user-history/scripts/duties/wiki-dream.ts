@@ -4,6 +4,7 @@ import { readdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { wikiContentDir } from "../../src/chat-wiki.ts";
 import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
 /**
@@ -12,7 +13,8 @@ import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shar
  *   which reads the pages from the content root in ~/.config/sieun-pi/wiki.json;
  * - the mistake signal comes from the owner corrections ledger and the continual-harness memories and refinements made since the last run;
  * - the duty's own ledger says which duplicate pairs were judged and which mistake classes are open, fixed or back;
- * - `git log` in both repos says which `(wiki-dream)` commits were reverted and which files the dream edited twice in 7 days;
+ * - `git log` in both repos says which `(wiki-dream)` commits were reverted and which code files the dream edited twice in 7 days, and the page
+ *   revisions in the content root's .wiki/wiki.db say which wiki pages it edited twice, since the pages left git in b767305544 (2026-11-03);
  * - wiki-health's stale list says which pages are behind their code, both sides dated on the first-parent history of auto-sns-agent's HEAD.
  * wiki-health judges a copy of the pages on disk, where the page API writes. Until 2026-11-03 it judged the pages as committed at HEAD of
  * auto-sns-agent, and this precheck also read the wiki host batch's journal (wiki-box-commit) for pages the batch left out of git; the pages
@@ -54,7 +56,11 @@ export interface DreamDeps {
   repos: { wiki: string; pi: string };
   /** `agentDir` is Prime's agent folder, which holds the clean-room indexes under browser-chat and the session transcripts. */
   files: { corrections: string; harness: string; ledger: string; agentDir: string };
+  /** The page revisions the wiki recorded since an ISO time (wiki.db `revisions`); left out, the precheck reads no page churn. */
+  revisions?: (sinceIso: string) => Promise<PageRevision[]>;
 }
+/** One row of the wiki's `revisions` table: the page's wiki path, who wrote it and the write's summary. */
+export interface PageRevision { path: string; author: string; summary: string }
 
 /** What `wiki-health.mjs` prints (build contract part A). */
 export interface HealthItem { kind: string; path: string; excerpt?: string; target?: string }
@@ -167,6 +173,10 @@ export function parseGitLog(repo: string, text: string): DreamCommit[] {
 }
 
 const isDream = (subject: string): boolean => subject.includes("(wiki-dream)");
+/** A page revision the dream wrote: its author or summary names wiki-dream or "wiki dream", in any case. */
+export const isDreamRevision = (row: PageRevision): boolean => /wiki[- ]dream/i.test(`${row.author} ${row.summary}`);
+/** Content-root paths in git: the pages that left auto-sns-agent in b767305544, which wiki.db counts instead. */
+const OLD_CONTENT = "apps/llm-wiki/content/";
 export const isRevert = (subject: string): boolean => subject.startsWith('Revert "') && isDream(subject);
 
 /** Reverted dream commits, and files (repo:path) that 2 or more dream commits changed. Reverts do not count as edits. */
@@ -175,10 +185,17 @@ export function churn(commits: readonly DreamCommit[]): { reverts: DreamCommit[]
   const edits = new Map<string, number>();
   for (const commit of commits) {
     if (!isDream(commit.subject) || isRevert(commit.subject)) continue;
-    for (const file of new Set(commit.files)) edits.set(`${commit.repo}:${file}`, (edits.get(`${commit.repo}:${file}`) ?? 0) + 1);
+    for (const file of new Set(commit.files.filter(file => !file.startsWith(OLD_CONTENT)))) edits.set(`${commit.repo}:${file}`, (edits.get(`${commit.repo}:${file}`) ?? 0) + 1);
   }
   const retouched = [...edits].filter(([, count]) => count >= 2).map(([file, count]) => ({ file, commits: count })).sort((a, b) => b.commits - a.commits);
   return { reverts, retouched };
+}
+
+/** Wiki pages, named by wiki path, that 2 or more dream revisions wrote; the page API is their one writer. */
+export function pageChurn(rows: readonly PageRevision[]): { file: string; revisions: number }[] {
+  const edits = new Map<string, number>();
+  for (const row of rows) if (isDreamRevision(row)) edits.set(row.path, (edits.get(row.path) ?? 0) + 1);
+  return [...edits].filter(([, count]) => count >= 2).map(([file, count]) => ({ file, revisions: count })).sort((a, b) => b.revisions - a.revisions);
 }
 
 /**
@@ -435,6 +452,9 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
       { cwd: repo, timeoutMs: GIT_TIMEOUT_MS }).then(text => { commits.push(...parseGitLog(name, text)); }).catch(error => { gitOk = false; fail(`git log ${name}`, error); });
   }
 
+  const pageRows = deps.revisions ? await deps.revisions(gitSince).catch(error => fail("wiki.db revisions", error)) : [];
+  const pagesRetouched = pageRows ? pageChurn(pageRows) : undefined;
+
   const listed = health && (() => { try { return parseStale(health.stale); } catch (error) { return fail("wiki-health.mjs stale", error); } })();
   const undated = listed?.some(page => page.staleRefs.some(ref => ref.since === undefined && !Number.isFinite(Date.parse(ref.modified))));
   const stalePages = listed && undated
@@ -459,7 +479,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   metrics.mistakes_back = classes?.back.length ?? UNMEASURED;
   const dream = churn(commits);
   metrics.dream_reverts = gitOk ? dream.reverts.length : UNMEASURED;
-  metrics.pages_retouched = gitOk ? dream.retouched.length : UNMEASURED;
+  metrics.pages_retouched = gitOk && pagesRetouched ? dream.retouched.length + pagesRetouched.length : UNMEASURED;
   for (const input of health?.errors ?? []) fail("wiki-health.mjs", new Error(`could not read ${input}`));
   if (health && !health.errors.length) {
     for (const key of [...HEALTH_METRICS, "lint_failing_pages"]) if (health.facts[key] === undefined) fail("wiki-health.mjs", new Error(`no fact ${key}`));
@@ -482,6 +502,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
     slices.push({ kind: "recurred", item: slug, excerpt: clip(`${row.title ?? slug} came back on ${(row.recurred ?? []).slice(-1)[0]}, ${when} ${row.fixCommit ?? "?"}; skill ${row.skill ?? "?"}`) });
   }
   for (const commit of dream.reverts) slices.push({ kind: "revert", item: `${commit.repo}:${commit.sha.slice(0, 10)}`, excerpt: clip(commit.subject) });
+  for (const row of pagesRetouched ?? []) slices.push({ kind: "retouched", item: row.file, excerpt: `${row.file} changed by ${row.revisions} wiki-dream page revisions in 7 days` });
   for (const row of dream.retouched) slices.push({ kind: "retouched", item: row.file, excerpt: `${row.file} changed by ${row.commits} (wiki-dream) commits in 7 days` });
   for (const [slug, row] of classes?.open ?? []) {
     slices.push({ kind: "open_class", item: slug, excerpt: clip(`${row.status}: ${row.title ?? slug}; skill ${row.skill ?? "?"}; gap ${row.gap ?? "?"}; sources ${(row.sources ?? []).join("; ")}`) });
@@ -540,6 +561,15 @@ export function piCheckout(scriptDir: string, fromEnv: string | undefined = proc
   try { return dirname(realpathSync(join(root, "node_modules"))); } catch { return root; }
 }
 
+/** The page revisions since `sinceIso`, read from wiki.db opened read-only, so the engine's writes never wait on it. */
+async function readRevisions(db: string, sinceIso: string): Promise<PageRevision[]> {
+  const { DatabaseSync } = await import("node:sqlite");
+  const database = new DatabaseSync(db, { readOnly: true });
+  try {
+    return database.prepare("SELECT path, author, summary FROM revisions WHERE ts >= ?").all(sinceIso) as unknown as PageRevision[];
+  } finally { database.close(); }
+}
+
 const execNoShell: Exec = (file, args, options) => new Promise((done, failed) => {
   execFile(file, args, { cwd: options.cwd, timeout: options.timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 << 20 }, (error, stdout, stderr) => {
     if (!error) { done(String(stdout)); return; }
@@ -563,6 +593,7 @@ async function main(): Promise<void> {
       // The ledger sits in the duty chat's own duties folder, the folder the runner keeps LAST_RUNS_FILE in.
       ledger: process.env.WIKI_DREAM_LEDGER || join(dirname(process.env.LAST_RUNS_FILE || "."), "wiki-dream-ledger.json"),
     },
+    revisions: sinceIso => readRevisions(join(wikiContentDir(), ".wiki/wiki.db"), sinceIso),
   };
   const result = await measureDream(deps, Array.isArray(lastRuns) ? lastRuns as DutyRunRecord[] : []);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");

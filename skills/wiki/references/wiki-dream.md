@@ -40,7 +40,11 @@ The owner asked for it in these words: "a daily job that cleans wiki, find anti-
 1. The job plans, spawns, reads results and commits, and it never edits a page or skill in its own context.
 2. Each output item gets its own subagent: one hub, one duplicate pair, one stale page, one page on the writing glide, one mistake class, or one skill file of memory moves.
 3. Every flagged item gets its subagent in the same run, all started at once, with no daily cap. The 2026-10-15 01:30 run fixed 50 missing dates (missing_meta 51 to 1) and judged 30 pairs in one go, and none of its commits was reverted.
-4. Each page writer brief carries the standard line from `writing.md`, the target path, the flagged item, and the sources to read.
+4. Each page writer brief carries the standard line from `writing.md`, the target path, the flagged item, the sources to read, and this write path, and the job writes each brief fresh from this file, never from a brief of an earlier run, because on 2026-11-03 the 16:09Z run copied an old brief that told writers to commit pages with `commit.mjs` under `apps/llm-wiki/content/`.
+   - The writer edits the page only through the wiki module (`wiki.read`, `wiki.edit`, `wiki.write`) or `PATCH`/`PUT https://us-metal02-dev.tail0c093d.ts.net:5184/wiki/<path>`.
+   - It names the page by its wiki path, such as `apps/search/onboarding-orgs.html`, with no `apps/llm-wiki/content/` or `content/` prefix.
+   - It commits nothing, because a page lives only in the content root and `wiki-backup.timer` backs it up.
+   - Its write summary starts with `wiki-dream:`, because the precheck counts a page's dream revisions in `wiki.db` by that mark.
 5. Each writer first reads the page's `last_verified` on the wiki and stops with no write when it is later than every flagged ref's change, because a code session often verifies its pages minutes after the precheck. On 2026-10-31 the job started at 14:44Z on a 12:12Z precheck, session `01a191dd` had verified all six flagged `promote.yml` pages in 8b762731d4 at 12:17Z, and four writers bumped `last_verified` again until the job wrote HEAD's bytes back.
 6. The writer makes `node apps/wiki/scripts/prose-lint.mjs <page>` pass with 0 errors and writes through the page API (`POST /api/agent/page` with `{path, content}`, or `PATCH` with `{path, edits}`), which answers 422 on a write that adds lint errors.
 7. The job reads every rendered page against `writing.md` and runs the lint again before it ends the run.
@@ -166,12 +170,12 @@ The glide plan in `wiki-dream.ts` expects at least 10 a day from 2026-10-11, and
 
 ## Commits, churn guards and "when unsure, leave it"
 
-1. Every commit the job makes uses the scope `wiki-dream`, such as `docs(wiki-dream): merge deploy-runbook into production-runbook`, because the precheck finds dream commits, reverts and retouched pages by that scope.
-2. One change is one commit, so one `git revert` undoes one change.
+1. Every code or skill commit the job makes uses the scope `wiki-dream`, such as `docs(wiki-dream): fix the ledger rule in wiki-dream.md`, and every page write carries a summary that starts with `wiki-dream:`, because the precheck finds dream commits and reverts in git by that scope and retouched pages in the wiki's revisions by that mark.
+2. One change is one commit or one page write, so one `git revert` or one write of the older page revision undoes one change.
 3. Before a subagent starts on files, check them with one `node scripts/repo/agent/whose.mjs <path>...` call and skip a file a live session owns. With no path it reads the whole tree, and on 2026-10-15 a job that ran it once per page took 88.8 s a call at load 157 and sat in one cell for 40 minutes.
 4. When `commit.mjs` refuses, report the refusal and leave the file, because a guard refusal is never routed around.
-5. A flagged invariant item gets fixed even on a page a `(wiki-dream)` commit touched in the last 7 days, and `pages_retouched` only tells you to read the revert reason in step 6 first. On 2026-10-15 the precheck read pages_retouched 7 and dream_reverts 0.
-6. A revert of a dream commit means the change was wrong, so read the revert's reason and record it on the class or page before the dream touches that file again.
+5. A flagged invariant item gets fixed even on a page a wiki-dream revision touched in the last 7 days, and `pages_retouched` only tells you to read the revert reason in step 6 first. On 2026-10-15 the precheck read pages_retouched 7 and dream_reverts 0.
+6. A revert of a dream commit or page write means the change was wrong, so read the revert's reason and record it on the class or page before the dream touches that file again.
 7. Leave it and ask the owner when a merge is unclear, an archive would hit a page agents still read, a rule would move from one skill to another, or a fix would contradict an owner correction.
 8. The dream sends nothing outside the machine, so no email, ticket reply, message or post.
 
@@ -184,7 +188,7 @@ A run that dies mid-way leaves the ledger as it was, so the next run redoes its 
 {
 	"version": 1,
 	"pairs": { "<a>|<b>": { "verdict": "distinct|merged", "at": "<iso>", "job": "<name>", "score": 0.4 } },
-	"verified": { "<path>": { "at": "<iso>", "commit": "<sha>" } },
+	"verified": { "<path>": { "at": "<iso>", "version": "<page version>" } },
 	"classes": {
 		"<slug>": {
 			"title": "...",
@@ -211,7 +215,7 @@ Write the whole file through a temp file and a rename, so the precheck never rea
 
 1. After the ledger write, rerun the precheck from sieun-pi `components/user-history` with `OUTPUT_FILE=<session data>/precheck.json LAST_RUNS_FILE=~/.prime/agent/browser-chat/duties/01a1164b-4a2d-742d-b27a-82f086ed0200/d4.last-runs.json node --import tsx scripts/duties/wiki-dream.ts` (without `LAST_RUNS_FILE` it finds no ledger and prints 999999), and go again until wiki_problems, open_mistakes, mistakes_back and dup_unjudged are all 0, or name the blocker and whose it is. The 2026-10-15 01:30 run stopped with stale_vs_code at 11 and no blocker named.
 2. A quiet day sends nothing, and the runner keeps its run record.
-3. A day with changes sends the chat one `plan_update` on p200, the wiki goal the duty brief names, since p249 is no longer on the board, whose note gives the metrics before and after and the commit SHAs, and closes the run's wiki session with the commit list.
+3. A day with changes sends the chat one `plan_update` on p200, the wiki goal the duty brief names, since p249 is no longer on the board, whose note gives the metrics before and after, the commit SHAs of code and skill changes and the page versions of page writes, and closes the run's wiki session with that list.
 4. The report has owner lines only for a skill rule that changed (the class, the rule line, the commit), an open question from "leave it and ask", or a metric missed 2 runs in a row, and otherwise it says "nothing for the owner".
 5. Owner lines use short everyday words with no internal names, per correction c32.
 6. On Monday's run, one writer subagent writes a weekly page in the run's session folder, with the glide paths as a chart and each mistake class with its fix and recurrences.
