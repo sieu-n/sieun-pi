@@ -1,0 +1,65 @@
+<!--wiki
+{ "title": "Retry budget", "date": "2026-10-10", "updated": "2026-10-10", "apps": ["llm-wiki"],
+  "tags": ["fixture"], "status": "draft", "kind": "reference",
+  "description": "Fixture page for the prose lint. A short page in the numbered-line style with diagrams that must pass with zero errors." }
+-->
+<h1>Retry budget</h1>
+<wiki-tldr>
+	<strong>What.</strong> How the crawler decides when to stop retrying a failed request.
+	<strong>Answer.</strong> Each request gets three tries, and the third failure goes to the dead-letter table.
+	<strong>Read this if</strong> you change the retry code or read a dead-letter alert.
+</wiki-tldr>
+
+<h2 id="why">1 · Why the budget exists</h2>
+<ol>
+	<li>The crawler used to retry a failed request until it worked.</li>
+	<li>On 2026-09-14 one bad proxy pool turned that loop into 40,000 requests an hour against one account.</li>
+	<li>A fixed budget stops that loop, so a broken upstream costs at most three calls per request.</li>
+	<li>The worker counts tries in <code>retry_count</code> and gives up after the third one.</li>
+	<li>We kept the count in the row and not in Redis, because a restart must not reset it.</li>
+</ol>
+
+<pre class="mermaid">
+flowchart LR
+  R["Request fails"] --> C{"retry_count below 3?"}
+  C -->|"yes"| W["Wait, then try again"]
+  W --> R
+  C -->|"no"| D["Write to dead_letters"]
+</pre>
+
+<h2 id="how">2 · How a retry runs</h2>
+<ol start="6">
+	<li>The worker waits before each new try, and the wait doubles each time.</li>
+	<li>The first retry waits 10 seconds after the failure.</li>
+	<li>The second retry waits 20 seconds and picks a different proxy pool.</li>
+	<li>The third failure writes the request to <code>dead_letters</code> with the last status code.</li>
+	<li>A longer wait did not help in the 2026-09 test, because a dead pool stays dead for hours.</li>
+</ol>
+
+<table>
+	<thead><tr><th>Try</th><th>Wait</th><th>Proxy</th></tr></thead>
+	<tbody>
+		<tr><td>1</td><td>none</td><td>same pool</td></tr>
+		<tr><td>2</td><td>10 s</td><td>same pool</td></tr>
+		<tr><td>3</td><td>20 s</td><td>new pool</td></tr>
+	</tbody>
+</table>
+
+<h2 id="alerts">3 · What an alert means</h2>
+<ol start="11">
+	<li>An alert fires when more than 2% of an hour's requests reach the dead-letter table.</li>
+	<li>At that rate the cause is almost always one upstream, so check the newest rows first.</li>
+	<li>The status code on the newest rows names the upstream that broke.</li>
+	<li>The owner put the rule this way: "three tries, then stop, then tell me."</li>
+	<li>The waits between tries stay at 10–20 seconds.</li>
+</ol>
+
+<wiki-figure src="assets/dead-letter-alert.png" caption="The dead-letter alert in Grafana on 2026-09-14."></wiki-figure>
+
+<p>The two numbers to watch are the 2% alert line and the 20-second last wait.</p>
+
+<h2 id="related">Related</h2>
+<ul>
+	<li><a href="../crawler-v3/index.html">Crawler v3</a></li>
+	<li><a href="../crawler-v3/proxies.html">Proxy pools</a></li>
+</ul>

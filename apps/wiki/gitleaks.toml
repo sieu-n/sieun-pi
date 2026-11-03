@@ -1,0 +1,159 @@
+# Repo gitleaks config — extends the default ruleset. CI passes this via
+# `--config .gitleaks.toml` (monorepo / secrets job).
+#
+# Path allowlist rationale: `openapi-examples.json` is a REGENERATED fixture of
+# captured public API example payloads (Instagram/YouTube page tokens:
+# client_token, client_cache_key, continuationToken, organic_tracking_token,
+# scope_key). Every regeneration shifts line numbers, so fingerprint entries in
+# .gitleaksignore go stale on each rebuild — a path allowlist is the stable
+# form. Verified 2026-08-04 that no first-party credential appears in the file
+# (real keys grepped against it); the values are third-party page tokens with
+# no auth power over our systems.
+#
+# `apps/virev-demo/.../media/manifest.json` is the same shape: a 6.4 MB
+# REGENERATED media manifest of Instagram CDN links and their public B2 mirror
+# links. generic-api-key fires 10 times on CDN query strings (`_nc_ohc`, `oe`,
+# `ig_cache_key`), which are Meta's own cache parameters. Verified 2026-09-19:
+# zero occurrences of Authorization, X-Bz-, authToken, applicationKey, secret or
+# Bearer in the file, and the B2 links are public-bucket paths that carry no
+# token. Rebuilt on every demo media refresh, so fingerprints would go stale.
+[extend]
+useDefault = true
+
+# Build/vendor output is NOT scanned. CI checks out a clean tree with no
+# node_modules/.venv, so without these entries a LOCAL scan reads ~2.6 GB of
+# dependencies and reports tens of thousands of third-party matches that CI
+# would never see — the local and CI runs must agree or `pnpm ci` is useless.
+# `.cache/` also carries a corrupt .gz that crashes betterleaks 1.7.4
+# (nil deref in gzip Reader.Close, upstream sources/file.go:228).
+[[allowlists]]
+description = "Generated docs fixtures, plus build/vendor output CI never sees"
+paths = [
+  '''apps/api-portal/src/lib/openapi-examples\.json''',
+  '''apps/virev-demo/src/lib/demo-env/media/manifest\.json''',
+  '''(^|/)node_modules/''',
+  '''(^|/)\.venv/''',
+  '''(^|/)\.git/''',
+  '''(^|/)\.cache/''',
+  '''(^|/)\.turbo/''',
+  '''(^|/)\.svelte-kit/''',
+  '''(^|/)\.vercel/''',
+  '''(^|/)dist/''',
+  '''(^|/)build/''',
+  '''(^|/)__pycache__/''',
+]
+
+# The replay proxy's test CA and leaf keys (packages/sirocco/src/sirocco/testing/certs,
+# written by make_certs.py there). Test-only ECDSA P-256 keys: the CA is trusted only
+# where an offline harness points a client at ca.pem on purpose (CURL_CA_BUNDLE,
+# SSL_CERT_FILE), so the keys protect nothing and are published with the repo.
+[[allowlists]]
+description = "sirocco replay proxy test CA and leaf keys"
+targetRules = ["private-key"]
+paths = [
+  '''(^|/)packages/sirocco/src/sirocco/testing/certs/(ca|leaf)\.key$''',
+]
+
+# Instagram followers next_cursor fixture: base64 of
+# {"max_id":"rank-page-2","op":"followers","rank_token":"<uuid5>"}, a pagination
+# seed minted by engage/operations._rank_token with no auth power. Betterleaks
+# decodes the base64 and flags the rank_token, then matches the line with the
+# decoded text in place, so the regex anchors on the decoded value. Edits above
+# the fixture no longer stale the entry, as line fingerprints did.
+[[allowlists]]
+description = "Instagram followers next_cursor fixture"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = [
+  '''(^|/)apps/crawler-v3/src/platforms/instagram/example_responses\.json$''',
+  '''(^|/)apps/crawler-v3/tests/unit/fixtures/instagram/after-openapi\.json$''',
+]
+regexTarget = "line"
+regexes = [
+  '''^\s*"next_cursor": "\{"max_id":"rank-page-2","op":"followers","rank_token":"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"\}",?$''',
+]
+
+# YouTube continuationToken fixtures: protobuf pagination cursors with no auth
+# power. Betterleaks percent-decodes %3D to = and flags the base64 as a
+# generic-api-key Secret. The regex anchors on the protobuf field prefixes, so
+# browse (4qmFsg), next (Eg0SC) and search (E...Egx, the query string field)
+# cursors pass and any other value is flagged. tests/unit/fixtures/youtube/
+# feed_pages.json holds the feed pages a channel and a search walk answered
+# (2026-10-13), with the same three cursor shapes.
+[[allowlists]]
+description = "YouTube continuationToken fixture"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = [
+  '''(^|/)apps/crawler-v3/src/platforms/youtube/example_responses\.json$''',
+  '''(^|/)apps/crawler-v3/tests/unit/fixtures/youtube/feed_pages\.json$''',
+]
+regexes = [
+  '''^(?:4qmFsg|Eg0SC|E[A-Za-z0-9]{3}Egx)[A-Za-z0-9+/]+={0,2}$''',
+]
+
+# Golden env profiles and the tests that read them pin input files by SHA-256
+# (`<name>_sha256: <64 hex>` in ops/golden/envs/*.yaml, the same key quoted in
+# ops/golden/tests/*.mjs). A key named `daily_keys_set_sha256` makes generic-api-key
+# read the digest as an API key (a66e44f28 staging.yaml, cfe3b03ff
+# u9-evidence.test.mjs). A digest of a public file has no auth power. The regex
+# anchors on the whole line, so only a `_sha256` key with exactly 64 lowercase hex
+# characters (optionally quoted, with a trailing comma) passes; any other value in
+# these files is still scanned.
+[[allowlists]]
+description = "Golden SHA-256 file pins"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = [
+  '''(^|/)ops/golden/envs/[a-z0-9-]+\.yaml$''',
+  '''(^|/)ops/golden/tests/[a-z0-9-]+\.test\.mjs$''',
+]
+regexTarget = "line"
+regexes = [
+  '''^\s*[a-z0-9_]+_sha256: '?[0-9a-f]{64}'?,?$''',
+]
+
+# LinkedIn operation ids in the OpenAPI document. Since 512f131d2b each path entry is an op()
+# call whose 'LinkedIn' tag line sits right above the operation id, so linkedin-client-secret
+# reads a 16-letter id such as liveLiSearchJobs as a client secret (verify-dev 39379797901,
+# openapi.ts:2737). The value is the operationId liveLiSearchJobs, the same id 512f131d2b^ held
+# at line 2977, so this entry allows that one id in that one file and nothing else.
+[[allowlists]]
+description = "LinkedIn OpenAPI operation id liveLiSearchJobs"
+targetRules = ["linkedin-client-secret"]
+condition = "AND"
+paths = [
+  '''(^|/)apps/api-portal/src/lib/openapi\.ts$''',
+]
+regexes = [
+  '''^liveLiSearchJobs$''',
+]
+
+# Profile projection fingerprints in the crawler's search index sync. Each platform's entry is the first
+# 16 hex digits of a sha256, and the "linkedin" key right before its value makes linkedin-client-secret read
+# it as a client secret (verify-dev 40051159812, projection.py:58 and :67, since 675877fe36). This entry
+# allows a 16-hex value in that one file and nothing else.
+[[allowlists]]
+description = "Crawler profile projection fingerprints"
+targetRules = ["linkedin-client-secret"]
+condition = "AND"
+paths = [
+  '''(^|/)apps/crawler-v3/src/index/sync/projection\.py$''',
+]
+regexes = [
+  '''^[0-9a-f]{16}$''',
+]
+
+# Twitch's public web client id in the Twitch gap measurers. twitch.tv's own pages send kimne78kx3ncx6brgo4mv6wki5h1ko
+# as the client-id header of every gql.twitch.tv call, so it is published by Twitch and grants no access to any account
+# of ours. This entry allows that one id in that one file and nothing else.
+[[allowlists]]
+description = "Twitch public web client id"
+targetRules = ["twitch-api-token"]
+condition = "AND"
+paths = [
+  '''(^|/)scripts/twitch-gaps/lib\.mjs$''',
+]
+regexes = [
+  '''^kimne78kx3ncx6brgo4mv6wki5h1ko$''',
+]

@@ -1,0 +1,35 @@
+{
+	"name": "@sieun-pi/wiki",
+	"private": true,
+	"version": "0.1.0",
+	"type": "module",
+	"description": "The wiki engine on us-metal02 (:5176, base /wiki): HTML pages, session folders and the agent API, moved from auto-sns-agent apps/llm-wiki.",
+	"scripts": {
+		"dev": "svelte-kit sync && vite dev --host localhost --port 5177",
+		"build": "svelte-kit sync && vite build",
+		"start": "node server.mjs",
+		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"test": "node tests/run.mjs",
+		"test:content": "node tests/run.mjs --content"
+	},
+	"devDependencies": {
+		"@sveltejs/adapter-node": "^5.5.7",
+		"@sveltejs/kit": "^2.57.1",
+		"@sveltejs/vite-plugin-svelte": "^7.3.0",
+		"@types/node": "22.15.30",
+		"svelte": "^5.55.2",
+		"svelte-check": "^4.4.5",
+		"typescript": "^5.9.3",
+		"vite": "^8.3.4"
+	},
+	"dependencies": {
+		"@scalar/api-reference": "^1.60.0",
+		"echarts": "^6.1.0",
+		"graphology": "^0.26.0",
+		"graphology-layout-forceatlas2": "^0.10.1",
+		"isomorphic-dompurify": "^3.18.0",
+		"marked": "^17.0.5",
+		"mermaid": "^11.16.1",
+		"sigma": "^3.0.3"
+	}
+}

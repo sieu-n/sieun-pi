@@ -1,0 +1,1238 @@
+:root {
+	--bg: #f6f7f8;
+	--surface: #ffffff;
+	--surface-alt: #fbfcfb;
+	--ink: #16211f;
+	--ink-soft: #3a4a45;
+	--ink-muted: #66736f;
+	--accent: #1d4f43;
+	--accent-soft: #e4efe9;
+	--border: #dfe5e2;
+	--border-soft: #eef2f0;
+	--rail-width: 300px;
+	color-scheme: light;
+	font-family:
+		Inter,
+		ui-sans-serif,
+		system-ui,
+		-apple-system,
+		BlinkMacSystemFont,
+		'Segoe UI',
+		sans-serif;
+	background: var(--bg);
+	color: var(--ink);
+}
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+	min-width: 320px;
+	background: var(--bg);
+}
+
+a {
+	color: inherit;
+	text-decoration: none;
+}
+
+button,
+input {
+	font: inherit;
+}
+
+.shell {
+	min-height: 100vh;
+}
+
+.topbar {
+	position: sticky;
+	top: 0;
+	z-index: 20;
+	border-bottom: 1px solid var(--border);
+	background: rgba(246, 247, 248, 0.92);
+	backdrop-filter: blur(12px);
+}
+
+.topbar-inner {
+	display: flex;
+	align-items: center;
+	gap: 16px;
+	max-width: 1440px;
+	margin: 0 auto;
+	padding: 11px 20px;
+}
+
+.brand {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	font-weight: 700;
+}
+
+.brand-mark {
+	display: grid;
+	width: 28px;
+	height: 28px;
+	place-items: center;
+	border: 1px solid #aebbb5;
+	border-radius: 7px;
+	background: var(--surface);
+	font-size: 13px;
+}
+
+.search-trigger {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	width: min(360px, 38vw);
+	border: 1px solid var(--border);
+	border-radius: 9px;
+	background: var(--surface);
+	padding: 8px 11px;
+	color: var(--ink-muted);
+	font-size: 14px;
+	cursor: pointer;
+}
+
+.search-trigger:hover {
+	border-color: #b9c6c0;
+}
+
+.search-trigger kbd {
+	border: 1px solid var(--border);
+	border-radius: 5px;
+	background: var(--surface-alt);
+	padding: 1px 6px;
+	font-family: ui-monospace, Menlo, Consolas, monospace;
+	font-size: 11px;
+}
+
+.nav {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	margin-left: auto;
+	color: var(--ink-soft);
+	font-size: 14px;
+}
+
+.nav a {
+	border-radius: 7px;
+	padding: 7px 10px;
+}
+
+.nav a:hover {
+	background: #e8eeeb;
+	color: var(--ink);
+}
+
+/* Reader mode: the one persistent control that folds both rails away (⌘\ does the same). */
+.reader-toggle {
+	display: flex;
+	flex-shrink: 0;
+	align-items: center;
+	gap: 7px;
+	border: 1px solid var(--border);
+	border-radius: 9px;
+	background: var(--surface);
+	padding: 7px 10px;
+	color: var(--ink-soft);
+	font-size: 13px;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.reader-toggle:hover {
+	border-color: #b9c6c0;
+	color: var(--ink);
+}
+
+.reader-toggle--on {
+	border-color: #b6d2c8;
+	background: var(--accent-soft);
+	color: var(--accent);
+}
+
+.reader-toggle kbd {
+	border: 1px solid var(--border);
+	border-radius: 5px;
+	background: var(--surface-alt);
+	padding: 1px 5px;
+	font-family: ui-monospace, Menlo, Consolas, monospace;
+	font-size: 11px;
+	font-weight: 400;
+}
+
+.reader-toggle--on kbd {
+	border-color: #b6d2c8;
+	background: rgba(255, 255, 255, 0.65);
+}
+
+.body {
+	display: grid;
+	grid-template-columns: var(--rail-width) minmax(0, 1fr);
+	align-items: start;
+	max-width: 1440px;
+	margin: 0 auto;
+}
+
+.tree-rail {
+	position: sticky;
+	top: 49px;
+	max-height: calc(100vh - 49px);
+	overflow-y: auto;
+	border-right: 1px solid var(--border);
+	padding: 16px 12px 40px;
+}
+
+.tree-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 10px;
+	padding: 0 7px;
+	color: var(--ink-muted);
+	font-size: 12px;
+}
+
+.tree-head-actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.tree-home {
+	color: var(--accent);
+	font-weight: 600;
+}
+
+/* Square icon button that folds a rail away. Lives inside the rail it controls. */
+.rail-collapse {
+	display: grid;
+	place-items: center;
+	width: 22px;
+	height: 22px;
+	border: 1px solid transparent;
+	border-radius: 6px;
+	background: none;
+	padding: 0;
+	color: var(--ink-muted);
+	cursor: pointer;
+}
+
+.rail-collapse:hover {
+	border-color: var(--border);
+	background: var(--surface);
+	color: var(--ink);
+}
+
+/* The way back: a slim always-visible strip where the page tree used to be. Hidden until
+   `html[data-tree-collapsed]` turns it on, which app.html can already have set before paint. */
+.rail-tab {
+	position: sticky;
+	top: 49px;
+	display: none;
+	flex-direction: column;
+	align-items: center;
+	gap: 10px;
+	height: calc(100vh - 49px);
+	border: none;
+	border-right: 1px solid var(--border);
+	background: none;
+	padding: 16px 0;
+	color: var(--ink-muted);
+	cursor: pointer;
+}
+
+.rail-tab:hover {
+	background: var(--surface);
+	color: var(--accent);
+}
+
+.rail-tab-label {
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	writing-mode: vertical-rl;
+}
+
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+.content {
+	min-width: 0;
+	padding: 0;
+}
+
+/* Hidden on desktop; shown only at ≤860px via the media query below. */
+.browse-btn {
+	display: none;
+}
+
+/* One knob for the article column, set by three states: both rails on, the right rail folded, and reader mode. */
+.page {
+	--page-measure: 1180px;
+	max-width: var(--page-measure);
+	margin: 0 auto;
+	padding: 30px 32px 72px;
+}
+
+html[data-rail-collapsed] .page {
+	--page-measure: 900px;
+}
+
+.page-head {
+	margin-bottom: 22px;
+	border-bottom: 1px solid var(--border);
+	padding-bottom: 18px;
+}
+
+.crumbs {
+	margin: 0 0 8px;
+	color: var(--ink-muted);
+	font-family: ui-monospace, Menlo, Consolas, monospace;
+	font-size: 12px;
+	word-break: break-all;
+}
+
+.page-title-row {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 16px;
+}
+
+.page-title-row h1 {
+	margin: 0;
+	font-size: clamp(27px, 2.8vw, 34px);
+	line-height: 1.15;
+	letter-spacing: -0.015em;
+}
+
+.edit-btn {
+	flex-shrink: 0;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--surface);
+	padding: 8px 15px;
+	color: var(--ink-soft);
+	font-size: 14px;
+	font-weight: 600;
+}
+
+.edit-btn:hover {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
+.mirror-tag {
+	flex-shrink: 0;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	background: var(--surface-alt);
+	padding: 5px 11px;
+	color: var(--ink-muted);
+	font-size: 12px;
+	font-weight: 600;
+	white-space: nowrap;
+}
+
+.page-meta {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	margin-top: 14px;
+	font-size: 12px;
+}
+
+.page-meta .pill {
+	border-color: var(--border-soft);
+	color: var(--ink-muted);
+}
+
+.pill {
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	background: var(--surface-alt);
+	padding: 3px 10px;
+	color: var(--ink-soft);
+	font-size: 12px;
+}
+
+.pill.warn {
+	border-color: #ead8a4;
+	background: #fff9e6;
+	color: #60480f;
+}
+
+.page-grid {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 248px;
+	gap: 36px;
+	align-items: start;
+}
+
+.rail {
+	position: sticky;
+	top: 70px;
+	display: grid;
+	gap: 16px;
+}
+
+html[data-rail-collapsed] .page-grid {
+	grid-template-columns: minmax(0, 1fr);
+}
+
+html[data-rail-collapsed] .rail {
+	display: none;
+}
+
+.rail-tools {
+	display: flex;
+	justify-content: flex-end;
+	margin-bottom: -8px;
+}
+
+.rail-card h2 {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 0 0 10px;
+	color: var(--ink-muted);
+	font-size: 12px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.07em;
+}
+
+.rail-card-btn {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	border: none;
+	background: none;
+	padding: 0;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+}
+
+.rail-card-btn:hover {
+	color: var(--ink);
+}
+
+.rail-caret {
+	transform: rotate(90deg);
+	transition: transform 120ms ease;
+}
+
+html[data-toc-closed] .rail-caret {
+	transform: none;
+}
+
+html[data-toc-closed] #wiki-toc {
+	display: none;
+}
+
+.badge {
+	border-radius: 999px;
+	background: var(--accent-soft);
+	padding: 1px 7px;
+	color: var(--accent);
+	font-size: 11px;
+}
+
+/* Long tables of contents scroll inside the rail instead of pushing the page down. */
+.toc {
+	display: grid;
+	gap: 2px;
+	max-height: min(56vh, 520px);
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	border-left: 2px solid var(--border-soft);
+}
+
+.toc a {
+	display: block;
+	margin-left: -2px;
+	border-left: 2px solid transparent;
+	padding: 3px 0 3px 12px;
+	color: var(--ink-muted);
+	font-size: 13px;
+	line-height: 1.35;
+}
+
+.toc a:hover {
+	color: var(--accent);
+	border-left-color: var(--accent);
+}
+
+.toc a.toc-d2 {
+	padding-left: 24px;
+}
+
+.toc a.toc-d3 {
+	padding-left: 36px;
+}
+
+/* Scrollspy: the section currently under the top of the viewport. */
+.toc a.toc-active {
+	border-left-color: var(--accent);
+	color: var(--accent);
+	font-weight: 600;
+}
+
+.backlinks {
+	display: grid;
+	gap: 7px;
+}
+
+.backlinks a {
+	display: grid;
+	gap: 1px;
+	border: 1px solid var(--border-soft);
+	border-radius: 7px;
+	padding: 8px 10px;
+	background: var(--surface-alt);
+}
+
+.backlinks a:hover {
+	border-color: #b9c6c0;
+}
+
+.bl-title {
+	color: var(--ink);
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.bl-path {
+	color: var(--ink-muted);
+	font-family: ui-monospace, Menlo, Consolas, monospace;
+	font-size: 11px;
+	word-break: break-all;
+}
+
+.muted {
+	color: var(--ink-muted);
+}
+
+.small {
+	font-size: 13px;
+}
+
+.prose {
+	min-width: 0;
+	color: #21302c;
+	font-size: 16px;
+	line-height: 1.72;
+	overflow-wrap: break-word;
+}
+
+.prose > :first-child {
+	margin-top: 0;
+}
+
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4 {
+	margin: 1.8em 0 0.6em;
+	line-height: 1.25;
+	letter-spacing: -0.01em;
+	scroll-margin-top: 64px;
+}
+
+.prose h1 {
+	font-size: 1.5em;
+}
+
+.prose h2 {
+	margin-top: 2.1em;
+	border-bottom: 1px solid var(--border-soft);
+	padding-bottom: 0.3em;
+	font-size: 1.28em;
+}
+
+.prose h3 {
+	font-size: 1.08em;
+}
+
+.prose h4 {
+	font-size: 1em;
+	color: var(--ink-soft);
+}
+
+.prose p,
+.prose ul,
+.prose ol {
+	margin: 0 0 1.05em;
+}
+
+.prose ul,
+.prose ol {
+	padding-left: 1.5em;
+}
+
+.prose li {
+	margin: 0.3em 0;
+}
+
+/* statement-stream pages: top-level ol statements breathe like the 메르-blog reference */
+.prose > ol > li {
+	margin: 0.7em 0;
+}
+
+.prose a {
+	color: var(--accent);
+	text-decoration: underline;
+	text-decoration-color: #b6d2c8;
+	text-underline-offset: 2px;
+}
+
+.prose a:hover {
+	text-decoration-color: var(--accent);
+}
+
+.prose a.wikilink-missing {
+	color: #b4541f;
+	text-decoration-color: #e6b89c;
+	text-decoration-style: dashed;
+}
+
+.prose a.external::after {
+	content: '↗';
+	margin-left: 2px;
+	font-size: 0.8em;
+	color: var(--ink-muted);
+}
+
+.prose code {
+	border: 1px solid var(--border-soft);
+	border-radius: 5px;
+	background: var(--surface-alt);
+	padding: 0.1em 0.4em;
+	font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+	font-size: 0.86em;
+}
+
+.prose pre {
+	margin: 0 0 1.2em;
+	overflow-x: auto;
+	border: 1px solid var(--border-soft);
+	border-radius: 10px;
+	background: var(--surface-alt);
+	padding: 16px 18px;
+	font-size: 13px;
+	line-height: 1.55;
+	tab-size: 2;
+}
+
+.prose pre code {
+	border: none;
+	background: none;
+	padding: 0;
+	font-size: inherit;
+}
+
+.prose blockquote {
+	margin: 0 0 1.1em;
+	border-left: 3px solid #c5d6cf;
+	padding: 0.2em 0 0.2em 1em;
+	color: var(--ink-muted);
+}
+
+.prose table {
+	display: block;
+	width: max-content;
+	max-width: 100%;
+	overflow-x: auto;
+	margin: 0 0 1.3em;
+	border-collapse: collapse;
+	font-size: 14px;
+}
+
+.prose th,
+.prose td {
+	border: 1px solid var(--border);
+	padding: 7px 12px;
+	text-align: left;
+}
+
+.prose th {
+	background: var(--surface-alt);
+	font-weight: 600;
+}
+
+.prose tr:nth-child(even) td {
+	background: var(--surface-alt);
+}
+
+.prose img {
+	max-width: 100%;
+	border-radius: 8px;
+}
+
+.prose hr {
+	margin: 2em 0;
+	border: none;
+	border-top: 1px solid var(--border);
+}
+
+.prose figure.wiki-figure {
+	margin: 0 0 1.4em;
+}
+
+.prose figure.wiki-figure img,
+.prose .wiki-gallery img {
+	cursor: zoom-in;
+}
+
+.prose figure.wiki-figure figcaption,
+.prose .wiki-gallery figcaption {
+	margin-top: 0.5em;
+	font-size: 13px;
+	color: var(--ink-muted);
+	text-align: center;
+}
+
+.prose .wiki-gallery {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+	gap: 14px;
+	margin: 0 0 1.4em;
+}
+
+.prose .wiki-gallery figure {
+	margin: 0;
+}
+
+.prose .wiki-gallery img {
+	width: 100%;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+}
+
+.prose .wiki-cite {
+	border-bottom: 1px dotted var(--ink-muted);
+	cursor: help;
+}
+
+.prose .wiki-cite-assumed {
+	border-bottom-style: dashed;
+	color: var(--ink-soft);
+}
+
+/* Fixed, so a scrolling table cannot clip it; the page script places it under its number. */
+.prose .wiki-cite-tip {
+	display: none;
+	position: fixed;
+	z-index: 40;
+	max-width: 320px;
+	padding: 6px 9px;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: var(--surface);
+	box-shadow: 0 4px 14px rgb(0 0 0 / 12%);
+	color: var(--ink);
+	font-size: 12.5px;
+	font-weight: 400;
+	line-height: 1.45;
+	text-align: left;
+	white-space: normal;
+}
+
+.prose .wiki-cite:hover .wiki-cite-tip,
+.prose .wiki-cite:focus-within .wiki-cite-tip {
+	display: block;
+}
+
+.prose .wiki-empty {
+	color: var(--ink-muted);
+	font-style: italic;
+}
+
+.prose table[data-wiki-sortable] th {
+	cursor: pointer;
+	user-select: none;
+	white-space: nowrap;
+}
+
+.prose table[data-wiki-sortable] th::after {
+	content: ' ⇅';
+	font-size: 11px;
+	opacity: 0.4;
+}
+
+.prose table[data-wiki-sortable] th[aria-sort='ascending']::after {
+	content: ' ↑';
+	opacity: 1;
+}
+
+.prose table[data-wiki-sortable] th[aria-sort='descending']::after {
+	content: ' ↓';
+	opacity: 1;
+}
+
+.prose input.wiki-filter {
+	display: block;
+	width: 260px;
+	max-width: 100%;
+	margin: 0 0 10px;
+	padding: 7px 11px;
+	border: 1px solid var(--border);
+	border-radius: 7px;
+	background: var(--surface);
+	color: var(--ink);
+	font-size: 14px;
+}
+
+.prose input.wiki-filter:focus {
+	outline: none;
+	border-color: var(--accent);
+}
+
+.wiki-lightbox {
+	position: fixed;
+	inset: 0;
+	z-index: 100;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 14px;
+	padding: 32px;
+	background: rgba(12, 18, 16, 0.82);
+	cursor: zoom-out;
+}
+
+.wiki-lightbox img {
+	max-width: 92vw;
+	max-height: 86vh;
+	border-radius: 10px;
+	box-shadow: 0 14px 50px rgba(0, 0, 0, 0.5);
+}
+
+.wiki-lightbox figcaption {
+	color: #f3f6f5;
+	font-size: 13px;
+}
+
+/* Quiet info panels: a hairline box with a colored left rail. */
+.prose .wiki-panel {
+	margin: 0 0 1.3em;
+	border: 1px solid var(--border);
+	border-left: 3px solid var(--ink-muted);
+	border-radius: 8px;
+	background: var(--surface-alt);
+	padding: 11px 15px;
+	font-size: 0.97em;
+}
+
+.prose .wiki-panel > :first-child {
+	margin-top: 0;
+}
+
+.prose .wiki-panel > :last-child {
+	margin-bottom: 0;
+}
+
+.prose .wiki-panel.note {
+	border-left-color: #5b7fa6;
+	background: #f3f7fb;
+}
+
+.prose .wiki-panel.success {
+	border-left-color: var(--accent);
+	background: var(--accent-soft);
+}
+
+.prose .wiki-panel.warning {
+	border-left-color: #c79321;
+	background: #fdf7e6;
+}
+
+.prose .wiki-panel.danger {
+	border-left-color: #c0492f;
+	background: #fbefec;
+}
+
+.prose .wiki-panel-label {
+	display: block;
+	margin-bottom: 3px;
+	color: var(--ink-muted);
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0;
+	text-transform: uppercase;
+}
+
+.prose .wiki-panel.note .wiki-panel-label {
+	color: #3f6184;
+}
+
+.prose .wiki-panel.success .wiki-panel-label {
+	color: var(--accent);
+}
+
+.prose .wiki-panel.warning .wiki-panel-label {
+	color: #8a6512;
+}
+
+.prose .wiki-panel.danger .wiki-panel-label {
+	color: #a33d25;
+}
+
+/* Inline verdict chips for probe results. Wrap rather than overflow on mobile. */
+.prose .wiki-status {
+	display: inline-flex;
+	align-items: baseline;
+	gap: 6px;
+	max-width: 100%;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	background: var(--surface-alt);
+	padding: 1px 9px;
+	color: var(--ink-soft);
+	font-size: 0.82em;
+	font-weight: 600;
+	line-height: 1.5;
+	white-space: normal;
+	overflow-wrap: anywhere;
+	vertical-align: baseline;
+}
+
+.prose .wiki-status::before {
+	content: '';
+	flex: 0 0 auto;
+	align-self: center;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: currentColor;
+	opacity: 0.75;
+}
+
+.prose .wiki-status.usable,
+.prose .wiki-status.captured {
+	border-color: #b6d3c7;
+	background: var(--accent-soft);
+	color: #1d4f43;
+}
+
+.prose .wiki-status.json-error {
+	border-color: #e3b3a6;
+	background: #fbefec;
+	color: #a33d25;
+}
+
+.prose .wiki-status.html-shell {
+	border-color: #d2c2e6;
+	background: #f7f3fb;
+	color: #61458e;
+}
+
+.prose .wiki-status.blocked,
+.prose .wiki-status.degraded {
+	border-color: #e6cf8f;
+	background: #fdf7e6;
+	color: #8a6512;
+}
+
+.prose .wiki-status.invalid {
+	border-color: #e4bd9e;
+	background: #fff3eb;
+	color: #8a4d24;
+}
+
+.prose .wiki-status.redirect {
+	border-color: #b9cbdd;
+	background: #f3f7fb;
+	color: #3f6184;
+}
+
+.prose .wiki-status.skipped {
+	border-color: var(--border);
+	background: var(--surface-alt);
+	color: var(--ink-muted);
+}
+
+/* Key/value properties grid. Full-width table, label column shaded. */
+.prose table.wiki-properties {
+	display: table;
+	width: 100%;
+	table-layout: fixed;
+	margin: 0 0 1.3em;
+	border-collapse: collapse;
+	font-size: 14px;
+}
+
+.prose table.wiki-properties th,
+.prose table.wiki-properties td {
+	border: 1px solid var(--border);
+	padding: 7px 12px;
+	text-align: left;
+	vertical-align: top;
+	overflow-wrap: anywhere;
+}
+
+.prose table.wiki-properties th {
+	width: 28%;
+	background: var(--surface-alt);
+	color: var(--ink-soft);
+	font-weight: 600;
+}
+
+.prose table.wiki-properties td {
+	background: var(--surface);
+}
+
+.prose table.wiki-properties tr:nth-child(even) td {
+	background: var(--surface);
+}
+
+@media (max-width: 600px) {
+	.prose table.wiki-properties th {
+		width: 38%;
+	}
+}
+
+/* Reader mode: both rails fold away and the column narrows to a reading measure. `ch` resolves against the 17px base
+   set here. This block must stay after `html[data-rail-collapsed] .page`: same specificity, so source order wins. */
+html[data-reader] .page {
+	/* 62ch of this font's zero width is a 663px column — measured in Chrome at the 17px reader
+	   size, that renders ~82 characters per line. +56px is the horizontal padding that a
+	   border-box max-width includes. */
+	--reader-measure: 62ch;
+	--page-measure: calc(var(--reader-measure) + 56px);
+	padding: 44px 28px 112px;
+	font-size: 17px;
+}
+
+/* Reader mode with the right rail pinned back on: keep the measure, add room for the rail. */
+html[data-reader]:not([data-rail-collapsed]) .page {
+	--page-measure: calc(var(--reader-measure) + 340px);
+}
+
+html[data-reader] .page-head {
+	margin-bottom: 32px;
+	padding-bottom: 22px;
+}
+
+html[data-reader] .prose {
+	font-size: inherit;
+	line-height: 1.78;
+}
+
+html[data-reader] .prose h1,
+html[data-reader] .prose h2,
+html[data-reader] .prose h3,
+html[data-reader] .prose h4 {
+	scroll-margin-top: 84px;
+}
+
+html[data-reader] .prose h2 {
+	margin-top: 2.3em;
+}
+
+/* The way back to the table of contents once `html[data-rail-collapsed]` folds the right rail away. */
+.toc-dock {
+	position: fixed;
+	right: 20px;
+	bottom: 20px;
+	z-index: 30;
+	display: none;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 8px;
+}
+
+html[data-rail-collapsed] .toc-dock {
+	display: flex;
+}
+
+.toc-dock-btn {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	background: var(--surface);
+	padding: 9px 15px;
+	color: var(--ink-soft);
+	font-size: 13px;
+	font-weight: 600;
+	box-shadow: 0 6px 20px rgba(22, 33, 31, 0.12);
+	cursor: pointer;
+}
+
+.toc-dock-btn:hover {
+	border-color: #b9c6c0;
+	color: var(--ink);
+}
+
+.toc-dock-btn[aria-expanded='true'] {
+	border-color: #b6d2c8;
+	background: var(--accent-soft);
+	color: var(--accent);
+}
+
+.toc-dock-panel {
+	width: min(320px, calc(100vw - 40px));
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	background: var(--surface);
+	padding: 12px 14px 14px;
+	box-shadow: 0 14px 40px rgba(22, 33, 31, 0.16);
+}
+
+.toc-dock-panel .toc {
+	max-height: min(46vh, 420px);
+}
+
+.toc-dock-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	margin-bottom: 10px;
+	color: var(--ink-muted);
+	font-size: 12px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.07em;
+}
+
+.dock-pin {
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: var(--surface-alt);
+	padding: 3px 8px;
+	color: var(--ink-soft);
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0;
+	text-transform: none;
+	cursor: pointer;
+}
+
+.dock-pin:hover {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
+.main {
+	max-width: 1180px;
+	margin: 0 auto;
+	padding: 30px 32px 72px;
+}
+
+@media (max-width: 1080px) {
+	.page-grid {
+		grid-template-columns: 1fr;
+	}
+
+	.rail {
+		position: static;
+	}
+}
+
+@media (max-width: 860px) {
+	.body {
+		grid-template-columns: 1fr;
+	}
+
+	/* Full-width toggle button that replaces the persistent tree rail on narrow viewports. */
+	.browse-btn {
+		display: block;
+		width: 100%;
+		border: none;
+		border-bottom: 1px solid var(--border);
+		background: var(--surface);
+		padding: 11px 16px;
+		color: var(--ink-soft);
+		font-size: 14px;
+		font-weight: 600;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.browse-btn:hover {
+		background: var(--surface-alt);
+		color: var(--ink);
+	}
+
+	/* Tree rail hidden by default on narrow viewports; .tree-rail--open reveals it inline. */
+	.tree-rail {
+		display: none;
+	}
+
+	.tree-rail--open {
+		display: block;
+		position: static;
+		max-height: none;
+		border-right: none;
+		border-bottom: 1px solid var(--border);
+	}
+
+	/* Narrow viewports use .browse-btn for the tree, so the desktop fold control has no job.
+	   `.rail-tab` needs no rule here — it only turns on inside the min-width block below. */
+	.tree-head .rail-collapse {
+		display: none;
+	}
+
+	.search-trigger {
+		width: auto;
+		flex: 1;
+	}
+
+	.nav {
+		display: none;
+	}
+
+	.reader-toggle-label,
+	.reader-toggle kbd {
+		display: none;
+	}
+
+	.toc-dock {
+		right: 14px;
+		bottom: 14px;
+	}
+}
+
+/* Folding the page tree away is a desktop move; below 861px .browse-btn owns the rail and the
+   two mechanisms must not fight over `display`. */
+@media (min-width: 861px) {
+	html[data-tree-collapsed] .body {
+		grid-template-columns: 36px minmax(0, 1fr);
+	}
+
+	html[data-tree-collapsed] .tree-rail {
+		display: none;
+	}
+
+	html[data-tree-collapsed] .rail-tab {
+		display: flex;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.rail-caret {
+		transition: none;
+	}
+}

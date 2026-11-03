@@ -1,0 +1,200 @@
+<!--wiki
+{ "title": "Gateway v2", "date": "2026-10-09", "updated": "2026-10-09",
+  "apps": ["infra", "convex", "search", "api-portal", "research-agent-be"],
+  "tags": ["architecture", "egress", "webhooks", "slack", "zernio", "resend", "stripe", "gmail", "decision"],
+  "status": "draft", "owner": "platform", "kind": "session",
+  "description": "Revised gateway vision: an LLM proxy plus a neutral integration layer for Slack, Zernio, Resend and Stripe calls and inbound webhooks. Inventory, misuse traps, scope, webhook design, placement, phases. Draft for owner review.",
+  "summary": "The gateway holds zero application logic. Layer 1 forwards LLM calls. Layer 2 forwards provider-shaped SaaS calls with each provider's rules enforced, and receives webhooks: verify, store raw, ack, then route by provider and event type. Slack first, then the inbound receiver with Resend, then Zernio, Resend sends, Stripe. Gmail stays out.",
+  "superseded_by": "sessions/2026/10/09/2344-gateway-v2-rewrite/gateway-v2.html" }
+-->
+<h1>Gateway v2</h1>
+<wiki-tldr>
+	<strong>What.</strong> A new version of the <a href="../1918-egress-vision/egress-vision.html">egress vision</a>. It adds a second layer for SaaS calls and inbound webhooks. The 1918 page stays as it is for the LLM layer.
+	<strong>Answer.</strong> The gateway knows no application logic. It makes each provider's API hard to misuse and logs every call and event the same neutral way. Slack goes first. Gmail stays out.
+	<strong>Read this if</strong> you send to Slack, Zernio, Resend or Stripe, receive their webhooks, or plan the gateway's phases.
+</wiki-tldr>
+
+<h2 id="ask">1 · The ask</h2>
+<ol>
+	<li>The owner: "i highly confidently want Slack, Zernio integration &amp; webhook here, and also for Resend, Stripe, Gmail to a lower degree. so like it does send_email or crate_stripe same but this stays and orchestrates, forces correct pattern, reliably accepts logs routes webhooks ... doens't need to be big bang though."</li>
+	<li>Then: "i want a reliable API for these services as they are often so easy to misuse. no this gateway doesn't know application logic, it just forces correct application and does neutral logging understand..?"</li>
+	<li>Earlier, still in force: "NEVER litellm." The four purposes from the 1918 page also stand: no provider keys in apps, one way to call from any language, one place to watch, routing with fallback for LLMs.</li>
+	<li>All requests, verbatim, are in <a href="requests.html">requests.html</a>. The evidence files are <a href="data/inv-slack-zernio.md">inv-slack-zernio.md</a>, <a href="data/inv-resend-stripe-gmail.md">inv-resend-stripe-gmail.md</a> and <a href="data/provider-retry-policies.md">provider-retry-policies.md</a>.</li>
+</ol>
+
+<h2 id="principle">2 · First principle: no application logic</h2>
+<ol start="5">
+	<li><strong>The gateway never decides anything for the product.</strong> It does not choose who gets an email, what a checkout holds, or what a webhook means. The app decides all of that.</li>
+	<li><strong>It makes the provider's API hard to misuse.</strong> It requires idempotency keys where the provider supports them. It checks every webhook signature. It applies the provider's own timeout, retry, backoff and rate-limit rules in one place.</li>
+	<li><strong>It speaks the provider's shape.</strong> A call is <code>slack chat.postMessage</code>, <code>resend emails.send</code> or <code>stripe checkout.sessions.create</code>, with the provider's own body. There are no product verbs like <code>send_welcome_email</code>.</li>
+	<li><strong>So the provider's SDK keeps working.</strong> The app changes the base URL and the key. stripe-node takes a <code>host</code> option, the Resend SDK reads <code>RESEND_BASE_URL</code>, and Slack's WebClient takes <code>slackApiUrl</code>. Today we use no Slack SDK, and Zernio is one raw fetch helper.</li>
+	<li><strong>It logs every call and every event the same way.</strong> One record holds provider, method or event type, caller, status, attempts, latency, units, provider ids and the idempotency key. It holds no secrets and no outbound bodies.</li>
+	<li><strong>Webhooks are routed by provider, env tag and event type only.</strong> The app gets the raw verified bytes and decides what they mean.</li>
+	<li><strong>The test.</strong> A repo-invariant test in <code>apps/egress</code> fails when gateway code imports product code, or when it reads a payload field that is not on the per-provider allowlist (event id, event type, created time, env tag). A second test sends each provider's sample events through and checks that the bytes the app gets equal the bytes the provider sent.</li>
+</ol>
+
+<h2 id="layers">3 · Two layers, one door</h2>
+<ol start="12">
+	<li><strong>Layer 1, LLM proxy.</strong> As in the 1918 page. It maps a call type to a model, tries CLIProxyAPI first, uses a paid fallback only where a row allows it, and never retries. It is stateless and never touches the database.</li>
+	<li><strong>Layer 2, integration proxy.</strong> It forwards allowlisted provider methods and adds the provider's rules. A method that is not on the list gets 404. It also runs the webhook receiver.</li>
+	<li><strong>Both layers forward and never translate.</strong> Layer 2 adds headers, checks, waits and a log record. It never converts one provider's format to another's.</li>
+	<li><strong>Retries are declared, not hidden.</strong> Layer 2 retries only rows that are safe to retry: a call with an idempotency key, or a 429 with <code>Retry-After</code>. Every attempt shows in the log. Layer 1 keeps zero retries.</li>
+	<li><strong>The gateway waits only inside the caller's deadline.</strong> The caller sends <code>x-gateway-deadline-ms</code> (default 10,000). If Slack asks for a 30 s wait, the gateway answers 429 with <code>Retry-After</code> instead of hanging.</li>
+	<li><strong>Layer 2 needs a small store.</strong> One Postgres with two tables: <code>inbound_events</code> (raw webhooks) and <code>idempotency_records</code> (24 h answers for providers with no native key, Slack today). This replaces the 1918 rule "No state" for layer 2 only.</li>
+	<li><strong>One codebase, two Railway services.</strong> <code>egress-llm</code> and <code>egress-int</code> run the same image with a different role. A flood of LLM streams or a bad routing-row deploy cannot slow a webhook ack.</li>
+</ol>
+
+<pre class="mermaid">
+flowchart LR
+  subgraph apps["Our apps (no provider keys)"]
+    CX["Convex"]
+    SK["apps/search, api-portal"]
+    RA["research-agent-be, crawler-v3"]
+  end
+  subgraph gw["apps/egress on Railway"]
+    L1["egress-llm, layer 1, stateless"]
+    L2["egress-int, layer 2"]
+    PG[("Postgres: inbound_events, idempotency_records")]
+  end
+  RA -->|"call type + egress key"| L1
+  L1 --> LLM["CLIProxyAPI, then paid API if the row allows"]
+  CX -->|"provider path + idempotency key"| L2
+  SK -->|"provider path + idempotency key"| L2
+  L2 -->|"timeout, Retry-After, pacing"| SAAS["Slack, Zernio, Resend, Stripe"]
+  SAAS -->|"signed webhook"| L2
+  L2 -->|"1. verify 2. insert raw"| PG
+  L2 -->|"3. ack 2xx"| SAAS
+  PG -->|"4. dispatch raw bytes, retry, dead letter"| CX
+  L1 -.->|"spans"| OBS["collector, ClickHouse, Grafana Egress board"]
+  L2 -.->|"spans"| OBS
+  OPS["Grafana alerts, watch.mjs, digest.py, triage.py"] -->|"direct, never via gateway"| SLK["Slack ops channel"]
+</pre>
+
+<h2 id="today">4 · Today's code</h2>
+<ol start="19">
+	<li>Counted with <code>rg</code> on <code>sieun/dev</code>, 2026-10-09. Tests, <code>_generated</code>, <code>node_modules</code> and the mocked <code>apps/virev-demo</code> copy are not counted.</li>
+</ol>
+<table>
+<thead><tr><th>Service</th><th>Outbound sites</th><th>Inbound endpoints</th><th>Key holders (env files)</th><th>Retries today</th><th>Signature check</th><th>Raw event stored before ack</th></tr></thead>
+<tbody>
+<tr><td>Slack</td><td>10 code sites (4 apps/search, 3 Convex, 3 apps/infra) plus 4 Grafana receivers. 8 separate <code>chat.postMessage</code> copies. No SDK.</td><td>0</td><td>2 bot tokens in 5 files plus 4 Convex rows. Per-org webhook URLs encrypted in <code>searchIntegrations</code>.</td><td>3 of 10 sites have any retry. None honours 429 <code>Retry-After</code>.</td><td>n/a</td><td>n/a</td></tr>
+<tr><td>Zernio</td><td>1 helper (<code>convex/search/zernio/client.ts:46</code>), 16 wrappers, 15 call sites</td><td>1, <code>POST /zernio-webhook</code> (<code>convex/http.ts:47</code>)</td><td>2 secrets, Convex env only, 0 files</td><td>None in the client. Cron sweeps reconcile.</td><td>HMAC-SHA256 on raw body, constant time, no timestamp</td><td>No. Event id only (<code>searchZernioEvents</code>).</td></tr>
+<tr><td>Resend</td><td>17 (14 via <code>resendFetch</code> in Convex, 3 raw fetch in apps/search)</td><td>1 public (apps/search <code>/api/email/webhook</code>) feeding 2 Convex routes</td><td><code>RESEND_API_KEY</code> 5 files (2 in research-agent-be, unused), webhook secret 3</td><td>429 only, 4 tries. Campaign scheduler 3 attempts.</td><td>svix, but the SvelteKit hop fails open when the secret is unset</td><td>Partly. Component rows, no svix-id dedupe, no raw copy.</td></tr>
+<tr><td>Stripe</td><td>102 (98 SDK lines in 3 runtimes, 4 raw fetch). 43 mutate, 12 carry an app idempotency key.</td><td>3 receivers in code (Convex, apps/search, api-portal)</td><td><code>STRIPE_SECRET_KEY</code> 7 files, webhook secret 7 (research-app holds both, uses neither)</td><td>SDK 2 retries. Convex ledger 5 retries over 12 h plus a daily <code>events.list</code> sweep.</td><td>Yes on all 3, raw body, 300 s</td><td>Convex yes (id, type, object id). The two SvelteKit routes process inline.</td></tr>
+<tr><td>Gmail</td><td>7 raw fetch, per-user OAuth</td><td>0 webhooks. A cron polls every 2 min.</td><td>Client id and secret 3 files. Tokens AES-encrypted in <code>searchGmailConnections</code>.</td><td>Campaign scheduler retries the send, which has no idempotency.</td><td>n/a</td><td>n/a</td></tr>
+</tbody></table>
+<ol start="20">
+	<li><strong>The <code>@convex-dev/resend</code> queue never runs for us.</strong> We call only <code>sendEmailManually</code>, <code>status</code> and <code>handleResendEventWebhook</code>. Its batching, Workpool retries and rate limiter are idle, and its cleanup jobs are never scheduled.</li>
+	<li><strong>Which Stripe receivers the dashboard calls is not checked.</strong> If more than one is subscribed, a handler such as <code>search-overage</code> runs twice and only idempotency keys save it.</li>
+</ol>
+
+<h2 id="traps">5 · Misuse traps the gateway closes</h2>
+<ol start="22">
+	<li><strong>Slack, 9 traps in code.</strong> 4 senders have no timeout. 7 ignore 429 <code>Retry-After</code>. <code>digest.py:512</code> crashes on a 429. User text goes into mrkdwn unescaped on 3 builders, 2 on public forms, so a visitor can type <code>&lt;!channel&gt;</code>. Slack returns HTTP 200 with <code>ok: false</code>. <code>chat.postMessage</code> has no idempotency key.</li>
+	<li>The gateway closes them this way. It sets a 10 s timeout. It honours <code>Retry-After</code> inside the caller's deadline. It paces each channel to 1 post per second. It logs <code>ok: false</code> as a failure. It rejects <code>&lt;!channel&gt;</code>, <code>&lt;!here&gt;</code> and <code>&lt;!everyone&gt;</code> unless the row allows a broadcast. It answers a repeated idempotency key from <code>idempotency_records</code> for 24 h.</li>
+	<li><strong>Zernio, 8 traps in code.</strong> The helper has no timeout, no retry and no 429 handling. 3 billable POSTs (<code>inbox.ts:639</code>, <code>templates.ts:333</code>, <code>connect.ts:60</code>) send no <code>Idempotency-Key</code>. The webhook writes its dedupe row before the work, so a failed apply loses the event. The raw event is not kept. The signature has no timestamp.</li>
+	<li>The gateway closes them this way. It sets a timeout. It honours <code>Retry-After</code> within Zernio's 60, 600 or 1,200 rpm tier. It rejects a POST with no <code>Idempotency-Key</code>. It treats a 207 as a partial failure in the log. It stores the raw event and keeps dispatching until the app answers 2xx. It keeps event-id dedupe for 30 days, matching Zernio's redeliver window.</li>
+	<li><strong>Resend, 10 traps in code.</strong> 6 of 7 send sites send no <code>Idempotency-Key</code>. The one keyed site makes a new key per attempt (<code>scheduler.ts:242</code>), so a lost answer can send twice. 4 fetch sites have no timeout. The 650 ms pacer is per isolate, not per account. The inbound hop fails open, has no svix-id dedupe, can do 12 s of work before the ack, and acks events it then loses.</li>
+	<li>The gateway closes them this way. It rejects a send with no <code>Idempotency-Key</code>. It sets a 15 s timeout. It paces the whole account to Resend's 10 requests per second. It fails closed on a missing secret. It dedupes on <code>svix-id</code>. It acks right after the insert. It stores an unparseable body as a dead letter instead of returning 500 forever.</li>
+	<li><strong>The gateway cannot judge a key's quality.</strong> A key per attempt still passes the check. The phase that moves Resend sends also changes the key to one per message. The same holds for Stripe's 30 s window key in <code>autoReplenishAction.ts:28</code>.</li>
+	<li><strong>Stripe, 8 traps in code.</strong> 31 mutating SDK calls carry no app key, including 6 creates and 2 <code>invoices.pay</code>. The SDK's own key covers only its retries inside one call. apps/search and api-portal use the 80 s SDK timeout, and api-portal pins no API version. Two receivers process before the ack with no event-id dedupe.</li>
+	<li>The gateway closes them this way. It rejects a POST whose key is missing or is the SDK's automatic <code>stripe-node-retry-</code> key. It sets a 20 s timeout. It pins <code>Stripe-Version</code> per row. It retries 429 and 5xx with backoff and the same key. It runs one receiver that stores before it acks, with a 300 s tolerance on the raw bytes.</li>
+	<li><strong>Gmail, 6 traps in code.</strong> The send has no idempotency and is retried. 5 calls have no timeout. <code>invalid_grant</code> looks like a network error. These stay app fixes, because Gmail stays out of the gateway.</li>
+</ol>
+
+<h2 id="scope">6 · Scope</h2>
+<table>
+<thead><tr><th>Service</th><th>Layer</th><th>Phase</th><th>In or out</th><th>Reason</th></tr></thead>
+<tbody>
+<tr><td>Slack product posts (7 sites: 4 apps/search, <code>chatSlack</code>, <code>opsDigest</code>, <code>stepSlack</code>)</td><td>2 out</td><td>1</td><td>In</td><td>8 copies of one call, 7 ignore 429. The per-org webhook URL comes in per call, so the gateway holds no customer secret.</td></tr>
+<tr><td>Slack ops alerts (watch.mjs, digest.py, triage.py, 4 Grafana receivers)</td><td>none</td><td>none</td><td>Out</td><td>The alert that says the gateway is down cannot travel through it.</td></tr>
+<tr><td>Slack Events and interactivity</td><td>2 in</td><td>when a feature needs it</td><td>In, not built</td><td>0 receivers today. 3 s ack, retries end after about 6 min, no replay API.</td></tr>
+<tr><td>Resend webhooks</td><td>2 in</td><td>2</td><td>In, first receiver tenant</td><td>It replaces an existing hop (apps/search on Vercel), so it adds none. It is the weakest receiver today.</td></tr>
+<tr><td>Zernio calls and webhooks</td><td>2 out and in</td><td>3</td><td>In</td><td>One team key, no per-user credentials. 3 billable POSTs without a key. The gateway can route each env's events by profile tag.</td></tr>
+<tr><td>Resend sends and domain calls (17 sites)</td><td>2 out</td><td>4</td><td>In</td><td>6 unkeyed sends, no timeouts, per-isolate pacing. The idle <code>@convex-dev/resend</code> component is removed in the same phase.</td></tr>
+<tr><td>Stripe webhooks</td><td>2 in</td><td>5</td><td>In, with a direct fallback</td><td>One door and a raw copy. Convex keeps its ledger and its <code>events.list</code> sweep (<code>crons.ts:238</code>) as the fallback.</td></tr>
+<tr><td>Stripe API (102 sites, 3 runtimes)</td><td>2 out</td><td>6</td><td>In, after 30 days of phase 5 uptime</td><td>Checkout and top-ups stop when the gateway stops. Prove uptime on webhooks first. The SDK <code>host</code> option means no call site is rewritten.</td></tr>
+<tr><td>Gmail</td><td>none</td><td>none</td><td>Out</td><td>Per-user refresh tokens, a send with no idempotency, and no webhooks (we poll). Revisit only if we move to Pub/Sub push.</td></tr>
+<tr><td>LLM and paid media</td><td>1</td><td>track L</td><td>In</td><td>Unchanged from the 1918 page.</td></tr>
+<tr><td>Clerk, B2, scraping proxies, telemetry</td><td>none</td><td>none</td><td>Out</td><td>Unchanged from the 1918 page.</td></tr>
+</tbody></table>
+
+<h2 id="inbound">7 · Inbound webhooks</h2>
+<ol start="32">
+	<li><strong>Public ingress.</strong> One HTTPS URL per provider per env, for example <code>https://int.egress.virev.ai/in/stripe</code>. Register only <code>https://</code>. Railway turns a POST to <code>http://</code> into a GET and drops the body.</li>
+	<li><strong>Verify first, on raw bytes.</strong> Stripe <code>t=,v1=</code>, Svix <code>v1,</code> over <code>id.ts.body</code>, Slack <code>v0=</code> over <code>v0:ts:body</code>, Zernio hex over the body. Timestamp tolerance is 300 s where the provider signs a timestamp. A bad signature gets 400 and a counted reject, never a stored row.</li>
+	<li><strong>Store before ack.</strong> Insert into <code>inbound_events</code> (provider, event id, env tag, type, headers, raw body, received at). A unique index on (provider, event id) is the dedupe. Commit, then answer 2xx. The whole path has a 1 s budget, inside Slack's 3 s.</li>
+	<li><strong>A repeat is acked and dropped.</strong> A unique-index hit answers 200 and logs a duplicate.</li>
+	<li><strong>Route by table.</strong> One row per (provider, env tag, event type) names the app route, for example Convex <code>/in/stripe</code>. An unknown type is stored as <code>unrouted</code> and still acked, so no provider disables the endpoint.</li>
+	<li><strong>Dispatch.</strong> A worker sends the raw bytes, the original provider headers and an <code>x-gateway-signature</code> HMAC. The app checks one scheme instead of four. A 2xx means the app accepted the event.</li>
+	<li><strong>Retry and dead letter.</strong> Dispatch retries at 10 s, 1 min, 5 min, 30 min, 2 h, 6 h and 12 h. After that the row is <code>dead</code>, and the Egress board alerts on any dead row.</li>
+	<li><strong>Replay.</strong> An ops-key endpoint sets rows back to <code>pending</code> by id, provider or time range. The app must accept a repeat, which every current handler already does by event id.</li>
+	<li><strong>Retention.</strong> Raw bodies are kept 30 days, then deleted. That matches the longest provider replay window (Stripe and Zernio).</li>
+</ol>
+<table>
+<thead><tr><th>Provider</th><th>Ack timeout</th><th>Retry tail</th><th>Replay later</th><th>Auto-disable</th><th>Gateway down longer than the tail</th></tr></thead>
+<tbody>
+<tr><td>Stripe</td><td>"quickly", no number</td><td>3 days</td><td><code>GET /v1/events</code>, 30 days</td><td>not documented</td><td>The Convex <code>events.list</code> sweep picks events up.</td></tr>
+<tr><td>Resend (Svix)</td><td>15 s</td><td>about 27.6 h, 8 tries</td><td>Replay Event API</td><td>after 5 days of failure</td><td>Replay through the API.</td></tr>
+<tr><td>Zernio</td><td>5 s</td><td>about 51 h, 7 tries, then Zernio's dead letter</td><td>redeliver, 30 days</td><td>3 days with no success</td><td>Redeliver from Zernio's logs.</td></tr>
+<tr><td>Slack Events</td><td>3 s</td><td>about 6 min, 3 retries (24 h with Delayed Events)</td><td>none</td><td>over 95% failing for 60 min, at 1,000 or more events per hour</td><td>Events are lost. Turn Delayed Events on before any Slack receiver ships.</td></tr>
+<tr><td>Gmail (Pub/Sub)</td><td>10 s</td><td>7 days</td><td><code>history.list</code></td><td>watch expires after 7 days</td><td>Out of scope. We poll.</td></tr>
+</tbody></table>
+<ol start="41">
+	<li><strong>When the gateway is down, the provider's own retry is the fallback.</strong> A gateway or Postgres failure answers 503 or times out. Every provider then retries for 6 minutes to 3 days, and four of five can replay later.</li>
+	<li><strong>Stripe keeps a documented direct path.</strong> The Convex <code>/stripe-webhook</code> route stays deployed. The runbook adds it as a Stripe endpoint if the gateway is down for more than 1 hour. The <code>events.list</code> sweep closes any gap.</li>
+</ol>
+
+<h2 id="placement">8 · Placement: Railway, confirmed</h2>
+<ol start="43">
+	<li><strong>Railway, next to CLIProxyAPI.</strong> Inbound needs a public HTTPS edge and restarts we do not run by hand. Railway gives both. The 1918 reasons for layer 1 still hold.</li>
+	<li><strong>The setup.</strong> 2 replicas per service. A healthcheck path. Overlap and draining seconds set. Serverless off, because a slept service can answer 502. No volume on the gateway, because a volume means downtime on every deploy.</li>
+	<li><strong>Postgres is a separate Railway service.</strong> It has a volume, so a Postgres redeploy causes a short outage. During it the receiver answers 503 and providers retry.</li>
+	<li><strong>Not us-metal01.</strong> It went dark on 2026-10-08 from 17:06Z to 17:27Z. That is longer than Slack's 6 min retry tail.</li>
+	<li><strong>Not Convex.</strong> Convex is public and highly available and already hosts 4 receivers. It is the product layer, though, and the gateway must stay neutral. Convex stays the Stripe fallback.</li>
+	<li><strong>The risk we accept.</strong> Railway has no SLA below Business Class. Its status page showed 99.98% uptime per region over 90 days on 2026-10-09. Provider retry tails cover outages shorter than 6 minutes for Slack and 27 hours for the rest.</li>
+</ol>
+
+<h2 id="constraints">9 · Constraints added or changed</h2>
+<ol start="49">
+	<li><strong>No application logic in the gateway.</strong> Tested as in item 11. A row may name a provider method, a timeout, a retry rule, a pacing rule and a route. It may not name a product concept.</li>
+	<li><strong>Never translate, in both layers.</strong> The 1918 rule now covers layer 2 too.</li>
+	<li><strong>Idempotency is required where the provider supports it.</strong> Stripe, Resend and Zernio POSTs without a key get 400 and reach no provider.</li>
+	<li><strong>Every webhook is verified, stored, then acked.</strong> No receiver does product work before the ack.</li>
+	<li><strong>Layer 1 never touches the database.</strong> A Postgres outage cannot stop an LLM call.</li>
+	<li><strong>Bodies.</strong> Outbound bodies are never stored. Raw inbound bodies are stored 30 days, readable only with the ops key.</li>
+	<li><strong>Ops alerts stay direct.</strong> As in the 1918 page.</li>
+	<li><strong>Each move deletes the old path.</strong> When Slack moves, the 8 copies go. When the Resend receiver moves, the SvelteKit route goes. When Resend sends move, the idle component goes.</li>
+</ol>
+
+<h2 id="phases">10 · Phases</h2>
+<ol start="57">
+	<li><strong>Phase 0, subtract first.</strong> Check which Stripe receivers the dashboard calls and delete the others. Remove <code>RESEND_API_KEY</code> from research-agent-be and the Stripe keys from research-app. Make the Resend hop fail closed.<br>Staging: one Stripe test event is processed by exactly 1 webhook route.</li>
+	<li><strong>Phase 1, the service and Slack.</strong> Build <code>apps/egress</code> with the row table, the neutral log, the ops key and the idempotency store. Add the Slack rows. Move the 7 product senders. Delete the 8 copies. Land the neutrality test.<br>Staging: two Slack posts sent with the same idempotency key show as 1 message in the channel.</li>
+	<li><strong>Phase 2, the receiver with Resend.</strong> Build verify, store, ack, dispatch, retry, dead letter and replay. Point Resend at the gateway. Delete the apps/search webhook route.<br>Staging: with Convex refusing Resend events for 10 minutes, all 20 test events land once after it recovers.</li>
+	<li><strong>Phase 3, Zernio.</strong> Add the Zernio call rows and the receiver row. Move <code>ZERNIO_API_KEY</code> to the gateway only. Route by profile env tag.<br>Staging: a Zernio inbox send without an Idempotency-Key gets 400 and reaches no Zernio API.</li>
+	<li><strong>Phase 4, Resend sends.</strong> Move the 17 sites. Use one key per message. Remove <code>@convex-dev/resend</code> and keep status in <code>searchEmailMessages</code>.<br>Staging: one campaign email sent twice with the same idempotency key arrives once.</li>
+	<li><strong>Phase 5, Stripe webhooks.</strong> Point Stripe at the gateway, forwarding to the Convex ledger. Write the fallback runbook.<br>Staging: with the gateway stopped for 30 minutes, every Stripe test event from that window lands in Convex once.</li>
+	<li><strong>Phase 6, Stripe API.</strong> Only after 30 days of phase 5 with no dead rows. Set the SDK <code>host</code> in the 3 clients. Add app keys to the 31 unkeyed mutating calls.<br>Staging: a Stripe create call with no app idempotency key gets 400 and reaches no Stripe API.</li>
+	<li><strong>Track L, LLM layer.</strong> Runs in parallel, as in the 1918 page, with its own criteria.</li>
+</ol>
+
+<h2 id="disagree">11 · Where this differs from the ops chat's opinion</h2>
+<ol start="65">
+	<li><strong>No product verbs.</strong> The opinion named <code>send_slack</code>, <code>send_email</code> and <code>create_checkout</code>. This page uses the provider's own methods, so the gateway holds no product words and SDKs keep working. The owner's second message points the same way.</li>
+	<li><strong>"Never translates" holds for both layers.</strong> The opinion kept it for layer 1 only. Layer 2 needs no translation either. It adds rules and leaves the body alone.</li>
+	<li><strong>Slack has 7 movable senders, not 9.</strong> There are 10 code sites. The 3 ops scripts and 4 Grafana receivers stay direct. The win is timeouts, 429 handling and escaping, not fewer keys. <code>SLACK_BOT_TOKEN_DEV</code> keeps its Grafana and watch holders.</li>
+	<li><strong>The receiver starts with Resend, not Zernio.</strong> Resend already crosses an apps/search hop, so the gateway replaces a hop. Zernio's receiver is the healthiest today, and moving it first adds a hop. Zernio comes one phase later.</li>
+	<li><strong>The Resend component does not queue for us.</strong> Its queue, retries and rate limiter never run. We call it only for status rows. So remove it in phase 4. There is nothing to weigh keeping.</li>
+	<li><strong>Slack webhooks have no consumer yet.</strong> There are 0 Slack inbound routes. Build one only when a feature needs it, with Delayed Events on.</li>
+	<li><strong>Two services, not one.</strong> Same code and image. The LLM layer and the receiver have different load and must fail apart.</li>
+	<li><strong>Agreed as proposed.</strong> Stripe keys pass through, Stripe stores before it acks with a direct fallback, and Gmail stays out.</li>
+</ol>
+
+<h2 id="open">12 · Open points</h2>
+<ol start="73">
+	<li>Not checked: which webhook endpoints the Stripe and Resend dashboards call, and the Convex, Vercel and Railway env stores beyond the Convex rows listed.</li>
+	<li>Not measured: the added latency of the Convex to Railway hop for Slack and Resend sends. Phase 1 measures it.</li>
+	<li>The name. <code>apps/egress</code> now takes inbound traffic too. <code>apps/gateway</code> may fit better. This is the owner's call.</li>
+	<li>Draft spec: <code>apps/llm-wiki/specs/platform/egress-one-door.md</code>, updated to match, <code>status: draft</code>, not committed.</li>
+</ol>

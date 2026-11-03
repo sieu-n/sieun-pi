@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		%sveltekit.head%
+		<!--
+			Reader view, applied before the first paint. This is the ONLY read of the saved record;
+			the layout picks the flags back up from these attributes, so there is one reader of
+			localStorage and one set of CSS rules keyed off `html[data-*]`. Only non-default states
+			get an attribute — a missing attribute always means "default" — so a browser with no
+			saved record paints exactly what the server rendered.
+		-->
+		<script>
+			try {
+				var saved = JSON.parse(localStorage.getItem('wiki:readerView') || '{}');
+				var root = document.documentElement;
+				root.toggleAttribute('data-reader', saved.reader === true);
+				root.toggleAttribute('data-tree-collapsed', saved.treeCollapsed === true);
+				root.toggleAttribute('data-rail-collapsed', saved.railCollapsed === true);
+				root.toggleAttribute('data-toc-closed', saved.tocOpen === false);
+			} catch (error) {
+				localStorage.removeItem('wiki:readerView');
+			}
+		</script>
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>

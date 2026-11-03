@@ -1,0 +1,296 @@
+<!--wiki
+{ "title": "Gateway v2", "date": "2026-10-09", "updated": "2026-10-09",
+  "apps": ["infra", "convex", "search", "api-portal", "research-agent-be"],
+  "tags": ["architecture", "egress", "webhooks", "slack", "zernio", "resend", "stripe", "gmail", "decision"],
+  "status": "draft", "owner": "platform", "kind": "session",
+  "description": "The plan for one gateway service that our apps call instead of calling Slack, Zernio, Resend and Stripe directly, and that receives their webhooks.",
+  "summary": "The gateway holds no application logic. It enforces each provider's rules, logs every call the same way, and stores every webhook before it answers. Slack moves first, then the webhook receiver with Resend, then Zernio, Resend sends and Stripe. Gmail stays out." }
+-->
+<h1>Gateway v2</h1>
+<wiki-tldr>
+	Our apps will call Slack, Zernio, Resend and Stripe through one gateway that also receives their webhooks. The gateway makes no product decisions, and Slack moves first while Gmail stays out.
+</wiki-tldr>
+
+<h2 id="ask">What the owner asked for</h2>
+<ol start="1">
+	<li>Today our apps call Slack, Zernio, Resend and Stripe directly, and each app holds its own provider keys.</li>
+	<li>The gateway is one service that sits between our apps and those four providers.</li>
+	<li>The gateway also receives their webhooks, which are HTTP requests a provider sends us when something happens.</li>
+	<li>The gateway keeps the LLM proxy from the <a href="/page/sessions/2026/10/09/1918-egress-vision/egress-vision.html">egress vision page</a>.</li>
+</ol>
+<p><img src="img/before-after.svg" alt="Left side, today: Convex, apps/search, api-portal and apps/infra each call Slack, Zernio, Resend and Stripe directly. Right side, planned: the first three apps call one gateway, which calls the four providers, while apps/infra ops alerts still go straight to Slack." width="100%" style="max-width:960px;height:auto"></p>
+<blockquote>"i want a reliable API for these services as they are often so easy to misuse. no this gateway doesn't know application logic, it just forces correct application and does neutral logging understand..?"</blockquote>
+<ol start="5">
+	<li>The owner also said the move "doens't need to be big bang".</li>
+	<li>His earlier rule "NEVER litellm." still holds.</li>
+	<li>No app should hold a provider key, as the egress vision page decided.</li>
+	<li>Every language should call a provider the same way.</li>
+	<li>We should watch every call in one place.</li>
+	<li>LLM calls should keep routing with fallback.</li>
+	<li>All of his requests are on the <a href="/page/sessions/2026/10/09/2234-gateway-integrations/requests.html">requests page</a>.</li>
+</ol>
+
+<h2 id="misuse">The misuse in our code today</h2>
+<ol start="12">
+	<li>Seven of our ten Slack call sites ignore Slack's answer that we are sending too fast.</li>
+	<li>Thirty-one Stripe calls that change data send no idempotency key of our own.</li>
+	<li>An idempotency key is a unique id that lets the provider do the work once, even if we send the request twice.</li>
+	<li>Some webhook routes ack an event before they store it.</li>
+	<li>An ack is the 2xx answer that tells the provider to stop retrying.</li>
+</ol>
+<p><img src="img/misuse-today.svg" alt="Bar chart of misuse counted on 2026-10-09: 7 of 10 Slack call sites ignore a 429, 31 of 43 Stripe calls that change data carry no key of ours, and 6 of 7 Resend send sites send no idempotency key." width="100%" style="max-width:960px;height:auto"></p>
+<ol start="17">
+	<li>The counts come from <a href="/raw/sessions/2026/10/09/2234-gateway-integrations/data/inv-slack-zernio.md">inv-slack-zernio.md</a> and <a href="/raw/sessions/2026/10/09/2234-gateway-integrations/data/inv-resend-stripe-gmail.md">inv-resend-stripe-gmail.md</a>.</li>
+</ol>
+
+<h2 id="principle">What the gateway does for each call</h2>
+<ol start="18">
+	<li>The gateway never makes a product decision, such as who gets an email or what a webhook means.</li>
+	<li>It applies each provider's own rules for timeouts, retries and rate limits.</li>
+	<li>It refuses a Stripe, Resend or Zernio POST that has no idempotency key.</li>
+	<li>It checks the signature on every webhook, so nobody can fake one.</li>
+	<li>It writes the same log record for every call and every webhook.</li>
+	<li>The log record never holds secrets or outbound bodies.</li>
+</ol>
+<pre class="mermaid">
+sequenceDiagram
+  participant C as Convex
+  participant G as Gateway
+  participant S as Slack
+  C->>G: chat.postMessage with Slack's own body
+  Note over G: method on the allowlist? If not, 404
+  G->>S: chat.postMessage
+  S-->>G: 429, try again in 30 s
+  Note over G: 30 s is past the 10 s deadline
+  G-->>C: 429 with Retry-After
+  Note over G: one log record to the Grafana Egress board
+</pre>
+<ol start="24">
+	<li>The gateway speaks each provider's own API, so a Slack call is still <code>chat.postMessage</code> with Slack's own body.</li>
+	<li>The provider's SDK keeps working, because an app only changes the base URL and the key.</li>
+	<li>A provider method that is not on the gateway's allowlist gets a 404.</li>
+	<li>The gateway forwards requests and never translates them.</li>
+	<li>It retries a call only when the call has an idempotency key or the provider sent a 429 that says when to try again.</li>
+	<li>The gateway never waits past the caller's deadline, which is 10 seconds by default.</li>
+</ol>
+
+<h2 id="tests">The tests that keep product logic out</h2>
+<ol start="30">
+	<li>A test in <code>apps/egress</code> fails when gateway code imports product code.</li>
+	<li>The same test fails when the gateway reads a webhook field other than event id, event type, created time and environment tag.</li>
+	<li>A second test checks that the app gets the same webhook bytes the provider sent.</li>
+	<li>A config row may name only a provider method, a timeout, a retry rule or a route.</li>
+</ol>
+<pre class="mermaid">
+flowchart LR
+  E["Stripe event body"] --> R{"Field the gateway reads"}
+  R -->|"id, type, created, env tag"| OK["Allowed, used for dedupe and routing"]
+  R -->|"customer email, amount"| NO["Test fails"]
+  E -->|"same bytes"| APP["Convex gets the body unchanged"]
+</pre>
+
+<h2 id="build">Two services and one small database</h2>
+<ol start="34">
+	<li>The gateway is one codebase in <code>apps/egress</code>, deployed as two Railway services.</li>
+	<li><code>egress-llm</code> is the LLM proxy, and it keeps no state and never touches the database.</li>
+	<li><code>egress-int</code> forwards SaaS calls and receives webhooks.</li>
+	<li>The split means a flood of LLM traffic cannot slow a webhook answer.</li>
+	<li><code>egress-int</code> has a small Postgres database with two tables.</li>
+	<li>The <code>inbound_events</code> table keeps the raw webhooks.</li>
+	<li>The <code>idempotency_records</code> table remembers answers for 24 hours for Slack, which has no idempotency key of its own.</li>
+</ol>
+<pre class="mermaid">
+flowchart LR
+  subgraph code["apps/egress, one codebase"]
+    L["egress-llm, LLM proxy, no database"]
+    I["egress-int, SaaS calls and webhooks"]
+  end
+  RA["research-agent-be asks for a summary"] --> L
+  L --> CP["CLIProxyAPI"]
+  CX["Convex sends a campaign email"] --> I
+  I --> RS["Resend"]
+  I --> PG[("Postgres: inbound_events, idempotency_records")]
+</pre>
+
+<h2 id="inbound">How a webhook comes in</h2>
+<ol start="41">
+	<li>Each provider gets one HTTPS address per environment, such as <code>https://int.egress.virev.ai/in/stripe</code>.</li>
+	<li>We register only https addresses, because Railway turns an http POST into a GET and drops the body.</li>
+	<li>The gateway answers the provider within 1 second, and only after it saves the row.</li>
+	<li>A repeat of a stored event id gets a 200 and goes no further.</li>
+	<li>The gateway stores and answers an event type with no route, so no provider turns our endpoint off.</li>
+	<li>The app gets the raw bytes and checks one gateway signature instead of four schemes.</li>
+</ol>
+<pre class="mermaid">
+flowchart TD
+  P["Stripe sends invoice.paid"] --> V["Check the Stripe signature"]
+  V --> S["Save the raw event in inbound_events"]
+  S --> A["Answer Stripe with 200"]
+  A --> R["Look up the route for Stripe invoice.paid"]
+  R --> D["Send the raw bytes to Convex"]
+  D -->|"Convex fails"| T["Retry for about 21 hours"]
+  T -->|"still failing"| DL["Mark it dead and alert in Grafana"]
+  DL -->|"ops replays it"| D
+</pre>
+<ol start="47">
+	<li>When the app fails, the gateway keeps retrying delivery for about 21 hours.</li>
+	<li>An event that fails every retry becomes a dead letter, which is an event the gateway stopped trying to deliver.</li>
+	<li>Grafana alerts on every dead letter.</li>
+	<li>An ops endpoint can replay events by id, provider or time range.</li>
+	<li>The gateway keeps raw bodies for 30 days, the longest replay window that Stripe and Zernio offer.</li>
+	<li>Only the ops key can read the raw bodies.</li>
+</ol>
+
+<h2 id="down">What happens when the gateway is down</h2>
+<ol start="53">
+	<li>If the gateway goes down, each provider's own retries cover the gap.</li>
+	<li>Slack retries for about 6 minutes.</li>
+	<li>Stripe retries for up to 3 days.</li>
+</ol>
+<p><img src="img/retry-windows.svg" alt="Bars on a log time scale: Slack retries for about 6 minutes, Resend for about 27.6 hours, Zernio for about 51 hours, Stripe for 3 days, and the gateway keeps raw bodies for 30 days." width="100%" style="max-width:960px;height:auto"></p>
+<ol start="56">
+	<li>Stripe also keeps a direct route into Convex that the runbook turns on after an hour of downtime.</li>
+	<li>Each provider's retry rules are in <a href="/raw/sessions/2026/10/09/2234-gateway-integrations/data/provider-retry-policies.md">provider-retry-policies.md</a>.</li>
+</ol>
+<pre class="mermaid">
+sequenceDiagram
+  participant S as Stripe
+  participant G as Gateway
+  participant C as Convex
+  S->>G: invoice.paid
+  G--xS: no answer, gateway is down
+  S->>G: retry later, up to 3 days
+  Note over S,C: after 1 hour down, ops follows the runbook
+  S->>C: direct route into Convex
+  C-->>S: 200
+</pre>
+
+<h2 id="placement">Why Railway hosts the gateway</h2>
+<ol start="58">
+	<li>Both services run on Railway next to CLIProxyAPI, our service that routes LLM calls.</li>
+	<li>Railway gives the receiver a public HTTPS address and restarts it without our help.</li>
+	<li>We ruled out our server us-metal01, because it went dark for 21 minutes on 2026-10-08.</li>
+	<li>That outage was longer than Slack's 6 minutes of retries.</li>
+	<li>We ruled out Convex, because Convex is the product layer and the gateway must stay neutral.</li>
+	<li>Railway promises no uptime below its Business Class plan.</li>
+	<li>We accept that risk, because provider retries cover short outages.</li>
+</ol>
+<pre class="mermaid">
+flowchart TD
+  Q["Where does the gateway run?"] --> R["Railway, next to CLIProxyAPI"]
+  Q --> M["us-metal01"]
+  Q --> C["Convex"]
+  R --> R1["Chosen: public HTTPS and automatic restarts"]
+  M --> M1["Ruled out: dark for 21 minutes on 2026-10-08"]
+  C --> C1["Ruled out: it is the product layer"]
+</pre>
+
+<h2 id="out">What stays out of the gateway</h2>
+<ol start="65">
+	<li>Gmail stays out, because each user connects their own Google account.</li>
+	<li>A Gmail send also has no idempotency key.</li>
+	<li>We poll Gmail instead of getting webhooks from it.</li>
+	<li>We look at Gmail again only if we move to Google's push delivery.</li>
+	<li>Slack ops alerts stay direct, because an alert that the gateway is down cannot go through it.</li>
+	<li>Clerk, B2, the scraping proxies and telemetry stay out, as the egress vision page decided.</li>
+</ol>
+<pre class="mermaid">
+flowchart LR
+  G["Through the gateway"] --> I1["Slack product posts"]
+  G --> I2["Zernio calls and webhooks"]
+  G --> I3["Resend sends and webhooks"]
+  G --> I4["Stripe webhooks, then Stripe API"]
+  G --> I5["LLM calls"]
+  D["Stays direct"] --> O1["Gmail, per-user Google accounts"]
+  D --> O2["Slack ops alerts from Grafana and watch.mjs"]
+  D --> O3["Clerk, B2, scraping proxies, telemetry"]
+</pre>
+<ol start="71">
+	<li>We will build a Slack event receiver only when a feature needs it.</li>
+	<li>Slack has no replay, so we must first turn on its Delayed Events setting.</li>
+	<li>Delayed Events makes Slack retry failed events for 24 hours instead of about 6 minutes.</li>
+</ol>
+
+<h2 id="phases">The phases, in order</h2>
+<ol start="74">
+	<li>Each phase moves one thing, deletes the old path, and passes one staging check.</li>
+</ol>
+<pre class="mermaid">
+flowchart TD
+  P0["Phase 0: delete unused Stripe routes and keys"] --> P1["Phase 1: build apps/egress, move Slack posts"]
+  P1 --> P2["Phase 2: webhook receiver with Resend"]
+  P2 --> P3["Phase 3: Zernio calls and webhooks"]
+  P3 --> P4["Phase 4: Resend sends"]
+  P4 --> P5["Phase 5: Stripe webhooks"]
+  P5 -->|"30 days with no dead letters"| P6["Phase 6: Stripe API calls"]
+  TL["Track L: LLM calls move to egress-llm, alongside every phase"]
+</pre>
+<ol start="75">
+	<li>Phase 0 deletes the Stripe webhook routes the dashboard does not call.</li>
+	<li>Phase 0 also removes provider keys from apps that never use them.</li>
+	<li>Phase 0 makes the Resend webhook route in apps/search refuse events when its secret is missing.</li>
+	<li>Phase 0 passes when one Stripe test event on staging runs through only one webhook route.</li>
+	<li>Phase 1 builds <code>apps/egress</code> and moves the product's Slack senders.</li>
+	<li>Phase 1 deletes the eight copies of the Slack posting code.</li>
+	<li>The gateway adds the timeouts, rate-limit handling and <code>&lt;!channel&gt;</code> blocking those copies lack.</li>
+	<li>Phase 1 passes when two Slack posts with the same idempotency key show up as one message on staging.</li>
+</ol>
+<pre class="mermaid">
+flowchart LR
+  R1["Resend today"] --> S1["apps/search webhook route"] --> C1["Convex"]
+  R2["Resend after phase 2"] --> G2["Gateway receiver"] --> C2["Convex"]
+</pre>
+<ol start="83">
+	<li>Phase 2 builds the receiver, points Resend at it, and deletes the Resend route in apps/search.</li>
+	<li>Phase 2 passes when Convex refuses Resend events for 10 minutes on staging and all 20 test events still arrive once after it recovers.</li>
+	<li>Phase 3 moves Zernio calls and webhooks and keeps the Zernio key only in the gateway.</li>
+	<li>Phase 3 routes Zernio events to each environment by profile tag.</li>
+	<li>Phase 3 passes when a Zernio send without an idempotency key gets a 400 on staging and never reaches Zernio.</li>
+	<li>Phase 4 moves every Resend call and gives each email one key across retries.</li>
+	<li>Phase 4 removes the unused <code>@convex-dev/resend</code> component.</li>
+	<li>Email status stays in <code>searchEmailMessages</code>.</li>
+	<li>Phase 4 passes when one campaign email sent twice with the same key arrives once on staging.</li>
+</ol>
+<pre class="mermaid">
+sequenceDiagram
+  participant C as Convex
+  participant G as Gateway
+  participant R as Resend
+  C->>G: send email, key campaign-42-alice
+  G->>R: send, key campaign-42-alice
+  R-->>G: 200
+  C->>G: same send again, same key
+  G->>R: send, key campaign-42-alice
+  R-->>G: same answer, no second email
+</pre>
+<ol start="92">
+	<li>Phase 5 sends Stripe's webhooks through the gateway to the Convex ledger and adds the fallback runbook.</li>
+	<li>Phase 5 passes when the gateway stops for 30 minutes on staging and every Stripe test event from that window still lands in Convex once.</li>
+	<li>Phase 6 moves Stripe API calls and adds our own idempotency keys.</li>
+	<li>Phase 6 waits for 30 days of phase 5 with no dead letters, because checkout stops when the gateway stops.</li>
+	<li>Phase 6 passes when a Stripe create call without our own key gets a 400 on staging and never reaches Stripe.</li>
+	<li>Track L moves LLM calls to the LLM proxy alongside these phases, with its own checks from the egress vision page.</li>
+</ol>
+
+<h2 id="differ">Where this plan differs from the ops chat</h2>
+<ol start="98">
+	<li>The gateway uses the providers' own methods instead of product verbs like <code>send_email</code>.</li>
+	<li>The rule against translating covers both services.</li>
+	<li>Seven Slack senders move instead of the nine the ops chat counted, because the ops scripts and Grafana alerts stay direct.</li>
+	<li>The receiver starts with Resend instead of Zernio, because the gateway then replaces an existing hop through apps/search.</li>
+	<li>We remove the <code>@convex-dev/resend</code> component, because its queue and retries never run for us.</li>
+	<li>The Slack event receiver waits until a feature needs it.</li>
+	<li>The gateway runs as two services, so the LLM proxy and the receiver fail separately.</li>
+	<li>We agree with the ops chat that Stripe keys pass through the gateway.</li>
+	<li>We agree that the gateway stores Stripe webhooks before it answers.</li>
+	<li>We agree that Gmail stays out.</li>
+</ol>
+
+<h2 id="open">Open points</h2>
+<ol start="108">
+	<li>Nobody has checked which webhook addresses the Stripe and Resend dashboards call.</li>
+	<li>Nobody has checked the env stores in Convex, Vercel and Railway beyond the Convex rows already listed.</li>
+	<li>Phase 1 will measure the delay the extra hop adds to Slack and Resend sends.</li>
+	<li>The owner decides whether the service stays <code>apps/egress</code> or becomes <code>apps/gateway</code>, since it now takes inbound traffic.</li>
+	<li>The draft spec at <code>apps/llm-wiki/specs/platform/egress-one-door.md</code> matches this page and is not committed yet.</li>
+</ol>

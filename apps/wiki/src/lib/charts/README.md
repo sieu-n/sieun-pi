@@ -1,0 +1,1 @@
+These chart files are copies of auto-sns-agent `packages/ui/src/charts` (EChart.svelte, tokens.ts, recipe.ts, preload.ts, registry.ts and registry-basic.ts), taken on 2026-11-03 when the wiki engine moved into sieun-pi, so the engine imports nothing from auto-sns-agent.

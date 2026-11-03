@@ -1,0 +1,27 @@
+# The wiki engine (sieun-pi apps/wiki) on 127.0.0.1:5176 under the base path /wiki, behind Tailscale Serve
+# (https://us-metal02-dev.tail0c093d.ts.net:5176). It replaces llm-wiki.service, the Vite dev server in the auto-sns-agent checkout.
+# It runs the installed release under ~/.local/share/sieun-pi-wiki/current, which scripts/release-wiki.mjs builds from a commit on origin main.
+# Its content root, mounts and repos come from ~/.config/sieun-pi/wiki.json (apps/wiki/src/lib/wiki-config.mjs).
+# ~/.config/sieun-pi/wiki.env holds CRAWLER_API_URL and CRAWLER_API_KEY for the visual-enrichment playground (it was apps/llm-wiki/.env.local).
+# The mimalloc and rolldown env lines of llm-wiki.service are gone: they tamed Vite's rolldown workers, and a built server runs no Vite.
+[Unit]
+Description=sieun-pi wiki engine, the one wiki server for every box, on 127.0.0.1:5176 (/wiki) behind Tailscale Serve
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/sieun-pi-wiki/current/apps/wiki
+# git, uv (the playground's python scripts) and betterleaks (the page secret scan) come from these folders.
+Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=WIKI_EDITABLE=true
+EnvironmentFile=-%h/.config/sieun-pi/wiki.env
+ExecStart=%h/.local/node/bin/node server.mjs
+# CPU layer 1 of deploy/linux/README.md (owner's t84 answer 10-19), carried over from llm-wiki.service's drop-in. A weight is no cap.
+CPUWeight=10000
+KillSignal=SIGTERM
+TimeoutStopSec=20
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
