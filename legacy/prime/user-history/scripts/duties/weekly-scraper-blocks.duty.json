@@ -1,0 +1,30 @@
+{
+  "name": "Scraper blocks",
+  "ownerWords": "그냥 계속 수동으로 막는것도 해. as a weekly job. even 1%",
+  "goal": "Every client that is neither a person at a browser, a verified search or AI engine (Google, Bing, Apple, DuckDuckGo, OpenAI search and ChatGPT-User, Perplexity, Naver, Yandex, Baidu, Seznam), a link preview nor our own box, and that made 1% or more of a week's calls to the logged-out virev.ai pages that read our database or crawler and their APIs (the routes of the Public page scrapers duty, d5), is blocked at the Vercel Firewall. A client is one reason and UA across all its IPs, so a scraper that rotates IPs counts once: a UA d5's rules read as automated, or a browser UA from a hosting or cloud network. A browser UA from a home or mobile network is a person and is never listed or blocked. On 11-03 a plain Safari 26.0.1 UA on 2,850 DigitalOcean IPs made 4.6% of the week's calls, and Tencent Cloud IPs with six current Chrome UAs made about 15%.",
+  "metrics": [
+    {
+      "key": "unblocked_scrapers",
+      "label": "Clients at 1% or more of the week's calls to the public database pages that still got past the Vercel Firewall in the last 24 h (11-03 read 4 of 10 such clients)",
+      "op": "<=",
+      "target": 0,
+      "unit": "",
+      "headline": true
+    }
+  ],
+  "schedule": {
+    "kind": "every",
+    "minutes": 10080
+  },
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/weekly-scraper-blocks.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 420000
+  },
+  "onMiss": "The precheck reads 7 days of the prod search drain in otel.otel_logs through Grafana (one query, max_threads=2, about 160 s) and looks up the networks of the candidate IPs with Team Cymru bulk whois (about 60 s). Each scraper_client item names one client, its share, calls, IPs, networks, the calls the firewall already denied, and a block.py command to start from. 1. For each scraper_client item, decide the narrowest block that takes all of it: UA plus its hosting ASNs (--ua-sub and --asn) for a browser UA from a hosting network; one --asn group with --public-only when several UAs come from one cloud network (the 11-03 Tencent AS45090 and AS45102 clients); for a UA d5 reads as automated, the d5 shape rule that should have caught it (wafRule in the drain says which rule denied the rest), or a group of UA plus the networks in the item. Never block by a browser UA alone, never block a home or mobile network, and never block Cloudflare, Akamai or Fastly networks, because iCloud Private Relay and WARP users come through them. 2. Add each block with `python3 scripts/duties/scraper-block.py --label \"<client>, weekly <date>\" ...` from legacy/prime/user-history (it appends an OR group to the Vercel Firewall rule scraper-blocklist, rule_scraper_blocklist_5OLTML, on project auto-sns-search, publishes it after printing `vercel firewall diff`, and logs it in ~/work/scraper-watch/blocklist.jsonl; its docstring has every flag, and --groups-file takes a header, query or cookie condition). The owner asked for these blocks (11-03, the words above) and pre-approved firewall changes for scraper duties in msg mvtth6bs. 3. 15 to 30 min later, count drain rows with vercel.source = 'firewall' and vercel.proxy.wafRule = 'rule_scraper_blocklist_5OLTML' for each client, check that none of its calls still reach lambda, and curl a blocked path with the same UA from us-metal02, which must still answer 200. Then rerun the precheck, where a client denied after its last passed call reads as blocked. 4. Report each client you blocked with its label, share and calls before, the denied count after, and any client you left with the reason. All on target: no message."
+}

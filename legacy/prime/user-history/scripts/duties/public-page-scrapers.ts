@@ -247,7 +247,7 @@ export function rangeList(bodies: readonly unknown[]): BlockList {
 export const inRanges = (list: BlockList, ip: string): boolean => isIPv4(ip) ? list.check(ip, "ipv4") : isIPv6(ip) ? list.check(ip, "ipv6") : false;
 
 /** Checks each IP that claims a wanted engine: published ranges, or a reverse DNS name the engine owns that resolves back to the IP. */
-async function verifier(rows: readonly Row[], errors: string[], signal: AbortSignal): Promise<Verify> {
+export async function verifier(rows: readonly Row[], errors: string[], signal: AbortSignal): Promise<Verify> {
   const claims = new Map<Engine, Set<string>>();
   for (const row of rows) {
     const engine = ENGINES.find(candidate => candidate.ua.test(row.ua));

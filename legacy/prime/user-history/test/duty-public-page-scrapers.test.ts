@@ -6,6 +6,9 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { classify, ENGINES, inRanges, rangeList, requestsSql, ROUTES, routeOf, type Row, scrapers, SHED_MIN_503, typicalChrome, type Verify } from "../scripts/duties/public-page-scrapers.ts";
 import { type DutyMetric, judge } from "../src/shared/chat-duties.ts";
+import { DAY } from "../scripts/duties/estate-reads.ts";
+import { type Asn, isHosting, parseCymru } from "../scripts/duties/ip-asn.ts";
+import { lookupIps, type WeekRow, weeklyClients, weeklySql } from "../scripts/duties/weekly-scraper-blocks.ts";
 
 const duty = JSON.parse(readFileSync(new URL("../scripts/duties/public-page-scrapers.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] };
 const WIN = (major: number | string) => `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}${typeof major === "number" ? ".0.0.0" : ""} Safari/537.36`;
@@ -84,4 +87,41 @@ test("a source that fails leaves its numbers out with a source error", () => {
   const output = scrapers({ end: 1, errors: ["Bing IP ranges: fetch failed"], verify: googleOnly, rows: new Error("Grafana HTTP 502"), shed: [] });
   assert.deepEqual(output.metrics, { crawler_shed_min: 0 });
   assert.deepEqual(output.flagged!.filter(slice => slice.kind === "source_error").map(slice => slice.excerpt), ["Bing IP ranges: fetch failed", "search requests: Grafana HTTP 502"]);
+});
+
+// 11-03 KST: a plain Safari 26.0.1 UA pulled 425 /profile pages in an hour from 264 IPs, mostly DigitalOcean, and the owner asked for a weekly
+// job that blocks every client at 1% or more ("even 1%"). These cases pin which clients the weekly precheck lists.
+const SAFARI = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0.1 Safari/605.1.15";
+const DO: Asn = { asn: 14061, name: "DIGITALOCEAN-ASN - DigitalOcean, LLC, US", cc: "US" };
+const KT: Asn = { asn: 4766, name: "KIXS-AS-KR-KR - Korea Telecom, KR", cc: "KR" };
+const week = (part: Partial<WeekRow>): WeekRow => ({ ua: WIN(150), ip: "1.2.3.4", refk: "page", page: true, state: "origin", calls: 1, last: 10 * DAY, ...part });
+
+test("the weekly list names a browser UA from a hosting network and a rotating bot, and never a person, a verified engine or a blocked client", () => {
+  const rows = [
+    ...Array.from({ length: 30 }, (_, index) => week({ ua: SAFARI, ip: `64.227.101.${index}`, refk: "none", calls: 2 })),
+    week({ ua: SAFARI, ip: "183.108.170.148", calls: 400 }),
+    week({ ua: GOOGLEBOT, ip: "66.249.66.1", calls: 300 }),
+    week({ ua: "python-requests/2.32", ip: "9.9.9.9", refk: "none", calls: 40, last: 8 * DAY }),
+    week({ ua: "Go-http-client/1.1", ip: "8.8.4.4", refk: "none", calls: 500, state: "denied" }),
+    week({ calls: 200 }),
+  ];
+  const asns = new Map([...Array.from({ length: 30 }, (_, index): [string, Asn] => [`64.227.101.${index}`, DO]), ["183.108.170.148", KT]]);
+  assert.ok(lookupIps(rows, googleOnly).has("64.227.101.7"));
+  const output = weeklyClients({ rows, asns, verify: googleOnly, errors: [], end: 10 * DAY });
+  const listed = output.flagged!.filter(slice => slice.kind.startsWith("scraper_client")).map(slice => [slice.kind, slice.sig]);
+  assert.deepEqual(listed, [["scraper_client", `browser UA from a hosting network | ${SAFARI}`], ["scraper_client_stopped", "bot or HTTP library UA | other OS python-requests/2.32"]]);
+  assert.deepEqual(output.metrics, { unblocked_scrapers: 1 });
+  assert.match(output.flagged!.find(slice => slice.kind === "scraper_client")!.excerpt, /from 30 IPs.*AS14061.*--ua-sub '.*Version\/26\.0\.1 Safari\/605\.1\.15' --asn 14061/);
+  const blocked = weeklyClients({ rows: [...rows, week({ ua: SAFARI, ip: "64.227.101.3", refk: "none", state: "denied", calls: 5, last: 10 * DAY + 1 })], asns, verify: googleOnly, errors: [], end: 10 * DAY + 2 });
+  assert.equal(blocked.metrics.unblocked_scrapers, 0, "a client the firewall denies after its last passed call reads as blocked the same day");
+});
+
+test("a bulk whois answer maps each IP to its network and skips NA rows", () => {
+  const found = parseCymru("Bulk mode; whois.cymru.com [2026-11-03 10:26:04 +0000]\n14061   | 64.227.101.252   | 64.227.96.0/20      | US | arin     | 2019-08-14 | DIGITALOCEAN-ASN - DigitalOcean, LLC, US\n" +
+    "NA      | 10.0.0.1         | NA                  |    | other    |            | NA\n");
+  assert.deepEqual([...found], [["64.227.101.252", DO]]);
+  assert.equal(isHosting(DO.name), true);
+  assert.equal(isHosting(KT.name), false);
+  assert.equal(isHosting("CLOUDFLARENET - Cloudflare, Inc., US"), false, "iCloud Private Relay and WARP users exit through Cloudflare");
+  assert.match(weeklySql(10 * DAY), /max_threads = 2/);
 });
