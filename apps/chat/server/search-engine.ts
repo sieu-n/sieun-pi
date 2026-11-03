@@ -304,7 +304,9 @@ export class SearchEngine {
     const groups = new Map<string, EntryRow[]>();
     for (const row of read.rows) {
       const id = entryDocId(row);
-      groups.set(id, [...(groups.get(id) ?? []), row]);
+      const copies = groups.get(id);
+      if (copies) copies.push(row);
+      else groups.set(id, [row]);
     }
     const docs = [...groups].map(([id, copies]) => {
       const first = copies[0]!;
@@ -338,13 +340,16 @@ export class SearchEngine {
       // The array's brackets and one comma per document count toward the limit too.
       let bytes = 2;
       const batch: SearchDoc[] = [];
+      const parts: string[] = [];
       while (at < merged.length) {
-        const size = Buffer.byteLength(JSON.stringify(merged[at])) + 1;
+        const part = JSON.stringify(merged[at]);
+        const size = Buffer.byteLength(part) + 1;
         if (batch.length && bytes + size > PAYLOAD_BYTES) break;
         bytes += size;
+        parts.push(part);
         batch.push(merged[at++]!);
       }
-      const { taskUid } = await this.meili.put(SEARCH_INDEX, batch);
+      const { taskUid } = await this.meili.put(SEARCH_INDEX, `[${parts.join(",")}]`);
       for (const doc of batch) if (this.pending.get(doc.id)?.doc === doc) this.pending.set(doc.id, { doc, task: taskUid });
       tasks.push(taskUid);
     }

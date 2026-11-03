@@ -18,11 +18,11 @@ export class MeiliError extends Error {}
 export class Meili {
   constructor(readonly url: string, private readonly key: string) {}
 
-  async call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  async call<T>(method: string, path: string, body?: unknown, written = false): Promise<T> {
     const response = await fetch(`${this.url}${path}`, {
       method,
       headers: { authorization: `Bearer ${this.key}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      ...(body === undefined ? {} : { body: written ? String(body) : JSON.stringify(body) }),
     });
     const text = await response.text();
     if (!response.ok) throw new MeiliError(`Meilisearch ${method} ${path} answered ${response.status}: ${text.slice(0, 300)}`);
@@ -36,8 +36,9 @@ export class Meili {
     if (task.status !== "succeeded") throw new MeiliError(`Meilisearch refused the ${uid} settings: ${task.error?.message ?? task.status}`);
   }
 
-  put(uid: string, docs: readonly object[]): Promise<MeiliTask> {
-    return this.call<MeiliTask>("POST", `/indexes/${uid}/documents`, docs);
+  /** `docs` is the JSON array of documents, written once by the caller, which measured its size against Meilisearch's payload limit. */
+  put(uid: string, docs: string): Promise<MeiliTask> {
+    return this.call<MeiliTask>("POST", `/indexes/${uid}/documents`, docs, true);
   }
 
   deleteWhere(uid: string, filter: string): Promise<MeiliTask> {
