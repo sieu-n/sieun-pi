@@ -1469,8 +1469,13 @@ function offlineIn(watch: readonly WatchLine[], box: string, from: number): bool
   return !!read && (!!read.view.offline || flapped(watch, read.view, from) || !!read.line.uplinkDark || !!flatBattery(read.view.usable));
 }
 
+/**
+ * A box unreached, unread at a stop or answered with no reading next to Tailscale's offline read (`offlineAround`). At 20:43:30Z on 11-03 the
+ * Mac's relay answered with usable null and no error between offline reads at 20:42Z and a timeout at 20:44Z, two calls lost their link to it,
+ * and d7 counted 20:43Z dirty, 27 of 30 clean; it was the only such read in the Mac's 24,300 from 10-18 to 11-04.
+ */
 const flapped = (watch: readonly WatchLine[], view: HostView, from: number): boolean => !view.offline && !view.usable &&
-  (UNREACHED.test(view.error ?? "") || view.error === UNREAD_AT_STOP) && offlineAround(watch, view.name, from, from + MINUTE);
+  (UNREACHED.test(view.error ?? "") || view.error === UNREAD_AT_STOP || !view.error) && offlineAround(watch, view.name, from, from + MINUTE);
 
 /**
  * Whether the call lost its link to a box that read usable in the call's minute and counts offline the next minute, so the box was falling

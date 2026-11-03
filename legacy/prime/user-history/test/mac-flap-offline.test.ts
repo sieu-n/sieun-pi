@@ -8,13 +8,13 @@ import { UNREAD_AT_STOP, type WatchLine } from "../src/mac-usable-watch.ts";
 const RUN = Date.parse("2026-10-23T14:53:43Z");
 const box = { kind: "linux", memSomeAvg10: 0, memFullAvg10: 0, cpuSomeAvg10: 0, swapoutsPerS: 0, runnablePerCore: 0.4, allowedCpus: 80 } as const;
 const mac = { pressureLevel: 1, swapoutsPerS: 0, kernelTaskPct: 25 };
-type MacRead = "usable" | "offline" | "fetch failed" | typeof UNREAD_AT_STOP | "relay mac answered 500 to /v1/watch";
+type MacRead = "usable" | "no reading" | "offline" | "fetch failed" | "The operation was aborted due to timeout" | typeof UNREAD_AT_STOP | "relay mac answered 500 to /v1/watch";
 const minuteAt = (minute: number): number => Math.floor(RUN / 60_000) * 60_000 - (30 - minute) * 60_000;
 const line = (minute: number, read: MacRead): WatchLine => ({ host: "us-metal02",
   at: new Date(minuteAt(minute) + 30_000).toISOString(), usable: box, workers: 0, workerGb: 0, top: [], live: 0, working: 0, queue: null,
   mac: { swapGb: null, pressureLevel: null }, cpuMs: 0,
   hosts: [{ name: "mac", usable: read === "usable" ? mac : null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null,
-    ...read === "usable" ? {} : read === "offline" ? { offline: true, error: "offline, Tailscale last seen 28 min ago" } : { error: read } }] } as WatchLine);
+    ...read === "usable" || read === "no reading" ? {} : read === "offline" ? { offline: true, error: "offline, Tailscale last seen 28 min ago" } : { error: read } }] } as WatchLine);
 const handshake = (minute: number) => ({ at: minuteAt(minute) + 40_000, host: "mac", session: "01a15427", what: "its resume got no answer, the handshake timed out after 10 s" });
 const run = (watch: WatchLine[], daemonFaults = [handshake(6)]) => measure({ now: RUN, watch, log: { holds: [] }, chats: [], daemonFaults });
 
@@ -78,6 +78,19 @@ test("a daemon call that lost its link to a box which reads offline the next min
   assert.match(flag, new RegExp(`in 1 more minute a box read online, daemon calls lost their link to it .*\\(${new Date(minuteAt(6)).toISOString().slice(11, 16)}Z mac\\)`));
   const shaking = run(Array.from({ length: 30 }, (_, minute) => line(minute, minute < 7 ? "usable" : "offline")), [handshake(6)]);
   assert.equal(shaking.metrics.clean_min_30, 30, "a handshake timeout the minute before Tailscale reads the box offline is left out too");
+});
+
+// Guards d7's 20:43Z minute on 11-03: Tailscale read the Mac offline to 20:42Z, the relay answered at 20:43:30Z with no reading of it (usable
+// null, no error), timed out at 20:44:30Z and Tailscale read it offline from 20:45Z; two calls lost their link at 20:43Z and d7 read 27 of 30.
+test("a lost link in a minute the relay answered with no reading, before the box sleeps, is left out", () => {
+  const read = (minute: number): MacRead => minute < 6 ? "offline" : minute === 6 ? "no reading" : minute === 7 ? "The operation was aborted due to timeout" : "offline";
+  const out = run(Array.from({ length: 30 }, (_, minute) => line(minute, read(minute))),
+    [handshake(6), closed(6, "its wake failed, the daemon connection closed")]);
+  assert.equal(out.metrics.clean_min_30, 30);
+  assert.equal(out.metrics.daemon_fail_min_30, 0);
+  const awake = run(Array.from({ length: 30 }, (_, minute) => line(minute, minute === 6 ? "no reading" : "usable")), [handshake(6)]);
+  assert.equal(awake.metrics.daemon_fail_min_30, 1, "a lost link to a box that stays online keeps the fault");
+  assert.equal(awake.metrics.unknown_min_30, 0);
 });
 
 test("a closed connection to a box that reads online the next minute, or a slow call before it sleeps, stays dirty", () => {
