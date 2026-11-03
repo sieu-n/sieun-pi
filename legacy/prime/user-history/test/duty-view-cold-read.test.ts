@@ -1,12 +1,13 @@
 // Guards the Duties card's read of the AI harness chat on 10-28: each chat release restarts the service, and the first api/threads/<chat>/duties
 // read after it parsed the chat's whole runs file (1,935 records, 3.4 MB) beside the duty tick's cold parse of every chat's file, 818 to 1,126 ms
-// in four restart minutes, which d7 counted dirty. The card shows 14 runs per duty, so a cold view reads only those. Today's view took 1.05 to
-// 1.15 times a whole parse here, and the tail read 0.3 to 0.43 times.
+// in four restart minutes, which d7 counted dirty. The card shows 14 runs per duty, so a cold view parses only those. The test counts the
+// characters JSON.parse reads, because its first check compared wall times and failed releases that ran 20 test files at once: the view took
+// 0.64, 0.89 and 0.91 of a whole parse on 10-29, 11-02 and 11-04, against 0.27 to 0.38 in 12 passing runs of the same files. The view before
+// the tail read parsed 1.0 of the file's characters, and the tail read parses 0.06.
 import assert from "node:assert/strict";
 import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { performance } from "node:perf_hooks";
 import { test } from "node:test";
 import { Duties, VIEW_RUNS } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
@@ -14,10 +15,8 @@ import type { Duty, DutyRunRecord } from "../src/shared/chat-duties.ts";
 import type { CheckInView } from "../src/shared/types.ts";
 
 const CHAT = "01a1164b-4a2d-742d-b27a-82f086ed0200";
-/** Cold copies of the same chat, each read once: three views and three whole parses, compared by their medians. */
-const VIEWED = ["01a1164b-0000-0000-0000-000000000001", "01a1164b-0000-0000-0000-000000000002", "01a1164b-0000-0000-0000-000000000003"];
-const PARSED = ["01a1164b-0000-0000-0000-000000000011", "01a1164b-0000-0000-0000-000000000012", "01a1164b-0000-0000-0000-000000000013"];
-const median = (values: number[]): number => [...values].sort((a, b) => a - b)[1]!;
+/** A cold copy of the same chat for the whole parse. */
+const PARSED = "01a1164b-0000-0000-0000-000000000011";
 const MIN = 60_000;
 /** The AI harness chat's runs per duty on 10-28: d8 runs rarely, so its 14 newest reach back to the file's first line. */
 const COUNTS: Record<string, number> = { d7: 695, checkin: 575, d4: 209, d9: 167, d10: 145, d5: 79, d11: 52, d8: 12 };
@@ -41,18 +40,24 @@ function runsFile(start: number): string {
   }).join("");
 }
 
-test("a cold Duties view of a 1,935-run chat reads its 14 newest runs per duty in under 60% of a whole parse, and shows the same runs", async t => {
+/** What `read` gives and the characters every JSON.parse call during it read. */
+async function parsedChars<T>(read: () => Promise<T>): Promise<{ result: T; chars: number }> {
+  const parse = JSON.parse;
+  let chars = 0;
+  JSON.parse = (text, reviver) => { chars += text.length; return parse(text, reviver); };
+  try { const result = await read(); return { result, chars }; } finally { JSON.parse = parse; }
+}
+
+test("a cold Duties view of a 1,935-run chat parses its 14 newest runs per duty, under a tenth of a whole parse, and shows the same runs", async t => {
   const dir = await mkdtemp(join(tmpdir(), "duty-view-cold-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const store = new DutyStore(dir);
   const now = Date.parse("2026-10-28T07:00:00Z");
   const text = runsFile(now - 2000 * MIN);
-  for (const id of [CHAT, ...VIEWED, ...PARSED]) {
+  for (const id of [CHAT, PARSED]) {
     await store.update(id, duties => { duties.push(...IDS.map(entry => duty(entry, now - 9 * 24 * 60 * MIN))); });
     await writeFile(join(store.dir, `${id}.runs.jsonl`), text);
   }
-  await writeFile(join(store.dir, "warm.runs.jsonl"), text.slice(0, text.indexOf("\n", 200_000) + 1));
-  await store.runs("warm");
   const duties = new Duties(store, {
     isChat: async () => true, now: () => now, tickMs: 0,
     jobs: { chat: async id => ({ id, name: "AI harness", cwd: dir, board: id }), working: async () => false, retire: async () => {},
@@ -60,22 +65,11 @@ test("a cold Duties view of a 1,935-run chat reads its 14 newest runs per duty i
     checkIn: { view: async () => ({ everyMs: 15 * MIN, paused: false, nextAt: now + MIN }) as CheckInView, set: async () => null, run: async () => {} },
   });
 
-  const views: number[] = [];
-  const parses: number[] = [];
-  for (let index = 0; index < 3; index++) {
-    let started = performance.now();
-    await duties.view(VIEWED[index]!);
-    views.push(performance.now() - started);
-    started = performance.now();
-    await store.runs(PARSED[index]!);
-    parses.push(performance.now() - started);
-  }
-  const [viewMs, parseMs] = [median(views), median(parses)];
-  if (process.env.DUTY_VIEW_TIMES) console.log(JSON.stringify({ viewMs, parseMs }));
-  assert.ok(viewMs < parseMs * 0.6, `a cold view took ${viewMs.toFixed(1)} ms against ${parseMs.toFixed(1)} ms for a whole parse of the same file`);
+  const { result: cold, chars: viewChars } = await parsedChars(() => duties.view(CHAT));
+  const { result: all, chars: parseChars } = await parsedChars(() => store.runs(PARSED));
+  if (process.env.DUTY_VIEW_CHARS) console.log(JSON.stringify({ viewChars, parseChars, share: viewChars / parseChars }));
+  assert.ok(viewChars < parseChars / 10, `a cold view parsed ${viewChars} characters against ${parseChars} for a whole parse of the same file`);
 
-  const cold = await duties.view(CHAT);
-  const all = await store.runs(PARSED[0]!);
   const expected = (records: readonly DutyRunRecord[], id: string) => records.filter(run => run.duty === id).slice(0, VIEW_RUNS);
   assert.deepEqual(cold.map(view => view.duty.id), ["checkin", ...IDS]);
   for (const view of cold) assert.deepEqual(view.runs, expected(all, view.duty.id), view.duty.id);
