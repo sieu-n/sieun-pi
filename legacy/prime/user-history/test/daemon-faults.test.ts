@@ -209,6 +209,24 @@ test("a wait_for_idle that fails because its own client asked the worker to shut
   assert.equal(readSupervisorFaults([probe[2]!], "us-metal02").length, 1, "a close with no stop asked counts");
 });
 
+test("a prompt_and_wait that fails because its own -p client completed its session on SIGTERM is no fault (11-03 10:00Z and 10:11Z)", () => {
+  const killedRun = [
+    "[2026-11-03T09:59:29.208Z] supervisor: Session worker fbf42e6ec552 stderr: Prime Agent daemon listening on /tmp/prime-agent-1001/worker-ee92e1d8c39e-fbf42e6ec552.sock",
+    "[2026-11-03T10:00:58.639Z] supervisor: Session worker fbf42e6ec552 stderr: shutdown command received over socket; 1 active session(s) will be closed",
+    "[2026-11-03T10:00:58.642Z] supervisor: Supervisor command prompt_and_wait failed: Error: Daemon worker client closed",
+    "    at close (/$bunfs/root/prime-agent:1963:3998)",
+    "    at stopWorkerUntracked (/$bunfs/root/prime-agent:2257:2150)",
+    "[2026-11-03T10:00:58.645Z] supervisor: Session worker fbf42e6ec552 stderr: shutting down (exit 0); closing 1 active session(s)",
+    "[2026-11-03T10:11:02.518Z] supervisor: Session worker f2afb37a7f10 stderr: shutdown command received over socket; 1 active session(s) will be closed",
+    "[2026-11-03T10:11:02.518Z] supervisor: Session worker f2afb37a7f10 stderr: shutting down (exit 0); closing 1 active session(s)",
+    "[2026-11-03T10:11:02.519Z] supervisor: Supervisor command prompt_and_wait failed: Error: Daemon worker client closed",
+  ];
+  assert.deepEqual(readSupervisorFaults(killedRun, "us-metal02"), []);
+  // Made up: a prompt_and_wait cut with no stop asked just before it still counts.
+  const unasked = readSupervisorFaults([killedRun[1]!, "[2026-11-03T10:01:05.000Z] supervisor: Supervisor command prompt_and_wait failed: Error: Daemon worker client closed"], "us-metal02");
+  assert.equal(unasked.length, 1, "a close 6 s after the stop is its own fault");
+});
+
 test("a reopen that delivered its send is no fault, and one whose second send failed counts with the second answer", () => {
   const faults = readServiceFaults([
     REOPEN_SENT,

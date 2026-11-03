@@ -72,10 +72,15 @@ const OWN_STOP = /Prime Agent daemon client closed before the operation complete
  * A worker that a client asked to shut down over its socket: the wait_for_idle the same client still had open fails with "Daemon worker client
  * closed" 1 to 2 ms later, a stop it asked for. The watchdog's model probe (components/watchdog/wd_probe.py) ends its --no-session rpc client
  * this way every 10 min, and from 23:33Z on 10-19 to 00:43Z on 10-20 its 13 such failures made 8 d7 minutes dirty while every box read usable.
+ * A `prime-agent -p` client ends the same way with its prompt_and_wait open: SIGTERM disposes it, and its complete_owned_session stops its own
+ * worker. On 11-03 a job ran `timeout 90` and `timeout 300 prime-agent -p` against the live daemon, and its two prompt_and_wait failures 1 to
+ * 3 ms after the stop (10:00:58Z and 10:11:02Z) held d7 at 28 of 30 for two runs. Only -p clients send prompt_and_wait.
  */
 const ASKED_STOP = /^\[(\S+Z)\] supervisor: Session worker \S+ stderr: shutdown command received over socket/;
 /** The measured gap was 1 to 2 ms on 10-20; a failure a full second after the stop is no longer read as its echo. */
 const ASKED_STOP_MS = 1000;
+/** The calls a client holds open on its own worker until its turn ends, which its own stop cuts. */
+const OWN_WAITS = new Set(["wait_for_idle", "prompt_and_wait"]);
 /**
  * An agent message the outbox held while its target's worker stopped or started (src/agent-outbox.ts). The wait counts once it passes
  * SLOW_MS, as a send that slow would; the refusals before it are no fault of their own, since the outbox delivered each such message.
@@ -361,7 +366,7 @@ export function readSupervisorFaults(lines: readonly string[], local: string, re
     const reason = faultReason(found[3]!);
     const at = Date.parse(found[1]!);
     if (found[2] === "send_message" && /Session worker is (?:failed|recovering)/.test(found[3]!) && delivered.has(minuteOf(at))) continue;
-    if (found[2] === "wait_for_idle" && /Daemon worker client closed/.test(found[3]!) && at - askedStop <= ASKED_STOP_MS) continue;
+    if (OWN_WAITS.has(found[2]!) && /Daemon worker client closed/.test(found[3]!) && at - askedStop <= ASKED_STOP_MS) continue;
     if (reason && Number.isFinite(at)) faults.push({ at, host: local, what: `the supervisor's ${found[2]} failed, ${reason}` });
   }
   return faults;
