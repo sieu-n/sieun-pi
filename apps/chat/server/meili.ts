@@ -4,6 +4,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { Agent, request as httpRequest } from "node:http";
 import { createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,17 +17,37 @@ export interface MeiliSearchAnswer<T> { hits: T[]; totalHits: number; processing
 export class MeiliError extends Error {}
 
 export class Meili {
+  private readonly agent = new Agent({ keepAlive: true });
   constructor(readonly url: string, private readonly key: string) {}
 
-  async call<T>(method: string, path: string, body?: unknown, written = false): Promise<T> {
-    const response = await fetch(`${this.url}${path}`, {
-      method,
-      headers: { authorization: `Bearer ${this.key}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
-      ...(body === undefined ? {} : { body: written ? String(body) : JSON.stringify(body) }),
+  /**
+   * One request over node:http with a keep-alive agent. fetch took 47 to 56 ms for two of every three searches on 11-03 against 2 ms of
+   * Meilisearch's own processing, the 40 ms of a delayed ACK; node:http took 4 to 6 ms for the same search.
+   */
+  call<T>(method: string, path: string, body?: unknown, written = false): Promise<T> {
+    const payload = body === undefined ? undefined : written ? String(body) : JSON.stringify(body);
+    return new Promise<T>((resolve, reject) => {
+      const request = httpRequest(new URL(path, this.url), {
+        method, agent: this.agent,
+        headers: { authorization: `Bearer ${this.key}`, ...(payload === undefined ? {} : { "content-type": "application/json", "content-length": Buffer.byteLength(payload) }) },
+      }, response => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.on("error", reject);
+        response.on("end", () => {
+          const text = Buffer.concat(chunks).toString("utf8");
+          const status = response.statusCode ?? 0;
+          if (status < 200 || status >= 300) return reject(new MeiliError(`Meilisearch ${method} ${path} answered ${status}: ${text.slice(0, 300)}`));
+          try {
+            resolve((text ? JSON.parse(text) : undefined) as T);
+          } catch (error) {
+            reject(error);
+          }
+        });
+      });
+      request.on("error", reject);
+      request.end(payload);
     });
-    const text = await response.text();
-    if (!response.ok) throw new MeiliError(`Meilisearch ${method} ${path} answered ${response.status}: ${text.slice(0, 300)}`);
-    return (text ? JSON.parse(text) : undefined) as T;
   }
 
   /** Creates the index if it is missing; a second create answers a failed task, which is fine. */
