@@ -20,7 +20,7 @@ const red = Array.from({ length: 14 }, (_, i) => line(at("03:00:30") + i * 60_00
 const usable = Array.from({ length: 250 }, (_, i) => line(at("03:14:30") + i * 60_000, 30));
 const metrics = (JSON.parse(readFileSync(new URL("../scripts/duties/local-dev-uptime.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] }).metrics;
 const port = (n: number) => `port ${n} 200\n`;
-const macReading = `{ 3.10 3.00 3.00 }\nSystem-wide memory free percentage: 40%\n${[5174, 5180, 8791, 8787].map(port).join("")}`;
+const macReading = `{ 3.10 3.00 3.00 }\nSystem-wide memory free percentage: 40%\n${[5174, 5180, 8791, 8787, 3210].map(port).join("")}`;
 
 const earlier: DutyRunRecord = { duty: "d1", at: at("06:23:17"), trigger: "push", ms: 1, verdict: "missed", summary: "",
   metrics: { servers_not_answering: { value: 0, target: 0, op: "<=", met: true }, mac_unusable_min: { value: 14, target: 0, op: "<=", met: false } } } as DutyRunRecord;
@@ -28,7 +28,7 @@ const earlier: DutyRunRecord = { duty: "d1", at: at("06:23:17"), trigger: "push"
 async function newestRun(): Promise<DutyRunRecord> {
   const mac = await measureMac({ platform: "linux", exec: async () => macReading, wait: async () => {}, watch: async () => [...red, ...usable] }, now);
   const { metrics: macMetrics, flagged: _flagged, ...windows } = mac;
-  const judged = judge(metrics, { metrics: { servers_not_answering: 0, store_box_swap_used_mb: 1000, ...macMetrics }, ...windows });
+  const judged = judge(metrics, { metrics: { servers_not_answering: 0, store_box_swap_used_mb: 1000, store_box_vm_io_full_pct: 8, ...macMetrics }, ...windows });
   return { duty: "d1", at: now, trigger: "push", ms: 1, ...judged } as DutyRunRecord;
 }
 

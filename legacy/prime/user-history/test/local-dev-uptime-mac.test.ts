@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
 import { hostAwayOf, judge, type DutyMetric, type FlaggedSlice } from "../src/shared/chat-duties.ts";
-import { convexCommand, convexPushStale, LOCAL_CONVEX_COMMAND, MAC_COMMAND, measureLocalConvex, MAC_RETRY_MS, MAC_WINDOW_MS, macDown, macUnusableMinutes, measureMac, measureStoreBox, parseConvexReading, parseMacReading, parseStoreBox, STORE_BOX, STORE_COMMAND } from "../scripts/duties/local-dev-uptime.ts";
+import { convexCommand, convexPushStale, LOCAL_CONVEX_COMMAND, MAC_COMMAND, measureLocalConvex, MAC_RETRY_MS, MAC_WINDOW_MS, macDown, macUnusableMinutes, measureMac, measureStoreBox, parseConvexReading, parseMacReading, parseStoreBox, STORE_BOX, STORE_COMMAND, STORE_VM_IO_FULL_PCT } from "../scripts/duties/local-dev-uptime.ts";
 
 const push = (outcome: string, at: string, lastGoodAt: string | null) =>
   `convex-push {  "count": 1,  "watchers": [],  "push": {    "outcome": "${outcome}",    "at": "${at}",    "reason": ${outcome === "failed" ? '"schema eval timed out (1s)"' : "null"},    "lastGoodAt": ${lastGoodAt ? `"${lastGoodAt}"` : "null"}  }}\n`;
@@ -110,13 +110,26 @@ test("the store box over its swap line is flagged, under it is detail, and an un
   assert.deepEqual(calls, [["ssh", "-o", "BatchMode=yes", STORE_BOX, STORE_COMMAND]]);
   assert.deepEqual(full.metrics, { store_box_swap_used_mb: 8525 });
   assert.equal(full.flagged[0]!.kind, "store_box_swap");
-  assert.match(full.flagged[0]!.excerpt, /8525 MB swap used, over the 6000 MB line.*memory pressure warn, top com.docker.krun 7995M 6458M; sandboxd/);
+  assert.match(full.flagged[0]!.excerpt, /8525 MB host swap used, over the 6000 MB line.*memory pressure warn, top com.docker.krun 7995M 6458M; sandboxd/);
   const freed = await measureStoreBox({ exec: async () => store("1431.06", 2) }, 0);
   assert.deepEqual(freed.metrics, { store_box_swap_used_mb: 1431 });
   assert.equal(freed.flagged[0]!.kind, "store_box");
   const away = await measureStoreBox({ exec: async () => { throw Object.assign(new Error("Command failed: ssh"), { code: 255 }); } }, 0);
   assert.deepEqual(away.metrics, {});
   assert.equal(away.flagged[0]!.kind, "store_box_unreachable");
+});
+
+test("the store box's Docker VM IO stall is flagged over its line while host swap reads fine, as when local Convex stalled on 11-03", async () => {
+  const vm = (avg60: string) => `${store("1457.62", 1)}vm-io-full avg10=63.14 avg60=${avg60} avg300=46.37 total=97981372538\nvm-swap-total:       6291444 kB\nvm-swap-free:        2179072 kB\n`;
+  assert.match(STORE_COMMAND, /docker run --rm alpine:latest cat \/proc\/pressure\/io \/proc\/meminfo/);
+  const stalled = await measureStoreBox({ exec: async () => vm("62.38") }, 0);
+  assert.deepEqual(stalled.metrics, { store_box_swap_used_mb: 1458, store_box_vm_io_full_pct: 62.38 });
+  assert.equal(stalled.flagged[0]!.kind, "store_box_vm_io");
+  assert.match(stalled.flagged[0]!.excerpt, new RegExp(`Docker VM IO full avg60 62.38%, over the ${STORE_VM_IO_FULL_PCT}% line.*VM swap 4016 MB; 1458 MB host swap used, memory`));
+  assert.ok(!stalled.flagged[0]!.excerpt.includes("vm-"));
+  const calm = await measureStoreBox({ exec: async () => vm("8.21") }, 0);
+  assert.deepEqual(calm.metrics, { store_box_swap_used_mb: 1458, store_box_vm_io_full_pct: 8.21 });
+  assert.equal(calm.flagged[0]!.kind, "store_box");
 });
 
 const localPush = (push: Record<string, string | null>, src: string) => `convex-push {"count": 1, "watchers": [], "push": ${JSON.stringify(push)}}\nconvex-src ${src}\n`;

@@ -26,7 +26,7 @@ import { macSilent } from "./mac-reach.ts";
  * counts the minutes of the last 24 h that the Mac usable watch read unusable (src/mac-usable-watch.ts USABLE, the same line d7 judges a minute
  * by), and mac_unreachable is 1 when ssh cannot reach it (asleep), which fails no check.
  * store_box_swap_used_mb reads the M2 Air store box that hosts local Convex and the dev stores over ssh, with its memory pressure level and
- * its three biggest processes as run detail.
+ * its three biggest processes as run detail, and store_box_vm_io_full_pct reads the IO stall of the Docker VM that runs local Convex there.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
@@ -97,17 +97,37 @@ export const STORE_BOX = "a.@100.84.91.26";
  * 3.8 to 8.9 GB with sandboxd at 5.4 GB and System Events at 1.2 GB (board step p560).
  */
 export const STORE_SWAP_MB = 6000;
-/** Swap use and the macOS memory pressure level (1 normal, 2 warn, 4 critical), then the three processes with the most memory, swapped and compressed pages included. */
-export const STORE_COMMAND = "sysctl -n vm.swapusage kern.memorystatus_vm_pressure_level; top -l 1 -o mem -n 3 -stats command,mem,cmprs | tail -3";
+/**
+ * The Docker VM's IO stall line: `full avg60` of /proc/pressure/io, the share of the last minute every task in the VM waited on IO.
+ * measured: on 11-03 local Convex in the VM answered in up to 385 s and the Mac's :3210/version timed out at 10 s while full avg60 read 62%
+ * (16:13Z, a crawler search-sync read of the 6.5 GB tiktok_shop_products table), and /version answered in 0.04 s at 8% once that read ended
+ * (16:17Z). Host swap read 1,458 MB through it, under STORE_SWAP_MB, so only the VM's own reading showed the stall.
+ */
+export const STORE_VM_IO_FULL_PCT = 40;
+/**
+ * Swap use and the macOS memory pressure level (1 normal, 2 warn, 4 critical), then the three processes with the most memory, swapped and
+ * compressed pages included, then the Docker VM's own IO pressure and swap from a throwaway container, whose /proc shows the VM kernel's.
+ */
+export const STORE_COMMAND = "sysctl -n vm.swapusage kern.memorystatus_vm_pressure_level; top -l 1 -o mem -n 3 -stats command,mem,cmprs | tail -3; "
+  + "/usr/local/bin/docker run --rm alpine:latest cat /proc/pressure/io /proc/meminfo | sed -n 's/^full /vm-io-full /p; s/^SwapTotal:/vm-swap-total:/p; s/^SwapFree:/vm-swap-free:/p'";
 export const PRESSURE_NAMES: Record<number, string> = { 1: "normal", 2: "warn", 4: "critical" };
 
-/** Parses STORE_COMMAND's output: `total = 9216.00M  used = 8525.44M  free = 690.56M  (encrypted)`, the pressure level, then the top lines. */
-export function parseStoreBox(text: string): { swapUsedMb: number; pressureLevel: number; top: string[] } {
+/**
+ * Parses STORE_COMMAND's output: `total = 9216.00M  used = 8525.44M  free = 690.56M  (encrypted)`, the pressure level, the top lines, then the
+ * VM's `vm-io-full avg10=.. avg60=..` and `vm-swap-total:`/`vm-swap-free:` kB lines, which stay unset when the VM gave no reading.
+ */
+export function parseStoreBox(text: string): { swapUsedMb: number; pressureLevel: number; top: string[]; vmIoFullPct?: number; vmSwapUsedMb?: number } {
   const lines = text.trim().split("\n");
   const swapUsedMb = Number(/used = ([\d.]+)M/.exec(lines[0] ?? "")?.[1]);
   const pressureLevel = Number(lines[1]?.trim());
   if (!Number.isFinite(swapUsedMb) || !Number.isInteger(pressureLevel) || !lines[1]?.trim()) throw new Error(`unparsed store box reading: ${text.trim().slice(0, 200)}`);
-  return { swapUsedMb: Math.round(swapUsedMb), pressureLevel, top: lines.slice(2).map(line => line.trim().replace(/\s+/g, " ")).filter(Boolean) };
+  const ioFull = /^vm-io-full avg10=[\d.]+ avg60=([\d.]+)/m.exec(text)?.[1];
+  const swapTotal = /^vm-swap-total:\s*(\d+) kB/m.exec(text)?.[1];
+  const swapFree = /^vm-swap-free:\s*(\d+) kB/m.exec(text)?.[1];
+  return { swapUsedMb: Math.round(swapUsedMb), pressureLevel,
+    top: lines.slice(2).filter(line => !line.startsWith("vm-")).map(line => line.trim().replace(/\s+/g, " ")).filter(Boolean),
+    ...ioFull ? { vmIoFullPct: Number(ioFull) } : {},
+    ...swapTotal && swapFree ? { vmSwapUsedMb: Math.round((Number(swapTotal) - Number(swapFree)) / 1024) } : {} };
 }
 
 /** Reads the store box over ssh. ssh exit 255 means it could not reach the box, which leaves store_box_swap_used_mb unmeasured. */
@@ -121,9 +141,12 @@ export async function measureStoreBox(deps: Pick<UptimeDeps, "exec">, at: number
     return { metrics: {}, flagged: [{ at, kind, excerpt: `Store box ${STORE_BOX}: read failed: ${message}`.slice(0, 300) }] };
   }
   const over = reading.swapUsedMb > STORE_SWAP_MB;
+  const ioOver = reading.vmIoFullPct !== undefined && reading.vmIoFullPct > STORE_VM_IO_FULL_PCT;
   const pressure = PRESSURE_NAMES[reading.pressureLevel] ?? `level ${reading.pressureLevel}`;
-  return { metrics: { store_box_swap_used_mb: reading.swapUsedMb },
-    flagged: [{ at, kind: over ? "store_box_swap" : "store_box", excerpt: `Store box: ${reading.swapUsedMb} MB swap used${over ? `, over the ${STORE_SWAP_MB} MB line where local Convex schema evals start to pass 1 s` : ""}, memory pressure ${pressure}, top ${reading.top.join("; ")}`.slice(0, 300) }] };
+  const vm = reading.vmIoFullPct === undefined ? "Docker VM unread"
+    : `Docker VM IO full avg60 ${reading.vmIoFullPct}%${ioOver ? `, over the ${STORE_VM_IO_FULL_PCT}% line where local Convex stalled on 11-03` : ""}, VM swap ${reading.vmSwapUsedMb ?? "unread"} MB`;
+  return { metrics: { store_box_swap_used_mb: reading.swapUsedMb, ...reading.vmIoFullPct !== undefined ? { store_box_vm_io_full_pct: reading.vmIoFullPct } : {} },
+    flagged: [{ at, kind: ioOver ? "store_box_vm_io" : over ? "store_box_swap" : "store_box", excerpt: `Store box: ${vm}; ${reading.swapUsedMb} MB host swap used${over ? `, over the ${STORE_SWAP_MB} MB line where local Convex schema evals start to pass 1 s` : ""}, memory pressure ${pressure}, top ${reading.top.join("; ")}`.slice(0, 300) }] };
 }
 
 /**
