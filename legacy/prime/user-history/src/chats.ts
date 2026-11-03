@@ -610,7 +610,9 @@ export class Chats {
    */
   reopen(id: string, since: number): Promise<boolean> {
     return this.membership(id, async () => {
-      if (this.archives(id) !== since || !(await this.archivedIds()).has(id)) return false;
+      // The archived ids as this service last read or wrote them, a read only before the first (IdIndex.known): this runs before every owner send.
+      const archived = this.source.archived?.known() ?? await this.archivedIds();
+      if (this.archives(id) !== since || !archived.has(id)) return false;
       const rearchivedSince = async (): Promise<boolean> => {
         if (this.archives(id) === since) return false;
         await this.threads.archive(id, "owner");

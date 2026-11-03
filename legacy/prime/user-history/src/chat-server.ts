@@ -1200,9 +1200,10 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
           const images = parseImages(body.images);
           const mode = (await backend.chats.ids()).has(id) || (await backend.chats.archivedIds()).has(id) ? "steer" : parseMode(body.mode);
           if (!message.trim() && !images.length) throw new RequestError(400, "Add a message or image.");
-          await backend.chats.reopenJob(id);
+          // The job cancel record's read runs beside the send, so the prompt leaves in the turn the POST came in (test/owner-send-one-turn.test.ts).
+          const reopened = backend.chats.reopenJob(id);
           const fingerprint = createHash("sha256").update(JSON.stringify([id, message, images, mode])).digest("hex");
-          try { json(res, 200, await backend.outbox.submit({ id: rid, threadId: id, text: message, images, mode, fingerprint })); }
+          try { json(res, 200, (await Promise.all([backend.outbox.submit({ id: rid, threadId: id, text: message, images, mode, fingerprint }), reopened]))[0]); }
           catch (error) { throw error instanceof OutboxConflict ? new RequestError(409, error.message) : error; }
           return;
         }
