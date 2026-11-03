@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { agents, api, boardStore, isSoloRoom, jobs, me, timeline, type Item } from "$lib/api";
+  import { agents, api, boardStore, isSoloRoom, jobs, me, prefetchThread, timeline, type Item } from "$lib/api";
   import BoardPanel from "$pages/board/BoardPanel.svelte";
   import { boardHref, boardTitles, rememberTitles } from "$pages/board/chips";
   import { conversationHref, router } from "$lib/router.svelte";
@@ -182,6 +182,7 @@
   }
 
   function openThread(key: string) {
+    if (key !== threadParam) prefetchThread(isChannel ? id : null, key);
     router.setParams({ thread: key, board: null });
   }
 
@@ -350,7 +351,7 @@
     </span>
   {/if}
   {#if workThread}
-    <Button variant="ghost" size="sm" icon="robot" href={conversationHref(workThread)}>Open work thread</Button>
+    <span class="work-thread" data-work-thread title="Open work thread"><Button variant="ghost" size="sm" icon="robot" href={conversationHref(workThread)}>Open work thread</Button></span>
   {/if}
   {#if working}
     <IconButton icon="stop" label="Stop" size="sm" onclick={stop} data-testid="header-stop" />
@@ -452,10 +453,27 @@
 
 <style>
   .conversation {
+    container: conversation / inline-size;
     display: flex;
     flex: 1;
     flex-direction: column;
     min-height: 0;
+  }
+  .work-thread {
+    display: inline-flex;
+  }
+  .conversation > :global(.panel-header .title) {
+    min-width: min(40%, 12rem);
+  }
+  @container conversation (max-width: 640px) {
+    .conversation > :global(.panel-header [data-work-thread] .label) {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
   }
   .conversation.slack {
     --timeline-measure: 100%;

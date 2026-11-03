@@ -301,6 +301,70 @@ export const connection = {
   },
 };
 
+/**
+ * The last page each thread showed, kept when its view closes so the next open shows it at once and reads it again behind, and the read
+ * a thread pill click starts before the pane mounts. It keeps the newest 20 threads: a job page measured 434 KB on 11-03
+ * (work/fast-thread/before.md), so 20 hold under 9 MB.
+ */
+class PageCache<Raw, Shown> {
+  private readonly shown = new Map<string, Shown>();
+  private readonly reads = new Map<string, { read: Promise<Raw>; at: number }>();
+
+  constructor(private readonly keep: number) {}
+
+  /** Starts the read now; the store that opens this thread next takes it instead of reading again. */
+  prefetch(key: string, read: () => Promise<Raw>): void {
+    const pending = read();
+    pending.catch(() => undefined);
+    this.reads.set(key, { read: pending, at: Date.now() });
+  }
+
+  /**
+   * The prefetched read, or a new one. A prefetch counts for 2 s: the slowest click to pane mount measured 817 ms on 11-03
+   * (work/fast-thread/before.md), and an older one may miss changes made since.
+   */
+  take(key: string, read: () => Promise<Raw>): Promise<Raw> {
+    const prefetched = this.reads.get(key);
+    this.reads.delete(key);
+    return prefetched && Date.now() - prefetched.at < 2_000 ? prefetched.read : read();
+  }
+
+  last(key: string): Shown | undefined {
+    return this.shown.get(key);
+  }
+
+  remember(key: string, value: Shown): void {
+    this.shown.delete(key);
+    this.shown.set(key, value);
+    for (const oldest of this.shown.keys()) {
+      if (this.shown.size <= this.keep) break;
+      this.shown.delete(oldest);
+    }
+  }
+}
+
+type TimelineRead = { page: Awaited<ReturnType<typeof api.items>>; header: ConversationHeader };
+type TimelineShown = { items: Item[]; older: string | undefined; header: ConversationHeader };
+const readTimeline = async (id: ConversationId, around?: string): Promise<TimelineRead> => {
+  const [page, header] = await Promise.all([api.items(id, around ? { around } : {}), api.header(id)]);
+  return { page, header };
+};
+const timelinePages = new PageCache<TimelineRead, TimelineShown>(20);
+
+type RepliesRead = Awaited<ReturnType<typeof api.replies>>;
+type RepliesShown = { root: Item | null; items: Item[] };
+const repliesPages = new PageCache<RepliesRead, RepliesShown>(20);
+const repliesKey = (channel: ConversationId, root: string) => `${channel}\u0000${root}`;
+
+/**
+ * Starts reading a side thread on the click that opens it, so the read runs while the router, the side panel and the pane mount: a
+ * channel post's replies with `channel`, else the job's or thread's newest page and header.
+ */
+export function prefetchThread(channel: ConversationId | null, key: string): void {
+  if (channel) repliesPages.prefetch(repliesKey(channel, key), () => api.replies(channel, key));
+  else timelinePages.prefetch(key, () => readTimeline(key));
+}
+
 /** One conversation's timeline: the newest page, older pages on demand, live upserts, status, send and Stop. Nothing streams. */
 export class Timeline {
   items = $state<Item[]>([]);
@@ -335,12 +399,28 @@ export class Timeline {
     void this.load(opts.around);
   }
 
+  private around: string | undefined;
+
   private async load(around?: string): Promise<void> {
+    this.around = around;
+    const last = around ? undefined : timelinePages.last(this.id);
+    if (last) {
+      this.header = last.header;
+      this.status = last.header.summary.status;
+      this.items = last.items;
+      this.older = last.older;
+      this.loading = false;
+    }
     try {
-      const [page, header] = await Promise.all([api.items(this.id, around ? { around } : {}), api.header(this.id)]);
+      const { page, header } = around ? await readTimeline(this.id, around) : await timelinePages.take(this.id, () => readTimeline(this.id));
       this.header = header;
       this.status = header.summary.status;
       this.queue = header.queue ?? null;
+      if (last) {
+        const kept = new Set(page.items.map(item => item.id));
+        const gone = new Set(last.items.map(item => item.id).filter(itemId => !kept.has(itemId)));
+        this.items = this.items.filter(item => !gone.has(item.id));
+      }
       this.upsert(page.items);
       this.older = page.older;
       this.focus = page.focus;
@@ -428,6 +508,7 @@ export class Timeline {
   close(): void {
     this.stopWatch?.();
     this.stopListen?.();
+    if (!this.around && this.header && !this.error) timelinePages.remember(this.id, { items: this.items.filter(item => !isPending(item)), older: this.older, header: this.header });
   }
 }
 
@@ -452,8 +533,19 @@ export class Replies {
       this.sends.merge(event.items.filter(item => item.kind === "message" && item.threadRoot === rootId), event.removed ?? []);
     });
     this.stopWatch = live.watch(channel);
-    void api.replies(channel, rootId).then(page => {
+    const key = repliesKey(channel, rootId);
+    const last = repliesPages.last(key);
+    if (last) {
+      this.root = last.root;
+      this.items = last.items;
+      this.loading = false;
+    }
+    void repliesPages.take(key, () => api.replies(channel, rootId)).then(page => {
       this.root = page.root;
+      if (last) {
+        const kept = new Set(page.items.map(item => item.id));
+        this.items = this.items.filter(item => isPending(item) || kept.has(item.id) || !last.items.some(old => old.id === item.id));
+      }
       this.sends.merge(page.items);
     }).catch(error => (this.error = message(error))).finally(() => (this.loading = false));
   }
@@ -479,6 +571,7 @@ export class Replies {
   close(): void {
     this.stopWatch?.();
     this.stopListen?.();
+    if (!this.loading && !this.error) repliesPages.remember(repliesKey(this.channel, this.rootId), { root: this.root, items: this.items.filter(item => !isPending(item)) });
   }
 }
 
