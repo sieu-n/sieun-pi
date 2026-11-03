@@ -11,6 +11,7 @@
   import type { MarkdownContext } from "$lib/ui/markdown";
   import type { Status } from "$lib/ui/types";
   import { conversationHref, router } from "$lib/router.svelte";
+  import { frequentEmoji } from "./frequent-emoji.svelte";
   import Reactions from "./Reactions.svelte";
   import StepLine from "./StepLine.svelte";
   import ThreadPill from "./ThreadPill.svelte";
@@ -87,6 +88,7 @@
   const reactable = $derived(message && room && message.seq !== undefined && !pending ? message : null);
   let reactions = $state<Reactions>();
   let reactButton = $state<HTMLButtonElement>();
+  let picking = $state(false);
 
   function copyText() {
     void navigator.clipboard.writeText(item.text).then(() => {
@@ -98,7 +100,13 @@
 
 {#snippet actionBar()}
   <div class="actions" role="toolbar" aria-label="Message actions">
-    {#if reactable}<IconButton icon="smile" label="Add reaction" size="sm" bind:element={reactButton} onclick={() => reactButton && reactions?.pick(reactButton)} data-add-reaction />{/if}
+    {#if reactable}
+      {#each frequentEmoji.list.slice(0, 3) as emoji (emoji)}
+        <button type="button" class="quick" aria-label="React with {emoji}" data-quick-reaction={emoji} onclick={() => reactions?.toggle(emoji)}>{emoji}</button>
+      {/each}
+      <IconButton icon="emoji-add" label="Add reaction" size="sm" bind:element={reactButton} onclick={() => reactButton && reactions?.pick(reactButton)} data-add-reaction />
+      <span class="divider" aria-hidden="true"></span>
+    {/if}
     {#if canReply}<IconButton icon="reply" label="Reply in thread" size="sm" onclick={() => onthread(item.id)} />{/if}
     {#if workHref && !why}<IconButton icon="robot" label="Show work" size="sm" onclick={() => workHref && router.navigate(workHref)} data-show-work />{/if}
     <IconButton icon="link" label="Copy link" size="sm" onclick={() => oncopylink(item)} />
@@ -119,7 +127,7 @@
 {/snippet}
 
 {#snippet tail()}
-  {#if reactable && room}<Reactions bind:this={reactions} item={reactable} {room} />{/if}
+  {#if reactable && room}<Reactions bind:this={reactions} bind:picking item={reactable} {room} />{/if}
   {#if offline}
     <p class="send-state queued" role="status" data-send-state="queued" title="It goes when the box is back.">{offline}</p>
   {:else if sendState === "failed"}
@@ -178,7 +186,7 @@
 {/snippet}
 
 {#if slack}
-  <li class="row slack" class:own class:first class:pending data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined}>
+  <li class="row slack" class:own class:first class:pending class:picking data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined}>
     <div class="gutter">
       {#if first}
         <Avatar name={item.author.name} kind={avatarKind(item.author)} seed={item.author.id} size={36} status={statusOf?.(item.author.id) ?? null} />
@@ -224,7 +232,7 @@
     {@render actionBar()}
   </li>
 {:else}
-  <li class="row" class:own class:first class:pending data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined}>
+  <li class="row" class:own class:first class:pending class:picking data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined}>
     {#if first}
       <div class="byline">
         {#if !own && item.author.kind !== "owner"}<Icon name="robot" size={13} />{/if}
@@ -401,9 +409,34 @@
     left: 8px;
   }
   .row:hover .actions,
+  .row.picking .actions,
   .actions:focus-within {
     opacity: 1;
     pointer-events: auto;
+  }
+  .quick {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-icon-button);
+    background: transparent;
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .quick:hover {
+    background: var(--affordance-ghost-hover);
+  }
+  .divider {
+    align-self: center;
+    width: 1px;
+    height: 16px;
+    margin: 0 2px;
+    background: var(--border-standard);
   }
   .pending .actions {
     display: none;

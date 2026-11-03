@@ -1,61 +1,118 @@
 <script lang="ts">
-  import { api, type Item } from "$lib/api";
-  import { QUICK_REACTIONS, WIP_EMOJI } from "$lib/api/shared/reactions";
+  import { tick } from "svelte";
+  import { api, type Item, type Reaction } from "$lib/api";
+  import { emojiName } from "$lib/api/shared/emoji";
+  import Icon from "$lib/ui/Icon.svelte";
   import Popover from "$lib/ui/Popover.svelte";
+  import { place, portal } from "$lib/ui/floating";
   import { toast } from "$lib/ui/toast.svelte";
-  import { tooltip } from "$lib/ui/tooltip";
+  import EmojiPicker from "./EmojiPicker.svelte";
+  import { frequentEmoji } from "./frequent-emoji.svelte";
 
   type Props = {
     item: Extract<Item, { kind: "message" }>;
     /** The room the post is in. */
     room: string;
+    /** True while the picker is open, so the row keeps its hover bar. */
+    picking?: boolean;
   };
-  let { item, room }: Props = $props();
+  let { item, room, picking = $bindable(false) }: Props = $props();
 
-  let pickerOpen = $state(false);
   let anchor = $state<HTMLElement | null>(null);
   let addButton = $state<HTMLButtonElement>();
+  let hovered = $state<{ emoji: string; chip: HTMLElement } | null>(null);
+  let card = $state<HTMLDivElement>();
+  let cardAt = $state<{ x: number; y: number } | null>(null);
+  let hoverTimer: ReturnType<typeof setTimeout> | undefined;
 
   const rows = $derived(item.reactions ?? []);
   const mine = (emoji: string) => rows.some((r) => r.emoji === emoji && r.by.some((b) => b.id === "owner"));
-  const names = (by: { id: string; name: string }[]) => by.map((b) => (b.id === "owner" ? "You" : b.name)).join(", ");
+  const code = (emoji: string) => `:${emojiName(emoji) ?? emoji}:`;
+  /** Who reacted, the owner first as You, as Slack names them. */
+  const people = (reaction: Reaction) =>
+    [...reaction.by].sort((a, b) => Number(b.id === "owner") - Number(a.id === "owner")).map((b) => (b.id === "owner" ? "You" : b.name));
+  const joiner = (i: number, count: number) => (i === 0 ? "" : i === count - 1 ? " and " : ", ");
+  /** "You, vent and agent factory". */
+  const names = (reaction: Reaction) => people(reaction).map((name, i, all) => joiner(i, all.length) + name).join("");
+  const shown = $derived(hovered ? rows.find((r) => r.emoji === hovered!.emoji) : undefined);
 
-  function toggle(emoji: string, on = !mine(emoji)) {
-    pickerOpen = false;
+  /** Puts the owner's emoji on the post, or takes it off when it is his already. */
+  export function toggle(emoji: string, on = !mine(emoji)) {
+    if (on) frequentEmoji.use(emoji);
     void api.react(room, item.id, emoji, on).catch((error: unknown) => toast.error(error instanceof Error ? error.message : "Could not react"));
   }
 
-  /** Opens the emoji picker next to `at`, such as the hover toolbar's Add reaction button. */
+  /** Opens the emoji picker next to `at`, such as the hover bar's Add reaction button. */
   export function pick(at: HTMLElement) {
+    hide();
     anchor = at;
-    pickerOpen = true;
+    picking = true;
   }
+
+  function show(emoji: string, chip: HTMLElement) {
+    clearTimeout(hoverTimer);
+    hoverTimer = setTimeout(() => (hovered = { emoji, chip }), hovered ? 0 : 350);
+  }
+  function hide() {
+    clearTimeout(hoverTimer);
+    hovered = null;
+    cardAt = null;
+  }
+
+  $effect(() => {
+    if (!hovered || !shown) return;
+    const chip = hovered.chip;
+    void shown.by.length;
+    void tick().then(() => {
+      if (!card || !chip.isConnected) return;
+      const at = place(chip.getBoundingClientRect(), card.getBoundingClientRect(), "top", 8);
+      cardAt = { x: at.x, y: at.y };
+    });
+  });
+  $effect(() => () => clearTimeout(hoverTimer));
 </script>
 
 {#if rows.length}
-  <div class="reactions" data-reactions>
+  <div class="reactions" class:picking data-reactions>
     {#each rows as reaction (reaction.emoji)}
-      {#if reaction.emoji === WIP_EMOJI}
-        <span class="chip wip" data-reaction={reaction.emoji} data-wip use:tooltip={`${names(reaction.by)} ${reaction.by.length > 1 ? "are" : "is"} working on this`} aria-label="{names(reaction.by)} working on this">
-          <span class="emoji">{reaction.emoji}</span>{#if reaction.by.length > 1}<span class="count">{reaction.by.length}</span>{/if}
-        </span>
-      {:else}
-        <button type="button" class="chip" class:mine={mine(reaction.emoji)} aria-pressed={mine(reaction.emoji)} data-reaction={reaction.emoji}
-          use:tooltip={`${names(reaction.by)} reacted with ${reaction.emoji}`} onclick={() => toggle(reaction.emoji)}>
-          <span class="emoji">{reaction.emoji}</span><span class="count">{reaction.by.length}</span>
-        </button>
-      {/if}
+      <button
+        type="button"
+        class="chip"
+        class:mine={mine(reaction.emoji)}
+        aria-pressed={mine(reaction.emoji)}
+        aria-label="{names(reaction)} reacted with {code(reaction.emoji)}"
+        data-reaction={reaction.emoji}
+        onpointerenter={(e) => show(reaction.emoji, e.currentTarget)}
+        onpointerleave={hide}
+        onclick={() => toggle(reaction.emoji)}
+      >
+        <span class="emoji">{reaction.emoji}</span><span class="count">{reaction.by.length}</span>
+      </button>
     {/each}
-    <button type="button" class="chip add" aria-label="Add reaction" use:tooltip={"Add reaction"} bind:this={addButton} onclick={() => addButton && pick(addButton)}>+</button>
+    <button type="button" class="chip add" aria-label="Add reaction" bind:this={addButton} onclick={() => addButton && pick(addButton)} data-add-reaction-chip>
+      <Icon name="emoji-add" size={16} />
+    </button>
   </div>
 {/if}
 
-<Popover bind:open={pickerOpen} {anchor} placement="top-start" label="Add reaction" role="menu">
-  <div class="picker" data-reaction-picker>
-    {#each QUICK_REACTIONS as emoji (emoji)}
-      <button type="button" class="pick" class:mine={mine(emoji)} aria-label="React with {emoji}" onclick={() => toggle(emoji)}>{emoji}</button>
-    {/each}
+{#if hovered && shown}
+  <div use:portal bind:this={card} class="card" class:placed={!!cardAt} role="tooltip" data-reaction-card style:transform={cardAt ? `translate(${Math.round(cardAt.x)}px, ${Math.round(cardAt.y)}px)` : undefined}>
+    <span class="big">{shown.emoji}</span>
+    <p>
+      {#each people(shown) as name, i (i)}{joiner(i, shown.by.length)}<b>{name}</b>{/each}
+      reacted with <span class="code">{code(shown.emoji)}</span>
+    </p>
   </div>
+{/if}
+
+<Popover bind:open={picking} {anchor} placement="top-start" label="Add reaction" surface="solid" padding={0} radius="row">
+  <EmojiPicker
+    selected={mine}
+    onpick={(emoji, keepOpen) => {
+      if (!keepOpen) picking = false;
+      toggle(emoji);
+    }}
+  />
 </Popover>
 
 <style>
@@ -70,64 +127,94 @@
     align-items: center;
     gap: 4px;
     height: 24px;
-    padding: 0 8px;
-    border: 1px solid var(--border-standard);
-    border-radius: var(--radius-pill);
-    background: var(--surface-inset);
+    padding: 0 8px 0 6px;
+    border: 0;
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--text-standard) 6%, transparent);
+    box-shadow: inset 0 0 0 1px transparent;
     color: var(--text-subtle);
-    font: var(--text-caption);
     cursor: pointer;
+    transition: background var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
   }
   .chip:hover {
-    border-color: var(--border-prominent);
-    color: var(--text-standard);
+    background: var(--surface-panel);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-standard) 30%, transparent);
   }
   .chip.mine {
-    border-color: var(--border-focus);
-    background: var(--surface-message-own);
-    color: var(--text-standard);
+    background: color-mix(in srgb, var(--accent-9) 22%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-link) 75%, transparent);
+    color: var(--accent-link);
   }
-  .chip.wip {
-    cursor: default;
+  .chip.mine:hover {
+    background: color-mix(in srgb, var(--accent-9) 32%, transparent);
   }
-  .chip.wip .emoji {
-    animation: wip 2.4s ease-in-out infinite;
+  .emoji {
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+    font-size: 16px;
+    line-height: 1;
+  }
+  .count {
+    min-width: 7px;
+    font: 500 12px/16px var(--font-sans);
+    font-variant-numeric: tabular-nums;
   }
   .chip.add {
+    padding: 0 6px;
+    color: var(--text-metadata);
     opacity: 0;
-    transition: opacity var(--duration-fast) var(--ease-standard);
+  }
+  .chip.add:hover {
+    color: var(--text-standard);
   }
   :global(.row:hover) .chip.add,
+  .picking .chip.add,
   .chip.add:focus-visible {
     opacity: 1;
   }
-  .emoji {
-    font-size: 14px;
+  .card {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 100000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    max-width: 220px;
+    padding: 10px 12px 8px;
+    border-radius: 12px;
+    background: var(--neutral-11, #1d1c1d);
+    color: var(--neutral-1, #ffffff);
+    text-align: center;
+    pointer-events: none;
+    visibility: hidden;
+  }
+  .card.placed {
+    visibility: visible;
+  }
+  :global(:root[data-color-mode="dark"]) .card {
+    background: #f1f1f2;
+    color: #0f0f0f;
+  }
+  .card .big {
+    display: grid;
+    place-items: center;
+    width: 48px;
+    height: 48px;
+    border-radius: 10px;
+    background: #ffffff;
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+    font-size: 34px;
     line-height: 1;
   }
-  .picker {
-    display: flex;
-    gap: 2px;
+  .card p {
+    margin: 0;
+    font: 400 13px/18px var(--font-sans);
   }
-  .pick {
-    width: 32px;
-    height: 32px;
-    padding: 0;
-    border: 0;
-    border-radius: var(--radius-row);
-    background: transparent;
-    font-size: 18px;
-    cursor: pointer;
+  .card b {
+    font-weight: 500;
   }
-  .pick:hover,
-  .pick.mine {
-    background: var(--surface-inset);
-  }
-  @keyframes wip {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.45; }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .chip.wip .emoji { animation: none; }
+  .card .code {
+    opacity: 0.7;
   }
 </style>

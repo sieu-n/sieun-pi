@@ -49,7 +49,7 @@ const ownerPost = (text: string) => ({
   text, images: [], mentions: [], deliveries: [],
 });
 
-test("the wip mark the server sends shows on the owner's post with no typing line, and the Work pill shows while the work thread runs", async ({ page }) => {
+test("the 👀 an agent puts on the owner's post shows as a plain chip with no typing line, and the Work pill shows while the work thread runs", async ({ page }) => {
   const vent = await splitVent(page);
   await open(page, `#/c/${DM}`);
   const typing = page.locator(".typing");
@@ -59,15 +59,17 @@ test("the wip mark the server sends shows on the owner's post with no typing lin
   await expect(pill).toHaveCount(0);
 
   vent.set({ comm: "working", work: "idle" });
-  const wipBy = { id: "ag_vent", kind: "chat", name: "Vent", avatar: { initials: "Ve", hue: 120 } };
-  vent.send({ type: "items", conversation: DM, items: [{ ...ownerPost("so what is status?"), reactions: [{ emoji: "⏳", by: [wipBy] }] }] });
-  await expect(row(page, "p999").locator("[data-wip]")).toHaveAccessibleName("Vent working on this");
+  const by = { id: "ag_vent", kind: "chat", name: "Vent", avatar: { initials: "Ve", hue: 120 } };
+  vent.send({ type: "items", conversation: DM, items: [{ ...ownerPost("so what is status?"), reactions: [{ emoji: "👀", by: [by] }] }] });
+  const eyes = row(page, "p999").locator('[data-reaction="👀"]');
+  await expect(eyes).toHaveAccessibleName("Vent reacted with :eyes:");
+  await expect(eyes).toHaveAttribute("aria-pressed", "false");
   await expect(typing).not.toContainText("answering");
   await expect(pill).toHaveCount(0);
 
   vent.set({ comm: "idle", work: "working" });
   vent.send({ type: "items", conversation: DM, items: [ownerPost("so what is status?")] });
-  await expect(row(page, "p999").locator("[data-wip]")).toHaveCount(0);
+  await expect(eyes).toHaveCount(0);
   await expect(pill).toBeVisible();
   await expect(typing).not.toContainText("working now");
 

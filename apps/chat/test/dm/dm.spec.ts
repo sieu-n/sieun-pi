@@ -71,28 +71,25 @@ test("an owner send shows at once, its reply post arrives, and a reload keeps bo
   await expect(row(page, id!).locator("[data-send-state]")).toHaveCount(0);
 });
 
-test("a running turn puts the agent's wip mark on the owner's post, Stop takes it off, and the owner's own emoji toggles", async ({ page }) => {
-  // A slow turn, a Stop and a reload in one walk.
-  test.slow();
-  // Crawler VP's DM, which no other spec posts to, so no other post joins the turn.
+test("the owner reacts through the hover bar's picker, his chip is highlighted, a reload keeps it and a click takes it off", async ({ page }) => {
+  // Crawler VP's DM, which no other spec posts to.
   await open(page, "#/c/dm_crawler-vp");
-  const text = `slow wip check ${tag()}`;
+  const text = `reaction check ${tag()}`;
   await composerInput(page).fill(text);
   await composerInput(page).press("Enter");
   const mine = conversation(page).locator(".row.own[data-message-id]").filter({ hasText: text });
   await expect(mine).toHaveAttribute("data-message-id", /^p\d+$/, { timeout: 5_000 });
-  const wip = mine.locator("[data-wip]");
-  await expect(wip).toBeVisible({ timeout: 10_000 });
-  await expect(wip).toHaveAccessibleName("Crawler VP working on this");
-  await expect(page.locator(".typing")).not.toContainText("working");
-  await page.getByTestId("header-stop").click();
-  await expect(wip).toHaveCount(0, { timeout: 10_000 });
+  // The agent's reply moves the rows, so the hover waits for it.
+  const seq = Number((await mine.getAttribute("data-message-id"))!.slice(1));
+  await expect(row(page, `p${seq + 1}`)).toBeVisible({ timeout: 10_000 });
 
   await mine.hover();
   await mine.locator("[data-add-reaction]").click();
-  await page.getByRole("button", { name: "React with 👍" }).click();
+  await page.locator("[data-emoji-picker] [data-emoji='👍']").first().click();
+  await expect(page.locator("[data-emoji-picker]")).toHaveCount(0);
   const thumbs = mine.locator('[data-reaction="👍"]');
   await expect(thumbs).toHaveAttribute("aria-pressed", "true");
+  await expect(thumbs).toHaveAccessibleName("You reacted with :+1:");
   await page.reload();
   await expect(thumbs).toContainText("1", { timeout: 15_000 });
   await thumbs.click();
