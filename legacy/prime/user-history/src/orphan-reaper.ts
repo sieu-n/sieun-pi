@@ -31,6 +31,8 @@ export interface ProcRow {
   pid: number; ppid: number; started: number | null; bytes: number | null; command: string;
   sessionDir: string | null; harnessSession: string | null; lcSession: string | null; sshFrom: string | null;
   prime: boolean; shared: boolean; cgroup: string | null; cwd: string | null;
+  /** PRIME_OWNER_UNIT: the unit that started a transient unit no session owns, such as take-in.service for a land queue's convex-save-check runner. */
+  ownerUnit?: string | null;
 }
 
 /** The session a group's env names: `dir` is its RLM_SESSION_DIR when it ran on this box, `host` the box its kernel runs on. */
@@ -67,10 +69,11 @@ const hasUnitFile = (unit: string, files: ReadonlySet<string>): boolean => files
 export function groupProcesses(rows: readonly ProcRow[], unitFiles: ReadonlySet<string>, hostOf: (address: string) => string, here: string): Group[] {
   const byPid = new Map(rows.map(row => [row.pid, row]));
   const service = (row: ProcRow): string | null => { const unit = unitOf(row.cgroup); return unit?.endsWith(".service") ? unit : null; };
-  const kept = (row: ProcRow): boolean => {
-    const unit = service(row);
-    return row.prime || row.shared || PROTECTED_COMMAND.test(row.command) || (row.cgroup ?? "").includes("/system.slice/") || (unit !== null && unit !== "prime-agent-daemon.service" && hasUnitFile(unit, unitFiles));
-  };
+  const keptUnit = (unit: string | null | undefined): boolean => !!unit && unit !== "prime-agent-daemon.service" && hasUnitFile(unit, unitFiles);
+  // A runner unit that take-in.service's timer run started belongs to take-in.service as much as its own processes do: from 18:06Z on 11-03
+  // every d2 run listed one convex-save-check-land-object unit (6 processes, 5.3 GB) as an orphan of no owner.
+  const kept = (row: ProcRow): boolean =>
+    row.prime || row.shared || PROTECTED_COMMAND.test(row.command) || (row.cgroup ?? "").includes("/system.slice/") || keptUnit(service(row)) || keptUnit(row.ownerUnit);
   const boundary = (row: ProcRow | undefined): boolean => !row || row.pid <= 1 || /(^|\/)systemd --user/.test(row.command) || /^sshd/.test(row.command);
   /** The topmost process below a boundary, or null when the chain passes a Prime process, a shared service or a kept unit. */
   const rootOf = (row: ProcRow): number | null => {

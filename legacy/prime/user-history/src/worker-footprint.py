@@ -401,7 +401,7 @@ def owners(table):
         text = " ".join(args[0])
         found.append({"pid": pid, "ppid": ppid, "started": start, "bytes": footprint(pid), "command": command(args),
                       "sessionDir": env_value(env, "RLM_SESSION_DIR"), "harnessSession": (harness(env) or ("", ""))[1] or None,
-                      "lcSession": env_value(env, "LC_PRIME_SESSION"), "sshFrom": ssh.split()[0] if ssh else None,
+                      "lcSession": env_value(env, "LC_PRIME_SESSION"), "ownerUnit": env_value(env, "PRIME_OWNER_UNIT"), "sshFrom": ssh.split()[0] if ssh else None,
                       "prime": bool(PRIME.search(text)), "shared": bool(SHARED.search(text)), "cgroup": cgroup_of(pid), "cwd": linux_link(pid, "cwd")})
     return found
 

@@ -58,6 +58,17 @@ test("a transient unit is one group whose owner any member names, and a unit fil
   assert.deepEqual([...unitFileNames("llm-wiki.service enabled enabled\naw-drv.service transient -\n")], ["llm-wiki.service"]);
 });
 
+test("11-03: a runner unit take-in.service started is kept like take-in.service, and one a transient unit started is still listed", () => {
+  const land = `${USER}/convex-save-check-land-object-1089253.service`;
+  const runner = "node scripts/repo/agent/convex-save-check.mjs run --session land-object";
+  const groups = group([
+    row(80, 4578, runner, { cgroup: land, ownerUnit: "take-in.service" }),
+    row(81, 80, "node --test touched.test.mjs", { cgroup: land, ownerUnit: "take-in.service" }),
+    row(90, 4578, runner, { cgroup: `${USER}/convex-save-check-land-object-90.service`, ownerUnit: "aw-drv.service" }),
+  ], ["take-in.service"]);
+  assert.deepEqual(groups.map(entry => entry.unit), ["convex-save-check-land-object-90.service"]);
+});
+
 test("RLM_SESSION_DIR on this box wins over the ssh tag, and a tag with no host takes the box its ssh came from", () => {
   const dir = "/home/sieun/.prime/agent/session-artifacts/01a11af8-962e-773d-a19a-ee4104011987";
   assert.deepEqual(ownerOf(row(1, 0, "x", { sessionDir: dir, lcSession: `${JOB}@Sieuns-MacBook-Pro` }), hosts, "us-metal02"),
