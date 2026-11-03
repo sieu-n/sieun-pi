@@ -139,6 +139,26 @@ test("a provider key copied under another name counts in tier files and box env 
   assert.equal(providerKey("STRIPE_READ_VENT_KEY"), false);
 });
 
+// On 11-03 the env audit found CLOUDFLARE_USAGE_TOKEN, CONVEX_USAGE_TOKEN, TAILSCALE_API_KEY and both Slack alarm webhooks in the infra tier
+// while the hand list read 0, so the repo key scan's classes count too, and an alarm webhook stays only beside its alarm.
+test("the repo key scan's provider class counts, and a Slack alarm webhook counts outside its alarm path", () => {
+  const providers = new Set(["CLOUDFLARE_USAGE_TOKEN", "CONVEX_USAGE_TOKEN", "TAILSCALE_API_KEY", "SLACK_ALERT_WEBHOOK_GRAFANA", "SLACK_ALERT_WEBHOOK_WATCH"]);
+  const classOf = (name: string) => providers.has(name) ? "provider" : "ours";
+  const locations: Record<string, string[]> = {
+    "tier apps/infra/.env": ["CLOUDFLARE_USAGE_TOKEN", "CONVEX_USAGE_TOKEN", "TAILSCALE_API_KEY", "SLACK_ALERT_WEBHOOK_GRAFANA", "CRAWLER_API_KEY"],
+    "tier apps/infra/metal/watch/.env.watch": ["SLACK_ALERT_WEBHOOK_WATCH"],
+    "tier apps/search/.env": ["SLACK_ALERT_WEBHOOK_GRAFANA"],
+  };
+  const output = ventMetrics(reads({ keys: { locations, unreadable: {}, classOf } }), 0);
+  assert.deepEqual(output.flagged!.filter(flag => flag.kind === "key_outside_vent").map(flag => flag.excerpt), [
+    "tier apps/infra/.env still holds CLOUDFLARE_USAGE_TOKEN, CONVEX_USAGE_TOKEN, TAILSCALE_API_KEY",
+    "tier apps/search/.env still holds SLACK_ALERT_WEBHOOK_GRAFANA",
+  ]);
+  assert.equal(output.metrics.provider_keys_outside_vent, 4);
+  assert.equal(providerKey("CONVEX_USAGE_TOKEN"), false);
+  assert.equal(providerKey("CONVEX_USAGE_TOKEN", classOf), true);
+});
+
 // On 10-24 at 04:28Z the share script exited non-zero on a ClickHouse TIMEOUT_EXCEEDED, the precheck wrote through_vent_pct -1 and the
 // runner judged that a measured miss of the 100 target. A failed read leaves the metric out, so the runner reads it as not measured.
 test("a failed share script leaves through_vent_pct unmeasured with a source error, never -1", async () => {

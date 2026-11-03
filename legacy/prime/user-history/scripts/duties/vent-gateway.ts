@@ -91,8 +91,19 @@ export const PROVIDER_KEYS = new Set([
  */
 const PROVIDER_VENDORS = new Set([...PROVIDER_KEYS].map(name => name.split("_")[0]!));
 const NOT_PROVIDER = /_VENT_KEY$|_PUBLISHABLE_KEY$|^CLERK_JWT_KEY$|_OAUTH_STATE_SECRET$|^GOOGLE_PICKER_API_KEY$/;
-export const providerKey = (name: string): boolean =>
-  PROVIDER_KEYS.has(name) || (PROVIDER_VENDORS.has(name.split("_")[0]!) && /_(KEY|TOKEN|SECRET)$/.test(name) && !NOT_PROVIDER.test(name));
+/**
+ * The class auto-sns-agent's scripts/ci/vent-key-scan.mjs gives a name (classifyName, with Vent's secret names from tables.py at the tip):
+ * every Vent integration secret and every secret-shaped name with a vendor word of scripts/ci/providers.mjs. The hand list above alone
+ * missed names Vent holds that it never listed (GSC_SERVICE_ACCOUNT_JSON, LOGODEV_TOKEN, GITHUB_APP_PRIVATE_KEY) and vendors it never
+ * named: on 2026-11-03 the env audit found CLOUDFLARE_USAGE_TOKEN, CONVEX_USAGE_TOKEN, TAILSCALE_API_KEY and the two
+ * SLACK_ALERT_WEBHOOK_* in the infra tier while this duty read 0.
+ */
+export type ClassOf = (name: string) => string;
+export const providerKey = (name: string, classOf?: ClassOf): boolean =>
+  PROVIDER_KEYS.has(name) || (PROVIDER_VENDORS.has(name.split("_")[0]!) && /_(KEY|TOKEN|SECRET)$/.test(name) && !NOT_PROVIDER.test(name))
+  || classOf?.(name) === "provider";
+/** The Slack keys an alarm path keeps for when Vent is down: the bot token of rows 69 to 71, and the incoming webhooks of the metal watch and Grafana's slack-direct contact point. */
+export const ALARM_SLACK = /^SLACK_(BOT_TOKEN_DEV|ALERT_WEBHOOK_(GRAFANA|WATCH))$/;
 
 /** Vercel and Railway tokens count on the box, where the host services exporter (virev-services) calls those APIs at runtime: until 10-24
  *  from /srv/obs/secrets/services.env, since 1b0fa0fd17 from the prod infra tier copy /usr/local/lib/virev-services/infra.env, which the key
@@ -101,7 +112,7 @@ export const BOX_PLATFORM = /^(VERCEL|RAILWAY)_([A-Z0-9]+_)*TOKEN$/;
 const onBox = (location: string) => /^(box|container|unit) /.test(location);
 
 /**
- * Where SLACK_BOT_TOKEN_DEV may stay: the alarm paths of rows 69 (metal watch dead-man), 70 (Grafana contact points) and 71 (ci_watch), which
+ * Where the ALARM_SLACK keys may stay: the alarm paths of rows 69 (metal watch dead-man), 70 (Grafana contact points) and 71 (ci_watch), which
  * keep a direct Slack fallback for when Vent is down, and the files they read it from.
  */
 /** The repo secret CLERK_SECRET_KEY reaches only the CI job-local Vent: auto-sns-agent scripts/ci/tasks/search-e2e.sh unsets it
@@ -137,7 +148,7 @@ export interface ShareResult { refs: Record<string, { sha: string; sites: ShareS
 /** Share script statuses for a row whose call is no longer in the code: every file deleted, or the files no longer name the provider. */
 export const GONE = new Set(["removed", "gone"]);
 export interface WebhookVerdict { source: string; direct: boolean; vent: boolean }
-export interface KeyListing { locations: Record<string, string[]>; unreadable: Record<string, string> }
+export interface KeyListing { locations: Record<string, string[]>; unreadable: Record<string, string>; classOf?: ClassOf }
 /** The tip's text lines that name a removed provider (`git grep -z -n` output) and apps/vent/src/vent/tables.py at the tip. */
 export interface RemovedReads { grep: string; tables: string }
 /** One group of test sends that reached a real provider in 24 h (TEST_SENDS_SQL). */
@@ -347,7 +358,7 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
   const leaks: string[] = [];
   for (const [location, names] of Object.entries(reads.keys.locations)) {
     if (!inScope(location)) continue;
-    const here = names.filter(name => (providerKey(name) || (BOX_PLATFORM.test(name) && onBox(location))) && !(name === "SLACK_BOT_TOKEN_DEV" && ALARM_FALLBACK.test(location)) && !CI_VENT_INPUT(location, name));
+    const here = names.filter(name => (providerKey(name, reads.keys.classOf) || (BOX_PLATFORM.test(name) && onBox(location))) && !(ALARM_SLACK.test(name) && ALARM_FALLBACK.test(location)) && !CI_VENT_INPUT(location, name));
     for (const name of here) leaks.push(`${location} ${name}`);
     if (here.length) flagged.push({ at, kind: "key_outside_vent", item: location, excerpt: `${location} still holds ${here.join(", ")}`.slice(0, 300) });
   }
@@ -461,12 +472,20 @@ async function keyListing(): Promise<KeyListing> {
       locations[`tier ${path}`] = [...new Set([...(locations[`tier ${path}`] ?? []), ...names])];
     }
   })().catch((error: unknown) => { unreadable[`tier files at ${ref}`] = errorText(error); }));
+  let classOf: ClassOf | undefined;
+  tasks.push((async () => {
+    const scan = await import(pathToFileURL(join(REPO, "scripts/ci/vent-key-scan.mjs")).href) as {
+      classifyName: (name: string, ventNames: Set<string>) => { class: string }; ventSecretNames: (tablesPy: string) => Set<string>;
+    };
+    const ventNames = scan.ventSecretNames(await run("git", ["show", `${TIP}:apps/vent/src/vent/tables.py`]));
+    classOf = name => scan.classifyName(name, ventNames).class;
+  })().catch((error: unknown) => { unreadable["vent-key-scan.mjs key classes"] = errorText(error); }));
   tasks.push(run("node", ["--input-type=module", "-e", `import(${JSON.stringify(join(REPO, "scripts/ci/vent-key-scan.mjs"))}).then(m => process.stdout.write(m.BOX_READER))`])
     .then(reader => run("ssh", ["-o", "BatchMode=yes", BOX, "python3", "-"], { input: reader }))
     .then(stdout => { boxLocations(JSON.parse(stdout.trim().split("\n").pop()!) as BoxReaderOut, locations); },
       (error: unknown) => { unreadable[`${BOX} box reader`] = errorText(error); }));
   await Promise.all(tasks);
-  return { locations, unreadable };
+  return { locations, unreadable, classOf };
 }
 
 /** The tip's lines that name a removed provider, read with git grep (wiki content and binaries skipped), and tables.py at the tip. Exit 1 is no match. */
