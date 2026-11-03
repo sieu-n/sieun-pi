@@ -123,7 +123,7 @@ export const SOURCES: Record<Measure, string> = {
 /** One Prometheus series from an instant query: its labels and its value. */
 export interface Series { labels: Record<string, string>; value: number }
 /** The answer to each measure, or the error text when its source gave none. */
-export type Answers = Record<Measure, Series[] | { error: string }>;
+export type Answers = Record<Exclude<Measure, "rowUp" | "rowAge">, Series[] | { error: string }> & Partial<Record<"rowUp" | "rowAge", Series[] | { error: string }>>;
 
 /** One apiPortalHealthProbes row, the fields the uptime needs. */
 export interface ProbeRow { target: string; ok: boolean; createdAt: number }
@@ -220,7 +220,7 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
   const flagged: FlaggedSlice[] = [];
   let sourceErrors = 0;
   /** The series of one measure, or undefined after flagging why there are none. */
-  const read = (name: Measure, needTargets: readonly string[]): Series[] | undefined => {
+  const read = (name: Exclude<Measure, "rowUp" | "rowAge">, needTargets: readonly string[]): Series[] | undefined => {
     const answer = answers[name];
     if ("error" in answer) { sourceErrors++; flagged.push({ at, kind: "source_error", excerpt: `no answer from ${SOURCES[name]}: ${answer.error}`.slice(0, 300) }); return undefined; }
     const missing = needTargets.filter(target => !answer.some(series => series.labels.target === target));
