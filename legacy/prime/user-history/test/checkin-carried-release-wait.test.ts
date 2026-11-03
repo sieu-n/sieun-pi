@@ -75,3 +75,24 @@ test("a stopped release job leaves the steps that wait on it stuck, so they stil
     assert.notEqual(found.goals.find(push => push.goal.id === "p1")?.act, "waiting");
   }
 });
+
+// Prospect feature bro on 11-03: p290 waited for the release owner's next prod promote, and its job "prospect posthog" slept on a board.wake
+// check for the fix reaching prod main, due by 00:00Z. The 19:59, 20:14 and 20:29 KST check-ins read no_progress 1 for p290 alone, because
+// only a wake on a running CI run held a step there, while d9's unmovedSteps counted the same job moving.
+const PROSPECT = "01a11bd7-072f-7591-ad1d-f123c276cde5";
+const POSTHOG = "01a19f3e-c871-749b-9eff-325cb1a3ecaa";
+const prospect = (): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-11-03T08:35:48Z", todos: [], plan: [
+  step("p290", "Remove the empty Brand watch that onboarding gave 7 customer campaigns", { status: "doing", job: "prospect posthog", sessionId: POSTHOG,
+    waitFor: "Release owner's next prod promote carries a122902672 and 8d3dfc6ff. The job's wake then hands over the convex-run call." }),
+] });
+const posthog = (asleep: boolean): JobFact => ({ key: POSTHOG, sessionId: POSTHOG, name: "prospect posthog", activityAt: NOW - 3 * 3_600_000,
+  ...asleep ? { state: "working", wake: "a board.wake on a check by 00:00Z" } : { state: "ended" } });
+const CHECK = { session: POSTHOG, root: PROSPECT, on: { kind: "check", command: "git cat-file -e origin/main:convex/search/campaigns/emptyBrandWatchFix.ts", every: 900_000, at: NOW + 6 * 3_600_000 },
+  note: "prospect posthog: emptyBrandWatchFix is on prod", since: NOW - 3 * 3_600_000 } as never;
+
+test("a step whose job sleeps on a board.wake check is not no_progress, and the same job stopped with no wake still is", () => {
+  const noProgress = (fact: JobFact, wakes: never[] = []) => checkInPrecheck(previous, [fact], prospect(), NOW, { self: [PROSPECT], jobs: [], wakes }).noProgress;
+  assert.equal(noProgress(posthog(true)), null, "the job's fact carries the wake");
+  assert.equal(noProgress(posthog(false), [CHECK]), null, "the step's session holds the wake");
+  assert.deepEqual(noProgress(posthog(false))?.moving.map(view => view.item.id), ["p290"]);
+});

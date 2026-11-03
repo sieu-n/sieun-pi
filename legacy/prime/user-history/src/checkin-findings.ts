@@ -10,6 +10,7 @@ import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, ownerState,
   walk } from "./checkin-steps.ts";
 import type { CiRun, Train, TrainRun } from "./checkin-load.ts";
 import { type Movers, outsideMover, stepCarrier } from "./checkin-end-state.ts";
+import { stepSessions } from "./unmoved-steps.ts";
 import { heldByTodo, type HoldingTodo, waitRefs } from "./shared/todo-hold.ts";
 import { localTime } from "./checkin-settings.ts";
 import { GOAL_PUSH_LINK, type GoalPush } from "./checkin-goals.ts";
@@ -508,19 +509,28 @@ export const PROGRESS_MS = 60 * 60_000;
  * sent the chat a message with a fact (`factsAt`, so an answer to a status ask with no fact is no move); its steps are not counted (launch main bro 10-12: p56's copy and p57's lane reads reported every 30 min with new page
  * and run counts, and three check-ins in a row flagged them). No verdict (null) until the chat's memory spans PROGRESS_MS. `moving` are the open
  * steps that are not held and whose goal did not move. A step whose wait names a plan item a live owner carries is held (`carried`). A step whose work waits in the Mac-wide turn queue is held (`queueHolds`), and so is a
- * step whose owner sleeps on a board.wake for a run that is queued or running (`JobFact.wake`), as a waitFor naming that run is. Frontend bro
- * 10-15: the 20:31, 20:46 and 21:02 KST check-ins read no_progress 1 for p145 alone, whose job slept on a wake for verify-dev run 38724412490
- * from 20:01 KST while the run's jobs waited for pool-light and m1-air runners; the step's waitFor named no run.
+ * step whose owner sleeps on a pending board.wake of any kind, a run, a time or a check (`asleepOwner`, the carrier rule d9's `unmovedSteps` reads).
+ * Frontend bro 10-15: the 20:31, 20:46 and 21:02 KST check-ins read no_progress 1 for p145 alone, whose job slept on a wake for verify-dev run
+ * 38724412490 from 20:01 KST while the run's jobs waited for pool-light and m1-air runners; the step's waitFor named no run. Until 11-03 only a
+ * run wake held, and Prospect feature bro's 19:59, 20:14 and 20:29 KST check-ins read no_progress 1 for p290 alone, whose job "prospect posthog"
+ * slept on a board.wake check for its fix reaching prod main, due by 00:00Z.
  * Finished work is progress before anyone closes its step (`finished`): an open item that looks done by a fact of the last PROGRESS_MS (its
  * duty metric met, its PRs merged), or a PR an open item names in its text or note that merged in that hour. Slack green guy 10-15: job email
  * confirm loss merged #258 at 10:57Z and its deploy was READY, p144 stayed doing until the check-in closed it at about 11:58Z, and the 11:18Z
  * check-in read no_progress 1.
  */
 export interface NoProgress { moving: StepView[] }
+/**
+ * Whether a step's owner sleeps on a pending board.wake: its job's fact carries the wake (`JobFact.wake`, `withWakes`), or a session that owns
+ * the step (`stepSessions`: its session id, or a job field that names a session) has one (`Movers.watches`). d9's `unmovedSteps` counts the same
+ * sessions moving. A job that stopped with no wake still counts.
+ */
+const asleepOwner = (view: Pick<StepView, "item" | "owner">, { watches }: Pick<Movers, "watches">): boolean =>
+  view.owner?.wake !== undefined || stepSessions(view.item, new Map()).some(session => watches?.has(session) === true);
 export function noProgress(board: ChatBoard | null, views: readonly StepView[], memos: Readonly<Record<string, StepMemo>>, since: number,
   rows: readonly Pick<SessionRow, "id" | "name" | "archived">[], self: ReadonlySet<string>, now: number, train?: Train,
   queued: ReadonlyMap<string, unknown> = new Map(),
-  finished: { done: readonly DoneReason[]; prs: ReadonlyMap<string, PrState> } = { done: [], prs: new Map() }, movers: Pick<Movers, "steps"> = {}): NoProgress | null {
+  finished: { done: readonly DoneReason[]; prs: ReadonlyMap<string, PrState> } = { done: [], prs: new Map() }, movers: Pick<Movers, "steps" | "watches"> = {}): NoProgress | null {
   if (now - since < PROGRESS_MS) return null;
   const recentMs = (at: number | undefined): boolean => (at ?? 0) >= now - PROGRESS_MS;
   let done = finished.done.some(found => recentMs(found.at));
@@ -531,7 +541,7 @@ export function noProgress(board: ChatBoard | null, views: readonly StepView[], 
   if (done) return null;
   const held = (view: StepView): boolean => view.item.status === "blocked" || view.cls === "foryou" || Date.parse(view.item.waitUntil ?? "") > now ||
     (!view.mine && view.owner?.key.startsWith("thread:") === true) || waitTarget(view.item.waitFor, rows, self) !== undefined ||
-    [...namedRuns(view.item, train), ...namedRuns({ waitFor: view.owner?.wake ?? "" }, train)].some(run => run.running) ||
+    namedRuns(view.item, train).some(run => run.running) || asleepOwner(view, movers) ||
     (train !== undefined && trainMoves(view.item, train, now)) || queueHolds(view, queued, rows, self) || carried(view.item, movers);
   const recent = (at: number | undefined): boolean => (at ?? 0) >= now - PROGRESS_MS;
   const goalOf = (view: StepView): string => view.goal?.id ?? view.item.id;
