@@ -5,6 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
     <title>Chat</title>
+    <!-- The fonts a thread open draws with load from the start, so the first layout uses them: on 11-03 each font that arrived after it laid
+         out and shaped the page again, 58 to 206 ms per open in the box Chrome at 6x CPU throttle. -->
+    <link rel="preload" href="./node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="./node_modules/@fontsource/jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="./node_modules/@fontsource/jetbrains-mono/files/jetbrains-mono-latin-500-normal.woff2" as="font" type="font/woff2" crossorigin />
     <script>
       try {
         const saved = localStorage.getItem("chat.colorMode");

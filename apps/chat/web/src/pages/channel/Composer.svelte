@@ -82,7 +82,9 @@
       box.textContent = saved;
       sync();
     }
-    if (autofocus) focusEnd();
+    // After the first frame, so the focus and its caret do not force a style and layout pass in the middle of the page's mount: on 11-03
+    // that pass cost 39 to 56 ms of each thread open in the box Chrome at 6x CPU throttle.
+    if (autofocus) requestAnimationFrame(() => box?.isConnected && focusEnd());
     const onSelection = () => {
       if (document.activeElement === box) updateQuery();
     };

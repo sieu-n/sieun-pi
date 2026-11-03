@@ -84,3 +84,24 @@ export function mascotSvg(seed: string, id = `m${hash(seed).toString(36)}`): str
     + cheeks + eyes(parts.eyes, parts.ink) + mouth(parts.mouth, parts.ink)
     + `</svg>`;
 }
+
+const MASCOT_ID = "mascot-art";
+const parsedMascots = new Map<string, SVGSVGElement>();
+
+/**
+ * The mascot of `seed` as an SVG element whose gradient has the id `id`. Each seed's markup is parsed once and cloned after, since every
+ * avatar parsed its own copy and a thread open spent 74 ms of HTML parsing on 24 avatars in the box Chrome at 6x CPU throttle on 11-03.
+ */
+export function mascotNode(seed: string, id: string): SVGSVGElement {
+  let parsed = parsedMascots.get(seed);
+  if (!parsed) {
+    const template = document.createElement("template");
+    template.innerHTML = mascotSvg(seed, MASCOT_ID);
+    parsed = template.content.firstElementChild as SVGSVGElement;
+    parsedMascots.set(seed, parsed);
+  }
+  const svg = parsed.cloneNode(true) as SVGSVGElement;
+  svg.querySelector("radialGradient")!.id = id;
+  svg.querySelector(`[fill="url(#${MASCOT_ID})"]`)!.setAttribute("fill", `url(#${id})`);
+  return svg;
+}

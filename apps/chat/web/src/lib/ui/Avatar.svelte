@@ -1,6 +1,6 @@
 <script lang="ts">
   import { hueFor, initials } from "./hash";
-  import { mascotParts, mascotSvg } from "./mascot";
+  import { mascotNode, mascotParts } from "./mascot";
   import type { Status } from "./types";
 
   type Props = {
@@ -43,7 +43,7 @@
   {:else if kind === "person"}
     <span class="initials" style:font-size="{Math.max(9, Math.round(size * 0.4))}px">{initials(name)}</span>
   {:else}
-    <span class="figure">{@html mascotSvg(key, `av-${uid}`)}</span>
+    <span class="figure" {@attach (figure) => figure.replaceChildren(mascotNode(key, `av-${uid}`))}></span>
     <span class="sr-only">{name}</span>
   {/if}
   {#if status}
