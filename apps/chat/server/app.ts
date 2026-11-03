@@ -307,7 +307,7 @@ export class App {
     if (config.meili && config.durableIndex) {
       try {
         watcher = watch(dirname(config.durableIndex), (_event, name) => {
-          if (String(name).startsWith("index.sqlite")) void engine.refresh().catch(error => this.log(`search: ${String(error)}`));
+          if (String(name).startsWith("index.sqlite")) engine.scheduleRefresh();
         });
       } catch (error) {
         this.log(`search: cannot watch ${config.durableIndex} (${String(error)}); entries are read at each search`);

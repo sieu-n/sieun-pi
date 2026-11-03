@@ -114,17 +114,24 @@
     const { signal } = controller;
     const timer = setTimeout(async () => {
       const ask = { ...params, limit: PAGE };
-      // This box answers first; the full search brings the boxes it names as pending, with the exact count.
+      // This box answers first; the full search, asked at the same time, brings the other boxes with the exact count. On 11-03 the full
+      // search started only after the local answer, which added that answer's 33 to 698 ms to the exact count's wait.
       let local: SearchResult | undefined;
+      let fullDone = false;
+      const full = api.search(ask, { signal }).then(result => {
+        fullDone = true;
+        if (mine === generation) show(result, false);
+        return result;
+      });
+      full.catch(() => undefined);
       try {
         local = await api.search(ask, { local: true, signal });
-        if (mine !== generation) return;
+        if (mine !== generation || fullDone) return;
         show(local, false);
         if (!local.pending?.length) return;
-        const full = await api.search(ask, { signal });
-        if (mine === generation) show(full, false);
+        await full;
       } catch (error) {
-        if (mine !== generation || signal.aborted) return;
+        if (mine !== generation || signal.aborted || fullDone) return;
         if (local?.pending?.length) {
           show({ hits: local.hits, total: local.total, missing: [...(local.missing ?? []), ...pendingNotes(local.pending, error)] }, false);
         } else messages = { state: "error", message: error instanceof Error ? error.message : String(error) };

@@ -25,7 +25,16 @@ export const SEARCH_SETTINGS = {
   rankingRules: ["sort", "tier:asc", "words", "typo", "proximity", "attribute", "exactness"],
   // Meilisearch counts hits only up to maxTotalHits (1,000 by default); "d" alone matched 48,594 entries on 11-03, and the count stays exact (c191).
   pagination: { maxTotalHits: 100_000_000 },
+  // Search filters on these attributes and never asks for facet values, while building facet search took 15.8 s of the last 20 batches' 42 s
+  // of indexing on 11-03 (progressTrace, 1 to 9 documents a batch).
+  facetSearch: false,
 };
+
+/**
+ * Sends to Meilisearch are this far apart. A batch costs about the same for 1 or 9 documents (word fst 0.6 s, facet search 0.8 s a batch on
+ * 11-03), and a send on each pi-host write kept it indexing 48 batches a minute, all of the time; documents in between are read from memory.
+ */
+const SEND_SPACING_MS = 5_000;
 
 /** Meilisearch's default http-payload-size-limit is 100 MB, so one request of documents stays under it. */
 const PAYLOAD_BYTES = 100_000_000;
@@ -179,6 +188,8 @@ export class SearchEngine {
   private ready?: Promise<void>;
   private sync?: Promise<void>;
   private resync = false;
+  private sendTimer?: ReturnType<typeof setTimeout>;
+  private lastSend = 0;
   private meili!: Meili;
   /** While an empty index fills, every document is in `pending` and search reads only memory until the fill's tasks are done. */
   private filling = false;
@@ -253,6 +264,17 @@ export class SearchEngine {
       this.pending.set(doc.id, { doc: merged });
       this.unsent.set(doc.id, merged);
     }
+  }
+
+  /** A `refresh` at most once per `SEND_SPACING_MS`, for a write that landed or a search; `settled` and the first start send at once. */
+  scheduleRefresh(): void {
+    if (this.sendTimer) return;
+    this.sendTimer = setTimeout(() => {
+      this.sendTimer = undefined;
+      this.lastSend = Date.now();
+      void this.refresh().catch(error => this.deps.log(`search: ${String(error)}`));
+    }, Math.max(0, this.lastSend + SEND_SPACING_MS - Date.now()));
+    this.sendTimer.unref?.();
   }
 
   /** Sends what `readNew` read to the index and saves the cursor; a call while one runs runs once more after it. */
@@ -394,7 +416,7 @@ export class SearchEngine {
   async search(q: string, where: Cond, opts: { sort: "relevance" | "recent"; limit: number }): Promise<EngineAnswer> {
     if (!this.ready) void this.start().catch(() => undefined);
     this.readNew();
-    void this.refresh().catch(error => this.deps.log(`search: ${String(error)}`));
+    this.scheduleRefresh();
     // A first fill is waited for, so every answer comes from Meilisearch's matching, typo tolerance included; memory answers only while
     // Meilisearch cannot start, as on a box without its binary.
     if (this.filling) {
