@@ -1,5 +1,6 @@
 import DOMPurify from "dompurify";
 import { Marked, type Tokens, type TokenizerAndRendererExtension } from "marked";
+import { emojiOf } from "../api/shared/emoji";
 import { hueFor } from "./hash";
 import { ICONS } from "./icons";
 
@@ -16,7 +17,8 @@ import { ICONS } from "./icons";
  * - file paths in code spans or bare text (`apps/chat/server/http.ts:42`) as a pill that copies the path;
  * - GitHub pull request, issue and commit URLs as a compact card, and other web links with the site's icon and domain;
  * - GitHub callouts (`> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`), task lists, and `<details>`/`<summary>`;
- * - code blocks with a language label, a copy button and a fold past CODE_FOLD_LINES lines, and mermaid blocks that draw when they scroll into view.
+ * - code blocks with a language label, a copy button and a fold past CODE_FOLD_LINES lines, and mermaid blocks that draw when they scroll into view;
+ * - Slack emoji names such as `:eyes:` as the emoji, and in chat message mode every line break as a break, as Slack shows a post.
  * Every other raw HTML tag shows as text.
  */
 
@@ -27,7 +29,7 @@ export type MarkdownContext = {
   mentions?: ReadonlyMap<string, { id: string; kind: "person" | "agent" | "channel"; self?: boolean }> | null;
   /** Folder that relative image paths resolve against. */
   cwd?: string;
-  /** Chat message mode: bold renders as text and headings as paragraphs. */
+  /** Chat message mode: bold renders as text, headings as paragraphs, and a single line break as a break. */
   plain?: boolean;
 };
 
@@ -315,10 +317,28 @@ const mentions: TokenizerAndRendererExtension = {
   },
 };
 
+/** A Slack emoji name, `:white_check_mark:`, as its emoji; a name the table does not know stays text. */
+const shortcodes: TokenizerAndRendererExtension = {
+  name: "shortcode",
+  level: "inline",
+  start(src) {
+    const m = /:[\w+-]+:/.exec(src);
+    return m ? m.index : undefined;
+  },
+  tokenizer(src) {
+    const m = /^:([\w+-]+):/.exec(src);
+    const hit = m ? emojiOf(m[1]!) : undefined;
+    return m && hit ? { type: "shortcode", raw: m[0], char: hit.char, name: m[1] } : undefined;
+  },
+  renderer(token) {
+    return `<span class="emoji" title=":${escapeHtml(String(token.name))}:">${escapeHtml(String(token.char))}</span>`;
+  },
+};
+
 const marked = new Marked({
   gfm: true,
   async: false,
-  extensions: [spacedLinks, wikiLinks, filePaths, boardIds, mentions],
+  extensions: [spacedLinks, wikiLinks, filePaths, boardIds, mentions, shortcodes],
   hooks: {
     postprocess: (html) => html.replaceAll("<table>", '<div class="table-wrap"><table>').replaceAll("</table>", "</table></div>"),
   },
@@ -432,7 +452,7 @@ export function renderMarkdown(text: string, context: MarkdownContext = {}): str
   return cached(`b${contextKey(context)}\0${text}`, () => {
     ctx = context;
     try {
-      return sanitize(marked.parse(text, { async: false }));
+      return sanitize(marked.parse(text, { async: false, breaks: !!context.plain }));
     } finally {
       ctx = {};
     }
