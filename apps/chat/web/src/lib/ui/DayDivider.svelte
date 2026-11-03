@@ -31,14 +31,16 @@
   </div>
 {:else}
   <div class="divider" role="separator" aria-label={label}>
-    <span class="cal" aria-hidden="true">
-      <svg viewBox="0 0 20 20" width="20" height="20">
-        <rect x="2.5" y="3" width="15" height="14.5" rx="3" fill="var(--surface-panel)" stroke="var(--border-standard)" />
-        <path d="M2.5 6a3 3 0 0 1 3-3h9a3 3 0 0 1 3 3v1.5h-15z" fill="#e5484d" />
-        <text x="10" y="15" text-anchor="middle">{date}</text>
-      </svg>
+    <span class="tag">
+      <span class="cal" aria-hidden="true">
+        <svg viewBox="0 0 20 20" width="20" height="20">
+          <rect x="2.5" y="3" width="15" height="14.5" rx="3" fill="var(--surface-panel)" stroke="var(--border-standard)" />
+          <path d="M2.5 6a3 3 0 0 1 3-3h9a3 3 0 0 1 3 3v1.5h-15z" fill="#e5484d" />
+          <text x="10" y="15" text-anchor="middle">{date}</text>
+        </svg>
+      </span>
+      <span class="label">{label}</span>
     </span>
-    <span class="label">{label}</span>
     <span class="line"></span>
   </div>
 {/if}
@@ -66,16 +68,19 @@
     background: var(--border-standard);
     box-shadow: 0 0 0 0.25px var(--border-standard);
   }
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 4px;
+    border-radius: var(--radius-pill);
+  }
   .cal {
     display: inline-flex;
-    margin-left: 4px;
   }
   text {
     font: 500 7.5px var(--font-sans);
     fill: var(--text-standard);
-  }
-  .label {
-    margin-right: 4px;
   }
   .pill-divider {
     position: relative;
@@ -102,5 +107,21 @@
     font: var(--text-caption);
     font-weight: 500;
     letter-spacing: var(--tracking-caption);
+  }
+  /* Stuck to the top of a timeline (Timeline's sticky .day container), the rule goes and the label floats as a pill over the rows. */
+  @container scroll-state(stuck: top) {
+    .divider::before,
+    .line,
+    .pill-divider::before {
+      visibility: hidden;
+    }
+    .tag {
+      padding-inline: 8px 12px;
+      background: var(--surface-panel);
+      box-shadow: 0 0 0 1px var(--border-standard), var(--shadow-sm);
+    }
+    .pill {
+      box-shadow: var(--shadow-sm);
+    }
   }
 </style>

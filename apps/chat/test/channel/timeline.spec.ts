@@ -22,7 +22,7 @@ test("day dividers split the days, and the timeline column is at most 52rem", as
   await open(page, `#/c/${VENT}`);
   await expect(conversation(page).getByRole("separator", { name: "Today" })).toBeVisible();
   expect(await conversation(page).getByRole("separator").count()).toBeGreaterThanOrEqual(3);
-  const width = await conversation(page).locator("ol.rows").evaluate((el) => el.getBoundingClientRect().width);
+  const width = await conversation(page).locator(".rows").evaluate((el) => el.getBoundingClientRect().width);
   expect(width).toBeLessThanOrEqual(832);
 });
 

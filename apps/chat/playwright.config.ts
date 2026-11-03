@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineConfig, devices } from "@playwright/test";
@@ -11,6 +12,12 @@ import { defineConfig, devices } from "@playwright/test";
 const WEB_PORT = Number(process.env.CHAT_WEB_PORT ?? 5187);
 const SERVER_URL = process.env.CHAT_SERVER_URL ?? "http://127.0.0.1:5186";
 const SERVER_PORT = Number(new URL(SERVER_URL).port || 80);
+/**
+ * Each run writes its traces to its own folder, because Playwright empties its output folder when a run starts and two runs that shared one
+ * deleted each other's artifacts. The workers read the main process's pick from the environment. The name stays short, as a long TMPDIR
+ * already pushes Chrome's socket path past its limit.
+ */
+process.env.CHAT_PW_OUTPUT ??= join(tmpdir(), `acpw-${randomBytes(3).toString("hex")}`);
 
 export default defineConfig({
   testDir: "test",
@@ -22,7 +29,7 @@ export default defineConfig({
   timeout: 30_000,
   expect: { timeout: 5_000 },
   reporter: [["list"]],
-  outputDir: join(tmpdir(), "apps-chat-playwright"),
+  outputDir: process.env.CHAT_PW_OUTPUT,
   use: {
     baseURL: `http://127.0.0.1:${WEB_PORT}`,
     viewport: { width: 1440, height: 900 },

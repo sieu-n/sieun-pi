@@ -2,6 +2,7 @@
  * Turns what the owner typed, the conversation and agent lists, and the server's message hits into the groups and
  * rows the palette shows. Rows carry their action as data, so the dialog runs it and tests can read it.
  */
+import { avatarOf } from "../channel/present.ts";
 import { author, locationText, what, type Hit } from "./hit-view.ts";
 import { matchName, snippetPieces, type Piece } from "./match.ts";
 import { datePresets, filters, prompt, searchText, type Operator } from "./operators.ts";
@@ -129,7 +130,7 @@ function personRow(person: Person, needle: string, action: Action, detail: strin
     positions: needle ? matchName(person.name, needle)?.positions : undefined,
     detail,
     icon: "chat",
-    avatar: { src: person.avatar, name: person.name, shape: person.kind === "agent" ? "squircle" : "circle" },
+    avatar: { src: person.avatar, name: avatarOf(person).name, shape: person.kind === "agent" ? "squircle" : "circle" },
     action,
   };
 }

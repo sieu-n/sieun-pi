@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { layoutRows, STACK_MS } from "../../web/src/pages/channel/rows.ts";
+import { dayGroups, layoutRows, newestRows, STACK_MS } from "../../web/src/pages/channel/rows.ts";
 import { exactUnique, matchCandidates, openQuery } from "../../web/src/pages/channel/typeahead.ts";
 
 const now = new Date(2026, 9, 28, 15, 0).getTime();
@@ -39,6 +39,20 @@ test("a thread's first reply starts its own group under the root, with its bylin
     { id: "r2", at: at(28, 10, 2), kind: "message", author: owner },
   ], "root");
   assert.deepEqual(rows.map(row => row.kind === "post" ? `${row.key}:${row.first ? "F" : ""}${row.last ? "L" : ""}` : row.kind), ["day", "root:FL", "r1:F", "r2:L"]);
+});
+
+test("rows group by day under their divider, and the first paint keeps the newest rows under their own day", () => {
+  const owner = { id: "owner" };
+  const groups = dayGroups(layoutRows([
+    { id: "1", at: at(26, 9), kind: "message", author: owner },
+    { id: "2", at: at(27, 9), kind: "message", author: owner },
+    { id: "3", at: at(27, 9, 10), kind: "message", author: owner },
+    { id: "4", at: at(28, 9), kind: "message", author: owner },
+  ]));
+  const day = (date: number) => new Date(at(date, 0)).toDateString();
+  assert.deepEqual(groups.map(group => [group.key, group.rows.map(row => row.key)]), [[day(26), ["1"]], [day(27), ["2", "3"]], [day(28), ["4"]]]);
+  assert.deepEqual(newestRows(groups, 2).map(group => [group.key, group.rows.map(row => row.key)]), [[day(27), ["3"]], [day(28), ["4"]]]);
+  assert.equal(newestRows(groups, 9).length, 3);
 });
 
 test("openQuery finds @ and # at the caret and ignores emails and closed names", () => {

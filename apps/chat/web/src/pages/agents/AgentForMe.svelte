@@ -6,7 +6,7 @@
   import { api, live, type ForMeItem, type ForMeList, type Reaction } from "$lib/api";
   import { Avatar, Button, Chip, Icon, IconButton, LoadingText, Tabs, ageLabel, stampLabel, toast } from "$lib/ui";
   import { conversationHref } from "$lib/router.svelte";
-  import { avatarKind } from "$pages/channel/present";
+  import { avatarOf } from "$pages/channel/present";
   import { FOR_FILTERS, FOR_FILTER_LABEL, REASON_LABEL, forCount, reasonChips, forEmpty, forTarget, previewText, type ForFilter } from "./agents-model";
 
   type Props = { agentId: string; name: string };
@@ -107,9 +107,10 @@
   {:else}
     <ul class="rows">
       {#each list.items as item (item.id)}
+        {@const face = avatarOf(item.author)}
         <li class="row" data-item-id={item.id} data-status={item.status}>
           <a class="open" href={hrefOf(item)} data-for-me-open>
-            <span class="gutter"><Avatar name={item.author.name} kind={avatarKind(item.author)} seed={item.author.id} size={36} /></span>
+            <span class="gutter"><Avatar name={face.name} kind={face.kind} seed={face.id} size={36} /></span>
             <span class="body">
               <span class="where t-caption">
                 {#if roomIcon(item)}<Icon name={roomIcon(item)!} size={12} />{/if}

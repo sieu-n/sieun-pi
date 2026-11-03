@@ -9,7 +9,7 @@
   import type { Status } from "$lib/ui/types";
   import MessageRow from "./MessageRow.svelte";
   import { avatarOf, waitingSend } from "./present";
-  import { layoutRows } from "./rows";
+  import { dayGroups, layoutRows, newestRows } from "./rows";
 
   type Props = {
     items: Item[];
@@ -61,7 +61,8 @@
    */
   const FIRST_ROWS = 16;
   let full = $state(false);
-  const drawn = $derived(full ? rows : rows.slice(-FIRST_ROWS));
+  const days = $derived(dayGroups(rows));
+  const drawn = $derived(full ? days : newestRows(days, FIRST_ROWS));
   const slack = $derived(layout === "slack");
   const intro = $derived(slack && full && beginning && !hasOlder && !loadingOlder ? beginning : null);
   const introName = $derived(intro ? (intro.kind === "solo" ? intro.name : `#${intro.name}`) : "");
@@ -203,47 +204,52 @@
           {#if intro.purpose}<p class="intro-purpose">{intro.purpose}</p>{/if}
         </div>
       {/if}
-      <ol class="rows" bind:this={rowsEl}>
-        {#each drawn as row (row.key)}
-          {#if row.kind === "day"}
-            {#if !(slack && compact)}<li class="day"><DayDivider at={row.at} variant={slack ? "pill" : "calendar"} /></li>{/if}
-          {:else if row.kind === "system"}
-            <li data-message-id={row.item.id}>
-              <SystemLine
-                text={row.item.text}
-                members={row.item.kind === "system" ? row.item.avatars.map(avatarOf) : []}
-              />
-            </li>
-          {:else if row.item.kind !== "system"}
-            <MessageRow
-              item={row.item}
-              first={row.first}
-              last={row.last}
-              {layout}
-              fullTime={slack && compact}
-              {context}
-              liveLabel={row.item.id === liveId ? liveLabel : null}
-              queue={row.item.id === waitingId ? queue : null}
-              flash={flashId === row.item.id}
-              {openThread}
-              canReply={canReply && row.item.kind === "message" && !row.item.threadRoot}
-              {statusOf}
-              {onretrysend}
-              {ondiscardsend}
-              {onthread}
-              {oncopylink}
-              {onmention}
-              {onboardid}
-              {onartifact}
-            />
-          {/if}
-          {#if replyCount && row.key === firstPost}
-            <li class="replies" data-testid="thread-replies-divider">
-              <span>{replyCount} {replyCount === 1 ? "reply" : "replies"}</span>
-            </li>
-          {/if}
+      <div class="rows" bind:this={rowsEl}>
+        {#each drawn as day (day.key)}
+          <div class="day-group">
+            {#if !(slack && compact)}<div class="day"><DayDivider at={day.day.at} variant={slack ? "pill" : "calendar"} /></div>{/if}
+            <ol class="day-rows">
+              {#each day.rows as row (row.key)}
+                {#if row.kind === "system"}
+                  <li data-message-id={row.item.id}>
+                    <SystemLine
+                      text={row.item.text}
+                      members={row.item.kind === "system" ? row.item.avatars.map(avatarOf) : []}
+                    />
+                  </li>
+                {:else if row.item.kind !== "system"}
+                  <MessageRow
+                    item={row.item}
+                    first={row.first}
+                    last={row.last}
+                    {layout}
+                    fullTime={slack && compact}
+                    {context}
+                    liveLabel={row.item.id === liveId ? liveLabel : null}
+                    queue={row.item.id === waitingId ? queue : null}
+                    flash={flashId === row.item.id}
+                    {openThread}
+                    canReply={canReply && row.item.kind === "message" && !row.item.threadRoot}
+                    {statusOf}
+                    {onretrysend}
+                    {ondiscardsend}
+                    {onthread}
+                    {oncopylink}
+                    {onmention}
+                    {onboardid}
+                    {onartifact}
+                  />
+                {/if}
+                {#if replyCount && row.key === firstPost}
+                  <li class="replies" data-testid="thread-replies-divider">
+                    <span>{replyCount} {replyCount === 1 ? "reply" : "replies"}</span>
+                  </li>
+                {/if}
+              {/each}
+            </ol>
+          </div>
         {/each}
-      </ol>
+      </div>
     {/if}
   </div>
   <div class="jump" class:visible={showJump}>
@@ -284,7 +290,7 @@
     width: min(100%, var(--timeline-measure, 52rem));
     margin-inline: auto;
   }
-  .rows {
+  .day-rows {
     margin-block: 0;
     padding: 0;
     list-style: none;
@@ -299,8 +305,13 @@
     color: var(--text-subtle);
     font: var(--text-caption);
   }
+  /* Slack's sticky date: a day's divider rides the top of the feed while that day's rows scroll under it, and DayDivider drops its rule once stuck. */
   .day {
-    list-style: none;
+    position: sticky;
+    top: 8px;
+    z-index: 2;
+    container-type: scroll-state;
+    pointer-events: none;
   }
   .intro {
     width: min(100%, var(--timeline-measure, 52rem));

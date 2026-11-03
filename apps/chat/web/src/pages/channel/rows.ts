@@ -37,3 +37,31 @@ export function layoutRows<I extends RowSource>(items: readonly I[], breakAfter?
   }
   return rows;
 }
+
+export type DayGroup<I extends RowSource> = { key: string; day: Extract<Row<I>, { kind: "day" }>; rows: Exclude<Row<I>, { kind: "day" }>[] };
+
+/**
+ * Rows as one group per day, so a day's divider sticks to the top of the timeline only while that day's rows scroll past, as in Slack. A
+ * group's key is its date, so older posts that load into a day join its group instead of drawing the day anew.
+ */
+export function dayGroups<I extends RowSource>(rows: readonly Row<I>[]): DayGroup<I>[] {
+  const groups: DayGroup<I>[] = [];
+  for (const row of rows) {
+    if (row.kind === "day") groups.push({ key: new Date(row.at).toDateString(), day: row, rows: [] });
+    else groups.at(-1)?.rows.push(row);
+  }
+  return groups;
+}
+
+/** The newest `count` rows of the groups, each kept under its day, for the first paint of a long timeline. */
+export function newestRows<I extends RowSource>(groups: readonly DayGroup<I>[], count: number): DayGroup<I>[] {
+  const kept: DayGroup<I>[] = [];
+  let left = count;
+  for (let index = groups.length - 1; index >= 0 && left > 0; index--) {
+    const group = groups[index]!;
+    const rows = group.rows.slice(-left);
+    left -= rows.length;
+    kept.unshift(rows.length === group.rows.length ? group : { ...group, rows });
+  }
+  return kept;
+}

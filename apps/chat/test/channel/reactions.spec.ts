@@ -1,7 +1,7 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { open, row } from "./helpers.ts";
 
-/** Vent's DM in the fixture (server/fixture/seed.ts): p10 is Vent's answer, which these specs dress with reactions. */
+/** Vent's DM in the fixture (server/fixture/seed.ts), where p10 is Vent's answer. */
 const DM = "dm_vent";
 const vent = { id: "ag_vent", kind: "chat", name: "vent", avatar: { initials: "Ve", hue: 120 } };
 const factory = { id: "ag_agent-factory", kind: "chat", name: "agent factory", avatar: { initials: "Af", hue: 40 } };
@@ -13,25 +13,30 @@ const REACTIONS = [
 
 type Json = Record<string, unknown>;
 
-/** Serves p10 with `reactions` and records each reaction the owner posts, answered with the post as the server would. */
-async function dressed(page: Page): Promise<{ posted: Json[] }> {
+/**
+ * Gives the spec a post of its own: a copy of p10 with `reactions` under a fresh id the fixture server never holds, so no other spec on the
+ * shared fixture, and no live update of p10, changes what this one reads. Each reaction the owner posts is recorded and answered as the
+ * server would.
+ */
+async function dressed(page: Page): Promise<{ post: Locator; posted: Json[] }> {
+  const id = `p${100_000 + Math.floor(Math.random() * 900_000)}`;
   const posted: Json[] = [];
   await page.route(`**/api/c/${DM}/items*`, async (route) => {
     const body = (await (await route.fetch()).json()) as { items: Json[] };
-    await route.fulfill({ json: { ...body, items: body.items.map((item) => (item.id === "p10" ? { ...item, reactions: REACTIONS } : item)) } });
+    const items = body.items.flatMap((item) => (item.id === "p10" ? [item, { ...item, id, at: (item.at as number) + 1, reactions: REACTIONS }] : [item]));
+    await route.fulfill({ json: { ...body, items } });
   });
-  await page.route(`**/api/c/${DM}/posts/p10/reactions`, async (route) => {
+  await page.route(`**/api/c/${DM}/posts/${id}/reactions`, async (route) => {
     posted.push(route.request().postDataJSON() as Json);
-    await route.fulfill({ json: { item: { id: "p10" } } });
+    await route.fulfill({ json: { item: { id } } });
   });
   await page.addInitScript(() => localStorage.removeItem("chat.emoji.frequent"));
   await open(page, `#/c/${DM}`);
-  return { posted };
+  return { post: row(page, id), posted };
 }
 
 test("chips show the emoji and its count, the owner's own is highlighted, and an ⏳ is a chip like any other", async ({ page }) => {
-  await dressed(page);
-  const post = row(page, "p10");
+  const { post } = await dressed(page);
   const eyes = post.locator('[data-reaction="👀"]');
   await expect(eyes).toHaveText("👀3");
   await expect(eyes).toHaveAttribute("aria-pressed", "true");
@@ -44,8 +49,7 @@ test("chips show the emoji and its count, the owner's own is highlighted, and an
 });
 
 test("the add-reaction chip and the one-click emoji show only on hover", async ({ page }) => {
-  await dressed(page);
-  const post = row(page, "p10");
+  const { post } = await dressed(page);
   const add = post.locator("[data-add-reaction-chip]");
   await page.mouse.move(0, 0);
   await expect(add).toHaveCSS("opacity", "0");
@@ -56,8 +60,8 @@ test("the add-reaction chip and the one-click emoji show only on hover", async (
 });
 
 test("the hover card names who reacted with the owner as You and shows the emoji's name", async ({ page }) => {
-  await dressed(page);
-  await row(page, "p10").locator('[data-reaction="👀"]').hover();
+  const { post } = await dressed(page);
+  await post.locator('[data-reaction="👀"]').hover();
   const card = page.locator("[data-reaction-card]");
   await expect(card).toBeVisible();
   await expect(card).toHaveText(/👀\s*You, vent and agent factory reacted with :eyes:/);
@@ -66,16 +70,14 @@ test("the hover card names who reacted with the owner as You and shows the emoji
 });
 
 test("a click on a chip toggles the owner's own reaction", async ({ page }) => {
-  const { posted } = await dressed(page);
-  const post = row(page, "p10");
+  const { post, posted } = await dressed(page);
   await post.locator('[data-reaction="👀"]').click();
   await post.locator('[data-reaction="⏳"]').click();
   await expect.poll(() => posted).toEqual([{ emoji: "👀", on: false }, { emoji: "⏳", on: true }]);
 });
 
 test("the picker searches, moves by arrows, picks with Enter, keeps Frequently used and closes on Esc", async ({ page }) => {
-  const { posted } = await dressed(page);
-  const post = row(page, "p10");
+  const { post, posted } = await dressed(page);
   await post.hover();
   await post.locator("[data-add-reaction]").click();
   const picker = page.locator("[data-emoji-picker]");

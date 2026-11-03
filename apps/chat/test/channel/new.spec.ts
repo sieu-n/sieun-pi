@@ -9,8 +9,12 @@ test("New channel makes the room and opens it", async ({ page }) => {
   await page.getByLabel(/Purpose/).fill("A spec room");
   await page.getByTestId("main-panel").getByRole("button", { name: "Create channel" }).click();
   await expect(page).toHaveURL(/#\/c\/ch_/);
-  await expect(page.getByTestId("conversation-title")).toHaveText(name.replace(" ", "-"));
-  await expect(conversation(page)).toContainText("No messages yet.");
+  const slug = name.replace(" ", "-");
+  await expect(page.getByTestId("conversation-title")).toHaveText(slug);
+  const intro = page.getByTestId("channel-intro");
+  await expect(intro.getByRole("heading", { name: `#${slug}` })).toBeVisible();
+  await expect(intro).toContainText(`This is the very beginning of the #${slug} channel.`);
+  await expect(intro).toContainText("A spec room");
 });
 
 test("New chat starts a solo chat from its first message, and no agent", async ({ page, request }) => {

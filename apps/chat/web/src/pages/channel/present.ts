@@ -1,4 +1,4 @@
-import type { AgentSummary, Delivery, ImageUpload, Item, Principal, Room, Step, TurnPlace } from "$lib/api";
+import type { AgentSummary, Delivery, ImageUpload, Item, Room, Step, TurnPlace } from "$lib/api";
 import type { MarkdownContext } from "$lib/ui/markdown";
 import { offlineText } from "../agents/host-badge.ts";
 import type { PickerItem } from "$lib/ui/types";
@@ -57,10 +57,13 @@ export function mentionContext(agents: readonly AgentSummary[], channels: readon
 
 export const isOwn = (item: Item): boolean => item.kind !== "system" && item.author.id === "owner";
 
-export const avatarKind = (principal: Principal): "person" | "agent" => (principal.kind === "owner" ? "person" : "agent");
+/** Who an avatar draws: a principal, a search hit's author or a For list's author. Only the owner's kind is "owner". */
+type Who = { id: string; kind: string; name: string };
 
-/** A principal as an avatar draws it: the owner as the top bar's "S" in his own color, an agent as its art. */
-export const avatarOf = (principal: Principal): { id: string; name: string; kind: "person" | "agent" } => ({
+export const avatarKind = (principal: Who): "person" | "agent" => (principal.kind === "owner" ? "person" : "agent");
+
+/** The one owner avatar path: the owner as the top bar's "S" in his own color, anyone else as their own art. */
+export const avatarOf = (principal: Who): { id: string; name: string; kind: "person" | "agent" } => ({
   id: principal.id,
   name: principal.kind === "owner" ? OWNER_NAME : principal.name,
   kind: avatarKind(principal),
