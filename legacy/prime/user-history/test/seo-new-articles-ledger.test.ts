@@ -24,3 +24,21 @@ test("a check_of line scores the check it names, once, and a liveness note befor
   assert.equal(stats.scored, 4);
   assert.equal(stats.wins, 1);
 });
+
+// Guards the 11-03 d2 run. A scorer on 11-02 named each check as "<date> <worker> <url>", and d2 listed all 32 of them as overdue,
+// among them six downloader-links-batch5 lines that share a date, worker and kind and that only the URL tells apart.
+test("a check_of line that names the URL scores that one line of a batch, and a shorter URL does not match a longer one", () => {
+  const entries: LedgerEntry[] = [
+    { date: "2026-10-12", worker: "downloader-links-batch5", kind: "fix", url: "https://virev.ai/blog/a", check_date: "2026-11-02" },
+    { date: "2026-10-12", worker: "downloader-links-batch5", kind: "fix", url: "https://virev.ai/blog/b", check_date: "2026-11-02" },
+    { date: "2026-10-05", worker: "funnel-audit", kind: "fix", url: "https://virev.ai/blog", check_date: "2026-11-02" },
+    { date: "2026-10-05", worker: "funnel-audit", kind: "fix", url: "https://virev.ai/blog/c", check_date: "2026-11-02" },
+    { date: "2026-11-02", worker: "gsc-read", kind: "check", check_of: "2026-10-12 downloader-links-batch5 https://virev.ai/blog/a", result: "flat" },
+    { date: "2026-11-02", worker: "gsc-read", kind: "check", check_of: "2026-10-12 downloader-links-batch5 https://virev.ai/blog/b", result: "win" },
+    { date: "2026-11-02", worker: "gsc-read", kind: "check", check_of: "2026-10-05 funnel-audit https://virev.ai/blog", result: "loss" },
+  ];
+  const stats = ledgerStats(entries, "2026-11-03");
+  assert.deepEqual(stats.overdue.map(entry => entry.url), ["https://virev.ai/blog/c"]);
+  assert.equal(stats.scored, 3);
+  assert.equal(stats.wins, 1);
+});

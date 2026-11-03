@@ -159,10 +159,18 @@ export function requestedUrls(log: string): Set<string> {
   return out;
 }
 
-/** Whether a `check_of` line ("<date> <worker> <kind> line ...") names this entry; a worker may be named without its "group/" prefix. */
+/**
+ * Whether a `check_of` line names this entry, as "<date> <worker> <kind> line ..." or "<date> <worker> <url> ..."; a worker may be named
+ * without its "group/" prefix. Only the URL form tells apart the lines of a batch that share a date, worker and kind.
+ */
 function namesEntry(checkOf: string, entry: LedgerEntry): boolean {
-  if (!entry.date || !entry.worker || !entry.kind) return false;
-  return [entry.worker, entry.worker.split("/").pop()].some(worker => checkOf.startsWith(`${entry.date} ${worker} ${entry.kind} line`));
+  if (!entry.date || !entry.worker) return false;
+  return [entry.worker, entry.worker.split("/").pop()].some(worker => {
+    const head = `${entry.date} ${worker} `;
+    if (!checkOf.startsWith(head)) return false;
+    const rest = checkOf.slice(head.length);
+    return (!!entry.kind && rest.startsWith(`${entry.kind} line`)) || (!!entry.url && rest.split(/\s/, 1)[0] === entry.url);
+  });
 }
 
 /**
