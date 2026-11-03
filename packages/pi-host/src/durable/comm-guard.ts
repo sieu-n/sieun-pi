@@ -4,7 +4,7 @@
  * error, so the model reads why and ends the turn.
  *
  * 1. A post in the turn that handed the work thread a task (`CommHandedDoc`, written by `threads.ts` `sendRoot`) is refused, unless it asks a
- *    question with no relay words. The room already shows the post as in progress, and the result comes once, from the work thread's report or
+ *    question with no relay words. The agent's 👀 on the post shows it is on it, and the result comes once, from the work thread's report or
  *    the work-done notice. On 11-03 vent's comm thread handed the panel list over and then posted "The vent thread is now listing every panel,
  *    ...", and the agent factory comm thread answered the owner's complaint about that line with "Got it, ..." and "The agent factory work
  *    thread is building all five now, ...", both after its hand-over in the same turn.
@@ -26,12 +26,12 @@ const asks = (text: string): boolean => text.includes("?");
 export function commPostRefusal(text: string, turn: CommPostTurn): string | undefined {
   const relay = relayWords(text);
   if (turn.handed && (relay || !asks(text))) {
-    return "Not sent: you handed this to your work thread in this turn. The room already shows the post as in progress, so post nothing " +
+    return "Not sent: you handed this to your work thread in this turn. Your 👀 on the post already shows that you are on it, so post nothing " +
       "about the hand-over and end the turn now. Post the result once, when the work thread's report or the [work-done ...] notice brings it. " +
       "Only a question the owner must answer before the work can go on goes out now.";
   }
   if (relay?.kind === "handoff") {
-    return `Not sent: "${relay.words}" announces a hand-over or a result to come. The room already shows that the work runs, so post ` +
+    return `Not sent: "${relay.words}" announces a hand-over or a result to come. Your 👀 on the post already shows that the work runs, so post ` +
       "nothing until the result is in, then post the result once.";
   }
   if (relay && !turn.owner) {

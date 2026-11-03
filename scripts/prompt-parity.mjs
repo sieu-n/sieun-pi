@@ -198,7 +198,9 @@ const wire = tool => ({ name: tool.name, description: tool.description,
   input_schema: { type: "object", properties: tool.parameters?.properties ?? {}, required: tool.parameters?.required ?? [] } });
 // Prime's ipython as pi-host's durable threads offer it: pi-rlm's own registration, loaded through the same adapter (rlm.ts).
 const ipython = await (await import("../packages/pi-host/src/durable/rlm.ts")).loadIpythonTool();
-const piTools = new Map([ipython, ...chat.tools].map(tool => [tool.name, wire(tool)]));
+// The room tools (set_emoji) beside the chat's, as registry.ts installs them; Prime has none, so they read as pi only.
+const roomTools = (await import("../packages/pi-host/src/durable/room-tools.ts")).roomTools(chat.app, "parity").tools ?? [];
+const piTools = new Map([ipython, ...chat.tools, ...roomTools].map(tool => [tool.name, wire(tool)]));
 write("pi-tools.json", [...piTools.values()]);
 const sameJson = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const toolRows = payload.tools.map(tool => {

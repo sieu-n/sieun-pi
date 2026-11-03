@@ -1,7 +1,7 @@
 /**
  * An agent's comm thread and work thread (`comm.ts`, `agent-profile.ts`), on DurableThreads with a real kernel and the faux model:
  * 1. An `agent.ref` parses in its three shapes, and writing one sets the root's tools filter and instructions for the role in the same
- *    commit, again with no change, and never clears a value pi-host did not set.
+ *    commit, again with no change, and never clears a value pi-host did not set. Both comm texts ask for 👀 with set_emoji on the post.
  * 2. While the work thread runs a slow turn, a status turn of the comm thread reads it with agent_observe (status, messages, live rlm
  *    child with its progress note), and the work conversation's entries and inputs do not change; stop_work then ends the work turn.
  * 3. A task the comm thread hands the work thread with agent_message.send that settles with no reply sends the comm thread one
@@ -162,6 +162,9 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
     assert.match(commInstructions(comm), /comm thread in room dm_vent[\s\S]*receiver_name="w-1"[\s\S]*stop_work[\s\S]*c117[\s\S]*tell_owner/);
     for (const room of ["dm_vent", "so_1a2b3c4d", "ch_1a2b3c4d"]) {
       assert.match(commInstructions({ ...comm, room }), /When you hand a task over, post nothing in that turn[\s\S]*Post once, with the result[\s\S]*replaces the base prompt's progress updates/, room);
+      assert.match(commInstructions({ ...comm, room }), /put 👀 on it with `set_emoji\(message_id, "eyes", true\)`\. Take it off with `on: false` once you post the result or decide to post nothing/, room);
+      assert.match(commInstructions({ ...comm, room }), /Your 👀 on the post already shows that you are on it\./, room);
+      assert.doesNotMatch(commInstructions({ ...comm, room }), /in progress/, room);
     }
     for (const room of ["so_1a2b3c4d", "ch_1a2b3c4d"]) {
       const group = commInstructions({ ...comm, room });

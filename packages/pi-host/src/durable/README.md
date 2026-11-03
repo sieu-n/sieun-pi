@@ -39,7 +39,7 @@ H-->>C: the same submission, nothing admitted twice
 | `index-db.ts` | `ThreadIndex`: the thread rows, each thread's last wake, the FTS5 search rows, the usage rows and the outbox, all derived from the thread files. |
 | `feed.ts` | The outbox's reading of speaking calls (`speechOf`) and the `durable_feed` streams per connection. |
 | `commands.ts` | `DurableCommands`: the `durable_*` socket commands and the watches per connection. |
-| `registry.ts` | What every thread runs with: Prime's prompt (or the preamble alone without an agent dir), pi-durable's coding tools in the thread's cwd, the subagent tool, the `send_message` tool, Prime's chat extension when the host loaded it, Prime's `ipython` when the host loaded it, the `rlm.deliver` task, `agent.message` entries and `chat.doc` documents. |
+| `registry.ts` | What every thread runs with: Prime's prompt (or the preamble alone without an agent dir), pi-durable's coding tools in the thread's cwd, the subagent tool, the `send_message` tool, Prime's chat extension and the room tools when the host loaded the chat extension, Prime's `ipython` when the host loaded it, the `rlm.deliver` task, `agent.message` entries and `chat.doc` documents. |
 | `pi-extensions.ts` | The adapter that runs a pi coding-agent extension in pi-host: a recording `ExtensionAPI`, its events fired with a thread's pi context, and each registered tool as a pi-durable tool with the extension's own definition. |
 | `prime-chat.ts`, `chat-app.ts` | Prime's chat extension (user-history) in a thread's root conversation: `search_history`, `chat_board`, `tell_owner`, `correction_add`, `poteto_mode` and the `[message id]` and `[not from the owner]` wrappers, with `chat_board` and `tell_owner` on apps/chat's board API; `docs/prime-pi-prompt-parity.md` lists each binding and what is skipped. |
 | `prime-prompt.ts` | A Prime chat's system prompt, built by prime-agent's own `buildSystemPrompt` from the agent dir's AGENTS.md files, skills, chat brief and corrections ledger, as pi-durable sections; `docs/prime-pi-prompt-parity.md` maps each part. |
@@ -51,6 +51,7 @@ H-->>C: the same submission, nothing admitted twice
 | `@sieun-pi/pi-pool/durable` | `poolProvider()` in `packages/pi-pool/src/durable/pool-provider.ts`: a pi-ai Provider that vends each request's account through pi-pool and turns a slot wait into a stored sleep. |
 | `subagent.ts` | The `subagent` tool: the call starts a child conversation through an `rlm.deliver` task and returns at once, and the child's whole answer reaches the parent later as an input. A call from before this change still owns its child and returns its answer. `ForegroundSubagent` keeps the old tool for `openDurableHost`. |
 | `rlm.ts`, `children.ts` | Prime's `ipython` on pi-rlm's kernel, one kernel per conversation, with `rlm.spawn`, `agent_message` and `agent_observe` answered from the thread file; the `rlm.child` document and the `rlm.deliver` task. `docs/prime-pi-prompt-parity.md` describes both. |
+| `room-tools.ts` | The `room-tools` extension of a thread's root conversation: `set_emoji {message_id, emoji, on}` puts the agent's reaction on a room post or takes it off through apps/chat's `POST /api/threads/<thread>/reactions` and returns the server's one-line answer. A job's child conversation drops it. |
 | `send-message.ts` | The `send_message` tool, the one way an agent speaks to people: `{text, to?}`, result "Sent.", no effect outside the thread. |
 | `import.ts` | `parseSession()`: a Prime or Pi session file's active branch as entry drafts, for `durable_import`. |
 
@@ -76,7 +77,7 @@ The commit that writes an `agent.ref` also sets the root conversation's agent fo
 
 | Role | `tools` | `modelTools` | `instructions` |
 |---|---|---|---|
-| comm | `{remove: ["write", "edit", "bash", "subagent"]}` | `{add: ["stop_work"]}` | the comm role text, naming the agent, the room and the work thread; a DM (`dm_`) gets the DM text, and a channel (`ch_`) or Solo room (`so_`) gets the group text, which says to speak only when the post concerns the agent or adds something |
+| comm | `{remove: ["write", "edit", "bash", "subagent"]}` | `{add: ["stop_work"]}` | the comm role text, naming the agent, the room and the work thread; a DM (`dm_`) gets the DM text, and a channel (`ch_`) or Solo room (`so_`) gets the group text, which says to speak only when the post concerns the agent or adds something; both ask the agent to put 👀 on the post it starts on with `set_emoji` and take it off once it posts the result or decides to post nothing |
 | work with `comm` | `{remove: ["tell_owner"]}` | unset | the work role text, naming the agent and its DM comm thread, with the rule to report to the comm thread that handed the task by the name in its message header |
 | work without `comm`, job | unset | unset | unset |
 
@@ -108,7 +109,7 @@ H->>C: [work-done: no-reply agent:<work name>] unless W reported
 
 A comm thread posts a result, an answer or a question, never a relay of its own work. `comm-guard.ts` checks each `tell_owner` and `send_message` call of a comm thread's root before it runs (a `ToolTask` hook in `prime-chat.ts`), and a refusal comes back as the call's error.
 
-1. The hand-over notes its time in the comm root's `comm.handed` document, in the commit that creates the `comm.hand` task. A post in the same turn, after the turn's input arrived, is refused unless it asks a question with no relay words, because the room already shows the post as in progress and the result comes once, from the work thread's report or the work-done notice.
+1. The hand-over notes its time in the comm root's `comm.handed` document, in the commit that creates the `comm.hand` task. A post in the same turn, after the turn's input arrived, is refused unless it asks a question with no relay words, because the agent's 👀 on the post (set with `set_emoji`, as its role text asks) shows it is on it and the result comes once, from the work thread's report or the work-done notice.
 2. A post with hand-over words (`relay-line.ts`: "I passed it to the job", "I'll post the link once it's done") is refused on any turn.
 3. A post with progress words ("The vent thread is now listing every panel") is refused on a turn the owner did not start, and allowed on his turn, where it answers his status question.
 

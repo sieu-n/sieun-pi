@@ -53,6 +53,7 @@ import { agentIdOf, artifactDirOf, DeliverTask, RlmChildDoc, sessionOf, textOfMe
 import { childTitle } from "./job-title.ts";
 import { durableTool, loadPiExtension, type PiTool, type PiToolResult } from "./pi-extensions.ts";
 import { PrimeChatName } from "./prime-chat.ts";
+import { RoomToolsName } from "./room-tools.ts";
 import { piThreadHeader } from "./prime-roots.ts";
 import { bundledSkillsDir, primeResources } from "./prime-prompt.ts";
 import { SendMessage } from "./send-message.ts";
@@ -716,7 +717,7 @@ export class DurableRlm {
         via: "rlm.spawn", requestId: `rlm-task:${id}`, whenBusy: "steer",
       }, { ownership: { kind: "conversation" }, conversationId: slot.conversation as ConversationId, background: true });
       const created = await tx.createConversation({ ownership: { kind: "task", taskId: task } });
-      await configure(tx, created.id, { model, thinkingLevel: thinking as ModelThinkingLevel, extensions: { remove: [Subagent, SendMessage, PrimeChatName] } });
+      await configure(tx, created.id, { model, thinkingLevel: thinking as ModelThinkingLevel, extensions: { remove: [Subagent, SendMessage, PrimeChatName, RoomToolsName] } });
       await dropAgentRole(tx, created.id);
       const doc = await tx.doc(RlmChildDoc, created.id);
       Object.assign(doc, { id, name, task: prompt, model: `${model.provider}/${model.modelId}`, thinking, sessionDir: artifactDirOf(slot.thread.file, slot.thread.id, created.id), createdAt: Date.now(), status: "running" });

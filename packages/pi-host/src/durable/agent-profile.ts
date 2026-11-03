@@ -68,27 +68,29 @@ export function commInstructions(ref: { agent: string; room: string; work: strin
 /** The steps a comm thread takes with its work thread, in a DM or a group room. */
 function workSteps(work: string): string[] {
   return [
+    "When you start on a post, put 👀 on it with `set_emoji(message_id, \"eyes\", true)`. Take it off with `on: false` once you post the result or decide to post nothing, also when the result comes later in the work thread's report or a work-done notice.",
     `Answer a status question from the work thread's state. Read it in ipython with \`await agent_observe.get_agent(${work})\` or \`await agent_observe.recent_messages(${work})\`, and read the board with chat_board. Never ask the work thread for its status.`,
     `Hand any task that takes more than a minute to the work thread with \`await agent_message.send(task, receiver_role="sibling", receiver_name=${work})\`. Steer it the same way with \`mode="steer"\`, and stop its turn with stop_work.`,
-    "When you hand a task over, post nothing in that turn: no \"got it\", no \"the work thread is doing X\", no \"I'll post it when it's done\". The chat already shows the post as in progress. Post once, with the result, when the work thread's report or the work-done notice brings it. A question the work needs answered first is the one post that may go out. If you can answer in full yourself, answer and hand nothing over. This replaces the base prompt's progress updates.",
+    "When you hand a task over, post nothing in that turn: no \"got it\", no \"the work thread is doing X\", no \"I'll post it when it's done\". Your 👀 on the post already shows that you are on it. Post once, with the result, when the work thread's report or the work-done notice brings it. A question the work needs answered first is the one post that may go out. If you can answer in full yourself, answer and hand nothing over. This replaces the base prompt's progress updates.",
   ];
 }
 
 function dmCommInstructions(ref: { agent: string; room: string; work: string }): string {
-  const [status, hand, quiet] = workSteps(JSON.stringify(ref.work));
+  const [eyes, status, hand, quiet] = workSteps(JSON.stringify(ref.work));
   return [
     `You are agent ${ref.agent}'s comm thread in room ${ref.room}. You talk with the owner. The work thread ${ref.work} does the agent's work.`,
     "",
     `1. ${status}`,
     `2. ${hand}`,
     `3. ${quiet}`,
-    "4. A `[work-done ...]` or `[work-failed ...]` input is a notice from pi-host, not the owner's turn. Tell the owner about it only when he asked for that result or it needs his decision (c117). Otherwise end the turn without a message.",
-    "5. Speak to the owner only with tell_owner. You do not edit files, so you have no write, edit, bash or subagent tool.",
+    `4. ${eyes}`,
+    "5. A `[work-done ...]` or `[work-failed ...]` input is a notice from pi-host, not the owner's turn. Tell the owner about it only when he asked for that result or it needs his decision (c117). Otherwise end the turn without a message.",
+    "6. Speak to the owner only with tell_owner. You do not edit files, so you have no write, edit, bash or subagent tool.",
   ].join("\n");
 }
 
 function groupCommInstructions(ref: { agent: string; room: string; work: string }): string {
-  const [status, hand, quiet] = workSteps(JSON.stringify(ref.work));
+  const [eyes, status, hand, quiet] = workSteps(JSON.stringify(ref.work));
   return [
     `You are agent ${ref.agent}'s comm thread in room ${ref.room}, a group chat that the owner and other agents share. The work thread ${ref.work} does the agent's work.`,
     "",
@@ -99,8 +101,9 @@ function groupCommInstructions(ref: { agent: string; room: string; work: string 
     `5. ${status}`,
     `6. ${hand}`,
     `7. ${quiet}`,
-    "8. A `[work-done ...]` or `[work-failed ...]` input is a notice from pi-host. Tell the room about it only when the owner or a member asked for that result or it needs the owner's decision (c117). Otherwise end the turn without a message.",
-    "9. You do not edit files, so you have no write, edit, bash or subagent tool.",
+    `8. ${eyes}`,
+    "9. A `[work-done ...]` or `[work-failed ...]` input is a notice from pi-host. Tell the room about it only when the owner or a member asked for that result or it needs the owner's decision (c117). Otherwise end the turn without a message.",
+    "10. You do not edit files, so you have no write, edit, bash or subagent tool.",
   ].join("\n");
 }
 

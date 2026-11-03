@@ -2,7 +2,7 @@
  * What every durable thread runs with: Prime's system prompt (`prime-prompt.ts`) when the host knows Prime's agent dir, else Prime's
  * preamble alone, pi-durable's coding tools in the thread's cwd, the subagent tool (which returns at once, `subagent.ts`), the
  * `send_message` tool, and, when the host loaded it, Prime's chat extension (`prime-chat.ts`: `tell_owner`, `chat_board`, `correction_add`,
- * `search_history`, `poteto_mode` and the turn wrappers), Prime's `ipython` with its RLM runtime (`rlm.ts`) and sieun-rules' tool guards (`rules.ts`), plus the chat's own
+ * `search_history`, `poteto_mode` and the turn wrappers) with the room tools beside it (`room-tools.ts`: `set_emoji`), Prime's `ipython` with its RLM runtime (`rlm.ts`) and sieun-rules' tool guards (`rules.ts`), plus the chat's own
  * document and entry kinds, the child delivery task (`children.ts`), and the comm thread's hand-over task and `stop_work` (`comm.ts`).
  * Each thread file gets its own registry, so its prompt can name its file.
  */
@@ -13,6 +13,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { Preamble } from "./open.ts";
 import { primeChat, type ChatThread, type PrimeChat } from "./prime-chat.ts";
 import { primePrompt, type PrimePromptOptions } from "./prime-prompt.ts";
+import { roomTools } from "./room-tools.ts";
 import { SendMessage, SendMessageAlias } from "./send-message.ts";
 import { ChildTasks } from "./children.ts";
 import { subagentExtension } from "./subagent.ts";
@@ -51,6 +52,7 @@ export function threadRegistry(prompt?: PrimePromptOptions, chat?: { chat: Prime
   // With Prime's chat extension, tell_owner is how the agent speaks to the owner, and send_message stays as an alias (send-message.ts).
   registry.install(chat ? SendMessageAlias : SendMessage);
   if (chat) registry.install(primeChat(chat.chat, chat.thread));
+  if (chat) registry.install(roomTools(chat.chat.app, chat.thread.id));
   registry.install(ChildTasks);
   if (extras.rlm) registry.install(extras.rlm);
   if (extras.comm) registry.install(extras.comm);

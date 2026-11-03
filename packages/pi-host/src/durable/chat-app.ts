@@ -62,6 +62,12 @@ export class ChatApp {
     return Array.isArray(body.agents) ? body.agents as ChatAgent[] : [];
   }
 
+  /** Puts this thread's agent's reaction on a room post or takes it off; the answer's `text` is one line that names the post and its reactions. */
+  async react(thread: string, change: { message: string; emoji: string; on: boolean }, signal?: AbortSignal): Promise<{ text: string }> {
+    const body = await this.call<{ text?: unknown }>("POST", this.thread(thread, "reactions"), change, signal);
+    return { text: typeof body?.text === "string" ? body.text : `${change.emoji} is ${change.on ? "on" : "off"} ${change.message}.` };
+  }
+
   /** The open todos the owner's other chats asked him, which tell_owner's same-ask check reads (Prime's `otherAsks`). */
   async otherAsks(thread: string, signal?: AbortSignal): Promise<OtherAsk[]> {
     const body = await this.call<{ items?: { chatId: string; todo: OwnerTodo }[] }>("GET", "/api/for-you", undefined, signal);

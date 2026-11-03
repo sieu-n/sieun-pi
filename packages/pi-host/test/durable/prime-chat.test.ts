@@ -5,6 +5,7 @@
  * stored entries keep the raw text, tell_owner's guard holds a message on a turn the owner did not start, chat_board reads and writes the
  * new chat's board through its HTTP API, correction_add writes the shared ledger, and a subagent's child conversation gets none of them. In a
  * comm thread, tell_owner refuses a post after the turn's hand-over and a relay line (`comm-guard.ts`) before Prime's guard reads it.
+ * `set_emoji` (`room-tools.ts`) posts the thread's reaction to the chat server and passes its answer or its error through.
  */
 import { strict as assert } from "node:assert";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -26,6 +27,7 @@ import { CommHandedDoc } from "../../src/durable/comm.ts";
 import { loadPrimeChat, PRIME_CHAT_TOOLS, withTurnWrappers, type ChatThread, type PrimeChat } from "../../src/durable/prime-chat.ts";
 import { guidelines } from "../../src/durable/prime-prompt.ts";
 import { ChatDoc, threadRegistry } from "../../src/durable/registry.ts";
+import { SET_EMOJI_TOOL } from "../../src/durable/room-tools.ts";
 import { SEND_MESSAGE_TOOL } from "../../src/durable/send-message.ts";
 import { MODEL, textOf } from "./crash-scenario.ts";
 
@@ -70,6 +72,11 @@ before(async () => {
     if (req.url!.endsWith("/check-in")) return send({ everyMs: 120 * 60_000, paused: false, pausedUntil: null, nextAt: null, lastAt: null });
     if (req.url!.endsWith("/agents")) return send({ agents: [] });
     if (req.url === "/api/for-you") return send({ items: [] });
+    if (req.url!.endsWith("/reactions")) {
+      const { message, emoji, on } = body as { message: string; emoji: string; on: boolean };
+      if (message === "p404") { res.writeHead(404, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: "No post p404 in dm_vent. Pass a post id such as p12." })); }
+      return send({ room: "dm_vent", post: message, reactions: on ? [{ emoji: "👀", by: ["vent"] }] : [], text: `${emoji === "eyes" ? "👀" : emoji} is ${on ? "on" : "off"} ${message} in dm_vent.` });
+    }
     res.writeHead(404).end("{}");
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -121,7 +128,7 @@ test("a durable chat thread offers the extension's tools with its exact definiti
   });
   await (await root.submit({ type: "input", content: "hi" }, context)).wait(context);
   await harness.close(context);
-  assert.deepEqual(tools.map(tool => tool.name), ["read", "write", "edit", "bash", "subagent", SEND_MESSAGE_TOOL, ...PRIME_CHAT_TOOLS]);
+  assert.deepEqual(tools.map(tool => tool.name), ["read", "write", "edit", "bash", "subagent", SEND_MESSAGE_TOOL, ...PRIME_CHAT_TOOLS, SET_EMOJI_TOOL]);
   for (const name of PRIME_CHAT_TOOLS) {
     const registered = chat.loaded.tools.get(name)!;
     assert.deepEqual(tools.find(tool => tool.name === name), toToolDeclaration({ name, description: registered.description, parameters: registered.parameters as never }), name);
@@ -244,6 +251,23 @@ test("chat_board writes through the chat server as the agent and reads the open 
   assert.match(out[0]!.text, /^Added p1: Ship the relay fix\nBoard rev 1: 1 open steps, 0 open todos\.$/);
   assert.match(out[1]!.text, /^This chat: thread:board\nCheck-in: every 120 min\nBoard rev 1\. Open plan/);
   assert.match(out[1]!.text, /p1/);
+});
+
+test("set_emoji posts the reaction to the chat server as the thread, returns its line, and an error answer becomes the call's error", async () => {
+  const plan = [{ message_id: "dm_vent/p7", emoji: "eyes", on: true }, { message_id: "dm_vent/p7", emoji: "eyes", on: false }, { message_id: "p404", emoji: "eyes", on: true }];
+  let made = 0;
+  const { harness, root } = await open("react", () => {
+    const args = plan[made++];
+    return args ? fauxAssistantMessage([fauxToolCall(SET_EMOJI_TOOL, args)], { stopReason: "toolUse" }) : fauxAssistantMessage("done");
+  });
+  await (await root.submit({ type: "input", content: "Look at p7." }, context)).wait(context);
+  const out = results(await entriesOf(root)).filter(result => result.name === SET_EMOJI_TOOL);
+  await harness.close(context);
+  const posts = calls.filter(call => call.method === "POST" && call.path === "/api/threads/react/reactions").map(call => call.body);
+  assert.deepEqual(posts, [{ message: "dm_vent/p7", emoji: "eyes", on: true }, { message: "dm_vent/p7", emoji: "eyes", on: false }, { message: "p404", emoji: "eyes", on: true }]);
+  assert.deepEqual(out.map(result => [result.text, result.isError]), [
+    ["👀 is on dm_vent/p7 in dm_vent.", false], ["👀 is off dm_vent/p7 in dm_vent.", false], ["No post p404 in dm_vent. Pass a post id such as p12.", true],
+  ]);
 });
 
 test("correction_add runs the extension's own execute and writes the shared ledger with the thread as the chat", async () => {
