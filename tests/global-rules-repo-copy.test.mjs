@@ -112,7 +112,18 @@ test("an install, build, dev server, type check or test inside an existing workt
   }
   const cellResult = at(root, "ipython", `import os\nos.chdir(${JSON.stringify(wt)})\nh = bash('pnpm install --frozen-lockfile')`);
   assert.equal(cellResult?.block, true, "a cell that chdirs into the worktree");
-  for (const [cwd, text] of [[repo, "pnpm install"], [repo, "npx tsc --noEmit -p ."], [boxRun, "pnpm install"], [wt, "git status"],
+  // On 11-03 four box-run.sh trees under ~/box-run on us-metal02 held 4 GB of node and 7.3 GB of swap running Mac jobs' Convex tests.
+  const boxTree = join(root, "box-run", "mac", "tree", "convex");
+  mkdirSync(boxTree, { recursive: true });
+  for (const [cwd, text] of [[boxRun, "pnpm install"], [boxRun, "node node_modules/.bin/vitest run convex/a.test.ts"], [boxTree, "npx vitest run a.test.ts"],
+    [root, `cd ${boxRun} && pnpm build`]]) {
+    const result = at(cwd, "bash", text);
+    assert.equal(result?.block, true, `${cwd}: ${text}`);
+    assert.match(result.reason, /box-run/);
+    assert.match(result.reason, /commit\.mjs --probe/);
+  }
+  assert.equal(at(boxRun, "bash", "ls"), undefined);
+  for (const [cwd, text] of [[repo, "pnpm install"], [repo, "npx tsc --noEmit -p ."], [wt, "git status"],
     [wt, "ls node_modules"], [wt, "cat package.json"], [root, `cd ${repo} && pnpm build`], [wt, "git worktree list"]]) {
     assert.equal(at(cwd, "bash", text), undefined, `${cwd}: ${text}`);
   }

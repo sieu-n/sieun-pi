@@ -14,7 +14,8 @@ import { SHELLS, effective, lex, shellScript, stripHeredocs } from "./shell.ts";
  * It also refuses an install, build, dev server, type check or test run inside a copy that already exists: a git worktree (its `.git` is a
  * file), a clone of another checkout on this host, or a clone beside the repo's main checkout (copyAt). At 12:04Z on 10-30 a slack
  * green guy job refused a new worktree reused the old worktree slack-green-trial-banner-checkout, ran `pnpm install` there, and its tree held 6.6 GB while the Mac read
- * 9,981 swap-outs a second. box-run.sh's own box checkout (~/box-run/<mac>/repo) is no copy.
+ * 9,981 swap-outs a second. Every folder under ~/box-run is a copy too: auto-sns-agent's box-run.sh synced each Mac checkout into
+ * ~/box-run/<mac>/repo on us-metal02 to run its tests there, and on 11-03 four such trees held 4 GB of node and 7.3 GB of swap.
  * Hard limit: the owner set this ban himself (c193).
  */
 const PREFIX = "global-rules repo copy guard:";
@@ -144,8 +145,6 @@ function born(top: string): number {
 	}
 }
 
-const BOX_RUN = /\/box-run\/[^/]+\/repo$/;
-
 /**
  * The main checkout of the repo that `top` holds when `top` is not it, or null. The main one is the checkout named after its origin repo,
  * then the oldest. Candidates are the folders beside `top` and beside a bundle it was cloned from; a candidate is the same repo when its
@@ -165,7 +164,7 @@ function mainOf(top: string, url: string | null): string | null {
 	const rank = (dir: string): [number, number] => [basename(dir) === name ? 0 : 1, born(dir)];
 	const mine = rank(top);
 	for (const dir of candidates) {
-		if (dir === top || BOX_RUN.test(dir) || !ownCheckout(dir)) continue;
+		if (dir === top || !ownCheckout(dir)) continue;
 		const theirs = originUrl(dir);
 		if (localOrigin(dir, theirs) === top) continue;
 		const same = (key !== null && originKey(dir, theirs) === key) || (rootsOf(top) !== "" && rootsOf(dir) === rootsOf(top));
@@ -183,9 +182,11 @@ function mainOf(top: string, url: string | null): string | null {
  * all.bundle and so was not named after its origin.
  */
 export function copyAt(dir: string): string | null {
+	const boxRun = join(home(), "box-run");
+	if (dir === boxRun || dir.startsWith(`${boxRun}/`))
+		return `${dir} is in ~/box-run, where box-run.sh copied a Mac checkout to test it; run the check in CI with \`node scripts/repo/agent/commit.mjs --probe <files>\`, or commit and let CI run it`;
 	const checkout = checkoutOf(dir);
 	if (!checkout) return null;
-	if (BOX_RUN.test(checkout.top)) return null;
 	if (checkout.worktree) return `${checkout.top} is a git worktree`;
 	const url = originUrl(checkout.top);
 	const local = localOrigin(checkout.top, url);
