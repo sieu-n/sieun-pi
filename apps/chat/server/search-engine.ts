@@ -110,11 +110,12 @@ export class SqliteEntries implements EntrySource {
   read(cursor: string | undefined): { rows: EntryRow[]; cursor: string } {
     if (!this.db && !existsSync(this.path)) return { rows: [], cursor: cursor ?? "0" };
     this.db ??= openIndexReadOnly(this.path);
-    const top = Number((this.db.prepare("SELECT max(rowid) AS top FROM entries").get() as { top: number | null }).top ?? 0);
+    const top = Number((this.db.prepare("SELECT rowid AS top FROM entries ORDER BY rowid DESC LIMIT 1").get() as { top: number } | undefined)?.top ?? 0);
     let after = Number(cursor ?? 0);
     if (top < after) after = 0;
+    // The bounds go in as BigInt: node:sqlite binds a number as REAL, and FTS5 then scans every row for the range (226 ms against 0.6 ms on 11-03).
     const rows = (this.db.prepare("SELECT rowid AS id, text, thread, conversation, entry_id, kind, author, at FROM entries WHERE rowid > ? AND rowid <= ? ORDER BY rowid")
-      .all(after, top) as Record<string, string | number>[]).map(row => ({
+      .all(BigInt(after), BigInt(top)) as Record<string, string | number>[]).map(row => ({
       thread: String(row.thread), conversation: Number(row.conversation), entryId: Number(row.entry_id), kind: String(row.kind), author: String(row.author),
       at: Number(row.at), text: String(row.text),
     }));
@@ -334,11 +335,12 @@ export class SearchEngine {
     for (const doc of merged) this.pending.set(doc.id, { doc });
     const tasks: number[] = [];
     for (let at = 0; at < merged.length;) {
-      let bytes = 0;
+      // The array's brackets and one comma per document count toward the limit too.
+      let bytes = 2;
       const batch: SearchDoc[] = [];
       while (at < merged.length) {
-        const size = Buffer.byteLength(JSON.stringify(merged[at]));
-        if (batch.length && bytes + size >= PAYLOAD_BYTES) break;
+        const size = Buffer.byteLength(JSON.stringify(merged[at])) + 1;
+        if (batch.length && bytes + size > PAYLOAD_BYTES) break;
         bytes += size;
         batch.push(merged[at++]!);
       }
