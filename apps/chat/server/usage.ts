@@ -26,19 +26,22 @@ export async function usageReport(host: Host, threads: Threads, box: string, opt
   const since = until - days * DAY;
   const scope = opts.thread ? { threads: [opts.thread] } : {};
   if (opts.host && opts.host !== box) return { at: now, since, until, rows: [], days: [], previous: { cost: 0, complete: true } };
-  const totals = await host.usage({ since, until, ...scope });
+  // One round of calls: on 11-03 the three rounds one after another made api/usage take 2.4 s on us-metal02.
+  const [totals, perDay, previousRows] = await Promise.all([
+    host.usage({ since, until, ...scope }),
+    Promise.all(Array.from({ length: days }, async (_, i) => {
+      const start = since + i * DAY;
+      const dayRows = await host.usage({ since: start, until: start + DAY, ...scope });
+      const byModel: Record<string, number> = {};
+      for (const row of dayRows) byModel[row.model] = (byModel[row.model] ?? 0) + row.cost;
+      return { start, byModel };
+    })),
+    host.usage({ since: since - days * DAY, until: since, ...scope }),
+  ]);
   const rows: UsageRow[] = totals.map(t => ({
     thread: t.thread, threadName: threads.thread(t.thread)?.name ?? t.thread, host: box, model: t.model, turns: t.turns,
     tokens: { input: t.input, output: t.output, cacheRead: t.cacheRead, cacheWrite: t.cacheWrite }, cost: costOf(t),
   }));
-  const perDay = await Promise.all(Array.from({ length: days }, async (_, i) => {
-    const start = since + i * DAY;
-    const dayRows = await host.usage({ since: start, until: start + DAY, ...scope });
-    const byModel: Record<string, number> = {};
-    for (const row of dayRows) byModel[row.model] = (byModel[row.model] ?? 0) + row.cost;
-    return { start, byModel };
-  }));
-  const previousRows = await host.usage({ since: since - days * DAY, until: since, ...scope });
   const oldest = Math.min(...threads.threadsList().map(t => t.createdAt), now);
   return { at: now, since, until, rows, days: perDay, previous: { cost: previousRows.reduce((sum, r) => sum + r.cost, 0), complete: oldest <= since - days * DAY } };
 }
@@ -56,14 +59,56 @@ function relayToken(host: RegistryHost): string | null {
   }
 }
 
+type MachineRead = { pingMs: number; machine: MachineView | null };
+
 /** One box's machine reading from its relay's GET /v1/host. */
-async function relayHost(h: RegistryHost): Promise<{ pingMs: number; machine: MachineView | null }> {
+async function relayHost(h: RegistryHost): Promise<MachineRead> {
   const started = Date.now();
   const token = relayToken(h);
   const response = await fetch(`http://${h.address}:${h.relayPort ?? 7790}/v1/host`, { signal: AbortSignal.timeout(5000), ...(token ? { headers: { authorization: `Bearer ${token}` } } : {}) });
   const body = response.ok ? ((await response.json()) as { machine?: MachineView }) : null;
   return { pingMs: Date.now() - started, machine: body?.machine ?? null };
 }
+
+/** How old a box's machine reading may be before a read starts behind it: the Hosts page polls every 2 s (HostsPage.svelte POLL_MS). */
+export const MACHINE_TICK_MS = 2_000;
+
+/** A machine relay read as it ended: the reading, or why the relay did not answer, with the epoch ms the read started. */
+export type MachineAnswer = { at: number } & ({ read: MachineRead } | { error: string });
+
+/**
+ * Each box's last machine reading, answered at once, with one read started behind it once it is a tick old; only a box never read waits.
+ * On 11-03 GET /v1/host took 0.5 to 1.2 s on both boxes, since each read starts `pi-pool queue` and `config` there, and api/hosts waited for
+ * every box's read on each 2 s poll of the Hosts page.
+ */
+export class MachineReads {
+  private readonly last = new Map<string, MachineAnswer>();
+  private readonly out = new Map<string, Promise<MachineAnswer>>();
+
+  constructor(private readonly read: (h: RegistryHost) => Promise<MachineRead> = relayHost, private readonly now: () => number = Date.now) {}
+
+  get(h: RegistryHost): Promise<MachineAnswer> {
+    const key = `${h.name} ${h.address}:${h.relayPort ?? 7790}`;
+    const last = this.last.get(key);
+    if (last && this.now() - last.at < MACHINE_TICK_MS) return Promise.resolve(last);
+    const reading = this.out.get(key) ?? this.start(key, h);
+    return last ? Promise.resolve(last) : reading;
+  }
+
+  private start(key: string, h: RegistryHost): Promise<MachineAnswer> {
+    const at = this.now();
+    const reading = this.read(h).then((read): MachineAnswer => ({ at, read }), (error: unknown): MachineAnswer => ({ at, error: error instanceof Error ? error.message : String(error) }))
+      .then(answer => {
+        this.last.set(key, answer);
+        this.out.delete(key);
+        return answer;
+      });
+    this.out.set(key, reading);
+    return reading;
+  }
+}
+
+const machineReads = new WeakMap<Host, MachineReads>();
 
 /** What the box's `RelayHost` holds about its link, read from memory with no call to the box. */
 export function agentRelayLink(relay: RelayHost): AgentRelayLink {
@@ -82,6 +127,8 @@ const piHostView = (ping: NonNullable<Ping["boxes"]>[string], socket?: string): 
  * machine relay; the agent relay link and a remote pi-host come from the `RelayHost` in memory.
  */
 export async function hostsReport(host: Host, threads: Threads, box: string, socket: string, hostsFile: string): Promise<HostsReport> {
+  let reads = machineReads.get(host);
+  if (!reads) machineReads.set(host, reads = new MachineReads());
   let registry: RegistryHost[] = [];
   let registryError: string | null = null;
   try {
@@ -104,13 +151,11 @@ export async function hostsReport(host: Host, threads: Threads, box: string, soc
     let machine: MachineView | null = null;
     let machineRelay: HostView["relay"] = self ? { state: "up", pingMs: 0 } : { state: "unreachable", error: `${name} is not in ${hostsFile}` };
     if (entry) {
-      try {
-        const read = await relayHost(entry);
-        machine = read.machine;
-        if (!self) machineRelay = { state: "up", pingMs: read.pingMs };
-      } catch (error) {
-        if (!self) machineRelay = { state: "unreachable", error: error instanceof Error ? error.message : String(error) };
-      }
+      const answer = await reads.get(entry);
+      if ("read" in answer) {
+        machine = answer.read.machine;
+        if (!self) machineRelay = { state: "up", pingMs: answer.read.pingMs };
+      } else if (!self) machineRelay = { state: "unreachable", error: answer.error };
     }
     return {
       name, address: entry?.address ?? (self ? "127.0.0.1" : "unknown"), self, relay: machineRelay, piHost,
