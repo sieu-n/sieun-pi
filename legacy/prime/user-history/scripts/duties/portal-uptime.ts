@@ -1,11 +1,12 @@
 import { realpathSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { readGrafanaAuth } from "./estate-reads.ts";
 
 /**
  * The api portal vp chat's "Portal stays up" precheck (`node --import tsx scripts/duties/portal-uptime.ts`). No model call.
@@ -247,15 +248,6 @@ export function uptimeMetrics(answers: Answers, direct: { status: number; ms: nu
   return { metrics, flagged, ...Object.keys(lastEventAt).length ? { lastEventAt } : {} };
 }
 
-/** Grafana basic auth from auto-sns-agent apps/infra/aws/secrets.env, as crawler-pipeline.mjs reads it. */
-export function grafanaAuth(secrets: string): string {
-  const get = (key: string) => {
-    const value = new RegExp(`^${key}=(.*)$`, "m").exec(secrets)?.[1]?.trim().replace(/^["']|["']$/g, "");
-    if (!value || value.startsWith("encrypted:")) throw new Error(`${key} missing or encrypted in apps/infra/aws/secrets.env`);
-    return value;
-  };
-  return `Basic ${Buffer.from(`${get("GRAFANA_ADMIN_USER")}:${get("GRAFANA_ADMIN_PASSWORD")}`).toString("base64")}`;
-}
 
 /** A fetch error with its network code, so "fetch failed" from an offline Mac reads as ENETUNREACH or ENOTFOUND. */
 export function errorText(error: unknown): string {
@@ -337,7 +329,7 @@ async function main(): Promise<void> {
   const names = Object.keys(QUERIES) as QueryName[];
   let answers: Answers;
   try {
-    const auth = grafanaAuth(await readFile(join(REPO, "apps/infra/aws/secrets.env"), "utf8"));
+    const auth = await readGrafanaAuth();
     const settled = await Promise.all(names.map(name => instant(auth, QUERIES[name], now).catch((error: unknown) => ({ error: errorText(error) }))));
     answers = Object.fromEntries(names.map((name, index) => [name, settled[index]!])) as Answers;
   } catch (error) {

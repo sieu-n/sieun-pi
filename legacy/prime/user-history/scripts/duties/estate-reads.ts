@@ -1,13 +1,14 @@
-import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { type DutyMetric, type FlaggedSlice, PRECHECK_TARGET_MS } from "../../src/shared/chat-duties.ts";
 
 /**
  * Read-only access to the estate's Grafana for the launch main bro duty prechecks (engage-reads.ts, watchlist-green.ts).
  * Grafana ds/query on obs.virev.ai serves the prod and staging Postgres datasources (estate_pg_prod, estate_pg_stg, user grafana_ro) and the
- * prod and staging Prometheus datasources (estate_prometheus, estate_prometheus_stg). The login is the admin pair in auto-sns-agent's
- * apps/infra/aws/secrets.env, the same one auto-sns-agent scripts/duties/crawler/crawler-pipeline.mjs uses.
+ * prod and staging Prometheus datasources (estate_prometheus, estate_prometheus_stg). The login is the Agents org token GRAFANA_AGENT_TOKEN
+ * in auto-sns-agent's apps/infra/.env, the same one auto-sns-agent scripts/duties/lib.mjs grafanaAuth uses.
  * prodReader below runs the prod reads that the parsers take as psql lines, through estate_pg_prod as well.
  * A metric whose source failed gets `missValue`, a number that misses any target, so a broken source never reads as green.
  */
@@ -46,17 +47,13 @@ export const unmeasuredFlag = (replaced: readonly string[], at: number): Flagged
   excerpt: `Not measured this run, so the value is ${UNMEASURED} or -${UNMEASURED} and counts as a miss: ${replaced.join(", ")}. Fix the source_error first.`.slice(0, 300),
 });
 
-/** The Grafana basic auth header from the KEY=value lines of secrets.env; throws when a key is missing or still encrypted. */
-export function grafanaAuth(secrets: string): string {
-  const get = (key: string): string => {
-    const value = new RegExp(`^${key}=(.*)$`, "m").exec(secrets)?.[1]?.trim().replace(/^["']|["']$/g, "");
-    if (!value || value.startsWith("encrypted:")) throw new Error(`${key} is missing or encrypted in apps/infra/aws/secrets.env`);
-    return value;
-  };
-  return `Basic ${Buffer.from(`${get("GRAFANA_ADMIN_USER")}:${get("GRAFANA_ADMIN_PASSWORD")}`).toString("base64")}`;
+/** The Grafana bearer header of GRAFANA_AGENT_TOKEN, decrypted from auto-sns-agent's apps/infra/.env; throws when it is empty or still ciphertext. */
+export async function readGrafanaAuth(): Promise<string> {
+  const { stdout } = await promisify(execFile)(join(REPO, "node_modules/.bin/dotenvx"), ["get", "GRAFANA_AGENT_TOKEN", "-f", ".env"], { cwd: join(REPO, "apps/infra") });
+  const token = stdout.trim();
+  if (!token || token.startsWith("encrypted:")) throw new Error("GRAFANA_AGENT_TOKEN is missing or encrypted in apps/infra/.env");
+  return `Bearer ${token}`;
 }
-
-export const readGrafanaAuth = async (): Promise<string> => grafanaAuth(await readFile(join(REPO, "apps/infra/aws/secrets.env"), "utf8"));
 
 interface Frame { schema: { fields: { name: string; labels?: Record<string, string> }[] }; data: { values: unknown[][] } }
 /** One query through Grafana ds/query (refId A) over the hour to now, or over `span`; throws on an HTTP or query error. */
