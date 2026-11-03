@@ -28,14 +28,6 @@
       "why": "sum_over_time(((count(crawler_v3_health_snapshot_up{world=\"prod\"}==0)>bool 0) or vector(0))[24h:1m]). It read 1,323 of 1,440 min at 15:36Z on 10-19, and at 16:50Z tiktok_shop_frontier (1,143 min), instagram_census (805) and watch_targets (762) were down the longest."
     },
     {
-      "key": "onboarding_renders_3x_under_60s",
-      "label": "Onboarding shop page renders under 60 s when 3 run at once on the prod crawler",
-      "op": ">=",
-      "target": 3,
-      "why": "3 POST /api/crawl/fetch renders at once on the bloomandwild.com homepage, terms-and-privacy and delivery-information pages, the bodies onboarding's renderPage sends, counting those that answer a page under its 60 s RENDER_MS (convex/search/brandTracking/catalog.ts). p1076 met it on staging at 14:25Z on 10-28 with 6 render slots: 9 of 9 under 60 s, slowest 41.7 s. On 1 slot two legal renders took 61.6 and 69.6 s. Read by auto-sns-agent scripts/duties/crawler/crawler-api.mjs, which sends a legal page's settle_min_text and, like renderPage, sends the render again without it when the crawler refuses it as extra. The first prod reading, 10-28 16:17Z on prod 2637dd2a, was 3 of 3, slowest 55.3 s, with both legal renders sent again without settle_min_text.",
-      "unit": " renders"
-    },
-    {
       "key": "ig_few_post_stats_pct",
       "label": "Prod Instagram profile docs with 1 to 4 posts that show an engagement rate and a views median",
       "op": ">=",

@@ -12,9 +12,9 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * The headline counts what fails on prod for a customer: the documented crawler API routes that fail for a crawler reason, read by
  * auto-sns-agent scripts/duties/crawler/crawler-api.mjs from the API portal chat's d2 detail file, plus each Query MCP call that fails on
  * prod https://virev.ai/mcp on either tier. The 3 supporting counts come from the same crawler-api.mjs run: minutes the API and its health
- * snapshots were down in 24 h (prod Prometheus through obs.virev.ai), and the onboarding renders that keep p1076, 3 shop page renders fired
- * at once at the prod crawler and counted when they answer under onboarding's 60 s render limit. A fourth supporting count, from the same run, is the percent of prod
- * Instagram profile docs with 1 to 4 posts that show an engagement rate and a views median (t89, p1168, 11-03), read from prod OpenSearch. A duty holds one headline and at most 3
+ * snapshots were down in 24 h (prod Prometheus through obs.virev.ai), and the share of sampled prod Instagram profile docs with 1 to 4
+ * posts that show an engagement rate and a views median where counts_stand holds (t89, p1168). The onboarding renders that keep p1076
+ * (3 shop page renders at once under onboarding's 60 s limit) are a detail line since 11-03, as p1076 is met. A duty holds one headline and at most 3
  * supporting metrics (c75, c133), so the Instagram posts behind the prod OpenSearch alias crawler_v3_posts, which keep p689 (closed on 10-24
  * at 1,411.8M against 1,007M), are a detail line of each run, and a low count from crawler-api.mjs shows as a detail line too.
  * The MCP half calls prod the way a customer's agent does (JSON-RPC over Streamable HTTP, a bearer token): describe, a sql count, a search
@@ -35,6 +35,9 @@ const TIERS = ["standard", "full"] as const;
 export const UNMEASURED = 999999;
 export const HEADLINE = "prod_routes_and_mcp_tools_failing";
 const POSTS = "ig_posts_searchable";
+const RENDERS = "onboarding_renders_3x_under_60s";
+/** crawler-api.mjs counts that this duty shows as detail lines only: the posts count (p689 met) and the onboarding renders (p1076 met). */
+const DETAIL_KINDS = new Set([POSTS, RENDERS]);
 /** Token lifetime: one run. The whole MCP check took 26 to 38 s on prod (10-19 17:30Z and 23:22Z), so an hour covers it with room. */
 const TOKEN_TTL_S = 3600;
 /** One MCP call. The slowest call, the follower-bucket sql on the standard tier, stops at that tier's 10 s max_execution_time. */
@@ -142,10 +145,12 @@ export function report(api: PrecheckOutput | Error, mcp: Record<string, CallResu
   else {
     for (const slice of api.flagged ?? []) {
       if (slice.kind === "unmeasured") continue;
-      flagged.push(slice.kind === "prod_routes_failing_crawler" ? { ...slice, kind: HEADLINE } : slice.kind === POSTS ? { ...slice, kind: "detail" } : slice);
+      flagged.push(slice.kind === "prod_routes_failing_crawler" ? { ...slice, kind: HEADLINE } : DETAIL_KINDS.has(slice.kind) ? { ...slice, kind: "detail" } : slice);
     }
     const posts = api.metrics[POSTS];
     flagged.push({ at: now, kind: "detail", excerpt: `Instagram posts searchable on prod OpenSearch (alias crawler_v3_posts, p689 kept it at 1,007M or more): ${posts === undefined ? "not read" : posts.toLocaleString("en-US")}.` });
+    const renders = api.metrics[RENDERS];
+    flagged.push({ at: now, kind: "detail", excerpt: `Onboarding shop page renders under 60 s with 3 at once on the prod crawler (p1076 kept it at 3 of 3): ${renders === undefined ? "not read" : `${renders} of 3`}.` });
   }
   let mcpFailing = UNMEASURED;
   if (mcp instanceof Error) flagged.push({ at: now, kind: "source_error", excerpt: `Query MCP read failed: ${mcp.message}`.slice(0, 299) });
@@ -162,7 +167,6 @@ export function report(api: PrecheckOutput | Error, mcp: Record<string, CallResu
     [HEADLINE]: routes === UNMEASURED || mcpFailing === UNMEASURED ? UNMEASURED : routes + mcpFailing,
     api_down_minutes_24h: read("api_down_minutes_24h"),
     health_snapshot_down_minutes_24h: read("health_snapshot_down_minutes_24h"),
-    onboarding_renders_3x_under_60s: read("onboarding_renders_3x_under_60s", -UNMEASURED),
     ig_few_post_stats_pct: read("ig_few_post_stats_pct", -UNMEASURED),
   };
   const unmeasured = Object.entries(metrics).filter(([, value]) => Math.abs(value) === UNMEASURED).map(([key]) => key);
