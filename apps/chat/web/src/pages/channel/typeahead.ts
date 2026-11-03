@@ -1,3 +1,5 @@
+import { CHIP_MARK } from "./composer-dom";
+
 export type Trigger = "@" | "#";
 export type Query = { trigger: Trigger; start: number; text: string };
 
@@ -12,7 +14,7 @@ export function openQuery(text: string, caret: number): Query | null {
   const head = text.slice(0, caret);
   for (let index = head.length - 1; index >= 0 && head.length - index <= MAX_QUERY + 1; index--) {
     const char = head[index];
-    if (char === "\n") return null;
+    if (char === "\n" || char === CHIP_MARK) return null;
     if (char !== "@" && char !== "#") continue;
     const before = index === 0 ? " " : (head[index - 1] ?? " ");
     if (!/[\s([]/.test(before)) continue;

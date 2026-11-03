@@ -40,8 +40,12 @@ export function textBeforeCaret(root: HTMLElement): { text: string; range: Range
   before.setEnd(range.startContainer, range.startOffset);
   const holder = root.ownerDocument.createElement("div");
   holder.append(before.cloneContents());
+  for (const chip of holder.querySelectorAll(`[${CHIP}]`)) chip.replaceWith(CHIP_MARK);
   return { text: readDraft(holder).text + trailingSpace(before.toString()), range };
 }
+
+/** Stands in for a chip in the text before the caret, so the @name inside a chip never reads as an open query. */
+export const CHIP_MARK = "\ufffc";
 
 const trailingSpace = (text: string) => (/\s$/.test(text) ? " " : "");
 

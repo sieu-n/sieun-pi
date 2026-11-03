@@ -85,6 +85,11 @@
   $effect(() => {
     if (active >= filtered.length) active = Math.max(0, filtered.length - 1);
   });
+  const itemKey = $derived(items.map((i) => i.id).join("\n"));
+  $effect(() => {
+    void itemKey;
+    if (typeahead) active = 0;
+  });
   $effect(() => {
     const keys = typeahead?.keys;
     if (!open || !keys) return;
@@ -135,7 +140,7 @@
 </script>
 
 <Popover bind:open {anchor} {placement} {width} surface="glass" role="dialog" {label} onclose={close} padding={6} autofocus={!typeahead}>
-  <div class="picker" onkeydown={onKeydown} role="presentation">
+  <div class="picker" onkeydown={onKeydown} onmousedown={(e) => typeahead && e.preventDefault()} role="presentation">
     {#if showSearch}
       <div class="search"><SearchField bind:value={query} {placeholder} label={placeholder} data-autofocus aria-controls={listId} aria-activedescendant={filtered[active] ? `${listId}-${active}` : undefined} /></div>
     {/if}

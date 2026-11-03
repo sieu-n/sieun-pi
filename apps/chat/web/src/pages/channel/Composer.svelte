@@ -38,7 +38,8 @@
   let encoding = $state(false);
   let dragging = $state(false);
   let fileInput = $state<HTMLInputElement>();
-  let savedRange: Range | null = null;
+  /** Where the query Escape closed starts, so it stays closed while that query goes on and a new @ opens the card again. */
+  let dismissedAt: number | null = null;
 
   const hasContent = $derived(!empty || attachments.length > 0);
   const recipients = $derived(mentions.map((id) => agents.find((a) => a.id === id)).filter((a): a is AgentSummary => !!a));
@@ -77,6 +78,11 @@
       sync();
     }
     if (autofocus) focusEnd();
+    const onSelection = () => {
+      if (document.activeElement === box) updateQuery();
+    };
+    document.addEventListener("selectionchange", onSelection);
+    return () => document.removeEventListener("selectionchange", onSelection);
   });
 
   export function focus() {
@@ -113,32 +119,28 @@
       return;
     }
     const before = textBeforeCaret(box);
-    if (!before) {
-      query = null;
-      return;
-    }
-    savedRange = before.range.cloneRange();
-    query = openQuery(before.text, before.text.length);
+    const next = before ? openQuery(before.text, before.text.length) : null;
+    if (next?.start !== dismissedAt) dismissedAt = null;
+    query = next && next.start !== dismissedAt ? next : null;
+  }
+
+  function dismiss() {
+    if (query) dismissedAt = query.start;
+    query = null;
   }
 
   function pick(id: string) {
     const hit = matches.find((m) => m.id === id);
     if (!box || !hit || !query) return;
-    box.focus();
-    if (savedRange) {
-      const selection = document.getSelection();
-      selection?.removeAllRanges();
-      selection?.addRange(savedRange);
-    }
     insertChip(box, query.text.length, hit.target);
     query = null;
     sync();
   }
 
   function onkeydown(e: KeyboardEvent) {
-    if (e.defaultPrevented || (pickerOpen && ["ArrowUp", "ArrowDown", "Enter", "Tab"].includes(e.key))) return;
+    if (e.defaultPrevented) return;
     if (e.key === "Escape" && query) {
-      query = null;
+      dismiss();
       return;
     }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
@@ -264,13 +266,7 @@
     data-placeholder={placeholder}
     data-testid="composer-input"
     oninput={sync}
-    onkeyup={(e) => {
-      if (!["ArrowUp", "ArrowDown", "Enter", "Tab"].includes(e.key) || !pickerOpen) updateQuery();
-    }}
-    onclick={updateQuery}
-    onblur={() => setTimeout(() => {
-      if (document.activeElement !== box && !document.querySelector("[role=listbox]:hover")) query = null;
-    }, 150)}
+    onblur={() => (query = null)}
     {onkeydown}
     {onpaste}
   ></div>
@@ -304,7 +300,7 @@
   label={query?.trigger === "#" ? "Channels" : "Agents"}
   typeahead={box && query ? { query: "", keys: box } : undefined}
   onselect={(id) => pick(id)}
-  onclose={() => (query = null)}
+  onclose={dismiss}
 />
 
 <style>

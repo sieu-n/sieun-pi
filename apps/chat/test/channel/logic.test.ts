@@ -38,6 +38,9 @@ test("openQuery finds @ and # at the caret and ignores emails and closed names",
   assert.equal(openQuery("mail a@b", 8), null);
   assert.equal(openQuery("@ x", 3), null);
   assert.equal(openQuery("@a\nb", 4), null);
+  assert.equal(openQuery("\ufffc ", 2), null);
+  assert.equal(openQuery("@cr\ufffc x", 6), null);
+  assert.deepEqual(openQuery("\ufffc @v", 4), { trigger: "@", start: 2, text: "v" });
 });
 
 test("matchCandidates ranks prefix, then word prefix, then substring, stable inside a rank", () => {
