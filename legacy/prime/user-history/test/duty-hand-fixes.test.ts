@@ -310,6 +310,16 @@ test("a hand write of enrich.llm_daily_limit is fault F35", async () => {
   assert.equal(verdict.kind === "fault" ? verdict.fault.id : verdict.kind, "F35");
 });
 
+// On 11-03 d3 read deploy.sh's own pause.sync migration hold (staging audit 19456) as a hand fix, and the box owner's hand holds matched no fault (prod 20926).
+test("deploy.sh's migration hold of pause.sync is the deploy path, and a hand hold or write-off of it is fault F36", async () => {
+  const hold: AuditRow = { id: 19456, ts: Date.parse("2026-11-02T19:25:35Z"), actor: "api-key", source: "ops-api", key: "pause.sync",
+    reason: "deploy.sh de2e1167ff04: the projection holds while the migration 0244_media_probe_contract -> 0247_ig_content_pinned_recent runs" };
+  assert.equal(classifyConfig(groupAudit("staging", [hold])[0]!, await registry()).kind, "exempt");
+  const byHand: AuditRow = { ...hold, id: 20926, reason: "metal box owner: clear instagram_content lock holders for the 0242-0244 migrate (promote retry)" };
+  const verdict = classifyConfig(groupAudit("prod", [byHand])[0]!, await registry());
+  assert.equal(verdict.kind === "fault" ? verdict.fault.id : verdict.kind, "F36");
+});
+
 // F1 as it stood on 10-19, designed by p170 alone, before later designs (p235, p246 and their commits) joined it.
 const asOf1019 = async () => { const reg = await registry(); return { ...reg, faults: reg.faults.map(fault => fault.id === "F1" ? { ...fault, designs: [P170] } : fault) }; };
 
