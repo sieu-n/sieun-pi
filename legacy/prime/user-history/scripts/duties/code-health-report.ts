@@ -6,12 +6,13 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { loadHosts, roleUrl } from "../../src/hosts.ts";
+import { wikiContentDir } from "../../src/chat-wiki.ts";
 
 /**
  * The Code health report duty's precheck (`node --import tsx scripts/duties/code-health-report.ts`). No model call.
  * The owner asked on 2026-10-15 for "daily Git reports and keep track of metrics", and checks it by opening the daily report page and
  * seeing today's numbers for both repos. auto-sns-agent's scripts/dev/code-health-daily.mjs writes them under the systemd user timer
- * code-health.timer (06:00 KST) on the wiki host, into apps/llm-wiki/content/.wiki/code-health.duckdb, the page, and a dated copy on the store box.
+ * code-health.timer (06:00 KST) on the wiki host, into .wiki/code-health.duckdb under the wiki's content root, the page, and a dated copy on the store box.
  * - report_days_7d reads the store: days of the last 7 KST days with metric rows for both repos.
  * - ranked_metrics_shown reads the page the wiki serves and counts the 10 tracked metrics whose page rows show the newest store day's numbers, with
  *   code_health_page.py's own formatting: the 8 the agent-code-metrics page ranks for both repos, plus auto-sns-agent's tests and CI (sieun-pi has
@@ -31,7 +32,7 @@ export const REPOS = ["auto-sns-agent", "sieun-pi"] as const;
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 const CHECKOUT = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
-const STORE = join(CHECKOUT, "apps/llm-wiki/content/.wiki/code-health.duckdb");
+const STORE = join(wikiContentDir(), ".wiki/code-health.duckdb");
 const PAGE_PATH = "/page/domains/devops/agent-code-metrics/daily-report";
 const LOG = join(homedir(), ".local/state/virev/code-health.log");
 const STORE_BOX = "root@100.84.91.26";

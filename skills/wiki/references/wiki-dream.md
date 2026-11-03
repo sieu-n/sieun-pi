@@ -141,7 +141,8 @@ Log hits are keyword matches, and logs mention CI and git in normal work, so rea
 7. Commit each change on the tip as its own commit right after the checks above, with `node scripts/repo/agent/commit.mjs -m "docs(wiki-dream): <what>" <files>`, and ask nobody for a probe slot or a go.
 8. Until 2026-10-18 this step sent the object's sha to the chat to ask Fable for a probe slot, after the owner had said on 2026-10-12: "NEVER wait for something, or ask for my permission to push to Github etc."
 9. Commit every drafted rule in the same run. On 2026-10-10 two drafted rules were left "for tomorrow" with no sha sent, and they landed only on 2026-10-14.
-10. A wiki page change needs no commit, because the page API writes it and `wiki-backup.timer` copies it to the private repo `sieu-n/wiki-content` within 5 minutes.
+10. A wiki page change needs no commit: write it with `wiki.write()` or `PUT https://us-metal02-dev.tail0c093d.ts.net:5184/wiki/<path>`, and `wiki-backup.timer` copies it to the private repo `sieu-n/wiki-content` within 5 minutes.
+    A revert of a page is a new write of its older revision, read from `GET /wiki/api/agent/history?path=<path>` and `/wiki/api/agent/diff`, and the ledger records the page version instead of a commit.
 11. Commit a global skill or `config/AGENTS.md` in sieun-pi locally with `git -C <sieun-pi checkout> add -- <new files>` and `git -C <sieun-pi checkout> commit -m "docs(wiki-dream): <what>" -- <files>`, then confirm it with `git log -3 --stat`, where the checkout is `/Users/sieunpark/Documents/Github/sieun-pi` on the Mac and `/home/sieun/src/sieun-pi` on us-metal02.
 12. A sieun-pi commit is live at once through the `~/.prime/agent/skills` symlinks.
 13. Never push either repo, and never pass `--allow-shared`.

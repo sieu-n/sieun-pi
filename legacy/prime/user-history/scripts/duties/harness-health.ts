@@ -14,6 +14,7 @@ import { grafanaPrometheus } from "../../src/usage/lgtm.ts";
 import { lgtmFailure, measureCache, WINDOWS, type CacheMetric } from "./cache-ratio.ts";
 import { SMOKE_SESSION, smokeSkills, type SmokeEnv } from "./skill-smoke.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { wikiContentDir } from "../../src/chat-wiki.ts";
 
 /**
  * The Skills and harness duty's precheck (`node --import tsx scripts/duties/harness-health.ts`): outcomes, never sizes. The owner asked to "prune
@@ -355,7 +356,7 @@ async function main(): Promise<void> {
     { name: "native", dir: join(AUTO_SNS, ".claude/skills-native"), views: "@code/.claude/skills-native/", repo: AUTO_SNS },
     { name: "prime", dir: join(homedir(), ".prime/agent/skills"), transcripts: true },
   ];
-  const db = join(AUTO_SNS, "apps/llm-wiki/content/.wiki/wiki.db");
+  const db = join(wikiContentDir(), ".wiki/wiki.db");
   const dataDir = process.env.HARNESS_DATA_DIR || join(homedir(), ".prime/agent/browser-chat");
   // The cache targets live in the Skills and tools duty since Skills and harness merged into it on 10-16.
   const duty = JSON.parse(await readFile(join(import.meta.dirname, "skills-and-tools.duty.json"), "utf8")) as { metrics: { key: string; target: number }[] };

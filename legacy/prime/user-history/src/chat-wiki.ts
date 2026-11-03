@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { WIKI_CONTENT_HOME } from "./shared/artifact-link.ts";
@@ -12,8 +13,18 @@ import { loadHosts, roleUrl, selfHost } from "./hosts.ts";
 export type WikiPageView = { path: string; title: string; url: string; dir: string } & ({ kind: "html"; html: string } | { kind: "markdown"; text: string });
 
 export const WIKI_TIMEOUT_MS = 5000;
-/** The llm-wiki checkout the dev server serves; the page's file is read from here when the dev server is down. */
-export const wikiContentDir = (): string => join(homedir(), WIKI_CONTENT_HOME.slice(2));
+/**
+ * The wiki's content root on this box: `contentRoot` in ~/.config/sieun-pi/wiki.json (or the file WIKI_CONFIG names), else WIKI_CONTENT_HOME.
+ * The page's file is read from here when the wiki does not answer. The engine, the backup timer and the duties read the same file.
+ */
+export function wikiContentDir(): string {
+  const file = process.env.WIKI_CONFIG || join(homedir(), ".config/sieun-pi/wiki.json");
+  try {
+    const root = (JSON.parse(readFileSync(file, "utf8")) as { contentRoot?: unknown }).contentRoot;
+    if (typeof root === "string" && root) return root.replace(/^~(?=$|\/)/, homedir());
+  } catch { /* no config: the default root */ }
+  return join(homedir(), WIKI_CONTENT_HOME.slice(2));
+}
 const MAX_PATH = 2048;
 
 export function wikiPagePath(path: string): string {
