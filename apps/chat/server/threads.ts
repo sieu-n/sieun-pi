@@ -44,6 +44,8 @@ export const conversationIdOf = (thread: string, conversation: number): Conversa
 const PAGE = 40;
 /** A turn with more entries than this is cut at a page edge instead of read whole. */
 const TURN_READ_CAP = 2000;
+/** How many entries one widening read asks for, past the page, to reach the input that starts the page's oldest turn. */
+const WIDEN = 100;
 
 interface LiveConversation {
   thread: string;
@@ -480,23 +482,32 @@ export class Threads {
     };
   }
 
-  /** Entries before `before` (exclusive), oldest first, widened up to the input that starts the oldest turn; lean, as a page draws them. */
+  /**
+   * Entries before `before` (exclusive), oldest first, widened up to the input that starts the oldest turn; lean, as a page draws them.
+   * The first read asks for WIDEN entries past `limit`, so a page whose oldest turn starts within them takes one pi-host call, not two.
+   */
   private async pageBefore(thread: string, conversation: number, before: number | undefined, limit: number): Promise<{ entries: EntryRecord[]; more: boolean }> {
-    const got = await this.host.entries(thread, { conversation, ...(before === undefined ? {} : { before }), limit, lean: true });
-    const entries = [...got.entries];
-    let more = got.more;
-    while (more && entries.length && !isInput(entries.at(-1)!) && entries.length < TURN_READ_CAP) {
-      const next = await this.host.entries(thread, { conversation, before: entries.at(-1)!.id, limit: 100, lean: true });
-      if (!next.entries.length) {
-        more = false;
-        break;
+    const got = await this.host.entries(thread, { conversation, ...(before === undefined ? {} : { before }), limit: limit + WIDEN, lean: true });
+    const entries = got.entries.slice(0, limit);
+    let rest = got.entries.slice(limit);
+    let hostMore = got.more;
+    while (entries.length && !isInput(entries.at(-1)!) && entries.length < TURN_READ_CAP) {
+      if (!rest.length) {
+        if (!hostMore) break;
+        const next = await this.host.entries(thread, { conversation, before: entries.at(-1)!.id, limit: WIDEN, lean: true });
+        rest = next.entries;
+        hostMore = next.more;
+        if (!rest.length) {
+          hostMore = false;
+          break;
+        }
       }
-      const cut = next.entries.findIndex(isInput);
-      entries.push(...(cut >= 0 ? next.entries.slice(0, cut + 1) : next.entries));
-      more = cut >= 0 ? next.more || cut + 1 < next.entries.length : next.more;
+      const cut = rest.findIndex(isInput);
+      entries.push(...(cut >= 0 ? rest.slice(0, cut + 1) : rest));
+      rest = cut >= 0 ? rest.slice(cut + 1) : [];
       if (cut >= 0) break;
     }
-    return { entries: entries.reverse(), more };
+    return { entries: entries.reverse(), more: rest.length > 0 || hostMore };
   }
 
   /** Entries after `after` (exclusive), oldest first, stopped before the next input once `limit` is reached. */
