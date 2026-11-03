@@ -2,7 +2,7 @@
  * The Accounts tab's endpoints (apps/chat/API.md, "Accounts"). Every pi-pool call runs through the old chat's own code in
  * legacy/prime/user-history/src/chat-pool.ts, so the pool's parsers, its shared reader and its login and refresh runners live in one place.
  * A thread is any sw factory id: a conversation id, an agent id `ag_<slug>` or a DM room `dm_<slug>`. pi-pool knows it as the tree of its
- * root thread, `pi-durable:<root thread id>` (packages/pi-host/src/main.ts).
+ * root thread, `pi-durable:<root thread id>`, or for a comm thread its agent's work thread's (packages/pi-host/src/durable/pool-labels.ts).
  */
 import type { IncomingMessage } from "node:http";
 import {
@@ -29,11 +29,14 @@ function text(value: unknown, name: string, max: number): string {
 
 const optional = (value: unknown, name: string, max: number): string | null => (value === undefined || value === null ? null : text(value, name, max));
 
-/** The pool tree of a sw factory thread id. An agent or DM reads as the agent's work thread, any conversation as its root thread. */
+/**
+ * The pool tree of a sw factory thread id. An agent or DM reads as the agent's work thread, any conversation as its root thread, and a comm
+ * thread as its agent's work thread, whose tree pi-host runs it in (packages/pi-host/src/durable/pool-labels.ts).
+ */
 export function poolTree(app: App, id: string): string {
   const root = parseConversationId(app.threads.conversationOf(id)).thread;
   if (!app.threads.thread(root)) throw new PoolError(404, `No thread ${id}.`);
-  return `pi-durable:${root}`;
+  return `pi-durable:${app.agents.ofComm(root)?.record.workThread ?? root}`;
 }
 
 /** A POST body as an account action, with `use` and `follow` naming a sw factory thread in `id`. Ported from the old chat-server.ts parseAccountAction. */

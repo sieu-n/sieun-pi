@@ -36,6 +36,7 @@ import { PrimeRoots } from "./prime-roots.ts";
 import { jobTitle } from "./job-title.ts";
 import { rlmChildName, type DurableRlm, type PiRootView, type RlmThread, type RootRow } from "./rlm.ts";
 import type { DurableRules } from "./rules.ts";
+import type { PoolLabels } from "./pool-labels.ts";
 import { AGENT_REF_DOC, applyAgentRole, parseAgentRef, threadAgent } from "./agent-profile.ts";
 import { RlmChildDoc } from "./children.ts";
 import { commExtension, noteHanded, noteHeard, type CommHost, type CommSubmit } from "./comm.ts";
@@ -79,6 +80,8 @@ export interface DurableThreadsOptions {
   rules?: DurableRules;
   /** The Prime root sessions a thread's root reaches with `agent_message` and `agent_observe`; default `new PrimeRoots()` with `rlm`, none for null. */
   primeRoots?: PrimeRoots | null;
+  /** pi-pool's tree, class and lead place for each thread's agent role (`pool-labels.ts`), told at each open, `agent.ref` write, root input and close. */
+  pool?: Pick<PoolLabels, "agent" | "submitted" | "closed">;
 }
 
 export interface ThreadInfo extends ThreadRow {
@@ -353,6 +356,8 @@ export class DurableThreads {
       // The role from this release's code, so a role whose tools or text changed reaches the thread on its first open after the restart.
       const ref = await threadAgent(harness, context);
       if (ref) await harness.commit(tx => applyAgentRole(tx, ref), context);
+      // The pool tree before the first request after the open, which `harness.resume()` below may start.
+      if (this.options.pool) this.options.pool.agent({ id, name: name() }, ref, ref?.role === "comm" ? await this.sessionOf(harness, ROOT_CONVERSATION_ID) : undefined);
       const tasks = await this.backfill(id, harness);
       state = { id, file, harness, root, watchers: new Set(), wake, stopCommits: () => {}, ...(prompt ? { prompt } : {}), digesting: Promise.resolve(), tasks, comm };
       const opened = state;
@@ -676,6 +681,7 @@ export class DurableThreads {
       watcher.sink({ type: "closed", reason });
     }
     open.watchers.clear();
+    this.options.pool?.closed(id);
     await this.options.rlm?.closeThread(id, reason).catch(error => this.log(`${id} kernels did not close: ${error instanceof Error ? error.message : String(error)}`));
     await open.harness.close(context).catch(error => this.log(`${id} close failed: ${error instanceof Error ? error.message : String(error)}`));
     this.leases.release(open.file);
@@ -697,11 +703,11 @@ export class DurableThreads {
   }
 
   /** The provider session id of a conversation, which is its session in pi-pool's turn queue. */
-  private async sessionOf(open: OpenThread, conversation: ConversationId): Promise<string> {
-    const existing = await open.harness.snapshot(ProviderDoc, conversation, context);
+  private async sessionOf(harness: Harness, conversation: ConversationId): Promise<string> {
+    const existing = await harness.snapshot(ProviderDoc, conversation, context);
     if (existing?.sessionId) return existing.sessionId;
     // A conversation from before pi.provider gets its identity in one commit, as pi-durable's ensureProviderSessionId does.
-    return open.harness.commit(async tx => (await tx.doc(ProviderDoc, conversation)).sessionId, context);
+    return harness.commit(async tx => (await tx.doc(ProviderDoc, conversation)).sessionId, context);
   }
 
   /** Where a conversation's run stands in pi-pool's turn queue. */
@@ -709,7 +715,7 @@ export class DurableThreads {
     if (!this.options.turns) return undefined;
     const open = await this.thread(id);
     const conversation = await this.conversation(open, conversationId);
-    return this.options.turns.ticket(id, await this.sessionOf(open, conversation.id));
+    return this.options.turns.ticket(id, await this.sessionOf(open.harness, conversation.id));
   }
 
   /**
@@ -726,13 +732,14 @@ export class DurableThreads {
     if (!content.length) throw new Error("durable_submit needs text or images");
     const requestId = input.requestId ?? `pi-host:${randomUUID()}`;
     const turns = this.options.turns;
-    const session = turns ? await this.sessionOf(open, conversation.id) : undefined;
+    const session = turns ? await this.sessionOf(open.harness, conversation.id) : undefined;
     // Right after a settle, turns.json still shows the ended run working until its release lands, which would skip the
     // mark and let the next run renew a slot that the release then drops.
     await this.releasing.get(`${id}:${conversation.id}`);
     let owner: OwnerMark | undefined;
     if (input.ownerTurn && turns && session && turns.ticket(id, session).place.state !== "working") owner = await turns.ownerTurn(id, session);
     this.index.markActive(id, this.now());
+    if (conversation.id === ROOT_CONVERSATION_ID) this.options.pool?.submitted(id);
     if (open.prompt && conversation.id === ROOT_CONVERSATION_ID) await this.deliverDigest(open, conversation.id, input);
     const submission = await conversation.submit({
       type: "input", content, requestId,
@@ -900,6 +907,10 @@ export class DurableThreads {
       draft.value = value as never;
       if (name === AGENT_REF_DOC && target === ROOT_CONVERSATION_ID) await applyAgentRole(tx, parseAgentRef(value));
     }, context);
+    if (name === AGENT_REF_DOC && target === ROOT_CONVERSATION_ID && this.options.pool) {
+      const ref = parseAgentRef(value);
+      this.options.pool.agent({ id, name: this.index.get(id)?.name ?? id }, ref, ref?.role === "comm" ? await this.sessionOf(open.harness, ROOT_CONVERSATION_ID) : undefined);
+    }
     for (const watcher of open.watchers) watcher.sink({ type: "doc", conversation: target, name, value });
   }
 

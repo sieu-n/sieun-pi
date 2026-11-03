@@ -446,6 +446,28 @@ class Cli(unittest.TestCase):
         self.run_cli("lead")
         self.assertEqual((self.queue()["lead"], [q["session"] for q in self.queue()["queued"]]), ([], ["d", "e"]))
 
+    def test_lead_add_and_drop_change_only_their_sessions_and_a_replace_keeps_what_its_writer_carries(self):
+        """pi-host puts its comm threads on the list with --add and --drop while the chat service replaces the list with its chat
+        heads plus every id it did not write (leadWriter in legacy/prime/user-history/src/chat-hosts.ts)."""
+        for s in "abcdefg":
+            self.admit(s, "--tree", s.upper())
+        self.run_cli("lead", "c", "d")
+        self.assertEqual(json.loads(self.run_cli("lead", "--add", "f", "g").stdout), {"lead": ["c", "d", "f", "g"]})
+        path = os.path.join(self.dir, "turns.json")
+        before = os.stat(path).st_mtime_ns
+        self.assertEqual(json.loads(self.run_cli("lead", "--add", "f").stdout), {"lead": ["c", "d", "f", "g"]})
+        self.assertEqual(os.stat(path).st_mtime_ns, before, "an id already on the list leaves turns.json alone")
+        self.run_cli("lead", "--drop", "g", "x")
+        self.assertEqual(self.queue()["lead"], ["c", "d", "f"], "a drop leaves the other writer's ids and ignores an id not on the list")
+        self.assertEqual([q["session"] for q in self.queue()["queued"]][:3], ["c", "d", "f"])
+        self.run_cli("lead", "c", "e", "f")
+        self.assertEqual(self.queue()["lead"], ["c", "e", "f"], "a replace that carries f keeps it")
+        with open(os.path.join(self.dir, "pi-pool.log")) as f:
+            sets = [json.loads(line) for line in f if '"turn_lead_set"' in line]
+        self.assertEqual([(e["sessions"], e.get("add"), e.get("drop")) for e in sets], [(2, None, None), (4, 2, None), (3, None, 2), (3, None, None)])
+        for bad in (["--add"], ["--drop"], ["--add", "-x"]):
+            self.assertNotEqual(self.run_cli("lead", *bad, check=False).returncode, 0, bad)
+
     def test_set_records_who_and_when_in_config_and_the_log(self):
         before = round(time.time())
         self.run_cli("set", "working_max", "30", "--by", "the Settings pane")

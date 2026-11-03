@@ -615,18 +615,31 @@ def cmd_owner_turn(rest):
     return 0
 
 
+def lead_list(current, op, sessions):
+    """The lead list after `op`: "set" replaces it with `sessions`, "add" and "drop" change only those sessions and keep the rest."""
+    if op == "set":
+        return sorted(set(sessions))
+    if op == "add":
+        return sorted(set(current) | set(sessions))
+    return sorted(set(current) - set(sessions))
+
+
 def cmd_lead(rest):
     """Replace the lead list with these sessions, whose queued runs start before every other run; no sessions clears it.
-    The same list again changes nothing, so turns.json and its waiters are left alone."""
-    if any(s.startswith("-") for s in rest):
-        raise SystemExit("usage: pi-pool lead [<session>...]")
-    sessions = sorted(set(rest))
+    `--add` and `--drop` change only the named sessions inside the lock, for a writer that shares the list: pi-host puts its comm
+    threads there while the chat service writes its chat heads by replacing the list. The same list again changes nothing, so
+    turns.json and its waiters are left alone."""
+    op = {"--add": "add", "--drop": "drop"}.get(rest[0], "set") if rest else "set"
+    sessions = rest[1:] if op != "set" else rest
+    if any(s.startswith("-") for s in sessions) or (op != "set" and not sessions):
+        raise SystemExit("usage: pi-pool lead [<session>...] | lead --add <session>... | lead --drop <session>...")
 
     def put(turns, now):
-        if turns["lead"] == sessions:
-            return False, {"lead": sessions}, []
-        turns["lead"] = sessions
-        return True, {"lead": sessions}, [("turn_lead_set", {"sessions": len(sessions)})]
+        after = lead_list(turns["lead"], op, sessions)
+        if turns["lead"] == after:
+            return False, {"lead": after}, []
+        turns["lead"] = after
+        return True, {"lead": after}, [("turn_lead_set", {"sessions": len(after), **({op: len(sessions)} if op != "set" else {})})]
     emit(locked(put))
     return 0
 

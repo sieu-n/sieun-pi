@@ -14,13 +14,16 @@ export interface DurableModelsOptions {
   agentDir?: string;
   /** The machine's turn queue every request takes its place in. */
   turns?: TurnQueue;
+  /** The thread's pi-pool tree at each request (`PoolLabels.tree`); default its own, `pi-durable:<thread id>`. */
+  tree?: () => string;
 }
 
-/** One thread's model registry with Prime's context windows; the thread is its own pi-pool tree, `pi-durable:<thread id>`. */
+/** One thread's model registry with Prime's context windows, asking pi-pool for the thread's tree (`pool-labels.ts`). */
 export function durableModels(threadId: string, options: DurableModelsOptions = {}): ReturnType<typeof createModels> {
   const models = createModels();
+  const treeKey = options.tree ?? `pi-durable:${threadId}`;
   for (const inner of [anthropicProvider(), openaiCodexProvider()]) {
-    models.setProvider(poolProvider({ treeKey: `pi-durable:${threadId}`, agentDir: options.agentDir, turns: options.turns, inner: withPrimeWindows(inner, options.agentDir) }));
+    models.setProvider(poolProvider({ treeKey, agentDir: options.agentDir, turns: options.turns, inner: withPrimeWindows(inner, options.agentDir) }));
   }
   return models;
 }

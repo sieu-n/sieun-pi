@@ -44,7 +44,7 @@ test("GET /api/pool lists every seeded account with its state", async () => {
   assert.equal(view.poolConfig!.active_session_sec, 3600);
 });
 
-test("GET /api/accounts reads an agent, its DM and a conversation as the root thread's tree", async () => {
+test("GET /api/accounts reads an agent, its DM, its comm thread and a conversation as the work or root thread's tree", async () => {
   const none = await s.get<AccountsView>("/api/accounts");
   assert.equal(none.sessionId, null);
   assert.equal(provider(none, "openai-codex").resolution!.account, "codex-ready", "with no thread it names the next request's account");
@@ -58,6 +58,9 @@ test("GET /api/accounts reads an agent, its DM and a conversation as the root th
   assert.deepEqual(provider(harness, "anthropic").resolution!.selection, { mode: "manual", account_id: "claude-stale" });
   const crawler = await s.get<AccountsView>("/api/accounts?thread=ag_crawler-vp");
   assert.equal(crawler.priority, "low");
+  const comm = s.app.agents.record("ag_crawler-vp")!.comm![FIXTURE_IDS.cutoverChannel]!;
+  const commView = await s.get<AccountsView>(`/api/accounts?thread=${comm}`);
+  assert.equal(commView.sessionId, tree(FIXTURE_IDS.crawler), "a comm thread reads as its agent's work thread, whose tree pi-host runs it in");
   assert.equal(provider(crawler, "anthropic").wait!.account, "claude-limited");
   assert.ok(provider(crawler, "anthropic").wait!.slotAt > Date.now());
 });

@@ -228,7 +228,7 @@ else exit 75 with retryAt
 end
 ```
 
-1. One thread is one pool tree: `PI_POOL_SESSION_KEY` carries `pi-durable:<thread id>` as the root and the conversation's `pi.provider` session id as the active session, so a child conversation draws from the root's account.
+1. One thread is one pool tree: `PI_POOL_SESSION_KEY` carries `pi-durable:<thread id>` as the root and the conversation's `pi.provider` session id as the active session, so a child conversation draws from the root's account. A comm thread runs in its agent's work thread's tree, so it takes the account the work thread holds (`pool-labels.ts`).
 2. A poll that finds the slot open ends with a retryable error, because pi-durable's `fetchDeferred` gets only the handle and not the transcript, so each slot wait costs one attempt of `settings.retry.maxRetries`.
 3. Each request first takes its run's place in pi-pool's turn queue, the one line every Prime and Pi run on the box waits in, through `TurnQueue` (`admit <session>` under the thread's tree).
 4. A queued run is deferred like a slot wait: its stored sleep reads its place in `turns.json` each second and asks again every 30 s, as the pi-pool extension does, and a crash during the wait resumes the poll from the file.
@@ -237,6 +237,7 @@ end
 7. A crash drops the host's queue entries once pi-pool sees the process gone, so a resumed run asks again and keeps its place only through pi-pool's own `kept` rules.
 8. `durable_submit {ownerTurn: true}` runs `pi-pool owner-turn <session>` before the admit, as the chat does for an owner prompt to Prime, so the run's first ask starts at once as kind `owner` and counts toward `working_max`, and a run of that conversation already queued starts now as kind `ahead`. A run that already holds its slot takes the owner's input as a steer or follow-up, and no mark is set. Every submit first waits for the slot release of the conversation's last settled input, so an input sent right after a settle never reads the ended run as working and never renews a slot that the release then drops.
 9. A ticket's `place` is `{state: "working", kind}`, `{state: "queued", position, total}` in pi-pool's order (lead sessions first, then first asked), `{state: "marked"}` for an owner mark the run has not taken yet, or `{state: "none"}` before the run's first ask and after its release. The ticket in `durable_submit`'s answer is read right after the admit, so the run's first ask may come after it; `durable_ticket` reads it again.
+10. pi-host labels each agent's threads the way the chat service labels a Prime chat (`pool-labels.ts`). The agent's work tree and its jobs ask as class `high`, a duty job as `low` and a check-in or Wiki dream duty job as `normal`, each set once per process with `pi-pool priority` unless the tree's record holds that class or a hand label. An open comm thread's root session sits on the turn queue's lead list through `pi-pool lead --add` and leaves it with `--drop` when the thread closes.
 
 ## Crash tests
 

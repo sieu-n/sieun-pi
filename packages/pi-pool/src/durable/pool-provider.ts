@@ -38,8 +38,11 @@ import { admitReply, placeIn, type AdmitReply } from "../core/turns.ts";
 import { defaultPoolBin, poolEnv, runPool, vendOnce, WAIT_ASK_MS, type TreeKey, type Vend } from "../core/pool-cli.ts";
 
 export interface PoolProviderOptions {
-  /** The pool tree's root key. One durable session file is one tree, so every conversation in it shares the account. */
-  treeKey: string;
+  /**
+   * The pool tree's root key, read at each request. One durable session file is one tree, so every conversation in it shares the
+   * account; pi-host puts an agent's comm threads in its work thread's tree (`pool-labels.ts` there), so they share one account too.
+   */
+  treeKey: string | (() => string);
   /** The token hook; defaults to `PI_POOL_TOKEN_BIN` or `<pool dir>/bin/pi-pool-token`. */
   bin?: string;
   /** The agent dir whose auth.json `adopt-logins` reads. */
@@ -97,9 +100,10 @@ export function pooledRetries(root: string): number {
  * pool-handled retry of the tree's busiest run, read at every retry, so a run that waits on the pool waits as long as
  * the pool says and still fails after pi-durable's own count of other errors.
  */
-export function durableSettings(treeKey: string, retry: Partial<typeof DEFAULT_RETRY_POLICY> = {}): HarnessSettings {
+export function durableSettings(treeKey: string | (() => string), retry: Partial<typeof DEFAULT_RETRY_POLICY> = {}): HarnessSettings {
   const base = { ...DEFAULT_RETRY_POLICY, ...retry };
-  return { get retry() { return { ...base, maxRetries: base.maxRetries + pooledRetries(treeKey) }; } };
+  const root = typeof treeKey === "string" ? () => treeKey : treeKey;
+  return { get retry() { return { ...base, maxRetries: base.maxRetries + pooledRetries(root()) }; } };
 }
 
 type TurnPlace = { kind: "go" } | { kind: "wait"; position: number | null; total: number | null; askedAt: number };
@@ -246,7 +250,33 @@ export class TurnQueue {
   holds(session: string): boolean {
     return this.held.has(session);
   }
+
+  /** Adds `session` to the queue's lead list, or drops it, keeping every other writer's ids (`pi-pool lead --add|--drop`). */
+  async lead(op: "add" | "drop", session: string): Promise<boolean> {
+    return (await this.call({ root: session, session }, ["lead", `--${op}`, session])).ok;
+  }
+
+  /**
+   * Gives `tree` the pool class `priority` (`pi-pool priority`), as the chat service does for each Prime chat (`PoolPriorities` in
+   * legacy/prime/user-history/src/chat-pool-priority.ts). It reads the tree's record first and sets nothing when the record holds that
+   * class already, or a class someone set by hand as a label. A tree with no record yet gets one, so its first request asks as that class.
+   */
+  async treeClass(tree: string, priority: PoolClass): Promise<"set" | "kept" | "failed"> {
+    const key: TreeKey = { root: tree, session: tree };
+    const read = await this.call(key, ["snapshot", "--json", "--tree", tree]);
+    let held: { priority?: unknown; label?: unknown } | undefined;
+    try {
+      held = (JSON.parse(read.out.split("\n").at(-1) ?? "") as { trees?: { session?: unknown; priority?: unknown; label?: unknown }[] }).trees?.find(t => t.session === tree);
+    } catch {
+      held = undefined;
+    }
+    if (read.ok && held && ((held.label !== null && held.label !== undefined) || held.priority === priority)) return "kept";
+    return (await this.call(key, ["priority", priority, "--session", tree])).ok ? "set" : "failed";
+  }
 }
+
+/** pi-pool's tree classes (rule R7 in pool/sched.py). */
+export type PoolClass = "high" | "normal" | "low";
 
 function turnWait(model: Model<Api>, key: TreeKey, place: Extract<TurnPlace, { kind: "wait" }>): AssistantMessage {
   const deferred: DeferredHandle = {
@@ -288,7 +318,8 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
   const inner = opts.inner ?? anthropicProvider();
   const bin = opts.bin ?? defaultPoolBin();
   const now = opts.now ?? Date.now;
-  const keyOf = (options: StreamOptions | undefined): TreeKey => ({ root: opts.treeKey, session: options?.sessionId ?? opts.treeKey });
+  const treeOf = typeof opts.treeKey === "string" ? (() => opts.treeKey as string) : opts.treeKey;
+  const keyOf = (options: StreamOptions | undefined): TreeKey => ({ root: treeOf(), session: options?.sessionId ?? treeOf() });
   const envOf = (options: StreamOptions | undefined) => poolEnv(keyOf(options), opts.agentDir);
   const callOf = (env: NodeJS.ProcessEnv): PoolCall => async args => {
     const run = await runPool(bin, ["--cli", ...args], env);
@@ -365,7 +396,7 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
         void (async () => {
           // The poll's options carry no session id, so the wait's handle names the session that asked.
           const data = (handle.data ?? {}) as { session?: unknown; askedAt?: unknown };
-          const key: TreeKey = { root: opts.treeKey, session: typeof data.session === "string" ? data.session : keyOf(options).session };
+          const key: TreeKey = { root: treeOf(), session: typeof data.session === "string" ? data.session : keyOf(options).session };
           const place = opts.turns ? await opts.turns.poll(key, Number(data.askedAt ?? 0)) : ({ kind: "go" } as const);
           if (place.kind !== "wait") countPooled(key);
           const final = place.kind === "wait" ? turnWait(model, key, place) : message(model, { stopReason: "error", errorMessage: TURN_OPEN_TEXT });
@@ -379,7 +410,7 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
       void (async () => {
         // The poll's options carry no session id, so the wait's handle names the session that asked.
         const data = (handle.data ?? {}) as { session?: unknown };
-        const key: TreeKey = { root: opts.treeKey, session: typeof data.session === "string" ? data.session : keyOf(options).session };
+        const key: TreeKey = { root: treeOf(), session: typeof data.session === "string" ? data.session : keyOf(options).session };
         const got = await vendOnce(bin, model.provider, poolEnv(key, opts.agentDir), options?.signal, model.id);
         if (got.kind === "token") countPooled(key);
         const final = got.kind === "wait" ? slotWait(model, key, got, now())
