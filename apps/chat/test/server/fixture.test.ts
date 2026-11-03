@@ -183,7 +183,7 @@ describe("channels and mentions", () => {
     assert.equal(sent.status, 200, sent.body.error);
     assert.equal(sent.body.deliveries.length, 1);
     const joined = (await s.get<any[]>("/api/rooms")).find(r => r.id === channel);
-    assert.deepEqual(joined.members.map((m: any) => [m.principal.id, m.wakeOn]), [["owner", "all"], [agents.vent, "mention"]]);
+    assert.deepEqual(joined.members.map((m: any) => [m.principal.id, m.wakeOn]), [["owner", "all"], [agents.vent, "all"]]);
     const comm = await until(async () => s.app.agents.record(agents.vent)!.comm?.[channel], c => !!c);
     const copyOf = (page: TimelinePage) => page.items.find(i => i.kind === "message" && i.text.startsWith("[#dev-admin-app · post 2 from You (owner)")) as Extract<Item, { kind: "message" }> | undefined;
     const copy = copyOf(await until(() => s.get<TimelinePage>(`/api/c/${comm}/items`), p => !!copyOf(p)))!;
