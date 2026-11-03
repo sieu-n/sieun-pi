@@ -7,9 +7,11 @@ import { join } from "node:path";
  * fix. Before this file nothing told d5 a sign-in had reached such a prompt: from 10-30 to 11-02 claude4@slack.green's magic link sat in
  * sieunpark77's Gmail, whose Google sign-in in Aside stopped on "Complete sign-in using your passkey" (10-30 20:11Z), and d5 started a job that
  * could not act on each of 6 runs. `scripts/sign-in-prompt.ts` writes it, and pool_claude drops an account's prompt once it no longer needs a
- * sign-in, so only a prompt reached since its last sign-in counts.
+ * sign-in, so only a prompt reached since its last sign-in counts. A "payment" prompt is claude.ai's "Your subscription is paused. Pay your
+ * invoice to restore access." on the OAuth Authorize click: on 11-03 01:50Z claude4@slack.green's magic link worked through a slack.green Email
+ * Routing rule, and its Authorize answered 403 with that page, since its Max plan reads past_due and only the owner's payment brings it back.
  */
-export const PROMPT_KINDS = ["password", "2fa", "passkey"] as const;
+export const PROMPT_KINDS = ["password", "2fa", "passkey", "payment"] as const;
 export type PromptKind = typeof PROMPT_KINDS[number];
 export interface SignInPrompt {
   /** pi-pool's provider, "anthropic" or "openai-codex". */

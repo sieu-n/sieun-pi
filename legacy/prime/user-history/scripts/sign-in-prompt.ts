@@ -4,7 +4,7 @@ import { parseArgs } from "node:util";
 import { PROMPT_KINDS, type PromptKind, parsePrompts, promptsText, signInPromptsFile, withPrompt } from "../src/sign-in-prompts.ts";
 
 /**
- * Records that an agent's sign-in of a pool account reached a password, 2FA or passkey prompt, which makes the account the owner's fix in
+ * Records that an agent's sign-in of a pool account reached a password, 2FA, passkey or payment prompt, which makes the account the owner's fix in
  * d5's pool checks (src/sign-in-prompts.ts):
  * `node --import tsx scripts/sign-in-prompt.ts <email> --provider anthropic --prompt passkey --where "<page that asked>" --evidence <screenshot or session ref> [--at <ISO>]`.
  * Run it only after a real attempt showed the prompt, with --at set to when it did; the account's earlier record is replaced.

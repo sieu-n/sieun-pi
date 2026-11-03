@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { CALL_TIMEOUT_MS, CHECKS, type Deps, type ExecResult, runChecks, toOutput, withHarness } from "../scripts/duties/skills-and-tools.ts";
 import type { DutyStore } from "../src/chat-duty-store.ts";
+import { parsePrompts } from "../src/sign-in-prompts.ts";
 import { dailyRun } from "../src/chat-tools.ts";
 import type { Duty, DutyRunRecord } from "../src/shared/chat-duties.ts";
 
@@ -373,6 +374,23 @@ test("pool_claude makes an account whose sign-in reached a recorded passkey prom
     && mixed.detail.includes("claude4@slack.green, whose sign-in reached a passkey prompt") && mixed.fix.includes("scripts/sign-in-prompt.ts"), JSON.stringify(mixed));
   const { outcome: none } = await run([claude4, live], []);
   assert.ok(none.status === "fail" && none.fixer === "agent", "with no recorded prompt it stays the agent's fix");
+});
+
+// 11-03: claude4@slack.green's magic link came through a slack.green Email Routing rule, and Authorize answered "Your subscription is paused".
+test("pool_claude makes an account whose sign-in reached a recorded payment prompt the owner's fix", async () => {
+  const PROMPTS = "/home/sieun/.config/sieun-pi/sign-in-prompts.json";
+  const payment = { provider: "anthropic", account: "claude4@slack.green", prompt: "payment", at: "2026-11-03T01:50:00Z",
+    where: "claude.ai OAuth Authorize: Your subscription is paused, pay your invoice", evidence: "us-metal02:01a18e4c" };
+  assert.deepEqual(parsePrompts(JSON.stringify({ prompts: [payment] })), [payment]);
+  const mac = macDeps(false, TIMED_OUT, []);
+  const outcome = await poolClaude.run({ ...mac,
+    exec: async (file, args, options) => file === "pi-pool"
+      ? { code: 0, stdout: JSON.stringify({ rows: [{ email: "claude4@slack.green", reason: "needs-reauth" }, { email: "a@gmail.com", usable: true }] }), stderr: "", ms: 0 }
+      : mac.exec(file, args, options),
+    readFile: async path => { if (path === PROMPTS) return JSON.stringify({ prompts: [payment] }); throw new Error(`no ${path}`); },
+    writeFile: async () => {} });
+  assert.ok(outcome.status === "fail" && outcome.fixer === "owner"
+    && outcome.detail.startsWith("claude4@slack.green, whose sign-in reached a payment prompt at 11-03 01:50Z"), JSON.stringify(outcome));
 });
 
 // 10-23 and 10-25: jobs following the fix text ran `pi-pool off` on krenerd77 and sieunpark77 after the owner had turned them on in Settings.
