@@ -89,6 +89,26 @@ test("a triage job leads pi-pool's turn queue while its rule fires and leaves th
   assert.deepEqual(f.leads.at(-1), [], "a resolved rule whose job had its turn no longer leads");
 });
 
+// 11-03: 56198de2 put alert triage jobs on pi-pool's lead list, and ops guy checked a job leaves it once its rule's last label set resolves.
+test("a triage job stays on the lead list while any label set of its rule fires and leaves it when the last one resolves", async () => {
+  const f = await fixture();
+  const set = (fingerprint: string, host: string) => raw(fingerprint, { alertname: "CI history ingest has not read GitHub for 15 min", __alert_rule_uid__: "ci-history-stale", host }, "2026-10-18T15:58:00.000Z");
+  f.set([set("aaaa0000000000a1", "m1"), set("aaaa0000000000a2", "m2")]);
+  await f.bridge.tick();
+  f.at(NOW + 30_000);
+  await f.bridge.tick();
+  assert.deepEqual(f.leads.at(-1), ["job-1"]);
+  f.set([set("aaaa0000000000a2", "m2")]); f.at(NOW + 60_000);
+  await f.bridge.tick();
+  assert.deepEqual(f.leads.at(-1), ["job-1"], "one label set still fires, so the job still leads");
+  f.set([]); f.at(NOW + 90_000);
+  await f.bridge.tick();
+  assert.deepEqual(f.leads.at(-1), [], "the last label set resolved, so the job left the lead list");
+  f.at(NOW + 120_000);
+  await f.bridge.tick();
+  assert.deepEqual(f.leads.at(-1), [], "it stays off on later polls");
+});
+
 test("a second fire of the same rule uid goes to its live job by message and starts no second job, and a fire after the job ended starts a new job that reads the old one", async () => {
   const f = await fixture();
   f.set([ciAlert()]);
@@ -397,6 +417,7 @@ test("a triage job that ended with no turn after it took a fire hands the fire t
   const state = await f.state();
   assert.equal(state.chats[CI], "job-2");
   assert.equal(state.rules[ruleKey(CI, "ci-history-stale")]!.job!.id, "job-2");
+  assert.deepEqual(f.leads.at(-1), ["job-2"], "the ended job left the lead list and the fresh one took its place");
   f.at(fired + 90_000);
   await f.bridge.tick();
   assert.equal(f.started.length, 2, "one fresh job");
