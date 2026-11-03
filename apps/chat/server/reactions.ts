@@ -28,7 +28,7 @@ export function reactionsOf(principal: (id: string) => Principal, post: RoomPost
 }
 
 /** A post's reactions as an agent reads them, such as `👀 vent, agent factory · 👍 Sieun (owner)`, or "" with none. */
-function reactionList(principal: (id: string) => Principal, post: RoomPost): string {
+export function reactionList(principal: (id: string) => Principal, post: RoomPost): string {
   const rows = reactionsOf(principal, post).reactions ?? [];
   return rows.map(row => `${row.emoji} ${row.by.map(p => (p.kind === "owner" ? OWNER_FOR_AGENTS : p.name)).join(", ")}`).join(" · ");
 }

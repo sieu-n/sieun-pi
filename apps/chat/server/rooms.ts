@@ -543,19 +543,15 @@ export class Rooms {
   }
 
   /**
-   * The posts search reads as posts: those whose words live in a comm thread, which search leaves out. An owner post that went or goes to
+   * Whether search reads a DM post as a post: its words live in a comm thread, which search leaves out. An owner post that went or goes to
    * the comm thread counts, and an agent post whose call the comm thread holds; everything before the split is in the work thread.
    */
-  searchPosts(): { room: RoomId; agent: AgentRecord; post: RoomPost }[] {
-    return this.deps.agents.list().flatMap(record => {
-      const comm = record.comm?.[record.room];
-      if (!comm) return [];
-      return this.store.postsOf(record.room).filter(post =>
-        post.author === "owner"
-          ? !post.imported && !!post.delivery && (post.delivery.thread === comm || (post.delivery.thread === undefined && post.delivery.state !== "delivered"))
-          : post.source?.thread === comm,
-      ).map(post => ({ room: record.room, agent: record, post }));
-    });
+  searchListed(record: AgentRecord, post: RoomPost): boolean {
+    const comm = record.comm?.[record.room];
+    if (!comm) return false;
+    return post.author === "owner"
+      ? !post.imported && !!post.delivery && (post.delivery.thread === comm || (post.delivery.thread === undefined && post.delivery.state !== "delivered"))
+      : post.source?.thread === comm;
   }
 
   /** Sends the posts to the room's watchers and its row to the sidebar. */

@@ -1,7 +1,8 @@
 /**
  * Wires the host seam, the chat server's store and the services, and holds the one live hub every page connects to over /api/live.
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import type {
@@ -14,7 +15,7 @@ import { AgentFolders, type BoxFiles } from "./agent-folder.ts";
 import { AgentStore, type AgentRecord, type RoomPost } from "./agent-store.ts";
 import { Agents, isGroupRoomId, isRoomId, type SplitPlan } from "./agents.ts";
 import { Boards } from "./boards.ts";
-import { GroupRooms } from "./group-rooms.ts";
+import { CHANNEL_COPY_LIKE, GroupRooms } from "./group-rooms.ts";
 import { ForMe } from "./for-me.ts";
 import type { ForMeItem, ForMeList, ForMeStatus } from "../web/src/lib/api/types.ts";
 import { DEFAULT_MODEL, type Config } from "./config.ts";
@@ -22,10 +23,13 @@ import { MultiHost } from "./host/multi-host.ts";
 import type { Host } from "./host/types.ts";
 import { Outbox, type OutboxRow } from "./outbox.ts";
 import { boxCwd, projectCwd, projectList } from "./projects.ts";
-import { agentPost, react, ReactionError, reactionInput, reactionsOf, reactionText } from "./reactions.ts";
+import { agentPost, react, ReactionError, reactionInput, reactionList, reactionsOf, reactionText } from "./reactions.ts";
 import { Rooms } from "./rooms.ts";
 import { Search } from "./search.ts";
-import { Store } from "./store.ts";
+import { likeRegex, postDocId, SEARCH_DOC_VERSION, SearchEngine, SqliteEntries, type EntrySource, type PostDoc } from "./search-engine.ts";
+import { Meili, startOwnMeili, type OwnMeili } from "./meili.ts";
+import type { FixtureHost } from "./host/fixture.ts";
+import { readJson, Store, writeJson } from "./store.ts";
 import { modelRef, OWNER, parseConversationId, Threads } from "./threads.ts";
 import { QueueWatch, waitingPlace } from "./queue.ts";
 
@@ -66,6 +70,8 @@ export class App {
   readonly boards: Boards;
   readonly search: Search;
   readonly queues: QueueWatch;
+  readonly searchEngine: SearchEngine;
+  private searchStop: () => void = () => {};
   readonly outbox: Outbox;
   /** The boxes agents run on, when the host is a `MultiHost` (server/host/multi-host.ts); a fixture or test host has one box. */
   readonly routing?: MultiHost;
@@ -199,7 +205,8 @@ export class App {
     this.threads.onDoc = (thread, name, value) => {
       if (name === "chat.board") this.boards.docChanged(thread, value);
     };
-    this.search = new Search(routing?.list()[0]!.host ?? host, this.threads, this.groups, config.fixture ? undefined : config.durableIndex);
+    this.searchEngine = this.newSearchEngine(routing?.list()[0]!.host ?? host);
+    this.search = new Search(this.threads, this.groups, this.searchEngine, room => this.agentStore.postsOf(room));
     if (routing) {
       this.search.boxes = () => routing.list().filter(b => b.box !== config.box).map(b => ({ box: b.box, link: () => routing.link(b.box), search: query => b.host.search(query) }));
     }
@@ -209,7 +216,8 @@ export class App {
       ...this.agents.list().flatMap(record => Object.values(record.comm ?? {})),
       ...Object.keys(this.agentStore.agents.aliases).filter(thread => this.agentStore.isTest(thread)),
     ];
-    this.search.dmPosts = () => this.rooms.searchPosts();
+    this.search.testRooms = () => [...this.groups.rows().filter(row => row.test).map(row => row.id), ...this.agents.list().filter(record => record.test).map(record => record.room)];
+    this.agentStore.onPost = post => this.searchEngine.postChanged(postDocId(post.room, post.id), this.postDoc(post.room, post));
     this.queues = new QueueWatch(host, this.threads, (conversation, place) => {
       this.toWatchers(conversation, { type: "queue", conversation, place });
       const record = this.agents.ofWorkThread(conversation) ?? this.agents.ofComm(conversation)?.record;
@@ -237,6 +245,7 @@ export class App {
     this.boards.start();
     this.outbox.start();
   }
+    if (this.config.meili) void this.searchEngine.refresh().catch(error => this.log(`search: ${String(error)}`));
 
   async stop(): Promise<void> {
     this.rooms.stop();
@@ -250,7 +259,72 @@ export class App {
     await this.host.close();
     await this.threads.stop();
     for (const client of this.clients) client.socket.close();
-    this.search.close();
+    this.searchStop();
+  }
+
+  /**
+   * Search's one Meilisearch index: meilisearch.service when the config names it, else a Meilisearch of this server's own, started on the
+   * first search. Entries come from pi-host's index.sqlite, or from the fixture host's threads.
+   */
+  private newSearchEngine(local: Host): SearchEngine {
+    const { config } = this;
+    const fixture = (local as Partial<Pick<FixtureHost, "indexRows">>).indexRows ? (local as FixtureHost) : undefined;
+    let seen: Record<string, number> = {};
+    const sqlite = !fixture && config.durableIndex ? new SqliteEntries(config.durableIndex) : undefined;
+    const entries: EntrySource = fixture
+      ? { read: cursor => { const read = fixture.indexRows(cursor === undefined ? {} : seen); seen = read.seen; return { rows: read.rows, cursor: "fixture" }; } }
+      : sqlite ?? { read: () => ({ rows: [], cursor: "0" }) };
+    let own: OwnMeili | undefined;
+    let memory: string | undefined;
+    const file = join(config.dataDir, "search", "meili.json");
+    if (config.meili) {
+      const saved = readJson<{ v?: number; cursor?: string }>(file, {});
+      if (saved.v === SEARCH_DOC_VERSION) memory = saved.cursor;
+    }
+    const cursor = {
+      get: () => memory,
+      set: (next: string) => {
+        memory = next;
+        if (config.meili) writeJson(file, { v: SEARCH_DOC_VERSION, cursor: next });
+      },
+    };
+    const engine = new SearchEngine({
+      connect: async () => {
+        if (config.meili) return new Meili(config.meili.url, readFileSync(config.meili.keyFile, "utf8").trim());
+        own = await startOwnMeili();
+        return own.meili;
+      },
+      entries, cursor, channelCopy: likeRegex(CHANNEL_COPY_LIKE), log: this.log,
+      allPosts: () => [...this.groups.rows().map(row => row.id), ...this.agents.list().map(record => record.room)]
+        .flatMap(room => this.agentStore.postsOf(room).flatMap(post => this.postDoc(room, post) ?? [])),
+    });
+    // The live index follows pi-host's writes as they land, so the next search has little left to read.
+    let watcher: FSWatcher | undefined;
+    if (config.meili && config.durableIndex) {
+      try {
+        watcher = watch(dirname(config.durableIndex), (_event, name) => {
+          if (String(name).startsWith("index.sqlite")) void engine.refresh().catch(error => this.log(`search: ${String(error)}`));
+        });
+      } catch (error) {
+        this.log(`search: cannot watch ${config.durableIndex} (${String(error)}); entries are read at each search`);
+      }
+    }
+    this.searchStop = () => {
+      watcher?.close();
+      sqlite?.close();
+      own?.stop();
+    };
+    return engine;
+  }
+
+  /** A post's search document, or null for a post in no DM, channel or Solo room. */
+  private postDoc(room: string, post: RoomPost): PostDoc | null {
+    const principal = (id: string) => this.threads.principal(id);
+    const base = { id: postDocId(room, post.id), source: "post", text: post.text, reactions: reactionList(principal, post), at: post.at, tier: 0, author: post.author, room, post: post.id } as const;
+    const record = this.agents.record(room);
+    if (record?.room === room) return { ...base, dm: true, listed: this.rooms.searchListed(record, post), ownerPost: post.author === "owner" && !post.testSend };
+    if (this.groups.row(room)?.id === room) return { ...base, dm: false, listed: true, ownerPost: post.author === "owner" };
+    return null;
   }
 
   me(): Me {

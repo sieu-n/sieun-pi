@@ -227,12 +227,12 @@ describe("search", () => {
     assert.ok(all.hits.every(h => !/<(?!\/?mark>)/.test(h.snippet)));
   });
 
-  test("the best channel post ranks beside the best thread hit", async () => {
+  test("channel posts and thread hits rank in one list from the one index", async () => {
     const all = await s.get<SearchResult>("/api/search?q=relay&limit=100");
     const posts = all.hits.filter(h => h.kind === "post").length;
     assert.ok(posts > 0 && posts < all.total);
-    const top = await s.get<SearchResult>("/api/search?q=relay&limit=2");
-    assert.deepEqual(top.hits.map(h => h.kind === "post").sort(), [false, true]);
+    const firstPost = all.hits.findIndex(h => h.kind === "post");
+    assert.ok(all.hits.slice(firstPost).some(h => h.kind !== "post" && h.role !== "tool"), "a thread message ranks after a post");
   });
 
   test("a hit's messageId opens the page around it, focused on the turn that holds it", async () => {

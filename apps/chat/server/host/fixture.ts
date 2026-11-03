@@ -13,6 +13,7 @@
 import { randomUUID } from "node:crypto";
 import type { TurnPlace } from "../../web/src/lib/api/types.ts";
 import { DEFAULT_MODEL } from "../config.ts";
+import type { EntryRow } from "../search-engine.ts";
 import type { ContentBlock, DurableEvent, DurableThread, EntryRecord, Host, Message, SearchHit, SearchPage, SearchQuery, SubmissionRecord, Submitted, SubmitInput, Ticket, TreeNode, UsageTotal } from "./types.ts";
 
 interface FakeThread {
@@ -284,6 +285,20 @@ export class FixtureHost implements Host {
     };
   }
 
+  /** Each thread's entries after the counts in `seen`, as pi-host's index would hold them, and the new counts. */
+  indexRows(seen: Readonly<Record<string, number>>): { rows: EntryRow[]; seen: Record<string, number> } {
+    const rows: EntryRow[] = [];
+    const next: Record<string, number> = {};
+    for (const thread of this.threadsById.values()) {
+      next[thread.row.id] = thread.entries.length;
+      for (const entry of thread.entries.slice(seen[thread.row.id] ?? 0)) {
+        const row = fixtureIndexRow(thread.row.id, entry);
+        if (row?.text) rows.push(row);
+      }
+    }
+    return { rows, seen: next };
+  }
+
   async search(query: SearchQuery): Promise<SearchPage> {
     const words = query.q.toLowerCase().split(/\s+/).map(w => w.replace(/^"|"$|\*$/g, "")).filter(Boolean);
     type Match = { hit: Omit<SearchHit, "snippet">; text: string; score: number };
@@ -294,17 +309,14 @@ export class FixtureHost implements Host {
     for (const thread of this.threadsById.values()) {
       if (query.threads && !query.threads.includes(thread.row.id)) continue;
       for (const entry of thread.entries) {
-        const message = entry.model?.[0];
-        if (!message || message.role === "system") continue;
-        // pi-host indexes a tool call as its name and JSON arguments beside the answer's text.
-        const text = typeof message.content === "string" ? message.content : message.content.flatMap(b => (b.type === "text" ? [b.text] : b.type === "toolCall" ? [`${b.name} ${JSON.stringify(b.arguments ?? {})}`] : [])).join("\n");
+        const row = fixtureIndexRow(thread.row.id, entry);
+        if (!row) continue;
+        const { text, at, author } = row;
         const lower = text.toLowerCase();
         const counts = words.map(w => lower.split(w).length - 1);
         if (!words.length || counts.some(c => c === 0)) continue;
-        const at = message.timestamp ?? 0;
         if (query.after !== undefined && at < query.after) continue;
         if (query.before !== undefined && at >= query.before) continue;
-        const author = entry.kind === "agent.message" ? String((entry.data as { from?: string }).from) : message.role === "user" ? "owner" : message.role === "assistant" ? `${message.provider}/${message.model}` : `tool:${message.toolName}`;
         if (query.from && author !== query.from) continue;
         if (query.notFrom && author === query.notFrom) continue;
         if (query.kinds?.length && !query.kinds.includes(entry.kind)) continue;
@@ -441,4 +453,13 @@ function replyFor(text: string, image: string): string {
   if (/\brich\b/i.test(text)) return richReply(image);
   if (/\bslow\b/i.test(text)) return Array.from({ length: 60 }, (_, i) => `word${i + 1}`).join(" ");
   return `Got it. You said: "${text.split("\n").find(line => line.trim() && !line.startsWith("["))?.slice(0, 120) ?? text.slice(0, 120)}". I checked the canary and the relay, and both answer.`;
+}
+
+/** An entry as pi-host indexes it: its text with each tool call as its name and JSON arguments, its author and time; none for a system note. */
+export function fixtureIndexRow(thread: string, entry: EntryRecord): EntryRow | undefined {
+  const message = entry.model?.[0];
+  if (!message || message.role === "system") return undefined;
+  const text = typeof message.content === "string" ? message.content : message.content.flatMap(b => (b.type === "text" ? [b.text] : b.type === "toolCall" ? [`${b.name} ${JSON.stringify(b.arguments ?? {})}`] : [])).join("\n");
+  const author = entry.kind === "agent.message" ? String((entry.data as { from?: string }).from) : message.role === "user" ? "owner" : message.role === "assistant" ? `${message.provider}/${message.model}` : `tool:${message.toolName}`;
+  return { thread, conversation: entry.conversationId, entryId: entry.id, kind: entry.kind, author, at: message.timestamp ?? 0, text };
 }

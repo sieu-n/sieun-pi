@@ -1,5 +1,7 @@
 /**
- * The first search after a start answers in under a second, and so does every search after it, with exact totals (c191).
+ * The first search after a start answers in under a second, and so does every search after it, with exact totals (c191). Once
+ * Meilisearch holds the index, each keystroke of a word answers in under 150 ms at the 90th percentile: on 11-03 the owner's ⌘K popup
+ * took 0.58 to 2.39 s per keystroke of "delete".
  * On 2026-10-28 the first search on :5184 took 14.8 s: the server read every match from pi-host with its snippet, built a hit for each, and
  * read each page hit's thread through the host to name its item, which opened cold thread files.
  * The thread here holds 10,000 matching entries, and every host read waits 50 ms, the way a read that opens a cold thread file waits.
@@ -62,4 +64,20 @@ test("a thread hit opens the page around its entry, focused on the item that hol
   const input = Number(hit.messageId.slice(1)) - (9_999 % 50);
   assert.equal(page.focus, `t${input}`);
   assert.ok(page.items.some(i => i.id === page.focus));
+});
+
+test("each keystroke answers in under 150 ms at the 90th percentile with the exact count, once Meilisearch holds the index", async () => {
+  await s.app.searchEngine.settled();
+  const expected: Record<string, number> = { z: ENTRIES, ze: ENTRIES, zep: ENTRIES, zeph: ENTRIES, zephy: ENTRIES, zephyr: ENTRIES, r: ENTRIES, re: ENTRIES, rel: ENTRIES, rela: ENTRIES, relay: ENTRIES };
+  const times: number[] = [];
+  for (const q of Object.keys(expected)) {
+    const { ms, body } = await timed(`/api/search?q=${q}&limit=20&local=1`);
+    times.push(ms);
+    assert.ok(body.total >= expected[q]!, `${q}: ${body.total}`);
+    assert.equal(body.hits.length, 20);
+  }
+  const sorted = [...times].sort((a, b) => a - b);
+  const p90 = sorted[Math.ceil(sorted.length * 0.9) - 1]!;
+  assert.ok(p90 < 150, `keystrokes took ${times.map(ms => ms.toFixed(0)).join(", ")} ms, p90 ${p90.toFixed(0)} ms`);
+  assert.equal((await s.get<SearchResult>("/api/search?q=zephyr%20relay")).total, ENTRIES);
 });

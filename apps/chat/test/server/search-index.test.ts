@@ -64,14 +64,17 @@ const search = async (q: string): Promise<{ ms: number; body: SearchResult }> =>
   return { ms: performance.now() - started, body: (await response.json()) as SearchResult };
 };
 
-test("with pi-host down, search answers in under a second with pi-host's total and order", async () => {
-  const { ms, body } = await search("zebra");
-  assert.ok(ms < 1000, `search took ${ms.toFixed(0)} ms`);
+test("with pi-host down, search answers in under a second with pi-host's total and copy rules, before and after Meilisearch holds the index", async () => {
   const expected = index.search({ q: "zebra", limit: 20, skipAgentMessages: CHANNEL_COPY_LIKE });
-  assert.equal(body.total, 300);
-  assert.equal(body.total, expected.total);
-  assert.deepEqual(body.hits.map(h => h.messageId), expected.hits.map(h => `e${h.entryId}`));
-  assert.ok(body.hits.every(h => h.conversation.id === "live" && !h.snippet.includes("posted back")));
+  for (const read of ["memory", "meilisearch"]) {
+    if (read === "meilisearch") await app.searchEngine.settled();
+    const { ms, body } = await search("zebra");
+    assert.ok(ms < 1000, `search from ${read} took ${ms.toFixed(0)} ms`);
+    assert.equal(body.total, 300, read);
+    assert.equal(body.total, expected.total, read);
+    assert.equal(new Set(body.hits.map(h => h.messageId)).size, 20, read);
+    assert.ok(body.hits.every(h => h.conversation.id === "live" && !h.snippet.includes("posted back")), read);
+  }
 });
 
 test("a write pi-host commits after the chat opened the index shows in the next search", async () => {

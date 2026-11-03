@@ -42,6 +42,11 @@ export interface Config {
   agentRefs: boolean;
   /** The hosts registry: `SIEUN_PI_HOSTS`, else `~/.config/sieun-pi/hosts.json`. */
   hostsFile: string;
+  /**
+   * The Meilisearch search keeps its index in (meilisearch.service): `APPS_CHAT_MEILI_URL` and the master key in `APPS_CHAT_MEILI_KEY_FILE`.
+   * Without it, as on the fixture or in a test, the server starts a Meilisearch of its own with a temp folder.
+   */
+  meili?: { url: string; keyFile: string };
 }
 
 /**
@@ -144,6 +149,7 @@ export function readConfig(argv = process.argv.slice(2), env = process.env): Con
     agentsDir: resolve(env.APPS_CHAT_AGENTS_DIR ?? (fixture ? join(dataDir, "agent-folders") : join(home, ".pi/agent/agents"))),
     agentRefs: true,
     hostsFile: resolve(env.SIEUN_PI_HOSTS ?? join(home, ".config/sieun-pi/hosts.json")),
+    ...(!fixture && env.APPS_CHAT_MEILI_URL ? { meili: { url: env.APPS_CHAT_MEILI_URL, keyFile: resolve(env.APPS_CHAT_MEILI_KEY_FILE ?? join(home, ".config/meilisearch/master.key")) } } : {}),
   };
 }
 

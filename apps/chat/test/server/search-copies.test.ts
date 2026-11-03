@@ -29,9 +29,12 @@ test("a mention is found once, as the post in its channel, with no routing heade
 
 test("a thread imported beside its archived source shows each entry once, from the unarchived thread", async () => {
   const host = s.host as FixtureHost;
+  // Both counts come from Meilisearch, whose typo tolerance finds more than the in-memory read of documents it does not hold yet.
+  await s.app.searchEngine.settled();
   const before = await s.get<SearchResult>("/api/search?q=relay&limit=100");
   const source = host.addThread({ name: "Vent", createdAt: Date.now() - 86_400_000, archived: true });
   source.entries.push(...host.threadsById.get(ids.vent)!.entries.map(entry => ({ ...entry })));
+  await s.app.searchEngine.settled();
   const after = await s.get<SearchResult>("/api/search?q=relay&limit=100");
   assert.equal(after.total, before.total);
   assert.deepEqual(after.hits.map(h => h.id), before.hits.map(h => h.id));
