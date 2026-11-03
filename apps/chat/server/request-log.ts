@@ -10,11 +10,14 @@ import { join } from "node:path";
 
 export type TimingSource = "server" | "client";
 
-/** One request: when it ended, who measured it, its method, route pattern (`/api/c/:id/items`), path, status and duration. */
-export interface RequestTiming { at: number; src: TimingSource; m: string; r: string; p: string; s: number; ms: number }
+/**
+ * One request: when it ended, who measured it, its method, route pattern (`/api/c/:id/items`), path, status and duration. A client line
+ * also has `net`, the browser's network time for the call when it had one, so `ms - net` is the time the page's own main thread held it.
+ */
+export interface RequestTiming { at: number; src: TimingSource; m: string; r: string; p: string; s: number; ms: number; net?: number }
 
 /** A client sample as POST /api/timings takes it; the server names its route. */
-export interface ClientTiming { m: string; p: string; s: number; ms: number }
+export interface ClientTiming { m: string; p: string; s: number; ms: number; net?: number }
 
 /** A 24 h window spans at most two UTC days, so a file older than yesterday holds no line the duty reads. */
 const KEEP_DAYS = 2;
@@ -60,5 +63,5 @@ export function clientTimings(body: unknown): ClientTiming[] {
   return samples.filter((sample): sample is ClientTiming => {
     const { m, p, s, ms } = (sample ?? {}) as Record<string, unknown>;
     return typeof m === "string" && typeof p === "string" && p.startsWith("/api/") && typeof s === "number" && typeof ms === "number" && Number.isFinite(ms) && ms >= 0;
-  }).map(({ m, p, s, ms }) => ({ m, p: p.split("?")[0]!, s, ms }));
+  }).map(({ m, p, s, ms, net }) => ({ m, p: p.split("?")[0]!, s, ms, ...(typeof net === "number" && Number.isFinite(net) && net >= 0 ? { net } : {}) }));
 }

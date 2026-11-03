@@ -2,7 +2,8 @@
  * Duty precheck: sw factory stays snappy (owner's words, #sw-factory-build, 11-03, msg mw0et67o: "Thread > load messages 이것도 진짜 너무
  * 느리거든? 이거 계속 느린 api 뭔지 꾸준히 (daily) monitoring 하는걸 add to duty and keep it snappy"). It reads the request log
  * (server/request-log.ts) of the last 24 h and gives each route's p90. A metric reads the web client's lines, the wait the owner sees, and
- * falls back to the server's own handler time for a route no page called in the window.
+ * falls back to the server's own handler time for a route no page called in the window. A client line's `net` is the browser's network
+ * time for the call, so a flagged route whose network p90 is far below its wait was held by the page's main thread, not by the server.
  *
  * Usage: OUTPUT_FILE=<file> node --import tsx scripts/duties/api-speed.ts [--data-dir <dir>] [--hours 24]
  * The data dir defaults to APPS_CHAT_DATA_DIR, else ~/.pi/agent/chat. Without OUTPUT_FILE the result prints to stdout.
@@ -13,7 +14,11 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { RequestTiming, TimingSource } from "../../server/request-log.ts";
 
-export interface RouteSpeed { route: string; src: TimingSource; count: number; p50: number; p90: number; max: number; slowestPath: string }
+/**
+ * One route's speed from one source. `netP50` and `netP90` come from the client lines that carry the browser's network time, so a client
+ * p90 far above its `netP90` is the page's own main thread, not the server or the network.
+ */
+export interface RouteSpeed { route: string; src: TimingSource; count: number; p50: number; p90: number; max: number; slowestPath: string; netP50?: number; netP90?: number }
 
 /** The routes each metric reads, by `<method> <route pattern>`. */
 export const ROUTES = {
@@ -56,7 +61,11 @@ export function routeSpeeds(timings: readonly RequestTiming[]): RouteSpeed[] {
   return [...groups.values()].map(group => {
     const sorted = group.map(t => t.ms).sort((a, b) => a - b);
     const slowest = group.reduce((a, b) => (b.ms > a.ms ? b : a));
-    return { route: `${group[0]!.m} ${group[0]!.r}`, src: group[0]!.src, count: group.length, p50: percentile(sorted, 0.5), p90: percentile(sorted, 0.9), max: sorted.at(-1)!, slowestPath: slowest.p };
+    const net = group.flatMap(t => (t.net === undefined ? [] : [t.net])).sort((a, b) => a - b);
+    return {
+      route: `${group[0]!.m} ${group[0]!.r}`, src: group[0]!.src, count: group.length, p50: percentile(sorted, 0.5), p90: percentile(sorted, 0.9), max: sorted.at(-1)!, slowestPath: slowest.p,
+      ...(net.length ? { netP50: percentile(net, 0.5), netP90: percentile(net, 0.9) } : {}),
+    };
   }).sort((a, b) => b.p90 - a.p90);
 }
 
@@ -87,7 +96,8 @@ export function apiSpeed(dir: string, now: number, windowMs: number) {
     routes: speeds,
     flagged: slowest.map(s => ({
       kind: "slow_api", sig: `${s.src}:${s.route}`,
-      excerpt: `${s.route} p90 ${s.p90} ms, p50 ${s.p50} ms, max ${s.max} ms over ${s.count} ${s.src} requests; the slowest was ${s.slowestPath}`,
+      excerpt: `${s.route} p90 ${s.p90} ms, p50 ${s.p50} ms, max ${s.max} ms over ${s.count} ${s.src} requests; the slowest was ${s.slowestPath}${
+        s.netP90 === undefined ? "" : `; its network time, the server's included, was p90 ${s.netP90} ms, p50 ${s.netP50} ms, and the page's main thread held the rest`}`,
     })),
   };
 }

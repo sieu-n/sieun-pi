@@ -31,9 +31,12 @@ const boardBase = (chat: string): string => (chat.startsWith("ag_") ? `/api/agen
 
 /**
  * How long the page waited for each call, posted in batches to POST /api/timings for the daily speed duty (server/request-log.ts). It holds
- * what the server's own timing misses: the network and the wait while another request blocks the server.
+ * what the server's own timing misses: the network and the wait while another request blocks the server. `net` is the browser's own
+ * network time for the call (Resource Timing, start to the last byte), so the duty can tell it from the time the page's main thread was
+ * busy before it could send the call or read the answer: on 11-03 a thread open in the box Chrome waited 2,135 ms for /api/rooms, of which
+ * the network and the server took 29 ms.
  */
-const timings: { m: string; p: string; s: number; ms: number }[] = [];
+const timings: { m: string; p: string; s: number; ms: number; net?: number }[] = [];
 let timingsTimer: ReturnType<typeof setTimeout> | undefined;
 
 function sendTimings(): void {
@@ -44,11 +47,21 @@ function sendTimings(): void {
   if (!navigator.sendBeacon?.("/api/timings", new Blob([body], { type: "application/json" }))) {
     void fetch("/api/timings", { method: "POST", headers: { "content-type": "application/json" }, body, keepalive: true }).catch(() => {});
   }
+  // The browser keeps 250 resource entries by default and then drops new ones, so each batch empties the buffer.
+  performance.clearResourceTimings();
 }
 
-function recordTiming(m: string, path: string, s: number, ms: number): void {
+/** The network time of the call to `path` that started at `started`, from its Resource Timing entry, if the browser has one. */
+function networkMs(path: string, started: number): number | undefined {
+  const entries = performance.getEntriesByName(new URL(path, location.href).href, "resource") as PerformanceResourceTiming[];
+  const entry = entries.findLast(e => e.startTime >= started - 1);
+  return entry && entry.responseEnd > 0 ? Math.round(entry.responseEnd - entry.startTime) : undefined;
+}
+
+function recordTiming(m: string, path: string, s: number, started: number): void {
   if (typeof window === "undefined") return;
-  timings.push({ m, p: path.split("?")[0]!, s, ms: Math.round(ms) });
+  const net = networkMs(path, started);
+  timings.push({ m, p: path.split("?")[0]!, s, ms: Math.round(performance.now() - started), ...(net === undefined ? {} : { net }) });
   timingsTimer ??= setTimeout(sendTimings, 10_000);
 }
 
@@ -65,7 +78,7 @@ async function call<T>(method: string, path: string, body?: unknown, signal?: Ab
     ...(signal ? { signal } : {}),
   });
   const text = await response.text();
-  recordTiming(method, path, response.status, performance.now() - started);
+  recordTiming(method, path, response.status, started);
   const value = text ? (JSON.parse(text) as unknown) : undefined;
   if (!response.ok) throw new ApiError(response.status, (value as { error?: string } | undefined)?.error ?? `${method} ${path} failed with ${response.status}`);
   return value as T;
