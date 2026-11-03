@@ -42,22 +42,25 @@ export function parseView(value: string | null | undefined): View | null {
   return null;
 }
 
-/** The hash a view was opened from, while the open view is the entry `openView` pushed; closing then goes back to it. */
-let openedFrom: { from: string; at: string } | null = null;
+/**
+ * The entry `openView` pushed: its hash and the history length then. Closing goes back to the page while both still hold; once a frame
+ * in the view has pushed entries of its own, Back would step the frame, so the close drops the param in place instead.
+ */
+let openedFrom: { at: string; length: number } | null = null;
 
 export const currentView = (): View | null => parseView(router.route.params.view);
 
 /** Open a view. A view opened from inside another one replaces it, so one close always returns to the page. */
 export function openView(view: View): void {
   const replace = currentView() !== null;
-  const from = location.hash;
   router.setParams({ view: encodeView(view) }, { replace });
-  if (!replace) openedFrom = { from, at: location.hash };
+  if (!replace) openedFrom = { at: location.hash, length: history.length };
+  else if (openedFrom) openedFrom.at = location.hash;
 }
 
 /** Close the open view: back to the entry it was opened from, or drop the param in place for a view that came with the address. */
 export function closeView(): void {
-  if (openedFrom && openedFrom.at === location.hash) {
+  if (openedFrom && openedFrom.at === location.hash && openedFrom.length === history.length) {
     openedFrom = null;
     history.back();
     return;
@@ -67,7 +70,8 @@ export function closeView(): void {
 }
 
 /**
- * Open what an artifact link names, a wiki page or a thread, in the viewer. False for any other target, such as a file path. A thread id may be a job's `<thread>:<n>` conversation, which `parseArtifactTarget` does not take, so `thread:` is read here.
+ * Open what an artifact link names, a wiki page or a thread, in the viewer. False for any other target, such as a file path. A thread id
+ * may be a job's `<thread>:<n>` conversation, which `parseArtifactTarget` does not take, so `thread:` is read here.
  */
 export function openArtifactTarget(target: string): boolean {
   const thread = target.startsWith("thread:") ? parseView(target.replace(/@\d+$/, "")) : null;

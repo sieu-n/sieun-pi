@@ -117,7 +117,8 @@
     win.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !event.defaultPrevented) closeView();
     });
-    // A wiki link stays in the frame; a link out of the wiki opens in a tab, and a link into this app opens here.
+    // A wiki link loads in the frame in place, since an entry the frame pushed would make Back and closeView's history.back() step the
+    // frame instead of closing. A link out of the wiki opens in a tab, and a link into this app opens here.
     doc.addEventListener("click", (event) => {
       const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
       if (!link || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
@@ -127,9 +128,13 @@
       } catch {
         return;
       }
-      if (url.origin === location.origin && url.pathname.startsWith("/wiki/")) return;
       event.preventDefault();
-      if (url.origin === location.origin && url.hash.startsWith("#/")) router.navigate(url.hash);
+      if (url.origin === win.location.origin && url.pathname === win.location.pathname && url.hash) {
+        doc.getElementById(decodeURIComponent(url.hash.slice(1)))?.scrollIntoView({ behavior: "smooth", block: "start" });
+        return;
+      }
+      if (url.origin === location.origin && url.pathname.startsWith("/wiki/")) win.location.replace(url.href);
+      else if (url.origin === location.origin && url.hash.startsWith("#/")) router.navigate(url.hash);
       else window.open(url.href, "_blank", "noopener");
     }, true);
   }

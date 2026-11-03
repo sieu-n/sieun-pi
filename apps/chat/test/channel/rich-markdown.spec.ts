@@ -141,6 +141,14 @@ test("a wiki link opens the page in the viewer popup over the chat, and Esc or B
   await expect(dialog).toBeHidden();
   await expect(page).toHaveURL(before);
   await expect(composerInput(conversation(page))).toBeVisible();
+  // An entry the page in the frame pushes does not turn Esc into a step back inside the frame.
+  await link.click();
+  await expect(frame).toBeVisible();
+  await expect.poll(() => page.frames().length).toBeGreaterThan(1);
+  await frame.contentFrame().locator("body").evaluate(() => history.pushState({}, "", `${location.pathname}?step`));
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(page).not.toHaveURL(/view=/);
 });
 
 test("the screenshot loads from the box through /api/local-image and opens in the lightbox", async ({ page }) => {
