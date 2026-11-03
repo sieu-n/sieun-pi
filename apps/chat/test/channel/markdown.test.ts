@@ -17,6 +17,11 @@ test("GitHub callouts become styled notes without their marker, and a plain quot
   assert.match(html, /<blockquote>\n<p>Just a quote\.<\/p>/);
 });
 
+test("a chat post's callout starts its body on the title's next line, with no blank line from the marker's break", () => {
+  const html = renderMarkdown("> [!IMPORTANT]\n> A callout line.", { plain: true });
+  assert.match(html, /Important<\/p><p>A callout line\.<\/p>/);
+});
+
 test("mermaid blocks get a slot, a hidden source, an error line and the Expand, Source and Copy buttons", () => {
   const html = renderMarkdown("```mermaid\nflowchart TD\n  a --> b\n```");
   assert.match(html, /class="code-block diagram-block" data-diagram="mermaid"/);

@@ -540,6 +540,7 @@ const marked = new Marked({
       text.raw = text.raw.replace(/^\[![a-z]+\][ \t]*\n?/i, "");
       if (!text.text) inline.shift();
     }
+    if (inline[0]?.type === "br") inline.shift();
     if (!inline.length) quote.tokens.shift();
   },
   renderer: {

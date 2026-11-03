@@ -275,6 +275,9 @@
   .compact .feed {
     padding: 0 16px 12px;
   }
+  .compact .edge {
+    margin-top: 0;
+  }
   .rows,
   .edge,
   .state {
