@@ -37,7 +37,10 @@ declare -A SYSTEM_WEIGHTS=([ssh.service]=1000 [tailscaled.service]=1000 [user.sl
 # first one takes: each page call reads through the relay and pi-host. measured: on 11-03 at 10:53Z at load 434 and weight 100, per
 # CPU-second used the apps-chat main thread waited 3.02 s in the run queue, pi-host 2.36 s and the relay 4.15 s, against 0.39 s for
 # sieun-pi-chat at 10000, and the agent page's calls waited 1 to 4.3 s in the browser while their handlers took 1 to 44 ms.
-declare -A USER_WEIGHTS=([sieun-pi-chat.service]=10000 [sieun-pi-apps-chat.service]=10000 [pi-host.service]=10000 [pi-host-relay.service]=10000 [pi-history.service]=10000 [sieun-pi-wiki.service]=10000 [auto-sns-dev-pm2.service]=10000 [pi-pool-serve.service]=1000 [pi-pool-hookd.service]=1000 [prime-agent-daemon.service]=10000)
+# meilisearch.service runs at 10000 for the same reason as pi-history, whose place behind api/search it took on 11-03. measured: on 11-03 at
+# 21:3xZ at load 330 and weight 100, per CPU-second used its threads waited 22.06 s in the run queue against 0.91 s for apps-chat at 10000,
+# and over 137 sequential searches the handler waited p90 107 ms, 72 ms of it in Meilisearch, whose own work for one search took 2 to 10 ms.
+declare -A USER_WEIGHTS=([sieun-pi-chat.service]=10000 [sieun-pi-apps-chat.service]=10000 [meilisearch.service]=10000 [pi-host.service]=10000 [pi-host-relay.service]=10000 [pi-history.service]=10000 [sieun-pi-wiki.service]=10000 [auto-sns-dev-pm2.service]=10000 [pi-pool-serve.service]=1000 [pi-pool-hookd.service]=1000 [prime-agent-daemon.service]=10000)
 
 dropin() {
   printf '# CPU layer 1 of deploy/linux/README.md (owner'"'"'s t84 answer 10-19, after https://cho.sh/ko/1983DC). A weight is no cap.\n[%s]\nCPUWeight=%s\n' "$1" "$2"

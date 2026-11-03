@@ -49,7 +49,7 @@ class Setup(unittest.TestCase):
         self.assertEqual(weights("SYSTEM"), {"ssh.service": 1000, "tailscaled.service": 1000, "user.slice": 1000, "user@1001.service": 10000,
                                              "virev.slice": 4000, "virev-prod.slice": 300, "virev-ci.slice": 300,
                                              "system.slice": 400, "dev.slice": 400})
-        self.assertEqual(weights("USER"), {"sieun-pi-chat.service": 10000, "sieun-pi-apps-chat.service": 10000, "pi-host.service": 10000,
+        self.assertEqual(weights("USER"), {"sieun-pi-chat.service": 10000, "sieun-pi-apps-chat.service": 10000, "meilisearch.service": 10000, "pi-host.service": 10000,
                                            "pi-host-relay.service": 10000, "pi-history.service": 10000, "sieun-pi-wiki.service": 10000,
                                            "auto-sns-dev-pm2.service": 10000, "pi-pool-serve.service": 1000, "pi-pool-hookd.service": 1000,
                                            "prime-agent-daemon.service": 10000})
@@ -58,6 +58,11 @@ class Setup(unittest.TestCase):
         system, user = weights("SYSTEM"), weights("USER")
         self.assertGreater(system["user@1001.service"], 100)
         self.assertEqual(user["sieun-pi-chat.service"], max(user.values()))
+
+    def test_every_unit_a_sw_factory_search_or_page_call_waits_on_runs_at_the_chat_weight(self):
+        user = weights("USER")
+        for unit in ("sieun-pi-apps-chat.service", "pi-host.service", "pi-host-relay.service", "meilisearch.service"):
+            self.assertEqual(user[unit], user["sieun-pi-apps-chat.service"], unit)
 
     def test_busy_ci_outweighs_the_agents_and_system_and_dev_keep_their_old_floor(self):
         system = weights("SYSTEM")
@@ -70,7 +75,7 @@ class Setup(unittest.TestCase):
         self.assertNotIn("machine.slice", system)
 
     def test_no_unit_gets_a_cap(self):
-        for path in CPU.iterdir():
+        for path in (p for p in CPU.iterdir() if p.is_file()):
             self.assertNotRegex(path.read_text(), r"CPUQuota|AllowedCPUs|cpu\.max|MemoryMax", path.name)
 
     def test_files_cite_the_page(self):
