@@ -272,6 +272,8 @@ export interface ChatThreads {
   abort(id: string): Promise<void>;
   /** Reopens the session's input pump, so queued input runs now. */
   resumeQueue(id: string): Promise<void>;
+  /** Compacts the session through the daemon's own `compact` command, the one behind /compact, on whichever box runs it; resolves once it ends. */
+  compact(id: string): Promise<void>;
   /**
    * Deletes a finished subagent of the chat (the daemon's delete_rlm_subagent, the path `rlm.delete_subagent` takes). The daemon checks the
    * subagent's turn in the same request and refuses one that streams or holds an unfinished action (`running`); `not_held` means the chat no

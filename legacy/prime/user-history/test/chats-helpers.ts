@@ -31,6 +31,7 @@ export function fakeThreads(calls: string[]) {
     async restart(id: string, message: string, abort?: boolean) { calls.push(`restart ${id} ${message}${abort ? " (abort)" : ""}`); },
     async abort(id: string) { calls.push(`abort ${id}`); },
     async resumeQueue(id: string) { calls.push(`resume ${id}`); },
+    async compact(id: string) { calls.push(`compact ${id}`); },
     /** What the daemon answers a delete. */
     deleteAnswer: "deleted" as SubagentDelete,
     async deleteSubagent(id: string, childId: string) { calls.push(`delete ${id} ${childId}`); return this.deleteAnswer; },

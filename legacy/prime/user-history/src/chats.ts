@@ -34,7 +34,7 @@ import { unpushed } from "./checkin-goals.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { spawnRecord } from "./spawn-record.ts";
 import { pooledProviders } from "./chat-pool.ts";
-import { checkInLane, type ClaudeState, claudeDown, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
+import { checkInLane, type ClaudeState, claudeDown, contextFull, failureCause, hungMessage, hungTurn, jobWake, type JobWake, ownerPause, revivalMessage, type Stall, stallAction, strandedInput, turnStall, turnViewOf, wokeFromSleep } from "./chat-recovery.ts";
 import { asServerNote, CHECK_IN_PREFIX, JOB_NOTICE_PREFIX, poolSlot, TELL_OWNER_TOOL } from "./shared/chat-feed.ts";
 import { checkInIdle, checkInPrompt } from "./chat-checkin.ts";
 import { type JobPush, jobPushLine, jobPushMessage } from "./checkin-jobs.ts";
@@ -1348,7 +1348,8 @@ export class Chats {
       if (action === "wait") { if (!last) this.jobWakes.set(threadId, { failureAt: Number.NaN, attempts: 0, at: stall!.at }); return; }
       const attempts = woke ? 1 : (last?.attempts ?? 0) + 1;
       this.jobWakes.set(threadId, { failureAt: stall!.at, attempts, at: now });
-      await this.threads.restart(threadId, "continue", stall!.retrying);
+      if (contextFull(stall!)) await this.compactThenGo(threadId, stall!, "continue");
+      else await this.threads.restart(threadId, "continue", stall!.retrying);
       this.log(`job ${threadId.slice(0, 8)}: last turn failed (${stall!.error}); woke it${woke ? " after a sleep" : ""}, try ${attempts}`);
     } catch (error) {
       const gone = threadGone(error);
@@ -1462,8 +1463,9 @@ export class Chats {
     const last = woke && failureCause(stall.error) === "transient" ? undefined : this.revivals.get(id);
     // A chat the hub holds no attach for runs no provider retry of Prime's: the idle unload stopped it asleep in one, or a service start left it
     // detached. A failure the pool decides then waits for pi-pool to admit its tree (`stallAction`, `stopped`).
+    const cause = failureCause(stall.error);
     const stopped = this.threads.isLive?.(id) === false && provider !== null && (pooledProviders as readonly string[]).includes(provider) &&
-      !stall.aborted && failureCause(stall.error) !== "other";
+      !stall.aborted && cause !== "other" && cause !== "context";
     // A chat is its tree's root, so the pool is asked about the chat's own id, for a stopped chat and for a hold with input waiting behind it.
     const admits = (stopped || (stall.queued > 0 && stall.slotAt !== undefined && stall.slotAt > now)) && provider !== null && this.source.poolAdmits
       ? await this.source.poolAdmits(id, provider).catch(() => false) : false;
@@ -1474,11 +1476,24 @@ export class Chats {
     this.revivals.set(id, { attempts, at: now });
     this.threads.setWait(id, null);
     try {
-      await this.threads.restart(id, action.message, action.abort);
-      this.log(`chat ${id.slice(0, 8)}: last turn failed (${stall.error}); started a new turn, try ${attempts}${woke ? " after a sleep" : ""}`);
+      if (action.compact) await this.compactThenGo(id, stall, action.message);
+      else await this.threads.restart(id, action.message, action.abort);
+      const did = !action.compact ? "started a new turn" : stall.queued > 0 ? "compacted it and resumed its queue" : "compacted it and started a new turn";
+      this.log(`chat ${id.slice(0, 8)}: last turn failed (${stall.error}); ${did}, try ${attempts}${woke ? " after a sleep" : ""}`);
     } catch (error) {
       this.log(`chat ${id.slice(0, 8)}: restart: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /**
+   * Compacts a session Prime will not send on (`contextFull`), since a restart alone meets the same refusal, then lets it go on: its queued
+   * input when it holds some, with no steer, else `message` as a new turn. On 11-04 the hand compact of sep launch!! released its 39 queued
+   * inputs at once.
+   */
+  private async compactThenGo(id: string, stall: Stall, message: string): Promise<void> {
+    await this.threads.compact(id);
+    if (stall.queued > 0) await this.threads.resumeQueue(id);
+    else await this.threads.restart(id, message);
   }
 
   /**
@@ -1496,10 +1511,11 @@ export class Chats {
       if (!strandedInput(stall, now)) { this.ownerWakes.delete(threadId); return; }
       // A thread that waits for its pi-pool slot holds its input until the slot starts; a "continue" would put it at the end of the line.
       if ((await this.slotPark(threadId))?.park) return;
-      // A job's transient failure is woken by `wakeJob` on its faster schedule.
-      if (this.jobThreads.has(threadId) && failureCause(stall!.error) === "transient") return;
+      // A job's transient failure or full context is woken by `wakeJob` on its faster schedule.
+      if (this.jobThreads.has(threadId) && (failureCause(stall!.error) === "transient" || contextFull(stall!))) return;
       this.ownerWakes.set(threadId, { attempts: (last?.attempts ?? 0) + 1, at: now });
-      await this.threads.restart(threadId, "continue", true);
+      if (contextFull(stall!)) await this.compactThenGo(threadId, stall!, "continue");
+      else await this.threads.restart(threadId, "continue", true);
       this.log(`thread ${threadId.slice(0, 8)}: last turn failed (${stall!.error}) with ${stall!.queued} queued; woke it`);
     } catch (error) {
       this.log(`thread ${threadId.slice(0, 8)}: wake: ${error instanceof Error ? error.message : String(error)}`);

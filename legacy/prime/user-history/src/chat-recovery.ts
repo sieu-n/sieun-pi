@@ -31,20 +31,34 @@ export type { ClaudeState } from "./shared/pool-types.ts";
 
 /** An owner-started failed turn is restarted after 30 s, then on the usual schedule. A turn something else started waits 5 min first. */
 export const OWNER_RETRY_BACKOFF_MS: readonly number[] = [30_000, ...RETRY_BACKOFF_MS];
+/** A context Prime will not send is compacted and restarted at once, and again on the usual schedule while it stays full. */
+export const CONTEXT_RETRY_BACKOFF_MS: readonly number[] = [0, ...RETRY_BACKOFF_MS];
 /** A transient failure (the token command, the connection) is restarted after 30 s, 1 min, 2 min, then on the usual schedule. */
 export const TRANSIENT_RETRY_BACKOFF_MS: readonly number[] = [30_000, 60_000, 120_000, ...RETRY_BACKOFF_MS];
 /** The scheduler wakes every 30 s; a gap longer than this between two wakes means the Mac slept. */
 export const SLEEP_GAP_MS = 90_000;
+/** Whether a stall is a context Prime will not send, so its wake compacts the session before the restart. */
+export const contextFull = (stall: Pick<Stall, "error" | "aborted">): boolean => !stall.aborted && failureCause(stall.error) === "context";
 /** Whether the wake at `now` follows a sleep: more than SLEEP_GAP_MS since the last wake. False at the first wake. */
 export const wokeFromSleep = (last: number | null, now: number): boolean => last !== null && now - last > SLEEP_GAP_MS;
 const waitOf = (schedule: readonly number[], attempts: number): number => schedule[Math.min(attempts, schedule.length - 1)]!;
 
 /**
- * Why a turn failed: `transient` when the pool's token command failed or timed out (Prime runs it with a 10 s limit;
+ * Prime's refusal of a request whose context does not fit. On 11-04 sep launch!! (01a15427, on the Mac) sat from about 05:47 to 12:13 KST on
+ * "Request not sent: context length exceeded. The next request to anthropic/claude-opus-5-5 is about 503909 tokens, over its 500000-token
+ * context window.", with 39 inputs queued: an automatic compaction that failed on a connection drop blocked the next ones, and every
+ * "Your last turn failed" restart met the same refusal. A manual compact lifts that block, as the daemon's `compact` did at 12:11 KST.
+ */
+export const CONTEXT_FULL = "Request not sent: context length exceeded.";
+
+/**
+ * Why a turn failed: `context` when Prime did not send the request because the context does not fit (`CONTEXT_FULL`), so only a compaction
+ * lets the session go on; `transient` when the pool's token command failed or timed out (Prime runs it with a 10 s limit;
  * on 10-05 the Mac slept on battery and every turn failed so) or the connection dropped, `account` when no Claude account exists,
  * `rate-limit` for a 429, a 401 or a Consumer Terms 400 (account availability matters only when the pool also has no usable account), `other` for the rest (Stop).
  */
-export function failureCause(error: string): "account" | "rate-limit" | "transient" | "other" {
+export function failureCause(error: string): "context" | "account" | "rate-limit" | "transient" | "other" {
+  if (error.startsWith(CONTEXT_FULL)) return "context";
   if (/Failed to resolve API key for provider "[^"]*" from shell command|token hook gave no token/i.test(error)) return "transient";
   if (/Failed to resolve API key for provider "anthropic"|No Claude account|No API key for (?:provider: )?anthropic/i.test(error)) return "account";
   // A 401 (bad or expired credentials) or a 400 asking to accept new terms is the vended account failing, like a 429: account availability matters only when
@@ -86,7 +100,21 @@ export function turnViewOf(state: Viewed, running: boolean): TurnView {
     queued: (state.queue?.steering.length ?? 0) + (state.queue?.followUp.length ?? 0) + (state.info?.queuedActions ?? 0), retryError: state.retry?.error ?? null };
 }
 
-/** The thread's stall, or null when its last turn ended well or one runs now. */
+/**
+ * When the session last went well: its newest assistant reply that did not fail, or its newest compaction. A failure older than that is
+ * stale. The hub's messages come in file order (a compaction after the failure it fixed) or, from an attach snapshot, in context order (the
+ * compaction first, then the entries it kept, the failure among them), so the times decide. On 11-04 at 03:11:30Z, about 3 s after the hand
+ * compact of sep launch!! ended, its revive still steered "Your last turn failed at 05:47 (Request not sent: context length exceeded...)".
+ */
+function lastGoodAt(messages: readonly ThreadMessage[]): number {
+  let at = -Infinity;
+  for (const message of messages) {
+    if (message.role === "compactionSummary" || (message.role === "assistant" && message.stopReason !== "error" && message.stopReason !== "aborted")) at = Math.max(at, message.timestamp);
+  }
+  return at;
+}
+
+/** The thread's stall, or null when its last turn ended well, a later good turn or compaction made its failure stale, or one runs now. */
 export function turnStall(view: TurnView, now: number): Stall | null {
   if (view.running && !view.retrying) return null;
   let failed: { error: string; at: number; aborted: boolean } | null = null;
@@ -101,6 +129,7 @@ export function turnStall(view: TurnView, now: number): Stall | null {
     if (message.stopReason !== "error" && message.stopReason !== "aborted") break;
     failed = { error: (message.errorMessage?.trim() || message.stopReason).replace(/\s+/g, " "), at: message.timestamp, aborted: message.stopReason === "aborted" };
   }
+  if (failed && failed.at < lastGoodAt(view.messages)) { failed = null; asked = null; }
   if (!failed && !view.retrying) return null;
   const error = clip(view.retryError?.replace(/\s+/g, " ") || failed?.error || "retrying", 160);
   // The slot note sits after the provider's own text, past the clip.
@@ -125,13 +154,16 @@ export function revivalMessage(stall: Pick<Stall, "error" | "at" | "owner">): st
  * the feed shows the wait to the owner. `woke`: the scheduler just woke from a sleep, and a transient stall restarts now.
  * `stopped`: no worker runs the turn (the idle unload stopped the chat asleep in its provider retry, or a service start left it detached), so
  * no retry of Prime's continues it; it restarts once the pool admits its tree (`admits`) and waits until then, since a restart before that
- * only meets the same refusal and loads the chat for nothing.
+ * only meets the same refusal and loads the chat for nothing. A context Prime will not send restarts with `compact`: the session is compacted
+ * first, at once and then on the usual schedule, since a restart alone only meets the same refusal.
  */
 export function stallAction(input: { stall: Stall; down: boolean; claude: ClaudeState | null; attempts: number; since: number; now: number; woke?: boolean; admits?: boolean; stopped?: boolean }):
-  { kind: "restart"; message: string; abort: boolean } | { kind: "wait"; wait: ChatWait | null } | { kind: "none" } {
+  { kind: "restart"; message: string; abort: boolean; compact: boolean } | { kind: "wait"; wait: ChatWait | null } | { kind: "none" } {
   const { stall, attempts, since, now } = input;
-  const transient = !stall.aborted && failureCause(stall.error) === "transient";
-  const restart = { kind: "restart" as const, message: revivalMessage(stall), abort: stall.retrying };
+  const cause = stall.aborted ? null : failureCause(stall.error);
+  const transient = cause === "transient";
+  const compact = cause === "context";
+  const restart = { kind: "restart" as const, message: revivalMessage(stall), abort: stall.retrying, compact };
   if (input.stopped) {
     if (input.admits === true) return restart;
     const until = stall.slotAt ?? input.claude?.freeAt ?? null;
@@ -140,7 +172,7 @@ export function stallAction(input: { stall: Stall; down: boolean; claude: Claude
   if (poolHolds(stall, now) && !(stall.queued > 0 && input.admits === true)) return { kind: "wait", wait: stall.owner === null ? null : { kind: "account", until: stall.slotAt! } };
   if (input.woke && transient) return restart;
   if (stall.retrying && stall.queued === 0 && !input.down) return { kind: "none" };
-  const schedule = transient ? TRANSIENT_RETRY_BACKOFF_MS : stall.owner !== null ? OWNER_RETRY_BACKOFF_MS : RETRY_BACKOFF_MS;
+  const schedule = compact ? CONTEXT_RETRY_BACKOFF_MS : transient ? TRANSIENT_RETRY_BACKOFF_MS : stall.owner !== null ? OWNER_RETRY_BACKOFF_MS : RETRY_BACKOFF_MS;
   const at = since + waitOf(schedule, attempts);
   if (now >= at) return restart;
   if (stall.owner === null) return { kind: "wait", wait: null };
@@ -150,13 +182,15 @@ export function stallAction(input: { stall: Stall; down: boolean; claude: Claude
 /** The wakes sent to a job thread for its run of transient failures: the failure last woken (its time), how many, and when the last went. */
 export interface JobWake { failureAt: number; attempts: number; at: number }
 /**
- * What to do about a job of a chat (a subagent or a create_session root): `none` when its last turn did not end in a transient failure;
- * otherwise `wake` once per failure on the TRANSIENT_RETRY_BACKOFF_MS schedule, and at once after a sleep (`woke`), queued input or not. A
- * provider retry with nothing queued is the session's own to finish until a sleep.
+ * What to do about a job of a chat (a subagent or a create_session root): `none` when its last turn did not end in a transient failure or a
+ * context Prime will not send; otherwise `wake` once per failure on the TRANSIENT_RETRY_BACKOFF_MS schedule, and at once after a sleep
+ * (`woke`), queued input or not. A provider retry with nothing queued is the session's own to finish until a sleep. The wake of a full
+ * context compacts the job first (`contextFull`).
  */
 export function jobWake(input: { stall: Stall | null; last: JobWake | undefined; woke: boolean; now: number }): "wake" | "wait" | "none" {
   const { stall, last } = input;
-  if (!stall || stall.aborted || failureCause(stall.error) !== "transient") return "none";
+  const cause = stall && !stall.aborted ? failureCause(stall.error) : null;
+  if (!stall || (cause !== "transient" && cause !== "context")) return "none";
   if (last?.failureAt === stall.at || poolHolds(stall, input.now)) return "wait";
   if (input.woke) return "wake";
   if (stall.retrying && stall.queued === 0) return "wait";

@@ -303,6 +303,8 @@ const LOCAL_HELLO_MS = 30_000;
 const DAEMON_DOWN = /Prime Agent daemon (?:on \S+ )?is not reachable|Failed to connect to the Prime Agent daemon/;
 /** A prompt's wait for the session to take it, as long as the native connection's (DAEMON_LONG_RUNNING_REQUEST_TIMEOUT_MS, 24 h). */
 const PROMPT_REQUEST_MS = 24 * 60 * 60 * 1000;
+/** A compaction's wait for its summary, as long as pi-host's (src/pi-host-client.ts `compact`); the 11-04 one of 503,320 tokens took 97 s. */
+const COMPACT_REQUEST_MS = 30 * 60_000;
 
 /** A daemon prompt's fields; an owner send to another box carries `ownerTurn`, which that box's relay marks (components/prime-relay/owner-turn.mjs). */
 /** What a spare session is made for: the box, folder, model and effort of the new thread the owner is writing. */
@@ -1700,6 +1702,22 @@ export class ThreadHub {
       const response = await (await this.daemon(id)).request({ type: "resume_queue", activeSessionId: live.activeSessionId }, undefined, { recoverable: false });
       if (!response.success && response.error !== "No queued work to resume") throw new ThreadError(502, response.error);
     }, () => this.stateOf(id, live.activeSessionId));
+  }
+
+  /**
+   * Compacts the session with the daemon's `compact` command, the one behind /compact, sent to the daemon of the box that runs it, so a Mac
+   * chat's goes through the bridge socket and the Mac's relay. A manual compact also lifts the block a failed automatic compaction left, which
+   * holds every later request as "Request not sent: context length exceeded". It waits for the compaction to end: the 11-04 hand compact of
+   * sep launch!! (503,320 tokens) took 97 s, far past the daemon client's default timeout.
+   */
+  async compact(id: string): Promise<void> {
+    await this.use(id, async () => {
+      const { live } = await this.requireResumed(id, "compact");
+      await afterMove(async () => {
+        const response = await (await this.daemon(id)).request({ type: "compact", activeSessionId: live.activeSessionId }, COMPACT_REQUEST_MS, { recoverable: false });
+        if (!response.success) throw new ThreadError(502, response.error);
+      }, () => this.stateOf(id, live.activeSessionId));
+    });
   }
 
   /**
