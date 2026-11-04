@@ -12,7 +12,7 @@ Python walks a cell makes as they run, because a cell builds the root at run tim
 3. Only a call made by cell code (a frame whose file is "<cell-N>", which covers helpers a cell defines) is judged, so library and
    skill code runs as before.
 
-Hard limit: the owner set rule 6 himself, and a warning would reach the caller only after the walk had held its pool slot.
+Hard limit: owner rule 6 says never, and c81's measured repeats show the text did not hold (on 11-04 walks of 56 and 24 min), while a warning would come only after the walk.
 The prelude in kernel-guard.ts runs this file once per kernel.
 """
 
@@ -38,6 +38,7 @@ TAIL = (
 )
 
 
+# Hard limit: owner rule 6 says never, and c81's measured repeats show the text did not hold (on 11-04 walks of 56 and 24 min).
 class WalkRefused(Exception):
     """A walk of all of home or the wiki content root."""
 

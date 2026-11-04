@@ -12,8 +12,9 @@ import { SHELLS, effective, expandVars, lex, shellScript, stripHeredocs } from "
  * when both needed only the curated folders. This rule refuses a find, an rg and a grep -r whose root is home, the wiki content root, or a
  * folder that holds one of them; kernel-walk.py refuses the Python walks. A walk of one named subfolder passes, and so does a find or rg
  * with a max depth of 3 or less: on 11-04 `find ~ -maxdepth 3` listed 175,725 entries in 2.4 s on us-metal02.
- * Hard limit: the owner set rule 6 himself, and a warning would reach the caller only after the walk had held its pool slot.
+ * Hard limit: owner rule 6 says never, and c81's measured repeats show the text did not hold (on 11-04 walks of 56 and 24 min), while a warning would come only after the walk.
  */
+// Hard limit: owner rule 6 says never, and c81's measured repeats show the text did not hold (on 11-04 walks of 56 and 24 min).
 const PREFIX = "global-rules wiki walk guard:";
 export const WALK_TAIL =
 	"Owner rule 6: never walk all of home or the wiki content root, which holds about 100 GB of sessions/ and agents/; on 11-04 two wiki " +
