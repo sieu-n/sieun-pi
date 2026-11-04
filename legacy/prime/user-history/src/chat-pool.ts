@@ -108,6 +108,19 @@ function reportedError(stdout: string): string | null {
   try { const value: unknown = JSON.parse(stdout); return isRecord(value) ? text(value.error) : null; } catch { return null; }
 }
 
+/**
+ * A short pi-pool command the service runs on its own, such as the turn queue's lead list each tick, through hookd's socket (`poolPart`), so
+ * the chat forks no process for it. The spawn of each such CLI run held the main thread while the kernel copied the chat's address space: 16
+ * `pi-pool lead` runs from 00:11Z to 01:15Z on 11-04 took 37 ms median and 81 ms p90 in spawn, and the one at 00:53:27Z took 1,038 ms with
+ * 2.51 runnable threads a core, the 1.07 s loop stall d7 read for 00:53Z. A command that may outrun hookd's answer wait, such as an account
+ * removal, keeps `run`.
+ */
+async function runQuick(args: string[]): Promise<string> {
+  const said = await poolPart(args);
+  if (said.code !== 0) throw new Error("pi-pool failed: " + (said.err.trim() || reportedError(said.out) || `exit ${said.code}`).slice(0, 300));
+  return said.out;
+}
+
 function run(args: string[], timeout = 15000): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(poolExecutable(), args, { timeout, maxBuffer: 4 * 1024 * 1024, env: poolEnv() }, (error, stdout, stderr) => {
@@ -681,7 +694,7 @@ export function parseNoModelRoom(config: unknown): NoModelRoomSetting {
 }
 
 export async function readNoModelRoom(): Promise<NoModelRoomSetting> {
-  return parseNoModelRoom(JSON.parse(await run(["config"])));
+  return parseNoModelRoom(JSON.parse(await runQuick(["config"])));
 }
 
 /** `pi-pool set no_model_room <value> --by "the Settings pane"`, then the value as the pool reads it back. */
@@ -695,17 +708,17 @@ export async function setNoModelRoom(value: NoModelRoom): Promise<NoModelRoomSet
  * One pi-pool call took 0.16 to 0.20 s at load 20 on 10-14, so it adds no wait the owner sees.
  */
 export async function markOwnerTurn(sessionId: string): Promise<void> {
-  await run(poolCommand.ownerTurn(sessionId));
+  await runQuick(poolCommand.ownerTurn(sessionId));
 }
 
 /** This box's `pi-pool queue --json` read now, unparsed, for the lead writer's read of the list (`leadNow`). */
 export async function poolQueueNow(): Promise<unknown> {
-  return JSON.parse(await run(["queue", "--json"]));
+  return JSON.parse(await runQuick(["queue", "--json"]));
 }
 
 /** Puts the queued runs of these sessions ahead of every other queued run in this box's turn queue (`pi-pool lead`); the list replaces the last one. */
 export async function leadSessions(sessionIds: readonly string[]): Promise<void> {
-  await run(poolCommand.lead(sessionIds));
+  await runQuick(poolCommand.lead(sessionIds));
 }
 
 /** The class a tree's pool record holds as the pool reads it, and its sidebar label; null priority for a tree with no record yet. */
