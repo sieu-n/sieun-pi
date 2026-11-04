@@ -11,10 +11,11 @@ import { judgeBrowser } from "./browser.ts";
 import { judgeHeavyCheck } from "./heavy-check.ts";
 import { judgeKill } from "./kill.ts";
 import { judgeRepoCopy } from "./repo-copy.ts";
+import { judgeWalk } from "./walk.ts";
 import { cellStart, cellSteps } from "./kernel-cwd.ts";
 
 export interface Verdict {
-	rule: "sieun-pi" | "send" | "cap" | "pm2" | "browser" | "kill" | "repo-copy";
+	rule: "sieun-pi" | "send" | "cap" | "pm2" | "browser" | "kill" | "repo-copy" | "walk";
 	command: string;
 	reason: string;
 }
@@ -96,6 +97,7 @@ export function judgeShellText(text: string, cwd: string): Verdict[] {
 		...judgeBrowser(text, cwd),
 		...judgeKill(text),
 		...judgeRepoCopy(text, cwd),
+		...judgeWalk(text, cwd),
 		...(text.includes("cua-driver") ? judgeCuaShell(text) : []),
 	];
 }

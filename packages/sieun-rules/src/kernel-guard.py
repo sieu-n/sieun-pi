@@ -62,6 +62,8 @@ HEAVY_HINT = re.compile(r"svelte-check|\btsgo\b|\btsc\b|vitest|\bturbo\b|\b(?:np
 KILL_HINT = re.compile(r"\b(?:pkill|killall|kill)\b")
 # A repo copy (git worktree add, a clone of a local checkout, git archive into a folder), which repo-copy.ts judges (owner rule c193).
 COPY_HINT = re.compile(r"\bgit\b[\s\S]*\b(?:worktree|clone|archive)\b")
+# A find, rg or grep that may walk all of home or the wiki content root, which walk.ts judges (owner rule 6, 11-04).
+WALK_HINT = re.compile(r"\b(?:find|rg|e?grep|fgrep)\b")
 MCP_HINT = re.compile(r"send|reply|forward|post|comment|message|submit|create|invite|exec|repl", re.I)
 WRITE = frozenset({"POST", "PUT", "PATCH"})
 OWN_PACKAGES = ("aside_browser",)
@@ -396,7 +398,7 @@ def on_shell(args, cwd, env, executable=None) -> None:
     where = os.fsdecode(cwd) if cwd else os.getcwd()
     repo = touches_repo(text, where)
     hinted = SHELL_HINT.search(text) or (BROWSER_HINT and BROWSER_HINT.search(text)) or (HEAVY_HINT and HEAVY_HINT.search(text))
-    if not (repo or CAP_HINT.search(text) or KILL_HINT.search(text) or COPY_HINT.search(text) or (hinted and not plain_git(executable, args))) or owned_by_skill():
+    if not (repo or CAP_HINT.search(text) or KILL_HINT.search(text) or COPY_HINT.search(text) or WALK_HINT.search(text) or (hinted and not plain_git(executable, args))) or owned_by_skill():
         return
     names = env if isinstance(env, dict) else os.environ
     expanded = re.sub(r"\$\{?([A-Za-z_]\w*)\}?", lambda m: os.fsdecode(names.get(m.group(1), m.group(0))), text)

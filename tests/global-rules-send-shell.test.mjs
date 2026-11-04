@@ -230,7 +230,7 @@ test("ipython bash calls, subprocess argv lists, bang lines and %%bash cells get
 test("read-only commands that only name mail tools or send URLs are allowed in bash and ipython", () => {
   blocked("bash", ["msmtp vendor@acme.com < reply.eml"]);
   const reads = [
-    "rg -n sendmail",
+    "rg -n sendmail src/",
     "rg -n 'mail -s' docs/",
     "grep -n swaks README.md",
     "man msmtp",

@@ -47,6 +47,8 @@ wiki.close("what changed", no_durable_knowledge=True)  # or graduated_to=[...] o
 3. A write names its conversation in the `x-pi-conversation` header, and a write without one is stamped `unknown`.
 4. `POST /api/c/<conversation>/workspace` opens the folder, `.../workspace/events` appends a log event and `.../workspace/close` closes it.
 5. Every other `/wiki/*` path passes through to the engine, so the engine's agent API answers at `/wiki/api/agent/*`, such as `/wiki/api/agent/search?q=` and `/wiki/api/agent/sessions`.
+   `/wiki/api/agent/find?glob=apps/**` lists the pages under a path glob, and `/wiki/api/agent/grep?pattern=<regex>&glob=apps/**&context=0` returns one row per matching line with its page `path`.
+   A count over the curated pages asks each of `apps/**`, `domains/**`, `projects/**` and `experiments/**`, because the content root's `sessions/` held 95 GB on 11-04 and the global-rules guard refuses a walk of the whole root.
 6. Old links and calls on the engine's old tailnet port (`/page/<path>`, `/raw/<path>`, `/api/agent/*`) still answer, because the engine puts `/wiki` in front of a path that lacks it, but every new link and call uses `:5184/wiki/`.
 
 ## The page format

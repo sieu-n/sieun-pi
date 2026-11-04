@@ -24,6 +24,8 @@ const JOURNAL_FILE = join(HERE, "kernel-journal.py");
 // kernel-wait.py hands a cell's bash() await back after 120 s and stops a cell's sleeps at 120 s, so a turn that only waits ends and frees its
 // pool slot (11-03: waits over 2 min held 172.6 of 664.9 slot-hours). It has its own flag for the same reason.
 const WAIT_FILE = join(HERE, "kernel-wait.py");
+// kernel-walk.py refuses a cell's Python walk of all of home or the wiki content root (owner rule 6, 11-04). It has its own flag for the same reason.
+const WALK_FILE = join(HERE, "kernel-walk.py");
 
 export const PRELUDE_SOURCE = `
 import sys
@@ -63,6 +65,12 @@ if not getattr(sys, "global_rules_kernel_wait", False):
         exec(compile(open(${JSON.stringify(WAIT_FILE)}).read(), ${JSON.stringify(WAIT_FILE)}, "exec"), {"__name__": "global_rules_kernel_wait", "__file__": ${JSON.stringify(WAIT_FILE)}})
     except Exception as error:
         print(f"global-rules: the kernel wait default did not load: {error}", file=sys.stderr)
+if not getattr(sys, "global_rules_kernel_walk", False):
+    sys.global_rules_kernel_walk = True
+    try:
+        exec(compile(open(${JSON.stringify(WALK_FILE)}).read(), ${JSON.stringify(WALK_FILE)}, "exec"), {"__name__": "global_rules_kernel_walk", "__file__": ${JSON.stringify(WALK_FILE)}})
+    except Exception as error:
+        print(f"global-rules: the kernel walk guard did not load: {error}", file=sys.stderr)
 _convex_report = getattr(sys, "global_rules_convex_report", None)
 if _convex_report:
     _convex_report()
