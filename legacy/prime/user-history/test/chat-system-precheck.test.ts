@@ -1,9 +1,10 @@
 // Guards the Chat system duty's precheck (d9), built 10-19 for the owner's rule that a plan holds only tasks that finish (msg mvfb7zt0).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agingSince, chatSystemOutput, failingTurns, fixNotMoving, manualSelection, goalsWithNoJob, downRoutes, jobPushRecords, jobPushTells, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushSettled, pushesSince, pushTells, spotAuditLines, spotPick, spread, unknownOwners, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
+import { agingSince, chatSystemOutput, failingTurns, fixNotMoving, fixWorkUnread, unreadFixes, manualSelection, goalsWithNoJob, downRoutes, jobPushRecords, jobPushTells, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushSettled, pushesSince, pushTells, spotAuditLines, spotPick, spread, unknownOwners, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
 import { type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
 import type { MetricStreak } from "../src/shared/duty-streak.ts";
+import type { DutyRunRecord } from "../src/shared/chat-duties.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
 import { routedTell } from "../src/clean-room-subjects.ts";
 
@@ -234,6 +235,38 @@ test("a red duty whose live fix has not moved its number over 3 or more misses i
   assert.ok(out.flagged!.some(slice => slice.kind === "fix_not_moving" && slice.item === "d1"));
   assert.ok(out.flagged!.some(slice => slice.kind === "push" && slice.excerpt.startsWith("1 chat has")));
   assert.deepEqual(pushList({ idleGoals: [], stuckDuties: [], upkeep: [], notMoving: found }).map(entry => [entry.chat, entry.duties]), [["a", [found[0]!.line]]]);
+});
+
+test("a fix whose job worked after the duty's newest reading gets a verify run, and only a fresh reading flags it as not moving", () => {
+  // 11-04: d9's 03:33Z run asked Prospect feature bro to replace p291 on d2 from three 99.5% runs read by 02:24Z, while p291's fix 02bce70f4
+  // served on prod from 03:25Z, its job worked until 03:26Z, and d2 read 100 at 04:11Z.
+  const at = (time: string): number => Date.parse(`2026-11-04T${time}:00Z`);
+  const read = (value: number) => ({ owner_green_pct: { value, target: 100, op: ">=" as const, met: value >= 100 } });
+  const fix = { step: "p291", job: "watchlist collab doc-drift stops 11-04", live: true };
+  const run = (start: string, trigger: DutyRunRecord["trigger"], after?: string): DutyRunRecord => {
+    const record: DutyRunRecord = { duty: "d2", at: at(start), slot: at(start), trigger, ms: 1, verdict: "missed", metrics: read(99.5), summary: "missed", fixes: { owner_green_pct: fix } };
+    if (after) record.after = { at: at(after), verdict: "missed", metrics: read(99.5), summary: "missed" };
+    return record;
+  };
+  const own: DutyRunRecord[] = [run("02:22", "verify"), run("02:17", "owner", "02:24"), run("01:47", "owner", "02:06")];
+  assert.equal(fixWorkUnread(own, at("03:26"), undefined), at("03:26"));
+  assert.equal(fixWorkUnread(own, at("02:20"), undefined), undefined);
+  const metric: MetricStreak = { key: "owner_green_pct", misses: 3, moved: false, since: at("01:47"), value: 99.5, target: 100, op: ">=", fix, stuck: true };
+  const duty = { chat: "pfb", duty: "d2", name: "Watchlist green", green: false, misses: 3, stuck: false, fix: "p291", metric, underFix: { misses: 3, moved: false },
+    unreadWork: at("03:26") };
+  assert.deepEqual(fixNotMoving([duty], () => "Prospect feature bro"), []);
+  assert.deepEqual(unreadFixes([duty]).map(entry => entry.duty), ["d2"]);
+  const out = chatSystemOutput({ names: new Map([["pfb", "Prospect feature bro"]]), stuck: [], upkeep: [], fleet: { pct: 50, red: [duty] }, stuckDuties: [], idleGoals: [], followUps: [], detail: "/tmp/d9.md" });
+  assert.equal(out.metrics.fix_not_moving, 0);
+  assert.match(out.flagged!.find(slice => slice.kind === "fix_unread")!.excerpt, /^Prospect feature bro: Watchlist green \(d2\) misses owner_green_pct under p291, whose job worked at 2026-11-04T03:26Z, .* starts a verify run of d2/);
+  // The 03:33Z d9 run asked for the verify run; one that still reads 99.5 at 03:35Z judges p291 even though its job works on.
+  const fresh: DutyRunRecord[] = [run("03:35", "verify"), ...own];
+  assert.equal(fixWorkUnread(fresh, at("05:20"), at("03:33")), undefined);
+  assert.equal(fixWorkUnread(fresh, at("05:20"), undefined), at("05:20"));
+  const { unreadWork: _read, ...rest } = duty;
+  const judged = { ...rest, underFix: { misses: 4, moved: false } };
+  assert.deepEqual(fixNotMoving([judged], () => "Prospect feature bro").map(entry => entry.duty), ["d2"]);
+  assert.deepEqual(unreadFixes([judged]), []);
 });
 
 // d9 run of 10-24: the global-rules read guard refuses a read of another chat's transcript, so the spot audit reads the board, job list and agent_observe.

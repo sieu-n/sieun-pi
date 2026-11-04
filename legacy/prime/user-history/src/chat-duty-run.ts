@@ -1303,6 +1303,7 @@ export class Duties {
     try {
       const output = await this.precheck(duty, dir, detail, previous.slice(0, 10));
       await this.sendTells(chatId, dutyId, output.tells);
+      await this.startVerifies(chatId, dutyId, output.verify);
       const judged = judge(duty.metrics, output, { now: started, runs: previous });
       const readings = outputReadings(duty.readings, output);
       const hostAway = hostAwayOf(output);
@@ -1352,6 +1353,24 @@ export class Duties {
     const handOff = findingsFile && flagged.some(slice => slice.handOff) ? { items: flagged.filter(slice => slice.handOff), detail: findingsFile } : undefined;
     await this.startJob(chatId, record, duty, { schedule: duty.schedule, measured, ...idle ? { idle: true as const } : {},
       brief: { measure: record.verdict === "error" ? `no measure (${record.summary})` : record.summary, findings, misses, ...record.parts ? { parts: record.parts } : {} }, ...handOff ? { handOff } : {} });
+  }
+
+  /** Starts a verify run of each duty a precheck's `verify` names (`PrecheckOutput.verify`), the check-in through the chat server's queue. */
+  private async startVerifies(chatId: string, dutyId: string, asks: PrecheckOutput["verify"]): Promise<void> {
+    if (!Array.isArray(asks)) return;
+    for (const ask of asks) {
+      if (typeof ask?.chat !== "string" || typeof ask.duty !== "string") continue;
+      const by = `duty ${chatId.slice(0, 8)}/${dutyId}`;
+      if (ask.duty === CHECK_IN_DUTY_ID) {
+        if (!this.host.checkIn) continue;
+        this.log(`${by}: ${ask.chat.slice(0, 8)}/${ask.duty} has fix work no reading has judged; a verify run starts`);
+        void this.host.checkIn.run(ask.chat, "verify").catch(error => this.log(`duty ${ask.chat.slice(0, 8)}/${ask.duty}: verify: ${message(error)}`));
+        continue;
+      }
+      if (!(await this.store.list(ask.chat).catch(() => [])).some(duty => duty.id === ask.duty)) continue;
+      const started = this.start(ask.chat, ask.duty, "verify", null);
+      this.log(`${by}: ${ask.chat.slice(0, 8)}/${ask.duty} has fix work no reading has judged; ${started ? "a verify run starts" : "a run is going, so no verify run starts"}`);
+    }
   }
 
   /**

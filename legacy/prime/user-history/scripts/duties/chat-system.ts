@@ -20,7 +20,7 @@ import { CHECK_IN_DUTY_ID, type DutyPrecheck, type DutyRunRecord, type FlaggedSl
 import { DutyStore } from "../../src/chat-duty-store.ts";
 import { D9_PUSH_PREFIX, serverNote } from "../../src/shared/chat-feed.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
-import { CHANGE_APPROACH_MISSES, fixStepStreak } from "../../src/shared/duty-streak.ts";
+import { CHANGE_APPROACH_MISSES, fixStepStreak, newestReading } from "../../src/shared/duty-streak.ts";
 import { agingSince, agingUntil, countWindowMs } from "../../src/duty-push.ts";
 import { pendingWakes, type Wake } from "../../src/wakes.ts";
 import { hasDoneLine, upkeepWords } from "../../src/shared/upkeep-title.ts";
@@ -142,7 +142,26 @@ function localCopy(file: string | undefined): { file: string; host: string } | u
  */
 export type RedDuty = FleetDuty & { agingSince?: number; agingUntil?: number; underFix?: ReturnType<typeof fixStepStreak>; windowWait?: number;
   /** The fix step reads `blocked`: its fix is not in place yet (a build not installed, a land not made), so its runs judge no fix. */
-  fixBlocked?: true };
+  fixBlocked?: true;
+  /** When the fix step's job last worked, after the duty's newest reading and with no verify run d9 asked for since (`fixWorkUnread`). */
+  unreadWork?: number };
+
+/**
+ * When the fix job worked after the duty's newest reading (`newestReading`), the time of that work, so no reading on record judges it yet;
+ * undefined once a reading is as new as the work, or as new as the verify run the last d9 run asked for (`askedAt`), so a job that works on
+ * without a break is judged on that verify run. At 03:33Z on 11-04 d9 asked Prospect feature bro to replace p291 on d2's owner_green_pct
+ * from three 99.5% runs between 01:47Z and 02:24Z, while p291's fix 02bce70f4 had served on prod since 03:25Z and d2 read 100 at 04:11Z.
+ */
+export function fixWorkUnread(own: readonly DutyRunRecord[], workedAt: number | undefined, askedAt: number | undefined): number | undefined {
+  const reading = newestReading(own);
+  if (!reading || workedAt === undefined) return undefined;
+  const readAt = reading.after?.at ?? reading.at;
+  return readAt >= workedAt || (askedAt !== undefined && readAt >= askedAt) ? undefined : workedAt;
+}
+
+/** The red duties `fixNotMoving` would flag but for fix work no reading has judged (`unreadWork`): each gets a verify run, and the next d9 run judges it. */
+export const unreadFixes = (red: readonly RedDuty[]): RedDuty[] =>
+  red.filter(({ unreadWork, ...duty }) => unreadWork !== undefined && fixNotMoving([duty], () => "").length > 0);
 
 /** The ids of the plan items above `id` on a board, nearest first: what a fix step's own number can be read from (`fixStepStreak`). */
 export function itemsAbove(board: ChatBoard | null, id: string): string[] {
@@ -220,13 +239,14 @@ export interface NotMoving { chat: string; duty: string; line: string }
  * asked to replace AI harness p1127, whose Prime build with ctx.waitForCredential was never installed on us-metal02, so pi-pool's park could not
  * fire and quiet_agent_gb could not move.
  * When the runs read a number for the item the step works (`fixStepStreak` with `itemsAbove`), the move is judged on that number and the
- * line names it, since a count of goals or risks moves only when one clears.
+ * line names it, since a count of goals or risks moves only when one clears. A fix whose job worked after the newest reading (`unreadWork`)
+ * waits for the verify run d9 asks for (`unreadFixes`).
  */
 export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => string): NotMoving[] {
   return red.flatMap(duty => {
     const metric = duty.metric;
     const under = duty.underFix;
-    if (duty.held || duty.fixBlocked || !duty.fix || metric?.fix?.step !== duty.fix || duty.agingSince !== undefined || metric.quietSince !== undefined || duty.windowWait !== undefined || !under ||
+    if (duty.held || duty.fixBlocked || duty.unreadWork !== undefined || !duty.fix || metric?.fix?.step !== duty.fix || duty.agingSince !== undefined || metric.quietSince !== undefined || duty.windowWait !== undefined || !under ||
       under.moved || under.misses < CHANGE_APPROACH_MISSES) return [];
     const worked = under.worked;
     const stall = worked ? `${worked.item}, the item ${duty.fix} works, read ${show(worked.to)} against ${show(worked.target)}, no closer than its ${show(worked.from)} when the first of those runs measured it`
@@ -613,6 +633,10 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
   const notMoving = fixNotMoving(facts.fleet.red, name);
   head("fix_not_moving", notMoving.length, "red duties whose live fix job does not move the number", chats(notMoving));
   for (const duty of spread(notMoving, EXAMPLES)) flagged.push({ kind: "fix_not_moving", chat: duty.chat, item: duty.duty, excerpt: `${duty.line}.` });
+  for (const duty of unreadFixes(facts.fleet.red)) {
+    flagged.push({ kind: "fix_unread", chat: duty.chat, item: duty.duty, excerpt: `${name(duty.chat)}: ${duty.name} (${duty.duty}) misses ${duty.metric!.key} under ${duty.fix}, ` +
+      `whose job worked at ${minute(duty.unreadWork!)}, after the duty's newest reading, so this run starts a verify run of ${duty.duty} and the next d9 run judges ${duty.fix} on it; push no replacement for ${duty.fix}.` });
+  }
   const pushes = pushList({ ...facts, notMoving }).filter(entry => !down.has(entry.chat) && !facts.noPush?.has(entry.chat));
   if (pushes.length) flagged.push({ kind: "push", excerpt: `${pushes.length} ${pushes.length === 1 ? "chat has" : "chats have"} a goal with no live job, an open step nobody moves, a red duty with no fix job ` +
     `or with a fix that does not move it, or a plan item that is upkeep or has no done line; ` +
@@ -860,6 +884,11 @@ async function main(): Promise<void> {
   const runsOf = (chat: string, duty: string) => (runsByChat.get(chat) ?? []).filter(run => run.duty === duty);
   const wakes = await pendingWakes(join(dataDir, "wakes"), now);
   const store = new DutyStore(dataDir);
+  // The verify runs the last d9 run asked for (`unreadFixes`), read from its output file: a reading since then judges the fix.
+  const lastRuns = JSON.parse(await readFile(process.env.LAST_RUNS_FILE ?? "", "utf8").catch(() => "[]")) as DutyRunRecord[];
+  const lastRun = lastRuns.find(run => run.verdict !== "skipped");
+  const lastOutput = lastRun?.detail ? JSON.parse(await readFile(lastRun.detail, "utf8").catch(() => "{}")) as Partial<PrecheckOutput> : {};
+  const asked = new Set((lastOutput.verify ?? []).map(ask => `${ask.chat}/${ask.duty}`));
   const red = await Promise.all(fleetDuties.filter(duty => !duty.green && !duty.pending).map(async (duty): Promise<RedDuty> => {
     const own = runsOf(duty.chat, duty.duty);
     const since = agingSince(own);
@@ -875,8 +904,11 @@ async function main(): Promise<void> {
     const under = duty.fix && metric ? { underFix: fixStepStreak(own, metric.key, duty.fix, itemsAbove(board, duty.fix), judging) } : {};
     const judgedFrom = under.underFix?.judgedFrom;
     const waits = [fixWindowWait(metric, step, wakes, now), judgedFrom !== undefined && judgedFrom > now ? judgedFrom : undefined].filter((at): at is number => at !== undefined);
+    const sessions = step ? stepSessions(step, owners.named.get(duty.chat) ?? new Map()) : [];
+    const worked = rows.filter(row => sessions.includes(row.sessionId)).map(row => ms(row.lastActivityAt)).filter(at => at > 0);
+    const unread = fixWorkUnread(own, worked.length ? Math.max(...worked) : undefined, asked.has(`${duty.chat}/${duty.duty}`) ? lastRun?.at : undefined);
     const entry: RedDuty = { ...duty, ...metric ? { metric } : {}, ...under, ...since === undefined ? {} : { agingSince: since }, ...until === undefined ? {} : { agingUntil: until },
-      ...step?.status === "blocked" ? { fixBlocked: true as const } : {} };
+      ...step?.status === "blocked" ? { fixBlocked: true as const } : {}, ...unread === undefined ? {} : { unreadWork: unread } };
     // The wait is named only where it keeps d9 from asking to replace the fix, judged as before windows and the item's own reading.
     const plain = duty.fix && metric ? fixStepStreak(own, metric.key, duty.fix, itemsAbove(board, duty.fix)) : undefined;
     const hides = plain !== undefined && fixNotMoving([{ ...entry, underFix: plain }], () => "").length > 0;
@@ -891,8 +923,7 @@ async function main(): Promise<void> {
   const stuckDuties = [...withLiveGoalGaps(counts.redDuties, new Map(goalGaps.map(entry => [entry.chat, entry.goals.length]))).filter(counted),
     ...appsDuties.filter(duty => duty.stuck).map(duty => ({ chat: duty.chat, duty: duty.duty, keys: duty.metric ? [duty.metric.key] : [], line: appsStuckLine(duty, names.get(duty.chat) ?? duty.chat) }))];
   // The pushes the last run's job sent: those recorded after the last run of this duty began (LAST_RUNS_FILE, newest first).
-  const lastRuns = JSON.parse(await readFile(process.env.LAST_RUNS_FILE ?? "", "utf8").catch(() => "[]")) as DutyRunRecord[];
-  const since = lastRuns.find(run => run.verdict !== "skipped")?.at;
+  const since = lastRun?.at;
   const sent = since === undefined ? [] : pushesSince(await readFile(PUSHES_FILE, "utf8").catch(() => ""), since);
   const followUps: PushCheck[] = [];
   for (const push of sent) {
@@ -948,6 +979,7 @@ async function main(): Promise<void> {
   result.flagged!.push({ kind: "spot_audit", chat: spot, excerpt: `Spot audit this run: ${names.get(spot)} (${spot}). Its files and the owner's last messages in it are in ${detail}; ` +
     `log what you found to ${log}, and send the owner nothing.` });
 
+  const verify = unreadFixes(red).filter(duty => !appsIds.has(duty.chat)).map(duty => ({ chat: duty.chat, duty: duty.duty }));
   const md = [
     `# Chat system run of ${new Date(now).toISOString()}`, "",
     `stuck_steps_all ${result.metrics.stuck_steps_all}, plan_upkeep_all ${result.metrics.plan_upkeep_all}, duties_green_pct ${result.metrics.duties_green_pct}, ` +
@@ -982,6 +1014,8 @@ async function main(): Promise<void> {
     section(`Red duties with no live fix job (${stuckDuties.length})`, stuckDuties.map(duty => `${duty.line}.`)),
     section(`Red duty metrics that wait on the owner's open For you todo (${owned.ownerHeld.length})`, owned.ownerHeld.map(duty => `${duty.line}.`)),
     section(`Red duties whose live fix job does not move the number (${notMoving.length})`, notMoving.map(duty => `${duty.line}.`)),
+    section(`Red duties whose fix job worked after their newest reading, measured again by a verify run (${verify.length})`,
+      verify.map(ask => `${name(ask.chat)}: ${ask.duty}.`)),
     section(`Red windowed counts with no lastEventAt, read as lagging windows (${owned.lagging.length})`, owned.lagging.map(duty => `${duty.line}.`)),
     section(`Check-ins late by more than ${LATE_INTERVALS} intervals (${lateCheckIns.length})`, lateCheckIns.map(standing => `${checkInStandingLine(standing, name(standing.chat), now)}.`)),
     section(`Check-ins that do not run, with why (${stopped.length})`,
@@ -992,7 +1026,7 @@ async function main(): Promise<void> {
     await mkdir(dirname(PUSHES_FILE), { recursive: true });
     await appendFile(PUSHES_FILE, [...pushRecords(pushes, tag, now), ...jobPushRecords(direct, tag, now)].map(line => JSON.stringify(line) + "\n").join(""));
   }
-  await writeFile(output, JSON.stringify({ ...result, tells: [...pushTells(pushes, tag), ...jobPushTells(direct, tag, name)] }, null, 2) + "\n");
+  await writeFile(output, JSON.stringify({ ...result, tells: [...pushTells(pushes, tag), ...jobPushTells(direct, tag, name)], ...verify.length ? { verify } : {} }, null, 2) + "\n");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main();

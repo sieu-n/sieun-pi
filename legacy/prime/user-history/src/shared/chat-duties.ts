@@ -92,7 +92,12 @@ export interface PrecheckOutput { metrics: Record<string, number>; flagged?: Fla
    * Server notices the runner sends to other chats when the precheck ends, before the duty's job starts (`DutyHost.tell`): d9's pushes. With
    * `session` the notice goes to that root job session of the chat instead of the chat: d9's push to the job of a chat that cannot take a turn.
    */
-  tells?: { chat: string; text: string; session?: string }[] }
+  tells?: { chat: string; text: string; session?: string }[];
+  /**
+   * Duties the runner starts a verify run of when the precheck ends, as it does for a closed fix step: d9's red duties whose fix job worked
+   * after their newest reading (`unreadFixes` in scripts/duties/chat-system.ts), so the next d9 run judges that fix on a fresh reading.
+   */
+  verify?: { chat: string; duty: string }[] }
 /**
  * One thing the precheck found that the duty job should read: the chat (session id), when, what kind, a short excerpt, and the plan item it is
  * about. `handOff` marks work a run hands to the duty's job while that job still works (`Duties.handOff`), so a later run's finding reaches it.

@@ -69,6 +69,49 @@ writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { duties_green_
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+// 11-04: d9's 03:33Z run asked to replace Prospect feature bro's p291 from d2 runs read before p291's fix served at 03:25Z, and d2 did not run
+// again. A precheck's `verify` now starts a verify run of each duty it names, so the next d9 run judges the fix on a fresh reading.
+test("a precheck's verify list starts a verify run of each named duty, and skips one that is not a duty", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "duty-precheck-verify-"));
+  try {
+    const PFB = "01a11bd7-072f-7591-ad1d-f123c276cde5";
+    const d9 = join(dir, "d9.mjs");
+    await writeFile(d9, `import { writeFileSync } from "node:fs";
+writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { duties_green_pct: 45.7 }, verify: [{ chat: ${JSON.stringify(PFB)}, duty: "d2" }, { chat: ${JSON.stringify(PFB)}, duty: "d404" }] }));`);
+    const d2 = join(dir, "d2.mjs");
+    await writeFile(d2, `import { writeFileSync } from "node:fs";
+writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { owner_green_pct: 100 } }));`);
+    const store = new DutyStore(dir);
+    const base = { ownerWords: "the plan clears", goal: "duties read green", onMiss: "fix it", createdAt: NOW - 24 * 60 * MIN, updatedAt: NOW - 24 * 60 * MIN, runCount: 0 };
+    await store.update(CHAT, duties => { duties.push({ ...base, id: "d9", name: "Chat system", status: "active",
+      metrics: [{ key: "duties_green_pct", label: "Duties green", op: ">=", target: 100, headline: true }],
+      schedule: { kind: "every", minutes: 60 }, precheck: { command: ["node", d9], cwd: dir, timeoutMs: 30_000 } }); });
+    await store.update(PFB, duties => { duties.push({ ...base, id: "d2", name: "Watchlist green", status: "paused",
+      metrics: [{ key: "owner_green_pct", label: "Owner Watchlist green", op: ">=", target: 100, headline: true }],
+      schedule: { kind: "every", minutes: 24 * 60 }, precheck: { command: ["node", d2], cwd: dir, timeoutMs: 30_000 } }); });
+    const duties = new Duties(store, {
+      isChat: async () => true, now: () => NOW, tickMs: 0, node: process.execPath,
+      jobs: {
+        chat: async id => ({ id, name: id === CHAT ? "AI harness" : "Prospect feature bro", cwd: dir, board: id }),
+        working: async () => false,
+        retire: async () => {},
+        start: async (_chat, name) => ({ id: `job-${name}`, name }),
+        ended: async (last, older = []) => [...last, ...older],
+        stop: async () => {},
+      },
+      checkIn: { view: async () => ({ everyMs: 120 * MIN }) as CheckInView, set: async () => null, run: async () => {} },
+      board: async () => ({ v: 2, rev: 1, updatedAt: "", todos: [], plan: [] }),
+      fixLive: async () => false,
+    });
+    await duties.tick();
+    await duties.settled();
+    await duties.settled();
+    duties.close();
+    const runs = (await store.runs(PFB)).filter(run => run.duty === "d2");
+    assert.deepEqual(runs.map(run => [run.trigger, run.verdict, run.metrics.owner_green_pct?.value]), [["verify", "met", 100]]);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
 // On 10-23 the 14:24Z after-job measure of d9 and a 14:31Z precheck the server never logged each appended pushes.jsonl lines for Crawler VP and
 // the Railway chat that no notice ever carried, and the 00:35 KST run read all 4 as pushes that never reached their transcripts.
 test("only a run the server sends tells for records its pushes; an after-job measure or a hand run records none", () => {
