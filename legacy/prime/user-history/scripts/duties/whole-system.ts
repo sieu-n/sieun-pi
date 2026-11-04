@@ -1491,6 +1491,19 @@ export function failedAsleep(watch: readonly WatchLine[], fault: DaemonFault): b
 }
 
 /**
+ * Whether the call began in a minute its box counted offline and ended within SLOW_MS after the last such minute, so it waited for the box
+ * to come back. The service stamps a worker start when it begins and logs it when it ends: at 00:51:31Z on 11-04 a resume of 01a11b0b went
+ * to the Mac, which Tailscale read offline 00:43Z to 01:05Z, and it answered in 893.6 s at 01:06:25Z, 25 s after the Mac read back; at
+ * 01:10:24Z a get_state to the Mac timed out after 30 s, begun in the offline minute 01:09Z. d7 counted both minutes dirty, 26 of 30 clean.
+ */
+export function waitedOffline(watch: readonly WatchLine[], fault: DaemonFault): boolean {
+  if (fault.from === undefined) return false;
+  for (let minute = Math.floor(fault.at / MINUTE) * MINUTE; minute >= Math.floor(fault.from / MINUTE) * MINUTE; minute -= MINUTE)
+    if (offlineIn(watch, fault.host, minute)) return fault.at - (minute + MINUTE) <= SLOW_MS;
+  return false;
+}
+
+/**
  * How long after the chat service starts listening its slow read or loop stall is the start's own work, which d7 books on the harness side and
  * names, still dirty (c172). From 11-02 00:00Z to 11-03 07:40Z, 7 of us-metal02's 37 chat starts were followed by a dirty minute, each 5 to 62 s
  * after the start. At 18:59Z on 11-03 the loop stalled 1.2 s 10 s after a start whose CPU profile spent 9.5 s in fileOrigin and 4.0 s in
@@ -1639,7 +1652,7 @@ export function measure(input: Inputs): PrecheckOutput {
     const minuteFaults = daemonFaults.filter(fault => fault.at >= from && fault.at < to);
     const asleep = minuteFaults.filter(fault => !offline.has(fault.host) && failedAsleep(input.watch, fault));
     for (const host of new Set(asleep.map(fault => fault.host))) asleepMin.push(`${clock(from)} ${host}`);
-    const faults = minuteFaults.filter(fault => !offline.has(fault.host) && !failedOffline(fault) && !asleep.includes(fault));
+    const faults = minuteFaults.filter(fault => !offline.has(fault.host) && !failedOffline(fault) && !asleep.includes(fault) && !waitedOffline(input.watch, fault));
     offlineFaults += minuteFaults.length - faults.length;
     if (faults.length) {
       daemonFail++;

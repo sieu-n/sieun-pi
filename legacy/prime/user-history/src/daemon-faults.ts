@@ -23,6 +23,11 @@ export interface DaemonFault {
   what: string;
   /** The daemon command whose answer timed out and how long the service waited, from a "Timed out after <ms>ms ... to "<call>"" line. */
   timedOut?: { call: string; ms: number };
+  /**
+   * When the call began, where its line gives its wait: a worker start's stamp, or a timeout's line less its wait. d7 leaves out a call that
+   * began while its box read offline and ended as the box came back (`waitedOffline` in scripts/duties/whole-system.ts).
+   */
+  from?: number;
   /** The outbox's id of the message a send carried (`m-<uuid>`), which its "is landed" line names (src/slot-wait-timeouts.ts). */
   message?: string;
   /**
@@ -62,6 +67,8 @@ const START_ON = /^([0-9a-f]{8}) on ([\w.-]+)$/;
  */
 const SLOW_CREATE = "a create Prime answered late";
 const WORKER_NO_ANSWER = /^daemon (create|resume|reload) (.+): no answer after ([\d.]+) s: (.*)$/;
+/** The box a call failed on when the chat service's own Tailscale read had it offline (src/host-catalogs.ts `away`). */
+const AWAY_BOX = /^([\w.-]+) is offline \(Tailscale last seen /;
 /**
  * The service closed its own daemon link: DaemonClient.close() is the only source of this error, and the clients of worker starts belong to
  * the catalog, which closes them only when the service stops. 10-18 12:29:18Z the release cut "check-in metal-management 21:29" 3.3 s in, the
@@ -282,14 +289,17 @@ export function readServiceFaults(lines: readonly string[], local: string): Daem
       const on = START_ON.exec(found[2]!);
       const late = found[1] === "create" && (found[3] === "answered" || NAME_TAKEN.test(found[5] ?? "")) && seconds * 1000 > SLOW_MS;
       if (refused || seconds * 1000 > SLOW_MS)
-        faults.push({ at: at + seconds * 1000, host: on?.[2] ?? local, ...titleOrSession(on?.[1] ?? found[2]!), what: `its ${found[1]} was ${found[3]} in ${seconds} s${found[5] ? `, ${faultReason(found[5]) ?? found[5].slice(0, 80)}` : ""}`,
+        faults.push({ at: at + seconds * 1000, from: at, host: on?.[2] ?? local, ...titleOrSession(on?.[1] ?? found[2]!), what: `its ${found[1]} was ${found[3]} in ${seconds} s${found[5] ? `, ${faultReason(found[5]) ?? found[5].slice(0, 80)}` : ""}`,
           ...late ? { prime: SLOW_CREATE } : {} });
       continue;
     }
     if ((found = WORKER_NO_ANSWER.exec(text))) {
       if (OWN_STOP.test(found[4]!)) continue;
       const on = START_ON.exec(found[2]!);
-      faults.push({ at: at + Number(found[3]) * 1000, host: on?.[2] ?? hostOf(text, local), ...titleOrSession(on?.[1] ?? found[2]!), what: `its ${found[1]} got no answer, ${faultReason(found[4]!) ?? found[4]!.slice(0, 80)}` });
+      // A create's line names no box; one the service refused on its own offline read names it in the error: at 01:15:24Z on 11-04 "daemon create
+      // chat page probe 01:12: no answer after 0.0 s: mac is offline (Tailscale last seen 5 min ago)" read as us-metal02's, and d7 counted it dirty.
+      const away = AWAY_BOX.exec(found[4]!)?.[1];
+      faults.push({ at: at + Number(found[3]) * 1000, from: at, host: on?.[2] ?? away ?? hostOf(text, local), ...titleOrSession(on?.[1] ?? found[2]!), what: `its ${found[1]} got no answer, ${faultReason(found[4]!) ?? found[4]!.slice(0, 80)}` });
       continue;
     }
     if ((found = OUTBOX_MOVED.exec(text))) {
@@ -312,7 +322,7 @@ export function readServiceFaults(lines: readonly string[], local: string): Daem
     const timed = TIMED_OUT.exec(text);
     const message = MESSAGE_ID.exec(text)?.[1];
     faults.push({ at, host, ...session ? { session } : {}, what: `${prefix[2] ? `a job's ${prefix[2]}` : ACTIONS[prefix[1]!]} failed, ${reason}`,
-      ...timed ? { timedOut: { call: timed[2]!, ms: Number(timed[1]) } } : {}, ...message ? { message } : {} });
+      ...timed ? { timedOut: { call: timed[2]!, ms: Number(timed[1]) }, from: at - Number(timed[1]) } : {}, ...message ? { message } : {} });
   }
   return faults;
 }

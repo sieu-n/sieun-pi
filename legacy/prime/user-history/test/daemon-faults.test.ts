@@ -291,3 +291,9 @@ test("calls the stop's own bridge close cut count as no fault, and the same clos
   const faults = readServiceFaults(BRIDGE_STOP, "us-metal02");
   assert.deepEqual(faults.map(fault => `${new Date(fault.at).toISOString().slice(11, 16)} ${fault.host}`), ["05:40 mac"], JSON.stringify(faults));
 });
+
+test("a create the service refused on its own offline read of a box is that box's fault", () => {
+  const [fault] = readServiceFaults(["2026-11-04T01:15:24.481Z daemon create chat page probe 01:12: no answer after 0.0 s: mac is offline (Tailscale last seen 5 min ago)"], "us-metal02");
+  assert.equal(fault?.host, "mac");
+  assert.equal(fault?.title, "chat page probe 01:12");
+});

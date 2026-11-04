@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { measure } from "../scripts/duties/whole-system.ts";
+import type { DaemonFault } from "../src/daemon-faults.ts";
 import { UNREAD_AT_STOP, type WatchLine } from "../src/mac-usable-watch.ts";
 
 const RUN = Date.parse("2026-10-23T14:53:43Z");
@@ -16,7 +17,7 @@ const line = (minute: number, read: MacRead): WatchLine => ({ host: "us-metal02"
   hosts: [{ name: "mac", usable: read === "usable" ? mac : null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null,
     ...read === "usable" || read === "no reading" ? {} : read === "offline" ? { offline: true, error: "offline, Tailscale last seen 28 min ago" } : { error: read } }] } as WatchLine);
 const handshake = (minute: number) => ({ at: minuteAt(minute) + 40_000, host: "mac", session: "01a15427", what: "its resume got no answer, the handshake timed out after 10 s" });
-const run = (watch: WatchLine[], daemonFaults = [handshake(6)]) => measure({ now: RUN, watch, log: { holds: [] }, chats: [], daemonFaults });
+const run = (watch: WatchLine[], daemonFaults: DaemonFault[] = [handshake(6)]) => measure({ now: RUN, watch, log: { holds: [] }, chats: [], daemonFaults });
 
 test("a Mac minute the relay could not reach between two minutes Tailscale read offline is offline, and its daemon calls are left out", () => {
   const out = run(Array.from({ length: 30 }, (_, minute) => line(minute, minute === 6 ? "fetch failed" : "offline")));
@@ -103,4 +104,23 @@ test("a closed connection to a box that reads online the next minute, or a slow 
   assert.equal(slow.metrics.daemon_fail_min_30, 1, "a call the box answered late is no lost link");
   const unread = run(Array.from({ length: 30 }, (_, minute) => line(minute, minute < 9 ? "fetch failed" : "offline")), [closed(5)]);
   assert.equal(unread.metrics.daemon_fail_min_30, 1, "a minute the relay could not read is offlineAround's, three lines from an offline read");
+});
+
+// Guards d7's 01:06Z and 01:10Z minutes on 11-04: Tailscale read the Mac offline 00:43Z to 01:05Z and 01:07Z to 01:09Z, a resume begun at
+// 00:51:31Z answered in 893.6 s at 01:06:25Z, and a get_state begun at 01:09:54Z timed out at 01:10:24Z; d7 read 26 of 30 clean.
+test("a daemon call begun while its box read offline and ended as the box came back is left out", () => {
+  const back = Array.from({ length: 30 }, (_, minute) => line(minute, minute < 6 ? "offline" : "usable"));
+  const resume = { at: minuteAt(6) + 25_000, from: minuteAt(6) + 25_000 - 893_600, host: "mac", session: "01a11b0b", what: "its resume was answered in 893.6 s" };
+  const out = run(back, [resume]);
+  assert.equal(out.metrics.clean_min_30, 30);
+  assert.equal(out.metrics.daemon_fail_min_30, 0);
+  const timedOut = { at: minuteAt(6) + 24_000, from: minuteAt(6) - 6_000, host: "mac", what: "an idle check failed, get_state timed out after 29.999 s", timedOut: { call: "get_state", ms: 29_999 } };
+  assert.equal(run(back, [timedOut]).metrics.clean_min_30, 30);
+  const lateAfterWake = run(back, [{ ...resume, at: minuteAt(6) + 45_000 }]);
+  assert.equal(lateAfterWake.metrics.daemon_fail_min_30, 1, "a call the box answered over 30 s after it read back stays a fault");
+  const awake = run(back, [{ ...resume, at: minuteAt(8) + 25_000, from: minuteAt(7) }]);
+  assert.equal(awake.metrics.daemon_fail_min_30, 1, "a slow call begun while the box read online stays a fault");
+  const { from: _from, ...noFrom } = resume;
+  const noStart = run(back, [noFrom]);
+  assert.equal(noStart.metrics.daemon_fail_min_30, 1, "a fault whose line gives no start stays a fault");
 });
