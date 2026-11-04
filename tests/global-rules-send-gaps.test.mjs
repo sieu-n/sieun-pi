@@ -146,6 +146,8 @@ test("http-19 and http-22, smtp-2: node -e and python3 -c bodies that send are b
   allowed("bash", [
     `node -e "console.log(1 + 1)"`,
     `python3 -c "import requests; print(requests.get('https://api.resend.com/emails/abc').status_code)"`,
+    // 2026-11-04: a webhook replay re-posts a stored event to our own endpoint and sends no mail.
+    `python3 -c "import requests; requests.post('https://api.resend.com/webhooks/abc/events/msg_1/replay')"`,
   ]);
 });
 

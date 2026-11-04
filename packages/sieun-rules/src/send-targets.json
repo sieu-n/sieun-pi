@@ -13,7 +13,7 @@
 	{
 		"label": "the mail API {host}",
 		"host": "(?:^|\\.)api\\.resend\\.com$",
-		"unless_path": "^/(?:api-keys|domains)(?:/|$)",
+		"unless_path": "^/(?:api-keys|domains|webhooks)(?:/|$)",
 		"test_inbox": "resend.dev"
 	},
 	{
