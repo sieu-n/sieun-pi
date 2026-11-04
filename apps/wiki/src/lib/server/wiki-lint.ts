@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { getWikiIndex, normalizeLinkTarget, readRawContent, type WikiIndex, type WikiPageSummary } from './wiki';
+import { getContentRoot, getWikiIndex, normalizeLinkTarget, readRawContent, type WikiIndex, type WikiPageSummary } from './wiki';
+import { inspectWikiFile } from './wiki-mirror';
 import { resolveLink } from './wiki-index';
 import { deriveTitleFromPath, isSessionPath } from './session-artifact-index';
 import { extractHtmlHrefs } from './wiki-html';
@@ -152,26 +153,30 @@ function checkHubListing(index: WikiIndex, curated: Map<string, CuratedFile>, ad
 	}
 }
 
-type CuratedFile = { updated: string; links: Set<string>; tags: ChildrenTag[] };
+type CuratedFile = { stamp: string; links: Set<string>; tags: ChildrenTag[] };
 const curatedCache = new Map<string, CuratedFile>();
 
 /**
  * Resolved links and `<wiki-children>` tags of every curated page and the home page, read from the
  * whole file. The index keeps links from the first 64 KiB and drops `/page/<path>` hrefs as app
- * routes, and hubs use both.
+ * routes, and hubs use both. The cache is keyed on the file's own mtime and size, because the index
+ * snapshot can lag a write: on 2026-11-04 lint kept 3 hub orphans after their hub linked them.
  */
 async function readCuratedFiles(index: WikiIndex): Promise<Map<string, CuratedFile>> {
 	const out = new Map<string, CuratedFile>();
 	for (const page of index.pages) {
 		if (!isCuratedPage(page) && page.path !== HOME) continue;
+		const stamp = await inspectWikiFile({ wikiPath: page.path, contentRoot: getContentRoot() })
+			.then(({ stat }) => `${stat.mtimeMs}:${stat.size}`)
+			.catch(() => 'missing');
 		const cached = curatedCache.get(page.path);
-		if (cached?.updated === page.updated) {
+		if (cached?.stamp === stamp) {
 			out.set(page.path, cached);
 			continue;
 		}
 		const html = await readRawContent(page.path).catch(() => null);
 		const links = new Set<string>([...page.links, ...(html ? hrefTargets(html, page.path, index) : [])]);
-		const file = { updated: page.updated, links, tags: html ? parseWikiChildren(html, page.path) : [] };
+		const file = { stamp, links, tags: html ? parseWikiChildren(html, page.path) : [] };
 		curatedCache.set(page.path, file);
 		out.set(page.path, file);
 	}
