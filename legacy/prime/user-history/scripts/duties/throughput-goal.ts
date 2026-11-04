@@ -501,7 +501,8 @@ export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): P
   }
   if (rows.some(row => row.value === null || row.goal === null)) unmeasured.add("throughput_goals_missed");
   for (const row of rows) flagged.push({ at: d.now, kind: "goal", item: row.item, excerpt: goalLine(row).slice(0, 300) });
-  const items = Object.fromEntries(rows.flatMap(row => row.value === null || row.goal === null ? [] : [[row.item, { value: row.value, target: row.goal, op: row.op }] as const]));
+  const judged = rows.filter(row => row.value !== null && row.goal !== null);
+  const items = Object.fromEntries([...judged.filter(row => !missed(row)), ...judged.filter(missed)].map(row => [row.item, { value: row.value!, target: row.goal!, op: row.op }] as const));
   if (d.others) {
     const named = (kind: string): string => kind.replace(/^(\w+)/, word => ({ instagram: "Instagram", tiktok: "TikTok", youtube: "YouTube", linkedin: "LinkedIn" })[word] ?? word);
     flagged.push({ at: d.now, kind: "no_goal", excerpt: `No throughput goal on the board, so left out of the count: ${d.others.length ? d.others.map(o =>

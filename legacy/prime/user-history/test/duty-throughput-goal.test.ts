@@ -99,6 +99,12 @@ test("every throughput goal on the board is one row, and the headline counts the
   assert.equal(met.metrics.throughput_goals_missed, 0);
 });
 
+test("an item with two rows reports its missed row, so p683's 10k+ slip is not hidden by the met under-10k row (11-05 d9: items.p683 read 0)", () => {
+  const out = report(base({ board: BOARD, igSlowest: 10_400, refresh: [{ ...HALF, past7Big: 5_000 }], ...LAG_OK }), METRICS);
+  assert.equal(out.items!.p683!.op, "<=");
+  assert.ok(out.items!.p683!.value > out.items!.p683!.target);
+});
+
 test("a goal whose read or board number failed leaves the headline unmeasured instead of counting a miss", () => {
   const noBoard = report(base({ igSlowest: 10_400, ttsSlowest: 2_100, ttsWeekly: { read: 6_290_183, live: 6_291_426 }, meta: { due: 1, finished24h: 53_570 }, refresh: [HALF], errors: [{ source: "board", message: "ENOENT" }] }), METRICS);
   assert.ok(noBoard.metrics.throughput_goals_missed! > 1000);
