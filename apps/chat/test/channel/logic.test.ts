@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dayGroups, layoutRows, newestRows, STACK_MS } from "../../web/src/pages/channel/rows.ts";
+import { dayGroups, keepGroups, layoutRows, newestRows, STACK_MS } from "../../web/src/pages/channel/rows.ts";
 import { exactUnique, matchCandidates, openQuery } from "../../web/src/pages/channel/typeahead.ts";
 
 const now = new Date(2026, 9, 28, 15, 0).getTime();
@@ -53,6 +53,25 @@ test("rows group by day under their divider, and the first paint keeps the newes
   assert.deepEqual(groups.map(group => [group.key, group.rows.map(row => row.key)]), [[day(26), ["1"]], [day(27), ["2", "3"]], [day(28), ["4"]]]);
   assert.deepEqual(newestRows(groups, 2).map(group => [group.key, group.rows.map(row => row.key)]), [[day(27), ["3"]], [day(28), ["4"]]]);
   assert.equal(newestRows(groups, 9).length, 3);
+});
+
+test("a send keeps its row when the stored post replaces it, and an update redraws only the rows it changed", () => {
+  const owner = { id: "owner" };
+  const agent = { id: "agent:a" };
+  const old = { id: "1", at: at(27, 9), kind: "turn", author: agent };
+  const reply = { id: "2", at: at(28, 9), kind: "turn", author: agent };
+  const pending = { id: "r:abc", at: at(28, 10), kind: "message", author: owner, requestId: "abc" };
+  const before = keepGroups([], dayGroups(layoutRows([old, reply, pending])));
+  const stored = { id: "p3", at: at(28, 10), kind: "message", author: owner, requestId: "abc" };
+  const after = keepGroups(before, dayGroups(layoutRows([old, reply, stored])));
+  assert.deepEqual(after.map(group => group.rows.map(row => row.key)), [["1"], ["2", "r:abc"]]);
+  assert.equal(after[0], before[0], "a day the update did not touch is the same object");
+  assert.equal(after[1]!.rows[0], before[1]!.rows[0], "an untouched row is the same object");
+  assert.notEqual(after[1]!.rows[1], before[1]!.rows[1]);
+  const again = keepGroups(after, dayGroups(layoutRows([old, reply, stored])));
+  assert.equal(again[1], after[1], "a redraw with nothing new keeps every group");
+  const twice = layoutRows([stored, { ...stored, id: "p4" }]);
+  assert.deepEqual(twice.map(row => row.key), ["day-r:abc", "r:abc", "p4"], "a second item with one requestId keys by its id, so no key repeats");
 });
 
 test("openQuery finds @ and # at the caret and ignores emails and closed names", () => {

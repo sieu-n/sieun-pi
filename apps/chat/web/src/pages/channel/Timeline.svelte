@@ -9,7 +9,7 @@
   import type { Status } from "$lib/ui/types";
   import MessageRow from "./MessageRow.svelte";
   import { avatarOf, waitingSend } from "./present";
-  import { dayGroups, layoutRows, newestRows } from "./rows";
+  import { dayGroups, keepGroups, layoutRows, newestRows, type DayGroup } from "./rows";
 
   type Props = {
     items: Item[];
@@ -61,7 +61,8 @@
    */
   const FIRST_ROWS = 16;
   let full = $state(false);
-  const days = $derived(dayGroups(rows));
+  let keptDays: DayGroup<Item>[] = [];
+  const days = $derived((keptDays = keepGroups(keptDays, dayGroups(rows))));
   const drawn = $derived(full ? days : newestRows(days, FIRST_ROWS));
   const slack = $derived(layout === "slack");
   const intro = $derived(slack && full && beginning && !hasOlder && !loadingOlder ? beginning : null);
