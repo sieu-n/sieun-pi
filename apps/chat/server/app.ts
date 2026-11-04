@@ -678,14 +678,17 @@ export class App {
 
   /**
    * A send's image: a ref POST /api/uploads gave, whose file is here. A page loaded before b2058046 (11-03 15:01Z) still sends the image's
-   * base64 bytes as `{data, mimeType}`; those are kept as an upload here, because on 11-04 at 03:09Z the owner's open tab sent two posts
-   * that way and both came back Not delivered with "No upload undefined", and a stale tab cannot learn the new shape until it reloads.
+   * base64 bytes as `{data, mimeType}`; those are kept as an upload on arrival, because on 11-04 at 03:09Z the owner's open tab sent two
+   * posts that way and both came back Not delivered with "No upload undefined". The server takes the send form of the build before the
+   * current one in this way each time a release changes it, and pages reload themselves to the new build at a safe moment
+   * (web/src/lib/api/reload.ts); each arrival logs a line, so the log shows when no older page sends it any more.
    */
   private uploaded(ref: ImageRef | LegacyImage): ImageRef {
     const legacy = ref as Partial<LegacyImage>;
     if (typeof legacy?.data === "string" && typeof legacy.mimeType === "string" && legacy.mimeType.startsWith("image/") && legacy.data) {
       const name = `${randomUUID()}.${legacy.mimeType.split("/")[1]!.replace(/[^a-z0-9]/g, "") || "bin"}`;
       writeFileSync(this.store.imagePath(name), Buffer.from(legacy.data, "base64"));
+      this.log(`send: an inline image from a page on a web build before b2058046, kept as /api/uploads/${name}`);
       return { url: `/api/uploads/${name}`, mimeType: legacy.mimeType };
     }
     ref = ref as ImageRef;
