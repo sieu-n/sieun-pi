@@ -474,11 +474,36 @@ def take_command(destination: str, options: tuple, path: str) -> list:
 STILL_RUNNING = 3
 
 
+# The crawler feedback reds of dev push runs that auto-sns-agent's push-reds.mjs names by Session-Id, which the box ci-cache poller writes and
+# the Mac's ci-cache-mirror copies. take hands each one back once and leaves a push-red-<run id> marker in the session's folder.
+PUSH_REDS = os.path.join(os.environ.get("CI_CACHE_DIR") or os.path.expanduser("~/.cache/virev"), "push-reds.json")
+push_reds: dict = {"mtime": None, "ids": []}
+
+
+def push_red_owed(folder: str) -> bool:
+    """Whether push-reds.json names this session in a red no later push cleared and take has not handed back. It parses the file only when
+    the poller rewrote it, so a cell costs one stat."""
+    try:
+        mtime = os.stat(PUSH_REDS).st_mtime
+    except OSError:
+        return False
+    if mtime != push_reds["mtime"]:
+        push_reds["mtime"] = mtime
+        try:
+            with open(PUSH_REDS, encoding="utf-8") as handle:
+                reds = json.load(handle).get("reds") or []
+        except (OSError, ValueError):
+            reds = []
+        push_reds["ids"] = [red.get("id") for red in reds if not red.get("cleared") and any(c.get("session") == SESSION for c in red.get("commits") or [])]
+    return any(not os.path.exists(os.path.join(folder, f"push-red-{red}")) for red in push_reds["ids"])
+
+
 def take_local(root: str) -> None:
     folder = check_dir(root)
     # A finished result is claimed even while a later save's runner is live, as auto-sns-agent 03891509aa's take does: on 11-03 session
     # 01a19e2d's red sat in result.json from 05:03Z for 44 min while the runner of its later commits held running/.
-    if not os.path.exists(os.path.join(folder, "result.json")) and (runner_live(folder) or not os.path.exists(os.path.join(folder, "queue"))):
+    # A crawler feedback red of this session's commit is claimed too, with no result: a Mac commit queues no touched tests, so no result comes.
+    if not os.path.exists(os.path.join(folder, "result.json")) and (runner_live(folder) or not os.path.exists(os.path.join(folder, "queue"))) and not push_red_owed(folder):
         return
     run = subprocess.run([shutil.which("node") or "node", os.path.join(root, SAVE_CHECK), "take", "--root", root, "--session", SESSION],
                          capture_output=True, text=True, stdin=subprocess.DEVNULL, check=False)

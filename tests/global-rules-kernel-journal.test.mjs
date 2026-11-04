@@ -352,6 +352,28 @@ if (cmd === "take" && existsSync(dir + "/result.json")) { console.log("convex sa
   }
 });
 
+test("a crawler feedback red that names the session's commit is taken with no save check result, once", () => {
+  reset();
+  const script = join(checkout, "scripts/repo/agent/convex-save-check.mjs");
+  mkdirSync(dirname(script), { recursive: true });
+  writeFileSync(script, `import { mkdirSync, writeFileSync } from "node:fs";
+const [cmd, , root, , session] = process.argv.slice(2);
+const dir = root + "/.cache/convex-save-check/" + session;
+if (cmd === "take") { mkdirSync(dir, { recursive: true }); writeFileSync(dir + "/push-red-41908161032", ""); console.log("crawler feedback: verify-dev push run 41908161032 went red"); }
+`);
+  // 11-04: crawler feedback reds of dev push runs reached no Prime session, since take_local ran take only for a save check result.
+  const cache = join(root, "push-reds-cache");
+  mkdirSync(cache, { recursive: true });
+  writeFileSync(join(cache, "push-reds.json"), JSON.stringify({ reds: [{ id: 41908161032, cleared: false, commits: [{ sha: "f".repeat(40), session }] }, { id: 7, cleared: 8, commits: [{ sha: "e".repeat(40), session }] }] }));
+  try {
+    assert.equal(kernel("x = 1\n", { GLOBAL_RULES_AUTO_SNS_AGENT: checkout, CI_CACHE_DIR: cache }).stderr, "crawler feedback: verify-dev push run 41908161032 went red\n");
+    assert.equal(kernel("x = 2\n", { GLOBAL_RULES_AUTO_SNS_AGENT: checkout, CI_CACHE_DIR: cache }).stderr, "", "a red handed back once is not asked for again");
+  } finally {
+    rmSync(join(checkout, "scripts"), { recursive: true, force: true });
+    rmSync(cache, { recursive: true, force: true });
+  }
+});
+
 test("a convex/ write over ssh that the box queued a check for is asked for its result at each later cell until the box has it", () => {
   reset();
   const bin = join(root, "fake-ssh-take-bin");
