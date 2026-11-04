@@ -64,7 +64,7 @@ export function readTimings(dir: string, now: number, windowMs: number): Request
 export function routeSpeeds(timings: readonly RequestTiming[]): RouteSpeed[] {
   const groups = new Map<string, RequestTiming[]>();
   for (const timing of timings) {
-    if (timing.s === 0) continue;
+    if (timing.s === 0 || timing.shown) continue;
     const key = `${sourceOf(timing)} ${timing.m} ${timing.r}`;
     const group = groups.get(key);
     if (group) group.push(timing);
@@ -111,12 +111,14 @@ export function finding(s: RouteSpeed): string {
 const SEND_ROUTES = new Set([ROUTES.send, "POST /api/c/:id/send/:requestId/retry", "POST /api/uploads"]);
 
 /**
- * The sends that failed, each once: a server line the server refused or failed (status 400 and up), and a client line with status 0, a call
- * that never reached the server, such as one made during a release restart. A client line with a status repeats the server's own line. On
- * 11-04 at 03:09Z three of the owner's sends answered 400 and showed Not delivered, and no metric counted them.
+ * The sends the owner saw as Not delivered, each once. A server line that refused one (status 400 to 499) counts, since the page never
+ * retries a refusal, and it is the only line a tab too old to post timings leaves. A page's `shown` line counts when its last call never
+ * reached the server (status 0) or failed there (500 and up), which the page tried again first; its 4xx repeats the server's line. A failed
+ * call that a later try landed is no failure. On 11-04 at 03:09Z three of the owner's sends answered 400 and showed Not delivered, and no
+ * metric counted them.
  */
 export function failedSends(timings: readonly RequestTiming[]): RequestTiming[] {
-  return timings.filter(t => SEND_ROUTES.has(`${t.m} ${t.r}`) && (t.src === "server" ? t.s >= 400 : t.s === 0));
+  return timings.filter(t => SEND_ROUTES.has(`${t.m} ${t.r}`) && (t.src === "server" ? t.s >= 400 && t.s < 500 : t.shown === true && (t.s === 0 || t.s >= 500)));
 }
 
 export function apiSpeed(dir: string, now: number, windowMs: number) {
@@ -145,7 +147,7 @@ export function apiSpeed(dir: string, now: number, windowMs: number) {
     flagged: [
       ...failed.map(t => ({
         kind: "failed_send", sig: `${sourceOf(t)}:${t.m} ${t.r}:${t.s}`,
-        excerpt: `${new Date(t.at).toISOString()} ${t.m} ${t.p} ${t.s ? `answered ${t.s}` : "never reached the server"} (${sourceOf(t)}): ${t.err ?? "no reason logged"}`,
+        excerpt: `${new Date(t.at).toISOString()} ${t.m} ${t.p} ${t.s ? `answered ${t.s}` : "never reached the server"} (${sourceOf(t)}${t.shown ? ", Not delivered after the page's tries" : ""}): ${t.err ?? "no reason logged"}`,
       })),
       ...slowest.map(s => ({ kind: "slow_api", sig: `${s.src}:${s.route}`, excerpt: finding(s) })),
     ],

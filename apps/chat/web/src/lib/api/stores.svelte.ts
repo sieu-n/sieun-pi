@@ -6,7 +6,7 @@
  * lands; nothing waits on the network before the composer takes the next message. An attached image shows from its preview while its
  * upload ends, and the post names the uploaded ref.
  */
-import { api, ApiError, roomOf, type Attached } from "./client.ts";
+import { api, ApiError, reportNotDelivered, roomOf, type Attached } from "./client.ts";
 import { live } from "./live.svelte.ts";
 import type {
   AgentId, AgentSummary, BoardOp, BoardView, ConversationHeader, ConversationId, ConversationSummary, ForYouItem, Item, Me,
@@ -123,7 +123,7 @@ class Sends {
     try {
       return await post(this.conversation, request);
     } catch (error) {
-      this.fail(`r:${request.requestId}`, message(error));
+      this.fail(`r:${request.requestId}`, error);
       return undefined;
     }
   }
@@ -132,8 +132,10 @@ class Sends {
     this.write(this.read().map(item => (item.id === id && item.kind === "message" ? { ...item, ...change } : item)));
   }
 
-  fail(id: string, error: string): void {
-    this.patch(id, { send: "failed", sendError: error });
+  /** Marks the send Not delivered and tells the server's log why (`reportNotDelivered`). */
+  private fail(id: string, error: unknown): void {
+    this.patch(id, { send: "failed", sendError: message(error) });
+    reportNotDelivered(this.conversation, error instanceof ApiError ? error.status : 0, message(error));
   }
 
   /**
@@ -148,7 +150,7 @@ class Sends {
     try {
       return request ? await post(this.conversation, request) : await api.retrySend(this.conversation, requestId);
     } catch (error) {
-      this.fail(id, message(error));
+      this.fail(id, error);
       return undefined;
     }
   }

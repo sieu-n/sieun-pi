@@ -320,7 +320,7 @@ async function takeTimings(table: Route[], requests: RequestLog, log: (line: str
     for (const sample of samples) {
       const r = routeLabel(table, sample.m, sample.p);
       requests.write({ at, src: "client", ...sample, r, via });
-      if (sample.err !== undefined) log(`client ${sample.m} ${r} ${sample.p} ${sample.s || "unreached"} (${via}): ${sample.err}`);
+      if (sample.err !== undefined) log(`client ${sample.m} ${r} ${sample.p} ${sample.shown ? "Not delivered" : sample.s || "unreached"} (${via}): ${sample.err}`);
     }
     json(res, 200, { taken: samples.length });
   } catch (error) {

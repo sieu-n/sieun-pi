@@ -93,23 +93,31 @@ test("a refused send logs its route, status and reason, and a page's failed call
     assert.equal(refused.status, 400);
     const empty = await chat.send("POST", `/api/c/${channel}/send`, { text: " ", requestId: "r-empty" });
     assert.equal(empty.status, 400);
-    const unreached = { m: "POST", p: `/api/c/${channel}/send`, s: 0, ms: 2800, err: "TypeError: Failed to fetch" };
-    const answered = { m: "POST", p: `/api/c/${channel}/send`, s: 400, ms: 30, err: "No upload blob:x" };
-    assert.deepEqual(await chat.send("POST", "/api/timings", { samples: [unreached, answered] }), { status: 200, body: { taken: 2 } });
+    const p = `/api/c/${channel}/send`;
+    const samples = [
+      { m: "POST", p, s: 0, ms: 7, err: "TypeError: Failed to fetch" },
+      { m: "POST", p, s: 400, ms: 30, err: "No upload blob:x" },
+      { m: "POST", p, s: 400, ms: 0, err: "No upload blob:x", shown: true },
+      { m: "POST", p, s: 0, ms: 0, err: "TypeError: Failed to fetch", shown: true },
+    ];
+    assert.deepEqual(await chat.send("POST", "/api/timings", { samples }), { status: 200, body: { taken: 4 } });
     await new Promise(resolve => setTimeout(resolve, 50));
-    assert.ok(logs.some(line => line.startsWith(`POST /api/c/:id/send /api/c/${channel}/send 400: No upload blob:x;`)), logs.join("\n"));
-    assert.ok(logs.includes(`POST /api/c/:id/send /api/c/${channel}/send 400: A message needs text or an image.`), logs.join("\n"));
-    assert.ok(logs.includes(`client POST /api/c/:id/send /api/c/${channel}/send unreached (local): TypeError: Failed to fetch`), logs.join("\n"));
+    assert.ok(logs.some(line => line.startsWith(`POST /api/c/:id/send ${p} 400: No upload blob:x;`)), logs.join("\n"));
+    assert.ok(logs.includes(`POST /api/c/:id/send ${p} 400: A message needs text or an image.`), logs.join("\n"));
+    assert.ok(logs.includes(`client POST /api/c/:id/send ${p} unreached (local): TypeError: Failed to fetch`), logs.join("\n"));
+    assert.ok(logs.includes(`client POST /api/c/:id/send ${p} Not delivered (local): TypeError: Failed to fetch`), logs.join("\n"));
     const sends = lines(dataDir).filter(line => line.r === "/api/c/:id/send");
-    assert.deepEqual(sends.map(line => [line.src, line.s, line.err?.slice(0, 15)]), [
-      ["server", 400, "No upload blob:"], ["server", 400, "A message needs"], ["client", 0, "TypeError: Fail"], ["client", 400, "No upload blob:"],
+    assert.deepEqual(sends.map(line => [line.src, line.s, line.err?.slice(0, 15), line.shown]), [
+      ["server", 400, "No upload blob:", undefined], ["server", 400, "A message needs", undefined], ["client", 0, "TypeError: Fail", undefined],
+      ["client", 400, "No upload blob:", undefined], ["client", 400, "No upload blob:", true], ["client", 0, "TypeError: Fail", true],
     ]);
+    // The two refusals and the send that never reached the server count; the unreached try and the page's copies of the refusal do not.
     const out = apiSpeed(dataDir, Date.now() + 1, 3600_000);
     assert.equal(out.metrics.failed_sends_24h, 3);
-    assert.deepEqual(out.flagged.filter(row => row.kind === "failed_send").map(row => row.sig), [
-      "server:POST /api/c/:id/send:400", "server:POST /api/c/:id/send:400", "client:POST /api/c/:id/send:0",
-    ]);
-    assert.match(out.flagged[2]!.excerpt, /never reached the server \(client\): TypeError: Failed to fetch$/);
+    const failed = out.flagged.filter(row => row.kind === "failed_send");
+    assert.deepEqual(failed.map(row => row.sig), ["server:POST /api/c/:id/send:400", "server:POST /api/c/:id/send:400", "client:POST /api/c/:id/send:0"]);
+    assert.match(failed[2]!.excerpt, /never reached the server \(client, Not delivered after the page's tries\): TypeError: Failed to fetch$/);
+    assert.equal(out.routes.find(route => route.src === "client" && route.route === "POST /api/c/:id/send")?.count, 1, "only the answered try is timed");
   } finally {
     await chat.close();
   }

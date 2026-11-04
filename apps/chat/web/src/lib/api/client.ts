@@ -36,7 +36,7 @@ const boardBase = (chat: string): string => (chat.startsWith("ag_") ? `/api/agen
  * busy before it could send the call or read the answer: on 11-03 a thread open in the box Chrome waited 2,135 ms for /api/rooms, of which
  * the network and the server took 29 ms.
  */
-type Timing = { m: string; p: string; s: number; ms: number; net?: number; err?: string };
+type Timing = { m: string; p: string; s: number; ms: number; net?: number; err?: string; shown?: true };
 const timings: Timing[] = [];
 let timingsTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -78,6 +78,16 @@ function recordTiming(m: string, path: string, s: number, started: number, err?:
 }
 
 if (typeof window !== "undefined") addEventListener("pagehide", () => sendTimings(true));
+
+/**
+ * A send the page gave up on and showed as Not delivered, with the last call's status (0 when it never reached the server) and error. Each
+ * failed call already has its own line, and a send that lands on a later try is no failure, so the speed duty counts only these lines.
+ */
+export function reportNotDelivered(conversation: ConversationId, status: number, err: string): void {
+  if (typeof window === "undefined") return;
+  timings.push({ m: "POST", p: `/api/c/${enc(conversation)}/send`, s: status, ms: 0, err, shown: true });
+  sendTimings();
+}
 
 /**
  * A Blob body goes as its own bytes with its own type, any other body as JSON. A call that fails, refused by the server or never reaching
