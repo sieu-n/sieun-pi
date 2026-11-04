@@ -2,11 +2,9 @@
 // variables" in the browser, because the us-metal02 prebuilt build had no NEXT_PUBLIC_SUPABASE_* values, and no duty saw it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type PageRead, PAGES, pageFailure, parseWorker, servicesOutput, type WorkerRead } from "../scripts/duties/slack-green-services.ts";
+import { type PageRead, PAGES, pageFailure, readWorker, servicesOutput } from "../scripts/duties/slack-green-services.ts";
 
 const NOW = Date.parse("2026-10-30T12:10:00Z");
-const WORKER: WorkerRead = { running: true, restarts: 0, startedAt: NOW - 3_600_000, image: `ghcr.io/sieu-n/slack-green/worker:${"a".repeat(40)}`, sha: "a".repeat(40),
-  lastActiveAt: NOW - 30_000, activeLines: 200 };
 const page = (key: string, extra: Partial<PageRead> = {}): PageRead =>
   ({ key, url: `https://slack.green/${key}`, status: 200, pageErrors: [], consoleErrors: [], api5xx: [], ...extra });
 
@@ -19,7 +17,8 @@ test("a page that answers 200 and throws the missing Supabase env error in the b
 test("the 10-30 outage reads every page failing while the worker and the owner's Slack read fine", () => {
   const pages = PAGES.map(spec => page(spec.key, { pageErrors: ["Missing Supabase environment variables. Please check your .env file."] }));
   const output = servicesOutput({ pages, routes: [], errors: [], presence: { presence: "active", online: true, connectionCount: 1 },
-    worker: WORKER, deploys: { metrics: { main_checks_failed_24h: 0, worker_not_live: 0, vercel_not_live: 3, source_errors: 0 }, flagged: [] } }, NOW);
+    worker: { status: "SUCCESS", deployAt: NOW - 3_600_000, lastActiveAt: NOW - 30_000, activeLines: 200 },
+    deploys: { metrics: { commits_not_live: 3, main_checks_failed_24h: 0, railway_not_live: 0, vercel_not_live: 3, source_errors: 0 }, flagged: [] } }, NOW);
   assert.equal(output.metrics.pages_failing, PAGES.length);
   assert.equal(output.metrics.deploy_problems, 0);
   assert.equal(output.metrics.owner_slack_green, 1);
@@ -27,43 +26,25 @@ test("the 10-30 outage reads every page failing while the worker and the owner's
 
 test("failed main runs alone make deploy_problems a day's window that ages out, and a live problem does not", () => {
   const base = { pages: PAGES.map(spec => page(spec.key)), routes: [], errors: [], presence: { presence: "active", online: true, connectionCount: 1 },
-    worker: WORKER };
+    worker: { status: "SUCCESS", deployAt: NOW - 3_600_000, lastActiveAt: NOW - 30_000, activeLines: 200 } };
   const failedAt = NOW - 2 * 3_600_000;
-  const checks = servicesOutput({ ...base, deploys: { metrics: { main_checks_failed_24h: 4, worker_not_live: 0, vercel_not_live: 0, source_errors: 0 },
+  const checks = servicesOutput({ ...base, deploys: { metrics: { commits_not_live: 0, main_checks_failed_24h: 4, railway_not_live: 0, vercel_not_live: 0, source_errors: 0 },
     flagged: [], lastEventAt: { main_checks_failed_24h: failedAt } } }, NOW);
   assert.equal(checks.metrics.deploy_problems, 4);
   assert.deepEqual(checks.lastEventAt, { deploy_problems: failedAt });
   assert.deepEqual(checks.windowMs, { deploy_problems: 24 * 3_600_000 });
-  const late = servicesOutput({ ...base, deploys: { metrics: { main_checks_failed_24h: 4, worker_not_live: 1, vercel_not_live: 0, source_errors: 0 },
+  const late = servicesOutput({ ...base, deploys: { metrics: { commits_not_live: 1, main_checks_failed_24h: 4, railway_not_live: 1, vercel_not_live: 0, source_errors: 0 },
     flagged: [], lastEventAt: { main_checks_failed_24h: failedAt } } }, NOW);
   assert.equal(late.metrics.deploy_problems, 5);
   assert.equal(late.windowMs, undefined);
 });
 
-// p226 (11-04): the worker runs on us-metal01, read from prod Prometheus (docker state, cAdvisor) and otel.otel_logs through Grafana.
-const S = (value: number, labels: Record<string, string> = {}) => ({ labels, value });
-const STATE = [S(1, { __name__: "virev_container_running" }), S(0, { __name__: "virev_container_restart_count" }), S((NOW - 3_600_000) / 1000, { __name__: "virev_container_started_seconds" })];
-const STAMP = [S((NOW - 20_000) / 1000)];
-const SEEN = [S(NOW / 1000, { image: `ghcr.io/sieu-n/slack-green/worker:${"a".repeat(40)}` })];
-
-test("the worker read takes docker's state, the sha of cAdvisor's image tag and the newest presence line", () => {
-  assert.deepEqual(parseWorker(STATE, STAMP, SEEN, [{ lines: 200, newest: NOW - 30_000 }], NOW), WORKER);
-  const quiet = parseWorker(STATE, STAMP, [S(NOW / 1000, { image: "ghcr.io/sieu-n/slack-green/worker:main" })], [{ lines: 0, newest: 0 }], NOW);
-  assert.equal(quiet.sha, undefined);
-  assert.equal(quiet.lastActiveAt, undefined);
-  assert.throws(() => parseWorker([], STAMP, [], [], NOW), /has no container slack-green-worker/);
-  assert.throws(() => parseWorker(STATE, [S((NOW - 20 * 60_000) / 1000)], SEEN, [], NOW), /docker state file was last written 20 min ago/);
-});
-
-test("a worker that is stopped, restarted itself in the last 10 min, went silent or runs a tag with no sha is a deploy problem each", () => {
-  const output = (worker: WorkerRead) => servicesOutput({ pages: PAGES.map(spec => page(spec.key)), routes: [], errors: [], worker,
-    deploys: { metrics: { main_checks_failed_24h: 0, worker_not_live: 0, vercel_not_live: 0, source_errors: 0 }, flagged: [] } }, NOW);
-  assert.equal(output(WORKER).metrics.deploy_problems, 0);
-  assert.equal(output({ ...WORKER, running: false }).metrics.deploy_problems, 1);
-  assert.equal(output({ ...WORKER, restarts: 3, startedAt: NOW - 120_000 }).metrics.deploy_problems, 1);
-  assert.equal(output({ ...WORKER, restarts: 3 }).metrics.deploy_problems, 0);
-  const { sha: _sha, ...tagOnly } = WORKER;
-  const silentTag = output({ ...tagOnly, image: "ghcr.io/sieu-n/slack-green/worker:main", lastActiveAt: NOW - 11 * 60_000 });
-  assert.equal(silentTag.metrics.deploy_problems, 2);
-  assert.match((silentTag.flagged ?? []).find(item => item.kind === "worker_problem")?.excerpt ?? "", /worker:main, which names no main sha, and its last presence check log line is 11 min old/);
+// 11-04: a Railway build that failed (slack-green #422 deleted the Dockerfile) leaves the deployment before it running.
+test("the worker read skips a FAILED deployment and reads the one still running", async () => {
+  const exec = async (_file: string, args: readonly string[]): Promise<string> =>
+    args[0] === "deployment" ? JSON.stringify([{ status: "FAILED", createdAt: new Date(NOW - 60_000).toISOString() }, { status: "SUCCESS", createdAt: new Date(NOW - 3_600_000).toISOString() }])
+      : args[0] === "logs" ? JSON.stringify({ timestamp: new Date(NOW - 30_000).toISOString(), message: "[ppwc] 🟢 active" }) : "";
+  const worker = await readWorker(exec);
+  assert.equal(worker.status, "SUCCESS");
+  assert.equal(worker.lastActiveAt, NOW - 30_000);
 });
