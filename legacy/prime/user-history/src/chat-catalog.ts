@@ -980,7 +980,7 @@ export class Catalog {
   async refresh(): Promise<void> {
     await waitFor(this.peer.sync(() => this.connect()), LIST_WAIT_MS, this.peer.name);
     this.inputs++;
-    this.index(this.peer.list());
+    await this.indexInSlices(this.peer.list());
     void this.emit().catch(() => {});
   }
 
@@ -993,6 +993,7 @@ export class Catalog {
   private async apply(): Promise<void> {
     if (this.closed) return;
     this.inputs++;
+    this.changes++;
     if (!this.stale) {
       this.stale = true;
       this.staleTimer = setTimeout(() => { this.staleTimer = undefined; this.settle(); }, this.emitGapMs);
@@ -1014,10 +1015,48 @@ export class Catalog {
 
   /** The rows of this box's copy and the other boxes' copies, as the catalog reads them. */
   private index(rows: readonly SessionSummary[]): void {
+    const steps = this.indexSteps(rows);
+    while (!steps.next().done);
+  }
+
+  /**
+   * `index` that gives the loop a turn every PROJECTION_SLICE_MS, for the refresh at start and after a list, which reads every row of every box
+   * at once. At 01:15:54Z on 11-04, 5 s after release-3750cce started, that first index held the main thread 1.05 s in one run with CI on 42 of
+   * 80 cores, and d7 read a 1.49 s loop stall for 01:16Z. A reader that needs the rows meanwhile indexes them itself (`settle`), and then this
+   * run commits nothing, since that index read rows at least as new.
+   */
+  private async indexInSlices(rows: readonly SessionSummary[]): Promise<void> {
+    const steps = this.indexSteps(rows);
+    const run = this.indexRuns;
+    const changes = this.changes;
+    // A reader meanwhile reads no rows older than this list: it indexes them itself (`settle`).
+    const wasStale = this.stale;
+    this.stale = true;
+    let slice = performance.now();
+    for (let step = steps.next(true); !step.done; step = steps.next(run === this.indexRuns)) {
+      if (performance.now() - slice < PROJECTION_SLICE_MS) continue;
+      await new Promise<void>(resolve => { setImmediate(resolve); });
+      slice = performance.now();
+    }
+    // Rows that changed while this ran stay for the next reader's index.
+    if (run + 1 === this.indexRuns && changes === this.changes && !wasStale) this.stale = false;
+  }
+  /** How many indexes committed, so a sliced one that another overtook drops its own (`indexInSlices`). */
+  private indexRuns = 0;
+  /** How many copy changes `apply` heard of, so a sliced index knows whether rows changed while it ran. */
+  private changes = 0;
+
+  /**
+   * The index as steps: it yields between rows and commits at its end, unless the caller passes false to the step that would commit. Every
+   * BREATHE_ROWS rows is one step, so a sliced run reads the clock at most once per that many rows.
+   */
+  private *indexSteps(rows: readonly SessionSummary[]): Generator<void, void, boolean | undefined> {
     const next = new Map<string, SessionSummary>();
     const children: SessionSummary[] = [];
-    ({ own: this.own, ownActive: this.ownActive } = this.ownNow());
-    for (const row of this.hosts ? [...rows, ...this.hosts.rows()] : rows) {
+    const all = this.hosts ? [...rows, ...this.hosts.rows()] : rows;
+    for (let at = 0; at < all.length; at++) {
+      if (at % BREATHE_ROWS === 0 && at > 0) yield;
+      const row = all[at]!;
       if (!isTopLevel(row)) { children.push(row); continue; }
       const existing = next.get(row.sessionId);
       // A session on two boxes (a copy, or one moving between them) shows as the box whose daemon runs it, this box's row when both or neither do.
@@ -1027,13 +1066,20 @@ export class Catalog {
         process.stderr.write(`catalog: session ${row.sessionId.slice(0, 8)} runs on this box and on ${this.hosts?.hostOf(row.sessionId)?.name ?? "another box"}; the list shows this box's\n`);
       }
     }
+    const childById = new Map<string, SessionSummary>();
+    for (let at = 0; at < children.length; at++) {
+      if (at % BREATHE_ROWS === 0 && at > 0) yield;
+      const row = children[at]!;
+      const existing = childById.get(row.sessionId);
+      if (!existing || (existing.activeSessionId === undefined && row.activeSessionId !== undefined)) childById.set(row.sessionId, row);
+    }
+    const applied = yield;
+    if (applied === false) return;
+    this.indexRuns++;
+    ({ own: this.own, ownActive: this.ownActive } = this.ownNow());
     this.summaries = next;
     this.childSummaries = children;
-    this.childById = new Map();
-    for (const row of children) {
-      const existing = this.childById.get(row.sessionId);
-      if (!existing || (existing.activeSessionId === undefined && row.activeSessionId !== undefined)) this.childById.set(row.sessionId, row);
-    }
+    this.childById = childById;
     const roster = rosterChildren(children, this.cuts);
     void Promise.resolve().then(() => this.chats.roster?.(roster)).catch(() => {});
     void this.readCuts();
