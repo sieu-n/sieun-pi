@@ -7,7 +7,7 @@ import { FIRST_TASK_CHARS, keptFirst, taskText } from "./first-task.ts";
 import { DaemonClient, onPiHost } from "./daemon-sdk.ts";
 import { fullListInWorker } from "./full-list.ts";
 import type { ChatLabels } from "./chat-labels.ts";
-import { keptChatAgents, stepSessions, withPoolBelow, withQueue, withRates, withSlotParks, withWaits, type SubagentSession } from "./chat-agents.ts";
+import { keptChatAgents, queuedBelowIndex, stepSessions, withPoolBelow, withQueue, withRates, withSlotParks, withWaits, type SubagentSession } from "./chat-agents.ts";
 import { RowOrder } from "./catalog-rows.ts";
 import { type FileSlotPark, heldSlotParkReads, poolPark, readRowSlotPark, type SlotPark, takeSlotParkReads } from "./slot-park.ts";
 import { type Cut, cutActivity, SessionCuts, type CutSource } from "./cut-end.ts";
@@ -16,7 +16,7 @@ import { unreadCount } from "./shared/chat-feed.ts";
 import type { Chats } from "./chats.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
 import type { OriginResolver, ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
-import type { Wake } from "./wakes.ts";
+import { treeWakeIndex, type Wake } from "./wakes.ts";
 import { mirrorPath, remotePath, type HostCatalogs } from "./host-catalogs.ts";
 import { SessionPeer } from "./session-peer.ts";
 import { sessionBornAt, UNLISTED_LIVE_MS } from "./shared/duty-fixes.ts";
@@ -1236,10 +1236,13 @@ export class Catalog {
       if (row.chat) row.pulse = pulse;
       else rows[at] = { ...row, pulse };
     }
-    const below = (session: string) => (children.get(session) ?? []).map(child => child.sessionId);
+    // Both waits below an agent are read walking up from each wake and queued session, once for every chat (`treeWakeIndex`).
+    const above = (session: string) => this.childById.get(session)?.parentSessionId;
+    const wakesIn = treeWakeIndex(wakes, above);
+    const queuedBelow = queuedBelowIndex(queued, above);
     for (const { row } of chatRows) {
       await breathe();
-      row.agents = withPoolBelow(withWaits(withQueue(withRates(row.agents ?? [], rates), queued), wakes, below), queued, below);
+      row.agents = withPoolBelow(withWaits(withQueue(withRates(row.agents ?? [], rates), queued), wakesIn), queuedBelow);
     }
     // Each park read stats its file in-line before its first await, and each spawned count below reads a folder in-line, so the loop gets a turn
     // between agents in both passes: at 21:56:20Z on 11-03, with CI on 51 of 80 cores, these passes and a major GC held the main thread 1.3 s.

@@ -485,6 +485,25 @@ function wakeIndex(wakes: readonly Wake[]): ReadonlyMap<string, readonly number[
   return index;
 }
 
+/**
+ * `treeWakes` of every session at once: each wake's session and every session above it through `above` (a session's parent in the daemon's
+ * list), each with its wakes in list order. A catalog projection asked `treeWakes` for each of the 3,065 agents of the live chat's 14 chats on
+ * 11-04, and each call walked that agent's whole tree down, while a few hundred wakes walk up a few levels.
+ */
+export function treeWakeIndex(wakes: readonly Wake[], above: (session: string) => string | undefined): Map<string, Wake[]> {
+  const index = new Map<string, Wake[]>();
+  for (const wake of wakes) {
+    const seen = new Set<string>();
+    for (let id: string | undefined = wake.session; id !== undefined && !seen.has(id); id = above(id)) {
+      seen.add(id);
+      const owed = index.get(id);
+      if (owed) owed.push(wake);
+      else index.set(id, [wake]);
+    }
+  }
+  return index;
+}
+
 /** `session` and every session below it at any depth (`below` gives a session's child sessions). */
 export function treeSessions(session: string, below: (session: string) => readonly string[]): Set<string> {
   const sessions = new Set([session]);

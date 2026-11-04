@@ -3,7 +3,7 @@ import { slotParkWords, type SlotPark } from "./slot-park.ts";
 import { createdSessions } from "./shared/created-sessions.ts";
 import { sortAgents } from "./shared/sessions-delta.ts";
 import type { AgentLink, AgentState, ChatAgent, ChatBoard, ChildAgent, PlanItem, QueuePlace, SessionRow, ThreadMessage, TokenRate } from "./shared/types.ts";
-import { treeSessions, treeWakes, type Wake, wakeWait } from "./wakes.ts";
+import { type Wake, wakeWait } from "./wakes.ts";
 
 /** A thread the chat exchanged agent messages with this long ago still counts as linked. */
 export const CONTACT_WINDOW_MS = 24 * 60 * 60_000;
@@ -554,13 +554,31 @@ export function agentChildren(agents: readonly ChatAgent[]): ChildAgent[] {
  * by step id, with the job it names.
  */
 export function stepSessions(board: ChatBoard | null, agents: readonly ChatAgent[]): Map<string, { job: string; sessionId: string }> {
-  const owners = new Map(agents.flatMap(agent => agent.sessionId ? agent.steps.map(step => [step, agent.sessionId!] as const) : []));
   const links = new Map<string, { job: string; sessionId: string }>();
-  walk(board?.plan ?? [], item => {
+  const open = board ? unlinkedSteps(board) : [];
+  if (!open.length) return links;
+  const owners = new Map(agents.flatMap(agent => agent.sessionId ? agent.steps.map(step => [step, agent.sessionId!] as const) : []));
+  for (const item of open) {
     const sessionId = owners.get(item.id);
-    if (item.job && !item.sessionId && sessionId) links.set(item.id, { job: item.job, sessionId });
-  });
+    if (sessionId) links.set(item.id, { job: item.job!, sessionId });
+  }
   return links;
+}
+
+/**
+ * The steps of a board with a job and no session id yet, in plan order, read once per board object. The catalog asked `stepSessions` for every
+ * chat on every projection and built a map of all its agents' steps each time, 6% of a projection on 11-04, while almost every step already
+ * had its session id.
+ */
+const unlinked = new WeakMap<ChatBoard, PlanItem[]>();
+function unlinkedSteps(board: ChatBoard): PlanItem[] {
+  let open = unlinked.get(board);
+  if (!open) {
+    const items: PlanItem[] = [];
+    walk(board.plan, item => { if (item.job && !item.sessionId) items.push(item); });
+    unlinked.set(board, open = items);
+  }
+  return open;
 }
 
 const STATE_WORD: Record<AgentState, string> = { working: "working", waiting: "waiting for you", idle: "idle", done: "done", failed: "failed" };
@@ -584,29 +602,47 @@ export function withQueue(agents: readonly ChatAgent[], places: ReadonlyMap<stri
 }
 
 /**
- * The agents not at work whose session or a session below it (`below`, `treeWakes`) has a pending board.wake: state working, the check-in's rule
- * for a job asleep on a wake (`withWakes`), with the wait in words (`wakeWait`). Crawler VP 10-18 03:00Z: the agents API gave query mcp build,
- * census canary run and crawler ops train state "done" while each slept on its run and time wakes.
+ * The agents not at work whose session or a session below it has a pending board.wake (`wakesIn`, from `treeWakeIndex`): state working, the
+ * check-in's rule for a job asleep on a wake (`withWakes`), with the wait in words (`wakeWait`). Crawler VP 10-18 03:00Z: the agents API gave
+ * query mcp build, census canary run and crawler ops train state "done" while each slept on its run and time wakes.
  */
-export function withWaits(agents: readonly ChatAgent[], wakes: readonly Wake[], below: (session: string) => readonly string[]): ChatAgent[] {
-  if (!wakes.length) return [...agents];
+export function withWaits(agents: readonly ChatAgent[], wakesIn: ReadonlyMap<string, readonly Wake[]>): ChatAgent[] {
+  if (!wakesIn.size) return [...agents];
   return agents.map(agent => {
-    const owed = agent.sessionId && agent.state !== "working" ? treeWakes(agent.sessionId, below, wakes) : [];
-    return owed.length ? { ...agent, state: "working", wait: wakeWait(owed) } : agent;
+    const owed = agent.sessionId && agent.state !== "working" ? wakesIn.get(agent.sessionId) : undefined;
+    return owed?.length ? { ...agent, state: "working", wait: wakeWait(owed) } : agent;
   });
 }
 
 /**
- * The agents not at work with a session below them, at any depth (`below`), queued in pi-pool's line (`places`): state working, with the wait in
- * words, "waits on a subagent queued 3 of 21 for a working slot". A job that ended its turn to wait on its subagents moves while they wait for
- * their slots: at 12:04Z on 10-29 ops guy's job "staging convex io cut" read idle while io-contactfind and io-brands sat in a full pool's line.
+ * Each session above a session queued in pi-pool's line (`places`), at any depth through `above`, with the first queued place below it. A
+ * projection asked this for every agent of every chat by walking each agent's whole tree down (`treeSessions`), twice with `treeWakes`, while
+ * the line holds a few hundred sessions: walking up from those is the same answer.
  */
-export function withPoolBelow(agents: readonly ChatAgent[], places: ReadonlyMap<string, QueuePlace>, below: (session: string) => readonly string[]): ChatAgent[] {
-  if (!places.size) return [...agents];
+export function queuedBelowIndex(places: ReadonlyMap<string, QueuePlace>, above: (session: string) => string | undefined): Map<string, QueuePlace> {
+  const below = new Map<string, QueuePlace>();
+  for (const [session, place] of places) {
+    const seen = new Set([session]);
+    for (let up = above(session); up !== undefined && !seen.has(up); up = above(up)) {
+      seen.add(up);
+      const known = below.get(up);
+      if (!known || place.position < known.position) below.set(up, place);
+    }
+  }
+  return below;
+}
+
+/**
+ * The agents not at work with a session below them, at any depth, queued in pi-pool's line (`queuedBelow`, from `queuedBelowIndex`): state
+ * working, with the wait in words, "waits on a subagent queued 3 of 21 for a working slot". A job that ended its turn to wait on its subagents
+ * moves while they wait for their slots: at 12:04Z on 10-29 ops guy's job "staging convex io cut" read idle while io-contactfind and io-brands
+ * sat in a full pool's line.
+ */
+export function withPoolBelow(agents: readonly ChatAgent[], queuedBelow: ReadonlyMap<string, QueuePlace>): ChatAgent[] {
+  if (!queuedBelow.size) return [...agents];
   return agents.map(agent => {
     if (!agent.sessionId || agent.state === "working") return agent;
-    const place = [...treeSessions(agent.sessionId, below)].filter(session => session !== agent.sessionId).map(session => places.get(session))
-      .filter((each): each is QueuePlace => each !== undefined).sort((a, b) => a.position - b.position)[0];
+    const place = queuedBelow.get(agent.sessionId);
     return place ? { ...agent, state: "working", wait: `waits on a subagent queued ${place.position} of ${place.total} for a working slot` } : agent;
   });
 }

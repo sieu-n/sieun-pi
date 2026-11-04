@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { poolWaitingOwners, wakingOwners } from "../scripts/duties/whole-system.ts";
-import { withPoolBelow } from "../src/chat-agents.ts";
+import { queuedBelowIndex, withPoolBelow } from "../src/chat-agents.ts";
 import type { ChatAgent, ChatBoard } from "../src/shared/types.ts";
 import { rowOwnerReads, unmovedSteps } from "../src/unmoved-steps.ts";
 
@@ -50,12 +50,12 @@ test("d9: a board.wake set by a job's subagent makes the job a live owner", asyn
 test("the chat service reads a job whose subagent is queued for a slot as moving its step", () => {
   const agent: ChatAgent = { key: "child:f276551c", sessionId: JOB, name: "staging convex io cut", job: "staging convex io cut", sender: "staging convex io cut",
     link: "subagent", state: "idle", lastActivityAt: "2026-10-29T11:05:00Z", steps: ["p613"] };
-  const below = (session: string) => session === JOB ? [KID] : [];
-  const [moved] = withPoolBelow([agent], new Map([[KID, { position: 3, total: 21, since: now - 3_600_000 }]]), below);
+  const above = (session: string) => session === KID ? JOB : undefined;
+  const [moved] = withPoolBelow([agent], queuedBelowIndex(new Map([[KID, { position: 3, total: 21, since: now - 3_600_000 }]]), above));
   assert.equal(moved!.state, "working");
   assert.equal(moved!.wait, "waits on a subagent queued 3 of 21 for a working slot");
   const reads = rowOwnerReads({ id: CHAT, working: false, lastActivityAt: "2026-10-29T10:00:00Z", agents: [moved!] }, now);
   assert.deepEqual(unmovedSteps(board, now, 7_200_000, reads).map(step => step.id), []);
-  const [left] = withPoolBelow([agent], new Map(), below);
+  const [left] = withPoolBelow([agent], queuedBelowIndex(new Map(), above));
   assert.deepEqual(unmovedSteps(board, now, 7_200_000, rowOwnerReads({ id: CHAT, working: false, lastActivityAt: "2026-10-29T10:00:00Z", agents: [left!] }, now)).map(step => step.id), ["p613"]);
 });
