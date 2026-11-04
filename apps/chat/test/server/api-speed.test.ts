@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { apiSpeed, finding } from "../../scripts/duties/api-speed.ts";
-import { LoopStalls, RequestLog, type RequestTiming } from "../../server/request-log.ts";
+import { dayOf, LoopStalls, RequestLog, type RequestTiming } from "../../server/request-log.ts";
 import { start } from "./helpers.ts";
 
 const dirs: string[] = [];
@@ -113,13 +113,43 @@ test("a refused send logs its route, status and reason, and a page's failed call
       ["server", 400, "No upload blob:", undefined], ["server", 400, "A message needs", undefined], ["client", 0, "TypeError: Fail", undefined],
       ["client", 400, "No upload blob:", undefined], ["client", 400, "No upload blob:", true], ["client", 0, "TypeError: Fail", true],
     ]);
-    // The two refusals and the send that never reached the server count; the unreached try and the page's copies of the refusal do not.
+    // The two refusals and the send that never reached the server failed; the unreached try and the page's copies of the refusal did not.
+    // All three came from this box, as a job's walk does, so they are flagged apart and the owner's count stays 0.
     const out = apiSpeed(dataDir, Date.now() + 1, 3600_000);
-    assert.equal(out.metrics.failed_sends_24h, 3);
-    const failed = out.flagged.filter(row => row.kind === "failed_send");
-    assert.deepEqual(failed.map(row => row.sig), ["server:POST /api/c/:id/send:400", "server:POST /api/c/:id/send:400", "client:POST /api/c/:id/send:0"]);
-    assert.match(failed[2]!.excerpt, /never reached the server \(client, Not delivered after the page's tries\): TypeError: Failed to fetch$/);
+    assert.equal(out.metrics.failed_sends_24h, 0);
+    assert.equal(out.flagged.filter(row => row.kind === "failed_send").length, 0);
+    const walks = out.flagged.filter(row => row.kind === "walk_failed_send");
+    assert.deepEqual(walks.map(row => row.sig), ["server via local:POST /api/c/:id/send:400", "server via local:POST /api/c/:id/send:400", "client via local:POST /api/c/:id/send:0"]);
+    assert.match(walks[2]!.excerpt, /never reached the server \(client via local, Not delivered after the page's tries\): TypeError: Failed to fetch$/);
     assert.equal(out.routes.find(route => route.src === "client" && route.route === "POST /api/c/:id/send")?.count, 1, "only the answered try is timed");
+  } finally {
+    await chat.close();
+  }
+});
+
+test("failed_sends_24h counts the owner's failed sends and flags a box walk's apart", async () => {
+  const dataDir = tempDir();
+  const chat = await start({ dataDir });
+  try {
+    const channel = (await chat.get("/api/sidebar")).channels[0].id as string;
+    const send = (tailnet: boolean) => fetch(`${chat.base}/api/c/${channel}/send`, {
+      method: "POST", headers: { "content-type": "application/json", ...(tailnet ? { "tailscale-user-login": "owner@example.com" } : {}) },
+      body: JSON.stringify({ text: " ", requestId: `r-${tailnet}` }),
+    });
+    assert.deepEqual([(await send(true)).status, (await send(false)).status], [400, 400]);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.deepEqual(lines(dataDir).filter(line => line.r === "/api/c/:id/send").map(line => [line.src, line.s, line.via]), [["server", 400, "tailnet"], ["server", 400, "local"]]);
+    const p = `/api/c/${channel}/send`;
+    const old = { at: Date.now() - 1000, src: "server", m: "POST", r: "/api/c/:id/send", p, s: 400, ms: 3, err: "No upload blob:x" };
+    const shown = (via: string) => ({ at: Date.now() - 1000, src: "client", m: "POST", r: "/api/c/:id/send", p, s: 0, ms: 0, err: "TypeError: Failed to fetch", shown: true, via });
+    writeFileSync(join(dataDir, "requests", `${dayOf(Date.now())}.jsonl`), [old, shown("tailnet"), shown("local")].map(line => `${JSON.stringify(line)}\n`).join(""), { flag: "a" });
+    const out = apiSpeed(dataDir, Date.now() + 1, 3600_000);
+    // The tailnet refusal, the old refusal with no via and the tailnet page's Not delivered count; the local refusal and local page do not.
+    assert.equal(out.metrics.failed_sends_24h, 3);
+    assert.deepEqual(out.flagged.filter(row => row.kind.endsWith("failed_send")).map(row => `${row.kind} ${row.sig}`), [
+      "failed_send server via tailnet:POST /api/c/:id/send:400", "failed_send server:POST /api/c/:id/send:400", "failed_send client via tailnet:POST /api/c/:id/send:0",
+      "walk_failed_send server via local:POST /api/c/:id/send:400", "walk_failed_send client via local:POST /api/c/:id/send:0",
+    ]);
   } finally {
     await chat.close();
   }

@@ -111,7 +111,7 @@ export function finding(s: RouteSpeed): string {
 const SEND_ROUTES = new Set([ROUTES.send, "POST /api/c/:id/send/:requestId/retry", "POST /api/uploads"]);
 
 /**
- * The sends the owner saw as Not delivered, each once. A server line that refused one (status 400 to 499) counts, since the page never
+ * The sends a page saw as Not delivered, each once. A server line that refused one (status 400 to 499) counts, since the page never
  * retries a refusal, and it is the only line a tab too old to post timings leaves. A page's `shown` line counts when its last call never
  * reached the server (status 0) or failed there (500 and up), which the page tried again first; its 4xx repeats the server's line. A failed
  * call that a later try landed is no failure. On 11-04 at 03:09Z three of the owner's sends answered 400 and showed Not delivered, and no
@@ -121,10 +121,21 @@ export function failedSends(timings: readonly RequestTiming[]): RequestTiming[] 
   return timings.filter(t => SEND_ROUTES.has(`${t.m} ${t.r}`) && (t.src === "server" ? t.s >= 400 && t.s < 500 : t.shown === true && (t.s === 0 || t.s >= 500)));
 }
 
+/**
+ * A failed send from a browser on the box (`via` local), such as a job's walk, is not the owner's. A line with no `via` is from before the
+ * server named where a request came from and may be his, so it counts. On 11-05 the duty counted 8 failed sends, and 3 of them were a job's
+ * walk in a test room, one a deliberate blob:walk6 upload.
+ */
+const fromBox = (t: RequestTiming): boolean => t.via === "local";
+
+const who = (t: RequestTiming): string => (t.via ? `${t.src} via ${t.via}` : t.src);
+
 export function apiSpeed(dir: string, now: number, windowMs: number) {
   const timings = readTimings(dir, now, windowMs);
   const speeds = routeSpeeds(timings);
   const failed = failedSends(timings);
+  const owners = failed.filter(t => !fromBox(t));
+  const walks = failed.filter(fromBox);
   const seen = PREFERRED.map(src => speeds.filter(s => s.src === src)).find(list => list.length) ?? [];
   const metrics: Record<string, number> = {};
   if (seen.length) metrics.slowest_api_p90_ms = seen[0]!.p90;
@@ -137,7 +148,7 @@ export function apiSpeed(dir: string, now: number, windowMs: number) {
   if (messages || replies) metrics.thread_open_p90_ms = Math.max(messages?.p90 ?? 0, replies?.p90 ?? 0);
   const send = speedOf(speeds, ROUTES.send);
   if (send) metrics.send_p90_ms = send.p90;
-  metrics.failed_sends_24h = failed.length;
+  metrics.failed_sends_24h = owners.length;
   const slowest = seen.slice(0, 3);
   return {
     metrics,
@@ -145,9 +156,9 @@ export function apiSpeed(dir: string, now: number, windowMs: number) {
     metricSources: Object.fromEntries(Object.entries({ search, messages, replies, send }).flatMap(([key, speed]) => (speed ? [[key, `${speed.src}, ${speed.count} requests`]] : []))),
     routes: speeds,
     flagged: [
-      ...failed.map(t => ({
-        kind: "failed_send", sig: `${sourceOf(t)}:${t.m} ${t.r}:${t.s}`,
-        excerpt: `${new Date(t.at).toISOString()} ${t.m} ${t.p} ${t.s ? `answered ${t.s}` : "never reached the server"} (${sourceOf(t)}${t.shown ? ", Not delivered after the page's tries" : ""}): ${t.err ?? "no reason logged"}`,
+      ...[...owners.map(t => ["failed_send", t] as const), ...walks.map(t => ["walk_failed_send", t] as const)].map(([kind, t]) => ({
+        kind, sig: `${who(t)}:${t.m} ${t.r}:${t.s}`,
+        excerpt: `${new Date(t.at).toISOString()} ${t.m} ${t.p} ${t.s ? `answered ${t.s}` : "never reached the server"} (${who(t)}${t.shown ? ", Not delivered after the page's tries" : ""}): ${t.err ?? "no reason logged"}`,
       })),
       ...slowest.map(s => ({ kind: "slow_api", sig: `${s.src}:${s.route}`, excerpt: finding(s) })),
     ],

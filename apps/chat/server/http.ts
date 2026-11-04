@@ -298,7 +298,7 @@ export function serve(app: App): Server {
       phases.set(req, phase);
       res.once("close", () => requests.write({
         at: Date.now(), src: "server", m: method, r: routeLabel(table, method, path), p: path, s: res.writableFinished ? res.statusCode : 0, ms: performance.now() - started,
-        ...phase, stall: stalls.longest(started),
+        ...phase, stall: stalls.longest(started), via: viaOf(req),
       }));
     }
     void handle(app, table, req, res);
@@ -314,12 +314,14 @@ export function serve(app: App): Server {
   return server;
 }
 
+const viaOf = (req: IncomingMessage): ClientVia => (req.headers["tailscale-user-login"] ? "tailnet" : "local");
+
 /** POST /api/timings: the web client's wait for each call it made (request-log.ts), with each path named by its route. */
 async function takeTimings(table: Route[], requests: RequestLog, log: (line: string) => void, req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
     const at = Date.now();
     const samples = clientTimings(await readBody(req));
-    const via: ClientVia = req.headers["tailscale-user-login"] ? "tailnet" : "local";
+    const via = viaOf(req);
     for (const sample of samples) {
       const r = routeLabel(table, sample.m, sample.p);
       requests.write({ at, src: "client", ...sample, r, via });
