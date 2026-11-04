@@ -139,9 +139,31 @@ export const CHAINED = /\{(job_id|snapshot_id)\}/;
  * A Xiaohongshu note opens only with the xsec_token an explore answer issues, so note_detail's fixed docs example answered 502
  * acquisition_credential_unavailable on staging on 2026-10-28 at 00:02Z, while 10 of 10 notes from an explore answer opened there at 01:4xZ.
  */
-export const QUERY_CHAINS: Readonly<Record<string, { from: string; param: string }>> = {
-  "GET /v1/xiaohongshu/note_detail": { from: "GET /v1/xiaohongshu/explore", param: "note_id" },
+export const QUERY_CHAINS: Readonly<Record<string, { from: string; what: string; query: (body: unknown) => Record<string, string> | undefined }>> = {
+  "GET /v1/xiaohongshu/note_detail": { from: "GET /v1/xiaohongshu/explore", what: "note_id", query: body => {
+    const id = firstItemId(body);
+    return id ? { note_id: id } : undefined;
+  } },
+  /**
+   * A Facebook expansion_token stops working 7 days after post_comments issues it: the docs example token of 10-27 20:35Z read its
+   * replies on prod at 6.88 days and got field_exception on staging at 7.2 days (d2, 11-04 01:53Z), while a token from a fresh
+   * post_comments answer read the same comment and its page 2 on staging at 11-04 02:39Z.
+   */
+  "GET /v1/facebook/post_comment_replies": { from: "GET /v1/facebook/post_comments", what: "feedback_id and expansion_token", query: firstReplyKeys },
 };
+
+/** The first comment of a list answer that carries both `extra.feedback_id` and `extra.expansion_token`, as post_comment_replies' query. */
+export function firstReplyKeys(body: unknown): Record<string, string> | undefined {
+  const data = (body as { data?: unknown } | null)?.data;
+  const list = Array.isArray(data) ? data : (data as { items?: unknown } | null)?.items;
+  for (const item of Array.isArray(list) ? list : []) {
+    const extra = (item as { extra?: { feedback_id?: unknown; expansion_token?: unknown } } | null)?.extra;
+    if (typeof extra?.feedback_id === "string" && extra.feedback_id && typeof extra.expansion_token === "string" && extra.expansion_token) {
+      return { feedback_id: extra.feedback_id, expansion_token: extra.expansion_token };
+    }
+  }
+  return undefined;
+}
 
 /** The first item id of a list answer, whose `data` is the list or holds it as `items`. */
 export function firstItemId(body: unknown): string | undefined {
@@ -719,11 +741,16 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
     const chain = QUERY_CHAINS[op]!;
     const index = first.findIndex(([name]) => name === chain.from);
     const source = index >= 0 ? phase1[index] : undefined;
-    const value = source?.verdict === "ok" ? firstItemId(source.body) : undefined;
-    if (!value) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: `no ${chain.param} from a ${chain.from} answer in this run`, body: null };
+    const values = source?.verdict === "ok" ? chain.query(source.body) : undefined;
+    if (!values) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: `no ${chain.what} from a ${chain.from} answer in this run`, body: null };
     const request = buildRequest(op, operation);
     if ("missing" in request) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: request.missing, body: null };
-    return call(orgs[index % orgs.length]!, op, { ...request, query: { ...request.query, [chain.param]: value } }, `${chain.param} from this run's ${chain.from} answer`);
+    const org = orgs[index % orgs.length]!;
+    const fedRequest = { ...request, query: { ...request.query, ...values } };
+    const result = await call(org, op, fedRequest, `${chain.what} from this run's ${chain.from} answer`);
+    const next = result.verdict === "ok" ? nextPage(operation, result.body) : null;
+    if (next) pageTwo.set(op, await call(org, `${op} page 2`, { ...fedRequest, query: { ...fedRequest.query, [next.param]: next.value } }, `page 2 with its own ${next.param}`));
+    return result;
   }));
   await Promise.all([...pageTwoRuns, ...opened.map(job => cancel(job.org, job.id))]);
   // A page-2 failure counts against the operation: a customer cannot get past page 1. A page 2 the run did not reach leaves page 1's verdict.
