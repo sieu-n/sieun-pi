@@ -24,7 +24,7 @@ test("a low posts count from crawler-api.mjs shows as a detail line, never as a 
 });
 
 test("the full org's token names the /mcp/insight endpoint, since the search app picks the tier from it (11-04, p1071)", () => {
-  const claims = (tier: "standard" | "full") => JSON.parse(Buffer.from(mintToken("s", tier, 1).split(".")[1], "base64url").toString());
+  const claims = (tier: "standard" | "full") => JSON.parse(Buffer.from(mintToken("s", tier, 1).split(".")[1] ?? "", "base64url").toString());
   assert.equal(claims("full").aud, "https://virev.ai/mcp/insight");
   assert.equal(claims("full").resource, MCP_URLS.full);
   assert.equal(claims("standard").aud, "https://virev.ai/mcp");
