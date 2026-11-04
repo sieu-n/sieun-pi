@@ -19,6 +19,9 @@ const JOBS: Record<number, CiJob[]> = {
     { name: "Frontend", conclusion: "failure", url: "https://github.com/sieu-n/slack-green/actions/runs/2/job/22",
       steps: [step("Set up runner", "success"), step("Test", "failure")] }],
   3: [{ name: "Frontend", conclusion: "cancelled", steps: [step("Set up runner", "success"), step("Build", "cancelled")] }],
+  // 41798084254 on 11-04: the vercel-production group cancelled a waiting deploy when a newer merge queued, and run 8 deployed that merge.
+  7: [{ name: "Checks", conclusion: "success", steps: [] }, { name: "Vercel deploy", conclusion: "cancelled", steps: [] }],
+  8: [{ name: "Checks", conclusion: "success", steps: [] }, { name: "Vercel deploy", conclusion: "success", steps: [] }],
 };
 
 function deps(runs: CiRun[], failRunList = false): DeployDeps {
@@ -66,4 +69,12 @@ test("main_checks_failed_24h's lastEventAt is the newest failed run's end, this 
   assert.equal(green.lastEventAt, undefined);
   const broken = await measureDeploys(deps([], true));
   assert.deepEqual(broken.lastEventAt, { main_checks_failed_24h: NOW });
+});
+
+test("a failed job counts only until a newer main run passes that job, so a deploy the vercel-production group cancelled drops out", async () => {
+  const runs = [run(8, "hhhhhhh8", 1, "success"), run(7, "ggggggg7", 1.2, "cancelled"), run(2, "bbbbbbb2", 3, "failure"), run(9, "iiiiiii9", 4, "success")];
+  const output = await measureDeploys(deps(runs));
+  assert.equal(output.metrics.main_checks_failed_24h, 1);
+  const checks = (output.flagged ?? []).filter(slice => slice.kind.startsWith("main_checks_"));
+  assert.deepEqual(checks.map(slice => slice.excerpt.slice(0, 13)), ["main bbbbbbb'"]);
 });

@@ -112,7 +112,10 @@ export function deployMetrics(sources: Sources, now: number): { metrics: Record<
     ...failedAt === undefined ? {} : { lastEventAt: { main_checks_failed_24h: failedAt } } };
 }
 
-/** Run conclusions that count as broken checks. ci.yml cancels only PR runs for a newer push, so a cancelled main run is a timeout or a stop. */
+/**
+ * Run conclusions that count as broken checks. ci.yml's Vercel deploy job shares the vercel-production group, so a newer main merge cancels an older
+ * deploy still waiting there; dropFixed drops that cancel once a newer run passes the job.
+ */
 export const CHECKS_FAILED = ["failure", "cancelled", "timed_out", "startup_failure"];
 export const CHECKS_WINDOW_MS = 24 * 60 * MINUTE;
 /** Steps GitHub and the runner own. "Set up runner" runs the job-started hook, which fails the job when the M1 Air is under its disk floor. */
@@ -180,7 +183,23 @@ export async function readCheckFailures(deps: DeployDeps, now: number): Promise<
   const finished = runs.filter(run => run.at > now - CHECKS_WINDOW_MS && run.conclusion).length;
   const failures = await Promise.all(failedMainRuns(runs, now).map(run => readJobs(deps, run.id).then(jobs => classifyFailure(run, jobs),
     (error: unknown): CheckFailure => ({ run, side: "unknown", url: run.url, error: message(error) }))));
-  return { failures, finished };
+  return { failures: await dropFixed(deps, runs, failures), finished };
+}
+
+/**
+ * The failures no newer main run fixed. A failure is fixed once a newer passed main run passed the job that failed. On 2026-11-04 d6 still counted 10
+ * such runs: 5 Vercel deploys the vercel-production group cancelled for a newer merge, and 5 render-check failures that #463 fixed at 07:45Z.
+ * Passed runs are read newest first, and the read stops once every failed job has its newest pass.
+ */
+export async function dropFixed(deps: DeployDeps, runs: readonly CiRun[], failures: CheckFailure[]): Promise<CheckFailure[]> {
+  const newestPass = new Map<string, number>();
+  const open = () => failures.filter(failure => failure.job !== undefined && !newestPass.has(failure.job));
+  for (const run of runs.filter(item => item.conclusion === "success").sort((a, b) => b.at - a.at)) {
+    if (!open().some(failure => run.at > failure.run.at)) break;
+    const jobs = await readJobs(deps, run.id).catch(() => [] as CiJob[]);
+    for (const job of jobs) if (job.conclusion === "success" && !newestPass.has(job.name)) newestPass.set(job.name, run.at);
+  }
+  return failures.filter(failure => failure.job === undefined || (newestPass.get(failure.job) ?? 0) <= failure.run.at);
 }
 
 export async function readFiles(deps: DeployDeps, sha: string): Promise<string[]> {
