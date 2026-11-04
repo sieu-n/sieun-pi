@@ -10,10 +10,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const script = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../scripts/release-chat.mjs");
 const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
-// A build control is <STEP>_MS, _FAIL, _FAIL_NAME or _HANG for the step it names: BOOT for the boot check in the release folder, TYPECHECK and
+// A build control is <STEP>_MS, _WAIT (a file the step waits for), _FAIL, _FAIL_NAME or _HANG for the step it names: BOOT for the boot check in the release folder, TYPECHECK and
 // TEST for the old helper's in-release steps, TSC and SVELTE for the scoped type checks in the release folder, and SCOPED_TEST for the scoped tests
 // in the checkout, which take it from CHECKOUT.
-const BUILD_CONTROL = /^(BOOT|TYPECHECK|TEST|SCOPED_TEST|TSC|SVELTE)_(MS|FAIL|FAIL_NAME|HANG)$/;
+const BUILD_CONTROL = /^(BOOT|TYPECHECK|TEST|SCOPED_TEST|TSC|SVELTE)_(MS|WAIT|FAIL|FAIL_NAME|HANG)$/;
 // Each step runs from the release folder it builds (id release-<sha7>) or from the checkout (id checkout), and appends what it ran to seen/steps.log.
 const BUILD_STEP = `import { connect } from "node:net";
 import { createServer } from "node:http";
@@ -34,6 +34,7 @@ for (const [key, value] of Object.entries(process.env)) {
   if (stat?.isSocket()) await new Promise(done => connect(value).on("connect", function () { this.end(key); done(); }).on("error", done));
   else if (stat?.isDirectory()) writeFileSync(path.join(value, "touched-" + key), step);
 }
+while (control[key + "_WAIT"] && !existsSync(control[key + "_WAIT"])) await new Promise(done => setTimeout(done, 20));
 if (control[key + "_FAIL_NAME"]) process.stdout.write("✔ a passing test (1ms)\\n✖ failing tests:\\n\\ntest at test/flaky.test.ts:1:1\\n✖ " + control[key + "_FAIL_NAME"] + " (4027.4ms)\\n  AssertionError\\n");
 if (control[key + "_FAIL"]) process.exit(1);
 await new Promise(done => setTimeout(done, Number(control[key + "_MS"] || 0)));
@@ -49,26 +50,44 @@ if (control[key + "_HANG"]) {
 const FREE_PORTS = `const net = require("node:net");
 const a = net.createServer().listen(0, "127.0.0.1", () => { const b = net.createServer().listen(0, "127.0.0.1", () => {
   console.log(a.address().port + " " + b.address().port); a.close(); b.close(); }); });`;
-// The chat service: it starts from the release current names, and that release's chat-behavior.json makes it exit before it listens (exitMs, the
-// 10-19 crash at listen), answer and then exit (answerThenExitMs) or never listen (hang). Every other start answers each request 404 with its release,
-// except GET /ready when readyAfterMs is set: 503 until that long after the start, then 200, as Chats.ready does at the end of the first pass.
+// The chat service: it starts from the release current names. The fake launchctl starts its process before it stops the old chat (its third
+// argument), and it listens only once the old one is gone, so its node start overlaps that stop and counts against no answer window. That release's
+// chat-behavior.json makes it exit before it listens (exitAt "start", the 10-19 crash at listen), exit after its first answer to GET / or
+// GET /ready (exitAt "/" or "/ready"), never listen (hang), or take stopMs to stop on SIGTERM and then stop only once the next chat has loaded.
+// Each exit waits until the release looked at the process twice more (every show and print appends a line to checks.<pid>), so the release saw
+// the chat get that far before it exits. Every other start answers each request 404 with its release, except GET /ready when readyAfterMs is
+// set: 503 until that long after the listen, then 200, as Chats.ready does at the end of the first pass.
 const FAKE_CHAT = `import { createServer } from "node:http";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
-const [home, port] = process.argv.slice(2);
+const [home, port, old] = process.argv.slice(2);
+const dir = path.dirname(home);
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const checks = () => { try { return readFileSync(path.join(dir, "checks." + process.pid), "utf8").split("\\n").length - 1; } catch { return 0; } };
+const exitAfterTwoChecks = async () => { const seen = checks(); while (checks() < seen + 2) await sleep(10); process.exit(1); };
 const release = realpathSync(path.join(home, "current"));
 const file = path.join(release, "chat-behavior.json");
 const behavior = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
-if (behavior.exitMs !== undefined) setTimeout(() => process.exit(1), behavior.exitMs);
+if (old) writeFileSync(path.join(dir, "loaded." + old), "");
+while (old && alive(Number(old))) await sleep(10);
+if (behavior.exitAt === "start") await exitAfterTwoChecks();
 else if (behavior.hang) setInterval(() => {}, 1000);
 else {
   const start = Date.now();
+  let exiting = false;
   createServer((req, res) => {
-    if (req.url === "/ready" && behavior.readyAfterMs !== undefined) { const ready = Date.now() - start >= behavior.readyAfterMs; res.writeHead(ready ? 200 : 503); res.end(JSON.stringify({ ready })); return; }
-    res.writeHead(404); res.end(JSON.stringify({ error: "Not found.", release: path.basename(release) }));
+    const exit = !exiting && req.url === behavior.exitAt;
+    if (exit) exiting = true;
+    const done = () => { if (exit) exitAfterTwoChecks(); };
+    if (req.url === "/ready" && behavior.readyAfterMs !== undefined) { const ready = Date.now() - start >= behavior.readyAfterMs; res.writeHead(ready ? 200 : 503); res.end(JSON.stringify({ ready }), done); return; }
+    res.writeHead(404); res.end(JSON.stringify({ error: "Not found.", release: path.basename(release) }), done);
   }).listen(Number(port), "127.0.0.1");
-  if (behavior.answerThenExitMs !== undefined) setTimeout(() => process.exit(1), behavior.answerThenExitMs);
-  if (behavior.stopMs !== undefined) process.on("SIGTERM", () => setTimeout(() => process.exit(0), behavior.stopMs));
+  if (behavior.stopMs !== undefined) process.on("SIGTERM", async () => {
+    await sleep(behavior.stopMs);
+    while (!existsSync(path.join(dir, "loaded." + process.pid))) await sleep(10);
+    process.exit(0);
+  });
 }
 `;
 // The systemd socket: it holds the page port across chat restarts and hands each connection to the chat once one listens behind it.
@@ -150,6 +169,10 @@ function fixture(t) {
     `sock=$(cat "${socketPid}" 2>/dev/null)`,
     'up() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null; }',
     'running() { [ "$state" = running ] && up "$pid"; }',
+    // Each look at the chat process, which FAKE_CHAT counts before an exit.
+    'case "$*" in',
+    `  *show*|print\\ *) [ -n "$pid" ] && echo >> "${path.join(dir, "checks.")}$pid" ;;`,
+    "esac",
     'case "$*" in',
     '  *is-active*) running; exit $? ;;',
     "  *show*) if running; then printf 'ActiveState=active\\nInvocationID=inv%s\\nMainPID=%s\\n' \"$pid\" \"$pid\"; else printf 'ActiveState=inactive\\nInvocationID=\\nMainPID=0\\n'; fi; exit 0 ;;",
@@ -162,7 +185,7 @@ function fixture(t) {
     `  *disable*sieun-pi-chat.socket*) halt "$sock"; rm -f "${socketPid}" ;;`,
     `  *enable*sieun-pi-chat.socket*) up "$sock" || { ${node} "${path.join(dir, "socket.mjs")}" ${port} ${backend} >/dev/null 2>&1 & echo $! > "${socketPid}"; } ;;`,
     `  *stop*) halt "$pid"; echo stopped > "${state}" ;;`,
-    `  *start*) halt "$pid"; if up "$sock"; then p=${backend}; else p=${port}; fi; ${node} "${path.join(dir, "chat.mjs")}" "${home}" "$p" >/dev/null 2>&1 & echo $! > "${chatPid}"; echo running > "${state}" ;;`,
+    `  *start*) if up "$sock"; then p=${backend}; else p=${port}; fi; ${node} "${path.join(dir, "chat.mjs")}" "${home}" "$p" "$pid" >/dev/null 2>&1 & next=$!; halt "$pid"; echo $next > "${chatPid}"; echo running > "${state}" ;;`,
     "esac",
     "",
   ].join("\n"), { mode: 0o755 });
@@ -221,6 +244,10 @@ const id = (sha) => (sha.startsWith("release-") ? sha : `release-${sha.slice(0, 
 // A wait that fails its test instead of spinning forever when the script under test never reaches the state, as old code does. The slowest
 // test here took 6.3 s end to end on us-metal02 on 10-18, so 60 s only ends a wait that will never finish.
 const drafts = (home) => (existsSync(home) ? readdirSync(home).filter((name) => /^release\.lock\.\d+$/.test(name)).length : 0);
+// Whether a waiting release of `sha` has written its draft.
+const drafted = (home, sha) => readdirSync(home).filter((name) => /^release\.lock\.\d+$/.test(name)).some((name) => {
+  try { return JSON.parse(readFileSync(path.join(home, name), "utf8")).sha === sha; } catch { return false; }
+});
 
 // Starts every request while a lock this test holds keeps them queued, then lets go once each has written its draft, so the release that takes
 // the lock finds all of them waiting. A request is [args, extra, helper].
@@ -270,7 +297,7 @@ test("a socket-activated start that dies before it answers goes back to the rele
   const f = fixture(t);
   for (const [file, text] of Object.entries(UNITS)) f.write(file, text);
   const good = f.commit("good");
-  f.write("chat-behavior.json", JSON.stringify({ exitMs: 150 }));
+  f.write("chat-behavior.json", JSON.stringify({ exitAt: "start" }));
   const bad = f.commit("dies at listen");
   f.git("rm", "-q", "chat-behavior.json");
   const fixed = f.commit("fixed");
@@ -299,7 +326,7 @@ test("a chat that answers but exits inside the hold, or never answers, sends cur
   const f = fixture(t);
   assert.equal(f.release([f.c1]).status, 0);
   const cases = [
-    [{ answerThenExitMs: 300 }, { SIEUN_PI_CHAT_HOLD_MS: "5000" }, /exited [\d.]+ s after its start \(pid \d+\); going back/],
+    [{ exitAt: "/" }, { SIEUN_PI_CHAT_HOLD_MS: "5000" }, /exited [\d.]+ s after its start \(pid \d+\); going back/],
     [{ hang: true }, { SIEUN_PI_CHAT_ANSWER_MS: "1500" }, /did not answer http:\/\/127\.0\.0\.1:\d+\/ within 1\.5 s of its start \(ECONNREFUSED\); going back/],
   ];
   for (const [behavior, extra, failure] of cases) {
@@ -328,7 +355,7 @@ test("an old chat that is slow to stop does not count against the new chat's ans
   f.publish();
   const result = await f.releaseAsync([next], { SIEUN_PI_CHAT_ANSWER_MS: "1500" });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, /the restart returned in [2-9]\.\d s/);
+  assert.match(result.stderr, /the restart returned in ([2-9]|\d{2,})\.\d s/);
   assert.equal(f.current(), id(next));
   assert.equal(await f.page(), id(next));
 });
@@ -339,7 +366,7 @@ test("a start that answers, passes the hold and dies in its first pass goes back
   const f = fixture(t);
   f.write("chat-behavior.json", JSON.stringify({ readyAfterMs: 400 }));
   const good = f.commit("ends its first pass");
-  f.write("chat-behavior.json", JSON.stringify({ readyAfterMs: 60_000, answerThenExitMs: 1_500 }));
+  f.write("chat-behavior.json", JSON.stringify({ readyAfterMs: 60_000, exitAt: "/ready" }));
   const bad = f.commit("dies in its first pass");
   f.write("chat-behavior.json", JSON.stringify({ readyAfterMs: 60_000 }));
   const slow = f.commit("first pass never ends");
@@ -363,7 +390,7 @@ test("an older request gives way to a queued newer one whose start then dies, so
   // Latest wins (10-28): the older caller is told at once which release carries its commit, and a failed carrier fails only its own caller.
   const f = fixture(t);
   assert.equal(f.release([f.c1]).status, 0);
-  f.write("chat-behavior.json", JSON.stringify({ exitMs: 150 }));
+  f.write("chat-behavior.json", JSON.stringify({ exitAt: "start" }));
   const bad = f.commit("dies at listen");
   f.publish();
   mkdirSync(f.home, { recursive: true });
@@ -417,10 +444,12 @@ test("a release whose commit the running release holds gives way at once, names 
   // behind each other for 10 to 25 min, each to build a commit the next one held.
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
-  const newer = f.releaseAsync([f.c3], { BOOT_MS: "1500" });
+  const gate = path.join(f.dir, "gate");
+  const newer = f.releaseAsync([f.c3], { BOOT_WAIT: gate });
   await waitWhile(() => !existsSync(path.join(f.home, "release.lock")));
   const [older, same] = await Promise.all([f.releaseAsync([f.c2]), f.releaseAsync([f.c3])]);
   assert.ok(existsSync(path.join(f.home, "release.lock")), "the waiters left before the running release ended");
+  writeFileSync(gate, "");
   const won = await newer;
   assert.equal(won.status, 0, won.stderr);
   for (const [sha, result] of [[f.c2, older], [f.c3, same]]) {
@@ -438,11 +467,13 @@ test("a release whose commit the running release holds gives way at once, names 
 test("a waiter gives way to the running release that holds its commit even when that build then fails, and the next release retries the tip", async (t) => {
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
-  const newer = f.releaseAsync([f.c3], { BOOT_MS: "1500", BOOT_FAIL: "1" });
+  const gate = path.join(f.dir, "gate");
+  const newer = f.releaseAsync([f.c3], { BOOT_WAIT: gate, BOOT_FAIL: "1" });
   await waitWhile(() => !existsSync(path.join(f.home, "release.lock")));
   const older = await f.releaseAsync([f.c2]);
   assert.equal(older.status, 0, older.stderr);
   assert.equal(older.stdout.trim(), id(f.c3));
+  writeFileSync(gate, "");
   const failed = await newer;
   assert.equal(failed.status, 1, failed.stderr);
   assert.match(failed.stderr, /boot check failed: the service exited \(1\)/);
@@ -653,12 +684,16 @@ test("in a steady queue each release restarts at its own end, so no restart pass
   const f = fixture(t);
   assert.equal(f.release([f.c1, "--no-kickstart"]).status, 0);
   const lockHolder = () => { try { return JSON.parse(readFileSync(path.join(f.home, "release.lock"), "utf8")).sha; } catch { return null; } };
-  const first = f.releaseAsync([f.c2], { BOOT_MS: "1500" });
+  const [gate2, gate3] = [path.join(f.dir, "gate2"), path.join(f.dir, "gate3")];
+  const first = f.releaseAsync([f.c2], { BOOT_WAIT: gate2 });
   await waitWhile(() => lockHolder() !== f.c2);
-  const second = f.releaseAsync([f.c3], { BOOT_MS: "1500" });
-  await waitWhile(() => !readdirSync(f.home).some((name) => /^release\.lock\.\d+$/.test(name)));
+  const second = f.releaseAsync([f.c3], { BOOT_WAIT: gate3 });
+  await waitWhile(() => !drafted(f.home, f.c3));
+  writeFileSync(gate2, "");
   await waitWhile(() => lockHolder() !== f.c3);
   const third = f.releaseAsync([f.c4]);
+  await waitWhile(() => !drafted(f.home, f.c4));
+  writeFileSync(gate3, "");
   const [a, b, c] = await Promise.all([first, second, third]);
   for (const result of [a, b, c]) {
     assert.equal(result.status, 0, result.stderr);
@@ -789,7 +824,7 @@ test("six queued linear requests fold into one build and one restart, and each c
   const leaders = results.filter((result) => /current: .* -> /.test(result.stderr));
   assert.equal(leaders.length, 1);
   for (const result of results.filter((result) => result !== leaders[0]))
-    assert.match(result.stderr, new RegExp(`already live in ${newest}; nothing to do|gives way to the queued release of [0-9a-f]{7} by pid \\d+, which holds it`));
+    assert.match(result.stderr, new RegExp(`already live in ${newest}; nothing to do|gives way to the (queued|running) release of [0-9a-f]{7} by pid \\d+, which holds it`));
   assert.deepEqual(built(f).filter((name) => !before.includes(name)), [newest]);
   assert.equal(f.kicked().length, 1);
   assert.equal(f.current(), newest);
@@ -804,10 +839,18 @@ test("requests that arrive during a batch's build wait for the next batch, and t
   const c5 = f.commit("five");
   const c6 = f.commit("six");
   f.publish();
-  const firstBatch = queued(f, [[[f.c2]], [[f.c3], { BOOT_MS: "1500" }]]);
+  // The batch's boot check waits for the gate, so the late requests come while it builds.
+  const gate = path.join(f.dir, "gate");
+  const firstBatch = queued(f, [[[f.c2]], [[f.c3], { BOOT_WAIT: gate }]]);
   await waitWhile(() => !existsSync(path.join(f.dir, "seen", `${id(f.c3)}-boot.json`)));
-  const late = [f.releaseAsync([f.c4]), f.releaseAsync([c5]), f.releaseAsync([c6])].map(settles);
-  await waitWhile(() => drafts(f.home) + late.filter((result) => result.settled).length < 3);
+  // Newest first, each once the one before it waits or left, so each older late request finds c6 queued and gives way to it.
+  const late = [];
+  for (const sha of [c6, c5, f.c4]) {
+    const result = settles(f.releaseAsync([sha]));
+    late.push(result);
+    await waitWhile(() => !result.settled && !drafted(f.home, sha));
+  }
+  writeFileSync(gate, "");
   const [a, b] = await firstBatch;
   for (const result of [a, b]) {
     assert.equal(result.status, 0, result.stderr);
@@ -930,10 +973,12 @@ test("helpers from before the fold finish next to it: their waiters exit 0 on it
   }
   assert.equal(f.kicked().length, 2);
 
-  const oldLeader = f.releaseAsync([c6], { TYPECHECK_MS: "1500" }, old);
+  const gate = path.join(f.dir, "gate");
+  const oldLeader = f.releaseAsync([c6], { TYPECHECK_WAIT: gate }, old);
   await waitWhile(() => !existsSync(path.join(f.dir, "seen", `${id(c6)}-typecheck.json`)));
   const newWaiters = [f.releaseAsync([c7]), f.releaseAsync([c7])].map(settles);
   await waitWhile(() => drafts(f.home) + newWaiters.filter((result) => result.settled).length < 2);
+  writeFileSync(gate, "");
   const [oldLed, ...newWaited] = await Promise.all([oldLeader, ...newWaiters]);
   assert.equal(oldLed.status, 0, oldLed.stderr);
   assert.match(oldLed.stderr, /restart left to the waiting release of/);

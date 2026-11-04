@@ -31,8 +31,8 @@ A waiting release whose commit a release puts live (current holds it and the cha
 After a failed build the name of each failing scoped test goes into the log and build.failed, and the next release that waited for the lock also tries
 origin main's tip first, unless the failed build was that same tip's retry.
 Releases that queue up are folded: the release that takes the lock reads the requests waiting for it, picks the queued commit on origin main
-that holds its own commit and the most queued ones, builds that one, flips current, restarts and names each request it covered. The covered
-waiters then exit 0 with nothing built. A request that arrives during the build waits for the next batch. When the picked build fails, the
+that holds its own commit and the most queued ones, names it in the lock, builds it, flips current, restarts and names each request it covered.
+The covered waiters exit 0 with nothing built and print that release. A request that arrives during the build waits for the next batch. When the picked build fails, the
 release builds the next candidate down to its own commit, so a newer request that fails never takes the older ones with it. --rollback is
 never folded. The batch restarts unless every covered request passed --no-kickstart, and it never leaves its restart to a later release.
 A release that takes the lock with restart.owed, which helpers before the fold left to a waiting release, makes that restart before its build.
@@ -202,10 +202,12 @@ function alive(pid) {
  * The lock and the draft `release.lock.<pid>` written while it waits hold the request: pid, sha, startedAt, kickstart and rollback.
  * `covered` runs on each wait and throws Covered once a release put this commit live, or once a newer release that holds this commit is
  * running or queued: on 10-28 at 03:47Z four releases waited on each other for 10 to 25 min, each to build a commit the next one held.
+ * `building` puts the commit the release builds into its lock, so a waiter that a folded batch covers gives way to that batch at once instead
+ * of to a newer request that queued during the build.
  */
 async function takeLock(home, request, covered = () => {}) {
   const lock = join(home, "release.lock");
-  const body = JSON.stringify(request) + "\n";
+  let body = JSON.stringify(request) + "\n";
   const draft = `${lock}.${process.pid}`;
   writeFileSync(draft, body);
   let told = false, waited = false;
@@ -228,13 +230,21 @@ async function takeLock(home, request, covered = () => {}) {
     }
   } finally { rmSync(draft, { force: true }); }
   const release = () => { try { if (readFileSync(lock, "utf8") === body) unlinkSync(lock); } catch {} };
+  // Names the commit this release builds now in its lock, so a waiter whose commit that build holds gives way to it at once.
+  const building = sha => {
+    const next = JSON.stringify({ ...request, sha }) + "\n";
+    if (next === body) return;
+    writeFileSync(`${lock}.${process.pid}.building`, next);
+    renameSync(`${lock}.${process.pid}.building`, lock);
+    body = next;
+  };
   process.on("exit", release);
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => {
     if (!step) { release(); process.exit(1); }
     stopping = signal;
     step.kill(signal);
   });
-  return { release, waited };
+  return { release, waited, building };
 }
 
 async function archive(repo, sha, into) {
@@ -787,7 +797,7 @@ async function main() {
     throw new Covered(`${short} gives way to the ${best.running ? "running" : "queued"} release of ${shortSha(best.sha)} by pid ${best.pid}, which holds it; ` +
       `${short} goes live in ${carrier}${best.running ? "" : " or a newer release that holds it"}`, carrier);
   };
-  const { waited } = await takeLock(home, own, () => { wentLive(); givesWay(); });
+  const { waited, building } = await takeLock(home, own, () => { wentLive(); givesWay(); });
   await payOwed(home);
   const kept = holding();
   if (kept) {
@@ -803,6 +813,7 @@ async function main() {
   for (const plan of plans) {
     const planDir = plan.sha === sha ? dir : join(home, `release-${shortSha(plan.sha)}`);
     const planId = basename(planDir);
+    building(plan.sha);
     try {
       if (existsSync(planDir)) log(`${planId} is built already; reusing it`);
       else {
