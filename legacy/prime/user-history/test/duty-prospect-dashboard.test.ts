@@ -23,6 +23,15 @@ test("the outage's paused tables count as failing, a table no tile reads and nob
   assert.match(lines[2]!, /^apiPortalUsage: last sync 2026-11-03T17:00Z, 8 h ago, over twice its 1hour interval/);
 });
 
+test("a table whose newest job ran Completed with 0 rows is fresh, though last_synced_at is hours old (11-04 21:10Z orgs)", () => {
+  const out = report({ tiles: [], newest: fresh, required: ["orgs"], schemas: [
+    schema("orgs", { last_synced_at: "2026-11-03T18:58:00Z", last_run_at: "2026-11-04T00:58:00Z" }),
+    schema("searchEmailEvents", { last_synced_at: "2026-11-03T18:58:00Z", last_run_at: null }),
+  ] }, NOW);
+  assert.equal(out.metrics.source_tables_failing, 1);
+  assert.match(out.flagged!.find(slice => slice.kind === "table_failing")!.excerpt, /^searchEmailEvents: last sync 2026-11-03T18:58Z/);
+});
+
 test("a clean true 0 counts as fed, and an error, no row or a row of only names and blanks does not (11-04, launch VP)", () => {
   const out = report({ schemas: [], required: [], newest: fresh, tiles: [
     { id: 1, name: "Customer orgs", rows: [[286, 52, 234]] },

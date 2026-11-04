@@ -16,7 +16,9 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * tile that errors, reads a missing source, or returns no row or only blanks and labels where its numbers belong is not.
  * source_tables_failing counts the source's tables that are paused, failed or stale: every table with should_sync on, plus every table a
  * tile reads (`prodconvex_<table>` in its HogQL), since the outage turned should_sync off on orgs and orgMembers. A table fails when its
- * status is not Completed or Running, or its last sync is older than twice its sync interval. The two event ages are the hours since the
+ * status is not Completed or Running, or its last sync run is older than twice its sync interval. A sync run is the newest Completed job
+ * of the table, because PostHog moves a schema's last_synced_at only when a run brings rows: on 11-04 orgs read 18:58Z at 21:10Z while
+ * its jobs ran Completed with 0 rows at 19:58Z and 20:58Z, so 3 tables that synced every hour read stale. The two event ages are the hours since the
  * newest prod prospect_state_day and watchlist_reads_day event. Prod means the orgId is a prod Convex org and appEnv, when set, is
  * production, because dev and staging events landed in 354457 too, with their own org ids. The key is POSTHOG_ADMIN_API_KEY from
  * apps/search/.env, read through dotenvx in the auto-sns-agent checkout, because the query keys get 403 on dashboards.
@@ -58,7 +60,7 @@ const HOUR = 3_600_000;
 
 export interface TileRead { id: number; name: string; error?: string; rows?: unknown[][] }
 export interface SchemaRow { id: string; name: string; should_sync: boolean; status: string | null; last_synced_at: string | null;
-  sync_frequency: string | null; latest_error: string | null }
+  sync_frequency: string | null; latest_error: string | null; last_run_at?: string | null }
 export interface TableProblem { name: string; why: string }
 type Read<T> = T | { error: string };
 export interface Sources { tiles: Read<TileRead[]>; schemas: Read<SchemaRow[]>; required: string[]; newest: Read<Partial<Record<StateEvent, string>>> }
@@ -92,7 +94,8 @@ export function tableProblems(schemas: readonly SchemaRow[], required: readonly 
     if (!schema.should_sync) { problems.push({ name: schema.name, why: `a tile reads it, but its sync is off (status ${schema.status ?? "none"})${err}` }); continue; }
     if (schema.status !== "Completed" && schema.status !== "Running") { problems.push({ name: schema.name, why: `status ${schema.status ?? "none"}${err}` }); continue; }
     const every = intervalMs(schema.sync_frequency);
-    const last = schema.last_synced_at ? Date.parse(schema.last_synced_at) : NaN;
+    const times = [schema.last_synced_at, schema.last_run_at].filter((at): at is string => !!at).map(at => Date.parse(at)).filter(at => !Number.isNaN(at));
+    const last = times.length ? Math.max(...times) : NaN;
     if (Number.isNaN(last)) { problems.push({ name: schema.name, why: "never synced" }); continue; }
     if (every !== null && now - last > 2 * every) {
       problems.push({ name: schema.name, why: `last sync ${new Date(last).toISOString().slice(0, 16)}Z, ${round((now - last) / HOUR)} h ago, over twice its ${schema.sync_frequency} interval` });
@@ -214,16 +217,28 @@ export async function readNewest(deps: Deps): Promise<Partial<Record<StateEvent,
   return Object.fromEntries((answer.results ?? []).map(([event, at]) => [String(event), String(at)]));
 }
 
+interface SyncJob { status: string; finished_at: string | null; created_at: string }
+
+/** Each checked table with last_run_at set to the end of its newest Completed job, a run that brought no rows included. */
+export async function readSchemas(deps: Deps, required: readonly string[]): Promise<SchemaRow[]> {
+  const { schemas } = await api<{ schemas: SchemaRow[] }>(deps, `external_data_sources/${SOURCE}/`);
+  const needed = new Set(required);
+  return Promise.all(schemas.map(async schema => {
+    if (!schema.should_sync && !needed.has(schema.name.toLowerCase())) return schema;
+    const answer = await api<SyncJob[] | { results: SyncJob[] }>(deps, `external_data_sources/${SOURCE}/jobs/?schemas=${encodeURIComponent(schema.name)}`);
+    const run = (Array.isArray(answer) ? answer : answer.results).find(job => job.status === "Completed");
+    return { ...schema, last_run_at: run ? run.finished_at ?? run.created_at : null };
+  }));
+}
+
 export async function measure(deps: Deps): Promise<PrecheckOutput> {
   const now = deps.now();
   const fail = (error: unknown) => ({ error: message(error) });
-  const [dashboard, schemas, newest] = await Promise.all([
-    readDashboard(deps).catch(fail),
-    api<{ schemas: SchemaRow[] }>(deps, `external_data_sources/${SOURCE}/`).then(source => source.schemas, fail),
-    readNewest(deps).catch(fail),
-  ]);
+  const [dashboard, newest] = await Promise.all([readDashboard(deps).catch(fail), readNewest(deps).catch(fail)]);
   const tiles = isErr(dashboard) ? dashboard : dashboard.tiles;
-  return report({ tiles, schemas, required: isErr(dashboard) ? ["orgs", "orgmembers"] : dashboard.required, newest }, now);
+  const required = isErr(dashboard) ? ["orgs", "orgmembers"] : dashboard.required;
+  const schemas = await readSchemas(deps, required).catch(fail);
+  return report({ tiles, schemas, required, newest }, now);
 }
 
 const sh = (command: string, cwd: string): Promise<string> => new Promise((resolve, reject) => {
