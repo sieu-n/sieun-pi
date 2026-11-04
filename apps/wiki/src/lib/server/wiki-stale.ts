@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -72,45 +73,106 @@ function blobReader(root: string): { read: (spec: string) => Promise<string | nu
 	};
 }
 
-export type Change = { at: number; sha: string; files: string[] };
+export type Change = { at: number; sha: string; parent: string; files: string[] };
+
+type StaleRef = { ref: string; modified: string; since?: string };
+
+/** One page's result at the state's pin: its check time and, per `source_refs` entry in order, the stale row or null. */
+type PageEntry = { key: string; verifiedAt: number; refs: Array<StaleRef | null> };
 
 /**
- * The first-parent commits of `pin` in `root` since `since`, newest first, each with every file it changed against its first parent.
- * A commit's files never change, so they are kept by sha in the git dir (`wiki-stale/first-parent-files.json`), and git diffs only
- * the commits no earlier report saw. On 2026-11-02 one `git log --name-only` over 1,737 pathspecs (1,521 refs and 216 pages) and
- * the 20,024 first-parent commits since 2026-10-19 took 514 s of a 531 s report on us-metal02 at load 139 to 218, and the
- * same log with no pathspec took 42 s at load 100.
+ * What one report leaves for the next, in the code repo's git dir (`wiki-stale/report-state.json`) and in memory: the pinned
+ * HEAD, the first-parent commits back to `since` with their files, each sibling repo's `root sha`, and each page's result.
+ * A later report diffs only the commits after `pin` and recomputes only the pages whose inputs or cited files changed. On
+ * 2026-11-04 the full report took 54 to 80 s on us-metal02 at load 236, and Tailscale Serve answered 502 through :5184:
+ * 570 per-ref git processes (239 show, 269 log, 62 ls-tree) and 17 s of definition parsing ran for 253 pages on every call.
  */
-async function firstParentChanges(root: string, pin: string, since: string[]): Promise<Change[]> {
-	const listed = (await git(root, ['log', pin, '--first-parent', '--format=%ct %H %P', ...since]))
-		.split('\n')
-		.map((line) => line.trim().split(' '))
-		.filter(([stamp, sha]) => stamp && sha);
-	const store = path.resolve(
-		root,
-		(await git(root, ['rev-parse', '--git-path', 'wiki-stale/first-parent-files.json'])).trim(),
+type StaleState = {
+	version: 1;
+	pin: string;
+	since: number | null;
+	changes: Change[];
+	siblings: Record<string, string>;
+	pages: Record<string, PageEntry>;
+};
+
+const STATE_VERSION = 1;
+const states = new Map<string, StaleState>();
+
+async function statePath(root: string): Promise<string> {
+	return path.resolve(root, (await git(root, ['rev-parse', '--git-path', 'wiki-stale/report-state.json'])).trim());
+}
+
+async function readState(store: string): Promise<StaleState | null> {
+	const held = states.get(store);
+	if (held) return held;
+	const state = await readFile(store, 'utf8')
+		.then((text) => JSON.parse(text) as StaleState)
+		.catch(() => null);
+	return state?.version === STATE_VERSION ? state : null;
+}
+
+async function writeState(store: string, state: StaleState): Promise<void> {
+	states.set(store, state);
+	await mkdir(path.dirname(store), { recursive: true });
+	const temp = `${store}.${process.pid}.${Math.random().toString(36).slice(2)}`;
+	await writeFile(temp, JSON.stringify(state));
+	await rename(temp, store);
+}
+
+const coversSince = (held: number | null, since: number | null): boolean =>
+	held === null || (since !== null && held <= since);
+
+/**
+ * The first-parent commits of `pin` in `root` since `since`, newest first, each with every file it changed against its first
+ * parent, the files changed after `held.pin`, or null when `held.pin` is not on this history, and the time the list reaches back to. Git lists and diffs only the
+ * commits after `held.pin`, or on a new history the commits `held` lacks. On 2026-11-02 one `git log --name-only` over 1,737
+ * pathspecs (1,521 refs and 216 pages) and the 20,024 first-parent commits since 2026-10-19 took 514 s of a 531 s report on
+ * us-metal02 at load 139 to 218, and the same log with no pathspec took 42 s at load 100.
+ */
+async function firstParentChanges(
+	root: string,
+	pin: string,
+	since: number | null,
+	held: StaleState | null,
+): Promise<{ changes: Change[]; touched: Set<string> | null; since: number | null }> {
+	const parse = (text: string) =>
+		text
+			.split('\n')
+			.map((line) => line.trim().split(' '))
+			.filter(([stamp, sha]) => stamp && sha)
+			.map(([stamp, sha, parent]) => ({ at: Number(stamp) * 1000, sha: sha!, parent: parent ?? '', files: [] as string[] }));
+	const format = '--format=%ct %H %P';
+	let listed: Change[] | null = null;
+	let reach = since;
+	if (held && coversSince(held.since, since)) {
+		if (held.pin === pin) return { changes: held.changes, touched: new Set(), since: held.since };
+		const added = parse(await git(root, ['log', pin, '--first-parent', format, `^${held.pin}`]));
+		if (added.length && added[added.length - 1]!.parent === held.pin) {
+			listed = [...added, ...held.changes];
+			reach = held.since;
+		}
+	}
+	listed ??= parse(
+		await git(root, ['log', pin, '--first-parent', format, ...(since === null ? [] : [`--since=${new Date(since).toISOString()}`])]),
 	);
-	const known: Record<string, string[]> = await readFile(store, 'utf8')
-		.then((text) => JSON.parse(text))
-		.catch(() => ({}));
-	const missing = listed.filter(([, sha]) => !known[sha!]);
+	const known = new Map((held?.changes ?? []).map((change) => [change.sha, change.files]));
+	const missing = listed.filter(({ sha }) => !known.has(sha));
 	if (missing.length) {
 		const diff = await git(
 			root,
 			['diff-tree', '--stdin', '-r', '--root', '--name-only', '--no-renames', '--always', '--format=%x1e%H'],
-			missing.map(([, sha, parent]) => `${sha} ${parent ?? ''}`.trim()).join('\n') + '\n',
+			missing.map(({ sha, parent }) => `${sha} ${parent}`.trim()).join('\n') + '\n',
 		);
 		for (const block of diff.split('\x1e')) {
 			const [sha = '', ...files] = block.trim().split('\n');
-			if (sha) known[sha.trim()] = files.map((line) => line.trim()).filter(Boolean);
+			if (sha) known.set(sha.trim(), files.map((line) => line.trim()).filter(Boolean));
 		}
-		const kept = Object.fromEntries(listed.map(([, sha]) => [sha, known[sha!] ?? []]));
-		await mkdir(path.dirname(store), { recursive: true });
-		const temp = `${store}.${process.pid}`;
-		await writeFile(temp, JSON.stringify(kept));
-		await rename(temp, store);
 	}
-	return listed.map(([stamp, sha]) => ({ at: Number(stamp) * 1000, sha: sha!, files: known[sha!] ?? [] }));
+	const changes = listed.map((change) => ({ ...change, files: known.get(change.sha) ?? [] }));
+	const heldAt = held ? changes.findIndex(({ sha }) => sha === held.pin) : -1;
+	const touched = heldAt < 0 ? null : new Set(changes.slice(0, heldAt).flatMap(({ files }) => files));
+	return { changes, touched, since: reach };
 }
 
 /** Whether `file` is one of `paths` or lies under one, as a literal pathspec of them matches it. */
@@ -225,9 +287,32 @@ export type StaleReport = {
 		title: string;
 		last_verified: string;
 		verified_at: string;
-		staleRefs: Array<{ ref: string; modified: string; since?: string }>;
+		staleRefs: StaleRef[];
 	}>;
 };
+
+type Page = Awaited<ReturnType<typeof getWikiIndex>>['pages'][number];
+
+/** Each sibling repo the pages cite, with its checkout and pinned HEAD, or null with no checkout here. */
+type SiblingPins = Map<string, { root: string; pin: Pin } | null>;
+
+/**
+ * The files changed in sibling `name` since the state's `held` value, or null when its checkout or history moved elsewhere.
+ * Every commit `old..new` counts, since a sibling path ref dates by `git log -1` on all of HEAD's history.
+ */
+async function siblingTouched(held: string | undefined, now: { root: string; pin: Pin } | null): Promise<Set<string> | null> {
+	const value = now ? `${now.root} ${now.pin.sha}` : '';
+	if (held === value) return new Set();
+	const [root, old] = (held ?? '').split(' ');
+	if (!now || !old || root !== now.root) return null;
+	const ancestor = await git(now.root, ['merge-base', '--is-ancestor', old, now.pin.sha]).then(
+		() => true,
+		() => false,
+	);
+	if (!ancestor) return null;
+	const names = await git(now.root, ['log', '--format=', '--name-only', `${old}..${now.pin.sha}`]);
+	return new Set(names.split('\n').map((line) => line.trim()).filter(Boolean));
+}
 
 /**
  * Pages whose `source_refs` changed after the page's check (`verifiedAt`), dated on the first-parent history of a HEAD pinned
@@ -243,6 +328,8 @@ export type StaleReport = {
  * 2026-10-29 such a ref was dated by mtime, and each materialize of apps/virev-demo rewrote
  * `apps/virev-demo/src/routes/dev/design/charts/+page.svelte` and flagged apps/search/enterprise-mock.html again, 4 times in
  * the 7 days to 2026-10-29 06:20Z. A `sieun-pi:<path>` ref is dated by its sibling repo, unmeasured with no checkout.
+ * A page's result is kept in the StaleState and reused while its meta, its text and every file it cites stay unchanged, so a
+ * report reads git per page only for the pages a commit since the last report touched.
  * GET /api/agent/stale and wiki-health.mjs use it.
  */
 export async function getStaleReport(
@@ -251,13 +338,10 @@ export async function getStaleReport(
 	siblings: Map<string, string> = siblingRepos(),
 ): Promise<StaleReport> {
 	const index = await getWikiIndex();
-	const checkable = index.pages.filter(
-		(p) =>
-			!p.path.startsWith('@code/') &&
-			p.meta.last_verified &&
-			(p.meta.source_refs?.length ?? 0) > 0 &&
-			(!app || p.meta.apps.includes(app)),
+	const candidates = index.pages.filter(
+		(p) => !p.path.startsWith('@code/') && p.meta.last_verified && (p.meta.source_refs?.length ?? 0) > 0,
 	);
+	const checkable = candidates.filter((p) => !app || p.meta.apps.includes(app));
 	const fileOf = (ref: string): string => symbolRef(ref)?.file ?? ref;
 	const local = (ref: string): boolean => {
 		const file = fileOf(ref);
@@ -265,21 +349,133 @@ export async function getStaleReport(
 		const full = path.resolve(repoRoot, file);
 		return full !== repoRoot && full.startsWith(`${repoRoot}${path.sep}`);
 	};
-	const refs = [...new Set(checkable.flatMap((p) => (p.meta.source_refs ?? []).filter(local).map(fileOf)))];
-	const days = checkable.map((p) => dayStart(p.meta.last_verified!)).filter(Number.isFinite);
-	const since = days.length ? [`--since=${new Date(Math.min(...days)).toISOString()}`] : [];
-	const pageFiles = checkable.map((p) => `${PAGES}${p.path}`);
-	const pin = await pinHead(repoRoot);
-	const siblingPins = new Map<string, Promise<Pin>>();
-	const siblingPin = (root: string): Promise<Pin> => {
-		if (!siblingPins.has(root)) siblingPins.set(root, pinHead(root));
-		return siblingPins.get(root)!;
-	};
-	const [changes, tree] = await Promise.all([
-		firstParentChanges(repoRoot, pin.sha, since),
-		refs.length ? git(repoRoot, ['ls-tree', '-r', '-z', '--name-only', pin.sha, '--', ...refs]) : Promise.resolve(''),
+	// A ref into the wiki content by its old repo path names a page's own file, which left git with the content on
+	// 2026-11-03: it resolves on disk under the content root, and no code commit dates it, so no state keeps it.
+	const onDisk = (ref: string): boolean => fileOf(ref).startsWith(PAGES);
+	const days = candidates.map((p) => dayStart(p.meta.last_verified!)).filter(Number.isFinite);
+	const since = days.length ? Math.min(...days) : null;
+	const store = await statePath(repoRoot);
+	const [pin, held] = await Promise.all([pinHead(repoRoot), readState(store)]);
+	const siblingNames = new Set(
+		candidates.flatMap((p) => (p.meta.source_refs ?? []).map((ref) => siblingRef(ref)?.repo).filter((name) => name !== undefined)),
+	);
+	const siblingPins: SiblingPins = new Map(
+		await Promise.all(
+			[...siblingNames].map(async (name) => {
+				const root = siblings.get(name);
+				return [name, root ? { root, pin: await pinHead(root) } : null] as const;
+			}),
+		),
+	);
+	const [{ changes, touched, since: reach }, siblingChanges] = await Promise.all([
+		firstParentChanges(repoRoot, pin.sha, since, held),
+		Promise.all(
+			[...siblingPins].map(async ([name, now]) => [name, await siblingTouched(held?.siblings[name], now)] as const),
+		).then((rows) => new Map(rows)),
 	]);
-	const watched = new Set([...refs.map((ref) => ref.replace(/\/+$/, '')), ...pageFiles]);
+
+	const sources = new Map(
+		await Promise.all(
+			candidates.map(async (p) => [p.path, await readFile(diskPath(p.path), 'utf8').catch(() => '')] as const),
+		),
+	);
+	const keyOf = (p: Page): string =>
+		JSON.stringify([
+			p.title,
+			p.meta.last_verified,
+			p.meta.source_refs,
+			createHash('sha1').update(sources.get(p.path) ?? '').digest('hex'),
+		]);
+	const untouched = (p: Page): boolean => {
+		if (!touched) return false;
+		const cited = new Set([`${PAGES}${p.path}`]);
+		for (const ref of p.meta.source_refs ?? []) {
+			const sibling = siblingRef(ref);
+			if (sibling) {
+				const files = siblingChanges.get(sibling.repo);
+				if (!files) return false;
+				const file = (symbolRef(sibling.path)?.file ?? sibling.path).replace(/\/+$/, '');
+				for (const changed of files) if (under(file, changed)) return false;
+			} else if (local(ref) && !onDisk(ref)) cited.add(fileOf(ref).replace(/\/+$/, ''));
+		}
+		for (const changed of touched) if (matchesPath(cited, changed)) return false;
+		return true;
+	};
+	const pages: Record<string, PageEntry> = {};
+	for (const p of candidates) {
+		const entry = held?.pages[p.path];
+		const key = keyOf(p);
+		if (entry && entry.key === key && untouched(p)) pages[p.path] = entry;
+	}
+	const todo = checkable.filter((p) => !pages[p.path]);
+	if (todo.length) {
+		const { evaluate, close } = await pageEvaluator(repoRoot, pin, changes, todo, siblingPins, sources, { fileOf, local, onDisk });
+		try {
+			for (const p of todo) pages[p.path] = { key: keyOf(p), ...(await evaluate(p)) };
+		} finally {
+			close();
+		}
+	}
+	const siblingState = Object.fromEntries(
+		[...siblingPins].map(([name, now]) => [name, now ? `${now.root} ${now.pin.sha}` : '']),
+	);
+	const next: StaleState = {
+		version: STATE_VERSION,
+		pin: pin.sha,
+		since: reach,
+		changes,
+		siblings: siblingState,
+		pages,
+	};
+	if (
+		!held ||
+		todo.length ||
+		held.pin !== next.pin ||
+		held.since !== next.since ||
+		JSON.stringify(held.siblings) !== JSON.stringify(next.siblings) ||
+		Object.keys(held.pages).length !== Object.keys(pages).length
+	)
+		await writeState(store, next);
+	else states.set(store, held);
+
+	const stale: StaleReport['stale'] = [];
+	for (const p of checkable) {
+		const entry = pages[p.path]!;
+		const staleRefs = (p.meta.source_refs ?? []).flatMap((ref, i): StaleRef[] => {
+			if (onDisk(ref) && !siblingRef(ref))
+				return existsSync(diskPath(fileOf(ref).slice(PAGES.length))) ? [] : [{ ref, modified: MISSING }];
+			return entry.refs[i] ? [entry.refs[i]!] : [];
+		});
+		if (staleRefs.length > 0)
+			stale.push({
+				path: p.path,
+				title: p.title,
+				last_verified: p.meta.last_verified!,
+				verified_at: new Date(entry.verifiedAt).toISOString(),
+				staleRefs,
+			});
+	}
+	return { checkable: checkable.length, count: stale.length, stale };
+}
+
+/**
+ * The per-page check of getStaleReport for `todo`, reading git at `pin`: per `source_refs` entry the stale row or null, with
+ * null for a ref into the wiki content (getStaleReport reads those on disk). `close` ends its one `git cat-file --batch`.
+ */
+async function pageEvaluator(
+	repoRoot: string,
+	pin: Pin,
+	changes: Change[],
+	todo: Page[],
+	siblingPins: SiblingPins,
+	sources: Map<string, string>,
+	{ fileOf, local, onDisk }: { fileOf: (ref: string) => string; local: (ref: string) => boolean; onDisk: (ref: string) => boolean },
+): Promise<{ evaluate: (page: Page) => Promise<Omit<PageEntry, 'key'>>; close: () => void }> {
+	const refs = [
+		...new Set(todo.flatMap((p) => (p.meta.source_refs ?? []).filter((ref) => local(ref) && !onDisk(ref)).map(fileOf))),
+	];
+	const tree = refs.length ? await git(repoRoot, ['ls-tree', '-r', '-z', '--name-only', pin.sha, '--', ...refs]) : '';
+	const watched = new Set([...refs.map((ref) => ref.replace(/\/+$/, '')), ...todo.map((p) => `${PAGES}${p.path}`)]);
 	const commits = fileCommits(changes, (file) => matchesPath(watched, file));
 	const filesOf = new Map<string, string[]>();
 	for (const [file, list] of commits)
@@ -288,12 +484,14 @@ export async function getStaleReport(
 			if (files) files.push(file);
 			else filesOf.set(sha, [file]);
 		}
-	const tracked = tree.split('\0').filter(Boolean);
+	const tracked = new Set(tree.split('\0').filter(Boolean));
+	const trackedUnder = (file: string): boolean => [...tracked].some((entry) => under(file, entry));
 	const versions = new Map<string, Promise<string | null>>();
-	const blobs = blobReader(repoRoot);
+	let blobs: ReturnType<typeof blobReader> | null = null;
 	const definitions = new Map<string, Map<string, string | null>>();
 	const versionAt = (rev: string, file: string): Promise<string | null> => {
 		const key = `${rev}:${file}`;
+		blobs ??= blobReader(repoRoot);
 		if (!versions.has(key)) versions.set(key, blobs.read(key));
 		return versions.get(key)!;
 	};
@@ -316,16 +514,7 @@ export async function getStaleReport(
 			);
 		return codes.get(key)!;
 	};
-
-	const sources = new Map<string, Promise<string>>();
-	const sourceOf = (page: string): Promise<string> => {
-		if (!sources.has(page))
-			sources.set(
-				page,
-				readFile(diskPath(page), 'utf8').catch(() => ''),
-			);
-		return sources.get(page)!;
-	};
+	const sourceOf = (page: string): string => sources.get(page) ?? '';
 	/**
 	 * The times, oldest first, of the commits after `checked` that changed a whole-file or folder `ref` in a way the page states. A commit
 	 * touches the page when the page cites line numbers of the ref, since a comment cut moves them too, else when it changed the code
@@ -345,7 +534,7 @@ export async function getStaleReport(
 					}
 		const after = [...byCommit].sort((a, b) => a[1].at - b[1].at);
 		if (!after.length) return [];
-		const source = await sourceOf(pagePath);
+		const source = sourceOf(pagePath);
 		const cited = citedWords(source);
 		if (citesLines(source, ref)) return after.map(([, row]) => row.at);
 		const touching: number[] = [];
@@ -370,8 +559,7 @@ export async function getStaleReport(
 		return touching;
 	};
 
-	const stale: StaleReport['stale'] = [];
-	for (const page of checkable) {
+	const evaluate = async (page: Page): Promise<Omit<PageEntry, 'key'>> => {
 		const pageCommits = commits.get(`${PAGES}${page.path}`) ?? [];
 		const checked = verifiedAt(
 			page.meta.last_verified!,
@@ -384,88 +572,56 @@ export async function getStaleReport(
 				if ((filesOf.get(own.sha) ?? []).some((file) => under(ref, file))) at = Math.max(at, own.at);
 			return at;
 		};
-		const staleRefs: Array<{ ref: string; modified: string; since?: string }> = [];
-		for (const ref of page.meta.source_refs ?? []) {
+		const refRow = async (ref: string): Promise<StaleRef | null> => {
 			const sibling = siblingRef(ref);
 			if (sibling) {
-				const root = siblings.get(sibling.repo);
-				if (!root) continue;
+				const at = siblingPins.get(sibling.repo);
+				if (!at) return null;
 				const siblingSymbol = symbolRef(sibling.path);
 				if (siblingSymbol) {
-					const change = await definitionChange(
-						root,
-						await siblingPin(root),
-						siblingSymbol.file,
-						siblingSymbol.name,
-						checked,
-					);
-					if (change === 'missing') staleRefs.push({ ref, modified: MISSING });
-					else if (change)
-						staleRefs.push({
-							ref,
-							modified: new Date(change.newest).toISOString(),
-							since: new Date(change.first).toISOString(),
-						});
-					continue;
+					const change = await definitionChange(at.root, at.pin, siblingSymbol.file, siblingSymbol.name, checked);
+					if (change === 'missing') return { ref, modified: MISSING };
+					return change
+						? { ref, modified: new Date(change.newest).toISOString(), since: new Date(change.first).toISOString() }
+						: null;
 				}
-				const at = await commitTime(root, (await siblingPin(root)).sha, sibling.path);
-				if (at === null) staleRefs.push({ ref, modified: MISSING });
-				else if (at > checked) staleRefs.push({ ref, modified: new Date(at).toISOString() });
-				continue;
+				const time = await commitTime(at.root, at.pin.sha, sibling.path);
+				if (time === null) return { ref, modified: MISSING };
+				return time > checked ? { ref, modified: new Date(time).toISOString() } : null;
 			}
-			// A ref into the wiki content by its old repo path names a page's own file, which left git with the content on
-			// 2026-11-03: it resolves on disk under the content root, and no code commit dates it.
-			if (fileOf(ref).startsWith(PAGES)) {
-				if (!existsSync(diskPath(fileOf(ref).slice(PAGES.length)))) staleRefs.push({ ref, modified: MISSING });
-				continue;
-			}
-			if (!local(ref)) continue;
+			if (onDisk(ref) || !local(ref)) return null;
 			const symbol = symbolRef(ref);
 			const file = fileOf(ref);
-			if (symbol && tracked.includes(file)) {
+			if (symbol && tracked.has(file)) {
 				const head = await definitionAt(pin.sha, file, symbol.name);
-				if (head === null) {
-					staleRefs.push({ ref, modified: MISSING });
-					continue;
-				}
+				if (head === null) return { ref, modified: MISSING };
 				const since = checkedFor(file);
 				const after = (commits.get(file) ?? []).filter(({ at }) => at > since).reverse();
-				if (!after.length) continue;
+				if (!after.length) return null;
 				const atCheck = await definitionAt(`${after[0]!.sha}^1`, file, symbol.name);
-				const follow = followed(await sourceOf(page.path), atCheck);
+				const follow = followed(sourceOf(page.path), atCheck);
 				const textAt = async (rev: string): Promise<string | null> =>
 					follow(await definitionAt(rev, file, symbol.name));
 				const change = await definitionDates(after, follow(head)!, textAt, pin);
-				if (change)
-					staleRefs.push({
-						ref,
-						modified: new Date(change.newest).toISOString(),
-						since: new Date(change.first).toISOString(),
-					});
-				continue;
+				return change
+					? { ref, modified: new Date(change.newest).toISOString(), since: new Date(change.first).toISOString() }
+					: null;
 			}
-			if (tracked.some((entry) => under(file, entry))) {
+			if (trackedUnder(file)) {
 				const touching = await touchingChanges(page.path, ref, checkedFor(ref));
-				if (touching.length)
-					staleRefs.push({
-						ref,
-						modified: new Date(touching[touching.length - 1]!).toISOString(),
-						since: new Date(touching[0]!).toISOString(),
-					});
-				continue;
+				return touching.length
+					? {
+							ref,
+							modified: new Date(touching[touching.length - 1]!).toISOString(),
+							since: new Date(touching[0]!).toISOString(),
+						}
+					: null;
 			}
-			staleRefs.push({ ref, modified: MISSING });
-		}
-		if (staleRefs.length > 0) {
-			stale.push({
-				path: page.path,
-				title: page.title,
-				last_verified: page.meta.last_verified!,
-				verified_at: new Date(checked).toISOString(),
-				staleRefs,
-			});
-		}
-	}
-	blobs.close();
-	return { checkable: checkable.length, count: stale.length, stale };
+			return { ref, modified: MISSING };
+		};
+		const rows: Array<StaleRef | null> = [];
+		for (const ref of page.meta.source_refs ?? []) rows.push(await refRow(ref));
+		return { verifiedAt: checked, refs: rows };
+	};
+	return { evaluate, close: () => blobs?.close() };
 }

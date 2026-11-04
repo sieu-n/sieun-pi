@@ -353,6 +353,56 @@ test('the report logs commits with no pathspec and diffs each commit once across
 	assert.deepEqual(third.rows, { 'apps/a.html': [{ ref: 'a.py', ...at('05') }] });
 });
 
+// 2026-11-04: GET /api/agent/stale ran 570 git processes for 253 pages on every call and took 54 to 80 s, so :5184 answered 502.
+test('a report on an unchanged tip reruns no page, and a new commit reruns only the pages citing what it changed', (t) => {
+	const w = fixture(t);
+	const py = (n) => `def alpha(x):\n    return x + ${n}\n`;
+	w.write('a.py', py(1));
+	w.write('b.py', py(1));
+	w.page('a.html', ['a.py::alpha']);
+	w.page('b.html', ['b.py::alpha']);
+	w.page('folder.html', ['b.py']);
+	w.init();
+	w.commit('2026-10-20T01:00:00Z', 'pages');
+	w.write('b.py', py(2));
+	w.commit('2026-10-20T04:00:00Z', 'b');
+
+	const bin = mkdtempSync(path.join(tmpdir(), 'wiki-stale-git-'));
+	t.after(() => rmSync(bin, { recursive: true, force: true }));
+	const calls = path.join(bin, 'calls');
+	const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+	writeFileSync(path.join(bin, 'git'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\nexec '${real}' "$@"\n`, { mode: 0o755 });
+	const saved = process.env.PATH;
+	t.after(() => (process.env.PATH = saved));
+	process.env.PATH = `${bin}${path.delimiter}${saved}`;
+	// The page reads of the report: the blob reads, a per-ref log or show, and the tree listing at the pinned sha.
+	const pageReads = (lines) =>
+		lines.filter((line) => /(^| )cat-file |(^| )show (?!-s )| log .* -- |ls-tree -r -z --name-only [0-9a-f]{40} /.test(line));
+	const report = () => {
+		writeFileSync(calls, '');
+		const rows = w.refsByPage();
+		return { rows, reads: pageReads(readFileSync(calls, 'utf8').split('\n').filter(Boolean)) };
+	};
+	const behindB = { 'apps/b.html': [{ ref: 'b.py::alpha', ...at('04') }], 'apps/folder.html': [{ ref: 'b.py', ...at('04') }] };
+
+	const first = report();
+	assert.deepEqual(first.rows, behindB);
+	assert.ok(first.reads.length > 0, 'the first report reads the pages');
+	const second = report();
+	assert.deepEqual(second.rows, behindB, 'the kept result is the same report');
+	assert.deepEqual(second.reads, [], 'a report on the same tip runs no per-page git read');
+
+	w.write('a.py', py(3));
+	w.commit('2026-10-20T05:00:00Z', 'a');
+	const third = report();
+	assert.deepEqual(third.rows, { 'apps/a.html': [{ ref: 'a.py::alpha', ...at('05') }], ...behindB });
+	assert.ok(third.reads.length > 0 && third.reads.every((line) => !/b\.py/.test(line)), third.reads.join('\n'));
+
+	w.page('b.html', ['b.py::alpha'], { verified: '2026-10-20T04:30Z' });
+	const fourth = report();
+	assert.deepEqual(fourth.rows, { 'apps/a.html': [{ ref: 'a.py::alpha', ...at('05') }], 'apps/folder.html': behindB['apps/folder.html'] }, 'a page whose check moved reruns');
+});
+
 // 2026-10-28: the words of a cited path counted one by one, so the `search-admin` of `/api/search-admin/access` touched every
 // convex/http.ts line of another search-admin route, and ROUTE_ACCESS refs flagged 21 rechecks in 7 days that fixed no page.
 test('a cited path counts only whole, and a path::name route table follows only the routes the page names', (t) => {
