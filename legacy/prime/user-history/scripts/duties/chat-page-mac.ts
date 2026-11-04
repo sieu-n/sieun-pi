@@ -11,7 +11,7 @@ import { credentialWaitAt } from "../../src/shared/credential-wait.ts";
 import { parseStartSkill, startMessage } from "../../src/shared/start-skill.ts";
 import { asideRepl } from "./aside-repl.ts";
 import { browseInAside } from "./chat-page-mac-probe.ts";
-import { macAway } from "./mac-reach.ts";
+import { macAway, macSilent } from "./mac-reach.ts";
 
 /**
  * The Chat page from the Mac duty's precheck (`node --import tsx scripts/duties/chat-page-mac.ts`): whether the box's chat page on :5182 feels
@@ -354,6 +354,15 @@ export async function sendProbe(config: ChatConfig, firstReplyMs = FIRST_REPLY_M
 
 const settle = <T>(promise: Promise<T>): Promise<T | Error> => promise.catch((error: unknown) => error instanceof Error ? error : new Error(String(error)));
 
+/**
+ * The `host_away` item for this run: Tailscale's read before the Mac reads (`away`), else, when a Mac read failed, the item `silent` gives for
+ * a Mac that answers no tailscale ping after it. On 11-04 at 01:06Z and 01:13Z the Mac read online, then slept during the run: Aside's ssh
+ * exited 255, the ping ssh and the sends timed out, and the run read "the precheck failed" instead of a rerun once the Mac is back.
+ */
+export async function runAway(away: FlaggedSlice | undefined, reads: readonly unknown[], silent: () => Promise<FlaggedSlice | undefined>): Promise<FlaggedSlice | undefined> {
+  return away ?? (reads.some(read => read instanceof Error) ? silent() : undefined);
+}
+
 export async function measure(chatId: string): Promise<PrecheckOutput> {
   const at = Date.now();
   const config = JSON.parse(await readFile(join(DATA_DIR, "configuration.json"), "utf8")) as ChatConfig;
@@ -366,8 +375,9 @@ export async function measure(chatId: string): Promise<PrecheckOutput> {
     offline ? skipped : settle(onMac(`ping -c 5 -q ${host}`, 40)),
     settle(exec("journalctl", ["--user", "-u", "sieun-pi-chat", "--since", `@${Math.floor((at - 25 * 3_600_000) / 1000)}`, "-o", "short-iso-precise", "--no-pager"], { timeoutMs: 60_000 })),
   ]);
+  const gone = await runAway(away, [browser, ping], () => macSilent(MAC, "tab switch, cold load and the Mac chat reply wait are", at));
   const startSkill = await readFile(join(DATA_DIR, "new-chat.json"), "utf8").then(text => parseStartSkill((JSON.parse(text) as { startSkill?: unknown }).startSkill ?? null), () => null);
-  const replies = offline ? new Error(offline) : await settle(sendProbe(config, FIRST_REPLY_MS, startSkill));
+  const replies = gone ? new Error(gone.excerpt) : await settle(sendProbe(config, FIRST_REPLY_MS, startSkill));
   const macSession = replies instanceof Error ? replies : await settle(onMac(`cat .prime/agent/sessions/${replies.id.replace(/[^0-9a-f-]/g, "")}.jsonl`, 40));
   const metrics: Record<string, number> = {};
   const flagged: FlaggedSlice[] = [];
@@ -379,7 +389,7 @@ export async function measure(chatId: string): Promise<PrecheckOutput> {
     flagged.push(...reading.flagged);
   };
 
-  if (away) flagged.push(away);
+  if (gone) flagged.push(gone);
   else {
     if (browser instanceof Error) sourceError(`the Aside page on the Mac did not run, so tab switch and cold load are not measured: ${browser.message}`);
     else {

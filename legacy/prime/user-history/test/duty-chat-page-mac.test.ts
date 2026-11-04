@@ -7,7 +7,7 @@ import type { AddressInfo } from "node:net";
 import { WebSocketServer } from "ws";
 import type { Repl } from "../scripts/duties/aside-repl.ts";
 import { browseInAside, PROBE_LIB, type ProbeConfig } from "../scripts/duties/chat-page-mac-probe.ts";
-import { browserReadings, droppedBeforeLogin, median, parseLoadavg, parsePing, releaseBreaks, replyExtra, sendProbe, type SendTiming } from "../scripts/duties/chat-page-mac.ts";
+import { browserReadings, droppedBeforeLogin, median, parseLoadavg, parsePing, releaseBreaks, replyExtra, runAway, sendProbe, type SendTiming } from "../scripts/duties/chat-page-mac.ts";
 import { MAC_HOST, macAwayItem, macTailnet } from "../scripts/duties/mac-reach.ts";
 import { HOST_AWAY } from "../src/shared/chat-duties.ts";
 
@@ -412,4 +412,15 @@ test("an offline Mac is a host_away item for the hosts.json box mac, and an onli
   assert.match(item!.excerpt, /offline on the tailnet since 2026-10-26T15:20:00\.1Z, asleep or shut, so tab switch, cold load and the Mac chat reply wait are not measured; the duty reruns/);
   assert.equal(macAwayItem(status(true), "100.66.173.18", "x are", at), undefined);
   assert.equal(macAwayItem(status(false), "100.1.2.3", "x are", at), undefined);
+});
+
+test("a Mac that sleeps during the run reads as host_away when its reads failed and it answers no tailscale ping (11-04)", async () => {
+  const asleep = { at, kind: HOST_AWAY, host: MAC_HOST, excerpt: "the Mac answered no ssh and no tailscale ping" };
+  const before = { ...asleep, excerpt: "offline on the tailnet" };
+  assert.deepEqual(await runAway(undefined, [new Error("aside mcp exited with code 255"), "rtt"], async () => asleep), asleep);
+  assert.equal(await runAway(undefined, [new Error("aside mcp exited with code 255")], async () => undefined), undefined);
+  let pinged = false;
+  assert.equal(await runAway(undefined, [{ loads: [] }, "rtt"], async () => { pinged = true; return asleep; }), undefined);
+  assert.equal(pinged, false);
+  assert.deepEqual(await runAway(before, [new Error("x")], async () => asleep), before);
 });
