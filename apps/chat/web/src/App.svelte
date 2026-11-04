@@ -33,7 +33,7 @@
     if (staleShown || !isStale(me.value?.web, pageEntry())) return;
     staleShown = true;
     reloadWhenSafe();
-    toast.show("A new version of the chat is out. Reload to use it.", { duration: 0, action: { label: "Reload", run: () => location.reload() } });
+    toast.show("A new version of the chat is out. It loads when you switch away, or reload now.", { duration: 0, action: { label: "Reload", run: () => location.reload() } });
   });
 
   function onKeydown(e: KeyboardEvent) {
