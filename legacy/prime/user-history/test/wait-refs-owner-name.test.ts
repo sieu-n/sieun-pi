@@ -16,13 +16,13 @@ const p714: PlanItem = { id: "p714", text: "Ship the staging fix to prod", statu
 const p147 = (status: PlanItem["status"]): PlanItem => ({ id: "p147", text: "The follow-up prod release", status, children: [] });
 const board = (plan: PlanItem[]): ChatBoard => ({ v: 2, rev: 1, updatedAt: "2026-11-04T00:00:00Z", plan, todos: [] }) as unknown as ChatBoard;
 const self = new Set([OPS, "ops guy"]);
-const met = (rows: { id: string; name: string }[], others: Map<string, ChatBoard | null>) =>
+const met = (rows: { id: string; name: string; archived: boolean }[], others: Map<string, ChatBoard | null>) =>
   waitsMet([stepView(p714, now - 3_600_000, self, [], [], [], now)], withLinkedBoards(board([p714, p147("dropped")]), OPS, others, []), rows, self, others)
     .map(({ view, over }) => [view.item.id, over]);
 
 test("p714's wait on the release owner's p147 is not over though ops guy's own p147 is dropped", () => {
   assert.deepEqual(met([], new Map()), []);
-  assert.deepEqual(met([{ id: RELEASE, name: "release owner" }], new Map([[RELEASE, board([p147("todo")])]])), []);
+  assert.deepEqual(met([{ id: RELEASE, name: "release owner", archived: false }], new Map([[RELEASE, board([p147("todo")])]])), []);
 });
 
 test("an owner's id with no name word before owner stays this board's, and one after a name word is another chat's", () => {
