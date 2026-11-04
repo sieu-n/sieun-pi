@@ -258,13 +258,17 @@ const APPLE_RELAY = "@privaterelay.appleid.com";
  */
 export const GRANT_WARN_MS = 48 * 3_600_000;
 
-/** When each Claude account's refresh grant ends (refreshTokenExpiresAt), read from the credential files pi-pool keeps where no Keychain is; a Mac reads none. */
+/**
+ * When each Claude account's refresh grant ends (claudeAiOauth.refreshTokenExpiresAt), read from the credential files pi-pool keeps where no
+ * Keychain is; a Mac reads none. Until 11-05 this read the field at the file's top level, found none, and claude5@slack.green's grant ended at
+ * 02:58Z on 11-04 with nothing flagged.
+ */
 async function grantEnds(deps: Deps, ids: readonly string[]): Promise<Map<string, number>> {
   const secrets = join((deps.env ?? process.env).PI_POOL_DIR || join(deps.home, ".config/pi-pool"), "accounts/secrets");
   const ends = new Map<string, number>();
   await Promise.all(ids.map(async id => {
     try {
-      const at = (JSON.parse(await deps.readFile(join(secrets, `pi-pool.anthropic.${id}`))) as { refreshTokenExpiresAt?: unknown }).refreshTokenExpiresAt;
+      const at = (JSON.parse(await deps.readFile(join(secrets, `pi-pool.anthropic.${id}`))) as { claudeAiOauth?: { refreshTokenExpiresAt?: unknown } }).claudeAiOauth?.refreshTokenExpiresAt;
       if (typeof at === "number") ends.set(id, at);
     } catch { /* no credential file here */ }
   }));

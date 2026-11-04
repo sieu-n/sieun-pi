@@ -481,7 +481,7 @@ test("pool_claude flags a live account whose refresh grant ends within GRANT_WAR
     readFile: async path => {
       const id = path.match(/pi-pool\/accounts\/secrets\/pi-pool\.anthropic\.(\w+)$/)?.[1];
       if (!id) throw new Error(`unexpected read ${path}`);
-      return JSON.stringify({ accessToken: "x", refreshTokenExpiresAt: ends[id] });
+      return JSON.stringify({ claudeAiOauth: { accessToken: "x", refreshTokenExpiresAt: ends[id] } });
     } });
   assert.ok(outcome.status === "fail" && outcome.fixer === "agent" && outcome.detail.startsWith("sieunpark77@gmail.com (grant ends 10-24 10:00Z) need")
     && !outcome.detail.includes("claude4") && !outcome.detail.includes("krenerd77") && outcome.fix.includes("pi-pool login"), JSON.stringify(outcome));
