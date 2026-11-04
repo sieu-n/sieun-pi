@@ -265,6 +265,22 @@ export const offPace = (trend: GoalTrend, stale: boolean): boolean =>
  */
 export interface ItemOwners { ownerOf?: (item: PlanItem) => JobFact | undefined; held?: (view: Pick<StepView, "item" | "owner">) => HostHold | undefined }
 
+const ownerLive = (view: Pick<StepView, "item" | "owner">, items: ItemOwners): boolean =>
+  ownerMoves(view.owner) || (view.owner !== undefined && items.held?.(view) !== undefined);
+
+/**
+ * The live owner from another chat that the board hands a goal to: the owner of the goal itself or of its push step (`GOAL_PUSH_LINK`), with
+ * `goalOwner`'s liveness, when that owner is no job of this chat (`ownJob`). The goal waits on that thread, and its check-in neither steers it
+ * (028e0c80) nor starts a second job. On 11-05 Prospect feature bro's p307 and its push step p308 named the live ops guy thread, which had
+ * fixed 2,099 of 5,316 staging blanks by 04:46 KST, and goal_gaps read p307 "no live job" in 4 check-ins in a row; the 04:21 KST one started
+ * a duplicate job, "blank creators fill".
+ */
+export function handedOwner(goal: PlanItem, views: readonly StepView[], items: ItemOwners, ownJob: (fact: JobFact) => boolean): JobFact | undefined {
+  const push = views.find(view => view.goal?.id === goal.id && view.item.duty === GOAL_PUSH_LINK);
+  const self = views.find(view => view.item.id === goal.id) ?? { item: goal, owner: items.ownerOf?.(goal) };
+  return [push, self].find(view => view?.owner !== undefined && !ownJob(view.owner) && ownerLive(view, items))?.owner;
+}
+
 /**
  * The live job that owns a goal's number, with d9's liveness (`ownerMoves`, a job asleep on a board.wake or waiting for a pi-pool slot
  * included, or a job held on an offline box), first found of: the job of the goal's push step (`GOAL_PUSH_LINK`), the job of the goal itself,
@@ -279,7 +295,7 @@ export function goalOwner(goal: PlanItem, views: readonly StepView[], items: Ite
   const under = new Set([goal.id]);
   const nested: PlanItem[] = [goal];
   walk(goal.children, item => { under.add(item.id); nested.push(item); });
-  const moves = (view: Pick<StepView, "item" | "owner">): boolean => ownerMoves(view.owner) || (view.owner !== undefined && items.held?.(view) !== undefined);
+  const moves = (view: Pick<StepView, "item" | "owner">): boolean => ownerLive(view, items);
   const live = views.filter(view => under.has(view.item.id) && moves(view));
   const leaves = new Set(views.map(view => view.item.id));
   const inner: Pick<StepView, "item" | "owner">[] = [];
@@ -470,8 +486,9 @@ export function goalPushes(board: ChatBoard | null, views: readonly StepView[], 
     const stale = number.measuredAt === undefined || now - number.measuredAt > number.staleMs;
     const left = trend.kind === "met" ? openUnder(goal).map(item => item.id) : [];
     const asks = trend.kind !== "met" || left.length ? held : undefined;
+    const handed = owner ? undefined : handedOwner(goal, views, items, ownJob);
     const waits = trend.kind === "met" || asks ? undefined : goalWait(goal, pushView, now, paused, views, carriers) ?? slotWait(owner ?? holder?.owner, now) ??
-      hostWait(owner, goal, items);
+      hostWait(owner, goal, items) ?? (handed && `on ${ownerLabel(handed)} of another chat, which owns ${step ?? goal.id}`);
     const act: GoalAct = trend.kind === "met" ? "on_pace" : asks ? "owner" : waits ? "waiting" : !owner ? "start" : offPace(trend, stale) ? "steer" : "on_pace";
     // goalTrend's memo is a new object, so the push time carries over from the saved one.
     const before = memos?.[goal.id]?.pushed;
@@ -622,7 +639,7 @@ export function goalPromptLine(push: GoalPush): string {
   const title = `${quote(push.goal.text)} (${push.goal.id})`;
   if (!push.number) return `${title} has no number yet: no target and no duty metric${push.act === "owner" ? `, and it waits on the owner's word on ${ownerAsks(push)}` : ""}.`;
   const gap = gapText(push.number);
-  const owner = push.owner ? `${ownerLabel(push.owner)} owns it` : "no live job owns it";
+  const owner = push.owner ? `${ownerLabel(push.owner)} owns it` : push.act === "waiting" ? "no job of this chat owns it" : "no live job owns it";
   return `${title}: ${numberText(push.number)}${gap ? `, ${gap}` : ""}; ${paceText(push)}; ${owner}.${push.fixes ? ` ${fixesText(push.fixes)}` : ""}`;
 }
 
