@@ -142,6 +142,20 @@ test("calls that name an older model count on both tiers whether Vent let them t
   assert.equal(unread.metrics.source_errors, 1);
 });
 
+// On 11-05 staging Vent began reading the model from Jev's non-stream replies, and d2 read 33 let-through Typesafe calls on jev-1.13.0 as
+// older models. c185 limits the Claude and GPT tiers only, so a model of another family counts only when Vent refuses it.
+test("a model outside the allowed set's families counts only its refused calls", () => {
+  const last = Date.UTC(2026, 10, 5, 0, 0);
+  const row = (env: string, caller: string, model: string, calls: number, refused = 0) => ({ env, caller, operation: "", model, calls, refused, last });
+  const models: ModelReads = { allowed: ALLOWED, rows: [
+    row("staging", "convex", "jev-1.13.0", 25), row("staging", "crawler-v3", "jev-1.13.0", 8), row("production", "convex", "gemini-3-pro", 5, 5),
+    row("staging", "convex", "gpt-6-sol", 2),
+  ] };
+  const output = integrationMetrics({ lights: [], hosts: hosts(), spans: null, refusals: [], models, consoleReads: CHEAP }, last);
+  assert.equal(output.metrics.old_model_calls_24h, 5 + 2);
+  assert.deepEqual(output.flagged!.filter(flag => flag.kind === "old_model").map(flag => flag.item), ["production convex  gemini-3-pro", "staging convex  gpt-6-sol"]);
+});
+
 test("the allowed set is ALLOWED_MODELS as tables.py writes it, and a tables.py without it throws", () => {
   const tables = `# owner rule c185\nALLOWED_MODELS: frozenset[str] = frozenset(\n    {\n${ALLOWED.map(model => `        "${model}",`).join("\n")}\n    }\n)\n_EFFORT_SUFFIX = re.compile(r"\\([a-z]+\\)$")\n`;
   assert.deepEqual(allowedModels(tables), ALLOWED);

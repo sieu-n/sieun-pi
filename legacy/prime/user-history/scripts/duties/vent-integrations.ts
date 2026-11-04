@@ -24,7 +24,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   as a refused source on 10-25 at 08:35Z) and research-api/check as railway-breach-check/research-api (langfuse at 22:05Z on 10-25), so
  *   every user agent with "breach-check/" in it is left out. `lastEventAt.vent_key_refused_sources` is the newest refusal it counts, so a
  *   count whose sources stopped refusing reads as aging out of the window: on 10-26 d9 read d2 as stuck on two sources last seen 10-25.
- * - old_model_calls_24h: LLM calls on prod and staging Vent in 24 h that named a model outside ALLOWED_MODELS, whether Vent let them through or
+ * - old_model_calls_24h: LLM calls on prod and staging Vent in 24 h that named an older model of a family ALLOWED_MODELS covers (claude, gpt),
+ *   plus every call Vent refused as vent_model_not_allowed, so another family such as Typesafe's jev counts only when Vent refuses it. Whether Vent let them through or
  *   refused them as vent_model_not_allowed, read from otel.vent_calls per tier, caller, operation and model the way the vent-model-allowlist
  *   session's vent_models_query.py counts them: Body 'vent.call', the cliproxy integrations but cliproxy-management, gemini, any row that names
  *   gen_ai.request.model and any vent_model_not_allowed refusal, with the "(effort)" suffix stripped. Owner rule c185 (10-28): "vent should
@@ -107,11 +108,20 @@ export function behindHours(hosts: IntegrationReads["hosts"], spans: VersionSpan
 
 const EFFORT_SUFFIX = /\([a-z]+\)$/;
 
-/** The rows whose calls named a model off the allowed set, with only the refused calls of a row whose model Vent allows today (owner rule c185). */
+/** The family a model id belongs to, such as claude for claude-opus-5-5(high) and gpt for gpt-6.1-sol. */
+const family = (model: string) => model.split("-")[0]!;
+
+/**
+ * The rows whose calls named an older model of a tier family the allowed set covers, with only the refused calls of every other row (owner
+ * rule c185). c185 names only the Claude and GPT tiers, so a model of another family, such as Typesafe's jev-1.13.0, is no older tier model:
+ * on 11-05 staging Vent began reading the model from Jev's non-stream replies, and d2 read its 33 calls as old_model_calls_24h.
+ */
 export function oldModelCalls(reads: ModelReads): ModelCalls[] {
   const allowed = new Set(reads.allowed);
+  const families = new Set(reads.allowed.map(family));
+  const older = (model: string) => families.has(family(model)) && !allowed.has(model.replace(EFFORT_SUFFIX, ""));
   return reads.rows
-    .map(row => row.model && !allowed.has(row.model.replace(EFFORT_SUFFIX, "")) ? row : { ...row, calls: row.refused })
+    .map(row => older(row.model) ? row : { ...row, calls: row.refused })
     .filter(row => row.calls > 0);
 }
 
