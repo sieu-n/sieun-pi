@@ -4,7 +4,7 @@
 // dashboards drawing ("Check the Observability and Metrics"), where on 10-19 at 15:55Z two panels read No data.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type BoardItem, GOOD_ROWS, META_FINISHED_EXPR, META_SAMPLE_PCT, META_SAMPLE_RUNS, REFRESH_SAMPLE_PCT, REFRESH_SAMPLE_RUNS, type ThroughputData, backlogged, blankPanels, boardGoal, deploySlots, geonodeHours, geonodeMbps, goalLine, goalRows, grew, interpolate, lastHalfHour,
+import { type BoardItem, sampledMetaDue, GOOD_ROWS, META_FINISHED_EXPR, META_SAMPLE_PCT, META_SAMPLE_RUNS, REFRESH_SAMPLE_PCT, REFRESH_SAMPLE_RUNS, type ThroughputData, backlogged, blankPanels, boardGoal, deploySlots, geonodeHours, geonodeMbps, goalLine, goalRows, grew, interpolate, lastHalfHour,
   type Dashboard, folderBoards, folderFiles, lagSlots, metaDueSql, PROVIDERS, QUEUES, missed, readPanels, pageRuns, panelQueries, panelState, refreshShares, refreshSql, report, scaleDue, slowestHour, writerLagAtRate } from "../scripts/duties/throughput-goal.ts";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
 
@@ -360,4 +360,19 @@ test("readPanels reads the folder's boards from the provider file and fails on n
   await assert.rejects(readPanels([], api), /no owner:crawler or owner:crawler-v3 dashboard/);
   await assert.rejects(readPanels([boards[1]!], api), /no owner:crawler/);
   await assert.rejects(readPanels([{ uid: "e", title: "Empty", tags: ["owner:crawler"], panels: [{ type: "text" }] }], api), /hold no queried panel/);
+});
+
+test("a Meta Ads due sample that prod cancels on its statement timeout is read again at half the sample, and other errors stay errors", async () => {
+  const pages = 4_016_026;
+  const sizes: number[] = [];
+  const timedOut = async (runs: readonly [number, number][]): Promise<number | null> => {
+    sizes.push(runs.reduce((sum, [first, past]) => sum + past - first, 0));
+    if (sizes.length === 1) throw new Error("Grafana HTTP 400: db query error: pq: canceling statement due to statement timeout");
+    return 15_000;
+  };
+  const due = await sampledMetaDue(pages, timedOut, () => 0.5);
+  assert.equal(sizes.length, 2);
+  assert.ok(Math.abs(sizes[1]! * 2 - sizes[0]!) <= 64, `half sample ${sizes[1]} of ${sizes[0]}`);
+  assert.equal(due, Math.round((15_000 * pages) / sizes[1]!));
+  await assert.rejects(sampledMetaDue(pages, async () => { throw new Error("Grafana HTTP 502"); }, () => 0.5), /502/);
 });

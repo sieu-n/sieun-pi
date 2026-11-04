@@ -611,6 +611,23 @@ export const META_PAGES_SQL = "SELECT pg_relation_size('meta_ads_walks') / curre
 /** Advertiser walks idle and due now over the page runs, and how many pages they hold. */
 export const metaDueSql = (runs: readonly [number, number][]): string => `SELECT count(*) FILTER (WHERE kind = 'advertiser' AND state = 'idle' AND next_run_at <= now()) AS due
 FROM (${pageRunsSql("meta_ads_walks", "kind, state, next_run_at", runs)}) AS sampled`;
+/**
+ * The scaled due count of meta_ads_walks from a page sample, read again at half the sample when prod Postgres cancels the read on grafana_ro's
+ * 30 s statement_timeout. measured: the 1% sample of 64 runs took 2.3 to 5.4 s on 10-29, then 10.4 to 23.4 s over 3 reads at 08:2xZ on 11-04,
+ * and at 08:10Z that day it hit the timeout, so throughput_goals_missed read the 999999 placeholder.
+ */
+export async function sampledMetaDue(pages: number, read: (runs: readonly [number, number][]) => Promise<number | null>, random: () => number = Math.random): Promise<number> {
+  let runs = pageRuns(pages, META_SAMPLE_PCT, META_SAMPLE_RUNS, random);
+  let due: number | null;
+  try { due = runs.length ? await read(runs) : null; } catch (error) {
+    if (!/statement timeout/i.test(error instanceof Error ? error.message : String(error))) throw error;
+    runs = pageRuns(pages, META_SAMPLE_PCT / 2, META_SAMPLE_RUNS / 2, random);
+    due = runs.length ? await read(runs) : null;
+  }
+  if (due == null) throw new Error("the meta_ads_walks page sample answered no row");
+  return scaleDue(due, runs, pages);
+}
+
 /** The due count the sample stands for: its due walks times the table's pages over the pages it read. */
 export const scaleDue = (due: number, runs: readonly [number, number][], pages: number): number =>
   Math.round((due * pages) / runs.reduce((sum, [first, past]) => sum + past - first, 0));
@@ -662,10 +679,8 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
       const [finished, pages] = await Promise.all([promInstant(query, PROM.prod, META_FINISHED_EXPR), sqlRows(query, PG.prod, META_PAGES_SQL)]);
       const tablePages = num(pages[0]?.pages);
       if (!finished[0] || !tablePages) throw new Error(`meta ads walks: ${finished[0] ? "meta_ads_walks answered no page count" : "crawler_v3_meta_ads_finished_1h has no advertiser series"}`);
-      const runs = pageRuns(tablePages, META_SAMPLE_PCT, META_SAMPLE_RUNS);
-      const due = runs.length ? num((await sqlRows(query, PG.prod, metaDueSql(runs)))[0]?.due) : null;
-      if (due == null) throw new Error("the meta_ads_walks page sample answered no row");
-      return { due: scaleDue(due, runs, tablePages), finished24h: Math.round(finished[0].value) };
+      const due = await sampledMetaDue(tablePages, async runs => num((await sqlRows(query, PG.prod, metaDueSql(runs)))[0]?.due));
+      return { due, finished24h: Math.round(finished[0].value) };
     }),
     step("other crawls", async () => (await sqlRows(query, CH, OTHERS_SQL)).map(row => ({ kind: String(row.kind), slowest6h: num(row.slowest6h) ?? 0, average24h: num(row.average24h) ?? 0 }))
       .filter(row => !GOAL_KINDS.has(row.kind))),
