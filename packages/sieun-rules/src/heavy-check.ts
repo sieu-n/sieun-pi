@@ -14,7 +14,7 @@ import { SHELLS, effective, expandVars, lex, shellScript, stripHeredocs } from "
  * goes on: a memory spike guards none of the hard cases of c98, so this is a warning and never a refusal. The kernel half (send-check.ts)
  * prints it when the kernel starts the command, and the tool_call half adds it to a bash tool call's result. Other hosts get no note.
  */
-const PREFIX = "global-rules Mac heavy check:";
+const PREFIX = "Mac heavy check:";
 export const HEAVY_COST =
 	"Global rule 6 keeps heavy compute on us-metal02: on 11-04 at 16:20:55 KST one job's `pnpm check` in auto-sns-agent apps/search grew " +
 	"from 0.1 to 7.52 GB in a minute and pushed the Mac's swap from 11.5 to 13.3 GB.";

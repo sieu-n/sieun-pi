@@ -138,7 +138,7 @@ function noteHeavy(event: ToolCallEvent, text: string, cwd: string): void {
 	if (event.toolName !== "bash" || !event.toolCallId) return;
 	const found = judgeHeavyCheck(text, cwd);
 	if (!found.length) return;
-	notes.set(event.toolCallId, found.join("\n"));
+	notes.set(event.toolCallId, found.map((note) => `global-rules: ${note}`).join("\n"));
 	while (notes.size > NOTES_KEEP) notes.delete(notes.keys().next().value!);
 }
 
