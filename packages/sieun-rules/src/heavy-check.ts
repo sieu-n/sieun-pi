@@ -124,6 +124,15 @@ function packageScript(name: string, args: string[], cwd: string): { script: str
 	}
 }
 
+/**
+ * The command as the agent typed it: the words before a redirect's leftover fd number, a closing brace or an assignment, which the lexer
+ * keeps from a wrapper such as Prime's bash(), whose `npm test` on the Mac read as "npm test 2 } 8 __prime_status=$?" on 11-04.
+ */
+function label(eff: string[]): string {
+	const end = eff.findIndex((w, i) => i > 0 && (/^\d+$/.test(w) || w === "}" || /^[A-Za-z_]\w*=/.test(w)));
+	return (end === -1 ? eff : eff.slice(0, end)).join(" ");
+}
+
 interface Hit {
 	command: string;
 	cwd: string;
@@ -142,7 +151,7 @@ function judge(text: string, depth: number, out: Hit[], start: string, vars: Map
 		const eff = effective(argv);
 		const name = basename(eff[0] ?? "");
 		const args = eff.slice(1);
-		const at0 = top ?? { command: eff.join(" "), cwd };
+		const at0 = top ?? { command: label(eff), cwd };
 		const hit = (why: string): void => { out.push({ ...at0, why: via + why }); };
 		const again = (inner: string, where = cwd, through = via): void => judge(inner, depth + 1, out, where, new Map(vars), at0, through);
 		if (name === "cd" || name === "pushd") {

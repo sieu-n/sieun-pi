@@ -46,6 +46,9 @@ test("on the Mac, the 11-04 `pnpm check` in apps/search runs from the kernel wit
   assert.match(result.warning, /kit-check\.mjs runs a whole-app type check/);
   assert.match(result.warning, /7\.52 GB/);
   assert.match(result.warning, /commit\.mjs --probe <files>/);
+  // Prime's bash() wraps the command in its status script (rlm/bash.py _status_script), and the redirect reader joins the lines after `2>&1`.
+  const wrapped = await kernel("exec 9>&0 8>&1 0</dev/null\nread -r _prime_agent_gate <&9 || exit 127\n{\npnpm test 2>&1\n} 8>&- 9>&-\n__prime_status=$?\n", search);
+  assert.match(wrapped.warning, /Mac heavy check: `pnpm test` runs here/);
   for (const [text, cwd] of [
     [`cd ${search} && pnpm check`, root],
     ["pnpm -C apps/search check", asa],
