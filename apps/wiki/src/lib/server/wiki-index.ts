@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { isSessionLog } from './session-artifact-index';
 import type { WikiIndex, WikiPageSummary } from './wiki';
 
 /**
@@ -69,6 +70,8 @@ export class WikiIndexStore {
 	readonly treeLog: TreeLog = { epoch: 0, paths: [] };
 	/** Newest first, by `updated` and then path. */
 	private order: WikiPageSummary[] = [];
+	/** The session log paths, about 5k of the 100k+ pages, so a sessions query never walks every page. */
+	private readonly logs = new Set<string>();
 	/** The summary as read, for each page with links. `byPath` holds a copy whose links are resolved. */
 	private readonly linked = new Map<string, WikiPageSummary>();
 	/** Raw link target to the pages whose links name it. */
@@ -84,6 +87,7 @@ export class WikiIndexStore {
 		this.last ??= {
 			generatedAt: Date.now(),
 			pages: this.order.slice(),
+			sessionLogs: Array.from(this.logs, (logPath) => this.byPath.get(logPath)!).sort(newestFirst),
 			byPath: this.byPath,
 			backlinks: this.backlinks,
 			treeLog: this.treeLog,
@@ -118,6 +122,10 @@ export class WikiIndexStore {
 				this.byPath.delete(pagePath);
 			}
 			if (!old || !next) appeared.push(pagePath);
+			if ((!old || !next) && isSessionLog(pagePath)) {
+				if (next) this.logs.add(pagePath);
+				else this.logs.delete(pagePath);
+			}
 			if (!old || !next || old.title !== next.title || old.kind !== next.kind) treePaths.push(pagePath);
 		}
 		if (removed.length === 0 && fresh.size === 0) return;

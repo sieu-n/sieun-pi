@@ -24,6 +24,7 @@ export function isSessionPath(wikiPath: string): boolean {
 
 /** sessions/YYYY/MM/DD/hhmm-slug/index.html (or the same under agents/<agent>/jobs/), the one page per session. */
 export function isSessionLog(wikiPath: string): boolean {
+	if (!wikiPath.endsWith('/index.html')) return false;
 	const segments = wikiPath.split('/');
 	if (segments[0] === 'sessions') return segments.length === 6 && segments[5] === 'index.html';
 	return JOB_ROOT.test(wikiPath) && segments.length === 8 && segments[7] === 'index.html';

@@ -256,6 +256,31 @@ test('a repo copy in a session folder (a .git or pnpm-workspace.yaml in it) is n
 	);
 });
 
+// GET /api/agent/sessions read every page's path for the ~5k logs among 100k+ pages, about 400 ms a call on 2026-11-04.
+test('the index lists its session logs apart from the other pages, and a new log joins them', async () => {
+	await withIndex(
+		{
+			'apps/hub/index.html': '<h1>Hub</h1>',
+			'sessions/2026/11/03/0900-old/index.html': '<h1>Old</h1>',
+			'sessions/2026/11/03/0900-old/notes/index.html': '<h1>Notes</h1>',
+			'sessions/2026/11/03/0900-old/report.md': '# Report',
+		},
+		async (wiki, fs) => {
+			const first = await indexWith(wiki, 'sessions/2026/11/03/0900-old/report.md');
+			assert.deepEqual(
+				first.sessionLogs.map((page) => page.path),
+				['sessions/2026/11/03/0900-old/index.html'],
+			);
+			fs.write('sessions/2026/11/04/1000-new/index.html', '<h1>New</h1>');
+			const next = await indexWith(wiki, 'sessions/2026/11/04/1000-new/index.html');
+			assert.deepEqual(next.sessionLogs.map((page) => page.path).sort(), [
+				'sessions/2026/11/03/0900-old/index.html',
+				'sessions/2026/11/04/1000-new/index.html',
+			]);
+		},
+	);
+});
+
 test('concurrent cold index consumers share one completion-stamped result', async () => {
 	const originalDateNow = Date.now;
 	let clock = 100;

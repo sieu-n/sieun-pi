@@ -1,4 +1,3 @@
-import { isSessionLog } from './session-artifact-index';
 import { getWikiIndex, type WikiPageSummary } from './wiki';
 import { kstDay } from '../kst.mjs';
 
@@ -26,8 +25,7 @@ const DATE_RE = /(\d{4}-\d{2}-\d{2})/;
 
 export async function getLogIndex(): Promise<LogEntry[]> {
 	const index = await getWikiIndex();
-	return index.pages
-		.filter((page) => isSessionLog(page.path))
+	return index.sessionLogs
 		.map(toLogEntry)
 		.sort((a, b) => b.date.localeCompare(a.date) || a.title.localeCompare(b.title));
 }

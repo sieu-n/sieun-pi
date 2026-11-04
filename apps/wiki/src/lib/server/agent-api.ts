@@ -8,7 +8,7 @@ import type { AgentVerb } from '../../params/agentVerb';
 import { isLintedPath, ratchet, savedLintAnswer, STANDARD_FILE } from '$lib/prose-lint.mjs';
 import { heldByWrite, type HeldRow } from '../../../scripts/dup-held.mjs';
 import { codeRepoDir } from '../wiki-config.mjs';
-import { isSessionLog, isSessionPath } from './session-artifact-index';
+import { isSessionPath } from './session-artifact-index';
 import { rootOf } from './wiki-mounts';
 import { scanWikiFiles } from './wiki-secrets.mjs';
 import { renderWikiPage } from './render';
@@ -838,10 +838,9 @@ const API = {
 				const status = param(c, 'status') ?? 'open';
 				const agent = param(c, 'agent');
 				const conversation = param(c, 'conversation');
-				const sessions = (await getWikiIndex()).pages
+				const sessions = (await getWikiIndex()).sessionLogs
 					.filter(
 						(p) =>
-							isSessionLog(p.path) &&
 							(status === 'all' || (p.meta.status ?? '') === status) &&
 							(!agent || p.meta.agent === agent) &&
 							(!conversation || p.meta.conversation === conversation),

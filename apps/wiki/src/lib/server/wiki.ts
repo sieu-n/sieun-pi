@@ -58,6 +58,8 @@ export type WikiManifest = {
 export type WikiIndex = {
 	generatedAt: number;
 	pages: WikiPageSummary[];
+	/** The session logs of `pages`, newest first, owned by this snapshot like `pages`. */
+	sessionLogs: WikiPageSummary[];
 	byPath: Map<string, WikiPageSummary>;
 	backlinks: Map<string, Set<string>>;
 	treeLog: TreeLog;
