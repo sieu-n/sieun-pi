@@ -414,6 +414,8 @@ export class Timeline {
   private readonly sends: Sends;
   /** The newest delivery time seen per DM owner post, so a send answer that lands after a newer live update cannot roll it back. */
   private readonly deliveredAt = new Map<string, number>();
+  /** The newest item when the page last posted /read. */
+  private marked: Item | undefined;
 
   constructor(readonly id: ConversationId, opts: { around?: string } = {}) {
     this.isChannel = id.startsWith("ch_");
@@ -529,9 +531,20 @@ export class Timeline {
     return api.abort(this.id);
   }
 
+  /**
+   * Marks the conversation read up to its newest item, once per item. The server marks it read when it stores an owner send, so after the
+   * open's first mark the page posts nothing while the newest item is the owner's own, and a send posts /read at most once, for the reply.
+   */
   markRead(): Promise<unknown> {
+    const newest = this.items.at(-1);
+    const own = newest?.kind === "message" && newest.author.id === "owner";
+    if (!newest || newest === this.marked || (own && this.marked)) return Promise.resolve();
+    this.marked = newest;
     const seq = this.items.findLast(i => i.kind === "message" && i.seq !== undefined);
-    return api.read(this.id, seq?.kind === "message" ? seq.seq : undefined);
+    return api.read(this.id, seq?.kind === "message" ? seq.seq : undefined).catch(error => {
+      if (this.marked === newest) this.marked = undefined;
+      throw error;
+    });
   }
 
   close(): void {
