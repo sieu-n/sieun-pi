@@ -52,14 +52,11 @@ const stops = async (now: number): Promise<boolean> => {
   return unloadPlan(rows, { ...input(now), held }).some(planned => planned.sessionId === ID);
 };
 
-test("the transcript's failed run names its first failed reply and the slot pi-pool parked it again at", () => {
+test("the transcript's failed run names its first failed reply and the last slot pi-pool named", () => {
   const at = Date.parse("2026-10-31T05:31:00Z");
   const run = failedRun(transcript(at).tail)!;
   assert.equal(run.since, start + 87);
-  assert.equal(run.rolled, true);
   assert.match(lastTurnError(transcript(at).tail)!, /waits for its slot at 2026-10-31T05:32:30.000Z/);
-  const first = failedRun(transcript(start + 2 * MIN).tail)!;
-  assert.equal(first.rolled, false, "before its first slot passed, pi-pool has not parked it again");
   assert.equal(failedRun(`${transcript(at).tail}\n${JSON.stringify({ type: "message", message: { role: "toolResult" } })}`), undefined);
 });
 
@@ -77,7 +74,7 @@ test("a tree pi-pool parks again every 3 to 4.5 min keeps its worker, since each
   }
 });
 
-test("a tree whose first slot has not passed keeps its worker for that slot, however long ago it first failed", async () => {
+test("a tree whose first slot comes within the lead keeps its worker for that slot, however long ago it first failed", async () => {
   const now = Date.parse("2026-10-31T04:46:00Z");
   const one = [failure(start, now + 91_000, true), failure(start + 1_050, now + 91_000, false)].join("\n");
   assert.equal((await providerWaits([row(now)], now, QUIET, reads(now, one, now + 91_000))).size, 0);

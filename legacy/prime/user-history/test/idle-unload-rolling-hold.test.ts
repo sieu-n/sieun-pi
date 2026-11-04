@@ -1,7 +1,8 @@
 // At 16:18Z on 10-19 us-metal02 OOM-killed 11 processes, one inside prime-agent-daemon.service. 13 sessions sat 15 to 26 min in Prime's
 // provider retry, each on a worker of its own (4.9 GB in all), while `pi-pool who` named a slot that kept moving to about now: 6 accounts
 // served with 12 to 81 trees waiting on each. The unload stopped a retry only for a slot past its 15 min, so a rolling slot kept every one.
-// Since 10-29 a tree's own slot within the quiet window keeps the session (c88): a stop there only made it miss its cell.
+// Since 10-29 a tree's own slot near enough keeps the session (c88): a stop there only made it miss its cell. Since 11-04 near enough is
+// POOL_LEAD_MS, the lead the resume of a stopped tree starts it again by.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SessionSummary } from "prime-agent";

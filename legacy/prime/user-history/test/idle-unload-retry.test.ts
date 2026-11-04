@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { mock, test } from "node:test";
 import type { SessionSummary } from "prime-agent";
-import { type PoolPart, poolFreeAt, type ThreadParts, threadKey } from "../src/chat-pool.ts";
+import { POOL_LEAD_MS, type PoolPart, poolFreeAt, type ThreadParts, threadKey } from "../src/chat-pool.ts";
 import { type DaemonAnswer, IdleUnloader, poolHoldsPast, providerWaits, retryCandidates, STOP_BOUND_MS, unloadPlan, WAIT_READ_TREES } from "../src/idle-unload.ts";
 
 type Fixture = { takenAt: string; chats: string[]; rows: SessionSummary[]; tails: Record<string, string> };
@@ -52,7 +52,7 @@ test("the 01:11Z rows: each session asleep in its provider retry on a pool hold 
   const held = await providerWaits(candidates, at, TEN_MIN, reads());
   for (const [id, until] of held) {
     const waited = at - Date.parse(byId.get(id)!.lastActivityAt!);
-    assert.ok(until === null ? waited >= TEN_MIN : until > at && (until > at + TEN_MIN || waited >= TEN_MIN), id);
+    assert.ok(until === null ? waited >= TEN_MIN : until > at && (until > at + POOL_LEAD_MS || waited >= TEN_MIN), id);
   }
   assert.ok(held.size >= 140, `${held.size} held`);
   const before = unloadPlan(day.rows, input);
@@ -67,15 +67,16 @@ test("the 01:11Z rows: each session asleep in its provider retry on a pool hold 
   assert.ok(freed >= freedBefore + 100, `workers whose every session stops: ${freedBefore} before, ${freed} now`);
 });
 
-test("a tree the pool serves within the unload's minutes, or now, keeps its session in Prime's retry, and a hold a day away stops it", async () => {
+test("a tree the pool serves within the lead, or now, keeps its session in Prime's retry, and a hold past the lead stops it", async () => {
   const row = retryCandidates(day.rows, input).find(candidate => slotOf(candidate.sessionId) !== null)!;
   const tree = rootOf(row);
   const heldWith = async (slot: number | null) => (await providerWaits([row], at, TEN_MIN, reads(new Map([[tree, slot]])))).has(row.sessionId);
   assert.equal(await heldWith(at + TEN_MIN + MIN), true);
-  assert.equal(await heldWith(at + TEN_MIN - MIN), false, "its tree's own slot inside the unload's minutes keeps it, however long it waited: a stop makes it miss that cell");
+  assert.equal(await heldWith(at + TEN_MIN - MIN), true, "its tree's own slot past the lead stops it: the resume starts it again by the lead");
+  assert.equal(await heldWith(at + POOL_LEAD_MS - 30_000), false, "its tree's own slot inside the lead keeps it, however long it waited: a stop makes it miss that cell");
   const fresh = { ...row, lastActivityAt: new Date(at - 5 * MIN).toISOString() };
-  assert.equal((await providerWaits([fresh], at, TEN_MIN, reads(new Map([[tree, at + TEN_MIN - MIN]])))).has(row.sessionId), false,
-    "a session 5 min into its wait whose slot comes before the unload's minutes are out stays in Prime's retry");
+  assert.equal((await providerWaits([fresh], at, TEN_MIN, reads(new Map([[tree, at + POOL_LEAD_MS - 30_000]])))).has(row.sessionId), false,
+    "a session 5 min into its wait whose slot comes within the lead stays in Prime's retry");
   assert.equal(await heldWith(null), false, "the pool serves the tree now: the job sweep's abort continues it in place");
   assert.equal(await heldWith(at + 30 * 60 * MIN), true, "the resume pass looks back with no limit");
   const failing = { ...reads(), read: async () => { throw new Error("pi-pool failed"); } };

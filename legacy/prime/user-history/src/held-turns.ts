@@ -68,17 +68,14 @@ export function lastTurnError(tail: string): string | undefined {
 
 /**
  * The run of failed replies a transcript ends on (`lastTurnError`): the last one's error, when the first one was written (null when no line
- * of the run carries a time), and whether a later failed reply came at or after a pi-pool slot an earlier one named ("waits for its slot at"),
- * so pi-pool parked the session again at its slot. From 04:24Z to 06:09Z on 10-31 01a19034 failed 2 replies every 3 to 4.5 min this way,
- * each naming the next slot, while only claude12 and krenerd77 took trees.
+ * of the run carries a time). From 04:24Z to 06:09Z on 10-31 01a19034 failed 2 replies every 3 to 4.5 min, each naming the next pi-pool
+ * slot, while only claude12 and krenerd77 took trees, so the run's first reply, not its last, tells how long the session waited.
  */
-export interface FailedRun { error: string; since: number | null; rolled: boolean }
-
-const SLOT_AT = /waits for its slot at (\d{4}-\d\d-\d\dT[\d:.]+Z)/;
+export interface FailedRun { error: string; since: number | null }
 
 export function failedRun(tail: string): FailedRun | undefined {
   const lines = tail.split("\n");
-  const run: { at: number; slot: number }[] = [];
+  const run: number[] = [];
   let error: string | undefined;
   for (let index = lines.length - 1; index >= 0; index--) {
     let line: { type?: unknown; customType?: unknown; timestamp?: unknown; message?: { role?: unknown; stopReason?: unknown; errorMessage?: unknown; diagnostics?: unknown } };
@@ -89,12 +86,11 @@ export function failedRun(tail: string): FailedRun | undefined {
     if (line.message.role !== "assistant" || line.message.stopReason !== "error") break;
     const text = turnError(line.message);
     error ??= text?.trim() ? text : "error";
-    run.unshift({ at: typeof line.timestamp === "string" ? Date.parse(line.timestamp) : NaN, slot: Date.parse(SLOT_AT.exec(text ?? "")?.[1] ?? "") });
+    run.unshift(typeof line.timestamp === "string" ? Date.parse(line.timestamp) : NaN);
   }
   if (error === undefined) return undefined;
-  const times = run.map(entry => entry.at).filter(Number.isFinite);
-  const rolled = run.some((entry, index) => run.slice(0, index).some(before => entry.at >= before.slot));
-  return { error, since: times.length ? Math.min(...times) : null, rolled };
+  const times = run.filter(Number.isFinite);
+  return { error, since: times.length ? Math.min(...times) : null };
 }
 
 const TAIL_BYTES = 64 * 1024;

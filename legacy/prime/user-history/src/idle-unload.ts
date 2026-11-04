@@ -78,7 +78,7 @@ function quiet(row: SessionSummary, input: { attached: ReadonlySet<string>; pool
  * is queued in it. At 01:11Z on 10-19 176 sessions sat this way after a 429 (91) or pi-pool's token hook refusal "this session waits for its
  * slot at" (85), with 148 workers and 176 kernels (31.2 GB) that the unload left alone, since Prime counts a retrying session as active
  * (agent-session.ts `isRetrying`) and Prime's retry wait may last 8 days. The caller confirms from the transcript that the turn ended on a
- * failed reply (`lastTurnError`) and from pi-pool that its tree waits past the unload's minutes (`poolHoldsPast`).
+ * failed reply (`lastTurnError`) and from pi-pool that its tree waits past POOL_LEAD_MS (`poolHoldsPast`).
  * A chat counts too, with no client attached but the service's own, which its stop lets go of first (`UnloadSource.release`); `Chats.revive` reopens it
  * once pi-pool admits its tree. Until 10-19 every chat stayed: at 06:03Z six chats sat asleep this way, each alone on its own worker with
  * 0.20 to 0.40 GB PSS and a kernel, SEO guy 562 min after its last activity (~/scratch/idle-ram/sessions-0603.json).
@@ -172,7 +172,7 @@ export interface PlanInput { attached: ReadonlySet<string>; pool: ReadonlySet<st
   /** The rows whose detached services the unload can hand off (`UnloadSource.handsOff`), so a detached process does not keep them. */
   handoff?: (row: SessionSummary) => boolean;
   /**
-   * Sessions asleep in Prime's provider retry whose tree pi-pool holds past the unload's minutes, with when the hold ends (`poolHoldsPast`);
+   * Sessions asleep in Prime's provider retry whose tree pi-pool holds past POOL_LEAD_MS, with when the hold ends (`poolHoldsPast`);
    * null for a chat whose tree the pool names no time for.
    */
   held?: ReadonlyMap<string, number | null>;
@@ -214,23 +214,22 @@ export function unloadPlan(rows: readonly SessionSummary[], input: PlanInput): S
 
 /**
  * Whether the unload stops a session asleep in its provider retry whose tree pi-pool next serves at `freeAt` (epoch ms, null when the pool
- * names no time), from a pool reading that came back. It stops when that comes after the unload's minutes or the pool names no time. A tree
- * the pool would serve sooner is left to Prime's retry and the job sweep's abort (ab65b511), which continue it in place. No hold is too long
- * to stop on: a chat's revive and the job sweep's resume pass (`resumeJobs`, --since-minutes 0) ask pi-pool again with no look-back.
- * A session that already waited the unload's minutes (`waitedMs`, since its last activity) stops on any hold the pool does not lift now, near
- * or not, unless its tree holds its own pi-pool slot (`ownSlot`, epoch ms) within the unload's minutes and pi-pool has not yet parked it again
- * at an earlier slot (`providerWaits` passes null then). A stop there only delays the turn
- * (c88): the session comes back through the resume pass after its slot, and a tree that started waiting later takes the cell. From 12:00Z on
- * 10-28 to 02:17Z on 10-29 45 of the 55 pool-wait stops on us-metal02 came with the tree's slot under 15 min ahead, 01a1748f's 91 s and 3 s
- * ahead at 00:34:29Z and 02:17:27Z, and the 19 that asked again did so 25 to 458 s after their slot; at 00:36:30Z 01a18508, parked later,
- * took the cell 01a1748f missed. At 16:18Z on 10-19 13 sessions sat 15 to 26 min in their retry on workers of their own (4.9 GB) while
- * `pi-pool who` named a slot that kept moving to about now, and the box OOM-killed 11 processes; a hold with no slot of the tree's own still
- * stops after the unload's minutes.
+ * names no time), from a pool reading that came back. It keeps the session only when its tree's own pi-pool cell (`ownSlot`, epoch ms) or the
+ * pool's next free time comes within POOL_LEAD_MS, the lead the resume of a stopped tree starts it again by (`poolResumesBy`, PoolHeldJobs,
+ * `Chats.revive`), so a stop further out frees the worker and kernel at no cost to the turn. A session that already waited the unload's
+ * minutes (`waitedMs`, since its first failed reply) stops on any hold the pool does not lift now, unless its own cell comes within the lead.
+ * No hold is too long to stop on: the resume asks pi-pool again with no look-back.
+ * Until 11-04 the horizon was the unload's minutes, set when a stopped tree came back only at or after its cell (10-29: 01a1748f asked 25 to
+ * 458 s late and lost its cell), and the lead resume of 11-01 made that cost go away. From 03:31Z to 03:48Z on 11-04 us-metal02 kept CI and
+ * RepoOps, code cut 3 and metal01 cpu cuts (3.08 GB) in pool waits whose cells pi-pool kept 2 to 12 min ahead, and Prospect feature bro's chat
+ * sat parked from 03:34:12Z to 04:01Z on cells 4, 8, 2 and 12 min ahead, so d7 read 5.1 GB of quiet trees against its 5 GB target.
+ * At 16:18Z on 10-19 13 sessions sat 15 to 26 min in their retry on workers of their own (4.9 GB) while `pi-pool who` named a slot that kept
+ * moving to about now, and the box OOM-killed 11 processes, so a hold the pool does not lift now still stops after the unload's minutes.
  */
 export function poolHoldsPast(freeAt: number | null, now: number, idleMs: number, waitedMs = 0, ownSlot: number | null = null): boolean {
   if (freeAt === now) return false;
-  if (ownSlot !== null && ownSlot > now && ownSlot <= now + idleMs) return false;
-  return waitedMs >= idleMs || freeAt === null || freeAt > now + idleMs;
+  if (ownSlot !== null && ownSlot > now && ownSlot <= now + POOL_LEAD_MS) return false;
+  return waitedMs >= idleMs || freeAt === null || freeAt > now + POOL_LEAD_MS;
 }
 
 /**
@@ -366,7 +365,7 @@ export interface UnloadSource {
   /** The sessions with a board.wake pending at `now`. */
   waking(now: number): Promise<ReadonlySet<string>>;
   /**
-   * Of `rows` (`retryCandidates`), the ones whose transcript ends on a failed reply and whose tree pi-pool holds past the unload's minutes
+   * Of `rows` (`retryCandidates`), the ones whose transcript ends on a failed reply and whose tree pi-pool holds past POOL_LEAD_MS
    * (`poolHoldsPast`), with when the hold ends.
    */
   held(rows: readonly SessionSummary[], now: number, idleMs: number): Promise<ReadonlyMap<string, number | null>>;
@@ -430,10 +429,9 @@ export interface WaitReads {
 
 /**
  * Of `rows` (`retryCandidates`), each one of this box whose transcript ends on a failed reply (`failedRun`) and whose tree, keyed by its
- * root session as pi-pool keys it, the pool serves next only past the unload's minutes (`poolFreeAt`, `poolHoldsPast`), with when that
- * is. The trees are read WAIT_READ_TREES at a time. The wait counts from the run's first failed reply, since each retry Prime makes moves the
- * row's lastActivityAt, and a slot of the tree's own keeps the session only until pi-pool parks it again at a slot (`FailedRun.rolled`), unless
- * that slot comes within POOL_LEAD_MS, when the stopped tree's resume would start it again at once. On 11-01 the unload stopped SEO guy
+ * root session as pi-pool keys it, the pool serves next only past POOL_LEAD_MS (`poolFreeAt`, `poolHoldsPast`), with when that is. The trees
+ * are read WAIT_READ_TREES at a time. The wait counts from the run's first failed reply, since each retry Prime makes moves the row's
+ * lastActivityAt, and a cell of the tree's own keeps the session only when it comes within POOL_LEAD_MS. On 11-01 the unload stopped SEO guy
  * (01a11a24) at 09:09:30Z, 90 s before its 09:11:00Z cell, and the tree's next asks came after its cells until 09:25:42Z.
  * From 05:10Z to 06:00Z on 10-31 17 quiet trees on us-metal02 held 10.5 GB this way with no pool-wait stop: pi-pool parked each one again
  * every 3 to 4.5 min, so its lastActivityAt never read 15 min old and its next slot was always under 15 min ahead.
@@ -464,9 +462,7 @@ export async function providerWaits(rows: readonly SessionSummary[], now: number
     const run = runs.get(row.sessionId)!;
     const freeAt = poolFreeAt(parts, row.model!.provider, now);
     const waited = now - (run.since ?? Date.parse(row.lastActivityAt ?? ""));
-    const own = accountSlot(parts, row.model!.provider);
-    const slot = run.rolled && !(own !== null && own <= now + POOL_LEAD_MS) ? null : own;
-    return poolHoldsPast(freeAt, now, idleMs, Number.isFinite(waited) ? waited : 0, slot) ? [[row.sessionId, freeAt] as const] : [];
+    return poolHoldsPast(freeAt, now, idleMs, Number.isFinite(waited) ? waited : 0, accountSlot(parts, row.model!.provider)) ? [[row.sessionId, freeAt] as const] : [];
   }));
 }
 

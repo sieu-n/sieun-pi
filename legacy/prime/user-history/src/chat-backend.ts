@@ -425,7 +425,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const stopUptime = ownChatsOnly ? () => {} : startUptimeWatch({ stateFile: join(dataDir, "uptime-watch.json"), overrideFile: join(dataDir, "uptime-targets.json"),
     log: dutyLog, ...agentMessage });
   // An idle root job, dormant chat or subagent stops after the quiet window, a session that ended its task after ENDED_MS, a job or chat
-  // asleep in Prime's provider retry once pi-pool holds its tree past the quiet window, and a job or chat in Prime's quota park at once,
+  // asleep in Prime's provider retry once pi-pool holds its tree past POOL_LEAD_MS, and a job or chat in Prime's quota park at once,
   // since Prime's own sweeps fail under load and count a retry as work. A quiet worker that grew past RECYCLE_OWN_BYTES is recycled. Each sweep starts its stops at once and does not wait for a slow kill
   // (src/idle-unload.ts IdleUnloader). Every box's idle sessions stop from here, since the chat service is the one place that knows which chats
   // a tab or the pool holds.
@@ -443,7 +443,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     pool: () => poolWaiting(),
     waking: async now => new Set((await pendingWakes(join(dataDir, "wakes"), now).catch(() => [])).map(wake => wake.session)),
     // A session asleep in Prime's provider retry stops when its transcript ends on the failed reply and pi-pool serves its tree (keyed by the
-    // root session) only past the unload's minutes. Only this box's sessions: another box's pool decides for its own. The job sweep's resume
+    // root session) only past POOL_LEAD_MS. Only this box's sessions: another box's pool decides for its own. The job sweep's resume
     // pass continues a job once the pool or the token hook lets its tree in (resume_paused.py unload_stop_holds), and a chat's revive reopens
     // the chat once pi-pool admits it (Chats.revive).
     held: (rows, now, idleMs) => providerWaits(rows, now, idleMs, { all: catalog.daemonRows(), local: row => !catalog.hostOf(row.sessionId),

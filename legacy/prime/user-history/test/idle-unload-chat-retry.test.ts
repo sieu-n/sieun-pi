@@ -11,7 +11,7 @@ import type { SessionSummary } from "prime-agent";
 import { loadRecord } from "../src/chat-brief.ts";
 import type { Catalog } from "../src/chat-catalog.ts";
 import { Dormancy } from "../src/chat-dormancy.ts";
-import { type PoolPart, type ThreadParts, threadKey } from "../src/chat-pool.ts";
+import { POOL_LEAD_MS, type PoolPart, type ThreadParts, threadKey } from "../src/chat-pool.ts";
 import { ThreadHub } from "../src/chat-threads.ts";
 import { Chats } from "../src/chats.ts";
 import { IdIndex } from "../src/id-index.ts";
@@ -57,10 +57,11 @@ test("the 06:03Z rows: each of the six chats asleep in its provider retry is pla
   assert.equal(retryCandidates([...others, { ...seo, attachedClients: 0 }], dormant).some(candidate => candidate.sessionId === seo.sessionId), true);
 });
 
-test("a session stops on a hold past the quiet window or one with no time named, and a tree served within the quiet window keeps it", async () => {
+test("a session stops on a hold past the lead or one with no time named, and a tree served within the lead keeps it", async () => {
   assert.equal(poolHoldsPast(at + 30 * 60 * MIN, at, QUIET), true, "a chat's revive and the job sweep ask the pool with no look-back");
   assert.equal(poolHoldsPast(null, at, QUIET), true);
-  assert.equal(poolHoldsPast(at + QUIET - MIN, at, QUIET), false);
+  assert.equal(poolHoldsPast(at + QUIET - MIN, at, QUIET), true, "a chat's revive reopens it by the lead before its cell");
+  assert.equal(poolHoldsPast(at + POOL_LEAD_MS - 30_000, at, QUIET), false);
   assert.equal(poolHoldsPast(at, at, QUIET), false, "the pool serves the tree now");
   const candidates = retryCandidates(day.rows, input);
   assert.equal((await providerWaits(candidates, at, QUIET, reads(() => null))).size, 0, "pi-pool serves every tree now");
