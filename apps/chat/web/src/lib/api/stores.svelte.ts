@@ -7,6 +7,8 @@
  * upload ends, and the post names the uploaded ref.
  */
 import { api, ApiError, reportNotDelivered, roomOf, type Attached } from "./client.ts";
+import { heldSends, type HeldSend } from "./held-sends.ts";
+import { holdReload, releaseReload } from "./reload.ts";
 import { live } from "./live.svelte.ts";
 import type {
   AgentId, AgentSummary, BoardOp, BoardView, ConversationHeader, ConversationId, ConversationSummary, ForYouItem, Item, Me,
@@ -33,11 +35,13 @@ const isRoom = (id: ConversationId): boolean => id.startsWith("dm_");
 const sameText = (a: string, b: string): boolean => a.trim() === b.trim();
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-function optimistic(request: SendDraft): Item {
+/** A send as its own message until the real one lands: sending, or Not delivered with `failed`, as a kept send shows after a reload. */
+function optimistic(request: SendDraft, failed?: { at: number; error: string }): Item {
   return {
-    kind: "message", id: `r:${request.requestId}`, at: Date.now(), author: global.me?.owner ?? { id: "owner", kind: "owner", name: "You", avatar: { initials: "Me", hue: 210 } },
+    kind: "message", id: `r:${request.requestId}`, at: failed?.at ?? Date.now(), author: global.me?.owner ?? { id: "owner", kind: "owner", name: "You", avatar: { initials: "Me", hue: 210 } },
     text: request.text, images: (request.images ?? []).map(image => ({ url: image.preview, mimeType: image.mimeType })),
-    mentions: request.mentions ?? [], deliveries: [], pending: true, send: "sending", requestId: request.requestId,
+    mentions: request.mentions ?? [], deliveries: [], pending: true, requestId: request.requestId,
+    ...(failed ? { send: "failed" as const, sendError: failed.error } : { send: "sending" as const }),
     ...(request.threadRoot ? { threadRoot: request.threadRoot } : {}),
   };
 }
@@ -89,12 +93,15 @@ function merge(items: readonly Item[], incoming: readonly Item[], landed: Set<st
 
 /**
  * Posts a send once its images are uploaded, trying again with the same requestId while the chat server cannot be reached; a refused send
- * throws at once.
+ * throws at once. Once the images have refs the send is kept in localStorage (held-sends.ts) until it lands, so a reload cannot lose it.
  */
 async function post(conversation: ConversationId, draft: SendDraft): Promise<SendResult> {
+  let kept = heldSends.has(draft.requestId);
   for (let attempt = 0; ; attempt++) {
     try {
       const images = await Promise.all((draft.images ?? []).map(image => image.ref()));
+      if (!kept) heldSends.keep({ ...draft, conversation, images, at: Date.now() });
+      kept = true;
       return await api.send(conversation, { ...draft, images });
     } catch (error) {
       const unreachable = !(error instanceof ApiError) || error.status >= 500;
@@ -104,37 +111,97 @@ async function post(conversation: ConversationId, draft: SendDraft): Promise<Sen
   }
 }
 
-/** The optimistic side of sending, shared by a timeline and a channel thread: requests by id, landed ids, and failure marks. */
+/** A kept send as the page holds it again, its images already uploaded. */
+const draftOf = (held: HeldSend): SendDraft => ({
+  text: held.text, requestId: held.requestId,
+  images: held.images.map(ref => ({ preview: ref.url, mimeType: ref.mimeType, ref: () => Promise.resolve(ref) })),
+  ...(held.mentions ? { mentions: held.mentions } : {}), ...(held.threadRoot ? { threadRoot: held.threadRoot } : {}),
+  ...(held.whenBusy ? { whenBusy: held.whenBusy } : {}),
+});
+
+/** The requestIds a live view shows, so a second view of the same conversation does not show or send them again. */
+const shownSends = new Set<string>();
+
+/**
+ * The optimistic side of sending, shared by a timeline and a channel thread: requests by id, landed ids, and failure marks. Each send holds
+ * the page's reload after a release (reload.ts) while it is on its way, and a failed one whose images never uploaded holds it until it
+ * lands or is discarded, since only this page has those images.
+ */
 class Sends {
   readonly requests = new Map<string, SendDraft>();
   readonly landed = new Set<string>();
+  private readonly flying = new Set<string>();
+  private closed = false;
 
-  constructor(private readonly conversation: ConversationId, private readonly read: () => Item[], private readonly write: (items: Item[]) => void) {}
+  constructor(
+    private readonly conversation: ConversationId, private readonly read: () => Item[], private readonly write: (items: Item[]) => void,
+    private readonly threadRoot?: string,
+  ) {}
+
+  /**
+   * Shows the sends an earlier page or a closed view of this conversation kept and no live view shows: Not delivered ones with Retry, and
+   * the ones that were on their way are returned, for the view to send again.
+   */
+  restore(): string[] {
+    const resend: string[] = [];
+    for (const held of heldSends.of(this.conversation, this.threadRoot)) {
+      if (shownSends.has(held.requestId)) continue;
+      shownSends.add(held.requestId);
+      const draft = draftOf(held);
+      this.requests.set(held.requestId, draft);
+      this.merge([optimistic(draft, { at: held.at, error: held.error ?? "Not sent before the page reloaded" })]);
+      if (held.error === undefined) resend.push(`r:${held.requestId}`);
+    }
+    return resend;
+  }
 
   merge(incoming: readonly Item[], removed: readonly string[] = []): void {
     this.write(merge(this.read(), incoming, this.landed, removed));
-    for (const id of this.landed) this.requests.delete(id.slice(2));
+    for (const id of this.landed) {
+      const requestId = id.slice(2);
+      if (this.requests.delete(requestId)) this.settle(requestId);
+    }
   }
 
   /** Shows the send at once and posts it behind; the promise settles when the chat server has it or it failed. */
   async send(request: SendDraft, show = true): Promise<SendResult | undefined> {
     this.requests.set(request.requestId, request);
+    shownSends.add(request.requestId);
     if (show) this.merge([optimistic(request)]);
+    return this.fly(request.requestId, () => post(this.conversation, request), `r:${request.requestId}`);
+  }
+
+  private async fly(requestId: string, call: () => Promise<SendResult>, id: string): Promise<SendResult | undefined> {
+    this.flying.add(requestId);
+    holdReload(`send:${requestId}`);
     try {
-      return await post(this.conversation, request);
+      const result = await call();
+      this.settle(requestId);
+      return result;
     } catch (error) {
-      this.fail(`r:${request.requestId}`, error);
+      this.fail(id, requestId, error);
       return undefined;
+    } finally {
+      this.flying.delete(requestId);
+      if (this.closed) shownSends.delete(requestId);
+      if (heldSends.has(requestId) || !this.requests.has(requestId) || this.closed) releaseReload(`send:${requestId}`);
     }
+  }
+
+  /** The send landed or was discarded: nothing keeps it any more. */
+  private settle(requestId: string): void {
+    heldSends.drop(requestId);
+    releaseReload(`send:${requestId}`);
   }
 
   private patch(id: string, change: Partial<Extract<Item, { kind: "message" }>>): void {
     this.write(this.read().map(item => (item.id === id && item.kind === "message" ? { ...item, ...change } : item)));
   }
 
-  /** Marks the send Not delivered and tells the server's log why (`reportNotDelivered`). */
-  private fail(id: string, error: unknown): void {
+  /** Marks the send Not delivered, keeps the error with the kept send, and tells the server's log why (`reportNotDelivered`). */
+  private fail(id: string, requestId: string, error: unknown): void {
     this.patch(id, { send: "failed", sendError: message(error) });
+    heldSends.fail(requestId, message(error));
     reportNotDelivered(this.conversation, error instanceof ApiError ? error.status : 0, message(error));
   }
 
@@ -147,17 +214,29 @@ class Sends {
     const requestId = (item?.kind === "message" && item.requestId) || id.slice(2);
     this.patch(id, { send: "sending", sendError: undefined });
     const request = this.requests.get(requestId);
-    try {
-      return request ? await post(this.conversation, request) : await api.retrySend(this.conversation, requestId);
-    } catch (error) {
-      this.fail(id, error);
-      return undefined;
-    }
+    return this.fly(requestId, () => (request ? post(this.conversation, request) : api.retrySend(this.conversation, requestId)), id);
   }
 
   discard(id: string): void {
+    const requestId = id.slice(2);
+    this.requests.delete(requestId);
+    this.settle(requestId);
+    shownSends.delete(requestId);
     this.merge([], [id]);
-    void api.discardSend(this.conversation, id.slice(2)).catch(() => undefined);
+    void api.discardSend(this.conversation, requestId).catch(() => undefined);
+  }
+
+  /**
+   * The view closed: its kept sends show in the next view that opens, and a send on its way still lands or fails here. A failed send that
+   * was never kept is gone from the screen with the view, so it no longer holds the reload.
+   */
+  close(): void {
+    this.closed = true;
+    for (const requestId of this.requests.keys()) {
+      if (this.flying.has(requestId)) continue;
+      shownSends.delete(requestId);
+      releaseReload(`send:${requestId}`);
+    }
   }
 }
 
@@ -434,6 +513,7 @@ export class Timeline {
       else if (event.type === "room" && event.room.id === id) void this.refreshHeader();
     });
     void this.load(opts.around);
+    for (const id of this.sends.restore()) this.retrySend(id);
   }
 
   private around: string | undefined;
@@ -556,6 +636,7 @@ export class Timeline {
   close(): void {
     this.stopWatch?.();
     this.stopListen?.();
+    this.sends.close();
     if (!this.around && this.header && !this.error) timelinePages.remember(this.id, { items: this.items.filter(item => !isPending(item)), older: this.older, header: this.header });
   }
 }
@@ -573,7 +654,7 @@ export class Replies {
   private readonly sends: Sends;
 
   constructor(readonly channel: ConversationId, readonly rootId: string) {
-    this.sends = new Sends(channel, () => this.items, items => (this.items = items));
+    this.sends = new Sends(channel, () => this.items, items => (this.items = items), rootId);
     this.stopListen = live.on(event => {
       if (event.type !== "items" || event.conversation !== channel) return;
       const root = event.items.find(item => item.id === rootId);
@@ -596,6 +677,7 @@ export class Replies {
       }
       this.sends.merge(page.items);
     }).catch(error => (this.error = message(error))).finally(() => (this.loading = false));
+    for (const id of this.sends.restore()) this.retrySend(id);
   }
 
   send(text: string, opts: { images?: Attached[]; mentions?: AgentId[] } = {}): Promise<void> {
@@ -619,6 +701,7 @@ export class Replies {
   close(): void {
     this.stopWatch?.();
     this.stopListen?.();
+    this.sends.close();
     if (!this.loading && !this.error) repliesPages.remember(repliesKey(this.channel, this.rootId), { root: this.root, items: this.items.filter(item => !isPending(item)) });
   }
 }

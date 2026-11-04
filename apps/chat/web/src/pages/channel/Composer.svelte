@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { attach, type AgentSummary, type Attached, type Room } from "$lib/api";
+  import { holdReload, releaseReload } from "$lib/api/reload";
   import AvatarStack from "$lib/ui/AvatarStack.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import Picker from "$lib/ui/Picker.svelte";
@@ -36,6 +37,13 @@
   let empty = $state(true);
   let mentions = $state<string[]>([]);
   let attachments = $state<Attachment[]>([]);
+  // An attached image not sent yet lives only in this page, so it holds the reload a new release asks for (lib/api/reload.ts).
+  const reloadHold = `composer:${crypto.randomUUID()}`;
+  $effect(() => {
+    if (attachments.length) holdReload(reloadHold);
+    else releaseReload(reloadHold);
+  });
+  $effect(() => () => releaseReload(reloadHold));
   let query = $state<Query | null>(null);
   let dragging = $state(false);
   let fileInput = $state<HTMLInputElement>();

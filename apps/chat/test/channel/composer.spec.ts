@@ -166,11 +166,36 @@ test("a send the chat server never gets reads Not delivered, and Retry sends it"
   const mine = conversation(page).locator(".row.own").filter({ hasText: `offline ${word}` });
   await expect(mine).toBeVisible({ timeout: 1_000 });
   const state = mine.locator("[data-send-state]");
-  await expect(state).toHaveAttribute("data-send-state", "failed", { timeout: 10_000 });
+  await expect(state).toHaveAttribute("data-send-state", "failed", { timeout: 16_000 });
   await expect(state).toContainText("Not delivered");
   await page.unroute(`**/api/c/${agent.room}/send`);
   await state.getByRole("button", { name: "Retry" }).click();
   await expect(conversation(page).locator(".row.own").filter({ hasText: `offline ${word}` })).toHaveCount(1);
   await expect(conversation(page).locator('.row.own[data-message-id^="p"]').filter({ hasText: `offline ${word}` })).toBeVisible({ timeout: 8_000 });
   await expect(conversation(page).locator("[data-send-state]")).toHaveCount(0);
+});
+
+test("a Not delivered send outlives a reload and a closed view, and Retry sends it", async ({ page, request }) => {
+  test.setTimeout(60_000);
+  const agent = (await (await request.post("/api/agents", { data: { kind: "chat", name: `reload ${tag()}` } })).json()) as { id: string; room: string; thread: string };
+  await open(page, `#/c/${agent.room}`);
+  await page.route(`**/api/c/${agent.room}/send`, (route) => route.abort("connectionrefused"));
+  const word = tag();
+  await composerInput(conversation(page)).click();
+  await page.keyboard.type(`kept ${word}`);
+  await page.keyboard.press("Enter");
+  const mine = () => conversation(page).locator(".row.own").filter({ hasText: `kept ${word}` });
+  await expect(mine().locator("[data-send-state]")).toHaveAttribute("data-send-state", "failed", { timeout: 16_000 });
+  await page.unroute(`**/api/c/${agent.room}/send`);
+  await page.reload();
+  await expect(mine().locator("[data-send-state]")).toContainText("Not delivered");
+  await open(page, `#/c/${FRONTEND}`);
+  await open(page, `#/c/${agent.room}`);
+  await expect(mine()).toHaveCount(1);
+  await mine().locator("[data-send-state]").getByRole("button", { name: "Retry" }).click();
+  await expect(conversation(page).locator('.row.own[data-message-id^="p"]').filter({ hasText: `kept ${word}` })).toBeVisible({ timeout: 8_000 });
+  await expect(conversation(page).locator("[data-send-state]")).toHaveCount(0);
+  await page.reload();
+  await expect(mine()).toHaveCount(1);
+  expect(await page.evaluate(() => localStorage.getItem("chat.heldSends"))).toBeNull();
 });

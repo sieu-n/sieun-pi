@@ -20,17 +20,19 @@
   import ArtifactViewer from "$lib/shell/ArtifactViewer.svelte";
   import { me } from "$lib/api";
   import { isStale, pageEntry } from "$lib/api/stale";
+  import { reloadWhenSafe } from "$lib/api/reload";
   import { toast } from "$lib/ui/toast.svelte";
 
   trackKeyboardNavigation();
   initZoom();
 
-  // A tab left open across a release runs the old bundle, whose sends the new server may refuse, so it offers a reload until taken.
-  // The composer keeps its draft in localStorage, so a reload loses no typed text.
+  // A tab left open across a release runs the old bundle, whose sends the new server may refuse. It reloads itself once the tab is hidden
+  // or out of focus and nothing is on its way (lib/api/reload.ts), and offers a Reload until then. Drafts and unsent posts outlive it.
   let staleShown = false;
   $effect(() => {
     if (staleShown || !isStale(me.value?.web, pageEntry())) return;
     staleShown = true;
+    reloadWhenSafe();
     toast.show("A new version of the chat is out. Reload to use it.", { duration: 0, action: { label: "Reload", run: () => location.reload() } });
   });
 
