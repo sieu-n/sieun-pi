@@ -38,6 +38,12 @@ class CpuProtectPlan(unittest.TestCase):
         daemon = {40: (20, test_daemon)}
         self.assertEqual(cpu.plan(daemon, {12: (1, SUPERVISOR), 41: (20, test_daemon)}, PUBLIC), ([40], [12]))
 
+    def test_the_catalogs_the_supervisor_starts_stay_and_one_in_the_tools_scope_goes_back(self):
+        """The name catalog waited 13.3 s in the run queue per CPU-second in the tools scope, and a rename waited 2,767 ms on 11-03 at 23:37Z."""
+        catalog = ["/home/sieun/.local/share/prime-agent/releases/r1/prime-agent", "--version"]
+        daemon = {10: (1, SUPERVISOR), 11: (10, WORKER), 12: (10, catalog), 20: (11, ["/bin/bash", "-c", "prime-agent --version"]), 21: (20, catalog)}
+        self.assertEqual(cpu.plan(daemon, {13: (10, catalog), 22: (20, catalog)}, PUBLIC), ([20, 21], [13]))
+
     def test_the_tools_scope_runs_at_the_default_weight_with_no_cap(self):
         text = (CPU / "cpu-protect.py").read_text()
         self.assertNotIn('"CPUWeight"', text)

@@ -7,9 +7,14 @@ supervisor and workers win against the job rigs in app.slice, but until 11-02 th
 on 11-02 it held 253 processes and used 25.9 cores, of which the prime-agent processes used about 2.8, and worker f2f8b4ebd885 waited 1,418 ms
 for a CPU inside a 5,049 ms stall (~/work/prime-worker-stalls/for-metal-management.md). So each pass moves every process of the daemon unit that is
 not core into the tools scope, a sibling of the unit in app.slice at the default weight, and its later children start there. Core is a
-`prime-agent --mode daemon` on the public daemon's socket directory (the supervisor and its workers), a pi-pool token helper, and
+`prime-agent --mode daemon` on the public daemon's socket directory (the supervisor and its workers), a prime-agent the supervisor starts
+itself (its two catalog processes, `prime-agent --version` with a role in their environment), a pi-pool token helper, and
 prime-agent-daemon-ctl with what it starts, so a reload's update keeps running in the unit. A supervisor that an update started from the tools
-scope goes back to the unit. A nice value below 0 that a moved process inherited from the old nice layer goes back to 0.
+scope goes back to the unit, and so does a catalog. A nice value below 0 that a moved process inherited from the old nice layer goes back to 0.
+
+The catalogs are core because every rename and named create waits for the name catalog's answer. In the tools scope at weight 100, from 21:19Z
+on 11-03 to 00:10Z on 11-04, the name catalog's main thread waited 13.3 s in the run queue per CPU-second used, against a median of 1.3 s for
+the workers' main threads; in single seconds it waited 0.25 to 0.97 s for 1 to 4 time slices, and at 23:37:52Z a rename's name check took 2,767 ms.
 
 The scope has Delegate=yes, so writing a pid into its cgroup.procs is a supported move, and OOMPolicy=continue, so a kernel OOM kill of one
 command ends only that command, as in the daemon unit. systemd stops the scope once it is empty, and the next pass that has a process to move
@@ -46,6 +51,11 @@ def is_daemon(argv: list[str], public_dir: str) -> bool:
     return argv[mode:mode + 1] == ["daemon"] and os.path.dirname(argv[sock] if sock < len(argv) else "") == public_dir
 
 
+def is_supervisor(argv: list[str], public_dir: str) -> bool:
+    """The supervisor: the daemon on the public socket itself, where each worker listens on a socket of its own beside it."""
+    return is_daemon(argv, public_dir) and os.path.basename(argv[argv.index("--daemon-socket") + 1]) == "daemon.sock"
+
+
 def plan(daemon: dict[int, tuple[int, list[str]]], tools: dict[int, tuple[int, list[str]]], public_dir: str) -> tuple[list[int], list[int]]:
     """The moves that bring each process to its side: (pids from the unit to the scope, pids from the scope to the unit). daemon and tools map
     pid -> (ppid, argv) for the processes of each cgroup."""
@@ -58,12 +68,15 @@ def plan(daemon: dict[int, tuple[int, list[str]]], tools: dict[int, tuple[int, l
             pid = daemon[pid][0]
         return False
 
+    def started_by_supervisor(ppid: int, argv: list[str]) -> bool:
+        return bool(argv) and os.path.basename(argv[0]) == "prime-agent" and ppid in daemon and is_supervisor(daemon[ppid][1], public_dir)
+
     def core(pid: int) -> bool:
-        argv = daemon[pid][1]
-        return is_daemon(argv, public_dir) or runs(argv, "pi-pool-token") or under_ctl(pid)
+        ppid, argv = daemon[pid]
+        return is_daemon(argv, public_dir) or started_by_supervisor(ppid, argv) or runs(argv, "pi-pool-token") or under_ctl(pid)
 
     out = sorted(pid for pid in daemon if not core(pid))
-    back = sorted(pid for pid, (_, argv) in tools.items() if is_daemon(argv, public_dir))
+    back = sorted(pid for pid, (ppid, argv) in tools.items() if is_daemon(argv, public_dir) or started_by_supervisor(ppid, argv))
     return out, back
 
 
