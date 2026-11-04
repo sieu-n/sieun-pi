@@ -470,9 +470,13 @@ export function screenKeys(keys: readonly string[]): string[] {
   return Array.from({ length: Math.min(SCREEN_SAMPLE, crawler.length) }, (_, i) => crawler[Math.floor(i * step)]!);
 }
 
-/** The crawler route the search server reads for the chips, and the key it sends: CRAWLER_API_URL and CRAWLER_API_KEY of apps/search/.env, prod. */
+/**
+ * The crawler route the search server reads for the chips, sent with crawler-v3's own CRAWLER_API_KEY of its tier file. auto-sns-agent
+ * b4497e1a57 (11-04) took the crawler key out of the search tiers, since search reaches the crawler through Vent, and on 11-04 prod
+ * Vent still answered `unknown integration crawler`, so the probe reads the crawler direct, as scripts/duties/crawler/crawler-api.mjs does.
+ */
 export const SUMMARY_URL = "https://crawler.virev.ai/api/watch-targets/summary";
-export async function readCrawlerKey(envFile = "apps/search/.env"): Promise<string> {
+export async function readCrawlerKey(envFile = "apps/crawler-v3/.env"): Promise<string> {
   const { stdout } = await promisify(execFile)(join(REPO, "node_modules/.bin/dotenvx"), ["get", "CRAWLER_API_KEY", "-f", join(REPO, envFile)]);
   const key = stdout.trim();
   if (!key || key.startsWith("encrypted:")) throw new Error(`CRAWLER_API_KEY did not decrypt from ${envFile}`);
@@ -626,7 +630,7 @@ async function main(): Promise<void> {
   try { query = grafanaClient(fetch, await readGrafanaAuth(), now, signal); } catch (error) { authError = error instanceof Error ? error.message : String(error); }
   const data = await measure({ query, authError, now,
     keys: async () => convexKeys(fetch, await convexToken(), signal),
-    stagingKeys: async () => groupKeys(fetch, await readCrawlerKey("apps/search/.env.staging"), watchGroupId(STAGING_OWNER_ORG), signal),
+    stagingKeys: async () => groupKeys(fetch, await readCrawlerKey("apps/crawler-v3/.env.staging"), watchGroupId(STAGING_OWNER_ORG), signal),
     rows: async () => {
       if (!query) throw new Error("not read: no Grafana login");
       const read = prodReader(query);
