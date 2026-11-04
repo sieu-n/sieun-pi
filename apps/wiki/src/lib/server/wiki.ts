@@ -213,7 +213,7 @@ export async function readPage(rawPath: string): Promise<WikiPage | null> {
 	const page = indexed && !isSessionArtifact(resolvedPath) ? indexed : summarize(stored, resolvedPath, file.stat);
 	if (page !== indexed) page.links = page.links.map((link) => resolveLink(link, index.byPath));
 
-	const readLimit = isLargeTextDoc(page.path) ? LARGE_DOC_READ_LIMIT : PAGE_READ_LIMIT;
+	const readLimit = readLimitFor(page.path);
 	// Sized from the bytes just read, not from the index: the index is up to CACHE_TTL_MS stale,
 	// and callers refuse the read on `truncated`, so it has to be exact for a page written a
 	// second ago.
@@ -856,6 +856,11 @@ function scorePage(page: WikiPageSummary, terms: string[]): { score: number; mat
 	}
 
 	return { score, matched };
+}
+
+/** The whole-read cap of a content path: past it GET /api/agent/page answers 413 instead of the page. */
+export function readLimitFor(relativePath: string): number {
+	return isLargeTextDoc(relativePath) ? LARGE_DOC_READ_LIMIT : PAGE_READ_LIMIT;
 }
 
 function isLargeTextDoc(relativePath: string): boolean {

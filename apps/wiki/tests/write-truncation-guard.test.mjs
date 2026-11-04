@@ -154,6 +154,26 @@ test('a strict-prefix write to an over-cap page is refused and leaves it intact;
 	assert.match(await raw(GUARD), /tail marker edited/);
 });
 
+test('a write that leaves a page past the read cap saves it and warns with the cap named', async (t) => {
+	if (!serverUp) return t.skip('llm-wiki dev server unreachable — SKIPPED, not passed');
+
+	const GROWN = `${sessionFolder}/read-cap-warning-fixture.html`;
+	const small = await post({ path: GROWN, content: bigPage('small').slice(0, 4_000) + '\n</pre>\n' });
+	assert.equal(small.status, 201, `a small page must save, got ${small.status}`);
+	const smallBody = await small.json();
+	assert.ok(!(smallBody.warnings ?? []).some((w) => /read cap/.test(w)), 'a page under the cap gets no read cap warning');
+
+	const grown = await post({ path: GROWN, content: bigPage('grown past the cap') });
+	assert.equal(grown.status, 201, `a write past the cap must save, never be refused, got ${grown.status}`);
+	const { warnings = [], bytes } = await grown.json();
+	const warning = warnings.find((w) => /read cap/.test(w));
+	assert.ok(warning, `the answer must warn about the read cap, got ${JSON.stringify(warnings)}`);
+	assert.match(warning, new RegExp(String(CAP)), 'the warning must name the cap in bytes');
+	assert.match(warning, new RegExp(String(bytes)), 'the warning must name the page size');
+	assert.match(warning, /\/raw\//, 'the warning must name where the whole page is');
+	assert.match(await raw(GROWN), /grown past the cap/);
+});
+
 test('rejects a truncating write of a CJK page whose cap splits a multibyte char', async (t) => {
 	if (!serverUp) return t.skip('llm-wiki dev server unreachable — SKIPPED, not passed');
 

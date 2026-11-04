@@ -7,7 +7,7 @@ import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { normalizeLinkTarget, normalizeRequestedPath, PAGE_READ_LIMIT } from './wiki';
+import { normalizeLinkTarget, normalizeRequestedPath, PAGE_READ_LIMIT, readLimitFor } from './wiki';
 import { extractHtmlTitle, META_COMMENT, parseHtmlMeta } from './wiki-html';
 import { hubsLinking, isCuratedPath, isRetiredStatus, retiredLinksAdded, titleMatchesH1 } from './wiki-lint';
 import { addRevision, currentVersion } from './wiki-store';
@@ -179,7 +179,7 @@ export async function commitPage(input: {
 	diff: string;
 	linesAdded: number;
 	linesRemoved: number;
-	/** Page gate warnings (rules 6 and 7): a source_ref this write adds, or a commit its new last_verified hides, changed after the page's last_verified; and a broken mermaid block the page already held. */
+	/** Page gate warnings (rules 6 and 7): a source_ref this write adds, or a commit its new last_verified hides, changed after the page's last_verified; a broken mermaid block the page already held; and a page the write leaves past its whole-read cap. */
 	warnings?: string[];
 }> {
 	const { rel, full } = resolveWritePath(input.rawPath);
@@ -228,6 +228,7 @@ export async function commitPage(input: {
 	const warnings = [
 		...(isCuratedPath(rel) && code ? pageWriteWarnings(code, rel, exists ? before : null, input.content, input.summary) : []),
 		...mermaid.warnings,
+		...readCapWarning(rel, input.content),
 	];
 	const written = await writeLogged({
 		rel,
@@ -239,6 +240,21 @@ export async function commitPage(input: {
 		baseVersion: input.baseVersion ?? null,
 	});
 	return warnings.length ? { ...written, warnings } : written;
+}
+
+/**
+ * A warning when the write leaves the page past its whole-read cap, because every later whole read of it answers 413.
+ * On 2026-11-04 apps/crawler-v3/adding-a-platform/retrieval.html reached 64,289 bytes with no word to any of its writers.
+ */
+function readCapWarning(rel: string, content: string): string[] {
+	const bytes = Buffer.byteLength(content);
+	const cap = readLimitFor(rel);
+	if (bytes <= cap) return [];
+	return [
+		`${rel} is ${bytes} bytes, past the ${cap}-byte whole-page read cap, so GET /api/agent/page and the markdown view of it ` +
+			`answer 413 and a reader has to slice it with ?section= or read /raw/${rel}. Split it into a short index page and ` +
+			`child pages by topic.`,
+	];
 }
 
 /**
