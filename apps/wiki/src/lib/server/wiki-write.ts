@@ -14,6 +14,7 @@ import { addRevision, currentVersion } from './wiki-store';
 import { deadLinkReason, deadLinksAdded, pageWriteReasons, pageWriteWarnings } from '../../../scripts/page-gate.mjs';
 import { staleWrite } from './stale-base.mjs';
 import { mermaidWriteCheck } from '../../../scripts/mermaid-check.mjs';
+import { renumberLists } from '../../../scripts/ol-numbering.mjs';
 import { codeRepoDir, contentGitRoot } from '../wiki-config.mjs';
 import { diskPath, rootOf } from './wiki-mounts';
 import { isSessionPath, sessionFolderOf as folderOfSession } from './session-artifact-index';
@@ -221,26 +222,54 @@ export async function commitPage(input: {
 		const reason = staleCopyReason(rel, input.content);
 		if (reason) throw new WriteError(409, reason);
 	}
-	await assertPageInvariants(rel, exists ? before : null, input.content);
-	const mermaid = await mermaidCheck(rel, exists ? before : null, input.content);
+	const numbered = renumberedPage(rel, input.content);
+	const content = numbered.content;
+	await assertPageInvariants(rel, exists ? before : null, content);
+	const mermaid = await mermaidCheck(rel, exists ? before : null, content);
 	if (mermaid.reasons.length) throw new WriteError(422, `refusing ${rel}: ${mermaid.reasons.join('. Also, ')}`);
 	const code = codeRepoDir();
 	const warnings = [
-		...(isCuratedPath(rel) && code ? pageWriteWarnings(code, rel, exists ? before : null, input.content, input.summary) : []),
+		...(isCuratedPath(rel) && code ? pageWriteWarnings(code, rel, exists ? before : null, content, input.summary) : []),
+		...numbered.warnings,
 		...mermaid.warnings,
-		...readCapWarning(rel, input.content),
-		...(exists ? [] : await hubRowWarning(rel, input.content)),
+		...readCapWarning(rel, content),
+		...(exists ? [] : await hubRowWarning(rel, content)),
 	];
 	const written = await writeLogged({
 		rel,
 		full,
 		before,
-		content: input.content,
+		content,
 		author: input.author,
 		summary: input.summary,
 		baseVersion: input.baseVersion ?? null,
 	});
 	return warnings.length ? { ...written, warnings } : written;
+}
+
+/**
+ * A curated page with its top-level <ol> lists numbered on in order (scripts/ol-numbering.mjs), so a writer who adds or
+ * drops a line never has to shift each later start= by hand. A write whose "item N" names a number two lines shared is
+ * refused, because the reference has no one line to move with.
+ */
+function renumberedPage(rel: string, content: string): { content: string; warnings: string[] } {
+	if (!rel.endsWith('.html') || !isCuratedPath(rel)) return { content, warnings: [] };
+	const result = renumberLists(content);
+	if (result.ambiguous.length)
+		throw new WriteError(
+			422,
+			`refusing ${rel}: its numbered lines need new start= values, and "item ${result.ambiguous.join('", "item ')}" ` +
+				`names a number that two lines share, so the reference cannot move with its line. Point it at the line you ` +
+				`mean by its number once the lists run on, or reword it to name the fact`,
+		);
+	if (!result.moved) return { content, warnings: [] };
+	return {
+		content: result.html,
+		warnings: [
+			`the page API set start= on ${result.moved} numbered list(s) of ${rel} so its line numbers run on, and moved each ` +
+				`"item N" with its line. Read the page again before your next edit`,
+		],
+	};
 }
 
 /**

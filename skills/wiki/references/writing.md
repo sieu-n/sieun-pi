@@ -32,7 +32,7 @@ He should scan the page once, top to bottom, and come away with the answer and t
 1. The page opens with the `<h1>`, the `<wiki-tldr>`, and numbered lines that give the answer first.
 2. A design or plan page for the owner is about 1/10 the length of a full spec and answers his questions in the order he asked them, each in a short plain sentence with one concrete example, before any options, tables or numbers.
 3. On 2026-10-29 the owner could not follow the long spec at `sessions/2026/10/30/0215-wiki-in-sw-factory-design/design.html`, asked his seven questions again, and asked for a 1/10 plan in 메르 style (c201).
-4. The body is numbered lines in `<ol>`, and the numbering runs on across sections with `start=`.
+4. The body is numbered lines in `<ol>`, and the numbering runs on across sections with `start=`. Since 2026-11-04 the page API sets each top-level `start=` of a curated page on every write and moves an in-page "item N" with its line (`apps/wiki/scripts/ol-numbering.mjs`), so a writer who adds or drops a line never shifts later lists. That day the wiki dream found 115 of 410 curated pages with broken numbers, such as `apps/crawler-v3/workers.html` showing 58 twice. A write whose "item N" names a number two lines share is refused with a 422.
 5. Each numbered line is one plain, complete sentence that states one fact.
 6. A line stays under about 30 words, so two facts become two lines.
 7. A line never opens with a bold label or a `Label:` prefix, so `Owner: the crawler team.` is refused.
