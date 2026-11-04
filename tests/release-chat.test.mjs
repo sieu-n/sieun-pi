@@ -11,7 +11,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const script = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../scripts/release-chat.mjs");
 const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
 // A build control is <STEP>_MS, _FAIL, _FAIL_NAME or _HANG for the step it names: BOOT for the boot check in the release folder, TYPECHECK and
-// TEST for the old helper's in-release steps, and SCOPED_TEST, TSC and SVELTE for the scoped checks in the checkout, which take them from CHECKOUT.
+// TEST for the old helper's in-release steps, TSC and SVELTE for the scoped type checks in the release folder, and SCOPED_TEST for the scoped tests
+// in the checkout, which take it from CHECKOUT.
 const BUILD_CONTROL = /^(BOOT|TYPECHECK|TEST|SCOPED_TEST|TSC|SVELTE)_(MS|FAIL|FAIL_NAME|HANG)$/;
 // Each step runs from the release folder it builds (id release-<sha7>) or from the checkout (id checkout), and appends what it ran to seen/steps.log.
 const BUILD_STEP = `import { connect } from "node:net";
@@ -1006,7 +1007,7 @@ test("after a failed scoped test the log names it, and the next waiter retries o
   assert.notEqual(c6, c5);
 });
 
-test("a release runs the scoped checks of its range in the checkout and only the boot check in its release folder (c193)", { timeout: 120000 }, async (t) => {
+test("a release runs the scoped tests of its range in the checkout and only tsc, svelte-check and the boot check in its release folder (c193)", { timeout: 120000 }, async (t) => {
   // Owner rule c193, 10-28: "Copying the repo to do the test: THIS MUST BE BANNED". Each release ran npm run typecheck and the whole
   // npm test of 592 files inside its release folder; on 10-28 from 02:52Z four releases queued 10 to 25 min each and every one failed on
   // load-timing tests their diffs did not touch.
@@ -1028,16 +1029,52 @@ test("a release runs the scoped checks of its range in the checkout and only the
   assert.equal(f.current(), id(changed));
   const app = path.join(f.repo, "legacy/prime/user-history");
   const ran = (sha) => f.steps().filter((entry) => entry.id === id(sha)).map((entry) => entry.step);
-  for (const sha of [added, changed]) assert.deepEqual(ran(sha), ["boot"], "the release folder runs only the boot check");
+  assert.deepEqual(ran(added), ["tsc", "svelte", "boot"]);
+  assert.deepEqual(ran(changed), ["tsc", "boot"]);
   const checkout = f.steps().filter((entry) => entry.id === "checkout");
   for (const entry of checkout) assert.equal(entry.cwd, app);
   assert.deepEqual(checkout.map((entry) => [entry.step, entry.args.filter((arg) => !arg.startsWith("--"))]), [
-    ["tsc", []], ["svelte", []], ["scoped-test", ["test/other.test.ts", "test/thing.test.ts"]],
-    ["tsc", []], ["scoped-test", ["test/thing.test.ts"]],
+    ["scoped-test", ["test/other.test.ts", "test/thing.test.ts"]],
+    ["scoped-test", ["test/thing.test.ts"]],
   ]);
   assert.match(result.stderr, new RegExp(`${added.slice(0, 7)}\\.\\.${changed.slice(0, 7)} changes 2 file\\(s\\) of legacy/prime/user-history; scoped checks: 1 test file\\(s\\), tsc\\n`));
   assert.match(result.stderr, /boot check: the release answered http:\/\/127\.0\.0\.1:\d+\/ with 404/);
   assert.doesNotMatch(result.stderr, /npm run --silent (typecheck|test)\b(?!:)/);
+});
+
+test("another session's broken uncommitted file in the checkout fails no release, while a type error in the commit still does", { timeout: 120000 }, (t) => {
+  // On 11-04 at 13:58 KST a release of a clean commit failed tsc on convex-admin.ts and portal-uptime.ts, which only a duty job's working copy held.
+  const f = fixture(t);
+  assert.equal(f.release([f.c4]).status, 0);
+  const app = "legacy/prime/user-history";
+  // A type check that, like tsc, judges the .ts files of the folder it runs in.
+  f.write(`${app}/check-types.mjs`, `import { readdirSync, readFileSync } from "node:fs";
+const bad = readdirSync("src").filter((name) => name.endsWith(".ts") && readFileSync("src/" + name, "utf8").includes("type error"));
+if (bad.length) { console.error("type errors in " + bad.join(", ")); process.exit(2); }
+`);
+  const manifest = JSON.parse(readFileSync(path.join(f.repo, app, "package.json"), "utf8"));
+  manifest.scripts["typecheck:ts"] = "node check-types.mjs";
+  f.write(`${app}/package.json`, JSON.stringify(manifest));
+  f.write(`${app}/src/clean.ts`, "export const clean = 1;\n");
+  const checker = f.commit("type check");
+  f.write(`${app}/src/clean.ts`, "export const clean = 2;\n");
+  const clean = f.commit("clean change");
+  f.publish();
+  assert.equal(f.release([checker]).status, 0);
+  f.write(`${app}/src/convex-admin.ts`, "type error\n");
+  const released = f.release([clean]);
+  assert.equal(released.status, 0, released.stderr);
+  assert.equal(f.current(), id(clean));
+  f.write(`${app}/src/broken.ts`, "type error\n");
+  f.git("add", "--", `${app}/src/broken.ts`);
+  f.git("commit", "-q", "-m", "broken");
+  const broken = f.git("rev-parse", "HEAD");
+  f.publish();
+  const refused = f.release([broken]);
+  assert.equal(refused.status, 1, refused.stderr);
+  assert.match(refused.stderr, /type errors in broken\.ts\n/);
+  assert.match(refused.stderr, /npm run --silent typecheck:ts failed/);
+  assert.equal(f.current(), id(clean));
 });
 
 test("a box that hosts.json lists with no chat role builds nothing and names the chat's box, as the Mac's build of b6219fb did at 10-21 17:55Z", { timeout: 60000 }, (t) => {

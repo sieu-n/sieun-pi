@@ -20,10 +20,11 @@ until then it makes that restart and installs those units (after --no-kickstart,
 Any other commit that does not descend from the live release's commit is refused, so a late release never rolls back a newer one. --rollback allows it.
 --rollback onto a release folder already built skips the origin check and needs no network, so a known-good release stays usable offline
 or when its commit was rebased off main. --rollback onto a commit not built yet is checked against origin like any release.
-Before it builds, the release runs the scoped checks in this checkout (--repo): the legacy/prime/user-history tests that reach a file changed
-since the live release's commit (scripts/release-chat-scope.mjs), tsc when a changed file is typed and svelte-check when one is a .svelte file.
-A --rollback runs none. The release folder itself runs no test: it writes the packed client and service bundles, then a boot check starts the
-service from the folder on a scratch port and data dir, waits until it answers GET /, and stops it.
+Before it builds, the release runs the scoped tests in this checkout (--repo): the legacy/prime/user-history tests that reach a file changed
+since the live release's commit (scripts/release-chat-scope.mjs). A --rollback runs none. The release folder, which holds only the commit, runs tsc
+when a changed file is typed and svelte-check when one is a .svelte file, so another session's uncommitted edit in the checkout fails no release.
+It then writes the packed client and service bundles, and a boot check starts the service from the folder on a scratch port and data dir,
+waits until it answers GET /, and stops it.
 Those steps get PATH and the locale from this shell and a private HOME, TMPDIR and XDG dirs, so they see no agent socket, token, session dir or key.
 --no-kickstart flips current only, for a release whose diff touches only scripts/duties or tests.
 A waiting release whose commit a release puts live (current holds it and the chat runs current) exits 0 at once, while the lock is still held.
@@ -275,30 +276,41 @@ function chatAppPath(tree) {
 }
 
 /**
- * Runs the scoped checks for `from`..`to` in the checkout `repo` (scopedPlan): the tests that reach a changed file of the chat, tsc when a changed
- * file is typed, svelte-check when one is a .svelte file. Null `from` (a rollback, or no live release) runs none.
+ * The scoped checks for `from`..`to` (scopedPlan): the tests that reach a changed file of the chat, tsc when a changed file is typed,
+ * svelte-check when one is a .svelte file. Null `from` (a rollback, or no live release) plans none and returns null.
  */
-async function checkScoped(repo, from, to) {
-  if (!from) { log(`no scoped checks for ${shortSha(to)}: a rollback or a first release has no range to scope`); return; }
+function scope(repo, from, to) {
+  if (!from) { log(`no scoped checks for ${shortSha(to)}: a rollback or a first release has no range to scope`); return null; }
   const appPath = chatAppPath(repo);
-  const app = join(repo, appPath);
   const plan = scopedPlan(repo, appPath, from, to);
-  const head = git(repo, ["rev-parse", "HEAD"]);
-  if (head && !contains(repo, head, to)) log(`the checkout's HEAD ${shortSha(head)} does not hold ${shortSha(to)}; the scoped checks run the checkout's files`);
   log(`${shortSha(from)}..${shortSha(to)} changes ${plan.changed.length} file(s) of ${appPath}; scoped checks: ${plan.tests.length} test file(s)` +
     `${plan.tsc ? ", tsc" : ""}${plan.svelte ? ", svelte-check" : ""}`);
-  if (!plan.tests.length && !plan.tsc && !plan.svelte) return;
+  return plan;
+}
+
+/** Runs the plan's tests in the checkout `repo`, which holds their fixtures and may hold other sessions' edits. */
+async function testScoped(repo, to, plan) {
+  if (!plan?.tests.length) return;
+  const app = join(repo, chatAppPath(repo));
+  const head = git(repo, ["rev-parse", "HEAD"]);
+  if (head && !contains(repo, head, to)) log(`the checkout's HEAD ${shortSha(head)} does not hold ${shortSha(to)}; the scoped tests run the checkout's files`);
   const checks = mkdtempSync("/tmp/release-chat-");
   try {
-    const env = checkEnv(checks);
-    if (plan.tsc) run("npm", ["run", "--silent", "typecheck:ts"], app, env);
-    if (plan.svelte) run("npm", ["run", "--silent", "typecheck:svelte"], app, env);
     // One file runs with --test-isolation=none: under --test-force-exit the default isolation drops trailing cases (nodejs/node#64857, AGENTS.md rule 6).
-    if (plan.tests.length)
-      await runNamingFailures("npm", ["run", "--silent", "test:one", "--", "--test-concurrency=20", ...(plan.tests.length === 1 ? ["--test-isolation=none"] : []), ...plan.tests], app, env);
+    await runNamingFailures("npm", ["run", "--silent", "test:one", "--", "--test-concurrency=20", ...(plan.tests.length === 1 ? ["--test-isolation=none"] : []), ...plan.tests], app, checkEnv(checks));
   } finally {
     rmSync(checks, { recursive: true, force: true });
   }
+}
+
+/**
+ * Runs the plan's tsc and svelte-check in the release folder `app`, which holds exactly the commit, so another session's uncommitted file in the
+ * checkout cannot fail a clean release: on 11-04 at 13:58 KST a release failed on convex-admin.ts and portal-uptime.ts, which only a duty job's
+ * working copy held. Neither tool writes a file there.
+ */
+function typecheck(app, plan, env) {
+  if (plan?.tsc) run("npm", ["run", "--silent", "typecheck:ts"], app, env);
+  if (plan?.svelte) run("npm", ["run", "--silent", "typecheck:svelte"], app, env);
 }
 
 const freePort = () => new Promise((done, fail) => {
@@ -352,7 +364,7 @@ async function bootCheck(app, root, env) {
 }
 
 /** Builds release-<sha7> in a scratch folder and renames it into place, so a release folder that exists is complete. */
-async function build(options, home, sha, dir) {
+async function build(options, home, sha, dir, plan = null) {
   const scratch = join(home, `.building-${basename(dir)}-${process.pid}`);
   rmSync(scratch, { recursive: true, force: true });
   mkdirSync(scratch, { recursive: true });
@@ -361,6 +373,9 @@ async function build(options, home, sha, dir) {
     log(`git archive ${sha.slice(0, 7)} into ${scratch}`);
     await archive(options.repo, sha, scratch);
     symlinkSync(join(options.repo, "node_modules"), join(scratch, "node_modules"));
+    // tsc in the release folder follows the chat's imports into packages/pi-rlm, which finds @sieun-pi/pi-family in packages/node_modules.
+    if (existsSync(join(options.repo, "packages/node_modules")) && existsSync(join(scratch, "packages")))
+      symlinkSync(join(options.repo, "packages/node_modules"), join(scratch, "packages/node_modules"));
     const appPath = chatAppPath(scratch);
     symlinkSync(join(options.repo, appPath, "node_modules"), join(scratch, appPath, "node_modules"));
     if (appPath === LEGACY_APP && !existsSync(join(scratch, OLD_APP))) {
@@ -369,6 +384,7 @@ async function build(options, home, sha, dir) {
     }
     const app = join(scratch, appPath);
     const env = checkEnv(checks);
+    typecheck(app, plan, env);
     // The packed client bundle, so the service start reads it instead of compiling it (6.5 s at a load of 50 on 10-18) while every shell waits.
     run("node", ["src/chat-assets-prebuild.mjs"], app, env);
     // The service's own bundle, which chat-service-cli.mjs loads with no tsx: a start in a new release folder compiled every .ts file again,
@@ -791,8 +807,9 @@ async function main() {
       if (existsSync(planDir)) log(`${planId} is built already; reusing it`);
       else {
         const live = liveRelease(home);
-        await checkScoped(options.repo, options.rollback || !live ? null : releaseCommit(options.repo, resolve(home, live)), plan.sha);
-        await build(options, home, plan.sha, planDir);
+        const checks = scope(options.repo, options.rollback || !live ? null : releaseCommit(options.repo, resolve(home, live)), plan.sha);
+        await testScoped(options.repo, plan.sha, checks);
+        await build(options, home, plan.sha, planDir, checks);
       }
     } catch (error) {
       writeFileSync(join(home, FAILED), JSON.stringify({ sha: plan.sha, tests: error.failing ?? [], retry: plan.retry === true, at: new Date().toISOString() }) + "\n");
