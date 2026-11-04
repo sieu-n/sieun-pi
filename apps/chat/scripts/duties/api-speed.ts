@@ -1,10 +1,10 @@
 /**
  * Duty precheck: sw factory stays snappy (owner's words, #sw-factory-build, 11-03, msg mw0et67o: "Thread > load messages 이것도 진짜 너무
  * 느리거든? 이거 계속 느린 api 뭔지 꾸준히 (daily) monitoring 하는걸 add to duty and keep it snappy"). It reads the request log
- * (server/request-log.ts) of the last 24 h and gives each route's p90. A metric reads the web client's lines, the wait the owner sees, and
- * falls back to the server's own handler time for a route no page called in the window. A client line's `net` is the browser's network
- * time for the call, so a flagged route whose network p90 is far below its wait was held by the page's main thread, not by the server.
- *
+ * (server/request-log.ts) of the last 24 h and gives each route's p90 as the owner waits for it: his own devices' lines (via tailnet), else
+ * the server's handler time plus his network p50 from his other tailnet lines, and each metric says which in `metricSources`. A box
+ * browser's line, such as a job's walk, never sets a metric; its slowest routes are walk_slow_api rows apart. A client line's `net` is the
+ * browser's network time for the call, so a flagged route whose network p90 is far below its wait was held by the page's main thread. *
  * Usage: OUTPUT_FILE=<file> node --import tsx scripts/duties/api-speed.ts [--data-dir <dir>] [--hours 24]
  * The data dir defaults to APPS_CHAT_DATA_DIR, else ~/.pi/agent/chat. Without OUTPUT_FILE the result prints to stdout.
  */
@@ -81,11 +81,31 @@ export function routeSpeeds(timings: readonly RequestTiming[]): RouteSpeed[] {
   }).sort((a, b) => b.p90 - a.p90);
 }
 
-const PREFERRED: readonly SpeedSource[] = ["tailnet", "client", "server"];
+/** The owner's network time: the p50 of `net` on his own devices' answered calls, which also holds those calls' few ms of handler time. */
+export interface OwnerNetwork { count: number; p50: number }
 
-/** A route's speed as the owner sees it: his own devices' lines, else any page's, else the server's. */
-const speedOf = (speeds: readonly RouteSpeed[], route: string): RouteSpeed | undefined =>
-  PREFERRED.map(src => speeds.find(s => s.src === src && s.route === route)).find(Boolean);
+export function ownerNetwork(timings: readonly RequestTiming[]): OwnerNetwork | undefined {
+  const net = timings.flatMap(t => (sourceOf(t) === "tailnet" && t.s > 0 && !t.shown && t.net !== undefined ? [t.net] : [])).sort((a, b) => a - b);
+  return net.length ? { count: net.length, p50: percentile(net, 0.5) } : undefined;
+}
+
+/**
+ * A route's p90 as the owner waits for it, and the text that says where it came from: his own devices' lines, else the server's handler p90
+ * plus his network p50 from his other calls. A box browser's line never sets it. On 11-05 the send metric read 288 ms from 255 job walks in
+ * the box Chrome, which waits for the box's CPU, while the server answered sends at 15 ms p90 and the owner made no send over the tailnet.
+ */
+export interface OwnerSpeed { route: string; p90: number; source: string; speed: RouteSpeed }
+
+export function ownerSpeed(speeds: readonly RouteSpeed[], route: string, net: OwnerNetwork | undefined): OwnerSpeed | undefined {
+  const own = speeds.find(s => s.src === "tailnet" && s.route === route);
+  if (own) return { route, p90: own.p90, source: `the owner's devices, ${own.count} requests`, speed: own };
+  const server = speeds.find(s => s.src === "server" && s.route === route);
+  if (!server) return undefined;
+  const handler = `no request of the owner's in the window, so the server's handler p90 ${server.p90} ms over ${server.count} requests`;
+  return net
+    ? { route, p90: Math.round((server.p90 + net.p50) * 10) / 10, source: `${handler} plus his network p50 ${net.p50} ms over ${net.count} tailnet requests`, speed: server }
+    : { route, p90: server.p90, source: `${handler} alone, since no tailnet request in the window carries the network time`, speed: server };
+}
 
 const WHO: Record<SpeedSource, string> = {
   tailnet: "the owner's devices",
@@ -130,37 +150,42 @@ const fromBox = (t: RequestTiming): boolean => t.via === "local";
 
 const who = (t: RequestTiming): string => (t.via ? `${t.src} via ${t.via}` : t.src);
 
+/** A slow route's flagged excerpt: the owner's own wait with its network split, or the fallback reading with its source. */
+const slowExcerpt = (o: OwnerSpeed): string =>
+  o.speed.src === "tailnet" ? finding(o.speed) : `${o.route} p90 about ${o.p90} ms for the owner: ${o.source}; the slowest was ${o.speed.slowestPath}`;
+
 export function apiSpeed(dir: string, now: number, windowMs: number) {
   const timings = readTimings(dir, now, windowMs);
   const speeds = routeSpeeds(timings);
+  const net = ownerNetwork(timings);
   const failed = failedSends(timings);
   const owners = failed.filter(t => !fromBox(t));
   const walks = failed.filter(fromBox);
-  const seen = PREFERRED.map(src => speeds.filter(s => s.src === src)).find(list => list.length) ?? [];
+  const pageRoutes = new Set<string>([...Object.values(ROUTES), ...speeds.filter(s => s.src !== "server").map(s => s.route)]);
+  const slowest = [...pageRoutes].flatMap(route => ownerSpeed(speeds, route, net) ?? []).sort((a, b) => b.p90 - a.p90).slice(0, 3);
+  const walkSlowest = speeds.filter(s => s.src === "client").slice(0, 3);
+  const [search, messages, replies, send] = [ROUTES.search, ROUTES.messages, ROUTES.replies, ROUTES.send].map(route => ownerSpeed(speeds, route, net));
   const metrics: Record<string, number> = {};
-  if (seen.length) metrics.slowest_api_p90_ms = seen[0]!.p90;
-  const search = speedOf(speeds, ROUTES.search);
+  if (slowest.length) metrics.slowest_api_p90_ms = slowest[0]!.p90;
   if (search) metrics.search_p90_ms = search.p90;
-  const messages = speedOf(speeds, ROUTES.messages);
-  const replies = speedOf(speeds, ROUTES.replies);
   if (messages) metrics.thread_open_p90_ms_messages = messages.p90;
   if (replies) metrics.thread_open_p90_ms_replies = replies.p90;
   if (messages || replies) metrics.thread_open_p90_ms = Math.max(messages?.p90 ?? 0, replies?.p90 ?? 0);
-  const send = speedOf(speeds, ROUTES.send);
   if (send) metrics.send_p90_ms = send.p90;
   metrics.failed_sends_24h = owners.length;
-  const slowest = seen.slice(0, 3);
   return {
     metrics,
     slowest,
-    metricSources: Object.fromEntries(Object.entries({ search, messages, replies, send }).flatMap(([key, speed]) => (speed ? [[key, `${speed.src}, ${speed.count} requests`]] : []))),
+    metricSources: Object.fromEntries(Object.entries({ slowest: slowest[0], search, messages, replies, send }).flatMap(([key, speed]) => (speed ? [[key, `${speed.route}: ${speed.source}`]] : []))),
+    network: net,
     routes: speeds,
     flagged: [
       ...[...owners.map(t => ["failed_send", t] as const), ...walks.map(t => ["walk_failed_send", t] as const)].map(([kind, t]) => ({
         kind, sig: `${who(t)}:${t.m} ${t.r}:${t.s}`,
         excerpt: `${new Date(t.at).toISOString()} ${t.m} ${t.p} ${t.s ? `answered ${t.s}` : "never reached the server"} (${who(t)}${t.shown ? ", Not delivered after the page's tries" : ""}): ${t.err ?? "no reason logged"}`,
       })),
-      ...slowest.map(s => ({ kind: "slow_api", sig: `${s.src}:${s.route}`, excerpt: finding(s) })),
+      ...slowest.map(o => ({ kind: "slow_api", sig: `${o.speed.src}:${o.route}`, excerpt: slowExcerpt(o) })),
+      ...walkSlowest.map(s => ({ kind: "walk_slow_api", sig: `${s.src}:${s.route}`, excerpt: finding(s) })),
     ],
   };
 }

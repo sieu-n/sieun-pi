@@ -1,7 +1,7 @@
 /**
  * The request log and the speed duty's precheck: the server writes one line per /api request with its route pattern, POST /api/timings
- * takes the web client's waits, an old day file goes, and `scripts/duties/api-speed.ts` reads each metric from the client's lines with the
- * server's as the fallback.
+ * takes the web client's waits, an old day file goes, and `scripts/duties/api-speed.ts` reads each metric from the owner's tailnet lines with the
+ * server's handler time plus his network p50 as the fallback.
  */
 import { strict as assert } from "node:assert";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -165,48 +165,62 @@ test("a day file older than yesterday goes when the day changes", async () => {
   assert.deepEqual(readdirSync(dir).sort(), ["2026-11-01.jsonl", "2026-11-02.jsonl", "2026-11-03.jsonl"]);
 });
 
-test("the precheck reads each metric from the client's lines, falls back to the server's, and names the 3 slowest routes", () => {
+test("the precheck reads each metric from the owner's lines, falls back to the server's plus his network, and flags walks apart", () => {
   const dir = tempDir();
   mkdirSync(join(dir, "requests"));
   const now = Date.UTC(2026, 10, 3, 9);
   const at = now - 3600_000;
-  const row = (src: string, m: string, r: string, ms: number, when = at, net?: number) =>
-    JSON.stringify({ at: when, src, m, r, p: r.replace(":id", "dm_x").replace(":root", "p1"), s: 200, ms, ...(net === undefined ? {} : { net }) });
+  const row = (src: string, via: string | undefined, m: string, r: string, ms: number, when = at, net?: number) =>
+    JSON.stringify({ at: when, src, m, r, p: r.replace(":id", "dm_x").replace(":root", "p1"), s: 200, ms, ...(via ? { via } : {}), ...(net === undefined ? {} : { net }) });
   const rows = [
-    ...[100, 120, 130, 140, 150, 160, 170, 180, 190, 2000].map(ms => row("client", "GET", "/api/c/:id/items", ms)),
-    row("client", "GET", "/api/c/:id/replies/:root", 10, at, 8),
-    row("client", "GET", "/api/c/:id/replies/:root", 2500, at, 30),
-    row("client", "GET", "/api/search", 900),
-    row("server", "GET", "/api/search", 5),
-    row("server", "POST", "/api/c/:id/send", 40),
-    row("client", "GET", "/api/me", 3),
-    row("client", "GET", "/api/search", 99_000, now - 30 * 3600_000),
+    ...[100, 120, 130, 140, 150, 160, 170, 180, 190, 2000].map(ms => row("client", "tailnet", "GET", "/api/c/:id/items", ms, at, 20)),
+    row("client", "tailnet", "GET", "/api/c/:id/replies/:root", 10, at, 8),
+    row("client", "tailnet", "GET", "/api/c/:id/replies/:root", 2500, at, 30),
+    row("client", "local", "GET", "/api/search", 900),
+    row("server", undefined, "GET", "/api/search", 5),
+    row("client", "local", "POST", "/api/c/:id/send", 288),
+    row("server", "local", "POST", "/api/c/:id/send", 40),
+    row("client", "local", "GET", "/api/me", 3),
+    row("client", "tailnet", "GET", "/api/search", 99_000, now - 30 * 3600_000),
   ];
   writeFileSync(join(dir, "requests", "2026-11-02.jsonl"), `${rows.at(-1)}\n`);
   writeFileSync(join(dir, "requests", "2026-11-03.jsonl"), `${rows.slice(0, -1).join("\n")}\n{"torn`);
   const out = apiSpeed(dir, now, 24 * 3600_000);
+  // The network p50 is 20 ms over the owner's 12 lines, so search reads 5 + 20 and send 40 + 20; the walks' 900 and 288 set nothing.
   assert.deepEqual(out.metrics, {
-    slowest_api_p90_ms: 2500, search_p90_ms: 900, thread_open_p90_ms_messages: 190, thread_open_p90_ms_replies: 2500, thread_open_p90_ms: 2500, send_p90_ms: 40,
+    slowest_api_p90_ms: 2500, search_p90_ms: 25, thread_open_p90_ms_messages: 190, thread_open_p90_ms_replies: 2500, thread_open_p90_ms: 2500, send_p90_ms: 60,
     failed_sends_24h: 0,
   });
-  assert.equal(out.metricSources.send, "server, 1 requests");
-  assert.deepEqual(out.slowest.map(s => s.route), ["GET /api/c/:id/replies/:root", "GET /api/search", "GET /api/c/:id/items"]);
-  assert.equal(out.flagged.length, 3);
-  assert.equal(out.flagged[0]!.excerpt, "GET /api/c/:id/replies/:root p90 2500 ms, p50 10 ms, max 2500 ms over 2 requests from browsers on the box, such as job walks, or pages from before the server named where a page ran; on the 2 lines that carry the network time, the network and the server took p90 30 ms, p50 8 ms, so the page's main thread held the rest in long tasks; trace a page load in the box Chrome to find them; the slowest was /api/c/dm_x/replies/p1");
-  assert.match(out.flagged[1]!.excerpt, /no line carries the network time yet/);
+  assert.equal(out.metricSources.messages, "GET /api/c/:id/items: the owner's devices, 10 requests");
+  assert.equal(out.metricSources.send, "POST /api/c/:id/send: no request of the owner's in the window, so the server's handler p90 40 ms over 1 requests plus his network p50 20 ms over 12 tailnet requests");
+  assert.deepEqual(out.slowest.map(s => s.route), ["GET /api/c/:id/replies/:root", "GET /api/c/:id/items", "POST /api/c/:id/send"]);
+  assert.deepEqual(out.flagged.map(row => `${row.kind} ${row.sig}`), [
+    "slow_api tailnet:GET /api/c/:id/replies/:root", "slow_api tailnet:GET /api/c/:id/items", "slow_api server:POST /api/c/:id/send",
+    "walk_slow_api client:GET /api/search", "walk_slow_api client:POST /api/c/:id/send", "walk_slow_api client:GET /api/me",
+  ]);
+  assert.equal(out.flagged[0]!.excerpt, "GET /api/c/:id/replies/:root p90 2500 ms, p50 10 ms, max 2500 ms over 2 requests from the owner's devices; on the 2 lines that carry the network time, the network and the server took p90 30 ms, p50 8 ms, so the page's main thread held the rest in long tasks; trace a page load in the box Chrome to find them; the slowest was /api/c/dm_x/replies/p1");
+  assert.match(out.flagged[2]!.excerpt, /^POST \/api\/c\/:id\/send p90 about 60 ms for the owner: no request of the owner's/);
+  assert.match(out.flagged[3]!.excerpt, /from browsers on the box, such as job walks.*no line carries the network time yet/);
 });
 
-test("the precheck reads the owner's devices first, then any page, then the server", () => {
+test("a walk never sets a metric, and with no tailnet line the server's handler time stands alone", () => {
   const dir = tempDir();
   mkdirSync(join(dir, "requests"));
   const now = Date.UTC(2026, 10, 3, 9);
-  const row = (src: string, ms: number, via?: string) => JSON.stringify({ at: now - 60_000, src, m: "GET", r: "/api/c/:id/items", p: "/api/c/dm_x/items", s: 200, ms, ...(via ? { via } : {}) });
-  writeFileSync(join(dir, "requests", "2026-11-03.jsonl"), `${[row("client", 2000, "local"), row("client", 1500), row("client", 80, "tailnet"), row("server", 5)].join("\n")}\n`);
-  const out = apiSpeed(dir, now, 24 * 3600_000);
-  assert.equal(out.metrics.thread_open_p90_ms_messages, 80);
-  assert.equal(out.metrics.slowest_api_p90_ms, 80);
-  assert.equal(out.metricSources.messages, "tailnet, 1 requests");
-  assert.deepEqual(out.routes.map(s => [s.src, s.count, s.p90]), [["client", 2, 2000], ["tailnet", 1, 80], ["server", 1, 5]]);
+  const row = (src: string, ms: number, via?: string, net?: number) =>
+    JSON.stringify({ at: now - 60_000, src, m: "GET", r: "/api/c/:id/items", p: "/api/c/dm_x/items", s: 200, ms, ...(via ? { via } : {}), ...(net === undefined ? {} : { net }) });
+  const file = join(dir, "requests", "2026-11-03.jsonl");
+  writeFileSync(file, `${[row("client", 2000, "local"), row("client", 1500), row("server", 5)].join("\n")}\n`);
+  const alone = apiSpeed(dir, now, 24 * 3600_000);
+  assert.equal(alone.metrics.thread_open_p90_ms_messages, 5);
+  assert.equal(alone.metrics.slowest_api_p90_ms, 5);
+  assert.equal(alone.network, undefined);
+  assert.match(alone.metricSources.messages!, /handler p90 5 ms over 1 requests alone, since no tailnet request in the window carries the network time$/);
+  writeFileSync(file, `${row("client", 80, "tailnet", 60)}\n`, { flag: "a" });
+  const own = apiSpeed(dir, now, 24 * 3600_000);
+  assert.equal(own.metrics.thread_open_p90_ms_messages, 80);
+  assert.equal(own.metricSources.messages, "GET /api/c/:id/items: the owner's devices, 1 requests");
+  assert.deepEqual(own.routes.map(s => [s.src, s.count, s.p90]), [["client", 2, 2000], ["tailnet", 1, 80], ["server", 1, 5]]);
 });
 
 test("a finding whose wait is close to its network time blames the network or the server", () => {
