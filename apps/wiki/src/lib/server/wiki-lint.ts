@@ -178,6 +178,28 @@ async function readCuratedFiles(index: WikiIndex): Promise<Map<string, CuratedFi
 	return out;
 }
 
+/**
+ * The nearest hub of a curated page no ancestor hub lists, with the href a row there needs, or null when a hub
+ * links it or a `<wiki-children>` tag covers it. Hubs are read from disk, because the page API asks right after a
+ * create, before a hub row could pass the dead-link gate. On 2026-11-04 a split made 9 child pages beside their
+ * parents, and the 02:10Z wiki dream run read them as 9 hub orphans.
+ */
+export async function missingHubRow(pagePath: string): Promise<{ hub: string; href: string } | null> {
+	const index = await getWikiIndex();
+	const exists = (wikiPath: string) => index.byPath.has(wikiPath);
+	const hasIndex = (folder: string) => exists(`${folder}/index.html`) || exists(`${folder}/README.html`);
+	const targets = new Set([pagePath, pagePath.replace(/\.html$/, '')]);
+	const hubs = ancestorHubs(pagePath, exists);
+	for (const hub of hubs) {
+		const html = await readRawContent(hub).catch(() => null);
+		if (html === null) continue;
+		if ([...hrefTargets(html, hub, index)].some((target) => targets.has(target))) return null;
+		if (parseWikiChildren(html, hub).some((tag) => childrenTagCovers(tag, pagePath, hasIndex))) return null;
+	}
+	const hub = hubs.at(-1) ?? HOME;
+	return { hub, href: path.posix.relative(path.posix.dirname(hub), pagePath) };
+}
+
 /** Hub pages of every folder above `pagePath`, home first. A folder page is not above itself. */
 export function ancestorHubs(pagePath: string, exists: (wikiPath: string) => boolean): string[] {
 	const parts = pagePath.split('/');

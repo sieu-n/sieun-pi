@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { normalizeLinkTarget, normalizeRequestedPath, PAGE_READ_LIMIT, readLimitFor } from './wiki';
 import { extractHtmlTitle, META_COMMENT, parseHtmlMeta } from './wiki-html';
-import { hubsLinking, isCuratedPath, isRetiredStatus, retiredLinksAdded, titleMatchesH1 } from './wiki-lint';
+import { hubsLinking, isCuratedPath, missingHubRow, isRetiredStatus, retiredLinksAdded, titleMatchesH1 } from './wiki-lint';
 import { addRevision, currentVersion } from './wiki-store';
 import { deadLinkReason, deadLinksAdded, pageWriteReasons, pageWriteWarnings } from '../../../scripts/page-gate.mjs';
 import { staleWrite } from './stale-base.mjs';
@@ -179,7 +179,7 @@ export async function commitPage(input: {
 	diff: string;
 	linesAdded: number;
 	linesRemoved: number;
-	/** Page gate warnings (rules 6 and 7): a source_ref this write adds, or a commit its new last_verified hides, changed after the page's last_verified; a broken mermaid block the page already held; and a page the write leaves past its whole-read cap. */
+	/** Page gate warnings (rules 6 and 7): a source_ref this write adds, or a commit its new last_verified hides, changed after the page's last_verified; a broken mermaid block the page already held; a page the write leaves past its whole-read cap; and a created curated page no hub lists. */
 	warnings?: string[];
 }> {
 	const { rel, full } = resolveWritePath(input.rawPath);
@@ -229,6 +229,7 @@ export async function commitPage(input: {
 		...(isCuratedPath(rel) && code ? pageWriteWarnings(code, rel, exists ? before : null, input.content, input.summary) : []),
 		...mermaid.warnings,
 		...readCapWarning(rel, input.content),
+		...(exists ? [] : await hubRowWarning(rel, input.content)),
 	];
 	const written = await writeLogged({
 		rel,
@@ -253,7 +254,21 @@ function readCapWarning(rel: string, content: string): string[] {
 	return [
 		`${rel} is ${bytes} bytes, past the ${cap}-byte whole-page read cap, so GET /api/agent/page and the markdown view of it ` +
 			`answer 413 and a reader has to slice it with ?section= or read /raw/${rel}. Split it into a short index page and ` +
-			`child pages by topic.`,
+			`child pages by topic, and add a row for each child page to the hub that lists this page.`,
+	];
+}
+
+/**
+ * A warning when a write creates a current curated page that no ancestor hub lists, naming the hub and the row to add.
+ * It warns instead of refusing, because the dead-link gate refuses a hub row written before its page exists.
+ */
+async function hubRowWarning(rel: string, content: string): Promise<string[]> {
+	if (!rel.endsWith('.html') || !isCuratedPath(rel) || isRetiredStatus(parseHtmlMeta(content).status)) return [];
+	const missing = await missingHubRow(rel);
+	if (!missing) return [];
+	return [
+		`no hub lists ${rel} yet, so wiki-health counts it as a hub orphan. Add a row to ${missing.hub} that links ` +
+			`href="${missing.href}" with its one-line summary, or list its folder there with a <wiki-children> tag.`,
 	];
 }
 
