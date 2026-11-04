@@ -12,12 +12,13 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * so empty (msg mw08t1g0). From 17:39Z on 11-03 to 01:49Z on 11-04 the prod Convex warehouse source sat paused with 3 failed tables during
  * the Convex outage, and nothing noticed. The headline, tiles_with_data_pct, runs every insight tile of the dashboard the way the dashboard
  * loads it (refresh "async": a fresh cached answer, else a new run) and counts a tile that finished with no error and has a row with a
- * nonzero number in it. A tile of only zeros or nulls reads as empty to the owner, so it counts against the headline.
+ * number in it. A true 0 counts as fed, because a clean query that counts nothing is an answer (launch VP, 11-04); a
+ * tile that errors, reads a missing source, or returns no row or only blanks and labels where its numbers belong is not.
  * source_tables_failing counts the source's tables that are paused, failed or stale: every table with should_sync on, plus every table a
  * tile reads (`prodconvex_<table>` in its HogQL), since the outage turned should_sync off on orgs and orgMembers. A table fails when its
  * status is not Completed or Running, or its last sync is older than twice its sync interval. The two event ages are the hours since the
- * newest prod prospect_state_day and watchlist_reads_day event. Prod means appEnv production, or an event from before appEnv existed whose
- * orgId is a prod Convex org (staging events land in 354457 too, with staging org ids). The key is POSTHOG_ADMIN_API_KEY from
+ * newest prod prospect_state_day and watchlist_reads_day event. Prod means the orgId is a prod Convex org and appEnv, when set, is
+ * production, because dev and staging events landed in 354457 too, with their own org ids. The key is POSTHOG_ADMIN_API_KEY from
  * apps/search/.env, read through dotenvx in the auto-sns-agent checkout, because the query keys get 403 on dashboards.
  */
 
@@ -60,9 +61,9 @@ export interface Sources { tiles: Read<TileRead[]>; schemas: Read<SchemaRow[]>; 
 
 const isErr = <T,>(value: Read<T>): value is { error: string } => typeof value === "object" && value !== null && "error" in value;
 
-/** True when some cell is a finite number other than 0: a tile of zeros, nulls and labels shows nothing. */
+/** True when some cell is a finite number, 0 included: a tile of only nulls, labels and dates, or no row at all, is blank. */
 export const hasData = (rows: readonly unknown[][]): boolean =>
-  rows.some(row => row.some(cell => typeof cell === "number" && Number.isFinite(cell) && cell !== 0));
+  rows.some(row => row.some(cell => typeof cell === "number" && Number.isFinite(cell)));
 
 /** A sync_frequency such as "1hour", "6hour", "30min", "1day" or "7day" in ms, or null for one it cannot read. */
 export function intervalMs(frequency: string | null): number | null {
@@ -113,7 +114,7 @@ export function report(sources: Sources, now: number): PrecheckOutput {
     flagged.push({ at: now, kind: "dashboard", excerpt: `${shown.length} of ${tiles.length} tiles of https://us.posthog.com/project/354457/dashboard/${DASHBOARD} show data` });
     for (const tile of tiles) {
       if (tile.error) flagged.push({ at: now, kind: "tile_failing", excerpt: `tile ${tile.id} "${tile.name}": ${tile.error}` });
-      else if (!tile.rows || !hasData(tile.rows)) flagged.push({ at: now, kind: "tile_empty", excerpt: `tile ${tile.id} "${tile.name}": ${tile.rows?.length ?? 0} rows, no nonzero number` });
+      else if (!tile.rows || !hasData(tile.rows)) flagged.push({ at: now, kind: "tile_empty", excerpt: `tile ${tile.id} "${tile.name}": ${tile.rows?.length ?? 0} rows, no number` });
     }
   }
   if (isErr(sources.schemas)) {
@@ -193,10 +194,13 @@ export async function readDashboard(deps: Deps): Promise<{ tiles: TileRead[]; re
   return { tiles, required: tilesTables(insights.map(insight => JSON.stringify(insight.query))) };
 }
 
-/** The newest prod event of each STATE_EVENTS name. */
+/**
+ * The newest prod event of each STATE_EVENTS name: its orgId is a prod Convex org and its appEnv, when it has one, is production. Dev
+ * backends sent prospect_state_day with dev org ids into 354457 on 11-03, so an event from any other org never counts.
+ */
 export const newestQuery = (): string => `SELECT event, max(timestamp) FROM events WHERE event IN (${STATE_EVENTS.map(event => `'${event}'`).join(", ")}) ` +
-  `AND timestamp >= toDateTime('${FIRST_SENT} 00:00:00', 'UTC') AND (properties.appEnv = 'production' OR (properties.appEnv IS NULL ` +
-  `AND properties.orgId IN (SELECT org_id FROM ${TABLE_PREFIX}orgs))) GROUP BY event`;
+  `AND timestamp >= toDateTime('${FIRST_SENT} 00:00:00', 'UTC') AND coalesce(properties.appEnv, 'production') = 'production' ` +
+  `AND properties.orgId IN (SELECT org_id FROM ${TABLE_PREFIX}orgs) GROUP BY event`;
 
 export async function readNewest(deps: Deps): Promise<Partial<Record<StateEvent, string>>> {
   const answer = await api<QueryAnswer>(deps, "query/", { query: { kind: "HogQLQuery", query: newestQuery() }, refresh: "blocking" });

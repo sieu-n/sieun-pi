@@ -23,14 +23,15 @@ test("the outage's paused tables count as failing, a table no tile reads and nob
   assert.match(lines[2]!, /^apiPortalUsage: last sync 2026-11-03T17:00Z, 8 h ago, over twice its 1hour interval/);
 });
 
-test("a tile of zeros, nulls and labels reads empty, so the headline is the tiles that show a nonzero number (11-04: 7 of 18)", () => {
+test("a clean true 0 counts as fed, and an error, no row or a row of only names and blanks does not (11-04, launch VP)", () => {
   const out = report({ schemas: [], required: [], newest: fresh, tiles: [
     { id: 1, name: "Customer orgs", rows: [[286, 52, 234]] },
-    { id: 2, name: "Prospect state", rows: [[0, 0, null, "no prospect_state_day yet"]] },
-    { id: 3, name: "Watchlist reads", rows: [["2026-11-01", 0, 0.0, null]] },
-    { id: 4, name: "Emails sent", error: "Query timed out" },
+    { id: 2, name: "failures by surface", rows: [["Scout runs", 0, 0, null]] },
+    { id: 3, name: "Prospect state per customer org", rows: [["My workspace", "org_3Lcw", null, null, "2026-11-04T04:32:09Z"]] },
+    { id: 4, name: "Watchlist per customer org", rows: [] },
+    { id: 5, name: "Emails sent", error: "Query timed out" },
   ] }, NOW);
-  assert.equal(out.metrics.tiles_with_data_pct, 25);
+  assert.equal(out.metrics.tiles_with_data_pct, 40);
   assert.equal(out.metrics.tiles_empty, 2);
   assert.equal(out.metrics.tiles_failing, 1);
   assert.deepEqual(out.flagged!.slice(1).map(slice => slice.kind), ["tile_empty", "tile_empty", "tile_failing"]);
