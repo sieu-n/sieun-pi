@@ -6,14 +6,17 @@ import { mkdtemp, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { convexBackend } from "../scripts/duties/convex-admin.ts";
 import { convexKeys } from "../scripts/duties/watchlist-green.ts";
 
-/** A fake of the Convex authorize route and /api/query: two pages of keys, and the stamp query, listed in apiSpec, when `stamp` is set. */
+/** A fake of a Convex backend's /instance_name and /api/query: two pages of keys, and the stamp query, listed in apiSpec, when `stamp` is set. */
 function fakeConvex(state: { stamp: string | null; keys: string[] }) {
   const calls: string[] = [];
+  const urls: string[] = [];
   const fetcher = (async (url: string, init: RequestInit) => {
+    urls.push(url);
     const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
-    if (url.includes("authorize_within_current_project")) return json({ adminKey: "ak", url: "https://dep.convex.cloud" });
+    if (url.endsWith("/instance_name")) return new Response(url.startsWith("https://convex.virev.ai/") ? "convex-prod" : "dep");
     const { path, args } = JSON.parse(String(init.body)) as { path: string; args: { cursor?: string | null } };
     calls.push(path);
     if (path === "_system/cli/modules:apiSpec") {
@@ -27,14 +30,16 @@ function fakeConvex(state: { stamp: string | null; keys: string[] }) {
     const first = args.cursor === null;
     return json({ status: "success", value: { keys: first ? state.keys.slice(0, half) : state.keys.slice(half), continueCursor: "c1", isDone: !first } });
   }) as typeof fetch;
-  return { fetcher, calls, walks: () => calls.filter(path => path.endsWith(":pageKeys")).length };
+  return { fetcher, calls, urls, walks: () => calls.filter(path => path.endsWith(":pageKeys")).length };
 }
+
+const DEP = { url: "https://dep.convex.cloud", instance: "dep", adminKey: "prod:dep|ak" };
 
 test("convexKeys walks once per stamp and answers the kept keys while the stamp holds", async () => {
   const dir = await mkdtemp(join(tmpdir(), "wg-keys-"));
   const state = { stamp: "q:3:a:b" as string | null, keys: ["instagram:account:nike", "instagram:tagged:nike", "instagram:account:puma"] };
   const convex = fakeConvex(state);
-  const read = () => convexKeys(convex.fetcher, "token", AbortSignal.timeout(5000), "dep", "org_x", dir);
+  const read = () => convexKeys(convex.fetcher, DEP, AbortSignal.timeout(5000), "org_x", dir);
   assert.deepEqual(await read(), state.keys);
   assert.equal(convex.walks(), 2);
   assert.deepEqual(await read(), state.keys);
@@ -50,10 +55,21 @@ test("convexKeys walks once per stamp and answers the kept keys while the stamp 
 test("a deployment without the stamp query walks every time and keeps nothing", async () => {
   const dir = await mkdtemp(join(tmpdir(), "wg-keys-"));
   const convex = fakeConvex({ stamp: null, keys: ["instagram:account:nike"] });
-  const read = () => convexKeys(convex.fetcher, "token", AbortSignal.timeout(5000), "dep", "org_x", dir);
+  const read = () => convexKeys(convex.fetcher, DEP, AbortSignal.timeout(5000), "org_x", dir);
   assert.deepEqual(await read(), ["instagram:account:nike"]);
   assert.deepEqual(await read(), ["instagram:account:nike"]);
   assert.equal(convex.walks(), 4);
   assert.deepEqual(await readdir(dir), []);
   assert.ok(!convex.calls.includes("search/watchTargets:watchKeysStamp"), "a deployment without the stamp query is never asked for it");
+});
+
+test("the keys come from the backend the prod VITE_CONVEX_URL row names, with that instance's admin key (prod cutover 11-04)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "wg-keys-"));
+  const convex = fakeConvex({ stamp: null, keys: ["instagram:account:nike"] });
+  const rows: Record<string, string> = { "apps/api-portal/.env VITE_CONVEX_URL": "https://convex.virev.ai",
+    "apps/ci/.env": JSON.stringify({ CONVEX_DEPLOY_KEY: "prod:befitting-sparrow-356|old", CONVEX_SELF_HOSTED_ADMIN_KEY: "convex-prod|new" }) };
+  const backend = await convexBackend("production", convex.fetcher, async (file, name) => rows[name ? `${file} ${name}` : file]!);
+  assert.deepEqual(backend, { url: "https://convex.virev.ai", instance: "convex-prod", adminKey: "convex-prod|new" });
+  assert.deepEqual(await convexKeys(convex.fetcher, backend, AbortSignal.timeout(5000), "org_x", dir), ["instagram:account:nike"]);
+  assert.ok(convex.urls.every(url => url.startsWith("https://convex.virev.ai/")), convex.urls.join(" "));
 });

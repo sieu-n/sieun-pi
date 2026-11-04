@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { dutyShapeProblem, type DutyMetric } from "../src/shared/chat-duties.ts";
-import { boxLocations, inScope, providerKey, removedProviderRefs, STORE_NAMES, TEST_SENDS_SQL, TIP, UNMEASURED, VENT_SHARE, ventMetrics, webhookVerdicts, type ShareResult, type VentReads } from "../scripts/duties/vent-gateway.ts";
+import { boxLocations, convexEnvNames, inScope, providerKey, removedProviderRefs, STORE_NAMES, TEST_SENDS_SQL, TIP, UNMEASURED, VENT_SHARE, ventMetrics, webhookVerdicts, type ShareResult, type VentReads } from "../scripts/duties/vent-gateway.ts";
 
 const site = (row: number, status: string, extra: object = {}) => ({ row, app: "convex", provider: "Stripe", runs_in: "Convex staging, prod", status, ...extra });
 const TABLES = 'INTEGRATIONS: dict[str, Integration] = {\n    "zernio": Integration(ZERNIO, "ZERNIO_API_KEY"),\n    "cliproxy-openai": Integration(OPENAI, "CLIPROXY_API_KEY"),\n}\n';
@@ -428,4 +428,18 @@ test("the duty keeps one headline and at most 3 metrics, and test_calls_real_24h
     assert.deepEqual(duty.metrics.find(metric => metric.key === "test_calls_real_24h")!.target, 0);
     assert.equal(duty.readings, undefined);
   });
+});
+
+test("the prod Convex env names come from the backend the prod VITE_CONVEX_URL row names, with that instance's admin key (prod cutover 11-04)", async () => {
+  const calls: { url: string; authorization: string | undefined }[] = [];
+  const fetcher = (async (url: string, init?: RequestInit) => {
+    calls.push({ url, authorization: (init?.headers as Record<string, string> | undefined)?.authorization });
+    if (url.endsWith("/instance_name")) return new Response("convex-prod");
+    return new Response(JSON.stringify({ status: "success", value: [{ name: "VENT_KEY", value: "secret" }] }));
+  }) as typeof fetch;
+  const rows: Record<string, string> = { "apps/api-portal/.env VITE_CONVEX_URL": "https://convex.virev.ai",
+    "apps/ci/.env": JSON.stringify({ CONVEX_DEPLOY_KEY: "prod:befitting-sparrow-356|old", CONVEX_SELF_HOSTED_ADMIN_KEY: "convex-prod|new" }) };
+  assert.deepEqual(await convexEnvNames("production", fetcher, async (file, name) => rows[name ? `${file} ${name}` : file]!), { instance: "convex-prod", names: ["VENT_KEY"] });
+  assert.deepEqual(calls, [{ url: "https://convex.virev.ai/instance_name", authorization: undefined },
+    { url: "https://convex.virev.ai/api/query", authorization: "Convex convex-prod|new" }]);
 });

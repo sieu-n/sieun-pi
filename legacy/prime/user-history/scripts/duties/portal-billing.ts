@@ -2,11 +2,12 @@ import { realpathSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { checkCleanup } from "./test-org-cleanup.ts";
+import { adminQuery, convexBackend, type EnvRead, readEnvRow } from "./convex-admin.ts";
 import { DAY, MINUTE, REPO, SOURCE_DEADLINE_MS, frameRows, grafanaClient, readGrafanaAuth, settle, unmeasuredFlag, utc } from "./estate-reads.ts";
 
 /**
@@ -236,27 +237,9 @@ const lastLine = (text: string) => text.trim().split("\n").at(-1)?.trim() ?? "";
 
 interface EnvFile { urls: { apiPortal: string; convex: string }; keySources: Record<string, { cmd: string }> }
 const envFile = async (name: Env): Promise<EnvFile> => JSON.parse(await readFile(join(REPO, `apps/specs/envs/${name}.json`), "utf8")) as EnvFile;
-/** The Convex deployment name of an env's site URL: https://befitting-sparrow-356.convex.site is befitting-sparrow-356. */
-const deploymentOf = (env: EnvFile) => new URL(env.urls.convex).hostname.split(".")[0]!;
-
-/** An admin client for one Convex deployment, authorized by the owner's Convex CLI login, the way `convex run --deployment-name` is. */
-async function convexAdmin(deployment: string, signal: AbortSignal) {
-  const accessToken = (JSON.parse(await readFile(join(homedir(), ".convex/config.json"), "utf8")) as { accessToken: string }).accessToken;
-  const headers = { authorization: `Bearer ${accessToken}`, "content-type": "application/json", "convex-client": "npm-cli-1.34.0" };
-  const auth = await fetch("https://api.convex.dev/api/deployment/authorize_within_current_project", { method: "POST", headers, signal,
-    body: JSON.stringify({ selectedDeploymentName: deployment, projectSelection: { kind: "deploymentName", deploymentName: deployment, deploymentType: null } }) });
-  const credentials = await auth.json().catch(() => null) as { adminKey?: string; url?: string } | null;
-  if (!auth.ok || !credentials?.adminKey || !credentials.url) throw new Error(`Convex authorize for ${deployment} gave HTTP ${auth.status}`);
-  const { adminKey, url } = credentials;
-  return async (path: string, args: unknown): Promise<unknown> => {
-    const response = await fetch(`${url}/api/query`, { method: "POST", signal,
-      headers: { authorization: `Convex ${adminKey}`, "content-type": "application/json", "convex-client": "npm-cli-1.34.0" },
-      body: JSON.stringify({ path, args, format: "json" }) });
-    const body = await response.json().catch(() => null) as { status?: string; errorMessage?: string; value?: unknown } | null;
-    if (body?.status !== "success") throw new Error(`${deployment} ${path}: HTTP ${response.status} ${String(body?.errorMessage ?? "no value").slice(0, 160)}`);
-    return body.value;
-  };
-}
+/** An admin query client on an env's Convex backend, the one its VITE_CONVEX_URL row names (convex-admin.ts). */
+export const convexAdmin = async (env: Env, signal: AbortSignal, fetcher: typeof fetch = fetch, read: EnvRead = readEnvRow) =>
+  adminQuery(await convexBackend(env === "prod" ? "production" : "staging", fetcher, read, signal), fetcher, signal);
 
 /** apiPortalUsage rows created at or after `since`, newest first, through the CLI's table reader. */
 async function ledgerSince(query: (path: string, args: unknown) => Promise<unknown>, since: number): Promise<UsageRow[]> {
@@ -351,7 +334,7 @@ async function stagingProbes(signal: AbortSignal): Promise<ProbeResult[]> {
   const file = await envFile("staging");
   const [bypass, secret] = await Promise.all(["VERCEL_AUTOMATION_BYPASS_SECRET", "CONVEX_WEBHOOK_SECRET"].map(async name => lastLine(await sh(file.keySources[name]!.cmd, REPO, signal))));
   if (!bypass || !secret) throw new Error("the staging bypass secret or CONVEX_WEBHOOK_SECRET is empty");
-  const query = await convexAdmin(deploymentOf(file), signal);
+  const query = await convexAdmin("staging", signal);
   const key = `kb_live_${randomBytes(16).toString("hex")}`;
   const orgId = `org_duty_billing_${Date.now()}`;
   const post = (path: string, body: object) => fetch(`${file.urls.convex}${path}`, { method: "POST", signal, headers: { "content-type": "application/json" }, body: JSON.stringify({ ...body, secret }) });
@@ -371,7 +354,7 @@ async function stagingProbes(signal: AbortSignal): Promise<ProbeResult[]> {
 async function prodProbes(signal: AbortSignal): Promise<ProbeResult[]> {
   const key = process.env.VIREV_API_KEY_PROD || lastLine(await sh("cd apps/api-portal && npx --no-install dotenvx get VIREV_API_KEY_PROD -f .env", REPO, signal));
   if (!key.startsWith("kb_live_")) throw new Error("VIREV_API_KEY_PROD from apps/api-portal/.env is not a kb_live_ key");
-  return probeEnv("prod", key, {}, await convexAdmin(deploymentOf(await envFile("prod")), signal), signal);
+  return probeEnv("prod", key, {}, await convexAdmin("prod", signal), signal);
 }
 
 async function measure(now: number, signal: AbortSignal): Promise<BillingData> {
@@ -388,7 +371,7 @@ async function measure(now: number, signal: AbortSignal): Promise<BillingData> {
     clickhouse.then(read => read && step("prod requests", async () => (await read(REQUESTS_SQL(now))).map((row): RequestLine => ({
       rid: String(row.rid), method: String(row.method), path: String(row.path), status: Number(row.status), start: Number(row.start), durationMs: Number(row.duration) || 0,
     })).filter(line => Number.isFinite(line.start) && line.status > 0))),
-    step("prod ledger", async () => ledgerSince(await convexAdmin(deploymentOf(await envFile("prod")), signal), now - DAY - EDGE_MS)),
+    step("prod ledger", async () => ledgerSince(await convexAdmin("prod", signal), now - DAY - EDGE_MS)),
     clickhouse.then(read => read ? step("gateway failures", async () => (await read(UNCOUNTED_SQL(now))).map((row): Uncounted => ({
       kind: String(row.kind), status: String(row.status ?? ""), path: String(row.path ?? ""), calls: Number(row.calls), lastAt: Number(row.last),
     }))) : (data.errors.push({ source: "gateway failures", message: "no ClickHouse read" }), undefined)),

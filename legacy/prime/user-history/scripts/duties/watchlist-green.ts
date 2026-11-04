@@ -10,12 +10,13 @@ import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/
 import {
   type DsQuery, DAY, PG, PROM, REPO, SOURCE_DEADLINE_MS, grafanaClient, prodReader, promInstant, readGrafanaAuth, round1, settle, sqlRows, unmeasuredFlag,
 } from "./estate-reads.ts";
+import { adminQuery, convexBackend, type ConvexBackend, readEnvRow } from "./convex-admin.ts";
 
 /**
  * The Watchlist green duty's precheck for launch main bro (`node --import tsx scripts/duties/watchlist-green.ts`). Code only, no model
  * call, reads only. It measures goal p35 (the Watchlist screen, /app/analytics/monitor, all green on staging and prod, collabs included) from:
- * - the owner org's watch keys: prod Convex befitting-sparrow-356, internalQuery search/watchTargets:pageKeys with orgId, paged in this one node
- *   process with an admin key the owner's Convex CLI login (~/.convex/config.json) authorizes, the call `convex run --deployment-name` makes;
+ * - the owner org's watch keys: the prod Convex backend VITE_CONVEX_URL of apps/api-portal/.env names, internalQuery
+ *   search/watchTargets:pageKeys with orgId, paged in this one node process with that backend's admin key from apps/ci/.env (convex-admin.ts);
  * - prod watch_targets monitor rows and the watch runs settled in 24 h (watch_target_claims): two reads through estate_pg_prod
  *   (estate-reads.ts prodReader), and staging watch_targets monitor rows from estate_pg_stg, scored only for the staging owner org's unpaused
  *   watches, which the staging crawler's group read names (groupKeys);
@@ -69,7 +70,6 @@ export const LOOP_STALL_S = 300;
 
 /** The owner's org on prod, from findings.md ("the only prod org with about 9,846 watched accounts"). */
 export const OWNER_ORG = "org_3IrtoOAEP0nk1aCQHGVME02Dy6E";
-export const PROD_CONVEX = "befitting-sparrow-356";
 /** The owner's org on staging (Adapt Korea, the 23,877-key org t17 keeps about 10 accounts of on): staging_green_pct judges only the rows of
  *  this org's unpaused watches, so another org that unpauses a shared row (a sign-up check's throwaway org, mac-management, 2026-10-20 16:17Z
  *  and 17:0xZ, unpaused about 1,000 old rows for minutes) never moves it. */
@@ -398,7 +398,7 @@ export async function streamFaults(query: DsQuery): Promise<StreamFault[]> {
 export const KEYS_CACHE_DIR = join(homedir(), ".cache", "watchlist-green");
 
 /**
- * Every distinct watch key of one org on a Convex deployment, read with the owner's Convex CLI login. It reads the org's watch-key stamp
+ * Every distinct watch key of one org on a Convex backend, read as admin (convex-admin.ts convexBackend). It reads the org's watch-key stamp
  * first (search/watchTargets:watchKeysStamp, 3 documents), and when the stamp equals the one KEYS_CACHE_DIR holds for the org, the keys there
  * are the answer and nothing is walked. A deployment without the stamp query walks every time and keeps nothing.
  * Before a deployment has answered a stamp, which leaves a file in KEYS_CACHE_DIR, it reads the deployment's function list
@@ -407,24 +407,10 @@ export const KEYS_CACHE_DIR = join(homedir(), ".cache", "watchlist-green");
  * 2026-10-22 16:47:45Z on prod, because sieun-pi 414dba9c went live before auto-sns-agent a6786dc14 reached prod Convex. The apiSpec read
  * logs no function_execution row.
  */
-export async function convexKeys(fetcher: typeof fetch, accessToken: string, signal: AbortSignal,
-  deployment: string = PROD_CONVEX, orgId: string = OWNER_ORG, cacheDir: string = KEYS_CACHE_DIR): Promise<string[]> {
-  const headers = { authorization: `Bearer ${accessToken}`, "content-type": "application/json", "convex-client": "npm-cli-1.34.0" };
-  const auth = await fetcher("https://api.convex.dev/api/deployment/authorize_within_current_project", { method: "POST", headers, signal,
-    body: JSON.stringify({ selectedDeploymentName: deployment, projectSelection: { kind: "deploymentName", deploymentName: deployment, deploymentType: null } }) });
-  const credentials = await auth.json().catch(() => null) as { adminKey?: string; url?: string } | null;
-  if (!auth.ok || !credentials?.adminKey || !credentials.url) throw new Error(`Convex authorize for ${deployment} gave HTTP ${auth.status}`);
-  const query = async <T>(path: string, args: Record<string, unknown>): Promise<T> => {
-    const response = await fetcher(`${credentials.url}/api/query`, { method: "POST", signal,
-      headers: { authorization: `Convex ${credentials.adminKey}`, "content-type": "application/json", "convex-client": "npm-cli-1.34.0" },
-      body: JSON.stringify({ path, args, format: "json" }) });
-    const body = await response.json().catch(() => null) as { status?: string; errorMessage?: string; value?: T } | null;
-    if (body?.status !== "success" || body.value === undefined) {
-      throw new Error(`${path.split(":")[1]}: HTTP ${response.status} ${String(body?.errorMessage ?? "no value").slice(0, 200)}`);
-    }
-    return body.value;
-  };
-  const file = join(cacheDir, `${deployment}-${orgId}.json`);
+export async function convexKeys(fetcher: typeof fetch, backend: ConvexBackend, signal: AbortSignal,
+  orgId: string = OWNER_ORG, cacheDir: string = KEYS_CACHE_DIR): Promise<string[]> {
+  const query = adminQuery(backend, fetcher, signal);
+  const file = join(cacheDir, `${backend.instance}-${orgId}.json`);
   const kept = await readFile(file, "utf8").then(text => JSON.parse(text) as { stamp?: unknown; keys?: unknown }).catch(() => null);
   const served = kept !== null || await query<{ identifier: string }[]>("_system/cli/modules:apiSpec", {})
     .then(spec => spec.some(fn => fn.identifier === "search/watchTargets.js:watchKeysStamp"), () => false);
@@ -616,9 +602,6 @@ export async function measure(deps: WatchDeps): Promise<WatchData> {
   return data;
 }
 
-const convexToken = async (): Promise<string> =>
-  (JSON.parse(await readFile(join(homedir(), ".convex/config.json"), "utf8")) as { accessToken: string }).accessToken;
-
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("watchlist-green: OUTPUT_FILE is not set\n"); process.exit(2); }
@@ -629,7 +612,7 @@ async function main(): Promise<void> {
   let authError: string | null = null;
   try { query = grafanaClient(fetch, await readGrafanaAuth(), now, signal); } catch (error) { authError = error instanceof Error ? error.message : String(error); }
   const data = await measure({ query, authError, now,
-    keys: async () => convexKeys(fetch, await convexToken(), signal),
+    keys: async () => convexKeys(fetch, await convexBackend("production", fetch, readEnvRow, signal), signal),
     stagingKeys: async () => groupKeys(fetch, await readCrawlerKey("apps/crawler-v3/.env.staging"), watchGroupId(STAGING_OWNER_ORG), signal),
     rows: async () => {
       if (!query) throw new Error("not read: no Grafana login");

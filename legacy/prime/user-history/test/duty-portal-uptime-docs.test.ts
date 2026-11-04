@@ -3,7 +3,8 @@
 // must not count, and one main does ship must.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { docsIsScalar, rowUptime, uptimeMetrics } from "../scripts/duties/portal-uptime.ts";
+import { convexBackend } from "../scripts/duties/convex-admin.ts";
+import { cliEnv, docsIsScalar, rowUptime, uptimeMetrics } from "../scripts/duties/portal-uptime.ts";
 
 const UP = [{ labels: { target: "crawler_health" }, value: 1 }, { labels: { target: "crawler_schema" }, value: 1 }, { labels: { target: "portal_openapi" }, value: 1 }];
 const ANSWERS = { up: UP, uptime: UP, age: UP.map(series => ({ ...series, value: 60 })), p90: [{ labels: { target: "portal_openapi" }, value: 400 }], lastDown: [] };
@@ -86,4 +87,12 @@ test("a key check refused with 401 counts nothing", () => {
   const output = uptimeMetrics(ANSWERS, DIRECT, 0, {}, undefined, undefined, { status: 401, ms: 120, code: "invalid_api_key" });
   assert.equal(output.metrics.probes_down_now, 0);
   assert.equal(kinds(output).includes("portal_auth"), false);
+});
+
+test("the probe rows come from the backend the prod VITE_CONVEX_URL row names, with that instance's admin key (prod cutover 11-04)", async () => {
+  const fetcher = (async (url: string) => new Response(url === "https://convex.virev.ai/instance_name" ? "convex-prod" : "", { status: url.endsWith("/instance_name") ? 200 : 404 })) as typeof fetch;
+  const rows: Record<string, string> = { "apps/api-portal/.env VITE_CONVEX_URL": "https://convex.virev.ai",
+    "apps/ci/.env": JSON.stringify({ CONVEX_DEPLOY_KEY: "prod:befitting-sparrow-356|old", CONVEX_SELF_HOSTED_ADMIN_KEY: "convex-prod|new" }) };
+  const env = cliEnv(await convexBackend("production", fetcher, async (file, name) => rows[name ? `${file} ${name}` : file]!), { CONVEX_DEPLOY_KEY: "prod:x|y", PATH: "/bin" });
+  assert.deepEqual(env, { PATH: "/bin", CONVEX_SELF_HOSTED_URL: "https://convex.virev.ai", CONVEX_SELF_HOSTED_ADMIN_KEY: "convex-prod|new" });
 });

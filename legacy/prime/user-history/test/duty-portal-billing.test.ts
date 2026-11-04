@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
-import { type BillingData, type Operation, type RequestLine, type UsageRow, expectedCharge, micros, PROBES, reconcile, report } from "../scripts/duties/portal-billing.ts";
+import { type BillingData, convexAdmin, type Operation, type RequestLine, type UsageRow, expectedCharge, micros, PROBES, reconcile, report } from "../scripts/duties/portal-billing.ts";
 
 const NOW = Date.parse("2026-10-19T16:00:00Z");
 const AT = NOW - 6 * 3_600_000;
@@ -92,4 +92,19 @@ test("each 24 h count gives the time of its newest counted call, and a zero coun
   const { uncounted: _, ...unread } = data;
   const broken = report({ ...unread, errors: [{ source: "gateway failures", message: "HTTP 500" }] }, METRICS);
   assert.equal(broken.lastEventAt?.uncounted_calls_24h, undefined);
+});
+
+test("the prod ledger reads the backend the prod VITE_CONVEX_URL row names, with that instance's admin key (prod cutover 11-04)", async () => {
+  const calls: { url: string; authorization: string | undefined }[] = [];
+  const fetcher = (async (url: string, init?: RequestInit) => {
+    calls.push({ url, authorization: (init?.headers as Record<string, string> | undefined)?.authorization });
+    if (url.endsWith("/instance_name")) return new Response("convex-prod");
+    return new Response(JSON.stringify({ status: "success", value: [] }));
+  }) as typeof fetch;
+  const rows: Record<string, string> = { "apps/api-portal/.env VITE_CONVEX_URL": "https://convex.virev.ai",
+    "apps/ci/.env": JSON.stringify({ CONVEX_DEPLOY_KEY: "prod:befitting-sparrow-356|old", CONVEX_SELF_HOSTED_ADMIN_KEY: "convex-prod|new" }) };
+  const query = await convexAdmin("prod", AbortSignal.timeout(5000), fetcher, async (file, name) => rows[name ? `${file} ${name}` : file]!);
+  await query("apiPortal/usage:any", {});
+  assert.deepEqual(calls, [{ url: "https://convex.virev.ai/instance_name", authorization: undefined },
+    { url: "https://convex.virev.ai/api/query", authorization: "Convex convex-prod|new" }]);
 });

@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { adminQuery, convexBackend, CONVEX_ROWS, type ConvexTier, type EnvRead, readEnvRow } from "./convex-admin.ts";
 import { clickhouse } from "./vent-integrations.ts";
 
 /**
@@ -46,8 +47,6 @@ export const REF = "origin/main";
 /** us-metal02's dev branch dev/sieun (c119), where the cutover lands first: its by-code count shows the code ahead of the next prod promote. */
 export const TIP_BRANCH = "dev/sieun";
 export const TIP = `origin/${TIP_BRANCH}`;
-/** Convex deployments, from the cutover inventory's env-names-before.json (2026-10-18). */
-export const CONVEX = { staging: "tremendous-eel-825", production: "befitting-sparrow-356" } as const;
 const BOX = "us-metal01";
 export const UNMEASURED = 999999;
 
@@ -448,6 +447,13 @@ export function boxLocations(out: BoxReaderOut, locations: Record<string, string
   for (const [unit, names] of Object.entries(out.units ?? {})) locations[`unit ${unit}`] = names;
 }
 
+/** A tier's Convex env names, read as admin from the backend its VITE_CONVEX_URL row names (convex-admin.ts), the list `convex env list` prints. */
+export async function convexEnvNames(tier: ConvexTier, fetcher: typeof fetch = fetch, read: EnvRead = readEnvRow): Promise<{ instance: string; names: string[] }> {
+  const backend = await convexBackend(tier, fetcher, read);
+  const vars = await adminQuery(backend, fetcher)<{ name: string }[]>("_system/cli/queryEnvironmentVariables", {});
+  return { instance: backend.instance, names: vars.map(variable => variable.name) };
+}
+
 /** Every location's env names: the cutover listers, both Convex deployments, the tier files at main and the tip and us-metal01 through the key scan's BOX_READER. Values never leave this function. */
 async function keyListing(): Promise<KeyListing> {
   const locations: Record<string, string[]> = {};
@@ -459,11 +465,9 @@ async function keyListing(): Promise<KeyListing> {
     // sieu-n is a user account, so the org secrets call answers 404 and there is no org store to read.
     for (const [location, error] of Object.entries(listed.unreadable)) if (!(location === "github secrets org" && /HTTP 404/.test(error))) unreadable[location] = error;
   }, (error: unknown) => { unreadable["railway, vercel and github"] = errorText(error); }));
-  for (const [tier, name] of Object.entries(CONVEX)) {
-    tasks.push(run("npx", ["convex", "env", "list", "--deployment-name", name, "--env-file", "/dev/null"]).then(stdout => {
-      locations[`convex ${tier} ${name}`] = [...stdout.matchAll(/^([A-Za-z_][A-Za-z0-9_]*)=/gm)].map(match => match[1]!);
-    }, (error: unknown) => { unreadable[`convex ${tier} ${name}`] = errorText(error); }));
-  }
+  for (const tier of Object.keys(CONVEX_ROWS) as ConvexTier[]) tasks.push(convexEnvNames(tier).then(({ instance, names }) => {
+    locations[`convex ${tier} ${instance}`] = names;
+  }, (error: unknown) => { unreadable[`convex ${tier}`] = errorText(error); }));
   // A tier file's names at main, which prod runs, and at the tip, where a new copy lands first (the *_USAGE_KEY copies of 10-30).
   for (const ref of [REF, TIP]) tasks.push((async () => {
     const files = (await run("git", ["ls-tree", "-r", "--name-only", ref])).split("\n")

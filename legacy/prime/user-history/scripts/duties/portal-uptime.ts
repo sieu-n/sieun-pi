@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { type ConvexBackend, convexBackend } from "./convex-admin.ts";
 import { readGrafanaAuth } from "./estate-reads.ts";
 
 /**
@@ -14,8 +15,8 @@ import { readGrafanaAuth } from "./estate-reads.ts";
  * auto-sns-agent scripts/duties/crawler/crawler-pipeline.mjs does. The Convex cron "api health probe" (apps/virev-demo/convex/apiPortal/healthProbe.ts)
  * probes crawler /health, crawler /health/schema and the portal's /openapi.json every minute (every 5 min before auto-sns-agent 2e687fa79), and Prometheus scrapes the result every 60 s
  * from job api-portal-health with the label env="production" (labels checked on 2026-10-12: env, instance, job, target).
- * The 24 h uptime and its newest failed round come from the probe rows in prod Convex instead (PROD_CONVEX below), which an outage of
- * us-metal01, where that Prometheus runs, cannot hide.
+ * The 24 h uptime and its newest failed round come from the probe rows in prod Convex instead, on the backend VITE_CONVEX_URL of
+ * apps/api-portal/.env names (convex-admin.ts), so a gap in the Prometheus scrapes cannot hide a failed round.
  * It also makes one free signed-out GET of https://api.virev.ai/openapi.json as a second view that does not depend on Convex.
  * It makes one more signed-out GET of https://api.virev.ai/docs, because board goal p110 put the public docs on the same Scalar reference as
  * /dashboard/docs and this duty keeps it there (owner rule c110). A failed GET counts into probes_down_now. A page that is not Scalar counts only
@@ -95,9 +96,8 @@ const SEL = 'env="production",job="api-portal-health"';
  * The 24 h uptime and the newest failed round come from the prod Convex table apiPortalHealthProbes, which the probe cron writes and keeps
  * 7 days, not from Prometheus. On 10-29 the docker move on us-metal01 stopped the crawler and the estate Prometheus beside it from 02:55 to
  * 05:01Z, the Convex rows hold 127 failed rounds per crawler target, and avg_over_time(api_probe_up[24h]) still read 99.92% because it
- * skips a gap with no scrapes. The rows live on Convex's own hosts, so an outage of us-metal01 cannot hide in them.
+ * skips a gap with no scrapes.
  */
-export const PROD_CONVEX = "befitting-sparrow-356";
 export const PROBE_TABLE = "apiPortalHealthProbes";
 /** One probe run per minute for each target, so 24 h holds at most this many rows (apps/virev-demo/convex/crons.ts "api health probe", every minute). */
 export const ROWS_24H = 1440 * 3;
@@ -114,10 +114,10 @@ export type Measure = QueryName | "uptime" | "lastDown" | "rowUp" | "rowAge";
 /** What each measure reads, for a flagged row that says which source gave no answer. */
 export const SOURCES: Record<Measure, string> = {
   ...QUERIES,
-  uptime: `the ${PROBE_TABLE} rows of the last 24 h on Convex ${PROD_CONVEX} (passing rows over all rows, per target)`,
-  lastDown: `the newest failed ${PROBE_TABLE} row or skipped round of the last 24 h on Convex ${PROD_CONVEX}`,
-  rowUp: `the newest ${PROBE_TABLE} row per target on Convex ${PROD_CONVEX}`,
-  rowAge: `the age of the newest ${PROBE_TABLE} row per target on Convex ${PROD_CONVEX}`,
+  uptime: `the ${PROBE_TABLE} rows of the last 24 h on prod Convex (passing rows over all rows, per target)`,
+  lastDown: `the newest failed ${PROBE_TABLE} row or skipped round of the last 24 h on prod Convex`,
+  rowUp: `the newest ${PROBE_TABLE} row per target on prod Convex`,
+  rowAge: `the age of the newest ${PROBE_TABLE} row per target on prod Convex`,
 };
 
 /** One Prometheus series from an instant query: its labels and its value. */
@@ -356,22 +356,22 @@ async function liveProdSource(env: EnvFiles): Promise<LiveProd> {
   } catch (error) { return { error: errorText(error) }; }
 }
 
-/** The env the Convex CLI runs with: no self-hosted or deployment keys, so --deployment-name picks the cloud deployment from the Convex login. */
-const cloudEnv = (): NodeJS.ProcessEnv => {
-  const env = { ...process.env };
-  for (const key of ["CONVEX_SELF_HOSTED_URL", "CONVEX_SELF_HOSTED_ADMIN_KEY", "CONVEX_DEPLOYMENT", "CONVEX_DEPLOY_KEY"]) delete env[key];
+/** The env the Convex CLI runs with: the backend's URL and admin key, and no deployment keys, so the CLI talks to that backend alone. */
+export const cliEnv = (backend: ConvexBackend, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => {
+  const env: NodeJS.ProcessEnv = { ...base, CONVEX_SELF_HOSTED_URL: backend.url, CONVEX_SELF_HOSTED_ADMIN_KEY: backend.adminKey };
+  for (const key of ["CONVEX_DEPLOYMENT", "CONVEX_DEPLOY_KEY"]) delete env[key];
   return env;
 };
 
 /**
- * The newest ROWS_24H apiPortalHealthProbes rows on prod Convex, through the auto-sns-agent Convex CLI and the Convex login in
- * ~/.convex/config.json. It runs from the home folder, because the checkout's .env.local names the self-hosted local backend and the CLI
- * then refuses --deployment-name. measured: 4320 rows were 967,955 bytes and 2.8 s on 10-29 from us-metal02.
+ * The newest ROWS_24H apiPortalHealthProbes rows on prod Convex, through the auto-sns-agent Convex CLI as admin of the backend VITE_CONVEX_URL
+ * of apps/api-portal/.env names. It runs from the home folder, because the checkout's .env.local names the self-hosted local backend.
+ * measured: 4320 rows were 967,955 bytes and 2.8 s on 10-29 from us-metal02.
  */
-export const probeRows = () => new Promise<ProbeRow[]>((resolve, reject) => {
-  execFile(join(REPO, "node_modules/.bin/convex"), ["data", PROBE_TABLE, "--deployment-name", PROD_CONVEX, "--limit", String(ROWS_24H), "--order", "desc", "--format", "jsonLines"],
+export const probeRows = (backend: ConvexBackend) => new Promise<ProbeRow[]>((resolve, reject) => {
+  execFile(join(REPO, "node_modules/.bin/convex"), ["data", PROBE_TABLE, "--limit", String(ROWS_24H), "--order", "desc", "--format", "jsonLines"],
     // measured: 967,955 bytes for 4320 rows on 10-29, so 8 MiB holds eight times that.
-    { cwd: homedir(), env: cloudEnv(), encoding: "utf8", maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
+    { cwd: homedir(), env: cliEnv(backend), encoding: "utf8", maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) return reject(new Error(`convex data ${PROBE_TABLE}: ${String(stderr).trim().slice(-160) || error.message}`));
       resolve(stdout.split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line) as ProbeRow));
     });
@@ -392,7 +392,7 @@ async function main(): Promise<void> {
     answers = Object.fromEntries(names.map(name => [name, { error: message }])) as Answers;
   }
   try {
-    Object.assign(answers, rowUptime(await probeRows(), now));
+    Object.assign(answers, rowUptime(await probeRows(await convexBackend("production")), now));
   } catch (error) {
     const message = errorText(error);
     Object.assign(answers, { uptime: { error: message }, lastDown: { error: message }, rowUp: { error: message }, rowAge: { error: message } });
