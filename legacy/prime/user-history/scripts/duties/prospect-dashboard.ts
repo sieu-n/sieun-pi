@@ -37,7 +37,11 @@ export const FIRST_SENT = "2026-11-03";
  * day plus one hour leaves the fill its run time and a run that starts in the minute before the cron no false miss.
  */
 export const EVENT_DUE_HOURS = 25;
-/** The "could not measure" value of the other prechecks (customer-api-failures.ts), so a missing source never reads on target. */
+/**
+ * The "could not measure" value of the other prechecks (customer-api-failures.ts), so a missing source never reads on target. The at-least
+ * headline takes its negative (chat-duties.ts PLACEHOLDER): on 11-04 at 06:15Z one "fetch failed" scored the tiles 0% and the run read a
+ * miss, while a rerun two minutes later read 18 of 18.
+ */
 export const UNMEASURED = 999_999;
 /**
  * PostHog answers 429 when a project runs too many queries at once, and 502 to 504 when it is busy: slack-green-numbers.ts lost a query to
@@ -103,7 +107,7 @@ export function report(sources: Sources, now: number): PrecheckOutput {
   const flagged: FlaggedSlice[] = [];
   const metrics: Record<string, number> = {};
   if (isErr(sources.tiles)) {
-    metrics.tiles_with_data_pct = 0;
+    metrics.tiles_with_data_pct = -UNMEASURED;
     flagged.push({ at: now, kind: "source_error", excerpt: `dashboard ${DASHBOARD}: ${sources.tiles.error}` });
   } else {
     const tiles = sources.tiles;
@@ -230,7 +234,7 @@ async function main(): Promise<void> {
   if (!output) { process.stderr.write("prospect-dashboard: OUTPUT_FILE is not set\n"); process.exit(2); }
   const result = await sh("node_modules/.bin/dotenvx get POSTHOG_ADMIN_API_KEY -f apps/search/.env", REPO).then(
     async text => measure({ fetch, now: Date.now, key: text.trim().split("\n").at(-1)!.trim() }),
-    (error: unknown): PrecheckOutput => ({ metrics: { tiles_with_data_pct: 0, source_tables_failing: UNMEASURED,
+    (error: unknown): PrecheckOutput => ({ metrics: { tiles_with_data_pct: -UNMEASURED, source_tables_failing: UNMEASURED,
       ...Object.fromEntries(STATE_EVENTS.map(event => [`${event}_age_h`, UNMEASURED])) },
       flagged: [{ at: Date.now(), kind: "source_error", excerpt: `POSTHOG_ADMIN_API_KEY from ${REPO}/apps/search/.env: ${message(error)}` }] }));
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");

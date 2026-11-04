@@ -45,6 +45,11 @@ test("an event prod never sent reads unmeasured and is flagged, and one from 20 
     ["prod prospect_state_day: none since 2026-11-03, due every day from pipeDays.fillDay at 04:41Z"]);
 });
 
+test("a dashboard PostHog could not reach reads unmeasured, never 0% (11-04 06:15Z fetch failed)", () => {
+  const out = report({ tiles: { error: "fetch failed" }, schemas: [], required: [], newest: fresh }, NOW);
+  assert.equal(out.metrics.tiles_with_data_pct, -UNMEASURED);
+});
+
 test("the tables to check are the source tables the tiles read", () => {
   assert.deepEqual(tilesTables(["SELECT org_id FROM prodconvex_orgs JOIN prodconvex_orgMembers m", "FROM events"]), ["orgmembers", "orgs"]);
 });
