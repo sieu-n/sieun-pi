@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { ENDED_FOR_MS, KILL_AFTER_MS, type Group, type ProcRow, type Verdict, decide, groupProcesses, hostMatcher, leftParent, ownerOf, piThreadRow, readUnitHolds, readVerdicts, stopGroups, unitFileNames, unitOf, verdict } from "../src/orphan-reaper.ts";
+import { ENDED_FOR_MS, KILL_AFTER_MS, type Group, type ProcRow, type Verdict, decide, describe, groupProcesses, hostMatcher, leftParent, ownerOf, piThreadRow, readUnitHolds, readVerdicts, stopGroups, unitFileNames, unitOf, verdict } from "../src/orphan-reaper.ts";
 
 const JOB = "01a183f7-0a0b-725c-984d-d59f150e6420";
 const LIVE = "01a190a3-1b2e-74ad-88ca-f217e0f956a8";
@@ -306,4 +306,11 @@ test("a crashpad handler that a live Chrome names stays with it, while one whose
   assert.equal(leftParent(group(monitor), [...base, handler, monitor]), true);
   const shell = row(700, 600, "bash");
   assert.equal(leftParent(group(shell), [...base, row(600, 4578, "sshd"), shell]), false);
+});
+
+test("an orphan_unknown line names why its owner read as unknown", () => {
+  // 11-04 10:17 d2 listed a live Mac job's walk server as orphan_unknown with no cause to read.
+  const walk: Group = { key: "unit:funnel-walk.service", unit: "funnel-walk.service", root: 1, pids: [1], bytes: 0, started: 0, command: "node walk-server.mjs", owners: [{ session: JOB, host: "mac" }] };
+  const line = describe(walk, 0, new Map<string, Verdict>([[`mac/${JOB}`, { state: "unknown", why: "mac did not answer: timeout" }]]));
+  assert.match(line, /unread \(mac did not answer: timeout\)/);
 });

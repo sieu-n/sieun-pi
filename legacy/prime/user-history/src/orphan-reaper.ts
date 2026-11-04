@@ -394,8 +394,9 @@ export interface Reading { orphan_processes: number; orphan_unknown: number; sto
 
 const age = (group: Group, now: number): string => group.started === null ? "?" : `${((now / 1000 - group.started) / 3600).toFixed(1)} h`;
 const mb = (bytes: number): string => `${Math.round(bytes / 1048576)} MB`;
+/** A group's line; an owner whose verdict is unknown carries its why, because the 11-04 10:17 d2 run listed a live Mac job's walk server as orphan_unknown with no cause to read. */
 export function describe(group: Group, now: number, verdicts?: ReadonlyMap<string, Verdict>): string {
-  const owners = group.owners.map(owner => { const read = verdicts?.get(ownerKey(owner)); return `${owner.session} on ${owner.host}${read?.state === "ended" ? ` ended ${new Date(read.at).toISOString().slice(5, 16)}Z` : ""}`; });
+  const owners = group.owners.map(owner => { const read = verdicts?.get(ownerKey(owner)); return `${owner.session} on ${owner.host}${read?.state === "ended" ? ` ended ${new Date(read.at).toISOString().slice(5, 16)}Z` : read?.state === "unknown" ? ` unread (${read.why})` : ""}`; });
   return `${group.unit ?? `pid ${group.root}`}: ${group.pids.length} processes, ${mb(group.bytes)}, ${age(group, now)}, ${group.command.slice(0, 120)}${owners.length ? `; owner ${owners.join(", ")}` : "; no owner signal"}`;
 }
 
