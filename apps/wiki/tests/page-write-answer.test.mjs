@@ -50,7 +50,11 @@ test('an identical POST and an identical PATCH keep the version and answer chang
 	const same = await again.json();
 	assert.equal(same.version, made.version);
 	assert.equal(same.changed, false);
-	const edits = [{ old_string: 'one line', new_string: 'one line' }];
+	// The edits run in order, so the second puts back what the first changed.
+	const edits = [
+		{ old_string: 'one line', new_string: 'two lines' },
+		{ old_string: 'two lines', new_string: 'one line' },
+	];
 	const patched = await send('PATCH', '/api/agent/page', { path, edits }).then((r) => r.json());
 	assert.equal(patched.version, made.version, JSON.stringify(patched));
 	assert.equal(patched.changed, false);
