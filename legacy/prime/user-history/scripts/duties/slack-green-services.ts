@@ -1,15 +1,14 @@
-import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { CHECKS_WINDOW_MS, type DeployDeps, type Exec, exec, measureDeploys } from "./slack-green-deploys.ts";
 import { parseEnv } from "./local-dev-uptime.ts";
 import { vercelToken } from "./vercel-login.ts";
+import { BoxBrowser } from "./box-browser.ts";
 
 /**
  * The precheck of slack green guy's "Slack Green services work" duty (`node --import tsx scripts/duties/slack-green-services.ts`). No model call.
@@ -118,34 +117,6 @@ export function servicesOutput(read: Readings, now: number): PrecheckOutput {
   return { metrics: { pages_failing: pagesFailing, deploy_problems: deployProblems, owner_slack_green: green, api_routes_failing: routesFailing,
     source_errors: read.errors.length }, flagged, ...failedAt === undefined ? {} : { lastEventAt: { deploy_problems: failedAt } },
     ...onlyChecks && failedAt !== undefined ? { windowMs: { deploy_problems: CHECKS_WINDOW_MS } } : {} };
-}
-
-/** The aside-browser box runner: a headful Chrome on its own Xvfb display, driven by JSON lines on stdin and stdout. */
-export class BoxBrowser {
-  private next = 1;
-  private waiting = new Map<number, (reply: { out?: string; error?: string }) => void>();
-  private constructor(private child: ReturnType<typeof spawn>) {
-    createInterface({ input: child.stdout! }).on("line", line => {
-      try { const reply = JSON.parse(line) as { id: number; out?: string; error?: string }; this.waiting.get(reply.id)?.(reply); this.waiting.delete(reply.id); }
-      catch { /* runner chatter */ }
-    });
-    child.on("exit", () => { for (const done of this.waiting.values()) done({ error: "the box runner exited" }); this.waiting.clear(); });
-  }
-  static start(runner = process.env.BOX_RUNNER || join(homedir(), ".prime/agent/skills/aside-browser/box/box.mjs")): BoxBrowser {
-    return new BoxBrowser(spawn(process.execPath, [runner], { stdio: ["pipe", "pipe", "inherit"] }));
-  }
-  run(code: string, timeoutMs: number): Promise<string> {
-    const id = this.next++;
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.waiting.delete(id); reject(new Error(`the box browser call took over ${timeoutMs / 1000} s`)); }, timeoutMs);
-      this.waiting.set(id, reply => { clearTimeout(timer); reply.error ? reject(new Error(reply.error.split("\n")[0])) : resolve(reply.out ?? ""); });
-      this.child.stdin!.write(JSON.stringify({ id, code }) + "\n");
-    });
-  }
-  async close(): Promise<void> {
-    this.child.stdin!.end();
-    await new Promise<void>(resolve => { const timer = setTimeout(() => { this.child.kill("SIGKILL"); resolve(); }, 15_000); this.child.on("exit", () => { clearTimeout(timer); resolve(); }); });
-  }
 }
 
 /** Code for the box runner: open the page in a new tab, record its document status, uncaught errors, console errors and /api/ 5xx answers. */
