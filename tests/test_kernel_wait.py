@@ -153,6 +153,54 @@ class KernelWait(unittest.TestCase):
         self.assertEqual(kind(events, "error")["ename"], "StillRunning", events)
         self.assertIsNotNone(repl.completed(events, timeout=5))
 
+    def test_wait_for_with_a_long_timeout_hands_off(self):
+        repl = self.start(1)
+        began = time.monotonic()
+        events = repl.run("waitfor", "import asyncio\nawait asyncio.wait_for(bash('sleep 3; echo wf-xyz; exit 4'), 60)")
+        error = kind(events, "error")
+        self.assertEqual(error and error["ename"], "StillRunning", events)
+        self.assertLess(time.monotonic() - began, 2.5)
+        pid = int(error["evalue"].split("pid ")[1].split()[0])
+        notice = repl.completed(events, timeout=10)
+        self.assertIsNotNone(notice, "no bash completion follow-up after the handoff")
+        self.assertEqual((notice["pid"], notice["exitCode"]), (pid, 4))
+        self.assertTrue(notice["command"].endswith("wf-xyz\n"), notice["command"])
+        self.assertEqual(result(repl.run("read", f"bash_handoffs[{pid}].poll().exit_code")), "4")
+
+    def test_gather_of_two_handles_hands_off_and_both_follow_ups_arrive(self):
+        repl = self.start(1)
+        began = time.monotonic()
+        events = repl.run("gather", "import asyncio\nawait asyncio.gather(bash('sleep 3; echo ga'), bash('sleep 3.5; echo gb; exit 2'))")
+        self.assertEqual(kind(events, "error")["ename"], "StillRunning", events)
+        self.assertLess(time.monotonic() - began, 2.5)
+        first, second = repl.completed(events, timeout=10), repl.completed([], timeout=10)
+        self.assertIsNotNone(first, "no follow-up for the first handle")
+        self.assertIsNotNone(second, "no follow-up for the second handle")
+        notices = sorted((n["exitCode"], n["command"].rsplit("\n", 2)[-2]) for n in (first, second))
+        self.assertEqual(notices, [(0, "ga"), (2, "gb")])
+        pids = sorted([first["pid"], second["pid"]])
+        self.assertEqual(result(repl.run("read", "sorted(bash_handoffs)")), str(pids))
+
+    def test_ensure_future_and_wait_hand_off(self):
+        repl = self.start(1)
+        events = repl.run("wait", "import asyncio\nt = asyncio.ensure_future(bash('sleep 3'))\nawait asyncio.wait([t])\nt.result()")
+        self.assertEqual(kind(events, "error")["ename"], "StillRunning", events)
+        self.assertIsNotNone(repl.completed(events, timeout=10))
+
+    def test_wait_for_with_a_short_timeout_still_times_out_and_kills(self):
+        repl = self.start(5)
+        marker = os.path.join(self.tmp, "marker")
+        events = repl.run("short", f"import asyncio\nawait asyncio.wait_for(bash('sleep 1.5 && touch {marker}'), 0.5)")
+        self.assertEqual(kind(events, "error")["ename"], "TimeoutError", events)
+        self.assertIsNone(repl.completed(events, timeout=2.5))
+        self.assertFalse(os.path.exists(marker))
+
+    def test_a_gather_outside_cell_code_waits_as_before(self):
+        repl = self.start(0.5)
+        Path(self.tmp, "helper.py").write_text("import asyncio\n\nasync def both(a, b):\n    return await asyncio.gather(a, b)\n")
+        events = repl.run("helper", "import helper\n[r.output for r in await helper.both(bash('sleep 1.5; echo s1'), bash('sleep 1; echo s2'))]")
+        self.assertEqual(result(events), "['s1\\n', 's2\\n']", events)
+
     def test_sleeps_stop_once_a_cell_has_slept_the_limit(self):
         repl = self.start(1)
         events = repl.run("sleeps", "import asyncio, time\ntime.sleep(0.6)\nawait asyncio.sleep(0.6)\nprint('third')\ntime.sleep(0.1)\nprint('fourth')")

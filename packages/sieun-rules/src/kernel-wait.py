@@ -9,7 +9,9 @@ the worker and one of the pool's working slots while other turns queue. LIMIT is
    most LIMIT. If the command is still running then, the await raises StillRunning and the command keeps running as a background
    handle in the cell's bash_handoffs[pid]. Prime's bash completion follow-up wakes the session when it ends, and its command text
    carries the exit code, the output tail and a file with the whole output. Cancelling the cell inside LIMIT still kills a one-shot
-   `await bash(cmd)`, as rlm does. An await from a skill module, rlm or a gather wrapper waits as before.
+   `await bash(cmd)`, as rlm does. A handle that cell code hands to asyncio.wait_for, gather, wait, shield or ensure_future gets the
+   same bound in the task asyncio wraps it in, and a wait_for timeout under LIMIT still raises TimeoutError and kills the command. An
+   await or a gather from a skill module or rlm waits as before.
 2. time.sleep and asyncio.sleep called from cell code in the cell's own task add up per cell. Once a cell's sleeps reach LIMIT, the
    next one raises SleepBudgetSpent, which points at board.wake. Sleeps in background tasks, threads and library code do not count.
 
@@ -57,6 +59,13 @@ class SleepBudgetSpent(Exception):
 
 def from_cell(frame) -> bool:
     return frame is not None and CELL.match(frame.f_code.co_filename) is not None
+
+
+def cell_caller(frame):
+    """The first frame above asyncio's own frames, if it is cell code."""
+    while frame is not None and frame.f_globals.get("__name__", "").partition(".")[0] == "asyncio":
+        frame = frame.f_back
+    return frame if from_cell(frame) else None
 
 
 def current_task():
@@ -143,6 +152,15 @@ def handle_await(self):
     return bounded(self, caller.f_globals)
 
 
+def wrap_awaitable(awaitable):
+    """asyncio's _wrap_awaitable, through which ensure_future, gather, wait, shield and wait_for run a BashHandle in its own task."""
+    if isinstance(awaitable, rlm_bash.BashHandle) and not awaitable._done.is_set():
+        cell = cell_caller(sys._getframe(1))
+        if cell is not None:
+            return bounded(awaitable, cell.f_globals)
+    return ORIGINAL["wrap"](awaitable)
+
+
 async def notify(self, cell_finished, activity):
     """rlm's completion notice, which first puts the output tail into the command text of a handed-off handle."""
     inner = ORIGINAL["notify"](self, cell_finished, activity)
@@ -194,18 +212,22 @@ def asyncio_sleep(delay, result=None):
 
 
 def install() -> None:
-    """Puts the bounded await, the notice and the sleeps in place, over the originals a first install kept on BashHandle."""
+    """Puts the bounded await, the notice, the asyncio wrapper and the sleeps in place, over the originals a first install kept on BashHandle."""
     global ORIGINAL
     Handle = rlm_bash.BashHandle
-    ORIGINAL = getattr(Handle, "_kernel_wait_original", None) or {
-        "await": Handle.__await__,
-        "notify": Handle._notify_background_completion,
-        "time.sleep": time.sleep,
-        "asyncio.sleep": asyncio.sleep,
-    }
+    ORIGINAL = getattr(Handle, "_kernel_wait_original", None) or {}
+    for name, original in (
+        ("await", Handle.__await__),
+        ("notify", Handle._notify_background_completion),
+        ("time.sleep", time.sleep),
+        ("asyncio.sleep", asyncio.sleep),
+        ("wrap", asyncio.tasks._wrap_awaitable),
+    ):
+        ORIGINAL.setdefault(name, original)
     Handle._kernel_wait_original = ORIGINAL
     Handle.__await__ = handle_await
     Handle._notify_background_completion = notify
+    asyncio.tasks._wrap_awaitable = wrap_awaitable
     time.sleep = time_sleep
     asyncio.sleep = asyncio_sleep
 
