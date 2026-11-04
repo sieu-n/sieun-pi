@@ -88,7 +88,7 @@ type PageEntry = { key: string; verifiedAt: number; refs: Array<StaleRef | null>
  * 570 per-ref git processes (239 show, 269 log, 62 ls-tree) and 17 s of definition parsing ran for 253 pages on every call.
  */
 type StaleState = {
-	version: 1;
+	version: typeof STATE_VERSION;
 	pin: string;
 	since: number | null;
 	changes: Change[];
@@ -96,7 +96,13 @@ type StaleState = {
 	pages: Record<string, PageEntry>;
 };
 
-const STATE_VERSION = 1;
+/**
+ * `--since-as-filter`, never `--since`, for a date-limited walk that must list every commit: `--since` stops at the first commit
+ * dated before the cutoff, and parallel lands leave the auto-sns-agent tip dated out of order, so on 2026-11-04
+ * `--since=13:12:40Z` stopped at addbbf5329 (13:12:35Z) and missed afc3ff7332 (13:13:02Z) below it.
+ * Version 2 drops a held list read with `--since`.
+ */
+const STATE_VERSION = 2;
 const states = new Map<string, StaleState>();
 
 async function statePath(root: string): Promise<string> {
@@ -154,7 +160,7 @@ async function firstParentChanges(
 		}
 	}
 	listed ??= parse(
-		await git(root, ['log', pin, '--first-parent', format, ...(since === null ? [] : [`--since=${new Date(since).toISOString()}`])]),
+		await git(root, ['log', pin, '--first-parent', format, ...(since === null ? [] : [`--since-as-filter=${new Date(since).toISOString()}`])]),
 	);
 	const known = new Map((held?.changes ?? []).map((change) => [change.sha, change.files]));
 	const missing = listed.filter(({ sha }) => !known.has(sha));
@@ -249,7 +255,7 @@ async function definitionChange(
 			pin.sha,
 			'--first-parent',
 			'--format=%ct %H',
-			`--since=${Math.floor(checked / 1000)}`,
+			`--since-as-filter=${Math.floor(checked / 1000)}`,
 			'--',
 			file,
 		])

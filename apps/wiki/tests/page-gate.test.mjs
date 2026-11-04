@@ -109,6 +109,35 @@ test('the page gate warns on a write whose later last_verified hides a commit th
 	assert.deepEqual(pageWriteWarnings(f.repo, PUSH, before, early), [], 'a last_verified before the commits hides none');
 });
 
+// 2026-11-04: the auto-sns-agent tip held addbbf5329 (13:12:35Z) above afc3ff7332 (13:13:02Z), and `git log --since=13:12:40Z`
+// stopped at the first, so a write stamped in that window hid the second from both warnings.
+test('the page gate warnings find a commit after last_verified below a commit dated before it', (t) => {
+	const f = codeRepo();
+	t.after(() => rmSync(f.repo, { recursive: true, force: true }));
+	const at = (when, ...files) => {
+		f.git('add', ...files);
+		execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'c'], {
+			cwd: f.repo,
+			env: { ...f.env, GIT_AUTHOR_DATE: when, GIT_COMMITTER_DATE: when },
+		});
+		return f.git('rev-parse', 'HEAD');
+	};
+	const DETAIL = 'apps/crawler-v3/profile-detail.html';
+	const CODE = 'apps/crawler-v3/src/index/profile_detail.py';
+	const OTHER = 'apps/crawler-v3/src/index/other.py';
+	const py = (limit) => `def fetch_detail(x):\n    return x + ${limit}\n`;
+	const detail = (verified, refs) => html({ title: 'Profile detail', description: 'd', last_verified: verified, source_refs: refs }, '<p>It adds one.</p>');
+	const before = detail('2026-11-04T13:12:40Z', [OTHER, `${CODE}::fetch_detail`]);
+	at('2026-11-04T13:00:00Z', f.write(CODE, py(1)), f.write(OTHER, 'x = 1\n'), f.page(DETAIL, before));
+	const later = at('2026-11-04T13:13:02Z', f.write(CODE, py(2)));
+	at('2026-11-04T13:12:35Z', f.write(OTHER, 'x = 2\n'));
+	const stamped = detail('2026-11-04T13:20Z', [OTHER, `${CODE}::fetch_detail`]);
+	assert.match(pageWriteWarnings(f.repo, DETAIL, before, stamped).join('\n'), new RegExp(`past ${later.slice(0, 10)}, which`));
+	const added = detail('2026-11-04T13:12:40Z', [OTHER, CODE]);
+	const reason = new RegExp(`it adds the source_refs ${CODE} \\(changed in ${later.slice(0, 10)} at 2026-11-04T13:13Z\\)`);
+	assert.match(pageWriteWarnings(f.repo, DETAIL, detail('2026-11-04T13:12:40Z', [OTHER]), added).join('\n'), reason);
+});
+
 // A relative link to a .py or .mjs file in git is a dead_link, because the index serves no .py or .mjs page.
 const SCALE = 'projects/multi-platform-crawl-scale/index.html';
 const scale = (body) => html({ title: 'Multi-platform crawl scale', description: 'd', last_verified: DAY }, body);

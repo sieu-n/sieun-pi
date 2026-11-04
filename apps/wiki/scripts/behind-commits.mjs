@@ -14,6 +14,8 @@ import { parseMeta } from './wiki-health.mjs';
 
 const CONTENT = 'apps/llm-wiki/content/';
 
+// A date-limited log here passes `--since-as-filter`, because `--since` stops at the first commit dated before the cutoff and
+// the auto-sns-agent tip is dated out of order (STATE_VERSION in src/lib/server/wiki-stale.ts has the 2026-11-04 case).
 function git(root, args) {
 	const run = spawnSync('git', ['--literal-pathspecs', '-C', root, ...args], { maxBuffer: Infinity });
 	if (run.error || run.status !== 0)
@@ -89,7 +91,7 @@ function localFile(ref) {
  */
 export function checkedAt(root, rev, page, lastVerified, writtenAt) {
 	if (lastVerified.includes('T')) return verifiedAt(lastVerified);
-	const stamps = git(root, ['log', '--first-parent', '--format=%ct', `--since=${dayStart(lastVerified) / 1000}`, rev, '--', `${CONTENT}${page}`])
+	const stamps = git(root, ['log', '--first-parent', '--format=%ct', `--since-as-filter=${dayStart(lastVerified) / 1000}`, rev, '--', `${CONTENT}${page}`])
 		.split('\n')
 		.filter(Boolean)
 		.map((stamp) => Number(stamp) * 1000);
@@ -107,7 +109,7 @@ export function commitsBehind(root, rev, page, html, checked, until = Infinity) 
 	const files = [...new Set(refs.map(localFile))];
 	if (!files.length) return [];
 	const pageFile = `${CONTENT}${page}`;
-	const since = `--since=${Math.floor(checked / 1000)}`;
+	const since = `--since-as-filter=${Math.floor(checked / 1000)}`;
 	const commits = git(root, ['log', '--first-parent', '--format=%x1e%ct %H', '--name-only', since, rev, '--', ...files, pageFile])
 		.split('\x1e')
 		.map((block) => block.trim().split('\n'))

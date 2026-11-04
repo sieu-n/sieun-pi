@@ -4,8 +4,11 @@
 // (FOLLOW_WINDOW_MS), and a newer one is the part wiki_problems_following, which a push run still goes after.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readFileSync } from "node:fs";
-import { dateMissingRefs, FLAGGED_MAX, FOLLOW_WINDOW_MS, measureDream, parseDeletions, parseStale, piRef, pickFlagged, staleExcerpt, type DreamDeps } from "../scripts/duties/wiki-dream.ts";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { dateMissingRefs, FLAGGED_MAX, FOLLOW_WINDOW_MS, measureDream, parseDeletions, parseStale, piRef, piRemovalArgs, pickFlagged, staleExcerpt, type DreamDeps } from "../scripts/duties/wiki-dream.ts";
 import { judge, type DutyMetric } from "../src/shared/chat-duties.ts";
 
 const DUTY = JSON.parse(readFileSync(new URL("../scripts/duties/wiki-dream.duty.json", import.meta.url), "utf8")) as { metrics: unknown[] };
@@ -93,7 +96,7 @@ test("a missing ref whose file a commit in the follow window deleted is followed
   } };
   const result = await measureDream(dated, []);
   assert.equal(calls.length, 1, "one git log reads every deletion of the follow window");
-  assert.ok(calls[0]!.includes("--first-parent") && calls[0]!.includes(`--since=${new Date(NOW - FOLLOW_WINDOW_MS).toISOString()}`));
+  assert.ok(calls[0]!.includes("--first-parent") && calls[0]!.includes(`--since-as-filter=${new Date(NOW - FOLLOW_WINDOW_MS).toISOString()}`));
   assert.equal(result.metrics.pages_behind_code, 1, "only outside-calls, behind since 02:14:30Z, counts");
   assert.equal(result.metrics.wiki_problems_following! + result.info.pages_waiting!, 2, "telemetry-map fell behind at 03:10Z, when its README changed and gone.py was deleted");
   const telemetry = (result.flagged ?? []).find(slice => slice.item === "domains/architecture/telemetry-map.html");
@@ -135,7 +138,7 @@ test("a missing sieun-pi definition is followed from the sieun-pi commit that re
   assert.equal(result.metrics.pages_behind_code, 1, "only the auto-sns-agent page counts, since the follow gate refuses such a commit there");
   assert.equal(result.metrics.source_errors, 0);
   assert.equal(piLogs.length, 2);
-  assert.ok(piLogs[0]!.includes("--first-parent") && piLogs[0]!.at(-1) === "apps/chat/server/search.ts" && piLogs[0]!.includes("--since=2026-11-03T14:00:00.000Z"),
+  assert.ok(piLogs[0]!.includes("--first-parent") && piLogs[0]!.at(-1) === "apps/chat/server/search.ts" && piLogs[0]!.includes("--since-as-filter=2026-11-03T14:00:00.000Z"),
     "it reads commits after the page's check, which is inside the window");
   assert.ok(piLogs.some(args => args.includes("-G(^|[^[:alnum:]_$])missingNote([^[:alnum:]_$]|$)")), "only a commit that changed a line naming the definition dates it");
   const page = (result.flagged ?? []).find(slice => slice.item === "domains/devops/sw-factory-threads/index.html");
@@ -146,4 +149,25 @@ test("piRef reads a sieun-pi file or definition ref and drops a line suffix", ()
   assert.deepEqual(piRef("sieun-pi:apps/chat/server/search.ts::run"), { path: "apps/chat/server/search.ts", name: "run" });
   assert.deepEqual(piRef("sieun-pi:packages/pi-pool/install.py:12-30"), { path: "packages/pi-pool/install.py" });
   assert.equal(piRef("convex/search/adLibrary.ts::pruneOrphanAds"), null);
+});
+
+// On 2026-11-04 the auto-sns-agent tip held addbbf5329 (13:12:35Z) above afc3ff7332 (13:13:02Z), and `--since=13:12:40Z` stopped at
+// the first and never listed the second.
+test("piRemovalArgs finds a removal dated after the check below a commit dated before it", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "wiki-dream-since-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const env: NodeJS.ProcessEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), GIT_CEILING_DIRECTORIES: dirname(dir) };
+  const git = (args: string[], at?: string) => execFileSync("git", args, { cwd: dir, encoding: "utf8",
+    env: at ? { ...env, GIT_AUTHOR_DATE: at, GIT_COMMITTER_DATE: at } : env });
+  const commit = (file: string, text: string, at: string) => {
+    writeFileSync(join(dir, file), text);
+    git(["add", file]);
+    git(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", file], at);
+  };
+  git(["init", "-q"]);
+  commit("search.ts", "export function missingNote() {}\nexport function run() {}\n", "2026-11-04T13:00:00Z");
+  commit("search.ts", "export function run() {}\n", "2026-11-04T13:13:02Z");
+  commit("other.ts", "x\n", "2026-11-04T13:12:35Z");
+  const removedAt = git(piRemovalArgs(dir, { path: "search.ts", name: "missingNote" }, Date.parse("2026-11-04T13:12:40Z"))).trim();
+  assert.equal(Number(removedAt) * 1000, Date.parse("2026-11-04T13:13:02Z"));
 });

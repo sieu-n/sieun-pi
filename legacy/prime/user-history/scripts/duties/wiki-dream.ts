@@ -283,11 +283,12 @@ export function piRef(ref: string): { path: string; name?: string } | null {
 /**
  * The `git log` arguments that find the newest first-parent sieun-pi commit after `after` that took the ref off HEAD: one that changed a line
  * holding the definition's name as a word, or for a whole-file ref one that touched the path. Renames stay off, so a moved file reads as the
- * deletion it is for the ref.
+ * deletion it is for the ref. Every date-limited log in this duty passes `--since-as-filter`, because `--since` stops at the first commit dated
+ * before the cutoff, and on 2026-11-04 parallel lands left the auto-sns-agent tip dated out of order, so `--since=13:12:40Z` missed afc3ff7332 (13:13:02Z).
  */
 export function piRemovalArgs(repo: string, ref: { path: string; name?: string }, after: number): string[] {
   const word = ref.name && `(^|[^[:alnum:]_$])${ref.name.replace(/[.[\]()*+?{}|^$\\]/g, "\\$&")}([^[:alnum:]_$]|$)`;
-  return ["-C", repo, "--literal-pathspecs", "log", "HEAD", "--first-parent", "--no-renames", "-n1", "--format=%ct", `--since=${new Date(after).toISOString()}`,
+  return ["-C", repo, "--literal-pathspecs", "log", "HEAD", "--first-parent", "--no-renames", "-n1", "--format=%ct", `--since-as-filter=${new Date(after).toISOString()}`,
     ...(word ? [`-G${word}`] : []), "--", ref.path];
 }
 
@@ -490,7 +491,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   const commits: DreamCommit[] = [];
   let gitOk = true;
   for (const [name, repo] of [["auto-sns-agent", deps.repos.wiki], ["sieun-pi", deps.repos.pi]] as const) {
-    await deps.exec("git", ["-C", repo, "log", "HEAD", `--since=${gitSince}`, "--fixed-strings", "--grep=(wiki-dream)", "--format=%x1e%H%x1f%s", "--name-only", "--no-renames"],
+    await deps.exec("git", ["-C", repo, "log", "HEAD", `--since-as-filter=${gitSince}`, "--fixed-strings", "--grep=(wiki-dream)", "--format=%x1e%H%x1f%s", "--name-only", "--no-renames"],
       { cwd: repo, timeoutMs: GIT_TIMEOUT_MS }).then(text => { commits.push(...parseGitLog(name, text)); }).catch(error => { gitOk = false; fail(`git log ${name}`, error); });
   }
 
@@ -500,7 +501,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   const listed = health && (() => { try { return parseStale(health.stale); } catch (error) { return fail("wiki-health.mjs stale", error); } })();
   const undated = listed?.some(page => page.staleRefs.some(ref => ref.since === undefined && !Number.isFinite(Date.parse(ref.modified))));
   const datedWiki = listed && undated
-    ? await deps.exec("git", ["-C", deps.repos.wiki, "log", "HEAD", "--first-parent", "--diff-filter=D", "--no-renames", `--since=${new Date(now - FOLLOW_WINDOW_MS).toISOString()}`,
+    ? await deps.exec("git", ["-C", deps.repos.wiki, "log", "HEAD", "--first-parent", "--diff-filter=D", "--no-renames", `--since-as-filter=${new Date(now - FOLLOW_WINDOW_MS).toISOString()}`,
       "--format=%x1e%ct", "--name-only"], { cwd: deps.repos.wiki, timeoutMs: GIT_TIMEOUT_MS })
       .then(text => dateMissingRefs(listed, parseDeletions(text))).catch(error => { fail("git log deletions", error); return listed; })
     : listed;

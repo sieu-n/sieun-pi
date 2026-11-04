@@ -157,6 +157,7 @@ export function behindRefReason(root, rev, page, old, html, writtenAt) {
 	if (page === HOME || !VERIFIED.test(lastVerified)) return null;
 	const added = addedSourceRefs(old, html).filter((ref) => !siblingRef(ref) && !/^[a-z][a-z0-9+.-]*:/i.test(ref));
 	if (!added.length) return null;
+	// `--since-as-filter`, as in behind-commits.mjs, because `--since` stops at the first commit dated before the cutoff.
 	const log = (format, file, ...args) =>
 		String(git(root, ['log', '--first-parent', '--diff-merges=first-parent', format, ...args, rev, '--', file]))
 			.trim()
@@ -165,13 +166,13 @@ export function behindRefReason(root, rev, page, old, html, writtenAt) {
 	const pageFile = `${CONTENT}${page}`;
 	const pageCommits = lastVerified.includes('T')
 		? []
-		: [writtenAt, ...log('--format=%ct', pageFile, `--since=${dayStart(lastVerified) / 1000}`).map((s) => Number(s) * 1000)];
+		: [writtenAt, ...log('--format=%ct', pageFile, `--since-as-filter=${dayStart(lastVerified) / 1000}`).map((s) => Number(s) * 1000)];
 	const checked = verifiedAt(lastVerified, pageCommits);
 	const behind = [];
 	for (const ref of added) {
 		const symbol = symbolRef(ref);
 		const file = (symbol?.file ?? ref).replace(/\/+$/, '');
-		const after = log('--format=%ct %H', file, `--since=${Math.floor(checked / 1000)}`)
+		const after = log('--format=%ct %H', file, `--since-as-filter=${Math.floor(checked / 1000)}`)
 			.map((line) => line.split(' '))
 			.filter(([stamp]) => Number(stamp) * 1000 > checked);
 		const changed = symbol ? definitionChanges(root, after, file, symbol.name) : after[0];

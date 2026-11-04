@@ -179,6 +179,39 @@ test('a sibling-repo path::name ref and a shell function ref follow their defini
 	assert.deepEqual(rows['apps/up.html'], [{ ref: 'svc.sh::up_x', ...at('05') }], 'a shell function with a comment after its brace is a definition, and an edit inside it counts');
 });
 
+// 2026-11-04: the auto-sns-agent tip held addbbf5329 (13:12:35Z) above afc3ff7332 (13:13:02Z), and `git log --since=13:12:40Z` stopped
+// at the first. The report's walk back to the oldest check day and its walk of a sibling repo's definition each stopped that way.
+test('the stale report finds a commit after the check below a commit dated before it', (t) => {
+	const w = fixture(t);
+	const pi = fixture(t, 'wiki-stale-sibling-pi-');
+	const py = (alpha) => `def alpha(x):\n    return x + ${alpha}\n`;
+	w.write('a.py', 'x = 1\n');
+	w.write('b.py', 'x = 1\n');
+	pi.write('pool/s.py', py(1));
+	pi.write('pool/t.py', 'y = 1\n');
+	w.page('day.html', ['a.py'], { verified: '2026-10-20T00:30Z' });
+	w.page('sibling.html', ['sieun-pi:pool/s.py::alpha'], { verified: '2026-10-20T03:30Z' });
+	w.init();
+	pi.init();
+	w.commit('2026-10-19T12:00:00Z', 'pages');
+	w.write('a.py', 'x = 2\n');
+	w.commit('2026-10-20T01:00:00Z', 'a.py');
+	w.write('b.py', 'x = 2\n');
+	w.commit('2026-10-19T23:00:00Z', 'b.py dated before the oldest check day');
+	pi.commit('2026-10-20T01:00:00Z', 'pool');
+	pi.write('pool/s.py', py(2));
+	pi.commit('2026-10-20T04:00:00Z', 'alpha');
+	pi.write('pool/t.py', 'y = 2\n');
+	pi.commit('2026-10-20T03:00:00Z', 't.py dated before the check');
+
+	const saved = process.env.SIEUN_PI_REPO;
+	t.after(() => (saved === undefined ? delete process.env.SIEUN_PI_REPO : (process.env.SIEUN_PI_REPO = saved)));
+	process.env.SIEUN_PI_REPO = pi.dir;
+	const rows = w.refsByPage();
+	assert.deepEqual(rows['apps/day.html'], [{ ref: 'a.py', ...at('01') }]);
+	assert.deepEqual(rows['apps/sibling.html'], [{ ref: 'sieun-pi:pool/s.py::alpha', ...at('04') }]);
+});
+
 // 2026-10-25: a ref to a YAML list item keyed by a field, as `vent.yaml::vent-front-door-failing-prod` cites a Grafana alert rule, read missing.
 test('a path::name ref to a YAML list item follows only that item', (t) => {
 	const w = fixture(t);
