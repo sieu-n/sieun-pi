@@ -67,6 +67,14 @@ test("two watch lines in one clock minute count as one minute, as at 20:16:10Z a
     { read: 2, unusable: 1, by: { swapouts: 1, kernel_task: 1 }, lastAt: Date.parse("2026-10-27T20:16:30.013Z") });
 });
 
+test("the unusable excerpt names each red minute's largest owner and the newest one's groups, so the owner's own Chrome reads apart from agent load (p754)", async () => {
+  const held = (at: string, label: string, swapoutsPerS: number): WatchLine => ({ host: "us-metal02", at, usable: null, workers: 0, workerGb: 0, top: [], hosts: [{ name: "mac",
+    usable: { pressureLevel: 2, swapoutsPerS, kernelTaskPct: 20, owners: [{ owner: "x", label, gb: 21.5 }], groups: { browsers: 28.38, agents: 3.27 } }, workers: 0, workerGb: 0, top: [] }] } as unknown as WatchLine);
+  const result = await measureMac({ platform: "linux", exec: async () => reading("4.5", 44, ["200", "200"]), wait: async () => {},
+    watch: async () => [held("2026-11-03T14:10:30.000Z", "run_mps_bench.sh", 9000), held("2026-11-04T03:53:30.000Z", "Google Chrome", 0), held("2026-11-04T03:54:30.014Z", "Google Chrome", 8014)] }, 0);
+  assert.equal(result.flagged[0]!.excerpt, "Mac: 2 of 3 watched minutes in the last 24 h read unusable (swapouts 2; largest owner run_mps_bench.sh in 1, Google Chrome in 1; the newest at 03:54:30Z with browsers 28.38 GB, agents 3.27 GB)");
+});
+
 test("mac_unusable_min reports its 24 h window and its newest unusable minute, so d9 reads old red minutes as a lagging window", async () => {
   const deps = { platform: "linux", exec: async () => reading("7.26", 37, ["200", "200"]), wait: async () => {} } as const;
   const red = await measureMac({ ...deps, watch: async () => [minute(113, 0, "2026-10-28T01:17:30.013Z"), minute(98, 10969, "2026-10-28T03:13:30.038Z"), minute(40, 0, "2026-10-28T06:24:30.000Z")] }, 0);

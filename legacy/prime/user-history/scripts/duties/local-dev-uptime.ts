@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { loadHosts, roleUrl } from "../../src/hosts.ts";
 import { treeMb, treePids } from "./demo-sandbox.ts";
+import type { MemoryGroupId } from "../../src/shared/types.ts";
 import { isLinuxReading, readWatch, type UsableMiss, unusable, type WatchLine } from "../../src/mac-usable-watch.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { hostViews } from "./whole-system.ts";
@@ -231,10 +232,13 @@ export function macDown(reading: MacReading): string[] {
  * watch writes more than one line in some minutes: on 10-27 it wrote 20:16:10Z and 20:16:30Z, both unusable, and counting lines read
  * 13 unusable minutes as 14.
  */
-export function macUnusableMinutes(lines: readonly WatchLine[]): { read: number; unusable: number; by: Partial<Record<UsableMiss, number>>; lastAt?: number } {
+export function macUnusableMinutes(lines: readonly WatchLine[]): { read: number; unusable: number; by: Partial<Record<UsableMiss, number>>; lastAt?: number;
+  ledBy?: Record<string, number>; lastGroups?: Partial<Record<MemoryGroupId, number>> } {
   const read = new Set<number>();
   let lastAt: number | undefined;
+  let lastGroups: Partial<Record<MemoryGroupId, number>> | undefined;
   const missedIn = new Map<number, Set<UsableMiss>>();
+  const leader = new Map<number, string>();
   for (const line of lines) {
     const usable = hostViews(line).find(view => view.name === MAC_HOST)?.usable;
     // The Mac writes no Linux reading, so a Linux one named the Mac is another box's (whole-system.ts UNNAMED_LINUX_HOST).
@@ -244,11 +248,28 @@ export function macUnusableMinutes(lines: readonly WatchLine[]): { read: number;
     const missed = unusable(usable);
     if (!missed.length) continue;
     missedIn.set(minute, new Set([...missedIn.get(minute) ?? [], ...missed]));
+    const top = usable.owners?.[0];
+    if (top) leader.set(minute, top.label);
+    if (Date.parse(line.at) >= (lastAt ?? 0)) lastGroups = usable.groups;
     lastAt = Math.max(lastAt ?? 0, Date.parse(line.at));
   }
   const by: Partial<Record<UsableMiss, number>> = {};
   for (const misses of missedIn.values()) for (const miss of misses) by[miss] = (by[miss] ?? 0) + 1;
-  return { read: read.size, unusable: missedIn.size, by, ...lastAt === undefined ? {} : { lastAt } };
+  const ledBy: Record<string, number> = {};
+  for (const label of leader.values()) ledBy[label] = (ledBy[label] ?? 0) + 1;
+  return { read: read.size, unusable: missedIn.size, by, ...lastAt === undefined ? {} : { lastAt }, ...leader.size ? { ledBy } : {}, ...lastGroups ? { lastGroups } : {} };
+}
+
+/**
+ * Who held the Mac's memory in its red minutes, so the chat can tell the owner his own tabs from agent load with no code job: each red minute's
+ * largest feed owner, and the groups of the newest one. On 11-04 the one new red minute (03:54:30Z, 8,014 swapouts a second) had browsers at
+ * 28.4 GB with his own Google Chrome at 21.5 GB and agents at 3.3 GB, while the 43 minutes before it were MPS runs a job started (board step p754).
+ */
+export function macRedHolders(day: ReturnType<typeof macUnusableMinutes>): string {
+  const led = Object.entries(day.ledBy ?? {}).sort((a, b) => b[1] - a[1]).map(([label, n]) => `${label} in ${n}`).join(", ");
+  const groups = Object.entries(day.lastGroups ?? {}).sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0)).map(([group, gb]) => `${group} ${gb} GB`).join(", ");
+  const newest = day.lastAt === undefined ? "" : `the newest at ${new Date(day.lastAt).toISOString().slice(11, 19)}Z${groups ? ` with ${groups}` : ""}`;
+  return [led && `largest owner ${led}`, newest].filter(Boolean).join("; ");
 }
 
 /**
@@ -269,7 +290,7 @@ export async function measureMac(deps: Pick<UptimeDeps, "exec" | "platform" | "w
   const windows: Pick<MacResult, "lastEventAt" | "windowMs"> = day.read
     ? { windowMs: { mac_unusable_min: MAC_WINDOW_MS }, ...day.lastAt === undefined ? {} : { lastEventAt: { mac_unusable_min: day.lastAt } } } : {};
   const usable: FlaggedSlice = day.read
-    ? { at, kind: day.unusable ? "mac_unusable" : "mac_usable", excerpt: `Mac: ${day.unusable} of ${day.read} watched minutes in the last 24 h read unusable${day.unusable ? ` (${Object.entries(day.by).map(([miss, n]) => `${miss} ${n}`).join(", ")})` : ""}` }
+    ? { at, kind: day.unusable ? "mac_unusable" : "mac_usable", excerpt: `Mac: ${day.unusable} of ${day.read} watched minutes in the last 24 h read unusable${day.unusable ? ` (${Object.entries(day.by).map(([miss, n]) => `${miss} ${n}`).join(", ")}${macRedHolders(day) ? `; ${macRedHolders(day)}` : ""})` : ""}` }
     : { at, kind: "mac_read", excerpt: "Mac: the usable watch holds no Mac minute in the last 24 h" };
   const watched = day.read ? { mac_unusable_min: day.unusable } : {};
   const read = () => deps.platform === "darwin" ? deps.exec("sh", ["-c", MAC_COMMAND]) : deps.exec("ssh", [MAC_HOST, MAC_COMMAND]);
