@@ -1700,7 +1700,7 @@
   "box": [
    {
     "panel": "websearch_query",
-    "shared": "^Google is down on the Virev search backend"
+    "shared": "^Google is down on the Virev search backend| Convex team \\d+ reads usageState "
    }
   ]
  },

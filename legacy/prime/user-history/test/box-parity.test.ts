@@ -112,6 +112,15 @@ test("the pi-pool panel rows take an account that needs a new sign-in as shared,
   assert.deepEqual(off("pi-pool ls exited 127: command not found", "Virev search error (500); Google is down on the Virev search backend"), ["tools-panel-check-pool-codex", "tools-panel-check-websearch-query"]);
 });
 
+test("the websearch row takes a key check that fails because Convex disabled the shared team as shared, as on 11-04 in d1-261104-1010, and still counts one on a Default team", () => {
+  const rows = (JSON.parse(readFileSync(join(import.meta.dirname, "../scripts/duties/box-parity.rows.json"), "utf8")) as Row[]).filter(row => row.id === "tools-panel-check-websearch-query");
+  const off = (detail: string) => judgeRows(rows, output("mac", { [rows[0]!.id]: ["ok"] }), output("box", { [rows[0]!.id]: ["panel"] }),
+    new Map([["websearch_query", { status: "fail" as const, fixer: "owner" as const, detail, fix: "x" }]])).off.length;
+  const check = "Virev search error (503): API key checks are temporarily unavailable. No data was returned and nothing was charged. Retry the call.";
+  assert.equal(off(`${check} Convex team 453421 reads usageState Disabled`), 0);
+  assert.equal(off(`${check} Convex team 453421 reads Default`), 1);
+});
+
 const deploy = join(import.meta.dirname, "../../../../deploy/linux");
 const layers = parseLayers(readFileSync(join(deploy, "cpu/setup-cpu.sh"), "utf8"), readFileSync(join(deploy, "memory/heavy"), "utf8"), 1001, readFileSync(join(deploy, "cpu/rcu-boost.service"), "utf8"), readFileSync(join(deploy, "cpu/rcu-boost.py"), "utf8"));
 const context = (files: Record<string, string>, nice: Record<number, number> = {}, scope: "system" | "user" = "user"): LimitContext =>
