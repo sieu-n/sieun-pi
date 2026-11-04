@@ -511,6 +511,11 @@ export function titleDetail(text: string): string | null {
   return text.match(GIT_SHA)?.[0] ?? text.match(RUN_ID)?.[0] ?? null;
 }
 
+/**
+ * The refusal for `done` on a plan op, which only a todo has. Until 11-04 the parser dropped it and kept the rest of the op: the AI harness VP
+ * chat sent 217 plan_update ops with a `done` text, such as p717's at 04:11Z on 11-04, which closed the step and lost its evidence.
+ */
+export const PLAN_DONE_FIELD = "done is a todo's true or false. A step closes with status \"done\" and keeps its evidence in note.";
 /** Parses one untrusted op (an HTTP body or a tool call). The reducer trusts its input after this. */
 export function parseBoardOp(value: unknown): BoardOp {
   if (!isRecord(value)) invalid("Each op must be an object with an op field.");
@@ -519,6 +524,7 @@ export function parseBoardOp(value: unknown): BoardOp {
       if (!Array.isArray(value.items)) invalid("plan_set needs items, a list of plan items.");
       return { op: "plan_set", items: value.items.map(planInput) };
     case "plan_add": {
+      if (value.done !== undefined) invalid(PLAN_DONE_FIELD);
       const op: BoardOp = { op: "plan_add", text: str(value.text, "text") };
       if (value.parent !== undefined && value.parent !== null) op.parent = id(value.parent, "parent");
       const s = status(value.status); if (s) op.status = s;
@@ -532,6 +538,7 @@ export function parseBoardOp(value: unknown): BoardOp {
       return Object.assign(op, gates(value));
     }
     case "plan_update": {
+      if (value.done !== undefined) invalid(PLAN_DONE_FIELD);
       const op: BoardOp = { op: "plan_update", id: id(value.id) };
       if (value.parent !== undefined) op.parent = value.parent === null ? null : id(value.parent, "parent");
       const text = optStr(value.text, "text"); if (text !== undefined) op.text = text;

@@ -112,7 +112,7 @@ export default function historyExtension(pi: ExtensionAPI): void {
         ops: {
           type: "array",
           description: `Applied in order, all or none. Fields: id, parent, text, status (${PLAN_STATUSES.join("|")}), job, sessionId, note, waitUntil, ` +
-            `waitFor, done, step, choices, items, go ("needed"), kind ("build"), requirements [{text,status (${REQUIREMENT_STATUSES.join("|")}),evidence,` +
+            `waitFor, done (a todo's true or false; a step's evidence goes in note), step, choices, items, go ("needed"), kind ("build"), requirements [{text,status (${REQUIREMENT_STATUSES.join("|")}),evidence,` +
             "note}], target {metric,target,unit,current,measuredAt,source,cadence,direction (\"up\" higher is better, \"down\" lower is better; left out, the board stores the one its numbers show)}, duty (\"<dutyId>/<metricKey>\", the duty metric a step fixes), " +
             "links [{label,target}]; null clears a field.",
           items: {
