@@ -2,7 +2,7 @@
 // read 91.8%, because the screen's status read ran past its budget; these cases pin how d2 counts that read in watchlist_risks.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type ScreenChunk, SCREEN, SCREEN_SAMPLE, type WatchData, SUMMARY_URL, report, screenFailed, screenKeys, screenRead } from "../scripts/duties/watchlist-green.ts";
+import { type ScreenChunk, SCREEN, SCREEN_SAMPLE, type WatchData, SUMMARY_URL, readCrawlerKey, report, screenFailed, screenKeys, screenRead } from "../scripts/duties/watchlist-green.ts";
 
 const metrics = [
   { key: "owner_green_pct", target: 100, direction: "min" },
@@ -61,4 +61,10 @@ test("a screen read with a late chunk adds one Watchlist risk while every row is
   assert.equal(late.metrics.owner_green_pct, 100);
   assert.equal(late.metrics.watchlist_risks, 1);
   assert.equal(late.metrics.screen_read_ok_pct, 50);
+});
+
+test("readCrawlerKey decrypts the prod crawler key from the auto-sns-agent checkout by default", async () => {
+  // 11-04: b4497e1a57 took CRAWLER_API_KEY out of apps/search/.env, and the 01:47Z d2 run wrote watchlist_risks as its placeholder.
+  const key = await readCrawlerKey();
+  assert.ok(key.length > 0 && !key.startsWith("encrypted:"));
 });
