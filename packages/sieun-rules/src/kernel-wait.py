@@ -221,13 +221,15 @@ def install() -> None:
         ("notify", Handle._notify_background_completion),
         ("time.sleep", time.sleep),
         ("asyncio.sleep", asyncio.sleep),
-        ("wrap", asyncio.tasks._wrap_awaitable),
+        ("wrap", getattr(asyncio.tasks, "_wrap_awaitable", None)),
     ):
         ORIGINAL.setdefault(name, original)
     Handle._kernel_wait_original = ORIGINAL
     Handle.__await__ = handle_await
     Handle._notify_background_completion = notify
-    asyncio.tasks._wrap_awaitable = wrap_awaitable
+    # Python 3.12 dropped _wrap_awaitable, and there the direct await bound and the sleeps still install.
+    if ORIGINAL["wrap"] is not None:
+        asyncio.tasks._wrap_awaitable = wrap_awaitable
     time.sleep = time_sleep
     asyncio.sleep = asyncio_sleep
 

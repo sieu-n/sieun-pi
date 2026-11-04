@@ -21,7 +21,7 @@ LOAD = f"exec(compile(open({str(WAIT)!r}).read(), {str(WAIT)!r}, 'exec'), {{'__n
 
 
 class Repl:
-    def __init__(self, limit: float, tmp: str) -> None:
+    def __init__(self, limit: float, tmp: str, before: str = "") -> None:
         env = {**os.environ, "GLOBAL_RULES_KERNEL_WAIT_S": str(limit), "RLM_SESSION_DIR": tmp, "PYTHONPATH": tmp}
         for name in ("PRIME_AGENT_INTERNAL_ORPHAN_PROCESS_JOURNAL", "PRIME_AGENT_KERNEL_OWNER_PID"):
             env.pop(name, None)
@@ -30,7 +30,7 @@ class Repl:
         self.lines: queue.Queue = queue.Queue()
         threading.Thread(target=self.read, daemon=True).start()
         assert self.event()["event"] == "ready"
-        self.run("load", "from rlm import bash\n" + LOAD)
+        self.run("load", "from rlm import bash\n" + before + LOAD)
 
     def read(self) -> None:
         for line in self.proc.stdout:
@@ -94,10 +94,10 @@ def result(events: list):
 
 @unittest.skipUnless(PYTHON.exists(), f"no Prime kernel-venv at {PYTHON}")
 class KernelWait(unittest.TestCase):
-    def start(self, limit: float) -> Repl:
+    def start(self, limit: float, before: str = "") -> Repl:
         tmp = tempfile.mkdtemp(prefix="kernel-wait-")
         self.addCleanup(lambda: subprocess.run(["rm", "-rf", tmp]))
-        repl = Repl(limit, tmp)
+        repl = Repl(limit, tmp, before)
         self.addCleanup(repl.close)
         self.tmp = tmp
         return repl
@@ -200,6 +200,12 @@ class KernelWait(unittest.TestCase):
         Path(self.tmp, "helper.py").write_text("import asyncio\n\nasync def both(a, b):\n    return await asyncio.gather(a, b)\n")
         events = repl.run("helper", "import helper\n[r.output for r in await helper.both(bash('sleep 1.5; echo s1'), bash('sleep 1; echo s2'))]")
         self.assertEqual(result(events), "['s1\\n', 's2\\n']", events)
+
+    def test_a_python_without_wrap_awaitable_still_bounds_a_direct_await(self):
+        """Python 3.12 dropped asyncio.tasks._wrap_awaitable, and a failed install would drop the whole default (11-04)."""
+        repl = self.start(1, "import asyncio.tasks\ndel asyncio.tasks._wrap_awaitable\n")
+        events = repl.run("long", "await bash('sleep 3')")
+        self.assertEqual(kind(events, "error")["ename"], "StillRunning", events)
 
     def test_sleeps_stop_once_a_cell_has_slept_the_limit(self):
         repl = self.start(1)
