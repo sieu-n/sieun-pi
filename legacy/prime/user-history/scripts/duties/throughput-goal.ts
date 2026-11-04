@@ -55,10 +55,6 @@ export const HOLD_MS = 6 * HOUR;
 export const TTS_WEEKLY_PCT = 99.5;
 export const TTS_WEEKLY_CH = "SELECT uniqExact(key) AS n FROM crawler.tiktok_shop_reads WHERE kind = 'product' AND outcome = 'ok' AND region = 'US' AND observed_at > now() - INTERVAL 7 DAY";
 export const TTS_LIVE_PG = "SELECT count(*) AS n FROM tiktok_shop_frontier WHERE kind = 'product' AND region = 'US' AND last_outcome IS DISTINCT FROM 'gone'";
-/** CONNECT and TLS bytes per new proxied connection, measured in geonode-proxy-use.mjs NEW_CONNECTION_BYTES. */
-export const NEW_CONNECTION_BYTES = 8_678;
-/** The meter's lane for census attempts; once the meter carries it, census connections come from the meter (geonode-proxy-use.mjs). */
-const CENSUS_METER_LANE = "instagram_census";
 /**
  * A queue grew when its 15-minute mean now is over 6 h ago's by more than 10% and by more than about one minute of census intake, its lowest
  * point over 30 minutes rose past the same line, and its 6 h slope is up. On 10-19 at 15:17Z the m-backlogs read of 38 prod series found every
@@ -313,7 +309,7 @@ export function grafanaApi(fetcher: typeof fetch, auth: string, signal: AbortSig
 
 export interface Queue { family: string; name: string; now: number; ago6h: number | null; slope6h: number | null; low?: number | null; low6h?: number | null; wait?: number | null }
 export interface CensusWindow { jobs: number; bad: number; att: number; okAtt: number; wire: number }
-export interface ProxyLane { lane: string; wire: number; newSessions: number }
+export interface ProxyLane { lane: string; wire: number }
 export interface WireDay { day: number; wire: number; updated: number }
 /** One hour of GeoNode ledgers, keyed by the hour's start. */
 export interface GeoHour { hour: number; census?: CensusWindow; proxy: ProxyLane[] }
@@ -377,11 +373,9 @@ export function adLibraryBytes(days: readonly WireDay[], from: number, to: numbe
   return bytes;
 }
 
-/** GeoNode megabits a second over the window: census and other lanes' HTTP bytes, Ad Library bytes, and the handshake of each new connection. */
+/** GeoNode megabits a second over the window: census, other lanes' and Ad Library wire bytes, which include CONNECT and TLS. */
 export function geonodeMbps(census: CensusWindow, proxy: readonly ProxyLane[], adLibrary: readonly WireDay[], from: number, to: number): number {
-  const meter = proxy.reduce((sum, lane) => sum + lane.newSessions, 0);
-  const censusConns = proxy.some(lane => lane.lane === CENSUS_METER_LANE) ? 0 : Math.max(census.jobs, census.jobs + census.att - census.okAtt - census.bad);
-  const bytes = census.wire + proxy.reduce((sum, lane) => sum + lane.wire, 0) + adLibraryBytes(adLibrary, from, to) + (meter + censusConns) * NEW_CONNECTION_BYTES;
+  const bytes = census.wire + proxy.reduce((sum, lane) => sum + lane.wire, 0) + adLibraryBytes(adLibrary, from, to);
   return round1((bytes * 8) / ((to - from) / 1000) / 1e6);
 }
 
@@ -500,7 +494,7 @@ export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): P
     const newestUnder = under.at(-1)?.hour;
     if (newestUnder !== undefined) { lastEventAt.geonode_mbps = newestUnder; windowMs.geonode_mbps = GEONODE_HOURS * HOUR; }
     const leaves = newestUnder === undefined ? "" : `, the newest leaving the window at ${when(newestUnder + GEONODE_HOURS * HOUR)}`;
-    flagged.push({ at: d.now, kind: "geonode", excerpt: `GeoNode carried ${slowest.mbps} Mbps in its slowest hour ${span} (${utc(slowest.hour).slice(6)}), ${hours.at(-1)!.mbps} in the last, with ${under.length} of ${hours.length} hours under the owner's 100 Mbps${under.length ? `: ${under.map(h => `${utc(h.hour).slice(6, 11)} ${h.mbps}`).join(", ")}${leaves}` : ""}. Handshakes count ${NEW_CONNECTION_BYTES.toLocaleString("en-US")} bytes per new connection.`.slice(0, 300) });
+    flagged.push({ at: d.now, kind: "geonode", excerpt: `GeoNode carried ${slowest.mbps} Mbps in its slowest hour ${span} (${utc(slowest.hour).slice(6)}), ${hours.at(-1)!.mbps} in the last, with ${under.length} of ${hours.length} hours under the owner's 100 Mbps${under.length ? `: ${under.map(h => `${utc(h.hour).slice(6, 11)} ${h.mbps}`).join(", ")}${leaves}` : ""}.`.slice(0, 300) });
   }
   if (d.queues) {
     const backlogs = d.queues.filter(backlogged);
@@ -674,8 +668,8 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
       .filter(row => !GOAL_KINDS.has(row.kind))),
     step("census reads", async () => (await sqlRows(query, CH, `SELECT ${hourOf} AS hour, count() AS jobs, countIf(outcome IN ('blocked', 'failed')) AS bad, sum(attempts) AS att, sum(ok_attempts) AS okAtt, sum(wire_bytes) AS wire FROM crawler.instagram_census_reads WHERE ${window} GROUP BY hour`))
       .map(row => ({ hour: num(row.hour) ?? 0, census: { jobs: num(row.jobs) ?? 0, bad: num(row.bad) ?? 0, att: num(row.att) ?? 0, okAtt: num(row.okAtt) ?? 0, wire: num(row.wire) ?? 0 } }))),
-    step("proxy wire reads", async () => (await sqlRows(query, CH, `SELECT ${hourOf} AS hour, lane, sum(wire_bytes) AS wire, sum(attempts_new_session) AS newSessions FROM crawler.proxy_wire_reads WHERE world = 'prod' AND provider = 'geonode' AND ${window} GROUP BY hour, lane`))
-      .map(row => ({ hour: num(row.hour) ?? 0, lane: { lane: String(row.lane), wire: num(row.wire) ?? 0, newSessions: num(row.newSessions) ?? 0 } }))),
+    step("proxy wire reads", async () => (await sqlRows(query, CH, `SELECT ${hourOf} AS hour, lane, sum(wire_bytes) AS wire FROM crawler.proxy_wire_reads WHERE world = 'prod' AND provider = 'geonode' AND ${window} GROUP BY hour, lane`))
+      .map(row => ({ hour: num(row.hour) ?? 0, lane: { lane: String(row.lane), wire: num(row.wire) ?? 0 } }))),
     step("ad library wire days", async () => {
       const day = (t: number): string => `date '${new Date(t).toISOString().slice(0, 10)}'`;
       return (await sqlRows(query, PG.prod, `SELECT (extract(epoch FROM day) * 1000)::bigint AS day, sum(wire_bytes)::bigint AS wire, (extract(epoch FROM max(updated_at)) * 1000)::bigint AS updated FROM meta_ads_wire_days WHERE day >= ${day(geoFrom)} AND day <= ${day(geoTo)} GROUP BY day ORDER BY day`))

@@ -107,7 +107,7 @@ test("a goal whose read or board number failed leaves the headline unmeasured in
 
 test("GeoNode reads the slowest full hour of the 24 h, and an hour with no ledger rows reads near 0", () => {
   const census = { jobs: 0, bad: 0, att: 0, okAtt: 0, wire: 45_000_000_000 };
-  const hours = Array.from({ length: 24 }, (_, index) => ({ hour: GEO_FROM + index * 3_600_000, census, proxy: [{ lane: "instagram_census", wire: 0, newSessions: 0 }] }));
+  const hours = Array.from({ length: 24 }, (_, index) => ({ hour: GEO_FROM + index * 3_600_000, census, proxy: [{ lane: "instagram_census", wire: 0 }] }));
   assert.deepEqual(geonodeHours(hours, [], GEO_FROM, GEO_TO).map(h => h.mbps), Array(24).fill(100));
   const gap = geonodeHours(hours.filter((_, index) => index !== 19), [], GEO_FROM, GEO_TO);
   assert.equal(Math.min(...gap.map(h => h.mbps)), 0);
@@ -115,11 +115,10 @@ test("GeoNode reads the slowest full hour of the 24 h, and an hour with no ledge
   assert.equal(out.metrics.geonode_mbps, 0);
 });
 
-test("GeoNode Mbps counts HTTP bytes and 8,678 bytes per new connection, with census connections inferred from its jobs", () => {
+test("GeoNode Mbps sums census and lane wire bytes with no per-connection handshake term (TCP_INFO wire bytes, 11-04)", () => {
   const census = { jobs: 100, bad: 60, att: 400, okAtt: 40, wire: 0 };
-  // 100 jobs + 400 tries - 40 ok tries - 60 bad jobs = 400 connections; 400 * 8,678 bytes over 1,800 s.
-  assert.equal(geonodeMbps(census, [], [], FROM, TO), Math.round((400 * 8678 * 8) / 1800 / 1e6 * 10) / 10);
-  assert.equal(geonodeMbps({ ...census, wire: 22_500_000_000 }, [{ lane: "instagram_census", wire: 0, newSessions: 0 }], [], FROM, TO), 100);
+  assert.equal(geonodeMbps(census, [], [], FROM, TO), 0);
+  assert.equal(geonodeMbps({ ...census, wire: 11_250_000_000 }, [{ lane: "instagram_web", wire: 11_250_000_000 }], [], FROM, TO), 100);
 });
 
 test("a queue backlogs while its 30-minute low stands over 80k even as it falls (p827; media.fetch at 5.5M read 0 on 10-22)", () => {
