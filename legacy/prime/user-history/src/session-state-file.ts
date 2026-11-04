@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync, closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
 import { CURRENT_SESSION_VERSION, SessionManager } from "prime-agent";
 
 /** The bytes read at a time from a session file's end. A kill's archived state is the file's last line, so one read finds it. */
@@ -43,13 +44,28 @@ const parsed = (line: Buffer): Record<string, unknown> | undefined => {
   catch { return undefined; }
 };
 
+/** Each file's last queued state write; a write starts after the one before it on the same file ends, so they land in call order. */
+const queued = new Map<string, Promise<void>>();
+
 /**
  * Writes a closed session file's lifecycle state, as `SessionManager.open(file)` with `getSessionState` and `appendSessionState` does, without
  * parsing the transcript: the state is the file's last session_state line and the new entry's parent its last entry. A file of another
  * version or with a cut last line takes the full open, which migrates and repairs it. On 10-19 the idle unload's sweep opened every session
  * it stopped this way, up to 60 MB in one sweep, and a 73 MB chat took 0.48 s of the service's main thread to open.
+ *
+ * The append runs on libuv's pool, and the promise settles once the line is in the file. On 11-04 at 05:02:10Z an appendFileSync here held
+ * the main thread 2.0 s in the kernel. A call queues behind the file's earlier calls, so a caller that queues synchronously after a check
+ * keeps its order against a later archive's write.
  */
-export function setFileSessionState(sessionFile: string, status: "archived" | "active"): void {
+export function setFileSessionState(sessionFile: string, status: "archived" | "active"): Promise<void> {
+  const write = (queued.get(sessionFile) ?? Promise.resolve()).then(() => writeState(sessionFile, status));
+  const settled = write.then(() => {}, () => {});
+  queued.set(sessionFile, settled);
+  void settled.then(() => { if (queued.get(sessionFile) === settled) queued.delete(sessionFile); });
+  return write;
+}
+
+async function writeState(sessionFile: string, status: "archived" | "active"): Promise<void> {
   const fd = openSync(sessionFile, "r");
   let fast: { current: string | undefined; leaf: string } | undefined;
   try {
@@ -73,7 +89,7 @@ export function setFileSessionState(sessionFile: string, status: "archived" | "a
     return;
   }
   if (status === "archived" ? fast.current === "archived" : fast.current !== "archived") return;
-  appendFileSync(sessionFile, JSON.stringify({ type: "session_state", id: randomUUID(), parentId: fast.leaf, timestamp: new Date().toISOString(), state: { status } }) + "\n");
+  await appendFile(sessionFile, JSON.stringify({ type: "session_state", id: randomUUID(), parentId: fast.leaf, timestamp: new Date().toISOString(), state: { status } }) + "\n");
 }
 
 /** The id of the session file's last whole entry, or null when the file is missing or its last whole line has none. */

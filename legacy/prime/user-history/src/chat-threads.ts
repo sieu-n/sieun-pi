@@ -1785,8 +1785,9 @@ export class ThreadHub {
     // Only a command the daemon confirmed wrote an archived line, and the service's operation takes that line alone, before this hub writes its own.
     if (operation && (killed || answer === "archived" || (typeof answer === "object" && "services" in answer))) await this.landArchive(id, operation);
     const saved = answer === "archived" ? undefined : answer;
-    this.setSessionState(summary, "archived");
+    const written = this.setSessionState(summary, "archived");
     this.catalog.holdLifecycle(id, "archived");
+    await written;
     if (summary.lifecycle !== "archived" || summary.activeSessionId) void this.catalog.refresh().catch(() => {});
     if (saved === undefined || "services" in saved) await this.cancels?.done(id);
     if (saved === undefined) return;
@@ -1952,7 +1953,7 @@ export class ThreadHub {
     await this.supersedeArchive(id);
     const summary = await this.catalog.summary(id);
     if (!summary) throw new ThreadError(404, "Thread not found.");
-    this.reactivate(id, summary);
+    await this.reactivate(id, summary);
     await this.catalog.refresh();
   }
 
@@ -1966,23 +1967,27 @@ export class ThreadHub {
     const summary = await this.catalog.summary(id);
     if (await this.cancels?.has(id)) return false;
     if (!summary || this.archiving.has(id) || (this.archivedAt.get(id) ?? -Infinity) >= since) return false;
-    this.reactivate(id, summary);
+    await this.reactivate(id, summary);
     void this.catalog.refresh().catch(() => {});
     return true;
   }
 
-  /** Synchronous, so an archive cannot interleave between the check in `keepListed` and these writes. */
-  private reactivate(id: string, summary: SessionSummary): void {
-    this.setSessionState(summary, "active");
+  /**
+   * Queues the file write and sets the held lifecycle in one synchronous step, so an archive cannot interleave between the check in
+   * `keepListed` and them: its own write queues behind this one. The promise settles once the active line is in the file.
+   */
+  private reactivate(id: string, summary: SessionSummary): Promise<void> {
+    const written = this.setSessionState(summary, "active");
     this.catalog.holdLifecycle(id, "active");
     this.catalog.forget(id);
+    return written;
   }
 
   /** Skips a file deleted since the listing: SessionManager.open would recreate a stub at the old path. */
-  private setSessionState(summary: SessionSummary, status: "archived" | "active"): void {
+  private setSessionState(summary: SessionSummary, status: "archived" | "active"): Promise<void> {
     // Another box's file is that box's to write; the catalog names it by a local copy, which a write here would only fork.
-    if (!summary.sessionFile || this.catalog.hostOf(summary.sessionId) || !existsSync(summary.sessionFile)) return;
-    setFileSessionState(summary.sessionFile, status);
+    if (!summary.sessionFile || this.catalog.hostOf(summary.sessionId) || !existsSync(summary.sessionFile)) return Promise.resolve();
+    return setFileSessionState(summary.sessionFile, status);
   }
 
   async rename(id: string, name: string): Promise<void> {

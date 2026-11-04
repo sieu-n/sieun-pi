@@ -1,6 +1,8 @@
 // Guards the 10-19 steady block: the idle unload's sweep opened each session it stopped with SessionManager.open to write its state back,
 // which parses the whole transcript on the main thread (a 73 MB chat took 0.48 s, and one sweep opened up to 60 MB).
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,8 +31,8 @@ test("a session's state is read and written from the file's ends, as a full open
   await writeFile(file, transcript(dir, 600));
   const opens = t.mock.method(SessionManager, "open");
 
-  setFileSessionState(file, "active");
-  setFileSessionState(file, "active");
+  await setFileSessionState(file, "active");
+  await setFileSessionState(file, "active");
   assert.equal(opens.mock.callCount(), 0, "no full open of a current-version file");
   opens.mock.restore();
   const lines = (await readFile(file, "utf8")).trimEnd().split("\n");
@@ -39,9 +41,9 @@ test("a session's state is read and written from the file's ends, as a full open
   assert.equal(manager.getSessionState()?.status, "active");
   assert.equal(manager.getBranch().length, 602, "the new entry hangs on the transcript's last entry");
 
-  setFileSessionState(file, "archived");
+  await setFileSessionState(file, "archived");
   assert.equal(SessionManager.open(file).getSessionState()?.status, "archived");
-  setFileSessionState(file, "archived");
+  await setFileSessionState(file, "archived");
   assert.equal((await readFile(file, "utf8")).trimEnd().split("\n").length, 604);
 });
 
@@ -51,8 +53,29 @@ test("a file with a cut last line takes the full open, which repairs it", async 
   const file = join(dir, `${SESSION}.jsonl`);
   await writeFile(file, transcript(dir, 4) + '{"type":"message","id":"cut"');
   const opens = t.mock.method(SessionManager, "open");
-  setFileSessionState(file, "active");
+  await setFileSessionState(file, "active");
   assert.equal(opens.mock.callCount(), 1);
   opens.mock.restore();
   assert.equal(SessionManager.open(file).getSessionState()?.status, "active");
+});
+
+// On 11-04 at 05:02:10Z an appendFileSync here held the chat's main thread 2.0 s in the kernel, from keepListed's reactivate.
+test("a state write leaves the main thread, and two writes queued at once land in call order", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "session-state-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, `${SESSION}.jsonl`);
+  await writeFile(file, transcript(dir, 4));
+  const appends = t.mock.method(fs, "appendFileSync");
+  const writes = t.mock.method(fs, "writeSync");
+  syncBuiltinESMExports();
+  t.after(() => { appends.mock.restore(); writes.mock.restore(); syncBuiltinESMExports(); });
+
+  const active = setFileSessionState(file, "active");
+  const archived = setFileSessionState(file, "archived");
+  assert.equal((await readFile(file, "utf8")).trimEnd().split("\n").length, 6, "nothing is written before the calls return");
+  await Promise.all([active, archived]);
+  assert.equal(appends.mock.callCount() + writes.mock.callCount(), 0, "no synchronous write");
+  const states = (await readFile(file, "utf8")).trimEnd().split("\n").slice(6).map(line => JSON.parse(line).state.status);
+  assert.deepEqual(states, ["active", "archived"], "the archive queued second reads the active line the first wrote");
+  assert.equal(SessionManager.open(file).getSessionState()?.status, "archived");
 });

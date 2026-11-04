@@ -15,6 +15,7 @@ import { openChat } from "./chat-open.ts";
 import { RemoteAccess, tailnetOwner, type RemoteControl } from "./chat-remote.ts";
 import { runsSlack, SlackBridge, slackChats } from "./chat-slack.ts";
 import { takeListenFd } from "./listen-fd.ts";
+import { asyncFileLogs } from "./async-log.ts";
 import type { EarlyShell } from "./early-shell.ts";
 import type { RemoteMode } from "./shared/types.ts";
 
@@ -335,6 +336,8 @@ export async function ensureChatService(options: Options = {}): Promise<Instance
 }
 
 async function serve(options: Options): Promise<void> {
+  // A serve logs to a file under systemd and launchd; these writes then leave the main thread (src/async-log.ts).
+  asyncFileLogs();
   const service = await loadService({ ...options, socketPath: options.socketPath ?? await defaultSocket() }, true);
   if (!service) throw new Error("Could not create chat configuration.");
   const instancePath = join(service.directory, "instance.json");
