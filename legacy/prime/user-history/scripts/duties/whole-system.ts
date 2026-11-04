@@ -13,7 +13,7 @@ import { type PoolQueue, readPoolQueue, slotParkOf } from "../../src/slot-park.t
 import { stepSessions, unmovedSteps } from "../../src/unmoved-steps.ts";
 import { waitHolds } from "../../src/checkin-end-state.ts";
 import type { ChatBoard, MemoryGroupId, PlanItem } from "../../src/shared/types.ts";
-import { type AgentLine, type AsideTabs, type HostUsable, type JobRig, LINGER_MS, type LingerLine, isLinuxReading, parseLinuxReading, readWatch, type StrayServerLine, type IdlePm2Line, type TestBrowserLine, UNREAD_AT_STOP, unusable, type UsableReading, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
+import { type AgentLine, type AsideTabs, FEED_OWNERS, type HostUsable, type JobRig, LINGER_MS, type LingerLine, isLinuxReading, parseLinuxReading, readWatch, type StrayServerLine, type IdlePm2Line, type TestBrowserLine, UNREAD_AT_STOP, unusable, type UsableReading, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
 import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-minutes.ts";
 import type { HungCall } from "../../src/hung-calls.ts";
 import type { StoppedCall } from "../../src/hung-stop.ts";
@@ -52,7 +52,9 @@ export interface HostView { name: string; usable: HostUsable | null; workers: nu
   /** The Mac's open Aside tabs and how many agents opened that minute (HostWatchLine.asideTabs). */
   asideTabs?: AsideTabs;
   /** The box's job rigs that minute (HostWatchLine.jobRigs). */
-  jobRigs?: readonly JobRig[] }
+  jobRigs?: readonly JobRig[];
+  /** The swap in use on the box that minute in GB (HostWatchLine.swapGb). */
+  swapGb?: number }
 /** Lines written before 10-18 04:5xZ name no box, and the Mac wrote every one of them. */
 export const UNNAMED_HOST = "mac";
 /**
@@ -150,7 +152,7 @@ export function hostViews(line: WatchLine): HostView[] {
         ...host.agents ? { agents: host.agents } : {}, ...error ? { error } : {}, ...host.offline ? { offline: true as const } : {}, ...host.testBrowsers ? { testBrowsers: host.testBrowsers } : {},
         ...host.strayServers ? { strayServers: host.strayServers } : {}, ...host.idlePm2 ? { idlePm2: host.idlePm2 } : {},
         ...host.byWorker ? { byWorker: host.byWorker } : {}, ...host.lingering ? { lingering: host.lingering } : {}, ...host.asideTabs ? { asideTabs: host.asideTabs } : {},
-        ...host.jobRigs ? { jobRigs: host.jobRigs } : {} };
+        ...host.jobRigs ? { jobRigs: host.jobRigs } : {}, ...typeof host.swapGb === "number" ? { swapGb: host.swapGb } : {} };
     }),
   ];
 }
@@ -248,6 +250,60 @@ export function agentAsideGb(view: HostView): number {
 export function asideWords(view: HostView): string {
   const gb = agentAsideGb(view);
   return gb > 0 ? `; agents' Aside tabs ${view.asideTabs!.agent} of ${view.asideTabs!.all}, about ${gb} GB` : "";
+}
+
+/** A holder of a Mac minute's memory in the flag's words and its GB. */
+export interface MemoryHolder { words: string; gb: number }
+
+/**
+ * A Mac minute's memory holders by key: the feed's largest owners (`chat:<root>`, `browser:<name>` and so on), each chat tree the feed left out
+ * of them by its workers' footprint (HostView.byWorker, which reads within 0.2 GB of the feed's chat owner), and each job rig by `rig:<dir>`.
+ * Empty for a Linux reading or one with no feed owners.
+ */
+export function memoryHolders(view: HostView, owner: RigOwner): Map<string, MemoryHolder> {
+  const out = new Map<string, MemoryHolder>();
+  const usable = view.usable;
+  if (!usable || isLinuxReading(usable) || !usable.owners?.length) return out;
+  for (const feed of usable.owners) out.set(feed.owner, { words: feed.owner.startsWith("chat:") ? `chat ${feed.label}` : feed.label, gb: feed.gb });
+  const trees = new Map<string, MemoryHolder>();
+  for (const worker of view.byWorker ?? []) {
+    const known = trees.get(`chat:${worker.root}`);
+    trees.set(`chat:${worker.root}`, { words: `chat ${worker.tree}`, gb: (known?.gb ?? 0) + worker.gb });
+  }
+  for (const [key, tree] of trees) if (!out.has(key)) out.set(key, tree);
+  for (const rig of view.jobRigs ?? []) out.set(`rig:${rig.dir}`, { words: `job rig ${rigOwnerWords(rig.dir, owner)} in ~/${rig.dir.slice(0, 50)}`, gb: rig.gb });
+  return out;
+}
+
+const gbRound = (gb: number): number => Math.round(100 * gb) / 100;
+
+/**
+ * A Mac minute's cause in the flag's words: the holder whose memory grew the most since the same box in the line before, with its GB before and
+ * after and the swap's rise; the agents' Aside tabs (`asideWords`) when that line is missing, over 2 minutes older or has no feed owners, or
+ * when nothing grew. A feed owner missing from the line before held at most its smallest owner, or nothing when the feed listed fewer than
+ * FEED_OWNERS. At 07:21Z on 11-04 a `pnpm check` (tsgo with an 8 GB heap) that a sep launch!! job started at 07:20:55Z took that chat from 0.55
+ * to 7.52 GB and swap from 11.5 to 13.3 GB, while one agent tab opened in Aside, and d7 named only "agents' Aside tabs 1 of 4, about 0.83 GB".
+ */
+export function jumpWords(lines: readonly WatchLine[], owner: RigOwner): (line: WatchLine, view: HostView) => string {
+  const previous = new Map(lines.map((line, at) => [line, lines[at - 1]] as const));
+  return (line, view) => {
+    const before = previous.get(line);
+    const gap = before ? Date.parse(line.at) - Date.parse(before.at) : Infinity;
+    const same = gap <= 2 * MINUTE ? hostViews(before!).find(candidate => candidate.name === view.name) : undefined;
+    const then = same ? memoryHolders(same, owner) : new Map<string, MemoryHolder>();
+    if (!then.size) return asideWords(view);
+    const listed = same!.usable && !isLinuxReading(same!.usable) ? same!.usable.owners ?? [] : [];
+    const floor = listed.length >= FEED_OWNERS ? Math.min(...listed.map(feed => feed.gb)) : 0;
+    let top: { key: string; words: string; from: number; to: number } | undefined;
+    for (const [key, holder] of memoryHolders(view, owner)) {
+      const from = then.get(key)?.gb ?? (key.startsWith("chat:") || key.startsWith("rig:") ? 0 : floor);
+      if (holder.gb - from > (top ? top.to - top.from : 0)) top = { key, words: holder.words, from, to: holder.gb };
+    }
+    if (!top) return asideWords(view);
+    const swap = same!.swapGb !== undefined && view.swapGb !== undefined ? `, swap ${same!.swapGb} to ${view.swapGb} GB` : "";
+    return `; the largest jump since ${clock(Date.parse(before!.at))} was ${top.words} +${gbRound(top.to - top.from)} GB (${gbRound(top.from)} to ${gbRound(top.to)} GB)${swap}` +
+      (top.key === "browser:aside" ? asideWords(view) : "");
+  };
 }
 
 const leads = (shares: ReadonlyMap<MemoryGroupId, number>): boolean => {
@@ -1571,6 +1627,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const slotWaits = (input.slotWaits ?? []).filter(wait => wait.fault.at >= start && wait.fault.at < start + WINDOW_MS);
   const side = sideOf(input.watch);
   const ciAt = ciWords(input.watch);
+  const jumpAt = jumpWords(input.watch, rigOwner);
   const dirty: string[] = [];
   const busy: string[] = [];
   const unknownLines: string[] = [];
@@ -1622,7 +1679,7 @@ export function measure(input: Inputs): PrecheckOutput {
       const startWords = started === undefined ? "" : `, ${Math.round((lineAt - started) / 1000)} s after the chat started at ${new Date(started).toISOString().slice(11, 19)}Z`;
       const led = side(line, view);
       const read = found.includes("cpu") && (slowChat(own, line.chat) || started !== undefined) ? "harness" : led;
-      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${startWords}${memoryWords(view)}${asideWords(view)}${led === "ci" ? ciAt(line, view) : ""}${rigWords(view, faultName)}${jobRigWords(view, rigOwner)})`);
+      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${startWords}${memoryWords(view)}${jumpAt(line, view)}${led === "ci" ? ciAt(line, view) : ""}${rigWords(view, faultName)}${jobRigWords(view, rigOwner)})`);
       sides.add(read);
       if (read === "harness" && rigsLead(view)) {
         rigged = true;

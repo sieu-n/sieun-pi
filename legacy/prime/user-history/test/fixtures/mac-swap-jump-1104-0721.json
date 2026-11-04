@@ -1,0 +1,288 @@
+[
+ {
+  "at": "2026-11-04T07:20:30.021Z",
+  "host": "us-metal02",
+  "usable": {
+   "kind": "linux",
+   "memSomeAvg10": 0,
+   "memFullAvg10": 0,
+   "cpuSomeAvg10": 0,
+   "swapoutsPerS": 0,
+   "runnablePerCore": 0.5,
+   "allowedCpus": 80
+  },
+  "workers": 21,
+  "workerGb": 33.45,
+  "top": [],
+  "live": 75,
+  "working": 45,
+  "queue": null,
+  "mac": {
+   "swapGb": null,
+   "pressureLevel": null
+  },
+  "cpuMs": 0,
+  "hosts": [
+   {
+    "name": "mac",
+    "usable": {
+     "pressureLevel": 2,
+     "swapoutsPerS": 0,
+     "kernelTaskPct": 17.3,
+     "owners": [
+      {
+       "owner": "browser:chrome",
+       "label": "Google Chrome",
+       "gb": 22.48
+      },
+      {
+       "owner": "browser:helium",
+       "label": "Helium",
+       "gb": 4.65
+      },
+      {
+       "owner": "other:ChatGPT",
+       "label": "ChatGPT",
+       "gb": 3.71
+      },
+      {
+       "owner": "other:rest",
+       "label": "other names under 0.1 GiB each",
+       "gb": 3.48
+      },
+      {
+       "owner": "browser:aside",
+       "label": "Aside",
+       "gb": 2.34
+      },
+      {
+       "owner": "pm2:search",
+       "label": "search",
+       "gb": 1.52
+      },
+      {
+       "owner": "chat:01a11b0b-7c15-73da-9481-8de15903eab4",
+       "label": "slack green guy",
+       "gb": 1.04
+      },
+      {
+       "owner": "other:Visual Studio Code",
+       "label": "Visual Studio Code",
+       "gb": 1.03
+      }
+     ],
+     "groups": {
+      "browsers": 29.8,
+      "other": 8.54,
+      "dev": 2.74,
+      "agents": 2.6,
+      "coding": 1.03,
+      "system": 3.95
+     },
+     "battery": {
+      "pct": 100,
+      "ac": true
+     }
+    },
+    "workers": 3,
+    "workerGb": 2.1,
+    "top": [],
+    "live": 12,
+    "working": 8,
+    "byWorker": [
+     {
+      "pid": 81941,
+      "gb": 1.06,
+      "root": "01a11b0b-7c15-73da-9481-8de15903eab4",
+      "tree": "slack green guy",
+      "sessions": 8,
+      "working": 6
+     },
+     {
+      "pid": 6405,
+      "gb": 0.55,
+      "root": "01a15427-145f-751d-ba15-d27b6c30f65f",
+      "tree": "sep launch!! (product guy)",
+      "sessions": 2,
+      "working": 1
+     },
+     {
+      "pid": 20748,
+      "gb": 0.49,
+      "root": "01a0cc38-4679-76da-8bbc-c5d5cb779908",
+      "tree": "there used to be a `slack green SEO improve poll`, review ex",
+      "sessions": 2,
+      "working": 1
+     }
+    ],
+    "agents": {
+     "gb": 2.6,
+     "working": 8,
+     "children": 4,
+     "retry": 0,
+     "idle": 0,
+     "hung": 0
+    },
+    "swapGb": 11.5,
+    "asideTabs": {
+     "agent": 0,
+     "all": 3
+    },
+    "jobRigs": [
+     {
+      "dir": "scratch/01a17dd4-abbc-718f-86b6-d2d80374089a",
+      "gb": 0.01,
+      "pids": 1,
+      "command": "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacO"
+     },
+     {
+      "dir": "work/sg-render-check",
+      "gb": 0,
+      "pids": 1,
+      "command": "bash /Users/sieunpark/work/sg-render-check/merge-pr.sh 460 --delete-branch"
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "at": "2026-11-04T07:21:30.016Z",
+  "host": "us-metal02",
+  "usable": {
+   "kind": "linux",
+   "memSomeAvg10": 0,
+   "memFullAvg10": 0,
+   "cpuSomeAvg10": 0,
+   "swapoutsPerS": 0,
+   "runnablePerCore": 0.5,
+   "allowedCpus": 80
+  },
+  "workers": 22,
+  "workerGb": 38.29,
+  "top": [],
+  "live": 75,
+  "working": 42,
+  "queue": null,
+  "mac": {
+   "swapGb": null,
+   "pressureLevel": null
+  },
+  "cpuMs": 0,
+  "hosts": [
+   {
+    "name": "mac",
+    "usable": {
+     "pressureLevel": 2,
+     "swapoutsPerS": 11709.2,
+     "kernelTaskPct": 65.8,
+     "owners": [
+      {
+       "owner": "browser:chrome",
+       "label": "Google Chrome",
+       "gb": 22.48
+      },
+      {
+       "owner": "chat:01a15427-145f-751d-ba15-d27b6c30f65f",
+       "label": "sep launch!! (product guy)",
+       "gb": 7.52
+      },
+      {
+       "owner": "browser:helium",
+       "label": "Helium",
+       "gb": 4.67
+      },
+      {
+       "owner": "other:ChatGPT",
+       "label": "ChatGPT",
+       "gb": 3.71
+      },
+      {
+       "owner": "other:rest",
+       "label": "other names under 0.1 GiB each",
+       "gb": 3.53
+      },
+      {
+       "owner": "browser:aside",
+       "label": "Aside",
+       "gb": 3.31
+      },
+      {
+       "owner": "pm2:search",
+       "label": "search",
+       "gb": 1.6
+      },
+      {
+       "owner": "chat:01a11b0b-7c15-73da-9481-8de15903eab4",
+       "label": "slack green guy",
+       "gb": 1.14
+      }
+     ],
+     "groups": {
+      "browsers": 30.79,
+      "agents": 10,
+      "other": 8.58,
+      "dev": 2.85,
+      "coding": 1.05,
+      "system": 4.14
+     },
+     "battery": {
+      "pct": 100,
+      "ac": true
+     }
+    },
+    "workers": 3,
+    "workerGb": 2.44,
+    "top": [],
+    "live": 13,
+    "working": 10,
+    "byWorker": [
+     {
+      "pid": 81941,
+      "gb": 1.19,
+      "root": "01a11b0b-7c15-73da-9481-8de15903eab4",
+      "tree": "slack green guy",
+      "sessions": 8,
+      "working": 7
+     },
+     {
+      "pid": 20748,
+      "gb": 0.68,
+      "root": "01a0cc38-4679-76da-8bbc-c5d5cb779908",
+      "tree": "there used to be a `slack green SEO improve poll`, review ex",
+      "sessions": 3,
+      "working": 2
+     },
+     {
+      "pid": 6405,
+      "gb": 0.57,
+      "root": "01a15427-145f-751d-ba15-d27b6c30f65f",
+      "tree": "sep launch!! (product guy)",
+      "sessions": 2,
+      "working": 1
+     }
+    ],
+    "agents": {
+     "gb": 10,
+     "working": 10,
+     "children": 3,
+     "retry": 0,
+     "idle": 0,
+     "hung": 0
+    },
+    "swapGb": 13.3,
+    "asideTabs": {
+     "agent": 1,
+     "all": 4
+    },
+    "jobRigs": [
+     {
+      "dir": "scratch/01a17dd4-abbc-718f-86b6-d2d80374089a",
+      "gb": 0.01,
+      "pids": 1,
+      "command": "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacO"
+     }
+    ]
+   }
+  ]
+ }
+]
