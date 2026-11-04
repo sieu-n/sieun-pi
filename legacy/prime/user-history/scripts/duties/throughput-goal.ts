@@ -138,6 +138,13 @@ export const REFRESH_SAMPLE_RUNS = 64;
  * at 22:5xZ the same 0.2% read as 8 statements of 8 runs answered in 5.1 to 9.6 s each, so each statement stays under the timeout.
  */
 export const REFRESH_SAMPLE_CHUNKS = 8;
+/**
+ * Independent page samples pooled into the p683 shares, each its own pageRuns draw. measured: five 0.2% draws taken at one moment at 10:5xZ 11-04
+ * read the 10k+ weekly slip at 18.1, 22.8, 23.6, 21.1 and 26.1%, so one draw swung about 4 points and the 10:41Z 26.2% against 21.5% at 08:05Z
+ * read as a rise that was mostly noise; three draws pooled read 21.7% (13,616 of 62,803 10k+ rows). The draws run side by side, each draw's
+ * statements one after another, so the step takes about one draw's time.
+ */
+export const REFRESH_SAMPLE_DRAWS = 3;
 export const REFRESH_PAGES_SQL = "SELECT pg_relation_size('instagram_census') / current_setting('block_size')::bigint AS pages";
 /** The weekly tier's floor (owner 10-26, "10K+ every week"), as the census reads it: no follower count reads as 0 (auto-sns-agent census policy.cadence). */
 export const WEEKLY_MIN_FOLLOWERS = 10_000;
@@ -717,17 +724,20 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
     }),
     step("refresh age", async (): Promise<RefreshSample[]> => {
       const pages = num((await sqlRows(query, PG.prod, REFRESH_PAGES_SQL))[0]?.pages);
-      const runs = pages ? pageRuns(pages, REFRESH_SAMPLE_PCT, REFRESH_SAMPLE_RUNS) : [];
-      if (!runs.length) throw new Error("instagram_census answered no page count");
-      const size = Math.ceil(runs.length / REFRESH_SAMPLE_CHUNKS);
+      if (!pages) throw new Error("instagram_census answered no page count");
       const samples: RefreshSample[] = [];
       let failure: unknown = null;
-      for (let at = 0; at < runs.length; at += size) {
-        try {
-          const row = (await sqlRows(query, PG.prod, refreshSql(runs.slice(at, at + size))))[0];
-          if (row) samples.push({ read: num(row.read) ?? 0, readBig: num(row.readBig) ?? 0, past7Big: num(row.past7Big) ?? 0, past30Rest: num(row.past30Rest) ?? 0 });
-        } catch (error) { failure ??= error; }
-      }
+      const draw = async (): Promise<void> => {
+        const runs = pageRuns(pages, REFRESH_SAMPLE_PCT, REFRESH_SAMPLE_RUNS);
+        const size = Math.ceil(runs.length / REFRESH_SAMPLE_CHUNKS);
+        for (let at = 0; at < runs.length; at += size) {
+          try {
+            const row = (await sqlRows(query, PG.prod, refreshSql(runs.slice(at, at + size))))[0];
+            if (row) samples.push({ read: num(row.read) ?? 0, readBig: num(row.readBig) ?? 0, past7Big: num(row.past7Big) ?? 0, past30Rest: num(row.past30Rest) ?? 0 });
+          } catch (error) { failure ??= error; }
+        }
+      };
+      await Promise.all(Array.from({ length: REFRESH_SAMPLE_DRAWS }, draw));
       if (!samples.length) throw failure ?? new Error("the instagram_census page sample answered no row");
       return samples;
     }),
