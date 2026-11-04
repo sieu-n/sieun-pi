@@ -36,19 +36,29 @@ const boardBase = (chat: string): string => (chat.startsWith("ag_") ? `/api/agen
  * busy before it could send the call or read the answer: on 11-03 a thread open in the box Chrome waited 2,135 ms for /api/rooms, of which
  * the network and the server took 29 ms.
  */
-const timings: { m: string; p: string; s: number; ms: number; net?: number }[] = [];
+type Timing = { m: string; p: string; s: number; ms: number; net?: number; err?: string };
+const timings: Timing[] = [];
 let timingsTimer: ReturnType<typeof setTimeout> | undefined;
 
-function sendTimings(): void {
+/**
+ * Posts the batch. A batch that did not reach the server goes back in the queue, so a failure seen while the server restarts reaches the log
+ * once it is back; the page's last batch goes as a beacon on pagehide.
+ */
+function sendTimings(beacon = false): void {
   clearTimeout(timingsTimer);
   timingsTimer = undefined;
   if (!timings.length) return;
-  const body = JSON.stringify({ samples: timings.splice(0) });
-  if (!navigator.sendBeacon?.("/api/timings", new Blob([body], { type: "application/json" }))) {
-    void fetch("/api/timings", { method: "POST", headers: { "content-type": "application/json" }, body, keepalive: true }).catch(() => {});
-  }
+  const samples = timings.splice(0);
+  const body = JSON.stringify({ samples });
   // The browser keeps 250 resource entries by default and then drops new ones, so each batch empties the buffer.
   performance.clearResourceTimings();
+  if (beacon && navigator.sendBeacon?.("/api/timings", new Blob([body], { type: "application/json" }))) return;
+  const requeue = () => {
+    timings.unshift(...samples);
+    timingsTimer ??= setTimeout(sendTimings, 10_000);
+  };
+  void fetch("/api/timings", { method: "POST", headers: { "content-type": "application/json" }, body, keepalive: true })
+    .then(response => (response.status >= 500 ? requeue() : undefined), requeue);
 }
 
 /** The network time of the call to `path` that started at `started`, from its Resource Timing entry, if the browser has one. */
@@ -58,29 +68,48 @@ function networkMs(path: string, started: number): number | undefined {
   return entry && entry.responseEnd > 0 ? Math.round(entry.responseEnd - entry.startTime) : undefined;
 }
 
-function recordTiming(m: string, path: string, s: number, started: number): void {
+/** Records one call; a failed call names its error and goes out at once, so the server log holds it beside the request it failed on. */
+function recordTiming(m: string, path: string, s: number, started: number, err?: string): void {
   if (typeof window === "undefined") return;
   const net = networkMs(path, started);
-  timings.push({ m, p: path.split("?")[0]!, s, ms: Math.round(performance.now() - started), ...(net === undefined ? {} : { net }) });
-  timingsTimer ??= setTimeout(sendTimings, 10_000);
+  timings.push({ m, p: path.split("?")[0]!, s, ms: Math.round(performance.now() - started), ...(net === undefined ? {} : { net }), ...(err ? { err } : {}) });
+  if (err) sendTimings();
+  else timingsTimer ??= setTimeout(sendTimings, 10_000);
 }
 
-if (typeof window !== "undefined") addEventListener("pagehide", sendTimings);
+if (typeof window !== "undefined") addEventListener("pagehide", () => sendTimings(true));
 
-/** A Blob body goes as its own bytes with its own type, any other body as JSON. */
+/**
+ * A Blob body goes as its own bytes with its own type, any other body as JSON. A call that fails, refused by the server or never reaching
+ * it, posts its error with its timing (`recordTiming`), so the server's log holds every failure the page shows, such as a Not delivered send.
+ */
 async function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const started = performance.now();
   const blob = body instanceof Blob;
-  const response = await fetch(path, {
-    method,
-    headers: body === undefined ? {} : { "content-type": blob ? body.type || "application/octet-stream" : "application/json" },
-    ...(body === undefined ? {} : { body: blob ? body : JSON.stringify(body) }),
-    ...(signal ? { signal } : {}),
-  });
-  const text = await response.text();
-  recordTiming(method, path, response.status, started);
-  const value = text ? (JSON.parse(text) as unknown) : undefined;
-  if (!response.ok) throw new ApiError(response.status, (value as { error?: string } | undefined)?.error ?? `${method} ${path} failed with ${response.status}`);
+  let response: Response;
+  let text: string;
+  try {
+    response = await fetch(path, {
+      method,
+      headers: body === undefined ? {} : { "content-type": blob ? body.type || "application/octet-stream" : "application/json" },
+      ...(body === undefined ? {} : { body: blob ? body : JSON.stringify(body) }),
+      ...(signal ? { signal } : {}),
+    });
+    text = await response.text();
+  } catch (error) {
+    if (!signal?.aborted) recordTiming(method, path, 0, started, error instanceof Error ? `${error.name}: ${error.message}` : String(error));
+    throw error;
+  }
+  let value: unknown;
+  let error: string | undefined;
+  try {
+    value = text ? (JSON.parse(text) as unknown) : undefined;
+  } catch {
+    error = `${method} ${path} answered ${response.status} with a body that is not JSON`;
+  }
+  const failure = response.ok ? error : (value as { error?: string } | undefined)?.error ?? error ?? `${method} ${path} failed with ${response.status}`;
+  recordTiming(method, path, response.status, started, failure);
+  if (failure !== undefined) throw response.ok ? new Error(failure) : new ApiError(response.status, failure);
   return value as T;
 }
 

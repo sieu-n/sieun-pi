@@ -38,7 +38,10 @@ export const ROUTES = {
 
 const percentile = (sorted: readonly number[], q: number): number => sorted[Math.max(0, Math.ceil(q * sorted.length) - 1)]!;
 
-/** The request log's lines in the window ending at `now`; a line that does not parse is skipped. */
+/**
+ * The request log's lines in the window ending at `now`; a line that does not parse is skipped, and so is a server line with status 0, a
+ * request the caller dropped. A client line with status 0 stays, since it is a call that never reached the server.
+ */
 export function readTimings(dir: string, now: number, windowMs: number): RequestTiming[] {
   const logDir = join(dir, "requests");
   if (!existsSync(logDir)) return [];
@@ -50,7 +53,7 @@ export function readTimings(dir: string, now: number, windowMs: number): Request
       if (!line) continue;
       try {
         const timing = JSON.parse(line) as RequestTiming;
-        if (timing.at >= from && timing.at <= now && timing.s > 0) out.push(timing);
+        if (timing.at >= from && timing.at <= now && (timing.s > 0 || (timing.src === "client" && timing.err !== undefined))) out.push(timing);
       } catch { /* a torn last line */ }
     }
   }
@@ -61,6 +64,7 @@ export function readTimings(dir: string, now: number, windowMs: number): Request
 export function routeSpeeds(timings: readonly RequestTiming[]): RouteSpeed[] {
   const groups = new Map<string, RequestTiming[]>();
   for (const timing of timings) {
+    if (timing.s === 0) continue;
     const key = `${sourceOf(timing)} ${timing.m} ${timing.r}`;
     const group = groups.get(key);
     if (group) group.push(timing);
@@ -103,8 +107,22 @@ export function finding(s: RouteSpeed): string {
   return `${head}${net}; the slowest was ${s.slowestPath}`;
 }
 
+/** The routes a send of the owner's goes through: the post, its retry and the image upload it waits on. */
+const SEND_ROUTES = new Set([ROUTES.send, "POST /api/c/:id/send/:requestId/retry", "POST /api/uploads"]);
+
+/**
+ * The sends that failed, each once: a server line the server refused or failed (status 400 and up), and a client line with status 0, a call
+ * that never reached the server, such as one made during a release restart. A client line with a status repeats the server's own line. On
+ * 11-04 at 03:09Z three of the owner's sends answered 400 and showed Not delivered, and no metric counted them.
+ */
+export function failedSends(timings: readonly RequestTiming[]): RequestTiming[] {
+  return timings.filter(t => SEND_ROUTES.has(`${t.m} ${t.r}`) && (t.src === "server" ? t.s >= 400 : t.s === 0));
+}
+
 export function apiSpeed(dir: string, now: number, windowMs: number) {
-  const speeds = routeSpeeds(readTimings(dir, now, windowMs));
+  const timings = readTimings(dir, now, windowMs);
+  const speeds = routeSpeeds(timings);
+  const failed = failedSends(timings);
   const seen = PREFERRED.map(src => speeds.filter(s => s.src === src)).find(list => list.length) ?? [];
   const metrics: Record<string, number> = {};
   if (seen.length) metrics.slowest_api_p90_ms = seen[0]!.p90;
@@ -117,13 +135,20 @@ export function apiSpeed(dir: string, now: number, windowMs: number) {
   if (messages || replies) metrics.thread_open_p90_ms = Math.max(messages?.p90 ?? 0, replies?.p90 ?? 0);
   const send = speedOf(speeds, ROUTES.send);
   if (send) metrics.send_p90_ms = send.p90;
+  metrics.failed_sends_24h = failed.length;
   const slowest = seen.slice(0, 3);
   return {
     metrics,
     slowest,
     metricSources: Object.fromEntries(Object.entries({ search, messages, replies, send }).flatMap(([key, speed]) => (speed ? [[key, `${speed.src}, ${speed.count} requests`]] : []))),
     routes: speeds,
-    flagged: slowest.map(s => ({ kind: "slow_api", sig: `${s.src}:${s.route}`, excerpt: finding(s) })),
+    flagged: [
+      ...failed.map(t => ({
+        kind: "failed_send", sig: `${sourceOf(t)}:${t.m} ${t.r}:${t.s}`,
+        excerpt: `${new Date(t.at).toISOString()} ${t.m} ${t.p} ${t.s ? `answered ${t.s}` : "never reached the server"} (${sourceOf(t)}): ${t.err ?? "no reason logged"}`,
+      })),
+      ...slowest.map(s => ({ kind: "slow_api", sig: `${s.src}:${s.route}`, excerpt: finding(s) })),
+    ],
   };
 }
 

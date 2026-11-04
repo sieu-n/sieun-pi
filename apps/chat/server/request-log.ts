@@ -25,6 +25,11 @@ export interface RequestTiming {
   at: number; src: TimingSource; m: string; r: string; p: string; s: number; ms: number; net?: number; via?: ClientVia;
   /** A server line's split of `ms`: the wait for the request body, the handler's own time after it, and the longest event-loop stall in it. */
   body?: number; run?: number; stall?: number;
+  /**
+   * Why the request failed: the server's error for a refused or failed request, and on a client line the error the page got, with `s` 0 when
+   * the call never reached the server, such as during a release restart.
+   */
+  err?: string;
 }
 
 /**
@@ -63,7 +68,7 @@ export class LoopStalls {
 }
 
 /** A client sample as POST /api/timings takes it; the server names its route. */
-export interface ClientTiming { m: string; p: string; s: number; ms: number; net?: number }
+export interface ClientTiming { m: string; p: string; s: number; ms: number; net?: number; err?: string }
 
 /** A 24 h window spans at most two UTC days, so a file older than yesterday holds no line the duty reads. */
 const KEEP_DAYS = 2;
@@ -110,5 +115,8 @@ export function clientTimings(body: unknown): ClientTiming[] {
   return samples.filter((sample): sample is ClientTiming => {
     const { m, p, s, ms } = (sample ?? {}) as Record<string, unknown>;
     return typeof m === "string" && typeof p === "string" && p.startsWith("/api/") && typeof s === "number" && typeof ms === "number" && Number.isFinite(ms) && ms >= 0;
-  }).map(({ m, p, s, ms, net }) => ({ m, p: p.split("?")[0]!, s, ms, ...(typeof net === "number" && Number.isFinite(net) && net >= 0 ? { net } : {}) }));
+  }).map(({ m, p, s, ms, net, err }) => ({
+    m, p: p.split("?")[0]!, s, ms, ...(typeof net === "number" && Number.isFinite(net) && net >= 0 ? { net } : {}),
+    ...(typeof err === "string" && err ? { err: err.slice(0, 500) } : {}),
+  }));
 }

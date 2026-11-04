@@ -34,8 +34,11 @@ const MAX_BODY = 40 * 1024 * 1024;
 
 export class BadRequest extends Error {}
 
-/** A request's split of its time for the request log: the body wait and the handler's own time (request-log.ts `RequestTiming`). */
-type Phase = { body?: number; run?: number };
+/**
+ * A request's split of its time for the request log: the body wait and the handler's own time, and the reason a refused or failed
+ * request gave (request-log.ts `RequestTiming`).
+ */
+type Phase = { body?: number; run?: number; err?: string };
 const phases = new WeakMap<IncomingMessage, Phase>();
 
 function route(method: string, path: string, handler: Handler): Route {
@@ -285,7 +288,7 @@ export function serve(app: App): Server {
   const server = createServer((req, res) => {
     const path = (req.url ?? "/").split("?")[0]!;
     const method = req.method ?? "GET";
-    if (path === "/api/timings" && method === "POST") return void takeTimings(table, requests, req, res);
+    if (path === "/api/timings" && method === "POST") return void takeTimings(table, requests, app.log, req, res);
     if (path.startsWith("/api/")) {
       const started = performance.now();
       const phase: Phase = {};
@@ -309,12 +312,16 @@ export function serve(app: App): Server {
 }
 
 /** POST /api/timings: the web client's wait for each call it made (request-log.ts), with each path named by its route. */
-async function takeTimings(table: Route[], requests: RequestLog, req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function takeTimings(table: Route[], requests: RequestLog, log: (line: string) => void, req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
     const at = Date.now();
     const samples = clientTimings(await readBody(req));
     const via: ClientVia = req.headers["tailscale-user-login"] ? "tailnet" : "local";
-    for (const sample of samples) requests.write({ at, src: "client", ...sample, r: routeLabel(table, sample.m, sample.p), via });
+    for (const sample of samples) {
+      const r = routeLabel(table, sample.m, sample.p);
+      requests.write({ at, src: "client", ...sample, r, via });
+      if (sample.err !== undefined) log(`client ${sample.m} ${r} ${sample.p} ${sample.s || "unreached"} (${via}): ${sample.err}`);
+    }
     json(res, 200, { taken: samples.length });
   } catch (error) {
     json(res, 400, { error: error instanceof Error ? error.message : String(error) });
@@ -357,17 +364,31 @@ async function handle(app: App, table: Route[], req: IncomingMessage, res: Serve
         if (phase) phase.run = performance.now() - ran - (phase.body ?? 0);
         return json(res, 200, value ?? { ok: true });
       }
-      return json(res, 404, { error: `No endpoint ${req.method} ${path}.` });
+      return refuse(app, table, req, res, 404, `No endpoint ${req.method} ${path}.`);
     }
     return serveWeb(app, path, res);
   } catch (error) {
-    if ((error instanceof PoolError || error instanceof ReactionError) && !res.headersSent) return json(res, error.status, { error: error.message });
     const message = error instanceof Error ? error.message : String(error);
-    const status = isHostAway(error) ? 503 : error instanceof NotFound || error instanceof EntryMissing ? 404 : error instanceof EntryExists ? 409 : error instanceof BadRequest || error instanceof CwdRefused || /^(No |A |An |Dates|around|after|.* is not in (#|Solo "))/.test(message) ? 400 : 500;
-    if (status === 500) app.log(`${req.method} ${path} failed: ${error instanceof Error ? error.stack : message}`);
-    if (!res.headersSent) json(res, status, { error: message });
-    else res.end();
+    const status = error instanceof PoolError || error instanceof ReactionError ? error.status : isHostAway(error) ? 503
+      : error instanceof NotFound || error instanceof EntryMissing ? 404 : error instanceof EntryExists ? 409
+      : error instanceof BadRequest || error instanceof CwdRefused || /^(No |A |An |Dates|around|after|.* is not in (#|Solo "))/.test(message) ? 400 : 500;
+    refuse(app, table, req, res, status, message, status === 500 && error instanceof Error ? error.stack : undefined);
   }
+}
+
+/**
+ * Answers a refused or failed /api request and writes one log line with its route, status and reason, which also goes on its request log
+ * line as `err`. On 11-04 at 03:09Z three of the owner's sends answered 400 and the page showed Not delivered, while the server logged
+ * nothing about them, so the reason was lost.
+ */
+function refuse(app: App, table: Route[], req: IncomingMessage, res: ServerResponse, status: number, message: string, stack?: string): void {
+  const method = req.method ?? "GET";
+  const path = new URL(req.url ?? "/", "http://x").pathname;
+  const phase = phases.get(req);
+  if (phase) phase.err = message.slice(0, 500);
+  app.log(`${method} ${routeLabel(table, method, path)} ${path} ${status}: ${stack ?? message}`);
+  if (!res.headersSent) json(res, status, { error: message });
+  else res.end();
 }
 
 async function serveEntryImage(app: App, path: string, res: ServerResponse): Promise<void> {

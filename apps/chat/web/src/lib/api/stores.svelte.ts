@@ -19,8 +19,12 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 type SendOpts = { images?: Attached[]; mentions?: AgentId[]; threadRoot?: string; whenBusy?: "steer" | "followUp" };
 /** A send as the page holds it: a `SendRequest` whose images may still be uploading. */
 type SendDraft = Omit<SendRequest, "images"> & { images?: Attached[] };
-/** Tries after the first when the chat server cannot be reached, each with the same requestId, so a send lands once. */
-const SEND_RETRIES = 3;
+/**
+ * Tries after the first when the chat server cannot be reached, each with the same requestId, so a send lands once. The waits double from
+ * 400 ms, so 5 tries wait 12.4 s in all. A release restart leaves :5184 closed from its stop until the new server listens, which took 1.3 to
+ * 3.0 s over the 14 restarts on 11-03 and 11-04 (journal: Started to "apps/chat on"), longer than the 2.8 s that 3 tries waited.
+ */
+const SEND_RETRIES = 5;
 /** A real owner message replaces a pending send with its text only if it is no older than this before it, so history never does. */
 const LAND_SLACK_MS = 60_000;
 const isPending = (item: Item): boolean => item.id.startsWith("r:");

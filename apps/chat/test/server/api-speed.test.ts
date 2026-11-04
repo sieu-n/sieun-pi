@@ -83,6 +83,38 @@ test("a server line splits its time into the body wait, the handler and the long
   }
 });
 
+test("a refused send logs its route, status and reason, and a page's failed call reaches the log", async () => {
+  const dataDir = tempDir();
+  const logs: string[] = [];
+  const chat = await start({ dataDir, log: line => logs.push(line) });
+  try {
+    const channel = (await chat.get("/api/sidebar")).channels[0].id as string;
+    const refused = await chat.send("POST", `/api/c/${channel}/send`, { text: "long post", requestId: "r-blob", images: [{ url: "blob:x", mimeType: "image/png" }] });
+    assert.equal(refused.status, 400);
+    const empty = await chat.send("POST", `/api/c/${channel}/send`, { text: " ", requestId: "r-empty" });
+    assert.equal(empty.status, 400);
+    const unreached = { m: "POST", p: `/api/c/${channel}/send`, s: 0, ms: 2800, err: "TypeError: Failed to fetch" };
+    const answered = { m: "POST", p: `/api/c/${channel}/send`, s: 400, ms: 30, err: "No upload blob:x" };
+    assert.deepEqual(await chat.send("POST", "/api/timings", { samples: [unreached, answered] }), { status: 200, body: { taken: 2 } });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.ok(logs.some(line => line.startsWith(`POST /api/c/:id/send /api/c/${channel}/send 400: No upload blob:x;`)), logs.join("\n"));
+    assert.ok(logs.includes(`POST /api/c/:id/send /api/c/${channel}/send 400: A message needs text or an image.`), logs.join("\n"));
+    assert.ok(logs.includes(`client POST /api/c/:id/send /api/c/${channel}/send unreached (local): TypeError: Failed to fetch`), logs.join("\n"));
+    const sends = lines(dataDir).filter(line => line.r === "/api/c/:id/send");
+    assert.deepEqual(sends.map(line => [line.src, line.s, line.err?.slice(0, 15)]), [
+      ["server", 400, "No upload blob:"], ["server", 400, "A message needs"], ["client", 0, "TypeError: Fail"], ["client", 400, "No upload blob:"],
+    ]);
+    const out = apiSpeed(dataDir, Date.now() + 1, 3600_000);
+    assert.equal(out.metrics.failed_sends_24h, 3);
+    assert.deepEqual(out.flagged.filter(row => row.kind === "failed_send").map(row => row.sig), [
+      "server:POST /api/c/:id/send:400", "server:POST /api/c/:id/send:400", "client:POST /api/c/:id/send:0",
+    ]);
+    assert.match(out.flagged[2]!.excerpt, /never reached the server \(client\): TypeError: Failed to fetch$/);
+  } finally {
+    await chat.close();
+  }
+});
+
 test("a day file older than yesterday goes when the day changes", async () => {
   const dir = tempDir();
   mkdirSync(dir, { recursive: true });
@@ -115,6 +147,7 @@ test("the precheck reads each metric from the client's lines, falls back to the 
   const out = apiSpeed(dir, now, 24 * 3600_000);
   assert.deepEqual(out.metrics, {
     slowest_api_p90_ms: 2500, search_p90_ms: 900, thread_open_p90_ms_messages: 190, thread_open_p90_ms_replies: 2500, thread_open_p90_ms: 2500, send_p90_ms: 40,
+    failed_sends_24h: 0,
   });
   assert.equal(out.metricSources.send, "server, 1 requests");
   assert.deepEqual(out.slowest.map(s => s.route), ["GET /api/c/:id/replies/:root", "GET /api/search", "GET /api/c/:id/items"]);
