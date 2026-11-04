@@ -427,10 +427,9 @@ def pick_other(agents, to):
     exact = [agent for agent in agents if wanted in (agent.get("sessionId"), agent.get("activeSessionId"))]
     if len(exact) == 1:
         return exact[0], "id"
-    # A thread matches by its exact name only, never by an id prefix (c149).
+    # A thread or root matches by its exact name only, never by an id prefix (c149): two sessions started in the same minute share 8 characters.
     named = [agent for agent in agents if str(agent.get("sessionName") or "").strip() == wanted if agent.get("piThread")] + [
-        agent for agent in agents if not agent.get("piThread") and (str(agent.get("sessionName") or "").strip().lower() == wanted.lower() or
-                                                                    (len(wanted) >= 8 and str(agent.get("sessionId") or "").startswith(wanted)))]
+        agent for agent in agents if not agent.get("piThread") and str(agent.get("sessionName") or "").strip().lower() == wanted.lower()]
     if len(named) > 1 and any(agent.get("piThread") for agent in named):
         raise ambiguous(wanted, named)
     return (named[0], "name") if len(named) == 1 else None

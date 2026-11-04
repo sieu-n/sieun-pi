@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { measure } from "../scripts/duties/whole-system.ts";
-import { listedSessions, readReopenedSends, readServiceFaults, readSupervisorFaults } from "../src/daemon-faults.ts";
+import { chatNamer, listedSessions, readReopenedSends, readServiceFaults, readSupervisorFaults } from "../src/daemon-faults.ts";
 import { timedWorkerStart } from "../src/daemon-worker-start.ts";
 import type { WatchLine } from "../src/mac-usable-watch.ts";
 
@@ -296,4 +296,25 @@ test("a create the service refused on its own offline read of a box is that box'
   const [fault] = readServiceFaults(["2026-11-04T01:15:24.481Z daemon create chat page probe 01:12: no answer after 0.0 s: mac is offline (Tailscale last seen 5 min ago)"], "us-metal02");
   assert.equal(fault?.host, "mac");
   assert.equal(fault?.title, "chat page probe 01:12");
+});
+
+// At 02:36Z on 11-04 a short id, 01a1a1a6, started both terms-design's id and that of the AI harness chat's d7 duty, and the duty's triage
+// messaged the wrong one (c149). A short id that starts two sessions names both with their full ids; a full id names its own session only.
+test("a fault's short id that two sessions share names both by full id, and a full id names its own session", () => {
+  const TERMS = "01a1a1a6-ec7f-7a10-8000-000000000002";
+  const D7 = "01a1a1a6-5b16-7a10-8000-000000000001";
+  const HARNESS = "01a1164b-4a2d-742d-b27a-82f086ed0200";
+  const OTHER = "01a1a1a6-0c3e-7a10-8000-000000000003";
+  const both = [{ id: TERMS, name: "terms-design" }, { id: HARNESS, name: "AI harness" }];
+  const name = chatNamer(both, new Map([[HARNESS, new Map([["d7 duty", [D7]]])]]));
+  assert.equal(name({ at: 0, host: "us-metal02", session: "01a1a1a6", what: "" }),
+    `one of terms-design (${TERMS}) or AI harness, job d7 duty (${D7}), whose ids all start 01a1a1a6`);
+  assert.equal(name({ at: 0, host: "us-metal02", session: D7, what: "" }), "AI harness, job d7 duty");
+  assert.equal(name({ at: 0, host: "us-metal02", session: TERMS, what: "" }), "terms-design");
+  const row = (id: string, root: string, sessionName: string) => ({ sessionId: id, sessionFile: `/home/sieun/.prime/agent/session-artifacts/${root}/sub-1/${id}.jsonl`, sessionName });
+  const copy = JSON.stringify({ rows: [row(OTHER, HARNESS, "convex push"), row(D7, HARNESS, "d7 duty")] });
+  const listed = listedSessions([copy], ["01a1a1a6"]);
+  assert.deepEqual([listed.get("01a1a1a6")?.id, listed.get("01a1a1a6")?.alike?.map(one => one.id)], [OTHER, [D7]]);
+  assert.equal(chatNamer([both[1]!], new Map(), listed)({ at: 0, host: "us-metal02", session: "01a1a1a6", what: "" }),
+    `one of AI harness, job convex push (${OTHER}) or AI harness, job d7 duty (${D7}), whose ids all start 01a1a1a6`);
 });

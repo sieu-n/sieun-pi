@@ -382,11 +382,14 @@ export function readSupervisorFaults(lines: readonly string[], local: string, re
   return faults;
 }
 
-/** A session a box's catalog copy lists: the chat at the root of its tree and its own name. */
-export interface ListedSession { root: string; name?: string; rootName?: string;
+/** A session a box's catalog copy lists: its full id, the chat at the root of its tree and its own name. */
+export interface ListedSession { id: string; root: string; name?: string; rootName?: string;
   /** The session's file on its own box, which src/slot-wait-timeouts.ts reads for a timed-out send's delivery. */
-  file?: string }
+  file?: string;
+  /** The other sessions a short id starts the id of: two sessions started in the same minute share their first 8 characters (c149). */
+  alike?: ListedSession[] }
 
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ROOT_IN_PATH = /\/session-artifacts\/([0-9a-f-]{36})\/|\/sessions\/([0-9a-f-]{36})\.jsonl$/;
 
 /**
@@ -395,36 +398,48 @@ const ROOT_IN_PATH = /\/session-artifacts\/([0-9a-f-]{36})\/|\/sessions\/([0-9a-
  * 10-18, so this looks up the few ids a window's faults name by text search instead of parsing every row.
  */
 export function listedSessions(texts: readonly string[], shorts: Iterable<string>): Map<string, ListedSession> {
-  const row = (id: string): ListedSession | undefined => {
+  // Every session whose id starts with `id`, the first row of each full id kept.
+  const rows = (id: string): ListedSession[] => {
+    const found = new Map<string, ListedSession>();
     for (const text of texts) {
-      const at = text.indexOf(`"sessionId":"${id}`);
-      if (at < 0) continue;
-      const slice = text.slice(at, at + 4000);
-      const file = /"sessionFile":"([^"]*)"/.exec(slice)?.[1];
-      const root = file ? ROOT_IN_PATH.exec(file) : null;
-      if (!root) continue;
-      const name = /"sessionName":"((?:[^"\\]|\\.)*)"/.exec(slice)?.[1];
-      return { root: root[1] ?? root[2]!, file: JSON.parse(`"${file}"`) as string, ...name ? { name: JSON.parse(`"${name}"`) as string } : {} };
+      for (let at = text.indexOf(`"sessionId":"${id}`); at >= 0; at = text.indexOf(`"sessionId":"${id}`, at + 1)) {
+        const slice = text.slice(at, at + 4000);
+        const full = /^"sessionId":"([^"]*)"/.exec(slice)?.[1];
+        if (!full || found.has(full)) continue;
+        const file = /"sessionFile":"([^"]*)"/.exec(slice)?.[1];
+        const root = file ? ROOT_IN_PATH.exec(file) : null;
+        if (!root) continue;
+        const name = /"sessionName":"((?:[^"\\]|\\.)*)"/.exec(slice)?.[1];
+        found.set(full, { id: full, root: root[1] ?? root[2]!, file: JSON.parse(`"${file}"`) as string, ...name ? { name: JSON.parse(`"${name}"`) as string } : {} });
+      }
     }
-    return undefined;
+    return [...found.values()];
+  };
+  const named = (own: ListedSession): ListedSession => {
+    const rootName = own.root === own.id ? own.name : rows(own.root)[0]?.name;
+    return { ...own, ...rootName ? { rootName } : {} };
   };
   const found = new Map<string, ListedSession>();
   for (const short of new Set(shorts)) {
-    const own = row(short);
-    if (!own) continue;
-    const rootName = own.root.startsWith(short) ? own.name : row(own.root)?.name;
-    found.set(short, { ...own, ...rootName ? { rootName } : {} });
+    const [own, ...alike] = rows(short).map(named);
+    if (own) found.set(short, { ...own, ...alike.length ? { alike } : {} });
   }
   return found;
 }
 
-/** A session's chat, by the title of its tree's root, and its job name when it is no chat itself. */
-export interface SessionOwner { chat: string; job?: string }
+/**
+ * A session's chat, by the title of its tree's root, and its job name when it is no chat itself. `alike` holds every full id a short id starts
+ * when it starts more than one, and `chat` then names each of them, so a flag never steers one chat for another's session (c149).
+ */
+export interface SessionOwner { chat: string; job?: string; alike?: string[] }
+
+const ownerWords = (owner: SessionOwner): string => owner.job ? `${owner.chat}, job ${owner.job}` : owner.chat;
 
 /**
  * Names a session as the precheck names chats, by the title of its tree's root: the chat itself, or the chat and job for a job its box's
  * catalog copy lists (`listedSessions`) or a job of the chat (`named`), by session id or by job name (`byJob`); undefined when nothing names it.
- * A short id is a session id's first 8 characters, about a minute of a UUIDv7's clock, so two sessions can share one; the first match names it.
+ * A full id names its own session only. A short id is a session id's first 8 characters, about a minute of a UUIDv7's clock, so two sessions
+ * can share one: on 11-04 the AI harness d7 duty (01a1a1a6-5b16) and terms-design (01a1a1a6-ec7f) did. Such a short id names every match.
  */
 export function sessionOwners(chats: readonly { id: string; name: string }[], jobs: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>> = new Map(),
   listed: ReadonlyMap<string, ListedSession> = new Map()): { bySession: (session: string) => SessionOwner | undefined; byJob: (name: string) => SessionOwner | undefined } {
@@ -437,18 +452,26 @@ export function sessionOwners(chats: readonly { id: string; name: string }[], jo
     if (!named.has(job)) named.set(job, owner);
     for (const session of sessions) jobOf.set(session, owner);
   }
-  const find = <T>(map: ReadonlyMap<string, T>, short: string): T | undefined => { for (const [id, value] of map) if (id.startsWith(short)) return value; return undefined; };
+  const listedById = new Map<string, ListedSession>();
+  for (const entry of listed.values()) for (const one of [entry, ...entry.alike ?? []]) if (!listedById.has(one.id)) listedById.set(one.id, one);
+  const ownerOf = (id: string): SessionOwner | undefined => {
+    const chat = byId.get(id);
+    if (chat !== undefined) return { chat };
+    const job = jobOf.get(id);
+    if (job) return job;
+    const entry = listedById.get(id);
+    if (!entry) return undefined;
+    const root = byId.get(entry.root) ?? entry.rootName ?? `chat ${entry.root.slice(0, 8)}`;
+    return entry.root === id ? { chat: root } : { chat: root, job: entry.name ?? id.slice(0, 8) };
+  };
   return {
     bySession: session => {
-      const short = session.slice(0, 8);
-      const chat = find(byId, short);
-      if (chat !== undefined) return { chat };
-      const job = find(jobOf, short);
-      if (job) return job;
-      const entry = listed.get(short);
-      if (!entry) return undefined;
-      const root = byId.get(entry.root) ?? entry.rootName ?? `chat ${entry.root.slice(0, 8)}`;
-      return entry.root.startsWith(short) ? { chat: root } : { chat: root, job: entry.name ?? short };
+      if (!session) return undefined;
+      if (SESSION_ID.test(session)) return ownerOf(session);
+      const ids = [...new Set([...byId.keys(), ...jobOf.keys(), ...listedById.keys()])].filter(id => id.startsWith(session));
+      const owners = ids.flatMap(id => { const owner = ownerOf(id); return owner ? [{ id, owner }] : []; });
+      if (owners.length < 2) return owners[0]?.owner;
+      return { chat: `one of ${owners.map(({ id, owner }) => `${ownerWords(owner)} (${id})`).join(" or ")}, whose ids all start ${session}`, alike: owners.map(({ id }) => id) };
     },
     byJob: name => named.get(name),
   };
@@ -461,7 +484,7 @@ export function chatNamer(chats: readonly { id: string; name: string }[], jobs: 
   return fault => {
     if (fault.title) return fault.title;
     const owner = fault.session ? bySession(fault.session) : undefined;
-    return owner && (owner.job ? `${owner.chat}, job ${owner.job}` : owner.chat);
+    return owner && ownerWords(owner);
   };
 }
 

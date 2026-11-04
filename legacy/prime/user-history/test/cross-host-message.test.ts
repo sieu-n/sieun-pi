@@ -33,7 +33,7 @@ function boxes(): RootDirectory & { sent: { host: string; session: string; text:
 
 test("a box chat's send to the release owner on the Mac goes to the Mac's daemon with the sender named", async () => {
   const directory = boxes();
-  const receipt = await sendCrossHost(directory, VP, "01a10810", "land 37 is green, promote when ready");
+  const receipt = await sendCrossHost(directory, VP, RELEASE_OWNER, "land 37 is green, promote when ready");
   assert.deepEqual([receipt.host, receipt.crossHost, receipt.deliveryStatus], ["mac", true, "queued"]);
   assert.equal(directory.sent.length, 1);
   assert.deepEqual([directory.sent[0]!.host, directory.sent[0]!.session], ["mac", RELEASE_OWNER]);
@@ -43,6 +43,32 @@ test("a box chat's send to the release owner on the Mac goes to the Mac's daemon
   assert.deepEqual((await otherBoxRoots(directory, VP)).map(root => root.name), ["release driver", "Untitled"]);
   assert.equal(siblingRow(ROOTS[2]!).relationship, "sibling");
   assert.ok("error" in pickRoot([...ROOTS, { ...ROOTS[3]!, sessionId: "01a0cc5e-ffff-7000-8000-000000000000" }], "untitled"), "two roots of one name need an id");
+});
+
+// At 02:36Z on 11-04 an ops alert named terms-design by its prefix 01a1a1a6, and the send went to the AI harness d7 duty, a session the same
+// minute started (c149).
+test("an 8-character id prefix two roots share names neither, and the error names both full ids", async () => {
+  const D7 = "01a1a1a6-5b16-7000-8000-000000000001";
+  const TERMS = "01a1a1a6-ec7f-7000-8000-000000000002";
+  const roots: Root[] = [ROOTS[0]!, { sessionId: D7, name: "d7 duty", host: "mac", status: "idle" }, { sessionId: TERMS, name: "terms-design", host: "mac", status: "idle" }];
+  const sent: string[] = [];
+  const directory: RootDirectory = { roots: () => roots, reopen: async () => false,
+    send: async session => { sent.push(session); return { deliveryStatus: "queued", target: { sessionId: session } }; } };
+  await assert.rejects(sendCrossHost(directory, VP, "01a1a1a6", "convex push failing"), (error: Error) =>
+    /^No sibling matches "01a1a1a6" on any box either: an id prefix names no session/.test(error.message) && error.message.includes(D7) && error.message.includes(TERMS));
+  await assert.rejects(sendCrossHost(directory, VP, "01a1a1a6-ec7f", "x"), /an id prefix names no session \(c149\), and it starts the id of terms-design/);
+  await sendCrossHost(directory, VP, TERMS, "convex push failing");
+  await sendCrossHost(directory, VP, "terms-design", "again");
+  assert.deepEqual(sent, [TERMS, TERMS]);
+});
+
+test("a root's kernel picks no other-box root by an id prefix (message-limit-check.py pick_other), only by full id or exact name", async () => {
+  const code = "import importlib.util, json, sys\nspec = importlib.util.spec_from_file_location('mlc', sys.argv[1]); mlc = importlib.util.module_from_spec(spec)\n" +
+    "spec.loader.exec_module(mlc)\nagents = json.loads(sys.argv[2])\nprint(json.dumps([mlc.pick_other(agents, to) for to in json.loads(sys.argv[3])]))";
+  const agents = [{ sessionId: "01a1a1a6-5b16-7000-8000-000000000001", sessionName: "d7 duty" }, { sessionId: "01a1a1a6-ec7f-7000-8000-000000000002", sessionName: "terms-design" }];
+  const wanted = ["01a1a1a6", "01a1a1a6-ec7f", "terms-design", agents[1]!.sessionId];
+  const run = await promisify(execFile)("python3", ["-c", code, join(import.meta.dirname, "../src/message-limit-check.py"), JSON.stringify(agents), JSON.stringify(wanted)]);
+  assert.deepEqual(JSON.parse(run.stdout), [null, null, [agents[1], "name"], [agents[1], "id"]]);
 });
 
 // On 10-21 from 08:33Z every send from a us-metal02 session to slack green guy read 'No sibling matches "slack green guy" on any box either',
@@ -66,7 +92,7 @@ test("a chat the Mac's daemon lists archived stays a sibling, and an archived ro
   const old: RootDirectory = { ...directory, roots: () => [roots[0]!, ...archived] };
   assert.deepEqual(await otherBoxRoots(old, VP), [], "an archived root that is no chat stays off the roster");
   await sendCrossHost(old, VP, "land 37 driver", "x");
-  await sendCrossHost(old, VP, OLD_JOB.slice(0, 8), "y");
+  await sendCrossHost(old, VP, OLD_JOB, "y");
   assert.deepEqual(sent, [SLACK_GREEN, OLD_JOB, OLD_JOB]);
   const live: Root = { sessionId: "01a15000-0000-7000-8000-000000000000", name: "land 37 driver", host: "mac", status: "idle" };
   assert.equal((pickRoot([...archived, live], "land 37 driver") as Root).sessionId, live.sessionId, "a listed root wins over an archived one of its name");

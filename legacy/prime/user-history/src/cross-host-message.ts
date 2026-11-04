@@ -65,21 +65,26 @@ export async function otherBoxRoots(directory: RootDirectory, session: string): 
 }
 
 /**
- * The one root `to` names among `roots`: its session id, an id prefix of 8 or more characters, its active session id or its name (any case).
- * An archived root counts only when no other root matches.
+ * The one root `to` names among `roots`: its full session id, its active session id or its name (any case). An id prefix names none (c149):
+ * session ids are UUIDv7, so two sessions started in the same minute share their first 8 characters, and on 11-04 a prefix sent an ops alert
+ * to the AI harness d7 duty (01a1a1a6-5b16) instead of terms-design (01a1a1a6-ec7f). An archived root counts only when no other root matches.
  */
 export function pickRoot(roots: readonly Root[], to: string): Root | { error: string } {
   const wanted = to.trim();
   const lower = wanted.toLowerCase();
   const match = (among: readonly Root[]): Root[] => {
     const exact = among.filter(root => root.sessionId === wanted || root.activeSessionId === wanted);
-    return exact.length ? exact : among.filter(root => root.name.trim().toLowerCase() === lower || (wanted.length >= 8 && root.sessionId.startsWith(wanted)));
+    return exact.length ? exact : among.filter(root => root.name.trim().toLowerCase() === lower);
   };
   const listed = match(roots.filter(root => !root.archived));
   const named = listed.length ? listed : match(roots.filter(root => root.archived));
   if (named.length === 1) return named[0]!;
-  if (!named.length) return { error: `No sibling matches "${wanted}" on any box either.` };
-  return { error: `"${wanted}" names ${named.length} roots on other boxes (${named.map(root => `${root.name} ${root.sessionId.slice(0, 8)} on ${root.host}`).join(", ")}); send to one session id.` };
+  const full = (list: readonly Root[]) => list.map(root => `${root.name} ${root.sessionId} on ${root.host}`).join(", ");
+  if (named.length) return { error: `"${wanted}" names ${named.length} roots on other boxes (${full(named)}); send to one full session id.` };
+  const prefixed = wanted.length >= 4 ? roots.filter(root => root.sessionId.startsWith(wanted)) : [];
+  if (prefixed.length) return { error: `No sibling matches "${wanted}" on any box either: an id prefix names no session (c149), and it starts ` +
+    `${prefixed.length === 1 ? "the id of" : `the ids of ${prefixed.length} sessions,`} ${full(prefixed)}; send to the full session id or the exact name.` };
+  return { error: `No sibling matches "${wanted}" on any box either.` };
 }
 
 /** The delivered text: the daemon heads it with the chat service's client id only, so it names the sender and how to answer. */

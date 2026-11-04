@@ -44,6 +44,14 @@ test("d7 books the 14:48Z to 14:57Z Mac minutes to the harness and names the cha
     /^Crawler VP's job small model classify held most of the harness's memory on mac with its rigs in 10 unusable minutes \(14:48Z.*\), up to 30\.81 GB.*Steer Crawler VP /);
 });
 
+// A rig dir carries its session's full id, so a chat whose id shares its first 8 characters is not steered for it (c149).
+test("a rig's full session id names its own job, not a chat that started the same minute", () => {
+  const { flagged } = measure({ now: RUN, watch: Array.from({ length: 10 }, (_, at) => line(48 + at)), log: { holds: [] },
+    chats: [{ id: "01a1a15b-0000-7000-8000-000000000009", name: "terms-design", duties: [], runs: [] }, { id: CRAWLER, name: "Crawler VP", duties: [], runs: [] }],
+    named: new Map([[CRAWLER, new Map([["small model classify", [SMC]]])]]) });
+  assert.match(flagged?.find(slice => slice.kind === "job_rig_minutes")?.excerpt ?? "", /^Crawler VP's job small model classify held .*Steer Crawler VP /);
+});
+
 test("the Mac's watch line keeps the helper's job rigs and drops a malformed one", async () => {
   const footprints = (rigs: unknown): Footprints => ({ workers: {}, kernels: [], swap_used_bytes: 0, pressure_level: 2, cpu_s: 0, job_rigs: rigs as RawJobRig[] });
   const read = async (rigs: unknown) => await hostWatchLine({ name: "mac", rows: [], read: async () => ({ usable: null, footprints: footprints(rigs) }) },

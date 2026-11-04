@@ -1823,7 +1823,7 @@ export function measure(input: Inputs): PrecheckOutput {
     const who = owner ? owner.job ? `${owner.chat}'s job ${owner.job}` : owner.chat : `The ${rigOwnerWords(held.dir, rigOwner)} that owns ~/${held.dir}`;
     flagged.push({ kind: "job_rig_minutes", excerpt: `${who} held most of the harness's memory on ${held.box} with its rigs in ${held.at.length} unusable ` +
       `${held.at.length === 1 ? "minute" : "minutes"} (${spans(held.at)}), up to ${held.gb} GB under ~/${held.dir}${held.command ? ` (${held.command.slice(0, 80)})` : ""}. ` +
-      (owner ? `Steer ${owner.chat} to run them with the box's memory free or on a Linux box.` : `Find its chat by that dir and steer it.`) });
+      (owner && !owner.alike ? `Steer ${owner.chat} to run them with the box's memory free or on a Linux box.` : `Find its chat by that dir and steer it.`) });
   }
   if (unknownLines.length) flagged.push({ kind: "unknown_minutes", excerpt: unknownLines.slice(-10).join("; ") });
   if (busy.length) flagged.push({ kind: "busy_minutes", excerpt: `${busy.length} minutes the box was CPU-busy and the harness stayed fast, not counted dirty: ${busy.slice(-10).join("; ")}` });
@@ -2209,7 +2209,7 @@ async function main(): Promise<void> {
     .filter(fault => fault.at >= now - WINDOW_MS - 2 * MINUTE), supervisorLogs.flatMap(readSupervisorStalls), box);
   const queueOverruns = readQueueOverruns(serviceLines, box).filter(entry => entry.at >= now - WINDOW_MS - 2 * MINUTE);
   const listed = listedSessions(await catalogCopies(dataDir), [...allFaults.flatMap(fault => fault.session ? [fault.session.slice(0, 8)] : []), ...queueOverruns.map(entry => entry.session),
-    ...watch.flatMap(line => hostViews(line).flatMap(view => (view.jobRigs ?? []).flatMap(rig => rig.dir.startsWith("scratch/") ? [rig.dir.slice(8, 16)] : [])))]);
+    ...watch.flatMap(line => hostViews(line).flatMap(view => (view.jobRigs ?? []).flatMap(rig => rig.dir.startsWith("scratch/") ? [rig.dir.split("/")[1]!] : [])))]);
   const marks = await readSessionMarks(deliveryCandidates(allFaults), short => listed.get(short)?.file, box, now);
   const { faults: daemonFaults, slotWaits } = splitSlotWaits(allFaults, outboxLandings(serviceLines), fault => marks.get(fault.session!.slice(0, 8)));
   const poolLines = await tailLines(POOL_LOG, POOL_LOG_TAIL_BYTES);
