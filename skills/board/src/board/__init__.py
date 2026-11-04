@@ -452,13 +452,14 @@ def wake(run: int | str | None = None, at: str | float | None = None, note: str 
         when = float(at) if isinstance(at, (int, float)) else datetime.fromisoformat(str(at).replace("Z", "+00:00")).timestamp()
         on = {"kind": "time", "at": int(when * 1000)}
         key, what = f"time-{int(when)}", f"it is {datetime.fromtimestamp(when, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+    squash = _squash_warning(on["command"]) if on["kind"] == "check" else ""
     if _pi_thread():
         url, thread, conversation = _pi_thread()  # type: ignore[misc]
         # The chat runs a check once as it arms it, on its own box, so the request waits up to the check's own pace.
         armed = _pi_call(f"api/threads/{urllib.parse.quote(thread)}/wakes",
                          {"id": f"{thread}-{conversation}-{key}", "conversation": conversation, "on": on, "note": note, "since": int(time.time() * 1000)},
                          timeout=30 + (on["every"] / 1000 if on["kind"] == "check" else 0))
-        warning = _check_warning(on["command"]) if armed.get("passes") else ""
+        warning = squash + (_check_warning(on["command"]) if armed.get("passes") else "")
         return _Text(f"{warning}Wake set: the chat messages this thread when {what}. End this turn now with no bash handle, sleep or wait left running. "
                      f"({url}, {armed.get('path', 'wakes')})")
     session = _own_session()
@@ -468,7 +469,7 @@ def wake(run: int | str | None = None, at: str | float | None = None, note: str 
     if _chat_host():
         # The chat service on the chat host keeps the wake and delivers it through this box's relay.
         where = json.loads(_call("api/agent/wakes", record) or b"{}").get("path", "the chat host")
-        return _Text(f"Wake set: the chat service messages this session when {what}. End this turn now with no bash handle, sleep or wait left running, "
+        return _Text(f"{squash}Wake set: the chat service messages this session when {what}. End this turn now with no bash handle, sleep or wait left running, "
                      f"so Prime can unload the session while it waits. (chat host:{where})")
     data_dir = Path(os.environ["AGENT_CHAT_DATA_DIR"]) if os.environ.get("AGENT_CHAT_DATA_DIR") else _agent_dir() / "browser-chat"
     folder = data_dir / "wakes"
@@ -482,13 +483,41 @@ def wake(run: int | str | None = None, at: str | float | None = None, note: str 
     kinds = (folder / ".kinds").read_text(errors="replace").split() if (folder / ".kinds").exists() else []
     if on["kind"] == "check" and "check" not in kinds:
         raise RuntimeError("The chat service here does not deliver check wakes yet, and it would drop the file. Set a time wake instead.")
-    warning = _check_passes_now(on) if on["kind"] == "check" else ""
+    warning = squash + (_check_passes_now(on) if on["kind"] == "check" else "")
     path = folder / f"{session}-{key}.json"
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(record))
     os.replace(tmp, path)
     return _Text(f"{warning}Wake set: the chat service messages this session when {what}. End this turn now with no bash handle, sleep or wait left running, "
                  f"so Prime can unload the session while it waits. ({path})")
+
+
+_SQUASH_ANCESTOR = re.compile(r"merge-base\s+--is-ancestor\s+[\"']?([0-9a-f]{7,40})[\"']?\s+[\"']?(?:refs/remotes/)?(?:origin/)?(main|staging)\b")
+
+
+def _squash_warning(command: str) -> str:
+    """A warning when a check wake tests an auto-sns-agent dev branch sha with `merge-base --is-ancestor` against main or staging.
+
+    land.yml squashes a dev branch onto staging and promote.yml fast-forwards main to staging lands, so a dev sha is never an ancestor of
+    either, and on 11-04 d9 found six such wakes that would go out only at their deadlines. A sha the checkout lacks counts as a dev sha when the
+    command names auto-sns-agent. The warning is soft and the wake is still set (c98).
+    """
+    repo = Path.home() / "Documents" / "Github" / "auto-sns-agent"
+    if not (repo / ".git").exists():
+        return ""
+    found = []
+    for sha, branch in _SQUASH_ANCESTOR.findall(command):
+        known = subprocess.run(["git", "-C", str(repo), "cat-file", "-e", f"{sha}^{{commit}}"], capture_output=True).returncode == 0
+        staged = known and subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", sha, "origin/staging"], capture_output=True).returncode == 0
+        if not staged and (known or "auto-sns-agent" in command):
+            found.append((sha, branch))
+    if not found:
+        return ""
+    shas = " ".join(sha for sha, _ in found)
+    return (f"Warning: `merge-base --is-ancestor` never passes for auto-sns-agent dev sha {shas} against {found[0][1]}, because land.yml squashes "
+            f"each land and main fast-forwards to staging lands, so this wake would go out only at its deadline. Check with "
+            f"`node ~/Documents/Github/auto-sns-agent/scripts/repo/agent/landed.mjs {shas} --on {found[0][1]}`, which exits 0 once the newest land "
+            f"there holds each sha, and set the wake again. ")
 
 
 def _check_passes_now(on: dict) -> str:

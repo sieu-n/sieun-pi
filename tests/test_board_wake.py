@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -59,6 +60,35 @@ class BoardWakeTests(unittest.TestCase):
                 self.assertEqual(len(list((data / "wakes").glob("*-check-*.json"))), 1)
                 text = board.wake(check="test -e new.flag", at="2026-10-29T03:00:00Z", every=1)
                 self.assertNotIn("Warning", text)
+                self.assertTrue(text.startswith("Wake set"))
+
+    def test_check_wake_warns_on_merge_base_of_an_auto_sns_agent_dev_sha_against_main(self):
+        """11-04: d9 found 8 wakes testing dev/sieun shas against origin/main or origin/staging, which squash lands never make ancestors."""
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            session = home / ".prime/agent/session-artifacts/01a14210-4e7d-72c3-aa67-e3d476f4e728"
+            session.mkdir(parents=True)
+            data = home / "chat"
+            (data / "wakes").mkdir(parents=True)
+            (data / "wakes" / ".ticked").write_text("")
+            (data / "wakes" / ".kinds").write_text("run time check\n")
+            repo = home / "Documents/Github/auto-sns-agent"
+            repo.mkdir(parents=True)
+            git_env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+            git = lambda *args: subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True, env=git_env).stdout.strip()
+            git("init", "-q")
+            git("commit", "-q", "--allow-empty", "-m", "land")
+            land = git("rev-parse", "HEAD")
+            git("update-ref", "refs/remotes/origin/staging", land)
+            git("commit", "-q", "--allow-empty", "-m", "dev fix")
+            dev = git("rev-parse", "HEAD")[:10]
+            env = {"HOME": str(home), "RLM_SESSION_DIR": str(session), "AGENT_CHAT_DATA_DIR": str(data), "SIEUN_PI_HOSTS": str(home / "none.json")}
+            with patch.dict(os.environ, env), patch.object(Path, "home", return_value=home):
+                board = load_board()
+                text = board.wake(check=f"cd ~/Documents/Github/auto-sns-agent && git merge-base --is-ancestor {dev} origin/main", at="2026-10-29T03:00:00Z", every=1)
+                self.assertIn(f"landed.mjs {dev} --on main", text)
+                self.assertEqual(len(list((data / "wakes").glob("*-check-*.json"))), 1)
+                text = board.wake(check=f"cd ~/Documents/Github/auto-sns-agent && git merge-base --is-ancestor {land[:10]} origin/main", at="2026-10-29T03:00:00Z", every=1)
                 self.assertTrue(text.startswith("Wake set"))
 
 
