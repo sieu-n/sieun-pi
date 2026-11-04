@@ -14,7 +14,7 @@ import type { ConversationId, EntryRecord, Harness, LiveState } from "@earendil-
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDurableHost } from "../../src/durable/open.ts";
-import { poolProvider } from "@sieun-pi/pi-pool/durable";
+import { durableSettings, poolProvider } from "@sieun-pi/pi-pool/durable";
 import { fauxRespond, INPUT, MODEL, REQUEST_ID, textOf, type EntrySummary } from "./crash-scenario.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -72,8 +72,9 @@ async function main() {
   const [phase, file, mode] = process.argv.slice(2);
   if (!phase || !file || (mode !== "faux" && mode !== "real")) throw new Error("usage: crash-worker.ts <start|inspect|resume> <db file> <faux|real>");
   const started = Date.now();
-  const models = modelsFor(mode, `pi-durable:${file}`);
-  const { harness, root } = await openDurableHost({ file, models, model: MODEL, thinkingLevel: mode === "real" ? "high" : "off", readOnly: phase === "inspect", onReport: (error, info) => say("report", { info, error: String(error) }) }, context);
+  const treeKey = `pi-durable:${file}`;
+  const models = modelsFor(mode, treeKey);
+  const { harness, root } = await openDurableHost({ file, models, model: MODEL, settings: durableSettings(treeKey), thinkingLevel: mode === "real" ? "high" : "off", readOnly: phase === "inspect", onReport: (error, info) => say("report", { info, error: String(error) }) }, context);
   say("opened", { ms: Date.now() - started });
 
   if (phase === "inspect") {

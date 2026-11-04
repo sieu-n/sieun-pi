@@ -111,3 +111,26 @@ test("no_model_room switch runs the request on the first listed model the provid
   assert.equal(last?.model, OTHER);
   assert.equal(vends()[0]?.model, MODEL.modelId);
 });
+
+test("a request that asks for no deferred answer, as compaction's summary does, waits in the request and runs at the slot", async () => {
+  const until = Date.now() / 1000 + 2;
+  writeFileSync(join(dir, "state.json"), JSON.stringify({ accounts: ["free"], current: 0, modelWait: { [MODEL.modelId]: until } }));
+  writeFileSync(join(dir, "calls.jsonl"), "");
+  const faux = fauxProvider({ provider: MODEL.provider, models: [{ id: MODEL.modelId }], tokensPerSecond: 0 });
+  const seen: unknown[] = [];
+  faux.setResponses(Array.from({ length: 2 }, () => (_context: unknown, options: { deferred?: unknown } | undefined) => {
+    seen.push(options?.deferred);
+    return fauxAssistantMessage("summary");
+  }));
+  const provider = poolProvider({ treeKey: "pi-durable:inline", bin: FAKE_POOL, inner: faux.provider });
+  const model = faux.provider.getModels()[0]!;
+  const ask = { messages: [{ role: "user", content: "Summarize.", timestamp: Date.now() }] } as unknown as Parameters<typeof provider.streamSimple>[1];
+
+  const deferred = await provider.streamSimple(model, ask, { sessionId: "inline", deferred: true }).result();
+  assert.equal(deferred.stopReason, "deferred", "a generation, which asks for deferred answers, gets the wait back to store");
+
+  const inline = await provider.streamSimple(model, ask, { sessionId: "inline" }).result();
+  assert.equal(inline.stopReason, "stop", inline.errorMessage);
+  assert.ok(Date.now() / 1000 >= until, "the request waited for the slot");
+  assert.deepEqual(seen, [undefined], "the inner provider never sees the deferred ask");
+});

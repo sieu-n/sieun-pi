@@ -35,7 +35,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { rewriteFailure, type PoolCall } from "../core/errors.ts";
 import { admitReply, placeIn, type AdmitReply } from "../core/turns.ts";
-import { defaultPoolBin, poolEnv, runPool, vendOnce, WAIT_ASK_MS, type TreeKey, type Vend } from "../core/pool-cli.ts";
+import { defaultPoolBin, poolEnv, runPool, sleep, vendOnce, WAIT_ASK_MS, type TreeKey, type Vend } from "../core/pool-cli.ts";
 
 export interface PoolProviderOptions {
   /**
@@ -98,12 +98,13 @@ export function pooledRetries(root: string): number {
 /**
  * Run settings for the thread behind `treeKey`: pi-durable's retry budget for real request failures, plus each
  * pool-handled retry of the tree's busiest run, read at every retry, so a run that waits on the pool waits as long as
- * the pool says and still fails after pi-durable's own count of other errors.
+ * the pool says and still fails after pi-durable's own count of other errors. `stream.deferred` asks this provider for
+ * deferred waits on each generation request; compaction drops it and waits in its request instead.
  */
 export function durableSettings(treeKey: string | (() => string), retry: Partial<typeof DEFAULT_RETRY_POLICY> = {}): HarnessSettings {
   const base = { ...DEFAULT_RETRY_POLICY, ...retry };
   const root = typeof treeKey === "string" ? () => treeKey : treeKey;
-  return { get retry() { return { ...base, maxRetries: base.maxRetries + pooledRetries(root()) }; } };
+  return { stream: { deferred: true }, get retry() { return { ...base, maxRetries: base.maxRetries + pooledRetries(root()) }; } };
 }
 
 type TurnPlace = { kind: "go" } | { kind: "wait"; position: number | null; total: number | null; askedAt: number };
@@ -338,6 +339,31 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
     return undefined;
   };
 
+  /**
+   * The request's place in line and its vend. A caller that asks for a deferred response (`options.deferred`, which
+   * `durableSettings` sets for each generation) gets the first wait back to store as a sleep. Any other caller waits here
+   * until it holds a working slot and a token: pi-durable's compaction strips `deferred` and reads a deferred answer as
+   * "Summarization produced no text", so on 11-04 at 01:56Z gpt guy's turn, waiting on sieunpark77, failed twice when its
+   * threshold compaction met a full turn queue (40 working, 33 queued).
+   */
+  const placeAndVend = async (model: Model<Api>, options: StreamOptions | undefined, env: NodeJS.ProcessEnv): Promise<{ place: TurnPlace; got: Vend | undefined }> => {
+    const key = keyOf(options);
+    const defers = Boolean((options as { deferred?: unknown } | undefined)?.deferred);
+    const signal = options?.signal;
+    for (;;) {
+      let place: TurnPlace = opts.turns ? await opts.turns.enter(key) : { kind: "go" };
+      while (place.kind === "wait" && !defers && opts.turns) {
+        if (!(await sleep(TURN_POLL_MS, signal))) return { place, got: undefined };
+        place = await opts.turns.poll(key, place.askedAt);
+      }
+      if (place.kind === "wait") return { place, got: undefined };
+      const got = await vendOnce(bin, model.provider, env, signal, model.id);
+      if (got.kind !== "wait" || defers) return { place, got };
+      if (opts.turns?.holds(key.session)) await opts.turns.release(key);
+      if (!(await sleep(Math.min(Math.max(1000, got.retryAt * 1000 - now()), WAIT_ASK_MS), signal))) return { place, got };
+    }
+  };
+
   /** Vends, then streams through `inner` with the token; a 429 or an account refusal goes back to the pool as in ../pool. */
   const send = <O extends StreamOptions>(model: Model<Api>, options: O | undefined, run: (model: Model<Api>, options: O) => AssistantMessageEventStream): AssistantMessageEventStream => {
     const out = createAssistantMessageEventStream();
@@ -345,11 +371,10 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
       const env = envOf(options);
       let final: AssistantMessage;
       try {
-        const place = opts.turns ? await opts.turns.enter(keyOf(options)) : ({ kind: "go" } as const);
-        const got = place.kind === "wait" ? undefined : await vendOnce(bin, model.provider, env, options?.signal, model.id);
+        const { place, got } = await placeAndVend(model, options, env);
         const on = got?.kind === "token" ? runsOn(model, got.models) : undefined;
-        if (place.kind === "wait" || got === undefined) final = turnWait(model, keyOf(options), place as Extract<TurnPlace, { kind: "wait" }>);
-        else if (options?.signal?.aborted) final = message(model, { stopReason: "aborted", errorMessage: "Request aborted" });
+        if (options?.signal?.aborted) final = message(model, { stopReason: "aborted", errorMessage: "Request aborted" });
+        else if (place.kind === "wait" || got === undefined) final = turnWait(model, keyOf(options), place as Extract<TurnPlace, { kind: "wait" }>);
         else if (got.kind === "wait") {
           // A run lets its working slot go while its tree waits for an account, as a Prime run does, and the pool keeps its place
           // in line for the retry (pool/turns.py `leave`). On 11-03 pi-host held 839 slot-minutes this way and Prime 152, and at
@@ -361,7 +386,8 @@ export function poolProvider(opts: PoolProviderOptions): Provider {
         else if (got.kind === "final") final = message(model, { stopReason: "error", errorMessage: got.message });
         else if (on === undefined) final = message(model, { stopReason: "error", errorMessage: `pi-pool: the account with room lacks ${model.id} and lists no model this provider knows (${(got.models ?? []).join(", ")}).` });
         else {
-          const events = run(on, { ...options, apiKey: got.token } as O);
+          const { deferred: _deferred, ...forwarded } = (options ?? {}) as O & { deferred?: unknown };
+          const events = run(on, { ...forwarded, apiKey: got.token } as O);
           for await (const event of events as AsyncIterable<AssistantMessageEvent>) {
             if (event.type !== "done" && event.type !== "error") out.push(event);
           }
