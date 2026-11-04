@@ -19,8 +19,10 @@ import { macSilent } from "./mac-reach.ts";
  * goes into the flagged items as run detail. No model call. The wiki is the one server at the wiki host of hosts.json. On us-metal02 it runs as
  * sieun-pi-wiki.service under systemd (deploy/linux/sieun-pi-wiki.service, llm-wiki.service until 2026-11-03) and elsewhere as the llm-wiki app of the pm2 dev stack, so its memory and
  * restarts come from whichever of the two holds it.
- * Convex and the crawler API may run on another box behind local port forwards; their URLs are the ones the search dev app uses (apps/search/.env.local).
- * When that file points a service away from this machine (`pnpm dev:crawler staging`), the local one is off by design and does not count as down.
+ * Convex and the crawler API may run on another box behind local port forwards. Convex's URL is the one the search dev app uses
+ * (apps/search/.env.local), and the crawler's is the one the local Vent uses (.cache/dev/vent.env), because search reaches the crawler through
+ * Vent and its tiers dropped CRAWLER_API_URL on 11-04 (auto-sns-agent b4497e1a57). When that file points a service away from this machine
+ * (`pnpm dev:crawler staging`), the local one is off by design and does not count as down.
  * It also reads the owner's Mac: mac_servers_not_answering counts which of its search app, design demo, Vent, crawler API and Convex forward gave no 200 over ssh,
  * mac_convex_push_stale is 1 when its Convex watcher's newest push failed and no push succeeded after the newest convex/ change, mac_unusable_min
  * counts the minutes of the last 24 h that the Mac usable watch read unusable (src/mac-usable-watch.ts USABLE, the same line d7 judges a minute
@@ -37,12 +39,12 @@ export const CAP_MB = 4096;
 export const WIKI_UNIT = "sieun-pi-wiki.service";
 
 /** A service: its metric key prefix, and either a fixed URL or the search app's env key for its base URL plus the health path. */
-export type Service = { key: string; url: string } | { key: string; envKey: string; path: string };
+export type Service = { key: string; url: string } | { key: string; envKey: string; envFile: string; path: string };
 export const SERVICES: readonly Service[] = [
   { key: "search", url: "http://localhost:5174/" },
   { key: "api-portal", url: "http://localhost:5175/" },
-  { key: "convex", envKey: "PUBLIC_CONVEX_URL", path: "/version" },
-  { key: "crawler", envKey: "CRAWLER_API_URL", path: "/health" },
+  { key: "convex", envKey: "PUBLIC_CONVEX_URL", envFile: "apps/search/.env.local", path: "/version" },
+  { key: "crawler", envKey: "CRAWLER_API_URL", envFile: ".cache/dev/vent.env", path: "/health" },
 ];
 /** The owner's Mac (the `mac` alias of ~/.ssh/config.d/mac.conf), its dev servers, and the targets that keep it usable (owner, 10-09: "have it your duty to have usable mac"). */
 export const MAC_HOST = "mac";
@@ -378,13 +380,24 @@ export function parseEnv(text: string): Record<string, string> {
   return env;
 }
 
+/** Each service's base URL key, read from that service's own env file. */
+export async function readServiceEnv(read: (path: string) => Promise<string>): Promise<Record<string, string>> {
+  const env: Record<string, string> = {};
+  for (const service of SERVICES) {
+    if ("url" in service) continue;
+    const value = parseEnv(await read(service.envFile).catch(() => ""))[service.envKey];
+    if (value !== undefined) env[service.envKey] = value;
+  }
+  return env;
+}
+
 /** The URL to probe, or why the service is not probed: off by design (the app uses a remote one) or a config error. */
 export function target(service: Service, env: Record<string, string>): { url: string } | { off: string } | { error: string } {
   if ("url" in service) return { url: service.url };
   const base = env[service.envKey];
-  if (!base || base.startsWith("encrypted:")) return { error: `${service.envKey} is not set in plain text in apps/search/.env.local` };
+  if (!base || base.startsWith("encrypted:")) return { error: `${service.envKey} is not set in plain text in ${service.envFile}` };
   const host = URL.canParse(base) ? new URL(base).hostname : "";
-  if (!["localhost", "127.0.0.1", "[::1]"].includes(host)) return { off: `stopped by design: the search dev app uses ${service.envKey}=${base}, not a local ${service.key}` };
+  if (!["localhost", "127.0.0.1", "[::1]"].includes(host)) return { off: `stopped by design: ${service.envFile} sets ${service.envKey}=${base}, not a local ${service.key}` };
   return { url: base.replace(/\/+$/, "") + service.path };
 }
 
@@ -537,7 +550,7 @@ async function main(): Promise<void> {
   if (!output) { process.stderr.write("local-dev-uptime: OUTPUT_FILE is not set\n"); process.exit(2); }
   const stateFile = process.env.STATE_FILE;
   const previous = stateFile ? await readFile(stateFile, "utf8").then(text => JSON.parse(text) as UptimeState, () => undefined) : undefined;
-  const env = await readFile(join(REPO, "apps/search/.env.local"), "utf8").then(parseEnv, () => ({}));
+  const env = await readServiceEnv(path => readFile(join(REPO, path), "utf8"));
   const wiki = roleUrl(await loadHosts(), "wiki");
   if (!wiki) { process.stderr.write("local-dev-uptime: no host holds the wiki role in hosts.json\n"); process.exit(2); }
   const watch = () => readWatch(chatDataDir(), Date.now() - MAC_WINDOW_MS, Date.now());

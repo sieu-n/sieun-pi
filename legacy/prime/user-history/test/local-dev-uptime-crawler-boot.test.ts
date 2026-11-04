@@ -1,7 +1,7 @@
 // Guards ops guy's d1 on 10-29: the local crawler restarted on alembic revision '0238_brand_lists', which no file held, and d1 only read it as not answering.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { measureUptime, unknownRevisionLine, type UptimeDeps } from "../scripts/duties/local-dev-uptime.ts";
+import { measureUptime, readServiceEnv, unknownRevisionLine, type UptimeDeps } from "../scripts/duties/local-dev-uptime.ts";
 
 const FAILED = "2026-10-29 20:12:40,464 ERROR runtime.supervisor bootstrap failed: unknown alembic revision 0238_brand_lists: the database is at a revision no file in apps/crawler-v3/alembic/versions holds; commit that migration, or run its downgrade and alembic stamp the checkout's head";
 
@@ -37,4 +37,13 @@ test("a down crawler whose log holds no unknown revision adds no cause", async (
 test("the newest unknown-revision line wins", () => {
   assert.equal(unknownRevisionLine(`${FAILED.replace("0238_brand_lists", "0230_old")}\n${FAILED}\n`)?.split(":")[1], " unknown alembic revision 0238_brand_lists");
   assert.equal(unknownRevisionLine("supervisor starting\n"), undefined);
+});
+
+test("the crawler URL comes from the local Vent's env, since search dropped CRAWLER_API_URL on 11-04", async () => {
+  const files: Record<string, string> = {
+    "apps/search/.env.local": "PUBLIC_CONVEX_URL=http://127.0.0.1:3210\n# reaches every store through CRAWLER_API_URL.\n",
+    ".cache/dev/vent.env": "PUBLIC_CONVEX_URL=http://elsewhere\nCRAWLER_API_URL=http://127.0.0.1:8786\n",
+  };
+  const env = await readServiceEnv(async path => files[path] ?? "");
+  assert.deepEqual(env, { PUBLIC_CONVEX_URL: "http://127.0.0.1:3210", CRAWLER_API_URL: "http://127.0.0.1:8786" });
 });
