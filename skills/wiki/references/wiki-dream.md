@@ -53,6 +53,7 @@ The owner asked for it in these words: "a daily job that cleans wiki, find anti-
    - The page API now parses each mermaid block of a curated page and answers 422 on a write that adds one that does not parse, and `node apps/wiki/scripts/mermaid-check.mjs <page>` checks a draft, because on 2026-11-04 the first scan found 7 broken blocks on 6 of 353 pages that prose-lint passed, after docker-and-containers took 27 dream revisions with a broken one.
 8. A subagent runs at the depth limit and cannot spawn, so the job itself runs any trigger probe and any writer for a second page.
 9. Each page writer writes a result file before it ends, and the job checks that file for every writer it started, because on 2026-10-22 14 writers started at 04:00Z exited on failed model requests with no page write and no report, and their 14 pages counted in `wiki_problems` two hours later.
+   - Before a writer reports a red from a repo test or script, it runs `git status --short` on the files it reads, and when any has uncommitted changes it judges the finding against `git show HEAD:<file>` or reports it as unconfirmed. On 2026-11-04 at 22:58Z a writer reported `test_prod_full_pools_fit_the_pg_budget` red at 767 of 765 from another job's uncommitted draft, while committed HEAD passed at 765.
 10. The job starts a new writer for each page with no result file and checks the page against the stale list again, and it ends the run only when every flagged page has a result or a second writer.
 
 ## Phase 2 · index and links, every run, first
