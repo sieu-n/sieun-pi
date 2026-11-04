@@ -51,7 +51,9 @@ const source = (process.env.CI_CACHE_SOURCE || (() => {
 const daemon = source.startsWith('rsync://');
 const pullFrom = daemon ? `${source}/virev/` : `${source}/`;
 const wantsTo = `${source}/ci-wants/`;
-const WHOLE = ['ci-runs.json', 'infra-rerun-state.json', 'release-runner-state.json', ...(host?.roles?.chat ? ['alert-bridge-status.json'] : [])];
+// push-reds.json: the crawler feedback reds that take() in auto-sns-agent's convex-save-check.mjs hands to the Mac sessions
+// whose dev/sieun-mac commits caused them (scripts/repo/agent/push-reds.mjs); Mac reds were in 32 of the 114 crawler-red staging heads of the 7 days to 11-04.
+const WHOLE = ['ci-runs.json', 'infra-rerun-state.json', 'release-runner-state.json', 'push-reds.json', ...(host?.roles?.chat ? ['alert-bridge-status.json'] : [])];
 
 const run = (cmd, argv) =>
 	new Promise((resolve, reject) =>

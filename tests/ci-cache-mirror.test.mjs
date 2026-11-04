@@ -41,6 +41,7 @@ test('ci-cache-mirror copies the box cache with rsync, follows changes and drops
 	writeFileSync(path.join(box, 'ci-cache.heartbeat.json'), '{"at":1}');
 	writeFileSync(path.join(box, 'ci-runs.d', '1.stamp'), 'a');
 	writeFileSync(path.join(box, 'unrelated.json'), 'x');
+	writeFileSync(path.join(box, 'push-reds.json'), '{"reds":[]}');
 	writeFileSync(path.join(mac, 'ci-runs.d', '9.stamp'), 'old');
 	try {
 		once(box, mac);
@@ -49,6 +50,7 @@ test('ci-cache-mirror copies the box cache with rsync, follows changes and drops
 		assert.deepEqual(readdirSync(path.join(mac, 'ci-runs.d')).sort(), ['1.stamp']);
 		assert.ok(Math.abs(statSync(path.join(mac, 'ci-runs.json')).mtimeMs - statSync(path.join(box, 'ci-runs.json')).mtimeMs) < 1);
 		assert.throws(() => statSync(path.join(mac, 'unrelated.json')));
+		assert.equal(readFileSync(path.join(mac, 'push-reds.json'), 'utf8'), '{"reds":[]}', 'a Mac session reads the crawler reds of its commits');
 
 		writeFileSync(path.join(box, 'ci-runs.json'), JSON.stringify({ runs: [1, 2, 3] }));
 		utimesSync(path.join(box, 'ci-runs.json'), new Date(), new Date(Date.now() + 5000));
