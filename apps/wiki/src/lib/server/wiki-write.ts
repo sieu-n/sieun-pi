@@ -180,6 +180,8 @@ export async function commitPage(input: {
 	diff: string;
 	linesAdded: number;
 	linesRemoved: number;
+	/** False when the content equals the stored page: the answer names the current version and no revision is logged. */
+	changed: boolean;
 	/** Page gate warnings (rules 6 and 7): a source_ref this write adds, or a commit its new last_verified hides, changed after the page's last_verified; a broken mermaid block the page already held; a page the write leaves past its whole-read cap; and a created curated page no hub lists. */
 	warnings?: string[];
 }> {
@@ -218,12 +220,14 @@ export async function commitPage(input: {
 					`you genuinely mean to delete the tail.`,
 			);
 	}
+	const numbered = renumberedPage(rel, input.content);
+	const content = numbered.content;
+	// A write of the bytes already stored logs no revision. On 2026-11-04 golden-and-release v71 and v72 had one hash.
+	if (exists && content === before) return unchangedWrite(rel, before);
 	if (exists && input.refuseStaleCopy && (input.baseVersion === undefined || input.baseVersion === null)) {
 		const reason = staleCopyReason(rel, input.content);
 		if (reason) throw new WriteError(409, reason);
 	}
-	const numbered = renumberedPage(rel, input.content);
-	const content = numbered.content;
 	await assertPageInvariants(rel, exists ? before : null, content);
 	const mermaid = await mermaidCheck(rel, exists ? before : null, content);
 	if (mermaid.reasons.length) throw new WriteError(422, `refusing ${rel}: ${mermaid.reasons.join('. Also, ')}`);
@@ -244,7 +248,20 @@ export async function commitPage(input: {
 		summary: input.summary,
 		baseVersion: input.baseVersion ?? null,
 	});
-	return warnings.length ? { ...written, warnings } : written;
+	return warnings.length ? { ...written, changed: true, warnings } : { ...written, changed: true };
+}
+
+/** The answer to a write whose content equals the stored page, the same shape supersedePage gives an unchanged write. */
+function unchangedWrite(rel: string, before: string): WriteResult & { changed: false } {
+	return {
+		path: rel,
+		version: currentVersion(rel),
+		bytes: Buffer.byteLength(before),
+		diff: '',
+		linesAdded: 0,
+		linesRemoved: 0,
+		changed: false,
+	};
 }
 
 /**
@@ -535,10 +552,7 @@ export async function supersedePage(input: {
 	}
 	if (!meta || typeof meta !== 'object' || Array.isArray(meta))
 		throw new WriteError(422, `${rel} frontmatter is not a JSON object`);
-	if (meta.superseded_by === target) {
-		const unchanged = { diff: '', linesAdded: 0, linesRemoved: 0, bytes: Buffer.byteLength(before) };
-		return { path: rel, version: currentVersion(rel), ...unchanged, superseded_by: target, changed: false };
-	}
+	if (meta.superseded_by === target) return { ...unchangedWrite(rel, before), superseded_by: target };
 	const nextJson = withSupersededBy(jsonText, meta, target);
 	const jsonStart = match.index + match[0].length - '-->'.length - match[1].length + match[1].indexOf(jsonText);
 	const content = before.slice(0, jsonStart) + nextJson + before.slice(jsonStart + jsonText.length);

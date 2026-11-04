@@ -4,11 +4,11 @@
 //   node apps/wiki/scripts/prose-lint.mjs <file|dir|wiki path>...  lint pages, exit 1 on any error; a target that is
 //        not an existing path is read from the content root (wikiConfig().contentRoot), so apps/search/campaigns.html works
 //   node apps/wiki/scripts/prose-lint.mjs --recent 20              the 20 newest session pages of the newest month folder
-//   node apps/llm-wiki/scripts/prose-lint.mjs --json ...           JSON instead of text
-//   node apps/llm-wiki/scripts/prose-lint.mjs --ratchet <before|-> <file>
+//   node apps/wiki/scripts/prose-lint.mjs --json ...           JSON instead of text
+//   node apps/wiki/scripts/prose-lint.mjs --ratchet <before|-> <file>
 //        exit 1 only if <file> has more errors of some rule than <before>; "-" reads before from stdin,
 //        a missing before file counts as a new page with 0 errors
-//   node apps/llm-wiki/scripts/prose-lint.mjs --ratchet-git <rev> <file>...
+//   node apps/wiki/scripts/prose-lint.mjs --ratchet-git <rev> <file>...
 //        ratchet every file against its blob at <rev> in one process (commit.mjs uses this), and refuse a curated
 //        page that newly looks like another page with no `distinct_from` line (dup-gate.mjs), and a page that adds a
 //        title/h1 mismatch or a current hub link to a retired page (page-gate.mjs)

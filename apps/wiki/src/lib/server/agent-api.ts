@@ -5,7 +5,7 @@ import { dev } from '$app/environment';
 import { base } from '$app/paths';
 import { env } from '$env/dynamic/private';
 import type { AgentVerb } from '../../params/agentVerb';
-import { isLintedPath, ratchet, STANDARD_FILE } from '$lib/prose-lint.mjs';
+import { isLintedPath, ratchet, savedLintAnswer, STANDARD_FILE } from '$lib/prose-lint.mjs';
 import { heldByWrite, type HeldRow } from '../../../scripts/dup-held.mjs';
 import { codeRepoDir } from '../wiki-config.mjs';
 import { isSessionLog, isSessionPath } from './session-artifact-index';
@@ -198,26 +198,31 @@ const distinctFromLine = (rows: HeldRow[]) =>
  * runs the same scan (scripts/repo/agent/wiki-secrets.mjs, one betterleaks spawn, a median 163 ms on us-metal02). The
  * duplicate check refuses a write that starts a held pair, because wiki-box-commit.mjs never commits a held page and
  * writers do not read a held note on a 200; a write that only keeps a pair from before saves with the held note.
+ * A write the prose lint lets through carries its leftover findings in `lint` (savedLintAnswer).
  */
+type Checked = { held: Record<string, unknown>; lint: ReturnType<typeof savedLintAnswer> };
+
 async function checkWrite(
 	rawPath: string,
 	before: string | null,
 	after: string,
-): Promise<{ rejected: Response } | { held: Record<string, unknown> }> {
+): Promise<{ rejected: Response } | Checked> {
 	let rel: string;
 	try {
 		rel = normalizeRequestedPath(rawPath);
 	} catch {
-		return { held: {} }; // commitPage reports the bad path
+		return { held: {}, lint: null }; // commitPage reports the bad path
 	}
+	let lint: Checked['lint'] = null;
 	if (isLintedPath(rel)) {
 		const result = ratchet(before, after, { path: rel });
+		lint = savedLintAnswer(result.findings);
 		if (!result.ok) {
 			const grown = Object.entries(result.grown).map(([rule, g]) => `${rule} ${g.before} -> ${g.after}`);
 			return {
 				rejected: fail(
 					`prose lint: this write adds errors (${grown.join(', ')}). Fix each finding below and write again. ` +
-						`The standard is ${STANDARD_FILE}; run node apps/llm-wiki/scripts/prose-lint.mjs <file> to check a draft.`,
+						`The standard is ${STANDARD_FILE}; run node apps/wiki/scripts/prose-lint.mjs <file> to check a draft.`,
 					422,
 					{
 						standard: STANDARD_FILE,
@@ -252,7 +257,7 @@ async function checkWrite(
 		rows = heldByWrite(getContentRoot(), rel, after);
 	} catch (error) {
 		console.error(`page API: the duplicate check of ${rel} could not run: ${error}`);
-		return { held: {} };
+		return { held: {}, lint };
 	}
 	if (rows.added.length) {
 		return {
@@ -265,14 +270,27 @@ async function checkWrite(
 			),
 		};
 	}
-	if (!rows.kept.length) return { held: {} };
+	if (!rows.kept.length) return { held: {}, lint };
 	return {
+		lint,
 		held: {
 			held:
 				`The page is saved, but the wiki host still will not commit it to git while it looks like ${looksLike(rows.kept)}. ` +
 				`Add ${distinctFromLine(rows.kept)} to its meta block, or merge the pages with POST /api/agent/supersede, and write it again.`,
 			heldBy: rows.kept.map((r) => r.other),
 		},
+	};
+}
+
+/** The page API's answer to a saved write: commitPage's result, the held note, and the lint findings the write kept. */
+function writeAnswer(result: { warnings?: string[] } & Record<string, unknown>, checked: Checked): Record<string, unknown> {
+	const warnings = [...(result.warnings ?? []), ...(checked.lint ? [checked.lint.warning] : [])];
+	return {
+		...result,
+		revisionLogged: store.storeStatus().ok,
+		...checked.held,
+		...(checked.lint ? { lint: checked.lint.lint } : {}),
+		...(warnings.length ? { warnings } : {}),
 	};
 }
 
@@ -538,7 +556,7 @@ const API = {
 		},
 		PATCH: {
 			doc: doc(
-				'str_replace diff edits — 422 ambiguous or meta title apart from the first <h1>, 409 stale baseVersion, a retired status while a current hub links the page, or a new hub link to a retired page; logs a revision with summary + lines/bytes changed',
+				'str_replace diff edits; an edit that leaves the page as it was answers changed: false with the current version and logs no revision — 422 ambiguous or meta title apart from the first <h1>, 409 stale baseVersion, a retired status while a current hub links the page, or a new hub link to a retired page; logs a revision with summary + lines/bytes changed',
 				{
 					requestBody: body(['path', 'edits'], {
 						path: str,
@@ -574,12 +592,12 @@ const API = {
 					baseVersion: b.baseVersion,
 					allowTruncate: true,
 				});
-				return json({ ...result, applied, revisionLogged: store.storeStatus().ok, ...checked.held });
+				return json({ ...writeAnswer(result, checked), applied });
 			}),
 		},
 		POST: {
 			doc: doc(
-				'Create/replace a page with full content (201); same guards + revision log; 409 when the content is an edit of an older committed copy and sends no baseVersion',
+				'Create/replace a page with full content (201, or 200 with changed: false when the content equals the stored page); a saved write lists the prose-lint findings it kept in lint and warnings; same guards + revision log; 409 when the content is an edit of an older committed copy and sends no baseVersion',
 				{
 					requestBody: body(['path', 'content'], {
 						path: str,
@@ -605,7 +623,8 @@ const API = {
 					allowTruncate: b.allowTruncate === true,
 					refuseStaleCopy: true,
 				});
-				return json({ ...result, revisionLogged: store.storeStatus().ok, ...checked.held }, { status: 201 });
+				// An identical write saves nothing, so it answers 200 with changed: false and the current version.
+				return json(writeAnswer(result, checked), { status: result.changed ? 201 : 200 });
 			}),
 		},
 	},

@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { lintHtml, parsePage, ratchet } from '../src/lib/prose-lint.mjs';
+import { lintHtml, parsePage, ratchet, savedLintAnswer } from '../src/lib/prose-lint.mjs';
 
 const fixture = (name) => readFileSync(fileURLToPath(new URL(`fixtures/prose-lint/${name}`, import.meta.url)), 'utf8');
 /** Error rule ids for a snippet. */
@@ -114,4 +114,21 @@ test('the CLI lints a page by wiki path and --recent from the content root', () 
 		rmSync(root, { recursive: true, force: true });
 		rmSync(elsewhere, { recursive: true, force: true });
 	}
+});
+
+test('a write the ratchet lets through answers with the warnings it kept, so the writer fixes them without a lint run', () => {
+	// On 2026-11-04 wiki-dream writers made 10 extra revisions in 7 days by linting after a 201 that named no warning.
+	const long = Array.from({ length: 40 }, (_, i) => `word${i}`).join(' ');
+	const html = `<!--wiki {"title":"Lint answer fixture","description":"lint answer fixture"} -->\n<h1>Lint answer fixture</h1>\n<p>The engine saves the page. It then answers with ${long} at the end.</p>\n`;
+	const result = ratchet(null, html);
+	assert.equal(result.ok, true, JSON.stringify(result.grown));
+	const answer = savedLintAnswer(result.findings);
+	assert.ok(answer, 'a page with a warning gets a lint answer');
+	assert.deepEqual(
+		answer.lint.map((f) => [f.rule, f.severity, f.line]),
+		[['long-sentence', 'warn', 3]],
+	);
+	assert.match(answer.lint[0].fix, /Split any sentence/);
+	assert.match(answer.warning, /saved with 1 finding\(s\) \(long-sentence 1\)/);
+	assert.equal(savedLintAnswer(ratchet(null, html.replace(` ${long}`, '')).findings), null, 'a clean page gets none');
 });

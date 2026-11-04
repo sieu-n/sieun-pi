@@ -1489,7 +1489,7 @@ export function lintHtml(html, opts = {}) {
  * @param {string | null} before
  * @param {string} after
  * @param {{ path?: string, now?: number }} [opts]
- * @returns {{ ok: boolean, grown: Record<string, { before: number, after: number }>, newFindings: Finding[], before: Counts, after: Counts }}
+ * @returns {{ ok: boolean, grown: Record<string, { before: number, after: number }>, newFindings: Finding[], findings: Finding[], before: Counts, after: Counts }}
  */
 export function ratchet(before, after, opts = {}) {
 	const old = before ? lintHtml(before, opts) : { findings: [], counts: countFindings([]) };
@@ -1515,5 +1515,33 @@ export function ratchet(before, after, opts = {}) {
 		else newFindings.push(f);
 	}
 	if (!newFindings.length) newFindings = cur.findings.filter((f) => f.severity === 'error' && grown[f.rule]);
-	return { ok: Object.keys(grown).length === 0, grown, newFindings, before: old.counts, after: cur.counts };
+	return {
+		ok: Object.keys(grown).length === 0,
+		grown,
+		newFindings,
+		findings: cur.findings,
+		before: old.counts,
+		after: cur.counts,
+	};
+}
+
+/**
+ * What a saved page write answers about the findings the ratchet let through: every warning and every error of old
+ * debt, so the writer fixes them from the write answer instead of linting after the write and writing again. On
+ * 2026-11-04 wiki-dream writers made 10 extra revisions in 7 days that way. Null when the page is clean.
+ * @param {Finding[]} findings the findings of the saved content, as ratchet returns them
+ * @returns {{ lint: { line: number, rule: string, severity: Severity, excerpt: string, fix: string }[], warning: string } | null}
+ */
+export function savedLintAnswer(findings) {
+	if (!findings.length) return null;
+	/** @type {Map<string, number>} */
+	const byRule = new Map();
+	for (const f of findings) byRule.set(f.rule, (byRule.get(f.rule) ?? 0) + 1);
+	const rules = [...byRule].map(([rule, n]) => `${rule} ${n}`).join(', ');
+	return {
+		lint: findings.map((f) => ({ line: f.line, rule: f.rule, severity: f.severity, excerpt: f.excerpt, fix: f.fix })),
+		warning:
+			`prose lint: the page is saved with ${findings.length} finding(s) (${rules}). ` +
+			`Fix each one in "lint" in your next write of this page; the write answer lists what is left.`,
+	};
 }
