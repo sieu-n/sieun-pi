@@ -27,6 +27,15 @@ SPACES = ("sessions", "agents", "apps", "domains", "projects", "experiments", "a
 PUBLIC = "https://us-metal02-dev.tail0c093d.ts.net:5184/wiki"
 _CONVERSATION = re.compile(r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(\d+)$", re.I)
 _SLUG = re.compile(r"[^a-z0-9]+")
+_STALE = re.compile(r"stale: baseVersion (\d+) != current (\d+)")
+_HEADER = re.compile(r"\A---\r?\n(.*?)\r?\n---", re.S)
+_READ: dict[str, int] = {}
+"""The version each page had when this process last read or wrote it. write, edit and publish send it as the base version, because on
+2026-11-04 a wiki-dream writer read dev-push-checks.html, another job saved v115, and the writer's full write at 18:09Z made v116
+over it with no base version and dropped four facts."""
+_DREAM: dict[str, int] = {}
+"""The version of each page this process saved with a `wiki-dream:` summary. On 2026-11-04 a writer saved domains/architecture/
+ci-deploy.html as v135 at 18:05Z and wrote v136 at 18:06Z only to drop a stray period, so a second dream write needs again=<reason>."""
 
 
 class WikiError(RuntimeError):
@@ -131,6 +140,7 @@ def _call(method: str, path: str, body=None, *, raw: bytes | None = None, conten
             payload = response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as error:
         payload = error.read().decode("utf-8", errors="replace")
+        error.close()
         try:
             parsed = json.loads(payload)
         except ValueError:
@@ -203,6 +213,42 @@ def _path(name: str) -> str:
     return name if name.split("/")[0] in SPACES else _folder() + name
 
 
+def _base(path: str, base_version: int | None) -> int | None:
+    return base_version if base_version is not None else _READ.get(path)
+
+
+def _remember(path: str, got, summary: str | None) -> None:
+    if isinstance(got, dict) and isinstance(got.get("version"), int):
+        _READ[path] = got["version"]
+        if (summary or "").startswith("wiki-dream:") and got.get("changed") is not False:
+            _DREAM[path] = got["version"]
+
+
+def _dream_summary(path: str, summary: str | None, again: str | None) -> str | None:
+    """The summary to send, or ValueError for a second wiki-dream write of a page this process already saved."""
+    if not (summary or "").startswith("wiki-dream:") or path not in _DREAM:
+        return summary
+    if not again:
+        raise ValueError(f"{path}: this process already saved it as v{_DREAM[path]} with a wiki-dream: summary, and a dream run makes one "
+                         "write per page. Fold every fix into that one write next time; pass again='<reason>' only for a real second change.")
+    return f"{summary} (again: {again})"
+
+
+def _explain(error: WikiError, path: str) -> None:
+    """Turn a stale-base 409 into an answer that names each newer version, its author and time, and the read to redo."""
+    match = _STALE.search(str(error))
+    if error.status != 409 or not match:
+        return
+    try:
+        got = _call("GET", f"/wiki/api/agent/diff?{urllib.parse.urlencode({'path': path, 'from': match[1], 'to': match[2]})}")
+        rows = sorted(got.get("revisions", []), key=lambda row: -row.get("version", 0))
+    except (WikiError, AttributeError):
+        rows = []
+    newer = "; ".join(f"v{row['version']} by {row.get('author')} at {row.get('ts')}" for row in rows[:3]) or f"v{match[2]}"
+    error.args = (f"{path} changed after v{match[1]}, the version this write builds on: {newer}. Writing your copy would drop those "
+                  f"changes, so call wiki.read({path!r}) again, redo your change on that text and write it.",)
+
+
 def _page_write(path: str, content: str, summary: str | None, author: str | None, markdown: bool, base_version: int | None) -> dict:
     if conversation():
         query = {k: v for k, v in {"format": "md" if markdown else None, "summary": summary,
@@ -218,18 +264,31 @@ def _page_write(path: str, content: str, summary: str | None, author: str | None
 
 
 def write(name: str, content: str, *, summary: str | None = None, markdown: bool = False, base_version: int | None = None,
-          author: str | None = None) -> dict:
-    """Create or replace a page in the workspace (`plan.html`), or at a full wiki path; the gates' 422 comes back as WikiError."""
+          author: str | None = None, again: str | None = None) -> dict:
+    """Create or replace a page in the workspace (`plan.html`), or at a full wiki path; the gates' 422 comes back as WikiError.
+
+    A page this process read goes back with the version that read saw as its base, so a change saved since answers 409; pass
+    base_version to choose the base yourself. A second `wiki-dream:` write of one page from this process needs again='<reason>'.
+    """
     path = _path(name)
-    got = _page_write(path, content, summary, author, markdown, base_version)
+    summary = _dream_summary(path, summary, again)
+    try:
+        got = _page_write(path, content, summary, author, markdown, _base(path, base_version))
+    except WikiError as error:
+        _explain(error, path)
+        raise
+    _remember(path, got, summary)
     return {**got, "path": path, "url": _url(path)} if isinstance(got, dict) else got
 
 
-def edit(name: str, edits, *, summary: str | None = None, base_version: int | None = None, author: str | None = None) -> dict:
-    """Exact-string edits to a page: [(old, new), ...] or [{old_string, new_string, replace_all?}]."""
+def edit(name: str, edits, *, summary: str | None = None, base_version: int | None = None, author: str | None = None,
+         again: str | None = None) -> dict:
+    """Exact-string edits to a page: [(old, new), ...] or [{old_string, new_string, replace_all?}]; base_version and again work as in write."""
     path = _path(name)
+    summary = _dream_summary(path, summary, again)
     rows = [e if isinstance(e, dict) else {"old_string": e[0], "new_string": e[1]} for e in edits]
-    body = {"edits": rows, **({"summary": summary} if summary else {}), **({"baseVersion": base_version} if base_version is not None else {})}
+    base = _base(path, base_version)
+    body = {"edits": rows, **({"summary": summary} if summary else {}), **({"baseVersion": base} if base is not None else {})}
     try:
         if conversation():
             got = _call("PATCH", f"/wiki/{_quote(path)}", body)
@@ -239,7 +298,9 @@ def edit(name: str, edits, *, summary: str | None = None, base_version: int | No
         if error.status == 422 and "old_string not found" in str(error):
             error.args = (f"{error.args[0]} Copy old strings from wiki.read(path, html=True), the stored HTML with its "
                           "<!--wiki {json}--> header; the default markdown view shows that header as YAML.",)
+        _explain(error, path)
         raise
+    _remember(path, got, summary)
     return {**got, "path": path, "url": _url(path)}
 
 
@@ -282,11 +343,12 @@ def close(outcome: str, graduated_to: list[str] | None = None, gaps_created: lis
     return got
 
 
-def publish(path: str, html: str, *, summary: str | None = None, base_version: int | None = None, author: str | None = None) -> dict:
+def publish(path: str, html: str, *, summary: str | None = None, base_version: int | None = None, author: str | None = None,
+            again: str | None = None) -> dict:
     """Write a curated page (apps/, domains/, projects/, experiments/) and run the verify gate; close() lists it in graduated_to."""
     if path.split("/")[0] not in SPACES or path.startswith(("sessions/", "agents/")):
         raise ValueError(f"{path}: publish() writes a curated page such as apps/<app>/index.html; write() takes workspace pages.")
-    got = write(path, html, summary=summary, base_version=base_version, author=author)
+    got = write(path, html, summary=summary, base_version=base_version, author=author, again=again)
     verify = _call("POST", "/wiki/api/agent/verify", {"path": path})
     state = _state()
     state["graduated"] = list(dict.fromkeys([*state.get("graduated", []), path]))
@@ -307,9 +369,30 @@ def search(q: str, *, agent: str | None = None, sessions: bool = False, limit: i
 
 
 def read(path: str, *, section: str | None = None, lines: str | None = None, html: bool = False) -> str:
-    """A page as markdown (Turndown of the stored HTML), or its stored HTML with html=True."""
+    """A page as markdown (Turndown of the stored HTML), or its stored HTML with html=True; either read keeps the page's version.
+
+    The markdown header carries the version. The HTML view has none, so the version is asked first: a write that lands between the two
+    calls leaves an older base, which answers 409 instead of being overwritten.
+    """
+    path = path.lstrip("/")
     query = {"format": "html" if html else "md", **({"section": section} if section else {}), **({"lines": lines} if lines else {})}
-    return _call("GET", f"/wiki/{_quote(path.lstrip('/'))}?{urllib.parse.urlencode(query)}", text=True)
+    version = _version(path) if html else None
+    got = _call("GET", f"/wiki/{_quote(path)}?{urllib.parse.urlencode(query)}", text=True)
+    if not html:
+        header = _HEADER.match(got)
+        found = re.search(r"^version: (\d+)\s*$", header[1], re.M) if header else None
+        version = int(found[1]) if found else None
+    if version is not None:
+        _READ[path] = version
+    return got
+
+
+def _version(path: str) -> int | None:
+    try:
+        got = _call("GET", f"/wiki/api/agent/page?{urllib.parse.urlencode({'path': path, 'lines': '1-1'})}")
+    except WikiError:
+        return None
+    return got.get("version") if isinstance(got, dict) and isinstance(got.get("version"), int) else None
 
 
 def supersede(old: str, new: str, *, summary: str | None = None, author: str | None = None) -> dict:

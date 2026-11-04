@@ -6,11 +6,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import tempfile
 import threading
+import urllib.parse
 import unittest
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[1]
 THREAD = "230bbdbf-4d84-475f-95d2-63db2f90ca34"
+PAGE = "domains/devops/ci-cd-pipeline/dev-push-checks.html"
 
 
 def load_wiki():
@@ -156,6 +158,130 @@ class WikiSkillTests(unittest.TestCase):
             wiki = load_wiki()
             with self.assertRaises(ValueError):
                 wiki.write("apps/llm-wiki/content/apps/x.html", "<h1>x</h1>")
+
+
+class VersionedChat(BaseHTTPRequestHandler):
+    """One page with a revision log, answering like the :5184 /wiki routes and the engine's stale-base 409."""
+
+    page = {}
+    calls: list = []
+
+    def log_message(self, *args):
+        pass
+
+    def _send(self, status, out, kind="application/json"):
+        data = out.encode() if isinstance(out, str) else json.dumps(out).encode()
+        self.send_response(status)
+        self.send_header("content-type", kind)
+        self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _answer(self):
+        size = int(self.headers.get("content-length") or 0)
+        body = self.rfile.read(size).decode() if size else ""
+        url = urllib.parse.urlsplit(self.path)
+        query = dict(urllib.parse.parse_qsl(url.query))
+        VersionedChat.calls.append((self.command, url.path, query, body))
+        page = VersionedChat.page
+        current = page["revisions"][-1]["version"]
+        if self.command == "GET" and url.path == "/wiki/api/agent/diff":
+            rows = [r for r in page["revisions"] if int(query["from"]) < r["version"] <= int(query["to"])]
+            return self._send(200, {"current": current, "revisions": rows})
+        if self.command == "GET" and url.path == "/wiki/api/agent/page":
+            return self._send(200, {"path": query["path"], "version": current, "content": page["html"][:5]})
+        if self.command == "GET":
+            if query.get("format") == "html":
+                return self._send(200, page["html"], "text/html")
+            return self._send(200, f'---\npath: "{PAGE}"\nversion: {current}\ntitle: "Dev push checks"\n---\n\n# Page\n', "text/markdown")
+        sent = json.loads(body) if body.startswith("{") else {}
+        base = sent.get("baseVersion", query.get("baseVersion"))
+        if base is not None and int(base) != current:
+            return self._send(409, {"error": f"stale: baseVersion {base} != current {current}"})
+        page["revisions"].append({"version": current + 1, "author": "writer", "ts": "2026-11-04T18:20:00.000Z"})
+        return self._send(200, {"path": PAGE, "version": current + 1, "changed": True})
+
+    do_GET = do_POST = do_PUT = do_PATCH = _answer
+
+
+class ReadVersionTests(unittest.TestCase):
+    def setUp(self):
+        VersionedChat.calls = []
+        VersionedChat.page = {"html": "<h1>Dev push checks</h1>", "revisions": [{"version": 114, "author": "a", "ts": "t"}]}
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), VersionedChat)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.tmp.cleanup()
+
+    def env(self, **extra):
+        clean = {k: v for k, v in os.environ.items() if k not in ("PI_HOST_THREAD", "PI_HOST_CONVERSATION", "WIKI_AUTHOR", "RLM_SESSION_DIR")}
+        return patch.dict(os.environ, {**clean, "PI_HOST_CHAT_URL": self.url, "RLM_SESSION_DIR": self.tmp.name,
+                                       "WIKI_AUTHOR": "prime job check", **extra}, clear=True)
+
+    def another_job_saves(self):
+        version = VersionedChat.page["revisions"][-1]["version"] + 1
+        VersionedChat.page["revisions"].append({"version": version, "author": "push-verdict-legs-wiki", "ts": "2026-11-04T18:06:52.909Z"})
+
+    def bases(self):
+        return [json.loads(body).get("baseVersion") if body.startswith("{") else query.get("baseVersion")
+                for method, _path, query, body in VersionedChat.calls if method in ("POST", "PUT", "PATCH")]
+
+    def test_a_full_write_after_a_read_refuses_a_change_saved_since_and_names_it(self):
+        with self.env():
+            wiki = load_wiki()
+            wiki.read(PAGE)
+            self.another_job_saves()
+            with self.assertRaises(wiki.WikiError) as refused:
+                wiki.write(PAGE, "<h1>Dev push checks</h1><p>mine</p>")
+            self.assertEqual(refused.exception.status, 409)
+            self.assertIn("after v114, the version this write builds on: v115 by push-verdict-legs-wiki at 2026-11-04T18:06:52.909Z", str(refused.exception))
+            self.assertIn(f"wiki.read('{PAGE}') again", str(refused.exception))
+            with self.assertRaises(wiki.WikiError):
+                wiki.write(PAGE, "<h1>Dev push checks</h1><p>mine</p>")
+            wiki.read(PAGE)
+            self.assertEqual(wiki.write(PAGE, "<h1>Dev push checks</h1><p>mine</p>")["version"], 116)
+            wiki.edit(PAGE, [("mine", "ours")])
+        self.assertEqual(self.bases(), [114, 114, 115, 116])
+
+    def test_an_html_read_asks_the_version_first_and_an_unread_page_or_a_given_base_keeps_today(self):
+        with self.env():
+            wiki = load_wiki()
+            wiki.write(PAGE, "<h1>Dev push checks</h1>")
+            wiki = load_wiki()
+            wiki.read(PAGE, html=True)
+            self.assertEqual([c[1] for c in VersionedChat.calls[-2:]], ["/wiki/api/agent/page", f"/wiki/{PAGE}"])
+            self.another_job_saves()
+            with self.assertRaises(wiki.WikiError):
+                wiki.edit(PAGE, [("Dev", "The dev")])
+            wiki.edit(PAGE, [("Dev", "The dev")], base_version=116)
+        self.assertEqual(self.bases(), [None, 115, 116])
+
+    def test_a_second_dream_write_of_one_page_needs_a_reason_and_names_the_first(self):
+        with self.env():
+            wiki = load_wiki()
+            wiki.read(PAGE)
+            wiki.write(PAGE, "<h1>Dev push checks</h1><p>a.</p>", summary="wiki-dream: checked 47cbf1db62")
+            with self.assertRaises(ValueError) as refused:
+                wiki.edit(PAGE, [("a.", "a")], summary="wiki-dream: drop a stray period")
+            self.assertIn("already saved it as v115", str(refused.exception))
+            wiki.edit(PAGE, [("a.", "a")], summary="job: drop a stray period")
+            wiki.edit(PAGE, [("a", "b")], summary="wiki-dream: restore a fact", again="v116 dropped a fact")
+        sent = [json.loads(body).get("summary") for method, _path, _query, body in VersionedChat.calls if method == "PATCH"]
+        self.assertEqual(sent, ["job: drop a stray period", "wiki-dream: restore a fact (again: v116 dropped a fact)"])
+
+    def test_a_pi_host_job_sends_the_read_version_on_its_put(self):
+        session = Path(self.tmp.name) / ".prime/agent/pi-host/durable/session-artifacts" / f"{THREAD}-7"
+        session.mkdir(parents=True)
+        with self.env(RLM_SESSION_DIR=str(session)):
+            wiki = load_wiki()
+            wiki.read(PAGE, section="legs")
+            wiki.write(PAGE, "<h1>Dev push checks</h1>")
+        self.assertEqual(self.bases(), ["114"])
 
 
 if __name__ == "__main__":
