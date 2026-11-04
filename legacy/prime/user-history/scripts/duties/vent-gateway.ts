@@ -129,13 +129,35 @@ export const VENT_OWN = /^(railway .*\/vent|tier apps\/vent\/.*|box .*\/vent[^/]
 /** The CLIProxy gateway's own tier files. Its CLIPROXY_API_KEY is the key callers present to the gateway, which sits upstream of Vent, so it is no provider key. */
 export const CLIPROXY_OWN = /^tier apps\/infra\/cliproxy\//;
 
+/** Other projects that run on us-metal01 beside this system. Each regex names a project's own places, and a key there is that project's. */
+export const OTHER_PROJECT_PLACES: readonly RegExp[] = [
+  // slack.green (repo sieu-n/slack-green) runs its worker from /srv/slack-green; no auto-sns-agent compose or unit reads that file.
+  /^(box \/srv\/slack-green\/|container slack-green-)/,
+  // tokscale-viewer (vibecodingstats.com, repo sieu-n/me) is the tokscale-* services of compose.obs.yml, with their own OAuth apps.
+  /^container virev-[a-z]+-tokscale-/,
+];
+
+/**
+ * Key names that belong to another project wherever they sit. Only compose.obs.yml's tokscale-web reads the TOKSCALE_* rows, and no
+ * auto-sns-agent file reads CLOUDFLARE_VIBECODINGSTATS_DNS_TOKEN, the DNS token of tokscale's domain (rg at origin/dev/sieun, 11-04).
+ */
+export const OTHER_PROJECT_KEY = /^(TOKSCALE_[A-Z0-9_]+|CLOUDFLARE_VIBECODINGSTATS_DNS_TOKEN)$/;
+
+/**
+ * The CLIProxy gateway's server keys where compose.staging.yml's cliproxy service takes them since it moved to metal on 11-04: the staging
+ * release tier, its box copy and the container. They stay counted anywhere else, because Vent (tables.py) and the virev-demo record scripts
+ * read CLIPROXY_API_KEY to call the gateway, so a copy in another app's store is a way around Vent.
+ */
+export const CLIPROXY_SERVER = (location: string, name: string) => /^CLIPROXY_(API_KEY|MANAGEMENT_PASSWORD)$/.test(name)
+  && /^(tier apps\/infra\/\.env\.staging|box \/srv\/staging\/secrets\/release\.env|container virev-staging-cliproxy)$/.test(location);
+
 /**
  * Whether a lister location is a deployment of this system other than Vent: Convex, the auto-sns-crawler Railway project, the auto-sns-*
  * Vercel projects, the repo's GitHub stores, tracked tier files and us-metal01. Other projects on the same accounts (slack.green, tokscale,
- * hello2026) and the CLIProxy gateway, which sits upstream of Vent, are outside it.
+ * hello2026) and the CLIProxy gateway, which sits upstream of Vent, are outside it, by place (OTHER_PROJECT_PLACES) or by key (OTHER_PROJECT_KEY, CLIPROXY_SERVER).
  */
 export function inScope(location: string): boolean {
-  if (VENT_OWN.test(location) || CLIPROXY_OWN.test(location)) return false;
+  if (VENT_OWN.test(location) || CLIPROXY_OWN.test(location) || OTHER_PROJECT_PLACES.some(place => place.test(location))) return false;
   return /^(convex |railway auto-sns-crawler\/|vercel auto-sns-|github (secrets|variables) (repo|env )|tier |box |container |unit )/.test(location);
 }
 
@@ -358,7 +380,8 @@ export function ventMetrics(reads: VentReads, at: number): PrecheckOutput {
   const leaks: string[] = [];
   for (const [location, names] of Object.entries(reads.keys.locations)) {
     if (!inScope(location)) continue;
-    const here = names.filter(name => (providerKey(name, reads.keys.classOf) || (BOX_PLATFORM.test(name) && onBox(location))) && !(ALARM_SLACK.test(name) && ALARM_FALLBACK.test(location)) && !CI_VENT_INPUT(location, name));
+    const here = names.filter(name => (providerKey(name, reads.keys.classOf) || (BOX_PLATFORM.test(name) && onBox(location))) && !(ALARM_SLACK.test(name) && ALARM_FALLBACK.test(location)) && !CI_VENT_INPUT(location, name)
+      && !OTHER_PROJECT_KEY.test(name) && !CLIPROXY_SERVER(location, name));
     for (const name of here) leaks.push(`${location} ${name}`);
     if (here.length) flagged.push({ at, kind: "key_outside_vent", item: location, excerpt: `${location} still holds ${here.join(", ")}`.slice(0, 300) });
   }

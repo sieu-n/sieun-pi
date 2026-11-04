@@ -77,6 +77,29 @@ test("the CLIProxy gateway's tier files are out of scope, and other tiers still 
   assert.equal(inScope("tier apps/infra/.env"), true);
 });
 
+// d1 of 11-04 read 20 keys outside Vent, and 16 of them were other projects' keys on us-metal01 or the staging CLIProxy server's own keys.
+test("slack.green, tokscale and the staging CLIProxy server keep their keys out of the count, and the same names elsewhere still count", () => {
+  const keys = { locations: {
+    "box /srv/slack-green/worker.env": ["RESEND_API_KEY", "SUPABASE_SERVICE_KEY"],
+    "container slack-green-worker": ["RESEND_API_KEY"],
+    "container virev-obs-tokscale-web": ["GITHUB_CLIENT_SECRET", "GOOGLE_CLIENT_SECRET"],
+    "box /srv/obs/secrets/obs.env": ["TOKSCALE_GITHUB_CLIENT_SECRET"],
+    "tier apps/infra/.env": ["TOKSCALE_GOOGLE_CLIENT_SECRET", "CLOUDFLARE_VIBECODINGSTATS_DNS_TOKEN", "STRIPE_USAGE_KEY"],
+    "tier apps/infra/.env.staging": ["CLIPROXY_API_KEY", "CLIPROXY_MANAGEMENT_PASSWORD"],
+    "box /srv/staging/secrets/release.env": ["CLIPROXY_API_KEY", "CLIPROXY_MANAGEMENT_PASSWORD"],
+    "container virev-staging-cliproxy": ["CLIPROXY_API_KEY"],
+    "container virev-staging-search": ["CLIPROXY_API_KEY"],
+    "container virev-prod-worker": ["RESEND_API_KEY"],
+  }, unreadable: {} };
+  const output = ventMetrics(reads({ keys }), 0);
+  assert.deepEqual(output.flagged!.filter(slice => slice.kind === "key_outside_vent").map(slice => slice.excerpt), [
+    "tier apps/infra/.env still holds STRIPE_USAGE_KEY",
+    "container virev-staging-search still holds CLIPROXY_API_KEY",
+    "container virev-prod-worker still holds RESEND_API_KEY",
+  ]);
+  assert.equal(output.metrics.provider_keys_outside_vent, 3);
+});
+
 test("the box reader's stopped containers, host units and services.env tokens count (p61 audit, 10-22)", () => {
   const locations: Record<string, string[]> = {};
   boxLocations({
