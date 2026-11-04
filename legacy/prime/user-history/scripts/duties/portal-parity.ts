@@ -98,7 +98,7 @@ export type Verdict = "ok" | "crawler" | "portal" | "unprobed" | "skipped";
 export interface ProbeResult { op: string; verdict: Verdict; status: number; ms: number; code?: string | undefined; note: string; costUsd?: number }
 /**
  * `ms` holds each "<env> <op>" call's last answer time, which orders the next run's page-1 calls slowest first. `paidAt` holds when each
- * paid prod read last got an answer, so the run calls it once a UTC day.
+ * paid prod read last got a working answer, so the run calls it once a UTC day while it works.
  */
 export interface ParityState { verdicts: Record<string, Verdict>; ms?: Record<string, number>; paidAt?: Record<string, number> }
 /** The saved state, or undefined for none. The duty runner seeds STATE_FILE with "{}" before the first run, which has no verdicts. */
@@ -440,8 +440,29 @@ export function parityMetrics(input: {
   state.ms = { ...input.previous?.ms };
   for (const env of ENVS) for (const probe of input.probes[env]) if (probe.ms > 0) state.ms[`${env} ${probe.op}`] = probe.ms;
   state.paidAt = { ...input.previous?.paidAt };
-  for (const probe of input.probes.prod) if (input.paid?.has(probe.op) && probe.ms > 0 && ["ok", "portal", "crawler"].includes(probe.verdict)) state.paidAt[probe.op] = at;
+  for (const probe of input.probes.prod) {
+    if (!input.paid?.has(probe.op) || probe.ms <= 0) continue;
+    if (probe.verdict === "ok") state.paidAt[probe.op] = at;
+    else delete state.paidAt[probe.op];
+  }
   return { output: { metrics, flagged }, state };
+}
+
+const utcDay = (ms: number) => Math.floor(ms / 86_400_000);
+
+/**
+ * The paid prod reads whose working answer from earlier the same UTC day the run reuses instead of calling them again. Only an "ok" answer
+ * is held, because the gateway charges nothing for a failed call (apps/api-portal "No charge on upstream failure"), and on 11-04 the 00:00Z
+ * run's four failures in a Convex billing outage were held all day and pinned prod_working_pct at 97.5% while the routes worked.
+ */
+export function heldPaidReads(paid: Iterable<string>, previous: ParityState | undefined, start: number): Map<string, ProbeResult> {
+  const held = new Map<string, ProbeResult>();
+  for (const op of paid) {
+    const at = previous?.paidAt?.[op];
+    if (at !== undefined && previous?.verdicts[`prod ${op}`] === "ok" && utcDay(at) === utcDay(start))
+      held.set(op, { op, verdict: "ok", status: 0, ms: 0, note: `paid read, answer of ${new Date(at).toISOString()} reused; called again on the next UTC day` });
+  }
+  return held;
 }
 
 // ---- I/O ----
@@ -729,7 +750,6 @@ function money(value: unknown): number {
  * day reuses the day's answer.
  */
 const PAID = "prod-cost";
-const utcDay = (ms: number) => Math.floor(ms / 86_400_000);
 
 /**
  * The operations SPEC-93 never calls on prod, read from auto-sns-agent apps/specs/lib/api-portal/<group>.mjs, the cases the prod
@@ -784,13 +804,7 @@ async function main(): Promise<void> {
   const probes: Record<Env, ProbeResult[]> = { prod: [], staging: [] };
   const orgs: Org[] = [];
   const spend = { usd: 0 };
-  const held = new Map<string, ProbeResult>();
-  for (const op of skips?.paid ?? []) {
-    const at = previous?.paidAt?.[op];
-    const verdict = previous?.verdicts[`prod ${op}`];
-    if (at !== undefined && verdict && utcDay(at) === utcDay(start))
-      held.set(op, { op, verdict, status: 0, ms: 0, note: `paid read, answer of ${new Date(at).toISOString()} reused; called again on the next UTC day` });
-  }
+  const held = heldPaidReads(skips?.paid ?? [], previous, start);
   const prodOrg: Org | null = prodKey ? { id: "prod", key: prodKey } : null;
   if (prodOrg && prodEnv) await attempt("cancel of prod jobs that earlier runs left open", () => cancelLeftovers(prodEnv.urls.apiPortal!, prodOrg));
   try {

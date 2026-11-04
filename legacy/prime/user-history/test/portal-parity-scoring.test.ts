@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { UNMEASURED_PCT, parityMetrics, scoredRoutes, type OpenApi, type ProbeResult, type Route } from "../scripts/duties/portal-parity.ts";
+import { UNMEASURED_PCT, heldPaidReads, parityMetrics, scoredRoutes, type OpenApi, type ProbeResult, type Route } from "../scripts/duties/portal-parity.ts";
 
 const doc = (...ops: string[]): OpenApi => {
   const paths: NonNullable<OpenApi["paths"]> = {};
@@ -114,4 +114,19 @@ test("the route map holds unique entries per env and names only real envs", () =
     assert.deepEqual(aliases.filter(alias => keys.includes(alias) || aliases.indexOf(alias) !== aliases.lastIndexOf(alias)), [], `an alias another entry scores on ${env}`);
   }
   for (const route of routes) for (const env of route.envs ?? []) assert.ok(env === "prod" || env === "staging");
+});
+
+// 11-04 00:00Z: four paid prod reads failed in a Convex billing outage, the run held their failures for the UTC day, and every later run
+// read prod_working_pct 97.5% while the routes worked again.
+test("a paid prod read holds only a working answer for the UTC day, so a failed one is called again on the next run", () => {
+  const paid = new Set(["GET /v1/tiktok/live/profile", "GET /v1/youtube/live/channel"]);
+  const at = Date.parse("2026-11-04T00:00:12.956Z");
+  const failed: ProbeResult = { op: "GET /v1/youtube/live/channel", verdict: "portal", status: 502, ms: 5, note: "upstream failure" };
+  const { state } = parityMetrics({ routes: ROUTES, crawler, docs, probes: { ...probes, prod: [ok("GET /v1/tiktok/live/profile"), failed] }, sourceErrors: [], at, paid });
+  assert.deepEqual(state.paidAt, { "GET /v1/tiktok/live/profile": at });
+  const later = Date.parse("2026-11-04T01:53:00Z");
+  assert.deepEqual([...heldPaidReads(paid, state, later).keys()], ["GET /v1/tiktok/live/profile"]);
+  const stale = { ...state, paidAt: { ...state.paidAt, "GET /v1/youtube/live/channel": at } };
+  assert.deepEqual([...heldPaidReads(paid, stale, later).keys()], ["GET /v1/tiktok/live/profile"]);
+  assert.equal(heldPaidReads(paid, state, Date.parse("2026-11-05T00:00:00Z")).size, 0);
 });
