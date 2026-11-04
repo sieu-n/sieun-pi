@@ -23,8 +23,7 @@ test("a chat's agents are built again only when a row they name, their inputs or
   const again = keptChatAgents(input({ rows: [...rows(false), { row: row("s4", "new thread") }], now: now + 1000 }));
   assert.deepEqual(states(again), ["s1:idle", "s2:waiting"]);
   assert.equal(planReads, built, "new rows that the agents do not name and a later time build nothing");
-  again[0]!.subagentsTotal = 99;
-  assert.equal(keptChatAgents(input()).some(agent => agent.subagentsTotal === 99), false, "each call gets its own agent objects");
+  assert.ok(keptChatAgents(input()).every(agent => again.includes(agent)), "an unchanged chat gives the last call's agent objects, which no caller changes");
 
   assert.deepEqual(states(keptChatAgents(input({ rows: rows(true) }))), ["s1:working", "s2:waiting"], "a named row that starts working shows it");
   assert.deepEqual(states(keptChatAgents(input({ rows: rows(true), now: now + 120_000 }))), ["s1:working"], "a contact that leaves the window is built again");

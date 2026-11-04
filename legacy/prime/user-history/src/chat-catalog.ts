@@ -310,6 +310,20 @@ function keptChat(before: SessionRow | undefined, row: SessionRow): SessionRow {
  * while its row is unchanged leaves the sidebar with the row's next change or the next full list.
  */
 const listedRows = new WeakMap<SessionSummary, boolean>();
+/**
+ * A saved session's slot-park reading (`readRowSlotPark`), kept per row object. Only a session's worker writes its file, and a resume gives the
+ * row a worker, which the daemon sends as a new row object, so a saved row the catalog read before has the same file. On 11-04 the live chat's
+ * 14 chats listed 3,065 agents, about 2,800 of them idle or done, and each of its 81 projections a minute stat'ed every such agent's file.
+ */
+const savedParks = new WeakMap<SessionSummary, FileSlotPark>();
+async function rowSlotPark(row: SessionSummary): Promise<FileSlotPark> {
+  if (row.activeSessionId !== undefined) return readRowSlotPark(row);
+  const known = savedParks.get(row);
+  if (known) return known;
+  const read = await readRowSlotPark(row);
+  savedParks.set(row, read);
+  return read;
+}
 function listedHere(row: SessionSummary): boolean {
   let listed = listedRows.get(row);
   if (listed === undefined) { listed = isListed(row); listedRows.set(row, listed); }
@@ -1238,12 +1252,17 @@ export class Catalog {
     const parks = new Map((await wait(Promise.all(parkReads))).flat());
     for (const { row } of chatRows) row.agents = withSlotParks(row.agents ?? [], parks);
     await breathe();
-    for (const agent of chatRows.flatMap(({ row }) => row.agents ?? [])) {
-      await breathe();
-      const session = agent.sessionId ? this.find(agent.sessionId) : undefined;
-      const folder = session ? subagentFolder(session) : undefined;
-      const spawned = folder ? this.spawned.of(folder, now, agent.state === "idle") : 0;
-      if (spawned > (agent.subagentsTotal ?? 0)) agent.subagentsTotal = spawned;
+    for (const { row } of chatRows) {
+      const agents = row.agents ?? [];
+      for (let at = 0; at < agents.length; at++) {
+        await breathe();
+        const agent = agents[at]!;
+        const session = agent.sessionId ? this.find(agent.sessionId) : undefined;
+        const folder = session ? subagentFolder(session) : undefined;
+        const spawned = folder ? this.spawned.of(folder, now, agent.state === "idle") : 0;
+        // An agent can be the last projection's object (`keptChatAgents`), which a frame gave out, so it gets a copy.
+        if (spawned > (agent.subagentsTotal ?? 0)) agents[at] = { ...agent, subagentsTotal: spawned };
+      }
     }
     // A chat row that came out as the last projection built it is that projection's object again (`keptChat`).
     const keptChats = new Map<string, SessionRow>();
@@ -1700,7 +1719,7 @@ export class Catalog {
    */
   private async slotPark(agent: ChatAgent, pool: { queued: ReadonlyMap<string, QueuePlace>; working: Set<string> }, now: number): Promise<(readonly [string, SlotPark])[]> {
     const row = agent.sessionId && agent.state !== "working" ? this.find(agent.sessionId) : undefined;
-    const park = row ? poolPark((await readRowSlotPark(row).catch((): FileSlotPark => ({ complete: true }))).park, agent.sessionId!, now, pool) : null;
+    const park = row ? poolPark((await rowSlotPark(row).catch((): FileSlotPark => ({ complete: true }))).park, agent.sessionId!, now, pool) : null;
     return park ? [[agent.sessionId!, park] as const] : [];
   }
 
