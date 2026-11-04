@@ -10,11 +10,14 @@ user_ctl=(systemctl --user "--machine=$DEV_USER@")
 # Unit -> CPUWeight, against the default of 100. A weight only counts against its siblings, so the root level decides who wins between the
 # agents (user.slice) and the CI guests and prod (virev.slice), and the daemon's weight decides it against the other units in app.slice.
 # On t68 (10-27) the owner ranked CI above dev box work: "ci shouldn't be a bottleneck (higher priority) than dev box work itself, while it
-# shouldn't clog up unnecessary compute when idle". So virev.slice runs at 4000 against user.slice at 1000, and inside it virev-ci.slice runs
+# shouldn't clog up unnecessary compute when idle". So virev.slice runs at 10000 (systemd's maximum) against user.slice at 1000, and inside it virev-ci.slice runs
 # at 300 beside virev-prod.slice at 300, so busy CI outweighs the agents 2 to 1, a busy prod does too, and an idle guest takes nothing.
 # measured: from 10-20 to 10-27 at 93-100% host busy, with virev.slice at 400 and CI at 100 inside it, the CI guests saw 34% mean steal and
 # 27% of search / e2e jobs hit Convex's 1 s function limit (auto-sns-agent apps/infra/ci-server/RUNBOOK.md, "CPU weight of the CI guests").
-# system.slice and dev.slice run at 400, so with virev.slice at 4000 they keep the 5 or so cores they could count on at 100 under 1600 before.
+# measured: at 01:3x-01:4xZ on 11-04 at load 283 to 346, two 30 s vcpu schedstat samples read the busy CI guests using 41.1 and 29.4 cores
+# while waiting 29 to 56% of their runnable time (an ask of 67.4 and 44.9 cores), with virev.slice holding 43.4 and 36.8 cores against
+# user.slice 26.8 and 33.4. At 10000 against user.slice 1000, system and dev 400 and machine 100, CI's floor is about 67 of 80 threads (54 at 4000).
+# system.slice and dev.slice run at 400, so with virev.slice at 4000 (10-27) they keep the 5 or so cores they could count on at 100 under 1600 before.
 # measured: at 93-100% host busy those two used 2.4 and 3.3 to 4.1 cores. World rigs (transient user units and ssh login scopes) stay at 100.
 # user@1001.service runs at 10000, the most systemd takes, because its siblings are the ssh login scopes, 69 of them
 # at 100 each from Mac jobs on 10-19 at 21:1xZ, which at 300 left the user manager about 300/7200 of user-1001.slice when all were busy.
@@ -28,7 +31,7 @@ user_ctl=(systemctl --user "--machine=$DEV_USER@")
 # 202 to 254; after both changes at 06:41:40Z it waited 0.13 s and 0.35 s at load 204 to 221 (/home/sieun/work/cpu-weights/report.md).
 # pi-history runs at 10000 beside the chat, whose api/search answers from it: at 03:28Z on 10-28 at load 400 and weight 100, its cpu.pressure
 # full read 23% against 4 to 5% for the chat, and searches took p50 433 ms and p90 1.3 s, mostly pi-history waiting for CPU.
-declare -A SYSTEM_WEIGHTS=([ssh.service]=1000 [tailscaled.service]=1000 [user.slice]=1000 [user@$uid.service]=10000 [virev.slice]=4000 [virev-prod.slice]=300 [virev-ci.slice]=300 [system.slice]=400 [dev.slice]=400)
+declare -A SYSTEM_WEIGHTS=([ssh.service]=1000 [tailscaled.service]=1000 [user.slice]=1000 [user@$uid.service]=10000 [virev.slice]=10000 [virev-prod.slice]=300 [virev-ci.slice]=300 [system.slice]=400 [dev.slice]=400)
 # sieun-pi-wiki and auto-sns-dev-pm2 (the wiki and the dev servers duty d1 probes) run at 10000 for the same reason as pi-history.
 # measured: on 10-29 at load 200 and weight 100, per CPU-second used the wiki waited 0.35 s and pm2 0.32 s against 0.02 s for the
 # chat at 10000; at load 230 :5174 answered in 12.7 s and the wiki in up to 1.1 s while the chat took 0.13 s, and d1 at 06:06Z saw
