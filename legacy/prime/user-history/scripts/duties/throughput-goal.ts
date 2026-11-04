@@ -54,7 +54,9 @@ export const HOLD_MS = 6 * HOUR;
  */
 export const TTS_WEEKLY_PCT = 99.5;
 export const TTS_WEEKLY_CH = "SELECT uniqExact(key) AS n FROM crawler.tiktok_shop_reads WHERE kind = 'product' AND outcome = 'ok' AND region = 'US' AND observed_at > now() - INTERVAL 7 DAY";
-export const TTS_LIVE_PG = "SELECT count(*) AS n FROM tiktok_shop_frontier WHERE kind = 'product' AND region = 'US' AND last_outcome IS DISTINCT FROM 'gone'";
+/** Live US products, the crawler API's exact count of non-gone product rows of tiktok_shop_frontier every 5 minutes, which the Throughput dashboard's
+ * coverage panel reads too. measured: the same count run here on prod Postgres hit grafana_ro's 30 s statement_timeout at 08:00Z 11-04, so the headline went unmeasured. */
+export const TTS_LIVE_EXPR = 'max(last_over_time(crawler_v3_tiktok_shop_live_products{world="prod", region="US"}[1h]))';
 /**
  * A queue grew when its 15-minute mean now is over 6 h ago's by more than 10% and by more than about one minute of census intake, its lowest
  * point over 30 minutes rose past the same line, and its 6 h slope is up. On 10-19 at 15:17Z the m-backlogs read of 38 prod series found every
@@ -649,9 +651,10 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
     step("instagram rate", () => slotsOf(GOOD_ROWS.instagram, lagFrom)),
     step("tiktok shop rate", () => slotsOf(GOOD_ROWS.tiktokShop)),
     step("tiktok shop weekly", async () => {
-      const [read, live] = await Promise.all([sqlRows(query, CH, TTS_WEEKLY_CH), sqlRows(query, PG.prod, TTS_LIVE_PG)]);
-      if (!read[0] || !live[0]) throw new Error("tiktok shop weekly coverage answered no row");
-      return { read: num(read[0].n) ?? 0, live: num(live[0].n) ?? 0 };
+      const [read, live] = await Promise.all([sqlRows(query, CH, TTS_WEEKLY_CH), promInstant(query, PROM.prod, TTS_LIVE_EXPR)]);
+      if (!read[0]) throw new Error("tiktok shop weekly coverage answered no row");
+      if (!live[0]) throw new Error("crawler_v3_tiktok_shop_live_products has no prod US series in the last hour");
+      return { read: num(read[0].n) ?? 0, live: Math.round(live[0].value) };
     }),
     step("prod deploys", async () => (await promRange(query, PROM.prod, DEPLOY_EXPR, lagFrom, holdTo, SLOT_MS)).flatMap(series => series.points)),
     step("census writer lag", async () => lagSlots((await promRange(query, PROM.prod, WRITER_LAG_EXPR, lagFrom + SLOT_MS, holdTo, SLOT_MS)).flatMap(series => series.points))),
