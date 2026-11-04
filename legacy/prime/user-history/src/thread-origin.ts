@@ -42,6 +42,11 @@ export function fileOrigin(sessionFile: string): { origin: ThreadOrigin; final: 
 const HEAD_SCAN_BYTES = 4 * 1024 * 1024;
 /** A listed session as the resolver reads it: its file, and the daemon row's fields that change when the file is written. */
 type OriginRow = { sessionId: string; sessionFile?: string; modified?: string; messageCount?: number; lastActivityAt?: string };
+/**
+ * A projection's origin rule (`ThreadOrigins.resolver`), with the ids it reads besides the file heads: the threads this server created and the
+ * clean-room chats. A row object's file answer is kept, so the catalog builds a row again for its origin only when one of these sets changed.
+ */
+export type OriginResolver = ((row: OriginRow) => ThreadOrigin) & { readonly own: ReadonlySet<string>; readonly tests: ReadonlySet<string> };
 const TYPE = /^\{"type":"([a-z_]+)"/;
 /** The entry type of one JSONL line. The session writer puts `type` first, so the line is not parsed. */
 function entryType(line: string): string | undefined { return TYPE.exec(line)?.[1]; }
@@ -63,10 +68,10 @@ export class ThreadOrigins {
   private readonly undecided = new Map<string, { key: string; origin: ThreadOrigin }>();
   constructor(private readonly created: Pick<IdIndex, "ids">, private readonly cleanRoom?: Pick<IdIndex, "ids">) {}
 
-  async resolver(chats: ReadonlySet<string>): Promise<(row: OriginRow) => ThreadOrigin> {
+  async resolver(chats: ReadonlySet<string>): Promise<OriginResolver> {
     const own = new Set(await this.created.ids().catch(() => []));
     const tests = new Set(await this.cleanRoom?.ids().catch(() => []) ?? []);
-    return row => {
+    return Object.assign((row: OriginRow): ThreadOrigin => {
       if (tests.has(row.sessionId)) return "agent";
       if (own.has(row.sessionId) || chats.has(row.sessionId)) return "user";
       if (!row.sessionFile) return "user";
@@ -75,7 +80,7 @@ export class ThreadOrigins {
       const origin = this.fileDecides(row, row.sessionFile);
       this.byRow.set(row, origin);
       return origin;
-    };
+    }, { own, tests });
   }
 
   /**

@@ -21,6 +21,11 @@ export interface SubagentSession {
 /** A top-level session as the catalog projects it, plus its first task text. */
 export interface AgentRow { row: SessionRow; first?: string }
 /**
+ * The row a session id or name finds, as `rowFinder` finds it in rows in the catalog's order: the first row whose id or name it is. The catalog
+ * keeps one up to date across projections (catalog-rows.ts `RowOrder`), so a projection reads no row that did not change.
+ */
+export interface RowLookup { lookup(who: string): AgentRow | undefined }
+/**
  * One agent message between the chat and another agent, from the chat's transcript. `who` is the other side as the transcript names it: a
  * session id (a sent message's receipt names the target), `child:<name>`, or a session name (a received message's header). `text` is the
  * first line of a received message, empty for a sent one.
@@ -39,8 +44,8 @@ export interface AgentSources {
   roots: readonly string[];
   /** The chat's transcript: created-session handles and agent messages are read from it. */
   messages: readonly ThreadMessage[];
-  /** Every top-level session, to resolve names and ids. */
-  rows: readonly AgentRow[];
+  /** Every top-level session, to resolve names and ids: the rows in the catalog's order, or a lookup that answers as such rows would (`RowLookup`). */
+  rows: readonly AgentRow[] | RowLookup;
   now: number;
 }
 
@@ -285,7 +290,8 @@ function indexRows(rows: readonly AgentRow[]): void {
   rowIndex.rows = rows;
   rowIndex.mark = mark;
 }
-function rowFinder(rows: readonly AgentRow[]): (who: string) => AgentRow | undefined {
+function rowFinder(rows: readonly AgentRow[] | RowLookup): (who: string) => AgentRow | undefined {
+  if ("lookup" in rows) return who => rows.lookup(who);
   return who => {
     indexRows(rows);
     const at = Math.min(rowIndex.byId.get(who) ?? Infinity, rowIndex.byName.get(who) ?? Infinity);

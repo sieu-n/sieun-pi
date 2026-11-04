@@ -7,14 +7,15 @@ import { FIRST_TASK_CHARS, keptFirst, taskText } from "./first-task.ts";
 import { DaemonClient, onPiHost } from "./daemon-sdk.ts";
 import { fullListInWorker } from "./full-list.ts";
 import type { ChatLabels } from "./chat-labels.ts";
-import { keptChatAgents, stepSessions, withPoolBelow, withQueue, withRates, withSlotParks, withWaits, type AgentRow, type SubagentSession } from "./chat-agents.ts";
+import { keptChatAgents, stepSessions, withPoolBelow, withQueue, withRates, withSlotParks, withWaits, type SubagentSession } from "./chat-agents.ts";
+import { RowOrder } from "./catalog-rows.ts";
 import { type FileSlotPark, heldSlotParkReads, poolPark, readRowSlotPark, type SlotPark, takeSlotParkReads } from "./slot-park.ts";
 import { type Cut, cutActivity, SessionCuts, type CutSource } from "./cut-end.ts";
 import { planCounts } from "./shared/chat-board.ts";
 import { unreadCount } from "./shared/chat-feed.ts";
 import type { Chats } from "./chats.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
-import type { ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
+import type { OriginResolver, ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
 import type { Wake } from "./wakes.ts";
 import { mirrorPath, remotePath, type HostCatalogs } from "./host-catalogs.ts";
 import { SessionPeer } from "./session-peer.ts";
@@ -240,6 +241,11 @@ export function sessionTitle(row: Pick<SessionSummary, "sessionName" | "firstMes
  * each roster update that changed two of them.
  */
 type KeptRow = { key: readonly unknown[]; row: SessionRow };
+/** What a projection read for its rows besides the daemon rows (`Catalog.projectRows`). */
+type RowInputs = {
+  state: Awaited<ReturnType<ChatReadState["snapshot"]>> | null; labels: Awaited<ReturnType<ChatLabels["snapshot"]>> | null; chats: ReadonlySet<string> | null;
+  checkIns: ReadonlyMap<string, CheckInState> | null; briefs: ReadonlyMap<string, ChatBriefState> | null; archivedByOwner: ReadonlySet<string> | null; originOf: OriginResolver;
+};
 /** Whether a kept row's key holds the entries of `fixed` and then those of `below`. */
 function sameKey(left: readonly unknown[], fixed: readonly unknown[], below: readonly unknown[]): boolean {
   if (left.length !== fixed.length + below.length) return false;
@@ -298,13 +304,6 @@ function keptChat(before: SessionRow | undefined, row: SessionRow): SessionRow {
   }
   return sameValue(before, row, 4) ? before : row;
 }
-/** A projected row's sort time, parsed once per row object: a kept row is the same object in each projection. */
-const sortTimes = new WeakMap<SessionRow, number>();
-function sortTime(row: SessionRow): number {
-  let at = sortTimes.get(row);
-  if (at === undefined) { at = Date.parse(row.lastActivityAt ?? row.created ?? ""); sortTimes.set(row, at); }
-  return at;
-}
 /**
  * Whether this box's daemon row is listed, kept per row object: a roster update replaces only the rows it changed, and asking the disk for every
  * saved row's file on each projection was 3.3 of 54 ms of a projection's own code on a bench over a copy of the live rows on 10-19. A file gone
@@ -316,8 +315,6 @@ function listedHere(row: SessionSummary): boolean {
   if (listed === undefined) { listed = isListed(row); listedRows.set(row, listed); }
   return listed;
 }
-/** Each projected row's entry for `chatAgents`, so a kept row keeps its entry and its first task is not looked up again. */
-const agentRowOf = new WeakMap<SessionRow, AgentRow>();
 
 export function isTopLevel(row: SessionSummary): boolean {
   return row.runtimeKind !== "subagent" && typeof row.rlmChildId !== "string" && !(typeof row.rlmDepth === "number" && row.rlmDepth > 0);
@@ -580,8 +577,14 @@ function rosterAgent(row: SessionSummary, id: string, running: boolean, failed: 
  */
 export function subagentFolder(row: Pick<SessionSummary, "sessionId" | "sessionFile" | "parentSessionId">): string | undefined {
   if (!row.sessionFile) return undefined;
-  return row.parentSessionId ? dirname(row.sessionFile) : join(dirname(dirname(row.sessionFile)), "session-artifacts", row.sessionId);
+  const known = subagentFolders.get(row);
+  if (known?.file === row.sessionFile && known.parent === row.parentSessionId && known.id === row.sessionId) return known.folder;
+  const folder = row.parentSessionId ? dirname(row.sessionFile) : join(dirname(dirname(row.sessionFile)), "session-artifacts", row.sessionId);
+  subagentFolders.set(row, { file: row.sessionFile, parent: row.parentSessionId, id: row.sessionId, folder });
+  return folder;
 }
+/** `subagentFolder` per row object: each projection asks it for every chat's agents, and the path joins were 3.5% of a live projection on 11-04. */
+const subagentFolders = new WeakMap<object, { file: string; parent: string | undefined; id: string; folder: string }>();
 
 /** The session ids and active session ids of `rows`, and the ids of the rows with a worker. */
 function ownIds(rows: readonly SessionSummary[]): { own: Set<string>; ownActive: Set<string> } {
@@ -847,8 +850,31 @@ export class Catalog {
   private readonly spawned = new SpawnedCounts(() => { if (!this.closed) void this.emit(); });
   /** The chat rows the last projection gave out, by session id (`keptChat`). */
   private keptChats = new Map<string, SessionRow>();
-  /** The rows the last projection built, by session id, that the next one may reuse (`KeptRow`). */
+  /** The rows the row stage built, by session id, that the next one may reuse (`KeptRow`). */
   private keptRows = new Map<string, KeptRow>();
+  /** The listed rows in the sidebar's order, kept across projections; the row stage puts the rows it builds again (`projectRows`). */
+  private readonly order = new RowOrder();
+  /** The session ids whose row the next row stage builds again (`rowsToVisit`), and whether it builds every row. */
+  private pending = new Set<string>();
+  private pendingAll = true;
+  /** Rows the last row stage looked at: those marked changed and the chats, every row only when it built them all. */
+  rowsWalked = 0;
+  /** False makes every row stage look at every row, as a projection did before the row stage kept its order (tests compare the two). */
+  incremental = true;
+  /** The listed rows with a pulse, which pi-pool's waits go on (`withPoolWaits`). */
+  private readonly pulsed = new Set<string>();
+  /** The row stages, one after another. */
+  private rowStage: Promise<void> = Promise.resolve();
+  /** What the last row stage read besides the daemon rows, to tell which rows an input changed for (`rowsToVisit`). */
+  private readAts = new Map<string, number | undefined>();
+  private labelsKept = new Map<string, ThreadLabels>();
+  private scheduleKept = new Map<string, ThreadSchedule>();
+  private seen: { baseline: number | undefined; schedules: ReadonlyMap<string, ThreadSchedule> | undefined; chats: ReadonlySet<string>; archived: ReadonlySet<string>;
+    own: ReadonlySet<string>; tests: ReadonlySet<string> } = { baseline: undefined, schedules: undefined, chats: new Set(), archived: new Set(), own: new Set(), tests: new Set() };
+  /** Each daemon row object the last index read, of every box, to tell which rows the next one changed (`markIndexed`). */
+  private indexedRows = new Set<SessionSummary>();
+  /** The subagent rows by parent, running ones and all, built once per index. */
+  private childMaps: { from: readonly SessionSummary[]; running: Map<string, SessionSummary[]>; children: Map<string, SessionSummary[]> } | undefined;
   private schedulesRefreshing: Promise<void> | undefined;
   private schedulesTimer: ReturnType<typeof setTimeout> | undefined;
   /** Wall ms of each projection since the last `projectionLine`, and the ms of each that its own code ran. */
@@ -1054,9 +1080,11 @@ export class Catalog {
     const next = new Map<string, SessionSummary>();
     const children: SessionSummary[] = [];
     const all = this.hosts ? [...rows, ...this.hosts.rows()] : rows;
+    const indexed = new Set<SessionSummary>();
     for (let at = 0; at < all.length; at++) {
       if (at % BREATHE_ROWS === 0 && at > 0) yield;
       const row = all[at]!;
+      indexed.add(row);
       if (!isTopLevel(row)) { children.push(row); continue; }
       const existing = next.get(row.sessionId);
       // A session on two boxes (a copy, or one moving between them) shows as the box whose daemon runs it, this box's row when both or neither do.
@@ -1076,6 +1104,7 @@ export class Catalog {
     const applied = yield;
     if (applied === false) return;
     this.indexRuns++;
+    this.markIndexed(indexed, childById);
     ({ own: this.own, ownActive: this.ownActive } = this.ownNow());
     this.summaries = next;
     this.childSummaries = children;
@@ -1083,6 +1112,30 @@ export class Catalog {
     const roster = rosterChildren(children, this.cuts);
     void Promise.resolve().then(() => this.chats.roster?.(roster)).catch(() => {});
     void this.readCuts();
+  }
+
+  /**
+   * Marks for the next row stage (`pending`) the session of each daemon row object, of any box, that this index reads and the last did not, or
+   * the last read and this one does not: a changed, new or gone row. A subagent row marks each session above it, by its parent in this index
+   * and in the last, since their subtrees and pulses read it.
+   */
+  private markIndexed(indexed: Set<SessionSummary>, childById: ReadonlyMap<string, SessionSummary>): void {
+    const was = this.indexedRows;
+    this.indexedRows = indexed;
+    if (this.pendingAll) return;
+    const wasChildren = this.childById;
+    const mark = (row: SessionSummary) => {
+      if (isTopLevel(row)) { this.pending.add(row.sessionId); return; }
+      const seen = new Set<string>();
+      for (const parents of [childById, wasChildren]) {
+        for (let parent = row.parentSessionId; parent && !seen.has(parent); parent = parents.get(parent)?.parentSessionId) {
+          seen.add(parent);
+          if (!childById.has(parent) && !wasChildren.has(parent)) this.pending.add(parent);
+        }
+      }
+    };
+    for (const row of indexed) if (!was.has(row)) mark(row);
+    for (const row of was) if (!indexed.has(row)) mark(row);
   }
 
   /** Reads the cut ends of children that changed since the last read, one pass at a time, and hands the roster on again when one moved. */
@@ -1127,88 +1180,21 @@ export class Catalog {
     const queuedRead = this.queueSource();
     const wakesRead = this.wakesSource(startedAt).catch(() => []);
     const originOf = await wait(this.origins.resolver(chats ?? new Set()));
-    this.settle();
-    const running = runningByParent(this.childSummaries);
-    const children = childrenByParent(this.childSummaries);
-    const selfName = this.hosts?.selfName ?? null;
-    const kept = new Map<string, KeptRow>();
-    const rows: SessionRow[] = [];
-    // The read markers by session in a Map: looking each of the 4,500 rows up in the parsed read state's object was 1.9 of 29 ms of a
-    // projection's own code on a bench over a copy of the live rows on 10-19.
-    const readAts = new Map(Object.entries(state?.sessions ?? {}).map(([id, marker]) => [id, marker?.timestamp] as const));
-    // A row whose session file head is not read yet costs about 0.8 ms (HEADS_FILE), so this loop looks at the clock on every row: 256 such rows
-    // between two looks held the main thread about 200 ms after each start.
-    for (const row of [...this.summaries.values()]) {
-      if (performance.now() - slice >= PROJECTION_SLICE_MS) await breathe();
-      const remote = this.hostOf(row.sessionId);
-      // Another box's saved session is listed by its daemon's word: its file is on that box's disk, not this one.
-      if (!(remote ? isListed(row, () => true) : listedHere(row)) || this.spares.has(row.sessionId)) continue;
-      const host = remote ?? selfName;
-      const schedule = this.schedules.get(row.sessionId);
-      const labelsFor = labels && Object.hasOwn(labels.threads, row.sessionId) ? labels.threads[row.sessionId] : undefined;
-      const subtree = subtreeOf(row, children);
-      const chat = chats?.has(row.sessionId) === true;
-      const working = isWorking(row, subtree);
-      const origin = originOf(row);
-      const archived = archivedByOwner?.has(row.sessionId) === true;
-      // A working row's pulse reads the rows of its running subagents at any depth, so they are part of its key.
-      // The key is built in one reused array and copied only for a row built again: most rows are kept, and a new 14-entry array for each of the
-      // 4,500 rows on every projection was about 4 of 54 ms of its own code on a bench over a copy of the live rows on 10-19.
-      const readAt = readAts.get(row.sessionId);
-      const baseline = state?.baseline ?? 0;
-      const fixed = scratchKey;
-      fixed[0] = row; fixed[1] = readAt; fixed[2] = baseline; fixed[3] = labelsFor; fixed[4] = schedule; fixed[5] = subtree.cost; fixed[6] = subtree.running;
-      fixed[7] = subtree.total; fixed[8] = origin; fixed[9] = host; fixed[10] = archived; fixed[11] = this.heldLifecycle.get(row.sessionId); fixed[12] = working;
-      const below = working ? runningBelow(row, running) : NO_ROWS;
-      const before = this.keptRows.get(row.sessionId);
-      // A chat row gets its agents and counts written onto it below, so it is built again.
-      if (!chat && before && sameKey(before.key, fixed, below)) { kept.set(row.sessionId, before); rows.push(before.row); continue; }
-      const key = [...fixed, ...below];
-      const checkIn = checkIns?.get(row.sessionId);
-      const brief = briefs?.get(row.sessionId);
-      const held = this.heldLifecycle.get(row.sessionId);
-      const projected = this.applyHeld(row, projectRow(row, readAt, baseline, {
-        ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, origin,
-        ...(chat ? { chat: true, ...(checkIn ? { checkIn } : {}), ...(brief ? { brief } : {}) } : {}),
-        ...(working ? { pulse: sessionPulse(row, running) } : {}) }));
-      if (host) projected.host = host;
-      // A chat in the index that the owner did not archive stays listed when its daemon lists it archived, since only the daemon wrote that, as the
-      // idle unload's kill does. This box cannot write another box's file, so on 10-28 the Mac chat frontend bro kept the archived state the
-      // 17:11Z unload wrote, the 17:14Z release dropped the hold that covered it, and the 17:20Z Mac list hid it from the sidebar for 42 min.
-      if (chat && !archived && held !== "archived") projected.archived = false;
-      // A chat the owner archived stays out of the sidebar when an agent message resumes its session; only his unarchive brings it back.
-      if (archived) projected.archived = true;
-      if (!chat) kept.set(row.sessionId, { key, row: projected });
-      rows.push(projected);
-    }
-    this.keptRows = kept;
-    await breathe();
-    // Each row's time is read once, not once per comparison: the sort compares about 50,000 pairs of the 4,500 rows.
-    const times = new Float64Array(rows.length);
-    const order = new Uint32Array(rows.length);
-    for (let at = 0; at < rows.length; at++) {
-      if (at % BREATHE_ROWS === 0) await breathe();
-      times[at] = sortTime(rows[at]!); order[at] = at;
-    }
-    order.sort((left, right) => times[right]! - times[left]! || left - right);
-    const unsorted = rows.slice();
-    for (let at = 0; at < order.length; at++) rows[at] = unsorted[order[at]!]!;
-    await breathe();
-    // A chat's agents resolve step owners and message partners against every other row, so they are filled in once all rows exist.
-    const agentRows: AgentRow[] = [];
-    for (const row of rows) {
-      if (agentRows.length % BREATHE_ROWS === 0) await breathe();
-      let entry = agentRowOf.get(row);
-      if (!entry) { const first = firstTask(this.summaries.get(row.id) ?? {}); entry = first ? { row, first } : { row }; agentRowOf.set(row, entry); }
-      agentRows.push(entry);
-    }
+    // One projection's row stage at a time: each takes the rows marked changed since the last one (`projectRows`).
+    const stage = this.rowStage.then(() => this.projectRows({ state, labels, chats, checkIns, briefs, archivedByOwner, originOf }));
+    this.rowStage = stage.then(() => {}, () => {});
+    const { running, children, ownMs } = await wait(stage);
+    own += ownMs;
+    const rows = this.order.rows();
+    // The places are read now: another projection's row stage may change the order while this one waits on a chat's links below.
+    const chatRows = [...chats ?? []].map(id => this.order.indexOf(id)).filter(at => at >= 0).sort((left, right) => left - right).map(at => ({ at, row: rows[at]! }));
+    const pulsed = [...this.pulsed].map(id => this.order.indexOf(id)).filter(at => at >= 0);
     const now = Date.now();
-    const chatRows = rows.filter(row => row.chat);
-    for (const row of chatRows) {
+    for (const { row } of chatRows) {
       await breathe();
       const links = await wait(linksOf.get(row.id) ?? this.chats.links(row.id, row.name).catch(() => null));
       row.agents = keptChatAgents({ self: { id: row.id, name: row.name }, children: links?.children ?? [], childSessions: subagentSessions(children.get(row.id) ?? [], children, this.cuts),
-        board: links?.board ?? null, roots: links?.roots ?? [], messages: links?.messages ?? [], rows: agentRows, now });
+        board: links?.board ?? null, roots: links?.roots ?? [], messages: links?.messages ?? [], rows: this.order, now });
       const sessions = stepSessions(links?.board ?? null, row.agents);
       if (sessions.size) void this.linkSessions(row.id, sessions);
       if (links?.board?.plan.length) row.plan = planCounts(links.board.plan);
@@ -1220,14 +1206,14 @@ export class Catalog {
         else row.unread = false;
       }
     }
-    const rates = this.ratesFor(chatRows.flatMap(row => (row.agents ?? []).flatMap(agent => agent.sessionId ? [agent.sessionId] : [])), now);
+    const rates = this.ratesFor(chatRows.flatMap(({ row }) => (row.agents ?? []).flatMap(agent => agent.sessionId ? [agent.sessionId] : [])), now);
     const queued = await wait(queuedRead);
     const wakes = await wait(wakesRead);
     // A run that waits in pi-pool's turn queue or for an account emits nothing, so its pulse says why instead of reading stalled. A chat row
     // is built for this projection alone; another row may be the last projection's object, so it is copied.
     const accounts = this.accountWaitSource(this.accountAsks(), now);
     let waiting = false;
-    for (let at = 0; at < rows.length; at++) {
+    for (const at of pulsed) {
       const row = rows[at]!;
       if (!row.pulse) continue;
       const pulse = withPoolWaits(row.pulse, row.id, queued, accounts);
@@ -1237,7 +1223,7 @@ export class Catalog {
       else rows[at] = { ...row, pulse };
     }
     const below = (session: string) => (children.get(session) ?? []).map(child => child.sessionId);
-    for (const row of chatRows) {
+    for (const { row } of chatRows) {
       await breathe();
       row.agents = withPoolBelow(withWaits(withQueue(withRates(row.agents ?? [], rates), queued), wakes, below), queued, below);
     }
@@ -1245,14 +1231,14 @@ export class Catalog {
     // between agents in both passes: at 21:56:20Z on 11-03, with CI on 51 of 80 cores, these passes and a major GC held the main thread 1.3 s.
     const pool = { queued, working: new Set<string>() };
     const parkReads: Promise<(readonly [string, SlotPark])[]>[] = [];
-    for (const agent of chatRows.flatMap(row => row.agents ?? [])) {
+    for (const agent of chatRows.flatMap(({ row }) => row.agents ?? [])) {
       await breathe();
       parkReads.push(this.slotPark(agent, pool, now));
     }
     const parks = new Map((await wait(Promise.all(parkReads))).flat());
-    for (const row of chatRows) row.agents = withSlotParks(row.agents ?? [], parks);
+    for (const { row } of chatRows) row.agents = withSlotParks(row.agents ?? [], parks);
     await breathe();
-    for (const agent of chatRows.flatMap(row => row.agents ?? [])) {
+    for (const agent of chatRows.flatMap(({ row }) => row.agents ?? [])) {
       await breathe();
       const session = agent.sessionId ? this.find(agent.sessionId) : undefined;
       const folder = session ? subagentFolder(session) : undefined;
@@ -1261,9 +1247,7 @@ export class Catalog {
     }
     // A chat row that came out as the last projection built it is that projection's object again (`keptChat`).
     const keptChats = new Map<string, SessionRow>();
-    for (let at = 0; at < rows.length; at++) {
-      const row = rows[at]!;
-      if (!row.chat) continue;
+    for (const { at, row } of chatRows) {
       await breathe();
       const kept = keptChat(this.keptChats.get(row.id), row);
       rows[at] = kept;
@@ -1271,9 +1255,145 @@ export class Catalog {
     }
     this.keptChats = keptChats;
     // A queued agent's place moves as the queue drains, so the rows go out again while one waits too.
-    this.scheduleRates(waiting || chatRows.some(row => row.agents?.some(agent => agent.state === "working" || agent.queued !== undefined)));
+    this.scheduleRates(waiting || chatRows.some(({ row }) => row.agents?.some(agent => agent.state === "working" || agent.queued !== undefined)));
     this.projectionOwnMs.push(own + performance.now() - ran);
     return { rows, tags: labels?.tags ?? [] };
+  }
+
+  /**
+   * The rows of the daemon rows marked changed since the last row stage, and of each row an input changed for (`rowsToVisit`), built again into
+   * `order`; every other row stays as that order holds it. It reads the rows and their subagents as the catalog indexed them last (`settle`).
+   * Until 11-04 each projection walked every listed row (4,500 on the live chat that day) to check its key, sort it and index it for the chats'
+   * agents, about a third of its 210 ms of own code, while a roster update changed a few rows. `ownMs` is the time its own code ran.
+   */
+  private async projectRows(input: RowInputs): Promise<{ running: Map<string, SessionSummary[]>; children: Map<string, SessionSummary[]>; ownMs: number }> {
+    let own = 0;
+    let ran = performance.now();
+    let slice = ran;
+    this.settle();
+    const summaries = this.summaries;
+    if (this.childMaps?.from !== this.childSummaries) {
+      this.childMaps = { from: this.childSummaries, running: runningByParent(this.childSummaries), children: childrenByParent(this.childSummaries) };
+    }
+    const { running, children } = this.childMaps;
+    const { full, ids } = this.rowsToVisit(input, summaries);
+    const selfName = this.hosts?.selfName ?? null;
+    const baseline = input.state?.baseline ?? 0;
+    const firstOf = (row: SessionRow): string => firstTask(summaries.get(row.id) ?? {});
+    let walked = 0;
+    this.order.begin(full);
+    if (full) this.pulsed.clear();
+    // A row whose session file head is not read yet costs about 0.8 ms (HEADS_FILE), so this loop looks at the clock on every row: 256 such rows
+    // between two looks held the main thread about 200 ms after each start.
+    for (const id of ids) {
+      if (performance.now() - slice >= PROJECTION_SLICE_MS) {
+        own += performance.now() - ran;
+        await new Promise<void>(resolve => { setImmediate(resolve); });
+        ran = slice = performance.now();
+      }
+      walked++;
+      const row = summaries.get(id);
+      const remote = row ? this.hostOf(id) : null;
+      // Another box's saved session is listed by its daemon's word: its file is on that box's disk, not this one.
+      if (!row || !(remote ? isListed(row, () => true) : listedHere(row)) || this.spares.has(id)) {
+        this.keptRows.delete(id);
+        this.order.remove(id);
+        this.pulsed.delete(id);
+        continue;
+      }
+      const host = remote ?? selfName;
+      const schedule = this.scheduleKept.get(id);
+      const labelsFor = this.labelsKept.get(id);
+      const subtree = subtreeOf(row, children);
+      const chat = input.chats?.has(id) === true;
+      const working = isWorking(row, subtree);
+      const origin = input.originOf(row);
+      const archived = input.archivedByOwner?.has(id) === true;
+      // A working row's pulse reads the rows of its running subagents at any depth, so they are part of its key.
+      const readAt = this.readAts.get(id);
+      const fixed = scratchKey;
+      fixed[0] = row; fixed[1] = readAt; fixed[2] = baseline; fixed[3] = labelsFor; fixed[4] = schedule; fixed[5] = subtree.cost; fixed[6] = subtree.running;
+      fixed[7] = subtree.total; fixed[8] = origin; fixed[9] = host; fixed[10] = archived; fixed[11] = this.heldLifecycle.get(id); fixed[12] = working;
+      const below = working ? runningBelow(row, running) : NO_ROWS;
+      const before = this.keptRows.get(id);
+      // A chat row gets its agents and counts written onto it, so it is built again.
+      if (!chat && before && sameKey(before.key, fixed, below)) { this.order.put(id, before.row, firstOf); continue; }
+      const key = [...fixed, ...below];
+      const checkIn = input.checkIns?.get(id);
+      const brief = input.briefs?.get(id);
+      const held = this.heldLifecycle.get(id);
+      const projected = this.applyHeld(row, projectRow(row, readAt, baseline, {
+        ...(labelsFor ? { labels: labelsFor } : {}), ...(schedule ? { schedule } : {}), subtree, origin,
+        ...(chat ? { chat: true, ...(checkIn ? { checkIn } : {}), ...(brief ? { brief } : {}) } : {}),
+        ...(working ? { pulse: sessionPulse(row, running) } : {}) }));
+      if (host) projected.host = host;
+      // A chat in the index that the owner did not archive stays listed when its daemon lists it archived, since only the daemon wrote that, as the
+      // idle unload's kill does. This box cannot write another box's file, so on 10-28 the Mac chat frontend bro kept the archived state the
+      // 17:11Z unload wrote, the 17:14Z release dropped the hold that covered it, and the 17:20Z Mac list hid it from the sidebar for 42 min.
+      if (chat && !archived && held !== "archived") projected.archived = false;
+      // A chat the owner archived stays out of the sidebar when an agent message resumes its session; only his unarchive brings it back.
+      if (archived) projected.archived = true;
+      if (chat) this.keptRows.delete(id);
+      else this.keptRows.set(id, { key, row: projected });
+      this.order.put(id, projected, firstOf);
+      if (projected.pulse) this.pulsed.add(id);
+      else this.pulsed.delete(id);
+    }
+    this.order.end();
+    this.rowsWalked = walked;
+    return { running, children, ownMs: own + performance.now() - ran };
+  }
+
+  /**
+   * The session ids the row stage builds again: those `pending` collected (a daemon row or a subagent below it that changed, `markIndexed`, and
+   * the catalog's own changes such as `holdLifecycle`), each chat, and each row whose read marker, labels, schedule, chat or archive mark, or
+   * origin rule changed since the last stage; every row on the first stage and when the read baseline moves (`full`). It keeps what it compared
+   * for the next stage.
+   */
+  private rowsToVisit(input: RowInputs, summaries: ReadonlyMap<string, SessionSummary>): { full: boolean; ids: Iterable<string> } {
+    const ids = this.pending;
+    this.pending = new Set();
+    const full = this.pendingAll || !this.incremental || (input.state?.baseline ?? 0) !== this.seen.baseline;
+    this.pendingAll = false;
+    const mark = (id: string) => { ids.add(id); };
+    const readAts = new Map<string, number | undefined>();
+    for (const [id, marker] of Object.entries(input.state?.sessions ?? {})) readAts.set(id, marker?.timestamp);
+    for (const [id, at] of readAts) if (this.readAts.get(id) !== at || !this.readAts.has(id)) mark(id);
+    for (const id of this.readAts.keys()) if (!readAts.has(id)) mark(id);
+    this.readAts = readAts;
+    // The labels file is parsed again for each projection, so a thread's labels count as changed only when they read differently.
+    const threads = input.labels?.threads ?? {};
+    const labelsKept = new Map<string, ThreadLabels>();
+    for (const id of Object.keys(threads)) {
+      const now = threads[id]!;
+      const was = this.labelsKept.get(id);
+      if (this.labelsKept.has(id) && sameValue(was, now, 2)) labelsKept.set(id, was!);
+      else { labelsKept.set(id, now); mark(id); }
+    }
+    for (const id of this.labelsKept.keys()) if (!labelsKept.has(id)) mark(id);
+    this.labelsKept = labelsKept;
+    if (this.seen.schedules !== this.schedules) {
+      const scheduleKept = new Map<string, ThreadSchedule>();
+      for (const [id, now] of this.schedules) {
+        const was = this.scheduleKept.get(id);
+        if (was !== undefined && sameValue(was, now, 1)) scheduleKept.set(id, was);
+        else { scheduleKept.set(id, now); mark(id); }
+      }
+      for (const id of this.scheduleKept.keys()) if (!scheduleKept.has(id)) mark(id);
+      this.scheduleKept = scheduleKept;
+    }
+    const sets = { chats: input.chats ?? new Set<string>(), archived: input.archivedByOwner ?? new Set<string>(), own: input.originOf.own, tests: input.originOf.tests };
+    for (const name of ["chats", "archived", "own", "tests"] as const) {
+      const was = this.seen[name];
+      const now = sets[name];
+      if (was === now) continue;
+      for (const id of now) if (!was.has(id)) mark(id);
+      for (const id of was) if (!now.has(id)) mark(id);
+    }
+    this.seen = { baseline: input.state?.baseline ?? 0, schedules: this.schedules, ...sets };
+    if (full) return { full, ids: new Set([...summaries.keys(), ...this.order.ids(), ...this.keptRows.keys()]) };
+    for (const id of sets.chats) ids.add(id);
+    return { full, ids };
   }
 
   /**
@@ -1558,7 +1678,12 @@ export class Catalog {
   /** The local running rows asleep before their next model call (`asleepInRun`), each with its tree's root session and its provider. */
   private accountAsks(): AccountAsk[] {
     const asks: AccountAsk[] = [];
-    for (const row of [...this.summaries.values(), ...this.childSummaries]) {
+    // Only a row with a worker can be asleep in its run, and only this box's rows count, so it reads this box's live rows, the indexed ones
+    // in the index's order (top-level rows, then subagents), instead of every row of every box.
+    this.settle();
+    const live = this.peer.listed ? this.peer.liveRows() : [];
+    const top = live.filter(row => isTopLevel(row) && this.summaries.get(row.sessionId) === row);
+    for (const row of [...top, ...live.filter(row => !isTopLevel(row) && this.indexedRows.has(row))]) {
       const provider = row.model?.provider;
       if (!provider || !asleepInRun(row) || this.hostOf(row.sessionId) !== null) continue;
       let top = row;
@@ -1625,7 +1750,15 @@ export class Catalog {
       ...(row.usage && Number.isFinite(row.usage.cost) ? { cost: row.usage.cost } : {}) }));
   }
 
-  forget(sessionId: string): void { this.settle(); this.summaries.delete(sessionId); this.inputs++; }
+  forget(sessionId: string): void {
+    this.settle();
+    // The next index lists the row again as new, as the projection after a forget did before the row stage kept its rows.
+    const row = this.summaries.get(sessionId);
+    if (row) this.indexedRows.delete(row);
+    this.summaries.delete(sessionId);
+    this.pending.add(sessionId);
+    this.inputs++;
+  }
 
   /** Changes the row of a session this server changed itself, such as a saved session's new name, in the copy of the box that lists it. */
   patchRow(sessionId: string, fields: Partial<SessionSummary>): void {
@@ -1646,9 +1779,9 @@ export class Catalog {
    * new Mac threads in a row answered 502 "Unknown active session" and lost their first message: the prompt right after the create went to
    * this box's daemon, because the Mac's roster had not listed the session yet.
    */
-  place(host: string, ...ids: string[]): void { for (const id of ids) this.placed.set(id, host); this.inputs++; }
+  place(host: string, ...ids: string[]): void { for (const id of ids) { this.placed.set(id, host); this.pending.add(id); } this.inputs++; }
   /** A spare session made for a new thread the owner is still writing (ThreadHub.prewarm) stays out of the sidebar until his send takes it. */
-  spare(sessionId: string, on: boolean): void { if (on) this.spares.add(sessionId); else this.spares.delete(sessionId); this.inputs++; }
+  spare(sessionId: string, on: boolean): void { if (on) this.spares.add(sessionId); else this.spares.delete(sessionId); this.pending.add(sessionId); this.inputs++; }
   private readonly spares = new Set<string>();
 
   /**
@@ -1782,13 +1915,13 @@ export class Catalog {
    * The row shows this lifecycle until the daemon list agrees (archived: listed as archived with no active session). The daemon scan can lag
    * behind the session file, and the terminal agents view hides a deactivated row the same way until it does.
    */
-  holdLifecycle(sessionId: string, lifecycle: "archived" | "active"): void { this.heldLifecycle.set(sessionId, lifecycle); this.inputs++; }
+  holdLifecycle(sessionId: string, lifecycle: "archived" | "active"): void { this.heldLifecycle.set(sessionId, lifecycle); this.pending.add(sessionId); this.inputs++; }
 
   private applyHeld(row: SessionSummary, projected: SessionRow): SessionRow {
     const held = this.heldLifecycle.get(row.sessionId);
     if (!held) return projected;
     const agrees = held === "archived" ? row.lifecycle === "archived" && row.activeSessionId === undefined : row.lifecycle !== "archived";
-    if (agrees) { this.heldLifecycle.delete(row.sessionId); return projected; }
+    if (agrees) { this.heldLifecycle.delete(row.sessionId); this.pending.add(row.sessionId); return projected; }
     if (held === "active") return { ...projected, archived: false };
     const { pulse: _pulse, ...rest } = projected;
     return { ...rest, archived: true, kind: "saved", status: "saved", working: false, subagentsRunning: 0, unread: false };
