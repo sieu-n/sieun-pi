@@ -37,12 +37,12 @@ test("a clean true 0 counts as fed, and an error, no row or a row of only names 
   assert.deepEqual(out.flagged!.slice(1).map(slice => slice.kind), ["tile_empty", "tile_empty", "tile_failing"]);
 });
 
-test("an event prod never sent reads unmeasured and is flagged, and one from 20 h ago is on time", () => {
-  const out = report({ tiles: [], schemas: [], required: [], newest: { watchlist_reads_day: "2026-11-03T05:00:00Z" } }, NOW);
-  assert.equal(out.metrics.prospect_state_day_age_h, UNMEASURED);
+test("an event prod never sent reads its age since the first fill and is flagged, and one from 20 h ago is on time", () => {
+  const out = report({ tiles: [], schemas: [], required: [], newest: { watchlist_reads_day: "2026-11-03T11:00:00Z" } }, NOW + 6 * 3_600_000);
+  assert.equal(out.metrics.prospect_state_day_age_h, 26.3);
   assert.equal(out.metrics.watchlist_reads_day_age_h, 20);
   assert.deepEqual(out.flagged!.filter(slice => slice.kind === "event_late").map(slice => slice.excerpt),
-    ["prod prospect_state_day: none since 2026-11-03, due every day from pipeDays.fillDay at 04:41Z"]);
+    ["prod prospect_state_day: none since 2026-11-03, so over 26.3 h, due every day from pipeDays.fillDay at 04:41Z"]);
 });
 
 test("a dashboard PostHog could not reach reads unmeasured, never 0% (11-04 06:15Z fetch failed)", () => {

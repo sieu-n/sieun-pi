@@ -132,9 +132,11 @@ export function report(sources: Sources, now: number): PrecheckOutput {
   for (const event of STATE_EVENTS) {
     const key = `${event}_age_h`;
     if (isErr(sources.newest)) { metrics[key] = UNMEASURED; continue; }
+    // An event prod never sent is a measured miss: the query read every day since FIRST_SENT, so it is at least as old as the first
+    // fill of that day. Unmeasured made each run on 11-04 read as a broken precheck while the senders waited on the prod promote.
     const at = sources.newest[event] ? Date.parse(sources.newest[event]!) : NaN;
-    metrics[key] = Number.isNaN(at) ? UNMEASURED : round((now - at) / HOUR);
-    const when = Number.isNaN(at) ? `none since ${FIRST_SENT}` : `newest ${new Date(at).toISOString().slice(0, 16)}Z, ${metrics[key]} h ago`;
+    metrics[key] = round((now - (Number.isNaN(at) ? Date.parse(`${FIRST_SENT}T04:41:00Z`) : at)) / HOUR);
+    const when = Number.isNaN(at) ? `none since ${FIRST_SENT}, so over ${metrics[key]} h` : `newest ${new Date(at).toISOString().slice(0, 16)}Z, ${metrics[key]} h ago`;
     if (metrics[key]! > EVENT_DUE_HOURS) flagged.push({ at: now, kind: "event_late", excerpt: `prod ${event}: ${when}, due every day from pipeDays.fillDay at 04:41Z` });
   }
   if (isErr(sources.newest)) flagged.push({ at: now, kind: "source_error", excerpt: `prod event ages: ${sources.newest.error}` });
