@@ -1,3 +1,4 @@
+import { readFileSync, statSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { getAgentDir, SettingsManager } from "prime-agent";
@@ -61,7 +62,7 @@ import { DutyStore } from "./chat-duty-store.ts";
 import { IdIndex } from "./id-index.ts";
 import { newChatStore, type NewChatStore } from "./chat-new-chat.ts";
 import { ThreadOrigins } from "./thread-origin.ts";
-import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput } from "./shared/types.ts";
+import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput, type IdleEvictionMinutes } from "./shared/types.ts";
 import { grafanaPrometheus, Usage } from "./usage/lgtm.ts";
 import { cacheWatch, pendingWakes, readRunState, runStamp, startWakes, wakeLabel, waking } from "./wakes.ts";
 import { BRIEFS_DIR, primeWorkers, recordModel, serviceBriefs, startBriefKeeper, unstartedJobs } from "./brief-keeper.ts";
@@ -126,11 +127,44 @@ export interface ChatBackend {
 }
 
 /**
+ * The daemon's idleEvictionMinutes from the global settings file, parsed again only when the file changed (its inode, size or mtime). Prime
+ * writes the file with an atomic rename, so a read needs no lock. `SettingsManager.create` takes proper-lockfile's lock, a mkdir and an rmdir
+ * in ~/.prime/agent, and the idle unload, the tmp sweep, job cleanup and the rest clock read this value on the main thread at each pass. On
+ * 11-04 on us-metal02 that mkdir held the chat's main thread 2.9 s at 04:28:55Z and 1.0 s at 02:39:08Z, and 15 of the CPU profiles' sample gaps
+ * of 0.4 s or more on 11-03 and 11-04 sat in it; a stat writes nothing and takes no journal handle.
+ */
+export function idleEvictionReader(agentDir: string): () => IdleEvictionMinutes {
+  const file = join(agentDir, "settings.json");
+  let known: { key: string; value: IdleEvictionMinutes } | undefined;
+  return () => {
+    const key = fileKey(file);
+    if (known?.key === key) return known.value;
+    const value = SettingsManager.inMemory(settingsOf(file)).getIdleEvictionMinutes();
+    known = { key, value };
+    return value;
+  };
+}
+
+function fileKey(file: string): string {
+  try { const stat = statSync(file); return `${stat.ino}:${stat.size}:${stat.mtimeMs}`; } catch { return "missing"; }
+}
+
+/** The file's settings object; an unreadable or bad file reads as no settings, as `SettingsManager.create` loads it. */
+function settingsOf(file: string): Record<string, unknown> {
+  try {
+    const value: unknown = JSON.parse(readFileSync(file, "utf8"));
+    return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  } catch { return {}; }
+}
+
+/**
  * Every call builds a fresh SettingsManager, as the daemon does per session, because native sessions write the same file when a thread's model changes.
- * `agentDir` doubles as `cwd` so no project-level `.prime/agent/settings.json` shadows the global value.
+ * `agentDir` doubles as `cwd` so no project-level `.prime/agent/settings.json` shadows the global value. The idle time takes the unlocked
+ * reader (`idleEvictionReader`).
  */
 export function chatDefaultsStore(agentDir: string): ChatDefaultsStore {
   const manager = () => SettingsManager.create(agentDir, agentDir);
+  const idleEviction = idleEvictionReader(agentDir);
   return {
     read() {
       const settings = manager();
@@ -145,7 +179,7 @@ export function chatDefaultsStore(agentDir: string): ChatDefaultsStore {
       const failure = settings.drainErrors("global")[0];
       if (failure) throw failure.error;
     },
-    idleEviction: () => manager().getIdleEvictionMinutes(),
+    idleEviction,
     async setIdleEviction(value) {
       const settings = manager();
       settings.setIdleEvictionMinutes(value);
