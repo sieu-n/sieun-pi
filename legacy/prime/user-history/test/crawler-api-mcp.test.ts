@@ -1,7 +1,7 @@
 // 10-29 06:20 KST, and again 11-03 with the p1168 metric: duty d6 Crawler API and MCP carried 5 metrics against the shape of one headline and at most 3 more (c75, c133).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { HEADLINE, report, type CallResult } from "../scripts/duties/crawler-api-mcp.ts";
+import { HEADLINE, MCP_URLS, mintToken, report, type CallResult } from "../scripts/duties/crawler-api-mcp.ts";
 
 const ok = (name: string): CallResult => ({ name, ok: true, ms: 500, note: "" });
 const mcp = { standard: [ok("describe"), ok("sql")], full: [ok("describe"), ok("sql")] };
@@ -21,4 +21,11 @@ test("a low posts count from crawler-api.mjs shows as a detail line, never as a 
   const out = report(api(0, [{ kind: "ig_posts_searchable", at: 1, excerpt: "Prod search finds 0 Instagram posts" }]), mcp, 1);
   assert.equal((out.flagged ?? []).filter(f => f.kind === "ig_posts_searchable").length, 0);
   assert.ok((out.flagged ?? []).some(f => f.kind === "detail" && f.excerpt.startsWith("Prod search finds 0")));
+});
+
+test("the full org's token names the /mcp/insight endpoint, since the search app picks the tier from it (11-04, p1071)", () => {
+  const claims = (tier: "standard" | "full") => JSON.parse(Buffer.from(mintToken("s", tier, 1).split(".")[1], "base64url").toString());
+  assert.equal(claims("full").aud, "https://virev.ai/mcp/insight");
+  assert.equal(claims("full").resource, MCP_URLS.full);
+  assert.equal(claims("standard").aud, "https://virev.ai/mcp");
 });

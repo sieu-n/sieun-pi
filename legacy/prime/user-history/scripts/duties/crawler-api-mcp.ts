@@ -11,7 +11,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * The owner merged the Crawler API and Query MCP duties on 10-22 (msg mvj491h5): "merge Crawler API & Query MCP".
  * The headline counts what fails on prod for a customer: the documented crawler API routes that fail for a crawler reason, read by
  * auto-sns-agent scripts/duties/crawler/crawler-api.mjs from the API portal chat's d2 detail file, plus each Query MCP call that fails on
- * prod https://virev.ai/mcp on either tier. The 3 supporting counts come from the same crawler-api.mjs run: minutes the API and its health
+ * prod https://virev.ai/mcp (standard tier) or https://virev.ai/mcp/insight (full tier). The 3 supporting counts come from the same crawler-api.mjs run: minutes the API and its health
  * snapshots were down in 24 h (prod Prometheus through obs.virev.ai), and the share of sampled prod Instagram profile docs with 1 to 4
  * posts that show an engagement rate and a views median where counts_stand holds (t89, p1168). The onboarding renders that keep p1076
  * (3 shop page renders at once under onboarding's 60 s limit) are a detail line since 11-03, as p1076 is met. A duty holds one headline and at most 3
@@ -27,10 +27,16 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
-const MCP_URL = "https://virev.ai/mcp";
 const HEALTH_URL = "https://virev.ai/health";
 const USER = "mcp-duty-checker";
-const TIERS = ["standard", "full"] as const;
+/**
+ * The MCP endpoint per tier, used as the fetch URL and as the token's resource and aud. Since auto-sns-agent 91baebb9b8 (10-22) the
+ * search app picks the tier from the endpoint (apps/search/src/lib/server/mcp/crawler.ts queryTierFor), so only /mcp/insight answers
+ * tier full, and the full org's calls to /mcp answered tier standard from 10-22 to 11-04.
+ */
+export const MCP_URLS = { standard: "https://virev.ai/mcp", full: "https://virev.ai/mcp/insight" } as const;
+type Tier = keyof typeof MCP_URLS;
+const TIERS = Object.keys(MCP_URLS) as Tier[];
 /** The "could not measure" value, the same one auto-sns-agent scripts/duties/ci/duty-sources.mjs gives a metric it could not read. */
 export const UNMEASURED = 999999;
 export const HEADLINE = "prod_routes_and_mcp_tools_failing";
@@ -55,9 +61,10 @@ const CALLS: { name: string; tool: "describe" | "sql" | "search"; args: Record<s
 ];
 
 const b64u = (b: Buffer | string) => Buffer.from(b).toString("base64url");
-export function mintToken(secret: string, tier: string, now: number): string {
+export function mintToken(secret: string, tier: Tier, now: number): string {
+  const url = MCP_URLS[tier];
   const payload = { userId: USER, clientId: `duty-query-mcp-${tier}`, clientName: `Query MCP duty check, ${tier} tier (keep)`, connectorSurface: "custom",
-    resource: MCP_URL, aud: MCP_URL, scope: "openid profile email", orgId: `org_mcp_duty_${tier}`, type: "access", iat: now, exp: now + TOKEN_TTL_S,
+    resource: url, aud: url, scope: "openid profile email", orgId: `org_mcp_duty_${tier}`, type: "access", iat: now, exp: now + TOKEN_TTL_S,
     jti: randomBytes(16).toString("hex") };
   const enc = b64u(JSON.stringify(payload));
   return `vrev_mcp_access.${enc}.${b64u(createHmac("sha256", secret).update(enc).digest())}`;
@@ -70,11 +77,11 @@ export function rpcResult(text: string): { result?: { content?: { text?: string 
 }
 
 export interface CallResult { name: string; ok: boolean; ms: number; note: string }
-async function callTool(token: string, call: (typeof CALLS)[number], id: number): Promise<CallResult> {
+async function callTool(url: string, token: string, call: (typeof CALLS)[number], id: number): Promise<CallResult> {
   const t0 = Date.now();
   const done = (ok: boolean, note: string): CallResult => ({ name: call.name, ok, ms: Date.now() - t0, note });
   try {
-    const res = await fetch(MCP_URL, { method: "POST", signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+    const res = await fetch(url, { method: "POST", signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
       body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: call.tool, arguments: call.args } }) });
     const text = await res.text();
@@ -82,9 +89,11 @@ async function callTool(token: string, call: (typeof CALLS)[number], id: number)
     const rpc = rpcResult(text);
     const out = (rpc.result?.content ?? []).map(c => c.text ?? "").join("");
     if (rpc.error || rpc.result?.isError) return done(false, (rpc.error?.message ?? out).slice(0, 300));
-    let meta: { ms?: number; readRows?: number; readBytes?: number } | undefined;
+    let meta: { tier?: string; ms?: number; readRows?: number; readBytes?: number } | undefined;
     try { meta = (JSON.parse(out) as { data?: { meta?: typeof meta } }).data?.meta; } catch { /* a text answer */ }
-    return done(true, meta ? [`server ${meta.ms} ms`, meta.readRows !== undefined ? `${meta.readRows} rows` : "", meta.readBytes !== undefined ? `${meta.readBytes} bytes read` : ""].filter(Boolean).join(", ") : "");
+    const parts = meta ? [meta.tier ? `tier ${meta.tier}` : "", `server ${meta.ms} ms`, meta.readRows !== undefined ? `${meta.readRows} projection rows` : "",
+      meta.readBytes !== undefined ? `${meta.readBytes} bytes read` : ""] : [];
+    return done(true, parts.filter(Boolean).join(", "));
   } catch (error) {
     return done(false, error instanceof Error ? error.message : String(error));
   }
@@ -117,7 +126,7 @@ async function readMcp(): Promise<Record<string, CallResult[]>> {
   const tiers = await Promise.all(TIERS.map(async tier => {
     const token = mintToken(secret, tier, now);
     const calls: CallResult[] = [];
-    for (const [i, call] of CALLS.entries()) calls.push(await callTool(token, call, i + 1));
+    for (const [i, call] of CALLS.entries()) calls.push(await callTool(MCP_URLS[tier], token, call, i + 1));
     return [tier, calls] as const;
   }));
   return Object.fromEntries(tiers);
@@ -158,7 +167,7 @@ export function report(api: PrecheckOutput | Error, mcp: Record<string, CallResu
   else {
     const failed = Object.entries(mcp).flatMap(([tier, calls]) => calls.filter(c => !c.ok).map(c => `${tier} ${c.name} (${c.note})`));
     mcpFailing = failed.length;
-    if (failed.length) flagged.push({ at: now, kind: HEADLINE, excerpt: `${failed.length} Query MCP calls fail on prod ${MCP_URL}: ${failed.join("; ")}`.slice(0, 600) });
+    if (failed.length) flagged.push({ at: now, kind: HEADLINE, excerpt: `${failed.length} Query MCP calls fail on prod ${Object.values(MCP_URLS).join(" or ")}: ${failed.join("; ")}`.slice(0, 600) });
     for (const [tier, calls] of Object.entries(mcp)) {
       flagged.push({ at: now, kind: "detail", excerpt: `Query MCP ${tier} tier: ` + calls.map(c => `${c.name} ${c.ok ? "ok" : "FAILED"} ${c.ms} ms${c.note ? ` (${c.note})` : ""}`).join("; ") });
     }
