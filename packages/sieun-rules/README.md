@@ -13,6 +13,7 @@ auto-sns-agent is the one exception: its rules stay in that repo's `scripts/repo
 | --- | --- | --- |
 | `tool_call` (`bash`, `ipython`) | `guard.ts` | Refuses a history rewrite in the sieun-pi checkout, an outside send without the owner's ok, a resource cap the owner did not ask for, a kill by pattern, and a repo copy. |
 | `tool_call` (`ipython`) | `kernel-guard.ts` | Installs `kernel-guard.py` in the Python kernel, which refuses an outside send at run time. |
+| `tool_call`, `tool_result` (`bash`) | `guard.ts` | On the owner's Mac, lets a whole-project type check or test suite run and adds the `heavy-check.ts` note to its result. |
 | `tool_call` (`ipython`) | `rlm-delete.ts` | In a subagent, makes `rlm.delete_subagent` wait until a child that already replied is idle. |
 | `tool_call` (`ipython`) | `kernel-guard.ts` | Also installs `kernel-own.py`, which records each path under `~/scratch` the kernel makes, on this box or on another one over ssh, in the session's `owned.json`, and refuses a recursive delete below `~/scratch` of a tree the job did not make (c130). An owner-less leftover goes through `job-leftovers.ts unowned` in `legacy/prime/user-history` instead. |
 | `tool_call` (`ipython`) | `kernel-guard.ts` | Also installs `kernel-read.py`, which refuses reads of another family's session transcripts in the kernel and the Python processes it starts. |
@@ -35,6 +36,12 @@ A launch needs both a Playwright or Puppeteer import and a `.launch(`, `launchPe
 The refusal points to the aside_browser skill and to us-metal02, where repo specs keep running, as they do in CI (c163).
 The kernel judges the same rule on each subprocess through `send-check.ts`, so a command built at run time is refused too.
 `GLOBAL_RULES_PLATFORM` stands in for `process.platform` in tests.
+
+`heavy-check.ts` notes, on the owner's Mac only, each whole-project type check or test suite an agent starts, because global rule 6 keeps heavy compute on us-metal02.
+On 11-04 at 16:20:55 KST a job's `pnpm check` in auto-sns-agent apps/search, started by its kernel's `bash()`, grew from 0.1 to 7.52 GB in a minute while the Mac's swap went from 11.5 to 13.3 GB.
+It covers `svelte-check`, `tsc` or `tsgo` with no named file, `vitest` with no named test, a turbo check or test task, a check script such as `kit-check.mjs`, and a package.json script that runs one, through `cd`, `sh -c`, `npx`, `pnpm exec`, `pnpm -C` and `--filter`.
+The command runs, because a memory spike guards none of the hard cases of c98, and the note names the cost and the off-Mac command: `commit.mjs --probe <files>` in auto-sns-agent, `ssh us-metal02` into the box checkout of pushed main in sieun-pi, and a pushed branch on us-metal02 or CI elsewhere.
+The kernel prints the note when it starts the command, through `send-check.ts`, and a `bash` tool call gets it after its output.
 
 `kill.ts` refuses a kill by pattern on every host: `pkill`, `killall`, and a `kill` fed by `pgrep`, `pidof` or `ps` through a pipe to `xargs`, a `$(...)`, a variable or a loop.
 On 10-29 at 04:24:48 KST a job on the owner's Mac ran `pkill -f 'svelte-check' -U $(id -u)`, macOS pkill read `-U` and 501 as more patterns, and it closed the Prime worker that held 43 sessions (board step p1266); at 05:44 KST another job ran `pkill -9 -f 'autopair-real-ig.mjs --local'` after a prompt note had banned it.

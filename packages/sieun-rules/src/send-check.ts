@@ -4,9 +4,10 @@ import { judgeShellText, type Verdict } from "./guard.ts";
 import { applyOwnerOk, httpSend, mcpSend, ownerOkToken, refusal } from "./send-guard.ts";
 import { recordSend, sendReason, sessionOf } from "./send-log.ts";
 import { judgeKernelShell } from "./auto-sns-agent.ts";
+import { judgeHeavyCheck } from "./heavy-check.ts";
 
 /*
- * The runtime half of the send guard (c37), the cap guard (c107), the Mac browser guard (c177) and auto-sns-agent's repo guard. kernel-guard.py runs this for a send or cap it sees at run time in the Python kernel:
+ * The runtime half of the send guard (c37), the cap guard (c107), the Mac browser guard (c177), the Mac heavy check note (rule 6) and auto-sns-agent's repo guard. kernel-guard.py runs this for a send or cap it sees at run time in the Python kernel:
  * a subprocess, an HTTP write or an MCP call whose text the tool_call guard could not read. It prints one JSON line,
  * {"block": false} or {"block": true, "reason": "..."}, and judges with the same rules as the tool_call guard.
  */
@@ -38,16 +39,24 @@ export function judgeCheck(check: Check, record = false): { block: false } | { b
 	return left.length ? { block: true, reason: left[0].reason } : { block: false };
 }
 
-/** A git write the kernel starts (`repo: true`) also goes through auto-sns-agent's repo guard with the kernel's real cwd. */
-export async function judgeKernelCheck(check: Check): Promise<{ block: false; warning?: string } | { block: true; reason: string }> {
+type KernelVerdict = { block: false; warning?: string } | { block: true; reason: string };
+
+/**
+ * A git write the kernel starts (`repo: true`) also goes through auto-sns-agent's repo guard with the kernel's real cwd. A command that
+ * runs a whole-project check on the owner's Mac (heavy-check.ts) runs with its note, which the kernel prints.
+ */
+export async function judgeKernelCheck(check: Check): Promise<KernelVerdict> {
+	const notes = check.kind === "shell" ? judgeHeavyCheck(check.text, check.cwd) : [];
+	const noted = (verdict: KernelVerdict): KernelVerdict =>
+		verdict.block || !notes.length ? verdict : { block: false, warning: [verdict.warning, ...notes].filter(Boolean).join("\n") };
 	const result = judgeCheck(check, true);
-	if (result.block || check.kind !== "shell" || !check.repo) return result;
+	if (result.block || check.kind !== "shell" || !check.repo) return noted(result);
 	try {
-		return (await judgeKernelShell(check.text, check.cwd, process.env.RLM_SESSION_DIR)) ?? result;
+		return noted((await judgeKernelShell(check.text, check.cwd, process.env.RLM_SESSION_DIR)) ?? result);
 	} catch (error) {
 		// It still fails open, and the kernel prints the warning, because a stale test fixture hid a guard that never loaded for 5 days (10-29 to 11-03).
 		const message = (error instanceof Error ? error.message : String(error)).split("\n")[0];
-		return { block: false, warning: `the auto-sns-agent repo guard did not load, so this command ran unjudged: ${message}` };
+		return noted({ block: false, warning: `the auto-sns-agent repo guard did not load, so this command ran unjudged: ${message}` });
 	}
 }
 

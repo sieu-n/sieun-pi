@@ -38,6 +38,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	try {
 		const guard: typeof import("./guard.ts") = await import(join(dir, "guard.ts"));
 		pi.on("tool_call", (event, ctx) => guard.onToolCall(event, ctx));
+		pi.on("tool_result", (event) => guard.onToolResult(event));
 	} catch (error) {
 		loadFailed("guard.ts", error);
 	}

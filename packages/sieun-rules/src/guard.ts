@@ -1,4 +1,4 @@
-import type { ExtensionContext, ToolCallEvent, ToolCallEventResult } from "prime-agent";
+import type { ExtensionContext, ToolCallEvent, ToolCallEventResult, ToolResultEvent } from "prime-agent";
 import { enabled, log } from "./log.ts";
 import { judgeCuaShell } from "./cua-guard.ts";
 import { applyOwnerOk, judgeSendPython, judgeSendShell, ownerOkToken } from "./send-guard.ts";
@@ -8,6 +8,7 @@ import { judgeSieunPi } from "./sieun-pi.ts";
 import { judgeCaps } from "./caps.ts";
 import { judgePm2 } from "./pm2.ts";
 import { judgeBrowser } from "./browser.ts";
+import { judgeHeavyCheck } from "./heavy-check.ts";
 import { judgeKill } from "./kill.ts";
 import { judgeRepoCopy } from "./repo-copy.ts";
 import { cellStart, cellSteps } from "./kernel-cwd.ts";
@@ -125,6 +126,29 @@ function recordSends(judged: Verdict[], left: Verdict[], tool: string, text: str
 	}
 }
 
+/*
+ * A bash tool call that runs a whole-project check on the owner's Mac runs, and its note (heavy-check.ts) follows its output, keyed by
+ * toolCallId until its tool_result. An ipython cell gets the note from the kernel half when it starts the command. A call whose result
+ * never comes leaves its note here, so the map keeps only the newest NOTES_KEEP.
+ */
+const notes = new Map<string, string>();
+const NOTES_KEEP = 64;
+
+function noteHeavy(event: ToolCallEvent, text: string, cwd: string): void {
+	if (event.toolName !== "bash" || !event.toolCallId) return;
+	const found = judgeHeavyCheck(text, cwd);
+	if (!found.length) return;
+	notes.set(event.toolCallId, found.join("\n"));
+	while (notes.size > NOTES_KEEP) notes.delete(notes.keys().next().value!);
+}
+
+export function onToolResult(event: Pick<ToolResultEvent, "toolCallId" | "content">): Pick<ToolResultEvent, "content"> | undefined {
+	const note = notes.get(event?.toolCallId);
+	if (note === undefined) return undefined;
+	notes.delete(event.toolCallId);
+	return { content: [...(Array.isArray(event.content) ? event.content : []), { type: "text", text: note }] };
+}
+
 /** A handler error fails open: a bug here must not stop every bash and ipython call on the machine. */
 export function onToolCall(event: ToolCallEvent, ctx: Partial<Pick<ExtensionContext, "cwd" | "sessionManager">> | undefined): ToolCallEventResult | undefined {
 	let cwd = "?";
@@ -140,7 +164,9 @@ export function onToolCall(event: ToolCallEvent, ctx: Partial<Pick<ExtensionCont
 		const verdicts = applyOwnerOk(judged, text);
 		for (const v of verdicts) log("guard", `block rule=${v.rule} cwd=${cwd} :: ${v.command}`);
 		recordSends(judged, verdicts, event.toolName, text, sessionPath);
-		return verdicts.length ? { block: true, reason: verdicts[0].reason } : undefined;
+		if (verdicts.length) return { block: true, reason: verdicts[0].reason };
+		noteHeavy(event, text, cwd);
+		return undefined;
 	} catch (err) {
 		log("guard", `handler error, failing open cwd=${cwd} :: ${err instanceof Error ? err.stack : String(err)}`);
 		return undefined;
