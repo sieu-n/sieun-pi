@@ -80,15 +80,54 @@ export function unifiedDiff(before: string, after: string, label: string): strin
 	return hunk.join('\n');
 }
 
-/** Edit-log accounting: lines added/removed + byte sizes for a revision record. */
+/**
+ * The length of the shortest line edit script from a to b (Myers 1986, the greedy forward pass), in O(N+M) memory and
+ * O((N+M)D) time. Only the length is needed, so no trace is kept.
+ */
+function editDistance(a: string[], b: string[]): number {
+	const ids = new Map<string, number>();
+	const id = (line: string) => ids.get(line) ?? (ids.set(line, ids.size), ids.size - 1);
+	const x = Int32Array.from(a, id);
+	const y = Int32Array.from(b, id);
+	const n = x.length;
+	const m = y.length;
+	const max = n + m;
+	const v = new Int32Array(2 * max + 2);
+	for (let d = 0; d <= max; d += 1) {
+		for (let k = -d; k <= d; k += 2) {
+			let i = k === -d || (k !== d && v[max + k - 1] < v[max + k + 1]) ? v[max + k + 1] : v[max + k - 1] + 1;
+			let j = i - k;
+			while (i < n && j < m && x[i] === y[j]) {
+				i += 1;
+				j += 1;
+			}
+			v[max + k] = i;
+			if (i >= n && j >= m) return d;
+		}
+	}
+	return max;
+}
+
+/**
+ * Edit-log accounting: the lines a shortest line diff adds and removes, plus byte sizes, for a revision record. Until
+ * 2026-11-04 it counted every line between the first and the last change, so apps/llm-wiki/index.html v59 logged 577
+ * added and 560 removed for an edit near each end of the page.
+ */
 export function changeStats(
 	before: string,
 	after: string,
 ): { linesAdded: number; linesRemoved: number; bytesBefore: number; bytesAfter: number } {
 	const { aMid, bMid } = before === after ? { aMid: [], bMid: [] } : trimCommon(before, after);
+	// A line the other side lacks can never match, so dropping it first leaves the longest common subsequence as it was
+	// and makes a full rewrite cost no diff work (a 3000-line rewrite took 808 ms in editDistance without this).
+	const inB = new Set(bMid);
+	const inA = new Set(aMid);
+	const a = aMid.filter((line) => inB.has(line));
+	const b = bMid.filter((line) => inA.has(line));
+	const common = (a.length + b.length - editDistance(a, b)) / 2;
 	return {
-		linesAdded: bMid.length,
-		linesRemoved: aMid.length,
+		linesAdded: bMid.length - common,
+		linesRemoved: aMid.length - common,
 		bytesBefore: Buffer.byteLength(before),
 		bytesAfter: Buffer.byteLength(after),
 	};
