@@ -14,8 +14,18 @@ const BOARD_WORDS = "(?:(?:own|board|plan|steps?|for\\s+you|todos?)\\s+)*";
 const CHAT_THEN_IDS = new RegExp(`\\b(${UUID})(?:['’]s)?\\s+${BOARD_WORDS}(${IDS})\\b`, "gi");
 /** "t17 in chat 01a16213-...", "t11 on thread 01a16213-..." (`todoName`). */
 const IDS_THEN_CHAT = new RegExp(`\\b(${IDS})\\s+(?:in|on|of|from|at)\\s+(?:the\\s+)?(?:(?:chat|thread|board)\\s+)?(?:thread:)?(${UUID})\\b`, "gi");
-/** "VP of CI's p134", "the API portal's own p8", "its t17", "their p3"; "this chat's" and "the owner's" name this board. */
-const POSSESSIVE_IDS = new RegExp(`(?<!\\b(?:this(?:\\s+(?:board|chat|thread))?|owner))(?:['’]s|\\bits|\\btheir)\\s+${BOARD_WORDS}(${IDS})\\b`, "gi");
+/**
+ * "VP of CI's p134", "the API portal's own p8", "its t17", "their p3"; "this chat's" names this board, and so does an owner's with no name word
+ * before "owner" (`OWNER_HERE`).
+ */
+const POSSESSIVE_IDS = new RegExp(`(?<!\\bthis(?:\\s+(?:board|chat|thread))?)(?:['’]s|\\bits|\\btheir)\\s+${BOARD_WORDS}(${IDS})\\b`, "gi");
+/**
+ * "owner's t74", "(owner's t28)" and "by the owner's t108" are the owner's For you todos on this board, while a name word before "owner" makes
+ * it a chat's name. Ops guy p714 waited for "the owner-walked prod promote (release owner's p147)", and three check-ins on 11-04 read ops guy's
+ * own dropped p147 as the wait over, while the release owner's p147 was a live promote candidate. On 11-04 the live boards' waits held 8 owner's
+ * ids of this board and 5 of the release owner's.
+ */
+const OWNER_HERE = /(?:^|[^\w\s'’-]\s*|\bthe\s+)owner$/i;
 
 /**
  * A plan step or todo id that a wait names on another chat's board: `chat` is that chat's session id, or null when the wait ties the id to
@@ -38,7 +48,9 @@ export function waitRefs(text: string, chats: readonly NamedChat[] = []): { refs
     .replace(CHAT_THEN_IDS, (_, chat: string, ids: string) => { add(ids, chat.toLowerCase()); return " "; })
     .replace(IDS_THEN_CHAT, (_, ids: string, chat: string) => { add(ids, chat.toLowerCase()); return " "; })
     .replace(POSSESSIVE_IDS, (match: string, ids: string, at: number, whole: string) => {
-      add(ids, /^['’]s/.test(match) ? chatNamed(whole.slice(0, at), chats) : null);
+      const before = whole.slice(0, at);
+      if (OWNER_HERE.test(before)) return match;
+      add(ids, /^['’]s/.test(match) ? chatNamed(before, chats) : null);
       return " ";
     });
   return { refs, rest };
