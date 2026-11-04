@@ -23,7 +23,8 @@
       "label": "Finished prod watch reads in 24 h that ended in an error after retries",
       "op": "<=",
       "target": 5,
-      "unit": "%"
+      "unit": "%",
+      "windowMs": 86400000
     },
     {
       "key": "watchlist_risks",

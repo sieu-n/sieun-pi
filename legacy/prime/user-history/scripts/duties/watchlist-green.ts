@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import {
-  type DsQuery, DAY, PG, PROM, REPO, SOURCE_DEADLINE_MS, grafanaClient, prodReader, promInstant, readGrafanaAuth, round1, settle, sqlRows, unmeasuredFlag,
+  type DsQuery, DAY, HOUR, PG, PROM, REPO, SOURCE_DEADLINE_MS, grafanaClient, prodReader, promInstant, readGrafanaAuth, round1, settle, sqlRows, unmeasuredFlag, utc,
 } from "./estate-reads.ts";
 import { adminQuery, convexBackend, type ConvexBackend, readEnvRow } from "./convex-admin.ts";
 
@@ -65,6 +65,8 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "watchlist-green
  * normal hour's 75th percentile and below every incident hour.
  */
 export const READ_ERROR_TARGET_PCT = 5;
+/** prod_read_error_pct's trailing window: the watch runs RECEIPTS_SQL reads, settled in the last 24 h. */
+export const READ_WINDOW_MS = DAY;
 /** The prod watch-scheduler alert, apps/infra/metal/config/obs/grafana/alerting/crawler-health.yaml (loop age over 300 s). */
 export const LOOP_STALL_S = 300;
 
@@ -104,7 +106,7 @@ export interface StreamFault { topic: string; why: string }
 export interface Gauges { rows: Record<string, number>; overdue: Record<string, number>; loopAge?: number }
 export interface WatchData {
   now: number;
-  keys?: string[]; stagingKeys?: string[]; rows?: WatchRow[]; receipts?: Record<string, number>; staging?: WatchRow[]; prod?: Gauges; pauseWatch?: string; streams?: StreamFault[];
+  keys?: string[]; stagingKeys?: string[]; rows?: WatchRow[]; receipts?: Record<string, number>; receiptHours?: Record<number, Record<string, number>>; staging?: WatchRow[]; prod?: Gauges; pauseWatch?: string; streams?: StreamFault[];
   screen?: ScreenChunk[];
   errors: { source: Source; message: string }[];
 }
@@ -252,6 +254,7 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
   const metrics: Record<string, number> = {};
   const detail: Record<string, number> = { source_errors: data.errors.length };
   const flagged: FlaggedSlice[] = data.errors.map(error => ({ at, kind: "source_error", excerpt: `${error.source}: ${error.message}`.slice(0, 400) }));
+  const lastEventAt: Record<string, number> = {};
   const failed = new Set(data.errors.map(error => error.source));
   const unmeasured = new Set(Object.keys(NEEDS).filter(key => NEEDS[key]!.some(source => failed.has(source))));
   const screen = data.screen ?? [];
@@ -301,7 +304,10 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
     const outcomes = Object.entries(data.receipts).sort((a, b) => b[1] - a[1]).map(([outcome, value]) => `${value} ${outcome}`).join(", ") || "none";
     if (finished) metrics.prod_read_error_pct = round1(100 * (data.receipts.error ?? 0) / finished);
     else { unmeasured.add("prod_read_error_pct"); flagged.push({ at, kind: "no_reads", excerpt: `no prod watch run settled ok, error or gone in the last 24 h (runs: ${outcomes})` }); }
-    flagged.push({ at, kind: "prod_reads", excerpt: `prod watch runs settled in 24 h: ${outcomes}; ${finished} finished reads (ok, error, gone), target error share at most ${READ_ERROR_TARGET_PCT}%` });
+    const over = data.receiptHours ? readErrorLastEventAt(data.receiptHours, now) : undefined;
+    if (over !== undefined) lastEventAt.prod_read_error_pct = over;
+    const lag = over === undefined ? "" : `; the newest hour over ${READ_ERROR_TARGET_PCT}% ended ${utc(over)} and leaves the 24 h window at ${utc(over + READ_WINDOW_MS)}`;
+    flagged.push({ at, kind: "prod_reads", excerpt: `prod watch runs settled in 24 h: ${outcomes}; ${finished} finished reads (ok, error, gone), target error share at most ${READ_ERROR_TARGET_PCT}%${lag}` });
   }
   if (data.prod) {
     detail.prod_posts_fresh_pct = freshPct(data.prod, "posts");
@@ -318,7 +324,8 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
   if (data.pauseWatch === "true") flagged.push({ at, kind: "pause", excerpt: "prod pause.watch is true, so the watch scheduler claims nothing" });
   const replaced = settle(dutyMetrics, metrics, unmeasured);
   if (replaced.length) flagged.push(unmeasuredFlag(replaced, at));
-  return { metrics: { ...metrics, ...detail }, flagged };
+  return { metrics: { ...metrics, ...detail }, flagged,
+    ...Object.keys(lastEventAt).length ? { lastEventAt, windowMs: { prod_read_error_pct: READ_WINDOW_MS } } : {} };
 }
 
 /** The tab-separated monitor rows psql prints (rowLines for Grafana's): platform, kind, target, paused (t or f), last_outcome, last_run_at epoch ms or empty,
@@ -337,15 +344,36 @@ export function parseRows(text: string): WatchRow[] {
   return rows;
 }
 
-/** The `receipt<TAB>outcome<TAB>runs` lines of the prod receipts read (RECEIPTS_SQL): watch runs settled in the last 24 h, per outcome. */
-export function parseReceipts(text: string): Record<string, number> {
+/** The `receipt<TAB>outcome<TAB>runs<TAB>hour` lines of the prod receipts read (RECEIPTS_SQL): watch runs settled in the last 24 h, per outcome,
+ *  and per outcome in each UTC hour by the hour's start in epoch ms (`hours`). */
+export function parseReceipts(text: string): { receipts: Record<string, number>; hours: Record<number, Record<string, number>> } {
   const receipts: Record<string, number> = {};
+  const hours: Record<number, Record<string, number>> = {};
   for (const line of text.split("\n")) {
     const cells = line.split("\t");
-    if (cells.length === 3 && cells[0] === "receipt") receipts[cells[1]!] = Number(cells[2]);
+    if (cells.length < 3 || cells[0] !== "receipt") continue;
+    const [outcome, runs] = [cells[1]!, Number(cells[2])];
+    receipts[outcome] = (receipts[outcome] ?? 0) + runs;
+    if (cells[3]) (hours[Number(cells[3])] ??= {})[outcome] = runs;
   }
-  return receipts;
+  return { receipts, hours };
 }
+
+/**
+ * prod_read_error_pct's newest event: the end of the newest UTC hour whose finished reads erred more than READ_ERROR_TARGET_PCT, capped at `now`,
+ * or undefined when no hour did. The share is over READ_WINDOW_MS, so it stays at or under the target once that hour has left the window.
+ */
+export function readErrorLastEventAt(hours: Record<number, Record<string, number>>, now: number): number | undefined {
+  let newest: number | undefined;
+  for (const [hour, outcomes] of Object.entries(hours)) {
+    const finished = FINISHED.reduce((sum, outcome) => sum + (outcomes[outcome] ?? 0), 0);
+    if (finished && 100 * (outcomes.error ?? 0) / finished > READ_ERROR_TARGET_PCT) newest = Math.max(newest ?? 0, Math.min(Number(hour) + HOUR, now));
+  }
+  return newest;
+}
+
+const receiptFields = (parsed: ReturnType<typeof parseReceipts>): Pick<WatchData, "receipts" | "receiptHours"> =>
+  ({ receipts: parsed.receipts, receiptHours: parsed.hours });
 
 /** One gauge read as `kind/tier` -> value. */
 export const byKindTier = (series: { labels: Record<string, string>; value: number }[]): Record<string, number> =>
@@ -561,7 +589,8 @@ export const STAGING_ROWS_SQL = NO_JIT + ROWS_SQL + "'f' as renamed from watch_t
 /** ROWS_SQL's columns in parseRows order, to print Grafana's table rows as the lines psql prints. */
 const ROW_COLUMNS = ["platform", "kind", "target", "paused", "last_outcome", "last_run_at", "last_stop_reason", "last_error_code", "is_private", "err_streak", "due", "last_ok_at", "added_at", "renamed"];
 export const rowLines = (rows: Record<string, unknown>[]): string => rows.map(row => ROW_COLUMNS.map(column => String(row[column] ?? "")).join("\t")).join("\n");
-export const RECEIPTS_SQL = "select 'receipt' as kind, outcome, count(*) as runs from watch_target_claims where settled_at > now() - interval '24 hours' and outcome is not null group by outcome";
+export const RECEIPTS_SQL = "select 'receipt' as kind, outcome, count(*) as runs, (extract(epoch from date_trunc('hour', settled_at)) * 1000)::bigint as hour"
+  + " from watch_target_claims where settled_at > now() - interval '24 hours' and outcome is not null group by outcome, hour";
 
 export interface WatchDeps {
   query: DsQuery | null; authError: string | null; keys: () => Promise<string[]>; rows: () => Promise<string>; receipts: () => Promise<string>;
@@ -597,7 +626,7 @@ export async function measure(deps: WatchDeps): Promise<WatchData> {
   if (rows && !rows.length) data.errors.push({ source: "prod rows", message: "the estate_pg_prod read returned no prod watch_targets monitor row" });
   if (staging && !staging.length) data.errors.push({ source: "staging rows", message: "estate_pg_stg returned no staging watch_targets monitor row" });
   if (screen && !screen.length) data.errors.push({ source: "screen read", message: "the screen read sent no chunk to crawler.virev.ai" });
-  Object.assign(data, keys && { keys }, screen?.length && { screen }, rows?.length && { rows }, receiptText !== undefined && { receipts: parseReceipts(receiptText) }, staging?.length && { staging }, stagingKeys?.length && { stagingKeys },
+  Object.assign(data, keys && { keys }, screen?.length && { screen }, rows?.length && { rows }, receiptText !== undefined && receiptFields(parseReceipts(receiptText)), staging?.length && { staging }, stagingKeys?.length && { stagingKeys },
     prod && { prod }, pause !== undefined && { pauseWatch: pause }, streams && { streams });
   return data;
 }
