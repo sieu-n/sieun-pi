@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import type { SessionSummary } from "prime-agent";
-import { Catalog } from "../src/chat-catalog.ts";
+import { Catalog, PROJECTION_SLICE_MS } from "../src/chat-catalog.ts";
 import { ChatLabels } from "../src/chat-labels.ts";
 import { ChatReadState } from "../src/chat-read-state.ts";
 import { ThreadOrigins } from "../src/thread-origin.ts";
@@ -37,21 +37,29 @@ test("the slot park and spawned-count passes over many stopped agents give the l
   const catalog = catalogOf(t);
   await catalog.refresh();
   await catalog.event();
-  // Each agent's row lookup in either pass takes SPIN_MS, standing in for its in-line stat or folder read,, as statSync does on a box with CI on 51 of 80 cores.
+  // Each agent's row lookup in either pass takes SPIN_MS, standing in for its in-line stat or folder read, as statSync does on a box with CI on
+  // 51 of 80 cores. The test counts the loop's turns between the lookups, not their wall time, so a loaded test box reads the same.
   const find = Reflect.get(catalog, "find") as (id: string) => unknown;
+  let ticks = 0;
   let parkReads = 0;
+  let turnsWithin = 0;
+  let lastTicks = -1;
   t.mock.method(catalog as unknown as { find: (id: string) => unknown }, "find", function (this: Catalog, id: string) {
-    if (id.startsWith("child-")) { parkReads += 1; for (const end = performance.now() + SPIN_MS; performance.now() < end;); }
+    if (id.startsWith("child-")) {
+      parkReads += 1;
+      if (lastTicks >= 0) turnsWithin += ticks - lastTicks;
+      lastTicks = ticks;
+      for (const end = performance.now() + SPIN_MS; performance.now() < end;);
+    }
     return find.call(this, id);
   });
-  let longest = 0;
-  let last = performance.now();
   let ticking = true;
-  const tick = (): void => { const at = performance.now(); longest = Math.max(longest, at - last); last = at; if (ticking) setImmediate(tick); };
+  const tick = (): void => { ticks += 1; if (ticking) setImmediate(tick); };
   setImmediate(tick);
   catalog.notify();
   await catalog.rows();
   ticking = false;
   assert.ok(parkReads >= AGENTS, `the projection read ${parkReads} parks`);
-  assert.ok(longest < (AGENTS * SPIN_MS) / 2, `the loop waited ${Math.round(longest)} ms in one run for ${AGENTS} park reads of ${SPIN_MS} ms`);
+  const least = Math.floor((parkReads * SPIN_MS) / PROJECTION_SLICE_MS / 2);
+  assert.ok(turnsWithin >= least, `the loop got ${turnsWithin} turns between ${parkReads} lookups of ${SPIN_MS} ms, under ${least}`);
 });

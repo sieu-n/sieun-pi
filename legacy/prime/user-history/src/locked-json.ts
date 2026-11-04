@@ -89,7 +89,6 @@ export async function withFileLock<R>(path: string, label: string, task: () => P
   finally { await rm(lock, { recursive: true, force: true }); }
 }
 
-/** Read, change, and atomically replace a private JSON file under a cross-process lock. The file is written only when the change altered it. */
 /**
  * Read, change, and atomically replace a private JSON file under a cross-process lock. The file is written only when the change altered it.
  * A file read through `cachedJsonFile` skips the read and parse while the file is as this process last saw it, and its cache takes the written
@@ -105,9 +104,13 @@ export async function transactJsonFile<T, R = void>(file: JsonFile<T>, change: (
     let state: T; let before: string | undefined;
     const cached = parsed.get(file.path);
     const hit = cached?.text !== undefined && cached.key === await statKey(file.path) ? cached : undefined;
-    if (hit) { state = structuredClone(hit.value) as T; before = hit.text; }
+    // The change gets a copy parsed from the text, and the text read or last written stands for the state before it. A structuredClone of the
+    // cached value took 1.4 to 2.3 times a JSON.parse of its text (48 against 22 ms for the 1.4 MB service-archives.json on us-metal02 on 11-04),
+    // and a JSON.stringify of a file just parsed was a second full pass, so one transaction on that file ran about 0.1 s in one synchronous block
+    // at rest and several times that with CI on 30 to 50 of 80 cores: the chat's 23:48Z to 00:11Z profile spent 7.9 s of its runs over 300 ms here.
+    if (hit) { state = JSON.parse(hit.text!) as T; before = hit.text; }
     else {
-      try { state = await readJsonFile(file); before = JSON.stringify(state); }
+      try { const text = await readFile(file.path, "utf8"); state = file.parse(JSON.parse(text)); before = text; }
       catch (error) { if (!missing(error)) throw error; state = file.initial(); }
     }
     const result = change(state);
