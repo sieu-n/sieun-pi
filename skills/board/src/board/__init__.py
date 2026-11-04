@@ -422,8 +422,8 @@ def wake(run: int | str | None = None, at: str | float | None = None, note: str 
 
     `check` is a shell command the chat service runs every `every` minutes on the chat host (us-metal02), from the home folder; the wake goes out
     once it exits 0, with its output, or at the deadline `at` if it never does. Use it instead of a time wake that only looks whether something
-    happened, such as a sha reaching prod or a unit ending, so the session stays unloaded until it happened. On the chat host board.wake runs
-    the check once as you arm it and puts a warning in front of its reply when the check already exits 0, and still sets the wake.
+    happened, such as a sha reaching prod or a unit ending, so the session stays unloaded until it happened. In a pi thread and on the chat host
+    board.wake runs the check once in this kernel as you arm it and puts a warning in front of its reply when the check already exits 0, and still sets the wake.
 
     The chat service sends the wake as an agent message, which reopens the session even after Prime passivated it, so the wait holds no
     Python kernel and no worker. `repo` ("owner/name") reads the run with gh instead of the local CI cache. `note` comes back in the wake.
@@ -455,11 +455,10 @@ def wake(run: int | str | None = None, at: str | float | None = None, note: str 
     squash = _squash_warning(on["command"]) if on["kind"] == "check" else ""
     if _pi_thread():
         url, thread, conversation = _pi_thread()  # type: ignore[misc]
-        # The chat runs a check once as it arms it, on its own box, so the request waits up to the check's own pace.
+        # The kernel runs on the box whose relay runs the check later, so it runs the first check itself and the chat only writes the wake.
+        warning = squash + (_check_passes_now(on) if on["kind"] == "check" else "")
         armed = _pi_call(f"api/threads/{urllib.parse.quote(thread)}/wakes",
-                         {"id": f"{thread}-{conversation}-{key}", "conversation": conversation, "on": on, "note": note, "since": int(time.time() * 1000)},
-                         timeout=30 + (on["every"] / 1000 if on["kind"] == "check" else 0))
-        warning = squash + (_check_warning(on["command"]) if armed.get("passes") else "")
+                         {"id": f"{thread}-{conversation}-{key}", "conversation": conversation, "on": on, "note": note, "since": int(time.time() * 1000)})
         return _Text(f"{warning}Wake set: the chat messages this thread when {what}. End this turn now with no bash handle, sleep or wait left running. "
                      f"({url}, {armed.get('path', 'wakes')})")
     session = _own_session()

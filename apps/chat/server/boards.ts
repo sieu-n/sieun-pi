@@ -661,11 +661,10 @@ export class Boards {
    * Sets a wake for a thread's conversation, as the board skill's `board.wake(...)` asks for it from a durable thread's kernel: a run, a time
    * or a check (server/wakes.ts). The same file id twice writes one file, so a retried request sets one wake.
    */
-  async addWake(id: string, body: Record<string, unknown>): ReturnType<typeof armWake> {
+  async addWake(id: string, body: Record<string, unknown>): Promise<ReturnType<typeof armWake>> {
     const thread = this.threadOf(this.chatId(id));
     if (!this.threads.thread(thread)) await this.threads.refresh().catch(() => undefined);
     if (!this.threads.thread(thread)) throw new Error(`No thread ${thread}.`);
-    const remote = this.checkOn(thread);
-    return remote ? armWake(this.wakeDir, thread, body, remote) : armWake(this.wakeDir, thread, body);
+    return armWake(this.wakeDir, thread, body);
   }
 }

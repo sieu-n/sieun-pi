@@ -21,6 +21,7 @@ import { usageReport, hostsReport } from "./usage.ts";
 import { type ClientVia, clientTimings, LoopStalls, RequestLog } from "./request-log.ts";
 import { accountRoutes, PoolError } from "./accounts.ts";
 import { serveWiki } from "./wiki/routes.ts";
+import { WORKSPACE_ROUTE } from "./wiki/workspaces.ts";
 
 type Params = Record<string, string>;
 type Handler = (req: IncomingMessage, params: Params, query: URLSearchParams, body: () => Promise<unknown>) => Promise<unknown>;
@@ -54,6 +55,8 @@ function route(method: string, path: string, handler: Handler): Route {
 function routeLabel(table: Route[], method: string, path: string): string {
   const found = table.find(r => r.method === method && r.pattern.test(path));
   if (found) return found.path;
+  const workspace = WORKSPACE_ROUTE.exec(path);
+  if (workspace) return `/api/c/:id/workspace${workspace[2] ? `/${workspace[2]}` : ""}`;
   const prefix = ["/api/images/", "/api/uploads/"].find(start => path.startsWith(start));
   return prefix ? `${prefix}*` : path === "/api/local-image" ? path : "unmatched";
 }

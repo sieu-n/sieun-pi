@@ -35,8 +35,9 @@ test("the server logs each /api request by route and takes the client's waits", 
       { m: "GET", p: "/api/search", s: 200, ms: 90, net: "fast" },
       { m: "GET", p: "/not-api", s: 200, ms: 1 },
       { m: "GET", p: "/api/me", s: 200, ms: "slow" },
+      { m: "POST", p: `/api/c/${room}%3A12/workspace/close`, s: 200, ms: 40 },
     ] });
-    assert.deepEqual(posted, { status: 200, body: { taken: 2 } });
+    assert.deepEqual(posted, { status: 200, body: { taken: 3 } });
     const viaTailnet = await fetch(`${chat.base}/api/timings`, {
       method: "POST", headers: { "content-type": "application/json", "tailscale-user-login": "owner@example.com" },
       body: JSON.stringify({ samples: [{ m: "GET", p: "/api/rooms", s: 200, ms: 30, net: 4 }] }),
@@ -51,7 +52,8 @@ test("the server logs each /api request by route and takes the client's waits", 
     assert.ok(!logged.some(line => line.p === "/api/timings"), "the timings post itself is not logged");
     const client = logged.filter(line => line.src === "client");
     assert.deepEqual(client.map(line => [line.r, line.p, line.ms, line.net, line.via]), [
-      ["/api/c/:id/items", `/api/c/${room}/items`, 420, 12, "local"], ["/api/search", "/api/search", 90, undefined, "local"], ["/api/rooms", "/api/rooms", 30, 4, "tailnet"],
+      ["/api/c/:id/items", `/api/c/${room}/items`, 420, 12, "local"], ["/api/search", "/api/search", 90, undefined, "local"],
+      ["/api/c/:id/workspace/close", `/api/c/${room}%3A12/workspace/close`, 40, undefined, "local"], ["/api/rooms", "/api/rooms", 30, 4, "tailnet"],
     ]);
   } finally {
     await chat.close();

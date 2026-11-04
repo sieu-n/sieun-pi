@@ -5,7 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { POLL_HINT, readRunState, REAL_GH } from "../../../../legacy/prime/user-history/src/wakes.ts";
@@ -41,8 +41,7 @@ test("a check wake runs sh from home at its pace and wakes the conversation once
   const { dir, sent, host, until } = rig(t);
   const flag = join(dir, "flag");
   const command = `test -f ${flag} && echo landed`;
-  const armed = await armWake(dir, THREAD, { conversation: 2, on: { kind: "check", command, every: 100, at: Date.now() + 10 * MIN }, note: "p12" });
-  assert.equal(armed.passes, undefined);
+  const armed = armWake(dir, THREAD, { conversation: 2, on: { kind: "check", command, every: 100, at: Date.now() + 10 * MIN }, note: "p12" });
   assert.ok(existsSync(armed.path));
   const stop = startThreadWakes({ dir, host, log: () => {}, everyMs: 50 });
   t.after(stop);
@@ -59,16 +58,18 @@ test("a check wake runs sh from home at its pace and wakes the conversation once
   assert.deepEqual(readdirSync(dir).filter(name => name.endsWith(".json")), []);
 });
 
-test("arming a check that already exits 0 says so, and the wake is still set", async t => {
+test("arming a check writes its wake without running the command, which board.wake runs in the caller's kernel", t => {
   const { dir } = rig(t);
-  const armed = await armWake(dir, THREAD, { on: { kind: "check", command: "pwd", every: 5 * MIN, at: Date.now() + MIN }, note: "" });
-  assert.deepEqual(armed.passes, { ok: true, output: `${homedir()}\n` }, "the check runs from the home folder");
+  const ran = join(dir, "ran");
+  const armed = armWake(dir, THREAD, { on: { kind: "check", command: `touch ${ran}; sleep 5`, every: 5 * MIN, at: Date.now() + MIN }, note: "" });
   assert.ok(existsSync(armed.path));
+  assert.equal(existsSync(ran), false);
+  assert.deepEqual(Object.keys(armed).sort(), ["path", "wake"]);
 });
 
 test("a check that never passes wakes the conversation at its deadline with its last output", async t => {
   const { dir, sent, host, until } = rig(t);
-  await armWake(dir, THREAD, { on: { kind: "check", command: "echo 416fae9; exit 1", every: 100, at: Date.now() + 300 }, note: "" });
+  armWake(dir, THREAD, { on: { kind: "check", command: "echo 416fae9; exit 1", every: 100, at: Date.now() + 300 }, note: "" });
   const stop = startThreadWakes({ dir, host, log: () => {}, everyMs: 50 });
   t.after(stop);
   await until(1);
@@ -79,7 +80,7 @@ test("a check that never passes wakes the conversation at its deadline with its 
 test("a time wake goes out at its time with Prime's text", async t => {
   const { dir, sent, host, until } = rig(t);
   const at = Date.now() + 200;
-  await armWake(dir, THREAD, { on: { kind: "time", at }, note: "remeasure" });
+  armWake(dir, THREAD, { on: { kind: "time", at }, note: "remeasure" });
   const stop = startThreadWakes({ dir, host, log: () => {}, everyMs: 50 });
   t.after(stop);
   await until(1);
@@ -108,7 +109,7 @@ test("a run wake follows the latest attempt, waits for attempt= on a rerun, and 
   const { dir, sent, host, until } = rig(t);
   const ci = ciFixture(39493311906);
   let now = Date.now();
-  await armWake(dir, THREAD, { on: { kind: "run", run: 39493311906, attempt: 2 }, note: "land r11" }, undefined, now);
+  armWake(dir, THREAD, { on: { kind: "run", run: 39493311906, attempt: 2 }, note: "land r11" }, now);
   const stop = startThreadWakes({ dir, host, log: () => {}, everyMs: 50, now: () => now, stamp: async () => null, runState: on => readRunState(on, ci.exec) });
   t.after(stop);
   const step = async () => { now += 3 * MIN; await new Promise(done => setTimeout(done, 150)); };
@@ -130,7 +131,7 @@ test("a run wake in another repo reads gh with that repo", async t => {
   const { dir, sent, host, until } = rig(t);
   const ci = ciFixture(123);
   Object.assign(ci.state, { status: "completed", conclusion: "failure", attempt: 1 });
-  await armWake(dir, THREAD, { on: { kind: "run", run: 123, repo: "sieu-n/sieun-pi" }, note: "" });
+  armWake(dir, THREAD, { on: { kind: "run", run: 123, repo: "sieu-n/sieun-pi" }, note: "" });
   const stop = startThreadWakes({ dir, host, log: () => {}, everyMs: 50, runState: on => readRunState(on, ci.exec) });
   t.after(stop);
   await until(1);

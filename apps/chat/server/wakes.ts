@@ -43,16 +43,15 @@ export function parseArm(thread: string, body: Record<string, unknown>, now: num
 }
 
 /**
- * Writes the wake's file, where the ticker finds it after a restart too. A check runs once first, from the home folder with sh and its own pace
- * as the time limit, as board.wake does on Prime's chat host; `passes` tells the skill to warn that the check already exits 0. The wake is set either way.
+ * Writes the wake's file, where the ticker finds it after a restart too. Arming runs no check: board.wake runs a check once in the caller's
+ * kernel, on the box that runs it later, to warn that it already exits 0. On 11-04 the arm request ran it here and took 6.1 s at p90 and
+ * 14.7 s at most over 98 calls, since checks run git fetch, ssh and curl.
  */
-export async function armWake(dir: string, thread: string, body: Record<string, unknown>, check: (command: string, timeoutMs: number) => Promise<CheckResult> = runCheck,
-  now = Date.now()): Promise<{ wake: Wake; path: string; passes?: CheckResult }> {
+export function armWake(dir: string, thread: string, body: Record<string, unknown>, now = Date.now()): { wake: Wake; path: string } {
   const { id, wake } = parseArm(thread, body, now);
-  const passes = wake.on.kind === "check" ? await check(wake.on.command, wake.on.every) : undefined;
   const path = join(dir, `${id}.json`);
   writeJson(path, wake);
-  return { wake, path, ...(passes?.ok ? { passes } : {}) };
+  return { wake, path };
 }
 
 export interface ThreadWakeOptions {
