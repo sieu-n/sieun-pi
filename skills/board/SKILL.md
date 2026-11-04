@@ -40,7 +40,9 @@ A check wake is for a wait on something with no CI run of its own, such as a sha
 
 A run wake follows the run's latest attempt, and its `[wake]` text names that attempt. A rerun keeps the run id, so a wake set on a run that already finished goes out at once with the old result. When you wait for a rerun, pass `attempt=` with the attempt you wait for.
 
-Never end a turn with `bash("ci-run-status <id> --wait")`, `gh run watch`, or a `sleep` still running. Prime counts a session with a running bash handle as busy, so the session keeps its Python kernel and its worker for the whole wait. On 10-14, 125 of 152 working sessions waited that way and held 8.69 GB of kernels. A wait inside one turn that ends in under a minute can still use `await bash(...)`.
+Never end a turn with `bash("ci-run-status <id> --wait")`, `gh run watch`, or a `sleep` still running. Prime counts a session with a running bash handle as busy, so the session keeps its Python kernel and its worker for the whole wait. On 10-14, 125 of 152 working sessions waited that way and held 8.69 GB of kernels.
+
+A wait inside a turn holds the kernel, the worker and a pool slot. So the kernel (sieun-rules `kernel-wait.py`) ends a cell's `await` on a `bash()` handle after 120 s with `StillRunning`. The command keeps running in `bash_handoffs[pid]`, and Prime's `[bash-done]` follow-up brings its exit code, output tail and a full-output file. End the turn when it raises, which frees the slot. A cell's `time.sleep` and `asyncio.sleep` calls stop at 120 s in total the same way. On 11-03, waits over 2 min held 172.6 of 664.9 pool slot-hours.
 
 The same holds for any `bash()` handle that outlives its turn, such as a 3 h sampler. Run that command detached, with no `nice` in front, and set `board.wake(at=<its end>)`.
 

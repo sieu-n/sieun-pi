@@ -21,6 +21,9 @@ const READ_FILE = join(HERE, "kernel-read.py");
 // kernel-journal.py journals the kernel's writes into a shared auto-sns-agent checkout for its commit.mjs (10-29). It has its own flag for the same reason.
 // Its report() runs before every cell, so a Convex type check that a convex/ save queued prints its result at the session's next cell (10-31).
 const JOURNAL_FILE = join(HERE, "kernel-journal.py");
+// kernel-wait.py hands a cell's bash() await back after 120 s and stops a cell's sleeps at 120 s, so a turn that only waits ends and frees its
+// pool slot (11-03: waits over 2 min held 172.6 of 664.9 slot-hours). It has its own flag for the same reason.
+const WAIT_FILE = join(HERE, "kernel-wait.py");
 
 export const PRELUDE_SOURCE = `
 import sys
@@ -54,6 +57,12 @@ if not getattr(sys, "global_rules_kernel_journal", False):
         exec(compile(open(${JSON.stringify(JOURNAL_FILE)}).read(), ${JSON.stringify(JOURNAL_FILE)}, "exec"), {"__name__": "global_rules_kernel_journal", "__file__": ${JSON.stringify(JOURNAL_FILE)}})
     except Exception as error:
         print(f"global-rules: the kernel write journal did not load: {error}", file=sys.stderr)
+if not getattr(sys, "global_rules_kernel_wait", False):
+    sys.global_rules_kernel_wait = True
+    try:
+        exec(compile(open(${JSON.stringify(WAIT_FILE)}).read(), ${JSON.stringify(WAIT_FILE)}, "exec"), {"__name__": "global_rules_kernel_wait", "__file__": ${JSON.stringify(WAIT_FILE)}})
+    except Exception as error:
+        print(f"global-rules: the kernel wait default did not load: {error}", file=sys.stderr)
 _convex_report = getattr(sys, "global_rules_convex_report", None)
 if _convex_report:
     _convex_report()
