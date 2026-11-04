@@ -131,6 +131,9 @@ export async function pruneCaches(root: string, beforeMs: number): Promise<numbe
 }
 
 const CHUNK = 4 * 1024 * 1024;
+/** The buffer `namedSince` reads into, kept from one transcript to the next, and whether a read holds it now. */
+let sweepBuffer: Buffer | undefined;
+let sweepBufferBusy = false;
 const STAMP_KEY = Buffer.from('"timestamp":"');
 const STAMP = /^"timestamp":"(\d{4}-\d\d-\d\dT[\d:.]+Z)"/;
 /** The bytes of a name `namedIn` matches: TMP_NAME's characters. */
@@ -165,9 +168,14 @@ export async function namedSince(file: string, sinceMs: number, root: string, ch
   const named = new Set<string>();
   const prefix = Buffer.from(`${root}/`);
   const handle = await open(file, "r");
+  // The sweep reads its transcripts one after another into one buffer. Until 11-04 each transcript got a fresh buffer of up to 4 MB, outside
+  // the V8 heap, and at 01:02:01Z on 11-04 the 01:02:13Z sweep's reads ran beside 541 ms of garbage collection in a 750 ms run, part of the
+  // 1.19 s loop stall d7 read for 01:02Z.
+  const owned = !sweepBufferBusy;
+  if (owned) sweepBufferBusy = true;
+  let buffer = owned && sweepBuffer ? sweepBuffer : Buffer.allocUnsafe(1);
   try {
     const { size } = await handle.stat();
-    let buffer = Buffer.allocUnsafe(Math.max(1, Math.min(chunk, size)));
     // A line longer than a chunk is read again with a chunk more room, and the chunk after it gets the usual room.
     for (let end = size, room = chunk; end > 0;) {
       const start = Math.max(0, end - room);
@@ -186,6 +194,7 @@ export async function namedSince(file: string, sinceMs: number, root: string, ch
     }
     return named;
   } finally {
+    if (owned) { sweepBuffer = buffer; sweepBufferBusy = false; }
     await handle.close();
   }
 }
