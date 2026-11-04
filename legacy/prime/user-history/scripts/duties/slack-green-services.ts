@@ -1,27 +1,31 @@
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { CHECKS_WINDOW_MS, type DeployDeps, type Exec, exec, measureDeploys } from "./slack-green-deploys.ts";
+import { type DsQuery, grafanaClient, PROM, promInstant, SOURCE_DEADLINE_MS, sqlRows } from "./estate-reads.ts";
+import { CHECKS_WINDOW_MS, type DeployDeps, exec, measureDeploys } from "./slack-green-deploys.ts";
 import { parseEnv } from "./local-dev-uptime.ts";
 import { vercelToken } from "./vercel-login.ts";
-import { BoxBrowser } from "./box-browser.ts";
 
 /**
  * The precheck of slack green guy's "Slack Green services work" duty (`node --import tsx scripts/duties/slack-green-services.ts`). No model call.
  * On 10-30 slack.green prod served HTML 200 for hours while every page threw "Missing Supabase environment variables" in the browser, because
  * the us-metal02 prebuilt build had no NEXT_PUBLIC_SUPABASE_* values, and no duty saw it until the owner sent a screenshot (msg mvux3bjx). He then
  * asked for one duty every 3 hours that checks every service works, Vercel and Railway included, and that his own Slack account shows green
- * (msg mvux7mnh).
+ * (msg mvux7mnh). The worker left Railway for us-metal01 on 11-04 (ops guy's p737).
  * pages_failing, the headline, opens five pages in a headful Chrome on this box through the aside-browser box runner (c177, c205) and counts a
  * page as failing when its document answers non-200, it throws an uncaught error (pageerror), or it shows an error screen. /dashboard is read
  * signed in as sg-qa-services-duty@slack.green, whose password this precheck sets to a new random value each run through Supabase's admin API.
- * deploy_problems folds in the old Slack green deploys duty (d4): failed main CI runs of 24 h, a deploy source that did not read, and the
- * worker crashed or silent. Main commits the Railway worker lacks are flagged and not counted, because the worker moves to us-metal01 (p226)
- * and Railway stopped building it when slack-green #422 deleted the Dockerfile. Main commits that Vercel prod lacks are flagged and not
+ * deploy_problems folds in the old Slack green deploys duty (d4): main's newest worker image not running on us-metal01 20 min after its push,
+ * failed main CI runs of 24 h, a deploy source that did not read, and the worker stopped, restarting or silent. The worker reads come from
+ * prod Prometheus and prod ClickHouse through Grafana with the Viewer token prod-headroom.ts uses, never over ssh to us-metal01 (c146): the
+ * docker state file the metal box owner's virev-docker-state.timer writes, cAdvisor's image label, and the container's log lines that the obs
+ * collector ships to otel.otel_logs. Main commits that Vercel prod lacks are flagged and not
  * counted, because since 10-30 slack.green builds on us-metal02 (c200) and each prod deploy waits for the release owner (c154). owner_slack_green reads the owner's presence with Slack's users.getPresence
  * through the session tokens Slack Green stores for his ppwc workspace, read only. api_routes_failing calls the add-on's and the CLI's routes
  * with a bogus login and expects their JSON 401, and counts each /api/ route that answered 500 or more during the page walk.
@@ -48,6 +52,16 @@ const DEFAULT_SUPABASE = "https://pcpcicvhrcazmlpjrqho.supabase.co";
  * 10-30 at 12:04Z it wrote several such lines a second, so 10 min with none means it stopped working.
  */
 const WORKER_SILENT_MS = 10 * 60_000;
+/** The worker container on us-metal01 and the image it runs, whose tag is the main sha CI built it from. */
+export const WORKER = { box: "us-metal01", container: "slack-green-worker", image: /^ghcr\.io\/sieu-n\/slack-green\/worker:([0-9a-f]{40})(?:@sha256:[0-9a-f]{64})?$/ };
+/** virev-docker-state.timer writes the state file every 30 s, so one older than this is a stopped timer, not the worker's state. */
+const DOCKER_STATE_STALE_MS = 5 * 60_000;
+const GRAFANA_CONFIG = join(homedir(), ".prime/agent/browser-chat/grafana-alerts.json");
+const CH_PROD = "estate_ch_prod";
+/** The worker's presence check lines of the last hour; Grafana's ClickHouse answers a table frame with these two named columns. */
+export const PRESENCE_SQL = `SELECT count() AS lines, toUnixTimestamp64Milli(max(Timestamp)) AS newest FROM otel.otel_logs
+WHERE ServiceName = '${WORKER.container}' AND Timestamp > now() - INTERVAL 1 HOUR AND Body LIKE '%🟢 active%'
+SETTINGS max_threads = 2, log_comment = 'sieun-pi d6 worker presence'`;
 const SETTLE_MS = 4000;
 const PAGE_TIMEOUT_MS = 45_000;
 
@@ -65,7 +79,8 @@ export function pageFailure(read: PageRead): string | null {
   return null;
 }
 
-export interface WorkerRead { status: string; deployAt: number; lastActiveAt?: number; activeLines: number }
+/** The worker container: docker's state, the image cAdvisor saw it run and that image's main sha, and its presence check log lines. */
+export interface WorkerRead { running: boolean; restarts: number; startedAt?: number; image?: string; sha?: string; lastActiveAt?: number; activeLines: number }
 export interface Presence { presence: string; online: boolean; connectionCount: number; lastActivity?: number }
 export interface RouteRead { route: string; status?: number; body?: string; error?: string; ok: boolean }
 export interface Readings { pages: PageRead[]; deploys?: PrecheckOutput; worker?: WorkerRead; presence?: Presence; routes: RouteRead[]; errors: string[] }
@@ -87,19 +102,19 @@ export function servicesOutput(read: Readings, now: number): PrecheckOutput {
   let workerProblems = 0;
   if (!read.worker) workerProblems++;
   else {
-    const { status, lastActiveAt, activeLines } = read.worker;
-    const crashed = !["SUCCESS", "SLEEPING"].includes(status);
+    const { running, restarts, startedAt, image, sha, lastActiveAt, activeLines } = read.worker;
+    const restarting = restarts > 0 && startedAt !== undefined && now - startedAt < WORKER_SILENT_MS;
     const silent = lastActiveAt === undefined || now - lastActiveAt > WORKER_SILENT_MS;
-    workerProblems += Number(crashed) + Number(silent);
-    flagged.push({ at: now, kind: crashed || silent ? "worker_problem" : "worker_ok", excerpt: `the Railway worker's newest deployment is ${status} (${when(read.worker.deployAt)}), and its last presence check log line is ${lastActiveAt ? `${Math.round((now - lastActiveAt) / 60_000)} min old, ${activeLines} active lines in the logs read` : "missing from the logs read"}` });
+    workerProblems += Number(!running || restarting) + Number(silent) + Number(!sha);
+    const state = running ? `runs since ${startedAt ? when(startedAt) : "an unknown time"} after ${restarts} restart(s)` : `is not running, ${restarts} restart(s)`;
+    const tag = sha ? `image ${image}` : `image ${image ?? "unknown"}, which names no main sha`;
+    flagged.push({ at: now, kind: !running || restarting || silent || !sha ? "worker_problem" : "worker_ok", excerpt: `the ${WORKER.box} container ${WORKER.container} ${state}, ${tag}, and its last presence check log line is ${lastActiveAt ? `${Math.round((now - lastActiveAt) / 60_000)} min old, ${activeLines} in the last hour` : "missing from the last hour"}` });
   }
   const deploys = read.deploys;
   if (deploys) flagged.push(...(deploys.flagged ?? []).map(slice => slice.kind === "vercel_not_live"
-    ? { ...slice, kind: "vercel_behind_main", excerpt: `${slice.excerpt}; not counted, because each slack.green prod deploy waits for the release owner (c154, c200)` }
-    : slice.kind === "railway_not_live"
-      ? { ...slice, kind: "railway_behind_main", excerpt: `${slice.excerpt}; not counted, because the worker moves to us-metal01 (p226)` } : slice));
-  const { main_checks_failed_24h: checksFailed = 0, source_errors: deployErrors = 0 } = deploys?.metrics ?? {};
-  const deployProblems = workerProblems + (deploys ? checksFailed + deployErrors : 1);
+    ? { ...slice, kind: "vercel_behind_main", excerpt: `${slice.excerpt}; not counted, because each slack.green prod deploy waits for the release owner (c154, c200)` } : slice));
+  const { worker_not_live: workerLate = 0, main_checks_failed_24h: checksFailed = 0, source_errors: deployErrors = 0 } = deploys?.metrics ?? {};
+  const deployProblems = workerProblems + (deploys ? workerLate + checksFailed + deployErrors : 1);
 
   const green = read.presence?.presence === "active" ? 1 : 0;
   if (read.presence) flagged.push({ at: now, kind: green ? "owner_green" : "owner_not_green", excerpt: `the owner's Slack (ppwc, ${OWNER.slackUser}) reads ${read.presence.presence}, online ${read.presence.online}, ${read.presence.connectionCount} connection(s)${read.presence.lastActivity ? `, last activity ${when(read.presence.lastActivity * 1000)}` : ""}` });
@@ -117,6 +132,34 @@ export function servicesOutput(read: Readings, now: number): PrecheckOutput {
   return { metrics: { pages_failing: pagesFailing, deploy_problems: deployProblems, owner_slack_green: green, api_routes_failing: routesFailing,
     source_errors: read.errors.length }, flagged, ...failedAt === undefined ? {} : { lastEventAt: { deploy_problems: failedAt } },
     ...onlyChecks && failedAt !== undefined ? { windowMs: { deploy_problems: CHECKS_WINDOW_MS } } : {} };
+}
+
+/** The aside-browser box runner: a headful Chrome on its own Xvfb display, driven by JSON lines on stdin and stdout. */
+export class BoxBrowser {
+  private next = 1;
+  private waiting = new Map<number, (reply: { out?: string; error?: string }) => void>();
+  private constructor(private child: ReturnType<typeof spawn>) {
+    createInterface({ input: child.stdout! }).on("line", line => {
+      try { const reply = JSON.parse(line) as { id: number; out?: string; error?: string }; this.waiting.get(reply.id)?.(reply); this.waiting.delete(reply.id); }
+      catch { /* runner chatter */ }
+    });
+    child.on("exit", () => { for (const done of this.waiting.values()) done({ error: "the box runner exited" }); this.waiting.clear(); });
+  }
+  static start(runner = process.env.BOX_RUNNER || join(homedir(), ".prime/agent/skills/aside-browser/box/box.mjs")): BoxBrowser {
+    return new BoxBrowser(spawn(process.execPath, [runner], { stdio: ["pipe", "pipe", "inherit"] }));
+  }
+  run(code: string, timeoutMs: number): Promise<string> {
+    const id = this.next++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this.waiting.delete(id); reject(new Error(`the box browser call took over ${timeoutMs / 1000} s`)); }, timeoutMs);
+      this.waiting.set(id, reply => { clearTimeout(timer); reply.error ? reject(new Error(reply.error.split("\n")[0])) : resolve(reply.out ?? ""); });
+      this.child.stdin!.write(JSON.stringify({ id, code }) + "\n");
+    });
+  }
+  async close(): Promise<void> {
+    this.child.stdin!.end();
+    await new Promise<void>(resolve => { const timer = setTimeout(() => { this.child.kill("SIGKILL"); resolve(); }, 15_000); this.child.on("exit", () => { clearTimeout(timer); resolve(); }); });
+  }
 }
 
 /** Code for the box runner: open the page in a new tab, record its document status, uncaught errors, console errors and /api/ 5xx answers. */
@@ -220,27 +263,40 @@ export async function readRoutes(fetcher: typeof fetch, now: number): Promise<Ro
   }));
 }
 
-interface RailwayRow { status: string; createdAt: string }
-/**
- * The worker's newest deployment that is not skipped, removed, waiting or failed, and its newest presence check log line, from a temp-linked
- * folder. A FAILED build leaves the deployment before it running, as the 03:15Z redeploy on 11-04 did after slack-green #422 deleted the Dockerfile.
- */
-export async function readWorker(run: Exec): Promise<WorkerRead> {
-  const dir = await mkdtemp(join(tmpdir(), "sg-services-"));
-  try {
-    await run("railway", ["link", "--project", "slack-green-backend", "--environment", "production", "--service", "slack-green-backend"], { cwd: dir });
-    const list = await run("railway", ["deployment", "list", "--json", "--limit", "20"], { cwd: dir });
-    const newest = (JSON.parse(list.slice(list.indexOf("["))) as RailwayRow[]).filter(row => !["SKIPPED", "REMOVED", "WAITING", "FAILED"].includes(row.status))
-      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
-    if (!newest) throw new Error("the worker has no deployment among its newest 20");
-    const logs = await run("railway", ["logs", "--lines", "300", "--json"], { cwd: dir });
-    const active = logs.split("\n").flatMap(line => { try { return [JSON.parse(line) as { timestamp?: string; message?: string }]; } catch { return []; } })
-      .filter(row => row.message?.includes("🟢 active") && row.timestamp).map(row => Date.parse(row.timestamp!));
-    return { status: newest.status, deployAt: Date.parse(newest.createdAt), activeLines: active.length, ...active.length ? { lastActiveAt: Math.max(...active) } : {} };
-  } finally {
-    await run("railway", ["unlink", "-y"], { cwd: dir }).catch(() => "");
-    await rm(dir, { recursive: true, force: true });
-  }
+type Series = { labels: Record<string, string>; value: number }[];
+
+/** The worker read from docker's state series, the state file's write time, cAdvisor's series and the presence line count; throws when unread. */
+export function parseWorker(state: Series, stamp: Series, seen: Series, presence: Record<string, unknown>[], now: number): WorkerRead {
+  const written = Math.max(...stamp.map(item => item.value)) * 1000;
+  if (!Number.isFinite(written)) throw new Error(`prod Prometheus has no virev_docker_state_timestamp_seconds for ${WORKER.box}`);
+  if (now - written > DOCKER_STATE_STALE_MS) throw new Error(`${WORKER.box}'s docker state file was last written ${Math.round((now - written) / 60_000)} min ago`);
+  const value = (name: string) => state.find(item => item.labels.__name__ === name)?.value;
+  const running = value("virev_container_running");
+  if (running === undefined) throw new Error(`${WORKER.box}'s docker state has no container ${WORKER.container}`);
+  const started = value("virev_container_started_seconds");
+  const image = [...seen].sort((a, b) => b.value - a.value)[0]?.labels.image;
+  const sha = image ? WORKER.image.exec(image)?.[1] : undefined;
+  const lines = Number(presence[0]?.lines ?? 0);
+  return { running: running === 1, restarts: value("virev_container_restart_count") ?? 0, activeLines: lines,
+    ...started ? { startedAt: started * 1000 } : {}, ...image ? { image } : {}, ...sha ? { sha } : {}, ...lines ? { lastActiveAt: Number(presence[0]!.newest) } : {} };
+}
+
+/** The worker through Grafana: three prod Prometheus reads and one prod ClickHouse read, nothing written and no ssh to the box. */
+export async function readWorker(query: DsQuery, now: number): Promise<WorkerRead> {
+  const [state, stamp, seen, presence] = await Promise.all([
+    promInstant(query, PROM.prod, `{__name__=~"virev_container_(running|restart_count|started_seconds)",box="${WORKER.box}",container="${WORKER.container}"}`),
+    promInstant(query, PROM.prod, `virev_docker_state_timestamp_seconds{box="${WORKER.box}"}`),
+    promInstant(query, PROM.prod, `container_last_seen{box="${WORKER.box}",name="${WORKER.container}"}`),
+    sqlRows(query, CH_PROD, PRESENCE_SQL),
+  ]);
+  return parseWorker(state, stamp, seen, presence, now);
+}
+
+/** A Grafana query client with the read-only Viewer token of browser-chat/grafana-alerts.json. */
+async function grafanaQuery(now: number): Promise<DsQuery> {
+  const config = JSON.parse(await readFile(GRAFANA_CONFIG, "utf8")) as { token?: string };
+  if (!config.token) throw new Error(`${GRAFANA_CONFIG} has no token`);
+  return grafanaClient(fetch, `Bearer ${config.token}`, now, AbortSignal.timeout(SOURCE_DEADLINE_MS));
 }
 
 async function supabaseEnv(): Promise<Supabase> {
@@ -265,9 +321,8 @@ async function main(): Promise<void> {
     try { return await walkPages(browser, login); } finally { await browser.close(); }
   })().catch((error: unknown) => { fail("box browser")(error); return [] as PageRead[]; });
   const backend = (async () => {
-    const deploys = await measureDeploys(deps);
-    const worker = await readWorker(exec).catch(fail("Railway worker status and logs"));
-    return { deploys, worker };
+    const worker = await grafanaQuery(now).then(query => readWorker(query, now)).catch(fail(`${WORKER.box} worker state and logs through Grafana`));
+    return { deploys: await measureDeploys(deps, worker?.sha), worker };
   })();
   const [pageReads, { deploys, worker }, presence, routes] = await Promise.all([pages, backend,
     sb ? readOwnerPresence(fetch, sb).catch(fail("owner's Slack presence")) : undefined, readRoutes(fetch, now)]);
