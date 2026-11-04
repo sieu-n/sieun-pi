@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { type Candidate, type Compare, type FailedJob, type HeadStatuses, type Run, type VerifyJudge, judgeCandidate, loadPromoteCi, measureReach, newestPerBranch,
-  reachMetrics, readCandidates, readFailedJobs, verifyJudge } from "../scripts/duties/fixes-reach-prod.ts";
+  reachMetrics, readCandidates, readFailedJobs, verifyJudge, gitIn, AUTO_SNS } from "../scripts/duties/fixes-reach-prod.ts";
 
 const NOW = Date.parse("2026-10-23T03:50:00Z");
 const HEAD = "6e71eb047898f76ecba23e8e5d002f4a4e018be2";
@@ -131,7 +131,7 @@ test("a staging sha needs a successful deploy/staging status before its full ver
   const output = reachMetrics({ compare: { ...COMPARE, aheadBy: 2, commits: [...VERIFIED_COMPARE.commits, ...COMPARE.commits] }, promotes: [], lands: [],
     candidates: [head, older], failedJobs: new Map(), health: [], errors: [] }, NOW);
   assert.equal(line(output.flagged, "promotable"), `promotable: 3b0fcfee0b is the newest promotable staging sha, under staging's head 6e71eb0478, so promote it with --sha ${VERIFIED}: ` +
-    `it has a successful deploy/staging status and its full verify, run 40067724892, passes promote.yml's critical set; newer staging shas are not promotable: 6e71eb0478: ${RED_CRITICAL}`);
+    `it has a successful deploy/staging status and its full verify, run 40067724892, passes promote.yml's critical set, and it holds no harmful commit of HARM_FIXES without its fix; newer staging shas are not promotable: 6e71eb0478: ${RED_CRITICAL}`);
   assert.ok(!kinds(output.flagged).includes("no_promotable_staging_sha"));
 });
 
@@ -142,12 +142,24 @@ test("a full verify whose only red is a warn-only task reads promotable by auto-
   const sha = "68132a1f870a8ca504773f932d2a5c8d85f9388e";
   const leg = (tasks: [string, boolean][]) => ({ id: 2, name: "linux (rest)", conclusion: tasks.every(([, pass]) => pass) ? "success" : "failure", steps: [],
     turbo: { tasks: new Map(tasks.map(([task, pass]) => [task, { pass, line: `${task} ${pass ? "passed" : "failed"}` }])) } });
-  const judgeWith = (rest: ReturnType<typeof leg>) => verifyJudge({ ...ci,
+  const judgeWith = (rest: ReturnType<typeof leg>) => verifyJudge({ ...ci, harmMiss: () => null, fetchLandHeads: () => {},
     stagingCheckOf: async () => ({ id: 40656926422, status: "completed", conclusion: "failure" }),
     jobsOf: async () => [{ id: 1, name: "plan", conclusion: "success", steps: [] }, rest] }, async () => "", (...args) => args[0] === "diff" ? "docs/readme.md\0" : "");
   assert.deepEqual(await judgeWith(leg([["//#ci:secrets-scan", true], ["//#ci:guards", false]]))(sha, COMPARE.mainSha), { miss: null, run: 40656926422 });
   const red = await judgeWith(leg([["//#ci:secrets-scan", false], ["//#ci:guards", false]]))(sha, COMPARE.mainSha);
   assert.match(red.miss ?? "", /^sha 68132a1f87 has staging check 40656926422 failure, red on the promote's critical set: always: 'linux \(rest\)' task \/\/#ci:secrets-scan/);
+});
+
+// 11-04 16:23Z: d4 named staging 4b18f07022 promotable from green checks while it held c5fba790fe without its revert 92350627ab, which land 256e7a3382 holds.
+test("a green staging sha that holds a HARM_FIXES cause through its land without the fix is refused, and the land that holds the fix is not refused for it", async () => {
+  const ci = await loadPromoteCi();
+  const git = gitIn(AUTO_SNS);
+  const main = git("rev-parse", "origin/main").trim();
+  const judge = verifyJudge({ ...ci, stagingCheckOf: async () => ({ id: 41858343178, status: "completed", conclusion: "success" }) }, async () => "", git);
+  const refused = await judge("4b18f070221e5eb8cf451251d65e1bddf4a3acf9", main);
+  assert.match(refused.miss ?? "", /^4b18f07022 holds .*c5fba790fe \([^)]+\) without 92350627ab/);
+  const fixed = await judge("256e7a3382c826d1c3ec8ca5cde86de09240c4c5", main);
+  assert.doesNotMatch(fixed.miss ?? "", /c5fba790fe/);
 });
 
 test("a failed promote that a later green promote followed leaves failed_promotes_24h", () => {

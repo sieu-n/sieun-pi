@@ -33,6 +33,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * precheck flagged neither, because 53 of the newest 60 land runs were cancelled by newer ones and it took the newest finished run of each branch.
  * Incident: on 10-24 at 01:44Z and again near 07:00Z the release owner (session 01a10810) corrected d4's "every gate is green" report, because
  * runs read staging_deploy_passed on 3b0fcfee0b as release clearance while its full verify, run 40067724892, had failed.
+ * Incident: on 11-04 at 16:23Z the precheck named staging 4b18f07022 promotable from green checks alone, while it held c5fba790fe, whose Median
+ * engagement sort timed out on prod, without the revert 92350627ab. The judge now runs promote-preflight.mjs harmMiss over its HARM_FIXES list first.
  */
 
 export const REPO = "sieu-n/auto-sns-agent";
@@ -301,7 +303,7 @@ export function promotableFlags(candidates: readonly Candidate[] | undefined, ve
     const newer = refused.length ? `; newer staging shas are not promotable: ${refused.map(candidateWords).join("; ")}` : "";
     flagged.push({ at: now, kind: "promotable", item: passing.sha,
       excerpt: `promotable: ${short(passing.sha)} is the newest promotable ${where}: it has a successful ${DEPLOY_STATUS} status and its full verify` +
-        `${passing.verifyRun ? `, run ${passing.verifyRun},` : ""} passes promote.yml's critical set${newer}` });
+        `${passing.verifyRun ? `, run ${passing.verifyRun},` : ""} passes promote.yml's critical set, and it holds no harmful commit of HARM_FIXES without its fix${newer}` });
     return flagged;
   }
   const newest = newestDecided(probes);
@@ -348,6 +350,8 @@ export interface PromoteCi {
   stagingCheckMiss(sha: string, check: (CiRun & { jobs?: unknown[] }) | null, what: string, flags: Record<string, boolean>): string | null;
   scopeOf(paths: string[]): Record<string, boolean>;
   changedPaths(io: { gitRaw: GitRaw }, base: string, head: string): string[];
+  harmMiss(git: GitRaw, target: string): string | null;
+  fetchLandHeads(git: GitRaw, target: string, staging: string): void;
 }
 
 /** auto-sns-agent's own scripts/ci modules the verify judge runs, loaded from its checkout. */
@@ -359,13 +363,18 @@ export async function loadPromoteCi(repo = AUTO_SNS): Promise<PromoteCi> {
 export const gitIn = (repo: string): GitRaw => (...args) =>
   execFileSync("git", args, { cwd: repo, encoding: "utf8", maxBuffer: Infinity, stdio: ["ignore", "pipe", "pipe"] });
 
-/** The verify judge promote.yml's gate and the release owner's preflight use: the deploy scope of main..sha (deploy-staging.mjs), the sha's full
- *  verify with its jobs and turbo task lines (release-evidence.mjs), and stagingCheckMiss over promoteJudge (promote-preflight.mjs,
- *  promote-critical.mjs). The checkout fetches staging and main only when it lacks a sha the diff needs. */
+/** The judge promote.yml's gate and the release owner's preflight use: first promote-preflight.mjs harmMiss, which refuses a sha that holds a
+ *  harmful commit of its HARM_FIXES list through a land's Land-From without every fix, then the deploy scope of main..sha (deploy-staging.mjs),
+ *  the sha's full verify with its jobs and turbo task lines (release-evidence.mjs), and stagingCheckMiss over promoteJudge (promote-preflight.mjs,
+ *  promote-critical.mjs). The checkout fetches staging and main only when it lacks a sha the diff needs, and origin's land-from tags only when it
+ *  lacks a Land-From head. */
 export function verifyJudge(ci: PromoteCi, read: GhRead, git: GitRaw): VerifyJudge {
   const has = (sha: string) => { try { git("cat-file", "-e", `${sha}^{commit}`); return true; } catch { return false; } };
   return async (sha, mainSha) => {
     if (!has(sha) || !has(mainSha)) git("fetch", "--quiet", "origin", "staging", "main");
+    ci.fetchLandHeads(git, sha, sha);
+    const harm = ci.harmMiss(git, sha);
+    if (harm) return { miss: harm };
     const flags = ci.scopeOf(ci.changedPaths({ gitRaw: git }, mainSha, sha));
     const check = await ci.stagingCheckOf(read, sha);
     const judged = check?.status === "completed" && check.conclusion !== "success" ? { ...check, jobs: await ci.jobsOf(read, check) } : check;
