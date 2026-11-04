@@ -154,6 +154,8 @@ Log hits are keyword matches, and logs mention CI and git in normal work, so rea
 12. A sieun-pi commit is live at once through the `~/.prime/agent/skills` symlinks.
 13. Never push either repo, and never pass `--allow-shared`.
 14. After the commit lands, set the class to `fixed` with `fixCommit`, `fixedAt`, and `watchUntil` 7 days out.
+15. Every fix commit, a fix job's included, carries one `Dream-class: <slug>` trailer line per class, so put it in the fix job's brief, and the precheck takes the newer of `fixedAt` and that commit as the class's fix time.
+16. On 2026-11-04 sieun-pi 76bd7a2f fixed dream_second_writes at 18:16Z with no dream run alive to copy it into the ledger, and mistakes_back read 1 for 3 runs until a run fixed the row by hand.
 
 ## Memory moves
 

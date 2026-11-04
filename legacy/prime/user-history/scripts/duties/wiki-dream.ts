@@ -12,7 +12,8 @@ import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shar
  * - the wiki facts come from `node apps/wiki/scripts/wiki-health.mjs --since <last run>` in this sieun-pi checkout, the wiki engine's home,
  *   which reads the pages from the content root in ~/.config/sieun-pi/wiki.json;
  * - the mistake signal comes from the owner corrections ledger and the continual-harness memories and refinements made since the last run;
- * - the duty's own ledger says which duplicate pairs were judged and which mistake classes are open, fixed or back;
+ * - the duty's own ledger says which duplicate pairs were judged and which mistake classes are open, fixed or back, and a commit's
+ *   `Dream-class: <slug>` trailer moves its class's fix time up when no dream run copied that fix into the ledger;
  * - `git log` in both repos says which `(wiki-dream)` commits were reverted and which code files the dream edited twice in 7 days, and the page
  *   revisions in the content root's .wiki/wiki.db say which wiki pages it edited twice, since the pages left git in b767305544 (2026-11-03);
  * - wiki-health's stale list says which pages are behind their code, both sides dated on the first-parent history of auto-sns-agent's HEAD.
@@ -140,15 +141,54 @@ export function unjudgedPairs(pairs: Health["dupPairs"], ledger: Ledger): Health
   });
 }
 
+/** The newest commit in 7 days whose `Dream-class: <slug>` trailer names a class, with its commit time. */
+export interface TrailerFix { repo: string; sha: string; at: number }
+
+/**
+ * The `git log` arguments that list the commits of the last 7 days carrying a `Dream-class:` trailer, on the first-parent history of `ref`.
+ * The output is one `%x1e<sha>%x1f<commit time>%x1f<slugs split by %x1d>` record per commit.
+ */
+export function trailerArgs(repo: string, ref: string, since: string): string[] {
+  return ["-C", repo, "log", ref, "--first-parent", `--since-as-filter=${since}`, "--fixed-strings", "--regexp-ignore-case", "--grep=Dream-class:",
+    "--format=%x1e%H%x1f%ct%x1f%(trailers:key=Dream-class,valueonly,separator=%x1d)"];
+}
+
+/** Adds the trailer commits of `trailerArgs` output to `fixes`, keeping the newest commit per class slug. */
+export function parseTrailers(repo: string, text: string, fixes: Map<string, TrailerFix>): Map<string, TrailerFix> {
+  for (const record of text.split("\x1e").map(block => block.trim()).filter(Boolean)) {
+    const [sha = "", time = "", slugs = ""] = record.split("\x1f");
+    const at = Number(time) * 1000;
+    if (!sha || !(at > 0)) continue;
+    for (const slug of slugs.split("\x1d").map(value => value.trim()).filter(Boolean)) {
+      if (!((fixes.get(slug)?.at ?? 0) >= at)) fixes.set(slug, { repo, sha, at });
+    }
+  }
+  return fixes;
+}
+
+/**
+ * A class's current fix: the newer of the ledger's `fixedAt` and its newest `Dream-class` trailer commit, with the commit that made it. On
+ * 2026-11-04 dream_second_writes recurred at 18:06Z and job "wiki write base version 11-05" landed its fix, sieun-pi 76bd7a2f, at 18:16:18Z,
+ * but no dream run was alive to copy that into the ledger, which still said eaca53de at 12:13Z, so mistakes_back read 1 for 3 runs.
+ */
+export function currentFix(row: LedgerClass, trailer?: TrailerFix): { at: number; iso?: string; commit?: string } {
+  const ledgerAt = ms(row.fixedAt);
+  if (trailer && !(ledgerAt >= trailer.at)) {
+    return { at: trailer.at, iso: new Date(trailer.at).toISOString().replace(".000Z", "Z"), commit: `${trailer.repo} ${trailer.sha.slice(0, 10)}` };
+  }
+  return { at: Number.isFinite(ledgerAt) ? ledgerAt : -Infinity, ...(Number.isFinite(ledgerAt) ? { iso: row.fixedAt! } : {}), ...(row.fixCommit ? { commit: row.fixCommit } : {}) };
+}
+
 /**
  * Ledger classes still open (open or reopened); the open ones the last run already had (first seen before `since`, or with no date), which
  * open_mistakes counts; classes with a recurrence in the last 7 days (`recurred`); and of those, the ones whose recurrence came after the
- * class's current fix (`back`, or any recurrence when the class has no fixedAt). A class the last run found gets one daily run to land its fix,
+ * class's current fix (`back`, or any recurrence when the class has neither a fixedAt nor a trailer commit), where `fixes` holds the
+ * `Dream-class` trailer commits (currentFix). A class the last run found gets one daily run to land its fix,
  * because a rule takes a CI probe: the 10-13 rules took 22 h from draft (10-13 17:47Z) to land (68d53dd86d, 10-14 16:07Z). On 10-18
  * slop_in_replies_and_pages recurred at 05:39Z and 06:55Z and got a new fix at 07:01Z, and owner_mac_and_machines recurred at 05:20Z and got
  * a new fix at 06:39Z, so counting every recurrence kept mistakes_back at 2 for 7 days whatever the new fixes did.
  */
-export function classStates(ledger: Ledger, now: number, since = now): {
+export function classStates(ledger: Ledger, now: number, since = now, fixes: ReadonlyMap<string, TrailerFix> = new Map()): {
   open: [string, LedgerClass][]; due: [string, LedgerClass][]; recurred: [string, LedgerClass][]; back: [string, LedgerClass][];
 } {
   const classes = Object.entries(ledger.classes ?? {});
@@ -159,7 +199,7 @@ export function classStates(ledger: Ledger, now: number, since = now): {
     open,
     due: open.filter(([, row]) => !(ms(row.firstSeen) >= since)),
     recurred,
-    back: recurred.filter(([, row]) => recent(row).some(at => !(ms(at) <= ms(row.fixedAt)))),
+    back: recurred.filter(([slug, row]) => { const fix = currentFix(row, fixes.get(slug)); return recent(row).some(at => !(ms(at) <= fix.at)); }),
   };
 }
 
@@ -495,6 +535,14 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
       { cwd: repo, timeoutMs: GIT_TIMEOUT_MS }).then(text => { commits.push(...parseGitLog(name, text)); }).catch(error => { gitOk = false; fail(`git log ${name}`, error); });
   }
 
+  // A fix commit names its class with a `Dream-class: <slug>` trailer, read on sieun-pi origin/main and the auto-sns-agent checkout's HEAD.
+  const fixes = new Map<string, TrailerFix>();
+  let trailersOk = true;
+  for (const [name, repo, ref] of [["auto-sns-agent", deps.repos.wiki, "HEAD"], ["sieun-pi", deps.repos.pi, "origin/main"]] as const) {
+    await deps.exec("git", trailerArgs(repo, ref, gitSince), { cwd: repo, timeoutMs: GIT_TIMEOUT_MS })
+      .then(text => { parseTrailers(name, text, fixes); }).catch(error => { trailersOk = false; fail(`git log ${name} Dream-class`, error); });
+  }
+
   const pageRows = deps.revisions ? await deps.revisions(gitSince).catch(error => fail("wiki.db revisions", error)) : [];
   const pagesRetouched = pageRows ? pageChurn(pageRows) : undefined;
 
@@ -521,9 +569,9 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   const unjudged = health && ledger ? unjudgedPairs(health.dupPairs, ledger) : undefined;
   metrics.dup_unjudged = unjudged?.length ?? UNMEASURED;
   metrics.memory_rules_over_glide = harness ? harness.repoFacts - glide(MEMORY_GLIDE, now) : UNMEASURED;
-  const classes = ledger ? classStates(ledger, now, since) : undefined;
+  const classes = ledger ? classStates(ledger, now, since, fixes) : undefined;
   metrics.open_mistakes = classes?.due.length ?? UNMEASURED;
-  metrics.mistakes_back = classes?.back.length ?? UNMEASURED;
+  metrics.mistakes_back = trailersOk ? classes?.back.length ?? UNMEASURED : UNMEASURED;
   const dream = churn(commits);
   metrics.dream_reverts = gitOk ? dream.reverts.length : UNMEASURED;
   metrics.pages_retouched = gitOk && pagesRetouched ? dream.retouched.length + pagesRetouched.length : UNMEASURED;
@@ -545,8 +593,9 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   const slices: FlaggedSlice[] = [...errors];
   // Only a class back after its current fix is work: one that came back before it already has that fix, and recurred_7d counts it.
   for (const [slug, row] of classes?.back ?? []) {
-    const when = row.fixedAt ? `after its current fix (${row.fixedAt})` : "with no fix date";
-    slices.push({ kind: "recurred", item: slug, excerpt: clip(`${row.title ?? slug} came back on ${(row.recurred ?? []).slice(-1)[0]}, ${when} ${row.fixCommit ?? "?"}; skill ${row.skill ?? "?"}`) });
+    const fix = currentFix(row, fixes.get(slug));
+    const when = fix.iso ? `after its current fix (${fix.iso})` : "with no fix date";
+    slices.push({ kind: "recurred", item: slug, excerpt: clip(`${row.title ?? slug} came back on ${(row.recurred ?? []).slice(-1)[0]}, ${when} ${fix.commit ?? "?"}; skill ${row.skill ?? "?"}`) });
   }
   for (const commit of dream.reverts) slices.push({ kind: "revert", item: `${commit.repo}:${commit.sha.slice(0, 10)}`, excerpt: clip(commit.subject) });
   for (const row of pagesRetouched ?? []) slices.push({ kind: "retouched", item: row.file, excerpt: `${row.file} changed by ${row.revisions} wiki-dream page revisions in 7 days` });
