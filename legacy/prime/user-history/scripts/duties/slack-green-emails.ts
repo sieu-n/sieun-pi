@@ -39,7 +39,7 @@ export const NUDGE_CAP = 2;
 export const TOKEN_EMAIL_REMOVED_AT = Date.parse("2026-10-14T01:22:18Z");
 
 export type Template = "connect_reminder" | "setup_link" | "token_expired" | "trial_d7" | "trial_d2" | "trial_last_day" | "trial_d0" |
-  "trial_idle" | "trial_followup" | "signup_confirm" | "password_reset" | "other";
+  "trial_charge" | "trial_idle" | "trial_followup" | "signup_confirm" | "password_reset" | "other";
 /**
  * Subjects as sent today: the connect reminder from PR #225, the setup link from the onboarding route, the rest from the Resend log.
  * PR #285 gave the setup link a subject naming the saved workspace and hours, and added SETUP_EMAIL_PERSONAL_COPY subjects that the setup link
@@ -66,6 +66,11 @@ const SUBJECTS: [Template, RegExp][] = [
   ["trial_d0", /^Slack Green stopped keeping .+ green$/],
   ["trial_d0", /^Your Slack Green trial ended before Slack was connected$/],
   ["trial_idle", /^Slack Green isn't keeping .+ green$/],
+  // PR #407 (v1.16.295, 2026-10-30): the last-day and trial-ended emails for a connected user say Slack shows them away again.
+  ["trial_last_day", /^Tomorrow Slack shows you away again in .+$/],
+  ["trial_d0", /^Slack shows you away again in .+$/],
+  // _charge_draft: the d2 reminder of the first charge for a Pro plan in its Stripe trial. It ignores the marketing opt-out by design.
+  ["trial_charge", /^Your Slack Green trial ends on .+$/],
   ["signup_confirm", /^Confirm Your Signup$/],
   ["password_reset", /^Reset Your Password$/],
 ];

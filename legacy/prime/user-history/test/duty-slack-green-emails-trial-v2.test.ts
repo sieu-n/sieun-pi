@@ -17,6 +17,9 @@ test("every v2 trial subject maps to a trial template", () => {
   assert.equal(templateOf("Slack Green isn't keeping Acme green"), "trial_idle");
   assert.equal(templateOf("50% off your first month of Slack Green"), "trial_followup");
   assert.equal(templateOf("Connect Slack to keep Acme green"), "setup_link");
+  assert.equal(templateOf("Tomorrow Slack shows you away again in Copec Flux"), "trial_last_day");
+  assert.equal(templateOf("Slack shows you away again in Acme"), "trial_d0");
+  assert.equal(templateOf("Your Slack Green trial ends on November 6"), "trial_charge");
 });
 
 test("the never-connected trial email is wrong after the user connected Slack, and marketing after an opt-out", () => {
