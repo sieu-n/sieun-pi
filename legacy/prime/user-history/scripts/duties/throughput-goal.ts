@@ -90,6 +90,18 @@ export const WAIT_LINE_S = 300;
  * outbox over it whose oldest write waits under WAIT_LINE_S is a backfill, as above, and does not count.
  */
 export const QUEUE_LINE = 80_000;
+/**
+ * Kafka topics that are capped buffers: a group's lag on one counts only when the topic's fullest partition passes this many bytes, which means
+ * Kafka is not deleting at its cap. instagram.crawl_counts (crawler-v3 bus/topics/instagram.py) holds census post-count jobs that run only on idle
+ * census slots, so it fills by design, and past 1 GiB a partition (bus/tuning.py TOPIC_RETENTION_BYTES) or 7 days Kafka drops the oldest jobs and
+ * each dropped account queues its job again at its next census read. The line is the 9/8 of the cap a partition holds before its closed segments go.
+ */
+// measured: prod 11-04 20:3xZ, crawl_counts census-crawl lag 4.18M of 5.19M retained in a 34.3 MB fullest partition (about 158 B a job on disk, so the cap holds over 150M jobs, not 63M at 405 B); instagram.observed peaked at 9.66 GB on its 8 GiB cap (9/8)
+export const CAPPED_TOPICS: Readonly<Record<string, number>> = { "instagram.crawl_counts": (9 / 8) * 1024 ** 3 };
+const cappedTopic = (q: Queue): string | undefined => {
+  const topic = q.family === "kafka lag" ? q.name.split("/")[0] : undefined;
+  return topic !== undefined && topic in CAPPED_TOPICS ? topic : undefined;
+};
 
 /**
  * The census Postgres writer's worst lag over 24 h, read only in the 5-minute slots where Instagram profiles read at p826's rate or more and no
@@ -316,7 +328,9 @@ export function grafanaApi(fetcher: typeof fetch, auth: string, signal: AbortSig
   };
 }
 
-export interface Queue { family: string; name: string; now: number; ago6h: number | null; slope6h: number | null; low?: number | null; low6h?: number | null; wait?: number | null }
+export interface Queue { family: string; name: string; now: number; ago6h: number | null; slope6h: number | null; low?: number | null; low6h?: number | null; wait?: number | null;
+  /** A capped Kafka topic's fullest partition in bytes, null when the gauge answered none (CAPPED_TOPICS). */
+  bytes?: number | null }
 export interface CensusWindow { jobs: number; bad: number; att: number; okAtt: number; wire: number }
 export interface ProxyLane { lane: string; wire: number }
 export interface WireDay { day: number; wire: number; updated: number }
@@ -393,7 +407,11 @@ const waits = (q: Queue): boolean => q.wait == null || q.wait > WAIT_LINE_S;
 export const grew = (q: Queue): boolean =>
   q.ago6h !== null && q.slope6h !== null && q.slope6h > 0 && rose(q.now, q.ago6h) && (q.low == null || q.low6h == null || rose(q.low, q.low6h)) && waits(q);
 export const standing = (q: Queue): boolean => (q.low ?? q.now) > QUEUE_LINE && waits(q);
-export const backlogged = (q: Queue): boolean => standing(q) || grew(q);
+const overCap = (q: Queue, topic: string): boolean => q.bytes == null || q.bytes > CAPPED_TOPICS[topic]!;
+export const backlogged = (q: Queue): boolean => {
+  const topic = cappedTopic(q);
+  return topic ? overCap(q, topic) : standing(q) || grew(q);
+};
 
 const count = (n: number): string => n >= 1e6 ? `${round1(n / 1e6)}M` : n >= 1e4 ? `${Math.round(n / 1e3)}k` : String(Math.round(n));
 
@@ -509,7 +527,7 @@ export function report(d: ThroughputData, dutyMetrics: readonly DutyMetric[]): P
     const backlogs = d.queues.filter(backlogged);
     metrics.ig_queues_growing_6h = backlogs.length;
     const largest = [...d.queues].sort((a, b) => b.now - a.now).slice(0, 3);
-    const trend = (q: Queue): string => `${q.family} ${q.name} ${count(q.now)}${q.ago6h === null ? " (no 6 h history)" : ` from ${count(q.ago6h)} 6 h ago`}${q.wait == null ? "" : `, oldest write ${Math.round(q.wait)} s`}`;
+    const trend = (q: Queue): string => `${q.family} ${q.name} ${count(q.now)}${q.ago6h === null ? " (no 6 h history)" : ` from ${count(q.ago6h)} 6 h ago`}${q.wait == null ? "" : `, oldest write ${Math.round(q.wait)} s`}${q.bytes === undefined ? "" : `, fullest partition ${q.bytes === null ? "not read" : `${round1(q.bytes / 1024 ** 3)} GiB`} against its ${round1(CAPPED_TOPICS[q.name.split("/")[0]!]! / 1024 ** 3)} GiB line`}`;
     flagged.push({ at: d.now, kind: "backlog", excerpt: `${backlogs.length} of ${d.queues.length} Instagram queues backlog, over ${count(QUEUE_LINE)} at their 30-minute low or grown over 6 h${backlogs.length ? `: ${backlogs.map(trend).join("; ")}` : ""}. Largest: ${largest.map(trend).join("; ")}.` });
   }
   if (d.panels) {
@@ -720,7 +738,10 @@ export async function measure(query: DsQuery | null, api: GrafanaApi | null, aut
             ...(waitS ? { wait: byKey(waitS).get(name) ?? null } : {}) });
         }
       }
-      return out;
+      if (!out.some(cappedTopic)) return out;
+      const fill = new Map((await promInstant(query, PROM.prod, `max by (topic) (crawler_v3_bus_topic_fullest_partition_bytes{world="prod",topic=~"${Object.keys(CAPPED_TOPICS).join("|")}"})`))
+        .map(s => [s.labels.topic ?? "", s.value]));
+      return out.map(q => { const topic = cappedTopic(q); return topic ? { ...q, bytes: fill.get(topic) ?? null } : q; });
     }),
     step("refresh age", async (): Promise<RefreshSample[]> => {
       const pages = num((await sqlRows(query, PG.prod, REFRESH_PAGES_SQL))[0]?.pages);

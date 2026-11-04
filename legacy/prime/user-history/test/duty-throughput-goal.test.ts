@@ -189,6 +189,14 @@ test("No data panels under prod's deploy lock are left out of crawler_panels_bla
   assert.equal(report(base({ panels }), METRICS).metrics.crawler_panels_blank, 3);
 });
 
+test("a capped Kafka buffer counts only past its byte cap, however its lag grows (11-04 20:3xZ, instagram.crawl_counts at 4M)", () => {
+  const counts = { family: "kafka lag", name: "instagram.crawl_counts/instagram-census-crawl", now: 4_176_779, ago6h: 0, slope6h: 200, low: 4_100_000, low6h: 0, bytes: 34_271_064 };
+  assert.equal(backlogged(counts), false);
+  assert.equal(backlogged({ ...counts, bytes: 1.5 * 1024 ** 3 }), true);
+  assert.equal(backlogged({ ...counts, bytes: null }), true);
+  assert.equal(report(base({ queues: [counts] }), METRICS).metrics.ig_queues_growing_6h, 0);
+});
+
 test("ig_queues_growing_6h dates a growing or unread queue count at this run and gives no lastEventAt at 0 (10-20 07:40Z d9 push)", () => {
   const videos = { family: "kafka lag", name: "crawl.videos/video-writers", now: 652_138, ago6h: 447_386, slope6h: 20, low: 532_587, low6h: 437_735 };
   const run = (queues: ThroughputData["queues"], errors: ThroughputData["errors"] = []) => report(base({ errors, ...queues ? { queues } : {} }), METRICS);
