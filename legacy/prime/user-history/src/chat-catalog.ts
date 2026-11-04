@@ -16,6 +16,7 @@ import { unreadCount } from "./shared/chat-feed.ts";
 import type { Chats } from "./chats.ts";
 import type { ChatReadState } from "./chat-read-state.ts";
 import type { OriginResolver, ThreadOrigin, ThreadOrigins } from "./thread-origin.ts";
+import { type IndexChange, SessionIndex } from "./session-index.ts";
 import { treeWakeIndex, type Wake } from "./wakes.ts";
 import { mirrorPath, remotePath, type HostCatalogs } from "./host-catalogs.ts";
 import { SessionPeer } from "./session-peer.ts";
@@ -1055,6 +1056,12 @@ export class Catalog {
 
   /** The rows of this box's copy and the other boxes' copies, as the catalog reads them. */
   private index(rows: readonly SessionSummary[]): void {
+    if (this.incrementalIndex && this.sessionIndex.ready) {
+      const change = this.sessionIndex.update(this.segments(rows));
+      if (change) this.commitIndex(change);
+      else this.indexRuns++;
+      return;
+    }
     const steps = this.indexSteps(rows);
     while (!steps.next().done);
   }
@@ -1091,65 +1098,62 @@ export class Catalog {
    * BREATHE_ROWS rows is one step, so a sliced run reads the clock at most once per that many rows.
    */
   private *indexSteps(rows: readonly SessionSummary[]): Generator<void, void, boolean | undefined> {
-    const next = new Map<string, SessionSummary>();
-    const children: SessionSummary[] = [];
-    const all = this.hosts ? [...rows, ...this.hosts.rows()] : rows;
-    const indexed = new Set<SessionSummary>();
-    for (let at = 0; at < all.length; at++) {
-      if (at % BREATHE_ROWS === 0 && at > 0) yield;
-      const row = all[at]!;
-      indexed.add(row);
-      if (!isTopLevel(row)) { children.push(row); continue; }
-      const existing = next.get(row.sessionId);
-      // A session on two boxes (a copy, or one moving between them) shows as the box whose daemon runs it, this box's row when both or neither do.
-      if (!existing || (row.activeSessionId !== undefined && existing.activeSessionId === undefined)) next.set(row.sessionId, row);
-      else if (row.activeSessionId !== undefined && !this.duplicates.has(row.sessionId)) {
-        this.duplicates.add(row.sessionId);
-        process.stderr.write(`catalog: session ${row.sessionId.slice(0, 8)} runs on this box and on ${this.hosts?.hostOf(row.sessionId)?.name ?? "another box"}; the list shows this box's\n`);
-      }
-    }
-    const childById = new Map<string, SessionSummary>();
-    for (let at = 0; at < children.length; at++) {
-      if (at % BREATHE_ROWS === 0 && at > 0) yield;
-      const row = children[at]!;
-      const existing = childById.get(row.sessionId);
-      if (!existing || (existing.activeSessionId === undefined && row.activeSessionId !== undefined)) childById.set(row.sessionId, row);
-    }
+    const build = yield* this.sessionIndex.build(this.segments(rows));
     const applied = yield;
     if (applied === false) return;
+    this.commitIndex(this.sessionIndex.adopt(build));
+  }
+
+  /** This box's rows, then the other boxes' rows, each as its copy lists them. */
+  private segments(rows: readonly SessionSummary[]): readonly (readonly SessionSummary[])[] {
+    return this.hosts ? [rows, this.hosts.rows()] : [rows];
+  }
+
+  /** Takes in what an index changed: the next row stage's marks, this box's ids, and the subagents handed on when one changed. */
+  private commitIndex(change: IndexChange): void {
     this.indexRuns++;
-    this.markIndexed(indexed, childById);
+    this.markIndexed(change);
     ({ own: this.own, ownActive: this.ownActive } = this.ownNow());
-    this.summaries = next;
-    this.childSummaries = children;
-    this.childById = childById;
+    this.summaries = this.sessionIndex.summaries;
+    this.childById = this.sessionIndex.childById;
+    this.indexedRows = this.sessionIndex.rows;
+    if (!change.childrenChanged) return;
+    const children = this.childSummaries = this.sessionIndex.children;
     const roster = rosterChildren(children, this.cuts);
     void Promise.resolve().then(() => this.chats.roster?.(roster)).catch(() => {});
     void this.readCuts();
   }
+
+  /** The rows every index reads (`SessionIndex`); `incrementalIndex` false builds it whole each time, as a test's reference does. */
+  private readonly sessionIndex = new SessionIndex(isTopLevel, row => {
+    if (this.duplicates.has(row.sessionId)) return;
+    this.duplicates.add(row.sessionId);
+    process.stderr.write(`catalog: session ${row.sessionId.slice(0, 8)} runs on this box and on ${this.hosts?.hostOf(row.sessionId)?.name ?? "another box"}; the list shows this box's\n`);
+  });
+  incrementalIndex = true;
+  /** How many rows the last index looked at past the identity check (`SessionIndex.visited`). */
+  get rowsIndexed(): number { return this.sessionIndex.visited; }
 
   /**
    * Marks for the next row stage (`pending`) the session of each daemon row object, of any box, that this index reads and the last did not, or
    * the last read and this one does not: a changed, new or gone row. A subagent row marks each session above it, by its parent in this index
    * and in the last, since their subtrees and pulses read it.
    */
-  private markIndexed(indexed: Set<SessionSummary>, childById: ReadonlyMap<string, SessionSummary>): void {
-    const was = this.indexedRows;
-    this.indexedRows = indexed;
+  private markIndexed(change: IndexChange): void {
     if (this.pendingAll) return;
-    const wasChildren = this.childById;
+    const now = this.childById;
     const mark = (row: SessionSummary) => {
       if (isTopLevel(row)) { this.pending.add(row.sessionId); return; }
       const seen = new Set<string>();
-      for (const parents of [childById, wasChildren]) {
-        for (let parent = row.parentSessionId; parent && !seen.has(parent); parent = parents.get(parent)?.parentSessionId) {
+      for (const parentOf of [(id: string) => now.get(id), change.wasChild]) {
+        for (let parent = row.parentSessionId; parent && !seen.has(parent); parent = parentOf(parent)?.parentSessionId) {
           seen.add(parent);
-          if (!childById.has(parent) && !wasChildren.has(parent)) this.pending.add(parent);
+          if (!now.has(parent) && !change.wasChild(parent)) this.pending.add(parent);
         }
       }
     };
-    for (const row of indexed) if (!was.has(row)) mark(row);
-    for (const row of was) if (!indexed.has(row)) mark(row);
+    for (const row of change.added) mark(row);
+    for (const row of change.removed) mark(row);
   }
 
   /** Reads the cut ends of children that changed since the last read, one pass at a time, and hands the roster on again when one moved. */
@@ -1775,9 +1779,7 @@ export class Catalog {
   forget(sessionId: string): void {
     this.settle();
     // The next index lists the row again as new, as the projection after a forget did before the row stage kept its rows.
-    const row = this.summaries.get(sessionId);
-    if (row) this.indexedRows.delete(row);
-    this.summaries.delete(sessionId);
+    this.sessionIndex.forget(sessionId);
     this.pending.add(sessionId);
     this.inputs++;
   }

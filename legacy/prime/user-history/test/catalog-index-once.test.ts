@@ -35,19 +35,24 @@ async function catalog(t: TestContext) {
 
 test("ten copy changes between two projections index the rows once, and the projection after them has the last one", async t => {
   const { catalog: c, handed } = await catalog(t);
-  for (let n = 0; n < 10; n++) c.patchRow("s2", { sessionName: `renamed ${n}` });
+  for (let n = 0; n < 10; n++) { c.patchRow("s2", { sessionName: `renamed ${n}` }); c.patchRow("c1", { sessionName: `job renamed ${n}` }); }
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(handed, [], "no change indexed the rows before a reader needed them");
   const rows = await c.rows();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(rows.find(row => row.id === "s2")?.name, "renamed 9");
   assert.deepEqual(handed, [1], "the projection indexed the rows once and handed the roster on once");
+  // The roster lists each chat's subagents, so a change of top-level rows alone hands nothing on (11-04, `SessionIndex`).
+  c.patchRow("s2", { sessionName: "renamed again" });
+  assert.equal((await c.rows()).find(row => row.id === "s2")?.name, "renamed again");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(handed, [1]);
 });
 
 test("a copy change with no reader still hands the roster on within emitGapMs", async t => {
   const { catalog: c, handed } = await catalog(t);
   c.emitGapMs = 20;
-  c.patchRow("s2", { sessionName: "renamed" });
+  c.patchRow("c1", { sessionName: "renamed" });
   for (let waited = 0; !handed.length && waited < 1000; waited += 10) await new Promise(resolve => setTimeout(resolve, 10));
   assert.deepEqual(handed, [1]);
 });
