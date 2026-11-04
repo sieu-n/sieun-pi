@@ -384,6 +384,15 @@
         "1830bf19651"
       ],
       "why": "AI Chat list 'tool calling 막 다 길게 뜨는거, AI Chat라고 하는 왼쪽 위 title, chat history needs tag/hover UI, ttile should be more intelligently generated, Chat icon remove does nothing. OUtputs and Plan is kinda too rigid': the shared-components line was already in the skill, 4502b69e78b folds tool steps to one line, b42a158f9db gives history rows shared Tag chips and a delete that sticks, 59cc4b3e778 and 251bca73f14 write short unique titles, 38680d45f97 and a84b8e9c40c make the plan a light checklist and Outputs a pill, and 1830bf19651 re-freezes Staging on chat/openui (p421)."
+    },
+    {
+      "at": "2026-11-03T05:28:21.147Z",
+      "commits": [
+        "de52555c8a0",
+        "3dab4851c",
+        "c9afdd07a"
+      ],
+      "why": "Inbox sidebar pick 'Folded channels 처럼 하고, folded indicator는 보여줘야지, 그리고 unread 숫자랑 compose 버튼은 consistent하게, like Folders only': de52555c8a0 writes the one-row-one-way line (count, fold mark and compose pen in one spot on every row of a kind) into the skill, 3dab4851c forks inbox/folded-final on the shared SidebarRow with a fixed muted fold mark, one count column and hover pens in the count's spot, and c9afdd07a puts Staging inbox on it; walked in box Chrome at 1440 on 11-03."
     }
   ]
 }
