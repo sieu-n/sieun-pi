@@ -3,9 +3,9 @@
  * the thread ids that belong to it, `rooms.json` with each room and the feed cursor per agent, and one append-only post log per room under
  * `rooms/`. The server (`agents.ts`, `rooms.ts`) and the migration (`migrate.ts`) both read and write them through this file only.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentId, ImageRef, Ms } from "../web/src/lib/api/types.ts";
+import { appendLater, readLatest, writeJsonLater, written } from "./disk.ts";
 import { readJson, writeJson } from "./store.ts";
 
 export type RoomId = string;
@@ -214,7 +214,7 @@ export class AgentStore {
   }
   saveRooms(): void {
     this.version += 1;
-    writeJson(join(this.dir, "rooms.json"), this.rooms);
+    writeJsonLater(join(this.dir, "rooms.json"), this.rooms);
   }
   /** `test-sends.json`: the work-thread inputs that were a job's test send, which pi-history's search reads as the job's too. */
   saveTestSends(entries: { thread: string; entry: number; by: string; reason: string }[]): void {
@@ -282,10 +282,10 @@ export class AgentStore {
     let list = this.posts.get(room);
     if (list) return list;
     list = [];
-    const file = this.logFile(room);
-    if (existsSync(file)) {
+    const text = readLatest(this.logFile(room));
+    if (text !== undefined) {
       const byId = new Map<string, RoomPost>();
-      for (const line of readFileSync(file, "utf8").split("\n")) {
+      for (const line of text.split("\n")) {
         if (!line.trim()) continue;
         let parsed: LogLine;
         try {
@@ -323,16 +323,20 @@ export class AgentStore {
     const seq = (list.at(-1)?.seq ?? 0) + 1;
     const post: RoomPost = { ...input, id: `p${seq}`, seq };
     list.push(post);
-    mkdirSync(join(this.dir, "rooms"), { recursive: true });
-    appendFileSync(this.logFile(input.room), `${JSON.stringify({ t: "post", post } satisfies LogLine)}\n`);
+    appendLater(this.logFile(input.room), `${JSON.stringify({ t: "post", post } satisfies LogLine)}\n`);
     this.onPost(post);
     return { post, created: true };
   }
 
   set(post: RoomPost, patch: PostPatch): void {
     Object.assign(post, patch);
-    appendFileSync(this.logFile(post.room), `${JSON.stringify({ t: "set", post: post.id, patch } satisfies LogLine)}\n`);
+    appendLater(this.logFile(post.room), `${JSON.stringify({ t: "set", post: post.id, patch } satisfies LogLine)}\n`);
     this.onPost(post);
+  }
+
+  /** Settles once every post and change queued for the room's log so far is on disk (disk.ts). */
+  written(room: RoomId): Promise<void> {
+    return written(this.logFile(room));
   }
 
   private logFile(room: RoomId): string {

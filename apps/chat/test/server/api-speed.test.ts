@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { apiSpeed, finding } from "../../scripts/duties/api-speed.ts";
-import { RequestLog, type RequestTiming } from "../../server/request-log.ts";
+import { LoopStalls, RequestLog, type RequestTiming } from "../../server/request-log.ts";
 import { start } from "./helpers.ts";
 
 const dirs: string[] = [];
@@ -53,6 +53,31 @@ test("the server logs each /api request by route and takes the client's waits", 
     assert.deepEqual(client.map(line => [line.r, line.p, line.ms, line.net, line.via]), [
       ["/api/c/:id/items", `/api/c/${room}/items`, 420, 12, "local"], ["/api/search", "/api/search", 90, undefined, "local"], ["/api/rooms", "/api/rooms", 30, 4, "tailnet"],
     ]);
+  } finally {
+    await chat.close();
+  }
+});
+
+test("a server line splits its time into the body wait, the handler and the longest event-loop stall", async () => {
+  const stalls = new LoopStalls();
+  try {
+    const since = performance.now();
+    await new Promise(resolve => setTimeout(resolve, 40));
+    const blocked = performance.now();
+    while (performance.now() - blocked < 150) { /* holds the loop */ }
+    await new Promise(resolve => setTimeout(resolve, 40));
+    assert.ok(stalls.longest(since) >= 100, `a 150 ms block reads as a stall, got ${stalls.longest(since)}`);
+  } finally {
+    stalls.stop();
+  }
+  const dataDir = tempDir();
+  const chat = await start({ dataDir });
+  try {
+    const room = (await chat.get("/api/sidebar")).dms[0].id;
+    await chat.send("POST", `/api/c/${room}/read`, {});
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const read = lines(dataDir).find(line => line.src === "server" && line.r === "/api/c/:id/read");
+    assert.ok(read?.body !== undefined && read.run !== undefined && read.body + read.run <= read.ms + 0.2, JSON.stringify(read));
   } finally {
     await chat.close();
   }

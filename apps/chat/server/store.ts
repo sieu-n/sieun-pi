@@ -2,8 +2,9 @@
  * The chat server's own small state in its data dir: thread kinds and read marks. Agents and every room (DMs, channels and Solo rooms) with
  * their post logs are agent-store.ts, duties and check-ins boards.ts. pi-host owns every thread's entries; nothing here copies them. One process writes these files.
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { readLatest, writeJsonLater } from "./disk.ts";
 import type { AgentId, ConversationId, ThinkingLevel } from "../web/src/lib/api/types.ts";
 
 export interface ThreadMeta { kind: "chat" | "job"; parent?: AgentId }
@@ -22,7 +23,7 @@ export function writeJson(path: string, value: unknown): void {
 }
 export function readJson<T>(path: string, fallback: T): T {
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as T;
+    return JSON.parse(readLatest(path) ?? "") as T;
   } catch {
     return fallback;
   }
@@ -41,7 +42,7 @@ export class Store {
     return readJson<T>(join(this.dir, "cache", `${name}.json`), fallback);
   }
   saveCache(name: string, value: unknown): void {
-    writeJson(join(this.dir, "cache", `${name}.json`), value);
+    writeJsonLater(join(this.dir, "cache", `${name}.json`), value);
   }
 
   /** Counts the saves of state.json; what reads the thread kinds keys its caches on it. */
@@ -49,7 +50,7 @@ export class Store {
 
   saveState(): void {
     this.version += 1;
-    writeJson(join(this.dir, "state.json"), this.state);
+    writeJsonLater(join(this.dir, "state.json"), this.state);
   }
 
   imagePath(name: string): string {

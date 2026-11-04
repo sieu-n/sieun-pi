@@ -13,14 +13,13 @@
  */
 import type { IndexRead } from "../../../../packages/pi-host/src/durable/index-db.ts";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import WebSocket from "ws";
 import {
   AGENT_RELAY_PROTOCOL, parseFrame, type BoxInfo, type ChatHttpArgs, type ChatHttpResult, type FeedRow, type InstructionsAnswer, type RelayFrame, type ServerFrame,
   type ServerOp,
 } from "../../../../components/prime-relay/agents/protocol.ts";
-import { writeJson } from "../store.ts";
+import { readLatest, writeJsonLater } from "../disk.ts";
 import {
   HostAway, type CreateOptions, type DurableEvent, type DurableThread, type EntriesQuery, type EntryRecord, type Host, type Ping,
   type SubmissionRecord, type Submitted, type SubmitInput, type Ticket, type TreeNode, type UsageRange, type UsageTotal,
@@ -146,15 +145,14 @@ export class RelayHost implements Host {
   /** The seq of the newest feed row this server acked for the box. */
   cursor(): number {
     try {
-      return Number((JSON.parse(readFileSync(this.cursorFile, "utf8")) as { feedAfter?: number }).feedAfter) || 0;
+      return Number((JSON.parse(readLatest(this.cursorFile) ?? "") as { feedAfter?: number }).feedAfter) || 0;
     } catch {
       return 0;
     }
   }
 
   private saveCursor(seq: number): void {
-    mkdirSync(join(this.options.dataDir, "relay"), { recursive: true });
-    writeJson(this.cursorFile, { feedAfter: seq });
+    writeJsonLater(this.cursorFile, { feedAfter: seq });
   }
 
   /** Starts dialing; the client redials with backoff until `close`. */

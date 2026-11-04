@@ -14,6 +14,7 @@ import { runStamp } from "../duty-run.ts";
 import { createEntry, EntryExists, writeBrief } from "../agent-folder.ts";
 import { AgentStore, type RoomRow as RoomsRow } from "../agent-store.ts";
 import { fixtureFolders } from "../config.ts";
+import { flushSync } from "../disk.ts";
 import { writeJson, type StateFile } from "../store.ts";
 
 export const FIXTURE_IDS = {
@@ -383,4 +384,5 @@ export function seedFixture(host: FixtureHost, dataDir: string, now = Date.now()
     }
   };
   if (host.wordMs > 0) setTimeout(() => void stream(), 500);
+  flushSync();
 }

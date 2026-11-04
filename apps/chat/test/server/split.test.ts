@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { applySplit, dryRunAgents, readOnlyHost, renderReport, splitReport } from "../../scripts/split-agents.ts";
 import { AgentStore } from "../../server/agent-store.ts";
+import { flushSync } from "../../server/disk.ts";
 import { DEFAULT_MODEL, fixtureFolders } from "../../server/config.ts";
 import { FIXTURE_AGENTS, FIXTURE_IDS, seedFixture } from "../../server/fixture/seed.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
@@ -41,6 +42,7 @@ function world() {
     room: record.room, author: "owner", text: "Is the cutover still on for Friday?", images: [], at: Date.now(), requestId: "split-test-sending",
     delivery: { target: record.id, state: "sending", attempts: 2, at: Date.now(), requestId: "d:p9:x" },
   });
+  flushSync();
   const agents = dryRunAgents(dataDir, host, { box: "test-box", agentsDir: fixtureFolders(dataDir).agentsDir });
   return { dataDir, host, agents, record: agents.record(FIXTURE_AGENTS.harness)!, close: () => rmSync(dataDir, { recursive: true, force: true }) };
 }

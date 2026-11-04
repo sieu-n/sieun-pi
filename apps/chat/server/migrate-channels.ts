@@ -10,6 +10,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentId, ImageRef, Ms } from "../web/src/lib/api/types.ts";
 import { AgentStore, type RoomDelivery, type RoomMember, type RoomPost, type RoomRow, type WakeOn } from "./agent-store.ts";
+import { flushSync } from "./disk.ts";
 import { readJson } from "./store.ts";
 
 // The shapes `server/store.ts` and `web/src/lib/api/types.ts` had before phase 5, copied here because phase 5 deletes them.
@@ -169,6 +170,8 @@ export function migrateChannels(dataDir: string, opts: { apply: boolean }): Migr
     move.unmapped = [...unmapped];
     for (const id of unmapped) allUnmapped.add(id);
   }
+  // A migration's writes are on disk when it returns, so the script's exit and the next read both see them.
+  flushSync();
   return { apply: opts.apply, dataDir, channels: moves, unmapped: [...allUnmapped], roomsWritten, postsWritten };
 }
 

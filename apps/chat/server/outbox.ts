@@ -8,10 +8,10 @@
  * -> gone, once an owner input with its text shows in the conversation. `failed` is only for a send pi-host refuses for good,
  * and it stays until the owner retries or discards it.
  */
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentId, ConversationId, Delivery, ImageRef, Item, SendState } from "../web/src/lib/api/types.ts";
 import type { EntryRecord, Host, Submitted } from "./host/types.ts";
+import { appendLater, readLatest, replaceLater, written } from "./disk.ts";
 import { isInput } from "./timeline.ts";
 import { OWNER, parseConversationId } from "./threads.ts";
 
@@ -85,12 +85,8 @@ export class Outbox {
   }
 
   private load(): void {
-    let text = "";
-    try {
-      text = readFileSync(this.file, "utf8");
-    } catch {
-      return;
-    }
+    const text = readLatest(this.file);
+    if (text === undefined) return;
     for (const raw of text.split("\n")) {
       if (!raw.trim()) continue;
       let line: Line;
@@ -119,15 +115,16 @@ export class Outbox {
       ...[...this.done].map(([requestId, at]): Line => ({ t: "done", requestId, at })),
       ...[...this.rows.values()].map((row): Line => ({ t: "row", row })),
     ];
-    writeFileSync(this.file, lines.map(line => `${JSON.stringify(line)}\n`).join(""));
+    replaceLater(this.file, lines.map(line => `${JSON.stringify(line)}\n`).join(""));
   }
 
   private write(line: Line): void {
-    try {
-      appendFileSync(this.file, `${JSON.stringify(line)}\n`);
-    } catch (error) {
-      this.deps.log(`outbox: could not write ${this.file}: ${String(error)}`);
-    }
+    appendLater(this.file, `${JSON.stringify(line)}\n`);
+  }
+
+  /** Settles once every line queued for the outbox file so far is on disk (disk.ts). */
+  written(): Promise<void> {
+    return written(this.file);
   }
 
   /** Starts delivering every row a restart left open, and the sweep that finds landed rows. */

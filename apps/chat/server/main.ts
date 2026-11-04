@@ -6,6 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { homedir, platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { App } from "./app.ts";
+import { flushSync, onWriteError } from "./disk.ts";
 import { fixtureFolders, readAgentHosts, readConfig, type Config } from "./config.ts";
 import { FixtureHost } from "./host/fixture.ts";
 import { MultiHost, type Box } from "./host/multi-host.ts";
@@ -18,6 +19,8 @@ import { seedFixture } from "./fixture/seed.ts";
 
 const config = readConfig();
 const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
+onWriteError(log);
+process.on("exit", flushSync);
 if (config.fixture && !process.argv.includes("--data-dir")) config.dataDir = mkdtempSync(join(tmpdir(), "apps-chat-fixture-"));
 if (config.fixture) Object.assign(config, fixtureFolders(config.dataDir));
 /**

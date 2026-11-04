@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { after, before, describe, mock, test } from "node:test";
 import type { AgentHostList, AgentSummary, Item, Room, SearchResult, TimelinePage } from "../../web/src/lib/api/types.ts";
 import { App } from "../../server/app.ts";
+import { drained } from "../../server/disk.ts";
 import { fixtureFolders, readConfig } from "../../server/config.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
 import { MultiHost } from "../../server/host/multi-host.ts";
@@ -149,6 +150,7 @@ describe("RelayHost", () => {
     await until(async () => relay.acks, acks => acks.includes(9));
     assert.deepEqual(order, ["read 8", "read 9"]);
     assert.deepEqual(relay.acks.slice(-2), [8, 9]);
+    await drained();
     assert.equal(JSON.parse(readFileSync(join(dir, "relay", "mac.json"), "utf8")).feedAfter, 9);
     relay.feed(row(9));
     await until(async () => relay.acks.filter(a => a === 9).length, n => n === 2);

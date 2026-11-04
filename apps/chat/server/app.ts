@@ -32,6 +32,7 @@ import { Search } from "./search.ts";
 import { likeRegex, postDocId, SEARCH_DOC_VERSION, SearchEngine, SqliteEntries, type EntrySource, type PostDoc } from "./search-engine.ts";
 import { Meili, startOwnMeili, type OwnMeili } from "./meili.ts";
 import type { FixtureHost } from "./host/fixture.ts";
+import { drained } from "./disk.ts";
 import { readJson, Store, writeJson } from "./store.ts";
 import { modelRef, OWNER, parseConversationId, Threads } from "./threads.ts";
 import { QueueWatch, waitingPlace } from "./queue.ts";
@@ -265,6 +266,7 @@ export class App {
     await this.threads.stop();
     for (const client of this.clients) client.socket.close();
     this.searchStop();
+    await drained();
   }
 
   /**
@@ -460,9 +462,14 @@ export class App {
       const record = this.roomAgent(id);
       const result = this.rooms.post(record, request);
       if (request.mentions?.length) void this.deliverMentions({ requestId: request.requestId, conversation: id, text: request.text ?? "", mentions: request.mentions });
+      await this.agentStore.written(record.room);
       return result;
     }
-    if (this.isGroup(id)) return this.groups.post(id, request);
+    if (this.isGroup(id)) {
+      const result = this.groups.post(id, request);
+      await this.agentStore.written(id);
+      return result;
+    }
     const { thread } = parseConversationId(id);
     if (!this.threads.thread(thread)) throw new NotFound(`No thread ${thread}.`);
     const open = this.outbox.get(request.requestId);
@@ -474,6 +481,7 @@ export class App {
     });
     this.store.state.reads[id] = { at: Date.now() };
     this.store.saveState();
+    await this.outbox.written();
     return { item, deliveries: item.kind === "message" ? item.deliveries : [] };
   }
 

@@ -18,7 +18,7 @@ import { CwdRefused } from "./projects.ts";
 import { isHostAway } from "./host/types.ts";
 import { readJson } from "./store.ts";
 import { usageReport, hostsReport } from "./usage.ts";
-import { type ClientVia, clientTimings, RequestLog } from "./request-log.ts";
+import { type ClientVia, clientTimings, LoopStalls, RequestLog } from "./request-log.ts";
 import { accountRoutes, PoolError } from "./accounts.ts";
 import { serveWiki } from "./wiki/routes.ts";
 
@@ -33,6 +33,10 @@ const TYPES: Record<string, string> = {
 const MAX_BODY = 40 * 1024 * 1024;
 
 export class BadRequest extends Error {}
+
+/** A request's split of its time for the request log: the body wait and the handler's own time (request-log.ts `RequestTiming`). */
+type Phase = { body?: number; run?: number };
+const phases = new WeakMap<IncomingMessage, Phase>();
 
 function route(method: string, path: string, handler: Handler): Route {
   const keys: string[] = [];
@@ -277,14 +281,18 @@ export function routes(app: App): Route[] {
 export function serve(app: App): Server {
   const table = routes(app);
   const requests = new RequestLog(join(app.config.dataDir, "requests"), app.log);
+  const stalls = new LoopStalls();
   const server = createServer((req, res) => {
     const path = (req.url ?? "/").split("?")[0]!;
     const method = req.method ?? "GET";
     if (path === "/api/timings" && method === "POST") return void takeTimings(table, requests, req, res);
     if (path.startsWith("/api/")) {
       const started = performance.now();
+      const phase: Phase = {};
+      phases.set(req, phase);
       res.once("close", () => requests.write({
         at: Date.now(), src: "server", m: method, r: routeLabel(table, method, path), p: path, s: res.writableFinished ? res.statusCode : 0, ms: performance.now() - started,
+        ...phase, stall: stalls.longest(started),
       }));
     }
     void handle(app, table, req, res);
@@ -335,7 +343,18 @@ async function handle(app: App, table: Route[], req: IncomingMessage, res: Serve
         const params: Params = {};
         r.keys.forEach((key, i) => (params[key] = decodeURIComponent(match[i + 1]!)));
         let parsed: Promise<unknown> | undefined;
-        const value = await r.handler(req, params, url.searchParams, () => (parsed ??= readBody(req)));
+        const phase = phases.get(req);
+        const timedBody = async (): Promise<unknown> => {
+          const asked = performance.now();
+          try {
+            return await readBody(req);
+          } finally {
+            if (phase) phase.body = performance.now() - asked;
+          }
+        };
+        const ran = performance.now();
+        const value = await r.handler(req, params, url.searchParams, () => (parsed ??= timedBody()));
+        if (phase) phase.run = performance.now() - ran - (phase.body ?? 0);
         return json(res, 200, value ?? { ok: true });
       }
       return json(res, 404, { error: `No endpoint ${req.method} ${path}.` });
