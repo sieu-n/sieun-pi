@@ -153,6 +153,10 @@ test("unitLimits lists a setting the deploy/linux layer scripts set as owner-ask
   assert.deepEqual(asked({ Id: "ssh.service", CPUWeight: "1000" }, {}, {}, "user"), [["user ssh.service CPUWeight", false]]);
   assert.deepEqual(asked({ Id: "user@1001.service", CPUWeight: "10000" }, {}, {}, "system"), [["system user@N.service CPUWeight", true]]);
   assert.deepEqual(asked({ Id: "dev.slice", CPUWeight: "300" }, {}, {}, "system"), [["system dev.slice CPUWeight", false]]);
+  const guest = { Id: "machine-qemu\\x2d12\\x2dci\\x2dg3.scope", CPUWeight: "267" };
+  assert.deepEqual(asked(guest, {}, {}, "system"), [["system machine-qemu-N-ci-gN.scope CPUWeight", true]], "a CI guest's <cputune><shares> weight is owner-asked (t68, t126)");
+  assert.deepEqual(asked({ ...guest, CPUWeight: "100" }, {}, {}, "system"), [["system machine-qemu-N-ci-gN.scope CPUWeight", true]]);
+  assert.deepEqual(asked({ ...guest, CPUWeight: "500" }, {}, {}, "system"), [["system machine-qemu-N-ci-gN.scope CPUWeight", false]]);
   const daemon = { Id: "prime-agent-daemon.service", ActiveState: "active", MainPID: "7", Nice: "0", CPUWeight: "10000" };
   assert.deepEqual(asked(daemon, {}, {}), [["user prime-agent-daemon.service CPUWeight", true]]);
   assert.deepEqual(asked(daemon, {}, { 7: -10 }), [["user prime-agent-daemon.service CPUWeight", true], ["user prime-agent-daemon.service nice", false]]);
