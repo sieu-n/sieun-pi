@@ -109,6 +109,8 @@ test("with no listener the agents come from the last projection, and a change si
   assert.equal(catalog.heldAgents("s1"), undefined, "nothing to answer from before a projection");
   assert.equal(catalog.heldSource("s1"), "no frame, projection or saved agents yet");
   await catalog.rows();
+  // The refresh's cut read can end while that projection yields (`breathe`) and start another; the second rows() waits for the rows to be current.
+  await catalog.rows();
   assert.equal(catalog.heldSource("s9"), "the last projection of 2 rows lacks its row");
   const built = counted.projections;
   assert.deepEqual(catalog.heldAgents("s1")?.map(entry => entry.sessionId), ["s2"]);
