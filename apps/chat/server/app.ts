@@ -36,6 +36,7 @@ import { drained } from "./disk.ts";
 import { readJson, Store, writeJson } from "./store.ts";
 import { modelRef, OWNER, parseConversationId, Threads } from "./threads.ts";
 import { QueueWatch, waitingPlace } from "./queue.ts";
+import { webEntry } from "./web-entry.ts";
 
 /** An image as a page from before 11-03 15:01Z sends it: its base64 bytes inline (see `App.uploaded`). */
 type LegacyImage = { data: string; mimeType: string };
@@ -344,8 +345,15 @@ export class App {
     return null;
   }
 
+  /** The web build this server serves, read once: a release puts a new build in a new folder and restarts the server. */
+  private webBuild: { entry: string | null } | undefined;
+
   me(): Me {
-    return { owner: OWNER, host: this.config.box, fixture: this.config.fixture, wikiBase: this.config.wikiBase, version: this.config.version };
+    this.webBuild ??= { entry: webEntry(this.config.webDir) };
+    return {
+      owner: OWNER, host: this.config.box, fixture: this.config.fixture, wikiBase: this.config.wikiBase, version: this.config.version,
+      web: this.webBuild.entry,
+    };
   }
 
   async sidebar(): Promise<Sidebar> {

@@ -18,9 +18,21 @@
   import SearchDialog from "$pages/search/SearchDialog.svelte";
   import SearchPage from "$pages/search/SearchPage.svelte";
   import ArtifactViewer from "$lib/shell/ArtifactViewer.svelte";
+  import { me } from "$lib/api";
+  import { isStale, pageEntry } from "$lib/api/stale";
+  import { toast } from "$lib/ui/toast.svelte";
 
   trackKeyboardNavigation();
   initZoom();
+
+  // A tab left open across a release runs the old bundle, whose sends the new server may refuse, so it offers a reload until taken.
+  // The composer keeps its draft in localStorage, so a reload loses no typed text.
+  let staleShown = false;
+  $effect(() => {
+    if (staleShown || !isStale(me.value?.web, pageEntry())) return;
+    staleShown = true;
+    toast.show("A new version of the chat is out. Reload to use it.", { duration: 0, action: { label: "Reload", run: () => location.reload() } });
+  });
 
   function onKeydown(e: KeyboardEvent) {
     if (!modKey(e) || e.altKey) return;

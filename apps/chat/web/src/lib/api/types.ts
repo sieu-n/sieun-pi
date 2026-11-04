@@ -551,7 +551,11 @@ export interface AgentConfig {
   usage: { days: number; turns: number; cost: number; tokens: { input: number; output: number; cacheRead: number; cacheWrite: number }; scope: string } | null;
 }
 
-export interface Me { owner: Principal; host: string; fixture: boolean; wikiBase: string; version: string }
+export interface Me {
+  owner: Principal; host: string; fixture: boolean; wikiBase: string; version: string;
+  /** The entry script of the web build the server serves now; a page that loaded another one is stale (lib/api/stale.ts). */
+  web: string | null;
+}
 
 /** Server to page, over the one WebSocket at /api/live. */
 export type LiveEvent =
