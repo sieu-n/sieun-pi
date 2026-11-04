@@ -34,13 +34,13 @@ function deps(runs: CiRun[], failRunList = false): DeployDeps {
     return "";
   };
   const fetch = (async () => new Response(JSON.stringify({ targets: { production: { meta: { githubCommitSha: "live" } } }, deployments: [] }))) as typeof globalThis.fetch;
-  return { exec, fetch, now: () => NOW, railwayToken: async () => "t", vercelToken: async () => "t" };
+  return { exec, fetch, now: () => NOW, vercelToken: async () => "t" };
 }
 
 test("a failed main run of the last 24 h counts once per commit, with the runner or the repo named as the fix's owner", async () => {
   const runs = [run(1, "aaaaaaa1", 0.5, "failure"), run(2, "bbbbbbb2", 3, "failure"), run(3, "bbbbbbb2", 2, "cancelled"), run(4, "ccccccc3", 5, "success"),
     run(5, "ddddddd4", 30, "failure"), run(6, "eeeeeee5", 0.1, "")];
-  const { output } = await measureDeploys(deps(runs), { redeployed: {} });
+  const output = await measureDeploys(deps(runs));
   assert.equal(output.metrics.main_checks_failed_24h, 2);
   assert.equal(output.metrics.commits_not_live, 0);
   const checks = (output.flagged ?? []).filter(slice => slice.kind.startsWith("main_checks_"));
@@ -50,20 +50,20 @@ test("a failed main run of the last 24 h counts once per commit, with the runner
 });
 
 test("all green main runs read 0 with an ok flag, and a run list that fails is a miss and a source error", async () => {
-  const green = await measureDeploys(deps([run(4, "ccccccc3", 5, "success")]), { redeployed: {} });
-  assert.equal(green.output.metrics.main_checks_failed_24h, 0);
-  assert.ok((green.output.flagged ?? []).some(slice => slice.kind === "main_checks_ok"));
-  const broken = await measureDeploys(deps([], true), { redeployed: {} });
-  assert.equal(broken.output.metrics.main_checks_failed_24h, 1);
-  assert.equal(broken.output.metrics.source_errors, 1);
+  const green = await measureDeploys(deps([run(4, "ccccccc3", 5, "success")]));
+  assert.equal(green.metrics.main_checks_failed_24h, 0);
+  assert.ok((green.flagged ?? []).some(slice => slice.kind === "main_checks_ok"));
+  const broken = await measureDeploys(deps([], true));
+  assert.equal(broken.metrics.main_checks_failed_24h, 1);
+  assert.equal(broken.metrics.source_errors, 1);
 });
 
 test("main_checks_failed_24h's lastEventAt is the newest failed run's end, this run when the list fails, and absent when all passed", async () => {
   const runs = [run(2, "bbbbbbb2", 3, "failure"), run(3, "bbbbbbb2", 2, "cancelled"), run(4, "ccccccc3", 1, "success"), run(5, "ddddddd4", 30, "failure")];
-  const failed = await measureDeploys(deps(runs), { redeployed: {} });
-  assert.deepEqual(failed.output.lastEventAt, { main_checks_failed_24h: NOW - 2 * HOUR + 600_000 });
-  const green = await measureDeploys(deps([run(4, "ccccccc3", 5, "success")]), { redeployed: {} });
-  assert.equal(green.output.lastEventAt, undefined);
-  const broken = await measureDeploys(deps([], true), { redeployed: {} });
-  assert.deepEqual(broken.output.lastEventAt, { main_checks_failed_24h: NOW });
+  const failed = await measureDeploys(deps(runs));
+  assert.deepEqual(failed.lastEventAt, { main_checks_failed_24h: NOW - 2 * HOUR + 600_000 });
+  const green = await measureDeploys(deps([run(4, "ccccccc3", 5, "success")]));
+  assert.equal(green.lastEventAt, undefined);
+  const broken = await measureDeploys(deps([], true));
+  assert.deepEqual(broken.lastEventAt, { main_checks_failed_24h: NOW });
 });

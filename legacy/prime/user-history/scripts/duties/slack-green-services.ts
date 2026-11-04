@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { CHECKS_WINDOW_MS, type DeployDeps, type DeployState, type Exec, exec, measureDeploys, railwayToken } from "./slack-green-deploys.ts";
+import { CHECKS_WINDOW_MS, type DeployDeps, type Exec, exec, measureDeploys } from "./slack-green-deploys.ts";
 import { parseEnv } from "./local-dev-uptime.ts";
 import { vercelToken } from "./vercel-login.ts";
 
@@ -20,8 +20,9 @@ import { vercelToken } from "./vercel-login.ts";
  * pages_failing, the headline, opens five pages in a headful Chrome on this box through the aside-browser box runner (c177, c205) and counts a
  * page as failing when its document answers non-200, it throws an uncaught error (pageerror), or it shows an error screen. /dashboard is read
  * signed in as sg-qa-services-duty@slack.green, whose password this precheck sets to a new random value each run through Supabase's admin API.
- * deploy_problems folds in the old Slack green deploys duty (d4): main commits not live on the Railway worker after 20 min, failed main CI
- * runs of 24 h, a deploy source that did not read, and the worker crashed or silent. Main commits that Vercel prod lacks are flagged and not
+ * deploy_problems folds in the old Slack green deploys duty (d4): failed main CI runs of 24 h, a deploy source that did not read, and the
+ * worker crashed or silent. Main commits the Railway worker lacks are flagged and not counted, because the worker moves to us-metal01 (p226)
+ * and Railway stopped building it when slack-green #422 deleted the Dockerfile. Main commits that Vercel prod lacks are flagged and not
  * counted, because since 10-30 slack.green builds on us-metal02 (c200) and each prod deploy waits for the release owner (c154). owner_slack_green reads the owner's presence with Slack's users.getPresence
  * through the session tokens Slack Green stores for his ppwc workspace, read only. api_routes_failing calls the add-on's and the CLI's routes
  * with a bogus login and expects their JSON 401, and counts each /api/ route that answered 500 or more during the page walk.
@@ -95,9 +96,11 @@ export function servicesOutput(read: Readings, now: number): PrecheckOutput {
   }
   const deploys = read.deploys;
   if (deploys) flagged.push(...(deploys.flagged ?? []).map(slice => slice.kind === "vercel_not_live"
-    ? { ...slice, kind: "vercel_behind_main", excerpt: `${slice.excerpt}; not counted, because each slack.green prod deploy waits for the release owner (c154, c200)` } : slice));
-  const { railway_not_live: railwayLate = 0, main_checks_failed_24h: checksFailed = 0, source_errors: deployErrors = 0 } = deploys?.metrics ?? {};
-  const deployProblems = workerProblems + (deploys ? railwayLate + checksFailed + deployErrors : 1);
+    ? { ...slice, kind: "vercel_behind_main", excerpt: `${slice.excerpt}; not counted, because each slack.green prod deploy waits for the release owner (c154, c200)` }
+    : slice.kind === "railway_not_live"
+      ? { ...slice, kind: "railway_behind_main", excerpt: `${slice.excerpt}; not counted, because the worker moves to us-metal01 (p226)` } : slice));
+  const { main_checks_failed_24h: checksFailed = 0, source_errors: deployErrors = 0 } = deploys?.metrics ?? {};
+  const deployProblems = workerProblems + (deploys ? checksFailed + deployErrors : 1);
 
   const green = read.presence?.presence === "active" ? 1 : 0;
   if (read.presence) flagged.push({ at: now, kind: green ? "owner_green" : "owner_not_green", excerpt: `the owner's Slack (ppwc, ${OWNER.slackUser}) reads ${read.presence.presence}, online ${read.presence.online}, ${read.presence.connectionCount} connection(s)${read.presence.lastActivity ? `, last activity ${when(read.presence.lastActivity * 1000)}` : ""}` });
@@ -277,29 +280,26 @@ async function supabaseEnv(): Promise<Supabase> {
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("slack-green-services: OUTPUT_FILE is not set\n"); process.exit(2); }
-  const stateFile = process.env.STATE_FILE;
-  const saved = stateFile ? await readFile(stateFile, "utf8").then(text => JSON.parse(text) as Partial<DeployState>, () => undefined) : undefined;
   const now = Date.now();
   const errors: string[] = [];
   const fail = (what: string) => (error: unknown): undefined => { errors.push(`${what}: ${message(error)}`); return undefined; };
   const sb = await supabaseEnv().catch(fail("Supabase key"));
-  const deps: DeployDeps = { exec, fetch, now: Date.now, railwayToken, vercelToken };
+  const deps: DeployDeps = { exec, fetch, now: Date.now, vercelToken };
   const pages = (async () => {
     const login = sb ? await qaLogin(fetch, sb).catch((error: unknown) => new Error(message(error))) : new Error("no Supabase key");
     const browser = BoxBrowser.start();
     try { return await walkPages(browser, login); } finally { await browser.close(); }
   })().catch((error: unknown) => { fail("box browser")(error); return [] as PageRead[]; });
   const backend = (async () => {
-    const deploys = await measureDeploys(deps, { redeployed: saved?.redeployed && typeof saved.redeployed === "object" ? saved.redeployed : {} });
+    const deploys = await measureDeploys(deps);
     const worker = await readWorker(exec).catch(fail("Railway worker status and logs"));
     return { deploys, worker };
   })();
   const [pageReads, { deploys, worker }, presence, routes] = await Promise.all([pages, backend,
     sb ? readOwnerPresence(fetch, sb).catch(fail("owner's Slack presence")) : undefined, readRoutes(fetch, now)]);
-  const result = servicesOutput({ pages: pageReads, deploys: deploys.output, routes, errors,
+  const result = servicesOutput({ pages: pageReads, deploys, routes, errors,
     ...worker ? { worker } : {}, ...presence ? { presence } : {} }, now);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
-  if (stateFile) await writeFile(stateFile, JSON.stringify(deploys.state) + "\n");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main();

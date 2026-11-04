@@ -21,11 +21,11 @@ function deps(now: number): DeployDeps {
   };
   const fetch = (async () => new Response(JSON.stringify({ targets: { production: { meta: { githubCommitSha: LIVE } } },
     deployments: [{ state: "READY", created: PUSHED - 36 * MINUTE, meta: { githubCommitSha: LIVE } }] }))) as typeof globalThis.fetch;
-  return { exec, fetch, now: () => now, railwayToken: async () => "t", vercelToken: async () => "t" };
+  return { exec, fetch, now: () => now, vercelToken: async () => "t" };
 }
 
 test("a main commit with no Vercel production deployment counts as not live once it is DEPLOY_MINUTES old", async () => {
-  const { output } = await measureDeploys(deps(PUSHED + (DEPLOY_MINUTES + 2) * MINUTE), { redeployed: {} });
+  const output = await measureDeploys(deps(PUSHED + (DEPLOY_MINUTES + 2) * MINUTE));
   assert.equal(output.metrics.commits_not_live, 1);
   assert.equal(output.metrics.vercel_not_live, 1);
   assert.equal(output.metrics.railway_not_live, 0);
@@ -34,7 +34,7 @@ test("a main commit with no Vercel production deployment counts as not live once
 });
 
 test("before DEPLOY_MINUTES the same commit is pending and not counted", async () => {
-  const { output } = await measureDeploys(deps(PUSHED + (DEPLOY_MINUTES - 5) * MINUTE), { redeployed: {} });
+  const output = await measureDeploys(deps(PUSHED + (DEPLOY_MINUTES - 5) * MINUTE));
   assert.equal(output.metrics.commits_not_live, 0);
   assert.ok((output.flagged ?? []).some(item => item.kind === "vercel_pending"));
 });

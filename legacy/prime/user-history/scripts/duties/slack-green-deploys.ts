@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type FlaggedSlice, type PrecheckOutput, PRECHECK_TARGET_MS } from "../../src/shared/chat-duties.ts";
 
@@ -11,9 +11,8 @@ import { type FlaggedSlice, type PrecheckOutput, PRECHECK_TARGET_MS } from "../.
  * contains it, so the count reads the real state whoever deployed: Railway's GitHub trigger, the CI Backend job's deploy_worker.py
  * (slack-green #253), or this precheck. GitHub's compare API lists the main commits the live commit lacks, which also covers a live commit
  * that is not on main. A source that fails makes the headline at least 1, because an unmeasured state is not a good one.
- * When the worker misses a commit past DEPLOY_MINUTES, this precheck deploys main's head to it once per head commit, through the same
- * serviceInstanceDeployV2 call the approved merges job used by hand for #233 (4222b4b, 2026-10-14), and flags it. Vercel is never redeployed
- * here. slack-green's CI Vercel deploy job (slack-green #299) calls the project's deploy hook when Vercel starts nothing for a main push that
+ * This precheck deploys nothing. Until 11-04 it redeployed main's head to the Railway worker when the worker missed a commit, but after
+ * slack-green #422 deleted the Dockerfile each of those builds failed (c942da20 at 03:09Z), while the worker moves to us-metal01 (p226). slack-green's CI Vercel deploy job (slack-green #299) calls the project's deploy hook when Vercel starts nothing for a main push that
  * ran CI, as for 9db2437 (#298) on 2026-10-19. A commit still missing here past DEPLOY_MINUTES most likely got no push event (9ad6c68,
  * 2026-09-29), which the duty job fixes with an empty commit through a PR.
  * Its one supporting metric, main_checks_failed_24h, counts the slack-green main commits whose push CI run (ci.yml) started in the last 24 h
@@ -23,8 +22,6 @@ import { type FlaggedSlice, type PrecheckOutput, PRECHECK_TARGET_MS } from "../.
  */
 
 export const REPO = "sieu-n/slack-green";
-/** Railway project slack-green-backend, environment production, service slack-green-backend (`railway environment config --json`). */
-export const RAILWAY = { environmentId: "c10f04dd-8694-406f-aeb3-3872b3c3ab36", serviceId: "1d922935-9d01-4946-9451-cda91e22792b" };
 const VERCEL_TEAM = "team_HkFeqFbbJa5UAIjN0IYINUS0";
 const VERCEL_PROJECT = "prj_Fg9XulbXkvMu6jmDIeGK8tb2DsvG";
 /**
@@ -34,11 +31,7 @@ const VERCEL_PROJECT = "prj_Fg9XulbXkvMu6jmDIeGK8tb2DsvG";
  */
 export const DEPLOY_MINUTES = 20;
 const RAILWAY_LIVE = ["SUCCESS", "SLEEPING"];
-/** A worker deployment on its way: the precheck does not start a second one of the same commit. WAITING (Railway's CI wait) is not in it. */
-const RAILWAY_BUILDING = ["QUEUED", "INITIALIZING", "BUILDING", "DEPLOYING"];
 const MINUTE = 60_000;
-/** A redeploy is remembered this long, so the state file stays small. */
-const REMEMBER_MS = 14 * 24 * 60 * MINUTE;
 /** GitHub lists at most 300 files per commit; a commit at the cap counts as changing a watched path. */
 const COMMIT_FILE_LIMIT = 300;
 
@@ -87,27 +80,11 @@ export function describe(side: "railway" | "vercel", state: Side, commits: reado
   return `${PLATFORM[side]} runs ${short(state.live)}, which lacks ${listed.join(", ")}${more}`;
 }
 
-/** Run to run memory: the main heads this precheck already deployed to the worker, with when. */
-export interface DeployState { redeployed: Record<string, number> }
-
-/**
- * The one fix this precheck makes: deploy main's head to the worker when it lacks a commit past DEPLOY_MINUTES, once per head, and not while a
- * deployment of the head is already building.
- */
-export function redeployFor(railway: Side | undefined, now: number, state: DeployState): string | null {
-  if (!railway || !standing("railway", railway.behind, now).late.length) return null;
-  const head = railway.behind.at(-1)!.sha;
-  if (state.redeployed[head] !== undefined || RAILWAY_BUILDING.includes(latestFor(railway.deploys, head)?.status ?? "")) return null;
-  return head;
-}
-
-export type Redeploy = { head: string; error?: string };
-
 /**
  * main_checks_failed_24h's `lastEventAt` is the newest end of a failed run it counts, or this run when the run list failed, and none with no failed
  * run. AI harness d9 read it as a lagging window on 10-22 because it had none.
  */
-export function deployMetrics(sources: Sources, now: number, redeploy?: Redeploy): { metrics: Record<string, number>; flagged: FlaggedSlice[]; lastEventAt?: Record<string, number> } {
+export function deployMetrics(sources: Sources, now: number): { metrics: Record<string, number>; flagged: FlaggedSlice[]; lastEventAt?: Record<string, number> } {
   const flagged: FlaggedSlice[] = sources.errors.map(error => ({ at: now, kind: "source_error",
     excerpt: `${error}. The headline counts this run as a miss until the precheck or its login is fixed.` }));
   const notLive = new Set<string>();
@@ -123,9 +100,6 @@ export function deployMetrics(sources: Sources, now: number, redeploy?: Redeploy
       : { at: now, kind: `${side}_ok`, excerpt: `${PLATFORM[side]} runs ${short(state.live)}, which has every main commit over ${DEPLOY_MINUTES} min old it should run` });
     if (pending.length) flagged.push({ at: now, kind: `${side}_pending`, excerpt: describe(side, state, pending, now) });
   }
-  if (redeploy) flagged.push({ at: now, kind: redeploy.error ? "redeploy_error" : "redeploy", excerpt: redeploy.error
-    ? `deploying main's head ${short(redeploy.head)} to the Railway worker failed: ${redeploy.error}`
-    : `this check deployed main's head ${short(redeploy.head)} to the Railway worker once; the next run shows whether it went live` });
   for (const failure of sources.checks ?? []) flagged.push({ at: now, kind: `main_checks_${failure.side}`, excerpt: describeFailure(failure) });
   if (sources.checks && !sources.checks.length) flagged.push({ at: now, kind: "main_checks_ok",
     excerpt: `all ${sources.checkRuns ?? 0} finished main push CI runs of the last 24 h passed` });
@@ -166,7 +140,7 @@ export function describeFailure(failure: CheckFailure): string {
 
 /** Runs a program with no shell and gives its stdout. */
 export type Exec = (file: string, args: readonly string[], options?: { cwd?: string }) => Promise<string>;
-export interface DeployDeps { exec: Exec; fetch: typeof fetch; now: () => number; railwayToken: () => Promise<string>; vercelToken: () => Promise<string> }
+export interface DeployDeps { exec: Exec; fetch: typeof fetch; now: () => number; vercelToken: () => Promise<string> }
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error)).replace(/(Bearer\s+)\S+/g, "$1***");
 
@@ -255,16 +229,6 @@ export async function readVercel(deps: DeployDeps): Promise<{ live: string; depl
   return { live, deploys: list.deployments.map(row => ({ status: row.state ?? row.readyState ?? "?", at: row.created, sha: row.meta?.githubCommitSha })) };
 }
 
-/** Deploys a commit to the worker without waiting for CI, the call the dashboard's deploy button makes. */
-export async function deployWorker(deps: DeployDeps, sha: string): Promise<void> {
-  const response = await deps.fetch("https://backboard.railway.com/graphql/v2", { method: "POST",
-    headers: { Authorization: `Bearer ${await deps.railwayToken()}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ query: "mutation($s: String!, $e: String!, $c: String) { serviceInstanceDeployV2(serviceId: $s, environmentId: $e, commitSha: $c) }",
-      variables: { s: RAILWAY.serviceId, e: RAILWAY.environmentId, c: sha } }) });
-  const body = await response.text();
-  if (!response.ok || /"errors"/.test(body)) throw new Error(`Railway serviceInstanceDeployV2 gave HTTP ${response.status}: ${body.slice(0, 200)}`);
-}
-
 /** Marks each worker commit past DEPLOY_MINUTES with whether it changes a watch path; a failed read leaves it unknown, which counts as watched. */
 async function markWatched(deps: DeployDeps, behind: Commit[], now: number, fail: (what: string) => (error: unknown) => undefined): Promise<void> {
   const due = behind.filter(commit => age(commit, now) >= DEPLOY_MINUTES);
@@ -277,7 +241,7 @@ async function markWatched(deps: DeployDeps, behind: Commit[], now: number, fail
   }));
 }
 
-export async function measureDeploys(deps: DeployDeps, previous: DeployState): Promise<{ output: PrecheckOutput; state: DeployState }> {
+export async function measureDeploys(deps: DeployDeps): Promise<PrecheckOutput> {
   const now = deps.now();
   const sources: Sources = { errors: [] };
   const fail = (what: string) => (error: unknown): undefined => { sources.errors.push(`${what}: ${message(error)}`); return undefined; };
@@ -294,15 +258,7 @@ export async function measureDeploys(deps: DeployDeps, previous: DeployState): P
   if (railway) { await markWatched(deps, railway.behind, now, fail); sources.railway = railway; }
   if (vercel) sources.vercel = vercel;
   if (checks) { sources.checks = checks.failures; sources.checkRuns = checks.finished; }
-  const state: DeployState = { redeployed: Object.fromEntries(Object.entries(previous.redeployed).filter(([, at]) => at > now - REMEMBER_MS)) };
-  let redeploy: Redeploy | undefined;
-  const head = redeployFor(railway, now, state);
-  if (head) {
-    redeploy = { head };
-    try { await deployWorker(deps, head); state.redeployed[head] = now; }
-    catch (error) { redeploy.error = message(error); }
-  }
-  return { output: deployMetrics(sources, now, redeploy), state };
+  return deployMetrics(sources, now);
 }
 
 /** Each command stops 10 s before the runner's PRECHECK_TARGET_MS, so a hung call still ends as a source error with every metric written. */
@@ -311,12 +267,3 @@ export const exec: Exec = (file, args, options) => new Promise((resolve, reject)
   execFile(file, [...args], { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, cwd: options?.cwd },
     (error, stdout, stderr) => error ? reject(new Error(`${file} ${args[0] ?? ""}: ${error.message} ${stderr}`.trim())) : resolve(stdout));
 });
-
-/** RAILWAY_API_TOKEN when set, else the railway CLI's login, which the `railway deployment list` call just refreshed. */
-export const railwayToken = async (): Promise<string> => {
-  if (process.env.RAILWAY_API_TOKEN) return process.env.RAILWAY_API_TOKEN;
-  const user = (JSON.parse(await readFile(join(homedir(), ".railway/config.json"), "utf8")) as { user?: { accessToken?: string; token?: string } }).user;
-  const token = user?.accessToken ?? user?.token;
-  if (!token) throw new Error("no Railway token: RAILWAY_API_TOKEN is unset and ~/.railway/config.json has no login");
-  return token;
-};

@@ -33,8 +33,18 @@ test("failed main runs alone make deploy_problems a day's window that ages out, 
   assert.equal(checks.metrics.deploy_problems, 4);
   assert.deepEqual(checks.lastEventAt, { deploy_problems: failedAt });
   assert.deepEqual(checks.windowMs, { deploy_problems: 24 * 3_600_000 });
-  const late = servicesOutput({ ...base, deploys: { metrics: { commits_not_live: 1, main_checks_failed_24h: 4, railway_not_live: 1, vercel_not_live: 0, source_errors: 0 },
-    flagged: [], lastEventAt: { main_checks_failed_24h: failedAt } } }, NOW);
+  const late = servicesOutput({ ...base, worker: { ...base.worker, lastActiveAt: NOW - 11 * 60_000 }, deploys: { metrics: { commits_not_live: 1, main_checks_failed_24h: 4,
+    railway_not_live: 1, vercel_not_live: 0, source_errors: 0 }, flagged: [], lastEventAt: { main_checks_failed_24h: failedAt } } }, NOW);
   assert.equal(late.metrics.deploy_problems, 5);
   assert.equal(late.windowMs, undefined);
+});
+
+// 11-04: slack-green #422 deleted the Dockerfile, so every Railway redeploy d6 started failed (c942da20 at 03:09Z) while the worker moves to us-metal01.
+test("main commits the Railway worker lacks are flagged as railway_behind_main and not counted", () => {
+  const output = servicesOutput({ pages: PAGES.map(spec => page(spec.key)), routes: [], errors: [], presence: { presence: "active", online: true, connectionCount: 1 },
+    worker: { status: "SUCCESS", deployAt: NOW - 3_600_000, lastActiveAt: NOW - 30_000, activeLines: 200 },
+    deploys: { metrics: { commits_not_live: 2, main_checks_failed_24h: 0, railway_not_live: 2, vercel_not_live: 0, source_errors: 0 },
+      flagged: [{ at: NOW, kind: "railway_not_live", excerpt: "the Railway worker runs c805b4a, which lacks c942da2" }] } }, NOW);
+  assert.equal(output.metrics.deploy_problems, 0);
+  assert.match((output.flagged ?? []).find(slice => slice.kind === "railway_behind_main")?.excerpt ?? "", /lacks c942da2; not counted/);
 });
