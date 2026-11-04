@@ -39,7 +39,8 @@ export interface ProcRow {
 export interface Owner { session: string; host: string; dir?: string }
 export interface Group { key: string; unit?: string; root: number; pids: number[]; bytes: number; started: number | null; command: string; owners: Owner[] }
 
-export type Verdict = { state: "live"; why: string } | { state: "ended"; at: number; why: string } | { state: "unknown"; why: string };
+/** "unreachable" is an owner on a host that did not answer, which a later run reads again; on 11-04 a Mac job's walk rig read as orphan_unknown for 3 d2 runs while the Mac slept. */
+export type Verdict = { state: "live"; why: string } | { state: "ended"; at: number; why: string } | { state: "unknown"; why: string } | { state: "unreachable"; why: string };
 
 /** What the reaper knows of one session from its host's roster, the wakes and its transcript. */
 export interface SessionFacts {
@@ -153,7 +154,7 @@ const PARENT_ONLY = /--require \S*node_modules\/vitest\/suppress-warnings\.cjs|f
  * Splits the groups: stop a parent-only worker that lost its parent (PARENT_ONLY) and is over ENDED_FOR_MS old, and a group when every owner it names ended over ENDED_FOR_MS ago, hold it when any owner is live or ended more recently
  * or when `unitHolds` names its unit (a live session recorded the unit with board.own; on 10-31 a child started check4-sampler.service and
  * ended, and its parent 01a1935d recorded the unit and still waited on a wake to use it),
- * and list a group with no owner or an owner with no transcript as unknown. Only a group whose root left its parent (now under systemd --user,
+ * hold it while an owner's host does not answer, and list a group with no owner or an owner with no transcript as unknown. Only a group whose root left its parent (now under systemd --user,
  * pid 1 or an sshd) or that is a transient unit is listed as unknown, so a terminal's own shell is no unknown orphan.
  */
 export function decide(groups: readonly Group[], verdicts: ReadonlyMap<string, Verdict>, now: number, unitHolds: ReadonlyMap<string, string> = new Map()): Decision {
@@ -167,6 +168,8 @@ export function decide(groups: readonly Group[], verdicts: ReadonlyMap<string, V
     const live = read.find(entry => entry.verdict.state === "live");
     if (live) { decision.held.push({ group, why: `${live.owner.session} on ${live.owner.host} is live: ${live.verdict.why}` }); continue; }
     if (read.some(entry => entry.verdict.state === "unknown")) { decision.unknown.push(group); continue; }
+    const away = read.find(entry => entry.verdict.state === "unreachable");
+    if (away) { decision.held.push({ group, why: `${away.owner.session} on ${away.owner.host} could not be read: ${away.verdict.why}` }); continue; }
     const endedAt = Math.max(...read.map(entry => (entry.verdict as { at: number }).at));
     if (now - endedAt < ENDED_FOR_MS) { decision.held.push({ group, why: `its owner ended at ${new Date(endedAt).toISOString()}, under 1 h ago` }); continue; }
     decision.stop.push(group);
@@ -264,7 +267,7 @@ export async function readVerdicts(groups: Group[], context: ReadContext, read: 
     } else {
       if (verdicts.has(ownerKey(owner))) continue;
       try { facts = owner.host === context.here ? await boxFactsById(owner.session, context, read) : await remoteFacts(owner, context, read); }
-      catch (error) { verdicts.set(ownerKey(owner), { state: "unknown", why: `${owner.host} did not answer: ${error instanceof Error ? error.message.slice(0, 160) : String(error)}` }); continue; }
+      catch (error) { verdicts.set(ownerKey(owner), { state: "unreachable", why: `${owner.host} did not answer: ${error instanceof Error ? error.message.slice(0, 160) : String(error)}` }); continue; }
     }
     verdicts.set(ownerKey(owner), await settle(facts, owner.session, context));
   }
@@ -396,7 +399,7 @@ const age = (group: Group, now: number): string => group.started === null ? "?" 
 const mb = (bytes: number): string => `${Math.round(bytes / 1048576)} MB`;
 /** A group's line; an owner whose verdict is unknown carries its why, because the 11-04 10:17 d2 run listed a live Mac job's walk server as orphan_unknown with no cause to read. */
 export function describe(group: Group, now: number, verdicts?: ReadonlyMap<string, Verdict>): string {
-  const owners = group.owners.map(owner => { const read = verdicts?.get(ownerKey(owner)); return `${owner.session} on ${owner.host}${read?.state === "ended" ? ` ended ${new Date(read.at).toISOString().slice(5, 16)}Z` : read?.state === "unknown" ? ` unread (${read.why})` : ""}`; });
+  const owners = group.owners.map(owner => { const read = verdicts?.get(ownerKey(owner)); return `${owner.session} on ${owner.host}${read?.state === "ended" ? ` ended ${new Date(read.at).toISOString().slice(5, 16)}Z` : read?.state === "unknown" || read?.state === "unreachable" ? ` unread (${read.why})` : ""}`; });
   return `${group.unit ?? `pid ${group.root}`}: ${group.pids.length} processes, ${mb(group.bytes)}, ${age(group, now)}, ${group.command.slice(0, 120)}${owners.length ? `; owner ${owners.join(", ")}` : "; no owner signal"}`;
 }
 

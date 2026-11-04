@@ -94,15 +94,15 @@ test("a session is live while its roster says running or idle, a wake waits, it 
   assert.equal(verdict({ topLevel: false, endedAt: null }).state, "unknown");
 });
 
-test("a group stops only when every owner ended over 1 h ago; a live owner or a recent end holds it, and no owner lists it", () => {
+test("a group stops only when every owner ended over 1 h ago; a live owner, a recent end or an owner's host that did not answer holds it, and no owner lists it", () => {
   const now = 10 * ENDED_FOR_MS;
   const mk = (key: string, owners: Group["owners"]): Group => ({ key, root: 1, pids: [1], bytes: 0, started: 0, command: key, owners });
   const verdicts = new Map<string, Verdict>([[`mac/${JOB}`, { state: "ended", at: now - 2 * ENDED_FOR_MS, why: "" }],
-    [`us-metal02/${LIVE}`, { state: "live", why: "its roster status is running" }], ["mac/recent", { state: "ended", at: now - 60_000, why: "" }]]);
+    [`us-metal02/${LIVE}`, { state: "live", why: "its roster status is running" }], ["mac/recent", { state: "ended", at: now - 60_000, why: "" }], ["mac/asleep", { state: "unreachable", why: "mac did not answer" }]]);
   const decision = decide([mk("old", [{ session: JOB, host: "mac" }]), mk("mixed", [{ session: JOB, host: "mac" }, { session: LIVE, host: "us-metal02" }]),
-    mk("recent", [{ session: "recent", host: "mac" }]), mk("none", [])], verdicts, now);
+    mk("recent", [{ session: "recent", host: "mac" }]), mk("asleep", [{ session: "asleep", host: "mac" }]), mk("none", [])], verdicts, now);
   assert.deepEqual(decision.stop.map(entry => entry.key), ["old"]);
-  assert.deepEqual(decision.held.map(entry => entry.group.key), ["mixed", "recent"]);
+  assert.deepEqual(decision.held.map(entry => entry.group.key), ["mixed", "recent", "asleep"]);
   assert.deepEqual(decision.unknown.map(entry => entry.key), ["none"]);
 });
 
