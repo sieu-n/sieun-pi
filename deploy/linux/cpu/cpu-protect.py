@@ -1,28 +1,36 @@
 #!/usr/bin/python3 -B
-"""Keeps the Prime supervisor and its workers alone in prime-agent-daemon.service and moves every process they start into
-prime-agent-tools.scope, CPU layer 2 of deploy/linux/README.md.
+"""Keeps the agents' control loop in agents.slice and the commands it starts in prime-agent-tools.scope, CPU layer 2 of deploy/linux/README.md.
 
-The owner's t84 answer on 10-19 put CPU priority on us-metal02 under https://cho.sh/ko/1983DC. The daemon unit runs at CPUWeight 10000 so its
-supervisor and workers win against the job rigs in app.slice, but until 11-02 the kernels and every command they ran shared that cgroup: at 18:13Z
-on 11-02 it held 253 processes and used 25.9 cores, of which the prime-agent processes used about 2.8, and worker f2f8b4ebd885 waited 1,418 ms
-for a CPU inside a 5,049 ms stall (~/work/prime-worker-stalls/for-metal-management.md). So each pass moves every process of the daemon unit that is
-not core into the tools scope, a sibling of the unit in app.slice at the default weight, and its later children start there. Core is a
-`prime-agent --mode daemon` on the public daemon's socket directory (the supervisor and its workers), a prime-agent the supervisor starts
-itself (its two catalog processes, `prime-agent --version` with a role in their environment), a pi-pool token helper, and
-prime-agent-daemon-ctl with what it starts, so a reload's update keeps running in the unit. A supervisor that an update started from the tools
-scope goes back to the unit, and so does a catalog. A nice value below 0 that a moved process inherited from the old nice layer goes back to 0.
+The owner's t84 answer on 10-19 put CPU priority on us-metal02 under https://cho.sh/ko/1983DC. Since 11-02 every process the Prime workers start
+leaves prime-agent-daemon.service for prime-agent-tools.scope, a sibling in app.slice at the default weight: at 18:13Z on 11-02 the unit held 253
+processes using 25.9 cores, of which the prime-agent processes used about 2.8, and worker f2f8b4ebd885 waited 1,418 ms for a CPU inside a 5,049
+ms stall (~/work/prime-worker-stalls/for-metal-management.md).
+
+Since 11-04 the control loop also leaves user.slice. The Prime supervisor, its workers, its two catalogs and pi-pool token helpers run in
+prime-agent-daemon-core.scope, and the main process of each unit in SERVICES in a <unit>-core.scope, all in agents.slice, a root slice beside
+virev.slice. A weight only counts against its siblings, and on each CPU a group's weight is its root weight times that CPU's share of its
+load. So in user.slice at 1000 with about 25 busy cores of tools, the control loop got about 40 per CPU against CI's 10000 spread over its busy cores, and at 01:55 to
+01:58Z on 11-04, right after virev.slice went from 4000 to 10000 (63214791), 14 worker stalls of 5 s or more followed, up to 65.6 s. In
+agents.slice the same weight sits on the 2 to 3 cores the loop uses. Everything the loop starts still moves to the tools scope, and every
+other process of those services goes back to its unit, so the tools, the job rigs and the services' helpers keep their user.slice weight
+under CI (t68).
+
+A user unit's cgroup always lies under user@<uid>.service, so the units stay where they are and own their processes: systemd --user still
+starts, reloads and stops them and tracks each main PID, and only the processes move. A supervisor moves only once it is the unit's MainPID,
+so a start or reload reads its PIDFile while the new supervisor still runs in the unit. prime-agent-daemon-ctl and what it starts stay in
+the unit. Each scope has Delegate=yes, so writing a pid into its cgroup.procs is a supported move, and OOMPolicy=continue, so a kernel OOM
+kill of one process ends only that process. systemd stops a scope once it is empty, and the next pass that has a process to move starts it
+again with that process.
 
 The catalogs are core because every rename and named create waits for the name catalog's answer. In the tools scope at weight 100, from 21:19Z
 on 11-03 to 00:10Z on 11-04, the name catalog's main thread waited 13.3 s in the run queue per CPU-second used, against a median of 1.3 s for
 the workers' main threads; in single seconds it waited 0.25 to 0.97 s for 1 to 4 time slices, and at 23:37:52Z a rename's name check took 2,767 ms.
 
-The scope has Delegate=yes, so writing a pid into its cgroup.procs is a supported move, and OOMPolicy=continue, so a kernel OOM kill of one
-command ends only that command, as in the daemon unit. systemd stops the scope once it is empty, and the next pass that has a process to move
-starts it again with that process.
-
 A split inside the unit (Delegate=yes with core and tools leaves) was tried on a scratch unit first. It works live, but systemd 259 then cannot
 start the unit while the workers it left behind under KillMode=process still run: it spawns the start task into the unit's own cgroup, whose
-enabled controllers refuse a process, and the start fails with EBUSY.
+enabled controllers refuse a process, and the start fails with EBUSY. The unit's own cgroup stays a plain leaf here, and on 11-04 a scratch
+Type=forking unit with KillMode=process whose main process sat in a system scope reloaded, restarted after its main process died, and started
+again, and a Type=simple one with KillMode=mixed stopped with its child in the unit killed and its scope gone.
 """
 import os
 import pwd
@@ -32,10 +40,24 @@ import time
 
 USER = os.environ.get("CPU_PROTECT_USER", "sieun")
 DAEMON = "prime-agent-daemon.service"
+# The units whose main process serves the owner. meilisearch.service and pi-history.service stay out: their index threads ran 92% and 94% of
+# their CPU (10,343 s of 11,289 s and 49,335 s of 52,328 s, read from /proc on 11-04 at 02:5xZ), batch work that must not meet CI as an equal.
+SERVICES = ("sieun-pi-chat.service", "sieun-pi-apps-chat.service", "pi-host.service", "pi-host-relay.service")
 TOOLS = "prime-agent-tools.scope"
+AGENTS = "agents.slice"
 # measured: from 19:15 to 19:46Z on 11-02 the passes used 8.6 s of CPU in 31.5 min, 0.46% of one core, so a new process runs at most 2 s in the
 # unit before it moves.
 INTERVAL_S = 2
+
+Procs = dict[int, tuple[int, list[str]]]
+
+
+def core(unit: str) -> str:
+    """The scope in agents.slice that holds a unit's core processes."""
+    return unit.removesuffix(".service") + "-core.scope"
+
+
+CORE = core(DAEMON)
 
 
 def runs(argv: list[str], name: str) -> bool:
@@ -56,28 +78,57 @@ def is_supervisor(argv: list[str], public_dir: str) -> bool:
     return is_daemon(argv, public_dir) and os.path.basename(argv[argv.index("--daemon-socket") + 1]) == "daemon.sock"
 
 
-def plan(daemon: dict[int, tuple[int, list[str]]], tools: dict[int, tuple[int, list[str]]], public_dir: str) -> tuple[list[int], list[int]]:
-    """The moves that bring each process to its side: (pids from the unit to the scope, pids from the scope to the unit). daemon and tools map
-    pid -> (ppid, argv) for the processes of each cgroup."""
-    def under_ctl(pid: int) -> bool:
-        seen = set()
-        while pid in daemon and pid not in seen:
-            if runs(daemon[pid][1], "prime-agent-daemon-ctl"):
-                return True
-            seen.add(pid)
-            pid = daemon[pid][0]
-        return False
+def under_ctl(pid: int, procs: Procs) -> bool:
+    seen = set()
+    while pid in procs and pid not in seen:
+        if runs(procs[pid][1], "prime-agent-daemon-ctl"):
+            return True
+        seen.add(pid)
+        pid = procs[pid][0]
+    return False
 
-    def started_by_supervisor(ppid: int, argv: list[str]) -> bool:
-        return bool(argv) and os.path.basename(argv[0]) == "prime-agent" and ppid in daemon and is_supervisor(daemon[ppid][1], public_dir)
 
-    def core(pid: int) -> bool:
-        ppid, argv = daemon[pid]
-        return is_daemon(argv, public_dir) or started_by_supervisor(ppid, argv) or runs(argv, "pi-pool-token") or under_ctl(pid)
+def plan(groups: dict[str, Procs], mains: dict[str, int | None], public_dir: str) -> dict[str, list[int]]:
+    """The moves that bring each process to its place, as target -> pids. groups maps each unit and scope name (DAEMON, CORE, TOOLS, and each
+    of SERVICES with its core scope) to pid -> (ppid, argv) of that cgroup's processes, TOOLS only its prime-agent ones; mains maps DAEMON and
+    each of SERVICES to the unit's MainPID, None when unknown.
 
-    out = sorted(pid for pid in daemon if not core(pid))
-    back = sorted(pid for pid, (ppid, argv) in tools.items() if is_daemon(argv, public_dir) or started_by_supervisor(ppid, argv))
-    return out, back
+    The supervisor goes to CORE once it is the daemon's MainPID and back to the unit while it is not; its workers, its catalogs and pi-pool token
+    helpers go to CORE, and every other process of the daemon's side to TOOLS. prime-agent-daemon-ctl and what it starts stay in the unit. A
+    service's MainPID goes to its core scope and every other process there back to its unit."""
+    side = {**groups.get(TOOLS, {}), **groups.get(CORE, {}), **groups.get(DAEMON, {})}
+    main = mains.get(DAEMON)
+
+    def place(pid: int, ppid: int, argv: list[str], here: str) -> str:
+        if is_supervisor(argv, public_dir):
+            return here if main is None else CORE if pid == main else DAEMON
+        by_supervisor = bool(argv) and os.path.basename(argv[0]) == "prime-agent" and ppid in side and is_supervisor(side[ppid][1], public_dir)
+        return CORE if is_daemon(argv, public_dir) or by_supervisor or runs(argv, "pi-pool-token") else TOOLS
+
+    moves: dict[str, list[int]] = {}
+    for here in (DAEMON, CORE, TOOLS):
+        for pid, (ppid, argv) in groups.get(here, {}).items():
+            to = here if here == DAEMON and under_ctl(pid, side) else place(pid, ppid, argv, here)
+            if to != here:
+                moves.setdefault(to, []).append(pid)
+    for unit in SERVICES:
+        if mains.get(unit) is None:
+            continue
+        for here, to, wanted in ((unit, core(unit), True), (core(unit), unit, False)):
+            for pid in groups.get(here, {}):
+                if (pid == mains[unit]) == wanted:
+                    moves.setdefault(to, []).append(pid)
+    return {to: sorted(pids) for to, pids in moves.items()}
+
+
+def candidates(groups: dict[str, Procs], manager: int, public_dir: str) -> frozenset[tuple[str, int]]:
+    """The processes that may be a MainPID the last ask did not see: a supervisor that no ctl runs, wherever it is, and each child of the user
+    manager in a service's unit or core scope. A start or reload makes a new one, so the steady state asks systemd nothing."""
+    side = {**groups.get(TOOLS, {}), **groups.get(CORE, {}), **groups.get(DAEMON, {})}
+    found = {(DAEMON, pid) for here in (DAEMON, CORE, TOOLS) for pid, (_, argv) in groups.get(here, {}).items()
+             if is_supervisor(argv, public_dir) and not under_ctl(pid, side)}
+    found |= {(unit, pid) for unit in SERVICES for here in (unit, core(unit)) for pid, (ppid, _) in groups.get(here, {}).items() if ppid == manager}
+    return frozenset(found)
 
 
 def read(path: str) -> str | None:
@@ -88,7 +139,7 @@ def read(path: str) -> str | None:
         return None
 
 
-def procs(cgroup: str, only_comm: str | None = None) -> dict[int, tuple[int, list[str]]]:
+def procs(cgroup: str, only_comm: str | None = None) -> Procs:
     """pid -> (ppid, argv) of a cgroup's processes; with only_comm, only those whose comm is that."""
     found = {}
     for line in (read(f"{cgroup}/cgroup.procs") or "").split():
@@ -100,6 +151,42 @@ def procs(cgroup: str, only_comm: str | None = None) -> dict[int, tuple[int, lis
             continue
         found[pid] = (int(stat.rsplit(")", 1)[1].split()[1]), [arg for arg in cmdline.split("\0") if arg])
     return found
+
+
+def as_user(argv: list[str]) -> list[str]:
+    """argv run as the user through setpriv on the user's own bus. `--machine=<user>@.host` starts a unit and a session scope of its own for
+    each call, and a root ssh login's DBUS_SESSION_BUS_ADDRESS names root's bus, which fails with EPERM (11-02 23:47Z)."""
+    entry = pwd.getpwnam(USER)
+    return ["setpriv", f"--reuid={entry.pw_uid}", f"--regid={entry.pw_gid}", "--init-groups", "env", f"XDG_RUNTIME_DIR=/run/user/{entry.pw_uid}",
+            f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{entry.pw_uid}/bus", *argv]
+
+
+def main_pids() -> dict[str, int | None]:
+    units = (DAEMON, *SERVICES)
+    out = subprocess.run(as_user(["systemctl", "--user", "show", "-p", "MainPID", "--value", *units]), capture_output=True, text=True).stdout
+    values = [line.strip() for line in out.split("\n") if line.strip()]
+    return {unit: int(value) if value.isdigit() and value != "0" else None for unit, value in zip(units, values)}
+
+
+def start_scope(name: str, pid: int, user: bool) -> None:
+    """Starts a scope with pid as its first process: the tools scope in the user's app.slice, a core scope in the system's agents.slice."""
+    slice_, about = ("app.slice", "Commands the Prime workers start") if user else (AGENTS, "The agents' control loop")
+    call = ["busctl", *(["--user"] if user else []), "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager",
+            "StartTransientUnit", "ssa(sv)a(sa(sv))", name, "fail", "5", "PIDs", "au", "1", str(pid), "Delegate", "b", "true", "OOMPolicy", "s", "continue",
+            "Slice", "s", slice_, "Description", "s", f"{about}, CPU layer 2 of sieun-pi deploy/linux/README.md", "0"]
+    subprocess.run(as_user(call) if user else call, capture_output=True, text=True)
+
+
+def move(pid: int, cgroup: str, source: str) -> bool:
+    """Writes pid into cgroup when it still lies in source, so a process that a handoff moved meanwhile stays where it went."""
+    if (read(f"/proc/{pid}/cgroup") or "").strip() != f"0::{source.removeprefix('/sys/fs/cgroup')}":
+        return False
+    try:
+        with open(f"{cgroup}/cgroup.procs", "w") as f:
+            f.write(str(pid))
+        return True
+    except OSError:
+        return False
 
 
 def nice_to_zero(pid: int) -> None:
@@ -115,56 +202,33 @@ def nice_to_zero(pid: int) -> None:
             pass
 
 
-def start_scope(pid: int) -> None:
-    """Starts the tools scope in the user's manager with pid as its first process. It calls the user's bus as the user through setpriv, since
-    `--machine=<user>@.host` starts a unit and a session scope of its own for each call. It names the bus by path, because `busctl --user`
-    follows an inherited DBUS_SESSION_BUS_ADDRESS, and from a root ssh login that names root's bus and fails with EPERM (11-02 23:47Z)."""
-    entry = pwd.getpwnam(USER)
-    subprocess.run(["setpriv", f"--reuid={entry.pw_uid}", f"--regid={entry.pw_gid}", "--init-groups",
-                    "busctl", f"--address=unix:path=/run/user/{entry.pw_uid}/bus", "call", "org.freedesktop.systemd1", "/org/freedesktop/systemd1",
-                    "org.freedesktop.systemd1.Manager", "StartTransientUnit", "ssa(sv)a(sa(sv))", TOOLS, "fail", "5",
-                    "PIDs", "au", "1", str(pid), "Delegate", "b", "true", "OOMPolicy", "s", "continue", "Slice", "s", "app.slice",
-                    "Description", "s", "Commands the Prime workers start, CPU layer 2 of sieun-pi deploy/linux/README.md", "0"],
-                   capture_output=True, text=True)
-
-
-def move(pid: int, cgroup: str, source: str) -> bool:
-    """Writes pid into cgroup when it still lies in source, so a process that a handoff moved meanwhile stays where it went."""
-    if (read(f"/proc/{pid}/cgroup") or "").strip() != f"0::{source.removeprefix('/sys/fs/cgroup')}":
-        return False
-    try:
-        with open(f"{cgroup}/cgroup.procs", "w") as f:
-            f.write(str(pid))
-        return True
-    except OSError:
-        return False
-
-
-def run_once(app: str, public_dir: str) -> None:
-    unit, scope = f"{app}/{DAEMON}", f"{app}/{TOOLS}"
-    out, back = plan(procs(unit), procs(scope, only_comm="prime-agent"), public_dir)
-    if out and not os.path.isdir(scope):
-        start_scope(out[0])
-    for pid in out:
-        if move(pid, scope, unit):
-            nice_to_zero(pid)
-    for pid in back:
-        move(pid, unit, scope)
-
-
-def nice_reset(app: str) -> None:
-    """Puts every thread of the unit back to nice 0 once, after the old nice layer set the supervisor and workers to -10."""
-    for pid in (read(f"{app}/{DAEMON}/cgroup.procs") or "").split():
-        nice_to_zero(int(pid))
+def run_once(paths: dict[str, str], known: tuple[dict[str, int | None], frozenset], manager: int, public_dir: str) -> tuple[dict[str, int | None], frozenset]:
+    """One pass. known is the MainPIDs from the last ask and the candidates it saw. A pass asks again when the candidates changed, and while a
+    supervisor that is not the known MainPID runs outside a ctl, because systemd reads the PIDFile only after the ctl that wrote it exits."""
+    groups = {name: procs(path, only_comm="prime-agent" if name == TOOLS else None) for name, path in paths.items()}
+    mains, seen = known
+    now = candidates(groups, manager, public_dir)
+    if now != seen or any(unit == DAEMON and pid != mains.get(DAEMON) for unit, pid in now):
+        mains, seen = main_pids(), now
+    for to, pids in plan(groups, mains, public_dir).items():
+        if to.endswith(".scope") and not os.path.isdir(paths[to]):
+            start_scope(to, pids[0], user=to == TOOLS)
+        for pid in pids:
+            source = next(paths[name] for name, found in groups.items() if pid in found)
+            if move(pid, paths[to], source) and to == TOOLS:
+                nice_to_zero(pid)
+    return mains, seen
 
 
 if __name__ == "__main__":
     uid = pwd.getpwnam(USER).pw_uid
-    app = f"/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service/app.slice"
-    public_dir = f"/tmp/prime-agent-{uid}"
-    nice_reset(app)
+    user = f"/sys/fs/cgroup/user.slice/user-{uid}.slice/user@{uid}.service"
+    app, agents = f"{user}/app.slice", f"/sys/fs/cgroup/{AGENTS}"
+    paths = {name: f"{app}/{name}" for name in (DAEMON, TOOLS, *SERVICES)} | {core(unit): f"{agents}/{core(unit)}" for unit in (DAEMON, *SERVICES)}
+    known: tuple[dict[str, int | None], frozenset] = ({}, frozenset({("", 0)}))
     while True:
-        run_once(app, public_dir)
+        manager = int((read(f"{user}/init.scope/cgroup.procs") or "0").split()[0])
+        known = run_once(paths, known, manager, f"/tmp/prime-agent-{uid}")
         if "--once" in sys.argv:
             break
         time.sleep(INTERVAL_S)

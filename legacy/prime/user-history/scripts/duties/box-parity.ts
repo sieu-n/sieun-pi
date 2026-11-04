@@ -24,8 +24,9 @@ import { CHECKS, type Outcome, realDeps, runChecks } from "./skills-and-tools.ts
  *   folded, plus services whose main process runs at a nice level its unit does not set. A limit at or above the box's RAM limits nothing.
  *   A setting the owner asked for is listed as `owner_asked` with its layer and not counted: a CPUWeight setup-cpu.sh sets (CPU layer 1) and a
  *   `heavy` scope (memory layer 4), both in deploy/linux/README.md after the owner's 10-19 asks and his t84 answer. CPU layer 2 sets no unit
- *   property since 11-02: cpu-protect.py moves the daemon's commands into prime-agent-tools.scope at the default weight. `parseLayers` reads
- *   them from those scripts, so a value that differs from its script still counts.
+ *   property since 11-02: cpu-protect.py moves the daemon's commands into prime-agent-tools.scope at the default weight, and since 11-04 the
+ *   agents' control loop into scopes in agents.slice, whose CPUWeight is a layer 1 row. `parseLayers` reads them from those scripts, so a value
+ *   that differs from its script still counts.
  * - `rcu_boost_off`: 1 when rcu-boost.service (CPU layer 3) is not running or rcu_cpu_stall_timeout differs from its STALL_TIMEOUT_S, see rcuBoostOff.
  * - `public_ssh_open`: 1 when port 22 on the box's public address answers from us-metal01 (METAL_SSH_HOST), or ssh-public-guard.service is not
  *   active; the probe also dials a closed port, so a refused answer proves the path reaches the box.

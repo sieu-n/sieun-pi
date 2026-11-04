@@ -31,7 +31,13 @@ user_ctl=(systemctl --user "--machine=$DEV_USER@")
 # 202 to 254; after both changes at 06:41:40Z it waited 0.13 s and 0.35 s at load 204 to 221 (/home/sieun/work/cpu-weights/report.md).
 # pi-history runs at 10000 beside the chat, whose api/search answers from it: at 03:28Z on 10-28 at load 400 and weight 100, its cpu.pressure
 # full read 23% against 4 to 5% for the chat, and searches took p50 433 ms and p90 1.3 s, mostly pi-history waiting for CPU.
-declare -A SYSTEM_WEIGHTS=([ssh.service]=1000 [tailscaled.service]=1000 [user.slice]=1000 [user@$uid.service]=10000 [virev.slice]=10000 [virev-prod.slice]=300 [virev-ci.slice]=300 [system.slice]=400 [dev.slice]=400)
+# agents.slice runs at 10000, equal to virev.slice, because cpu-protect.py puts the agents' control loop there and nothing else: the Prime
+# supervisor, its workers and catalogs, and the main processes of the chat, sw factory, pi-host and its relay. A weight only counts while its
+# group is runnable, and the loop used 2.6 to 3.5 cores at CI peaks (prime-cpu-split 11-02, d7-cpu-root-split 11-04), so at 10000 it costs CI
+# at most those cores, while its weight on each CPU it runs on is about 3000 against CI's 10000 spread over 35 to 50 busy cores.
+# measured: at 01:55 to 01:58Z on 11-04, with the loop in user.slice at 1000 against virev.slice at 10000 and CI ramping from 15 to 51 cores,
+# 14 Prime stalls of 5 s or more followed, up to 65.6 s, and at 02:34Z the workers' main threads waited 2.09 s per CPU-second used.
+declare -A SYSTEM_WEIGHTS=([ssh.service]=1000 [tailscaled.service]=1000 [user.slice]=1000 [user@$uid.service]=10000 [virev.slice]=10000 [virev-prod.slice]=300 [virev-ci.slice]=300 [system.slice]=400 [dev.slice]=400 [agents.slice]=10000)
 # sieun-pi-wiki and auto-sns-dev-pm2 (the wiki and the dev servers duty d1 probes) run at 10000 for the same reason as pi-history.
 # measured: on 10-29 at load 200 and weight 100, per CPU-second used the wiki waited 0.35 s and pm2 0.32 s against 0.02 s for the
 # chat at 10000; at load 230 :5174 answered in 12.7 s and the wiki in up to 1.1 s while the chat took 0.13 s, and d1 at 06:06Z saw
@@ -50,7 +56,10 @@ dropin() {
 }
 section() { case "$1" in *.slice) echo Slice ;; *) echo Service ;; esac; }
 
-# 1. CPUWeight from a drop-in for the next start, and set live now.
+# 1. CPUWeight from a drop-in for the next start, and set live now. agents.slice is ours, so it is installed and started first.
+install -m 644 "$here/agents.slice" /etc/systemd/system/agents.slice
+systemctl daemon-reload
+systemctl start agents.slice
 for unit in "${!SYSTEM_WEIGHTS[@]}"; do
   install -d "/etc/systemd/system/$unit.d"
   dropin "$(section "$unit")" "${SYSTEM_WEIGHTS[$unit]}" > "/etc/systemd/system/$unit.d/cpu-weight.conf"
@@ -65,8 +74,8 @@ done
 "${user_ctl[@]}" daemon-reload
 for unit in "${!USER_WEIGHTS[@]}"; do "${user_ctl[@]}" set-property --runtime "$unit" "CPUWeight=${USER_WEIGHTS[$unit]}"; done
 
-# 2. cpu-protect keeps the Prime supervisor and its workers alone in prime-agent-daemon.service and moves the commands they start into
-# prime-agent-tools.scope, a sibling in app.slice at the default weight. Its start puts the threads the old nice layer set to -10 back to 0.
+# 2. cpu-protect moves the Prime supervisor, its workers and the chat services' main processes into scopes in agents.slice, and the commands
+# the workers start into prime-agent-tools.scope, a sibling of the daemon unit in app.slice at the default weight.
 install -d /usr/local/lib/cpu-protect
 install -m 755 "$here/cpu-protect.py" /usr/local/lib/cpu-protect/cpu-protect.py
 install -m 644 "$here/cpu-protect.service" /etc/systemd/system/cpu-protect.service
@@ -97,6 +106,7 @@ app=user.slice/user-$uid.slice/user@$uid.service/app.slice
 for unit in "${!SYSTEM_WEIGHTS[@]}"; do echo "$unit cpu.weight $(cat "/sys/fs/cgroup$(systemctl show -p ControlGroup --value "$unit")/cpu.weight")"; done
 for unit in "${!USER_WEIGHTS[@]}"; do echo "$unit cpu.weight $(cat "/sys/fs/cgroup/$app/$unit/cpu.weight")"; done
 echo "processes in $app/prime-agent-daemon.service: $(wc -l < "/sys/fs/cgroup/$app/prime-agent-daemon.service/cgroup.procs"), in prime-agent-tools.scope: $(cat "/sys/fs/cgroup/$app/prime-agent-tools.scope/cgroup.procs" 2>/dev/null | wc -l)"
+for scope in /sys/fs/cgroup/agents.slice/*.scope; do [ -d "$scope" ] && echo "processes in agents.slice/${scope##*/}: $(wc -l < "$scope/cgroup.procs")"; done
 echo "cpu-protect $(systemctl is-active cpu-protect)"
 echo "rcu-boost $(systemctl is-active rcu-boost), rcu_cpu_stall_timeout $(cat /sys/module/rcupdate/parameters/rcu_cpu_stall_timeout)"
 echo "cgroup2 $(findmnt -no OPTIONS /sys/fs/cgroup), grub lines with cgroup_favordynmods=true: $(grep -c cgroup_favordynmods=true /boot/grub/grub.cfg)"

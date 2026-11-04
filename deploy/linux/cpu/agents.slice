@@ -1,0 +1,7 @@
+# The agents' control loop at the cgroup root beside virev.slice: the Prime supervisor, its workers and the main processes of the chat services,
+# which cpu-protect.py moves here (CPU layer 2 of deploy/linux/README.md, owner's t84 answer 10-19, after https://cho.sh/ko/1983DC).
+# setup-cpu.sh sets its CPUWeight from a drop-in.
+[Unit]
+Description=The agents' control loop, CPU layer 2 of sieun-pi deploy/linux/README.md
+
+[Slice]

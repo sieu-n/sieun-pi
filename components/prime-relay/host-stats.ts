@@ -265,9 +265,11 @@ export function transientUnits(now = Date.now()): ReadonlySet<string> {
  * the daemon unit until 11-02), and an ssh login's session scope runs Prime itself on some days (12:56Z to 16:46Z on 10-27) and Mac jobs' box
  * checks on others. `processHolder` names each of their processes.
  *
- * Under app.slice an installed unit is an agent service unless INSTALLED_UNITS gives it another group, a kernel's own pi-rlm-kernel scope is an
- * agent session, and every other transient unit is a job's (`transient`, `transientUnits`). Until 10-28 a path matched only CGROUP_RULES, so
- * jobs' transient units and the ssh scopes read Other: 43.1 GB of the 69.7 GB the groups summed at 17:15Z on 10-27.
+ * In agents.slice the Prime core scope (supervisor and workers, sieun-pi cpu-protect.py) is by-process, and each other core scope, which holds
+ * a chat service's main process, is an agent service. Under app.slice an installed unit is an agent service unless INSTALLED_UNITS gives it
+ * another group, a kernel's own pi-rlm-kernel scope is an agent session, and every other transient unit is a job's (`transient`,
+ * `transientUnits`). Until 10-28 a path matched only CGROUP_RULES, so jobs' transient units and the ssh scopes read Other: 43.1 GB of the
+ * 69.7 GB the groups summed at 17:15Z on 10-27.
  */
 export function leafHolder(path: string, transient: ReadonlySet<string> = transientUnits()): Holder | "by-process" {
   const label = cgroupLabel(path);
@@ -279,6 +281,8 @@ export function leafHolder(path: string, transient: ReadonlySet<string> = transi
     return { id: INSTALLED_UNITS.find(([, rule]) => rule.test(unit))?.[0] ?? "services", label };
   }
   if (LOGIN_SCOPE.test(path)) return "by-process";
+  if (path === `${AGENTS_SLICE}/prime-agent-daemon-core.scope`) return "by-process";
+  if (path.startsWith(`${AGENTS_SLICE}/`)) return { id: "services", label };
   return { id: PATH_RULES.find(([, rule]) => rule.test(path))?.[0] ?? "other", label };
 }
 
@@ -612,7 +616,8 @@ export const CPU_SIDES: readonly CpuSide[] = ["harness", "apps", "owner", "ci", 
 /**
  * The cgroups each side's CPU time is read from, under /sys/fs/cgroup, with {app} for user@<uid>.service/app.slice in this process's
  * user-<uid>.slice. The harness is that whole user slice (the Prime daemon and its workers, the chat service, pi-pool, the relay, agents'
- * ssh sessions and their transient units) less the units named here for another side, so a unit that ends inside the window still counts.
+ * ssh sessions and their transient units) less the units named here for another side, plus agents.slice, so a unit that ends inside the
+ * window still counts.
  * Virev's CI VMs and production servers in virev.slice count in full, because on 10-18 from 07:45Z metal-management removed the CPU pins on
  * us-metal02's slices and they run on the same 80 CPUs as the harness.
  */
@@ -622,6 +627,11 @@ export const SIDE_CGROUPS: Readonly<Record<Exclude<CpuSide, "harness">, readonly
   ci: ["{app}/ci-cache.service", "{app}/ci-monitor.service", "virev.slice/virev-ci.slice"],
   system: ["system.slice"],
 };
+/**
+ * The root slice that holds the agents' control loop since 11-04: sieun-pi cpu-protect.py moves the Prime supervisor, its workers and the chat
+ * services' main processes there from the user slice, so it counts on the harness side in full.
+ */
+export const AGENTS_SLICE = "agents.slice";
 /** usage_usec of a cgroup's cpu.stat; null when the line is absent. */
 export function parseUsageUsec(text: string): number | null {
   const value = /^usage_usec (\d+)$/m.exec(text)?.[1];
@@ -656,21 +666,21 @@ export function cpuSides(before: ReadonlyMap<string, number>, after: ReadonlyMap
       if (path.startsWith(`${slice.slice}/`)) inSlice += usec;
     }
   }
-  sides.harness = used(slice.slice) - inSlice;
+  sides.harness = used(slice.slice) - inSlice + used(AGENTS_SLICE);
   return Object.fromEntries(CPU_SIDES.map(side => [side, cores(sides[side])])) as CpuSides;
 }
 const CGROUP_ROOT = "/sys/fs/cgroup";
 const readText = (path: string): string => { try { return readFileSync(path, "utf8"); } catch { return ""; } };
 const ownSlice = process.platform === "linux" ? userSlice(readText("/proc/self/cgroup")) : null;
 /**
- * The usage_usec of the user slice and of every cgroup SIDE_CGROUPS names, by path; a cgroup that cannot be read is left out. The reads are
+ * The usage_usec of the user slice, of agents.slice and of every cgroup SIDE_CGROUPS names, by path; a cgroup that cannot be read is left out. The reads are
  * async, off the main thread: on 10-20 from 11:45Z to 13:08Z one readFileSync of a cpu.stat here held the live chat's event loop for 83 min,
  * while systemd killed hung `ss` reads of the box textfile collector, and the chat's CPU profile ended in readCgroups. They run in the cgroup
  * lane (kernel-read.ts), so a hung cgroup file holds one thread-pool thread and no more.
  */
 async function readCgroups(slice: { slice: string; app: string } | null): Promise<Map<string, number> | undefined> {
   if (!slice) return undefined;
-  const paths = [slice.slice, ...Object.values(SIDE_CGROUPS).flat().map(template => template.replace("{app}", slice.app))];
+  const paths = [slice.slice, AGENTS_SLICE, ...Object.values(SIDE_CGROUPS).flat().map(template => template.replace("{app}", slice.app))];
   const texts = await Promise.all(paths.map(path => kernelFile(join(CGROUP_ROOT, path, "cpu.stat")).catch(() => "")));
   return new Map(paths.flatMap((path, at) => { const usec = parseUsageUsec(texts[at]!); return usec === null ? [] : [[path, usec] as const]; }));
 }

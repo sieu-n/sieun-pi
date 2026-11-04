@@ -288,7 +288,8 @@ async function linuxLayers(ctx: Context): Promise<Sample[]> {
   const out: Sample[] = [];
   const slice = userSlice(await text("/proc/self/cgroup"));
   const cg = (path: string) => join("/sys/fs/cgroup", path);
-  const daemonCg = slice ? `${slice.app}/prime-agent-daemon.service` : null;
+  // Since 11-04 sieun-pi cpu-protect.py moves the supervisor and workers into this scope; memory they charged before a move stays with the unit.
+  const daemonCg = slice ? "agents.slice/prime-agent-daemon-core.scope" : null;
   const [swaps, meminfo, vmstat, zswap, sliceEvents, daemonEvents, daemonStat, daemonSwap, daemonCurrent, conf, system, user, ...sysctls] = await Promise.all([
     text("/proc/swaps"), text("/proc/meminfo"), text("/proc/vmstat"),
     Promise.all(["enabled", "compressor", "max_pool_percent"].map(name => text(`/sys/module/zswap/parameters/${name}`).then(value => value.trim()))),

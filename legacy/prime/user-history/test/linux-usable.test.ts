@@ -51,6 +51,13 @@ test("CPU sides with no pins: Virev's CI and prod VMs count in full, so a minute
   assert.deepEqual(cpuSides(before, after, slice, 10_000), { harness: 20, apps: 5, owner: 0, ci: 24, system: 0.8 });
 });
 
+test("CPU sides count agents.slice, where the Prime supervisor, workers and chat main processes run since 11-04, on the harness side", () => {
+  const slice = userSlice("0::/user.slice/user-1001.slice/user@1001.service/app.slice/sieun-pi-chat.service\n")!;
+  const before = new Map([[slice.slice, 0], ["agents.slice", 0], ["virev.slice/virev-ci.slice", 0]]);
+  const after = new Map([[slice.slice, 170_000_000], ["agents.slice", 30_000_000], ["virev.slice/virev-ci.slice", 240_000_000]]);
+  assert.deepEqual(cpuSides(before, after, slice, 10_000), { harness: 20, apps: 0, owner: 0, ci: 24, system: 0 });
+});
+
 test("runnable tasks a core with no pins average all 80 CPUs, VM vCPU time included", () => {
   const window = 10 * SECOND;
   const all = Array.from({ length: 80 }, (_, cpu) => cpu);

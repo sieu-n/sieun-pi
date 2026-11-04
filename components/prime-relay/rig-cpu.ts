@@ -7,7 +7,8 @@ import { kernelDir, kernelFile } from "./kernel-read.ts";
  * The harness side's CPU split into the harness's own work and the rigs jobs start (asked on 10-18 after us-metal02 read 10 CPU minutes
  * unusable from 11:23Z to 11:32Z, when scratch chat services, test rigs and iso builds of jobs held most of the harness's cores).
  *
- * Own work is the Prime workers and kernels, the live chat service, pi-pool, the relay and every other unit installed under the user's app.slice.
+ * Own work is the Prime workers and kernels, the live chat service, pi-pool, the relay and every other unit installed under the user's app.slice,
+ * and agents.slice, where sieun-pi cpu-protect.py moves the supervisor, the workers and the chat services' main processes since 11-04.
  * A rig is what a job started: every other process in prime-agent-daemon.service and in prime-agent-tools.scope, where the commands kernels
  * run go since 11-02 (tests, builds and scratch chat services), every other transient unit (systemd-run, such as the p8iso-* units of the
  * prime-agent fix job) and every ssh login's session-<n>.scope under the user slice. The rigs of those two units are their cgroup time less
