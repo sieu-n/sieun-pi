@@ -1,7 +1,7 @@
 /**
  * Wires the host seam, the chat server's store and the services, and holds the one live hub every page connects to over /api/live.
  */
-import { existsSync, mkdirSync, readFileSync, watch, type FSWatcher } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -36,6 +36,9 @@ import { drained } from "./disk.ts";
 import { readJson, Store, writeJson } from "./store.ts";
 import { modelRef, OWNER, parseConversationId, Threads } from "./threads.ts";
 import { QueueWatch, waitingPlace } from "./queue.ts";
+
+/** An image as a page from before 11-03 15:01Z sends it: its base64 bytes inline (see `App.uploaded`). */
+type LegacyImage = { data: string; mimeType: string };
 
 /** A model the pickers offer, which must be one of config/allowed-models.ts (owner rule c185: the newest model of each tier only). */
 function offered(key: AllowedModel, label: string, family: string, levels: ThinkingLevel[]): ModelInfo {
@@ -665,8 +668,19 @@ export class App {
     return { url: `/api/uploads/${name}`, mimeType };
   }
 
-  /** A send's image: a ref POST /api/uploads gave, whose file is here. */
-  private uploaded(ref: ImageRef): ImageRef {
+  /**
+   * A send's image: a ref POST /api/uploads gave, whose file is here. A page loaded before b2058046 (11-03 15:01Z) still sends the image's
+   * base64 bytes as `{data, mimeType}`; those are kept as an upload here, because on 11-04 at 03:09Z the owner's open tab sent two posts
+   * that way and both came back Not delivered with "No upload undefined", and a stale tab cannot learn the new shape until it reloads.
+   */
+  private uploaded(ref: ImageRef | LegacyImage): ImageRef {
+    const legacy = ref as Partial<LegacyImage>;
+    if (typeof legacy?.data === "string" && typeof legacy.mimeType === "string" && legacy.mimeType.startsWith("image/") && legacy.data) {
+      const name = `${randomUUID()}.${legacy.mimeType.split("/")[1]!.replace(/[^a-z0-9]/g, "") || "bin"}`;
+      writeFileSync(this.store.imagePath(name), Buffer.from(legacy.data, "base64"));
+      return { url: `/api/uploads/${name}`, mimeType: legacy.mimeType };
+    }
+    ref = ref as ImageRef;
     const name = typeof ref?.url === "string" && ref.url.startsWith("/api/uploads/") ? ref.url.slice("/api/uploads/".length).replace(/[^\w.-]/g, "") : "";
     if (!name || !existsSync(this.store.imagePath(name))) {
       throw new Error(`No upload ${String(ref?.url)}; post the image to POST /api/uploads first and send the {url, mimeType} it answers.`);

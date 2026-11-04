@@ -210,6 +210,14 @@ describe("send speed", () => {
       const refused = await s.send("POST", "/api/c/dm_vent/send", { text: "no bytes", images: [{ url: "/api/uploads/nothing.png", mimeType: "image/png" }], requestId: "speed-missing" });
       assert.equal(refused.status, 400);
       assert.match(refused.body.error, /POST \/api\/uploads/);
+      // A tab loaded before uploads existed sends the bytes inline; on 11-04 two such posts of the owner's came back Not delivered.
+      for (const [conversation, body] of sends) {
+        const sent = await s.send("POST", `/api/c/${conversation}/send`, { ...body, images: [{ data: png.toString("base64"), mimeType: "image/png" }], requestId: `legacy-${conversation}` });
+        assert.equal(sent.status, 200, sent.body.error);
+        const [kept] = sent.body.item.images as { url: string }[];
+        assert.match(kept!.url, /^\/api\/uploads\/[\w-]+\.png$/);
+        assert.deepEqual(Buffer.from(await (await fetch(s.base + kept!.url)).arrayBuffer()), png);
+      }
     } finally {
       host.beforeSubmit = undefined;
       release();
