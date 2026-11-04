@@ -521,14 +521,20 @@ async function cleanupOrg(convex: string, secret: string, org: Org): Promise<voi
 
 type Answer = ProbeResult & { body: unknown; retryAfterS?: number };
 
-async function probe(base: string, extra: Record<string, string>, org: Org, op: string, request: ProbeRequest, note: string): Promise<Answer> {
+/**
+ * The X-Virev-Caller of every call this duty makes. The portal passes a probe: label on to the crawler, which counts it out of its latency
+ * SLO (auto-sns-agent 2435aff5e): on prod on 11-04 from 01:30 to 05:30Z d2 reruns sent 19 unlabeled profile searches at a p50 of 13.9 s.
+ */
+const CALLER = { "x-virev-caller": "probe:portal-parity" };
+
+export async function probe(base: string, extra: Record<string, string>, org: Org, op: string, request: ProbeRequest, note: string): Promise<Answer> {
   const url = new URL(base + request.path);
   for (const [key, value] of Object.entries(request.query)) url.searchParams.set(key, value);
   const start = Date.now();
   try {
     const response = await fetch(url, {
       method: request.method,
-      headers: { authorization: `Bearer ${org.key}`, ...extra, ...(request.body === undefined ? {} : { "content-type": "application/json" }) },
+      headers: { authorization: `Bearer ${org.key}`, ...CALLER, ...extra, ...(request.body === undefined ? {} : { "content-type": "application/json" }) },
       body: request.body === undefined ? null : JSON.stringify(request.body),
       redirect: "manual",
     });
@@ -554,7 +560,7 @@ async function probe(base: string, extra: Record<string, string>, org: Org, op: 
  * True when the job holds no slot any more: 200 cancelled, 409 job_finished, or 404 for a job the portal no longer has.
  */
 async function cancelJob(base: string, extra: Record<string, string>, org: Org, id: string): Promise<boolean> {
-  return fetch(`${base}/v1/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST", headers: { authorization: `Bearer ${org.key}`, ...extra }, signal: AbortSignal.timeout(10_000) })
+  return fetch(`${base}/v1/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST", headers: { authorization: `Bearer ${org.key}`, ...CALLER, ...extra }, signal: AbortSignal.timeout(10_000) })
     .then(response => { void response.body?.cancel(); return [200, 404, 409].includes(response.status); }).catch(() => false);
 }
 

@@ -2,7 +2,7 @@
 // answered GET /v1/tiktok/live/profile 200 with no data (req_20a6dc07f84b09204e9ab4510ff863f1) and d2, which judged the status alone, read 82.2.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bodyGap, type Operation } from "../scripts/duties/portal-parity.ts";
+import { bodyGap, probe, type Operation } from "../scripts/duties/portal-parity.ts";
 
 const documented = (data: unknown): Operation => ({ responses: { "200": { content: { "application/json": { example: { data, meta: {} } } } } } });
 const profile = documented({ platform: "tiktok", username: "flighthouse", follower_count: 1 });
@@ -24,4 +24,16 @@ test("an operation whose docs show no data example is not judged on its body", (
   assert.equal(bodyGap(documented("ok"), { data: 1 }), null);
   const examples: Operation = { responses: { "200": { content: { "application/json": { examples: { one: { value: { data: { a: 1 } } } } } } } } };
   assert.match(bodyGap(examples, { data: { b: 1 } })!, /data lacks a/);
+});
+
+// 11-04: d2's prod profile searches reached the crawler unlabeled and counted in its latency SLO.
+test("every call names this duty as a probe to the portal", async (t) => {
+  const sent: Headers[] = [];
+  t.mock.method(globalThis, "fetch", async (_url: URL, init: RequestInit) => {
+    sent.push(new Headers(init.headers));
+    return new Response(JSON.stringify({ data: {}, meta: {} }), { status: 200 });
+  });
+  await probe("https://api.test", {}, { id: "org_1", key: "kb_live_x" }, "creators.profile_search",
+    { method: "POST", path: "/v1/creators/profiles/search", query: {}, body: { query: "natgeo", limit: 2 } }, "prod");
+  assert.equal(sent[0]!.get("x-virev-caller"), "probe:portal-parity");
 });
