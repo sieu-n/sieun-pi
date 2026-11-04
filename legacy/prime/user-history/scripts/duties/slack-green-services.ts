@@ -250,13 +250,16 @@ export async function readRoutes(fetcher: typeof fetch, now: number): Promise<Ro
 }
 
 interface RailwayRow { status: string; createdAt: string }
-/** The worker's newest deployment that is not skipped or removed, and its newest presence check log line, from a temp-linked folder. */
+/**
+ * The worker's newest deployment that is not skipped, removed, waiting or failed, and its newest presence check log line, from a temp-linked
+ * folder. A FAILED build leaves the deployment before it running, as the 03:15Z redeploy on 11-04 did after slack-green #422 deleted the Dockerfile.
+ */
 export async function readWorker(run: Exec): Promise<WorkerRead> {
   const dir = await mkdtemp(join(tmpdir(), "sg-services-"));
   try {
     await run("railway", ["link", "--project", "slack-green-backend", "--environment", "production", "--service", "slack-green-backend"], { cwd: dir });
     const list = await run("railway", ["deployment", "list", "--json", "--limit", "20"], { cwd: dir });
-    const newest = (JSON.parse(list.slice(list.indexOf("["))) as RailwayRow[]).filter(row => !["SKIPPED", "REMOVED", "WAITING"].includes(row.status))
+    const newest = (JSON.parse(list.slice(list.indexOf("["))) as RailwayRow[]).filter(row => !["SKIPPED", "REMOVED", "WAITING", "FAILED"].includes(row.status))
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
     if (!newest) throw new Error("the worker has no deployment among its newest 20");
     const logs = await run("railway", ["logs", "--lines", "300", "--json"], { cwd: dir });
