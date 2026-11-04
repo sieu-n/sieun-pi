@@ -64,6 +64,8 @@ export interface SearchHit { thread: string; conversation: number; entryId: numb
 export type UsageRange = { since?: number; until?: number; threads?: string[]; bucketMs?: number };
 export interface UsageTotal {
   bucket?: number;
+  /** The box whose pi-host answered the row; MultiHost sets it, and a single host's rows leave it to the caller. */
+  host?: string;
   thread: string; model: string; turns: number; input: number; output: number; cacheRead: number; cacheWrite: number;
   cost: number; costInput: number; costOutput: number; costCacheRead: number; costCacheWrite: number;
 }

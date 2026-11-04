@@ -187,7 +187,7 @@ export class MultiHost implements Host {
     const boxes = this.upBoxes();
     const answers = await Promise.allSettled(boxes.map(b => b.host.usage(range)));
     return answers.flatMap((answer, i) => {
-      if (answer.status === "fulfilled") return answer.value;
+      if (answer.status === "fulfilled") return answer.value.map(row => ({ ...row, host: boxes[i]!.box }));
       this.log(`usage on ${boxes[i]!.box} failed: ${String(answer.reason)}`);
       return [];
     });

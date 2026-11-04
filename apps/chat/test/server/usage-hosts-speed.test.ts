@@ -91,3 +91,22 @@ test("api/usage from a pi-host without buckets asks each range in one round", as
   assert.equal(report.rows[0]!.cost.total, 7);
   assert.equal(report.previous.cost, 7);
 });
+
+test("api/usage labels each row with the box that answered it, and the host filter keeps that box's rows", async () => {
+  const DAY = 86_400_000;
+  const row = (bucket: number, host: string, cost: number): UsageTotal => ({ bucket, host, thread: "t", model: "m", turns: 1, input: 1, output: 1, cacheRead: 0, cacheWrite: 0,
+    cost, costInput: 0, costOutput: 0, costCacheRead: 0, costCacheWrite: 0 });
+  const host = {
+    async usage(range: { since?: number }): Promise<UsageTotal[]> {
+      const day = range.since! + 7 * DAY;
+      return [row(day, "us-metal02", 1), row(day, "mac", 2), row(range.since!, "mac", 4)];
+    },
+  } as unknown as Host;
+  const threads = { thread: () => undefined, threadsList: () => [] } as unknown as Threads;
+  const all = await usageReport(host, threads, "us-metal02", { days: 7 });
+  assert.deepEqual(all.rows.map(r => [r.host, r.cost.total]), [["us-metal02", 1], ["mac", 2]]);
+  const mac = await usageReport(host, threads, "us-metal02", { days: 7, host: "mac" });
+  assert.deepEqual(mac.rows.map(r => [r.host, r.cost.total]), [["mac", 2]]);
+  assert.equal(mac.previous.cost, 4);
+  assert.equal(mac.days[0]!.byModel.m, 2);
+});
