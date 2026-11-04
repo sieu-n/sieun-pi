@@ -48,3 +48,20 @@ test("the worker read skips a FAILED deployment and reads the one still running"
   assert.equal(worker.status, "SUCCESS");
   assert.equal(worker.lastActiveAt, NOW - 30_000);
 });
+
+// 11-05: 20 main commits outside the worker's watch paths left 20 SKIPPED rows above the running deployment.
+test("the worker read asks for the CLI's full deployment list, so skipped rows never hide the running one", async () => {
+  const seen: string[][] = [];
+  const exec = async (_file: string, args: readonly string[]): Promise<string> => {
+    seen.push([...args]);
+    if (args[0] !== "deployment") return args[0] === "logs" ? JSON.stringify({ timestamp: new Date(NOW - 30_000).toISOString(), message: "🟢 active" }) : "";
+    const limit = Number(args[args.indexOf("--limit") + 1]);
+    const rows = [...Array.from({ length: 25 }, (_, i) => ({ status: "SKIPPED", createdAt: new Date(NOW - i * 60_000).toISOString() })),
+      { status: "SUCCESS", createdAt: new Date(NOW - 7_200_000).toISOString() }];
+    return JSON.stringify(rows.slice(0, limit));
+  };
+  const worker = await readWorker(exec);
+  assert.equal(worker.status, "SUCCESS");
+  assert.equal(worker.deployAt, NOW - 7_200_000);
+  assert.ok(seen.some(args => args[0] === "deployment" && args.includes("1000")));
+});

@@ -221,15 +221,17 @@ interface RailwayRow { status: string; createdAt: string }
 /**
  * The worker's newest deployment that is not skipped, removed, waiting or failed, and its newest presence check log line, from a temp-linked
  * folder. A FAILED build leaves the deployment before it running, as the 03:15Z redeploy on 11-04 did after slack-green #422 deleted the Dockerfile.
+ * It reads the CLI's maximum of 1000 rows, because main commits outside the worker's watch paths each add a SKIPPED row: on 11-05 the newest 20
+ * were all SKIPPED while the worker ran an 11-04 08:44Z deployment, and the whole history was 342 rows read in 0.7 s.
  */
 export async function readWorker(run: Exec): Promise<WorkerRead> {
   const dir = await mkdtemp(join(tmpdir(), "sg-services-"));
   try {
     await run("railway", ["link", "--project", "slack-green-backend", "--environment", "production", "--service", "slack-green-backend"], { cwd: dir });
-    const list = await run("railway", ["deployment", "list", "--json", "--limit", "20"], { cwd: dir });
+    const list = await run("railway", ["deployment", "list", "--json", "--limit", "1000"], { cwd: dir });
     const newest = (JSON.parse(list.slice(list.indexOf("["))) as RailwayRow[]).filter(row => !["SKIPPED", "REMOVED", "WAITING", "FAILED"].includes(row.status))
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
-    if (!newest) throw new Error("the worker has no deployment among its newest 20");
+    if (!newest) throw new Error("the worker has no deployment that is not skipped, removed, waiting or failed");
     const logs = await run("railway", ["logs", "--lines", "300", "--json"], { cwd: dir });
     const active = logs.split("\n").flatMap(line => { try { return [JSON.parse(line) as { timestamp?: string; message?: string }]; } catch { return []; } })
       .filter(row => row.message?.includes("🟢 active") && row.timestamp).map(row => Date.parse(row.timestamp!));
