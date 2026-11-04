@@ -302,6 +302,33 @@ open(c + "/src/b.ts", "w").write("b")
   }
 });
 
+test("an apps/search save queues the same save check, and a generated paraglide file does not", async () => {
+  reset();
+  const script = join(checkout, "scripts/repo/agent/convex-save-check.mjs");
+  mkdirSync(dirname(script), { recursive: true });
+  writeFileSync(script, `import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+const [cmd, , root, , session] = process.argv.slice(2);
+const dir = root + "/.cache/convex-save-check/" + session;
+if (cmd === "run") { renameSync(dir + "/queue", dir + "/q"); writeFileSync(dir + "/result.json", readFileSync(dir + "/q", "utf8")); rmSync(dir + "/q"); }
+else if (existsSync(dir + "/result.json")) { console.log("search save check: broken in " + readFileSync(dir + "/result.json", "utf8").trim().split("\\n").join(",")); rmSync(dir + "/result.json"); }
+`);
+  const folder = join(checkout, ".cache/convex-save-check", session);
+  try {
+    kernel(`
+import os
+c = ${JSON.stringify(checkout)}
+os.makedirs(c + "/apps/search/src/lib/paraglide", exist_ok=True)
+open(c + "/apps/search/src/lib/paraglide/m.js", "w").write("x")
+open(c + "/apps/search/src/c.svelte", "w").write("<p>c</p>\\n")
+`, { GLOBAL_RULES_AUTO_SNS_AGENT: checkout });
+    while (!existsSync(join(folder, "result.json"))) await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(kernel("x = 1\n", { GLOBAL_RULES_AUTO_SNS_AGENT: checkout }).stderr, "search save check: broken in apps/search/src/c.svelte\n");
+  } finally {
+    rmSync(join(checkout, "scripts"), { recursive: true, force: true });
+    rmSync(join(checkout, "apps"), { recursive: true, force: true });
+  }
+});
+
 test("a finished Convex save check result is printed while a later save's runner of the session is still live", () => {
   reset();
   const script = join(checkout, "scripts/repo/agent/convex-save-check.mjs");

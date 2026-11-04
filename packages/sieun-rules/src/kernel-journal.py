@@ -19,7 +19,9 @@ harness dir is its agent's store and names no session. The prelude in kernel-gua
 durable one, and python-child/sitecustomize.py once per Python a kernel starts. A journal failure prints one line to stderr and leaves the write alone.
 
 3. A write of a convex/ source file also queues that checkout's scripts/repo/agent/convex-save-check.mjs, the Convex type check the local
-   watcher runs before each push, and a remote record that answers `queued the Convex type check` marks that box as owing a result. The
+   watcher runs before each push, and a write of an apps/search source its search type check (search-typecheck.mjs), which CI's
+   linux (search-check) runs on every push. A remote record that answers `queued the Convex type check` or `queued the search type
+   check` marks that box as owing a result. The
    check runs detached, since one file took 33 s at load 64 to 83 on us-metal02 on 10-31, and the prelude's call to report() at each cell
    prints its result once: `take` in the checkout for a local write, over ssh for a remote one. One broken uncommitted convex/ save stops the
    watcher's push for every job on the box, which happened at least 9 times from 10-30 11:43Z to 10-31 06:00Z.
@@ -232,7 +234,7 @@ def record(target) -> None:
             os.write(fd, line.encode("utf-8"))
         finally:
             os.close(fd)
-        if CONVEX_SOURCE.match(path):
+        if CONVEX_SOURCE.match(path) or SEARCH_SOURCE.match(path):
             request_check(root, path)
     except Exception as error:
         warn(f"global-rules: could not journal the write to {target[2]}: {error}")
@@ -242,6 +244,8 @@ def record(target) -> None:
 
 # The convex/ sources the watcher type checks, as convex-typecheck.mjs CONVEX_TS names them.
 CONVEX_SOURCE = re.compile(r"^convex/(?!_generated/).*\.(?:ts|tsx|mts|cts)$")
+# The apps/search sources the same runner type checks, as search-typecheck.mjs isSearchSource names them.
+SEARCH_SOURCE = re.compile(r"^apps/search/(?!\.svelte-kit/|\.kit-check\.|src/lib/paraglide/|src/service-worker[./])(?!(?:.*/)?node_modules/).*\.(?:ts|mts|cts|js|mjs|cjs|svelte)$")
 SAVE_CHECK = os.path.join("scripts", "repo", "agent", "convex-save-check.mjs")
 checked_roots: set = set()
 # The box's shared checkout, where a convex/ save by a Python this kernel started queues its check.
@@ -530,7 +534,7 @@ def record_remote(writes: list) -> None:
                 if run.returncode != 0:
                     detail = (run.stderr.strip().splitlines() or [f"exit {run.returncode}"])[-1]
                     warn(f"global-rules: {destination} did not journal {', '.join(paths)}: {detail}")
-                elif "queued the Convex type check" in run.stdout:
+                elif re.search(r"queued the (?:Convex|search) type check", run.stdout):
                     pending_remote[(destination, options)] = paths[0]
             except Exception as error:
                 warn(f"global-rules: {destination} did not journal {', '.join(paths)}: {error}")
