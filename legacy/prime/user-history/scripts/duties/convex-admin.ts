@@ -1,24 +1,43 @@
 import { execFile } from "node:child_process";
-import { join } from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { REPO } from "./estate-reads.ts";
 
 /**
  * Where each tier's Convex backend is named: the client URL row of an auto-sns-agent tier file, the row the prod cutover to the
- * self-hosted backend on us-metal01 changes (11-04, prod-convex-flip.patch), and the ci file that holds the admin keys.
+ * self-hosted backend on us-metal01 changes (11-04, prod-convex-flip.patch), and the ci file that holds the admin keys. The URL row is read
+ * at `ref`, the branch the tier deploys from, because the checkout's dev branch moves ahead of it: on 11-04 at 20:42Z 30a60cdf2e flipped
+ * the row on dev/sieun to convex.virev.ai, which served 0 functions, while prod still ran befitting-sparrow-356 from main, so the
+ * watchlist-green precheck got "Could not find public function" and measured no owner key.
  */
 export const CONVEX_ROWS = {
-  production: { file: "apps/api-portal/.env", name: "VITE_CONVEX_URL", keys: "apps/ci/.env" },
-  staging: { file: "apps/api-portal/.env.staging", name: "VITE_CONVEX_URL", keys: "apps/ci/.env.staging" },
+  production: { file: "apps/api-portal/.env", name: "VITE_CONVEX_URL", ref: "origin/main", keys: "apps/ci/.env" },
+  staging: { file: "apps/api-portal/.env.staging", name: "VITE_CONVEX_URL", ref: "origin/staging", keys: "apps/ci/.env.staging" },
 } as const;
 export type ConvexTier = keyof typeof CONVEX_ROWS;
 /** A Convex backend's client URL, its instance name and an admin key of it. */
 export interface ConvexBackend { url: string; instance: string; adminKey: string }
-/** One dotenvx row of a repo file, or every row as JSON when no name is given. */
-export type EnvRead = (file: string, name?: string) => Promise<string>;
+/** One dotenvx row of a repo file, or every row as JSON when no name is given; with a ref, of the file as that git ref holds it. */
+export type EnvRead = (file: string, name?: string, ref?: string) => Promise<string>;
 
-export const readEnvRow: EnvRead = async (file, name) =>
-  (await promisify(execFile)(join(REPO, "node_modules/.bin/dotenvx"), ["get", ...name ? [name] : [], "-f", join(REPO, file)], { cwd: REPO, encoding: "utf8" })).stdout.trim();
+const run = promisify(execFile);
+
+export const readEnvRow: EnvRead = async (file, name, ref) => {
+  const dotenvx = (path: string, keys: string[]) =>
+    run(join(REPO, "node_modules/.bin/dotenvx"), ["get", ...name ? [name] : [], "-f", path, ...keys], { cwd: REPO, encoding: "utf8" });
+  if (!ref) return (await dotenvx(join(REPO, file), [])).stdout.trim();
+  const blob = (await run("git", ["-C", REPO, "show", `${ref}:${file}`], { encoding: "utf8" })).stdout;
+  const dir = await mkdtemp(join(tmpdir(), "convex-row-"));
+  try {
+    const path = join(dir, basename(file));
+    await writeFile(path, blob);
+    return (await dotenvx(path, ["-fk", join(REPO, dirname(file), ".env.keys")])).stdout.trim();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+};
 
 /**
  * The backend a tier's URL row names, with its admin key. Cloud and self-hosted backends both answer GET /instance_name, and the key is the
@@ -26,7 +45,7 @@ export const readEnvRow: EnvRead = async (file, name) =>
  */
 export async function convexBackend(tier: ConvexTier, fetcher: typeof fetch = fetch, read: EnvRead = readEnvRow, signal?: AbortSignal): Promise<ConvexBackend> {
   const row = CONVEX_ROWS[tier];
-  const url = (await read(row.file, row.name)).replace(/\/+$/, "");
+  const url = (await read(row.file, row.name, row.ref)).replace(/\/+$/, "");
   if (!url.startsWith("https://")) throw new Error(`${row.name} of ${row.file} did not decrypt to a URL`);
   const answer = await fetcher(`${url}/instance_name`, signal ? { signal } : {});
   const instance = (await answer.text()).trim();

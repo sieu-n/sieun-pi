@@ -63,12 +63,14 @@ test("a deployment without the stamp query walks every time and keeps nothing", 
   assert.ok(!convex.calls.includes("search/watchTargets:watchKeysStamp"), "a deployment without the stamp query is never asked for it");
 });
 
-test("the keys come from the backend the prod VITE_CONVEX_URL row names, with that instance's admin key (prod cutover 11-04)", async () => {
+test("the keys come from the backend the VITE_CONVEX_URL row on origin/main names, with that instance's admin key (prod cutover 11-04)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "wg-keys-"));
   const convex = fakeConvex({ stamp: null, keys: ["instagram:account:nike"] });
-  const rows: Record<string, string> = { "apps/api-portal/.env VITE_CONVEX_URL": "https://convex.virev.ai",
+  const rows: Record<string, string> = { "origin/main:apps/api-portal/.env VITE_CONVEX_URL": "https://convex.virev.ai",
+    "apps/api-portal/.env VITE_CONVEX_URL": "https://dev-tree-ahead-of-prod.example",
     "apps/ci/.env": JSON.stringify({ CONVEX_DEPLOY_KEY: "prod:befitting-sparrow-356|old", CONVEX_SELF_HOSTED_ADMIN_KEY: "convex-prod|new" }) };
-  const backend = await convexBackend("production", convex.fetcher, async (file, name) => rows[name ? `${file} ${name}` : file]!);
+  const backend = await convexBackend("production", convex.fetcher,
+    async (file, name, ref) => rows[`${ref ? `${ref}:` : ""}${file}${name ? ` ${name}` : ""}`]!);
   assert.deepEqual(backend, { url: "https://convex.virev.ai", instance: "convex-prod", adminKey: "convex-prod|new" });
   assert.deepEqual(await convexKeys(convex.fetcher, backend, AbortSignal.timeout(5000), "org_x", dir), ["instagram:account:nike"]);
   assert.ok(convex.urls.every(url => url.startsWith("https://convex.virev.ai/")), convex.urls.join(" "));
