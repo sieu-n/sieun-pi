@@ -72,7 +72,7 @@ async function rig(want: Rig) {
   const chats = new Chats(index, threads, async id => ({ lifecycle: "live", ...files.has(id) ? { sessionFile: files.get(id)! } : {} }), "b1",
     loadRecord(join(dir, "extension-loads.json")), {
       ...source(dir, {}, () => now, rows), ...extra, board: async () => board, waking: async () => false, wakes: async () => [],
-      resumes: { store: jobResumes(join(dir, "job-resumes")), applyBoard: async (_id: string, batch: readonly BoardOp[]) => { ops.push(...batch); } },
+      resumes: { store: jobResumes(join(dir, "job-resumes")), applyBoard: async (_id: string, batch: (board: ChatBoard) => readonly BoardOp[]) => { ops.push(...batch(board)); } },
     }, line => lines.push(line));
   await chats.adopt();
   const job: ChildAgent = { id: "sub-a7cae8cf", label: "metal agent queue", sessionName: "metal agent queue", sessionId: JOB, status: "done",

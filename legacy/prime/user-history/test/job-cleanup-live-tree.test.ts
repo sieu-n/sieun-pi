@@ -26,7 +26,7 @@ test("job cleanup: a reported job whose subagents still work keeps its open step
   const base = source(dir, {}, () => now);
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), {
     ...base, board: async () => board, waking: async () => false, wakes: async () => [],
-    resumes: { store: jobResumes(join(dir, "job-resumes")), applyBoard: async (_id: string, ops: readonly BoardOp[]) => { applied.push([...ops]); } },
+    resumes: { store: jobResumes(join(dir, "job-resumes")), applyBoard: async (_id: string, ops: (board: ChatBoard) => readonly BoardOp[]) => { applied.push([...ops(board)]); } },
   }, line => lines.push(line));
   await chats.adopt();
   const job: ChildAgent = { id: "sub-fbdd234a", label: "crawler lanes to box", sessionName: "crawler lanes to box", sessionId: "s-lanes", status: "done",
@@ -79,8 +79,9 @@ test("job cleanup: a hand back whose steer fails ('Daemon is preparing an update
   const base = source(dir, {}, () => now);
   const chats = new Chats(index, threads, async () => ({ lifecycle: "live" }), "b1", loadRecord(join(dir, "extension-loads.json")), {
     ...base, board: async () => board, waking: async () => false, wakes: async () => [],
-    resumes: { store: jobResumes(join(dir, "job-resumes")), applyBoard: async (_id: string, ops: readonly BoardOp[]) => {
+    resumes: { store: jobResumes(join(dir, "job-resumes")), applyBoard: async (_id: string, write: (board: ChatBoard) => readonly BoardOp[]) => {
       order.push("board");
+      const ops = write(board);
       board = { ...board, plan: board.plan.map(item => { const op = ops.find(each => each.op === "plan_update" && each.id === item.id); return op && op.op === "plan_update" ? { ...item, ...(op.job ? { job: op.job } : {}), ...(typeof op.note === "string" ? { note: op.note } : {}) } : item; }) };
     } },
   }, line => lines.push(line));

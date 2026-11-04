@@ -14,7 +14,7 @@ import { checkInDue, childName, childWorking, type JobFact, jobFacts, liveJobs, 
 import { treeWakes, type Wake } from "./wakes.ts";
 import { withQueuePlaces } from "./chat-turn-queue.ts";
 import { type CheckInContext, type CheckInMemory, checkInPrecheck, checkInPrecheckText, classCounts, convergenceMisses, endedJobs, endedWithoutReport, finishedJobs, JOB_CLEANUP_EVERY_MS, ROOT_END_EVERY_MS, jobEnd, jobEndText,
-  endedRoots, handBackNote, handBackSteps, handBackText, idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue,
+  endedRoots, handBackNote, handBackOps, handBackSteps, handBackText, idleRoots, jobReport, lastJobMessages, leftOpenSteps, noReportNotice, openStepLines, openStepsNotice, reportedRoot, retryDue,
   rootLeftSteps, rootStepsNotice } from "./chat-checkin.ts";
 import { rowOwnerReads, unmovedLine, unmovedNotice, unmovedSteps } from "./unmoved-steps.ts";
 import { childSessionFile, replacedJob, sessionBrief, sessionModel, sessionReplied } from "./job-resume.ts";
@@ -1007,10 +1007,16 @@ export class Chats {
       const file = sessionId !== undefined ? await this.summary(sessionId).then(summary => summary?.sessionFile, () => undefined) : undefined;
       if (file && lastTurnError((await tailLines(file, CUT_TAIL_BYTES).catch(() => [] as string[])).join("\n")) !== undefined) return false;
       const line = handBackNote(name, child.lastActivityAt ?? this.now());
-      await this.tell(id, JOB_NOTICE_PREFIX + handBackText(child, steps));
-      await this.source.resumes!.applyBoard(id, steps.map(step => ({ op: "plan_update", id: step.id, job: id,
-        note: [line, step.note].filter(Boolean).join("\n") })));
-      this.log(`chat ${id.slice(0, 8)}: handed ${steps.map(step => step.id).join(", ")} back to the chat: job ${name} reported with them open`);
+      // The sweep's board is from before these awaits, and the chat or the job may have closed a step since: the hand back reads the board
+      // again, and its write reads the one it applies to (`handBackOps`), so it never writes a note over a newer one.
+      const ids = steps.map(step => step.id);
+      const open = handBackOps(await this.source.board(id), id, child, ids, line).map(op => op.id);
+      if (!open.length) return false;
+      await this.tell(id, JOB_NOTICE_PREFIX + handBackText(child, steps.filter(step => open.includes(step.id))));
+      let written: string[] = [];
+      await this.source.resumes!.applyBoard(id, board => { const ops = handBackOps(board, id, child, open, line); written = ops.map(op => op.id); return ops; });
+      if (!written.length) return false;
+      this.log(`chat ${id.slice(0, 8)}: handed ${written.join(", ")} back to the chat: job ${name} reported with them open`);
       return true;
     } catch (error) {
       this.log(`chat ${id.slice(0, 8)}: hand back the steps of ${name}: ${error instanceof Error ? error.message : String(error)}`);

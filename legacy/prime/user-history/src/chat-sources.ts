@@ -405,7 +405,7 @@ export interface CheckInSource {
    * Where the cleanup saves a root it archives (`JobResumes`, src/job-resume.ts), and how it writes the note of a step it hands back to the chat
    * (the board store's apply). Absent: no root is archived and no step is handed back.
    */
-  resumes?: { store: JobResumes; applyBoard(id: string, ops: readonly BoardOp[]): Promise<unknown> };
+  resumes?: { store: JobResumes; applyBoard(id: string, ops: (board: ChatBoard) => readonly BoardOp[]): Promise<unknown> };
   /**
    * Sends "continue" to each interrupted run that `isJob` keeps, as the resume script finds them at any depth (`InterruptedRuns.resumeJobs`).
    * Absent (tests): the job sweep resumes nothing.

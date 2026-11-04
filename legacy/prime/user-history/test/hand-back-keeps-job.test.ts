@@ -32,8 +32,8 @@ test("a job whose step goes back to the chat is kept for the chat's turn, and st
     const chats = new Chats(index, threads, async () => ({ lifecycle: "live", sessionFile: join(dir, "sessions", "c1.jsonl") }), "b1", loadRecord(join(dir, "loads.json")), {
       ...source(dir, {}, () => now), board: async () => board, waking: async () => false, wakes: async () => [],
       resumes: { store: jobResumes(join(dir, "job-resumes")),
-        applyBoard: async (_id: string, ops: readonly BoardOp[]) => {
-          for (const op of ops) if (op.op === "plan_update") update(op.id, { ...op.job ? { job: op.job } : {}, ...typeof op.note === "string" ? { note: op.note } : {} });
+        applyBoard: async (_id: string, write: (board: ChatBoard) => readonly BoardOp[]) => {
+          for (const op of write(board)) if (op.op === "plan_update") update(op.id, { ...op.job ? { job: op.job } : {}, ...typeof op.note === "string" ? { note: op.note } : {} });
           // The chat's own write of 08:30:43Z lands right after: its new note and the job's session id, and no wait yet.
           update("p2", { text: "Record the change from 491 test files after the release", sessionId: "01a17754", note: "Done when both counts and their difference are recorded here." });
         } } },

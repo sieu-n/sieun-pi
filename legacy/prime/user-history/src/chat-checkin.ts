@@ -7,7 +7,7 @@ import { cachedJsonFile, snapshotJsonFile, transactJsonFile, type JsonFile } fro
 import { dutyKeeper, goWaitText, type MetOpen, metOpenItems, metOpenLine, planJob, stepGoWait } from "./shared/chat-board.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
-import type { ChatAgent, ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason, ThreadMessage } from "./shared/types.ts";
+import type { BoardOp, ChatAgent, ChatBoard, ChildAgent, PlanItem, SessionRow, StopReason, ThreadMessage } from "./shared/types.ts";
 import { ago, capacityWait, CHASE_ESCALATE_MS, childName, childWorking, classLine, clip, type JobFact, type JobMessage, OPEN, ownerLabel, ownerOf, ownerState, parkedBy, quote, readySteps,
   noteFacts, readyReviewLine, readyReviews, recordedAt, STEP_CLASSES, type StepClass, type StepMemo, stepNamesJob, stepOwnedBy, stepOwner, stepView, type StepView, todoForStep,
   waitBound, waitsOnOwner, walk, withGoals } from "./checkin-steps.ts";
@@ -644,13 +644,27 @@ const handedBack = (item: PlanItem, job: string): boolean => (item.note ?? "").s
  */
 export function handBackSteps(children: readonly ChildAgent[], board: ChatBoard | null, said: ReadonlyMap<string, JobMessage>): { child: ChildAgent; steps: PlanItem[] }[] {
   const ids = new Set(children.map(child => child.id));
-  const open = openSteps(board).filter(item => item.waitFor === undefined && item.waitUntil === undefined && !item.children.some(below => OPEN.has(below.status)));
   return children.flatMap(child => {
     if (!reported(child, ids, said)) return [];
-    const names = [child.id, childName(child), child.label, child.sessionId];
-    const steps = open.filter(item => { const owner = stepOwner(item); return owner !== undefined && names.includes(owner); });
+    const steps = openSteps(board).filter(item => handable(item, child));
     return steps.length ? [{ child, steps }] : [];
   });
+}
+/** An open leaf step with no wait that the job owns (`stepOwner`), which `handBackSteps` hands to the chat. */
+const handable = (item: PlanItem, child: ChildAgent): boolean => {
+  const owner = stepOwner(item);
+  return OPEN.has(item.status) && item.waitFor === undefined && item.waitUntil === undefined && !item.children.some(below => OPEN.has(below.status)) &&
+    owner !== undefined && [child.id, childName(child), child.label, child.sessionId].includes(owner);
+};
+/**
+ * The hand-back writes for `steps`, read from the board the write applies to: each step the job still owns open (`handable`) goes to the chat
+ * (`chat`), its current note under the hand-back line. A step that the job or the chat closed or took since the sweep read the board is left
+ * as it is. Designer bro 11-03: the sweep read p450 open at about 12:26Z, the chat marked it done with its done note right after, and the hand
+ * back wrote the note it had read, so the done note was lost until d9 restored it on 11-04.
+ */
+export function handBackOps(board: ChatBoard | null, chat: string, child: ChildAgent, steps: readonly string[], line: string): Extract<BoardOp, { op: "plan_update" }>[] {
+  return openSteps(board).filter(item => steps.includes(item.id) && handable(item, child))
+    .map(item => ({ op: "plan_update", id: item.id, job: chat, note: [line, item.note].filter(Boolean).join("\n") }));
 }
 /** The turn the chat gets for the steps `handBackSteps` handed it. */
 export const handBackText = (child: ChildAgent, steps: readonly PlanItem[]): string =>

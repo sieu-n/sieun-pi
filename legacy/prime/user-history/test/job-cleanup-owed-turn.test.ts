@@ -58,7 +58,7 @@ async function sweep(owed: (endedAt: number) => Owed) {
   const chats = new Chats(index, threads, async id => ({ lifecycle: "live", sessionFile: id === JOB ? jobFile : chatFile }), "b1",
     loadRecord(join(dir, "extension-loads.json")), {
       ...source(dir, {}, () => now), ...extra, board: async () => board, waking: async () => false, wakes: async () => [],
-      resumes: { store: jobResumes(join(dir, "job-resumes")), applyBoard: async (_id: string, _ops: readonly BoardOp[]) => {} },
+      resumes: { store: jobResumes(join(dir, "job-resumes")), applyBoard: async (_id: string, _ops: (board: ChatBoard) => readonly BoardOp[]) => {} },
     }, line => lines.push(line));
   await chats.adopt();
   const job: ChildAgent = { id: "sub-8aea6b3f", label: "5180 into the real app", sessionName: "5180 into the real app", sessionId: JOB, status: "done",

@@ -43,7 +43,7 @@ test("a reported job that waits on a message stays the same session through a do
     const chats = new Chats(index, threads, async () => ({ lifecycle: "live", sessionFile: join(dir, "sessions", `${CHAT}.jsonl`) }), "b1",
       loadRecord(join(dir, "loads.json")), {
         ...source(dir, {}, () => now), board: async () => board, waking: async () => false, wakes: async () => [],
-        resumes: { store: jobResumes(join(dir, "job-resumes")), applyBoard: async (_id: string, batch: readonly BoardOp[]) => { ops.push(...batch); } } },
+        resumes: { store: jobResumes(join(dir, "job-resumes")), applyBoard: async (_id: string, batch: (board: ChatBoard) => readonly BoardOp[]) => { ops.push(...batch(board)); } } },
       line => lines.push(line));
     await chats.adopt();
     const job: ChildAgent = { id: JOB, label: "test file count", sessionName: "test file count", sessionId: SESSION, status: "done", repliedSinceTask: true,
