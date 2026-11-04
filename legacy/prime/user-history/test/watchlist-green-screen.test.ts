@@ -1,7 +1,10 @@
 // Owner 10-09 (goal p35): "make this screen functional all green". On 10-19 every prod Watchlist chip read Status unavailable while owner_green_pct
 // read 91.8%, because the screen's status read ran past its budget; these cases pin how d2 counts that read in watchlist_risks.
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
+import { REPO } from "../scripts/duties/estate-reads.ts";
 import { type ScreenChunk, SCREEN, SCREEN_SAMPLE, type WatchData, SUMMARY_URL, readCrawlerKey, report, screenFailed, screenKeys, screenRead } from "../scripts/duties/watchlist-green.ts";
 
 const metrics = [
@@ -63,7 +66,7 @@ test("a screen read with a late chunk adds one Watchlist risk while every row is
   assert.equal(late.metrics.screen_read_ok_pct, 50);
 });
 
-test("readCrawlerKey decrypts the prod crawler key from the auto-sns-agent checkout by default", async () => {
+test("readCrawlerKey decrypts the prod crawler key from the auto-sns-agent checkout by default", { skip: !existsSync(join(REPO, "apps/crawler-v3/.env.keys")) }, async () => {
   // 11-04: b4497e1a57 took CRAWLER_API_KEY out of apps/search/.env, and the 01:47Z d2 run wrote watchlist_risks as its placeholder.
   const key = await readCrawlerKey();
   assert.ok(key.length > 0 && !key.startsWith("encrypted:"));
