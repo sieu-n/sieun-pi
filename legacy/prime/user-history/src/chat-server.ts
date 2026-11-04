@@ -6,8 +6,8 @@ import { dirname, join } from "node:path";
 import { parseWake } from "./wakes.ts";
 import { parseCursor } from "./shared/message-key.ts";
 import { isTopLevel, sessionTitle, unplacedMessage } from "./chat-catalog.ts";
-import { otherBoxRoots, reopenSibling, type RootDirectory, rootsOf, sendCrossHost, siblingRow } from "./cross-host-message.ts";
-import { getAgentDir } from "prime-agent";
+import { otherBoxRoots, reopenSibling, type RootDirectory, type RootRow, rootsOf, sendCrossHost, siblingRow } from "./cross-host-message.ts";
+import { getAgentDir, type SessionSummary } from "prime-agent";
 import { reopenSession, unarchiveOnItsBox } from "./reopen-send.ts";
 import { jobRegistry } from "./chat-sources.ts";
 import { IdIndex } from "./id-index.ts";
@@ -124,6 +124,28 @@ function requestId(value: unknown): string {
   if (typeof value !== "string" || !requestIdPattern.test(value)) throw new RequestError(400, "Expected a request ID.");
   return value;
 }
+const rootRowCache = new WeakMap<SessionSummary, RootRow>();
+/**
+ * The top-level rows as `rootsOf` reads them, each built once per row object and host. A copy replaces a row's object when the row changes,
+ * so an unchanged row's title is not worked out again. Every api/agent/siblings read builds the roots of every box (7,871 top-level rows on
+ * us-metal02 on 11-04), and at 23:45:49Z on 11-03 one such build sat 0.96 s inside sessionTitle with CI on 39 of 80 cores, which d7 read as
+ * a 1.1 s loop stall and a 1.1 s siblings read. A bench over the live copy's rows took 37 to 61 ms a build before and 18 to 28 ms after.
+ */
+export function rootRowsOf(rows: readonly SessionSummary[], hostOf: (id: string) => string): RootRow[] {
+  const out: RootRow[] = [];
+  for (const row of rows) {
+    if (!isTopLevel(row)) continue;
+    const host = hostOf(row.sessionId);
+    let root = rootRowCache.get(row);
+    if (root?.host !== host) {
+      root = { sessionId: row.sessionId, ...(row.activeSessionId ? { activeSessionId: row.activeSessionId } : {}), name: sessionTitle(row), host,
+        status: row.activity ?? row.lifecycle ?? "unknown", ...(row.lifecycle ? { lifecycle: row.lifecycle } : {}) };
+      rootRowCache.set(row, root);
+    }
+    out.push(root);
+  }
+  return out;
+}
 /** Every box's live roots and the daemon send for the cross-host message routes, from the catalog that lists each box's daemon. */
 function rootDirectory(backend: ChatBackend): RootDirectory {
   const catalog = backend.catalog;
@@ -131,9 +153,7 @@ function rootDirectory(backend: ChatBackend): RootDirectory {
     roots: async () => {
       const self = catalog.selfHost() ?? thisBox();
       const chats = await backend.chats.ids();
-      return rootsOf([...catalog.daemonRows(), ...catalog.remoteRows()].filter(isTopLevel).map(row => ({ sessionId: row.sessionId,
-        ...(row.activeSessionId ? { activeSessionId: row.activeSessionId } : {}), name: sessionTitle(row), host: catalog.hostOf(row.sessionId) ?? self,
-        status: row.activity ?? row.lifecycle ?? "unknown", ...(row.lifecycle ? { lifecycle: row.lifecycle } : {}) })), chats);
+      return rootsOf(rootRowsOf([...catalog.daemonRows(), ...catalog.remoteRows()], id => catalog.hostOf(id) ?? self), chats);
     },
     // The message waits on disk and the outbox delivers it, so the sender's kernel gets its receipt before the daemon answers (src/agent-outbox.ts).
     send: async (sessionId, message) => {
