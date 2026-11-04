@@ -13,6 +13,7 @@ import { hubsLinking, isCuratedPath, isRetiredStatus, retiredLinksAdded, titleMa
 import { addRevision, currentVersion } from './wiki-store';
 import { deadLinkReason, deadLinksAdded, pageWriteReasons, pageWriteWarnings } from '../../../scripts/page-gate.mjs';
 import { staleWrite } from './stale-base.mjs';
+import { mermaidWriteCheck } from '../../../scripts/mermaid-check.mjs';
 import { codeRepoDir, contentGitRoot } from '../wiki-config.mjs';
 import { diskPath, rootOf } from './wiki-mounts';
 import { isSessionPath, sessionFolderOf as folderOfSession } from './session-artifact-index';
@@ -178,7 +179,7 @@ export async function commitPage(input: {
 	diff: string;
 	linesAdded: number;
 	linesRemoved: number;
-	/** Page gate warnings (rules 6 and 7): a source_ref this write adds, or a commit its new last_verified hides, changed after the page's last_verified. */
+	/** Page gate warnings (rules 6 and 7): a source_ref this write adds, or a commit its new last_verified hides, changed after the page's last_verified; and a broken mermaid block the page already held. */
 	warnings?: string[];
 }> {
 	const { rel, full } = resolveWritePath(input.rawPath);
@@ -221,8 +222,13 @@ export async function commitPage(input: {
 		if (reason) throw new WriteError(409, reason);
 	}
 	await assertPageInvariants(rel, exists ? before : null, input.content);
+	const mermaid = await mermaidCheck(rel, exists ? before : null, input.content);
+	if (mermaid.reasons.length) throw new WriteError(422, `refusing ${rel}: ${mermaid.reasons.join('. Also, ')}`);
 	const code = codeRepoDir();
-	const warnings = isCuratedPath(rel) && code ? pageWriteWarnings(code, rel, exists ? before : null, input.content, input.summary) : [];
+	const warnings = [
+		...(isCuratedPath(rel) && code ? pageWriteWarnings(code, rel, exists ? before : null, input.content, input.summary) : []),
+		...mermaid.warnings,
+	];
 	const written = await writeLogged({
 		rel,
 		full,
@@ -233,6 +239,20 @@ export async function commitPage(input: {
 		baseVersion: input.baseVersion ?? null,
 	});
 	return warnings.length ? { ...written, warnings } : written;
+}
+
+/**
+ * The mermaid check of a curated page or the home page (scripts/mermaid-check.mjs): a block the write adds that does not
+ * parse refuses it, and a broken block the page already held is a warning. When the parser cannot run, the write saves.
+ */
+async function mermaidCheck(rel: string, before: string | null, after: string): Promise<{ reasons: string[]; warnings: string[] }> {
+	if (!isCuratedPath(rel) && rel !== 'index.html') return { reasons: [], warnings: [] };
+	try {
+		return await mermaidWriteCheck(before, after);
+	} catch (error) {
+		console.error(`page API: the mermaid check of ${rel} could not run: ${error}`);
+		return { reasons: [], warnings: [] };
+	}
 }
 
 /** A git runner in the repo that holds the content root, for stale-base.mjs: (args, { input, encoding }) => { status, stdout, stderr }. */
