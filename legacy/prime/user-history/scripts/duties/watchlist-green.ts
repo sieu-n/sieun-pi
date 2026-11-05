@@ -45,12 +45,14 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "watchlist-green
  *   a hidden account, which the owner's t31 answer of 2026-10-21 keeps Stopped as an accepted state (isAcceptedHidden: green, no risk, its
  *   own owner_hidden line, where a dead doc_id, F16, shows as a wave), a prod Kafka stream whose unread records fill over BUS_FILL_LIMIT of its byte cap or whose
  *   broker retention.bytes differs from the registry in code (p116, the two crawler-bus-retention.yaml alerts), 1 while those byte gauges are
- *   missing on prod (no alert can fire then), and an owner collab watch with no unpaused prod tagged monitor row (it can never turn green).
+ *   missing on prod (no alert can fire then), an owner collab watch with no unpaused prod tagged monitor row (it can never turn green), and 1
+ *   when a page of the owner org's group read is not a 200, its first read takes past GROUP_FIRST_READ_LIMIT_S (p314) or the read right after
+ *   it past GROUP_WARM_READ_LIMIT_S (p302, groupRead). c75 leaves no slot for them as metrics of their own; their seconds are run detail.
  *   It took collab_pushed_pct's slot on 10-18 (c75); collab_pushed_pct stays as run detail.
  * - prod_read_error_pct <= READ_ERROR_TARGET_PCT: the error share of prod watch runs that settled with an answer (ok, error or gone) in 24 h, from
  *   watch_target_claims. A proxy connect a retry recovered settles ok, so it is no error here (c73: up to about half of connects fail by design).
  *   Starved runs (no account free) and superseded runs never asked Instagram, so they are detail lines.
- * The rest is run detail, written to output.metrics after the judged keys and never judged: collab_pushed_pct, owner_stopped_watches, prod_posts_fresh_pct, prod_loop_age_s,
+ * The rest is run detail, written to output.metrics after the judged keys and never judged: collab_pushed_pct, owner_stopped_watches, prod_posts_fresh_pct, prod_loop_age_s, group_first_read_max_s, group_warm_read_max_s,
  * staging_posts_green_pct, staging_tagged_not_green and source_errors. A failed source still misses the metrics it feeds (NEEDS), and a prod
  * watch scheduler loop that is stalled past LOOP_STALL_S, or never ticked, misses prod_read_error_pct, since no read can finish while it stands.
  * The schedule, daily at 06:28 (c66), runs the Convex walk (22 pages, 10.4 s measured 2026-10-12) and the prod and staging reads once a day.
@@ -80,11 +82,11 @@ export const STAGING_OWNER_ORG = "org_3FLEJTtegZpZqZPYYByywRFfDjI";
 /** The unread-records fill of a stream's byte cap that the bus-unread-near-cap alert fires at (crawler-bus-retention.yaml, 2b5d936b50). */
 export const BUS_FILL_LIMIT = 0.8;
 
-export type Source = "grafana auth" | "prod gauges" | "prod config" | "convex keys" | "prod rows" | "prod receipts" | "staging rows" | "prod streams" | "screen read" | "staging keys";
+export type Source = "grafana auth" | "prod gauges" | "prod config" | "convex keys" | "prod rows" | "prod receipts" | "staging rows" | "prod streams" | "screen read" | "staging keys" | "group read";
 export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
   owner_green_pct: ["convex keys", "prod rows"], staging_green_pct: ["staging rows"],
   prod_read_error_pct: ["prod receipts", "grafana auth", "prod gauges", "prod config"],
-  watchlist_risks: ["convex keys", "prod rows", "grafana auth", "prod streams", "screen read"],
+  watchlist_risks: ["convex keys", "prod rows", "grafana auth", "prod streams", "screen read", "group read"],
 };
 
 /** One watch_targets monitor row: platform, kind (posts, tagged, post, ads), lower-case target, its last run, and whether the crawler holds
@@ -108,6 +110,8 @@ export interface WatchData {
   now: number;
   keys?: string[]; stagingKeys?: string[]; rows?: WatchRow[]; receipts?: Record<string, number>; receiptHours?: Record<number, Record<string, number>>; staging?: WatchRow[]; prod?: Gauges; pauseWatch?: string; streams?: StreamFault[];
   screen?: ScreenChunk[];
+  /** The owner org's group pages on prod, read in order twice: `first` is each page's first read of the run, `warm` the read right after. */
+  group?: GroupReads;
   errors: { source: Source; message: string }[];
 }
 
@@ -265,6 +269,14 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
     detail.screen_read_max_s = round1(Math.max(0, ...screen.map(chunk => chunk.ms)) / 1000);
     flagged.push({ at, kind: "screen_read", excerpt: `the Watchlist status read of ${asked} owner keys in ${screen.length} chunks of ${SCREEN.chunkKeys}: ${late.length} would read Status unavailable (not 200 or past ${SCREEN.budgetMs / 1000} s); times ${screen.map(chunk => round1(chunk.ms / 1000)).join(", ")} s` });
   }
+  const group = data.group ?? { first: [], warm: [] };
+  const groupSlow = groupFailed(group).length > 0;
+  const groupTimes = `first ${pageTimes(group.first)}; warm ${pageTimes(group.warm)}`;
+  if (data.group) {
+    detail.group_first_read_max_s = maxS(group.first);
+    detail.group_warm_read_max_s = maxS(group.warm);
+    flagged.push({ at, kind: "group_read", excerpt: `the owner org's Watchlist group read on prod, ${group.first.length} pages of up to ${GROUP_PAGE_ROWS} rows, read twice in order: ${groupTimes}; a first read past ${GROUP_FIRST_READ_LIMIT_S} s (p314), a warm read past ${GROUP_WARM_READ_LIMIT_S} s (p302) or a page not a 200 is one Watchlist risk` });
+  }
   if (data.keys && data.rows) {
     const owner = ownerGreen(data.keys, data.rows, now);
     metrics.owner_green_pct = owner.accounts ? round1(100 * owner.green / owner.accounts) : 0;
@@ -273,12 +285,13 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
     detail.owner_hidden_watches = owner.hidden;
     flagged.push({ at, kind: "owner_hidden", excerpt: `${owner.hidden} hidden by Instagram: owner watches that read Stopped because Instagram hides the account, kept Stopped by the owner's t31 answer and counted green; a wave of them can mean a dead doc_id, F16` });
     if (data.streams) {
-      metrics.watchlist_risks = owner.stopped + data.streams.length + (owner.collabs - owner.pushed) + (late.length || !screen.length ? 1 : 0);
+      metrics.watchlist_risks = owner.stopped + data.streams.length + (owner.collabs - owner.pushed) + (late.length || !screen.length ? 1 : 0) + (groupSlow ? 1 : 0);
       flagged.push({ at, kind: "watchlist_risks", excerpt: (`${metrics.watchlist_risks} Watchlist risks firing: ${owner.stopped} owner watches read Stopped`
         + (owner.stops.length ? ` (${listWhy(owner.stops)})` : "")
         + `; ${data.streams.length} prod Kafka stream faults${data.streams.length ? ` (${data.streams.map(fault => `${fault.topic}: ${fault.why}`).join("; ")})` : ""}`
         + `; ${owner.collabs - owner.pushed} owner collab watches prod does not read`
-        + `; ${late.length || !screen.length ? 1 : 0} Watchlist status read failing (${late.length} of ${screen.length} chunks would read Status unavailable). Risk page: wiki apps/crawler-v3/engage-reads-and-watchlist-risks.`).slice(0, 1200) });
+        + `; ${late.length || !screen.length ? 1 : 0} Watchlist status read failing (${late.length} of ${screen.length} chunks would read Status unavailable)`
+        + `; ${groupSlow ? 1 : 0} owner org group read slow or failing (${groupTimes})). Risk page: wiki apps/crawler-v3/engage-reads-and-watchlist-risks.`).slice(0, 1200) });
     }
     flagged.push({ at, kind: "owner_watchlist", excerpt: `${owner.green} of ${owner.accounts} owner org accounts green on prod; ${owner.pushed} of ${owner.collabs} collab watches have an unpaused prod tagged monitor row` +
       (owner.why.length ? `; watches not green: ${listWhy(owner.why)}` : "") + (owner.unread ? `; ${owner.unread} keys not in platform:kind:target form` : "") });
@@ -547,6 +560,50 @@ export async function screenRead(fetcher: typeof fetch, apiKey: string, keys: re
 /** Chunks a screen would show as Status unavailable: not a 200, or past the route's budget. */
 export const screenFailed = (chunks: readonly ScreenChunk[]): ScreenChunk[] => chunks.filter(chunk => chunk.status !== 200 || chunk.ms > SCREEN.budgetMs);
 
+/*
+ * The group read: the Watchlist loads an org's rows from POST /api/watch-targets/summary/group a page of GROUP_PAGE_ROWS at a time, and the
+ * owner org (18,984 watches on 11-05) is the biggest. A page nobody read for hours reads its rows from disk: on prod at 07:1xZ on 11-05 page 2
+ * answered 503 at 31.5 s, and after auto-sns-agent 2fb3ac573 and 1cbc13987 the worst first read of the org's pages was 6.77 s at 08:26Z
+ * (load 648). The probe reads every page of the org in order, each once, so at the duty's morning run each is that day's first read, as a
+ * member's Watchlist sends it (X-Virev-Caller member, so the reads take a person's share of the API's read slots).
+ */
+/** The p314 target: the worst first group read of the biggest org at most 10 s (launch VP, 11-05). */
+export const GROUP_FIRST_READ_LIMIT_S = 10;
+/** The p302 target: the worst warm group read of the biggest org at most 3 s (launch VP, 11-05); 1.72 s at load 648 at 08:25Z on 11-05. */
+export const GROUP_WARM_READ_LIMIT_S = 3;
+export interface GroupReads { first: ScreenChunk[]; warm: ScreenChunk[] }
+export const PROD_GROUP_URL = "https://crawler.virev.ai/api/watch-targets/summary/group";
+/** The caller label the probe reads under: a member of the owner org, as apps/search/src/lib/server/auth/caller.ts callerLabel names one. */
+export const GROUP_CALLER = `member:${OWNER_ORG}:d2`;
+
+/** Every page of the org's group read on prod, in order, as one ScreenChunk each: rows, HTTP status (0 when the request failed) and ms. */
+export async function groupRead(fetcher: typeof fetch, apiKey: string, grp: string, signal: AbortSignal): Promise<ScreenChunk[]> {
+  const pages: ScreenChunk[] = [];
+  let after: string | null = null;
+  do {
+    const start = performance.now();
+    let status = 0;
+    let body: { data?: { rows?: unknown[]; next?: string | null } } | null = null;
+    try {
+      const response = await fetcher(PROD_GROUP_URL, { method: "POST", signal,
+        headers: { "content-type": "application/json", "x-api-key": apiKey, "x-virev-caller": GROUP_CALLER },
+        body: JSON.stringify({ grp, limit: GROUP_PAGE_ROWS, ...(after ? { after } : {}) }) });
+      status = response.status;
+      body = await response.json().catch(() => null) as typeof body;
+    } catch { status = 0; }
+    pages.push({ keys: body?.data?.rows?.length ?? 0, status, ms: Math.round(performance.now() - start) });
+    after = status === 200 ? body?.data?.next ?? null : null;
+  } while (after);
+  return pages;
+}
+/** Group reads the Watchlist would wait on past their target (first reads p314, warm reads p302), or that did not answer 200. */
+export const groupFailed = (reads: GroupReads): ScreenChunk[] => [
+  ...reads.first.filter(page => page.status !== 200 || page.ms > GROUP_FIRST_READ_LIMIT_S * 1000),
+  ...reads.warm.filter(page => page.status !== 200 || page.ms > GROUP_WARM_READ_LIMIT_S * 1000),
+];
+const maxS = (pages: readonly ScreenChunk[]): number => round1(Math.max(0, ...pages.map(page => page.ms)) / 1000);
+const pageTimes = (pages: readonly ScreenChunk[]): string => pages.map(page => `${round1(page.ms / 1000)} s${page.status === 200 ? "" : ` (HTTP ${page.status})`}`).join(", ") || "none";
+
 const ROWS_SQL = "select w.platform, w.kind, lower(w.target) as target, case when w.paused then 't' else 'f' end as paused, coalesce(w.last_outcome, '') as last_outcome, " +
   "coalesce((extract(epoch from w.last_run_at) * 1000)::bigint::text, '') as last_run_at, coalesce(w.last_stop_reason, '') as last_stop_reason, coalesce(w.last_error_code, '') as last_error_code, " +
   "case when w.platform = 'instagram' and exists (select 1 from instagram_accounts a where a.username = w.target and a.is_private offset 0) then 't' else 'f' end as is_private, " +
@@ -597,6 +654,8 @@ export interface WatchDeps {
   staging: () => Promise<string>;
   stagingKeys: () => Promise<string[]>;
   screen: (keys: string[]) => Promise<ScreenChunk[]>; now: number;
+  /** The owner org's group pages on prod, read twice (groupRead); absent, the run reads none and watchlist_risks counts no group risk. */
+  group?: () => Promise<GroupReads>;
 }
 
 export async function measure(deps: WatchDeps): Promise<WatchData> {
@@ -610,6 +669,9 @@ export async function measure(deps: WatchDeps): Promise<WatchData> {
     for (const source of ["prod gauges", "prod config"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
   }
   const keysRead = step("convex keys", deps.keys);
+  // The group read goes first and alone, so each page's first read of the day meets no other read of this run on the box.
+  const group = deps.group ? await step("group read", deps.group) : undefined;
+  if (group && !group.first.length) data.errors.push({ source: "group read", message: "the group read sent no page to crawler.virev.ai" });
   const [keys, screen, prodText, receiptText, stagingText, prod, pause, streams, stagingKeys] = await Promise.all([
     keysRead,
     keysRead.then(read => read?.length ? step("screen read", () => deps.screen(screenKeys(read))) : undefined),
@@ -626,7 +688,7 @@ export async function measure(deps: WatchDeps): Promise<WatchData> {
   if (rows && !rows.length) data.errors.push({ source: "prod rows", message: "the estate_pg_prod read returned no prod watch_targets monitor row" });
   if (staging && !staging.length) data.errors.push({ source: "staging rows", message: "estate_pg_stg returned no staging watch_targets monitor row" });
   if (screen && !screen.length) data.errors.push({ source: "screen read", message: "the screen read sent no chunk to crawler.virev.ai" });
-  Object.assign(data, keys && { keys }, screen?.length && { screen }, rows?.length && { rows }, receiptText !== undefined && receiptFields(parseReceipts(receiptText)), staging?.length && { staging }, stagingKeys?.length && { stagingKeys },
+  Object.assign(data, keys && { keys }, screen?.length && { screen }, group?.first.length && { group }, rows?.length && { rows }, receiptText !== undefined && receiptFields(parseReceipts(receiptText)), staging?.length && { staging }, stagingKeys?.length && { stagingKeys },
     prod && { prod }, pause !== undefined && { pauseWatch: pause }, streams && { streams });
   return data;
 }
@@ -652,7 +714,12 @@ async function main(): Promise<void> {
     },
     receipts: async () => { if (!query) throw new Error("not read: no Grafana login"); return prodReader(query)(RECEIPTS_SQL); },
     staging: async () => { if (!query) throw new Error("not read: no Grafana login"); return rowLines(await sqlRows(query, PG.staging, STAGING_ROWS_SQL)); },
-    screen: async keys => screenRead(fetch, await readCrawlerKey(), keys, signal) });
+    screen: async keys => screenRead(fetch, await readCrawlerKey(), keys, signal),
+    group: async () => {
+      const key = await readCrawlerKey();
+      const first = await groupRead(fetch, key, watchGroupId(OWNER_ORG), signal);
+      return { first, warm: await groupRead(fetch, key, watchGroupId(OWNER_ORG), signal) };
+    } });
   const result = report(data, dutyMetrics);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   process.stdout.write(`watchlist-green: ${Object.entries(result.metrics).map(([key, value]) => `${key}=${value}`).join(" ")}\n`);
