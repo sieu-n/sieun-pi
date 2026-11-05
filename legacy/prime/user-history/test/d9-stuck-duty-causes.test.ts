@@ -159,6 +159,17 @@ test("a share, ratio or volume over a window is no windowed count, so a red one 
   assert.equal(planCounts(inputs([run], { id: "d3", name: "Prod box headroom" }, at("06:47"))).redDuties.length, 1);
 });
 
+test("a metric whose precheck names its window reads by lastEventAt, whatever its key name (api portal vp d4 slow_route_p90_s, 11-05)", () => {
+  const day = (clock: string) => Date.parse(`2026-11-05T${clock}Z`);
+  const p90 = (clock: string, fields: { lastEventAt?: number; windowMs?: number }): DutyRunRecord => ({ duty: "d4", at: day(clock), trigger: "owner", ms: 1,
+    verdict: "missed", summary: "", metrics: { slow_route_p90_s: { value: 22.59, target: 5, op: "<=", met: false, ...fields } } });
+  const lastCall = Date.parse("2026-11-04T21:47:46Z");
+  const rerun = [p90("04:10:50", { lastEventAt: lastCall, windowMs: Date.parse("2026-11-06T00:00:00Z") - lastCall }), p90("00:33:27", {})];
+  const read = (runs: DutyRunRecord[]) => planCounts(inputs(runs, { id: "d4", name: "Customer API failures" }, day("04:13:00")));
+  assert.deepEqual([read(rerun).redDuties.length, read(rerun).lagging.length], [0, 0], "a rerun of a closed day reads quiet");
+  assert.deepEqual(read([p90("04:10:50", { windowMs: 86_400_000 }), p90("00:33:27", {})]).lagging.map(duty => duty.keys), [["slow_route_p90_s"]]);
+});
+
 // 10-22 07:40Z: d9 asked Crawler VP to add lastEventAt to prod_alerts_over_24h, alert kinds firing now for over 24 h, which has no trailing window.
 test("a count of things in a state for over an age, or a count that must reach a floor, is no lagging window (Crawler VP prod_alerts_over_24h)", () => {
   assert.deepEqual(unreadWindows(["prod_alerts_over_24h", "meta_walks_overdue_1d", "reviews_waiting_24h", "false_reds_24h"], {}), ["false_reds_24h"]);

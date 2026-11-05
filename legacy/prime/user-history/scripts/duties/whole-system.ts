@@ -1255,13 +1255,16 @@ export interface StuckSteps { chat: PlanInputs["chats"][number]; value: number; 
 export const WINDOW_COUNT = /^(?!.*(?:_pct|_ratio|_p\d\d|_[kmgt]b|_over|_overdue|_waiting)_\d+[mhd]$).*_\d+[mhd]$/;
 
 /**
- * The missed windowed counts of a duty's newest reading whose precheck gives no `lastEventAt`: the runner cannot tell whether a new event
+ * The missed windowed metrics of a duty's newest reading whose precheck gives no `lastEventAt`: the runner cannot tell whether a new event
  * raised them or old events only wait to leave the window. On 10-20 CI and RepoOps' d5 held false_reds_24h at 4 for 8 runs from ci02 reds of
  * 10-19 17:05Z, after their fix went live at 03:28Z, and 11 other red windowed counts in 6 chats gave no lastEventAt either.
+ * A metric is windowed when its key reads as a windowed count (`WINDOW_COUNT`) or its precheck names its window (`windowMs`), whatever its
+ * name: public-page-scrapers' crawler_shed_min names a 24 h window, and d9 read a red one as a miss owing a fix job.
  */
 export function unreadWindows(missed: readonly string[], metrics: DutyRunRecord["metrics"]): string[] {
   // Only a count capped from above waits for old events to leave: a count that must reach a floor, like report_days_7d, misses on too few.
-  return missed.filter(key => WINDOW_COUNT.test(key) && metrics[key]?.op !== ">=" && metrics[key]?.lastEventAt === undefined);
+  return missed.filter(key => (WINDOW_COUNT.test(key) || metrics[key]?.windowMs !== undefined) && metrics[key]?.op !== ">=" &&
+    metrics[key]?.lastEventAt === undefined);
 }
 
 /**
