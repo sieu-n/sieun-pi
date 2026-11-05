@@ -322,15 +322,15 @@ export async function readUnitHolds(groups: readonly Group[], context: ReadConte
 /** The box session dirs that hold an owned.json: each `<uuid>` under session-artifacts and, below it, its `sub-*` jobs and `session-artifacts/<uuid>` children. */
 export async function ownedDirs(root: string): Promise<string[]> {
   const dirs: string[] = [];
+  // Read in parallel: on 11-05 at load 300 the sequential walk of 8,900 session dirs took 28 s and held the d2 precheck at 100 s.
   const below = async (dir: string): Promise<void> => {
-    for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
-      const path = join(dir, entry.name);
-      if (entry.name === "owned.json" && entry.isFile()) dirs.push(dir);
-      else if (entry.isDirectory() && (entry.name.startsWith("sub-") || UUID.test(entry.name) || entry.name === "session-artifacts")) await below(path);
-    }
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    if (entries.some(entry => entry.name === "owned.json" && entry.isFile())) dirs.push(dir);
+    await Promise.all(entries.filter(entry => entry.isDirectory() && (entry.name.startsWith("sub-") || UUID.test(entry.name) || entry.name === "session-artifacts"))
+      .map(entry => below(join(dir, entry.name))));
   };
   await below(root);
-  return dirs;
+  return dirs.sort();
 }
 
 /** A box session known only by id (RLM_HARNESS_STATE_DIR, or LC_PRIME_SESSION with no RLM_SESSION_DIR): a top-level chat or a job found in the full list. */
@@ -430,8 +430,8 @@ export async function readOrphans(context: ReadContext, hostOf: (address: string
   const groups = groupProcesses(rows, unitFiles, hostOf, context.here);
   const owned = groups.filter(group => group.owners.length);
   const read = reader(context);
-  const verdicts = await readVerdicts(owned, context, read);
-  const decision = decide(groups, verdicts, context.now, await readUnitHolds(groups, context, read));
+  const [verdicts, holds] = await Promise.all([readVerdicts(owned, context, read), readUnitHolds(groups, context, read)]);
+  const decision = decide(groups, verdicts, context.now, holds);
   const unknown = decision.unknown.filter(group => leftParent(group, rows));
   return { rows, reading: { orphan_processes: decision.stop.reduce((sum, group) => sum + group.pids.length, 0), orphan_unknown: unknown.reduce((sum, group) => sum + group.pids.length, 0),
     stop: decision.stop, held: decision.held, unknown, verdicts } };
