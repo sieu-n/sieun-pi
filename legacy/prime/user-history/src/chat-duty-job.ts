@@ -412,6 +412,8 @@ export const archiveDutyJob = (threads: { archive(id: string, by: ArchiveBy): Pr
 
 /** Why a job the chat's revive holds for pi-pool stays up (`DutyJobHost.kept`). */
 const POOL_HELD = "waits on pi-pool for its slot";
+/** Whether a `kept` reason is the chat's revive holding the job for its pi-pool slot (`POOL_HELD`): its tree holds a place in the pool's line. */
+export const heldForPool = (why: string | null | undefined): boolean => why === POOL_HELD;
 
 /**
  * Why the tree rooted at `tree` waits in pi-pool's turn queue, or null: a run of the tree is queued and none of its runs holds a working slot.

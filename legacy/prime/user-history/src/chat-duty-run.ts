@@ -1,7 +1,7 @@
 import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { hostExecFile } from "./spawn-host.ts";
 import { basename, join } from "node:path";
-import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName, inTurnQueue } from "./chat-duty-job.ts";
+import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName, heldForPool, inTurnQueue } from "./chat-duty-job.ts";
 import { type CheckInActor, CHECK_IN_MS } from "./checkin-settings.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
 import { POOL_LEAD_MS, type PoolHold, pooledProviders } from "./chat-pool.ts";
@@ -151,9 +151,9 @@ export const STILL_GOING = "skipped: previous run still";
 /** A duty job may work this long before a later run counts it as stuck, however short its duty's interval. */
 export const STUCK_MIN_MS = 90 * 60_000;
 /**
- * A duty job whose tree wrote no model reply for this long is stalled, whatever keeps it up (`DutyJobHost.repliedSince`), and the next run
- * replaces it. On 10-29 the Wiki dream's 14:33 KST job wrote its last reply at 07:54Z, then sat on pi-pool waits and quota parks with only empty
- * failed turns, and 13 d4 runs to 10:38Z skipped beside it while wiki_problems rose to 22. Before it wedged, its longest gap between replies
+ * A duty job whose tree wrote no model reply for this long is stalled (`DutyJobHost.repliedSince`), whatever keeps it up but a pi-pool line or
+ * slot hold (`previous`), and the next run replaces it. On 10-29 the Wiki dream's 14:33 KST job wrote its last reply at 07:54Z, then sat on
+ * pi-pool waits and quota parks with only empty failed turns, and 13 d4 runs to 10:38Z skipped beside it while wiki_problems rose to 22. Before it wedged, its longest gap between replies
  * was a 52 min pi-pool park, and its longest gap with no failed call was 6 min. The value is STUCK_MIN_MS.
  */
 export const STALLED_MS = 90 * 60_000;
@@ -411,8 +411,9 @@ export class Duties {
     const newestWorks = !!lastRun && await this.host.jobs.working(lastRun.job).catch(() => false) && !(await this.reportedFree(chatId, lastRun.job));
     const live = newestWorks && lastRun ? lastRun.job : lastRun ? await this.olderLive(chatId, own, lastRun.job, duty.schedule) : null;
     const working = live !== null;
-    // A working job takes the push run's findings (`handOff`), so it gets one when its duty's last measure flagged items to hand off.
-    if (live && !(await this.handsOffBeside(own, live))) return;
+    // A working job takes the push run's findings (`handOff`), so it gets one when its duty's last measure flagged items to hand off; a held one
+    // gets the push run as a read (`pushesBeside`).
+    if (live && !(await this.pushesBeside(own, live))) return;
     // A cut run waits for its rerun once pi-pool admits its tree (`rerunCut`), so it is still going: at 15:50:20Z on 10-19 the AI harness chat's
     // d9 got a push run while its 15:34Z run waited for its slot, and at 16:15:41Z frontend bro's d1 got one while its 15:29Z push run did.
     const lastCut = !working && lastRun && !own.some(run => run.rerunOf === lastRun.at) ? await this.cutOf(chatId, lastRun) : null;
@@ -1077,8 +1078,10 @@ export class Duties {
    * (`inTurnQueue`) still takes the run's hand-off as `working`: from 10-23 10:27Z to 10-24 05:18Z, 18 missed runs on 4 chats skipped beside
    * a job in that queue and handed it nothing, among them d4 at 00:26Z and 05:18Z with 5 and 12 wiki problems. A run that would retire the
    * last job skips instead while an older job of the duty works again (`olderLive`), and hands that job its items. A job whose tree wrote no
-   * model reply for STALLED_MS is replaced as stalled, however a pool wait or a quota park keeps it (`stalled`), unless pi-pool holds its tree
-   * in its line for an account (`IN_POOL_LINE`).
+   * model reply for STALLED_MS is replaced as stalled, however a quota park keeps it (`stalled`), unless pi-pool holds its tree in its line for
+   * an account (`IN_POOL_LINE`) or the chat's revive holds the job for its pi-pool slot (`heldForPool`), each up to STUCK_MAX_MS since its run
+   * started. On 11-05 d4's 16:30:07Z run replaced "wiki dream AI harness developer environment 23:55", held for a 17:03:30Z slot on claude8 after
+   * no account had quota from 14:52Z, and its new job got a 17:13Z slot, was cut at 17:01:46Z and got its first account at 17:34:21Z.
    */
   private async previous(chatId: string, dutyId: string, schedule: DutySchedule, slot: number): Promise<Previous> {
     const runs = (await this.store.runs(chatId)).filter(run => run.duty === dutyId);
@@ -1094,8 +1097,10 @@ export class Duties {
     }
     const kept = await this.kept(last, reported);
     const working = kept !== null || await this.host.jobs.working(last);
-    // A Prime update or a failed hold read keeps the job whatever its replies ("is kept ..."); a pool wait or a quota park does not.
-    const stalled = working && !reported && !kept?.startsWith("is kept") && await this.stalled(started.at, last);
+    // A Prime update or a failed hold read keeps the job whatever its replies ("is kept ..."), and so does the chat's revive holding it for its
+    // pi-pool slot (`heldForPool`) up to STUCK_MAX_MS, since a new job queues behind that slot as behind IN_POOL_LINE; a quota park does not.
+    const stalled = working && !reported && !kept?.startsWith("is kept") && !(heldForPool(kept) && this.now() - started.at <= STUCK_MAX_MS) &&
+      await this.stalled(started.at, last);
     if (kept && !stalled) {
       await this.store.updateRun(chatId, dutyId, started.at, record => { record.keptAt = this.now(); }).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: keptAt of ${last.name}: ${message(error)}`));
       return { skipped: `${STILL_WORKING} (job ${last.name} ${kept})`, held: { job: last, why: kept }, ...inTurnQueue(kept) ? { working: last } : {} };
@@ -1205,12 +1210,17 @@ export class Duties {
   }
 
   /**
-   * Whether a push run may start beside the duty's working job `job`: the host can steer it, nothing but pi-pool's turn queue keeps it (`kept`:
-   * a job parked on its quota or held by pi-pool for an account takes no message), and the duty's newest measured run flagged an item to hand off, read from its precheck output.
+   * Whether a push run may start beside the duty's working job `job`. A job kept by anything but pi-pool's turn queue (`kept`: parked on its
+   * quota, held by pi-pool for an account) takes no message, so the run only reads the duty and records its skip beside the job; any other
+   * job gets the run when the host can steer it and the duty's newest measured run flagged an item to hand off, read from its precheck output.
+   * Until 11-05 a held job got no push run at all: d4's 14:55Z push run of 11-05 started a job that pi-pool held for a 17:03:30Z slot, no run
+   * read d4 again until the 16:30Z schedule run, and its newest reading stayed met at wiki_problems 0 while 9 pages crossed their follow window
+   * from 15:25Z to 16:03Z.
    */
-  private async handsOffBeside(runs: readonly DutyRunRecord[], job: DutyJobRef): Promise<boolean> {
+  private async pushesBeside(runs: readonly DutyRunRecord[], job: DutyJobRef): Promise<boolean> {
     const kept = await this.kept(job);
-    if (!this.host.jobs.steer || (kept && !inTurnQueue(kept))) return false;
+    if (kept && !inTurnQueue(kept)) return true;
+    if (!this.host.jobs.steer) return false;
     const detail = runs.find(run => (run.verdict === "met" || run.verdict === "missed") && run.detail)?.detail;
     if (!detail) return false;
     const output = await readFile(detail, "utf8").then(text => JSON.parse(text) as PrecheckOutput, () => null);

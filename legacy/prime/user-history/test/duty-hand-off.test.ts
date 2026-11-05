@@ -2,7 +2,7 @@
 // verify and push run in that time measured, read "skipped: previous run still working" and gave its findings to nobody while
 // wiki_problems went from 14 to 44. In the 48 h to 10-22 07:51Z, 264 of the 1,221 page-hours the duty counted were pages that fell behind
 // after its live job's brief was written (~/work/wiki-problems-follow-fix/NOTES.md). A run that finds the last job working now hands it the
-// new items the precheck marks handOff, and a red duty gets that push run beside a working job, but never beside a parked one.
+// new items the precheck marks handOff, and a red duty gets that push run beside a working job; beside a parked one the push run only reads.
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -77,7 +77,9 @@ test("a push run beside a working job hands it only the new items, and nothing w
     const runsBefore = (await store.runs(CHAT)).length;
     await tick(["a.html", "e.html"]);
     assert.equal(steers.length, 1, "a job parked on its quota gets no message");
-    assert.equal((await store.runs(CHAT)).length, runsBefore, "and no push run starts beside it");
+    const beside = await store.runs(CHAT);
+    assert.equal(beside.length, runsBefore + 1, "a push run still reads the duty beside it (d4 read nothing from 14:55Z to 16:30Z on 11-05)");
+    assert.match(beside[0]!.summary, /skipped: previous run still working \(job [^)]+ has an active scheduled job \(quota-resume\)\)$/);
 
     parked = false;
     await tick(["a.html", "e.html"]);
