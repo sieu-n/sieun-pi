@@ -116,7 +116,20 @@ export function wakeText(wake: Wake, state: RunState | null, now: number, check?
   const rerun = done?.attempt && done.conclusion !== "success"
     ? ` A rerun keeps this run id: to wait for its next attempt, set board.wake(run=${wake.on.run}, attempt=${done.attempt + 1}).` : "";
   return `[wake] Run ${wake.on.run}${wake.on.repo ? ` in ${wake.on.repo}` : ""} finished: ${done?.conclusion ?? "unknown"}${about ? ` (${about})` : ""}. ` +
-    `${done?.why ? `${done.why} ` : ""}${done?.url ?? ""}${rerun} You set this wake with board.wake.${note}`.replace(/\s+/g, " ").trim();
+    `${done ? endedLine(done, wake.since) : ""}${done?.why ? `${done.why} ` : ""}${done?.url ?? ""}${rerun} You set this wake with board.wake.${note}`.replace(/\s+/g, " ").trim();
+}
+
+const stampOf = (at: number): string => `${new Date(at).toISOString().slice(0, 19)}Z`;
+
+/**
+ * When the run ended, and how long before the wake was set when it ended first. 11-05: crawler ops train dispatched metal-deploy run 42049999160 at
+ * 14:57Z, pi-pool parked it on its provider quota before its next step, and it set the wake at 17:02:07Z, 2 min after its slot came. The run had
+ * failed at 15:00:03Z, the wake went out 32 s after it was set, and the job, CI and the AI harness VP read it as a wake 2 h late.
+ */
+function endedLine(done: Extract<RunState, { done: true }>, setAt: number): string {
+  if (done.endedAt === undefined) return "";
+  const before = Math.round((setAt - done.endedAt) / 60_000);
+  return `It ended at ${stampOf(done.endedAt)}${before >= 1 ? `, ${before} min before you set this wake at ${stampOf(setAt)}` : ""}. `;
 }
 
 export interface WakeDeps {
