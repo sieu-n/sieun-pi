@@ -19,6 +19,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * SLOW_ROUTES by every org, internal ones included, because no is_internal = 0 org called them from 10-20 to 11-02 and the owner's own calls come
  * from internal orgs; 3.30 s after crawler p1381 at 20:36Z on 11-02 against 5 s, while Bing's p90 over all orgs read 30.7 s from 00:00 to 20:42Z that day.
  * Both day metrics name the next UTC midnight as their rollsAt, so the runner starts no push or verify run that would read the same day again.
+ * Each day metric's lastEventAt is the newest call it counts, so a rerun of a day that closed before its fix went live reads quiet
+ * (`MetricStreak.quietSince`) and owes no fix job: on 11-05 d4 read slow_route_p90_s 22.59 s for 11-04, while Bing after the 01:53Z fix read p90 2.76 s.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
@@ -32,9 +34,10 @@ export const SLOW_ROUTES = ["search.bing", "crawl.google.play_app", "crawl.googl
 /** The brief's floor for one route's p90: under 20 calls the p90 rests on the day's slowest one or two calls, so it reads as unknown. */
 export const MIN_ROUTE_CALLS = 20;
 
-export interface DayCounts { completed: number; failed: number; failed5xx: number }
-/** One operation's calls of the day that carry durationMs, and their p90 in ms (null with no call). */
-export interface RouteLatency { endpoint: string; calls: number; p90Ms: number | null }
+/** The day's customer calls; `lastAt` is the newest one's epoch ms, absent with no call. */
+export interface DayCounts { completed: number; failed: number; failed5xx: number; lastAt?: number }
+/** One operation's calls of the day that carry durationMs, their p90 in ms (null with no call) and the newest one's epoch ms. */
+export interface RouteLatency { endpoint: string; calls: number; p90Ms: number | null; lastAt?: number }
 export interface FailedCall { at: string; endpoint: string; status: number; errorCode: string; handle: string | null; requestId: string; orgId: string }
 
 /** The last full UTC day before `now`, as [start, end) ISO strings without the zone, the form HogQL's toDateTime reads. */
@@ -78,8 +81,13 @@ export function report(counts: DayCounts, failed: FailedCall[], day: { start: st
   flagged.splice(1, 0, { kind: "slow_routes", excerpt: `slowest p90, all orgs: ${slow === UNMEASURED ? `unknown, a route has under ${MIN_ROUTE_CALLS} calls` : `${slow} s`}; ` +
     latencyLine(latency) });
   const rollsAt = Date.parse(`${day.start.replace(" ", "T")}Z`) + 2 * DAY_MS;
+  const routeLasts = latency.filter(row => (SLOW_ROUTES as readonly string[]).includes(row.endpoint) && row.lastAt !== undefined).map(row => row.lastAt!);
+  const lastEventAt = { ...counts.lastAt === undefined ? {} : { customer_5xx_share_pct: counts.lastAt },
+    ...routeLasts.length ? { slow_route_p90_s: Math.max(...routeLasts) } : {} };
+  // The window each newest call waits to leave ends when the day rolls, so d9's aging time (`agingUntil`) is the next UTC midnight.
+  const windowMs = Object.fromEntries(Object.entries(lastEventAt).map(([key, at]) => [key, rollsAt - at]));
   return { metrics: { customer_5xx_share_pct: share, slow_route_p90_s: slow, source_errors: 0 }, flagged,
-    rollsAt: { customer_5xx_share_pct: rollsAt, slow_route_p90_s: rollsAt } };
+    rollsAt: { customer_5xx_share_pct: rollsAt, slow_route_p90_s: rollsAt }, ...Object.keys(lastEventAt).length ? { lastEventAt, windowMs } : {} };
 }
 
 // ---- I/O ----
@@ -105,9 +113,14 @@ export async function measure(now: number): Promise<PrecheckOutput> {
   const calls = "event in ('api_request_completed', 'api_request_failed')";
   try {
     const key = (await sh("node_modules/.bin/dotenvx get POSTHOG_PERSONAL_API_KEY -f apps/vent/.env", REPO)).trim().split("\n").at(-1)!.trim();
-    const [[completed, failed, failed5xx]] = (await hog(key, `select countIf(event = 'api_request_completed'), countIf(event = 'api_request_failed'), ` +
-      `countIf(event = 'api_request_failed' and toInt(properties.status) >= 500) from events where ${calls} and ${window} ` +
-      `and properties.orgId in (${CUSTOMER_ORGS})`)) as [[number, number, number]];
+    const [[completed, failed, failed5xx, lastCall]] = (await hog(key, `select countIf(event = 'api_request_completed'), countIf(event = 'api_request_failed'), ` +
+      `countIf(event = 'api_request_failed' and toInt(properties.status) >= 500), max(timestamp) from events where ${calls} and ${window} ` +
+      `and properties.orgId in (${CUSTOMER_ORGS})`)) as [[number, number, number, unknown]];
+    // HogQL's max over no rows is the epoch, so a time before the day reads as no call.
+    const inDay = (at: unknown): { lastAt?: number } => {
+      const ms = Date.parse(String(at));
+      return ms >= Date.parse(`${day.start.replace(" ", "T")}Z`) ? { lastAt: ms } : {};
+    };
     const rows = await hog(key, `select timestamp, properties.endpoint, toInt(properties.status), properties.errorCode, properties.crawlerPath, ` +
       `properties.requestId, properties.orgId from events where event = 'api_request_failed' and toInt(properties.status) >= 500 and ${window} ` +
       `and properties.orgId in (${CUSTOMER_ORGS}) order by timestamp`);
@@ -117,13 +130,13 @@ export async function measure(now: number): Promise<PrecheckOutput> {
       at: String(at), endpoint: String(endpoint), status: Number(status), errorCode: String(errorCode ?? ""), handle: handleOf(path as string | null),
       requestId: String(requestId ?? ""), orgId: String(orgId ?? ""),
     }));
-    const durations = `select properties.endpoint, count(), quantileExact(0.9)(toFloat(properties.durationMs)) from events where ${calls} and ${window} ` +
+    const durations = `select properties.endpoint, count(), quantileExact(0.9)(toFloat(properties.durationMs)), max(timestamp) from events where ${calls} and ${window} ` +
       `and properties.endpoint in (${SLOW_ROUTES.map(endpoint => `'${endpoint}'`).join(", ")}) and properties.durationMs is not null`;
-    const latencyRows = (rows: unknown[][]): RouteLatency[] => rows.map(([endpoint, count, p90]) =>
-      ({ endpoint: String(endpoint), calls: Number(count), p90Ms: p90 === null || p90 === undefined ? null : Number(p90) }));
+    const latencyRows = (rows: unknown[][]): RouteLatency[] => rows.map(([endpoint, count, p90, last]) =>
+      ({ endpoint: String(endpoint), calls: Number(count), p90Ms: p90 === null || p90 === undefined ? null : Number(p90), ...inDay(last) }));
     const latency = latencyRows(await hog(key, `${durations} group by 1`));
     const gapMin = gap[0]?.[0] === null || gap[0]?.[0] === undefined ? null : Number(gap[0][0]);
-    return report({ completed: Number(completed), failed: Number(failed), failed5xx: Number(failed5xx) }, failedCalls, day, gapMin, latency);
+    return report({ completed: Number(completed), failed: Number(failed), failed5xx: Number(failed5xx), ...inDay(lastCall) }, failedCalls, day, gapMin, latency);
   } catch (error) {
     return { metrics: { customer_5xx_share_pct: UNMEASURED, slow_route_p90_s: UNMEASURED, source_errors: 1 },
       flagged: [{ kind: "source_error", excerpt: `PostHog read failed: ${error instanceof Error ? error.message : String(error)}` }] };
