@@ -150,9 +150,11 @@
       "id": "F5",
       "title": "Engage account states fixed by hand",
       "designs": [
-        "p98"
+        "p98",
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p313",
+        "commit:d8842b2ce"
       ],
-      "owner": "engage read pacing, engage 100k throughput, Crawler ops 302 fix; a hand-run scripts.engage_jar_check exec in prod crawler-api (account 16, 10-18) checks a parked jar before a hand activation, which the same design replaces",
+      "owner": "engage read pacing, engage 100k throughput, Crawler ops 302 fix; a hand-run scripts.engage_jar_check exec in prod crawler-api (account 16, 10-18) checks a parked jar before a hand activation, which the same design replaces. Prospect feature bro (01a11bd7) job 'd3 engage suspension wave self-judges' (session 01a1a959), step p313: alert triage paused staging pause.engage_tagged at 22:22Z 11-04 (config_audit 21297) on engage-instagram-killing-stg, as runbook engage-capacity 'Allowed actions 2' told it, and lifted it at 22:33Z (21303) because 28 peers on the same image and pace read fine. No pause ever stopped a death: the staging waves of 10-27 (3 deaths 19:17-19:23Z), 10-29 (4 at 20:15-20:37Z, with 3 prod deaths in the same minutes) and 11-04 (6 at 21:40-22:01Z) each ended by themselves while 3 to 31 accounts read 164, 1,454 and 379 more pages with no death, the 11-04 pause came 21 minutes after the last death and cut the lane to 50 pages in 20 minutes against 109-270 per 10 minutes before, and prod's 12 deaths of 10-26 23:12Z to 10-27 11:41Z stopped with no pause. The crawler already freezes each suspended account at the read that finds it, so d8842b2ce removes the pause action from engage-capacity.md and engage-tagged-lane.md and the pause line from the engage-instagram-killing and fleet death-line alert summaries (c72); triage reads and escalates.",
       "match": {
         "engage_event": {
           "kind": "status",
