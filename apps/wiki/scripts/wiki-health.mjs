@@ -377,10 +377,10 @@ export function citedRefs(page) {
  * (siblingRepos, from its root or under one of its `components/<name>/`), not gitignored, and with `onDisk` not as a file
  * in the checkout, which holds the files a commit.mjs commit adds beside the page. A `sieun-pi:<path>` ref is unmeasured
  * when `siblings` has no sieun-pi checkout. An experiment page (kind or folder) or a retired page keeps its old
- * paths. The `<code>` paths matter because a page with no `source_refs` still describes code, and the sibling-repo and
+ * paths, and with `history` only its `<code>` paths, because the stale report reads `source_refs` on every page. The `<code>` paths matter because a page with no `source_refs` still describes code, and the sibling-repo and
  * wiki-page lookups keep paths that exist from reading as missing.
  */
-export function missingCodeRefs(pages, repo, siblings = new Map(), { rev = 'HEAD', onDisk = false } = {}) {
+export function missingCodeRefs(pages, repo, siblings = new Map(), { rev = 'HEAD', onDisk = false, history = false } = {}) {
 	const known = new Set();
 	const addPaths = (file, prefix = '') => {
 		const parts = file.split('/');
@@ -408,9 +408,10 @@ export function missingCodeRefs(pages, repo, siblings = new Map(), { rev = 'HEAD
 	const cited = [];
 	for (const page of pages) {
 		const meta = page.meta ?? {};
-		if (meta.kind === 'experiment' || page.path.startsWith('experiments/')) continue;
-		if (SETTLED_STATUS.has(String(meta.status).toLowerCase())) continue;
-		for (const [ref, candidates] of citedRefs(page))
+		const past =
+			meta.kind === 'experiment' || page.path.startsWith('experiments/') || SETTLED_STATUS.has(String(meta.status).toLowerCase());
+		if (past && !history) continue;
+		for (const [ref, candidates] of citedRefs(past ? { ...page, html: '' } : page))
 			if (!unmeasured(ref) && !candidates.some(resolves)) cited.push({ page, ref, candidates });
 	}
 	if (!cited.length) return [];

@@ -254,12 +254,47 @@ test('the page API refuses a ref to a file or definition only the checkout holds
 	assert.deepEqual(rest, []);
 	assert.match(
 		reason,
-		new RegExp(`it cites ${DRAINS}::drainSettledMoves, ${MOVES}::drainSettledJoins, which the checkout holds but its HEAD does not, so the file is not committed yet.*write the page after the code commit lands`),
+		new RegExp(`it cites ${DRAINS}::drainSettledMoves, ${MOVES}::drainSettledJoins, which the checkout holds but its HEAD does not, so the file is not committed yet.*leave the entry out now.*add it after the code commit lands`),
 	);
 	assert.match(pageWriteReasons(f.repo, CAMPAIGNS, before, campaigns([MOVES, `${MOVES}::nowhere`]))[0], /::nowhere, which git does not have/);
 	assert.deepEqual(pageWriteReasons(f.repo, CAMPAIGNS, v81, v81), [], 'a ref the page already had passes as before');
 	f.commit(DRAINS, MOVES);
 	assert.deepEqual(pageWriteReasons(f.repo, CAMPAIGNS, before, v81), [], 'the write passes once the code commit lands');
+});
+
+// 2026-11-05: the page API took the superseded domains/devops/production-runbook.html v74 with a source_ref on a README
+// heading only an uncommitted edit held, because the gate skipped history pages, and the precheck counted the page at once.
+test('the page API refuses a source_ref HEAD lacks on a superseded or experiment page, and keeps their <code> paths history', (t) => {
+	const f = codeRepo();
+	const pi = process.env.SIEUN_PI_REPO;
+	process.env.SIEUN_PI_REPO = f.env.SIEUN_PI_REPO;
+	t.after(() => {
+		if (pi === undefined) delete process.env.SIEUN_PI_REPO;
+		else process.env.SIEUN_PI_REPO = pi;
+		rmSync(f.repo, { recursive: true, force: true });
+	});
+	const PROD = 'domains/devops/production-runbook.html';
+	const README = 'apps/infra/metal/README.md';
+	const runbookAt = (refs, body = '<p>Runbook.</p>', meta = { status: 'superseded' }) =>
+		html({ title: 'Production runbook', description: 'd', last_verified: '2026-11-05T00:40Z', ...meta, source_refs: refs }, body);
+	const before = runbookAt([`${README}::Staging crawler mode`]);
+	f.commit(f.write(README, '# Metal\n\n## Staging crawler mode\n\nOne mode.\n'), f.page(PROD, before));
+	f.write(README, '# Metal\n\n## Staging crawler containers\n\nTwo containers.\n');
+	const v74 = runbookAt([`${README}::Staging crawler containers`]);
+	const [reason, ...rest] = pageWriteReasons(f.repo, PROD, before, v74);
+	assert.deepEqual(rest, []);
+	assert.match(reason, new RegExp(`it cites ${README}::Staging crawler containers, which the checkout holds but its HEAD does not.*leave the entry out now`));
+	assert.deepEqual(pageWriteReasons(f.repo, PROD, before, runbookAt([])), [], 'dropping the entry passes');
+	const EXP = 'experiments/2026-11-05-metal-split/index.html';
+	const exp = (refs, body) => runbookAt(refs, body, { kind: 'experiment' });
+	assert.match(pageWriteReasons(f.repo, EXP, exp([]), exp(['apps/infra/metal/split.sh']))[0], /split\.sh, which git does not have/);
+	assert.deepEqual(
+		pageWriteReasons(f.repo, EXP, exp([]), exp([], '<p>It ran <code>apps/infra/metal/split.sh</code> once.</p>')),
+		[],
+		'a <code> path on an experiment page stays history',
+	);
+	f.commit(README);
+	assert.deepEqual(pageWriteReasons(f.repo, PROD, before, v74), [], 'the write passes once the code commit lands');
 });
 
 // 2026-10-20: a bare last_verified day cannot tell a second check on the same day from no check, so a check sets the UTC time.

@@ -224,7 +224,8 @@ export function pageWriteReasons(root, page, before, after) {
 	if (uncommitted.length)
 		reasons.push(
 			`it cites ${uncommitted.join(', ')}, which the checkout holds but its HEAD does not, so the file is not committed ` +
-				`yet and the wiki dream would count the page behind its code at once; write the page after the code commit lands`,
+				`yet and the wiki dream would count the page behind its code at once; leave the entry out now, which the follow ` +
+				`gate takes for a code commit that renames or removes what it cites, and add it after the code commit lands`,
 		);
 	return reasons;
 }
@@ -508,8 +509,12 @@ const isGated = (rel) => isCuratedPath(rel) || rel === `${CONTENT}${HOME}`;
 /**
  * The refs of each `{ page, had }` row that `rev` lacks: a repo path missingCodeRefs finds nowhere at `rev`, with no checkout
  * file counted, or a `source_refs` definition `path::name` that definitions.mjs does not find in the file at `rev`, as
- * follow-gate.mjs reads it. Only refs none of the earlier copies `had` cited count, and an experiment or settled page is
- * skipped, as missingCodeRefs skips it. The result maps each content path to its refs.
+ * follow-gate.mjs reads it. Only refs none of the earlier copies `had` cited count, and an experiment or settled page
+ * counts its `source_refs` alone, as the stale report and follow-gate.mjs lostSourceRefs read them. The result maps each
+ * content path to its refs.
+ * Why: at 00:49Z on 2026-11-05 the page API took domains/devops/production-runbook.html v74, a superseded page, with
+ * `apps/infra/metal/README.md::Staging crawler containers`, a heading only an uncommitted README edit held, because this
+ * skipped such pages, and the wiki dream precheck counted the page at once.
  */
 function lackingRefs(root, rev, rows) {
 	const shaped = rows
@@ -525,7 +530,7 @@ function lackingRefs(root, rev, rows) {
 		shaped.map((row) => row.page),
 		root,
 		siblingRepos(),
-		{ rev },
+		{ rev, history: true },
 	))
 		for (const ref of refs) if (shaped.find((row) => row.page.path === page).added.has(ref)) note(page, ref);
 	const texts = new Map();
@@ -535,7 +540,6 @@ function lackingRefs(root, rev, rows) {
 		return text === null || definitionText(text, name) !== null;
 	};
 	for (const { page, added } of shaped) {
-		if (isHistory(page)) continue;
 		for (const ref of Array.isArray(page.meta.source_refs) ? page.meta.source_refs : []) {
 			const symbol = typeof ref === 'string' && added.has(ref) ? symbolRef(ref) : null;
 			if (symbol && !lacks.get(page.path)?.includes(ref) && !defined(symbol.file, symbol.name)) note(page.path, ref);
