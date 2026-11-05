@@ -90,6 +90,12 @@ export interface FunnelDeps { exec: Exec; now: () => number; repo: string; pytho
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error)).replace(/phx_[A-Za-z0-9]+/g, "phx_***");
 const pct = (part: number, whole: number): number => Math.round(10000 * part / whole) / 100;
 const SOURCES = 4;
+/**
+ * Each command stops 10 s before the runner's PRECHECK_TARGET_MS, and slack-green-funnel.py prints by the run's start plus this, so a hung
+ * PostHog query ends as its own source error with the other sources' numbers kept. 10 s covers the rest of a run: the first full run took
+ * 17.2 s, of which the python queries took 10.2 s, so git, tar and node took 7 s.
+ */
+export const COMMAND_TIMEOUT_MS = PRECHECK_TARGET_MS - 10_000;
 
 /**
  * The metrics from one report. Each source that failed (the cohort query, the 28-day query, the signup query, the home test query, or a cohort
@@ -179,8 +185,11 @@ export async function pickRef(deps: Pick<FunnelDeps, "exec" | "repo">): Promise<
   return { error: `no ref has ${SCRIPT}: ${notes.join("; ")}`, notes };
 }
 
-/** Extracts the scripts from the ref into a temp folder and runs slack-green-funnel.py there. Throws when the script cannot run. */
-export async function readFunnel(deps: FunnelDeps, ref: string): Promise<FunnelReport> {
+/**
+ * Extracts the scripts from the ref into a temp folder and runs slack-green-funnel.py there. Throws when the script cannot run. The python
+ * prints by `until` (epoch ms) with whatever finished, so one slow query costs its own source and not the whole report (d1, 11-05 09:30 KST).
+ */
+export async function readFunnel(deps: FunnelDeps, ref: string, until = deps.now() + COMMAND_TIMEOUT_MS): Promise<FunnelReport> {
   const dir = await mkdtemp(join(tmpdir(), "sg-funnel-"));
   try {
     const tar = join(dir, "scripts.tar");
@@ -188,7 +197,8 @@ export async function readFunnel(deps: FunnelDeps, ref: string): Promise<FunnelR
     await deps.exec("tar", ["-xf", tar, "-C", dir]);
     const key = deps.env.POSTHOG_PERSONAL_API_KEY;
     if (!key) throw new Error(`POSTHOG_PERSONAL_API_KEY is not set in ${deps.repo}/scripts/seo-agent/.env`);
-    const stdout = await deps.exec(deps.python, [deps.wrapper, join(dir, "scripts/seo-agent"), String(DAYS), String(deps.weeks ?? 0)],
+    const stdout = await deps.exec(deps.python, [deps.wrapper, join(dir, "scripts/seo-agent"), String(DAYS), String(deps.weeks ?? 0),
+      String(Math.max(0, (until - deps.now()) / 1000))],
       { cwd: dir, env: { POSTHOG_PERSONAL_API_KEY: key, POSTHOG_PROJECT_ID: deps.env.POSTHOG_PROJECT_ID || "226805", ...(deps.env.POSTHOG_HOST ? { POSTHOG_HOST: deps.env.POSTHOG_HOST } : {}) } });
     return JSON.parse(stdout.slice(stdout.indexOf("{"))) as FunnelReport;
   } finally { await rm(dir, { recursive: true, force: true }); }
@@ -204,7 +214,7 @@ export async function measureFunnel(deps: FunnelDeps, previous: FunnelState | un
   }
   let report: FunnelReport | null = null;
   let failure: string | undefined;
-  try { report = await readFunnel(deps, picked.ref); } catch (error) { failure = message(error); }
+  try { report = await readFunnel(deps, picked.ref, at + COMMAND_TIMEOUT_MS); } catch (error) { failure = message(error); }
   const { metrics, flagged } = funnelMetrics(report, at, failure);
   const source: FlaggedSlice = { at, kind: "script_ref", excerpt: `conversion_targets.py read from ${picked.label} (${picked.ref}) with git archive, not from the slack-green checkout` };
   return { output: { metrics, flagged: [source, ...notes, ...flagged, ...trend(previous, metrics, at)] }, ...(metrics.source_errors ? {} : { state: { metrics, at } }) };
@@ -215,11 +225,6 @@ function python(): string {
   return process.env.PYTHON || ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", join(homedir(), ".local/bin/python3.11")].find(path => existsSync(path)) || "python3";
 }
 
-/**
- * Each command stops 10 s before the runner's PRECHECK_TARGET_MS, so a hung PostHog query still ends as a source error with every metric
- * written. 10 s covers the rest of a run: the first full run took 17.2 s, of which the python queries took 10.2 s, so git, tar and node took 7 s.
- */
-const COMMAND_TIMEOUT_MS = PRECHECK_TARGET_MS - 10_000;
 const exec: Exec = (file, args, options) => new Promise((resolve, reject) => {
   execFile(file, [...args], { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, cwd: options?.cwd, env: { ...process.env, ...options?.env } },
     (error, stdout, stderr) => error ? reject(new Error(`${file} ${args[0] ?? ""}: ${error.message} ${stderr}`.trim())) : resolve(stdout));

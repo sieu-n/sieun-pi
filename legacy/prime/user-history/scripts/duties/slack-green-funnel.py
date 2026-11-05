@@ -1,6 +1,6 @@
 """The Visitors become paying users duty's PostHog reads, run by slack-green-funnel.ts. Read-only.
 
-Usage: python3 slack-green-funnel.py <dir with slack-green's scripts/seo-agent> <days> [<weeks>]
+Usage: python3 slack-green-funnel.py <dir with slack-green's scripts/seo-agent> <days> [<weeks>] [<deadline seconds>]
 
 slack-green-funnel.ts extracts slack-green's scripts/seo-agent and scripts/posthog from a git ref into a temp folder, so the 28-day numbers come
 from conversion_targets.py's own window_report (the funnel dashboard's definitions) without a checkout. It adds one query: real people (the
@@ -11,18 +11,21 @@ the CLI within 28 days of that visit (the duty's headline). A fourth reads real 
 or bought the CLI within 16 days of signing up, a trial and its charge. <weeks> adds one 7-day row per week before today, like
 conversion_targets.py --weeks, whose Pro or CLI column counts only payments inside that same week, and one signup row per week that ended 16
 days ago or earlier, followed 16 days.
-Prints one JSON object; a query that fails gives its error text instead of numbers.
+Prints one JSON object; a query that fails gives its error text instead of numbers. With <deadline seconds> it prints after that many seconds
+at most, and a query still running then gives an error text, so one slow query costs only its own numbers.
 """
 
 import json
+import os
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timedelta
 from pathlib import Path
 
 seo_agent = Path(sys.argv[1]).resolve()
 days = int(sys.argv[2]) if len(sys.argv) > 2 else 28
 weeks = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+deadline = float(sys.argv[4]) if len(sys.argv) > 4 else None
 sys.path.insert(0, str(seo_agent))
 
 HOME_TEST = "^sg-exp-home"
@@ -183,20 +186,29 @@ FROM (
     return {"start": str(start), "end": str(end), "follow_days": PAY_DAYS, "signed_up": signed_up, "paid": paid}
 
 
-with ThreadPoolExecutor(max_workers=4 + 2 * weeks) as pool:
-    window_job = pool.submit(run, lambda: window(days, 0))
-    home_job = pool.submit(run, home_test)
-    cohort_job = pool.submit(run, cohort)
-    signups_job = pool.submit(run, lambda: signups(days + PAY_DAYS, PAY_DAYS))
-    week_jobs = [pool.submit(run, lambda k=k: window(7 * k, 7 * (k - 1))) for k in range(1, weeks + 1)]
-    signup_week_jobs = [pool.submit(run, lambda k=k: signups(7 * k + PAY_DAYS, 7 * (k - 1) + PAY_DAYS)) for k in range(1, weeks + 1)]
-    (report, report_error), (home, home_error), (paid, paid_error) = window_job.result(), home_job.result(), cohort_job.result()
-    signup_paid, signup_paid_error = signups_job.result()
-    week_rows = [job.result() for job in week_jobs]
-    signup_week_rows = [job.result() for job in signup_week_jobs]
+pool = ThreadPoolExecutor(max_workers=4 + 2 * weeks)
+window_job = pool.submit(run, lambda: window(days, 0))
+home_job = pool.submit(run, home_test)
+cohort_job = pool.submit(run, cohort)
+signups_job = pool.submit(run, lambda: signups(days + PAY_DAYS, PAY_DAYS))
+week_jobs = [pool.submit(run, lambda k=k: window(7 * k, 7 * (k - 1))) for k in range(1, weeks + 1)]
+signup_week_jobs = [pool.submit(run, lambda k=k: signups(7 * k + PAY_DAYS, 7 * (k - 1) + PAY_DAYS)) for k in range(1, weeks + 1)]
+jobs = [window_job, home_job, cohort_job, signups_job, *week_jobs, *signup_week_jobs]
+wait(jobs, timeout=deadline)
+
+
+def result(job):
+    return job.result() if job.done() else (None, f"posthog query still running after {deadline:.0f} s")
+
+
+(report, report_error), (home, home_error), (paid, paid_error) = result(window_job), result(home_job), result(cohort_job)
+signup_paid, signup_paid_error = result(signups_job)
+week_rows = [result(job) for job in week_jobs]
+signup_week_rows = [result(job) for job in signup_week_jobs]
 print(json.dumps({
     "window": report, "window_error": report_error, "home": home, "home_error": home_error, "cohort": paid, "cohort_error": paid_error,
     "signups": signup_paid, "signups_error": signup_paid_error,
     "weeks": [row for row, _ in week_rows], "weeks_errors": [error for _, error in week_rows + signup_week_rows if error],
     "signup_weeks": [row for row, _ in signup_week_rows],
-}))
+}), flush=True)
+os._exit(0)  # a query still running past the deadline holds a pool thread, which would keep the process alive until slack-green-funnel.ts kills it
