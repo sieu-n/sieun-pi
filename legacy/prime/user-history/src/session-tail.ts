@@ -231,10 +231,10 @@ export interface FoundMessage { entry: SessionEntry; message: AgentMessage; befo
 
 /**
  * The shown message with timestamp `at` that has `n` shown messages with the same timestamp before it on the branch, found by walking back from
- * the leaf; only entries that hold `"timestamp":<at>` are parsed. `before` is where the entries before it start. Null when the branch holds no
- * such message, and undefined for a file a full open must migrate, so only that file takes a caller's whole-file read: until 10-27 a message
- * not on the branch read undefined too, and at 07:36Z and 07:37Z a part read of Crawler VP held the chat's event loop 1.8 and 1.9 s on that
- * read; on a copy of the 100 MB AI harness chat file it took 846 to 876 ms against 3 to 10 ms for this walk.
+ * the leaf; only entries that hold `"timestamp":<at>` or were written at `at` are parsed. `before` is where the entries before it start. Null
+ * when the branch holds no such message, and undefined for a file a full open must migrate, so only that file takes a caller's whole-file
+ * read: until 10-27 a message not on the branch read undefined too, and at 07:36Z and 07:37Z a part read of Crawler VP held the chat's event
+ * loop 1.8 and 1.9 s on that read; on a copy of the 100 MB AI harness chat file it took 846 to 876 ms against 3 to 10 ms for this walk.
  *
  * `near` is the place a page named for the message (`BranchPage.places`), and the walk starts there and reads at most a page's bytes. A place
  * the file no longer holds, after a rewrite, falls back to the walk from the leaf. That walk reads back to the message: at 18:00:30Z on 10-27
@@ -262,7 +262,8 @@ async function walkTo(handle: FileHandle, first: number, size: number, from: Fil
   const hits: FoundMessage[] = [];
   for await (const line of branchLines(handle, first, size, from, read)) {
     if (line.time < at - CLOCK_SKEW_MS) break;
-    if (!holdsStamp(line.bytes, needle)) continue;
+    // A custom message, a compaction and a branch summary take the entry's own ISO time as their timestamp, which no number in the line holds.
+    if (line.time !== at && !holdsStamp(line.bytes, needle)) continue;
     const entry = parse(line);
     const message = entry && shown(entry);
     if (entry && message?.timestamp === at) hits.push({ entry, message, before: entry.parentId ? { end: line.start, id: entry.parentId } : null });

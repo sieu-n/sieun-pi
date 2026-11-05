@@ -1,5 +1,6 @@
+import { spawn } from "node:child_process";
 import { open, readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
 import { isMain } from "./main-module.ts";
 
@@ -124,21 +125,77 @@ async function lineSince(file: string, since: number, match: (line: string) => n
 
 /** A session's file: `sessions/<id>.jsonl` for a root, else `<id>.jsonl` in a `sub-*` folder up to three levels under session-artifacts. */
 export async function sessionFileOf(sessionId: string, agentDir: string): Promise<string | null> {
+  const asked = performance.now();
   const name = `${sessionId}.jsonl`;
   const root = join(agentDir, "sessions", name);
-  if (await stat(root).then(() => true, () => false)) return root;
+  if (await exists(root)) return root;
   const artifacts = join(agentDir, "session-artifacts");
-  let level = (await readdir(artifacts).catch(() => [] as string[])).map(entry => join(artifacts, entry));
-  for (let depth = 0; depth < 3 && level.length; depth++) {
-    const next: string[] = [];
-    for (const dir of level) {
-      const entries = await readdir(dir).catch(() => [] as string[]);
-      if (depth > 0 && entries.includes(name)) return join(dir, name);
-      for (const entry of entries) if (entry.startsWith("sub-")) next.push(join(dir, entry));
-    }
-    level = next;
+  let index = artifactIndexes.get(artifacts);
+  if (!index) artifactIndexes.set(artifacts, index = new ArtifactIndex(artifacts));
+  return await index.find(name, asked);
+}
+
+const exists = (file: string): Promise<boolean> => stat(file).then(() => true, () => false);
+const artifactIndexes = new Map<string, ArtifactIndex>();
+
+/**
+ * Every subagent transcript under one session-artifacts folder by file name, from one `find` run in its own process. Until 11-05 each lookup
+ * walked the folder with readdir on the chat's main thread: on us-metal02 that was 62,472 folders under 8,931 roots, 9.8 s and 3.2 s of CPU
+ * for one walk (event loop 51% busy), and 13.8 s of the main thread in the first minute after the 03:47:19Z start, when the outbox retried
+ * its sends (cpu-profiles pid957211); an older-messages read in that minute took 1.4 s (d7 clean_min_30). The same `find` takes 2.6 s and
+ * 1.3 s of CPU in its own process. A name the last listing lacks, or whose file is gone, waits for a listing that began after it asked, so a
+ * file made just before the ask is found; every ask that waits meanwhile shares that one listing.
+ */
+class ArtifactIndex {
+  private files = new Map<string, string>();
+  private listing: { from: number; done: Promise<void> } | null = null;
+  private queued: Promise<void> | null = null;
+
+  constructor(private readonly artifacts: string) {}
+
+  async find(name: string, asked: number): Promise<string | null> {
+    const known = this.files.get(name);
+    if (known && await exists(known)) return known;
+    await this.listedSince(asked);
+    const found = this.files.get(name);
+    return found && await exists(found) ? found : null;
   }
-  return null;
+
+  private listedSince(asked: number): Promise<void> {
+    if (!this.listing) return this.list();
+    if (this.listing.from >= asked) return this.listing.done;
+    return this.queued ??= this.listing.done.then(() => { this.queued = null; return this.listing ? this.listing.done : this.list(); });
+  }
+
+  private list(): Promise<void> {
+    const from = performance.now();
+    const done: Promise<void> = listArtifacts(this.artifacts).then(files => { this.files = files; }, () => {})
+      .finally(() => { if (this.listing?.done === done) this.listing = null; });
+    this.listing = { from, done };
+    return done;
+  }
+}
+
+/**
+ * The `<id>.jsonl` files in `sub-*` folders one and two levels below each root folder of `artifacts`, by file name. `find` prunes every other
+ * folder below a root, as the readdir walk read only `sub-*` folders. A folder it cannot read still leaves the rest of the listing.
+ */
+function listArtifacts(artifacts: string): Promise<Map<string, string>> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("find", [artifacts, "-mindepth", "2", "-maxdepth", "4", "-type", "d", "!", "-name", "sub-*", "-prune", "-o", "-name", "*.jsonl", "-print"],
+      { stdio: ["ignore", "pipe", "ignore"] });
+    const chunks: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+    child.once("error", reject);
+    child.once("close", () => {
+      const files = new Map<string, string>();
+      for (const path of Buffer.concat(chunks).toString("utf8").split("\n")) {
+        const folder = dirname(path);
+        if (basename(folder).startsWith("sub-") && dirname(folder) !== artifacts && !files.has(basename(path))) files.set(basename(path), path);
+      }
+      resolve(files);
+    });
+  });
 }
 
 /**
