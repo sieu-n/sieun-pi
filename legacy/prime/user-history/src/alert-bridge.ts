@@ -245,7 +245,8 @@ const newFault = (rule: Tracked, alert: FiringAlert): boolean => {
  * 4. A rule that fired sets `wokeAt`, so its job owes the fire (`owed`). A new label set on a rule that still fires is the same incident, and
  *    so is a fire within REFIRE_MS of the rule resolving, which keeps the rule's entry and its job and fires nothing here. Once that job has
  *    ended, `reopen` fires the rule for the label sets it never read (`dueReopens`). A label set back within REFIRE_MS keeps the `seenAt` of
- *    the instance it repeats, so a Grafana reset reopens nothing.
+ *    the instance it repeats, so a Grafana reset reopens nothing, and so does a fingerprint that fires again with a new startsAt while
+ *    `holdStillFiring` still holds its old instance through a reset.
  * 5. A rule whose label `incident_by` names one of its labels, such as `spec`, holds one fault per value of that label: a new label set whose
  *    value no open instance of the rule has fires the rule again, so its job owes it. On 10-30 at 17:06Z hosted-app-chat.spec.ts went red on
  *    ci-staging-proof-spec-red while hosted-inbox-whatsapp-dm.spec.ts, held red on Meta's name approval, kept the rule open, and no job got it.
@@ -293,7 +294,8 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
     const rule = rules[key]!;
     if (!fired.has(key) && newFault(rule, alert)) fired.add(key);
     const labels = labelText(alert.labels);
-    const before = blips.has(key) ? Object.values(rule.instances).find(instance => labelText(instance.labels) === labels)?.seenAt : undefined;
+    const held = Object.entries(rule.instances).find(([id, instance]) => instance.resolvedAt === undefined && id.startsWith(`${alert.fingerprint}@`))?.[1];
+    const before = blips.has(key) ? Object.values(rule.instances).find(instance => labelText(instance.labels) === labels)?.seenAt : held?.seenAt;
     for (const [id, instance] of Object.entries(rule.instances)) if (instance.resolvedAt !== undefined && id.startsWith(`${alert.fingerprint}@`)) delete rule.instances[id];
     rule.instances[alertKey(alert)] = { startsAt: alert.startsAt, labels: alert.labels, seenAt: before ?? now };
     if (fired.has(key) && alert.startsAt < rule.startsAt) rule.startsAt = alert.startsAt;
@@ -934,8 +936,11 @@ export async function readGrafanaAlerts(configFile: string): Promise<FiringAlert
   return value === null ? null : parseAlerts(value);
 }
 
-/** What Grafana's rule list says of one rule: whether it has not evaluated since Grafana started, and how many of its instances alert now. */
-export interface RuleState { unevaluated: boolean; alerting: number }
+/**
+ * What Grafana's rule list says of one rule: whether it has not evaluated since Grafana started, how many of its instances alert now and how
+ * many wait out their `for` (Pending), and when it last evaluated (0 when it has not).
+ */
+export interface RuleState { unevaluated: boolean; alerting: number; pending: number; evaluatedAt: number }
 
 /**
  * Each rule of Grafana's rule list by uid. Grafana 12.3 lists a rule it has not evaluated since it started with lastEvaluation
@@ -947,11 +952,42 @@ export function parseRuleStates(value: unknown): Map<string, RuleState> {
   if (!groups) throw new Error("Grafana's rule list has no groups");
   const rules = groups.flatMap(group => isRecord(group) && Array.isArray(group.rules) ? group.rules : []);
   const count = (totals: unknown, state: string): number => isRecord(totals) && typeof totals[state] === "number" ? totals[state] as number : 0;
-  return new Map(rules.flatMap(rule => isRecord(rule) && typeof rule.uid === "string" && rule.isPaused !== true ? [[rule.uid, {
-    unevaluated: !(Date.parse(typeof rule.lastEvaluation === "string" ? rule.lastEvaluation : "") > 0),
-    alerting: count(rule.totals, "alerting") + count(rule.totals, "recovering"),
-  }] as const] : []));
+  return new Map(rules.flatMap(rule => {
+    if (!isRecord(rule) || typeof rule.uid !== "string" || rule.isPaused === true) return [];
+    const at = Date.parse(typeof rule.lastEvaluation === "string" ? rule.lastEvaluation : "");
+    return [[rule.uid, { unevaluated: !(at > 0), alerting: count(rule.totals, "alerting") + count(rule.totals, "recovering"),
+      pending: count(rule.totals, "pending"), evaluatedAt: at > 0 ? at : 0 }] as const];
+  }));
 }
+
+/**
+ * A label set as Grafana's alert list and its rule list both write it: every label but Grafana's own `__` ones and the empty ones, sorted by
+ * name. On 11-05 the rule list wrote `project=` on vendor-bill-over-pace's sets, and the alert list left the empty label out.
+ */
+export const setKey = (labels: Record<string, string>): string =>
+  Object.entries(labels).filter(([name, value]) => !name.startsWith("__") && value !== "").sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => `${name}=${value}`).join(", ");
+
+/** The label sets (`setKey`) of the instances of rule `uid` that a Grafana rule list holds Pending. */
+export function parsePendingSets(value: unknown, uid: string): Set<string> {
+  const groups = isRecord(value) && isRecord(value.data) && Array.isArray(value.data.groups) ? value.data.groups : null;
+  if (!groups) throw new Error("Grafana's rule list has no groups");
+  const rules = groups.flatMap(group => isRecord(group) && Array.isArray(group.rules) ? group.rules : []).filter(rule => isRecord(rule) && rule.uid === uid);
+  const alerts = rules.flatMap(rule => isRecord(rule) && Array.isArray(rule.alerts) ? rule.alerts : []);
+  return new Set(alerts.flatMap(alert => isRecord(alert) && typeof alert.state === "string" && alert.state.startsWith("Pending") && isRecord(alert.labels) ?
+    [setKey(Object.fromEntries(Object.entries(alert.labels).filter((entry): entry is [string, string] => typeof entry[1] === "string")))] : []));
+}
+
+/** The Pending label sets of `alert`'s rule, read by its title: 11 KB for crawler-prod-kafka-writer-lag against 3.9 MB for every rule with its instances on 11-05. */
+export async function readPendingSets(configFile: string, alert: FiringAlert): Promise<Set<string>> {
+  return parsePendingSets(await readGrafana(configFile, `/api/prometheus/grafana/api/v1/rules?rule_name=${encodeURIComponent(alert.alertname)}`), ruleOf(alert));
+}
+
+/**
+ * How to tell a Grafana state reset from a resolve: `since` is when the bridge read the last list, and `pending` reads the Pending label sets
+ * of an alert's rule. A provisioning reload that changes a rule resets every instance of it to "Normal (Updated)" with no evaluation, and the
+ * next evaluation puts a set that still breaches into Pending, where it waits out the rule's `for` before it fires with a new startsAt.
+ */
+export interface ResetCheck { since: number; pending: (alert: FiringAlert) => Promise<ReadonlySet<string>> }
 
 export async function readRuleStates(configFile: string): Promise<Map<string, RuleState>> {
   return parseRuleStates(await readGrafana(configFile, GRAFANA_RULES_PATH));
@@ -966,19 +1002,36 @@ export async function readRuleStates(configFile: string): Promise<Map<string, Ru
  * virev-obs-grafana, and its alert list at the bridge's poll at 15:42:52Z lacked the firing CI rules after each had evaluated again, so the
  * bridge resolved them all for one poll and d4's precheck read alerts_firing 0 at 15:43:23Z, while Grafana's state history kept
  * ci-turbo-force-failed and ci-staging-check-task-red Alerting throughout. The rule list is read only when an alert went missing, and a failed read fails the poll, so nothing resolves on it.
+ * With `reset`, a missing alert also stays while its rule has not evaluated since the last list, since only a reset or a restart drops a
+ * firing alert with no evaluation, and while Grafana holds its label set Pending, since a firing set goes Pending only after a reset. On
+ * 11-03 at 22:44:20Z the obs deploy of 63a4f6d6f2 changed crawler-prod-kafka-writer-lag, Grafana reset its 3 firing sets to "Normal
+ * (Updated)", two went Pending at 22:44:30Z and fired again at 23:44:30Z at the same values, and the bridge paged the Crawler VP's triage job
+ * at 23:45Z for a fault it already held, as it had on 11-02 at 17:53Z after the 16:49Z deploy of 195e3b808c. A missing alert whose fingerprint
+ * the list holds with a new startsAt has ended, so it never stays beside the instance that replaced it.
  */
-export async function holdStillFiring(previous: readonly FiringAlert[] | null, current: FiringAlert[], states: () => Promise<ReadonlyMap<string, RuleState>>): Promise<FiringAlert[]> {
+export async function holdStillFiring(previous: readonly FiringAlert[] | null, current: FiringAlert[], states: () => Promise<ReadonlyMap<string, RuleState>>, reset?: ResetCheck): Promise<FiringAlert[]> {
   const listed = new Set(current.map(alertKey));
-  const gone = (previous ?? []).filter(alert => !listed.has(alertKey(alert)));
+  const relisted = new Set(current.map(alert => alert.fingerprint));
+  const gone = (previous ?? []).filter(alert => !listed.has(alertKey(alert)) && !relisted.has(alert.fingerprint));
   if (!gone.length) return current;
   const rules = await states();
   const shown = new Map<string, number>();
   for (const alert of current) shown.set(ruleOf(alert), (shown.get(ruleOf(alert)) ?? 0) + 1);
-  const fires = (alert: FiringAlert): boolean => {
-    const rule = rules.get(ruleOf(alert));
-    return rule !== undefined && (rule.unevaluated || rule.alerting > (shown.get(ruleOf(alert)) ?? 0));
+  const pending = new Map<string, Promise<ReadonlySet<string>>>();
+  const pendingOf = (alert: FiringAlert): Promise<ReadonlySet<string>> => {
+    if (!pending.has(ruleOf(alert))) pending.set(ruleOf(alert), reset!.pending(alert));
+    return pending.get(ruleOf(alert))!;
   };
-  return [...current, ...gone.filter(fires)];
+  const fires = async (alert: FiringAlert): Promise<boolean> => {
+    const rule = rules.get(ruleOf(alert));
+    if (rule === undefined) return false;
+    if (rule.unevaluated || rule.alerting > (shown.get(ruleOf(alert)) ?? 0)) return true;
+    if (!reset) return false;
+    if (rule.evaluatedAt < reset.since) return true;
+    return rule.pending > 0 && (await pendingOf(alert)).has(setKey(alert.labels));
+  };
+  const held = await Promise.all(gone.map(fires));
+  return [...current, ...gone.filter((_, index) => held[index])];
 }
 
 export async function readOwnersFor(configFile: string, home: string): Promise<OwnerMap | null> {
