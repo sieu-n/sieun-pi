@@ -177,19 +177,27 @@ test("a CI gate or test script in a session folder and an exited container are n
   assert.deepEqual(left.map(container => container.name), ["virev-prod-remote-gw"]);
 });
 
-// The d3 run at 16:17Z on 10-18: every deploy left virev-prod-copy-oneoff stopped and its owner restarted it by hand. copy-oneoff.sh now
-// sets a restart policy and deploy.sh starts it again, so a labelled one-off before its expires_at is not counted; a hand container is.
-test("a copy-oneoff.sh one-off with a restart policy before its expires_at is not a hand-run process; an expired or unlabelled one is", () => {
+// The d3 run at 16:17Z on 10-18: every deploy left virev-prod-copy-oneoff stopped and its owner restarted it by hand. The d3 run at 01:30Z
+// on 11-05 counted two follow_release lane-drop one-offs past their expires_at that converge keeps, while no one-off came back after a reboot.
+test("a one-off counts unless it has a restart policy, follows the release or is before its expires_at, and its tier's boot relaunch is enabled", () => {
   const now = Date.parse("2026-10-18T16:17:55Z");
-  const { containers } = parseBox([
+  const box = (boot: string) => parseBox([
+    `B\tprod\t${boot}`,
+    "B\tstaging\tdisabled|script",
     "C\tvirev-prod-copy-oneoff\trunning|||true|1792348746|on-failure",
     "C\tvirev-prod-old-oneoff\trunning|||true|1792340000|on-failure",
+    "C\tvirev-prod-lane-drop-oneoff\trunning|||true|1792340000|on-failure|virev-prod,|||true",
     "C\tvirev-prod-norestart-oneoff\trunning|||true|1792348746|no",
+    "C\tvirev-staging-copy-oneoff\trunning|||true|1792348746|on-failure",
     "C\tposts-backfill-handrun\trunning|||||no",
     "C\tvirev-prod-remote-gw\trunning|remote-gw||||unless-stopped",
-  ].join("\n"));
-  assert.deepEqual(containers[0], { name: "virev-prod-copy-oneoff", status: "running", service: "", oneoff: { expiresAt: 1792348746, restart: "on-failure" } });
-  assert.deepEqual(oneOffs(containers, now).map(container => container.name), ["virev-prod-old-oneoff", "virev-prod-norestart-oneoff", "posts-backfill-handrun"]);
+  ].join("\n")).containers;
+  const containers = box("enabled|script");
+  assert.deepEqual(containers[0], { name: "virev-prod-copy-oneoff", status: "running", service: "", oneoff: { expiresAt: 1792348746, restart: "on-failure", followRelease: false, bootRelaunch: true } });
+  assert.deepEqual(oneOffs(containers, now).map(container => container.name),
+    ["virev-prod-old-oneoff", "virev-prod-norestart-oneoff", "virev-staging-copy-oneoff", "posts-backfill-handrun"]);
+  assert.deepEqual(oneOffs(box("enabled|"), now).map(container => container.name),
+    ["virev-prod-copy-oneoff", "virev-prod-old-oneoff", "virev-prod-lane-drop-oneoff", "virev-prod-norestart-oneoff", "virev-staging-copy-oneoff", "posts-backfill-handrun"]);
 });
 
 // The d3 run at 17:2xZ on 10-18 read 18 while us-metal01 also ran 7 loops that ssh sessions had left behind, which the docker exec read never

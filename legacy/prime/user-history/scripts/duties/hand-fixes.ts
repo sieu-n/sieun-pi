@@ -82,9 +82,12 @@ export interface StatusEvent { accountId: number; at: number; outcome: string; e
 export interface BoardStep { id: string; status: string; job?: string }
 /** What a design ref resolves to: a board step's status, or whether a branch or commit exists. */
 export type RefState = { kind: "step"; status: string | null } | { kind: "git"; exists: boolean };
-/** `oneoff` is set for a container scripts/copy-oneoff.sh started: its virev.expires_at in unix seconds (null when unreadable) and docker restart policy. */
+/**
+ * `oneoff` is set for a container scripts/copy-oneoff.sh started: its virev.expires_at in unix seconds (null when unreadable), docker
+ * restart policy, virev.follow_release label, and whether its tier's boot relaunch (virev-oneoff-boot@<tier>.service) is enabled on the box.
+ */
 /** `networks` is the docker networks it joins, or undefined when the read did not list them. */
-export interface BoxContainer { name: string; status: string; service: string; oneoff?: { expiresAt: number | null; restart: string }; networks?: string[]; image?: string; created?: string }
+export interface BoxContainer { name: string; status: string; service: string; oneoff?: { expiresAt: number | null; restart: string; followRelease: boolean; bootRelaunch: boolean }; networks?: string[]; image?: string; created?: string }
 /**
  * `id` is the docker exec id; `lasted` is whether it still ran at the read's second sample, or undefined when the read took none. `text` is
  * the exec's script with its same-folder imports, read on the box through /proc/<exec Pid>/root, or undefined when it could not be read.
@@ -260,8 +263,9 @@ export function doneSeenAfter(registry: Registry, refs: ReadonlyMap<string, RefS
 }
 
 /**
- * The ssh output: `C<TAB>name<TAB>status|service|execids|oneoff|expires_at|restart` per container, `E<TAB>name<TAB><exec json>` per exec
- * session, `H<TAB>pid<TAB><base64 json {command, text}>` per detached session process, and `D<TAB>time<TAB>sha12` per ok prod deploy.
+ * The ssh output: `C<TAB>name<TAB>status|service|execids|oneoff|expires_at|restart|networks|image|created|follow_release` per container,
+ * `E<TAB>name<TAB><exec json>` per exec session, `H<TAB>pid<TAB><base64 json {command, text}>` per detached session process,
+ * `D<TAB>time<TAB>sha12` per ok prod deploy, and `B<TAB>tier<TAB><systemctl is-enabled>|<script>` per tier's one-off boot relaunch.
  */
 export function parseBox(text: string): { containers: BoxContainer[]; execs: BoxExec[]; hosts: HostLoop[]; deploys: Deploy[] } {
   const containers: BoxContainer[] = [];
@@ -272,17 +276,20 @@ export function parseBox(text: string): { containers: BoxContainer[]; execs: Box
   const nets_ = new Map<string, string[]>();
   const still = new Set<string>();
   const texts = new Map<string, string>();
+  const relaunched = new Set<string>();
   let resampled = false;
   for (const line of text.split("\n")) {
     const [tag, name, rest] = line.split("\t");
     if (!name || rest === undefined) continue;
     if (tag === "C") {
-      const [status = "", svc = "", , oneoff = "", expires = "", restart = "", nets, image, created] = rest.split("|");
+      const [status = "", svc = "", , oneoff = "", expires = "", restart = "", nets, image, created, follow] = rest.split("|");
       const expiresAt = /^\d+$/.test(expires) ? Number(expires) : null;
       const networks = nets === undefined ? undefined : nets.split(",").filter(Boolean);
-      containers.push({ name, status, service: svc, ...(oneoff === "true" ? { oneoff: { expiresAt, restart } } : {}), ...(networks ? { networks } : {}), ...(image ? { image, created: created ?? "" } : {}) });
+      containers.push({ name, status, service: svc, ...(oneoff === "true" ? { oneoff: { expiresAt, restart, followRelease: follow === "true", bootRelaunch: false } } : {}), ...(networks ? { networks } : {}), ...(image ? { image, created: created ?? "" } : {}) });
       service.set(name, svc);
       if (networks) nets_.set(name, networks);
+    } else if (tag === "B") {
+      if (rest === "enabled|script") relaunched.add(name);
     } else if (tag === "D") {
       const at = Date.parse(name);
       if (!Number.isNaN(at) && /^[0-9a-f]{12,40}$/.test(rest)) deploys.push({ at, release: rest });
@@ -305,7 +312,9 @@ export function parseBox(text: string): { containers: BoxContainer[]; execs: Box
   }
   if (resampled) for (const exec of execs) if (exec.id) exec.lasted = still.has(exec.id);
   for (const exec of execs) { const text = exec.id ? texts.get(exec.id) : undefined; if (text !== undefined) exec.text = text; }
-  return { containers, execs, hosts, deploys };
+  const tierOf = (name: string): string => /^virev-(prod|staging)-/.exec(name)?.[1] ?? "";
+  const withBoot = containers.map(container => container.oneoff ? { ...container, oneoff: { ...container.oneoff, bootRelaunch: relaunched.has(tierOf(container.name)) } } : container);
+  return { containers: withBoot, execs, hosts, deploys };
 }
 
 /**
@@ -326,11 +335,18 @@ const RELEASE_DEPLOY = /^(?:\/usr)?\/bin\/bash \/srv\/(?:prod|staging)\/releases
 
 /**
  * A one-off that runs itself: scripts/copy-oneoff.sh started it with a restart policy, so docker starts it again after a failure and an
- * exit 0 ends it, and deploy.sh starts it again after the deploy stopped it (start_oneoffs), until its expires_at. Before 10-18 every
- * deploy left the copy one-off stopped and its owner restarted it by hand. One past its expires_at, or with no restart policy, counts.
+ * exit 0 ends it, deploy.sh starts it again after a deploy stopped it (start_oneoffs), and its tier's virev-oneoff-boot unit starts it
+ * again after a reboot (lib/oneoff.sh oneoff_boot, auto-sns-agent 2590ef7b3), which docker's on-failure policy never does. The keep rule
+ * is converge's (kept_oneoff in apps/infra/metal/lib/metal-state.mjs): a virev.follow_release one-off runs the release's code until its
+ * job ends, and its expires_at is only the owner's guess, while one that stays on its own image is kept only until its expires_at. Before
+ * 10-18 every deploy left the copy one-off stopped and its owner restarted it by hand. One with no restart policy, one past its
+ * expires_at that does not follow the release, or one on a tier whose boot relaunch is not enabled counts.
  */
-export const keptOneOff = (container: BoxContainer, now: number): boolean =>
-  !!container.oneoff && container.oneoff.expiresAt !== null && container.oneoff.expiresAt * 1000 > now && ["on-failure", "unless-stopped", "always"].includes(container.oneoff.restart);
+export const keptOneOff = (container: BoxContainer, now: number): boolean => {
+  const oneoff = container.oneoff;
+  if (!oneoff || !oneoff.bootRelaunch || !["on-failure", "unless-stopped", "always"].includes(oneoff.restart)) return false;
+  return oneoff.followRelease || (oneoff.expiresAt !== null && oneoff.expiresAt * 1000 > now);
+};
 /** Running containers with no compose service and no kept one-off; an exited one runs nothing, as posts-backfill-handrun after promote 12 on 10-18. */
 export const oneOffs = (containers: readonly BoxContainer[], now: number): BoxContainer[] =>
   containers.filter(container => !container.service && container.status === "running" && !keptOneOff(container, now) && reachesTier(container));
@@ -494,8 +510,8 @@ export function report(data: HandData, dutyMetrics: readonly DutyMetric[]): Prec
     for (const exec of execs) flagged.push({ at, kind: "box_exec", excerpt: `docker exec in ${exec.container}, gone at the next restart: ${exec.command}`.slice(0, 400) });
     for (const exec of experimentExecs(data.box.execs, registry?.exempt.box_exec_regex))
       flagged.push({ at, kind: "box_experiment", excerpt: `Staging measurement exec in ${exec.container}, its script writes no store, control or queue, not counted: ${exec.command}`.slice(0, 400) });
-    if (left.length) flagged.push({ at, kind: "box_oneoff", excerpt: `Containers with no compose service: ${left.map(container => `${container.name} (${container.status}${container.image ? `, ${container.image.replace(/@sha256:(\w{12})\w+/, "@$1")}, created ${container.created?.slice(0, 19)}Z` : ""})`).join(", ")}` });
-    if (kept.length) flagged.push({ at, kind: "box_oneoff_kept", excerpt: `One-offs that docker and deploy.sh start again, not counted: ${kept.map(container => `${container.name} (until ${utc(container.oneoff!.expiresAt! * 1000)})`).join(", ")}` });
+    if (left.length) flagged.push({ at, kind: "box_oneoff", excerpt: `Containers with no compose service: ${left.map(container => `${container.name} (${container.status}${container.oneoff && !container.oneoff.bootRelaunch ? ", a one-off on a tier with no virev-oneoff-boot unit enabled, so a reboot ends it" : ""}${container.image ? `, ${container.image.replace(/@sha256:(\w{12})\w+/, "@$1")}, created ${container.created?.slice(0, 19)}Z` : ""})`).join(", ")}` });
+    if (kept.length) flagged.push({ at, kind: "box_oneoff_kept", excerpt: `One-offs that docker, deploy.sh and the boot relaunch start again, not counted: ${kept.map(container => `${container.name} (${container.oneoff!.followRelease ? "follows the release" : `until ${utc(container.oneoff!.expiresAt! * 1000)}`})`).join(", ")}` });
   }
   if (data.mac && data.box) metrics.hand_run_processes = metrics.session_loops_writing! + metrics.unsupervised_box_processes!;
   const detail: Record<string, number> = { source_errors: data.errors.length };
@@ -562,8 +578,11 @@ if d.get('Running') and d.get('Pid') and d.get('ID') and script:
 PY
 )
 awk '$2 == "prod" && $3 == "deploy" && $5 == "ok:" { printf "D\\t%s\\t%s\\n", $1, $4 }' /srv/prod/releases/deploy.log
+for t in prod staging; do
+  printf 'B\\t%s\\t%s|%s\\n' "$t" "$(systemctl is-enabled "virev-oneoff-boot@$t.service" 2>/dev/null)" "$(test -x /usr/local/lib/virev-oneoff-boot/scripts/oneoff-boot.sh && echo script)"
+done
 for c in $(docker ps -a --format '{{.Names}}'); do
-  info=$(docker inspect -f '{{.State.Status}}|{{index .Config.Labels "com.docker.compose.service"}}|{{range .ExecIDs}}{{.}} {{end}}|{{index .Config.Labels "virev.oneoff"}}|{{index .Config.Labels "virev.expires_at"}}|{{.HostConfig.RestartPolicy.Name}}|{{range $k, $v := .NetworkSettings.Networks}}{{$k}},{{end}}|{{.Config.Image}}|{{.Created}}' "$c")
+  info=$(docker inspect -f '{{.State.Status}}|{{index .Config.Labels "com.docker.compose.service"}}|{{range .ExecIDs}}{{.}} {{end}}|{{index .Config.Labels "virev.oneoff"}}|{{index .Config.Labels "virev.expires_at"}}|{{.HostConfig.RestartPolicy.Name}}|{{range $k, $v := .NetworkSettings.Networks}}{{$k}},{{end}}|{{.Config.Image}}|{{.Created}}|{{index .Config.Labels "virev.follow_release"}}' "$c")
   printf 'C\\t%s\\t%s\\n' "$c" "$info"
   for e in $(printf '%s' "$info" | cut -d'|' -f3); do
     j=$(curl -s --max-time 5 --unix-socket /var/run/docker.sock "http://localhost/exec/$e/json")
