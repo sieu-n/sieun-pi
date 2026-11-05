@@ -82,7 +82,7 @@ test("a first group read past 10 s or a warm one past 3 s adds one Watchlist ris
 });
 
 test("groupRead reads every page of the org in order as a member, following next until the last page", async () => {
-  const asked: { after?: string; caller: string | null }[] = [];
+  const asked: { after?: string | undefined; caller: string | null }[] = [];
   const fetcher = (async (url: string, init: RequestInit) => {
     assert.equal(url, PROD_GROUP_URL);
     const sent = JSON.parse(String(init.body)) as { after?: string };

@@ -576,6 +576,7 @@ export const PROD_GROUP_URL = "https://crawler.virev.ai/api/watch-targets/summar
 /** The caller label the probe reads under: a member of the owner org, as apps/search/src/lib/server/auth/caller.ts callerLabel names one. */
 export const GROUP_CALLER = `member:${OWNER_ORG}:d2`;
 
+interface GroupPage { data?: { rows?: unknown[]; next?: string | null } }
 /** Every page of the org's group read on prod, in order, as one ScreenChunk each: rows, HTTP status (0 when the request failed) and ms. */
 export async function groupRead(fetcher: typeof fetch, apiKey: string, grp: string, signal: AbortSignal): Promise<ScreenChunk[]> {
   const pages: ScreenChunk[] = [];
@@ -583,13 +584,13 @@ export async function groupRead(fetcher: typeof fetch, apiKey: string, grp: stri
   do {
     const start = performance.now();
     let status = 0;
-    let body: { data?: { rows?: unknown[]; next?: string | null } } | null = null;
+    let body: GroupPage | null = null;
     try {
       const response = await fetcher(PROD_GROUP_URL, { method: "POST", signal,
         headers: { "content-type": "application/json", "x-api-key": apiKey, "x-virev-caller": GROUP_CALLER },
         body: JSON.stringify({ grp, limit: GROUP_PAGE_ROWS, ...(after ? { after } : {}) }) });
       status = response.status;
-      body = await response.json().catch(() => null) as typeof body;
+      body = await response.json().catch(() => null) as GroupPage | null;
     } catch { status = 0; }
     pages.push({ keys: body?.data?.rows?.length ?? 0, status, ms: Math.round(performance.now() - start) });
     after = status === 200 ? body?.data?.next ?? null : null;
