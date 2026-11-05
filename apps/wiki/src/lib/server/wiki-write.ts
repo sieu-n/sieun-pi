@@ -3,7 +3,7 @@
  * The EDITABLE gate lives in the route; this module confines paths to content/, rejects @code/ and allows page extensions only.
  */
 import { statSync } from 'node:fs';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -472,7 +472,14 @@ type WriteResult = {
 	linesRemoved: number;
 };
 
-/** Write the bytes and log the revision + diff. Every guard has already run. */
+/**
+ * Write the bytes and log the revision + diff. Every guard has already run.
+ * A page the gates judge (assertPageInvariants) lands read-only through a rename, so an agent's direct file write such as
+ * Python's open(path, 'w') fails with EACCES instead of skipping the gates and the revision log. Why: at 01:10:06Z on
+ * 2026-11-05 a session wrote apps/crawler-v3/architecture/instagram-authed-engage/dms-and-reads.html through the code
+ * checkout's apps/llm-wiki/content symlink with a source_ref its HEAD lacked, the page API logged no revision, and the
+ * wiki dream precheck counted the page in wiki_problems at once.
+ */
 async function writeLogged(input: {
 	rel: string;
 	full: string;
@@ -483,7 +490,11 @@ async function writeLogged(input: {
 	baseVersion: number | null;
 }): Promise<WriteResult> {
 	await mkdir(path.dirname(input.full), { recursive: true });
-	await writeFile(input.full, input.content, 'utf8');
+	if (input.rel.endsWith('.html') && (isCuratedPath(input.rel) || input.rel === 'index.html')) {
+		const temp = `${input.full}.${process.pid}.write`;
+		await writeFile(temp, input.content, { encoding: 'utf8', mode: 0o444 });
+		await rename(temp, input.full);
+	} else await writeFile(input.full, input.content, 'utf8');
 	const diff = unifiedDiff(input.before, input.content, input.rel);
 	const stats = changeStats(input.before, input.content);
 	const version = addRevision({
