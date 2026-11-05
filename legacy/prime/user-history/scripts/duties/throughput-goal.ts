@@ -53,7 +53,12 @@ export const HOLD_MS = 6 * HOUR;
  * a finished week. Live leaves out frontier rows TikTok answered gone (151,705 of 6,442,529 on 10-23), which cannot be indexed.
  */
 export const TTS_WEEKLY_PCT = 99.5;
-export const TTS_WEEKLY_CH = "SELECT uniqExact(key) AS n FROM crawler.tiktok_shop_reads WHERE kind = 'product' AND outcome = 'ok' AND region = 'US' AND observed_at > now() - INTERVAL 7 DAY";
+/**
+ * The numerator counts a product only while it is live now: an ok read in the 7 days and a last read that did not find it gone, the same rows
+ * the live count keeps. measured: prod 2026-11-05 17:00Z, every key with an ok read read 6,726,933 against 6,715,478 live (100.17%), because
+ * products read ok and then found gone that week counted; this form read 6,711,937 (99.947%), against 99.933% of a 2% frontier sample.
+ */
+export const TTS_WEEKLY_CH = "SELECT countIf(ok AND latest != 'gone') AS n FROM (SELECT key, max(outcome = 'ok') AS ok, argMaxIf(outcome, observed_at, last = 1) AS latest FROM crawler.tiktok_shop_reads WHERE kind = 'product' AND region = 'US' AND observed_at > now() - INTERVAL 7 DAY GROUP BY key)";
 /** Live US products, the crawler API's exact count of non-gone product rows of tiktok_shop_frontier every 5 minutes, which the Throughput dashboard's
  * coverage panel reads too. measured: the same count run here on prod Postgres hit grafana_ro's 30 s statement_timeout at 08:00Z 11-04, so the headline went unmeasured. */
 export const TTS_LIVE_EXPR = 'max(last_over_time(crawler_v3_tiktok_shop_live_products{world="prod", region="US"}[1h]))';
