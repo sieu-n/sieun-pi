@@ -13,13 +13,17 @@ import { parseEnv } from "./local-dev-uptime.ts";
  * funnel numbers the plan goals hold, over the last 28 full days in PostHog's project timezone (Asia/Seoul) with slack-green's own
  * scripts/seo-agent/conversion_targets.py, plus the signup and on-topic visitor cohorts that pay.
  * conversion_targets.py is on origin/main once PR #236 merges and only on its branch until then. The precheck never runs code from the
- * slack-green checkout (it sits on a feature branch): it fetches the remote ref, `git archive`s scripts/seo-agent and scripts/posthog into a
- * temp folder, and runs slack-green-funnel.py there with the PostHog key from scripts/seo-agent/.env. All reads; it sends nothing.
+ * slack-green checkout (it sits on a feature branch): it fetches the remote ref, `git archive`s ARCHIVE_PATHS into a temp folder, and runs slack-green-funnel.py there with the PostHog key from scripts/seo-agent/.env. All reads; it sends nothing.
  * `--weeks N` prints the raw report with N weekly rows to stdout for the duty job, and writes no output file.
  */
 
 const REPO = process.env.SLACK_GREEN_REPO || join(homedir(), "Documents/Github/slack-green");
 const SCRIPT = "scripts/seo-agent/conversion_targets.py";
+/**
+ * What the precheck extracts from the ref: the two script folders and every file they read. Since slack-green #496 (11-05),
+ * setup_acquisition_dashboard.py reads its slug word lists from blog-cta-rules.json, and without it d1 read source_errors 4 on 11-06.
+ */
+export const ARCHIVE_PATHS = ["scripts/seo-agent", "scripts/posthog", "packages/frontend/src/lib/blog-cta-rules.json"] as const;
 /** Where conversion_targets.py is read from, first match wins: main after PR #236 merges, the PR's branch before. */
 export const REFS = [{ branch: "main", label: "origin/main" }, { branch: "feature/on-topic-visit-target", label: "PR #236 branch" }] as const;
 /** The window: conversion_targets.py's default --days 28, the window the p145 and p151 goals and the funnel dashboard tile use. */
@@ -193,7 +197,7 @@ export async function readFunnel(deps: FunnelDeps, ref: string, until = deps.now
   const dir = await mkdtemp(join(tmpdir(), "sg-funnel-"));
   try {
     const tar = join(dir, "scripts.tar");
-    await deps.exec("git", ["-C", deps.repo, "archive", `--output=${tar}`, ref, "scripts/seo-agent", "scripts/posthog"]);
+    await deps.exec("git", ["-C", deps.repo, "archive", `--output=${tar}`, ref, ...ARCHIVE_PATHS]);
     await deps.exec("tar", ["-xf", tar, "-C", dir]);
     const key = deps.env.POSTHOG_PERSONAL_API_KEY;
     if (!key) throw new Error(`POSTHOG_PERSONAL_API_KEY is not set in ${deps.repo}/scripts/seo-agent/.env`);

@@ -2,7 +2,7 @@
 
 Usage: python3 slack-green-funnel.py <dir with slack-green's scripts/seo-agent> <days> [<weeks>] [<deadline seconds>]
 
-slack-green-funnel.ts extracts slack-green's scripts/seo-agent and scripts/posthog from a git ref into a temp folder, so the 28-day numbers come
+slack-green-funnel.ts extracts slack-green's scripts and the files they read (ARCHIVE_PATHS) from a git ref into a temp folder, so the 28-day numbers come
 from conversion_targets.py's own window_report (the funnel dashboard's definitions) without a checkout. It adds one query: real people (the
 dashboard's test, QA and likely-bot filters) who opened the home page of any locale signed out (no ?noredirect=true, the signed-in path, and
 not after $identify in the same session) in the last 24 h and in the last 7 days, how many of them got an sg-exp-home exposure, and all real home visitors and flag callers in 24 h. It adds a second: the
