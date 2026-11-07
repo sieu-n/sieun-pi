@@ -9,15 +9,6 @@
   ]
  },
  {
-  "id": "skill-figure-it-out",
-  "tool": "skill figure-it-out",
-  "probes": [
-   {
-    "path": "~/.prime/agent/skills/figure-it-out/SKILL.md"
-   }
-  ]
- },
- {
   "id": "skill-how",
   "tool": "skill how",
   "probes": [

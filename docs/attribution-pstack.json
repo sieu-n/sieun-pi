@@ -73,7 +73,9 @@
       "upstream_path": "pstack/skills/figure-it-out/SKILL.md",
       "upstream_sha256": "e041c64a39f1084a20e60ee99762c4dbd3ec8be56ed33fd68ea867b8bd8bd3e4",
       "import_sha256": "c5885cac023a029f005bccd2e139cd0652a45deac0f8686b6e1d1ec7578104c4",
-      "unchanged_at_comparison": false
+      "unchanged_at_comparison": false,
+      "merged_into": "skills/poteto-mode/playbooks/figure-it-out.md",
+      "merged_on": "2026-11-08"
     },
     {
       "path": "skills/how/SKILL.md",

@@ -97,7 +97,7 @@ Write the reply with the unslop skill as you draft it. Keep every section the pl
 
 Copy the matched playbook's steps into your checklist before you plan anything else. A step you skip stays in the list as `skip: <reason>`.
 
-Route a large or cross-cutting effort, or work the user will trust later without watching, to the figure-it-out skill, even when Feature fits. Use figure-it-out when no playbook below fits. A standing program with many subagents under one coordinator goes to Orchestrate.
+Route a large or cross-cutting effort, or work the user will trust later without watching, to the Figure it out playbook, even when Feature fits. Use it when no other playbook below fits. A standing program with many subagents under one coordinator goes to Orchestrate.
 
 | Playbook | Use it for | File |
 |---|---|---|
@@ -120,4 +120,5 @@ Route a large or cross-cutting effort, or work the user will trust later without
 | Pause safely | A clean stop that a later agent can resume. | `playbooks/pause-safely.md` |
 | Multi-phase plan | A written plan for work that spans phases or PRs. | `playbooks/multi-phase-plan.md` |
 | Worktree cleanup | Pruning old worktrees and simulators to free disk. | `playbooks/worktree-cleanup.md` |
+| Figure it out | A large migration or multi-part change that no other playbook fits. | `playbooks/figure-it-out.md` |
 | Shipping the change | The last step of every other playbook. | `playbooks/opening-a-pr.md` |

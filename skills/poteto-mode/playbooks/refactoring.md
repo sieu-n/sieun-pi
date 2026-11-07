@@ -1,6 +1,6 @@
 ### Refactoring
 
-For renames, extracts, inlines, dedupes, and moves that keep behavior. If the cleanup reveals a missing feature or a bug, split it out and ship the structural change first. A named redesign goes to Feature. A migration across many call sites goes to the figure-it-out skill.
+For renames, extracts, inlines, dedupes, and moves that keep behavior. If the cleanup reveals a missing feature or a bug, split it out and ship the structural change first. A named redesign goes to Feature. A migration across many call sites goes to `playbooks/figure-it-out.md`.
 
 1. Pin the behavior first. Run the how skill to learn the contract, then write a characterization test, snapshot, or equivalence harness. Type checks and lint are not a pin.
 2. Name the structure the code is missing per principle-model-the-domain. Leave plain code alone when its shape is already clear. The new shape must delete branches or invalid states, not add indirection.

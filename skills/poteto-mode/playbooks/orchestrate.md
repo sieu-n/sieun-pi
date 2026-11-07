@@ -1,6 +1,6 @@
 ### Orchestrate
 
-For a project handed to one standing coordinator chat that runs for days, with many PRs or commits and dozens of subagents. One task driven to a predicate is `playbooks/autonomous-run.md`, and one ambitious bespoke run is the figure-it-out skill. If one agent could finish the work inside the session's budget, use Autonomous run. In one head-to-head, this playbook landed 1 of 12 small units in half an hour while a plain agent landed all 12. Scale every gate below to the size and cost of the units.
+For a project handed to one standing coordinator chat that runs for days, with many PRs or commits and dozens of subagents. One task driven to a predicate is `playbooks/autonomous-run.md`, and one ambitious bespoke run is `playbooks/figure-it-out.md`. If one agent could finish the work inside the session's budget, use Autonomous run. In one head-to-head, this playbook landed 1 of 12 small units in half an hour while a plain agent landed all 12. Scale every gate below to the size and cost of the units.
 
 The coordinator never writes code. It writes briefs, drains completions, keeps the landed line green, and decides. Three rules hold throughout.
 
