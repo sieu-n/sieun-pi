@@ -39,7 +39,7 @@ export const NUDGE_CAP = 2;
 export const TOKEN_EMAIL_REMOVED_AT = Date.parse("2026-10-14T01:22:18Z");
 
 export type Template = "connect_reminder" | "setup_link" | "token_expired" | "trial_d7" | "trial_d2" | "trial_last_day" | "trial_d0" |
-  "trial_charge" | "trial_idle" | "trial_followup" | "signup_confirm" | "password_reset" | "other";
+  "trial_charge" | "trial_idle" | "trial_after_d3" | "trial_followup" | "signup_confirm" | "password_reset" | "other";
 /**
  * Subjects as sent today: the connect reminder from PR #225, the setup link from the onboarding route, the rest from the Resend log.
  * PR #285 gave the setup link a subject naming the saved workspace and hours, and added SETUP_EMAIL_PERSONAL_COPY subjects that the setup link
@@ -69,6 +69,9 @@ const SUBJECTS: [Template, RegExp][] = [
   // PR #407 (v1.16.295, 2026-10-30): the last-day and trial-ended emails for a connected user say Slack shows them away again.
   ["trial_last_day", /^Tomorrow Slack shows you away again in .+$/],
   ["trial_d0", /^Slack shows you away again in .+$/],
+  // PR #498 (v1.16.361, 2026-11-05): the after_d3 step, 3 to 4 days after the trial ends, half of each segment held out.
+  ["trial_after_d3", /^Your 7 free days of Slack Green are still waiting$/],
+  ["trial_after_d3", /^Your Slack Green schedule is still off for .+$/],
   // _charge_draft: the d2 reminder of the first charge for a Pro plan in its Stripe trial. It ignores the marketing opt-out by design.
   ["trial_charge", /^Your Slack Green trial ends on .+$/],
   ["signup_confirm", /^Confirm Your Signup$/],
@@ -78,9 +81,9 @@ export const NUDGES: readonly Template[] = ["connect_reminder", "setup_link"];
 /** Sends the person asked for themselves (a signup or a reset); a second one in a day is their retry, not us. */
 const ASKED: readonly Template[] = ["signup_confirm", "password_reset"];
 /** Sends that should_send_marketing gates in packages/backend/app/lib/email.py: off for a user who turned marketing email off. */
-const MARKETING: readonly Template[] = ["connect_reminder", "trial_d7", "trial_d2", "trial_last_day", "trial_d0", "trial_idle", "trial_followup"];
+const MARKETING: readonly Template[] = ["connect_reminder", "trial_d7", "trial_d2", "trial_last_day", "trial_d0", "trial_idle", "trial_after_d3", "trial_followup"];
 /** The v2 trial copy for someone who never connected Slack (_not_connected_draft): wrong once the user has a workspace. */
-const NOT_CONNECTED_SUBJECT = /Slack isn't connected yet$|^Your Slack Green trial ended before Slack was connected$/;
+const NOT_CONNECTED_SUBJECT = /Slack isn't connected yet$|^Your Slack Green trial ended before Slack was connected$|^Your 7 free days of Slack Green are still waiting$/;
 const BAD_EVENTS = ["bounced", "complained"];
 /**
  * QA sign-in accounts, the same pattern as QA_EMAIL in PR #225's packages/backend/app/lib/email.py, and Resend's test inboxes (delivered@,

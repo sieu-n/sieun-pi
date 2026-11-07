@@ -20,6 +20,8 @@ test("every v2 trial subject maps to a trial template", () => {
   assert.equal(templateOf("Tomorrow Slack shows you away again in Copec Flux"), "trial_last_day");
   assert.equal(templateOf("Slack shows you away again in Acme"), "trial_d0");
   assert.equal(templateOf("Your Slack Green trial ends on November 6"), "trial_charge");
+  assert.equal(templateOf("Your 7 free days of Slack Green are still waiting"), "trial_after_d3");
+  assert.equal(templateOf("Your Slack Green schedule is still off for Acme"), "trial_after_d3");
 });
 
 test("the never-connected trial email is wrong after the user connected Slack, and marketing after an opt-out", () => {
@@ -29,9 +31,9 @@ test("the never-connected trial email is wrong after the user connected Slack, a
     ({ id, at: NOW - HOUR, to, template: templateOf(subject), subject, lastEvent: "delivered" });
   const recipients = { "a@x.com": { userId: "ua", firstWorkspaceAt: NOW - 5 * HOUR }, "b@x.com": { userId: "ub" } };
   const sends = [send("1", "a@x.com", "Your Slack Green trial ended before Slack was connected"),
-    send("2", "b@x.com", "Last day of your Slack Green trial")];
+    send("2", "b@x.com", "Last day of your Slack Green trial"), send("3", "a@x.com", "Your 7 free days of Slack Green are still waiting")];
   const result = emailMetrics({ sends, recipients, optedOut: ["ub"], errors: [] }, NOW, { at: NOW - 20 * HOUR, optedOut: ["ub"] });
-  assert.equal(result.metrics.false_positive_sends, 2);
+  assert.equal(result.metrics.false_positive_sends, 3);
   assert.equal(result.flagged.filter(item => item.kind === "new_template").length, 0);
 });
 
