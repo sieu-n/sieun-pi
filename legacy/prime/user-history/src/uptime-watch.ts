@@ -1,4 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { dirname } from "node:path";
 import { ALERT_ROUTES, type AlertRoute, OPS_ROUTE } from "./alert-routes.ts";
 import { missing } from "./locked-json.ts";
@@ -10,6 +11,11 @@ import { TICK_MS } from "./wakes.ts";
  * failed for about 2 h and nothing paged. This check needs neither us-metal01 nor obs.virev.ai: it probes each URL every TICK_MS and, once a
  * target has had no good answer for DOWN_MS, sends one agent message to the owning chats and ops guy, and one more when it answers again.
  * `<dataDir>/uptime-targets.json` may map a target name to another URL, which a forced-failure test uses; the page then says so.
+ *
+ * From 22:42Z on 11-05 us-metal02's uplink failover moved the box to a dark address block about every 25 min. Each time both targets failed
+ * with "fetch failed (EAI_AGAIN)" for about 15 min, and each paged its chats that customers could not reach prod, which answered fine from
+ * outside. api.virev.ai runs on Vercel and crawler.virev.ai on us-metal01, so both failing DNS or connect at once is this box's own network:
+ * the watch then sends ops guy one line about the box once it lasted DOWN_MS, and no target pages while it lasts.
  */
 
 /** measured: the longest normal failure run in the 7 d of prod Convex apiPortalHealthProbes rows to 10-29 05:34Z was crawler /health from 03:15:01 to 03:18:08Z on 10-28 (3 min 7 s); api.virev.ai/openapi.json failed no round. */
@@ -40,6 +46,12 @@ export interface Probe { startedAt: number; at: number; error: string | null }
 /** Per target: the end of its last good probe (or the watch's start), its first and newest failed probe since, and when it paged. */
 export interface TargetState { lastPass: number; firstFail: Probe | null; lastFail: Probe | null; pagedAt: number | null }
 
+/** A probe error that never reached the target's server: a DNS answer that failed, a connect that failed, or no answer at all. */
+export function networkError(error: string): boolean {
+  return /\((?:EAI_AGAIN|EAI_FAIL|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ENETDOWN|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET)\)$/.test(error) ||
+    /^no answer in /.test(error);
+}
+
 const minute = (ms: number): string => `${new Date(ms).toISOString().slice(11, 16)}Z`;
 const span = (ms: number): string => `${Math.max(1, Math.round(ms / 60_000))} min`;
 
@@ -68,6 +80,11 @@ export function upText(target: UptimeTarget, url: string, before: TargetState, n
   return `[uptime-up] ${url} answers again at ${minute(now.lastPass)}; it gave no good answer from ${minute(before.lastPass)} (${span(now.lastPass - before.lastPass)}).${forced(target, url)}`;
 }
 
+export function boxDarkText(host: string, since: number, at: number, errors: readonly string[]): string {
+  return `[uptime-box-network] ${host} lost its network: all ${errors.length} uptime targets failed DNS or connect at once since ${minute(since)} ` +
+    `(${span(at - since)}; ${errors.join(", ")}), so this is the box, not prod. No target pages its chats while every one fails this way.`;
+}
+
 /** One GET of the target: null when it passed, else what failed in plain words. */
 export async function probeOnce(target: UptimeTarget, url: string, fetcher: typeof fetch = fetch, timeoutMs = PROBE_TIMEOUT_MS): Promise<string | null> {
   try {
@@ -94,6 +111,8 @@ export interface UptimeDeps {
   targets?: readonly UptimeTarget[];
   probe?: (target: UptimeTarget, url: string) => Promise<string | null>;
   now?: () => number;
+  /** The box the watch runs on, named in the box line; absent, os.hostname(). */
+  host?: string;
 }
 
 async function readJson(file: string, log: (line: string) => void): Promise<Record<string, unknown>> {
@@ -117,6 +136,10 @@ export class UptimeWatch {
   private readonly running = new Set<string>();
   private readonly now: () => number;
   private readonly targets: readonly UptimeTarget[];
+  /** Each target's newest probe error, null when it answered; a target probed in neither this run nor a restore has no entry. */
+  private readonly latest = new Map<string, string | null>();
+  /** When every target's newest probe first failed on the network, and whether the box line went out; null while any answers. */
+  private dark: { since: number; sent: boolean } | null = null;
   constructor(private readonly deps: UptimeDeps) {
     this.now = deps.now ?? Date.now;
     this.targets = deps.targets ?? UPTIME_TARGETS;
@@ -144,6 +167,12 @@ export class UptimeWatch {
     try {
       const startedAt = this.now();
       const error = await (this.deps.probe ?? probeOnce)(target, url);
+      this.latest.set(target.name, error);
+      if (error !== null && networkError(error) && this.targets.length > 1 && this.targets.every(other => networkError(this.latest.get(other.name) ?? ""))) {
+        await this.boxDark(states, this.now());
+        return;
+      }
+      if (error === null || !networkError(error)) this.dark = null;
       const before = states[target.name]!;
       const step = uptimeStep(before, { startedAt, at: this.now(), error });
       states[target.name] = step.state;
@@ -151,6 +180,21 @@ export class UptimeWatch {
       await writeJson(this.deps.stateFile, states);
       await this.page(target, step.send === "down" ? downText(target, url, step.state) : upText(target, url, before, step.state));
     } finally { this.running.delete(target.name); }
+  }
+
+  /**
+   * Every target's newest probe failed on the network, so no target's clock runs: each one that has not paged starts fresh at `at`, as at a
+   * restart, and one that paged keeps its page. The box line goes to ops guy once, after DOWN_MS of it.
+   */
+  private async boxDark(states: Record<string, TargetState>, at: number): Promise<void> {
+    for (const target of this.targets) if (states[target.name]!.pagedAt === null) states[target.name] = fresh(at);
+    this.dark ??= { since: at, sent: false };
+    if (this.dark.sent || at - this.dark.since < DOWN_MS) return;
+    this.dark.sent = true;
+    const text = boxDarkText(this.deps.host ?? hostname(), this.dark.since, at, this.targets.map(target => `${target.name}: ${this.latest.get(target.name)}`));
+    await this.deps.deliver(OPS_ROUTE.session, text, OPS_ROUTE.session)
+      .catch(error => this.deps.log(`uptime: send to ${OPS_ROUTE.chat}: ${error instanceof Error ? error.message : String(error)}`));
+    this.deps.log(`uptime: told ${OPS_ROUTE.chat}: ${text.slice(0, 160)}`);
   }
 
   private async page(target: UptimeTarget, text: string): Promise<void> {

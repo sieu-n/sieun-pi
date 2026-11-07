@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { DOWN_MS, probeOnce, UPTIME_TARGETS, type TargetState, UptimeWatch, uptimeStep } from "../src/uptime-watch.ts";
+import { DOWN_MS, networkError, probeOnce, UPTIME_TARGETS, type TargetState, UptimeWatch, uptimeStep } from "../src/uptime-watch.ts";
 
 const at = (time: string) => Date.parse(`2026-10-29T${time}Z`);
 const crawler = UPTIME_TARGETS.find(target => target.name === "crawler")!;
@@ -101,4 +101,45 @@ test("probeOnce passes a good crawler body and names each kind of failure", asyn
   const port = (closed.address() as { port: number }).port;
   await new Promise(done => closed.close(done));
   assert.match((await probeOnce(crawler, `http://127.0.0.1:${port}/health`))!, /^fetch failed \(ECONNREFUSED\)$/);
+});
+
+test("11-06: us-metal02's own network loss sends ops guy one box line and no customer outage page", async () => {
+  const { sent, deps, setNow } = await rig();
+  const dns = new Set<string>();
+  const watch = new UptimeWatch({ ...deps, host: "us-metal02", probe: async (target: { name: string }) => dns.has(target.name) ? "fetch failed (EAI_AGAIN)" : null });
+  const day = (time: string) => Date.parse(`2026-11-06T${time}Z`);
+  // 22:02Z to 22:17Z on 11-06 both targets got EAI_AGAIN, and the old watch paged each one's chats at 22:07Z and again at 22:17Z.
+  for (let ms = day("22:00:00"); ms <= day("22:30:00"); ms += 30_000) {
+    setNow(ms);
+    for (const name of ["crawler", "api"]) if (ms >= day("22:02:00") && ms < day("22:17:30")) dns.add(name); else dns.delete(name);
+    await watch.tick();
+  }
+  assert.equal(sent.length, 1, sent.map(send => send.text).join("\n"));
+  assert.equal(sent[0]!.session, "01a11af8-962e-773d-a19a-ee4104011987");
+  assert.match(sent[0]!.text, /^\[uptime-box-network\] us-metal02 lost its network: all 2 uptime targets failed DNS or connect at once since 22:02Z \(5 min; crawler: fetch failed \(EAI_AGAIN\), api: fetch failed \(EAI_AGAIN\)\)/);
+
+  // A second loss 25 min later sends one more box line; one target that went dark a round before the other changes nothing.
+  for (let ms = day("22:30:30"); ms <= day("22:50:00"); ms += 30_000) {
+    setNow(ms);
+    if (ms >= day("22:42:00") && ms < day("22:48:00")) dns.add("crawler"); else dns.delete("crawler");
+    if (ms >= day("22:42:30") && ms < day("22:48:00")) dns.add("api"); else dns.delete("api");
+    await watch.tick();
+  }
+  assert.deepEqual(sent.map(send => send.text.slice(0, 22)), ["[uptime-box-network] u", "[uptime-box-network] u"]);
+});
+
+test("one target down with an HTTP error while the other answers still pages as an outage", async () => {
+  const { sent, deps, setNow } = await rig();
+  const watch = new UptimeWatch({ ...deps, probe: async (target: { name: string }) => target.name === "api" ? "HTTP 502" : null });
+  for (let ms = at("02:55:00"); ms <= at("03:00:00"); ms += 30_000) { setNow(ms); await watch.tick(); }
+  const api = UPTIME_TARGETS.find(target => target.name === "api")!;
+  assert.deepEqual(sent.map(send => send.session), api.routes.map(route => route.session));
+  assert.match(sent[0]!.text, /^\[uptime-down\] https:\/\/api\.virev\.ai\/openapi\.json .*customers cannot reach the commercial API at all/);
+});
+
+test("networkError holds DNS, connect and no-answer failures, and no HTTP answer", () => {
+  for (const error of ["fetch failed (EAI_AGAIN)", "fetch failed (ENOTFOUND)", "fetch failed (ECONNREFUSED)", "fetch failed (UND_ERR_CONNECT_TIMEOUT)", "no answer in 300 s"]) {
+    assert.equal(networkError(error), true, error);
+  }
+  for (const error of ["HTTP 502", 'HTTP 200 with status="degraded"']) assert.equal(networkError(error), false, error);
 });
