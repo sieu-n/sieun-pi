@@ -688,6 +688,8 @@ export function treeOffline(watch: readonly WatchLine[], hosts: ReadonlyMap<stri
   };
 }
 const RANK: Readonly<Record<string, number>> = { high: 0, normal: 1, low: 2 };
+/** pi-pool's WAIT_STALE_SEC (packages/pi-pool/pool/sched.py): a wait whose cell passed this long ago with no ask gives up its cell. */
+const CELL_STALE_MS = 15 * MINUTE;
 const KST_MS = 9 * 60 * MINUTE;
 
 /**
@@ -735,7 +737,7 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
       !line.includes('"unparked"') && !line.includes('"vend"') && !line.includes('"wait"') && !line.includes('"limited"') && !line.includes('"priority"') &&
       !line.includes('"turn_lead_set"')) continue;
     let entry: { ts?: unknown; event?: unknown; session?: unknown; at?: unknown; waited_s?: unknown; priority?: unknown; provider?: unknown; reason?: unknown; manual?: unknown;
-      vend?: unknown; budget?: unknown; slot_at?: unknown; lead?: unknown; lead_s?: unknown; led?: unknown; unled?: unknown };
+      vend?: unknown; budget?: unknown; slot_at?: unknown; since?: unknown; lead?: unknown; lead_s?: unknown; led?: unknown; unled?: unknown };
     try { entry = JSON.parse(line) as typeof entry; } catch { continue; }
     // A run leads from the moment pi-pool marks it (`mark_led` in packages/pi-pool/pool/turns.py): its turn_queued line says `lead` when its
     // session was on the lead list as it queued, and a turn_lead_set line names the queued runs it put on the list (`led`) or took off
@@ -810,6 +812,10 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
     const manual = entry.manual === true;
     if (entry.event === "parked") {
       const park = parks.get(entry.session) ?? { start: at, last: at, ranks: [], held: [], manual, slot: undefined, asleep: [] };
+      // pi-pool ranks a waiter by its wait start, which each parked line names as `since` from 11-08. The first parked line in this
+      // tail is later for a park that began before the tail: at 23:27Z on 11-07 the 8 MB tail began at about 20:40Z, and 9 trees
+      // waiting since 19:15Z to 20:37Z read as passed for 91 to 116 min by trees waiting since 18:52Z.
+      if (typeof entry.since === "number") park.start = entry.since * 1000;
       woke(park, at);
       park.slot = typeof entry.slot_at === "number" ? entry.slot_at * 1000 : undefined;
       park.last = at;
@@ -829,10 +835,15 @@ export function readSmoothness(lines: readonly string[], heads: ReadonlySet<stri
   }
   const rankAt = (park: (typeof ended)[number], at: number) => (park.ranks.findLast(step => step.at <= at) ?? park.ranks[0])?.rank ?? 1;
   const heldAt = (park: (typeof ended)[number], at: number) => (park.held.findLast(step => step.at <= at) ?? park.held[0])?.budget ?? false;
+  // A tree that entered after pi-pool dropped the cell of the park's sleeping tree (WAIT_STALE_SEC past it) did not pass it, since the
+  // park held no cell then and pi-pool admits only a tree that asks. 01a1b6e6, normal, was given a 16:54Z cell on 11-07, asked nothing
+  // until 19:19Z, and read as passed for 84.8 min by 01a1a3bd, normal, which entered at 18:17Z, though no tree of its class entered from
+  // 19:19Z until its own entry at 23:15Z.
+  const asleepAt = (park: (typeof ended)[number], at: number) => park.asleep.some(([a, b]) => a + CELL_STALE_MS <= at && at < b);
   const overtaken = ended.filter(park => park.end >= from && park.end < to).map(park => {
     if (park.served) return { session: park.session, minutes: 0 };
     const passed = ended.find(other => !other.led && other.end < park.end && other.end > park.from && other.start > park.start &&
-      rankAt(other, other.end) >= rankAt(park, other.end) && !heldAt(park, other.end));
+      rankAt(other, other.end) >= rankAt(park, other.end) && !heldAt(park, other.end) && !asleepAt(park, other.end));
     if (!passed) return { session: park.session, minutes: 0 };
     const away = offline?.(park.session, passed.end, park.end) ?? 0;
     // A span the box read offline counts once, as offline.

@@ -677,9 +677,12 @@ def schedule(state, key, provider, accounts, cfg, now, admit_now=True):
         # One line per refused request, for the Whole system duty: `room` names the accounts the rules let this
         # tree enter now but for a cell, so a refusal with room is a turn held while the pool has accounts free.
         # `manual` marks a tree pinned to one account, which waits for that account outside Auto's order.
+        # `since` is the wait start R5 ranks the tree by (sched.tree_rank), so the duty reads a park that began before the
+        # log tail it reads: at 23:27Z on 11-07 its 8 MB tail began at about 20:40Z, and it read 9 trees waiting since 19:15Z
+        # to 20:37Z as passed for 91 to 116 min by trees waiting since 18:52Z, since their first lines in the tail came later.
         base.log("parked", provider=provider, session=key.key, at=round(now, 1), account=d.slot_account.label,
-                 slot_at=round(d.slot_at), priority=tree.priority, room=[a.label for a in d.room], **manual_mark(tree),
-                 **budget_mark(d))
+                 slot_at=round(d.slot_at), since=round(sched.tree_rank(tree, now)[1], 1), priority=tree.priority,
+                 room=[a.label for a in d.room], **manual_mark(tree), **budget_mark(d))
     elif tree.wait and admit_now:
         base.log("unparked", provider=provider, session=key.key, at=round(now, 1), account=d.account.label, **manual_mark(tree))
     if isinstance(d, sched.Admit) and admit_now:

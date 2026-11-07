@@ -467,8 +467,8 @@ Every vend that changes a tree's account logs one `vend` line with `reason` (`ne
 `switch`, `back`, `session_pin`, `pool_pin`, `upgrade`) and the `previous` account, and one `switch`
 line with `why` (the old account's reason, `asked`, `waiting`, `plan`, `pin` or
 `credential`) and the top `scores`. A new wait logs one `wait` line with the slot.
-Every refused request logs one `parked` line with `at` in epoch seconds, the slot and
-`room`, the accounts R1 to R7 would let the tree enter now but for a cell (R4), so a tree
+Every refused request logs one `parked` line with `at` in epoch seconds, the slot, `since`,
+the wait start R5 ranks the tree by, and `room`, the accounts R1 to R7 would let the tree enter now but for a cell (R4), so a tree
 held by its move budget (R6) logs no room, and the first request
 that gets an account after a wait logs one `unparked` line. The Whole system duty reads
 these (legacy/prime/user-history/scripts/duties/whole-system.ts `readPoolLog`).

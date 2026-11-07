@@ -943,6 +943,18 @@ class SwitchLog(unittest.TestCase):
         logged, _ = self.run_vend(state, [acct("b", five=100), acct("c", five=30, tier="max 5x")])
         self.assertEqual([kw["room"] for e, kw in logged if e == "parked"], [["c@x"]])
 
+    def test_a_parked_line_names_the_wait_start_r5_ranks_the_tree_by(self):
+        """11-07: the Whole system duty read 9 trees that waited since 19:15Z to 20:37Z as passed for 91 to 116 min by trees
+        that waited since 18:52Z, because its log tail began after both started."""
+        state = empty_state()
+        put(state, KEY, on="b")
+        logged, _ = self.run_vend(state, [acct("a", five=100), acct("b", five=100)])
+        self.assertEqual([kw["since"] for e, kw in logged if e == "parked"], [NOW])
+        state["sessions"][KEY.key]["wait"] = {P: {"account": "c", "slot_at": NOW + 600, "since": NOW - 3600}}
+        state["providers"][P]["admissions"] = {"c": [[NOW, "busy"]]}
+        logged, _ = self.run_vend(state, [acct("b", five=100), acct("c", five=30, tier="max 5x")])
+        self.assertEqual([kw["since"] for e, kw in logged if e == "parked"], [NOW - 3600])
+
     def test_a_pinned_tree_marks_its_parked_and_unparked_lines_manual(self):
         """10-22: 01a11ba8, pinned to claude8, waited from 15:19Z for its 16:30Z reset, and the Whole system duty read it as
         passed by Auto trees, since its return to its own account wrote no vend line."""
