@@ -414,10 +414,10 @@ export class Duties {
     // A working job takes the push run's findings (`handOff`), so it gets one when its duty's last measure flagged items to hand off; a held one
     // gets the push run as a read (`pushesBeside`).
     if (live && !(await this.pushesBeside(own, live))) return;
-    // A cut run waits for its rerun once pi-pool admits its tree (`rerunCut`), so it is still going: at 15:50:20Z on 10-19 the AI harness chat's
-    // d9 got a push run while its 15:34Z run waited for its slot, and at 16:15:41Z frontend bro's d1 got one while its 15:29Z push run did.
-    const lastCut = !working && lastRun && !own.some(run => run.rerunOf === lastRun.at) ? await this.cutOf(chatId, lastRun) : null;
-    if (lastRun && lastCut && cutReruns(lastRun, lastCut)) return;
+    // A cut job still reads the duty: the push run records its read beside the job while pi-pool holds the job's tree in its line
+    // (`IN_POOL_LINE` in `previous`), and replaces it once no line holds it. Until 11-07 a cut run waiting for its rerun (`rerunCut`) got no push
+    // run at all: d4's verify job of 17:55Z on 11-05 was cut at 17:55:51Z, pi-pool did not admit its tree again, and no run read d4 until the
+    // 16:30Z schedule run of 11-06; that run's job was cut at 16:35Z, and none read it again until its rerun at 03:38Z on 11-07.
     // The last job has ended, so its after-job measure is the duty's check now: the push judges on its result instead of measuring beside it.
     if (!working && (lastRun && !lastRun.after || this.afters.has(key))) {
       await (this.afters.get(key) ?? (lastRun && !this.stopped.has(lastRun.job.id) ? this.endJob(chatId, lastRun) : undefined));

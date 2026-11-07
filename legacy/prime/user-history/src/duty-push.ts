@@ -60,6 +60,9 @@ export const PART_READ_MS = 15 * 60_000;
  * even with every part on target, so a page that falls behind later is read while its follow window leaves time to rewrite it; the push run starts no job when it reads met with every part on target (`run` in
  * src/chat-duty-run.ts). On 10-25 the Wiki dream's after-job measure of 12:30Z read wiki_problems_following 0, no run read d4 again until its
  * 16:30Z schedule run, and that run read wiki_problems 45 and wiki_problems_following 13.
+ *
+ * A missed run whose counted metric has parts gets its push at that pace too, since its parts keep falling behind while it is red: from the
+ * 16:30Z schedule run of 11-06, which read wiki_problems 29, no run read d4 again until 03:38Z on 11-07, which read 43.
  */
 export function pushMisses(runs: readonly DutyRunRecord[], counted: ReadonlySet<string>, everyMs: number, now: number): string[] | null {
   const newest = runs[0];
@@ -80,14 +83,21 @@ export function pushMisses(runs: readonly DutyRunRecord[], counted: ReadonlySet<
     // the last full UTC day and could not change before 00:00Z on 11-03.
     const open = keys.filter(key => windowState(measured, key, newest.at, now) !== "closed");
     if (open.some(key => windowState(measured, key, newest.at, now) === "rolled")) return open;
-    if (now - newest.at >= everyMs) { const due = open.filter(key => !aging.has(key)); return due.length ? due : null; }
+    const pace = countedParts(measured, counted) ? Math.min(everyMs, PART_READ_MS) : everyMs;
+    if (now - newest.at >= pace) { const due = open.filter(key => !aging.has(key)); return due.length ? due : null; }
     const owed = endedUnpushed(runs) ? open.filter(key => !quiet.has(key)) : [];
     return owed.length ? owed : null;
   }
-  const parts = Object.fromEntries(Object.entries(measured.parts ?? {}).filter(([key]) => [...counted].some(metric => key.startsWith(`${metric}_`))));
-  if (!Object.keys(parts).length) return null;
+  const parts = countedParts(measured, counted);
+  if (!parts) return null;
   if (now - newest.at < Math.min(everyMs, PART_READ_MS)) return null;
   return missedKeys({ metrics: parts });
+}
+
+/** The parts of the counted metrics in `measured` (`<metricKey>_<part>`), or null when it has none. */
+function countedParts(measured: Pick<DutyRunRecord, "parts">, counted: ReadonlySet<string>): DutyRunRecord["parts"] | null {
+  const parts = Object.fromEntries(Object.entries(measured.parts ?? {}).filter(([key]) => [...counted].some(metric => key.startsWith(`${metric}_`))));
+  return Object.keys(parts).length ? parts : null;
 }
 
 /**
