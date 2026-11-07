@@ -46,8 +46,12 @@ const RENDERS = "onboarding_renders_3x_under_60s";
 const DETAIL_KINDS = new Set([POSTS, RENDERS]);
 /** Token lifetime: one run. The whole MCP check took 26 to 38 s on prod (10-19 17:30Z and 23:22Z), so an hour covers it with room. */
 const TOKEN_TTL_S = 3600;
-/** One MCP call. The slowest call, the follower-bucket sql on the standard tier, stops at that tier's 10 s max_execution_time. */
-const CALL_TIMEOUT_MS = 30_000;
+/**
+ * One MCP call, as long as a customer's client waits for it: the MCP TypeScript SDK's DEFAULT_REQUEST_TIMEOUT_MSEC.
+ * measured: on 11-07 at 18:19Z all 6 sql, search and follower-bucket calls answered 200 after 34 to 40 s under a us-metal01
+ * load spike, and the old 30 s abort counted each of them as a failure.
+ */
+const CALL_TIMEOUT_MS = 60_000;
 export const FOLLOWER_BUCKET_SQL =
   "SELECT multiIf(followers < 1000, '0-1K', followers < 10000, '1K-10K', followers < 100000, '10K-100K', followers < 1000000, '100K-1M', '1M+') " +
   "AS follower_bucket, sum(posts) AS posts, round(sum(likes_sum) / sum(likes_posts)) AS avg_likes, " +
@@ -125,8 +129,9 @@ async function readMcp(): Promise<Record<string, CallResult[]>> {
   const now = Math.floor(Date.now() / 1000);
   const tiers = await Promise.all(TIERS.map(async tier => {
     const token = mintToken(secret, tier, now);
-    const calls: CallResult[] = [];
-    for (const [i, call] of CALLS.entries()) calls.push(await callTool(MCP_URLS[tier], token, call, i + 1));
+    // The calls go out at once, so a run waits for its slowest call and stays inside the precheck's timeoutMs even when
+    // each call takes most of CALL_TIMEOUT_MS; one after another, 4 calls of 34 to 40 s ran past it on 11-07 at 18:19Z.
+    const calls = await Promise.all(CALLS.map((call, i) => callTool(MCP_URLS[tier], token, call, i + 1)));
     return [tier, calls] as const;
   }));
   return Object.fromEntries(tiers);
