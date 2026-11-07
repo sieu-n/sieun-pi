@@ -3,11 +3,12 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { CALL_TIMEOUT_MS, CHECKS, type Deps, type ExecResult, runChecks, toOutput, withHarness } from "../scripts/duties/skills-and-tools.ts";
+import { CALL_TIMEOUT_MS, CHECKS, type Deps, type ExecResult, runChecks, type SearchFix, searchFixStep, toOutput, withHarness } from "../scripts/duties/skills-and-tools.ts";
 import type { DutyStore } from "../src/chat-duty-store.ts";
 import { parsePrompts } from "../src/sign-in-prompts.ts";
 import { dailyRun } from "../src/chat-tools.ts";
 import type { Duty, DutyRunRecord } from "../src/shared/chat-duties.ts";
+import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
 
 const asideTabs = CHECKS.find(check => check.id === "aside_tabs")!;
 const deps = (platform?: NodeJS.Platform): Deps => ({
@@ -200,6 +201,35 @@ test("websearch_query's 503 key check failure stays an agent fix while the Conve
 test("websearch_query's 503 key check failure stays an agent fix with the error when the Convex state read fails", async () => {
   const outcome = await websearchQuery.run(keyCheckDeps(async () => { throw new Error("HTTP 401"); }));
   assert.ok(outcome.status === "fail" && outcome.fixer === "agent" && outcome.detail.includes("state read failed: HTTP 401"), JSON.stringify(outcome));
+});
+
+// 11-07: d5's 18:19Z run hit a ReadTimeout while the api portal's p164 job worked on prod Google search.
+const SEARCH_TIMED_OUT = { code: 0, stdout: "Results for query \"Prime Intellect\":\n\nError searching for 'Prime Intellect': ReadTimeout: \n", stderr: "", ms: 75_400 };
+const P164: SearchFix = { chat: "01a1301d-18de-7129-a559-cfb92f9b5fb1", step: "p164", job: "parity google sorry prod 11-08" };
+
+test("websearch_query reads a timeout or Google down as held while another chat's live fix step names the route", async () => {
+  for (const answer of [SEARCH_TIMED_OUT, DOWN]) {
+    const outcome = await websearchQuery.run({ ...searchDeps([answer], { n: 0 }), searchFix: async () => P164 });
+    assert.ok(outcome.status === "off" && outcome.detail.includes("held by p164 on thread 01a1301d-18de-7129-a559-cfb92f9b5fb1 (job parity google sorry prod 11-08)"), JSON.stringify(outcome));
+  }
+  const alone = await websearchQuery.run(searchDeps([SEARCH_TIMED_OUT], { n: 0 }));
+  assert.ok(alone.status === "fail" && alone.fixer === "agent" && alone.detail === "the search gave no answer in 75 s (ReadTimeout)", JSON.stringify(alone));
+});
+
+test("websearch_query searches again only when the first answer leaves the check time for it", async () => {
+  const calls = { n: 0 };
+  await websearchQuery.run(searchDeps([{ ...DOWN, ms: 70_000 }, GOOGLE], calls));
+  assert.equal(calls.n, 1);
+});
+
+test("searchFixStep takes the first open step that names the route with a live job", async () => {
+  const step = (id: string, status: PlanItem["status"], text: string): PlanItem => ({ id, status, text, job: `job ${id}`, children: [] });
+  const board = (plan: PlanItem[]) => ({ v: 2, rev: 1, updatedAt: "2026-11-07T18:00:00Z", plan, todos: [] }) as unknown as ChatBoard;
+  const route = "Prod GET /v1/search/google answers 200";
+  const boards = [["a", board([step("p1", "done", route), step("p2", "doing", "Bing parity")])], ["b", null],
+    ["c", board([step("p3", "doing", route), step("p4", "doing", route)])]] as const;
+  assert.deepEqual(await searchFixStep(boards, async (_, item) => item.id === "p4"), { chat: "c", step: "p4", job: "job p4" });
+  assert.equal(await searchFixStep(boards, async () => false), undefined);
 });
 
 const skillMap = CHECKS.find(check => check.id === "skill_map")!;

@@ -9,6 +9,12 @@ import { hostTools, loadHosts, selfHost, type HostTool } from "../../src/hosts.t
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { PIN_FILE, type PinResult, pinSkillPaths } from "../kernel-skill-paths.ts";
 import { parsePrompts, promptFor, promptsText, promptWords, type SignInPrompt, signInPromptsFile } from "../../src/sign-in-prompts.ts";
+import { BoardStore } from "../../src/chat-board-store.ts";
+import { OPEN, walk } from "../../src/checkin-steps.ts";
+import { fixLiveReader, type FixLiveness } from "../../src/shared/duty-fixes.ts";
+import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
+import { pendingWakes } from "../../src/wakes.ts";
+import { daemonSessions as daemonList, sessionRows } from "./duty-fleet.ts";
 
 /**
  * The Skills and tools duty's precheck (`node --import tsx scripts/duties/skills-and-tools.ts [--only id,id]`): whether every skill and tool agents
@@ -67,6 +73,30 @@ export interface Deps {
   fetchText?: (url: string) => Promise<string>;
   /** The Convex team's usageState ("Default" when healthy, "Disabled" when unpaid); throws when it cannot be read. Absent reads as a failed read. */
   convexUsageState?: () => Promise<string>;
+  /** The live fix step that holds a slow or down Google search (`searchFixStep`); absent or undefined means none. */
+  searchFix?: () => Promise<SearchFix | undefined>;
+}
+
+/** The route `await websearch(...)` calls on the Virev API. */
+export const SEARCH_ROUTE = "/v1/search/google";
+/**
+ * The search's own timeout, the skill's default: the crawler ends a Google search at 60 s (crawler-v3 SEARCH_DEADLINE_SECONDS), and on 11-07
+ * after 18:30Z a prod search that earned a cookie jar answered in up to 57 s, which the old 40 s timeout read as a ReadTimeout.
+ */
+export const SEARCH_TIMEOUT_S = 75;
+export interface SearchFix { chat: string; step: string; job: string }
+/**
+ * The first open step, on any chat's board, whose text names SEARCH_ROUTE and whose job `live` reads at work (`fixLiveReader`). Such a step
+ * owns Google on the Virev API, as the api portal chat's p164 did on 11-07.
+ */
+export async function searchFixStep(boards: Iterable<readonly [string, ChatBoard | null]>,
+  live: (chat: string, item: PlanItem) => Promise<FixLiveness>): Promise<SearchFix | undefined> {
+  for (const [chat, board] of boards) {
+    const steps: PlanItem[] = [];
+    walk(board?.plan ?? [], item => { if (OPEN.has(item.status) && (item.job || item.sessionId) && item.text.includes(SEARCH_ROUTE)) steps.push(item); });
+    for (const item of steps) if (await live(chat, item) === true) return { chat, step: item.id, job: item.job ?? item.sessionId! };
+  }
+  return undefined;
 }
 
 /** The bare-metal box the repo skills reach as root: an ssh config alias (us-metal01 by default) or METAL_SSH_HOST, so no address lives in this repo. */
@@ -555,14 +585,16 @@ export const CHECKS: readonly Check[] = [
    */
   { id: "websearch_query", group: "web search", tool: "Virev search API", hostTool: "websearch", run: async deps => {
     const skill = await deps.realpath(paths(deps).websearch);
-    const code = `import asyncio,sys; sys.path.insert(0,${JSON.stringify(join(skill, "src"))}); from websearch import run; print(asyncio.run(run('Prime Intellect', num_results=3, timeout=40)))`;
-    const search = () => deps.exec(paths(deps).kernelPython, ["-c", code], { timeoutMs: 55_000 });
+    const code = (seconds: number) => `import asyncio,sys; sys.path.insert(0,${JSON.stringify(join(skill, "src"))}); from websearch import run; print(asyncio.run(run('Prime Intellect', num_results=3, timeout=${seconds})))`;
+    const search = (seconds: number) => deps.exec(paths(deps).kernelPython, ["-c", code(seconds)], { timeoutMs: (seconds + 5) * 1000 });
     // Google on the Virev crawler drops for a few minutes at a time: 4 of 9 rechecks in
     // skills-and-tools.rechecks.jsonl (10-17 to 10-18) found it down, and each passed again
-    // minutes later. One more query before failing keeps such a drop from flagging the box alone.
+    // minutes later. One more query before failing keeps such a drop from flagging the box alone,
+    // when the first answer leaves the check enough of its time for it.
     const down = /Google is unavailable on the Virev search backend right now \((HTTP .*?)\)\. No charge was taken/;
-    const first = await search();
-    const result = down.test(both(first)) ? await search() : first;
+    const first = await search(SEARCH_TIMEOUT_S);
+    const left = Math.floor((CHECK_TIMEOUT_MS - first.ms) / 1000) - 15;
+    const result = down.test(both(first)) && left >= 10 ? await search(Math.min(left, SEARCH_TIMEOUT_S)) : first;
     const text = both(result);
     if (/no Virev API key|rejected the key \((401|403)|balance is empty \(402/.test(text))
       return FAIL("owner", brief(text.split("\n").find(line => /Virev/.test(line)) ?? text, 200), "put a working Virev API key in ~/.prime/agent/auth.json (virev) or top up its balance");
@@ -576,8 +608,18 @@ export const CHECKS: readonly Check[] = [
       return FAIL("agent", `${line} Convex team ${CONVEX_TEAM} ${typeof state === "string" ? "reads Default" : `state read failed: ${brief(state.message, 120)}`}`,
         "read the api-portal key check error in auto-sns-agent apps/api-portal/src/lib/server/gateway.ts and the Convex logs");
     }
+    // A search that times out or finds Google down waits on the crawler, so an open step on any chat's board that names the route and has a
+    // live job holds it (`searchFixStep`). On 11-07 d5's 18:19Z run failed on a ReadTimeout while the api portal's p164 job worked on prod
+    // Google, and from 18:30Z prod searches took 8 to 21 s, and up to 60 s while a crawler process earned its Google cookie jar.
     const outage = down.exec(text);
-    if (outage) return FAIL("agent", `Google is down on the Virev search backend (${brief(outage[1]!, 160)})`, "report it to the crawler side; the key works");
+    const timeout = result.code === 124 ? `timed out after ${result.ms} ms` : /Error searching for .*?: (\w*Timeout\w*)/.exec(text)?.[1];
+    if (outage || timeout) {
+      const detail = outage ? `Google is down on the Virev search backend (${brief(outage[1]!, 160)})` : `the search gave no answer in ${Math.round(result.ms / 1000)} s (${timeout})`;
+      const fix = await (deps.searchFix ?? (async () => undefined))().catch(() => undefined);
+      if (fix) return { status: "off", detail: `${detail}; held by ${fix.step} on thread ${fix.chat} (job ${fix.job}), a live fix for ${SEARCH_ROUTE}` };
+      return FAIL("agent", detail, outage ? "report it to the crawler side; the key works"
+        : `read the crawler-v3 serp lines for ${SEARCH_ROUTE} in otel.otel_logs (auto-sns-agent ops/bin/ch-ro) and send the cause to the Crawler VP; the key works`);
+    }
     const results = /^Result \d+: /m.test(result.stdout);
     if (results && result.code === 0) return PASS(brief(result.stdout.split("\n").find(line => line.startsWith("Result 1:")) ?? "", 100));
     return FAIL("agent", `no results: ${failText(result)}`, `check that api.virev.ai answers and ${paths(deps).kernelPython} imports httpx`);
@@ -975,7 +1017,19 @@ export function realDeps(scratchDir: string): Deps {
     pinSkillPaths: () => pinSkillPaths({ home }),
     fetchText: url => fetch(url, { signal: AbortSignal.timeout(CALL_TIMEOUT_MS) }).then(response => response.ok ? response.text() : "").catch(() => ""),
     convexUsageState: () => convexUsageState(home),
+    searchFix: () => liveSearchFix(join(home, ".prime/agent/browser-chat")),
   };
+}
+
+/** `searchFixStep` over every board in the chat service's data folder, with the duty runner's own liveness read. */
+async function liveSearchFix(dataDir: string): Promise<SearchFix | undefined> {
+  const store = new BoardStore(dataDir);
+  const chats = (await readdir(join(dataDir, "boards")).catch(() => [] as string[])).filter(name => name.endsWith(".json")).map(name => name.slice(0, -5));
+  const boards = await Promise.all(chats.map(async chat => [chat, await store.read(chat).catch(() => null)] as const));
+  let rows: Promise<ReturnType<typeof sessionRows>> | undefined;
+  const live = fixLiveReader({ rows: () => rows ??= daemonList().then(sessionRows), asleep: async now => (await pendingWakes(join(dataDir, "wakes"), now)).map(wake => wake.session),
+    pool: async () => [], held: () => [] });
+  return searchFixStep(boards, live);
 }
 
 /**
