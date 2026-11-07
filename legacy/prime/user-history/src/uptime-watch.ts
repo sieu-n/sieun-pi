@@ -122,9 +122,12 @@ async function readJson(file: string, log: (line: string) => void): Promise<Reco
   }
 }
 
+/** Two targets that page in one tick write at once, and one shared temporary name made the second rename fail with ENOENT. */
+let writes = 0;
+
 async function writeJson(file: string, value: unknown): Promise<void> {
   await mkdir(dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.tmp`;
+  const temporary = `${file}.${process.pid}.${++writes}.tmp`;
   await writeFile(temporary, `${JSON.stringify(value)}\n`);
   await rename(temporary, file);
 }

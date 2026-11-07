@@ -143,3 +143,12 @@ test("networkError holds DNS, connect and no-answer failures, and no HTTP answer
   }
   for (const error of ["HTTP 502", 'HTTP 200 with status="degraded"']) assert.equal(networkError(error), false, error);
 });
+
+test("both targets down with HTTP errors in one tick both page, and the state file holds both", async () => {
+  const { sent, deps, setNow } = await rig();
+  const watch = new UptimeWatch({ ...deps, probe: async () => "HTTP 502" });
+  for (let ms = at("02:55:00"); ms <= at("03:00:00"); ms += 30_000) { setNow(ms); await watch.tick(); }
+  assert.equal(sent.filter(send => send.text.startsWith("[uptime-down]")).length, 5);
+  const kept = JSON.parse(await readFile(deps.stateFile, "utf8"));
+  assert.ok(kept.crawler.pagedAt && kept.api.pagedAt);
+});
