@@ -158,7 +158,11 @@ async def run(
         return _SETUP_MESSAGE
 
     if timeout is None:
-        timeout = _env_int("PRIME_AGENT_WEBSEARCH_TIMEOUT", 45)
+        # The crawler ends a Google search at 60 s (SEARCH_DEADLINE_SECONDS in crawler-v3
+        # serp/tuning.py) and answers 200 or 502 by then. On 2026-11-07 after 18:30Z prod
+        # searches took 8 to 21 s and up to 57 s while a cookie jar was earned, so the old
+        # 45 s cut real answers into ReadTimeout.
+        timeout = _env_int("PRIME_AGENT_WEBSEARCH_TIMEOUT", 75)
     if num_results is None:
         num_results = _env_int("PRIME_AGENT_WEBSEARCH_NUM_RESULTS", 5)
     if gl is None:

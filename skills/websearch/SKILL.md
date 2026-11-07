@@ -28,7 +28,7 @@ The call returns one string and never raises, so errors arrive as text. Optional
 - `num_results` is 1 to 100, default 5.
 - `gl` is a 2-letter country code, default `"us"`, because the crawler's proxy exit country leaks into searches with no country.
 - `language` is an ISO-639-1 code.
-- `timeout` is in seconds, default 45.
+- `timeout` is in seconds, default 75, because the crawler ends a Google search at 60 s and a slow one still answers by then.
 - `max_output` caps the returned characters, default 8192.
 
 ## When Google is down
