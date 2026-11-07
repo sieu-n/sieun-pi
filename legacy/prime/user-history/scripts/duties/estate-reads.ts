@@ -7,14 +7,16 @@ import { type DutyMetric, type FlaggedSlice, PRECHECK_TARGET_MS } from "../../sr
 /**
  * Read-only access to the estate's Grafana for the launch main bro duty prechecks (engage-reads.ts, watchlist-green.ts).
  * Grafana ds/query on obs.virev.ai serves the prod and staging Postgres datasources (estate_pg_prod, estate_pg_stg, user grafana_ro) and the
- * prod and staging Prometheus datasources (estate_prometheus, estate_prometheus_stg). The login is the Agents org token GRAFANA_AGENT_TOKEN
- * in auto-sns-agent's apps/infra/.env, the same one auto-sns-agent scripts/duties/lib.mjs grafanaAuth uses.
+ * prod and staging Prometheus datasources (estate_prometheus, estate_prometheus_stg). Every read goes through prod Vent's grafana-agents
+ * integration, which holds the Agents org token, with the grafana-read caller key GRAFANA_READ_VENT_KEY from auto-sns-agent's apps/infra/.env.
  * prodReader below runs the prod reads that the parsers take as psql lines, through estate_pg_prod as well.
  * A metric whose source failed gets `missValue`, a number that misses any target, so a broken source never reads as green.
  */
 
 export const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
-const GRAFANA_QUERY = "https://obs.virev.ai/api/ds/query";
+/** Grafana as the Agents org reader, through prod Vent: `${GRAFANA}/api/ds/query`. */
+export const GRAFANA = "https://vent.virev.ai/grafana-agents";
+const GRAFANA_QUERY = `${GRAFANA}/api/ds/query`;
 export const PG = { prod: "estate_pg_prod", staging: "estate_pg_stg" } as const;
 export const PROM = { prod: "estate_prometheus", staging: "estate_prometheus_stg" } as const;
 export const UNMEASURED = 999_999;
@@ -47,13 +49,16 @@ export const unmeasuredFlag = (replaced: readonly string[], at: number): Flagged
   excerpt: `Not measured this run, so the value is ${UNMEASURED} or -${UNMEASURED} and counts as a miss: ${replaced.join(", ")}. Fix the source_error first.`.slice(0, 300),
 });
 
-/** The Grafana bearer header of GRAFANA_AGENT_TOKEN, decrypted from auto-sns-agent's apps/infra/.env; throws when it is empty or still ciphertext. */
-export async function readGrafanaAuth(): Promise<string> {
-  const { stdout } = await promisify(execFile)(join(REPO, "node_modules/.bin/dotenvx"), ["get", "GRAFANA_AGENT_TOKEN", "-f", ".env"], { cwd: join(REPO, "apps/infra") });
-  const token = stdout.trim();
-  if (!token || token.startsWith("encrypted:")) throw new Error("GRAFANA_AGENT_TOKEN is missing or encrypted in apps/infra/.env");
-  return `Bearer ${token}`;
+/** The grafana-read Vent key, decrypted from auto-sns-agent's apps/infra/.env; throws when it is empty or still ciphertext. */
+export async function readGrafanaKey(): Promise<string> {
+  const { stdout } = await promisify(execFile)(join(REPO, "node_modules/.bin/dotenvx"), ["get", "GRAFANA_READ_VENT_KEY", "-f", ".env"], { cwd: join(REPO, "apps/infra") });
+  const key = stdout.trim();
+  if (!key || key.startsWith("encrypted:")) throw new Error("GRAFANA_READ_VENT_KEY is missing or encrypted in apps/infra/.env");
+  return key;
 }
+
+/** The bearer header of a Grafana read through Vent (GRAFANA). */
+export const readGrafanaAuth = async (): Promise<string> => `Bearer ${await readGrafanaKey()}`;
 
 interface Frame { schema: { fields: { name: string; labels?: Record<string, string> }[] }; data: { values: unknown[][] } }
 /** One query through Grafana ds/query (refId A) over the hour to now, or over `span`; throws on an HTTP or query error. */

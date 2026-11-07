@@ -7,11 +7,11 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { type ConvexBackend, convexBackend } from "./convex-admin.ts";
-import { readGrafanaAuth } from "./estate-reads.ts";
+import { GRAFANA as GRAFANA_VENT, readGrafanaAuth } from "./estate-reads.ts";
 
 /**
  * The api portal vp chat's "Portal stays up" precheck (`node --import tsx scripts/duties/portal-uptime.ts`). No model call.
- * It reads the prod api probe gauges from Prometheus through Grafana's ds/query on obs.virev.ai (uid estate_prometheus), the way
+ * It reads the prod api probe gauges from Prometheus through prod Vent to Grafana's ds/query on obs.virev.ai (uid estate_prometheus, estate-reads.ts GRAFANA), the way
  * auto-sns-agent scripts/duties/crawler/crawler-pipeline.mjs does. The Convex cron "api health probe" (apps/virev-demo/convex/apiPortal/healthProbe.ts)
  * probes crawler /health, crawler /health/schema and the portal's /openapi.json every minute (every 5 min before auto-sns-agent 2e687fa79), and Prometheus scrapes the result every 60 s
  * from job api-portal-health with the label env="production" (labels checked on 2026-10-12: env, instance, job, target).
@@ -37,7 +37,7 @@ import { readGrafanaAuth } from "./estate-reads.ts";
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
-const GRAFANA = "https://obs.virev.ai/api/ds/query";
+const GRAFANA = `${GRAFANA_VENT}/api/ds/query`;
 const PROM_UID = "estate_prometheus";
 const PORTAL_OPENAPI = "https://api.virev.ai/openapi.json";
 export const PUBLIC_DOCS = "https://api.virev.ai/docs";

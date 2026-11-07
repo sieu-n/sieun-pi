@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { type DsQuery, HOUR, MINUTE, PG, PROM, REPO, grafanaClient, num, promInstant, promRange, readGrafanaAuth, round1, settle, sqlRows, unmeasuredFlag, utc } from "./estate-reads.ts";
+import { type DsQuery, GRAFANA, HOUR, MINUTE, PG, PROM, REPO, grafanaClient, num, promInstant, promRange, readGrafanaAuth, round1, settle, sqlRows, unmeasuredFlag, utc } from "./estate-reads.ts";
 
 /**
  * The Throughput goal achieved duty's precheck for the Crawler VP chat (`node --import tsx scripts/duties/throughput-goal.ts`). Code only, reads only.
@@ -196,13 +196,12 @@ export const QUEUES: { family: string; expr: string; by: string[]; wait?: string
   { family: "redis stream lag", by: ["stream", "group"], expr: "max by (stream, group) (crawler_v3_stream_group_lag)" },
 ];
 
-const GRAFANA = "https://obs.virev.ai";
 /**
  * The crawler dashboards the owner opens: the "Crawler and data" folder's dashboards tagged for the crawler owner whose variables all hold a
  * set value. That leaves out the Engage fleet (owner:crawler-engage, the Engage chat's) and the profile and live trace lookups, whose query
  * variables wait for a key the owner types. On 10-19 at 15:55Z it picked 6 dashboards with 124 queried panels.
  * The boards come from auto-sns-agent at the obs release obs.virev.ai serves, the source apps/infra/grafana/panel_health.py reads, because
- * GRAFANA_AGENT_TOKEN's org "Agents (read-only)" holds no dashboards: after sieun-pi ebc3b3ee moved this read to that token, Grafana search
+ * the Agents org reader's org "Agents (read-only)" holds no dashboards: after sieun-pi ebc3b3ee moved this read to that token, Grafana search
  * answered [] and the 11-03 21:11Z run read 0 blank of 0 panels.
  */
 export const DASHBOARD_FOLDER = "Crawler and data";

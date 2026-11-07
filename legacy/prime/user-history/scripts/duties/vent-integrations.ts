@@ -47,7 +47,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
 export const UNMEASURED = 999999;
 export const HOSTS = { production: "https://vent.virev.ai", staging: "https://staging-vent.virev.ai" } as const;
-const GRAFANA = "https://obs.virev.ai";
+/** Grafana as the Agents org reader, through prod Vent's grafana-agents integration with the grafana-read key. */
+const GRAFANA = `${HOSTS.production}/grafana-agents`;
 const VENT_HEALTH = join(dirname(fileURLToPath(import.meta.url)), "vent-health.py");
 /** The ref whose apps/vent/src the lights are built with: what staging runs, and what prod runs after the next promote. */
 const HEALTH_REF = "origin/staging";
@@ -236,11 +237,11 @@ const errorText = (error: unknown) => {
   return code ? `${error.message} (${code})` : error.message;
 };
 
+/** The grafana-read Vent key from apps/infra/.env. */
 async function grafanaToken(): Promise<string> {
-  if (process.env.GRAFANA_AGENT_TOKEN) return process.env.GRAFANA_AGENT_TOKEN;
-  const token = (await new Promise<string>((resolve, reject) => execFile("npx", ["--no-install", "dotenvx", "get", "GRAFANA_AGENT_TOKEN", "-f", ".env"],
+  const token = (await new Promise<string>((resolve, reject) => execFile("npx", ["--no-install", "dotenvx", "get", "GRAFANA_READ_VENT_KEY", "-f", ".env"],
     { cwd: join(REPO, "apps/infra"), encoding: "utf8" }, (error, stdout) => error ? reject(error) : resolve(stdout)))).trim();
-  if (!token) throw new Error("GRAFANA_AGENT_TOKEN missing in apps/infra/.env");
+  if (!token) throw new Error("GRAFANA_READ_VENT_KEY missing in apps/infra/.env");
   return token;
 }
 
@@ -259,7 +260,7 @@ async function lights(token: string, dir: string): Promise<IntegrationLight[]> {
   await run("git", ["archive", "--output", tar, HEALTH_REF, "apps/vent/src"]);
   await run("tar", ["-xf", tar, "-C", dir]);
   const stdout = await run(join(REPO, "apps/vent/.venv/bin/python"), [VENT_HEALTH, "production", GRAFANA], {
-    env: { ...process.env, GRAFANA_AGENT_TOKEN: token, PYTHONPATH: join(dir, "apps/vent/src") },
+    env: { ...process.env, GRAFANA_READ_VENT_KEY: token, PYTHONPATH: join(dir, "apps/vent/src") },
   });
   return (JSON.parse(stdout) as { integrations: IntegrationLight[] }).integrations;
 }
@@ -273,7 +274,7 @@ async function consoleReads(token: string, dir: string): Promise<ConsoleRead[]> 
   await run("mkdir", ["-p", tree]);
   await run("tar", ["-xf", tar, "-C", tree]);
   const stdout = await run(join(REPO, "apps/vent/.venv/bin/python"), [VENT_CONSOLE_COST, "production", GRAFANA], {
-    env: { ...process.env, GRAFANA_AGENT_TOKEN: token, PYTHONPATH: join(tree, "apps/vent/src") },
+    env: { ...process.env, GRAFANA_READ_VENT_KEY: token, PYTHONPATH: join(tree, "apps/vent/src") },
   });
   return (JSON.parse(stdout) as { reads: ConsoleRead[] }).reads;
 }

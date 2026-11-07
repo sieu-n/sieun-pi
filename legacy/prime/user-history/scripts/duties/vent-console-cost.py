@@ -4,8 +4,8 @@
 Run with apps/vent's python and PYTHONPATH at an apps/vent/src tree, the one prod runs. It builds the
 17 reads the console runs (vent.telemetry_read usage and calls over 1 h and 24 h, vent.health's summary,
 trend and top), runs each once through Grafana as the console does, tagged with a log_comment, and reads
-each run's CPU from otel.query_cost. Usage: vent-console-cost.py <env> <grafana url>, with
-GRAFANA_AGENT_TOKEN set. It prints no secret.
+each run's CPU from otel.query_cost. Usage: vent-console-cost.py <env> <grafana url>, where
+the url is prod Vent's grafana-agents integration, with GRAFANA_READ_VENT_KEY set. It prints no secret.
 """
 
 import asyncio
@@ -41,7 +41,7 @@ def console_reads(env: str) -> dict[str, str]:
 
 
 async def main(env: str, url: str) -> None:
-    source = tr.GrafanaSource(url, f"Bearer {os.environ['GRAFANA_AGENT_TOKEN']}", "grafana_clickhouse", env)
+    source = tr.GrafanaSource(url, f"Bearer {os.environ['GRAFANA_READ_VENT_KEY']}", "grafana_clickhouse", env)
     tags = {name: f"query-cost-{secrets.token_hex(6)}" for name in console_reads(env)}
     async with httpx.AsyncClient(timeout=None) as client:
         for name, sql in console_reads(env).items():

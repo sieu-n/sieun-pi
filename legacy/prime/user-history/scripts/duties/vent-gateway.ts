@@ -422,14 +422,14 @@ const errorText = (error: unknown) => {
   return code ? `${error.message} (${code})` : error.message;
 };
 
+/** The grafana-read Vent key from apps/infra/.env, for Grafana reads through prod Vent's grafana-agents integration. */
 async function grafanaToken(): Promise<string> {
-  if (process.env.GRAFANA_AGENT_TOKEN) return process.env.GRAFANA_AGENT_TOKEN;
-  const token = (await run("npx", ["--no-install", "dotenvx", "get", "GRAFANA_AGENT_TOKEN", "-f", ".env"], { cwd: join(REPO, "apps/infra") })).trim();
-  if (!token) throw new Error("GRAFANA_AGENT_TOKEN missing in apps/infra/.env");
+  const token = (await run("npx", ["--no-install", "dotenvx", "get", "GRAFANA_READ_VENT_KEY", "-f", ".env"], { cwd: join(REPO, "apps/infra") })).trim();
+  if (!token) throw new Error("GRAFANA_READ_VENT_KEY missing in apps/infra/.env");
   return token;
 }
 
-/** The test sends of TEST_SENDS_SQL, read from prod ClickHouse through the obs Grafana. */
+/** The test sends of TEST_SENDS_SQL, read from prod ClickHouse through prod Vent and the obs Grafana. */
 async function testSends(token: string): Promise<TestSendRow[]> {
   const { rows, column } = await clickhouse(token, TEST_SENDS_SQL);
   const [integration, caller, method, calls, last] = ["integration", "caller", "method", "calls", "last"].map(column);
@@ -440,7 +440,7 @@ async function testSends(token: string): Promise<TestSendRow[]> {
 
 async function share(token: string | undefined, dir: string): Promise<ShareResult> {
   const out = join(dir, "vent-share.json");
-  await run("python3", [VENT_SHARE, "--ref", REF, "--ref", TIP, "--traffic", "--json", out], { env: { ...process.env, ...(token ? { GRAFANA_AGENT_TOKEN: token } : {}) } });
+  await run("python3", [VENT_SHARE, "--ref", REF, "--ref", TIP, "--traffic", "--json", out], { env: { ...process.env, ...(token ? { GRAFANA_READ_VENT_KEY: token } : {}) } });
   return JSON.parse(await readFile(out, "utf8")) as ShareResult;
 }
 

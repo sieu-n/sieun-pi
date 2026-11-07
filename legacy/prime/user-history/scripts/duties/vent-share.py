@@ -479,12 +479,16 @@ def merge_traffic(days_rows: list[list[dict]]) -> list[dict]:
     return sorted(merged.values(), key=lambda r: (str(r.get("env")), -(r.get("calls") or 0)))
 
 
+# Grafana as the Agents org reader, through prod Vent's grafana-agents integration with the grafana-read key.
+GRAFANA_QUERY = "https://vent.virev.ai/grafana-agents/api/ds/query"
+
+
 def traffic(days: int) -> list[dict]:
-    """vent.call rows per env, caller and integration from the shared otel ClickHouse via Grafana, one query per day. On 10-22 the one
+    """vent.call rows per env, caller and integration from the shared otel ClickHouse via prod Vent and Grafana, one query per day. On 10-22 the one
     7-day query took 60.2 s and hit Grafana's 60 s datasource deadline (HTTP 400 around a 504 "context deadline exceeded"), while one
     day took 5.0 s, so each day is its own query and the rows merge."""
-    token = os.environ.get("GRAFANA_AGENT_TOKEN") or subprocess.run(
-        ["npx", "--no-install", "dotenvx", "get", "GRAFANA_AGENT_TOKEN", "-f", ".env"],
+    token = os.environ.get("GRAFANA_READ_VENT_KEY") or subprocess.run(
+        ["npx", "--no-install", "dotenvx", "get", "GRAFANA_READ_VENT_KEY", "-f", ".env"],
         cwd="apps/infra", capture_output=True, text=True).stdout.strip()
     return merge_traffic([traffic_day(token, day) for day in range(days)])
 
@@ -504,12 +508,12 @@ def grafana_error(body: str) -> str:
 def traffic_day(token: str, day: int) -> list[dict]:
     body = {"queries": [{"refId": "A", "datasource": {"uid": "grafana_clickhouse", "type": "grafana-clickhouse-datasource"},
                          "rawSql": traffic_sql(day), "format": 1, "queryType": "sql"}], "from": f"now-{day + 1}d", "to": f"now-{day}d" if day else "now"}
-    req = urllib.request.Request("https://obs.virev.ai/api/ds/query", data=json.dumps(body).encode(),
+    req = urllib.request.Request(GRAFANA_QUERY, data=json.dumps(body).encode(),
                                  headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
     try:
         res = json.load(urllib.request.urlopen(req))["results"]["A"]
     except urllib.error.HTTPError as error:
-        raise RuntimeError(f"Grafana answered {error.code} for vent.call day {day}: {grafana_error(error.read().decode(errors='replace'))}") from error
+        raise RuntimeError(f"Grafana through Vent answered {error.code} for vent.call day {day}: {grafana_error(error.read().decode(errors='replace'))}") from error
     frames = res.get("frames") or []
     if not frames:
         return []
