@@ -239,9 +239,9 @@ const errorText = (error: unknown) => {
 
 /** The grafana-read Vent key from apps/infra/.env. */
 async function grafanaToken(): Promise<string> {
-  const token = (await new Promise<string>((resolve, reject) => execFile("npx", ["--no-install", "dotenvx", "get", "GRAFANA_READ_VENT_KEY", "-f", ".env"],
+  const token = (await new Promise<string>((resolve, reject) => execFile("npx", ["--no-install", "dotenvx", "get", "GRAFANA_READ_VENT_KEY", "-f", ".env", "--strict"],
     { cwd: join(REPO, "apps/infra"), encoding: "utf8" }, (error, stdout) => error ? reject(error) : resolve(stdout)))).trim();
-  if (!token) throw new Error("GRAFANA_READ_VENT_KEY missing in apps/infra/.env");
+  if (!token || token.startsWith("encrypted:")) throw new Error("GRAFANA_READ_VENT_KEY is missing or encrypted in apps/infra/.env");
   return token;
 }
 

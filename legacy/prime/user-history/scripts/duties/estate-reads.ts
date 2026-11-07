@@ -51,7 +51,7 @@ export const unmeasuredFlag = (replaced: readonly string[], at: number): Flagged
 
 /** The grafana-read Vent key, decrypted from auto-sns-agent's apps/infra/.env; throws when it is empty or still ciphertext. */
 export async function readGrafanaKey(): Promise<string> {
-  const { stdout } = await promisify(execFile)(join(REPO, "node_modules/.bin/dotenvx"), ["get", "GRAFANA_READ_VENT_KEY", "-f", ".env"], { cwd: join(REPO, "apps/infra") });
+  const { stdout } = await promisify(execFile)(join(REPO, "node_modules/.bin/dotenvx"), ["get", "GRAFANA_READ_VENT_KEY", "-f", ".env", "--strict"], { cwd: join(REPO, "apps/infra") });
   const key = stdout.trim();
   if (!key || key.startsWith("encrypted:")) throw new Error("GRAFANA_READ_VENT_KEY is missing or encrypted in apps/infra/.env");
   return key;

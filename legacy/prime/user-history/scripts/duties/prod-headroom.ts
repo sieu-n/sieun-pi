@@ -1,11 +1,11 @@
 import { realpathSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type FiringAlert, readGrafanaAlerts } from "../../src/alert-bridge.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { type DsQuery, grafanaClient, PROM, promInstant, SOURCE_DEADLINE_MS } from "./estate-reads.ts";
+import { type DsQuery, grafanaClient, PROM, promInstant, readGrafanaAuth, SOURCE_DEADLINE_MS } from "./estate-reads.ts";
 
 /**
  * The precheck of metal-management's duty "Prod box headroom" (`node --import tsx scripts/duties/prod-headroom.ts`): whether us-metal01, the
@@ -97,9 +97,9 @@ async function main(): Promise<void> {
   const at = Date.now();
   let output: PrecheckOutput;
   try {
-    const config = JSON.parse(await readFile(GRAFANA_CONFIG, "utf8")) as { url?: string; token?: string };
-    if (!config.token) throw new Error(`${GRAFANA_CONFIG} has no token`);
-    output = await measure(grafanaClient(fetch, `Bearer ${config.token}`, at, AbortSignal.timeout(SOURCE_DEADLINE_MS)), grafanaAlerts, at);
+    // Prometheus goes through prod Vent with the grafana-read key. The bridge's token in GRAFANA_CONFIG is a Grafana token, which
+    // Vent refuses as vent_unauthorized: at 21:01:17Z on 11-07 this run sent it to Vent and read both metrics as HTTP 401.
+    output = await measure(grafanaClient(fetch, await readGrafanaAuth(), at, AbortSignal.timeout(SOURCE_DEADLINE_MS)), grafanaAlerts, at);
   } catch (error) {
     output = { metrics: {}, flagged: [{ at, kind: "source_error", excerpt: `prod Prometheus: ${error instanceof Error ? error.message : String(error)}`.slice(0, 600) }] };
   }

@@ -488,8 +488,10 @@ def traffic(days: int) -> list[dict]:
     7-day query took 60.2 s and hit Grafana's 60 s datasource deadline (HTTP 400 around a 504 "context deadline exceeded"), while one
     day took 5.0 s, so each day is its own query and the rows merge."""
     token = os.environ.get("GRAFANA_READ_VENT_KEY") or subprocess.run(
-        ["npx", "--no-install", "dotenvx", "get", "GRAFANA_READ_VENT_KEY", "-f", ".env"],
+        ["npx", "--no-install", "dotenvx", "get", "GRAFANA_READ_VENT_KEY", "-f", ".env", "--strict"],
         cwd="apps/infra", capture_output=True, text=True).stdout.strip()
+    if not token or token.startswith("encrypted:"):
+        raise RuntimeError("GRAFANA_READ_VENT_KEY is missing or encrypted in apps/infra/.env")
     return merge_traffic([traffic_day(token, day) for day in range(days)])
 
 
