@@ -22,10 +22,11 @@ const SOURCES_PY = join(import.meta.dirname, "seo-sources.py");
 /** A precheck value for a metric whose source failed: past its target either way, the convention of auto-sns-agent scripts/duties/ci/duty-sources.mjs. */
 export const UNMEASURED = 999_999;
 /**
- * Search Console marks a day final 2 to 3 days late (virev_seo/gsc.py: "GSC data lags 2-3 days"; on 10-12 the last final day was 10-10),
- * so a last final day more than 3 days old means the read is stale.
+ * The most Seoul days the last final day may trail today and still measure. Google dates are Pacific, 16 or 17 h behind Seoul, and it marks a day
+ * final about 3 Pacific days late, so before about 17:00 KST a normal read is 4 Seoul days old. Only a lag past the worst one seen fails.
  */
-export const GSC_STALE_DAYS = 3;
+// measured: program/metrics/*.json read lags of 2 to 5 Seoul days over 10-02..11-05, 5 on 10-04 (final 09-29); d1 read 11-04 at 11-08 03:22 KST.
+export const GSC_STALE_DAYS = 5;
 /**
  * dropped_pages: a page with at least DROP_MIN_DAILY impressions a day over the DROP_BASE_DAYS before the last DROP_RECENT_DAYS final days,
  * whose last DROP_RECENT_DAYS average under DROP_SHARE of that. A page's base days start at its first day with impressions, so a page

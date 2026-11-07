@@ -37,6 +37,17 @@ test("dropped_pages flags both 10-13 drops by the 10-16 final day and leaves a s
   assert.equal(visitsOutput({ gsc: { error: "HTTP 500" } }, 0).metrics.dropped_pages, 999_999);
 });
 
+test("a last final day 4 or 5 Seoul days old still measures, and only an older one is a source error (11-08 03:22 KST d1 read 11-04)", () => {
+  const read = (today: string): GscRead => ({ today, last_final: "2026-11-04", pages: upTo("2026-11-04"),
+    d7: { start: "2026-10-29", end: "2026-11-04", clicks: 255, impressions: 18191, position: 9 } });
+  for (const today of ["2026-11-08", "2026-11-09"]) {
+    const output = visitsOutput({ gsc: read(today) }, 0);
+    assert.ok(output.metrics.google_clicks_d7! > 0, today);
+    assert.notEqual(output.metrics.dropped_pages, 999_999, today);
+  }
+  assert.equal(visitsOutput({ gsc: read("2026-11-10") }, 0).metrics.dropped_pages, 999_999);
+});
+
 test("a page that answers robots noindex is left out of dropped_pages, since we asked Google to drop it", async () => {
   assert.deepEqual(droppedPages(upTo("2026-10-16"), new Set([IG_ALGO])).map(page => page.page), [JA_PAY]);
   const html = (robots: string): Response => new Response(`<html><head>${robots}</head></html>`, { headers: { "content-type": "text/html" } });
