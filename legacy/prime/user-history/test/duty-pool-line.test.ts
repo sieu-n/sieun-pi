@@ -1,7 +1,7 @@
 // Replays the AI harness chat's Wiki dream (d4) push run of 11-01 03:30:15Z. Its last job, "wiki dream AI harness developer environment 10:36"
 // (01a194c5), was cut by a 429 at 01:43:43Z and stayed in pi-pool's line: its 03:30:07Z wait held a 03:36:00Z cell on claude-virev18. The run
 // retired it and started "12:30", which asked at 03:35:19Z behind 15 trees on that account and got its first account at 04:16:33Z
-// (~/work/d4-slot-wait-1101). A job pi-pool holds in line, or a cut one it admits, is now kept and handed the run's new items.
+// (~/work/d4-slot-wait-1101). A job pi-pool holds in line is now kept and handed the run's new items.
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -84,12 +84,70 @@ test("a cut duty job that pi-pool holds in its line is kept and handed the run's
   assert.ok(steered[0]!.includes(NEW_PAGE) && !steered[0]!.includes(OLD_PAGE), steered[0]);
 });
 
-test("a cut duty job whose tree pi-pool admits is kept for the resume pass, not replaced (Wiki dream rerun, 10-29 12:04Z)", async () => {
+test("a cut duty job whose tree pi-pool admits is in no line, so the run retires it and starts a new job", async () => {
   const { latest, retired, started } = await runAt("2026-11-01T03:30:15.364Z", "admits");
-  assert.ok(latest.summary.includes(IN_POOL_LINE), latest.summary);
-  assert.deepEqual(retired, []);
-  assert.deepEqual(started, []);
+  assert.ok(!latest.summary.includes(IN_POOL_LINE), latest.summary);
+  assert.deepEqual(retired, [JOB.id]);
+  assert.equal(started.length, 1);
 });
+
+// Replays d11 (Owner messages) of the AI harness chat on 11-07. Its verify run of 18:50:35Z started "owner messages AI harness developer
+// environment 03:50", whose first model call got "this session waits for its slot at 18:56:30Z". The runner recorded the cut and archived
+// the job at 18:54:39Z, and every d11 run to 23:03Z skipped beside it. At 23:26:19Z pi-pool admitted its tree, the cut run reran, and the rerun
+// skipped beside the archived job too, with 2 to 217 owner lines unlabeled, until the 12 h limit at 06:50Z.
+const D11_JOB: DutyJobRef = { id: "01a1b759-5817-7698-a097-87af8ce47e95", name: "owner messages AI harness developer environment 03:50" };
+const D11_AT = Date.parse("2026-11-07T18:50:35.767Z");
+const D11_CUT: DutyCut = { at: Date.parse("2026-11-07T18:52:46.168Z"), provider: "anthropic", slotAt: Date.parse("2026-11-07T18:56:30.000Z"),
+  error: "token hook gave no token (credential_unavailable): pi-pool: this session waits for its slot at 2026-11-07T18:56:30.000Z." };
+
+async function d11RerunAt(now: string, hold: PoolHold) {
+  const dir = await mkdtemp(join(tmpdir(), "duty-pool-line-d11-"));
+  try {
+    const precheck = join(dir, "precheck.mjs");
+    await writeFile(precheck, `import { writeFileSync } from "node:fs"; writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { unlabeled_lines: 2 } }));`);
+    const store = new DutyStore(dir);
+    const lastSlotAt = Date.parse("2026-11-07T23:03:00.000Z");
+    await store.update(CHAT, duties => {
+      duties.push({ id: "d11", name: "Owner messages", ownerWords: "label every owner message", goal: "every owner line is labeled",
+        metrics: [{ key: "unlabeled_lines", label: "Unlabeled lines", op: "<=", target: 0, headline: true }], schedule: { kind: "every", minutes: 60 },
+        precheck: { command: ["node", precheck], cwd: dir, timeoutMs: 30_000 }, onMiss: "label each line", status: "active",
+        createdAt: D11_AT - 86_400_000, updatedAt: D11_AT - 86_400_000, runCount: 200, lastRunAt: lastSlotAt, lastSlotAt } satisfies Duty);
+    });
+    await store.appendRun(CHAT, { duty: "d11", at: D11_AT, slot: D11_AT, trigger: "verify", ms: 11_930, verdict: "missed",
+      metrics: { unlabeled_lines: { value: 217, target: 0, op: "<=", met: false } }, summary: "unlabeled_lines 217 (target at most 0)", job: D11_JOB, cut: D11_CUT });
+    const rows = new Map<string, SessionRow>([[CHAT, row(CHAT, "AI harness developer environment VP", false)],
+      [D11_JOB.id, { ...row(D11_JOB.id, D11_JOB.name, false), archived: true }]]);
+    const retired: string[] = [];
+    const started: string[] = [];
+    const logs: string[] = [];
+    const host = dutyJobHost({ threads: {} as never, archives: { add: async () => {} }, registry: {} as never, board: id => id,
+      rows: async () => [...rows.values()], schedules: async () => new Map(), log: line => logs.push(line) });
+    const duties = new Duties(store, {
+      isChat: async () => true, now: () => Date.parse(now), tickMs: 0, node: process.execPath, log: line => logs.push(line),
+      poolHolds: async tree => tree === D11_JOB.id ? hold : null, poolAdmits: async () => true,
+      jobs: { ...host, chat: async id => ({ id, name: rows.get(id)!.name, cwd: dir, board: id }),
+        retire: async job => { retired.push(job.id); },
+        start: async (_chat, name) => { const id = `new-${started.length + 1}`; started.push(name); rows.set(id, row(id, name, true)); return { id, name }; } },
+    });
+    try {
+      await duties.tick();
+      await duties.settled();
+      const rerun = (await store.runs(CHAT)).find(record => record.rerunOf === D11_AT);
+      return { rerun, retired, started, logs };
+    } finally { duties.close(); }
+  } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+for (const hold of ["admits", "line"] as const) {
+  test(`the rerun of a cut run replaces its archived job while pi-pool reads its tree as ${hold} (d11 of the AI harness chat, 11-07 23:26Z)`, async () => {
+    const { rerun, retired, started, logs } = await d11RerunAt("2026-11-07T23:26:19.054Z", hold);
+    assert.ok(rerun, logs.join("\n"));
+    assert.ok(!rerun.summary.includes(IN_POOL_LINE), rerun.summary);
+    assert.equal(rerun.job?.id, "new-1", rerun.summary);
+    assert.deepEqual(retired, [D11_JOB.id]);
+    assert.equal(started.length, 1);
+  });
+}
 
 test("a cut duty job that pi-pool no longer holds is retired and a new job starts", async () => {
   const { retired, started } = await runAt("2026-11-01T03:30:15.364Z", null);

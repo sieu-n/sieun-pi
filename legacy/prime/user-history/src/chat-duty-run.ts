@@ -84,7 +84,7 @@ export interface DutyHost {
   poolAdmits?: (tree: string, provider: string) => Promise<boolean>;
   /**
    * Where pi-pool holds the tree rooted at `tree` (`poolHoldsTree`): "line" while its wait holds a cell, "admits" when it gets an account now, or
-   * null. A run keeps the duty's last job in the line, and a cut one pi-pool admits (`IN_POOL_LINE`); absent: no job is kept for its tree.
+   * null. A run keeps the duty's last job in the line (`IN_POOL_LINE`); absent: no job is kept for its tree.
    */
   poolHolds?: (tree: string) => Promise<PoolHold | null>;
   /**
@@ -174,12 +174,11 @@ export function stuckAfterMs(schedule: DutySchedule): number {
 
 /**
  * Why a run keeps the duty's last job whose report is not in, up to STUCK_MAX_MS after its run started, and hands it the run's items: pi-pool
- * holds its tree in line for an account, or admits the tree of a job whose turn was cut (`DutyHost.poolHolds`). pi-pool ranks waiting trees
+ * holds its tree in line for an account (`DutyHost.poolHolds`). pi-pool ranks waiting trees
  * by class and then by wait start (rule R5, packages/pi-pool/pool/sched.py), so a new job of the same class queues behind the old one. On 11-01
  * the d4 push run of 03:30:15Z retired "wiki dream AI harness developer environment 10:36", cut by a 429 at 01:43Z and in line since then,
  * whose 03:30:07Z wait held a 03:36:00Z cell on claude-virev18. Its new job asked at 03:35:19Z behind the 15 trees waiting on that account and
- * got its first account at 04:16:33Z. On 10-29 the 12:04Z rerun of a cut run, started because pi-pool admitted the cut job's tree, which
- * held a 12:10:30Z cell, replaced that job, and the new one got its first account at 12:21:03Z. On 10-31 the 18:01Z run replaced a stalled
+ * got its first account at 04:16:33Z. On 10-31 the 18:01Z run replaced a stalled
  * job whose cell was 18:08:00Z, and the new one got in at 18:10:00Z. measured: from 10-25 to 11-01 (KST) every one of the 10 duty jobs of
  * any chat replaced while its tree held a cell got its first account later than that cell, 165 min in all, p50 11.3 and p90 27.0 min
  * (~/work/d4-slot-wait-1101). The words hold " is kept," so the push rule counts the run as the duty's read (src/duty-push.ts KEPT).
@@ -1092,7 +1091,9 @@ export class Duties {
     if (!started || !last) return {};
     const reported = await this.reported(chatId, last);
     // A check-in's items go to the chat, since its job takes no message until its slot (`handToChat`).
-    if (!reported && this.now() - started.at <= STUCK_MAX_MS && await this.inPoolLine(last, started.cut !== undefined)) {
+    // A cut run's rerun replaces the cut job, since the runner archived that job when it read the cut (`endJob`) and nothing resumes it.
+    if (!reported && this.now() - started.at <= STUCK_MAX_MS && !runs.some(run => run.rerunOf === started.at) &&
+      await this.inPoolLine(last, started.cut !== undefined)) {
       return { skipped: `${STILL_WORKING} (job ${last.name} ${IN_POOL_LINE})`, held: { job: last, why: IN_POOL_LINE },
         ...dutyId === CHECK_IN_DUTY_ID ? {} : { working: last } };
     }
@@ -1125,16 +1126,18 @@ export class Duties {
   }
 
   /**
-   * Whether pi-pool holds the job's tree in its line (`DutyHost.poolHolds` "line"), or admits the tree of a job whose turn was cut, which the
-   * job sweep's resume pass continues once pi-pool admits it (src/chat-resume.ts PoolHeldJobs). A failed read is no. A job that was not cut
-   * and no longer works is in no line, whatever wait pi-pool still keeps for its tree: on 11-03 sep launch!!'s check-in job of 09:16Z ended at
+   * Whether pi-pool holds the job's tree in its line (`DutyHost.poolHolds` "line"). A cut job's tree that pi-pool admits is in no line: the
+   * runner archived the job when it read the cut (`endJob`), nothing resumes it, and its run reruns (`rerunCut`). Until 11-08 such a tree read
+   * as held, so on 11-07 every d11 run of the AI harness chat from 18:55Z skipped beside "owner messages AI harness developer environment
+   * 03:50", archived at 18:54:39Z, and its rerun at 23:26:19Z, started because pi-pool admitted that tree, skipped beside it too. A failed read
+   * is no. A job that was not cut and no longer works is in no line, whatever wait pi-pool still keeps for its tree: on 11-03 sep launch!!'s check-in job of 09:16Z ended at
    * 11:38Z and was archived, but its tree kept a reserved openai-codex wait for a 11-04 06:46Z cell while its anthropic account served it, and
    * 33 check-in runs to 20:30Z skipped beside it with stuck_steps missed until its 12 h limit.
    */
   private async inPoolLine(job: DutyJobRef, cut: boolean): Promise<boolean> {
     if (!cut && !(await this.host.jobs.working(job).catch(() => false))) return false;
     const hold = await this.host.poolHolds?.(job.id).catch(error => { this.log(`duty job ${job.name}: read its pi-pool line: ${message(error)}`); return null; }) ?? null;
-    return hold === "line" || (cut && hold === "admits");
+    return hold === "line";
   }
 
   /** Whether the job of a run that started at `startedAt` has written no model reply in its tree for STALLED_MS; a failed read is no stall. */
