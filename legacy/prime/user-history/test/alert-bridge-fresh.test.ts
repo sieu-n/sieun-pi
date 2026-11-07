@@ -25,15 +25,14 @@ test("a new spec on a rule that holds an announced spec gives the job only the n
   let list: unknown[] = [SCREENING];
   let now = HELD_AT;
   const bridge = new AlertBridge({ file: join(await mkdtemp(join(tmpdir(), "alert-bridge-fresh-")), "alert-bridge.json"), now: () => now, log: () => {},
-    alerts: async () => parseAlerts(list), deliver: async (_session, text) => { sent.push(text); },
-    startJob: async () => ({ id: "job-1", name: "alert triage CI" }), jobWorking: async () => true, jobTurn: async (_job, since) => ({ ran: true, at: since }) });
+    alerts: async () => parseAlerts(list), deliver: async (_session, text) => { sent.push(text); }, jobTurn: async (_job, since) => ({ ran: true, at: since }) });
   await bridge.tick();
   list = [SCREENING, MONITOR];
   now = NOW;
   await bridge.tick();
-  assert.equal(sent.length, 1);
-  assert.match(sent[0]!, /spec-red \(CI staging-proof spec red 2 runs in a row, firing since 2026-10-31T15:41Z, 2 label sets\) fired at 2026-10-31T18:31Z\. Labels: spec=hosted-zz-monitor-flow\.spec\.ts\. Summary: hosted-zz-monitor-flow\.spec\.ts is red 1 in a row\. You are/);
-  assert.doesNotMatch(sent[0]!, /campaign-screening|6 in a row|3 runs/);
+  assert.equal(sent.length, 2);
+  assert.match(sent[1]!, /spec-red \(CI staging-proof spec red 2 runs in a row, firing since 2026-10-31T15:41Z, 2 label sets\)\n  Fired: spec=hosted-zz-monitor-flow\.spec\.ts\n  Summary: hosted-zz-monitor-flow\.spec\.ts is red 1 in a row\./);
+  assert.doesNotMatch(sent[1]!, /campaign-screening|6 in a row|3 runs/);
 });
 
 test("a new rule names each label set that fired with it, and a reopen with no new label set names every firing one", () => {

@@ -36,7 +36,6 @@ async function fixture() {
     // boards.read finds no board for a thread id, so the thread check has to come first.
     hasBoard: async session => session !== VENT,
     deliver: async (session, text) => { delivered.push({ session, text }); },
-    startJob: async chat => { started.push(chat); return { id: `job-${started.length}`, name: "a Prime job" }; },
     threads: {
       list: async () => { if (failList) throw new Error("pi-host did not answer"); return new Map([[VENT, "vent"]]); },
       send: async (thread, text, requestId) => {
@@ -45,7 +44,7 @@ async function fixture() {
       },
       turn: async (_thread, since) => turns.get(VENT) ?? { ran: true, at: since },
     },
-    jobWorking: async () => true, jobTurn: async (_job, since) => ({ ran: true, at: since }) });
+    jobTurn: async (_job, since) => ({ ran: true, at: since }) });
   return { bridge, toThread, delivered, started, turns, failSend: (count: number) => { failSends = count; }, failList: (on: boolean) => { failList = on; },
     set: (alerts: unknown[]) => { list = alerts; }, at: (ms: number) => { now = ms; }, state: async () => parseState(JSON.parse(await readFile(file, "utf8"))) };
 }
@@ -107,7 +106,7 @@ test("a thread with no turn after a fire escalates it to ops guy once at ESCALAT
   f.at(NOW + ESCALATE_MS);
   await f.bridge.tick();
   assert.equal(escalations(f).length, 1);
-  assert.match(escalations(f)[0]!.text, new RegExp(`On vent, its triage job vent has had no model turn: ${RULE}`));
+  assert.match(escalations(f)[0]!.text, new RegExp(`On vent, its thread has had no model turn since it took the fire: ${RULE}`));
   f.at(NOW + ESCALATE_MS + 30_000);
   await f.bridge.tick();
   assert.deepEqual([escalations(f).length, f.toThread.length], [1, 1], "once per fire, and the thread is not sent the fire again");

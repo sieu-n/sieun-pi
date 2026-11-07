@@ -8,18 +8,18 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 
 /**
  * The precheck of a chat's alert duty (`node --import tsx scripts/duties/prod-alerts.ts <chatId>`): alerts_firing counts the Grafana rules
- * the alert bridge holds as firing for the chat, read from its state (alert-bridge.json), and flags each with the triage job the bridge gave
- * it. The owner, 10-18: a firing alert feeds a duty, "things are meant to be first written in plan -> achieved -> cleared & written on duty
+ * the alert bridge holds as firing for the chat, read from its state (alert-bridge.json), and flags each with the session the bridge sent it
+ * to, the chat's own thread since 11-07. The owner, 10-18: a firing alert feeds a duty, "things are meant to be first written in plan -> achieved -> cleared & written on duty
  * for maintanence only", and the bridge stopped filing plan steps for alerts.
  */
 
 export const BRIDGE_FILE = join(homedir(), ".prime/agent/browser-chat/alert-bridge.json");
 
-/** The chat's firing rules as the duty reads them: the count, and one flagged line per rule, oldest first, with its triage job. */
+/** The chat's firing rules as the duty reads them: the count, and one flagged line per rule, oldest first, with the session that took it. */
 export function alertsFiring(rules: readonly Tracked[], at: number): { count: number; flagged: FlaggedSlice[] } {
   const sorted = [...rules].sort((a, b) => a.startsAt.localeCompare(b.startsAt));
   return { count: rules.length, flagged: sorted.map(rule => ({ at, kind: "alert_firing", excerpt: (`${rule.rule}${rule.rule.includes(rule.alertname) ? "" : ` (${rule.alertname})`} ` +
-    `firing since ${rule.startsAt.slice(0, 16)}Z: ${rule.job ? `triage job "${rule.job.name}" (session ${rule.job.id}), given it ${new Date(rule.job.at).toISOString().slice(0, 16)}Z` : "no triage job yet"}`).slice(0, 600) })) };
+    `firing since ${rule.startsAt.slice(0, 16)}Z: ${rule.job ? `${rule.job.id === rule.chat ? "sent to this chat's thread" : `triage job "${rule.job.name}" (session ${rule.job.id}), given it`} ${new Date(rule.job.at).toISOString().slice(0, 16)}Z` : "not sent yet"}`).slice(0, 600) })) };
 }
 
 async function main(): Promise<void> {

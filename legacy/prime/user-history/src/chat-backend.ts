@@ -31,7 +31,7 @@ import { closeWriters, keyedRequest } from "./daemon-write.ts";
 import type { PromptCapture } from "./prompt-capture.ts";
 import { readHostCapture } from "./prompt-host-capture.ts";
 import { artifactsRoot, dryLeftoverSource, hostLeftovers, leftoverSource, sshLeftovers } from "./job-leftovers.ts";
-import { ALERT_TRIAGE_DUTY, chatPoolPriority, dutyJobIds, dutyJobPriority, PoolPriorities } from "./chat-pool-priority.ts";
+import { chatPoolPriority, dutyJobIds, dutyJobPriority, PoolPriorities } from "./chat-pool-priority.ts";
 import { agentQueue, type AgentQueue, type IdleEviction } from "./chat-agent-queue.ts";
 import { POOL_LOG, TURN_HISTORY_FILE, turnHistory } from "./turn-history.ts";
 import { briefCheckRecord, deletedJobRecord, heldNoticeRecord, jobRegistry, checkRecord, quietJobRecord, relayRecord } from "./chat-sources.ts";
@@ -44,7 +44,6 @@ import { handOff, handoffSend, handsOffRow, systemPorts } from "./detached-hando
 import { unfinishedHandoffs } from "./orphan-services.ts";
 import { readHeldTurns, readTurnSince, threadTurnSince, writeResumePending } from "./held-turns.ts";
 import { routes as piHostRoutes, sendAlert, threadEntries, threadNames } from "./pi-thread-message.ts";
-import { jobLive, livePaths } from "./job-live.ts";
 import { recordUnloaded, writeReceipt } from "./unloaded.ts";
 import { quietMinutes } from "./quiet-minutes.ts";
 import { startTmpSweep } from "./tmp-sweep.ts";
@@ -56,7 +55,7 @@ import { primeUpdateRunning } from "./prime-update.ts";
 import { treeWait } from "./duty-tree-wait.ts";
 import { fixLiveReader } from "./shared/duty-fixes.ts";
 import { stalledCalls } from "./shared/stalled-calls.ts";
-import { alertJobBrief, archiveDutyJob, dutyJobHost, dutyJobName, savedChat } from "./chat-duty-job.ts";
+import { archiveDutyJob, dutyJobHost, savedChat } from "./chat-duty-job.ts";
 import { ArchiveQueue } from "./chat-archive-queue.ts";
 import { DutyStore } from "./chat-duty-store.ts";
 import { IdIndex } from "./id-index.ts";
@@ -296,9 +295,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // through their relays.
   const lead = ownChatsOnly ? null : leadWriter({ hostOf: id => catalog.hostOf(id), remotes: () => catalog.remoteHosts().map(({ host }) => host), local: leadSessions, log: dutyLog,
     current: host => leadNow(host, poolQueueNow), store: leadStore(join(dataDir, "lead-written.json")) });
-  // The alert bridge's triage jobs that hold a fire lead beside the chat heads (`leadJobs` in src/alert-bridge.ts), on the box each runs on.
-  let alertLead: readonly string[] = [];
-  const writeLead = (ids: readonly string[], every?: boolean) => lead!([...ids, ...alertLead], every);
+  const writeLead = (ids: readonly string[], every?: boolean) => lead!(ids, every);
   // The server's notices to chats wait on disk until the daemon takes them (src/notice-outbox.ts); a scratch serve keeps its own folder.
   const notices = noticeOutbox(join(dataDir, quiet ? "notice-outbox-scratch" : "notice-outbox"), threads, dutyLog, {
     held: async entry => { const host = catalog.hostOf(entry.threadId); return !!host && !(await reach.reach(host)).online; } });
@@ -431,27 +428,17 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const stopAlerts = !alertPoll ? () => {} : startAlertBridge({ file: join(dataDir, "alert-bridge.json"),
     alerts: () => alertPoll.alerts(),
     owners: () => readOwnersFor(grafanaConfig, homedir()), hasBoard: async session => (await boards.read(session)) !== null,
-    startJob: async (chatId, lines, previous, call) => {
-      const chat = await dutyJobs.chat(chatId);
-      if (!chat) throw new Error(`no chat ${chatId.slice(0, 8)}`);
-      const at = Date.now();
-      const name = dutyJobName(ALERT_TRIAGE_DUTY, chat.name, at);
-      return await dutyJobs.start(chat, name, alertJobBrief(chat, name, at, lines, previous, call), at);
-    },
     firingCall: async chatId => {
       const duty = (await duties.store.list(chatId)).find(duty => duty.status === "active" && duty.firingCall);
       return duty?.firingCall ? { command: duty.firingCall, cwd: duty.precheck.cwd } : null;
     },
     threads: { list: async () => threadNames(await piHostRoutes()), send: async (thread, text, requestId) => sendAlert(await piHostRoutes(), thread, text, requestId),
       turn: async (thread, since) => threadTurnSince(await threadEntries(await piHostRoutes(), thread), since, provider => treeFreeAt(`pi-durable:${thread}`, provider), Date.now()) },
-    jobWorking: job => dutyJobs.working(job),
     jobTurn: async (job, since) => {
       const file = await sessionFileFor(job.id, { listed: async id => (await catalog.summary(id))?.sessionFile, dataDir, agentDir }) ?? await sessionFileOf(job.id, agentDir);
       return file ? readTurnSince(file, since) : { ran: false };
     },
-    retryJob: () => chats.interruptedSoon(0), poolFreeAt: (tree, provider) => treeFreeAt(tree, provider),
-    turnQueued: async session => (await queued()).queued.get(session) ?? null,
-    ...lead ? { lead: async (jobs: readonly string[]) => { alertLead = jobs; await writeLead([...await chats.ids()]); } } : {}, jobLive: (session, now) => jobLive(livePaths(dataDir), session, now),
+    held: async session => messageHold((await readRowSlotPark(await catalog.summary(session))).park, session, Date.now(), await queued()) !== null,
     log: dutyLog, ...agentMessage });
   const stopBridgeWatch = !alertPoll ? () => {} : startBridgeWatch({ health: alertPoll.health, statusFile, configFile: grafanaConfig,
     alerting: alerting => alertPoll.alerting(alerting), log: dutyLog, ...agentMessage });

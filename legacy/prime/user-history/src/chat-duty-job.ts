@@ -1,5 +1,4 @@
 import { replaceableLine } from "./agent-outbox.ts";
-import { type AlertJob, type AlertLine, alertRulesText, type FiringCall, firingCallText, TRIAGE_WORK } from "./alert-bridge.ts";
 import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -186,36 +185,6 @@ export function checkInJobBrief({ chat, job, at, prompt, report }: Pick<DutyJobI
         "chat service that your report replaces an older check-in report still waiting for the chat, so a chat that was away reads only the newest.",
     ].map(line => `- ${line}`).join("\n"),
   ].join("\n\n") + "\n";
-}
-
-/** The owner's words an alert job opens with, from ops guy's goal p195. */
-export const ALERT_OWNER_WORDS = "One place to monitor and debug everything, and a firing prod alert wakes the thread that owns it";
-
-/**
- * The brief of the triage job the alert bridge starts for an owner chat, with every fire of that chat no job holds. Later fires of the chat
- * come to this job by message while it lives. The bridge files no plan step for it (owner 10-18: "stop being paranoid in plan under p45,
- * p221"); the chat's duty counts the rules that fire, and this job holds them until they stop. On 10-19 one job per rule had made 78 fires
- * into 78 jobs across 4 chats. With `call`, the chat's duty keeps a fault call per firing, and the brief names each firing key and the command.
- */
-export function alertJobBrief(chat: DutyChat, job: string, at: number, lines: readonly AlertLine[], previous?: AlertJob & { at: number }, call?: FiringCall): string {
-  const agentDir = dirname(dirname(dirname(chat.board)));
-  return [
-    `# ${job}: the firing alerts of the chat "${chat.name}"`,
-    `Owner's words (verbatim):\n\n> ${ALERT_OWNER_WORDS}`,
-    `You are the job "${job}" of the chat "${chat.name}" (session ${chat.id}), started ${localTime(at)} by the alert bridge, and its conversation is ` +
-      `${join(agentDir, "sessions", `${chat.id}.jsonl`)}. You are this chat's one triage job: the bridge gave you ${lines.length === 1 ? "this Grafana rule" : `these ${lines.length} Grafana rules`}, ` +
-      "and every rule of the chat that fires while you work comes to you by message.",
-    alertRulesText(lines),
-    previous ? `The chat's last triage job was "${previous.name}" (session ${previous.id}), started ${localTime(previous.at)}, and it has ended while ` +
-      "these rules fire. Read its conversation first and start from what it found." : "",
-    `${TRIAGE_WORK} Put no step on the chat's plan: the chat's duty counts the rules that fire, and you hold them.`,
-    call ? firingCallText(lines, at, call) : "",
-    "## How to act",
-    [
-      `Read ${join(agentDir, "skills/poteto-mode/SKILL.md")} and ${join(agentDir, "skills/unslop/SKILL.md")} first.`,
-      `When your rules stop firing for causes you fixed, or you are blocked, report in 3 short lines that lead with the causes, with \`${reportCall(chat)}\`.`,
-    ].map(line => `- ${line}`).join("\n"),
-  ].filter(Boolean).join("\n\n") + "\n";
 }
 
 const runs = (count: number): string => `${count} ${count === 1 ? "run" : "runs"}`;
