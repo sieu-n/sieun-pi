@@ -487,6 +487,24 @@ test("pool_claude flags a live account whose refresh grant ends within GRANT_WAR
     && !outcome.detail.includes("claude4") && !outcome.detail.includes("krenerd77") && outcome.fix.includes("pi-pool login"), JSON.stringify(outcome));
 });
 
+test("pool_claude leaves a grant end out of the fix list when the account's organization refuses OAuth", async () => {
+  /** 11-07: both sieun@virev.ai logins sat in the OAuth-refused cooldown while their grant ends held the headline at 1. */
+  const now = Date.parse("2026-11-07T18:00:00Z");
+  const ends: Record<string, number> = { p1: now + 18 * 3_600_000, t1: now + 18 * 3_600_000 };
+  const rows = [{ id: "p1", email: "sieun@virev.ai", label: "sieun@virev.ai (personal)", tier: "max 20x", reason: "cooldown 23h59m", cooldown_reason: "oauth not allowed for organization" },
+    { id: "t1", email: "sieun@virev.ai", label: "sieun@virev.ai (Virev)", tier: "team 5x", reason: "cooldown 23h59m", cooldown_reason: "oauth not allowed for organization" },
+    { id: "l1", email: "claude8@slack.green", usable: true }];
+  const mac = macDeps(true, TIMED_OUT, []);
+  const outcome = await poolClaude.run({ ...mac, now: () => now,
+    exec: async (file, args, options) => file === "pi-pool" ? { code: 0, stdout: JSON.stringify({ rows }), stderr: "", ms: 0 } : mac.exec(file, args, options),
+    readFile: async path => {
+      const id = path.match(/pi-pool\/accounts\/secrets\/pi-pool\.anthropic\.(\w+)$/)?.[1];
+      if (!id) throw new Error(`unexpected read ${path}`);
+      return JSON.stringify({ claudeAiOauth: { accessToken: "x", refreshTokenExpiresAt: ends[id] } });
+    } });
+  assert.ok(outcome.status === "pass" && outcome.detail.includes("sieun@virev.ai (personal) (grant ends") && outcome.detail.includes("t127"), JSON.stringify(outcome));
+});
+
 // 10-24 00:13 KST: pool_codex waited on the owner's Apple sign-in, and the headline missed for 10 runs that no agent could move.
 test("skills_or_tools_to_fix leaves out a fail only the owner can fix, which owner_fixes counts", () => {
   const check = (id: string) => CHECKS.find(entry => entry.id === id)!;

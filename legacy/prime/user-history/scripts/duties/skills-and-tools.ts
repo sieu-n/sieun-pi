@@ -310,7 +310,7 @@ async function currentPrompts(deps: Deps, provider: string, rows: readonly { ema
 async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise<Outcome> {
   const result = await deps.exec("pi-pool", ["ls", "--json", ...(provider === "anthropic" ? [] : ["--provider", provider])], { timeoutMs: CALL_TIMEOUT_MS });
   if (result.code !== 0) return FAIL("agent", `pi-pool ls ${failText(result)}`, "reinstall pi-pool with packages/pi-pool/install.py in sieun-pi");
-  type Row = { id?: string; email?: string; tier?: string; usable?: boolean; reason?: string | null; cooldown_reason?: string | null; disabled?: boolean; limited_until?: number | null; cooldown_until?: number | null; windows?: { pct?: number | null; resets_at?: number | null }[] };
+  type Row = { id?: string; email?: string; label?: string; tier?: string; usable?: boolean; reason?: string | null; cooldown_reason?: string | null; disabled?: boolean; limited_until?: number | null; cooldown_until?: number | null; windows?: { pct?: number | null; resets_at?: number | null }[] };
   const rows = (parseJson(result.stdout) as { rows?: Row[] }).rows ?? [];
   const live = rows.filter(row => row.disabled !== true);
   // A team org that already refuses a member for having no seat has more members than seats, so signing in a revoked member gives it no
@@ -321,10 +321,15 @@ async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise
   const seatless = new Set(live.filter(row => row.tier?.startsWith("team") && row.cooldown_reason === NO_SEAT).flatMap(row => orgOf(row) ?? []));
   const noSeat = live.filter(row => row.reason === "needs-reauth" && row.tier?.startsWith("team") && seatless.has(orgOf(row) ?? ""));
   const ends = provider === "anthropic" ? await grantEnds(deps, live.flatMap(row => row.reason !== "needs-reauth" && row.id ? [row.id] : [])) : new Map<string, number>();
-  const ending = live.flatMap(row => {
+  // A new sign-in gives an account whose organization refuses OAuth nothing to serve with, since only a seat or a paid plan lifts the refusal: on
+  // 11-07 both sieun@virev.ai logins sat in that cooldown, the personal Max plan unpaid by the owner's choice (t127) and the team one seatless
+  // (t125), and their grant ends held skills_or_tools_to_fix at 1 for a sign-in no agent could make count.
+  const grantRows = live.flatMap(row => {
     const at = row.id === undefined ? undefined : ends.get(row.id);
-    return at !== undefined && at - deps.now() <= GRANT_WARN_MS ? [{ email: row.email ?? "?", text: `${row.email ?? "?"} (grant ends ${utcMinute(at)})` }] : [];
+    return at !== undefined && at - deps.now() <= GRANT_WARN_MS ? [{ row, email: row.email ?? "?", text: `${row.email ?? "?"} (grant ends ${utcMinute(at)})`, label: `${row.label ?? row.email ?? "?"} (grant ends ${utcMinute(at)})` }] : [];
   });
+  const ending = grantRows.filter(entry => entry.row.cooldown_reason !== NO_SEAT).map(({ email, text }) => ({ email, text }));
+  const refusedEnding = grantRows.filter(entry => entry.row.cooldown_reason === NO_SEAT).map(entry => entry.label);
   const needing = [...live.filter(row => row.reason === "needs-reauth" && !noSeat.includes(row)).map(row => ({ email: row.email ?? "?", text: row.email ?? "?" })), ...ending];
   const prompts = await currentPrompts(deps, provider, rows, new Set(needing.map(entry => entry.email.toLowerCase())));
   // An account whose sign-in reached claude.ai's "Your subscription is paused. Pay your invoice" page is off by the owner's standing choice,
@@ -340,7 +345,7 @@ async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise
   const soon = live.some(row => [row.limited_until, row.cooldown_until, ...(row.windows ?? []).map(window => window.resets_at)]
     .some(at => typeof at === "number" && at > nowSec && at - nowSec <= 86_400));
   const unpaidWords = `${unpaid.join(", ")} off for an unpaid plan, which the owner chose to leave as it is (t87, t92, t123)`;
-  const others = `${usable} of ${live.length} usable, ${rows.length - live.length} off${noSeat.length ? `, ${noSeat.length} revoked in a team with no free seat (${noSeat.map(row => row.email ?? "?").join(", ")}), which gain room only when the owner gives them a seat` : ""}`;
+  const others = `${usable} of ${live.length} usable, ${rows.length - live.length} off${noSeat.length ? `, ${noSeat.length} revoked in a team with no free seat (${noSeat.map(row => row.email ?? "?").join(", ")}), which gain room only when the owner gives them a seat` : ""}${refusedEnding.length ? `, ${refusedEnding.join(", ")} refused by an organization that does not allow OAuth, which a new sign-in cannot fix until the owner gives it a seat or pays its plan (t125, t127)` : ""}`;
   const counts = unpaid.length ? `${others}, ${unpaidWords}` : others;
   if (reauth.length && reauth.every(entry => entry.text.endsWith(APPLE_RELAY))) return FAIL("owner", `${reauth.map(entry => entry.text).join(", ")} need a new sign-in (${counts})`,
     `the owner clicks Sign in again on the account in Settings, Accounts and signs in with Apple; Apple asks for his Apple ID password and a 2FA code on his devices, which no agent holds`);
