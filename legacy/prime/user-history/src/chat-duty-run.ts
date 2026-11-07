@@ -12,7 +12,7 @@ import { type AfterMeasure, CHECK_IN_DUTY, CHECK_IN_DUTY_ID, dailySlot, dutyDue,
   type DutyCut, type DutyMetric, type DutyRunRecord, type DutySchedule, type DutyTrigger, type DutyView, type FixLink, type FlaggedSlice, type PrecheckOutput, type PrecheckOverrun, STILL_WORKING, verdictMetrics } from "./shared/chat-duties.ts";
 import { briefFindings, headlineWords } from "./shared/brief-cap.ts";
 import { CHECK_IN_PREFIX } from "./shared/chat-feed.ts";
-import { agedOut, closedUntil, pushMisses } from "./duty-push.ts";
+import { agedOut, closedUntil, pushMisses, readsParts } from "./duty-push.ts";
 import { transientTurnError } from "./turn-error.ts";
 import type { TellSource } from "./clean-room-subjects.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
@@ -435,11 +435,12 @@ export class Duties {
     if (!misses) return;
     const board = await this.host.board?.(chatId).catch(() => null) ?? null;
     const fixes = await this.fixesOn(board, chatId, duty.id, misses, [], duty.boardGoal);
-    if (Object.values(fixes).some(fix => fix.live)) return;
+    const parts = readsParts(own, counted);
+    if (!parts && Object.values(fixes).some(fix => fix.live)) return;
     // A miss whose fix step waits on the owner's open For you todo (`hold`) owes no fix job, as d9 reads it, so a push run for it starts a job
     // with nothing to do. From 10-24 19:30Z to 02:08Z on 10-25 vent's d1 got 14 push runs, each with a job, while p79 waited on t15, and SEO
     // guy's d2 got one every 2 h while p101 waited on t30. The duty's own schedule still measures it, and a push comes back once the todo closes.
-    if (misses.length && misses.every(miss => fixes[miss]?.hold !== undefined)) return;
+    if (!parts && misses.length && misses.every(miss => fixes[miss]?.hold !== undefined)) return;
     if (this.afters.has(key)) return;
     if (this.start(chatId, duty.id, "push", this.now())) this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: ${misses.length ? `red on ${misses.join(", ")} with no job at work on it`
       : "met with parts that can fall behind, unread for the check-in interval"}; a push run starts`);

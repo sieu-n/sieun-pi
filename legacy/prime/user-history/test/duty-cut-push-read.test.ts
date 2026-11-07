@@ -4,7 +4,7 @@
 // run waiting for its rerun, so no run read d4 until the 16:30:18Z schedule run of 11-06, which read wiki_problems 29. That run's job was cut
 // at 16:35:31Z for a 16:40Z slot, and no run read d4 again until its rerun at 03:38:24Z on 11-07, which read 43. A cut job now gets the push
 // runs as reads while pi-pool holds its tree in its line, and is replaced once no line holds it; a missed duty with parts is read every
-// PART_READ_MS.
+// PART_READ_MS, also while a fix step on its metric has a live job.
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -14,7 +14,7 @@ import { PART_READ_MS } from "../src/duty-push.ts";
 import { Duties, IN_POOL_LINE, NOTHING_DUE } from "../src/chat-duty-run.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
 import type { Duty, DutyJobRef, DutyRunRecord } from "../src/shared/chat-duties.ts";
-import type { CheckInView } from "../src/shared/types.ts";
+import type { CheckInView, PlanItem } from "../src/shared/types.ts";
 
 const CHAT = "01a1164b-4a2d-742d-b27a-82f086ed0200";
 const MIN = 60_000;
@@ -22,7 +22,7 @@ const NO_TOKEN = "token hook gave no token (credential_unavailable): pi-pool: th
 
 type Run = { at: number; trigger: DutyRunRecord["trigger"]; problems: number; job: DutyJobRef; cutAt: number; slotAt: number };
 
-async function replay(run: Run, body: (at: { tick: (now: number, problems: number, following: number) => Promise<void>; runs: () => Promise<DutyRunRecord[]>;
+async function replay(run: Run, fixLive: boolean, body: (at: { tick: (now: number, problems: number, following: number) => Promise<void>; runs: () => Promise<DutyRunRecord[]>;
   retired: string[]; started: string[] }) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "duty-cut-push-read-"));
   try {
@@ -58,8 +58,8 @@ async function replay(run: Run, body: (at: { tick: (now: number, problems: numbe
       poolAdmits: async () => false,
       poolHolds: async tree => tree === run.job.id && inLine() ? "line" : null,
       checkIn: { view: async () => ({ everyMs: 60 * MIN }) as CheckInView, set: async () => null, run: async () => {} },
-      board: async () => ({ v: 2, rev: 1, updatedAt: "", todos: [], plan: [] }),
-      fixLive: async () => false,
+      board: async () => ({ v: 2, rev: 1, updatedAt: "", todos: [], plan: fixLive ? [FIX] : [] }),
+      fixLive: async () => fixLive,
     });
     const tick = async (at: number, problems: number, following: number) => {
       now = at;
@@ -72,13 +72,15 @@ async function replay(run: Run, body: (at: { tick: (now: number, problems: numbe
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
+const FIX = { id: "p1455", text: "d4 gets a push read every 15 min", status: "doing", job: "d4 push reads gap 11-07", duty: "d4/wiki_problems", children: [] } as PlanItem;
+
 const VERIFY: Run = {
   at: Date.parse("2026-11-05T17:55:07.223Z"), trigger: "verify", problems: 0, job: { id: "01a1ab2f-verify-0255", name: "wiki dream AI harness developer environment 02:55" },
   cutAt: Date.parse("2026-11-05T17:55:51.346Z"), slotAt: Date.parse("2026-11-05T18:10:00Z"),
 };
 
 test("a met duty with parts gets its part reads beside a cut job pi-pool holds in its line, then replaces it (Wiki dream, 11-05 18:11Z to 18:43Z)", async () => {
-  await replay(VERIFY, async ({ tick, runs, retired, started }) => {
+  await replay(VERIFY, false, async ({ tick, runs, retired, started }) => {
     await tick(VERIFY.at + PART_READ_MS + MIN, 0, 0);
     let read = await runs();
     assert.equal(read.length, 2, "the push run reads d4 while the cut run waits for its rerun");
@@ -102,7 +104,7 @@ const SCHEDULE: Run = {
 };
 
 test("a missed duty with parts is read every PART_READ_MS beside its cut job, not hourly (Wiki dream, 11-06 16:46Z)", async () => {
-  await replay(SCHEDULE, async ({ tick, runs, started }) => {
+  await replay(SCHEDULE, false, async ({ tick, runs, started }) => {
     await tick(SCHEDULE.at + PART_READ_MS + MIN, 31, 2);
     let read = await runs();
     assert.equal(read.length, 2, "the push run reads d4 15 min after the schedule run");
@@ -113,5 +115,14 @@ test("a missed duty with parts is read every PART_READ_MS beside its cut job, no
     assert.equal(read.length, 3, "and again PART_READ_MS later");
     assert.equal(read[0]!.metrics.wiki_problems?.value, 33);
     assert.deepEqual(started, []);
+  });
+});
+
+test("a missed duty with parts is read beside a live fix step on its metric (Wiki dream, 11-07 04:00Z)", async () => {
+  await replay(SCHEDULE, true, async ({ tick, runs }) => {
+    await tick(SCHEDULE.at + PART_READ_MS + MIN, 43, 2);
+    const read = await runs();
+    assert.equal(read.length, 2, "the fix job works on the code, and the duty's own job works the pages");
+    assert.equal(read[0]!.trigger, "push");
   });
 });

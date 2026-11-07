@@ -94,6 +94,16 @@ export function pushMisses(runs: readonly DutyRunRecord[], counted: ReadonlySet<
   return missedKeys({ metrics: parts });
 }
 
+/**
+ * Whether the duty's newest reading has parts of its counted metrics (`countedParts`). Its push run reads the duty whatever fix step is live or
+ * waits on the owner, since the run's job is the one that works the parts: at 04:00Z on 11-07 the d4 fix job "d4 push reads gap 11-07" on p1455
+ * was live, the d4 job of 01:30 KST was cut and archived at 03:54Z, and no push run read d4 or started a writer for its 43 wiki problems.
+ */
+export function readsParts(runs: readonly DutyRunRecord[], counted: ReadonlySet<string>): boolean {
+  const holder = newestReading(runs);
+  return !!holder && countedParts(effectiveRun(holder), counted) !== null;
+}
+
 /** The parts of the counted metrics in `measured` (`<metricKey>_<part>`), or null when it has none. */
 function countedParts(measured: Pick<DutyRunRecord, "parts">, counted: ReadonlySet<string>): DutyRunRecord["parts"] | null {
   const parts = Object.fromEntries(Object.entries(measured.parts ?? {}).filter(([key]) => [...counted].some(metric => key.startsWith(`${metric}_`))));
