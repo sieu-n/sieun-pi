@@ -1,5 +1,5 @@
 // d11's verify runs read unlabeled_lines 57, 67, 14 and 41 on 10-22 while each labelling job left 0 or 1: the metric counted the run's own
-// input queue. A line counts only when it went out before the newest run in LAST_RUNS_FILE that started a job, and every unlabeled line stays flagged.
+// input queue. A line counts only when an earlier run in LAST_RUNS_FILE saw it, and every unlabeled line stays flagged.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -7,12 +7,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CURRENT_SESSION_VERSION } from "@earendil-works/pi-coding-agent";
+import { judge, type DutyMetric } from "../src/shared/chat-duties.ts";
 
 const chat = "01a00000-0000-7000-8000-000000000001";
 const at = Date.parse;
 const jobRun = at("2026-10-22T08:15:00Z");
 
-function session(): string {
+const defaultLines: [string, string][] = [["2026-10-22T08:00:00.000Z", "before the job run"], ["2026-10-22T09:00:00.000Z", "after the job run"]];
+
+function session(lines = defaultLines): string {
   let n = 0;
   const entry = (time: string, message: Record<string, unknown>) =>
     JSON.stringify({ type: "message", id: `e${++n}`, parentId: n > 1 ? `e${n - 1}` : null, timestamp: time, message: { ...message, timestamp: at(time) } });
@@ -23,17 +26,17 @@ function session(): string {
     entry(time, { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" }),
   ];
   return [JSON.stringify({ type: "session", id: chat, version: CURRENT_SESSION_VERSION, timestamp: "2026-10-22T00:00:00Z", cwd: "/" }),
-    ...told("2026-10-22T08:00:00.000Z", "before the job run"), ...told("2026-10-22T09:00:00.000Z", "after the job run")].join("\n") + "\n";
+    ...lines.flatMap(([time, text]) => told(time, text))].join("\n") + "\n";
 }
 
-function precheck(lastRuns: unknown[] | undefined, labels: unknown[] = []): { metrics: Record<string, number>; flagged: { kind: string; excerpt: string }[] } {
+function precheck(lastRuns: unknown[] | undefined, labels: unknown[] = [], lines = defaultLines): { metrics: Record<string, number>; flagged: { kind: string; excerpt: string }[] } {
   const home = mkdtempSync(join(tmpdir(), "d11-cutoff-"));
   try {
     const data = join(home, "data");
     mkdirSync(join(home, ".prime/agent/sessions"), { recursive: true });
     mkdirSync(join(data, "owner-messages"), { recursive: true });
     writeFileSync(join(data, "owner-messages", "labels.jsonl"), labels.map(row => `${JSON.stringify(row)}\n`).join(""));
-    writeFileSync(join(home, ".prime/agent/sessions", `${chat}.jsonl`), session());
+    writeFileSync(join(home, ".prime/agent/sessions", `${chat}.jsonl`), session(lines));
     writeFileSync(join(data, "chats.json"), JSON.stringify({ ids: [chat] }));
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, CHAT_DATA_DIR: data, OUTPUT_FILE: join(home, "out.json") };
     delete env.LAST_RUNS_FILE;
@@ -51,9 +54,30 @@ test("an unlabeled line before the newest job run counts, and one after it is fl
   assert.deepEqual(output.flagged.filter(item => item.kind === "unlabeled").map(item => item.excerpt.startsWith("not counted yet, label it in this run even when every metric is met")), [false, true]);
 });
 
-test("with no LAST_RUNS_FILE or no run that started a job, every unlabeled line counts", () => {
+test("with no LAST_RUNS_FILE every unlabeled line counts", () => {
   assert.equal(precheck(undefined).metrics.unlabeled_lines, 2);
-  assert.equal(precheck([{ duty: "d11", at: jobRun, trigger: "verify" }]).metrics.unlabeled_lines, 2);
+});
+
+// From 10-26 to 11-07 every daily d11 run read met and started no job, so the cutoff stayed at the last run with a job (10-29 23:19Z) and the
+// runs flagged 13 to 122 unlabeled lines a day while unlabeled_lines read 0. A run with no job saw its lines, so the next run counts them, also
+// the ones that have left its 24 h window, and reads missed, which starts the labelling job.
+test("lines a met run with no job saw count on the next run, also once they left its window, and that run reads missed", () => {
+  const daily = (day: string) => ({ duty: "d11", at: at(`2026-10-${day}T09:30:00Z`), trigger: "schedule", verdict: "met" });
+  const lastJob = { duty: "d11", at: at("2026-10-19T09:30:00Z"), trigger: "host-back", verdict: "missed", job: { id: "j", name: "d11 job" }, after: { at: at("2026-10-19T09:50:00Z") } };
+  const lines: [string, string][] = [["2026-10-21T09:00:00.000Z", "seen by the last daily run"], ...defaultLines];
+  const output = precheck([daily("21"), daily("20"), lastJob], [], lines);
+  assert.equal(output.metrics.unlabeled_lines, 1);
+  assert.deepEqual(output.flagged.filter(item => item.kind === "unlabeled").map(item => [item.excerpt.split("sent: ")[1], item.excerpt.startsWith("not counted yet")]),
+    [["seen by the last daily run", false], ["before the job run", true], ["after the job run", true]]);
+  const metrics = (JSON.parse(readFileSync(join(import.meta.dirname, "../scripts/duties/owner-messages.duty.json"), "utf8")) as { metrics: DutyMetric[] }).metrics;
+  assert.equal(judge(metrics, output as never).verdict, "missed");
+});
+
+test("a run that began while an earlier run's job still worked gives no cutoff, so that job's run does", () => {
+  const job = { duty: "d11", at: jobRun, trigger: "verify", verdict: "missed", job: { id: "j", name: "d11 job" } };
+  const during = { duty: "d11", at: at("2026-10-22T09:30:00Z"), trigger: "push", verdict: "met" };
+  assert.equal(precheck([during, job]).metrics.unlabeled_lines, 1);
+  assert.equal(precheck([during, { ...job, after: { at: at("2026-10-22T09:10:00Z") } }]).metrics.unlabeled_lines, 2);
 });
 
 const cutJob = { id: "c", name: "d11 cut job" };

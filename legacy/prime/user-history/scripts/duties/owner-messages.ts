@@ -19,11 +19,15 @@ import { fixRepos, gitCommitTime } from "./repeat-split.ts";
  * domains/devops/owner-message-precision). No model call: a reply on a turn he started counts as needed, and every other line needs a label
  * the duty job writes to LABELS ({"id","label":"needed"|"noise","case"} per line), which the after-job measure reads.
  * - needed_pct_24h: needed lines of the labelled ones, in percent; 100 when nothing went out.
- * - unlabeled_lines: lines on turns he did not start with no label that a d11 job already had the chance to label, those sent before the newest
- *   run in LAST_RUNS_FILE that started a job (every line when none did). A line sent after it is the next job's input, not a miss: on 10-22
- *   verify runs read 57, 67, 14 and 41 while each labelling job left 0 or 1. A run whose job was cut (its `cut`) before it wrote a label line
- *   by its name had no chance: 4 of 6 d11 jobs from 10-22 14:45Z to 10-23 03:11Z were cut by credential_unavailable with no label, and the
- *   lines before them read 13, 9 and 9 misses. Every unlabeled line is flagged with its chat, wake and text.
+ * - unlabeled_lines: lines on turns he did not start with no label that an earlier d11 run already saw: those in the windows of the runs in
+ *   LAST_RUNS_FILE sent before the newest run that saw its lines (`saw`) began, also once they have left this run's window (every line in
+ *   this window when no run saw its lines). A run that started no job counts, since its lines go to the next run's job: from 10-26 to 11-07 the
+ *   cutoff was the newest run that started a job, every daily run read met with no job, and 13 to 122 flagged lines a day went unlabeled
+ *   while unlabeled_lines read 0. A line sent after the run is the next job's input, not a miss: on 10-22 verify runs read 57, 67, 14 and 41
+ *   while each labelling job left 0 or 1. So a run that began while an earlier run's job still worked (before that run's `after`) saw lines
+ *   no job was given, and a run whose job was cut (its `cut`) before it wrote a label line by its name had no chance: 4 of 6 d11 jobs from
+ *   10-22 14:45Z to 10-23 03:11Z were cut by credential_unavailable with no label, and the lines before them read 13, 9 and 9 misses. Every
+ *   unlabeled line is flagged with its chat, wake and text.
  * - unanswered_bursts: his message bursts with no reply in the window that are older than ANSWER_GRACE_MS. A burst on another box's chat counts
  *   only when this box's copy of its session file was complete past the grace (`copyThrough`); otherwise it is flagged `host_away`, so the
  *   runner reruns the duty once that box is back, or `copy_behind` while the box is up and the copy has not caught up yet.
@@ -61,11 +65,19 @@ const testChats = new Set(JSON.stringify(readJson(join(DATA, "clean-room-chats.j
 const chats = readJson<{ ids?: string[] }>(join(DATA, "chats.json"), {}).ids?.filter(id => !testChats.has(id)) ?? [];
 const labels = new Map<string, { label: string; case?: string; by?: string; at?: string }>();
 if (existsSync(LABELS)) for (const line of readFileSync(LABELS, "utf8").split("\n")) { try { const row = JSON.parse(line); if (row.id) labels.set(row.id, row); } catch { /* a torn line */ } }
-type Run = { at?: number; job?: { name?: string }; cut?: { at?: number } };
+type Run = { at?: number; job?: { name?: string }; cut?: { at?: number }; after?: { at?: number } };
 const labelledBy = (run: Run): boolean => [...labels.values()].some(row => (row.by === run.job?.name || row.by?.startsWith(`${run.job?.name} (`))
   && Date.parse(row.at ?? "") >= run.at! && Date.parse(row.at ?? "") <= (run.cut?.at ?? Infinity));
-const hadChance = (run: Run): boolean => Boolean(run.job) && typeof run.at === "number" && (!run.cut || labelledBy(run));
-const cutoff = readJson<Run[]>(process.env.LAST_RUNS_FILE ?? "", []).find(hadChance)?.at ?? Infinity;
+const runs = readJson<Run[]>(process.env.LAST_RUNS_FILE ?? "", []);
+const working = (run: Run, older: Run[]): boolean => older.some(job => job.job && job.at! < run.at! && run.at! < (job.after?.at ?? Infinity));
+const saw = (run: Run, index: number): boolean => typeof run.at === "number" && (run.job ? !run.cut || labelledBy(run) : !working(run, runs.slice(index + 1)));
+const cutoff = runs.find(saw)?.at ?? Infinity;
+/**
+ * Where the lines to read begin: the window of the oldest run in LAST_RUNS_FILE, so a line an earlier run saw still counts after it leaves this
+ * window. The cutoff run's window alone is too short: on 11-06 at 08:15Z and 13:29Z two lines went out that only the cut 21:03Z run and the
+ * 11-07 03:59Z push during its held job saw, and the 11-07 18:19Z job's window began at 11-06 18:19Z.
+ */
+const from = Math.min(start, ...runs.map(run => (run.at ?? Infinity) - windowMs));
 
 const textOf = (message: any): string => { try { return messageText(message).trim(); } catch { return ""; } };
 const projector = new Projector({ put: () => "x", link: () => {} } as never);
@@ -120,7 +132,7 @@ for (const chat of chats) {
   const place = PLACES.find(({ dir }) => existsSync(join(dir, `${chat}.jsonl`)));
   if (!place) continue;
   const file = join(place.dir, `${chat}.jsonl`);
-  const messages = projector.messages(historyMessages(await branchSince(file, start - 6 * 3_600_000)));
+  const messages = projector.messages(historyMessages(await branchSince(file, from - 6 * 3_600_000)));
   let owner = true, settled = true;
   const ownerTurn: boolean[] = [];
   const wakeOf: string[] = [];
@@ -140,11 +152,12 @@ for (const chat of chats) {
   messages.forEach((_: unknown, index: number) => indexOf.set(lineId(messages, index), index));
   const lines = chatLines(messages).filter(line => (line.kind === "agent" || line.kind === "user") && !(line as { pending?: true }).pending);
   for (const line of lines) {
-    if (line.kind !== "agent" || line.at < start || line.at >= end) continue;
+    if (line.kind !== "agent" || line.at < from || line.at >= end) continue;
     const index = indexOf.get(line.id.replace(/-t\d+$/, ""));
     if (index === undefined) continue;
-    if (ownerTurn[index]) { needed++; continue; }
     const label = labels.get(line.id);
+    if (line.at < start && (ownerTurn[index] || label)) continue;
+    if (ownerTurn[index]) { needed++; continue; }
     if (label?.label === "needed") needed++;
     else if (label?.label === "noise") noiseLines.push({ chat, at: line.at, ...Number.isFinite(Date.parse(label.at ?? "")) ? { labelled: Date.parse(label.at!) } : {}, case: label.case ?? "noise", text: line.text });
     else { if (line.at < cutoff) unlabeled++; flagged.push({ kind: "unlabeled", chat, at: line.at, excerpt: `${line.at < cutoff ? "" : UNCOUNTED}id ${line.id}; wake: ${wakeOf[index]!.replace(/\s+/g, " ")}; sent: ${line.text.replace(/\s+/g, " ").slice(0, 600)}` }); }
