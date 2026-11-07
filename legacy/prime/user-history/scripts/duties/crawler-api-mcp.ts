@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,10 +20,13 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * The MCP half calls prod the way a customer's agent does (JSON-RPC over Streamable HTTP, a bearer token): describe, a sql count, a search
  * count and the owner's follower-bucket sql (10-15 23:58Z: "팔로워 구간별로 좋아요 수 비율 분석해줘" as one group-by sql call), per tier.
  * The identity is the prod test user mcp-duty-checker with orgs org_mcp_duty_standard and org_mcp_duty_full (dataApi allow), made on 10-20
- * for this check; each run mints a fresh access token with the search app's MCP_TOKEN_SIGNING_SECRET, so no token is stored. The secret
- * comes from apps/search/.env at the commit prod serves (https://virev.ai/health names it), decrypted with the checkout's
- * apps/search/.env.keys. On 10-22 the incident QH8L8B3E rotation changed the secret on sieun/dev at 10:02Z while prod still served main
- * 6cdb32f, and a token signed with the checkout's secret read invalid_token on all 8 calls.
+ * for this check, whose connections duty-query-mcp-<tier> live on prod Convex. Each run mints a fresh `vrev_mcp_` access token and stores
+ * its hash as the connection's token row (auto-sns-agent search/mcp:issueAccessToken, called as admin through
+ * scripts/repo/convex/call.mjs), which revokes the last run's token, so no token is stored. Until prod serves the tokens table
+ * (auto-sns-agent unified token scheme, 11-08), call.mjs refuses that function with exit 3, and the run signs the old access token with
+ * the search app's MCP_TOKEN_SIGNING_SECRET from apps/search/.env at the commit prod serves (https://virev.ai/health names it). On 10-22
+ * the incident QH8L8B3E rotation changed the secret on sieun/dev at 10:02Z while prod still served main 6cdb32f, and a token signed with
+ * the checkout's secret read invalid_token on all 8 calls.
  */
 
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
@@ -124,11 +127,30 @@ async function prodSigningSecret(): Promise<string> {
   }
 }
 
+/** The tier's connection endpoint as prod Convex keys its token: /mcp is 'standard', /mcp/insight is 'db'. */
+const ENDPOINT: Record<Tier, "standard" | "db"> = { standard: "standard", full: "db" };
+
+/** A fresh token-table access token for the tier's duty connection, or null while prod does not serve issueAccessToken yet. */
+export async function issuedToken(tier: Tier): Promise<string | null> {
+  const token = `vrev_mcp_${randomBytes(32).toString("base64url")}`;
+  const hash = createHash("sha256").update(token).digest("hex");
+  const args = JSON.stringify({ userId: USER, clientId: `duty-query-mcp-${tier}`, endpoint: ENDPOINT[tier], hash });
+  try {
+    await promisify(execFile)("node", ["scripts/repo/convex/call.mjs", "prod", "mutation", "search/mcp:issueAccessToken", args], { cwd: REPO });
+    return token;
+  } catch (error) {
+    // Exit 3 is call.mjs refusing before any call: prod does not list the function yet.
+    if ((error as { code?: number }).code === 3) return null;
+    throw error;
+  }
+}
+
 async function readMcp(): Promise<Record<string, CallResult[]>> {
-  const secret = await prodSigningSecret();
+  const issued = await Promise.all(TIERS.map(issuedToken));
+  const secret = issued.some(token => token === null) ? await prodSigningSecret() : "";
   const now = Math.floor(Date.now() / 1000);
-  const tiers = await Promise.all(TIERS.map(async tier => {
-    const token = mintToken(secret, tier, now);
+  const tiers = await Promise.all(TIERS.map(async (tier, i) => {
+    const token = issued[i] ?? mintToken(secret, tier, now);
     // The calls go out at once, so a run waits for its slowest call and stays inside the precheck's timeoutMs even when
     // each call takes most of CALL_TIMEOUT_MS; one after another, 4 calls of 34 to 40 s ran past it on 11-07 at 18:19Z.
     const calls = await Promise.all(CALLS.map((call, i) => callTool(MCP_URLS[tier], token, call, i + 1)));
