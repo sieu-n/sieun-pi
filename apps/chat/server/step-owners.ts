@@ -1,8 +1,8 @@
 /**
  * Tells each chat what nobody owns on its board: its open steps nobody moves and its red duties with no live fix, by the rules the Chat system
  * duty (d9) counts them with (legacy/prime/user-history/src/apps-step-owners.ts), as today's chat service tells a Prime chat its unmoved steps
- * (`Chats.unmoved`). A chat is told when a gap appears and again each live window while the same gaps stay, as a follow-up when its turn ends,
- * and never while a duty run of it works. Until 11-03 the :5184 check-in only said "move each open step", and d9 found vent's p126 and chrome
+ * (`Chats.unmoved`). A chat is told when a gap appears and again each live window while the same gaps stay, only while its own conversation is
+ * idle, so the notice it reads is the board it acts on, and never while a duty run of it works. Until 11-03 the :5184 check-in only said "move each open step", and d9 found vent's p126 and chrome
  * extension's p20 each waiting with no wake and no job, which no part of the app had named to its chat.
  */
 import { appsGapsKey, appsOwnerGaps, appsOwnerNotice, type AppsChat } from "../../../legacy/prime/user-history/src/apps-step-owners.ts";
@@ -47,9 +47,11 @@ export class StepOwners {
       const wakes = await pendingWakes(this.boards.wakeDir, now);
       const links = { others: new Map(chats.map(chat => [chat.id, chat.board] as const)), chats: chats.map(chat => ({ id: chat.id, name: chat.name })) };
       for (const chat of chats) {
-        // A chat mid-turn gets the notice as a follow-up when the turn ends: agent factory's own turns ran most of 11-03, so a skip while it
-        // works would never tell it.
-        if (!chat.thread || chat.duties.some(row => row.running)) continue;
+        // A chat whose own conversation runs a turn, or waits in pi-pool's queue for one, is told on the first tick after it ends, built from
+        // the board as it is then. pi-host cannot take back an input it holds: from 14:13Z to 17:56Z on 11-07 vent's run waited for a slot, the
+        // app queued 10 notices as follow-ups, and all 10 reached vent at 18:00Z after its first turn had given p143, p144 and p152 a job,
+        // each quoting a waitFor that turn had cleared. A tick every 30 s finds the idle moment between turns, as the check-in does.
+        if (!chat.thread || chat.duties.some(row => row.running) || this.boards.rootRunning(chat.thread)) continue;
         const gaps = appsOwnerGaps(chat, sessions, wakes, now, { self: chat.id, ...links });
         const key = appsGapsKey(gaps);
         if (!key) { this.remember(chat.id, null); continue; }

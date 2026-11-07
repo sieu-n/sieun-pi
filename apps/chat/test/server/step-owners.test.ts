@@ -53,3 +53,35 @@ test("a step that waits with no job and no wake is told to its chat once a windo
   await s.app.boards.owners.tick(now + 62 * 60_000);
   assert.equal(mine().length, 2, "a wake of the chat's thread that names the step owns it");
 });
+
+test("a chat whose turn runs or waits for a slot gets no notice; the first idle tick reads the live board and sends one", async () => {
+  // vent on 11-07: its run waited for a pi-pool slot from 14:13Z to 18:00Z, and the app queued a notice each window for p143, p144 and p152.
+  // Its first turn at 18:00Z gave them a job and cleared their waitFor, and then all 10 queued notices reached it, each quoting the old waits.
+  const added = await s.send<{ board: ChatBoard }>("POST", `/api/agents/${vent.id}/board`, { actor: "agent", ops: [
+    { op: "plan_add", text: "Remove the Convex and Cloudflare usage keys from the infra settings", status: "doing", waitFor: "Release owner's p147. A wake checks main every 30 min" },
+    { op: "plan_add", text: "Move the billing mail reader onto Vent", status: "doing", waitFor: "Release owner's p147 deploys the obs tier" },
+  ] });
+  assert.equal(added.status, 200);
+  const [keys, mail] = added.body.board.plan.slice(-2).map(item => item.id);
+  const before = mine().length;
+  assert.ok(s.host instanceof FixtureHost);
+  s.host.wordMs = 50;
+  await s.host.submit(vent.thread, { text: "slow turn that waits for a slot" });
+  await until(async () => s.app.boards.rootRunning(vent.thread), running => running);
+  const now = Date.now() + 24 * 3600_000;
+  for (const step of [0, 6, 13, 43, 73]) await s.app.boards.owners.tick(now + step * 60_000);
+  assert.equal(mine().length, before, "no notice is queued behind a running or waiting turn");
+  await s.app.boards.addWake(vent.id, { on: { kind: "check", command: "false", every: 300_000, at: now + 86_400_000 }, note: `${keys}: post promote 24 vent checks` });
+  await s.send("POST", `/api/agents/${vent.id}/board`, { actor: "agent", ops: [{ op: "plan_update", id: keys, waitFor: null }] });
+  await s.host.abort(vent.thread);
+  await until(async () => s.app.boards.rootRunning(vent.thread), running => !running);
+  s.host.wordMs = 0;
+  await s.app.boards.owners.tick(now + 74 * 60_000);
+  await until(async () => mine().length, count => count === before + 1);
+  const notice = mine().at(-1)!.text;
+  assert.match(notice, new RegExp(`${mail} "Move the billing mail reader onto Vent" waits for`));
+  assert.doesNotMatch(notice, new RegExp(`${keys}\\b`), "a step its turn gave an owner is not in the notice");
+  await idle();
+  await s.app.boards.owners.tick(now + 75 * 60_000);
+  assert.equal(mine().length, before + 1, "the merged notice is the only one");
+});
