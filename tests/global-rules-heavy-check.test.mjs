@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -93,6 +93,22 @@ test("in sieun-pi the note names the box command in us-metal02's checkout", asyn
   process.env.GLOBAL_RULES_PLATFORM = "darwin";
   const r = await kernel("npx svelte-check", join(pi, "apps/chat"));
   assert.match(r.warning, /ssh us-metal02 'cd ~\/src\/sieun-pi\/apps\/chat && git log -1 --format=%h && heavy 8G -- npx svelte-check'/);
+});
+
+test("on the Mac, the 11-06 `vercel inspect` runs with a note that names the curl reader, and other vercel commands get none", async () => {
+  process.env.GLOBAL_RULES_PLATFORM = "darwin";
+  const r = await kernel("vercel inspect dpl_FYSwcBikmzEojUTfEQgRWuQfctv1 --scope sieuns-projects", search);
+  assert.equal(r.block, false);
+  assert.match(r.warning, /Mac heavy check: `vercel inspect dpl_FYSwcBikmzEojUTfEQgRWuQfctv1 --scope sieuns-projects` runs here/);
+  assert.match(r.warning, /4\.41 GB/);
+  const reader = r.warning.match(/`sh '([^']+vercel-deployment\.sh)'/)?.[1];
+  assert.ok(reader && existsSync(reader), r.warning);
+  assert.match((await kernel("npx vercel --scope sieuns-projects inspect staging.virev.ai", asa)).warning ?? "", /vercel-deployment\.sh/);
+  for (const text of ["vercel ls --scope sieuns-projects", "vercel logs --project auto-sns-search --json", "vercel --version"]) {
+    assert.deepEqual(await kernel(text, search), { block: false }, text);
+  }
+  process.env.GLOBAL_RULES_PLATFORM = "linux";
+  assert.deepEqual(await kernel("vercel inspect dpl_FYSwcBikmzEojUTfEQgRWuQfctv1", search), { block: false });
 });
 
 test("on us-metal02 and in CI the same commands run with no note", async () => {

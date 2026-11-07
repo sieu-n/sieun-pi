@@ -43,6 +43,8 @@ On 11-04 at 16:20:55 KST a job's `pnpm check` in auto-sns-agent apps/search, sta
 It covers `svelte-check`, `tsc` or `tsgo` with no named file, `vitest` with no named test, a turbo check or test task, a check script such as `kit-check.mjs`, and a package.json script that runs one, through `cd`, `sh -c`, `npx`, `pnpm exec`, `pnpm -C` and `--filter`.
 The command runs, because a memory spike guards none of the hard cases of c98, and the note names the cost and the off-Mac command: `commit.mjs --probe <files>` in auto-sns-agent, `ssh us-metal02` into the box checkout of pushed main in sieun-pi, and a pushed branch on us-metal02 or CI elsewhere.
 The kernel prints the note when it starts the command, through `send-check.ts`, and a `bash` tool call gets it after its output.
+It notes `vercel inspect` on the Mac the same way, because on 11-06 at 18:30:10Z one reached 4.41 GB within 20 s while the Mac swapped out 6,868.7 pages/s.
+That note names `src/vercel-deployment.sh`, which reads a deployment's state, URL, commit and aliases from the Vercel REST API with curl and peaked at 16 MB on us-metal02.
 
 `kill.ts` refuses a kill by pattern on every host: `pkill`, `killall`, and a `kill` fed by `pgrep`, `pidof` or `ps` through a pipe to `xargs`, a `$(...)`, a variable or a loop.
 On 10-29 at 04:24:48 KST a job on the owner's Mac ran `pkill -f 'svelte-check' -U $(id -u)`, macOS pkill read `-U` and 501 as more patterns, and it closed the Prime worker that held 43 sessions (board step p1266); at 05:44 KST another job ran `pkill -9 -f 'autopair-real-ig.mjs --local'` after a prompt note had banned it.

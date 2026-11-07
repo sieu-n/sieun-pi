@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { onMac } from "./browser.ts";
 import { SHELLS, effective, expandVars, lex, shellScript, stripHeredocs } from "./shell.ts";
 
@@ -13,6 +14,8 @@ import { SHELLS, effective, expandVars, lex, shellScript, stripHeredocs } from "
  * and a package.json script that runs one of those. The note names the measured cost and the off-Mac command for the repo, and the run
  * goes on: a memory spike guards none of the hard cases of c98, so this is a warning and never a refusal. The kernel half (send-check.ts)
  * prints it when the kernel starts the command, and the tool_call half adds it to a bash tool call's result. Other hosts get no note.
+ * It notes `vercel inspect` the same way: on 11-06 at 18:30:10Z one started by the chat 'sep launch!! (product guy)' reached 4.41 GB within
+ * 20 s while the Mac swapped out 6,868.7 pages/s, and its note names vercel-deployment.sh, which reads the same deployment state with curl.
  */
 const PREFIX = "Mac heavy check:";
 export const HEAVY_COST =
@@ -30,6 +33,11 @@ const PNPM_DIR = /^(?:-C|--dir|--prefix|--cwd)$/;
 const PNPM_WORKSPACE = /^(?:--filter|-F|--filter-prod)$/;
 const TASK = /(?:^|:)(?:check|test|typecheck|svelte-check)(?:$|:)/;
 const MAX_SCRIPT_BYTES = 500000;
+const VERCEL_VALUE = /^(?:-S|--scope|-T|--team|-t|--token|--cwd|-A|--local-config|-Q|--global-config|--api)$/;
+const LIGHT_DEPLOYMENT = fileURLToPath(new URL("./vercel-deployment.sh", import.meta.url));
+export const VERCEL_INSPECT_COST =
+	"On 11-06 at 18:30:10Z one `vercel inspect` on the owner's Mac reached 4.41 GB within 20 s while the Mac swapped out 6,868.7 pages/s; " +
+	"the same command peaked at 108 to 160 MB on us-metal02 under Vercel CLI 41 to 65 and Node 25 and 26, so the Mac-side cause is still open.";
 
 function readFile(path: string): string | null {
 	try {
@@ -137,6 +145,7 @@ interface Hit {
 	command: string;
 	cwd: string;
 	why: string;
+	kind: "check" | "vercel";
 }
 
 /**
@@ -152,7 +161,7 @@ function judge(text: string, depth: number, out: Hit[], start: string, vars: Map
 		const name = basename(eff[0] ?? "");
 		const args = eff.slice(1);
 		const at0 = top ?? { command: label(eff), cwd };
-		const hit = (why: string): void => { out.push({ ...at0, why: via + why }); };
+		const hit = (why: string, kind: Hit["kind"] = "check"): void => { out.push({ ...at0, why: via + why, kind }); };
 		const again = (inner: string, where = cwd, through = via): void => judge(inner, depth + 1, out, where, new Map(vars), at0, through);
 		if (name === "cd" || name === "pushd") {
 			cwd = at(cwd, args.find((a) => !a.startsWith("-")) ?? homedir());
@@ -181,6 +190,10 @@ function judge(text: string, depth: number, out: Hit[], start: string, vars: Map
 			if (found && "workspace" in found) hit(`it runs the \`${found.workspace}\` script across workspace packages`);
 			else if (found) again(found.script, found.dir, `${via}its \`${found.label}\` script runs \`${found.script.slice(0, 200)}\`, and `);
 			else if ((name === "pnpm" || name === "yarn") && args[0] && args[0] !== "run" && !args[0].startsWith("-")) again(args.join(" "));
+			continue;
+		}
+		if ((name === "vercel" || name === "vc") && positionals(args, VERCEL_VALUE)[0] === "inspect") {
+			hit("it loads the whole Vercel CLI to read one deployment", "vercel");
 			continue;
 		}
 		const why = JS_RUNNERS.has(name) ? checkScript(args, cwd) : wholeRun(name.replace(/\.(?:c|m)?js$/, ""), args);
@@ -215,13 +228,16 @@ export function offMac(command: string, cwd: string): string {
 		"`, or let CI run it; on the Mac run only the files you changed, by name.";
 }
 
-/** On the owner's Mac, one note per command in `text` that runs a whole-project type check or test suite; elsewhere none. */
+/** On the owner's Mac, one note per command in `text` that runs a whole-project type check or test suite or `vercel inspect`; elsewhere none. */
 export function judgeHeavyCheck(text: string, cwd: string): string[] {
 	if (!onMac()) return [];
 	const hits: Hit[] = [];
 	judge(text, 0, hits, cwd, new Map());
 	const seen = new Set<string>();
-	return hits.filter((h) => !seen.has(h.command) && seen.add(h.command)).map((h) =>
-		`${PREFIX} \`${h.command.slice(0, 200)}\` runs here on the owner's Mac, because ${h.why}. It runs now. ${HEAVY_COST} ` +
-		`Next time run it off the Mac. ${offMac(h.command, h.cwd)}`);
+	return hits.filter((h) => !seen.has(h.command) && seen.add(h.command)).map((h) => h.kind === "vercel"
+		? `${PREFIX} \`${h.command.slice(0, 200)}\` runs here on the owner's Mac, and ${h.why}. It runs now. ${VERCEL_INSPECT_COST} ` +
+			`Next time read the deployment's state, URL, commit and aliases with \`sh '${LIGHT_DEPLOYMENT}' <dpl id, URL or alias> [team slug]\`, ` +
+			"which curls the Vercel REST API and peaked at 16 MB on us-metal02; for build logs, run `vercel inspect --logs` on us-metal02 over ssh."
+		: `${PREFIX} \`${h.command.slice(0, 200)}\` runs here on the owner's Mac, because ${h.why}. It runs now. ${HEAVY_COST} ` +
+			`Next time run it off the Mac. ${offMac(h.command, h.cwd)}`);
 }
