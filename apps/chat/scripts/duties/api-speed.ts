@@ -5,21 +5,25 @@
  * the server's handler time plus his network p50 from his other tailnet lines, and each metric says which in `metricSources`. A box
  * browser's line, such as a job's walk, never sets a metric; its slowest routes are walk_slow_api rows apart. A client line's `net` is the
  * browser's network time for the call, so a flagged route whose network p90 is far below its wait was held by the page's main thread. *
- * Usage: OUTPUT_FILE=<file> node --import tsx scripts/duties/api-speed.ts [--data-dir <dir>] [--hours 24]
- * The data dir defaults to APPS_CHAT_DATA_DIR, else ~/.pi/agent/chat. Without OUTPUT_FILE the result prints to stdout.
+ * When no tailnet or server line of the window reached search, messages or replies, the precheck times a few GETs of that route against the
+ * live server itself and says so in `metricSources`; a probe that fails gives no value and a probe_failed row.
+ * Usage: OUTPUT_FILE=<file> node --import tsx scripts/duties/api-speed.ts [--data-dir <dir>] [--hours 24] [--server http://127.0.0.1:5184]
+ * The data dir defaults to APPS_CHAT_DATA_DIR, else ~/.pi/agent/chat, and the server to APPS_CHAT_URL, else http://127.0.0.1:5184.
+ * Without OUTPUT_FILE the result prints to stdout.
  */
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { RequestTiming } from "../../server/request-log.ts";
+import type { Item } from "../../web/src/lib/api/types.ts";
 
 /**
  * Who measured a line: the server's handler time, or a page's wait, `tailnet` for the owner's devices and `client` for a browser on the box,
  * such as a job's walk, or a line from before the server named where the page ran. On 11-03 a thread open in the box Chrome waited 32 ms at
  * p50 for GET /api/rooms at a box load of 12, and up to 2,135 ms while the load sat near 300, so a walk says little about the owner's wait.
  */
-export type SpeedSource = "server" | "client" | "tailnet";
+export type SpeedSource = "server" | "client" | "tailnet" | "probe";
 const sourceOf = (t: RequestTiming): SpeedSource => (t.src === "client" && t.via === "tailnet" ? "tailnet" : t.src);
 
 /**
@@ -111,6 +115,7 @@ const WHO: Record<SpeedSource, string> = {
   tailnet: "the owner's devices",
   client: "browsers on the box, such as job walks, or pages from before the server named where a page ran",
   server: "the server's own handler time",
+  probe: "the precheck's own calls from the box",
 };
 
 /**
@@ -154,17 +159,113 @@ const who = (t: RequestTiming): string => (t.via ? `${t.src} via ${t.via}` : t.s
 const slowExcerpt = (o: OwnerSpeed): string =>
   o.speed.src === "tailnet" ? finding(o.speed) : `${o.route} p90 about ${o.p90} ms for the owner: ${o.source}; the slowest was ${o.speed.slowestPath}`;
 
-export function apiSpeed(dir: string, now: number, windowMs: number) {
+/**
+ * The precheck's own GETs of one metric route against the live server, for a route no request of the window reached: the wall time of each
+ * call, or why the probe failed. On 11-06 the owner had made no call since 11-05 00Z, so search, messages and replies had no value and the
+ * duty read as unmeasured each day he was away.
+ */
+export type Probe = { route: string; at: number; path: string; ms: number[] } | { route: string; at: number; path?: string; error: string };
+
+/** The metric routes the precheck probes when the window holds no tailnet or server line of theirs. */
+export const PROBED = [ROUTES.search, ROUTES.messages, ROUTES.replies] as const;
+
+export const unmeasured = (speeds: readonly RouteSpeed[]): string[] => PROBED.filter(route => !speeds.some(s => s.route === route && s.src !== "client"));
+
+/** A probed route's p90 as the owner would wait for it: the probe's wall-time p90 plus his network p50 when the window has it. */
+export function probeSpeed(probe: Probe, net: OwnerNetwork | undefined): OwnerSpeed | undefined {
+  if (!("ms" in probe) || !probe.ms.length) return undefined;
+  const sorted = [...probe.ms].sort((a, b) => a - b);
+  const speed: RouteSpeed = { route: probe.route, src: "probe", count: sorted.length, p50: percentile(sorted, 0.5), p90: percentile(sorted, 0.9), max: sorted.at(-1)!, slowestPath: probe.path };
+  const head = `a probe from the box at ${new Date(probe.at).toISOString()}, since the owner made no call in the window: ${speed.count} GETs of ${probe.path} took p90 ${speed.p90} ms`;
+  return net
+    ? { route: probe.route, p90: Math.round((speed.p90 + net.p50) * 10) / 10, source: `${head} plus his network p50 ${net.p50} ms over ${net.count} tailnet requests`, speed }
+    : { route: probe.route, p90: speed.p90, source: `${head} alone, since no tailnet request in the window carries the network time`, speed };
+}
+
+const PROBE_CALLS = 5;
+const SEARCH_QUERY = "duty";
+
+async function getJson(base: string, path: string): Promise<{ ms: number; body: unknown }> {
+  const started = performance.now();
+  const res = await fetch(new URL(path, base));
+  const text = await res.text();
+  const ms = Math.round((performance.now() - started) * 10) / 10;
+  if (!res.ok) throw new Error(`GET ${path} answered ${res.status}: ${text.slice(0, 200)}`);
+  return { ms, body: JSON.parse(text) as unknown };
+}
+
+const why = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/** The conversation ids the window's requests named, busiest first, then the live server's rooms. */
+async function conversations(base: string, timings: readonly RequestTiming[]): Promise<string[]> {
+  const counts = new Map<string, number>();
+  for (const t of timings) {
+    const id = /^\/api\/c\/([^/?]+)/.exec(t.p)?.[1];
+    if (id) counts.set(decodeURIComponent(id), (counts.get(decodeURIComponent(id)) ?? 0) + 1);
+  }
+  const rooms = await getJson(base, "/api/rooms").then(r => (r.body as { id: string }[]).map(room => room.id), () => []);
+  return [...new Set([...[...counts].sort((a, b) => b[1] - a[1]).map(([id]) => id), ...rooms])];
+}
+
+/** The first of the candidates whose latest page answers and gives `pick` a path to probe. */
+async function firstPath(base: string, ids: readonly string[], pick: (items: readonly Item[]) => string | undefined): Promise<string | undefined> {
+  for (const id of ids) {
+    const page = await getJson(base, `/api/c/${encodeURIComponent(id)}/items`).then(r => r.body as { items?: Item[] }, () => undefined);
+    const tail = page?.items && pick(page.items);
+    if (tail !== undefined) return `/api/c/${encodeURIComponent(id)}${tail}`;
+  }
+  return undefined;
+}
+
+const repliesTail = (items: readonly Item[]): string | undefined => {
+  const root = items.find(item => item.kind === "message" && (item.thread?.replies ?? 0) > 0);
+  return root && `/replies/${encodeURIComponent(root.id)}`;
+};
+
+/**
+ * Probes each route against the live server at `base` with a few GETs: search with a plain query, the busiest conversation's latest
+ * messages, and a thread's replies on a real root post. The CLI runs it before apiSpeed, whose window ends before the probe's own lines.
+ */
+export async function probeRoutes(base: string, routes: readonly string[], timings: readonly RequestTiming[]): Promise<Probe[]> {
+  if (!routes.length) return [];
+  const at = Date.now();
+  const ids = await conversations(base, timings);
+  const pathOf = async (route: string): Promise<string | undefined> =>
+    route === ROUTES.search ? `/api/search?q=${SEARCH_QUERY}` : firstPath(base, ids, route === ROUTES.messages ? () => "/items" : repliesTail);
+  const out: Probe[] = [];
+  for (const route of routes) {
+    const path = await pathOf(route);
+    if (!path) {
+      out.push({ route, at, error: route === ROUTES.replies ? `no conversation the log or ${base}/api/rooms names has a post with replies` : `no conversation the log or ${base}/api/rooms names answers its items` });
+      continue;
+    }
+    try {
+      const ms: number[] = [];
+      for (let i = 0; i < PROBE_CALLS; i++) ms.push((await getJson(base, path)).ms);
+      out.push({ route, at, path, ms });
+    } catch (error) {
+      out.push({ route, at, path, error: why(error) });
+    }
+  }
+  return out;
+}
+
+export function apiSpeed(dir: string, now: number, windowMs: number, probes: readonly Probe[] = []) {
   const timings = readTimings(dir, now, windowMs);
   const speeds = routeSpeeds(timings);
   const net = ownerNetwork(timings);
+  const probed = (route: string): OwnerSpeed | undefined => {
+    const probe = probes.find(p => p.route === route);
+    return probe && probeSpeed(probe, net);
+  };
+  const speedOf = (route: string): OwnerSpeed | undefined => ownerSpeed(speeds, route, net) ?? probed(route);
   const failed = failedSends(timings);
   const owners = failed.filter(t => !fromBox(t));
   const walks = failed.filter(fromBox);
   const pageRoutes = new Set<string>([...Object.values(ROUTES), ...speeds.filter(s => s.src !== "server").map(s => s.route)]);
-  const slowest = [...pageRoutes].flatMap(route => ownerSpeed(speeds, route, net) ?? []).sort((a, b) => b.p90 - a.p90).slice(0, 3);
+  const slowest = [...pageRoutes].flatMap(route => speedOf(route) ?? []).sort((a, b) => b.p90 - a.p90).slice(0, 3);
   const walkSlowest = speeds.filter(s => s.src === "client").slice(0, 3);
-  const [search, messages, replies, send] = [ROUTES.search, ROUTES.messages, ROUTES.replies, ROUTES.send].map(route => ownerSpeed(speeds, route, net));
+  const [search, messages, replies, send] = [ROUTES.search, ROUTES.messages, ROUTES.replies, ROUTES.send].map(speedOf);
   const metrics: Record<string, number> = {};
   if (slowest.length) metrics.slowest_api_p90_ms = slowest[0]!.p90;
   if (search) metrics.search_p90_ms = search.p90;
@@ -184,6 +285,7 @@ export function apiSpeed(dir: string, now: number, windowMs: number) {
         kind, sig: `${who(t)}:${t.m} ${t.r}:${t.s}`,
         excerpt: `${new Date(t.at).toISOString()} ${t.m} ${t.p} ${t.s ? `answered ${t.s}` : "never reached the server"} (${who(t)}${t.shown ? ", Not delivered after the page's tries" : ""}): ${t.err ?? "no reason logged"}`,
       })),
+      ...probes.flatMap(p => ("error" in p ? [{ kind: "probe_failed", sig: `probe:${p.route}`, excerpt: `${p.route} has no value: a probe from the box at ${new Date(p.at).toISOString()} failed: ${p.error}` }] : [])),
       ...slowest.map(o => ({ kind: "slow_api", sig: `${o.speed.src}:${o.route}`, excerpt: slowExcerpt(o) })),
       ...walkSlowest.map(s => ({ kind: "walk_slow_api", sig: `${s.src}:${s.route}`, excerpt: finding(s) })),
     ],
@@ -191,9 +293,14 @@ export function apiSpeed(dir: string, now: number, windowMs: number) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const { values } = parseArgs({ options: { "data-dir": { type: "string" }, hours: { type: "string" } } });
+  const { values } = parseArgs({ options: { "data-dir": { type: "string" }, hours: { type: "string" }, server: { type: "string" } } });
   const dir = resolve(values["data-dir"] ?? process.env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat"));
-  const json = JSON.stringify(apiSpeed(dir, Date.now(), Number(values.hours ?? 24) * 3600_000), null, 1);
+  const base = values.server ?? process.env.APPS_CHAT_URL ?? "http://127.0.0.1:5184";
+  const now = Date.now();
+  const windowMs = Number(values.hours ?? 24) * 3600_000;
+  const timings = readTimings(dir, now, windowMs);
+  const probes = await probeRoutes(base, unmeasured(routeSpeeds(timings)), timings);
+  const json = JSON.stringify(apiSpeed(dir, now, windowMs, probes), null, 1);
   if (process.env.OUTPUT_FILE) writeFileSync(process.env.OUTPUT_FILE, json);
   else process.stdout.write(`${json}\n`);
 }

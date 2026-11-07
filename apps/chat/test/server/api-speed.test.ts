@@ -5,10 +5,12 @@
  */
 import { strict as assert } from "node:assert";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { apiSpeed, finding } from "../../scripts/duties/api-speed.ts";
+import { apiSpeed, finding, probeRoutes, readTimings, routeSpeeds, unmeasured } from "../../scripts/duties/api-speed.ts";
 import { dayOf, LoopStalls, RequestLog, type RequestTiming } from "../../server/request-log.ts";
 import { start } from "./helpers.ts";
 
@@ -226,4 +228,52 @@ test("a walk never sets a metric, and with no tailnet line the server's handler 
 test("a finding whose wait is close to its network time blames the network or the server", () => {
   const excerpt = finding({ route: "GET /api/usage", src: "tailnet", count: 4, p50: 300, p90: 390, max: 400, slowestPath: "/api/usage", netCount: 4, netP50: 290, netP90: 380 });
   assert.match(excerpt, /^GET \/api\/usage p90 390 ms.*from the owner's devices; on the 4 lines .* p90 380 ms, p50 290 ms, so the network or the server held the wait;/);
+});
+
+test("with no line of the owner's or the server's on a metric route, the CLI's probe of the live server sets it, and a failed probe flags why", async () => {
+  const dir = tempDir();
+  mkdirSync(join(dir, "requests"));
+  const now = Date.now();
+  const row = (via: string, r: string, p: string, ms: number, net?: number) =>
+    JSON.stringify({ at: now - 60_000, src: "client", m: "GET", r, p, s: 200, ms, via, ...(net === undefined ? {} : { net }) });
+  writeFileSync(join(dir, "requests", `${dayOf(now)}.jsonl`), `${[
+    row("local", "/api/c/:id/items", "/api/c/dm_busy/items", 900), row("local", "/api/c/:id/items", "/api/c/dm_busy/items", 800),
+    row("local", "/api/search", "/api/search", 700), row("tailnet", "/api/rooms", "/api/rooms", 30, 12),
+  ].join("\n")}\n`);
+  const seen: string[] = [];
+  const server = createServer((req, res) => {
+    seen.push(req.url!);
+    const json = (status: number, body: unknown) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+    if (req.url === "/api/rooms") return json(200, [{ id: "ch_room" }]);
+    if (req.url === "/api/c/dm_busy/items") return json(200, { items: [{ kind: "message", id: "p1" }] });
+    if (req.url === "/api/c/ch_room/items") return json(200, { items: [{ kind: "message", id: "p1" }, { kind: "message", id: "p2", thread: { replies: 3 } }] });
+    if (req.url === "/api/c/ch_room/replies/p2") return json(200, { root: {}, items: [] });
+    return json(500, { error: "search index is closed" });
+  });
+  await new Promise<void>(done => server.listen(0, "127.0.0.1", done));
+  try {
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const timings = readTimings(dir, now, 3600_000);
+    const missing = unmeasured(routeSpeeds(timings));
+    assert.deepEqual(missing, ["GET /api/search", "GET /api/c/:id/items", "GET /api/c/:id/replies/:root"], "a box walk's line leaves its route unmeasured");
+    const probes = await probeRoutes(base, missing, timings);
+    assert.deepEqual(probes.map(p => [p.route, p.path, "ms" in p ? p.ms.length : p.error]), [
+      ["GET /api/search", "/api/search?q=duty", 'GET /api/search?q=duty answered 500: {"error":"search index is closed"}'],
+      ["GET /api/c/:id/items", "/api/c/dm_busy/items", 5],
+      ["GET /api/c/:id/replies/:root", "/api/c/ch_room/replies/p2", 5],
+    ]);
+    assert.equal(seen.filter(url => url === "/api/c/dm_busy/items").length, 1 + 5 + 1, "the busiest thread in the log is the one probed");
+    const out = apiSpeed(dir, now, 3600_000, probes);
+    const p90 = (route: string) => { const p = probes.find(probe => probe.route === route)!; return "ms" in p ? [...p.ms].sort((a, b) => a - b).at(-1)! : NaN; };
+    assert.equal(out.metrics.search_p90_ms, undefined, "a failed probe gives no value");
+    assert.equal(out.metrics.thread_open_p90_ms_messages, Math.round((p90("GET /api/c/:id/items") + 12) * 10) / 10, "the probe's p90 plus the owner's network p50");
+    assert.equal(out.metrics.thread_open_p90_ms_replies, Math.round((p90("GET /api/c/:id/replies/:root") + 12) * 10) / 10);
+    assert.ok(out.metrics.slowest_api_p90_ms! >= out.metrics.thread_open_p90_ms!);
+    assert.match(out.metricSources.messages!, /^GET \/api\/c\/:id\/items: a probe from the box at \d{4}-\d\d-\d\dT[\d:.]+Z, since the owner made no call in the window: 5 GETs of \/api\/c\/dm_busy\/items took p90 [\d.]+ ms plus his network p50 12 ms over 1 tailnet requests$/);
+    assert.deepEqual(out.flagged.filter(f => f.kind === "probe_failed").map(f => f.sig), ["probe:GET /api/search"]);
+    assert.match(out.flagged.find(f => f.kind === "probe_failed")!.excerpt, /^GET \/api\/search has no value: a probe from the box at .* failed: GET \/api\/search\?q=duty answered 500/);
+    assert.deepEqual(await probeRoutes(base, [], timings), [], "a measured window probes nothing");
+  } finally {
+    await new Promise(done => server.close(done));
+  }
 });
