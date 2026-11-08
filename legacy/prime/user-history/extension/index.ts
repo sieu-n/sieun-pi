@@ -1,7 +1,7 @@
 import { appendFile, readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "prime-agent";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "../src/prime-values.ts";
 import { agentLines } from "../src/chat-agents.ts";
 import { agentOpsViaService, applyAgentOps } from "../src/agent-board.ts";
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, CHAT_BRIEF_ENTRY, type ChatJobOf, createdRootChat, JOB_REPLY_TOOL, jobOf, jobReplyGuideline, PERSONA_TOOL, personaGuideline, pinnedBrief } from "../src/chat-brief.ts";

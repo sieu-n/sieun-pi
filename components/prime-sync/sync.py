@@ -6,6 +6,7 @@
 2. An installed runtime moves to origin/main when main changed config/, skills/ or install-manifest.json, and releases nothing can read go.
 3. Every home link in install-manifest.json points at the installed runtime when present, otherwise the checkout.
    This keeps Prime's extensions and dependencies outside macOS-protected source folders.
+   When Prime loads user-history from the checkout, its one-file bundle is built again whenever the source changed.
 4. config/settings.shared.json sets its keys in ~/.prime/agent/settings.json.
 5. Global harness entries (harness_state.json) and the corrections ledger (browser-chat/corrections.json)
    merge three ways with the private state repo, one file per entry, and the newer side wins a clash.
@@ -523,6 +524,41 @@ def link_manifest(checkout: Path, home: Path, agent_dir: Path) -> list[str]:
     return changes
 
 
+# 3b. The user-history extension bundle
+EXTENSION = "legacy/prime/user-history"
+
+
+def bundle_fresh(component: Path) -> bool:
+    """The twin of freshBundle in src/extension-bundle.ts: the record's inputs still hash to its digest, and the bundle it names exists."""
+    try:
+        record = json.loads((component / "src/extension.bundle.json").read_text())
+        digest = hashlib.sha256()
+        for name in record["inputs"]:
+            digest.update(name.encode() + b"\0" + (component / name).read_bytes() + b"\0")
+        return digest.hexdigest() == record["digest"] and (component / f"src/extension.{record['digest'][:16]}.bundle.mjs").is_file()
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def build_bundle(checkout: Path, agent_dir: Path) -> str:
+    """Build the checkout's user-history bundle again when Prime loads the extension from this checkout and the source changed since the last build.
+    extension/entry.ts loads the bundle only while it matches the source, so a stale or failed build makes workers load the source, as before.
+    On us-metal02 on 11-08 the source cost 0.42 CPU-s of each worker start on a warm jiti cache and 7.7 CPU-s on a cold one, the bundle 0.25 (p1485).
+    An installed runtime builds its own bundle (scripts/install-runtime.mjs)."""
+    component = checkout / EXTENSION
+    link = agent_dir / "extensions/user-history"
+    script = component / "src/build-extension-bundle.ts"
+    if not script.is_file() or not link.is_symlink() or os.path.realpath(link) != os.path.realpath(component) or bundle_fresh(component):
+        return ""
+    node = next((str(p) for p in (HOME / ".local/node/bin/node", HOME / ".local/bin/node") if p.exists()), None) or shutil.which("node")
+    if not node:
+        return "not built: no node on PATH or in ~/.local/bin, so workers load extension/index.ts"
+    result = subprocess.run([node, str(script)], cwd=component, capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        return f"not built (exit {result.returncode}), so workers load extension/index.ts until the source builds"
+    return result.stdout.strip()
+
+
 # 4. Shared settings
 
 
@@ -947,6 +983,7 @@ def run() -> dict:
                  ("code", lambda: pull_checkout(config["checkout"])),
                  ("runtime", lambda: follow_runtime(config["checkout"], HOME, config["agentDir"], config.get("runtimeInstaller"))),
                  ("links", lambda: link_manifest(config["checkout"], HOME, config["agentDir"])),
+                 ("bundle", lambda: build_bundle(config["checkout"], config["agentDir"])),
                  ("settings", lambda: apply_settings(config["checkout"], config["agentDir"])),
                  ("modes", lambda: push_modes(config["checkout"])),
                  ("state", lambda: sync_state(config))]
@@ -966,7 +1003,8 @@ def run() -> dict:
         except Exception as error:
             report["watch"] = f"error: {type(error).__name__}: {error}"
     write_atomic(SHARE / "status.json", (json.dumps(report, indent=2) + "\n").encode(), 0o644)
-    if any(report.get(key) for key in ("index", "runtime", "links", "settings", "modes", "state")) or str(report.get("code")).startswith(("pulled", "rebased", "skipped", "alert")) or "error" in json.dumps(report):
+    if any(report.get(key) for key in ("index", "runtime", "links", "settings", "modes", "state")) or str(report.get("code")).startswith(("pulled", "rebased", "skipped", "alert")) \
+            or str(report.get("bundle")).startswith("built") or "error" in json.dumps(report):
         with open(SHARE / "sync.log", "a") as log:
             log.write(json.dumps(report) + "\n")
     return report

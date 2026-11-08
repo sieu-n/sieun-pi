@@ -47,7 +47,7 @@
       "./legacy/prime/pi-pool-extension/index.ts",
       "./packages/sieun-rules/src/index.ts",
       "./packages/pi-claude-rules/src/pi/index.ts",
-      "./legacy/prime/user-history/extension/index.ts"
+      "./legacy/prime/user-history/extension/entry.ts"
     ],
     "skills": [
       "./skills/architect/SKILL.md",

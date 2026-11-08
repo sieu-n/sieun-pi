@@ -4,8 +4,12 @@
 node_modules
 dist/
 .client-bundle/
-# The release-time bundles of the user-history extension and chat service (scripts/install-runtime.mjs, src/chat-service-bundle.mjs).
+# The built bundles of the user-history extension and chat service (src/build-extension-bundle.ts, src/chat-service-bundle.mjs) and the
+# record of what the extension bundle was built from.
 *.bundle.mjs
+*.bundle.mjs.*.tmp
+extension.bundle.json
+extension.bundle.json.*.tmp
 __pycache__/
 *.pyc
 .DS_Store

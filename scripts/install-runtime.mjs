@@ -66,7 +66,7 @@ function validate(root, execute) {
   }
 }
 
-/** package.json without its "pi" key, which bundleExtension rewrites in a release. */
+/** package.json without its "pi" key, which releases before the bundle entry (extension/entry.ts) rewrote. */
 const dependencyFields = path => { const { pi: _pi, ...rest } = JSON.parse(readFileSync(path, "utf8")); return JSON.stringify(rest); };
 
 function sameDependencies(installed, staged) {
@@ -79,24 +79,15 @@ function sameDependencies(installed, staged) {
   }
 }
 
-export const EXTENSION_BUNDLE = "src/extension.bundle.mjs";
-
 /**
- * Bundles the user-history extension in `dir` into one file with the release's own esbuild and points package.json's pi.extensions at it.
- * Prime's loader runs every extension module through jiti, and on the Mac on 10-20 the 47 source files took 400 to 610 ms of each worker
- * start against 22 to 174 ms for one bundle, while a new thread's first turn waits for that start. The bundle sits in src/, so the
- * paths its modules resolve from their own folder (load-wait-end.py, message-limit-check.py) and the dynamic import of chat-service.ts still
- * name the same files. A folder with no esbuild keeps the source entry.
+ * Builds the user-history extension bundle in `dir` with the release's own esbuild (src/build-extension-bundle.ts). Prime's loader runs every
+ * extension module through jiti, and on the Mac on 10-20 the 47 source files took 400 to 610 ms of each worker start against 22 to 174 ms for
+ * one bundle, while a new thread's first turn waits for that start. extension/entry.ts loads the bundle while it matches the source. A folder
+ * with no esbuild keeps loading the source.
  */
 export function bundleExtension(dir, execute = run) {
   if (!existsSync(join(dir, "node_modules/esbuild/package.json"))) return false;
-  execute(process.execPath, ["--input-type=module", "--eval", `
-    import { build } from 'esbuild';
-    await build({ entryPoints: ['extension/index.ts'], outfile: '${EXTENSION_BUNDLE}', bundle: true, platform: 'node', format: 'esm', target: 'node22',
-      packages: 'external', external: ['../src/chat-service.ts'], logLevel: 'warning' });
-  `], dir);
-  const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
-  writeFileSync(join(dir, "package.json"), JSON.stringify({ ...manifest, pi: { ...manifest.pi, extensions: [`./${EXTENSION_BUNDLE}`] } }, null, 2) + "\n");
+  execute(process.execPath, ["src/build-extension-bundle.ts"], dir);
   return true;
 }
 
