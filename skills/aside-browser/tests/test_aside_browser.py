@@ -735,7 +735,7 @@ class RemoteBoxRunnerTests(Base):
         with open(shot, "rb") as fh:
             self.assertEqual(fh.read(4), b"\x89PNG")
         self.assertEqual(ab._box.proc.args[:5], ["ssh", "-T", "-o", "BatchMode=yes", "localhost"])
-        tunnels = subprocess.run(["pgrep", "-f", "ssh -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes -D 127.0.0.1:"], capture_output=True, text=True).stdout
+        tunnels = subprocess.run(["pgrep", "-f", "ssh -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes .* -D 127.0.0.1:"], capture_output=True, text=True).stdout
         self.assertTrue(tunnels.strip())
         self.assertEqual(mcp.calls, [])
 
