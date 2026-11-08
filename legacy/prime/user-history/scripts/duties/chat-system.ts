@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { parseAgentQueue, poolExecutable } from "../../src/chat-pool.ts";
-import { heldByTodo, withLinkedBoards } from "../../src/shared/todo-hold.ts";
+import { dutyHold, heldByTodo, withLinkedBoards } from "../../src/shared/todo-hold.ts";
 import { cancelHolds, JOB_CANCELS_FILE, parseJobCancels } from "../../src/job-cancels.ts";
 import { planRiskSteps } from "../../src/checkin-findings.ts";
 import { LIVE_GAP_MS, OPEN, parkedBy, planHasOpenStep, walk } from "../../src/checkin-steps.ts";
@@ -144,7 +144,17 @@ export type RedDuty = FleetDuty & { agingSince?: number; agingUntil?: number; un
   /** The fix step reads `blocked`: its fix is not in place yet (a build not installed, a land not made), so its runs judge no fix. */
   fixBlocked?: true;
   /** When the fix step's job last worked, after the duty's newest reading and with no verify run d9 asked for since (`fixWorkUnread`). */
-  unreadWork?: number };
+  unreadWork?: number;
+  /** The open For you todo that holds the lead metric's own fix step (`leadHold`), while another missed metric's fix keeps `held` unset. */
+  leadHeld?: string };
+
+/**
+ * The hold of the lead metric's fix step alone (`dutyHold` on its one key), as the precheck's "wait on the owner" section reads each metric
+ * (`planCounts` `ownerHeld`). At 09:36Z on 11-08 d9 listed ops guy's d6 lines_over_pace as waiting on the owner (p752 on t67) and in the same
+ * run asked to replace p752, because d6 also missed billing_problems, whose fix p776 no todo held, so the duty-level `held` was unset.
+ */
+export const leadHold = (duty: Pick<FleetDuty, "duty" | "metric">, board: ChatBoard | null | undefined): string | undefined =>
+  duty.metric ? dutyHold(duty.duty, [duty.metric.key], board) : undefined;
 
 /**
  * When the fix job worked after the duty's newest reading (`newestReading`), the time of that work, so no reading on record judges it yet;
@@ -235,7 +245,7 @@ export interface NotMoving { chat: string; duty: string; line: string }
  * measured: over the 7,011 runs in the 118 runs files on 10-22, a missed metric with no move reached its target within 10 more runs 86% of the
  * time after 1 miss, 76% after 2, 67% after 3 and 32% after 12 or more.
  * A windowed count with no new event (`quietSince`) only waits, as does one whose fix's job waits inside the window (`windowWait`), and a duty whose missed metrics' fix steps all wait on an open For you todo
- * (`FleetDuty.held`) waits on the owner and owes no new job. A blocked fix step (`fixBlocked`) is a fix not yet in place: at 14:40Z on 10-27 d9
+ * (`FleetDuty.held`) waits on the owner and owes no new job, as does one whose lead metric's own fix step does (`leadHeld`). A blocked fix step (`fixBlocked`) is a fix not yet in place: at 14:40Z on 10-27 d9
  * asked to replace AI harness p1127, whose Prime build with ctx.waitForCredential was never installed on us-metal02, so pi-pool's park could not
  * fire and quiet_agent_gb could not move.
  * When the runs read a number for the item the step works (`fixStepStreak` with `itemsAbove`), the move is judged on that number and the
@@ -246,7 +256,7 @@ export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => st
   return red.flatMap(duty => {
     const metric = duty.metric;
     const under = duty.underFix;
-    if (duty.held || duty.fixBlocked || duty.unreadWork !== undefined || !duty.fix || metric?.fix?.step !== duty.fix || duty.agingSince !== undefined || metric.quietSince !== undefined || duty.windowWait !== undefined || !under ||
+    if (duty.held || duty.leadHeld || duty.fixBlocked || duty.unreadWork !== undefined || !duty.fix || metric?.fix?.step !== duty.fix || duty.agingSince !== undefined || metric.quietSince !== undefined || duty.windowWait !== undefined || !under ||
       under.moved || under.misses < CHANGE_APPROACH_MISSES) return [];
     const worked = under.worked;
     const stall = worked ? `${worked.item}, the item ${duty.fix} works, read ${show(worked.to)} against ${show(worked.target)}, no closer than its ${show(worked.from)} when the first of those runs measured it`
@@ -889,6 +899,8 @@ async function main(): Promise<void> {
   const lastRun = lastRuns.find(run => run.verdict !== "skipped");
   const lastOutput = lastRun?.detail ? JSON.parse(await readFile(lastRun.detail, "utf8").catch(() => "{}")) as Partial<PrecheckOutput> : {};
   const asked = new Set((lastOutput.verify ?? []).map(ask => `${ask.chat}/${ask.duty}`));
+  // A wait that names another chat's open todo holds its step, wherever that chat runs (`withLinkedBoards`).
+  const linked = (chat: string): ChatBoard | null => { const board = plan.boards.get(chat); return board ? withLinkedBoards(board, chat, plan.boards, plan.chats) : null; };
   const red = await Promise.all(fleetDuties.filter(duty => !duty.green && !duty.pending).map(async (duty): Promise<RedDuty> => {
     const own = runsOf(duty.chat, duty.duty);
     const since = agingSince(own);
@@ -909,13 +921,13 @@ async function main(): Promise<void> {
     const unread = fixWorkUnread(own, worked.length ? Math.max(...worked) : undefined, asked.has(`${duty.chat}/${duty.duty}`) ? lastRun?.at : undefined);
     const entry: RedDuty = { ...duty, ...metric ? { metric } : {}, ...under, ...since === undefined ? {} : { agingSince: since }, ...until === undefined ? {} : { agingUntil: until },
       ...step?.status === "blocked" ? { fixBlocked: true as const } : {}, ...unread === undefined ? {} : { unreadWork: unread } };
+    const held = leadHold(duty, linked(duty.chat) ?? board);
+    if (held) entry.leadHeld = held;
     // The wait is named only where it keeps d9 from asking to replace the fix, judged as before windows and the item's own reading.
     const plain = duty.fix && metric ? fixStepStreak(own, metric.key, duty.fix, itemsAbove(board, duty.fix)) : undefined;
     const hides = plain !== undefined && fixNotMoving([{ ...entry, underFix: plain }], () => "").length > 0;
     return { ...entry, ...waits.length && hides ? { windowWait: Math.max(...waits) } : {} };
   }));
-  // A wait that names another chat's open todo holds its step, wherever that chat runs (`withLinkedBoards`).
-  const linked = (chat: string): ChatBoard | null => { const board = plan.boards.get(chat); return board ? withLinkedBoards(board, chat, plan.boards, plan.chats) : null; };
   const goalGaps = plan.chats.map(chat => ({ chat: chat.id, goals: goalsWithNoJob(linked(chat.id),
     { now, named: plan.named.get(chat.id) ?? new Map(), jobs: jobs.get(chat.id) ?? [], activity: plan.ownerActivity, waking: plan.waking, poolWaiting: plan.poolWaiting,
       onHost: new Set(hostHeld.filter(step => step.chat === chat.id).map(step => step.id)) }) }));

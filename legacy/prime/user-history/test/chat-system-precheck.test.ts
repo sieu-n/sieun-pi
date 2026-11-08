@@ -1,11 +1,12 @@
 // Guards the Chat system duty's precheck (d9), built 10-19 for the owner's rule that a plan holds only tasks that finish (msg mvfb7zt0).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { agingSince, chatSystemOutput, failingTurns, fixNotMoving, fixWorkUnread, unreadFixes, manualSelection, goalsWithNoJob, downRoutes, jobPushRecords, jobPushTells, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushSettled, pushesSince, pushTells, spotAuditLines, spotPick, spread, unknownOwners, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
+import { agingSince, chatSystemOutput, failingTurns, fixNotMoving, fixWorkUnread, leadHold, unreadFixes, manualSelection, goalsWithNoJob, downRoutes, jobPushRecords, jobPushTells, jobsByChat, ownerMessages, planUpkeep, pushedFile, pushList, pushReached, pushRecords, pushSettled, pushesSince, pushTells, spotAuditLines, spotPick, spread, unknownOwners, waitsOnStep, withCatalogOwners, withoutWorkingRuns } from "../scripts/duties/chat-system.ts";
 import { type PlanInputs, planCounts } from "../scripts/duties/whole-system.ts";
 import type { MetricStreak } from "../src/shared/duty-streak.ts";
 import type { DutyRunRecord } from "../src/shared/chat-duties.ts";
 import type { ChatBoard } from "../src/shared/types.ts";
+import { dutyHold } from "../src/shared/todo-hold.ts";
 import { routedTell } from "../src/clean-room-subjects.ts";
 
 const board = { v: 2, rev: 1, updatedAt: "2026-10-19T13:40:00Z", todos: [], plan: [
@@ -267,6 +268,29 @@ test("a fix whose job worked after the duty's newest reading gets a verify run, 
   const judged = { ...rest, underFix: { misses: 4, moved: false } };
   assert.deepEqual(fixNotMoving([judged], () => "Prospect feature bro").map(entry => entry.duty), ["d2"]);
   assert.deepEqual(unreadFixes([judged]), []);
+});
+
+test("a red duty whose lead metric's fix step waits on an open For you todo is no fix that fails to move, though another missed metric's fix is not held", () => {
+  // 11-08 09:36Z: ops guy's d6 missed lines_over_pace (fix p752, held on t67) and billing_problems (fix p776, no todo), and d9 listed
+  // lines_over_pace as waiting on the owner while it asked to replace p752.
+  const ops = { v: 2, rev: 1, updatedAt: "2026-11-08T09:30:00Z", plan: [
+    { id: "p752", text: "Keep vendor bills inside plan", status: "doing", duty: "d6/lines_over_pace", children: [] },
+    { id: "p776", text: "Clear the billing problems", status: "doing", duty: "d6/billing_problems", children: [] }],
+    todos: [{ id: "t67", text: "Add $50 to the staging Jev account?", done: false, step: "p752", from: "agent", at: "2026-11-08T07:00:00Z" }] } as unknown as ChatBoard;
+  const fix = { step: "p752", job: "every vendor bill", live: true };
+  const metric: MetricStreak = { key: "lines_over_pace", misses: 11, moved: false, since: 0, value: 7, target: 0, op: "<=", fix, stuck: true };
+  const duty = { chat: "ops", duty: "d6", name: "Vendor bills stay inside plan", green: false, misses: 11, stuck: false, fix: "p752", metric,
+    underFix: { misses: 3, moved: false } };
+  assert.equal(dutyHold("d6", ["lines_over_pace", "billing_problems"], ops), undefined);
+  assert.equal(leadHold(duty, ops), "p752 on t67");
+  assert.equal(fixNotMoving([duty], () => "ops guy").length, 1);
+  const red = [{ ...duty, leadHeld: leadHold(duty, ops)! }];
+  assert.deepEqual(fixNotMoving(red, () => "ops guy"), []);
+  assert.deepEqual(unreadFixes([{ ...red[0]!, unreadWork: 1 }]), []);
+  const out = chatSystemOutput({ names: new Map([["ops", "ops guy"]]), stuck: [], upkeep: [], fleet: { pct: 50, red }, stuckDuties: [], idleGoals: [], followUps: [], detail: "/tmp/d9.md" });
+  assert.equal(out.metrics.fix_not_moving, 0);
+  const free = { ...ops, todos: [] } as ChatBoard;
+  assert.equal(leadHold(duty, free), undefined);
 });
 
 // d9 run of 10-24: the global-rules read guard refuses a read of another chat's transcript, so the spot audit reads the board, job list and agent_observe.
