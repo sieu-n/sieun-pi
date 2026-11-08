@@ -458,6 +458,163 @@ export function addMissingCodeRefs(stale, missing) {
 	return stale;
 }
 
+/** A not-landed phrase: a commit not on staging yet, not landed, or no staging land holding it. One on main or prod is about a promote. */
+const NOT_LANDED =
+	/\b(?:not (?:yet )?(?:on|in) (?:origin\/)?staging|(?:n't|not) (?:yet )?(?:landed|reached (?:origin\/)?staging)|no (?:staging )?land (?:yet )?(?:carried|carries|held|holds))\b(?! (?:on|in|to) (?:origin\/)?(?:main|prod))/i;
+/** Words that make the clause before a not-landed phrase a rule about any commit, as in "refuses a sha whose crawler code is not on staging". */
+const RULE_CLAUSE = /\b(?:whose|if|unless|until|when|whenever|once|before)\b/i;
+/** A restrictive relative clause, as in "every task that has not landed"; one after a comma, as in "73ca23e07f, which had not", is about that commit. */
+const RELATIVE_SUBJECT = /(?:\b(?:that|who)|(?<!,)\s+which)(?:\s+(?:has|have|had|is|are|was|were))?\s*$/i;
+const COMMIT_LINK = /<(?:a|wiki-cite)\b[^>]*?\b(?:href|src)\s*=\s*"[^"]*?github\.com\/[\w.-]+\/[\w.-]+\/commit\/([0-9a-f]{7,40})\b[^>]*>/gi;
+/** A word of 7 to 40 hex characters with a letter and a digit, unless it names the head of staging, prod or a land, as in "the land 7f655237dc". */
+const SHA_WORD = /(?<!\b(?:staging|prod|land|head|tip) )\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b/g;
+/** Marks the sha of a commit link in the text, so it counts for its sentence; notLandedLines drops it from the line it reports. */
+const MARK = (sha) => `\u2063${sha}\u2063`;
+
+/**
+ * The sentences of `html` that say a commit has not landed on staging, each with the shas it may name: those in the sentence, `<code>`
+ * and commit links included, or in the sentence before it when it has none, as in "At 14:38Z that commit had not landed" under the line
+ * that names the commit. A wiki-cite's `note` reads as part of its sentence. Diagrams and code blocks state no landing state, and a phrase
+ * in a clause that sets a rule for any commit (`RULE_CLAUSE`, or "a task that has not landed") is no claim.
+ */
+export function notLandedLines(html) {
+	const body = html
+		.replace(/<!--[\s\S]*?-->/g, ' ')
+		.replace(/<(pre|script|style)\b[\s\S]*?<\/\1>/gi, '<p>')
+		.replace(COMMIT_LINK, (tag, sha) => `${tag}${MARK(sha.toLowerCase())}`)
+		.replace(/<wiki-cite\b[^>]*?\bnote\s*=\s*"([^"]*)"[^>]*>([\s\S]*?)<\/wiki-cite>/gi, (_, note, inner) => `${inner} (${note})`);
+	const sentences = body
+		.split(/<\/?(?:li|p|td|th|tr|h[1-6]|div|ol|ul|table|blockquote|dd|dt|details|summary)\b[^>]*>/i)
+		.map((block) => stripTags(block))
+		.filter(Boolean)
+		.flatMap((block, at) => block.split(/(?<=[.!?])\s+/).map((text) => ({ text, block: at, shas: [...new Set([...text.matchAll(SHA_WORD)].map((m) => m[0]))] })));
+	const out = [];
+	sentences.forEach((sentence, i) => {
+		const hit = NOT_LANDED.exec(sentence.text);
+		if (!hit) return;
+		const before = sentence.text.slice(0, hit.index);
+		if (RELATIVE_SUBJECT.test(before) || RULE_CLAUSE.test(before.split(/[,;:(]/).pop())) return;
+		let from = i;
+		while (from >= 0 && !sentences[from].shas.length && sentences[from].block >= sentence.block - 1) from -= 1;
+		const shas = from >= 0 && sentences[from].block >= sentence.block - 1 ? sentences[from].shas : [];
+		if (shas.length) out.push({ line: sentence.text.replace(/\u2063[0-9a-f]+\u2063/g, ''), shas });
+	});
+	return out;
+}
+
+/**
+ * The staging lands of `repo`, oldest first: each first-parent commit of `staging` titled `land: <branch> <sha>[, <branch> <sha>]`.
+ * A land commit has one parent, so a landed dev commit is no ancestor of staging, only of the branch tip a land names.
+ */
+export function stagingLands(repo, staging = 'origin/staging') {
+	const log = String(run('git', ['log', '--first-parent', '--format=%H%x1f%cI%x1f%s', staging], { cwd: repo }));
+	const lands = [];
+	for (const row of log.split('\n').filter(Boolean)) {
+		const [commit, at, subject] = row.split('\x1f');
+		const named = /^land: (.+)$/.exec(subject ?? '');
+		if (!named) continue;
+		const tips = [...named[1].matchAll(/([\w./-]+) ([0-9a-f]{7,40})\b/g)].map((m) => ({ branch: m[1], tip: m[2] }));
+		if (tips.length) lands.push({ commit, at: new Date(at).toISOString(), tips });
+	}
+	return lands.reverse();
+}
+
+/** The full name of each rev `repo` has as a commit, from one `git cat-file --batch-check`; a rev it lacks is left out. */
+function commitNames(repo, revs) {
+	if (!revs.length) return new Map();
+	const check = spawnSync('git', ['cat-file', '--batch-check=%(objectname) %(objecttype)'], {
+		cwd: repo,
+		input: revs.map((rev) => `${rev}^{commit}`).join('\n') + '\n',
+		maxBuffer: Infinity,
+	});
+	if (check.error || check.status !== 0) throw new Error(`git cat-file exited ${check.status}: ${check.stderr}`);
+	const names = new Map();
+	String(check.stdout)
+		.split('\n')
+		.slice(0, revs.length)
+		.forEach((row, i) => {
+			const [name, type] = row.split(' ');
+			if (type === 'commit') names.set(revs[i], name);
+		});
+	return names;
+}
+
+/**
+ * Curated pages with a line from notLandedLines about a commit of `repo` that a staging land now carries, with the first land that
+ * carried it. A retired or experiment page keeps what held when it was written. A commit is carried by land `i` when it is an ancestor
+ * of the newest tip of some branch that lands up to `i` name, which `git rev-list --count <sha> --not <tips>` reads as 0, and dev
+ * branches never rebase, so that holds from the first such land on and a bisection finds it.
+ */
+export function landedClaims(pages, repo, lands = stagingLands(repo)) {
+	const found = [];
+	for (const page of pages) {
+		const meta = page.meta ?? {};
+		if (meta.kind === 'experiment' || page.path.startsWith('experiments/') || SETTLED_STATUS.has(String(meta.status).toLowerCase())) continue;
+		for (const { line, shas } of notLandedLines(page.html)) for (const sha of shas) found.push({ page, line, sha });
+	}
+	if (!found.length || !lands.length) return [];
+	const full = commitNames(repo, [...new Set(found.map((f) => f.sha))]);
+	const tips = commitNames(repo, [...new Set(lands.flatMap((land) => land.tips.map((t) => t.tip)))]);
+	const newestUpTo = [];
+	const newest = new Map();
+	for (const land of lands) {
+		for (const { branch, tip } of land.tips) if (tips.has(tip)) newest.set(branch, tips.get(tip));
+		newestUpTo.push([...new Set(newest.values())]);
+	}
+	const carriedBy = (sha, i) =>
+		newestUpTo[i].length > 0 && Number(run('git', ['rev-list', '--count', sha, '--not', ...newestUpTo[i]], { cwd: repo })) === 0;
+	const firstLand = new Map();
+	const landOf = (sha) => {
+		if (!firstLand.has(sha)) {
+			let first = null;
+			if (carriedBy(sha, lands.length - 1)) {
+				let [lo, hi] = [0, lands.length - 1];
+				while (lo < hi) {
+					const mid = (lo + hi) >> 1;
+					if (carriedBy(sha, mid)) hi = mid;
+					else lo = mid + 1;
+				}
+				first = lands[lo];
+			}
+			firstLand.set(sha, first);
+		}
+		return firstLand.get(sha);
+	};
+	const out = [];
+	for (const { page, line, sha } of found) {
+		const land = full.has(sha) ? landOf(full.get(sha)) : null;
+		if (land && !out.some((o) => o.path === page.path && o.full === full.get(sha) && o.line === line))
+			out.push({ path: page.path, title: page.title, lastVerified: page.meta?.last_verified, sha, full: full.get(sha), line, land });
+	}
+	return out;
+}
+
+/** The stale report's ref for a landed claim, which the precheck shows with the minute of the land as `modified`. */
+export function landedRef(claim) {
+	const start = Math.max(0, (NOT_LANDED.exec(claim.line)?.index ?? 0) - 100);
+	const cut = claim.line.slice(start, start + 160);
+	const line = `${start ? '...' : ''}${cut}${start + 160 < claim.line.length ? '...' : ''}`;
+	return `landed:${claim.sha.slice(0, 10)} (${claim.land.commit.slice(0, 10)} land: ${claim.land.tips.map((t) => `${t.branch} ${t.tip}`).join(', ')}): "${line}"`;
+}
+
+/**
+ * Puts the pages from landedClaims into the engine's stale report, so the precheck counts each in pages_behind_code from the time of its
+ * land. On the 2026-11-09 01:19 dream run 6 pages said a commit had not landed on staging after a land carried it, and the engine, which
+ * dates refs on HEAD's history, flagged none of them.
+ */
+export function addLandedClaims(stale, claims) {
+	for (const claim of claims) {
+		const ref = { ref: landedRef(claim), modified: claim.land.at };
+		const row = stale.stale.find((s) => s.path === claim.path);
+		if (row) {
+			if (!row.staleRefs.some((s) => s.ref === ref.ref)) row.staleRefs.push(ref);
+		} else
+			stale.stale.push({ path: claim.path, title: claim.title ?? claim.path, last_verified: claim.lastVerified ?? NEVER_VERIFIED, staleRefs: [ref] });
+	}
+	stale.count = stale.stale.length;
+	return stale;
+}
+
 // Node strips the engine's types; this hook adds the `.ts` its extensionless relative imports leave out.
 const ENGINE_RUN = `
 import { registerHooks } from 'node:module';
@@ -653,6 +810,11 @@ async function measure(args, root, rel) {
 		addMissingCodeRefs(stale, missingCodeRefs(pages, REPO, siblingRepos()));
 	} catch (error) {
 		errors.push(`code refs: ${error.message}`);
+	}
+	try {
+		addLandedClaims(stale, landedClaims(pages, REPO));
+	} catch (error) {
+		errors.push(`landed claims: ${error.message}`);
 	}
 
 	const sinceMs = args.since.getTime();
