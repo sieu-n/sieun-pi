@@ -1,6 +1,5 @@
 [Unit]
 Description=pi-history full-text index of Prime session transcripts
-After=default.target
 
 [Service]
 Type=simple

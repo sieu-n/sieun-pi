@@ -3,7 +3,6 @@
 # and this unit. Its data lives in ~/.local/share/meilisearch.
 [Unit]
 Description=Meilisearch for apps/chat search (127.0.0.1:7700)
-After=default.target
 
 [Service]
 Type=simple

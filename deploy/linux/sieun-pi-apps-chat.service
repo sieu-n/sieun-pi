@@ -4,7 +4,7 @@
 # Tailnet: tailscale serve --bg --https=5184 http://127.0.0.1:5184
 [Unit]
 Description=apps/chat, the sieun-pi chat app on pi-host (127.0.0.1:5184)
-After=default.target pi-host.service meilisearch.service
+After=pi-host.service meilisearch.service
 Wants=pi-host.service meilisearch.service
 
 [Service]

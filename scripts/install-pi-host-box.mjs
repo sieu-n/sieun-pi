@@ -107,7 +107,6 @@ export function systemdUnit(paths, node, vars) {
 # its sessions in ~/.prime/agent/pi-sessions and its durable threads in ~/.prime/agent/pi-host/durable.
 [Unit]
 Description=pi-host, the Pi session host for sieun-pi (beside Prime, own session dir)
-After=default.target
 
 [Service]
 Type=simple
