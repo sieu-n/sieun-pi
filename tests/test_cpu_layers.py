@@ -100,6 +100,21 @@ class CpuProtectPlan(unittest.TestCase):
             cpu.main_pids, cpu.procs = main_pids, procs
         self.assertEqual(len(asks), 2)
 
+    def test_a_process_systemd_forked_stays_put_until_it_runs_its_command(self):
+        """A Type=simple start moved before it ran node failed with status=219/CGROUP at 09:29:13Z on 11-08."""
+        moved = []
+        saved = cpu.main_pids, cpu.procs, cpu.read, cpu.move
+        cpu.main_pids = lambda: {cpu.DAEMON: None, "pi-host.service": 50}
+        cpu.procs = lambda path, only_comm=None: {50: (2, ["/home/sieun/.local/node/bin/node", "main.ts"])} if path == "unit" else {}
+        cpu.move = lambda pid, cgroup, source: moved.append((pid, cgroup)) or True
+        try:
+            for comm in ("(node)\n", "node\n"):
+                cpu.read = lambda path, comm=comm: comm if path.endswith("/comm") else None
+                cpu.run_once({"pi-host.service": "unit", "pi-host-core.scope": "."}, ({}, frozenset({("", 0)})), 2, PUBLIC)
+        finally:
+            cpu.main_pids, cpu.procs, cpu.read, cpu.move = saved
+        self.assertEqual(moved, [(50, ".")])
+
     def test_the_scopes_run_at_the_default_weight_with_no_cap(self):
         text = (CPU / "cpu-protect.py").read_text()
         self.assertNotIn('"CPUWeight"', text)

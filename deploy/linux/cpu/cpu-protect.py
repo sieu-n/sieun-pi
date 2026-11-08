@@ -166,8 +166,7 @@ def parse_mains(out: str, units: tuple[str, ...]) -> dict[str, int | None]:
     while the unit is not active yet. systemd --user drops a notification whose sender lies outside the unit's cgroup, and the chat's READY=1
     comes from a systemd-notify child, which starts in the cgroup of its parent. So a main process moved to its core scope before its READY=1
     left the unit starting: on 11-08 sieun-pi-chat sent READY=1 at 14:42:19Z, 21:55:28Z and 22:01:18Z and systemd counted it started only at
-    14:49:53Z, never and 22:06:20Z. A move also races the start itself: at 09:29:13Z its process, moved before it ran node, failed to attach to
-    the unit's cgroup (status=219/CGROUP)."""
+    14:49:53Z, never and 22:06:20Z."""
     shown = {}
     for block in out.split("\n\n"):
         props = dict(line.split("=", 1) for line in block.strip().split("\n") if "=" in line)
@@ -232,6 +231,11 @@ def run_once(paths: dict[str, str], known: tuple[dict[str, int | None], frozense
     if now != seen or any(unit == DAEMON and pid != mains.get(DAEMON) or unit in SERVICES and mains.get(unit) is None for unit, pid in now):
         mains, seen = main_pids(), now
     for to, pids in plan(groups, mains, public_dir).items():
+        # systemd names a process it forked "(<command>)" until it runs the command. A Type=simple unit counts as active from the fork, and at
+        # 09:29:13Z on 11-08 a chat start moved then failed to attach to its unit's cgroup with EACCES (status=219/CGROUP).
+        pids = [pid for pid in pids if not (read(f"/proc/{pid}/comm") or "").startswith("(")]
+        if not pids:
+            continue
         if to.endswith(".scope") and not os.path.isdir(paths[to]):
             start_scope(to, pids[0], user=to == TOOLS)
         for pid in pids:
