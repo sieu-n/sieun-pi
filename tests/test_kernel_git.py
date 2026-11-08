@@ -34,11 +34,11 @@ def loaded(base: dict, platform: str = "darwin") -> dict:
         os.environ.update(saved)
 
 
-def peak_kb(argv: list, env: dict, cwd: str) -> int:
-    """The peak RSS of argv and its children in KB, read from /usr/bin/time -l on macOS."""
+def peak_mb(argv: list, env: dict, cwd: str) -> int:
+    """The peak RSS of argv in MB, read from /usr/bin/time -l on macOS, which prints it in bytes."""
     done = subprocess.run(["/usr/bin/time", "-l", *argv], env=env, cwd=cwd, capture_output=True, text=True, timeout=120)
     line = next(l for l in done.stderr.splitlines() if "maximum resident set size" in l)
-    return int(line.split()[0]) // 1024
+    return int(line.split()[0]) // (1024 * 1024)
 
 
 @unittest.skipUnless(shutil.which("git"), "needs git")
@@ -94,10 +94,10 @@ class KernelGit(unittest.TestCase):
         (self.repo / "font.bin").write_bytes(os.urandom(5 * 1024 * 1024))
         subprocess.run([self.real, "-C", str(self.repo), "add", "font.bin"], check=True)
         env = {**self.env, "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8"}
-        raw = peak_kb([self.real, "grep", "-l", "extract.earerToken"], env, str(self.repo))
-        wrapped = peak_kb(["git", "grep", "-l", "extract.earerToken"], env, str(self.repo))
+        raw = peak_mb([self.real, "grep", "-l", "extract.earerToken"], env, str(self.repo))
+        wrapped = peak_mb(["git", "grep", "-l", "extract.earerToken"], env, str(self.repo))
         print(f"\nApple Git regex grep of a 5 MB binary file: {raw} MB as is, {wrapped} MB through git-child/git", file=sys.stderr)
-        self.assertLess(wrapped, 40)
+        self.assertLess(wrapped, 20)
 
 
 if __name__ == "__main__":
