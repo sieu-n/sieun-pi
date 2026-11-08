@@ -1947,6 +1947,29 @@ def lost_input(entries, restarts=list):
     return entries[first], ("cut_off", f"No turn answered its input of {entries[first].get('timestamp')}: {proof}.")
 
 
+# Prime's error for a request it held back to compact first. When that compaction's own model call fails on a provider error, the turn ends
+# there and nothing retries it: on 11-08 prod parity after p1249 (01a1954c) ended so at 00:34:02Z, its summary call met a 429 on claude16,
+# and it sat 661 min until a worker restart at 11:33Z redelivered its input, while this pass read the error as permanent.
+REQUEST_NOT_SENT = "Request not sent: context length exceeded."
+
+
+def failed_compaction(entries, last):
+    """The text of a failed compaction written after `last` whose cause is an interruption (a 429, a network error), else None."""
+    entries = list(entries)
+    start = next((index for index, entry in enumerate(entries) if entry is last), None)
+    if start is None:
+        return None
+    for entry in entries[start + 1:]:
+        if entry.get("type") == "message":
+            return None
+        if entry.get("customType") != "compaction_outcome" or (entry.get("details") or {}).get("outcome") != "failed":
+            continue
+        text = message_text(entry)
+        if INTERRUPTION_ERROR.search(text):
+            return text
+    return None
+
+
 def classify(last, now, entries=(), shutdowns=list, owner=False, restarts=list):
     """("error" | "cut_off" | "empty_reply" | "worker_stopped" | "aborted", text) when the last message shows the run stopped mid-work, else None."""
     if not last:
@@ -1962,7 +1985,10 @@ def classify(last, now, entries=(), shutdowns=list, owner=False, restarts=list):
         return ("empty_reply", "The model returned an empty reply that asked for a tool, so the turn ended.")
     if role == "assistant" and stop == "error":
         err = turn_error(msg)
-        return ("error", err) if INTERRUPTION_ERROR.search(err) else None
+        if INTERRUPTION_ERROR.search(err):
+            return ("error", err)
+        failed = failed_compaction(entries, last) if err.startswith(REQUEST_NOT_SENT) else None
+        return ("error", f"{failed} {err}") if failed else None
     cut_off = role in ("user", "toolResult") or (role == "assistant" and stop == "toolUse")
     if not cut_off:
         return None

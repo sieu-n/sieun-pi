@@ -220,6 +220,28 @@ class ResumePausedTests(unittest.TestCase):
         report = self.run_resume(dry_run=True)
         self.assertEqual([(p["id"], p["reason"], p["head"]) for p in report["paused"]], [("childchild01", "empty_reply", "headheadhead")])
 
+    def test_a_compaction_that_failed_on_a_429_counts_once_the_account_can_serve(self):
+        # 11-08 00:34:02Z: prod parity after p1249 (01a1954c) held back its request to compact first, the summary call met a 429, and the
+        # pass read "Request not sent" as permanent, so the job sat 661 min until a worker restart redelivered its input.
+        not_sent = assistant(30, "error", "Request not sent: context length exceeded. The next request to anthropic/claude-opus-5-5 is about "
+                                          "492932 tokens, over its 483616-token compaction threshold, so Prime compacts first.")
+        def outcome(text, result="failed"):
+            return {"type": "custom_message", "customType": "compaction_outcome", "timestamp": at(29.9), "content": text,
+                    "details": {"reason": "threshold", "outcome": result}}
+        limited = "Auto-compaction failed: Summarization failed: Provider rate limit exceeded (rate_limit_error, 429): try again later."
+        self.session("compact429ab", [not_sent, outcome(limited)])
+        self.session("compactokcut", [not_sent, outcome("Compaction cancelled", "cancelled")])
+        self.session("compactplain", [not_sent])
+        with patch.object(resume_paused, "account_blocker", return_value=("claude16@slack.green is limited", None)):
+            report = self.run_resume(dry_run=True)
+        self.assertEqual(report["paused"], [])
+        self.assertEqual([run["id"] for run in resume_paused.HELD], ["compact429ab"], "the pool holds it while no account serves its tree")
+        resume_paused.HELD.clear()
+        with patch.object(resume_paused, "account_blocker", return_value=(None, None)):
+            paused = self.run_resume(dry_run=True)["paused"]
+        self.assertEqual([(p["id"], p["reason"]) for p in paused], [("compact429ab", "error")])
+        self.assertIn("429", paused[0]["error"])
+
     def test_rate_limits_count_only_once_the_account_can_serve(self):
         self.session("aaaaaaaaaaaa", [assistant(30, "error", "Provider rate limit exceeded (rate_limit_error, 429): would exceed")])
         with patch.object(resume_paused, "account_blocker", return_value=("claude3@slack.green is depleted", None)):
