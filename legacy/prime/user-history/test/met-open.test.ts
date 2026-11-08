@@ -36,10 +36,25 @@ test("closing p850 at target flags p200, and a later op on the same board does n
   assert.doesNotMatch(applyBoardOp(next, { op: "plan_add", text: "Fix the wiki lint", note: "Done when lint passes." }, "agent", at, () => "p9").summary, /reads met/);
 });
 
-test("a note that says the target is met flags an open step, and a Done when line that names met does not", () => {
+// Crawler VP's p1206 read met_open in 32 check-ins in a row up to 11-08 04:30Z from the words "reads met" in its note, while d9, which its link
+// names, read the census Postgres writer missed at 23:26Z 11-07 (worst 4,805,833 records against at most 5,000).
+const p1206 = item("p146", { text: "Every documented crawler API route passes its own example on prod", children: [item("p1206", {
+  text: "Fix: the census Postgres writer fell 18.6M records behind at 02:05Z 11-05 against at most 5,000; find why the lane falls behind under new-first census and fix it in code",
+  duty: "d9/throughput_goals_missed", note: "Done when d9's census Postgres writer row (p895) holds its worst 5-min slot under 5,000 for 24 h at 10k+ profiles a minute on prod. " +
+    "The d9 row reads met 24 h after lag stays under 5,000." })] });
+const d9Missed = new Map([["d9/throughput_goals_missed", { met: false, at: Date.parse("2026-11-07T23:26:00Z") }]]);
+
+test("a note's words never make a step met: p1206 with d9 missed is not flagged, nor is a note that says the target is met", () => {
+  assert.deepEqual(metOpenItems(boardOf([p1206]).plan, d9Missed).map(found => found.item.id), []);
   const board = boardOf([item("p1", { note: "Done when the import e2e passes.", children: [item("p2", { note: "Done when the target is met." })] })]);
-  assert.match(applyBoardOp(board, { op: "plan_update", id: "p2", note: "Target met: 0 of 0 at 03:57Z." }, "agent", at, () => "p9").summary, /p2 "Work on p2" has a note that says its target is met\. Close it now/);
-  assert.doesNotMatch(applyBoardOp(board, { op: "plan_update", id: "p2", note: "Done when the target is met. Working on it." }, "agent", at, () => "p9").summary, /reads met|says its target is met/);
+  assert.doesNotMatch(applyBoardOp(board, { op: "plan_update", id: "p2", note: "Target met: 0 of 0 at 03:57Z." }, "agent", at, () => "p9").summary, /reads met|says its target is met/);
+});
+
+test("a duty miss newer than the target reading keeps the item open, and an older one does not", () => {
+  const goal = (measuredAt: string) => boardOf([item("p200", { duty: "d4/wiki_problems", target: { ...zero, measuredAt } })]);
+  const missed = new Map([["d4/wiki_problems", { met: false, at: Date.parse("2026-10-22T03:00:00Z") }]]);
+  assert.deepEqual(metOpenItems(goal("2026-10-22T02:00:00Z").plan, missed).map(found => found.item.id), []);
+  assert.deepEqual(metOpenItems(goal("2026-10-22T03:57:00Z").plan, missed).map(found => found.item.id), ["p200"]);
 });
 
 test("an open step that is not met, a hold in the owner's words and an unmet requirement keep a met goal open", () => {

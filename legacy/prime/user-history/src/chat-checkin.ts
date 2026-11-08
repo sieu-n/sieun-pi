@@ -217,7 +217,7 @@ export function checkInPrecheck(previous: CheckInMemory | undefined, facts: read
     fold, load: oneSessionLoad(goaled, context.jobs, context.subagents, new Set([...context.queued?.keys() ?? [], ...context.asleep ?? []]), now),
     heartbeats: redundantHeartbeats(context.heartbeats ?? [], context.duties ?? []), noDuty: context.boardError || !context.duties || context.noDuties ? [] : goalsWithoutDuty(board, context.duties, now), facts: notes,
     noDoneLine: context.boardError ? [] : goalsWithoutDoneLine(board), risks: context.boardError ? [] : free(planRiskSteps(board), item => item.id),
-    metOpen: context.boardError ? [] : free(metOpenItems(board?.plan ?? []), found => found.item.id), end };
+    metOpen: context.boardError ? [] : free(metOpenItems(board?.plan ?? [], doneFacts.metrics), found => found.item.id), end };
 }
 
 /** A job asleep on dead waits (`JobFact.deadWake`): the wake service did not send them, so the chat tells the job how its run ended. */

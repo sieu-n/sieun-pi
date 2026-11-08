@@ -1297,22 +1297,26 @@ function noDoneLines(before: ChatBoard, plan: readonly PlanItem[]): string[] {
 /**
  * An open item whose target reads met, with nothing left to do (owner rule c110, given the 4th time on 10-22: "that's already being handled by
  * the duty system. so then close it!!"). The AI harness chat's p850 read wiki problems 0 of at most 0 at 03:57Z on 10-22, and its goal p200,
- * which duty d4/wiki_problems keeps, stayed open "until d4's next run confirms 0" until the owner said close. The reading is the item's own
- * target or a newer one of the same metric on an item under it (p850's 0 under p200's stale 4), or a note that says the target is met. An item
- * stays off this list while an open step under it is unmet (its push step aside, frontend bro p208 and p286 on 10-20), while a requirement line
- * is not met, or when the owner's words name a hold, like "held 6 h": that hold is part of the target. `keeper` is the duty metric that keeps
- * the number from now on: the item's own duty link, else the nearest one above it, else one on a step under it that reads the same metric.
+ * which duty d4/wiki_problems keeps, stayed open "until d4's next run confirms 0" until the owner said close. Only a reading counts, never the
+ * words of a note: the item's own target or a newer one of the same metric on an item under it (p850's 0 under p200's stale 4). A newer miss of
+ * the duty metric the item links (`verdicts`, keyed like the link) overrules that reading, and an item with no target reading is left to
+ * `finishedOpen`, which reads the duty verdict with its hold window. Crawler VP's p1206 on d9/throughput_goals_missed, with no target, read met
+ * in 32 check-ins in a row up to 11-08 04:30Z from its note "The d9 row reads met 24 h after lag stays under 5,000", while d9 read it missed at
+ * 4,805,833 records against at most 5,000. An item stays off this list while an open step under it is unmet (its push step aside, frontend bro
+ * p208 and p286 on 10-20), while a requirement line is not met, or when the owner's words name a hold, like "held 6 h": that hold is part of the
+ * target. `keeper` is the duty metric that keeps the number from now on: the item's own duty link, else the nearest one above it, else one on a
+ * step under it that reads the same metric.
  */
-export interface MetOpen { item: PlanItem; target?: GoalTarget; from?: string; keeper?: string }
+export interface MetOpen { item: PlanItem; target: GoalTarget; from?: string; keeper?: string }
+/** A duty metric's verdict on the newest run that judged it, as the check-in reads it (`metricFacts`). */
+export interface DutyVerdict { met: boolean; at: number }
 const metricKey = (metric: string): string => metric.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 const OWNER_HOLD = /\b(?:held|holds?|for)\s+(?:a|an|one|\d+(?:\.\d+)?)\s*(?:h|hours?|days?|weeks?)\b/i;
-const NOTE_MET = /\b(?:target|done line|goal)\s+(?:is\s+|was\s+|now\s+)?(?:met|reached)\b|\breads?\s+met\b|\(met\)/i;
-const noteSaysMet = (note: string | undefined): boolean => NOTE_MET.test((note ?? "").replace(/\bdone when\b.*?(?:\.(?=\s|$)|$)/gis, ""));
 export const dutyKeeper = (duty: string | undefined): string | undefined => {
   const link = duty ? parseDutyLink(duty) : null;
   return link && link.duty !== CHECK_IN_DUTY_ID ? duty : undefined;
 };
-export function metOpenItems(plan: readonly PlanItem[]): MetOpen[] {
+export function metOpenItems(plan: readonly PlanItem[], verdicts: ReadonlyMap<string, DutyVerdict> = new Map()): MetOpen[] {
   const found: MetOpen[] = [];
   const met = new Set<string>();
   const visit = (item: PlanItem, above: readonly PlanItem[]): void => {
@@ -1332,11 +1336,12 @@ export function metOpenItems(plan: readonly PlanItem[]): MetOpen[] {
     const newer = newest?.target;
     const reading: GoalTarget | undefined = own && newer?.current !== undefined
       ? { ...own, current: newer.current, ...newer.measuredAt ? { measuredAt: newer.measuredAt } : {}, direction: targetOp(own) === "<=" ? "down" : "up" } : own;
-    const hit = reading && targetMet(reading) ? reading : undefined;
-    if (!hit && !noteSaysMet(item.note)) return;
-    const keeper = dutyKeeper(item.duty) ?? above.map(up => dutyKeeper(up.duty)).find(Boolean) ?? same.map(below => dutyKeeper(below.duty)).find(Boolean);
+    const link = dutyKeeper(item.duty);
+    const judged = link === undefined ? undefined : verdicts.get(link);
+    if (!reading || !targetMet(reading) || (judged && !judged.met && judged.at > time(reading))) return;
+    const keeper = link ?? above.map(up => dutyKeeper(up.duty)).find(Boolean) ?? same.map(below => dutyKeeper(below.duty)).find(Boolean);
     met.add(item.id);
-    found.push({ item, ...hit ? { target: hit } : {}, ...hit && newest ? { from: newest.id } : {}, ...keeper ? { keeper } : {} });
+    found.push({ item, target: reading, ...newest ? { from: newest.id } : {}, ...keeper ? { keeper } : {} });
   };
   for (const item of plan) visit(item, []);
   return found;
@@ -1344,8 +1349,8 @@ export function metOpenItems(plan: readonly PlanItem[]): MetOpen[] {
 const readTime = (at: string | undefined): string => at ? `, read ${new Date(at).toISOString().slice(5, 16).replace("T", " ")}Z` : "";
 /** The line that asks to close a met item now (`metOpenItems`): its reading, and the duty that keeps the metric (c110). */
 export function metOpenLine({ item, target, from, keeper }: MetOpen): string {
-  const reading = target ? `reads met (${target.metric} ${amountText(target.current!)}${target.unit ? ` ${target.unit}` : ""}, target ${targetOp(target) === "<=" ? "at most" : "at least"} ` +
-    `${amountText(target.target)}${readTime(target.measuredAt)}${from ? ` on ${from}` : ""})` : "has a note that says its target is met";
+  const reading = `reads met (${target.metric} ${amountText(target.current!)}${target.unit ? ` ${target.unit}` : ""}, target ${targetOp(target) === "<=" ? "at most" : "at least"} ` +
+    `${amountText(target.target)}${readTime(target.measuredAt)}${from ? ` on ${from}` : ""})`;
   const link = keeper ? parseDutyLink(keeper) : null;
   return `${item.id} ${quote(item.text)} ${reading}. Close it now with a note that names the reading: ` + (link
     ? `duty ${link.duty} keeps ${link.metric} (c110), so no reading of its next run is needed, and the duty puts a fix step back when it slips.`
