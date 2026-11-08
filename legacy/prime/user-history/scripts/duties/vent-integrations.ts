@@ -34,6 +34,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   counts as much as a refused one, so an older model that comes back on a path Vent does not check still misses: on 10-28 at 06:18Z the
  *   24 h before the allowlist shipped held 1,335 such prod calls and 13,453 on staging, claude-opus-5 and gpt-6-sol most of them. Until 10-28
  *   this slot was vent_model_refused_callers, which counted only callers Vent refused, so a refused call reads here as one of these calls.
+ *   A name built from an allowed model with more words after it, such as the gpt-6-luna-nope of a knob test on 11-08, names no model and
+ *   does not count.
  * - vent_console_slow_reads_24h: how many of the 17 reads the prod Vent console runs cost 1 core-second or more on prod ClickHouse. vent-console-cost.py
  *   beside this file builds them with vent.telemetry_read and vent.health from apps/vent/src at origin/main, the build prod runs, runs each once
  *   through Grafana with a log_comment tag and reads its CPU from otel.query_cost. Until release 21 (10-25) prod's console decoded the whole
@@ -116,12 +118,17 @@ const family = (model: string) => model.split("-")[0]!;
  * The rows whose calls named an older model of a tier family the allowed set covers, with only the refused calls of every other row (owner
  * rule c185). c185 names only the Claude and GPT tiers, so a model of another family, such as Typesafe's jev-1.13.0, is no older tier model:
  * on 11-05 staging Vent began reading the model from Jev's non-stream replies, and d2 read its 33 calls as old_model_calls_24h.
+ * A name made of an allowed model with more words after it names no model at all, so none of its calls count. On 11-08 at 09:39Z a contact
+ * finder knob test (~/work/playground/cf_knobs.py, "GEN_MODEL unknown") sent one staging crawler-v3 call on gpt-6-luna-nope, Vent refused
+ * it, and d2 read it as old_model_calls_24h 1.
  */
 export function oldModelCalls(reads: ModelReads): ModelCalls[] {
   const allowed = new Set(reads.allowed);
   const families = new Set(reads.allowed.map(family));
+  const madeUp = (model: string) => reads.allowed.some(name => model.startsWith(`${name}-`));
   const older = (model: string) => families.has(family(model)) && !allowed.has(model.replace(EFFORT_SUFFIX, ""));
   return reads.rows
+    .filter(row => !madeUp(row.model))
     .map(row => older(row.model) ? row : { ...row, calls: row.refused })
     .filter(row => row.calls > 0);
 }

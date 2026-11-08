@@ -156,6 +156,23 @@ test("a model outside the allowed set's families counts only its refused calls",
   assert.deepEqual(output.flagged!.filter(flag => flag.kind === "old_model").map(flag => flag.item), ["production convex  gemini-3-pro", "staging convex  gpt-6-sol"]);
 });
 
+// On 11-08 at 09:39Z a contact finder knob test sent one staging crawler-v3 call on gpt-6-luna-nope, Vent refused it, and d2 read
+// old_model_calls_24h 1. A name made of an allowed model with more words after it names no model, while a real older model still counts.
+test("a made-up name built on an allowed model does not count, and a real older model still does", () => {
+  const last = Date.UTC(2026, 10, 8, 9, 39);
+  const row = (env: string, model: string, calls: number, refused = 0) => ({ env, caller: "crawler-v3", operation: "crawler_enrichment", model, calls, refused, last });
+  const models: ModelReads = { allowed: ALLOWED, rows: [
+    row("staging", "gpt-6-luna-nope", 1, 1), row("staging", "claude-opus-5-5-nope(high)", 2, 2),
+    row("production", "claude-opus-5", 3), row("staging", "gpt-6-sol", 4, 4), row("staging", "claude-opus-5-5(1024)", 5, 5),
+  ] };
+  const output = integrationMetrics({ lights: [], hosts: hosts(), spans: null, refusals: [], models, consoleReads: CHEAP }, last);
+  assert.equal(output.metrics.old_model_calls_24h, 3 + 4 + 5);
+  assert.deepEqual(output.flagged!.filter(flag => flag.kind === "old_model").map(flag => flag.item.split(" ").pop()), ["claude-opus-5-5(1024)", "gpt-6-sol", "claude-opus-5"]);
+  const probe = integrationMetrics({ lights: [], hosts: hosts(), spans: null, refusals: [], models: { allowed: ALLOWED, rows: [row("staging", "gpt-6-luna-nope", 1, 1)] }, consoleReads: CHEAP }, last);
+  assert.equal(probe.metrics.old_model_calls_24h, 0);
+  assert.equal(probe.lastEventAt, undefined);
+});
+
 test("the allowed set is ALLOWED_MODELS as tables.py writes it, and a tables.py without it throws", () => {
   const tables = `# owner rule c185\nALLOWED_MODELS: frozenset[str] = frozenset(\n    {\n${ALLOWED.map(model => `        "${model}",`).join("\n")}\n    }\n)\n_EFFORT_SUFFIX = re.compile(r"\\([a-z]+\\)$")\n`;
   assert.deepEqual(allowedModels(tables), ALLOWED);
