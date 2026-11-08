@@ -4,7 +4,7 @@
 // its readers die more often than the rest.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CAPACITY_WINDOW_MS, type DayPages, type Death, type EngageData, deathExcessP, provenRates, report } from "../scripts/duties/engage-reads.ts";
+import { CAPACITY_WINDOW_MS, type AccountHour, type DayPages, type Death, type EngageData, SATURATED_HOURS_FLOOR, deathExcessP, provenRates, report, servedDays } from "../scripts/duties/engage-reads.ts";
 
 const at = (iso: string): number => Date.parse(iso);
 const verdict = (accountId: number, iso: string, code: string, pages24h: number): Death =>
@@ -83,4 +83,23 @@ test("the capacity headline reports its window: lastEventAt is the newest window
   assert.equal(output.windowMs?.prod_capacity_pages_day, CAPACITY_WINDOW_MS);
   const line = output.flagged?.find(flag => flag.kind === "capacity")?.excerpt ?? "";
   assert.match(line, /reads the window 2026-10-29 and 2026-10-30, .* the newest window day leaves at 11-02 00:00Z/);
+});
+
+test("a canary short of demand proves what its saturated hours serve, not the pages it got (launch VP, 11-08)", () => {
+  // 14 members read 45 an hour for 24 h on day one with a busy refusal each hour, and 30 an hour with none on day two.
+  const hours: AccountHour[] = Array.from({ length: 14 }, (_, i) => i + 1).flatMap(accountId => [
+    ...Array.from({ length: 24 }, (_, hour) => ({ day: "2026-11-06", hour, accountId, pages: 45, busy: 1 })),
+    ...Array.from({ length: 24 }, (_, hour) => ({ day: "2026-11-07", hour, accountId, pages: 30, busy: 0 })),
+  ]);
+  const days: DayPages[] = [...fleet("2026-11-06", [[14, 1080], [100, 150]]), ...fleet("2026-11-07", [[14, 720], [100, 150]])];
+  assert.equal(provenRates(days, [], 14).newest?.rate, 720);
+  assert.equal(provenRates(days, [], 14, servedDays(days, hours)).newest?.rate, 1080);
+});
+
+test("an account under the saturated-hours floor keeps its pages, and an hour with no prod row counts as serveable", () => {
+  const few: AccountHour[] = Array.from({ length: SATURATED_HOURS_FLOOR - 1 }, (_, hour) => ({ day: "2026-11-07", hour, accountId: 1, pages: 50, busy: 1 }));
+  assert.equal(servedDays([{ day: "2026-11-07", accountId: 1, pages: 350 }], few)[0]!.pages, 350);
+  // 23 hours with rows and hour 10 with none fleet-wide: 24 serveable hours at 40.
+  const outage: AccountHour[] = Array.from({ length: 24 }, (_, hour) => hour).filter(hour => hour !== 10).map(hour => ({ day: "2026-11-07", hour, accountId: 1, pages: 40, busy: 1 }));
+  assert.equal(servedDays([{ day: "2026-11-07", accountId: 1, pages: 920 }], outage)[0]!.pages, 960);
 });

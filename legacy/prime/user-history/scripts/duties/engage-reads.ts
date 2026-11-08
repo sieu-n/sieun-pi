@@ -134,6 +134,8 @@ export const unmeasured = (metric: Pick<DutyMetric, "op" | "target">): number =>
 
 /** Pages one prod account read on one full UTC day (YYYY-MM-DD). */
 export interface DayPages { day: string; accountId: number; pages: number }
+/** One prod account's read-log rows in one UTC hour of a full day: the pages it read and its account_busy refusals (HOURS_SQL). */
+export interface AccountHour { day: string; hour: number; accountId: number; pages: number; busy: number }
 /**
  * A dead-outcome event: Instagram's verdict when causeOf() says so. `pages24h` is what the account read in the 24 h before it. `transition` is false
  * for the re-login worker's verdicts, which leave the account parked, and crawler_v3_engage_deaths_24h counts only transitions.
@@ -161,7 +163,7 @@ export type StuckKind = "frozen_shared_exit" | "active_302s" | "parked_dead_jar"
 export interface StuckAccount { kind: StuckKind; accountId: number; since: number }
 export interface EngageData {
   now: number;
-  days?: DayPages[]; stagingLastReadAt?: number | null; stagingDue?: StagingDue; stagingPauses?: StagingPause[]; accounts?: Account[]; deaths?: Death[]; config?: Record<string, string>;
+  days?: DayPages[]; hours?: AccountHour[]; stagingLastReadAt?: number | null; stagingDue?: StagingDue; stagingPauses?: StagingPause[]; accounts?: Account[]; deaths?: Death[]; config?: Record<string, string>;
   healthy?: number; lapsed?: Lapsed; deepWalks?: DeepWalks; stuck?: StuckAccount[]; paced?: Paced;
   /** crawler_v3_engage_deaths_24h by cause. */
   deathGauge?: Record<string, number>;
@@ -259,7 +261,7 @@ export interface Proof { rate: number; days: string[]; hiDays: number; hiDeaths:
  * unsafe. Until 10-30 any verdict at v pages unproved every rate of v or more, so prod 163 at 91 pages held the proven rate at 90 while 12 canary
  * accounts read up to 665 a day with 0 verdicts; DEATH_EXCESS_P has the data that retired it. A verdict on an account that read no page in its
  * last 24 h says nothing about a read rate and is left out (prod 55 and 74 on 10-12: every read answered 302 to login, so they read 0 pages
- * before Instagram killed the session). The rates tried are the day totals accounts read.
+ * before Instagram killed the session). The rates tried are the day totals servedDays() gives each account.
  *
  * `newest` is the proof of the newest window, the last PROOF_DAYS full UTC days with reads, and it is the headline: the launch VP, 10-30, "the
  * headline must be today's capacity, not a two-week-old window", because the fleet, its seller lots and the pace changed after the 10-15 and
@@ -267,12 +269,64 @@ export interface Proof { rate: number; days: string[]; hiDays: number; hiDeaths:
  */
 export interface ProvenRates { newestDays: string[] | null; newest: Proof | null; best: Proof | null }
 
-/** The newest window's proof and the best one, as ProvenRates says. */
-export function provenRates(days: readonly DayPages[], deaths: readonly Death[], cohort: number): ProvenRates {
+/**
+ * The saturated hours an account needs before its hourly rate counts; with fewer, its day counts at the pages it read.
+ * measured: prod 11-05 to 11-07, 13 accounts with 30+ saturated hours; the median of 8 random ones fell within 10% of the account's own in 93% of 6,500 draws (5 hours 88%, 3 hours 81%).
+ */
+export const SATURATED_HOURS_FLOOR = 8;
+
+/**
+ * What each account could serve on each day of `hours`, so the proof reads supply and not the demand a day happened to send (c67; the launch VP,
+ * 11-08: on 11-07 the canary had no throttle and no fence, and 13,348 pages split over 15 to 18 members put rank 14 at 732). An account-hour is
+ * saturated when it logged an account_busy refusal, a pinned read that found the account's pace full. The account's hourly rate is its median
+ * pages over its saturated hours in `hours`, and its day is that rate times its serveable hours, the hours it logged a row plus the hours no prod
+ * account logged one: a fenced, frozen, parked or unbound account logs no row (prod 11-05 and 11-06, every canary gap of 5 to 7 hours followed a
+ * 'throttled' answer with no row at all), while an hour with no prod row is an outage of the lane, not of the account (11-07 10Z). An account
+ * under SATURATED_HOURS_FLOOR, a day it read more than that, and every day outside `hours` keep the pages it read.
+ */
+export function servedDays(days: readonly DayPages[], hours: readonly AccountHour[]): DayPages[] {
+  const saturated = new Map<number, number[]>();
+  const active = new Map<string, number>();
+  const fleetHours = new Map<string, Set<number>>();
+  for (const row of hours) {
+    if (row.busy > 0) saturated.set(row.accountId, [...saturated.get(row.accountId) ?? [], row.pages]);
+    const key = `${row.day} ${row.accountId}`;
+    active.set(key, (active.get(key) ?? 0) + 1);
+    fleetHours.set(row.day, (fleetHours.get(row.day) ?? new Set()).add(row.hour));
+  }
+  const rates = new Map<number, number>();
+  for (const [accountId, pages] of saturated) if (pages.length >= SATURATED_HOURS_FLOOR) rates.set(accountId, median(pages));
+  const served = new Map(days.map(row => [`${row.day} ${row.accountId}`, row]));
+  for (const [key, count] of active) if (!served.has(key)) { const [day, id] = key.split(" "); served.set(key, { day: day!, accountId: Number(id), pages: 0 }); }
+  return [...served.values()].map(row => {
+    const rate = rates.get(row.accountId);
+    const hoursOn = active.get(`${row.day} ${row.accountId}`);
+    if (rate === undefined || hoursOn === undefined) return row;
+    const serveable = hoursOn + 24 - fleetHours.get(row.day)!.size;
+    return { ...row, pages: Math.max(row.pages, Math.round(rate * serveable)) };
+  });
+}
+
+const median = (values: readonly number[]): number => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+};
+
+/**
+ * The newest window's proof and the best one, as ProvenRates says. `served` (servedDays) sets the rates tried and the cohort ceiling, and the
+ * death evidence stays the pages each account read.
+ */
+export function provenRates(days: readonly DayPages[], deaths: readonly Death[], cohort: number, served: readonly DayPages[] = days): ProvenRates {
   if (cohort < 1) return { newestDays: null, newest: null, best: null };
-  const byDay = new Map<string, number[]>();
-  for (const row of days) if (row.pages > 0) byDay.set(row.day, [...byDay.get(row.day) ?? [], row.pages]);
-  for (const pages of byDay.values()) pages.sort((a, b) => b - a);
+  const dayPages = (rows: readonly DayPages[]): Map<string, number[]> => {
+    const byDay = new Map<string, number[]>();
+    for (const row of rows) if (row.pages > 0) byDay.set(row.day, [...byDay.get(row.day) ?? [], row.pages]);
+    for (const pages of byDay.values()) pages.sort((a, b) => b - a);
+    return byDay;
+  };
+  const byDay = dayPages(served);
+  const readByDay = dayPages(days);
   const firstVerdicts = new Map<number, Death>();
   for (const death of [...deaths].sort((a, b) => a.at - b.at))
     if (causeOf(death) === "instagram" && death.pages24h > 0 && !firstVerdicts.has(death.accountId)) firstVerdicts.set(death.accountId, death);
@@ -280,7 +334,7 @@ export function provenRates(days: readonly DayPages[], deaths: readonly Death[],
     const first = run[0]!;
     const start = Date.parse(`${first}T00:00:00Z`);
     const verdicts = [...firstVerdicts.values()].filter(death => death.at >= start).map(death => death.pages24h);
-    const accountDays = [...byDay].filter(([day]) => day >= first).flatMap(([, pages]) => pages);
+    const accountDays = [...readByDay].filter(([day]) => day >= first).flatMap(([, pages]) => pages);
     const ceiling = Math.min(...run.map(day => byDay.get(day)![cohort - 1] ?? 0));
     const rates = [...new Set(run.flatMap(day => byDay.get(day)!))].filter(rate => rate <= ceiling).sort((a, b) => b - a);
     for (const rate of rates) {
@@ -368,7 +422,7 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
     const pauses = Object.entries(data.config).filter(([key, value]) => key.startsWith("pause.engage") && value === "true").map(([key]) => key);
     if (pauses.length) flagged.push({ at, kind: "pause", excerpt: `prod pause keys on: ${pauses.join(", ")}` });
     if (data.days && data.healthy !== undefined && data.lapsed) {
-      const { newestDays, newest: proof, best } = provenRates(data.days, data.deaths, want);
+      const { newestDays, newest: proof, best } = provenRates(data.days, data.deaths, want, data.hours ? servedDays(data.days, data.hours) : data.days);
       const rate = proof?.rate ?? 0;
       const healthy = data.healthy + data.lapsed.waiting;
       const counted = `${healthy} healthy prod accounts (${data.healthy} admissible now${data.lapsed.waiting ? `, ${data.lapsed.waiting} waiting on a proxy session renewal` : ""})`;
@@ -381,7 +435,7 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
       const lag = windowEnd !== undefined ? ` This reads the window ${newestDays!.join(" and ")}, and each day leaves it ${PROOF_DAYS} days after it ends: the newest window day leaves at ${utc(windowEnd + CAPACITY_WINDOW_MS)}.` : "";
       const older = best && best !== proof ? ` The best older window, ${best.days.join(" and ")}, proved ${fmt(best.rate)} (run detail only, not the headline).` : "";
       flagged.push({ at, kind: "capacity", excerpt: (proof
-        ? `${counted} x ${fmt(rate)} pages a day per account, proven on the newest window ${proof.days.join(" and ")} (the ${want}th busiest account read that much each day; since then ${proof.hiDeaths} Instagram verdicts in ${fmt(proof.hiDays)} account-days at or over it and ${proof.loDeaths} in ${fmt(proof.loDays)} under it, p ${proof.p.toFixed(2)}) = ${fmt(healthy * rate)} pages a day. `
+        ? `${counted} x ${fmt(rate)} pages a day per account, proven on the newest window ${proof.days.join(" and ")} (the ${want}th account could serve that much each day, at its median pages in hours its pace was full times its serveable hours; since then ${proof.hiDeaths} Instagram verdicts in ${fmt(proof.hiDays)} account-days at or over it and ${proof.loDeaths} in ${fmt(proof.loDays)} under it, p ${proof.p.toFixed(2)}) = ${fmt(healthy * rate)} pages a day. `
           + `${need! > healthy ? `${need! - healthy} more healthy accounts at that rate, or ${fmt(Math.ceil(PAGES_A_DAY_GOAL / Math.max(1, healthy)))} pages a day on these, reach ${fmt(PAGES_A_DAY_GOAL)}. ` : ""}`
           + `${onHand} prod accounts on hand (not dead, not moved to another world) x ${fmt(rate)} = ${fmt(onHand * rate)}${onHand * rate < PAGES_A_DAY_GOAL ? `, short of ${fmt(PAGES_A_DAY_GOAL)}` : ", enough once they are healthy"}.${lag}${older}`
         : `${counted}, and the newest window ${newestDays ? newestDays.join(" and ") : "(none)"} proves no rate: it had no ${want} accounts read at one rate whose readers did not die more often than the rest.${lag}${older}`).slice(0, 1000) });
@@ -435,9 +489,15 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
 }
 
 const DEAD_SQL = `('${DEAD.join("', '")}')`;
-const DAYS_SQL = `select to_char(l.at at time zone 'UTC', 'YYYY-MM-DD') as day, l.account_id, sum(l.pages) as pages
+export const DAYS_SQL = `select to_char(l.at at time zone 'UTC', 'YYYY-MM-DD') as day, l.account_id, sum(l.pages) as pages
 from ig_engage_read_log l join ig_engage_accounts a on a.id = l.account_id
 where a.world = 'prod' and l.at < date_trunc('day', now() at time zone 'UTC') at time zone 'UTC' group by 1, 2 having sum(l.pages) > 0`;
+/** HOURS_SQL's rows per account and UTC hour over the PROOF_DAYS full UTC days before today, the newest window servedDays() reads. */
+export const HOURS_SQL = `select to_char(l.at at time zone 'UTC', 'YYYY-MM-DD') as day, extract(hour from l.at at time zone 'UTC')::int as hour, l.account_id,
+  sum(l.pages) as pages, count(*) filter (where l.reason = 'account_busy') as busy
+from ig_engage_read_log l join ig_engage_accounts a on a.id = l.account_id
+where a.world = 'prod' and l.at >= (date_trunc('day', now() at time zone 'UTC') - interval '${PROOF_DAYS} days') at time zone 'UTC'
+  and l.at < date_trunc('day', now() at time zone 'UTC') at time zone 'UTC' group by 1, 2, 3`;
 const STAGING_SQL = `select extract(epoch from max(l.at)) * 1000 as last_read_at from ig_engage_read_log l join ig_engage_accounts a on a.id = l.account_id
 where a.world = 'staging' and l.pages > 0`;
 /** A deploy rewrites each pause row it closes with the same value (pause.meta_ads audit 14478 and 14481 on 2026-10-21 wrote 'true' over 'true'), so the writer named is the last one that changed the value. */
@@ -445,7 +505,7 @@ const STAGING_PAUSES_SQL = `select c.key, w.id, extract(epoch from w.ts) * 1000 
 left join lateral (select id, ts, actor, reason from config_audit a where a.key = c.key and a.old_value is distinct from a.new_value order by a.id desc limit 1) w on true
 where c.key like 'pause.%' and c.value = 'true' order by c.key`;
 const ACCOUNTS_SQL = "select id, status, status_reason as reason from ig_engage_accounts where world = 'prod' order by id";
-const DEATHS_SQL = `select e.account_id, extract(epoch from e.at) * 1000 as at, e.outcome, e.error_code, e.transition,
+export const DEATHS_SQL = `select e.account_id, extract(epoch from e.at) * 1000 as at, e.outcome, e.error_code, e.transition,
   exists (select 1 from ig_engage_read_log l where l.account_id = e.account_id and l.pages > 0 and l.at < e.at) as read_before,
   (select coalesce(sum(l.pages), 0) from ig_engage_read_log l where l.account_id = e.account_id and l.at <= e.at and l.at > e.at - interval '24 hours') as pages_24h
 from ig_engage_account_events e join ig_engage_accounts a on a.id = e.account_id where a.world = 'prod' and (e.outcome in ${DEAD_SQL} or (e.outcome = 'active' and e.transition)) order by e.at, e.id`;
@@ -611,6 +671,7 @@ export function busyHourFlag(paced: Paced, at: number): FlaggedSlice | null {
 }
 
 export const daysOf = (rows: Record<string, unknown>[]): DayPages[] => rows.map(row => ({ day: String(row.day), accountId: Number(row.account_id), pages: Number(row.pages) }));
+export const hoursOf = (rows: Record<string, unknown>[]): AccountHour[] => rows.map(row => ({ day: String(row.day), hour: Number(row.hour), accountId: Number(row.account_id), pages: Number(row.pages), busy: Number(row.busy) }));
 export const accountsOf = (rows: Record<string, unknown>[]): Account[] => rows.map(row => ({ id: Number(row.id), status: String(row.status), ...(row.reason ? { reason: String(row.reason) } : {}) }));
 export const stagingPausesOf = (rows: Record<string, unknown>[]): StagingPause[] => rows.map(row => ({
   key: String(row.key), auditId: num(row.id), at: num(row.at), actor: row.actor == null ? null : String(row.actor), reason: row.reason == null ? null : String(row.reason),
@@ -663,8 +724,9 @@ export async function measure(query: DsQuery | null, authError: string | null, n
     if (lapsed) data.lapsed = lapsed;
     return data;
   }
-  const [days, staging, stagingPauses, accounts, deaths, config, healthy, gauge, walks, due, lapsed, stuck, paced] = await Promise.all([
+  const [days, hours, staging, stagingPauses, accounts, deaths, config, healthy, gauge, walks, due, lapsed, stuck, paced] = await Promise.all([
     step("prod read log", async () => daysOf(await sqlRows(query, PG.prod, DAYS_SQL))),
+    step("prod read log", async () => hoursOf(await sqlRows(query, PG.prod, HOURS_SQL))),
     step("staging read log", async () => num((await sqlRows(query, PG.staging, STAGING_SQL))[0]?.last_read_at)),
     step("staging config", async () => stagingPausesOf(await sqlRows(query, PG.staging, STAGING_PAUSES_SQL))),
     step("prod accounts", async () => accountsOf(await sqlRows(query, PG.prod, ACCOUNTS_SQL))),
@@ -682,7 +744,7 @@ export async function measure(query: DsQuery | null, authError: string | null, n
     stuckAccounts,
     step("prod paced hours", async () => pacedOf(await sqlRows(query, PG.prod, PACED_SQL))),
   ]);
-  Object.assign(data, days && { days }, staging !== undefined && { stagingLastReadAt: staging }, stagingPauses && { stagingPauses }, accounts && { accounts }, deaths && { deaths }, config && { config },
+  Object.assign(data, days && { days }, hours && { hours }, staging !== undefined && { stagingLastReadAt: staging }, stagingPauses && { stagingPauses }, accounts && { accounts }, deaths && { deaths }, config && { config },
     healthy !== undefined && { healthy }, lapsed && { lapsed }, gauge && { deathGauge: gauge }, walks && { deepWalks: walks }, due && { stagingDue: due }, stuck && { stuck }, paced && { paced });
   return data;
 }
