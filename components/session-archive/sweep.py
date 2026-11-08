@@ -59,9 +59,11 @@ def walk(items):
 class Context:
     """What the chat service knows about chats, jobs, boards and wakes, read from its data folders and its agents route."""
 
-    def __init__(self, chat_ids=(), job_ids=(), job_names=(), open_ids=(), open_names=(), wake_ids=(), chat_live=()):
+    def __init__(self, chat_ids=(), job_ids=(), job_names=(), open_ids=(), open_names=(), wake_ids=(), chat_live=(), swept=None):
         self.chat_ids, self.job_ids, self.job_names = set(chat_ids), set(job_ids), set(job_names)
         self.open_ids, self.open_names, self.wake_ids, self.chat_live = set(open_ids), set(open_names), set(wake_ids), set(chat_live)
+        # Session id -> epoch s of this sweep's last archive whose archived line the chat found in the file (service-archives.json).
+        self.swept: dict[str, float] = dict(swept or {})
 
     @classmethod
     def read(cls, agents: dict[str, list[dict]]) -> "Context":
@@ -86,6 +88,10 @@ class Context:
                         ctx.open_names.add(job)
             for path in (folder / "wakes").glob("*.json"):
                 ctx.wake_ids.add(load(path, {}).get("session") or path.name[:36])
+            for sid, operations in load(folder / "service-archives.json", {}).items():
+                for operation in operations if isinstance(operations, list) else []:
+                    if isinstance(operation, dict) and operation.get("reason") == REASON and operation.get("line"):
+                        ctx.swept[sid] = max(ctx.swept.get(sid, 0.0), operation.get("at", 0) / 1000)
         for rows in agents.values():
             for agent in rows:
                 sid = agent.get("sessionId")
@@ -127,10 +133,23 @@ def parents(rows: list[dict]) -> dict[str, str | None]:
     return out
 
 
+def last_activity(row: dict) -> float:
+    return max(stamp(row.get("lastActivityAt")), stamp(row.get("modified")))
+
+
+def swept(row: dict, ctx: Context) -> bool:
+    """This sweep archived the session and nothing ran in it since. Prime test.42 lists such a subagent from its parent's ledger as a
+    live row with no timestamps (11-08: 1,360 of the 2,301 archived), so the row's lifecycle alone would pick it again each day."""
+    at = ctx.swept.get(row["sessionId"])
+    return at is not None and last_activity(row) <= at
+
+
 def own_reason(row: dict, ctx: Context, now: float, idle_s: float) -> str | None:
     sid, name = row["sessionId"], (row.get("sessionName") or "").strip()
     if row.get("lifecycle") != "live":
         return "not_live"
+    if swept(row, ctx):
+        return "already_archived"
     if sid in ctx.chat_ids:
         return "chat_thread"
     if not row.get("rlmDepth") and row.get("runtimeKind") != "subagent" and sid not in ctx.job_ids and name not in ctx.job_names:
@@ -143,7 +162,7 @@ def own_reason(row: dict, ctx: Context, now: float, idle_s: float) -> str | None
         return "chat_lists_live"
     if sid in ctx.open_ids or (name and name in ctx.open_names):
         return "open_step"
-    if now - max(stamp(row.get("lastActivityAt")), stamp(row.get("modified"))) < idle_s:
+    if now - last_activity(row) < idle_s:
         return "idle_under_24h"
     return None
 
@@ -167,7 +186,7 @@ def plan(rows: list[dict], ctx: Context, now: float, idle_s: float = 86400) -> t
         reason = reasons[sid] or ("live_descendant" if sid in kept_by_child else None)
         if reason is None:
             chosen.append(row)
-        elif reason != "not_live":
+        elif reason not in ("not_live", "already_archived"):
             kept[reason] += 1
     chosen.sort(key=lambda row: -(row.get("rlmDepth") or 0))
     return chosen, kept
@@ -178,8 +197,9 @@ def daemon_rows() -> list[dict]:
     return json.loads(out)["sessions"]
 
 
-def active(rows: list[dict]) -> dict:
-    files = [row["sessionFile"] for row in rows if row.get("lifecycle") == "live" and row.get("sessionFile")]
+def active(rows: list[dict], ctx: Context) -> dict:
+    files = [row["sessionFile"] for row in rows if row.get("lifecycle") == "live" and row.get("sessionFile") and row.get("sessionId")
+             and not swept(row, ctx)]
     size = sum(os.path.getsize(f) for f in files if os.path.exists(f))
     return {"sessions": len(files), "bytes": size}
 
@@ -255,8 +275,9 @@ def main(argv: list[str] | None = None) -> int:
     started = time.time()
     chat = Chat()
     rows = daemon_rows()
-    before = active(rows)
-    chosen, kept = plan(rows, Context.read(chat.agents()), started, args.idle_hours * 3600)
+    ctx = Context.read(chat.agents())
+    before = active(rows, ctx)
+    chosen, kept = plan(rows, ctx, started, args.idle_hours * 3600)
     if args.limit:
         chosen = chosen[: args.limit]
     run = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "dryRun": args.dry_run, "before": before,
@@ -275,7 +296,8 @@ def main(argv: list[str] | None = None) -> int:
                                       **({"notice": body["notice"]} if body.get("notice") else {}),
                                       **({} if ok else {"error": str(body.get("error"))[:300]})})
         rows = daemon_rows()
-    run.update(archived=archived, failed=dict(failed), after=active(rows), seconds=round(time.time() - started))
+        ctx = Context.read(chat.agents())
+    run.update(archived=archived, failed=dict(failed), after=active(rows, ctx), seconds=round(time.time() - started))
     append("runs.jsonl", run)
     print(f"session-archive: archived {archived}, failed {dict(failed)}; {run['after']['sessions']} live sessions, "
           f"{run['after']['bytes'] / 1e9:.2f} GB after; {run['seconds']} s", flush=True)

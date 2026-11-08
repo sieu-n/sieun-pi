@@ -55,6 +55,14 @@ class PlanTest(unittest.TestCase):
             each["lifecycle"] = "archived"
         self.assertEqual(self.plan(rows), ([], {}))
 
+    def test_a_session_this_sweep_archived_is_not_picked_again_until_it_runs(self):
+        at = sweep.stamp(OLD) + 3600
+        ledger_row = row("swept", at="", modified="")
+        reopened = row("reopened", at=NEW)
+        chosen, kept = self.plan([ledger_row, reopened], swept={"swept": at, "reopened": at})
+        self.assertEqual((chosen, kept), ([], {"idle_under_24h": 1}))
+        self.assertEqual(sweep.active([ledger_row, reopened], sweep.Context(swept={"swept": at}))["sessions"], 1)
+
 
 class ArchiveRetryTest(unittest.TestCase):
     def chat(self, answers, ready=True):
