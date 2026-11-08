@@ -2291,8 +2291,8 @@
   "byDesign": "Mac self-care duties; agents do not call them (gap-table.md)."
  },
  {
-  "id": "ci-monitor-code-health-tiktok-index-gaps-convex-usage-watch",
-  "tool": "ci-monitor / code-health / tiktok-index-gaps / convex-usage-watch",
+  "id": "ci-monitor-code-health-tiktok-index-gaps",
+  "tool": "ci-monitor / code-health / tiktok-index-gaps",
   "mac": [
    {
     "launchd": "ai.virev.ci-monitor"
@@ -2302,9 +2302,6 @@
    },
    {
     "launchd": "ai.virev.tiktok-index-gaps"
-   },
-   {
-    "launchd": "ai.virev.convex-usage-watch"
    }
   ],
   "box": [
@@ -2316,9 +2313,6 @@
    },
    {
     "unit": "tiktok-index-gaps.timer"
-   },
-   {
-    "unit": "convex-usage-watch.timer"
    }
   ]
  },
