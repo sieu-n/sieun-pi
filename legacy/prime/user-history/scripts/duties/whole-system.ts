@@ -1593,7 +1593,9 @@ export function measure(input: Inputs): PrecheckOutput {
   // 10-25 the crc.1 update's prepare made an open answer "Active session 680443071bdf is recovering; retry shortly", and two outbox sends the
   // new supervisor took 30 s to answer while it restored 42 sessions landed on their first try at 20:10:53Z. A crash or hang in it stays Prime's.
   const updates = input.primeUpdates ?? [];
-  const updateOf = (fault: DaemonFault) => fault.prime ? undefined : updates.find(update => update.host === fault.host && fault.at >= update.from && fault.at <= update.to);
+  // A call that began inside the span and ended after it waited on the same restart: at 15:53:43Z on 11-08 an outbox send the new supervisor
+  // took 30 s to answer timed out, 16 s after the coordinator's last write at 15:53:27Z, while that supervisor still answered cron_list in 41 s.
+  const updateOf = (fault: DaemonFault) => fault.prime ? undefined : updates.find(update => update.host === fault.host && fault.at >= update.from && (fault.from ?? fault.at) <= update.to);
   const allFaults = nameHungWorkers(input.daemonFaults ?? [], input.watch);
   const primeHost = input.prime?.host;
   const primeEvents = (input.prime?.events ?? []).filter(event => !updates.some(update => update.host === primeHost && event.from <= update.to && event.to >= update.from));
@@ -1752,7 +1754,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const updateMin = Array.from({ length: 30 }, (_, minute) => start + minute * MINUTE)
     .filter(from => inWindow.some(update => update.from < from + MINUTE && update.to >= from)).length;
   if (inWindow.length) flagged.push({ kind: "prime_update", excerpt: inWindow.map(update => {
-    const left = updateFaults.filter(fault => fault.host === update.host && fault.at >= update.from && fault.at <= update.to);
+    const left = updateFaults.filter(fault => updateOf(fault) === update);
     return `Prime update ${update.requestId} restarted the ${update.host} daemon from ${clock(update.from)} to ${clock(update.to)}; ` +
       `${left.length} daemon call${left.length === 1 ? "" : "s"} that failed or ran over ${SLOW_MS / 1000} s inside it count as planned maintenance, not dirty` +
       (left.length ? ` (${faultWords(left, faultName)})` : "");

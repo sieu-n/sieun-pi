@@ -49,3 +49,15 @@ test("an update on another box leaves this box's faults dirty", () => {
   const { metrics } = run([{ ...updateSpan(record)!, host: "mac" }]);
   assert.equal(metrics.clean_min_30, 28);
 });
+
+test("a call that began inside the update and timed out after its last write is planned maintenance too", () => {
+  // 11-08 on us-metal02: the coordinator's last write was 15:53:27Z, and an outbox send that began at 15:53:13Z timed out at 15:53:43Z.
+  const window = updateSpan(record)!;
+  const faults = readServiceFaults(service, "us-metal02").filter(fault => fault.from !== undefined && fault.from < fault.at);
+  assert.ok(faults.length > 0, "the fixture holds a call whose line gives its wait");
+  const cut = Math.max(...faults.map(fault => fault.from!)) + 1000;
+  assert.ok(faults.some(fault => fault.at > cut), "a call ends after the cut span");
+  const { metrics } = run([{ ...window, to: cut, host: "us-metal02" }]);
+  assert.equal(metrics.clean_min_30, 30);
+  assert.equal(metrics.daemon_fail_min_30, 0);
+});
