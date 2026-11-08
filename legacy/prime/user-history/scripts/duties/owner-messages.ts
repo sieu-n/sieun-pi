@@ -46,6 +46,8 @@ const ANSWER_GRACE_MS = 30 * 60_000;
 /**
  * The mark on an unlabeled line sent after the cutoff. Such a line counts from the next run, so a job whose run met every metric must still
  * label it: on 10-24 the 01:35Z run met, its job left the 00:54Z CI and RepoOps line unlabeled, and the 01:55Z run read unlabeled_lines 1.
+ * Each unlabeled slice names its line id as `item`, since a met run starts its job only when a slice has one (chat-duty-run.ts `acts`): on
+ * 11-08 the 10:11Z run met with 8 such lines, started no job, and the 10:38Z run read unlabeled_lines 8.
  */
 const UNCOUNTED = "not counted yet, label it in this run even when every metric is met, since the next run counts it; ";
 /** Where each chat's session file is: this box's own sessions, then this box's copy of the Mac's (src/host-catalogs.ts). */
@@ -160,7 +162,7 @@ for (const chat of chats) {
     if (ownerTurn[index]) { needed++; continue; }
     if (label?.label === "needed") needed++;
     else if (label?.label === "noise") noiseLines.push({ chat, at: line.at, ...Number.isFinite(Date.parse(label.at ?? "")) ? { labelled: Date.parse(label.at!) } : {}, case: label.case ?? "noise", text: line.text });
-    else { if (line.at < cutoff) unlabeled++; flagged.push({ kind: "unlabeled", chat, at: line.at, excerpt: `${line.at < cutoff ? "" : UNCOUNTED}id ${line.id}; wake: ${wakeOf[index]!.replace(/\s+/g, " ")}; sent: ${line.text.replace(/\s+/g, " ").slice(0, 600)}` }); }
+    else { if (line.at < cutoff) unlabeled++; flagged.push({ kind: "unlabeled", chat, at: line.at, item: line.id, excerpt: `${line.at < cutoff ? "" : UNCOUNTED}id ${line.id}; wake: ${wakeOf[index]!.replace(/\s+/g, " ")}; sent: ${line.text.replace(/\s+/g, " ").slice(0, 600)}` }); }
   }
   const seq = lines.filter(line => line.at >= start - 6 * 3_600_000 && line.at < end);
   for (let k = 0; k < seq.length; k++) {

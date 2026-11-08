@@ -29,7 +29,7 @@ function session(lines = defaultLines): string {
     ...lines.flatMap(([time, text]) => told(time, text))].join("\n") + "\n";
 }
 
-function precheck(lastRuns: unknown[] | undefined, labels: unknown[] = [], lines = defaultLines): { metrics: Record<string, number>; flagged: { kind: string; excerpt: string }[] } {
+function precheck(lastRuns: unknown[] | undefined, labels: unknown[] = [], lines = defaultLines): { metrics: Record<string, number>; flagged: { kind: string; excerpt: string; item?: string }[] } {
   const home = mkdtempSync(join(tmpdir(), "d11-cutoff-"));
   try {
     const data = join(home, "data");
@@ -93,4 +93,17 @@ test("a cut run whose job wrote a label line by its name before the cut still gi
   assert.equal(precheck([cutRun, earlierJobRun], [label]).metrics.unlabeled_lines, 1);
   assert.equal(precheck([cutRun, earlierJobRun], [{ ...label, by: "another job" }]).metrics.unlabeled_lines, 0);
   assert.equal(precheck([cutRun, earlierJobRun], [{ ...label, at: "2026-10-22T08:45:00Z" }]).metrics.unlabeled_lines, 0);
+});
+
+// 11-08: the 10:11Z run read every metric met and flagged 8 lines "not counted yet", but a met run starts its job only when a flagged slice
+// names an `item` (chat-duty-run.ts `acts`), so nobody labelled them and the 10:38Z run read unlabeled_lines 8. Each unlabeled slice names its
+// line id as its item.
+test("a met run flags each unlabeled line with its line id as the item, so the run starts its labelling job", () => {
+  const output = precheck([{ duty: "d11", at: at("2026-10-22T07:30:00Z"), trigger: "verify", job: { id: "j", name: "d11 job" } }]);
+  const metrics = (JSON.parse(readFileSync(join(import.meta.dirname, "../scripts/duties/owner-messages.duty.json"), "utf8")) as { metrics: DutyMetric[] }).metrics;
+  assert.equal(judge(metrics, output as never).verdict, "met");
+  const unlabeled = output.flagged.filter(item => item.kind === "unlabeled");
+  assert.equal(unlabeled.length, 2);
+  for (const slice of unlabeled) assert.equal(slice.item, /id (\S+);/.exec(slice.excerpt)?.[1]);
+  assert.ok(unlabeled.every(slice => slice.item !== undefined));
 });
