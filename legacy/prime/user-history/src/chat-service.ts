@@ -565,7 +565,7 @@ async function serve(options: Options): Promise<void> {
   process.send?.({ ready: true });
   tookPort();
   // Under the Type=notify unit, systemd counts the service started once it listens; a successor told it so as it took the port.
-  if (!parent) await notifySystemd(["READY=1"]).catch(error => log(`systemd-notify: ${error instanceof Error ? error.message : String(error)}`));
+  if (!parent) await notifySystemd(["READY=1"], process.env, log).catch(error => log(`systemd-notify: ${error instanceof Error ? error.message : String(error)}`));
   // A reload (`systemctl reload`, from scripts/release-chat.mjs) starts the next release beside this process, which answers until it took the port.
   if (listenFd !== null && primary && process.env.NOTIFY_SOCKET) {
     const { forwardRequest } = await import("./early-shell.ts");

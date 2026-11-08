@@ -56,12 +56,20 @@ export async function drainServer(server: Server, waitMs = 15_000): Promise<void
 }
 const netClose = NetServer.prototype.close;
 
-/** Tells systemd `fields` (sd_notify) from this process when it runs as a Type=notify service; false when it does not. */
-export async function notifySystemd(fields: readonly string[], env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+/**
+ * Tells systemd `fields` (sd_notify) from this process when it runs as a Type=notify service; false when it does not. The answer comes within
+ * NOTIFY_MS or the call fails: on 11-08 the first Type=notify start of release-500495f listened at 14:42:19Z and systemd counted it started
+ * only at 14:49:53Z, with no line saying where its READY=1 went.
+ */
+export async function notifySystemd(fields: readonly string[], env: NodeJS.ProcessEnv = process.env, log?: (line: string) => void): Promise<boolean> {
   if (!env.NOTIFY_SOCKET) return false;
-  await promisify(execFile)("systemd-notify", [`--pid=${process.pid}`, ...fields], { env });
+  const at = Date.now();
+  await promisify(execFile)("systemd-notify", [`--pid=${process.pid}`, ...fields], { env, timeout: NOTIFY_MS });
+  log?.(`systemd: told it ${fields.join(" ")} in ${Date.now() - at} ms`);
   return true;
 }
+/** systemd-notify answered in 13 ms from a test unit on us-metal02 on 11-08; 30 s fails only one that hangs. */
+const NOTIFY_MS = 30_000;
 
 /** The running chat's side of a hand-over (`listenForHandoff`). */
 export interface HandingOver {
@@ -244,7 +252,7 @@ export class HandoffParent {
    * own, takes the socket once `ready` resolved (or after TAKEOVER_MS), tells systemd this process is the service's main one, and only then
    * tells the running chat, which stops taking connections.
    */
-  shell(ready: Promise<void>, log: (line: string) => void, notify: (fields: readonly string[]) => Promise<unknown> = notifySystemd, takeoverMs = TAKEOVER_MS): EarlyShell {
+  shell(ready: Promise<void>, log: (line: string) => void, notify: (fields: readonly string[]) => Promise<unknown> = fields => notifySystemd(fields, process.env, log), takeoverMs = TAKEOVER_MS): EarlyShell {
     const server = createServer();
     return {
       server,
@@ -261,7 +269,9 @@ export class HandoffParent {
         server.on("request", handler);
         server.on("upgrade", upgrade);
         await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen({ fd: this.listenFd }, () => { server.off("error", reject); resolve(); }); });
-        await notify([`MAINPID=${process.pid}`, "READY=1"]).catch(error => log(`handoff: systemd-notify: ${error instanceof Error ? error.message : String(error)}`));
+        // systemd must take this process as the main one before the running chat exits, or it reads that exit as the service's end.
+        try { await notify([`MAINPID=${process.pid}`, "READY=1"]); }
+        catch (error) { log(`handoff: systemd-notify: ${error instanceof Error ? error.message : String(error)}; this successor exits and the running chat stops`); process.exit(1); }
         log(`handoff: took the port ${Math.round((Date.now() - began) / 1000)} s after the server was ready, ${waited === "ready" ? "once its first pass ended" : `with its first pass still going after ${takeoverMs / 1000} s`}`);
         await this.ask({ kind: "taken" });
         this.channel.once("disconnect", () => { own.close(); });
