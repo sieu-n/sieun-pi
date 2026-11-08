@@ -83,9 +83,15 @@ export function perMinute(orgs: readonly unknown[]): number {
 }
 /** Response keys that carry the next page, and the query parameter that takes it back. */
 const CURSOR_KEYS = ["next_cursor", "cursor", "continuationToken", "continuation_token", "next_page_id"] as const;
+/**
+ * Response keys a POST search answers its next page in, which go back in the request body under the name without `next`, such as
+ * `nextSearchAfter` as `searchAfter`. d2 followed query cursors only, so on 2026-11-08 it read POST /v1/creators/content/search as working
+ * while every page 2 after a post with no likes answered 500 (req_6cd1ea8809c58e2d26504d54b072f753).
+ */
+const BODY_CURSOR_KEYS = ["nextSearchAfter", "nextCursor", "next_cursor"] as const;
 
 interface Param { name: string; in: string; required?: boolean; example?: unknown; schema?: { example?: unknown; default?: unknown }; examples?: Record<string, { value?: unknown }> }
-type MediaExample = { example?: unknown; examples?: Record<string, { value?: unknown }>; schema?: { example?: unknown } };
+type MediaExample = { example?: unknown; examples?: Record<string, { value?: unknown }>; schema?: { example?: unknown; properties?: Record<string, unknown> } };
 export interface Operation { parameters?: Param[]; requestBody?: { content?: Record<string, MediaExample> }; responses?: Record<string, { content?: Record<string, MediaExample> }>; "x-example-query"?: Record<string, unknown> }
 export type OpenApi = { paths?: Record<string, Record<string, Operation>> };
 /**
@@ -327,8 +333,9 @@ export function bodyGap(operation: Operation, body: unknown): string | null {
  * An answer that says `has_more: false` has no next page: on 2026-10-18 prod GET /v1/facebook/live/profile/events for nasa answered
  * `has_more: false` and `cursor: null` with the Page's `next_page_id`, and sending that id as `cursor` hung prod for 90 s.
  */
-export function nextPage(operation: Operation, body: unknown): { param: string; value: string } | null {
+export function nextPage(operation: Operation, body: unknown): { param: string; value: unknown; in: "query" | "body" } | null {
   const accepts = new Set((operation.parameters ?? []).filter(p => p.in === "query").map(p => p.name));
+  const fields = new Set(Object.keys(operation.requestBody?.content?.["application/json"]?.schema?.properties ?? {}));
   const record = body as { data?: Record<string, unknown>; meta?: Record<string, unknown> } | null;
   for (const holder of [record?.data, record?.meta, record as Record<string, unknown> | null]) {
     if (!holder || typeof holder !== "object" || Array.isArray(holder)) continue;
@@ -337,10 +344,23 @@ export function nextPage(operation: Operation, body: unknown): { param: string; 
       const value = holder[key];
       if (typeof value !== "string" || !value) continue;
       const param = accepts.has(key) ? key : accepts.has("cursor") ? "cursor" : accepts.has("continuationToken") ? "continuationToken" : null;
-      if (param) return { param, value };
+      if (param) return { param, value, in: "query" };
+    }
+    for (const key of BODY_CURSOR_KEYS) {
+      const value = holder[key];
+      if (!(typeof value === "string" ? value : Array.isArray(value) && value.length)) continue;
+      const bare = key.replace(/^next_?/, "");
+      const param = [bare, bare.charAt(0).toLowerCase() + bare.slice(1)].find(name => fields.has(name));
+      if (param) return { param, value, in: "body" };
     }
   }
   return null;
+}
+
+/** Page 1's request with its answer's next-page token where the operation takes it back. */
+export function pageTwoRequest(request: ProbeRequest, next: NonNullable<ReturnType<typeof nextPage>>): ProbeRequest {
+  if (next.in === "query") return { ...request, query: { ...request.query, [next.param]: String(next.value) } };
+  return { ...request, body: { ...(request.body as Record<string, unknown>), [next.param]: next.value } };
 }
 
 /**
@@ -720,7 +740,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
     const gap = answer.verdict === "ok" && answer.status === 200 ? bodyGap(operation, answer.body) : null;
     const result = gap ? { ...answer, verdict: "portal" as const, code: "body_shape", note: `${answer.note}: ${gap}` } : answer;
     const next = result.verdict === "ok" ? nextPage(operation, result.body) : null;
-    if (next) pageTwoRuns.push(call(org, `${op} page 2`, { ...request, query: { ...request.query, [next.param]: next.value } }, `page 2 with its own ${next.param}`)
+    if (next) pageTwoRuns.push(call(org, `${op} page 2`, pageTwoRequest(request, next), `page 2 with its own ${next.param}`)
       .then(second => { pageTwo.set(op, second); }));
     return result;
   }));
@@ -755,7 +775,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
     const fedRequest = { ...request, query: { ...request.query, ...values } };
     const result = await call(org, op, fedRequest, `${chain.what} from this run's ${chain.from} answer`);
     const next = result.verdict === "ok" ? nextPage(operation, result.body) : null;
-    if (next) pageTwo.set(op, await call(org, `${op} page 2`, { ...fedRequest, query: { ...fedRequest.query, [next.param]: next.value } }, `page 2 with its own ${next.param}`));
+    if (next) pageTwo.set(op, await call(org, `${op} page 2`, pageTwoRequest(fedRequest, next), `page 2 with its own ${next.param}`));
     return result;
   }));
   await Promise.all([...pageTwoRuns, ...opened.map(job => cancel(job.org, job.id))]);
