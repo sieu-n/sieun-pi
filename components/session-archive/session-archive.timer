@@ -1,0 +1,9 @@
+[Unit]
+Description=Archive idle job sessions once a day
+
+[Timer]
+OnCalendar=*-*-* 19:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

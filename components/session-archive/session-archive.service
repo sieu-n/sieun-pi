@@ -1,0 +1,11 @@
+[Unit]
+Description=Archive job sessions idle over 24 h through the chat service (components/session-archive)
+After=prime-agent-daemon.service
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -B %h/.local/share/session-archive/current/sweep.py
+StandardOutput=append:%h/.prime/agent/session-archive/sweep.log
+StandardError=append:%h/.prime/agent/session-archive/sweep.log
+TimeoutStartSec=infinity

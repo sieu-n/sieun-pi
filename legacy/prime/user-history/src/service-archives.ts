@@ -19,10 +19,12 @@ export type ServiceArchiveReason =
   | "idle_root_end"
   /** A chat's sweep of a root the cleanup started whose steps now name other workers (`Chats.retireReplaced`). */
   | "replaced_job_end"
+  /** The daily sweep of job sessions idle over 24 h with no open step, wake or live session below them (components/session-archive). */
+  | "idle_job_end"
   /** The service's stop of a session it made for itself: a spare, a create whose rename or account use failed. */
   | "service_cleanup";
 export type ArchiveBy = "owner" | ServiceArchiveReason;
-export const SERVICE_ARCHIVE_REASONS: readonly ServiceArchiveReason[] = ["duty_job_end", "idle_root_end", "replaced_job_end", "service_cleanup"];
+export const SERVICE_ARCHIVE_REASONS: readonly ServiceArchiveReason[] = ["duty_job_end", "idle_root_end", "replaced_job_end", "idle_job_end", "service_cleanup"];
 export const isServiceArchiveReason = (value: unknown): value is ServiceArchiveReason => SERVICE_ARCHIVE_REASONS.includes(value as ServiceArchiveReason);
 
 export interface ServiceArchive {
