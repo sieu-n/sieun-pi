@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseDutyInput } from "../src/shared/chat-duties.ts";
-import { type AuditRow, type Deploy, type Fault, type HandData, type RefState, auditSql, classifyConfig, designOnProd, gitDeclaredCaps, gitReleaseHolds, markDeclared, parseControlDefaults, groupAudit, handExecs, experimentExecs, filedAfter, isSessionProcess, nextState, startedByTest, hostWriters, oneOffs, parseBox, parseRegistry, releaseAt, report, WRITES, HOST_WRITES } from "../scripts/duties/hand-fixes.ts";
+import { type AuditRow, type Deploy, type Fault, type HandData, type RefState, auditSql, classifyConfig, classifyEvent, designOnProd, gitDeclaredCaps, gitReleaseHolds, markDeclared, parseControlDefaults, groupAudit, handExecs, experimentExecs, filedAfter, isSessionProcess, nextState, startedByTest, hostWriters, oneOffs, parseBox, parseRegistry, releaseAt, report, WRITES, HOST_WRITES } from "../scripts/duties/hand-fixes.ts";
 
 const DIR = join(import.meta.dirname, "..", "scripts", "duties");
 const AT = Date.parse("2026-10-16T05:08:27Z");
@@ -549,4 +549,15 @@ test("a hand contact_points.retract is F34, and the contact refresh's own drop i
   assert.equal(hand.kind === "fault" && hand.fault.id, "F34");
   const refresh = classifyConfig({ actor: "contact-refresh", writer: "contact-refresh", keys: ["contact_points.retract"], text: "contact/complete refresh of instagram/allure: its run refused the page these points came from" }, reg);
   assert.equal(refresh.kind, "automatic");
+});
+
+test("an account the world-move or intake tool sets active is the product's own, and a hand activation is still F5", async () => {
+  // d3 at 11-08 08:40Z read prod's 18 world_move activations of 11-07 18:44Z and staging's intake activation of account 424 as F5 repeats.
+  const reg = await registry();
+  const at = Date.parse("2026-11-07T18:44:15Z");
+  assert.equal(classifyEvent({ accountId: 273, at, outcome: "active", errorCode: "", actor: "world_move" }, reg)?.kind, "automatic");
+  assert.equal(classifyEvent({ accountId: 424, at, outcome: "active", errorCode: "", actor: "operator:engage-intake" }, reg)?.kind, "automatic");
+  const hand = classifyEvent({ accountId: 16, at, outcome: "active", errorCode: "", actor: "operator:engage-frozen-thaw" }, reg);
+  assert.equal(hand?.kind === "fault" && hand.fault.id, "F5");
+  assert.equal(classifyEvent({ accountId: 16, at, outcome: "parked", errorCode: "", actor: "world_move" }, reg), null);
 });
