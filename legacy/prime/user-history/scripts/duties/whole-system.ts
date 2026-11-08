@@ -2035,25 +2035,38 @@ interface Folder { dir: string; parentFile: string; file: string }
  * The children an rlm.delete_subagent call in a parent transcript deleted: each `rlm_child_id='sub-...'` whose line is a toolResult and
  * whose call line before it calls delete_subagent, as resume_paused.py's parent_deleted reads it. A plain substring of the id missed
  * fair-self-heal (sub-6430b61d) on 10-16. One scan reads every child of the parent: a scan per child of a 68 to 114 MB chat transcript held
- * the chat's event loop 0.4 to 0.57 s at a time on us-metal02 on 10-20 (cpu-profiles, 10.7 s of 70 min).
+ * the chat's event loop 0.4 to 0.57 s at a time on us-metal02 on 10-20 (cpu-profiles, 10.7 s of 70 min). Each search stays inside the
+ * marker's line and the span back to its call line: an unbounded indexOf for "delete_subagent" per spawn result read to the end of the file
+ * when no later delete existed, and held the loop 1.42 s of a 1.61 s span at 09:20:25Z on 11-08.
  */
 export function deletedChildren(text: Buffer): Set<string> {
   const marker = "rlm_child_id='";
   const deleted = new Set<string>();
+  let line: MarkerLine = { end: -1, result: -1, deletes: false };
   for (let at = text.indexOf(marker); at >= 0; at = text.indexOf(marker, at + marker.length)) {
     const idAt = at + marker.length;
     const close = text.indexOf("'", idAt);
     if (close < 0) break;
     const child = text.toString("utf8", idAt, close);
     if (deleted.has(child)) continue;
-    const start = text.lastIndexOf(10, at) + 1;
-    const result = text.indexOf('"toolResult"', start);
-    const call = text.lastIndexOf('"toolCall"', start);
-    if (result < 0 || result > at || call < 0) continue;
-    const deleteAt = text.indexOf("delete_subagent", text.lastIndexOf(10, call) + 1);
-    if (deleteAt >= 0 && deleteAt < start) deleted.add(child);
+    if (at > line.end) line = markerLine(text, at);
+    if (line.deletes && line.result < at) deleted.add(child);
   }
   return deleted;
+}
+
+/** A line that holds a child id: where it ends, where its first "toolResult" starts (-1 for none) and whether the call before it calls delete_subagent. */
+interface MarkerLine { end: number; result: number; deletes: boolean }
+
+function markerLine(text: Buffer, at: number): MarkerLine {
+  const start = text.lastIndexOf(10, at) + 1;
+  const newline = text.indexOf(10, at);
+  const end = newline < 0 ? text.length : newline;
+  const found = text.subarray(start, end).indexOf('"toolResult"');
+  const result = found < 0 ? -1 : start + found;
+  const call = result < 0 ? -1 : text.lastIndexOf('"toolCall"', start);
+  const deletes = call >= 0 && text.subarray(text.lastIndexOf(10, call) + 1, start).includes("delete_subagent");
+  return { end, result, deletes };
 }
 
 /**
