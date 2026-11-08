@@ -415,3 +415,25 @@ ${PRELUDE.trim()}
   assert.deepEqual(asked, Array(2).fill(["-o", "BatchMode=yes", "us-metal02",
     `exec "\${SHELL:-sh}" -lc 'r=$(git -C "$(dirname ${repo}/convex/x.ts)" rev-parse --show-toplevel) && exec node "$r/scripts/repo/agent/convex-save-check.mjs" take --root "$r" --session ${session}'`]));
 });
+
+// Prime test.39 revives a snapshot record over 64 KiB lazily and gives the cell namespace a _LazyBuiltins dict copied from builtins at restore,
+// before the prelude patches open, so on 11-07 and 11-08 facts-heal's open(..., 'w') writes left no record. The plain dict copy stands in for
+// _LazyBuiltins where the Prime kernel venv is missing.
+const kernelPython = join(process.env.HOME ?? "", ".prime/agent/kernel-venv/bin/python");
+for (const [name, python, copy] of [
+  ["a copy of builtins", "python3", "dict(builtins.__dict__)"],
+  ["Prime's _LazyBuiltins", kernelPython, "__import__('rlm.repl', fromlist=['_LazyBuiltins'])._LazyBuiltins(ns)"],
+]) {
+  test(`a revived kernel whose namespace holds ${name} journals each cell's open()`, { skip: !existsSync(python) && python !== "python3" }, () => {
+    reset();
+    const cell = (file) => `${PRELUDE}open(${JSON.stringify(join(checkout, file))}, "w").write("x")\n`;
+    const run = spawnSync(python, ["-B", "-c", `import builtins, sys
+ns = sys.modules["__main__"].__dict__
+ns["__builtins__"] = ${copy}
+for code in ${JSON.stringify([cell("src/revived-1.txt"), cell("src/revived-2.txt")])}:
+    exec(compile(code, "<cell>", "exec"), ns)
+`], { env: env({}), encoding: "utf8", timeout: 60_000 });
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(journal().map((r) => r.path), ["src/revived-1.txt", "src/revived-2.txt"]);
+  });
+}

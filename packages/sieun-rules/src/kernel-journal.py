@@ -626,10 +626,28 @@ def journaling_system(original):
     return system
 
 
+def keep_cell_builtins() -> None:
+    """Writes each patched builtin into the cell namespace's own copy of builtins. Prime test.39 revives a snapshot record over 64 KiB lazily
+    and gives the namespace a _LazyBuiltins dict copied from builtins at restore, before the prelude runs, so a cell's bare open() skipped
+    this journal and kernel-read.py's guard until every lazy name was read. On 11-08 facts-heal's open(..., 'w') writes from 18:32Z on 11-07
+    left no record. A dict that holds no copied names, as a Prime that looks builtins up live would use, is left alone. Delete this once
+    Prime ships that fix."""
+    cell = getattr(sys.modules.get("__main__"), "__dict__", {}).get("__builtins__")
+    if isinstance(cell, dict) and cell is not builtins.__dict__ and "open" in cell:
+        for name, value in builtins.__dict__.items():
+            if cell.get(name) is not value:
+                cell[name] = value
+
+
+def each_cell() -> None:
+    keep_cell_builtins()
+    report()
+
+
 def install() -> None:
     if not SESSION or getattr(builtins.open, "journals_writes", False):
         return
-    sys.global_rules_convex_report = report
+    sys.global_rules_convex_report = each_cell
     builtins.open = io.open = journaling_open(builtins.open)
     for name in ("replace", "rename"):
         setattr(os, name, journaling_move(getattr(os, name)))
