@@ -561,3 +561,10 @@ test("an account the world-move or intake tool sets active is the product's own,
   assert.equal(hand?.kind === "fault" && hand.fault.id, "F5");
   assert.equal(classifyEvent({ accountId: 16, at, outcome: "parked", errorCode: "", actor: "world_move" }, reg), null);
 });
+
+test("an import the crawler's relogin INTAKE lane sets active is the product's own", async () => {
+  // relogin.py's INTAKE lane logs new imports in as actor engage-relogin from 11-08 10:19Z (73819e12ea).
+  const reg = await registry();
+  const at = Date.parse("2026-11-08T12:00:00Z");
+  assert.equal(classifyEvent({ accountId: 424, at, outcome: "active", errorCode: "", actor: "engage-relogin" }, reg)?.kind, "automatic");
+});
