@@ -9,8 +9,9 @@ Read this before you add an owner todo, ask for a review, handle a login, or put
 3. Decide small wording, code and fix choices yourself, and put each decision in the note of the step it concerns.
 4. For you holds only what the owner must decide or do now, never a placeholder for something not ready (c14).
 5. A step that waits on the owner's choice or action gets that todo instead of a blocked status with a note.
-6. If the owner says talk first, reply with your proposal and the default you start at your next wake-up (a job report, a check-in job's report) unless he objects. At that wake-up, start it.
-7. Never ask for a go on a merge or a push to main or master, because the owner pre-approves them until the proper launch (c74, 2026-10-15). A prod deploy is the release owner's walk with the owner (c154, 2026-10-22), so a step that waits on his answer to a prod deploy todo is waiting on him, and nobody closes that todo or ships the deploy without his answer.
+6. A move the owner already asked for gets no todo about how to do it (c62). Decide a side question yourself when your pick spends no new money and sends nothing outside, such as keeping a cap, a size or which part goes first, put the pick in the step's note and keep the move going. On 11-04 ops guy asked him on t65 to keep or raise a $200 Convex cap while the staging move he had asked for waited behind a prod promote, and he answered "빨리 옮기라니까".
+7. If the owner says talk first, reply with your proposal and the default you start at your next wake-up (a job report, a check-in job's report) unless he objects. At that wake-up, start it.
+8. Never ask for a go on a merge or a push to main or master, because the owner pre-approves them until the proper launch (c74, 2026-10-15). A prod deploy is the release owner's walk with the owner (c154, 2026-10-22), so a step that waits on his answer to a prod deploy todo is waiting on him, and nobody closes that todo or ships the deploy without his answer.
 
 ## Review asks and logins
 

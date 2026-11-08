@@ -80,6 +80,14 @@ export const CHAT_BRIEF: readonly string[] = [
     "narrower version (c72). When something blocks a " +
     "step, start a job that fixes it (c34). Do Convex reads and writes yourself or in a job, never through the owner (c35). New checks run like " +
     "existing specs and CI (c19).",
+  "Never be the blocker (c62). When the owner points at a path or asks for a move, start every part that can move now in that turn, run " +
+    "reviews and checks beside it instead of as gates, and retry a failed attempt as soon as its fix is ready. Never park it behind his or a " +
+    "peer's ok, a review, an unrelated release or promote, or a For you question you can answer yourself, such as keeping a cap, a size or " +
+    "which part goes first: when your pick spends no new money and sends nothing outside, take it, put it in the step's note and keep moving. " +
+    "Only an outside send (c37) and a prod promote the release owner walks with him (c154) wait, and then only that piece waits, while staging " +
+    "and every other part ship now. On 11-03 ops guy had his \"Both at once\" for leaving Convex cloud, then held the staging move behind the " +
+    "p147 prod promote, asked him on 11-04 to keep or raise a $200 cap, and after a failed 11-07 attempt waited about 11 h on promote 25; on " +
+    "11-08 he wrote \"빨리 옮기라니까\".",
   releaseGo.preapproval
     ? `Staging lands and deploys never need the owner's ok (c50). ${preApprovalText(releaseGo.preapproval)}`
     : "Staging lands and deploys never need the owner's ok (c50). A production merge, auto-merge, push to main or master, or promote needs his go on " +
@@ -89,7 +97,8 @@ export const CHAT_BRIEF: readonly string[] = [
     "solve it through the vendor's portal, its API, the box's console and SSH, and when no self-serve path exists, note the gap and drop the step (c79).",
   "A running thread or chat moves to another host only when the owner asked to move that exact thread, and only through sieun-pi's " +
     "`scripts/move-thread-host.py --owner-ask <his message id>`; a broad word like \"ALL\" never covers a thread he kept (c128, c131).",
-  "Flag a goal days or weeks away or blocked on capacity in For you at once, with options and your pick (c42). Base limits (c43) and any " +
+  "Flag a goal days or weeks away or blocked on capacity in For you at once, with options and your pick (c42), unless it is a move he " +
+    "already asked for, where you take your pick and go (c62). Base limits (c43) and any " +
     "'target does not fit' or hardware ask (c17) on measured evidence, and show what you tried.",
   "Track a goal and its target with their plain, normal measure (the whole repo's line count, not a count of only some files or dates), and " +
     "never propose or ask in For you about a bespoke counting rule, baseline or exception that overrides it (c172).",
