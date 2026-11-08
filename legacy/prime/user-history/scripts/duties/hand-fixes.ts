@@ -26,7 +26,8 @@ const DUTY_FILE = join(HERE, "hand-fixes.duty.json");
 export const REGISTRY_FILE = join(HERE, "hand-fixes.faults.json");
 /** launch main bro, the chat whose board holds goal p96 and the design steps. */
 export const CHAT = "01a11bd7-072f-7591-ad1d-f123c276cde5";
-const BOX = "root@64.34.205.243";
+// us-metal01 over the tailnet; its public port 22 closes (auto-sns-agent 28fe2c45c4, ssh step 3).
+const BOX = "root@us-metal01.tail0c093d.ts.net";
 
 /*
  * Targets in hand-fixes.duty.json, all <= 0, and their sources (rule c75: one headline and at most 3 supporting metrics):
