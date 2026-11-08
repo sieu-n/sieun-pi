@@ -99,7 +99,9 @@ export const UNREACHED = /^(?:fetch failed|The operation was aborted due to time
  * falling asleep, waking or flapping, so that minute is offline too. On 10-23 Tailscale read the Mac offline 13:53Z to 13:55Z and 13:57Z to
  * 14:22Z, its relay read "fetch failed" at 13:56Z, and d7 counted the minute unknown; at 14:29Z, between offline stretches, the same read came
  * with 2 handshake timeouts to the Mac and d7 counted the minute dirty. Of the Mac's 233 unreached reads from 10-01 to 10-23, 8 sat next to an
- * offline read, 5 of them between two.
+ * offline read, 5 of them between two. A Mac that read a flat battery (`flatBattery`) just before counts the same, because it is shutting down:
+ * on 11-08 it read 1% on battery from 16:32Z to 16:39Z, the relay timed out at 16:40:30Z, and d7's 16:41:19Z run came before Tailscale read it
+ * offline at 16:42:30Z, so it counted 16:40Z unknown, 29 of 30 clean.
  */
 export function offlineAround(watch: readonly WatchLine[], box: string, from: number, to: number): boolean {
   const view = (line: WatchLine) => hostViews(line).find(candidate => candidate.name === box);
@@ -110,7 +112,7 @@ export function offlineAround(watch: readonly WatchLine[], box: string, from: nu
       const line = back ? watch.findLast(entry => { const at = Date.parse(entry.at); return at < edge && at >= edge - MINUTE; })
         : watch.find(entry => { const at = Date.parse(entry.at); return at >= edge && at < edge + MINUTE; });
       if (!line) break;
-      if (view(line)?.offline) return true;
+      if (view(line)?.offline || (back && flatBattery(view(line)?.usable ?? null))) return true;
       if (!unreached(line)) break;
       edge = back ? Date.parse(line.at) : Date.parse(line.at) + 1;
     }
