@@ -194,7 +194,7 @@ export function memoryShares(view: HostView): Map<MemoryGroupId, number> {
  * The feed groups a job rig's processes fall in: the feed names a process no chat, pm2, browser or Docker owner holds by its script or app
  * (`other:<name>`), and a dev server name such as vite or next-server reads Dev (host-stats.ts `groupOf`).
  */
-const RIG_GROUPS: readonly MemoryGroupId[] = ["other", "dev"];
+export const RIG_GROUPS: readonly MemoryGroupId[] = ["other", "dev"];
 
 /**
  * What the Mac's job rigs held that minute in GB (HostView.jobRigs, worker-footprint.py `job_rigs`): the processes jobs started under

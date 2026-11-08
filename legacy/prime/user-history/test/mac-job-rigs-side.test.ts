@@ -77,3 +77,22 @@ print(json.dumps(wf.job_rigs(table, {40})))`;
   const rigs = JSON.parse(execFileSync("python3", ["-c", script, HELPER], { encoding: "utf8" })) as { dir: string; pids: number; bytes: number }[];
   assert.deepEqual(rigs.map(({ dir, pids, bytes }) => ({ dir, pids, bytes })), [{ dir: "scratch/abc", pids: 2, bytes: 21000 }, { dir: "work/smc-enc", pids: 1, bytes: 12000 }]);
 });
+
+// 11-08 11:11Z: a us-metal02 job (01a1bad2) ran virev-demo's whole check on the Mac with `ssh mac '... nohup sh -c ...'` in its checkout, so no
+// rig dir named it, and at 11:12:30Z the feed read the tree as other:bash at 5.17 GB. ssh carried the kernel's LC_PRIME_SESSION tag with it.
+test("the footprint helper counts a process with no rig dir under the scratch dir of the session its LC_PRIME_SESSION tag names", () => {
+  const script = `
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("wf", sys.argv[1]); wf = importlib.util.module_from_spec(spec); spec.loader.exec_module(wf)
+home = wf.HOME
+tag = "LC_PRIME_SESSION=01a1bad2-9505-72c1-9f7e-c9fb67d3c820@us-metal02"
+table = {10: (1, 10, 0, (["sh", "-c", "node kit-check.mjs"], ["LANG=en_US.UTF-8", tag])), 11: (10, 10, 0, (["node", "kit-check.mjs"], [tag])),
+         20: (1, 20, 0, (["python", "x.py"], ["RLM_SESSION_DIR=/a", tag])), 30: (1, 30, 0, (["zsh"], ["LC_PRIME_SESSION=garbage@mac"])),
+         40: (1, 40, 0, (["python", "y.py"], [tag]))}
+cwd = {10: home + "/Documents/Github/auto-sns-agent/apps/virev-demo", 11: home + "/Documents/Github/auto-sns-agent/apps/virev-demo", 20: home, 30: home, 40: home}
+wf.cwd_of = cwd.get
+wf.footprint = lambda pid: pid * 1000
+print(json.dumps(wf.job_rigs(table, {40})))`;
+  const rigs = JSON.parse(execFileSync("python3", ["-c", script, HELPER], { encoding: "utf8" })) as { dir: string; pids: number; bytes: number }[];
+  assert.deepEqual(rigs.map(({ dir, pids, bytes }) => ({ dir, pids, bytes })), [{ dir: "scratch/01a1bad2-9505-72c1-9f7e-c9fb67d3c820", pids: 2, bytes: 21000 }]);
+});

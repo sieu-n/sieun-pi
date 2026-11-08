@@ -75,6 +75,15 @@ test("the unusable excerpt names each red minute's largest owner and the newest 
   assert.equal(result.flagged[0]!.excerpt, "Mac: 2 of 3 watched minutes in the last 24 h read unusable (swapouts 2; largest owner run_mps_bench.sh in 1, Google Chrome in 1; the newest at 03:54:30Z with browsers 28.38 GB, agents 3.27 GB)");
 });
 
+// 11-08 11:12:30Z: a us-metal02 job's check, run on the Mac over ssh, read as other:bash at 5.17 GB, and d1 named no job.
+test("a red minute whose largest owner is a script carries the minute's largest job rig, and a browser owner does not", () => {
+  const at = (when: string, owner: string, label: string): WatchLine => ({ host: "us-metal02", at: when, usable: null, workers: 0, workerGb: 0, top: [], hosts: [{ name: "mac",
+    usable: { pressureLevel: 2, swapoutsPerS: 10686, kernelTaskPct: 20, owners: [{ owner, label, gb: 5.17 }], groups: { other: 6.2 } }, workers: 0, workerGb: 0, top: [],
+    jobRigs: [{ dir: "scratch/01a1bad2-9505-72c1-9f7e-c9fb67d3c820", gb: 5.02, pids: 4, command: "node ../../packages/config/kit-check.mjs" }] }] } as unknown as WatchLine);
+  assert.deepEqual(macUnusableMinutes([at("2026-11-08T11:12:30.000Z", "other:bash", "bash"), at("2026-11-08T11:20:30.000Z", "browser:chrome", "Google Chrome")]).ledBy,
+    { "bash (job rig ~/scratch/01a1bad2-9505-72c1-9f7e-c9fb67d3c820)": 1, "Google Chrome": 1 });
+});
+
 test("mac_unusable_min reports its 24 h window and its newest unusable minute, so d9 reads old red minutes as a lagging window", async () => {
   const deps = { platform: "linux", exec: async () => reading("7.26", 37, ["200", "200"]), wait: async () => {} } as const;
   const red = await measureMac({ ...deps, watch: async () => [minute(113, 0, "2026-10-28T01:17:30.013Z"), minute(98, 10969, "2026-10-28T03:13:30.038Z"), minute(40, 0, "2026-10-28T06:24:30.000Z")] }, 0);

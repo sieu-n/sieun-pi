@@ -11,7 +11,8 @@ import { treeMb, treePids } from "./demo-sandbox.ts";
 import type { MemoryGroupId } from "../../src/shared/types.ts";
 import { isLinuxReading, readWatch, type UsableMiss, unusable, type WatchLine } from "../../src/mac-usable-watch.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
-import { hostViews } from "./whole-system.ts";
+import { groupOf } from "../../../../../components/prime-relay/host-stats.ts";
+import { hostViews, RIG_GROUPS } from "./whole-system.ts";
 import { macSilent } from "./mac-reach.ts";
 
 /**
@@ -240,7 +241,8 @@ export function macUnusableMinutes(lines: readonly WatchLine[]): { read: number;
   const missedIn = new Map<number, Set<UsableMiss>>();
   const leader = new Map<number, string>();
   for (const line of lines) {
-    const usable = hostViews(line).find(view => view.name === MAC_HOST)?.usable;
+    const view = hostViews(line).find(candidate => candidate.name === MAC_HOST);
+    const usable = view?.usable;
     // The Mac writes no Linux reading, so a Linux one named the Mac is another box's (whole-system.ts UNNAMED_LINUX_HOST).
     if (!usable || isLinuxReading(usable)) continue;
     const minute = Math.floor(Date.parse(line.at) / 60_000);
@@ -249,7 +251,8 @@ export function macUnusableMinutes(lines: readonly WatchLine[]): { read: number;
     if (!missed.length) continue;
     missedIn.set(minute, new Set([...missedIn.get(minute) ?? [], ...missed]));
     const top = usable.owners?.[0];
-    if (top) leader.set(minute, top.label);
+    const rig = view?.jobRigs?.[0];
+    if (top) leader.set(minute, rig && RIG_GROUPS.includes(groupOf(top.owner)) ? `${top.label} (job rig ~/${rig.dir.slice(0, 50)})` : top.label);
     if (Date.parse(line.at) >= (lastAt ?? 0)) lastGroups = usable.groups;
     lastAt = Math.max(lastAt ?? 0, Date.parse(line.at));
   }
@@ -264,6 +267,8 @@ export function macUnusableMinutes(lines: readonly WatchLine[]): { read: number;
  * Who held the Mac's memory in its red minutes, so the chat can tell the owner his own tabs from agent load with no code job: each red minute's
  * largest feed owner, and the groups of the newest one. On 11-04 the one new red minute (03:54:30Z, 8,014 swapouts a second) had browsers at
  * 28.4 GB with his own Google Chrome at 21.5 GB and agents at 3.3 GB, while the 43 minutes before it were MPS runs a job started (board step p754).
+ * A largest owner the feed names by its script or app (RIG_GROUPS) carries the minute's largest job rig, whose dir names the job's session:
+ * at 11:12:30Z on 11-08 a us-metal02 job's check over ssh read only as "bash".
  */
 export function macRedHolders(day: ReturnType<typeof macUnusableMinutes>): string {
   const led = Object.entries(day.ledBy ?? {}).sort((a, b) => b[1] - a[1]).map(([label, n]) => `${label} in ${n}`).join(", ");

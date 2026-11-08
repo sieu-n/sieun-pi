@@ -316,10 +316,20 @@ HOME = os.path.expanduser("~")
 RIG_DIR = re.compile(r"(?:^|[=:\s,\"'])" + re.escape(HOME) + r"/(scratch|work)/([^/\s:,\"']+)")
 
 
+SESSION_TAG = re.compile(r"^LC_PRIME_SESSION=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})@")
+
+
 def rig_dir(text):
     """`scratch/<id>` or `work/<job>` for the first rig dir a path or command line names, or None."""
     match = RIG_DIR.search(text or "")
     return f"{match.group(1)}/{match.group(2)}" if match else None
+
+
+def tag_rig(env):
+    """`scratch/<session id>` for the session the LC_PRIME_SESSION tag in `env` names (kernel-own.py sets it in every kernel, and ssh carries it
+    with the other LC_* variables), or None."""
+    match = next((m for m in map(SESSION_TAG.match, env or ()) if m), None)
+    return f"scratch/{match.group(1)}" if match else None
 
 
 def job_rigs(table, seen):
@@ -327,7 +337,10 @@ def job_rigs(table, seen):
     there (its cwd) or its command names a path there, and its descendants count with it. A Mac job that starts a run over ssh from another
     box leaves no RLM_SESSION_DIR in it, so the pressure feed names it by its script: from 14:48Z to 14:57Z on 11-03 Crawler VP's
     small model classify job held 30.81 GB of the Mac as other:run_mps_bench.sh under ~/scratch/01a1a15b-.../ and d7 booked 11 unusable
-    minutes to the owner. Each dir carries its pid count, summed footprint and largest process."""
+    minutes to the owner. A process with no rig dir whose LC_PRIME_SESSION names the session that started it over ssh counts under that
+    session's scratch dir: at 11:12:30Z on 11-08 a us-metal02 job's whole virev-demo check, run on the Mac in its checkout with
+    `ssh mac '... nohup sh -c ...'`, held 5.17 GB as other:bash and d1 named no job. Each dir carries its pid count, summed footprint and
+    largest process."""
     def free(pid):
         args = table[pid][3]
         return bool(args) and pid not in seen and pid != os.getpid() and not PRIME.search(" ".join(args[0])) and \
@@ -335,7 +348,7 @@ def job_rigs(table, seen):
     own = {}
     for pid in table:
         if free(pid):
-            found = rig_dir((cwd_of(pid) or "") + "/") or rig_dir(" ".join(table[pid][3][0]))
+            found = rig_dir((cwd_of(pid) or "") + "/") or rig_dir(" ".join(table[pid][3][0])) or tag_rig(table[pid][3][1])
             if found:
                 own[pid] = found
 
