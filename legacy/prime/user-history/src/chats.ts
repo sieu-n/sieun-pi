@@ -1081,7 +1081,7 @@ export class Chats {
         if ((await this.summary(job.id))?.lifecycle === "archived") { this.retired.add(job.id); return; }
         if (await this.updateHold("replaced root is archived")) return;
         if (await this.source.waking?.(job.id) || await this.threads.sessionActive(job.id)) return;
-        await this.threads.archive(job.id, "replaced_job_end");
+        await this.archiveRoot(job.id, "replaced_job_end");
         this.retired.add(job.id);
         const left = await this.leftovers(job.chat, join(artifactsRoot(), job.id), job.id);
         this.log(`chat ${job.chat.slice(0, 8)}: archived replaced root ${job.name} instead of resuming it: ${job.steps.join(", ")} now name ${[...new Set(job.by)].join(", ")}; ` +
@@ -1245,6 +1245,12 @@ export class Chats {
     }
   }
 
+  /** Archives a root once the idle unload's stop of it, if one is under way, ended (`CheckInSource.unloading`), so it gets one kill. */
+  private async archiveRoot(id: string, why: ArchiveBy): Promise<void> {
+    await this.source.unloading?.(id)?.catch(() => false);
+    await this.threads.archive(id, why);
+  }
+
   /**
    * Ends each create_session root of a chat that reported while no open step names it (`idleRoots`): its brief,
    * last report and the chat it reports to are saved in `<data dir>/job-resumes`, then it is archived, so its worker ends, and the chat gets a
@@ -1286,7 +1292,7 @@ export class Chats {
           const model = sessionFile ? await sessionModel(sessionFile) : undefined;
           const path = await resumes.store.save({ chat: row.id, childId: id, job: agent.sender, steps: [], event: "no open step names it", brief,
             report: jobReport(messages, agent.sender), endedAt: now, ...model ? { model } : {} });
-          await this.threads.archive(id, "idle_root_end");
+          await this.archiveRoot(id, "idle_root_end");
           const left = await this.leftovers(row.id, join(artifactsRoot(), id), id);
           this.log(`chat ${row.id.slice(0, 8)}: archived idle root ${agent.name} (quiet ${quiet} min); saved state ${path}; stopped ${left.stopped.map(entry => entry.pid).join(", ") || "no process"}, closed ${left.tabs} Aside tabs${copiesNote(left)}`);
         } catch (error) {

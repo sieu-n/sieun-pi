@@ -706,6 +706,11 @@ export class IdleUnloader {
     this.running.add(tracked);
   }
 
+  /** The stop under way for `sessionId`, if any; it resolves true once the daemon stopped the session. */
+  stopping(sessionId: string): Promise<boolean> | undefined {
+    return this.out.get(sessionId);
+  }
+
   /** The session's stop, shared by every caller while it is under way; true once the daemon stopped it. */
   private stop(row: SessionSummary, chats: ReadonlySet<string>, why: UnloadReceipt["why"] = "idle"): Promise<boolean> {
     const known = this.out.get(row.sessionId);

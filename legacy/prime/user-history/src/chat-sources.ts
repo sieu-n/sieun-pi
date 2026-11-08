@@ -388,6 +388,12 @@ export interface CheckInSource {
   deletedLeftovers?: (chat: string, away: Set<string>) => Promise<Leftovers | null>;
   /** Whether a session holds a pending `board.wake` (src/wakes.ts); the cleanup keeps such a job, since its wake would reopen it. */
   waking?: (session: string) => Promise<boolean>;
+  /**
+   * The idle unload's stop of a session under way (src/idle-unload.ts `stopping`), or undefined. A root's archive waits for it and does not
+   * send a second kill: at 13:16:38Z on 11-08 idle unload and the idle-root sweep killed push verdict legs 11-04 together, and the second kill
+   * failed with "Daemon worker client closed" when the first one's worker exited, a failed daemon call in d7's 13:16Z minute.
+   */
+  unloading?: (session: string) => Promise<boolean> | undefined;
   /** The messages sent to stopped subagents through their parents (`<data dir>/relayed.json`); the cleanup keeps a job owed one. Absent: none. */
   relayed?: Pick<RelayRecord, "add" | "at">;
   /** The Prime update restoring this box's daemon now (`primeUpdateRunning`), or null; the idle-root sweep archives nothing while one runs. Absent: none. */

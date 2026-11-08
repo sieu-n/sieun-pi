@@ -302,6 +302,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     held: async entry => { const host = catalog.hostOf(entry.threadId); return !!host && !(await reach.reach(host)).online; } });
   // The job sweep's place, so a pass a chat restart cut is picked up by the next one (InterruptedRuns.journal).
   if (!replay) interruptedRuns.journal = join(dataDir, "resume-journal.json");
+  let stopping = (_session: string): Promise<boolean> | undefined => undefined;
   chats = new Chats(index, threads, id => catalog.summary(id), extensionBuild(), loadRecord(join(dataDir, "extension-loads.json")),
     { board: id => boards.read(id), rows: () => catalog.rows(), memory: checkInRecord(join(dataDir, "check-ins.json")), registry,
       correctionChecks: checkRecord(join(dataDir, "correction-checks.json")),
@@ -309,7 +310,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       heldNotices: heldNoticeRecord(join(dataDir, "held-notices.json")), notices, cancels: jobCancelRecord(join(dataDir, JOB_CANCELS_FILE)),
       leftovers: (dir, session) => jobEnds.leftovers(dir, session),
       deletedLeftovers: (chat, away) => jobEnds.deleted(chat, away),
-      waking: session => waking(join(dataDir, "wakes"), session), relayed: relays, updating: () => primeUpdateRunning(agentDir, socketPath), wakes: now => pendingWakes(join(dataDir, "wakes"), now), stalls,
+      waking: session => waking(join(dataDir, "wakes"), session), unloading: session => stopping(session), relayed: relays, updating: () => primeUpdateRunning(agentDir, socketPath), wakes: now => pendingWakes(join(dataDir, "wakes"), now), stalls,
       resumes: { store: jobResumes(join(dataDir, "job-resumes")), applyBoard: (id, ops) => boards.apply(id, ops, "agent") },
       // resume_paused.py hands its continues to the live chat service's agent outbox, so a replay serve only reads the cut jobs.
       interrupted: replay ? async () => { await cutJobs(dataDir, [...await chats.ids()], artifactsRoot()); return null; } : async (isJob, owners) => interruptedRuns.resumeJobs(isJob, id => threads.reopenFailed(id), owners, cut => writeResumePending(dataDir, cut, Date.now()),
@@ -524,6 +525,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     log: dutyLog,
     now: () => Date.now(),
   });
+  stopping = session => unloader_.stopping(session);
   let unloading = false;
   const unloader = ownChatsOnly && !replay ? undefined : setInterval(() => {
     if (unloading) return;
