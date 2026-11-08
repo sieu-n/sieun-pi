@@ -59,6 +59,8 @@ export interface DreamDeps {
   files: { corrections: string; harness: string; ledger: string; agentDir: string };
   /** The page revisions the wiki recorded since an ISO time (wiki.db `revisions`); left out, the precheck reads no page churn. */
   revisions?: (sinceIso: string) => Promise<PageRevision[]>;
+  /** The root of the Prime session tree that holds a session (`sessionTree`); left out, no page names its maker. */
+  treeOf?: (session: string) => Promise<string | null>;
 }
 /** One row of the wiki's `revisions` table: the page's wiki path, who wrote it and the write's summary. */
 export interface PageRevision { path: string; author: string; summary: string }
@@ -369,6 +371,81 @@ export function staleExcerpt(page: StalePage, now?: number): string {
   return `checked ${page.verified_at ? minute(page.verified_at) : page.last_verified} (last_verified ${page.last_verified})${following}; code changed since: ${page.staleRefs.map(ref => `${ref.ref} (${minute(ref.modified)})`).join(", ")}`;
 }
 
+/**
+ * Who put a page behind its code: the commit at the page's `behindSince` second that touched the ref dated there, the Session-Id trailer
+ * auto-sns-agent's commit.mjs wrote on it, and the root of that session's tree, the session a run can steer. A page whose maker the
+ * precheck cannot name has none.
+ */
+export interface PageMaker { commit: string; session: string; tree: string }
+
+/** The repo file a ref names: the ref without its `::name` or line suffix or a trailing slash; null for a `sieun-pi:` or other sibling ref. */
+export function refFile(ref: string): string | null {
+  if (/^[a-z][a-z0-9-]*:(?![:/])/.test(ref)) return null;
+  return ref.replace(/::.*$/, "").replace(/:\d+(?:-\d+)?$/, "").replace(/\/+$/, "");
+}
+
+/**
+ * The `git log` arguments that list every first-parent commit since `since` that touched one of `files`, each with its time, sha and
+ * Session-Id trailer, the way `parseMakerLog` reads them.
+ */
+export function makerLogArgs(repo: string, files: readonly string[], since: number): string[] {
+  return ["-C", repo, "--literal-pathspecs", "log", "HEAD", "--first-parent", "--no-renames", `--since-as-filter=${new Date(since).toISOString()}`,
+    "--format=%x1e%ct%x1f%H%x1f%(trailers:key=Session-Id,valueonly,separator=%x2c)", "--name-only", "--", ...files];
+}
+
+/** The commits of a `makerLogArgs` log: time in ms, sha, the first Session-Id or "", and the files it touched among those asked. */
+export function parseMakerLog(text: string): { at: number; sha: string; session: string; files: string[] }[] {
+  return text.split("\x1e").slice(1).flatMap(record => {
+    const [head = "", ...files] = record.split("\n");
+    const [stamp = "", sha = "", session = ""] = head.split("\x1f");
+    const at = Number(stamp) * 1000;
+    return Number.isFinite(at) && at > 0 && sha ? [{ at, sha, session: session.split(",")[0]!.trim(), files: files.map(line => line.trim()).filter(Boolean) }] : [];
+  });
+}
+
+/**
+ * The maker of each page (`PageMaker`), read from one `git log` over the files of the refs each page fell behind on. A ref's `since` is the
+ * commit time the engine dated it by, so the maker is the commit at that second that touched the ref's file, or a file under a folder ref.
+ * In the 7 days to 2026-11-07 23:11Z, 188 of the 211 pages that counted in wiki_problems, and 1,277 of their 1,358 page-hours, came from
+ * commits that commit.mjs had warned with the follow gate's `behindWarning`, and none of those sessions fixed its page; for 132 of them
+ * (1,204 page-hours) a session of the same tree committed again while the page counted, so the tree held a slot that the Wiki dream's job,
+ * held in pi-pool's line for 95% of all counted page-hours, did not (~/work/wiki-dream-held-root-cause-1108).
+ */
+export async function pageMakers(pages: readonly StalePage[], log: (files: readonly string[], since: number) => Promise<string>,
+  treeOf: (session: string) => Promise<string | null>): Promise<Map<string, PageMaker>> {
+  const wanted = pages.flatMap(page => {
+    const fell = behindSince(page);
+    const ref = page.staleRefs.find(row => Date.parse(row.since ?? row.modified) === fell);
+    const file = fell > 0 && ref ? refFile(ref.ref) : null;
+    return file ? [{ page: page.path, fell, file }] : [];
+  });
+  const out = new Map<string, PageMaker>();
+  if (!wanted.length) return out;
+  const commits = parseMakerLog(await log([...new Set(wanted.map(row => row.file))], Math.min(...wanted.map(row => row.fell)) - 1000));
+  const trees = new Map<string, Promise<string | null>>();
+  for (const { page, fell, file } of wanted) {
+    const commit = commits.find(row => row.at === fell && row.session && row.files.some(touched => touched === file || touched.startsWith(`${file}/`)));
+    if (!commit) continue;
+    if (!trees.has(commit.session)) trees.set(commit.session, treeOf(commit.session).catch(() => null));
+    const tree = await trees.get(commit.session)!;
+    if (tree) out.set(page, { commit: commit.sha, session: commit.session, tree });
+  }
+  return out;
+}
+
+/**
+ * The root of the Prime session tree that holds `session` under `agentDir`: the session itself when its transcript is a root's, else the
+ * root folder under session-artifacts that holds it as a subagent at depth 1 or 2; null when this box has no such session.
+ */
+export async function sessionTree(agentDir: string, session: string): Promise<string | null> {
+  if (!/^[\w-]+$/.test(session)) return null;
+  if (existsSync(join(agentDir, "sessions", `${session}.jsonl`))) return session;
+  const artifacts = join(agentDir, "session-artifacts");
+  const { glob } = await import("node:fs/promises");
+  for await (const found of glob([`*/sub-*/${session}.jsonl`, `*/sub-*/sub-*/${session}.jsonl`], { cwd: artifacts })) return String(found).split("/")[0]!;
+  return null;
+}
+
 /** A global memory about the auto-sns-agent repo: its path or title starts with "auto-sns-agent". */
 export const isRepoFact = (entry: HarnessEntry): boolean => /^auto-sns-agent/i.test(entry.path ?? "") || /^auto-sns-agent/i.test(entry.title ?? "");
 const skillPath = (text: string): string | undefined => /(?:\.agents\/skills|\.claude\/skills-native|skills)\/[\w./-]+?(?:SKILL\.md|\.md)/.exec(text)?.[0];
@@ -561,6 +638,11 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   for (const key of HEALTH_METRICS) metrics[key] = health?.facts[key] ?? UNMEASURED;
   const following = stalePages?.filter(page => { const fell = behindSince(page); return fell > 0 && now - fell <= FOLLOW_WINDOW_MS; });
   const waiting = new Set(stalePages?.filter(page => waits(behindSince(page), now)).map(page => page.path));
+  // The makers of the pages a run hands off, so a run can ask them while the dream's job is held (src/chat-duty-run.ts `handToMakers`).
+  const treeOf = deps.treeOf;
+  const makers = stalePages && treeOf ? await pageMakers(stalePages.filter(page => !waiting.has(page.path)),
+    (files, after) => deps.exec("git", makerLogArgs(deps.repos.wiki, files, after), { cwd: deps.repos.wiki, timeoutMs: GIT_TIMEOUT_MS }), treeOf)
+    .catch(error => { fail("git log makers", error); return new Map<string, PageMaker>(); }) : new Map<string, PageMaker>();
   metrics.pages_behind_code = stalePages && following ? stalePages.length - following.length : UNMEASURED;
   if (following) metrics.wiki_problems_following = following.length - waiting.size;
   metrics.wiki_problems = PROBLEM_METRICS.some(key => metrics[key] === UNMEASURED) ? UNMEASURED : PROBLEM_METRICS.reduce((sum, key) => sum + metrics[key]!, 0);
@@ -631,7 +713,11 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   for (const pair of unjudged ?? []) slices.push({ kind: "dup_pair", item: pairKey(pair.a, pair.b), excerpt: `${pair.a} and ${pair.b} look alike (score ${pair.score})` });
 
   const handOff = (slice: FlaggedSlice): boolean => PROBLEM_KINDS.has(slice.kind) && !(slice.kind === "stale_vs_code" && waiting.has(slice.item ?? ""));
-  return { metrics: { ...metrics }, flagged: pickFlagged(slices).map(slice => handOff(slice) ? { ...slice, handOff: true as const } : slice), info };
+  const marked = (slice: FlaggedSlice): FlaggedSlice => {
+    const maker = slice.kind === "stale_vs_code" ? makers.get(slice.item ?? "") : undefined;
+    return { ...slice, ...handOff(slice) ? { handOff: true as const } : {}, ...maker ? { maker } : {} };
+  };
+  return { metrics: { ...metrics }, flagged: pickFlagged(slices).map(marked), info };
 }
 
 /** The metrics the duty judges (wiki-dream.duty.json). A run that cannot measure one of them fails, so the runner records an error, not 999999. */
@@ -690,6 +776,7 @@ async function main(): Promise<void> {
       ledger: process.env.WIKI_DREAM_LEDGER || join(dirname(process.env.LAST_RUNS_FILE || "."), "wiki-dream-ledger.json"),
     },
     revisions: sinceIso => readRevisions(join(wikiContentDir(), ".wiki/wiki.db"), sinceIso),
+    treeOf: session => sessionTree(join(home, ".prime/agent"), session),
   };
   const result = await measureDream(deps, Array.isArray(lastRuns) ? lastRuns as DutyRunRecord[] : []);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");

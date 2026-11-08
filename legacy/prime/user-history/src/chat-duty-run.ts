@@ -80,6 +80,8 @@ export interface DutyHost {
    * duty (`routedTell`). Absent: the runner sends none.
    */
   tell?: (chatId: string, text: string, from: TellSource, session?: string) => Promise<boolean | void>;
+  /** Sends an agent message to `session`, a root or a subagent of the tree rooted at `tree` (`AgentOutbox.deliver`); absent: no maker is asked. */
+  message?: (session: string, tree: string, text: string) => Promise<void>;
   /** Whether pi-pool gives the tree rooted at `tree` a `provider` account now or a cell within POOL_LEAD_MS (`poolAdmits`), for a cut run's rerun; absent: it admits. */
   poolAdmits?: (tree: string, provider: string) => Promise<boolean>;
   /**
@@ -1182,15 +1184,17 @@ export class Duties {
     if (previous === null) return previous;
     if ("skipped" in previous) {
       const plural = (count: number) => `${count} new flagged item${count === 1 ? "" : "s"}`;
+      const asked = previous.held && handOff && dutyId !== CHECK_IN_DUTY_ID ? await this.handToMakers(chatId, dutyId, previous.held, handOff, brief.duty.name, at) : 0;
+      const skipped = asked ? `${previous.skipped}; asked the sessions that made them to fix ${asked} item${asked === 1 ? "" : "s"}` : previous.skipped;
       if (previous.working && handOff) {
         const handed = await this.handOff(chatId, dutyId, previous.working, handOff, brief.duty.name, at);
-        if (handed) return { skipped: `${previous.skipped}; handed it ${plural(handed)}` };
+        if (handed) return { skipped: `${skipped}; handed it ${plural(handed)}` };
       }
       if (previous.held && handOff && dutyId === CHECK_IN_DUTY_ID) {
         const told = await this.handToChat(chatId, dutyId, previous.held, handOff, brief.duty.name, at);
-        if (told) return { skipped: `${previous.skipped}; handed the chat ${plural(told)}` };
+        if (told) return { skipped: `${skipped}; handed the chat ${plural(told)}` };
       }
-      return { skipped: previous.skipped };
+      return { skipped };
     }
     const { last, lastRun, replaced } = previous;
     if (!chat) return { skipped: "skipped: the catalog does not list the chat" };
@@ -1258,6 +1262,52 @@ export class Duties {
       `found ${fresh.length} step${fresh.length === 1 ? "" : "s"} nobody moves, and its job ${held.job.name} ${held.why}, so it takes no message until then. ` +
       `Give each a live owner in this turn: steer its job, start one, link a For you todo, or close it on evidence. The run's findings are in ` +
       `${handOff.detail}.`, ...fresh.map(itemLine)].join("\n"), { chat: chatId, duty: dutyId }), "the chat");
+  }
+
+  /**
+   * Messages each session that made a `handOff` item (`FlaggedSlice.maker`) while the duty's job is held (`held`: pi-pool keeps its tree in
+   * line for an account, or a quota park), once per item (`<dutyId>.makers.json`), and returns how many items went out. Only a session whose
+   * tree is at work now is asked, so the ask rides a slot that tree already holds, and the held job's own tree is never asked. The agent
+   * outbox relays a message for a stopped subagent through its parent. In the 7 days to 2026-11-07 23:11Z the Wiki dream counted 1,358 page-hours behind code, 1,285 of them (95%) while
+   * pi-pool held its one job, and the sessions whose commits put the pages behind fixed none of them, though commit.mjs had warned each one
+   * and for 132 pages (1,204 page-hours) a session of the same tree committed again while the page counted (~/work/wiki-dream-held-root-cause-1108).
+   */
+  private async handToMakers(chatId: string, dutyId: string, held: { job: DutyJobRef; why: string }, handOff: HandOff, dutyName: string, at: number): Promise<number> {
+    const send = this.host.message;
+    if (!send) return 0;
+    const file = join(this.store.chatDir(chatId), `${dutyId}.makers.json`);
+    const current = new Set(handOff.items.map(handOffKey));
+    const stored = await readFile(file, "utf8").then(text => JSON.parse(text) as unknown, () => null);
+    const known = new Set((Array.isArray(stored) ? stored : []).filter((key): key is string => typeof key === "string" && current.has(key)));
+    const bySession = new Map<string, { tree: string; items: FlaggedSlice[] }>();
+    for (const slice of handOff.items) {
+      const maker = slice.maker;
+      if (!maker || maker.tree === held.job.id || known.has(handOffKey(slice))) continue;
+      const entry = bySession.get(maker.session) ?? { tree: maker.tree, items: [] };
+      entry.items.push(slice);
+      bySession.set(maker.session, entry);
+    }
+    const working = new Map<string, Promise<boolean>>();
+    let asked = 0;
+    for (const [session, { tree, items }] of bySession) {
+      if (!working.has(tree)) working.set(tree, this.host.jobs.working({ id: tree, name: tree }).catch(() => false));
+      if (!(await working.get(tree))) continue;
+      const commits = [...new Set(items.map(slice => slice.maker!.commit.slice(0, 10)))].join(", ");
+      const text = [`The ${dutyName} run of ${new Date(at).toISOString().slice(0, 16)}Z found ${items.length} wiki page${items.length === 1 ? "" : "s"} ` +
+        `behind code that your commit ${commits} changed, which commit.mjs's follow gate warning named. The ${dutyName} job ${held.job.name} ` +
+        `${held.why}, so nobody else rewrites them now. Fix each page now: read it against the commit's diff, fix each fact the diff changed, ` +
+        `or set last_verified to the current UTC minute when the diff changes nothing the page states, and write it through the wiki module ` +
+        `(sieun-pi skills/wiki/references/wiki-dream.md phase 3, steps 10 to 17). The run's findings are in ${handOff.detail}.`,
+        ...items.map(itemLine)].join("\n");
+      try { await send(session, tree, text); }
+      catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ask ${session.slice(0, 8)} to fix ${items.length} items: ${message(error)}`); continue; }
+      for (const slice of items) known.add(handOffKey(slice));
+      asked += items.length;
+      this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: asked ${session.slice(0, 8)} (tree ${tree.slice(0, 8)}) to fix ${items.length} items its commits put behind`);
+    }
+    if (asked) await writeFile(file, JSON.stringify([...known]), { mode: 0o600 })
+      .catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: write ${dutyId}.makers.json: ${message(error)}`));
+    return asked;
   }
 
   /** Sends the `handOff` items that the duty job's brief and the runs since did not name (`<dutyId>.handed.json`) once, and returns how many. */

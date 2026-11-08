@@ -105,6 +105,11 @@ export interface PrecheckOutput { metrics: Record<string, number>; flagged?: Fla
 export interface FlaggedSlice { chat?: string; at?: number; kind: string; excerpt: string; item?: string; handOff?: true;
   /** A `host_held` step's offline box (src/shared/host-hold.ts). */
   host?: string;
+  /**
+   * The session whose commit made this finding, and the root of its tree (`tree`), which a run steers while the duty's own job is held
+   * (`Duties.handToMakers`): the Wiki dream's page behind its code names the commit and its Session-Id (scripts/duties/wiki-dream.ts `pageMakers`).
+   */
+  maker?: { commit: string; session: string; tree: string };
   /** What makes this finding a new situation (`unsentFindings`): a finding with one goes out once, and again only when its sig changes. */
   sig?: string }
 
