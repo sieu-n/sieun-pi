@@ -1271,10 +1271,11 @@ export class Duties {
   }
 
   /**
-   * Messages each session that made a `handOff` item (`FlaggedSlice.maker`) while the duty's job is held (`held`: pi-pool keeps its tree in
-   * line for an account, or a quota park), once per item (`<dutyId>.makers.json`), and returns how many items went out. Only a session whose
-   * tree is at work now is asked, so the ask rides a slot that tree already holds, and the held job's own tree is never asked. The agent
-   * outbox relays a message for a stopped subagent through its parent. In the 7 days to 2026-11-07 23:11Z the Wiki dream counted 1,358 page-hours behind code, 1,285 of them (95%) while
+   * Messages the root of each session tree that made a `handOff` item (`FlaggedSlice.maker`) while the duty's job is held (`held`: pi-pool
+   * keeps its tree in line for an account, or a quota park), once per item (`<dutyId>.makers.json`), and returns how many items went out.
+   * Only a tree at work now is asked, so the ask rides a slot that tree already holds, and the held job's own tree is never asked. Until
+   * 2026-11-08 08:30Z the message went to the committing session itself, and 9 of the first 19 pages asked for were dropped as obsolete,
+   * because the session was a subagent its parent had already deleted, such as sub-0b33ba37 of chat 01a115e2 at 07:17Z. In the 7 days to 2026-11-07 23:11Z the Wiki dream counted 1,358 page-hours behind code, 1,285 of them (95%) while
    * pi-pool held its one job, and the sessions whose commits put the pages behind fixed none of them, though commit.mjs had warned each one
    * and for 132 pages (1,204 page-hours) a session of the same tree committed again while the page counted (~/work/wiki-dream-held-root-cause-1108).
    */
@@ -1285,31 +1286,27 @@ export class Duties {
     const current = new Set(handOff.items.map(handOffKey));
     const stored = await readFile(file, "utf8").then(text => JSON.parse(text) as unknown, () => null);
     const known = new Set((Array.isArray(stored) ? stored : []).filter((key): key is string => typeof key === "string" && current.has(key)));
-    const bySession = new Map<string, { tree: string; items: FlaggedSlice[] }>();
+    const byTree = new Map<string, FlaggedSlice[]>();
     for (const slice of handOff.items) {
-      const maker = slice.maker;
-      if (!maker || maker.tree === held.job.id || known.has(handOffKey(slice))) continue;
-      const entry = bySession.get(maker.session) ?? { tree: maker.tree, items: [] };
-      entry.items.push(slice);
-      bySession.set(maker.session, entry);
+      const tree = slice.maker?.tree;
+      if (!tree || tree === held.job.id || known.has(handOffKey(slice))) continue;
+      byTree.set(tree, [...byTree.get(tree) ?? [], slice]);
     }
-    const working = new Map<string, Promise<boolean>>();
     let asked = 0;
-    for (const [session, { tree, items }] of bySession) {
-      if (!working.has(tree)) working.set(tree, this.host.jobs.working({ id: tree, name: tree }).catch(() => false));
-      if (!(await working.get(tree))) continue;
-      const commits = [...new Set(items.map(slice => slice.maker!.commit.slice(0, 10)))].join(", ");
+    for (const [tree, items] of byTree) {
+      if (!(await this.host.jobs.working({ id: tree, name: tree }).catch(() => false))) continue;
+      const commits = [...new Set(items.map(slice => `${slice.maker!.commit.slice(0, 10)} (session ${slice.maker!.session})`))].join(", ");
       const text = [`The ${dutyName} run of ${new Date(at).toISOString().slice(0, 16)}Z found ${items.length} wiki page${items.length === 1 ? "" : "s"} ` +
-        `behind code that your commit ${commits} changed, which commit.mjs's follow gate warning named. The ${dutyName} job ${held.job.name} ` +
-        `${held.why}, so nobody else rewrites them now. Fix each page now: read it against the commit's diff, fix each fact the diff changed, ` +
-        `or set last_verified to the current UTC minute when the diff changes nothing the page states, and write it through the wiki module ` +
-        `(sieun-pi skills/wiki/references/wiki-dream.md phase 3, steps 10 to 17). The run's findings are in ${handOff.detail}.`,
-        ...items.map(itemLine)].join("\n");
-      try { await send(session, tree, text); }
-      catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ask ${session.slice(0, 8)} to fix ${items.length} items: ${message(error)}`); continue; }
+        `behind code that your session tree changed in ${commits}, which commit.mjs's follow gate warning named. The ${dutyName} job ` +
+        `${held.job.name} ${held.why}, so nobody else rewrites them now. Fix each page now, yourself or through a live job: read it against the ` +
+        `commit's diff, fix each fact the diff changed, or set last_verified to the current UTC minute when the diff changes nothing the page ` +
+        `states, and write it through the wiki module (sieun-pi skills/wiki/references/wiki-dream.md phase 3, steps 10 to 17). The run's ` +
+        `findings are in ${handOff.detail}.`, ...items.map(itemLine)].join("\n");
+      try { await send(tree, tree, text); }
+      catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ask ${tree.slice(0, 8)} to fix ${items.length} items: ${message(error)}`); continue; }
       for (const slice of items) known.add(handOffKey(slice));
       asked += items.length;
-      this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: asked ${session.slice(0, 8)} (tree ${tree.slice(0, 8)}) to fix ${items.length} items its commits put behind`);
+      this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: asked tree ${tree.slice(0, 8)} to fix ${items.length} items its commits put behind`);
     }
     if (asked) await writeFile(file, JSON.stringify([...known]), { mode: 0o600 })
       .catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: write ${dutyId}.makers.json: ${message(error)}`));

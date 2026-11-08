@@ -4,7 +4,8 @@
 // a subagent of chat 01a115e2) put the serp-api pages behind. Each push run only queued the new pages as messages to the held job. In the 7
 // days to 23:11Z, 1,285 of the 1,358 counted page-hours fell while pi-pool held the dream's one job, and 188 of the 211 counted pages came
 // from such warned commits (~/work/wiki-dream-held-root-cause-1108). A run that finds the job held now asks the session that made each page's
-// commit, while its tree works, and the precheck names that session.
+// commit through its tree's root, while that tree works, and the precheck names the session and its tree.
+// The first live asks on 11-08 went to the committing sessions, and 9 of 19 pages were dropped because their subagents had been deleted.
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -92,14 +93,15 @@ async function runsAt(times: readonly string[], hold: PoolHold | null, cut: Duty
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
-test("a run that finds the Wiki dream's job held in pi-pool's line asks the working session that made each page's commit (11-07 22:55Z)", async () => {
+test("a run that finds the Wiki dream's job held in pi-pool's line asks the working tree that made each page's commit (11-07 22:55Z)", async () => {
   const { summaries, started, steered, messaged } = await runsAt(["2026-11-07T22:55:39.000Z", "2026-11-07T23:11:17.943Z"], "line");
   assert.deepEqual(started, [], "the held job keeps its place in the line");
   assert.ok(summaries[0]!.includes(`${STILL_WORKING} (job ${JOB.name} ${IN_POOL_LINE})`), summaries[0]);
-  assert.equal(messaged.length, 1, "one message to the serp session; the idle Search VP tree and the dream's own tree are not asked");
-  assert.equal(messaged[0]!.session, SERP_SESSION);
+  assert.equal(messaged.length, 1, "one message to the Crawler VP tree; the idle Search VP tree and the dream's own tree are not asked");
+  assert.equal(messaged[0]!.session, CRAWLER, "the tree's root, since the committing subagent may be deleted by then");
   assert.equal(messaged[0]!.tree, CRAWLER);
-  assert.ok(messaged[0]!.text.includes(SERP) && messaged[0]!.text.includes(SERP_PROJECTS) && messaged[0]!.text.includes("ad8108976d"), messaged[0]!.text);
+  assert.ok(messaged[0]!.text.includes(SERP) && messaged[0]!.text.includes(SERP_PROJECTS) && messaged[0]!.text.includes("ad8108976d")
+    && messaged[0]!.text.includes(SERP_SESSION), messaged[0]!.text);
   assert.ok(!messaged[0]!.text.includes(CONVEX) && !messaged[0]!.text.includes(OWN), messaged[0]!.text);
   assert.ok(summaries[0]!.includes("asked the sessions that made them to fix 2 items"), summaries[0]);
   assert.equal(steered.length, 1, "the held job still gets the run's items queued");
@@ -119,7 +121,7 @@ test("a run that replaces a cut dream job asks the makers too", async () => {
   const { started, messaged } = await runsAt(["2026-11-07T22:55:39.000Z"], null);
   assert.equal(started.length, 1);
   assert.equal(messaged.length, 1);
-  assert.equal(messaged[0]!.session, SERP_SESSION);
+  assert.equal(messaged[0]!.session, CRAWLER);
   assert.ok(messaged[0]!.text.includes("was cut on a failed model call at 16:45Z"), messaged[0]!.text);
 });
 
