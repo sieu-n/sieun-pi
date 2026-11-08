@@ -121,6 +121,14 @@ test("the websearch row takes a key check that fails because Convex disabled the
   assert.equal(off(`${check} Convex team 453421 reads Default`), 1);
 });
 
+test("the aside_account row takes a signed-out account as shared, because the box's aside runs the Mac's CLI over ssh, as on 11-08 in d1-261108-1811", () => {
+  const rows = (JSON.parse(readFileSync(join(import.meta.dirname, "../scripts/duties/box-parity.rows.json"), "utf8")) as Row[]).filter(row => row.id === "tools-panel-check-aside-account");
+  const off = (detail: string) => judgeRows(rows, output("mac", { [rows[0]!.id]: ["ok"] }), output("box", { [rows[0]!.id]: ["panel"] }),
+    new Map([["aside_account", { status: "fail" as const, fixer: "owner" as const, detail, fix: "x" }]])).off.length;
+  assert.equal(off("aside account status shows no signed-in account: * u0 sieunpark77@gmail.com signed out profiles: Profile 0 provider: google"), 0);
+  assert.equal(off("aside account status: exit 255: ssh: connect to host mac port 22: Connection refused"), 1);
+});
+
 const deploy = join(import.meta.dirname, "../../../../deploy/linux");
 const layers = parseLayers(readFileSync(join(deploy, "cpu/setup-cpu.sh"), "utf8"), readFileSync(join(deploy, "memory/heavy"), "utf8"), 1001, readFileSync(join(deploy, "cpu/rcu-boost.service"), "utf8"), readFileSync(join(deploy, "cpu/rcu-boost.py"), "utf8"));
 const context = (files: Record<string, string>, nice: Record<number, number> = {}, scope: "system" | "user" = "user"): LimitContext =>

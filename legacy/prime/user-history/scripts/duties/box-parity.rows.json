@@ -2364,7 +2364,8 @@
   ],
   "box": [
    {
-    "panel": "aside_account"
+    "panel": "aside_account",
+    "shared": "^aside account status shows no signed-in account"
    }
   ]
  },
