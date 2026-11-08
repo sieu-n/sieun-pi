@@ -187,14 +187,15 @@ def owned_by_skill() -> bool:
     return False
 
 
-VOLATILE_ENV = re.compile(r"^(?:RLM_|PRIME_AGENT_INTERNAL_|PRIME_AGENT_KERNEL_)")
+VOLATILE_ENV = re.compile(r"^(?:RLM_|PRIME_AGENT_INTERNAL_|PRIME_AGENT_KERNEL_|LC_PRIME_SESSION$)")
 
 
 class Judge:
     """One `node send-check.ts --serve-socket <path>` per box for every kernel and child Python with the same rules and environment, started
     by the first check that finds none. On 10-18 at 16:48Z each kernel kept its own `--serve` judge, 88 of them at about 55 MB each (4.8 GB).
     The socket's name hashes the rule files (every .ts and .json next to send-check.ts) and the environment without the per-session
-    RLM_*, PRIME_AGENT_INTERNAL_* and PRIME_AGENT_KERNEL_* keys, so a changed rule or environment gets a fresh judge. Each check carries this
+    RLM_*, PRIME_AGENT_INTERNAL_*, PRIME_AGENT_KERNEL_* and LC_PRIME_SESSION keys, so a changed rule or environment gets a fresh judge.
+    From c22976c0 (10-31) each kernel set its own LC_PRIME_SESSION, and on 11-08 at 11:20Z us-metal02 ran 50 judges with 48 distinct tags. Each check carries this
     process's whole environment and cwd, which the judge takes on before it judges, so a verdict, its child processes and its send-log line
     read what a fresh `node send-check.ts` here would. The judge exits after 2 minutes with no check from any process. When it cannot be
     reached or started, the check runs one-shot."""

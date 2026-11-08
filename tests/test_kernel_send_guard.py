@@ -667,8 +667,9 @@ class OneJudgePerProcess(KernelGuardBase):
 
     def test_two_kernels_share_one_judge_and_each_send_log_line_names_its_own_session(self):
         # 10-18 16:48Z on us-metal02: 88 kernels each kept their own judge of about 55 MB.
-        first = self.cells(CURL_POST, env={"RLM_SESSION_DIR": str(self.tmp / "session-artifacts" / SESSION_A)})
-        second = self.cells(CURL_POST, env={"RLM_SESSION_DIR": str(self.tmp / "session-artifacts" / SESSION_B)})
+        # 11-08 11:20Z: each kernel's own LC_PRIME_SESSION tag split them again, 50 judges for 48 tags.
+        first = self.cells(CURL_POST, env={"RLM_SESSION_DIR": str(self.tmp / "session-artifacts" / SESSION_A), "LC_PRIME_SESSION": f"{SESSION_A}@box"})
+        second = self.cells(CURL_POST, env={"RLM_SESSION_DIR": str(self.tmp / "session-artifacts" / SESSION_B), "LC_PRIME_SESSION": f"{SESSION_B}@box"})
         self.assert_refused(first, "curl call writes to")
         self.assert_refused(second, "curl call writes to")
         self.assertEqual(len(self.judges()), 1, self.judges())
