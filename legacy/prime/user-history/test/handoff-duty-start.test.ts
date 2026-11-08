@@ -5,7 +5,7 @@
 // the duty's pending start to the successor.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -131,4 +131,34 @@ test("a hand-over waits for a duty job start whose create went out, so its sessi
     assert.equal(existsSync(join(store.chatDir(CHAT), "d6.pending.json")), false);
     await duties.settled();
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+// At 21:55:14Z on 11-08 the hand-over from release-2d2bac4 fenced a d6 run of chat 01a1180e as it measured, the run's rm of d6.measuring.json
+// failed with EACCES, its rejection went unhandled, and the process exited 40 ms after its fence, so the release restarted the chat instead.
+test("a duty run whose measuring file the fence keeps ends with a log line, not a rejection that ends the process", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "handoff-duty-measuring-"));
+  const store = new DutyStore(dir);
+  const chatDir = store.chatDir(CHAT);
+  try {
+    const precheck = join(dir, "precheck.mjs");
+    await writeFile(precheck, `import { chmodSync, writeFileSync } from "node:fs"; writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { gaps: 0 } })); chmodSync(${JSON.stringify(chatDir)}, 0o500);`);
+    await store.update(CHAT, duties => { duties.push({
+      id: "d6", name: "crawler api and mcp", ownerWords: "the api and mcp stay up", goal: "no gaps",
+      metrics: [{ key: "gaps", label: "Gaps", op: "<=", target: 0, headline: true }],
+      schedule: { kind: "every", minutes: 30 }, precheck: { command: ["node", precheck], cwd: dir, timeoutMs: 30_000 }, onMiss: "fix the gaps",
+      status: "active", createdAt: NOW - 86_400_000, updatedAt: NOW - 86_400_000, runCount: 0,
+    }); });
+    const lines: string[] = [];
+    const duties = new Duties(store, {
+      isChat: async () => true, now: () => NOW, tickMs: 0, node: process.execPath, log: line => lines.push(line),
+      jobs: {
+        chat: async id => ({ id, name: "Crawler VP", cwd: dir, board: id }),
+        working: async () => false, retire: async () => {}, ended: async (last, older = []) => [...last, ...older], stop: async () => {},
+        start: async (_chat, name) => ({ id: "job", name }),
+      },
+    });
+    await duties.tick();
+    await duties.settled();
+    assert.ok(lines.some(line => line.startsWith(`duty ${CHAT.slice(0, 8)}/d6: clear d6.measuring.json: EACCES`)), lines.join("\n"));
+  } finally { await chmod(chatDir, 0o700).catch(() => {}); await rm(dir, { recursive: true, force: true }); }
 });

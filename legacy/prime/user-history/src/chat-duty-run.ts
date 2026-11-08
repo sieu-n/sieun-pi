@@ -797,7 +797,13 @@ export class Duties {
     const key = `${chatId}/${dutyId}`;
     if (this.running.has(key)) return false;
     const run = this.run(chatId, dutyId, trigger, slot, rerunOf).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ${message(error)}`))
-      .finally(async () => { await rm(this.measuringFile(chatId, dutyId), { force: true }); this.running.delete(key); this.steps.delete(key); });
+      .finally(async () => {
+        // A chat that handed over writes no file (src/chat-handoff.ts `fenceHandedOver`), so this rm fails there, and the successor's `resume`
+        // runs the duty again. At 21:55:14Z on 11-08 release-2d2bac4 exited on this rm's EACCES 40 ms after its fence, and the hand-over failed.
+        await rm(this.measuringFile(chatId, dutyId), { force: true }).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: clear ${dutyId}.measuring.json: ${message(error)}`));
+        this.running.delete(key);
+        this.steps.delete(key);
+      });
     this.running.set(key, run);
     return true;
   }
