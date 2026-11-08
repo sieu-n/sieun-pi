@@ -1520,6 +1520,9 @@ def account_blocker(root_session_id, provider, cache, strict=False, lead=0):
     # on 10-23 nine cut high trees whose 04:46Z to 04:54Z claude20 slots had passed were held here, each pass reading a slot a minute ahead,
     # and trees that parked later entered claude20 meanwhile. A pool from before 10-23 writes no `reserved`, and its wait still holds.
     wait = resolved.get("wait") or {}
+    closed = cell_closed(rows.get(wait.get("account")), wait.get("slot_at"), time.time()) if wait.get("account") else None
+    if closed:
+        return f"pi-pool's cell for the tree is on {closed}, which opens no cell by its slot", free_at
     if wait.get("reserved") is False:
         return None, None
     if isinstance(wait.get("slot_at"), (int, float)) and wait["slot_at"] > time.time():
@@ -1535,6 +1538,29 @@ def account_blocker(root_session_id, provider, cache, strict=False, lead=0):
     if not row.get("usable"):
         return f"{row.get('email')} is {row.get('reason') or 'not usable'}", free_at
     return None, None
+
+
+def cell_closed(row, slot_at, now):
+    """The account and its reason when the account of a pi-pool wait takes no tree by the wait's slot, else None: it passes admission now
+    (no reason), or each limit, cooldown and spent window that holds it ends by the slot (chat-pool.ts waitCellOpens). An account held for a
+    reason with no end, such as unsampled, opens no cell, though pi-pool books cells on it: from 21:42Z to 23:00Z on 11-07 pi-pool parked 46
+    trees on cells of unsampled krenerd77 and claude12, each a new one 180 s ahead at every ask, and a run stopped there would be continued
+    at once on its next pass, only to park again."""
+    if row is None:
+        return None
+    label = row.get("email") or row.get("id")
+    reason = row.get("reason")
+    if row.get("disabled"):
+        return f"{label} (disabled)"
+    if row.get("usable") or reason is None:
+        return None
+    if not re.match(r"(limited|cooldown|depleted)\b", reason):
+        return f"{label} ({reason})"
+    ends = [at for at in [row.get("limited_until"), row.get("cooldown_until")] +
+            [w.get("resets_at") for w in row.get("windows") or [] if (w.get("pct") or 0) >= 100] if isinstance(at, (int, float)) and at > now]
+    if ends and isinstance(slot_at, (int, float)) and max(ends) <= slot_at:
+        return None
+    return f"{label} ({reason})"
 
 
 def pool_free_at(resolved, rows, now):

@@ -1680,6 +1680,28 @@ class ResumePausedTests(unittest.TestCase):
         # 10-23 04:49:39Z: 01a1641e's 04:46:30Z cell had passed and `who` read a fresh slot at 04:50Z that no cell held.
         self.assertIsNone(who({"account": "acct1", "slot_at": later, "reserved": False}, account=None))
 
+    def test_a_cell_on_an_account_that_opens_none_holds_the_tree(self):
+        # 11-07 22:54:04Z: pi-pool parked 01a1b6e6 on a 22:57:30Z cell of claude12, whose usage it had not read for 2.1 days, and booked it a
+        # new cell 180 s ahead at each ask until 23:00Z, as it did for 46 trees on claude12 and krenerd77.
+        now = dt.datetime(2026, 11, 7, 22, 56, 30, tzinfo=dt.timezone.utc).timestamp()
+        cell = now + 60
+
+        def blocker(row, reserved=True, lead=resume_paused.POOL_LEAD_S):
+            def run(cmd, **kwargs):
+                body = {"rows": [dict({"id": "claude12", "email": "claude12@slack.green"}, **row)]} if cmd[1] == "ls" else \
+                    {"providers": {"anthropic": {"account": None, "wait": {"account": "claude12", "slot_at": cell, "reserved": reserved}}}}
+                return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps(body), "")
+            with patch.object(resume_paused, "pool_bin", return_value="pi-pool"), patch.object(resume_paused.subprocess, "run", side_effect=run), \
+                    patch.object(resume_paused.time, "time", return_value=now):
+                return resume_paused.account_blocker("01a1b6e6-a5a7-7374-b8f6-41af8dff1635", "anthropic", {}, lead=lead)[0]
+
+        unsampled = {"usable": False, "reason": "unsampled"}
+        self.assertIn("claude12@slack.green (unsampled)", blocker(unsampled))
+        self.assertIn("opens no cell", blocker(unsampled, reserved=False))
+        self.assertIn("opens no cell", blocker({"usable": False, "reason": "limited 2h", "limited_until": now + 7200}))
+        self.assertIsNone(blocker({"usable": False, "reason": "limited 1m", "limited_until": now + 30}), "a limit that ends before the cell")
+        self.assertIsNone(blocker({"usable": True, "reason": None}), "an open account's cell within the lead")
+
     def test_a_stopped_run_is_continued_within_the_lead_before_its_cell(self):
         # SEO guy's tree, 11-01: stopped at 09:09:30Z for its 09:11:00Z cell, and this pass's first ask came at 09:11:32Z, after the cell.
         now = dt.datetime(2026, 11, 1, 9, 9, 30, tzinfo=dt.timezone.utc).timestamp()

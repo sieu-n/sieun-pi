@@ -1,7 +1,7 @@
 import { dirname } from "node:path";
 import type { SessionSummary } from "prime-agent";
 import type { DaemonClient } from "./daemon-sdk.ts";
-import { accountSlot, POOL_LEAD_MS, poolFreeAt, type PoolStatus, type PoolThread, type ThreadParts, threadKey } from "./chat-pool.ts";
+import { accountSlot, POOL_LEAD_MS, poolFreeAt, type PoolStatus, type PoolThread, type ThreadParts, threadKey, waitCellOpens } from "./chat-pool.ts";
 import { type FailedRun, failedRun } from "./held-turns.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
 import type { UnloadReceipt } from "./unloaded.ts";
@@ -435,6 +435,7 @@ export interface WaitReads {
  * (01a11a24) at 09:09:30Z, 90 s before its 09:11:00Z cell, and the tree's next asks came after its cells until 09:25:42Z.
  * From 05:10Z to 06:00Z on 10-31 17 quiet trees on us-metal02 held 10.5 GB this way with no pool-wait stop: pi-pool parked each one again
  * every 3 to 4.5 min, so its lastActivityAt never read 15 min old and its next slot was always under 15 min ahead.
+ * A cell on an account that opens no cell by its slot (`waitCellOpens`, such as an unsampled one) keeps no session and names no pool time.
  */
 export async function providerWaits(rows: readonly SessionSummary[], now: number, idleMs: number, reads: WaitReads): Promise<Map<string, number | null>> {
   const byId = new Map(reads.all.map(row => [row.sessionId, row] as const));
@@ -460,9 +461,12 @@ export async function providerWaits(rows: readonly SessionSummary[], now: number
     const parts = found.get(threadKey({ session: rootOf(row), model: null }));
     if (!parts) return [];
     const run = runs.get(row.sessionId)!;
-    const freeAt = poolFreeAt(parts, row.model!.provider, now);
+    const provider = row.model!.provider;
+    const cell = accountSlot(parts, provider);
+    const opens = cell === null || waitCellOpens(parts, provider, now);
+    const freeAt = opens ? poolFreeAt(parts, provider, now) : null;
     const waited = now - (run.since ?? Date.parse(row.lastActivityAt ?? ""));
-    return poolHoldsPast(freeAt, now, idleMs, Number.isFinite(waited) ? waited : 0, accountSlot(parts, row.model!.provider)) ? [[row.sessionId, freeAt] as const] : [];
+    return poolHoldsPast(freeAt, now, idleMs, Number.isFinite(waited) ? waited : 0, opens ? cell : null) ? [[row.sessionId, freeAt] as const] : [];
   }));
 }
 

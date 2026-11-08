@@ -599,7 +599,34 @@ export function poolResumesBy(parts: Pick<ThreadParts, "who" | "ls">, provider: 
     const said = isRecord(who) && isRecord(who.providers) ? who.providers[provider] : null;
     if (!isRecord(said) || text(said.error)) return false;
     const slotAt = epochMs(isRecord(said.wait) ? said.wait.slot_at : null);
-    return slotAt !== null && slotAt <= now + leadMs;
+    return slotAt !== null && slotAt <= now + leadMs && waitCellOpens(parts, provider, now);
+  } catch { return false; }
+}
+
+/**
+ * Whether the account of the wait `who` holds the tree in takes trees by that wait's slot, as `pi-pool ls` reads it: it passes admission
+ * now (no reason), or each limit, cooldown and spent window that holds it ends by the slot. An account held for a reason with no end, such as
+ * `unsampled` or `needs-reauth`, opens no cell, though pi-pool books cells on it. From 21:42Z to 23:00Z on 11-07 krenerd77 (usage unread for
+ * 7.8 days) and claude12 (2.1 days) read unsampled, and pi-pool parked 46 trees on their cells, each a new one 180 s ahead at every ask
+ * (pi-pool.log). Each cell came within POOL_LEAD_MS of every sweep that found its session quiet ENDED_MS, so the idle unload kept all of them,
+ * and us-metal02 held 11.85 GB of quiet sessions with nobody working. False when the wait names no account or a part fails to read; true for
+ * an account `ls` does not list, which nothing says is held.
+ */
+export function waitCellOpens(parts: Pick<ThreadParts, "who" | "ls">, provider: string, now: number): boolean {
+  if (!isPooled(provider)) return false;
+  try {
+    const who: unknown = JSON.parse(partOut(parts.who));
+    const said = isRecord(who) && isRecord(who.providers) ? who.providers[provider] : null;
+    const wait = isRecord(said) ? parsePoolWait(said.wait) : null;
+    if (!wait) return false;
+    const row = parsePoolRows(JSON.parse(partOut(parts.ls[provider])), provider).find(entry => entry.id === wait.account);
+    if (!row) return true;
+    if (row.disabled) return false;
+    if (row.usable || row.reason === null) return true;
+    if (!/^(limited|cooldown|depleted)\b/.test(row.reason)) return false;
+    const ends = [row.limitedUntil, row.cooldownUntil, ...row.windows.filter(window => window.pct >= 100).map(window => window.resetsAt)]
+      .filter((at): at is number => at !== null && at > now);
+    return ends.length > 0 && Math.max(...ends) <= wait.slotAt;
   } catch { return false; }
 }
 
