@@ -78,7 +78,8 @@ export const WORLD = "dm-ext-duty";
 /** Sends one run makes from the sender in staging-real-ig.mjs: the test DM from Connections, the Inbox DM window send (?outreach=1) and
  *  the Inbox reply. The autopair rig sends none. */
 export const SENDS_PER_RUN = 3;
-export const STAGING_DEPLOYMENT = "tremendous-eel-825";
+/** Staging Convex, self-hosted on us-metal01 since auto-sns-agent 83014234182e (11-08), the name scripts/repo/convex/call.mjs knows. */
+export const STAGING_DEPLOYMENT = "convex-staging";
 export const STAGING_HOST = "https://staging.virev.ai/*";
 /** measured: `convex data` on tremendous-eel-825 returned 16,384 and refused 50,001 ("Requested too many items") on 10-30, with 6,066 rows in searchEmailMessages. */
 export const ROWS_LIMIT = 16_384;
@@ -386,9 +387,20 @@ async function waitForOtherRuns(): Promise<{ ms: number; on: string[] }> {
   }
 }
 
+/** The convex CLI env file for the self-hosted staging backend, from call.mjs's own table and admin key row, written into the run's
+ *  mode 700 temp folder so the checkout's .env.local never decides, as search-clean-world.mjs does for a staging world. */
+async function stagingEnvFile(cwd: string): Promise<string> {
+  const call = await import(pathToFileURL(join(REPO, "scripts/repo/convex/call.mjs")).href) as {
+    SELF_HOSTED: Record<string, { url: string }>; selfHostedAdminKey: (deployment: string) => string;
+  };
+  const file = join(cwd, "convex-staging.env");
+  await writeFile(file, `CONVEX_SELF_HOSTED_URL=${call.SELF_HOSTED[STAGING_DEPLOYMENT]!.url}\nCONVEX_SELF_HOSTED_ADMIN_KEY=${call.selfHostedAdminKey(STAGING_DEPLOYMENT)}\n`, { mode: 0o600 });
+  return file;
+}
+
 async function staging(table: string, limit: number, cwd: string): Promise<unknown[]> {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^CONVEX_(DEPLOYMENT|SELF_HOSTED|URL)/.test(key)));
-  const out = await sh(join(REPO, "node_modules/.bin/convex"), ["data", table, "--limit", String(limit), "--format", "jsonl", "--deployment-name", STAGING_DEPLOYMENT], { cwd, env });
+  const out = await sh(join(REPO, "node_modules/.bin/convex"), ["data", table, "--limit", String(limit), "--format", "jsonl", "--env-file", await stagingEnvFile(cwd)], { cwd, env });
   return out.split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line) as unknown);
 }
 
