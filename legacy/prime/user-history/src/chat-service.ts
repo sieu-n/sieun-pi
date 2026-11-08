@@ -570,7 +570,7 @@ async function serve(options: Options): Promise<void> {
   if (listenFd !== null && primary && process.env.NOTIFY_SOCKET) {
     const { forwardRequest } = await import("./early-shell.ts");
     listenForHandoff({ listenFd, log,
-      quiesce: async () => { stopPromptPrune(); keeper?.close(); slack?.close(); await backend.quiesce?.(); },
+      quiesce: async () => { backend.threads.quiesce(); await backend.duties?.quiesce(); stopPromptPrune(); keeper?.close(); slack?.close(); await backend.quiesce?.(); },
       fence: successor => fenceHandedOver(successor, service.directory),
       forwardWrites: port => {
         server.forwardWrites((req, res) => {

@@ -169,16 +169,15 @@ export async function handOver(side: HandingOver, again: () => boolean = () => f
  * it before, and the successor's resume picks it up.
  */
 export async function fenceHandedOver(successor: number, dataDir: string, log: (line: string) => void = line => process.stderr.write(`${new Date().toISOString()} ${line}\n`)): Promise<void> {
-  const [{ fencedAgentDirs, fenceWrites }, { DAEMON_READS }, { refuseWrites }, { DaemonClient }] = await Promise.all([import("./scratch-fence.ts"),
-    import("./read-only-daemon.ts"), import("./daemon-write.ts"), import("./daemon-sdk.ts")]);
+  const [{ fencedAgentDirs, fenceWrites }, { DAEMON_READS }, { refuseWrites }, { DaemonClient }, { HANDED_OVER_REASON, handedOverAnswer }] = await Promise.all([
+    import("./scratch-fence.ts"), import("./read-only-daemon.ts"), import("./daemon-write.ts"), import("./daemon-sdk.ts"), import("./daemon-worker-start.ts")]);
   fenceWrites(fencedAgentDirs(), log, { label: "handoff", who: "a chat that handed over",
     allow: ["cpu-profiles", "prime-calls.jsonl", "first-pages", "mac-usable"].map(name => join(dataDir, name)) });
-  const reason = "This chat process handed over to its successor and only reads.";
-  refuseWrites(reason);
+  refuseWrites(HANDED_OVER_REASON);
   const proto = DaemonClient.prototype as unknown as { request: (command: { type: string }, ...rest: unknown[]) => Promise<unknown> };
   const request = proto.request;
   proto.request = function (this: unknown, command: { type: string }, ...rest: unknown[]) {
-    if (!DAEMON_READS.has(command.type)) return Promise.resolve({ type: "response", command: command.type, success: false, error: reason });
+    if (!DAEMON_READS.has(command.type)) return Promise.resolve({ type: "response", command: command.type, ...handedOverAnswer() });
     return request.call(this, command, ...rest);
   };
   for (const pid of descendants(process.pid, successor)) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }

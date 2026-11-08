@@ -1,4 +1,4 @@
-import { PREPARE_WAIT } from "./daemon-worker-start.ts";
+import { HANDED_OVER_REASON, PREPARE_WAIT } from "./daemon-worker-start.ts";
 import { HANDED_OVER_LINE } from "./chat-handoff.ts";
 
 /**
@@ -287,7 +287,8 @@ export function readServiceFaults(lines: readonly string[], local: string): Daem
     }
     if ((found = WORKER_START.exec(text))) {
       const seconds = Number(found[4]);
-      const refused = found[3] === "refused" && !NAME_TAKEN.test(found[5] ?? "") && !WAITS_OUT_PREPARE.test(found[5] ?? "");
+      // A release before 11-09 wrote a start its hand-over fence answered as refused, though no call left the process (`HANDED_OVER_REASON`).
+      const refused = found[3] === "refused" && !NAME_TAKEN.test(found[5] ?? "") && !WAITS_OUT_PREPARE.test(found[5] ?? "") && found[5] !== HANDED_OVER_REASON;
       const on = START_ON.exec(found[2]!);
       const late = found[1] === "create" && (found[3] === "answered" || NAME_TAKEN.test(found[5] ?? "")) && seconds * 1000 > SLOW_MS;
       if (refused || seconds * 1000 > SLOW_MS)

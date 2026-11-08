@@ -23,6 +23,7 @@ import type { AgentQueueReading, SessionRow, ThinkingLevel, ThreadSchedule } fro
 import { fileLines } from "./file-lines.ts";
 import { reportedSince, reportReader } from "./duty-job-report.ts";
 import { modelReplyAt } from "./send-once.ts";
+import { HANDED_OVER_REASON } from "./daemon-worker-start.ts";
 
 /**
  * Duty jobs: on every scheduled run of a duty (the built-in check-in included) the server starts one job for it, a root session linked to the
@@ -532,7 +533,11 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       const name = taken === 0 ? first : taken === 1 ? dated : `${dated} (${taken})`;
       try { return { id: (await input.threads.create({ cwd: chat.cwd, name, ...model ? { provider: model.provider, modelId: model.modelId } : {},
         ...model?.thinkingLevel ? { thinkingLevel: model.thinkingLevel } : {} })).id, name }; }
-      catch (error) { cause = reason(error); }
+      catch (error) {
+        cause = reason(error);
+        // The chat handed over before this create went out (`ThreadHub.quiesce`): no session was made, and the successor starts the job.
+        if (cause === HANDED_OVER_REASON) throw error;
+      }
       const refused = NAME_TAKEN.test(cause);
       const found = await find(chat, name, since, refused ? [0] : waits);
       if (found) { input.log?.(`duty job ${name}: the create failed (${cause}) but the session exists; adopting it`); return { id: found, name }; }

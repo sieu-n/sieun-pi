@@ -9,6 +9,19 @@ import { isPrepareRefusal, type PrepareEnd, UPDATE_WAIT_MS, windowEnded } from "
  */
 export const DAEMON_WORKER_START_MS = 1_500_000;
 
+/**
+ * The answer a chat that handed over gives itself for a daemon command other than a read, which reaches no daemon (src/chat-handoff.ts
+ * `fenceHandedOver`, `ThreadHub.quiesce`). Its start line says it was not sent, which d7 does not count (src/daemon-faults.ts), and a duty
+ * start leaves its job to the successor (src/chat-duty-run.ts `startJob`). At 21:21:09.873Z on 11-08 the duty create "crawler api and mcp
+ * Crawler VP 06:20" met the fence of a release hand-over, its line read "refused in 2.1 s", and d7 read the minute dirty though no call left
+ * the process.
+ */
+export const HANDED_OVER_REASON = "This chat process handed over to its successor and only reads.";
+const HANDED_OVER_CODE = "handed_over";
+export const handedOverAnswer = () => ({ success: false as const, error: HANDED_OVER_REASON, errorInfo: { code: HANDED_OVER_CODE } });
+export const isHandedOver = (answer: unknown): boolean => typeof answer === "object" && answer !== null &&
+  (answer as { errorInfo?: { code?: unknown } }).errorInfo?.code === HANDED_OVER_CODE;
+
 /** The words a refused start's line ends with when it waits out the daemon's update prepare (src/daemon-faults.ts reads them). */
 export const PREPARE_WAIT = "it starts again once the prepare ends";
 
@@ -22,6 +35,7 @@ export async function timedWorkerStart<T>(label: string, run: () => Promise<T>,
   const seconds = () => ((now() - started) / 1000).toFixed(1);
   try {
     const result = await run();
+    if (isHandedOver(result)) { log(`${new Date(started).toISOString()} daemon ${label}: not sent, ${HANDED_OVER_REASON}`); return result; }
     const failed = typeof result === "object" && result !== null && "success" in result && result.success === false;
     const reason = failed && "error" in result && typeof result.error === "string" ? `: ${result.error}` : "";
     const after = failed && waits(result) ? `; ${PREPARE_WAIT}` : "";

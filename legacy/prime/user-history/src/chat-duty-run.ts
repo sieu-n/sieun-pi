@@ -1,5 +1,6 @@
 import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { hostExecFile } from "./spawn-host.ts";
+import { HANDED_OVER_REASON } from "./daemon-worker-start.ts";
 import { basename, join } from "node:path";
 import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName, heldForPool, inTurnQueue } from "./chat-duty-job.ts";
 import { type CheckInActor, CHECK_IN_MS } from "./checkin-settings.ts";
@@ -301,6 +302,8 @@ export class Duties {
   private readonly ending = new Set<Promise<void>>();
   /** The push check going per `<chatId>/<dutyId>`, kept off the scan so a slow daemon read holds up no due duty. */
   private readonly pushes = new Map<string, Promise<void>>();
+  /** The job starts going (`startJob`), which a hand-over waits for before its fence (`quiesce`). */
+  private readonly starting = new Set<Promise<unknown>>();
   /**
    * The after-job measure and archive going per `<chatId>/<dutyId>` (`endJob`). A push of the duty waits for it and judges on its result, so
    * a duty has one check in flight: on 10-18 at 15:55:56Z a push run of chat-057a's Chat reopen read its last run's stale miss, measured
@@ -987,7 +990,14 @@ export class Duties {
    * recorded in any chat after 08:41Z. The job's brief is kept in `<dutyId>.pending.json` until the start ends, so `resume` can start the job
    * after a restart. A check-in run that starts no job is recorded as skipped; a standing duty's keeps its verdict and says why in its summary.
    */
-  private async startJob(chatId: string, record: DutyRunRecord, duty: DutyJobInput["duty"], pending: Omit<PendingStart, "at">, append = true): Promise<"started" | "none" | "failed"> {
+  private startJob(chatId: string, record: DutyRunRecord, duty: DutyJobInput["duty"], pending: Omit<PendingStart, "at">, append = true): Promise<"started" | "none" | "failed"> {
+    const task = this.startJobNow(chatId, record, duty, pending, append);
+    this.starting.add(task);
+    void task.catch(() => {}).finally(() => this.starting.delete(task));
+    return task;
+  }
+
+  private async startJobNow(chatId: string, record: DutyRunRecord, duty: DutyJobInput["duty"], pending: Omit<PendingStart, "at">, append: boolean): Promise<"started" | "none" | "failed"> {
     const file = this.pendingFile(chatId, record.duty);
     const older = await readPending(file);
     await mkdir(this.store.chatDir(chatId), { recursive: true, mode: 0o700 });
@@ -998,7 +1008,15 @@ export class Duties {
     let launched: Launched;
     let failed = false;
     try { launched = await this.launch(chatId, record.duty, pending.schedule, record.slot ?? record.at, record.at, { duty, ...pending.brief }, pending.measured, pending.handOff, pending.idle); }
-    catch (error) { failed = true; launched = { skipped: `${NOT_STARTED}: ${message(error).slice(0, 300)}` }; }
+    catch (error) {
+      // The chat handed over before the job's create went out: its pending file and record stay as they are, and the successor's `resume`
+      // starts the job. At 21:21Z on 11-08 the create of "crawler api and mcp Crawler VP 06:20" met the hand-over and the successor started it.
+      if (message(error).includes(HANDED_OVER_REASON)) {
+        this.log(`duty ${chatId.slice(0, 8)}/${record.duty}: this chat handed over before the job of the run of ${new Date(record.at).toISOString()} started; its successor starts it`);
+        return "none";
+      }
+      failed = true; launched = { skipped: `${NOT_STARTED}: ${message(error).slice(0, 300)}` };
+    }
     const checkIn = record.duty === CHECK_IN_DUTY_ID;
     const ms = Math.max(0, this.now() - record.at);
     const attach = (stored: DutyRunRecord) => {
@@ -1514,4 +1532,15 @@ export class Duties {
   }
 
   close(): void { clearInterval(this.timer); }
+
+  /**
+   * Stops the runner for a hand-over and resolves once its job starts ended: one whose create went out finishes its session, brief and
+   * record before the fence (src/chat-handoff.ts), and one whose create had not gone out ends at once on `ThreadHub.quiesce` and leaves its
+   * pending start to the successor. At 21:21Z on 11-08 the start of "crawler api and mcp Crawler VP 06:20" was cut by the fence of a release
+   * hand-over, and the successor's restart of it found the name taken and started the job 45 s late under its dated name.
+   */
+  async quiesce(): Promise<void> {
+    this.close();
+    while (this.starting.size) await Promise.allSettled([...this.starting]);
+  }
 }

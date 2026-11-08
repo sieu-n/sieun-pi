@@ -26,7 +26,7 @@ import { CHAT_NOTICE } from "./shared/chat-feed.ts";
 import { findMessage, findToolCall, type FilePlace, FIRST_PAGE_MESSAGES, historyMessages, PAGE_MESSAGES, readBranchPage, shownMessage, TAIL_BYTES, TAIL_MESSAGES } from "./session-tail.ts";
 import { formatCursor, keyIndex, type MessageKey, messageKey, parseCursor } from "./shared/message-key.ts";
 import { FirstPages, firstPage, wireEvent } from "./first-page.ts";
-import { DAEMON_WORKER_START_MS, workerStartThroughUpdates } from "./daemon-worker-start.ts";
+import { DAEMON_WORKER_START_MS, handedOverAnswer, workerStartThroughUpdates } from "./daemon-worker-start.ts";
 import { isPrepareRefusal, prepareEnd, updateRecords, type UpdateRecords, type UpdateWindow } from "./prime-update.ts";
 import { movedImages } from "./moved-images.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
@@ -364,6 +364,8 @@ export class ThreadHub {
    */
   private readonly using = new Map<string, number>();
   private closed = false;
+  /** Set when the chat starts to hand over (`quiesce`): from then a worker start sends nothing, so none reaches the daemon or its fence. */
+  private handedOver = false;
 
   /**
    * `board` reads a chat's board when the thread opens: null for a chat with no board yet, undefined for a thread that is not a chat.
@@ -706,7 +708,7 @@ export class ThreadHub {
     const wait = { session, controller: new AbortController() };
     this.waits.add(wait);
     try {
-      return await workerStartThroughUpdates(label, async () => run(used = await this.hostDaemon(host)),
+      return await workerStartThroughUpdates(label, async () => { used = await this.hostDaemon(host); return this.handedOver ? handedOverAnswer() as T : run(used); },
         waitMs => prepareEnd(used!, other ? null : this.updates, { waitMs, signal: wait.controller.signal }),
         async () => this.closed ? "the chat service stopped" : dropped(), refusedStart);
     } finally { this.waits.delete(wait); }
@@ -2165,6 +2167,12 @@ export class ThreadHub {
   }
 
   async warm(id: string): Promise<void> { await this.open(id); }
+
+  /**
+   * Stops this hub's worker starts as the chat hands over: a create, resume or reload not sent yet answers `handedOverAnswer` without a
+   * daemon call, and one already sent finishes. The successor then starts what this process left, such as a duty job's pending start.
+   */
+  quiesce(): void { this.handedOver = true; }
 
   async close(): Promise<void> {
     this.closed = true;
