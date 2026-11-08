@@ -60,15 +60,18 @@ def get_json(url, headers):
 
 
 def claude_windows(body, at_ms):
-    """Windows from Claude's usage body: the 5h window, the week when the body has
-    one (a team seat's has none), and each per-model weekly limit."""
-    if not isinstance(body, dict) or not isinstance(body.get("five_hour"), dict) \
-            or not isinstance(body["five_hour"].get("utilization"), (int, float)):
-        raise RuntimeError("usage read returned no 5h window")
+    """Windows from Claude's usage body: the 5h window and the week, each when the body
+    has one, and each per-model weekly limit. A team seat's body has no week, and on
+    2026-11-08 the max 20x accounts krenerd77 and claude12 answered five_hour null with a
+    week at 5% and 3% while /v1/messages served them (7d the only claim in its headers).
+    A body with neither is a failed read."""
     rows = [("five_hour", FIVE_HOURS_SEC), ("seven_day", WEEK_SEC)]
     out = [{"name": None, "usedPercentage": body[key]["utilization"], "resetsAt": instant_ms(body[key].get("resets_at")),
             "windowSeconds": secs, "sampledAt": at_ms}
-           for key, secs in rows if isinstance(body.get(key), dict) and isinstance(body[key].get("utilization"), (int, float))]
+           for key, secs in rows if isinstance(body, dict) and isinstance(body.get(key), dict)
+           and isinstance(body[key].get("utilization"), (int, float))]
+    if not out:
+        raise RuntimeError("usage read returned no 5h or weekly window")
     for row in body.get("limits") or []:
         model = ((row.get("scope") or {}).get("model") or {}).get("display_name") if isinstance(row, dict) else None
         if row.get("kind") == "weekly_scoped" and isinstance(row.get("percent"), (int, float)) and isinstance(model, str):

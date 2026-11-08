@@ -86,10 +86,19 @@ class ClaudeReads(Store):
         self.assertEqual([(w["name"], w["usedPercentage"], w["resetsAt"]) for w in rec["windows"]],
                          [(None, 10.0, 1791644399900), ("Fable", 4, 1791640799000)])
 
-    def test_a_body_with_no_five_hour_window_is_a_failed_read(self):
+    def test_a_body_with_a_week_and_no_five_hour_window_lands_and_the_account_is_sampled(self):
+        self.bodies["token-a"] = {"five_hour": None, "seven_day": {"utilization": 5.0, "resets_at": "2027-01-20T10:00:00Z"}}
+        self.assertTrue(self.read("anthropic", "a")["ok"])
+        rec = self.record("anthropic", "a")
+        self.assertEqual([(w["name"], w["usedPercentage"], w["windowSeconds"]) for w in rec["windows"]],
+                         [(None, 5.0, 604800)])
+        account = next(a for a in registry.load_index("anthropic") if a.id == "a")
+        self.assertFalse(registry.usage_unsampled(account, time.time() + 3600))
+
+    def test_a_body_with_no_five_hour_or_weekly_window_is_a_failed_read(self):
         self.bodies["token-a"] = {"five_hour": None, "seven_day": None}
         out = self.read("anthropic", "a")
-        self.assertEqual((out["ok"], out["reason"]), (False, "usage read returned no 5h window"))
+        self.assertEqual((out["ok"], out["reason"]), (False, "usage read returned no 5h or weekly window"))
         self.assertNotIn("lastUsageAt", self.record("anthropic", "a"))
         self.assertIn("lastProbeAt", self.record("anthropic", "a"))
 
