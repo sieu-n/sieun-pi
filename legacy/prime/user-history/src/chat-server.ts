@@ -1400,6 +1400,10 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     }
   }
   try {
+    // A hand-over's successor answers on a port of its own the writes the running chat passes on, with their Host still the service's port,
+    // before its take resolves (src/chat-handoff.ts). With `host` still empty it refused each with 421 "Unexpected host.": board writes and
+    // cross-host sends failed from 14:56:10Z to 14:57:19Z and from 15:51:40Z to 15:52:41Z on 11-08. The loopback host is known from the port.
+    if (port > 0) host = `127.0.0.1:${port}`;
     // The early shell may listen later (early-shell-start.mjs waits for this thread to be free); the address is read only after it does.
     if (early) await early.take(dispatch, upgrade);
     else await new Promise<void>((resolve, reject) => {
