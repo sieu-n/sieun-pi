@@ -37,7 +37,7 @@ test("the same slow opens stay dirty on a charged battery, on AC at 2% and with 
 test("a Mac unreached right after a flat battery read is offline, not unknown, before Tailscale reads it offline (11-08 16:40Z)", () => {
   const watch = Array.from({ length: 30 }, (_, minute) => line(minute, { pct: minute < 22 ? 2 : 1, ac: false }));
   const down = watch.at(-1)!;
-  down.hosts![0] = { ...down.hosts![0], usable: null, error: "The operation was aborted due to timeout" };
+  down.hosts![0] = { ...down.hosts![0]!, usable: null, error: "The operation was aborted due to timeout" };
   const out = measure({ now: RUN, log: { holds: [] }, chats: [], watch, daemonFaults: [] });
   assert.equal(out.metrics.clean_min_30, 30);
   assert.equal(out.metrics.offline_min_30_mac, 30);
