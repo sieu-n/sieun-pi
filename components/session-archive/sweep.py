@@ -15,6 +15,7 @@ A second run archives nothing new: an archived session is not live, so it is nev
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import subprocess
@@ -216,7 +217,27 @@ class Chat:
         return out
 
     def archive(self, sid: str) -> tuple[int, dict]:
-        return self.call(f"api/threads/{sid}/archive", {"by": REASON})
+        """One archive. When the chat restarts under it (a release at 13:02:04Z on 11-08 ended the first full run), wait until it answers
+        api/identity again and send the archive once more; an archive that already landed reads the session as archived and changes nothing."""
+        for attempt in range(2):
+            try:
+                return self.call(f"api/threads/{sid}/archive", {"by": REASON})
+            except (urllib.error.URLError, ConnectionError, http.client.HTTPException) as error:
+                if attempt or not self.ready():
+                    return 0, {"error": f"{type(error).__name__}: {error}"}
+        return 0, {"error": "unreachable"}
+
+    def ready(self, wait_s: float = 600) -> bool:
+        deadline = time.time() + wait_s
+        while time.time() < deadline:
+            try:
+                self.__init__()
+                if self.call("api/identity")[0] == 200:
+                    return True
+            except (OSError, ValueError, http.client.HTTPException):
+                pass
+            time.sleep(5)
+        return False
 
 
 def append(name: str, record: dict) -> None:

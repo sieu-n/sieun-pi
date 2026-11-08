@@ -56,5 +56,32 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(self.plan(rows), ([], {}))
 
 
+class ArchiveRetryTest(unittest.TestCase):
+    def chat(self, answers, ready=True):
+        chat = sweep.Chat.__new__(sweep.Chat)
+        calls = []
+
+        def call(route, body=None):
+            calls.append((route, body))
+            answer = answers.pop(0)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        chat.call, chat.ready = call, lambda: ready
+        return chat, calls
+
+    def test_a_restart_mid_archive_waits_for_the_chat_and_sends_once_more(self):
+        chat, calls = self.chat([sweep.http.client.RemoteDisconnected("closed"), (200, {"ok": True})])
+        self.assertEqual(chat.archive("s1"), (200, {"ok": True}))
+        self.assertEqual(calls, [("api/threads/s1/archive", {"by": "idle_job_end"})] * 2)
+
+    def test_a_chat_that_stays_down_fails_that_session_and_the_run_goes_on(self):
+        chat, calls = self.chat([ConnectionRefusedError("refused")], ready=False)
+        status, body = chat.archive("s1")
+        self.assertEqual((status, len(calls)), (0, 1))
+        self.assertIn("ConnectionRefusedError", body["error"])
+
+
 if __name__ == "__main__":
     unittest.main()
