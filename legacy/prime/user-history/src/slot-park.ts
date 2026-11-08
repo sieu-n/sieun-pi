@@ -151,6 +151,19 @@ export function messageHold(park: SlotPark | undefined, sessionId: string, now: 
   return open && !listed && open.resumeAt !== undefined && open.resumeAt <= now ? null : open;
 }
 
+/**
+ * The wait that holds a message past its slot (`messageHold` read none): the file's open slot wait ended the turn, and pi-pool lets the
+ * tree in neither now nor at a cell within the lead (`admits`, chat-pool.ts `poolAdmits`). Such a slot was a cell on an account that opens
+ * none: from 00:54Z to 09:01Z on 11-08 pi-pool booked trees a new cell on unsampled krenerd77 or claude12 every 180 s, each wake, job
+ * steer and continue the outbox sent at the passed slot sat as a queued steer behind the next wait, and the idle unload keeps a session
+ * with queued input, since a stop drops it. At 05:15Z 48 of the 59 sessions in such waits held one, and d7 read 13.66 GB with nobody
+ * working. The message goes once the pool admits the tree, when the session can act on it. A failed pool read holds nothing.
+ */
+export async function cellHold(park: SlotPark | undefined, admits: () => Promise<boolean>): Promise<SlotPark | null> {
+  if (!park?.ended) return null;
+  return await admits().catch(() => true) ? null : park;
+}
+
 /** Prime's credential park on a summary row (load.3, schema 39 `SessionCredentialPark`): its times are ISO strings, as agent_observe gives them. */
 type RowPark = { credentialPark?: { waitingFor?: unknown; waitingSince?: unknown; resumeAt?: unknown }; taskState?: unknown; summary?: unknown };
 

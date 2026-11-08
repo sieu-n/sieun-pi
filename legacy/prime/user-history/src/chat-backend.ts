@@ -39,7 +39,7 @@ import { jobResumes } from "./job-resume.ts";
 import { cutJobs, interruptedRuns } from "./chat-resume.ts";
 import { cutPasses, resumesNow, tailLines } from "./cut-end.ts";
 import { IdleUnloader, parkChanges, providerWaits, SWEEP_EVERY_MS, takesKillOrigin, unloadRequest } from "./idle-unload.ts";
-import { messageHold, parkedUntil, readRowSlotPark } from "./slot-park.ts";
+import { cellHold, messageHold, parkedUntil, readRowSlotPark } from "./slot-park.ts";
 import { handOff, handoffSend, handsOffRow, systemPorts } from "./detached-handoff.ts";
 import { unfinishedHandoffs } from "./orphan-services.ts";
 import { readHeldTurns, readTurnSince, threadTurnSince, writeResumePending } from "./held-turns.ts";
@@ -382,9 +382,24 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     remotes: () => catalog.remoteHosts().map(({ host, rows }) => ({ name: host.name, rows, read: pids => relayWatch(host, pids), reach: () => reach.reach(host.name) })) });
   // Every agent message the service sends waits on disk until the daemon takes it, and one that may have gone is looked for before it goes
   // again (src/agent-outbox.ts). A scratch serve keeps its own folder, so it never delivers the live service's messages.
+  /** The root session pi-pool keys a session's tree by: its topmost listed parent. */
+  const poolRoot = async (session: string): Promise<string> => {
+    let id = session;
+    for (let depth = 0; depth < 8; depth++) {
+      const parent = (await catalog.summary(id))?.parentSessionId;
+      if (!parent || parent === id) break;
+      id = parent;
+    }
+    return id;
+  };
   const agentOutbox = new AgentOutbox(join(dataDir, quiet ? "agent-outbox-scratch" : "agent-outbox"), { log: dutyLog, hostOf: session => catalog.hostOf(session), reach: host => reach.reach(host),
     slotPark: async session => {
-      return messageHold((await readRowSlotPark(await catalog.summary(session))).park, session, Date.now(), await queued());
+      const summary = await catalog.summary(session);
+      const park = (await readRowSlotPark(summary)).park;
+      const provider = summary?.model?.provider;
+      // Past its slot, a message to a session on this box waits while pi-pool lets its tree in at no open cell (src/slot-park.ts cellHold).
+      return messageHold(park, session, Date.now(), await queued()) ?? (catalog.hostOf(session) || !provider ? null :
+        await cellHold(park, async () => poolAdmits(await poolRoot(session), provider, (threads, options) => readPoolStatus(threads, { ...options, maxAgeMs: 30_000 }))));
     },
     synced: () => catalog.hostsSynced(), subagentOf: async session => rowSubagent(await catalog.summary(session)),
     relayed: (session, at) => relays.add(session, at), stopped: stopRecords(dataDir),
