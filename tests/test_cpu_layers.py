@@ -75,6 +75,31 @@ class CpuProtectPlan(unittest.TestCase):
         reload = {**steady, cpu.DAEMON: {30: (1, CTL), 12: (30, SUPERVISOR)}}
         self.assertEqual(cpu.candidates(reload, 2, PUBLIC), cpu.candidates(steady, 2, PUBLIC))
 
+    def test_a_service_main_process_stays_in_its_unit_until_systemd_counts_it_started(self):
+        """On 11-08 the chat's READY=1 came from a child in its core scope, which systemd --user drops, and its starts hung 5 to 7.5 min."""
+        out = ("Id=prime-agent-daemon.service\nActiveState=reloading\nMainPID=10\n\n"
+               "Id=sieun-pi-chat.service\nActiveState=activating\nMainPID=50\n\n"
+               "Id=sieun-pi-apps-chat.service\nActiveState=active\nMainPID=60\n\n"
+               "Id=pi-host.service\nActiveState=inactive\nMainPID=0\n")
+        units = (cpu.DAEMON, "sieun-pi-chat.service", "sieun-pi-apps-chat.service", "pi-host.service")
+        mains = cpu.parse_mains(out, units)
+        self.assertEqual(mains, {cpu.DAEMON: 10, "sieun-pi-chat.service": None, "sieun-pi-apps-chat.service": 60, "pi-host.service": None})
+        self.assertEqual(cpu.plan({"sieun-pi-chat.service": {50: (2, CHAT_SERVE)}}, mains, PUBLIC), {})
+        started = cpu.parse_mains(out.replace("ActiveState=activating", "ActiveState=active"), units)
+        self.assertEqual(cpu.plan({"sieun-pi-chat.service": {50: (2, CHAT_SERVE)}}, started, PUBLIC), {"sieun-pi-chat-core.scope": [50]})
+
+    def test_a_pass_asks_systemd_again_while_a_service_with_a_candidate_is_starting(self):
+        asks = []
+        main_pids, cpu.main_pids = cpu.main_pids, lambda: asks.append(1) or {cpu.DAEMON: None, "sieun-pi-chat.service": None}
+        procs, cpu.procs = cpu.procs, lambda path, only_comm=None: {50: (2, CHAT_SERVE)} if path == "chat" else {}
+        try:
+            paths = {"sieun-pi-chat.service": "chat"}
+            known = cpu.run_once(paths, ({}, frozenset()), 2, PUBLIC)
+            cpu.run_once(paths, known, 2, PUBLIC)
+        finally:
+            cpu.main_pids, cpu.procs = main_pids, procs
+        self.assertEqual(len(asks), 2)
+
     def test_the_scopes_run_at_the_default_weight_with_no_cap(self):
         text = (CPU / "cpu-protect.py").read_text()
         self.assertNotIn('"CPUWeight"', text)

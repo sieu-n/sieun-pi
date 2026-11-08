@@ -161,11 +161,31 @@ def as_user(argv: list[str]) -> list[str]:
             f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{entry.pw_uid}/bus", *argv]
 
 
+def parse_mains(out: str, units: tuple[str, ...]) -> dict[str, int | None]:
+    """Each unit's MainPID from `systemctl show -p Id -p MainPID -p ActiveState`, None when there is none, and for each of SERVICES also
+    while the unit is not active yet. systemd --user drops a notification whose sender lies outside the unit's cgroup, and the chat's READY=1
+    comes from a systemd-notify child, which starts in the cgroup of its parent. So a main process moved to its core scope before its READY=1
+    left the unit starting: on 11-08 sieun-pi-chat sent READY=1 at 14:42:19Z, 21:55:28Z and 22:01:18Z and systemd counted it started only at
+    14:49:53Z, never and 22:06:20Z. A move also races the start itself: at 09:29:13Z its process, moved before it ran node, failed to attach to
+    the unit's cgroup (status=219/CGROUP)."""
+    shown = {}
+    for block in out.split("\n\n"):
+        props = dict(line.split("=", 1) for line in block.strip().split("\n") if "=" in line)
+        if props.get("Id"):
+            shown[props["Id"]] = props
+    mains: dict[str, int | None] = {}
+    for unit in units:
+        props = shown.get(unit, {})
+        value = props.get("MainPID", "")
+        started = unit not in SERVICES or props.get("ActiveState") == "active"
+        mains[unit] = int(value) if value.isdigit() and value != "0" and started else None
+    return mains
+
+
 def main_pids() -> dict[str, int | None]:
     units = (DAEMON, *SERVICES)
-    out = subprocess.run(as_user(["systemctl", "--user", "show", "-p", "MainPID", "--value", *units]), capture_output=True, text=True).stdout
-    values = [line.strip() for line in out.split("\n") if line.strip()]
-    return {unit: int(value) if value.isdigit() and value != "0" else None for unit, value in zip(units, values)}
+    out = subprocess.run(as_user(["systemctl", "--user", "show", "-p", "Id", "-p", "MainPID", "-p", "ActiveState", *units]), capture_output=True, text=True).stdout
+    return parse_mains(out, units)
 
 
 def start_scope(name: str, pid: int, user: bool) -> None:
@@ -203,12 +223,13 @@ def nice_to_zero(pid: int) -> None:
 
 
 def run_once(paths: dict[str, str], known: tuple[dict[str, int | None], frozenset], manager: int, public_dir: str) -> tuple[dict[str, int | None], frozenset]:
-    """One pass. known is the MainPIDs from the last ask and the candidates it saw. A pass asks again when the candidates changed, and while a
-    supervisor that is not the known MainPID runs outside a ctl, because systemd reads the PIDFile only after the ctl that wrote it exits."""
+    """One pass. known is the MainPIDs from the last ask and the candidates it saw. A pass asks again when the candidates changed, while a
+    supervisor that is not the known MainPID runs outside a ctl, because systemd reads the PIDFile only after the ctl that wrote it exits, and
+    while a service that has a candidate is still starting (parse_mains)."""
     groups = {name: procs(path, only_comm="prime-agent" if name == TOOLS else None) for name, path in paths.items()}
     mains, seen = known
     now = candidates(groups, manager, public_dir)
-    if now != seen or any(unit == DAEMON and pid != mains.get(DAEMON) for unit, pid in now):
+    if now != seen or any(unit == DAEMON and pid != mains.get(DAEMON) or unit in SERVICES and mains.get(unit) is None for unit, pid in now):
         mains, seen = main_pids(), now
     for to, pids in plan(groups, mains, public_dir).items():
         if to.endswith(".scope") and not os.path.isdir(paths[to]):
