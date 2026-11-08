@@ -1,7 +1,8 @@
 // One on-disk HTTP cache per host, shared by every box runner, for the few URLs whose repeat fetches Vercel bills. Each runner
 // starts Chrome in a fresh off-the-record context, and aside_browser stops it at every turn end, so each walk began with an
 // empty HTTP cache. On 11-07 box Chromes on us-metal02 fetched staging.virev.ai's immutable files 3,550 times in one hour
-// from 23:00Z, and asked its /api/img 16,720 times for 8,121 URLs that day, each a billed Vercel function call. Every other
+// from 23:00Z, and asked its /api/img 16,720 times for 8,121 URLs that day, each a billed Vercel function call. A walk of
+// 3 staging domain pages on 11-08 also asked /api/logo 28 times, each a CDN MISS and so a function call too. Every other
 // URL stays with Chrome. Every box Chrome on a host is ours, so one cache keyed by URL may keep a `private` answer too.
 // The cache hooks in through CDP Fetch on each page, not context.route(), because Playwright turns off a context's HTTP
 // cache once it routes, and Fetch runs in Chrome's own network stack, so the loopback proxy and cookies apply to a miss.
@@ -26,6 +27,7 @@ const WEEK_S = 7 * 24 * 3600;
 export const RULES = [
   { urlPattern: "*/_app/immutable/*", keep: () => WEEK_S },
   { urlPattern: "https://staging.virev.ai/api/img*", keep: maxAge },
+  { urlPattern: "https://staging.virev.ai/api/logo/*", keep: maxAge },
 ].map((rule) => ({ ...rule, re: new RegExp(`^${rule.urlPattern.split("*").map((s) => s.replace(/[.?+^$()[\]{}|\\/]/g, "\\$&")).join(".*")}$`) }));
 const ruleFor = (url) => RULES.find((rule) => rule.re.test(url));
 

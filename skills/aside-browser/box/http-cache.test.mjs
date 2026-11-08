@@ -95,7 +95,7 @@ function fakeChrome(server) {
   return { reached, fakeTab };
 }
 
-test("whole 200 answers of staging /api/img come from disk for their max-age, and ranges, no-store and errors do not", async () => {
+test("whole 200 answers of staging /api/img and /api/logo come from disk for their max-age, and ranges, no-store and errors do not", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "box-http-cache-test-"));
   process.env.BOX_HTTP_CACHE = dir;
   try {
@@ -107,6 +107,8 @@ test("whole 200 answers of staging /api/img come from disk for their max-age, an
       "https://staging.virev.ai/api/img?u=nostore": { status: 200, headers: { "cache-control": "no-store" } },
       "https://staging.virev.ai/api/img?u=missing": { status: 404, headers: { "cache-control": "private, max-age=86400" } },
       "https://staging.virev.ai/api/img?u=video": { status: 200, headers: { "cache-control": "private, max-age=300" } },
+      "https://staging.virev.ai/api/logo/glossier.com": { status: 200, headers: { "cache-control": "public, max-age=86400", "content-type": "image/png" } },
+      "https://staging.virev.ai/api/logo/nostore.com": { status: 200, headers: { "cache-control": "no-store" } },
       "https://staging.virev.ai/api/me": { status: 200, headers: { "cache-control": "private, max-age=86400" } },
     };
     const { reached, fakeTab } = fakeChrome((url) => ({ ...answers[url], body: Buffer.from(`bytes of ${url}`) }));
@@ -116,11 +118,12 @@ test("whole 200 answers of staging /api/img come from disk for their max-age, an
       await load("https://staging.virev.ai/api/img?u=video", { Range: "bytes=0-99" });
     };
     await walk();
-    assert.equal(reached.length, 7);
+    assert.equal(reached.length, 9);
     await walk();
-    assert.deepEqual(reached.slice(7), [
+    assert.deepEqual(reached.slice(9), [
       "https://staging.virev.ai/api/img?u=nostore",
       "https://staging.virev.ai/api/img?u=missing",
+      "https://staging.virev.ai/api/logo/nostore.com",
       "https://staging.virev.ai/api/me",
       "https://staging.virev.ai/api/img?u=video",
     ]);
@@ -128,7 +131,7 @@ test("whole 200 answers of staging /api/img come from disk for their max-age, an
     const load = await fakeTab(cacheShared);
     assert.equal(await load("https://staging.virev.ai/api/img?u=short"), 200);
     assert.equal(await load(img), 200);
-    assert.deepEqual(reached.slice(11), ["https://staging.virev.ai/api/img?u=short"]);
+    assert.deepEqual(reached.slice(14), ["https://staging.virev.ai/api/img?u=short"]);
   } finally {
     delete process.env.BOX_HTTP_CACHE;
     fs.rmSync(dir, { recursive: true, force: true });
