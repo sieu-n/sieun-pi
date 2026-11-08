@@ -1,5 +1,5 @@
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, statSync, unlinkSync } from "node:fs";
-import { readdir, rename, writeFile } from "node:fs/promises";
+import { rename, writeFile } from "node:fs/promises";
 import { performance as loopPerformance } from "node:perf_hooks";
 import { basename, dirname, join } from "node:path";
 import { parseSkillBlock, type SessionSummary } from "prime-agent";
@@ -9,6 +9,7 @@ import { fullListInWorker } from "./full-list.ts";
 import type { ChatLabels } from "./chat-labels.ts";
 import { keptChatAgents, queuedBelowIndex, stepSessions, withPoolBelow, withQueue, withRates, withSlotParks, withWaits, type SubagentSession } from "./chat-agents.ts";
 import { RowOrder } from "./catalog-rows.ts";
+import { hostExecFile } from "./spawn-host.ts";
 import { type FileSlotPark, heldSlotParkReads, poolPark, readRowSlotPark, type SlotPark, takeSlotParkReads } from "./slot-park.ts";
 import { type Cut, cutActivity, SessionCuts, type CutSource } from "./cut-end.ts";
 import { planCounts } from "./shared/chat-board.ts";
@@ -617,17 +618,19 @@ function ownIds(rows: readonly SessionSummary[]): { own: Set<string>; ownActive:
 
 /** How long a folder's spawned count is reused; the daemon tree covers subagents spawned since. */
 export const SPAWNED_MS = 30_000;
-async function countSpawned(folder: string): Promise<number> {
-  return (await spawnedBelow(folder)).below;
-}
-/** Whether `folder` holds an rlm-subagent.json and how many spawned folders sit below it, from one listing of each folder. */
-async function spawnedBelow(folder: string): Promise<{ spawned: boolean; below: number }> {
-  const entries = await readdir(folder, { withFileTypes: true }).catch(() => []);
-  const children = entries.filter(entry => entry.isDirectory() && entry.name.startsWith("sub-")).map(entry => spawnedBelow(join(folder, entry.name)));
-  const spawned = entries.some(entry => entry.name === "rlm-subagent.json");
-  let below = 0;
-  for (const child of await Promise.all(children)) below += (child.spawned ? 1 : 0) + child.below;
-  return { spawned, below };
+/**
+ * How many `sub-*` folders at any depth below `folder`, through `sub-*` folders only, hold an rlm-subagent.json, counted by a `find` that the spawn
+ * host starts (spawn-host.ts) and that prints one byte per hit; 0 when the count fails. Until 11-08 the chat listed each of those folders with readdir, all at once:
+ * a VP's tree holds 1,241 to 2,526 of them on us-metal02, each working agent's count ran every SPAWNED_MS, and the listings were the largest
+ * caller of the chat's file reads in the 11:55Z profile (2 s of its main thread in 5 min). They queued in libuv's pool ahead of every other read,
+ * whose threads spent 5.2 s in the run queue against 2 s running in 20 s at 12:20Z, and at 12:02Z on 11-08 a file read waited 2.8 s for a pool thread.
+ */
+function countSpawned(folder: string): Promise<number> {
+  const below = `${folder.replace(/[\\*?[\]]/g, "\\$&")}/*/*`;
+  return new Promise(resolve => {
+    hostExecFile("find", [folder, "-mindepth", "1", "-type", "d", "!", "-name", "sub-*", "-prune", "-o", "-type", "f", "-name", "rlm-subagent.json",
+      "-path", below, "-printf", "."], {}, (_error, stdout) => resolve(stdout.length));
+  });
 }
 /**
  * Every subagent ever spawned below a folder at any depth, finished and deleted ones included: each `sub-*` folder holding an rlm-subagent.json.

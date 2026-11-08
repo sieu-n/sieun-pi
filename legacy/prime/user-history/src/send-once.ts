@@ -1,8 +1,8 @@
-import { spawn } from "node:child_process";
 import { open, readdir, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
 import { isMain } from "./main-module.ts";
+import { hostExecFile } from "./spawn-host.ts";
 
 /*
  * How to tell whether a send that timed out still reached its target. The daemon gives the target's worker 30 s to confirm a send_message
@@ -188,24 +188,22 @@ const literal = (name: string): string => name.replace(/[\\*?[\]]/g, "\\$&");
 
 /**
  * Where `names` sit as `<name>` files in `sub-*` folders one and two levels below each root folder of `artifacts`. `find` prunes every other
- * folder below a root and prints only the asked names, so the chat parses a line per hit. A folder it cannot read still leaves the rest.
+ * folder below a root and prints only the asked names, so the chat parses a line per hit. A folder it cannot read still leaves the rest. The
+ * spawn host starts it (spawn-host.ts): at 12:02:40Z on 11-08 the chat's own spawn of the listing held its main thread 1.22 s with the box at
+ * 6 runnable a core (cpu-profiles pid1039808), and d7 read 12:03Z dirty from that stall.
  */
 function findArtifacts(artifacts: string, names: readonly string[]): Promise<Map<string, string>> {
-  return new Promise((resolve, reject) => {
-    const match = names.flatMap((name, n) => [...n ? ["-o"] : [], "-name", literal(name)]);
-    const child = spawn("find", [artifacts, "-mindepth", "2", "-maxdepth", "4", "-type", "d", "!", "-name", "sub-*", "-prune", "-o", "-type", "f", "(", ...match, ")", "-print"],
-      { stdio: ["ignore", "pipe", "ignore"] });
-    const chunks: Buffer[] = [];
-    child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
-    child.once("error", reject);
-    child.once("close", () => {
-      const files = new Map<string, string>();
-      for (const path of Buffer.concat(chunks).toString("utf8").split("\n")) {
-        const folder = dirname(path);
-        if (path && basename(folder).startsWith("sub-") && dirname(folder) !== artifacts && !files.has(basename(path))) files.set(basename(path), path);
-      }
-      resolve(files);
-    });
+  const match = names.flatMap((name, n) => [...n ? ["-o"] : [], "-name", literal(name)]);
+  return new Promise(resolve => {
+    hostExecFile("find", [artifacts, "-mindepth", "2", "-maxdepth", "4", "-type", "d", "!", "-name", "sub-*", "-prune", "-o", "-type", "f", "(", ...match, ")", "-print"],
+      {}, (_error, stdout) => {
+        const files = new Map<string, string>();
+        for (const path of stdout.split("\n")) {
+          const folder = dirname(path);
+          if (path && basename(folder).startsWith("sub-") && dirname(folder) !== artifacts && !files.has(basename(path))) files.set(basename(path), path);
+        }
+        resolve(files);
+      });
   });
 }
 
