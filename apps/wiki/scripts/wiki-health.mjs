@@ -474,7 +474,7 @@ const NOT_LANDED = [
 	{ stage: 'staging', re: new RegExp(String.raw`\bor (?<value>[^.,;]{1,40}?) on (?<branch>${DEV_BRANCH})\b`, 'i') },
 	{
 		stage: 'prod',
-		re: /\b(?:(?:n't|not) (?:yet )?(?:(?:landed |deployed |promoted )?(?:on|in|to) (?:origin\/)?(?:main|prod)|promoted)|reach(?:es)? prod only with (?:a|the next) (?:full )?promote)\b/i,
+		re: /\b(?:(?:n't|not) (?:yet )?(?:(?:landed |deployed |promoted )?(?:on|in|to) (?:origin\/)?(?:main|prod)|reached (?:origin\/)?(?:main|prod)|promoted)|reach(?:es)? prod only with (?:a|the next) (?:full )?promote)\b/i,
 	},
 ];
 /** The first not-landed phrase in `text`, with its stage. */

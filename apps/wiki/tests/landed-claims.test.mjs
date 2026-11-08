@@ -62,6 +62,7 @@ test('a commit on neither crawler, one that reaches prod only with a promote and
 		'<h2 id="other">Other</h2>',
 		'<p>Some line names no commit.</p>',
 		'<p>That commit was not on staging at 12:00Z.</p>',
+		'<p>At 17:18Z on 2026-11-08 main did not hold that land, so <code>2b93c04fc8</code> had not reached prod.</p>',
 	].join('\n');
 	assert.deepEqual(notLandedLines(html), [
 		{ line: 'The commit adds migration 0236_census_leases , so it reaches prod only with a full promote.', shas: ['8acb3c6307'], stage: 'prod' },
@@ -72,6 +73,7 @@ test('a commit on neither crawler, one that reaches prod only with a promote and
 			stage: 'staging',
 		},
 		{ line: 'That commit was on dev/sieun and not yet on staging at 11:57Z that day.', shas: ['03c2d63a58'], stage: 'staging' },
+		{ line: 'At 17:18Z on 2026-11-08 main did not hold that land, so 2b93c04fc8 had not reached prod.', shas: ['2b93c04fc8'], stage: 'prod' },
 	]);
 });
 
