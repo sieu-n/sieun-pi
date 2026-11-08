@@ -162,8 +162,10 @@ Log hits are keyword matches, and logs mention CI and git in normal work, so rea
 12. A sieun-pi commit is live at once through the `~/.prime/agent/skills` symlinks.
 13. Never push either repo, and never pass `--allow-shared`.
 14. After the commit lands, set the class to `fixed` with `fixCommit`, `fixedAt`, and `watchUntil` 7 days out.
-15. Every fix commit, a fix job's included, carries one `Dream-class: <slug>` trailer line per class, so put it in the fix job's brief, and the precheck takes the newer of `fixedAt` and that commit as the class's fix time.
+15. Every fix commit, a fix job's included, carries one `Dream-class: <slug>` trailer line per class, and every fix job brief must name that trailer with the class slug, because the precheck takes the newer of `fixedAt` and that commit as the class's fix time.
 16. On 2026-11-04 sieun-pi 76bd7a2f fixed dream_second_writes at 18:16Z with no dream run alive to copy it into the ledger, and mistakes_back read 1 for 3 runs until a run fixed the row by hand.
+17. The precheck counts every class status but `fixed` as open, and it reads an open class whose newest trailer commit is newer than its `firstSeen` or newest recurrence as fixed, so it leaves that class out of open_mistakes and flags it once as "fixed by <commit>, ledger row still open" for you to copy into the row.
+18. Before that change, dream_write_clobber sat at "fixing" from 11-05 to 11-09, which open_mistakes did not count, and page_states_unlanded_commit kept open_mistakes at 1 at 11-08 17:00Z though its fix bddf1d97 had landed at 16:34Z.
 
 ## Memory moves
 

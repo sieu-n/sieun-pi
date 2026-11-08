@@ -182,24 +182,35 @@ export function currentFix(row: LedgerClass, trailer?: TrailerFix): { at: number
 }
 
 /**
- * Ledger classes still open (open or reopened); the open ones the last run already had (first seen before `since`, or with no date), which
- * open_mistakes counts; classes with a recurrence in the last 7 days (`recurred`); and of those, the ones whose recurrence came after the
- * class's current fix (`back`, or any recurrence when the class has neither a fixedAt nor a trailer commit), where `fixes` holds the
- * `Dream-class` trailer commits (currentFix). A class the last run found gets one daily run to land its fix,
- * because a rule takes a CI probe: the 10-13 rules took 22 h from draft (10-13 17:47Z) to land (68d53dd86d, 10-14 16:07Z). On 10-18
+ * Ledger classes still open (any status but "fixed"); of those, the ones a `Dream-class` trailer commit newer than the class's last opening
+ * (its firstSeen or newest recurrence) fixed while the ledger row stayed open (`landed`); the other open ones the last run already had (first
+ * seen before `since`, or with no date), which open_mistakes counts (`due`); classes with a recurrence in the last 7 days (`recurred`); and of
+ * those, the ones whose recurrence came after the class's current fix (`back`, or any recurrence when the class has neither a fixedAt nor a
+ * trailer commit), where `fixes` holds the `Dream-class` trailer commits (currentFix). A class the last run found gets one daily run to land its
+ * fix, because a rule takes a CI probe: the 10-13 rules took 22 h from draft (10-13 17:47Z) to land (68d53dd86d, 10-14 16:07Z). On 10-18
  * slop_in_replies_and_pages recurred at 05:39Z and 06:55Z and got a new fix at 07:01Z, and owner_mac_and_machines recurred at 05:20Z and got
- * a new fix at 06:39Z, so counting every recurrence kept mistakes_back at 2 for 7 days whatever the new fixes did.
+ * a new fix at 06:39Z, so counting every recurrence kept mistakes_back at 2 for 7 days whatever the new fixes did. Rows nobody closed after
+ * their fix landed hid or counted: dream_write_clobber sat at "fixing", which open_mistakes did not count, from 11-05 to 11-09 though 76bd7a2f
+ * fixed it on 11-04, and page_states_unlanded_commit kept open_mistakes at 1 at 11-08 17:00Z though bddf1d97 had landed at 16:34Z.
  */
 export function classStates(ledger: Ledger, now: number, since = now, fixes: ReadonlyMap<string, TrailerFix> = new Map()): {
-  open: [string, LedgerClass][]; due: [string, LedgerClass][]; recurred: [string, LedgerClass][]; back: [string, LedgerClass][];
+  open: [string, LedgerClass][]; landed: [string, LedgerClass, TrailerFix][]; due: [string, LedgerClass][]; recurred: [string, LedgerClass][];
+  back: [string, LedgerClass][];
 } {
   const classes = Object.entries(ledger.classes ?? {});
-  const open = classes.filter(([, row]) => row.status === "open" || row.status === "reopened");
+  const open = classes.filter(([, row]) => row.status !== "fixed");
+  const opened = (row: LedgerClass): number => Math.max(...[row.firstSeen, ...row.recurred ?? []].map(ms).filter(Number.isFinite));
+  const landed = open.flatMap(([slug, row]): [string, LedgerClass, TrailerFix][] => {
+    const fix = fixes.get(slug);
+    return fix && !(fix.at <= opened(row)) ? [[slug, row, fix]] : [];
+  });
+  const fixed = new Set(landed.map(([slug]) => slug));
   const recent = (row: LedgerClass): string[] => (row.recurred ?? []).filter(at => now - ms(at) <= CHURN_MS && ms(at) <= now);
   const recurred = classes.filter(([, row]) => recent(row).length > 0);
   return {
     open,
-    due: open.filter(([, row]) => !(ms(row.firstSeen) >= since)),
+    landed,
+    due: open.filter(([slug, row]) => !fixed.has(slug) && !(ms(row.firstSeen) >= since)),
     recurred,
     back: recurred.filter(([slug, row]) => { const fix = currentFix(row, fixes.get(slug)); return recent(row).some(at => !(ms(at) <= fix.at)); }),
   };
@@ -682,8 +693,11 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   for (const commit of dream.reverts) slices.push({ kind: "revert", item: `${commit.repo}:${commit.sha.slice(0, 10)}`, excerpt: clip(commit.subject) });
   for (const row of pagesRetouched ?? []) slices.push({ kind: "retouched", item: row.file, excerpt: `${row.file} changed by ${row.revisions} wiki-dream page revisions in 7 days` });
   for (const row of dream.retouched) slices.push({ kind: "retouched", item: row.file, excerpt: `${row.file} changed by ${row.commits} (wiki-dream) commits in 7 days` });
+  const landed = new Map((classes?.landed ?? []).map(([slug, , fix]) => [slug, fix]));
   for (const [slug, row] of classes?.open ?? []) {
-    slices.push({ kind: "open_class", item: slug, excerpt: clip(`${row.status}: ${row.title ?? slug}; skill ${row.skill ?? "?"}; gap ${row.gap ?? "?"}; sources ${(row.sources ?? []).join("; ")}`) });
+    const fix = landed.get(slug);
+    const state = fix ? `fixed by ${fix.repo} ${fix.sha.slice(0, 10)}, ledger row still open` : row.status;
+    slices.push({ kind: "open_class", item: slug, excerpt: clip(`${state}: ${row.title ?? slug}; skill ${row.skill ?? "?"}; gap ${row.gap ?? "?"}; sources ${(row.sources ?? []).join("; ")}`) });
   }
   slices.push(...corrections ?? []);
   for (const signal of health?.signals ?? []) slices.push({ kind: "signal", item: signal.path, excerpt: clip(`"${signal.phrase}": ${signal.excerpt ?? ""}`) });
