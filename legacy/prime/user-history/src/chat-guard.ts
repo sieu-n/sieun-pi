@@ -197,7 +197,9 @@ export interface TellInput { text?: unknown; why?: unknown; about?: unknown; rep
  * sent is left out), and the ids of his messages a `reply_to` may name.
  */
 export interface TellTurn { owner: boolean; ownerIds: ReadonlySet<string>; byOwner?: boolean; tells?: number; ownerText?: string; resent?: ReadonlySet<string>; done?: readonly string[]; startedAt?: number; asked?: ReadonlySet<string>; looked?: boolean;
-  others?: readonly OtherAsk[]; lastSent?: SentTell; dropped?: readonly DroppedTodo[]; plan?: readonly PlanItem[]; unfinished?: string }
+  others?: readonly OtherAsk[]; lastSent?: SentTell; dropped?: readonly DroppedTodo[]; plan?: readonly PlanItem[]; unfinished?: string;
+  /** The 5180 versions, by variant key, that the chat's sent messages linked since his last message. */
+  versions?: ReadonlyMap<string, ReadonlySet<string>> }
 /**
  * A For you todo the chat added, then removed or checked itself with no answer from the owner: an ask it took back. `swappedFor` holds the
  * todos the same call added. A call in the running step has no result yet, so `swappedAfter` holds the highest todo number the chat had
@@ -329,6 +331,32 @@ const PROGRESS = /\bstill being \w+ed\b|\binterim\b|\b(?:I['â€™]ll|I will|we['â€
  */
 const JOB_GOES_ON = /\bstill on (?:its|their) first\b|\bstep 1 (?:of \d+ )?(?:is )?(?:done|finished|complete)\b|\b(?:the )?(?:rest|others|other \d* ?\w+|remaining \w+) (?:are |is )?still (?:rendering|running|building|on)\b/i;
 const JOB_REPORT = "[agent-message from child:";
+/**
+ * The 5180 versions a text links, as variant key and value: `?v.landing=outreach-story` is version outreach-story of v.landing, and `?v=b` is
+ * version b of v.
+ */
+const VERSION_LINK = /[?&](v(?:\.[\w-]+)?)=([\w-]+)/g;
+const versionLinks = (text: string): Map<string, Set<string>> => {
+  const versions = new Map<string, Set<string>>();
+  for (const [, key, value] of text.matchAll(VERSION_LINK)) versions.set(key!, (versions.get(key!) ?? new Set()).add(value!));
+  return versions;
+};
+/**
+ * The versions of a variant key that the chat already sent him since his last message and that this text leaves out: one version handed to
+ * him apart from the others, so no one message holds them all to pick from. On 11-08 a chat sent landing version use-your-ai at 07:15Z,
+ * database-first at 09:12Z and outreach-story at 09:14Z, each alone with its own link, and d11 labelled the last two progress on a goal still
+ * going. A text that links two or more versions of the key is the batch itself and goes out.
+ * measured: over the 2,225 lines sent in 14 chats from 10-19 to 11-08 09:38Z (396 labelled), this refuses the 09:14Z line and one needed line,
+ * landing version C of 10-29 19:47Z sent alone after A and B, and its resend goes out (~/work/tell-owner-split-landing/replay.md).
+ */
+const versionsApart = (text: string, sent: ReadonlyMap<string, ReadonlySet<string>> | undefined): { key: string; missing: string[] } | undefined => {
+  for (const [key, values] of versionLinks(text)) {
+    if (values.size > 1) continue;
+    const missing = [...sent?.get(key) ?? []].filter(value => !values.has(value));
+    if (missing.length) return { key, missing };
+  }
+  return undefined;
+};
 /**
  * A done that names a step (p57) on staging and says nothing of prod: the step is finished but its goal waits on prod, so the result is not in.
  * On 10-23 at 10:17Z a chat sent "Google search is upgraded on staging (p57)" while its goal p18 ("works through api.virev.ai on prod") stayed
@@ -561,9 +589,10 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
   const sent: SentTell[] = [];
   const resent = new Set<string>();
   let done: string[] = [];
+  let versions = new Map<string, Set<string>>();
   let looked = false;
   for (const message of messages) {
-    if (message.role === "user" && !serverNote(messageText(message).trim())) { ownerIds.add(ownerMessageId(message.timestamp)); ownerText = messageText(message); done = []; }
+    if (message.role === "user" && !serverNote(messageText(message).trim())) { ownerIds.add(ownerMessageId(message.timestamp)); ownerText = messageText(message); done = []; versions = new Map(); }
     if (message.role === "assistant") for (const part of message.content) {
       if (part.type === "toolCall" && part.name === TELL_OWNER_TOOL && typeof part.arguments?.text === "string") told.set(part.id, part.arguments.text.trim());
       if (part.type === "toolCall" && part.name === TELL_OWNER_TOOL && typeof message.timestamp === "number") calls.set(part.id, { at: message.timestamp, ...(typeof part.arguments?.why === "string" ? { why: part.arguments.why } : {}) });
@@ -576,19 +605,29 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
       if (text) resent.add(text);
     }
     if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && messageText(message) === TELL_OWNER_DONE && calls.has(message.toolCallId)) sent.push(calls.get(message.toolCallId)!);
+    if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && messageText(message) === TELL_OWNER_DONE && told.has(message.toolCallId)) {
+      for (const [key, values] of versionLinks(told.get(message.toolCallId)!)) versions.set(key, new Set([...versions.get(key) ?? [], ...values]));
+    }
     if (message.role === "toolResult" && message.toolName === TELL_OWNER_TOOL && messageText(message) === TELL_OWNER_DONE && doneAbout.has(message.toolCallId)) {
       done.push(doneAbout.get(message.toolCallId)!);
     }
   }
-  const before = messages.at(-1)?.role === "assistant" ? messages.slice(0, -1) : messages;
+  // The running step is the last assistant message with the results its calls already wrote. Prime runs a step's calls one after another when
+  // one of them, such as ipython, cannot run beside the others, and writes each result before the next call starts. On 11-08 at 09:12Z a chat's
+  // step held an ipython call and two tell_owner calls, the first saw the ipython result as the last message and counted no tell_owner, and
+  // both landing messages reached the owner, while two calls alone in one step at 09:22Z ran side by side and were both refused.
+  // measured: on the same replay this refuses 67 more sent lines in 43 steps on turns he did not start (13 labelled needed, 5 noise, 49
+  // unlabelled), which the chat sends again as one message.
+  const stepAt = messages.findLastIndex(message => message.role === "assistant");
+  const running = stepAt >= 0 && messages.slice(stepAt + 1).every(message => message.role === "toolResult") ? messages[stepAt] as Extract<ThreadMessage, { role: "assistant" }> : undefined;
+  const before = running ? messages.slice(0, stepAt) : messages;
   // His last message is unanswered when no agent line follows it. A message he typed restarts the feed's turn tracking, so the feed of the
   // messages from it on has the same agent lines as the whole feed. On 11-03 the whole feed of a 36,000-message chat took 0.3 to 0.5 s of
   // each call, and up to 2 s inside 6 to 8 s worker stalls.
   const ownerAt = before.findLastIndex(ownerTyped);
   const unanswered = ownerAt >= 0 && !chatLines(before.slice(ownerAt)).some(line => line.kind === "agent");
   const byOwner = turnStarter(messages.filter(message => !(message.role === "user" && revival(messageText(message).trim())))) === "owner";
-  const last = messages.at(-1);
-  const tells = last?.role === "assistant" ? last.content.filter(part => part.type === "toolCall" && part.name === TELL_OWNER_TOOL).length : 0;
+  const tells = running ? running.content.filter(part => part.type === "toolCall" && part.name === TELL_OWNER_TOOL).length : 0;
   // The turn starts at the first wake after the last settled step: a message steered in mid-turn is no new turn, since on 10-21 at 09:47:43Z a
   // job's message arrived 1 s after mac-management added t8, and t8 read as added in an earlier turn, so its question was refused once.
   const settledAt = before.findLastIndex(message => message.role === "assistant" && (message as { stopReason?: string }).stopReason !== "toolUse");
@@ -599,7 +638,7 @@ export function tellTurn(messages: readonly ThreadMessage[]): TellTurn {
   const unfinished = before.slice(settledAt + 1).filter((message): message is Extract<ThreadMessage, { role: "custom" }> => message.role === "custom" && message.customType === "agent_message")
     .map(message => messageText(message)).filter(text => text.startsWith(JOB_REPORT)).map(text => JOB_GOES_ON.exec(text)?.[0]).find(Boolean);
   return { owner: unanswered || byOwner, ownerIds, byOwner, tells, ownerText, resent, done, looked, ...(typeof startedAt === "number" ? { startedAt } : {}), ...(lastSent ? { lastSent } : {}),
-    ...(dropped.length ? { dropped } : {}), ...(unfinished ? { unfinished } : {}) };
+    ...(dropped.length ? { dropped } : {}), ...(unfinished ? { unfinished } : {}), ...(versions.size ? { versions } : {}) };
 }
 
 /**
@@ -652,6 +691,10 @@ export function tellOwner(input: TellInput, turn: TellTurn, now = Date.now(), pa
     `the job report that woke this turn says its run goes on ("${turn.unfinished}"). One part of a result whose rest still runs is update, so ` +
     "put it on the board and tell him once every part is in, in one message. If this part is what he must see now, send the very same text " +
     "again and it goes out (c117)." };
+  const apart = !turn.owner && (answers || declared) && !turn.resent?.has(told) ? versionsApart(told, turn.versions) : undefined;
+  if (apart) return { kind: "refused", text: `${PROGRESS_MARK}, it sends one ${apart.key} version apart from the ${apart.missing.join(", ")} ` +
+    "you sent him since his last message. Send the versions that render now as one message, with each one's link and shot, so he picks from " +
+    "one message. If this one version is what he must see now, send the very same text again and it goes out (c117, c124)." };
   if (!turn.owner && input.why === "done" && declared && !turn.resent?.has(told) && stagingStep(told, input.about as string)) return { kind: "refused",
     text: `${PROGRESS_MARK}, a step on staging while its goal waits on prod. Put it in the step's note on the board and tell him once the goal ` +
       "is done, in one message. If this step finishes what he asked for, send the very same text again and it goes out (c117)." };

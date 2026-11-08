@@ -402,3 +402,44 @@ test("on a turn the owner did not start, a done for a step on staging that says 
   const both = { ...step, text: "Google search is upgraded on staging and prod (p57)." };
   assert.equal(tellOwner(both, turn, Date.now(), () => true).kind, "sent", "a step that reached prod is a result");
 });
+
+test("on a turn the owner did not start, two tell_owner calls in a step that also runs another tool are refused, also once the other tool's result is in", () => {
+  // 11-08 09:12Z: a step held an ipython call and two tell_owner calls. Prime ran them one after another and wrote the ipython result first,
+  // so the first tell_owner counted no call in the step and two landing messages reached the owner.
+  const second = { text: "The second landing option renders. [Database first](http://localhost:5180/?v.landing=database-first)", why: "answer", about: "landing page options" };
+  const agency = { text: "Agency services now has its own page. [Agency page](http://localhost:5180/agency?v.landing=agency-page)", why: "answer", about: "moving Agency services" };
+  const step = { role: "assistant", stopReason: "toolUse", timestamp: at("09:11:58"), content: [{ type: "toolCall", id: "py", name: "ipython", arguments: { code: "send()" } },
+    { type: "toolCall", id: "a", name: "tell_owner", arguments: second }, { type: "toolCall", id: "b", name: "tell_owner", arguments: agency }] } as unknown as ThreadMessage;
+  const queued = { role: "toolResult", toolCallId: "py", toolName: "ipython", content: [{ type: "text", text: "queued" }], isError: false, timestamp: at("09:12:00") } as ThreadMessage;
+  const woke = [...settled, job("More renders: 'Database first' is at http://localhost:5180/?v.landing=database-first.", "09:11:00")];
+  const first = tellTurn([...woke, step, queued]);
+  assert.equal(first.tells, 2);
+  assert.match(tellOwner(second, first, at("09:12:01"), () => true).text, /^2 tell_owner calls in one step/);
+  const next = tellTurn([...woke, step, queued, result("a", "2 tell_owner calls in one step on a turn the owner did not start, so none was sent.", "09:12:02")]);
+  assert.equal(tellOwner(agency, next, at("09:12:03"), () => true).kind, "refused");
+  const own = tellTurn([...settled, owner("where did Agency services go?", "09:11:00"), step, queued]);
+  assert.equal(tellOwner(second, { ...own, looked: true }, at("09:12:01"), () => true).kind, "sent", "his own turn is never held");
+});
+
+test("on a turn the owner did not start, one 5180 version sent apart from the versions he already got is refused once, and the very same text again goes out", () => {
+  // 11-08: a chat sent landing version use-your-ai at 07:15Z, database-first at 09:12Z and outreach-story at 09:14Z, each alone, and d11
+  // labelled the last two progress on a goal still going, since no message gave him all three to pick from.
+  const first = { text: "The first landing option renders. [Use it from your AI](http://localhost:5180/?v.landing=use-your-ai)", why: "answer", about: "landing page options" };
+  const third = { text: "The third landing option renders. [Outreach story](http://localhost:5180/?v.landing=outreach-story)", why: "answer", about: "landing page options" };
+  const history = [...settled, owner("let's work on the landing page, can we remove Agency services?", "04:34:00"), tell("l1", first, "07:15:18"),
+    result("l1", TELL_OWNER_DONE, "07:15:19"), said("", "07:15:20")];
+  const woke = { ...tellTurn([...history, job("All three directions now render. 'Outreach story', before polish.", "09:14:00")]), looked: true };
+  assert.deepEqual([...woke.versions!.get("v.landing")!], ["use-your-ai"]);
+  const refused = tellOwner(third, woke, at("09:14:23"), () => true);
+  assert.equal(refused.kind, "refused");
+  assert.match(refused.text, /^Not sent, it reports work still going, it sends one v\.landing version apart from the use-your-ai you sent him/);
+  const again = { ...tellTurn([...history, job("All three directions now render.", "09:14:00"), tell("l3", third, "09:14:23"), result("l3", refused.text, "09:14:24")]), looked: true };
+  assert.equal(tellOwner(third, again, at("09:14:30"), () => true).kind, "sent", "the very same text again goes out");
+  const all = { text: "All three landing options render, so pick one. [Use it from your AI](http://localhost:5180/?v.landing=use-your-ai), " +
+    "[Database first](http://localhost:5180/?v.landing=database-first), [Outreach story](http://localhost:5180/?v.landing=outreach-story)", why: "decision", about: "pick a landing option" };
+  assert.equal(tellOwner(all, woke, at("09:14:30"), () => true).kind, "sent", "one message with every version goes out");
+  assert.equal(tellOwner(third, { ...woke, owner: true }, at("09:14:30"), () => true).kind, "sent", "his own turn is never held");
+  const answered = { ...tellTurn([...history, owner("use-your-ai looks good, what about the others?", "08:00:00"), said("", "08:00:05"), job("Outreach story renders.", "09:14:00")]), looked: true };
+  assert.equal(answered.versions, undefined, "his message starts a new set");
+  assert.equal(tellOwner(third, answered, at("09:14:30"), () => true).kind, "sent");
+});
