@@ -114,14 +114,20 @@ export const readRoute = (url: string, base: string): string => {
   return (path.startsWith(base) ? path.slice(base.length) : path).replace(/\.[0-9a-f]{6,}(?=\.\w+$)/, "").slice(0, 80) || "shell";
 };
 
-/** Times a GET from now until its response is sent, and starts the event loop monitor on the first one. */
-export function timeRead(req: IncomingMessage, res: ServerResponse, base: string): void {
+/** Starts the event loop monitor, the GC observer and the pool probe once. */
+function watchLoop(): IntervalHistogram {
   if (!loop) {
     loop = monitorEventLoopDelay({ resolution: 20 }); loop.enable();
     new PerformanceObserver(list => { for (const entry of list.getEntries()) noteGc(entry.duration, gcKindOf(entry)); })
       .observe({ entryTypes: ["gc"] });
     setInterval(probePool, POOL_PROBE_MS).unref();
   }
+  return loop;
+}
+
+/** Times a GET from now until its response is sent, and starts the event loop monitor on the first one. */
+export function timeRead(req: IncomingMessage, res: ServerResponse, base: string): void {
+  watchLoop();
   const read: Reading = { remote: false };
   reading.enterWith(read);
   if (req.method !== "GET") return;
@@ -142,18 +148,42 @@ export function timeRead(req: IncomingMessage, res: ServerResponse, base: string
   });
 }
 
+/** A window another process of this service timed (`foldLatency`), whose loop stall the histogram here cannot hold. */
+let foldedLoopMs = 0;
+
+/** The latency of the window so far, which stays open; undefined before the server timed its first request. */
+export function peekLatency(): ChatLatency | undefined {
+  if (!loop) return undefined;
+  return { readMs: slowest.ms, ...slowest.route ? { read: slowest.route } : {},
+    ...slowestRemote.ms ? { remoteMs: slowestRemote.ms, remote: slowestRemote.route } : {},
+    ...slowestSend.ms ? { sendMs: slowestSend.ms, send: slowestSend.route } : {}, loopMs: Math.max(Math.round(loop.max / 1e6), foldedLoopMs),
+    ...longestGc ? { gcMs: Math.round(longestGc.ms), gc: longestGc.kind } : {}, poolMs: Math.round(poolWait()) };
+}
+
 /** The latency since the last take, then starts a new window; undefined before the server timed its first request. */
 export function takeLatency(): ChatLatency | undefined {
-  if (!loop) return undefined;
-  const taken: ChatLatency = { readMs: slowest.ms, ...slowest.route ? { read: slowest.route } : {},
-    ...slowestRemote.ms ? { remoteMs: slowestRemote.ms, remote: slowestRemote.route } : {},
-    ...slowestSend.ms ? { sendMs: slowestSend.ms, send: slowestSend.route } : {}, loopMs: Math.round(loop.max / 1e6),
-    ...longestGc ? { gcMs: Math.round(longestGc.ms), gc: longestGc.kind } : {}, poolMs: Math.round(poolWait()) };
+  const taken = peekLatency();
+  if (!taken) return undefined;
   slowest = { ms: 0, route: "" };
   longestPool = 0;
   slowestRemote = { ms: 0, route: "" };
   slowestSend = { ms: 0, route: "" };
   longestGc = null;
-  loop.reset();
+  foldedLoopMs = 0;
+  loop!.reset();
   return taken;
+}
+
+/**
+ * Adds the window the process this one took over from timed since its last watch line (src/chat-handoff.ts), so the next line here holds
+ * the reads that process answered after it: each slowest stays the slower of the two.
+ */
+export function foldLatency(other: ChatLatency): void {
+  watchLoop();
+  if (other.readMs > slowest.ms) slowest = { ms: other.readMs, route: other.read ?? "" };
+  if ((other.remoteMs ?? 0) > slowestRemote.ms) slowestRemote = { ms: other.remoteMs!, route: other.remote ?? "" };
+  if ((other.sendMs ?? 0) > slowestSend.ms) slowestSend = { ms: other.sendMs!, route: other.send ?? "" };
+  foldedLoopMs = Math.max(foldedLoopMs, other.loopMs);
+  if (other.gcMs !== undefined && other.gc && other.gcMs > (longestGc?.ms ?? 0)) longestGc = { ms: other.gcMs, kind: other.gc };
+  longestPool = Math.max(longestPool, other.poolMs ?? 0);
 }

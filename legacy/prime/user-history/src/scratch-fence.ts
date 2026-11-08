@@ -31,16 +31,19 @@ const asPath = (target: Target): string | null => typeof target === "string" ? t
  * Makes every file write of this process under `roots` fail: on 10-19 between 01:26Z and 02:24Z replay serves on a copy of browser-chat wrote
  * session_state active into 7 real session files the live service had archived, through threads.setSessionState after their fake daemon took
  * a kill. The node:fs and node:fs/promises calls that create, change, move or delete a file throw EACCES for such a path, and
- * `syncBuiltinESMExports` carries the change to every module's named imports. `log` gets the first refusal of each root.
+ * `syncBuiltinESMExports` carries the change to every module's named imports. `log` gets the first refusal of each root. A path under one of
+ * `allow` stays writable, and `label` and `who` name the process in the refusal (src/chat-handoff.ts fences a chat that handed over).
  */
-export function fenceWrites(roots: readonly string[], log: (line: string) => void): void {
+export function fenceWrites(roots: readonly string[], log: (line: string) => void, options: { allow?: readonly string[]; label?: string; who?: string } = {}): void {
   const told = new Set<string>();
+  const label = options.label ?? "scratch serve", who = options.who ?? "a scratch serve";
+  const allow = options.allow ?? [];
   const refuse = (target: Target, call: string): void => {
     const path = asPath(target);
     const root = path === null ? null : fencedRoot(path, roots);
-    if (root === null) return;
-    if (!told.has(root)) { told.add(root); log(`scratch serve: refused ${call} of ${path}; a scratch serve writes nothing under ${root}`); }
-    throw Object.assign(new Error(`EACCES: a scratch serve writes nothing under ${root}: ${call} ${path}`), { code: "EACCES" });
+    if (root === null || fencedRoot(path!, allow) !== null) return;
+    if (!told.has(root)) { told.add(root); log(`${label}: refused ${call} of ${path}; ${who} writes nothing under ${root}`); }
+    throw Object.assign(new Error(`EACCES: ${who} writes nothing under ${root}: ${call} ${path}`), { code: "EACCES" });
   };
   const wrap = (target: Record<string, unknown>, name: string, paths: (args: unknown[]) => Target[]): void => {
     const original = target[name];

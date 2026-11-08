@@ -1,4 +1,5 @@
 import { PREPARE_WAIT } from "./daemon-worker-start.ts";
+import { HANDED_OVER_LINE } from "./chat-handoff.ts";
 
 /**
  * Daemon calls that failed or ran over SLOW_MS, read from the chat service's log and the supervisor's own log, for the Whole system precheck
@@ -105,7 +106,8 @@ const IDLE_WORKER_FAILED = /^idle unload: [0-9a-f-]+: Session worker is failed\b
  * counted by its own metrics.
  */
 const OWN_STOP_BEGINS = /^stop: begins\b/;
-const SERVICE_UP = /^serve: listening\b/;
+/** A start listening ends a stop, and so does the end of a stop of a chat that handed over, whose successor listened before it (src/chat-handoff.ts). */
+const SERVICE_UP = new RegExp(`^(?:serve: listening\\b|${HANDED_OVER_LINE}$)`);
 /**
  * The stop closes the other boxes' bridges before the server (`timed("bridges", ...)` in src/chat-service.ts), so a call still out to another
  * box's daemon then answers that its connection closed, and a later one that the daemon is not connected or its bridge socket is gone. At

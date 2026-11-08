@@ -197,10 +197,15 @@ export function writerFor(socketPath: string): DaemonWriter {
  * no DaemonClient, as the tests hand the hub, takes it as its own request.
  */
 export function keyedRequest(client: Pick<DaemonClient, "request">, command: { type: string } & Record<string, unknown>, slot: WriteSlot, timeoutMs: number): Promise<WriteAnswer> {
+  if (refusal !== null) return Promise.resolve({ success: false, error: refusal });
   const socketPath: unknown = client instanceof DaemonClient ? Reflect.get(client, "socketPath") : undefined;
   if (typeof socketPath === "string") return writerFor(socketPath).request(command, slot, timeoutMs);
   return client.request(command as never, timeoutMs, { recoverable: false }) as Promise<WriteAnswer>;
 }
+
+let refusal: string | null = null;
+/** From now on every keyed write of this process fails with `reason` and reaches no daemon (src/chat-handoff.ts `fenceHandedOver`). */
+export function refuseWrites(reason: string): void { refusal = reason; }
 
 /** Closes every kept writer, for a service stop or the end of a CLI run. */
 export function closeWriters(): void {

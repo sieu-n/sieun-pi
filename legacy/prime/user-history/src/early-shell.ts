@@ -90,7 +90,7 @@ const netClose = NetServer.prototype.close;
 const hopHeaders = new Set(["connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-connection"]);
 
 /** A request the early shell held, sent on to the real server on the same port; the answer closes the connection, so the next one goes there itself. */
-function forwardRequest(port: number): Handler {
+export function forwardRequest(port: number): Handler {
   return (req, res) => {
     const headers = Object.fromEntries(Object.entries(req.headers).filter(([name]) => !hopHeaders.has(name)));
     const out = request({ host: "127.0.0.1", port, method: req.method, path: req.url, headers }, answer => {

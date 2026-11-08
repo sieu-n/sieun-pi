@@ -15,6 +15,8 @@ import { openChat } from "./chat-open.ts";
 import { RemoteAccess, tailnetOwner, type RemoteControl } from "./chat-remote.ts";
 import { runsSlack, SlackBridge, slackChats } from "./chat-slack.ts";
 import { takeListenFd } from "./listen-fd.ts";
+import { fenceHandedOver, HANDED_OVER_LINE, handoffParent, listenForHandoff, notifySystemd } from "./chat-handoff.ts";
+import { peekLatency } from "./chat-latency.ts";
 import { asyncFileLogs } from "./async-log.ts";
 import type { EarlyShell } from "./early-shell.ts";
 import type { RemoteMode } from "./shared/types.ts";
@@ -343,7 +345,9 @@ async function serve(options: Options): Promise<void> {
   const instancePath = join(service.directory, "instance.json");
   // Under socket activation systemd owns the port and queues connections while this process starts, so the identity check below would wait on
   // this process itself; only one service of the unit runs, so no other chat can hold the port.
-  const listenFd = takeListenFd();
+  // A successor that a running chat started on a reload gets the port's socket from it as fd 3 (src/chat-handoff.ts).
+  const parent = handoffParent();
+  const listenFd = parent ? parent.listenFd : takeListenFd();
   if (options.supervised && listenFd === null) {
     if (!service.primary || !service.config.keepRunning) { process.stdout.write("Keep running is off for this chat. The login item exits.\n"); return; }
     // Another chat process owns the port. Wait for it: take over after a crash, stay idle after chat stop.
@@ -408,7 +412,8 @@ async function serve(options: Options): Promise<void> {
   // The port answers page shells from disk while the rest loads (src/early-shell.ts): a shell during a restart waited 12.1 s at 12:42Z on 10-18.
   // On systemd's socket chat-service-cli.mjs starts it before this module loads; a serve that binds its own port starts it here.
   const started = (globalThis as { __chatEarlyShell?: EarlyShell | null }).__chatEarlyShell;
-  const early = started && listenFd !== null ? started : await (await import("./early-shell.ts")).startEarlyShell({ listenFd,
+  // A successor leaves the port to the running chat, which answers it until this process takes over.
+  const early = parent ? null : started && listenFd !== null ? started : await (await import("./early-shell.ts")).startEarlyShell({ listenFd,
     port: service.config.port, capability: service.config.capability, csrfToken: service.config.csrfToken, dataDir: service.directory }).catch(error => {
     if (hasCode(error, "EADDRINUSE")) throw new Error(`Port ${service.config.port} is already in use. No process was stopped. Choose --port with a separate --data-dir.`);
     throw error;
@@ -438,9 +443,13 @@ async function serve(options: Options): Promise<void> {
   // The other boxes in ~/.config/sieun-pi/hosts.json: the main instance opens a local socket per box, tunneled to its relay (src/hosts.ts), and
   // the catalog lists every box's sessions through them (src/host-catalogs.ts).
   const hosts = await serveHosts(options.piHostCanary === true, primary);
+  // Its loops start only once the running chat stopped its own.
+  if (parent) await parent.quiet();
+  let tookPort: () => void = () => {};
+  const portTaken = new Promise<void>(resolve => { tookPort = resolve; });
   const backend = await createChatBackend({ socketPath: readOnly?.socketPath ?? service.config.socketPath, dataDir: service.directory,
     ownChatsOnly: adopt === "own", scratch, replay, hosts: hosts?.catalogs ?? null, copyFile: primary ? join(service.directory, "session-copy.json") : null,
-    saveAgents: !scratch || !await isLiveDirectory(service.directory), listInWorker: true });
+    saveAgents: !scratch || !await isLiveDirectory(service.directory), listInWorker: true, ...parent ? { watchFrom: portTaken } : {} });
   // The Slack bridge stays off until Settings turns it on with tokens in the Keychain; without them the service runs as before.
   const slack = !scratch && runsSlack(primary) ? new SlackBridge({ path: join(service.directory, "slack.json"), chats: slackChats(backend),
     log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;
@@ -463,6 +472,7 @@ async function serve(options: Options): Promise<void> {
   if (!scratch && onPrime) backend.catalog.onDaemonVersion = version => { void sdk.daemonVersion(version); };
   let stopped: () => void = () => {};
   const done = new Promise<void>(resolve => { stopped = resolve; });
+  let handedOver = false;
   let closing: Promise<void> | undefined;
   // Only chat stop removes instance.json, so a supervised start after it stays idle. A restart (SIGTERM from a release or systemd) keeps it,
   // and the next serve rewrites it in place.
@@ -493,6 +503,8 @@ async function serve(options: Options): Promise<void> {
         await timed("cpu profile", () => runProfile.stop().catch(error => process.stderr.write(`cpu profile: ${error instanceof Error ? error.message : String(error)}\n`)));
         clearTimeout(stuck);
         process.stderr.write(`${new Date().toISOString()} stop: ${Date.now() - began} ms: ${parts.join(", ")}\n`);
+        // d7 reads the stop of a chat that handed over as ended here, since its successor listened before it (src/daemon-faults.ts SERVICE_UP).
+        if (handedOver) process.stderr.write(`${new Date().toISOString()} ${HANDED_OVER_LINE}\n`);
       }
     })().finally(() => { process.off("SIGTERM", stop); process.off("SIGINT", stop); stopped(); });
     return closing;
@@ -533,7 +545,9 @@ async function serve(options: Options): Promise<void> {
     },
     check: async () => { await Promise.all([remote.check(), keepRunning?.reconcile(), loginWindow?.refresh()]); },
   };
-  const server = await startChatServer({ backend, bundle, port: service.config.port, listenFd, early, capability: service.config.capability, csrfToken: service.config.csrfToken,
+  const log = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
+  const shell = parent ? parent.shell(backend.chats.firstPass, log) : early;
+  const server = await startChatServer({ backend, bundle, port: service.config.port, listenFd, early: shell, capability: service.config.capability, csrfToken: service.config.csrfToken,
     identity, identityReady, remote: control, slack, sdk, stopToken: service.config.stopToken, onStop: close, tailnetOwner: () => tailnetOwner() }).catch(error => {
       if (hasCode(error, "EADDRINUSE")) throw new Error(`Port ${service.config.port} is already in use. No process was stopped. Choose --port with a separate --data-dir.`);
       throw error;
@@ -549,6 +563,27 @@ async function serve(options: Options): Promise<void> {
   process.stderr.write(`${new Date().toISOString()} serve: listening ${Math.round(performance.now())} ms after start, main thread CPU ${Math.round((startCpu.user + startCpu.system) / 1000)} ms, ` +
     `from ${import.meta.url.endsWith(".bundle.mjs") ? "the bundle" : "source"}\n`);
   process.send?.({ ready: true });
+  tookPort();
+  // Under the Type=notify unit, systemd counts the service started once it listens; a successor told it so as it took the port.
+  if (!parent) await notifySystemd(["READY=1"]).catch(error => log(`systemd-notify: ${error instanceof Error ? error.message : String(error)}`));
+  // A reload (`systemctl reload`, from scripts/release-chat.mjs) starts the next release beside this process, which answers until it took the port.
+  if (listenFd !== null && primary && process.env.NOTIFY_SOCKET) {
+    const { forwardRequest } = await import("./early-shell.ts");
+    listenForHandoff({ listenFd, log,
+      quiesce: async () => { stopPromptPrune(); keeper?.close(); slack?.close(); await backend.quiesce?.(); },
+      fence: successor => fenceHandedOver(successor, service.directory),
+      forwardWrites: port => {
+        server.forwardWrites((req, res) => {
+          port.then(at => { forwardRequest(at)(req, res); }, (error: unknown) => {
+            if (!res.headersSent) { res.writeHead(502, { "Content-Type": "application/json", Connection: "close" }); res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) })); }
+          });
+        });
+      },
+      latency: peekLatency,
+      finish: async () => { handedOver = true; server.stopListening(); await close(false).catch(error => log(`handoff: stop: ${error instanceof Error ? error.message : String(error)}`)); },
+      fail: () => { process.exitCode = 1; stop(); } });
+    parent?.whenAskedAgain(() => { process.kill(process.pid, "SIGHUP"); });
+  }
   remote.start();
   void keepRunning?.reconcile();
   void loginWindow?.refresh();

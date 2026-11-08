@@ -275,6 +275,9 @@ export class Chats {
    * release's 8 s check, then the #interrupted pass of its first tick threw 30 s after each start, and the service crash-looped for 3.5 min.
    */
   ready = false;
+  private markReady!: () => void;
+  /** Resolves when `ready` turns true; a chat start that takes over from a running one waits for it (src/chat-handoff.ts). */
+  readonly firstPass = new Promise<void>(resolve => { this.markReady = resolve; });
   private ticked = false;
   private readonly heldJobs: PoolHeldJobs;
   private rootsEndedAt = -Infinity;
@@ -813,6 +816,7 @@ export class Chats {
         await this.syncing.get("#jobs");
         await this.syncing.get("#interrupted");
         this.ready = true;
+        this.markReady();
         this.log(`chats: first pass ended ${Math.round((this.now() - started) / 1000)} s after the first tick`);
       })();
     }

@@ -9,7 +9,13 @@ After=sieun-pi-chat.socket
 Requires=sieun-pi-chat.socket
 
 [Service]
-Type=simple
+# The chat tells systemd READY=1 once it listens. On a reload (scripts/release-chat.mjs) it starts its successor beside it, which tells systemd
+# MAINPID= when it takes the port, so the next release serves without a restart's slow first minute (legacy/prime/user-history/src/chat-handoff.ts).
+Type=notify
+NotifyAccess=all
+ExecReload=/bin/kill -HUP $MAINPID
+# A Type=simple start had no start timeout, and a start that listens late still serves through the socket.
+TimeoutStartSec=infinity
 Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=SIEUN_PI_CHAT_START_DAEMON=0
 Environment=SIEUN_PI_CHAT_OPEN_AT_LOGIN=0

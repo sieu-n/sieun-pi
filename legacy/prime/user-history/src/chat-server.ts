@@ -58,6 +58,7 @@ import { ScheduledJobsLeft } from "./saved-archive.ts";
 import { type ArchiveBy, isServiceArchiveReason, SERVICE_ARCHIVES_FILE } from "./service-archives.ts";
 import { type CancelBy, parseCancelBy } from "./job-cancels.ts";
 import { historyError, HistoryError, historyRaw } from "../../../../packages/pi-history/src/client.ts";
+import { Server as NetServer } from "node:net";
 
 const SEARCH_PARAMS = new Set(["q", "sort", "kind", "box", "chat", "agent", "since", "until", "limit", "cursor"]);
 const READ_PARAMS = new Set(["ref", "before", "after"]);
@@ -86,6 +87,17 @@ function remoteWorkspace(input: string, host: string): string {
   if (!typed.startsWith("/")) throw new WorkspaceError(`Type the full folder path on ${host}, starting with /: ${input.trim()}`);
   return typed;
 }
+
+/** The running server: its address, its stop, and the two steps of a hand-over to the next process of the service (src/chat-handoff.ts). */
+export interface ChatServer {
+  url: string;
+  close(): Promise<void>;
+  /** From now on every request but a GET or HEAD goes to `forward`. */
+  forwardWrites(forward: (req: IncomingMessage, res: ServerResponse) => void): void;
+  /** Stops taking connections; the ones open stay. net's close: http's would drop idle connections too. */
+  stopListening(): void;
+}
+const netClose = NetServer.prototype.close;
 
 async function jsonBody(request: IncomingMessage): Promise<unknown> {
   if (request.headers["content-type"]?.split(";")[0]?.trim() !== "application/json") throw new RequestError(415, "Expected application/json.");
@@ -436,7 +448,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
   wikiPage?: (path: string) => Promise<WikiPageView>;
   /** The tailnet login whose devices may open the chat from the bare tailnet URL (`tailnetOwner` in chat-remote.ts); null turns that off. */
   tailnetOwner?: () => Promise<string | null>;
-}): Promise<{ url: string; close(): Promise<void> }> {
+}): Promise<ChatServer> {
   const base = "/" + capability + "/";
   let owner: Promise<string | null> | undefined;
   const ownerLogin = () => owner ??= tailnetOwner().catch(() => null);
@@ -479,7 +491,13 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
   let host = "";
   let closing: Promise<void> | undefined;
 
-  const server = early?.server ?? createServer((req, res) => { void handle(req, res); });
+  // While this process hands over to its successor (src/chat-handoff.ts), every request but a read goes to that process.
+  let writesTo: ((req: IncomingMessage, res: ServerResponse) => void) | null = null;
+  const dispatch = (req: IncomingMessage, res: ServerResponse): void => {
+    if (writesTo && req.method !== "GET" && req.method !== "HEAD") writesTo(req, res);
+    else void handle(req, res);
+  };
+  const server = early?.server ?? createServer(dispatch);
   server.requestTimeout = 15000;
   server.headersTimeout = 10000;
   server.maxHeadersCount = 30;
@@ -1384,7 +1402,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
   }
   try {
     // The early shell may listen later (early-shell-start.mjs waits for this thread to be free); the address is read only after it does.
-    if (early) await early.take((req, res) => { void handle(req, res); }, upgrade);
+    if (early) await early.take(dispatch, upgrade);
     else await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
       const listening = () => { server.removeListener("error", reject); resolve(); };
@@ -1395,7 +1413,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     if (!address || typeof address === "string") throw new Error("Expected a loopback TCP address.");
     host = `127.0.0.1:${address.port}`;
     server.on("error", () => { void close(); });
-    return { url: `http://${host}${base}`, close };
+    return { url: `http://${host}${base}`, close, forwardWrites: forward => { writesTo = forward; }, stopListening: () => { netClose.call(server); } };
   } catch (error) {
     await close();
     throw error;

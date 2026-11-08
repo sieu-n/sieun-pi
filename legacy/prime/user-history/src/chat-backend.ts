@@ -122,6 +122,12 @@ export interface ChatBackend {
   messages: AgentOutbox;
   /** Stops the wake ticker and the agent outbox and waits for its disk writes; the service runs it before it closes its daemon links. */
   drainSends?: () => Promise<void>;
+  /**
+   * Stops everything that acts (sends, wakes, duties, check-ins, sweeps, alerts) and waits for the sends out, and keeps what answers reads:
+   * the catalog, the threads, the watch and the board watch. A chat that hands over to its successor (src/chat-handoff.ts) runs it before
+   * that process starts its own.
+   */
+  quiesce?: () => Promise<void>;
   close(): Promise<void>;
 }
 
@@ -199,8 +205,10 @@ export function chatDefaultsStore(agentDir: string): ChatDefaultsStore {
  * `copyFile`: where this box's session copy is kept across restarts (`SessionPeer`), so a restart serves the sidebar before any list.
  * `saveAgents`: the chats' agents go to AGENTS_FILE in the data dir at the stop, so the next start answers agents reads before its first projection.
  * `listInWorker`: each full list of this box's sessions runs in a worker thread (`Catalog.listsInWorker`).
+ * `watchFrom`: the minute watch starts when it resolves: a start that takes over from a running chat (src/chat-handoff.ts) leaves the watch to
+ * that chat until it answers the port, so one process writes each minute's line.
  */
-export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string; ownChatsOnly?: boolean; scratch?: boolean; replay?: boolean; hosts?: HostCatalogs | null; copyFile?: string | null; saveAgents?: boolean; listInWorker?: boolean } = {}): Promise<ChatBackend> {
+export async function createChatBackend(options: { socketPath?: string; dataDir?: string; agentDir?: string; ownChatsOnly?: boolean; scratch?: boolean; replay?: boolean; hosts?: HostCatalogs | null; copyFile?: string | null; saveAgents?: boolean; listInWorker?: boolean; watchFrom?: Promise<void> } = {}): Promise<ChatBackend> {
   const scratch = options.scratch === true;
   // A replay serve runs the loops a live start runs whose only effects are daemon commands, which all reach the recorded fake daemon, and
   // writes in its data dir copy. Whatever reaches past those (job leftovers, GitHub, the spawn ledger, Grafana, duty measures,
@@ -338,17 +346,21 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       ...(lead ? { lead: ids => writeLead(ids, true) } : { owned: new IdIndex(join(dataDir, "own-chats.json"), "Own chat index") }), ...quiet ? { tickMs: 0 } : {} },
     line => process.stderr.write(line + "\n"));
   chats.briefChanged = () => { void catalog.notify().catch(() => {}); };
+  // A chat that quiesced to hand over acts no more: its successor's catalog sees the same cuts and supervisor changes.
+  let quiesced = false;
   catalog.onCut(cut => {
+    if (quiesced) return;
     const now = Date.now();
     if (resumesNow(cut, now)) for (const at of cutPasses(cut, now)) chats.interruptedAt(at);
   });
   catalog.onSupervisorChange(() => {
+    if (quiesced) return;
     dutyLog("chats: the Prime daemon has a new supervisor; the pass over interrupted jobs runs soon");
     chats.interruptedSoon();
   });
   const unwatchBoards = boards.watch((id, board) => {
     threads.setBoard(id, board);
-    if (!quiet) void duties.boardChanged(id, board).catch(error => dutyLog(`duties: board change of ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
+    if (!quiet && !quiesced) void duties.boardChanged(id, board).catch(error => dutyLog(`duties: board change of ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}`));
   },
     error => process.stderr.write(`boards: ${error instanceof Error ? error.message : String(error)}\n`));
   // A chat over 100 MB is compacted after its Prime compaction, in a child process (src/session-autocompact.ts). Another box's chat is left to that box.
@@ -377,10 +389,11 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   const stop = new CallStopper({ handles: readCallHandles, kill: (pid, signal) => { process.kill(pid, signal); }, interrupt: interruptCell, alive: pidAlive,
     log: dutyLog,
     tell: (session, root, text) => agentOutbox.deliver(session, text, root) });
-  const stopWatch = ownChatsOnly && !replay ? async () => {} : startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
+  const startWatch = () => startMacUsableWatch({ dataDir, rows: () => catalog.daemonRows(), chats: () => chats.ids(), title: id => catalog.title(id),
     idleClock: id => threads.idleClock(id),
     queue: queueReading, log: dutyLog, calls, ...scratch ? {} : { stop }, host: catalog.selfHostName() ?? hostname().split(".")[0]!.toLowerCase(),
     remotes: () => catalog.remoteHosts().map(({ host, rows }) => ({ name: host.name, rows, read: pids => relayWatch(host, pids), reach: () => reach.reach(host.name) })) });
+  const stopWatch = ownChatsOnly && !replay ? async () => {} : options.watchFrom ? startLater(options.watchFrom, startWatch) : startWatch();
   // Every agent message the service sends waits on disk until the daemon takes it, and one that may have gone is looked for before it goes
   // again (src/agent-outbox.ts). A scratch serve keeps its own folder, so it never delivers the live service's messages.
   /** The root session pi-pool keys a session's tree by: its topmost listed parent. */
@@ -568,10 +581,34 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
   // A stop saves the Agent queue chart's hours for the next start (TURN_HISTORY_FILE), as the catalog saves its heads and tails.
   const turnHistoryRead = turnHistory(POOL_LOG, options.saveAgents ? join(dataDir, TURN_HISTORY_FILE) : null);
   let closed = false;
+  async function quiesce(): Promise<void> {
+    if (quiesced) return;
+    quiesced = true;
+    await outbox.close();
+    await agentOutbox.close();
+    await notices.close();
+    clearInterval(prioritySync);
+    if (unloader) clearInterval(unloader);
+    stopQuietWatch();
+    stopLeadWatch();
+    stopTmpSweep();
+    stopWakes();
+    stopBriefs();
+    stopAlerts();
+    stopBridgeWatch();
+    stopUptime();
+    alertPoll?.stop();
+    unobserveCompaction();
+    duties.close();
+    archives.close();
+    chats.close();
+    awake.close();
+  }
   return {
     catalog, threads, readState, labels, defaults, newChat, chats, boards, created, usage, duties, poolPriorities, calls,
     agentQueue: agentQueue(id => catalog.title(id), defaults, undefined, undefined, turnHistoryRead),
     drainSends: async () => { stopWakes(); await agentOutbox.close(); await notices.close(); },
+    quiesce,
     prompt: async (id, via) => {
       const capture = hostCapture(id);
       capture.catch(() => {});
@@ -586,27 +623,9 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       closed = true;
       // First, so the line of the minute it stops in goes out while the rest closes (startMacUsableWatch).
       const watchStopped = stopWatch();
-      await outbox.close();
-      await agentOutbox.close();
-      await notices.close();
+      await quiesce();
       await watchStopped;
-      clearInterval(prioritySync);
-      if (unloader) clearInterval(unloader);
-      stopQuietWatch();
-      stopLeadWatch();
-      stopTmpSweep();
-      stopWakes();
-      stopBriefs();
-      stopAlerts();
-      stopBridgeWatch();
-      stopUptime();
-      alertPoll?.stop();
       unwatchBoards();
-      unobserveCompaction();
-      duties.close();
-      archives.close();
-      chats.close();
-      awake.close();
       await threads.close();
       await catalog.close();
       await turnHistoryRead.save().catch(error => dutyLog(`agent queue: saving the turn history: ${error instanceof Error ? error.message : String(error)}`));
@@ -614,4 +633,11 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       usage.close();
     },
   };
+}
+
+/** A stop for what `start` starts once `from` resolves; a stop before then means it never starts. */
+function startLater(from: Promise<void>, start: () => () => Promise<void>): () => Promise<void> {
+  let stop: (() => Promise<void>) | null = null, stopped = false;
+  void from.then(() => { if (!stopped) stop = start(); }, () => {});
+  return async () => { stopped = true; await stop?.(); };
 }

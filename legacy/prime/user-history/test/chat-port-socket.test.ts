@@ -29,7 +29,7 @@ const runRelease = async (args: string[], env: NodeJS.ProcessEnv): Promise<{ sta
   execRelease(process.execPath, [script, ...args], { env, encoding: "utf8" }).then(({ stderr }) => ({ status: 0, stderr }),
     (error: { code?: number; stderr?: string }) => ({ status: error.code ?? 1, stderr: error.stderr ?? "" }));
 
-test("a release whose units differ installs them and moves the port to the socket; the next one only restarts", async t => {
+test("a release whose units differ installs them and moves the port to the socket; the next one reloads, and the chat hands over", async t => {
   // Since 5edd2273 each restart is checked: the fake systemctl reports one running process, and a fake chat answers the chat URL.
   const chat = createServer((_request, response) => { response.end("ok"); });
   await new Promise<void>(done => chat.listen(0, "127.0.0.1", done));
@@ -51,7 +51,10 @@ test("a release whose units differ installs them and moves the port to the socke
   writeFileSync(join(unitDir, "sieun-pi-chat.service"), "[Unit]\nDescription=the unit before sockets\n");
   const calls = join(dir, "calls.log");
   const systemctl = join(dir, "systemctl");
-  writeFileSync(systemctl, `#!/bin/sh\nif [ "$2" = show ]; then printf 'ActiveState=active\\nMainPID=4242\\nInvocationID=fake\\n'; exit 0; fi\necho "$@" >> ${JSON.stringify(calls)}\n`, { mode: 0o755 });
+  // A reload makes the running chat hand over to the next one (src/chat-handoff.ts), so the main pid changes and the invocation stays.
+  const reloaded = join(dir, "reloaded");
+  writeFileSync(systemctl, `#!/bin/sh\nif [ "$2" = show ]; then pid=4242; [ -e ${JSON.stringify(reloaded)} ] && pid=4243; printf "ActiveState=active\\nMainPID=$pid\\nInvocationID=fake\\n"; exit 0; fi\n` +
+    `[ "$2" = reload ] && touch ${JSON.stringify(reloaded)}\necho "$@" >> ${JSON.stringify(calls)}\n`, { mode: 0o755 });
   const env = { ...process.env, SIEUN_PI_CHAT_HOME: home, SIEUN_PI_CHAT_SERVICE_MANAGER: "systemd", SIEUN_PI_CHAT_SYSTEMCTL: systemctl, SIEUN_PI_CHAT_UNIT_DIR: unitDir,
     SIEUN_PI_CHAT_URL: `http://127.0.0.1:${port}/`, SIEUN_PI_CHAT_HOLD_MS: "0" };
   const release1 = await runRelease([`release-${sha.slice(0, 7)}`, "--rollback", "--repo", git], env);
@@ -69,5 +72,8 @@ test("a release whose units differ installs them and moves the port to the socke
   writeFileSync(join(nextRelease, "release.json"), JSON.stringify({ sha: next }));
   const release2 = await runRelease([`release-${next.slice(0, 7)}`, "--rollback", "--repo", git], env);
   assert.equal(release2.status, 0, release2.stderr);
-  assert.deepEqual(readFileSync(calls, "utf8").trim().split("\n"), ["--user restart sieun-pi-chat.service"]);
+  // The installed unit hands over (Type=notify, ExecReload), so the next release reloads the running chat instead of restarting it: at
+  // 13:02:12Z on 11-08 the restarted chat answered api/threads/01a11ba8/duties in 1.1 s while its start held its main thread.
+  assert.deepEqual(readFileSync(calls, "utf8").trim().split("\n"), ["--user reload sieun-pi-chat.service"]);
+  assert.match(release2.stderr, /the chat handed over from invocation fake pid 4242 to invocation fake pid 4243/);
 });

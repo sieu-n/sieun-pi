@@ -10,7 +10,9 @@ import { scopedPlan } from "./release-chat-scope.mjs";
 const USAGE = `usage: node scripts/release-chat.mjs <commit|release-id> [--rollback] [--no-kickstart] [--repo <dir>]
 
 Builds ~/.local/share/sieun-pi-chat/release-<sha7> from the commit, points current at it and kickstarts com.sieun.agent-chat (:5182),
-or on Linux restarts the systemd user unit sieun-pi-chat.service. When the release's deploy/linux sieun-pi-chat.service or .socket differs from
+or on Linux restarts the systemd user unit sieun-pi-chat.service. When that unit hands over (Type=notify with an ExecReload), a running chat
+gets systemctl reload instead: it starts the new release beside it and answers the port until that one ended its first pass and took over
+(up to 360 s, then a restart). The way back to the release before always restarts. When the release's deploy/linux sieun-pi-chat.service or .socket differs from
 ~/.config/systemd/user, it installs them, runs daemon-reload, stops the service, enables and starts the socket, and starts the service.
 The commit must be on origin's main, fetched at the start: push it first. The command never pushes or publishes anyone's source itself.
 One release runs at a time: a second command waits for the first one's lock. Latest wins: a waiting release whose commit the release holding
@@ -654,11 +656,48 @@ async function checkStart(startedAt) {
   }
 }
 
-/** Restarts the chat service on current: on systemd it installs current's units first when they differ. */
-function restartService(home) {
-  if (systemd()) {
-    if (!switchUnits(home)) run(systemctl(), ["--user", "restart", UNIT], process.cwd());
-  } else run(launchctl(), ["kickstart", "-k", launchdTarget()], process.cwd());
+/**
+ * Whether the installed unit hands over on a reload: Type=notify with an ExecReload, as deploy/linux/sieun-pi-chat.service has since the
+ * chat's hand-over (legacy/prime/user-history/src/chat-handoff.ts). There the running chat starts the next release beside it and keeps
+ * answering the port until that one ended its first pass, so a release costs no minute of slow reads.
+ */
+function handsOver() {
+  const text = readText(join(unitDir(), UNIT));
+  return text !== null && /^Type=notify$/m.test(text) && /^ExecReload=/m.test(text);
+}
+
+/**
+ * How long a reload may take until the successor is the service's main process: it takes the port once its first pass ended, at most
+ * TAKEOVER_MS (300 s) after it listened, and its start took up to 15.4 s on 11-08, so 360 s fails only a hand-over that hangs.
+ */
+const HANDOFF_MS = Number(process.env.SIEUN_PI_CHAT_HANDOFF_MS || 360_000);
+
+/** Waits until the service's main process is another one than `before`; false when it still is after HANDOFF_MS. */
+async function handedOver(before) {
+  const until = Date.now() + HANDOFF_MS;
+  while (Date.now() < until) {
+    const now = serviceProcess();
+    if (now && now !== before) return true;
+    await sleep(POLL_MS);
+  }
+  return false;
+}
+
+/**
+ * Restarts the chat service on current: on systemd it installs current's units first when they differ, and a running chat whose unit hands
+ * over gets a reload, which returns once the next release took the port. A hand-over that does not finish falls back to a restart. `reload`
+ * false always restarts, as the way back to a release before the hand-over does.
+ */
+async function restartService(home, reload = true) {
+  if (!systemd()) { run(launchctl(), ["kickstart", "-k", launchdTarget()], process.cwd()); return; }
+  if (switchUnits(home)) return;
+  const before = reload && handsOver() ? serviceProcess() : null;
+  if (before) {
+    run(systemctl(), ["--user", "reload", UNIT], process.cwd());
+    if (await handedOver(before)) { log(`the chat handed over from ${before} to ${serviceProcess()}`); return; }
+    log(`the chat ${before} did not hand over within ${seconds(HANDOFF_MS)} of the reload; restarting it`);
+  }
+  run(systemctl(), ["--user", "restart", UNIT], process.cwd());
 }
 
 /**
@@ -671,7 +710,7 @@ async function kickstart(home, before = null) {
   // The windows count from the end of the restart, which systemctl and launchctl return only once the old process exited: on 11-03 at 18:57Z
   // the old chat took 90 s to stop, and a count from before the restart failed release-d9f6745 on its 60 s answer window.
   const restartAt = Date.now();
-  restartService(home);
+  await restartService(home);
   log(`the restart returned in ${seconds(Date.now() - restartAt)}`);
   const failure = await checkStart(Date.now());
   if (!failure) {
@@ -682,7 +721,7 @@ async function kickstart(home, before = null) {
   if (!back) throw new StartFailed(`the chat on ${id} ${failure}; no release before it to go back to`);
   log(`the chat on ${id} ${failure}; going back to ${back}`);
   flip(home, back);
-  restartService(home);
+  await restartService(home, false);
   const again = await checkStart(Date.now());
   if (!again) writeFileSync(join(home, STARTED), JSON.stringify({ id: back, at: new Date().toISOString() }) + "\n");
   throw new StartFailed(`the chat on ${id} ${failure}, so current went back to ${back}${again ? `, and the chat on ${back} ${again} too` : ", which runs again"}`);
