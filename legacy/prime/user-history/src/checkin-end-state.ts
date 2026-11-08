@@ -4,6 +4,7 @@ import { handedStep, heldByTodo, OWNER_PROMPT_HOLD, ownerPromptWait } from "./sh
 import type { ChatBoard, OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import { landWaitCommits, type WakeWatch } from "./checkin-load.ts";
 import { zTime } from "./checkin-goals.ts";
+import { plannedEnd } from "./checkin-findings.ts";
 import { stallWords } from "./shared/stalled-calls.ts";
 import { stepIds } from "./shared/step-ids.ts";
 import { WAKE_LATE_MS } from "./wakes.ts";
@@ -76,8 +77,9 @@ export interface EndStateView { view: StepView; state: EndState; reason: string;
  * that Tailscale reads offline is held there (`hostHeld`), whatever its job's state reads: nothing on that box moves, wakes or reports until it
  * is back, and its row is the last copy the box sent. On 10-29 from 19:30Z sep launch!!'s p133 and p137 read moving on their jobs' failed
  * pi-pool slot waits on the sleeping Mac, so the check-in flagged them orphan four runs in a row and its job asked the owner on t65 to wake
- * the Mac (c178). A held step whose wait names other work than its box (`waitsPastBox`) reads by that wait instead (`byWait`): on 10-30
- * sep launch!!'s p125 waited for the release owner's next prod promote, and its job on the sleeping Mac read host_held in 7 check-ins in a row.
+ * the Mac (c178). A held step whose wait names other work than its box (`waitsPastBox`) reads by that wait instead (`byWait`) once that wait is
+ * due, with no waitUntil or one passed, or a passed clock it names (`plannedEnd`): on 10-30 sep launch!!'s p125 waited for the release owner's
+ * next prod promote, and its job on the sleeping Mac read host_held in 7 check-ins in a row.
  * Then a step whose owner is a working job or a working thread, a step whose wait names a working job of this chat
  * (`waitCarrier`, from `facts`) and a step whose wait hands it to another chat's open step (`handedStep`) are fine; a step the chat owns is
  * moving when it changed within STEP_STALE_MS and waits on nothing. Next an explicit For you link (`heldByTodo`) or a wait on the owner's own
@@ -100,7 +102,10 @@ export function endState(view: StepView, todos: Parameters<typeof heldByTodo>[1]
     // job on the sleeping Mac it read stuck (release) in every check-in from 15:47Z on 11-03, so d9 counted it 3 runs in a row.
     const carried = movers.steps ? stepCarrier(item, movers.steps) : undefined;
     if (carried && carried.owners.some(owner => !hostHeld({ item, owner }, rows, movers.hosts))) return out("moving", carriedText(carried));
-    return waitsPastBox(item, hold, rows, self) ? byWait(item, todos, rows, self, false, out, `; ${away}`)! : { ...out("host", away!), hold };
+    // A wait due later is held too: on 11-08 at 10:25Z sep launch!!'s p173 waited for "ops guy: staging Convex move serves about 12:30Z" with
+    // waitUntil 12:35Z, its job on the Mac (offline since 10:20Z) asleep on a check by 12:35Z, and it read stuck (thread), so d9 read 1.
+    const due = !(Date.parse(item.waitUntil ?? "") > now && (plannedEnd(item, view.changedAt) ?? Infinity) > now);
+    return due && waitsPastBox(item, hold, rows, self) ? byWait(item, todos, rows, self, false, out, `; ${away}`)! : { ...out("host", away!), hold };
   }
   if (owner?.stalled) return out("stalled_call", `${ownerLabel(owner)} ${stallWords(owner.stalled, now)}`);
   if (owner && ownerMoves(owner)) return out("moving", owner.state !== "working" ? `${ownerLabel(owner)} waits for its slot in the token pool`
