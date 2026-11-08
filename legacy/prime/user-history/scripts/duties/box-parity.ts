@@ -268,7 +268,7 @@ export const LIMIT_PROPS: readonly { prop: string; directive: string; unset: rea
 export const SHOW_PROPS = ["Id", "FragmentPath", "DropInPaths", "ActiveState", "MainPID", "Description", ...LIMIT_PROPS.map(limit => limit.prop)];
 const VENDOR = /^\/(usr\/)?lib\//;
 
-/** The settings the owner asked for on the box, as their scripts set them: unit weights keyed by scope and unit and `heavy`'s scope. */
+/** The settings the owner asked for on the box, as their scripts set them: unit weights keyed by scope and unit and `heavy`'s unit. */
 export interface Layers {
   weights: ReadonlyMap<string, string>;
   heavy: { swapMax: string; score: number };
@@ -297,8 +297,8 @@ export function parseLayers(setupCpu: string, heavy: string, uid: number, rcuBoo
     if (!body) throw new Error(`setup-cpu.sh has no ${table} table`);
     for (const [, unit, weight] of body.matchAll(/\[([^\]]+)\]=(\d+)/g)) weights.set(`${scope} ${unit!.replace("$uid", String(uid))}`, weight!);
   }
-  const run = /systemd-run --user --scope .*-p MemoryMax="\$size" -p MemorySwapMax=(\S+) -- choom -n (-?\d+) --/.exec(heavy);
-  if (!run) throw new Error("heavy has no systemd-run --user --scope line with MemoryMax, MemorySwapMax and choom");
+  const run = /systemd-run --user [^\n]*-p MemoryMax="\$size" -p MemorySwapMax=(\S+)[\s\\]*(?:\$setenv )?-- choom -n (-?\d+) --/.exec(heavy);
+  if (!run) throw new Error("heavy has no systemd-run --user line with MemoryMax, MemorySwapMax and choom");
   const policy = POLICY_NUMBERS[/^CPUSchedulingPolicy=(\w+)$/m.exec(rcuBoostUnit)?.[1] ?? ""];
   const stall = /^STALL_TIMEOUT_S = (\d+)$/m.exec(rcuBoost)?.[1];
   if (!policy || !stall) throw new Error("rcu-boost.service has no CPUSchedulingPolicy or rcu-boost.py no STALL_TIMEOUT_S");
@@ -307,11 +307,11 @@ export function parseLayers(setupCpu: string, heavy: string, uid: number, rcuBoo
 }
 
 /**
- * A `heavy` scope: a systemd-run user scope with heavy's MemorySwapMax whose command, in the Description systemd-run gives it, is heavy's choom
- * call. A scope whose command failed keeps its unit and settings with no process left, and still matches.
+ * A `heavy` unit: the transient user service heavy names heavy-<pid>-<ns>.service, with heavy's MemorySwapMax, whose command, in the Description
+ * systemd-run gives it, is heavy's choom call. Until 11-08 heavy ran a run-p<pid>-i<n>.scope instead.
  */
 const isHeavyScope = (unit: Record<string, string>, context: LimitContext): boolean =>
-  context.scope === "user" && /^run-p\d+-i\d+\.scope$/.test(unit.Id!) && unit.MemorySwapMax === context.layers.heavy.swapMax
+  context.scope === "user" && /^heavy-\d+-\d+\.service$/.test(unit.Id!) && unit.MemorySwapMax === context.layers.heavy.swapMax
     && new RegExp(`^\\[systemd-run\\] (\\S*/)?choom -n ${context.layers.heavy.score} -- `).test(unit.Description ?? "");
 
 /** Why the owner asked for this setting on this unit, or undefined when no layer sets it to this value. */

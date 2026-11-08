@@ -354,12 +354,12 @@ async function linuxLayers(ctx: Context): Promise<Sample[]> {
 
   if (slice) {
     const app = cg(slice.app);
-    const scopes = (await readdir(app).catch(() => [] as string[])).filter(name => /^run-.+\.scope$/.test(name));
+    const scopes = (await readdir(app).catch(() => [] as string[])).filter(name => /^(run-.+\.scope|heavy-\d+-\d+\.service)$/.test(name));
     const boxes = (await Promise.all(scopes.map(async name => {
       const [max, current] = await Promise.all([text(join(app, name, "memory.max")), text(join(app, name, "memory.current"))]);
       return /^\d+$/.test(max.trim()) ? { max: Number(max.trim()), current: Number(current.trim()) || 0 } : null;
     }))).filter(box => box !== null);
-    out.push(gauge("harness.memory.heavy_scopes", "Live `heavy` runs: systemd-run scopes under the user's app.slice with a MemoryMax.", boxes.length),
+    out.push(gauge("harness.memory.heavy_scopes", "Live `heavy` runs: systemd-run scopes and heavy services under the user's app.slice with a MemoryMax.", boxes.length),
       gauge("harness.memory.heavy_scope_memory", "memory.current of the live heavy runs, summed.", boxes.reduce((sum, box) => sum + box.current, 0), undefined, "By"),
       gauge("harness.memory.heavy_scope_limit", "MemoryMax of the live heavy runs, summed.", boxes.reduce((sum, box) => sum + box.max, 0), undefined, "By"));
   }

@@ -25,12 +25,15 @@ public=/tmp/prime-agent-$(id -u)/daemon.sock
 live=$(realpath -m "$HOME/.prime/agent")
 scratch="" agent=""
 prev=""
+# The case tests keep sed to the args that name a socket or dir: heavy passes its whole env as -E NAME, and under a load of 395 on 11-08 two
+# seds for each of its 140 args took a `heavy 1G -- true` 2 min 14 s, and 3.8 s with sed on these args alone.
 for arg in "$@"; do
+  sock="" given=""
   if [ "$prev" = "--daemon-socket" ]; then sock=$arg; else
-    sock=$(printf '%s\n' "$arg" | sed -n "s/.*--daemon-socket[=' \"]*\([^' \"]*\).*/\1/p" | head -n 1)
+    case $arg in *--daemon-socket*) sock=$(printf '%s\n' "$arg" | sed -n "s/.*--daemon-socket[=' \"]*\([^' \"]*\).*/\1/p" | head -n 1) ;; esac
   fi
   [ -n "$sock" ] && [ "$(realpath -m "$sock")" != "$public" ] && scratch=$sock
-  given=$(printf '%s\n' "$arg" | sed -n "s/.*PRIME_AGENT_CODING_AGENT_DIR=[' \"]*\([^' \"]*\).*/\1/p" | head -n 1)
+  case $arg in *PRIME_AGENT_CODING_AGENT_DIR=*) given=$(printf '%s\n' "$arg" | sed -n "s/.*PRIME_AGENT_CODING_AGENT_DIR=[' \"]*\([^' \"]*\).*/\1/p" | head -n 1) ;; esac
   [ -n "$given" ] && agent=$given
   prev=$arg
 done

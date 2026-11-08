@@ -121,7 +121,8 @@ export function parseExplained(value: unknown): Map<string, Explained> {
 export interface OomLine { at: number; units: string[] }
 
 const OOM_LINE = /^(\d+)(?:\.\d+)? \S+ kernel: oom-kill:\S*?task_memcg=([^,]*),/;
-const HEAVY_START = /^Started (run-\S+\.scope) - \[systemd-run\] \S*choom -n 500 -- /;
+// heavy runs a heavy-<pid>-<ns>.service since 11-08 and ran a run-p<pid>-i<n>.scope before, which the 7-day journal still holds.
+const HEAVY_START = /^Started ((?:run-\S+\.scope)|(?:heavy-\d+-\d+\.service)) - \[systemd-run\] \S*choom -n 500 -- /;
 
 /**
  * The kernel's kills inside heavy scopes, the leaf cgroups of the other kills, and the time of the newest other kill. The kernel writes one
@@ -230,7 +231,7 @@ async function oomBoxes(at: number): Promise<OomKills[]> {
   const journal = (args: string[]): Promise<string> => run("journalctl", ["--no-pager", ...args]);
   const since = entry.sinceBootAt ? new Date(entry.sinceBootAt).toISOString() : entry.explained !== undefined ? new Date(entry.by!.until).toISOString() : "-24h";
   const [lines, starts] = await Promise.all([journal(["_TRANSPORT=kernel", "--since", since, "-o", "short-unix", "-g", "oom-kill:"]),
-    journal(["--user", "--since", "-7d", "-o", "cat", "-g", "^Started run-.*choom -n 500"])]);
+    journal(["--user", "--since", "-7d", "-o", "cat", "-g", "^Started (run|heavy)-.*choom -n 500"])]);
   Object.assign(entry, splitOomLines(lines, starts));
   return boxes;
 }

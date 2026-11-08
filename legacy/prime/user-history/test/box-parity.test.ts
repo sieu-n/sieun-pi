@@ -170,13 +170,14 @@ test("unitLimits lists a setting the deploy/linux layer scripts set as owner-ask
   assert.deepEqual(asked(daemon, {}, { 7: -10 }), [["user prime-agent-daemon.service CPUWeight", true], ["user prime-agent-daemon.service nice", false]]);
   const chat = unitLimits({ ...daemon, Id: "sieun-pi-chat.service", CPUWeight: "[not set]" }, context({}, { 7: -10 }));
   assert.equal(chat[0]!.ownerAsked, undefined);
-  const heavy = { Id: "run-p904848-i92945148.scope", Description: "[systemd-run] /usr/bin/choom -n 500 -- npx jest --ci", MemoryMax: "800", MemorySwapMax: "0" };
-  const both = (ownerAsked: boolean) => [["user run-pN-iN.scope MemoryMax", ownerAsked], ["user run-pN-iN.scope MemorySwapMax", ownerAsked]];
+  const heavy = { Id: "heavy-904848-1794142102188876336.service", Description: "[systemd-run] /usr/bin/choom -n 500 -- npx jest --ci", MemoryMax: "800", MemorySwapMax: "0" };
+  const both = (ownerAsked: boolean) => [["user heavy-N-<id>.service MemoryMax", ownerAsked], ["user heavy-N-<id>.service MemorySwapMax", ownerAsked]];
   assert.deepEqual(asked(heavy, {}), both(true));
   assert.match(unitLimits(heavy, context({}))[0]!.ownerAsked!, /`heavy` sets it as memory layer 4/);
   assert.deepEqual(asked({ ...heavy, Description: "[systemd-run] npx jest --ci" }, {}), both(false));
   assert.deepEqual(asked({ ...heavy, MemorySwapMax: "100" }, {}), both(false));
-  assert.deepEqual(asked(heavy, {}, {}, "system"), [["system run-pN-iN.scope MemoryMax", false], ["system run-pN-iN.scope MemorySwapMax", false]]);
+  assert.deepEqual(asked({ ...heavy, Id: "run-p904848-i92945148.scope" }, {}), [["user run-pN-iN.scope MemoryMax", false], ["user run-pN-iN.scope MemorySwapMax", false]]);
+  assert.deepEqual(asked(heavy, {}, {}, "system"), [["system heavy-N-<id>.service MemoryMax", false], ["system heavy-N-<id>.service MemorySwapMax", false]]);
 });
 
 test("rcu-boost.service's FIFO is owner-asked CPU layer 3, and rcu_boost_off flags a stopped watcher or another stall timeout (us-metal02 RCU stall 10-20)", () => {

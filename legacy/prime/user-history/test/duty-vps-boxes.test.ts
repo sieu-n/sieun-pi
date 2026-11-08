@@ -71,6 +71,8 @@ test("a kill inside a heavy scope counts as heavy_scope_kills, one per kernel oo
   const outside = oomKills24h([{ box: "us-metal01", kills: 0 }, { box: "us-metal02", kills: 5, ...mixed }], 0);
   assert.equal(outside.kills, 2);
   assert.match(outside.flagged[0]!.excerpt, /^us-metal02: 2 OOM kills outside heavy scopes and 3 more inside heavy scopes in the last 24 h; the kernel log names prime-agent-daemon.service, run-p1-i2.scope$/);
+  const service = "heavy-2060104-1794142102188876336.service";
+  assert.deepEqual(splitOomLines(line(1792430999, `${app}/${service}`), `Started ${service} - [systemd-run] /usr/bin/choom -n 500 -- npx vitest run.`), { heavy: 1, units: [] });
 });
 
 // Guards p468 (10-20): p456 fixed the us-metal02 kills up to 16:52Z on 10-19, yet they held oom_kills_24h at 41 for a whole day and the duty

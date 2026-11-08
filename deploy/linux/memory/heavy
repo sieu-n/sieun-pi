@@ -32,24 +32,36 @@ if [ -z "${VITEST_MAX_WORKERS:-}" ] && workers=$(gib "$size"); then
 		export VITEST_MAX_WORKERS
 	fi
 fi
-# When CMD ends, every process it left in the scope is killed, since systemd keeps a scope while any process is in it.
-# measured: at 11:05Z on 11-08 33 run-p scopes on us-metal02 still held 36 Prime test daemons and workers, 3.1 GB,
-# that 33 `heavy 8G -- npx vitest` runs of daemon-supervisor-process.test.ts had left on 11-04 from 09:11Z to 10:03Z.
-# The shell forwards TERM, INT and HUP to CMD, so a timeout or kill of heavy still ends CMD. --expand-environment=no
-# keeps systemd-run from rewriting $$ and ${VAR} in that shell script and in CMD.
-exec systemd-run --user --scope --quiet --expand-environment=no -p MemoryMax="$size" -p MemorySwapMax=0 -- choom -n 500 -- sh -c '
+# CMD runs as the main process of a transient service, so once it exits systemd stops the unit and kills every process left in its cgroup,
+# also when heavy itself was SIGKILLed. A scope outlives its command while any process stays in it: at 11:05Z on 11-08 33 run-p scopes on
+# us-metal02 still held 36 Prime test daemons and workers, 3.1 GB, that 33 `heavy 8G -- npx vitest` runs of daemon-supervisor-process.test.ts
+# had left on 11-04 from 09:11Z to 10:03Z, and the shell that fdd314f2 ran in the scope to kill them dies with a SIGKILL of the caller's
+# process group, which left the leftover alive in a run on 11-08. A service starts from the user manager's environment, so heavy passes its
+# own on with -E, less the variables systemd sets for a unit, and --expand-environment=no keeps systemd from rewriting $VAR in CMD.
+unit=heavy-$$-$(date +%s%N).service
+names=$(env -0 | tr '\n\0' '\001\n' | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | grep -vxE '_|INVOCATION_ID|NOTIFY_SOCKET|JOURNAL_STREAM|SYSTEMD_EXEC_PID|MANAGERPID|MANAGERPIDFDID|MAINPID|MAINPIDFDID|PIDFILE|MEMORY_PRESSURE_WATCH|MEMORY_PRESSURE_WRITE|LISTEN_[A-Z]+|WATCHDOG_[A-Z]+' || :)
+setenv=
+for name in $names; do setenv="$setenv -E $name"; done
+# systemd-run ignores TERM, INT and HUP, so it stays to report CMD's exit code, and heavy sends each of them to CMD. A signal can come before
+# systemd has started the unit, so the send is retried until it lands or systemd-run is gone.
+trap '' TERM INT HUP
 exec 3<&0
-"$@" <&3 3<&- &
+# shellcheck disable=SC2086
+systemd-run --user --wait --pipe --collect --quiet --same-dir --expand-environment=no --unit="$unit" -p MemoryMax="$size" -p MemorySwapMax=0 \
+	$setenv -- choom -n 500 -- "$@" <&3 3<&- &
 pid=$!
 exec 3<&-
-trap "kill -TERM $pid 2>/dev/null" TERM
-trap "kill -INT $pid 2>/dev/null" INT
-trap "kill -HUP $pid 2>/dev/null" HUP
-while :; do
-	wait "$pid"
-	rc=$?
-	kill -0 "$pid" 2>/dev/null || break
-done
-procs=/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup)/cgroup.procs
-for p in $(cat "$procs" 2>/dev/null); do [ "$p" = "$$" ] || kill -KILL "$p" 2>/dev/null || :; done
-exit "$rc"' heavy "$@"
+to_cmd() {
+	(until systemctl --user kill --kill-whom=main --signal="$1" "$unit" 2>/dev/null; do
+		kill -0 "$pid" 2>/dev/null || exit 0
+		sleep 0.2
+	done) </dev/null >/dev/null 2>&1 &
+}
+trap 'to_cmd TERM' TERM
+trap 'to_cmd INT' INT
+trap 'to_cmd HUP' HUP
+# A trap cuts a wait short, so heavy waits until systemd-run is gone and then reads its saved status.
+while kill -0 "$pid" 2>/dev/null; do wait "$pid" || :; done
+rc=0
+wait "$pid" || rc=$?
+exit "$rc"
