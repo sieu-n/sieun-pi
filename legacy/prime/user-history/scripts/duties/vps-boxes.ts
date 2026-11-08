@@ -217,6 +217,8 @@ async function explain(boxes: OomKills[], explained: Map<string, Explained>, at:
   }));
 }
 
+/** The kernel lines match _TRANSPORT=kernel, because `journalctl -k` reads only the current boot: after us-metal02's reboot at 11:31Z on 11-08 the
+ * 23:48Z heavy scope kill of 11-07 read as outside heavy scopes. */
 async function oomBoxes(at: number): Promise<OomKills[]> {
   const [kills, last, explained] = await Promise.all([byBox(OOM_KILLS_QUERY), byBox(OOM_LAST_QUERY), readFile(DUTY_FILE, "utf8").then(text => parseExplained(JSON.parse(text)))]);
   const boxes: OomKills[] = [...kills].map(([box, count]) => ({ box, kills: count, ...last.has(box) ? { lastAt: last.get(box)! * 1000 } : {} }));
@@ -227,7 +229,7 @@ async function oomBoxes(at: number): Promise<OomKills[]> {
   const entry = boxes.find(box => box.box === here)!;
   const journal = (args: string[]): Promise<string> => run("journalctl", ["--no-pager", ...args]);
   const since = entry.sinceBootAt ? new Date(entry.sinceBootAt).toISOString() : entry.explained !== undefined ? new Date(entry.by!.until).toISOString() : "-24h";
-  const [lines, starts] = await Promise.all([journal(["-k", "--since", since, "-o", "short-unix", "-g", "oom-kill:"]),
+  const [lines, starts] = await Promise.all([journal(["_TRANSPORT=kernel", "--since", since, "-o", "short-unix", "-g", "oom-kill:"]),
     journal(["--user", "--since", "-7d", "-o", "cat", "-g", "^Started run-.*choom -n 500"])]);
   Object.assign(entry, splitOomLines(lines, starts));
   return boxes;
@@ -252,46 +254,57 @@ async function orphans(at: number): Promise<{ reading: Reading; lines: FlaggedSl
   return { reading, lines: orphanLines(reading, stopped, at) };
 }
 
+/**
+ * The five reads run at once, each with its own flagged lines kept in section order. The 20:12 KST run on 11-08 took 118 s in sequence; timed
+ * apart that day, the orphan read took 107 s (29 s of it `prime-agent list --all`) and the OOM journal reads 39 s, so in sequence they summed past
+ * the duty's 90 s target, and the runner query that ran last answered "fetch failed".
+ */
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("vps-boxes: OUTPUT_FILE is not set\n"); process.exit(2); }
   const at = Date.now();
   const result: PrecheckOutput = { metrics: {}, flagged: [] };
-  const flag = (kind: string, excerpt: string) => result.flagged!.push({ at, kind, excerpt: excerpt.slice(0, 600) });
-  try {
-    const file = parseRisks(JSON.parse(await readFile(RISKS_FILE, "utf8")));
-    const firing = await readGrafanaAlerts(GRAFANA_CONFIG);
-    if (!firing) throw new Error(`${GRAFANA_CONFIG} is missing`);
-    const rules = await grafana("/api/v1/provisioning/alert-rules").catch(() => null) as { uid: string }[] | null;
-    const counted = countRisks(file, firing, rules ? new Set(rules.map(rule => rule.uid)) : null, at);
-    result.metrics.risks_firing = counted.firing;
-    result.flagged!.push(...counted.flagged);
-    if (file.page) flag("page", `risk page: ${file.page}`);
-  } catch (error) { flag("source_error", `risks_firing: ${error instanceof Error ? error.message : String(error)}`); }
-  try {
-    const counted = alertsFiring(await readFiringRules(BRIDGE_FILE, CHAT), at);
-    result.metrics.alerts_firing = counted.count;
-    result.flagged!.push(...counted.flagged);
-  } catch (error) { flag("source_error", `alerts_firing: ${error instanceof Error ? error.message : String(error)}`); }
-  try {
-    const counted = oomKills24h(await oomBoxes(at), at);
-    result.metrics.oom_kills_24h = counted.kills;
-    result.metrics.heavy_scope_kills = counted.heavy;
-    result.metrics.oom_kills_explained = counted.explained;
-    result.windowMs = { oom_kills_24h: counted.windowMs };
-    if (counted.lastEventAt !== undefined) result.lastEventAt = { oom_kills_24h: counted.lastEventAt };
-    result.flagged!.push(...counted.flagged);
-  } catch (error) { flag("source_error", `oom_kills_24h: ${error instanceof Error ? error.message : String(error)}`); }
-  try {
-    const found = await orphans(at);
-    if (found) {
+  const section = async (name: string, read: (flagged: FlaggedSlice[]) => Promise<void>): Promise<FlaggedSlice[]> => {
+    const flagged: FlaggedSlice[] = [];
+    try { await read(flagged); }
+    catch (error) { flagged.push({ at, kind: "source_error", excerpt: `${name}: ${error instanceof Error ? error.message : String(error)}`.slice(0, 600) }); }
+    return flagged;
+  };
+  const sections = await Promise.all([
+    section("risks_firing", async flagged => {
+      const file = parseRisks(JSON.parse(await readFile(RISKS_FILE, "utf8")));
+      const firing = await readGrafanaAlerts(GRAFANA_CONFIG);
+      if (!firing) throw new Error(`${GRAFANA_CONFIG} is missing`);
+      const rules = await grafana("/api/v1/provisioning/alert-rules").catch(() => null) as { uid: string }[] | null;
+      const counted = countRisks(file, firing, rules ? new Set(rules.map(rule => rule.uid)) : null, at);
+      result.metrics.risks_firing = counted.firing;
+      flagged.push(...counted.flagged);
+      if (file.page) flagged.push({ at, kind: "page", excerpt: `risk page: ${file.page}` });
+    }),
+    section("alerts_firing", async flagged => {
+      const counted = alertsFiring(await readFiringRules(BRIDGE_FILE, CHAT), at);
+      result.metrics.alerts_firing = counted.count;
+      flagged.push(...counted.flagged);
+    }),
+    section("oom_kills_24h", async flagged => {
+      const counted = oomKills24h(await oomBoxes(at), at);
+      result.metrics.oom_kills_24h = counted.kills;
+      result.metrics.heavy_scope_kills = counted.heavy;
+      result.metrics.oom_kills_explained = counted.explained;
+      result.windowMs = { oom_kills_24h: counted.windowMs };
+      if (counted.lastEventAt !== undefined) result.lastEventAt = { oom_kills_24h: counted.lastEventAt };
+      flagged.push(...counted.flagged);
+    }),
+    section("orphan_processes", async flagged => {
+      const found = await orphans(at);
+      if (!found) return;
       result.metrics.orphan_processes = found.reading.orphan_processes;
       result.metrics.orphan_processes_unknown = found.reading.orphan_unknown;
-      result.flagged!.push(...found.lines);
-    }
-  } catch (error) { flag("source_error", `orphan_processes: ${error instanceof Error ? error.message : String(error)}`); }
-  try { result.metrics.air_runners_online = await instant(AIR_RUNNERS_QUERY); }
-  catch (error) { flag("source_error", `air_runners_online: ${error instanceof Error ? error.message : String(error)}`); }
+      flagged.push(...found.lines);
+    }),
+    section("air_runners_online", async () => { result.metrics.air_runners_online = await instant(AIR_RUNNERS_QUERY); }),
+  ]);
+  result.flagged!.push(...sections.flat());
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }
 
