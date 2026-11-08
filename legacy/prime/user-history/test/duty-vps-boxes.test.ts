@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FiringAlert } from "../src/alert-bridge.ts";
 import { readFile } from "node:fs/promises";
-import { DUTY_FILE, OOM_LAST_QUERY, OOM_WINDOW_MS, countRisks, oomKills24h, parseExplained, parseRisks, splitOomLines } from "../scripts/duties/vps-boxes.ts";
+import { DUTY_FILE, OOM_LAST_QUERY, OOM_WINDOW_MS, countRisks, oomKills24h, parseAlertingSets, parseExplained, parseRisks, splitByRuleState, splitOomLines } from "../scripts/duties/vps-boxes.ts";
 
 const alert = (uid: string, startsAt: string): FiringAlert =>
   ({ fingerprint: `${uid}-${startsAt}`, startsAt, alertname: uid, labels: { __alert_rule_uid__: uid }, summary: "", url: "" });
@@ -32,6 +32,34 @@ test("a risk's match narrows a shared rule to its own labels, and an alert witho
   assert.equal(countRisks(file, [disk("/"), disk("/ci")], known, 0).firing, 0);
   assert.equal(countRisks(file, [disk("/hdd.raid10")], known, 0).firing, 1);
   assert.equal(countRisks(file, [alert("metal-disk-raid-pd-failed", "2026-10-26T00:00:00.000Z")], known, 0).firing, 1);
+});
+
+// Guards p791 (11-08): metal-backup-ch-redis-age's redis sets read Recovering at value 0 from 20:48:30Z after the fix, Alertmanager still
+// listed them active for keep_firing_for, and the 21:14Z run read risks_firing 1 and asked for a root-cause job of a fixed fault.
+test("a risk whose rule sets only recover in the rule list does not count and keeps a recovering line with its owner", () => {
+  const file = parseRisks({ risks: [
+    { id: "backup", line: "Backups of ClickHouse and Redis go stale", owner: "metal box owner", alertUids: ["metal-backup-ch-redis-age"] },
+    { id: "disk", line: "us-metal01 root disk fills", owner: "metal", alertUids: ["metal-host-disk-85"] },
+  ] });
+  const set = (uid: string, store: string, startsAt: string): FiringAlert =>
+    ({ ...alert(uid, startsAt), labels: { __alert_rule_uid__: uid, alertname: uid, store, grafana_folder: "metal" } });
+  const active = [set("metal-backup-ch-redis-age", "redis-staging", "2026-11-08T18:10:00.000Z"), set("metal-backup-ch-redis-age", "redis-prod", "2026-11-08T18:16:00.000Z"),
+    set("metal-host-disk-85", "/", "2026-11-08T20:00:00.000Z")];
+  const rules = { data: { groups: [{ rules: [
+    { uid: "metal-backup-ch-redis-age", alerts: [
+      { state: "Recovering", labels: { alertname: "metal-backup-ch-redis-age", store: "redis-staging", grafana_folder: "metal" } },
+      { state: "Recovering", labels: { alertname: "metal-backup-ch-redis-age", store: "redis-prod", grafana_folder: "metal" } }] },
+    { uid: "metal-host-disk-85", alerts: [{ state: "Alerting (NoData)", labels: { alertname: "metal-host-disk-85", store: "/", grafana_folder: "metal", empty: "" } }] },
+  ] }] } };
+  const { firing, recovering } = splitByRuleState(active, parseAlertingSets(rules));
+  assert.deepEqual([firing.length, recovering.length], [1, 2]);
+  const result = countRisks(file, firing, null, 0, recovering);
+  assert.equal(result.firing, 1);
+  assert.deepEqual(result.flagged.map(slice => [slice.kind, slice.excerpt]), [
+    ["recovering", "Backups of ClickHouse and Redis go stale (owner metal box owner): metal-backup-ch-redis-age recovering, fired since 2026-11-08T18:10:00.000Z"],
+    ["firing", "us-metal01 root disk fills (owner metal): metal-host-disk-85 firing since 2026-11-08T20:00:00.000Z"],
+  ]);
+  assert.equal(countRisks(file, active, null, 0).firing, 2);
 });
 
 // Guards p456 (10-19): us-metal02 had 40 OOM kills from 13:14Z to 16:52Z and no duty counted them, so the 24 h hold after the fixes had no owner.

@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { type FiringAlert, readGrafanaAlerts } from "../../src/alert-bridge.ts";
+import { type FiringAlert, readGrafanaAlerts, setKey } from "../../src/alert-bridge.ts";
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { BRIDGE_FILE, alertsFiring } from "./prod-alerts.ts";
 import { readFiringRules } from "../../src/alert-bridge.ts";
@@ -14,7 +14,9 @@ import { type Reading, defaultContext, describe, hostMatcher, liveStopSource, re
 /**
  * The precheck of the ops chat's duty "VPS and dev boxes" (`node --import tsx scripts/duties/vps-boxes.ts`). The chat's risk list
  * (infra-risks.json, written with the wiki risk page) names each standing risk of the boxes with the Grafana alert rules that check it.
- * risks_firing counts the risks with a rule in Grafana's firing list, read like the alert bridge does (grafana-alerts.json, a Viewer token).
+ * risks_firing counts the risks with a rule in Grafana's firing list, read like the alert bridge does (grafana-alerts.json, a Viewer token),
+ * and only the label sets the rule list holds Alerting: Alertmanager keeps a Recovering set active for the rule's keep_firing_for, and on 11-08
+ * metal-backup-ch-redis-age, Recovering at value 0 from 20:48:30Z after its fix, held the 21:14Z run at 1 (p791, and p747 on 11-04).
  * air_runners_online counts the M1 Air's runners up from the box Prometheus through Grafana ds/query. disk_days_min, the fewest days until a
  * disk of us-metal01 or us-metal02 filled, left on 10-27 with the 30-day fill rules, after the owner answered todo t78 with "stop worrying about
  * storage being used up" (c187); a disk that is really full still fires metal-host-disk-85.
@@ -75,21 +77,48 @@ const ruleUid = (alert: FiringAlert): string => alert.labels.__alert_rule_uid__ 
 const matches = (risk: Risk, alert: FiringAlert): boolean =>
   Object.entries(risk.match ?? {}).every(([key, pattern]) => alert.labels[key] === undefined || new RegExp(`^(?:${pattern})$`).test(alert.labels[key]));
 
-/** The risks whose rules fire, one flagged line each with its owner, plus a line for each risk with no rule and each uid Grafana does not know. */
-export function countRisks(file: RiskFile, firing: readonly FiringAlert[], knownUids: ReadonlySet<string> | null, at: number): { firing: number; flagged: FlaggedSlice[] } {
+/** Every rule in a Grafana rule list read with `state=firing`, by uid, with the label sets (`setKey`) of its instances in an Alerting state. */
+export function parseAlertingSets(value: unknown): Map<string, Set<string>> {
+  const record = value as { data?: { groups?: unknown } } | null;
+  if (!Array.isArray(record?.data?.groups)) throw new Error("Grafana's rule list has no groups");
+  const rules = (record.data.groups as { rules?: unknown }[]).flatMap(group => Array.isArray(group?.rules) ? group.rules as { uid?: unknown; alerts?: unknown }[] : []);
+  return new Map(rules.flatMap(rule => typeof rule?.uid !== "string" ? [] : [[rule.uid, new Set((Array.isArray(rule.alerts) ? rule.alerts as { state?: unknown; labels?: Record<string, string> }[] : [])
+    .flatMap(alert => typeof alert?.state === "string" && alert.state.startsWith("Alerting") ? [setKey(alert.labels ?? {})] : []))] as const]));
+}
+
+/** Alertmanager's active alerts split by whether the rule list holds their label set Alerting; any other set is Recovering or already Normal. */
+export function splitByRuleState(active: readonly FiringAlert[], alerting: ReadonlyMap<string, ReadonlySet<string>>): { firing: FiringAlert[]; recovering: FiringAlert[] } {
+  const firing: FiringAlert[] = [];
+  const recovering: FiringAlert[] = [];
+  for (const alert of active) (alerting.get(ruleUid(alert))?.has(setKey(alert.labels)) ? firing : recovering).push(alert);
+  return { firing, recovering };
+}
+
+const earliest = (hits: readonly FiringAlert[], state: string): string[] => {
+  const since = new Map<string, string>();
+  for (const hit of hits) if (!since.has(hit.alertname) || hit.startsAt < since.get(hit.alertname)!) since.set(hit.alertname, hit.startsAt);
+  return [...since].map(([name, start]) => state === "firing" ? `${name} firing since ${start}` : `${name} recovering, fired since ${start}`);
+};
+
+/**
+ * The risks whose rules fire, one flagged line each with its owner, plus a line for each risk with no rule and each uid Grafana does not know.
+ * A risk whose sets only recover gets a `recovering` line and does not count.
+ */
+export function countRisks(file: RiskFile, firing: readonly FiringAlert[], knownUids: ReadonlySet<string> | null, at: number,
+  recovering: readonly FiringAlert[] = []): { firing: number; flagged: FlaggedSlice[] } {
   const flagged: FlaggedSlice[] = [];
   let count = 0;
   for (const risk of file.risks) {
     if (!risk.alertUids.length) { flagged.push({ at, kind: "unchecked", excerpt: `${risk.line.replace(/\.$/, "")} (owner ${risk.owner}): no Grafana rule checks it yet` }); continue; }
     const unknown = knownUids ? risk.alertUids.filter(uid => !knownUids.has(uid)) : [];
     if (unknown.length) flagged.push({ at, kind: "gap", excerpt: `${risk.line.replace(/\.$/, "")}: Grafana has no alert rule ${unknown.join(", ")}` });
-    const hits = firing.filter(alert => risk.alertUids.includes(ruleUid(alert)) && matches(risk, alert));
-    if (!hits.length) continue;
-    count++;
-    const since = new Map<string, string>();
-    for (const hit of hits) if (!since.has(hit.alertname) || hit.startsAt < since.get(hit.alertname)!) since.set(hit.alertname, hit.startsAt);
-    const rules = [...since].map(([name, start]) => `${name} firing since ${start}`);
-    flagged.push({ at, kind: "firing", excerpt: `${risk.line.replace(/\.$/, "")} (owner ${risk.owner}): ${rules.join("; ")}`.slice(0, 600) });
+    const ours = (alert: FiringAlert): boolean => risk.alertUids.includes(ruleUid(alert)) && matches(risk, alert);
+    const hits = firing.filter(ours);
+    const state = hits.length ? "firing" : "recovering";
+    const shown = hits.length ? hits : recovering.filter(ours);
+    if (!shown.length) continue;
+    if (hits.length) count++;
+    flagged.push({ at, kind: state, excerpt: `${risk.line.replace(/\.$/, "")} (owner ${risk.owner}): ${earliest(shown, state).join("; ")}`.slice(0, 600) });
   }
   return { firing: count, flagged };
 }
@@ -274,10 +303,11 @@ async function main(): Promise<void> {
   const sections = await Promise.all([
     section("risks_firing", async flagged => {
       const file = parseRisks(JSON.parse(await readFile(RISKS_FILE, "utf8")));
-      const firing = await readGrafanaAlerts(GRAFANA_CONFIG);
-      if (!firing) throw new Error(`${GRAFANA_CONFIG} is missing`);
+      const active = await readGrafanaAlerts(GRAFANA_CONFIG);
+      if (!active) throw new Error(`${GRAFANA_CONFIG} is missing`);
+      const { firing, recovering } = splitByRuleState(active, parseAlertingSets(await grafana("/api/prometheus/grafana/api/v1/rules?state=firing")));
       const rules = await grafana("/api/v1/provisioning/alert-rules").catch(() => null) as { uid: string }[] | null;
-      const counted = countRisks(file, firing, rules ? new Set(rules.map(rule => rule.uid)) : null, at);
+      const counted = countRisks(file, firing, rules ? new Set(rules.map(rule => rule.uid)) : null, at, recovering);
       result.metrics.risks_firing = counted.firing;
       flagged.push(...counted.flagged);
       if (file.page) flagged.push({ at, kind: "page", excerpt: `risk page: ${file.page}` });
