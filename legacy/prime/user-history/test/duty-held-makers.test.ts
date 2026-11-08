@@ -45,7 +45,7 @@ const FLAGGED = [
   page(OWN, { commit: "b86ee8683efe9779b84da19fa5e78befe29463e9", session: "01a1b6e6-0000-7000-8000-000000000000", tree: JOB.id }),
 ];
 
-async function runsAt(times: readonly string[], hold: PoolHold | null) {
+async function runsAt(times: readonly string[], hold: PoolHold | null, cut: DutyCut | null = CUT, jobWorking = false) {
   const dir = await mkdtemp(join(tmpdir(), "duty-held-makers-"));
   try {
     const agentDir = join(dir, "agent");
@@ -61,8 +61,8 @@ async function runsAt(times: readonly string[], hold: PoolHold | null) {
         createdAt: STARTED - 86_400_000, updatedAt: STARTED - 86_400_000, runCount: 790, lastRunAt: STARTED } satisfies Duty);
     });
     await store.appendRun(CHAT, { duty: "d4", at: STARTED, slot: STARTED, trigger: "push", ms: 30_000, verdict: "missed",
-      metrics: { wiki_problems: { value: 28, target: 0, op: "<=", met: false } }, summary: "wiki_problems 28 (target at most 0)", job: JOB, cut: CUT });
-    const rows = new Map<string, SessionRow>([[CHAT, row(CHAT, "AI harness developer environment VP", false)], [JOB.id, row(JOB.id, JOB.name, false)],
+      metrics: { wiki_problems: { value: 28, target: 0, op: "<=", met: false } }, summary: "wiki_problems 28 (target at most 0)", job: JOB, ...cut ? { cut } : {} });
+    const rows = new Map<string, SessionRow>([[CHAT, row(CHAT, "AI harness developer environment VP", false)], [JOB.id, row(JOB.id, JOB.name, jobWorking)],
       [CRAWLER, row(CRAWLER, "Crawler VP", true)], [IDLE_TREE, row(IDLE_TREE, "Search VP", false)]]);
     const started: string[] = [];
     const steered: string[] = [];
@@ -107,8 +107,20 @@ test("a run that finds the Wiki dream's job held in pi-pool's line asks the work
 });
 
 test("a run beside a working dream job asks no maker, since the job takes the pages itself", async () => {
-  const { messaged } = await runsAt(["2026-11-07T22:55:39.000Z"], null);
+  const { messaged, steered, started } = await runsAt(["2026-11-07T17:10:00.000Z"], null, null, true);
+  assert.deepEqual(started, []);
+  assert.equal(steered.length, 1);
   assert.deepEqual(messaged, []);
+});
+
+// On 11-08 pi-pool kept d4's cut jobs in no line: the 03:42Z job was cut at 03:46:31Z on credential_unavailable, the 03:58Z push run started
+// another, and that one was cut at 04:05:01Z, so the runs replaced cut jobs and never found one held.
+test("a run that replaces a cut dream job asks the makers too", async () => {
+  const { started, messaged } = await runsAt(["2026-11-07T22:55:39.000Z"], null);
+  assert.equal(started.length, 1);
+  assert.equal(messaged.length, 1);
+  assert.equal(messaged[0]!.session, SERP_SESSION);
+  assert.ok(messaged[0]!.text.includes("was cut on a failed model call at 16:45Z"), messaged[0]!.text);
 });
 
 const STALE: StalePage[] = [

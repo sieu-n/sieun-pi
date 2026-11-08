@@ -1198,6 +1198,12 @@ export class Duties {
     }
     const { last, lastRun, replaced } = previous;
     if (!chat) return { skipped: "skipped: the catalog does not list the chat" };
+    // A last job cut on a failed model call that pi-pool keeps in no line is replaced, and its replacement asks for an account too: on 11-08
+    // d4's jobs of 03:42Z and 03:58Z were each cut within 6 min on credential_unavailable, so the makers are asked here as beside a held job.
+    if (last && lastRun?.cut && handOff && dutyId !== CHECK_IN_DUTY_ID) {
+      await this.handToMakers(chatId, dutyId, { job: last, why: `was cut on a failed model call at ${new Date(lastRun.cut.at).toISOString().slice(11, 16)}Z` },
+        handOff, brief.duty.name, at);
+    }
     if (last) await this.host.jobs.retire(last).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: retire ${last.name}: ${message(error)}`));
     if (lastRun && !lastRun.after && measured) {
       await this.store.updateRun(chatId, dutyId, lastRun.at, record => { record.after ??= measured; })
