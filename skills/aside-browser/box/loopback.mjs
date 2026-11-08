@@ -84,9 +84,11 @@ const hostPort = (authority, fallback) => {
 };
 
 // Vite closes a keep-alive socket after 5 s idle, and that close takes a round trip to reach this side, so a request sent on a
-// socket the Mac already closed gets ECONNRESET. Chrome resends such a request itself; this proxy does the same for a GET or HEAD,
-// because a failed module fetch stops the whole SvelteKit start and the page never hydrates.
-function forward(stream, headers, agent, attempt) {
+// socket the Mac already closed gets ECONNRESET. Chrome resends such a request itself; this proxy does the same, because a failed
+// module fetch stops the whole SvelteKit start and the page never hydrates. A request with a body is read whole first so it can be
+// sent again: on 11-08 POSTs to 5180's /__demo/convex on such sockets answered 502 with no line in the 5180 log, and onboarding's
+// Filing said "This did not save" on its first try. Vite reads no request on a socket it closes for idling, so the resend runs once.
+function forward(stream, headers, agent, attempt, body) {
   const authority = headers[":authority"];
   const { host, port } = hostPort(authority, 80);
   const method = headers[":method"];
@@ -97,13 +99,21 @@ function forward(stream, headers, agent, attempt) {
   });
   req.on("error", () => {
     if (stream.destroyed) return;
-    if (req.reusedSocket && attempt === 0 && (method === "GET" || method === "HEAD")) { forward(stream, headers, agent, 1); return; }
+    if (req.reusedSocket && attempt === 0 && !stream.headersSent) { forward(stream, headers, agent, 1, body); return; }
     if (!stream.headersSent) stream.respond({ ":status": 502 });
     stream.end();
   });
   stream.once("close", () => req.destroy());
-  if (method === "GET" || method === "HEAD") req.end();
-  else stream.pipe(req);
+  req.end(body);
+}
+
+/** Reads a request's body whole, then forwards it; a GET or HEAD has none. */
+function forwardWhole(stream, headers, agent) {
+  const method = headers[":method"];
+  if (method === "GET" || method === "HEAD") { forward(stream, headers, agent, 0, undefined); return; }
+  const chunks = [];
+  stream.on("data", (chunk) => chunks.push(chunk));
+  stream.once("end", () => forward(stream, headers, agent, 0, Buffer.concat(chunks)));
 }
 
 function startProxy(socksPort) {
@@ -131,7 +141,7 @@ function startProxy(socksPort) {
       });
       return;
     }
-    forward(stream, headers, agent, 0);
+    forwardWhole(stream, headers, agent);
   });
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({ server, agent, spkiHash, port: server.address().port })));
 }
