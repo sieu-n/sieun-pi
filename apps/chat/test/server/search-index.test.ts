@@ -12,12 +12,18 @@ import { after, before, test } from "node:test";
 import type { SearchResult } from "../../web/src/lib/api/types.ts";
 import { ThreadIndex } from "../../../../packages/pi-host/src/durable/index-db.ts";
 import { App } from "../../server/app.ts";
+import { Meili, type MeiliTask } from "../../server/meili.ts";
 import { CHANNEL_COPY_LIKE } from "../../server/group-rooms.ts";
 import { readConfig } from "../../server/config.ts";
 import { PiHost } from "../../server/host/pi-host.ts";
 import { serve } from "../../server/http.ts";
 import { writeJson } from "../../server/store.ts";
 
+/**
+ * How long after Meilisearch finished a send its documents may stay in memory: the drain polls the task at most 200 ms apart (meili.ts
+ * `waitTask`) and reads the tasks once, and here it was done before the test's own wait for the task returned.
+ */
+const DRAIN_MS = 2_000;
 const dir = mkdtempSync(join(tmpdir(), "apps-chat-index-"));
 const indexPath = join(dir, "index.sqlite");
 let index: ThreadIndex;
@@ -89,4 +95,34 @@ test("skipEntries leaves those entries out of the hits and the exact total, as f
   const skipped = index.search({ q: "zebra", from: "owner", limit: 200, skipEntries: [{ thread: "live", entry: 1 }, { thread: "live", entry: 3 }] });
   assert.equal(skipped.total, owner.total - 2);
   assert.equal(skipped.hits.some(h => h.thread === "live" && (h.entryId === 1 || h.entryId === 3)), false);
+});
+
+test("rows pi-host writes while nobody searches leave memory once Meilisearch has them, so the first search after sends no id list", async t => {
+  // On 11-08 the 8,270 rows of 27 h without a search waited in memory for the next one, which took 445 ms on :5184 (d2 duty, p95).
+  const tasks: { meili: Meili; task: MeiliTask }[] = [];
+  const filters: string[] = [];
+  const { put, search: meiliSearch } = Meili.prototype;
+  t.mock.method(Meili.prototype, "put", async function (this: Meili, uid: string, docs: string) {
+    const task = await put.call(this, uid, docs);
+    tasks.push({ meili: this, task });
+    return task;
+  });
+  t.mock.method(Meili.prototype, "search", function (this: Meili, uid: string, body: Record<string, unknown>) {
+    filters.push(String(body.filter));
+    return meiliSearch.call(this, uid, body);
+  });
+  for (let i = 0; i < 20; i++) {
+    index.addEntries("live", [{ thread: "live", conversation: 1, entryId: 400 + i, kind: "pi.user", author: "owner", at: 4_000 + i, text: `an idle wombat ${i}` }], []);
+    await app.searchEngine.refresh();
+  }
+  const last = tasks.at(-1)!;
+  await last.meili.waitTask(last.task);
+  const pending = (app.searchEngine as unknown as { pending: Map<string, unknown> }).pending;
+  const deadline = Date.now() + DRAIN_MS;
+  while (pending.size && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(pending.size, 0, `${pending.size} documents still wait in memory ${DRAIN_MS} ms after Meilisearch finished their last task`);
+  const { body } = await search("wombat");
+  assert.equal(body.total, 20);
+  assert.equal(filters.length, 1);
+  assert.doesNotMatch(filters[0]!, /\bid IN \["/);
 });

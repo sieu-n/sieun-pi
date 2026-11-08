@@ -213,6 +213,7 @@ export class SearchEngine {
   /** The Meilisearch tasks of each box's first read, until they are done. */
   private readonly firstTasks = new Map<string, number[]>();
   private readonly unsent = new Map<string, SearchDoc>();
+  private draining?: Promise<void>;
 
   constructor(private readonly deps: EngineDeps) {}
 
@@ -484,12 +485,35 @@ export class SearchEngine {
       for (const doc of batch) if (this.pending.get(doc.id)?.doc === doc) this.pending.set(doc.id, { doc, task: taskUid });
       tasks.push(taskUid);
     }
+    this.drain();
     return tasks;
   }
 
   private async deleteDocs(ids: string[]): Promise<void> {
     const { taskUid } = await this.meili.deleteIds(SEARCH_INDEX, ids);
     for (const id of ids) if (this.pending.get(id)?.doc === null) this.pending.set(id, { doc: null, task: taskUid });
+    this.drain();
+  }
+
+  /**
+   * Drops sent documents from `pending` once Meilisearch has them, with no search needed. Until 11-09 only a search did, so an idle spell's
+   * pi-host rows piled up there: 8,270 rows came in the 27 h before the d2 duty's first search on 11-08, which took 445 ms on :5184 to test
+   * them in memory and leave them out of Meilisearch's query by id, and 9.95 s when the same rows were replayed into a copy of the index.
+   * Meilisearch runs one index's tasks in the order they came, so the newest task's end covers every task before it.
+   */
+  private drain(): void {
+    if (this.draining || this.filling) return;
+    let newest: number | undefined;
+    for (const p of this.pending.values()) if (p.task !== undefined && (newest === undefined || p.task > newest)) newest = p.task;
+    if (newest === undefined) return;
+    const last = newest;
+    this.draining = this.meili.waitTask({ taskUid: last })
+      .then(() => this.settle())
+      .catch(error => this.deps.log(`search: ${String(error)}`))
+      .finally(() => {
+        this.draining = undefined;
+        for (const p of this.pending.values()) if (p.task !== undefined && p.task > last) return this.drain();
+      });
   }
 
   /** Drops the pending documents whose task Meilisearch finished; the fill ends when none of its documents waits. */
