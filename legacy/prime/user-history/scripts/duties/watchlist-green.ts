@@ -643,7 +643,14 @@ export const PROD_ROWS_SQL = NO_JIT + ROWS_SQL + RENAMED_SQL + " and not w.pause
  */
 export const PROD_ROW_PARTS = 8;
 export const prodRowsSql = (part: number): string => `${PROD_ROWS_SQL} and (hashtext(w.target) & ${PROD_ROW_PARTS - 1}) = ${part}`;
-export const STAGING_ROWS_SQL = NO_JIT + ROWS_SQL + "'f' as renamed from watch_targets w where w.tier = 'monitor' and not w.paused";
+/**
+ * The staging read turns the seq scan off for its own statement, so it reads the 1,600 unpaused monitor rows through ix_watch_targets_monitor_due.
+ * Staging's stats hold paused and tier as independent (77% unpaused, 23% monitor), while its paused rows are the monitor rows, so the planner
+ * guessed 500k rows and chose a parallel seq scan of the 1.4 GB table. At 09:05Z and 09:10Z on 11-08 that scan hit the 30 s statement_timeout
+ * with us-metal01's nvme1n1 94% busy, and with the seq scan off the same read took 1.1 to 3.1 s in the same minutes.
+ */
+export const NO_SEQSCAN = "set local enable_seqscan = off; ";
+export const STAGING_ROWS_SQL = NO_JIT + NO_SEQSCAN + ROWS_SQL + "'f' as renamed from watch_targets w where w.tier = 'monitor' and not w.paused";
 /** ROWS_SQL's columns in parseRows order, to print Grafana's table rows as the lines psql prints. */
 const ROW_COLUMNS = ["platform", "kind", "target", "paused", "last_outcome", "last_run_at", "last_stop_reason", "last_error_code", "is_private", "err_streak", "due", "last_ok_at", "added_at", "renamed"];
 export const rowLines = (rows: Record<string, unknown>[]): string => rows.map(row => ROW_COLUMNS.map(column => String(row[column] ?? "")).join("\t")).join("\n");

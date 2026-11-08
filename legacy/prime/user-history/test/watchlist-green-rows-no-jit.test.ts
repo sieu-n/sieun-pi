@@ -4,13 +4,16 @@
 // connection for every later panel query.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { NO_JIT, PROD_ROWS_SQL, STAGING_ROWS_SQL } from "../scripts/duties/watchlist-green.ts";
+import { NO_JIT, NO_SEQSCAN, PROD_ROWS_SQL, STAGING_ROWS_SQL } from "../scripts/duties/watchlist-green.ts";
 
-for (const [name, sql] of [["prod", PROD_ROWS_SQL], ["staging", STAGING_ROWS_SQL]] as const) {
-  test(`the ${name} rows read turns JIT off for its own statement only`, () => {
-    assert.ok(sql.startsWith(NO_JIT));
+// On 2026-11-08 at 09:05Z and 09:10Z the staging rows read planned a seq scan of the 1.4 GB table and hit the 30 s statement_timeout,
+// so staging also turns the seq scan off for its own statement.
+const READS = [["prod", PROD_ROWS_SQL, ["set local jit = off"]], ["staging", STAGING_ROWS_SQL, ["set local jit = off", "set local enable_seqscan = off"]]] as const;
+for (const [name, sql, want] of READS) {
+  test(`the ${name} rows read changes settings for its own statement only`, () => {
+    assert.ok(sql.startsWith(name === "staging" ? NO_JIT + NO_SEQSCAN : NO_JIT));
     const sets = sql.split(";").map(part => part.trim().toLowerCase()).filter(part => part.startsWith("set "));
-    assert.deepEqual(sets, ["set local jit = off"]);
-    assert.equal(sql.split(";").length, 2, "one SET LOCAL, then the one select");
+    assert.deepEqual(sets, [...want]);
+    assert.equal(sql.split(";").length, want.length + 1, "the SET LOCALs, then the one select");
   });
 }
