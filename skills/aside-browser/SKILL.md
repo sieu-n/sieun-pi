@@ -202,7 +202,7 @@ An agent on the Mac never launches a Playwright, Puppeteer or Chrome for Testing
 - If a skill, playbook or memory names another browser tool, or sends a box agent to Aside for a page that needs no login, change that text.
 - Box tabs have targetIds `box-1`, `box-2` and so on, and they close when your kernel exits.
 - Each box browser is a separate Chrome with its own display and profile, so any number of agents can run one at once, and none of them sees another's cookies or tabs.
-- Every box Chrome on a host shares one disk cache of SvelteKit's `/_app/immutable/` files in `~/.cache/aside-box/immutable/` (`box/immutable-cache.mjs`), so a new box Chrome fetches each built file once, while pages, APIs and every other URL still go to the network. On 11-07 box Chromes fetched staging's immutable files 3,550 times in one hour, and each fetch is a billed Vercel request.
+- Every box Chrome on a host shares one disk cache in `~/.cache/aside-box/http/` (`box/http-cache.mjs`) for SvelteKit's `/_app/immutable/` files, kept a week, and for whole 200 answers of `https://staging.virev.ai/api/img`, kept for their own max-age, so a new box Chrome fetches each of them once. Ranges, no-store answers, errors, pages and every other URL still go to the network. On 11-07 box Chromes fetched staging's immutable files 3,550 times in one hour and asked its /api/img 16,720 times for 8,121 URLs, and each fetch is a billed Vercel request.
 - In a box tab, `snapshot()` returns Playwright's full AI snapshot with `[ref=eN]` ids, `annotatedScreenshot` has no ref boxes, `fs` is the box's real file system, and `page.setViewportSize()` works.
 - Screenshots are in device pixels, so read the viewport size and device pixel ratio before you crop for `attach_image`.
 - Read pages with `snapshot()`, not `page.content()`.
@@ -213,4 +213,4 @@ An agent on the Mac never launches a Playwright, Puppeteer or Chrome for Testing
 ## Tests
 
 From the sieun-pi repository root, `uv run python -m unittest discover -s skills/aside-browser/tests -v` runs the offline tests with a fake MCP server, plus two box tests when the runner is installed: one serves a page on 127.0.0.1 and drives it, and one checks that Chrome runs headful on its own Xvfb display and that a SIGKILL of the runner leaves no Xvfb or Chrome behind.
-`node --test --test-force-exit --test-isolation=none skills/aside-browser/box/immutable-cache.test.mjs` starts the runner twice against a local page and checks that the second start takes the page's immutable file from the disk cache.
+`node --test --test-force-exit --test-isolation=none skills/aside-browser/box/http-cache.test.mjs` starts the runner twice against a local page and checks that the second start takes the page's immutable file from the disk cache, then drives `http-cache.mjs` with a fake Chrome to check which /api/img answers it keeps.
