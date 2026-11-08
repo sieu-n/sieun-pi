@@ -5,7 +5,7 @@
   "metrics": [
     {
       "key": "wiki_problems",
-      "label": "Wiki problems (unlisted pages, broken links, missing dates, stale pages)",
+      "label": "Wiki problems (unlisted pages, broken links, missing dates, stale pages, pages near the read cap)",
       "op": "<=",
       "target": 0,
       "headline": true

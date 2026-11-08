@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { wikiContentDir } from "../../src/chat-wiki.ts";
 import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
@@ -61,7 +61,11 @@ export interface DreamDeps {
   revisions?: (sinceIso: string) => Promise<PageRevision[]>;
   /** The root of the Prime session tree that holds a session (`sessionTree`); left out, no page names its maker. */
   treeOf?: (session: string) => Promise<string | null>;
+  /** The stored size and status of each curated page on disk (`readPageSizes`); left out, no page is near the read cap. */
+  pageSizes?: () => Promise<PageSize[]>;
 }
+/** A curated page's wiki path, its stored HTML size in bytes and the `status` of its header. */
+export interface PageSize { path: string; bytes: number; status?: string }
 /** One row of the wiki's `revisions` table: the page's wiki path, who wrote it and the write's summary. */
 export interface PageRevision { path: string; author: string; summary: string }
 
@@ -457,6 +461,57 @@ export async function sessionTree(agentDir: string, session: string): Promise<st
   return null;
 }
 
+/**
+ * The whole-read cap of a stored page, `PAGE_READ_LIMIT` in apps/wiki/src/lib/server/wiki.ts: past it the markdown view answers 413 and the
+ * reader shows a truncated preview.
+ */
+export const PAGE_READ_CAP = 65_536;
+/**
+ * A page this close to the cap counts in pages_near_read_cap, so a run splits it before the next dream rewrite crosses. measured: the size
+ * change between consecutive wiki-dream revisions of one curated page in wiki.db was 2,364 B at p90 (n=2,923, 2026-10-12 to 11-08 20:44Z),
+ * and every one of the 12 dream writes that took a curated page over the cap started at 63,798 B or more. Pages do cross: 30 curated writes
+ * did from 10-10 to 11-08, 12 of them dream writes, and on the 11-09 05:02 run three pages sat within 1 KB of it and had to be split by hand.
+ */
+export const DREAM_GROWTH_P90 = 2_364;
+export const NEAR_READ_CAP = PAGE_READ_CAP - DREAM_GROWTH_P90;
+/** The statuses wiki-health.mjs reads as settled (`SETTLED_STATUS`), whose pages no writer grows. */
+const SETTLED = new Set(["superseded", "deprecated", "archived"]);
+
+/** The current curated pages at NEAR_READ_CAP bytes or more, largest first. */
+export function nearReadCap(pages: readonly PageSize[]): PageSize[] {
+  return pages.filter(page => page.bytes >= NEAR_READ_CAP && !SETTLED.has(page.status ?? "")).sort((a, b) => b.bytes - a.bytes);
+}
+
+/** The flagged line of a page near or over the read cap. */
+export function readCapExcerpt(page: PageSize): string {
+  const where = page.bytes > PAGE_READ_CAP ? `${page.bytes - PAGE_READ_CAP} B over` : `${PAGE_READ_CAP - page.bytes} B under`;
+  return `${page.bytes} B, ${where} the ${PAGE_READ_CAP} B read cap, and a dream rewrite adds ${DREAM_GROWTH_P90} B at p90: split it into a short index and topic child pages`;
+}
+
+/** The curated pages under `content` (the four spaces and the home page), with no dot, data or assets folder and no symlink, as wiki-health.mjs walks them. */
+export async function readPageSizes(content: string): Promise<PageSize[]> {
+  const files: string[] = ["index.html"];
+  for (const space of ["apps", "domains", "projects", "experiments"]) {
+    const entries = await readdir(join(content, space), { recursive: true, withFileTypes: true }).catch(error => {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".html")) continue;
+      const rel = relative(content, join(entry.parentPath, entry.name));
+      if (rel.split("/").slice(1, -1).some(part => part.startsWith(".") || part === "data" || part === "assets") || entry.name.startsWith(".")) continue;
+      files.push(rel);
+    }
+  }
+  return Promise.all(files.map(async path => {
+    const html = await readFile(join(content, path));
+    const header = /^<!--wiki\s*(\{[\s\S]*?\})\s*-->/.exec(html.subarray(0, 8192).toString("utf8"))?.[1];
+    let status: unknown;
+    try { status = header ? (JSON.parse(header) as { status?: unknown }).status : undefined; } catch { status = undefined; }
+    return { path, bytes: html.length, ...typeof status === "string" ? { status } : {} };
+  }));
+}
+
 /** A global memory about the auto-sns-agent repo: its path or title starts with "auto-sns-agent". */
 export const isRepoFact = (entry: HarnessEntry): boolean => /^auto-sns-agent/i.test(entry.path ?? "") || /^auto-sns-agent/i.test(entry.title ?? "");
 const skillPath = (text: string): string | undefined => /(?:\.agents\/skills|\.claude\/skills-native|skills)\/[\w./-]+?(?:SKILL\.md|\.md)/.exec(text)?.[0];
@@ -560,7 +615,7 @@ export function freshCorrections(file: unknown, since: number): FlaggedSlice[] {
  */
 export const FLAG_ORDER: readonly [string, number][] = [
   ["source_error", 6], ["recurred", 8], ["open_class", 10], ["hub_orphan", Infinity], ["dead_link", Infinity],
-  ["superseded_linked", Infinity], ["session_link", Infinity], ["missing_meta", Infinity], ["stale_vs_code", Infinity], ["dup_pair", 5], ["revert", 5], ["retouched", 5],
+  ["superseded_linked", Infinity], ["session_link", Infinity], ["missing_meta", Infinity], ["stale_vs_code", Infinity], ["near_read_cap", Infinity], ["dup_pair", 5], ["revert", 5], ["retouched", 5],
   ["correction", 10], ["signal", 6], ["refinement", 6], ["trial_memory", 10], ["memory", 10], ["lint_page", 5], ["archive_candidate", 3],
 ];
 
@@ -593,9 +648,9 @@ export function pickFlagged(slices: readonly FlaggedSlice[]): FlaggedSlice[] {
 const HEALTH_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "stale_vs_code"] as const;
 /**
  * The sync problems wiki_problems adds up; pages_behind_code counts the pages of wiki-health's stale list (parseStale) behind for longer than
- * FOLLOW_WINDOW_MS.
+ * FOLLOW_WINDOW_MS, and pages_near_read_cap the current curated pages at NEAR_READ_CAP bytes or more.
  */
-const PROBLEM_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "pages_behind_code"] as const;
+const PROBLEM_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "pages_behind_code", "pages_near_read_cap"] as const;
 
 /**
  * Measures everything and builds the precheck output. Each input that fails to run or to parse adds a source_error item and 999999 for
@@ -632,6 +687,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   }
 
   const pageRows = deps.revisions ? await deps.revisions(gitSince).catch(error => fail("wiki.db revisions", error)) : [];
+  const nearCap = deps.pageSizes ? await deps.pageSizes().then(nearReadCap).catch(error => fail("page sizes", error)) : [];
   const pagesRetouched = pageRows ? pageChurn(pageRows) : undefined;
 
   const listed = health && (() => { try { return parseStale(health.stale); } catch (error) { return fail("wiki-health.mjs stale", error); } })();
@@ -655,6 +711,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
     (files, after) => deps.exec("git", makerLogArgs(deps.repos.wiki, files, after), { cwd: deps.repos.wiki, timeoutMs: GIT_TIMEOUT_MS }), treeOf)
     .catch(error => { fail("git log makers", error); return new Map<string, PageMaker>(); }) : new Map<string, PageMaker>();
   metrics.pages_behind_code = stalePages && following ? stalePages.length - following.length : UNMEASURED;
+  metrics.pages_near_read_cap = nearCap?.length ?? UNMEASURED;
   if (following) metrics.wiki_problems_following = following.length - waiting.size;
   metrics.wiki_problems = PROBLEM_METRICS.some(key => metrics[key] === UNMEASURED) ? UNMEASURED : PROBLEM_METRICS.reduce((sum, key) => sum + metrics[key]!, 0);
   const lintFailing = health?.facts.lint_failing_pages;
@@ -720,6 +777,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   const staleOrder = [...stalePages ?? []].sort((a, b) => { const [x, y] = [behindOrder(a), behindOrder(b)]; return x[0] - y[0] || x[1] - y[1]; });
   // The page's check time is its sig, so a run hands the dream job a page again once a writer checked it and a later commit put it behind again.
   for (const page of staleOrder) slices.push({ kind: "stale_vs_code", item: page.path, excerpt: clip(staleExcerpt(page, now)), sig: page.verified_at ?? page.last_verified });
+  for (const page of nearCap ?? []) slices.push({ kind: "near_read_cap", item: page.path, excerpt: readCapExcerpt(page) });
   for (const item of health?.items ?? []) {
     if (item.kind === "signal" || (item.kind === "stale_vs_code" && stalePages)) continue;
     slices.push({ kind: item.kind, item: item.path, excerpt: clip(`${item.excerpt ?? item.path}${item.target ? ` -> ${item.target}` : ""}`) });
@@ -791,6 +849,7 @@ async function main(): Promise<void> {
     },
     revisions: sinceIso => readRevisions(join(wikiContentDir(), ".wiki/wiki.db"), sinceIso),
     treeOf: session => sessionTree(join(home, ".prime/agent"), session),
+    pageSizes: () => readPageSizes(wikiContentDir()),
   };
   const result = await measureDream(deps, Array.isArray(lastRuns) ? lastRuns as DutyRunRecord[] : []);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");

@@ -70,6 +70,7 @@ The owner asked for it in these words: "a daily job that cleans wiki, find anti-
 7. Fix `missing_meta` by setting `updated`, writing a `description`, or matching the `<h1>` to `title`.
 8. Rewrite relative dates such as "yesterday" or "last week" to the absolute date while a page is open anyway.
 9. The page API refuses a write whose page title and `<h1>` differ or that retires a page a current hub links (`apps/wiki/scripts/page-gate.mjs` in sieun-pi), so a new title gap or `superseded_linked` item here came from a file written on disk past the API.
+10. Split each flagged `near_read_cap` page into a short index page and child pages by topic, one subagent per page, and add each child to the nearest `index.html` hub. The precheck flags a current curated page at 63,172 B or more, because one dream rewrite adds 2,364 B at p90 and can push it past the 65,536 B read cap, and `pages_near_read_cap` counts it in `wiki_problems`. On the 2026-11-09 05:02 run three pages sat within 1 KB of the cap, and the writer of `apps/crawler-v3/architecture/serp-api/index.html` cut a details table and three history lines to fit, which a split would have kept.
 
 ## Phase 3 · consolidate duplicates and stale facts
 
