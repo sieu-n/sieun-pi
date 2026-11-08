@@ -242,7 +242,9 @@ function chatJobRules(): string[] {
       "`{\"op\":\"plan_update\",\"id\":\"p1\",\"target\":{\"metric\":\"proxy bandwidth used\",\"target\":200,\"unit\":\"Mbps\",\"current\":8,\"measuredAt\":\"2026-10-09T21:00:00+09:00\",\"source\":\"proxy dashboard, 24 h average\",\"direction\":\"up\"}}`. Give direction \"down\" when lower is better, such as a wait. " +
       "Close the largest gap first: start or steer the job that moves the number.",
     "Never push a ci/ branch or use --push-ci: build the commit object for auto-sns-agent " +
-      "(`node scripts/repo/agent/commit.mjs --object-only -m \"<type>(<scope>): <what>\" <files>`) and send it to the chat, which asks Fable for a probe slot; " +
+      "(`node scripts/repo/agent/commit.mjs --object-only -m \"<type>(<scope>): <what>\" <files>`). A commit that changes only skill or doc text " +
+      "(`.agents/skills/**`, `*.md` references) needs no probe slot: land it yourself with `node scripts/repo/agent/land-object.mjs <sha>` from " +
+      "~/Documents/Github/auto-sns-agent, which runs no CI gate, and the next push run checks it. Send a code commit to the chat, which asks Fable for a probe slot; " +
       "code reaches the shared tip only after its own green probe. Every file you touch stays " +
       "under its light-guard line limit (1,000 lines for most source files); split a file before it would cross it.",
     "Never cancel or rerun an auto-sns-agent CI run (`gh run cancel`, `gh run rerun` or their API calls), yours included; a superseded run is cancelled by " +

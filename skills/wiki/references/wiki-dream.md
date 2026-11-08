@@ -135,7 +135,7 @@ Log hits are keyword matches, and logs mention CI and git in normal work, so rea
 | trigger     | The rule exists, and the session that erred never read the skill (`skill-metrics` reads, the log's own reads). | Edit the description to lead with the use case that missed, then run the trigger probe.                      |
 | enforcement | The rule loaded and the agent broke it anyway.                                                                 | Start a fix job with `rlm.create_session` that lands the lint, guard or check in code with a test.           |
 
-6. The enforcement fix job ships its code through the object and probe flow below, and on 2026-10-15 board_and_delegation, slop_in_replies_and_pages and wiki_upkeep had sat 5 days as plan-step proposals under p249 with no job, so none got a check.
+6. The enforcement fix job ships its code as an object commit that the chat gets a probe slot for from Fable, since code reaches the tip only after its own green probe, and on 2026-10-15 board_and_delegation, slop_in_replies_and_pages and wiki_upkeep had sat 5 days as plan-step proposals under p249 with no job, so none got a check.
 7. Write the rule as a past mistake with its date and one concrete case, per the content standard in `repo/skill-creation`.
 8. Put repo knowledge in `.agents/skills`, which Claude Code and Codex read, never in a global Prime memory.
 9. Put a rule about Prime chats, jobs or the board in `~/.prime/agent/AGENTS.md` or a global skill, both in sieun-pi.
@@ -150,6 +150,7 @@ Log hits are keyword matches, and logs mention CI and git in normal work, so rea
 5. The probe passes only when the skill shows in CONTEXT LOADED and every sentinel holds.
 6. A skill edit is not a wiki-only change, so it follows "Ship a change" in `repo/git-workflow`.
 7. Commit each change on the tip as its own commit right after the checks above, with `node scripts/repo/agent/commit.mjs -m "docs(wiki-dream): <what>" <files>`, and ask nobody for a probe slot or a go.
+   When you built an object instead (`commit.mjs --object-only`, as the duty job rules say) and it changes only skill or doc text (`.agents/skills/**`, `*.md` references), land it yourself with `node scripts/repo/agent/land-object.mjs <sha>` from `~/Documents/Github/auto-sns-agent`, which runs no CI gate, and the next push run checks it, because on 2026-11-08 two such objects, 6353da5770 and 7229e743, waited on the chat for a probe slot they did not need.
 8. Until 2026-10-18 this step sent the object's sha to the chat to ask Fable for a probe slot, after the owner had said on 2026-10-12: "NEVER wait for something, or ask for my permission to push to Github etc."
 9. Commit every drafted rule in the same run. On 2026-10-10 two drafted rules were left "for tomorrow" with no sha sent, and they landed only on 2026-10-14.
 10. A wiki page change needs no commit: write it with `wiki.write()` or `PUT https://us-metal02-dev.tail0c093d.ts.net:5184/wiki/<path>`, and `wiki-backup.timer` copies it to the private repo `sieu-n/wiki-content` within 5 minutes.
