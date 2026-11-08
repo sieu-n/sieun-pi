@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright-core";
 import { hasDisplayServer, startDisplay } from "./display.mjs";
+import { cacheImmutable, pruneImmutable } from "./immutable-cache.mjs";
 import { startLoopbackTunnel } from "./loopback.mjs";
 
 // Chrome's profile lives in a folder named for this runner's pid, because Playwright makes it under os.tmpdir() and a
@@ -22,6 +23,7 @@ for (const name of fs.readdirSync(TMP)) {
 const profileRoot = fs.mkdtempSync(path.join(TMP, `aside-box-${process.pid}-`));
 process.env.TMPDIR = profileRoot;
 const cleanup = () => fs.rmSync(profileRoot, { recursive: true, force: true });
+pruneImmutable();
 
 // Agents never run a headless browser (owner c177, 10-27: "NEVER put it back in"), so a host with no Xvfb gets an error, not a headless Chrome.
 if (!hasDisplayServer()) {
@@ -45,6 +47,7 @@ let closing = false;
 browser.on("disconnected", () => { screen.close(); loopback?.close(); cleanup(); if (!closing) process.exit(1); });
 const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 const ids = new WeakMap();
+const cached = new WeakMap();
 let next = 1;
 const tabs = [];
 let page = null;
@@ -56,6 +59,7 @@ const getTabByTargetId = (id) => tabs.find((p) => targetId(p) === id) || null;
 function adopt(p) {
   if (ids.has(p)) return p;
   ids.set(p, `box-${next++}`);
+  cached.set(p, cacheImmutable(context, p).catch(() => {}));
   Object.defineProperty(p, "targetId", { get: () => ids.get(p) });
   const locator = p.locator.bind(p);
   p.locator = (selector, options) => locator(/^e\d+$/.test(selector) ? `aria-ref=${selector}` : selector, options);
@@ -71,6 +75,7 @@ context.on("page", adopt);
 
 async function openTab(url) {
   const p = adopt(await context.newPage());
+  await cached.get(p);
   if (url) await p.goto(url, { waitUntil: "load", timeout: 60000 }).catch((e) => { if (!/timeout/i.test(String(e))) throw e; });
   page = p;
   return p;
