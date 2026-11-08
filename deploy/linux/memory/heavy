@@ -32,4 +32,24 @@ if [ -z "${VITEST_MAX_WORKERS:-}" ] && workers=$(gib "$size"); then
 		export VITEST_MAX_WORKERS
 	fi
 fi
-exec systemd-run --user --scope --quiet -p MemoryMax="$size" -p MemorySwapMax=0 -- choom -n 500 -- "$@"
+# When CMD ends, every process it left in the scope is killed, since systemd keeps a scope while any process is in it.
+# measured: at 11:05Z on 11-08 33 run-p scopes on us-metal02 still held 36 Prime test daemons and workers, 3.1 GB,
+# that 33 `heavy 8G -- npx vitest` runs of daemon-supervisor-process.test.ts had left on 11-04 from 09:11Z to 10:03Z.
+# The shell forwards TERM, INT and HUP to CMD, so a timeout or kill of heavy still ends CMD. --expand-environment=no
+# keeps systemd-run from rewriting $$ and ${VAR} in that shell script and in CMD.
+exec systemd-run --user --scope --quiet --expand-environment=no -p MemoryMax="$size" -p MemorySwapMax=0 -- choom -n 500 -- sh -c '
+exec 3<&0
+"$@" <&3 3<&- &
+pid=$!
+exec 3<&-
+trap "kill -TERM $pid 2>/dev/null" TERM
+trap "kill -INT $pid 2>/dev/null" INT
+trap "kill -HUP $pid 2>/dev/null" HUP
+while :; do
+	wait "$pid"
+	rc=$?
+	kill -0 "$pid" 2>/dev/null || break
+done
+procs=/sys/fs/cgroup$(sed -n "s/^0:://p" /proc/self/cgroup)/cgroup.procs
+for p in $(cat "$procs" 2>/dev/null); do [ "$p" = "$$" ] || kill -KILL "$p" 2>/dev/null || :; done
+exit "$rc"' heavy "$@"
