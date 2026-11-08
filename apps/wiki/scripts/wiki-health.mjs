@@ -458,9 +458,34 @@ export function addMissingCodeRefs(stale, missing) {
 	return stale;
 }
 
-/** A not-landed phrase: a commit not on staging yet, not landed, or no staging land holding it. One on main or prod is about a promote. */
-const NOT_LANDED =
-	/\b(?:not (?:yet )?(?:on|in) (?:origin\/)?staging|(?:n't|not) (?:yet )?(?:landed|reached (?:origin\/)?staging)|no (?:staging )?land (?:yet )?(?:carried|carries|held|holds))\b(?! (?:on|in|to) (?:origin\/)?(?:main|prod))/i;
+/** A dev branch as a page names it, `dev/<name>` or the old `sieun/dev`. */
+const DEV_BRANCH = String.raw`(?:dev\/[\w-]+|sieun\/dev)`;
+/**
+ * The phrases that say a commit has not reached a stage, each with the stage whose land makes the line stale. Staging: not on staging
+ * yet, not landed, on neither the staging nor the prod crawler, no staging land holding it, or a value only a dev branch runs, as in "4,
+ * or up to 84 on dev/sieun", whose `value` a dated line on the page states with its sha. Prod: not on main or prod yet, or it reaches
+ * prod only with a promote.
+ */
+const NOT_LANDED = [
+	{
+		stage: 'staging',
+		re: /\b(?:not (?:yet )?(?:on|in) (?:origin\/)?staging|(?:n't|not) (?:yet )?(?:landed|reached (?:origin\/)?staging)|neither (?:the )?staging|no (?:staging )?land (?:yet )?(?:carried|carries|held|holds))\b(?! (?:on|in|to) (?:origin\/)?(?:main|prod))/i,
+	},
+	{ stage: 'staging', re: new RegExp(String.raw`\bor (?<value>[^.,;]{1,40}?) on (?<branch>${DEV_BRANCH})\b`, 'i') },
+	{
+		stage: 'prod',
+		re: /\b(?:(?:n't|not) (?:yet )?(?:(?:landed |deployed |promoted )?(?:on|in|to) (?:origin\/)?(?:main|prod)|promoted)|reach(?:es)? prod only with (?:a|the next) (?:full )?promote)\b/i,
+	},
+];
+/** The first not-landed phrase in `text`, with its stage. */
+function notLandedPhrase(text) {
+	let first = null;
+	for (const { stage, re } of NOT_LANDED) {
+		const hit = re.exec(text);
+		if (hit && (!first || hit.index < first.hit.index)) first = { stage, hit };
+	}
+	return first;
+}
 /** Words that make the clause before a not-landed phrase a rule about any commit, as in "refuses a sha whose crawler code is not on staging". */
 const RULE_CLAUSE = /\b(?:whose|if|unless|until|when|whenever|once|before)\b/i;
 /** A restrictive relative clause, as in "every task that has not landed"; one after a comma, as in "73ca23e07f, which had not", is about that commit. */
@@ -468,14 +493,19 @@ const RELATIVE_SUBJECT = /(?:\b(?:that|who)|(?<!,)\s+which)(?:\s+(?:has|have|had
 const COMMIT_LINK = /<(?:a|wiki-cite)\b[^>]*?\b(?:href|src)\s*=\s*"[^"]*?github\.com\/[\w.-]+\/[\w.-]+\/commit\/([0-9a-f]{7,40})\b[^>]*>/gi;
 /** A word of 7 to 40 hex characters with a letter and a digit, unless it names the head of staging, prod or a land, as in "the land 7f655237dc". */
 const SHA_WORD = /(?<!\b(?:staging|prod|land|head|tip) )\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b/g;
+/** A sentence that opens on "The commit" or "That commit" names the last commit its section names, however many lines back. */
+const THE_COMMIT = /^(?:the|that|this|the same) commit\b/i;
 /** Marks the sha of a commit link in the text, so it counts for its sentence; notLandedLines drops it from the line it reports. */
 const MARK = (sha) => `\u2063${sha}\u2063`;
 
 /**
- * The sentences of `html` that say a commit has not landed on staging, each with the shas it may name: those in the sentence, `<code>`
- * and commit links included, or in the sentence before it when it has none, as in "At 14:38Z that commit had not landed" under the line
- * that names the commit. A wiki-cite's `note` reads as part of its sentence. Diagrams and code blocks state no landing state, and a phrase
- * in a clause that sets a rule for any commit (`RULE_CLAUSE`, or "a task that has not landed") is no claim.
+ * The sentences of `html` that say a commit has not reached a stage, each with that stage and the shas it may name: those in the
+ * sentence, `<code>` and commit links included, or in the sentence before it when it has none, as in "At 14:38Z that commit had not
+ * landed" under the line that names the commit, or in the last line of its section with one when it opens on "The commit". A
+ * dev-branch value with no sha takes the shas of the line that states that value on that branch, as a table cell "4, or up to 84 on
+ * dev/sieun" does from "Since 42d3206e43 on dev/sieun, one job reads up to 84 pages". A wiki-cite's `note` reads as part of its
+ * sentence. Diagrams and code blocks state no landing state, and a phrase in a clause that sets a rule for any commit (`RULE_CLAUSE`, or
+ * "a task that has not landed") is no claim.
  */
 export function notLandedLines(html) {
 	const body = html
@@ -483,21 +513,34 @@ export function notLandedLines(html) {
 		.replace(/<(pre|script|style)\b[\s\S]*?<\/\1>/gi, '<p>')
 		.replace(COMMIT_LINK, (tag, sha) => `${tag}${MARK(sha.toLowerCase())}`)
 		.replace(/<wiki-cite\b[^>]*?\bnote\s*=\s*"([^"]*)"[^>]*>([\s\S]*?)<\/wiki-cite>/gi, (_, note, inner) => `${inner} (${note})`);
-	const sentences = body
-		.split(/<\/?(?:li|p|td|th|tr|h[1-6]|div|ol|ul|table|blockquote|dd|dt|details|summary)\b[^>]*>/i)
-		.map((block) => stripTags(block))
-		.filter(Boolean)
-		.flatMap((block, at) => block.split(/(?<=[.!?])\s+/).map((text) => ({ text, block: at, shas: [...new Set([...text.matchAll(SHA_WORD)].map((m) => m[0]))] })));
+	let section = 0;
+	const blocks = [];
+	for (const part of body.split(/(<\/?(?:li|p|td|th|tr|h[1-6]|div|ol|ul|table|blockquote|dd|dt|details|summary)\b[^>]*>)/i)) {
+		if (/^<h[1-6]\b/i.test(part)) section += 1;
+		const text = part.startsWith('<') ? '' : stripTags(part);
+		if (text) blocks.push({ text, section });
+	}
+	const sentences = blocks.flatMap((block, at) =>
+		block.text.split(/(?<=[.!?])\s+/).map((text) => ({ text, block: at, section: block.section, shas: [...new Set([...text.matchAll(SHA_WORD)].map((m) => m[0]))] })),
+	);
 	const out = [];
 	sentences.forEach((sentence, i) => {
-		const hit = NOT_LANDED.exec(sentence.text);
-		if (!hit) return;
+		const phrase = notLandedPhrase(sentence.text);
+		if (!phrase) return;
+		const { stage, hit } = phrase;
 		const before = sentence.text.slice(0, hit.index);
 		if (RELATIVE_SUBJECT.test(before) || RULE_CLAUSE.test(before.split(/[,;:(]/).pop())) return;
-		let from = i;
-		while (from >= 0 && !sentences[from].shas.length && sentences[from].block >= sentence.block - 1) from -= 1;
-		const shas = from >= 0 && sentences[from].block >= sentence.block - 1 ? sentences[from].shas : [];
-		if (shas.length) out.push({ line: sentence.text.replace(/\u2063[0-9a-f]+\u2063/g, ''), shas });
+		let shas = sentence.shas;
+		if (!shas.length && hit.groups?.value) {
+			const { value, branch } = hit.groups;
+			shas = sentences.find((s) => s.shas.length && s.text.includes(value) && s.text.includes(branch))?.shas ?? [];
+		} else if (!shas.length) {
+			const near = THE_COMMIT.test(sentence.text) ? (s) => s.section === sentence.section : (s) => s.block >= sentence.block - 1;
+			let from = i;
+			while (from >= 0 && !sentences[from].shas.length && near(sentences[from])) from -= 1;
+			shas = from >= 0 && near(sentences[from]) ? sentences[from].shas : [];
+		}
+		if (shas.length) out.push({ line: sentence.text.replace(/\u2063[0-9a-f]+\u2063/g, ''), shas, stage });
 	});
 	return out;
 }
@@ -543,14 +586,15 @@ function commitNames(repo, revs) {
  * Curated pages with a line from notLandedLines about a commit of `repo` that a staging land now carries, with the first land that
  * carried it. A retired or experiment page keeps what held when it was written. A commit is carried by land `i` when it is an ancestor
  * of the newest tip of some branch that lands up to `i` name, which `git rev-list --count <sha> --not <tips>` reads as 0, and dev
- * branches never rebase, so that holds from the first such land on and a bisection finds it.
+ * branches never rebase, so that holds from the first such land on and a bisection finds it. A line about prod counts once `main`
+ * holds that land, because a promote moves main to a staging land.
  */
-export function landedClaims(pages, repo, lands = stagingLands(repo)) {
+export function landedClaims(pages, repo, lands = stagingLands(repo), main = 'origin/main') {
 	const found = [];
 	for (const page of pages) {
 		const meta = page.meta ?? {};
 		if (meta.kind === 'experiment' || page.path.startsWith('experiments/') || SETTLED_STATUS.has(String(meta.status).toLowerCase())) continue;
-		for (const { line, shas } of notLandedLines(page.html)) for (const sha of shas) found.push({ page, line, sha });
+		for (const { line, shas, stage } of notLandedLines(page.html)) for (const sha of shas) found.push({ page, line, sha, stage });
 	}
 	if (!found.length || !lands.length) return [];
 	const full = commitNames(repo, [...new Set(found.map((f) => f.sha))]);
@@ -580,21 +624,27 @@ export function landedClaims(pages, repo, lands = stagingLands(repo)) {
 		}
 		return firstLand.get(sha);
 	};
+	const onMain = new Map();
+	const promoted = (land) => {
+		if (!onMain.has(land.commit)) onMain.set(land.commit, spawnSync('git', ['merge-base', '--is-ancestor', land.commit, main], { cwd: repo }).status === 0);
+		return onMain.get(land.commit);
+	};
 	const out = [];
-	for (const { page, line, sha } of found) {
+	for (const { page, line, sha, stage } of found) {
 		const land = full.has(sha) ? landOf(full.get(sha)) : null;
-		if (land && !out.some((o) => o.path === page.path && o.full === full.get(sha) && o.line === line))
-			out.push({ path: page.path, title: page.title, lastVerified: page.meta?.last_verified, sha, full: full.get(sha), line, land });
+		if (land && (stage !== 'prod' || promoted(land)) && !out.some((o) => o.path === page.path && o.full === full.get(sha) && o.line === line))
+			out.push({ path: page.path, title: page.title, lastVerified: page.meta?.last_verified, sha, full: full.get(sha), line, stage, land });
 	}
 	return out;
 }
 
 /** The stale report's ref for a landed claim, which the precheck shows with the minute of the land as `modified`. */
 export function landedRef(claim) {
-	const start = Math.max(0, (NOT_LANDED.exec(claim.line)?.index ?? 0) - 100);
+	const start = Math.max(0, (notLandedPhrase(claim.line)?.hit.index ?? 0) - 100);
 	const cut = claim.line.slice(start, start + 160);
 	const line = `${start ? '...' : ''}${cut}${start + 160 < claim.line.length ? '...' : ''}`;
-	return `landed:${claim.sha.slice(0, 10)} (${claim.land.commit.slice(0, 10)} land: ${claim.land.tips.map((t) => `${t.branch} ${t.tip}`).join(', ')}): "${line}"`;
+	const tips = claim.land.tips.map((t) => `${t.branch} ${t.tip}`).join(', ');
+	return `landed:${claim.sha.slice(0, 10)} (${claim.land.commit.slice(0, 10)} land: ${tips}${claim.stage === 'prod' ? ', on main' : ''}): "${line}"`;
 }
 
 /**

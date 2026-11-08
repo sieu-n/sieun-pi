@@ -28,11 +28,50 @@ test('a sentence that pairs a commit with a not-landed phrase is a claim, and a 
 		'<pre class="mermaid">a -->|"swap 1a2b3c4d5e not on staging yet"| b</pre>',
 	].join('\n');
 	assert.deepEqual(notLandedLines(html), [
-		{ line: 'At 14:38Z on 2026-11-08 that commit had not landed, so origin/staging still read cloud.', shas: ['9cf9e582c6'] },
-		{ line: 'Both fixes were on dev/sieun and not yet on staging at 14:38Z.', shas: ['abc1234def'] },
-		{ line: 'The pool of 6 comes from commit 73ca23e07f , which had not reached origin/staging at 14:38Z.', shas: ['73ca23e07f'] },
-		{ line: 'It slept 20 seconds (dev/sieun 8b8a0797aa, not yet landed on staging at 14:44Z).', shas: ['8b8a0797aa'] },
-		{ line: 'It had not landed on staging by 18:29Z, when the staging head was the land 7f655237dc .', shas: ['8b8a0797aa'] },
+		{ line: 'At 14:38Z on 2026-11-08 that commit had not landed, so origin/staging still read cloud.', shas: ['9cf9e582c6'], stage: 'staging' },
+		{ line: 'Both fixes were on dev/sieun and not yet on staging at 14:38Z.', shas: ['abc1234def'], stage: 'staging' },
+		{ line: 'The pool of 6 comes from commit 73ca23e07f , which had not reached origin/staging at 14:38Z.', shas: ['73ca23e07f'], stage: 'staging' },
+		{ line: 'On 11-08 c0cac2b9d6 had not yet landed on main.', shas: ['c0cac2b9d6'], stage: 'prod' },
+		{ line: 'It slept 20 seconds (dev/sieun 8b8a0797aa, not yet landed on staging at 14:44Z).', shas: ['8b8a0797aa'], stage: 'staging' },
+		{ line: 'It had not landed on staging by 18:29Z, when the staging head was the land 7f655237dc .', shas: ['8b8a0797aa'], stage: 'staging' },
+	]);
+});
+
+// 2026-11-08 17:05Z: a dream writer found 3 lines on census-scheduling.html v13 that said a commit was not on staging or prod after a
+// land carried it, and notLandedLines read none of them: "neither the staging nor the prod crawler ran", "reaches prod only with a full
+// promote" under the line that names the commit, and a table cell "4, or up to 84 on dev/sieun" whose sha sits on a later line.
+test('a commit on neither crawler, one that reaches prod only with a promote and a dev-branch value are claims', () => {
+	const html = [
+		'<!--wiki {"title":"Census scheduling"}-->',
+		'<h2 id="leases">Leases</h2>',
+		'<ol>',
+		'<li>Since <code>8acb3c6307</code> at 06:29Z on 11-01, every settle ends its row\'s lease.</li>',
+		'<li>The commit adds migration <code>0236_census_leases</code>, so it reaches prod only with a full promote.</li>',
+		'<li>Since <code>b2d0bfffc5</code> a blob pushed from a dev/sieun commit reaches prod only after it lands on staging.</li>',
+		'<li>When the control fails, the land marks dev/sieun only when the errors name a file it changed, as judgeSolos has done since <code>ee2466da11</code>.</li>',
+		'</ol>',
+		'<h2 id="lanes">Lanes</h2>',
+		'<table><tbody>',
+		'<tr><td><code>history</code></td><td>logged-out grid</td><td>4, or up to 84 on <code>dev/sieun</code></td><td>since <code>7537b8f69</code> 23 days</td></tr>',
+		'</tbody></table>',
+		'<ol>',
+		'<li>Since <code>03c2d63a58</code> on <code>sieun/dev</code> at 12:40Z on 10-26, which neither the staging nor the prod crawler ran at 13:19Z, the cadence reads only the follower count.</li>',
+		'<li>That commit was on <code>dev/sieun</code> and not yet on <code>staging</code> at 11:57Z that day.</li>',
+		'<li>Since <code>42d3206e43</code> at 20:00Z on 10-29 on <code>dev/sieun</code>, one history job reads the whole walk, up to 84 pages of 12 posts.</li>',
+		'</ol>',
+		'<h2 id="other">Other</h2>',
+		'<p>Some line names no commit.</p>',
+		'<p>That commit was not on staging at 12:00Z.</p>',
+	].join('\n');
+	assert.deepEqual(notLandedLines(html), [
+		{ line: 'The commit adds migration 0236_census_leases , so it reaches prod only with a full promote.', shas: ['8acb3c6307'], stage: 'prod' },
+		{ line: '4, or up to 84 on dev/sieun', shas: ['42d3206e43'], stage: 'staging' },
+		{
+			line: 'Since 03c2d63a58 on sieun/dev at 12:40Z on 10-26, which neither the staging nor the prod crawler ran at 13:19Z, the cadence reads only the follower count.',
+			shas: ['03c2d63a58'],
+			stage: 'staging',
+		},
+		{ line: 'That commit was on dev/sieun and not yet on staging at 11:57Z that day.', shas: ['03c2d63a58'], stage: 'staging' },
 	]);
 });
 
@@ -79,6 +118,16 @@ test('a claim counts once a staging land names a dev tip that holds the commit, 
 		],
 		'the commit no land carries and the experiment and retired pages are left out',
 	);
+
+	git('branch', 'main', first);
+	const prod = (sha) => `<li>At 09:50Z on 2026-11-08 <code>${sha.slice(0, 10)}</code> was not on prod yet.</li>`;
+	const promoted = landedClaims([{ path: 'apps/p.html', meta: {}, html: `<ol>${prod(a)}${prod(b)}</ol>` }], dir, lands, 'main');
+	assert.deepEqual(
+		promoted.map((x) => [x.sha, x.stage, x.land.commit]),
+		[[a.slice(0, 10), 'prod', first]],
+		'a prod line counts only once main holds the land that carried the commit',
+	);
+	assert.match(landedRef(promoted[0]), /, on main\): "/);
 
 	const stale = addLandedClaims({ count: 0, stale: [] }, claims);
 	assert.equal(stale.count, 1);
