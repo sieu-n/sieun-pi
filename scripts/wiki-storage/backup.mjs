@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Back up the wiki's page files (.html and .md) to a private GitHub repo, laid out by wiki path:
-// the content root at the repo root and the agents mount under agents/. Data files stay on the box.
+// Back up the wiki's page files (.html and .md), and the scripts in its curated spaces (lib.mjs SCRIPT_SPACES), to a
+// private GitHub repo, laid out by wiki path: the content root at the repo root and the agents mount under agents/.
+// Data files stay on the box.
 //
 //   node scripts/wiki-storage/backup.mjs [--paths-from <file>] [--no-push] [--dry-run]
 //

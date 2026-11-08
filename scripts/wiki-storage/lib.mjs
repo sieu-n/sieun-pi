@@ -22,15 +22,23 @@ export function loadConfig(env = process.env) {
 }
 
 export const PAGE = /\.(html|md)$/;
+const PAGE_NAMES = ['*.html', '*.md'];
+/**
+ * The curated spaces whose scripts are backed up beside the pages: a page generator such as
+ * apps/api-portal/platform/generate-api-endpoints.mjs lives only there since the content left auto-sns-agent's git on
+ * 2026-11-03. These spaces held 154 script files, 1.6 MB, on 2026-11-08, while the whole content root held 560,759, 5.8 GB.
+ */
+export const SCRIPT_SPACES = ['apps', 'domains', 'projects', 'experiments', 'archive'];
+const SCRIPT_NAMES = ['*.mjs', '*.cjs', '*.js', '*.ts', '*.py', '*.sh'];
 
 const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** Page files under root, skipping node_modules and each folder whose path matches a prune regex (find -regex, whole path). */
-export function findFiles(root, prune) {
+/** Files under root named like `names`, skipping node_modules and each folder whose path matches a prune regex (find -regex, whole path). */
+export function findFiles(root, prune, names = PAGE_NAMES) {
   if (!existsSync(root)) return [];
   const args = [root, '-regextype', 'posix-extended', '('];
   for (const p of prune) args.push('-regex', p, '-o');
-  args.push('-name', 'node_modules', ')', '-prune', '-o', '-type', 'f', '(', '-name', '*.html', '-o', '-name', '*.md', ')', '-printf', '%s\\t%T@\\t%P\\0');
+  args.push('-name', 'node_modules', ')', '-prune', '-o', '-type', 'f', '(', ...names.flatMap((n, i) => (i ? ['-o', '-name', n] : ['-name', n])), ')', '-printf', '%s\\t%T@\\t%P\\0');
   const out = execFileSync('find', args, { maxBuffer: 1 << 30 }).toString('utf8');
   return out.split('\0').filter(Boolean).map((line) => {
     const [size, mtime, rel] = line.split('\t');
@@ -38,10 +46,16 @@ export function findFiles(root, prune) {
   });
 }
 
-/** Every page file the wiki serves, keyed by wiki path; the agents mount wins over content/agents, as in the engine. */
+/**
+ * Every page file the wiki serves, plus the scripts in the curated spaces, keyed by wiki path; the agents mount wins
+ * over content/agents, as in the engine.
+ */
 export function wikiPages(cfg) {
   const pages = new Map();
   for (const f of findFiles(cfg.contentRoot, [`${reEscape(cfg.contentRoot)}/\\.wiki`])) pages.set(f.rel, f);
+  for (const space of SCRIPT_SPACES) {
+    for (const f of findFiles(path.join(cfg.contentRoot, space), [], SCRIPT_NAMES)) pages.set(`${space}/${f.rel}`, { ...f, rel: `${space}/${f.rel}` });
+  }
   for (const f of findFiles(cfg.agentsRoot, [`${reEscape(cfg.agentsRoot)}/[^/]+/harness`])) pages.set(`agents/${f.rel}`, f);
   return pages;
 }
