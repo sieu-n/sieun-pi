@@ -1721,6 +1721,26 @@ class ResumePausedTests(unittest.TestCase):
         self.assertIn("opens no cell", hook_answer({"usable": False, "reason": "unsampled"}))
         self.assertIsNone(hook_answer({"usable": True, "reason": None}), "a cell on an open account within the lead lets the run go")
 
+    def test_a_hook_token_for_a_tree_pi_pool_holds_in_a_wait_holds_the_run(self):
+        # 11-08 09:03Z: the hook gave Crawler VP's tree a token, its own refused account's, while `who` held the tree for a cell on unsampled
+        # krenerd77, and the pass sent its runs continue.
+        now = dt.datetime(2026, 11, 8, 9, 3, 41, tzinfo=dt.timezone.utc).timestamp()
+
+        def hook_answer(wait, account=None):
+            def run(cmd, **kwargs):
+                if cmd[0] != "pi-pool":
+                    return resume_paused.subprocess.CompletedProcess(cmd, 0, "sk-ant-oat01-token\n", "")
+                body = {"rows": [{"id": "krenerd77", "email": "krenerd77@naver.com", "usable": False, "reason": "unsampled"},
+                                 {"id": "claude16", "email": "claude16@slack.green", "usable": True, "reason": None}]} if cmd[1] == "ls" else \
+                    {"providers": {"anthropic": {"account": account, "wait": wait}}}
+                return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps(body), "")
+            with patch.object(resume_paused, "TOKEN_HOOK", Path("/bin/true")), patch.object(resume_paused, "pool_bin", return_value="pi-pool"), \
+                    patch.object(resume_paused.subprocess, "run", side_effect=run), patch.object(resume_paused.time, "time", return_value=now):
+                return resume_paused.hook_blocker("01a115e2-9544-7204-b8db-8ce4d5319048", "anthropic", {})
+
+        self.assertIn("opens no cell", hook_answer({"account": "krenerd77", "slot_at": now + 181, "reserved": False}))
+        self.assertIsNone(hook_answer(None, account="claude16"), "a token with no wait is an admission")
+
     def test_a_stopped_run_is_continued_within_the_lead_before_its_cell(self):
         # SEO guy's tree, 11-01: stopped at 09:09:30Z for its 09:11:00Z cell, and this pass's first ask came at 09:11:32Z, after the cell.
         now = dt.datetime(2026, 11, 1, 9, 9, 30, tzinfo=dt.timezone.utc).timestamp()

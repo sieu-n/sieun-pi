@@ -1457,9 +1457,12 @@ def hook_blocker(root_session_id, provider, cache):
     """Why the token hook gives this tree no token now, or None when it gives one or there is no hook to run.
 
     The hook runs as Prime runs it for the tree's next request, with the tree's session id and a 10 s limit, and its stdout, the token,
-    is dropped unread. A slot within POOL_LEAD_S lets the run go only when its cell's account opens by then (`cell_closed`): from 00:54Z to
-    02:00Z on 11-08 33 jobs got this pass's continue for cells on unsampled claude12 and krenerd77, each continue sat queued behind the run's
-    next slot wait, and the idle unload keeps a session with queued input, so 14.6 GB stayed resident with nobody working."""
+    is dropped unread. A token or a slot within POOL_LEAD_S lets the run go only when `pi-pool who` holds the tree in no wait that
+    account_blocker keeps, such as a cell on an account that opens none by its slot (`cell_closed`): from 00:54Z to 02:00Z on 11-08 33 jobs
+    got this pass's continue for cells on unsampled claude12 and krenerd77, each continue sat queued behind the run's next slot wait, and the
+    idle unload keeps a session with queued input, so 14.6 GB stayed resident with nobody working. A token is no admission either: for a tree
+    in a wait the hook vends the tree's own refused account, so the request meets a 429 (sched.Wait.vend). At 09:03Z on 11-08 it gave Crawler
+    VP's tree a token while `who` held it for a cell on unsampled krenerd77, and 31 runs got their continue after the 04:15Z release."""
     if not TOKEN_HOOK.exists() or provider not in ("anthropic", "openai-codex"):
         return None
     hook = TOKEN_HOOK
@@ -1470,8 +1473,7 @@ def hook_blocker(root_session_id, provider, cache):
             gave = ran.returncode == 0 and bool(ran.stdout.strip())
             slot_at = hook_slot_at(ran)
             near = not gave and slot_at and slot_at <= time.time() + POOL_LEAD_S
-            closed = near and account_blocker(root_session_id, provider, {}, lead=POOL_LEAD_S)[0]
-            cache[(root_session_id, provider)] = (None if gave or (near and not (closed and "opens no cell" in closed)) else closed if near
+            cache[(root_session_id, provider)] = (account_blocker(root_session_id, provider, {}, lead=POOL_LEAD_S)[0] if gave or near
                                                   else slot_wait_text(slot_at) if slot_at else f"the token hook gave no {provider} token (exit {ran.returncode})")
         except subprocess.TimeoutExpired:
             cache[(root_session_id, provider)] = f"the token hook gave no {provider} token in {HOOK_TIMEOUT_S} s"
