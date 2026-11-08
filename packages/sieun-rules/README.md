@@ -39,7 +39,7 @@ The refusal points to the aside_browser skill and to us-metal02, where repo spec
 The kernel judges the same rule on each subprocess through `send-check.ts`, so a command built at run time is refused too.
 `GLOBAL_RULES_PLATFORM` stands in for `process.platform` in tests.
 
-`heavy-check.ts` notes, on the owner's Mac only, each whole-project type check or test suite an agent starts, because global rule 6 keeps heavy compute on us-metal02.
+`heavy-check.ts` notes, on the owner's Mac only, each whole-project type check or test suite an agent starts, because global rule 6 keeps heavy compute on us-metal02. auto-sns-agent's apps/search check gets no note there, because since 380be3218 its kit-check.mjs runs the scoped save check on the Mac unless `KIT_CHECK_WHOLE` is set.
 On 11-04 at 16:20:55 KST a job's `pnpm check` in auto-sns-agent apps/search, started by its kernel's `bash()`, grew from 0.1 to 7.52 GB in a minute while the Mac's swap went from 11.5 to 13.3 GB.
 It covers `svelte-check`, `tsc` or `tsgo` with no named file, `vitest` with no named test, a turbo check or test task, a check script such as `kit-check.mjs`, and a package.json script that runs one, through `cd`, `sh -c`, `npx`, `pnpm exec`, `pnpm -C` and `--filter`.
 The command runs, because a memory spike guards none of the hard cases of c98, and the note names the cost and the off-Mac command: `commit.mjs --probe <files>` in auto-sns-agent, `ssh us-metal02` into the box checkout of pushed main in sieun-pi, and a pushed branch on us-metal02 or CI elsewhere.

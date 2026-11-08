@@ -117,3 +117,23 @@ test("on us-metal02 and in CI the same commands run with no note", async () => {
   assert.equal(guard.onToolCall(event("bash", `cd ${search} && pnpm check`, "c3"), { cwd: root }), undefined);
   assert.equal(guard.onToolResult({ toolCallId: "c3", content: [] }), undefined);
 });
+
+// auto-sns-agent 380be3218: on the Mac kit-check.mjs runs apps/search's check as the scoped save check (1.19 GB and 7 s there on 11-08),
+// so that run gets no note, while KIT_CHECK_WHOLE=1 and the other apps, which still run the whole check, keep it.
+test("on the Mac, a kit-check.mjs with scopedOnMac runs apps/search's check with no note unless KIT_CHECK_WHOLE asks for the whole app", async () => {
+  process.env.GLOBAL_RULES_PLATFORM = "darwin";
+  const scoped = join(root, "auto-sns-agent-scoped");
+  for (const dir of [join(scoped, ".git"), join(scoped, "scripts/repo/agent"), join(scoped, "packages/config"), join(scoped, "apps/search"), join(scoped, "apps/admin")]) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(scoped, "scripts/repo/agent/commit.mjs"), "");
+  writeFileSync(join(scoped, "packages/config/kit-check.mjs"), "export const scopedOnMac = () => true;\nspawnSync('svelte-check', process.argv.slice(2));\n");
+  const check = "pnpm i18n:compile && node ../../packages/config/kit-check.mjs --tsconfig ./tsconfig.json --tsgo --incremental";
+  for (const app of ["search", "admin"]) writeFileSync(join(scoped, "apps", app, "package.json"), JSON.stringify({ scripts: { check, "i18n:compile": "paraglide-js compile" } }));
+  for (const [text, cwd] of [["pnpm -C apps/search check", scoped], ["pnpm check", join(scoped, "apps/search")]]) {
+    assert.deepEqual(await kernel(text, cwd), { block: false }, text);
+  }
+  for (const [text, cwd] of [
+    ["KIT_CHECK_WHOLE=1 pnpm -C apps/search check", scoped],
+    ["export KIT_CHECK_WHOLE=1; pnpm check", join(scoped, "apps/search")],
+    ["pnpm -C apps/admin check", scoped],
+  ]) assert.match((await kernel(text, cwd)).warning ?? "", /Mac heavy check/, text);
+});

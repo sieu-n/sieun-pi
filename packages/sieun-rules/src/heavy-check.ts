@@ -87,12 +87,20 @@ function wholeRun(name: string, args: string[]): string | null {
 	return null;
 }
 
-/** A check script such as auto-sns-agent's packages/config/kit-check.mjs: a node script named for a check that runs svelte-check, tsc or tsgo. */
-function checkScript(args: string[], cwd: string): string | null {
+/**
+ * A check script such as auto-sns-agent's packages/config/kit-check.mjs: a node script named for a check that runs svelte-check, tsc or tsgo.
+ * Since auto-sns-agent 380be3218 that kit-check.mjs runs only the scoped save check of the changed files in apps/search on the Mac
+ * (scopedOnMac), at 1.19 GB and 7 s there on 11-08, unless KIT_CHECK_WHOLE is set, so that run gets no note.
+ */
+function checkScript(args: string[], cwd: string, vars: Map<string, string>): string | null {
 	const file = args.find((a) => !a.startsWith("-"));
 	if (!file || !/check/i.test(basename(file))) return null;
 	const text = readFile(at(cwd, file));
-	return text && /svelte-check|\btsgo\b|\btsc\b/.test(text) ? `${basename(file)} runs a whole-app type check` : null;
+	if (!text || !/svelte-check|\btsgo\b|\btsc\b/.test(text)) return null;
+	const root = checkoutOf(cwd);
+	const whole = vars.has("KIT_CHECK_WHOLE") || process.env.KIT_CHECK_WHOLE;
+	if (/\bscopedOnMac\b/.test(text) && root && relative(root, resolve(cwd)) === "apps/search" && !whole) return null;
+	return `${basename(file)} runs a whole-app type check`;
 }
 
 /** The package.json script a package manager runs, with the folder it runs in, or null. */
@@ -161,8 +169,13 @@ function judge(text: string, depth: number, out: Hit[], start: string, vars: Map
 		const name = basename(eff[0] ?? "");
 		const args = eff.slice(1);
 		const at0 = top ?? { command: label(eff), cwd };
+		const own = new Map(vars);
+		for (const w of argv.slice(0, argv.length - eff.length)) {
+			const set = /^([A-Za-z_]\w*)=(.*)$/s.exec(w);
+			if (set) own.set(set[1], set[2]);
+		}
 		const hit = (why: string, kind: Hit["kind"] = "check"): void => { out.push({ ...at0, why: via + why, kind }); };
-		const again = (inner: string, where = cwd, through = via): void => judge(inner, depth + 1, out, where, new Map(vars), at0, through);
+		const again = (inner: string, where = cwd, through = via): void => judge(inner, depth + 1, out, where, new Map(own), at0, through);
 		if (name === "cd" || name === "pushd") {
 			cwd = at(cwd, args.find((a) => !a.startsWith("-")) ?? homedir());
 			continue;
@@ -196,7 +209,7 @@ function judge(text: string, depth: number, out: Hit[], start: string, vars: Map
 			hit("it loads the whole Vercel CLI to read one deployment", "vercel");
 			continue;
 		}
-		const why = JS_RUNNERS.has(name) ? checkScript(args, cwd) : wholeRun(name.replace(/\.(?:c|m)?js$/, ""), args);
+		const why = JS_RUNNERS.has(name) ? checkScript(args, cwd, own) : wholeRun(name.replace(/\.(?:c|m)?js$/, ""), args);
 		if (why) hit(why);
 	}
 	for (const inner of nested) judge(inner, depth + 1, out, cwd, new Map(vars), top, via);
