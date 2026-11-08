@@ -1,0 +1,31 @@
+#!/bin/sh
+# Put first on PATH by kernel-git.py in every Prime kernel on the owner's Mac. It runs `git grep` with -I and passes every other git
+# command through unchanged. Apple Git 2.54 under en_US.UTF-8 matches a regex against a binary file at about 23 times the file's size
+# (110 MB for a 4.8 MB .otf, 11-09), so a regex git grep over auto-sns-agent's apps/ passed 400 MB within 1 s, and the take-in grep held
+# 41.94 GB at 15:49:30Z on 11-08. With -I the same greps peaked at 23 to 28 MB. A later -a or --text still searches binary files.
+real=${SIEUN_RULES_REAL_GIT:-/usr/bin/git}
+n=$#
+i=0
+skip=
+seen=
+while [ "$i" -lt "$n" ]; do
+	a=$1
+	shift
+	i=$((i + 1))
+	set -- "$@" "$a"
+	[ -n "$seen" ] && continue
+	if [ -n "$skip" ]; then
+		skip=
+		continue
+	fi
+	case $a in
+	-c | -C | --git-dir | --work-tree | --namespace | --super-prefix | --config-env) skip=1 ;;
+	-*) ;;
+	grep)
+		seen=1
+		set -- "$@" -I
+		;;
+	*) seen=1 ;;
+	esac
+done
+exec "$real" "$@"
