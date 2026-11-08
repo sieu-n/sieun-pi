@@ -390,6 +390,45 @@ test("with no break in 24 h, release_breaks_24h's lastEventAt is the newest rele
   assert.equal(releaseBreaks("", at).lastEventAt, undefined);
 });
 
+test("a start that failed in systemd's setup is no break when the start after it runs, as at 09:29Z on 11-08, and is one when no start runs after it", () => {
+  const release = [
+    "2026-10-19T09:29:07.317679+00:00 Stopping sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182...",
+    "2026-10-19T09:29:13.128532+00:00 Stopped sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182.",
+    "2026-10-19T09:29:13.258648+00:00 Started sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182.",
+    "2026-10-19T09:29:13.364305+00:00 sieun-pi-chat.service: Main process exited, code=exited, status=219/CGROUP",
+    "2026-10-19T09:29:13.364481+00:00 sieun-pi-chat.service: Failed with result 'exit-code'.",
+  ];
+  const served = journal([...release,
+    "2026-10-19T09:29:13.745284+00:00 Stopped sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182.",
+    "2026-10-19T09:29:13.750885+00:00 Started sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182.",
+  ]);
+  assert.equal(releaseBreaks(served, at).value, 0);
+  assert.equal(releaseBreaks(journal(release), at).value, 1);
+  const failedAgain = journal([...release,
+    "2026-10-19T09:29:23.750885+00:00 Starting sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182...",
+    "2026-10-19T09:29:23.800000+00:00 sieun-pi-chat.service: Main process exited, code=exited, status=203/EXEC",
+    "2026-10-19T09:29:33.750885+00:00 Starting sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182...",
+  ]);
+  assert.equal(releaseBreaks(failedAgain, at).value, 1);
+});
+
+test("a reload counts as a release, and the handing-over chat's crash after it is its break, as at 21:55Z on 11-08", () => {
+  const text = journal([
+    "2026-10-19T08:50:53.000000+00:00 Reloading sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182...",
+    "2026-10-19T08:50:53.010000+00:00 Reloaded sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182.",
+    "2026-10-19T08:52:15.000000+00:00 sieun-pi-chat.service: Supervising process 3000200 which is not our child. We'll most likely not notice when it exits.",
+    "2026-10-19T09:55:11.000000+00:00 Reloading sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182...",
+    "2026-10-19T09:55:11.010000+00:00 Reloaded sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182.",
+    "2026-10-19T09:55:14.000000+00:00 sieun-pi-chat.service: Main process exited, code=exited, status=1/FAILURE",
+    "2026-10-19T09:55:25.000000+00:00 Starting sieun-pi-chat.service - sieun-pi browser chat on 127.0.0.1:5182...",
+  ]);
+  const reading = releaseBreaks(text, at);
+  assert.equal(reading.value, 1);
+  assert.equal(reading.lastEventAt, Date.parse("2026-10-19T09:55:11.000Z"));
+  assert.match(reading.flagged[0]!.excerpt, /\(reload\): 1 break, first Main process exited, code=exited, status=1\/FAILURE/);
+  assert.equal(reading.flagged[1]!.excerpt, "2 chat releases in 24 h, 1 with a break");
+});
+
 test("the Mac's tailnet state comes from its ssh address, so an asleep Mac reads as offline instead of two ssh timeouts", () => {
   const status = JSON.stringify({ Peer: {
     "nodekey:a": { HostName: "Sieun’s MacBook Pro", TailscaleIPs: ["100.66.173.18", "fd7a:115c:a1e0::1"], Online: false, LastSeen: "2026-10-24T06:10:00.1Z" },

@@ -32,8 +32,8 @@ import { macAway, macSilent } from "./mac-reach.ts";
  *   file, in Mac-to-box round trips (ping from the Mac). The reply is "ok", so the Mac's reply entry lands a few ms after its first token.
  *   The target is 1.5: one round trip is the network floor (the prompt's half trip out and the reply's half trip back), and the layer tap
  *   of 10-20 01:49Z read a 193 ms round trip, about 55 ms on the Mac's daemon before its user entry, and 0 ms in the bridge and relay filters.
- * - `release_breaks_24h`: releases (systemd stops of sieun-pi-chat) in 24 h after which the service exits with an error within
- *   `RELEASE_WINDOW_MS`, which leaves the owner's page on its red banner.
+ * - `release_breaks_24h`: releases (systemd stops and reloads of sieun-pi-chat) in 24 h after which the chat exits with an error within
+ *   `RELEASE_WINDOW_MS`, which leaves the owner's page with no chat to answer it.
  * A Mac that Tailscale lists offline leaves the three Mac numbers out with a `host_away` item (mac-reach.ts), and the runner reruns the duty
  * once Tailscale reads it online. A source that cannot be read leaves its metric out with a `source_error` item, so the run says not measured
  * instead of a miss.
@@ -166,34 +166,54 @@ export function replyExtra(sends: readonly SendTiming[], macSession: string, rtt
 const timeOf = (line: string): number => Date.parse(line.slice(0, line.indexOf(" ")));
 
 /**
- * Releases in the 24 h before `now` from `journalctl --user -u sieun-pi-chat -o short-iso-precise`, and the ones with a break: a "Main process
- * exited" after the release's restart and before the next release or `RELEASE_WINDOW_MS`, which leaves the page on its red banner. The owner
- * outbox keeps a send on disk and retries it across restarts, so a release loses no page message by itself; the agent outbox's "message ...
- * dropped" lines are sends to sessions that are gone, 9 in the 24 h to 10-19 15:30Z and 4 of them away from any release, so they do not count.
- * `lastEventAt` is the newest broken release's stop, the time the 24 h window keys on, or with no break the newest release's stop, and none
- * with no release in 24 h. AI harness d9 read the count as a lagging window on 10-23 because it had none.
+ * The exit status systemd gives a start that failed in its own setup before the command ran (systemd.exec(5), "Process Exit Codes": 200
+ * EXIT_CHDIR to 245 EXIT_BPF). On 11-08 at 09:29:13Z the release's start failed to attach to its cgroup (219/CGROUP), and the rollback start
+ * 0.4 s later served from 09:29:18Z, so the page waited 11.5 s from the stop, as long as a slow release, and saw no chat that crashed.
+ */
+const setupFailure = (status: number): boolean => status >= 200 && status <= 245;
+
+/**
+ * Releases in the 24 h before `now` from `journalctl --user -u sieun-pi-chat -o short-iso-precise`, and the ones with a break. A release is a
+ * stop of the unit or, since the hand-over of 11-08 14:56Z, a reload (scripts/release-chat.mjs). Its break is a "Main process exited" after
+ * the release's restart, or after the reload itself, and before the next release or `RELEASE_WINDOW_MS`: on 11-08 at 21:55:14Z the chat
+ * that was handing over threw EACCES 3 s after the reload, its successor ended with it, and the port went unanswered for 14 s. A start that
+ * failed in systemd's setup (`setupFailure`) is no break when the next start after it runs to the window's end, since the page met no chat
+ * that crashed. The owner outbox keeps a send on disk and retries it across restarts, so a release loses no page message by itself; the agent
+ * outbox's "message ... dropped" lines are sends to sessions that are gone, 9 in the 24 h to 10-19 15:30Z and 4 of them away from any release,
+ * so they do not count. `lastEventAt` is the newest broken release's time, which the 24 h window keys on, or with no break the newest
+ * release's, and none with no release in 24 h. AI harness d9 read the count as a lagging window on 10-23 because it had none.
  */
 export function releaseBreaks(journal: string, now: number): Reading {
   const reading: Reading = { flagged: [] };
   const since = now - 24 * 3_600_000;
   const lines = journal.split("\n").filter(line => /^\d{4}-\d\d-\d\dT/.test(line));
-  const stops = lines.filter(line => line.includes("Stopping sieun-pi-chat.service")).map(timeOf).filter(at => at >= since);
-  const starts = lines.filter(line => line.includes("Started sieun-pi-chat.service")).map(timeOf);
-  const exits = lines.filter(line => line.includes("Main process exited")).map(line => ({ at: timeOf(line), text: line.slice(line.indexOf("Main process")) }));
+  const releases = lines.flatMap(line => {
+    const kind = line.includes("Stopping sieun-pi-chat.service") ? "stop" : line.includes("Reloading sieun-pi-chat.service") ? "reload" : null;
+    const at = timeOf(line);
+    return kind && at >= since ? [{ kind, at }] : [];
+  });
+  const starts = lines.filter(line => /Start(?:ing|ed) sieun-pi-chat\.service/.test(line)).map(timeOf);
+  const exits = lines.filter(line => line.includes("Main process exited"))
+    .map(line => ({ at: timeOf(line), status: Number(/status=(\d+)/.exec(line)?.[1]), text: line.slice(line.indexOf("Main process")) }));
   let broken = 0;
-  stops.forEach((stop, index) => {
-    const end = Math.min(stops[index + 1] ?? Infinity, stop + RELEASE_WINDOW_MS);
-    const restart = starts.find(at => at >= stop) ?? stop;
-    const found = exits.filter(exit => exit.at > restart && exit.at < end);
+  releases.forEach((release, index) => {
+    const end = Math.min(releases[index + 1]?.at ?? Infinity, release.at + RELEASE_WINDOW_MS);
+    const restart = release.kind === "reload" ? release.at : starts.find(at => at >= release.at) ?? release.at;
+    const inWindow = exits.filter(exit => exit.at > restart && exit.at < end);
+    const found = inWindow.filter(exit => {
+      if (!setupFailure(exit.status)) return true;
+      const next = starts.find(at => at > exit.at && at < end);
+      return next === undefined || inWindow.some(later => later.at > next);
+    });
     if (!found.length) return;
     broken++;
-    reading.lastEventAt = stop;
-    reading.flagged.push({ at: stop, kind: "release_break", item: new Date(stop).toISOString(),
-      excerpt: `the release at ${new Date(stop).toISOString()}: ${found.length} break${found.length > 1 ? "s" : ""}, first ${found[0]!.text}`.slice(0, 600) });
+    reading.lastEventAt = release.at;
+    reading.flagged.push({ at: release.at, kind: "release_break", item: new Date(release.at).toISOString(),
+      excerpt: `the release at ${new Date(release.at).toISOString()} (${release.kind}): ${found.length} break${found.length > 1 ? "s" : ""}, first ${found[0]!.text}`.slice(0, 600) });
   });
   reading.value = broken;
-  if (!broken && stops.length) reading.lastEventAt = Math.max(...stops);
-  reading.flagged.push({ at: now, kind: "releases", excerpt: `${stops.length} chat releases in 24 h, ${broken} with a break` });
+  if (!broken && releases.length) reading.lastEventAt = Math.max(...releases.map(release => release.at));
+  reading.flagged.push({ at: now, kind: "releases", excerpt: `${releases.length} chat releases in 24 h, ${broken} with a break` });
   return reading;
 }
 
