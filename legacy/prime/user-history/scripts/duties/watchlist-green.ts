@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import {
-  type DsQuery, DAY, HOUR, PG, PROM, REPO, SOURCE_DEADLINE_MS, grafanaClient, prodReader, promInstant, readGrafanaAuth, round1, settle, sqlRows, unmeasuredFlag, utc,
+  type DsQuery, DAY, HOUR, PG, PROM, REPO, grafanaClient, prodReader, promInstant, readGrafanaAuth, round1, settle, sqlRows, unmeasuredFlag, utc,
 } from "./estate-reads.ts";
 import { adminQuery, convexBackend, type ConvexBackend, readEnvRow } from "./convex-admin.ts";
 
@@ -56,7 +56,7 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "watchlist-green
  * staging_posts_green_pct, staging_tagged_not_green and source_errors. A failed source still misses the metrics it feeds (NEEDS), and a prod
  * watch scheduler loop that is stalled past LOOP_STALL_S, or never ticked, misses prod_read_error_pct, since no read can finish while it stands.
  * The schedule, daily at 06:28 (c66), runs the Convex walk (22 pages, 10.4 s measured 2026-10-12) and the prod and staging reads once a day.
- * The duty's timeoutMs 120000 is the runner's soft target, PRECHECK_TARGET_MS in src/shared/chat-duties.ts.
+ * The duty's timeoutMs 240000 is the runner's soft target, 10 s past WATCH_DEADLINE_MS, and the hard stop is the daily interval.
  */
 
 /**
@@ -701,12 +701,20 @@ export async function measure(deps: WatchDeps): Promise<WatchData> {
   return data;
 }
 
+/**
+ * Every source read of this precheck ends by this deadline. The shared 110 s SOURCE_DEADLINE_MS of estate-reads.ts aborted the prod rows read
+ * in the 06:28 run on 11-09 and a rerun at 06:30, so both wrote 999999 for owner_green_pct and watchlist_risks: the group read, which runs
+ * first and alone, took 58 s of it (first pages up to 13.7 s) and the 8 rows slices started after it. A run at 06:4x took 72 s with the rows
+ * read at 17 s. 230 s is about twice the 110 s those runs passed.
+ */
+const WATCH_DEADLINE_MS = 230_000;
+
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("watchlist-green: OUTPUT_FILE is not set\n"); process.exit(2); }
   const dutyMetrics = (JSON.parse(await readFile(DUTY_FILE, "utf8")) as { metrics: DutyMetric[] }).metrics;
   const now = Date.now();
-  const signal = AbortSignal.timeout(SOURCE_DEADLINE_MS);
+  const signal = AbortSignal.timeout(WATCH_DEADLINE_MS);
   let query: DsQuery | null = null;
   let authError: string | null = null;
   try { query = grafanaClient(fetch, await readGrafanaAuth(), now, signal); } catch (error) { authError = error instanceof Error ? error.message : String(error); }
