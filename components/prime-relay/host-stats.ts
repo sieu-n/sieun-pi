@@ -637,10 +637,16 @@ export function parseUsageUsec(text: string): number | null {
   const value = /^usage_usec (\d+)$/m.exec(text)?.[1];
   return value === undefined ? null : Number(value);
 }
-/** This process's user-<uid>.slice and its user@<uid>.service/app.slice, from a /proc/self/cgroup text; null outside a user slice. */
-export function userSlice(cgroup: string): { slice: string; app: string } | null {
+/**
+ * The harness user's user-<uid>.slice and its user@<uid>.service/app.slice, from a /proc/self/cgroup text: the user slice the process runs in,
+ * or `uid`'s when it runs in agents.slice. Null in any other slice. Since 11-04 cpu-protect.py moves the chat into agents.slice, and a match on
+ * the user slice alone left the chat's watch lines with no cpuCores from 11-04 03:00Z to 11-08.
+ */
+export function userSlice(cgroup: string, uid = process.getuid?.()): { slice: string; app: string } | null {
   const match = /^0::\/(user\.slice\/user-(\d+)\.slice)(?:\/|$)/m.exec(cgroup);
-  return match ? { slice: match[1]!, app: `${match[1]}/user@${match[2]}.service/app.slice` } : null;
+  const inAgents = cgroup.split("\n").some(line => line === `0::/${AGENTS_SLICE}` || line.startsWith(`0::/${AGENTS_SLICE}/`));
+  const user = match?.[2] ?? (inAgents && uid !== undefined ? String(uid) : undefined);
+  return user === undefined ? null : { slice: `user.slice/user-${user}.slice`, app: `user.slice/user-${user}.slice/user@${user}.service/app.slice` };
 }
 /**
  * Each side's cores between two cgroup readings `ms` apart. A counter that went back (a unit restarted) counts its new value, a cgroup missing

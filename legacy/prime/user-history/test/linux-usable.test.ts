@@ -165,6 +165,14 @@ test("CPU sides: the harness is the user slice less the apps', owner's and CI's 
   assert.equal(cpuSides(new Map(), after, slice, 10_000), null);
 });
 
+// us-metal02's chat on 11-08 read 0::/agents.slice/sieun-pi-chat-core.scope from /proc/<pid>/cgroup, and its watch lines had no cpuCores since 11-04.
+test("a process in agents.slice, where cpu-protect.py moves the chat since 11-04, reads its user's slice, and another root slice reads none", () => {
+  assert.deepEqual(userSlice("0::/agents.slice/sieun-pi-chat-core.scope\n", 1001),
+    { slice: "user.slice/user-1001.slice", app: "user.slice/user-1001.slice/user@1001.service/app.slice" });
+  assert.equal(userSlice("0::/agents.slicex/a.scope\n", 1001), null);
+  assert.equal(userSlice("0::/system.slice/prime-relay.service\n", 1001), null);
+});
+
 test("on a Linux box in a user slice the reading carries each side's cores", { skip: process.platform !== "linux" || !userSlice(readFileSync("/proc/self/cgroup", "utf8")) }, async () => {
   for (let spin = Date.now(); Date.now() - spin < 50;);
   const reading = await linuxUsable(Date.now());
