@@ -179,6 +179,36 @@ test('a sibling-repo path::name ref and a shell function ref follow their defini
 	assert.deepEqual(rows['apps/up.html'], [{ ref: 'svc.sh::up_x', ...at('05') }], 'a shell function with a comment after its brace is a definition, and an edit inside it counts');
 });
 
+// 2026-11-08: sieun-pi d0799f3f changed only the header comment of scripts/wiki-storage/backup.mjs, and the report dated a whole-file
+// sibling ref by `git log -1`, so two pages that cite that file read as behind it.
+test('a sibling-repo whole-file or folder ref counts only the code changes that touch what the page states', (t) => {
+	const w = fixture(t);
+	const pi = fixture(t, 'wiki-stale-sibling-pi-');
+	const py = ({ note = 'Adds one.', alpha = 1, beta = 2 } = {}) =>
+		`# ${note}\nALPHA_LIMIT = 5\n\n\ndef alpha(x):\n    return x + ${alpha}\n\n\ndef beta(x):\n    return x * ${beta}\n`;
+	pi.write('pool/s.py', py());
+	for (const [name, ref] of [['file', 'sieun-pi:pool/s.py'], ['folder', 'sieun-pi:pool/'], ['gone', 'sieun-pi:pool/gone.py']])
+		w.page(`${name}.html`, [ref], { body: '<p><code>alpha</code> adds up to <code>ALPHA_LIMIT</code>.</p>' });
+	w.init();
+	pi.init();
+	w.commit('2026-10-20T01:00:00Z', 'pages');
+	pi.commit('2026-10-20T01:00:00Z', 'pool');
+	pi.write('pool/s.py', py({ note: 'Adds one, up to ALPHA_LIMIT.' }));
+	pi.commit('2026-10-20T04:00:00Z', 'comment only');
+	pi.write('pool/s.py', py({ note: 'Adds one, up to ALPHA_LIMIT.', beta: 3 }));
+	pi.commit('2026-10-20T05:00:00Z', 'beta, which the page does not name');
+	pi.write('pool/s.py', py({ note: 'Adds one, up to ALPHA_LIMIT.', alpha: 2, beta: 3 }));
+	pi.commit('2026-10-20T06:00:00Z', 'alpha');
+
+	const saved = process.env.SIEUN_PI_REPO;
+	t.after(() => (saved === undefined ? delete process.env.SIEUN_PI_REPO : (process.env.SIEUN_PI_REPO = saved)));
+	process.env.SIEUN_PI_REPO = pi.dir;
+	const rows = w.refsByPage();
+	assert.deepEqual(rows['apps/file.html'], [{ ref: 'sieun-pi:pool/s.py', ...at('06') }], 'a comment edit and an edit of beta touch nothing the page states');
+	assert.deepEqual(rows['apps/folder.html'], [{ ref: 'sieun-pi:pool/', ...at('06') }]);
+	assert.deepEqual(rows['apps/gone.html'], [{ ref: 'sieun-pi:pool/gone.py', modified: 'missing — ref no longer exists' }]);
+});
+
 // 2026-11-04: the auto-sns-agent tip held addbbf5329 (13:12:35Z) above afc3ff7332 (13:13:02Z), and `git log --since=13:12:40Z` stopped
 // at the first. The report's walk back to the oldest check day and its walk of a sibling repo's definition each stopped that way.
 test('the stale report finds a commit after the check below a commit dated before it', (t) => {

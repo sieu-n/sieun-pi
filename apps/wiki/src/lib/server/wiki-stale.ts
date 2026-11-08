@@ -200,13 +200,6 @@ async function pinHead(root: string): Promise<Pin> {
 	return { sha, at: Number(stamp) * 1000 };
 }
 
-/** The time in ms of the newest commit at `pin` of `root` that touched `rel`, or null when the pinned tree has no such path. */
-async function commitTime(root: string, pin: string, rel: string): Promise<number | null> {
-	const file = rel.replace(/\/+$/, '');
-	if (!(await git(root, ['ls-tree', '--name-only', pin, '--', file])).trim()) return null;
-	return Number((await git(root, ['log', '-1', '--format=%ct', pin, '--', file])).trim()) * 1000;
-}
-
 /**
  * When a definition fell behind and last changed, read from `after`, the commits after the check that touched its file, oldest
  * first: the first and newest that changed its text, or null when the pinned `head` text equals the text at the check. When the
@@ -304,7 +297,7 @@ type SiblingPins = Map<string, { root: string; pin: Pin } | null>;
 
 /**
  * The files changed in sibling `name` since the state's `held` value, or null when its checkout or history moved elsewhere.
- * Every commit `old..new` counts, since a sibling path ref dates by `git log -1` on all of HEAD's history.
+ * Every commit `old..new` counts, a superset of the first-parent commits a sibling ref reads.
  */
 async function siblingTouched(held: string | undefined, now: { root: string; pin: Pin } | null): Promise<Set<string> | null> {
 	const value = now ? `${now.root} ${now.pin.sha}` : '';
@@ -333,7 +326,12 @@ async function siblingTouched(held: string | undefined, now: { root: string; pin
  * lacks reads as missing even when a gitignored file sits at its path, so its writer swaps it for a tracked file: until
  * 2026-10-29 such a ref was dated by mtime, and each materialize of apps/virev-demo rewrote
  * `apps/virev-demo/src/routes/dev/design/charts/+page.svelte` and flagged apps/search/enterprise-mock.html again, 4 times in
- * the 7 days to 2026-10-29 06:20Z. A `sieun-pi:<path>` ref is dated by its sibling repo, unmeasured with no checkout.
+ * the 7 days to 2026-10-29 06:20Z. A `sieun-pi:<path>` whole-file or folder ref reads the same way on its sibling repo's first-parent
+ * history (siblingCommits), and goes unmeasured with no checkout. Until 2026-11-08 it was dated by `git log -1` alone: in the 7 days
+ * to 2026-11-08 12:47Z, 71 sieun-pi commits touched a file a curated page cites whole, 58 of them after a citing page's check, for
+ * 66 page flags. d0799f3f changed only a comment and flagged 2 pages, and 6 more flags touched nothing their page states. Of these 8,
+ * 5 ended in a `last_verified`-only recheck, 1 page fix had a `path::name` flag from the same commit, and 2 page fixes of
+ * apps/llm-wiki/index.html added a fact the page had not named (after 0f695503 and d0799f3f).
  * A page's result is kept in the StaleState and reused while its meta, its text and every file it cites stay unchanged, so a
  * report reads git per page only for the pages a commit since the last report touched.
  * GET /api/agent/stale and wiki-health.mjs use it.
@@ -464,9 +462,83 @@ export async function getStaleReport(
 	return { checkable: checkable.length, count: stale.length, stale };
 }
 
+type RepoReader = {
+	definitionAt: (rev: string, file: string, name: string) => Promise<string | null>;
+	codeAt: (rev: string, file: string) => Promise<string | null>;
+	close: () => void;
+};
+
+/**
+ * Reads of `rev:file` in `root`, each once per report: a definition's code (definitionCode) and a file's code with its comments and
+ * docstrings removed (codeText), through one `git cat-file --batch` started at the first read.
+ */
+function repoReader(root: string): RepoReader {
+	const versions = new Map<string, Promise<string | null>>();
+	let blobs: ReturnType<typeof blobReader> | null = null;
+	const definitions = new Map<string, Map<string, string | null>>();
+	const versionAt = (rev: string, file: string): Promise<string | null> => {
+		const key = `${rev}:${file}`;
+		blobs ??= blobReader(root);
+		if (!versions.has(key)) versions.set(key, blobs.read(key));
+		return versions.get(key)!;
+	};
+	const definitionAt = async (rev: string, file: string, name: string): Promise<string | null> => {
+		const text = await versionAt(rev, file);
+		if (text === null || !text.includes(name)) return null;
+		// Consecutive commits share a file's text, so one text's definitions are read once per name.
+		const known = definitions.get(text) ?? new Map<string, string | null>();
+		definitions.set(text, known);
+		if (!known.has(name)) known.set(name, definitionCode(text, name, file));
+		return known.get(name)!;
+	};
+	const codes = new Map<string, Promise<string | null>>();
+	const codeAt = (rev: string, file: string): Promise<string | null> => {
+		const key = `${rev}:${file}`;
+		if (!codes.has(key))
+			codes.set(
+				key,
+				versionAt(rev, file).then((text) => (text === null ? null : codeText(text, file))),
+			);
+		return codes.get(key)!;
+	};
+	return { definitionAt, codeAt, close: () => blobs?.close() };
+}
+
+/** A commit after a page's check that changed a whole-file or folder ref, with the files it changed under that ref. */
+type RefCommit = { at: number; sha: string; files: string[] };
+
+/**
+ * The first-parent commits of `pin` in sibling checkout `root` after `checked` that changed `rel` or a file under it, oldest first,
+ * each with its changed files against its first parent; null when the pinned tree lacks `rel`.
+ */
+async function siblingCommits(root: string, pin: string, rel: string, checked: number): Promise<RefCommit[] | null> {
+	const file = rel.replace(/\/+$/, '');
+	if (!(await git(root, ['ls-tree', '--name-only', pin, '--', file])).trim()) return null;
+	const log = await git(root, [
+		'log',
+		pin,
+		'--first-parent',
+		'--diff-merges=first-parent',
+		'--no-renames',
+		'--name-only',
+		'--format=%x1e%ct %H',
+		`--since-as-filter=${Math.floor(checked / 1000)}`,
+		'--',
+		file,
+	]);
+	const after: RefCommit[] = [];
+	for (const block of log.split('\x1e')) {
+		const [head = '', ...files] = block.trim().split('\n');
+		const [stamp, sha] = head.trim().split(' ');
+		if (!stamp || !sha || Number(stamp) * 1000 <= checked) continue;
+		after.push({ at: Number(stamp) * 1000, sha, files: files.map((line) => line.trim()).filter(Boolean) });
+	}
+	return after.reverse();
+}
+
 /**
  * The per-page check of getStaleReport for `todo`, reading git at `pin`: per `source_refs` entry the stale row or null, with
- * null for a ref into the wiki content (getStaleReport reads those on disk). `close` ends its one `git cat-file --batch`.
+ * null for a ref into the wiki content (getStaleReport reads those on disk). `close` ends the `git cat-file --batch` of each repo it read.
  */
 async function pageEvaluator(
 	repoRoot: string,
@@ -492,59 +564,47 @@ async function pageEvaluator(
 		}
 	const tracked = new Set(tree.split('\0').filter(Boolean));
 	const trackedUnder = (file: string): boolean => [...tracked].some((entry) => under(file, entry));
-	const versions = new Map<string, Promise<string | null>>();
-	let blobs: ReturnType<typeof blobReader> | null = null;
-	const definitions = new Map<string, Map<string, string | null>>();
-	const versionAt = (rev: string, file: string): Promise<string | null> => {
-		const key = `${rev}:${file}`;
-		blobs ??= blobReader(repoRoot);
-		if (!versions.has(key)) versions.set(key, blobs.read(key));
-		return versions.get(key)!;
+	const readers = new Map<string, RepoReader>();
+	const readerOf = (root: string): RepoReader => {
+		let reader = readers.get(root);
+		if (!reader) readers.set(root, (reader = repoReader(root)));
+		return reader;
 	};
-	const definitionAt = async (rev: string, file: string, name: string): Promise<string | null> => {
-		const text = await versionAt(rev, file);
-		if (text === null || !text.includes(name)) return null;
-		// Consecutive commits share a file's text, so one text's definitions are read once per name.
-		const known = definitions.get(text) ?? new Map<string, string | null>();
-		definitions.set(text, known);
-		if (!known.has(name)) known.set(name, definitionCode(text, name, file));
-		return known.get(name)!;
-	};
-	const codes = new Map<string, Promise<string | null>>();
-	const codeAt = (rev: string, file: string): Promise<string | null> => {
-		const key = `${rev}:${file}`;
-		if (!codes.has(key))
-			codes.set(
-				key,
-				versionAt(rev, file).then((text) => (text === null ? null : codeText(text, file))),
-			);
-		return codes.get(key)!;
-	};
+	const { definitionAt } = readerOf(repoRoot);
 	const sourceOf = (page: string): string => sources.get(page) ?? '';
+	/** The commits of the code repo after `checked` that changed a whole-file or folder `ref`, oldest first. */
+	const localCommits = (ref: string, checked: number): RefCommit[] => {
+		const byCommit = new Map<string, RefCommit>();
+		for (const [file, list] of commits)
+			if (under(ref, file))
+				for (const { at, sha } of list)
+					if (at > checked) {
+						const row = byCommit.get(sha) ?? { at, sha, files: [] };
+						row.files.push(file);
+						byCommit.set(sha, row);
+					}
+		return [...byCommit.values()].sort((a, b) => a.at - b.at);
+	};
 	/**
-	 * The times, oldest first, of the commits after `checked` that changed a whole-file or folder `ref` in a way the page states. A commit
+	 * The times, oldest first, of the commits in `after` that changed a whole-file or folder `ref` in a way the page states, read
+	 * from the repo of `reader`. A commit
 	 * touches the page when the page cites line numbers of the ref, since a comment cut moves them too, else when it changed the code
 	 * of a file (`codeText`, comments and docstrings removed) and a changed code line holds a distinctive word or a whole path of the
 	 * page's `<code>` spans (`linesTouch`), the code of a definition the page names changed, or the page cites neither. On the 2026-10-26 comment
 	 * sweep (23:20Z to 00:18Z) that cut comments only, a replay at c842f86a0c read 116 pages as behind code before this filter and 11 after it.
 	 */
-	const touchingChanges = async (pagePath: string, ref: string, checked: number): Promise<number[]> => {
-		const byCommit = new Map<string, { at: number; files: string[] }>();
-		for (const [file, list] of commits)
-			if (under(ref, file))
-				for (const { at, sha } of list)
-					if (at > checked) {
-						const row = byCommit.get(sha) ?? { at, files: [] };
-						row.files.push(file);
-						byCommit.set(sha, row);
-					}
-		const after = [...byCommit].sort((a, b) => a[1].at - b[1].at);
+	const touchingChanges = async (
+		pagePath: string,
+		ref: string,
+		after: readonly RefCommit[],
+		{ codeAt, definitionAt }: RepoReader,
+	): Promise<number[]> => {
 		if (!after.length) return [];
 		const source = sourceOf(pagePath);
 		const cited = citedWords(source);
-		if (citesLines(source, ref)) return after.map(([, row]) => row.at);
+		if (citesLines(source, ref)) return after.map(({ at }) => at);
 		const touching: number[] = [];
-		for (const [sha, { at, files }] of after) {
+		for (const { at, sha, files } of after) {
 			let touches = false;
 			for (const file of files) {
 				if (touches) break;
@@ -564,6 +624,14 @@ async function pageEvaluator(
 		}
 		return touching;
 	};
+	const touchingRow = (ref: string, touching: number[]): StaleRef | null =>
+		touching.length
+			? {
+					ref,
+					modified: new Date(touching[touching.length - 1]!).toISOString(),
+					since: new Date(touching[0]!).toISOString(),
+				}
+			: null;
 
 	const evaluate = async (page: Page): Promise<Omit<PageEntry, 'key'>> => {
 		const pageCommits = commits.get(`${PAGES}${page.path}`) ?? [];
@@ -591,9 +659,9 @@ async function pageEvaluator(
 						? { ref, modified: new Date(change.newest).toISOString(), since: new Date(change.first).toISOString() }
 						: null;
 				}
-				const time = await commitTime(at.root, at.pin.sha, sibling.path);
-				if (time === null) return { ref, modified: MISSING };
-				return time > checked ? { ref, modified: new Date(time).toISOString() } : null;
+				const after = await siblingCommits(at.root, at.pin.sha, sibling.path, checked);
+				if (after === null) return { ref, modified: MISSING };
+				return touchingRow(ref, await touchingChanges(page.path, sibling.path, after, readerOf(at.root)));
 			}
 			if (onDisk(ref) || !local(ref)) return null;
 			const symbol = symbolRef(ref);
@@ -614,14 +682,7 @@ async function pageEvaluator(
 					: null;
 			}
 			if (trackedUnder(file)) {
-				const touching = await touchingChanges(page.path, ref, checkedFor(ref));
-				return touching.length
-					? {
-							ref,
-							modified: new Date(touching[touching.length - 1]!).toISOString(),
-							since: new Date(touching[0]!).toISOString(),
-						}
-					: null;
+				return touchingRow(ref, await touchingChanges(page.path, ref, localCommits(ref, checkedFor(ref)), readerOf(repoRoot)));
 			}
 			return { ref, modified: MISSING };
 		};
@@ -629,5 +690,10 @@ async function pageEvaluator(
 		for (const ref of page.meta.source_refs ?? []) rows.push(await refRow(ref));
 		return { verifiedAt: checked, refs: rows };
 	};
-	return { evaluate, close: () => blobs?.close() };
+	return {
+		evaluate,
+		close: () => {
+			for (const reader of readers.values()) reader.close();
+		},
+	};
 }
