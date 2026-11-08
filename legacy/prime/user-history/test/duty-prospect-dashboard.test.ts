@@ -59,6 +59,15 @@ test("a dashboard PostHog could not reach reads unmeasured, never 0% (11-04 06:1
   assert.equal(out.metrics.tiles_with_data_pct, -UNMEASURED);
 });
 
+test("the GCS source's prodconvex_ tables match the tiles' names, and a failed or stopped writer counts as failing (11-09 source swap)", () => {
+  const tables = [schema("prodconvex_orgs", {}), schema("prodconvex_orgmembers", {})];
+  const ok = report({ tiles: [], newest: fresh, required: ["orgmembers", "orgs"], schemas: tables, writer: { exitedAt: "2026-11-04T00:35:26Z", status: 0 } }, NOW);
+  assert.equal(ok.metrics.source_tables_failing, 0);
+  const failed = report({ tiles: [], newest: fresh, required: ["orgs"], schemas: tables, writer: { exitedAt: "2026-11-04T00:35:26Z", status: 1 } }, NOW);
+  const stopped = report({ tiles: [], newest: fresh, required: ["orgs"], schemas: tables, writer: { exitedAt: "2026-11-03T21:35:26Z", status: 0 } }, NOW);
+  assert.deepEqual([failed.metrics.source_tables_failing, stopped.metrics.source_tables_failing], [1, 1]);
+});
+
 test("the tables to check are the source tables the tiles read", () => {
   assert.deepEqual(tilesTables(["SELECT org_id FROM prodconvex_orgs JOIN prodconvex_orgMembers m", "FROM events"]), ["orgmembers", "orgs"]);
 });

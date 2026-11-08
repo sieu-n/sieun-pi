@@ -27,9 +27,19 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
 const REPO = process.env.LLM_WIKI_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
 const POSTHOG = "https://us.posthog.com/api/projects/354457";
 export const DASHBOARD = 2295680;
-export const SOURCE = "01a17c34-360e-0000-509d-3ae02d9d3fed";
-/** The warehouse prefix of SOURCE's tables in HogQL (source prefix "prod", source type Convex). */
+/**
+ * The tiles read the views `prodconvex_<table>`. The PostHog Convex source 01a17c34 fed them until prod Convex left the cloud on 11-07, and
+ * its 11-08 replacement is a Google Cloud Storage source whose schemas carry the full names (auto-sns-agent ops/posthog-warehouse). The
+ * precheck finds the source whose schemas hold `prodconvex_orgs`, because on 11-09 the hardcoded old id answered 404.
+ */
 export const TABLE_PREFIX = "prodconvex_";
+/** A schema's table as the tiles name it, lowercased, with no prefix: Convex's `orgMembers` and GCS's `prodconvex_orgmembers` are orgmembers. */
+export const tableName = (schema: { name: string }): string => schema.name.toLowerCase().replace(new RegExp(`^${TABLE_PREFIX}`), "");
+/**
+ * The writer of the GCS files, a us-metal02 user timer at minute 35 of each hour. PostHog's hourly full refresh reloads the last file
+ * even when the writer stopped, so a source that reads fresh can hold stale rows, and the writer's last good run is a table problem.
+ */
+export const WRITER_UNIT = "posthog-warehouse-sync.service";
 export const STATE_EVENTS = ["prospect_state_day", "watchlist_reads_day"] as const;
 export type StateEvent = (typeof STATE_EVENTS)[number];
 /** The day both events were first sent anywhere (staging, 11-03), so an age query reads nothing older. */
@@ -63,7 +73,10 @@ export interface SchemaRow { id: string; name: string; should_sync: boolean; sta
   sync_frequency: string | null; latest_error: string | null; last_run_at?: string | null }
 export interface TableProblem { name: string; why: string }
 type Read<T> = T | { error: string };
-export interface Sources { tiles: Read<TileRead[]>; schemas: Read<SchemaRow[]>; required: string[]; newest: Read<Partial<Record<StateEvent, string>>> }
+/** The writer unit's last run as systemd shows it: when its main process exited (null before its first run) and its exit status. */
+export interface WriterRun { exitedAt: string | null; status: number }
+export interface Sources { tiles: Read<TileRead[]>; schemas: Read<SchemaRow[]>; required: string[]; newest: Read<Partial<Record<StateEvent, string>>>;
+  writer?: Read<WriterRun> }
 
 const isErr = <T,>(value: Read<T>): value is { error: string } => typeof value === "object" && value !== null && "error" in value;
 
@@ -87,9 +100,9 @@ export const tilesTables = (queries: readonly string[]): string[] =>
 export function tableProblems(schemas: readonly SchemaRow[], required: readonly string[], now: number): TableProblem[] {
   const needed = new Set(required);
   const problems: TableProblem[] = [];
-  for (const name of needed) if (!schemas.some(schema => schema.name.toLowerCase() === name)) problems.push({ name, why: "a tile reads it, but the source has no such table" });
+  for (const name of needed) if (!schemas.some(schema => tableName(schema) === name)) problems.push({ name, why: "a tile reads it, but the source has no such table" });
   for (const schema of schemas) {
-    if (!schema.should_sync && !needed.has(schema.name.toLowerCase())) continue;
+    if (!schema.should_sync && !needed.has(tableName(schema))) continue;
     const err = schema.latest_error ? `: ${schema.latest_error.slice(0, 200)}` : "";
     if (!schema.should_sync) { problems.push({ name: schema.name, why: `a tile reads it, but its sync is off (status ${schema.status ?? "none"})${err}` }); continue; }
     if (schema.status !== "Completed" && schema.status !== "Running") { problems.push({ name: schema.name, why: `status ${schema.status ?? "none"}${err}` }); continue; }
@@ -105,6 +118,17 @@ export function tableProblems(schemas: readonly SchemaRow[], required: readonly 
 }
 
 const round = (value: number): number => Math.round(value * 10) / 10;
+
+/** The writer as a table problem when its last run failed or is over twice its hourly timer ago, or null when it is on time. */
+export function writerProblem(writer: Read<WriterRun>, now: number): TableProblem | null {
+  const name = `${WRITER_UNIT} (writes the files every table reads)`;
+  if (isErr(writer)) return { name, why: `could not read its last run: ${writer.error}` };
+  const at = writer.exitedAt ? Date.parse(writer.exitedAt) : NaN;
+  if (Number.isNaN(at)) return { name, why: "has no finished run" };
+  if (writer.status !== 0) return { name, why: `last run at ${new Date(at).toISOString().slice(0, 16)}Z exited ${writer.status}` };
+  if (now - at > 2 * HOUR) return { name, why: `last run ${new Date(at).toISOString().slice(0, 16)}Z, ${round((now - at) / HOUR)} h ago, over twice its hourly timer` };
+  return null;
+}
 
 export function report(sources: Sources, now: number): PrecheckOutput {
   const flagged: FlaggedSlice[] = [];
@@ -126,9 +150,10 @@ export function report(sources: Sources, now: number): PrecheckOutput {
   }
   if (isErr(sources.schemas)) {
     metrics.source_tables_failing = UNMEASURED;
-    flagged.push({ at: now, kind: "source_error", excerpt: `warehouse source ${SOURCE}: ${sources.schemas.error}` });
+    flagged.push({ at: now, kind: "source_error", excerpt: `warehouse source of ${TABLE_PREFIX}orgs: ${sources.schemas.error}` });
   } else {
-    const problems = tableProblems(sources.schemas, sources.required, now);
+    const writer = sources.writer ? writerProblem(sources.writer, now) : null;
+    const problems = [...tableProblems(sources.schemas, sources.required, now), ...(writer ? [writer] : [])];
     metrics.source_tables_failing = problems.length;
     for (const problem of problems) flagged.push({ at: now, kind: "table_failing", excerpt: `${problem.name}: ${problem.why}` });
   }
@@ -148,7 +173,7 @@ export function report(sources: Sources, now: number): PrecheckOutput {
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error)).replace(/(Bearer\s+)\S+/g, "$1***").slice(0, 300);
 
-export interface Deps { fetch: typeof fetch; now: () => number; key: string; sleep?: (ms: number) => Promise<void> }
+export interface Deps { fetch: typeof fetch; now: () => number; key: string; sleep?: (ms: number) => Promise<void>; writer?: () => Promise<WriterRun> }
 const pause = (deps: Deps, ms: number): Promise<void> => (deps.sleep ?? (wait => new Promise(resolve => setTimeout(resolve, wait))))(ms);
 
 async function api<T>(deps: Deps, path: string, body?: unknown): Promise<T> {
@@ -221,11 +246,14 @@ interface SyncJob { status: string; finished_at: string | null; created_at: stri
 
 /** Each checked table with last_run_at set to the end of its newest Completed job, a run that brought no rows included. */
 export async function readSchemas(deps: Deps, required: readonly string[]): Promise<SchemaRow[]> {
-  const { schemas } = await api<{ schemas: SchemaRow[] }>(deps, `external_data_sources/${SOURCE}/`);
+  const listed = await api<{ results: { id: string; schemas?: SchemaRow[] }[] }>(deps, "external_data_sources/");
+  const source = listed.results.find(row => (row.schemas ?? []).some(schema => tableName(schema) === "orgs"));
+  if (!source) throw new Error(`no source of project 354457 has a ${TABLE_PREFIX}orgs or orgs table`);
+  const schemas = source.schemas ?? [];
   const needed = new Set(required);
   return Promise.all(schemas.map(async schema => {
-    if (!schema.should_sync && !needed.has(schema.name.toLowerCase())) return schema;
-    const answer = await api<SyncJob[] | { results: SyncJob[] }>(deps, `external_data_sources/${SOURCE}/jobs/?schemas=${encodeURIComponent(schema.name)}`);
+    if (!schema.should_sync && !needed.has(tableName(schema))) return schema;
+    const answer = await api<SyncJob[] | { results: SyncJob[] }>(deps, `external_data_sources/${source.id}/jobs/?schemas=${encodeURIComponent(schema.name)}`);
     const run = (Array.isArray(answer) ? answer : answer.results).find(job => job.status === "Completed");
     return { ...schema, last_run_at: run ? run.finished_at ?? run.created_at : null };
   }));
@@ -237,14 +265,22 @@ export async function measure(deps: Deps): Promise<PrecheckOutput> {
   const [dashboard, newest] = await Promise.all([readDashboard(deps).catch(fail), readNewest(deps).catch(fail)]);
   const tiles = isErr(dashboard) ? dashboard : dashboard.tiles;
   const required = isErr(dashboard) ? ["orgs", "orgmembers"] : dashboard.required;
-  const schemas = await readSchemas(deps, required).catch(fail);
-  return report({ tiles, schemas, required, newest }, now);
+  const [schemas, writer] = await Promise.all([readSchemas(deps, required).catch(fail), (deps.writer ?? readWriter)().catch(fail)]);
+  return report({ tiles, schemas, required, newest, writer }, now);
 }
 
 const sh = (command: string, cwd: string): Promise<string> => new Promise((resolve, reject) => {
   execFile("/bin/sh", ["-c", command], { cwd, encoding: "utf8" }, (error, stdout, stderr) =>
     error ? reject(new Error(`${error.message.split("\n")[0]} ${String(stderr).trim().slice(-200)}`)) : resolve(stdout));
 });
+
+/** The writer unit's last run from `systemctl --user show`, whose unix timestamp reads `@1762634126` and `n/a` before a first run. */
+export async function readWriter(): Promise<WriterRun> {
+  const text = await sh(`systemctl --user show ${WRITER_UNIT} --timestamp=unix -p ExecMainExitTimestamp -p ExecMainStatus`, REPO);
+  const field = (key: string): string => new RegExp(`^${key}=(.*)$`, "m").exec(text)?.[1]?.trim() ?? "";
+  const seconds = /^@(\d+)$/.exec(field("ExecMainExitTimestamp"))?.[1];
+  return { exitedAt: seconds ? new Date(Number(seconds) * 1000).toISOString() : null, status: Number(field("ExecMainStatus") || NaN) };
+}
 
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
