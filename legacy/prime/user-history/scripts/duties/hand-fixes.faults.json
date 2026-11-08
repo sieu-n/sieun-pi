@@ -569,6 +569,18 @@
           "pause.sync"
         ]
       }
+    },
+    {
+      "id": "F37",
+      "title": "staging engage pool refilled by hand: engage_world_move and engage_intake docker execs held staging at the owner's 37 active accounts (t37)",
+      "designs": [
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p96",
+        "commit:73819e12ea"
+      ],
+      "owner": "Prospect feature bro (01a11bd7), job 'd3 staging engage pool keeps itself' (session 01a1ba79), filed by d3 at 11-08 09:12Z. The metal box owner's engage-swap child (01a1b7ed) kept staging at 37 active by hand: engage_world_move export on prod, import on staging and verify-disjoint as docker execs at 11-07 03:26Z, 11-07 18:44Z (31 accounts) and 11-08 09:15Z (reinanodone 478), plus an engage_intake run at 11-08 07:16Z. Commit 73819e12ea adds crawler-v3 engage/pool_keeper.py to the engage-session-renewal role. It holds each world at the control engage.active_target (37 on staging, 0 on prod) both ways: under target the re-login logs in the world's own never-logged-in imports (relogin.INTAKE), then the peer lends its healthiest account through engage_world_move export and the world imports it through engage_world_move import (GET /ops/engage/pool and /ops/engage/lent), and a world over target lends the surplus. Its moves write events with actor world_move from the role's own children, not a docker exec. A hand exec of engage_world_move or engage_intake after this design serves on staging and prod is a repeat, unless it quotes an owner order.",
+      "match": {
+        "box_exec_regex": "engage_world_move|engage_intake"
+      }
     }
   ],
   "exempt": {
