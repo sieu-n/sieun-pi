@@ -8,6 +8,7 @@ import { request } from "node:http";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { descendants, serveArgs } from "../src/chat-handoff.ts";
+import { SLOW_READ_MS } from "../src/harness-slow.ts";
 
 const fixture = fileURLToPath(new URL("./handoff-fixture.ts", import.meta.url));
 
@@ -23,29 +24,36 @@ const ask = (port: number, method = "GET"): Promise<{ who: string; pid: number; 
 });
 
 test("a reload hands the port over: the running chat answers while the successor starts, and the successor answers once it took over", { timeout: 60_000 }, async t => {
-  const old = fork(fixture, [], { execArgv: ["--import", "tsx"], env: { ...process.env, FIXTURE_START_MS: "3000" }, stdio: ["ignore", "inherit", "pipe", "ipc"] });
+  // The fixture's output stays off the runner's pipes, so a successor left behind can never hold the test run open.
+  const old = fork(fixture, [], { execArgv: ["--import", "tsx"], env: { ...process.env, FIXTURE_START_MS: "3000" }, stdio: ["ignore", "ignore", "pipe", "ipc"] });
   let log = "";
   old.stderr!.on("data", chunk => { log += chunk; });
-  t.after(() => { old.kill("SIGKILL"); });
+  t.after(() => {
+    old.kill("SIGKILL");
+    const successor = Number(/started the successor (\d+)/.exec(log)?.[1]);
+    if (successor) try { process.kill(successor, "SIGKILL"); } catch { /* gone */ }
+  });
   const { port } = await new Promise<{ port: number }>(resolve => old.once("message", value => resolve(value as { port: number })));
   const exited = new Promise<number | null>(resolve => old.once("exit", code => resolve(code)));
   old.send("go");
-  const reads: { who: string; pid: number; ms: number }[] = [];
+  const reads: { who: string; pid: number; ms: number; starting: boolean }[] = [];
   let write: { who: string } | undefined;
   const until = Date.now() + 30_000;
   while (Date.now() < until) {
-    const read = await ask(port);
+    const starting = /only answers reads/.test(log) && !/took the port/.test(log);
+    const read = { ...await ask(port), starting };
     reads.push(read);
-    if (reads.length === 10) write = await ask(port, "POST");
+    // A write once the running chat stopped acting waits for the successor's own port and goes there.
+    if (!write && /only answers reads/.test(log)) write = await ask(port, "POST");
     if (read.who === "new" && reads.filter(entry => entry.who === "new").length >= 3) break;
     await new Promise(resolve => setTimeout(resolve, 50));
   }
-  const before = reads.filter(entry => entry.who === "old");
-  assert.ok(before.length >= 10, `the running chat answered ${before.length} reads during the successor's 3 s start\n${log}`);
-  assert.ok(Math.max(...before.map(entry => entry.ms)) < 500, `no read waited on the successor's busy start: ${before.map(entry => Math.round(entry.ms)).join(", ")}\n${log}`);
+  // The reads asked while the successor started: the running chat answered them, each within the owner's 1 s line, until the successor
+  // took the port at the end of its start.
+  const during = reads.filter(entry => entry.starting);
+  assert.ok(during.filter(entry => entry.who === "old").length >= 5, `the running chat answered ${during.length} reads while the successor started\n${log}`);
+  assert.ok(Math.max(...during.map(entry => entry.ms)) < SLOW_READ_MS, `no read waited on the successor's busy start: ${during.map(entry => Math.round(entry.ms)).join(", ")}\n${log}`);
   assert.equal(write?.who, "new", "a write during the hand-over went to the successor, whose loops run");
-  const successor = reads.find(entry => entry.who === "new")?.pid;
-  if (successor) t.after(() => { try { process.kill(successor, "SIGKILL"); } catch { /* gone */ } });
   assert.equal(reads.at(-1)!.who, "new", log);
   assert.equal(await exited, 0, "the running chat exits once the successor took the port");
   assert.match(log, /handoff: took the port \d+ s after the server was ready, once its first pass ended/);

@@ -1,7 +1,7 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import { Server as NetServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Duplex } from "node:stream";
@@ -36,6 +36,25 @@ type ToNew = { kind: "quiet" } | { kind: "latency"; latency: ChatLatency | null 
 type Handler = (req: IncomingMessage, res: ServerResponse) => void;
 type Upgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => void;
 const isMessage = (value: unknown): value is { kind: string } => typeof value === "object" && value !== null && typeof (value as { kind?: unknown }).kind === "string";
+
+/**
+ * Lets `server` finish what it holds without dropping a request: it stops listening (net's close only), waits a second for requests on
+ * connections it accepted just before, then ends each connection once it is idle, and after `waitMs` ends the rest. http's close drops idle
+ * connections at once, and one accepted just before with its request not read yet was reset (ECONNRESET in 2 of 6 scratch hand-overs on
+ * 10-19, src/early-shell.ts). The 15 s default is the server's requestTimeout (src/chat-server.ts).
+ */
+export async function drainServer(server: Server, waitMs = 15_000): Promise<void> {
+  const ended = new Promise<void>(resolve => { netClose.call(server, () => resolve()); });
+  await new Promise(resolve => setTimeout(resolve, 1_000));
+  const idle = setInterval(() => { server.closeIdleConnections(); }, 100);
+  server.closeIdleConnections();
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([ended, new Promise<void>(resolve => { timer = setTimeout(resolve, waitMs); })]);
+  clearTimeout(timer);
+  clearInterval(idle);
+  server.closeAllConnections();
+}
+const netClose = NetServer.prototype.close;
 
 /** Tells systemd `fields` (sd_notify) from this process when it runs as a Type=notify service; false when it does not. */
 export async function notifySystemd(fields: readonly string[], env: NodeJS.ProcessEnv = process.env): Promise<boolean> {

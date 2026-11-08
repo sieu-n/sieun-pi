@@ -1,7 +1,7 @@
 // A chat stand-in for test/chat-handoff.test.ts: the running chat ("old") and, started by its hand-over, the successor, which holds its main
 // thread busy for START_MS as a chat start under CI load does before it may serve.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { handOver, handoffParent } from "../src/chat-handoff.ts";
+import { drainServer, handOver, handoffParent } from "../src/chat-handoff.ts";
 import { forwardRequest } from "../src/early-shell.ts";
 
 const START_MS = Number(process.env.FIXTURE_START_MS ?? 3000);
@@ -23,6 +23,8 @@ if (parent) {
   ready();
   await taking;
   process.stderr.write(`new ${process.pid} serves\n`);
+  // A successor the test could not stop ends on its own.
+  setTimeout(() => process.exit(0), 30_000).unref();
 } else {
   let writesTo: ((req: IncomingMessage, res: ServerResponse) => void) | null = null;
   const own = answer("old");
@@ -35,7 +37,7 @@ if (parent) {
       quiesce: async () => {}, fence: async () => {},
       forwardWrites: port => { writesTo = (req, res) => { void port.then(at => forwardRequest(at)(req, res)); }; },
       latency: () => ({ readMs: 1234, read: "api/old-read", loopMs: 5 }),
-      finish: async () => { server.close(); server.closeAllConnections(); },
-      fail: reason => { process.stderr.write(`fail: ${reason}\n`); process.exit(1); } }).then(() => { process.disconnect(); });
+      finish: () => drainServer(server),
+      fail: reason => { process.stderr.write(`fail: ${reason}\n`); process.exit(1); } }).then(() => { process.disconnect?.(); });
   });
 }

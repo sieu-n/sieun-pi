@@ -58,7 +58,7 @@ import { ScheduledJobsLeft } from "./saved-archive.ts";
 import { type ArchiveBy, isServiceArchiveReason, SERVICE_ARCHIVES_FILE } from "./service-archives.ts";
 import { type CancelBy, parseCancelBy } from "./job-cancels.ts";
 import { historyError, HistoryError, historyRaw } from "../../../../packages/pi-history/src/client.ts";
-import { Server as NetServer } from "node:net";
+import { drainServer } from "./chat-handoff.ts";
 
 const SEARCH_PARAMS = new Set(["q", "sort", "kind", "box", "chat", "agent", "since", "until", "limit", "cursor"]);
 const READ_PARAMS = new Set(["ref", "before", "after"]);
@@ -94,10 +94,9 @@ export interface ChatServer {
   close(): Promise<void>;
   /** From now on every request but a GET or HEAD goes to `forward`. */
   forwardWrites(forward: (req: IncomingMessage, res: ServerResponse) => void): void;
-  /** Stops taking connections; the ones open stay. net's close: http's would drop idle connections too. */
-  stopListening(): void;
+  /** Stops taking connections, ends the live feeds, and ends each connection once its requests are answered (`drainServer`). */
+  drain(): Promise<void>;
 }
-const netClose = NetServer.prototype.close;
 
 async function jsonBody(request: IncomingMessage): Promise<unknown> {
   if (request.headers["content-type"]?.split(";")[0]?.trim() !== "application/json") throw new RequestError(415, "Expected application/json.");
@@ -1413,7 +1412,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     if (!address || typeof address === "string") throw new Error("Expected a loopback TCP address.");
     host = `127.0.0.1:${address.port}`;
     server.on("error", () => { void close(); });
-    return { url: `http://${host}${base}`, close, forwardWrites: forward => { writesTo = forward; }, stopListening: () => { netClose.call(server); } };
+    return { url: `http://${host}${base}`, close, forwardWrites: forward => { writesTo = forward; }, drain: async () => { feeds.close(); await drainServer(server); } };
   } catch (error) {
     await close();
     throw error;

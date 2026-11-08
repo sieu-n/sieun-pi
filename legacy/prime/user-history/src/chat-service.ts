@@ -580,7 +580,7 @@ async function serve(options: Options): Promise<void> {
         });
       },
       latency: peekLatency,
-      finish: async () => { handedOver = true; server.stopListening(); await close(false).catch(error => log(`handoff: stop: ${error instanceof Error ? error.message : String(error)}`)); },
+      finish: async () => { handedOver = true; await server.drain(); await close(false).catch(error => log(`handoff: stop: ${error instanceof Error ? error.message : String(error)}`)); },
       fail: () => { process.exitCode = 1; stop(); } });
     parent?.whenAskedAgain(() => { process.kill(process.pid, "SIGHUP"); });
   }
