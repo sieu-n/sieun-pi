@@ -167,7 +167,7 @@ test("a made-up name built on an allowed model does not count, and a real older 
   ] };
   const output = integrationMetrics({ lights: [], hosts: hosts(), spans: null, refusals: [], models, consoleReads: CHEAP }, last);
   assert.equal(output.metrics.old_model_calls_24h, 3 + 4 + 5);
-  assert.deepEqual(output.flagged!.filter(flag => flag.kind === "old_model").map(flag => flag.item.split(" ").pop()), ["claude-opus-5-5(1024)", "gpt-6-sol", "claude-opus-5"]);
+  assert.deepEqual(output.flagged!.filter(flag => flag.kind === "old_model").map(flag => flag.item?.split(" ").pop()), ["claude-opus-5-5(1024)", "gpt-6-sol", "claude-opus-5"]);
   const probe = integrationMetrics({ lights: [], hosts: hosts(), spans: null, refusals: [], models: { allowed: ALLOWED, rows: [row("staging", "gpt-6-luna-nope", 1, 1)] }, consoleReads: CHEAP }, last);
   assert.equal(probe.metrics.old_model_calls_24h, 0);
   assert.equal(probe.lastEventAt, undefined);
