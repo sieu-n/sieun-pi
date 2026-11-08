@@ -13,7 +13,10 @@ import { SHELLS, effective, expandVars, lex, shellScript, stripHeredocs } from "
  * tsc or tsgo with no named file, vitest with no named test, a turbo check or test task, an app's check script such as kit-check.mjs,
  * and a package.json script that runs one of those. The note names the measured cost and the off-Mac command for the repo, and the run
  * goes on: a memory spike guards none of the hard cases of c98, so this is a warning and never a refusal. The kernel half (send-check.ts)
- * prints it when the kernel starts the command, and the tool_call half adds it to a bash tool call's result. Other hosts get no note.
+ * prints it when the kernel starts the command, and the tool_call half adds it to a bash tool call's result. On another host only a command
+ * sent to the Mac over ssh gets the note: on 11-08 at 11:11Z the job 'staging design fix 11-08' (session 01a1bad2) ran virev-demo's
+ * kit-check.mjs with an 8 GB heap on the Mac from its us-metal02 kernel as `ssh mac '... nohup sh -c ...'`, and at 11:12:30Z that tree
+ * held 5.17 GB while the Mac swapped out 10,686 pages/s, with no note, because the check ran on the Mac while the kernel ran on the box.
  * It notes `vercel inspect` the same way: on 11-06 at 18:30:10Z one started by the chat 'sep launch!! (product guy)' reached 4.41 GB within
  * 20 s while the Mac swapped out 6,868.7 pages/s, and its note names vercel-deployment.sh, which reads the same deployment state with curl.
  */
@@ -34,6 +37,9 @@ const PNPM_WORKSPACE = /^(?:--filter|-F|--filter-prod)$/;
 const TASK = /(?:^|:)(?:check|test|typecheck|svelte-check)(?:$|:)/;
 const MAX_SCRIPT_BYTES = 500000;
 const VERCEL_VALUE = /^(?:-S|--scope|-T|--team|-t|--token|--cwd|-A|--local-config|-Q|--global-config|--api)$/;
+/** The owner's Mac as ssh names it, with or without a user (deploy/linux/ssh-mac.conf). */
+const MAC_HOST = /^(?:[^@\s]+@)?(?:mac|100\.66\.173\.18|main-dev-sieuns-macbook-pro-m2max(?:\.tail0c093d\.ts\.net)?)$/;
+const SSH_VALUE = /^-[BbcDEeFIiJLlmOoPpQRSWw]$/;
 const LIGHT_DEPLOYMENT = fileURLToPath(new URL("./vercel-deployment.sh", import.meta.url));
 export const VERCEL_INSPECT_COST =
 	"On 11-06 at 18:30:10Z one `vercel inspect` on the owner's Mac reached 4.41 GB within 20 s while the Mac swapped out 6,868.7 pages/s; " +
@@ -154,13 +160,28 @@ interface Hit {
 	cwd: string;
 	why: string;
 	kind: "check" | "vercel";
+	ssh?: string;
+}
+
+/** The command `ssh <args>` runs on the owner's Mac and the host as typed, or null when it goes to another host or opens a login shell. */
+function sentToMac(args: string[]): { host: string; command: string } | null {
+	let i = 0;
+	while (i < args.length && args[i].startsWith("-")) i += SSH_VALUE.test(args[i]) ? 2 : 1;
+	const host = args[i] ?? "";
+	if (!MAC_HOST.test(host)) return null;
+	const rest = args.slice(i + 1);
+	const end = rest.findIndex((w) => /^\d+$/.test(w) || w === "}" || /^[A-Za-z_]\w*=/.test(w));
+	const command = (end === -1 ? rest : rest.slice(0, end)).join(" ");
+	return command ? { host, command } : null;
 }
 
 /**
- * One hit per command in `text` that runs a whole-project check or suite, judged from `start`. `top` is the command the agent typed and
- * where it ran, and `via` names the package scripts it went through.
+ * One hit per command in `text` that runs a whole-project check or suite on the Mac, judged from `start`. `top` is the command the agent typed
+ * and where it ran, and `via` names the package scripts it went through. `ssh` is the Mac host when the text runs there over ssh, "" when it
+ * runs where the kernel does, and null when that is not the Mac, so only an ssh to the Mac hits. Over ssh, `~` and relative paths resolve
+ * against this host's home, as us-metal02 keeps auto-sns-agent at the Mac's ~/Documents/Github/auto-sns-agent.
  */
-function judge(text: string, depth: number, out: Hit[], start: string, vars: Map<string, string>, top?: { command: string; cwd: string }, via = ""): void {
+function judge(text: string, depth: number, out: Hit[], start: string, vars: Map<string, string>, ssh: string | null, top?: { command: string; cwd: string }, via = ""): void {
 	if (depth > 6) return;
 	let cwd = start;
 	const { commands, nested } = lex(stripHeredocs(text));
@@ -174,8 +195,15 @@ function judge(text: string, depth: number, out: Hit[], start: string, vars: Map
 			const set = /^([A-Za-z_]\w*)=(.*)$/s.exec(w);
 			if (set) own.set(set[1], set[2]);
 		}
-		const hit = (why: string, kind: Hit["kind"] = "check"): void => { out.push({ ...at0, why: via + why, kind }); };
-		const again = (inner: string, where = cwd, through = via): void => judge(inner, depth + 1, out, where, new Map(own), at0, through);
+		const hit = (why: string, kind: Hit["kind"] = "check"): void => {
+			if (ssh !== null) out.push({ ...at0, why: via + why, kind, ...ssh ? { ssh } : {} });
+		};
+		const again = (inner: string, where = cwd, through = via): void => judge(inner, depth + 1, out, where, new Map(own), ssh, at0, through);
+		if (name === "ssh") {
+			const sent = sentToMac(args);
+			if (sent) judge(sent.command, depth + 1, out, homedir(), new Map(), sent.host);
+			continue;
+		}
 		if (name === "cd" || name === "pushd") {
 			cwd = at(cwd, args.find((a) => !a.startsWith("-")) ?? homedir());
 			continue;
@@ -212,7 +240,7 @@ function judge(text: string, depth: number, out: Hit[], start: string, vars: Map
 		const why = JS_RUNNERS.has(name) ? checkScript(args, cwd, own) : wholeRun(name.replace(/\.(?:c|m)?js$/, ""), args);
 		if (why) hit(why);
 	}
-	for (const inner of nested) judge(inner, depth + 1, out, cwd, new Map(vars), top, via);
+	for (const inner of nested) judge(inner, depth + 1, out, cwd, new Map(vars), ssh, top, via);
 }
 
 /** The git checkout that holds `dir`, or null. */
@@ -241,16 +269,19 @@ export function offMac(command: string, cwd: string): string {
 		"`, or let CI run it; on the Mac run only the files you changed, by name.";
 }
 
-/** On the owner's Mac, one note per command in `text` that runs a whole-project type check or test suite or `vercel inspect`; elsewhere none. */
+/**
+ * One note per command in `text` that runs a whole-project type check or test suite or `vercel inspect` on the owner's Mac: every such command
+ * on the Mac, and on another host each one it sends to the Mac over ssh.
+ */
 export function judgeHeavyCheck(text: string, cwd: string): string[] {
-	if (!onMac()) return [];
 	const hits: Hit[] = [];
-	judge(text, 0, hits, cwd, new Map());
+	judge(text, 0, hits, cwd, new Map(), onMac() ? "" : null);
 	const seen = new Set<string>();
+	const where = (h: Hit): string => h.ssh ? `on the owner's Mac over \`ssh ${h.ssh}\`` : "here on the owner's Mac";
 	return hits.filter((h) => !seen.has(h.command) && seen.add(h.command)).map((h) => h.kind === "vercel"
-		? `${PREFIX} \`${h.command.slice(0, 200)}\` runs here on the owner's Mac, and ${h.why}. It runs now. ${VERCEL_INSPECT_COST} ` +
+		? `${PREFIX} \`${h.command.slice(0, 200)}\` runs ${where(h)}, and ${h.why}. It runs now. ${VERCEL_INSPECT_COST} ` +
 			`Next time read the deployment's state, URL, commit and aliases with \`sh '${LIGHT_DEPLOYMENT}' <dpl id, URL or alias> [team slug]\`, ` +
 			"which curls the Vercel REST API and peaked at 16 MB on us-metal02; for build logs, run `vercel inspect --logs` on us-metal02 over ssh."
-		: `${PREFIX} \`${h.command.slice(0, 200)}\` runs here on the owner's Mac, because ${h.why}. It runs now. ${HEAVY_COST} ` +
+		: `${PREFIX} \`${h.command.slice(0, 200)}\` runs ${where(h)}, because ${h.why}. It runs now. ${HEAVY_COST} ` +
 			`Next time run it off the Mac. ${offMac(h.command, h.cwd)}`);
 }

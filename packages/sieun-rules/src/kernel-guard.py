@@ -54,9 +54,10 @@ CAP_HINT = re.compile(
 # On the owner's Mac a Python, uv or package manager command may also launch a Playwright browser, which browser.ts judges (c177, c103);
 # node, tsx, bun, deno, npx and shell scripts reach the judge through SHELL_HINT already.
 BROWSER_HINT = re.compile(r"\bpython|playwright|puppeteer|\b(?:uv|npm|pnpm|yarn)\b") if (os.environ.get("GLOBAL_RULES_PLATFORM") or sys.platform) == "darwin" else None
-# On the owner's Mac a whole-project type check or test suite runs with a note that names the off-Mac command (heavy-check.ts, rule 6);
-# node, npx and shell scripts reach the judge through SHELL_HINT already.
-HEAVY_HINT = re.compile(r"svelte-check|\btsgo\b|\btsc\b|vitest|\bturbo\b|\b(?:npm|pnpm|yarn|bun)\b") if (os.environ.get("GLOBAL_RULES_PLATFORM") or sys.platform) == "darwin" else None
+# On the owner's Mac a whole-project type check or test suite runs with a note that names the off-Mac command (heavy-check.ts, rule 6),
+# and on another host one it sends to the Mac over ssh does; node, npx and shell scripts reach the judge through SHELL_HINT already.
+HEAVY_WORDS = r"svelte-check|\btsgo\b|\btsc\b|vitest|\bturbo\b|\b(?:npm|pnpm|yarn|bun)\b"
+HEAVY_HINT = re.compile(HEAVY_WORDS if (os.environ.get("GLOBAL_RULES_PLATFORM") or sys.platform) == "darwin" else rf"\bssh\b[\s\S]*(?:{HEAVY_WORDS})")
 # A kill by pattern (pkill, killall, or kill fed by pgrep, pidof or ps), which kill.ts judges as the tool_call guard does, so a command
 # a cell builds at run time is refused too; on 10-29 a pattern kill on the owner's Mac closed a Prime worker's 43 sessions.
 KILL_HINT = re.compile(r"\b(?:pkill|killall|kill)\b")
@@ -398,7 +399,7 @@ def on_shell(args, cwd, env, executable=None) -> None:
     text = shell_text(args)
     where = os.fsdecode(cwd) if cwd else os.getcwd()
     repo = touches_repo(text, where)
-    hinted = SHELL_HINT.search(text) or (BROWSER_HINT and BROWSER_HINT.search(text)) or (HEAVY_HINT and HEAVY_HINT.search(text))
+    hinted = SHELL_HINT.search(text) or (BROWSER_HINT and BROWSER_HINT.search(text)) or HEAVY_HINT.search(text)
     if not (repo or CAP_HINT.search(text) or KILL_HINT.search(text) or COPY_HINT.search(text) or WALK_HINT.search(text) or (hinted and not plain_git(executable, args))) or owned_by_skill():
         return
     names = env if isinstance(env, dict) else os.environ

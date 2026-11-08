@@ -46,6 +46,17 @@ class HeavyCheckOnTheMac(KernelGuardBase):
         self.assert_passed(out)
         self.assertNotIn("Mac heavy check", out["result"])
 
+    def test_on_us_metal02_a_run_sent_to_the_mac_over_ssh_has_the_note(self):
+        # 11-08 11:11Z: a us-metal02 kernel ran virev-demo's whole check on the Mac as `ssh mac '...'`, 5.17 GB at 11:12:30Z.
+        tool = self.bin / "ssh"
+        tool.write_text(FAKE_TOOL)
+        tool.chmod(0o755)
+        out = self.run_command(f"ssh mac 'cd {self.app} && pnpm test'", "linux")
+        self.assert_passed(out)
+        self.assertIn("over `ssh mac`", out["result"])
+        self.assertIn("vitest runs every test file", out["result"])
+        self.assertEqual(self.fake_runs(), [f"ssh mac cd {self.app} && pnpm test"])
+
     def test_on_us_metal02_the_run_has_no_note(self):
         out = self.run_command(f"cd {self.app} && pnpm test", "linux")
         self.assert_passed(out)

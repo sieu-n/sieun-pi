@@ -137,3 +137,36 @@ test("on the Mac, a kit-check.mjs with scopedOnMac runs apps/search's check with
     ["pnpm -C apps/admin check", scoped],
   ]) assert.match((await kernel(text, cwd)).warning ?? "", /Mac heavy check/, text);
 });
+
+// 11-08 at 11:11Z the job 'staging design fix 11-08' ran virev-demo's whole check on the Mac from its us-metal02 kernel over ssh, and at
+// 11:12:30Z the Mac read unusable with that tree at 5.17 GB and 10,686 swap-outs a second. These are its two commands as its kernel ran them.
+test("on us-metal02, a check a box kernel sends to the Mac over ssh runs with a note that names ssh and the off-Mac path", async () => {
+  process.env.GLOBAL_RULES_PLATFORM = "linux";
+  const savedHome = process.env.HOME;
+  process.env.HOME = root;
+  try {
+    const demo = join(asa, "apps", "virev-demo");
+    mkdirSync(demo, { recursive: true });
+    const check = "node scripts/materialize.mjs && NODE_OPTIONS=--max-old-space-size=8192 node ../../packages/config/kit-check.mjs --tsconfig ./tsconfig.json --tsgo --incremental --threshold error";
+    writeFileSync(join(demo, "package.json"), JSON.stringify({ scripts: { check } }));
+    const mac = (cmd) => `ssh mac 'export PATH=/Users/sieunpark/.hermes/node/bin:$PATH; cd ~/auto-sns-agent && ${cmd.replaceAll("'", "'\\''")}'`;
+    const first = await kernel(mac("cd apps/virev-demo && pnpm check 2>&1 | tail -25"), root);
+    assert.equal(first.block, false);
+    assert.match(first.warning ?? "", /Mac heavy check: `pnpm check` runs on the owner's Mac over `ssh mac`, because its `check` script runs/);
+    assert.match(first.warning, /commit\.mjs --probe <files>/);
+    const second = await kernel(mac(`mkdir -p ~/scratch/01a1bad2 && cd apps/virev-demo && (nohup sh -c '${check}; echo EXIT=$?' > ~/scratch/01a1bad2/check.log 2>&1 &) ; echo started`), root);
+    assert.match(second.warning ?? "", /over `ssh mac`, because kit-check\.mjs runs a whole-app type check/);
+    for (const text of [`ssh -o BatchMode=yes sieunpark@100.66.173.18 'cd ${demo} && npx vitest run'`, `ssh -tt main-dev-sieuns-macbook-pro-m2max.tail0c093d.ts.net "bash -lc 'cd ${demo} && pnpm check'"`]) {
+      assert.match((await kernel(text, root)).warning ?? "", /Mac heavy check: .* over `ssh /, text);
+    }
+    assert.equal(guard.onToolCall(event("bash", mac("cd apps/virev-demo && pnpm check"), "c4"), { cwd: root }), undefined);
+    assert.match(guard.onToolResult({ toolCallId: "c4", content: [] }).content[0].text, /over `ssh mac`/);
+    for (const text of [`ssh us-metal01 'cd ${demo} && pnpm check'`, mac("cd apps/virev-demo && node_modules/.bin/vitest run tests/unit/a.test.ts"), mac("git status"), "ssh mac"]) {
+      assert.deepEqual(await kernel(text, root), { block: false }, text);
+    }
+    process.env.GLOBAL_RULES_PLATFORM = "darwin";
+    assert.deepEqual(await kernel(`ssh us-metal02 'cd ${demo} && pnpm check'`, root), { block: false });
+  } finally {
+    process.env.HOME = savedHome;
+  }
+});
