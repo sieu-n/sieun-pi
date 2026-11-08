@@ -26,6 +26,9 @@ const JOURNAL_FILE = join(HERE, "kernel-journal.py");
 const WAIT_FILE = join(HERE, "kernel-wait.py");
 // kernel-walk.py refuses a cell's Python walk of all of home or the wiki content root (owner rule 6, 11-04). It has its own flag for the same reason.
 const WALK_FILE = join(HERE, "kernel-walk.py");
+// kernel-node.py puts node-child/epipe.cjs in the kernel's NODE_OPTIONS, so a Node child exits once `| head` closes its pipe (11-08: a Convex CLI
+// grew to 4.36 GB on the Mac after that). It has its own flag for the same reason.
+const NODE_FILE = join(HERE, "kernel-node.py");
 
 export const PRELUDE_SOURCE = `
 import sys
@@ -71,6 +74,12 @@ if not getattr(sys, "global_rules_kernel_walk", False):
         exec(compile(open(${JSON.stringify(WALK_FILE)}).read(), ${JSON.stringify(WALK_FILE)}, "exec"), {"__name__": "global_rules_kernel_walk", "__file__": ${JSON.stringify(WALK_FILE)}})
     except Exception as error:
         print(f"global-rules: the kernel walk guard did not load: {error}", file=sys.stderr)
+if not getattr(sys, "global_rules_kernel_node", False):
+    sys.global_rules_kernel_node = True
+    try:
+        exec(compile(open(${JSON.stringify(NODE_FILE)}).read(), ${JSON.stringify(NODE_FILE)}, "exec"), {"__name__": "global_rules_kernel_node", "__file__": ${JSON.stringify(NODE_FILE)}})
+    except Exception as error:
+        print(f"global-rules: the kernel node preload did not load: {error}", file=sys.stderr)
 _convex_report = getattr(sys, "global_rules_convex_report", None)
 if _convex_report:
     _convex_report()
