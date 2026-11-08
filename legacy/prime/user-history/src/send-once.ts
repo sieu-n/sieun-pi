@@ -124,6 +124,7 @@ async function lineSince(file: string, since: number, match: (line: string) => n
 }
 
 /** A session's file: `sessions/<id>.jsonl` for a root, else `<id>.jsonl` in a `sub-*` folder up to three levels under session-artifacts. */
+/** A session's file: `sessions/<id>.jsonl` for a root, else `<id>.jsonl` in a `sub-*` folder up to three levels under session-artifacts. */
 export async function sessionFileOf(sessionId: string, agentDir: string): Promise<string | null> {
   const asked = performance.now();
   const name = `${sessionId}.jsonl`;
@@ -139,50 +140,60 @@ const exists = (file: string): Promise<boolean> => stat(file).then(() => true, (
 const artifactIndexes = new Map<string, ArtifactIndex>();
 
 /**
- * Every subagent transcript under one session-artifacts folder by file name, from one `find` run in its own process. Until 11-05 each lookup
- * walked the folder with readdir on the chat's main thread: on us-metal02 that was 62,472 folders under 8,931 roots, 9.8 s and 3.2 s of CPU
- * for one walk (event loop 51% busy), and 13.8 s of the main thread in the first minute after the 03:47:19Z start, when the outbox retried
- * its sends (cpu-profiles pid957211); an older-messages read in that minute took 1.4 s (d7 clean_min_30). The same `find` takes 2.6 s and
- * 1.3 s of CPU in its own process. A name the last listing lacks, or whose file is gone, waits for a listing that began after it asked, so a
- * file made just before the ask is found; every ask that waits meanwhile shares that one listing.
+ * Subagent transcripts under one session-artifacts folder by file name, each found by a `find` in its own process that prints only the asked
+ * names. Until 11-05 each lookup walked the folder with readdir on the chat's main thread: on us-metal02 that was 62,472 folders under 8,931
+ * roots, 9.8 s and 3.2 s of CPU for one walk. Its replacement listed every transcript, 66,659 paths and 8.4 MB on 11-08, and split them on the
+ * main thread at each miss: 0.2 to 0.65 s with its garbage collection, four times a minute while the outbox retried a send to a root with no
+ * file, 5 s of the main thread in the 5 min of cpu-profiles pid903649, and d7 read 12:03Z on 11-08 dirty from a 1.3 s loop stall. A known name
+ * answers from memory; names that miss join the next search, which starts after they asked, so a file made just before the ask is found and
+ * every ask that waits meanwhile shares that one search.
  */
 class ArtifactIndex {
   private files = new Map<string, string>();
-  private listing: { from: number; done: Promise<void> } | null = null;
-  private queued: Promise<void> | null = null;
+  private search: { from: number; names: Set<string>; done: Promise<void> } | null = null;
+  private next: { names: Set<string>; done: Promise<void> } | null = null;
 
   constructor(private readonly artifacts: string) {}
 
   async find(name: string, asked: number): Promise<string | null> {
     const known = this.files.get(name);
     if (known && await exists(known)) return known;
-    await this.listedSince(asked);
+    this.files.delete(name);
+    await this.searched(name, asked);
     const found = this.files.get(name);
     return found && await exists(found) ? found : null;
   }
 
-  private listedSince(asked: number): Promise<void> {
-    if (!this.listing) return this.list();
-    if (this.listing.from >= asked) return this.listing.done;
-    return this.queued ??= this.listing.done.then(() => { this.queued = null; return this.listing ? this.listing.done : this.list(); });
+  private searched(name: string, asked: number): Promise<void> {
+    if (this.search && this.search.from >= asked && this.search.names.has(name)) return this.search.done;
+    if (!this.search) return this.start(new Set([name]));
+    if (this.next) { this.next.names.add(name); return this.next.done; }
+    const names = new Set([name]);
+    const done = this.search.done.then(() => { this.next = null; return this.start(names); });
+    this.next = { names, done };
+    return done;
   }
 
-  private list(): Promise<void> {
+  private start(names: Set<string>): Promise<void> {
     const from = performance.now();
-    const done: Promise<void> = listArtifacts(this.artifacts).then(files => { this.files = files; }, () => {})
-      .finally(() => { if (this.listing?.done === done) this.listing = null; });
-    this.listing = { from, done };
+    const done: Promise<void> = findArtifacts(this.artifacts, [...names]).then(files => { for (const [name, path] of files) this.files.set(name, path); }, () => {})
+      .finally(() => { if (this.search?.done === done) this.search = null; });
+    this.search = { from, names, done };
     return done;
   }
 }
 
+/** A `find -name` pattern that matches `name` as written. */
+const literal = (name: string): string => name.replace(/[\\*?[\]]/g, "\\$&");
+
 /**
- * The `<id>.jsonl` files in `sub-*` folders one and two levels below each root folder of `artifacts`, by file name. `find` prunes every other
- * folder below a root, as the readdir walk read only `sub-*` folders. A folder it cannot read still leaves the rest of the listing.
+ * Where `names` sit as `<name>` files in `sub-*` folders one and two levels below each root folder of `artifacts`. `find` prunes every other
+ * folder below a root and prints only the asked names, so the chat parses a line per hit. A folder it cannot read still leaves the rest.
  */
-function listArtifacts(artifacts: string): Promise<Map<string, string>> {
+function findArtifacts(artifacts: string, names: readonly string[]): Promise<Map<string, string>> {
   return new Promise((resolve, reject) => {
-    const child = spawn("find", [artifacts, "-mindepth", "2", "-maxdepth", "4", "-type", "d", "!", "-name", "sub-*", "-prune", "-o", "-name", "*.jsonl", "-print"],
+    const match = names.flatMap((name, n) => [...n ? ["-o"] : [], "-name", literal(name)]);
+    const child = spawn("find", [artifacts, "-mindepth", "2", "-maxdepth", "4", "-type", "d", "!", "-name", "sub-*", "-prune", "-o", "-type", "f", "(", ...match, ")", "-print"],
       { stdio: ["ignore", "pipe", "ignore"] });
     const chunks: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -191,7 +202,7 @@ function listArtifacts(artifacts: string): Promise<Map<string, string>> {
       const files = new Map<string, string>();
       for (const path of Buffer.concat(chunks).toString("utf8").split("\n")) {
         const folder = dirname(path);
-        if (basename(folder).startsWith("sub-") && dirname(folder) !== artifacts && !files.has(basename(path))) files.set(basename(path), path);
+        if (path && basename(folder).startsWith("sub-") && dirname(folder) !== artifacts && !files.has(basename(path))) files.set(basename(path), path);
       }
       resolve(files);
     });
