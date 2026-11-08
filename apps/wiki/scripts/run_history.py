@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import os
@@ -192,37 +193,54 @@ def load_runs(runs_dir: Path = RUNS_DIR) -> list[dict]:
     return [parse_run(json.loads(p.read_text())) for p in sorted(runs_dir.glob("*/*.json"))]
 
 
+RUN_TYPES = ("TEXT", "TEXT", "TEXT", "TIMESTAMP", "TIMESTAMP", "TEXT", "TEXT", "TEXT", "TEXT", "JSON", "TEXT", "JSON", "TEXT",
+             "TEXT", "TIMESTAMP")
+METRIC_TYPES = ("TEXT", "TEXT", "TEXT", "DOUBLE", "DOUBLE", "DOUBLE", "TEXT")
+
+
+def insert_rows(con, table: str, types: tuple[str, ...], rows: list[tuple]) -> None:
+    """Inserts every row in one statement, one list parameter per column, which is far faster than executemany."""
+    if rows:
+        columns = ", ".join(f"unnest(?::{t}[])" for t in types)
+        con.execute(f"INSERT INTO {table} SELECT {columns}", [list(c) for c in zip(*rows, strict=True)])
+
+
 def build(runs_dir: Path = RUNS_DIR, store: Path = STORE) -> int:
-    """Builds the store from every run file into a new file, then renames it over the old store."""
+    """Builds the store from every run file into a new file, then renames it over the old store.
+
+    An exclusive lock beside the store holds from reading the run files to the rename, so of two writers the
+    second reads the first one's run too. Under the lock no other build is running, so any temp store left
+    beside it came from a build that died partway, and is removed.
+    """
     import duckdb
 
-    runs = load_runs(runs_dir)
     store.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=store.parent, prefix=f".{store.name}.", suffix=".tmp")
-    os.close(fd)
-    os.unlink(tmp)
-    con = duckdb.connect(tmp)
-    try:
-        con.execute(SCHEMA)
-        if runs:
-            con.executemany(
-                "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                [
+    with open(store.parent / f".{store.name}.lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for stale in store.parent.glob(f".{store.name}.*.tmp*"):
+            stale.unlink(missing_ok=True)
+        runs = load_runs(runs_dir)
+        tmp = store.parent / f".{store.name}.{os.getpid()}.tmp"
+        try:
+            con = duckdb.connect(str(tmp))
+            try:
+                con.execute(SCHEMA)
+                insert_rows(con, "runs", RUN_TYPES, [
                     (r["component"], r["run_id"], r["kind"], naive(r["started_at"]), naive(r["ended_at"]), r["commit"],
                      r["model"], r["prompt_hash"], r["dataset"], json.dumps(r["config"]), r["config_hash"],
                      json.dumps(r["artifacts"]), r["source"], r["notes"], naive(r["recorded_at"]))
                     for r in runs
-                ],
-            )
-        rows = [
-            (r["component"], r["run_id"], m["name"], m["value"], m["ci_low"], m["ci_high"], m["unit"])
-            for r in runs for m in r["metrics"]
-        ]
-        if rows:
-            con.executemany("INSERT INTO metrics VALUES (?,?,?,?,?,?,?)", rows)
-    finally:
-        con.close()
-    os.replace(tmp, store)
+                ])
+                insert_rows(con, "metrics", METRIC_TYPES, [
+                    (r["component"], r["run_id"], m["name"], m["value"], m["ci_low"], m["ci_high"], m["unit"])
+                    for r in runs for m in r["metrics"]
+                ])
+            finally:
+                con.close()
+            os.replace(tmp, store)
+        finally:
+            tmp.unlink(missing_ok=True)
+            Path(f"{tmp}.wal").unlink(missing_ok=True)
     return len(runs)
 
 
