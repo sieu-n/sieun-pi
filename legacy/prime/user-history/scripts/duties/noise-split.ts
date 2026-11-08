@@ -42,6 +42,8 @@ export const NOISE_FIXES: readonly { kind: string; fix: string }[] = [
   { kind: "same incident asked again by another chat", fix: "c083958b" },
   // The one-part-of-several check of 10-29, which refuses landing versions sent one at a time and a job's "Step 1 is done" (~/work/tell-owner-progress-trickle/replay.md).
   { kind: "progress on a goal still going", fix: "958ccd0a" },
+  // The running step count and the version-apart check of 11-08, after two landing versions went out alone (~/work/tell-owner-split-landing/replay.md).
+  { kind: "progress on a goal still going", fix: "1462a85d" },
 ];
 
 /** A labelled noise line: `at` is when it went out, `labelled` when the duty run wrote its label (the LABELS row's `at`). */
