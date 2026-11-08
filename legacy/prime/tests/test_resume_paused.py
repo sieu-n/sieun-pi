@@ -1702,6 +1702,25 @@ class ResumePausedTests(unittest.TestCase):
         self.assertIsNone(blocker({"usable": False, "reason": "limited 1m", "limited_until": now + 30}), "a limit that ends before the cell")
         self.assertIsNone(blocker({"usable": True, "reason": None}), "an open account's cell within the lead")
 
+    def test_a_hook_slot_within_the_lead_on_a_cell_that_opens_none_holds_the_run(self):
+        # 11-08 00:54Z to 02:00Z: this pass's continue reached 33 jobs whose hook slot came within the lead on unsampled claude12 or krenerd77.
+        now = dt.datetime(2026, 11, 8, 1, 0, 0, tzinfo=dt.timezone.utc).timestamp()
+        cell = now + 60
+
+        def hook_answer(row):
+            def run(cmd, **kwargs):
+                if cmd[0] != "pi-pool":
+                    return resume_paused.subprocess.CompletedProcess(cmd, resume_paused.SLOT_WAIT_EXIT, json.dumps({"retryAt": cell}), "")
+                body = {"rows": [dict({"id": "claude12", "email": "claude12@slack.green"}, **row)]} if cmd[1] == "ls" else \
+                    {"providers": {"anthropic": {"account": None, "wait": {"account": "claude12", "slot_at": cell, "reserved": True}}}}
+                return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps(body), "")
+            with patch.object(resume_paused, "TOKEN_HOOK", Path("/bin/true")), patch.object(resume_paused, "pool_bin", return_value="pi-pool"), \
+                    patch.object(resume_paused.subprocess, "run", side_effect=run), patch.object(resume_paused.time, "time", return_value=now):
+                return resume_paused.hook_blocker("01a1a5a2-ba7a-718e-908b-646159b5326d", "anthropic", {})
+
+        self.assertIn("opens no cell", hook_answer({"usable": False, "reason": "unsampled"}))
+        self.assertIsNone(hook_answer({"usable": True, "reason": None}), "a cell on an open account within the lead lets the run go")
+
     def test_a_stopped_run_is_continued_within_the_lead_before_its_cell(self):
         # SEO guy's tree, 11-01: stopped at 09:09:30Z for its 09:11:00Z cell, and this pass's first ask came at 09:11:32Z, after the cell.
         now = dt.datetime(2026, 11, 1, 9, 9, 30, tzinfo=dt.timezone.utc).timestamp()

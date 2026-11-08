@@ -1457,7 +1457,9 @@ def hook_blocker(root_session_id, provider, cache):
     """Why the token hook gives this tree no token now, or None when it gives one or there is no hook to run.
 
     The hook runs as Prime runs it for the tree's next request, with the tree's session id and a 10 s limit, and its stdout, the token,
-    is dropped unread."""
+    is dropped unread. A slot within POOL_LEAD_S lets the run go only when its cell's account opens by then (`cell_closed`): from 00:54Z to
+    02:00Z on 11-08 33 jobs got this pass's continue for cells on unsampled claude12 and krenerd77, each continue sat queued behind the run's
+    next slot wait, and the idle unload keeps a session with queued input, so 14.6 GB stayed resident with nobody working."""
     if not TOKEN_HOOK.exists() or provider not in ("anthropic", "openai-codex"):
         return None
     hook = TOKEN_HOOK
@@ -1467,8 +1469,10 @@ def hook_blocker(root_session_id, provider, cache):
                                  stdin=subprocess.DEVNULL, capture_output=True, timeout=HOOK_TIMEOUT_S)
             gave = ran.returncode == 0 and bool(ran.stdout.strip())
             slot_at = hook_slot_at(ran)
-            cache[(root_session_id, provider)] = (None if gave or (slot_at and slot_at <= time.time() + POOL_LEAD_S) else slot_wait_text(slot_at) if slot_at
-                                                  else f"the token hook gave no {provider} token (exit {ran.returncode})")
+            near = not gave and slot_at and slot_at <= time.time() + POOL_LEAD_S
+            closed = near and account_blocker(root_session_id, provider, {}, lead=POOL_LEAD_S)[0]
+            cache[(root_session_id, provider)] = (None if gave or (near and not (closed and "opens no cell" in closed)) else closed if near
+                                                  else slot_wait_text(slot_at) if slot_at else f"the token hook gave no {provider} token (exit {ran.returncode})")
         except subprocess.TimeoutExpired:
             cache[(root_session_id, provider)] = f"the token hook gave no {provider} token in {HOOK_TIMEOUT_S} s"
         except OSError:
