@@ -38,8 +38,8 @@ import { CLEAN_ROOM_CHATS_FILE } from "../../src/chat-corrections.ts";
 import { peerReach, readTailscaleStatus } from "../../src/host-reach.ts";
 import { type AwayHost, hostHolds } from "../../src/shared/host-hold.ts";
 import { stepIds } from "../../src/shared/step-ids.ts";
-import { appsStuckLine, appsWakes, greenPct, movedPrimeChats, readAppsChats } from "./chat-system-apps.ts";
-import { appsChatDuties, appsOwnerReads, appsStuckSteps } from "../../src/apps-step-owners.ts";
+import { appsWakes, greenPct, movedPrimeChats, readAppsChats } from "./chat-system-apps.ts";
+import { appsChatDuties, appsOwnerReads } from "../../src/apps-step-owners.ts";
 
 /**
  * The precheck of the AI harness chat's Chat system duty (d9). The owner on 10-19 (msg mvfb7zt0): "plan should be tasks all eventually clear -
@@ -48,7 +48,7 @@ import { appsChatDuties, appsOwnerReads, appsStuckSteps } from "../../src/apps-s
  * nobody moves (headline), the open plan items that are upkeep or have no done line, the share of green duties, and the red duties with no live
  * fix job, and the red duties whose live fix job does not move the number. Each metric flags at most 3 examples, spread over chats, and the detail file next to OUTPUT_FILE lists them all. Each run also
  * picks one chat not yet audited this cycle (`spotPick`) for the duty job's quiet spot audit and writes that chat's files and the owner's last messages in it there.
- * The duties of the :5184 chat app's chats count too (chat-system-apps.ts), with no push, and the paused Prime copy of a chat that moved there counts no more.
+ * The duties of the :5184 chat app's chats count in duties_green_pct (chat-system-apps.ts) and on no list that asks the run to act, and the paused Prime copy of a chat that moved there counts no more.
  */
 
 /** Examples per metric in the flagged slices; the detail file lists every item. The owner's c75 shape for a duty run's summary. */
@@ -586,7 +586,7 @@ export interface ChatSystemFacts {
   stepMoves?: readonly StepMove[];
   /** The stuck steps whose job d9 cannot see (`unknownOwners`), which nobody replaces. */
   unknownOwners?: readonly UnknownOwner[];
-  /** The chats d9 counts and sends no push, the :5184 chats sw factory runs (`readAppsChats`). */
+  /** The :5184 chats sw factory runs (`readAppsChats`), counted in duties_green_pct alone and left off every list that asks the run to act (`actingFacts`). */
   noPush?: ReadonlySet<string>;
   detail: string;
 }
@@ -594,8 +594,26 @@ export interface ChatSystemFacts {
 /** How many runs in a row a red duty missed, in words; a duty red on skipped runs' measures alone says so (`FleetDuty.skipped`). */
 export const missRuns = (duty: Pick<RedDuty, "misses" | "skipped">): string =>
   `${duty.misses} ${duty.skipped ? "skipped " : ""}${duty.misses === 1 ? "run" : "runs in a row"}`;
-/** The precheck output from the facts: the five metrics, and per metric a count line with the detail path and up to 3 examples. */
-export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
+/**
+ * The facts with every chat in `noPush` left out of each list that asks the run to act, and the green percent kept as read. On 11-09 the 10:13 KST
+ * run read fix_not_moving 1 from seo d1 dropped_pages, and its job dropped p117 on seo's board and started a session for a new step there.
+ */
+export function actingFacts(facts: ChatSystemFacts): ChatSystemFacts {
+  const keep = (chat: string): boolean => !facts.noPush?.has(chat);
+  const acts = <T extends { chat: string }>(items: readonly T[]): T[] => items.filter(item => keep(item.chat));
+  return { ...facts, stuck: acts(facts.stuck), upkeep: acts(facts.upkeep), fleet: { pct: facts.fleet.pct, red: acts(facts.fleet.red) },
+    stuckDuties: acts(facts.stuckDuties), idleGoals: acts(facts.idleGoals), followUps: facts.followUps.filter(check => keep(check.push.chat)),
+    ...facts.hostHeld ? { hostHeld: acts(facts.hostHeld) } : {}, ...facts.down ? { down: acts(facts.down) } : {},
+    ...facts.jobPushes ? { jobPushes: acts(facts.jobPushes) } : {}, ...facts.stepMoves ? { stepMoves: acts(facts.stepMoves) } : {},
+    ...facts.unknownOwners ? { unknownOwners: acts(facts.unknownOwners) } : {} };
+}
+
+/**
+ * The precheck output from the facts: the five metrics, and per metric a count line with the detail path and up to 3 examples. The red duties
+ * of the `noPush` chats count in duties_green_pct alone (`actingFacts`), and one line names them as the chats the run leaves alone.
+ */
+export function chatSystemOutput(all: ChatSystemFacts): PrecheckOutput {
+  const facts = actingFacts(all);
   const name = (chat: string): string => facts.names.get(chat) ?? chat.slice(0, 8);
   const stuckCount = facts.stuck.reduce((sum, entry) => sum + (entry.count ?? 1), 0);
   const down = new Set((facts.down ?? []).map(entry => entry.chat));
@@ -647,7 +665,7 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
     flagged.push({ kind: "fix_unread", chat: duty.chat, item: duty.duty, excerpt: `${name(duty.chat)}: ${duty.name} (${duty.duty}) misses ${duty.metric!.key} under ${duty.fix}, ` +
       `whose job worked at ${minute(duty.unreadWork!)}, after the duty's newest reading, so this run starts a verify run of ${duty.duty} and the next d9 run judges ${duty.fix} on it; push no replacement for ${duty.fix}.` });
   }
-  const pushes = pushList({ ...facts, notMoving }).filter(entry => !down.has(entry.chat) && !facts.noPush?.has(entry.chat));
+  const pushes = pushList({ ...facts, notMoving }).filter(entry => !down.has(entry.chat));
   if (pushes.length) flagged.push({ kind: "push", excerpt: `${pushes.length} ${pushes.length === 1 ? "chat has" : "chats have"} a goal with no live job, an open step nobody moves, a red duty with no fix job ` +
     `or with a fix that does not move it, or a plan item that is upkeep or has no done line; ` +
     `message each one, as the push list in ${facts.detail} says.` });
@@ -659,6 +677,9 @@ export function chatSystemOutput(facts: ChatSystemFacts): PrecheckOutput {
     flagged.push({ kind: "push_followup", chat: check.push.chat, excerpt: `${name(check.push.chat)}${check.push.session ? ` job ${check.push.session}` : ""}: the last run's push ${check.push.tag} about ${check.push.items.join(", ")} ` +
       `${!check.delivered ? "never reached its transcript" : !check.read ? "reached it, but the chat has not answered" : "was read, but no job started since"}; steer it again.` });
   }
+  const swFactory = all.fleet.red.filter(duty => all.noPush?.has(duty.chat));
+  if (swFactory.length) flagged.push({ kind: "sw_factory_red", excerpt: `${swFactory.map(duty => `${name(duty.chat)} ${duty.duty}`).join(", ")} ` +
+    `${swFactory.length === 1 ? "is" : "are"} red in :5184 chats sw factory runs and count in duties_green_pct alone; message, steer or change the board of none of them.` });
   return {
     metrics: { stuck_steps_all: stuckCount, plan_upkeep_all: facts.upkeep.length, duties_green_pct: facts.fleet.pct, stuck_duties: facts.stuckDuties.length,
       fix_not_moving: notMoving.length },
@@ -878,13 +899,10 @@ async function main(): Promise<void> {
     ? entry.items.map(id => { const waitsOn = waitsOnStep(plan.boards.get(entry.chat.id) ?? null, id);
       return { chat: entry.chat.id, id, text: text(entry.chat.id, id) ?? "", ...waitsOn ? { waitsOn } : {} }; })
     : [{ chat: entry.chat.id, count: entry.value }]);
-  // A :5184 chat's open steps nobody moves, read as a paused Prime chat's are, with waits that may hand a step to any chat's board.
+  // A :5184 chat's fix steps are read only to judge its duties for duties_green_pct; its open steps are on no list (`actingFacts`).
   const appsWaking = await appsWakes(now);
   const appsReads = new Map(apps.chats.map(chat => [chat.id, appsOwnerReads(chat, apps.sessions, appsWaking, now)] as const));
-  const links = { others: new Map([...plan.boards, ...apps.chats.map(chat => [chat.id, chat.board] as const)]),
-    chats: [...plan.chats.map(chat => ({ id: chat.id, name: chat.name })), ...apps.chats.map(chat => ({ id: chat.id, name: chat.name }))] };
-  const stuck: ChatSystemFacts["stuck"] = [...primeStuck, ...apps.chats.flatMap(chat => appsStuckSteps(chat, appsReads.get(chat.id)!, now, { self: chat.id, ...links })
-    .map(item => { const waitsOn = waitsOnStep(chat.board, item.id); return { chat: chat.id, id: item.id, text: item.text, ...waitsOn ? { waitsOn } : {} }; }))];
+  const stuck = primeStuck;
   const upkeep = plan.chats.filter(chat => !plan.pausedChats.has(chat.id) && !moved.has(chat.id)).flatMap(chat => planUpkeep(chat.id, plan.boards.get(chat.id) ?? null));
   const fleet = await dutyFleet({ dataDir, now, sessions: daemonSessions, chats: plan.chats });
   const appsDuties = apps.chats.flatMap(chat => appsChatDuties(chat, now, appsReads.get(chat.id)));
@@ -932,8 +950,7 @@ async function main(): Promise<void> {
     { now, named: plan.named.get(chat.id) ?? new Map(), jobs: jobs.get(chat.id) ?? [], activity: plan.ownerActivity, waking: plan.waking, poolWaiting: plan.poolWaiting,
       onHost: new Set(hostHeld.filter(step => step.chat === chat.id).map(step => step.id)) }) }));
   const idleGoals = goalGaps.filter(entry => !plan.pausedChats.has(entry.chat) && counted(entry));
-  const stuckDuties = [...withLiveGoalGaps(counts.redDuties, new Map(goalGaps.map(entry => [entry.chat, entry.goals.length]))).filter(counted),
-    ...appsDuties.filter(duty => duty.stuck).map(duty => ({ chat: duty.chat, duty: duty.duty, keys: duty.metric ? [duty.metric.key] : [], line: appsStuckLine(duty, names.get(duty.chat) ?? duty.chat) }))];
+  const stuckDuties = withLiveGoalGaps(counts.redDuties, new Map(goalGaps.map(entry => [entry.chat, entry.goals.length]))).filter(counted);
   // The pushes the last run's job sent: those recorded after the last run of this duty began (LAST_RUNS_FILE, newest first).
   const since = lastRun?.at;
   const sent = since === undefined ? [] : pushesSince(await readFile(PUSHES_FILE, "utf8").catch(() => ""), since);
@@ -947,8 +964,8 @@ async function main(): Promise<void> {
   }
   const tag = pushTag(now);
   const name = (chat: string): string => names.get(chat) ?? chat.slice(0, 8);
-  const notMoving = fixNotMoving(red, name);
-  const listedPushes = pushList({ idleGoals, stuck, stuckDuties, lagging: owned.lagging.filter(counted), notMoving, upkeep }).filter(entry => !appsIds.has(entry.chat));
+  const notMoving = fixNotMoving(red.filter(duty => !appsIds.has(duty.chat)), name);
+  const listedPushes = pushList({ idleGoals, stuck, stuckDuties, lagging: owned.lagging.filter(counted), notMoving, upkeep });
   const down: ChatDown[] = [];
   for (const chat of new Set([...listedPushes.map(entry => entry.chat), ...followUps.map(check => check.push.chat)])) {
     const file = localCopy(pushedFile(listed, copies, chat));
@@ -1014,7 +1031,7 @@ async function main(): Promise<void> {
       `${step.waitsOn ? `, which waits on ${step.waitsOn}` : ""}.`))),
     ...hostHeld.length ? [] : [section("Steps and red duties that wait on an offline box (0)", [])],
     section(`Open plan items that are upkeep or have no done line (${upkeep.length})`, upkeep.map(item => `${name(item.chat)}: ${item.id} ${quote(item.text)} ${item.why}.`)),
-    section(`Chats on :5184, counted with no push, and the moved Prime copies left out (${apps.chats.length + moved.size})`, [
+    section(`Chats on :5184, which sw factory runs, counted in duties_green_pct alone with nothing to act on, and the moved Prime copies left out (${apps.chats.length + moved.size})`, [
       ...apps.chats.map(chat => `${chat.name} (${chat.id}): ${appsDuties.filter(duty => duty.chat === chat.id && !duty.pending).map(duty => `${duty.duty} ${duty.green ? "green" : "red"}`).join(", ") || "no judged duty"}.`),
       ...[...moved].map(id => `${names.get(id)} (${id}) moved to :5184, so its paused Prime copy is not counted.`)]),
     section(`Red duties (${red.length}, ${result.metrics.duties_green_pct}% green)`, red.map(duty => `${name(duty.chat)}: ${duty.name} (${duty.duty}), ` +

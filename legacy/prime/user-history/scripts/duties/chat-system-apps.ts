@@ -42,14 +42,6 @@ export async function readAppsChats(base = BASE, get: Get = getJson): Promise<{ 
   }
 }
 
-/** The d9 line of a :5184 red duty with no fix: what it misses and the duty field a fix step needs, with no ask, since d9 sends it no push. */
-export function appsStuckLine(duty: FleetDuty, chatName: string): string {
-  const metric = duty.metric;
-  return `${chatName}: ${duty.name} (${duty.duty}) read off target in ${duty.misses === 1 ? "its last run" : `its last ${duty.misses} runs`}` +
-    `${metric ? `, ${metric.key} ${metric.value} against ${metric.op} ${metric.target}` : ""}, and no open step linked to it ` +
-    `(duty field ${duty.duty}/${metric?.key ?? "<metricKey>"}) has a job at work, asleep on a wake or waiting on a time; sw factory runs this chat, so d9 counts it and sends no push`;
-}
-
 const plainName = (name: string): string => name.replace(/[([][^)\]]*[)\]]/g, "").trim().toLowerCase();
 
 /**

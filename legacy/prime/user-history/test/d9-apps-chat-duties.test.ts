@@ -1,6 +1,6 @@
 // 11-03 07:14Z: d9 read only the Prime chats and reported duties_green_pct 75, while the :5184 chat app, where vent, seo and mcp run since 10-29,
 // showed vent d2 (old_model_calls_24h 8 against 0) and seo d1 and d2 red. d9 reads those chats' duties through the app's own API, counts them
-// with no push, since sw factory runs them, and stops counting the paused Prime copy of each chat that moved.
+// in duties_green_pct alone, since sw factory runs them, and stops counting the paused Prime copy of each chat that moved.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { greenPct, movedPrimeChats, readAppsChats } from "../scripts/duties/chat-system-apps.ts";
@@ -82,7 +82,7 @@ test("the Prime copies of moved chats leave the count, by their imported runs or
   assert.deepEqual([...movedPrimeChats(chats, prime)].sort(), [PRIME_VENT, "01a162bc-47b4-770b-a9fc-19c3a742e730"].sort());
 });
 
-test("a :5184 red duty counts in red_duty and stuck_duties, and no push goes to its chat", async () => {
+test("a :5184 red duty counts in duties_green_pct alone: no stuck_duties, no red_duty example and no push names its chat", async () => {
   const { chats } = await readAppsChats("http://chat.test", get);
   const duties = chats.flatMap(chat => appsChatDuties(chat, now));
   const red = duties.filter(entry => !entry.green) as RedDuty[];
@@ -90,12 +90,31 @@ test("a :5184 red duty counts in red_duty and stuck_duties, and no push goes to 
     fleet: { pct: greenPct(duties), red }, idleGoals: [], followUps: [], detail: "/tmp/d9.md", noPush: new Set(["ag_vent", "ag_seo"]),
     stuckDuties: red.filter(entry => entry.stuck).map(entry => ({ chat: entry.chat, line: `${entry.chat} ${entry.duty}` })) });
   assert.equal(out.metrics.duties_green_pct, 40);
-  assert.equal(out.metrics.stuck_duties, 2);
-  assert.match(out.flagged!.find(slice => slice.kind === "red_duty")!.excerpt, /^3 red duties in 2 chats/);
-  assert.equal(out.flagged!.some(slice => slice.kind === "push"), false);
+  assert.equal(out.metrics.stuck_duties, 0);
+  assert.deepEqual(out.flagged!.map(slice => slice.kind), ["sw_factory_red"]);
+  assert.match(out.flagged![0]!.excerpt, /^vent \(:5184\) d2, seo \(:5184\) d1, seo \(:5184\) d2 are red .* message, steer or change the board of none of them\.$/);
 });
 
-test("d9 counts a :5184 chat's open steps nobody moves, as a paused Prime chat's, and a wake or a subagent at work moves a step", async () => {
+test("an seo duty whose fix has not moved its number over 10 runs is on no list that asks the run to act", () => {
+  // 11-09 01:13Z: d9 read fix_not_moving 1 from seo d1 dropped_pages, and its job dropped p117 on seo's board and started a session for a new seo step.
+  const fix = { step: "p117", job: "seo dropped pages", live: true };
+  const streak = { key: "dropped_pages", misses: 10, moved: false, since: now - 10 * 7_200_000, value: 9, target: 0, op: "<=", fix, stuck: true };
+  const seo = { chat: "ag_seo", duty: "d1", name: "Search traffic", green: false, misses: 10, stuck: true, fix: "p117", metric: streak, underFix: { misses: 10, moved: false } } as RedDuty;
+  const prime = { ...seo, chat: "c1", name: "Prime duty" } as RedDuty;
+  const step = { chat: "ag_seo", id: "p117", text: "dropped_pages back to 0" };
+  const check = { push: { at: now - 7_200_000, chat: "ag_seo", tag: "d9-0", items: ["p117"] }, delivered: true, read: false, jobStarted: false };
+  const facts = (red: RedDuty[]) => chatSystemOutput({ names: new Map([["ag_seo", "seo (:5184)"], ["c1", "CI and RepoOps"]]), stuck: [step], upkeep: [],
+    fleet: { pct: 50, red }, idleGoals: [{ chat: "ag_seo", goals: [{ id: "p56", text: "Reach 10,000 visits a day", status: "doing", children: [] }] as never }],
+    followUps: [check], detail: "/tmp/d9.md", noPush: new Set(["ag_seo"]), stuckDuties: [{ chat: "ag_seo", line: "seo d1" }],
+    hostHeld: [{ chat: "ag_seo", id: "p90", host: "mac" }], unknownOwners: [{ chat: "ag_seo", id: "p117", text: "x", why: "y" }] as never });
+  const out = facts([seo, prime]);
+  assert.deepEqual(out.metrics, { stuck_steps_all: 0, plan_upkeep_all: 0, duties_green_pct: 50, stuck_duties: 0, fix_not_moving: 1 });
+  assert.deepEqual(out.flagged!.filter(slice => slice.chat === "ag_seo" || slice.excerpt.includes("seo")).map(slice => slice.kind), ["sw_factory_red"]);
+  assert.ok(out.flagged!.some(slice => slice.kind === "fix_not_moving" && slice.chat === "c1"));
+  assert.equal(facts([seo]).metrics.fix_not_moving, 0);
+});
+
+test("d9 leaves a :5184 chat's open steps nobody moves off its lists, and a wake or a subagent at work moves a step", async () => {
   const { chats, sessions } = await readAppsChats("http://chat.test", get);
   const wakes = [{ session: "b99a7650-d2bd-4712-825e-eae6b96595f8--1", on: { kind: "time", at: now + 3_600_000 }, note: "", since: now - day }] as Wake[];
   const stuck = (id: string, owed: readonly Wake[]) => { const chat = chats.find(entry => entry.id === id)!;
@@ -109,7 +128,7 @@ test("d9 counts a :5184 chat's open steps nobody moves, as a paused Prime chat's
   assert.deepEqual([fixed.fix, fixed.stuck], ["p117", false]);
   const out = chatSystemOutput({ names: new Map([["ag_seo", "seo (:5184)"]]), upkeep: [], fleet: { pct: 100, red: [] }, idleGoals: [], followUps: [],
     detail: "/tmp/d9.md", noPush: new Set(["ag_seo"]), stuckDuties: [], stuck: [{ chat: "ag_seo", id: "p67", text: "Lift visits with new reach" }] });
-  assert.equal(out.metrics.stuck_steps_all, 1);
+  assert.equal(out.metrics.stuck_steps_all, 0);
   assert.equal(out.flagged!.some(slice => slice.kind === "push"), false);
 });
 
