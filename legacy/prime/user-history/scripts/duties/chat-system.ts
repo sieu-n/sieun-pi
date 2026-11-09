@@ -236,7 +236,7 @@ export function fixWindowWait(metric: { key: string; windowMs?: number } | undef
 
 /** A red duty whose live fix job does not move its number, with the push line that asks its chat to replace that fix. */
 export interface NotMoving { chat: string; duty: string; line: string;
-  /** Set on a serial ask (`SERIAL_MS`): the `serialKey` the push records, so each fix step gets the ask once. */
+  /** Set on a serial ask (`SERIAL_MS`): the `serialKey` the push records, so the duty's streak gets the ask once (`serialAsked`). */
   serial?: string }
 /**
  * How long a duty's metric has missed with no move, across all of its fix steps, before d9 asks once per step for one shared root cause. Each
@@ -250,10 +250,29 @@ export interface NotMoving { chat: string; duty: string; line: string;
 export const SERIAL_MS = 24 * 3_600_000;
 /** The pushes.jsonl item of a serial ask about a duty's fix step. */
 export const serialKey = (duty: string, step: string): string => `serial:${duty}@${step}`;
-/** The serial asks PUSHES_FILE records, so a later run asks about the same fix step no more. */
-export const serialAsked = (log: string): Set<string> => new Set(log.split("\n").flatMap(line => {
-  try { return ((JSON.parse(line) as { items?: unknown }).items as unknown[] ?? []).filter((item): item is string => typeof item === "string" && item.startsWith("serial:")); } catch { return []; }
-}));
+/** The `serialAskKey` of a duty in a chat: duty ids repeat across chats, so the chat is part of it. */
+export const serialAskKey = (chat: string, duty: string): string => `${chat}|${duty}`;
+/**
+ * When d9 last made a serial ask about each duty (`serialAskKey`), from the serial items PUSHES_FILE records. A later run asks no more while
+ * the duty's miss streak began before that ask: the ask covers the whole streak, and a step made after it is the root-cause step that answers it,
+ * which the per-step rule judges on its own runs. On 11-09 d9 asked metal-management at 21:18Z to fold d3's fixes into one root-cause step,
+ * it made p269, and at 21:23Z d9 asked again because p269 "began 0 runs ago", since the record named only p267.
+ */
+export const serialAsked = (log: string): Map<string, number> => {
+  const asked = new Map<string, number>();
+  for (const line of log.split("\n")) {
+    let record: { at?: unknown; chat?: unknown; items?: unknown };
+    try { record = JSON.parse(line) as typeof record; } catch { continue; }
+    if (typeof record.at !== "number" || typeof record.chat !== "string" || !Array.isArray(record.items)) continue;
+    for (const item of record.items) {
+      const duty = typeof item === "string" ? /^serial:([^@]+)@/.exec(item)?.[1] : undefined;
+      if (!duty) continue;
+      const key = serialAskKey(record.chat, duty);
+      asked.set(key, Math.max(asked.get(key) ?? 0, record.at));
+    }
+  }
+  return asked;
+};
 
 /** The metric without `quietSince` when its miss streak is chronic (`chronicWindow`), so d9 judges its fix like any red's; else the metric as it is. */
 export function unquietChronic(metric: MetricStreak, newestAt: number): MetricStreak {
@@ -279,7 +298,7 @@ export function unquietChronic(metric: MetricStreak, newestAt: number): MetricSt
  * line names it, since a count of goals or risks moves only when one clears. A fix whose job worked after the newest reading (`unreadWork`)
  * waits for the verify run d9 asks for (`unreadFixes`).
  */
-export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => string, asked: ReadonlySet<string> = new Set(), now?: number): NotMoving[] {
+export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => string, asked: ReadonlyMap<string, number> = new Map(), now?: number): NotMoving[] {
   return red.flatMap(duty => {
     const metric = duty.metric;
     const under = duty.underFix;
@@ -287,7 +306,8 @@ export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => st
       under.moved) return [];
     if (under.misses < CHANGE_APPROACH_MISSES) {
       const key = serialKey(duty.duty, duty.fix);
-      if (now === undefined || metric.moved || metric.misses < CHANGE_APPROACH_MISSES || now - metric.since < SERIAL_MS || asked.has(key)) return [];
+      const lastAsk = asked.get(serialAskKey(duty.chat, duty.duty));
+      if (now === undefined || metric.moved || metric.misses < CHANGE_APPROACH_MISSES || now - metric.since < SERIAL_MS || (lastAsk !== undefined && lastAsk >= metric.since)) return [];
       const hours = Math.floor((now - metric.since) / 3_600_000);
       return [{ chat: duty.chat, duty: duty.duty, serial: key, line: `${name(duty.chat)}: ${duty.name} (${duty.duty}) missed ${metric.key} ${metric.misses} runs in a row over ${hours} h with no move ` +
         `across all its fix steps, ${shownValue(metric.value, metric.target)} against ${metric.op} ${show(metric.target)}, and its newest step ${duty.fix} began ${under.misses} ` +
@@ -627,7 +647,7 @@ export const jobPushRecords = (pushes: readonly JobPush[], tag: string, at: numb
 export interface ChatSystemFacts {
   names: ReadonlyMap<string, string>;
   /** The serial asks earlier runs recorded in PUSHES_FILE (`serialAsked`); absent: none. */
-  serialAsked?: ReadonlySet<string>;
+  serialAsked?: ReadonlyMap<string, number>;
   /** When the run measured, for the serial ask's elapsed time (`SERIAL_MS`); absent: no serial ask, as in a check of one duty's fix. */
   now?: number;
   stuck: readonly StuckStep[];
