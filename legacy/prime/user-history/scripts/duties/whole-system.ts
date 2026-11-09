@@ -15,7 +15,7 @@ import { waitHolds } from "../../src/checkin-end-state.ts";
 import type { ChatBoard, MemoryGroupId, PlanItem } from "../../src/shared/types.ts";
 import { type AgentLine, type AsideTabs, FEED_OWNERS, type HostUsable, type JobRig, LINGER_MS, type LingerLine, isLinuxReading, parseLinuxReading, readWatch, type StrayServerLine, type IdlePm2Line, type TestBrowserLine, UNREAD_AT_STOP, unusable, type UsableReading, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
 import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-minutes.ts";
-import type { HungCall } from "../../src/hung-calls.ts";
+import { type HungCall, PROGRESS_CORES } from "../../src/hung-calls.ts";
 import type { StoppedCall } from "../../src/hung-stop.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
 import { beatStale, type CacheBeat, pendingWakes, readBeat, treeSessions, treeWakes } from "../../src/wakes.ts";
@@ -1038,8 +1038,11 @@ export function quietAgents(lines: readonly WatchLine[], from: number, to: numbe
   return found;
 }
 
-/** A worker in one watch minute whose sessions had not worked for the quiet window: its pid, lead chat tree, GB and the first line of that stretch. */
-export interface QuietTree { pid: number; root: string; tree: string; gb: number; since: number }
+/**
+ * A worker in one watch minute whose sessions had not worked for the quiet window: its pid, lead chat tree, GB and the first line of that
+ * stretch, and `workGb` when part of its GB is its sessions' commands, which used too little CPU to count as work, such as a dev server nobody uses.
+ */
+export interface QuietTree { pid: number; root: string; tree: string; gb: number; since: number; workGb?: number }
 /**
  * One box's quiet memory in one watch minute: `gb` sums the workers in `trees`, or is the whole box's Agent sessions when no session of the box
  * had worked for the quiet window (`whole`, from `quietAgents`).
@@ -1047,15 +1050,27 @@ export interface QuietTree { pid: number; root: string; tree: string; gb: number
 export interface QuietReading { host: string; at: number; gb: number; trees: QuietTree[]; whole?: QuietMinute }
 
 /**
+ * Whether a worker's commands used PROGRESS_CORES or more since the box's line before (`WorkerTree.workCpuS`), as a tool call's commands do
+ * while they make progress (src/hung-calls.ts). A session idle between turns while its own command runs is at work: at 10:56Z on 11-09 the
+ * worker of "korean sign-up staging metal" read 5.08 GB with no session working since 10:39Z, 4.38 GB of it a svelte-check its job
+ * ko-last-english had started and still ran, and quiet_agent_gb read 6.68 GB for it; the tree fell to 0.67 GB at 11:00Z when the check ended.
+ * CPU seconds that fell (a kernel or a process left the tree) say nothing, so the worker counts as no work then.
+ */
+const commandsAtWork = (worker: WorkerTree, before: { at: number; seconds: number } | undefined, at: number): boolean =>
+  worker.workCpuS !== undefined && before !== undefined && at > before.at && (worker.workCpuS - before.seconds) * 1000 / (at - before.at) >= PROGRESS_CORES;
+
+/**
  * Every box minute in [`from`, `to`) with the workers (WatchLine.byWorker) none of whose sessions had worked in any line for `quietMs`. Prime
  * runs a chat and all its jobs in one worker, so a worker is a tree, and a quiet tree should have dropped its memory by then while the rest of
- * the box works. A worker's stretch starts at its first line with no session working, and breaks on a line where one works, on a line with no
- * `byWorker`, and on a gap over QUIET_GAP_MS; lines from before `from` count toward it. A box minute with `byWorker` gives a reading even with no
- * quiet tree (0 GB), so d7 reads one every run while autonomous jobs work day and night. At 17:52Z on 10-19 us-metal02 ran 119 sessions working
- * over 71 workers and had not gone 15 min with none since 14:29Z.
+ * the box works. A worker's stretch starts at its first line with no session working and no command at work (`commandsAtWork`), and breaks on
+ * a line where one works, on a line with no `byWorker`, and on a gap over QUIET_GAP_MS; lines from before `from` count toward it. A command
+ * that uses no CPU, as a leftover dev server, leaves the tree quiet and counts in its GB. A box minute with `byWorker` gives a reading even with
+ * no quiet tree (0 GB), so d7 reads one every run while autonomous jobs work day and night. At 17:52Z on 10-19 us-metal02 ran 119 sessions
+ * working over 71 workers and had not gone 15 min with none since 14:29Z.
  */
 export function quietTrees(lines: readonly WatchLine[], from: number, to: number, quietMs: number): QuietReading[] {
   const stretches = new Map<string, Map<number, number>>();
+  const cpu = new Map<string, Map<number, { at: number; seconds: number }>>();
   const last = new Map<string, number>();
   const found: QuietReading[] = [];
   for (const line of lines) {
@@ -1064,15 +1079,22 @@ export function quietTrees(lines: readonly WatchLine[], from: number, to: number
     for (const view of hostViews(line)) {
       const before = last.get(view.name);
       last.set(view.name, at);
-      if (!view.byWorker) { stretches.delete(view.name); continue; }
-      const held = before !== undefined && at - before <= QUIET_GAP_MS ? stretches.get(view.name) ?? new Map<number, number>() : new Map<number, number>();
+      if (!view.byWorker) { stretches.delete(view.name); cpu.delete(view.name); continue; }
+      const near = before !== undefined && at - before <= QUIET_GAP_MS;
+      const held = near ? stretches.get(view.name) ?? new Map<number, number>() : new Map<number, number>();
+      const heldCpu = near ? cpu.get(view.name) : undefined;
       const next = new Map<number, number>();
-      for (const worker of view.byWorker) if (worker.working === 0) next.set(worker.pid, held.get(worker.pid) ?? at);
+      const nextCpu = new Map<number, { at: number; seconds: number }>();
+      for (const worker of view.byWorker) {
+        if (worker.workCpuS !== undefined) nextCpu.set(worker.pid, { at, seconds: worker.workCpuS });
+        if (worker.working === 0 && !commandsAtWork(worker, heldCpu?.get(worker.pid), at)) next.set(worker.pid, held.get(worker.pid) ?? at);
+      }
       stretches.set(view.name, next);
+      cpu.set(view.name, nextCpu);
       if (at < from) continue;
-      const trees = view.byWorker.flatMap(worker => {
+      const trees = view.byWorker.flatMap((worker): QuietTree[] => {
         const since = next.get(worker.pid);
-        return since !== undefined && at - since >= quietMs ? [{ pid: worker.pid, root: worker.root, tree: worker.tree, gb: worker.gb, since }] : [];
+        return since !== undefined && at - since >= quietMs ? [{ pid: worker.pid, root: worker.root, tree: worker.tree, gb: worker.gb, since, ...worker.workGb ? { workGb: worker.workGb } : {} }] : [];
       }).sort((a, b) => b.gb - a.gb);
       found.push({ host: view.name, at, gb: Math.round(100 * trees.reduce((sum, tree) => sum + tree.gb, 0)) / 100, trees });
     }
@@ -1228,7 +1250,7 @@ const agentWords = (agents: AgentLine): string => `${agents.gb === null ? "an un
  * still at work beside them.
  */
 function quietTreeWords(reading: QuietReading, quietWords: number): string {
-  const named = reading.trees.slice(0, 5).map(tree => `${tree.tree || tree.root.slice(0, 8) || "no live session"} (pid ${tree.pid}, ${tree.gb} GB, quiet since ${clock(tree.since)})`);
+  const named = reading.trees.slice(0, 5).map(tree => `${tree.tree || tree.root.slice(0, 8) || "no live session"} (pid ${tree.pid}, ${tree.gb} GB${tree.workGb ? `, ${tree.workGb} GB of it its sessions' commands` : ""}, quiet since ${clock(tree.since)})`);
   const rest = reading.trees.length - named.length;
   return `${reading.host}'s ${reading.trees.length} ${reading.trees.length === 1 ? "tree" : "trees"} with no session working for ${quietWords} min or more held ${reading.gb} GB ` +
     `at ${clock(reading.at)}${named.length ? `: ${named.join(", ")}${rest > 0 ? ` and ${rest} more` : ""}` : ""}. The rest of the box had a session at work, so its whole ` +

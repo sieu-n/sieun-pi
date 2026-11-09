@@ -151,7 +151,14 @@ export interface WorkerLine { pid: number; gb: number; sessions: number; root: s
  * (whole-system.ts `quietTrees`). `top` names only the 5 largest: at 17:52Z on 10-19 us-metal02 ran 71 workers with 119 sessions working and
  * no box had gone 15 min with none since 14:29Z, so the box-wide reading never came. Absent on lines written before 10-20.
  */
-export interface WorkerTree { pid: number; gb: number; root: string; tree: string; sessions: number; working: number }
+export interface WorkerTree { pid: number; gb: number; root: string; tree: string; sessions: number; working: number;
+  /** The part of `gb` its sessions' work holds (`workBytes`); absent on lines written before 11-09. */
+  workGb?: number;
+  /**
+   * The CPU seconds its kernels' commands used, summed over its kernels (worker-footprint.py `work_cpu_s`, Linux only), which `quietTrees` reads
+   * between two lines to tell a command at work from a leftover one; absent off Linux and on lines written before 11-09.
+   */
+  workCpuS?: number }
 /**
  * A session a worker still holds loaded (`activeSessionId` set) that read idle with no client but a chat's service attach for over LINGER_MS,
  * and with no session below it at work, which the idle unload (src/idle-unload.ts) should have stopped by then on any box: its session, name,
@@ -455,7 +462,9 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
   const byWorker = sized.map(({ pid, bytes }): WorkerTree => {
     const on = live.filter(row => row.worker === pid);
     const lead = topTrees(on, tree, 1)[0];
-    return { pid, gb: round(bytes / GB), root: lead?.root ?? "", tree: (lead?.tree ?? "").slice(0, 60), sessions: on.length, working: atWork.get(pid) ?? 0 };
+    const cpu = workCpu(input.footprints, byId, pid);
+    return { pid, gb: round(bytes / GB), root: lead?.root ?? "", tree: (lead?.tree ?? "").slice(0, 60), sessions: on.length, working: atWork.get(pid) ?? 0,
+      workGb: round(workBytes(input.footprints, byId, pid) / GB), ...cpu === undefined ? {} : { workCpuS: round(cpu, 1) } };
   });
   const queue = input.queue && queueLine(input.queue, input.now, id => {
     const row = byId.get(id);
@@ -507,6 +516,16 @@ function workBytes(footprints: Footprints, rows: ReadonlyMap<string, Row>, pid: 
     bytes += row.working || row.active ? kernel.bytes : kernel.bytes - (kernel.own ?? kernel.bytes);
   }
   return bytes;
+}
+
+/** The `work_cpu_s` of worker `pid`'s kernels summed, or undefined when none of them reports it. */
+function workCpu(footprints: Footprints, rows: ReadonlyMap<string, Row>, pid: number): number | undefined {
+  let seconds: number | undefined;
+  for (const kernel of footprints.kernels ?? []) {
+    if (rows.get(kernel.session)?.worker !== pid || typeof kernel.work_cpu_s !== "number") continue;
+    seconds = (seconds ?? 0) + kernel.work_cpu_s;
+  }
+  return seconds;
 }
 
 /** Each chat tree's footprint from the helper's kernels and orphans, largest first; `owner` maps a session and the root its env names to the chat tree. */
