@@ -1,6 +1,6 @@
 import { missedKeys } from "./shared/duty-fixes.ts";
 import { type DutyRunRecord, STILL_WORKING } from "./shared/chat-duties.ts";
-import { effectiveRun, metricStreaks, newestReading } from "./shared/duty-streak.ts";
+import { effectiveRun, metricStreaks, newestReading, type MetricStreak } from "./shared/duty-streak.ts";
 
 /**
  * Whether the duty's newest job ended with no push job since: that job is no push run's, nor a rerun's of a push run, and it ended with an
@@ -182,8 +182,19 @@ export function agedOut(runs: readonly DutyRunRecord[], counted: ReadonlySet<str
  */
 export function agingSince(runs: readonly DutyRunRecord[]): number | undefined {
   const streaks = metricStreaks(runs);
-  if (!streaks.length || streaks.some(streak => streak.quietSince === undefined)) return undefined;
+  const newestAt = Math.max(...runs.map(run => run.at));
+  if (!streaks.length || streaks.some(streak => streak.quietSince === undefined || chronicWindow(streak, newestAt))) return undefined;
   return Math.max(...streaks.map(streak => streak.quietSince!));
+}
+
+/**
+ * Whether a windowed count's miss streak is chronic: it has lasted its whole window and an event it counts landed after its first miss, so new
+ * events keep the count up and nothing ages out. Such a count is no quiet one and owes a fix job. Until 11-09 d9 read only the newest event, and
+ * ops guy's d3 missed noisy_rules_24h at every run from 23:46Z on 11-02 with a new flap each day while d9 said it owed no fix job.
+ */
+export function chronicWindow(streak: Pick<MetricStreak, "key" | "since" | "lastEventAt" | "windowMs">, newestAt: number): boolean {
+  const window = countWindowMs(streak.key, streak);
+  return window !== undefined && streak.lastEventAt !== undefined && streak.lastEventAt > streak.since && newestAt - streak.since >= window;
 }
 
 /**

@@ -37,7 +37,7 @@ test("the run copies the window the precheck names onto the metric", () => {
 });
 
 test("only the writer row misses and its newest slot over 5,000 came before the previous run: d9 reads it aging, with a clear time, not fix_not_moving", () => {
-  const runs = [d9("10-27T22:47:00", "10-27T00:35:00"), ...older];
+  const runs = [d9("10-27T22:47:00", "10-27T00:35:00"), older[0]!];
   const duty = red(runs);
   assert.equal(duty.agingSince, t("10-27T00:35:00"));
   assert.equal(duty.agingUntil, t("10-28T00:35:00"));

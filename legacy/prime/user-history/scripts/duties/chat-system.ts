@@ -20,8 +20,8 @@ import { CHECK_IN_DUTY_ID, type DutyPrecheck, type DutyRunRecord, type FlaggedSl
 import { DutyStore } from "../../src/chat-duty-store.ts";
 import { D9_PUSH_PREFIX, serverNote } from "../../src/shared/chat-feed.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
-import { CHANGE_APPROACH_MISSES, fixStepStreak, newestReading } from "../../src/shared/duty-streak.ts";
-import { agingSince, agingUntil, countWindowMs } from "../../src/duty-push.ts";
+import { CHANGE_APPROACH_MISSES, fixStepStreak, newestReading, type MetricStreak } from "../../src/shared/duty-streak.ts";
+import { agingSince, agingUntil, chronicWindow, countWindowMs } from "../../src/duty-push.ts";
 import { pendingWakes, type Wake } from "../../src/wakes.ts";
 import { hasDoneLine, upkeepWords } from "../../src/shared/upkeep-title.ts";
 import { stalledSince } from "../../src/shared/stalled-calls.ts";
@@ -234,6 +234,13 @@ export function fixWindowWait(metric: { key: string; windowMs?: number } | undef
 
 /** A red duty whose live fix job does not move its number, with the push line that asks its chat to replace that fix. */
 export interface NotMoving { chat: string; duty: string; line: string }
+
+/** The metric without `quietSince` when its miss streak is chronic (`chronicWindow`), so d9 judges its fix like any red's; else the metric as it is. */
+export function unquietChronic(metric: MetricStreak, newestAt: number): MetricStreak {
+  if (metric.quietSince === undefined || !chronicWindow(metric, newestAt)) return metric;
+  const { quietSince: _quiet, ...rest } = metric;
+  return rest;
+}
 
 /**
  * The red duties whose lead metric's fix step has a live job while the runs that named that step (`underFix`, `fixStepStreak`) missed it
@@ -929,7 +936,8 @@ async function main(): Promise<void> {
     const precheck = duty.metric && duty.metric.windowMs === undefined
       ? (await store.read(duty.chat).catch(() => null))?.duties.find(entry => entry.id === duty.duty)?.precheck : undefined;
     const declared = duty.metric && precheck ? (await precheckWindows(precheck))[duty.metric.key] : undefined;
-    const metric = duty.metric && declared !== undefined ? { ...duty.metric, windowMs: declared } : duty.metric;
+    const read = duty.metric && declared !== undefined ? { ...duty.metric, windowMs: declared } : duty.metric;
+    const metric = read && own[0] ? unquietChronic(read, own[0].at) : read;
     const judging = { own: sameTargetItems(board, duty.fix), ...metric?.windowMs === undefined ? {} : { windowMs: metric.windowMs } };
     const under = duty.fix && metric ? { underFix: fixStepStreak(own, metric.key, duty.fix, itemsAbove(board, duty.fix), judging) } : {};
     const judgedFrom = under.underFix?.judgedFrom;

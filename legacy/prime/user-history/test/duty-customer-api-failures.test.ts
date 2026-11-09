@@ -54,7 +54,7 @@ test("a rerun of a closed day reads quiet until the next UTC midnight, while the
     { endpoint: "crawl.google.news", calls: 40, p90Ms: 2_000 }];
   const run = (at: string, day: string, p90Ms: number, lastAt: string): DutyRunRecord => ({ duty: "d4", at: Date.parse(at), trigger: "push", ms: 1,
     ...judge(metrics, report(counts, [], { start: day }, null, bing(p90Ms, lastAt))) });
-  const before = run("2026-11-04T00:33:25Z", "2026-11-03 00:00:00", 6_000, "2026-11-03T23:50:00Z");
+  const before = run("2026-11-04T00:33:25Z", "2026-11-03 00:00:00", 4_000, "2026-11-03T23:50:00Z");
   const first = run("2026-11-05T00:33:27Z", "2026-11-04 00:00:00", 22_590, "2026-11-04T23:58:00Z");
   assert.equal(first.metrics.slow_route_p90_s!.lastEventAt, Date.parse("2026-11-04T23:58:00Z"), "the newest slow-route call of the day");
   assert.equal(metricStreaks([first, before])[0]!.quietSince, undefined, "11-04 had calls after the run before");
