@@ -1334,19 +1334,17 @@
    ]
   },
   {
-   "crawler": "POST /api/contact/fast",
+   "crawler": "POST /api/contacts/find",
    "group": "enrich_contact_intel",
    "portal": [
-    "GET /v1/intelligence/contact/fast",
-    "POST /v1/intelligence/contact/fast"
-   ]
-  },
-  {
-   "crawler": "POST /api/contact/complete",
-   "group": "enrich_contact_intel",
-   "portal": [
-    "GET /v1/intelligence/contact/complete",
-    "POST /v1/intelligence/contact/complete"
+    "POST /v1/contacts/find/fast",
+    "POST /v1/contacts/find/thorough",
+    "GET /v1/contacts/find-from-instagram/fast",
+    "GET /v1/contacts/find-from-instagram/thorough",
+    "GET /v1/contacts/find-from-tiktok/fast",
+    "GET /v1/contacts/find-from-tiktok/thorough",
+    "GET /v1/contacts/find-from-youtube/fast",
+    "GET /v1/contacts/find-from-youtube/thorough"
    ]
   },
   {
