@@ -221,16 +221,24 @@ export function metricStreaks(runs: readonly DutyRunRecord[]): MetricStreak[] {
  * A duty's verdict now: that of its newest reading, a measured run's (after its job, when it has that measure) or a skipped run's that measured
  * all the same. A check-in whose last job still works records its next run as skipped with the board's measure, and until 10-22 the fleet read
  * the older run: over the 24 h to 07:40Z the newest measure would have changed the verdict at 126 of 2,592 chat samples, 51 to green and 75 to red.
+ * A newer error run's metrics stand over that reading's, one metric at a time, since an error run measured them and only missed others: from
+ * 21:55Z on 11-09 metal-management's d2 read release_breaks_24h 0 in four error runs while the Mac was asleep, and the fleet kept its 05:40Z
+ * reading of 1 and counted the duty stuck. Over every duty's runs at 23:30Z on 11-09 this changed that one verdict and no other.
  */
 export function verdictNow(runs: readonly DutyRunRecord[]): "met" | "missed" | undefined {
-  let best: { at: number; verdict: "met" | "missed" } | undefined;
+  let best: { at: number; verdict: "met" | "missed"; metrics: Record<string, MetricResult> } | undefined;
   for (const run of runs) {
     const metrics = Object.values(run.metrics ?? {});
-    const read = measured(run) ? { at: run.after?.at ?? run.at, verdict: effectiveRun(run).verdict as "met" | "missed" }
-      : run.verdict === "skipped" && metrics.length ? { at: run.at, verdict: metrics.every(metric => metric.met) ? "met" as const : "missed" as const } : undefined;
+    const read = measured(run) ? { at: run.after?.at ?? run.at, verdict: effectiveRun(run).verdict as "met" | "missed", metrics: effectiveRun(run).metrics ?? {} }
+      : run.verdict === "skipped" && metrics.length ? { at: run.at, verdict: metrics.every(metric => metric.met) ? "met" as const : "missed" as const, metrics: run.metrics ?? {} } : undefined;
     if (read && (!best || read.at > best.at)) best = read;
   }
-  return best?.verdict;
+  if (!best) return undefined;
+  const newer = runs.filter(run => run.at > best.at && effectiveRun(run).verdict === "error" && Object.keys(effectiveRun(run).metrics ?? {}).length).sort((a, b) => a.at - b.at);
+  if (!newer.length) return best.verdict;
+  const met = new Map(Object.entries(best.metrics).map(([key, result]) => [key, result.met]));
+  for (const run of newer) for (const [key, result] of Object.entries(effectiveRun(run).metrics ?? {})) met.set(key, result.met);
+  return met.size && [...met.values()].every(Boolean) ? "met" : "missed";
 }
 
 /** The missed metric the line names: the duty's headline when it missed, else the one missed for the most runs in a row. */

@@ -8,6 +8,7 @@ import { dutyFleet, readsTheShare, skippedMisses } from "../scripts/duties/duty-
 import { missRuns } from "../scripts/duties/chat-system.ts";
 import { CHANGE_APPROACH_MISSES, verdictNow } from "../src/shared/duty-streak.ts";
 import { DutyStore } from "../src/chat-duty-store.ts";
+import type { DutyRunRecord } from "../src/shared/chat-duties.ts";
 
 const duty = (id: string, key: string, op: ">=" | "<=", target: number) => ({ id, name: `duty ${id}`, ownerWords: "keep it working", goal: "It works.",
   metrics: [{ key, label: key, op, target, headline: true }], schedule: { kind: "every", minutes: 60 }, precheck: { command: ["true"] }, onMiss: "Fix it.", status: "active", runCount: 1 });
@@ -159,4 +160,21 @@ test("a red duty one run old names the linked step whose job works, and a short 
     const d1 = fleet.duties.find(entry => entry.duty === "d1")!, d2 = fleet.duties.find(entry => entry.duty === "d2")!;
     assert.deepEqual([d1.fix, d1.stuck, d2.fix, d2.stuck, fleet.metrics.stuck_duties], ["p71", false, undefined, false, 0]);
   } finally { await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test("a newer error run's measured metrics stand over the older reading's, one metric at a time", () => {
+  // 11-09: metal-management's d2 read release_breaks_24h 1 at 05:40Z; from 21:55Z four error runs read it 0 while the asleep Mac left its other
+  // metrics unmeasured, and the fleet kept the 05:40Z red and counted the duty stuck.
+  const at = (time: string): number => Date.parse(`2026-11-09T${time}:00Z`);
+  const result = (value: number, target: number) => ({ value, target, op: "<=" as const, met: value <= target });
+  const measuredRun = { duty: "d2", at: at("05:40"), trigger: "rerun", ms: 1, verdict: "missed", summary: "",
+    metrics: { cold_tab_switch_ms: result(33, 100), cold_load_s: result(0.44, 1), release_breaks_24h: result(1, 0) } } as DutyRunRecord;
+  const errorRun = (time: string, breaks: number) => ({ duty: "d2", at: at(time), trigger: "schedule", ms: 1, verdict: "error", summary: "",
+    metrics: { release_breaks_24h: result(breaks, 0) } }) as DutyRunRecord;
+  assert.equal(verdictNow([measuredRun]), "missed");
+  assert.equal(verdictNow([measuredRun, errorRun("21:55", 0), errorRun("22:06", 0)]), "met");
+  assert.equal(verdictNow([measuredRun, errorRun("21:55", 0), errorRun("22:06", 2)]), "missed", "the newest error run's reading stands");
+  const metRun = { ...measuredRun, verdict: "met", metrics: { ...measuredRun.metrics, release_breaks_24h: result(0, 0) } } as DutyRunRecord;
+  assert.equal(verdictNow([metRun, errorRun("22:06", 1)]), "missed", "an error run's miss counts too");
+  assert.equal(verdictNow([measuredRun, { ...errorRun("22:06", 0), metrics: {} }]), "missed", "an error run with no metric changes nothing");
 });
