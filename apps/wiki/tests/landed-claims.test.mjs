@@ -77,6 +77,24 @@ test('a commit on neither crawler, one that reaches prod only with a promote and
 	]);
 });
 
+// 2026-11-09 10:30Z: the d4 precheck read "At 10:26Z on 2026-11-09 `8c1f60df87` had not landed, and the newest staging land
+// `b0056d7fa9` carried `dev/sieun` `b6a5b7ad5`" on docker-and-containers.html as a not-landed claim about b6a5b7ad5, which that land
+// carried. The subject of "had not landed" is 8c1f60df87, and b6a5b7ad5 sits in a later clause.
+test('a not-landed phrase is about the sha before it in its clause, not one in a later clause', () => {
+	const html = [
+		'<ol>',
+		'<li>At 10:26Z on 2026-11-09 <code>8c1f60df87</code> had not landed, and the newest staging land <code>b0056d7fa9</code> carried <code>dev/sieun</code> <code>b6a5b7ad5</code>.</li>',
+		'<li>On 11-09 <code>b6a5b7ad5</code> landed at 09:21Z, but <code>8c1f60df87</code> was not on staging yet.</li>',
+		'<li>Since <code>aa11bb22cc</code> the pool reads 6; it had not landed by 11:00Z, so <code>dd33ee44ff</code> still ran.</li>',
+		'<li>Not yet on staging at 11:00Z were <code>ab12cd34ef</code> and <code>12ab34cd56</code>.</li>',
+		'</ol>',
+	].join('\n');
+	assert.deepEqual(
+		notLandedLines(html).map((l) => l.shas),
+		[['8c1f60df87'], ['8c1f60df87'], ['aa11bb22cc'], ['ab12cd34ef', '12ab34cd56']],
+	);
+});
+
 test('a claim counts once a staging land names a dev tip that holds the commit, dated by the first such land', (t) => {
 	const dir = mkdtempSync(path.join(tmpdir(), 'landed-claims-'));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));

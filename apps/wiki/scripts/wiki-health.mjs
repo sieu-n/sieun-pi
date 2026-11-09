@@ -497,11 +497,29 @@ const SHA_WORD = /(?<!\b(?:staging|prod|land|head|tip) )\b(?=[0-9a-f]*[a-f])(?=[
 const THE_COMMIT = /^(?:the|that|this|the same) commit\b/i;
 /** Marks the sha of a commit link in the text, so it counts for its sentence; notLandedLines drops it from the line it reports. */
 const MARK = (sha) => `\u2063${sha}\u2063`;
+/** Where a clause of a sentence ends: a semicolon, a dash, "but", or a comma before a conjunction, as in ", and the newest land carried". */
+const CLAUSE_BREAK = /;|\s[\u2013\u2014]\s|\s+but\s+|,\s+(?=(?:and|but|or|so|while|whereas|though|although|because|since|when|then)\b)/gi;
 
 /**
- * The sentences of `html` that say a commit has not reached a stage, each with that stage and the shas it may name: those in the
- * sentence, `<code>` and commit links included, or in the sentence before it when it has none, as in "At 14:38Z that commit had not
- * landed" under the line that names the commit, or in the last line of its section with one when it opens on "The commit". A
+ * The shas a not-landed phrase is about: its subject, the shas of the last clause before the phrase that names one, or else those after
+ * it in its own clause. A sha in a later clause is about something else, as `b6a5b7ad5` is in "At 10:26Z `8c1f60df87` had not landed,
+ * and the newest staging land carried `dev/sieun` `b6a5b7ad5`".
+ */
+function subjectShas(sentence, hit) {
+	const breaks = [...sentence.text.matchAll(CLAUSE_BREAK)].map((m) => m.index);
+	const clauseOf = (at) => breaks.filter((b) => b < at).length;
+	const before = sentence.hits.filter((h) => h.at < hit.index);
+	const last = before.at(-1);
+	const own = last
+		? before.filter((h) => clauseOf(h.at) === clauseOf(last.at))
+		: sentence.hits.filter((h) => h.at >= hit.index + hit[0].length && clauseOf(h.at) === clauseOf(hit.index));
+	return [...new Set(own.map((h) => h.sha))];
+}
+
+/**
+ * The sentences of `html` that say a commit has not reached a stage, each with that stage and the shas it may name: its subject in the
+ * sentence (`subjectShas`), `<code>` and commit links included, or the shas of the sentence before it when it has none, as in "At
+ * 14:38Z that commit had not landed" under the line that names the commit, or in the last line of its section with one when it opens on "The commit". A
  * dev-branch value with no sha takes the shas of the line that states that value on that branch, as a table cell "4, or up to 84 on
  * dev/sieun" does from "Since 42d3206e43 on dev/sieun, one job reads up to 84 pages". A wiki-cite's `note` reads as part of its
  * sentence. Diagrams and code blocks state no landing state, and a phrase in a clause that sets a rule for any commit (`RULE_CLAUSE`, or
@@ -521,7 +539,10 @@ export function notLandedLines(html) {
 		if (text) blocks.push({ text, section });
 	}
 	const sentences = blocks.flatMap((block, at) =>
-		block.text.split(/(?<=[.!?])\s+/).map((text) => ({ text, block: at, section: block.section, shas: [...new Set([...text.matchAll(SHA_WORD)].map((m) => m[0]))] })),
+		block.text.split(/(?<=[.!?])\s+/).map((text) => {
+			const hits = [...text.matchAll(SHA_WORD)].map((m) => ({ sha: m[0], at: m.index }));
+			return { text, block: at, section: block.section, hits, shas: [...new Set(hits.map((h) => h.sha))] };
+		}),
 	);
 	const out = [];
 	sentences.forEach((sentence, i) => {
@@ -530,7 +551,7 @@ export function notLandedLines(html) {
 		const { stage, hit } = phrase;
 		const before = sentence.text.slice(0, hit.index);
 		if (RELATIVE_SUBJECT.test(before) || RULE_CLAUSE.test(before.split(/[,;:(]/).pop())) return;
-		let shas = sentence.shas;
+		let shas = subjectShas(sentence, hit);
 		if (!shas.length && hit.groups?.value) {
 			const { value, branch } = hit.groups;
 			shas = sentences.find((s) => s.shas.length && s.text.includes(value) && s.text.includes(branch))?.shas ?? [];
