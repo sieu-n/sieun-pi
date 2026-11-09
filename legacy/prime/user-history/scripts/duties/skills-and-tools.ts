@@ -12,9 +12,10 @@ import { parsePrompts, promptFor, promptsText, promptWords, type SignInPrompt, s
 import { BoardStore } from "../../src/chat-board-store.ts";
 import { OPEN, walk } from "../../src/checkin-steps.ts";
 import { fixLiveReader, type FixLiveness } from "../../src/shared/duty-fixes.ts";
-import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
+import type { ChatBoard, OwnerTodo, PlanItem } from "../../src/shared/types.ts";
 import { pendingWakes } from "../../src/wakes.ts";
 import { daemonSessions as daemonList, sessionRows } from "./duty-fleet.ts";
+import { CRAWLER_BASE, readCrawlerKey, readHold, type SupplyHold } from "./watchlist-green.ts";
 
 /**
  * The Skills and tools duty's precheck (`node --import tsx scripts/duties/skills-and-tools.ts [--only id,id]`): whether every skill and tool agents
@@ -75,6 +76,8 @@ export interface Deps {
   convexUsageState?: () => Promise<string>;
   /** The live fix step that holds a slow or down Google search (`searchFixStep`); absent or undefined means none. */
   searchFix?: () => Promise<SearchFix | undefined>;
+  /** The GeoNode outage that waits on the owner (`proxyOutage`); absent or undefined means none. */
+  proxyOutage?: () => Promise<ProxyOutage | undefined>;
 }
 
 /** The route `await websearch(...)` calls on the Virev API. */
@@ -97,6 +100,20 @@ export async function searchFixStep(boards: Iterable<readonly [string, ChatBoard
     for (const item of steps) if (await live(chat, item) === true) return { chat, step: item.id, job: item.job ?? item.sessionId! };
   }
   return undefined;
+}
+
+export interface ProxyOutage { holds: SupplyHold[]; chat: string; todo: string }
+/**
+ * The prod crawler's GeoNode supply holds (GET /ops/status supply_holds) with the newest open For you todo on any board that names GeoNode.
+ * Both together mean the crawler's proxies wait on the owner: from 07:27Z on 11-09 GeoNode's plan ended unpaid, prod held proxy_unreachable on
+ * us-08 from 08:44Z, and only his payment (Crawler VP's t112) could bring Google back. The hold lifts by itself once a tunnel opens.
+ */
+export function proxyOutage(holds: readonly SupplyHold[], boards: Iterable<readonly [string, ChatBoard | null]>): ProxyOutage | undefined {
+  const geonode = holds.filter(hold => hold.provider === "geonode");
+  let newest: { chat: string; todo: OwnerTodo } | undefined;
+  for (const [chat, board] of boards) for (const todo of board?.todos ?? [])
+    if (!todo.done && todo.from === "agent" && /geonode/i.test(todo.text) && (!newest || todo.at > newest.todo.at)) newest = { chat, todo };
+  return geonode.length && newest ? { holds: geonode, chat: newest.chat, todo: newest.todo.id } : undefined;
 }
 
 /** The bare-metal box the repo skills reach as root: an ssh config alias (us-metal01 by default) or METAL_SSH_HOST, so no address lives in this repo. */
@@ -615,6 +632,12 @@ export const CHECKS: readonly Check[] = [
     const timeout = result.code === 124 ? `timed out after ${result.ms} ms` : /Error searching for .*?: (\w*Timeout\w*)/.exec(text)?.[1];
     if (outage || timeout) {
       const detail = outage ? `Google is down on the Virev search backend (${brief(outage[1]!, 160)})` : `the search gave no answer in ${Math.round(result.ms / 1000)} s (${timeout})`;
+      const proxy = await (deps.proxyOutage ?? (async () => undefined))().catch(() => undefined);
+      if (proxy) {
+        const holds = proxy.holds.map(hold => `${hold.code} on ${hold.gateway} since ${utcMinute(hold.since)}`).join("; ");
+        return FAIL("owner", `${detail}; the prod crawler holds its GeoNode supply (${holds}), and ${proxy.todo} on thread ${proxy.chat} waits on the owner for GeoNode`,
+          `the owner answers ${proxy.todo}; the crawler lifts the hold once a GeoNode tunnel opens, and the search passes again`);
+      }
       const fix = await (deps.searchFix ?? (async () => undefined))().catch(() => undefined);
       if (fix) return { status: "off", detail: `${detail}; held by ${fix.step} on thread ${fix.chat} (job ${fix.job}), a live fix for ${SEARCH_ROUTE}` };
       return FAIL("agent", detail, outage ? "report it to the crawler side; the key works"
@@ -1018,14 +1041,21 @@ export function realDeps(scratchDir: string): Deps {
     fetchText: url => fetch(url, { signal: AbortSignal.timeout(CALL_TIMEOUT_MS) }).then(response => response.ok ? response.text() : "").catch(() => ""),
     convexUsageState: () => convexUsageState(home),
     searchFix: () => liveSearchFix(join(home, ".prime/agent/browser-chat")),
+    proxyOutage: async () => proxyOutage((await readHold(fetch, CRAWLER_BASE.prod, await readCrawlerKey(), AbortSignal.timeout(CALL_TIMEOUT_MS))).holds,
+      await readBoards(join(home, ".prime/agent/browser-chat"))),
   };
+}
+
+/** Every board in the chat service's data folder, null where one does not read. */
+async function readBoards(dataDir: string): Promise<(readonly [string, ChatBoard | null])[]> {
+  const store = new BoardStore(dataDir);
+  const chats = (await readdir(join(dataDir, "boards")).catch(() => [] as string[])).filter(name => name.endsWith(".json")).map(name => name.slice(0, -5));
+  return Promise.all(chats.map(async chat => [chat, await store.read(chat).catch(() => null)] as const));
 }
 
 /** `searchFixStep` over every board in the chat service's data folder, with the duty runner's own liveness read. */
 async function liveSearchFix(dataDir: string): Promise<SearchFix | undefined> {
-  const store = new BoardStore(dataDir);
-  const chats = (await readdir(join(dataDir, "boards")).catch(() => [] as string[])).filter(name => name.endsWith(".json")).map(name => name.slice(0, -5));
-  const boards = await Promise.all(chats.map(async chat => [chat, await store.read(chat).catch(() => null)] as const));
+  const boards = await readBoards(dataDir);
   let rows: Promise<ReturnType<typeof sessionRows>> | undefined;
   const live = fixLiveReader({ rows: () => rows ??= daemonList().then(sessionRows), asleep: async now => (await pendingWakes(join(dataDir, "wakes"), now)).map(wake => wake.session),
     pool: async () => [], held: () => [] });

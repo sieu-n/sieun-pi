@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { CALL_TIMEOUT_MS, CHECKS, type Deps, type ExecResult, runChecks, type SearchFix, searchFixStep, toOutput, withHarness } from "../scripts/duties/skills-and-tools.ts";
+import { CALL_TIMEOUT_MS, CHECKS, type Deps, type ExecResult, proxyOutage, runChecks, type SearchFix, searchFixStep, toOutput, withHarness } from "../scripts/duties/skills-and-tools.ts";
 import type { DutyStore } from "../src/chat-duty-store.ts";
 import { parsePrompts } from "../src/sign-in-prompts.ts";
 import { dailyRun } from "../src/chat-tools.ts";
@@ -214,6 +214,30 @@ test("websearch_query reads a timeout or Google down as held while another chat'
   }
   const alone = await websearchQuery.run(searchDeps([SEARCH_TIMED_OUT], { n: 0 }));
   assert.ok(alone.status === "fail" && alone.fixer === "agent" && alone.detail === "the search gave no answer in 75 s (ReadTimeout)", JSON.stringify(alone));
+});
+
+// 11-09: GeoNode's plan ended unpaid at 07:27Z, prod held proxy_unreachable on us-08 from 08:44Z, and only the owner's payment (t112) could fix it.
+const US08 = { code: "proxy_unreachable", provider: "geonode", gateway: "residential-unlimited-us-08-proxy.geonode.io:12001", since: Date.parse("2026-11-09T08:44:58Z") };
+const T112 = { id: "t112", text: "All prod and staging crawling has been stopped since 16:41 KST, because GeoNode never charged the Nov 9 renewal", done: false, from: "agent", at: "2026-11-09T08:08:59Z" };
+
+test("websearch_query reads Google down as the owner's while the prod crawler holds GeoNode and a For you todo names GeoNode", async () => {
+  const outage = { holds: [US08], chat: "01a115e2-9544-7204-b8db-8ce4d5319048", todo: "t112" };
+  for (const answer of [SEARCH_TIMED_OUT, DOWN]) {
+    const outcome = await websearchQuery.run({ ...searchDeps([answer], { n: 0 }), proxyOutage: async () => outage, searchFix: async () => P164 });
+    assert.ok(outcome.status === "fail" && outcome.fixer === "owner" && outcome.detail.includes("proxy_unreachable on residential-unlimited-us-08-proxy.geonode.io:12001 since 11-09 08:44Z")
+      && outcome.detail.includes("t112 on thread 01a115e2-9544-7204-b8db-8ce4d5319048") && outcome.fix.includes("t112"), JSON.stringify(outcome));
+  }
+  const failedRead = await websearchQuery.run({ ...searchDeps([DOWN], { n: 0 }), proxyOutage: async () => { throw new Error("HTTP 502"); } });
+  assert.ok(failedRead.status === "fail" && failedRead.fixer === "agent", JSON.stringify(failedRead));
+});
+
+test("proxyOutage needs a GeoNode supply hold and takes the newest open agent todo that names GeoNode", () => {
+  const board = (todos: unknown[]) => ({ v: 2, rev: 1, updatedAt: "2026-11-09T09:00:00Z", plan: [], todos }) as unknown as ChatBoard;
+  const t64 = { ...T112, id: "t64", text: "GeoNode charges the card that declines", at: "2026-11-04T04:46:51Z" };
+  const boards = [["ops", board([t64, { ...T112, id: "t9", at: "2026-11-10T00:00:00Z", done: true }])], ["none", null], ["crawler", board([T112, { ...T112, id: "t7", text: "Pay Convex" }])]] as const;
+  assert.deepEqual(proxyOutage([US08, { ...US08, provider: "brightdata" }], boards), { holds: [US08], chat: "crawler", todo: "t112" });
+  assert.equal(proxyOutage([], boards), undefined);
+  assert.equal(proxyOutage([US08], [["crawler", board([{ ...T112, done: true }])]]), undefined);
 });
 
 test("websearch_query searches again only when the first answer leaves the check time for it", async () => {
