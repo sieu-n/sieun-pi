@@ -236,15 +236,18 @@ export function fixWindowWait(metric: { key: string; windowMs?: number } | undef
 
 /** A red duty whose live fix job does not move its number, with the push line that asks its chat to replace that fix. */
 export interface NotMoving { chat: string; duty: string; line: string;
-  /** Set on a serial ask (`SERIAL_MISSES`): the `serialKey` the push records, so each fix step gets the ask once. */
+  /** Set on a serial ask (`SERIAL_MS`): the `serialKey` the push records, so each fix step gets the ask once. */
   serial?: string }
 /**
- * Misses in a row with no move, across all of a duty's fix steps, after which d9 asks once per step for one shared root cause. Each new step
- * starts its own count (`fixNotMoving`), so a duty whose fixes were replaced step after step never read as not moving: CI and RepoOps' d4
- * alerts_firing missed 36 runs from 11-05 23:30Z to 11-09 20:39Z under about 10 steps (p645 to p725) while fix_not_moving read 0.
- * measured: over the 7,011 runs of 10-22, a missed metric with no move reached its target within 10 more runs 32% of the time after 12 or more misses.
+ * How long a duty's metric has missed with no move, across all of its fix steps, before d9 asks once per step for one shared root cause. Each
+ * new step starts its own count (`fixNotMoving`), so a duty whose fixes were replaced step after step never read as not moving: CI and RepoOps'
+ * d4 alerts_firing missed 36 runs over 93 h, from 11-05 23:30Z to 11-09 20:39Z, under about 10 steps (p645 to p725) while fix_not_moving read 0.
+ * The rule judges elapsed time, not runs, since duties run at different cadences: ops d2 runs every 15.5 min, and a first rule of 12 runs flagged
+ * its risks_firing after 13 runs, 3.4 h on one disk fault whose fix p802 was moving (/ci 402 GB free at 20:39Z, 423.6 GB at 21:05Z on 11-09).
+ * measured: over the 3,115 miss streaks in the duty run logs on 11-09, 69% of those 3 h or older reached their target within the next 24 h,
+ * against 47% of those 24 h or older, so a streak past a day is as likely to stay red as to clear.
  */
-export const SERIAL_MISSES = 12;
+export const SERIAL_MS = 24 * 3_600_000;
 /** The pushes.jsonl item of a serial ask about a duty's fix step. */
 export const serialKey = (duty: string, step: string): string => `serial:${duty}@${step}`;
 /** The serial asks PUSHES_FILE records, so a later run asks about the same fix step no more. */
@@ -276,7 +279,7 @@ export function unquietChronic(metric: MetricStreak, newestAt: number): MetricSt
  * line names it, since a count of goals or risks moves only when one clears. A fix whose job worked after the newest reading (`unreadWork`)
  * waits for the verify run d9 asks for (`unreadFixes`).
  */
-export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => string, asked: ReadonlySet<string> = new Set()): NotMoving[] {
+export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => string, asked: ReadonlySet<string> = new Set(), now?: number): NotMoving[] {
   return red.flatMap(duty => {
     const metric = duty.metric;
     const under = duty.underFix;
@@ -284,8 +287,9 @@ export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => st
       under.moved) return [];
     if (under.misses < CHANGE_APPROACH_MISSES) {
       const key = serialKey(duty.duty, duty.fix);
-      if (metric.moved || metric.misses < SERIAL_MISSES || asked.has(key)) return [];
-      return [{ chat: duty.chat, duty: duty.duty, serial: key, line: `${name(duty.chat)}: ${duty.name} (${duty.duty}) missed ${metric.key} ${metric.misses} runs in a row with no move ` +
+      if (now === undefined || metric.moved || metric.misses < CHANGE_APPROACH_MISSES || now - metric.since < SERIAL_MS || asked.has(key)) return [];
+      const hours = Math.floor((now - metric.since) / 3_600_000);
+      return [{ chat: duty.chat, duty: duty.duty, serial: key, line: `${name(duty.chat)}: ${duty.name} (${duty.duty}) missed ${metric.key} ${metric.misses} runs in a row over ${hours} h with no move ` +
         `across all its fix steps, ${shownValue(metric.value, metric.target)} against ${metric.op} ${show(metric.target)}, and its newest step ${duty.fix} began ${under.misses} ` +
         `${under.misses === 1 ? "run" : "runs"} ago. Each new step restarts the count, so replacing steps has not moved it. Start one root-cause job (rlm.spawn, not a new thread) ` +
         `that finds the cause its fix steps share and fixes that cause, on one step with duty "${duty.duty}/${metric.key}", and fold ${duty.fix} into it` }];
@@ -624,6 +628,8 @@ export interface ChatSystemFacts {
   names: ReadonlyMap<string, string>;
   /** The serial asks earlier runs recorded in PUSHES_FILE (`serialAsked`); absent: none. */
   serialAsked?: ReadonlySet<string>;
+  /** When the run measured, for the serial ask's elapsed time (`SERIAL_MS`); absent: no serial ask, as in a check of one duty's fix. */
+  now?: number;
   stuck: readonly StuckStep[];
   upkeep: readonly PlanFlag[];
   fleet: { pct: number; red: readonly RedDuty[] };
@@ -716,7 +722,7 @@ export function chatSystemOutput(all: ChatSystemFacts): PrecheckOutput {
   }
   head("stuck_duty", facts.stuckDuties.length, "red duties with no live fix job", chats(facts.stuckDuties));
   for (const duty of spread(facts.stuckDuties, EXAMPLES)) flagged.push({ kind: "stuck_duty", chat: duty.chat, excerpt: `${duty.line}.` });
-  const notMoving = fixNotMoving(facts.fleet.red, name, facts.serialAsked);
+  const notMoving = fixNotMoving(facts.fleet.red, name, facts.serialAsked, facts.now);
   head("fix_not_moving", notMoving.length, "red duties whose live fix job does not move the number", chats(notMoving));
   for (const duty of spread(notMoving, EXAMPLES)) flagged.push({ kind: "fix_not_moving", chat: duty.chat, item: duty.duty, excerpt: `${duty.line}.` });
   for (const duty of unreadFixes(facts.fleet.red)) {
@@ -1037,7 +1043,7 @@ async function main(): Promise<void> {
   const tag = pushTag(now);
   const name = (chat: string): string => names.get(chat) ?? chat.slice(0, 8);
   const serialDone = serialAsked(await readFile(PUSHES_FILE, "utf8").catch(() => ""));
-  const notMoving = fixNotMoving(red.filter(duty => !appsIds.has(duty.chat)), name, serialDone);
+  const notMoving = fixNotMoving(red.filter(duty => !appsIds.has(duty.chat)), name, serialDone, now);
   const listedPushes = pushList({ idleGoals, stuck, stuckDuties, lagging: owned.lagging.filter(counted), notMoving, upkeep });
   const down: ChatDown[] = [];
   for (const chat of new Set([...listedPushes.map(entry => entry.chat), ...followUps.map(check => check.push.chat)])) {
@@ -1057,7 +1063,7 @@ async function main(): Promise<void> {
   const routes = downRoutes(stuck, new Set(down.map(entry => entry.chat)), routeReads, name);
   const unknown = unknownOwners(stuck, routeReads);
   const direct = routes.pushes;
-  const result = chatSystemOutput({ names, serialAsked: serialDone, stuck, upkeep, fleet: { pct: greenPct(fleetDuties), red }, stuckDuties, idleGoals, followUps, down,
+  const result = chatSystemOutput({ names, serialAsked: serialDone, now, stuck, upkeep, fleet: { pct: greenPct(fleetDuties), red }, stuckDuties, idleGoals, followUps, down,
     jobPushes: direct, stepMoves: routes.moves, unknownOwners: unknown, detail, hostHeld: hostHeld.filter(counted), noPush: appsIds });
   if (apps.error) result.flagged!.push({ kind: "apps_chat_unread", excerpt: `The :5184 chat app did not answer (${apps.error.slice(0, 300)}), so its chats' duties are not in these numbers.` });
   const fleetMissing = fleet.flagged.filter(slice => slice.kind === "fleet_data_missing");

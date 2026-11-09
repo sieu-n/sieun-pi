@@ -225,7 +225,7 @@ test("a red duty whose live fix has not moved its number over 3 or more misses i
   const metric: MetricStreak = { key: "probe_uptime_24h_pct", misses: 42, moved: false, since: 0, value: 97.2, target: 100, op: ">=", fix, stuck: false };
   const duty = (id: string, change: Partial<MetricStreak> = {}, extra: object = {}) => ({ chat: "a", duty: id, name: id, green: false, misses: 42,
     stuck: false, fix: "p52", metric: { ...metric, ...change }, underFix: { misses: 8, moved: false }, ...extra });
-  const red = [duty("d1"), duty("d2", {}, { underFix: { misses: 8, moved: true } }), duty("d3", { misses: 5 }, { underFix: { misses: 2, moved: false } }),
+  const red = [duty("d1"), duty("d2", {}, { underFix: { misses: 8, moved: true } }), duty("d3", {}, { underFix: { misses: 2, moved: false } }),
     duty("d4", { quietSince: 1 }), duty("d5", { fix: { ...fix, step: "p9" } }), duty("d6", {}, { fix: undefined }), duty("d7", {}, { agingSince: 1 }),
     duty("d8", {}, { underFix: undefined })];
   const found = fixNotMoving(red, () => "api portal vp");
