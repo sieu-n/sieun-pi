@@ -287,7 +287,7 @@ export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => st
       if (metric.moved || metric.misses < SERIAL_MISSES || asked.has(key)) return [];
       return [{ chat: duty.chat, duty: duty.duty, serial: key, line: `${name(duty.chat)}: ${duty.name} (${duty.duty}) missed ${metric.key} ${metric.misses} runs in a row with no move ` +
         `across all its fix steps, ${shownValue(metric.value, metric.target)} against ${metric.op} ${show(metric.target)}, and its newest step ${duty.fix} began ${under.misses} ` +
-        `${under.misses === 1 ? "run" : "runs"} ago. Each new step restarts the count, so replacing steps has not moved it. Start one root-cause job with rlm.create_session ` +
+        `${under.misses === 1 ? "run" : "runs"} ago. Each new step restarts the count, so replacing steps has not moved it. Start one root-cause job (rlm.spawn, not a new thread) ` +
         `that finds the cause its fix steps share and fixes that cause, on one step with duty "${duty.duty}/${metric.key}", and fold ${duty.fix} into it` }];
     }
     if (under.misses < CHANGE_APPROACH_MISSES) return [];
@@ -296,7 +296,7 @@ export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => st
       : `${shownValue(metric.value, metric.target)} against ${metric.op} ${show(metric.target)} and no closer than when ${duty.fix} began`;
     return [{ chat: duty.chat, duty: duty.duty, line: `${name(duty.chat)}: ${duty.name} (${duty.duty}) missed ${metric.key} ${metric.misses} runs in a row, ` +
       `${under.misses} of them under its fix step ${duty.fix}, ${stall}, ` +
-      `while ${duty.fix} has a live job. Replace that fix: start a root-cause job with rlm.create_session that finds why ${duty.fix} does not move the number and fixes that cause, ` +
+      `while ${duty.fix} has a live job. Replace that fix: start a root-cause job (rlm.spawn, not a new thread) that finds why ${duty.fix} does not move the number and fixes that cause, ` +
       `give it its own step with duty "${duty.duty}/${metric.key}", and close or drop ${duty.fix} with a note naming the new step` }];
   });
 }

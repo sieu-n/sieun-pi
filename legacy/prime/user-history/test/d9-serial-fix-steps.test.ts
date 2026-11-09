@@ -35,7 +35,7 @@ test("CI d4's 36 runs with no move across its fix steps get one ask for a shared
   assert.equal(lines.length, 1);
   assert.equal(lines[0]!.serial, serialKey("d4", "p725"));
   assert.match(lines[0]!.line, /missed alerts_firing 36 runs in a row with no move across all its fix steps/);
-  assert.match(lines[0]!.line, /one root-cause job/);
+  assert.match(lines[0]!.line, /one root-cause job \(rlm\.spawn, not a new thread\)/);
 });
 
 test("the ask goes out once per fix step: the push records it, and the next run that reads that record asks no more", () => {
