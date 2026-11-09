@@ -1084,7 +1084,7 @@ export class Chats {
       try {
         if ((await this.summary(job.id))?.lifecycle === "archived") { this.retired.add(job.id); return; }
         if (await this.updateHold("replaced root is archived")) return;
-        if (await this.source.waking?.(job.id) || await this.threads.sessionActive(job.id)) return;
+        if (await this.source.waking?.(job.id) || await this.rootBusy(job.id)) return;
         await this.archiveRoot(job.id, "replaced_job_end");
         this.retired.add(job.id);
         const left = await this.leftovers(job.chat, join(artifactsRoot(), job.id), job.id);
@@ -1249,6 +1249,17 @@ export class Chats {
     }
   }
 
+  /**
+   * Whether the daemon shows a root at work, asked only once the idle unload's stop of it, if one is under way, ended; a root that stop ended is
+   * idle. At 21:46:32Z on 11-09 the sweep's get_state of onboarding renders prod 60s went out 0.35 s after idle unload's kill of it and the
+   * daemon refused it with "Session worker is stopping", a failed daemon call in d7's 21:46Z minute.
+   */
+  private async rootBusy(id: string): Promise<boolean> {
+    const stop = this.source.unloading?.(id);
+    if (stop && await stop.catch(() => false)) return false;
+    return this.threads.sessionActive(id);
+  }
+
   /** Archives a root once the idle unload's stop of it, if one is under way, ended (`CheckInSource.unloading`), so it gets one kill. */
   private async archiveRoot(id: string, why: ArchiveBy): Promise<void> {
     await this.source.unloading?.(id)?.catch(() => false);
@@ -1287,7 +1298,7 @@ export class Chats {
         try {
           const summary = await this.summary(id);
           if (summary?.lifecycle === "archived") return;
-          if (await this.source.waking?.(id) || await this.threads.sessionActive(id)) { this.rootsEnded.delete(id); return; }
+          if (await this.source.waking?.(id) || await this.rootBusy(id)) { this.rootsEnded.delete(id); return; }
           if (await this.updateHold("idle root is archived")) { this.rootsEnded.delete(id); return; }
           const sessionFile = summary?.sessionFile;
           const brief = sessionFile ? await sessionBrief(sessionFile) : undefined;
