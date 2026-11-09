@@ -119,11 +119,17 @@ export function dropWindows(lastFinal: string): { base: Span; recent: Span } {
 
 /** The pages that fell, from Search Console impressions per page and day in the windows that end on `daily.end`, biggest base first.
  * A page in `noindex` answers robots noindex, so we asked Google to drop it: /blog/tag/creator-selection went noindex as a one-article
- * tag page after the 10-15 merge of 20 guides into 13 (e177d75478), and its 6 to 0.3 a day on 10-16..10-18 was that ask working. */
+ * tag page after the 10-15 merge of 20 guides into 13 (e177d75478), and its 6 to 0.3 a day on 10-16..10-18 was that ask working.
+ * A #fragment URL is a jump link into its page, so its rows count toward that page: on 11-09, 9 of 21 dropped pages were
+ * fragments of /blog/average-instagram-followers. */
 export function droppedPages(daily: PagesDaily, noindex: ReadonlySet<string> = new Set()): DroppedPage[] {
   const { base, recent } = dropWindows(daily.end);
   const pages = new Map<string, { date: string; impressions: number }[]>();
-  for (const row of daily.rows) if (row.date >= base.start && row.date <= recent.end) pages.set(row.page, [...pages.get(row.page) ?? [], row]);
+  for (const row of daily.rows) {
+    if (row.date < base.start || row.date > recent.end) continue;
+    const page = row.page.split("#")[0]!;
+    pages.set(page, [...pages.get(page) ?? [], row]);
+  }
   return [...pages].flatMap(([page, rows]) => {
     if (noindex.has(page)) return [];
     const first = rows.reduce((min, row) => (row.date < min ? row.date : min), recent.end);

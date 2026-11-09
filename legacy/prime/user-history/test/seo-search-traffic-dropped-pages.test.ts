@@ -60,3 +60,14 @@ test("a page that answers robots noindex is left out of dropped_pages, since we 
   }) as typeof fetch;
   assert.deepEqual(await readNoindex([JA_PAY, IG_ALGO, STEADY, LAUNCH], get), [IG_ALGO, STEADY]);
 });
+
+test("#fragment rows of one page count as that one page (11-09: 9 of 21 dropped pages were jump links of one article)", () => {
+  const PAGE = "https://virev.ai/blog/average-instagram-followers";
+  const rows = ["", "#by-country", "#for-creators"].flatMap(fragment => Array.from({ length: 17 }, (_, i) => {
+    const date = new Date(Date.parse("2026-10-24") + i * 86_400_000).toISOString().slice(0, 10);
+    return { page: PAGE + fragment, date, impressions: date >= "2026-11-07" ? 0 : 4 };
+  }));
+  const daily: PagesDaily = { start: "2026-10-24", end: "2026-11-09", rows };
+  assert.deepEqual(droppedPages(daily), [{ page: PAGE, baseDaily: 12, recentDaily: 0 }]);
+  assert.deepEqual(droppedPages(daily, new Set([PAGE])), []);
+});
