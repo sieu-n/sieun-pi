@@ -10,6 +10,7 @@ import path from "node:path";
 import { chromium } from "playwright-core";
 import { hasDisplayServer, startDisplay } from "./display.mjs";
 import { cacheShared, pruneShared } from "./http-cache.mjs";
+import { holdLeaves } from "./leave.mjs";
 import { startLoopbackTunnel } from "./loopback.mjs";
 
 // Chrome's profile lives in a folder named for this runner's pid, because Playwright makes it under os.tmpdir() and a
@@ -54,14 +55,6 @@ let page = null;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Resolves once the page's Convex client has an answer for every mutation it sent: virev's app pages expose
- *  window.__convexWritesLanded (WRITES_LANDED_KEY in auto-sns-agent apps/search/src/lib/convex/leave.ts). A page
- *  without it, or one already leaving, answers at once. */
-async function writesLanded(p) {
-  await p.evaluate(() => window.__convexWritesLanded?.()).catch((e) => {
-    if (!/Execution context was destroyed|Target page, context or browser has been closed/.test(String(e))) throw e;
-  });
-}
 const targetId = (p) => ids.get(p);
 const getTabByTargetId = (id) => tabs.find((p) => targetId(p) === id) || null;
 
@@ -72,16 +65,7 @@ function adopt(p) {
   Object.defineProperty(p, "targetId", { get: () => ids.get(p) });
   const locator = p.locator.bind(p);
   p.locator = (selector, options) => locator(/^e\d+$/.test(selector) ? `aria-ref=${selector}` : selector, options);
-  // A goto or reload first waits for the page's unanswered Convex mutations (auto-sns-agent $lib/convex/leave.ts), since
-  // the server drops a write it was retrying once the page's socket closes: two staging walks' page.goto lost an
-  // askCount write each at 18:12Z and 18:21Z on 11-09.
-  for (const name of ["goto", "reload"]) {
-    const leave = p[name].bind(p);
-    p[name] = async (...args) => {
-      await writesLanded(p);
-      return leave(...args);
-    };
-  }
+  holdLeaves(p);
   p.on("close", () => {
     const i = tabs.indexOf(p);
     if (i >= 0) tabs.splice(i, 1);
