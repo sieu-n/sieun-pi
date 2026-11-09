@@ -67,7 +67,8 @@ export interface SwitchFrame { startMs: number; sentMs: number; firstByteMs: num
 export interface BrowserSwitch { id: string; ms: number | null; lines?: number; primed?: boolean | null; frame?: SwitchFrame | null }
 /** `settle`: the prefetches back when the probe's settle ended and its clicks began, and their median time. */
 export interface BrowserTabs { switches: BrowserSwitch[]; banner?: string | null; settle?: { frames: number; medianMs: number | null } }
-export interface BrowserOutput { loads: BrowserLoad[]; tabs: BrowserTabs | { error: string }; load?: number; ms?: number; error?: string }
+/** `late`: the probe ran past `BROWSE_BUDGET_MS`, as it does when the Mac drops off mid-run, so `runAway` counts it as a failed Mac read. */
+export interface BrowserOutput { loads: BrowserLoad[]; tabs: BrowserTabs | { error: string }; load?: number; ms?: number; error?: string; late?: boolean }
 /** `create` is the send that rides on the create call, which also waits on the Mac's worker start. */
 export interface SendTiming { marker: string; sentAt: number; firstTokenAt: number; create?: boolean }
 export interface Reading { value?: number; flagged: FlaggedSlice[]; lastEventAt?: number }
@@ -265,7 +266,7 @@ async function browse(config: ChatConfig, chatId: string): Promise<BrowserOutput
     const loads = over ? output.loads.map(sample => sample.error ? { error: late } : sample) : output.loads;
     const tabs = over && "error" in output.tabs ? { error: late } : output.tabs;
     const load = await onMac("sysctl -n vm.loadavg", 40).then(parseLoadavg, () => undefined);
-    return { ...output, loads, tabs, ...(load === undefined ? {} : { load }) };
+    return { ...output, loads, tabs, ...(load === undefined ? {} : { load }), ...(over ? { late: true } : {}) };
   } finally {
     clearTimeout(stop);
     repl.stop();
@@ -377,10 +378,13 @@ const settle = <T>(promise: Promise<T>): Promise<T | Error> => promise.catch((er
 /**
  * The `host_away` item for this run: Tailscale's read before the Mac reads (`away`), else, when a Mac read failed, the item `silent` gives for
  * a Mac that answers no tailscale ping after it. On 11-04 at 01:06Z and 01:13Z the Mac read online, then slept during the run: Aside's ssh
- * exited 255, the ping ssh and the sends timed out, and the run read "the precheck failed" instead of a rerun once the Mac is back.
+ * exited 255, the ping ssh and the sends timed out, and the run read "the precheck failed" instead of a rerun once the Mac is back. A browse
+ * that ran past its budget fails too: on 11-09 at 02:55Z the Mac dropped off mid-browse, 9 of 10 loads ran past 190 s and the one load
+ * before the drop (1.76 s) became cold_load_s, a miss, while runs with the Mac up read 0.32 to 0.45 s.
  */
 export async function runAway(away: FlaggedSlice | undefined, reads: readonly unknown[], silent: () => Promise<FlaggedSlice | undefined>): Promise<FlaggedSlice | undefined> {
-  return away ?? (reads.some(read => read instanceof Error) ? silent() : undefined);
+  const failed = (read: unknown) => read instanceof Error || (read as Partial<BrowserOutput> | null)?.late === true;
+  return away ?? (reads.some(failed) ? silent() : undefined);
 }
 
 export async function measure(chatId: string): Promise<PrecheckOutput> {
@@ -395,10 +399,12 @@ export async function measure(chatId: string): Promise<PrecheckOutput> {
     offline ? skipped : settle(onMac(`ping -c 5 -q ${host}`, 40)),
     settle(exec("journalctl", ["--user", "-u", "sieun-pi-chat", "--since", `@${Math.floor((at - 25 * 3_600_000) / 1000)}`, "-o", "short-iso-precise", "--no-pager"], { timeoutMs: 60_000 })),
   ]);
-  const gone = await runAway(away, [browser, ping], () => macSilent(MAC, "tab switch, cold load and the Mac chat reply wait are", at));
+  const silent = () => macSilent(MAC, "tab switch, cold load and the Mac chat reply wait are", at);
+  const early = await runAway(away, [browser, ping], silent);
   const startSkill = await readFile(join(DATA_DIR, "new-chat.json"), "utf8").then(text => parseStartSkill((JSON.parse(text) as { startSkill?: unknown }).startSkill ?? null), () => null);
-  const replies = gone ? new Error(gone.excerpt) : await settle(sendProbe(config, FIRST_REPLY_MS, startSkill));
+  const replies = early ? new Error(early.excerpt) : await settle(sendProbe(config, FIRST_REPLY_MS, startSkill));
   const macSession = replies instanceof Error ? replies : await settle(onMac(`cat .prime/agent/sessions/${replies.id.replace(/[^0-9a-f-]/g, "")}.jsonl`, 40));
+  const gone = early ?? await runAway(undefined, [replies, macSession], silent);
   const metrics: Record<string, number> = {};
   const flagged: FlaggedSlice[] = [];
   const sourceError = (excerpt: string) => flagged.push({ at, kind: "source_error", excerpt: excerpt.slice(0, 600) });

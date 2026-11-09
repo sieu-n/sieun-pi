@@ -463,3 +463,9 @@ test("a Mac that sleeps during the run reads as host_away when its reads failed 
   assert.equal(pinged, false);
   assert.deepEqual(await runAway(before, [new Error("x")], async () => asleep), before);
 });
+
+test("a browse that ran past its budget is a failed Mac read, so a Mac that dropped mid-browse reads as host_away (11-09 02:55Z)", async () => {
+  const asleep = { at, kind: HOST_AWAY, host: MAC_HOST, excerpt: "the Mac answered no ssh and no tailscale ping" };
+  const late = { loads: [{ shown: 1756 }, { error: "the Aside probe ran past 190 s" }], tabs: { error: "the Aside probe ran past 190 s" }, late: true };
+  assert.deepEqual(await runAway(undefined, [late, "rtt"], async () => asleep), asleep);
+});
