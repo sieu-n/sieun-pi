@@ -217,11 +217,14 @@ def claude_harvest(tokens):
     if not login_id:
         raise LoginFailed("Claude's profile names no account")
     email = account.get("email") or account.get("email_address") or (tokens.get("account") or {}).get("email_address")
+    now_ms = int(time.time() * 1000)
     secret = {"accessToken": tokens["access_token"], "refreshToken": tokens["refresh_token"],
-              "expiresAt": int(time.time() * 1000) + int(tokens.get("expires_in") or 8 * 3600) * 1000,
+              "expiresAt": now_ms + int(tokens.get("expires_in") or 8 * 3600) * 1000,
               "scopes": [s for s in (tokens.get("scope") or " ".join(CLAUDE_SCOPES)).split(" ") if s],
               "subscriptionType": CLAUDE_PLANS.get(org.get("organization_type")),
               "rateLimitTier": org.get("rate_limit_tier")}
+    if tokens.get("refresh_token_expires_in") is not None:
+        secret["refreshTokenExpiresAt"] = now_ms + int(tokens["refresh_token_expires_in"]) * 1000
     from .usage import tier_label
     record = {"id": login_id, "email": email, "tier": tier_label(secret),
               "oauthAccount": {"accountUuid": login_id, "emailAddress": email,

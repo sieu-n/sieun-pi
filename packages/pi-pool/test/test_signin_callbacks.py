@@ -137,6 +137,15 @@ class ReservedAccountAdd(InProcessStore):
         self.assertEqual(observed, [True])
         self.assertEqual(sum(row["id"] == account_id for row in self.index()), 1)
 
+    def test_login_keeps_the_refresh_grant_end(self):
+        # 11-09: claude12's fresh login had no refreshTokenExpiresAt until its first refresh, so d5's 48 h grant warning could not see it.
+        before = int(time.time() * 1000)
+        with patch.object(signin, "claude_profile", return_value=PROFILE):
+            secret = signin.claude_harvest({**TOKENS, "refresh_token_expires_in": 30 * 86400})["secret"]
+        self.assertGreaterEqual(secret["refreshTokenExpiresAt"], before + 30 * 86400 * 1000)
+        with patch.object(signin, "claude_profile", return_value=PROFILE):
+            self.assertNotIn("refreshTokenExpiresAt", signin.claude_harvest(TOKENS)["secret"])
+
     def test_reauth_login_block_cleanup_and_usage_refresh_keep_off(self):
         with patch.object(signin, "claude_profile", return_value=PROFILE):
             harvest = signin.claude_harvest(TOKENS)
