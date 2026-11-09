@@ -45,6 +45,7 @@ import {
 	commitPage,
 	readForEdit,
 	supersedePage,
+	withPageLock,
 	WriteError,
 	type Edit,
 } from './wiki-write';
@@ -578,21 +579,24 @@ const API = {
 				const b = await readJson(c);
 				if (!b || typeof b.path !== 'string' || !Array.isArray(b.edits))
 					return fail('Body needs string "path" + "edits" array of {old_string,new_string}', 400);
-				const before = await readForEdit(b.path);
-				if (before === null) return fail('page not found — PATCH edits an existing page; POST to create', 404);
-				const { content, applied } = applyEdits(before, b.edits as Edit[]);
-				const checked = await checkWrite(b.path, before, content);
-				if ('rejected' in checked) return checked.rejected;
-				// PATCH builds on a full disk read, so a shorter result is a real edit, never a read-cap truncation.
-				const result = await commitPage({
-					rawPath: b.path,
-					content,
-					author: b.author,
-					summary: b.summary,
-					baseVersion: b.baseVersion,
-					allowTruncate: true,
+				// The lock holds the read the edits apply to, so an edit lands on the page as the write before it left it.
+				return withPageLock(b.path, async () => {
+					const before = await readForEdit(b.path);
+					if (before === null) return fail('page not found — PATCH edits an existing page; POST to create', 404);
+					const { content, applied } = applyEdits(before, b.edits as Edit[]);
+					const checked = await checkWrite(b.path, before, content);
+					if ('rejected' in checked) return checked.rejected;
+					// PATCH builds on a full disk read, so a shorter result is a real edit, never a read-cap truncation.
+					const result = await commitPage({
+						rawPath: b.path,
+						content,
+						author: b.author,
+						summary: b.summary,
+						baseVersion: b.baseVersion,
+						allowTruncate: true,
+					});
+					return json({ ...writeAnswer(result, checked), applied });
 				});
-				return json({ ...writeAnswer(result, checked), applied });
 			}),
 		},
 		POST: {
@@ -612,19 +616,21 @@ const API = {
 				const b = await readJson(c);
 				if (!b || typeof b.path !== 'string' || typeof b.content !== 'string')
 					return fail('Body needs string "path" + "content"', 400);
-				const checked = await checkWrite(b.path, await readForEdit(b.path), b.content);
-				if ('rejected' in checked) return checked.rejected;
-				const result = await commitPage({
-					rawPath: b.path,
-					content: b.content,
-					author: b.author,
-					summary: b.summary,
-					baseVersion: b.baseVersion,
-					allowTruncate: b.allowTruncate === true,
-					refuseStaleCopy: true,
+				return withPageLock(b.path, async () => {
+					const checked = await checkWrite(b.path, await readForEdit(b.path), b.content);
+					if ('rejected' in checked) return checked.rejected;
+					const result = await commitPage({
+						rawPath: b.path,
+						content: b.content,
+						author: b.author,
+						summary: b.summary,
+						baseVersion: b.baseVersion,
+						allowTruncate: b.allowTruncate === true,
+						refuseStaleCopy: true,
+					});
+					// An identical write saves nothing, so it answers 200 with changed: false and the current version.
+					return json(writeAnswer(result, checked), { status: result.changed ? 201 : 200 });
 				});
-				// An identical write saves nothing, so it answers 200 with changed: false and the current version.
-				return json(writeAnswer(result, checked), { status: result.changed ? 201 : 200 });
 			}),
 		},
 	},

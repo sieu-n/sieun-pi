@@ -2,8 +2,9 @@
  * The wiki write path: str_replace edits and full-content creates, each logged as a SQLite revision with a unified diff.
  * The EDITABLE gate lives in the route; this module confines paths to content/, rejects @code/ and allows page extensions only.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { statSync } from 'node:fs';
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -199,8 +200,40 @@ function resolveWritePath(rawPath: string): { rel: string; full: string } {
 	return { rel, full };
 }
 
+/** The tail of each page's write queue in this process, by content-relative path. */
+const pageQueues = new Map<string, Promise<void>>();
+/** The page paths whose lock the current async call chain holds, so a locked caller can call commitPage on the same page. */
+const heldPages = new AsyncLocalStorage<ReadonlySet<string>>();
+
+/**
+ * Run fn after every earlier write of the same page in this process settles, so a page's read, base check and write run
+ * as one step. Why: at about 09:01Z on 2026-11-09 two writes of apps/search/campaigns/counts.html on base v28 both passed
+ * the base check while the page gates ran; one saved v29 and the other failed with EACCES on the first's temp file,
+ * where it should have answered 409 stale base. With other timing both would have saved and the second dropped the first.
+ */
+export async function withPageLock<T>(rawPath: string, fn: () => Promise<T>): Promise<T> {
+	const { rel } = resolveWritePath(rawPath);
+	const held = heldPages.getStore();
+	if (held?.has(rel)) return fn();
+	const previous = pageQueues.get(rel) ?? Promise.resolve();
+	const result = previous.then(() => heldPages.run(new Set([...(held ?? []), rel]), fn));
+	const tail = result.then(
+		() => undefined,
+		() => undefined,
+	);
+	pageQueues.set(rel, tail);
+	void tail.then(() => {
+		if (pageQueues.get(rel) === tail) pageQueues.delete(rel);
+	});
+	return result;
+}
+
 /** Write full content to a page, logging a revision + diff. baseVersion (if given) is checked for optimistic concurrency. */
-export async function commitPage(input: {
+export function commitPage(input: Parameters<typeof commitPageLocked>[0]): ReturnType<typeof commitPageLocked> {
+	return withPageLock(input.rawPath, () => commitPageLocked(input));
+}
+
+async function commitPageLocked(input: {
 	rawPath: string;
 	content: string;
 	author?: string;
@@ -491,9 +524,14 @@ async function writeLogged(input: {
 }): Promise<WriteResult> {
 	await mkdir(path.dirname(input.full), { recursive: true });
 	if (input.rel.endsWith('.html') && (isCuratedPath(input.rel) || input.rel === 'index.html')) {
-		const temp = `${input.full}.${process.pid}.write`;
-		await writeFile(temp, input.content, { encoding: 'utf8', mode: 0o444 });
-		await rename(temp, input.full);
+		const temp = `${input.full}.${process.pid}.${Math.random().toString(36).slice(2)}.write`;
+		try {
+			await writeFile(temp, input.content, { encoding: 'utf8', mode: 0o444 });
+			await rename(temp, input.full);
+		} catch (error) {
+			await rm(temp, { force: true });
+			throw error;
+		}
 	} else await writeFile(input.full, input.content, 'utf8');
 	const diff = unifiedDiff(input.before, input.content, input.rel);
 	const stats = changeStats(input.before, input.content);
@@ -574,12 +612,16 @@ async function resolveSupersedeTarget(by: string, fromRel: string): Promise<stri
  * session is frozen, but a reader who opens its stale page must still find the new one.
  * Only the JSON inside the meta comment changes; every other byte of the file stays as it was.
  */
-export async function supersedePage(input: {
+export function supersedePage(input: {
 	rawPath: string;
 	by: string;
 	author?: string;
 	summary?: string;
 }): Promise<WriteResult & { superseded_by: string; changed: boolean }> {
+	return withPageLock(input.rawPath, () => supersedePageLocked(input));
+}
+
+async function supersedePageLocked(input: Parameters<typeof supersedePage>[0]): ReturnType<typeof supersedePage> {
 	const { rel, full } = resolveWritePath(input.rawPath);
 	const folder = sessionFolderOf(rel);
 	if (folder && rel === `${folder}/index.html`)
