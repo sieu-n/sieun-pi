@@ -96,16 +96,19 @@ function wholeRun(name: string, args: string[]): string | null {
 /**
  * A check script such as auto-sns-agent's packages/config/kit-check.mjs: a node script named for a check that runs svelte-check, tsc or tsgo.
  * Since auto-sns-agent 380be3218 that kit-check.mjs runs only the scoped save check of the changed files in apps/search on the Mac
- * (scopedOnMac), at 1.19 GB and 7 s there on 11-08, unless KIT_CHECK_WHOLE is set, so that run gets no note.
+ * (scopedOnMac), at 1.19 GB and 7 s there on 11-08, unless KIT_CHECK_WHOLE is set, so that run gets no note. Its SCOPED table later
+ * named apps/virev-demo too, whose scoped check peaked at 1.0 to 1.7 GB on us-metal02 against 4.0 GB for the whole one, so each app
+ * the script names in quotes beside scopedOnMac gets no note.
  */
 function checkScript(args: string[], cwd: string, vars: Map<string, string>): string | null {
 	const file = args.find((a) => !a.startsWith("-"));
-	if (!file || !/check/i.test(basename(file))) return null;
+	if (!file || !/check/i.test(basename(file)) || /\.test\.[cm]?[jt]s$/.test(file) || args.includes("--test")) return null;
 	const text = readFile(at(cwd, file));
 	if (!text || !/svelte-check|\btsgo\b|\btsc\b/.test(text)) return null;
 	const root = checkoutOf(cwd);
 	const whole = vars.has("KIT_CHECK_WHOLE") || process.env.KIT_CHECK_WHOLE;
-	if (/\bscopedOnMac\b/.test(text) && root && relative(root, resolve(cwd)) === "apps/search" && !whole) return null;
+	const app = root ? relative(root, resolve(cwd)) : "";
+	if (/\bscopedOnMac\b/.test(text) && app && text.includes(`'${app}'`) && !whole) return null;
 	return `${basename(file)} runs a whole-app type check`;
 }
 

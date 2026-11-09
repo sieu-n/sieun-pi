@@ -125,7 +125,7 @@ test("on the Mac, a kit-check.mjs with scopedOnMac runs apps/search's check with
   const scoped = join(root, "auto-sns-agent-scoped");
   for (const dir of [join(scoped, ".git"), join(scoped, "scripts/repo/agent"), join(scoped, "packages/config"), join(scoped, "apps/search"), join(scoped, "apps/admin")]) mkdirSync(dir, { recursive: true });
   writeFileSync(join(scoped, "scripts/repo/agent/commit.mjs"), "");
-  writeFileSync(join(scoped, "packages/config/kit-check.mjs"), "export const scopedOnMac = () => true;\nspawnSync('svelte-check', process.argv.slice(2));\n");
+  writeFileSync(join(scoped, "packages/config/kit-check.mjs"), "export const SCOPED_APP = 'apps/search';\nexport const scopedOnMac = () => true;\nspawnSync('svelte-check', process.argv.slice(2));\n");
   const check = "pnpm i18n:compile && node ../../packages/config/kit-check.mjs --tsconfig ./tsconfig.json --tsgo --incremental";
   for (const app of ["search", "admin"]) writeFileSync(join(scoped, "apps", app, "package.json"), JSON.stringify({ scripts: { check, "i18n:compile": "paraglide-js compile" } }));
   for (const [text, cwd] of [["pnpm -C apps/search check", scoped], ["pnpm check", join(scoped, "apps/search")]]) {
@@ -169,4 +169,20 @@ test("on us-metal02, a check a box kernel sends to the Mac over ssh runs with a 
   } finally {
     process.env.HOME = savedHome;
   }
+});
+
+// The SCOPED table that names apps/virev-demo beside apps/search: its scoped check peaked at 1.0 to 1.7 GB on us-metal02, against 4.0 GB whole.
+test("on the Mac, every app a kit-check.mjs SCOPED table names runs its check with no note, and an app it does not name keeps it", async () => {
+  process.env.GLOBAL_RULES_PLATFORM = "darwin";
+  const table = join(root, "auto-sns-agent-table");
+  for (const dir of [join(table, ".git"), join(table, "scripts/repo/agent"), join(table, "packages/config"), ...["search", "virev-demo", "admin"].map((a) => join(table, "apps", a))]) mkdirSync(dir, { recursive: true });
+  writeFileSync(join(table, "scripts/repo/agent/commit.mjs"), "");
+  writeFileSync(join(table, "packages/config/kit-check.mjs"), "export const SCOPED = {\n\t'apps/search': ['a.mjs', 'SEARCH'],\n\t'apps/virev-demo': ['b.mjs', 'VIREV_DEMO'],\n};\nexport const scopedOnMac = () => true;\nspawnSync('svelte-check', []);\n");
+  for (const app of ["search", "virev-demo", "admin"]) writeFileSync(join(table, "apps", app, "package.json"), JSON.stringify({ scripts: { check: "node ../../packages/config/kit-check.mjs --tsconfig ./tsconfig.json --tsgo" } }));
+  assert.deepEqual(await kernel("pnpm check", join(table, "apps/virev-demo")), { block: false });
+  assert.deepEqual(await kernel("pnpm -C apps/search check", table), { block: false });
+  assert.match((await kernel("pnpm -C apps/admin check", table)).warning ?? "", /Mac heavy check/);
+  assert.match((await kernel("KIT_CHECK_WHOLE=1 pnpm check", join(table, "apps/virev-demo"))).warning ?? "", /Mac heavy check/);
+  writeFileSync(join(table, "packages/config/kit-check.test.mjs"), "import { scopedOnMac } from './kit-check.mjs';\n// svelte-check\n");
+  assert.deepEqual(await kernel("node --test --test-isolation=none packages/config/kit-check.test.mjs", table), { block: false });
 });
