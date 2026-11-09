@@ -1275,9 +1275,9 @@ export class Duties {
         const handed = await this.handOff(chatId, dutyId, previous.working, handOff, brief.duty.name, at);
         if (handed) return { skipped: `${skipped}; handed it ${plural(handed)}` };
       }
-      // A held job that takes no hand-off (POOL_PARKED, a quota park) leaves the chat the items no maker was asked to fix.
+      // A held job that takes no hand-off (POOL_PARKED, a quota park) leaves the chat the items no maker works: never asked, or parked by pi-pool.
       if (previous.held && handOff && (dutyId === CHECK_IN_DUTY_ID || !previous.working)) {
-        const left = dutyId === CHECK_IN_DUTY_ID ? handOff : await this.unasked(chatId, dutyId, handOff);
+        const left = dutyId === CHECK_IN_DUTY_ID ? handOff : await this.unmoved(chatId, dutyId, handOff);
         const told = await this.handToChat(chatId, dutyId, previous.held, left, brief.duty.name, at);
         if (told) return { skipped: `${skipped}; handed the chat ${plural(told)}` };
       }
@@ -1359,7 +1359,7 @@ export class Duties {
       ? `${run} found ${fresh.length} step${fresh.length === 1 ? "" : "s"} nobody moves, and its job ${held.job.name} ${held.why}, so it takes no ` +
         `message until then. Give each a live owner in this turn: steer its job, start one, link a For you todo, or close it on evidence.`
       : `${run} found ${fresh.length} flagged item${fresh.length === 1 ? "" : "s"} that no session works: its job ${held.job.name} ${held.why}, so ` +
-        `it takes no message until then, and no session that made them is asked. Fix each through a subagent of this chat, whose turns use this ` +
+        `it takes no message until then, and no session that made them works them or pi-pool parked it. Fix each through a subagent of this chat, whose turns use this ` +
         `chat's pi-pool slot, since a new job would wait in the same pool, or close it on evidence.`;
     const send = (fresh: readonly FlaggedSlice[]) => tell(chatId, [`${text(fresh)} The run's findings are in ${handOff.detail}.`,
       ...fresh.map(itemLine)].join("\n"), { chat: chatId, duty: dutyId });
@@ -1388,11 +1388,25 @@ export class Duties {
 
   private makersFile(chatId: string, dutyId: string): string { return join(this.store.chatDir(chatId), `${dutyId}.makers.json`); }
 
-  /** The `handOff` items that no run asked a maker to fix (`<dutyId>.makers.json`). */
-  private async unasked(chatId: string, dutyId: string, handOff: HandOff): Promise<HandOff> {
+  /**
+   * The `handOff` items no maker works: those no run asked a maker to fix (`<dutyId>.makers.json`), and those whose maker's tree pi-pool parked
+   * on a slot in the last STALLED_MS. On 11-09 the 16:30Z run asked trees 01a15c6c and 01a1ba78 to fix 4 pages, pi-pool parked both at
+   * 16:31:38Z, and neither fixed its page before a subagent of the chat did at 18:20Z (~/work/d4-held-pages-1110).
+   */
+  private async unmoved(chatId: string, dutyId: string, handOff: HandOff): Promise<HandOff> {
     const stored = await readFile(this.makersFile(chatId, dutyId), "utf8").then(text => JSON.parse(text) as unknown, () => null);
     const asked = new Set(Array.isArray(stored) ? stored : []);
-    return { ...handOff, items: handOff.items.filter(slice => !asked.has(handOffKey(slice))) };
+    const since = this.now() - STALLED_MS;
+    const parked = new Map<string, Promise<boolean>>();
+    const parkedTree = (tree: string) => parked.get(tree) ?? parked.set(tree, this.host.jobs.poolParked?.({ id: tree, name: tree }, since, since)
+      .catch(error => { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: read maker tree ${tree.slice(0, 8)} slot waits: ${message(error)}`); return false; })
+      ?? Promise.resolve(false)).get(tree)!;
+    const items: FlaggedSlice[] = [];
+    for (const slice of handOff.items) {
+      const tree = slice.maker?.tree;
+      if (!asked.has(handOffKey(slice)) || (tree && await parkedTree(tree))) items.push(slice);
+    }
+    return { ...handOff, items };
   }
 
   /**

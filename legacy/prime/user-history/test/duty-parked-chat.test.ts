@@ -51,13 +51,14 @@ const reply = (at: string) => JSON.stringify({ type: "message", timestamp: at, m
 const slotWait = (at: string, slot: string) => JSON.stringify({ type: "message", timestamp: at, message: { role: "assistant", provider: "anthropic", content: [],
   stopReason: "error", errorMessage: `token hook gave no token (credential_unavailable): pi-pool: this session waits for its slot at ${slot}.` } });
 
-async function runsAt(times: readonly string[], hold: PoolHold | null, briefKeys?: readonly string[]) {
+async function runsAt(times: readonly string[], hold: PoolHold | null, briefKeys?: readonly string[], parkedMakers: readonly string[] = []) {
   const dir = await mkdtemp(join(tmpdir(), "duty-parked-chat-"));
   try {
     const agentDir = join(dir, "agent");
     await mkdir(join(agentDir, "sessions"), { recursive: true });
     await writeFile(join(agentDir, "sessions", `${JOB.id}.jsonl`),
       [reply("2026-11-09T14:05:17.249Z"), slotWait("2026-11-09T17:00:04.300Z", "2026-11-09T18:07:00.000Z")].join("\n") + "\n");
+    for (const tree of parkedMakers) await writeFile(join(agentDir, "sessions", `${tree}.jsonl`), slotWait("2026-11-09T16:31:38.000Z", "2026-11-09T18:07:00.000Z") + "\n");
     const precheck = join(dir, "precheck.mjs");
     await writeFile(precheck, `import { writeFileSync } from "node:fs"; writeFileSync(process.env.OUTPUT_FILE, JSON.stringify(${JSON.stringify({ metrics: { wiki_problems: 5 }, flagged: FLAGGED })}));`);
     const store = new DutyStore(dir);
@@ -133,4 +134,18 @@ test("a dream job parked right after its start, with every page in its brief, st
   assert.deepEqual(started, [], "p1514 keeps the parked job");
   assert.equal(told.length, 1, summaries[0]);
   for (const item of NO_MAKER) assert.ok(told[0]!.text.includes(item), `${item} reaches the chat`);
+});
+
+const CODE_CUT_3 = "01a15c6c-8bec-71fe-b7d3-1fac79a315c9";
+const BURST_WAIT = "01a1ba78-7815-77b8-9adc-b40247e66f1c";
+
+test("a page whose maker tree pi-pool parked after the ask reaches the chat too (11-09 16:31:38Z park, 17:16:42Z run)", async () => {
+  const { told, summaries } = await runsAt(["2026-11-09T17:16:42.674Z", "2026-11-09T17:32:12.857Z"], null, undefined, [CODE_CUT_3, BURST_WAIT]);
+  assert.equal(told.length, 1, summaries[0]);
+  const parked = FLAGGED.filter(slice => slice.maker && [CODE_CUT_3, BURST_WAIT].includes(slice.maker.tree)).map(slice => slice.item!);
+  assert.equal(parked.length, 4);
+  for (const item of [...NO_MAKER, ...parked]) assert.ok(told[0]!.text.includes(item), `${item} reaches the chat`);
+  for (const slice of FLAGGED.filter(entry => entry.maker && ![CODE_CUT_3, BURST_WAIT].includes(entry.maker.tree))) {
+    assert.ok(!told[0]!.text.includes(slice.item!), `${slice.item} stays with its working maker`);
+  }
 });
