@@ -95,6 +95,21 @@ test('a not-landed phrase is about the sha before it in its clause, not one in a
 	);
 });
 
+// 2026-11-09: notLandedLines dropped every block whose text opens on an inline tag, so it never read
+// "<li><code>8c1f60df87</code> was not on staging yet.</li>".
+test('a line that opens on a code tag or a commit link is read', () => {
+	const html = [
+		'<ol>',
+		'<li><code>8c1f60df87</code> was not on staging yet at 10:30Z.</li>',
+		'<li><a href="https://github.com/sieu-n/auto-sns-agent/commit/abc1234def"><code>abc1234def</code></a> had not landed at 10:30Z.</li>',
+		'</ol>',
+	].join('\n');
+	assert.deepEqual(
+		notLandedLines(html).map((l) => l.shas),
+		[['8c1f60df87'], ['abc1234def']],
+	);
+});
+
 test('a claim counts once a staging land names a dev tip that holds the commit, dated by the first such land', (t) => {
 	const dir = mkdtempSync(path.join(tmpdir(), 'landed-claims-'));
 	t.after(() => rmSync(dir, { recursive: true, force: true }));

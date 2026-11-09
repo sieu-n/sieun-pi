@@ -535,7 +535,7 @@ export function notLandedLines(html) {
 	const blocks = [];
 	for (const part of body.split(/(<\/?(?:li|p|td|th|tr|h[1-6]|div|ol|ul|table|blockquote|dd|dt|details|summary)\b[^>]*>)/i)) {
 		if (/^<h[1-6]\b/i.test(part)) section += 1;
-		const text = part.startsWith('<') ? '' : stripTags(part);
+		const text = stripTags(part);
 		if (text) blocks.push({ text, section });
 	}
 	const sentences = blocks.flatMap((block, at) =>
