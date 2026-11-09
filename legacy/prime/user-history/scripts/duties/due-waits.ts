@@ -121,6 +121,10 @@ export interface DueWait { chat: string; id: string; text: string; waitFor: stri
 /**
  * The open leaf steps of each board whose wait on a land or promote (`waitOnCommits`) came true. A step an open For you todo holds
  * (`heldByTodo`, or a todo's step field) or an owner correction parks (`parkedBy`) waits on the owner, not the land, and is left out.
+ * A commit in staging's own history is a land commit, which exists only once it landed, so a staging wait that names one names the build its
+ * work runs on and waits on no land: product guy's p170 on 11-09 waited for "16 re-walkers ... recheck every first-walk defect on staging
+ * 10a9ac9 (land 10a9ac9deb holds all 24 fixes)". The wait's time cannot tell this apart, since metal-management's p232 wrote its promote wait
+ * at 11-02 18:19Z, after promote 22 at 17:35Z had carried 6c413ea27, and that wait was still the one to clear.
  */
 export async function dueWaits(boards: ReadonlyMap<string, ChatBoard | null | undefined>, carry: (commit: string, branch: WaitBranch) => Promise<Carry | undefined>): Promise<DueWait[]> {
   const out: DueWait[] = [];
@@ -135,10 +139,12 @@ export async function dueWaits(boards: ReadonlyMap<string, ChatBoard | null | un
       steps.push({ id: item.id, text: item.text, waitFor: item.waitFor!, on });
     });
     for (const step of steps) {
-      const carried = await Promise.all(step.on.commits.map(commit => carry(commit, step.on.branch)));
-      if (carried.some(found => !found)) continue;
-      const lands = carried.flatMap(found => found!.land ?? []).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
-      out.push({ chat, id: step.id, text: step.text, waitFor: step.waitFor, branch: step.on.branch, commits: step.on.commits, ...lands.length ? { land: lands.at(-1)! } : {} });
+      const named = await Promise.all(step.on.commits.map(async commit => ({ commit, found: await carry(commit, step.on.branch) })));
+      const waited = step.on.branch === "staging" ? named.filter(({ found }) => !found || found.land) : named;
+      if (!waited.length || waited.some(({ found }) => !found)) continue;
+      const lands = waited.flatMap(({ found }) => found!.land ?? []).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+      out.push({ chat, id: step.id, text: step.text, waitFor: step.waitFor, branch: step.on.branch, commits: waited.map(({ commit }) => commit),
+        ...lands.length ? { land: lands.at(-1)! } : {} });
     }
   }
   return out;

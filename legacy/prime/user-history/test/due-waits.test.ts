@@ -1,6 +1,7 @@
 // Guards d9 stuck_steps_all on 11-09: metal-management's p232 sat blocked 6.5 days on "A prod promote carrying 6c413ea27; promote 22 (main
 // b1fb45b230, 11-02 17:35Z) did not include it", while promote 22's b1fb45b230 held it. Staging lands are one-parent commits with a
-// Land-From trailer, so 6c413ea27 was no ancestor of main and every step with a waitFor read as held on purpose.
+// Land-From trailer, so 6c413ea27 was no ancestor of main and every step with a waitFor read as held on purpose. Product guy's p170 then read
+// due on 11-09 05:34Z for re-walkers that ran "on staging 10a9ac9", staging's own land commit, while its job was working.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -49,6 +50,19 @@ test("a wait on a promote whose squash-landed commit main already holds is due, 
     const stuck = withDueWaits([], due.map(entry => ({ chat: entry.chat, id: entry.id, text: entry.text, why: dueWords(entry) })));
     assert.deepEqual(stuck.map(entry => entry.id), ["p232"]);
     assert.match(pushItems({ chat: CHAT, goals: [], steps: stuck, duties: [], upkeep: [] }), /p232 "step p232" \(its wait is over: main carries [0-9a-f]{9} since land/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a staging wait that names staging's own land commit names the build its work runs on, while one on the dev commit the land carries is due", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "due-waits-"));
+  try {
+    const { fix, land } = trainWith(dir);
+    const p170 = step("p170", `16 re-walkers (rewalk-<tool id>) recheck every first-walk defect on staging ${land.slice(0, 7)} (land ${land.slice(0, 10)} holds all 24 fixes), started 04:58Z`,
+      { status: "doing", waitForAt: "2026-11-09T05:17:00.000Z" });
+    const landed = step("p171", `land of ${fix.slice(0, 9)} reaches staging`, { waitForAt: "2026-10-29T00:00:00.000Z" });
+    const board: ChatBoard = { plan: [p170, landed], todos: [] } as unknown as ChatBoard;
+    const due = await dueWaits(new Map([[CHAT, board]]), landCarry(dir));
+    assert.deepEqual(due.map(entry => [entry.id, entry.commits, entry.land?.commit]), [["p171", [fix.slice(0, 9)], land]]);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
