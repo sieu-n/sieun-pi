@@ -748,8 +748,13 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
     slices.push({ kind: "recurred", item: slug, excerpt: clip(`${row.title ?? slug} came back on ${(row.recurred ?? []).slice(-1)[0]}, ${when} ${fix.commit ?? "?"}; skill ${row.skill ?? "?"}`) });
   }
   for (const commit of dream.reverts) slices.push({ kind: "revert", item: `${commit.repo}:${commit.sha.slice(0, 10)}`, excerpt: clip(commit.subject) });
-  for (const row of pagesRetouched ?? []) slices.push({ kind: "retouched", item: row.file, excerpt: `${row.file} changed by ${row.revisions} wiki-dream page revisions in 7 days` });
-  for (const row of dream.retouched) slices.push({ kind: "retouched", item: row.file, excerpt: `${row.file} changed by ${row.commits} (wiki-dream) commits in 7 days` });
+  // Retouched pages are context for a revert (wiki-dream.md step 6), so they are listed only beside one. A page that follows its code is
+  // rewritten each time that code moves (2,993 dream revisions from 11-02 to 11-09, 5 pages at 46 to 58 each, no revert), and a met run
+  // that lists them starts a job with nothing to do (`acts` in src/chat-duty-run.ts): the d4 runs of 11-03 01:30Z and 11-09 05:29Z did.
+  if (dream.reverts.length) {
+    for (const row of pagesRetouched ?? []) slices.push({ kind: "retouched", item: row.file, excerpt: `${row.file} changed by ${row.revisions} wiki-dream page revisions in 7 days` });
+    for (const row of dream.retouched) slices.push({ kind: "retouched", item: row.file, excerpt: `${row.file} changed by ${row.commits} (wiki-dream) commits in 7 days` });
+  }
   const landed = new Map((classes?.landed ?? []).map(([slug, , fix]) => [slug, fix]));
   for (const [slug, row] of classes?.open ?? []) {
     const fix = landed.get(slug);

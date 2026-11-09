@@ -35,7 +35,9 @@ test("retouched counts a page's dream revisions in wiki.db by its wiki path, and
     ...deps,
     exec: async (file, _args, options) => {
       if (file === "node") return JSON.stringify({ items: [] });
-      return options.cwd === "/pi" ? log("a1", ["skills/wiki/SKILL.md", "apps/llm-wiki/content/apps/search/x.html"]) + log("b2", ["skills/wiki/SKILL.md", "apps/llm-wiki/content/apps/search/x.html"]) : "";
+      // The revert makes the retouched items show, since they are listed only beside one.
+      return options.cwd === "/pi" ? log("a1", ["skills/wiki/SKILL.md", "apps/llm-wiki/content/apps/search/x.html"]) + log("b2", ["skills/wiki/SKILL.md", "apps/llm-wiki/content/apps/search/x.html"])
+        + `\x1ec3\x1fRevert "docs(wiki-dream): refresh"\nskills/wiki/SKILL.md\n` : "";
     },
     revisions: async () => [
       { path: "apps/search/onboarding-orgs.html", author: "agent", summary: "wiki dream: names the 12-pack" },
@@ -48,4 +50,24 @@ test("retouched counts a page's dream revisions in wiki.db by its wiki path, and
   assert.deepEqual(retouched.map(slice => slice.item), ["apps/search/onboarding-orgs.html", "sieun-pi:skills/wiki/SKILL.md"]);
   assert.match(retouched[0]!.excerpt, /changed by 2 wiki-dream page revisions in 7 days/);
   assert.equal(result.metrics.pages_retouched, 2);
+});
+
+// Guards the d4 verify run of 2026-11-09 05:29Z: every target met and its only flagged items were 5 retouched pages that follow their code,
+// so the run started a job with nothing to do. With no revert the count stays and no retouched item is listed.
+test("retouched pages are listed only beside a revert, and still counted without one", async () => {
+  const log = (sha: string, subject: string, files: string[]) => `\x1e${sha}\x1f${subject}\n${files.join("\n")}\n`;
+  const result = await measureDream({
+    ...deps,
+    exec: async (file, _args, options) => {
+      if (file === "node") return JSON.stringify({ items: [] });
+      return options.cwd === "/pi" ? log("a1", "docs(wiki-dream): refresh", ["skills/wiki/SKILL.md"]) + log("b2", "docs(wiki-dream): again", ["skills/wiki/SKILL.md"]) : "";
+    },
+    revisions: async () => [
+      { path: "domains/devops/convex-deployments.html", author: "agent", summary: "wiki-dream: last_verified only" },
+      { path: "domains/devops/convex-deployments.html", author: "agent", summary: "wiki-dream: follows a compose change" },
+    ],
+  }, []);
+  assert.deepEqual((result.flagged ?? []).filter(slice => slice.kind === "retouched"), []);
+  assert.equal(result.metrics.pages_retouched, 2);
+  assert.equal(result.metrics.dream_reverts, 0);
 });
