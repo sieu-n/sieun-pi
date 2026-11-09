@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type FlaggedSlice, type PrecheckOutput, PRECHECK_TARGET_MS } from "../../src/shared/chat-duties.ts";
+import { retryingExec } from "./connection-retry.ts";
 
 /**
  * The deploy reader of slack green guy's Slack Green services work duty (slack-green-services.ts), which folded in the Slack green deploys
@@ -283,7 +284,9 @@ export async function measureDeploys(deps: DeployDeps): Promise<PrecheckOutput> 
 
 /** Each command stops 10 s before the runner's PRECHECK_TARGET_MS, so a hung call still ends as a source error with every metric written. */
 const COMMAND_TIMEOUT_MS = PRECHECK_TARGET_MS - 10_000;
-export const exec: Exec = (file, args, options) => new Promise((resolve, reject) => {
+const execOnce: Exec = (file, args, options) => new Promise((resolve, reject) => {
   execFile(file, [...args], { encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, cwd: options?.cwd },
     (error, stdout, stderr) => error ? reject(new Error(`${file} ${args[0] ?? ""}: ${error.message} ${stderr}`.trim())) : resolve(stdout));
 });
+/** A gh or railway call that could not connect, such as gh's "error connecting to api.github.com" on 11-09, runs once more. */
+export const exec: Exec = retryingExec(execOnce);

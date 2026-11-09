@@ -9,6 +9,7 @@ import { CHECKS_WINDOW_MS, type DeployDeps, type Exec, exec, measureDeploys } fr
 import { parseEnv } from "./local-dev-uptime.ts";
 import { vercelToken } from "./vercel-login.ts";
 import { BoxBrowser } from "./box-browser.ts";
+import { CONNECTION_FAILURE, RETRY_PAUSE_MS, retryUnreached, retryingFetch } from "./connection-retry.ts";
 
 /**
  * The precheck of slack green guy's "Slack Green services work" duty (`node --import tsx scripts/duties/slack-green-services.ts`). No model call.
@@ -146,16 +147,20 @@ await p.close();
 console.log(JSON.stringify(read));`;
 }
 
-export async function walkPages(browser: Pick<BoxBrowser, "run">, login: { email: string; password: string } | Error): Promise<PageRead[]> {
+/** Each page reads once more when its load never reached slack.green (a net::ERR_ failure), as /en/pricing's ERR_CONNECTION_ABORTED on 11-09. */
+export async function walkPages(browser: Pick<BoxBrowser, "run">, login: { email: string; password: string } | Error, pauseMs = RETRY_PAUSE_MS): Promise<PageRead[]> {
   const reads: PageRead[] = [];
   for (const page of PAGES) {
     const url = `${BASE}${page.path}`;
     const base = { key: page.key, url, pageErrors: [], consoleErrors: [], api5xx: [] };
     if (page.signedIn && login instanceof Error) { reads.push({ ...base, error: `no sg-qa sign-in: ${login.message}` }); continue; }
-    try {
-      const out = await browser.run(pageCode(url, page.signedIn && !(login instanceof Error) ? login : undefined), 2 * PAGE_TIMEOUT_MS + 40_000);
-      reads.push({ ...base, ...JSON.parse(out.trim().split("\n").at(-1)!) as Partial<PageRead> });
-    } catch (error) { reads.push({ ...base, error: message(error) }); }
+    const code = pageCode(url, page.signedIn && !(login instanceof Error) ? login : undefined);
+    reads.push(await retryUnreached(async (): Promise<PageRead> => {
+      try {
+        const out = await browser.run(code, 2 * PAGE_TIMEOUT_MS + 40_000);
+        return { ...base, ...JSON.parse(out.trim().split("\n").at(-1)!) as Partial<PageRead> };
+      } catch (error) { return { ...base, error: message(error) }; }
+    }, read => CONNECTION_FAILURE.test(read.error ?? ""), pauseMs));
   }
   return reads;
 }
@@ -257,9 +262,10 @@ async function main(): Promise<void> {
   const errors: string[] = [];
   const fail = (what: string) => (error: unknown): undefined => { errors.push(`${what}: ${message(error)}`); return undefined; };
   const sb = await supabaseEnv().catch(fail("Supabase key"));
-  const deps: DeployDeps = { exec, fetch, now: Date.now, vercelToken };
+  const net = retryingFetch(fetch);
+  const deps: DeployDeps = { exec, fetch: net, now: Date.now, vercelToken };
   const pages = (async () => {
-    const login = sb ? await qaLogin(fetch, sb).catch((error: unknown) => new Error(message(error))) : new Error("no Supabase key");
+    const login = sb ? await qaLogin(net, sb).catch((error: unknown) => new Error(message(error))) : new Error("no Supabase key");
     const browser = BoxBrowser.start();
     try { return await walkPages(browser, login); } finally { await browser.close(); }
   })().catch((error: unknown) => { fail("box browser")(error); return [] as PageRead[]; });
@@ -269,7 +275,7 @@ async function main(): Promise<void> {
     return { deploys, worker };
   })();
   const [pageReads, { deploys, worker }, presence, routes] = await Promise.all([pages, backend,
-    sb ? readOwnerPresence(fetch, sb).catch(fail("owner's Slack presence")) : undefined, readRoutes(fetch, now)]);
+    sb ? readOwnerPresence(net, sb).catch(fail("owner's Slack presence")) : undefined, readRoutes(net, now)]);
   const result = servicesOutput({ pages: pageReads, deploys, routes, errors,
     ...worker ? { worker } : {}, ...presence ? { presence } : {} }, now);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
