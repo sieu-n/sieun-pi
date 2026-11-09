@@ -18,6 +18,13 @@ declare global { interface Window { __bootFeed?: BootFeed } }
 const feedKey = (feed: Feed): string => feed.feed === "thread" ? "thread:" + feed.id : feed.feed === "agents" ? "agents:" + feed.id : feed.feed === "sessions" && feed.delta ? "sessions:delta" + (feed.archived ? ":archived" : "") : feed.feed;
 
 const token = document.body.dataset.chatToken ?? "";
+/**
+ * A page opened with `?background` is one no person waits on, such as d2's probe tabs (scripts/duties/chat-page-mac-probe.ts): its thread
+ * feeds subscribe in the background, so opening a chat wakes no dormant chat and restarts no idle clock (ChatThreads.subscribe). Until 11-09
+ * every d2 run woke about 4 dormant chats, each held loaded 15 min, every 15 to 20 min while d2 was red (c92).
+ */
+const background = new URLSearchParams(location.search).has("background");
+const subscribeFrame = (sub: number, feed: Feed) => ({ type: "subscribe", sub, ...feed, ...(background && feed.feed === "thread" ? { background: true } : {}) });
 /** The server pings every 25 s; a socket silent this long is dead even if the browser has not noticed. */
 const silenceMs = 70_000;
 const stableMs = 10_000;
@@ -88,7 +95,7 @@ class FeedSocket {
       this.boot.delete(key);
       early.push(...this.bootFrames.get(sub) ?? []);
       this.bootFrames.delete(sub);
-    } else if (this.socket?.readyState === WebSocket.OPEN) this.send({ type: "subscribe", sub, ...feedOf(feed) });
+    } else if (this.socket?.readyState === WebSocket.OPEN) this.send(subscribeFrame(sub, feedOf(feed)));
     else this.connect();
     // After the caller has its stop function: a frame may stop the feed it arrives on.
     if (early.length) queueMicrotask(() => { for (const frame of early) this.dispatch(frame as { sub: number; event: string; data?: unknown }); });
@@ -122,7 +129,7 @@ class FeedSocket {
       this.listen();
       // Thread feeds first: the server holds an agents feed's frames until every thread feed asked for before it sent its first frame.
       const feeds = [...this.listeners].filter(([sub]) => !this.serverSubs.has(sub)).map(([sub, listener]) => ({ sub, feed: feedOf(listener.feed) }));
-      for (const { sub, feed } of [...feeds.filter(entry => entry.feed.feed === "thread"), ...feeds.filter(entry => entry.feed.feed !== "thread")]) this.send({ type: "subscribe", sub, ...feed });
+      for (const { sub, feed } of [...feeds.filter(entry => entry.feed.feed === "thread"), ...feeds.filter(entry => entry.feed.feed !== "thread")]) this.send(subscribeFrame(sub, feed));
       for (const sub of this.serverSubs) if (!this.listeners.has(sub) && !this.bootFrames.has(sub)) { this.serverSubs.delete(sub); this.send({ type: "unsubscribe", sub }); }
     };
     socket.onmessage = message => this.receive(message.data);

@@ -17,7 +17,7 @@ class FakeSocket implements Fake {
   send(text: string) { this.sent.push(JSON.parse(text)); }
   close() { this.closed = true; this.readyState = 3; }
 }
-Object.assign(globalThis, { document: fakeDocument, window: { addEventListener: () => {} }, WebSocket: FakeSocket });
+Object.assign(globalThis, { document: fakeDocument, window: { addEventListener: () => {} }, location: { search: "" }, WebSocket: FakeSocket });
 
 test("a hidden tab keeps its socket, and a reconnect subscribes with what the feed holds by then", async t => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });

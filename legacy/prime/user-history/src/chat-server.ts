@@ -539,7 +539,7 @@ export async function startChatServer({ backend, bundle, port, listenFd = null, 
     }
     try {
       const id = threadId(feed.id);
-      const stop = await backend.threads.subscribe(id, event => send("thread", wireEvent(event)), false, feed.have, feed.delta === true);
+      const stop = await backend.threads.subscribe(id, event => send("thread", wireEvent(event)), feed.background === true, feed.have, feed.delta === true);
       pushSide(id, side => send("side", side));
       return stop;
     } catch (error) {

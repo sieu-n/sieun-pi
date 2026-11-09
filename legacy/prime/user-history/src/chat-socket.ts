@@ -18,8 +18,9 @@ import type { ThreadHave } from "./shared/types.ts";
  * (shared/sessions-delta.ts `sessionsHave`), on an agents feed `key:hash` per agent (`agentsHave`), and on a thread feed its newest message
  * key and the board's `rev|updatedAt` (`ThreadHave`).
  */
-export type Feed = { feed: "sessions"; delta?: true; archived?: true; have?: string } | { feed: "login" } | { feed: "refresh" } | { feed: "usage" } | { feed: "thread"; id: string; delta?: true; have?: ThreadHave }
-  | { feed: "agents"; id: string; delta?: true; have?: string };
+/** A thread feed with `background: true` comes from a page no person waits on (client/feeds.ts `background`): it wakes no dormant chat. */
+export type Feed = { feed: "sessions"; delta?: true; archived?: true; have?: string } | { feed: "login" } | { feed: "refresh" } | { feed: "usage" }
+  | { feed: "thread"; id: string; delta?: true; have?: ThreadHave; background?: true } | { feed: "agents"; id: string; delta?: true; have?: string };
 export type FeedSend = (event: string, data: unknown) => void;
 /** Starts one feed. A thread feed opens the thread first, so it may resolve later; the returned function stops it. */
 export type FeedSubscriber = (feed: Feed, send: FeedSend) => (() => void) | Promise<() => void>;
@@ -53,7 +54,8 @@ function parseValue(value: unknown): { type: "subscribe"; sub: number; feed: Fee
     const raw = typeof message.have === "object" && message.have !== null ? message.have as Record<string, unknown> : {};
     const have: ThreadHave = { ...(typeof raw.last === "string" && /^m\d{1,16}\.\d{1,6}$/.test(raw.last) ? { last: raw.last } : {}),
       ...(typeof raw.board === "string" && raw.board.length <= 100 ? { board: raw.board } : {}) };
-    return { type: "subscribe", sub, feed: { feed: "thread", id: message.id, ...(message.delta === true ? { delta: true } : {}), ...(have.last || have.board ? { have } : {}) } };
+    return { type: "subscribe", sub, feed: { feed: "thread", id: message.id, ...(message.delta === true ? { delta: true } : {}), ...(have.last || have.board ? { have } : {}),
+      ...(message.background === true ? { background: true } : {}) } };
   }
   if (message.feed === "agents" && typeof message.id === "string" && message.id.length <= 512) {
     const have = message.delta === true && typeof message.have === "string" ? message.have : undefined;

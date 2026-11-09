@@ -81,7 +81,7 @@ test("the page subscribes the thread and its agents in the same tick, the thread
     send(text: string) { this.sent.push(JSON.parse(text) as Record<string, unknown>); }
     close() { this.readyState = 3; }
   }
-  Object.assign(globalThis, { WebSocket: FakeSocket, window: { addEventListener: () => {} },
+  Object.assign(globalThis, { WebSocket: FakeSocket, window: { addEventListener: () => {} }, location: { search: "" },
     document: { visibilityState: "visible", baseURI: "https://box.example/cap/", body: { dataset: { chatToken: "t" } }, getElementById: () => null, addEventListener: () => {} } });
   t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const { subscribeFeed } = await import("../src/client/feeds.ts");

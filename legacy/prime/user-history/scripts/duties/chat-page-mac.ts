@@ -250,17 +250,22 @@ export function parseLoadavg(text: string): number | undefined {
 }
 
 /**
- * Cold loads and tab switches in the owner's Aside on the Mac (chat-page-mac-probe.ts), over one `aside mcp` that runs there through ssh.
- * The page's URL carries `?t=<chat>`, which its boot script would otherwise add with a reload before the timed document.
+ * The page URL the probe opens. `?t=<chat>` is the query the page's boot script would otherwise add with a reload before the timed document.
+ * `background` makes the page's thread feeds background ones (client/feeds.ts), so the probe's opens and clicks wake no dormant chat and
+ * restart no chat's idle clock: until 11-09 each run woke about 4 dormant chats (vent, slack green guy, AI harness VP, metal-management),
+ * each then held loaded 15 min (c92). The page paints from the same first frames either way, since a wake attaches only after the paint.
  */
+export const probeUrl = (origin: string, capability: string, chatId: string): string =>
+  `${origin}/${capability}/?t=${encodeURIComponent(chatId)}&background=1#${chatId}`;
+
+/** Cold loads and tab switches in the owner's Aside on the Mac (chat-page-mac-probe.ts), over one `aside mcp` that runs there through ssh. */
 async function browse(config: ChatConfig, chatId: string): Promise<BrowserOutput> {
   if (!config.publicOrigin) throw new Error("configuration.json has no publicOrigin, so the Mac has no URL for the page");
   const repl = asideRepl("ssh", ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", MAC, "exec $HOME/.local/bin/aside mcp"]);
   let over = false;
   const stop = setTimeout(() => { over = true; repl.stop(); }, BROWSE_BUDGET_MS);
   try {
-    const url = `${config.publicOrigin}/${config.capability}/?t=${encodeURIComponent(chatId)}#${chatId}`;
-    const output = await browseInAside(repl, { url, loads: LOADS, switches: SWITCHES, loadTimeoutMs: 20_000, switchTimeoutMs: SWITCH_TIMEOUT_MS, clickTimeoutMs: 5000,
+    const output = await browseInAside(repl, { url: probeUrl(config.publicOrigin, config.capability, chatId), loads: LOADS, switches: SWITCHES, loadTimeoutMs: 20_000, switchTimeoutMs: SWITCH_TIMEOUT_MS, clickTimeoutMs: 5000,
       settleMs: 3000, gapMs: 300 });
     const late = `the Aside probe ran past ${BROWSE_BUDGET_MS / 1000} s`;
     const loads = over ? output.loads.map(sample => sample.error ? { error: late } : sample) : output.loads;

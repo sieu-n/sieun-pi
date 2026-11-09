@@ -6,7 +6,8 @@ import { createHash } from "node:crypto";
  * frames wait in `window.__bootFeed` until `client/feeds.ts` adopts the socket. On 10-18 a cold load from Korea sent its subscribes only
  * after app.js (227 KB) ran: about four round trips of 185 ms before the first message could arrive.
  *
- * The thread names the board this browser kept for it (client/board-cache.ts `BOARD_KEYS`), so an unchanged board sends nothing.
+ * The thread names the board this browser kept for it (client/board-cache.ts `BOARD_KEYS`), so an unchanged board sends nothing. A page URL
+ * with `?background` subscribes it in the background, as client/feeds.ts does for its later thread feeds.
  * The URL parse is `pageTarget` in client/permalink.ts in a few lines; `test/cold-load.test.ts` holds the two to the same answer.
  */
 export const BOOT_SUBS = { thread: 1, sessions: 2 } as const;
@@ -14,7 +15,7 @@ export const BOOT_SUBS = { thread: 1, sessions: 2 } as const;
 export const bootFeedScript = `(function(){try{
 var raw=decodeURIComponent(location.hash.slice(1)),at=raw.lastIndexOf("@"),id=at>0&&/^\\d+$/.test(raw.slice(at+1))?raw.slice(0,at):raw;
 if(!id)id=new URLSearchParams(location.search).get("t");
-var subs=[];if(id){var sub={sub:${BOOT_SUBS.thread},feed:"thread",id:id,delta:true};try{var held=JSON.parse(localStorage.getItem("chat.boardKeys")||"{}")[id];if(typeof held==="string")sub.have={board:held}}catch(e){}subs.push(sub)}subs.push({sub:${BOOT_SUBS.sessions},feed:"sessions",delta:true});
+var subs=[];if(id){var sub={sub:${BOOT_SUBS.thread},feed:"thread",id:id,delta:true};if(new URLSearchParams(location.search).has("background"))sub.background=true;try{var held=JSON.parse(localStorage.getItem("chat.boardKeys")||"{}")[id];if(typeof held==="string")sub.have={board:held}}catch(e){}subs.push(sub)}subs.push({sub:${BOOT_SUBS.sessions},feed:"sessions",delta:true});
 var url=new URL("api/ws",document.baseURI);url.protocol=url.protocol==="https:"?"wss:":"ws:";
 url.searchParams.set("token",document.body.dataset.chatToken||"");url.searchParams.set("subs",JSON.stringify(subs));
 var socket=new WebSocket(url),boot={socket:socket,subs:subs,frames:[]};

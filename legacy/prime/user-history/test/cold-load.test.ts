@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { brotliDecompressSync } from "node:zlib";
 import { runInNewContext } from "node:vm";
 import WebSocket from "ws";
+import { probeUrl } from "../scripts/duties/chat-page-mac.ts";
 import { bootFeedScript, bootTargetScript } from "../src/boot-feed.ts";
 import { pageTarget } from "../src/client/permalink.ts";
 import { startChatServer } from "../src/chat-server.ts";
@@ -108,6 +109,30 @@ test("the boot script reads the thread from the hash, else ?t=, the way the page
     const subs = JSON.parse(new URL(sockets[0]!).searchParams.get("subs")!) as Array<{ feed: string; id?: string }>;
     assert.equal(subs.find(sub => sub.feed === "thread")?.id ?? null, pageTarget({ hash, search })?.id ?? null, search + hash);
   }
+});
+
+// Guards d2 until 11-09: each run's Aside tabs woke about 4 dormant chats, each held loaded 15 min (c92).
+test("the d2 probe's page subscribes its thread feeds in the background, so its opens wake no dormant chat", async t => {
+  const backgrounds: Array<[string, boolean]> = [];
+  const backend = {
+    close: async () => {},
+    catalog: { subscribe: () => () => {}, childUsage: () => [] },
+    threads: { state: () => null, subscribe: async (id: string, send: (event: unknown) => void, background: boolean) => { backgrounds.push([id, background]); send({ type: "snapshot", snapshot: { messages: [] } }); return () => {}; } },
+  } as unknown as ChatBackend;
+  const server = await startChatServer({ backend, bundle: { js: script, css: style, version: "test" }, port: 0, capability: "cap", csrfToken: "token", stopToken: "stop",
+    identity: { pid: process.pid, instanceId: "test", socketPath: "/isolated-cold-background.sock" }, onStop: async () => {} });
+  t.after(() => server.close());
+  const page = new URL(probeUrl(new URL(server.url).origin, "cap", "chat-a"));
+  const sockets: string[] = [];
+  runInNewContext(bootFeedScript, { window: {}, URL, URLSearchParams, JSON, decodeURIComponent, location: { hash: page.hash, search: page.search },
+    document: { baseURI: new URL("/cap/", server.url).href, body: { dataset: { chatToken: "token" } } }, WebSocket: class { constructor(url: URL) { sockets.push(String(url)); } } });
+  const ws = new WebSocket(sockets[0]!.replace(/^wss:/, "ws:"), { headers: { origin: new URL(server.url).origin } });
+  t.after(() => ws.close());
+  await new Promise(resolve => ws.once("open", resolve));
+  // The tab switch's feed, as client/feeds.ts sends it from a page opened with ?background.
+  ws.send(JSON.stringify({ type: "subscribe", sub: 3, feed: "thread", id: "chat-b", delta: true, background: true }));
+  while (backgrounds.length < 2) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(backgrounds, [["chat-a", true], ["chat-b", true]]);
 });
 
 test("the boot script names the board this browser kept for the thread, and goes without it when storage throws", () => {

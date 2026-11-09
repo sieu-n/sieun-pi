@@ -18,6 +18,7 @@ import type { BrowserLoad, BrowserOutput, BrowserSwitch } from "./chat-page-mac.
  *   paint instead (`via: "first paint"`), since the prepainted lines come in the document's first paint.
  * - Every request other than GET is refused by a wrapped `fetch` from that moment instead of a route, so opening and leaving chats never marks
  *   the owner's chats read or warms a session; the page posts nothing before it, since it marks a chat read only when it leaves it or hides.
+ *   The page URL carries `background` (chat-page-mac.ts `probeUrl`), so its thread feeds wake no dormant chat either.
  * - A new tab is no new browser profile: the app's hashed assets (cache-control immutable) can come from Aside's cache, and the connection
  *   to the box can be reused. Each load lists how many assets came from the cache and how many over the network, counted once the page's
  *   load event has passed, since the prepainted lines show before app.js arrives.

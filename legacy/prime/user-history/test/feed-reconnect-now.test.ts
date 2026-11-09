@@ -14,7 +14,7 @@ class FakeSocket implements Fake {
 }
 Object.assign(globalThis, {
   document: { visibilityState: "visible", baseURI: "https://box.example/cap/", body: { dataset: { chatToken: "t" } }, getElementById: () => null, addEventListener: () => {} },
-  window: { addEventListener: () => {} }, WebSocket: FakeSocket,
+  window: { addEventListener: () => {} }, location: { search: "" }, WebSocket: FakeSocket,
 });
 
 const open = (socket: Fake) => { socket.readyState = 1; socket.onopen?.(); };
