@@ -40,6 +40,8 @@ import { type AwayHost, hostHolds } from "../../src/shared/host-hold.ts";
 import { stepIds } from "../../src/shared/step-ids.ts";
 import { appsWakes, greenPct, movedPrimeChats, readAppsChats } from "./chat-system-apps.ts";
 import { appsChatDuties, appsOwnerReads } from "../../src/apps-step-owners.ts";
+import { trainRepo } from "../../src/checkin-load.ts";
+import { dueWaits, dueWords, landCarry, waitOnCommits } from "./due-waits.ts";
 
 /**
  * The precheck of the AI harness chat's Chat system duty (d9). The owner on 10-19 (msg mvfb7zt0): "plan should be tasks all eventually clear -
@@ -429,9 +431,27 @@ async function poolTrees(): Promise<Set<string>> {
 
 /**
  * An open step nobody moves: its id and title, or only a count when the chat's check-in named no ids. `waitsOn` is the open step of the same
- * chat that its blocked wait names (`waitsOnStep`), whose live job it can name as its own.
+ * chat that its blocked wait names (`waitsOnStep`), whose live job it can name as its own. `due` says why its wait on a land or promote is
+ * over (`dueWaits`), which makes it stuck whoever owns it.
  */
-export interface StuckStep { chat: string; id?: string; text?: string; count?: number; waitsOn?: string }
+export interface StuckStep { chat: string; id?: string; text?: string; count?: number; waitsOn?: string; due?: string }
+
+/**
+ * The stuck steps with each due wait (`dueWaits`) added once, as a step whose wait is over: its wait no longer holds it, so it needs its next
+ * state. A step its check-in already counts gets the reason, and one held on an offline box (`held`) waits for that box.
+ */
+export function withDueWaits(stuck: readonly StuckStep[], due: readonly { chat: string; id: string; text: string; why: string }[],
+  held: readonly { chat: string; id: string }[] = []): StuckStep[] {
+  const out = stuck.map(step => {
+    const found = due.find(entry => entry.chat === step.chat && entry.id === step.id);
+    return found ? { ...step, due: found.why } : step;
+  });
+  for (const entry of due) {
+    if (out.some(step => step.chat === entry.chat && step.id === entry.id) || held.some(step => step.chat === entry.chat && step.id === entry.id)) continue;
+    out.push({ chat: entry.chat, id: entry.id, text: entry.text, due: entry.why });
+  }
+  return out;
+}
 
 /** The other open step of the board that a blocked step's waitFor names, such as CI and RepoOps' p361 waiting for p368 on 10-24. */
 export function waitsOnStep(board: ChatBoard | null, id: string): string | undefined {
@@ -635,7 +655,9 @@ export function chatSystemOutput(all: ChatSystemFacts): PrecheckOutput {
   head("stuck_steps", stuckCount, "open steps nobody moves", chats(facts.stuck));
   for (const entry of spread(facts.stuck, EXAMPLES)) {
     flagged.push({ kind: "stuck_steps", chat: entry.chat, ...entry.id ? { item: entry.id } : {},
-      excerpt: entry.id ? `${name(entry.chat)}: ${entry.id} ${quote(entry.text ?? "")} is open and nobody moves it.` : `${name(entry.chat)}: ${entry.count} open steps nobody moves.` });
+      excerpt: !entry.id ? `${name(entry.chat)}: ${entry.count} open steps nobody moves.` : entry.due
+        ? `${name(entry.chat)}: ${entry.id} ${quote(entry.text ?? "")} still waits, though its wait is over: ${entry.due}.`
+        : `${name(entry.chat)}: ${entry.id} ${quote(entry.text ?? "")} is open and nobody moves it.` });
   }
   for (const group of hostGroups(facts.hostHeld ?? [])) {
     const one = group.steps.length === 1;
@@ -771,7 +793,8 @@ const PUSH_ASK = "Give each goal a live job this turn, each open step nobody mov
 
 /** One stuck step in a push: its id and title with the step its wait names, or the count of a chat whose check-in named no ids. */
 const stuckItem = (step: StuckStep): string => step.id
-  ? `${step.id} ${quote(step.text ?? "")}${step.waitsOn ? ` (blocked on ${step.waitsOn}, so it can name ${step.waitsOn}'s live job)` : ""}`
+  ? `${step.id} ${quote(step.text ?? "")}${step.due ? ` (its wait is over: ${step.due}, so clear the wait and do its next step or close it)`
+    : step.waitsOn ? ` (blocked on ${step.waitsOn}, so it can name ${step.waitsOn}'s live job)` : ""}`
   : `${step.count ?? 1} with no ids in its check-in`;
 
 /** One chat's line of the push list: its idle goals, its stuck steps, its red duty lines and its upkeep items. */
@@ -909,7 +932,6 @@ async function main(): Promise<void> {
   // A :5184 chat's fix steps are read only to judge its duties for duties_green_pct; its open steps are on no list (`actingFacts`).
   const appsWaking = await appsWakes(now);
   const appsReads = new Map(apps.chats.map(chat => [chat.id, appsOwnerReads(chat, apps.sessions, appsWaking, now)] as const));
-  const stuck = primeStuck;
   const upkeep = plan.chats.filter(chat => !plan.pausedChats.has(chat.id) && !moved.has(chat.id)).flatMap(chat => planUpkeep(chat.id, plan.boards.get(chat.id) ?? null));
   const fleet = await dutyFleet({ dataDir, now, sessions: daemonSessions, chats: plan.chats });
   const appsDuties = apps.chats.flatMap(chat => appsChatDuties(chat, now, appsReads.get(chat.id)));
@@ -926,6 +948,13 @@ async function main(): Promise<void> {
   const asked = new Set((lastOutput.verify ?? []).map(ask => `${ask.chat}/${ask.duty}`));
   // A wait that names another chat's open todo holds its step, wherever that chat runs (`withLinkedBoards`).
   const linked = (chat: string): ChatBoard | null => { const board = plan.boards.get(chat); return board ? withLinkedBoards(board, chat, plan.boards, plan.chats) : null; };
+  // A wait on a land or promote whose commits the branch already carries holds nothing (`dueWaits`), read by content in the train's checkout.
+  const waitBoards = new Map(plan.chats.filter(chat => !moved.has(chat.id)).map(chat => [chat.id, linked(chat.id)] as const));
+  let waitsOnLands = false;
+  for (const board of waitBoards.values()) walk(board?.plan ?? [], item => { if (OPEN.has(item.status) && waitOnCommits(item.waitFor)) waitsOnLands = true; });
+  if (waitsOnLands) await run("git", ["-C", trainRepo(), "fetch", "-q", "origin", "main", "staging"]).catch(() => undefined);
+  const due = waitsOnLands ? await dueWaits(waitBoards, landCarry(trainRepo())) : [];
+  const stuck = withDueWaits(primeStuck, due.map(entry => ({ chat: entry.chat, id: entry.id, text: entry.text, why: `${quote(entry.waitFor)} is over, as ${dueWords(entry)}` })), hostHeld);
   const red = await Promise.all(fleetDuties.filter(duty => !duty.green && !duty.pending).map(async (duty): Promise<RedDuty> => {
     const own = runsOf(duty.chat, duty.duty);
     const since = agingSince(own);
@@ -1034,7 +1063,7 @@ async function main(): Promise<void> {
     section(`Pushes the last run sent (${followUps.length})`, followUps.map(check => `${name(check.push.chat)}${check.push.session ? ` job ${check.push.session}` : ""}: ${check.push.tag} about ${check.push.items.join(", ")}, ` +
       `${check.delivered ? "delivered" : check.away ? `queued while ${check.away} is offline` : "not delivered"}, ${check.read ? "read" : "not read"}, ${check.settled ? "and every step it named has closed since" : check.jobStarted ? "a job started since" : "no job started since"}.`)),
     section(`Open steps nobody moves (${result.metrics.stuck_steps_all})`, stuck.map(entry => entry.id
-      ? `${name(entry.chat)}: ${entry.id} ${quote(entry.text ?? "")}.` : `${name(entry.chat)}: ${entry.count} open steps nobody moves, with no ids in its check-in.`)),
+      ? `${name(entry.chat)}: ${entry.id} ${quote(entry.text ?? "")}${entry.due ? `, whose wait ${entry.due}` : ""}.` : `${name(entry.chat)}: ${entry.count} open steps nobody moves, with no ids in its check-in.`)),
     ...hostGroups(hostHeld).map(group => section(group.title, group.steps.map(step => `${name(step.chat)}: ${step.id} ${quote(step.text)}` +
       `${step.waitsOn ? `, which waits on ${step.waitsOn}` : ""}.`))),
     ...hostHeld.length ? [] : [section("Steps and red duties that wait on an offline box (0)", [])],

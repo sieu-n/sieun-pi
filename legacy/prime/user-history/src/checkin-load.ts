@@ -363,11 +363,11 @@ export function wakeWatches(wakes: readonly Wake[], train?: Train, carried: Read
 /** A wait's first clause that names a land, promote or release, whose commits a land run can carry. */
 export const LAND_WAIT = /\b(?:land|lands|landed|promote|promotes|release|released)\b/i;
 /** A commit id as a wait names it: 7 to 40 hex characters with a digit and a letter, not part of a session id ("01a14fbe-a688-..."). */
-const COMMIT = /(?<![\w-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![\w-])/g;
+export const WAIT_COMMIT = /(?<![\w-])(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![\w-])/g;
 /** The commits the first clause of a wait on a land names (`LAND_WAIT`), lower case; none for any other wait. */
 export function landWaitCommits(waitFor: string | undefined): string[] {
   const head = firstClause(waitFor ?? "").toLowerCase();
-  return LAND_WAIT.test(head) ? [...new Set(head.match(COMMIT) ?? [])] : [];
+  return LAND_WAIT.test(head) ? [...new Set(head.match(WAIT_COMMIT) ?? [])] : [];
 }
 const git = promisify(execFile);
 const ancestry = new Map<string, Promise<boolean>>();
