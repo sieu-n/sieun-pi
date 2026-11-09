@@ -14,6 +14,11 @@ export interface JobTree {
   relay: (sessions: ReadonlySet<string>) => Promise<{ id: string; threadId: string } | undefined>;
   /** The board.wakes the service still owes (`pendingWakes`); one whose `root` is the job counts even when the daemon no longer lists its session. */
   wakes: () => Promise<readonly Wake[]>;
+  /**
+   * The sessions the chat's job sweep holds until pi-pool gives them a slot (`Chats.poolHeldSessions`), which it continues then. Absent, none is
+   * held. Such a subagent is stopped and has no scheduled job, so only this set tells that its turn comes back.
+   */
+  held?: () => ReadonlySet<string>;
 }
 
 /**
@@ -32,8 +37,11 @@ export function sessionWait(row: SessionSummary): string | null {
 
 /**
  * What still waits on a duty job's tree, or null when nothing does: a session of it that starts, recovers, sits queued or runs
- * (`sessionWait`), a scheduled job of one of them in `scheduled` (the daemon's cron_list), an agent message the outbox holds for one of them, a
- * board.wake one of them set, or input queued in a live one's worker.
+ * (`sessionWait`), a scheduled job of one of them in `scheduled` (the daemon's cron_list), one the job sweep holds for its pi-pool slot
+ * (`JobTree.held`), an agent message the outbox holds for one of them, a board.wake one of them set, or input queued in a live one's worker.
+ * On 11-09 the 11 subagents of "wiki dream AI harness developer environment 17:52" (01a1bf83) parked on their quota at 09:16Z and 09:32Z, and
+ * their quota-resume jobs kept the root. At 10:06:15Z the idle unload stopped them as pool waits for their 10:09Z to 10:10Z slots, which left
+ * no scheduled job, and the runner archived the root at 10:07:06Z. The sweep then skipped the archived tree, so none of them came back.
  * The root's own row can read idle meanwhile, as the restored roots of update ctl-847650 did on 10-20 while their subagents were still to come
  * back. An archive of such a root only comes undone: at 06:46:06Z on 10-20 the runner archived owner corrections 06:46 while its subagents
  * repeat c79 and repeat c129 slept on wakes, and a relay to repeat c72 reopened it through its parent 26 s later.
@@ -46,6 +54,7 @@ export async function treeWait(id: string, tree: JobTree, scheduled: ReadonlyMap
     if (wait) return `${who(row)} ${wait}`;
     const job = scheduled.get(row.sessionId);
     if (job) return `${who(row)} has ${job.status === "active" ? "an active" : "a paused"} scheduled job${job.label ? ` (${job.label})` : ""}`;
+    if (tree.held?.().has(row.sessionId)) return `${who(row)} waits on pi-pool for its slot`;
   }
   const ids = new Set([id, ...sessions.map(row => row.sessionId)]);
   const relay = await tree.relay(ids);
