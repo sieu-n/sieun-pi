@@ -111,6 +111,12 @@ export interface DutyJobHost {
    * work from one parked on pi-pool or answering with empty failed turns. A host without it (test fakes) reads every job as replying.
    */
   repliedSince?(job: DutyJobRef, since: number): Promise<boolean>;
+  /**
+   * Whether the newest turn of the job's root or of a subagent below it ended on a pi-pool slot wait (`jobCut` with `slotAt`) written at or
+   * after `since`, for a slot at or after `slotFrom`: pi-pool parked the tree, which then has no account to reply with. A host without it
+   * (test fakes) reads no job as parked.
+   */
+  poolParked?(job: DutyJobRef, since: number, slotFrom: number): Promise<boolean>;
 }
 
 /**
@@ -664,6 +670,14 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
     },
     async steer(job, text) {
       await input.threads.prompt(job.id, { message: text, images: [], mode: "steer" });
+    },
+    async poolParked(job, since, slotFrom) {
+      if (!input.treeFiles) return false;
+      for (const file of await input.treeFiles(job.id)) {
+        const cut = await readJobCut(file).catch(() => null);
+        if (cut?.slotAt !== undefined && cut.at >= since && cut.slotAt >= slotFrom) return true;
+      }
+      return false;
     },
     async repliedSince(job, since) {
       if (!input.treeFiles) return true;

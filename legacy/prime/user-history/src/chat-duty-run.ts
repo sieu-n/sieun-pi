@@ -188,6 +188,19 @@ export function stuckAfterMs(schedule: DutySchedule): number {
  */
 export const IN_POOL_LINE = "is kept, since pi-pool holds its tree in line for an account and a new job would queue behind it";
 
+/**
+ * Why a run keeps a duty job whose tree wrote no model reply for STALLED_MS while pi-pool parked it on a slot (`DutyHost.jobs.poolParked`): its
+ * newest turn, or a subagent's, ended on a pi-pool slot wait after its run started, for a slot no more than STALLED_MS ago. Such a tree has no
+ * account to reply with, and a new job asks the same pool. On 11-09 "wiki dream AI harness developer environment 19:48" made its last model call
+ * at 11:05:27Z, its tree sat on pi-pool slot waits to 13:17:30Z while the anthropic accounts had no quota, and the 13:08:58Z push run replaced
+ * it as stalled. Its tree got its account at 13:17:30Z and its writers fixed the 13 counted pages, and the new job got its first account at
+ * 13:25:30Z and found them all fixed. measured: in the 7 days to 11-09 13:30Z the runner replaced 33 duty jobs of 9 chats as stalled, and
+ * pi-pool had parked 31 of their trees through those 90 min with no model call served. Only 3 of the 31 new jobs got an account at all, 14.5,
+ * 16.5 and 390 min after the replace, and both old trees that came back got theirs first (~/work/d4-pool-wait-skip-1109). It holds up to
+ * STUCK_MAX_MS since its run started, as IN_POOL_LINE does.
+ */
+export const POOL_PARKED = "is kept, since pi-pool parked its tree on a slot and a new job would ask the same pool";
+
 /** The time between two slots of a schedule; a daily duty's is a day. */
 export const intervalMs = (schedule: DutySchedule): number => schedule.kind === "every" ? schedule.minutes * 60_000 : 24 * 60 * 60_000;
 
@@ -1163,13 +1176,17 @@ export class Duties {
     }
     const kept = await this.kept(last, reported);
     const working = kept !== null || await this.host.jobs.working(last);
+    const young = this.now() - started.at <= STUCK_MAX_MS;
     // A Prime update or a failed hold read keeps the job whatever its replies ("is kept ..."), and so does the chat's revive holding it for its
     // pi-pool slot (`heldForPool`) up to STUCK_MAX_MS, since a new job queues behind that slot as behind IN_POOL_LINE; a quota park does not.
-    const stalled = working && !reported && !kept?.startsWith("is kept") && !(heldForPool(kept) && this.now() - started.at <= STUCK_MAX_MS) &&
-      await this.stalled(started.at, last);
-    if (kept && !stalled) {
+    // A silent job whose tree pi-pool parked on a slot (`poolParked`) is kept the same way (POOL_PARKED).
+    const silent = working && !reported && !kept?.startsWith("is kept") && !(heldForPool(kept) && young) && await this.stalled(started.at, last);
+    const parked = silent && young && await this.poolParked(last, started.at);
+    const stalled = silent && !parked;
+    const why = kept ?? (parked ? POOL_PARKED : null);
+    if (why && !stalled) {
       await this.store.updateRun(chatId, dutyId, started.at, record => { record.keptAt = this.now(); }).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: keptAt of ${last.name}: ${message(error)}`));
-      return { skipped: `${STILL_WORKING} (job ${last.name} ${kept})`, held: { job: last, why: kept }, ...inTurnQueue(kept) ? { working: last } : {} };
+      return { skipped: `${STILL_WORKING} (job ${last.name} ${why})`, held: { job: last, why }, ...inTurnQueue(why) ? { working: last } : {} };
     }
     let next: Previous;
     if (!working) next = { last, lastRun: started };
@@ -1202,6 +1219,12 @@ export class Duties {
     if (!cut && !(await this.host.jobs.working(job).catch(() => false))) return false;
     const hold = await this.host.poolHolds?.(job.id).catch(error => { this.log(`duty job ${job.name}: read its pi-pool line: ${message(error)}`); return null; }) ?? null;
     return hold === "line";
+  }
+
+  /** Whether pi-pool parked the job's tree on a slot after its run started at `startedAt` (`DutyJobHost.poolParked`); a failed read is no. */
+  private async poolParked(job: DutyJobRef, startedAt: number): Promise<boolean> {
+    return await this.host.jobs.poolParked?.(job, startedAt, this.now() - STALLED_MS)
+      .catch(error => { this.log(`duty job ${job.name}: read its pi-pool slot waits: ${message(error)}`); return false; }) ?? false;
   }
 
   /** Whether the job of a run that started at `startedAt` has written no model reply in its tree for STALLED_MS; a failed read is no stall. */
