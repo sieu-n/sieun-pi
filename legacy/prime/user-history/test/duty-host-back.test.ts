@@ -136,3 +136,61 @@ test("a run that waited on the offline Mac reruns once Tailscale reads it online
     duties.close();
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test("the reruns waiting on a box that wakes go one at a time, each after the one before has measured", async () => {
+  // 11-09 02:55Z: five duty reruns measured the waking MacBook Pro within 4 min, and its 1 min load read 680 on 12 cores.
+  const dir = await mkdtemp(join(tmpdir(), "duty-host-back-turns-"));
+  try {
+    const out = join(dir, "out.json");
+    const gate = join(dir, "gate");
+    const precheck = join(dir, "precheck.mjs");
+    await writeFile(precheck, `import { copyFileSync, existsSync } from "node:fs";
+      const wait = () => existsSync(${JSON.stringify(gate)}) ? copyFileSync(${JSON.stringify(out)}, process.env.OUTPUT_FILE) : setTimeout(wait, 20);
+      wait();`);
+    const store = new DutyStore(dir);
+    let now = Date.parse("2026-11-09T02:00:00Z");
+    const duty = (id: string): Duty => ({
+      id, name: `Mac duty ${id}`, ownerWords: "measure the Mac", goal: "the Mac is measured", metrics: METRICS,
+      schedule: { kind: "every", minutes: 24 * 60 }, precheck: { command: ["node", precheck], cwd: dir, timeoutMs: 30_000 },
+      onMiss: "Fix each miss.", status: "active", createdAt: now - 72 * HOUR, updatedAt: now - 72 * HOUR, runCount: 0,
+    });
+    await store.update(CHAT, duties => { duties.push(duty("d1"), duty("d2")); });
+    let macOnline = false;
+    const duties = new Duties(store, {
+      isChat: async () => true, now: () => now, tickMs: 0, node: process.execPath, hostOnline: async () => macOnline,
+      jobs: {
+        chat: async id => ({ id, name: "metal-management", cwd: dir, board: id }),
+        working: async () => false, retire: async () => {}, start: async (_chat, name) => ({ id: "job", name }),
+        ended: async (last, older = []) => [...last, ...older], stop: async () => {},
+      },
+      checkIn: { view: async () => ({ everyMs: 120 * MIN }) as CheckInView, set: async () => null, run: async () => {} },
+    });
+    const hostBack = async () => (await store.runs(CHAT)).filter(entry => entry.trigger === "host-back").map(entry => entry.duty);
+    const measuring = async () => (await duties.view(CHAT)).filter(view => view.running).map(view => view.duty.id);
+
+    await writeFile(gate, "");
+    await writeFile(out, JSON.stringify({ metrics: { resource_limits_set: 0 }, flagged: [away] }));
+    for (const id of ["d1", "d2"]) await duties.runNow(CHAT, id);
+    await duties.settled();
+
+    macOnline = true;
+    now += HOUR;
+    await rm(gate);
+    await writeFile(out, JSON.stringify({ metrics: { tool_rows_off: 0, resource_limits_set: 0 } }));
+    await duties.tick();
+    const first = await measuring();
+    assert.equal(first.length, 1, "one rerun starts when the Mac reads online");
+    now += MIN;
+    await duties.tick();
+    assert.deepEqual(await measuring(), first, "the other waits while the first one measures");
+
+    await writeFile(gate, "");
+    await duties.settled();
+    assert.deepEqual(await hostBack(), first);
+    now += MIN;
+    await duties.tick();
+    await duties.settled();
+    assert.deepEqual((await hostBack()).sort(), ["d1", "d2"], "the next tick after it measured starts the other");
+    duties.close();
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

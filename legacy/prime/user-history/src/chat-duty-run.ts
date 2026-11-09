@@ -314,6 +314,12 @@ export class Duties {
   private readonly cuts = new Map<string, Promise<DutyCut | null>>();
   /** The cut runs this process started a rerun of, by `<chatId>/<dutyId>@<at>`, for a rerun that ends with no record (`rerunCut`). */
   private readonly reran = new Set<string>();
+  /**
+   * The host-back rerun going per box (`rerunHostBack`), so a box that wakes gets its waiting reruns one at a time. At 02:55Z on 11-09 the
+   * owner's MacBook Pro woke with swap at 22.5 of 23.5 GB, five duty reruns measured it within 4 min beside three board wakes, its 1 min load
+   * read 680 on 12 cores and 5180 answered in about 72 s.
+   */
+  private readonly hostBack = new Map<string, Promise<void>>();
   private readonly timer: ReturnType<typeof setInterval> | undefined;
   private readonly now: () => number;
   private ticking: Promise<void> | undefined;
@@ -618,7 +624,8 @@ export class Duties {
    * that finds the box offline again waits again, and the precheck flags a box only when Tailscale reads it offline, so a box that is online
    * but fails its read gets one rerun and a source error, never a rerun each tick. A check-in whose newest run held steps on an offline box
    * (`host_held`) reruns the same way, so the jobs that box stopped are read, steered or restarted at once: on 10-29 sep launch!!'s p133 and
-   * p137 sat on failed jobs on the sleeping Mac.
+   * p137 sat on failed jobs on the sleeping Mac. A box's reruns go one at a time (`hostBack`): the next starts at the first tick after the
+   * one before has measured and started its job.
    */
   private async rerunHostBack(runsByChat: ReadonlyMap<string, readonly DutyRunRecord[]>): Promise<void> {
     const online = this.host.hostOnline;
@@ -632,14 +639,18 @@ export class Duties {
         const checkIn = run.duty === CHECK_IN_DUTY_ID;
         const host = checkIn ? run.flagged?.find(slice => slice.kind === "host_held" && slice.host)?.host : run.after ? run.after.hostAway : run.hostAway;
         const key = `${chatId}/${run.duty}`;
-        if (!host || this.running.has(key) || this.afters.has(key) || this.reran.has(`${key}@${run.at}`)) continue;
+        if (!host || this.hostBack.has(host) || this.running.has(key) || this.afters.has(key) || this.reran.has(`${key}@${run.at}`)) continue;
         let read = reads.get(host);
         if (!read) { read = online(host).catch(() => false); reads.set(host, read); }
         if (!(await read) || !(await this.dutyActive(chatId, run.duty))) continue;
         this.reran.add(`${key}@${run.at}`);
         this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: ${host} is back online, so its run of ${new Date(run.at).toISOString()} that waited on it reruns`);
-        if (checkIn) void this.host.checkIn?.run(chatId, "host-back", run.at).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: host-back rerun: ${message(error)}`));
-        else this.start(chatId, run.duty, "host-back", null, run.at);
+        const going = checkIn
+          ? this.host.checkIn?.run(chatId, "host-back", run.at).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: host-back rerun: ${message(error)}`))
+          : this.start(chatId, run.duty, "host-back", null, run.at) ? this.running.get(key) : undefined;
+        if (!going) continue;
+        const turn = going.then(() => {}, () => {}).finally(() => { if (this.hostBack.get(host) === turn) this.hostBack.delete(host); });
+        this.hostBack.set(host, turn);
       }
     }
   }
