@@ -523,7 +523,11 @@ export class Duties {
    * Measures an ended last job's run again and then queues the job's archive, once per duty at a time: the scan (`stopEnded`) and a push of
    * the same duty share one measure. A run of the duty going now is this job's measure (`launch` writes it as the after-job measure), so the
    * measure waits for it and runs only when the run left none. A job that ended cut did no work, so its run records the cut (`cutOf`) in place
-   * of the measure and reruns (`rerunCut`).
+   * of the measure and reruns (`rerunCut`). A job cut on a pi-pool slot wait (`DutyCut.slotAt`) is kept instead, and `rerunCut` continues it
+   * once pi-pool admits its tree: on 11-09 the d4 job "wiki dream AI harness developer environment 19:06" got a 10:14:30Z slot at 10:07:33Z,
+   * the idle unload stopped it at 10:11:14Z, this archive followed at 10:11:20Z, and the rerun's new job started at 10:18:39Z, while its 11
+   * pages counted from 10:12Z. In the 7 days to 11-09 10:30Z this archive ended 372 duty jobs cut on a slot wait, 109 with no reply past
+   * their brief, and the 190 reruns among them started a median 52 min after the slot (~/work/d4-slot-wait-archive-1109).
    */
   private endJob(chatId: string, run: DutyRunRecord & { job: DutyJobRef }): Promise<void> {
     const key = `${chatId}/${run.duty}`;
@@ -535,8 +539,13 @@ export class Duties {
       const runGoing = this.running.get(key);
       if (runGoing) await runGoing;
       const measured = run.after !== undefined || runGoing && (await this.store.runs(chatId)).find(entry => entry.duty === run.duty && entry.at === run.at)?.after;
-      if (!measured && !(await this.cutOf(chatId, run))) await this.measureAfter(chatId, run);
+      const cut = measured ? null : await this.cutOf(chatId, run);
+      if (!measured && !cut) await this.measureAfter(chatId, run);
       if (!jobs.stop) return;
+      if (cut?.slotAt !== undefined && jobs.resume) {
+        this.log(`duty job ${run.job.name}: kept for its pi-pool slot at ${new Date(cut.slotAt).toISOString()}; it continues once pi-pool admits its tree`);
+        return;
+      }
       // The measure can take minutes, and the job's tree can wake meanwhile, so it is read again right before the stop; a held stop is tried at a later scan.
       const still = !jobs.ended || (await jobs.ended([], [run.job])).some(job => job.id === run.job.id);
       if (!still || await this.updateRunning()) { this.stopped.delete(run.job.id); return; }
@@ -606,14 +615,31 @@ export class Duties {
     for (let from = 0; from < found.length; from += WAIT_READ_TREES) {
       const part = found.slice(from, from + WAIT_READ_TREES);
       const open = await Promise.all(part.map(admitted));
-      part.forEach(({ chatId, run }, index) => {
-        if (!open[index]) return;
+      for (const [index, { chatId, run, cut }] of part.entries()) {
+        if (!open[index] || await this.resumeKept(chatId, run, cut)) continue;
         this.reran.add(`${chatId}/${run.duty}@${run.at}`);
         this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: pi-pool admits the tree of ${run.job.name}, so its cut run of ${new Date(run.at).toISOString()} reruns`);
         if (run.duty !== CHECK_IN_DUTY_ID) this.start(chatId, run.duty, "rerun", null, run.at);
         else void this.host.checkIn?.run(chatId, "rerun", run.at).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: rerun: ${message(error)}`));
-      });
+      }
     }
+  }
+
+  /**
+   * Continues the job `endJob` kept for its pi-pool slot, once pi-pool admits its tree, so the job takes the slot pi-pool gave it with its
+   * own brief and the run reads as working again (its cut cleared). False when the cut names no slot or the job is gone or archived, such as
+   * one an older release archived: that run reruns with a new job.
+   */
+  private async resumeKept(chatId: string, run: DutyRunRecord & { job: DutyJobRef }, cut: DutyCut): Promise<boolean> {
+    const resume = this.host.jobs.resume;
+    if (cut.slotAt === undefined || !resume) return false;
+    const resumed = await resume.call(this.host.jobs, run.job).catch(error => { this.log(`duty job ${run.job.name}: continue: ${message(error)}`); return false; });
+    if (!resumed) return false;
+    await this.store.updateRun(chatId, run.duty, run.at, record => { delete record.cut; });
+    this.cuts.delete(run.job.id);
+    this.stopped.delete(run.job.id);
+    this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: pi-pool admits the tree of ${run.job.name}, so the job continues at its slot`);
+    return true;
   }
 
   /**
@@ -1128,7 +1154,8 @@ export class Duties {
     if (!started || !last) return {};
     const reported = await this.reported(chatId, last);
     // A check-in's items go to the chat, since its job takes no message until its slot (`handToChat`).
-    // A cut run's rerun replaces the cut job, since the runner archived that job when it read the cut (`endJob`) and nothing resumes it.
+    // A cut run's rerun replaces the cut job, since the runner archived that job when it read the cut (`endJob`), or found it archived or gone
+    // when pi-pool admitted its tree (`resumeKept`).
     if (!reported && this.now() - started.at <= STUCK_MAX_MS && !runs.some(run => run.rerunOf === started.at) &&
       await this.inPoolLine(last, started.cut !== undefined)) {
       return { skipped: `${STILL_WORKING} (job ${last.name} ${IN_POOL_LINE})`, held: { job: last, why: IN_POOL_LINE },

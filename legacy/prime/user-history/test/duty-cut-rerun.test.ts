@@ -1,7 +1,7 @@
 // Replays cut duty runs from 10-19. Every check-in of "Twitch gaps" (01a151ca) from 02:33Z to 05:34Z got pi-pool's "this session waits for its
 // slot" as its job's first reply: check-in 01a1521d got its task at 03:04:04Z, failed 80 ms later with its slot at 03:42Z, the idle unload
 // stopped it at 03:06:30Z, and the runner logged "after its job, missed" at 03:07:00Z. The wiki dream duty d4 of chat 01a1164b had the same
-// cut at 11:19:50Z (job 01a153e3-7133, slot 11:49:30Z).
+// cut at 11:19:50Z (job 01a153e3-7133, slot 11:49:30Z), and again on 11-09 at 10:07:33Z (job 01a1bfc6, slot 10:14:30Z).
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -41,10 +41,11 @@ function jobHostOverRows(dir: string) {
   const row = (id: string, name: string): SessionRow => ({ id, name, cwd: dir, kind: "root", status: "idle", archived: false, messageCount: 2, working: false,
     subagentsRunning: 0, unread: false, tags: [], priority: 0 } as unknown as SessionRow);
   const created: string[] = [];
+  const prompts: [string, string][] = [];
   for (const [id, name] of [[TWITCH, "Twitch gaps"], [HARNESS, "AI harness developer environment"]] as const) rows.set(id, row(id, name));
   const jobs = dutyJobHost({
     threads: { create: async ({ name }) => { const id = `rerun-job-${created.length + 1}`; created.push(name); rows.set(id, { ...row(id, name), working: true }); return { id }; },
-      prompt: async () => {} },
+      prompt: async (id, { message }) => { prompts.push([id, message]); } },
     archives: { add: async job => { const found = rows.get(job.id); if (found) found.archived = true; } },
     rows: async () => [...rows.values()],
     registry: { add: async () => {}, chatOf: async () => undefined, chatIdOf: async () => undefined, rootsOf: async () => [], remove: async () => {} },
@@ -56,11 +57,11 @@ function jobHostOverRows(dir: string) {
     await mkdir(join(dir, "sessions"), { recursive: true });
     await writeFile(join(dir, "sessions", `${id}.jsonl`), lines);
   };
-  return { jobs, rows, created, addJob };
+  return { jobs, rows, created, prompts, addJob };
 }
 
 function checkInDuties(dir: string, store: DutyStore, clock: { now: number }, slots: Record<string, number>) {
-  const { jobs, rows, created, addJob } = jobHostOverRows(dir);
+  const { jobs, rows, created, prompts, addJob } = jobHostOverRows(dir);
   const logs: string[] = [];
   const reruns: [string, string | undefined, number | undefined][] = [];
   const asked: string[] = [];
@@ -72,10 +73,10 @@ function checkInDuties(dir: string, store: DutyStore, clock: { now: number }, sl
       measure: async () => { measures++; return { metrics: { goal_gaps: 1, stuck_steps: 0, no_done_line: 0, plan_risks: 0 }, flagged: [] }; } },
     poolAdmits: async (tree: string, provider: string) => { asked.push(`${tree} ${provider}`); return clock.now >= (slots[tree] ?? 0); },
   };
-  return { duties: new Duties(store, host), rows, created, addJob, logs, reruns, asked, measures: () => measures };
+  return { duties: new Duties(store, host), rows, created, prompts, addJob, logs, reruns, asked, measures: () => measures };
 }
 
-test("check-in 01a1521d, cut by a pool wait at its first reply, records the cut instead of a measure and reruns once pi-pool admits its tree (Twitch gaps 10-19 03:04Z)", async () => {
+test("check-in 01a1521d, cut by a pool wait at its first reply, records the cut instead of a measure, is kept, and continues once pi-pool admits its tree (Twitch gaps 10-19 03:04Z)", async () => {
   const dir = await mkdtemp(join(tmpdir(), "duty-cut-checkin-"));
   try {
     const store = new DutyStore(dir);
@@ -97,27 +98,23 @@ test("check-in 01a1521d, cut by a pool wait at its first reply, records the cut 
     assert.deepEqual(run.logs.filter(line => line.includes("after its job")), []);
     assert.ok(run.logs.some(line => line.startsWith("duty 01a151ca/checkin: cut, its job check-in Twitch gaps 12:03 ended on a failed model call at 2026-10-19T03:04:04.082Z, pi-pool slot 2026-10-19T03:42:00.000Z")),
       run.logs.join("\n"));
-    assert.equal(run.rows.get(job.id)!.archived, true, "the cut job is archived as an ended job is");
+    assert.equal(run.rows.get(job.id)!.archived, false, "the job cut on a slot wait is kept for its slot");
     await run.duties.tick();
-    assert.deepEqual(run.reruns, [], "no rerun before pi-pool admits the tree");
+    assert.deepEqual([run.reruns, run.prompts], [[], []], "nothing before pi-pool admits the tree");
 
     clock.now = Date.parse("2026-10-19T03:42:10.000Z");
     await run.duties.tick();
-    assert.deepEqual(run.reruns, [[TWITCH, "rerun", at]], "the cut run reruns at the first tick pi-pool admits its tree");
+    assert.deepEqual(run.prompts, [[job.id, "continue"]], "the kept job continues at the first tick pi-pool admits its tree");
+    assert.deepEqual(run.reruns, [], "no rerun replaces it");
+    assert.equal((await store.runs(TWITCH))[0]!.cut, undefined, "the continued job's run reads as working again");
+    run.rows.get(job.id)!.working = true;
     await run.duties.tick();
-    assert.deepEqual(run.reruns, [[TWITCH, "rerun", at]], "one rerun per cut run");
-
-    await run.duties.checkIn(TWITCH, { at: clock.now, trigger: "rerun", rerunOf: at, everyMs: 30 * MIN, output: { metrics: { goal_gaps: 1, stuck_steps: 0, no_done_line: 0, plan_risks: 0 }, flagged: [] },
-      classes: {}, findings: "" });
-    const [rerun] = await store.runs(TWITCH);
-    assert.equal(rerun!.trigger, "rerun");
-    assert.equal(rerun!.rerunOf, at, "the rerun names the cut run");
-    assert.equal(rerun!.job?.id, "rerun-job-1");
+    assert.deepEqual([run.reruns, run.prompts.length], [[], 1], "one continue per cut");
     run.duties.close();
 
     const restarted = checkInDuties(dir, store, clock, {});
     await restarted.duties.tick();
-    assert.deepEqual(restarted.reruns, [], "after a restart the rerun link in the runs file keeps the cut run from a second rerun");
+    assert.deepEqual([restarted.reruns, restarted.prompts], [[], []], "after a restart the cleared cut keeps the run from a rerun");
     restarted.duties.close();
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
@@ -153,59 +150,80 @@ test("a cut check-in whose next check-in started first gets no rerun, and that n
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test("a wiki dream job cut by a pool wait at its first reply reruns as its own run once pi-pool admits its tree (d4 of 01a1164b, 10-19 11:19Z)", async () => {
+test("a wiki dream job cut by a pool wait at its first reply is kept and continues at its slot, and its run is measured after it ends (d4 of 01a1164b, 11-09 10:07Z)", async () => {
+  // At 10:06:48Z on 11-09 d4's verify run started "wiki dream AI harness developer environment 19:06" for 11 pages that counted from 10:12Z.
+  // Its first reply at 10:07:33Z was pi-pool's slot wait for 10:14:30Z, the idle unload stopped it at 10:11:14Z, and until this change the
+  // runner archived it at 10:11:20Z and, once pi-pool admitted the tree at 10:17:17Z, measured again and started a new job at 10:18:39Z.
   const dir = await mkdtemp(join(tmpdir(), "duty-cut-d4-"));
   try {
     const count = join(dir, "prechecks");
     const precheck = join(dir, "precheck.mjs");
     await writeFile(precheck, `import { appendFileSync, writeFileSync } from "node:fs";
 appendFileSync(${JSON.stringify(count)}, "x");
-writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { wiki_problems: 46 } }));`);
+writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { wiki_problems: 0 } }));`);
     const store = new DutyStore(dir);
-    const now = Date.parse("2026-10-19T11:24:41.198Z");
+    const now = Date.parse("2026-11-09T10:11:17.355Z");
     const lastSlotAt = dailySlot("01:30", now);
     const duty: Duty = { id: "d4", name: "Wiki dream", ownerWords: "keep the wiki healthy", goal: "no wiki problems",
       metrics: [{ key: "wiki_problems", label: "Wiki problems", op: "<=", target: 0, headline: true }], schedule: { kind: "daily", at: "01:30" },
       precheck: { command: ["node", precheck], cwd: dir, timeoutMs: 30_000 }, onMiss: "fix the wiki", status: "active", createdAt: now - 7 * 24 * 60 * MIN,
       updatedAt: now - 7 * 24 * 60 * MIN, runCount: 65, lastSlotAt, lastRunAt: lastSlotAt };
     await store.update(HARNESS, duties => { duties.push(duty); });
-    const job = { id: "01a153e3-7133-747b-b1ae-1c4fdbf4fe62", name: "wiki dream AI harness developer environment 20:19" };
-    const at = 1792408752057;
-    await store.appendRun(HARNESS, { duty: "d4", at, slot: 1792408751960, trigger: "push", ms: 37_000, verdict: "missed",
-      metrics: { wiki_problems: { value: 46, target: 0, op: "<=", met: false } }, summary: "wiki_problems 46 (target at most 0)", job });
+    const job = { id: "01a1bfc6-f8d5-706b-b63d-5d3347360ce9", name: "wiki dream AI harness developer environment 19:06" };
+    const at = 1794218808971;
+    await store.appendRun(HARNESS, { duty: "d4", at, slot: at, trigger: "verify", ms: 41_085, verdict: "met",
+      metrics: { wiki_problems: { value: 0, target: 0, op: "<=", met: true } }, summary: "wiki_problems 0 (on target)", job });
     const clock = { now };
-    const { jobs, rows, created, addJob } = jobHostOverRows(dir);
-    await addJob(job.id, job.name, transcript(job.id, "2026-10-19T11:19:49.913Z", "2026-10-19T11:19:50.131Z", slotError("2026-10-19T11:49:30.000Z", 30), "2026-10-19T11:24:09.286Z"));
+    const { jobs, rows, created, prompts, addJob } = jobHostOverRows(dir);
+    const lines = transcript(job.id, "2026-11-09T10:07:32.146Z", "2026-11-09T10:07:33.226Z", slotError("2026-11-09T10:14:30.000Z", 7), "2026-11-09T10:11:14.829Z");
+    await addJob(job.id, job.name, lines);
     const logs: string[] = [];
     const duties = new Duties(store, { isChat: async () => true, now: () => clock.now, tickMs: 0, node: process.execPath, log: line => { logs.push(line); }, jobs,
       checkIn: { view: async () => ({ everyMs: 120 * MIN, paused: false }) as CheckInView, set: async () => null, run: async () => {} },
-      poolAdmits: async () => clock.now >= Date.parse("2026-10-19T11:49:30.000Z") });
+      poolAdmits: async () => clock.now >= Date.parse("2026-11-09T10:17:17.013Z") });
 
     await duties.tick();
     await duties.settled();
     const [cut] = await store.runs(HARNESS);
-    assert.equal(cut!.cut?.slotAt, Date.parse("2026-10-19T11:49:30.000Z"), "the d4 run is recorded as cut");
+    assert.equal(cut!.cut?.slotAt, Date.parse("2026-11-09T10:14:30.000Z"), "the d4 run is recorded as cut");
     assert.equal(cut!.after, undefined);
     assert.equal(existsSync(count), false, "a cut run is not measured after its job");
-    assert.deepEqual(logs.filter(line => line.includes("after its job")), []);
-    assert.equal(rows.get(job.id)!.archived, true);
+    assert.equal(rows.get(job.id)!.archived, false, "the job waits for its slot instead of being archived");
+    assert.ok(logs.includes(`duty job ${job.name}: kept for its pi-pool slot at 2026-11-09T10:14:30.000Z; it continues once pi-pool admits its tree`), logs.join("\n"));
 
-    clock.now = Date.parse("2026-10-19T11:49:31.000Z");
+    clock.now = Date.parse("2026-11-09T10:12:31.000Z");
     await duties.tick();
     await duties.settled();
-    const [rerun, before] = await store.runs(HARNESS);
-    assert.equal(before!.at, at);
-    assert.equal(rerun!.trigger, "rerun");
-    assert.equal(rerun!.rerunOf, at);
-    assert.equal(rerun!.verdict, "missed");
-    assert.equal(rerun!.job?.id, "rerun-job-1", "the rerun starts its own job");
-    assert.deepEqual(created.map(name => name.startsWith("wiki dream AI harness developer environment ")), [true]);
-    assert.equal((await readFile(count, "utf8")).length, 1, "the rerun measures once");
-    assert.equal((await store.list(HARNESS))[0]!.lastRunAt, lastSlotAt, "a rerun leaves the schedule alone");
+    assert.deepEqual([prompts, created], [[], []], "nothing while pi-pool does not admit the tree, though its slot is within the lead");
 
+    clock.now = Date.parse("2026-11-09T10:17:17.013Z");
     await duties.tick();
     await duties.settled();
-    assert.equal((await store.runs(HARNESS)).length, 2, "one rerun per cut run");
+    assert.deepEqual(prompts, [[job.id, "continue"]], "the same job continues once pi-pool admits its tree");
+    assert.deepEqual(created, [], "no new job replaces it");
+    assert.equal(existsSync(count), false, "no rerun measures first");
+    const runs = await store.runs(HARNESS);
+    assert.equal(runs.length, 1, "no rerun run");
+    assert.equal(runs[0]!.cut, undefined, "the run reads as working again");
+    assert.ok(logs.includes(`duty 01a1164b/d4: pi-pool admits the tree of ${job.name}, so the job continues at its slot`), logs.join("\n"));
+
+    rows.get(job.id)!.working = true;
+    clock.now = Date.parse("2026-11-09T10:30:00.000Z");
+    await duties.tick();
+    await duties.settled();
+    assert.equal(rows.get(job.id)!.archived, false, "a working job stays up");
+
+    await writeFile(join(dir, "sessions", `${job.id}.jsonl`), lines + JSON.stringify({ type: "message", timestamp: "2026-11-09T10:40:00.000Z",
+      message: { role: "assistant", content: [{ type: "text", text: "fixed the 11 pages" }], provider: "anthropic", stopReason: "stop" } }) + "\n");
+    rows.get(job.id)!.working = false;
+    clock.now = Date.parse("2026-11-09T10:41:00.000Z");
+    await duties.tick();
+    await duties.settled();
+    const [ended] = await store.runs(HARNESS);
+    assert.equal(ended!.after?.verdict, "met", "the continued job's run gets its after-job measure");
+    assert.equal((await readFile(count, "utf8")).length, 1, "measured once, after the job");
+    assert.equal(rows.get(job.id)!.archived, true, "and the job is archived once it ended");
+    assert.equal((await store.list(HARNESS))[0]!.lastRunAt, lastSlotAt, "the schedule stays where it was");
     duties.close();
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
@@ -300,10 +318,10 @@ test("a cut run waits for the slot pi-pool gave its job, though pi-pool reads as
 
     clock.now = Date.parse("2026-10-19T14:40:07.075Z");
     await run.duties.tick();
-    assert.deepEqual(run.reruns, [], "pi-pool admitting every tree at 14:40:07Z is no slot for this one");
+    assert.deepEqual([run.reruns, run.prompts], [[], []], "pi-pool admitting every tree at 14:40:07Z is no slot for this one");
     clock.now = Date.parse("2026-10-19T15:08:04.000Z");
     await run.duties.tick();
-    assert.deepEqual(run.reruns, [[HARNESS, "rerun", at]], "the cut run reruns at the first tick after its slot");
+    assert.deepEqual([run.reruns, run.prompts], [[], [[job.id, "continue"]]], "the kept job continues at the first tick after its slot");
     run.duties.close();
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
@@ -368,10 +386,12 @@ test("a cut check-in whose job ended on a credential wait reruns only once its r
     await run.duties.tick();
     const [cut] = await store.runs(MAC);
     assert.equal(cut!.cut?.slotAt, Date.parse("2026-10-20T18:00:00.000Z"), "the cut carries the marker's retryAtMs as its pi-pool slot");
+    run.rows.get(job.id)!.archived = true;
     assert.deepEqual(run.reruns, [], "pi-pool admits the tree, but the slot the hook gave is still ahead");
     clock.now = Date.parse("2026-10-20T18:00:19.854Z");
     await run.duties.tick();
-    assert.deepEqual(run.reruns, [[MAC, "rerun", at]]);
+    assert.deepEqual(run.reruns, [[MAC, "rerun", at]], "a job archived before its slot reruns with a new job");
+    assert.deepEqual(run.prompts, []);
     run.duties.close();
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
