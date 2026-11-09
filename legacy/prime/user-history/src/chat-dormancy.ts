@@ -85,6 +85,13 @@ const message = (error: unknown): string => error instanceof Error ? error.messa
 export class Dormancy {
   private readonly since = new Map<string, number>();
   /**
+   * Each dormant chat's idle clock when it went dormant (`idleClock`): the hub's `activeAt` at a detach, or the later of its last work and the
+   * saved clock when a start left it detached. Until 11-09 d7 read a dormant chat by its lastActivityAt alone: at 05:52Z the successor of the
+   * 05:51Z release left slack green guy and vent detached, 4 min after the d2 precheck's tab opens of 05:41Z restarted their clocks, while the
+   * old process still held their attach, and d7 named both as lingering 110 min. Both unloaded by 05:53:30Z once the old process let go.
+   */
+  private readonly restedAt = new Map<string, number>();
+  /**
    * Dormant chats let go of asleep in their provider retry (`ThreadHub.restAsleep`): the idle unload kills each right after, and until then the
    * catalog still lists its open turn as work, which must not attach it again.
    */
@@ -136,7 +143,9 @@ export class Dormancy {
   }
 
   has(id: string): boolean { return this.since.has(id); }
-  forget(id: string): void { this.since.delete(id); this.asleep.delete(id); }
+  forget(id: string): void { this.since.delete(id); this.asleep.delete(id); this.restedAt.delete(id); }
+  /** The idle clock (epoch ms) a dormant chat went dormant with (`restedAt`); undefined for a chat that is not dormant. */
+  idleClock(id: string): number | undefined { return this.since.has(id) ? this.restedAt.get(id) : undefined; }
 
   /** The daemon's idle time, or "off" when the settings file cannot be read (logged), so a bad file never detaches a chat. */
   minutes(): IdleEvictionMinutes {
@@ -158,6 +167,7 @@ export class Dormancy {
 
   sleep(id: string, idleMs: number, how: "detached" | "left detached" | "detached to recycle its worker" | "detached asleep in its provider retry"): void {
     this.since.set(id, this.now());
+    this.restedAt.set(id, this.now() - idleMs);
     if (how === "detached asleep in its provider retry") this.asleep.add(id);
     else this.asleep.delete(id);
     this.before.delete(id);
@@ -170,6 +180,7 @@ export class Dormancy {
     if (since === undefined) return false;
     this.since.delete(id);
     this.asleep.delete(id);
+    this.restedAt.delete(id);
     process.stderr.write(`wake ${id.slice(0, 8)}: ${trigger}, dormant ${Math.floor((this.now() - since) / 60_000)} min\n`);
     return true;
   }
