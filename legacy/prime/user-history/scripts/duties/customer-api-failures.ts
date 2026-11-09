@@ -15,6 +15,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * the calls themselves. The key is apps/vent's POSTHOG_PERSONAL_API_KEY (query:read only), read through dotenvx in the auto-sns-agent checkout.
  * PostHog missed every event from 03:48 to 06:19Z on 11-01 while prod Vent was down (p1257), so the run also names the day's longest stretch
  * with no api_request event at all as detail; it judges nothing, and a reader checks Vercel's request logs for that stretch.
+ * Each count and each 5xx row is by event uuid, because PostHog stored one event twice on 11-09 (req_cd46890275732bd3e299db679e4774ee at
+ * 07:45:13Z and 07:46:53Z), 25 such rows in 14 days of 147,178 api_request events.
  * slow_route_p90_s keeps board goal p111 met (owner 10-30: "이거 왜 20초 30초나 걸리냐"): the slowest p90 durationMs of the day's calls to
  * SLOW_ROUTES by every org, internal ones included, because no is_internal = 0 org called them from 10-20 to 11-02 and the owner's own calls come
  * from internal orgs; 3.30 s after crawler p1381 at 20:36Z on 11-02 against 5 s, while Bing's p90 over all orgs read 30.7 s from 00:00 to 20:42Z that day.
@@ -113,8 +115,8 @@ export async function measure(now: number): Promise<PrecheckOutput> {
   const calls = "event in ('api_request_completed', 'api_request_failed')";
   try {
     const key = (await sh("node_modules/.bin/dotenvx get POSTHOG_PERSONAL_API_KEY -f apps/vent/.env", REPO)).trim().split("\n").at(-1)!.trim();
-    const [[completed, failed, failed5xx, lastCall]] = (await hog(key, `select countIf(event = 'api_request_completed'), countIf(event = 'api_request_failed'), ` +
-      `countIf(event = 'api_request_failed' and toInt(properties.status) >= 500), max(timestamp) from events where ${calls} and ${window} ` +
+    const [[completed, failed, failed5xx, lastCall]] = (await hog(key, `select uniqIf(uuid, event = 'api_request_completed'), uniqIf(uuid, event = 'api_request_failed'), ` +
+      `uniqIf(uuid, event = 'api_request_failed' and toInt(properties.status) >= 500), max(timestamp) from events where ${calls} and ${window} ` +
       `and properties.orgId in (${CUSTOMER_ORGS})`)) as [[number, number, number, unknown]];
     // HogQL's max over no rows is the epoch, so a time before the day reads as no call.
     const inDay = (at: unknown): { lastAt?: number } => {
@@ -123,7 +125,7 @@ export async function measure(now: number): Promise<PrecheckOutput> {
     };
     const rows = await hog(key, `select timestamp, properties.endpoint, toInt(properties.status), properties.errorCode, properties.crawlerPath, ` +
       `properties.requestId, properties.orgId from events where event = 'api_request_failed' and toInt(properties.status) >= 500 and ${window} ` +
-      `and properties.orgId in (${CUSTOMER_ORGS}) order by timestamp`);
+      `and properties.orgId in (${CUSTOMER_ORGS}) order by timestamp limit 1 by uuid`);
     const gap = await hog(key, `select max(gap) from (select dateDiff('minute', lagInFrame(timestamp, 1, timestamp) over (order by timestamp rows between 1 preceding and current row), timestamp) as gap ` +
       `from events where ${calls} and ${window})`).catch(() => [[null]]);
     const failedCalls = rows.map(([at, endpoint, status, errorCode, path, requestId, orgId]) => ({
