@@ -83,3 +83,10 @@ test("a land's tips come from its title and its Land-From trailers, oldest land 
     { commit: "a".repeat(40), at: "2026-11-02T17:35:00Z", tips: [`${"4".repeat(39)}5`, "45ed4afb3"] },
   ]);
 });
+
+test("a due wait whose job sleeps on a board.wake is moved by that wake, while one whose job holds none is stuck", () => {
+  // 11-09 20:16Z: p144's job held a check wake for staging to serve land 3076864715, which woke it at 20:25Z.
+  const due = [{ chat: CHAT, id: "p144", text: "step p144", why: "staging carries f9684a759" }, { chat: CHAT, id: "p145", text: "step p145", why: "staging carries c61424158" }];
+  const stuck = withDueWaits([], due, [], step => step.id === "p144");
+  assert.deepEqual(stuck.map(entry => entry.id), ["p145"]);
+});

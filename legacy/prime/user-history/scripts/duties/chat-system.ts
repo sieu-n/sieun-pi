@@ -438,16 +438,19 @@ export interface StuckStep { chat: string; id?: string; text?: string; count?: n
 
 /**
  * The stuck steps with each due wait (`dueWaits`) added once, as a step whose wait is over: its wait no longer holds it, so it needs its next
- * state. A step its check-in already counts gets the reason, and one held on an offline box (`held`) waits for that box.
+ * state. A step its check-in already counts gets the reason, one held on an offline box (`held`) waits for that box, and one whose job sleeps
+ * on a board.wake (`asleep`) is moved by that wake, as every other step is (`goalsWithNoJob`). On 11-09 the 20:16Z run read sep launch!!'s
+ * p144 stuck 4 minutes after land 3076864715 carried the walk 57 fixes, while its job's check wake, set at 20:04Z, waited for staging to serve
+ * that land and woke the job at 20:25Z; the 15:54Z and 17:54Z runs read it stuck while the walk 56 wake also waited for the supply hold (t112).
  */
 export function withDueWaits(stuck: readonly StuckStep[], due: readonly { chat: string; id: string; text: string; why: string }[],
-  held: readonly { chat: string; id: string }[] = []): StuckStep[] {
+  held: readonly { chat: string; id: string }[] = [], asleep: (step: { chat: string; id: string }) => boolean = () => false): StuckStep[] {
   const out = stuck.map(step => {
     const found = due.find(entry => entry.chat === step.chat && entry.id === step.id);
     return found ? { ...step, due: found.why } : step;
   });
   for (const entry of due) {
-    if (out.some(step => step.chat === entry.chat && step.id === entry.id) || held.some(step => step.chat === entry.chat && step.id === entry.id)) continue;
+    if (out.some(step => step.chat === entry.chat && step.id === entry.id) || held.some(step => step.chat === entry.chat && step.id === entry.id) || asleep(entry)) continue;
     out.push({ chat: entry.chat, id: entry.id, text: entry.text, due: entry.why });
   }
   return out;
@@ -954,7 +957,12 @@ async function main(): Promise<void> {
   for (const board of waitBoards.values()) walk(board?.plan ?? [], item => { if (OPEN.has(item.status) && waitOnCommits(item.waitFor)) waitsOnLands = true; });
   if (waitsOnLands) await run("git", ["-C", trainRepo(), "fetch", "-q", "origin", "main", "staging"]).catch(() => undefined);
   const due = waitsOnLands ? await dueWaits(waitBoards, landCarry(trainRepo())) : [];
-  const stuck = withDueWaits(primeStuck, due.map(entry => ({ chat: entry.chat, id: entry.id, text: entry.text, why: `${quote(entry.waitFor)} is over, as ${dueWords(entry)}` })), hostHeld);
+  const asleep = (step: { chat: string; id: string }): boolean => {
+    let item: PlanItem | undefined;
+    walk(plan.boards.get(step.chat)?.plan ?? [], candidate => { if (candidate.id === step.id) item = candidate; });
+    return !!item && stepSessions(item, owners.named.get(step.chat) ?? new Map()).some(session => plan.waking.has(session));
+  };
+  const stuck = withDueWaits(primeStuck, due.map(entry => ({ chat: entry.chat, id: entry.id, text: entry.text, why: `${quote(entry.waitFor)} is over, as ${dueWords(entry)}` })), hostHeld, asleep);
   const red = await Promise.all(fleetDuties.filter(duty => !duty.green && !duty.pending).map(async (duty): Promise<RedDuty> => {
     const own = runsOf(duty.chat, duty.duty);
     const since = agingSince(own);
