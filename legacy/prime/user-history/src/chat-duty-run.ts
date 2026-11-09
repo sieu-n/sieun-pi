@@ -1275,8 +1275,10 @@ export class Duties {
         const handed = await this.handOff(chatId, dutyId, previous.working, handOff, brief.duty.name, at);
         if (handed) return { skipped: `${skipped}; handed it ${plural(handed)}` };
       }
-      if (previous.held && handOff && dutyId === CHECK_IN_DUTY_ID) {
-        const told = await this.handToChat(chatId, dutyId, previous.held, handOff, brief.duty.name, at);
+      // A held job that takes no hand-off (POOL_PARKED, a quota park) leaves the chat the items no maker was asked to fix.
+      if (previous.held && handOff && (dutyId === CHECK_IN_DUTY_ID || !previous.working)) {
+        const left = dutyId === CHECK_IN_DUTY_ID ? handOff : await this.unasked(chatId, dutyId, handOff);
+        const told = await this.handToChat(chatId, dutyId, previous.held, left, brief.duty.name, at);
         if (told) return { skipped: `${skipped}; handed the chat ${plural(told)}` };
       }
       return { skipped };
@@ -1341,18 +1343,35 @@ export class Duties {
   }
 
   /**
-   * Hands the chat itself, as one server notice, the new `handOff` items of a check-in run whose job pi-pool or a quota park holds (`kept`), since
-   * that job takes no message until its slot. On 10-23 sep launch!!'s check-in job of 03:39Z was cut on a 429 at 05:05Z and held for its
-   * 08:09Z slot, so the 17 check-ins from 03:55Z to 08:12Z all skipped, and the stuck steps they counted (up to 23 at 04:27Z and 15 at 06:27Z)
-   * reached no check-in (~/work/checkin-skip-orphans). It opens with CHECK_IN_PREFIX, so the turn it starts is not the owner's (c117).
+   * Hands the chat itself, as one server notice, the new `handOff` items of a run whose job pi-pool or a quota park holds and takes no message
+   * until its slot: every item of a check-in, and of another duty the items no maker was asked to fix (`unasked`). On 10-23 sep launch!!'s
+   * check-in job of 03:39Z was cut on a 429 at 05:05Z and held for its 08:09Z slot, so the 17 check-ins from 03:55Z to 08:12Z all skipped, and
+   * the stuck steps they counted (up to 23 at 04:27Z and 15 at 06:27Z) reached no check-in (~/work/checkin-skip-orphans). On 11-09 d4's runs
+   * from 16:30Z to 18:03Z kept "wiki dream AI harness developer environment 22:59" as POOL_PARKED, and 5 of their 12 pages had no maker, such as
+   * the 4 that take-in e3dd9060ea put behind with no Session-Id, so they reached nobody until a subagent of the chat, which rode the chat's
+   * slot, fixed them at 18:20Z (~/work/d4-held-pages-1110). It opens with CHECK_IN_PREFIX, so the turn it starts is not the owner's (c117).
    */
   private async handToChat(chatId: string, dutyId: string, held: { job: DutyJobRef; why: string }, handOff: HandOff, dutyName: string, at: number): Promise<number> {
     const tell = this.host.tell;
     if (!tell) return 0;
-    return this.handNew(chatId, dutyId, held.job, handOff, fresh => tell(chatId, [`${CHECK_IN_PREFIX}The ${dutyName} run of ${new Date(at).toISOString().slice(0, 16)}Z ` +
-      `found ${fresh.length} step${fresh.length === 1 ? "" : "s"} nobody moves, and its job ${held.job.name} ${held.why}, so it takes no message until then. ` +
-      `Give each a live owner in this turn: steer its job, start one, link a For you todo, or close it on evidence. The run's findings are in ` +
-      `${handOff.detail}.`, ...fresh.map(itemLine)].join("\n"), { chat: chatId, duty: dutyId }), "the chat");
+    const run = `${CHECK_IN_PREFIX}The ${dutyName} run of ${new Date(at).toISOString().slice(0, 16)}Z`;
+    const text = (fresh: readonly FlaggedSlice[]) => dutyId === CHECK_IN_DUTY_ID
+      ? `${run} found ${fresh.length} step${fresh.length === 1 ? "" : "s"} nobody moves, and its job ${held.job.name} ${held.why}, so it takes no ` +
+        `message until then. Give each a live owner in this turn: steer its job, start one, link a For you todo, or close it on evidence.`
+      : `${run} found ${fresh.length} flagged item${fresh.length === 1 ? "" : "s"} that no session works: its job ${held.job.name} ${held.why}, so ` +
+        `it takes no message until then, and no session that made them is asked. Fix each through a subagent of this chat, whose turns use this ` +
+        `chat's pi-pool slot, since a new job would wait in the same pool, or close it on evidence.`;
+    return this.handNew(chatId, dutyId, held.job, handOff, fresh => tell(chatId, [`${text(fresh)} The run's findings are in ${handOff.detail}.`,
+      ...fresh.map(itemLine)].join("\n"), { chat: chatId, duty: dutyId }), "the chat");
+  }
+
+  private makersFile(chatId: string, dutyId: string): string { return join(this.store.chatDir(chatId), `${dutyId}.makers.json`); }
+
+  /** The `handOff` items that no run asked a maker to fix (`<dutyId>.makers.json`). */
+  private async unasked(chatId: string, dutyId: string, handOff: HandOff): Promise<HandOff> {
+    const stored = await readFile(this.makersFile(chatId, dutyId), "utf8").then(text => JSON.parse(text) as unknown, () => null);
+    const asked = new Set(Array.isArray(stored) ? stored : []);
+    return { ...handOff, items: handOff.items.filter(slice => !asked.has(handOffKey(slice))) };
   }
 
   /**
@@ -1367,7 +1386,7 @@ export class Duties {
   private async handToMakers(chatId: string, dutyId: string, held: { job: DutyJobRef; why: string }, handOff: HandOff, dutyName: string, at: number): Promise<number> {
     const send = this.host.message;
     if (!send) return 0;
-    const file = join(this.store.chatDir(chatId), `${dutyId}.makers.json`);
+    const file = this.makersFile(chatId, dutyId);
     const current = new Set(handOff.items.map(handOffKey));
     const stored = await readFile(file, "utf8").then(text => JSON.parse(text) as unknown, () => null);
     const known = new Set((Array.isArray(stored) ? stored : []).filter((key): key is string => typeof key === "string" && current.has(key)));
