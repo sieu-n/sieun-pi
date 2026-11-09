@@ -60,6 +60,10 @@ def gsc_read() -> dict[str, Any]:
     rows = gsc.query(sess, start, end, ["page", "date"])
     out["pages"] = {"start": start.isoformat(), "end": end.isoformat(),
                     "rows": [{"page": r["page"], "date": r["date"], "impressions": r["impressions"]} for r in rows]}
+    # The same days per search and page, so movedPages can tell a page whose searches went to another virev.ai page from one that lost them.
+    rows = gsc.query(sess, start, end, ["query", "page", "date"])
+    out["queries"] = {"start": start.isoformat(), "end": end.isoformat(),
+                      "rows": [{"query": r["query"], "page": r["page"], "date": r["date"], "impressions": r["impressions"]} for r in rows]}
     return out
 
 

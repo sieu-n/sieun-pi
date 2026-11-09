@@ -98,7 +98,10 @@ export interface PageDay { page: string; date: string; impressions: number }
 /** Search Console impressions per page and day over the DROP_BASE_DAYS + DROP_RECENT_DAYS days that end on the last final day. */
 export interface PagesDaily { start: string; end: string; rows: PageDay[] }
 export interface Span { start: string; end: string }
-export interface GscRead { today: string; last_final: string | null; d7?: Totals; d7_prior?: Totals; pages?: PagesDaily }
+export interface QueryDay { query: string; page: string; date: string; impressions: number }
+/** Search Console impressions per search, page and day over the same days as PagesDaily. Google leaves out searches it keeps anonymous. */
+export interface QueriesDaily { start: string; end: string; rows: QueryDay[] }
+export interface GscRead { today: string; last_final: string | null; d7?: Totals; d7_prior?: Totals; pages?: PagesDaily; queries?: QueriesDaily }
 export interface SignupsRead { clerk_users: number; d28: number; attribution: string; attribution_error?: string; matched?: number; by_section?: Record<string, number> }
 export interface TipCommit { sha: string; committedAt: number; subject: string }
 export interface ShipRead { tipRef: string; commits: TipCommit[] }
@@ -117,6 +120,13 @@ export function dropWindows(lastFinal: string): { base: Span; recent: Span } {
   return { base: { start: addDays(recentStart, -DROP_BASE_DAYS), end: addDays(recentStart, -1) }, recent: { start: recentStart, end: lastFinal } };
 }
 
+const pageOf = (url: string): string => url.split("#")[0]!;
+
+/** The first day of a page's base: the base start, or two days after its first day with impressions when that falls inside the base. */
+function baseFrom(first: string, base: Span): string {
+  return first > base.start ? addDays(first, DROP_LAUNCH_DAYS) : first;
+}
+
 /** The pages that fell, from Search Console impressions per page and day in the windows that end on `daily.end`, biggest base first.
  * A page in `noindex` answers robots noindex, so we asked Google to drop it: /blog/tag/creator-selection went noindex as a one-article
  * tag page after the 10-15 merge of 20 guides into 13 (e177d75478), and its 6 to 0.3 a day on 10-16..10-18 was that ask working.
@@ -127,19 +137,44 @@ export function droppedPages(daily: PagesDaily, noindex: ReadonlySet<string> = n
   const pages = new Map<string, { date: string; impressions: number }[]>();
   for (const row of daily.rows) {
     if (row.date < base.start || row.date > recent.end) continue;
-    const page = row.page.split("#")[0]!;
+    const page = pageOf(row.page);
     pages.set(page, [...pages.get(page) ?? [], row]);
   }
   return [...pages].flatMap(([page, rows]) => {
     if (noindex.has(page)) return [];
-    const first = rows.reduce((min, row) => (row.date < min ? row.date : min), recent.end);
-    const from = first > base.start ? addDays(first, DROP_LAUNCH_DAYS) : first;
+    const from = baseFrom(rows.reduce((min, row) => (row.date < min ? row.date : min), recent.end), base);
     if (from > base.end) return [];
     const sum = (start: string, end: string): number => rows.reduce((total, row) => (row.date >= start && row.date <= end ? total + row.impressions : total), 0);
     const baseDaily = sum(from, base.end) / (daysBetween(from, base.end) + 1);
     const recentDaily = sum(recent.start, recent.end) / DROP_RECENT_DAYS;
     return baseDaily >= DROP_MIN_DAILY && recentDaily < DROP_SHARE * baseDaily ? [{ page, baseDaily: round(baseDaily, 1), recentDaily: round(recentDaily, 1) }] : [];
   }).sort((a, b) => b.baseDaily - a.baseDaily);
+}
+
+export interface MovedPage { page: string; lostDaily: number; takenDaily: number }
+
+/** The dropped pages whose named searches went to other virev.ai pages: what the page lost a day on the searches it had in its base,
+ * against what other pages gained a day on those searches, and a page is moved when they took at least what it lost. On 11-06 d1 read
+ * /blog/fitness-influencers 71.2 to 6.7, while Google showed /en/top-fitness-influencers-in-singapore at position 3.9 for "top fitness
+ * influencers": the page lost 24.6 impressions a day on its 55 named searches, other pages gained 26.8, and the fitness pages rose from
+ * 112 to 173 a day in all. */
+export function movedPages(dropped: readonly DroppedPage[], daily: PagesDaily, queries: QueriesDaily): MovedPage[] {
+  const { base, recent } = dropWindows(daily.end);
+  return dropped.flatMap(({ page }) => {
+    const first = daily.rows.reduce((min, row) => (pageOf(row.page) === page && row.date < min ? row.date : min), recent.end);
+    const from = baseFrom(first, base);
+    const baseDays = daysBetween(from, base.end) + 1;
+    const rows = queries.rows.filter(row => row.date >= from && row.date <= recent.end);
+    const named = new Set(rows.filter(row => pageOf(row.page) === page && row.date <= base.end).map(row => row.query));
+    let lost = 0, taken = 0;
+    for (const row of rows) {
+      if (!named.has(row.query)) continue;
+      const change = row.date <= base.end ? -row.impressions / baseDays : row.date >= recent.start ? row.impressions / DROP_RECENT_DAYS : 0;
+      if (pageOf(row.page) === page) lost -= change;
+      else taken += change;
+    }
+    return lost > 0 && taken >= lost ? [{ page, lostDaily: round(lost, 1), takenDaily: round(taken, 1) }] : [];
+  });
 }
 
 /** The blog commits on the tip and not on GitHub that are older than UNSHIPPED_AFTER_MS at `now`, oldest first. */
@@ -182,9 +217,12 @@ export function visitsOutput(read: VisitsRead, at: number): PrecheckOutput {
   else {
     const { base, recent } = dropWindows(gsc.pages.end);
     const noindex = new Set(read.noindex ?? []);
-    const dropped = droppedPages(gsc.pages, noindex);
+    const fell = droppedPages(gsc.pages, noindex);
+    const moved = gsc.queries ? movedPages(fell, gsc.pages, gsc.queries) : [];
+    const dropped = fell.filter(page => !moved.some(move => move.page === page.page));
     const skipped = droppedPages(gsc.pages).filter(page => noindex.has(page.page));
-    const left = skipped.length ? ` Left out, since they answer robots noindex: ${skipped.map(page => `${page.page} ${page.baseDaily} to ${page.recentDaily}`).join(", ")}.` : "";
+    const left = (skipped.length ? ` Left out, since they answer robots noindex: ${skipped.map(page => `${page.page} ${page.baseDaily} to ${page.recentDaily}`).join(", ")}.` : "") +
+      (moved.length ? ` Left out, since other virev.ai pages took the named searches they lost: ${moved.map(move => `${move.page} lost ${move.lostDaily} a day, others took ${move.takenDaily}`).join(", ")}.` : "");
     metrics.dropped_pages = dropped.length;
     flagged.push({ at, kind: "dropped_pages", excerpt: (dropped.length
       ? `Pages whose Google impressions a day fell under ${DROP_SHARE * 100}% (${base.start}..${base.end} against ${recent.start}..${recent.end}): ${dropped.map(page => `${page.page} ${page.baseDaily} to ${page.recentDaily}`).join(", ")}.`
@@ -250,7 +288,8 @@ export async function readCopy(git: Git): Promise<CopyRead> {
 /** Runs the reads in auto-sns-agent's SEO CLI project and parses the one JSON line it prints. */
 export function readSources(repo: string): Promise<VisitsRead> {
   return new Promise((resolve, reject) => {
-    execFile("uv", ["run", "--project", "scripts/seo", "--frozen", "python", SOURCES_PY, "visits"], { cwd: repo, encoding: "utf8" },
+    // measured: visits printed 1,552,286 bytes on 11-09 once it carried 7,229 search rows, past execFile's 1 MiB default; 64 MiB is runGit's buffer.
+    execFile("uv", ["run", "--project", "scripts/seo", "--frozen", "python", SOURCES_PY, "visits"], { cwd: repo, encoding: "utf8", maxBuffer: 64 << 20 },
       (error, stdout, stderr) => {
         if (error) { reject(new Error(`${error.message} ${stderr.trim()}`.trim())); return; }
         try { resolve(JSON.parse(stdout.trim().split("\n").at(-1)!) as VisitsRead); } catch (parseError) { reject(parseError); }

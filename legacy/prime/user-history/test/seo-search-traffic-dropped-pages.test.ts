@@ -3,7 +3,7 @@
 // Also guards the 10-18 false drop: /blog/will-ai-kill-us-all's launch days (1,248 and 263) made its usual 4 to 56 a day read as a fall.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { droppedPages, readNoindex, visitsOutput, type GscRead, type PagesDaily } from "../scripts/duties/seo-search-visits.ts";
+import { droppedPages, readNoindex, visitsOutput, type GscRead, type PagesDaily, type QueriesDaily } from "../scripts/duties/seo-search-visits.ts";
 
 const JA_PAY = "https://virev.ai/ja/blog/how-much-does-youtube-pay-per-view";
 const IG_ALGO = "https://virev.ai/blog/instagram-algorithm";
@@ -70,4 +70,27 @@ test("#fragment rows of one page count as that one page (11-09: 9 of 21 dropped 
   const daily: PagesDaily = { start: "2026-10-24", end: "2026-11-09", rows };
   assert.deepEqual(droppedPages(daily), [{ page: PAGE, baseDaily: 12, recentDaily: 0 }]);
   assert.deepEqual(droppedPages(daily, new Set([PAGE])), []);
+});
+
+test("a dropped page whose named searches another virev.ai page took is left out (11-06: top fitness influencers moved to a country list)", () => {
+  const LIST = "https://virev.ai/blog/fitness-influencers", COUNTRY = "https://virev.ai/en/top-fitness-influencers-in-singapore";
+  const GONE = "https://virev.ai/blog/yoga-influencers";
+  const dates = Array.from({ length: 17 }, (_, i) => new Date(Date.parse("2026-10-21") + i * 86_400_000).toISOString().slice(0, 10));
+  const recent = (date: string): boolean => date >= "2026-11-04";
+  const pages: PagesDaily = { start: dates[0]!, end: dates.at(-1)!, rows: dates.flatMap(date => [
+    { page: LIST, date, impressions: recent(date) ? 6 : 70 },
+    { page: GONE, date, impressions: recent(date) ? 3 : 24 },
+    ...(recent(date) ? [{ page: COUNTRY, date, impressions: 120 }] : []),
+  ]) };
+  const queries: QueriesDaily = { start: pages.start, end: pages.end, rows: dates.flatMap(date => [
+    ...(recent(date) ? [{ query: "top fitness influencers", page: COUNTRY, date, impressions: 30 }] : [{ query: "top fitness influencers", page: LIST, date, impressions: 25 }]),
+    ...(recent(date) ? [] : [{ query: "yoga influencers", page: GONE, date, impressions: 8 }]),
+  ]) };
+  const gsc: GscRead = { today: "2026-11-09", last_final: "2026-11-06", pages, queries,
+    d7: { start: "2026-10-31", end: "2026-11-06", clicks: 262, impressions: 18979, position: 12 } };
+  const output = visitsOutput({ gsc }, 0);
+  assert.equal(output.metrics.dropped_pages, 1);
+  const excerpt = output.flagged!.find(slice => slice.kind === "dropped_pages")!.excerpt;
+  assert.match(excerpt, /yoga-influencers 24 to 3\./);
+  assert.match(excerpt, /took the named searches they lost: https:\/\/virev\.ai\/blog\/fitness-influencers lost 25 a day, others took 30/);
 });
