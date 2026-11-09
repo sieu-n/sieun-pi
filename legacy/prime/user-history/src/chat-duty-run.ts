@@ -1361,8 +1361,29 @@ export class Duties {
       : `${run} found ${fresh.length} flagged item${fresh.length === 1 ? "" : "s"} that no session works: its job ${held.job.name} ${held.why}, so ` +
         `it takes no message until then, and no session that made them is asked. Fix each through a subagent of this chat, whose turns use this ` +
         `chat's pi-pool slot, since a new job would wait in the same pool, or close it on evidence.`;
-    return this.handNew(chatId, dutyId, held.job, handOff, fresh => tell(chatId, [`${text(fresh)} The run's findings are in ${handOff.detail}.`,
-      ...fresh.map(itemLine)].join("\n"), { chat: chatId, duty: dutyId }), "the chat");
+    const send = (fresh: readonly FlaggedSlice[]) => tell(chatId, [`${text(fresh)} The run's findings are in ${handOff.detail}.`,
+      ...fresh.map(itemLine)].join("\n"), { chat: chatId, duty: dutyId });
+    return dutyId === CHECK_IN_DUTY_ID ? this.handNew(chatId, dutyId, held.job, handOff, send, "the chat") : this.handChatOnce(chatId, dutyId, handOff, send);
+  }
+
+  /**
+   * Sends the chat each item once, kept apart from `handed.json`, which lists the brief of the job that pi-pool now parks: on 11-09 d4's 03:09
+   * job (01a1c180) started at 18:09:13Z with all 12 pages in its brief and was parked on credential_unavailable at 18:10:02Z, so a check
+   * against its brief would hand the chat none of them.
+   */
+  private async handChatOnce(chatId: string, dutyId: string, handOff: HandOff, send: (fresh: readonly FlaggedSlice[]) => Promise<unknown>): Promise<number> {
+    const file = join(this.store.chatDir(chatId), `${dutyId}.chat-handed.json`);
+    const current = new Set(handOff.items.map(handOffKey));
+    const stored = await readFile(file, "utf8").then(text => JSON.parse(text) as unknown, () => null);
+    const known = (Array.isArray(stored) ? stored : []).filter((key): key is string => typeof key === "string" && current.has(key));
+    const fresh = handOff.items.filter(slice => !known.includes(handOffKey(slice)));
+    if (!fresh.length) return 0;
+    try { await send(fresh); }
+    catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: hand the chat ${fresh.length} items: ${message(error)}`); return 0; }
+    await writeFile(file, JSON.stringify([...known, ...fresh.map(handOffKey)]), { mode: 0o600 })
+      .catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: write ${dutyId}.chat-handed.json: ${message(error)}`));
+    this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: handed the chat ${fresh.length} new flagged items`);
+    return fresh.length;
   }
 
   private makersFile(chatId: string, dutyId: string): string { return join(this.store.chatDir(chatId), `${dutyId}.makers.json`); }

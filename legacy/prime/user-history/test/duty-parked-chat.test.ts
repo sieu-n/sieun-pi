@@ -51,7 +51,7 @@ const reply = (at: string) => JSON.stringify({ type: "message", timestamp: at, m
 const slotWait = (at: string, slot: string) => JSON.stringify({ type: "message", timestamp: at, message: { role: "assistant", provider: "anthropic", content: [],
   stopReason: "error", errorMessage: `token hook gave no token (credential_unavailable): pi-pool: this session waits for its slot at ${slot}.` } });
 
-async function runsAt(times: readonly string[], hold: PoolHold | null) {
+async function runsAt(times: readonly string[], hold: PoolHold | null, briefKeys?: readonly string[]) {
   const dir = await mkdtemp(join(tmpdir(), "duty-parked-chat-"));
   try {
     const agentDir = join(dir, "agent");
@@ -71,6 +71,7 @@ async function runsAt(times: readonly string[], hold: PoolHold | null) {
       metrics: { wiki_problems: { value: 0, target: 0, op: "<=", met: true } }, summary: "wiki_problems 0 (on target); all 4 on target", job: JOB });
     await mkdir(store.chatDir(CHAT), { recursive: true });
     await writeFile(join(store.chatDir(CHAT), "d4.makers.json"), JSON.stringify(ASKED));
+    if (briefKeys) await writeFile(join(store.chatDir(CHAT), "d4.handed.json"), JSON.stringify({ job: JOB.id, keys: briefKeys }));
     const rows = new Map<string, SessionRow>([[CHAT, row(CHAT, "AI harness developer environment VP", false)], [JOB.id, row(JOB.id, JOB.name, true)],
       [CRAWLER, row(CRAWLER, "Crawler VP", true)], [API_PORTAL, row(API_PORTAL, "api portal vp", true)]]);
     const started: string[] = [];
@@ -125,4 +126,11 @@ test("a dream job held in pi-pool's line still takes the run's items itself, and
   assert.ok(summaries[0]!.includes(IN_POOL_LINE), summaries[0]);
   assert.deepEqual(steered, [JOB.id]);
   assert.deepEqual(told, []);
+});
+
+test("a dream job parked right after its start, with every page in its brief, still leaves the chat the pages no maker takes (11-09 18:10Z)", async () => {
+  const { started, told, summaries } = await runsAt(["2026-11-09T18:24:47.000Z"], null, FLAGGED.map(key));
+  assert.deepEqual(started, [], "p1514 keeps the parked job");
+  assert.equal(told.length, 1, summaries[0]);
+  for (const item of NO_MAKER) assert.ok(told[0]!.text.includes(item), `${item} reaches the chat`);
 });
