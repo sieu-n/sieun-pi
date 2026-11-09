@@ -81,6 +81,16 @@ test("a first group read past 10 s or a warm one past 3 s adds one Watchlist ris
   assert.equal(failed.metrics.watchlist_risks, 1);
 });
 
+test("a supply hold scores open rows not green as the Watchlist paints them Waiting, and the flag names its code and start (11-09)", () => {
+  const base = data([{ keys: 25, status: 200, ms: 800 }]);
+  const gone = { ...base.rows![0]!, target: "b", lastOutcome: "gone" };
+  const held = report({ ...base, keys: ["instagram:account:a", "instagram:account:b"], rows: [base.rows![0]!, gone],
+    hold: { pausedBy: ["supply_hold"], holds: [{ code: "proxy_unreachable", provider: "geonode", gateway: "us-08:12001", since: Date.UTC(2026, 10, 9, 8, 44, 58) }] } }, metrics);
+  assert.equal(held.metrics.owner_green_pct, 50);
+  assert.match(held.flagged!.find(flag => flag.kind === "watch_held")!.excerpt, /prod watching is paused by supply_hold \(proxy_unreachable on geonode us-08:12001 since 11-09 08:44Z\)/);
+  assert.equal(report({ ...base, hold: { pausedBy: [], holds: [] } }, metrics).metrics.owner_green_pct, 100);
+});
+
 test("groupRead reads every page of the org in order as a member, following next until the last page", async () => {
   const asked: { after?: string | undefined; caller: string | null }[] = [];
   const fetcher = (async (url: string, init: RequestInit) => {

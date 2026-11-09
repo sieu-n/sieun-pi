@@ -37,6 +37,8 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "watchlist-green
  * The four judged metrics in watchlist-green.duty.json (c75: one headline and at most 3 more) and their sources:
  * - owner_green_pct >= 100 is the headline: the owner, 10-09, "make this screen functional all green, including collabs", and 10-10, "most
  *   importantly staging and prod watchlist all green". An owner account is green when every watch on it, posts and collab, is green.
+ *   While a tier's watch_paused_by is not empty (readHold), its Watchlist paints every open row Waiting, so only rows a read closed count green there
+ *   (closedThroughHold), and a watch_held flag names the hold's code and start; claims_stopped flags no claim for LOOP_STALL_S while rows are due.
  * - staging_green_pct >= 100: the staging half of that sentence. It is the share of unpaused staging monitor rows, posts and collabs, read ok in
  *   24 h, from staging watch_targets itself, so a row whose reads keep failing counts (the overdue gauge misses those, health.py _NO_GOOD_READ).
  *   Paused staging rows are out of the staging Watchlist by design: the owner's t17 answer asked for "only like 10 accounts" in staging.
@@ -82,10 +84,10 @@ export const STAGING_OWNER_ORG = "org_3FLEJTtegZpZqZPYYByywRFfDjI";
 /** The unread-records fill of a stream's byte cap that the bus-unread-near-cap alert fires at (crawler-bus-retention.yaml, 2b5d936b50). */
 export const BUS_FILL_LIMIT = 0.8;
 
-export type Source = "grafana auth" | "prod gauges" | "prod config" | "convex keys" | "prod rows" | "prod receipts" | "staging rows" | "prod streams" | "screen read" | "staging keys" | "group read";
+export type Source = "grafana auth" | "prod gauges" | "prod config" | "convex keys" | "prod rows" | "prod receipts" | "staging rows" | "prod streams" | "screen read" | "staging keys" | "group read" | "prod hold" | "staging hold" | "prod claims";
 export const NEEDS: Readonly<Record<string, readonly Source[]>> = {
-  owner_green_pct: ["convex keys", "prod rows"], staging_green_pct: ["staging rows"],
-  prod_read_error_pct: ["prod receipts", "grafana auth", "prod gauges", "prod config"],
+  owner_green_pct: ["convex keys", "prod rows", "prod hold"], staging_green_pct: ["staging rows", "staging hold"],
+  prod_read_error_pct: ["prod receipts", "grafana auth", "prod gauges", "prod config", "prod claims"],
   watchlist_risks: ["convex keys", "prod rows", "grafana auth", "prod streams", "screen read", "group read"],
 };
 
@@ -106,12 +108,20 @@ export interface WatchRow {
 /** One prod Kafka stream fault watchlist_risks counts: a fill over BUS_FILL_LIMIT, a retention.bytes changed by hand, or missing byte gauges. */
 export interface StreamFault { topic: string; why: string }
 export interface Gauges { rows: Record<string, number>; overdue: Record<string, number>; loopAge?: number }
+/** One live proxy supply hold of a tier's GET /ops/status supply_holds, `since` in epoch ms. */
+export interface SupplyHold { code: string; provider: string; gateway: string; since: number }
+/** What holds a tier's watch claims, as its Watchlist reads it: watch_paused_by of the summary answer, which the screen puts on every row
+ *  (apps/search/src/lib/watchlist/crawl.svelte.ts), and the supply holds behind it. */
+export interface HoldRead { pausedBy: string[]; holds: SupplyHold[] }
+/** The newest prod watch claim in 24 h, epoch ms or null, and the unpaused monitor rows due now (CLAIMS_SQL). */
+export interface ClaimsRead { lastClaimAt: number | null; dueNow: number }
 export interface WatchData {
   now: number;
   keys?: string[]; stagingKeys?: string[]; rows?: WatchRow[]; receipts?: Record<string, number>; receiptHours?: Record<number, Record<string, number>>; staging?: WatchRow[]; prod?: Gauges; pauseWatch?: string; streams?: StreamFault[];
   screen?: ScreenChunk[];
   /** The owner org's group pages on prod, read in order twice: `first` is each page's first read of the run, `warm` the read right after. */
   group?: GroupReads;
+  hold?: HoldRead; stagingHold?: HoldRead; claims?: ClaimsRead;
   errors: { source: Source; message: string }[];
 }
 
@@ -173,12 +183,21 @@ const readOk = (row: WatchRow, now: number): boolean =>
   !isHidden(row) && stopReason(row, now) === null && row.lastOkAt !== null && now - row.lastOkAt <= DAY;
 /** A row added under 24 h ago that does not read Stopped: its first read is not late yet (crawler health.py _NO_GOOD_READ). */
 export const isYoung = (row: WatchRow, now: number): boolean => row.addedAt !== null && now - row.addedAt < DAY && stopReason(row, now) === null;
-export const isGreen = (row: WatchRow | undefined, now: number): boolean =>
-  !!row && !row.paused && (isClosed(row) || isAcceptedHidden(row) || readOk(row, now) || isYoung(row, now));
+/**
+ * A row the Watchlist paints closed while a hold pauses watching. words.ts watchWords reads a gone run, a private account and an ok run that
+ * stopped private or hidden before the hold, and paints every other row Waiting ("Watching is paused: ..."). On 2026-11-09 at 10:14Z d2 read
+ * owner_green_pct 98.4% while the prod Watchlist showed no green chip under a proxy_unreachable hold since 08:44:58Z (d2 shot 10:29:40Z).
+ */
+export const closedThroughHold = (row: WatchRow): boolean =>
+  row.lastOutcome === "gone" || row.isPrivate || (row.lastOutcome === "ok" && (row.lastStopReason === "private" || row.lastStopReason === "hidden"));
+/** Green as the Watchlist paints the row; `held` is a tier whose watch_paused_by is not empty, which paints every open row Waiting. */
+export const isGreen = (row: WatchRow | undefined, now: number, held = false): boolean =>
+  !!row && !row.paused && (held ? closedThroughHold(row) : isClosed(row) || isAcceptedHidden(row) || readOk(row, now) || isYoung(row, now));
 /** Why a watch is not green, as a flag phrase. */
-function notGreen(kind: string, row: WatchRow | undefined, now: number): string {
+function notGreen(kind: string, row: WatchRow | undefined, now: number, held = false): string {
   if (!row) return `${kind} no unpaused monitor row`;
   if (row.paused) return `${kind} paused`;
+  if (held) return `${kind} Waiting, watching is paused`;
   if (!row.lastOutcome) return `${kind} never ran`;
   if (isHidden(row)) return `${kind} Stopped, hidden`;
   const stop = stopReason(row, now);
@@ -189,7 +208,7 @@ const tally = (why: Map<string, number>): [string, number][] => [...why.entries(
 const listWhy = (why: readonly [string, number][]): string => why.map(([reason, count]) => `${count} ${reason}`).join(", ");
 
 /** The owner's accounts and their green share, and the collab watches with an unpaused monitor row. */
-export function ownerGreen(keys: readonly string[], rows: readonly WatchRow[], now: number) {
+export function ownerGreen(keys: readonly string[], rows: readonly WatchRow[], now: number, held = false) {
   const byId = new Map(rows.map(row => [id(row), row]));
   const accounts = new Map<string, boolean>();
   const why = new Map<string, number>();
@@ -202,11 +221,11 @@ export function ownerGreen(keys: readonly string[], rows: readonly WatchRow[], n
     const want = rowKeyOf(key);
     if (!want) { unread++; continue; }
     const row = byId.get(id(want));
-    const green = isGreen(row, now);
+    const green = isGreen(row, now, held);
     const account = `${want.platform}:${want.target}`;
     accounts.set(account, (accounts.get(account) ?? true) && green);
     if (want.kind === "tagged") { collabs++; if (row && !row.paused) pushed++; }
-    if (!green) { const reason = notGreen(want.kind, row, now); why.set(reason, (why.get(reason) ?? 0) + 1); }
+    if (!green) { const reason = notGreen(want.kind, row, now, held); why.set(reason, (why.get(reason) ?? 0) + 1); }
     if (row && isAcceptedHidden(row)) { hidden++; continue; }
     const stop = row && stopReason(row, now);
     if (stop) { const reason = `${want.kind} ${stop}`; stops.set(reason, (stops.get(reason) ?? 0) + 1); }
@@ -217,17 +236,17 @@ export function ownerGreen(keys: readonly string[], rows: readonly WatchRow[], n
 }
 
 /** The unpaused monitor rows of the given kinds (posts and tagged: the Watchlist's posts and collabs), how many are green, and why the rest are not. */
-export function rowsGreen(rows: readonly WatchRow[], now: number, kinds: readonly string[] = ["posts", "tagged"]) {
+export function rowsGreen(rows: readonly WatchRow[], now: number, kinds: readonly string[] = ["posts", "tagged"], held = false) {
   const live = rows.filter(row => !row.paused && kinds.includes(row.kind));
   const why = new Map<string, number>();
   const byKind: Record<string, { rows: number; green: number }> = Object.fromEntries(kinds.map(kind => [kind, { rows: 0, green: 0 }]));
   let young = 0;
   for (const row of live) {
-    const green = isGreen(row, now);
+    const green = isGreen(row, now, held);
     byKind[row.kind]!.rows++;
     if (green) byKind[row.kind]!.green++;
-    else { const reason = notGreen(row.kind, row, now); why.set(reason, (why.get(reason) ?? 0) + 1); }
-    if (green && !isClosed(row) && !readOk(row, now)) young++;
+    else { const reason = notGreen(row.kind, row, now, held); why.set(reason, (why.get(reason) ?? 0) + 1); }
+    if (green && !held && !isClosed(row) && !isAcceptedHidden(row) && !readOk(row, now)) young++;
   }
   return { rows: live.length, green: Object.values(byKind).reduce((sum, kind) => sum + kind.green, 0), byKind, why: tally(why), young };
 }
@@ -277,8 +296,19 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
     detail.group_warm_read_max_s = maxS(group.warm);
     flagged.push({ at, kind: "group_read", excerpt: `the owner org's Watchlist group read on prod, ${group.first.length} pages of up to ${GROUP_PAGE_ROWS} rows, read twice in order: ${groupTimes}; a first read past ${GROUP_FIRST_READ_LIMIT_S} s (p314), a warm read past ${GROUP_WARM_READ_LIMIT_S} s (p302) or a page not a 200 is one Watchlist risk` });
   }
+  const prodHeld = !!data.hold?.pausedBy.length;
+  const stagingHeld = !!data.stagingHold?.pausedBy.length;
+  if (data.hold) flagged.push(...holdFlags("prod", data.hold, at));
+  if (data.stagingHold) flagged.push(...holdFlags("staging", data.stagingHold, at));
+  if (data.claims) {
+    const age = data.claims.lastClaimAt === null ? null : now - data.claims.lastClaimAt;
+    if (data.claims.dueNow > 0 && (age === null || age > LOOP_STALL_S * 1000)) {
+      unmeasured.add("prod_read_error_pct");
+      flagged.push({ at, kind: "claims_stopped", excerpt: `prod claimed no watch target ${data.claims.lastClaimAt === null ? "in 24 h" : `since ${utc(data.claims.lastClaimAt)}`} while ${data.claims.dueNow} unpaused monitor rows are due, past the ${LOOP_STALL_S} s loop alert line, so prod_read_error_pct misses${prodHeld ? "" : "; no hold names a cause"}` });
+    }
+  }
   if (data.keys && data.rows) {
-    const owner = ownerGreen(data.keys, data.rows, now);
+    const owner = ownerGreen(data.keys, data.rows, now, prodHeld);
     metrics.owner_green_pct = owner.accounts ? round1(100 * owner.green / owner.accounts) : 0;
     detail.collab_pushed_pct = owner.collabs ? round1(100 * owner.pushed / owner.collabs) : 100;
     detail.owner_stopped_watches = owner.stopped;
@@ -299,7 +329,7 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
   }
   if (data.staging) {
     const { owned, others } = splitByKeys(data.staging, data.stagingKeys);
-    const staging = rowsGreen(owned, now);
+    const staging = rowsGreen(owned, now, undefined, stagingHeld);
     metrics.staging_green_pct = staging.rows ? round1(100 * staging.green / staging.rows) : 0;
     const posts = staging.byKind.posts!;
     const tagged = staging.byKind.tagged!;
@@ -339,6 +369,13 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
   if (replaced.length) flagged.push(unmeasuredFlag(replaced, at));
   return { metrics: { ...metrics, ...detail }, flagged,
     ...Object.keys(lastEventAt).length ? { lastEventAt, windowMs: { prod_read_error_pct: READ_WINDOW_MS } } : {} };
+}
+
+/** The flag of a tier whose watching is held: what holds it, each supply hold's code, gateway and start, and how its Watchlist paints. */
+function holdFlags(tier: string, hold: HoldRead, at: number): FlaggedSlice[] {
+  if (!hold.pausedBy.length) return [];
+  const holds = hold.holds.map(supply => `${supply.code} on ${supply.provider} ${supply.gateway} since ${utc(supply.since)}`).join("; ");
+  return [{ at, kind: "watch_held", excerpt: `${tier} watching is paused by ${hold.pausedBy.join(", ")}${holds ? ` (${holds})` : ""}: the Watchlist paints every open row Waiting, so the ${tier} green share counts only rows a gone, private or hidden read closed` }];
 }
 
 /** The tab-separated monitor rows psql prints (rowLines for Grafana's): platform, kind, target, paused (t or f), last_outcome, last_run_at epoch ms or empty,
@@ -657,6 +694,36 @@ export const rowLines = (rows: Record<string, unknown>[]): string => rows.map(ro
 export const RECEIPTS_SQL = "select 'receipt' as kind, outcome, count(*) as runs, (extract(epoch from date_trunc('hour', settled_at)) * 1000)::bigint as hour"
   + " from watch_target_claims where settled_at > now() - interval '24 hours' and outcome is not null group by outcome, hour";
 
+/** The newest prod watch claim of 24 h and the unpaused monitor rows due now: 0.38 s through estate_pg_prod at 10:3xZ on 2026-11-09
+ *  (ix_watch_target_claims_claimed_at, ix_watch_targets_monitor_due). The scheduler loop ticks under a hold, so its age never shows one. */
+export const CLAIMS_SQL = NO_JIT + "select 'claims' as kind, coalesce((extract(epoch from max(claimed_at)) * 1000)::bigint::text, '') as last_claim, "
+  + "(select count(*) from watch_targets w where w.tier = 'monitor' and not w.paused and w.next_due_at <= now()) as due_now "
+  + "from watch_target_claims where claimed_at > now() - interval '24 hours'";
+export function parseClaims(text: string): ClaimsRead {
+  const cells = text.split("\n").map(line => line.split("\t")).find(line => line[0] === "claims");
+  if (!cells) throw new Error("the prod claims read returned no line");
+  return { lastClaimAt: cells[1] ? Number(cells[1]) : null, dueNow: Number(cells[2]) || 0 };
+}
+
+/** A tier's crawler base URL, which serves both reads of readHold. */
+export const CRAWLER_BASE = { prod: "https://crawler.virev.ai", staging: "https://staging-crawler.virev.ai" } as const;
+/** Any well-formed key: the summary answers watch_paused_by for every request, and a key with no row only reads missing. */
+const HOLD_PROBE_KEY = "instagram:posts:instagram";
+/** What holds a tier's watch claims: watch_paused_by of one summary read, the answer the Watchlist paints, and GET /ops/status supply_holds. */
+export async function readHold(fetcher: typeof fetch, base: string, apiKey: string, signal: AbortSignal): Promise<HoldRead> {
+  const headers = { "content-type": "application/json", "x-api-key": apiKey };
+  const [summary, status] = await Promise.all([
+    fetcher(`${base}/api/watch-targets/summary`, { method: "POST", signal, headers, body: JSON.stringify({ keys: [HOLD_PROBE_KEY] }) }),
+    fetcher(`${base}/ops/status`, { signal, headers }),
+  ]);
+  const paused = await summary.json().catch(() => null) as { data?: { watch_paused_by?: string[] } } | null;
+  const ops = await status.json().catch(() => null) as { data?: { supply_holds?: { code: string; provider: string; gateway?: string; since: number }[] } } | null;
+  if (!summary.ok || !Array.isArray(paused?.data?.watch_paused_by)) throw new Error(`${base} watch-targets/summary gave HTTP ${summary.status}`);
+  if (!status.ok || !Array.isArray(ops?.data?.supply_holds)) throw new Error(`${base} /ops/status gave HTTP ${status.status}`);
+  return { pausedBy: paused.data.watch_paused_by,
+    holds: ops.data.supply_holds.map(hold => ({ code: hold.code, provider: hold.provider, gateway: hold.gateway ?? "", since: Math.round(hold.since * 1000) })) };
+}
+
 export interface WatchDeps {
   query: DsQuery | null; authError: string | null; keys: () => Promise<string[]>; rows: () => Promise<string>; receipts: () => Promise<string>;
   staging: () => Promise<string>;
@@ -664,6 +731,9 @@ export interface WatchDeps {
   screen: (keys: string[]) => Promise<ScreenChunk[]>; now: number;
   /** The owner org's group pages on prod, read twice (groupRead); absent, the run reads none and watchlist_risks counts no group risk. */
   group?: () => Promise<GroupReads>;
+  /** What holds each tier's watching (readHold) and the newest prod claim (CLAIMS_SQL lines); absent, the run reads no hold. */
+  hold?: (tier: keyof typeof CRAWLER_BASE) => Promise<HoldRead>;
+  claims?: () => Promise<string>;
 }
 
 export async function measure(deps: WatchDeps): Promise<WatchData> {
@@ -680,6 +750,13 @@ export async function measure(deps: WatchDeps): Promise<WatchData> {
   // The group read goes first and alone, so each page's first read of the day meets no other read of this run on the box.
   const group = deps.group ? await step("group read", deps.group) : undefined;
   if (group && !group.first.length) data.errors.push({ source: "group read", message: "the group read sent no page to crawler.virev.ai" });
+  const [hold, stagingHold, claimsText] = await Promise.all([
+    deps.hold ? step("prod hold", () => deps.hold!("prod")) : undefined,
+    deps.hold ? step("staging hold", () => deps.hold!("staging")) : undefined,
+    deps.claims ? step("prod claims", deps.claims) : undefined,
+  ]);
+  const claims = claimsText === undefined ? undefined : await step("prod claims", async () => parseClaims(claimsText));
+  Object.assign(data, hold && { hold }, stagingHold && { stagingHold }, claims && { claims });
   const [keys, screen, prodText, receiptText, stagingText, prod, pause, streams, stagingKeys] = await Promise.all([
     keysRead,
     keysRead.then(read => read?.length ? step("screen read", () => deps.screen(screenKeys(read))) : undefined),
@@ -729,6 +806,8 @@ async function main(): Promise<void> {
       return text;
     },
     receipts: async () => { if (!query) throw new Error("not read: no Grafana login"); return prodReader(query)(RECEIPTS_SQL); },
+    claims: async () => { if (!query) throw new Error("not read: no Grafana login"); return prodReader(query)(CLAIMS_SQL); },
+    hold: async tier => readHold(fetch, CRAWLER_BASE[tier], await readCrawlerKey(tier === "prod" ? undefined : "apps/crawler-v3/.env.staging"), signal),
     staging: async () => { if (!query) throw new Error("not read: no Grafana login"); return rowLines(await sqlRows(query, PG.staging, STAGING_ROWS_SQL)); },
     screen: async keys => screenRead(fetch, await readCrawlerKey(), keys, signal),
     group: async () => {
