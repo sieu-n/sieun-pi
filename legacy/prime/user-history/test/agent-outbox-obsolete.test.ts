@@ -18,7 +18,8 @@ const report = (text: string) => `[cross-host message from check-in VP of CI 01:
   `agent_message.send(text, receiver_role="sibling", receiver_name="01a14fc7-c8be-773c-8656-3a8ca20a9d8d")]\n\n${replaceableLine("check-in report")}\n\n${text}`;
 const landedLine = (text: string, when: number) => JSON.stringify({ type: "custom", customType: "agent_message", details: { message: text }, timestamp: new Date(when).toISOString() });
 
-async function setup(t: TestContext, landed: Record<string, [string, number][]> = {}) {
+/** `slot` makes the target wait for a pi-pool slot instead of the Mac reading offline, until `macBack`. */
+async function setup(t: TestContext, landed: Record<string, [string, number][]> = {}, slot = false) {
   const dir = await mkdtemp(join(tmpdir(), "outbox-obsolete-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   await writeFile(join(dir, "archived-chats.json"), JSON.stringify({ ids: [ARCHIVED] }));
@@ -38,8 +39,9 @@ async function setup(t: TestContext, landed: Record<string, [string, number][]> 
     target: async () => ({ queued: [], busy: false, unfinished: 0 }),
     fileOf: async session => files.get(session) ?? null,
     stopped: stopRecords(dir),
-    // Every target is on the Mac, which stays offline until `back` turns true.
-    hostOf: () => "mac", reach: async () => ({ online: back }) as never,
+    // Every target is on the Mac, which stays offline, or with `slot` waits for its slot, until `back` turns true.
+    hostOf: () => "mac", reach: async () => ({ online: slot || back }) as never,
+    slotPark: async () => slot && !back ? {} : null,
   });
   t.after(() => outbox.close());
   let back = false;
@@ -66,8 +68,15 @@ test("an old message with no proof against it is delivered once, after 6.5 h, wi
   await box.queue(CHAT, text, "13:13:06");
   await box.macBack("19:42:22");
   assert.equal(box.sent.length, 1);
-  assert.equal(box.sent[0]!.text, `[queued 6.5 h ago at 13:13Z; the chat service's outbox held it until the target could take it]\n\n${text}`);
+  assert.equal(box.sent[0]!.text, `[queued 6.5 h ago at 13:13Z; the chat service's outbox held it while mac read offline]\n\n${text}`);
   assert.equal(unaged(box.sent[0]!.text), text);
+});
+
+test("a wake held while its target waited for a pi-pool slot says so in its age line (11-09, 01a15984)", async t => {
+  const box = await setup(t, {}, true);
+  await box.queue(CHAT, timeWake("22:09:03"), "13:13:06");
+  await box.macBack("14:12:06");
+  assert.equal(box.sent[0]!.text, `[queued 59 min ago at 13:13Z; the chat service's outbox held it while this session waited for a pi-pool working slot]\n\n${timeWake("22:09:03")}`);
 });
 
 test("a message that goes at once carries no age", async t => {

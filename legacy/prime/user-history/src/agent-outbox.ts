@@ -200,12 +200,14 @@ const clock = (at: number, now: number): string => {
 const ago = (ms: number): string => ms < 3_600_000 ? `${Math.max(1, Math.round(ms / 60_000))} min` : `${(ms / 3_600_000).toFixed(1)} h`;
 
 /**
- * The text as it goes: a message queued at `at` that waited past the longest wait between two tries opens with its age and queue time, like
- * "[queued 4.8 h ago at 13:13Z; ...]", so the target reads it as old news. One that went at once goes as it is.
+ * The text as it goes: a message queued at `at` that waited past the longest wait between two tries opens with its age, its queue time and
+ * `why` it waited, like "[queued 4.8 h ago at 13:13Z; ...]", so the target reads it as old news. One that went at once goes as it is. On 11-09
+ * the Crawler VP's job read "held it until the target could take it" on a wake held 60 min while its own session waited for a pi-pool slot,
+ * and a job spent its turn finding that the outbox had held it for that wait (`AgentOutbox.waited`).
  */
-export function agedText(text: string, at: number, now: number): string {
+export function agedText(text: string, at: number, now: number, why = "until the target could take it"): string {
   if (now - at < MAX_BACKOFF_MS) return text;
-  return `[queued ${ago(now - at)} ago at ${clock(at, now)}; the chat service's outbox held it until the target could take it]\n\n${text}`;
+  return `[queued ${ago(now - at)} ago at ${clock(at, now)}; the chat service's outbox held it ${why}]\n\n${text}`;
 }
 
 /**
@@ -296,6 +298,8 @@ export class AgentOutbox {
   private readonly offline = new Map<string, number>();
   /** The entries held while their target waits for a pi-pool slot (`AgentOutboxDeps.slotPark`), with when the hold began. */
   private readonly parked = new Map<string, number>();
+  /** Why each entry that a hold ended waited, for its age line (`agedText`). */
+  private readonly waited = new Map<string, string>();
 
   private readonly now: () => number;
 
@@ -314,7 +318,8 @@ export class AgentOutbox {
         await this.room(session, entry.id, host);
         const merged = await this.merge(entry);
         if ("obsolete" in merged) return merged;
-        const text = agedText(merged.change?.text ?? entry.text, entry.at, this.now());
+        const text = agedText(merged.change?.text ?? entry.text, entry.at, this.now(), this.waited.get(entry.id));
+        this.waited.delete(entry.id);
         const go = async () => {
           await sending(merged.change);
           await this.took(entry, merged);
@@ -354,6 +359,7 @@ export class AgentOutbox {
         const parkedSince = this.parked.get(entry.id);
         if (park && parkedSince === undefined) {
           this.parked.set(entry.id, this.now());
+          this.waited.set(entry.id, "while this session waited for a pi-pool working slot");
           deps.log(`outbox ${this.where(entry.threadId)}: ${entry.id} waits with no try while the target ${slotParkWords(park)}`);
         } else if (!park && parkedSince !== undefined) {
           this.parked.delete(entry.id);
@@ -366,6 +372,7 @@ export class AgentOutbox {
         const since = this.offline.get(entry.id);
         if (away && since === undefined) {
           this.offline.set(entry.id, this.now());
+          this.waited.set(entry.id, `while ${host} read offline`);
           deps.log(`outbox ${this.where(entry.threadId)}: ${entry.id} waits with no try while ${host} reads offline`);
         } else if (!away && since !== undefined) {
           this.offline.delete(entry.id);
