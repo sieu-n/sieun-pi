@@ -14,7 +14,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { durableSettings, TurnQueue } from "@sieun-pi/pi-pool/durable";
 import { DurableCommands, DurableThreads } from "./durable/index.ts";
-import { durableCompactionLine, durableModels } from "./durable/models.ts";
+import { durableCompactionLine, durableModels, primeDefaults } from "./durable/models.ts";
 import { PoolLabels } from "./durable/pool-labels.ts";
 import { withPrimeCompaction } from "./durable/prime-compaction.ts";
 import { loadPrimeChat, type PrimeChat } from "./durable/prime-chat.ts";
@@ -104,8 +104,9 @@ if (!values["no-durable"] && process.env.PI_HOST_RULES !== "0") {
 const durable = values["no-durable"] ? undefined : new DurableCommands(new DurableThreads({
   dir: values["durable-dir"] ? resolve(values["durable-dir"]) : join(dataDir, "durable"),
   models: threadId => durableModels(threadId, { agentDir, turns, tree: () => pool.tree(threadId) }),
-  defaultModel: values.model ? { provider, modelId: modelId.join("/") } : { provider: "anthropic", modelId: "claude-opus-5-5" },
-  defaultThinkingLevel: "high",
+  // A Prime chat's default on this host, read from Prime's settings.json at each creation (models.ts primeDefaults); --model overrides it.
+  defaultModel: values.model ? { provider, modelId: modelId.join("/") } : () => primeDefaults(agentDir).model,
+  defaultThinkingLevel: () => primeDefaults(agentDir).thinkingLevel,
   defaultCwd: values.cwd ? resolve(values.cwd) : homedir(),
   // Compacts where a Prime chat on this host does: Prime's window minus Prime's reserve (prime-compaction.ts).
   settings: threadId => withPrimeCompaction(durableSettings(() => pool.tree(threadId)), agentDir),

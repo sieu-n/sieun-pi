@@ -34,6 +34,7 @@ export const PRIME_WINDOWS: Readonly<Record<string, number>> = {
   "anthropic/claude-opus-5": 500_000,
   "anthropic/claude-fable-5": 500_000,
   "anthropic/claude-fable-5-1": 500_000,
+  "anthropic/claude-fable-5-2": 500_000,
   "anthropic/claude-opus-4-6": 500_000,
   "anthropic/claude-opus-4-7": 500_000,
   "anthropic/claude-opus-4-8": 500_000,
@@ -51,7 +52,7 @@ const isCount = (value: unknown): value is number => typeof value === "number" &
 
 const files = new Map<string, { mtimeMs: number; size: number; value: unknown }>();
 /** The parsed file, parsed again only when its mtime or size changed; a file that does not parse keeps the last one read. */
-function readJson(path: string): unknown {
+export function readJson(path: string): unknown {
   let stat;
   try {
     stat = statSync(path);

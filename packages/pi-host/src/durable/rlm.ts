@@ -62,6 +62,7 @@ import type { HostCall, HostModule } from "./host-modules.ts";
 import { goalModule } from "./goal.ts";
 import { heartbeatModule } from "./heartbeat.ts";
 import { mcpModule } from "./mcp.ts";
+import { primeDefaults } from "./models.ts";
 import { refineModule } from "./refine.ts";
 
 /** The folder of the tag-only systemd-run shim (`unit-tag/systemd-run`), first on each kernel's PATH. */
@@ -747,7 +748,8 @@ export class DurableRlm {
     }
     const harness = this.harnessOf(slot.thread);
     const parentAgent = await (await harness.conversation(slot.conversation as ConversationId, context))?.agent(context);
-    let model: ModelRef | undefined = parentAgent?.model;
+    // A job runs its parent's model and thinking level unless named, as a Prime job does; a parent without one gets Prime's default (models.ts).
+    let model: ModelRef | undefined = parentAgent?.model ?? primeDefaults(this.options.agentDir).model;
     if (typeof kwargs.model === "string") {
       const [provider, ...rest] = kwargs.model.split("/");
       const ref = { provider: provider!, modelId: rest.join("/") };
@@ -756,7 +758,7 @@ export class DurableRlm {
       model = ref;
     }
     if (!model) throw new Error("rlm.spawn needs a parent model or model=");
-    const thinking = typeof kwargs.thinking === "string" ? kwargs.thinking : parentAgent?.thinkingLevel ?? "high";
+    const thinking = typeof kwargs.thinking === "string" ? kwargs.thinking : parentAgent?.thinkingLevel ?? primeDefaults(this.options.agentDir).thinkingLevel;
     const id = `sub-${randomBytes(4).toString("hex")}`;
     const parentName = slot.conversation === ROOT_CONVERSATION_ID ? slot.thread.name() : (await harness.snapshot(RlmChildDoc, slot.conversation as ConversationId, context))?.name ?? slot.session;
     const child = await harness.commit(async tx => {

@@ -51,8 +51,10 @@ export interface DurableThreadsOptions {
   dir: string;
   /** Model access for one thread; pi-host passes pi-pool's provider keyed by the thread, so a thread is one pool tree. */
   models: (threadId: string) => Models;
-  defaultModel: ModelRef;
-  defaultThinkingLevel?: ModelThinkingLevel;
+  /** A new thread's model when none is named; a function is asked at each creation, as pi-host reads Prime's settings.json (`primeDefaults`). */
+  defaultModel: ModelRef | (() => ModelRef);
+  /** A new thread's thinking level when none is named, default "medium" (c221); a function is asked at each creation. */
+  defaultThinkingLevel?: ModelThinkingLevel | (() => ModelThinkingLevel);
   defaultCwd: string;
   /** How long a file with no runnable work and no watcher stays open; default 10 minutes. */
   idleCloseMs?: number;
@@ -278,6 +280,16 @@ export class DurableThreads {
     return this.index.list(options).map(row => ({ ...row, status: statusOf(row) }));
   }
 
+  private defaultModel(): ModelRef {
+    const value = this.options.defaultModel;
+    return typeof value === "function" ? value() : value;
+  }
+
+  private defaultThinkingLevel(): ModelThinkingLevel {
+    const value = this.options.defaultThinkingLevel ?? "medium";
+    return typeof value === "function" ? value() : value;
+  }
+
   info(id: string): ThreadInfo {
     const row = this.index.get(id);
     if (!row) throw new Error(`No durable thread ${id}`);
@@ -286,8 +298,8 @@ export class DurableThreads {
 
   async create(input: { name?: string; model?: ModelRef; thinkingLevel?: ModelThinkingLevel; cwd?: string; id?: string } = {}): Promise<ThreadInfo> {
     const id = input.id ?? randomUUID();
-    const model = input.model ?? this.options.defaultModel;
-    const thinkingLevel = input.thinkingLevel ?? this.options.defaultThinkingLevel ?? "high";
+    const model = input.model ?? this.defaultModel();
+    const thinkingLevel = input.thinkingLevel ?? this.defaultThinkingLevel();
     const cwd = input.cwd ?? this.options.defaultCwd;
     const at = this.now();
     if (this.index.get(id)) throw new Error(`Durable thread ${id} exists`);
@@ -781,7 +793,7 @@ export class DurableThreads {
    * Changes a thread's name, model, thinking level, archived flag or cwd. A new cwd goes into the root conversation's agent, which its next
    * request reads for the tools' environment and Prime's prompt, and into the row, which the open file's chat extension and kernels read.
    */
-  async set(id: string, change: { name?: string; model?: ModelRef; thinkingLevel?: ModelThinkingLevel; archived?: boolean; cwd?: string }): Promise<ThreadInfo> {
+  async set(id: string, change: { name?: string; model?: ModelRef; thinkingLevel?: ModelThinkingLevel; archived?: boolean; cwd?: string; jobs?: boolean }): Promise<ThreadInfo> {
     const before = this.info(id);
     if (change.cwd !== undefined) {
       if (!isAbsolute(change.cwd)) throw new Error(`cwd must be an absolute path, got ${JSON.stringify(change.cwd)}`);
@@ -793,6 +805,7 @@ export class DurableThreads {
         ...(change.model ? { model: change.model } : {}), ...(change.thinkingLevel ? { thinkingLevel: change.thinkingLevel } : {}),
         ...(change.cwd === undefined ? {} : { cwd: change.cwd }),
       }, context);
+      if (change.jobs && (change.model || change.thinkingLevel)) await this.moveJobs(open, { provider: before.provider, modelId: before.modelId }, change);
     }
     this.index.update(id, {
       ...(change.name === undefined ? {} : { name: change.name }),
@@ -805,6 +818,28 @@ export class DurableThreads {
     // An archive ends the thread's jobs, as Prime's chat service ends an archived job's leftovers (`DurableRlm.endThread`).
     if (change.archived === true && !before.archived) void this.options.rlm?.endThread(id, this.fileOf(id)).catch(error => this.log(`${id} job ends failed: ${error instanceof Error ? error.message : String(error)}`));
     return this.info(id);
+  }
+
+  /**
+   * With `jobs`, `set` moves each job conversation that runs the root's old model to the new model and thinking level from its next request
+   * on, as c221 moved every thread and job to Fable 5.2 on 2026-11-10. A job spawned on another model keeps it.
+   */
+  private async moveJobs(open: OpenThread, old: ModelRef, change: { model?: ModelRef; thinkingLevel?: ModelThinkingLevel }): Promise<void> {
+    for (const record of await this.conversations(open.harness)) {
+      if (record.id === ROOT_CONVERSATION_ID) continue;
+      const conversation = await open.harness.conversation(record.id, context);
+      const model = conversation ? (await conversation.agent(context)).model : undefined;
+      if (!conversation || model?.provider !== old.provider || model.modelId !== old.modelId) continue;
+      await conversation.configure({ ...(change.model ? { model: change.model } : {}), ...(change.thinkingLevel ? { thinkingLevel: change.thinkingLevel } : {}) }, context);
+      // rlm.list_subagents reads a job's model and thinking from its RlmChildDoc.
+      if ((await open.harness.snapshot(RlmChildDoc, record.id, context))?.id) {
+        await open.harness.commit(async tx => {
+          const doc = await tx.doc(RlmChildDoc, record.id);
+          if (change.model) doc.model = `${change.model.provider}/${change.model.modelId}`;
+          if (change.thinkingLevel) doc.thinking = change.thinkingLevel;
+        }, context);
+      }
+    }
   }
 
   /** Entries newest first: `before` is an exclusive entry id, so the timeline loads the newest page and scrolls up. */
@@ -922,8 +957,8 @@ export class DurableThreads {
     const parsed = parseSession(path);
     const created = await this.create({
       name: input.name ?? parsed.name ?? `Imported ${parsed.id ?? path}`,
-      model: input.model ?? parsed.model ?? this.options.defaultModel,
-      thinkingLevel: input.thinkingLevel ?? parsed.thinkingLevel ?? this.options.defaultThinkingLevel ?? "high",
+      model: input.model ?? parsed.model ?? this.defaultModel(),
+      thinkingLevel: input.thinkingLevel ?? parsed.thinkingLevel ?? this.defaultThinkingLevel(),
       cwd: input.cwd ?? parsed.cwd ?? this.options.defaultCwd,
     });
     const open = await this.thread(created.id);

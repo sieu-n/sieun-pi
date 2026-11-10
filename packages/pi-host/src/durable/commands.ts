@@ -186,6 +186,7 @@ export class DurableCommands {
             ...(optStr(command, "thinkingLevel") ? { thinkingLevel: optStr(command, "thinkingLevel") as ModelThinkingLevel } : {}),
             ...(typeof command.archived === "boolean" ? { archived: command.archived } : {}),
             ...(optStr(command, "cwd") === undefined ? {} : { cwd: optStr(command, "cwd")! }),
+            ...(command.jobs === true ? { jobs: true } : {}),
           }) });
         }
         case "durable_import": {
