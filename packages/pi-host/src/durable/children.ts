@@ -70,6 +70,12 @@ export type DeliverInput = {
    */
   report?: "prime" | "answer";
 };
+/**
+ * Per thread, what resolves once a conversation's `bash()` handles and their `[bash-done]` runs are over, true when it waited
+ * (`rlm.ts` `workDone`). A thread with no kernel host has none.
+ */
+export const childWork = new Map<string, (conversation: number, signal: AbortSignal) => Promise<boolean>>();
+
 type DeliverState =
   | { phase: "deliver" }
   | { phase: "report"; child: number; since: number; status: "done" | "unanswered"; answer?: number; text: string; stopReason?: string; reason?: string; error?: string };
@@ -81,7 +87,8 @@ export const textOfMessage = (message: Message | undefined): string => {
 };
 
 /**
- * One message from a parent to a child, and the child's notice to the parent when the run it starts settles without a reply: a
+ * One message from a parent to a child, and the child's notice to the parent when the run it starts, and the `bash()` handles that run
+ * left going, settle without a reply: a
  * background task of the parent conversation, so the parent's own runs end and its Esc does not reach the child. Its first run owns the
  * child conversation. A restart reruns a phase from its top; the request ids find the submissions it already made.
  */
@@ -109,8 +116,14 @@ export const DeliverTask = defineTask<DeliverInput, DeliverState, null>({
         entry: { kind: "agent.message", data: { from: task.input.from, via: task.input.via } },
       }, ctx);
       const settled = await submission.wait(ctx);
+      // A `bash()` handle the child started may outlive this run, and its `[bash-done]` input starts the child's next one. The child is
+      // over when those are, as under Prime, and its last text is then the newest run's.
+      const later = settled.status === "done" && await childWork.get(task.input.thread)?.(child, runtime.signal)
+        ? (await runtime.context(child as ConversationId, ctx)).messages.findLast(message => message.role === "assistant")
+        : undefined;
       await runtime.commit(async tx => {
-        const answer = settled.status === "done" && settled.answer !== undefined ? (await tx.entry(settled.answer))?.model?.[0] as (Message & { stopReason?: string; errorMessage?: string }) | undefined : undefined;
+        const first = settled.status === "done" && settled.answer !== undefined ? (await tx.entry(settled.answer))?.model?.[0] : undefined;
+        const answer = (later ?? first) as (Message & { stopReason?: string; errorMessage?: string }) | undefined;
         return {
           status: "running",
           checkpoint: {

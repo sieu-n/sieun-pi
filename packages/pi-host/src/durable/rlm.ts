@@ -16,7 +16,9 @@
  * conversation that task owns, and returns at admission with Prime's `rlm_child_id`, `name`, `session_dir` and `model`. The task hands
  * the child its `[task from parent]` input and waits for the run to settle; when the child did not reply itself with
  * `agent_message.send(receiver_role="parent")`, it hands the parent pi-rlm's `[child-exited: no-reply child:<name>]` (or
- * `[child-failed ...]`) as an agent message input, as pi-rlm's ChildManager does. A parent's later message to a child runs the same task.
+ * `[child-failed ...]`) as an agent message input, as pi-rlm's ChildManager does. A child whose `bash()` handle outlives its run stays
+ * running until the handle and the run its `[bash-done]` input starts are over (`workDone`), as Prime's `waitForRlmQuiescence` holds it.
+ * A parent's later message to a child runs the same task.
  * Request ids keep a restart from delivering anything twice. `rlm.list_subagents`, `rlm.collect`, `rlm.delete_subagent`,
  * `rlm.progress_note`, `rlm.find_models`, `rlm.create_session`, `agent_message.send` and `agent_observe.*` read and write that family,
  * with Prime's reach rule (pi-rlm `bus/family.ts`): the parent, siblings and direct children, and every thread's root a sibling of the others.
@@ -49,7 +51,7 @@ import { withKernelGuard } from "../../../sieun-rules/src/kernel-guard.ts";
 import { enabled } from "../../../sieun-rules/src/log.ts";
 import { conversationHarnessDir, dropAgentRole, harnessSessionOf, threadAgent } from "./agent-profile.ts";
 import { CHAT_URL_ENV, DEFAULT_CHAT_URL } from "./chat-app.ts";
-import { agentIdOf, artifactDirOf, DeliverTask, RlmChildDoc, sessionOf, textOfMessage, type RlmChild } from "./children.ts";
+import { agentIdOf, artifactDirOf, childWork, DeliverTask, RlmChildDoc, sessionOf, textOfMessage, type RlmChild } from "./children.ts";
 import { childTitle } from "./job-title.ts";
 import { durableTool, loadPiExtension, type PiTool, type PiToolResult } from "./pi-extensions.ts";
 import { PrimeChatName } from "./prime-chat.ts";
@@ -81,6 +83,8 @@ const context: Context = BACKGROUND_CONTEXT;
 export const RLM_EXTENSION = "rlm";
 export const IPYTHON_TOOL = "ipython";
 const IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+/** The display record `rlm.bash` emits when a `bash()` handle starts, ends or turns out to be a detached service. */
+const BASH_ACTIVITY = "application/vnd.prime-agent.bash-activity+json";
 const MARKER = "kernel-started";
 /** The marker's text for a kernel stopped mid-cell, which the next pi-host reports with the reset note. */
 const LOST = "lost";
@@ -177,6 +181,12 @@ class Slot {
   /** The ipython call running now, for host requests that need its model catalog, and the children its cell spawned. */
   call: { api: ToolExecutionApi; spawned: number[] } | undefined;
   notices = new Map<number, Notice>();
+  /** The `bash()` handles the kernel reports as running, by the id of their activity record (`rlm.bash` emits one per handle). */
+  jobs = new Set<string>();
+  /** The `[bash-done]` notices on their way: being submitted, or in a run that has not settled. */
+  sending = 0;
+  /** Who waits for this conversation's background work to end (`DurableRlm.workDone`). */
+  waiters: (() => void)[] = [];
   idleTimer: NodeJS.Timeout | undefined;
   lastUsed = Date.now();
   /** Set once this process killed whatever kernel a previous process left for this conversation. */
@@ -273,6 +283,7 @@ export class DurableRlm {
   /** The pi-durable extension a thread's conversations select: `ipython` with pi-rlm's definition, and the delivery task. */
   extension(thread: RlmThread): Extension {
     this.threads.set(thread.id, thread);
+    childWork.set(thread.id, (conversation, signal) => this.workDone(thread.id, conversation, signal));
     return defineExtension({
       name: RLM_EXTENSION,
       tools: [durableTool(this.tool, {
@@ -370,11 +381,13 @@ export class DurableRlm {
     });
     const cwd = slot.thread.cwd;
     let kernel: Kernel | undefined;
+    slot.jobs.clear();
     kernel = await Kernel.relay({
       python, cwd, env, stderrLogPath: join(slot.artifactDir, "kernel-stderr.log"),
       onHostRequest: request => this.hostRequest(slot, request),
+      onDisplay: data => this.onBashActivity(slot, data[BASH_ACTIVITY]),
       interruptGraceMs: Number(process.env.PI_RLM_INTERRUPT_GRACE_MS ?? 3000),
-      onExit: () => { if (slot.kernel === kernel) slot.kernel = undefined; },
+      onExit: () => { if (slot.kernel === kernel) slot.kernel = undefined; this.wake(slot); },
     }, { ...paths, wakeSession: "" }, true);
     if (!kernel) throw new Error(`the kernel relay for ${slot.session} did not start`);
     await kernel.ready;
@@ -513,6 +526,7 @@ export class DurableRlm {
       await kernel?.shutdown().catch(() => undefined);
       if (idle) rmSync(join(slot.artifactDir, MARKER), { force: true });
       else if (kernel) writeFileSync(join(slot.artifactDir, MARKER), `${LOST}\n`);
+      this.wake(slot);
     };
     slot.freeing = run().finally(() => (slot.freeing = undefined));
     await slot.freeing;
@@ -537,6 +551,7 @@ export class DurableRlm {
     slot.notices.clear();
     // This settle runs inside the conversation's slot release, and a submit waits for that release, so awaiting the notices here would
     // never end and would hang every later submit to the conversation (10-30: two agent factory jobs sat 5 h in agent_message.send).
+    slot.sending += pending.length;
     void pending.reduce((sent, notice) => sent.then(() => this.sendNotice(slot, notice)), Promise.resolve());
     this.armIdle(slot);
   }
@@ -549,6 +564,7 @@ export class DurableRlm {
       this.slots.delete(key);
     }));
     this.threads.delete(threadId);
+    childWork.delete(threadId);
     await Promise.all(this.modules.map(module => module.closeThread?.(threadId).catch(() => undefined)));
   }
 
@@ -589,6 +605,7 @@ export class DurableRlm {
         return this.onBashCompleted(slot, { pid: Number(payload.pid), command: String(payload.command ?? ""), exitCode: (payload.exitCode as number | null) ?? null });
       case "bash.consumed":
         slot.notices.delete(Number(payload.pid));
+        this.wake(slot);
         return {};
       case "rlm.run":
         return this.spawn(slot, payload);
@@ -644,16 +661,69 @@ export class DurableRlm {
 
   private onBashCompleted(slot: Slot, notice: Notice): Record<string, unknown> {
     // While a cell or a run is going, the notice waits for the run to settle, so a live cell that reads the handle drops it first.
-    if (slot.call) slot.notices.set(notice.pid, notice);
-    else void this.running(slot).then(async busy => { if (busy) slot.notices.set(notice.pid, notice); else await this.sendNotice(slot, notice); }, () => this.sendNotice(slot, notice));
+    if (slot.call) {
+      slot.notices.set(notice.pid, notice);
+      return {};
+    }
+    slot.sending++;
+    void this.running(slot).then(busy => {
+      if (!busy) return this.sendNotice(slot, notice);
+      slot.notices.set(notice.pid, notice);
+      slot.sending--;
+    }, () => this.sendNotice(slot, notice));
     return {};
   }
 
+  /** Submits one notice the caller counted in `slot.sending`, and holds that count until the run the notice started or joined settles. */
   private async sendNotice(slot: Slot, notice: Notice): Promise<void> {
-    await this.submit(slot.thread, {
-      conversation: slot.conversation, text: noticeMessage(notice).content, requestId: `bash-done:${slot.session}:${notice.pid}:${Date.now()}`, whenBusy: "steer",
-      entry: { kind: "agent.message", data: { from: "kernel", via: "bash-done" } },
-    }).catch(error => this.log(`${slot.session}: bash notice failed: ${error instanceof Error ? error.message : String(error)}`));
+    const requestId = `bash-done:${slot.session}:${notice.pid}:${Date.now()}`;
+    try {
+      await this.submit(slot.thread, {
+        conversation: slot.conversation, text: noticeMessage(notice).content, requestId, whenBusy: "steer",
+        entry: { kind: "agent.message", data: { from: "kernel", via: "bash-done" } },
+      });
+      const harness = this.harnessOf(slot.thread);
+      const record = await harness.commit(tx => tx.submissionByRequest(slot.conversation as ConversationId, requestId), context);
+      if (record) await (await harness.submission(record.id, context))?.wait(context);
+    } catch (error) {
+      this.log(`${slot.session}: bash notice failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      slot.sending--;
+      this.wake(slot);
+    }
+  }
+
+  /** The kernel's record of one `bash()` handle: running, or over once its notice went out, a cell read it or only a detached service is left. */
+  private onBashActivity(slot: Slot, activity: unknown): void {
+    const { id, active } = (activity ?? {}) as { id?: unknown; active?: unknown };
+    if (typeof id !== "string") return;
+    if (active === true) slot.jobs.add(id);
+    else if (slot.jobs.delete(id)) this.wake(slot);
+  }
+
+  private wake(slot: Slot): void {
+    for (const resolve of slot.waiters.splice(0)) resolve();
+  }
+
+  /**
+   * Resolves once the conversation has no `bash()` handle running and no `[bash-done]` notice held, on its way or in a run, as Prime's
+   * `waitForRlmQuiescence` holds a child whose handle outlived its turn. True when it waited. A kernel that ended took its handles along.
+   */
+  private async workDone(threadId: string, conversation: number, signal: AbortSignal): Promise<boolean> {
+    const slot = this.slots.get(`${threadId}:${conversation}`);
+    if (!slot) return false;
+    let waited = false;
+    const aborted = () => this.wake(slot);
+    signal.addEventListener("abort", aborted);
+    try {
+      while (!signal.aborted && slot.kernel?.alive && (slot.jobs.size || slot.notices.size || slot.sending)) {
+        waited = true;
+        await new Promise<void>(resolve => slot.waiters.push(resolve));
+      }
+    } finally {
+      signal.removeEventListener("abort", aborted);
+    }
+    return waited;
   }
 
   private async submit(thread: RlmThread, input: RlmSubmit): Promise<unknown> {
