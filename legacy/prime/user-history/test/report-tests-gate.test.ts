@@ -86,10 +86,10 @@ test("a job's report waits for its touched tests, is refused on their red, and g
   const green = await send(b, "parent", null);
   assert.equal(green.reply?.deliveryStatus, "delivered");
   assert.match(String(green.reply?.note), /def7654321 pass again/);
-  await writeFile(join(b.dir, "wait-text"), "touched tests: the unit tests of your commit fed1234567 still run after 900 s, so CI judges them.");
+  await writeFile(join(b.dir, "wait-text"), "touched tests: the unit tests of your commit fed1234567 still run after 600 s, so CI judges them.");
   await writeFile(join(b.dir, "wait-code"), "3");
   const late = await send(b, "parent", null);
   assert.equal(late.reply?.deliveryStatus, "delivered");
-  assert.match(String(late.reply?.note), /still run after 900 s, so CI judges them\. This report went out before their verdict\./);
+  assert.match(String(late.reply?.note), /still run after 600 s, so CI judges them\. This report went out before their verdict\./);
   assert.equal(await sends(b.dir), 4);
 });
