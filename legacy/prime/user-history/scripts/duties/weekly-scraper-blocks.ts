@@ -200,7 +200,10 @@ export function weeklyClients(input: WeekInputs): PrecheckOutput {
     for (const account of over) flagged.push({ at, kind: "heavy_view_account", item: "heavy_view_accounts", sig: `account ${account.user}`,
       excerpt: `Clerk user ${account.user} viewed ${account.views} profiles from ${account.ips} IPs on ${account.day}; check its org's campaigns, searches and saved lists in Convex before a ban.` });
   }
-  return { metrics, flagged, windowMs: { unblocked_crawlers: WEEK, heavy_view_accounts: WEEK } };
+  /** The newest passed call of a client still getting through, so a count whose crawlers made no new call reads quiet and a fresh one live. */
+  const newestOpen = Math.max(0, ...open.map(([, client]) => client.last));
+  return { metrics, flagged, windowMs: { unblocked_crawlers: WEEK, heavy_view_accounts: WEEK },
+    ...newestOpen > 0 ? { lastEventAt: { unblocked_crawlers: newestOpen } } : {} };
 }
 
 const sqlText = (text: string): string => `'${text.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
@@ -259,6 +262,7 @@ export async function withDirectRatio(output: PrecheckOutput, at: number): Promi
     const ratio = await import(pathToFileURL(join(REPO, "scripts/duties/search/direct-to-google.mjs")).href);
     const read = ratio.measure(await ratio.readDays(7));
     return { ...output, metrics: { ...output.metrics, direct_to_google_ratio: read.metrics.direct_to_google_ratio },
+      ...read.lastEventAt ? { lastEventAt: { ...output.lastEventAt, ...read.lastEventAt } } : {},
       flagged: [...(output.flagged ?? []), { at, kind: "reading", item: "direct_to_google_ratio",
         excerpt: `PostHog virev.ai pageviews in the last 7 full UTC days: ${read.direct} $direct, ${read.google} from Google, ratio ${read.metrics.direct_to_google_ratio}.` }],
       windowMs: { ...output.windowMs, direct_to_google_ratio: WEEK } };

@@ -120,6 +120,14 @@ test("the weekly list names every crawler whatever its size, and never a person,
   assert.equal(listed(blocked)[0]![0], "scraper_client_stopped", "a client the firewall denies after its last passed call reads as blocked the same day");
 });
 
+test("unblocked_crawlers' lastEventAt is the newest call of a client still getting through, and none once every client stopped (ops guy, 2026-11-10)", () => {
+  const chatgpt = "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ChatGPT-User/1.0; +https://openai.com/bot";
+  const stale = week({ ua: "python-requests/2.32", ip: "9.9.9.9", refk: "none", calls: 40, last: 8 * DAY });
+  const output = weekly([stale, week({ ua: chatgpt, ip: "20.63.180.103", calls: 3, last: 10 * DAY - 1000 }), week({ calls: 200 })], new Map());
+  assert.deepEqual(output.lastEventAt, { unblocked_crawlers: 10 * DAY - 1000 });
+  assert.equal(weekly([stale, week({ calls: 200 })], new Map()).lastEventAt, undefined);
+});
+
 test("a browser UA whose home IPs each open one page with no referer is a fleet, and the same UA with referers stays a person", () => {
   const fleet = Array.from({ length: FLEET_MIN_IPS }, (_, index) => week({ ua: WIN(151), ip: `73.0.0.${index}`, refk: "none" }));
   const people = [...Array.from({ length: 10 }, (_, index) => week({ ua: WIN(151), ip: `98.0.0.${index}`, refk: "other", calls: 3 }))];
