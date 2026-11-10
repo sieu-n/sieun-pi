@@ -1,7 +1,7 @@
 {
   "defaultProvider": "anthropic",
-  "defaultModel": "claude-opus-5-5",
-  "defaultThinkingLevel": "high",
+  "defaultModel": "claude-fable-5-2",
+  "defaultThinkingLevel": "medium",
   "bundledSkills": {
     "websearch": false
   },
