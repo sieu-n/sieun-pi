@@ -22,10 +22,11 @@ const NAMED_FILES = [
   "legacy/prime/scripts/prove_runtime.mjs",
   "apps/chat/server/app.ts",
   "apps/chat/server/config.ts",
-  "packages/pi-host/src/main.ts",
 ];
+/** pi-host's default, which names a model in one of these two files: main.ts until 11-10, then durable/models.ts beside Prime's settings.json. */
+const PI_HOST_FILES = ["packages/pi-host/src/main.ts", "packages/pi-host/src/durable/models.ts"];
 /** Every clean-room scenario script, since a scenario fixes the model its chat and job run on. */
-const CODE_FILES = [...new Set([...NAMED_FILES,
+const CODE_FILES = [...new Set([...NAMED_FILES, ...PI_HOST_FILES,
   ...readdirSync(join(ROOT, CLEAN_ROOM)).filter(name => name.endsWith(".ts")).map(name => `${CLEAN_ROOM}/${name}`)])];
 
 /** Every model a source names outside its comments, as provider/id. */
@@ -64,6 +65,7 @@ test("every default, fallback and fixed model pick names an allowed model", () =
     if (NAMED_FILES.includes(file)) assert.ok(models.length > 0, `${file} names no model any more; drop it from CODE_FILES or fix the parser`);
     outside.push(...models.filter(model => !isAllowedModel(model)).map(model => `${file}: ${model}`));
   }
+  assert.ok(PI_HOST_FILES.some(file => namedModels(readFileSync(join(ROOT, file), "utf8")).length > 0), "pi-host names no default model in main.ts or durable/models.ts");
   outside.push(...pstackModels().filter(model => !isAllowedModel(model)).map(model => `${relative(ROOT, join(ROOT, "config/pstack-models.json"))}: ${model}`));
   assert.deepEqual(outside, [], "models outside config/allowed-models.ts (owner rule c185)");
 });
