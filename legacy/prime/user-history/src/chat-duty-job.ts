@@ -166,6 +166,8 @@ export interface DutyJobInput {
   report?: string;
   /** The check-in's own prompt body (`checkInPrompt` and its detail file): set, the brief is `checkInJobBrief` with no stock rules (c90). */
   prompt?: string;
+  /** `<dutyId>.chat-handed.json`, the items a run handed the chat while this job took no message, which the job skips (`takenLine`). */
+  taken?: string;
 }
 
 /** The owner's sentence for the check-in (c90, 2026-10-15 23:52Z), which the check-in prompt opens with. */
@@ -301,11 +303,21 @@ export function partLines(duty: Pick<DutyCard, "metrics">, parts: Readonly<Recor
 }
 
 /**
+ * The brief line that keeps each flagged item with one owner: a run that finds the job parked hands the chat the items no session works, and
+ * the job, which may get its slot later, skips them. On 11-10 the 09:14 dream job worked again from 01:19Z and started writers at 01:25Z for
+ * the pages the chat's "wiki stale pages 0929" subagent had taken at 00:30Z.
+ */
+const takenLine = (file: string): string =>
+  `Right before you start work on a flagged item, whether from this brief, a later message or a precheck you rerun, read ${file} if it exists. ` +
+  "It lists the items the server handed the chat while you took no message, such as while pi-pool parked you, as `kind|item|sig` keys. The " +
+  "chat's own subagents own those items, so skip each flagged item whose kind and item open a key there, and name the skipped items in your report.";
+
+/**
  * The duty job's brief (owner 10-09: "every (n min/h/day) -> code precheck -> run job with that context to 'fix issues, check what duty
  * specifies, be a VP, report to user what needed'"; "control flow should be dynamically defined by agent"): the duty in the owner's words, the
  * precheck as information, and how a chat job works. It names no fixed list of checks and no verdict; a quiet run ends in one short turn.
  */
-export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [], misses = [], parts = {}, report, prompt }: DutyJobInput): string {
+export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [], misses = [], parts = {}, report, prompt, taken }: DutyJobInput): string {
   if (prompt !== undefined) return checkInJobBrief({ chat, job, at, prompt, ...(report ? { report } : {}) });
   const send = reportCall(chat);
   const headline = headlineMetric(duty.metrics);
@@ -347,6 +359,7 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
         "or delete a whole duty with `scripts/duties/remove.ts`, and say why in your report. Skip nitpicks and spend the run only where it has real " +
         "impact on a system that breaks easily.",
       ...focus,
+      ...taken ? [takenLine(taken)] : [],
       "Split work by the job rules: one goal per job, one subagent per unit of output, and work of 1 to 3 tool calls stays inline. Start " +
         "subagents with `await rlm.spawn(brief, name=...)`, all at once, each brief ending with `await agent_message.send(report, receiver_role=\"parent\")`; " +
         "end your turn, read each reply as it comes, and delete each subagent after its report. Work for another repository goes to " +

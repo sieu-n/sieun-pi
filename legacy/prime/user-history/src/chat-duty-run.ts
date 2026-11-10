@@ -230,6 +230,11 @@ interface HandOff { items: FlaggedSlice[]; detail: string }
 interface Handed { job: string; keys: string[] }
 /** An item is handed again once its `sig` changes: a wiki page a writer checked and that a later commit put behind again is new work. */
 const handOffKey = (slice: FlaggedSlice): string => `${slice.kind}|${slice.item ?? slice.excerpt}${slice.sig === undefined ? "" : `|${slice.sig}`}`;
+/** The `keys` no item of `items` replaces: one with the same kind and item and another `sig`, which a later commit put behind again. */
+const stillTaken = (keys: readonly string[], items: readonly FlaggedSlice[]): string[] => keys.filter(key => !items.some(slice => {
+  const base = `${slice.kind}|${slice.item ?? slice.excerpt}`;
+  return key !== handOffKey(slice) && (key === base || key.startsWith(`${base}|`));
+}));
 const itemLine = (slice: FlaggedSlice): string => `- ${slice.kind}${slice.item ? ` ${slice.item}` : ""}: ${slice.excerpt}`;
 async function readPending(file: string): Promise<PendingStart | null> {
   try { const value = JSON.parse(await readFile(file, "utf8")) as PendingStart; return typeof value?.at === "number" && value.schedule && value.brief ? value : null; }
@@ -246,7 +251,13 @@ export function runStamp(at: number): string {
 /** What a run's start of its duty job did: started one (`replaced` notes a stuck job it retired), skipped with why, or nothing (the slot already has its job). */
 type Launched = { job: DutyJobRef; replaced?: string } | { skipped: string } | null;
 /** The duty's last job as a new run finds it: the slot already has its job (null), it still works (skip), or it is the job to retire, if any. */
-type Previous = { last?: DutyJobRef; lastRun?: DutyRunRecord; replaced?: string } | { skipped: string; working?: DutyJobRef; held?: { job: DutyJobRef; why: string } } | null;
+type Previous = { last?: DutyJobRef; lastRun?: DutyRunRecord; replaced?: string } | { skipped: string; working?: DutyJobRef; held?: Held } | null;
+/**
+ * A job a run keeps that takes no message now (`why`). `atWork`: its tree wrote a model reply since the duty's last run, so a subagent of it
+ * works its brief while the root waits, as at 01:31Z on 11-10, when the 09:14 dream job's root had a quota-resume job and its subagent
+ * split-retrieval-backfill was splitting the page the run handed the chat at 01:33Z.
+ */
+type Held = { job: DutyJobRef; why: string; atWork?: boolean };
 
 /** What a tick reads once per chat for its push runs: the chat's runs, newest first, and its check-in interval. */
 type PushContext = { runs: DutyRunRecord[]; everyMs: number };
@@ -935,7 +946,7 @@ export class Duties {
     const job = dutyJobName(duty.name, chat.name, at);
     const text = dutyJobBrief({ duty, chat, job, at, measure: "<the precheck's measure against the targets, taken when the run starts>",
       findings: "<the precheck's findings, and a line for each metric stuck on a miss, from that run>",
-      ...checkIn ? { focus: CHECK_IN_FOCUS, report: CHECK_IN_REPORT } : {} });
+      ...checkIn ? { focus: CHECK_IN_FOCUS, report: CHECK_IN_REPORT } : { taken: this.chatHandedFile(chatId, dutyId) } });
     return { text, at };
   }
 
@@ -1186,7 +1197,9 @@ export class Duties {
     const why = kept ?? (parked ? POOL_PARKED : null);
     if (why && !stalled) {
       await this.store.updateRun(chatId, dutyId, started.at, record => { record.keptAt = this.now(); }).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: keptAt of ${last.name}: ${message(error)}`));
-      return { skipped: `${STILL_WORKING} (job ${last.name} ${why})`, held: { job: last, why }, ...inTurnQueue(why) ? { working: last } : {} };
+      const lastRun = runs.find(run => run.slot !== slot);
+      const atWork = !parked && !inTurnQueue(why) && lastRun !== undefined && await this.repliedSince(last, lastRun.at);
+      return { skipped: `${STILL_WORKING} (job ${last.name} ${why})`, held: { job: last, why, ...atWork ? { atWork } : {} }, ...inTurnQueue(why) ? { working: last } : {} };
     }
     let next: Previous;
     if (!working) next = { last, lastRun: started };
@@ -1225,6 +1238,11 @@ export class Duties {
   private async poolParked(job: DutyJobRef, startedAt: number): Promise<boolean> {
     return await this.host.jobs.poolParked?.(job, startedAt, this.now() - STALLED_MS)
       .catch(error => { this.log(`duty job ${job.name}: read its pi-pool slot waits: ${message(error)}`); return false; }) ?? false;
+  }
+
+  /** Whether the job's tree wrote a model reply at or after `since`; a failed read is no. */
+  private async repliedSince(job: DutyJobRef, since: number): Promise<boolean> {
+    return await this.host.jobs.repliedSince?.(job, since).catch(error => { this.log(`duty job ${job.name}: read its replies: ${message(error)}`); return false; }) ?? false;
   }
 
   /** Whether the job of a run that started at `startedAt` has written no model reply in its tree for STALLED_MS; a failed read is no stall. */
@@ -1277,7 +1295,7 @@ export class Duties {
       }
       // A held job that takes no hand-off (POOL_PARKED, a quota park) leaves the chat the items no maker works: never asked, or parked by pi-pool.
       if (previous.held && handOff && (dutyId === CHECK_IN_DUTY_ID || !previous.working)) {
-        const left = dutyId === CHECK_IN_DUTY_ID ? handOff : await this.unmoved(chatId, dutyId, handOff);
+        const left = dutyId === CHECK_IN_DUTY_ID ? handOff : await this.unmoved(chatId, dutyId, handOff, previous.held);
         const told = await this.handToChat(chatId, dutyId, previous.held, left, brief.duty.name, at);
         if (told) return { skipped: `${skipped}; handed the chat ${plural(told)}` };
       }
@@ -1298,7 +1316,10 @@ export class Duties {
     }
     if (idle) return { skipped: NOTHING_DUE };
     const name = dutyJobName(brief.duty.name, chat.name, at);
-    const job = await this.host.jobs.start(chat, name, dutyJobBrief({ ...brief, chat, job: name, at }), at);
+    // A new job owns every item its brief names, so the list of items the chat took beside the last job starts empty.
+    const taken = dutyId === CHECK_IN_DUTY_ID ? undefined : this.chatHandedFile(chatId, dutyId);
+    if (taken) await rm(taken, { force: true }).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: clear ${dutyId}.chat-handed.json: ${message(error)}`));
+    const job = await this.host.jobs.start(chat, name, dutyJobBrief({ ...brief, chat, job: name, at, ...taken ? { taken } : {} }), at);
     if (handOff) await this.writeHanded(chatId, dutyId, { job: job.id, keys: handOff.items.map(handOffKey) });
     return replaced ? { job, replaced } : { job };
   }
@@ -1337,9 +1358,14 @@ export class Duties {
   private async handOff(chatId: string, dutyId: string, job: DutyJobRef, handOff: HandOff, dutyName: string, at: number): Promise<number> {
     const steer = this.host.jobs.steer;
     if (!steer) return 0;
-    return this.handNew(chatId, dutyId, job, handOff, fresh => steer(job, [`The ${dutyName} run of ${new Date(at).toISOString().slice(0, 16)}Z found ` +
+    const taken = await this.chatTaken(chatId, dutyId);
+    const mine = { ...handOff, items: handOff.items.filter(slice => !taken.includes(handOffKey(slice))) };
+    const handed = await this.handNew(chatId, dutyId, job, mine, fresh => steer(job, [`The ${dutyName} run of ${new Date(at).toISOString().slice(0, 16)}Z found ` +
       `${fresh.length} flagged item${fresh.length === 1 ? "" : "s"} that your brief and earlier runs did not name. Work them like your brief's items ` +
       `before you end. The run's findings are in ${handOff.detail}.`, ...fresh.map(itemLine)].join("\n")), job.name);
+    // A page the chat took and a later commit put behind again is the job's now, so the job's check of the list no longer skips it.
+    if (handed) await this.writeChatTaken(chatId, dutyId, stillTaken(taken, mine.items));
+    return handed;
   }
 
   /**
@@ -1351,7 +1377,7 @@ export class Duties {
    * the 4 that take-in e3dd9060ea put behind with no Session-Id, so they reached nobody until a subagent of the chat, which rode the chat's
    * slot, fixed them at 18:20Z (~/work/d4-held-pages-1110). It opens with CHECK_IN_PREFIX, so the turn it starts is not the owner's (c117).
    */
-  private async handToChat(chatId: string, dutyId: string, held: { job: DutyJobRef; why: string }, handOff: HandOff, dutyName: string, at: number): Promise<number> {
+  private async handToChat(chatId: string, dutyId: string, held: Held, handOff: HandOff, dutyName: string, at: number): Promise<number> {
     const tell = this.host.tell;
     if (!tell) return 0;
     const run = `${CHECK_IN_PREFIX}The ${dutyName} run of ${new Date(at).toISOString().slice(0, 16)}Z`;
@@ -1372,18 +1398,32 @@ export class Duties {
    * against its brief would hand the chat none of them.
    */
   private async handChatOnce(chatId: string, dutyId: string, handOff: HandOff, send: (fresh: readonly FlaggedSlice[]) => Promise<unknown>): Promise<number> {
-    const file = join(this.store.chatDir(chatId), `${dutyId}.chat-handed.json`);
-    const current = new Set(handOff.items.map(handOffKey));
-    const stored = await readFile(file, "utf8").then(text => JSON.parse(text) as unknown, () => null);
-    const known = (Array.isArray(stored) ? stored : []).filter((key): key is string => typeof key === "string" && current.has(key));
+    const known = await this.chatTaken(chatId, dutyId);
     const fresh = handOff.items.filter(slice => !known.includes(handOffKey(slice)));
     if (!fresh.length) return 0;
     try { await send(fresh); }
     catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: hand the chat ${fresh.length} items: ${message(error)}`); return 0; }
-    await writeFile(file, JSON.stringify([...known, ...fresh.map(handOffKey)]), { mode: 0o600 })
-      .catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: write ${dutyId}.chat-handed.json: ${message(error)}`));
+    await this.writeChatTaken(chatId, dutyId, [...stillTaken(known, fresh), ...fresh.map(handOffKey)]);
     this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: handed the chat ${fresh.length} new flagged items`);
     return fresh.length;
+  }
+
+  /**
+   * `<dutyId>.chat-handed.json`: the keys of the items the runs handed the chat since the duty's job started, which that job skips, also after
+   * the chat fixed them (`dutyJobBrief`'s `taken`). On 11-10 the 00:30Z run handed the chat 11 pages while pi-pool held the 09:14 dream job
+   * for its slot, the chat's "wiki stale pages 0929" subagent took them, and the job, which worked again from 01:19Z, started writers for the
+   * same pages from 01:25Z.
+   */
+  private chatHandedFile(chatId: string, dutyId: string): string { return join(this.store.chatDir(chatId), `${dutyId}.chat-handed.json`); }
+
+  private async chatTaken(chatId: string, dutyId: string): Promise<string[]> {
+    const stored = await readFile(this.chatHandedFile(chatId, dutyId), "utf8").then(text => JSON.parse(text) as unknown, () => null);
+    return (Array.isArray(stored) ? stored : []).filter((key): key is string => typeof key === "string");
+  }
+
+  private async writeChatTaken(chatId: string, dutyId: string, keys: readonly string[]): Promise<void> {
+    await writeFile(this.chatHandedFile(chatId, dutyId), JSON.stringify(keys), { mode: 0o600 })
+      .catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: write ${dutyId}.chat-handed.json: ${message(error)}`));
   }
 
   private makersFile(chatId: string, dutyId: string): string { return join(this.store.chatDir(chatId), `${dutyId}.makers.json`); }
@@ -1393,9 +1433,12 @@ export class Duties {
    * on a slot in the last STALLED_MS. On 11-09 the 16:30Z run asked trees 01a15c6c and 01a1ba78 to fix 4 pages, pi-pool parked both at
    * 16:31:38Z, and neither fixed its page before a subagent of the chat did at 18:20Z (~/work/d4-held-pages-1110).
    */
-  private async unmoved(chatId: string, dutyId: string, handOff: HandOff): Promise<HandOff> {
+  private async unmoved(chatId: string, dutyId: string, handOff: HandOff, held: Held): Promise<HandOff> {
     const stored = await readFile(this.makersFile(chatId, dutyId), "utf8").then(text => JSON.parse(text) as unknown, () => null);
     const asked = new Set(Array.isArray(stored) ? stored : []);
+    // A job whose tree works (`atWork`) keeps the items its brief and the runs since named, and the chat gets only the others.
+    const brief = held.atWork ? await readFile(this.handedFile(chatId, dutyId), "utf8").then(text => JSON.parse(text) as Handed, () => null) : null;
+    const owned = new Set(brief?.job === held.job.id && Array.isArray(brief.keys) ? brief.keys : []);
     const since = this.now() - STALLED_MS;
     const parked = new Map<string, Promise<boolean>>();
     const parkedTree = (tree: string) => parked.get(tree) ?? parked.set(tree, this.host.jobs.poolParked?.({ id: tree, name: tree }, since, since)
@@ -1404,6 +1447,7 @@ export class Duties {
     const items: FlaggedSlice[] = [];
     for (const slice of handOff.items) {
       const tree = slice.maker?.tree;
+      if (owned.has(handOffKey(slice))) continue;
       if (!asked.has(handOffKey(slice)) || (tree && await parkedTree(tree))) items.push(slice);
     }
     return { ...handOff, items };
