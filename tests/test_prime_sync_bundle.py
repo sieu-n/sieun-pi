@@ -26,7 +26,7 @@ class PrimeSyncBundleTests(unittest.TestCase):
         (agent / "extensions").mkdir(parents=True)
         (component / "extension/index.ts").write_text('import { word } from "../src/word.ts";\nexport default (): string => word;\n')
         (component / "src/word.ts").write_text('export const word: string = "one";\n')
-        for name in ("extension-bundle.ts", "build-extension-bundle.ts"):
+        for name in ("extension-bundle.ts", "build-extension-bundle.ts", "main-module.ts"):
             shutil.copy(REPO / sync.EXTENSION / "src" / name, component / "src" / name)
         (component / "node_modules").symlink_to(REPO / sync.EXTENSION / "node_modules")
         self.assertEqual(sync.build_bundle(checkout, agent), "", "no link into the checkout, so nothing to build")

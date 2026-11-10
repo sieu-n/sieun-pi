@@ -1,7 +1,7 @@
-import { readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, extname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
 import { BUNDLE_INPUTS, bundleName, type BundleInputs, COMPONENT, freshBundle, inputsDigest } from "./extension-bundle.ts";
+import { isMain } from "./main-module.ts";
 
 const LOADERS: Record<string, "ts" | "js" | "json"> = { ".ts": "ts", ".js": "js", ".mjs": "js", ".json": "json" };
 const BUILT = /^extension\.[0-9a-f]{16}\.bundle\.mjs$/;
@@ -57,7 +57,7 @@ export async function buildExtensionBundle(dir: string = COMPONENT, write = true
   return { name, text: output.text, inputs, imports: meta.imports.map(({ path, kind }) => ({ path, kind })) };
 }
 
-if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   if (process.argv.includes("--help")) {
     console.log("usage: node src/build-extension-bundle.ts [--if-stale]\nBuilds the user-history extension bundle in src/; --if-stale prints \"fresh\" and builds nothing when the bundle matches the source.");
   } else if (process.argv.includes("--if-stale") && freshBundle()) {
