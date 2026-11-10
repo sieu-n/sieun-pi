@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { classify, ENGINES, humanIps, inRanges, rangeList, requestsSql, ROUTES, routeOf, type Row, scrapers, SHED_MIN_503, typicalChrome, type Verify } from "../scripts/duties/public-page-scrapers.ts";
+import { classify, ENGINES, humanIps, inRanges, rangeList, requestsSql, ROUTES, routeOf, type Row, scrapers, SHED_MIN_503, typicalChrome, type Verify, verifier } from "../scripts/duties/public-page-scrapers.ts";
 import { type DutyMetric, judge } from "../src/shared/chat-duties.ts";
 import { DAY } from "../scripts/duties/estate-reads.ts";
 import { type Asn, isHosting, parseCymru } from "../scripts/duties/ip-asn.ts";
@@ -55,6 +55,15 @@ test("a search engine counts as wanted only from its own IPs, and a link preview
   assert.equal(classify(row({ route: "profile", ua: "facebookexternalhit/1.1" }), 149, googleOnly).kind, "wanted");
   assert.equal(classify(row({ route: "img", ua: "facebookexternalhit/1.1" }), 149, googleOnly).kind, "automated");
   assert.ok(ENGINES.some(engine => engine.ua.test(GOOGLEBOT)));
+});
+
+test("KakaoBot counts as Daum from an IP on Kakao's list and as automated from anywhere else", async () => {
+  // 11-10 03:30Z: 15 listed Kakao IPs and 3 spoofs sent KakaoBot to the public pages after a Korean blog post.
+  const kakao = "Mozilla/5.0 (compatible; KakaoBot/1.0; +https://cs.kakao.com/helps_html/1073213012)";
+  const rows = [row({ route: "profile", ua: kakao, ip: "211.249.246.168" }), row({ route: "profile", ua: kakao, ip: "207.6.89.97" })];
+  const verify = await verifier(rows, [], AbortSignal.abort());
+  assert.deepEqual(classify(rows[0]!, 149, verify), { kind: "wanted", who: "Daum" });
+  assert.deepEqual(classify(rows[1]!, 149, verify), { kind: "automated", why: "UA claims Daum from an IP outside its ranges" });
 });
 
 test("published ranges match IPv4 and IPv6 addresses", () => {

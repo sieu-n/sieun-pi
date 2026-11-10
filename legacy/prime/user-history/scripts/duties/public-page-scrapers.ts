@@ -61,8 +61,8 @@ export const SHED_MIN_503 = 10;
  */
 export const CHROME_LAG = 10;
 
-/** The search engines we want, with where each publishes its crawler IPs, or the reverse DNS names its crawler IPs resolve to. */
-export interface Engine { name: string; ua: RegExp; ranges?: readonly string[]; rdns?: RegExp }
+/** The search engines we want, with where each publishes its crawler IPs, the prefixes it lists only on a help page, or the reverse DNS names its crawler IPs resolve to. */
+export interface Engine { name: string; ua: RegExp; ranges?: readonly string[]; cidrs?: readonly string[]; rdns?: RegExp }
 export const ENGINES: readonly Engine[] = [
   { name: "Google", ua: /Googlebot|Google-InspectionTool|GoogleOther|Storebot-Google|AdsBot-Google|Mediapartners-Google|FeedFetcher-Google|APIs-Google|Google-Read-Aloud/i,
     ranges: ["https://developers.google.com/static/search/apis/ipranges/googlebot.json", "https://developers.google.com/static/search/apis/ipranges/special-crawlers.json",
@@ -76,6 +76,11 @@ export const ENGINES: readonly Engine[] = [
   { name: "Yandex", ua: /YandexBot|YandexImages|YandexMobileBot/i, rdns: /\.yandex\.(?:ru|net|com)$/ },
   { name: "Baidu", ua: /Baiduspider/i, rdns: /\.baidu\.(?:com|jp)$/ },
   { name: "Seznam", ua: /SeznamBot/i, rdns: /\.seznam\.cz$/ },
+  // KakaoBot's IPs as Kakao lists them on https://cs.kakao.com/helps_html/1073213012 (HTML only, read 2026-11-10). They have no reverse DNS.
+  { name: "Daum", ua: /KakaoBot/i, cidrs: ["121.53.90.224/27", "121.53.91.224/27", "121.53.92.224/27", "121.53.93.224/27", "121.53.220.224/27", "121.53.221.224/27",
+    "203.133.184.224/27", "203.133.185.224/27", "121.53.91.107/32", "121.53.91.108/32", "121.53.91.109/32", "121.53.92.107/32", "121.53.92.108/32",
+    "211.249.246.105/32", "211.249.246.122/32", "211.249.246.136/32", "211.249.246.152/32", "211.249.246.168/32",
+    "211.183.208.241/32", "211.183.208.242/32", "211.183.208.243/32", "211.183.208.244/32", "211.183.208.245/32"] },
 ];
 /** Link preview fetchers that render a shared page once. They count as wanted on pages and as automated on image and API routes. */
 export const PREVIEW_UA = /facebookexternalhit|Twitterbot|Slackbot-LinkExpanding|LinkedInBot|Discordbot|TelegramBot|WhatsApp|kakaotalk-scrap|Pinterestbot/i;
@@ -266,6 +271,11 @@ export async function verifier(rows: readonly Row[], errors: string[], signal: A
   }
   const answers = new Map<string, boolean | null>();
   await Promise.all([...claims].map(async ([engine, ips]) => {
+    if (engine.cidrs) {
+      const list = rangeList([{ prefixes: engine.cidrs.map(cidr => cidr.includes(":") ? { ipv6Prefix: cidr } : { ipv4Prefix: cidr }) }]);
+      for (const ip of ips) answers.set(`${engine.name} ${ip}`, inRanges(list, ip));
+      return;
+    }
     if (engine.ranges) {
       try {
         const bodies = await Promise.all(engine.ranges.map(async url => {
