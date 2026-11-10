@@ -47,11 +47,12 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.du
  *   run until it moves on: on 10-19 the metric read 100% while 32 open walks sat on cursor_provenance_missing. The run detail
  *   deep_walks_open_stuck counts them. An open walk that errored and started inside one cadence is retrying, so it is left out, and the
  *   deep_walks flag shows those as their own count with their codes. NOT_PAGINATION below names the codes left out of the stops.
- * - canary_ig_deaths_1h, canary_accounts_short, staging_due_wait_min, deep_walks_open_stuck, paced_busy_hour_share, paced_accts_200plus, best_proven_rate and source_errors are run detail:
+ * - canary_ig_deaths_1h, canary_accounts_short, staging_due_wait_min, deep_walks_open_stuck, paced_busy_hour_share, paced_accts_200plus, paced_serveable_hours, best_proven_rate and source_errors are run detail:
  *   report() writes them to the output, the server does not judge them, and the canary_short, staging_stall and busy_hour_share flags carry them to the fix jobs.
  * - paced_busy_hour_share keeps closed goal p229 ("Engage accounts spread their pages across the day on prod, busiest hour at most a tenth of the
  *   day", 0.074 on 10-28) as run detail, because c75 holds d1 at one headline and 3 supporting metrics. Over BUSY_HOUR_SHARE_MAX the busy_hour_share
- *   flag is a handOff, so a run whose metrics read met still starts or steers a fix job.
+ *   flag is a handOff, so a run whose metrics read met still starts or steers a fix job. It counts serveable hours as servedDays() does, and a day
+ *   with fewer than PACED_HOURS_FLOOR of them, such as the GeoNode hold of 11-09, is not scored.
  * - canary_accounts_short: the owner, 10-12 13:33Z, "ALWAYS RUN ~10% account as CANARY"; CANARY_SHARE below.
  * - staging_due_wait_min: staging stays a working test bed, so a due staging collab read starts within STAGING_WAIT_MIN. The owner keeps about
  *   10 monitored accounts on staging (t17, 10-12), so staging reads come in bursts hours apart by design, and the time since the last read
@@ -106,7 +107,7 @@ export const CODE_CAUSES: Readonly<Record<string, Cause>> = {
 };
 /** The staging stall line's limit: the oldest due staging collab read waits at most this long. The launch VP's number. */
 export const STAGING_WAIT_MIN = 60;
-export type Source = "grafana auth" | "prod paced hours" | "prod read log" | "prod supply holds" | "staging read log" | "staging due reads" | "staging config" | "prod accounts" | "prod config" | "prod healthy gauge" | "prod lapsed bindings" | "prod death gauge" | "prod deep walks" | "prod stuck accounts";
+export type Source = "grafana auth" | "prod read log" | "prod supply holds" | "staging read log" | "staging due reads" | "staging config" | "prod accounts" | "prod config" | "prod healthy gauge" | "prod lapsed bindings" | "prod death gauge" | "prod deep walks" | "prod stuck accounts";
 /**
  * How long an account may sit frozen for a shared exit, on 302s, or parked with a dead jar before it counts as stuck. The launch VP's number
  * (10-18): the accounts job wakes every 2 h, and jar account 16 sat active on 302s for 24 h (55 of 55 reads, 10-14 13:16Z to 10-15 12:00Z).
@@ -120,8 +121,7 @@ export const STUCK_302S = 3;
  */
 export const FEEDS: Readonly<Record<Source, readonly string[]>> = {
   "grafana auth": ["prod_capacity_pages_day", "fleet_ig_killed_pct", "canary_ig_deaths_1h", "paced_busy_hour_share"],
-  "prod paced hours": ["paced_busy_hour_share"],
-  "prod read log": ["prod_capacity_pages_day"], "prod supply holds": ["prod_capacity_pages_day"], "prod healthy gauge": ["prod_capacity_pages_day"], "prod lapsed bindings": ["prod_capacity_pages_day"],
+  "prod read log": ["prod_capacity_pages_day", "paced_busy_hour_share"], "prod supply holds": ["prod_capacity_pages_day", "paced_busy_hour_share"], "prod healthy gauge": ["prod_capacity_pages_day"], "prod lapsed bindings": ["prod_capacity_pages_day"],
   "prod accounts": ["prod_capacity_pages_day", "fleet_ig_killed_pct", "canary_ig_deaths_1h"],
   "prod config": ["prod_capacity_pages_day", "fleet_ig_killed_pct", "canary_ig_deaths_1h"],
   "prod death gauge": ["fleet_ig_killed_pct", "canary_ig_deaths_1h"],
@@ -134,8 +134,11 @@ export const unmeasured = (metric: Pick<DutyMetric, "op" | "target">): number =>
 
 /** Pages one prod account read on one full UTC day (YYYY-MM-DD). */
 export interface DayPages { day: string; accountId: number; pages: number }
-/** One prod account's read-log rows in one UTC hour of a full day: the pages it read, its account_busy refusals and its reads that failed on transport (HOURS_SQL). */
-export interface AccountHour { day: string; hour: number; accountId: number; pages: number; busy: number; transport: number }
+/**
+ * One prod account's read-log rows in one UTC hour of a full day: the pages it read, its account_busy refusals, its reads that failed on transport
+ * and its sends, the reads not refused at dispatch (HOURS_SQL).
+ */
+export interface AccountHour { day: string; hour: number; accountId: number; pages: number; busy: number; transport: number; sends: number }
 /**
  * A dead-outcome event: Instagram's verdict when causeOf() says so. `pages24h` is what the account read in the 24 h before it. `transition` is false
  * for the re-login worker's verdicts, which leave the account parked, and crawler_v3_engage_deaths_24h counts only transitions.
@@ -479,6 +482,7 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
   }
   if (data.paced) {
     metrics.paced_accts_200plus = data.paced.accounts;
+    metrics.paced_serveable_hours = data.paced.hours;
     if (data.paced.share !== null) metrics.paced_busy_hour_share = data.paced.share;
     const flag = busyHourFlag(data.paced, at);
     if (flag) flagged.push(flag);
@@ -499,9 +503,10 @@ const DEAD_SQL = `('${DEAD.join("', '")}')`;
 export const DAYS_SQL = `select to_char(l.at at time zone 'UTC', 'YYYY-MM-DD') as day, l.account_id, sum(l.pages) as pages
 from ig_engage_read_log l join ig_engage_accounts a on a.id = l.account_id
 where a.world = 'prod' and l.at < date_trunc('day', now() at time zone 'UTC') at time zone 'UTC' group by 1, 2 having sum(l.pages) > 0`;
-/** HOURS_SQL's rows per account and UTC hour over the PROOF_DAYS full UTC days before today, the newest window servedDays() reads. */
+/** HOURS_SQL's rows per account and UTC hour over the PROOF_DAYS full UTC days before today, the newest window servedDays() reads; pacedOf() scores its last day. */
 export const HOURS_SQL = `select to_char(l.at at time zone 'UTC', 'YYYY-MM-DD') as day, extract(hour from l.at at time zone 'UTC')::int as hour, l.account_id,
-  sum(l.pages) as pages, count(*) filter (where l.reason = 'account_busy') as busy, count(*) filter (where l.reason = 'transport') as transport
+  sum(l.pages) as pages, count(*) filter (where l.reason = 'account_busy') as busy, count(*) filter (where l.reason = 'transport') as transport,
+  count(*) filter (where l.dispatched is distinct from false) as sends
 from ig_engage_read_log l join ig_engage_accounts a on a.id = l.account_id
 where a.world = 'prod' and l.at >= (date_trunc('day', now() at time zone 'UTC') - interval '${PROOF_DAYS} days') at time zone 'UTC'
   and l.at < date_trunc('day', now() at time zone 'UTC') at time zone 'UTC' group by 1, 2, 3`;
@@ -656,40 +661,44 @@ export function stagingDueOf(rows: Record<string, unknown>[]): StagingDue {
 /** Goal p229's target: the median paced account's busiest hour holds at most this share of its day's sends. */
 export const BUSY_HOUR_SHARE_MAX = 0.1;
 /**
- * The last full UTC day's paced score, the 'paced' row of p98-paced-grafana.sql (job g2g accounts setup 10-20): over the hours with an
- * account_busy refusal, each account's busiest hour over its day's sends (a read not refused at dispatch), and the median of that over the
- * accounts with 200 or more sends. `share` is null when no account sent 200.
+ * The fewest serveable backlog hours a day needs before pacedOf() scores it. Fewer than 1 / BUSY_HOUR_SHARE_MAX hours cannot meet the target at
+ * any pace, and a short day reads its normal pace as a miss: on 11-09 the GeoNode hold left 8 hours, and its 19 accounts read 0.153 of their day in
+ * the busiest hour at 1.22 times their mean hour, which 11-08 matched at 1.40 over 23 hours (0.061).
+ * measured: prod 10-15 to 11-08, every day had 18 to 24 backlog hours; the 11-09 hold left 8.
+ */
+export const PACED_HOURS_FLOOR = 18;
+/**
+ * The last full UTC day's paced score from its HOURS_SQL rows, after the 'paced' row of p98-paced-grafana.sql (job g2g accounts setup 10-20): over
+ * the backlog hours, the hours with an account_busy refusal, each account's busiest hour over its day's sends, and the median of that over the
+ * accounts with 200 or more sends. It counts the hours servedDays() counts: an hour a supply hold covered (`held`) is no backlog hour, and an
+ * account-hour that read no page while a read failed on transport is left out. `share` is null when no account sent 200 or the day had fewer than
+ * PACED_HOURS_FLOOR backlog hours.
  */
 export interface Paced { day: string; share: number | null; accounts: number; hours: number }
-export const PACED_SQL = `with d as (select date_trunc('day', now() at time zone 'UTC') - interval '1 day' as start),
-r as (select l.account_id, extract(hour from l.at at time zone 'UTC')::int as hr,
-    count(*) filter (where l.dispatched is distinct from false) as sends, count(*) filter (where l.reason = 'account_busy') as paced_refusals
-  from ig_engage_read_log l, d where l.at >= d.start at time zone 'UTC' and l.at < (d.start + interval '1 day') at time zone 'UTC' group by 1, 2),
-backlog as (select hr from r group by hr having sum(paced_refusals) > 0),
-e as (select * from r where paced_refusals > 0 or (sends > 0 and hr in (select hr from backlog))),
-t as (select account_id, sum(sends) as day_sends, max(sends) as top_hour from e group by 1)
-select to_char((select start from d), 'YYYY-MM-DD') as day,
-  (select round((percentile_cont(0.5) within group (order by top_hour::numeric / day_sends))::numeric, 3) from t where day_sends >= 200) as share,
-  (select count(*) from t where day_sends >= 200) as accts_200plus, (select count(*) from backlog) as hours`;
-
-export function pacedOf(rows: Record<string, unknown>[]): Paced {
-  const [row] = rows;
-  const share = num(row?.share), accounts = num(row?.accts_200plus), hours = num(row?.hours);
-  if (rows.length !== 1 || !/^\d{4}-\d{2}-\d{2}$/.test(String(row?.day)) || accounts === null || hours === null || ![accounts, hours, share ?? 0].every(Number.isFinite))
-    throw new Error(`paced hours: unexpected answer ${JSON.stringify(rows).slice(0, 80)}`);
-  return { day: String(row!.day), share, accounts, hours };
+export function pacedOf(hours: readonly AccountHour[], day: string, held: ReadonlySet<string>): Paced {
+  const live = hours.filter(cell => cell.day === day && !held.has(`${day} ${cell.hour}`) && !(cell.pages === 0 && cell.transport > 0));
+  const backlog = new Set(live.filter(cell => cell.busy > 0).map(cell => cell.hour));
+  const accounts = new Map<number, { sends: number; top: number }>();
+  for (const cell of live) {
+    if (!(cell.busy > 0 || (cell.sends > 0 && backlog.has(cell.hour)))) continue;
+    const account = accounts.get(cell.accountId) ?? { sends: 0, top: 0 };
+    accounts.set(cell.accountId, { sends: account.sends + cell.sends, top: Math.max(account.top, cell.sends) });
+  }
+  const shares = [...accounts.values()].filter(account => account.sends >= 200).map(account => account.top / account.sends);
+  const share = shares.length && backlog.size >= PACED_HOURS_FLOOR ? Math.round(median(shares) * 1000) / 1000 : null;
+  return { day, share, accounts: shares.length, hours: backlog.size };
 }
 
 /** The busy_hour_share flag when the day's paced share is over BUSY_HOUR_SHARE_MAX, a handOff so a met run acts on it; null otherwise. */
 export function busyHourFlag(paced: Paced, at: number): FlaggedSlice | null {
   if (paced.share === null || paced.share <= BUSY_HOUR_SHARE_MAX) return null;
   return { at, kind: "busy_hour_share", handOff: true, sig: paced.day, excerpt: (`paced_busy_hour_share ${paced.share} on ${paced.day} UTC (target at most ${BUSY_HOUR_SHARE_MAX}, closed goal p229): `
-    + `over the ${paced.hours} hours with account_busy refusals, the median of the ${paced.accounts} prod accounts with 200+ sends (paced_accts_200plus) read ${Math.round(paced.share * 1000) / 10}% of its day in its busiest hour. `
+    + `over the ${paced.hours} serveable hours with account_busy refusals, the median of the ${paced.accounts} prod accounts with 200+ sends (paced_accts_200plus) read ${Math.round(paced.share * 1000) / 10}% of its day in its busiest hour. `
     + "Put a d1/paced_busy_hour_share fix step under p168 with a live job, as for a missed metric.").slice(0, 600) };
 }
 
 export const daysOf = (rows: Record<string, unknown>[]): DayPages[] => rows.map(row => ({ day: String(row.day), accountId: Number(row.account_id), pages: Number(row.pages) }));
-export const hoursOf = (rows: Record<string, unknown>[]): AccountHour[] => rows.map(row => ({ day: String(row.day), hour: Number(row.hour), accountId: Number(row.account_id), pages: Number(row.pages), busy: Number(row.busy), transport: Number(row.transport ?? 0) }));
+export const hoursOf = (rows: Record<string, unknown>[]): AccountHour[] => rows.map(row => ({ day: String(row.day), hour: Number(row.hour), accountId: Number(row.account_id), pages: Number(row.pages), busy: Number(row.busy), transport: Number(row.transport ?? 0), sends: Number(row.sends) }));
 export const accountsOf = (rows: Record<string, unknown>[]): Account[] => rows.map(row => ({ id: Number(row.id), status: String(row.status), ...(row.reason ? { reason: String(row.reason) } : {}) }));
 export const stagingPausesOf = (rows: Record<string, unknown>[]): StagingPause[] => rows.map(row => ({
   key: String(row.key), auditId: num(row.id), at: num(row.at), actor: row.actor == null ? null : String(row.actor), reason: row.reason == null ? null : String(row.reason),
@@ -735,7 +744,7 @@ export async function measure(query: DsQuery | null, authError: string | null, n
   const stuckAccounts = step("prod stuck accounts", async () => stuckOf(await prodRead(STUCK_SQL)));
   if (!query) {
     data.errors.push({ source: "grafana auth", message: authError ?? "no Grafana login" });
-    for (const source of ["prod paced hours", "prod read log", "prod supply holds", "staging read log", "staging due reads", "staging config", "prod accounts", "prod config", "prod healthy gauge"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
+    for (const source of ["prod read log", "prod supply holds", "staging read log", "staging due reads", "staging config", "prod accounts", "prod config", "prod healthy gauge"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
     const [walks, lapsed, stuck] = await Promise.all([deepWalks, lapsedBindings, stuckAccounts]);
     if (walks) data.deepWalks = walks;
     if (stuck) data.stuck = stuck;
@@ -743,7 +752,7 @@ export async function measure(query: DsQuery | null, authError: string | null, n
     return data;
   }
   const today = Date.parse(`${new Date(now).toISOString().slice(0, 10)}T00:00:00Z`);
-  const [days, hours, heldHours, staging, stagingPauses, accounts, deaths, config, healthy, gauge, walks, due, lapsed, stuck, paced] = await Promise.all([
+  const [days, hours, heldHours, staging, stagingPauses, accounts, deaths, config, healthy, gauge, walks, due, lapsed, stuck] = await Promise.all([
     step("prod read log", async () => daysOf(await sqlRows(query, PG.prod, DAYS_SQL))),
     step("prod read log", async () => hoursOf(await sqlRows(query, PG.prod, HOURS_SQL))),
     step("prod supply holds", async () => heldHoursOf((await promRange(query, PROM.prod, SUPPLY_HOLD_EXPR, today - PROOF_DAYS * DAY + HOUR, today, HOUR)).flatMap(series => series.points))),
@@ -762,10 +771,10 @@ export async function measure(query: DsQuery | null, authError: string | null, n
     step("staging due reads", async () => stagingDueOf(await sqlRows(query, PG.staging, STAGING_DUE_SQL))),
     lapsedBindings,
     stuckAccounts,
-    step("prod paced hours", async () => pacedOf(await sqlRows(query, PG.prod, PACED_SQL))),
   ]);
   Object.assign(data, days && { days }, hours && { hours }, heldHours && { heldHours }, staging !== undefined && { stagingLastReadAt: staging }, stagingPauses && { stagingPauses }, accounts && { accounts }, deaths && { deaths }, config && { config },
-    healthy !== undefined && { healthy }, lapsed && { lapsed }, gauge && { deathGauge: gauge }, walks && { deepWalks: walks }, due && { stagingDue: due }, stuck && { stuck }, paced && { paced });
+    healthy !== undefined && { healthy }, lapsed && { lapsed }, gauge && { deathGauge: gauge }, walks && { deepWalks: walks }, due && { stagingDue: due }, stuck && { stuck },
+    hours && heldHours && { paced: pacedOf(hours, new Date(today - DAY).toISOString().slice(0, 10), heldHours) });
   return data;
 }
 

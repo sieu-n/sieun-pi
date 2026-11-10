@@ -88,8 +88,8 @@ test("the capacity headline reports its window: lastEventAt is the newest window
 test("a canary short of demand proves what its saturated hours serve, not the pages it got (launch VP, 11-08)", () => {
   // 14 members read 45 an hour for 24 h on day one with a busy refusal each hour, and 30 an hour with none on day two.
   const hours: AccountHour[] = Array.from({ length: 14 }, (_, i) => i + 1).flatMap(accountId => [
-    ...Array.from({ length: 24 }, (_, hour) => ({ day: "2026-11-06", hour, accountId, pages: 45, busy: 1, transport: 0 })),
-    ...Array.from({ length: 24 }, (_, hour) => ({ day: "2026-11-07", hour, accountId, pages: 30, busy: 0, transport: 0 })),
+    ...Array.from({ length: 24 }, (_, hour) => ({ day: "2026-11-06", hour, accountId, pages: 45, busy: 1, transport: 0, sends: 45 })),
+    ...Array.from({ length: 24 }, (_, hour) => ({ day: "2026-11-07", hour, accountId, pages: 30, busy: 0, transport: 0, sends: 30 })),
   ]);
   const days: DayPages[] = [...fleet("2026-11-06", [[14, 1080], [100, 150]]), ...fleet("2026-11-07", [[14, 720], [100, 150]])];
   assert.equal(provenRates(days, [], 14).newest?.rate, 720);
@@ -97,19 +97,19 @@ test("a canary short of demand proves what its saturated hours serve, not the pa
 });
 
 test("an account under the saturated-hours floor keeps its pages, and an hour with no prod row counts as serveable", () => {
-  const few: AccountHour[] = Array.from({ length: SATURATED_HOURS_FLOOR - 1 }, (_, hour) => ({ day: "2026-11-07", hour, accountId: 1, pages: 50, busy: 1, transport: 0 }));
+  const few: AccountHour[] = Array.from({ length: SATURATED_HOURS_FLOOR - 1 }, (_, hour) => ({ day: "2026-11-07", hour, accountId: 1, pages: 50, busy: 1, transport: 0, sends: 50 }));
   assert.equal(servedDays([{ day: "2026-11-07", accountId: 1, pages: 350 }], few)[0]!.pages, 350);
   // 23 hours with rows and hour 10 with none fleet-wide: 24 serveable hours at 40.
-  const outage: AccountHour[] = Array.from({ length: 24 }, (_, hour) => hour).filter(hour => hour !== 10).map(hour => ({ day: "2026-11-07", hour, accountId: 1, pages: 40, busy: 1, transport: 0 }));
+  const outage: AccountHour[] = Array.from({ length: 24 }, (_, hour) => hour).filter(hour => hour !== 10).map(hour => ({ day: "2026-11-07", hour, accountId: 1, pages: 40, busy: 1, transport: 0, sends: 40 }));
   assert.equal(servedDays([{ day: "2026-11-07", accountId: 1, pages: 920 }], outage)[0]!.pages, 960);
 });
 
 test("hours under a supply hold and hours whose reads failed on transport serve nothing (GeoNode hold, 11-09)", () => {
   // Reads 40 an hour at its pace through 06Z, fails on transport in 07Z and 08Z, then no prod row while the hold lives from 08:44Z.
   const hours: AccountHour[] = [
-    ...Array.from({ length: 7 }, (_, hour) => ({ day: "2026-11-09", hour, accountId: 1, pages: 40, busy: 1, transport: 0 })),
-    ...[7, 8].map(hour => ({ day: "2026-11-09", hour, accountId: 1, pages: 0, busy: 3, transport: 50 })),
-    ...Array.from({ length: 8 }, (_, hour) => ({ day: "2026-11-08", hour, accountId: 1, pages: 40, busy: 1, transport: 0 })),
+    ...Array.from({ length: 7 }, (_, hour) => ({ day: "2026-11-09", hour, accountId: 1, pages: 40, busy: 1, transport: 0, sends: 40 })),
+    ...[7, 8].map(hour => ({ day: "2026-11-09", hour, accountId: 1, pages: 0, busy: 3, transport: 50, sends: 50 })),
+    ...Array.from({ length: 8 }, (_, hour) => ({ day: "2026-11-08", hour, accountId: 1, pages: 40, busy: 1, transport: 0, sends: 40 })),
   ];
   const held = heldHoursOf(Array.from({ length: 16 }, (_, i) => [Date.parse("2026-11-09T09:00:00Z") + i * 3_600_000, 1] as [number, number]));
   assert.ok(held.has("2026-11-09 8") && held.has("2026-11-09 23") && !held.has("2026-11-09 7"));
