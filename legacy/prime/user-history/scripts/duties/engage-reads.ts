@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import {
-  type DsQuery, DAY, HOUR, PG, PROM, SOURCE_DEADLINE_MS, UNMEASURED, grafanaClient, missValue, num, promInstant, readGrafanaAuth, round1, sqlRows, utc, type ProdRead, prodReader,
+  type DsQuery, DAY, HOUR, PG, PROM, SOURCE_DEADLINE_MS, UNMEASURED, grafanaClient, missValue, num, promInstant, promRange, readGrafanaAuth, round1, sqlRows, utc, type ProdRead, prodReader,
 } from "./estate-reads.ts";
 
 /**
@@ -106,7 +106,7 @@ export const CODE_CAUSES: Readonly<Record<string, Cause>> = {
 };
 /** The staging stall line's limit: the oldest due staging collab read waits at most this long. The launch VP's number. */
 export const STAGING_WAIT_MIN = 60;
-export type Source = "grafana auth" | "prod paced hours" | "prod read log" | "staging read log" | "staging due reads" | "staging config" | "prod accounts" | "prod config" | "prod healthy gauge" | "prod lapsed bindings" | "prod death gauge" | "prod deep walks" | "prod stuck accounts";
+export type Source = "grafana auth" | "prod paced hours" | "prod read log" | "prod supply holds" | "staging read log" | "staging due reads" | "staging config" | "prod accounts" | "prod config" | "prod healthy gauge" | "prod lapsed bindings" | "prod death gauge" | "prod deep walks" | "prod stuck accounts";
 /**
  * How long an account may sit frozen for a shared exit, on 302s, or parked with a dead jar before it counts as stuck. The launch VP's number
  * (10-18): the accounts job wakes every 2 h, and jar account 16 sat active on 302s for 24 h (55 of 55 reads, 10-14 13:16Z to 10-15 12:00Z).
@@ -121,7 +121,7 @@ export const STUCK_302S = 3;
 export const FEEDS: Readonly<Record<Source, readonly string[]>> = {
   "grafana auth": ["prod_capacity_pages_day", "fleet_ig_killed_pct", "canary_ig_deaths_1h", "paced_busy_hour_share"],
   "prod paced hours": ["paced_busy_hour_share"],
-  "prod read log": ["prod_capacity_pages_day"], "prod healthy gauge": ["prod_capacity_pages_day"], "prod lapsed bindings": ["prod_capacity_pages_day"],
+  "prod read log": ["prod_capacity_pages_day"], "prod supply holds": ["prod_capacity_pages_day"], "prod healthy gauge": ["prod_capacity_pages_day"], "prod lapsed bindings": ["prod_capacity_pages_day"],
   "prod accounts": ["prod_capacity_pages_day", "fleet_ig_killed_pct", "canary_ig_deaths_1h"],
   "prod config": ["prod_capacity_pages_day", "fleet_ig_killed_pct", "canary_ig_deaths_1h"],
   "prod death gauge": ["fleet_ig_killed_pct", "canary_ig_deaths_1h"],
@@ -134,8 +134,8 @@ export const unmeasured = (metric: Pick<DutyMetric, "op" | "target">): number =>
 
 /** Pages one prod account read on one full UTC day (YYYY-MM-DD). */
 export interface DayPages { day: string; accountId: number; pages: number }
-/** One prod account's read-log rows in one UTC hour of a full day: the pages it read and its account_busy refusals (HOURS_SQL). */
-export interface AccountHour { day: string; hour: number; accountId: number; pages: number; busy: number }
+/** One prod account's read-log rows in one UTC hour of a full day: the pages it read, its account_busy refusals and its reads that failed on transport (HOURS_SQL). */
+export interface AccountHour { day: string; hour: number; accountId: number; pages: number; busy: number; transport: number }
 /**
  * A dead-outcome event: Instagram's verdict when causeOf() says so. `pages24h` is what the account read in the 24 h before it. `transition` is false
  * for the re-login worker's verdicts, which leave the account parked, and crawler_v3_engage_deaths_24h counts only transitions.
@@ -163,7 +163,7 @@ export type StuckKind = "frozen_shared_exit" | "active_302s" | "parked_dead_jar"
 export interface StuckAccount { kind: StuckKind; accountId: number; since: number }
 export interface EngageData {
   now: number;
-  days?: DayPages[]; hours?: AccountHour[]; stagingLastReadAt?: number | null; stagingDue?: StagingDue; stagingPauses?: StagingPause[]; accounts?: Account[]; deaths?: Death[]; config?: Record<string, string>;
+  days?: DayPages[]; hours?: AccountHour[]; heldHours?: Set<string>; stagingLastReadAt?: number | null; stagingDue?: StagingDue; stagingPauses?: StagingPause[]; accounts?: Account[]; deaths?: Death[]; config?: Record<string, string>;
   healthy?: number; lapsed?: Lapsed; deepWalks?: DeepWalks; stuck?: StuckAccount[]; paced?: Paced;
   /** crawler_v3_engage_deaths_24h by cause. */
   deathGauge?: Record<string, number>;
@@ -278,32 +278,39 @@ export const SATURATED_HOURS_FLOOR = 8;
 /**
  * What each account could serve on each day of `hours`, so the proof reads supply and not the demand a day happened to send (c67; the launch VP,
  * 11-08: on 11-07 the canary had no throttle and no fence, and 13,348 pages split over 15 to 18 members put rank 14 at 732). An account-hour is
- * saturated when it logged an account_busy refusal, a pinned read that found the account's pace full. The account's hourly rate is its median
- * pages over its saturated hours in `hours`, and its day is that rate times its serveable hours, the hours it logged a row plus the hours no prod
- * account logged one: a fenced, frozen, parked or unbound account logs no row (prod 11-05 and 11-06, every canary gap of 5 to 7 hours followed a
- * 'throttled' answer with no row at all), while an hour with no prod row is an outage of the lane, not of the account (11-07 10Z). An account
- * under SATURATED_HOURS_FLOOR, a day it read more than that, and every day outside `hours` keep the pages it read.
+ * saturated when it logged an account_busy refusal, a pinned read that found the account's pace full, and read a page. The account's hourly rate
+ * is its median pages over its saturated hours in `hours`, and its day is that rate times its serveable hours:
+ * - an hour it logged a row counts, unless it read no page and a read failed on transport, because its exit could serve nothing then;
+ * - an hour no prod account logged a row counts when no supply hold covered it (`held`, "YYYY-MM-DD H" keys), because then demand was empty
+ *   (11-07 10Z), while a held hour is an outage the accounts could not serve through (the GeoNode hold from 08:44Z on 11-09; the launch VP, 11-10:
+ *   a green 127,872 on that pair hid a full stop);
+ * - an hour the fleet read and it logged no row does not count, because a fenced, frozen, parked or unbound account logs no row (prod 11-05 and
+ *   11-06, every canary gap of 5 to 7 hours followed a 'throttled' answer with no row at all).
+ * An account under SATURATED_HOURS_FLOOR, a day it read more than that, and every day outside `hours` keep the pages it read.
  */
-export function servedDays(days: readonly DayPages[], hours: readonly AccountHour[]): DayPages[] {
+export function servedDays(days: readonly DayPages[], hours: readonly AccountHour[], held: ReadonlySet<string> = new Set()): DayPages[] {
   const saturated = new Map<number, number[]>();
-  const active = new Map<string, number>();
+  const open = new Map<string, number>();
   const fleetHours = new Map<string, Set<number>>();
   for (const row of hours) {
-    if (row.busy > 0) saturated.set(row.accountId, [...saturated.get(row.accountId) ?? [], row.pages]);
+    const dead = row.pages === 0 && row.transport > 0;
+    if (row.busy > 0 && !dead) saturated.set(row.accountId, [...saturated.get(row.accountId) ?? [], row.pages]);
     const key = `${row.day} ${row.accountId}`;
-    active.set(key, (active.get(key) ?? 0) + 1);
+    open.set(key, (open.get(key) ?? 0) + (dead ? 0 : 1));
     fleetHours.set(row.day, (fleetHours.get(row.day) ?? new Set()).add(row.hour));
   }
   const rates = new Map<number, number>();
   for (const [accountId, pages] of saturated) if (pages.length >= SATURATED_HOURS_FLOOR) rates.set(accountId, median(pages));
+  const emptyHours = new Map<string, number>();
+  for (const [day, busy] of fleetHours)
+    emptyHours.set(day, Array.from({ length: 24 }, (_, hour) => hour).filter(hour => !busy.has(hour) && !held.has(`${day} ${hour}`)).length);
   const served = new Map(days.map(row => [`${row.day} ${row.accountId}`, row]));
-  for (const [key, count] of active) if (!served.has(key)) { const [day, id] = key.split(" "); served.set(key, { day: day!, accountId: Number(id), pages: 0 }); }
+  for (const key of open.keys()) if (!served.has(key)) { const [day, id] = key.split(" "); served.set(key, { day: day!, accountId: Number(id), pages: 0 }); }
   return [...served.values()].map(row => {
     const rate = rates.get(row.accountId);
-    const hoursOn = active.get(`${row.day} ${row.accountId}`);
+    const hoursOn = open.get(`${row.day} ${row.accountId}`);
     if (rate === undefined || hoursOn === undefined) return row;
-    const serveable = hoursOn + 24 - fleetHours.get(row.day)!.size;
-    return { ...row, pages: Math.max(row.pages, Math.round(rate * serveable)) };
+    return { ...row, pages: Math.max(row.pages, Math.round(rate * (hoursOn + emptyHours.get(row.day)!))) };
   });
 }
 
@@ -422,7 +429,7 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
     const pauses = Object.entries(data.config).filter(([key, value]) => key.startsWith("pause.engage") && value === "true").map(([key]) => key);
     if (pauses.length) flagged.push({ at, kind: "pause", excerpt: `prod pause keys on: ${pauses.join(", ")}` });
     if (data.days && data.healthy !== undefined && data.lapsed) {
-      const { newestDays, newest: proof, best } = provenRates(data.days, data.deaths, want, data.hours ? servedDays(data.days, data.hours) : data.days);
+      const { newestDays, newest: proof, best } = provenRates(data.days, data.deaths, want, data.hours ? servedDays(data.days, data.hours, data.heldHours) : data.days);
       const rate = proof?.rate ?? 0;
       const healthy = data.healthy + data.lapsed.waiting;
       const counted = `${healthy} healthy prod accounts (${data.healthy} admissible now${data.lapsed.waiting ? `, ${data.lapsed.waiting} waiting on a proxy session renewal` : ""})`;
@@ -494,10 +501,21 @@ from ig_engage_read_log l join ig_engage_accounts a on a.id = l.account_id
 where a.world = 'prod' and l.at < date_trunc('day', now() at time zone 'UTC') at time zone 'UTC' group by 1, 2 having sum(l.pages) > 0`;
 /** HOURS_SQL's rows per account and UTC hour over the PROOF_DAYS full UTC days before today, the newest window servedDays() reads. */
 export const HOURS_SQL = `select to_char(l.at at time zone 'UTC', 'YYYY-MM-DD') as day, extract(hour from l.at at time zone 'UTC')::int as hour, l.account_id,
-  sum(l.pages) as pages, count(*) filter (where l.reason = 'account_busy') as busy
+  sum(l.pages) as pages, count(*) filter (where l.reason = 'account_busy') as busy, count(*) filter (where l.reason = 'transport') as transport
 from ig_engage_read_log l join ig_engage_accounts a on a.id = l.account_id
 where a.world = 'prod' and l.at >= (date_trunc('day', now() at time zone 'UTC') - interval '${PROOF_DAYS} days') at time zone 'UTC'
   and l.at < date_trunc('day', now() at time zone 'UTC') at time zone 'UTC' group by 1, 2, 3`;
+/**
+ * The supply holds on the residential pool the engage exits ride (every prod engage endpoint read on 11-08 and 11-09 was a residential
+ * engage-session row): a series per held proxy account, 1 while the hold lives. crawler_v3_proxy_supply_hold names the proxy account and not the
+ * gateway, so a hold counts against every engage account. Each point is the hour that ends at its timestamp.
+ */
+export const SUPPLY_HOLD_EXPR = 'max(max_over_time(crawler_v3_proxy_supply_hold{pool="residential"}[1h]))';
+/** The "YYYY-MM-DD H" hours of supply hold points, each point the hour that ends at its timestamp. */
+export const heldHoursOf = (points: readonly [number, number][]): Set<string> => new Set(points.filter(([, value]) => value > 0).map(([at]) => {
+  const start = new Date(at - HOUR);
+  return `${start.toISOString().slice(0, 10)} ${start.getUTCHours()}`;
+}));
 const STAGING_SQL = `select extract(epoch from max(l.at)) * 1000 as last_read_at from ig_engage_read_log l join ig_engage_accounts a on a.id = l.account_id
 where a.world = 'staging' and l.pages > 0`;
 /** A deploy rewrites each pause row it closes with the same value (pause.meta_ads audit 14478 and 14481 on 2026-10-21 wrote 'true' over 'true'), so the writer named is the last one that changed the value. */
@@ -671,7 +689,7 @@ export function busyHourFlag(paced: Paced, at: number): FlaggedSlice | null {
 }
 
 export const daysOf = (rows: Record<string, unknown>[]): DayPages[] => rows.map(row => ({ day: String(row.day), accountId: Number(row.account_id), pages: Number(row.pages) }));
-export const hoursOf = (rows: Record<string, unknown>[]): AccountHour[] => rows.map(row => ({ day: String(row.day), hour: Number(row.hour), accountId: Number(row.account_id), pages: Number(row.pages), busy: Number(row.busy) }));
+export const hoursOf = (rows: Record<string, unknown>[]): AccountHour[] => rows.map(row => ({ day: String(row.day), hour: Number(row.hour), accountId: Number(row.account_id), pages: Number(row.pages), busy: Number(row.busy), transport: Number(row.transport ?? 0) }));
 export const accountsOf = (rows: Record<string, unknown>[]): Account[] => rows.map(row => ({ id: Number(row.id), status: String(row.status), ...(row.reason ? { reason: String(row.reason) } : {}) }));
 export const stagingPausesOf = (rows: Record<string, unknown>[]): StagingPause[] => rows.map(row => ({
   key: String(row.key), auditId: num(row.id), at: num(row.at), actor: row.actor == null ? null : String(row.actor), reason: row.reason == null ? null : String(row.reason),
@@ -717,16 +735,18 @@ export async function measure(query: DsQuery | null, authError: string | null, n
   const stuckAccounts = step("prod stuck accounts", async () => stuckOf(await prodRead(STUCK_SQL)));
   if (!query) {
     data.errors.push({ source: "grafana auth", message: authError ?? "no Grafana login" });
-    for (const source of ["prod paced hours", "prod read log", "staging read log", "staging due reads", "staging config", "prod accounts", "prod config", "prod healthy gauge"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
+    for (const source of ["prod paced hours", "prod read log", "prod supply holds", "staging read log", "staging due reads", "staging config", "prod accounts", "prod config", "prod healthy gauge"] as const) data.errors.push({ source, message: "not read: no Grafana login" });
     const [walks, lapsed, stuck] = await Promise.all([deepWalks, lapsedBindings, stuckAccounts]);
     if (walks) data.deepWalks = walks;
     if (stuck) data.stuck = stuck;
     if (lapsed) data.lapsed = lapsed;
     return data;
   }
-  const [days, hours, staging, stagingPauses, accounts, deaths, config, healthy, gauge, walks, due, lapsed, stuck, paced] = await Promise.all([
+  const today = Date.parse(`${new Date(now).toISOString().slice(0, 10)}T00:00:00Z`);
+  const [days, hours, heldHours, staging, stagingPauses, accounts, deaths, config, healthy, gauge, walks, due, lapsed, stuck, paced] = await Promise.all([
     step("prod read log", async () => daysOf(await sqlRows(query, PG.prod, DAYS_SQL))),
     step("prod read log", async () => hoursOf(await sqlRows(query, PG.prod, HOURS_SQL))),
+    step("prod supply holds", async () => heldHoursOf((await promRange(query, PROM.prod, SUPPLY_HOLD_EXPR, today - PROOF_DAYS * DAY + HOUR, today, HOUR)).flatMap(series => series.points))),
     step("staging read log", async () => num((await sqlRows(query, PG.staging, STAGING_SQL))[0]?.last_read_at)),
     step("staging config", async () => stagingPausesOf(await sqlRows(query, PG.staging, STAGING_PAUSES_SQL))),
     step("prod accounts", async () => accountsOf(await sqlRows(query, PG.prod, ACCOUNTS_SQL))),
@@ -744,7 +764,7 @@ export async function measure(query: DsQuery | null, authError: string | null, n
     stuckAccounts,
     step("prod paced hours", async () => pacedOf(await sqlRows(query, PG.prod, PACED_SQL))),
   ]);
-  Object.assign(data, days && { days }, hours && { hours }, staging !== undefined && { stagingLastReadAt: staging }, stagingPauses && { stagingPauses }, accounts && { accounts }, deaths && { deaths }, config && { config },
+  Object.assign(data, days && { days }, hours && { hours }, heldHours && { heldHours }, staging !== undefined && { stagingLastReadAt: staging }, stagingPauses && { stagingPauses }, accounts && { accounts }, deaths && { deaths }, config && { config },
     healthy !== undefined && { healthy }, lapsed && { lapsed }, gauge && { deathGauge: gauge }, walks && { deepWalks: walks }, due && { stagingDue: due }, stuck && { stuck }, paced && { paced });
   return data;
 }
