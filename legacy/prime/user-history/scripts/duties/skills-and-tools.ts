@@ -214,6 +214,7 @@ async function offIfMacGone(deps: Deps, failed: Outcome): Promise<Outcome> {
  */
 const NO_ASIDE_WINDOW = /is not connected to the daemon/;
 const MAC_REACH_FIX = "the box's `aside` runs a Mac's Aside CLI over ssh (~/.local/bin/aside, deploy/linux/aside-remote, its target in ~/.config/aside-remote/host), so check ssh to that Mac, check Aside runs there, and re-check";
+const ASIDE_SIGN_IN_FIX = "sign it in again yourself: in `aside repl` open chrome-extension://fjdhphbdlfjogobdofoaagnlnkoibdge/main.html, enter the account email, Continue, read the 6-digit code from no-reply@asidehq.com with the `gmail` global (uid 0), type it and Verify, all in one repl call because the tab closes when the call ends; ask the owner only if Gmail shows no code";
 
 const missingServer = (name: string, why: string) => FAIL("agent", why, `re-add the ${name} server with \`prime-agent mcp add\` and the command from its vendor docs`);
 
@@ -663,7 +664,12 @@ export const CHECKS: readonly Check[] = [
     return offIfMacGone(deps, FAIL("agent", answer.error ? `MCP ${answer.error}` : `repl gave ${brief(text || "no text", 200)}`, deps.platform === "linux"
       ? MAC_REACH_FIX : "open Aside with `open -a Aside` and re-check"));
   } },
-  /** Only a reply that lists no signed-in account is the owner's; a timeout, an ssh failure or "Aside isn't running" (10-18 04:31Z and 13:24Z) is a reach problem. */
+  /**
+ * A signed-out account is an agent's fix: on 11-10 a job signed u0 in again through the email code, read from his Gmail in Aside. Aside
+ * had dropped the session itself on 11-07 06:35Z ("Token refresh rejected; clearing authenticated account state"), and its Google button
+ * failed 5 of 5 tries with 409 "attempt expired" on daemon 1.26.1107.24. A timeout, an ssh failure or "Aside isn't running" (10-18 04:31Z
+ * and 13:24Z) is a reach problem.
+ */
   { id: "aside_account", group: "browser", tool: "Aside account", hostTool: "aside", run: async deps => {
     const mac = await macReach(deps);
     if (!mac.online) return { status: "off", detail: mac.detail };
@@ -671,7 +677,7 @@ export const CHECKS: readonly Check[] = [
     const line = /^\*\s+\S+\s+\S+@\S+\s+signed in.*$/m.exec(result.stdout);
     if (line) return PASS(brief(line[0], 100));
     if (result.code !== 0) return offIfMacGone(deps, FAIL("agent", `aside account status: ${failText(result)}`, deps.platform === "linux" ? MAC_REACH_FIX : "open Aside with `open -a Aside` and re-check"));
-    return FAIL("owner", `aside account status shows no signed-in account: ${brief(both(result), 200)}`, "sign in to the Aside account in the Aside app");
+    return FAIL("agent", `aside account status shows no signed-in account: ${brief(both(result), 200)}`, ASIDE_SIGN_IN_FIX);
   } },
   { id: "prime_daemon", group: "prime skills", tool: "Prime daemon (agent-message, agent-observe, goal, heartbeat, compact, mcp)", run: async deps => {
     const result = await deps.exec(paths(deps).prime, ["status", "--json"], { timeoutMs: CALL_TIMEOUT_MS });

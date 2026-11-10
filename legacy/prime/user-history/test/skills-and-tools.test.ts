@@ -360,10 +360,11 @@ test("a Mac that Tailscale still lists online but does not answer a ping turns f
   }
 });
 
-test("aside_account on an online Mac keeps a signed-out reply as the owner's fix", async () => {
-  const signedOut = { code: 0, stdout: "  u0 sieunpark77@gmail.com signed out\n", stderr: "", ms: 0 };
+test("aside_account on an online Mac gives a signed-out reply to an agent, with the email-code sign-in", async () => {
+  const signedOut = { code: 0, stdout: "* u0  sieunpark77@gmail.com  signed out  profiles: Profile 0\n  provider: google\n", stderr: "", ms: 0 };
   const outcome = await CHECKS.find(check => check.id === "aside_account")!.run(macDeps(true, signedOut, []));
-  assert.ok(outcome.status === "fail" && outcome.fixer === "owner" && outcome.fix.includes("sign in"), JSON.stringify(outcome));
+  assert.ok(outcome.status === "fail" && outcome.fixer === "agent" && outcome.fix.includes("no-reply@asidehq.com") && outcome.fix.includes("main.html"), JSON.stringify(outcome));
+  assert.equal(toOutput([{ check: CHECKS.find(check => check.id === "aside_account")!, outcome }], 0).metrics.owner_fixes, 0);
 });
 
 test("aside_account on an online Mac calls a timeout a reach problem, not a sign-in", async () => {
