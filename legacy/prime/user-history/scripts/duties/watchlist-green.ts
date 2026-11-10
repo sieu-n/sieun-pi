@@ -227,7 +227,8 @@ export function ownerGreen(keys: readonly string[], rows: readonly WatchRow[], n
     if (want.kind === "tagged") { collabs++; if (row && !row.paused) pushed++; }
     if (!green) { const reason = notGreen(want.kind, row, now, held); why.set(reason, (why.get(reason) ?? 0) + 1); }
     if (row && isAcceptedHidden(row)) { hidden++; continue; }
-    const stop = row && stopReason(row, now);
+    // Under a hold words.ts reads the hold before a no-account or failed stop, so the chip is Waiting, never Stopped.
+    const stop = !held && row && stopReason(row, now);
     if (stop) { const reason = `${want.kind} ${stop}`; stops.set(reason, (stops.get(reason) ?? 0) + 1); }
   }
   const green = [...accounts.values()].filter(Boolean).length;

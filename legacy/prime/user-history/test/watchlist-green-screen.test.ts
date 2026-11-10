@@ -87,6 +87,9 @@ test("a supply hold scores open rows not green as the Watchlist paints them Wait
   const held = report({ ...base, keys: ["instagram:account:a", "instagram:account:b"], rows: [base.rows![0]!, gone],
     hold: { pausedBy: ["supply_hold"], holds: [{ code: "proxy_unreachable", provider: "geonode", gateway: "us-08:12001", since: Date.UTC(2026, 10, 9, 8, 44, 58) }] } }, metrics);
   assert.equal(held.metrics.owner_green_pct, 50);
+  const starved = { ...base.rows![0]!, lastOutcome: "starved", lastOkAt: -3 * 86_400_000, addedAt: -9 * 86_400_000 };
+  assert.equal(report({ ...base, rows: [starved] }, metrics).metrics.watchlist_risks, 1);
+  assert.equal(report({ ...base, rows: [starved], hold: { pausedBy: ["supply_hold"], holds: [] } }, metrics).metrics.watchlist_risks, 0);
   assert.match(held.flagged!.find(flag => flag.kind === "watch_held")!.excerpt, /prod watching is paused by supply_hold \(proxy_unreachable on geonode us-08:12001 since 11-09 08:44Z\)/);
   assert.equal(report({ ...base, hold: { pausedBy: [], holds: [] } }, metrics).metrics.owner_green_pct, 100);
 });
