@@ -186,6 +186,15 @@ test("a run stopped by a slow exit names it in a slow_exit slice and in each fai
   assert.ok(!other.flagged?.some(s => s.kind === "slow_exit" || s.kind === "instagram_refused"));
 });
 
+// d1 on 11-10 06:49Z: the lapsed GeoNode account's gateway opened no tunnel, and the run read both accounts as signed out on a slow exit.
+test("a run stopped by a down gateway names it in an exit_down slice and in each failed part", () => {
+  const reason = "residential-unlimited-us-08-proxy.geonode.io:12001 opened 0 of 5 tunnels (no TCP answer in 30 s) for the account's session";
+  const out = report({ now: NOW, autopair: { checks: [], stoppedOn: { kind: "exit_down", step: "instagram sign-in", reason } }, errors: [] }, METRICS);
+  assert.equal(out.metrics.e2e_pass, 0);
+  assert.ok(out.flagged?.some(s => s.kind === "exit_down" && s.excerpt.includes("opened no tunnel, not on the extension") && s.excerpt.includes("0 of 5 tunnels")));
+  assert.ok(out.flagged?.some(s => s.kind === "e2e_part" && s.item === "pair" && s.excerpt.includes("stopped on a proxy gateway that opened no tunnel")));
+});
+
 test("the rigs end their Instagram waits the tail before the budget runs out", () => {
   assert.equal(rigDeadline(NOW, 1_800_000), NOW + 1_800_000 - TAIL_MS);
 });

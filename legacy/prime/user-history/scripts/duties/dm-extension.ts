@@ -108,11 +108,12 @@ export const FEEDS: Readonly<Record<Source, readonly string[]>> = {
 export interface Check { name: string; ok: boolean; detail?: unknown }
 /**
  * Why a rig run stopped (evidence.stoppedOn, apps/dm-extension/tests/lib/ig-load.mjs): slow_exit when an Instagram page or a send wait
- * on it stalled or was still loading at its ceiling, instagram_refused when Instagram sent the account to a login page, a challenge or
- * a checkpoint or answered send_restricted, and other for anything else. `step` is where the run stopped and `causeStep` where the
+ * on it stalled or was still loading at its ceiling, exit_down when a load failed and the rig's own probe of the gateway opened no tunnel
+ * for the account's session or a fresh one (apps/dm-extension/tests/lib/exit-probe.mjs), instagram_refused when Instagram sent the account
+ * to a login page, a challenge or a checkpoint or answered send_restricted, and other for anything else. `step` is where the run stopped and `causeStep` where the
  * cause happened.
  */
-export interface Stop { step: string; kind: "slow_exit" | "instagram_refused" | "other"; reason?: string; exit?: string; kb?: number; code?: number; causeStep?: string | null }
+export interface Stop { step: string; kind: "slow_exit" | "exit_down" | "instagram_refused" | "other"; reason?: string; exit?: string; kb?: number; code?: number; causeStep?: string | null }
 export interface AutopairEvidence { checks?: Check[]; stoppedOn?: Stop }
 export interface E2eEvidence {
   connectionsRow?: string | null;
@@ -177,15 +178,19 @@ export function parts(autopair: AutopairEvidence | undefined, e2e: E2eEvidence |
   };
 }
 
-const STOP_WORDS: Readonly<Record<Exclude<Stop["kind"], "other">, string>> = { slow_exit: "a slow Instagram exit", instagram_refused: "an Instagram refusal" };
+const STOP_WORDS: Readonly<Record<Exclude<Stop["kind"], "other">, string>> = {
+  slow_exit: "a slow Instagram exit", exit_down: "a proxy gateway that opened no tunnel", instagram_refused: "an Instagram refusal",
+};
 
-/** The slice that names a rig run stopped by a slow Instagram exit or by Instagram refusing the account, apart from an extension failure. */
+/** The slice that names a rig run stopped by a slow or down Instagram exit or by Instagram refusing the account, apart from an extension failure. */
 export function stopSlice(rig: "autopair" | "e2e", stop: Stop | undefined, at: number): FlaggedSlice | undefined {
   if (!stop || stop.kind === "other") return undefined;
   const where = stop.causeStep && stop.causeStep !== stop.step ? `${stop.causeStep} (it stopped at ${stop.step})` : stop.step;
   const excerpt = stop.kind === "slow_exit"
     ? `the ${rig} rig failed on a slow Instagram exit at ${where}, not on the extension: ${stop.reason ?? ""}`
-    : `the ${rig} rig stopped because Instagram refused the account at ${where}: ${stop.reason ?? ""}`;
+    : stop.kind === "exit_down"
+      ? `the ${rig} rig stopped at ${where} because the account's proxy gateway opened no tunnel, not on the extension: ${stop.reason ?? ""}`
+      : `the ${rig} rig stopped because Instagram refused the account at ${where}: ${stop.reason ?? ""}`;
   return { at, kind: stop.kind, item: rig, excerpt: excerpt.slice(0, 300) };
 }
 
@@ -230,7 +235,7 @@ export function report(data: DutyData, dutyMetrics: readonly DutyMetric[]): Prec
       const slice = stopSlice(rig, stop, at);
       if (slice) flagged.push(slice);
     }
-    const stopKind = stops.map(stop => stop?.kind).find(kind => kind === "slow_exit" || kind === "instagram_refused");
+    const stopKind = stops.map(stop => stop?.kind).find(kind => kind === "slow_exit" || kind === "exit_down" || kind === "instagram_refused");
     const cause = stopKind ? ` The run stopped on ${STOP_WORDS[stopKind]} (${stopKind} slice).` : "";
     for (const [part, { ok, why }] of Object.entries(held) as [Part, { ok: boolean; why: string }][])
       if (!ok) flagged.push({ at, kind: "e2e_part", item: part, excerpt: `${PARTS[part]}: NO.${cause} ${why}. Evidence: ${OUT}`.slice(0, 300) });
