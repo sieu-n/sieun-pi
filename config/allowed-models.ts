@@ -6,7 +6,7 @@
 export const ALLOWED_MODELS = [
   "anthropic/claude-opus-5-5",
   "anthropic/claude-sonnet-5-5",
-  "anthropic/claude-fable-5-1",
+  "anthropic/claude-fable-5-2",
   "openai-codex/gpt-6.1-sol",
   "openai-codex/gpt-6.1-terra",
   "openai-codex/gpt-6-luna",

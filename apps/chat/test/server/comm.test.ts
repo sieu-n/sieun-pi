@@ -51,8 +51,8 @@ describe("delivery to the comm thread", () => {
         assert.equal(host.threadsById.size, threadsBefore + 1, "two posts make one comm thread");
         const row = host.threadsById.get(comm)!.row;
         assert.equal(row.name, "Vent · DM");
-        assert.equal(`${row.provider}/${row.modelId}`, "anthropic/claude-opus-5-5");
-        assert.equal(row.thinkingLevel, "high");
+        assert.equal(`${row.provider}/${row.modelId}`, "anthropic/claude-fable-5-2");
+        assert.equal(row.thinkingLevel, "medium");
         const delivered = submits.filter(x => x.input.requestId?.startsWith("d:"));
         assert.deepEqual(delivered.map(x => [x.thread, x.input.text, x.input.ownerTurn]), [[comm, "first comm post", true], [comm, "second comm post", true]]);
         assert.equal(host.threadsById.get(ids.vent)!.entries.length, workEntries, "the work thread gets no input");
@@ -233,7 +233,7 @@ describe("POST /api/agents/:id/split", () => {
     const plan = await s.send("POST", `/api/agents/${agents.crawler}/split`, {});
     assert.equal(plan.status, 200);
     assert.equal(plan.body.comm.created, true);
-    assert.deepEqual(plan.body.comm.create, { name: "Crawler VP · DM", model: "anthropic/claude-opus-5-5", thinkingLevel: "high", cwd: record.home });
+    assert.deepEqual(plan.body.comm.create, { name: "Crawler VP · DM", model: "anthropic/claude-fable-5-2", thinkingLevel: "medium", cwd: record.home });
     assert.equal(plan.body.workRef.after.comm, "<new>");
     assert.deepEqual(plan.body.workRef.before, workRef ?? null);
     assert.deepEqual(plan.body.commRef, { agent: agents.crawler, dir: join(s.app.config.agentsDir, record.slug), role: "comm", room: record.room, work: record.workThread });

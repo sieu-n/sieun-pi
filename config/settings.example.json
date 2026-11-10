@@ -3,8 +3,8 @@
     "enabled": false
   },
   "defaultProvider": "anthropic",
-  "defaultModel": "claude-opus-5-5",
-  "defaultThinkingLevel": "high",
+  "defaultModel": "claude-fable-5-2",
+  "defaultThinkingLevel": "medium",
   "packages": [],
   "bundledSkills": {
     "websearch": false

@@ -23,7 +23,7 @@ export function avatarOf(name: string): Principal["avatar"] {
 }
 
 const MODEL_LABELS: Record<string, string> = {
-  "claude-opus-5-5": "Opus 5.5", "claude-sonnet-5-5": "Sonnet 5.5", "claude-fable-5-1": "Fable 5.1", "gpt-6.1-sol": "GPT-6.1 sol", "gpt-6-luna": "GPT-6 luna",
+  "claude-opus-5-5": "Opus 5.5", "claude-sonnet-5-5": "Sonnet 5.5", "claude-fable-5-2": "Fable 5.2", "claude-fable-5-1": "Fable 5.1", "gpt-6.1-sol": "GPT-6.1 sol", "gpt-6-luna": "GPT-6 luna",
 };
 export function modelRef(spec: string | null | undefined): ModelRef | null {
   if (!spec || !spec.includes("/")) return null;

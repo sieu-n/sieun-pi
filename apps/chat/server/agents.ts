@@ -12,7 +12,7 @@
 import type { AgentHostState, AgentId, AgentSummary, RunStatus, ThinkingLevel } from "../web/src/lib/api/types.ts";
 import { AGENT_REF_DOC, agentRef, commRef, sameRef, type AgentRef } from "./agent-folder.ts";
 import { freeSlug, isUntitled, type AgentRecord, type AgentStore, type RoomId } from "./agent-store.ts";
-import { DEFAULT_MODEL, type Config } from "./config.ts";
+import { DEFAULT_MODEL, DEFAULT_THINKING, type Config } from "./config.ts";
 import type { CreateOptions, DurableThread, Host, TreeNode } from "./host/types.ts";
 import type { Store } from "./store.ts";
 
@@ -142,7 +142,7 @@ export class Agents {
   }
 
   /**
-   * The thread `ensureComm` makes for the agent's comm thread in `room`, on Opus 5.5 at high thinking (c31): named `<agent> · DM`,
+   * The thread `ensureComm` makes for the agent's comm thread in `room`, on Fable 5.2 at medium thinking (c221): named `<agent> · DM`,
    * `<agent> · #<channel>` or `<agent> · Solo <name>`. A work thread answers its comm thread by that exact name, so a name another root
    * thread holds gets the room id after it.
    */
@@ -151,7 +151,7 @@ export class Agents {
     const label = !row || row.kind === "dm" ? "DM" : row.kind === "channel" ? `#${row.name}` : `Solo ${row.name}`;
     let name = `${record.name} · ${label}`;
     if (row && row.kind !== "dm" && (await this.host.threads().catch(() => [])).some(t => t.name === name)) name = `${name} (${room})`;
-    return { name, model: DEFAULT_MODEL, thinkingLevel: "high", cwd: record.home };
+    return { name, model: DEFAULT_MODEL, thinkingLevel: DEFAULT_THINKING, cwd: record.home };
   }
 
   /** What `ensureComm(record)` would do, read with no writes, for the migration's dry run. */
@@ -167,7 +167,7 @@ export class Agents {
   }
 
   /**
-   * The agent's comm thread for `room`: the one the record holds, or a new thread on Opus 5.5 at high thinking (c31) in the agent's home,
+   * The agent's comm thread for `room`: the one the record holds, or a new thread on Fable 5.2 at medium thinking (c221) in the agent's home,
    * saved in the record before anything else. Each call then writes the comm thread's `agent.ref` and the work thread's, which names the
    * comm thread, and throws while the comm thread's ref is not written, so the caller tries again before the comm thread gets an input
    * without its role.

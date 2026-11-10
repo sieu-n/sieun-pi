@@ -10,7 +10,7 @@ import { isAbsolute, join } from "node:path";
 import type { BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyRow, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
 import { morningTime, upsertDuty, type Duty, type DutyRunRecord, type DutySchedule, type DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
-import { DEFAULT_MODEL } from "./config.ts";
+import { DEFAULT_MODEL, DEFAULT_THINKING } from "./config.ts";
 import { asAfter, measure, measureAfter, runStamp } from "./duty-run.ts";
 import { dutyCard, judgedRun, missStreak } from "../web/src/lib/api/shared/duty-card.ts";
 import type { ChatAgent } from "../web/src/lib/api/shared/types.ts";
@@ -467,7 +467,7 @@ export class Boards {
       try {
         // The duty job works where its precheck runs, else in its chat's project folder, so it reads that folder's AGENTS.md chain.
         const cwd = duty.precheck.cwd || this.threads.thread(thread)?.cwd;
-        const job = await this.threads.create({ name, model: DEFAULT_MODEL, thinkingLevel: "high", ...(cwd ? { cwd } : {}) }, made => {
+        const job = await this.threads.create({ name, model: DEFAULT_MODEL, thinkingLevel: DEFAULT_THINKING, ...(cwd ? { cwd } : {}) }, made => {
           this.store.state.threads[made.id] = { kind: "job", parent: chat };
           this.store.saveState();
           this.agents.alias(made.id, chat);

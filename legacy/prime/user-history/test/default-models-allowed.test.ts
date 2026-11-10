@@ -48,7 +48,7 @@ function pstackModels(): string[] {
 }
 
 test("the allowed set is the newest model of each c185 tier", () => {
-  assert.deepEqual([...ALLOWED_MODELS].sort(), ["anthropic/claude-fable-5-1", "anthropic/claude-opus-5-5", "anthropic/claude-sonnet-5-5",
+  assert.deepEqual([...ALLOWED_MODELS].sort(), ["anthropic/claude-fable-5-2", "anthropic/claude-opus-5-5", "anthropic/claude-sonnet-5-5",
     "openai-codex/gpt-6-luna", "openai-codex/gpt-6.1-sol", "openai-codex/gpt-6.1-terra"]);
 });
 
@@ -68,11 +68,11 @@ test("every default, fallback and fixed model pick names an allowed model", () =
   assert.deepEqual(outside, [], "models outside config/allowed-models.ts (owner rule c185)");
 });
 
-test("the model menu's default favorites are allowed and lead with Opus 5.5", () => {
+test("the model menu's default favorites are allowed and lead with Fable 5.2, the default since c221", () => {
   const source = readFileSync(join(ROOT, "legacy/prime/user-history/src/client/ModelMenu.svelte"), "utf8");
   const list = /const DEFAULT_FAVORITES[^=]*= (\[[^\]]*\])/.exec(source);
   assert.ok(list, "ModelMenu.svelte has a DEFAULT_FAVORITES list");
   const favorites = JSON.parse(list[1]!) as string[];
-  assert.equal(favorites[0], "anthropic/claude-opus-5-5");
+  assert.equal(favorites[0], "anthropic/claude-fable-5-2");
   assert.deepEqual(favorites.filter(model => !isAllowedModel(model)), []);
 });

@@ -12,7 +12,7 @@ import type { RunState, Scenario, Verdict } from "./session-read.ts";
  * nobody sends anything. The judge reads the job's spawn record and session file, the wake files and the service.log lines that name the
  * job's session, which collect keeps for this scenario (`jobEvidence`). The criteria live in the run folder's criteria.md.
  */
-// Owner rule c185 allows only Claude Opus 5.5, Sonnet 5.5 and Fable 5.1, and OpenAI GPT-6.1 sol, GPT-6.1 terra and GPT-6 luna; run1 on 10-27
+// Owner rule c185 allows only Claude Opus 5.5, Sonnet 5.5 and Fable 5.2, and OpenAI GPT-6.1 sol, GPT-6.1 terra and GPT-6 luna; run1 on 10-27
 // used gpt-6-astra and was closed as noncompliant.
 export const MODEL = { provider: "openai-codex", modelId: "gpt-6.1-sol", thinkingLevel: "medium" };
 export const TASK = "how many test files are in legacy/prime/user-history/test of ~/src/sieun-pi right now? have one job on openai-codex/gpt-6.1-sol " +

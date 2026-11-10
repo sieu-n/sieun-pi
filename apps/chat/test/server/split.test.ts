@@ -87,7 +87,7 @@ test("the plan names the comm thread, both refs, the tools, the feed switch, the
     const report = await splitReport(agents, record);
     const { plan } = report;
     assert.ok(plan.comm.created);
-    assert.deepEqual(plan.comm.create, { name: `${record.name} · DM`, model: DEFAULT_MODEL, thinkingLevel: "high", cwd: record.home });
+    assert.deepEqual(plan.comm.create, { name: `${record.name} · DM`, model: DEFAULT_MODEL, thinkingLevel: "medium", cwd: record.home });
     assert.equal(plan.commRef.role, "comm");
     assert.deepEqual(plan.commRef, { agent: record.id, dir: report.stays.folder.dir, role: "comm", room: record.room, work: record.workThread });
     assert.equal(plan.workRef.after.role, "work");
@@ -103,7 +103,7 @@ test("the plan names the comm thread, both refs, the tools, the feed switch, the
 
     const text = renderReport(report);
     for (const part of [
-      `"${record.name} · DM" with ${DEFAULT_MODEL}, thinking high, cwd ${record.home}`,
+      `"${record.name} · DM" with ${DEFAULT_MODEL}, thinking medium, cwd ${record.home}`,
       "work thread loses the tools tell_owner, and gets these instructions",
       "comm thread loses the tools write, edit, bash, subagent and is offered stop_work",
       `You are agent ${record.id}'s comm thread in room ${record.room}.`,

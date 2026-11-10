@@ -20,7 +20,7 @@ import { CHANNEL_COPY_LIKE, GroupRooms, roomLabel } from "./group-rooms.ts";
 import { assertOwnPost, deleteNotice, deliveriesOf, editNotice } from "./post-edits.ts";
 import { ForMe } from "./for-me.ts";
 import type { ForMeItem, ForMeList, ForMeStatus } from "../web/src/lib/api/types.ts";
-import { DEFAULT_MODEL, type Config } from "./config.ts";
+import { DEFAULT_MODEL, DEFAULT_THINKING, type Config } from "./config.ts";
 import { MultiHost } from "./host/multi-host.ts";
 import type { Host } from "./host/types.ts";
 import { Outbox, type OutboxRow } from "./outbox.ts";
@@ -49,13 +49,13 @@ function offered(key: AllowedModel, label: string, family: string, levels: Think
 
 export const MODELS: ModelCatalog = {
   models: [
+    offered("anthropic/claude-fable-5-2", "Fable 5.2", "claude", ["off", "low", "medium", "high", "xhigh"]),
     offered("anthropic/claude-opus-5-5", "Opus 5.5", "claude", ["off", "low", "medium", "high", "xhigh"]),
     offered("anthropic/claude-sonnet-5-5", "Sonnet 5.5", "claude", ["off", "low", "medium", "high"]),
-    offered("anthropic/claude-fable-5-1", "Fable 5.1", "claude", ["off", "low", "medium", "high", "xhigh"]),
     offered("openai-codex/gpt-6.1-sol", "GPT-6.1 sol", "gpt", ["low", "medium", "high", "xhigh"]),
     offered("openai-codex/gpt-6-luna", "GPT-6 luna", "gpt", ["low", "medium", "high", "xhigh"]),
   ],
-  default: { model: DEFAULT_MODEL, thinkingLevel: "high" },
+  default: { model: DEFAULT_MODEL, thinkingLevel: DEFAULT_THINKING },
 };
 
 /** The watch prefix of an agent's For list: `for:<agent id>`. */
