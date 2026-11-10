@@ -59,7 +59,7 @@ test("a fire of a rule a pi-host thread owns goes to the thread as one agent mes
   assert.deepEqual([f.toThread[0]!.thread, f.toThread[0]!.requestId], [VENT, `alert:${RULE}@${NOW}`]);
   const text = f.toThread[0]!.text;
   assert.ok(text.startsWith("[alert] A Grafana rule this thread owns fired."));
-  assert.ok(text.includes(`- ${RULE} (Vent health checks fail on prod, firing since 2026-10-29T02:58Z)\n  Summary: Vent failure rate is 12%.\n  Values: B=0.12.\n` +
+  assert.ok(text.includes(`- ${RULE} (Vent health checks fail on prod, firing since 2026-10-29T02:58Z)\n  Summary: Vent failure rate is 12%.\n  Values at the fire: B=0.12.\n` +
     `  Grafana: https://obs.virev.ai/alerting/grafana/${RULE}/view`));
   assert.ok(text.includes(TRIAGE_WORK) && text.includes("rlm.spawn"));
   assert.deepEqual([f.started, f.delivered], [[], []]);

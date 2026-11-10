@@ -65,7 +65,7 @@ import { isThinkingLevel, type ChatDefaults, type ChatDefaultsInput, type IdleEv
 import { grafanaPrometheus, Usage } from "./usage/lgtm.ts";
 import { cacheWatch, pendingWakes, readRunState, runStamp, startWakes, wakeLabel, waking } from "./wakes.ts";
 import { BRIEFS_DIR, primeWorkers, recordModel, serviceBriefs, startBriefKeeper, unstartedJobs } from "./brief-keeper.ts";
-import { readOwnersFor, startAlertBridge } from "./alert-bridge.ts";
+import { readOwnersFor, readSetStates, startAlertBridge } from "./alert-bridge.ts";
 import { startBridgeWatch } from "./alert-bridge-health.ts";
 import { startAlertPoll } from "./alert-poll.ts";
 import { startUptimeWatch } from "./uptime-watch.ts";
@@ -469,6 +469,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       return file ? readTurnSince(file, since) : { ran: false };
     },
     held: async session => messageHold((await readRowSlotPark(await catalog.summary(session))).park, session, Date.now(), await queued()) !== null,
+    setStates: alert => readSetStates(grafanaConfig, alert),
     log: dutyLog, ...agentMessage });
   const stopBridgeWatch = !alertPoll ? () => {} : startBridgeWatch({ health: alertPoll.health, statusFile, configFile: grafanaConfig,
     alerting: alerting => alertPoll.alerting(alerting), log: dutyLog, ...agentMessage });

@@ -6,7 +6,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { AlertBridge, ESCALATE_MS, REOPEN_MS, errorText, firingRules, parseAlerts, parseOwners, parseState, readFiringRules, ruleKey, startAlertBridge, type FiringCall } from "../src/alert-bridge.ts";
+import { AlertBridge, ESCALATE_MS, REOPEN_MS, errorText, firingRules, parseAlerts, parseOwners, parseSetStates, parseState, readFiringRules, ruleKey, startAlertBridge, type FiringAlert, type FiringCall } from "../src/alert-bridge.ts";
 import { ALERT_ROUTES } from "../src/alert-routes.ts";
 import type { TurnSince } from "../src/held-turns.ts";
 
@@ -27,7 +27,8 @@ const backup = raw("34a8c0c62d402cb1", { alertname: "ClickHouse or Redis backup 
 const OWNERS = parseOwners({ owners: { "metal box owner": METAL, "ops guy": OPS }, fallback: "ops guy",
   routes: [{ name: "box backups", match: { __alert_rule_uid__: "^metal-backup-" }, owner: "metal box owner" }] });
 
-async function fixture(options: { state?: unknown; firingCall?: (chat: string) => Promise<FiringCall | null>; deliver?: (session: string, text: string) => Promise<void> } = {}) {
+async function fixture(options: { state?: unknown; firingCall?: (chat: string) => Promise<FiringCall | null>; deliver?: (session: string, text: string) => Promise<void>;
+  setStates?: (alert: FiringAlert) => Promise<ReadonlyMap<string, { state: string; since: number }>> } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "alert-bridge-chat-"));
   const file = join(dir, "alert-bridge.json");
   if (options.state) await writeFile(file, JSON.stringify(options.state));
@@ -40,7 +41,7 @@ async function fixture(options: { state?: unknown; firingCall?: (chat: string) =
     hasBoard: async id => id !== METAL,
     deliver: options.deliver ?? (async (id, text, root) => { sent.push({ session: id, text, ...root ? { root } : {} }); }),
     jobTurn: async (job, since) => turns.get(job.id) ?? { ran: true, at: since },
-    held: async id => held.has(id), ...options.firingCall ? { firingCall: options.firingCall } : {} });
+    held: async id => held.has(id), ...options.firingCall ? { firingCall: options.firingCall } : {}, ...options.setStates ? { setStates: options.setStates } : {} });
   return { file, bridge, sent, turns, held, set: (alerts: unknown[]) => { list = alerts; }, at: (ms: number) => { now = ms; },
     alerts: () => sent.filter(({ text }) => text.startsWith("[alert] ")), escalations: () => sent.filter(({ session: id, text }) => id === OPS && text.startsWith("[alert-escalation]")),
     state: async () => parseState(JSON.parse(await readFile(file, "utf8"))) };
@@ -73,6 +74,27 @@ test("30 fires for 3 chats while their trees are held reach each chat's thread a
   const state = await f.state();
   assert.deepEqual(Object.keys(state.jobs).sort(), Object.values(chats).sort(), "each chat's thread holds its fires, and no triage job exists");
   assert.ok(Object.values(state.rules).every(rule => rule.job?.id === rule.chat));
+});
+
+// 11-10: viewer-wall-walls-spike fired at 03:34:30Z at A=26, C=1 and waited for ops guy's thread until 06:21Z. Grafana read it Recovering
+// from 04:34:30Z and Normal from 05:34:30Z, its alert list still held it, and the message printed A=0, C=0 as if the rule were broken.
+test("a fire held until after it resolved goes with the values it fired at and says when Grafana resolved it", async () => {
+  const at = (iso: string) => Date.parse(iso);
+  const labels = { alertname: "The viewer tools walled 20 or more signed-out profile views in an hour (otel)", __alert_rule_uid__: "viewer-wall-walls-spike", project: "search" };
+  const listed = (values: string) => ({ ...raw("8bb3afdd4bf27cc7", labels, "2026-11-10T03:34:30.000Z"), annotations: { summary: "Walls spiked.", __values__: values } });
+  const ruleList = { data: { groups: [{ rules: [{ uid: "viewer-wall-walls-spike", alerts: [{ labels, state: "Normal", activeAt: "2026-11-10T05:34:30Z" }] }] }] } };
+  const f = await fixture({ setStates: async alert => parseSetStates(ruleList, alert.labels.__alert_rule_uid__!) });
+  f.held.add(OPS);
+  for (const [time, values] of [["03:35:30", '{"A":26,"C":1}'], ["04:35:30", '{"A":12,"C":0}'], ["05:35:30", '{"A":0,"C":0}']] as const) {
+    f.set([listed(values)]); f.at(at(`2026-11-10T${time}Z`));
+    await f.bridge.tick();
+  }
+  assert.equal(f.alerts().length, 0, "the pool holds ops guy's thread");
+  f.held.delete(OPS); f.at(at("2026-11-10T06:21:33Z"));
+  await f.bridge.tick();
+  const text = f.alerts()[0]!.text;
+  assert.match(text, /- viewer-wall-walls-spike \(The viewer tools.*, fired at 2026-11-10T03:34Z, resolved at 2026-11-10T05:34Z\)/);
+  assert.match(text, /  Values at the fire: A=26, C=1\.\n  Values now: A=0, C=0\.\n  Resolved at 2026-11-10T05:34Z \(Grafana: Normal\)\./);
 });
 
 test("a fire that comes while the thread's last alert message waits for its turn joins the next message, sent once the thread had a turn", async () => {

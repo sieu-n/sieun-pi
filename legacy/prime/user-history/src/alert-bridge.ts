@@ -40,9 +40,11 @@ export const GRAFANA_RULES_PATH = "/api/prometheus/grafana/api/v1/rules?limit_al
 export interface FiringAlert { fingerprint: string; startsAt: string; alertname: string; labels: Record<string, string>; summary: string; url: string; values?: string }
 /**
  * One firing label set of a rule, keyed in `Tracked.instances` by alertKey (fingerprint@startsAt). `seenAt` is when the bridge first listed
- * it, so a fire names the label sets it saw at or after the rule's `wokeAt` (`alertLine`). A state saved before 10-31 has none.
+ * it, so a fire names the label sets it saw at or after the rule's `wokeAt` (`alertLine`). A state saved before 10-31 has none. `values` are
+ * the alert's values at `seenAt`, since Grafana rewrites `__values__` at each evaluation: on 11-10 viewer-wall-walls-spike fired at 03:34:30Z
+ * at A=26, C=1, its fire waited for ops guy's thread until 06:21Z, and the message printed A=0, C=0 from an evaluation after it cleared.
  */
-export interface Instance { startsAt: string; labels: Record<string, string>; seenAt?: number; resolvedAt?: number }
+export interface Instance { startsAt: string; labels: Record<string, string>; seenAt?: number; resolvedAt?: number; values?: string }
 /** The session that took a fire: the owning chat's thread, or a triage job from before 11-07. */
 export interface AlertJob { id: string; name: string }
 /** The triage job a rule's fire went to, and when the bridge gave it (started the job with it, or sent it by message). */
@@ -77,13 +79,19 @@ export interface BridgeState { v: 4; rules: Record<string, Tracked>; jobs: Recor
 export interface OwnerRoute { name: string; match: Record<string, string>; owner: string }
 export interface OwnerMap { owners: Record<string, string>; fallback: string; routes: OwnerRoute[] }
 export type Router = (alert: FiringAlert) => string;
-/** One label set of a fire as its triage job reads it: the labels that tell it apart, its own summary, values and Grafana link. */
-export interface AlertFire { labels: Record<string, string>; summary: string; url: string; values?: string }
+/**
+ * One label set of a fire as its triage job reads it: the labels that tell it apart, its own summary, its values when the bridge first saw it
+ * (`values`), its values in the list now when they differ or none were kept (`now`), what Grafana's rule list says of it at the send when it
+ * no longer alerts (`ended`), and its Grafana link.
+ */
+export interface AlertFire { labels: Record<string, string>; summary: string; url: string; values?: string; now?: string; ended?: SetState }
 /**
  * One firing rule as its triage job reads it, with the label sets of its fire: those that newly fired (`fresh`), or every firing one when
  * the fire is a reopen or an escalation with no new label set.
  */
-export interface AlertLine { rule: string; alertname: string; startsAt: string; firedAt: number; sets: number; fresh: boolean; fires: AlertFire[] }
+export interface AlertLine { rule: string; alertname: string; startsAt: string; firedAt: number; sets: number; fresh: boolean; fires: AlertFire[];
+  /** When Grafana put the last of the shown label sets back to Normal, when every one of them is Normal at the send. */
+  resolvedAt?: number }
 
 export const emptyState = (): BridgeState => ({ v: 4, rules: {}, jobs: {}, chats: {} });
 export const alertKey = (alert: Pick<FiringAlert, "fingerprint" | "startsAt">): string => `${alert.fingerprint}@${alert.startsAt}`;
@@ -252,8 +260,8 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
     const rule = rules[key]!;
     delete rule.resolvedAt;
     rule.rule = ruleOf(alert);
-    const seen = rule.instances[id]!.seenAt;
-    rule.instances[id] = { startsAt: alert.startsAt, labels: alert.labels, ...seen === undefined ? {} : { seenAt: seen } };
+    const { seenAt: seen, values } = rule.instances[id]!;
+    rule.instances[id] = { startsAt: alert.startsAt, labels: alert.labels, ...seen === undefined ? {} : { seenAt: seen }, ...values === undefined ? {} : { values } };
   }
   for (const alert of rest) {
     const chat = route(alert);
@@ -282,9 +290,10 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
     if (!fired.has(key) && newFault(rule, alert)) fired.add(key);
     const labels = labelText(alert.labels);
     const held = Object.entries(rule.instances).find(([id, instance]) => instance.resolvedAt === undefined && id.startsWith(`${alert.fingerprint}@`))?.[1];
-    const before = blips.has(key) ? Object.values(rule.instances).find(instance => labelText(instance.labels) === labels)?.seenAt : held?.seenAt;
+    const before = blips.has(key) ? Object.values(rule.instances).find(instance => labelText(instance.labels) === labels) : held;
     for (const [id, instance] of Object.entries(rule.instances)) if (instance.resolvedAt !== undefined && id.startsWith(`${alert.fingerprint}@`)) delete rule.instances[id];
-    rule.instances[alertKey(alert)] = { startsAt: alert.startsAt, labels: alert.labels, seenAt: before ?? now };
+    const values = before?.seenAt !== undefined ? before.values : alert.values || undefined;
+    rule.instances[alertKey(alert)] = { startsAt: alert.startsAt, labels: alert.labels, seenAt: before?.seenAt ?? now, ...values === undefined ? {} : { values } };
     if (fired.has(key) && alert.startsAt < rule.startsAt) rule.startsAt = alert.startsAt;
   }
   for (const rule of Object.values(rules)) {
@@ -352,22 +361,32 @@ const shownLabels = (labels: Record<string, string>, alertname: string): Record<
  * is the newest shown label set's alertname, since a rule's alertname can carry a count: at 19:12Z that day the entry, open from 10-30, still
  * held "CI staging-proof spec red 3 runs in a row" while the spec that fired was red 2 runs.
  */
-export function alertLine(rule: Tracked, firing: ReadonlyMap<string, FiringAlert>): AlertLine {
+export function alertLine(rule: Tracked, firing: ReadonlyMap<string, FiringAlert>, states?: ReadonlyMap<string, SetState>): AlertLine {
   const live = Object.entries(rule.instances).flatMap(([id, instance]) => firing.has(id) ? [{ alert: firing.get(id)!, instance }] : [])
     .sort((a, b) => a.alert.startsAt.localeCompare(b.alert.startsAt));
   const fresh = live.filter(({ instance }) => instance.seenAt !== undefined && (instance.seenAt >= rule.wokeAt || (rule.job !== undefined && instance.seenAt > rule.job.at)));
   const shown = fresh.length ? fresh : live;
   const alertname = shown.at(-1)?.alert.alertname ?? rule.alertname;
-  const fires = shown.map(({ alert }): AlertFire => ({ labels: shownLabels(alert.labels, alertname), summary: alert.summary, url: alert.url,
-    ...alert.values ? { values: alert.values } : {} }));
-  return { rule: rule.rule, alertname, startsAt: rule.startsAt, firedAt: rule.wokeAt, sets: firingSets(rule), fresh: fresh.length > 0, fires };
+  const fires = shown.map(({ alert, instance }): AlertFire => {
+    const ended = states?.get(setKey(alert.labels));
+    return { labels: shownLabels(alert.labels, alertname), summary: alert.summary, url: alert.url, ...instance.values ? { values: instance.values } : {},
+      ...alert.values && alert.values !== instance.values ? { now: alert.values } : {}, ...ended && Number.isFinite(ended.since) && /^(Normal|Recovering)/.test(ended.state) ? { ended } : {} };
+  });
+  const normal = fires.length > 0 && fires.every(fire => fire.ended?.state.startsWith("Normal"));
+  return { rule: rule.rule, alertname, startsAt: rule.startsAt, firedAt: rule.wokeAt, sets: firingSets(rule), fresh: fresh.length > 0, fires,
+    ...normal ? { resolvedAt: Math.max(...fires.map(fire => fire.ended!.since)) } : {} };
 }
 
 const labelText = (labels: Record<string, string>): string => Object.entries(labels).map(([name, value]) => `${name}=${value}`).join(", ");
 
-/** One rule in a line of text: its uid, its title when that differs, and since when it fires. */
-export const ruleText = (line: Pick<AlertLine, "rule" | "alertname" | "startsAt" | "sets">): string =>
-  `${line.rule} (${ruleIn(line.rule, line.alertname)}firing since ${minute(line.startsAt)}${line.sets > 1 ? `, ${line.sets} label sets` : ""})`;
+/** One rule in a line of text: its uid, its title when that differs, and since when it fires, or when it fired and resolved. */
+export const ruleText = (line: Pick<AlertLine, "rule" | "alertname" | "startsAt" | "sets" | "resolvedAt">): string =>
+  `${line.rule} (${ruleIn(line.rule, line.alertname)}${line.resolvedAt === undefined ? `firing since ${minute(line.startsAt)}`
+    : `fired at ${minute(line.startsAt)}, resolved at ${minute(line.resolvedAt)}`}${line.sets > 1 ? `, ${line.sets} label sets` : ""})`;
+
+/** What Grafana says of a label set that no longer alerts: Normal since the time it resolved, or Recovering since its condition cleared. */
+const endedText = (ended: SetState): string => ended.state.startsWith("Normal") ? `  Resolved at ${minute(ended.since)} (Grafana: ${ended.state}).`
+  : `  Grafana reads it ${ended.state} since ${minute(ended.since)}, so its condition no longer holds.`;
 
 /**
  * Each rule a triage job takes, with the labels, summary, values and Grafana link of each label set of its fire: the rule list of a Prime
@@ -375,7 +394,8 @@ export const ruleText = (line: Pick<AlertLine, "rule" | "alertname" | "startsAt"
  */
 export const alertRulesText = (lines: readonly AlertLine[]): string => lines.map(line => [`- ${ruleText(line)}`, ...line.fires.flatMap(fire => [
   Object.keys(fire.labels).length ? `  ${line.fresh ? "Fired" : "Firing"}: ${labelText(fire.labels)}` : "", fire.summary ? `  Summary: ${fire.summary}` : "",
-  fire.values ? `  Values: ${fire.values}.` : "", fire.url ? `  Grafana: ${fire.url}` : ""])].filter(Boolean).join("\n")).join("\n");
+  fire.values ? `  Values at the fire: ${fire.values}.` : "", fire.now ? `  Values now: ${fire.now}.` : "", fire.ended ? endedText(fire.ended) : "",
+  fire.url ? `  Grafana: ${fire.url}` : ""])].filter(Boolean).join("\n")).join("\n");
 
 /** How a triage job works its rules, in a Prime triage brief and in a pi-host thread's alert message. */
 export const TRIAGE_WORK = "Group the rules by cause first: several rules often fire on one fault. Find each cause from evidence: the Grafana rule and its query, the " +
@@ -463,6 +483,8 @@ export interface AlertBridgeDeps {
   jobTurn?: (job: AlertJob, since: number) => Promise<TurnSince>;
   /** Whether the session waits for a pi-pool slot, so a message to it now would only wait (the agent outbox's `slotPark`). Absent, none does. */
   held?: (session: string) => Promise<boolean>;
+  /** The instances of the alert's rule in Grafana's rule list (`readSetStates`), read at each send, so a fire that waited says it resolved. */
+  setStates?: (alert: FiringAlert) => Promise<ReadonlyMap<string, SetState>>;
   now?: () => number;
   log: (line: string) => void;
 }
@@ -555,9 +577,9 @@ export class AlertBridge {
   }
 
   private async handOff(snapshot: BridgeState, chat: string, keys: readonly string[]): Promise<void> {
-    const lines = keys.map(key => alertLine(snapshot.rules[key]!, this.firing));
     this.handing.add(chat);
     try {
+      const lines = await Promise.all(keys.map(async key => alertLine(snapshot.rules[key]!, this.firing, await this.setStates(snapshot.rules[key]!))));
       const name = await this.give(chat, lines);
       this.sendErrors.delete(chat);
       const at = this.now();
@@ -574,7 +596,7 @@ export class AlertBridge {
       });
     } catch (error) {
       this.sendErrors.set(chat, message(error));
-      this.deps.log(`alerts: send to ${chat.slice(0, 8)} of ${lines.map(line => line.rule).join(", ")}: ${message(error)}; tried again next tick`);
+      this.deps.log(`alerts: send to ${chat.slice(0, 8)} of ${keys.map(key => snapshot.rules[key]!.rule).join(", ")}: ${message(error)}; tried again next tick`);
     } finally { this.handing.delete(chat); }
   }
 
@@ -677,6 +699,17 @@ export class AlertBridge {
     } catch (error) {
       this.deps.log(`alerts: escalation: ${message(error)}; tried again next tick`);
       return state;
+    }
+  }
+
+  /** What Grafana's rule list says of the rule's instances now; a failed read gives none, so the hand-off still goes out. */
+  private async setStates(rule: Tracked): Promise<ReadonlyMap<string, SetState> | undefined> {
+    const alert = Object.keys(rule.instances).map(id => this.firing.get(id)).find(alert => alert !== undefined);
+    if (!alert || !this.deps.setStates) return undefined;
+    try { return await this.deps.setStates(alert); }
+    catch (error) {
+      this.deps.log(`alerts: rule list of ${rule.rule}: ${message(error)}; sent without its state`);
+      return undefined;
     }
   }
 
@@ -787,19 +820,36 @@ export function parseRuleStates(value: unknown): Map<string, RuleState> {
 export const setKey = (labels: Record<string, string>): string =>
   Object.entries(labels).filter(([name, value]) => !name.startsWith("__") && value !== "").sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => `${name}=${value}`).join(", ");
 
-/** The label sets (`setKey`) of the instances of rule `uid` that a Grafana rule list holds Pending. */
-export function parsePendingSets(value: unknown, uid: string): Set<string> {
+/**
+ * One instance of a rule in Grafana's rule list: its state, such as "Alerting", "Recovering", "Pending" or "Normal (NoData)", and since when
+ * it holds that state (`activeAt`). On 11-10 viewer-wall-walls-spike's instance read Normal with activeAt 05:34:30Z, the time its state
+ * history put it back to Normal, and crawler-prod-pg-xmin-horizon's read Recovering with activeAt 05:47:40Z, the time it went Recovering.
+ */
+export interface SetState { state: string; since: number }
+
+/** The instances of rule `uid` in a Grafana rule list, by label set (`setKey`). */
+export function parseSetStates(value: unknown, uid: string): Map<string, SetState> {
   const groups = isRecord(value) && isRecord(value.data) && Array.isArray(value.data.groups) ? value.data.groups : null;
   if (!groups) throw new Error("Grafana's rule list has no groups");
   const rules = groups.flatMap(group => isRecord(group) && Array.isArray(group.rules) ? group.rules : []).filter(rule => isRecord(rule) && rule.uid === uid);
   const alerts = rules.flatMap(rule => isRecord(rule) && Array.isArray(rule.alerts) ? rule.alerts : []);
-  return new Set(alerts.flatMap(alert => isRecord(alert) && typeof alert.state === "string" && alert.state.startsWith("Pending") && isRecord(alert.labels) ?
-    [setKey(Object.fromEntries(Object.entries(alert.labels).filter((entry): entry is [string, string] => typeof entry[1] === "string")))] : []));
+  return new Map(alerts.flatMap(alert => isRecord(alert) && typeof alert.state === "string" && isRecord(alert.labels) ?
+    [[setKey(strings(alert.labels)), { state: alert.state, since: typeof alert.activeAt === "string" ? Date.parse(alert.activeAt) : NaN }] as const] : []));
 }
 
-/** The Pending label sets of `alert`'s rule, read by its title: 11 KB for crawler-prod-kafka-writer-lag against 3.9 MB for every rule with its instances on 11-05. */
+const pendingSets = (states: ReadonlyMap<string, SetState>): Set<string> => new Set([...states].flatMap(([key, { state }]) => state.startsWith("Pending") ? [key] : []));
+
+/** The label sets (`setKey`) of the instances of rule `uid` that a Grafana rule list holds Pending. */
+export const parsePendingSets = (value: unknown, uid: string): Set<string> => pendingSets(parseSetStates(value, uid));
+
+/** The instances of `alert`'s rule, read by its title: 11 KB for crawler-prod-kafka-writer-lag against 3.9 MB for every rule with its instances on 11-05. */
+export async function readSetStates(configFile: string, alert: FiringAlert): Promise<Map<string, SetState>> {
+  return parseSetStates(await readGrafana(configFile, `/api/prometheus/grafana/api/v1/rules?rule_name=${encodeURIComponent(alert.alertname)}`), ruleOf(alert));
+}
+
+/** The Pending label sets of `alert`'s rule. */
 export async function readPendingSets(configFile: string, alert: FiringAlert): Promise<Set<string>> {
-  return parsePendingSets(await readGrafana(configFile, `/api/prometheus/grafana/api/v1/rules?rule_name=${encodeURIComponent(alert.alertname)}`), ruleOf(alert));
+  return pendingSets(await readSetStates(configFile, alert));
 }
 
 /**
