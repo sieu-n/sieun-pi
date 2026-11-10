@@ -49,6 +49,15 @@ its own reference. It does three things.
 10. pi-host threads. Prime's daemon knows no pi-host thread (c93), so a root's agent_observe.list_agents lists pi-host's threads as
    siblings too, and a sibling send to a thread's full id, or to its exact name when no Prime root here or on another box has that name,
    goes to the thread as an agent.message input (src/pi-thread-message.ts). A name that names a Prime root and a thread raises with both ids.
+11. A report waits for its touched tests. In auto-sns-agent's shared checkout commit.mjs queues the unit tests a commit touches for a
+   detached runner, which hands a red back at the session's next tool call, but a job commits, reports and ends its turn first: in the 7 d
+   to 11-09, 251 of 418 touched-test reds were never read, and 30 of the 79 culprit commits a d4 call named had a red touched-tests run. So
+   a job's report, a send to its parent or a create_session job's send to the chat chat-jobs.json files it under, first runs that checkout's
+   `convex-save-check.mjs wait` when the session's folder there holds a queued, running or unread touched-tests result or a red it read.
+   A red refuses the send with the failing tests, a timeout or a pass sends with the wait's text as the note, and a wait that fails sends as
+   it came. Any other send, such as a chat's message to another chat or a job's message to a sibling it works with, goes out at once,
+   because only the report ends the job's last chance to read its red. The job reads its own result before it ends, so nothing wakes a
+   thread (owner rule c114); the VP of CI approved the gate as p725.
 """
 
 import asyncio
@@ -64,7 +73,7 @@ import uuid
 
 CHECK = os.path.join(os.path.dirname(os.path.realpath(__file__)), "message-limit-check.ts")
 SEND_ONCE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "send-once.ts")
-VERSION = 27
+VERSION = 28
 BRIEFS = "spawn-briefs"
 SAFE_ID = re.compile(r"^[\w-]{1,128}$")
 SEND_TIMEOUT = 'waiting for the Prime Agent daemon response to "send_message"'
@@ -547,6 +556,102 @@ def plain_request():
     return bare
 
 
+SAVE_CHECK = os.path.join("scripts", "repo", "agent", "convex-save-check.mjs")
+SHARED_MARKER = os.path.join(".git", "agent-shared-checkout")
+TESTS_RED = 1
+TESTS_LATE = 3
+BATCH_FILE = re.compile(r"^(?:batch|queue)\.\d+$")
+WAIT_NOTE = "agent_message: this report waits for the touched tests of your commits first (point 11)."
+TESTS_REFUSED = (
+    "agent_message: not sent. The touched tests of your own commits are red, and the dev push run would go red on them. Fix them in a new "
+    "commit and send the report again, which waits for that commit's run.\n\n{text}"
+)
+
+
+class TestsRed(RuntimeError):
+    """A report that the red touched tests of the sender's own commits refuse (point 11)."""
+
+
+def commit_session():
+    """The session id commit.mjs files this kernel's commits under, read as kernel-journal.py's session_id reads it."""
+    found = re.findall(r"/session-artifacts/([^/]+)/harness$", os.environ.get("RLM_HARNESS_STATE_DIR", ""))
+    if found:
+        return found[-1]
+    ids = {os.environ.get(name) for name in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_HOST_SESSION_ID")} - {None, ""}
+    return ids.pop() if len(ids) == 1 else None
+
+
+def shared_checkout():
+    """The box's shared auto-sns-agent checkout, whose .git/agent-shared-checkout names it, as kernel-journal.py finds it; else None."""
+    root = os.path.realpath(os.environ.get("GLOBAL_RULES_AUTO_SNS_AGENT") or os.path.expanduser("~/Documents/Github/auto-sns-agent"))
+    try:
+        with open(os.path.join(root, SHARED_MARKER), encoding="utf-8") as f:
+            return root if f.readline().strip() == root else None
+    except OSError:
+        return None
+
+
+def tests_owed(folder):
+    """Whether a session's convex-save-check folder holds a queue, a runner's batch or an unread result, or a touched-tests red it read."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return False
+    if any(name in ("queue", "result.json") or BATCH_FILE.match(name) for name in names):
+        return True
+    try:
+        with open(os.path.join(folder, "taken.json"), encoding="utf-8") as f:
+            return (json.load(f).get("tests") or {}).get("ok") is False
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+async def is_report(real, payload):
+    """Whether a send is a job's report: any send to the parent, or a root's send to the chat that chat-jobs.json files it under."""
+    role = payload.get("receiver_role")
+    if role == "parent":
+        return True
+    root, folder = own_root(), data_dir()
+    if role != "sibling" or not root or not isinstance(folder, str):
+        return False
+    try:
+        with open(os.path.join(folder, "chat-jobs.json"), encoding="utf-8") as f:
+            jobs = json.load(f).get("jobs") or {}
+    except (OSError, ValueError, AttributeError):
+        return False
+    entry = jobs.get(root)
+    if not isinstance(entry, dict):
+        roster = await real("agent_observe.list")
+        me = roster.get("current") if isinstance(roster, dict) else None
+        name = str(me.get("sessionName") or "").strip() if isinstance(me, dict) else ""
+        entry = jobs.get(name) if name else None
+    chat = entry.get("chat") if isinstance(entry, dict) else None
+    return isinstance(chat, str) and chat.strip().lower() == str(payload.get("receiver_name") or "").strip().lower()
+
+
+async def tests_gate(real, payload):
+    """Point 11: the note a report goes out with after its touched tests ended, or None; raises TestsRed when they are red."""
+    session, root = commit_session(), shared_checkout()
+    if not session or not root or not SAFE_ID.match(session):
+        return None
+    if not tests_owed(os.path.join(root, ".cache", "convex-save-check", session)) or not await is_report(real, payload):
+        return None
+    print(WAIT_NOTE)
+    proc = await asyncio.create_subprocess_exec(shutil.which("node") or "node", os.path.join(root, SAVE_CHECK), "wait", "--root", root, "--session",
+                                                session, cwd=root, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                                                stderr=asyncio.subprocess.PIPE)
+    out, err = await proc.communicate()
+    text = out.decode(errors="replace").strip()
+    if proc.returncode == TESTS_RED:
+        raise TestsRed(TESTS_REFUSED.format(text=text))
+    if proc.returncode == TESTS_LATE:
+        return f"{text} This report went out before their verdict."
+    if proc.returncode not in (0, 4):
+        tail = (err.decode(errors="replace").strip().splitlines() or [f"exit {proc.returncode}"])[-1]
+        return f"agent_message: the touched tests wait failed ({tail}), so this report went out as it came."
+    return text or None
+
+
 CALLS = "prime-calls.jsonl"
 CALL_TARGETS = ("sessionId", "session_id", "activeSessionId", "receiver_name", "name", "receiver_role")
 
@@ -626,6 +731,14 @@ async def request(request_type, payload=None, *args, **kwargs):
         return with_note(await real(request_type, payload, *args, **kwargs), note)
     started = earlier["since"] if earlier else time.time()
     if direct:
+        try:
+            note = " ".join(filter(None, [note, await tests_gate(real, payload)])) or None
+        except TestsRed as error:
+            UNCONFIRMED.pop(key, None)
+            log_call(request_type, payload, time.monotonic(), "refused", error, receipt="refused", state="touched_red")
+            raise
+        except Exception as error:
+            print(f"user-history: the touched tests check failed ({error}); sent as it came", file=sys.stderr)
         try:
             await trial_wall(real, payload)
         except TrialRefused as error:
