@@ -2168,13 +2168,10 @@
     "port": 5174
    },
    {
-    "port": 5180
-   },
-   {
     "port": 5179
    }
   ],
-  "note": "search, virev-demo and blog; the blog serves on 5189 on the Mac and 5179 on the box."
+  "note": "search and blog on both, and virev-demo on the Mac only; the blog serves on 5189 on the Mac and 5179 on the box. The box runs no 5180: demo work runs only on the owner's Mac (owner, 2026-10-19; auto-sns-agent scripts/dev/dev-apps.cjs macOnly), and a box 5180 served a stale tree that day."
  },
  {
   "id": "dev-server-supervision",
