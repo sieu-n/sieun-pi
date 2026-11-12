@@ -46,6 +46,14 @@ test("slow_route_p90_s is the slowest p90 of Bing, Google Play and News over eve
   assert.equal(quiet.metrics.slow_route_p90_s, UNMEASURED);
 });
 
+test("a route that answers only 5xx reads unknown, never fast (Bing during the GeoNode outage, 11-11 UTC)", () => {
+  const down = report({ completed: 0, failed: 0, failed5xx: 0 }, [], { start: "2026-11-11 00:00:00" }, null, [
+    { endpoint: "search.bing", calls: 0, p90Ms: null, failed5xx: 94 }, { endpoint: "crawl.google.play_app", calls: 93, p90Ms: 1_072 },
+    { endpoint: "crawl.google.news", calls: 92, p90Ms: 1_146 }]);
+  assert.equal(down.metrics.slow_route_p90_s, UNMEASURED);
+  assert.match(down.flagged![1]!.excerpt, /search\.bing 0 calls p90 none, 94 answered 5xx/);
+});
+
 test("a rerun of a closed day reads quiet until the next UTC midnight, while the day's first run reads live (d4, 11-05)", () => {
   const metrics: DutyMetric[] = [{ key: "slow_route_p90_s", label: "Slowest p90", op: "<=", target: 5, unit: "s" }];
   const counts = { completed: 0, failed: 0, failed5xx: 0 };

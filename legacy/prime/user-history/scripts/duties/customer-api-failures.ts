@@ -17,6 +17,7 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * with no api_request event at all as detail; it judges nothing, and a reader checks Vercel's request logs for that stretch.
  * Each count and each 5xx row is by event uuid, because PostHog stored one event twice on 11-09 (req_cd46890275732bd3e299db679e4774ee at
  * 07:45:13Z and 07:46:53Z), 25 such rows in 14 days of 147,178 api_request events.
+ * Only answered calls count in a route's p90, so a route that fails fast reads unknown and never on target.
  * slow_route_p90_s keeps board goal p111 met (owner 10-30: "이거 왜 20초 30초나 걸리냐"): the slowest p90 durationMs of the day's calls to
  * SLOW_ROUTES by every org, internal ones included, because no is_internal = 0 org called them from 10-20 to 11-02 and the owner's own calls come
  * from internal orgs; 3.30 s after crawler p1381 at 20:36Z on 11-02 against 5 s, while Bing's p90 over all orgs read 30.7 s from 00:00 to 20:42Z that day.
@@ -38,8 +39,9 @@ export const MIN_ROUTE_CALLS = 20;
 
 /** The day's customer calls; `lastAt` is the newest one's epoch ms, absent with no call. */
 export interface DayCounts { completed: number; failed: number; failed5xx: number; lastAt?: number }
-/** One operation's calls of the day that carry durationMs, their p90 in ms (null with no call) and the newest one's epoch ms. */
-export interface RouteLatency { endpoint: string; calls: number; p90Ms: number | null; lastAt?: number }
+/** One operation's answered calls of the day (api_request_completed), their p90 durationMs (null with none), the newest one's epoch ms,
+ *  and the day's 5xx answers, which count in no p90: on 11-10 to 11-12 every Bing call answered 503 in about 0.35 s while GeoNode was down. */
+export interface RouteLatency { endpoint: string; calls: number; p90Ms: number | null; lastAt?: number; failed5xx?: number }
 export interface FailedCall { at: string; endpoint: string; status: number; errorCode: string; handle: string | null; requestId: string; orgId: string }
 
 /** The last full UTC day before `now`, as [start, end) ISO strings without the zone, the form HogQL's toDateTime reads. */
@@ -58,13 +60,14 @@ const routeP90 = (rows: RouteLatency[], endpoint: string): number => {
   return !row || row.calls < MIN_ROUTE_CALLS || row.p90Ms === null ? UNMEASURED : Math.round(row.p90Ms / 10) / 100;
 };
 
-/** The slowest p90 of SLOW_ROUTES in seconds; a route under MIN_ROUTE_CALLS makes it UNMEASURED, so a quiet route never passes. */
+/** The slowest p90 of SLOW_ROUTES in seconds over answered calls; a route under MIN_ROUTE_CALLS of them makes it UNMEASURED, so a quiet
+ *  or a failing route never passes. */
 export const slowRouteP90 = (routes: RouteLatency[]): number => Math.max(...SLOW_ROUTES.map(endpoint => routeP90(routes, endpoint)));
 
 const latencyLine = (rows: RouteLatency[]): string => SLOW_ROUTES.map(endpoint => {
   const row = rows.find(candidate => candidate.endpoint === endpoint);
   const p90 = row?.p90Ms === null || row?.p90Ms === undefined ? "none" : `${Math.round(row.p90Ms / 10) / 100} s`;
-  return `${endpoint} ${row?.calls ?? 0} calls p90 ${p90}`;
+  return `${endpoint} ${row?.calls ?? 0} calls p90 ${p90}${row?.failed5xx ? `, ${row.failed5xx} answered 5xx` : ""}`;
 }).join(", ");
 
 /** The day's metrics and one flagged slice per 5xx, grouped in the excerpt by operation and error code. */
@@ -132,10 +135,14 @@ export async function measure(now: number): Promise<PrecheckOutput> {
       at: String(at), endpoint: String(endpoint), status: Number(status), errorCode: String(errorCode ?? ""), handle: handleOf(path as string | null),
       requestId: String(requestId ?? ""), orgId: String(orgId ?? ""),
     }));
-    const durations = `select properties.endpoint, count(), quantileExact(0.9)(toFloat(properties.durationMs)), max(timestamp) from events where ${calls} and ${window} ` +
+    // HogQL has no quantileExactIf, and quantileExact skips nulls.
+    const answered = "event = 'api_request_completed'";
+    const durations = `select properties.endpoint, countIf(${answered}), quantileExact(0.9)(if(${answered}, toFloat(properties.durationMs), null)), ` +
+      `maxIf(timestamp, ${answered}), countIf(event = 'api_request_failed' and toInt(properties.status) >= 500) from events where ${calls} and ${window} ` +
       `and properties.endpoint in (${SLOW_ROUTES.map(endpoint => `'${endpoint}'`).join(", ")}) and properties.durationMs is not null`;
-    const latencyRows = (rows: unknown[][]): RouteLatency[] => rows.map(([endpoint, count, p90, last]) =>
-      ({ endpoint: String(endpoint), calls: Number(count), p90Ms: p90 === null || p90 === undefined ? null : Number(p90), ...inDay(last) }));
+    const latencyRows = (rows: unknown[][]): RouteLatency[] => rows.map(([endpoint, count, p90, last, failed5xx]) =>
+      ({ endpoint: String(endpoint), calls: Number(count), p90Ms: p90 === null || p90 === undefined ? null : Number(p90), ...inDay(last),
+        failed5xx: Number(failed5xx ?? 0) }));
     const latency = latencyRows(await hog(key, `${durations} group by 1`));
     const gapMin = gap[0]?.[0] === null || gap[0]?.[0] === undefined ? null : Number(gap[0][0]);
     return report({ completed: Number(completed), failed: Number(failed), failed5xx: Number(failed5xx), ...inDay(lastCall) }, failedCalls, day, gapMin, latency);
