@@ -84,6 +84,15 @@ class RunTests(unittest.TestCase):
             )
             self.assertNotIn("Result ", out)
 
+    def test_a_crawler_503_reads_as_google_down_and_a_portal_503_keeps_its_own_text(self):
+        """Prod 2026-11-10 to 11-12: the crawler refused every Google search while it held its proxy supply."""
+        held = json.dumps({"error": {"code": "upstream_error", "message": "upstream temporarily unavailable"}})
+        out, _ = self.run_with(lambda request: httpx.Response(503, text=held))
+        self.assertIn("Google is unavailable on the Virev search backend right now (HTTP 503: upstream temporarily unavailable).", out)
+        keys = json.dumps({"error": {"code": "auth_unavailable", "message": "API key checks are temporarily unavailable"}})
+        out, _ = self.run_with(lambda request: httpx.Response(503, text=keys))
+        self.assertIn("Virev search error (503): API key checks are temporarily unavailable", out)
+
     def test_engine_is_not_a_parameter(self):
         with self.assertRaises(TypeError):
             asyncio.run(websearch.run("q", engine="bing"))

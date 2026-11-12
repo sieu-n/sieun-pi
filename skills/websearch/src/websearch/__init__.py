@@ -107,6 +107,13 @@ def _error_message(body_text: str) -> str:
         return body_text[:300]
 
 
+def _error_code(body_text: str) -> str:
+    try:
+        return str(json.loads(body_text)["error"]["code"])
+    except (ValueError, KeyError, TypeError):
+        return ""
+
+
 def _friendly_http_error(status: int, body_text: str) -> str:
     message = _error_message(body_text)
     if status in (401, 403):
@@ -120,7 +127,10 @@ def _friendly_http_error(status: int, body_text: str) -> str:
             f"Virev API balance is empty ({status}): {message}\n"
             "Top up the balance at api.virev.ai to keep searching."
         )
-    if status in (429, 502, 504):
+    # A 503 `upstream_error` is the crawler's own refusal, as while it holds its proxy supply
+    # ("upstream temporarily unavailable"). The portal's other 503s (auth_unavailable,
+    # rate_limit_unavailable, billing_unavailable) are its Convex calls and keep their own text.
+    if status in (429, 502, 504) or (status == 503 and _error_code(body_text) == "upstream_error"):
         # A 429 is Google refusing the crawler's exits. A 502 or 504 can also be the
         # crawler itself being down: on 2026-10-15 a prod deploy hold stopped it from
         # 09:16Z to 10:24Z and every call came back as 502 "Upstream error".
