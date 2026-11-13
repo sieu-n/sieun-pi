@@ -49,9 +49,26 @@ type Summary = { sessionId?: string; activeSessionId?: string; sessionFile?: str
 
 const matches = (session: Summary, id: string): boolean => session.sessionId === id || session.activeSessionId === id || session.id === id || session.sessionId?.startsWith(id) === true;
 
+type ListCommand = { type: "list"; all?: true };
+
 /**
- * The session's file on `host`, from the chat service's copy of that host's list (`copyPath`) when the copy names it, else from the daemon's
- * full list: on 10-18 each `hosts transcript mac` listed the Mac whole, 38.6 MB over the relay, to find one path.
+ * The file of session `id` from the daemon's live list, and only when that does not name it from its full list. The full list read 11,228
+ * saved sessions on us-metal02 on 11-13, 97 MB and about 13 CPU-s of the supervisor's one thread, and a herd of them held every other daemon
+ * call up to 657 s, while a transcript is mostly read from a session that runs.
+ */
+export async function listedSessionFile(request: (command: ListCommand) => Promise<unknown>, id: string, host: string): Promise<string> {
+  for (const command of [{ type: "list" }, { type: "list", all: true }] as const) {
+    const data = await request(command) as { sessions?: Summary[] } | Summary[];
+    const sessions = Array.isArray(data) ? data : data.sessions ?? [];
+    const file = sessions.find(session => matches(session, id))?.sessionFile;
+    if (file) return file;
+  }
+  throw new Error(`no session ${id} on ${host}`);
+}
+
+/**
+ * The session's file on `host`, from the chat service's copy of that host's list (`copyPath`) when the copy names it, else from the daemon
+ * (`listedSessionFile`): on 10-18 each `hosts transcript mac` listed the Mac whole, 38.6 MB over the relay, to find one path.
  */
 async function sessionFile(host: Host, registry: Awaited<ReturnType<typeof loadHosts>>, id: string): Promise<string> {
   if (id.startsWith("/")) return id;
@@ -60,13 +77,11 @@ async function sessionFile(host: Host, registry: Awaited<ReturnType<typeof loadH
   if (known) return known;
   const { client, close } = await clientFor(host, registry);
   try {
-    const response = await client.request({ type: "list", all: true } as Parameters<DaemonClient["request"]>[0], 60_000, { recoverable: false });
-    if (!response.success) throw new Error(response.error);
-    const data = response.data as { sessions?: Summary[] } | Summary[];
-    const sessions = Array.isArray(data) ? data : data.sessions ?? [];
-    const match = sessions.find(session => matches(session, id));
-    if (!match?.sessionFile) throw new Error(`no session ${id} on ${host.name}`);
-    return match.sessionFile;
+    return await listedSessionFile(async command => {
+      const response = await client.request(command as Parameters<DaemonClient["request"]>[0], 60_000, { recoverable: false });
+      if (!response.success) throw new Error(response.error);
+      return response.data;
+    }, id, host.name);
   } finally { await close(); }
 }
 
