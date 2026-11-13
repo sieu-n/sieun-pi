@@ -465,7 +465,9 @@ def nudge(r, why, shared_worker=False, repeats=0, dry_run=False):
         if stop.returncode != 0 and r['pid']:
             # `stop` times out when the worker is wedged mid-request; kill it directly, but only
             # when this session is the sole tenant of that worker (subagents share their parent's).
-            tenants = [z for z in json.loads(pa('list', '--all', '--json').stdout)['sessions']
+            # Only a row a worker holds has a workerPid, so the live list names every tenant; the
+            # full list read 11,228 saved sessions (97 MB, about 13 CPU-s of the supervisor) on 11-13.
+            tenants = [z for z in json.loads(pa('list', '--json').stdout)['sessions']
                        if z.get('workerPid') == r['pid'] and z.get('sessionId') != r['sid']]
             # safe to kill when nobody else is using this worker, or only this session's idle children
             sole = all(z.get('activity') == 'idle' for z in tenants)
