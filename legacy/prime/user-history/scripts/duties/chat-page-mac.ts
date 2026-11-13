@@ -135,6 +135,19 @@ export function unprimedCause(frame: SwitchFrame | null): string {
 interface SessionEntry { type?: string; timestamp?: string; message?: { role?: string; content?: unknown; stopReason?: string; errorMessage?: string; diagnostics?: unknown } }
 
 /**
+ * When a failed turn's pool slot comes: Prime's credential wait marker, or pi-pool's "waits for its slot at <iso>" in the error text, which
+ * the Mac's Prime wrote on 11-12 and 11-13 ("API key for provider ... temporarily unavailable ...: pi-pool: this session waits for its slot
+ * at 2026-11-12T18:19:30.000Z") with no marker, so the reading named a slot wait as a failed reply.
+ */
+export function poolSlotAt(message: { errorMessage?: unknown; diagnostics?: unknown }): number | null {
+  const marked = credentialWaitAt(message);
+  if (marked !== null) return marked;
+  const said = typeof message.errorMessage === "string" ? /waits for its slot at (\d{4}-\d\d-\d\dT[\d:.]+Z)/.exec(message.errorMessage) : null;
+  const at = said ? Date.parse(said[1]!) : Number.NaN;
+  return Number.isFinite(at) ? at : null;
+}
+
+/**
  * Extra round trips per send: the box's wait from the send to the first reply frame, less the Mac's own wait from its user entry to its reply
  * entry, over the round trip. A reply that is an error, such as pi-pool's slot wait, still crossed the same path, so it is timed and listed;
  * a send whose entries are missing is listed and left out. The create send is listed and left out of the median, since its wait holds the
@@ -149,7 +162,7 @@ export function replyExtra(sends: readonly SendTiming[], macSession: string, rtt
     const reply = user < 0 ? undefined : entries.slice(user + 1).find(entry => entry.message?.role === "assistant");
     if (!reply) { reading.flagged.push({ at, kind: "reply_unmatched", excerpt: `${send.marker}: the Mac's session file has no ${user < 0 ? "user entry" : "reply"} for it` }); continue; }
     // A dhx.3 Prime ends a turn the pool holds on its credential wait marker, a wait for the slot and no failed reply.
-    const waitAt = reply.message?.stopReason === "error" ? credentialWaitAt(reply.message) : null;
+    const waitAt = reply.message?.stopReason === "error" ? poolSlotAt(reply.message) : null;
     if (waitAt !== null) reading.flagged.push({ at, kind: "reply_pool_wait", excerpt: `${send.marker}: the Mac's turn waits for its pi-pool slot until ${new Date(waitAt).toISOString()}, timed as its reply` });
     else if (reply.message?.stopReason === "error") reading.flagged.push({ at, kind: "reply_error", excerpt: `${send.marker}: the Mac's turn ended in an error, timed as its reply: ${reply.message.errorMessage ?? "no message"}`.slice(0, 600) });
     const own = Date.parse(reply.timestamp ?? "") - Date.parse(entries[user]!.timestamp ?? "");
@@ -292,7 +305,8 @@ export async function sendProbe(config: ChatConfig, firstReplyMs = FIRST_REPLY_M
     if (!res.ok) throw new Error(`${route} ${res.status} ${text.slice(0, 200)}`);
     return JSON.parse(text) as Record<string, unknown>;
   };
-  type Frame = { event?: string; sub?: number; data?: { type?: string; event?: { type?: string; message?: { role?: string; content?: unknown; stopReason?: string } }; snapshot?: { messages?: { role?: string; stopReason?: string }[]; streaming?: boolean } } };
+  type Message = { role?: string; content?: unknown; stopReason?: string; errorMessage?: unknown; diagnostics?: unknown };
+  type Frame = { event?: string; sub?: number; data?: { type?: string; event?: { type?: string; message?: Message }; snapshot?: { messages?: Message[]; streaming?: boolean } } };
   const ws = new WebSocket(`${base.replace("http", "ws")}api/ws?token=${config.csrfToken}`, { headers: { Origin: origin } });
   const frames: { at: number; frame: Frame }[] = [];
   ws.on("message", data => { try { frames.push({ at: Date.now(), frame: JSON.parse(data.toString()) as Frame }); } catch { /* a frame that is not JSON is no thread event */ } });
@@ -341,18 +355,25 @@ export async function sendProbe(config: ChatConfig, firstReplyMs = FIRST_REPLY_M
     // answered with a snapshot that already held the slot-wait error, and follow-ups sent behind its retry read up to 89 round trips.
     const failed = (from: number, to: number) => {
       let error = false;
+      let slotAt: number | null = null;
       for (const { frame } of frames.slice(from, to + 1)) {
         if (!mine(frame)) continue;
-        if (frame.data?.type === "snapshot") {
-          const last = (frame.data.snapshot?.messages ?? []).filter(message => message.role === "assistant").at(-1);
-          if (last) error = last.stopReason === "error";
-        } else if (kind(frame) === "message_end" && frame.data?.event?.message?.role === "assistant") error = frame.data.event.message.stopReason === "error";
+        const message = frame.data?.type === "snapshot" ? (frame.data.snapshot?.messages ?? []).filter(message => message.role === "assistant").at(-1)
+          : kind(frame) === "message_end" && frame.data?.event?.message?.role === "assistant" ? frame.data.event.message : undefined;
+        if (message) {
+          error = message.stopReason === "error";
+          slotAt = error ? poolSlotAt(message) : null;
+        }
         // A retry that starts holds the turn, whatever its last message said; the turn after it decides.
         else if (kind(frame) === "auto_retry_start") error = true;
       }
-      return error;
+      return { error, slotAt };
     };
-    for (let from = first.index, turn = end.index; failed(from, turn); ) {
+    for (let from = first.index, turn = end.index; ; ) {
+      const { error, slotAt } = failed(from, turn);
+      if (!error) break;
+      // A slot past the bound cannot come in this probe: on 11-12 at 10:36Z the Mac's pool named 18:19Z, and the probe sat its whole 10 min.
+      if (slotAt !== null && slotAt > createdAt + firstReplyMs) return { id, sends };
       const left = createdAt + firstReplyMs - Date.now();
       const next = left > 0 ? await until(turn + 1, frame => mine(frame) && kind(frame) === "agent_end", left, "turn after the slot wait").catch(() => null) : null;
       if (!next) return { id, sends };

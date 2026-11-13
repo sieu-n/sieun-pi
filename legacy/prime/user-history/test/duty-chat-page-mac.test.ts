@@ -193,6 +193,17 @@ test("a Mac turn that ends on dhx.3's credential wait marker is timed and listed
   assert.match(reading.flagged[0]!.excerpt, /waits for its pi-pool slot until 2026-10-20T17:32:00.000Z/);
 });
 
+test("a Mac turn whose error text names pi-pool's slot time, with no marker, is listed as a pool wait (11-12 10:36Z)", () => {
+  const said = { stopReason: "error", errorMessage: "API key for provider \"anthropic\" is temporarily unavailable until 2026-11-12T18:19:30.000Z: waiting for an account slot pi-pool: this session waits for its slot at 2026-11-12T18:19:30.000Z. Try again in 1 minute." };
+  const session = [
+    entry("user", "2026-11-12T10:36:30.000Z", "chat page probe ffff. Reply with exactly: ok"),
+    entry("assistant", "2026-11-12T10:36:31.400Z", "", said),
+  ].join("\n");
+  const reading = replyExtra([{ marker: "chat page probe ffff.", sentAt: 1_000, firstTokenAt: 1_000 + 1_400 + 300 }], session, 190, at);
+  assert.deepEqual(reading.flagged.map(item => item.kind), ["reply_pool_wait", "reply"]);
+  assert.match(reading.flagged[0]!.excerpt, /until 2026-11-12T18:19:30.000Z/);
+});
+
 test("the create send is timed from before its POST, listed as a new thread and left out of the median", async t => {
   const server = createServer((req, res) => {
     let body = "";
