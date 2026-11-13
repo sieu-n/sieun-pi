@@ -20,6 +20,14 @@ WRITER = """
 process.on("uncaughtException", () => {});
 setInterval(() => { process.stdout.write("x".repeat(65536)); process.stderr.write("y".repeat(65536)); }, 1);
 """
+KEEPER = """
+process.stderr.on("error", () => {});
+let writes = 0;
+const timer = setInterval(() => {
+  process.stderr.write("y".repeat(65536));
+  if (++writes === 50) { clearInterval(timer); require("fs").writeFileSync(process.argv[2], "alive"); }
+}, 1);
+"""
 
 
 def loaded(base: dict) -> dict:
@@ -53,6 +61,15 @@ class KernelNode(unittest.TestCase):
                               env=self.env, capture_output=True, text=True, timeout=20)
         self.assertLess(time.monotonic() - started, 15)
         self.assertEqual(done.stdout.strip(), "0")
+
+    def test_a_writer_that_handles_its_own_stream_errors_outlives_its_reader(self) -> None:
+        # A detached Prime daemon worker ignores EPIPE on stderr to outlive its supervisor; on 11-13 the preload ended such workers.
+        keeper = Path(self.tmp) / "keeper.cjs"
+        keeper.write_text(KEEPER)
+        alive = Path(self.tmp) / "alive"
+        subprocess.run(["sh", "-c", f'node "{keeper}" "{alive}" 2>&1 >/dev/null | head -c 10 >/dev/null'], env=self.env,
+                       capture_output=True, text=True, timeout=20)
+        self.assertEqual(alive.read_text() if alive.exists() else "", "alive")
 
     def test_full_output_still_reaches_a_reader_that_stays(self) -> None:
         done = subprocess.run(["sh", "-c", "node -e 'console.log(\"a\".repeat(200000))' | wc -c"], env=self.env,
