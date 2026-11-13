@@ -205,16 +205,26 @@ export function weeklyClients(input: WeekInputs): PrecheckOutput {
     flagged.push({ at, kind: "source_error", excerpt: "otel.otel_logs holds no prod call to the public database routes in the 7 days, so the Vercel drain or the query is broken" });
     return { metrics: {}, flagged };
   }
-  const clients = new Map<string, Client>();
-  for (const row of rows) {
+  const keyed = rows.flatMap(row => {
     const asn = asns.get(row.ip);
     const key = clientKey(row, judge, asn);
-    if (!key) continue;
+    return key ? [{ row, asn, key }] : [];
+  });
+  const replayed = new Map(keyed.filter(({ row }) => row.state !== "denied").map(entry => [entry, input.replay?.(entry.row, entry.asn) ?? false]));
+  /**
+   * The (client, IP) pairs whose no-referer entry page the published rules now deny. A browser there never gets that page's HTML, so it never
+   * loads the images and APIs the page refers to: on 11-13 every /api/img call the replay left open came with a virev.ai page referer from an IP
+   * whose first call was such a page (36.212.247.234, Windows Chrome 148, 8 pages then 8 images within 9 s).
+   */
+  const shut = new Set(keyed.filter(entry => entry.row.page && entry.row.refk === "none" && replayed.get(entry)).map(({ row, key }) => `${key}\t${row.ip}`));
+  const clients = new Map<string, Client>();
+  for (const entry of keyed) {
+    const { row, asn, key } = entry;
     const client = clients.get(key) ?? { calls: 0, denied: 0, lastDenied: 0, pages: 0, ips: new Set<string>(), asns: new Map(), last: 0, ua: row.ua, shapes: 0, covered: 0, gap: "" };
     if (row.state === "denied") { client.denied += row.calls; client.lastDenied = Math.max(client.lastDenied, row.last); clients.set(key, client); continue; }
     client.calls += row.calls;
     client.shapes += 1;
-    if (input.replay?.(row, asn)) client.covered += 1;
+    if (replayed.get(entry) || (!row.page && row.refk === "page" && shut.has(`${key}\t${row.ip}`))) client.covered += 1;
     else client.gap ||= `${row.path} with referer ${row.refk} from AS${asn?.asn ?? "?"}`;
     if (row.page) client.pages += row.calls;
     client.ips.add(row.ip);

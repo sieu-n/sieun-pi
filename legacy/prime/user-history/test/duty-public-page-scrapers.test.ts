@@ -153,6 +153,10 @@ test("a client counts as blocked once the published deny rules cover every call 
   assert.equal(run(safari).metrics.unblocked_crawlers, 0);
   assert.match(run(safari).flagged!.find(slice => slice.kind === "scraper_client_stopped")!.excerpt, /rules now deny 30 of its 30 passed call shapes/);
   assert.equal(run([...safari, week({ ua: SAFARI, ip: "64.227.101.7", refk: "page", calls: 2 })]).metrics.unblocked_crawlers, 1, "a shape with a referer still gets through");
+  const image = (ip: string) => week({ ua: SAFARI, ip, refk: "page", page: false, path: "/api/img?media=%2Fapi%2Fmedia%2Fx" });
+  assert.equal(run([...safari, image("64.227.101.3")]).metrics.unblocked_crawlers, 0, "an image its page referred to follows a denied entry page from the same IP");
+  assert.equal(run([...safari, image("64.227.102.1")], new Map([...asns, ["64.227.102.1", DO]])).metrics.unblocked_crawlers, 1,
+    "a self-referer image call from an IP with no denied entry page still gets through");
   const fakeGooglebot = week({ ua: GOOGLEBOT, ip: "34.1.2.3", calls: 50 });
   assert.equal(run([fakeGooglebot], new Map([["34.1.2.3", { asn: 396982, name: "GOOGLE-CLOUD-PLATFORM, US", cc: "US" }]])).metrics.unblocked_crawlers, 0);
   assert.equal(run([fakeGooglebot], new Map()).metrics.unblocked_crawlers, 1, "with no ASN the replay also tries AS15169, which the rule spares");
