@@ -137,3 +137,28 @@ test("whole 200 answers of staging /api/img and /api/logo come from disk for the
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("ASIDE_BOX_IMAGES=0 answers crawler pictures with a 204 and no body, so none reaches the server, and every other URL still does", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "box-http-cache-test-"));
+  process.env.BOX_HTTP_CACHE = dir;
+  process.env.ASIDE_BOX_IMAGES = "0";
+  try {
+    const { cacheShared } = await import(`${CACHE}?t=${Date.now()}`);
+    const pictures = [
+      "https://staging.virev.ai/api/img?u=a",
+      "https://virev.ai/api/img?u=a",
+      "http://localhost:5174/api/img?u=a",
+      "http://127.0.0.1:5174/api/img?u=a",
+    ];
+    const others = ["https://staging.virev.ai/api/logo/glossier.com", "https://staging.virev.ai/api/me", "http://localhost:5174/app/search"];
+    const { reached, fakeTab } = fakeChrome(() => ({ status: 200, headers: { "cache-control": "no-store" }, body: Buffer.from("x") }));
+    const load = await fakeTab(cacheShared);
+    for (const url of pictures) assert.equal(await load(url), 204, url);
+    for (const url of others) assert.equal(await load(url), 200, url);
+    assert.deepEqual(reached, others);
+  } finally {
+    delete process.env.BOX_HTTP_CACHE;
+    delete process.env.ASIDE_BOX_IMAGES;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

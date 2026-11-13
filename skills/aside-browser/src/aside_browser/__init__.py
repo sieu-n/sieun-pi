@@ -917,7 +917,8 @@ class _BoxRunner:
         host = _box_host()
         if host:
             loopback = os.environ.get("ASIDE_BROWSER_LOOPBACK_HOST", "mac")
-            remote = f"cd {REMOTE_BOX_DIR} && BOX_LOOPBACK_VIA={shlex.quote(loopback)} exec node box.mjs"
+            images = f"ASIDE_BOX_IMAGES={shlex.quote(os.environ['ASIDE_BOX_IMAGES'])} " if "ASIDE_BOX_IMAGES" in os.environ else ""
+            remote = f"cd {REMOTE_BOX_DIR} && {images}BOX_LOOPBACK_VIA={shlex.quote(loopback)} exec node box.mjs"
             return ["ssh", "-T", "-o", "BatchMode=yes", host, "bash", "-lc", shlex.quote(remote)], None
         node = _node()
         if not node:

@@ -666,6 +666,14 @@ class MacRemoteBoxTests(Base):
         self.assertIn("BOX_LOOPBACK_VIA=mac exec node box.mjs", command[-1])
         self.assertIsNone(cwd)
 
+    def test_the_mac_passes_aside_box_images_to_its_remote_runner(self):
+        """p777: a Mac kernel that sets ASIDE_BOX_IMAGES=0 gets a us-metal02 box Chrome that answers crawler pictures with a 204."""
+        env = {k: v for k, v in os.environ.items() if k != "ASIDE_BROWSER_BOX_HOST"}
+        env["ASIDE_BOX_IMAGES"] = "0"
+        with patch.dict(os.environ, env, clear=True), patch.object(ab.sys, "platform", "darwin"):
+            command, _ = ab._BoxRunner()._command()
+        self.assertIn("ASIDE_BOX_IMAGES=0 BOX_LOOPBACK_VIA=", command[-1])
+
     def test_a_linux_box_still_runs_its_runner_here(self):
         env = {k: v for k, v in os.environ.items() if k != "ASIDE_BROWSER_BOX_HOST"}
         with patch.dict(os.environ, env, clear=True), patch.object(ab.sys, "platform", "linux"), patch.object(ab, "_node", return_value="/usr/bin/node"):

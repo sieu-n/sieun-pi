@@ -24,12 +24,26 @@ const maxAge = (headers) => {
 // stored 62 of them, 3.9 MB, and a file still in use costs one more fetch a week.
 const WEEK_S = 7 * 24 * 3600;
 // urlPattern is CDP Fetch's glob, so Chrome pauses only these URLs, and keep() gives a 200's seconds in the cache.
+const globRe = (urlPattern) => new RegExp(`^${urlPattern.split("*").map((s) => s.replace(/[.?+^$()[\]{}|\\/]/g, "\\$&")).join(".*")}$`);
 export const RULES = [
   { urlPattern: "*/_app/immutable/*", keep: () => WEEK_S },
   { urlPattern: "https://staging.virev.ai/api/img*", keep: maxAge },
   { urlPattern: "https://staging.virev.ai/api/logo/*", keep: maxAge },
-].map((rule) => ({ ...rule, re: new RegExp(`^${rule.urlPattern.split("*").map((s) => s.replace(/[.?+^$()[\]{}|\\/]/g, "\\$&")).join(".*")}$`) }));
+].map((rule) => ({ ...rule, re: globRe(rule.urlPattern) }));
 const ruleFor = (url) => RULES.find((rule) => rule.re.test(url));
+
+// Crawler pictures, which a runner started with ASIDE_BOX_IMAGES=0 answers itself with a 204 and no body, the answer
+// /api/img gives for a gone picture, so the app draws its fallback and never retries. Pictures stay on by default,
+// because walk screenshots are visual reviews. From 11-12 00:00Z for 39.2 h box Chromes made 14,454 staging /api/img
+// function calls, and the screening-list-fresh save timer, which reads data and times saves, made 4,312 of them.
+export const IMAGE_PATTERNS = [
+  "https://staging.virev.ai/api/img*",
+  "https://virev.ai/api/img*",
+  "https://www.virev.ai/api/img*",
+  "http://localhost:5174/api/img*",
+  "http://127.0.0.1:5174/api/img*",
+];
+const IMAGE_RES = IMAGE_PATTERNS.map(globRe);
 
 // The stored body is decoded, so these headers would describe bytes the cache does not hold.
 const DROP = new Set(["content-encoding", "content-length", "transfer-encoding", "connection", "set-cookie"]);
@@ -82,13 +96,15 @@ function write(url, headers, until, body) {
   }
 }
 
-/** Serves the page's whole GETs of RULES' URLs from CACHE_DIR, and stores each 200 from the network that a rule keeps. */
-export async function cacheShared(context, page) {
+/** Serves the page's whole GETs of RULES' URLs from CACHE_DIR, and stores each 200 from the network that a rule keeps.
+ *  With `images` false, the default under ASIDE_BOX_IMAGES=0, it answers IMAGE_PATTERNS with a 204 and no body. */
+export async function cacheShared(context, page, { images = process.env.ASIDE_BOX_IMAGES !== "0" } = {}) {
   const cdp = await context.newCDPSession(page);
   const send = (method, params) => cdp.send(method, params).catch(() => {});
   cdp.on("Fetch.requestPaused", async ({ requestId, request, responseStatusCode, responseHeaders }) => {
     const whole = request.method === "GET" && !Object.keys(request.headers ?? {}).some((h) => h.toLowerCase() === "range");
     if (responseStatusCode === undefined) {
+      if (!images && IMAGE_RES.some((re) => re.test(request.url))) return send("Fetch.fulfillRequest", { requestId, responseCode: 204, responseHeaders: [] });
       const hit = whole ? read(request.url) : null;
       if (hit) return send("Fetch.fulfillRequest", { requestId, responseCode: 200, responseHeaders: hit.headers, body: hit.body.toString("base64") });
       return send("Fetch.continueRequest", { requestId, interceptResponse: whole });
@@ -100,5 +116,6 @@ export async function cacheShared(context, page) {
     }
     return send("Fetch.continueRequest", { requestId });
   });
-  await send("Fetch.enable", { patterns: RULES.map(({ urlPattern }) => ({ urlPattern, requestStage: "Request" })) });
+  const patterns = new Set([...RULES.map(({ urlPattern }) => urlPattern), ...(images ? [] : IMAGE_PATTERNS)]);
+  await send("Fetch.enable", { patterns: [...patterns].map((urlPattern) => ({ urlPattern, requestStage: "Request" })) });
 }
