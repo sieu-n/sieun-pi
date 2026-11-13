@@ -54,6 +54,16 @@ export type ViewEvent = {
 };
 export type RecordViewResult = 'recorded' | 'duplicate' | 'unavailable';
 
+/**
+ * How long a statement waits for another connection's write lock before it fails with SQLITE_BUSY. Other processes write
+ * this file too, such as auto-sns-agent's read-skill, which records a view here when the server does not answer. With no
+ * timeout, at about 14:59Z on 2026-11-13, during a wiki dream run of 46 page writers, a write of
+ * domains/architecture/outside-calls/vendors.html failed at once with "database is locked". The wait blocks the server's
+ * event loop only while another process holds the lock: on a copy of the 1.5 GB wiki.db on 2026-11-13, read-skill's view
+ * transaction held it 2.7 ms at p50 and 66 ms at most over 200 runs, so 5 s outlasts it about 75 times over.
+ */
+const BUSY_TIMEOUT_MS = 5000;
+
 let db: DatabaseSync | null = null;
 let tried = false;
 let initError: string | null = null;
@@ -72,6 +82,7 @@ function getDb(): DatabaseSync | null {
 		mkdirSync(dir, { recursive: true });
 		const handle = new DatabaseSync(path.join(dir, 'wiki.db'));
 		handle.exec(`
+			PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS};
 			PRAGMA journal_mode = WAL;
 			CREATE TABLE IF NOT EXISTS views (
 				path TEXT NOT NULL, viewer_kind TEXT NOT NULL, agent_id TEXT, session_id TEXT,
@@ -233,8 +244,39 @@ export function statOne(pagePath: string): PageStat {
 	);
 }
 
-export function addRevision(input: Omit<Revision, 'version' | 'ts'> & { ts?: string }): number {
-	if (!getDb()) return 0;
+/** The file change a revision records: write puts the new bytes on disk, and restore puts the old ones back. */
+export type PageFileChange = { write: () => void; restore: () => void };
+
+/**
+ * Log a revision and make its file change as one step: the row and the file both land, or neither does. The change runs
+ * inside the transaction, so it must be synchronous, and no other statement on this connection can join the transaction.
+ * Why: at about 14:59Z on 2026-11-13 a write of domains/architecture/outside-calls/vendors.html changed the file, then
+ * failed to insert its revision with "database is locked", so the writer got HTTP 400 while the page held its edit and
+ * the revision log stayed at v7.
+ */
+export function addRevision(input: Omit<Revision, 'version' | 'ts'> & { ts?: string }, change: PageFileChange): number {
+	const handle = getDb();
+	if (!handle) {
+		change.write();
+		return 0;
+	}
+	handle.exec('BEGIN IMMEDIATE');
+	let written = false;
+	try {
+		const version = insertRevision(input);
+		change.write();
+		written = true;
+		handle.exec('COMMIT');
+		return version;
+	} catch (error) {
+		// isTransaction is in node:sqlite since Node 22.16; the pinned @types/node 22.15 lacks it.
+		if ((handle as DatabaseSync & { isTransaction: boolean }).isTransaction) handle.exec('ROLLBACK');
+		if (written) change.restore();
+		throw error;
+	}
+}
+
+function insertRevision(input: Omit<Revision, 'version' | 'ts'> & { ts?: string }): number {
 	const version = currentVersion(input.path) + 1;
 	run(
 		`INSERT INTO revisions (path, version, author, ts, summary, base_version, content_hash, diff, lines_added, lines_removed, bytes_before, bytes_after)

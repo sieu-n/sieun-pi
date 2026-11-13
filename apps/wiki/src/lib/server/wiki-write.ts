@@ -3,8 +3,8 @@
  * The EDITABLE gate lives in the route; this module confines paths to content/, rejects @code/ and allows page extensions only.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { statSync } from 'node:fs';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdir, readFile, stat } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -315,6 +315,7 @@ async function commitPageLocked(input: {
 		rel,
 		full,
 		before,
+		existed: exists,
 		content,
 		author: input.author,
 		summary: input.summary,
@@ -506,7 +507,8 @@ type WriteResult = {
 };
 
 /**
- * Write the bytes and log the revision + diff. Every guard has already run.
+ * Write the bytes and log the revision + diff as one step (addRevision), so a failed write leaves the page as it was.
+ * Every guard has already run.
  * A page the gates judge (assertPageInvariants) lands read-only through a rename, so an agent's direct file write such as
  * Python's open(path, 'w') fails with EACCES instead of skipping the gates and the revision log. Why: at 01:10:06Z on
  * 2026-11-05 a session wrote apps/crawler-v3/architecture/instagram-authed-engage/dms-and-reads.html through the code
@@ -517,33 +519,31 @@ async function writeLogged(input: {
 	rel: string;
 	full: string;
 	before: string;
+	existed: boolean;
 	content: string;
 	author?: string;
 	summary?: string;
 	baseVersion: number | null;
 }): Promise<WriteResult> {
 	await mkdir(path.dirname(input.full), { recursive: true });
-	if (input.rel.endsWith('.html') && (isCuratedPath(input.rel) || input.rel === 'index.html')) {
-		const temp = `${input.full}.${process.pid}.${Math.random().toString(36).slice(2)}.write`;
-		try {
-			await writeFile(temp, input.content, { encoding: 'utf8', mode: 0o444 });
-			await rename(temp, input.full);
-		} catch (error) {
-			await rm(temp, { force: true });
-			throw error;
-		}
-	} else await writeFile(input.full, input.content, 'utf8');
+	const gated = input.rel.endsWith('.html') && (isCuratedPath(input.rel) || input.rel === 'index.html');
 	const diff = unifiedDiff(input.before, input.content, input.rel);
 	const stats = changeStats(input.before, input.content);
-	const version = addRevision({
-		path: input.rel,
-		author: input.author ?? 'agent',
-		summary: input.summary ?? '',
-		baseVersion: input.baseVersion,
-		contentHash: createHash('sha1').update(input.content).digest('hex'),
-		diff,
-		...stats,
-	});
+	const version = addRevision(
+		{
+			path: input.rel,
+			author: input.author ?? 'agent',
+			summary: input.summary ?? '',
+			baseVersion: input.baseVersion,
+			contentHash: createHash('sha1').update(input.content).digest('hex'),
+			diff,
+			...stats,
+		},
+		{
+			write: () => writePageFile(input.full, input.content, gated),
+			restore: () => (input.existed ? writePageFile(input.full, input.before, gated) : rmSync(input.full, { force: true })),
+		},
+	);
 	return {
 		path: input.rel,
 		version,
@@ -552,6 +552,19 @@ async function writeLogged(input: {
 		linesAdded: stats.linesAdded,
 		linesRemoved: stats.linesRemoved,
 	};
+}
+
+/** Put a page's bytes on disk; a gated page lands read-only through a temp file and a rename. Synchronous, because addRevision runs it inside its transaction. */
+function writePageFile(full: string, content: string, gated: boolean): void {
+	if (!gated) return writeFileSync(full, content, 'utf8');
+	const temp = `${full}.${process.pid}.${Math.random().toString(36).slice(2)}.write`;
+	try {
+		writeFileSync(temp, content, { encoding: 'utf8', mode: 0o444 });
+		renameSync(temp, full);
+	} catch (error) {
+		rmSync(temp, { force: true });
+		throw error;
+	}
 }
 
 /**
@@ -652,6 +665,7 @@ async function supersedePageLocked(input: Parameters<typeof supersedePage>[0]): 
 		rel,
 		full,
 		before,
+		existed: true,
 		content,
 		author: input.author,
 		summary: input.summary ?? `superseded by ${target}`,
