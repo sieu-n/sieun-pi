@@ -83,7 +83,7 @@ The owner asked for it in these words: "a daily job that cleans wiki, find anti-
 7. The other page gets `status: superseded` plus `POST /api/agent/supersede {path: old, by: survivor}`, which sets `superseded_by`, or it moves to `archive/` with `archived_reason`.
 8. Repoint every curated link to the old page in the same run.
 9. Record each verdict, `distinct` included, in `pairs` under the sorted key `a|b` with the pair's `score`, so the pair drops out of `dup_unjudged`.
-10. Check every `stale_vs_code` page, one subagent per page.
+10. Check every `stale_vs_code` page, one subagent per page, but first rerun the precheck or read each page's `last_verified` through `wiki.read`, and spawn no writer for a page whose `last_verified` is already later than every change its flag names, because on 2026-11-13 all 8 pages the 13:07Z precheck flagged had been rechecked by `wiki-dream-stale-fix` at 13:10Z, and the 8 writers the run spawned at 13:40Z found nothing left to do.
 11. The flagged line gives the time the page was checked and the minute the tip changed each ref, as in `checked 2026-10-20T01:12Z (last_verified 2026-10-20); code changed since: apps/vent/src/vent/tables.py (2026-10-20T02:14Z)`.
 12. That subagent reads `git log --first-parent -p --since-as-filter=<checked> HEAD -- <ref>` for each ref first, then the current code wherever the diff touches a fact the page states.
 13. It fixes those facts in place and deletes facts the code now contradicts, and when the diff changes nothing the page states, it changes only `last_verified`, because 16 of 29 such flags read from 2026-10-16 to 2026-10-20 changed nothing on the page.
