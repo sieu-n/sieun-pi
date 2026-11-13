@@ -58,8 +58,8 @@ const CALL_TIMEOUT_MS = 60_000;
 export const FOLLOWER_BUCKET_SQL =
   "SELECT multiIf(followers < 1000, '0-1K', followers < 10000, '1K-10K', followers < 100000, '10K-100K', followers < 1000000, '100K-1M', '1M+') " +
   "AS follower_bucket, sum(posts) AS posts, round(sum(likes_sum) / sum(likes_posts)) AS avg_likes, " +
-  "round(sum(likes_sum / followers) / sum(likes_posts) * 100, 3) AS likes_per_follower_pct " +
-  "FROM q.instagram_account_post_counts WHERE followers > 0 GROUP BY follower_bucket ORDER BY min(followers)";
+  "round(sum(likes_per_follower_sum) / sum(likes_posts) * 100, 3) AS likes_per_follower_pct " +
+  "FROM q.instagram_follower_counts WHERE followers > 0 GROUP BY follower_bucket ORDER BY min(followers)";
 const CALLS: { name: string; tool: "describe" | "sql" | "search"; args: Record<string, unknown> }[] = [
   { name: "describe", tool: "describe", args: {} },
   { name: "sql", tool: "sql", args: { sql: "SELECT sum(posts) AS posts FROM q.instagram_account_post_counts" } },
