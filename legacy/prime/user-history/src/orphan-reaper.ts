@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { jobLive, livePaths } from "./job-live.ts";
+import { fileArchived } from "./session-file-end.ts";
 
 /**
  * The d2 orphan reaper on us-metal02: it lists the processes whose owning Prime session ended over ENDED_FOR_MS ago and stops them. On 10-28 a
@@ -269,17 +270,18 @@ async function dirSession(dir: string, home: string): Promise<{ session: string;
   return null;
 }
 
-/** `list` prints a host's `prime-agent list --json` (with `--all` for every saved session), `remote` runs a shell command on another host. */
+/** `list` prints a host's `prime-agent list --json` (the sessions its daemon holds), `remote` runs a shell command on another host. */
 /** `piThread` reads a pi-host thread's row from its durable index, null when no thread has that id. */
-export interface ReadContext { here: string; home: string; dataDir: string; now: number; list: (host: string, all: boolean) => Promise<string>; remote: (host: string, command: string) => Promise<string>;
-  piThread: (id: string) => Promise<PiThread | null> }
+/** `archived` reads whether a saved session file is archived (session-file-end.ts), null when it does not read. */
+export interface ReadContext { here: string; home: string; dataDir: string; now: number; list: (host: string) => Promise<string>; remote: (host: string, command: string) => Promise<string>;
+  piThread: (id: string) => Promise<PiThread | null>; archived?: (file: string) => boolean | null }
 export interface PiThread { archived: boolean; updatedAt: number }
 
-/** The roster reads one d2 run shares: each host's resident sessions, this box's full list, and whether a session is about to run. */
+/** The roster reads one d2 run shares: each host's resident sessions, whether a top-level session is archived, and whether a session is about to run. */
 interface Reader {
   roster: (host: string) => Promise<Map<string, RosterRow>>;
-  /** Null when the full list did not answer; `failure` then says why. */
-  all: () => Promise<Map<string, RosterRow> | null>;
+  /** Null when the session's file did not read; `failure` then says why. */
+  archived: (file: string) => boolean | null;
   failure: () => string | null;
   /** Why a session counts as live for the sessions below it: running, idle when it is a job, or a wake or queued run waits (job-live.ts). */
   liveAbove: (session: string, host: string, topLevel: boolean) => Promise<string | null>;
@@ -289,29 +291,32 @@ export function reader(context: ReadContext): Reader {
   const paths = livePaths(context.dataDir, context.home);
   const rosters = new Map<string, Promise<Map<string, RosterRow>>>();
   const roster = (host: string): Promise<Map<string, RosterRow>> => {
-    if (!rosters.has(host)) rosters.set(host, context.list(host, false).then(rosterOf));
+    if (!rosters.has(host)) rosters.set(host, context.list(host).then(rosterOf));
     return rosters.get(host)!;
   };
-  // On 11-03 and 11-13 `list --all` (11,231 sessions, 97 MB) passed the Prime CLI's fixed 30 s daemon timeout and failed the whole orphan read.
-  let archive: Promise<Map<string, RosterRow> | null> | null = null;
+  // A top-level session no worker holds is archived when its file's last session_state says so, the same field the daemon's full list reads.
+  // Until 11-14 this read `prime-agent list --all` each run, every 15 min: on 11-03 and 11-13 it (11,231 sessions, 97 MB) passed the Prime
+  // CLI's fixed 30 s daemon timeout and failed the orphan read, and each one held the supervisor's one thread about 13 CPU-s.
   let failure: string | null = null;
-  const all = (): Promise<Map<string, RosterRow> | null> => archive ??= context.list(context.here, true).then(rosterOf, (error: unknown) => {
-    failure = `prime-agent list --all did not answer (${(error instanceof Error ? error.message : String(error)).slice(0, 200)})`;
-    return null;
-  });
+  const readArchived = context.archived ?? fileArchived;
+  const archived = (file: string): boolean | null => {
+    const read = readArchived(file);
+    if (read === null) failure ??= `${file} did not read`;
+    return read;
+  };
   // A top-level chat stays resident and idle long after its last turn, so only a running one holds its subagents' leftovers.
   const liveAbove = async (session: string, host: string, topLevel: boolean): Promise<string | null> => {
     const status = (await roster(host)).get(session)?.rosterStatus;
     if (status === "running" || (status === "idle" && !topLevel)) return `its roster status is ${status}`;
     return jobLive(paths, session, context.now);
   };
-  return { roster, all, failure: () => failure, liveAbove };
+  return { roster, archived, failure: () => failure, liveAbove };
 }
 
-/** Whether a top-level session is archived, or a live reason when the full list did not answer: a missing read never stops a process. */
-async function archiveOf(session: string, read: Reader): Promise<Pick<SessionFacts, "archived" | "live">> {
-  const all = await read.all();
-  return all ? { archived: all.get(session)?.lifecycle === "archived" } : { live: `${read.failure()}, so whether it is archived is unknown` };
+/** Whether a top-level session is archived, or a live reason when its file did not read: a missing read never stops a process. */
+function archiveOf(transcript: string, read: Reader): Pick<SessionFacts, "archived" | "live"> {
+  const archived = read.archived(transcript);
+  return archived === null ? { live: `${transcript} did not read, so whether it is archived is unknown` } : { archived };
 }
 
 /** The verdict of every owner the groups name, with each owner's session id filled in from its dir. */
@@ -350,7 +355,7 @@ export function ancestorDirs(dir: string, home: string): string[] {
 
 async function boxFacts(found: { session: string; transcript: string; topLevel: boolean }, dir: string, context: ReadContext, read: Reader): Promise<SessionFacts> {
   const row = (await read.roster(context.here)).get(found.session);
-  const archive = found.topLevel && !row ? await archiveOf(found.session, read) : {};
+  const archive = found.topLevel && !row ? archiveOf(found.transcript, read) : {};
   let parentLive: string | null = null;
   for (const up of ancestorDirs(dir, context.home)) {
     const parent = await dirSession(up, context.home);
@@ -399,7 +404,7 @@ async function boxFactsById(session: string, context: ReadContext, read: Reader)
   const row = (await read.roster(context.here)).get(session);
   const top = join(context.home, ".prime", "agent", "sessions", `${session}.jsonl`);
   const topAt = await mtime(top);
-  if (topAt !== null) return { rosterStatus: row?.rosterStatus, topLevel: true, ...await archiveOf(session, read), endedAt: topAt };
+  if (topAt !== null) return { rosterStatus: row?.rosterStatus, topLevel: true, ...row ? {} : archiveOf(top, read), endedAt: topAt };
   // A pi-host thread (LC_PRIME_SESSION from pi-host's rlm.ts) is the owner's chat like a top-level Prime chat: live until it is archived.
   const thread = await context.piThread(session);
   if (thread) return { topLevel: true, archived: thread.archived, endedAt: thread.updatedAt };
@@ -464,7 +469,7 @@ export const liveStopSource: StopSource = {
 
 // ---- the d2 reading ----
 
-/** `listFailure` names a full list that did not answer, whose top-level sessions the run held as live. */
+/** `listFailure` names the first top-level session file whose archive state did not read; the run held each such session as live. */
 export interface Reading { orphan_processes: number; orphan_unknown: number; stop: Group[]; held: { group: Group; why: string }[]; unknown: Group[]; verdicts: Map<string, Verdict>;
   listFailure: string | null }
 
@@ -514,5 +519,5 @@ export async function readOrphans(context: ReadContext, hostOf: (address: string
 export const defaultContext = (here: string, now: number): ReadContext => {
   const remote = (host: string, command: string): Promise<string> => run("ssh", ["-o", "BatchMode=yes", host, command]);
   return { here, home: homedir(), dataDir: join(homedir(), ".prime", "agent", "browser-chat"), now, remote, piThread: async id => piThreadRow(join(homedir(), ".prime", "agent", "pi-host", "durable", "index.sqlite"), id),
-    list: (host, all) => host === here ? run("prime-agent", ["list", ...all ? ["--all"] : [], "--json"]) : remote(host, `~/.local/share/prime-agent/bin/prime-agent list${all ? " --all" : ""} --json`) };
+    list: host => host === here ? run("prime-agent", ["list", "--json"]) : remote(host, "~/.local/share/prime-agent/bin/prime-agent list --json") };
 };

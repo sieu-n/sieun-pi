@@ -279,29 +279,48 @@ test("10-31: a unit a live session recorded with board.own is held even when the
   } finally { await rm(live.home, { recursive: true, force: true }); }
   const gone = await check4Rig({ wake: false });
   try {
-    const archived = { ...check4Context(gone.home, gone.dataDir, "inactive"), list: async (_host: string, all: boolean) =>
-      JSON.stringify({ sessions: all ? [{ sessionId: CHAT, lifecycle: "archived" }] : [] }) };
+    await mkdir(join(gone.home, ".prime/agent/sessions"), { recursive: true });
+    await writeFile(join(gone.home, ".prime/agent/sessions", `${CHAT}.jsonl`), `${JSON.stringify({ type: "session", id: CHAT })}\n` +
+      `${JSON.stringify({ type: "session_state", id: "s1", state: { status: "archived", reason: "owner_archive" } })}\n`);
+    const archived = { ...check4Context(gone.home, gone.dataDir, "inactive"), list: async () => JSON.stringify({ sessions: [] }) };
     assert.equal((await readUnitHolds([samplerGroup([])], archived)).size, 0);
   } finally { await rm(gone.home, { recursive: true, force: true }); }
 });
 
-// Guards 11-13: `prime-agent list --all` passed the Prime CLI's fixed 30 s daemon timeout three times from 15:18Z, and each failure lost d2's whole orphan read.
-test("a full list that does not answer leaves a top-level session's archive state unknown, holds it as live and names the failure once", async () => {
+// Guards 11-13: `prime-agent list --all` passed the Prime CLI's fixed 30 s daemon timeout three times from 15:18Z, and each failure lost d2's whole
+// orphan read, while a herd of such lists held every other daemon call up to 657 s. The read now asks the daemon only for its live list and
+// reads a top-level session's archive state from its file.
+test("the orphan read never asks for the full list, and reads a top-level chat's archive state from its file's last session_state", async () => {
+  const rig = await check4Rig({ wake: false });
+  try {
+    const asked: unknown[][] = [];
+    const sessions = join(rig.home, ".prime/agent/sessions");
+    await mkdir(sessions, { recursive: true });
+    const state = (status: string) => `${JSON.stringify({ type: "session_state", id: status, state: { status } })}\n`;
+    await writeFile(join(sessions, `${CHAT}.jsonl`), `${JSON.stringify({ type: "session", id: CHAT })}\n${state("archived")}${state("active")}`);
+    const context = { ...check4Context(rig.home, rig.dataDir, "inactive"), list: async (...args: unknown[]) => { asked.push(args); return JSON.stringify({ sessions: [] }); } };
+    assert.equal((await readUnitHolds([samplerGroup([])], context)).size, 1, "a chat unarchived again holds the unit it recorded");
+    await writeFile(join(sessions, `${CHAT}.jsonl`), `${JSON.stringify({ type: "session", id: CHAT })}\n${state("active")}${state("archived")}`);
+    assert.equal((await readUnitHolds([samplerGroup([])], context)).size, 0, "an archived chat holds nothing");
+    const verdicts = await readVerdicts([samplerGroup([{ session: CHAT, host: "us-metal02" }])], context);
+    assert.deepEqual(verdicts.get(`us-metal02/${CHAT}`)?.state, "ended");
+    assert.deepEqual(asked, [["us-metal02"], ["us-metal02"], ["us-metal02"]]);
+  } finally { await rm(rig.home, { recursive: true, force: true }); }
+});
+
+test("a top-level session file that does not read leaves its archive state unknown, holds it as live and names the failure once", async () => {
   const rig = await check4Rig({ wake: false });
   try {
     let reads = 0;
-    const context = { ...check4Context(rig.home, rig.dataDir, "inactive"), list: async (_host: string, all: boolean) => {
-      if (!all) return JSON.stringify({ sessions: [] });
-      reads += 1;
-      throw new Error("Timed out waiting for daemon response after 30000ms");
-    } };
+    const context = { ...check4Context(rig.home, rig.dataDir, "inactive"), list: async () => JSON.stringify({ sessions: [] }),
+      archived: () => { reads += 1; return null; } };
     const read = reader(context);
     const verdicts = await readVerdicts([samplerGroup([{ session: "", host: "us-metal02", dir: rig.chatDir }])], context, read);
     assert.equal(verdicts.get(`us-metal02/${CHAT}`)?.state, "live");
-    assert.match((verdicts.get(`us-metal02/${CHAT}`) as { why: string }).why, /list --all did not answer .*30000ms.*archived is unknown/);
+    assert.match((verdicts.get(`us-metal02/${CHAT}`) as { why: string }).why, new RegExp(`${CHAT}\\.jsonl did not read, so whether it is archived is unknown`));
     assert.equal((await readUnitHolds([samplerGroup([])], context, read)).size, 1);
-    assert.equal(reads, 1);
-    assert.match(read.failure() ?? "", /^prime-agent list --all did not answer/);
+    assert.equal(reads, 2);
+    assert.match(read.failure() ?? "", new RegExp(`${CHAT}\\.jsonl did not read$`));
   } finally { await rm(rig.home, { recursive: true, force: true }); }
 });
 
