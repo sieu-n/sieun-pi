@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -19,6 +19,11 @@ import { jobLive, livePaths } from "./job-live.ts";
  * pid 1 or an sshd. A group with no owner signal is listed and never signalled. Prime's own processes and everything under a live kernel, the
  * shared services (pm2 and the Convex watcher under it, Aside, cua-driver) and every process of a unit with a unit file (the chat services,
  * llm-wiki, code-server, the Prime daemon) are never in a group.
+ *
+ * A container's processes run under containerd-shim with no owner in their env, so a container is a group of its own, read from the label
+ * ai.virev.owner that the sieun-rules docker shim (unit-env/docker) adds to each `docker run` and `docker create`. On 11-13 the ClickHouse rig
+ * fh-ch-test still held 1.3 GiB, 3 days after the follower-history job 01a1c526 started it and 7 h after that job was deleted. A container with a
+ * restart policy is a standing service, such as the auto-sns-agent compose stack or the slack-green runners, and is never in a group.
  */
 
 /** How long an owner must have ended before its processes stop: the 1 h mac-management asked for on 10-31 after the 47811 driver ran 2 days. */
@@ -37,7 +42,8 @@ export interface ProcRow {
 
 /** The session a group's env names: `dir` is its RLM_SESSION_DIR when it ran on this box, `host` the box its kernel runs on. */
 export interface Owner { session: string; host: string; dir?: string }
-export interface Group { key: string; unit?: string; root: number; pids: number[]; bytes: number; started: number | null; command: string; owners: Owner[] }
+/** `container` names a Docker container group, which has no pids of its own to signal and stops with `docker stop`. */
+export interface Group { key: string; unit?: string; container?: string; root: number; pids: number[]; bytes: number; started: number | null; command: string; owners: Owner[] }
 
 /** "unreachable" is an owner on a host that did not answer, which a later run reads again; on 11-04 a Mac job's walk rig read as orphan_unknown for 3 d2 runs while the Mac slept. */
 export type Verdict = { state: "live"; why: string } | { state: "ended"; at: number; why: string } | { state: "unknown"; why: string } | { state: "unreachable"; why: string };
@@ -117,6 +123,32 @@ export function ownerOf(row: ProcRow, hostOf: (address: string) => string, here:
   return null;
 }
 
+export const OWNER_LABEL = "ai.virev.owner";
+
+/** A running container as `docker inspect` prints it, with only the fields `containerGroups` reads. */
+export interface InspectedContainer {
+  Name: string; Path?: string; Args?: readonly string[] | null; State?: { Pid?: number; StartedAt?: string };
+  Config?: { Image?: string; Labels?: Readonly<Record<string, string>> | null }; HostConfig?: { RestartPolicy?: { Name?: string } };
+}
+
+/** One group per running container that carries OWNER_LABEL and no restart policy; the label holds LC_PRIME_SESSION or an RLM_SESSION_DIR. */
+export function containerGroups(containers: readonly InspectedContainer[], hostOf: (address: string) => string, here: string, bytesOf: (pid: number) => number = () => 0): Group[] {
+  return containers.flatMap(container => {
+    const label = container.Config?.Labels?.[OWNER_LABEL] ?? "";
+    const restart = container.HostConfig?.RestartPolicy?.Name ?? "";
+    if (!label || (restart !== "" && restart !== "no")) return [];
+    const dir = label.startsWith("/");
+    const owner = ownerOf({ pid: 0, ppid: 0, started: null, bytes: null, command: "", sessionDir: dir ? label : null, harnessSession: null, lcSession: dir ? null : label,
+      sshFrom: null, prime: false, shared: false, cgroup: null, cwd: null }, hostOf, here);
+    if (!owner) return [];
+    const name = container.Name.replace(/^\//, "");
+    const pid = container.State?.Pid ?? 0;
+    const started = Date.parse(container.State?.StartedAt ?? "");
+    return [{ key: `container:${name}`, container: name, root: pid, pids: [], bytes: pid ? bytesOf(pid) : 0, started: Number.isNaN(started) ? null : started / 1000,
+      command: [container.Config?.Image ?? "", container.Path ?? "", ...container.Args ?? []].filter(Boolean).join(" "), owners: [owner] }];
+  });
+}
+
 /** The hosts.json name of a box from its hostname (`LC_PRIME_SESSION`'s host) or its address (`SSH_CONNECTION`), else the text itself. */
 export function hostMatcher(hosts: readonly { name: string; hostname: string; address: string }[]): (text: string) => string {
   const short = (name: string): string => name.split(".")[0]!.toLowerCase();
@@ -187,6 +219,22 @@ function run(command: string, args: readonly string[], timeout = 60_000): Promis
 
 const HELPER = new URL("./worker-footprint.py", import.meta.url).pathname;
 export const readProcesses = async (): Promise<ProcRow[]> => (JSON.parse(await run("python3", [HELPER, "--owners"])) as { processes: ProcRow[] }).processes;
+
+/** The memory of a container's cgroup, read through its init pid; 0 when either read fails. */
+function cgroupBytes(pid: number): number {
+  try {
+    const path = readFileSync(`/proc/${pid}/cgroup`, "utf8").split("\n").find(line => line.startsWith("0::"))?.slice(3);
+    return path ? Number(readFileSync(`/sys/fs/cgroup${path}/memory.current`, "utf8").trim()) || 0 : 0;
+  } catch { return 0; }
+}
+
+/** The groups of the running containers with an owner label; none on a box with no docker. */
+export async function readContainerGroups(hostOf: (address: string) => string, here: string): Promise<Group[]> {
+  const ids = (await run("docker", ["ps", "-q", "--filter", `label=${OWNER_LABEL}`]).catch(() => "")).split("\n").filter(Boolean);
+  if (!ids.length) return [];
+  const listed = await run("docker", ["inspect", ...ids]).catch(() => "[]");
+  return containerGroups(JSON.parse(listed) as InspectedContainer[], hostOf, here, cgroupBytes);
+}
 
 export async function readUnitFiles(): Promise<Set<string>> {
   const text = await run("systemctl", ["--user", "list-unit-files", "--type=service", "--no-legend", "--no-pager"]);
@@ -368,10 +416,19 @@ export function piThreadRow(file: string, id: string): PiThread | null {
 
 // ---- stop ----
 
-export interface StopSource { starts: () => Promise<ReadonlyMap<number, number | null>>; kill: (pid: number, signal: "SIGTERM" | "SIGKILL") => void; wait: (ms: number) => Promise<void> }
+export interface StopSource {
+  starts: () => Promise<ReadonlyMap<number, number | null>>; kill: (pid: number, signal: "SIGTERM" | "SIGKILL") => void; wait: (ms: number) => Promise<void>;
+  /** `docker stop`, which keeps the container's volumes and bind mounts; whether it stopped. */
+  stopContainer: (name: string) => Promise<boolean>;
+}
 
-/** SIGTERM every process of the groups that still runs with the start time the scan read, then SIGKILL the ones that still do after KILL_AFTER_MS. */
-export async function stopGroups(groups: readonly Group[], rows: readonly ProcRow[], source: StopSource): Promise<{ signalled: number[]; killed: number[] }> {
+/**
+ * Stops each container group with `docker stop`, then sends SIGTERM to every process of the groups that still runs with the start time the
+ * scan read, then SIGKILL to the ones that still do after KILL_AFTER_MS.
+ */
+export async function stopGroups(groups: readonly Group[], rows: readonly ProcRow[], source: StopSource): Promise<{ signalled: number[]; killed: number[]; containers: string[] }> {
+  const containers: string[] = [];
+  for (const group of groups) if (group.container && await source.stopContainer(group.container)) containers.push(group.container);
   const startOf = new Map(rows.map(row => [row.pid, row.started]));
   const same = (starts: ReadonlyMap<number, number | null>, pid: number): boolean => starts.has(pid) && starts.get(pid) !== null && starts.get(pid) === startOf.get(pid);
   const signal = (pids: readonly number[], name: "SIGTERM" | "SIGKILL"): number[] => pids.filter(pid => {
@@ -379,16 +436,17 @@ export async function stopGroups(groups: readonly Group[], rows: readonly ProcRo
   });
   const before = await source.starts();
   const signalled = signal(groups.flatMap(group => group.pids).filter(pid => same(before, pid)), "SIGTERM");
-  if (!signalled.length) return { signalled, killed: [] };
+  if (!signalled.length) return { signalled, killed: [], containers };
   await source.wait(KILL_AFTER_MS);
   const after = await source.starts();
-  return { signalled, killed: signal(signalled.filter(pid => same(after, pid)), "SIGKILL") };
+  return { signalled, killed: signal(signalled.filter(pid => same(after, pid)), "SIGKILL"), containers };
 }
 
 export const liveStopSource: StopSource = {
   starts: async () => new Map((await readProcesses()).map(row => [row.pid, row.started])),
   kill: (pid, signal) => process.kill(pid, signal),
   wait: ms => new Promise(done => setTimeout(done, ms)),
+  stopContainer: name => run("docker", ["stop", name]).then(() => true, () => false),
 };
 
 // ---- the d2 reading ----
@@ -400,7 +458,7 @@ const mb = (bytes: number): string => `${Math.round(bytes / 1048576)} MB`;
 /** A group's line; an owner whose verdict is unknown carries its why, because the 11-04 10:17 d2 run listed a live Mac job's walk server as orphan_unknown with no cause to read. */
 export function describe(group: Group, now: number, verdicts?: ReadonlyMap<string, Verdict>): string {
   const owners = group.owners.map(owner => { const read = verdicts?.get(ownerKey(owner)); return `${owner.session} on ${owner.host}${read?.state === "ended" ? ` ended ${new Date(read.at).toISOString().slice(5, 16)}Z` : read?.state === "unknown" || read?.state === "unreachable" ? ` unread (${read.why})` : ""}`; });
-  return `${group.unit ?? `pid ${group.root}`}: ${group.pids.length} processes, ${mb(group.bytes)}, ${age(group, now)}, ${group.command.slice(0, 120)}${owners.length ? `; owner ${owners.join(", ")}` : "; no owner signal"}`;
+  return `${group.container ? `container ${group.container}:` : `${group.unit ?? `pid ${group.root}`}: ${group.pids.length} processes,`} ${mb(group.bytes)}, ${age(group, now)}, ${group.command.slice(0, 120)}${owners.length ? `; owner ${owners.join(", ")}` : "; no owner signal"}`;
 }
 
 /**
@@ -409,7 +467,7 @@ export function describe(group: Group, now: number, verdicts?: ReadonlyMap<strin
  * two handlers of a Mac job's live aside box on us-metal02 read as orphan_unknown while the Mac did not answer.
  */
 export function leftParent(group: Group, rows: readonly ProcRow[]): boolean {
-  if (group.unit !== undefined) return true;
+  if (group.unit !== undefined || group.container !== undefined) return true;
   const byPid = new Map(rows.map(row => [row.pid, row]));
   const ppid = byPid.get(group.root)?.ppid ?? 0;
   if (ppid !== 1 && !/(^|\/)systemd --user/.test(byPid.get(ppid)?.command ?? "")) return false;
@@ -427,7 +485,7 @@ function heldHandler(pid: number, rows: readonly ProcRow[], byPid: ReadonlyMap<n
 
 export async function readOrphans(context: ReadContext, hostOf: (address: string) => string): Promise<{ rows: ProcRow[]; reading: Reading }> {
   const [rows, unitFiles] = await Promise.all([readProcesses(), readUnitFiles()]);
-  const groups = groupProcesses(rows, unitFiles, hostOf, context.here);
+  const groups = [...groupProcesses(rows, unitFiles, hostOf, context.here), ...await readContainerGroups(hostOf, context.here)];
   const owned = groups.filter(group => group.owners.length);
   const read = reader(context);
   const [verdicts, holds] = await Promise.all([readVerdicts(owned, context, read), readUnitHolds(groups, context, read)]);

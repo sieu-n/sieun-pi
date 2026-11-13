@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { ENDED_FOR_MS, KILL_AFTER_MS, type Group, type ProcRow, type Verdict, decide, describe, groupProcesses, hostMatcher, leftParent, ownerOf, piThreadRow, readUnitHolds, readVerdicts, stopGroups, unitFileNames, unitOf, verdict } from "../src/orphan-reaper.ts";
+import { ENDED_FOR_MS, KILL_AFTER_MS, type Group, type ProcRow, type Verdict, containerGroups, decide, describe, groupProcesses, hostMatcher, leftParent, ownerOf, piThreadRow, readUnitHolds, readVerdicts, stopGroups, unitFileNames, unitOf, verdict } from "../src/orphan-reaper.ts";
 
 const JOB = "01a183f7-0a0b-725c-984d-d59f150e6420";
 const LIVE = "01a190a3-1b2e-74ad-88ca-f217e0f956a8";
@@ -115,10 +115,44 @@ test("the stop skips a reused pid, sends SIGTERM, and sends SIGKILL after 10 s o
     starts: async () => reads++ === 0 ? new Map([[1, 1001], [2, 1002], [3, 9999]]) : new Map([[2, 1002]]),
     kill: (pid, signal) => { sent.push(`${signal} ${pid}`); },
     wait: async ms => { waited = ms; },
+    stopContainer: async () => true,
   });
   assert.deepEqual(sent, ["SIGTERM 1", "SIGTERM 2", "SIGKILL 2"]);
   assert.equal(waited, KILL_AFTER_MS);
-  assert.deepEqual(result, { signalled: [1, 2], killed: [2] });
+  assert.deepEqual(result, { signalled: [1, 2], killed: [2], containers: [] });
+});
+
+// 11-13: the ClickHouse rig fh-ch-test held 1.3 GiB on us-metal02 3 days after the follower-history job 01a1c526 started it with `docker run -d
+// --rm`, and 7 h after that job was deleted, because a container's processes name no session. unit-env/docker now labels each run with its owner.
+test("a labelled container with no restart policy is a group of its owner, stopped with docker stop once that owner ended over 1 h ago", async () => {
+  const FH = "01a1c526-6baa-71bd-bef7-cb61aa719c82";
+  const started = "2026-11-10T23:07:45.433713059Z";
+  const container = (name: string, labels: Record<string, string> | null, restart: string) =>
+    ({ Name: `/${name}`, Path: "/entrypoint.sh", Args: [], State: { Pid: 268833, StartedAt: started }, Config: { Image: "clickhouse/clickhouse-server:26.3.9.8", Labels: labels }, HostConfig: { RestartPolicy: { Name: restart } } });
+  const groups = containerGroups([
+    container("fh-ch-test", { "ai.virev.owner": `${FH}@us-metal02` }, "no"),
+    container("mac-rig", { "ai.virev.owner": `${JOB}@Sieuns-MacBook-Pro` }, ""),
+    container("kernel-rig", { "ai.virev.owner": "/h/.prime/agent/session-artifacts/r/sub-1" }, "no"),
+    container("auto-sns-agent-clickhouse-1", { "ai.virev.owner": `${FH}@us-metal02`, "com.docker.compose.project": "auto-sns-agent" }, "unless-stopped"),
+    container("us-metal02-slack-green-1", null, "unless-stopped"),
+    container("modest_lehmann", {}, "no"),
+  ], hosts, "us-metal02", () => 1_417_000_000);
+  assert.deepEqual(groups.map(entry => [entry.key, entry.owners]), [
+    ["container:fh-ch-test", [{ session: FH, host: "us-metal02" }]],
+    ["container:mac-rig", [{ session: JOB, host: "mac" }]],
+    ["container:kernel-rig", [{ session: "", host: "us-metal02", dir: "/h/.prime/agent/session-artifacts/r/sub-1" }]],
+  ]);
+  const [fh] = groups;
+  assert.deepEqual({ pids: fh!.pids, bytes: fh!.bytes, started: fh!.started, command: fh!.command }, { pids: [], bytes: 1_417_000_000, started: Date.parse(started) / 1000, command: "clickhouse/clickhouse-server:26.3.9.8 /entrypoint.sh" });
+  assert.ok(leftParent(fh!, []));
+  const now = Date.parse("2026-11-13T14:55:00Z");
+  const decision = decide([fh!], new Map([[`us-metal02/${FH}`, { state: "ended", at: Date.parse("2026-11-13T08:06:00Z"), why: "" }]]), now);
+  assert.deepEqual(decision.stop.map(entry => entry.key), ["container:fh-ch-test"]);
+  assert.match(describe(fh!, now), /^container fh-ch-test: 1351 MB, 63\.8 h, clickhouse/);
+  const sent: string[] = [];
+  const result = await stopGroups(decision.stop, [], { starts: async () => new Map(), kill: () => { sent.push("kill"); }, wait: async () => {}, stopContainer: async name => { sent.push(`docker stop ${name}`); return true; } });
+  assert.deepEqual(sent, ["docker stop fh-ch-test"]);
+  assert.deepEqual(result, { signalled: [], killed: [], containers: ["fh-ch-test"] });
 });
 
 test("a job's dir names its transcript, a pending wake keeps it live, and a live parent job holds an ended child", async () => {

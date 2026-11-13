@@ -119,6 +119,10 @@ Prime's shutdown takes no `--daemon-socket` ("Unknown option for shutdown") and 
 To stop a scratch daemon, stop its unit, or run `prime-agent shutdown` by name with HOME, TMPDIR and PRIME_AGENT_CODING_AGENT_DIR all in scratch. `prime-agent stop <agent>` still runs, since `AGENTS.md` names it as the way to restart one stuck agent.
 A program that is neither a shell nor Python, such as a Node script, can still run the release binary by path unseen. Only a check in Prime's supervisor of who asks for the shutdown would close that.
 
+`unit-env/docker` adds the label `ai.virev.owner=<LC_PRIME_SESSION, else RLM_SESSION_DIR>` to each `docker run` and `docker create` a kernel starts, so the d2 orphan reaper (`legacy/prime/user-history/src/orphan-reaper.ts`) can tie a container to its session.
+A container's processes run under containerd-shim with no session in their env, so on 11-13 the ClickHouse rig fh-ch-test still held 1.3 GiB on us-metal02, 3 days after the follower-history job 01a1c526 started it and 7 h after that job was deleted.
+The reaper stops a labelled container with `docker stop` once its owner ended over 1 h ago, and it never touches a container with a restart policy, such as the compose stacks and the slack-green runners.
+
 `send-log.ts` keeps the record of outside sends (c37), so "did an agent send anything" has one answer.
 Each layer above writes one JSON line per send it judges to `~/.prime/agent/browser-chat/sends.jsonl`: the tool_call guard, `send-check.ts` for the kernel, the cua-driver proxy and the aside-browser skill.
 A line holds the time, the decision (`allowed` or `refused`), the layer, the chat and session, the target, the guard's reason and the OWNER_OK token.

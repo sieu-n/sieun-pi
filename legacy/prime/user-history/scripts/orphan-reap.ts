@@ -18,5 +18,5 @@ for (const group of reading.stop) process.stdout.write(`stop ${describe(group, a
 for (const group of reading.unknown) process.stdout.write(`unknown ${describe(group, at, reading.verdicts)}; listed, not stopped\n`);
 if (reading.stop.length) {
   const stopped = await stopGroups(reading.stop, rows, liveStopSource);
-  process.stdout.write(`sent SIGTERM to ${stopped.signalled.length} orphan processes and SIGKILL to the ${stopped.killed.length} still running 10 s later\n`);
+  process.stdout.write(`sent SIGTERM to ${stopped.signalled.length} orphan processes and SIGKILL to the ${stopped.killed.length} still running 10 s later${stopped.containers.length ? `, and stopped the containers ${stopped.containers.join(", ")}` : ""}\n`);
 }

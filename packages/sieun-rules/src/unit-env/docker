@@ -1,0 +1,41 @@
+#!/bin/sh
+# sieun-pi docker shim. Each shim skips every docker on PATH with this line, so two shims never exec each other.
+# A container's processes run under containerd-shim with no RLM_SESSION_DIR or LC_PRIME_SESSION in their env, so the d2 orphan reaper
+# (user-history orphan-reaper.ts) never tied a container to the session that started it. On 11-13 at 14:55Z the ClickHouse rig fh-ch-test still
+# held 1.3 GiB on us-metal02, 3 days after the follower-history job 01a1c526 ran `docker run -d --rm --name fh-ch-test ...` and 7 h after that job
+# was deleted. This shim adds the label ai.virev.owner=<LC_PRIME_SESSION, else RLM_SESSION_DIR> to each `docker run` and `docker create`, and
+# the reaper stops a labelled container with no restart policy once that owner ended.
+here=$(cd "$(dirname "$0")" && pwd -P)
+real=""
+rest=$PATH
+while [ -n "$rest" ]; do
+  dir=${rest%%:*}
+  case $rest in *:*) rest=${rest#*:} ;; *) rest="" ;; esac
+  [ -n "$dir" ] && [ -x "$dir/docker" ] && [ "$(cd "$dir" 2>/dev/null && pwd -P)" != "$here" ] \
+    && ! grep -qF "# sieun-pi docker shim." "$dir/docker" 2>/dev/null && { real=$dir/docker; break; }
+done
+[ -n "$real" ] || { echo "docker: command not found" >&2; exit 127; }
+owner=${LC_PRIME_SESSION:-${RLM_SESSION_DIR:-}}
+[ -n "$owner" ] || exec "$real" "$@"
+# The label goes right after the run or create word: past the global options (and their values) and an optional `container`.
+at=0 i=0 skip="" sub=""
+for arg in "$@"; do
+  i=$((i + 1))
+  if [ -n "$skip" ]; then skip=""; continue; fi
+  case $arg in
+    --config|-c|--context|-H|--host|-l|--log-level|--tlscacert|--tlscert|--tlskey) skip=1 ;;
+    -*) ;;
+    container) [ -z "$sub" ] && sub=container || break ;;
+    run|create) at=$i; break ;;
+    *) break ;;
+  esac
+done
+[ "$at" -gt 0 ] || exec "$real" "$@"
+n=$# i=0
+for arg in "$@"; do
+  i=$((i + 1))
+  set -- "$@" "$arg"
+  [ "$i" -eq "$at" ] && set -- "$@" --label "ai.virev.owner=$owner"
+done
+shift "$n"
+exec "$real" "$@"

@@ -266,11 +266,11 @@ async function oomBoxes(at: number): Promise<OomKills[]> {
 }
 
 /** One flagged line per group the run stops and per group with no owner, largest first, and one line with what the stop signalled. */
-export function orphanLines(reading: Reading, stopped: { signalled: number[]; killed: number[] } | null, at: number): FlaggedSlice[] {
+export function orphanLines(reading: Reading, stopped: { signalled: number[]; killed: number[]; containers: string[] } | null, at: number): FlaggedSlice[] {
   const bySize = <T extends { bytes: number }>(groups: readonly T[]): T[] => [...groups].sort((a, b) => b.bytes - a.bytes);
   const lines: FlaggedSlice[] = bySize(reading.stop).map(group => ({ at, kind: "orphan", excerpt: describe(group, at, reading.verdicts).slice(0, 600) }));
   lines.push(...bySize(reading.unknown).map(group => ({ at, kind: "orphan_unknown", excerpt: `${describe(group, at, reading.verdicts)}; listed, not stopped`.slice(0, 600) })));
-  if (stopped) lines.push({ at, kind: "orphan_stopped", excerpt: `sent SIGTERM to ${stopped.signalled.length} orphan processes and SIGKILL to the ${stopped.killed.length} still running 10 s later` });
+  if (stopped) lines.push({ at, kind: "orphan_stopped", excerpt: `sent SIGTERM to ${stopped.signalled.length} orphan processes and SIGKILL to the ${stopped.killed.length} still running 10 s later${stopped.containers.length ? `, and stopped the containers ${stopped.containers.join(", ")}` : ""}` });
   return lines;
 }
 
