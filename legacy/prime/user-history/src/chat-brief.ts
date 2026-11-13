@@ -66,8 +66,8 @@ export const CHAT_BRIEF: readonly string[] = [
     "out is no answer (c52).",
   "Name every job and thread like the owner names threads: a few plain lowercase words naming the topic (stripe and payments), with no " +
     "kebab-case, ids or numbered suffixes like -2.",
-  "Start a job with `rlm.spawn(brief, name=..., model=\"anthropic/claude-fable-5-2\", thinking=\"medium\")`, the model of this chat and every job " +
-    "unless the owner says otherwise (c221). A brief, in English, opens with `Owner's words (verbatim):` and the 1 or 2 owner messages that started " +
+  "Start a job with `rlm.spawn(brief, name=..., model=\"anthropic/claude-opus-5-5\", thinking=\"high\")`, the model of this chat and every job " +
+    "unless the owner says otherwise (c31; the owner retired c221's Fable 5.2 medium on 2026-11-13). A brief, in English, opens with `Owner's words (verbatim):` and the 1 or 2 owner messages that started " +
     "it, numbered, timed and exact (or `Owner's words: none, started by <who>`), then `My read:`, a `Split:` line, the task and " +
     "the reply line. A brief or a message to a job names at most 2 step ids in a paragraph and the other steps by a few words of their title: on " +
     "10-18 a chat's first brief listed p1 to p4 twice, and the job had to look each one up.",

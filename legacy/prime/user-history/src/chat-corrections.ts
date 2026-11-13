@@ -374,9 +374,10 @@ export const OUTSIDE_ACTION_RULE = "Before any outside action (an email, a ticke
 /**
  * The rules a job reads as short lines: outside sends, vendor support, acting directly, never being the blocker, dropping cautious settings,
  * the model and no model fallback, writing, Convex, merges and staging. c62 joined on 11-09: on 11-08 the owner repeated it in ops guy after
- * its job held the staging Convex move behind a prod promote, while JOB_RULES left c62 out.
+ * its job held the staging Convex move behind a prod promote, while JOB_RULES left c62 out. c31 is the model rule again since the owner
+ * retired c221 on 2026-11-13.
  */
-export const JOB_RULES: ReadonlySet<string> = new Set(["c18", "c20", "c30", "c35", "c37", "c47", "c49", "c50", "c62", "c72", "c79", "c221"]);
+export const JOB_RULES: ReadonlySet<string> = new Set(["c18", "c20", "c30", "c31", "c35", "c37", "c47", "c49", "c50", "c62", "c72", "c79"]);
 export function jobLedgerPrompt(ledger: Ledger | null, brief: string = ""): string {
   const lines = [uiRuleLine(brief), chatWebRuleLine(brief), tokenCostRuleLine(brief), heavyComputeRuleLine(brief)].filter((line): line is string => line !== null);
   return [`[corrections] The owner's corrections that bind jobs, live from the ledger; every other correction holds in this job too. ${OUTSIDE_ACTION_RULE} ${READ_RULE}`,

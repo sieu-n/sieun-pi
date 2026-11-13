@@ -142,7 +142,7 @@ export class Agents {
   }
 
   /**
-   * The thread `ensureComm` makes for the agent's comm thread in `room`, on Fable 5.2 at medium thinking (c221): named `<agent> · DM`,
+   * The thread `ensureComm` makes for the agent's comm thread in `room`, on Opus 5.5 at high thinking (c31): named `<agent> · DM`,
    * `<agent> · #<channel>` or `<agent> · Solo <name>`. A work thread answers its comm thread by that exact name, so a name another root
    * thread holds gets the room id after it.
    */
@@ -167,7 +167,7 @@ export class Agents {
   }
 
   /**
-   * The agent's comm thread for `room`: the one the record holds, or a new thread on Fable 5.2 at medium thinking (c221) in the agent's home,
+   * The agent's comm thread for `room`: the one the record holds, or a new thread on Opus 5.5 at high thinking (c31) in the agent's home,
    * saved in the record before anything else. Each call then writes the comm thread's `agent.ref` and the work thread's, which names the
    * comm thread, and throws while the comm thread's ref is not written, so the caller tries again before the comm thread gets an input
    * without its role.

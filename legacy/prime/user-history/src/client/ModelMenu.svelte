@@ -3,7 +3,7 @@
 
   const FAVORITES_KEY = "chat.favoriteModels";
   // Only models from config/allowed-models.ts (c185); test/default-models-allowed.test.ts checks this list.
-  const DEFAULT_FAVORITES: readonly AllowedModel[] = ["anthropic/claude-fable-5-2", "anthropic/claude-opus-5-5", "openai-codex/gpt-6.1-sol", "anthropic/claude-sonnet-5-5", "openai-codex/gpt-6-luna"];
+  const DEFAULT_FAVORITES: readonly AllowedModel[] = ["anthropic/claude-opus-5-5", "anthropic/claude-fable-5-2", "openai-codex/gpt-6.1-sol", "anthropic/claude-sonnet-5-5", "openai-codex/gpt-6-luna"];
   const PROVIDER_NAME: Record<string, string> = { anthropic: "Anthropic", "openai-codex": "OpenAI Codex", openai: "OpenAI", google: "Google" };
   const providerName = (provider: string): string => PROVIDER_NAME[provider] ?? provider.charAt(0).toUpperCase() + provider.slice(1);
 

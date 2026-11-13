@@ -4,7 +4,7 @@ Read this before you start, steer or delete a job.
 
 ## Start a job
 
-1. `handle = await rlm.spawn(brief, name=..., model="anthropic/claude-fable-5-2", thinking="medium")` starts a job in this repository, under its rules.
+1. `handle = await rlm.spawn(brief, name=..., model="anthropic/claude-opus-5-5", thinking="high")` starts a job in this repository, under its rules.
 2. `await rlm.create_session(brief, name=..., cwd=...)` starts a root in another repository.
 
 ## Write the brief

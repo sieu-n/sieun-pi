@@ -6,11 +6,14 @@ import { parseArgs } from "node:util";
 import type { AllowedModel } from "../../../config/allowed-models.ts";
 import { AGENT_RELAY_PATH } from "../../../components/prime-relay/agents/protocol.ts";
 
-/** A new thread's model when none is named: Fable 5.2, the owner's 2026-11-10 pick (c221), one of config/allowed-models.ts (c185). */
-export const DEFAULT_MODEL: AllowedModel = "anthropic/claude-fable-5-2";
+/**
+ * A new thread's model when none is named: Opus 5.5, the owner's pin (c31, back on 2026-11-13 when he retired c221's Fable 5.2), one of
+ * config/allowed-models.ts (c185).
+ */
+export const DEFAULT_MODEL: AllowedModel = "anthropic/claude-opus-5-5";
 
-/** A new thread's thinking level when none is named (c221). */
-export const DEFAULT_THINKING = "medium";
+/** A new thread's thinking level when none is named (c31). */
+export const DEFAULT_THINKING = "high";
 
 /** Today's chat, which this server ports from. One constant, so its move to legacy/prime/user-history is a one-line edit. */
 export const USER_HISTORY_DIR = "legacy/prime/user-history";

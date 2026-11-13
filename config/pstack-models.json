@@ -1,141 +1,144 @@
 {
  "version": 1,
- "verified_at": "2026-11-10",
+ "verified_at": "2026-11-13",
  "roles": {
   "feature, refactoring": [
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    }
   ],
   "bug-fix": [
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    }
   ],
   "perf-issue": [
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    }
   ],
   "hillclimb": [
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    }
   ],
   "judgment and prose": [
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    }
   ],
   "hardest tasks": [
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    }
   ],
   "how explorer": [
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    }
   ],
   "how explainer": [
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    }
   ],
   "how critics": [
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    },
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    }
   ],
   "why investigators": [
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    }
   ],
   "why synthesizer": [
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    }
   ],
   "cross-judge pool": [
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    },
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    }
   ],
   "swarm workers": [
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    }
   ],
   "architect runners": [
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    },
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    }
   ],
   "interrogate reviewers": [
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    },
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    }
   ],
   "frontend": [
    {
-    "model": "anthropic/claude-fable-5-2",
-    "thinking": "medium"
+    "model": "anthropic/claude-opus-5-5",
+    "thinking": "high"
    }
   ]
  },
  "policy": {
   "source_of_truth": "This file is the only model policy for Prime Agent subagents. Change it with the setup-pstack skill.",
-  "default": "anthropic/claude-fable-5-2 with thinking medium for every chat thread, job and subagent (owner 2026-11-10, c221: \"can you change the default model & all thread's model to Fable 5.2 - medium effort?\", which replaces the Opus 5.5 high pin of c31). Set model= and thinking='medium' on every spawn; use another model only when the owner names it.",
+  "default": "anthropic/claude-opus-5-5 with thinking high for every chat thread, job and subagent (c31, owner 2026-10-10: \"the chat threads and Jobs should be pinned at opus5.5. high (dont' hard enforce with code but with prompt)\", and back on 2026-11-13: \"actually back to opus 55 high\", which retires the Fable 5.2 medium default of c221). Set model= and thinking='high' on every spawn; use another model only when the owner names it.",
   "allowed": [
    "inherit-parent",
-   "anthropic/claude-fable-5-2",
    "anthropic/claude-opus-5-5",
+   "anthropic/claude-fable-5-2",
    "openai-codex/gpt-6.1-sol"
   ],
   "recommended": {
    "frontend": [
-    "anthropic/claude-fable-5-2"
+    "anthropic/claude-opus-5-5"
    ]
   },
   "banned": "Never Sonnet or Haiku (any version). Never the gpt terra or luna series (gpt-5.6-terra, gpt-5.6-terra-pro, gpt-5.6-luna, gpt-5.6-luna-pro, and later models with those names). Never other Opus or Fable versions. This holds even when a skill, playbook, or config names them.",
   "explicit_user_choice": "When the user names a model or a subagent architecture (named models, a cross-family panel, a bakeoff), follow the user, inside the banned list.",
   "enforcement": "Written rule only. Do not add an extension, setting, or code patch to enforce it (owner 2026-10-10: pin by prompt, not code).",
-  "fable": "Fable 5.2 is the default for every spawn since the owner picked it on 2026-11-10 (c221). This replaces the 2026-10-08 rule that kept Fable for owner-picked threads only.",
+  "fable": "Fable 5.2 was the default from 2026-11-10 (c221) until the owner moved every thread back to Opus 5.5 high on 2026-11-13. It stays allowed as an option the owner or a brief names; do not pick it on your own.",
   "reachability_2026-11-10": {
    "anthropic/claude-fable-5-2 thinking medium": "MODEL_OK: /v1/messages returns 200 with user-agent claude-cli/2.1.290 or newer and 400 claude_code_version_too_old with 2.1.280, so the models.json entry sends claude-cli/2.1.311."
+  },
+  "reachability_2026-11-13": {
+   "anthropic/claude-opus-5-5 thinking high": "MODEL_OK"
   }
  },
- "updated_at": "2026-11-10"
+ "updated_at": "2026-11-13"
 }

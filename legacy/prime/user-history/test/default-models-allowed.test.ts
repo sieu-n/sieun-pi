@@ -70,11 +70,11 @@ test("every default, fallback and fixed model pick names an allowed model", () =
   assert.deepEqual(outside, [], "models outside config/allowed-models.ts (owner rule c185)");
 });
 
-test("the model menu's default favorites are allowed and lead with Fable 5.2, the default since c221", () => {
+test("the model menu's default favorites are allowed and lead with Opus 5.5, the default under c31", () => {
   const source = readFileSync(join(ROOT, "legacy/prime/user-history/src/client/ModelMenu.svelte"), "utf8");
   const list = /const DEFAULT_FAVORITES[^=]*= (\[[^\]]*\])/.exec(source);
   assert.ok(list, "ModelMenu.svelte has a DEFAULT_FAVORITES list");
   const favorites = JSON.parse(list[1]!) as string[];
-  assert.equal(favorites[0], "anthropic/claude-fable-5-2");
+  assert.equal(favorites[0], "anthropic/claude-opus-5-5");
   assert.deepEqual(favorites.filter(model => !isAllowedModel(model)), []);
 });

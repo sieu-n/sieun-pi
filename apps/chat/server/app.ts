@@ -49,9 +49,9 @@ function offered(key: AllowedModel, label: string, family: string, levels: Think
 
 export const MODELS: ModelCatalog = {
   models: [
-    offered("anthropic/claude-fable-5-2", "Fable 5.2", "claude", ["off", "low", "medium", "high", "xhigh"]),
     offered("anthropic/claude-opus-5-5", "Opus 5.5", "claude", ["off", "low", "medium", "high", "xhigh"]),
     offered("anthropic/claude-sonnet-5-5", "Sonnet 5.5", "claude", ["off", "low", "medium", "high"]),
+    offered("anthropic/claude-fable-5-2", "Fable 5.2", "claude", ["off", "low", "medium", "high", "xhigh"]),
     offered("openai-codex/gpt-6.1-sol", "GPT-6.1 sol", "gpt", ["low", "medium", "high", "xhigh"]),
     offered("openai-codex/gpt-6-luna", "GPT-6 luna", "gpt", ["low", "medium", "high", "xhigh"]),
   ],

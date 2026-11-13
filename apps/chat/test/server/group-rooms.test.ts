@@ -68,7 +68,7 @@ describe("a Solo room", () => {
     const ventComm = commOf(s, agents.vent, room.id)!;
     const frontComm = commOf(s, agents.frontend, room.id)!;
     assert.equal(host.threadsById.get(ventComm)!.row.name, `Vent · Solo ${QUIET}`);
-    assert.equal(host.threadsById.get(frontComm)!.row.thinkingLevel, "medium");
+    assert.equal(host.threadsById.get(frontComm)!.row.thinkingLevel, "high");
     const header = `[Solo "${QUIET}" (${room.id}): ${QUIET} · with Vent, frontend bro · post 1 from You (owner) · hops 0]`;
     assert.deepEqual(roomSubmits().map(x => [x.thread, x.input.requestId, x.input.ownerTurn, x.input.whenBusy, x.input.text]).sort(), [
       [ventComm, `d:${room.id}:p1:${agents.vent}`, true, "steer", `${header}\n\n${QUIET}`],
