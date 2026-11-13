@@ -184,12 +184,15 @@ export async function measureTests(query: Query, table: readonly TableTest[], ta
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error)).replace(/phx_[A-Za-z0-9]+/g, "phx_***");
 
-/** A HogQL query through PostHog's query API, failing on any non-200 or query error. */
+/**
+ * A HogQL query through PostHog's query API, failing on any non-200 or query error. It forces a fresh read, because on 11-13 the run right
+ * after seven experiments were ended at 12:54Z got the cached system.experiments rows and still read them as overdue.
+ */
 export function posthogQuery(key: string, project: string, host = "https://us.posthog.com"): Query {
   return async hogql => {
     const response = await fetch(`${host}/api/projects/${project}/query/`, {
       method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ query: { kind: "HogQLQuery", query: hogql } }),
+      body: JSON.stringify({ query: { kind: "HogQLQuery", query: hogql }, refresh: "force_blocking" }),
       signal: AbortSignal.timeout(PRECHECK_TARGET_MS / 3),
     });
     const body = await response.json() as { results?: unknown[][]; error?: string; detail?: string };
