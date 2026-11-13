@@ -32,7 +32,7 @@ test("lines that all came before their fix date the headline from the newest fix
   writeFileSync(join(dataDir, "corrections.json"), JSON.stringify({ corrections: [
     { ...c79, repeats: [{ at: said.c79, chat: vp, words: "NONONONO" }] }, { ...c18, repeats: [{ at: said.c18, chat: vp, words: "short please" }] }] }));
   const output = await measureHarness({ roots: [], views: async () => [], dataDir, now, cache: async () => ({ metrics: { cache_read_ratio_1h: 95, cache_read_ratio_24h: 95 }, flagged: [] }),
-    history: async () => ({ owner: [{ text: "NONONONO", at: at(said.c79) }, { text: "short please", at: at(said.c18) }], refines: [] }), commitTime, transcripts: async () => [], smoke: { python: "python3" } });
+    history: async () => ({ owner: [{ text: "NONONONO", at: at(said.c79) }, { text: "short please", at: at(said.c18) }], refines: [] }), commitTime, harnessFixes: new Map(), transcripts: async () => [], smoke: { python: "python3" } });
   assert.deepEqual([output.metrics.repeat_corrections_7d, output.metrics.repeats_before_fix_7d], [2, 2]);
   assert.deepEqual(output.lastEventAt, { repeat_corrections_7d: at(commits["06aa1dfb"]!), repeats_before_fix_7d: at(commits["06aa1dfb"]!) });
 
@@ -64,7 +64,7 @@ test("a commit a ref gains after its fix flipped a repeat does not date the head
   const c117 = entry("c117", "2026-10-19T06:02:55Z", "sieun-pi 18b73ec8 (brief line), wake note fix db3b622");
   writeFileSync(join(dataDir, "corrections.json"), JSON.stringify({ corrections: [{ ...c117, repeats: [{ at: said, chat: vp, words: "stop sending these" }] }] }));
   const measure = (when: string) => measureHarness({ roots: [], views: async () => [], dataDir, now: at(when), cache: async () => ({ metrics: { cache_read_ratio_1h: 95, cache_read_ratio_24h: 95 }, flagged: [] }),
-    history: async () => ({ owner: [{ text: "stop sending these", at: at(said) }], refines: [] }), commitTime: time, transcripts: async () => [], smoke: { python: "python3" } });
+    history: async () => ({ owner: [{ text: "stop sending these", at: at(said) }], refines: [] }), commitTime: time, harnessFixes: new Map(), transcripts: async () => [], smoke: { python: "python3" } });
   const output = await measure("2026-10-28T02:44:00Z");
   assert.deepEqual([output.metrics.repeat_corrections_7d, output.metrics.repeats_before_fix_7d], [1, 1]);
   assert.deepEqual(output.lastEventAt, { repeat_corrections_7d: at(times["18b73ec8"]!), repeats_before_fix_7d: at(times["18b73ec8"]!) });

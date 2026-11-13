@@ -87,7 +87,7 @@ test("an unreachable LGTM is asked once, and every window gets its error", async
 test("a cache check that throws leaves both shares out of the harness output", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "cache-no-data-"));
   const output = await measureHarness({ roots: [], views: async () => [], dataDir, now: Date.parse("2026-10-19T15:30:00Z"),
-    cache: () => Promise.reject(new Error("LGTM unreachable")), history: async () => ({ owner: [], refines: [] }), commitTime: async () => undefined, transcripts: async () => [], smoke: { python: "python3" } });
+    cache: () => Promise.reject(new Error("LGTM unreachable")), history: async () => ({ owner: [], refines: [] }), commitTime: async () => undefined, harnessFixes: new Map(), transcripts: async () => [], smoke: { python: "python3" } });
   for (const key of keys) assert.equal(key in output.metrics, false);
   assert.match(output.flagged!.find(slice => slice.kind === "source_error")!.excerpt, /^cache_read_ratio_1h and cache_read_ratio_24h not measured: LGTM did not answer: LGTM unreachable$/);
   const verdict = judge(duty.metrics, withHarness(tools, output));

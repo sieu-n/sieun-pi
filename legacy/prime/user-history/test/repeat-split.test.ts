@@ -2,12 +2,12 @@
 // no run could see whether a fix held. The split shows it next to the headline: repeats_before_fix_7d, repeats_after_fix_7d, repeats_no_fix_7d.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { applyCorrection, fixRefs, parseLedger, type CountedRepeat, type Correction } from "../src/chat-corrections.ts";
-import { firstFixLanded, fixLanded, fixMarks, gitCommitTime, sideLabel, splitLastEvents, splitMetrics, splitRepeats } from "../scripts/duties/repeat-split.ts";
+import { firstFixLanded, fixLanded, fixMarks, fixRepos, gitCommitTime, harnessDirs, readHarnessFixes, sideLabel, splitLastEvents, splitMetrics, splitRepeats } from "../scripts/duties/repeat-split.ts";
 import { measureHarness } from "../scripts/duties/harness-health.ts";
 
 const at = Date.parse;
@@ -68,7 +68,7 @@ test("the d10 precheck reports the split next to repeat_corrections_7d and leads
   const repeat = { at: "2026-10-19T06:00:13Z", chat: vp, words: "NONONONONONO" };
   writeFileSync(join(dataDir, "corrections.json"), JSON.stringify({ corrections: [{ ...c79, repeats: [repeat] }] }));
   const output = await measureHarness({ roots: [], views: async () => [], dataDir, now, cache: async () => ({ metrics: { cache_read_ratio_1h: 95, cache_read_ratio_24h: 95 }, flagged: [] }),
-    history: async () => ({ owner: [{ text: repeat.words, at: at("2026-10-19T05:32:49.192Z") }], refines: [] }), commitTime, transcripts: async () => [], smoke: { python: "python3" } });
+    history: async () => ({ owner: [{ text: repeat.words, at: at("2026-10-19T05:32:49.192Z") }], refines: [] }), commitTime, harnessFixes: new Map(), transcripts: async () => [], smoke: { python: "python3" } });
   assert.equal(output.metrics.repeat_corrections_7d, 1);
   assert.deepEqual([output.metrics.repeats_before_fix_7d, output.metrics.repeats_after_fix_7d, output.metrics.repeats_no_fix_7d], [1, 0, 0]);
   const line = output.flagged!.find(slice => slice.kind === "repeat_corrections_7d")!;
@@ -126,4 +126,56 @@ test("a repeat after any fix in place when the owner said it is after_fix, thoug
   assert.deepEqual(fixMarks("shared-ui.test.ts (fails at 8883b9521a on a layout, passes at 7979da5081)", at(c78.at), later).commits, ["7979da5081"]);
   const [cost] = await splitRepeats([counted(c157, "2026-10-27T21:00:00Z")], later, time);
   assert.equal(cost!.side, "before_fix");
+});
+
+test("a harness entry whose metadata names the correction is a fix at each of its versions, so c215's 11-13 02:47Z line reads after_fix (d10 11-13 13:55Z)", async () => {
+  const sg = { id: "01a11b0b-7c15-73da-9481-8de15903eab4", name: "slack green guy" };
+  const note = "slack_green_trial_and_upgrade_cards_lead_with_the_action_and_its_reward_no_fille";
+  const agentDir = mkdtempSync(join(tmpdir(), "repeat-split-harness-"));
+  mkdirSync(join(agentDir, "harness"));
+  mkdirSync(join(agentDir, "session-artifacts/s1/harness"), { recursive: true });
+  mkdirSync(join(agentDir, "session-artifacts/s2"), { recursive: true });
+  writeFileSync(join(agentDir, "harness/harness_state.json"), JSON.stringify({ schema: 1, entries: {
+    prompt: { [note]: { id: note, metadata: { corrections: ["c215"] }, created_at: "2026-11-04T02:53:22.228Z", updated_at: "2026-11-13T03:00:12.053Z", version: 2 } },
+    memory: { old: { id: "old", metadata: { corrections: ["c92"] }, created_at: "2026-10-17T23:45:05.914Z", updated_at: "2026-10-17T23:45:05.914Z", version: 3 } } },
+  refinements: [{ id: "refine_20261104025312289", changes: [`create prompt:${note}`], created_at: "2026-11-04T02:53:22.228Z" },
+    { id: "refine_20261113025948995", changes: [`update prompt:${note}`], created_at: "2026-11-13T03:00:12.053Z" }] }));
+  writeFileSync(join(agentDir, "harness/refinements.jsonl"), `${JSON.stringify({ id: "refine_20261020010203004", appliedEdits: [{ action: "update", kind: "memory", id: "old", applied: true, after: {} }] })}\n`);
+  writeFileSync(join(agentDir, "session-artifacts/s1/harness/harness_state.json"), JSON.stringify({ schema: 1, entries: { prompt: { local: { id: "local", metadata: { corrections: ["c215"] }, created_at: "2026-11-05T00:00:00Z" } } } }));
+  assert.deepEqual(harnessDirs(agentDir), [join(agentDir, "harness"), join(agentDir, "session-artifacts/s1/harness")]);
+  const harness = await readHarnessFixes(harnessDirs(agentDir));
+  assert.deepEqual(harness.get("c215"), [at("2026-11-04T02:53:22.228Z"), at("2026-11-05T00:00:00Z"), at("2026-11-13T03:00:12.053Z")]);
+  assert.deepEqual(harness.get("c92"), [at("2026-10-17T23:45:05.914Z"), at("2026-10-20T01:02:03.004Z")]);
+
+  // The ledger ref before the 11-13 fix call named only mw1itohn, the owner's own 11-04 message.
+  const c215 = { ...entry("c215", "2026-11-04T02:52:38.205Z", "mw1itohn"), chat: sg };
+  const later = at("2026-11-13T13:55:00Z");
+  const said = "2026-11-13T02:47:00Z";
+  const dataDir = mkdtempSync(join(tmpdir(), "repeat-split-c215-"));
+  const words = "NEVER EVER put bullshit like \"Not guaranteed to be hidden.\"";
+  writeFileSync(join(dataDir, "corrections.json"), JSON.stringify({ corrections: [{ ...c215, repeats: [{ at: "2026-11-13T02:58:06.700Z", chat: sg, words }] }] }));
+  const measure = (harnessFixes: typeof harness) => measureHarness({ roots: [], views: async () => [], dataDir, now: later, cache: async () => ({ metrics: { cache_read_ratio_1h: 95, cache_read_ratio_24h: 95 }, flagged: [] }),
+    history: async () => ({ owner: [{ text: words, at: at(said) }], refines: [] }), commitTime, harnessFixes, transcripts: async () => [], smoke: { python: "python3" } });
+  const output = await measure(harness);
+  assert.deepEqual([output.metrics.repeat_corrections_7d, output.metrics.repeats_before_fix_7d, output.metrics.repeats_after_fix_7d, output.metrics.repeats_no_fix_7d], [1, 0, 1, 0]);
+  assert.match(output.flagged!.find(slice => slice.kind === "repeat_corrections_7d")!.excerpt, /^after fix of 11-05 00:00Z, fixed again 11-13 03:00Z: c215 /);
+  assert.equal((await measure(new Map())).metrics.repeats_no_fix_7d, 1);
+  assert.equal(await firstFixLanded(c215.ref, at(c215.at), later, commitTime, harness.get("c215")), at("2026-11-04T02:53:22.228Z"));
+  assert.equal(await firstFixLanded(c215.ref, at("2026-11-04T03:00:00Z"), later, commitTime, harness.get("c215")), at("2026-11-05T00:00:00Z"));
+});
+
+test("fixRepos keeps every checkout under ~/src and ~/Documents/Github, so a slack-green commit resolves (2cc3fb6d, #518, 11-13)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "repeat-split-home-"));
+  const repo = join(home, "Documents/Github/slack-green");
+  mkdirSync(repo, { recursive: true });
+  mkdirSync(join(home, "src/notes"), { recursive: true });
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env: { ...process.env, GIT_COMMITTER_DATE: "2026-11-13T11:07:50Z", GIT_AUTHOR_DATE: "2026-11-13T11:07:50Z" } }).trim();
+  git("init", "-q");
+  writeFileSync(join(repo, "a"), "a");
+  git("add", "a");
+  git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "fix(frontend): remove the access-log caveats");
+  const repos = fixRepos("", home);
+  assert.ok(repos.includes(repo));
+  assert.ok(!repos.includes(join(home, "src/notes")));
+  assert.equal(await gitCommitTime(repos)(git("rev-parse", "--short=8", "HEAD")), at("2026-11-13T11:07:50Z"));
 });

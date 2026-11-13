@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -46,25 +47,31 @@ export function fixMarks(ref: string, given: number, now: number): { commits: st
   return { commits, messages, refines };
 }
 
-/** When each fix a ref names landed: its message and refine id times and its commit times (`commitTime`, undefined for a commit no repo knows). */
-async function fixTimes(ref: string, given: number, now: number, commitTime: (hash: string) => Promise<number | undefined>): Promise<number[]> {
+/**
+ * Each correction id's harness fixes: the times a harness entry whose `metadata.corrections` names it was created or changed. On 11-13 d10 read
+ * c215's 02:47Z repeat as before the 03:00Z refine its ref named, while the global prompt note naming c215 had been in place since 11-04 02:53Z,
+ * 44 s after the correction; the ledger ref named only the owner's own message.
+ */
+export type HarnessFixes = ReadonlyMap<string, readonly number[]>;
+
+/** When each fix a ref or a harness entry names landed: message and refine id times, harness entry times and commit times (`commitTime`, undefined for a commit no repo knows). */
+async function fixTimes(ref: string, given: number, now: number, commitTime: (hash: string) => Promise<number | undefined>, harness: readonly number[]): Promise<number[]> {
   const { commits, messages, refines } = fixMarks(ref, given, now);
-  return [...messages, ...refines, ...(await Promise.all(commits.map(commitTime))).filter((at): at is number => at !== undefined)];
+  return [...messages, ...refines, ...harness.filter(at => at >= given && at <= now), ...(await Promise.all(commits.map(commitTime))).filter((at): at is number => at !== undefined)];
 }
 
-/** When the newest fix a ref names landed: the latest message or refine id time or commit time. */
-export async function fixLanded(ref: string, given: number, now: number, commitTime: (hash: string) => Promise<number | undefined>): Promise<number | undefined> {
-  const times = await fixTimes(ref, given, now, commitTime);
+/** When the newest fix a ref or a harness entry names landed: the latest message, refine id, harness entry or commit time. */
+export async function fixLanded(ref: string, given: number, now: number, commitTime: (hash: string) => Promise<number | undefined>, harness: readonly number[] = []): Promise<number | undefined> {
+  const times = await fixTimes(ref, given, now, commitTime, harness);
   return times.length ? Math.max(...times) : undefined;
 }
 
 /**
- * When the first fix a ref names landed: the earliest commit or message id time at or after the correction (`given`), for the chase rule in
+ * When the first fix a ref or a harness entry names landed: the earliest time at or after the correction (`given`), for the chase rule in
  * repeatsBetween; undefined while none has. A commit from before the correction was no fix for it.
  */
-export async function firstFixLanded(ref: string, given: number, now: number, commitTime: (hash: string) => Promise<number | undefined>): Promise<number | undefined> {
-  const { commits, messages, refines } = fixMarks(ref, given, now);
-  const times = [...messages, ...refines, ...(await Promise.all(commits.map(commitTime))).filter((at): at is number => at !== undefined && at >= given && at <= now)];
+export async function firstFixLanded(ref: string, given: number, now: number, commitTime: (hash: string) => Promise<number | undefined>, harness: readonly number[] = []): Promise<number | undefined> {
+  const times = (await fixTimes(ref, given, now, commitTime, harness)).filter(at => at >= given && at <= now);
   return times.length ? Math.min(...times) : undefined;
 }
 
@@ -78,10 +85,11 @@ export const repeatSide = (said: number, fixed: number | undefined): RepeatSide 
  * came after a fix that had landed, such as c117's 10-27 18:43Z line after seven tell_owner checks and c78's three 10-27 lines after
  * 0e90bb1421; p1240 then only waited for them to age out.
  */
-export async function splitRepeats(repeats: readonly CountedRepeat[], now: number, commitTime: (hash: string) => Promise<number | undefined>): Promise<SplitRepeat[]> {
+export async function splitRepeats(repeats: readonly CountedRepeat[], now: number, commitTime: (hash: string) => Promise<number | undefined>,
+  harness: HarnessFixes = new Map()): Promise<SplitRepeat[]> {
   return Promise.all(repeats.map(async repeat => {
     const given = Date.parse(repeat.entry.at);
-    const times = await fixTimes(fixRefs(repeat.entry), given, now, commitTime);
+    const times = await fixTimes(fixRefs(repeat.entry), given, now, commitTime, harness.get(repeat.entry.id) ?? []);
     const held = times.filter(time => time >= given && time < repeat.said);
     const later = times.filter(time => time >= repeat.said);
     const side: RepeatSide = held.length ? "after_fix" : later.length ? "before_fix" : "no_fix";
@@ -129,9 +137,74 @@ export function sideLabel(repeat: SplitRepeat): string {
   return `after fix${fixed}${repeat.flipped === undefined ? "" : `, fixed again ${minute(repeat.flipped)}`}`;
 }
 
-/** The checkouts a ref's commits live in: sieun-pi on the box and on the Mac, and auto-sns-agent. */
-export const fixRepos = (autoSns: string): string[] =>
-  [process.env.SIEUN_PI_REPO, join(homedir(), "src/sieun-pi"), join(homedir(), "Documents/Github/sieun-pi"), autoSns].filter((dir): dir is string => !!dir && existsSync(join(dir, ".git")));
+const children = (dir: string): string[] => { try { return readdirSync(dir).sort().map(name => join(dir, name)); } catch { return []; } };
+
+/**
+ * The checkouts a ref's commits live in: sieun-pi and auto-sns-agent first, then every other checkout directly under ~/src and ~/Documents/Github,
+ * one level deep. With only the first two, slack-green 2cc3fb6d (#518, 11-13 11:07Z, c215's access-log caveat test) never had a time.
+ */
+export function fixRepos(autoSns: string, home = homedir()): string[] {
+  const kept = ["src", "Documents/Github"].flatMap(parent => children(join(home, parent)));
+  return [...new Set([process.env.SIEUN_PI_REPO, join(home, "src/sieun-pi"), join(home, "Documents/Github/sieun-pi"), autoSns, ...kept])]
+    .filter((dir): dir is string => !!dir && existsSync(join(dir, ".git")));
+}
+
+/** The harness folders a box keeps: the global one and each session's under session-artifacts, one level deep. */
+export function harnessDirs(agentDir = join(homedir(), ".prime/agent")): string[] {
+  return [join(agentDir, "harness"), ...children(join(agentDir, "session-artifacts")).map(dir => join(dir, "harness"))].filter(dir => existsSync(join(dir, "harness_state.json")));
+}
+
+const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const time = (value: unknown): number | undefined => { const at = typeof value === "string" ? Date.parse(value) : NaN; return Number.isNaN(at) ? undefined : at; };
+const refineTime = (id: string): number | undefined => { const match = [...id.matchAll(REFINE)][0]; return match ? Date.UTC(+match[1]!, +match[2]! - 1, +match[3]!, +match[4]!, +match[5]!, +match[6]!, +match[7]!) : undefined; };
+
+/**
+ * The harness fixes in one harness folder's `harness_state.json` and `refinements.jsonl`: for each entry whose `metadata.corrections` names a
+ * correction, its created_at and updated_at and the time of each refinement that created or updated it. The state keeps refinements since 10-17
+ * as `changes` lines such as "update prompt:<id>"; the log keeps older ones as `appliedEdits`.
+ */
+export function harnessFixesIn(state: unknown, log: readonly unknown[], into = new Map<string, number[]>()): Map<string, number[]> {
+  const versions = new Map<string, number[]>();
+  const add = (key: string, at: number | undefined) => { if (at !== undefined) versions.set(key, [...versions.get(key) ?? [], at]); };
+  for (const event of Array.isArray(record(state).refinements) ? record(state).refinements as unknown[] : []) {
+    const { changes, created_at } = record(event);
+    for (const change of Array.isArray(changes) ? changes : []) {
+      const match = typeof change === "string" ? /^(?:create|update) (\w+):(\S+)$/.exec(change) : null;
+      if (match) add(`${match[1]}:${match[2]}`, time(created_at));
+    }
+  }
+  for (const event of log) {
+    const { id, appliedEdits } = record(event);
+    for (const edit of Array.isArray(appliedEdits) ? appliedEdits : []) {
+      const { action, kind, id: entry, after, applied } = record(edit);
+      if ((action === "create" || action === "update") && applied !== false) add(`${String(kind)}:${String(entry)}`, time(record(after).updated_at) ?? (typeof id === "string" ? refineTime(id) : undefined));
+    }
+  }
+  for (const [kind, entries] of Object.entries(record(record(state).entries))) {
+    for (const [id, value] of Object.entries(record(entries))) {
+      const { metadata, created_at, updated_at } = record(value);
+      const corrections = record(metadata).corrections;
+      if (!Array.isArray(corrections)) continue;
+      const times = [time(created_at), time(updated_at), ...versions.get(`${kind}:${id}`) ?? []].filter((at): at is number => at !== undefined);
+      for (const correction of corrections) if (typeof correction === "string") into.set(correction, [...new Set([...into.get(correction) ?? [], ...times])].sort((a, b) => a - b));
+    }
+  }
+  return into;
+}
+
+/** The harness fixes in each folder (`harnessDirs`); a folder whose state cannot be read adds none. */
+export async function readHarnessFixes(dirs: readonly string[]): Promise<HarnessFixes> {
+  const fixes = new Map<string, number[]>();
+  for (const dir of dirs) {
+    const text = await readFile(join(dir, "harness_state.json"), "utf8").catch(() => "");
+    if (!text.includes('"corrections"')) continue;
+    let state: unknown;
+    try { state = JSON.parse(text); } catch { continue; }
+    const log = (await readFile(join(dir, "refinements.jsonl"), "utf8").catch(() => "")).split("\n").flatMap(line => { try { return line ? [JSON.parse(line) as unknown] : []; } catch { return []; } });
+    harnessFixesIn(state, log, fixes);
+  }
+  return fixes;
+}
 
 /** A commit's committer time in the first repo that has it, once per hash. */
 export function gitCommitTime(repos: readonly string[]): (hash: string) => Promise<number | undefined> {
@@ -153,8 +226,9 @@ async function main(): Promise<void> {
   const history = chatHistories(join(homedir(), ".prime/agent/sessions"), process.platform === "darwin" ? null : macSessionLines, errors);
   const ledger = await new CorrectionLedger(process.env.HARNESS_DATA_DIR || join(homedir(), ".prime/agent/browser-chat")).read();
   const commitTime = gitCommitTime(fixRepos(AUTO_SNS));
+  const harness = await readHarnessFixes(harnessDirs());
   const split = await splitRepeats(await repeatsBetween(ledger, now - REPEAT_DAYS * 86_400_000, now, history,
-    entry => firstFixLanded(fixRefs(entry), Date.parse(entry.at), now, commitTime)), now, commitTime);
+    entry => firstFixLanded(fixRefs(entry), Date.parse(entry.at), now, commitTime, harness.get(entry.id))), now, commitTime, harness);
   for (const repeat of split) {
     process.stdout.write(`${new Date(repeat.said).toISOString().slice(0, 16)}Z ${repeat.entry.id} ${sideLabel(repeat)} in ${repeat.repeat.chat.name || repeat.repeat.chat.id}: ${repeat.repeat.words.replace(/\s+/g, " ").slice(0, 120)}\n`);
   }

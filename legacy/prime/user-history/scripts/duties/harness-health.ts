@@ -9,7 +9,7 @@ import { loadSkillsFromDir } from "prime-agent";
 import { CorrectionLedger, fixRefs, repeatsBetween, type ChatHistory } from "../../src/chat-corrections.ts";
 import { chatHistory, fileChatHistory } from "../../src/owner-history.ts";
 import { readAppended } from "./read-appended.ts";
-import { firstFixLanded, fixRepos, gitCommitTime, sideLabel, splitLastEvents, splitMetrics, splitRepeats } from "./repeat-split.ts";
+import { firstFixLanded, fixRepos, gitCommitTime, harnessDirs, readHarnessFixes, sideLabel, splitLastEvents, splitMetrics, splitRepeats, type HarnessFixes } from "./repeat-split.ts";
 import { grafanaPrometheus } from "../../src/usage/lgtm.ts";
 import { lgtmFailure, measureCache, WINDOWS, type CacheMetric } from "./cache-ratio.ts";
 import { SMOKE_SESSION, smokeSkills, type SmokeEnv } from "./skill-smoke.ts";
@@ -62,6 +62,8 @@ export interface HarnessDeps {
   history: (chat: string) => Promise<ChatHistory>;
   /** When a commit a correction's ref names landed (`splitRepeats`), undefined for one no repo knows. */
   commitTime: (hash: string) => Promise<number | undefined>;
+  /** When each harness entry that names a correction in `metadata.corrections` was created or changed (`readHarnessFixes`). */
+  harnessFixes: HarnessFixes;
   /** The Prime Agent transcript files that changed since the given time, for the reads of `transcripts` roots. */
   transcripts: (since: number) => Promise<string[]>;
   smoke: SmokeEnv;
@@ -242,7 +244,7 @@ export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput 
   const pairs = listed.filter(pair => pair.score >= OVERLAP_MIN);
   const unread = skills.filter(skill => skill.lastRead === null);
   const repeats = await splitRepeats(await repeatsBetween(await new CorrectionLedger(deps.dataDir).read(), deps.now - REPEAT_DAYS * DAY, deps.now, deps.history,
-    entry => firstFixLanded(fixRefs(entry), Date.parse(entry.at), deps.now, deps.commitTime)), deps.now, deps.commitTime);
+    entry => firstFixLanded(fixRefs(entry), Date.parse(entry.at), deps.now, deps.commitTime, deps.harnessFixes.get(entry.id))), deps.now, deps.commitTime, deps.harnessFixes);
   const smoke = await smokeSkills(skills, deps.roots, deps.smoke);
   const failures = smoke.filter(result => !result.pass);
   const flagged: FlaggedSlice[] = [
@@ -391,7 +393,7 @@ async function main(): Promise<void> {
     return [];
   })];
   const { skills, smoke, ...result } = await measureHarness({ roots, views, dataDir, now: Date.now(), cache,
-    history, commitTime: gitCommitTime(fixRepos(AUTO_SNS)), transcripts: since => primeTranscripts(homedir(), since), smoke: { python } });
+    history, commitTime: gitCommitTime(fixRepos(AUTO_SNS)), harnessFixes: await readHarnessFixes(harnessDirs()), transcripts: since => primeTranscripts(homedir(), since), smoke: { python } });
   for (const error of macErrors) result.flagged = [...result.flagged ?? [], error.startsWith("views: ")
     ? { kind: "unread_14d_mac", excerpt: `no data: the Mac's skill view events could not be read, so its read-skill.mjs reads are left out: ${error}`.slice(0, EXCERPT_MAX) }
     : { kind: "repeat_corrections_mac", excerpt: `no data: the Mac read of a chat's session failed, so its repeats are left out: ${error}`.slice(0, EXCERPT_MAX) }];
