@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { READS_VERSION, transcriptReads, type ReadState, type Skill, type SkillRoot } from "../scripts/duties/harness-health.ts";
+import { markReads, READS_VERSION, transcriptReads, type ReadState, type Skill, type SkillRoot } from "../scripts/duties/harness-health.ts";
 
 const roots: SkillRoot[] = [{ name: "prime", dir: "/skills", transcripts: true }];
 const skill = (name: string): Skill => ({ id: `prime:${name}`, root: "prime", dir: `/skills/${name}`, description: "" });
@@ -15,12 +15,15 @@ const since = Date.parse("2026-10-18T00:00:00Z");
 const call = (ts: string, code: string) => ({ type: "message", timestamp: ts, message: { role: "assistant", content: [{ type: "toolCall", name: "ipython", arguments: { code } }] } });
 const result = (ts: string, text: string) => ({ type: "message", timestamp: ts, message: { role: "toolResult", toolName: "ipython", content: [{ type: "text", text }] } });
 
-async function reads(entries: object[]): Promise<Record<string, string>> {
+async function reads(entries: object[], tracked = skills, under = roots): Promise<Record<string, string>> {
   const file = join(mkdtempSync(join(tmpdir(), "skill-reads-")), "session.jsonl");
   writeFileSync(file, entries.map(entry => JSON.stringify(entry)).join("\n") + "\n");
   const state: ReadState = { version: READS_VERSION, offsets: {}, reads: {} };
-  return Object.fromEntries((await transcriptReads([file], skills, roots, since, state)).map(view => [view.path, view.ts]));
+  return Object.fromEntries((await transcriptReads([file], tracked, under, since, state)).map(view => [view.path, view.ts]));
 }
+
+const repoRoots: SkillRoot[] = [{ name: "repo", dir: "/repo/.agents/skills", views: "@code/.agents/skills/", transcripts: true }];
+const repoSkill = (id: string): Skill => ({ id: `repo:${id}`, root: "repo", dir: `/repo/.agents/skills/${id}`, description: "" });
 
 test("a tool result that shows a skill's SKILL.md counts as a read, however the call built the path", async () => {
   const found = await reads([
@@ -40,4 +43,15 @@ test("a skill name in a table or a diff of a SKILL.md is no read", async () => {
 
 test("a read before the window is no read", async () => {
   assert.deepEqual(await reads([result("2026-10-10T00:00:00.000Z", "---\nname: arena\ndescription: x\n---\n")]), {});
+});
+
+test("a repo skill read through rg of its reference or read-skill.mjs counts, and so does its view event (d5 11-13)", async () => {
+  const tracked = [repoSkill("repo/skill-creation"), repoSkill("stack/dataviz"), repoSkill("stack/python")];
+  const found = await reads([
+    call("2026-11-09T09:06:00.000Z", "r=await bash(\"rg -n -i 'crawler' .agents/skills/repo/skill-creation/references/skill-map.md\")"),
+    call("2026-11-08T10:59:00.000Z", "r=await bash('node scripts/skills/read-skill.mjs stack/dataviz 2>/dev/null | head -120')"),
+  ], tracked, repoRoots);
+  assert.deepEqual(found, { "repo:repo/skill-creation/": "2026-11-09T09:06:00.000Z", "repo:stack/dataviz/": "2026-11-08T10:59:00.000Z" });
+  markReads(tracked, repoRoots, [...Object.entries(found).map(([path, ts]) => ({ path, ts })), { path: "@code/.agents/skills/stack/python/SKILL.md", ts: "2026-11-10T00:00:00.000Z" }]);
+  assert.deepEqual(tracked.map(skill => skill.lastRead), ["2026-11-09T09:06:00.000Z", "2026-11-08T10:59:00.000Z", "2026-11-10T00:00:00.000Z"]);
 });

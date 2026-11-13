@@ -37,9 +37,9 @@ const EXCERPT_MAX = 500;
 export const AUTO_SNS = process.env.HARNESS_REPO || join(homedir(), "Documents/Github/auto-sns-agent");
 
 /**
- * Where skills live. `views` is the path prefix the llm-wiki view events use for this root. `transcripts` marks a root whose skills sit one
- * level down and are read straight from disk, so a read is a Prime Agent tool call that names a file in the skill or calls its Python module,
- * or a `/skill:<name>` load (transcriptReads). A root with neither has no read tracking.
+ * Where skills live. `views` is the path prefix the llm-wiki view events use for this root. `transcripts` marks a root whose skills agents also
+ * read straight from disk, so a read is a Prime Agent tool call that names a file in the skill, runs `read-skill.mjs <id>` or calls its Python
+ * module, or a `/skill:<name>` load (transcriptReads). A root with both counts the newer of the two. A root with neither has no read tracking.
  * `repo` is the repo whose `scripts/skills/read-skill.mjs` reads this root's skills; the smoke check runs it for each one.
  */
 export interface SkillRoot { name: string; dir: string; views?: string; transcripts?: true; repo?: string }
@@ -141,7 +141,7 @@ const strings = (value: unknown): string[] => typeof value === "string" ? [value
 /** What transcriptReads keeps between runs: the bytes of each transcript already read and the newest read of each skill. */
 export interface ReadState { version: number; offsets: Record<string, number>; reads: Record<string, string> }
 /** Bump when the read rules change, so the next run reads every transcript again. */
-export const READS_VERSION = 2;
+export const READS_VERSION = 3;
 export const READS_FILE = "harness-skill-reads.json";
 
 /**
@@ -158,10 +158,12 @@ export async function transcriptReads(files: readonly string[], skills: readonly
   if (!tracked.length) return [];
   const byName = new Map(tracked.map(skill => [skill.id.slice(skill.root.length + 1), skill.id]));
   const byImport = new Map(tracked.filter(skill => skill.importName).map(skill => [skill.importName!, skill.id]));
-  const path = new RegExp(`skills/(${[...byName.keys()].map(escape).join("|")})(?![\\w-])`, "g");
+  const names = [...byName.keys()].map(escape).join("|");
+  const path = new RegExp(`skills/(${names})(?![\\w-])`, "g");
+  const wrapper = new RegExp(`read-skill\\.mjs\\s+["']?(${names})(?![\\w-])`, "g");
   const call = byImport.size ? new RegExp(`(?<![\\w.])(${[...byImport.keys()].map(escape).join("|")})\\.\\w+\\(`, "g") : null;
   const read = (id: string | undefined, ts: string) => { if (id && ts > (state.reads[id] ?? "")) state.reads[id] = ts; };
-  const needles = ["skills/", "<skill name=", "\\nname: ", ...[...byImport.keys()].map(name => `${name}.`)].map(text => ({ text }));
+  const needles = ["skills/", "read-skill.mjs", "<skill name=", "\\nname: ", ...[...byImport.keys()].map(name => `${name}.`)].map(text => ({ text }));
   const offsets: Record<string, number> = {};
   for (const file of files) {
     const { offset } = await readAppended(file, state.offsets[file] ?? 0, needles, line => {
@@ -181,6 +183,7 @@ export async function transcriptReads(files: readonly string[], skills: readonly
           if (!isRecord(block) || block.type !== "toolCall") continue;
           const args = strings(block.arguments).join("\n");
           for (const match of args.matchAll(path)) read(byName.get(match[1]!), ts);
+          for (const match of args.matchAll(wrapper)) read(byName.get(match[1]!), ts);
           if (call) for (const match of args.matchAll(call)) read(byImport.get(match[1]!), ts);
         }
       } else if (role === "user") {
@@ -202,22 +205,25 @@ export async function transcriptReads(files: readonly string[], skills: readonly
 }
 
 /**
- * Sets each tracked skill's `lastRead`: for a `views` root the newest view event whose path is under the skill's directory in that root, and
- * for a `transcripts` root the newest transcript read (transcriptReads). A skill in a root with neither keeps `lastRead` undefined.
+ * Sets each tracked skill's `lastRead` to the newest of its reads: for a `views` root the view events whose path is under the skill's directory
+ * in that root, and for a `transcripts` root the transcript reads (transcriptReads). A skill in a root with neither keeps `lastRead` undefined.
+ * The repo root has both, because only `read-skill.mjs` makes a view event, and on 11-13 d5 flagged repo/skill-creation unread while jobs ran
+ * `rg` over its references/skill-map.md every day.
  */
 export function markReads(skills: Skill[], roots: readonly SkillRoot[], views: readonly View[]): void {
   const newest = new Map<string, string>();
   for (const view of views) if (view.ts > (newest.get(view.path) ?? "")) newest.set(view.path, view.ts);
   for (const skill of skills) {
     const root = roots.find(candidate => candidate.name === skill.root);
-    if (root?.transcripts) { skill.lastRead = newest.get(`${skill.id}/`) ?? null; continue; }
-    if (!root?.views) continue;
-    const prefix = `${root.views}${skill.id.slice(root.name.length + 1)}/`;
-    let last: string | null = null;
-    for (const [path, ts] of newest) if (path.startsWith(prefix) && (!last || ts > last)) last = ts;
+    if (!root?.transcripts && !root?.views) continue;
+    let last: string | null = root.transcripts ? newest.get(`${skill.id}/`) ?? null : null;
+    const prefix = root.views ? `${root.views}${skill.id.slice(root.name.length + 1)}/` : null;
+    if (prefix) for (const [path, ts] of newest) if (path.startsWith(prefix) && (!last || ts > last)) last = ts;
     skill.lastRead = last;
   }
 }
+
+const readKinds = (root: SkillRoot | undefined) => [root?.views && "view event", root?.transcripts && "agent read in a Prime transcript"].filter(Boolean).join(" or ");
 
 export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput & { skills: Skill[]; smoke: SkillSmoke[] }> {
   const skills = await readSkills(deps.roots);
@@ -243,7 +249,7 @@ export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput 
     ...failures.map(result => ({ kind: "skill_smoke_failures", excerpt: `${result.skill} failed its smoke check${result.detail ? `: ${result.detail}` : ""}` })),
     ...repeats.map(item => ({ chat: item.repeat.chat.id, at: item.said, kind: "repeat_corrections_7d",
       excerpt: `${sideLabel(item)}: ${item.entry.id} "${item.entry.rule}" (enforced by ${item.entry.enforcedBy}: ${item.entry.ref}) given again in ${item.repeat.chat.name || item.repeat.chat.id}: ${item.repeat.words}`.slice(0, EXCERPT_MAX) })),
-    ...unread.map(skill => ({ kind: "unread_14d", excerpt: `${skill.id} (${skill.dir}) has no ${deps.roots.find(root => root.name === skill.root)?.transcripts ? "agent read in a Prime transcript" : "view event"} since ${since.slice(0, 10)}` })),
+    ...unread.map(skill => ({ kind: "unread_14d", excerpt: `${skill.id} (${skill.dir}) has no ${readKinds(deps.roots.find(root => root.name === skill.root))} since ${since.slice(0, 10)}` })),
     ...listed.slice(0, 8).map(pair => ({ kind: "overlap", excerpt: `${pair.a} and ${pair.b} share ${Math.round(pair.score * 100)}% of description words: ${pair.shared.slice(0, 12).join(", ")}` })),
   ];
   // A cache check that throws leaves both shares out, so the judge reads them as not measured, and the skill checks still report.
@@ -338,21 +344,36 @@ export function chatHistories(dir: string, mac: ((chat: string) => Promise<Buffe
   };
 }
 
+const VIEWS_SQL = "SELECT path, max(ts) AS ts FROM views WHERE ts >= ? AND (path LIKE '@code/.agents/skills/%' OR path LIKE '@code/.claude/skills-native/%') AND coalesce(session_id, '') != ? GROUP BY path";
+
 /** The view events since `since` for files under .agents/skills or .claude/skills-native, from the wiki database, opened read only, without the smoke's reads. */
 async function wikiViews(db: string, since: string): Promise<View[]> {
   const { DatabaseSync } = await import("node:sqlite");
   const database = new DatabaseSync(db, { readOnly: true });
   try {
-    return database.prepare("SELECT path, max(ts) AS ts FROM views WHERE ts >= ? AND (path LIKE '@code/.agents/skills/%' OR path LIKE '@code/.claude/skills-native/%') AND coalesce(session_id, '') != ? GROUP BY path")
-      .all(since, SMOKE_SESSION) as unknown as View[];
+    return database.prepare(VIEWS_SQL).all(since, SMOKE_SESSION) as unknown as View[];
   } finally { database.close(); }
+}
+
+/**
+ * The same view events from the Mac's own wiki.db. The wiki answers a remote `POST /api/agent/activity` with 403 "skill activity ingestion is
+ * local-only", so `read-skill.mjs` on the Mac records each view offline there: on 11-13 it held 327 views since 11-03, 3 of them of
+ * stack/dataviz, which d5 flagged unread for 21 runs.
+ */
+export function macWikiViews(since: string): Promise<View[]> {
+  if (!/^[\d-]+T[\d:.]+Z$/.test(since) || !/^[\w-]+$/.test(SMOKE_SESSION)) return Promise.reject(new Error(`bad view query input: ${since}`));
+  const sql = VIEWS_SQL.replace("?", `'${since}'`).replace("?", `'${SMOKE_SESSION}'`);
+  const command = `f="$HOME/.pi/wiki/content/.wiki/wiki.db"; [ -f "$f" ] && sqlite3 -readonly -separator ' ' "$f" "${sql}"; true`;
+  return new Promise((resolve, reject) => execFile("timeout", [String(MAC_READ_S), "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20", MAC, command],
+    { maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => error ? reject(new Error(`ssh ${MAC}: ${(stderr || error.message).trim().slice(0, 300)}`))
+      : resolve(stdout.split("\n").filter(Boolean).map(row => { const [path, ts] = row.split(" "); return { path: path!, ts: ts! }; }))));
 }
 
 async function main(): Promise<void> {
   const output = process.env.OUTPUT_FILE;
   if (!output) { process.stderr.write("harness-health: OUTPUT_FILE is not set\n"); process.exit(2); }
   const roots: SkillRoot[] = [
-    { name: "repo", dir: join(AUTO_SNS, ".agents/skills"), views: "@code/.agents/skills/", repo: AUTO_SNS },
+    { name: "repo", dir: join(AUTO_SNS, ".agents/skills"), views: "@code/.agents/skills/", transcripts: true, repo: AUTO_SNS },
     { name: "native", dir: join(AUTO_SNS, ".claude/skills-native"), views: "@code/.claude/skills-native/", repo: AUTO_SNS },
     { name: "prime", dir: join(homedir(), ".prime/agent/skills"), transcripts: true },
   ];
@@ -365,9 +386,15 @@ async function main(): Promise<void> {
   const cache = () => measureCache(grafanaPrometheus(join(dataDir, "grafana-alerts.json")), cacheTargets);
   const macErrors: string[] = [];
   const history = chatHistories(join(homedir(), ".prime/agent/sessions"), process.platform === "darwin" ? null : macSessionLines, macErrors);
-  const { skills, smoke, ...result } = await measureHarness({ roots, views: since => wikiViews(db, since), dataDir, now: Date.now(), cache,
+  const views = async (since: string) => [...await wikiViews(db, since), ...process.platform === "darwin" ? [] : await macWikiViews(since).catch((error: unknown) => {
+    macErrors.push(`views: ${error instanceof Error ? error.message : String(error)}`);
+    return [];
+  })];
+  const { skills, smoke, ...result } = await measureHarness({ roots, views, dataDir, now: Date.now(), cache,
     history, commitTime: gitCommitTime(fixRepos(AUTO_SNS)), transcripts: since => primeTranscripts(homedir(), since), smoke: { python } });
-  for (const error of macErrors) result.flagged = [...result.flagged ?? [], { kind: "repeat_corrections_mac", excerpt: `no data: the Mac read of a chat's session failed, so its repeats are left out: ${error}`.slice(0, EXCERPT_MAX) }];
+  for (const error of macErrors) result.flagged = [...result.flagged ?? [], error.startsWith("views: ")
+    ? { kind: "unread_14d_mac", excerpt: `no data: the Mac's skill view events could not be read, so its read-skill.mjs reads are left out: ${error}`.slice(0, EXCERPT_MAX) }
+    : { kind: "repeat_corrections_mac", excerpt: `no data: the Mac read of a chat's session failed, so its repeats are left out: ${error}`.slice(0, EXCERPT_MAX) }];
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
   if (process.env.DETAILS_FILE) await writeFile(process.env.DETAILS_FILE, JSON.stringify({ skills: skills.map(({ description: _, ...skill }) => skill), smoke }, null, 2) + "\n");
 }
