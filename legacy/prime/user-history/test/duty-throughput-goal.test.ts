@@ -376,6 +376,18 @@ test("readPanels reads the folder's boards from the provider file and fails on n
   await assert.rejects(readPanels([{ uid: "e", title: "Empty", tags: ["owner:crawler"], panels: [{ type: "text" }] }], api), /hold no queried panel/);
 });
 
+test("readPanels reads a panel with its own timeFrom over that span, as Grafana draws it (11-13 d9 read the 7-day Throughput panels over 24 h)", async () => {
+  const ranges: string[] = [];
+  const spans = async (_path: string, body?: unknown) => {
+    ranges.push((body as { from: string }).from);
+    return (body as { from: string }).from === "now-7d" ? { results: { A: { frames: [{ data: { values: [[1], [5]] } }] } } } : { results: { A: { frames: [] } } };
+  };
+  const week = { uid: "w", title: "Throughput", tags: ["owner:crawler"], time: { from: "now-24h", to: "now" },
+    panels: [{ id: 4, title: "Hourly, 7 days", timeFrom: "7d", targets: [{ refId: "A" }] }, { id: 5, title: "A minute", targets: [{ refId: "A" }] }] };
+  assert.deepEqual((await readPanels([week], spans)).map(read => read.state), ["ok", "no data"]);
+  assert.deepEqual(ranges, ["now-7d", "now-24h"]);
+});
+
 test("a Meta Ads due sample that prod cancels on its statement timeout is read again at half the sample, and other errors stay errors", async () => {
   const pages = 4_016_026;
   const sizes: number[] = [];

@@ -209,7 +209,7 @@ export const DASHBOARD_TAGS: readonly string[] = ["owner:crawler", "owner:crawle
 
 export type GrafanaApi = (path: string, body?: unknown) => Promise<unknown>;
 export interface PanelTarget { refId?: string; hide?: boolean; datasource?: { type?: string; uid?: string } | null; [field: string]: unknown }
-export interface DashPanel { id?: number; type?: string; title?: string; datasource?: PanelTarget["datasource"]; targets?: PanelTarget[]; panels?: DashPanel[] }
+export interface DashPanel { id?: number; type?: string; title?: string; timeFrom?: string; datasource?: PanelTarget["datasource"]; targets?: PanelTarget[]; panels?: DashPanel[] }
 export interface Dashboard { uid: string; title: string; tags?: string[]; time?: { from?: string; to?: string }; panels?: DashPanel[];
   templating?: { list?: { name: string; type?: string; current?: { value?: unknown; text?: unknown } }[] } }
 export interface PanelRead { dashboard: string; title: string; state: "ok" | "no data" | "error"; detail: string }
@@ -314,7 +314,8 @@ export async function readPanels(boards: readonly Dashboard[], api: GrafanaApi):
     const range = { from: dash.time?.from ?? "now-6h", to: dash.time?.to ?? "now" };
     reads.push(...await Promise.all(leafPanels(dash.panels).filter(panel => panel.targets?.length).map(async panel => {
       const { queries, shown } = panelQueries(panel, vars);
-      const answer = await api("/api/ds/query", { queries, ...range }).catch((error: unknown) => ({ message: error instanceof Error ? error.message : String(error) }));
+      // A panel's relative time (timeFrom, such as 7d) replaces the board's range, as Grafana draws it: the 11-13 d9 read the three 7-day Throughput panels over 24 h.
+      const answer = await api("/api/ds/query", { queries, ...range, ...(panel.timeFrom ? { from: `now-${panel.timeFrom}` } : {}) }).catch((error: unknown) => ({ message: error instanceof Error ? error.message : String(error) }));
       return { dashboard: dash.title, title: panel.title ?? `panel ${panel.id}`, ...panelState(answer as QueryAnswer, shown) };
     })));
   }
