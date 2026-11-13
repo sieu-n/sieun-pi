@@ -97,6 +97,18 @@ test("a fire held until after it resolved goes with the values it fired at and s
   assert.match(text, /  Values at the fire: A=26, C=1\.\n  Values now: A=0, C=0\.\n  Resolved at 2026-11-10T05:34Z \(Grafana: Normal\)\./);
 });
 
+// 11-13: devbox-wiki-public-down fired at 15:56Z, and the rule list's Normal activeAt from its 11-03 episode made it read as resolved 10 days earlier.
+test("a fire whose rule list state predates it reads as still firing", async () => {
+  const labels = { alertname: "The public wiki is down", __alert_rule_uid__: "devbox-wiki-public-down", project: "devbox" };
+  const ruleList = { data: { groups: [{ rules: [{ uid: "devbox-wiki-public-down", alerts: [{ labels, state: "Normal", activeAt: "2026-11-03T22:45:00Z" }] }] }] } };
+  const f = await fixture({ setStates: async alert => parseSetStates(ruleList, alert.labels.__alert_rule_uid__!) });
+  f.set([raw("5c1d2e3f4a5b6c7d", labels, "2026-11-13T15:56:00.000Z")]); f.at(Date.parse("2026-11-13T15:57:00Z"));
+  await f.bridge.tick();
+  const text = f.alerts()[0]!.text;
+  assert.match(text, /- devbox-wiki-public-down \(The public wiki is down, firing since 2026-11-13T15:56Z\)/);
+  assert.doesNotMatch(text, /resolved at/i);
+});
+
 test("a fire that comes while the thread's last alert message waits for its turn joins the next message, sent once the thread had a turn", async () => {
   const f = await fixture();
   f.set([alert(1, "crawler-a", "crawler")]);

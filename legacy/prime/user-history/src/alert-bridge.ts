@@ -359,7 +359,9 @@ const shownLabels = (labels: Record<string, string>, alertname: string): Record<
  * (keepFiringFor, auto-sns-agent 25e5f33e58), and on 10-31 at 18:31Z ci-staging-proof-spec-red fired for hosted-zz-monitor-flow.spec.ts
  * with the summary of the held hosted-campaign-screening.spec.ts instance, "6 in a row", because the line took the oldest instance. The title
  * is the newest shown label set's alertname, since a rule's alertname can carry a count: at 19:12Z that day the entry, open from 10-30, still
- * held "CI staging-proof spec red 3 runs in a row" while the spec that fired was red 2 runs.
+ * held "CI staging-proof spec red 3 runs in a row" while the spec that fired was red 2 runs. A label set's Normal or Recovering state counts
+ * only from its fire's startsAt on, because the rule list keeps an older episode's activeAt: on 11-13 devbox-wiki-public-down fired at
+ * 15:56Z and the message said it resolved at 22:45Z on 11-03.
  */
 export function alertLine(rule: Tracked, firing: ReadonlyMap<string, FiringAlert>, states?: ReadonlyMap<string, SetState>): AlertLine {
   const live = Object.entries(rule.instances).flatMap(([id, instance]) => firing.has(id) ? [{ alert: firing.get(id)!, instance }] : [])
@@ -368,9 +370,10 @@ export function alertLine(rule: Tracked, firing: ReadonlyMap<string, FiringAlert
   const shown = fresh.length ? fresh : live;
   const alertname = shown.at(-1)?.alert.alertname ?? rule.alertname;
   const fires = shown.map(({ alert, instance }): AlertFire => {
-    const ended = states?.get(setKey(alert.labels));
+    const state = states?.get(setKey(alert.labels));
+    const ended = state && state.since >= Date.parse(alert.startsAt) && /^(Normal|Recovering)/.test(state.state) ? state : undefined;
     return { labels: shownLabels(alert.labels, alertname), summary: alert.summary, url: alert.url, ...instance.values ? { values: instance.values } : {},
-      ...alert.values && alert.values !== instance.values ? { now: alert.values } : {}, ...ended && Number.isFinite(ended.since) && /^(Normal|Recovering)/.test(ended.state) ? { ended } : {} };
+      ...alert.values && alert.values !== instance.values ? { now: alert.values } : {}, ...ended ? { ended } : {} };
   });
   const normal = fires.length > 0 && fires.every(fire => fire.ended?.state.startsWith("Normal"));
   return { rule: rule.rule, alertname, startsAt: rule.startsAt, firedAt: rule.wokeAt, sets: firingSets(rule), fresh: fresh.length > 0, fires,
