@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { UNMEASURED_PCT, heldPaidReads, parityMetrics, scoredRoutes, type OpenApi, type ProbeResult, type Route } from "../scripts/duties/portal-parity.ts";
+import { MEDIA_OP, UNMEASURED_PCT, firstMediaUrl, heldPaidReads, parityMetrics, scoredRoutes, type OpenApi, type ProbeResult, type Route } from "../scripts/duties/portal-parity.ts";
 
 const doc = (...ops: string[]): OpenApi => {
   const paths: NonNullable<OpenApi["paths"]> = {};
@@ -129,4 +129,18 @@ test("a paid prod read holds only a working answer for the UTC day, so a failed 
   const stale = { ...state, paidAt: { ...state.paidAt, "GET /v1/youtube/live/channel": at } };
   assert.deepEqual([...heldPaidReads(paid, stale, later).keys()], ["GET /v1/tiktok/live/profile"]);
   assert.equal(heldPaidReads(paid, state, Date.parse("2026-11-05T00:00:00Z")).size, 0);
+});
+
+test("the keyless /v1/media read scores from its own probe though no openapi lists it", () => {
+  // 11-10 to 11-13: every prod /v1/media URL answered 502 media_unavailable (auto-sns-agent cca08bba2c), and d2 scored no media route.
+  const MEDIA: Route = { crawler: "GET /api/media/{kind}/{entity_id}/{slot}", group: "media", portal: [MEDIA_OP] };
+  const url = "https://api.virev.ai/v1/media/instagram_account/3882/profile_pic?e=1795219200&s=f28da9cf04a9e5aff1b2eb4eb0f9bc3a";
+  assert.equal(firstMediaUrl([null, { data: { profile_pic_url: url } }]), url);
+  const withMedia = { ...crawler, prod: doc(OLD.crawler, SAME.crawler, PAUSED.crawler, MEDIA.crawler) };
+  const failing = { op: MEDIA_OP, verdict: "portal" as const, status: 502, ms: 5, code: "media_unavailable", note: "keyless GET" };
+  const broken = run({ routes: [...ROUTES, MEDIA], crawler: withMedia, probes: { ...probes, prod: [...probes.prod, failing] } }).metrics;
+  assert.equal(broken.prod_routes_portal, 1);
+  assert.equal(broken.prod_routes_missing, 0);
+  const fixed = run({ routes: [...ROUTES, MEDIA], crawler: withMedia, probes: { ...probes, prod: [...probes.prod, ok(MEDIA_OP)] } }).metrics;
+  assert.equal(fixed.prod_working_pct, 100);
 });

@@ -405,10 +405,48 @@ export function scoredRoutes(routes: readonly Route[], env: Env, crawlerOps: Map
 export const listedBy = (route: Route, crawlerOps: Map<string, Operation>) =>
   crawlerOps.has(route.crawler) || (route.aliases ?? []).some(alias => crawlerOps.has(alias));
 
+/**
+ * The keyless media read that every Data API answer links its images to. No openapi lists it, because an <img> sends no key, so a run reads the
+ * first /v1/media URL in its own working answers and fetches it with no key (probeMedia). From 11-10 08:38Z to 11-13 prod answered every such
+ * URL 502 media_unavailable, because Vent refused the portal's media read as vent_missing_actor (auto-sns-agent cca08bba2c), and no run saw it.
+ */
+export const MEDIA_OP = "GET /v1/media/{kind}/{entity_id}/{slot}";
+const MEDIA_URL = /https?:\/\/[^"\s]+?\/v1\/media\/[a-z_]+\/[0-9]+\/[a-z0-9_]+\?e=[0-9]+&s=[0-9a-f]+/;
+
+/** The first signed /v1/media URL in these answer bodies, or null. */
+export function firstMediaUrl(bodies: readonly unknown[]): string | null {
+  for (const body of bodies) {
+    const found = body === null || body === undefined ? null : MEDIA_URL.exec(JSON.stringify(body));
+    if (found) return found[0];
+  }
+  return null;
+}
+
+/** One keyless GET of a signed media URL, as a browser's <img> sends it: an image or video answer works, and any other answer is the portal's. */
+export async function probeMedia(url: string | null, extra: Record<string, string>): Promise<ProbeResult> {
+  if (!url) return { op: MEDIA_OP, verdict: "unprobed", status: 0, ms: 0, note: "no /v1/media URL in this run's working answers" };
+  const start = Date.now();
+  try {
+    const response = await fetch(url, { headers: { ...CALLER, ...extra }, redirect: "manual" });
+    const type = response.headers.get("content-type") ?? "";
+    const text = Buffer.from(await response.arrayBuffer());
+    const ms = Date.now() - start;
+    const note = `keyless GET of ${new URL(url).pathname}`;
+    if (response.status === 200 && /^(image|video)\//.test(type)) return { op: MEDIA_OP, verdict: "ok", status: 200, ms, note: `${note}: ${type}, ${text.length} bytes` };
+    let body: unknown = null;
+    try { body = JSON.parse(text.toString("utf8")); } catch { body = null; }
+    const { verdict, code } = classify(response.status, body);
+    return { op: MEDIA_OP, verdict: verdict === "ok" ? "portal" : verdict, status: response.status, ms, code: code ?? (verdict === "ok" ? "not_media" : undefined),
+      note: `${note}: ${type || "no content type"}` };
+  } catch (error) {
+    return { op: MEDIA_OP, verdict: "unprobed", status: 0, ms: Date.now() - start, note: `keyless media GET: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
 /** A route's verdict on one env from that env's documented operations (null when unread) and that env's probe results. */
 export function routeVerdict(route: Route, ops: Map<string, Operation> | null, byOp: ReadonlyMap<string, ProbeResult>): RouteVerdict {
   if (!ops) return "unprobed";
-  const listed = route.portal.filter(op => ops.has(baseOp(op)));
+  const listed = route.portal.filter(op => op === MEDIA_OP || ops.has(baseOp(op)));
   if (!listed.length) return "missing";
   // A route works only when none of its called operations fails: 18 /v1/crawl presets share POST /api/crawl/fetch, and on 11-02 from 21:20Z
   // GET /v1/crawl/taplink/page answered 502 on prod while the other 17 passed, so "any ok" scored the route working and d2 read 100.
@@ -778,6 +816,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
     if (next) pageTwo.set(op, await call(org, `${op} page 2`, pageTwoRequest(fedRequest, next), `page 2 with its own ${next.param}`));
     return result;
   }));
+  const media = probeMedia(firstMediaUrl([...phase1, ...fed].filter(result => result.verdict === "ok").map(result => result.body)), target.headers);
   await Promise.all([...pageTwoRuns, ...opened.map(job => cancel(job.org, job.id))]);
   // A page-2 failure counts against the operation: a customer cannot get past page 1. A page 2 the run did not reach leaves page 1's verdict.
   const out: ProbeResult[] = [];
@@ -787,6 +826,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
     const { body: _body, ...plain } = failed ? { ...second, op: result.op, note: `page 1 worked, ${second.note}` } : result;
     out.push(plain);
   }
+  out.push(await media);
   return out;
 }
 

@@ -1458,6 +1458,13 @@
    "portal": [
     "GET /v1/search/languages"
    ]
+  },
+  {
+   "crawler": "GET /api/media/{kind}/{entity_id}/{slot}",
+   "group": "media",
+   "portal": [
+    "GET /v1/media/{kind}/{entity_id}/{slot}"
+   ]
   }
  ]
 }
