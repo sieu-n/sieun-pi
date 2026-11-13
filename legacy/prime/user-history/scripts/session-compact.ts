@@ -181,10 +181,14 @@ function daemonRequest(socket: string, command: Entry, timeoutMs = 30_000): Prom
   });
 }
 
-/** Why the daemon would mind a rewrite now, or undefined when it lists the session stopped or idle. */
-async function busy(socket: string, file: string): Promise<string | undefined> {
+/**
+ * Why the daemon would mind a rewrite now, or undefined when it lists the session stopped or idle. Only a session a worker holds can write,
+ * so this reads the live list: `list` with `all` read all 11,228 saved sessions (97 MB, about 13 CPU-s of the supervisor's one thread) on
+ * 11-13, and `apply` asks again every IDLE_POLL_MS while the session works.
+ */
+export async function busy(socket: string, file: string): Promise<string | undefined> {
   if (socket === "none") return undefined;
-  const response = await daemonRequest(socket, { type: "list", all: true });
+  const response = await daemonRequest(socket, { type: "list" });
   const rows = (response.data?.sessions ?? []) as Entry[];
   const row = rows.find(candidate => candidate.sessionFile === file);
   if (!row || row.lifecycle !== "live") return undefined;
