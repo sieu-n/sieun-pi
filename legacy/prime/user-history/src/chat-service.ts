@@ -432,7 +432,7 @@ async function serve(options: Options): Promise<void> {
   const keeper = onPrime && !scratch && startsDaemon(primary)
     ? new DaemonKeeper({ socketPath: service.config.socketPath, log: line => process.stderr.write(`${new Date().toISOString()} ${line}\n`) }) : null;
   void keeper?.start();
-  const [{ buildClientBundle }, { createChatBackend }, { startChatServer }, { SdkSync, loadedClientVersion }, { startPromptPrune }, { getAgentDir }] = await Promise.all([
+  const [{ buildClientBundle, drawAppAssets }, { createChatBackend }, { startChatServer }, { SdkSync, loadedClientVersion }, { startPromptPrune }, { getAgentDir }] = await Promise.all([
     import("./chat-assets.ts"), import("./chat-backend.ts"), import("./chat-server.ts"), import("./chat-sdk.ts"), import("./prompt-prune.ts"), import("prime-agent")]);
   // A release reads its prebuilt page bundle from disk. A checkout without one compiles it in a worker while the server listens (17 s at a
   // load of 90); the page and app.js wait for it, the API answers at once.
@@ -546,7 +546,9 @@ async function serve(options: Options): Promise<void> {
     check: async () => { await Promise.all([remote.check(), keepRunning?.reconcile(), loginWindow?.refresh()]); },
   };
   const log = (line: string) => process.stderr.write(`${new Date().toISOString()} ${line}\n`);
-  const shell = parent ? parent.shell(backend.chats.firstPass, log) : early;
+  // A successor draws the manifest and icons before it takes the port: after the 14:42:49Z take-over on 11-13 the first page load drew them in
+  // the loop's first long task, 300 ms of its 761 ms.
+  const shell = parent ? parent.shell(backend.chats.firstPass.then(drawAppAssets), log) : early;
   const server = await startChatServer({ backend, bundle, port: service.config.port, listenFd, early: shell, capability: service.config.capability, csrfToken: service.config.csrfToken,
     identity, identityReady, remote: control, slack, sdk, stopToken: service.config.stopToken, onStop: close, tailnetOwner: () => tailnetOwner() }).catch(error => {
       if (hasCode(error, "EADDRINUSE")) throw new Error(`Port ${service.config.port} is already in use. No process was stopped. Choose --port with a separate --data-dir.`);

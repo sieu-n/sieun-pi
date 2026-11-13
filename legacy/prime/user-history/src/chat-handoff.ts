@@ -5,7 +5,9 @@ import { Server as NetServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { Duplex } from "node:stream";
-import { foldLatency, type ChatLatency } from "./chat-latency.ts";
+import { getHeapStatistics, setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
+import { foldLatency, takeLatency, type ChatLatency } from "./chat-latency.ts";
 import type { EarlyShell } from "./early-shell.ts";
 
 /**
@@ -70,6 +72,30 @@ export async function notifySystemd(fields: readonly string[], env: NodeJS.Proce
 }
 /** systemd-notify answered in 13 ms from a test unit on us-metal02 on 11-08; 30 s fails only one that hangs. */
 const NOTIFY_MS = 30_000;
+
+/**
+ * What a successor does just before it takes the port, while the running chat still answers every read. Its start allocates for minutes and
+ * leaves the heap full of garbage, and on 11-13 at 14:42:55Z, 5 s after release-68c901e took the port, a 1.1 s major GC held the loop and
+ * d7 counted 14:43Z dirty. A full GC here pays that cost while no read waits on this process. Its latency window then starts over, because
+ * it opened at the first write the running chat passed on and held the start's own stalls: the first line after the 13:49:44Z take-over
+ * read a 13.2 s loop stall and a 7.5 s GC that its CPU profile put at 13:46:06Z and 13:47:01Z, minutes before it answered a read, and the
+ * 14:29:22Z one, written 0.1 s after the take-over, read a 2.6 s stall. Returns the clause the take-over's log line ends with.
+ */
+export function settleBeforeTakeover(collect: () => void = fullGc): string {
+  const start = takeLatency();
+  const before = getHeapStatistics().used_heap_size;
+  const at = performance.now();
+  collect();
+  const ms = Math.round(performance.now() - at);
+  const freed = Math.round((before - getHeapStatistics().used_heap_size) / 2 ** 20);
+  return `a full GC freed ${freed} MB in ${ms} ms first` + (start ? `, and the start's longest loop stall of ${start.loopMs} ms${start.gcMs ? ` (a ${start.gc} GC of ${start.gcMs} ms)` : ""} stays off the latency line` : "");
+}
+
+/** V8's full GC; the service runs without --expose-gc, so the flag is set here and the function read from a fresh context. */
+function fullGc(): void {
+  setFlagsFromString("--expose-gc");
+  (runInNewContext("gc") as () => void)();
+}
 
 /** The running chat's side of a hand-over (`listenForHandoff`). */
 export interface HandingOver {
@@ -265,13 +291,14 @@ export class HandoffParent {
         let timer: NodeJS.Timeout | undefined;
         const waited = await Promise.race([ready.then(() => "ready" as const), new Promise<"late">(resolve => { timer = setTimeout(() => resolve("late"), takeoverMs); timer.unref(); })]);
         clearTimeout(timer);
+        const settled = settleBeforeTakeover();
         server.on("request", handler);
         server.on("upgrade", upgrade);
         await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen({ fd: this.listenFd }, () => { server.off("error", reject); resolve(); }); });
         // systemd must take this process as the main one before the running chat exits, or it reads that exit as the service's end.
         try { await notify([`MAINPID=${process.pid}`, "READY=1"]); }
         catch (error) { log(`handoff: systemd-notify: ${error instanceof Error ? error.message : String(error)}; this successor exits and the running chat stops`); process.exit(1); }
-        log(`handoff: took the port ${Math.round((Date.now() - began) / 1000)} s after the server was ready, ${waited === "ready" ? "once its first pass ended" : `with its first pass still going after ${takeoverMs / 1000} s`}`);
+        log(`handoff: took the port ${Math.round((Date.now() - began) / 1000)} s after the server was ready, ${waited === "ready" ? "once its first pass ended" : `with its first pass still going after ${takeoverMs / 1000} s`}; ${settled}`);
         await this.ask({ kind: "taken" });
         this.channel.once("disconnect", () => { own.close(); });
       },

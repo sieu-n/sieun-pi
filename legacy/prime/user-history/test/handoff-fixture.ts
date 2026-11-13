@@ -2,9 +2,12 @@
 // thread busy for START_MS as a chat start under CI load does before it may serve.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { drainServer, handOver, handoffParent } from "../src/chat-handoff.ts";
+import { peekLatency, timeRead } from "../src/chat-latency.ts";
 import { forwardRequest } from "../src/early-shell.ts";
 
 const START_MS = Number(process.env.FIXTURE_START_MS ?? 3000);
+/** One stall at the end of the successor's start, after the write the test sends during it opened its latency window. */
+const STALL_MS = Number(process.env.FIXTURE_STALL_MS ?? 0);
 const busy = (ms: number) => { const until = Date.now() + ms; while (Date.now() < until) { /* the start's own work */ } };
 const answer = (who: string) => (req: IncomingMessage, res: ServerResponse) => {
   req.resume();
@@ -17,12 +20,15 @@ if (parent) {
   let ready!: () => void;
   const firstPass = new Promise<void>(resolve => { ready = resolve; });
   const shell = parent.shell(firstPass, line => process.stderr.write(line + "\n"), async () => true);
-  const taking = shell.take(answer("new"), () => {});
+  const serve = answer("new");
+  const taking = shell.take((req, res) => { timeRead(req, res, "/"); serve(req, res); }, () => {});
   // The start: seconds of main-thread work in slices, then the first pass ends.
   for (let done = 0; done < START_MS; done += 250) { busy(250); await new Promise(resolve => setImmediate(resolve)); }
+  busy(STALL_MS);
+  await new Promise(resolve => setImmediate(resolve));
   ready();
   await taking;
-  process.stderr.write(`new ${process.pid} serves\n`);
+  process.stderr.write(`new ${process.pid} serves\nnew latency ${JSON.stringify(peekLatency() ?? null)}\n`);
   // A successor the test could not stop ends on its own.
   setTimeout(() => process.exit(0), 30_000).unref();
 } else {

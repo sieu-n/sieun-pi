@@ -243,6 +243,11 @@ const appSources: Record<string, () => Asset> = {
 };
 const appBuilt = new Map<string, Asset>();
 
+/** Draws the manifest and every icon now, so no request waits on them. */
+export function drawAppAssets(): void {
+  for (const route of Object.keys(appSources)) appAsset(route);
+}
+
 /** The manifest or an icon, drawn on its first request (the 512 px icon takes about 0.2 s) and kept for the life of the process. */
 export function appAsset(route: string): Asset | undefined {
   if (!Object.hasOwn(appSources, route)) return undefined;
