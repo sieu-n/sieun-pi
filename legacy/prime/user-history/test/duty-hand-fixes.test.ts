@@ -568,3 +568,20 @@ test("an import the crawler's relogin INTAKE lane sets active is the product's o
   const at = Date.parse("2026-11-08T12:00:00Z");
   assert.equal(classifyEvent({ accountId: 424, at, outcome: "active", errorCode: "", actor: "engage-relogin" }, reg)?.kind, "automatic");
 });
+
+test("the Meta Ads scheduler's supply-hold pause and the gateway failover's row move are the product's own, and the same writes by hand still count", async () => {
+  // d3 read prod audits 32465 to 33305 and staging audits 24823 to 24832, all scheduler.py _stop_for_hold, as 9 F1 repeats in the 24 h to 11-13 13:35Z.
+  const reg = await registry();
+  const ts = Date.parse("2026-11-13T12:50:00Z");
+  const reason = "proxy supply held 7201 s (proxy_auth_failed), over 300 s: Meta Ads paused";
+  const keys = ["pause.meta_ads", "pause.meta_ads.owner", "pause.meta_ads.expires_at"];
+  const stop = keys.map((key, index): AuditRow => ({ id: 33305 + index, ts, actor: "meta-ads-scheduler", source: "meta-ads-scheduler", key, reason }));
+  assert.equal(classifyConfig(groupAudit("prod", stop)[0]!, reg).kind, "automatic");
+  const byHand = groupAudit("prod", stop.map(row => ({ ...row, actor: "api-key", source: "ops-api", reason: "Meta Ads off while GeoNode is dark" })))[0]!;
+  const verdict = classifyConfig(byHand, reg);
+  assert.equal(verdict.kind === "fault" && verdict.fault.id, "F1");
+  const move = { keys: ["proxy_endpoints.gateway"], text: "gateway failover: a dark, and b answered CONNECT 200 for the row credential" };
+  assert.equal(classifyConfig({ ...move, actor: "gateway_failover", writer: "crawler" }, reg).kind, "automatic");
+  const switched = classifyConfig({ ...move, actor: "proxy_gateway_switch", writer: "ops-cli" }, reg);
+  assert.equal(switched.kind === "fault" && switched.fault.id, "F5");
+});
