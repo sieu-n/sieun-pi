@@ -270,6 +270,7 @@ export function orphanLines(reading: Reading, stopped: { signalled: number[]; ki
   const bySize = <T extends { bytes: number }>(groups: readonly T[]): T[] => [...groups].sort((a, b) => b.bytes - a.bytes);
   const lines: FlaggedSlice[] = bySize(reading.stop).map(group => ({ at, kind: "orphan", excerpt: describe(group, at, reading.verdicts).slice(0, 600) }));
   lines.push(...bySize(reading.unknown).map(group => ({ at, kind: "orphan_unknown", excerpt: `${describe(group, at, reading.verdicts)}; listed, not stopped`.slice(0, 600) })));
+  if (reading.listFailure) lines.push({ at, kind: "gap", excerpt: `orphan_processes: ${reading.listFailure}, so each top-level session not in the roster was held as live this run` });
   if (stopped) lines.push({ at, kind: "orphan_stopped", excerpt: `sent SIGTERM to ${stopped.signalled.length} orphan processes and SIGKILL to the ${stopped.killed.length} still running 10 s later${stopped.containers.length ? `, and stopped the containers ${stopped.containers.join(", ")}` : ""}` });
   return lines;
 }

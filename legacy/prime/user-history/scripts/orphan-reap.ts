@@ -14,6 +14,7 @@ if (here !== "us-metal02") {
 }
 const at = Date.now();
 const { rows, reading } = await readOrphans(defaultContext(here, at), hostMatcher(registry.hosts));
+if (reading.listFailure) process.stdout.write(`${reading.listFailure}, so each top-level session not in the roster was held as live\n`);
 for (const group of reading.stop) process.stdout.write(`stop ${describe(group, at, reading.verdicts)}\n`);
 for (const group of reading.unknown) process.stdout.write(`unknown ${describe(group, at, reading.verdicts)}; listed, not stopped\n`);
 if (reading.stop.length) {

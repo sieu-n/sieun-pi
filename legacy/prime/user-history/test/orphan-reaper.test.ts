@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { ENDED_FOR_MS, KILL_AFTER_MS, type Group, type ProcRow, type Verdict, containerGroups, decide, describe, groupProcesses, hostMatcher, leftParent, ownerOf, piThreadRow, readUnitHolds, readVerdicts, stopGroups, unitFileNames, unitOf, verdict } from "../src/orphan-reaper.ts";
+import { ENDED_FOR_MS, KILL_AFTER_MS, type Group, type ProcRow, type Verdict, containerGroups, decide, describe, groupProcesses, hostMatcher, leftParent, ownerOf, piThreadRow, readUnitHolds, readVerdicts, reader, stopGroups, unitFileNames, unitOf, verdict } from "../src/orphan-reaper.ts";
 
 const JOB = "01a183f7-0a0b-725c-984d-d59f150e6420";
 const LIVE = "01a190a3-1b2e-74ad-88ca-f217e0f956a8";
@@ -283,6 +283,26 @@ test("10-31: a unit a live session recorded with board.own is held even when the
       JSON.stringify({ sessions: all ? [{ sessionId: CHAT, lifecycle: "archived" }] : [] }) };
     assert.equal((await readUnitHolds([samplerGroup([])], archived)).size, 0);
   } finally { await rm(gone.home, { recursive: true, force: true }); }
+});
+
+// Guards 11-13: `prime-agent list --all` passed the Prime CLI's fixed 30 s daemon timeout three times from 15:18Z, and each failure lost d2's whole orphan read.
+test("a full list that does not answer leaves a top-level session's archive state unknown, holds it as live and names the failure once", async () => {
+  const rig = await check4Rig({ wake: false });
+  try {
+    let reads = 0;
+    const context = { ...check4Context(rig.home, rig.dataDir, "inactive"), list: async (_host: string, all: boolean) => {
+      if (!all) return JSON.stringify({ sessions: [] });
+      reads += 1;
+      throw new Error("Timed out waiting for daemon response after 30000ms");
+    } };
+    const read = reader(context);
+    const verdicts = await readVerdicts([samplerGroup([{ session: "", host: "us-metal02", dir: rig.chatDir }])], context, read);
+    assert.equal(verdicts.get(`us-metal02/${CHAT}`)?.state, "live");
+    assert.match((verdicts.get(`us-metal02/${CHAT}`) as { why: string }).why, /list --all did not answer .*30000ms.*archived is unknown/);
+    assert.equal((await readUnitHolds([samplerGroup([])], context, read)).size, 1);
+    assert.equal(reads, 1);
+    assert.match(read.failure() ?? "", /^prime-agent list --all did not answer/);
+  } finally { await rm(rig.home, { recursive: true, force: true }); }
 });
 
 // Guards 11-02: the Mac's login shell is zsh, whose nomatch error failed every remote transcript lookup with an unmatched glob, so each Mac
