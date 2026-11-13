@@ -5,7 +5,7 @@
 // job as stalled, and the new job got a later slot and its first account at 17:34:21Z. A held job now gets the push run as a read, and keeps
 // the duty, like a job in pi-pool's line, until STUCK_MAX_MS.
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -22,12 +22,15 @@ const RUN_AT = Date.parse("2026-11-05T14:55:41.394Z");
 const HELD = "waits on pi-pool for its slot";
 
 async function replay(body: (at: { tick: (now: number, problems: number, following: number, scheduled?: boolean) => Promise<void>; store: DutyStore;
-  retired: string[]; started: string[] }) => Promise<void>): Promise<void> {
+  retired: string[]; started: string[]; reads: () => Promise<number> }) => Promise<void>, seed: { parts: boolean } = { parts: true }): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "duty-pool-held-push-"));
   try {
     const out = join(dir, "out.json");
     const precheck = join(dir, "precheck.mjs");
-    await writeFile(precheck, `import { copyFileSync } from "node:fs"; copyFileSync(${JSON.stringify(out)}, process.env.OUTPUT_FILE);`);
+    const counter = join(dir, "reads");
+    await writeFile(counter, "");
+    await writeFile(precheck, `import { appendFileSync, copyFileSync } from "node:fs"; appendFileSync(${JSON.stringify(counter)}, "x"); ` +
+      `copyFileSync(${JSON.stringify(out)}, process.env.OUTPUT_FILE);`);
     const store = new DutyStore(dir);
     const duty: Duty = {
       id: "d4", name: "Wiki dream", ownerWords: "the main wiki all articles and whcih articles exist itself should always be up to date", goal: "no page behind code",
@@ -38,8 +41,9 @@ async function replay(body: (at: { tick: (now: number, problems: number, followi
     };
     await store.update(CHAT, duties => { duties.push(duty); });
     const result = (value: number) => ({ value, target: 0, op: "<=" as const, met: value <= 0 });
-    await store.appendRun(CHAT, { duty: "d4", at: RUN_AT, slot: RUN_AT, trigger: "push", ms: 58_946, verdict: "met", summary: "wiki_problems 0 (on target); all 4 on target",
-      metrics: { wiki_problems: result(0) }, parts: { wiki_problems_following: result(3) }, job: JOB });
+    await store.appendRun(CHAT, seed.parts ? { duty: "d4", at: RUN_AT, slot: RUN_AT, trigger: "push", ms: 58_946, verdict: "met", summary: "wiki_problems 0 (on target); all 4 on target",
+      metrics: { wiki_problems: result(0) }, parts: { wiki_problems_following: result(3) }, job: JOB }
+      : { duty: "d4", at: RUN_AT, slot: RUN_AT, trigger: "push", ms: 58_946, verdict: "missed", summary: "wiki_problems 9", metrics: { wiki_problems: result(9) }, job: JOB });
     let now = RUN_AT;
     const retired: string[] = [];
     const started: string[] = [];
@@ -64,7 +68,8 @@ async function replay(body: (at: { tick: (now: number, problems: number, followi
       else await duties.tick();
       await duties.settled();
     };
-    try { await body({ tick, store, retired, started }); } finally { duties.close(); }
+    const reads = async () => (await readFile(counter, "utf8")).length;
+    try { await body({ tick, store, retired, started, reads }); } finally { duties.close(); }
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
@@ -99,4 +104,17 @@ test("a job pi-pool holds for its slot is replaced as stalled once STUCK_MAX_MS 
     assert.deepEqual(retired, [JOB.id]);
     assert.equal(started.length, 1);
   });
+});
+
+test("a missed duty with no parts gets no read beside a job pi-pool holds, and the push records its skip (api portal vp d2, 11-10 to 11-13)", async () => {
+  await replay(async ({ tick, store, retired, started, reads }) => {
+    await tick(RUN_AT + 61 * MIN, 9, 0);
+    const latest = (await store.runs(CHAT)).find(run => run.duty === "d4")!;
+    assert.equal(latest.trigger, "push");
+    assert.equal(latest.verdict, "skipped");
+    assert.ok(latest.summary.startsWith(`${STILL_WORKING} (job ${JOB.name} ${HELD})`), latest.summary);
+    assert.equal(await reads(), 0, "the precheck does not run");
+    assert.deepEqual(retired, []);
+    assert.deepEqual(started, []);
+  }, { parts: false });
 });

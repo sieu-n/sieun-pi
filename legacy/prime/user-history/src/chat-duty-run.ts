@@ -264,6 +264,14 @@ type PushContext = { runs: DutyRunRecord[]; everyMs: number };
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
+/** Whether the duty's newest measured run flagged an item to hand off, read from its precheck output; a missing or unreadable file flags none. */
+async function flaggedHandOff(runs: readonly DutyRunRecord[]): Promise<boolean> {
+  const detail = runs.find(run => (run.verdict === "met" || run.verdict === "missed") && run.detail)?.detail;
+  if (!detail) return false;
+  const output = await readFile(detail, "utf8").then(text => JSON.parse(text) as PrecheckOutput, () => null);
+  return Array.isArray(output?.flagged) && output.flagged.some(slice => slice?.handOff === true);
+}
+
 /** Whether a run moves its duty's lastRunAt and lastSlotAt: a push run or a rerun leaves them, since they set when the duty is due next. */
 const movesSchedule = (trigger: DutyTrigger): boolean => trigger !== "push" && trigger !== "rerun" && trigger !== "host-back";
 /**
@@ -1343,10 +1351,7 @@ export class Duties {
     const kept = await this.kept(job);
     if (kept && !inTurnQueue(kept)) return true;
     if (!this.host.jobs.steer) return false;
-    const detail = runs.find(run => (run.verdict === "met" || run.verdict === "missed") && run.detail)?.detail;
-    if (!detail) return false;
-    const output = await readFile(detail, "utf8").then(text => JSON.parse(text) as PrecheckOutput, () => null);
-    return Array.isArray(output?.flagged) && output.flagged.some(slice => slice?.handOff === true);
+    return await flaggedHandOff(runs);
   }
 
   /**
@@ -1537,7 +1542,20 @@ export class Duties {
       const found = duties.find(entry => entry.id === dutyId);
       if (found) found.runCount += 1;
     });
-    if ((await this.previous(chatId, dutyId, duty.schedule, at)) === null) return;
+    const before = await this.previous(chatId, dutyId, duty.schedule, at);
+    if (before === null) return;
+    // A push beside a held job reads the duty only for parts that can fall behind (11-05) or items to hand off. From 11-10 to 11-13 api portal vp's
+    // d2 got 322 push runs beside jobs pi-pool held, and each called 238 /v1 routes on api.virev.ai and staging-api.virev.ai and handed nobody
+    // anything: 44k Vercel requests a day (otel.otel_logs, 11-12). The job's own after-job measure reads the duty once it ends.
+    if (trigger === "push" && "skipped" in before && before.held) {
+      const own = (await this.store.runs(chatId)).filter(run => run.duty === dutyId);
+      if (!readsParts(own, verdictKeys(duty.metrics)) && !(await flaggedHandOff(own))) {
+        const summary = `${before.skipped}; no read beside it, since the duty has no parts and nothing to hand off`;
+        await this.store.appendRun(chatId, { duty: dutyId, at: started, slot: at, trigger, ms: this.now() - started, verdict: "skipped", metrics: {}, summary });
+        this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: ${summary}`);
+        return;
+      }
+    }
     const previous = (await this.store.runs(chatId)).filter(run => run.duty === dutyId && run.verdict !== "skipped");
     const dir = this.store.chatDir(chatId);
     const detail = join(dir, `${dutyId}-${runStamp(started)}.json`);
