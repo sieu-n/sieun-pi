@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type ArmRow, type Experiment, fisherP, measureTests, readDate, testsMetrics } from "../scripts/duties/slack-green-tests.ts";
+import { type ArmRow, armsQuery, type Experiment, fisherP, measureTests, readDate, testsMetrics } from "../scripts/duties/slack-green-tests.ts";
 
 const NOW = Date.parse("2026-11-13T12:00:00Z");
 const experiment = (id: number, flag: string, start: string, extra: Partial<Experiment> = {}): Experiment =>
@@ -33,7 +33,7 @@ test("only live tests past their read date count, and an ended, archived or dele
   const { metrics, flagged } = testsMetrics(experiments, [arm("sg-exp-late", "control", 111, 1), arm("sg-exp-late", "test", 106, 4)], [], NOW);
   assert.deepEqual(metrics, { tests_overdue: 1, tests_live: 2, tests_live_p_under_005: 0, source_errors: 0 });
   assert.deepEqual(flagged.map(slice => [slice.kind, slice.item]), [["overdue_test", "sg-exp-late"], ["running_test", "sg-exp-new"]]);
-  assert.match(flagged[0]!.excerpt, /control 111 people: 1 signed up \(0\.9%\).*test 106 people: 4 signed up \(3\.8%\).*signed up 0\.204/);
+  assert.match(flagged[0]!.excerpt, /control 111 people: 1 signed up in 7 days \(0\.9%\).*test 106 people: 4 signed up in 7 days \(3\.8%\).*signed up in 7 days 0\.204/);
 });
 
 test("a tests.json test outside PostHog counts once its read date passes", () => {
@@ -46,4 +46,12 @@ test("a tests.json test outside PostHog counts once its read date passes", () =>
 test("a failed experiments read is a source error with no made-up count", async () => {
   const output = await measureTests(async () => { throw new Error("HTTP 403: missing scope"); }, [], undefined, NOW);
   assert.deepEqual(output.metrics, { tests_overdue: 0, source_errors: 1 });
+});
+
+test("the arms query reads first exposures with each outcome's window and drops QA people and two-arm people", () => {
+  const query = armsQuery(["sg-exp-home-1"], "2026-10-14");
+  assert.match(query, /INTERVAL 7 DAY/);
+  assert.match(query, /INTERVAL 28 DAY/);
+  assert.match(query, /ex\.narms = 1/);
+  assert.match(query, /match\(coalesce\(toString\(properties\.email\), ''\), '\(\?i\)sgqa\|sg-qa\|@slack\\\\\.green/);
 });

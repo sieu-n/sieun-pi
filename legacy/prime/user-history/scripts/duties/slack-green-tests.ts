@@ -17,9 +17,9 @@ import { parseEnv } from "./local-dev-uptime.ts";
  * flag is not deleted. Its read date is, first match wins: a "Read date: YYYY-MM-DD" line in the experiment description, the test's read_date in
  * ~/work/slack-green-ab-tests/tests.json (the ab-results-page job's table, 11-13), or 28 days after the start. A test in tests.json with no
  * PostHog experiment (an email cohort test) counts too once its read date passes, until an experiment named with its key records its call.
- * Each live test gets one slice with each arm's people, and how many of them signed up, connected a workspace or paid after their first
- * exposure, with a two-sided Fisher exact p of each test arm against control. The duty job reads the experiment description for the test's own
- * primary metric.
+ * Each live test gets one slice with each arm's people, and how many of them signed up or connected Slack within 7 days of their first
+ * exposure or paid within 28 days (`armsQuery`, the ab-results-page method), with a two-sided Fisher exact p of each test arm against control.
+ * The duty job reads the experiment description for the test's own primary metric.
  */
 
 export const HEADLINE = "tests_overdue";
@@ -36,6 +36,7 @@ export interface TableTest { flag: string; experiment_id: number | null; read_da
 export type Query = (hogql: string) => Promise<unknown[][]>;
 
 const OUTCOMES = ["signed_up", "workspace_added", "paid"] as const;
+const LABEL = { signed_up: "signed up in 7 days", workspace_added: "connected in 7 days", paid: "paid in 28 days" } as const;
 const day = (iso: string) => iso.slice(0, 10);
 const pct = (part: number, whole: number) => whole ? Math.round(1000 * part / whole) / 10 : 0;
 
@@ -73,12 +74,12 @@ export function armWords(rows: readonly ArmRow[]): { words: string; minP: number
   const control = rows.find(row => row.arm === "control");
   let minP: number | null = null;
   const parts = rows.map(row => {
-    const rates = OUTCOMES.map(key => `${row[key]} ${key.replace("_", " ")} (${pct(row[key], row.n)}%)`).join(", ");
+    const rates = OUTCOMES.map(key => `${row[key]} ${LABEL[key]} (${pct(row[key], row.n)}%)`).join(", ");
     if (!control || row === control) return `${row.arm} ${row.n} people: ${rates}`;
     const ps = OUTCOMES.map(key => {
       const p = fisherP(row[key], row.n - row[key], control[key], control.n - control[key]);
       minP = minP === null ? p : Math.min(minP, p);
-      return `${key.replace("_", " ")} ${p}`;
+      return `${LABEL[key]} ${p}`;
     });
     return `${row.arm} ${row.n} people: ${rates}; p against control: ${ps.join(", ")}`;
   });
@@ -117,19 +118,39 @@ export function testsMetrics(experiments: readonly Experiment[], arms: readonly 
 const EXPERIMENTS = `SELECT e.id, e.name, f.key, e.start_date, e.end_date, e.archived, f.deleted, e.description
 FROM system.experiments AS e LEFT JOIN system.feature_flags AS f ON f.id = e.feature_flag_id ORDER BY e.id`;
 
-/** People per arm by first exposure, and how many of them signed up, connected a workspace or paid after it. QA and internal people are left out by the project's test filters. */
+/**
+ * QA and internal people, by the email on their person, the same regex as the ab-results-page table (tests.json `qa_email_regex`, 11-13), so
+ * the duty and the page read the same numbers. On 11-13 the duty's first version counted any conversion after exposure with the project test
+ * filters and read sg-exp-home-1 at 20 of 478 against 10 of 438 signups (p 0.14) while the page read 19 of 483 against 7 of 442 (p 0.045).
+ */
+export const QA_EMAILS = "(?i)sgqa|sg-qa|@slack\\.green|resend\\.dev|sieun|virev|example\\.com|konti|testmail";
+/** What a conversion is: signed up or connected Slack within 7 days of first exposure, paid within 28 days, from 2 minutes before it. */
+export const WINDOW_DAYS = { signed_up: 7, workspace_added: 7, paid: 28 } as const;
+const PAID = "event IN ('subscription_purchased', 'cli_license_purchased') OR (event = 'subscription_created' AND toString(properties.trialing) != 'true') " +
+  "OR (event = 'payment_succeeded' AND toFloat(properties.amount) > 0)";
+
+/**
+ * People per arm by their first exposure, people who saw two arms left out, and how many of them converted inside each outcome's window.
+ * The method of the ab-results-page table, so a call reads the same numbers the owner sees there.
+ */
 export function armsQuery(flags: readonly string[], since: string): string {
   const list = flags.map(flag => `'${flag.replace(/'/g, "")}'`).join(", ");
-  return `SELECT x.flag, x.arm, count(), countIf(c.signup > x.t0), countIf(c.workspace > x.t0), countIf(c.paid > x.t0), toString(max(x.t0))
-FROM (SELECT person_id, properties.$feature_flag AS flag, argMin(toString(properties.$feature_flag_response), timestamp) AS arm, min(timestamp) AS t0
-  FROM events WHERE event = '$feature_flag_called' AND properties.$feature_flag IN (${list}) AND properties.$feature_flag_response IS NOT NULL
-    AND timestamp >= toDateTime('${since}') AND {filters}
-  GROUP BY person_id, flag) AS x
-LEFT JOIN (SELECT person_id, maxIf(timestamp, event = 'user_signed_up') AS signup, maxIf(timestamp, event = 'workspace_added') AS workspace,
-    maxIf(timestamp, event IN ('subscription_created', 'cli_license_purchased')) AS paid
-  FROM events WHERE event IN ('user_signed_up', 'workspace_added', 'subscription_created', 'cli_license_purchased') AND timestamp >= toDateTime('${since}')
-  GROUP BY person_id) AS c ON c.person_id = x.person_id
-GROUP BY x.flag, x.arm ORDER BY x.flag, x.arm`;
+  const within = (kind: string, days: number) =>
+    `max(if(mm.kind = '${kind}' AND mm.timestamp >= ex.t0 - INTERVAL 2 MINUTE AND mm.timestamp <= ex.t0 + INTERVAL ${days} DAY, 1, 0))`;
+  return `SELECT flag, arm, count(), sum(su), sum(ws), sum(pd), toString(max(t0)) FROM (
+  SELECT ex.person_id AS pid, ex.flag AS flag, ex.arm AS arm, ex.t0 AS t0, ${within("signup", WINDOW_DAYS.signed_up)} AS su,
+    ${within("connect", WINDOW_DAYS.workspace_added)} AS ws, ${within("paid", WINDOW_DAYS.paid)} AS pd
+  FROM (SELECT person_id, properties.$feature_flag AS flag, argMin(toString(properties.$feature_flag_response), timestamp) AS arm, min(timestamp) AS t0,
+      count(DISTINCT toString(properties.$feature_flag_response)) AS narms
+    FROM events WHERE event = '$feature_flag_called' AND properties.$feature_flag IN (${list}) AND properties.$feature_flag_response IS NOT NULL
+      AND timestamp >= toDateTime('${since}')
+      AND person_id NOT IN (SELECT id FROM persons WHERE match(coalesce(toString(properties.email), ''), '${QA_EMAILS.replace(/\\/g, "\\\\")}'))
+    GROUP BY person_id, flag) AS ex
+  LEFT JOIN (SELECT person_id, timestamp, multiIf(event = 'user_signed_up', 'signup', event = 'workspace_added', 'connect', 'paid') AS kind FROM events
+    WHERE timestamp >= toDateTime('${since}') AND (event IN ('user_signed_up', 'workspace_added') OR ${PAID})) AS mm ON mm.person_id = ex.person_id
+  WHERE ex.narms = 1
+  GROUP BY ex.person_id, ex.flag, ex.arm, ex.t0)
+GROUP BY flag, arm ORDER BY flag, arm`;
 }
 
 export function toExperiment(row: unknown[]): Experiment {
@@ -163,12 +184,12 @@ export async function measureTests(query: Query, table: readonly TableTest[], ta
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error)).replace(/phx_[A-Za-z0-9]+/g, "phx_***");
 
-/** A HogQL query through PostHog's query API with the project's test account filters, failing on any non-200 or query error. */
+/** A HogQL query through PostHog's query API, failing on any non-200 or query error. */
 export function posthogQuery(key: string, project: string, host = "https://us.posthog.com"): Query {
   return async hogql => {
     const response = await fetch(`${host}/api/projects/${project}/query/`, {
       method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ query: { kind: "HogQLQuery", query: hogql, filters: { filterTestAccounts: true } } }),
+      body: JSON.stringify({ query: { kind: "HogQLQuery", query: hogql } }),
       signal: AbortSignal.timeout(PRECHECK_TARGET_MS / 3),
     });
     const body = await response.json() as { results?: unknown[][]; error?: string; detail?: string };
