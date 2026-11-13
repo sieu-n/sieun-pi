@@ -1,8 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { daemonList, listRows } from "../../src/daemon-list.ts";
+import { dirname, join } from "node:path";
+import { daemonList, listRows, type ListOptions, readListOnce } from "../../src/daemon-list.ts";
 import { readSession, readSessionFile, sessionFiles, type RunState, type Scenario, type SessionEvent, type Verdict } from "./session-read.ts";
 
 /**
@@ -23,8 +23,19 @@ const clip = (text: string, length = 300): string => (text.length > length ? tex
 interface Check { id: string; ok: boolean | null; detail: string }
 const yes = (ok: boolean | null): string => ok === null ? "not reached yet" : ok ? "met" : "not met";
 
-interface Row { sessionId: string; sessionName?: string; activeSessionId?: string; parentSessionId?: string; lifecycle?: string }
-const daemonRows = async (): Promise<Row[]> => listRows<Row>(await daemonList({ all: true }));
+interface Row { sessionId: string; activeSessionId?: string }
+/**
+ * The sessions a worker holds. The judge asks only whether each session of the chat is still resident, so it reads the live list: the full
+ * list read 11,228 saved sessions on 11-13 (97 MB, about 13 CPU-s of the supervisor's one thread).
+ */
+export const residentRows = async (read: (options: ListOptions) => Promise<unknown> = readListOnce): Promise<Row[]> => listRows<Row>(await daemonList({}, read));
+/** A job's name from the rlm-subagent.json beside its transcript, which stays after its worker stops; "" when it does not read. */
+export function jobName(file: string): string {
+  try {
+    const name = (JSON.parse(readFileSync(join(dirname(file), "rlm-subagent.json"), "utf8")) as { sessionName?: unknown }).sessionName;
+    return typeof name === "string" ? name : "";
+  } catch { return ""; }
+}
 /** Each process whose environment names the chat's session folder (RLM_HARNESS_STATE_DIR or RLM_SESSION_DIR of its tree), as its pid and command start. */
 function treeProcesses(chat: string): string[] {
   const out = execFileSync("ps", ["-E", "-ww", "-ax", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
@@ -72,18 +83,18 @@ async function judge(_run: string, state: RunState): Promise<{ verdict: Verdict;
     detail: `${jobs.length} job sessions, ${jobs.filter(job => job.reported).length} reported to the chat; the chat's last answer with a number: ${answer ? `${iso(answer.at)} "${clip(answer.text, 300)}"` : "none yet"}` });
 
   const minutes = idleMinutes();
-  const rows = await daemonRows();
+  const rows = await residentRows();
   const byId = new Map(rows.map(row => [row.sessionId, row] as const));
   const passivated = linesAfter(DAEMON_LOG, state.windowStart).filter(entry => /Passivated idle child|Evicted idle worker/.test(entry.line));
   const unloads = linesAfter(join(DATA, "service.log"), state.windowStart).filter(entry => entry.line.includes("idle unload: stopped"));
-  const names = new Map(jobs.map(job => [job.id, byId.get(job.id)?.sessionName ?? ""] as const));
+  const names = new Map(jobs.map(job => [job.id, jobName(job.file)] as const));
   const jobLines = jobs.map(job => {
     const row = byId.get(job.id);
     const name = names.get(job.id) ?? "";
     const evidence = [...passivated.filter(entry => entry.line.includes(job.id)), ...unloads.filter(entry => name && entry.line.includes(name) && entry.at >= job.last)].sort((x, y) => x.at - y.at)[0];
     const resident = row?.activeSessionId !== undefined;
     const late = evidence && minutes !== "off" ? evidence.at - job.last > minutes * 60_000 + SLACK_MS : false;
-    return { ok: resident ? null : !late, text: `${name || job.id}: last event ${iso(job.last)}, ${resident ? "still resident" : `not resident (${row?.lifecycle ?? "not listed"})`}` +
+    return { ok: resident ? null : !late, text: `${name || job.id}: last event ${iso(job.last)}, ${resident ? "still resident" : "not resident"}` +
       `${evidence ? `; ${clip(evidence.line, 200)} after ${Math.round((evidence.at - job.last) / 60_000)} min` : "; no unload line, so the chat's job cleanup deleted it or Prime evicted its tree"}` };
   });
   checks.push({ id: "b", ok: jobs.length === 0 ? null : jobLines.some(line => line.ok === false) ? false : jobLines.every(line => line.ok === true) ? true : null,
@@ -92,7 +103,7 @@ async function judge(_run: string, state: RunState): Promise<{ verdict: Verdict;
   const chatRow = byId.get(chat);
   const lastChat = Math.max(0, ...events.map(event => event.at));
   checks.push({ id: "c", ok: chatRow?.activeSessionId === undefined ? true : null,
-    detail: `the chat's last event ${iso(lastChat)}; its session is ${chatRow?.activeSessionId === undefined ? `not resident (${chatRow?.lifecycle ?? "not listed"})` : "still resident"}` });
+    detail: `the chat's last event ${iso(lastChat)}; its session is ${chatRow?.activeSessionId === undefined ? "not resident" : "still resident"}` });
 
   const left = treeProcesses(chat);
   checks.push({ id: "e", ok: chatRow?.activeSessionId === undefined ? left.length === 0 : null,
