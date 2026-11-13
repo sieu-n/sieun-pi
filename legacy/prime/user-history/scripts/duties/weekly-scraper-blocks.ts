@@ -48,7 +48,8 @@ export const ACCOUNT_VIEWS_MAX = 50;
 export const STOPPED_SHOWN = 20;
 
 export type State = "origin" | "hit" | "denied";
-export interface WeekRow { ua: string; ip: string; refk: string; page: boolean; state: State; calls: number; last: number }
+/** One (UA, IP, referer kind, route, state) group of calls; path is one of its paths, which the firewall replay reads. */
+export interface WeekRow { ua: string; ip: string; refk: string; page: boolean; path: string; state: State; calls: number; last: number }
 
 /** The parts of apps/search/firewall.json the list reads: the allowed UA tokens, the crawler UA regex and our own boxes. */
 export interface Firewall { allow: RegExp; bot: RegExp; ownIps: ReadonlySet<string> }
@@ -58,7 +59,46 @@ export function parseFirewall(body: unknown): Firewall {
   return { allow: new RegExp(file.allow.map(entry => escape(entry.ua)).join("|")),
     bot: new RegExp([...file.bot_patterns, ...file.deny.map(entry => escape(entry.ua))].join("|")), ownIps: new Set(file.own_ips) };
 }
-export const readFirewall = async (): Promise<Firewall> => parseFirewall(JSON.parse(await readFile(join(REPO, "apps/search/firewall.json"), "utf8")));
+
+/** The parts of apps/search/firewall.json that acts() reads; the file goes to acts() whole. */
+export interface FirewallCondition { type?: string; key?: string; op?: string; neg?: boolean; value?: string | string[]; use?: string }
+export interface FirewallFile { own_ua_env: string; rules: { name: string; action: { action: string }; groups: { conditions: FirewallCondition[] }[] }[] }
+/** A request in the shape acts() of auto-sns-agent scripts/repo/vercel/firewall.mjs reads. */
+export interface FirewallRequest { path: string; ip: string; asn: string | undefined; country: string | undefined; headers: Record<string, string | undefined> }
+/** acts() of that file: the `rule group <n>` names a request meets. */
+export type Acts = (file: FirewallFile, request: FirewallRequest, env: Record<string, string>) => string[];
+/** Whether the published rules would now deny a passed call of this shape, whatever the fields the log lacks hold. */
+export type Replay = (row: WeekRow, asn: Asn | undefined) => boolean;
+
+/** The actions that keep a crawler out; weeklySql counts a challenge as denied too. */
+const BLOCKING: ReadonlySet<string> = new Set(["deny", "challenge"]);
+const UNKNOWN = "weekly-scraper-blocks unknown";
+
+/**
+ * Replays a passed call through the deny and challenge rules of firewall.json with acts(). The log has no sec-ch-ua or country, and only the kind
+ * of a foreign referer, and an IP whois missed has no ASN, so each such field is tried absent, present with a value no rule names, and as each
+ * value a negated condition names; a call shape counts as denied only when every try is.
+ */
+export function replayer(file: FirewallFile, acts: Acts): Replay {
+  const blocking = { ...file, rules: file.rules.filter(rule => BLOCKING.has(rule.action.action)) };
+  const env = { [file.own_ua_env]: UNKNOWN };
+  const conditions = file.rules.flatMap(rule => rule.groups.flatMap(group => group.conditions));
+  const tries = (field: (condition: FirewallCondition) => boolean): (string | undefined)[] => [undefined, UNKNOWN,
+    ...conditions.filter(condition => condition.neg && field(condition) && ["eq", "inc", "sub"].includes(condition.op ?? "")).flatMap(condition => condition.value ?? [])];
+  const countries = tries(condition => condition.type === "geo_country");
+  const hints = tries(condition => condition.type === "header" && condition.key === "sec-ch-ua");
+  const anyAsn = tries(condition => condition.type === "geo_as_number");
+  const referers: Record<string, (string | undefined)[]> = { none: [undefined], bare_self: ["https://virev.ai/"], page: ["https://virev.ai/en"],
+    other: tries(condition => condition.type === "header" && condition.key === "referer").filter(value => value !== undefined) };
+  return (row, asn) => {
+    const path = row.path.split("?")[0];
+    if (!path) return false;
+    return (referers[row.refk] ?? [UNKNOWN]).every(referer => hints.every(hint => countries.every(country => (asn ? [String(asn.asn)] : anyAsn).every(as =>
+      acts(blocking, { path, ip: row.ip, asn: as, country, headers: { "user-agent": row.ua, referer, "sec-ch-ua": hint } }, env).length > 0))));
+  };
+}
+
+const firewallFile = async (): Promise<unknown> => JSON.parse(await readFile(join(REPO, "apps/search/firewall.json"), "utf8"));
 
 /** The row as public-page-scrapers.ts classifies it: a page or an API call, passed or denied. */
 export const asRow = (row: WeekRow): Row => ({ route: row.page ? "profile" : "img", refk: row.refk, ref: "", ua: row.ua, ip: row.ip,
@@ -120,16 +160,23 @@ const pct = (part: number, whole: number): number => Math.round((part / whole) *
 const utcMin = (ms: number): string => `${new Date(ms).toISOString().slice(5, 16).replace("T", " ")}Z`;
 const shellText = (text: string): string => `'${text.replaceAll("'", "'\\''")}'`;
 
-interface Client { calls: number; denied: number; lastDenied: number; pages: number; ips: Set<string>; asns: Map<number, { name: string; calls: number }>; last: number; ua: string }
+/** shapes counts the client's passed call groups and covered those the published rules would now deny. */
+interface Client { calls: number; denied: number; lastDenied: number; pages: number; ips: Set<string>; asns: Map<number, { name: string; calls: number }>; last: number; ua: string;
+  shapes: number; covered: number; gap: string }
 
 /** One signed-in account's busiest UTC day of profile views. */
 export interface AccountDay { user: string; day: string; views: number; ips: number }
 
 export interface WeekInputs { rows: readonly WeekRow[] | Error; asns: ReadonlyMap<string, Asn> | Error; accounts: readonly AccountDay[] | Error; judge: Omit<Judge, "fleet" | "typical">;
-  errors: readonly string[]; end: number }
+  errors: readonly string[]; end: number; replay?: Replay | undefined }
 
-/** A client still gets through when a call passed in the last 24 h and after the firewall's last denial of it, so a block made since reads as done. */
-const passing = (client: Client, at: number): boolean => client.last > at - DAY && client.last > client.lastDenied;
+/** The published rules would now deny every call shape the client got through with, so a block reads as done before the client comes back. */
+const covered = (client: Client): boolean => client.shapes > 0 && client.covered === client.shapes;
+/**
+ * A client still gets through when a call passed in the last 24 h, after the firewall's last denial of it, and the published rules would not
+ * deny all its passed call shapes, so a block made since reads as done.
+ */
+const passing = (client: Client, at: number): boolean => client.last > at - DAY && client.last > client.lastDenied && !covered(client);
 
 function blockCommand(key: string, client: Client, at: number, nets: [number, { name: string; calls: number }][]): string {
   const hosting = nets.filter(([asn, net]) => asn && isHosting(net.name)).map(([asn]) => asn);
@@ -163,9 +210,12 @@ export function weeklyClients(input: WeekInputs): PrecheckOutput {
     const asn = asns.get(row.ip);
     const key = clientKey(row, judge, asn);
     if (!key) continue;
-    const client = clients.get(key) ?? { calls: 0, denied: 0, lastDenied: 0, pages: 0, ips: new Set<string>(), asns: new Map(), last: 0, ua: row.ua };
+    const client = clients.get(key) ?? { calls: 0, denied: 0, lastDenied: 0, pages: 0, ips: new Set<string>(), asns: new Map(), last: 0, ua: row.ua, shapes: 0, covered: 0, gap: "" };
     if (row.state === "denied") { client.denied += row.calls; client.lastDenied = Math.max(client.lastDenied, row.last); clients.set(key, client); continue; }
     client.calls += row.calls;
+    client.shapes += 1;
+    if (input.replay?.(row, asn)) client.covered += 1;
+    else client.gap ||= `${row.path} with referer ${row.refk} from AS${asn?.asn ?? "?"}`;
     if (row.page) client.pages += row.calls;
     client.ips.add(row.ip);
     client.last = Math.max(client.last, row.last);
@@ -177,9 +227,11 @@ export function weeklyClients(input: WeekInputs): PrecheckOutput {
   const crawlers = [...clients].filter(([, client]) => client.calls > 0).sort((a, b) => b[1].calls - a[1].calls);
   const open = crawlers.filter(([, client]) => passing(client, at));
   const crawled = crawlers.reduce((sum, [, client]) => sum + client.calls, 0);
+  const ruled = crawlers.filter(([, client]) => covered(client) && client.last > at - DAY && client.last > client.lastDenied).length;
   flagged.push({ at, kind: "reading", item: "unblocked_crawlers", excerpt: `${total} calls to the public database pages and their APIs got past the Vercel Firewall in the 7 days, ` +
-    `${crawled} (${pct(crawled, total)}%) of them from ${crawlers.length} crawler clients; ${open.length} still got through in the last 24 h and ` +
-    `${crawlers.length - open.length} made none since ${utcMin(at - DAY)} or since the firewall began to deny them.` });
+    `${crawled} (${pct(crawled, total)}%) of them from ${crawlers.length} crawler clients; ${open.length} still got through in the last 24 h, ` +
+    `${ruled} more passed in the last 24 h but the published rules of apps/search/firewall.json now deny every call shape they passed with, and ` +
+    `${crawlers.length - open.length - ruled} made none since ${utcMin(at - DAY)} or since the firewall began to deny them.` });
   /** Stopped clients need no action, so the run lists only the largest few of them to keep the run detail readable; every open one is listed. */
   const shown = [...open, ...crawlers.filter(([, client]) => !passing(client, at)).slice(0, STOPPED_SHOWN)].sort((a, b) => b[1].calls - a[1].calls);
   for (const [key, client] of shown) {
@@ -187,7 +239,8 @@ export function weeklyClients(input: WeekInputs): PrecheckOutput {
     const netText = nets.slice(0, 3).map(([asn, net]) => `AS${asn} ${net.name.slice(0, 32)} ${pct(net.calls, client.calls)}%`).join(", ");
     const still = passing(client, at);
     flagged.push({ at: client.last, kind: still ? "scraper_client" : "scraper_client_stopped", ...(still ? { item: "unblocked_crawlers" } : {}), sig: key,
-      excerpt: `${pct(client.calls, total)}% (${client.calls} calls, ${client.pages} pages) from ${client.ips.size} IPs, ${client.denied} more denied, last ${utcMin(client.last)}: ` +
+      excerpt: `${pct(client.calls, total)}% (${client.calls} calls, ${client.pages} pages) from ${client.ips.size} IPs, ${client.denied} more denied, last ${utcMin(client.last)}, ` +
+        `the published rules now deny ${client.covered} of its ${client.shapes} passed call shapes${client.gap && input.replay ? ` (not ${client.gap.slice(0, 120)})` : ""}: ` +
         `${key.slice(0, 200)}; networks ${netText}; IPs ${[...client.ips].slice(0, 3).join(" ")}; start from: ${blockCommand(key, client, at, nets)}`.slice(0, 900) });
   }
   const metrics: Record<string, number> = { unblocked_crawlers: open.length };
@@ -209,19 +262,24 @@ export function weeklyClients(input: WeekInputs): PrecheckOutput {
 const sqlText = (text: string): string => `'${text.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
 const weekWindow = (end: number): string => `Timestamp > fromUnixTimestamp64Milli(${end - WEEK}) AND Timestamp <= fromUnixTimestamp64Milli(${end})`;
 
-/** One row per (UA, IP, referer kind, page or API, passed to origin, served from the CDN or denied), each request counted once by its Vercel id. */
+/**
+ * One row per (UA, IP, referer kind, page or API, route of ROUTES, passed to origin, served from the CDN or denied) with one of its paths, each
+ * request counted once by its Vercel id. A row per route gives the firewall replay one path for each route a client used.
+ */
 export function weeklySql(end: number): string {
   const any = ROUTES.map(([, pattern]) => `(?:${pattern})`).join("|");
   const ref = "LogAttributes['vercel.proxy.referer']";
   return `SELECT replaceRegexpAll(LogAttributes['vercel.proxy.userAgent'], '^\\\\["|"\\\\]$', '') AS ua, LogAttributes['vercel.proxy.clientIp'] AS ip,
   multiIf(${ref} = '', 'none', match(${ref}, '^https?://(www\\\\.)?virev\\\\.ai/?$'), 'bare_self', match(${ref}, '^https?://(www\\\\.)?virev\\\\.ai/'), 'page', 'other') AS refk,
   NOT startsWith(LogAttributes['vercel.proxy.path'], '/api/') AS page,
+  multiIf(${ROUTES.map(([name, pattern]) => `match(LogAttributes['vercel.proxy.path'], ${sqlText(pattern)}), '${name}'`).join(", ")}, '') AS route,
+  any(LogAttributes['vercel.proxy.path']) AS path,
   multiIf(LogAttributes['vercel.source'] = 'firewall' OR LogAttributes['vercel.proxy.wafAction'] IN ('deny', 'challenge'), 'denied',
     LogAttributes['vercel.proxy.vercelCache'] = 'HIT', 'hit', 'origin') AS state,
   uniqExact(LogAttributes['vercel.requestId']) AS calls, max(toUnixTimestamp64Milli(Timestamp)) AS last
 FROM otel.otel_logs WHERE ServiceName = 'search' AND \`__hdx_materialized_deployment.environment.name\` = 'production' AND ${weekWindow(end)}
   AND LogAttributes['vercel.proxy.path'] != '' AND match(LogAttributes['vercel.proxy.path'], ${sqlText(any)})
-GROUP BY ua, ip, refk, page, state
+GROUP BY ua, ip, refk, page, route, state
 SETTINGS max_threads = 2, log_comment = 'duty weekly-scraper-blocks'`;
 }
 
@@ -235,22 +293,30 @@ SETTINGS max_threads = 2, log_comment = 'duty weekly-scraper-blocks'`;
 
 export async function measure(query: DsQuery, end: number, signal: AbortSignal): Promise<PrecheckOutput> {
   const asError = (error: unknown): Error => error instanceof Error ? error : new Error(String(error));
-  const [raw, accountRows, firewall] = await Promise.all([
+  const [raw, accountRows, file] = await Promise.all([
     sqlRows(query, CLICKHOUSE, weeklySql(end)).then(found => found, asError),
     sqlRows(query, CLICKHOUSE, accountsSql(end)).then(found => found, asError),
-    readFirewall(),
+    firewallFile(),
   ]);
+  const firewall = parseFirewall(file);
   const rows = raw instanceof Error ? raw : raw.map((row): WeekRow => ({ ua: String(row.ua ?? ""), ip: String(row.ip ?? ""), refk: String(row.refk),
-    page: Boolean(Number(row.page)), state: String(row.state) as State, calls: Number(row.calls), last: Number(row.last) }));
+    page: Boolean(Number(row.page)), path: String(row.path ?? ""), state: String(row.state) as State, calls: Number(row.calls), last: Number(row.last) }));
   const accounts = accountRows instanceof Error ? accountRows : accountRows.map((row): AccountDay => ({ user: String(row.user), day: String(row.day),
     views: Number(row.views), ips: Number(row.ips) }));
   const errors: string[] = [];
   if (rows instanceof Error) return weeklyClients({ rows, asns: new Map(), accounts, judge: { verify: { engine: () => null }, firewall }, errors, end });
   const verify = await verifier(rows.map(asRow), errors, signal);
   const judge = { verify, firewall };
-  const lookup = rows.filter(row => needsNetwork(row, { ...judge, typical: null, fleet: new Set() })).map(row => row.ip);
+  /** Every passed call's network too, so the replay can test the ASN groups on an indexer UA or a bot UA. */
+  const lookup = rows.filter(row => needsNetwork(row, { ...judge, typical: null, fleet: new Set() }) || (row.state !== "denied" && !firewall.ownIps.has(row.ip)))
+    .map(row => row.ip);
   const asns = await asnOf(lookup, signal).then(found => found, asError);
-  return weeklyClients({ rows, asns, accounts, judge, errors, end });
+  const replay = await import(pathToFileURL(join(REPO, "scripts/repo/vercel/firewall.mjs")).href)
+    .then(module => replayer(file as FirewallFile, module.acts as Acts), (error: unknown) => {
+      errors.push(`firewall replay through ${REPO}/scripts/repo/vercel/firewall.mjs: ${asError(error).message}, so only a denial after the last pass counts as blocked`);
+      return undefined;
+    });
+  return weeklyClients({ rows, asns, accounts, judge, errors, end, replay });
 }
 
 /**

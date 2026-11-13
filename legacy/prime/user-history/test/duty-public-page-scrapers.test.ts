@@ -8,7 +8,8 @@ import { classify, ENGINES, humanIps, inRanges, rangeList, requestsSql, ROUTES, 
 import { type DutyMetric, judge } from "../src/shared/chat-duties.ts";
 import { DAY } from "../scripts/duties/estate-reads.ts";
 import { type Asn, isHosting, parseCymru } from "../scripts/duties/ip-asn.ts";
-import { accountsSql, ACCOUNT_VIEWS_MAX, FLEET_MIN_IPS, fleetKeys, parseFirewall, type WeekRow, weeklyClients, weeklySql } from "../scripts/duties/weekly-scraper-blocks.ts";
+import { accountsSql, ACCOUNT_VIEWS_MAX, type Acts, type FirewallCondition, type FirewallFile, FLEET_MIN_IPS, fleetKeys, parseFirewall, replayer, type WeekRow, weeklyClients,
+  weeklySql } from "../scripts/duties/weekly-scraper-blocks.ts";
 
 const duty = JSON.parse(readFileSync(new URL("../scripts/duties/public-page-scrapers.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] };
 const WIN = (major: number | string) => `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}${typeof major === "number" ? ".0.0.0" : ""} Safari/537.36`;
@@ -105,7 +106,7 @@ const DO: Asn = { asn: 14061, name: "DIGITALOCEAN-ASN - DigitalOcean, LLC, US", 
 const KT: Asn = { asn: 4766, name: "KIXS-AS-KR-KR - Korea Telecom, KR", cc: "KR" };
 const FIREWALL = parseFirewall({ allow: [{ ua: "Googlebot" }, { ua: "facebookexternalhit" }], deny: [{ ua: "ChatGPT-User" }], bot_patterns: ["[Bb]ot[^a-z]", "[Pp]ython"],
   own_ips: ["155.254.27.166"] });
-const week = (part: Partial<WeekRow>): WeekRow => ({ ua: WIN(150), ip: "1.2.3.4", refk: "page", page: true, state: "origin", calls: 1, last: 10 * DAY, ...part });
+const week = (part: Partial<WeekRow>): WeekRow => ({ ua: WIN(150), ip: "1.2.3.4", refk: "page", page: true, path: "/profile/someone", state: "origin", calls: 1, last: 10 * DAY, ...part });
 const weekly = (rows: WeekRow[], asns: Map<string, Asn>, end = 10 * DAY) => weeklyClients({ rows, asns, accounts: [], judge: { verify: googleOnly, firewall: FIREWALL }, errors: [], end });
 const listed = (output: ReturnType<typeof weeklyClients>) => output.flagged!.filter(slice => slice.kind.startsWith("scraper_client")).map(slice => [slice.kind, slice.sig]);
 
@@ -127,6 +128,36 @@ test("the weekly list names every crawler whatever its size, and never a person,
   assert.match(output.flagged!.find(slice => slice.kind === "scraper_client")!.excerpt, /from 30 IPs.*AS14061.*--ua-sub '.*Version\/26\.0\.1 Safari\/605\.1\.15' --asn 14061/);
   const blocked = weekly([...rows, week({ ua: SAFARI, ip: "64.227.101.3", refk: "none", state: "denied", calls: 5, last: 10 * DAY + 1 })], asns, 10 * DAY + 2);
   assert.equal(listed(blocked)[0]![0], "scraper_client_stopped", "a client the firewall denies after its last passed call reads as blocked the same day");
+});
+
+/** acts() of auto-sns-agent scripts/repo/vercel/firewall.mjs for the condition ops these cases use, without its compile step. */
+const fakeActs: Acts = (file, request) => file.rules.flatMap(rule => rule.groups.flatMap((group, at) => group.conditions.every(condition => {
+  const have = condition.type === "path" ? request.path : condition.type === "user_agent" ? request.headers["user-agent"]
+    : condition.type === "header" ? request.headers[condition.key!] : condition.type === "geo_as_number" ? request.asn : request.country;
+  const met = condition.op === "nex" ? have === undefined : condition.op === "eq" ? have === condition.value : have !== undefined && new RegExp(String(condition.value)).test(have);
+  return met !== Boolean(condition.neg);
+}) ? [`${rule.name} group ${at}`] : []));
+
+test("a client counts as blocked once the published deny rules cover every call shape it passed with, before it comes back (d7, 11-13)", () => {
+  const rule = (action: string, ...groups: FirewallCondition[][]) => ({ name: action, action: { action }, groups: groups.map(conditions => ({ conditions })) });
+  const file: FirewallFile = { own_ua_env: "FIREWALL_OWN_UA", rules: [
+    rule("deny", [{ type: "user_agent", op: "re", value: "Version/26\\.0\\.1 Safari" }, { type: "header", key: "referer", op: "nex" }],
+      [{ type: "user_agent", op: "re", value: "Googlebot" }, { type: "geo_as_number", op: "eq", neg: true, value: "15169" }],
+      [{ type: "user_agent", op: "re", value: "Chrome/" }, { type: "header", key: "sec-ch-ua", op: "nex" }]),
+    rule("log", [{ type: "path", op: "re", value: "^/profile/" }])] };
+  const safari = Array.from({ length: 30 }, (_, index) => week({ ua: SAFARI, ip: `64.227.101.${index}`, refk: "none", calls: 2 }));
+  const asns = new Map(safari.map((row): [string, Asn] => [row.ip, DO]));
+  const run = (rows: WeekRow[], found = asns) => weeklyClients({ rows, asns: found, accounts: [], judge: { verify: googleOnly, firewall: FIREWALL }, errors: [], end: 10 * DAY,
+    replay: replayer(file, fakeActs) });
+  assert.deepEqual(listed(run(safari)), [["scraper_client_stopped", `browser UA from a hosting network | ${SAFARI}`]]);
+  assert.equal(run(safari).metrics.unblocked_crawlers, 0);
+  assert.match(run(safari).flagged!.find(slice => slice.kind === "scraper_client_stopped")!.excerpt, /rules now deny 30 of its 30 passed call shapes/);
+  assert.equal(run([...safari, week({ ua: SAFARI, ip: "64.227.101.7", refk: "page", calls: 2 })]).metrics.unblocked_crawlers, 1, "a shape with a referer still gets through");
+  const fakeGooglebot = week({ ua: GOOGLEBOT, ip: "34.1.2.3", calls: 50 });
+  assert.equal(run([fakeGooglebot], new Map([["34.1.2.3", { asn: 396982, name: "GOOGLE-CLOUD-PLATFORM, US", cc: "US" }]])).metrics.unblocked_crawlers, 0);
+  assert.equal(run([fakeGooglebot], new Map()).metrics.unblocked_crawlers, 1, "with no ASN the replay also tries AS15169, which the rule spares");
+  assert.equal(run([week({ ua: "Mozilla/5.0 (Windows NT 10.0) Chrome/120.0.0.0", ip: "64.227.101.1", refk: "bare_self" })]).metrics.unblocked_crawlers, 1,
+    "the log has no sec-ch-ua, so a rule that needs it absent proves nothing");
 });
 
 test("unblocked_crawlers' lastEventAt is the newest call of a client still getting through, and none once every client stopped (ops guy, 2026-11-10)", () => {
