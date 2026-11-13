@@ -1717,8 +1717,12 @@ export function measure(input: Inputs): PrecheckOutput {
       const lineAt = Date.parse(line.at);
       const started = own && slow.some(words => words.startsWith("the chat")) ? (input.chatStarts ?? []).findLast(at => at <= lineAt && lineAt - at <= CHAT_START_MS) : undefined;
       const startWords = started === undefined ? "" : `, ${Math.round((lineAt - started) / 1000)} s after the chat started at ${new Date(started).toISOString().slice(11, 19)}Z`;
+      // A CPU minute whose only slowness is the Prime supervisor's, timed-out sends or wakes and unanswered worker polls, is the harness's too:
+      // from 15:09Z to 15:19Z on 11-13 the supervisor held send_message 30 s and more behind a herd of `prime-agent list --all --json` reads,
+      // and d7 booked those minutes on CI's side for its 35 to 47 of 80 cores, a level that read clean for most of that afternoon.
+      const daemonOnly = miss.every(kind => kind === "cpu") && slow.length > 0 && slow.every(words => !words.startsWith("the chat"));
       const led = side(line, view);
-      const read = found.includes("cpu") && (slowChat(own, line.chat) || started !== undefined) ? "harness" : led;
+      const read = found.includes("cpu") && (slowChat(own, line.chat) || started !== undefined || daemonOnly) ? "harness" : led;
       why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${startWords}${memoryWords(view)}${jumpAt(line, view)}${led === "ci" ? ciAt(line, view) : ""}${rigWords(view, faultName)}${jobRigWords(view, rigOwner)})`);
       sides.add(read);
       if (read === "harness" && rigsLead(view)) {
