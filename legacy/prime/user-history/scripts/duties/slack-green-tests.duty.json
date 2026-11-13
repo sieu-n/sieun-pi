@@ -1,0 +1,32 @@
+{
+  "name": "Slack Green tests",
+  "ownerWords": "and how has the a/b tests going in general? what worked/didn't work? did anything work at all?  your duty is to check ab test results as they clear every day. NEVER CHANGE SHIT UNLESS PROVEN!!!!!!!!!!!!!!!!!!!!",
+  "goal": "Every Slack Green A/B test gets its call on the day it clears, and nothing reaches all users unless its test proved it (c222). A test is live in PostHog project 226805 while its experiment has a start date and no end date; the call is recorded in PostHog as the experiment's end date and conclusion, so PostHog is the one record of calls. Its read date is a 'Read date: YYYY-MM-DD' line in the experiment description, else its read_date in ~/work/slack-green-ab-tests/tests.json, else 28 days after its start.",
+  "metrics": [
+    {
+      "key": "tests_overdue",
+      "label": "Slack Green tests past their read date with no recorded call",
+      "op": "<=",
+      "target": 0,
+      "unit": " tests",
+      "headline": true
+    },
+    {
+      "key": "source_errors",
+      "label": "PostHog reads that failed in this check",
+      "op": "<=",
+      "target": 0
+    }
+  ],
+  "precheck": {
+    "command": [
+      "node",
+      "--import",
+      "tsx",
+      "scripts/duties/slack-green-tests.ts"
+    ],
+    "cwd": "../..",
+    "timeoutMs": 120000
+  },
+  "onMiss": "source_errors: fix the precheck or POSTHOG_PERSONAL_API_KEY in slack-green scripts/seo-agent/.env first. Then make one call for each overdue_test slice. Read the experiment's description for its primary metric and its PostHog results page for that metric; the slice's signup, connect and paid counts and Fisher p are a cross-check. won: the test arm beats control on the primary metric with p under 0.05, or at a read date set before launch PostHog shows the test arm at 95% or more chance to beat control. lost: the same proof with control ahead. flat: neither, which includes a test too small to tell; it ends on control. Record the call from the owner's us.posthog.com tab in Aside (page.evaluate fetch with X-CSRFToken from the posthog_csrftoken cookie): PATCH /api/projects/226805/experiments/<id>/ with end_date now, conclusion won, lost or inconclusive, and conclusion_comment as one line with the arms' numbers and p. Then apply it: lost or flat sets the flag to control at 100%, won sets the test arm to 100%, with PATCH /api/projects/226805/feature_flags/<flag id>/. Server-side tests in the slack-green proxy ignore the flag, so open one slack-green PR that removes the lost arm or keeps the won arm as the only path, and put its merge on the owner's For you todo. A test may move its read date only when its description names a planned sample it has not reached: write a new 'Read date:' line with the reason, once per test. A tests.json test with no PostHog experiment gets an experiment named with its key, then the same call. Never change anything for all users without a won call, never merge, deploy prod or email users. Report each call in one short line, like 'sg-exp-x lost: control 4 of 106, test 1 of 111, p 0.2, flag back to control'. With nothing overdue, end with no message."
+}
