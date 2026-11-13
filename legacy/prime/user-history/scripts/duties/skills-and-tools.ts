@@ -346,13 +346,14 @@ const utcMinute = (ms: number) => `${new Date(ms).toISOString().slice(5, 16).rep
  * no longer needs a sign-in (`needing`, lowercased emails), so a prompt reached before an account's last sign-in never makes a later one the
  * owner's.
  */
-async function currentPrompts(deps: Deps, provider: string, rows: readonly { email?: string }[], needing: ReadonlySet<string>): Promise<SignInPrompt[]> {
+async function currentPrompts(deps: Deps, provider: string, rows: readonly { email?: string }[], needing: ReadonlySet<string>, found: readonly SignInPrompt[] = []): Promise<SignInPrompt[]> {
   const file = signInPromptsFile(deps.home);
   const prompts = parsePrompts(await deps.readFile(file).catch(() => undefined));
   const listed = new Set(rows.flatMap(row => row.email ? [row.email.toLowerCase()] : []));
   const kept = prompts.filter(row => row.provider !== provider || !listed.has(row.account.toLowerCase()) || needing.has(row.account.toLowerCase()));
-  if (kept.length < prompts.length) await deps.writeFile(file, promptsText(kept)).catch(() => undefined);
-  return kept;
+  const added = found.filter(row => !promptFor(kept, row.provider, row.account));
+  if (kept.length < prompts.length || added.length) await deps.writeFile(file, promptsText([...kept, ...added])).catch(() => undefined);
+  return [...kept, ...added];
 }
 
 async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise<Outcome> {
@@ -379,7 +380,15 @@ async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise
   const ending = grantRows.filter(entry => entry.row.cooldown_reason !== NO_SEAT).map(({ email, text }) => ({ email, text }));
   const refusedEnding = grantRows.filter(entry => entry.row.cooldown_reason === NO_SEAT).map(entry => entry.label);
   const needing = [...live.filter(row => row.reason === "needs-reauth" && !noSeat.includes(row)).map(row => ({ email: row.email ?? "?", text: row.email ?? "?" })), ...ending];
-  const prompts = await currentPrompts(deps, provider, rows, new Set(needing.map(entry => entry.email.toLowerCase())));
+  // An account that needs a sign-in while its organization refuses OAuth has an unpaid plan, which a new sign-in only takes to claude.ai's
+  // "Your subscription is paused" page, so the refusal is recorded as its payment prompt and outlives pi-pool's 24 h cooldown: on 11-13
+  // claude8@slack.green's grant ended at 10:09Z while its Max renewal sat declined on the owner's card (t78), and d5 read it as an agent's sign-in.
+  const refusedAt = new Date(deps.now()).toISOString();
+  const paused = live.filter(row => row.reason === "needs-reauth" && row.cooldown_reason === NO_SEAT && row.email && !noSeat.includes(row))
+    .map((row): SignInPrompt => ({ provider, account: row.email!, prompt: "payment", at: refusedAt,
+      where: `pi-pool's "${NO_SEAT}" refusal of ${row.email}'s ${row.tier ?? "plan"} login, which claude.ai gives a paused or unpaid plan`,
+      evidence: `pi-pool ls --json cooldown_reason at ${utcMinute(deps.now())}` }));
+  const prompts = await currentPrompts(deps, provider, rows, new Set(needing.map(entry => entry.email.toLowerCase())), paused);
   // An account whose sign-in reached claude.ai's "Your subscription is paused. Pay your invoice" page is off by the owner's standing choice,
   // since he answered each unpaid plan on For you with "Leave it unpaid for now" (t87), "Wait it out" (t92) and "Leave it as is" (t123):
   // from 11-03 claude4@slack.green's payment prompt held owner_fixes at 1, which only his payment could move. It counts again once it no

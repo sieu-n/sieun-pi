@@ -498,6 +498,32 @@ test("pool_claude reads an account whose sign-in reached a recorded payment prom
   assert.deepEqual(JSON.parse(writes[0]!).prompts, [], "once the owner pays and it signs in again, its record drops and it counts again");
 });
 
+// 11-13: claude8@slack.green's grant ended at 10:09Z while its Max renewal sat declined on the owner's card (t78), and pi-pool read its OAuth
+// refusal; d5 called it an agent's sign-in, which only reaches claude.ai's "Your subscription is paused" page.
+test("pool_claude records an OAuth refusal of an account that needs a sign-in as its payment prompt, and reads it as off for an unpaid plan", async () => {
+  const PROMPTS = "/home/sieun/.config/sieun-pi/sign-in-prompts.json";
+  const now = Date.parse("2026-11-13T14:10:00Z");
+  const run = async (rows: object[], stored: unknown[]) => {
+    const mac = macDeps(true, TIMED_OUT, []);
+    const writes: string[] = [];
+    const outcome = await poolClaude.run({ ...mac, now: () => now,
+      exec: async (file, args, options) => file === "pi-pool" ? { code: 0, stdout: JSON.stringify({ rows }), stderr: "", ms: 0 } : mac.exec(file, args, options),
+      readFile: async path => { if (path === PROMPTS) return JSON.stringify({ prompts: stored }); throw new Error(`no ${path}`); },
+      writeFile: async (_path, text) => { writes.push(String(text)); } });
+    return { outcome, writes };
+  };
+  const claude8 = { id: "c8", email: "claude8@slack.green", tier: "max 20x", reason: "needs-reauth", cooldown_reason: "oauth not allowed for organization" };
+  const live = { id: "k", email: "krenerd77@naver.com", tier: "max 20x", usable: true };
+  const { outcome: off, writes } = await run([claude8, live], []);
+  assert.ok(off.status === "off" && off.detail.startsWith("claude8@slack.green (subscription paused at 11-13 14:10Z) off for an unpaid plan"), JSON.stringify(off));
+  const recorded = parsePrompts(writes[0]);
+  assert.ok(recorded.length === 1 && recorded[0]!.account === "claude8@slack.green" && recorded[0]!.prompt === "payment", writes[0]);
+  const { outcome: later, writes: none } = await run([{ ...claude8, cooldown_reason: null }, live], recorded);
+  assert.ok(later.status === "off" && none.length === 0, "the record outlives pi-pool's 24 h cooldown and is written once");
+  const { outcome: plain } = await run([{ ...claude8, cooldown_reason: null }, live], []);
+  assert.ok(plain.status === "fail" && plain.fixer === "agent", "a sign-in with no refusal stays the agent's fix");
+});
+
 // 10-23 and 10-25: jobs following the fix text ran `pi-pool off` on krenerd77 and sieunpark77 after the owner had turned them on in Settings.
 test("pool_claude's sign-in fix never tells a job to turn the account off", async () => {
   const outcome = await poolClaude.run(poolMacDeps(true));
