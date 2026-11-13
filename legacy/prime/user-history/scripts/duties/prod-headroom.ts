@@ -11,9 +11,7 @@ import { type DsQuery, grafanaClient, PROM, promInstant, readGrafanaAuth, SOURCE
  * The precheck of metal-management's duty "Prod box headroom" (`node --import tsx scripts/duties/prod-headroom.ts`): whether us-metal01, the
  * prod box, keeps room for the crawl push, and whether the disks of us-metal01 and us-metal02 are healthy. The first two numbers are read only from
  * prod Prometheus (estate_prometheus) through Grafana ds/query on obs.virev.ai, the third from Grafana's alert list:
- * - `profiles_p95_s`: p95 seconds of /api/profiles GET over the last 24 h, from the crawler API's request histogram (goal p8). The window was
- *   1 h until 11-13, when prod served 6 to 44 reads an hour, so the hour's p95 was its one or two slowest reads: hourly reads ran 0.07 to 0.80 s
- *   on 11-12 and 11-13 while the 24 h p95 read 0.35 to 0.39 s on 350 to 400 reads.
+ * - `profiles_p95_s`: p95 seconds of /api/profiles GET over the last hour, from the crawler API's request histogram (goal p8).
  * - `nvme0_tb_24h`: terabytes written to nvme0n1, prod's database drive, in the last 24 h (goal p83).
  * - `disk_health_alerts_firing`: the firing alerts of the Grafana-managed `metal-disk-*` rules (disk-health.yaml, disk-health-raid.yaml and
  *   mount-io.yaml in apps/infra/metal/config/obs/grafana/alerting) on either box. us-metal01's RAID10 ran degraded from 10-14 and went offline
@@ -26,7 +24,7 @@ import { type DsQuery, grafanaClient, PROM, promInstant, readGrafanaAuth, SOURCE
 const GRAFANA_CONFIG = join(homedir(), ".prime/agent/browser-chat/grafana-alerts.json");
 
 export const QUERIES = {
-  profiles_p95_s: 'histogram_quantile(0.95, sum by (le) (rate(crawler_v3_api_request_duration_seconds_bucket{route="/api/profiles",method="GET"}[24h])))',
+  profiles_p95_s: 'histogram_quantile(0.95, sum by (le) (rate(crawler_v3_api_request_duration_seconds_bucket{route="/api/profiles",method="GET"}[1h])))',
   nvme0_tb_24h: 'increase(node_disk_written_bytes_total{box="us-metal01",device="nvme0n1"}[24h])',
 } as const;
 export type MetricKey = keyof typeof QUERIES;
@@ -38,7 +36,7 @@ export const CONVERT: Readonly<Record<MetricKey, (raw: number) => number>> = {
 };
 
 const WORDS: Readonly<Record<MetricKey, (value: number) => string>> = {
-  profiles_p95_s: value => `profile reads on prod took ${value} s at p95 over the last 24 h`,
+  profiles_p95_s: value => `profile reads on prod took ${value} s at p95 over the last hour`,
   nvme0_tb_24h: value => `nvme0n1 on us-metal01 took ${value} TB of writes in the last 24 h`,
 };
 
