@@ -14,6 +14,8 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const ENGINE = fileURLToPath(new URL('../src/lib/server', import.meta.url));
+// The engine runs from apps/wiki, as the service does, and finds its write checks worker there.
+const WIKI_DIR = fileURLToPath(new URL('..', import.meta.url));
 const TSX = import.meta.resolve('tsx');
 const WRITES = `
 const [engine, rel, ...contents] = process.argv.slice(1);
@@ -47,7 +49,7 @@ test('two writes of one curated page on one baseVersion save once and answer 409
 	writeFileSync(path.join(content, 'index.html'), page('Home', `<a href="${rel}">Counts</a>`));
 	const bodies = ['v1', 'writer A', 'writer B', 'writer C', 'writer D'].map((line) => page('Counts', `<p>${line}</p>`));
 	const run = spawnSync(process.execPath, ['--import', TSX, '--input-type=module', '-e', WRITES, ENGINE, rel, ...bodies], {
-		cwd: root,
+		cwd: WIKI_DIR,
 		encoding: 'utf8',
 		env: {
 			...process.env,

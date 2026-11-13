@@ -8,3 +8,11 @@ export type WriteChecks = {
 	held: Settled<{ added: HeldRow[]; kept: HeldRow[] }>;
 };
 export function writeChecks(input: { root: string; rel: string; before: string | null; after: string }): WriteChecks;
+
+type Gate = { code: string; rel: string; before: string | null; after: string; summary?: string };
+/** The worker's tasks by name, with the input each takes and the result it answers. */
+export type WriteTasks = {
+	checks: { input: { root: string; rel: string; before: string | null; after: string }; output: WriteChecks };
+	gateReasons: { input: Gate; output: string[] };
+	gateWarnings: { input: Gate; output: string[] };
+};

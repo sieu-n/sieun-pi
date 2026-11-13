@@ -1,5 +1,4 @@
 import path from 'node:path';
-import { Worker } from 'node:worker_threads';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { json, text } from '@sveltejs/kit';
 import { dev } from '$app/environment';
@@ -8,10 +7,10 @@ import { env } from '$env/dynamic/private';
 import type { AgentVerb } from '../../params/agentVerb';
 import { savedLintAnswer, STANDARD_FILE } from '$lib/prose-lint.mjs';
 import type { HeldRow } from '../../../scripts/dup-held.mjs';
-import type { WriteChecks } from '../../../scripts/write-checks.mjs';
 import { codeRepoDir } from '../wiki-config.mjs';
 import { isSessionPath } from './session-artifact-index';
 import { rootOf } from './wiki-mounts';
+import { inWriteWorker } from './write-worker';
 import { renderWikiPage } from './render';
 import { sharedRuns } from './shared-runs';
 import { loadSkillMetrics, SKILL_METRICS_ENABLED } from './skill-metrics';
@@ -215,7 +214,7 @@ async function checkWrite(
 	} catch {
 		return { held: {}, lint: null }; // commitPage reports the bad path
 	}
-	const checks = await runWriteChecks({ root: getContentRoot(), rel, before, after });
+	const checks = await inWriteWorker('checks', { root: getContentRoot(), rel, before, after });
 	let lint: Checked['lint'] = null;
 	if (checks.lint) {
 		const result = checks.lint;
@@ -294,44 +293,6 @@ function writeAnswer(result: { warnings?: string[] } & Record<string, unknown>, 
 		...(checked.lint ? { lint: checked.lint.lint } : {}),
 		...(warnings.length ? { warnings } : {}),
 	};
-}
-
-/**
- * The lint, secret scan and duplicate check of one write (scripts/write-checks.mjs), run in one worker thread so the
- * server's thread keeps answering while they run: on 2026-11-13 they held it about 1 s per curated write, and a wiki
- * dream run's writes left GET / with no answer for over 15 s (devbox-wiki-public-down at 15:56Z).
- */
-let checker: Worker | null = null;
-let nextCheck = 0;
-const pendingChecks = new Map<number, { resolve: (checks: WriteChecks) => void; reject: (error: Error) => void }>();
-
-function checkWorker(): Worker {
-	if (checker) return checker;
-	const worker = new Worker(path.resolve(process.cwd(), 'scripts/write-checks.mjs'));
-	worker.unref();
-	worker.on('message', ({ id, result, error }: { id: number; result?: WriteChecks; error?: string }) => {
-		const waiting = pendingChecks.get(id);
-		pendingChecks.delete(id);
-		if (error !== undefined) waiting?.reject(new Error(error));
-		else if (result) waiting?.resolve(result);
-	});
-	const fail = (error: Error) => {
-		if (checker === worker) checker = null;
-		for (const waiting of pendingChecks.values()) waiting.reject(error);
-		pendingChecks.clear();
-	};
-	worker.on('error', fail);
-	worker.on('exit', (code) => fail(new Error(`the write checks worker exited with ${code}`)));
-	checker = worker;
-	return worker;
-}
-
-function runWriteChecks(input: { root: string; rel: string; before: string | null; after: string }): Promise<WriteChecks> {
-	const id = nextCheck++;
-	return new Promise((resolve, reject) => {
-		pendingChecks.set(id, { resolve, reject });
-		checkWorker().postMessage({ id, input });
-	});
 }
 
 async function uploadAsset(c: Ctx): Promise<Response> {

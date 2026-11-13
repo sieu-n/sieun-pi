@@ -15,6 +15,8 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const ENGINE = fileURLToPath(new URL('../src/lib/server', import.meta.url));
+// The engine runs from apps/wiki, as the service does, and finds its write checks worker there.
+const WIKI_DIR = fileURLToPath(new URL('..', import.meta.url));
 const TSX = import.meta.resolve('tsx');
 const WRITES = `
 const [engine, ...pairs] = process.argv.slice(1);
@@ -36,7 +38,7 @@ test('the page API leaves a curated page read-only, rewrites it again, and leave
 	const NOTE = 'notes/probe.html';
 	const write = (...pairs) =>
 		spawnSync(process.execPath, ['--import', TSX, '--input-type=module', '-e', WRITES, ENGINE, ...pairs], {
-			cwd: root,
+			cwd: WIKI_DIR,
 			env: {
 				...process.env,
 				WIKI_CONFIG: path.join(root, 'no-config.json'),

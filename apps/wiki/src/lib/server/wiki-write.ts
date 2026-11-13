@@ -12,7 +12,7 @@ import { normalizeLinkTarget, normalizeRequestedPath, PAGE_READ_LIMIT, readLimit
 import { extractHtmlTitle, META_COMMENT, parseHtmlMeta } from './wiki-html';
 import { hubsLinking, isCuratedPath, missingHubRow, isRetiredStatus, retiredLinksAdded, titleMatchesH1 } from './wiki-lint';
 import { addRevision, currentVersion } from './wiki-store';
-import { deadLinkReason, deadLinksAdded, pageWriteReasons, pageWriteWarnings } from '../../../scripts/page-gate.mjs';
+import { deadLinkReason, deadLinksAdded } from '../../../scripts/page-gate.mjs';
 import { staleWrite } from './stale-base.mjs';
 import { mermaidWriteCheck } from '../../../scripts/mermaid-check.mjs';
 import { renumberLists } from '../../../scripts/ol-numbering.mjs';
@@ -20,6 +20,7 @@ import { codeRepoDir, contentGitRoot } from '../wiki-config.mjs';
 import { diskPath, rootOf } from './wiki-mounts';
 import { isSessionPath, sessionFolderOf as folderOfSession } from './session-artifact-index';
 import { shouldSkip } from './wiki-paths';
+import { inWriteWorker } from './write-worker';
 
 const WRITABLE = /\.(md|mdx|txt|ya?ml|json|html)$/i;
 
@@ -305,7 +306,9 @@ async function commitPageLocked(input: {
 	if (mermaid.reasons.length) throw new WriteError(422, `refusing ${rel}: ${mermaid.reasons.join('. Also, ')}`);
 	const code = codeRepoDir();
 	const warnings = [
-		...(isCuratedPath(rel) && code ? pageWriteWarnings(code, rel, exists ? before : null, content, input.summary) : []),
+		...(isCuratedPath(rel) && code
+			? await inWriteWorker('gateWarnings', { code, rel, before: exists ? before : null, after: content, summary: input.summary })
+			: []),
 		...numbered.warnings,
 		...mermaid.warnings,
 		...readCapWarning(rel, content),
@@ -470,7 +473,7 @@ async function assertPageInvariants(rel: string, before: string | null, after: s
 	if (!isCuratedPath(rel) && rel !== 'index.html') return;
 	const dead = deadLinksAdded(rel, before ?? undefined, after, isServedOnDisk);
 	const code = codeRepoDir();
-	const reasons = [...(dead.length ? [deadLinkReason(dead)] : []), ...(code ? pageWriteReasons(code, rel, before, after) : [])];
+	const reasons = [...(dead.length ? [deadLinkReason(dead)] : []), ...(code ? await inWriteWorker('gateReasons', { code, rel, before, after }) : [])];
 	if (reasons.length)
 		throw new WriteError(
 			422,

@@ -12,6 +12,8 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const ENGINE = fileURLToPath(new URL('../src/lib/server', import.meta.url));
+// The engine runs from apps/wiki, as the service does, and finds its write checks worker there.
+const WIKI_DIR = fileURLToPath(new URL('..', import.meta.url));
 
 // wiki-write.ts has a parameter property that node's type stripping refuses, so the child loads the engine through tsx.
 const TSX = import.meta.resolve('tsx');
@@ -42,7 +44,7 @@ function contentRoot(t) {
 
 function create(root, rel, html) {
 	const run = spawnSync(process.execPath, ['--import', TSX, '--input-type=module', '-e', WRITE, ENGINE, rel, html], {
-		cwd: root,
+		cwd: WIKI_DIR,
 		encoding: 'utf8',
 		env: {
 			...process.env,

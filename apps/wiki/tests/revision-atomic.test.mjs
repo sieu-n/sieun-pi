@@ -15,6 +15,8 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const ENGINE = fileURLToPath(new URL('../src/lib/server', import.meta.url));
+// The engine runs from apps/wiki, as the service does, and finds its write checks worker there.
+const WIKI_DIR = fileURLToPath(new URL('..', import.meta.url));
 const TSX = import.meta.resolve('tsx');
 const HOLD_MS = 1500;
 const LOCKER = `
@@ -65,7 +67,7 @@ test('a page write waits out another process\'s write lock and logs its revision
 		process.execPath,
 		['--import', TSX, '--input-type=module', '-e', WRITES, ENGINE, path.join(content, '.wiki', 'wiki.db'), LOCKER, String(HOLD_MS), rel, fresh, ...bodies],
 		{
-			cwd: root,
+			cwd: WIKI_DIR,
 			encoding: 'utf8',
 			env: {
 				...process.env,
