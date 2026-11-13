@@ -521,6 +521,12 @@ const within = <T>(work: Promise<T>, ms: number, late: T): Promise<T> => {
  * worker that failed after the row was listed (10-20 02:11:23Z: slack green guy 01a11b0b), which holds no live session to stop.
  */
 const skipUntilRowChanges = (error: string): boolean => /Unknown active session|Session worker is failed/.test(error) || error === NO_BARE_KILL;
+/**
+ * The supervisor's answer when the worker it routed a call to exited before it answered. At 03:17:48Z on 11-13 the Mac's idle-reaper sent
+ * SIGTERM to the workers of 01a14c02 and 01a14b76 while this unload's kills of both were closing them ("close in flight: c22eed7576ba
+ * (idle_unload)"), both kills answered "Daemon worker socket closed", and d7 booked the minute as a failed idle check.
+ */
+const WORKER_CLOSED = /Daemon worker (?:socket|client) closed/;
 
 /**
  * Runs the idle unload once a minute without letting one slow kill hold up the rest. Up to 10-18 every kill of a sweep waited for the one
@@ -738,6 +744,13 @@ export class IdleUnloader {
     catch (error) { if (refused && moveOf(error) !== undefined) return refused; throw error; }
   }
 
+  /** Whether `answer` met the row's worker exiting (WORKER_CLOSED) and one more get_state finds the daemon no longer holds the session. */
+  private async goneWithWorker(row: SessionSummary, answer: DaemonAnswer): Promise<boolean> {
+    if (answer.success || !WORKER_CLOSED.test(answer.error)) return false;
+    const again = await this.source.request(row, "get_state");
+    return !again.success && skipUntilRowChanges(again.error);
+  }
+
   private async stopNow(row: SessionSummary, chats: ReadonlySet<string>, why: UnloadReceipt["why"]): Promise<boolean> {
     const source = this.source;
     const retry = why === "pool wait";
@@ -751,7 +764,7 @@ export class IdleUnloader {
     // along has nothing left to stop: on 10-21 at 19:46:07Z this check met ops guy (+observability)'s stopping worker and failed, a d7 minute.
     let moved = false;
     const state = await this.askedThroughMove(row, "get_state", () => { moved = true; });
-    if (!state.success && moved && skipUntilRowChanges(state.error)) {
+    if (!state.success && (moved && skipUntilRowChanges(state.error) || await this.goneWithWorker(row, state))) {
       this.gone.add(goneKey(row));
       source.log(`idle unload: ${row.sessionId}: its worker exited with it while this check waited; nothing left to stop`);
       return false;
@@ -782,6 +795,7 @@ export class IdleUnloader {
         if (!handed?.done) { await receipt("failed", handed?.error ?? killed.error); source.log(`idle unload: ${row.sessionId}: kept, it holds detached processes${handed ? `; handoff: ${handed.error}` : ""}`); return false; }
         source.log(`idle unload: ${row.sessionId}: handed its detached services to their own scopes`);
       }
+      else if (!killed.success && await this.goneWithWorker(row, killed)) source.log(`idle unload: ${row.sessionId}: its worker exited with it while the kill was out; nothing left to stop`);
       else if (!killed.success) { await receipt("failed", killed.error); return failed(killed); }
     }
     await receipt("stopped");

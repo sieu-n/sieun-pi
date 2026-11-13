@@ -1,5 +1,11 @@
 # idle-reaper
 
+idle-reaper is retired, and on 11-13 `install.py uninstall` removed `com.sieun.idle-reaper` from the Mac.
+From 11-10 to 11-13 all 55 of its kills were worker kills, and the Mac's Prime started 47 of those workers again within 10 s. All five workers it killed at 03:12:46Z on 11-13 came back holding their sessions, which the chat's idle unload then stopped at 03:16:49Z and 03:17:47Z, so such a kill freed no RAM.
+At 03:17:48Z on 11-13 its SIGTERM also landed on two workers that the chat's idle unload was stopping, and both kills answered "Daemon worker socket closed", a failed idle check in d7.
+Its last `--version` kill was on 10-19.
+The chat service's idle unload (`legacy/prime/user-history/src/idle-unload.ts`) stops idle sessions and recycles quiet workers on the Mac.
+
 idle-reaper stops prime-agent workers that sit idle, so their RAM goes back to the Mac.
 The daemon keeps a worker alive long after its last turn, and on 10-18 idle workers and hung `--version` processes held the owner's 32 GB Mac near 80% used.
 launchd runs it every 5 minutes as `com.sieun.idle-reaper`.
