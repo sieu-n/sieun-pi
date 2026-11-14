@@ -51,7 +51,7 @@ systemctl daemon-reload
 systemctl enable oom-protect.service >/dev/null
 systemctl restart oom-protect.service
 
-# 7. THP defrag "defer" at boot and now, so a CI VM's huge page fault no longer compacts memory in place.
+# 7. THP defrag "never" at boot and now, so a CI VM's huge page fault neither compacts memory in place nor wakes kswapd to reclaim for it.
 install -m 644 "$here/thp-defrag.service" /etc/systemd/system/thp-defrag.service
 systemctl daemon-reload
 systemctl enable thp-defrag.service >/dev/null

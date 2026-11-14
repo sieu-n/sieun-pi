@@ -181,9 +181,9 @@ class Heavy(unittest.TestCase):
 
 
 class ThpDefrag(unittest.TestCase):
-    def test_defer_at_boot_and_from_setup(self):
+    def test_never_at_boot_and_from_setup(self):
         unit = (MEM / "thp-defrag.service").read_text()
-        self.assertIn("echo defer > /sys/kernel/mm/transparent_hugepage/defrag", unit)
+        self.assertIn("echo never > /sys/kernel/mm/transparent_hugepage/defrag", unit)
         self.assertIn("WantedBy=sysinit.target", unit)
         setup = (MEM / "setup-memory.sh").read_text()
         for line in ('install -m 644 "$here/thp-defrag.service" /etc/systemd/system/thp-defrag.service',
