@@ -408,6 +408,19 @@ test("removed_provider_refs skips ElevenLabs' crawler in a user-agent pattern an
   assert.deepEqual(result.flagged.map(flag => flag.item), ["apps/research-agent-be/src/voice.py"]);
 });
 
+test("removed_provider_refs skips the billing mail reader's SETTLED notes of old AI/ML API and ElevenLabs bills and still counts a call there (d1, 11-14)", () => {
+  const path = "apps/infra/metal/config/host/vendor-usage/billing_mail.py";
+  const line = (text: string) => `origin/dev/sieun:${path}\0${1}\0${text}`;
+  const grep = [
+    line('    "aimlapi": (vendor_usage.utc("2026-03-29 00:00:00"),'),
+    line('        "the $99.00 Pro renewal failed 04-26 to 05-17 and ElevenLabs cancelled the subscription with a $99.00 credit note on 05-17; the account is on Free with no open invoice (ElevenLabs billing read 11-13)"),'),
+    line("    usage = requests.get('https://api.aimlapi.com/v1/billing', headers=headers)"),
+  ].join("\n");
+  const result = removedProviderRefs({ grep, tables: TABLES }, 0);
+  assert.ok(!("error" in result));
+  assert.deepEqual(result.flagged.map(flag => flag.excerpt.split(": ")[0]), [`AIMLAPI named at origin/dev/sieun ${path}:1`]);
+});
+
 test("the store lister ships beside the duty, because the wiki session copy stopped resolving its repo imports on 11-04", () => {
   assert.ok(existsSync(STORE_NAMES));
   assert.doesNotMatch(STORE_NAMES, /llm-wiki/);

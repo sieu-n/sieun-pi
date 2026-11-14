@@ -248,6 +248,21 @@ export const KEPT_GUARDS: readonly { path: string; reason: string }[] = [
 ];
 const kept = (path: string) => KEPT_GUARDS.some(guard => guard.path.endsWith("/") ? path.startsWith(guard.path) : path === guard.path);
 
+/**
+ * Tip lines that record a past vendor's bills and call or configure nothing: the vendor-usage billing mail reader's SETTLED and DUE
+ * entries key a billing account by the sender word its mail carries and note how its old bill closed. On 11-14 d1 counted the
+ * "aimlapi" and ElevenLabs notes of SETTLED as removed provider refs. Only an entry's key line and its note string match, so an import,
+ * a key, a URL or a call of a removed provider in the same file still counts.
+ */
+export const BILLING_LEDGERS: readonly { path: string; line: RegExp; reason: string }[] = [
+  {
+    path: "apps/infra/metal/config/host/vendor-usage/billing_mail.py",
+    line: /^\s*"[^"]+": \((vendor_usage\.utc\(|\[)|^\s*"[^"]*\(.*\bread \d\d-\d\d(, t\d+)?\)"\),?\s*$/,
+    reason: "the SETTLED and DUE billing notes of accounts whose old bills the mail reader closes",
+  },
+];
+const ledger = (path: string, text: string) => BILLING_LEDGERS.some(entry => entry.path === path && entry.line.test(text));
+
 /** The row names of the INTEGRATIONS block in tables.py, or null when the block is missing. */
 export function integrationNames(tablesPy: string): string[] | null {
   const start = tablesPy.indexOf("INTEGRATIONS: dict[str, Integration] = {");
@@ -265,7 +280,7 @@ export function removedProviderRefs({ grep, tables }: RemovedReads, at: number):
     const [ref, num, text] = line.split("\0");
     if (text === undefined) continue;
     const path = ref!.slice(ref!.indexOf(":") + 1);
-    if (kept(path)) continue;
+    if (kept(path) || ledger(path, text)) continue;
     for (const provider of REMOVED_PROVIDERS) {
       const key = `${provider.name}\0${path}`;
       if (found.has(key) || !provider.code.test(text)) continue;
