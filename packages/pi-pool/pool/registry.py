@@ -6,9 +6,10 @@ from . import base
 
 # ------------------------------------------------------------- usage math
 SESSION_WINDOW_MAX_SEC = 6 * 3600
-# `pi-pool sample` reads every account at least every 15 min (usage.SAMPLE_MAX_SEC),
-# so a 5h sample older than this is one nobody reads: any account while the
+# `pi-pool sample` reads every account at least every SAMPLE_MAX_SEC (usage.sample_interval),
+# so a 5h sample older than STALE_USAGE_SEC is one nobody reads: any account while the
 # sampler is down.
+SAMPLE_MAX_SEC = 15 * 60
 STALE_USAGE_SEC = 20 * 60
 # A `pi-pool refresh` read has landed or failed by then.
 REFRESH_TIMEOUT_SEC = 180
@@ -185,6 +186,10 @@ class Account:
     tier: str = ""
     windows: tuple = ()
     usage_at: float = 0
+    # Epoch seconds before which the usage endpoint refuses a read of this account (its 429's retry time); 0 when none.
+    usage_retry_at: float = 0
+    # Epoch seconds of the last usage read when it failed, the latest read being a failure; 0 otherwise.
+    read_failed_at: float = 0
     disabled: bool = False
     # True when every model the session runs is outside the gated families, so
     # a spent per-model cap (Fable) does not stop this account serving it.
@@ -313,6 +318,20 @@ def record_labels(records):
     return {i: (f"{l} {i[:8]}" if shown[l] > 1 else l) for i, l in labels.items()}
 
 
+def read_state(record):
+    """The Account fields an index record's last usage read sets: the usage endpoint's retry time, and when the last
+    read failed. A read writes lastProbeAt each time and lastUsageAt only when it lands."""
+    probe, landed = (record.get("lastProbeAt") or 0) / 1000, (record.get("lastUsageAt") or 0) / 1000
+    return {"usage_retry_at": (record.get("usageRetryAt") or 0) / 1000, "read_failed_at": probe if probe > landed else 0}
+
+
+def next_read_at(a, now):
+    """When a usage read can next land a figure for the account: now, unless the usage endpoint set a retry time or the
+    last read failed. A failed read is tried again by `pi-pool sample` within SAMPLE_MAX_SEC, and by any hook that runs
+    meanwhile (vending.reads_due); a read that lands wakes the trees it gives an earlier cell (vending.book_line)."""
+    return max(now, a.usage_retry_at, a.read_failed_at + SAMPLE_MAX_SEC if a.read_failed_at else 0)
+
+
 def _load_index_anthropic():
     records = base.read_index("anthropic")["accounts"]
     cfg, now = base.config(), time.time()
@@ -325,7 +344,7 @@ def _load_index_anthropic():
             needs_reauth=bool(a.get("needsReauth")), session_pct=five, weekly_pct=seven,
             gated_pct=gated_pct(a, cfg, now), cred=Keychain(base.claude_service(a["id"])),
             tier=a.get("tier") or "", windows=tuple(a.get("windows") or ()),
-            usage_at=(a.get("lastUsageAt") or 0) / 1000,
+            usage_at=(a.get("lastUsageAt") or 0) / 1000, **read_state(a),
         ))
     return out
 
@@ -340,7 +359,7 @@ def _load_index_codex():
             needs_reauth=bool(a.get("needsReauth")), session_pct=session_pct,
             weekly_pct=weekly_pct, gated_pct=0, cred=CredFile(base.codex_secret(a["id"])),
             plan=(a.get("tier") or "").lower(), tier=a.get("tier") or "",
-            windows=tuple(a.get("windows") or ()), usage_at=(a.get("lastUsageAt") or 0) / 1000,
+            windows=tuple(a.get("windows") or ()), usage_at=(a.get("lastUsageAt") or 0) / 1000, **read_state(a),
             models=tuple(a["models"]) if isinstance(a.get("models"), list) and a["models"] else None,
         ))
     return out

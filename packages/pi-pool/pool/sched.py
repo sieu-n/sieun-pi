@@ -215,9 +215,14 @@ def admissible_at(a, cooldowns, cfg, now, priority="normal", manual=False):
         limit = 100 if manual else admit_cap(cfg, priority) if short else cfg["seven_day_max_pct"]
         if registry.live_pct(w, now) >= limit:
             at = max(at, window_reset_at(w))
-    # The hook starts a read of an unsampled account; by REFRESH_TIMEOUT_SEC it has
-    # landed or failed, and a tree that waits for the account asks again then.
-    return max(at, now + registry.REFRESH_TIMEOUT_SEC) if not manual and registry.usage_unsampled(a, now) else at
+    # The hook starts a read of an unsampled account; by REFRESH_TIMEOUT_SEC after the read can next run it has landed
+    # or failed, and a tree that waits for the account asks again then. Promising now + REFRESH_TIMEOUT_SEC while the
+    # account's reads kept failing woke each waiting tree every 3 min for a read that failed again: from 11-06 to 11-08
+    # 28,013 of 33,475 429s from waiting trees on us-metal02 came from such wakes, while claude3, krenerd77 and
+    # claude12 failed up to 419, 479 and 459 reads a day (pi-pool.log usage_refresh); 01a115e2 sent 5 requests a wake.
+    if not manual and registry.usage_unsampled(a, now):
+        return max(at, registry.next_read_at(a, now) + registry.REFRESH_TIMEOUT_SEC)
+    return at
 
 
 def by_tier(a, table, default):

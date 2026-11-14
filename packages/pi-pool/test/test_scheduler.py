@@ -924,6 +924,29 @@ class SwitchLog(unittest.TestCase):
         self.assertFalse(vending.bills_credits(codex, with_plan))
         self.assertFalse(vending.bills_credits(P, acct("b", five=100, week=100)))
 
+    def test_a_pi_extension_tree_that_waits_for_a_cell_gets_no_token_of_the_account_it_left(self):
+        """11-10 to 11-12: 01a17e5d, a Pi session in pi-host, took a krenerd77 token at each ask while it waited for a cell
+        and sent 1,884 requests that came back 429, one a minute, since Pi waits for a slot only on exit 75. A session of
+        another machine, which `pi-pool serve` runs with PI_POOL_REMOTE off, keeps the token."""
+        accounts = [acct("a", five=21), acct("b", five=40, limited_until=NOW + 300)]
+        key = tree_key("01a17e5d")
+        for remote_off, waits in ((None, True), ("off", False)):
+            env = {"PI_POOL_SESSION_KEY": json.dumps({"key": key.key, "uuid": key.key, "active": key.key})}
+            if remote_off:
+                env["PI_POOL_REMOTE"] = remote_off
+            with self.subTest(remote=remote_off), unittest.mock.patch.dict(os.environ, env):
+                os.environ.pop("PI_POOL_REMOTE", None) if remote_off is None else None
+                state = empty_state()
+                put(state, key, on="b")
+                state["providers"][P]["admissions"] = {"a": [[NOW, "busy"]]}
+                if waits:
+                    with self.assertRaises(base.SlotWait) as wait:
+                        self.run_vend(state, accounts, key)
+                    self.assertGreater(wait.exception.slot_at, NOW)
+                else:
+                    self.assertEqual(self.run_vend(state, accounts, key)[1], "fixture-token")
+                self.assertEqual(state["sessions"][key.key]["wait"][P]["account"], "a")
+
     def test_a_waiting_tree_with_no_refused_account_gets_no_token(self):
         state = empty_state()
         put(state, KEY, on="b")
@@ -1178,6 +1201,32 @@ class StaleUsage(unittest.TestCase):
         self.assertGreaterEqual(new.slot_at, VIREV_BACK + registry.REFRESH_TIMEOUT_SEC)
         on = put(state, tree_key("on"), on="seat", at=VIREV_BACK - 60)
         self.assertIsInstance(request(state, on, [seat], VIREV_BACK), sched.Stay)
+
+    def test_a_tree_waits_for_the_next_read_of_an_account_whose_last_read_failed(self):
+        """11-06 to 11-08: claude3's usage reads failed every 3 min, and each tree that waited for it was given a slot
+        REFRESH_TIMEOUT_SEC ahead, woke, sent its 429 and was given another. 01a115e2 did so for 20 h."""
+        old = VIREV_BACK - registry.STALE_USAGE_SEC - 1
+        seat = dataclasses.replace(acct("seat", tier="team 5x"), windows=(fresh_window(10, FIVE, VIREV_BACK + 3600, old),),
+                                   session_pct=10, weekly_pct=0)
+        own = acct("own", limited_until=VIREV_BACK + 86400)
+        failed = VIREV_BACK - 30
+        cases = (("no failed read", seat, VIREV_BACK + registry.REFRESH_TIMEOUT_SEC),
+                 ("its last read failed", dataclasses.replace(seat, read_failed_at=failed),
+                  failed + registry.SAMPLE_MAX_SEC + registry.REFRESH_TIMEOUT_SEC),
+                 ("the usage endpoint set a retry time", dataclasses.replace(seat, read_failed_at=failed, usage_retry_at=VIREV_BACK + 3000),
+                  VIREV_BACK + 3000 + registry.REFRESH_TIMEOUT_SEC))
+        for name, account, slot in cases:
+            with self.subTest(name):
+                state = empty_state()
+                key = put(state, tree_key("waiter"), on="own", at=VIREV_BACK - 60)
+                d = request(state, key, [account, own], VIREV_BACK)
+                self.assertIsInstance(d, sched.Wait)
+                self.assertEqual((d.slot_account.id, d.slot_at), ("seat", slot))
+
+    def test_an_index_record_names_its_failed_read_and_the_usage_retry_time(self):
+        self.assertEqual(registry.read_state({"lastProbeAt": 2000, "lastUsageAt": 1000, "usageRetryAt": 9000}),
+                         {"usage_retry_at": 9, "read_failed_at": 2})
+        self.assertEqual(registry.read_state({"lastProbeAt": 2000, "lastUsageAt": 2000}), {"usage_retry_at": 0, "read_failed_at": 0})
 
     def run_vend(self, state, accounts, now):
         started, logged = [], []

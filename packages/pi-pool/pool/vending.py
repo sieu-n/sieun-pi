@@ -738,6 +738,18 @@ def waits_by_exit(key):
     return key is not None and key.key.startswith(DURABLE_TREE_PREFIX)
 
 
+def waits_on_exit_75(key):
+    """True when the caller of a waiting tree sleeps until its slot on the hook's exit 75, so the hook gives it no token
+    of its refused account: a pi-durable tree (`waits_by_exit`), or any caller of src/core/pool-cli.ts on this machine,
+    which names its tree in PI_POOL_SESSION_KEY (`pi-pool serve` sets that key too, with PI_POOL_REMOTE off, for a
+    session of another machine). The Pi extension's sessions in pi-host got the refused token: 01a17e5d sent 1,884 429s
+    from 11-10 to 11-12 and 68 in the 24 h to 11-14 18:30Z, one a minute, since Pi retries a 429 on its own backoff and
+    waits for its slot only on exit 75 (src/core/pool-cli.ts `credential`)."""
+    from . import remote
+    return waits_by_exit(key) or (key is not None and bool(os.environ.get(remote.KEY_ENV))
+                                  and os.environ.get(remote.OFF_ENV) != "off")
+
+
 def bills_credits(provider, account):
     """True for a Codex account whose plan is used up. ChatGPT bills such a request to the account's paid credits and
     answers 200, so a waiting tree that got its token would run on credits instead of getting the 429 that makes it wait.
@@ -884,8 +896,8 @@ def vend(provider):
 
     A tree that waits gets its own account while the provider refuses it, so the
     request comes back as a 429 that writes no cache and `pi-pool limited` hands
-    the extension the slot time. With no such account, for a pi-durable tree
-    (`waits_by_exit`), or when that account would bill credits instead of refusing
+    the extension the slot time. With no such account, for a caller that sleeps
+    on exit 75 (`waits_on_exit_75`), or when that account would bill credits instead of refusing
     (`bills_credits`), the hook exits non-zero with no token, and the extension
     or the durable provider turns that failure into the same wait.
     """
@@ -974,7 +986,7 @@ def vend(provider):
                   if d.reason == "cooldown" else d.reason)
         raise RuntimeError(f"pinned {provider} account {label}: {reason}")
     if isinstance(d, sched.Wait):
-        if d.vend is not None and not waits_by_exit(key) and not bills_credits(provider, d.vend):
+        if d.vend is not None and not waits_on_exit_75(key) and not bills_credits(provider, d.vend):
             try:
                 token, _ = credential_for(d.vend, cfg)
             except Exception as e:

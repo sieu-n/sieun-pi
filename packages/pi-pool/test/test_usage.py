@@ -191,10 +191,10 @@ class Sampler(Store):
     def test_the_interval_shrinks_as_a_window_fills_and_waits_out_a_full_one(self):
         cfg = base.config()
         self.assertEqual(usage.sample_interval({"windows": []}, cfg, NOW), usage.SAMPLE_MIN_SEC)
-        self.assertEqual(usage.sample_interval({"windows": [self.win(0)]}, cfg, NOW), usage.SAMPLE_MAX_SEC)
-        self.assertEqual(usage.sample_interval({"windows": [self.win(50), self.win(10, 604800)]}, cfg, NOW), usage.SAMPLE_MAX_SEC / 2)
+        self.assertEqual(usage.sample_interval({"windows": [self.win(0)]}, cfg, NOW), registry.SAMPLE_MAX_SEC)
+        self.assertEqual(usage.sample_interval({"windows": [self.win(50), self.win(10, 604800)]}, cfg, NOW), registry.SAMPLE_MAX_SEC / 2)
         self.assertEqual(usage.sample_interval({"windows": [self.win(99)]}, cfg, NOW), usage.SAMPLE_MIN_SEC)
-        self.assertEqual(usage.sample_interval({"windows": [self.win(100)]}, cfg, NOW), usage.SAMPLE_MAX_SEC)
+        self.assertEqual(usage.sample_interval({"windows": [self.win(100)]}, cfg, NOW), registry.SAMPLE_MAX_SEC)
 
     def test_sample_reads_only_due_accounts_and_skips_one_that_needs_a_sign_in(self):
         now_ms = int(time.time() * 1000)

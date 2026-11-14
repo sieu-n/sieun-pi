@@ -13,11 +13,10 @@ READ_TIMEOUT = 10
 FIVE_HOURS_SEC = 5 * 3600
 WEEK_SEC = 7 * 24 * 3600
 # An account is read again after SAMPLE_MIN_SEC when a window is nearly full, and
-# after up to SAMPLE_MAX_SEC as its headroom grows; a full window waits for its reset.
+# after up to registry.SAMPLE_MAX_SEC as its headroom grows; a full window waits for its reset.
 # Both are the cadence this pool's usage was sampled at from 2026-09-23 to 2026-10-18
 # (26,807 good reads and 2,672 failed ones in the old sampler's log).
 SAMPLE_MIN_SEC = 90
-SAMPLE_MAX_SEC = 15 * 60
 READERS = 4
 
 
@@ -260,9 +259,9 @@ def read_many(selection, emit, timeout=registry.REFRESH_TIMEOUT_SEC):
 
 
 def sample_interval(record, cfg, now):
-    """Seconds between two reads of one account: SAMPLE_MAX_SEC scaled by the
+    """Seconds between two reads of one account: registry.SAMPLE_MAX_SEC scaled by the
     headroom of its fullest window (unnamed, and the gated model caps), never under
-    SAMPLE_MIN_SEC; SAMPLE_MAX_SEC once a window is full."""
+    SAMPLE_MIN_SEC; registry.SAMPLE_MAX_SEC once a window is full."""
     families = [f.lower() for f in cfg["switch_models"]]
     windows = [w for w in record.get("windows") or []
                if w.get("name") is None or any(f in registry.family_tokens(w["name"]) for f in families)]
@@ -270,8 +269,8 @@ def sample_interval(record, cfg, now):
         return SAMPLE_MIN_SEC
     used = max(registry.live_pct(w, now) for w in windows)
     if used >= 100:
-        return SAMPLE_MAX_SEC
-    return max(SAMPLE_MIN_SEC, SAMPLE_MAX_SEC * (1 - used / 100))
+        return registry.SAMPLE_MAX_SEC
+    return max(SAMPLE_MIN_SEC, registry.SAMPLE_MAX_SEC * (1 - used / 100))
 
 
 def due(provider, cfg, now):
