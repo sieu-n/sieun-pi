@@ -22,7 +22,7 @@ A Prime session has no pi-host conversation, so it passes `author=` once or sets
 
 ```python
 ws = wiki.workspace("what this job does")    # opens the folder on the first call; later calls return it
-wiki.write("plan.html", html)                # a page in the workspace; a full path such as apps/x/index.html also works
+wiki.write("plan.html", html)                # a page in the workspace; a full path such as apps/x/index.html also works, and the home page is "/index.html"
 wiki.write("notes.html", md, markdown=True)  # markdown in, stored as HTML (pi-host threads)
 wiki.edit("plan.html", [(old, new)])         # exact-string edits against the stored HTML
 wiki.put("data/run.log", "/path/run.log")    # any file that is not a page

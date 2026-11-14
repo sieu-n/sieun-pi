@@ -23,7 +23,10 @@ from pathlib import Path
 
 __all__ = ["workspace", "write", "edit", "put", "log", "close", "publish", "search", "read", "supersede", "WikiError"]
 
-SPACES = ("sessions", "agents", "apps", "domains", "projects", "experiments", "archive", "index.html")
+SPACES = ("sessions", "agents", "apps", "domains", "projects", "experiments", "archive")
+# The wiki home page, which only a rooted name reaches: on 2026-11-14 at 23:40Z a job's write("index.html") meant its own
+# folder and replaced the home page, because a bare "index.html" was read as the home path.
+HOME = "index.html"
 PUBLIC = "https://us-metal02-dev.tail0c093d.ts.net:5184/wiki"
 _CONVERSATION = re.compile(r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-(\d+)$", re.I)
 _SLUG = re.compile(r"[^a-z0-9]+")
@@ -206,11 +209,13 @@ def _folder() -> str:
 
 
 def _path(name: str) -> str:
-    """A wiki path: `name` as given when it starts in a content space, else under the workspace folder."""
+    """A wiki path: `name` as given when it starts in a content space or with "/" (the home page is "/index.html"), else under
+    the workspace folder."""
+    rooted = name.startswith("/")
     name = name.lstrip("/")
     if name.startswith(("apps/llm-wiki/content/", "content/")):
         raise ValueError(f"{name}: a wiki path starts at the content root, such as sessions/... or apps/...; drop the disk prefix.")
-    return name if name.split("/")[0] in SPACES else _folder() + name
+    return name if rooted or name.split("/")[0] in SPACES else _folder() + name
 
 
 def _base(path: str, base_version: int | None) -> int | None:
@@ -346,7 +351,7 @@ def close(outcome: str, graduated_to: list[str] | None = None, gaps_created: lis
 def publish(path: str, html: str, *, summary: str | None = None, base_version: int | None = None, author: str | None = None,
             again: str | None = None) -> dict:
     """Write a curated page (apps/, domains/, projects/, experiments/) and run the verify gate; close() lists it in graduated_to."""
-    if path.split("/")[0] not in SPACES or path.startswith(("sessions/", "agents/")):
+    if path.lstrip("/") != HOME and (path.lstrip("/").split("/")[0] not in SPACES or path.lstrip("/").startswith(("sessions/", "agents/"))):
         raise ValueError(f"{path}: publish() writes a curated page such as apps/<app>/index.html; write() takes workspace pages.")
     got = write(path, html, summary=summary, base_version=base_version, author=author, again=again)
     verify = _call("POST", "/wiki/api/agent/verify", {"path": path})
