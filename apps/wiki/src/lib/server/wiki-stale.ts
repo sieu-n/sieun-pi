@@ -8,7 +8,9 @@ import { codeText } from '../code-text.mjs';
 import { definitionCode, symbolRef } from '../definitions.mjs';
 import { siblingRef, siblingRepos } from '../sibling-repos.mjs';
 import {
+	CHECKED_FORMAT,
 	changedLines,
+	checkedPages,
 	citedWords,
 	citesLines,
 	dayStart,
@@ -73,7 +75,8 @@ function blobReader(root: string): { read: (spec: string) => Promise<string | nu
 	};
 }
 
-export type Change = { at: number; sha: string; parent: string; files: string[] };
+/** One first-parent commit: its time in ms, sha, first parent, changed files and the pages its `Wiki-Checked` trailers name. */
+export type Change = { at: number; sha: string; parent: string; files: string[]; checked: string[] };
 
 type StaleRef = { ref: string; modified: string; since?: string };
 
@@ -100,9 +103,9 @@ type StaleState = {
  * `--since-as-filter`, never `--since`, for a date-limited walk that must list every commit: `--since` stops at the first commit
  * dated before the cutoff, and parallel lands leave the auto-sns-agent tip dated out of order, so on 2026-11-04
  * `--since=13:12:40Z` stopped at addbbf5329 (13:12:35Z) and missed afc3ff7332 (13:13:02Z) below it.
- * Version 2 drops a held list read with `--since`.
+ * Version 2 drops a held list read with `--since`. Version 3 adds each commit's `Wiki-Checked` pages.
  */
-const STATE_VERSION = 2;
+const STATE_VERSION = 3;
 const states = new Map<string, StaleState>();
 
 async function statePath(root: string): Promise<string> {
@@ -145,10 +148,20 @@ async function firstParentChanges(
 	const parse = (text: string) =>
 		text
 			.split('\n')
-			.map((line) => line.trim().split(' '))
-			.filter(([stamp, sha]) => stamp && sha)
-			.map(([stamp, sha, parent]) => ({ at: Number(stamp) * 1000, sha: sha!, parent: parent ?? '', files: [] as string[] }));
-	const format = '--format=%ct %H %P';
+			.map((line) => {
+				const [head = '', checked = ''] = line.split('\x1f');
+				const [stamp, sha, parent] = head.trim().split(' ');
+				return { stamp, sha, parent, checked };
+			})
+			.filter(({ stamp, sha }) => stamp && sha)
+			.map(({ stamp, sha, parent, checked }) => ({
+				at: Number(stamp) * 1000,
+				sha: sha!,
+				parent: parent ?? '',
+				files: [] as string[],
+				checked: checkedPages(checked),
+			}));
+	const format = `--format=%ct %H %P%x1f${CHECKED_FORMAT}`;
 	let listed: Change[] | null = null;
 	let reach = since;
 	if (held && coversSince(held.since, since)) {
@@ -320,8 +333,9 @@ async function siblingTouched(held: string | undefined, now: { root: string; pin
  * the keys the page names (`entryKeys`), or for a class all but the fields added with a default the page does not name
  * (`memberKeys`), and only while the pinned code differs.
  * A commit that changes a ref and the page together counts as the page's check of that ref, since its writer updated the page with
- * the code, as the follow gate (scripts/follow-gate.mjs) asks. Until 2026-10-29 such a commit was dated after the page's minute
- * `last_verified`, and 109 of the 1,557 page flags in the 7 days to 2026-10-29 20:14Z came from a commit that had updated that page.
+ * the code, as the follow gate (scripts/follow-gate.mjs) asks, and so does a commit whose `Wiki-Checked` trailer names the page
+ * (CHECKED_TRAILER in stale-rules.mjs), the one way a code commit can vouch for a page since the pages left git on 2026-11-03.
+ * Until 2026-10-29 such a commit was dated after the page's minute `last_verified`, and 109 of the 1,557 page flags in the 7 days to 2026-10-29 20:14Z came from a commit that had updated that page.
  * A whole-file or folder ref counts only commits that touch what the page states (`touchingChanges`). A ref the pinned tree
  * lacks reads as missing even when a gitignored file sits at its path, so its writer swaps it for a tracked file: until
  * 2026-10-29 such a ref was dated by mtime, and each materialize of apps/virev-demo rewrote
@@ -562,6 +576,9 @@ async function pageEvaluator(
 			if (files) files.push(file);
 			else filesOf.set(sha, [file]);
 		}
+	const vouched = new Map<string, FileCommit[]>();
+	for (const { at, sha, checked } of changes)
+		for (const page of checked) vouched.set(page, [...(vouched.get(page) ?? []), { at, sha }]);
 	const tracked = new Set(tree.split('\0').filter(Boolean));
 	const trackedUnder = (file: string): boolean => [...tracked].some((entry) => under(file, entry));
 	const readers = new Map<string, RepoReader>();
@@ -639,10 +656,11 @@ async function pageEvaluator(
 			page.meta.last_verified!,
 			pageCommits.map(({ at }) => at),
 		);
-		// A commit that changes cited code and the page together is the page's own update of that code.
+		// A commit that changes cited code and the page together, or names the page in a `Wiki-Checked` trailer, is the page's own
+		// update of that code.
 		const checkedFor = (ref: string): number => {
 			let at = checked;
-			for (const own of pageCommits)
+			for (const own of [...pageCommits, ...(vouched.get(page.path) ?? [])])
 				if ((filesOf.get(own.sha) ?? []).some((file) => under(ref, file))) at = Math.max(at, own.at);
 			return at;
 		};

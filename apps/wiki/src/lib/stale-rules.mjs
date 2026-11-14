@@ -33,6 +33,33 @@ export function verifiedAt(lastVerified, pageCommits = []) {
 }
 
 /**
+ * The commit trailer by which a code commit vouches for a curated page: `Wiki-Checked: <page>` says its writer read the page
+ * against this commit and every older commit the follow gate named, and the page states what the code does after it. The stale
+ * report and the follow gate read such a commit as the page's check of each cited file it changes, the way they read a commit
+ * that changed the page with its code while the pages sat in git. Since 2026-11-03 the pages live outside git, so no code commit
+ * can carry one, and a page that a commit put behind waited for a later write: in the 7 days to 2026-11-14 23:13Z, 1,231 page
+ * flags ended with a page write, 1,036 of them by the wiki dream, 27 by the session that made the commit, and 93% of the 1,420
+ * counted page-hours waited on the dream (`~/work/wiki-pages-follow-commit-1115/`).
+ */
+export const CHECKED_TRAILER = 'Wiki-Checked';
+
+/** The `git log --format` field that lists a commit's CHECKED_TRAILER values, split by %x1d. */
+export const CHECKED_FORMAT = `%(trailers:key=${CHECKED_TRAILER},valueonly,separator=%x1d)`;
+
+/**
+ * The content paths of the pages one `Wiki-Checked` value or a %x1d-joined list of them names. A value is the page's wiki path,
+ * with or without a leading `/wiki/`, `wiki:` or the old `apps/llm-wiki/content/`, and may go on with a note after a space.
+ * @param {string} values
+ * @returns {string[]}
+ */
+export const checkedPages = (values) =>
+	values
+		.split('\x1d')
+		.map((value) => value.trim().split(/\s+/)[0] ?? '')
+		.map((page) => page.replace(/^(?:wiki:|\/?wiki\/|\/)/, '').replace(/^apps\/llm-wiki\/content\//, ''))
+		.filter((page) => page.endsWith('.html'));
+
+/**
  * @param {string} ref
  * @param {string} file
  */

@@ -363,7 +363,7 @@ test('a path::name ref reads one pinned commit while HEAD moves during the repor
 	const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
 	writeFileSync(
 		path.join(bin, 'git'),
-		`#!/bin/sh\ncase " $* " in *" --format=%ct %H %P "*)\n  if [ -f '${mark}' ]; then\n    out=$('${real}' "$@"); status=$?\n    rm -f '${mark}'\n    '${real}' -C '${w.dir}' update-ref HEAD ${moved}\n    printf '%s\\n' "$out"; exit $status\n  fi;;\nesac\nexec '${real}' "$@"\n`,
+		`#!/bin/sh\ncase " $* " in *" --format=%ct %H %P"*)\n  if [ -f '${mark}' ]; then\n    out=$('${real}' "$@"); status=$?\n    rm -f '${mark}'\n    '${real}' -C '${w.dir}' update-ref HEAD ${moved}\n    printf '%s\\n' "$out"; exit $status\n  fi;;\nesac\nexec '${real}' "$@"\n`,
 		{ mode: 0o755 },
 	);
 	const saved = process.env.PATH;
@@ -701,6 +701,35 @@ test('a commit that changes cited code and the page together is the page check o
 	w.commit('2026-10-20T05:00:00Z', 'code alone');
 	rows = w.refsByPage();
 	assert.deepEqual(rows['apps/updated.html'], [{ ref: 'a.py', ...at('05') }], 'a later code commit without the page counts');
+});
+
+// 2026-11-14: auto-sns-agent 71e3977724, c6207be51f and f99c3eb03d (18:06Z to 18:54Z) put about 30 pages behind their code, and
+// since the pages left git on 2026-11-03 no code commit could carry its page check, so each page waited for a later page write.
+test('a commit whose Wiki-Checked trailer names a page is the page check of the code it changes', (t) => {
+	const w = fixture(t);
+	w.write('a.py', 'A = 1\n');
+	w.write('b.py', 'def f():\n    return 1\n');
+	w.write('lib/x.py', 'X = 1\n');
+	const refs = ['a.py', 'b.py::f', 'lib/'];
+	w.page('vouched.html', refs, { body: '<p>A is 2.</p>' });
+	w.page('wiki-path.html', refs);
+	w.page('other.html', refs);
+	w.init();
+	w.commit('2026-10-20T01:00:00Z', 'pages');
+	w.write('a.py', 'A = 2\n');
+	w.write('b.py', 'def f():\n    return 2\n');
+	w.write('lib/x.py', 'X = 2\n');
+	w.commit('2026-10-20T04:00:00Z', 'fix: code\n\nSession-Id: s1\nWiki-Checked: apps/vouched.html (no other fact changed)\nWiki-Checked: /wiki/apps/wiki-path.html');
+
+	let rows = w.refsByPage();
+	assert.equal(rows['apps/vouched.html'], undefined, 'the trailer is the page check of this commit');
+	assert.equal(rows['apps/wiki-path.html'], undefined, 'a /wiki/ path names the page too');
+	assert.deepEqual(rows['apps/other.html'], refs.map((ref) => ({ ref, ...at('04') })), 'a page the trailer leaves out counts');
+
+	w.write('a.py', 'A = 3\n');
+	w.commit('2026-10-20T05:00:00Z', 'code alone');
+	rows = w.refsByPage();
+	assert.deepEqual(rows['apps/vouched.html'], [{ ref: 'a.py', ...at('05') }], 'a later commit with no trailer counts');
 });
 
 // 2026-10-30: db8e5529c5 (02:24:16Z) changed code apps/convex/schema.html cites and 5c9e190769 (02:24:44Z) wrote the page with

@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
-import { behindPages, behindWarning, brokenCitations, followRefusal } from '../scripts/follow-gate.mjs';
+import { behindPages, behindRefusal, behindWarning, brokenCitations, followRefusal } from '../scripts/follow-gate.mjs';
 import { pageRepo } from './page-repo.mjs';
 
 // A git repo with curated pages (page-repo.mjs) whose pages were checked at 2026-10-20T03:00Z.
@@ -49,6 +50,44 @@ test('a code commit that changes what a curated page states names the page until
 	const followed = w.commit('code with its pages');
 	assert.deepEqual(behindPages(w.dir, base, followed), [], 'a page in the commit passes');
 	assert.equal(behindWarning(w.dir, base, followed), null);
+});
+
+// 2026-11-14: in the 7 days to 23:13Z the sessions that made 1,231 page flags under the warning ended 27 of them, and 93% of the
+// 1,420 counted page-hours waited for the wiki dream, so commit.mjs refuses until the message vouches for each page.
+test('commit.mjs refuses a code commit until a Wiki-Checked trailer names each page it puts behind', (t) => {
+	const w = fixture(t);
+	w.write('routes.py', routes(1, 1));
+	w.write('jobs/run.py', 'RUN_EVERY_S = 60\n');
+	w.page('complete.html', ['routes.py::contact_complete'], { body: '<p>The route returns 1.</p>' });
+	w.page('jobs.html', ['jobs/'], { body: '<p>A run starts every <code>RUN_EVERY_S</code> seconds.</p>' });
+	const base = w.commit('pages');
+	w.write('routes.py', routes(2, 1));
+	w.write('jobs/run.py', 'RUN_EVERY_S = 30\n');
+	execFileSync('git', ['add', '-A'], { cwd: w.dir, env: w.env });
+	const staged = execFileSync('git', ['write-tree'], { cwd: w.dir, env: w.env, encoding: 'utf8' }).trim();
+
+	const refusal = behindRefusal(w.dir, base, staged, 'fix: code alone\n\nSession-Id: s1');
+	assert.match(refusal, /^follow gate: .* no Wiki-Checked line for them\n/);
+	assert.match(refusal, /\n {2}apps\/llm-wiki\/content\/apps\/complete\.html: cites routes\.py::contact_complete\n/);
+	assert.match(refusal, /\n {2}apps\/llm-wiki\/content\/apps\/jobs\.html: cites jobs\/\n/);
+	assert.match(refusal, /-m "Wiki-Checked: apps\/complete\.html"/);
+
+	const one = 'fix: code\n\nWiki-Checked: apps/complete.html\nSession-Id: s1';
+	assert.deepEqual(behindPages(w.dir, base, staged, one).map((row) => row.page), ['apps/jobs.html'], 'each page needs its own line');
+	const body = 'fix: code\n\nWiki-Checked: apps/complete.html in the body is no trailer\n\nSession-Id: s1';
+	assert.equal(behindPages(w.dir, base, staged, body).length, 2, 'only the trailer block counts, as git and the stale report read it');
+	const both = `${one}\nWiki-Checked: apps/jobs.html (no stated fact changed)`;
+	assert.equal(behindRefusal(w.dir, base, staged, both), null);
+
+	const vouched = w.commit(both);
+	assert.equal(behindWarning(w.dir, base, vouched), null, 'land-object.mjs reads the trailers of the stack it lands');
+	w.write('routes.py', routes(3, 1));
+	const next = w.commit('fix: more code');
+	assert.deepEqual(
+		behindPages(w.dir, vouched, next).map((row) => [row.page, row.earlier]),
+		[['apps/complete.html', []]],
+		'a vouched commit is no older commit the page is behind',
+	);
 });
 
 // 2026-11-03: session push-verdict-tail-11-03 followed this warning for its revert 1e85d90226 and set last_verified at 08:02Z on

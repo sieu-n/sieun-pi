@@ -9,7 +9,18 @@ import { spawnSync } from 'node:child_process';
 import { codeText } from '../src/lib/code-text.mjs';
 import { definitionCode, symbolRef } from '../src/lib/definitions.mjs';
 import { siblingRef } from '../src/lib/sibling-repos.mjs';
-import { changedLines, citedWords, citesLines, dayStart, followed, linesTouch, under, verifiedAt } from '../src/lib/stale-rules.mjs';
+import {
+	CHECKED_FORMAT,
+	changedLines,
+	checkedPages,
+	citedWords,
+	citesLines,
+	dayStart,
+	followed,
+	linesTouch,
+	under,
+	verifiedAt,
+} from '../src/lib/stale-rules.mjs';
 import { parseMeta } from './wiki-health.mjs';
 
 const CONTENT = 'apps/llm-wiki/content/';
@@ -101,7 +112,7 @@ export function checkedAt(root, rev, page, lastVerified, writtenAt) {
 /**
  * The first-parent commits of `rev` after `checked` and up to `until` (both ms) that change what the page `page` (`html`) states
  * through a `source_refs` entry, by refBehind, oldest first, as `{ sha, at }` with `at` in ms. A commit that changed a ref and the
- * page together is the page's own check of that ref, and a `path::name` ref whose definition `rev` holds as it was at the check
+ * page together, or names the page in a `Wiki-Checked` trailer (CHECKED_TRAILER), is the page's own check of that ref, and a `path::name` ref whose definition `rev` holds as it was at the check
  * counts no commit, as the stale report dates both (checkedFor and definitionDates in wiki-stale.ts).
  */
 export function commitsBehind(root, rev, page, html, checked, until = Infinity) {
@@ -110,20 +121,21 @@ export function commitsBehind(root, rev, page, html, checked, until = Infinity) 
 	if (!files.length) return [];
 	const pageFile = `${CONTENT}${page}`;
 	const since = `--since-as-filter=${Math.floor(checked / 1000)}`;
-	const commits = git(root, ['log', '--first-parent', '--format=%x1e%ct %H', '--name-only', since, rev, '--', ...files, pageFile])
+	const commits = git(root, ['log', '--first-parent', `--format=%x1e%ct %H%x1f${CHECKED_FORMAT}`, '--name-only', since, rev, '--', ...files, pageFile])
 		.split('\x1e')
 		.map((block) => block.trim().split('\n'))
 		.filter(([head]) => head)
 		.map(([head, ...changed]) => {
-			const [stamp, sha] = head.split(' ');
-			return { sha, at: Number(stamp) * 1000, files: changed.map((file) => file.trim()).filter(Boolean) };
+			const [stamp, sha] = head.split('\x1f')[0].split(' ');
+			const vouched = checkedPages(head.split('\x1f')[1] ?? '').includes(page);
+			return { sha, at: Number(stamp) * 1000, vouched, files: changed.map((file) => file.trim()).filter(Boolean) };
 		})
 		.filter(({ at }) => at > checked && at <= until)
 		.reverse();
 	if (!commits.length) return [];
 	const checkedFor = (file) =>
 		commits
-			.filter((c) => c.files.includes(pageFile) && c.files.some((changed) => under(file, changed)))
+			.filter((c) => (c.vouched || c.files.includes(pageFile)) && c.files.some((changed) => under(file, changed)))
 			.reduce((at, c) => Math.max(at, c.at), checked);
 	const code = commits.map((c) => ({ ...c, files: c.files.filter((file) => file !== pageFile) }));
 	const heads = refs.filter((ref) => symbolRef(ref)).map((ref) => `${rev}:${symbolRef(ref).file}`);
