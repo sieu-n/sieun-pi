@@ -9,8 +9,8 @@
  * A `source_refs` entry counts on every page the stale report reads, experiment and settled pages included (lostSourceRefs),
  * while a `<code>` path on an experiment or settled page stays history, as in missingCodeRefs.
  *
- * auto-sns-agent's commit-run.mjs runs followRefusal and behindRefusal on the tree it is about to commit, and its land-object.mjs
- * runs followRefusal and behindWarning on the stack it lands, both loading this file through scripts/repo/agent/wiki-follow.mjs from the sieun-pi checkout the wiki config
+ * auto-sns-agent's commit-run.mjs runs followRefusal and behindWarning on the tree it is about to commit, and its land-object.mjs
+ * runs them on the stack it lands, both loading this file through scripts/repo/agent/wiki-follow.mjs from the sieun-pi checkout the wiki config
  * names. `root` is the code repo, and the pages come from pagesAt, the content root on disk when a wiki config exists. The
  * page gate (page-gate.mjs) judges only page writes, so before this gate a code commit could leave a page behind with no check.
  *
@@ -238,59 +238,38 @@ export function behindPages(root, before, after, message) {
 }
 
 /**
- * The warning text for a stack of commits that changes code a curated page states while no commit of it names the page in a
- * `Wiki-Checked` trailer, or null. land-object.mjs prints it, because its stack is already written and commit.mjs refused
- * each of its commits that left a page out (behindRefusal). Why it exists: in the 7 days to 2026-10-29 20:14Z, 665 code commits put 1,557 page flags on the wiki, 621 of them from agent
- * sessions that could have updated the page, and those sessions updated it themselves within 70 min for 15 of 1,452 flags. The
- * dream rewrote the rest, and 88% of the 867 page-hours that counted in wiki_problems fell while it made no commit for over 45 min,
- * mostly while its one job was parked on model quota (~/work/wiki-stale-churn-1030/FINDINGS.md).
+ * The warning text for a commit, or for a landed stack of commits, that changes code curated pages state while no `Wiki-Checked`
+ * trailer names those pages, or null. commit.mjs passes the message it is about to commit, and land-object.mjs passes none, so
+ * the trailers of the stack's commits count (vouchedPages). It warns and the commit goes on, because a page behind its code
+ * guards no data integrity, security, money, outside send, vendor limit or destructive action (sieun-pi AGENTS.md, owner rules
+ * c98, c81 and c108), and the wiki dream rewrites a page its maker leaves behind.
+ * Why it names the trailer: since the pages left git on 2026-11-03 a code commit could carry no page check, and in the 7 days to
+ * 2026-11-14 23:13Z the sessions that made 1,231 page flags ended 27 of them, while 1,036 waited for the dream's rewrite, as did
+ * 93% of the 1,420 counted page-hours (~/work/wiki-pages-follow-commit-1115/). A writer who reads the page against the diff before
+ * committing ends the flag in the commit itself.
  */
-export function behindWarning(root, before, after) {
-	const rows = behindPages(root, before, after);
+export function behindWarning(root, before, after, message) {
+	const rows = behindPages(root, before, after, message);
 	if (!rows.length) return null;
 	const terms = pageTerms();
 	return [
-		'follow gate warning: this commit changes code that curated wiki pages state and leaves the pages out, so they will read as behind their code',
+		`follow gate warning: this commit changes code that curated wiki pages state, and no ${CHECKED_TRAILER} trailer names them, so they will read as behind their code`,
 		...behindLines(rows, terms),
 		`Read each page against this diff, and against each commit it is already behind, and update it ${terms.fix} next: fix each`,
 		`fact those diffs changed. Set last_verified to the current UTC minute, such as ${new Date().toISOString().slice(0, 16)}Z, only once every one`,
 		'of those diffs is in the page or changes nothing it states, because a later last_verified hides each older commit from the',
-		'stale report (sieun-pi apps/wiki/scripts/follow-gate.mjs).',
+		`stale report. Next time read the pages first and end the message with one trailer per page, such as -m "${CHECKED_TRAILER}: ${rows[0].page}",`,
+		'which the stale report reads as the page check of that commit (sieun-pi apps/wiki/scripts/follow-gate.mjs).',
 	].join('\n');
 }
 
-/** The page lines of a behind warning or refusal: each page, the refs this commit changes and the older commits it is behind. */
+/** The page lines of a behind warning: each page, the refs this commit changes and the older commits it is behind. */
 function behindLines(rows, terms) {
 	return rows.map((row) => {
 		const line = `  ${terms.name(row.page)}: cites ${row.refs.join(', ')}`;
 		if (!row.earlier.length) return line;
 		return `${line}, and is already behind ${row.earlier.join(', ')} since its last_verified ${row.lastVerified}`;
 	});
-}
-
-/**
- * The refusal text for a commit with the message `message` that changes code curated pages state while its message vouches for
- * none of those pages in a `Wiki-Checked` trailer, or null. commit.mjs refuses such a commit, because its writer holds the diff
- * and is the one session that can say what the page should state now.
- * Hard limit, data integrity: a curated page that states code the tip no longer runs is a wrong record that every reader trusts.
- * Why it refuses: the warning (behindWarning) let every such commit through from 2026-10-29, and in the 7 days to 2026-11-14
- * 23:13Z its sessions ended 27 of the 1,231 page flags themselves, 14 of the 485 flags whose maker the wiki dream asked as well.
- * 1,036 waited for the dream's rewrite, and so did 93% of the 1,420 counted page-hours (~/work/wiki-pages-follow-commit-1115/).
- * Commits made with commit.mjs put 940 of those page-hours on the wiki and their replays by land-object.mjs 168 more.
- */
-export function behindRefusal(root, before, after, message) {
-	const rows = behindPages(root, before, after, message);
-	if (!rows.length) return null;
-	const terms = pageTerms();
-	return [
-		`follow gate: this commit changes code that curated wiki pages state, and its message has no ${CHECKED_TRAILER} line for them`,
-		...behindLines(rows, terms),
-		`Read each page against this diff and each older commit named, and fix every fact they change ${terms.fix}. Then commit`,
-		`again with one trailer per page as the last paragraph of the message, such as -m "${CHECKED_TRAILER}: ${rows[0].page}". The`,
-		'trailer is the page check of this commit, so the page never reads as behind it and last_verified can stay as it is. Add a',
-		'source_refs entry for a file or definition this commit creates once the commit is on the tip, because the page API refuses a',
-		'ref HEAD lacks (sieun-pi apps/wiki/scripts/follow-gate.mjs).',
-	].join('\n');
 }
 
 function main() {
