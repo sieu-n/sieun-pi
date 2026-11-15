@@ -10,12 +10,18 @@ apps/ci-specs/.env.staging with dotenvx when the env lacks it.
 Usage, from any directory:
   python3 legacy/prime/user-history/scripts/duties/scraper-block.py --label "<who, date, who found it>" \
       [--ua-sub "<UA substring>" | --ua-re "<UA regex>"] [--asn 14061 ...] [--cidr 1.2.3.0/24 ...] [--ip 1.2.3.4 ...] \
-      [--public-only] [--dry-run]
+      [--public-only] [--forged-referer] [--dry-run]
   python3 legacy/prime/user-history/scripts/duties/scraper-block.py --label "<who, date>" --groups-file <file.json> [--dry-run]
 A group needs a UA or a network (asn, cidr or ip). A group with no UA condition skips the allow list (search indexing bots and
 link previews, "$allow_ua"), every group skips our own boxes, and --public-only limits it to the public data pages and their
 APIs ("$public_data"). --groups-file takes {"groups": [{"conditions": [...]}]} in the file's condition shape, for header,
 query or cookie conditions. --dry-run prints the group and changes nothing.
+--forged-referer takes a client whose page loads each carry a virev.ai referer while it loads no __data.json and no /api, the weekly
+precheck's forged-referer reason. Its group matches the UA alone (--ua-sub as an exact UA, or --ua-re), on every path and any referer, as
+auto-sns-agent d5c39145ee's Windows Chrome 152.0.0.0 group, because a forged referer skips every no-referer group: on 11-15 that client made
+22,176 such page loads from 7 home IPs. It goes to scraper-challenge, since people share the UA, and to scraper-blocklist only with a network
+(--asn, --cidr or --ip), which the caller passes only for a hosting network, as the precheck's command passes only the ASNs that ip-asn.ts
+isHosting names.
 A denied request shows in the Vercel drain (prod ClickHouse otel.otel_logs, service search) with
 LogAttributes['vercel.source'] = 'firewall' and LogAttributes['vercel.proxy.wafRule'] = 'rule_scraper_blocklist_5OLTML';
 a blocked client has no 'lambda' rows after the publish.
@@ -68,6 +74,9 @@ def net(kind: str, values: list[str]) -> dict:
 
 def flag_group(a: argparse.Namespace) -> list[dict]:
     group: list[dict] = []
+    if a.forged_referer:
+        ua = {"type": "user_agent", "op": "eq", "value": a.ua_sub} if a.ua_sub else {"type": "user_agent", "op": "re", "value": a.ua_re}
+        return [ua] + [net(kind, values) for kind, values in (("geo_as_number", a.asn), ("ip_address", a.cidr + a.ip)) if values] + [{"use": "skip_own_ips"}]
     if a.public_only:
         group.append({"type": "path", "op": "re", "value": "$public_data"})
     if a.ua_sub:
@@ -83,31 +92,34 @@ def flag_group(a: argparse.Namespace) -> list[dict]:
     return group + [{"use": "skip_own_ips"}]
 
 
-def verdict(group: list[dict]) -> str:
+def verdict(group: list[dict], forged_referer: bool = False) -> str:
     """challenge for a no-referer group with no network, no Google UA and a UA regex or substring (a home-proxy fleet a person's direct visit
     can also match, 11-15), deny for the rest: a hosting ASN or IP list, a fake Googlebot from outside Google's network, a bare Google referer
     (the X11 fleet), an exact UA list copied from one fleet's requests (of the 11-03 group's 32,764 denied IP and UA pairs from 11-08 to 11-15,
-    0 opened a page with a virev.ai referer), a UA."""
-    no_referer = any(c.get("type") == "header" and c.get("key") == "referer" and c.get("op") == "nex" for c in group)
+    0 opened a page with a virev.ai referer), a UA. A forged-referer group is challenged unless it names a network, which the caller passes only
+    for a hosting one."""
     network = any(c.get("type") in ("geo_as_number", "ip_address") and not c.get("neg") for c in group)
+    if forged_referer:
+        return "deny" if network else "challenge"
+    no_referer = any(c.get("type") == "header" and c.get("key") == "referer" and c.get("op") == "nex" for c in group)
     google = any(c.get("type") == "user_agent" and not c.get("neg") and "google" in str(c.get("value")).lower() for c in group)
     exact_uas = any(c.get("type") == "user_agent" and c.get("op") == "inc" and not c.get("neg") for c in group)
     return "challenge" if no_referer and not network and not google and not exact_uas else "deny"
 
 
-def place(firewall: dict, groups: list[list[dict]], label: str, today: str) -> dict:
+def place(firewall: dict, groups: list[list[dict]], label: str, today: str, forged_referer: bool = False) -> dict:
     """A copy of firewall with each group added to the rule its verdict names; adds scraper-challenge after scraper-blocklist if missing."""
     out = json.loads(json.dumps(firewall))
     names = [r["name"] for r in out["rules"]]
-    if RULES["challenge"] not in names and any(verdict(g) == "challenge" for g in groups):
+    if RULES["challenge"] not in names and any(verdict(g, forged_referer) == "challenge" for g in groups):
         out["rules"].insert(names.index(RULES["deny"]) + 1, json.loads(json.dumps(CHALLENGE_RULE)))
     for group in groups:
-        rule = next(r for r in out["rules"] if r["name"] == RULES[verdict(group)])
+        rule = next(r for r in out["rules"] if r["name"] == RULES[verdict(group, forged_referer)])
         rule["groups"].append({"label": label, "added": today, "conditions": group})
     return out
 
 
-def main() -> None:
+def args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", required=True)
     ap.add_argument("--ua-sub")
@@ -116,16 +128,25 @@ def main() -> None:
     ap.add_argument("--cidr", nargs="*", default=[])
     ap.add_argument("--ip", nargs="*", default=[])
     ap.add_argument("--public-only", action="store_true")
+    ap.add_argument("--forged-referer", action="store_true")
     ap.add_argument("--groups-file")
     ap.add_argument("--dry-run", action="store_true")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
+    if a.forged_referer and not a.groups_file and (a.public_only or not (a.ua_sub or a.ua_re)):
+        ap.error("--forged-referer takes --ua-sub or --ua-re and covers every path, so it takes no --public-only")
+    return a
+
+
+def main() -> None:
+    a = args()
     if a.groups_file:
         groups = [g["conditions"] for g in json.load(open(a.groups_file))["groups"]]
     elif a.ua_sub or a.ua_re or a.asn or a.cidr or a.ip:
         groups = [flag_group(a)]
     else:
         sys.exit("a group needs a UA or a network, or pass --groups-file")
-    print(json.dumps([{"rule": RULES[verdict(g)], "conditions": g} for g in groups], indent=1))
+    forged = a.forged_referer
+    print(json.dumps([{"rule": RULES[verdict(g, forged)], "conditions": g} for g in groups], indent=1))
     if a.dry_run:
         return
     os.environ["FIREWALL_OWN_UA"] = own_ua()
@@ -134,11 +155,11 @@ def main() -> None:
         sys.exit("\n".join(stale) + f"\nThe checkout's {FILE} differs from the live config, so take in staging (or commit the live state) first.")
     path = os.path.join(REPO, FILE)
     today = datetime.datetime.now(datetime.UTC).date().isoformat()
-    firewall = place(json.load(open(path)), groups, a.label, today)
+    firewall = place(json.load(open(path)), groups, a.label, today, forged)
     with open(path, "w") as f:
         f.write(json.dumps(firewall, indent="\t", ensure_ascii=False) + "\n")
     run("node", "scripts/repo/vercel/firewall.mjs", "apply")
-    run("node", "scripts/repo/agent/commit.mjs", "-m", f"chore(search): the firewall {'blocks' if any(verdict(g) == 'deny' for g in groups) else 'challenges'} {a.label}", FILE)
+    run("node", "scripts/repo/agent/commit.mjs", "-m", f"chore(search): the firewall {'blocks' if any(verdict(g, forged) == 'deny' for g in groups) else 'challenges'} {a.label}", FILE)
 
 
 if __name__ == "__main__":

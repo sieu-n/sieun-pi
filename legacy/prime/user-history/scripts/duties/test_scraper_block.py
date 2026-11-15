@@ -67,6 +67,21 @@ class Placement(unittest.TestCase):
         self.assertEqual(sb.verdict(HOME_FLEET), "challenge")
 
 
+CHROME_152 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
+# The group auto-sns-agent d5c39145ee added to scraper-challenge for the 11-15 forged-referer client.
+D5C39145EE = [{"type": "user_agent", "op": "eq", "value": CHROME_152}, OWN]
+
+
+class ForgedReferer(unittest.TestCase):
+    def test_forged_referer_client_is_challenged_by_its_ua_and_denied_only_on_a_hosting_network(self):
+        """11-15: the Chrome 152.0.0.0 client sent a virev.ai referer on 22,176 page loads, so every no-referer group skipped it."""
+        home = sb.flag_group(sb.args(["--label", "x", "--forged-referer", "--ua-sub", CHROME_152]))
+        self.assertEqual(home, D5C39145EE)
+        hosting = sb.flag_group(sb.args(["--label", "x", "--forged-referer", "--ua-sub", CHROME_152, "--asn", "14061"]))
+        out = sb.place(firewall("scraper-blocklist", "scraper-challenge"), [home, hosting], "weekly", "2026-11-15", forged_referer=True)
+        self.assertEqual([[g["conditions"] for g in r["groups"]] for r in out["rules"]], [[hosting], [home]])
+
+
 class Drift(unittest.TestCase):
     def test_a_file_that_differs_from_live_is_refused(self):
         """11-15: dev/sieun's firewall.json predated staging 6df678ce83, so an apply would have reverted the live rules."""
