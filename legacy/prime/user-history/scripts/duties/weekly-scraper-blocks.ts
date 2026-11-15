@@ -18,7 +18,11 @@ import { classify, ENGINES, PREVIEW_UA, ROUTES, type Row, typicalChrome, uaFamil
  * - its UA is empty or matches the deny tokens or bot patterns of apps/search/firewall.json (AI training and AI fetch bots, HTTP libraries);
  * - classify() in public-page-scrapers.ts reads it as automated (bare-origin referer, fake or stale Chrome);
  * - it is a browser UA from a hosting or cloud network (ip-asn.ts);
- * - it is a browser UA whose IPs mostly open one or two pages each with no referer and never come back, the home-proxy fleet (`fleetKeys`).
+ * - it is a browser UA whose IPs mostly open one or two pages each with no referer and never come back, the home-proxy fleet (`fleetKeys`);
+ * - forged-referer: one IP+UA loads FORGED_MIN_PAGES or more pages with a virev.ai referer and makes no call a browser that runs the page makes
+ *   (an asset, __data.json, an API call, the PostHog relay or a POST), from an IP that calls no /api or __data.json under any UA. A forged
+ *   referer skips every no-referer group of firewall.json, as the Windows Chrome/152.0.0.0 client did on 11-15. forgedSql reads every page
+ *   path for it, the blog and the other pages outside ROUTES too, because that client took 640 blog pages.
  * Only the allow list of firewall.json (search indexers and link previews, checked against published ranges where the engine has them), our own
  * boxes and people stay out. The headline counts the listed clients that still got through in the last 24 h; the duty's job blocks each one
  * through scraper-block.py. A second read lists signed-in accounts over ACCOUNT_VIEWS_MAX profile views in a UTC day from the `profile_view`
@@ -46,6 +50,12 @@ export const LONE_MAX_PAGES = 2;
  */
 export const ACCOUNT_VIEWS_MAX = 50;
 export const STOPPED_SHOWN = 20;
+/**
+ * measured: in the 7 days to 11-15 18:30Z, IP+UA pairs on an IP that called /api or __data.json under some UA (people and our boxes) loaded at most
+ * 9 virev.ai-referred pages with no asset, __data.json, API call or POST, and none of the 19,713 pairs that called them loaded more than 1 such
+ * page in an hour with none, while the 11-15 Chrome/152.0.0.0 client loaded 408 to 6,801 per IP.
+ */
+export const FORGED_MIN_PAGES = 10;
 
 export type State = "origin" | "hit" | "denied";
 /** One (UA, IP, referer kind, route, state) group of calls; path is one of its paths, which the firewall replay reads. */
@@ -131,11 +141,14 @@ export function fleetKeys(rows: readonly WeekRow[]): Set<string> {
   return keys;
 }
 
-export interface Judge { typical: number | null; verify: Verify; firewall: Firewall; fleet: ReadonlySet<string> }
+/** forged holds the (UA, IP) pairs of forgedSql's rows. */
+export interface Judge { typical: number | null; verify: Verify; firewall: Firewall; fleet: ReadonlySet<string>; forged: ReadonlySet<string> }
 
 /** Whether a call needs its IP's network looked up: a browser UA that no earlier step settles. */
 export const needsNetwork = (row: WeekRow, judge: Judge): boolean =>
   !judge.firewall.ownIps.has(row.ip) && !judge.firewall.allow.test(row.ua) && !!row.ua.trim() && !judge.firewall.bot.test(row.ua);
+
+export const FORGED = "forged-referer: virev.ai referer on its pages and no asset, __data.json or API call";
 
 /** The client a crawler's call belongs to (reason | UA), or null for an allowed indexer or preview, our own box or a person. */
 export function clientKey(row: WeekRow, judge: Judge, asn: Asn | undefined): string | null {
@@ -149,6 +162,7 @@ export function clientKey(row: WeekRow, judge: Judge, asn: Asn | undefined): str
     return null;
   }
   if (!ua || judge.firewall.bot.test(ua)) return `bot, AI or HTTP library UA | ${family}`;
+  if (judge.forged.has(pairKey(row))) return `${FORGED} | ${row.ua}`;
   const verdict = classify(asRow(row), judge.typical, judge.verify);
   if (verdict.kind === "automated") return `${verdict.why} | ${family}`;
   if (asn && isHosting(asn.name)) return `browser UA from a hosting network | ${row.ua}`;
@@ -167,8 +181,9 @@ interface Client { calls: number; denied: number; lastDenied: number; pages: num
 /** One signed-in account's busiest UTC day of profile views. */
 export interface AccountDay { user: string; day: string; views: number; ips: number }
 
-export interface WeekInputs { rows: readonly WeekRow[] | Error; asns: ReadonlyMap<string, Asn> | Error; accounts: readonly AccountDay[] | Error; judge: Omit<Judge, "fleet" | "typical">;
-  errors: readonly string[]; end: number; replay?: Replay | undefined }
+/** forged holds forgedSql's rows, which replace the route rows of their (UA, IP) pairs. */
+export interface WeekInputs { rows: readonly WeekRow[] | Error; forged?: readonly WeekRow[] | Error; asns: ReadonlyMap<string, Asn> | Error; accounts: readonly AccountDay[] | Error;
+  judge: Omit<Judge, "fleet" | "typical" | "forged">; errors: readonly string[]; end: number; replay?: Replay | undefined }
 
 /** The published rules would now deny every call shape the client got through with, so a block reads as done before the client comes back. */
 const covered = (client: Client): boolean => client.shapes > 0 && client.covered === client.shapes;
@@ -180,11 +195,11 @@ const passing = (client: Client, at: number): boolean => client.last > at - DAY 
 
 function blockCommand(key: string, client: Client, at: number, nets: [number, { name: string; calls: number }][]): string {
   const hosting = nets.filter(([asn, net]) => asn && isHosting(net.name)).map(([asn]) => asn);
-  const exact = /^(?:browser UA from|one or two pages)/.test(key);
+  const exact = /^(?:browser UA from|one or two pages|forged-referer)/.test(key);
   const label = `${uaFamily(client.ua)}${nets[0]?.[0] ? ` from AS${nets[0][0]}` : ""}, weekly ${new Date(at).toISOString().slice(0, 10)}`;
   const tail = key.startsWith("one or two pages") ? " (no-referer group: --groups-file with a referer nex condition, as the Windows Chrome 151 group)"
     : key.startsWith("bot, AI") ? " (or add its token to deny in apps/search/firewall.json)" : "";
-  return `scripts/duties/scraper-block.py --label ${shellText(label)}${exact ? ` --ua-sub ${shellText(client.ua)}` : ""}` +
+  return `scripts/duties/scraper-block.py --label ${shellText(label)}${key.startsWith("forged-referer") ? " --forged-referer" : ""}${exact ? ` --ua-sub ${shellText(client.ua)}` : ""}` +
     `${hosting.length && !key.startsWith("one or two pages") ? ` --asn ${hosting.slice(0, 8).join(" ")}` : ""}${tail}`;
 }
 
@@ -198,8 +213,11 @@ export function weeklyClients(input: WeekInputs): PrecheckOutput {
   }
   if (input.asns instanceof Error) flagged.push({ at, kind: "source_error", excerpt: `whois.cymru.com: ${input.asns.message}, so no browser UA counts as hosting`.slice(0, 600) });
   const asns = input.asns instanceof Error ? new Map<string, Asn>() : input.asns;
-  const rows = input.rows;
-  const judge: Judge = { ...input.judge, typical: typicalOf(rows), fleet: fleetKeys(rows) };
+  if (input.forged instanceof Error) flagged.push({ at, kind: "source_error", excerpt: `forged-referer read: ${input.forged.message}`.slice(0, 600) });
+  const forged = input.forged instanceof Error ? [] : input.forged ?? [];
+  const forgedPairs = new Set(forged.map(pairKey));
+  const rows = [...input.rows.filter(row => !forgedPairs.has(pairKey(row))), ...forged];
+  const judge: Judge = { ...input.judge, typical: typicalOf(input.rows), fleet: fleetKeys(rows), forged: forgedPairs };
   const total = rows.reduce((sum, row) => sum + (row.state === "denied" ? 0 : row.calls), 0);
   if (!total) {
     flagged.push({ at, kind: "source_error", excerpt: "otel.otel_logs holds no prod call to the public database routes in the 7 days, so the Vercel drain or the query is broken" });
@@ -271,6 +289,23 @@ export function weeklyClients(input: WeekInputs): PrecheckOutput {
 
 const sqlText = (text: string): string => `'${text.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
 const weekWindow = (end: number): string => `Timestamp > fromUnixTimestamp64Milli(${end - WEEK}) AND Timestamp <= fromUnixTimestamp64Milli(${end})`;
+const PATH = "LogAttributes['vercel.proxy.path']";
+const REF = "LogAttributes['vercel.proxy.referer']";
+const UA_SQL = "replaceRegexpAll(LogAttributes['vercel.proxy.userAgent'], '^\\\\[\"|\"\\\\]$', '')";
+const REFK_SQL = `multiIf(${REF} = '', 'none', match(${REF}, '^https?://(www\\\\.)?virev\\\\.ai/?$'), 'bare_self', match(${REF}, '^https?://(www\\\\.)?virev\\\\.ai/'), 'page', 'other')`;
+const ROUTE_SQL = `multiIf(${ROUTES.map(([name, pattern]) => `match(${PATH}, ${sqlText(pattern)}), '${name}'`).join(", ")}, '')`;
+const STATE_SQL = `multiIf(LogAttributes['vercel.source'] = 'firewall' OR LogAttributes['vercel.proxy.wafAction'] IN ('deny', 'challenge'), 'denied',
+    LogAttributes['vercel.proxy.vercelCache'] = 'HIT', 'hit', 'origin')`;
+const PROD = `ServiceName = 'search' AND \`__hdx_materialized_deployment.environment.name\` = 'production'`;
+/** A file a page links to (sitemap, robots, a blog's CSV), which a crawler fetches as readily as a person, so it is neither a page nor a browser's sign. */
+const DOWNLOAD = `match(${PATH}, '\\\\.(?:xml|txt|csv)(?:\\\\?|$)')`;
+/**
+ * A call that only a browser running the page makes: __data.json, an API or +server route, the PostHog relay (/_relay), a blog asset (/_blog),
+ * any other asset, or a POST. The drain logs none of apps/search's /_app assets, which the CDN serves, but it logs all of these (11-15 read).
+ */
+const BROWSER_SIGN = `(NOT ${DOWNLOAD} AND (LogAttributes['vercel.proxy.method'] NOT IN ('GET', 'HEAD', '') OR position(${PATH}, '/api/') > 0
+    OR position(${PATH}, '__data.json') > 0 OR startsWith(${PATH}, '/_') OR match(${PATH}, '\\\\.(?:png|jpe?g|gif|svg|ico|webp|avif|css|m?js|woff2?|ttf|webmanifest|json|map)(?:\\\\?|$)')))`;
+const DOCUMENT = `(NOT ${BROWSER_SIGN} AND NOT ${DOWNLOAD})`;
 
 /**
  * One row per (UA, IP, referer kind, page or API, route of ROUTES, passed to origin, served from the CDN or denied) with one of its paths, each
@@ -278,47 +313,65 @@ const weekWindow = (end: number): string => `Timestamp > fromUnixTimestamp64Mill
  */
 export function weeklySql(end: number): string {
   const any = ROUTES.map(([, pattern]) => `(?:${pattern})`).join("|");
-  const ref = "LogAttributes['vercel.proxy.referer']";
-  return `SELECT replaceRegexpAll(LogAttributes['vercel.proxy.userAgent'], '^\\\\["|"\\\\]$', '') AS ua, LogAttributes['vercel.proxy.clientIp'] AS ip,
-  multiIf(${ref} = '', 'none', match(${ref}, '^https?://(www\\\\.)?virev\\\\.ai/?$'), 'bare_self', match(${ref}, '^https?://(www\\\\.)?virev\\\\.ai/'), 'page', 'other') AS refk,
-  NOT startsWith(LogAttributes['vercel.proxy.path'], '/api/') AS page,
-  multiIf(${ROUTES.map(([name, pattern]) => `match(LogAttributes['vercel.proxy.path'], ${sqlText(pattern)}), '${name}'`).join(", ")}, '') AS route,
-  any(LogAttributes['vercel.proxy.path']) AS path,
-  multiIf(LogAttributes['vercel.source'] = 'firewall' OR LogAttributes['vercel.proxy.wafAction'] IN ('deny', 'challenge'), 'denied',
-    LogAttributes['vercel.proxy.vercelCache'] = 'HIT', 'hit', 'origin') AS state,
+  return `SELECT ${UA_SQL} AS ua, LogAttributes['vercel.proxy.clientIp'] AS ip, ${REFK_SQL} AS refk,
+  NOT startsWith(${PATH}, '/api/') AS page, ${ROUTE_SQL} AS route, any(${PATH}) AS path, ${STATE_SQL} AS state,
   uniqExact(LogAttributes['vercel.requestId']) AS calls, max(toUnixTimestamp64Milli(Timestamp)) AS last
-FROM otel.otel_logs WHERE ServiceName = 'search' AND \`__hdx_materialized_deployment.environment.name\` = 'production' AND ${weekWindow(end)}
-  AND LogAttributes['vercel.proxy.path'] != '' AND match(LogAttributes['vercel.proxy.path'], ${sqlText(any)})
+FROM otel.otel_logs WHERE ${PROD} AND ${weekWindow(end)}
+  AND ${PATH} != '' AND match(${PATH}, ${sqlText(any)})
 GROUP BY ua, ip, refk, page, route, state
+SETTINGS max_threads = 2, log_comment = 'duty weekly-scraper-blocks'`;
+}
+
+/**
+ * The page rows, in weeklySql's shape, of every (UA, IP) pair with the forged-referer shape, on every page path (route '' outside ROUTES): FORGED_MIN_PAGES
+ * or more pages with a virev.ai referer, no BROWSER_SIGN call from the pair, and no /api or __data.json call from its IP under any UA. One scan of
+ * the week, with the pair and IP sums as window functions.
+ */
+export function forgedSql(end: number): string {
+  const id = "LogAttributes['vercel.requestId']";
+  return `SELECT ua, ip, refk, page, route, path, state, calls, last FROM (
+  SELECT *, sum(signs) OVER (PARTITION BY ua, ip) AS pair_signs, sum(referred) OVER (PARTITION BY ua, ip) AS pair_referred, sum(app) OVER (PARTITION BY ip) AS ip_app
+  FROM (SELECT ${UA_SQL} AS ua, LogAttributes['vercel.proxy.clientIp'] AS ip, ${REFK_SQL} AS refk, true AS page, ${ROUTE_SQL} AS route,
+      anyIf(${PATH}, ${DOCUMENT}) AS path, ${STATE_SQL} AS state, uniqExactIf(${id}, ${DOCUMENT}) AS calls,
+      uniqExactIf(${id}, ${DOCUMENT} AND refk IN ('page', 'bare_self')) AS referred, uniqExactIf(${id}, ${BROWSER_SIGN}) AS signs,
+      uniqExactIf(${id}, position(${PATH}, '/api/') > 0 OR position(${PATH}, '__data.json') > 0) AS app,
+      maxIf(toUnixTimestamp64Milli(Timestamp), ${DOCUMENT}) AS last
+    FROM otel.otel_logs WHERE ${PROD} AND ${weekWindow(end)} AND ${PATH} != ''
+    GROUP BY ua, ip, refk, route, state))
+WHERE pair_signs = 0 AND pair_referred >= ${FORGED_MIN_PAGES} AND ip_app = 0 AND calls > 0
 SETTINGS max_threads = 2, log_comment = 'duty weekly-scraper-blocks'`;
 }
 
 /** Each signed-in account's profile views per UTC day, from the `profile_view {json}` lines apps/search logs for each viewer page render. */
 export const accountsSql = (end: number): string => `SELECT JSONExtractString(substring(Body, 14), 'user') AS user, toString(toDate(Timestamp)) AS day,
   uniqExact(JSONExtractString(substring(Body, 14), 'profile')) AS views, uniqExact(LogAttributes['vercel.proxy.clientIp']) AS ips
-FROM otel.otel_logs WHERE ServiceName = 'search' AND \`__hdx_materialized_deployment.environment.name\` = 'production' AND ${weekWindow(end)}
+FROM otel.otel_logs WHERE ${PROD} AND ${weekWindow(end)}
   AND LogAttributes['vercel.source'] = 'lambda' AND startsWith(Body, 'profile_view ') AND JSONExtractString(substring(Body, 14), 'user') != ''
 GROUP BY user, day
 SETTINGS max_threads = 2, log_comment = 'duty weekly-scraper-blocks'`;
 
 export async function measure(query: DsQuery, end: number, signal: AbortSignal): Promise<PrecheckOutput> {
   const asError = (error: unknown): Error => error instanceof Error ? error : new Error(String(error));
-  const [raw, accountRows, file] = await Promise.all([
+  const [raw, forgedRaw, accountRows, file] = await Promise.all([
     sqlRows(query, CLICKHOUSE, weeklySql(end)).then(found => found, asError),
+    sqlRows(query, CLICKHOUSE, forgedSql(end)).then(found => found, asError),
     sqlRows(query, CLICKHOUSE, accountsSql(end)).then(found => found, asError),
     firewallFile(),
   ]);
   const firewall = parseFirewall(file);
-  const rows = raw instanceof Error ? raw : raw.map((row): WeekRow => ({ ua: String(row.ua ?? ""), ip: String(row.ip ?? ""), refk: String(row.refk),
-    page: Boolean(Number(row.page)), path: String(row.path ?? ""), state: String(row.state) as State, calls: Number(row.calls), last: Number(row.last) }));
+  const weekRows = (found: Record<string, unknown>[]): WeekRow[] => found.map((row): WeekRow => ({ ua: String(row.ua ?? ""), ip: String(row.ip ?? ""),
+    refk: String(row.refk), page: Boolean(Number(row.page)), path: String(row.path ?? ""), state: String(row.state) as State, calls: Number(row.calls), last: Number(row.last) }));
+  const rows = raw instanceof Error ? raw : weekRows(raw);
+  const forged = forgedRaw instanceof Error ? forgedRaw : weekRows(forgedRaw);
   const accounts = accountRows instanceof Error ? accountRows : accountRows.map((row): AccountDay => ({ user: String(row.user), day: String(row.day),
     views: Number(row.views), ips: Number(row.ips) }));
   const errors: string[] = [];
   if (rows instanceof Error) return weeklyClients({ rows, asns: new Map(), accounts, judge: { verify: { engine: () => null }, firewall }, errors, end });
-  const verify = await verifier(rows.map(asRow), errors, signal);
+  const all = forged instanceof Error ? rows : [...rows, ...forged];
+  const verify = await verifier(all.map(asRow), errors, signal);
   const judge = { verify, firewall };
   /** Every passed call's network too, so the replay can test the ASN groups on an indexer UA or a bot UA. */
-  const lookup = rows.filter(row => needsNetwork(row, { ...judge, typical: null, fleet: new Set() }) || (row.state !== "denied" && !firewall.ownIps.has(row.ip)))
+  const lookup = all.filter(row => needsNetwork(row, { ...judge, typical: null, fleet: new Set(), forged: new Set() }) || (row.state !== "denied" && !firewall.ownIps.has(row.ip)))
     .map(row => row.ip);
   const asns = await asnOf(lookup, signal).then(found => found, asError);
   const replay = await import(pathToFileURL(join(REPO, "scripts/repo/vercel/firewall.mjs")).href)
@@ -326,7 +379,7 @@ export async function measure(query: DsQuery, end: number, signal: AbortSignal):
       errors.push(`firewall replay through ${REPO}/scripts/repo/vercel/firewall.mjs: ${asError(error).message}, so only a denial after the last pass counts as blocked`);
       return undefined;
     });
-  return weeklyClients({ rows, asns, accounts, judge, errors, end, replay });
+  return weeklyClients({ rows, forged, asns, accounts, judge, errors, end, replay });
 }
 
 /**

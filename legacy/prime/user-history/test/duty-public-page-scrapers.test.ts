@@ -8,8 +8,8 @@ import { classify, ENGINES, humanIps, inRanges, rangeList, requestsSql, ROUTES, 
 import { type DutyMetric, judge } from "../src/shared/chat-duties.ts";
 import { DAY } from "../scripts/duties/estate-reads.ts";
 import { type Asn, isHosting, parseCymru } from "../scripts/duties/ip-asn.ts";
-import { accountsSql, ACCOUNT_VIEWS_MAX, type Acts, type FirewallCondition, type FirewallFile, FLEET_MIN_IPS, fleetKeys, parseFirewall, replayer, type WeekRow, weeklyClients,
-  weeklySql } from "../scripts/duties/weekly-scraper-blocks.ts";
+import { accountsSql, ACCOUNT_VIEWS_MAX, type Acts, type FirewallCondition, type FirewallFile, FLEET_MIN_IPS, fleetKeys, FORGED, parseFirewall, replayer, type WeekRow,
+  weeklyClients, weeklySql } from "../scripts/duties/weekly-scraper-blocks.ts";
 
 const duty = JSON.parse(readFileSync(new URL("../scripts/duties/public-page-scrapers.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] };
 const WIN = (major: number | string) => `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}${typeof major === "number" ? ".0.0.0" : ""} Safari/537.36`;
@@ -179,6 +179,21 @@ test("a browser UA whose home IPs each open one page with no referer is a fleet,
   assert.deepEqual(listed(output), [["scraper_client", `one or two pages per IP with no referer, rotating IPs | ${WIN(151)}`]]);
   assert.match(output.flagged!.find(slice => slice.kind === "scraper_client")!.excerpt, /\(20 calls, 20 pages\) from 20 IPs/);
   assert.equal(fleetKeys([...fleet.slice(0, FLEET_MIN_IPS - 1), ...people]).size, 0, "fewer lone IPs than the line is no fleet");
+});
+
+test("an IP+UA whose pages all carry a virev.ai referer with no asset, __data.json or API call is a forged-referer client, blog pages counted (11-15)", () => {
+  const ips = ["42.49.111.178", "114.36.210.109", "157.148.101.218"];
+  const routes = ips.map(ip => week({ ua: WIN(152), ip, calls: 400 }));
+  const forged = [...ips.map(ip => week({ ua: WIN(152), ip, calls: 400 })), ...ips.map(ip => week({ ua: WIN(152), ip, path: "/blog/micro-fitness-influencers", calls: 200 }))];
+  const people = [week({ ua: WIN(152), ip: "98.0.0.1", calls: 3 }), week({ ua: WIN(152), ip: "98.0.0.1", page: false, path: "/api/img?media=x", calls: 6 })];
+  const asns = new Map(ips.map((ip): [string, Asn] => [ip, KT]));
+  const output = weeklyClients({ rows: [...routes, ...people, week({ calls: 200 })], forged, asns, accounts: [], judge: { verify: googleOnly, firewall: FIREWALL }, errors: [], end: 10 * DAY });
+  assert.deepEqual(listed(output), [["scraper_client", `${FORGED} | ${WIN(152)}`]]);
+  const excerpt = output.flagged!.find(slice => slice.kind === "scraper_client")!.excerpt;
+  assert.match(excerpt, /\(1800 calls, 1800 pages\) from 3 IPs/);
+  assert.match(excerpt, /--forged-referer --ua-sub '.*Chrome\/152\.0\.0\.0 Safari\/537\.36'$/, "a home network gets a challenge by UA and no --asn");
+  const hosted = weeklyClients({ rows: routes, forged, asns: new Map([...asns, [ips[0]!, DO]]), accounts: [], judge: { verify: googleOnly, firewall: FIREWALL }, errors: [], end: 10 * DAY });
+  assert.match(hosted.flagged!.find(slice => slice.kind === "scraper_client")!.excerpt, /--forged-referer --ua-sub '.*' --asn 14061$/);
 });
 
 test("a signed-in account over the daily profile line is listed for a ban check", () => {
