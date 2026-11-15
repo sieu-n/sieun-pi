@@ -27,13 +27,6 @@
       "target": ".prime/agent/skills/board"
     },
     {
-      "id": "skill:how",
-      "kind": "link",
-      "source": "skills/how",
-      "scope": "home",
-      "target": ".prime/agent/skills/how"
-    },
-    {
       "id": "skill:no-comments",
       "kind": "link",
       "source": "skills/no-comments",

@@ -20,7 +20,7 @@ Write this phase checklist in your reply before you start.
 
 ## Phase A: Ground the problem
 
-Run the `how` skill over every subsystem the new code touches. Use its critique mode when the existing structure is the constraint or the design must push back on it. Naming a file is not grounding; produce the traced model that `how` asks for.
+Run the `why` skill's How mode over every subsystem the new code touches. Use its Critique when the existing structure is the constraint or the design must push back on it. Naming a file is not grounding; produce the traced model that How mode asks for.
 
 If the design changes ownership or layering, also run the `why` skill on the existing shape and treat its answer as a constraint.
 
@@ -80,7 +80,7 @@ A few hard edge cases do not condemn a design. Complex data does not mean the de
 
 When you scrap:
 
-1. Re-run the `how` skill over what you built, so the lessons enter the new design as inputs.
+1. Re-run the `why` skill's How mode over what you built, so the lessons enter the new design as inputs.
 2. Redesign as if the new constraints had been there from day one.
 3. Make the new sketch smaller than the old one before it grows.
 4. Return to Phase B and re-run it.

@@ -3,7 +3,7 @@
 Tie every fix to a measurement. Do not read source in place of measuring.
 
 1. Capture a baseline trace on the real surface.
-2. Run the how skill to ground hypotheses. Do not claim a ceiling you have not measured. Use these strategy families to generate hypotheses, and try one only when the trace shows its signal.
+2. Run the why skill's How mode to ground hypotheses. Do not claim a ceiling you have not measured. Use these strategy families to generate hypotheses, and try one only when the trace shows its signal.
    - Elimination removes work nobody needs. The trace cannot show that work is deletable, so this one needs the how pass.
    - Divide and conquer splits work whose cost grows with input size, or runs independent pieces in parallel.
    - Caching reuses results for repeated identical inputs. Name what invalidates the cache.

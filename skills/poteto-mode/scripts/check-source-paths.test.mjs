@@ -57,7 +57,7 @@ test("documented source paths exist in the packaged layout", () => {
     "scripts/worktree-audit.sh",
     "../setup-pstack/references/prime-agent-runtime.md",
     "../swarm/SKILL.md",
-    "../how/SKILL.md",
+    "../why/SKILL.md",
     "../show-me-your-work/SKILL.md",
   ]) {
     assert.ok(checked.has(resolve(skillDir, source)), `uncovered source: ${source}`);

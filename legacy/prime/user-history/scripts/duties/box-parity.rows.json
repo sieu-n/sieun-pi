@@ -9,15 +9,6 @@
   ]
  },
  {
-  "id": "skill-how",
-  "tool": "skill how",
-  "probes": [
-   {
-    "path": "~/.prime/agent/skills/how/SKILL.md"
-   }
-  ]
- },
- {
   "id": "skill-no-comments",
   "tool": "skill no-comments",
   "probes": [

@@ -32,7 +32,7 @@ Run shell commands through Prime's `bash(...)` from the target project, which in
 
 Start every multi-step task with a written checklist. Its first item is to read the Principles section in full. Prime has no todo tool, so keep the checklist in your reply or in a scratch file. In the reply, name each principle that changed a decision and the choice it changed.
 
-- Use the how skill for a nontrivial change, an architecture decision, or an "are we sure?" question.
+- Use the why skill's How mode for a nontrivial change, an architecture decision, or an "are we sure?" question.
 - Before you ask the user which approach to take, check whether running something would answer it. If it would, settle it with `playbooks/prototype.md`. Ask only about a product or preference call that no experiment can settle. A read-only Investigation answers from evidence and does not build a sketch.
 - Name the data shape before you write code, and pick its structure with principle-model-the-domain.
 - Use the architect skill before code that crosses a function boundary.

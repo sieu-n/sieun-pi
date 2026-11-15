@@ -21,7 +21,7 @@ Use the caller's files or diff. Otherwise use the current diff against the base 
    - Keep a comment only with proof that it is about something we cannot change.
    - Find lint and TypeScript suppressions in scope that the child missed. A suppression that protects correctness or safety becomes a `MUST KILL`.
    - Restore a deleted comment only when you can name its exact exception and prove it inside the scope.
-   - Before you accept a thin `IMPORTANT` or `do not remove` kill or keep, run the `how` or `why` skill on its symbol. Leave an ambiguous kill deleted. Delete a keep that is refuted or still ambiguous.
+   - Before you accept a thin `IMPORTANT` or `do not remove` kill or keep, run the `why` skill, in How or Why mode, on its symbol. Leave an ambiguous kill deleted. Delete a keep that is refuted or still ambiguous.
    - If you reject the report, revert the child's diff and rerun it once with the failure named. If you reject the second report, report it open and fail `no-comments`.
 3. Fix trivial accepted flags directly, for example by deleting a dead path, dropping a parameter, or using the real API. If any fix needs a new shape, run the `architect` skill once over the accepted set and the code around it. Stop at its sketch.
 4. Implement the smallest root-cause fix in scope and remove every named workaround. Apply `principle-fix-root-causes` and the redesign-from-day-one rule in poteto-mode's Principles inside the scope only. If the root cause is outside the scope, land the smallest in-scope fix and report the rest open.

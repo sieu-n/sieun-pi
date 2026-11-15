@@ -82,7 +82,9 @@
       "upstream_path": "pstack/skills/how/SKILL.md",
       "upstream_sha256": "06b714dbd830bc829bfb89e33a1c39daf6d72ea412e488ea9d65f5f33b885a0c",
       "import_sha256": "9cda65989c3afb2a7d1697c8c54e23969d6bc771ffdd7af5fd1285912e0227b3",
-      "unchanged_at_comparison": false
+      "unchanged_at_comparison": false,
+      "merged_into": "skills/why/SKILL.md",
+      "merged_on": "2026-11-15"
     },
     {
       "path": "skills/how/references/critic-prompt.md",
@@ -90,7 +92,9 @@
       "upstream_commit": "93b00b89ef425a9c1bac0d0b317dfc49c930ac99",
       "upstream_sha256": "aa77a15590814c814bd5cb074842029ab7b790c2e8379050525bdbc20739d1bb",
       "import_sha256": "aa77a15590814c814bd5cb074842029ab7b790c2e8379050525bdbc20739d1bb",
-      "unchanged_at_comparison": true
+      "unchanged_at_comparison": true,
+      "merged_into": "skills/why/references/critic-prompt.md",
+      "merged_on": "2026-11-15"
     },
     {
       "path": "skills/how/references/critique-rubric.md",
@@ -98,21 +102,27 @@
       "upstream_commit": "93b00b89ef425a9c1bac0d0b317dfc49c930ac99",
       "upstream_sha256": "5774ff2caf51796e54c4a61b63620a165de5801f23c8f47406e527abfbe9addc",
       "import_sha256": "5774ff2caf51796e54c4a61b63620a165de5801f23c8f47406e527abfbe9addc",
-      "unchanged_at_comparison": true
+      "unchanged_at_comparison": true,
+      "merged_into": "skills/why/references/critique-rubric.md",
+      "merged_on": "2026-11-15"
     },
     {
       "path": "skills/how/references/explainer-prompt.md",
       "upstream_path": "pstack/skills/how/references/explainer-prompt.md",
       "upstream_sha256": "ddb89cebefc24e2b54517a331aedfe045b6971e101f45c71b8cef4cccff45bff",
       "import_sha256": "04336086e7c415394459ca2f461717d920e15339517dbf5a56ca042f8b4fead3",
-      "unchanged_at_comparison": false
+      "unchanged_at_comparison": false,
+      "merged_into": "skills/why/references/explainer-prompt.md",
+      "merged_on": "2026-11-15"
     },
     {
       "path": "skills/how/references/explorer-prompt.md",
       "upstream_path": "pstack/skills/how/references/explorer-prompt.md",
       "upstream_sha256": "3a6965276d23be7d8da6c305bfd5d7bf29d2aef09e5dae4119463ac72022a02d",
       "import_sha256": "fd1218b8cf1f467c644d4ce6fa5e54e6089ede65a28fbbae61f6ee7a2d462f85",
-      "unchanged_at_comparison": false
+      "unchanged_at_comparison": false,
+      "merged_into": "skills/why/references/explorer-prompt.md",
+      "merged_on": "2026-11-15"
     },
     {
       "path": "skills/interrogate/SKILL.md",

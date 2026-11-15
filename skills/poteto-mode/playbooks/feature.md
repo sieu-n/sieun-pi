@@ -2,7 +2,7 @@
 
 Delegate the implementation and stay in the lead.
 
-1. Run the how skill over the affected subsystem.
+1. Run the why skill's How mode over the affected subsystem.
 2. Run the architect skill. If you skip it, write `architect skipped: <reason>`.
 3. Write the throughput checkpoint as four checklist items. Mark an item that does not apply as `n/a: <reason>`.
    - Name the blocking first steps that run before any fan-out.

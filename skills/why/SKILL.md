@@ -1,19 +1,59 @@
 ---
 name: why
-description: "Use for why X works this way, design reasons, regressions, and postmortems. Searches git, tickets, docs, and chat, and returns a cited answer."
+description: "Use for how X works or why X works this way, code walkthroughs, where-should-this-live questions, design reasons, regressions, and postmortems. Traces the code and searches git, tickets, docs, and chat, and returns a cited answer."
 ---
 
-# Why
+# Why and how
 
-Answer why code has its shape: the intent, the edge cases, the outside constraints, and the rejected alternatives.
-The `how` skill answers what the code does.
+Answer a question about code that already exists.
+A how question asks what the code does, and How mode answers it with a working mental model that a senior engineer needs to start work in a subsystem.
+A why question asks why the code has its shape, meaning the intent, the edge cases, the outside constraints, and the rejected alternatives, and Why mode answers it from the record.
+When a question needs both, run How first and use its file paths and symbols as the code anchor for Why.
+
+## Spawning the roles
+
+Read `~/.prime/agent/skills/setup-pstack/references/prime-agent-runtime.md` before the first spawn, for how to spawn children, collect their reports, and handle the depth limit.
+
+- Take each role's model from its entry in `~/.prime/agent/pstack-models.json`, and omit `model=` and `thinking=` for an `inherit-parent` entry.
+- Put "read and report only; do not edit any file" in every brief, because Prime Agent has no read-only child mode.
+- End every brief with `await agent_message.send(<report>, receiver_role="parent")`.
+- At the `RLM_MAX_DEPTH` ceiling, play each role inline from the same template.
+
+## How mode
+
+Aim for a working mental model, not annotated source.
+Explain is the default.
+Critique runs Explain first and then sends the result to independent critics, so use it when the user asks for problems, issues, or improvements, or asks "are we sure?".
+The roles are `how explorer`, `how explainer`, and `how critics` in `pstack-models.json`.
+
+### Explain
+
+1. Restate the question and its scope. If it is ambiguous, state your best-guess reading and go on without asking.
+2. Size it. One module, a small utility, or one function is simple. A subsystem across files or services, a cross-cutting feature, or a full architectural overview is complex. When unsure, treat it as simple and add explorers later if the explainer gets stuck.
+3. For a simple question, spawn one explainer from `references/explainer-prompt.md` with no explorer findings, then go to step 6.
+4. For a complex question, split it into 2 to 4 angles that do not overlap, and spawn one explorer per angle from `references/explorer-prompt.md`. For "how does the rate limiter work?", the angles might be the data model and state, the request path and enforcement, and the configuration and metrics.
+5. When every explorer has reported, spawn one explainer from `references/explainer-prompt.md` with all their findings.
+6. Present the explainer's output. Edit it lightly for clarity or to add context from the conversation, but do not rewrite it.
+
+### Critique
+
+1. Run Explain in full first.
+2. Spawn one critic per entry in `how critics` from `references/critic-prompt.md`. Fill in the explanation, the file paths it cites, and the full text of `references/critique-rubric.md`.
+3. Judge the findings as the lead instead of merging them. Sort each one into act on, consider, noted, or dismissed.
+   - Act on means an architectural problem worth fixing now.
+   - Consider means a real concern whose cost and benefit are unclear.
+   - Noted means a valid, low-priority observation.
+   - Dismissed means the finding is wrong, misses context, or is a style preference.
+4. Present the explanation first and the verdict below it, so a reader who only wants to understand the system can stop after the explanation.
+
+## Why mode
 
 Code rarely states its own motivation.
 The answer lives in commits, PRs, tickets, docs, chat, and incident records, and you cannot tell in advance which one holds it.
 So search every reachable source, cite every claim, and report empty searches as findings.
 `references/epistemics.md` holds the confidence tiers and phrasing rules. Every investigator and the synthesizer follows it.
 
-## 1. Pin down the target and the question
+### 1. Pin down the target and the question
 
 The target is a piece of code, a pattern, a feature, or a named decision.
 The question is usually one of these kinds: design rationale, a tradeoff against an alternative, the edge case behind defensive code, an outside product or business constraint, why dead-looking code still exists, or the full history of X.
@@ -21,7 +61,7 @@ The question is usually one of these kinds: design rationale, a tradeoff against
 If the target is vague, pick the most likely referent from the conversation (open files, recent edits, what was just discussed).
 State your reading in one line so the user can redirect, then go on.
 
-## 2. Build the code anchor
+### 2. Build the code anchor
 
 Do this inline before you spawn anyone, and pass the result to every child.
 
@@ -35,7 +75,7 @@ gh pr view <number> --json title,body,author,createdAt,mergedAt,labels,closingIs
 
 The anchor lists file paths with line ranges, key symbols, the commits that touched the target, PR numbers, and ticket IDs.
 
-## 3. Map the reachable sources
+### 3. Map the reachable sources
 
 | Category | What only it tends to show | How to reach it |
 |---|---|---|
@@ -57,9 +97,8 @@ Skip a reachable category only when it is provably irrelevant, such as error tra
 A guess that the source "probably has nothing" is not a reason.
 Answer inline only when the target is a single commit whose PR body already answers the question, and say so.
 
-## 4. Spawn one investigator per category
+### 4. Spawn one investigator per category
 
-Read `~/.prime/agent/skills/setup-pstack/references/prime-agent-runtime.md` for how to spawn children, collect their reports, and handle the depth limit.
 Read the "why investigators" and "why synthesizer" roles in `~/.prime/agent/pstack-models.json` before you set `model=`.
 Spawn all investigators from one REPL cell so they run at the same time.
 Give each investigator one category, and never pool sources in one child.
@@ -75,7 +114,7 @@ Each investigator brief holds:
 For other categories, the investigator learns the query vocabulary from the MCP's own tool list.
 If the target looks defensive (null checks, retries, timeouts, rate limits, feature flags, OOM handlers), tell every investigator to look for incident history in its source.
 
-## 5. Synthesize and present
+### 5. Synthesize and present
 
 Spawn one synthesizer with `references/synthesizer-prompt.md`, filled in with all investigator reports, the skipped categories and their reasons, the code anchor, and the question.
 The synthesizer may read code and call MCP tools to spot-check citations.
