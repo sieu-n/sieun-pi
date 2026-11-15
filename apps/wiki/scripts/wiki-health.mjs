@@ -608,9 +608,12 @@ function commitNames(repo, revs) {
  * carried it. A retired or experiment page keeps what held when it was written. A commit is carried by land `i` when it is an ancestor
  * of the newest tip of some branch that lands up to `i` name, which `git rev-list --count <sha> --not <tips>` reads as 0, and dev
  * branches never rebase, so that holds from the first such land on and a bisection finds it. A line about prod counts once `main`
- * holds that land, because a promote moves main to a staging land.
+ * holds that land, because a promote moves main to a staging land, and its `since` is when main got the land: the push from
+ * `readPushes` (mainPushes) that brought it, else the later of the land and the page's check, since a page checked after the land
+ * and before the promote was right. On 2026-11-15 the 04:58Z run counted apps/crawler-v3/platforms/meta-ads/store-and-api.html at
+ * once, dated by its 23:55Z staging land, though main got that land at 04:53Z, after the page's 04:08Z check.
  */
-export function landedClaims(pages, repo, lands = stagingLands(repo), main = 'origin/main') {
+export function landedClaims(pages, repo, lands = stagingLands(repo), main = 'origin/main', readPushes = () => []) {
 	const found = [];
 	for (const page of pages) {
 		const meta = page.meta ?? {};
@@ -650,13 +653,51 @@ export function landedClaims(pages, repo, lands = stagingLands(repo), main = 'or
 		if (!onMain.has(land.commit)) onMain.set(land.commit, spawnSync('git', ['merge-base', '--is-ancestor', land.commit, main], { cwd: repo }).status === 0);
 		return onMain.get(land.commit);
 	};
+	let pushes;
+	const reachedMain = new Map();
+	const promotedAt = (land) => {
+		if (!reachedMain.has(land.commit)) {
+			pushes ??= readPushes();
+			const holds = (rev) => spawnSync('git', ['merge-base', '--is-ancestor', land.commit, rev], { cwd: repo }).status === 0;
+			const push = pushes.find((p) => holds(p.after));
+			reachedMain.set(land.commit, push && !holds(push.before) ? new Date(push.at).toISOString() : null);
+		}
+		return reachedMain.get(land.commit);
+	};
+	const turnedFalse = (land, page) => {
+		const checked = Date.parse(page.meta?.last_verified ?? '');
+		return promotedAt(land) ?? new Date(Math.max(Date.parse(land.at), Number.isFinite(checked) ? checked : 0)).toISOString();
+	};
 	const out = [];
 	for (const { page, line, sha, stage } of found) {
 		const land = full.has(sha) ? landOf(full.get(sha)) : null;
 		if (land && (stage !== 'prod' || promoted(land)) && !out.some((o) => o.path === page.path && o.full === full.get(sha) && o.line === line))
-			out.push({ path: page.path, title: page.title, lastVerified: page.meta?.last_verified, sha, full: full.get(sha), line, stage, land });
+			out.push({
+				path: page.path,
+				title: page.title,
+				lastVerified: page.meta?.last_verified,
+				sha,
+				full: full.get(sha),
+				line,
+				stage,
+				land,
+				...(stage === 'prod' ? { since: turnedFalse(land, page) } : {}),
+			});
 	}
 	return out;
+}
+
+/**
+ * The pushes to `main` that GitHub's activity API lists for `repo`'s origin, oldest first, as `{ at, before, after }`. A promote
+ * fast-forwards main to a staging land, so no commit date says when prod got a land: land 6b03e1ab5a is dated 04:12:46Z on 2026-11-15,
+ * and main got it at 04:53:24Z. One call of up to 100 pushes took 0.7 s on 2026-11-15 and reached back to 2026-06-09.
+ */
+export function mainPushes(repo) {
+	const origin = String(run('git', ['remote', 'get-url', 'origin'], { cwd: repo })).trim();
+	const slug = /github\.com[:/](.+?)(?:\.git)?$/.exec(origin)?.[1];
+	if (!slug) throw new Error(`origin ${origin} is no GitHub repo`);
+	const rows = JSON.parse(String(run('gh', ['api', `repos/${slug}/activity?ref=refs/heads/main&activity_type=push&per_page=100`])));
+	return rows.map((row) => ({ at: row.timestamp, before: row.before, after: row.after })).reverse();
 }
 
 /** The stale report's ref for a landed claim, which the precheck shows with the minute of the land as `modified`. */
@@ -669,13 +710,13 @@ export function landedRef(claim) {
 }
 
 /**
- * Puts the pages from landedClaims into the engine's stale report, so the precheck counts each in pages_behind_code from the time of its
- * land. On the 2026-11-09 01:19 dream run 6 pages said a commit had not landed on staging after a land carried it, and the engine, which
- * dates refs on HEAD's history, flagged none of them.
+ * Puts the pages from landedClaims into the engine's stale report, so the precheck counts each in pages_behind_code from the time its
+ * line turned false: a staging line at its land, a prod line at the claim's `since`. On the 2026-11-09 01:19 dream run 6 pages said a
+ * commit had not landed on staging after a land carried it, and the engine, which dates refs on HEAD's history, flagged none of them.
  */
 export function addLandedClaims(stale, claims) {
 	for (const claim of claims) {
-		const ref = { ref: landedRef(claim), modified: claim.land.at };
+		const ref = { ref: landedRef(claim), modified: claim.land.at, ...(claim.since ? { since: claim.since } : {}) };
 		const row = stale.stale.find((s) => s.path === claim.path);
 		if (row) {
 			if (!row.staleRefs.some((s) => s.ref === ref.ref)) row.staleRefs.push(ref);
@@ -883,7 +924,15 @@ async function measure(args, root, rel) {
 		errors.push(`code refs: ${error.message}`);
 	}
 	try {
-		addLandedClaims(stale, landedClaims(pages, REPO));
+		const readPushes = () => {
+			try {
+				return mainPushes(REPO);
+			} catch (error) {
+				errors.push(`main pushes: ${error.message}`);
+				return [];
+			}
+		};
+		addLandedClaims(stale, landedClaims(pages, REPO, stagingLands(REPO), 'origin/main', readPushes));
 	} catch (error) {
 		errors.push(`landed claims: ${error.message}`);
 	}

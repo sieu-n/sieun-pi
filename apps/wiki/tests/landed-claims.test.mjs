@@ -172,3 +172,56 @@ test('a claim counts once a staging land names a dev tip that holds the commit, 
 	});
 	assert.equal(landedRef(claims[1]), stale.stale[0].staleRefs[1].ref);
 });
+
+// 2026-11-15: the 04:58Z d4 run counted apps/crawler-v3/platforms/meta-ads/store-and-api.html at once. Its 04:08Z line said staging land
+// aa56e2f2ee had not reached prod, main got that land at 04:53:24Z with the promote of land 6b03e1ab5a (04:12:46Z), and the claim was
+// dated by the 23:55Z staging land, so the page had no window to follow the promote.
+test('a prod claim turns false when main gets its land, so a page checked before the promote gets the follow window', (t) => {
+	const dir = mkdtempSync(path.join(tmpdir(), 'landed-claims-'));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const env = fixtureGitEnv(dir);
+	const git = (...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd: dir, env, encoding: 'utf8' }).trim();
+	git('init', '-q', '-b', 'dev/sieun');
+	assertFixtureRepo(dir, env);
+	const commit = (message, when) => {
+		execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', message], {
+			cwd: dir,
+			env: { ...env, GIT_COMMITTER_DATE: when, GIT_AUTHOR_DATE: when },
+		});
+		return git('rev-parse', 'HEAD');
+	};
+	const fix = commit('fix', '2026-11-14T23:30:00Z');
+	const later = commit('later', '2026-11-15T04:00:00Z');
+	git('checkout', '-q', '--orphan', 'staging');
+	const root = commit('staging root', '2026-11-14T00:00:00Z');
+	const land = commit(`land: dev/sieun ${fix.slice(0, 9)}`, '2026-11-14T23:55:14Z');
+	const promote = commit(`land: dev/sieun ${later.slice(0, 9)}`, '2026-11-15T04:12:46Z');
+	git('branch', 'main', promote);
+	git('checkout', '-q', 'dev/sieun');
+
+	const line = `<li>Staging land <code>${land.slice(0, 10)}</code> carried <code>${fix.slice(0, 10)}</code> at 23:55Z on 2026-11-14, and at 04:08Z on 2026-11-15 that land had not reached prod.</li>`;
+	const pages = [{ path: 'apps/meta-ads.html', title: 'Store and API', meta: { last_verified: '2026-11-15T04:08Z' }, html: `<ol>${line}</ol>` }];
+	const lands = stagingLands(dir, 'staging');
+	const pushes = [
+		{ at: '2026-11-13T12:08:08Z', before: '0000000000000000000000000000000000000000', after: root },
+		{ at: '2026-11-15T04:53:24Z', before: root, after: promote },
+	];
+	const claims = landedClaims(pages, dir, lands, 'main', () => pushes);
+	assert.deepEqual(
+		claims.map((x) => [x.stage, x.land.commit, x.since]),
+		[['prod', land, '2026-11-15T04:53:24.000Z']],
+	);
+	const ref = addLandedClaims({ count: 0, stale: [] }, claims).stale[0].staleRefs[0];
+	assert.equal(ref.since, '2026-11-15T04:53:24.000Z', 'the page fell behind when main got the land, not at the staging land');
+	assert.equal(ref.modified, '2026-11-14T23:55:14.000Z');
+
+	const unread = landedClaims(pages, dir, lands, 'main', () => []);
+	assert.equal(unread[0].since, '2026-11-15T04:08:00.000Z', 'with no push read, a page checked after the land is dated from its check');
+	const known = landedClaims(pages, dir, lands, 'main', () => pushes.slice(1).map((p) => ({ ...p, before: promote })));
+	assert.equal(known[0].since, '2026-11-15T04:08:00.000Z', 'a push that found main already holding the land does not date it');
+
+	const staging = `<li>At 04:08Z on 2026-11-15 <code>${fix.slice(0, 10)}</code> was not on staging yet.</li>`;
+	const wrong = landedClaims([{ path: 'apps/s.html', meta: { last_verified: '2026-11-15T04:08Z' }, html: staging }], dir, lands, 'main', () => pushes);
+	assert.equal(wrong[0].since, undefined, 'a staging line checked after its land was wrong at the check and counts from the land');
+	assert.deepEqual(addLandedClaims({ count: 0, stale: [] }, wrong).stale[0].staleRefs[0].modified, '2026-11-14T23:55:14.000Z');
+});
