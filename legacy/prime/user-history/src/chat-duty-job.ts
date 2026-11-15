@@ -84,11 +84,11 @@ export interface DutyJobHost {
    */
   cut?(job: DutyJobRef): Promise<DutyCut | null>;
   /**
-   * Continues a job the runner kept for its pi-pool slot (`DutyCut.slotAt`) with "continue", once pi-pool admits its tree: true when the job
+   * Continues a job the runner kept for its pi-pool slot (`DutyCut.slotAt`) with `words`, once pi-pool admits its tree: true when the job
    * is listed and not archived (one that works again, continued by the job sweep's pass, gets no second message), false when it is gone or
    * archived. A host without it (test fakes) keeps no cut job, and every cut run reruns with a new job.
    */
-  resume?(job: DutyJobRef): Promise<boolean>;
+  resume?(job: DutyJobRef, words: string): Promise<boolean>;
   /**
    * Why a later run must keep the job up for now, or null: the job waits in pi-pool for its slot (the chat's revive continues it then), its
    * tree waits in pi-pool's turn queue (`turnQueueWait`), or the daemon holds a scheduled job for it, such as the quota-resume of a session
@@ -659,10 +659,10 @@ export function dutyJobHost(input: { threads: DutyJobThreads; archives: { add(jo
       const file = await input.sessionFile?.(job.id);
       return file ? readJobCut(file) : null;
     },
-    async resume(job) {
+    async resume(job, words) {
       const found = await row(job.id);
       if (!found || found.archived) return false;
-      if (!found.working) await input.threads.prompt(job.id, { message: "continue", images: [], mode: "steer" });
+      if (!found.working) await input.threads.prompt(job.id, { message: words, images: [], mode: "steer" });
       return true;
     },
     async kept(job, reported = false) {

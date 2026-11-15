@@ -19,6 +19,8 @@ const HARNESS = "01a1164b-4a2d-742d-b27a-82f086ed0200";
 const MIN = 60_000;
 const slotError = (slot: string, minutes: number) => `Failed to resolve API key for provider "anthropic" from shell command: /home/sieun/.config/pi-pool/bin/pi-pool-token ` +
   `pi-pool: this session waits for its slot at ${slot}. Try again in ${minutes} minutes.`;
+/** Each prompt's first line: a continue opens with "continue" and then says how old the brief's findings are. */
+const firstLines = (prompts: readonly [string, string][]) => prompts.map(([id, text]) => [id, text.split("\n")[0]]);
 const REFUSAL = "Model refused to respond (refusal): cyber: This request triggered restrictions on violative cyber content.";
 const CHECK_IN_MISS = { goal_gaps: { value: 1, target: 0, op: "<=" as const, met: false }, stuck_steps: { value: 0, target: 0, op: "<=" as const, met: true },
   no_done_line: { value: 0, target: 0, op: "<=" as const, met: true }, plan_risks: { value: 0, target: 0, op: "<=" as const, met: true } };
@@ -104,7 +106,7 @@ test("check-in 01a1521d, cut by a pool wait at its first reply, records the cut 
 
     clock.now = Date.parse("2026-10-19T03:42:10.000Z");
     await run.duties.tick();
-    assert.deepEqual(run.prompts, [[job.id, "continue"]], "the kept job continues at the first tick pi-pool admits its tree");
+    assert.deepEqual(firstLines(run.prompts), [[job.id, "continue"]], "the kept job continues at the first tick pi-pool admits its tree");
     assert.deepEqual(run.reruns, [], "no rerun replaces it");
     assert.equal((await store.runs(TWITCH))[0]!.cut, undefined, "the continued job's run reads as working again");
     run.rows.get(job.id)!.working = true;
@@ -199,9 +201,9 @@ writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { wiki_problems
     clock.now = Date.parse("2026-11-09T10:17:17.013Z");
     await duties.tick();
     await duties.settled();
-    assert.deepEqual(prompts, [[job.id, "continue"]], "the same job continues once pi-pool admits its tree");
+    assert.deepEqual(firstLines(prompts), [[job.id, "continue"]], "the same job continues once pi-pool admits its tree");
     assert.deepEqual(created, [], "no new job replaces it");
-    assert.equal(existsSync(count), false, "no rerun measures first");
+    assert.equal((await readFile(count, "utf8")).length, 1, "the precheck runs again for the continue");
     const runs = await store.runs(HARNESS);
     assert.equal(runs.length, 1, "no rerun run");
     assert.equal(runs[0]!.cut, undefined, "the run reads as working again");
@@ -221,9 +223,53 @@ writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { wiki_problems
     await duties.settled();
     const [ended] = await store.runs(HARNESS);
     assert.equal(ended!.after?.verdict, "met", "the continued job's run gets its after-job measure");
-    assert.equal((await readFile(count, "utf8")).length, 1, "measured once, after the job");
+    assert.equal((await readFile(count, "utf8")).length, 2, "measured again after the job");
     assert.equal(rows.get(job.id)!.archived, true, "and the job is archived once it ended");
     assert.equal((await store.list(HARNESS))[0]!.lastRunAt, lastSlotAt, "the schedule stays where it was");
+    duties.close();
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a fixes-reach-prod job kept 11 h for its slot continues on a precheck run again at the continue, so main's promote in between leaves no stale sha (d4 of Prospect feature bro, 11-15 09:26Z)", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "duty-cut-reach-"));
+  try {
+    const precheck = join(dir, "precheck.mjs");
+    await writeFile(precheck, `import { writeFileSync } from "node:fs";
+writeFileSync(process.env.OUTPUT_FILE, JSON.stringify({ metrics: { failed_promotes_24h: 0 }, flagged: [
+  { at: 0, kind: "oldest_fix", item: "6df678ce83c3045bfdd48a749b235e07ed0304f3", excerpt: "6df678ce83 landed on staging 2026-11-15T04:39Z, 4.9 h ago, and main lacks it" },
+  { at: 0, kind: "promotable", item: "1b224198cbb970cb9a64fbb56107381aab9543cb", excerpt: "promotable: 1b224198cb is the newest promotable staging sha" }] }));`);
+    const store = new DutyStore(dir);
+    const at = Date.parse("2026-11-14T22:25:26.555Z");
+    const duty: Duty = { id: "d4", name: "Fixes reach prod", ownerWords: "push like this", goal: "fixes reach prod",
+      metrics: [{ key: "failed_promotes_24h", label: "Failed promotes", op: "<=", target: 0, headline: true }], schedule: { kind: "daily", at: "07:25" },
+      precheck: { command: ["node", precheck], cwd: dir, timeoutMs: 30_000 }, onMiss: "tell the release owner", status: "active", createdAt: at - 30 * 24 * 60 * MIN,
+      updatedAt: at - 30 * 24 * 60 * MIN, runCount: 40, lastSlotAt: dailySlot("07:25", Date.parse("2026-11-15T09:26:12.020Z")), lastRunAt: at };
+    await store.update(PROSPECT, duties => { duties.push(duty); });
+    const job = { id: "01a1dc2a-b4c1-700d-b4ee-2a711b3efd89", name: "fixes reach prod Prospect feature bro 11-15 07:25" };
+    await store.appendRun(PROSPECT, { duty: "d4", at, slot: at, trigger: "schedule", ms: 19_000, verdict: "met",
+      metrics: { failed_promotes_24h: { value: 0, target: 0, op: "<=", met: true } }, summary: "failed_promotes_24h 0 (on target)", job });
+    const clock = { now: Date.parse("2026-11-14T23:28:28.457Z") };
+    const { jobs, created, prompts, addJob } = jobHostOverRows(dir);
+    await addJob(job.id, job.name, transcript(job.id, "2026-11-14T22:25:48.542Z", "2026-11-14T23:24:08.920Z", slotError("2026-11-14T23:33:00.000Z", 9), "2026-11-14T23:28:09.797Z"));
+    const duties = new Duties(store, { isChat: async () => true, now: () => clock.now, tickMs: 0, node: process.execPath, log: () => {}, jobs,
+      checkIn: { view: async () => ({ everyMs: 120 * MIN, paused: false }) as CheckInView, set: async () => null, run: async () => {} },
+      poolAdmits: async () => clock.now >= Date.parse("2026-11-15T09:26:12.020Z") });
+    await duties.tick();
+    await duties.settled();
+
+    clock.now = Date.parse("2026-11-15T09:26:12.020Z");
+    await duties.tick();
+    await duties.settled();
+    assert.deepEqual(created, [], "the kept job continues");
+    assert.equal(prompts.length, 1);
+    const [id, words] = prompts[0]!;
+    assert.equal(id, job.id);
+    assert.ok(words.startsWith("continue\n\nYour brief's findings are from 2026-11-14T22:25Z, 11.0 h ago"), words);
+    const file = /Its findings are in (\S+\.flagged\.md)\./.exec(words)?.[1];
+    assert.ok(file, words);
+    const findings = await readFile(file, "utf8");
+    assert.ok(findings.includes("6df678ce83") && findings.includes("1b224198cb"), findings);
+    assert.ok(!findings.includes("7a1377ef7b") && !findings.includes("15059c1de2"), "the shas main took at 05:13Z are not in the findings");
     duties.close();
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
@@ -321,7 +367,7 @@ test("a cut run waits for the slot pi-pool gave its job, though pi-pool reads as
     assert.deepEqual([run.reruns, run.prompts], [[], []], "pi-pool admitting every tree at 14:40:07Z is no slot for this one");
     clock.now = Date.parse("2026-10-19T15:08:04.000Z");
     await run.duties.tick();
-    assert.deepEqual([run.reruns, run.prompts], [[], [[job.id, "continue"]]], "the kept job continues at the first tick after its slot");
+    assert.deepEqual([run.reruns, firstLines(run.prompts)], [[], [[job.id, "continue"]]], "the kept job continues at the first tick after its slot");
     run.duties.close();
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

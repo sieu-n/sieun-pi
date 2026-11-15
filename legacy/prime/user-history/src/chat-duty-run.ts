@@ -648,30 +648,68 @@ export class Duties {
       const part = found.slice(from, from + WAIT_READ_TREES);
       const open = await Promise.all(part.map(admitted));
       for (const [index, { chatId, run, cut }] of part.entries()) {
-        if (!open[index] || await this.resumeKept(chatId, run, cut)) continue;
-        this.reran.add(`${chatId}/${run.duty}@${run.at}`);
-        this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: pi-pool admits the tree of ${run.job.name}, so its cut run of ${new Date(run.at).toISOString()} reruns`);
-        if (run.duty !== CHECK_IN_DUTY_ID) this.start(chatId, run.duty, "rerun", null, run.at);
-        else void this.host.checkIn?.run(chatId, "rerun", run.at).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: rerun: ${message(error)}`));
+        if (!open[index]) continue;
+        if (cut.slotAt !== undefined && this.host.jobs.resume) this.continueKept(chatId, run);
+        else this.rerun(chatId, run);
       }
     }
   }
 
+  private rerun(chatId: string, run: DutyRunRecord & { job: DutyJobRef }): void {
+    this.reran.add(`${chatId}/${run.duty}@${run.at}`);
+    this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: pi-pool admits the tree of ${run.job.name}, so its cut run of ${new Date(run.at).toISOString()} reruns`);
+    if (run.duty !== CHECK_IN_DUTY_ID) this.start(chatId, run.duty, "rerun", null, run.at);
+    else void this.host.checkIn?.run(chatId, "rerun", run.at).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: rerun: ${message(error)}`));
+  }
+
   /**
-   * Continues the job `endJob` kept for its pi-pool slot, once pi-pool admits its tree, so the job takes the slot pi-pool gave it with its
-   * own brief and the run reads as working again (its cut cleared). False when the cut names no slot or the job is gone or archived, such as
-   * one an older release archived: that run reruns with a new job.
+   * Continues the job `endJob` kept for its pi-pool slot, once pi-pool admits its tree, so the job takes the slot pi-pool gave it and the run
+   * reads as working again (its cut cleared). Its brief's precheck is as old as the wait, so a standing duty's precheck runs again first, as an
+   * after-mode measure that keeps no state, and the continue names its findings (`continueWords`). On 11-15 d4's job "fixes reach prod
+   * Prospect feature bro 11-15 07:25" got its brief at 22:25Z on 11-14, was kept for its slot, and continued at 09:26Z on 11-15 on that
+   * brief, so it told the release owner staging 15059c1de2 was promotable and fix 7a1377ef7b had waited 33.8 h, though promote 31 had moved
+   * main past both at 05:13Z. It goes beside the scan like an after-job measure (`afters`), so a run of the duty waits for it. A job that is
+   * gone or archived, such as one an older release archived, gets no continue, and its run reruns with a new job.
    */
-  private async resumeKept(chatId: string, run: DutyRunRecord & { job: DutyJobRef }, cut: DutyCut): Promise<boolean> {
-    const resume = this.host.jobs.resume;
-    if (cut.slotAt === undefined || !resume) return false;
-    const resumed = await resume.call(this.host.jobs, run.job).catch(error => { this.log(`duty job ${run.job.name}: continue: ${message(error)}`); return false; });
-    if (!resumed) return false;
-    await this.store.updateRun(chatId, run.duty, run.at, record => { delete record.cut; });
-    this.cuts.delete(run.job.id);
-    this.stopped.delete(run.job.id);
-    this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: pi-pool admits the tree of ${run.job.name}, so the job continues at its slot`);
-    return true;
+  private continueKept(chatId: string, run: DutyRunRecord & { job: DutyJobRef }): void {
+    const key = `${chatId}/${run.duty}`;
+    const resume = this.host.jobs.resume!;
+    const task = (async () => {
+      const words = await this.continueWords(chatId, run);
+      const resumed = await resume.call(this.host.jobs, run.job, words).catch(error => { this.log(`duty job ${run.job.name}: continue: ${message(error)}`); return false; });
+      this.afters.delete(key);
+      if (!resumed) { this.rerun(chatId, run); return; }
+      await this.store.updateRun(chatId, run.duty, run.at, record => { delete record.cut; });
+      this.cuts.delete(run.job.id);
+      this.stopped.delete(run.job.id);
+      this.log(`duty ${chatId.slice(0, 8)}/${run.duty}: pi-pool admits the tree of ${run.job.name}, so the job continues at its slot`);
+    })()
+      .catch(error => this.log(`duty job ${run.job.name}: continue at its slot: ${message(error)}`))
+      .finally(() => { this.afters.delete(key); this.ending.delete(task); });
+    this.afters.set(key, task);
+    this.ending.add(task);
+  }
+
+  /** The continue of a kept job: how old its brief's findings are, and a standing duty's findings from a precheck run again now. */
+  private async continueWords(chatId: string, run: DutyRunRecord & { job: DutyJobRef }): Promise<string> {
+    const at = this.now();
+    const old = `continue\n\nYour brief's findings are from ${new Date(run.at).toISOString().slice(0, 16)}Z, ${((at - run.at) / 3_600_000).toFixed(1)} h ago, so they may be out of date.`;
+    const duty = run.duty === CHECK_IN_DUTY_ID ? undefined : (await this.store.list(chatId)).find(entry => entry.id === run.duty);
+    if (!duty) return `${old} Read the live state behind each item before you act on it or message anyone about it.`;
+    try {
+      const dir = this.store.chatDir(chatId);
+      const name = `${run.duty}-${runStamp(at)}-continue`;
+      const lastRuns = (await this.store.runs(chatId)).filter(entry => entry.duty === run.duty && entry.verdict !== "skipped").slice(0, 10);
+      const output = await this.precheck(duty, dir, join(dir, `${name}.json`), lastRuns, "after");
+      const judged = judge(duty.metrics, output, { now: at, runs: lastRuns });
+      const file = await this.writeDetail(chatId, name, [`# ${duty.name} precheck of ${new Date(at).toISOString()}, run again for the continue of ${run.job.name}`,
+        `Measured against the targets: ${judged.summary}.`, `The full precheck output is ${join(dir, `${name}.json`)}.`, flaggedSection(output.flagged ?? [])]);
+      return `${old} The server ran the precheck again now: ${judged.summary}. Its findings are in ${file}. Work only from those findings: drop each item of ` +
+        "your brief they no longer flag, and message nobody about it.";
+    } catch (error) {
+      return `${old} Running the precheck again failed (${message(error).slice(0, 300)}), so read the live state behind each item before you act on it or ` +
+        "message anyone about it.";
+    }
   }
 
   /**
@@ -1187,7 +1225,7 @@ export class Duties {
     const reported = await this.reported(chatId, last);
     // A check-in's items go to the chat, since its job takes no message until its slot (`handToChat`).
     // A cut run's rerun replaces the cut job, since the runner archived that job when it read the cut (`endJob`), or found it archived or gone
-    // when pi-pool admitted its tree (`resumeKept`).
+    // when pi-pool admitted its tree (`continueKept`).
     if (!reported && this.now() - started.at <= STUCK_MAX_MS && !runs.some(run => run.rerunOf === started.at) &&
       await this.inPoolLine(last, started.cut !== undefined)) {
       return { skipped: `${STILL_WORKING} (job ${last.name} ${IN_POOL_LINE})`, held: { job: last, why: IN_POOL_LINE },
