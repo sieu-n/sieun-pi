@@ -26,7 +26,8 @@ import { macAway, macSilent } from "./mac-reach.ts";
  *   per load; an Aside tab can take the app's assets from Aside's cache, so each load says how many it did.
  * - `mac_chat_reply_extra_rtt`: a scratch thread on the Mac's daemon, made and archived here, gets up to `SENDS` no-op prompts through the
  *   chat service, the path the page uses. The first rides on the create call and is timed from before that POST; it waits on the Mac's
- *   worker start too, so it is listed and left out of the value, which is the median of the follow-ups. Those go only when the first turn
+ *   worker start too, so it is listed and left out of the value, which is the median of the follow-ups, or the create send's own
+ *   reading as their upper bound when none went. Those go only when the first turn
  *   ended without pi-pool's retry, since a new thread can wait 15 min and more for its slot (10-19 15:17Z). Per send, the extra wait is the
  *   time from the send to the first reply frame on the box, less the Mac's own time from its user entry to its reply entry in the session
  *   file, in Mac-to-box round trips (ping from the Mac). The reply is "ok", so the Mac's reply entry lands a few ms after its first token.
@@ -151,12 +152,13 @@ export function poolSlotAt(message: { errorMessage?: unknown; diagnostics?: unkn
  * Extra round trips per send: the box's wait from the send to the first reply frame, less the Mac's own wait from its user entry to its reply
  * entry, over the round trip. A reply that is an error, such as pi-pool's slot wait, still crossed the same path, so it is timed and listed;
  * a send whose entries are missing is listed and left out. The create send is listed and left out of the median, since its wait holds the
- * Mac's worker start, which a message to a chat that runs never has.
+ * Mac's worker start, which a message to a chat that runs never has; with no follow-up timed it is the value, as their upper bound.
  */
 export function replyExtra(sends: readonly SendTiming[], macSession: string, rttMs: number, at: number): Reading {
   const reading: Reading = { flagged: [] };
   const entries = macSession.split("\n").filter(line => line.startsWith("{")).map(line => JSON.parse(line) as SessionEntry).filter(entry => entry.type === "message");
   const counts: number[] = [];
+  let createCount: number | undefined;
   for (const send of sends) {
     const user = entries.findIndex(entry => entry.message?.role === "user" && JSON.stringify(entry.message.content).includes(send.marker));
     const reply = user < 0 ? undefined : entries.slice(user + 1).find(entry => entry.message?.role === "assistant");
@@ -169,10 +171,16 @@ export function replyExtra(sends: readonly SendTiming[], macSession: string, rtt
     const seen = send.firstTokenAt - send.sentAt;
     const extra = seen - own;
     if (!send.create) counts.push(extra / rttMs);
+    else createCount = extra / rttMs;
     reading.flagged.push({ at, kind: send.create ? "reply_new_thread" : "reply", excerpt: `${send.marker}: first reply frame on the box ${seen} ms after the send, the Mac's own turn ${own} ms, extra ${extra} ms = ` +
       `${(extra / rttMs).toFixed(2)} round trips of ${Math.round(rttMs)} ms` });
   }
-  const value = median(counts);
+  // A pool slot past the probe's bound leaves only the create send, as in 4 of 4 runs from 11-12 19:36 to 11-15 07:06 (1.37 to 1.62 round
+  // trips each). It also holds the Mac's worker start, so it reads at or above its follow-ups (10-27 to 11-09: create 0.97 to 3.68 against
+  // follow-up medians of 0.9 to 1.8), and it stands in as their upper bound instead of leaving the metric unread.
+  const createOnly = counts.length === 0 ? createCount : undefined;
+  if (createOnly !== undefined) reading.flagged.push({ at, kind: "reply_create_only", excerpt: `no follow-up was timed, so the new-thread send's ${createOnly.toFixed(2)} round trips, which hold the Mac's worker start too, stand in as the upper bound` });
+  const value = median(counts) ?? createOnly;
   if (value !== undefined) reading.value = Math.round(value * 10) / 10;
   return reading;
 }

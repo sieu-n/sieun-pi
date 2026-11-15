@@ -234,6 +234,14 @@ test("the create send is timed from before its POST, listed as a new thread and 
   assert.deepEqual(reading.flagged.map(item => item.kind), ["reply_new_thread", "reply"]);
 });
 
+test("with no follow-up timed, the create send's reading is the value as their upper bound (11-15 07:06 slot wait)", () => {
+  const said = { stopReason: "error", errorMessage: "pi-pool: this session waits for its slot at 2026-11-14T23:10:30.000Z. Try again in 1 minute." };
+  const session = [entry("user", "2026-11-14T22:06:30.000Z", "chat page probe 704e. Reply with exactly: ok"), entry("assistant", "2026-11-14T22:06:31.309Z", "", said)].join("\n");
+  const reading = replyExtra([{ marker: "chat page probe 704e.", sentAt: 1_000, firstTokenAt: 1_000 + 1_602, create: true }], session, 194, at);
+  assert.equal(reading.value, 1.5);
+  assert.deepEqual(reading.flagged.map(item => item.kind), ["reply_pool_wait", "reply_new_thread", "reply_create_only"]);
+});
+
 /** A fake chat service: `script` sends the first turn's frames; each follow-up prompt gets a user message, an "ok" reply and agent_end. */
 async function fakeService(t: { after: (fn: () => unknown) => void }, script: (frame: (type: string, message?: Record<string, unknown>) => void, snapshot: (messages: Record<string, unknown>[]) => void) => void) {
   const posts: string[] = [];
