@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Block one scraper client on virev.ai: add a group to the scraper-blocklist rule in auto-sns-agent's apps/search/firewall.json,
+"""Block one scraper client on virev.ai: add a group to the scraper-blocklist rule (deny) in auto-sns-agent's apps/search/firewall.json,
+or to scraper-challenge (challenge) when it is a no-referer home-proxy fleet a person's plain visit can also match (verdict below),
 publish it with `node scripts/repo/vercel/firewall.mjs apply`, and commit the file with commit.mjs on the checkout's dev branch.
 
 Usage, from any directory:
@@ -19,7 +20,18 @@ import argparse, datetime, json, os, subprocess, sys
 
 REPO = "/home/sieun/Documents/Github/auto-sns-agent"
 FILE = "apps/search/firewall.json"
-RULE = "scraper-blocklist"
+RULES = {"deny": "scraper-blocklist", "challenge": "scraper-challenge"}
+# The scraper-challenge rule as auto-sns-agent d765ee8401 adds it, for a firewall.json from before that commit.
+CHALLENGE_RULE = {
+    "name": "scraper-challenge",
+    "description": "Scraper fleets whose request a real browser can also send on a plain visit: a current or recent desktop browser UA with no "
+    "referer or a bare Google referer. A challenge lets a person through and stops the fleet: of 15,305 IP and UA pairs that public-db-fake-chrome "
+    "challenged on virev.ai from 11-08 to 11-15, 3 ever loaded a public data page. A group with a sign no person sends, such as a bot UA, a "
+    "hosting ASN or a UA no browser ships, stays in scraper-blocklist.",
+    "active": True,
+    "action": {"action": "challenge"},
+    "groups": [],
+}
 
 
 def run(*cmd: str) -> str:
@@ -51,6 +63,27 @@ def flag_group(a: argparse.Namespace) -> list[dict]:
     return group + [{"use": "skip_own_ips"}]
 
 
+def verdict(group: list[dict]) -> str:
+    """challenge for a no-referer group with no network and no Google UA (a home-proxy fleet a person's direct visit can also match, 11-15),
+    deny for the rest: a hosting ASN or IP list, a fake Googlebot from outside Google's network, a bare Google referer (the X11 fleet), a UA."""
+    no_referer = any(c.get("type") == "header" and c.get("key") == "referer" and c.get("op") == "nex" for c in group)
+    network = any(c.get("type") in ("geo_as_number", "ip_address") and not c.get("neg") for c in group)
+    google = any(c.get("type") == "user_agent" and not c.get("neg") and "google" in str(c.get("value")).lower() for c in group)
+    return "challenge" if no_referer and not network and not google else "deny"
+
+
+def place(firewall: dict, groups: list[list[dict]], label: str, today: str) -> dict:
+    """A copy of firewall with each group added to the rule its verdict names; adds scraper-challenge after scraper-blocklist if missing."""
+    out = json.loads(json.dumps(firewall))
+    names = [r["name"] for r in out["rules"]]
+    if RULES["challenge"] not in names and any(verdict(g) == "challenge" for g in groups):
+        out["rules"].insert(names.index(RULES["deny"]) + 1, json.loads(json.dumps(CHALLENGE_RULE)))
+    for group in groups:
+        rule = next(r for r in out["rules"] if r["name"] == RULES[verdict(group)])
+        rule["groups"].append({"label": label, "added": today, "conditions": group})
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--label", required=True)
@@ -69,18 +102,16 @@ def main() -> None:
         groups = [flag_group(a)]
     else:
         sys.exit("a group needs a UA or a network, or pass --groups-file")
-    print(json.dumps(groups, indent=1))
+    print(json.dumps([{"rule": RULES[verdict(g)], "conditions": g} for g in groups], indent=1))
     if a.dry_run:
         return
     path = os.path.join(REPO, FILE)
-    firewall = json.load(open(path))
-    rule = next(r for r in firewall["rules"] if r["name"] == RULE)
     today = datetime.datetime.now(datetime.UTC).date().isoformat()
-    rule["groups"] += [{"label": a.label, "added": today, "conditions": group} for group in groups]
+    firewall = place(json.load(open(path)), groups, a.label, today)
     with open(path, "w") as f:
         f.write(json.dumps(firewall, indent="\t", ensure_ascii=False) + "\n")
     run("node", "scripts/repo/vercel/firewall.mjs", "apply")
-    run("node", "scripts/repo/agent/commit.mjs", "-m", f"chore(search): the firewall blocks {a.label}", FILE)
+    run("node", "scripts/repo/agent/commit.mjs", "-m", f"chore(search): the firewall {'blocks' if any(verdict(g) == 'deny' for g in groups) else 'challenges'} {a.label}", FILE)
 
 
 if __name__ == "__main__":
