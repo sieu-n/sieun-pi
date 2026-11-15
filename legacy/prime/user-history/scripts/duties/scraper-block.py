@@ -2,6 +2,10 @@
 """Block one scraper client on virev.ai: add a group to the scraper-blocklist rule (deny) in auto-sns-agent's apps/search/firewall.json,
 or to scraper-challenge (challenge) when it is a no-referer home-proxy fleet a person's plain visit can also match (verdict below),
 publish it with `node scripts/repo/vercel/firewall.mjs apply`, and commit the file with commit.mjs on the checkout's dev branch.
+It first runs `firewall.mjs diff` on the unedited file and refuses when the file differs from the live config (drift below), so it never
+publishes a file older than what is live. On 11-15 dev/sieun's file predated staging 6df678ce83, and an apply would have sent 9 groups
+back to deny and brought back scraper-blocklist-2. The token for our own browser comes from FIREWALL_OWN_UA, read from
+apps/ci-specs/.env.staging with dotenvx when the env lacks it.
 
 Usage, from any directory:
   python3 legacy/prime/user-history/scripts/duties/scraper-block.py --label "<who, date, who found it>" \
@@ -32,6 +36,22 @@ CHALLENGE_RULE = {
     "action": {"action": "challenge"},
     "groups": [],
 }
+
+
+def drift(diff_out: str) -> list[str]:
+    """The lines of `firewall.mjs diff` output that say the file and the live config differ: an add, replace, remove or unmanaged rule."""
+    return [line for line in diff_out.splitlines() if line.split(" ", 1)[0] in ("add", "replace", "remove", "unmanaged")]
+
+
+def own_ua() -> str:
+    """FIREWALL_OWN_UA from the env, or from apps/ci-specs/.env.staging through dotenvx; never printed."""
+    if os.environ.get("FIREWALL_OWN_UA"):
+        return os.environ["FIREWALL_OWN_UA"]
+    out = subprocess.run(["npx", "dotenvx", "get", "FIREWALL_OWN_UA", "-f", "apps/ci-specs/.env.staging"], cwd=REPO, capture_output=True, text=True)
+    lines = out.stdout.strip().splitlines()
+    if out.returncode != 0 or not lines:
+        sys.exit("could not read FIREWALL_OWN_UA from apps/ci-specs/.env.staging")
+    return lines[-1]
 
 
 def run(*cmd: str) -> str:
@@ -105,6 +125,10 @@ def main() -> None:
     print(json.dumps([{"rule": RULES[verdict(g)], "conditions": g} for g in groups], indent=1))
     if a.dry_run:
         return
+    os.environ["FIREWALL_OWN_UA"] = own_ua()
+    stale = drift(run("node", "scripts/repo/vercel/firewall.mjs", "diff"))
+    if stale:
+        sys.exit("\n".join(stale) + f"\nThe checkout's {FILE} differs from the live config, so take in staging (or commit the live state) first.")
     path = os.path.join(REPO, FILE)
     today = datetime.datetime.now(datetime.UTC).date().isoformat()
     firewall = place(json.load(open(path)), groups, a.label, today)

@@ -38,5 +38,13 @@ class Placement(unittest.TestCase):
         self.assertEqual(out["rules"][1]["groups"], [{"label": "weekly", "added": "2026-11-15", "conditions": HOME_FLEET}])
 
 
+class Drift(unittest.TestCase):
+    def test_a_file_that_differs_from_live_is_refused(self):
+        """11-15: dev/sieun's firewall.json predated staging 6df678ce83, so an apply would have reverted the live rules."""
+        stale = "same      public-db-bot-ua\nreplace   scraper-blocklist\nunmanaged scraper-challenge (live, not in the file, left alone)\nno changes\n"
+        self.assertEqual(sb.drift(stale), ["replace   scraper-blocklist", "unmanaged scraper-challenge (live, not in the file, left alone)"])
+        self.assertEqual(sb.drift("same      public-db-bot-ua\nsame      scraper-blocklist\nno changes\n"), [])
+
+
 if __name__ == "__main__":
     unittest.main()
