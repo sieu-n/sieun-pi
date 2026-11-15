@@ -7,6 +7,7 @@ import { ChatLabels } from "../../src/chat-labels.ts";
 import { DutyStore } from "../../src/chat-duty-store.ts";
 import { chatPoolPriority } from "../../src/chat-pool-priority.ts";
 import { morningTime, upsertDuty } from "../../src/shared/chat-duties.ts";
+import { liveFolder } from "../../src/chat-duty-job.ts";
 import { appsChatDuties, dutiesCall } from "./apps-chat.ts";
 
 /**
@@ -14,7 +15,9 @@ import { appsChatDuties, dutiesCall } from "./apps-chat.ts";
  * chat's duty with the same name and keeps its run state, so running it twice changes nothing. The server picks it up at its next 30 s tick.
  * A relative `precheck.cwd` is resolved against the duty file's folder, so a checked-in duty names no home path. A relative duty file is
  * read from the shell's `$PWD` when that names the same file, so a duty added from inside `~/.local/share/sieun-pi-chat/current` keeps
- * `current` in its cwd instead of the release folder it pointed at, which a later release prunes. An absolute duty path is kept as given.
+ * `current` in its cwd instead of the release folder it pointed at, which a later release prunes. A cwd that still names a release folder, from an
+ * absolute duty path or a shell that cd'd into the release itself, is stored through `current` (`liveFolder`): on 11-13 a job cd'd into the
+ * realpath of current, so d3 kept release-0c9370a and its 06:01 run on 11-15 failed with spawn /bin/sh ENOENT after the prune.
  * Name a duty by the system it looks after, in two to four plain words, like "Chat system", never "<something> health" (c38). Mark one headline
  * metric (`"headline": true`) and keep up to 3 supporting ones; a duty with more is saved, and its verdict counts every metric while its run
  * summary and card ask the chat to rework it (`shapeNote`).
@@ -41,7 +44,7 @@ if (!chatId || !file) {
 }
 const definition: unknown = JSON.parse(await readFile(file, "utf8"));
 const precheck = (definition as { precheck?: { cwd?: unknown } }).precheck;
-if (typeof precheck?.cwd === "string") precheck.cwd = resolve(dirname(shellPath(file)), precheck.cwd);
+if (typeof precheck?.cwd === "string") precheck.cwd = liveFolder(resolve(dirname(shellPath(file)), precheck.cwd));
 const missing = typeof precheck?.cwd === "string" ? precheckMisses(precheck.cwd, (precheck as { command?: unknown }).command) : [];
 if (missing.length) {
   process.stderr.write(`refused ${file}: precheck ${missing.join(", ")} not found from ${precheck!.cwd}\n`);

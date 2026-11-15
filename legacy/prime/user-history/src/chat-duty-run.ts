@@ -2,7 +2,7 @@ import { copyFile, mkdir, readdir, readFile, rename, rm, writeFile } from "node:
 import { hostExecFile } from "./spawn-host.ts";
 import { HANDED_OVER_REASON } from "./daemon-worker-start.ts";
 import { basename, join } from "node:path";
-import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName, heldForPool, inTurnQueue } from "./chat-duty-job.ts";
+import { type DutyJobHost, dutyJobBrief, type DutyJobInput, dutyJobName, heldForPool, inTurnQueue, liveFolder } from "./chat-duty-job.ts";
 import { type CheckInActor, CHECK_IN_MS } from "./checkin-settings.ts";
 import type { DutyStore } from "./chat-duty-store.ts";
 import { POOL_LEAD_MS, type PoolHold, pooledProviders } from "./chat-pool.ts";
@@ -1705,7 +1705,7 @@ export class Duties {
     try {
       await new Promise<void>((resolve, reject) => {
         hostExecFile("/bin/sh", ["-c", 'exec "$0" "$@" </dev/null >/dev/null 2>"$PRECHECK_STDERR_FILE"', file, ...args],
-          { cwd: duty.precheck.cwd, env: { ...process.env, ...env, PRECHECK_STDERR_FILE: stderrFile }, timeout: hardStopMs, killSignal: "SIGKILL" }, error => {
+          { cwd: liveFolder(duty.precheck.cwd), env: { ...process.env, ...env, PRECHECK_STDERR_FILE: stderrFile }, timeout: hardStopMs, killSignal: "SIGKILL" }, error => {
             if (!error) { resolve(); return; }
             reject(new Error(error.killed ? `stopped at its hard stop after ${Math.round(hardStopMs / 60_000)} min, its schedule gap (target ${targetS} s)`
               : typeof error.code === "number" || error.signal ? `exit ${typeof error.code === "number" ? error.code : error.signal}` : error.message));

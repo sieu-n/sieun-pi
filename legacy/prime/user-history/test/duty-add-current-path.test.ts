@@ -1,5 +1,6 @@
 // On 10-18 the chat reopen launcher ran add.ts with a relative duty path from inside ~/.local/share/sieun-pi-chat/current, and its d1 got
 // precheck.cwd release-7fdadbf/..., a release folder a later release prunes, because Node resolves a relative path from the physical cwd.
+// On 11-13 a job cd'd into the realpath of current, so d3 kept release-0c9370a and failed with spawn ENOENT on 11-15 after the prune.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { cp, mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
@@ -69,14 +70,17 @@ test("a duty added by a relative path from inside current keeps current in its p
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test("a duty added by an absolute release path keeps that release in its precheck cwd", async () => {
-  const root = await mkdtemp(join(tmpdir(), "duty-add-release-"));
+test("a duty added from inside a release folder, by an absolute path or a shell cd'd into its realpath, stores current in its precheck cwd", async () => {
+  const root = join(await mkdtemp(join(tmpdir(), "duty-add-release-")), "sieun-pi-chat");
   try {
     await release(root, "a");
     await symlink("release-a", join(root, "current"));
     const dataDir = join(root, "data");
     await addFrom(root, join(root, "current"), join(root, "release-a", "duties", "duty.json"), dataDir);
-    const [duty] = await new DutyStore(dataDir).list(CHAT);
-    assert.equal(duty!.precheck.cwd, join(root, "release-a"));
-  } finally { await rm(root, { recursive: true, force: true }); }
+    await addFrom(root, join(root, "release-a"), "duties/duty.json", join(root, "data-cd"));
+    for (const dir of [dataDir, join(root, "data-cd")]) {
+      const [duty] = await new DutyStore(dir).list(CHAT);
+      assert.equal(duty!.precheck.cwd, join(root, "current"));
+    }
+  } finally { await rm(join(root, ".."), { recursive: true, force: true }); }
 });

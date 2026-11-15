@@ -55,7 +55,7 @@ import { primeUpdateRunning } from "./prime-update.ts";
 import { treeWait } from "./duty-tree-wait.ts";
 import { fixLiveReader } from "./shared/duty-fixes.ts";
 import { stalledCalls } from "./shared/stalled-calls.ts";
-import { archiveDutyJob, dutyJobHost, savedChat } from "./chat-duty-job.ts";
+import { archiveDutyJob, dutyJobHost, liveFolder, savedChat } from "./chat-duty-job.ts";
 import { ArchiveQueue } from "./chat-archive-queue.ts";
 import { DutyStore } from "./chat-duty-store.ts";
 import { IdIndex } from "./id-index.ts";
@@ -460,7 +460,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     owners: () => readOwnersFor(grafanaConfig, homedir()), hasBoard: async session => (await boards.read(session)) !== null,
     firingCall: async chatId => {
       const duty = (await duties.store.list(chatId)).find(duty => duty.status === "active" && duty.firingCall);
-      return duty?.firingCall ? { command: duty.firingCall, cwd: duty.precheck.cwd } : null;
+      return duty?.firingCall ? { command: duty.firingCall, cwd: liveFolder(duty.precheck.cwd) } : null;
     },
     threads: { list: async () => threadNames(await piHostRoutes()), send: async (thread, text, requestId) => sendAlert(await piHostRoutes(), thread, text, requestId),
       turn: async (thread, since) => threadTurnSince(await threadEntries(await piHostRoutes(), thread), since, provider => treeFreeAt(`pi-durable:${thread}`, provider), Date.now()) },
