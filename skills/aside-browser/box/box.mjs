@@ -47,6 +47,26 @@ const browser = await chromium.launch(process.platform === "linux" && process.ar
 let closing = false;
 browser.on("disconnected", () => { screen.close(); loopback?.close(); cleanup(); if (!closing) process.exit(1); });
 const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+// A walk that makes its own context, as a clean second user through page.context().browser().newContext(), gets the disk
+// cache on its pages too, before their first request. On 11-14 the home report walks' fresh-user contexts asked staging
+// /api/img again 634 times for pictures the cache already held, 476 of them from 23:00Z to 00:00Z.
+const newContext = browser.newContext.bind(browser);
+browser.newContext = async (options) => {
+  const ctx = await newContext(options);
+  const ready = new WeakMap();
+  const share = (p) => {
+    if (!ready.has(p)) ready.set(p, cacheShared(ctx, p).catch(() => {}));
+    return ready.get(p);
+  };
+  ctx.on("page", share);
+  const newPage = ctx.newPage.bind(ctx);
+  ctx.newPage = async () => {
+    const p = await newPage();
+    await share(p);
+    return p;
+  };
+  return ctx;
+};
 const ids = new WeakMap();
 const cached = new WeakMap();
 let next = 1;

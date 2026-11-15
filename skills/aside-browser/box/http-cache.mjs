@@ -32,6 +32,18 @@ export const RULES = [
 ].map((rule) => ({ ...rule, re: globRe(rule.urlPattern) }));
 const ruleFor = (url) => RULES.find((rule) => rule.re.test(url));
 
+// A busy picture: /api/img answers 202 with no body, no-store and the crawler's Retry-After (30 s on staging), and the tab
+// waits that out before it asks again. A box Chrome that loads the page again inside that wait asks again at once, so the
+// cache keeps a busy answer for its Retry-After and gives it back with the seconds left. On 11-14 from 08:00Z for 24 h box
+// Chromes asked a URL again after its 202 2,475 times, 1,723 of them within 30 s, from pages loaded again inside the wait.
+const BUSY = 202;
+const BUSY_RE = globRe("https://staging.virev.ai/api/img*");
+const retryAfter = (headers) => Number(headers.find((h) => h.name.toLowerCase() === "retry-after")?.value ?? 0) || 0;
+const keepFor = (url, status, headers) => {
+  if (status === 200) return ruleFor(url)?.keep(headers) ?? 0;
+  return status === BUSY && BUSY_RE.test(url) ? retryAfter(headers) : 0;
+};
+
 // Crawler pictures, which a runner started with ASIDE_BOX_IMAGES=0 answers itself with a 204 and no body, the answer
 // /api/img gives for a gone picture, so the app draws its fallback and never retries. Pictures stay on by default,
 // because walk screenshots are visual reviews. From 11-12 00:00Z for 39.2 h box Chromes made 14,454 staging /api/img
@@ -81,22 +93,26 @@ function read(url, now = Date.now()) {
   const file = fileFor(url);
   const meta = readMeta(file);
   if (!(meta?.until > now)) return null;
-  try { return { headers: meta.headers, body: fs.readFileSync(file).subarray(meta.start) }; } catch { return null; }
+  const status = meta.status ?? 200;
+  const left = String(Math.ceil((meta.until - now) / 1000));
+  const headers = status === BUSY ? meta.headers.map((h) => (h.name.toLowerCase() === "retry-after" ? { ...h, value: left } : h)) : meta.headers;
+  try { return { status, headers, body: fs.readFileSync(file).subarray(meta.start) }; } catch { return null; }
 }
 
-function write(url, headers, until, body) {
+function write(url, status, headers, until, body) {
   const file = fileFor(url);
   const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   try {
     fs.mkdirSync(CACHE_DIR, { recursive: true });
-    fs.writeFileSync(tmp, Buffer.concat([Buffer.from(JSON.stringify({ headers, until }) + "\n"), body]));
+    fs.writeFileSync(tmp, Buffer.concat([Buffer.from(JSON.stringify({ status, headers, until }) + "\n"), body]));
     fs.renameSync(tmp, file);
   } catch {
     fs.rmSync(tmp, { force: true });
   }
 }
 
-/** Serves the page's whole GETs of RULES' URLs from CACHE_DIR, and stores each 200 from the network that a rule keeps.
+/** Serves the page's whole GETs of RULES' URLs from CACHE_DIR, and stores each 200 from the network that a rule keeps,
+ *  and each busy /api/img answer for its Retry-After.
  *  With `images` false, the default under ASIDE_BOX_IMAGES=0, it answers IMAGE_PATTERNS with a 204 and no body. */
 export async function cacheShared(context, page, { images = process.env.ASIDE_BOX_IMAGES !== "0" } = {}) {
   const cdp = await context.newCDPSession(page);
@@ -106,13 +122,13 @@ export async function cacheShared(context, page, { images = process.env.ASIDE_BO
     if (responseStatusCode === undefined) {
       if (!images && IMAGE_RES.some((re) => re.test(request.url))) return send("Fetch.fulfillRequest", { requestId, responseCode: 204, responseHeaders: [] });
       const hit = whole ? read(request.url) : null;
-      if (hit) return send("Fetch.fulfillRequest", { requestId, responseCode: 200, responseHeaders: hit.headers, body: hit.body.toString("base64") });
+      if (hit) return send("Fetch.fulfillRequest", { requestId, responseCode: hit.status, responseHeaders: hit.headers, body: hit.body.toString("base64") });
       return send("Fetch.continueRequest", { requestId, interceptResponse: whole });
     }
-    const seconds = responseStatusCode === 200 ? ruleFor(request.url)?.keep(responseHeaders) ?? 0 : 0;
+    const seconds = keepFor(request.url, responseStatusCode, responseHeaders);
     if (seconds > 0) {
-      const got = await cdp.send("Fetch.getResponseBody", { requestId }).catch(() => null);
-      if (got) write(request.url, responseHeaders.filter((h) => !DROP.has(h.name.toLowerCase())), Date.now() + seconds * 1000, Buffer.from(got.body, got.base64Encoded ? "base64" : "utf8"));
+      const got = responseStatusCode === BUSY ? { body: "" } : await cdp.send("Fetch.getResponseBody", { requestId }).catch(() => null);
+      if (got) write(request.url, responseStatusCode, responseHeaders.filter((h) => !DROP.has(h.name.toLowerCase())), Date.now() + seconds * 1000, Buffer.from(got.body, got.base64Encoded ? "base64" : "utf8"));
     }
     return send("Fetch.continueRequest", { requestId });
   });

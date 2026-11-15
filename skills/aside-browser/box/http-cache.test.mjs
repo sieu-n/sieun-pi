@@ -78,19 +78,23 @@ function fakeChrome(server) {
       waiting.set(event.requestId, { ...entry, resolve });
       for (const fn of handlers) fn(event);
     });
-    return async function load(url, headers = {}) {
+    async function load(url, headers = {}) {
       const toServer = () => { reached.push(url); return server(url, headers); };
       if (!patterns.some((re) => re.test(url))) return toServer().status;
       const request = { url, method: "GET", headers };
       const first = await pause({ requestId: `r${++ids}`, request }, {});
-      if (first.method === "Fetch.fulfillRequest") return first.params.responseCode;
+      if (first.method === "Fetch.fulfillRequest") {
+        load.last = first.params.responseHeaders;
+        return first.params.responseCode;
+      }
       const answer = toServer();
       if (!first.params.interceptResponse) return answer.status;
       const requestId = `r${++ids}`;
       const headerList = Object.entries(answer.headers).map(([name, value]) => ({ name, value }));
       await pause({ requestId, request, responseStatusCode: answer.status, responseHeaders: headerList }, { answer });
       return answer.status;
-    };
+    }
+    return load;
   }
   return { reached, fakeTab };
 }
@@ -160,5 +164,63 @@ test("ASIDE_BOX_IMAGES=0 answers crawler pictures with a 204 and no body, so non
     delete process.env.BOX_HTTP_CACHE;
     delete process.env.ASIDE_BOX_IMAGES;
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a busy /api/img answer comes from disk until its Retry-After ends, with the seconds left, and then goes to the server again", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "box-http-cache-test-"));
+  process.env.BOX_HTTP_CACHE = dir;
+  try {
+    const { cacheShared, pruneShared } = await import(`${CACHE}?t=${Date.now()}`);
+    const busy = "https://staging.virev.ai/api/img?u=busy";
+    const answers = {
+      [busy]: { status: 202, headers: { "cache-control": "no-store", "retry-after": "30" } },
+      "https://staging.virev.ai/api/img?u=noretry": { status: 202, headers: { "cache-control": "no-store" } },
+      "https://staging.virev.ai/api/logo/busy.com": { status: 202, headers: { "cache-control": "no-store", "retry-after": "30" } },
+      "https://staging.virev.ai/api/img?u=gone": { status: 204, headers: { "cache-control": "no-store", "retry-after": "30" } },
+    };
+    const { reached, fakeTab } = fakeChrome((url) => ({ ...answers[url], body: Buffer.alloc(0) }));
+    const first = await fakeTab(cacheShared);
+    for (const url of Object.keys(answers)) await first(url);
+    const again = await fakeTab(cacheShared);
+    for (const url of Object.keys(answers)) assert.equal(await again(url), answers[url].status, url);
+    assert.deepEqual(reached.filter((u) => u === busy), [busy]);
+    assert.equal(reached.length, 7);
+    await again(busy);
+    const left = Number(again.last.find((h) => h.name === "retry-after").value);
+    assert.ok(left > 0 && left <= 30, `Retry-After ${left}`);
+    pruneShared(Date.now() + 31_000);
+    assert.equal(await (await fakeTab(cacheShared))(busy), 202);
+    assert.deepEqual(reached.filter((u) => u === busy), [busy, busy]);
+  } finally {
+    delete process.env.BOX_HTTP_CACHE;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("pages of a context the walk makes itself take /_app/immutable/ from disk too", async () => {
+  const hits = { immutable: 0 };
+  const server = http.createServer((req, res) => {
+    if (req.url === "/_app/immutable/entry/y.js") {
+      hits.immutable++;
+      res.writeHead(200, { "content-type": "text/javascript", "cache-control": "public, max-age=31536000, immutable" });
+      return res.end("window.ran = (window.ran || 0) + 1;");
+    }
+    res.writeHead(200, { "content-type": "text/html", "cache-control": "no-cache" });
+    res.end('<!doctype html><title>t</title><script src="/_app/immutable/entry/y.js"></script>');
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), "box-http-cache-test-"));
+  try {
+    const env = { ...process.env, BOX_HTTP_CACHE: cache };
+    const url = `http://127.0.0.1:${server.address().port}/`;
+    const code = `const ctx = await page.context().browser().newContext(); const p = await ctx.newPage(); await p.goto(${JSON.stringify(url)});`
+      + ` const q = await (await page.context().browser().newContext()).newPage(); await q.goto(${JSON.stringify(url)});`
+      + " console.log(await p.evaluate(() => window.ran) + await q.evaluate(() => window.ran))";
+    assert.equal(await runOnce(env, `await openTab("about:blank"); ${code}`), "2");
+    assert.equal(hits.immutable, 1);
+  } finally {
+    server.close();
+    fs.rmSync(cache, { recursive: true, force: true });
   }
 });
