@@ -16,6 +16,30 @@ HOSTING = [PUBLIC, {"type": "geo_as_number", "op": "inc", "value": ["203020", "5
 FAKE_GOOGLEBOT = [{"type": "user_agent", "op": "re", "value": "Googlebot|Google-InspectionTool"}, {"type": "geo_as_number", "op": "eq", "neg": True, "value": "15169"}, OWN]
 X11_FAKE_GOOGLE = [{"type": "user_agent", "op": "re", "value": "^Mozilla/5\\.0 \\(X11; Linux x86_64\\)"}, {"type": "header", "key": "referer", "op": "re", "value": "^https://www\\.google\\.[a-z.]+/$"}, OWN]
 HOSTING_NO_REFERER = [PUBLIC, {"type": "geo_as_number", "op": "eq", "value": "14061"}, NO_REFERER, OWN]
+# scraper-blocklist's "weekly d7 run 11-03" group of 21 no-referer Mac and Windows Chrome and Mac Firefox fleets, as apps/search/firewall.json holds it.
+EXACT_UA_FLEET = [PUBLIC, {"type": "user_agent", "op": "inc", "value": [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:151.0) Gecko/20100101 Firefox/151.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+]}, NO_REFERER, OWN]
 
 
 def firewall(*rules: str) -> dict:
@@ -36,6 +60,11 @@ class Placement(unittest.TestCase):
         out = sb.place(firewall("scraper-blocklist", "scraper-challenge"), [HOME_FLEET], "weekly", "2026-11-15")
         self.assertEqual(len(out["rules"]), 2)
         self.assertEqual(out["rules"][1]["groups"], [{"label": "weekly", "added": "2026-11-15", "conditions": HOME_FLEET}])
+
+    def test_exact_ua_list_with_no_referer_stays_deny(self):
+        """11-15: the 11-03 fleet list stays deny, 0 of its 32,764 denied pairs from 11-08 to 11-15 opened a page with a virev.ai referer."""
+        self.assertEqual(sb.verdict(EXACT_UA_FLEET), "deny")
+        self.assertEqual(sb.verdict(HOME_FLEET), "challenge")
 
 
 class Drift(unittest.TestCase):

@@ -84,12 +84,15 @@ def flag_group(a: argparse.Namespace) -> list[dict]:
 
 
 def verdict(group: list[dict]) -> str:
-    """challenge for a no-referer group with no network and no Google UA (a home-proxy fleet a person's direct visit can also match, 11-15),
-    deny for the rest: a hosting ASN or IP list, a fake Googlebot from outside Google's network, a bare Google referer (the X11 fleet), a UA."""
+    """challenge for a no-referer group with no network, no Google UA and a UA regex or substring (a home-proxy fleet a person's direct visit
+    can also match, 11-15), deny for the rest: a hosting ASN or IP list, a fake Googlebot from outside Google's network, a bare Google referer
+    (the X11 fleet), an exact UA list copied from one fleet's requests (of the 11-03 group's 32,764 denied IP and UA pairs from 11-08 to 11-15,
+    0 opened a page with a virev.ai referer), a UA."""
     no_referer = any(c.get("type") == "header" and c.get("key") == "referer" and c.get("op") == "nex" for c in group)
     network = any(c.get("type") in ("geo_as_number", "ip_address") and not c.get("neg") for c in group)
     google = any(c.get("type") == "user_agent" and not c.get("neg") and "google" in str(c.get("value")).lower() for c in group)
-    return "challenge" if no_referer and not network and not google else "deny"
+    exact_uas = any(c.get("type") == "user_agent" and c.get("op") == "inc" and not c.get("neg") for c in group)
+    return "challenge" if no_referer and not network and not google and not exact_uas else "deny"
 
 
 def place(firewall: dict, groups: list[list[dict]], label: str, today: str) -> dict:
