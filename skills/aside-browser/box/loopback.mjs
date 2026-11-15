@@ -116,9 +116,23 @@ function forwardWhole(stream, headers, agent) {
   stream.once("end", () => forward(stream, headers, agent, 0, Buffer.concat(chunks)));
 }
 
+// Our own sites leave from this box, whose IP the virev.ai firewall skips, and never from the Mac's home line, which it does not.
+// On 11-15 a box Chrome walk of staging.virev.ai from a Mac job went out through the Mac, and the firewall's Linux Chrome 155 group
+// answered 403 on the public data pages.
+const DIRECT = /(?:^|\.)virev\.ai$/;
+
+/** Connects to host:port from this box for our own sites and through the Mac for every other host. */
+function open(socksPort, host, port, callback) {
+  if (!DIRECT.test(host)) { socksConnect(socksPort, host, port, callback); return; }
+  const sock = net.connect(port, host);
+  let connected = false;
+  sock.on("error", (err) => { if (!connected) callback(err); });
+  sock.once("connect", () => { connected = true; callback(null, sock); });
+}
+
 function startProxy(socksPort) {
   const agent = new http.Agent({ keepAlive: true });
-  agent.createConnection = (options, callback) => { socksConnect(socksPort, options.host, options.port, callback); };
+  agent.createConnection = (options, callback) => { open(socksPort, options.host, options.port, callback); };
   const { key, cert, spkiHash } = selfSigned();
   // Chrome resets every open stream of a page it reloads or leaves, and nghttp2 ends a session whose client resets more streams than its
   // rapid-reset bucket allows (burst 1000, then 33/s). measured: on 11-03 one box Chrome sent 2,010 RST_STREAM frames in 5 reloads of
@@ -131,7 +145,7 @@ function startProxy(socksPort) {
     const authority = headers[":authority"];
     if (headers[":method"] === "CONNECT") {
       const { host, port } = hostPort(authority, 443);
-      socksConnect(socksPort, host, port, (err, sock) => {
+      open(socksPort, host, port, (err, sock) => {
         if (err) { if (!stream.destroyed) { stream.respond({ ":status": 502 }); stream.end(); } return; }
         if (stream.destroyed) { sock.destroy(); return; }
         stream.respond({ ":status": 200 });
