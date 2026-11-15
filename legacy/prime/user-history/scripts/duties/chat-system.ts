@@ -406,7 +406,7 @@ export function withLiveGoalGaps<T extends { chat: string; duty: string; keys: r
 
 /**
  * `planCounts`' owner reads with both boxes' catalog rows of each chat's jobs added: a row's session wrote at its `lastActivityAt`, now when it
- * works, and it is a session of the job its name names. `ownerActivity` reads only this box's transcripts, so at 00:29Z on 10-20 the Mac chats
+ * works, and it is a session of the job its name or its active session id names. `ownerActivity` reads only this box's transcripts, so at 00:29Z on 10-20 the Mac chats
  * frontend bro (p201, p296) and mcp for chris (p3) read as red duties with no live fix while the Mac's rows showed those fix jobs working.
  * A session also moves its step while a session below it (`parentSessionId`, at any depth, in `all`) works or wrote (`withDescendantActivity`).
  */
@@ -421,7 +421,7 @@ export function withCatalogOwners(plan: { ownerActivity?: ReadonlyMap<string, nu
   for (const [chat, rows] of jobs) {
     const names = named.get(chat) ?? named.set(chat, new Map()).get(chat)!;
     for (const row of rows) {
-      if (row.sessionName && !names.get(row.sessionName)?.includes(row.sessionId)) names.set(row.sessionName, [...names.get(row.sessionName) ?? [], row.sessionId]);
+      for (const name of [row.sessionName, row.activeSessionId]) if (name && !names.get(name)?.includes(row.sessionId)) names.set(name, [...names.get(name) ?? [], row.sessionId]);
     }
   }
   const parents = new Map(all.flatMap(row => row.parentSessionId ? [[row.sessionId, row.parentSessionId] as const] : []));

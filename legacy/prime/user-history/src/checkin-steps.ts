@@ -37,8 +37,10 @@ export interface JobFact {
   item?: { id: string; text: string; status: PlanStatus };
   /** A subagent's last agent message to the chat (`lastJobMessages`). */
   lastMessage?: JobMessage;
-  /** A duty job's subagent's session id, which a step's stored `sessionId` names. */
+  /** A subagent's session id, which a step's stored `sessionId` or its job field names. */
   sessionId?: string;
+  /** A subagent's active session id (the daemon's worker handle), which a step's job field may name. */
+  activeSessionId?: string;
   /** A thread that is a chat (`SessionRow.chat`): another chat holding a step on this board, never a job of this chat. */
   chat?: true;
   /** Its turn waits for a working slot in its box's turn queue (`pi-pool queue --json`). */
@@ -213,13 +215,35 @@ export const childWorking = (child: ChildAgent): boolean => child.status === "ru
 export const childName = (child: ChildAgent): string => child.sessionName ?? child.label;
 
 /**
- * Who owns a plan item: its `job` (a child name or id, a session name or id, `thread:<id>`), else its stored `sessionId`, else the first
- * `thread:<id>` link in its note.
+ * Who owns a plan item: its `job` (a child name or id, a session name, a session id, an active session id or an 8-character session id prefix,
+ * `thread:<id>`), else its stored `sessionId`, else the first `thread:<id>` link in its note.
  */
 export function stepOwner(item: PlanItem): string | undefined {
   return planJob(item.job) ?? item.sessionId ?? /\bthread:([a-zA-Z0-9_-]{1,128})/.exec(item.note ?? "")?.[1];
 }
-export const owns = (fact: JobFact, owner: string): boolean => fact.key === owner || fact.name === owner || fact.key === "thread:" + owner;
+export const owns = (fact: JobFact, owner: string): boolean => fact.key === owner || fact.name === owner || fact.key === "thread:" + owner ||
+  fact.sessionId === owner || fact.activeSessionId === owner;
+/** A job field that may be the start of a session id: 8 or more of its characters. */
+const ID_PREFIX = /^[0-9a-f]{8}[0-9a-f-]*$/i;
+/**
+ * The entries whose session id starts with `owner`, when `owner` is an id prefix (`ID_PREFIX`) and they all share one session; else none. A
+ * prefix two sessions share names neither.
+ */
+export function byIdPrefix<T>(owner: string, entries: readonly T[], sessionOf: (entry: T) => string | undefined): T[] {
+  if (!ID_PREFIX.test(owner)) return [];
+  const hits = entries.filter(entry => sessionOf(entry)?.startsWith(owner) === true);
+  return new Set(hits.map(sessionOf)).size === 1 ? hits : [];
+}
+const factSession = (fact: JobFact): string | undefined => fact.key.startsWith("thread:") ? fact.key.slice("thread:".length) : fact.sessionId;
+/**
+ * The fact a step's owner names (`owns`), else the one whose session id it starts (`byIdPrefix`), a working one first. On 11-15 CI and RepoOps'
+ * p730 named its live subagent "alerts 0406z batch" by session id, and three check-ins read the step as orphaned with the job "not found".
+ */
+export function ownerFact(facts: readonly JobFact[], owner: string): JobFact | undefined {
+  const named = facts.filter(fact => owns(fact, owner));
+  const found = named.length ? named : byIdPrefix(owner, facts, factSession);
+  return found.find(fact => fact.state === "working") ?? found[0];
+}
 /**
  * The fact that owns a step: the thread its stored session id names first, so a renamed thread keeps its steps, else the one its job names, a
  * working one first, so a job the chat started again under the same name owns the steps, not its ended first run.
@@ -244,7 +268,7 @@ export const ownerMoves = (owner: JobFact | undefined): boolean => owner?.state 
 export const ownerOf = (item: PlanItem, facts: readonly JobFact[]): JobFact | undefined => {
   const owner = stepOwner(item);
   return (item.sessionId ? facts.find(fact => fact.key === "thread:" + item.sessionId || fact.sessionId === item.sessionId) : undefined) ??
-    (owner === undefined ? undefined : facts.find(fact => owns(fact, owner) && fact.state === "working") ?? facts.find(fact => owns(fact, owner)));
+    (owner === undefined ? undefined : ownerFact(facts, owner));
 };
 
 /**
@@ -275,6 +299,7 @@ export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | nul
     if (child.parentId !== undefined && ids.has(child.parentId)) continue;
     const state: JobState = busy.has(child.id) ? "working" : child.status === "error" ? "failed" : "ended";
     facts.set(child.id, { key: child.id, name: childName(child), state, ...(state === "ended" && child.status === "cancelled" ? { cancelled: true as const } : {}),
+      ...(child.sessionId ? { sessionId: child.sessionId } : {}), ...(child.activeSessionId ? { activeSessionId: child.activeSessionId } : {}),
       ...(child.lastActivityAt !== undefined ? { activityAt: child.lastActivityAt } : {}),
       ...(child.repliedSinceTask !== undefined ? { replied: child.repliedSinceTask } : {}), ...(child.error ? { error: child.error } : {}) });
   }
@@ -285,15 +310,19 @@ export function jobFacts(children: readonly ChildAgent[], board: ChatBoard | nul
     const known = ownerOf(item, [...facts.values()]);
     if (known) { if (!known.item || (CLOSED.has(known.item.status) && OPEN.has(item.status))) known.item = link; return; }
     if (!OPEN.has(item.status)) return;
-    const named = (child: ChildAgent) => (item.sessionId !== undefined && child.sessionId === item.sessionId) || child.id === owner || childName(child) === owner;
-    const sub = nested.find(child => named(child) && childWorking(child)) ?? nested.find(named);
+    const named = (child: ChildAgent) => (item.sessionId !== undefined && child.sessionId === item.sessionId) ||
+      [child.id, childName(child), child.sessionId, child.activeSessionId].includes(owner);
+    const prefixed = nested.some(named) ? [] : byIdPrefix(owner, nested, child => child.sessionId);
+    const sub = nested.find(child => named(child) && childWorking(child)) ?? nested.find(named) ?? prefixed.find(childWorking) ?? prefixed[0];
     if (sub) {
       facts.set(sub.id, { key: sub.id, name: childName(sub), state: childWorking(sub) || live.has(sub.id) ? "working" : sub.status === "error" ? "failed" : "ended",
-        ...(sub.sessionId ? { sessionId: sub.sessionId } : {}), ...(sub.lastActivityAt !== undefined ? { activityAt: sub.lastActivityAt } : {}),
+        ...(sub.sessionId ? { sessionId: sub.sessionId } : {}), ...(sub.activeSessionId ? { activeSessionId: sub.activeSessionId } : {}),
+        ...(sub.lastActivityAt !== undefined ? { activityAt: sub.lastActivityAt } : {}),
         ...(sub.error ? { error: sub.error } : {}), item: link });
       return;
     }
-    const row = rows.find(candidate => candidate.id === item.sessionId) ?? rows.find(candidate => candidate.id === owner || candidate.name === owner);
+    const row = rows.find(candidate => candidate.id === item.sessionId) ?? rows.find(candidate => candidate.id === owner || candidate.name === owner) ??
+      byIdPrefix(owner, rows, candidate => candidate.id)[0];
     if (!row && item.sessionId !== undefined && item.sessionId !== self && liveSessions.has(item.sessionId)) {
       facts.set(item.sessionId, { key: item.sessionId, name: owner, state: "working", sessionId: item.sessionId, item: link });
       return;

@@ -6,7 +6,7 @@ import { areaWords, BOARD_LIMITS, buildGoal, coversStep, goalBelow, isBuildStep,
 import type { BoardOp, ChatBoard, OwnerTodo, PlanItem, SessionRow } from "./shared/types.ts";
 import { stepIds } from "./shared/step-ids.ts";
 import { upkeepWords } from "./shared/upkeep-title.ts";
-import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerOf, ownerState, owns, parkedBy, plural, quote, type StepMemo, stepOwner, type StepView, waitTarget,
+import { ago, clip, CLOSED, type JobFact, OPEN, ownerLabel, ownerFact, ownerOf, ownerState, parkedBy, plural, quote, type StepMemo, stepOwner, type StepView, waitTarget,
   walk } from "./checkin-steps.ts";
 import type { CiRun, Train, TrainRun } from "./checkin-load.ts";
 import { type Movers, outsideMover, stepCarrier } from "./checkin-end-state.ts";
@@ -381,7 +381,7 @@ export function goalsToFold(board: ChatBoard | null, facts: readonly JobFact[], 
   /** A job that names work of this chat: not the chat itself and not another thread. */
   const workJob = (item: PlanItem): string | undefined => {
     const job = planJob(item.job);
-    return job === undefined || self.has(job) || facts.some(fact => fact.key.startsWith("thread:") && owns(fact, job)) ? undefined : job;
+    return job === undefined || self.has(job) || ownerFact(facts.filter(fact => fact.key.startsWith("thread:")), job) ? undefined : job;
   };
   const folds: FoldGoal[] = [];
   const homeGoals = new Set<string>();
@@ -579,7 +579,7 @@ export function staleSteps(board: ChatBoard | null, facts: readonly JobFact[], c
       return;
     }
     const job = planJob(item.job);
-    const owner = job === undefined || self.has(job) ? undefined : facts.find(fact => owns(fact, job));
+    const owner = job === undefined || self.has(job) ? undefined : ownerFact(facts, job);
     if (!owner || owner.key.startsWith("thread:") || owner.state === "working" || owner.activityAt === undefined || until > now || owner.queued) return;
     if (movesOnPath(item, train, rows, self, now)) return;
     const end = owner.activityAt;

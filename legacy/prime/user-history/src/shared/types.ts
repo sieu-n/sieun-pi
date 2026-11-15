@@ -63,6 +63,8 @@ export interface ChildAgent {
   labelMore?: true;
   /** Its daemon session id, when the daemon's list gave it (`rosterChildren`); the hub's snapshots have none. */
   sessionId?: string;
+  /** Its daemon worker's active session id, while the daemon's list gives one (`rosterChildren`). */
+  activeSessionId?: string;
   durationMs?: number; recap?: string; error?: string; answerPreview?: string;
   /**
    * Its rlm child snapshot's activity. While it waits, `waitingFor` names what for, as an extension's wait ("a turn, place 3 of 7") or, from

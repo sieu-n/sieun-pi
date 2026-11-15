@@ -1,5 +1,5 @@
 import { clockTime } from "./checkin-settings.ts";
-import { liveWindowMs, OPEN, parkedBy, quote, walk } from "./checkin-steps.ts";
+import { byIdPrefix, liveWindowMs, OPEN, parkedBy, quote, walk } from "./checkin-steps.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { jobSession } from "./shared/chat-board.ts";
 import { handedStep, heldByTodo, type NamedChat } from "./shared/todo-hold.ts";
@@ -11,11 +11,12 @@ import type { ChatBoard, PlanItem, SessionRow } from "./shared/types.ts";
  * its continuation after the host move, slept on 9 CI run wakes. A job field that holds a session id names that session: at 06:05Z on 10-25
  * SEO guy's p101 had job set to the thread "sep launch!!" (01a15427-145f) with no sessionId, so d9 read it as running on the chat's own
  * us-metal02 and counted it stuck, though that thread sat on the offline Mac that For you t30 asked the owner to bring back. A job field written
- * as `thread:<id>` names that session the same way (`jobSession`).
+ * as `thread:<id>` names that session the same way (`jobSession`), and an 8-character prefix of one job session's id names that session
+ * (`byIdPrefix`). `named` may list a job's active session id as one of its names (`withCatalogOwners`).
  */
 export function stepSessions(item: { sessionId?: string; job?: string }, named: ReadonlyMap<string, readonly string[]>): string[] {
   const own = jobSession(item.job);
-  const job = item.job ? named.get(item.job) ?? (own ? [own] : []) : [];
+  const job = item.job ? named.get(item.job) ?? (own ? [own] : byIdPrefix(item.job.trim(), [...new Set([...named.values()].flat())], id => id)) : [];
   return [...new Set([...item.sessionId ? [item.sessionId] : [], ...job])];
 }
 

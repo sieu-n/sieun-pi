@@ -583,7 +583,8 @@ function rosterAgent(row: SessionSummary, id: string, running: boolean, failed: 
   const status = running ? "running" : failed || cut ? "error" : "done";
   // The session file's change counts as activity: a job between turns still gets its workers' reports (`liveJobs`).
   const at = Math.max(...[row.lastActivityAt, row.modified].map(value => Date.parse(value ?? "")).filter(Number.isFinite));
-  return { id, label: name || id, ...(name ? { sessionName: name } : {}), sessionId: row.sessionId, status, ...(cut ? { error: cutActivity(cut) } : {}),
+  return { id, label: name || id, ...(name ? { sessionName: name } : {}), sessionId: row.sessionId, ...(row.activeSessionId ? { activeSessionId: row.activeSessionId } : {}),
+    status, ...(cut ? { error: cutActivity(cut) } : {}),
     ...(row.repliedSinceTask === undefined ? {} : { repliedSinceTask: row.repliedSinceTask }), ...(Number.isFinite(at) ? { lastActivityAt: at } : {}) };
 }
 
