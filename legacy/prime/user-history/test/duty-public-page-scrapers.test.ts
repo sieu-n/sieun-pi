@@ -191,7 +191,8 @@ test("an IP+UA whose pages all carry a virev.ai referer with no asset, __data.js
   assert.deepEqual(listed(output), [["scraper_client", `${FORGED} | ${WIN(152)}`]]);
   const excerpt = output.flagged!.find(slice => slice.kind === "scraper_client")!.excerpt;
   assert.match(excerpt, /\(1800 calls, 1800 pages\) from 3 IPs/);
-  assert.match(excerpt, /--forged-referer --ua-sub '.*Chrome\/152\.0\.0\.0 Safari\/537\.36'$/, "a home network gets a challenge by UA and no --asn");
+  assert.match(excerpt, /--forged-referer --ua-sub '.*Chrome\/152\.0\.0\.0 Safari\/537\.36' --client-ips 42\.49\.111\.178 114\.36\.210\.109 157\.148\.101\.218$/,
+    "a home network gets no --asn, and its IPs go along for scraper-block.py to use when real visitors share the UA");
   const hosted = weeklyClients({ rows: routes, forged, asns: new Map([...asns, [ips[0]!, DO]]), accounts: [], judge: { verify: googleOnly, firewall: FIREWALL }, errors: [], end: 10 * DAY });
   assert.match(hosted.flagged!.find(slice => slice.kind === "scraper_client")!.excerpt, /--forged-referer --ua-sub '.*' --asn 14061$/);
 });

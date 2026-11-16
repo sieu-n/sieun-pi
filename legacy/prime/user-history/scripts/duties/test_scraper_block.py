@@ -49,7 +49,7 @@ def firewall(*rules: str) -> dict:
 class Placement(unittest.TestCase):
     def test_home_fleet_goes_to_challenge_and_proven_fakes_stay_deny(self):
         groups = [HOME_FLEET, HOSTING, FAKE_GOOGLEBOT, X11_FAKE_GOOGLE, HOSTING_NO_REFERER]
-        out = sb.place(firewall("public-db-bot-ua", "scraper-blocklist"), groups, "weekly", "2026-11-15")
+        out = sb.place(firewall("public-db-bot-ua", "scraper-blocklist"), [(sb.verdict(g), g) for g in groups], "weekly", "2026-11-15")
         rules = {r["name"]: r for r in out["rules"]}
         self.assertEqual([r["name"] for r in out["rules"]], ["public-db-bot-ua", "scraper-blocklist", "scraper-challenge"])
         self.assertEqual(rules["scraper-challenge"]["action"], {"action": "challenge"})
@@ -57,7 +57,7 @@ class Placement(unittest.TestCase):
         self.assertEqual([g["conditions"] for g in rules["scraper-blocklist"]["groups"]], [HOSTING, FAKE_GOOGLEBOT, X11_FAKE_GOOGLE, HOSTING_NO_REFERER])
 
     def test_existing_challenge_rule_takes_the_group(self):
-        out = sb.place(firewall("scraper-blocklist", "scraper-challenge"), [HOME_FLEET], "weekly", "2026-11-15")
+        out = sb.place(firewall("scraper-blocklist", "scraper-challenge"), [("challenge", HOME_FLEET)], "weekly", "2026-11-15")
         self.assertEqual(len(out["rules"]), 2)
         self.assertEqual(out["rules"][1]["groups"], [{"label": "weekly", "added": "2026-11-15", "conditions": HOME_FLEET}])
 
@@ -68,6 +68,7 @@ class Placement(unittest.TestCase):
 
 
 CHROME_152 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
+CHROME_154 = CHROME_152.replace("152.0.0.0", "154.0.0.0")
 # The group auto-sns-agent d5c39145ee added to scraper-challenge for the 11-15 forged-referer client.
 D5C39145EE = [{"type": "user_agent", "op": "eq", "value": CHROME_152}, OWN]
 
@@ -75,11 +76,20 @@ D5C39145EE = [{"type": "user_agent", "op": "eq", "value": CHROME_152}, OWN]
 class ForgedReferer(unittest.TestCase):
     def test_forged_referer_client_is_challenged_by_its_ua_and_denied_only_on_a_hosting_network(self):
         """11-15: the Chrome 152.0.0.0 client sent a virev.ai referer on 22,176 page loads, so every no-referer group skipped it."""
-        home = sb.flag_group(sb.args(["--label", "x", "--forged-referer", "--ua-sub", CHROME_152]))
-        self.assertEqual(home, D5C39145EE)
-        hosting = sb.flag_group(sb.args(["--label", "x", "--forged-referer", "--ua-sub", CHROME_152, "--asn", "14061"]))
-        out = sb.place(firewall("scraper-blocklist", "scraper-challenge"), [home, hosting], "weekly", "2026-11-15", forged_referer=True)
-        self.assertEqual([[g["conditions"] for g in r["groups"]] for r in out["rules"]], [[hosting], [home]])
+        home = sb.forged_groups(sb.args(["--label", "x", "--forged-referer", "--ua-sub", CHROME_152]), 39, frozenset())
+        self.assertEqual(home, [("challenge", D5C39145EE)])
+        hosting = sb.forged_groups(sb.args(["--label", "x", "--forged-referer", "--ua-sub", CHROME_152, "--asn", "14061"]), 0, frozenset())
+        self.assertEqual(hosting, [("deny", [D5C39145EE[0], {"type": "geo_as_number", "op": "eq", "value": "14061"}, OWN])])
+
+    def test_a_common_ua_on_tor_exits_is_blocked_by_its_ips_never_by_the_ua_alone(self):
+        """11-15: a forged-referer client on Tor exits sent Windows Chrome/154.0.0.0, which 361 IPs sent with a browser sign that week."""
+        a = sb.args(["--label", "x", "--forged-referer", "--ua-sub", CHROME_154, "--client-ips", "192.42.116.16", "81.2.3.4"])
+        ua = {"type": "user_agent", "op": "eq", "value": CHROME_154}
+        self.assertEqual(sb.forged_groups(a, 361, frozenset({"192.42.116.16"})), [
+            ("deny", [ua, {"type": "ip_address", "op": "eq", "value": "192.42.116.16"}, OWN]),
+            ("challenge", [ua, {"type": "ip_address", "op": "eq", "value": "81.2.3.4"}, OWN])])
+        with self.assertRaises(SystemExit):
+            sb.forged_groups(sb.args(["--label", "x", "--forged-referer", "--ua-sub", CHROME_154]), 361, frozenset())
 
 
 class Drift(unittest.TestCase):

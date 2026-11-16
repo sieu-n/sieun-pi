@@ -200,7 +200,8 @@ function blockCommand(key: string, client: Client, at: number, nets: [number, { 
   const tail = key.startsWith("one or two pages") ? " (no-referer group: --groups-file with a referer nex condition, as the Windows Chrome 151 group)"
     : key.startsWith("bot, AI") ? " (or add its token to deny in apps/search/firewall.json)" : "";
   return `scripts/duties/scraper-block.py --label ${shellText(label)}${key.startsWith("forged-referer") ? " --forged-referer" : ""}${exact ? ` --ua-sub ${shellText(client.ua)}` : ""}` +
-    `${hosting.length && !key.startsWith("one or two pages") ? ` --asn ${hosting.slice(0, 8).join(" ")}` : ""}${tail}`;
+    `${hosting.length && !key.startsWith("one or two pages") ? ` --asn ${hosting.slice(0, 8).join(" ")}` : ""}` +
+    `${key.startsWith("forged-referer") && !hosting.length ? ` --client-ips ${[...client.ips].join(" ")}` : ""}${tail}`;
 }
 
 /** The headline (crawler clients still getting through), one flagged item per crawler client with a block command, and the accounts over the line. */
