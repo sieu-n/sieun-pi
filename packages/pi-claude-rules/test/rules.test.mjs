@@ -17,15 +17,18 @@ for (const file of ["src/main.ts", "src/a.test.ts", "tests/b.py", "apps/web/src/
 writeFileSync(join(repo, ".claude", "rules", "always.md"), "# Always\n\nALWAYS-RULE-BODY\n");
 writeFileSync(join(repo, ".claude", "rules", "testing.md"), "---\npaths:\n  - '**/tests/**'\n  - '**/*.test.*'\n---\n\n# Testing\n\nTESTING-RULE-BODY\n");
 writeFileSync(join(repo, ".claude", "rules", "apps", "web.md"), "---\npaths: 'apps/web/**/*.{ts,svelte}'\n---\nWEB-RULE-BODY\n");
+// A home folder with no .claude/rules, so the user rules of the box that runs the tests stay out of them.
+const nohome = join(repo, "nohome");
+mkdirSync(nohome);
 
-function session(branch = []) {
+function session(branch = [], home = nohome) {
 	const handlers = new Map();
 	const entries = [...branch];
 	const pi = {
 		on: (name, handler) => handlers.set(name, [...(handlers.get(name) ?? []), handler]),
 		appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
 	};
-	register(pi, { cellStart, cellSteps });
+	register(pi, { cellStart, cellSteps }, home);
 	const ctx = { cwd: repo, sessionManager: { getBranch: () => entries, getSessionFile: () => null } };
 	const emit = async (name, event) => {
 		let result;
@@ -87,6 +90,22 @@ test("a cell's os.chdir and absolute paths count, and brace globs match", async 
 	assert.ok(globRegex("**/*.test.*").test("a.test.ts"));
 });
 
+test("a user rule in ~/.claude/rules loads in any repo, with its globs read against that repo, and its unscoped rule starts every session", async () => {
+	const home = join(repo, "home");
+	mkdirSync(join(home, ".claude", "rules"), { recursive: true });
+	writeFileSync(join(home, ".claude", "rules", "ts.md"), "---\npaths:\n  - '**/*.{ts,tsx}'\n---\nUSER-TS-RULE-BODY\n");
+	writeFileSync(join(home, ".claude", "rules", "all.md"), "USER-ALWAYS-RULE-BODY\n");
+	const s = session([], home);
+	const messages = await s.context([user]);
+	assert.match(messages[0].content, /ALWAYS-RULE-BODY[\s\S]*USER-ALWAYS-RULE-BODY/);
+	assert.doesNotMatch(await s.cell("open('tests/b.py').read()"), /USER-TS-RULE-BODY/);
+	const first = await s.cell("open('src/main.ts').read()");
+	assert.match(first, /USER-TS-RULE-BODY/);
+	assert.doesNotMatch(first, /USER-ALWAYS-RULE-BODY/);
+	assert.doesNotMatch(await s.cell("open('apps/web/src/page.svelte').read()"), /USER-TS-RULE-BODY/);
+	assert.ok(globRegex("**/*.{ts,tsx}").test("src/main.ts"));
+});
+
 test("a resumed session keeps a rule it already loaded, and a compaction lets it load again", async () => {
 	const s = session([{ type: "custom", customType: CUSTOM_TYPE, data: { files: [join(repo, ".claude", "rules", "testing.md")] } }]);
 	assert.doesNotMatch(await s.cell("open('src/a.test.ts')"), /TESTING-RULE-BODY/);
@@ -99,7 +118,7 @@ test("a resumed session keeps a rule it already loaded, and a compaction lets it
 test("a session started outside the repo gets the repo's unscoped rules with its first touch there", async () => {
 	const handlers = new Map();
 	const pi = { on: (name, handler) => handlers.set(name, handler), appendEntry: () => {} };
-	register(pi, { cellStart, cellSteps });
+	register(pi, { cellStart, cellSteps }, nohome);
 	const ctx = { cwd: tmpdir(), sessionManager: { getBranch: () => [] } };
 	assert.equal(handlers.get("context")({ type: "context", messages: [user] }, ctx), undefined);
 	const result = handlers.get("tool_result")({ toolName: "ipython", input: { code: `open(${JSON.stringify(join(repo, "src", "a.test.ts"))})` }, content: [] }, ctx);
@@ -112,7 +131,7 @@ test("a session whose cwd reaches the repo through a link gets no unscoped rule 
 	const link = `${repo}-link`;
 	symlinkSync(repo, link);
 	const handlers = new Map();
-	register({ on: (name, handler) => handlers.set(name, handler), appendEntry: () => {} }, { cellStart, cellSteps });
+	register({ on: (name, handler) => handlers.set(name, handler), appendEntry: () => {} }, { cellStart, cellSteps }, nohome);
 	const ctx = { cwd: link, sessionManager: { getBranch: () => [] } };
 	assert.match(handlers.get("context")({ type: "context", messages: [user] }, ctx).messages[0].content, /ALWAYS-RULE-BODY/);
 	const result = handlers.get("tool_result")({ toolName: "ipython", input: { code: `open(${JSON.stringify(join(repo, "src", "a.test.ts"))})` }, content: [] }, ctx);

@@ -1,6 +1,6 @@
 # pi-claude-rules
 
-This extension loads a repo's `.claude/rules/*.md` files the way Claude Code does, in Prime Agent sessions today and in Pi sessions.
+This extension loads a repo's `.claude/rules/*.md` files and the user rules in `~/.claude/rules` the way Claude Code does, in Prime Agent sessions today and in Pi sessions.
 Until 10-28 it lived in `components/claude-rules`. Prime itself loads only AGENTS.md, so until 10-25 no Prime session saw auto-sns-agent's 25 rule files, and every top test adder since 10-21 was a Prime session that never read `testing-rules.md`.
 
 ## When a rule loads
@@ -9,6 +9,8 @@ Until 10-28 it lived in `components/claude-rules`. Prime itself loads only AGENT
 2. A rule file with `paths:` globs loads the first time the session reads or edits a file that one of its globs matches, once per session.
 3. A session started outside a repo, such as a chat job started in home, gets that repo's unscoped rules with its first touch of a file there.
 4. A compaction drops the appended rules from context, so a rule loads again on its next match after one.
+5. The user rules in `~/.claude/rules` apply in every repo, as in Claude Code. An unscoped one loads at session start, and a scoped one loads with the first touched file its globs match, read against that file's repo, or against the home folder outside a repo.
+   sieun-pi installs `config/claude-rules/*.md` there, such as `typescript.md`, which points every session that touches a TypeScript file at the typescript-best-practices skill.
 
 Globs are relative to the folder that holds `.claude/`. `**` spans folders, `*` and `?` stay inside one, and `{a,b}` picks one, as in Claude Code. `paths:` takes a YAML list or one comma-separated string.
 

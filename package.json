@@ -95,6 +95,7 @@
     "AGENTS.md",
     "docs/**/*.md",
     "config/*.md",
+    "config/claude-rules/*.md",
     "config/*.json",
     "scripts/*.mjs",
     "docs/attribution-pstack.json",

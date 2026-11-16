@@ -6,7 +6,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 /*
  * Loads a repo's .claude/rules/*.md the way Claude Code does. A rule with no `paths:` front matter loads at session start, and a
  * rule with `paths:` globs loads the first time the session reads or edits a file they match. Prime only loads AGENTS.md, so
- * before this no Prime session saw auto-sns-agent's 25 rule files, testing-rules.md included.
+ * before this no Prime session saw auto-sns-agent's 25 rule files, testing-rules.md included. The user rules in ~/.claude/rules
+ * apply in every repo, as in Claude Code, with their globs read against the touched file's repo, or the home folder outside one.
  *
  * Cache: the session cwd's unscoped rules go in one message that the `context` hook puts first on every model call, the same
  * text each time, so the cached prefix holds on every turn kind and after a compaction. A scoped rule, or an unscoped rule of
@@ -103,7 +104,7 @@ export function readRules(root: string): Rule[] {
 
 export function render(rule: Rule): string {
 	const scope = rule.paths ? `, loaded because this session touched a file matching ${rule.globs.join(", ")}` : "";
-	return `Contents of ${rule.file} (project rule from .claude/rules${scope}). Follow it:\n\n${rule.body}`;
+	return `Contents of ${rule.file} (rule from .claude/rules${scope}). Follow it:\n\n${rule.body}`;
 }
 
 /** Paths a command or cell names: words with a slash, read against the folder they run in. */
@@ -153,9 +154,17 @@ export class SessionRules {
 	private prefix: { cwd: string; text: string | null; files: Set<string> } | null = null;
 	private appended: Set<string> | null = null;
 	private kernel: KernelCwd;
+	private home: string;
 
-	constructor(kernel: KernelCwd) {
+	/** `home` holds the user rules in `.claude/rules`. */
+	constructor(kernel: KernelCwd, home: string) {
 		this.kernel = kernel;
+		this.home = home;
+	}
+
+	/** The user rules, which apply in every repo. */
+	userRules(): Rule[] {
+		return statSync(join(this.home, ".claude", "rules"), { throwIfNoEntry: false })?.isDirectory() ? this.rulesOf(this.home) : [];
 	}
 
 	/** The nearest folder at or above `dir` that holds .claude/rules. */
@@ -192,11 +201,14 @@ export class SessionRules {
 		if (this.prefix?.cwd === cwd) return this.prefix;
 		const root = this.rootOf(cwd);
 		const always = root ? this.rulesOf(root).filter((rule) => !rule.paths) : [];
-		this.prefix = {
-			cwd,
-			text: always.length ? `Project rules from ${join(realpathSync(root!), ".claude", "rules")} that apply to all work in this repo:\n\n${always.map(render).join("\n\n")}` : null,
-			files: new Set(always.map((rule) => rule.file)),
-		};
+		const files = new Set(always.map((rule) => rule.file));
+		const user = this.userRules().filter((rule) => !rule.paths && !files.has(rule.file));
+		const parts = [
+			always.length ? `Project rules from ${join(realpathSync(root!), ".claude", "rules")} that apply to all work in this repo:\n\n${always.map(render).join("\n\n")}` : "",
+			user.length ? `User rules from ${join(realpathSync(this.home), ".claude", "rules")} that apply in every repo:\n\n${user.map(render).join("\n\n")}` : "",
+		].filter(Boolean);
+		for (const rule of user) files.add(rule.file);
+		this.prefix = { cwd, text: parts.length ? parts.join("\n\n") : null, files };
 		return this.prefix;
 	}
 
@@ -221,23 +233,27 @@ export class SessionRules {
 		const start = this.startup(cwd).files;
 		const appended = this.appendedSet(ctx);
 		const out = new Map<string, Rule>();
-		for (const path of touchedPaths(toolName, input, cwd, this.kernel, ctx)) {
-			const root = this.rootOf(dirname(path));
-			if (!root) continue;
-			const rel = relative(root, path).split(sep).join("/");
-			if (!rel || rel.startsWith("..")) continue;
-			for (const rule of this.rulesOf(root)) {
+		const user = this.userRules();
+		const add = (rules: Rule[], rel: string) => {
+			for (const rule of rules) {
 				if (start.has(rule.file) || appended.has(rule.file) || out.has(rule.file)) continue;
 				if (!rule.paths || rule.paths.some((re) => re.test(rel))) out.set(rule.file, rule);
 			}
+		};
+		for (const path of touchedPaths(toolName, input, cwd, this.kernel, ctx)) {
+			const root = this.rootOf(dirname(path));
+			const rel = relative(root ?? this.home, path).split(sep).join("/");
+			if (!rel) continue;
+			if (root && !rel.startsWith("..")) add(this.rulesOf(root), rel);
+			add(user, rel.startsWith("..") ? path.split(sep).join("/").replace(/^\//, "") : rel);
 		}
 		for (const file of out.keys()) appended.add(file);
 		return [...out.values()];
 	}
 }
 
-export function register(pi: Pick<ExtensionAPI, "on" | "appendEntry">, kernel: KernelCwd): void {
-	const session = new SessionRules(kernel);
+export function register(pi: Pick<ExtensionAPI, "on" | "appendEntry">, kernel: KernelCwd, home = homedir()): void {
+	const session = new SessionRules(kernel, home);
 	pi.on("context", (event, ctx) => {
 		let text: string | null;
 		try {
