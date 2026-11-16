@@ -182,9 +182,19 @@ export function agedOut(runs: readonly DutyRunRecord[], counted: ReadonlySet<str
  */
 export function agingSince(runs: readonly DutyRunRecord[]): number | undefined {
   const streaks = metricStreaks(runs);
-  const newestAt = Math.max(...runs.map(run => run.at));
-  if (!streaks.length || streaks.some(streak => streak.quietSince === undefined || chronicWindow(streak, newestAt))) return undefined;
+  const newestAt = Math.max(...runs.map(run => Math.max(run.at, run.after?.at ?? run.at)));
+  if (!streaks.length || streaks.some(streak => streak.quietSince === undefined || chronicWindow(streak, newestAt) || overdueWindow(streak, newestAt))) return undefined;
   return Math.max(...streaks.map(streak => streak.quietSince!));
+}
+
+/**
+ * Whether a quiet windowed miss still reads red at a run after its newest event left its window, so the number does not fall as events age out
+ * and the duty owes a fix job. Prospect feature bro's d1 read prod_capacity_pages_day 42,700 at 08:00Z on 11-16 with lastEventAt 00:00Z on 11-10
+ * and a 2-day window, and d9 of 23:20Z on 11-16 still said it cleared at 00:00Z on 11-12 and owed no fix job.
+ */
+export function overdueWindow(streak: Pick<MetricStreak, "key" | "quietSince" | "windowMs">, newestAt: number): boolean {
+  const window = countWindowMs(streak.key, streak);
+  return window !== undefined && streak.quietSince !== undefined && streak.quietSince + window <= newestAt;
 }
 
 /**

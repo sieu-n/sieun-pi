@@ -38,8 +38,9 @@ test("ops guy d3: a miss streak of six days with a flap each day is chronic, not
 test("the same miss inside its first 24 h, or with no flap after its first miss, still only ages out", () => {
   const young = opsD3.slice(0, 3);
   assert.equal(agingSince(young), t("11-08T18:25:00"), "11:48Z to 23:51Z is under the 24 h window");
-  const old = [d3("11-04T23:46:00", 2, "11-03T22:15:00"), d3("11-04T05:00:00", 2, "11-03T22:15:00"), d3("11-03T22:00:00", 3, "11-03T21:55:00")];
-  assert.equal(agingSince(old.slice(0, 2)), t("11-03T22:15:00"), "no counted flap came after 05:00Z, the first miss");
+  const old = [d3("11-04T23:46:00", 2, "11-04T00:15:00"), d3("11-04T05:00:00", 2, "11-04T00:15:00"), d3("11-03T22:00:00", 3, "11-03T21:55:00")];
+  assert.equal(agingSince(old.slice(0, 2)), t("11-04T00:15:00"), "no counted flap came after 05:00Z, the first miss");
+  assert.equal(agingSince([d3("11-05T00:30:00", 2, "11-04T00:15:00"), ...old.slice(0, 2)]), undefined, "still red after 00:15Z on 11-05, when its newest flap left the 24 h window");
 });
 
 test("api portal vp d1: a chronic red under its fix step reads as a fix that does not move, not as aging", () => {
