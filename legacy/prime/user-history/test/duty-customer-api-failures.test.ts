@@ -54,6 +54,16 @@ test("a route that answers only 5xx reads unknown, never fast (Bing during the G
   assert.match(down.flagged![1]!.excerpt, /search\.bing 0 calls p90 none, 94 answered 5xx/);
 });
 
+test("a quiet day reads each route's newest 20 answered calls instead of the placeholder (d4 read error 3 runs in a row, 11-15 UTC)", () => {
+  const since = Date.parse("2026-11-09T05:42:57Z");
+  const quiet = report({ completed: 0, failed: 0, failed5xx: 0 }, [], { start: "2026-11-15 00:00:00" }, null, [
+    { endpoint: "search.bing", calls: 7, p90Ms: 1_330, failed5xx: 2, pool: { calls: 20, p90Ms: 9_203, since } },
+    { endpoint: "crawl.google.play_app", calls: 9, p90Ms: 820, pool: { calls: 20, p90Ms: 1_029, since } },
+    { endpoint: "crawl.google.news", calls: 9, p90Ms: 910, pool: { calls: 20, p90Ms: 962, since } }]);
+  assert.equal(quiet.metrics.slow_route_p90_s, 9.2);
+  assert.match(quiet.flagged![1]!.excerpt, /search\.bing 7 calls p90 1\.33 s \(newest 20 since 2026-11-09T05:42Z: p90 9\.2 s\), 2 answered 5xx/);
+});
+
 test("a rerun of a closed day reads quiet until the next UTC midnight, while the day's first run reads live (d4, 11-05)", () => {
   const metrics: DutyMetric[] = [{ key: "slow_route_p90_s", label: "Slowest p90", op: "<=", target: 5, unit: "s" }];
   const counts = { completed: 0, failed: 0, failed5xx: 0 };
