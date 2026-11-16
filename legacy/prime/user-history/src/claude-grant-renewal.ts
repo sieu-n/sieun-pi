@@ -34,6 +34,8 @@ export interface RenewalState {
   ranAt: string;
   /** Each account's latest attempt, keyed by lowercased email, and the CLI's under CLI_KEY. */
   results: Record<string, RenewResult>;
+  /** The account a run found holding claude.ai in the owner's Aside and could not sign back in, which the next run restores. */
+  restoreTo?: string;
 }
 
 export const renewalStateFile = (home: string = homedir()): string => join(home, ".local/state/claude-grant-renew/state.json");
@@ -42,7 +44,7 @@ export function parseRenewal(text: string | undefined): RenewalState | undefined
   try {
     const state = JSON.parse(text ?? "") as Partial<RenewalState>;
     if (typeof state.ranAt !== "string" || !Number.isFinite(Date.parse(state.ranAt)) || typeof state.results !== "object" || state.results === null) return undefined;
-    return { ranAt: state.ranAt, results: state.results };
+    return { ranAt: state.ranAt, results: state.results, ...(typeof state.restoreTo === "string" ? { restoreTo: state.restoreTo } : {}) };
   } catch { return undefined; }
 }
 

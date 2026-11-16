@@ -113,8 +113,33 @@ async function newMagicLink(repl: AsideRepl, email: string, before: ReadonlySet<
     if (fresh.length) return fresh[0]!;
     await sleep(8_000);
   }
+  // Only slack.green mail reaches the owner's Gmail. krenerd77@naver.com's link lands in Naver mail, which his Aside is not signed in to
+  // (mail.naver.com answered 302 to nid.naver.com's login on 11-16), so only his Naver password lets it in.
+  const domain = email.split("@")[1] ?? "";
+  if (domain !== "slack.green") throw new Prompted("password", `${domain} mail, which gets ${email}'s claude.ai link and which the owner's Aside is not signed in to`);
   throw new Error(`no new claude.ai sign-in link for ${email} reached the owner's Gmail within about 2 min`);
 }
+
+/**
+ * Signs the tab in `repl.renewTab`, on a claude.ai login page or a page "Logged in as" another account, in as `email` through claude.ai's email
+ * link, and returns the page the link opened.
+ */
+async function emailSignIn(repl: AsideRepl, email: string): Promise<{ url: string; text: string }> {
+  const page = await read(repl);
+  if (page.text.includes("Logged in as")) await repl.run("await globalThis.renewTab.getByText('Switch account').click(); await sleep(3000);");
+  const before = new Set(await magicLinks(repl, email));
+  await repl.run(`const lt = globalThis.renewTab;
+if (!(await lt.getByRole('textbox', { name: 'Email' }).isVisible().catch(() => false))) { await lt.getByText('Continue with email').first().click(); await sleep(1500); }
+await lt.getByRole('textbox', { name: 'Email' }).click(); await lt.keyboard.type(${js(email)}, { delay: 40 }); await sleep(700);
+await lt.getByRole('button', { name: 'Continue with email' }).click(); await sleep(6000);`);
+  const sent = await read(repl);
+  if (!/link sent to/i.test(sent.text)) throw promptOn(sent) ?? new Error(`claude.ai sent no sign-in link: ${sent.text.slice(0, 300)}`);
+  const link = await newMagicLink(repl, email, before);
+  await repl.run(`await globalThis.renewTab.goto(${js(link)}); await sleep(7000);`);
+  return read(repl);
+}
+
+const closeRenewTab = (repl: AsideRepl) => repl.run("if (globalThis.renewTab) { await closeTab(globalThis.renewTab); globalThis.renewTab = undefined; }").catch(() => undefined);
 
 /** Approves the authorize URL for `email` in the owner's Aside and returns the code claude.ai shows to paste. */
 async function approve(repl: AsideRepl, url: string, email: string): Promise<string> {
@@ -122,17 +147,7 @@ async function approve(repl: AsideRepl, url: string, email: string): Promise<str
   try {
     let page = await read(repl);
     if (!page.text.includes(`Logged in as ${email}`)) {
-      if (page.text.includes("Logged in as")) { await repl.run("await globalThis.renewTab.getByText('Switch account').click(); await sleep(3000);"); }
-      const before = new Set(await magicLinks(repl, email));
-      await repl.run(`const lt = globalThis.renewTab;
-if (!(await lt.getByRole('textbox', { name: 'Email' }).isVisible().catch(() => false))) { await lt.getByText('Continue with email').first().click(); await sleep(1500); }
-await lt.getByRole('textbox', { name: 'Email' }).click(); await lt.keyboard.type(${js(email)}, { delay: 40 }); await sleep(700);
-await lt.getByRole('button', { name: 'Continue with email' }).click(); await sleep(6000);`);
-      page = await read(repl);
-      if (!/link sent to/i.test(page.text)) throw promptOn(page) ?? new Error(`claude.ai sent no sign-in link: ${page.text.slice(0, 300)}`);
-      const link = await newMagicLink(repl, email, before);
-      await repl.run(`await globalThis.renewTab.goto(${js(link)}); await sleep(7000);`);
-      page = await read(repl);
+      page = await emailSignIn(repl, email);
       if (!page.text.includes(`Logged in as ${email}`)) throw promptOn(page) ?? new Error(`the sign-in link did not reach the Authorize page as ${email}: ${page.text.slice(0, 300)}`);
     }
     // The Authorize button stays disabled until claude.ai's hCaptcha passes, which a reload and mouse moves bring about (11-16).
@@ -154,8 +169,23 @@ console.log('DISABLED');`);
     }
     throw new Error("the Authorize button stayed disabled through 3 reloads");
   } finally {
-    await repl.run("if (globalThis.renewTab) { await closeTab(globalThis.renewTab); globalThis.renewTab = undefined; }").catch(() => undefined);
+    await closeRenewTab(repl);
   }
+}
+
+/**
+ * Signs the owner's Aside back in to claude.ai as `holder`, the account it held before the run, or leaves it signed out when it held none,
+ * since each renewal's sign-in replaces his claude.ai login there and Aside has one profile with one cookie jar. claude.ai's sign-out is a
+ * POST to /api/auth/logout with his cookies; its /login?from=logout page did not sign out on 11-16.
+ */
+async function restoreHolder(repl: AsideRepl, holder: string): Promise<void> {
+  await repl.run("await fetch('https://claude.ai/api/auth/logout', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });");
+  if (holder.includes("@")) {
+    await repl.run("globalThis.renewTab = await openTab('https://claude.ai/login'); await sleep(4000);");
+    try { await emailSignIn(repl, holder); } finally { await closeRenewTab(repl); }
+  }
+  const now = await claudeAiHolder(repl);
+  if (now !== holder) throw new Error(`claude.ai in Aside holds ${now} after the restore`);
 }
 
 /** A sign-in process that prints an authorize URL and reads the code on stdin. */
@@ -180,6 +210,14 @@ function signIn(file: string, args: readonly string[], urlOf: (out: string) => s
   };
 }
 
+/** The account the owner's Aside holds claude.ai with, read with his cookies and no tab, or "signed out". */
+async function claudeAiHolder(repl: AsideRepl): Promise<string> {
+  const out = await repl.run("const answer = await fetch('https://claude.ai/api/account'); console.log(answer.status === 200 ? (await answer.json()).email_address : 'signed out');");
+  const holder = out.trim().split("\n").at(-1) ?? "";
+  if (!holder.includes("@") && holder !== "signed out") throw new Error(`claude.ai's account read gave ${out.slice(0, 120)}`);
+  return holder;
+}
+
 async function grantOf(file: string): Promise<number | undefined> {
   try {
     const at = (JSON.parse(await readFile(file, "utf8")) as { claudeAiOauth?: { refreshTokenExpiresAt?: unknown } }).claudeAiOauth?.refreshTokenExpiresAt;
@@ -201,7 +239,7 @@ async function renewPool(repl: AsideRepl, id: string, email: string, before: num
     if (!/"event": ?"done", ?"ok": ?true/.test(out)) throw new Error(`pi-pool login did not finish: ${out.split("\n").filter(Boolean).at(-1)?.slice(0, 300)}`);
   } finally { login.stop(); }
   const after = await poolGrant(id);
-  if (after === undefined || (before !== undefined && after <= before)) throw new Error(`pi-pool saved no later grant end (${after === undefined ? "none" : minute(after)})`);
+  if (after === undefined || after === before || after - Date.now() <= RENEW_LEAD_MS) throw new Error(`pi-pool saved no new grant end (${after === undefined ? "none" : minute(after)})`);
   return after;
 }
 
@@ -213,7 +251,7 @@ async function renewCli(repl: AsideRepl, email: string, before: number | undefin
   const status = await exec("claude", ["auth", "status"]);
   if (!/"loggedIn": ?true/.test(status.out)) throw new Error(`claude auth status after the sign-in: ${status.out.slice(0, 300)}`);
   const after = await grantOf(CLI_CREDENTIALS);
-  if (after === undefined || (before !== undefined && after <= before)) throw new Error(`the CLI saved no later grant end (${after === undefined ? "none" : minute(after)})`);
+  if (after === undefined || after === before || after - Date.now() <= RENEW_LEAD_MS) throw new Error(`the CLI saved no new grant end (${after === undefined ? "none" : minute(after)})`);
   return after;
 }
 
@@ -256,10 +294,18 @@ async function main(): Promise<void> {
   const record = (job: Job, result: Omit<RenewResult, "at" | "email">) => { state.results[job.key] = { at: new Date().toISOString(), email: job.email, ...result }; log(`${job.email}: ${result.outcome} ${result.detail}`); };
   let repl: AsideRepl | undefined;
   let offline: string | undefined;
-  for (const job of jobs) {
-    if (offline) { record(job, { outcome: "mac-offline", detail: offline }); continue; }
+  // The account to leave claude.ai in Aside with: one an earlier run failed to restore, else the one it holds now.
+  let holder = state.restoreTo;
+  if (jobs.length || holder) {
     try {
-      if (!repl) { repl = new AsideRepl(); await repl.open(); }
+      repl = new AsideRepl(); await repl.open();
+      holder ??= await claudeAiHolder(repl);
+      log(`claude.ai in the owner's Aside holds ${holder} before the run`);
+    } catch (error) { offline = (error as Error).message.slice(0, 300); }
+  }
+  for (const job of jobs) {
+    if (offline || !repl) { record(job, { outcome: "mac-offline", detail: offline ?? "no Aside" }); continue; }
+    try {
       const end = await job.run(repl);
       record(job, { outcome: "renewed", grantEnd: end, detail: `grant now ends ${minute(end)}` });
     } catch (error) {
@@ -273,6 +319,19 @@ async function main(): Promise<void> {
       record(job, { outcome: "failed", detail: (error as Error).message.slice(0, 400) });
     }
   }
+  if (repl && holder && !offline) {
+    try {
+      const now = await claudeAiHolder(repl);
+      if (now !== holder) { await restoreHolder(repl, holder); log(`signed claude.ai in the owner's Aside back in as ${holder}`); }
+      delete state.restoreTo;
+    } catch (error) {
+      state.restoreTo = holder;
+      log(`could not sign claude.ai in the owner's Aside back in as ${holder}, so the next run tries again: ${(error as Error).message.slice(0, 300)}`);
+      // A sign-in that failed must not leave his Aside on a pool account when it did not start on one.
+      const pool = new Set(rows.flatMap(row => row.email ? [row.email.toLowerCase()] : []));
+      if (!pool.has(holder.toLowerCase())) await restoreHolder(repl, "signed out").catch(signOut => log(`the sign-out failed too: ${(signOut as Error).message.slice(0, 200)}`));
+    }
+  } else if (holder && offline) state.restoreTo = holder;
   repl?.close();
   state.ranAt = new Date().toISOString();
   await mkdir(dirname(stateFile), { recursive: true });
