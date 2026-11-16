@@ -1,0 +1,11 @@
+[Unit]
+Description=Run claude-grant-renew every 3 hours (RENEW_EVERY_MS in src/claude-grant-renewal.ts), which signs in any Claude grant that ends within 4 days
+
+[Timer]
+OnActiveSec=5min
+OnBootSec=10min
+OnUnitActiveSec=3h
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

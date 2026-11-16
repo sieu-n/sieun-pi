@@ -1,0 +1,10 @@
+[Unit]
+Description=claude-grant-renew: sign each pi-pool Claude account and the box claude CLI in again through the owner's Aside before its refresh grant reaches its fixed end (legacy/prime/user-history/scripts/claude-grant-renew.ts)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/node/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/.local/share/sieun-pi-chat/current/legacy/prime/user-history
+ExecStart=%h/.local/node/bin/node --import tsx scripts/claude-grant-renew.ts

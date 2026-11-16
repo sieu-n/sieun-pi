@@ -9,6 +9,7 @@ import { hostTools, loadHosts, selfHost, type HostTool } from "../../src/hosts.t
 import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { PIN_FILE, type PinResult, pinSkillPaths } from "../kernel-skill-paths.ts";
 import { parsePrompts, promptFor, promptsText, promptWords, type SignInPrompt, signInPromptsFile } from "../../src/sign-in-prompts.ts";
+import { CLI_KEY, NO_SEAT, parseRenewal, renewalGap, renewalStateFile } from "../../src/claude-grant-renewal.ts";
 import { BoardStore } from "../../src/chat-board-store.ts";
 import { OPEN, walk } from "../../src/checkin-steps.ts";
 import { fixLiveReader, type FixLiveness } from "../../src/shared/duty-fixes.ts";
@@ -305,8 +306,6 @@ async function grantEnds(deps: Deps, ids: readonly string[]): Promise<Map<string
   }));
   return ends;
 }
-/** Anthropic's refusal of a team member with no seat: on 10-29 Virev's admin moved its 12 seats to new members, and virev1, 3 and 7 read seat_tier unassigned. */
-const NO_SEAT = "oauth not allowed for organization";
 
 /** Each Claude account's organization uuid, read from pi-pool's account index, which `pi-pool ls` leaves out. */
 async function accountOrgs(deps: Deps): Promise<Map<string, string>> {
@@ -356,11 +355,19 @@ async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise
   // A new sign-in gives an account whose organization refuses OAuth nothing to serve with, since only a seat or a paid plan lifts the refusal: on
   // 11-07 both sieun@virev.ai logins sat in that cooldown, the personal Max plan unpaid by the owner's choice (t127) and the team one seatless
   // (t125), and their grant ends held skills_or_tools_to_fix at 1 for a sign-in no agent could make count.
+  // The grant renewal (src/claude-grant-renewal.ts) signs each account in again before its end, so a grant end is a d5 fix only once the
+  // renewal failed at it or cannot run: before it, from 11-13 to 11-16, a new account entered the 48 h window every day or two and one hand
+  // sign-in per run never held skills_or_tools_to_fix at 0.
+  const renewal = provider === "anthropic" ? parseRenewal(await deps.readFile(renewalStateFile(deps.home)).catch(() => undefined)) : undefined;
   const grantRows = live.flatMap(row => {
     const at = row.id === undefined ? undefined : ends.get(row.id);
-    return at !== undefined && at - deps.now() <= GRANT_WARN_MS ? [{ row, email: row.email ?? "?", text: `${row.email ?? "?"} (grant ends ${utcMinute(at)})`, label: `${row.label ?? row.email ?? "?"} (grant ends ${utcMinute(at)})` }] : [];
+    if (at === undefined) return [];
+    const gap = row.cooldown_reason === NO_SEAT ? (at - deps.now() <= GRANT_WARN_MS ? "" : undefined) : renewalGap(renewal, row.email ?? "?", at, deps.now(), GRANT_WARN_MS);
+    return gap === undefined ? [] : [{ row, gap, email: row.email ?? "?", text: `${row.email ?? "?"} (grant ends ${utcMinute(at)})`, label: `${row.label ?? row.email ?? "?"} (grant ends ${utcMinute(at)})` }];
   });
   const ending = grantRows.filter(entry => entry.row.cooldown_reason !== NO_SEAT).map(({ email, text }) => ({ email, text }));
+  const gaps = [...new Set(grantRows.filter(entry => entry.row.cooldown_reason !== NO_SEAT).map(entry => `${entry.email}: ${entry.gap}`))];
+  const renewalWords = gaps.length ? `; ${gaps.join("; ")}` : "";
   const refusedEnding = grantRows.filter(entry => entry.row.cooldown_reason === NO_SEAT).map(entry => entry.label);
   const needing = [...live.filter(row => row.reason === "needs-reauth" && !noSeat.includes(row)).map(row => ({ email: row.email ?? "?", text: row.email ?? "?" })), ...ending];
   // An account that needs a sign-in while its organization refuses OAuth has an unpaid plan, which a new sign-in only takes to claude.ai's
@@ -394,7 +401,7 @@ async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise
   // row started a job on it that could not act.
   const gated = reauth.flatMap(entry => { const row = promptFor(prompts, provider, entry.email); return row ? [`${entry.text}, whose sign-in reached ${promptWords(row)}`] : []; });
   const open = reauth.filter(entry => !promptFor(prompts, provider, entry.email)).map(entry => entry.text);
-  if (reauth.length && !open.length) return FAIL("owner", `${gated.join("; ")}: waits on the owner (${counts})`,
+  if (reauth.length && !open.length) return FAIL("owner", `${gated.join("; ")}: waits on the owner (${counts})${renewalWords}`,
     `only the owner can pass that prompt, so it waits on him with no For you todo (c178); once he has, an agent finishes with \`pi-pool login <email> --provider ${provider}\`, and the prompt record drops itself when the account no longer needs a sign-in`);
   if (open.length) {
     // The fix never offers `pi-pool off`: jobs that followed it turned off krenerd77 (10-23 13:43Z) and sieunpark77 (10-25 19:49Z) after the
@@ -404,8 +411,8 @@ async function pool(deps: Deps, provider: "anthropic" | "openai-codex"): Promise
     // 10-24 12:36Z). With his Mac offline it stays an agent fix with the Mac's state in the detail, because 28 runs from 10-24 counted
     // sieunpark77's sign-in in owner_fixes, where no todo could hold it and the dead account fell out of skills_or_tools_to_fix.
     const mac = await macReach(deps);
-    return FAIL("agent", `${open.join(", ")} need a new sign-in (${counts})${gated.length ? `; ${gated.join("; ")}: waits on the owner` : ""}${mac.online ? "" : `; ${mac.detail}`}`,
-      `copy a live login of the account if a box has one, else run \`pi-pool login <email> --provider ${provider}\` in the owner's Aside once his Mac is online; never \`pi-pool off\` the account, since he turns accounts on and off in Settings, Accounts and his last choice stands; when the attempt reaches a password, 2FA or passkey prompt, record it with \`node --import tsx scripts/sign-in-prompt.ts <email> --provider ${provider} --prompt <password|2fa|passkey> --where <page> --evidence <screenshot>\` in sieun-pi's user-history, which makes it the owner's item`);
+    return FAIL("agent", `${open.join(", ")} need a new sign-in (${counts})${gated.length ? `; ${gated.join("; ")}: waits on the owner` : ""}${renewalWords}${mac.online ? "" : `; ${mac.detail}`}`,
+      `rerun the grant renewal with \`systemctl --user start claude-grant-renew.service\` on us-metal02 and read its journal when the detail names a renewal gap; else copy a live login of the account if a box has one, else run \`pi-pool login <email> --provider ${provider}\` in the owner's Aside once his Mac is online; never \`pi-pool off\` the account, since he turns accounts on and off in Settings, Accounts and his last choice stands; when the attempt reaches a password, 2FA or passkey prompt, record it with \`node --import tsx scripts/sign-in-prompt.ts <email> --provider ${provider} --prompt <password|2fa|passkey> --where <page> --evidence <screenshot>\` in sieun-pi's user-history, which makes it the owner's item`);
   }
   // Every account used up its own window by real work and serves again at a known time, so nothing waits on a fix: on 11-01 sieunpark77's
   // Codex week, spent from 10-28 06:38Z to 10-31 00Z by two Prime chats and Vent's CLIProxy traffic, reset on 11-04, and the check called it
@@ -758,8 +765,14 @@ export const CHECKS: readonly Check[] = [
     const result = await deps.exec("claude", ["auth", "status"], { timeoutMs: CALL_TIMEOUT_MS });
     let status: { loggedIn?: boolean; email?: string; subscriptionType?: string } = {};
     try { status = parseJson(result.stdout) as typeof status; } catch { /* reported below */ }
-    return status.loggedIn === true ? PASS(`${status.email} ${status.subscriptionType}`)
-      : FAIL("agent", `claude auth status: ${failText(result)}`, "sign in with `claude auth login` in the owner's Aside browser; a password prompt makes it an owner item");
+    const renew = "run `systemctl --user start claude-grant-renew.service` on us-metal02, which signs the CLI in again through the owner's Aside, and read its journal; a password prompt makes it an owner item";
+    if (status.loggedIn !== true) return FAIL("agent", `claude auth status: ${failText(result)}`, renew);
+    // On 11-16 the CLI's grant ended at 03:53Z with nothing flagged and the CLI blanked its tokens at 06:27Z, so its grant end counts like a pool account's.
+    let end: unknown;
+    try { end = (JSON.parse(await deps.readFile(join(deps.home, ".claude/.credentials.json"))) as { claudeAiOauth?: { refreshTokenExpiresAt?: unknown } }).claudeAiOauth?.refreshTokenExpiresAt; } catch { /* a Mac keeps it in the Keychain */ }
+    const gap = typeof end === "number" ? renewalGap(parseRenewal(await deps.readFile(renewalStateFile(deps.home)).catch(() => undefined)), CLI_KEY, end, deps.now(), GRANT_WARN_MS) : undefined;
+    return gap === undefined ? PASS(`${status.email} ${status.subscriptionType}`)
+      : FAIL("agent", `${status.email}'s CLI grant ends ${utcMinute(end as number)}; ${gap}`, renew);
   } },
   { id: "claude_peer", group: "peers", tool: "claude-sdk-session.py", run: async deps => {
     const result = await deps.exec("uv", ["run", "--script", "scripts/claude-sdk-session.py", "--help"], { cwd: deps.repo, timeoutMs: 60_000 });

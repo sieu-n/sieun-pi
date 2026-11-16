@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { CALL_TIMEOUT_MS, CHECKS, type Deps, type ExecResult, runChecks, type SearchFix, searchFixStep, toOutput, withHarness } from "../scripts/duties/skills-and-tools.ts";
 import type { DutyStore } from "../src/chat-duty-store.ts";
 import { parsePrompts } from "../src/sign-in-prompts.ts";
+import { dueAccounts, NO_SEAT } from "../src/claude-grant-renewal.ts";
 import { dailyRun } from "../src/chat-tools.ts";
 import type { Duty, DutyRunRecord } from "../src/shared/chat-duties.ts";
 import type { ChatBoard, PlanItem } from "../src/shared/types.ts";
@@ -566,6 +567,74 @@ test("pool_claude leaves a grant end out of the fix list when the account's orga
       return JSON.stringify({ claudeAiOauth: { accessToken: "x", refreshTokenExpiresAt: ends[id] } });
     } });
   assert.ok(outcome.status === "pass" && outcome.detail.includes("sieun@virev.ai (personal) (grant ends") && outcome.detail.includes("t127"), JSON.stringify(outcome));
+});
+
+// 11-13 to 11-16: a new account's grant entered the 48 h window every day or two, and one hand sign-in per d5 run never held the headline at 0.
+// The grant renewal signs each one in RENEW_LEAD_MS ahead, so pool_claude takes a grant end only once the renewal failed at it or cannot run.
+test("pool_claude flags a grant end once the grant renewal failed at it, and leaves one the renewal still covers", async () => {
+  const now = Date.parse("2026-11-16T20:00:00Z");
+  const ends: Record<string, number> = { c16: now + 3 * 86_400_000, c19: now + 3 * 86_400_000, c20: now + 6 * 86_400_000 };
+  const rows = [{ id: "c16", email: "claude16@slack.green", tier: "max 20x", usable: true }, { id: "c19", email: "claude19@slack.green", tier: "max 20x", usable: true },
+    { id: "c20", email: "claude20@slack.green", tier: "max 20x", usable: true }];
+  const run = (state: object | undefined, at = now) => {
+    const mac = macDeps(true, TIMED_OUT, []);
+    return poolClaude.run({ ...mac, now: () => at,
+      exec: async (file, args, options) => file === "pi-pool" ? { code: 0, stdout: JSON.stringify({ rows }), stderr: "", ms: 0 } : mac.exec(file, args, options),
+      readFile: async path => {
+        if (path === "/home/sieun/.local/state/claude-grant-renew/state.json") { if (state) return JSON.stringify(state); throw new Error("no state"); }
+        const id = path.match(/pi-pool\/accounts\/secrets\/pi-pool\.anthropic\.(\w+)$/)?.[1];
+        if (!id) throw new Error(`no ${path}`);
+        return JSON.stringify({ claudeAiOauth: { accessToken: "x", refreshTokenExpiresAt: ends[id] } });
+      } });
+  };
+  const ran = new Date(now - 3_600_000).toISOString();
+  const failed = await run({ ranAt: ran, results: { "claude16@slack.green": { at: ran, outcome: "failed", email: "claude16@slack.green", detail: "the Authorize button stayed disabled through 3 reloads" } } });
+  assert.ok(failed.status === "fail" && failed.fixer === "agent" && failed.detail.startsWith("claude16@slack.green (grant ends 11-19 20:00Z) need")
+    && failed.detail.includes("the grant renewal failed at 11-16 19:00Z: the Authorize button stayed disabled") && !failed.detail.includes("claude19")
+    && failed.fix.includes("claude-grant-renew.service"), JSON.stringify(failed));
+  const covered = await run({ ranAt: ran, results: {} });
+  assert.ok(covered.status === "pass", JSON.stringify(covered));
+  const lapsed = await run({ ranAt: ran, results: {} }, now + 2 * 86_400_000);
+  assert.ok(lapsed.status === "fail" && lapsed.detail.includes("claude16@slack.green: the grant renewal has not run since 11-16 19:00Z"), JSON.stringify(lapsed));
+  const none = await run(undefined, now + 2 * 86_400_000);
+  assert.ok(none.status === "fail" && none.detail.includes("has no state on this box"), JSON.stringify(none));
+});
+
+test("claude_cli flags a signed-in CLI whose grant ends soon only when the grant renewal does not cover it", async () => {
+  const now = Date.parse("2026-11-16T20:00:00Z");
+  const cli = CHECKS.find(check => check.id === "claude_cli")!;
+  const run = (end: number, state: object | undefined) => cli.run({ ...deps("linux"), now: () => now,
+    exec: async () => ({ code: 0, stdout: JSON.stringify({ loggedIn: true, email: "claude21@slack.green", subscriptionType: "max" }), stderr: "", ms: 0 }),
+    readFile: async path => {
+      if (path.endsWith(".claude/.credentials.json")) return JSON.stringify({ claudeAiOauth: { refreshTokenExpiresAt: end } });
+      if (state && path.endsWith("claude-grant-renew/state.json")) return JSON.stringify(state);
+      throw new Error(`no ${path}`);
+    } });
+  assert.equal((await run(now + 20 * 86_400_000, undefined)).status, "pass");
+  const ending = await run(now + 20 * 3_600_000, undefined);
+  assert.ok(ending.status === "fail" && ending.detail.startsWith("claude21@slack.green's CLI grant ends 11-17 16:00Z") && ending.fix.includes("claude-grant-renew.service"), JSON.stringify(ending));
+  const ran = new Date(now - 600_000).toISOString();
+  assert.equal((await run(now + 3 * 86_400_000, { ranAt: ran, results: { "claude-cli": { at: ran, outcome: "renewed", email: "claude21@slack.green", detail: "ok" } } })).status, "pass");
+});
+
+test("the grant renewal signs in live accounts due within RENEW_LEAD_MS, soonest first, and skips what pool_claude leaves to the owner", () => {
+  const now = Date.parse("2026-11-16T20:00:00Z");
+  const day = 86_400_000;
+  const rows = [
+    { id: "a", email: "claude19@slack.green", tier: "max 20x", reason: "limited" },
+    { id: "b", email: "claude16@slack.green", tier: "max 20x" },
+    { id: "c", email: "claude20@slack.green", tier: "max 20x" },
+    { id: "d", email: "claude1@slack.green", tier: "max", disabled: true },
+    { id: "e", email: "claude7@slack.green", tier: "max 20x", cooldown_reason: NO_SEAT },
+    { id: "f", email: "claude8@slack.green", tier: "max 20x", reason: "needs-reauth" },
+    { id: "g", email: "claude-virev10@slack.green", tier: "team 5x", reason: "needs-reauth" },
+    { id: "h", email: "claude-virev1@slack.green", tier: "team 5x", cooldown_reason: NO_SEAT },
+    { id: "i", email: "claude22@slack.green", tier: "max 20x", reason: "needs-reauth" },
+  ];
+  const ends = new Map([["a", now + 2 * day], ["b", now + day], ["c", now + 5 * day], ["d", now], ["e", now], ["f", now - day]]);
+  const orgs = new Map([["g", "virev"], ["h", "virev"]]);
+  const due = dueAccounts(rows, ends, orgs, new Set(["claude8@slack.green"]), now);
+  assert.deepEqual(due.map(account => account.email), ["claude22@slack.green", "claude16@slack.green", "claude19@slack.green"]);
 });
 
 // 10-24 00:13 KST: pool_codex waited on the owner's Apple sign-in, and the headline missed for 10 runs that no agent could move.
