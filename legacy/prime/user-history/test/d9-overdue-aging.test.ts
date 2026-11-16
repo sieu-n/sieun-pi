@@ -14,7 +14,7 @@ test("Prospect d1 of 11-16 owes a fix job, since its count stayed red past the t
 });
 
 test("the same miss read before its window passed still ages out", () => {
-  const early = RUNS.slice(-1).map(run => ({ ...run, at: 1794268800000 + 86_400_000, after: undefined }));
-  const before = { ...early[0]!, at: 1794268800000 + 3_600_000 };
+  const early: DutyRunRecord[] = RUNS.slice(-1).map(({ after: _after, ...run }) => ({ ...run, at: 1794268800000 + 86_400_000 }));
+  const before: DutyRunRecord = { ...early[0]!, at: 1794268800000 + 3_600_000 };
   assert.equal(new Date(agingSince([...early, before])!).toISOString().slice(0, 16), "2026-11-10T00:00");
 });
