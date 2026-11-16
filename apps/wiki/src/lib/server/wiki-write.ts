@@ -16,6 +16,7 @@ import { deadLinkReason, deadLinksAdded } from '../../../scripts/page-gate.mjs';
 import { staleWrite } from './stale-base.mjs';
 import { mermaidWriteCheck } from '../../../scripts/mermaid-check.mjs';
 import { renumberLists } from '../../../scripts/ol-numbering.mjs';
+import { DREAM_GROWTH_P90, NEAR_READ_CAP, isSettledStatus } from '../../../scripts/read-cap.mjs';
 import { codeRepoDir, contentGitRoot } from '../wiki-config.mjs';
 import { diskPath, rootOf } from './wiki-mounts';
 import { isSessionPath, sessionFolderOf as folderOfSession } from './session-artifact-index';
@@ -366,17 +367,26 @@ function renumberedPage(rel: string, content: string): { content: string; warnin
 }
 
 /**
- * A warning when the write leaves the page past its whole-read cap, because every later whole read of it answers 413.
- * On 2026-11-04 apps/crawler-v3/adding-a-platform/retrieval.html reached 64,289 bytes with no word to any of its writers.
+ * A warning when the write leaves the page past its whole-read cap, because every later whole read of it answers 413, or
+ * leaves a current curated page at NEAR_READ_CAP or more, which the wiki dream duty counts in wiki_problems at once.
+ * On 2026-11-04 apps/crawler-v3/adding-a-platform/retrieval.html reached 64,289 bytes with no word to any of its writers,
+ * and on 2026-11-16 four pages entered the near-cap band with no word, so two dream runs read wiki_problems 1 and split them.
  */
 function readCapWarning(rel: string, content: string): string[] {
 	const bytes = Buffer.byteLength(content);
 	const cap = readLimitFor(rel);
-	if (bytes <= cap) return [];
+	const split = `Split it into a short index page and child pages by topic, and add a row for each child page to the hub that lists this page.`;
+	if (bytes > cap)
+		return [
+			`${rel} is ${bytes} bytes, past the ${cap}-byte whole-page read cap, so GET /api/agent/page and the markdown view of it ` +
+				`answer 413 and a reader has to slice it with ?section= or read /raw/${rel}. ${split}`,
+		];
+	const curated = rel.endsWith('.html') && (isCuratedPath(rel) || rel === 'index.html');
+	if (!curated || bytes < NEAR_READ_CAP || isSettledStatus(parseHtmlMeta(content).status)) return [];
 	return [
-		`${rel} is ${bytes} bytes, past the ${cap}-byte whole-page read cap, so GET /api/agent/page and the markdown view of it ` +
-			`answer 413 and a reader has to slice it with ?section= or read /raw/${rel}. Split it into a short index page and ` +
-			`child pages by topic, and add a row for each child page to the hub that lists this page.`,
+		`${rel} is ${bytes} bytes, ${cap - bytes} under the ${cap}-byte whole-page read cap and at or past the ${NEAR_READ_CAP}-byte ` +
+			`near-cap line, because one wiki dream rewrite adds ${DREAM_GROWTH_P90} bytes at p90, so the wiki dream duty counts it ` +
+			`in wiki_problems. ${split}`,
 	];
 }
 

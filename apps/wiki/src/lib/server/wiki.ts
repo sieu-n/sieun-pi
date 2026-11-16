@@ -6,6 +6,7 @@ import { metaDescription, type WikiMeta } from './wiki-frontmatter';
 import { artifactStub, isSessionArtifact, isSessionPath, listSessionLogs } from './session-artifact-index';
 import { diskPath, mounts, wikiPathOf } from './wiki-mounts';
 import { wikiConfig } from '../wiki-config.mjs';
+import { PAGE_READ_CAP } from '../../../scripts/read-cap.mjs';
 import { FolderIndex } from './wiki-folders';
 import { resolveLink, WikiIndexStore, type PageChanges, type TreeLog } from './wiki-index';
 import {
@@ -72,7 +73,7 @@ const SUMMARY_READ_CONCURRENCY = 8;
  *  `GET /api/agent/page` refuses with the cap named rather than answering with a prefix, and the
  *  WRITE path needs the same number to detect a read-cap round-trip — see wiki-write.ts. */
 // measured: VIR-266 (2026-09-08): an agent round trip through a silently capped 64 KiB read cost crawler-v3/fleet-findings.html its closing section; the cap now refuses with 413 and wiki-write.ts refuses a prefix write with 409 (a295804c7c, 7657da782c)
-export const PAGE_READ_LIMIT = 64 * 1024;
+export const PAGE_READ_LIMIT = PAGE_READ_CAP;
 // measured: VIR-266 (2026-09-08): an agent round trip through a silently capped 64 KiB read cost crawler-v3/fleet-findings.html its closing section; the cap now refuses with 413 and wiki-write.ts refuses a prefix write with 409 (a295804c7c, 7657da782c)
 const LARGE_DOC_READ_LIMIT = 2 * 1024 * 1024;
 const DEFAULT_CONTEXT_BUDGET = 8_000;

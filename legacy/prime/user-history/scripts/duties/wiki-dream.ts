@@ -4,6 +4,7 @@ import { readdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { DREAM_GROWTH_P90, isSettledStatus, NEAR_READ_CAP, PAGE_READ_CAP } from "../../../../../apps/wiki/scripts/read-cap.mjs";
 import { wikiContentDir } from "../../src/chat-wiki.ts";
 import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
 
@@ -462,24 +463,15 @@ export async function sessionTree(agentDir: string, session: string): Promise<st
 }
 
 /**
- * The whole-read cap of a stored page, `PAGE_READ_LIMIT` in apps/wiki/src/lib/server/wiki.ts: past it the markdown view answers 413 and the
- * reader shows a truncated preview.
+ * The read cap, the dream growth at p90 and the near-cap line come from apps/wiki/scripts/read-cap.mjs, which the page API reads too, so a
+ * writer who leaves a page in the band this precheck counts gets the same line as a warning. Pages do cross: 30 curated writes did from
+ * 10-10 to 11-08, 12 of them dream writes, and on the 11-09 05:02 run three pages sat within 1 KB of the cap and had to be split by hand.
  */
-export const PAGE_READ_CAP = 65_536;
-/**
- * A page this close to the cap counts in pages_near_read_cap, so a run splits it before the next dream rewrite crosses. measured: the size
- * change between consecutive wiki-dream revisions of one curated page in wiki.db was 2,364 B at p90 (n=2,923, 2026-10-12 to 11-08 20:44Z),
- * and every one of the 12 dream writes that took a curated page over the cap started at 63,798 B or more. Pages do cross: 30 curated writes
- * did from 10-10 to 11-08, 12 of them dream writes, and on the 11-09 05:02 run three pages sat within 1 KB of it and had to be split by hand.
- */
-export const DREAM_GROWTH_P90 = 2_364;
-export const NEAR_READ_CAP = PAGE_READ_CAP - DREAM_GROWTH_P90;
-/** The statuses wiki-health.mjs reads as settled (`SETTLED_STATUS`), whose pages no writer grows. */
-const SETTLED = new Set(["superseded", "deprecated", "archived"]);
+export { DREAM_GROWTH_P90, NEAR_READ_CAP, PAGE_READ_CAP };
 
 /** The current curated pages at NEAR_READ_CAP bytes or more, largest first. */
 export function nearReadCap(pages: readonly PageSize[]): PageSize[] {
-  return pages.filter(page => page.bytes >= NEAR_READ_CAP && !SETTLED.has(page.status ?? "")).sort((a, b) => b.bytes - a.bytes);
+  return pages.filter(page => page.bytes >= NEAR_READ_CAP && !isSettledStatus(page.status)).sort((a, b) => b.bytes - a.bytes);
 }
 
 /** The flagged line of a page near or over the read cap. */
