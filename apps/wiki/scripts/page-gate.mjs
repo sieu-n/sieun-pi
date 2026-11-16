@@ -22,7 +22,10 @@
  *   7. A warning, not a refusal, in the page API answer only: a write that moves `last_verified` past a first-parent commit that
  *      changed what the page states names that commit's sha in the page or its summary (hiddenCommitsReason), because the stale report reads only commits
  *      after `last_verified`. A page behind code guards no data, money, auth, outside send or vendor limit (owner rule c98).
- * Rules 3 to 6 judge only what the write adds, because 265 of 296 curated pages had no `last_verified` on 2026-10-19
+ *   8. In the page API only (pageWriteReasons), a line a write adds that says a commit of the code repo has not landed (wiki-health.mjs notLandedLines) is refused when
+ *      a staging land already carries the commit, or for a prod line, when origin/main holds that land (landedClaims), and the
+ *      refusal names the first land that carried it. A line the page already held passes, so its fix can be saved.
+ * Rules 3 to 6 and 8 judge only what the write adds, because 265 of 296 curated pages had no `last_verified` on 2026-10-19
  * and a rule on the whole page would refuse every edit to them.
  *
  *   node apps/llm-wiki/scripts/page-gate.mjs <rev> <changed page>...
@@ -56,7 +59,7 @@ import { codeText } from '../src/lib/code-text.mjs';
 import { definitionCode, definitionText, symbolRef } from '../src/lib/definitions.mjs';
 import { siblingRef, siblingRepos } from '../src/lib/sibling-repos.mjs';
 import { citedWords, dayStart, under, verifiedAt, words } from '../src/lib/stale-rules.mjs';
-import { citedRefs, SETTLED_STATUS, hrefsOf, missingCodeRefs, parseMeta, resolveHref } from './wiki-health.mjs';
+import { citedRefs, SETTLED_STATUS, hrefsOf, landedClaims, missingCodeRefs, notLandedLines, parseMeta, resolveHref, stagingLands } from './wiki-health.mjs';
 import { checkedAt, commitsBehind } from './behind-commits.mjs';
 
 const CONTENT = 'apps/llm-wiki/content/';
@@ -187,8 +190,37 @@ export function behindRefReason(root, rev, page, old, html, writtenAt) {
 }
 
 /**
+ * Why the write of `html` over `old` adds a line from notLandedLines about a commit of the repo at `root` that a staging land of
+ * `staging` already carries, or for a prod line, whose land `main` holds (landedClaims), one reason per line and commit. A line and
+ * commit pair `old` already held passes, so a page that held a false line can still be saved with its fix. A land is a one-parent
+ * commit titled `land: dev/sieun <tip>`, so `git merge-base --is-ancestor <sha> origin/staging` fails after the land, and on
+ * 2026-11-16 at 08:01Z domains/architecture/telemetry-map.html v160 said d60109b34 had not landed on staging, though staging land
+ * c2cb3f9c81 (land: dev/sieun 47461624d, 06:18Z) carried it, and the wiki dream precheck counted the page at once.
+ */
+function landedLineReasons(root, page, old, html, staging = 'origin/staging', main = 'origin/main') {
+	const key = (sha, line) => `${sha}\u0000${line}`;
+	const had = new Set((old === undefined ? [] : notLandedLines(old)).flatMap(({ line, shas }) => shas.map((sha) => key(sha, line))));
+	const isNew = ({ line, shas }) => shas.some((sha) => !had.has(key(sha, line)));
+	if (!notLandedLines(html).some(isNew)) return [];
+	if (spawnSync('git', ['rev-parse', '--verify', '--quiet', `${staging}^{commit}`], { cwd: root }).status !== 0) return [];
+	return landedClaims([pageOf(page, html)], root, stagingLands(root, staging), main)
+		.filter((claim) => !had.has(key(claim.sha, claim.line)))
+		.map(({ sha, line, stage, land }) => {
+			const named = land.tips.map((t) => `${t.branch} ${t.tip}`).join(', ');
+			const carried = `staging land ${land.commit.slice(0, 10)} (land: ${named}, ${land.at.slice(0, 16)}Z) already carried ${sha}`;
+			const held = stage === 'prod' ? `${carried} and ${main} holds that land` : carried;
+			return (
+				`it adds "${line}", which is false, because ${held}; rewrite the line to say the commit reached ${stage} ` +
+				`with land ${land.commit.slice(0, 10)}, and check a land with git merge-base --is-ancestor <sha> <dev sha the ` +
+				`newest land names>, because a land commit has one parent and is no descendant of the dev commit`
+			);
+		});
+}
+
+
+/**
  * Why the page API (src/lib/server/wiki-write.ts) refuses one write of the curated page `page` (a content path), from
- * rules 3 and 4, as one reason each; empty when the write passes. `before` is the page on disk, or null for a new page.
+ * rules 3, 4 and 8, as one reason each; empty when the write passes. `before` is the page on disk, or null for a new page.
  * A repo path or `path::name` definition the write adds must be in the repo at `root` at HEAD (lackingRefs); a wiki
  * page path still resolves on disk. Most page writes come through the API, and on 2026-10-19 it took the pages behind
  * 37 of the 47 stale_vs_code items with no check.
@@ -203,6 +235,7 @@ export function pageWriteReasons(root, page, before, after) {
 	const reasons = [];
 	const unverified = unverifiedReason(page, old, after);
 	if (unverified) reasons.push(unverified);
+	reasons.push(...landedLineReasons(root, page, old, after));
 	if (!addedRefs(page, old, after).length) return reasons;
 	const shaped = pageOf(page, after);
 	const lacking = lackingRefs(root, 'HEAD', [{ page: shaped, had: old === undefined ? [] : [old] }]).get(page) ?? [];

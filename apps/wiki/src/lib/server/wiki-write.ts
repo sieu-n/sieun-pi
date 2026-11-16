@@ -459,7 +459,8 @@ function titleH1Gap(html: string): { title: string; h1: string } | null {
 /**
  * Write invariants for pages outside sessions/ and archive/: meta title matches the first <h1> (old debt stays editable),
  * a current hub gains no link to a retired page, a page is not retired while a current hub links it, and a curated page
- * has last_verified, no repo path git lacks and no dead link (the page-gate.mjs rules commit.mjs runs).
+ * has last_verified, no repo path git lacks, no dead link and no new not-landed line a land already made false (the
+ * page-gate.mjs rules).
  */
 async function assertPageInvariants(rel: string, before: string | null, after: string): Promise<void> {
 	if (!rel.endsWith('.html') || isSessionPath(rel) || rel.startsWith('archive/')) return;
@@ -477,7 +478,7 @@ async function assertPageInvariants(rel: string, before: string | null, after: s
 	if (reasons.length)
 		throw new WriteError(
 			422,
-			`refusing ${rel}: ${reasons.join('. Also, ')}. See the page gate rules 3 to 5 in apps/llm-wiki/scripts/page-gate.mjs`,
+			`refusing ${rel}: ${reasons.join('. Also, ')}. See the page gate rules 3 to 5 and 8 in apps/llm-wiki/scripts/page-gate.mjs`,
 		);
 	if (!isRetiredStatus(parseHtmlMeta(after).status)) {
 		const added = await retiredLinksAdded(rel, before, after);

@@ -304,3 +304,47 @@ test('a last_verified UTC time passes the last_verified rule, and a time in anot
 	assert.deepEqual(pageWriteReasons('.', RUNBOOK, null, verified(DAY)), []);
 	assert.match(pageWriteReasons('.', RUNBOOK, null, verified('2026-10-20 15:02'))[0], /new page with no last_verified/);
 });
+
+// 2026-11-16 08:01Z: a session saved domains/architecture/telemetry-map.html v160 with "At 08:01Z on 2026-11-16 `d60109b34` had not
+// landed on staging", though staging land c2cb3f9c81 (`land: dev/sieun 47461624d`, 06:18Z) carried it. A land has one parent, so
+// `git merge-base --is-ancestor d60109b34 origin/staging` failed, and the precheck counted the page from wiki-health.mjs landedClaims at once.
+test('the page API refuses a write that adds a not-landed line about a commit a staging land already carries', (t) => {
+	const f = codeRepo();
+	t.after(() => rmSync(f.repo, { recursive: true, force: true }));
+	const at = (message, when) => {
+		execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', message], {
+			cwd: f.repo,
+			env: { ...f.env, GIT_AUTHOR_DATE: when, GIT_COMMITTER_DATE: when },
+		});
+		return f.git('rev-parse', 'HEAD');
+	};
+	f.git('checkout', '-q', '-b', 'dev/sieun');
+	const fix = at('fix: log the crash', '2026-11-16T06:00:00Z');
+	f.git('checkout', '-q', '--orphan', 'staging');
+	at('staging root', '2026-11-15T00:00:00Z');
+	const land = at(`land: dev/sieun ${fix.slice(0, 9)}`, '2026-11-16T06:18:00Z');
+	f.git('update-ref', 'refs/remotes/origin/staging', land);
+	f.git('checkout', '-q', 'dev/sieun');
+	const later = at('later: not landed', '2026-11-16T07:00:00Z');
+	assert.notEqual(spawnSync('git', ['merge-base', '--is-ancestor', fix, 'origin/staging'], { cwd: f.repo, env: f.env }).status, 0);
+
+	const MAP = 'domains/architecture/telemetry-map.html';
+	const map = (lines) =>
+		html({ title: 'Telemetry map', description: 'd', last_verified: '2026-11-16T08:01Z' }, `<ol>${lines.map((l) => `<li>${l}</li>`).join('')}</ol>`);
+	const unlanded = (sha) => `At 08:01Z on 2026-11-16 <code>${sha.slice(0, 9)}</code> had not landed on staging, so the supervisor logs the crash.`;
+	const before = map(['The crawler logs each crash.']);
+
+	const [reason, ...rest] = pageWriteReasons(f.repo, MAP, before, map(['The crawler logs each crash.', unlanded(fix)]));
+	assert.deepEqual(rest, []);
+	assert.match(reason, new RegExp(`had not landed on staging.*staging land ${land.slice(0, 10)} \\(land: dev/sieun ${fix.slice(0, 9)}, 2026-11-16T06:18Z\\) already carried ${fix.slice(0, 9)}; rewrite the line`));
+	assert.match(reason, /git merge-base --is-ancestor <sha> <dev sha the newest land names>/);
+
+	assert.deepEqual(pageWriteReasons(f.repo, MAP, before, map(['The crawler logs each crash.', unlanded(later)])), [], 'a commit no land carries passes');
+	const held = map(['The crawler logs each crash.', unlanded(fix)]);
+	assert.deepEqual(pageWriteReasons(f.repo, MAP, held, held.replace('logs each crash', 'logs every crash')), [], 'a line the page already held passes');
+	assert.deepEqual(
+		pageWriteReasons(f.repo, MAP, held, map([`Staging land <code>${land.slice(0, 10)}</code> carried <code>${fix.slice(0, 9)}</code> at 06:18Z.`])),
+		[],
+		'the fix of that line passes',
+	);
+});
