@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import './no-wiki-config.mjs';
 import { assertFixtureRepo, fixtureGitEnv } from './test-git-env.mjs';
 import { pageStackRefusal, pageWriteReasons, pageWriteWarnings } from '../scripts/page-gate.mjs';
 
