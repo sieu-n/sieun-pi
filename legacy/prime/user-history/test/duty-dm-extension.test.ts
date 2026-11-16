@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
-import { activeRow, errorCounts, jarIgUserId, jars, otherRuns, parts, report, rigDeadline, senderFits, TAIL_MS, type AutopairEvidence, type DmRow, type E2eEvidence, type JarRow } from "../scripts/duties/dm-extension.ts";
+import { activeRow, errorCounts, jarIgUserId, jars, otherRuns, outreachAccounts, parts, report, rigDeadline, senderFits, TAIL_MS, type AutopairEvidence, type DmRow, type E2eEvidence, type JarRow } from "../scripts/duties/dm-extension.ts";
 import { type DsQuery, PG } from "../scripts/duties/estate-reads.ts";
 
 const METRICS = (JSON.parse(readFileSync(new URL("../scripts/duties/dm-extension.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] }).metrics;
@@ -197,4 +197,11 @@ test("a run stopped by a down gateway names it in an exit_down slice and in each
 
 test("the rigs end their Instagram waits the tail before the budget runs out", () => {
   assert.equal(rigDeadline(NOW, 1_800_000), NOW + 1_800_000 - TAIL_MS);
+});
+
+test("listOutreach's answer gives its accounts, and an error answer throws with call.mjs's errorMessage", () => {
+  const account = { platformUserId: "1", username: "a", sentToday: 2, dailyLimit: 8 };
+  assert.deepEqual(outreachAccounts(JSON.stringify({ status: "success", value: { accounts: [account], devices: [] } })), [account]);
+  assert.throws(() => outreachAccounts(JSON.stringify({ status: "error", errorMessage: "Uncaught ConvexError: unauthenticated" })), /search\/dmSenders:listOutreach answered error: Uncaught ConvexError: unauthenticated/);
+  assert.throws(() => outreachAccounts(JSON.stringify({ status: "success", value: null })), /answered success/);
 });

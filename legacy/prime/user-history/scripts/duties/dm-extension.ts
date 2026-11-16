@@ -72,7 +72,7 @@ export const WORLD = "dm-ext-duty";
  * workspace that sent in a shared thread its own copy, so the fresh org gets the reply too.
  * A fresh org also gets a fresh searchSocialAccounts row for the sender, keyed by org and Instagram id (convex/search/dmDevices.ts
  * syncAccounts), so earlier proof runs in other workspaces never use up its daily count. measured: on 10-30 Virev Test's row of 206
- * (@caiyiting8674) read sentToday 8 of dailyLimit 8 and 285 (@gimnayeon1396) 4 of 8 (search/dmDevices:listOutreach), and the queued
+ * (@caiyiting8674) read sentToday 8 of dailyLimit 8 and 285 (@gimnayeon1396) 4 of 8 (search/dmSenders:listOutreach), and the queued
  * Inbox reply of that day's proof stayed scheduled.
  */
 /** Sends one run makes from the sender in staging-real-ig.mjs: the test DM from Connections, the Inbox DM window send (?outreach=1) and
@@ -80,6 +80,9 @@ export const WORLD = "dm-ext-duty";
 export const SENDS_PER_RUN = 3;
 /** Staging Convex, self-hosted on us-metal01 since auto-sns-agent 83014234182e (11-08), the name scripts/repo/convex/call.mjs knows. */
 export const STAGING_DEPLOYMENT = "convex-staging";
+/** Connections' read of the paired browsers and their Instagram accounts. It moved here from search/dmDevices, which convex-staging
+ *  no longer serves it from (the precheck read source_error on 11-13, 11-14 and 11-15). */
+export const LIST_OUTREACH = "search/dmSenders:listOutreach";
 export const STAGING_HOST = "https://staging.virev.ai/*";
 /** measured: `convex data` on tremendous-eel-825 returned 16,384 and refused 50,001 ("Requested too many items") on 10-30, with 6,066 rows in searchEmailMessages. */
 export const ROWS_LIMIT = 16_384;
@@ -343,15 +346,28 @@ export async function jars(tmp: string, query: DsQuery): Promise<{ sender: strin
   return { sender: await file(sender), senderIgId: jarIgUserId(sender), replier: await file(replier), accounts, notes };
 }
 
-/** The sender's row in the world's org from Connections' own read (search/dmDevices:listOutreach), as an admin of that org. */
+type OutreachAccount = { platformUserId: string | null; username: string; sentToday: number; dailyLimit: number };
+
+/** The accounts in call.mjs's printed answer to listOutreach. call.mjs prints `{status: "error", errorMessage}` and exits 0 when the
+ * function throws, so an answer without `status: "success"` throws with that message. */
+export function outreachAccounts(stdout: string): OutreachAccount[] {
+  const out = JSON.parse(stdout) as { status?: string; errorMessage?: string; value?: { accounts?: OutreachAccount[] } };
+  if (out.status !== "success" || !Array.isArray(out.value?.accounts)) {
+    throw new Error(`${LIST_OUTREACH} answered ${out.status ?? "no status"}: ${out.errorMessage ?? stdout.slice(0, 300)}`);
+  }
+  return out.value.accounts;
+}
+
+/** The sender's row in the world's org from Connections' own read (search/dmSenders:listOutreach), as an admin of that org. The read
+ * passes requireOrgScope only while the world is up, because a torn-down world's org row carries deletedAt (convex/lib/functions.ts
+ * heldByMirror). */
 async function senderCount(igUserId: string): Promise<Sender> {
   const env = await sh("node", ["scripts/dev/search-clean-world.mjs", "env", "--name", WORLD]);
   const org = /^export E2E_ORG_ID="(.+)"$/m.exec(env)?.[1];
   if (!org) throw new Error(`search-clean-world env --name ${WORLD} names no E2E_ORG_ID`);
   const identity = JSON.stringify({ tokenIdentifier: `dm-extension-duty|${org}`, subject: "dm-extension-duty", orgId: org, orgRole: "org:admin" });
-  const out = JSON.parse(await sh("node", ["scripts/repo/convex/call.mjs", STAGING_DEPLOYMENT, "query", "search/dmDevices:listOutreach", "{}", identity])) as
-    { value: { accounts: { platformUserId: string | null; username: string; sentToday: number; dailyLimit: number }[] } };
-  const row = out.value.accounts.find(account => account.platformUserId === igUserId);
+  const accounts = outreachAccounts(await sh("node", ["scripts/repo/convex/call.mjs", STAGING_DEPLOYMENT, "query", LIST_OUTREACH, "{}", identity]));
+  const row = accounts.find(account => account.platformUserId === igUserId);
   if (!row) throw new Error(`Connections of the world's org ${org} lists no account ${igUserId} after autopair`);
   return { username: row.username, sentToday: row.sentToday, dailyLimit: row.dailyLimit };
 }
