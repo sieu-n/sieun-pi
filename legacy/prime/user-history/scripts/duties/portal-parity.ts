@@ -57,7 +57,7 @@ export const ORGS = 3;
 /** Fake staging balance per org: the audit's full staging run cost about $0.27 (findings-brief.md), so $1 covers a third of a run several times. */
 const BALANCE_MICROS = 1_000_000;
 /**
- * A call runs until the env answers, with no cut of this run's own: on 10-19 the 70 s page-1 cut this run had left 11 to 59 prod routes
+ * A call runs until the env answers or the portal's own limit passes (PROBE_DEADLINE_MS): on 10-19 the 70 s page-1 cut this run had left 11 to 59 prod routes
  * unprobed, because the calls past the portal's 100 a minute started at the next clock minute. apps/api-portal sets no maxDuration, so
  * Vercel's function limit (300 s by default with fluid compute) ends a call the portal never answers. Node's fetch gives up on an answer
  * with no headers after the same 300 s (undici's default headersTimeout), so the run sees that call as UND_ERR_HEADERS_TIMEOUT and counts it
@@ -66,6 +66,11 @@ const BALANCE_MICROS = 1_000_000;
  * go past it (c98).
  */
 const NO_ANSWER = new Set(["UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"]);
+/**
+ * Each probe call ends at this deadline, its body read included, and counts as a portal failure with no answer, because undici's 300 s cuts
+ * bound only the wait for headers and the gap between body chunks.
+ */
+export const PROBE_DEADLINE_MS = 301_000; // measured: Vercel's 300 s cut answered 504 FUNCTION_INVOCATION_TIMEOUT at 300.1 s (d2 11-04 01:54Z), undici's at 300.0 to 300.6 s (10-20 00:00Z)
 /**
  * The portal allows an org 100 REST calls in each clock minute (DEFAULT_REQUESTS_PER_MINUTE.rest and currentWindowStart in
  * apps/virev-demo/convex/apiPortal/rateLimits.ts), so an env's calls start one every 60 s / (100 x its orgs) (pacedSlot): prod's one org one
@@ -585,16 +590,19 @@ type Answer = ProbeResult & { body: unknown; retryAfterS?: number };
  */
 const CALLER = { "x-virev-caller": "probe:portal-parity" };
 
-export async function probe(base: string, extra: Record<string, string>, org: Org, op: string, request: ProbeRequest, note: string): Promise<Answer> {
+export async function probe(base: string, extra: Record<string, string>, org: Org, op: string, request: ProbeRequest, note: string,
+  deadlineMs = PROBE_DEADLINE_MS): Promise<Answer> {
   const url = new URL(base + request.path);
   for (const [key, value] of Object.entries(request.query)) url.searchParams.set(key, value);
   const start = Date.now();
+  const signal = AbortSignal.timeout(deadlineMs);
   try {
     const response = await fetch(url, {
       method: request.method,
       headers: { authorization: `Bearer ${org.key}`, ...CALLER, ...extra, ...(request.body === undefined ? {} : { "content-type": "application/json" }) },
       body: request.body === undefined ? null : JSON.stringify(request.body),
       redirect: "manual",
+      signal,
     });
     const text = await response.text();
     let body: unknown = null;
@@ -606,6 +614,7 @@ export async function probe(base: string, extra: Record<string, string>, org: Or
       ...(Number.isFinite(retryAfterS) && retryAfterS > 0 ? { retryAfterS } : {}) };
   } catch (error) {
     const ms = Date.now() - start;
+    if (signal.aborted) return { op, verdict: "portal", status: 0, ms, code: "no_answer", note: `${note}: no answer in ${deadlineMs / 1000} s`, body: null };
     const cause = (error as { cause?: { code?: unknown } } | null)?.cause?.code;
     if (typeof cause === "string" && NO_ANSWER.has(cause))
       return { op, verdict: "portal", status: 0, ms, code: "no_answer", note: `${note}: the portal sent no answer in ${Math.round(ms / 1000)} s (${cause})`, body: null };

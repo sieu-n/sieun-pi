@@ -1,6 +1,8 @@
 // 11-01 after 05:20Z: prod crawler 0b7addc2cb answered the old /api/live paths in their successors' flat shape, so prod's portal (main 416fae9ac8)
 // answered GET /v1/tiktok/live/profile 200 with no data (req_20a6dc07f84b09204e9ab4510ff863f1) and d2, which judged the status alone, read 82.2.
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import { bodyGap, nextPage, pageTwoRequest, probe, type Operation } from "../scripts/duties/portal-parity.ts";
 
@@ -49,4 +51,19 @@ test("a POST search's next page goes back in its request body under the name the
   assert.equal(nextPage(search, { data: { items: [], nextSearchAfter: null }, meta: {} }), null);
   const ads: Operation = { requestBody: { content: { "application/json": { schema: { properties: { cursor: {} } } } } } };
   assert.deepEqual(nextPage(ads, { data: { ads: [], next_cursor: "abc", has_more: true } }), { param: "cursor", value: "abc", in: "body" });
+});
+
+// 11-16 13:09Z: a 20 min d2 run was read as one hung call; undici cuts only header waits and chunk gaps, so a body that never ends had no end.
+test("a call with no answer by its deadline fails for the portal as no answer", { timeout: 5_000 }, async () => {
+  const server = createServer((_request, response) => { response.writeHead(200, { "content-type": "application/json" }); response.write("{"); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  try {
+    const answer = await probe(`http://127.0.0.1:${port}`, {}, { id: "org_1", key: "kb_live_x" }, "GET /v1/hang",
+      { method: "GET", path: "/v1/hang", query: {} }, "docs example", 200);
+    assert.deepEqual([answer.verdict, answer.code, answer.note], ["portal", "no_answer", "docs example: no answer in 0.2 s"]);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
 });
