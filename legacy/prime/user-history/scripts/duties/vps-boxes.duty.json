@@ -55,6 +55,11 @@
       "box": "us-metal01",
       "until": "2026-10-28T02:31:24Z",
       "step": "p1054 (3ebcc037b5)"
+    },
+    {
+      "box": "us-metal01",
+      "until": "2026-11-16T18:09:00Z",
+      "step": "p819"
     }
   ],
   "precheck": {
