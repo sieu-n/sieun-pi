@@ -69,6 +69,9 @@ const SUBJECTS: [Template, RegExp][] = [
   // PR #407 (v1.16.295, 2026-10-30): the last-day and trial-ended emails for a connected user say Slack shows them away again.
   ["trial_last_day", /^Tomorrow Slack shows you away again in .+$/],
   ["trial_d0", /^Slack shows you away again in .+$/],
+  // PR #513 (v1.16.376): the expired step's 50% off test arm, _offer_draft for an active user and NC_OFFER_DRAFT for a never-connected one.
+  ["trial_d0", /^50% off to keep .+ green$/],
+  ["trial_d0", /^Get Slack Green Pro for .+ this month$/],
   // PR #498 (v1.16.361, 2026-11-05): the after_d3 step, 3 to 4 days after the trial ends, half of each segment held out.
   ["trial_after_d3", /^Your 7 free days of Slack Green are still waiting$/],
   ["trial_after_d3", /^Your Slack Green schedule is still off for .+$/],
