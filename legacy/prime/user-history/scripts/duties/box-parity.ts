@@ -314,15 +314,19 @@ const isHeavyScope = (unit: Record<string, string>, context: LimitContext): bool
   context.scope === "user" && /^heavy-\d+-\d+\.service$/.test(unit.Id!) && unit.MemorySwapMax === context.layers.heavy.swapMax
     && new RegExp(`^\\[systemd-run\\] (\\S*/)?choom -n ${context.layers.heavy.score} -- `).test(unit.Description ?? "");
 
-/** Why the owner asked for this setting on this unit, or undefined when no layer sets it to this value. */
-export /** A CI guest's machine scope, which libvirt names machine-qemu\x2d<N>\x2dci\x2dg<N>.scope, and the CPUWeight its <cputune><shares> gives: heavy 16 vCPUs, lint and plan 6. */
+/** A CI guest's machine scope, which libvirt names machine-qemu\x2d<N>\x2dci\x2dg<N>.scope. */
 const CI_GUEST_SCOPE = /^machine-qemu\\x2d\d+\\x2dci\\x2dg\d+\.scope$/;
-const CI_GUEST_WEIGHTS = new Set(["100", "267"]);
+/** Whether a weight is round(100 x vCPUs / 6) for some whole vCPU count, the CPUWeight a CI guest's <cputune><shares> gives (ci02 slots of 6, 8, 12 and 16 vCPUs give 100, 133, 200 and 267). */
+function isCiGuestWeight(value: string): boolean {
+  const vcpus = Math.round(Number(value) * 6 / 100);
+  return vcpus >= 1 && Math.round(100 * vcpus / 6) === Number(value);
+}
 
+/** Why the owner asked for this setting on this unit, or undefined when no layer sets it to this value. */
 function layerReason(unit: Record<string, string>, prop: string, value: string, context: LimitContext): string | undefined {
   if (prop === "CPUWeight" && context.layers.weights.get(`${context.scope} ${unit.Id}`) === value) return `setup-cpu.sh sets it as CPU layer 1 ${CPU_LAYERS}`;
   if ((prop === "MemoryMax" || prop === "MemorySwapMax") && isHeavyScope(unit, context)) return `\`heavy\` sets it as memory layer 4 ${MEMORY_LAYERS}`;
-  if (prop === "CPUWeight" && context.scope === "system" && CI_GUEST_SCOPE.test(unit.Id ?? "") && CI_GUEST_WEIGHTS.has(value)) {
+  if (prop === "CPUWeight" && context.scope === "system" && CI_GUEST_SCOPE.test(unit.Id ?? "") && isCiGuestWeight(value)) {
     return "libvirt sets a CI guest's <cputune><shares> of 100 x vCPUs / 6 (auto-sns-agent apps/infra/ci-server/virt/virev-ci-virt.py domain_xml), which the owner asked for in t68 and t126";
   }
   if (prop === "CPUSchedulingPolicy" && context.scope === "system" && unit.Id === context.layers.rcuBoost.unit && value === context.layers.rcuBoost.policy) {
