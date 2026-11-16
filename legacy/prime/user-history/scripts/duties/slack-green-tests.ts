@@ -13,11 +13,14 @@ import { parseEnv } from "./local-dev-uptime.ts";
  * The call lives in PostHog itself: a test is called when its experiment in project 226805 has an end date (the duty job ends it with its
  * conclusion from the owner's PostHog tab in Aside). The repo's PostHog keys have no experiment:read or feature_flag:read scope, so the precheck
  * reads system.experiments and system.feature_flags through HogQL, which query:read allows.
+ * PostHog is the only list of tests, read fresh each run. On 11-16 a table of tests written on 11-13 had missed ten experiments started since and
+ * still listed three that had ended, so nothing here keeps a list. Every Slack Green test, in the browser or in the worker, sends PostHog's
+ * experiment exposure ($feature_flag_called) with an sg-exp- flag key the first time a person gets an arm (slack-green CLAUDE.md, A/B tests).
  * Its headline, tests_overdue, counts live tests past their read date. A test is live when it started, has no end date, is not archived and its
- * flag is not deleted. Its read date is, first match wins: a "Read date: YYYY-MM-DD" line in the experiment description, the test's read_date in
- * ~/work/slack-green-ab-tests/tests.json (the ab-results-page job's table, 11-13), or 28 days after the start. A test in tests.json with no
- * PostHog experiment (an email cohort test) counts too once its read date passes, until an experiment named with its key records its call.
- * Each live test gets one slice with each arm's people, and how many of them signed up or connected Slack within 7 days of their first
+ * flag is not deleted. Its read date is a "Read date: YYYY-MM-DD" line in the experiment description, which the test's PR writes at launch, else
+ * 28 days after the start. tests_untracked counts sg-exp- flags with exposures in the last UNTRACKED_DAYS days and no experiment on that key, such
+ * as a worker email test, so a test that never got an experiment still reaches the duty job.
+ * Each live or untracked test gets one slice with each arm's people, and how many of them signed up or connected Slack within 7 days of their first
  * exposure or paid within 28 days (`armsQuery`, the ab-results-page method), with a two-sided Fisher exact p of each test arm against control.
  * The duty job reads the experiment description for the test's own primary metric.
  */
@@ -26,13 +29,14 @@ export const HEADLINE = "tests_overdue";
 export const PROJECT = "226805";
 export const DEFAULT_READ_DAYS = 28;
 const DAY_MS = 86_400_000;
-export const TESTS_FILE = join(homedir(), "work/slack-green-ab-tests/tests.json");
+/** A flag with no exposure in this many days lost its code path (the onMiss stopped_early rule), so only newer exposures make a test untracked. */
+export const UNTRACKED_DAYS = 14;
 const REPO = process.env.SLACK_GREEN_REPO || join(homedir(), "Documents/Github/slack-green");
 
 export interface Experiment { id: number; name: string; flag: string | null; start: string | null; end: string | null; archived: boolean; flagDeleted: boolean; description: string }
 export interface ArmRow { flag: string; arm: string; n: number; signed_up: number; workspace_added: number; paid: number; last_new: string }
-/** One row of tests.json; only these fields are read. */
-export interface TableTest { flag: string; experiment_id: number | null; read_date: string | null }
+/** An sg-exp- flag's exposures: first and newest, and how many events. */
+export interface Exposure { flag: string; first: string; last: string; events: number }
 export type Query = (hogql: string) => Promise<unknown[][]>;
 
 const OUTCOMES = ["signed_up", "workspace_added", "paid"] as const;
@@ -54,11 +58,9 @@ export function fisherP(a: number, b: number, c: number, d: number): number {
 }
 
 /** The read date of a test and where it came from. */
-export function readDate(experiment: Experiment, table: readonly TableTest[]): { date: string; from: string } {
+export function readDate(experiment: Experiment): { date: string; from: string } {
   const line = /Read date:\s*(\d{4}-\d{2}-\d{2})/i.exec(experiment.description);
   if (line) return { date: line[1]!, from: "the experiment description" };
-  const row = table.find(test => test.experiment_id === experiment.id || (experiment.flag && test.flag === experiment.flag));
-  if (row?.read_date) return { date: row.read_date, from: "tests.json" };
   return { date: day(new Date(Date.parse(experiment.start!) + DEFAULT_READ_DAYS * DAY_MS).toISOString()), from: `${DEFAULT_READ_DAYS} days after the start` };
 }
 
@@ -86,40 +88,53 @@ export function armWords(rows: readonly ArmRow[]): { words: string; minP: number
   return { words: parts.length ? parts.join("; ") : "no exposures from real people", minP };
 }
 
-export function testsMetrics(experiments: readonly Experiment[], arms: readonly ArmRow[], table: readonly TableTest[], now: number):
+/** Flags with exposures and no experiment on their key, ended or not. */
+export function untracked(experiments: readonly Experiment[], exposures: readonly Exposure[]): Exposure[] {
+  const keys = new Set(experiments.map(e => e.flag));
+  return exposures.filter(exposure => !keys.has(exposure.flag));
+}
+
+export function testsMetrics(experiments: readonly Experiment[], arms: readonly ArmRow[], exposures: readonly Exposure[], now: number):
   { metrics: Record<string, number>; flagged: FlaggedSlice[] } {
   const flagged: FlaggedSlice[] = [];
   let overdue = 0, live = 0, proven = 0;
-  for (const experiment of experiments.filter(isLive).sort((a, b) => a.start!.localeCompare(b.start!))) {
-    live += 1;
-    const read = readDate(experiment, table);
-    const late = passed(read.date, now);
-    if (late) overdue += 1;
-    const rows = arms.filter(row => row.flag === experiment.flag);
+  const armsOf = (flag: string | null) => {
+    const rows = arms.filter(row => row.flag === flag);
     const { words, minP } = armWords(rows);
     if (minP !== null && minP < 0.05) proven += 1;
     const lastNew = rows.map(row => row.last_new).sort().at(-1);
+    return { words, lastNew: lastNew ? `, newest first exposure ${day(lastNew)}` : "" };
+  };
+  for (const experiment of experiments.filter(isLive).sort((a, b) => a.start!.localeCompare(b.start!))) {
+    live += 1;
+    const read = readDate(experiment);
+    const late = passed(read.date, now);
+    if (late) overdue += 1;
+    const { words, lastNew } = armsOf(experiment.flag);
     flagged.push({ at: now, kind: late ? "overdue_test" : "running_test", item: experiment.flag ?? String(experiment.id),
       sig: `${experiment.id}:${late}`,
       excerpt: `${experiment.flag ?? experiment.name} (experiment ${experiment.id}, started ${day(experiment.start!)}, read ${read.date} from ${read.from}` +
-        `${late ? `, ${pastWords(Math.floor((now - Date.parse(`${read.date}T00:00:00+09:00`)) / DAY_MS))} with no call` : ""}` +
-        `${lastNew ? `, newest first exposure ${day(lastNew)}` : ""}): ${words}` });
+        `${late ? `, ${pastWords(Math.floor((now - Date.parse(`${read.date}T00:00:00+09:00`)) / DAY_MS))} with no call` : ""}${lastNew}): ${words}` });
   }
-  for (const test of table) {
-    if (test.experiment_id !== null || experiments.some(e => e.flag === test.flag || e.name.includes(test.flag))) continue;
-    if (!test.read_date || !passed(test.read_date, now)) continue;
-    overdue += 1;
-    flagged.push({ at: now, kind: "overdue_test", item: test.flag, sig: `${test.flag}:outside`,
-      excerpt: `${test.flag} has no PostHog experiment and its read date ${test.read_date} (tests.json) passed: make an experiment named with ${test.flag}, then end it with the call` });
+  const orphans = untracked(experiments, exposures);
+  for (const exposure of orphans) {
+    const { words, lastNew } = armsOf(exposure.flag);
+    flagged.push({ at: now, kind: "untracked_test", item: exposure.flag, sig: `${exposure.flag}:untracked`,
+      excerpt: `${exposure.flag} (no PostHog experiment, first exposure ${day(exposure.first)}, ${exposure.events} exposure events${lastNew}): ${words}` });
   }
-  return { metrics: { [HEADLINE]: overdue, tests_live: live, tests_live_p_under_005: proven, source_errors: 0 }, flagged };
+  return { metrics: { [HEADLINE]: overdue, tests_untracked: orphans.length, tests_live: live, tests_live_p_under_005: proven, source_errors: 0 }, flagged };
 }
 
 const EXPERIMENTS = `SELECT e.id, e.name, f.key, e.start_date, e.end_date, e.archived, f.deleted, e.description
 FROM system.experiments AS e LEFT JOIN system.feature_flags AS f ON f.id = e.feature_flag_id ORDER BY e.id`;
 
+/** Every sg-exp- flag that got an exposure in the last UNTRACKED_DAYS days, with its first exposure ever. */
+const EXPOSURES = `SELECT toString(properties.$feature_flag) AS flag, toString(min(timestamp)), toString(max(timestamp)), count() FROM events
+WHERE event = '$feature_flag_called' AND toString(properties.$feature_flag) LIKE 'sg-exp-%'
+GROUP BY flag HAVING max(timestamp) >= now() - INTERVAL ${UNTRACKED_DAYS} DAY ORDER BY flag`;
+
 /**
- * QA and internal people, by the email on their person, the same regex as the ab-results-page table (tests.json `qa_email_regex`, 11-13), so
+ * QA and internal people, by the email on their person, the same regex as the ab-results-page table (its `qa_email_regex`, 11-13), so
  * the duty and the page read the same numbers. On 11-13 the duty's first version counted any conversion after exposure with the project test
  * filters and read sg-exp-home-1 at 20 of 478 against 10 of 438 signups (p 0.14) while the page read 19 of 483 against 7 of 442 (p 0.045).
  */
@@ -158,27 +173,32 @@ export function toExperiment(row: unknown[]): Experiment {
     end: row[4] ? String(row[4]) : null, archived: Boolean(row[5]), flagDeleted: Boolean(row[6]), description: String(row[7] ?? "") };
 }
 
-export async function measureTests(query: Query, table: readonly TableTest[], tableError: string | undefined, now: number): Promise<PrecheckOutput> {
+export async function measureTests(query: Query, now: number): Promise<PrecheckOutput> {
   const at = now;
   let experiments: Experiment[];
   try { experiments = (await query(EXPERIMENTS)).map(toExperiment); }
   catch (error) {
     return { metrics: { [HEADLINE]: 0, source_errors: 1 }, flagged: [{ at, kind: "source_error", excerpt: `PostHog system.experiments read failed: ${message(error)}` }] };
   }
+  const errors: string[] = [];
+  let exposures: Exposure[] = [];
+  try {
+    exposures = (await query(EXPOSURES)).map(row => ({ flag: String(row[0]), first: String(row[1]), last: String(row[2]), events: Number(row[3]) }));
+  } catch (error) { errors.push(`the sg-exp- exposures query failed, so untracked tests are not counted this run: ${message(error)}`); }
   const live = experiments.filter(isLive);
-  const flags = live.map(e => e.flag).filter((flag): flag is string => Boolean(flag));
+  const orphans = untracked(experiments, exposures);
+  const flags = [...live.map(e => e.flag).filter((flag): flag is string => Boolean(flag)), ...orphans.map(o => o.flag)];
   let arms: ArmRow[] = [];
-  let armsError: string | undefined;
   if (flags.length) {
-    const since = live.map(e => day(e.start!)).sort()[0]!;
+    const since = [...live.map(e => day(e.start!)), ...orphans.map(o => day(o.first))].sort()[0]!;
     try {
       arms = (await query(armsQuery(flags, since))).map(row => ({ flag: String(row[0]), arm: String(row[1]), n: Number(row[2]), signed_up: Number(row[3]),
         workspace_added: Number(row[4]), paid: Number(row[5]), last_new: String(row[6]) }));
-    } catch (error) { armsError = message(error); }
+    } catch (error) { errors.push(`the arm counts query failed, so no arm numbers this run: ${message(error)}`); }
   }
-  const { metrics, flagged } = testsMetrics(experiments, arms, table, now);
-  if (armsError) { metrics.source_errors! += 1; flagged.unshift({ at, kind: "source_error", excerpt: `the arm counts query failed, so no arm numbers this run: ${armsError}` }); }
-  if (tableError) flagged.push({ at, kind: "source_note", excerpt: `${TESTS_FILE} not read (${tableError}); read dates come from experiment descriptions or ${DEFAULT_READ_DAYS} days after the start` });
+  const { metrics, flagged } = testsMetrics(experiments, arms, exposures, now);
+  metrics.source_errors = errors.length;
+  flagged.unshift(...errors.map(excerpt => ({ at, kind: "source_error", excerpt })));
   return { metrics, flagged };
 }
 
@@ -208,12 +228,7 @@ async function main(): Promise<void> {
   const key = env.POSTHOG_PERSONAL_API_KEY;
   let result: PrecheckOutput;
   if (!key) result = { metrics: { [HEADLINE]: 0, source_errors: 1 }, flagged: [{ at: Date.now(), kind: "source_error", excerpt: `POSTHOG_PERSONAL_API_KEY is not set in ${REPO}/scripts/seo-agent/.env` }] };
-  else {
-    let table: TableTest[] = [];
-    let tableError: string | undefined;
-    try { table = (JSON.parse(await readFile(TESTS_FILE, "utf8")) as { tests?: TableTest[] }).tests ?? []; } catch (error) { tableError = message(error); }
-    result = await measureTests(posthogQuery(key, env.POSTHOG_PROJECT_ID || PROJECT, env.POSTHOG_HOST || undefined), table, tableError, Date.now());
-  }
+  else result = await measureTests(posthogQuery(key, env.POSTHOG_PROJECT_ID || PROJECT, env.POSTHOG_HOST || undefined), Date.now());
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }
 
