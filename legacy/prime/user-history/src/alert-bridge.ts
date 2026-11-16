@@ -773,16 +773,28 @@ export class GrafanaError extends Error {
   constructor(readonly status: number) { super(`Grafana answered ${status} for the alert list`); }
 }
 
-/** Grafana's answer to `path`, with the url and token of the config file; null when the file is gone. */
+/**
+ * Grafana's answer to `path`, with the url and token of the config file; null when the file is gone. A read that gets no HTTP answer from
+ * `url` goes again to the config's optional `tailnetUrl`, the same Grafana served over Tailscale. From 07:10:54Z to 07:26:35Z on 11-16 every
+ * connect from us-metal02 to obs.virev.ai timed out while tailscaled still reached us-metal01 through the derp-17 relay, and the bridge read
+ * nothing for 16 min. A ts.net name resolves in tailscaled itself, so the second read also outlives an upstream DNS failure such as the
+ * EAI_AGAIN hours of 11-06.
+ */
 async function readGrafana(configFile: string, path: string): Promise<unknown> {
   const text = await readFile(configFile, "utf8").catch((error: unknown) => { if (missing(error)) return null; throw error; });
   if (text === null) return null;
   const config = JSON.parse(text) as unknown;
   if (!isRecord(config) || typeof config.url !== "string" || typeof config.token !== "string") throw new Error(`${configFile} needs a url and a token`);
-  // The alert list answered in 135 to 411 ms over 30 reads at load 367 on 10-19 16:30Z, and the rule list in 130 ms to 1.9 s over 6 reads at
-  // 17:40Z. A read past 20 s is a stall on our side: at 16:10Z the box was in swap with 11 OOM kills, a 10 s sleep elsewhere on it woke up to
-  // 114 s late, and the read aborted with the next poll 30 s on.
-  const response = await fetch(new URL(path, config.url), { headers: { Authorization: `Bearer ${config.token}` }, signal: AbortSignal.timeout(20_000) });
+  const read = (base: string) =>
+    // The alert list answered in 135 to 411 ms over 30 reads at load 367 on 10-19 16:30Z, and the rule list in 130 ms to 1.9 s over 6 reads at
+    // 17:40Z. A read past 20 s is a stall on our side: at 16:10Z the box was in swap with 11 OOM kills, a 10 s sleep elsewhere on it woke up to
+    // 114 s late, and the read aborted with the next poll 30 s on.
+    fetch(new URL(path, base), { headers: { Authorization: `Bearer ${config.token}` }, signal: AbortSignal.timeout(20_000) });
+  const tailnet = typeof config.tailnetUrl === "string" ? config.tailnetUrl : null;
+  const response = await read(config.url).catch(async (error: unknown) => {
+    if (tailnet === null) throw error;
+    return read(tailnet).catch((second: unknown) => { throw new Error(`${errorText(error)}; through ${tailnet}: ${errorText(second)}`); });
+  });
   if (!response.ok) throw new GrafanaError(response.status);
   return response.json();
 }
