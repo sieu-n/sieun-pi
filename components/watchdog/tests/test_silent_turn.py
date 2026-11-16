@@ -121,6 +121,17 @@ class SilentTurn(unittest.TestCase):
         verdict, sends = self.cycle([*ANSWERED, agent_message(40), assistant(39, stop='error')])
         self.assertEqual((verdict, len(sends)), ('DROPPED_TURN', 1))
 
+    def test_a_run_that_refused_two_turns_in_a_row_gets_no_wake(self):
+        # 11-16: this cycle woke "watchlist collabs throughput 11-16" (01a1e481) at 14:31Z and 18:11Z, and each wake ended in the same refusal.
+        refusal = 'Model refused to respond (refusal): reasoning_extraction: This request was blocked [request_id: req_1]'
+        refused = lambda minutes_ago: {**assistant(minutes_ago, stop='error'), 'message': {
+            **assistant(minutes_ago, stop='error')['message'], 'errorMessage': refusal}}
+        loop = [*ANSWERED, user('is the audit done?', 100), refused(99), user('[check-in] The check-in restarted you.', 60), refused(59)]
+        first = self.cycle(loop)
+        second = self.cycle(loop)
+        once = self.cycle([*ANSWERED, user('is the audit done?', 100), refused(99)])
+        self.assertEqual((first, second[0], once[0], len(self.calls_of('send'))), (('REFUSAL_LOOP', []), 'NOTICED', 'DROPPED_TURN', 1))
+
     def test_one_owed_input_gets_one_resume_notice(self):
         owed = [*ANSWERED, user('is the audit done?', 80)]
         first = self.cycle(owed)

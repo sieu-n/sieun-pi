@@ -44,6 +44,8 @@ and a reason this script does not know. Rate limits (429), overloaded (529),
 5xx errors and a model refusal (often a false positive that passes on retry;
 the head decides) count too, but a run is listed only once pi-pool says the
 account its next request gets can serve; resuming earlier fails again at once.
+A run whose last two turns both ended in a refusal gets nothing, because its
+history trips the refusal and every wake fails the same way (refusal_loop).
 
 Each interrupted run maps to its head (the top-level root). Idle heads get one
 message (default "continue") that names the interrupted runs below them.
@@ -1970,6 +1972,32 @@ def failed_compaction(entries, last):
     return None
 
 
+MODEL_REFUSAL = re.compile(r"refused to respond", re.IGNORECASE)
+# One refusal often passes on retry, so a run gets one. On 11-16 "watchlist collabs throughput 11-16" (01a1e481) refused every turn from 13:24:51Z,
+# because its history replayed one 65 KB tool result, and a check-in, this pass, the watchdog and a quota-resume woke it six times into 18:11Z.
+REFUSAL_LOOP_TURNS = 2
+
+
+def refusal_streak(entries):
+    """How many turns in a row ended in a model refusal, counted back from the newest. A turn the model answered ends the count, and a turn
+    that failed before the model read it (a rate limit, a pool hold, a dropped socket, an abort) is skipped."""
+    count = 0
+    for entry in reversed(list(entries)):
+        msg = entry.get("message") or {}
+        if entry.get("type") != "message" or msg.get("role") != "assistant":
+            continue
+        if msg.get("stopReason") == "error" and MODEL_REFUSAL.search(turn_error(msg)):
+            count += 1
+        elif msg.get("stopReason") not in ("error", "aborted"):
+            break
+    return count
+
+
+def refusal_loop(entries):
+    """Whether the run refused REFUSAL_LOOP_TURNS turns in a row: its history trips the refusal, so no automatic wake gets past it."""
+    return refusal_streak(entries) >= REFUSAL_LOOP_TURNS
+
+
 def classify(last, now, entries=(), shutdowns=list, owner=False, restarts=list):
     """("error" | "cut_off" | "empty_reply" | "worker_stopped" | "aborted", text) when the last message shows the run stopped mid-work, else None."""
     if not last:
@@ -1985,6 +2013,8 @@ def classify(last, now, entries=(), shutdowns=list, owner=False, restarts=list):
         return ("empty_reply", "The model returned an empty reply that asked for a tool, so the turn ended.")
     if role == "assistant" and stop == "error":
         err = turn_error(msg)
+        if refusal_loop(entries):
+            return None
         if INTERRUPTION_ERROR.search(err):
             return ("error", err)
         failed = failed_compaction(entries, last) if err.startswith(REQUEST_NOT_SENT) else None

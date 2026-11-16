@@ -1723,6 +1723,7 @@ export class Chats {
     }
     for (const push of pushes) {
       const session = sessionOf(push);
+      if (push.act === "refusing") { this.log(`chat ${chat.slice(0, 8)}: check-in stopped pushing job ${push.fact.name}: ${push.why}`); continue; }
       try {
         if (!session) throw new Error("no session id");
         if (push.act === "restart") await this.threads.restart(session, jobPushMessage(push), true);

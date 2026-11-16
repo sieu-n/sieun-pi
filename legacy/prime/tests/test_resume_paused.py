@@ -289,6 +289,16 @@ class ResumePausedTests(unittest.TestCase):
         self.session("refusedrefus", [assistant(30, "error", "Model refused to respond (refusal) [request_id: req_1]")])
         self.assertEqual([p["id"] for p in self.run_resume(dry_run=True)["paused"]], ["refusedrefus"])
 
+    def test_a_run_that_refused_two_turns_in_a_row_gets_no_continue(self):
+        # 11-16: "watchlist collabs throughput 11-16" (01a1e481) refused every turn from 13:24:51Z, a 429 sat between two of them, and this
+        # pass sent it "continue" at 13:59:02Z after its second refusal.
+        refusal = "Model refused to respond (refusal): reasoning_extraction: This request was blocked [request_id: req_1]"
+        self.session("looplooploop", [role(90, "toolResult"), assistant(80, "error", refusal), role(70, "user"),
+                                      assistant(60, "error", "429 rate limit"), role(50, "user"), assistant(40, "error", refusal)])
+        self.session("answeredfirs", [assistant(80, "error", refusal), role(70, "user"), assistant(60, "stop"), role(50, "user"),
+                                      assistant(40, "error", refusal)])
+        self.assertEqual([p["id"] for p in self.run_resume(dry_run=True)["paused"]], ["answeredfirs"])
+
     def test_runs_in_a_failed_worker_are_listed_and_their_head_is_never_messaged(self):
         # 10-12: a Prime worker died under swap; its head and 22 children kept reading "working", and every abort and send
         # answered "Session worker is failed", so Resume could never bring them back.

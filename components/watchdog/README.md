@@ -65,6 +65,13 @@ The watchdog finds Prime Agent sessions that stopped making progress and recover
 3. When the daemon refuses a notice for its session uuid ("Unknown active session"), the cycle hands it to the chat service's agent outbox (`api/agent/notice`), which relays it to the parent of a subagent with no worker or opens a root from its file.
 4. From 10-20 to 10-22 the Mac sent 1291 notices, 1203 of them to uuids the daemon refused, and 1011 to five jobs whose trees were gone: box-takeover, douyin duty box sync, vite-mem, discover page errors and limits-flagged-10-16.
 
+## Refusal loops
+
+1. A session whose last two turns both ended in a model refusal ("Model refused to respond") reads `REFUSAL_LOOP` and gets no wake, because its history trips the refusal and every wake fails the same way.
+2. resume_paused.py's `refusal_loop` decides it for this cycle and for the resume pass, and it skips turns that failed before the model read them, such as a 429 or a pool hold.
+3. The cycle writes one `"skip": "refusal_loop"` line with the input's `owed_since`, so later cycles read it as `NOTICED`, and the chat's check-in tells the chat once (`checkin-jobs.ts`).
+4. On 11-16 "watchlist collabs throughput 11-16" (01a1e481) refused every turn from 13:24:51Z, and a check-in, the resume pass, this cycle at 14:31Z and 18:11Z and a quota-resume woke it six times. `tests/test_silent_turn.py` replays that case.
+
 ## Finished work
 
 1. A dropped turn of a job a chat lists (`api/threads/<chat>/agents`) gets a wake only while its work is owed: an open step of the chat's board names it, the chat shows it working, or an owner message to it has no reply.

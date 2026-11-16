@@ -14,8 +14,19 @@ import { zTime } from "./checkin-goals.ts";
  */
 
 /** What the check-in keeps per job: when its progress mark last moved, that mark, and when the check-in last pushed it. */
-export interface JobMemo { mark: number; since: number; pushed?: number }
-export type JobAct = "nudge" | "restart";
+/**
+ * When it is set, `refused` counts the check-in's restarts of a job whose last turn ended in a model refusal, and `refusing` marks the one line
+ * that told the chat the job refuses every turn.
+ */
+export interface JobMemo { mark: number; since: number; pushed?: number; refused?: number; refusing?: true }
+/** A nudge steers the job, a restart starts a turn with the message, and `refusing` sends the job nothing and tells the chat once. */
+export type JobAct = "nudge" | "restart" | "refusing";
+const MODEL_REFUSAL = /refused to respond/i;
+/**
+ * A model refusal often passes on retry, so a job that refused gets one restart. On 11-16, Prospect feature bro's check-in restarted "watchlist
+ * collabs throughput 11-16" (01a1e481) after a refusal at 13:46Z. Its history held a 65 KB tool result, and every later turn up to 18:11Z refused again.
+ */
+const REFUSAL_RESTARTS = 1;
 export interface JobPush { fact: JobFact; act: JobAct; idleMs: number; owes: string[]; why: string }
 
 /**
@@ -33,7 +44,10 @@ export function jobPushes(facts: readonly JobFact[], views: readonly StepView[],
     const mark = Math.max(fact.lastMessage?.factsAt ?? 0, ...owned.map(movedAt));
     const before = memos?.[fact.key];
     const since = !before ? mark || now : mark > before.mark ? mark : before.since;
-    const memo: JobMemo = { mark, since, ...(before?.pushed !== undefined ? { pushed: before.pushed } : {}) };
+    const failed = fact.state === "failed" || (fact.state === "ended" && fact.error !== undefined);
+    const refused = failed && MODEL_REFUSAL.test(fact.error ?? "");
+    const memo: JobMemo = { mark, since, ...(before?.pushed !== undefined ? { pushed: before.pushed } : {}),
+      ...(refused && before?.refused ? { refused: before.refused } : {}), ...(refused && before?.refusing ? { refusing: true as const } : {}) };
     kept[fact.key] = memo;
     // A job waiting on the token pool, queued for a working slot, parked on a provider limit or in its turn (streaming or in a tool call) is not pushed, and the wait does
     // not count as time with no progress: a restart aborts the waiting model request and puts the job at the end of the queue again.
@@ -44,10 +58,16 @@ export function jobPushes(facts: readonly JobFact[], views: readonly StepView[],
     if (fact.wake || (memo.pushed !== undefined && now - memo.pushed < everyMs && memo.pushed >= since)) return [];
     if (held.job?.(fact) || (owned.length && held.step && owned.every(held.step))) return [];
     const idleMs = now - since;
-    const failed = fact.state === "failed" || (fact.state === "ended" && fact.error !== undefined);
+    if ((memo.refused ?? 0) >= REFUSAL_RESTARTS) {
+      if (memo.refusing) return [];
+      memo.refusing = true;
+      return [{ fact, act: "refusing", idleMs, owes: owned.map(view => view.item.text),
+        why: `its last turn ended in a model refusal again after the check-in restarted it (${fact.error!.trim().slice(0, 80)})` }];
+    }
     const act: JobAct | null = failed || idleMs >= 2 * everyMs ? "restart" : idleMs >= everyMs ? "nudge" : null;
     if (!act) return [];
     memo.pushed = now;
+    if (refused) memo.refused = (memo.refused ?? 0) + 1;
     const why = failed ? `its last turn ended in an error${fact.error ? ` (${fact.error.trim().slice(0, 80)})` : ""}`
       : `nothing moved for ${Math.round(idleMs / 60_000)} min, since ${zTime(since)}`;
     return [{ fact, act, idleMs, owes: owned.map(view => view.item.text), why }];
@@ -77,9 +97,13 @@ export function jobPushLine(pushes: readonly JobPush[], failed: ReadonlySet<stri
     ...names("nudge").length ? [`nudged ${names("nudge").join(", ")}`] : [],
   ];
   const sent = parts.length ? `${parts.join("; ")}, because nothing moved on their work.` : "";
+  const refusing = done.filter(push => push.act === "refusing");
+  const refused = refusing.length ? `${refusing.map(({ fact }) => `${ownerLabel(fact)} (${fact.sessionId ?? fact.key})`).join(", ")} ` +
+    `ended ${refusing.length === 1 ? "its" : "each"} last turn in a model refusal again after a restart, so its history trips the refusal and no ` +
+    "automatic wake reaches it now. Start a fresh job with its brief and its open steps, leave out the history that tripped the refusal, and archive this one." : "";
   // mac-management 10-19 16:44Z: a failed push called four live jobs lost; email template made another tool call ten seconds later.
   const uncertain = unconfirmed.length ? `Could not confirm delivery to ${unconfirmed.map(({ fact }) => `${ownerLabel(fact)} (${fact.sessionId ?? fact.key})`).join(", ")}. ` +
     "The message may already be queued or accepted. Check each existing session's current state, queued messages, provider wait and recent progress before retrying; keep its session and model. " +
     "A delivery failure does not mean the job stopped. Resume the existing job when possible; replace it only after confirming it cannot be resumed and still owns unfinished work." : "";
-  return sent || uncertain ? `Check-in: ${[sent, uncertain].filter(Boolean).join(" ")}` : null;
+  return sent || refused || uncertain ? `Check-in: ${[sent, refused, uncertain].filter(Boolean).join(" ")}` : null;
 }

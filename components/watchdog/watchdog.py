@@ -151,6 +151,7 @@ def snapshot():
             if e.get('type') == 'message' and m.get('role') == 'assistant' and said_something(m):
                 last_asst = _ts(e.get('timestamp'))
         last_input, owed_since, owner_owed = owed_input(evs)
+        refusing = bool(owed_since) and _rp().refusal_loop(evs)
         awaiting = round((now - last_input).total_seconds() / 60, 1) if owed_since else None
         lm = (last_msg or {}).get('message') or {}
         limited = lm.get('role') == 'assistant' and lm.get('stopReason') == 'error' and (
@@ -199,6 +200,7 @@ def snapshot():
             owed_since=owed_since.isoformat() if owed_since else None,
             owner_owed=owner_owed,
             limited=limited,
+            refusing=refusing,
             last_asst_min=last_asst_min,
             sleepy=sleepy,
             busy_procs=[f'{c[4][:60]} cpu={c[2]:.0f}s {c[3]}%' for c in busy],
@@ -249,7 +251,7 @@ def read_log(hours=3):
             e = json.loads(ln)
         except Exception:
             continue
-        if e.get('owed_since') and e.get('sid') and e.get('skip') in (None, 'work_done'):
+        if e.get('owed_since') and e.get('sid') and e.get('skip') in (None, 'work_done', 'refusal_loop'):
             noticed.add((e['sid'], e['owed_since']))
         t = _ts(e.get('at'))
         if t and t >= cut and e.get('sid') and not e.get('skip'):
@@ -285,7 +287,7 @@ def classify(r, prev, repeats=None):
         # worker, so a parked session reads idle with input owed, or working with no output, for as long as it waits. pi-pool wakes it when
         # its slot starts.
         return 'SLOT_WAIT', f"{r['park']['words']}; pi-pool wakes it when its slot starts"
-    """-> (verdict, reason). Verdicts: SELF, HELD, ARCHIVED, SLOT_WAIT, NOTICED, WORK_DONE, OK, BUSY_TOOL, SUSPECT, FROZEN_TURN, FROZEN_TOOL,
+    """-> (verdict, reason). Verdicts: SELF, HELD, ARCHIVED, SLOT_WAIT, NOTICED, REFUSAL_LOOP, WORK_DONE, OK, BUSY_TOOL, SUSPECT, FROZEN_TURN, FROZEN_TOOL,
     STUCK_TOOL."""
     if r['life'] == 'live' and r['act'] == 'idle' and (r.get('awaiting_min') or 0) >= 30 and r.get('limited'):
         # The turn ended on a 429 or a pi-pool slot refusal, and the chat service's idle unload stops such a session while the pool holds
@@ -295,6 +297,10 @@ def classify(r, prev, repeats=None):
         return 'POOL_WAIT', 'last turn failed on a provider rate limit or a pi-pool hold; the resume sweep continues it once the pool admits its tree'
     if r['life'] == 'live' and r['act'] == 'idle' and (r.get('awaiting_min') or 0) >= 30 and r.get('noticed'):
         return 'NOTICED', f"input owed since {r['owed_since']} already got its one resume notice"
+    if r['life'] == 'live' and r['act'] == 'idle' and (r.get('awaiting_min') or 0) >= 30 and r.get('refusing'):
+        # Its last two turns ended in a model refusal, so its history trips the refusal and a wake fails the same way. On 11-16 this cycle
+        # woke "watchlist collabs throughput 11-16" (01a1e481) at 14:31Z and 18:11Z after refusals, and each wake took a pi-pool slot.
+        return 'REFUSAL_LOOP', 'its last two turns ended in a model refusal; its chat check-in shows it to the chat, and no wake gets past it'
     if r['life'] == 'live' and r['act'] == 'idle' and (r.get('awaiting_min') or 0) >= 30 and r.get('work_done'):
         return 'WORK_DONE', r['work_done']
     if r['life'] == 'live' and r['act'] == 'idle' and (r.get('awaiting_min') or 0) >= 30:
@@ -585,9 +591,9 @@ def _cycle(dry_run=False, verbose=True):
         verdicts.append(r)
         if v in ('DROPPED_TURN', 'PHANTOM_TURN', 'FROZEN_TURN', 'FROZEN_TOOL', 'STUCK_TOOL') and not admit(r, v):
             continue
-        if v == 'WORK_DONE' and not dry_run:
+        if v in ('WORK_DONE', 'REFUSAL_LOOP') and not dry_run:
             with open(LOG_F, 'a') as f:
-                f.write(json.dumps({'skip': 'work_done', 'id': r['id'], 'sid': r['sid'], 'name': r['name'], 'owed_since': r.get('owed_since'),
+                f.write(json.dumps({'skip': v.lower(), 'id': r['id'], 'sid': r['sid'], 'name': r['name'], 'owed_since': r.get('owed_since'),
                                     'why': why, 'at': dt.datetime.now(dt.timezone.utc).isoformat()}) + '\n')
         if v == 'DROPPED_TURN' and not dry_run:
             daemon_call({'type': 'resume_queue', 'activeSessionId': r['id']})
@@ -707,7 +713,7 @@ def _cycle(dry_run=False, verbose=True):
     if verbose:
         print(f'== watchdog {now.isoformat(timespec="seconds")}')
         order = {'FROZEN_TURN': 0, 'FROZEN_TOOL': 0, 'STUCK_TOOL': 0, 'SUSPECT': 1,
-                 'PHANTOM_TURN': 0, 'DROPPED_TURN': 0, 'NOTICED': 1, 'WORK_DONE': 1, 'MODEL_STALL': 1, 'POOL_WAIT': 1, 'SLOT_WAIT': 1, 'CHILD_WEDGED': 1,
+                 'PHANTOM_TURN': 0, 'DROPPED_TURN': 0, 'NOTICED': 1, 'WORK_DONE': 1, 'REFUSAL_LOOP': 1, 'MODEL_STALL': 1, 'POOL_WAIT': 1, 'SLOT_WAIT': 1, 'CHILD_WEDGED': 1,
                  'BUSY_TOOL': 2, 'IN_FLIGHT': 2,
                  'HELD': 2, 'ARCHIVED': 3, 'OK': 3, 'SELF': 4}
         for r in sorted([x for x in verdicts if x['verdict'] not in ('OK', 'SELF', 'IN_FLIGHT')],
