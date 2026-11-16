@@ -16,7 +16,7 @@ from wd_common import (LOG_F, STATE_F, WATCH, _rp, _run, _tail_events, _ts, chat
 from wd_daemon import daemon_call, ui_retry, unwedge
 from wd_heartbeats import heartbeat_rearm
 from wd_probe import probe_model, probe_verdict
-from wd_procs import (_children, _descendants, _fd1_is_pipe, _ps_table, _tls_confirmed, _tls_count, kill_stuck_cell,
+from wd_procs import (_children, _descendants, _fd1_is_pipe, _ps_table, _tls_confirmed, _tls_count, interrupt_cell, kill_stuck_cell, session_kernel,
                       parked_shells, pressure, session_busy_tools, shell_belongs_to, stuck_cell_procs, unblock)
 
 SELF_SESSION = '01a01846-1bcc-732d-b587-dcfccf752d68'   # this watchdog session; never touch
@@ -387,6 +387,40 @@ NUDGE = (
 )
 
 
+# The texts of a shared worker's recoveries, which stop nothing else in the worker; NUDGE stays for a stop+send, which restarts it.
+INTERRUPTED = (
+    "[watchdog] Your tool call sat {mins} minutes with nothing running under it ({why}), so I sent {signal} to your kernel (pid {kernel}). "
+    "SIGUSR2 returns the call with KeyboardInterrupt and keeps your variables; SIGTERM, sent when one interrupt did not free you, ends "
+    "the kernel, and Prime starts a new one from your last snapshot. Re-check the step that call was doing before you trust it."
+)
+STEERED = (
+    "[watchdog] This session looks wedged for {mins} minutes: {why}. I found no process or kernel of yours to stop, so this message is all "
+    "I did; it arrives when your running call returns."
+)
+
+
+def interrupted_before(sid, kernel, log_file=None, window=2_000_000):
+    """Whether an earlier cycle already sent this session's kernel pid an interrupt, read from the tail of log.jsonl."""
+    log_file = LOG_F if log_file is None else log_file
+    try:
+        with open(log_file, 'rb') as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - window))
+            tail = f.read().decode('utf-8', 'replace').splitlines()
+    except OSError:
+        return False
+    for line in tail:
+        if '"interrupt-cell"' not in line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get('sid') == sid and str(row.get('kernel')) == str(kernel):
+            return True
+    return False
+
+
 def nudge(r, why, shared_worker=False, repeats=0, dry_run=False):
     """Recover one wedged session.
 
@@ -451,8 +485,19 @@ def nudge(r, why, shared_worker=False, repeats=0, dry_run=False):
                 out['method'] = 'kill-stuck-cell'
                 out['killed'] = cell
                 killed = cell
-        if not killed:
-            st = pa('send', '--steer', r['sid'] or r['id'], msg)
+        kernel = session_kernel(r['pid'], r['sid']) if not killed and (r['tools'] or r['bash']) and r['sid'] else None
+        if kernel:
+            # Third shape: no process under the call at all, so the kernel itself waits (a Prime host request with no reply).
+            # Before this, the steer below was all a shared worker got: on 11-16 frontend bro sat 11.7 h in one call, and 16
+            # steers that claimed a restart filled its queue to the daemon's 20 while nothing was stopped.
+            again = interrupted_before(r['sid'], kernel)
+            out['method'] = 'interrupt-cell'
+            out['kernel'] = kernel
+            out['signal'] = interrupt_cell(kernel, again=again)
+            st = pa('send', '--steer', r['sid'], INTERRUPTED.format(mins=mins, why=why, kernel=kernel, signal=out['signal']))
+            out['send_rc'] = st.returncode
+        elif not killed:
+            st = pa('send', '--steer', r['sid'] or r['id'], STEERED.format(mins=mins, why=why))
             out['method'] = 'steer'
             out['send_rc'] = st.returncode
             out['send_out'] = (st.stdout or st.stderr).strip()[:200]

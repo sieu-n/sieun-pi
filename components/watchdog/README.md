@@ -107,3 +107,10 @@ WATCHDOG_DIR=<folder with the old watchdog files> python3 -B -m unittest compone
 ```
 
 The second line runs the probe cases against an old `model_alive()`, where the 12:44Z, 12:54Z and 13:14Z cases fail.
+
+## Frozen calls in a shared worker
+
+1. A subagent runs in its parent's worker, so the cycle never stops that worker. When a call is frozen and no pipe holder or parked shell sits under it, the cycle interrupts the cell of the kernel whose `RLM_HARNESS_STATE_DIR` names the session.
+2. The first interrupt is SIGUSR2, which the board skill's handler turns into a KeyboardInterrupt in the cell, so the kernel keeps its variables. When an earlier cycle already sent that kernel pid an interrupt and the session is frozen again, the cycle sends SIGTERM, and Prime starts a new kernel from the last snapshot.
+3. The kernel's session comes from `/proc/<pid>/environ` on Linux and from `ps -E` on the Mac, which has no `/proc`.
+4. On 11-16 frontend bro's kernel on the Mac lost its request reader at about 10:23Z, and its `agent_message.send` waited 11.7 h for a reply it could never read. The cycle sent it 85 steers that each said "I stopped the stuck worker and restarted you", 16 landed and filled its queue to the daemon's 20, and nothing was stopped. A steer that stops nothing now says so. `tests/test_frozen_kernel.py` replays that case.

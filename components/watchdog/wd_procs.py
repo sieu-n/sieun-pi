@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -140,17 +141,49 @@ def _rlm_kernel_pids(worker_pid, table):
     return [p for p in _children(worker_pid, table) if 'rlm.repl' in table[p][5]]
 
 
-def kernel_session(pid):
-    """The session a kernel serves: the last session id in its RLM_HARNESS_STATE_DIR (session-artifacts/<root>/.../<session>/harness)."""
+def _environ(pid):
+    """A process's environment as KEY=value byte strings: /proc on Linux, else `ps -E` (macOS prints the environment after the command)."""
     try:
-        env = Path(f'/proc/{pid}/environ').read_bytes().split(b'\0')
+        return Path(f'/proc/{pid}/environ').read_bytes().split(b'\0')
+    except FileNotFoundError:
+        if Path('/proc/self').exists():
+            return None
     except OSError:
         return None
-    for kv in env:
+    out = subprocess.run(['ps', '-E', '-ww', '-o', 'command=', '-p', str(pid)], capture_output=True, text=True)
+    return [part.encode() for part in out.stdout.split()] if out.returncode == 0 else None
+
+
+def kernel_session(pid):
+    """The session a kernel serves: the last session id in its RLM_HARNESS_STATE_DIR (session-artifacts/<root>/.../<session>/harness).
+
+    The Mac has no /proc, so this read `None` for every kernel there, and the watchdog could never tell whose tool a shared worker ran."""
+    for kv in _environ(pid) or []:
         if kv.startswith(b'RLM_HARNESS_STATE_DIR='):
             ids = SESSION_ID.findall(kv.decode('utf-8', 'replace'))
             return ids[-1] if ids else None
     return None
+
+
+def session_kernel(worker_pid, sid, table=None, read_session=kernel_session):
+    """The pid of the RLM kernel that serves session `sid` in this worker, or None."""
+    table = _ps_table() if table is None else table
+    return next((k for k in _rlm_kernel_pids(worker_pid, table) if read_session(k) == sid), None)
+
+
+def interrupt_cell(kernel_pid, again=False, kill=os.kill):
+    """Returns the cell a kernel waits in, or ends a kernel that cannot take a cell any more; the signal name it sent.
+
+    The board skill installs a SIGUSR2 handler in every Prime kernel (skills/board/src/board/__init__.py `_interrupt_cell`) that cancels
+    the running cell, so the call returns KeyboardInterrupt and the kernel keeps its variables. A kernel without that handler ends on
+    SIGUSR2, and its worker starts a new one, which also returns the call. `again` (this kernel was interrupted in an earlier cycle and
+    the session is frozen again) sends SIGTERM: on 11-16 frontend bro's kernel lost its request reader (EBADF in rlm.repl
+    `_read_requests` at about 10:23Z), so its `agent_message.send` waited 11.7 h for a host reply that could never be read, and the
+    next cell after the interrupt never started, since no execute request could reach the kernel either.
+    """
+    signal_name = 'SIGTERM' if again else 'SIGUSR2'
+    kill(int(kernel_pid), getattr(signal, signal_name))
+    return signal_name
 
 
 def session_busy_tools(worker_pid, sid, table=None, read_session=kernel_session):
