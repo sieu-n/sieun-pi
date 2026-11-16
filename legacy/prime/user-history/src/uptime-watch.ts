@@ -3,6 +3,7 @@ import { hostname } from "node:os";
 import { dirname } from "node:path";
 import { ALERT_ROUTES, type AlertRoute, OPS_ROUTE } from "./alert-routes.ts";
 import { missing } from "./locked-json.ts";
+import { type Metal01Path, metal01PathText, pingMetal01 } from "./metal01-path.ts";
 import { TICK_MS } from "./wakes.ts";
 
 /**
@@ -16,6 +17,11 @@ import { TICK_MS } from "./wakes.ts";
  * with "fetch failed (EAI_AGAIN)" for about 15 min, and each paged its chats that customers could not reach prod, which answered fine from
  * outside. api.virev.ai runs on Vercel and crawler.virev.ai on us-metal01, so both failing DNS or connect at once is this box's own network:
  * the watch then sends ops guy one line about the box once it lasted DOWN_MS, and no target pages while it lasts.
+ *
+ * From 07:10:54Z to 07:26:35Z on 11-16 only the path from us-metal02 to us-metal01's addresses failed: crawler.virev.ai timed out from here
+ * while it served every other caller, and the old watch told Crawler VP and api portal vp that customer crawls failed. A target on us-metal01
+ * whose page is due with a network error now asks Tailscale first, and when the box answers only through a relay, ops guy gets one path line
+ * and the target's chats get nothing; its clock starts again, so a fault that outlives the path fault still pages.
  */
 
 /** measured: the longest normal failure run in the 7 d of prod Convex apiPortalHealthProbes rows to 10-29 05:34Z was crawler /health from 03:15:01 to 03:18:08Z on 10-28 (3 min 7 s); api.virev.ai/openapi.json failed no round. */
@@ -31,13 +37,15 @@ export interface UptimeTarget {
   /** What else fails while this target fails, in plain words. */
   impact: string;
   routes: readonly AlertRoute[];
+  /** The target is served from us-metal01, so a network failure from here may be only the path to that box. */
+  onMetal01?: boolean;
 }
 
 const route = (chat: string): AlertRoute => ALERT_ROUTES.find(entry => entry.chat === chat)!;
 
 export const UPTIME_TARGETS: readonly UptimeTarget[] = [
   { name: "crawler", url: "https://crawler.virev.ai/health", expect: { field: "status", value: "ok" },
-    impact: "every customer crawl call through api.virev.ai fails with it", routes: [route("Crawler VP"), route("api portal vp"), OPS_ROUTE] },
+    impact: "every customer crawl call through api.virev.ai fails with it", routes: [route("Crawler VP"), route("api portal vp"), OPS_ROUTE], onMetal01: true },
   { name: "api", url: "https://api.virev.ai/openapi.json", impact: "customers cannot reach the commercial API at all", routes: [route("api portal vp"), OPS_ROUTE] },
 ];
 
@@ -80,6 +88,15 @@ export function upText(target: UptimeTarget, url: string, before: TargetState, n
   return `[uptime-up] ${url} answers again at ${minute(now.lastPass)}; it gave no good answer from ${minute(before.lastPass)} (${span(now.lastPass - before.lastPass)}).${forced(target, url)}`;
 }
 
+export function pathText(host: string, url: string, since: number, at: number, error: string, path: Metal01Path): string {
+  return `[uptime-path] ${host} has had no good answer from ${url} since ${minute(since)} (${span(at - since)}; ${error}), and ${metal01PathText(path)} ` +
+    `No page went to the chats that own it; one more line follows when it answers here again.`;
+}
+
+export function pathUpText(url: string, since: number, at: number): string {
+  return `[uptime-path-up] ${url} answers this box again at ${minute(at)}; the path to it failed from ${minute(since)} (${span(at - since)}).`;
+}
+
 export function boxDarkText(host: string, since: number, at: number, errors: readonly string[]): string {
   return `[uptime-box-network] ${host} lost its network: all ${errors.length} uptime targets failed DNS or connect at once since ${minute(since)} ` +
     `(${span(at - since)}; ${errors.join(", ")}), so this is the box, not prod. No target pages its chats while every one fails this way.`;
@@ -113,6 +130,8 @@ export interface UptimeDeps {
   now?: () => number;
   /** The box the watch runs on, named in the box line; absent, os.hostname(). */
   host?: string;
+  /** How us-metal01 answers over Tailscale; absent, one `tailscale ping`. */
+  metal01Path?: () => Promise<Metal01Path | null>;
 }
 
 async function readJson(file: string, log: (line: string) => void): Promise<Record<string, unknown>> {
@@ -143,6 +162,8 @@ export class UptimeWatch {
   private readonly latest = new Map<string, string | null>();
   /** When every target's newest probe first failed on the network, and whether the box line went out; null while any answers. */
   private dark: { since: number; sent: boolean } | null = null;
+  /** Per target on us-metal01, when its path fault began; the path line went out for each. */
+  private readonly pathFaults = new Map<string, number>();
   constructor(private readonly deps: UptimeDeps) {
     this.now = deps.now ?? Date.now;
     this.targets = deps.targets ?? UPTIME_TARGETS;
@@ -176,9 +197,26 @@ export class UptimeWatch {
         return;
       }
       if (error === null || !networkError(error)) this.dark = null;
+      const pathSince = this.pathFaults.get(target.name);
+      if (error === null && pathSince !== undefined) {
+        this.pathFaults.delete(target.name);
+        await this.tellOps(pathUpText(url, pathSince, this.now()));
+      }
       const before = states[target.name]!;
       const step = uptimeStep(before, { startedAt, at: this.now(), error });
       states[target.name] = step.state;
+      if (step.send === "down" && target.onMetal01 && networkError(error!)) {
+        const path = await (this.deps.metal01Path ?? pingMetal01)();
+        if (path?.kind === "relay") {
+          const at = this.now();
+          states[target.name] = fresh(at);
+          if (pathSince === undefined) {
+            this.pathFaults.set(target.name, before.lastPass);
+            await this.tellOps(pathText(this.deps.host ?? hostname(), url, before.lastPass, at, error!, path));
+          }
+          return;
+        }
+      }
       if (!step.send) return;
       await writeJson(this.deps.stateFile, states);
       await this.page(target, step.send === "down" ? downText(target, url, step.state) : upText(target, url, before, step.state));
@@ -194,7 +232,10 @@ export class UptimeWatch {
     this.dark ??= { since: at, sent: false };
     if (this.dark.sent || at - this.dark.since < DOWN_MS) return;
     this.dark.sent = true;
-    const text = boxDarkText(this.deps.host ?? hostname(), this.dark.since, at, this.targets.map(target => `${target.name}: ${this.latest.get(target.name)}`));
+    await this.tellOps(boxDarkText(this.deps.host ?? hostname(), this.dark.since, at, this.targets.map(target => `${target.name}: ${this.latest.get(target.name)}`)));
+  }
+
+  private async tellOps(text: string): Promise<void> {
     await this.deps.deliver(OPS_ROUTE.session, text, OPS_ROUTE.session)
       .catch(error => this.deps.log(`uptime: send to ${OPS_ROUTE.chat}: ${error instanceof Error ? error.message : String(error)}`));
     this.deps.log(`uptime: told ${OPS_ROUTE.chat}: ${text.slice(0, 160)}`);

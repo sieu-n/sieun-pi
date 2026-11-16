@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { errorText, GrafanaError, type FiringAlert } from "./alert-bridge.ts";
 import { OPS_ROUTE } from "./alert-routes.ts";
 import { missing } from "./locked-json.ts";
+import { type Metal01Path, metal01PathText, pingMetal01 } from "./metal01-path.ts";
 import { TICK_MS } from "./wakes.ts";
 
 export const STALE_MS = 5 * 60_000;
@@ -68,14 +69,21 @@ export function healthOf(record: PollRecord, now: number, wokeAt: number | null 
 const iso = (ms: number): string => new Date(ms).toISOString();
 const minute = (ms: number): string => `${iso(ms).slice(0, 16)}Z`;
 
-export function downText(record: PollRecord, down: Outage, now: number, configFile: string): string {
+/** A poll error that never reached Grafana: DNS, connect or no answer, as from 07:10 to 07:26Z on 11-16 when only the path to us-metal01 failed. */
+export function networkFailure(error: PollError | null): boolean {
+  return error !== null && error.status === null && /\b(?:UND_ERR_CONNECT_TIMEOUT|EAI_AGAIN|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH)\b|aborted due to timeout/.test(error.message);
+}
+
+export function downText(record: PollRecord, down: Outage, now: number, configFile: string, path: Metal01Path | null = null): string {
   const lastOk = record.lastOk === null ? `no good poll since the chat service started polling at ${minute(down.since)}` : `last good poll ${minute(record.lastOk)}`;
   const error = record.lastError ? `last error at ${minute(record.lastError.at)}: ${record.lastError.message}` : "no poll error, the poll loop stopped calling Grafana";
   const head = down.cause === "refused"
     ? `Grafana at obs.virev.ai refused the alert bridge's Viewer token (HTTP ${record.lastError?.status}), so firing alerts no longer reach any chat (${lastOk}; ${error}). ` +
       `Mint a new Viewer token and put it in ${configFile}.`
     : `The alert bridge has not read Grafana's firing list from obs.virev.ai for ${Math.round((now - down.since) / 60_000)} min, so firing alerts no longer reach any chat ` +
-      `(${lastOk}; ${error}). Check the chat service log and the token in ${configFile}.`;
+      `(${lastOk}; ${error}). ` + (networkFailure(record.lastError)
+        ? `The poll never reached Grafana, so the token is not the cause.${path ? ` ${metal01PathText(path)}` : ""}`
+        : `Check the chat service log and the token in ${configFile}.`);
   return `[alert-bridge-down] ${head} This comes from the bridge's own watchdog, repeats every ${REPEAT_MS / 60_000} min while it lasts, and one line follows when polls work again.`;
 }
 
@@ -83,11 +91,11 @@ export function recoveredText(record: PollRecord, alerting: Alerting): string {
   return `[alert-bridge-recovered] The alert bridge read Grafana's firing list again at ${minute(record.lastOk!)} (${record.firing} firing); it had no good poll from ${minute(alerting.since)}.`;
 }
 
-export function watchStep(record: PollRecord, alerting: Alerting | null, now: number, configFile: string, wokeAt: number | null = null): { send: string | null; alerting: Alerting | null } {
+export function watchStep(record: PollRecord, alerting: Alerting | null, now: number, configFile: string, wokeAt: number | null = null, path: Metal01Path | null = null): { send: string | null; alerting: Alerting | null } {
   const down = outage(record, now, wokeAt);
   if (down) {
     if (alerting && now - alerting.sentAt < REPEAT_MS) return { send: null, alerting };
-    return { send: downText(record, down, now, configFile), alerting: { since: alerting?.since ?? down.since, sentAt: now } };
+    return { send: downText(record, down, now, configFile, path), alerting: { since: alerting?.since ?? down.since, sentAt: now } };
   }
   if (alerting && lastWasOk(record)) return { send: recoveredText(record, alerting), alerting: null };
   return { send: null, alerting };
@@ -120,6 +128,8 @@ export interface BridgeWatchDeps {
   deliver: (session: string, text: string, root?: string) => Promise<void>;
   now?: () => number;
   wokeAt?: () => Promise<number | null>;
+  /** How us-metal01, which serves obs.virev.ai, answers over Tailscale; absent, one `tailscale ping`. */
+  metal01Path?: () => Promise<Metal01Path | null>;
   /** Hands the alerting state to the poll worker, which writes the status file after each poll (src/alert-poll.ts). */
   alerting: (alerting: Alerting | null) => void;
   log: (line: string) => void;
@@ -136,7 +146,9 @@ export class BridgeWatch {
     if (this.alerting === undefined) this.alerting = await this.restore();
     const now = this.now();
     const wokeAt = outage(record, now)?.cause === "stale" ? await (this.deps.wokeAt ?? macWokeAt)() : null;
-    const step = watchStep(record, this.alerting, now, this.deps.configFile, wokeAt);
+    const due = outage(record, now, wokeAt) !== null && (!this.alerting || now - this.alerting.sentAt >= REPEAT_MS);
+    const path = due && networkFailure(record.lastError) ? await (this.deps.metal01Path ?? pingMetal01)() : null;
+    const step = watchStep(record, this.alerting, now, this.deps.configFile, wokeAt, path);
     if (step.send) {
       try {
         await this.deps.deliver(OPS_ROUTE.session, step.send, OPS_ROUTE.session);

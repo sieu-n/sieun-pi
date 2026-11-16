@@ -22,3 +22,19 @@ test("the watchdog tells ops guy once that the bridge polls again, and not on ev
   assert.equal(sent.length, 1);
   assert.deepEqual(handed.slice(-1), [null]);
 });
+
+test("11-16: a watchdog page for connect timeouts to obs.virev.ai says the token is not the cause and names the relay-only path", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "bridge-watch-path-"));
+  const now = Date.parse("2026-11-16T07:16:00Z");
+  const health = new PollHealth(() => now);
+  const message = "fetch failed (UND_ERR_CONNECT_TIMEOUT: Connect Timeout Error (attempted address: obs.virev.ai:443, timeout: 10000ms))";
+  health.record = { configuredAt: now - 3_600_000, lastOk: Date.parse("2026-11-16T07:10:48Z"), lastError: { at: now - 20_000, message, status: null }, firing: 44 };
+  const sent: string[] = [];
+  const watch = new BridgeWatch({ health, statusFile: join(dir, "alert-bridge-status.json"), configFile: join(dir, "grafana-alerts.json"), now: () => now,
+    wokeAt: async () => null, metal01Path: async () => ({ kind: "relay", via: "DERP(lax)" }),
+    deliver: async (_session, text) => { sent.push(text); }, alerting: () => {}, log: () => {} });
+  await watch.tick();
+  assert.equal(sent.length, 1);
+  assert.match(sent[0]!, /never reached Grafana, so the token is not the cause\. us-metal01 answers over Tailscale only through DERP\(lax\)/);
+  assert.doesNotMatch(sent[0]!, /the token in/);
+});

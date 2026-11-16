@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { type Metal01Path, metal01PathOf } from "../src/metal01-path.ts";
 import { DOWN_MS, networkError, probeOnce, UPTIME_TARGETS, type TargetState, UptimeWatch, uptimeStep } from "../src/uptime-watch.ts";
 
 const at = (time: string) => Date.parse(`2026-10-29T${time}Z`);
@@ -151,4 +152,27 @@ test("both targets down with HTTP errors in one tick both page, and the state fi
   assert.equal(sent.filter(send => send.text.startsWith("[uptime-down]")).length, 5);
   const kept = JSON.parse(await readFile(deps.stateFile, "utf8"));
   assert.ok(kept.crawler.pagedAt && kept.api.pagedAt);
+});
+
+test("11-16: crawler.virev.ai timing out only from us-metal02 while us-metal01 answers through a relay sends ops guy one path line, not an outage page", async () => {
+  assert.deepEqual(metal01PathOf("pong from us-metal01 (100.113.142.90) via DERP(lax) in 75ms\n"), { kind: "relay", via: "DERP(lax)" });
+  const { sent, deps, setNow } = await rig();
+  const day = (time: string) => Date.parse(`2026-11-16T${time}Z`);
+  const dark = (ms: number) => ms >= day("07:11:00") && ms < day("07:26:30");
+  let path: Metal01Path = { kind: "relay", via: "DERP(lax)" };
+  const watch = new UptimeWatch({ ...deps, host: "us-metal02", metal01Path: async () => path,
+    probe: async (target: { name: string }) => target.name === "crawler" && dark(now) ? "fetch failed (UND_ERR_CONNECT_TIMEOUT)" : null });
+  let now = day("07:10:00");
+  for (; now <= day("07:30:00"); now += 30_000) { setNow(now); await watch.tick(); }
+  assert.deepEqual(sent.map(send => send.session), ["01a11af8-962e-773d-a19a-ee4104011987", "01a11af8-962e-773d-a19a-ee4104011987"], sent.map(send => send.text).join("\n"));
+  assert.match(sent[0]!.text, /^\[uptime-path\] us-metal02 has had no good answer from https:\/\/crawler\.virev\.ai\/health since 07:10Z .*through DERP\(lax\), so the box is up and the network path from this box/);
+  assert.match(sent[1]!.text, /^\[uptime-path-up\] https:\/\/crawler\.virev\.ai\/health answers this box again at 07:26Z/);
+
+  // A direct pong means the box's ingress failed, so the crawler's chats get the outage page.
+  sent.length = 0;
+  const direct = new UptimeWatch({ ...deps, stateFile: `${deps.stateFile}.direct`, metal01Path: async () => ({ kind: "direct", via: "64.34.205.246:41641" }),
+    probe: async (target: { name: string }) => target.name === "crawler" ? "fetch failed (UND_ERR_CONNECT_TIMEOUT)" : null });
+  for (now = day("09:00:00"); now <= day("09:05:30"); now += 30_000) { setNow(now); await direct.tick(); }
+  assert.deepEqual(sent.map(send => send.session), crawler.routes.map(route => route.session));
+  assert.match(sent[0]!.text, /^\[uptime-down\] https:\/\/crawler\.virev\.ai\/health/);
 });
