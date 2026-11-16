@@ -3,7 +3,7 @@
 // 167 times between them. A check wake runs that look in the chat service and wakes the session only once it passes or its deadline comes.
 import assert from "node:assert/strict";
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
@@ -58,6 +58,18 @@ test("a time wake tells a polling job about check wakes, and a check runs in sh 
   assert.equal(parseWake({ session, on: { ...check, every: 0 }, note: "", since: START }), null);
   assert.deepEqual(await runCheck("echo ok; exit 0", 10_000), { ok: true, output: "ok\n" });
   assert.equal((await runCheck("echo no; exit 3", 10_000)).ok, false);
+});
+
+// 11-15 to 11-17: crawler ops train's check wakes started train-ship-pNNNN units with `-E LC_PRIME_SESSION`, the chat service had no such
+// variable, and the d2 orphan reaper listed the units as orphan_unknown in 13 runs. A check runs tagged with the session that armed it.
+test("a check wake's command runs with LC_PRIME_SESSION naming the session that armed it on this host", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "wake-check-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(join(dir, `${session}-check-1.json`), JSON.stringify({ session, on: { kind: "check", command: "echo \"tag=$LC_PRIME_SESSION\"", every: MIN, at: Date.now() + MIN }, note: "", since: Date.now() }));
+  const sent: string[] = [];
+  const wakes = new Wakes({ dir, runState: async () => ({ done: false }), log: () => {}, deliver: async (_to, text) => { sent.push(text); } });
+  assert.equal(await wakes.tick(), 1);
+  assert.match(sent[0]!, new RegExp(`It printed: tag=${session}@${hostname().split(".")[0]}$`));
 });
 
 test("a running service names check among the wake kinds it delivers, which board.wake reads before it writes a check wake", async t => {

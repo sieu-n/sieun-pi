@@ -5,7 +5,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
-import { homedir, platform } from "node:os";
+import { homedir, hostname, platform } from "node:os";
 import { basename, dirname, isAbsolute, join, sep } from "node:path";
 import { instructionFiles } from "../../../apps/chat/server/agent-folder.ts";
 import { defaultProjects } from "../../../apps/chat/server/config.ts";
@@ -17,10 +17,14 @@ const PATH_WITH_LOCAL = [join(homedir(), ".local", "bin"), "/opt/homebrew/bin", 
 
 export interface CheckAnswer { ok: boolean; code: number | null; output: string }
 
-/** Runs a check wake's command with sh from home, as legacy wakes.ts runCheck does, and also gives its exit code (null when killed). */
-export function runCheck(command: string, timeoutMs: number): Promise<CheckAnswer> {
+/**
+ * Runs a check wake's command with sh from home, tagged LC_PRIME_SESSION=<session>@<short host> as legacy wakes.ts runCheck does, and also gives
+ * its exit code (null when killed).
+ */
+export function runCheck(command: string, timeoutMs: number, session?: string): Promise<CheckAnswer> {
   return new Promise(resolve => {
-    execFile("sh", ["-c", command], { cwd: homedir(), timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, PATH: PATH_WITH_LOCAL } }, (error, stdout, stderr) => {
+    const env = { ...process.env, PATH: PATH_WITH_LOCAL, ...session ? { LC_PRIME_SESSION: `${session}@${hostname().split(".")[0]}` } : {} };
+    execFile("sh", ["-c", command], { cwd: homedir(), timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, env }, (error, stdout, stderr) => {
       const output = `${stdout}${stderr}`.slice(-CHECK_TAIL);
       const code = !error ? 0 : typeof error.code === "number" ? error.code : null;
       resolve({ ok: !error, code, output: error && !output.trim() ? error.message : output });

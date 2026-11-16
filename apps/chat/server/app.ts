@@ -199,7 +199,7 @@ export class App {
       this.boards.checkOn = thread => {
         const box = routing.boxOf(thread);
         const relay = box === config.box ? undefined : routing.relay(box);
-        return relay ? (command, timeoutMs) => relay.check(command, timeoutMs) : undefined;
+        return relay ? (command, timeoutMs, owner) => relay.check(command, timeoutMs, owner) : undefined;
       };
       for (const relay of routing.relays()) relay.onFeed = row => this.feedRow(row);
       routing.onLink((box, link) => {

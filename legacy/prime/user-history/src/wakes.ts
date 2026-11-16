@@ -1,6 +1,6 @@
 import { hostExecFile } from "./spawn-host.ts";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 
 /**
@@ -151,8 +151,8 @@ export interface WakeDeps {
    * 30 s and a tick with 5 sessions due took over 2.5 min, so TICKED aged past WAKE_LATE_MS while the tick ran and board.wake refused everywhere.
    */
   progress?: () => Promise<void>;
-  /** Runs a check wake's command (`runCheck` by default), killed after `timeoutMs`, which is the check's own pace. */
-  check?: (command: string, timeoutMs: number) => Promise<CheckResult>;
+  /** Runs a check wake's command for the wake's `session` (`runCheck` by default), killed after `timeoutMs`, which is the check's own pace. */
+  check?: (command: string, timeoutMs: number, session: string) => Promise<CheckResult>;
   log: (line: string) => void;
 }
 
@@ -220,7 +220,7 @@ export class Wakes {
             if (failed && now - failed.since >= UNREADABLE_MS) state = { error: failed.error };
             else if (!state || !("done" in state) || !state.done || ((wake.on.attempt ?? 1) > (state.attempt ?? 1) && !rerunMissed(wake, state, now))) continue;
           } else if (wake.on.kind === "check") {
-            const result = await this.checkNow(file, wake.on, now);
+            const result = await this.checkNow(file, wake.on, wake.session, now);
             if (!result?.ok && wake.on.at > now) continue;
             const last = result ?? this.checked.get(file)?.result;
             due.push({ file, wake, state, ...last ? { check: last } : {} });
@@ -265,10 +265,10 @@ export class Wakes {
   }
 
   /** A check wake's command run now, or null when it ran less than its `every` ago. */
-  private async checkNow(file: string, on: Extract<WakeOn, { kind: "check" }>, now: number): Promise<CheckResult | null> {
+  private async checkNow(file: string, on: Extract<WakeOn, { kind: "check" }>, session: string, now: number): Promise<CheckResult | null> {
     const last = this.checked.get(file);
     if (last && now - last.at < on.every) return null;
-    const result = await (this.deps.check ?? runCheck)(on.command, on.every).catch((error: unknown) => ({ ok: false, output: error instanceof Error ? error.message : String(error) }));
+    const result = await (this.deps.check ?? runCheck)(on.command, on.every, session).catch((error: unknown) => ({ ok: false, output: error instanceof Error ? error.message : String(error) }));
     this.checked.set(file, { at: now, result });
     return result;
   }
@@ -288,10 +288,18 @@ export class Wakes {
   }
 }
 
-/** Runs a check wake's command with sh in the home folder; it passes on exit 0, and its output's tail comes back either way. */
-export function runCheck(command: string, timeoutMs: number): Promise<CheckResult> {
+/**
+ * The owner tag of a process a check starts for `session`: LC_PRIME_SESSION=<session>@<short host>, as sieun-rules kernel-own.py sets in a
+ * kernel. 11-15 to 11-17: crawler ops train's check wakes ran scripts that started train-ship-pNNNN units with `-E LC_PRIME_SESSION`, the chat
+ * service had none to pass, and the d2 orphan reaper listed those units as orphan_unknown in 13 runs.
+ */
+export const checkOwner = (session: string): { LC_PRIME_SESSION: string } => ({ LC_PRIME_SESSION: `${session}@${hostname().split(".")[0]}` });
+
+/** Runs a check wake's command with sh in the home folder, tagged with its session; it passes on exit 0, and its output's tail comes back either way. */
+export function runCheck(command: string, timeoutMs: number, session?: string): Promise<CheckResult> {
   return new Promise(resolve => {
-    hostExecFile("sh", ["-c", command], { cwd: homedir(), timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, PATH: PATH_WITH_LOCAL } }, (error, stdout, stderr) => {
+    const env = { ...process.env, PATH: PATH_WITH_LOCAL, ...session ? checkOwner(session) : {} };
+    hostExecFile("sh", ["-c", command], { cwd: homedir(), timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, env }, (error, stdout, stderr) => {
       const output = `${stdout}${stderr}`.slice(-CHECK_TAIL);
       resolve({ ok: !error, output: error && !output.trim() ? error.message : output });
     });

@@ -163,7 +163,7 @@ export class AgentLink {
         return { ok: true, data: {} };
       case "check":
         if (typeof args.command !== "string" || typeof args.timeoutMs !== "number" || args.timeoutMs <= 0) return { ok: false, error: "check needs command and a positive timeoutMs" };
-        return { ok: true, data: await runCheck(args.command, args.timeoutMs) };
+        return { ok: true, data: await runCheck(args.command, args.timeoutMs, typeof args.session === "string" && args.session ? args.session : undefined) };
       case "box_info":
         return { ok: true, data: this.info };
       case "file_get":

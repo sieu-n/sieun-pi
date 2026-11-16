@@ -54,6 +54,9 @@ export function armWake(dir: string, thread: string, body: Record<string, unknow
   return { wake, path };
 }
 
+/** Runs a check's command on a thread's box for `thread`, whose id tags what the command starts. */
+export type BoxCheckRun = (command: string, timeoutMs: number, thread: string) => Promise<CheckResult>;
+
 export interface ThreadWakeOptions {
   dir: string;
   host: Pick<Host, "submit">;
@@ -64,33 +67,18 @@ export interface ThreadWakeOptions {
   stamp?: WakeDeps["stamp"];
   check?: WakeDeps["check"];
   /** The check of a thread on another box, run by that box's relay; undefined runs it on this box. */
-  checkOn?: (thread: string) => ((command: string, timeoutMs: number) => Promise<CheckResult>) | undefined;
+  checkOn?: (thread: string) => BoxCheckRun | undefined;
 }
 
 /**
- * The thread of the check wake whose command this is. The legacy ticker hands a check only its command, so the wake files tell whose it is;
- * two check wakes with one command on two boxes would both run on the first one's box.
+ * Runs a check on the box of the thread whose wake it is, tagged with that thread as pi-host tags a thread's kernel (rlm.ts ownerTag), so a unit
+ * the check starts names its owner to the d2 orphan reaper.
  */
-export function checkThread(dir: string, command: string): string | undefined {
-  let names: string[] = [];
-  try { names = readdirSync(dir).filter(name => name.endsWith(".json")); } catch { return undefined; }
-  for (const name of names) {
-    try {
-      const wake = JSON.parse(readFileSync(join(dir, name), "utf8")) as Partial<Wake>;
-      if (wake.on?.kind === "check" && wake.on.command === command && typeof wake.session === "string") return wakeTarget(wake.session).thread;
-    } catch {
-      continue;
-    }
-  }
-  return undefined;
-}
-
-/** Runs a check on the box of the wake that owns it. */
-function boxCheck(dir: string, checkOn: NonNullable<ThreadWakeOptions["checkOn"]>): (command: string, timeoutMs: number) => Promise<CheckResult> {
-  return (command, timeoutMs) => {
-    const thread = checkThread(dir, command);
-    const remote = thread ? checkOn(thread) : undefined;
-    return remote ? remote(command, timeoutMs) : runCheck(command, timeoutMs);
+function boxCheck(checkOn: NonNullable<ThreadWakeOptions["checkOn"]>): NonNullable<WakeDeps["check"]> {
+  return (command, timeoutMs, session) => {
+    const { thread } = wakeTarget(session);
+    const remote = checkOn(thread);
+    return remote ? remote(command, timeoutMs, thread) : runCheck(command, timeoutMs, thread);
   };
 }
 
@@ -120,7 +108,7 @@ export function startThreadWakes(options: ThreadWakeOptions): () => void {
   const stale = cacheWatch(options.log);
   return startWakes({
     dir: options.dir, log: options.log, ...(options.now ? { now: options.now } : {}),
-    ...(options.check ? { check: options.check } : options.checkOn ? { check: boxCheck(options.dir, options.checkOn) } : {}),
+    check: options.check ?? boxCheck(options.checkOn ?? (() => undefined)),
     runState: options.runState ?? (on => readRunState(on, undefined, stale)),
     stamp: options.stamp ?? runStamp,
     deliver: async (session, text, _root, _kind, setAt) => {

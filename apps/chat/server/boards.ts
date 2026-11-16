@@ -20,7 +20,7 @@ import { readJson, writeJson, type Store } from "./store.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
 import type { Threads } from "./threads.ts";
 import { StepOwners } from "./step-owners.ts";
-import { armWake, startThreadWakes, wakeTarget, type CheckResult } from "./wakes.ts";
+import { armWake, startThreadWakes, wakeTarget, type BoxCheckRun } from "./wakes.ts";
 
 export const BOARD_DOC = "chat.board";
 const DEFAULT_CHECK_IN_MS = 120 * 60_000;
@@ -77,7 +77,7 @@ export class Boards {
   /** This server's own base URL, which a duty job's brief names for the board. */
   selfUrl = "http://127.0.0.1:5184";
   /** The check of a thread's check wake when the thread runs on another box: that box's relay runs it. Undefined runs it here. */
-  checkOn: (thread: string) => ((command: string, timeoutMs: number) => Promise<CheckResult>) | undefined = () => undefined;
+  checkOn: (thread: string) => BoxCheckRun | undefined = () => undefined;
 
   constructor(
     readonly host: Host,

@@ -430,9 +430,9 @@ export class RelayHost implements Host {
   async set(thread: string, patch: { name?: string; model?: string; thinkingLevel?: string; archived?: boolean; cwd?: string }): Promise<DurableThread> {
     return ((await this.call("durable_set", { thread, ...patch })) as { thread: DurableThread }).thread;
   }
-  /** Runs a wake's shell check on the box. */
-  async check(command: string, timeoutMs: number): Promise<BoxCheck> {
-    return (await this.call("check", { command, timeoutMs }, timeoutMs + COMMAND_TIMEOUT_MS)) as BoxCheck;
+  /** Runs a wake's shell check on the box, tagged with the `session` (a thread id) whose wake it is. */
+  async check(command: string, timeoutMs: number, session?: string): Promise<BoxCheck> {
+    return (await this.call("check", { command, timeoutMs, ...session ? { session } : {} }, timeoutMs + COMMAND_TIMEOUT_MS)) as BoxCheck;
   }
   async fileGet(path: string): Promise<BoxFile> {
     return (await this.call("file_get", { path })) as BoxFile;
