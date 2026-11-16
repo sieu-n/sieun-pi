@@ -5,18 +5,23 @@ import { test } from "node:test";
 import { causeOf } from "../scripts/duties/engage-reads.ts";
 
 test("a checkpoint_required death after a served page is an Instagram kill, and before one a first-login refusal", () => {
-  assert.equal(causeOf({ code: "checkpoint_required", readBefore: true }), "instagram");
-  assert.equal(causeOf({ code: "checkpoint_required", readBefore: false }), "first_login");
+  assert.equal(causeOf({ code: "checkpoint_required", readBefore: true, pages24h: 91 }), "instagram");
+  assert.equal(causeOf({ code: "checkpoint_required", readBefore: false, pages24h: 0 }), "first_login");
 });
 
 test("a code the map does not hold stays unknown", () => {
-  assert.equal(causeOf({ code: "login_required", readBefore: true }), "unknown");
+  assert.equal(causeOf({ code: "login_required", readBefore: true, pages24h: 91 }), "unknown");
 });
 
 // prod 163 went relogin_gone on 10-28 09:53Z after 385 pages in 24 h, and prod 24 relogin_bad_password at 12:10Z; d1 called both "cause unknown".
 test("the re-login worker's verdicts carry their real causes", () => {
-  assert.equal(causeOf({ code: "relogin_gone", readBefore: true }), "instagram");
-  assert.equal(causeOf({ code: "relogin_gone", readBefore: false }), "first_login");
-  assert.equal(causeOf({ code: "relogin_bad_password", readBefore: true }), "bad_password");
-  assert.equal(causeOf({ code: "relogin_two_factor", readBefore: true }), "ours");
+  assert.equal(causeOf({ code: "relogin_gone", readBefore: true, pages24h: 91 }), "instagram");
+  assert.equal(causeOf({ code: "relogin_gone", readBefore: false, pages24h: 0 }), "first_login");
+  assert.equal(causeOf({ code: "relogin_bad_password", readBefore: true, pages24h: 91 }), "bad_password");
+  assert.equal(causeOf({ code: "relogin_two_factor", readBefore: true, pages24h: 91 }), "ours");
+});
+
+test("an Instagram verdict on an account that read no page in the 24 h before it is found_idle, not a read kill (prod 158, 176, 181 on 11-16)", () => {
+  assert.equal(causeOf({ code: "relogin_gone", readBefore: true, pages24h: 0 }), "found_idle");
+  assert.equal(causeOf({ code: "account_suspended", readBefore: true, pages24h: 1 }), "instagram");
 });

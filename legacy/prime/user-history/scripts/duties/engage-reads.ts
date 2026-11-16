@@ -82,7 +82,7 @@ export const MOVED_PREFIX = "engage-world-move ";
  * 5 it called unable to read (23, 27 and 28) had moved to staging on 10-18 16:54Z, where 245 and 246 read on. */
 export const onHandOf = (accounts: readonly Account[]): Account[] =>
   accounts.filter(account => !(DEAD as readonly string[]).includes(account.status) && !(account.reason ?? "").startsWith(MOVED_PREFIX));
-export type Cause = "instagram" | "first_login" | "bad_password" | "ours" | "unknown";
+export type Cause = "instagram" | "first_login" | "found_idle" | "bad_password" | "ours" | "unknown";
 /**
  * A copy of CODE_CAUSES in apps/crawler-v3/src/control/metrics/engage_deaths.py (auto-sns-agent dev/sieun, 2026-10-28), which also holds the two codes
  * prod accounts 55 and 74 died with on 10-12: login_redirect (every usertags read answered 302 to the login page after both had served pages) and
@@ -208,11 +208,18 @@ export function canaryOf(config: Readonly<Record<string, string>>, accounts: rea
   return canary;
 }
 
-/** The cause of one death, as cause_of in engage_deaths.py. grafana_ro cannot see the actor, so a death with no mapped code is unknown. */
-export function causeOf(death: Pick<Death, "code" | "readBefore">): Cause {
+/**
+ * The cause of one death, as cause_of in engage_deaths.py. grafana_ro cannot see the actor, so a death with no mapped code is unknown. An
+ * Instagram verdict on an account that read no page in the 24 h before it is found_idle, as auto-sns-agent 429d03dc15: prod 158, 176 and 181
+ * read their last pages at 07:25Z 11-09, sat idle 7 days with no proxy, and the re-login worker found them gone (relogin_gone) on 11-16, which
+ * d1 counted as 3 read kills (2.1% of 140) while their 11 box peers with the same idle week read 482 to 496 pages each.
+ */
+export function causeOf(death: Pick<Death, "code" | "readBefore" | "pages24h">): Cause {
   const cause = CODE_CAUSES[death.code ?? ""];
   if (!cause) return "unknown";
-  return cause === "instagram" && !death.readBefore ? "first_login" : cause;
+  if (cause !== "instagram") return cause;
+  if (!death.readBefore) return "first_login";
+  return death.pages24h > 0 ? cause : "found_idle";
 }
 
 /** The canary size the owner's ~10% asks for: at least one account once any is active. */
@@ -717,7 +724,7 @@ export const deathsOf = (rows: Record<string, unknown>[]): Death[] => {
     if (killed.has(accountId)) continue;
     const death: Death = { accountId, at: Number(row.at), status: String(row.outcome), code: row.error_code == null ? null : String(row.error_code),
       readBefore: row.read_before === true, pages24h: Number(row.pages_24h ?? 0), transition: row.transition === true };
-    if (causeOf(death) === "instagram") killed.add(accountId);
+    if (causeOf(death) === "instagram" || causeOf(death) === "found_idle") killed.add(accountId);
     deaths.push(death);
   }
   return deaths;
