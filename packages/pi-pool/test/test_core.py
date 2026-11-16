@@ -4,7 +4,7 @@ the command tests that share these fixtures.
 
 Run: python3 -m unittest discover -s tests   (from the pool directory)
 """
-import base64, contextlib, dataclasses, importlib.util, io, json, os, sys, tempfile, threading, time, unittest, unittest.mock, urllib.request
+import base64, contextlib, dataclasses, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, threading, time, unittest, unittest.mock, urllib.request
 
 from fixture_isolation import isolate_test_module
 
@@ -786,6 +786,67 @@ class ModelGatedCap(unittest.TestCase):
         self.assertEqual(registry.session_models(state, KEY, "anthropic", CFG, NOW), ["claude-opus-5-5"])
         [acct] = registry.with_models([account("k", "k@x", gated_pct=100)], registry.session_models(state, KEY, "anthropic", CFG, NOW), CFG)
         self.assertIsNone(sched.admit_reason(acct, {}, CFG, NOW))
+
+
+def dead_pid():
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    return child.pid
+
+
+class ModelOfAnEndedSession(unittest.TestCase):
+    """A model entry counts while the worker that recorded it runs. On 11-16 01a1164b, 01a11af8 and 01a189ec ran Opus and
+    parked 40 to 48 min for claude21, while claude22 with its Fable cap at 100% took later trees, since each tree still
+    listed claude-fable-5-2 for two subagents whose worker had ended on 11-10."""
+    FABLE_SPENT = account("f", "f@x", session_pct=36, weekly_pct=84, gated_pct=100)
+    OWN = account("o", "o@x", session_pct=100)
+
+    def state(self, child_pid):
+        state = state_v2(current="o")
+        state["sessions"][KEY.key]["priority"] = "high"
+        state["sessions"][KEY.key]["models"] = {"anthropic": {
+            "root": {"model": "claude-opus-5-5", "at": NOW, "pid": os.getpid()},
+            "child": {"model": "claude-fable-5-2", "at": NOW - 6 * 86400, "pid": child_pid}}}
+        return state
+
+    def decide(self, state):
+        accounts = registry.with_models([self.FABLE_SPENT, self.OWN], registry.session_models(state, KEY, "anthropic", CFG, NOW), CFG)
+        return sched.decide(sched.tree_for(state, KEY, "anthropic"), accounts, sched.book_for(state, "anthropic", KEY, CFG, NOW),
+                            {}, CFG, NOW)
+
+    def test_a_tree_whose_fable_subagent_ended_enters_an_account_whose_fable_cap_is_spent(self):
+        d = self.decide(self.state(dead_pid()))
+        self.assertIsInstance(d, sched.Admit)
+        self.assertEqual(d.account.id, "f")
+
+    def test_a_fable_subagent_whose_worker_runs_still_keeps_the_cap(self):
+        self.assertIsNone(self.decide(self.state(os.getpid())))
+
+    def test_an_entry_with_no_worker_on_file_counts_until_the_ttl(self):
+        state = self.state(None)
+        del state["sessions"][KEY.key]["models"]["anthropic"]["child"]["pid"]
+        self.assertEqual(sorted(registry.session_models(state, KEY, "anthropic", CFG, NOW)), ["claude-fable-5-2", "claude-opus-5-5"])
+
+    def run_model(self, env):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        state_path = os.path.join(tmp, "state.json")
+        with unittest.mock.patch.object(base, "STATE", state_path), \
+                unittest.mock.patch.object(base, "LOCK", os.path.join(tmp, "lock")), \
+                unittest.mock.patch.object(registry, "session_key", lambda: KEY), \
+                unittest.mock.patch.dict(os.environ, env), \
+                unittest.mock.patch.object(os, "getppid", lambda: 4242):
+            if "PI_POOL_SESSION_KEY" not in env:
+                os.environ.pop("PI_POOL_SESSION_KEY", None)
+            session_cmds.cmd_model(["claude-opus-5-5", "--provider", "anthropic", "--source", "s1"])
+        with open(state_path) as f:
+            return json.load(f)["sessions"][KEY.key]["models"]["anthropic"]["s1"]
+
+    def test_pi_pool_model_files_the_worker_that_runs_the_session(self):
+        self.assertEqual(self.run_model({}).get("pid"), 4242)
+
+    def test_a_run_forwarded_from_another_machine_files_no_worker(self):
+        self.assertNotIn("pid", self.run_model({"PI_POOL_SESSION_KEY": json.dumps({"key": KEY.key})}))
 
 
 class StoreLayout(unittest.TestCase):

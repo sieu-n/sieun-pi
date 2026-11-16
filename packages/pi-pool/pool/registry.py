@@ -127,10 +127,17 @@ def tree_records(state, key):
 
 def session_models(state, key, provider, cfg, now):
     """The models the sessions of one tree last selected on this provider, as
-    the /account extension recorded them (`pi-pool model`)."""
+    the /account extension recorded them (`pi-pool model`). An entry whose worker
+    process is gone no longer counts: its session ended without the clear that
+    session_shutdown sends, and the session records its model again when it runs
+    in a new worker. On 11-16 from 22:10Z to 23:00Z 01a1164b, 01a11af8 and 01a189ec,
+    which ran Opus, parked 40 to 48 min for claude21 while claude22, whose Fable cap
+    read 100%, took later trees, since each tree still listed claude-fable-5-2 for
+    two subagents that recorded it on 11-10 in a worker long gone."""
     entries = [e for rec in tree_records(state, key)
                for e in (((rec.get("models") or {}).get(provider)) or {}).values()]
-    return [e.get("model") for e in entries if now - (e.get("at") or 0) <= cfg["pin_ttl_sec"]]
+    return [e.get("model") for e in entries if now - (e.get("at") or 0) <= cfg["pin_ttl_sec"]
+            and (e.get("pid") is None or pid_alive(e["pid"]))]
 
 
 def fmt_dur(sec):

@@ -2,7 +2,7 @@
 enable, off, on, unlimited and rm."""
 import json, math, os, shlex, time
 
-from . import base, limited, registry, sched, vending, status_view, limit_resets
+from . import base, limited, registry, remote, sched, vending, status_view, limit_resets
 
 
 def tree_view(state, key, provider, accounts, f, cfg, now):
@@ -101,7 +101,12 @@ def cmd_model(rest):
             for provider in base.PROVIDERS:
                 (models.get(provider) or {}).pop(source, None)
         if not f["clear"]:
-            recs[0]["models"].setdefault(f["provider"], {})[source] = {"model": model, "at": now}
+            entry = {"model": model, "at": now}
+            # The Prime worker that runs the session, so session_models drops the entry once the worker is gone. A run
+            # forwarded from another machine or pi-host names its tree in KEY_ENV, and its parent here says nothing of the session.
+            if not os.environ.get(remote.KEY_ENV):
+                entry["pid"] = os.getppid()
+            recs[0]["models"].setdefault(f["provider"], {})[source] = entry
         for rec in recs:
             models = rec["models"]
             for provider in [p for p, entries in models.items() if not entries]:
