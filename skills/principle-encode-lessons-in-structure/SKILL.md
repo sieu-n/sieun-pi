@@ -1,12 +1,34 @@
 ---
 name: principle-encode-lessons-in-structure
-description: "Apply when you catch yourself writing the same instruction a second time, or notice a recurring correction. Encode the rule as a lint, metadata flag, runtime check, or script instead of more text."
+description: "Apply to any edit, migration, analysis, or check beyond a few obvious edits, and when you write the same instruction a second time or see a recurring correction. Build the script, codemod, generator, lint, or check that does, proves, or enforces the work, instead of hand work or more text."
 disable-model-invocation: true
 ---
 
 # Encode lessons in structure
 
-Turn a recurring fix into a mechanism that enforces it, and delete the instruction it replaces. A reader can miss a written rule. A check runs whether or not anyone reads it.
+Put the work and its lessons into tools and checks instead of hand edits and written rules. A reviewer can rerun a tool, and can check a hand edit only by redoing it. A reader can miss a written rule, and a check runs whether or not anyone reads it.
+
+## Build the lever for the work
+
+When the work is more than a couple of obvious edits you can see at a glance, build the tool that does it or proves it. A one-off task still gets a tool when the tool is what makes the work checkable.
+
+1. Do the first unit by hand to learn the recipe.
+2. Build the tool, and make it safe to rerun.
+3. Rerun it on the first unit and diff the result against your hand-done version.
+4. Commit the tool when the work outlives the session, so the next run reruns it.
+
+Build the smallest script that does or proves the job, per [Laziness Protocol](../principle-laziness-protocol/SKILL.md), and never a framework.
+
+- Use a codemod or script for edits.
+- Use a generator for repetitive files.
+- Use a query over a SQLite dump for analysis.
+- Use a rerunnable check for verification, as [Prove It Works](../principle-prove-it-works/SKILL.md) describes.
+
+## Fan out through one skill
+
+- If the tool can process every unit in one pass, run it yourself instead of fanning out subagents to hand-apply it.
+- When you do fan out, put the recipe, the verification contract, and the do-not-touch fences in one skill that every subagent reads.
+- Keep that skill outside the subagents' write scope so they cannot edit the contract.
 
 ## When you write an instruction a second time
 
@@ -35,3 +57,7 @@ Agents copy the code around them, so a weak guard becomes the next template.
 4. Apply the change now, or write a concrete todo for it.
 
 Saying "I'll keep that in mind" records nothing. A note about a missing lint rule is wasted until someone builds the rule. A fix to one instance leaves the pattern in place.
+
+## Check that you applied it
+
+If you cite this principle and the diff has no codemod, script, generator, check, lint rule, or delegate skill, you did not apply it.

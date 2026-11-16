@@ -3,7 +3,7 @@
 For "hillclimb on X", "make startup 50% faster", or "keep trying until the metric improves by N%". Make one change, take one measurement, then keep or revert. Never stack untested changes, and never claim a win from reading code.
 
 1. Run the why skill's How mode over the target and pick a workload that reproduces the user's complaint. If none does, fix the repro first. Fix one metric, its better direction, and a stop predicate that pairs a target with a minimum number of attempts, such as "at least 50% better and at least 10 iterations".
-2. Build the measurement harness with principle-build-the-lever. Show that it separates the slow case from easier ones, then freeze it. One command must emit the metric as a median of several runs. Record the baseline and a green run of the regression tests before any change.
+2. Build the measurement harness as a rerunnable script, per principle-encode-lessons-in-structure. Show that it separates the slow case from easier ones, then freeze it. One command must emit the metric as a median of several runs. Record the baseline and a green run of the regression tests before any change.
 3. Open a `decision.tsv` log with the show-me-your-work skill, with one row per attempt holding id, hypothesis, change, before, after, delta, tests, verdict, and note. Keep it out of git so reverts do not touch it. Read it before each attempt.
 4. Tie each hypothesis to a named mechanism, such as "defer X off the boot path because it blocks first paint".
 5. Run one hypothesis per iteration.

@@ -55,13 +55,6 @@
       "target": ".prime/agent/skills/principle-boundary-discipline"
     },
     {
-      "id": "skill:principle-build-the-lever",
-      "kind": "link",
-      "source": "skills/principle-build-the-lever",
-      "scope": "home",
-      "target": ".prime/agent/skills/principle-build-the-lever"
-    },
-    {
       "id": "skill:principle-encode-lessons-in-structure",
       "kind": "link",
       "source": "skills/principle-encode-lessons-in-structure",

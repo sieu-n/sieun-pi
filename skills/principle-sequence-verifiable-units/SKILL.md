@@ -22,4 +22,4 @@ Never batch the edits and check once at the end. Run the check per unit even whe
 - Use the same order for other work: the deletion before the reshape, the baseline capture before the change, and the scaffold before the feature.
 - Make each commit build on its own, so a reviewer can check out any commit in the stack.
 
-[Prove It Works](../principle-prove-it-works/SKILL.md) keeps each check real. [Build the Lever](../principle-build-the-lever/SKILL.md) makes the per-unit check cheap.
+[Prove It Works](../principle-prove-it-works/SKILL.md) keeps each check real. [Encode Lessons in Structure](../principle-encode-lessons-in-structure/SKILL.md) makes the per-unit check a rerunnable tool.

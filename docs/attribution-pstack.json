@@ -479,7 +479,9 @@
       "upstream_path": "pstack/skills/principle-build-the-lever/SKILL.md",
       "upstream_sha256": "458b269eab8e95a1573276955312f7d2a13ae8599879a9efc748248f6bc34b56",
       "import_sha256": "3a0b02b1b890538810f27d00c525b2e677bb5d931f602fd7a774d5cd13b61c93",
-      "unchanged_at_comparison": false
+      "unchanged_at_comparison": false,
+      "merged_into": "skills/principle-encode-lessons-in-structure/SKILL.md",
+      "merged_on": "2026-11-16"
     },
     {
       "path": "skills/principle-encode-lessons-in-structure/SKILL.md",

@@ -45,15 +45,6 @@
   ]
  },
  {
-  "id": "skill-principle-build-the-lever",
-  "tool": "skill principle-build-the-lever",
-  "probes": [
-   {
-    "path": "~/.prime/agent/skills/principle-build-the-lever/SKILL.md"
-   }
-  ]
- },
- {
   "id": "skill-principle-encode-lessons-in-structure",
   "tool": "skill principle-encode-lessons-in-structure",
   "probes": [

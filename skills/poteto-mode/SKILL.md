@@ -51,7 +51,6 @@ Read the leaf skill in full for any principle you apply.
 | Principle skill | Apply when |
 |---|---|
 | principle-laziness-protocol | You size a diff or want to add a layer. Prefer deletion and the smallest change that works. |
-| principle-build-the-lever | Work is non-trivial. Build the script, codemod, or generator that does or proves it. |
 | principle-model-the-domain | Logic holds state or branches a lot. Encode it in a state machine, typed model, table, or reducer. |
 | principle-boundary-discipline | You wire validation, errors, or adapters. Guard at system edges and trust internal types. |
 | typescript-best-practices | You design types or a signature in any typed language. Make illegal states unrepresentable and parse external data at edges. |
@@ -60,7 +59,7 @@ Read the leaf skill in full for any principle you apply.
 | principle-prove-it-works | You are about to call a task done. Check the real artifact, not a proxy. |
 | principle-fix-root-causes | You debug. Reproduce first and trace each symptom to its cause. |
 | principle-sequence-verifiable-units | Work has many steps. Cut it into small units that each end in a check. |
-| principle-encode-lessons-in-structure | You write the same instruction twice. Turn it into a lint, check, flag, or script. |
+| principle-encode-lessons-in-structure | Work is more than a few obvious edits, or you write the same instruction twice. Build the script, codemod, check, or lint that does, proves, or enforces it. |
 
 These rules have no leaf skill, because one line holds each of them.
 
