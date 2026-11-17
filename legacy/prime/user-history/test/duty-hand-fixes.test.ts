@@ -329,11 +329,13 @@ test("deploy.sh's migration hold of pause.sync is the deploy path, and a hand ho
 });
 
 // On 11-17 d3 read 9 hand box binds (prod audit 37892 and on, actor engage_box_bind) as undesigned hand fixes with no fault.
-test("a hand bind of engage accounts to a box address is fault F38", async () => {
+test("a hand bind of engage accounts to a box address is fault F38, and the box keeper's bind is the product's own", async () => {
   const bind: AuditRow = { id: 37892, ts: Date.parse("2026-11-16T05:09:00Z"), actor: "engage_box_bind", source: "ops-cli", key: "proxy_endpoints.box",
     reason: "p35 collabs from the box" };
   const verdict = classifyConfig(groupAudit("prod", [bind])[0]!, await registry());
   assert.equal(verdict.kind === "fault" ? verdict.fault.id : verdict.kind, "F38");
+  const kept = classifyConfig(groupAudit("prod", [{ ...bind, actor: "box-keeper", source: "engage-session-renewal", reason: "box keeper: 64.34.205.244 held 7 of engage.box_accounts_per_address 8" }])[0]!, await registry());
+  assert.equal(kept.kind, "automatic");
 });
 
 // F1 as it stood on 10-19, designed by p170 alone, before later designs (p235, p246 and their commits) joined it.
