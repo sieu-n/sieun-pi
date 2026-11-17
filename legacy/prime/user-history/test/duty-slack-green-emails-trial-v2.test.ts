@@ -22,6 +22,7 @@ test("every v2 trial subject maps to a trial template", () => {
   assert.equal(templateOf("Your Slack Green trial ends on November 6"), "trial_charge");
   assert.equal(templateOf("Your 7 free days of Slack Green are still waiting"), "trial_after_d3");
   assert.equal(templateOf("Your Slack Green schedule is still off for Acme"), "trial_after_d3");
+  assert.equal(templateOf("Add a card now to get 7 more trial days"), "trial_day1_card");
 });
 
 test("the never-connected trial email is wrong after the user connected Slack, and marketing after an opt-out", () => {
