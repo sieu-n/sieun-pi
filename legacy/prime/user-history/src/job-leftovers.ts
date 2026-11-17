@@ -965,18 +965,21 @@ async function main(args: readonly string[]): Promise<void> {
     const { removed, kept, containers } = await removeFree(source, hostPaths(args.slice(1)));
     left = { stopped: [], tabs: 0, copies: [], artifacts: [], units: [], owned: removed, ...kept.size ? { kept: keptNotes(kept) } : {}, ...containers.length ? { containers } : {} };
   }
-  else if (kind === "unowned") { await mainUnowned(); return; }
-  else throw new Error("usage: job-leftovers.ts end <session>[/sub-...] [session] | deleted <chat> | away <path>... | unowned < paths");
+  else if (kind === "unowned") { await mainUnowned(path === "--scratch"); return; }
+  else throw new Error("usage: job-leftovers.ts end <session>[/sub-...] [session] | deleted <chat> | away <path>... | unowned [--scratch] < paths");
   process.stdout.write(JSON.stringify(left) + "\n");
 }
 
 /**
  * `unowned` reads one absolute path per line on stdin, since a path on this process's own command line would read as a process that names it
  * (worker-footprint.py `--inside`), runs `reapUnowned` on them, appends a line per path to `unownedLog` and prints the totals as one JSON line.
+ * `unowned --scratch` takes every folder in ~/scratch instead, for the hourly run that components/scratch-reaper installs on each box.
  */
-async function mainUnowned(): Promise<void> {
+async function mainUnowned(scratch: boolean): Promise<void> {
   let input = "";
-  for await (const chunk of process.stdin) input += String(chunk);
+  const root = join(homedir(), "scratch");
+  if (scratch) input = (await readdir(root, { withFileTypes: true })).filter(entry => entry.isDirectory()).map(entry => join(root, entry.name)).join("\n");
+  else for await (const chunk of process.stdin) input += String(chunk);
   const paths = input.split("\n").map(line => line.trim()).filter(Boolean);
   const bytes = new Map(await Promise.all(paths.map(async path => [path, await treeBytes(await realFolder(path))] as const)));
   const { removed, kept } = await reapUnowned(unownedSource, paths);

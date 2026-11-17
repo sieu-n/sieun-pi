@@ -105,3 +105,13 @@ test("unowned reads idle trees with a find that takes no @<epoch> date, and a fa
   assert.match(kept.get(broken) ?? "", /could not be read whole: find failed: find: boom/);
   assert.ok(existsSync(join(broken, "release", "package.json")));
 });
+
+test("unowned --scratch judges every folder in ~/scratch and no loose file", { skip: process.platform !== "linux" }, async t => {
+  const home = mkdtempSync(join(tmpdir(), "job-unowned-"));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  for (const name of ["a", "b"]) write(join(home, "scratch", name, "x"));
+  write(join(home, "scratch", "shot.png"));
+  const out = execFileSync(process.execPath, ["--import", "tsx", "src/job-leftovers.ts", "unowned", "--scratch"], { cwd: join(import.meta.dirname, ".."), env: { ...process.env, HOME: home }, encoding: "utf8" });
+  const { kept } = JSON.parse(out) as { kept: string[] };
+  assert.deepEqual(kept.map(line => line.split(":")[0]).sort(), [join(home, "scratch", "a"), join(home, "scratch", "b")]);
+});
