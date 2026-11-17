@@ -256,7 +256,7 @@ async function commitPageLocked(input: {
 	linesRemoved: number;
 	/** False when the content equals the stored page: the answer names the current version and no revision is logged. */
 	changed: boolean;
-	/** Page gate warnings (rules 6 and 7): a source_ref this write adds, or a commit its new last_verified hides, changed after the page's last_verified; a broken mermaid block the page already held; a page the write leaves past its whole-read cap; and a created curated page no hub lists. */
+	/** Page gate warnings (rules 6, 7 and 9): a source_ref this write adds, or a commit its new last_verified hides, changed after the page's last_verified; a not-landed line the write adds; a broken mermaid block the page already held; a page the write leaves past its whole-read cap; and a created curated page no hub lists. */
 	warnings?: string[];
 }> {
 	const { rel, full } = resolveWritePath(input.rawPath);

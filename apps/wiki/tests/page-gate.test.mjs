@@ -349,3 +349,32 @@ test('the page API refuses a write that adds a not-landed line about a commit a 
 		'the fix of that line passes',
 	);
 });
+
+// 2026-11-17: the wiki dream runs at 00:19Z and 01:06Z rewrote census-scheduling, profile-read, python-and-task-order,
+// search-legs-and-build and line-judge-and-wording again, because each held a not-landed line the land after its last write made
+// false. Rule 9 warns on a not-landed line a write adds, names the dev-sha phrasing, and lets the write through (c98).
+test('the page API warns on a write that adds a not-landed line, names the dev-sha phrasing, and lets it through', (t) => {
+	const f = codeRepo();
+	t.after(() => rmSync(f.repo, { recursive: true, force: true }));
+	const PAGE = 'apps/crawler-v3/platforms/instagram/census-scheduling.html';
+	const page = (lines) =>
+		html({ title: 'Census scheduling', description: 'd', last_verified: '2026-11-17T01:06Z' }, `<ol>${lines.map((l) => `<li>${l}</li>`).join('')}</ol>`);
+	const base = 'The census queues each profile once a day.';
+	const before = page([base]);
+	const unlanded = page([base, 'At 01:06Z on 2026-11-17 <code>8c1f60df87</code> had not landed, so staging still queues each profile twice.']);
+	const prod = page([base, 'The fix <code>8c1f60df87</code> is not on prod yet.']);
+
+	const [warning, ...rest] = pageWriteWarnings(f.repo, PAGE, before, unlanded);
+	assert.deepEqual(rest, []);
+	assert.match(warning, /it adds "At 01:06Z on 2026-11-17 8c1f60df87 had not landed, so staging still queues each profile twice\.", which says 8c1f60df87 has not reached staging/);
+	assert.match(warning, /"on dev\/sieun since 8c1f60df87"/);
+	assert.match(pageWriteWarnings(f.repo, PAGE, before, prod).join('\n'), /which says 8c1f60df87 has not reached prod/);
+	assert.deepEqual(pageWriteReasons(f.repo, PAGE, before, unlanded), [], 'the line is a warning, never a refusal');
+
+	assert.deepEqual(pageWriteWarnings(f.repo, PAGE, unlanded, unlanded.replace('once a day', 'each day')), [], 'a line the page already held passes');
+	assert.deepEqual(
+		pageWriteWarnings(f.repo, PAGE, before, page([base, 'On dev/sieun since <code>8c1f60df87</code>, the census queues each profile once.'])),
+		[],
+		'the dev-sha phrasing passes',
+	);
+});

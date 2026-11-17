@@ -25,7 +25,10 @@
  *   8. In the page API only (pageWriteReasons), a line a write adds that says a commit of the code repo has not landed (wiki-health.mjs notLandedLines) is refused when
  *      a staging land already carries the commit, or for a prod line, when origin/main holds that land (landedClaims), and the
  *      refusal names the first land that carried it. A line the page already held passes, so its fix can be saved.
- * Rules 3 to 6 and 8 judge only what the write adds, because 265 of 296 curated pages had no `last_verified` on 2026-10-19
+ *   9. A warning, not a refusal, in the page API answer only: every other not-landed line a write adds (notLandedWarnings) names the
+ *      dev-sha phrasing to use instead, "on dev/sieun since <sha>", because the next land makes such a line false and costs the page
+ *      another write. A stale line guards no data, money, auth, outside send or vendor limit (owner rule c98).
+ * Rules 3 to 6, 8 and 9 judge only what the write adds, because 265 of 296 curated pages had no `last_verified` on 2026-10-19
  * and a rule on the whole page would refuse every edit to them.
  *
  *   node apps/llm-wiki/scripts/page-gate.mjs <rev> <changed page>...
@@ -197,9 +200,16 @@ export function behindRefReason(root, rev, page, old, html, writtenAt) {
  * 2026-11-16 at 08:01Z domains/architecture/telemetry-map.html v160 said d60109b34 had not landed on staging, though staging land
  * c2cb3f9c81 (land: dev/sieun 47461624d, 06:18Z) carried it, and the wiki dream precheck counted the page at once.
  */
+const landedKey = (sha, line) => `${sha}\u0000${line}`;
+
+/** The line and sha pairs of the notLandedLines of `old` (undefined for a new page), so a write is judged only on the pairs it adds. */
+function heldNotLanded(old) {
+	return new Set((old === undefined ? [] : notLandedLines(old)).flatMap(({ line, shas }) => shas.map((sha) => landedKey(sha, line))));
+}
+
 function landedLineReasons(root, page, old, html, staging = 'origin/staging', main = 'origin/main') {
-	const key = (sha, line) => `${sha}\u0000${line}`;
-	const had = new Set((old === undefined ? [] : notLandedLines(old)).flatMap(({ line, shas }) => shas.map((sha) => key(sha, line))));
+	const key = landedKey;
+	const had = heldNotLanded(old);
 	const isNew = ({ line, shas }) => shas.some((sha) => !had.has(key(sha, line)));
 	if (!notLandedLines(html).some(isNew)) return [];
 	if (spawnSync('git', ['rev-parse', '--verify', '--quiet', `${staging}^{commit}`], { cwd: root }).status !== 0) return [];
@@ -751,13 +761,34 @@ export function hiddenCommitsReason(root, rev, page, old, html, writtenAt, summa
 	);
 }
 
-/** The page gate warning reasons for one page API write (rule 6 and hiddenCommitsReason), which wiki-write.ts returns with the write. */
+/**
+ * Rule 9: one warning per line `html` adds over `old` that says a commit has not reached staging or prod (notLandedLines), naming the
+ * dev-sha phrasing to use instead. Why: in the 2026-11-17 wiki dream runs at 00:19Z and 01:06Z, census-scheduling, profile-read,
+ * python-and-task-order, search-legs-and-build and line-judge-and-wording were each rewritten again, because each held a not-landed line
+ * that the land after its last write had made false. A line rule 8 refuses never reaches this warning, because the refusal comes first.
+ */
+export function notLandedWarnings(old, html) {
+	const had = heldNotLanded(old);
+	return notLandedLines(html)
+		.filter(({ line, shas }) => shas.some((sha) => !had.has(landedKey(sha, line))))
+		.map(({ line, shas, stage }) => {
+			const sha = shas.find((s) => !had.has(landedKey(s, line))).slice(0, 10);
+			return (
+				`it adds "${line}", which says ${sha} has not reached ${stage}, and the next land makes that line false and costs the page ` +
+				`another write; state what dev/sieun runs and name the dev sha instead, as in "on dev/sieun since ${sha}", which stays ` +
+				`true after the land (skills/wiki/references/writing.md item 10)`
+			);
+		});
+}
+
+/** The page gate warning reasons for one page API write (rules 6, 7 and 9), which wiki-write.ts returns with the write. */
 export function pageWriteWarnings(root, page, before, after, summary = '') {
 	if (page === HOME || !isCuratedPath(`${CONTENT}${page}`)) return [];
 	const writtenAt = Date.now();
 	return [
 		behindRefReason(root, 'HEAD', page, before ?? undefined, after, writtenAt),
 		hiddenCommitsReason(root, 'HEAD', page, before ?? undefined, after, writtenAt, summary),
+		...notLandedWarnings(before ?? undefined, after),
 	].filter(Boolean);
 }
 
