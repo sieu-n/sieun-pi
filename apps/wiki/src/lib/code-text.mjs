@@ -153,8 +153,85 @@ function script(text) {
 }
 
 /**
- * Svelte with its scripts read as JavaScript, block comments cut from its styles, and `<!-- -->` and whole `//` comment
- * lines of its template expressions cut from its markup.
+ * A style sheet without `/* *\/` comments, and without `//` line comments when `lines` is set, as SCSS and Less read
+ * them, outside quoted strings and an unquoted `url(...)`, so `url(https://a.example/x.png)` stays.
+ * @param {boolean} lines
+ */
+const css = (lines) => (/** @type {string} */ text) => {
+	let out = '';
+	let i = 0;
+	while (i < text.length) {
+		const c = text[i];
+		if (c === '/' && text[i + 1] === '*') {
+			const close = text.indexOf('*/', i + 2);
+			i = close < 0 ? text.length : close + 2;
+			out += ' ';
+			continue;
+		}
+		if (lines && c === '/' && text[i + 1] === '/') {
+			i = lineEnd(text, i);
+			continue;
+		}
+		let end = i + 1;
+		if (c === '"' || c === "'") {
+			while (end < text.length && text[end] !== c && text[end] !== '\n') end += text[end] === '\\' ? 2 : 1;
+			end = Math.min(text.length, end + 1);
+		} else if (/^url\([ \t]*[^'"\s)]/i.test(text.slice(i, i + 6)) && !/[\w-]/.test(text[i - 1] ?? '')) {
+			end = text.indexOf(')', i) + 1 || text.length;
+		}
+		out += text.slice(i, end);
+		i = end;
+	}
+	return out;
+};
+
+/**
+ * SQL without `--` line comments and `/* *\/` block comments, which may nest, as PostgreSQL and ClickHouse read them,
+ * outside a `'` string (with `''` or `\'` inside), a `"` or backtick quoted identifier.
+ * @param {string} text
+ */
+function sql(text) {
+	let out = '';
+	let i = 0;
+	while (i < text.length) {
+		const c = text[i];
+		if (c === '-' && text[i + 1] === '-') {
+			i = lineEnd(text, i);
+			continue;
+		}
+		if (c === '/' && text[i + 1] === '*') {
+			let depth = 0;
+			while (i < text.length) {
+				if (text.startsWith('/*', i)) {
+					depth += 1;
+					i += 2;
+				} else if (text.startsWith('*/', i)) {
+					depth -= 1;
+					i += 2;
+					if (!depth) break;
+				} else i += 1;
+			}
+			out += ' ';
+			continue;
+		}
+		let end = i + 1;
+		if (c === "'" || c === '"' || c === '`') {
+			while (end < text.length) {
+				if (text[end] === c && text[end + 1] === c) end += 2;
+				else if (text[end] === c) break;
+				else end += c === "'" && text[end] === '\\' ? 2 : 1;
+			}
+			end = Math.min(text.length, end + 1);
+		}
+		out += text.slice(i, end);
+		i = end;
+	}
+	return out;
+}
+
+/**
+ * Svelte with its scripts read as JavaScript, its styles read as CSS, or as SCSS or Less by their `lang`, and `<!-- -->`
+ * and whole `//` comment lines of its template expressions cut from its markup.
  * @param {string} text
  */
 function svelte(text) {
@@ -165,7 +242,8 @@ function svelte(text) {
 			if (!open) return part.replace(/<!--[\s\S]*?-->/g, ' ').replace(/^[ \t]*\/\/.*$/gm, '');
 			const close = `</${open[1]}>`;
 			const body = part.slice(open[0].length, part.length - close.length);
-			return open[0] + (open[1] === 'script' ? script(body) : body.replace(/\/\*[\s\S]*?\*\//g, ' ')) + close;
+			const style = css(/\blang=["']?(?:scss|less)\b/.test(open[0]));
+			return open[0] + (open[1] === 'script' ? script(body) : style(body)) + close;
 		})
 		.join('');
 }
@@ -319,6 +397,9 @@ const LANGUAGES = [
 	{ match: /\.pyi?$/, strip: python },
 	{ match: /\.[cm]?[jt]sx?$/, strip: script },
 	{ match: /\.svelte$/, strip: svelte },
+	{ match: /\.(?:css|pcss|postcss)$/, strip: css(false) },
+	{ match: /\.(?:scss|less)$/, strip: css(true) },
+	{ match: /\.sql$/, strip: sql },
 	{ match: /\.(?:sh|bash|zsh)$/, strip: shell },
 	{ match: /\.ya?ml$/, strip: yaml },
 	{ match: /\.toml$|^\.env(?:\.[\w.-]+)?$/, strip: toml },

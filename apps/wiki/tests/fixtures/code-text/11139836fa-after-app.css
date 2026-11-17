@@ -1,0 +1,1314 @@
+/* Tailwind scans src only, never all of apps/search. Its scan runs on the dev server's thread on each SSR reload, and
+   it read any untracked folder left in apps/search, such as a stray folder of Playwright traces, which held SSR for
+   seconds (10-28). The scan of src and packages/ui gives the same CSS byte for byte. Tests stay out too: a Playwright
+   selector such as `[role="alert"]:visible` reads as an arbitrary variant and emits `:is()`, which SvelteKit's CSS
+   parser rejects when it inlines the stylesheet (vite build, css_expected_identifier). */
+@import 'tailwindcss' source('.');
+@import '@virev/ui/theme.css';
+
+/* Tailwind 4 skips node_modules during content detection — the workspace
+   package's .svelte files must be scanned explicitly or their classes purge. */
+@source "../../../packages/ui/src";
+
+/* Arial resized to Inter's metrics, so text set before Inter loads takes the same room and the swap moves nothing.
+   fonts.css, which declares Inter, is preloaded ahead of the scripts ($lib/server/link-header.ts), so Inter often
+   arrives after the first paint, and a swap from a plain system face shifted the Connections cards (box A/B, 10-26:
+   0.003 to 0.0045 on 2 of 6 cold loads). measured: each size-adjust is the width of six UI strings in Inter v20 over
+   Arial (Liberation Sans) in Chrome at that weight: 107.3% at 400, 114.0% at 500, and 107.1% for Arial Bold at 600
+   and 700; the ascent and descent overrides are Inter's (0.969 and 0.241 of the em) over that size-adjust. The
+   unicode-range is that of Inter's latin and latin-ext files in fonts.css, so a glyph Inter lacks, such as an arrow,
+   still comes from the system face after Inter loads (without it, the → of "Open inbox →" on Connections drew from
+   Arial). */
+@font-face {
+	font-family: 'Inter Fallback';
+	src: local('Arial'), local('ArialMT'), local('Liberation Sans');
+	font-weight: 100 449;
+	size-adjust: 107.3%;
+	ascent-override: 90.29%;
+	descent-override: 22.48%;
+	line-gap-override: 0%;
+	unicode-range:
+		U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC,
+		U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD, U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+		U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F,
+		U+A720-A7FF;
+}
+@font-face {
+	font-family: 'Inter Fallback';
+	src: local('Arial'), local('ArialMT'), local('Liberation Sans');
+	font-weight: 450 549;
+	size-adjust: 114%;
+	ascent-override: 84.98%;
+	descent-override: 21.16%;
+	line-gap-override: 0%;
+	unicode-range:
+		U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC,
+		U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD, U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+		U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F,
+		U+A720-A7FF;
+}
+@font-face {
+	font-family: 'Inter Fallback';
+	src: local('Arial Bold'), local('Arial-BoldMT'), local('Liberation Sans Bold');
+	font-weight: 550 900;
+	size-adjust: 107.1%;
+	ascent-override: 90.45%;
+	descent-override: 22.52%;
+	line-gap-override: 0%;
+	unicode-range:
+		U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC,
+		U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD, U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7,
+		U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F,
+		U+A720-A7FF;
+}
+/* Name glyphs: scripts that creators borrow letters from to spell a name, which no face of the sans stack holds, so
+   they drew as boxes. Each face is one Noto subset from Google Fonts (OFL), and its unicode-range means a browser
+   fetches it only for a name that holds one of its glyphs. Fancy-name generators take letter shapes from the same few
+   scripts: Canadian Syllabics (ᗩ ᗷ ᑕ), Cherokee (Ꭺ Ᏼ Ꮯ), Tai Viet (ꪖ ꪀ ꫀ) and Lisu (ꓮ ꓐ ꓚ), plus rarer ones such as
+   Linear A and B, Cham, Elbasan, Meroitic Cursive, hieroglyphs and Vai (10-31, rw16). Those faces try the font a Mac or Windows already holds
+   before the file, so mostly a Linux browser fetches them; the Symbols 2 file is cut to U+2B00-2BFF.
+   tests/unit/name-glyph-fonts.test.ts lists the covered ranges. */
+@font-face {
+	font-family: 'Name Glyphs';
+	src: url('/fonts/noto-sans-linear-a.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+	unicode-range: U+10107-10133, U+10600-1077F;
+}
+@font-face {
+	font-family: 'Name Glyphs';
+	src: url('/fonts/noto-sans-canadian-aboriginal.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+	unicode-range: U+1400-167F, U+18B0-18FF;
+}
+@font-face {
+	font-family: 'Name Glyphs';
+	src: url('/fonts/noto-sans-cherokee.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+	unicode-range: U+13A0-13FF, U+AB70-ABBF;
+}
+@font-face {
+	font-family: 'Name Glyphs';
+	src: url('/fonts/noto-sans-tai-viet.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+	unicode-range: U+AA80-AADF;
+}
+@font-face {
+	font-family: 'Name Glyphs';
+	src: url('/fonts/noto-sans-lisu.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+	unicode-range: U+A4D0-A4FF;
+}
+@font-face {
+	font-family: 'Name Glyphs';
+	src: url('/fonts/noto-sans-cham.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+	unicode-range: U+AA00-AA5F;
+}
+@font-face {
+	font-family: 'Name Glyphs';
+	src: url('/fonts/noto-sans-elbasan.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+	unicode-range: U+10500-1052F;
+}
+@font-face {
+	font-family: 'Name Glyphs';
+	src: url('/fonts/noto-sans-meroitic.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+	unicode-range: U+10980-109FF;
+}
+@font-face {
+	font-family: 'Name Glyphs';
+	src:
+		local('Noto Sans Linear B'),
+		local('NotoSansLinearB-Regular'),
+		local('Segoe UI Historic'),
+		url('/fonts/noto-sans-linear-b.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+	unicode-range: U+10000-100FF;
+}
+@font-face {
+	font-family: 'Name Glyphs';
+	src:
+		local('Noto Sans Egyptian Hieroglyphs'),
+		local('NotoSansEgyptianHieroglyphs-Regular'),
+		local('Segoe UI Historic'),
+		url('/fonts/noto-sans-egyptian-hieroglyphs.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+	unicode-range: U+13000-1345F;
+}
+@font-face {
+	font-family: 'Name Glyphs';
+	src:
+		local('Kailasa'),
+		local('Microsoft Himalaya'),
+		url('/fonts/noto-serif-tibetan.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+	unicode-range: U+0F00-0FFF;
+}
+@font-face {
+	font-family: 'Name Glyphs';
+	src:
+		local('Kannada Sangam MN'),
+		local('Nirmala UI'),
+		url('/fonts/noto-sans-kannada.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+	unicode-range: U+0C80-0CFF;
+}
+@font-face {
+	font-family: 'Name Glyphs';
+	src:
+		local('Ebrima'),
+		url('/fonts/noto-sans-vai.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+	unicode-range: U+A500-A63F;
+}
+@font-face {
+	font-family: 'Name Glyphs';
+	src:
+		local('Segoe UI Symbol'),
+		url('/fonts/noto-sans-symbols-2.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+	unicode-range: U+2B00-2BFF;
+}
+@font-face {
+	font-family: 'Name Glyphs';
+	src:
+		local('Kohinoor Telugu'),
+		local('Telugu Sangam MN'),
+		local('Nirmala UI'),
+		url('/fonts/noto-sans-telugu.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+	unicode-range: U+0C00-0C7F;
+}
+@font-face {
+	font-family: 'Name Glyphs';
+	src:
+		local('Kohinoor Bangla'),
+		local('Bangla Sangam MN'),
+		local('Nirmala UI'),
+		url('/fonts/noto-sans-bengali.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+	unicode-range: U+0980-09FF;
+}
+@font-face {
+	font-family: 'Name Glyphs';
+	src: url('/fonts/noto-sans-arabic.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+	unicode-range: U+08A0-08FF;
+}
+@font-face {
+	font-family: 'Name Glyphs';
+	src:
+		local('Cambria Math'),
+		local('STIX Two Math'),
+		url('/fonts/noto-sans-math.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+	unicode-range: U+27C0-27EF;
+}
+
+@theme {
+	/* Fonts — app.css is the ONLY place a literal font stack may be written.
+	   Every surface (landing/marketing shells, auth, /live, flow demos, dev
+	   galleries) references these tokens instead of re-pasting the stack; the
+	   same General Sans chain used to be duplicated 4x and the Geist Mono chain
+	   6x, which is how a banned face survived in ~75 files. Enforced by
+	   tests/unit/no-mono-app-chrome.test.ts. */
+	--font-sans:
+		'Inter', 'Inter Fallback', 'Name Glyphs', 'SF Pro', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+	/* App numerals. Geist Mono is self-hosted in $lib/fonts/fonts.css, which every page preloads; the old
+	   SF Mono chain named no loaded face, so numbers drew in the browser's fallback monospace. */
+	--font-mono: 'Geist Mono', 'SF Mono', ui-monospace, monospace;
+	--font-brand: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+	/* Public/marketing display+body face (Fontshare, loaded by the landing shells). */
+	--font-display:
+		'General Sans', 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+	/* Marketing numerals/measurements face. NEVER for uppercase micro-caps. */
+	--font-mono-brand: var(--font-mono);
+	/* /live runs its own Geist-first type engine. */
+	--font-geist: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+	/* Brand-logo wall fallback wordmarks — Geist with explicit KR+JP faces so
+	   CJK brand names render deliberately, not via generic-fallback roulette. */
+	--font-geist-cjk:
+		'Geist', 'Hanken Grotesk', 'Apple SD Gothic Neo', 'Noto Sans KR', 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+	/* Canonical Korean fallback chain (Pretendard = K-SaaS standard, loaded in
+	   app.html). The ONLY place this chain is written — every surface that owns
+	   its own font-family (landing/marketing shells, auth, live, flow demos,
+	   Clerk appearance, public-form themes) appends var(--font-ko) instead of
+	   copying the literal stack, so Hangul renders Pretendard everywhere. */
+	--font-ko:
+		'Pretendard Variable', 'Pretendard', -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR',
+		'Malgun Gothic', sans-serif;
+	/* ko display roles: Latin face FIRST so Latin stays on-brand while Pretendard
+	   takes Hangul per-glyph (see the Korean typography rule). Surfaces reference
+	   these under html[lang='ko'] instead of re-pasting the pair. */
+	--font-display-ko: 'General Sans', var(--font-ko);
+	--font-geist-ko: 'Geist', var(--font-ko);
+	/* Caveat — a single-page signature accent (the /about H1 + its one
+	   annotation). Latin-only script face with no Hangul/Kana, so it falls
+	   back to the ko-safe display chain: KO/JA locales render a bold
+	   (non-handwritten) display line instead of broken glyphs — the
+	   sanctioned degradation for a script the face cannot cover. Loaded via
+	   Google Fonts CSS2, scoped to the consuming page's own <svelte:head>
+	   (not here, not app.html) since no other surface uses it. */
+	--font-handwritten: 'Caveat', var(--font-display-ko);
+
+	/* Blue budget (owner c95, demo campaigns-final): blue marks only a commonly used clickable action. Every state
+	   mark of a shared control (selected tab or option, checked box, on toggle, picked menu row) uses mark, which
+	   follows the ink, and every count badge uses count, a quiet grey. $lib/ui reads these; the demo's app.css sets
+	   the same. */
+	--color-mark: var(--color-ink);
+	--color-mark-soft: color-mix(in srgb, var(--color-ink) 7%, transparent);
+	--color-mark-bold: var(--color-ink);
+	--color-count: var(--color-ink-faint);
+	--color-btn-primary-off: var(--color-surface-alt);
+	--color-btn-primary-off-fg: var(--color-ink-muted);
+	--color-btn-primary-off-edge: var(--color-rule-strong);
+	--color-row-hover: color-mix(in srgb, var(--color-ink) 4%, var(--color-surface));
+	--color-row-selected: color-mix(in srgb, var(--color-ink) 8%, var(--color-surface));
+	/* A sidebar row's hover (SidebarRow), half the lit row's fill: lighter than the lit row, darker than the sidebar. */
+	--color-side-hover: color-mix(in srgb, var(--color-surface-alt) 50%, var(--color-surface));
+}
+
+/* In dark the lit fill (surface-alt) sits darker than the sidebar, so a hover half way to it read as a second lit row
+   (19,20,23 against 16,17,20). The hover lifts above the sidebar instead. */
+html[data-theme='dark'] {
+	--color-side-hover: color-mix(in srgb, var(--color-ink) 6%, var(--color-surface));
+}
+
+/* The main button each Preferences theme card draws (PreferencesThemePreview): the accent's primary plate in that
+   theme. Frozen per theme, never redeclared under html[data-theme]; html[data-accent] below sets its own. */
+:root {
+	--theme-preview-light-plate: #8ed0f5;
+	--theme-preview-dark-plate: #6fc0f2;
+}
+
+html {
+	background: var(--color-surface-alt);
+	color: var(--color-ink);
+	font-family: var(--font-sans);
+	-webkit-font-smoothing: antialiased;
+	font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+}
+
+/* Korean locale: Pretendard is the de-facto K-SaaS standard (Toss, Linear-style apps).
+   Falls back to system Korean stack. Tabular nums on for data-dense tables. */
+html[lang='ko'] {
+	font-family: var(--font-ko);
+	letter-spacing: -0.01em;
+}
+html[lang='ko'] :where(h1, h2, h3, h4, h5, h6) {
+	letter-spacing: -0.025em;
+}
+
+/* Japanese breaks a line only between phrases, wherever a phrase fits its box, so a word such as 配信停止ヘッダー or
+   ありません never splits mid-word. A line with no room for a phrase still breaks inside it, so a label column must be as
+   wide as its longest word (rw57). */
+html[lang='ja'] {
+	word-break: auto-phrase;
+}
+
+::selection {
+	background: var(--color-mark);
+	color: white;
+}
+
+/* ── Focus ──────────────────────────────── */
+
+:focus-visible {
+	outline: 2px solid var(--color-mark);
+	outline-offset: 2px;
+}
+/* The shared OptionGroup (lib/ui) marks keyboard focus with a soft fill, so
+   the ring above would draw a heavy box around a quiet choice. */
+[data-ui-option]:focus-visible {
+	outline: none;
+}
+
+/* THE text-control focus treatment (owner 2026-08-18): ocean border + a soft
+   ocean halo. One GLOBAL element rule, deliberately — every inline dropdown
+   search box, toolbar input and form field inherits it with zero call-site
+   classes, so no surface hand-rolls its own focus paint. On :focus, not :focus-visible: for TEXT controls the caret is already there,
+   the ring must be too, mouse or keyboard. */
+input:focus,
+textarea:focus,
+select:focus {
+	outline: none;
+	border-color: var(--color-mark);
+	box-shadow: 0 0 0 3px var(--color-mark-soft);
+}
+/* ── THE control shell (owner 2026-08-19, radius re-ruled 2026-09-27) ────
+   One radius and one type size for every text control: --radius-md (8px)
+   everywhere (owner, 2026-09-27). Inputs, selects, textareas and
+   the $lib/ui Select trigger shares it. Buttons and menu
+   triggers keep their own 6px.
+
+   Unlayered on purpose: Tailwind utilities live in @layer utilities, so this
+   beats the stray per-field rounded-* that caused the drift. Checkbox, radio
+   and range keep their own geometry. Fields carry NO shadow — elevation is a
+   popover property, never a field one. */
+input:not([type='checkbox']):not([type='radio']):not([type='range']),
+textarea,
+select {
+	border-radius: var(--radius-md);
+	font-size: 12.5px;
+}
+
+/* Bare inner inputs (typeahead fields living INSIDE a chip wrapper — the
+   wrapper is the field, so it carries focus-within paint and the naked input
+   must NOT paint its own ring; the global rule above would otherwise draw a
+   floating square around a borderless input). */
+.input-bare:focus {
+	border-color: transparent;
+	box-shadow: none;
+}
+
+/* Textareas auto-grow with content (AI-chat style, owner 2026-08-19): no
+   y-scrollbar until a caller-set max-height, and NEVER a drag-to-resize
+   handle. Callers own min/max-height; rows becomes the minimum. */
+textarea {
+	resize: none;
+	field-sizing: content;
+}
+
+/* ── Scrollbar ──────────────────────────── */
+
+.scroll-thin {
+	scrollbar-width: thin;
+	scrollbar-color: var(--color-rule-strong) transparent;
+}
+.scroll-thin::-webkit-scrollbar {
+	width: 6px;
+	height: 6px;
+}
+.scroll-thin::-webkit-scrollbar-track {
+	background: transparent;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+	background: var(--color-rule-strong);
+	border-radius: 3px;
+}
+.scroll-thin::-webkit-scrollbar-thumb:hover {
+	background: var(--color-ink-faint);
+}
+
+/* Persistent scrollbar — appears WHEN content is scrollable and stays
+ * always-visible (never auto-hides) on macOS. `overflow: auto` hides the bar
+ * if content fits; `-webkit-appearance: none` + opaque thumb overrides
+ * macOS's "auto-hide overlay scrollbar" so once the bar is shown it stays
+ * shown. `--scroll-visible-w` is exposed so sibling layout (e.g. the search
+ * table's header wrapper) can match the gutter for 1:1 horizontal scroll
+ * sync. */
+:root {
+	--scroll-visible-w: 12px;
+}
+.scroll-visible {
+	overflow-y: auto;
+	overflow-x: auto;
+	/* Reserve vertical gutter even when rows fit, so the search-table header
+	 * wrapper's matching `padding-right` stays in lock-step. */
+	scrollbar-gutter: stable;
+}
+/* Chrome/Safari path. We deliberately do NOT set `scrollbar-width` /
+ * `scrollbar-color` on the host — when those CSS-spec properties are present,
+ * Chrome forwards layout to its native (overlay) scrollbar and ignores our
+ * `::-webkit-scrollbar` rules, which means the bar fades out on macOS. With
+ * the spec props OFF and `-webkit-appearance: none` ON, Chrome uses our
+ * classic non-overlay bar that occupies the gutter and never auto-hides.
+ *
+ * Visual weight: track is `surface-alt` (#EEF0F3) with a 1px top border in
+ * `rule` (#E7E9ED) to read as a "shelf" rather than blending into the page.
+ * Thumb is `ink-faint` (#767E8B) — clearly grey-on-grey, ~3:1+ contrast
+ * against the track so a marketer immediately reads "drag to see more" from
+ * a glance. Darker `ink-muted` on hover for press feedback. */
+.scroll-visible::-webkit-scrollbar {
+	-webkit-appearance: none;
+	width: var(--scroll-visible-w);
+	height: var(--scroll-visible-w);
+	background: var(--color-surface-alt);
+}
+.scroll-visible::-webkit-scrollbar-track {
+	background: var(--color-surface-alt);
+	border-top: 1px solid var(--color-rule);
+	border-left: 1px solid var(--color-rule);
+}
+.scroll-visible::-webkit-scrollbar-thumb {
+	background: var(--color-ink-faint);
+	border: 3px solid var(--color-surface-alt);
+	border-radius: 8px;
+	min-width: 48px;
+	min-height: 48px;
+}
+.scroll-visible::-webkit-scrollbar-thumb:hover {
+	background: var(--color-ink-muted);
+	border-width: 2px;
+}
+.scroll-visible::-webkit-scrollbar-thumb:active {
+	background: var(--color-mark);
+	border-width: 2px;
+}
+.scroll-visible::-webkit-scrollbar-corner {
+	background: var(--color-surface-alt);
+	border-top: 1px solid var(--color-rule);
+	border-left: 1px solid var(--color-rule);
+}
+/* Firefox — has no webkit scrollbar pseudo, but its native scrollbars never
+ * auto-hide. `scrollbar-width: thin` + `scrollbar-color` give it the same
+ * thin colored bar as Chrome's webkit version. Scoped via @supports so this
+ * doesn't leak into Chrome and re-enable overlay there. */
+@supports (-moz-appearance: none) {
+	.scroll-visible {
+		scrollbar-width: thin;
+		scrollbar-color: var(--color-rule-strong) var(--color-surface-alt);
+	}
+}
+
+/* ── Motion tokens ─────────────────────── */
+/* The CSS twins of the tokens in $lib/ui/motion.ts, for a <style> block: a duration or curve in a component is one
+   of these, never a literal (tests/unit/motion-tokens.test.ts checks that the two agree). The curves are the
+   landing's (see motion.ts). Reduced motion turns every duration to 0. */
+:root {
+	--motion-fast: 150ms;
+	--motion-base: 200ms;
+	--motion-slow: 300ms;
+	--ease-out: cubic-bezier(0.33, 1, 0.68, 1);
+	--ease-glide: cubic-bezier(0.22, 1, 0.36, 1);
+	--ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+	:root {
+		--motion-fast: 0ms;
+		--motion-base: 0ms;
+		--motion-slow: 0ms;
+	}
+}
+
+/* ── Global transitions ────────────────── */
+button,
+a {
+	transition: all 150ms ease;
+}
+tr {
+	transition: background-color 150ms ease;
+}
+
+/* ── Animations ─────────────────────────── */
+
+/* A view that enters slides up 8px and shows on its first frame; it no longer fades in from opacity 0, which hid the
+   rendered page for the first frames of a switch. */
+@keyframes enterUp {
+	from {
+		transform: translateY(8px);
+	}
+	to {
+		transform: translateY(0);
+	}
+}
+
+@keyframes fadeIn {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
+
+@keyframes popIn {
+	from {
+		opacity: 0;
+		transform: scale(0.95);
+	}
+	to {
+		opacity: 1;
+		transform: scale(1);
+	}
+}
+
+@keyframes slideUp {
+	from {
+		opacity: 0;
+		transform: translateY(4px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+@keyframes shimmer {
+	0% {
+		background-position: -200% 0;
+	}
+	100% {
+		background-position: 200% 0;
+	}
+}
+
+@keyframes spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+.animate-enter {
+	animation: enterUp 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.animate-fade {
+	animation: fadeIn 200ms ease both;
+}
+
+.animate-slide-up {
+	animation: slideUp 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Entrance utilities use animation-fill-mode: both, so the final state is already
+   applied — dropping the animation under reduced-motion just reveals it instantly. */
+@media (prefers-reduced-motion: reduce) {
+	/* Tailwind's own motion utilities are included deliberately: a status
+	   spinner is motion the user asked us not to render, and the frozen
+	   brand-tracking contract requires reduced-motion to be honoured on the
+	   Fetching state (gate finding BA-G007). */
+	.animate-spin,
+	.animate-pulse,
+	.animate-ping,
+	.animate-enter,
+	.animate-fade,
+	.animate-slide-up,
+	.skeleton,
+	.skeleton::after {
+		animation: none;
+	}
+}
+
+/* ── Column header interactions ────────── */
+
+.col-add-bubble {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 20px;
+	height: 20px;
+	border-radius: 9999px;
+	background: var(--color-btn-primary);
+	color: var(--color-btn-primary-fg);
+	box-shadow:
+		inset 0 0 0 1px var(--color-btn-primary-edge),
+		0 2px 8px rgba(6, 52, 79, 0.22);
+	cursor: pointer;
+	transition: transform 150ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.col-add-bubble:hover {
+	transform: scale(1.15);
+}
+.col-add-bubble:active {
+	transform: scale(0.95);
+}
+
+/* Right-edge divider on the last sticky-pinned column in a table row / header.
+   A hairline rule always reads at scroll=0 (so the user sees the pin band as
+   a discrete zone); a soft fade-out shadow on top reinforces depth once the
+   non-pinned columns scroll underneath. Implemented as ::after so we don't
+   spend an extra DOM node and so the shadow paints OVER neighboring scrolling
+   cells (the pinned cell is sticky + z-[5], its ::after inherits that
+   stacking context and lands above z-[4] body cells). */
+.pin-divider {
+	box-shadow: inset -1px 0 0 0 rgba(15, 15, 15, 0.07);
+}
+/* One Find results cell (SearchTableRow.svelte), in place of `relative flex items-center px-2 py-1.5 text-[12px]
+   shrink-0` on each cell. measured: staging 3b8f424 (rw88) q=natgeo drew 950 cells, so the class saves 45.6 KB of the
+   992 KB document. In the components layer, so a cell's `sticky` utility wins. */
+@layer components {
+	.search-cell {
+		position: relative;
+		display: flex;
+		flex-shrink: 0;
+		align-items: center;
+		padding-inline: calc(var(--spacing) * 2);
+		padding-block: calc(var(--spacing) * 1.5);
+		font-size: 12px;
+	}
+}
+.pin-divider::after {
+	content: '';
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	right: -10px;
+	width: 10px;
+	pointer-events: none;
+	background: linear-gradient(to right, rgba(15, 15, 15, 0.06), rgba(15, 15, 15, 0));
+	z-index: 1;
+}
+/* Stagger */
+.stagger > * {
+	animation: enterUp 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.stagger > *:nth-child(1) {
+	animation-delay: 0ms;
+}
+.stagger > *:nth-child(2) {
+	animation-delay: 30ms;
+}
+.stagger > *:nth-child(3) {
+	animation-delay: 60ms;
+}
+.stagger > *:nth-child(4) {
+	animation-delay: 90ms;
+}
+.stagger > *:nth-child(5) {
+	animation-delay: 120ms;
+}
+.stagger > *:nth-child(6) {
+	animation-delay: 150ms;
+}
+.stagger > *:nth-child(7) {
+	animation-delay: 180ms;
+}
+.stagger > *:nth-child(8) {
+	animation-delay: 210ms;
+}
+
+/* ── Navigation progress bar ───────────── */
+.nav-progress-bar {
+	position: fixed;
+	top: 0;
+	left: 0;
+	right: 0;
+	height: 2px;
+	z-index: 9999;
+	overflow: hidden;
+	pointer-events: none;
+}
+.nav-progress-bar::after {
+	content: '';
+	position: absolute;
+	top: 0;
+	height: 100%;
+	width: 35%;
+	border-radius: 0 2px 2px 0;
+	background: var(--color-accent);
+	animation: navSlide 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@keyframes navSlide {
+	0% {
+		left: -35%;
+	}
+	100% {
+		left: 100%;
+	}
+}
+
+/* ── Skeleton loading ───────────────────── */
+/* The sweep moves ::after by transform, which the compositor runs with no main-thread frame. A background-position
+   sweep repainted the page every frame, even far off screen, and cost seconds of Paint (p137 walk 22). The position, isolation
+   and overflow sit in the components layer, so a call-site utility such as `absolute` wins. */
+.skeleton {
+	background: var(--color-surface-alt);
+}
+@layer components {
+	.skeleton {
+		position: relative;
+		isolation: isolate;
+		overflow: hidden;
+	}
+}
+.skeleton::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	z-index: -1;
+	pointer-events: none;
+	background: linear-gradient(90deg, transparent 25%, var(--color-rule) 50%, transparent 75%);
+	transform: translateX(-100%);
+	animation: skeletonSweep 1.5s infinite;
+}
+@keyframes skeletonSweep {
+	to {
+		transform: translateX(100%);
+	}
+}
+/* Radius carried at ZERO specificity so a call-site utility wins. As a plain
+   `.skeleton` declaration it was unlayered and beat `rounded-full`, which is
+   why skeleton avatars rendered as squares (MentionTooltip, the old profile overlay). */
+:where(.skeleton) {
+	border-radius: var(--radius-sm);
+}
+
+/* A For you report part a range switch has not reached yet (dash/range-lag.svelte.ts Lag.behind) still holds the old
+   range's answer, so everything under its title, its subtitle and count included, draws as skeleton blocks of the size it had.
+   measured: on staging 8763ef8 (11-02) Our posts read This month's "You posted nothing in this period." under the new
+   "Oct 15 – Oct 28" for 63 ms after Apply, and p137 scale walk 10 read it at 900 ms. content-visibility skips each
+   block's subtree with no restyle of it (search-pages rule 15: 3 ms where an inherited property cost 50 ms on 3,082
+   elements), and contain-intrinsic-size auto keeps the size each block last drew at. */
+[data-lag] :is(section > :not(header, :has(> header)), section > header p, [data-dash-sub], [data-insight-count]) {
+	contain-intrinsic-size: auto none;
+}
+[data-lag][data-behind]
+	:is(section > :not(header, :has(> header)), section > header p, [data-dash-sub], [data-insight-count]) {
+	content-visibility: hidden;
+	background: linear-gradient(90deg, var(--color-surface-alt) 25%, var(--color-rule) 50%, var(--color-surface-alt) 75%);
+	background-size: 200% 100%;
+	border-radius: var(--radius-sm);
+	animation: shimmer 1.5s infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+	[data-lag][data-behind]
+		:is(section > :not(header, :has(> header)), section > header p, [data-dash-sub], [data-insight-count]) {
+		animation: none;
+	}
+}
+
+/* The key color as a user theme (owner 10-30, msg mvtqgbht): Ocean, Amber or Graphite, picked in Settings > Preferences
+   and stamped as html[data-accent] by $lib/accent.svelte.ts and app.html's pre-paint script; Ocean is the base tokens
+   with no attribute. The values are prime-agent-chat's accents (sieun-pi legacy/prime/user-history/src/client/app.css):
+   an accent sets its base and bold tone per theme, and the soft tint, the primary plate and its label mix from them
+   with that app's ratios. The mark and count tokens above stay ink (c95). */
+html[data-accent='amber'] {
+	--color-accent: #c26a00;
+	--color-accent-bold: #964f00;
+	--color-accent-soft: color-mix(in srgb, var(--color-accent) 8%, transparent);
+	--color-accent-light: color-mix(in srgb, var(--color-accent) 22%, #fff);
+	--color-accent-muted: color-mix(in srgb, var(--color-accent) 22%, #fff);
+	--color-accent-fill: #c26a00;
+	--color-accent-bold-fill: #964f00;
+	--color-btn-primary: color-mix(in srgb, var(--color-accent) 45%, #fff);
+	--color-btn-primary-hover: color-mix(in srgb, var(--color-accent) 55%, #fff);
+	--color-btn-primary-active: color-mix(in srgb, var(--color-accent) 65%, #fff);
+	--color-btn-primary-fg: color-mix(in srgb, var(--color-accent) 40%, #000);
+	--color-btn-primary-edge: color-mix(in srgb, var(--color-btn-primary-fg) 40%, transparent);
+	--theme-preview-light-plate: color-mix(in srgb, #c26a00 45%, #fff);
+	--theme-preview-dark-plate: #fcc977;
+}
+html[data-theme='dark'][data-accent='amber'] {
+	--color-accent: #f0a43a;
+	--color-accent-bold: #fcc977;
+	--color-accent-soft: color-mix(in srgb, var(--color-accent) 14%, transparent);
+	--color-accent-light: color-mix(in srgb, var(--color-accent) 22%, #17181c);
+	--color-accent-muted: color-mix(in srgb, var(--color-accent) 30%, #17181c);
+	--color-btn-primary: var(--color-accent-bold);
+	--color-btn-primary-hover: color-mix(in srgb, var(--color-accent-bold) 85%, #fff);
+	--color-btn-primary-active: color-mix(in srgb, var(--color-accent-bold) 85%, #000);
+	--color-btn-primary-fg: color-mix(in srgb, var(--color-accent) 20%, #000);
+	--color-btn-primary-edge: color-mix(in srgb, var(--color-btn-primary-fg) 28%, transparent);
+}
+html[data-accent='graphite'] {
+	--color-accent: #4b5563;
+	--color-accent-bold: #2f3640;
+	--color-accent-soft: color-mix(in srgb, var(--color-accent) 8%, transparent);
+	--color-accent-light: color-mix(in srgb, var(--color-accent) 22%, #fff);
+	--color-accent-muted: color-mix(in srgb, var(--color-accent) 22%, #fff);
+	--color-accent-fill: #4b5563;
+	--color-accent-bold-fill: #2f3640;
+	--color-btn-primary: color-mix(in srgb, var(--color-accent) 45%, #fff);
+	--color-btn-primary-hover: color-mix(in srgb, var(--color-accent) 55%, #fff);
+	--color-btn-primary-active: color-mix(in srgb, var(--color-accent) 65%, #fff);
+	--color-btn-primary-fg: color-mix(in srgb, var(--color-accent) 40%, #000);
+	--color-btn-primary-edge: color-mix(in srgb, var(--color-btn-primary-fg) 40%, transparent);
+	--theme-preview-light-plate: color-mix(in srgb, #4b5563 45%, #fff);
+	--theme-preview-dark-plate: #d3d8e0;
+}
+html[data-theme='dark'][data-accent='graphite'] {
+	--color-accent: #a7afbc;
+	--color-accent-bold: #d3d8e0;
+	--color-accent-soft: color-mix(in srgb, var(--color-accent) 14%, transparent);
+	--color-accent-light: color-mix(in srgb, var(--color-accent) 22%, #17181c);
+	--color-accent-muted: color-mix(in srgb, var(--color-accent) 30%, #17181c);
+	--color-btn-primary: var(--color-accent-bold);
+	--color-btn-primary-hover: color-mix(in srgb, var(--color-accent-bold) 85%, #fff);
+	--color-btn-primary-active: color-mix(in srgb, var(--color-accent-bold) 85%, #000);
+	--color-btn-primary-fg: color-mix(in srgb, var(--color-accent) 20%, #000);
+	--color-btn-primary-edge: color-mix(in srgb, var(--color-btn-primary-fg) 28%, transparent);
+}
+
+/* The chart kit's series colors for HTML swatches next to a canvas chart (lib/charts/palette.ts seriesVar: legend
+   dots, table color dots), one set per accent and theme. Slot 0 is the accent and the rest are prime-agent-chat's
+   usage chart series (UsageSettings.svelte --k1 to --k4), and light Ocean's slot 0 is that app's soft Ocean #2e9fe6
+   (owner 10-30 via frontend bro: the sky blue he liked over #0077c0), while text links keep --color-accent for contrast, with Amber taking its blue in place of its own amber and
+   Graphite stepping through graphite lightness instead of hues. `--chart-shade-N` are the key color's shades for one
+   side's several series, such as a workspace's own brands. They equal palette.ts INK and SHADE, so a dot and its series
+   draw the same color (tests/unit/accent.test.ts). */
+:root {
+	--chart-slot-0: #2e9fe6;
+	--chart-slot-1: #0f9d8a;
+	--chart-slot-2: #7c5cd6;
+	--chart-slot-3: #d97706;
+	--chart-slot-4: #db4f7f;
+	--chart-shade-0: #2e9fe6;
+	--chart-shade-1: #0075b8;
+	--chart-shade-2: #90c0d8;
+	--chart-shade-3: #34495e;
+	--chart-shade-4: #002c4c;
+	--chart-other: var(--color-ink-faint);
+}
+html[data-theme='dark'] {
+	--chart-slot-0: #2e9fe6;
+	--chart-slot-1: #2fc4ad;
+	--chart-slot-2: #a68bff;
+	--chart-slot-3: #f5b544;
+	--chart-slot-4: #f279a3;
+	--chart-shade-0: #2e9fe6;
+	--chart-shade-1: #004774;
+	--chart-shade-2: #c6eaff;
+	--chart-shade-3: #0075b8;
+	--chart-shade-4: #71c7ff;
+}
+html[data-accent='amber'] {
+	--chart-slot-0: #c26a00;
+	--chart-slot-1: #0f9d8a;
+	--chart-slot-2: #7c5cd6;
+	--chart-slot-3: #4f7fdb;
+	--chart-slot-4: #db4f7f;
+	--chart-shade-0: #c26a00;
+	--chart-shade-1: #351500;
+	--chart-shade-2: #773b00;
+	--chart-shade-3: #ffa555;
+	--chart-shade-4: #9e5200;
+}
+html[data-theme='dark'][data-accent='amber'] {
+	--chart-slot-0: #f0a43a;
+	--chart-slot-1: #2fc4ad;
+	--chart-slot-2: #a68bff;
+	--chart-slot-3: #86a8f5;
+	--chart-slot-4: #f279a3;
+	--chart-shade-0: #f0a43a;
+	--chart-shade-1: #673d00;
+	--chart-shade-2: #ffeed3;
+	--chart-shade-3: #aa6a00;
+	--chart-shade-4: #ffcc88;
+}
+html[data-accent='graphite'] {
+	--chart-slot-0: #4b5563;
+	--chart-slot-1: #9ca3ad;
+	--chart-slot-2: #15171b;
+	--chart-slot-3: #c3c8cf;
+	--chart-slot-4: #737b87;
+	--chart-shade-0: #4b5563;
+	--chart-shade-1: #17202c;
+	--chart-shade-2: #adb8c9;
+	--chart-shade-3: #768190;
+	--chart-shade-4: #8e99a9;
+}
+html[data-theme='dark'][data-accent='graphite'] {
+	--chart-slot-0: #a7afbc;
+	--chart-slot-1: #5d6471;
+	--chart-slot-2: #eef0f3;
+	--chart-slot-3: #40454f;
+	--chart-slot-4: #848c98;
+	--chart-shade-0: #a7afbc;
+	--chart-shade-1: #414853;
+	--chart-shade-2: #6d7581;
+	--chart-shade-3: #eaf2ff;
+	--chart-shade-4: #858d99;
+}
+
+/* ── Global image fallback ───────────────────────────────────────────────
+   Every <img> gets a calm frosted placeholder while it loads and a permanent
+   one if it fails (broken-image icon suppressed by clearing the src), then a
+   soft blur-up to the real picture. State is set per-image by
+   `$lib/image-fallback.ts`. Opt a self-managed image out with `data-img-raw`.
+   Tokens are translucent neutrals so they read on both the light app shell and
+   the dark marketing surfaces; the `[data-theme='dark']` override flips them
+   lighter for the dark landings. */
+:root {
+	--img-ph-a: rgba(17, 19, 24, 0.045);
+	--img-ph-b: rgba(17, 19, 24, 0.09);
+	--img-ph-sheen: rgba(17, 19, 24, 0.05);
+}
+[data-theme='dark'] {
+	--img-ph-a: rgba(255, 255, 255, 0.05);
+	--img-ph-b: rgba(255, 255, 255, 0.1);
+	--img-ph-sheen: rgba(255, 255, 255, 0.08);
+}
+
+img[data-img-state='loading'],
+img[data-img-state='error'] {
+	background-color: var(--img-ph-b);
+	background-image: linear-gradient(135deg, var(--img-ph-a), var(--img-ph-b));
+	background-repeat: no-repeat;
+}
+img[data-img-state='loading'],
+img[data-img-state='error'] {
+	/* Hide alt text + any broken-glyph label; the frosted tile carries the state. */
+	color: transparent;
+}
+img[data-img-state='loading'] {
+	/* A slow load reads as "working" via a single sheen sweep over the tile. */
+	background-image:
+		linear-gradient(100deg, transparent 18%, var(--img-ph-sheen) 50%, transparent 82%),
+		linear-gradient(135deg, var(--img-ph-a), var(--img-ph-b));
+	background-size:
+		200% 100%,
+		auto;
+	background-position:
+		-150% 0,
+		0 0;
+	animation: imgPhSheen 1.4s ease-in-out infinite;
+}
+img[data-img-state='loading'][loading='lazy'] {
+	/* A lazy image waits until it is scrolled near, and its sweep ran all that time. measured: on staging 79ab41a (10-27)
+	   the 20 lazy images under the fold of Brand intelligence kept the main thread busy 2.0 s of every 3 s idle, 1.0 s
+	   without their sweep. */
+	animation: none;
+}
+img[data-img-state='loaded'] {
+	/* Blur-up: the freshly-painted picture starts soft and resolves, so it
+	   settles out of the frosted tile instead of snapping in. */
+	animation: imgReveal 0.55s ease-out;
+}
+img[data-img-state='loaded'][data-img-instant] {
+	/* Already cached when first seen — no placeholder was shown, so no blur-up. */
+	animation: none;
+}
+@keyframes imgPhSheen {
+	to {
+		background-position:
+			250% 0,
+			0 0;
+	}
+}
+@keyframes imgReveal {
+	from {
+		filter: blur(10px);
+	}
+	to {
+		filter: blur(0);
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	img[data-img-state='loading'],
+	img[data-img-state='loaded'] {
+		animation: none;
+	}
+}
+
+/* ── Sky-plate CTA (the class form of @virev/ui Button variant="primary") ──
+   The primary action in ad-hoc markup that predates the Button component: a
+   toolbar pill, a rounded-full card CTA, an icon-only send key. Prefer
+   <Button variant="primary"> in new code; this exists so the ~90 legacy call
+   sites can adopt the ONE primary language without a risky layout rewrite.
+
+   It sets ONLY colour, edge and depth — never size, radius, font or layout —
+   so it drops into an h-7 toolbar button and a rounded-full pill alike and the
+   call site keeps owning its geometry.
+
+   The edge is an INSET RING (box-shadow), not a border: a real border would add
+   2px to every fixed-height button it touched and shift 90 layouts by a pixel.
+   It is not decoration — the light fill sits at 1.60:1 against the page, under
+   the 3:1 non-text boundary gate, so the ring is what makes the plate read as
+   a button. Tokens + the per-theme ramp live in @virev/ui theme.css. */
+.btn-sky {
+	background: var(--color-btn-primary);
+	color: var(--color-btn-primary-fg);
+	box-shadow:
+		inset 0 0 0 1px var(--color-btn-primary-edge),
+		inset 0 1px 0 rgba(255, 255, 255, 0.45),
+		0 1px 2px rgba(6, 52, 79, 0.18);
+}
+.btn-sky:hover:not(:disabled) {
+	background: var(--color-btn-primary-hover);
+}
+.btn-sky:active:not(:disabled) {
+	background: var(--color-btn-primary-active);
+	box-shadow:
+		inset 0 0 0 1px var(--color-btn-primary-edge),
+		inset 0 1px 2px rgba(6, 52, 79, 0.3);
+}
+/* Icons inside inherit the label ink via currentColor — no per-icon class. */
+.btn-sky svg {
+	color: currentColor;
+}
+
+/* ── Badge variants ─────────────────────── */
+.badge {
+	display: inline-flex;
+	align-items: center;
+	padding: 2px 8px;
+	font-size: 11px;
+	font-weight: 600;
+	border-radius: 100px;
+	white-space: nowrap;
+}
+
+/* ── Data table ─────────────────────────── */
+.data-cell {
+	padding: 0 12px;
+	display: flex;
+	align-items: center;
+	min-width: 0;
+	font-size: 13px;
+}
+
+/* ── Editorial landing utilities ─────────── */
+
+/* Grain texture overlay — SVG noise for paper/film feel */
+.grain {
+	position: relative;
+	isolation: isolate;
+}
+.grain::before {
+	content: '';
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	opacity: 0.035;
+	mix-blend-mode: multiply;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.85 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+	z-index: -1;
+}
+
+/* Tabular mono — refined numeric rendering */
+.tabular {
+	font-family: var(--font-mono);
+	font-variant-numeric: tabular-nums slashed-zero;
+	font-feature-settings:
+		'tnum' 1,
+		'zero' 1;
+	letter-spacing: -0.02em;
+}
+
+/* Eyebrow metadata label */
+.eyebrow {
+	font-size: 10px;
+	font-weight: 500;
+	letter-spacing: 0.18em;
+	text-transform: uppercase;
+	color: var(--color-ink-muted);
+}
+
+/* Soft vignette — expensive atmospheric depth */
+.vignette {
+	position: relative;
+}
+.vignette::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	background: radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.08) 100%);
+}
+
+/* A button clicked before the page hydrated: app.html holds the click and $lib/hydration.ts runs it once the page
+   answers, so until then the button pulses and shows a progress cursor instead of looking dead. */
+@keyframes heldClick {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.5;
+	}
+}
+[data-held-click] {
+	cursor: progress;
+	animation: heldClick 0.9s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+	[data-held-click] {
+		animation: none;
+		opacity: 0.6;
+	}
+}
+
+/* Soft pulsing indicator — live status */
+@keyframes soft-pulse {
+	0%,
+	100% {
+		opacity: 1;
+		box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.45);
+	}
+	70% {
+		opacity: 0.85;
+		box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+	}
+}
+.live-dot {
+	animation: soft-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Hover lift — sophisticated card elevation */
+.lift {
+	transition:
+		transform 400ms cubic-bezier(0.16, 1, 0.3, 1),
+		box-shadow 400ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.lift:hover {
+	transform: translateY(-3px);
+}
+
+/* ── Chat surface (premium material) ──────────────────────────────────────
+   The composer, tool cards, and message chrome share one material language:
+   hairline rings, soft ambient depth, an accent focus bloom that mirrors the
+   global input focus, and calm (opacity-only) "thinking" motion instead of a
+   playful bounce. Shared by /app/chat + /onboarding so they stay aligned.
+   Motion here is deliberately transform-free — these surfaces host fixed
+   tooltips/popovers, and a retained transform would hijack their containing
+   block (see app-search.md "Popups & Overflow"). */
+
+/* Calm "working" pulse — opacity only */
+@keyframes dotPulse {
+	0%,
+	100% {
+		opacity: 0.2;
+	}
+	50% {
+		opacity: 1;
+	}
+}
+.dot-pulse > * {
+	animation: dotPulse 1.25s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+.dot-pulse > *:nth-child(2) {
+	animation-delay: 0.18s;
+}
+.dot-pulse > *:nth-child(3) {
+	animation-delay: 0.36s;
+}
+
+/* Shimmering label — the "Thinking…" sweep while the agent works */
+@keyframes textShimmer {
+	0% {
+		background-position: 200% 0;
+	}
+	100% {
+		background-position: -200% 0;
+	}
+}
+.text-shimmer {
+	background: linear-gradient(100deg, var(--color-ink-faint) 36%, var(--color-ink) 50%, var(--color-ink-faint) 64%);
+	background-size: 200% 100%;
+	-webkit-background-clip: text;
+	background-clip: text;
+	-webkit-text-fill-color: transparent;
+	animation: textShimmer 2.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.dot-pulse > *,
+	.text-shimmer {
+		animation: none;
+	}
+	.text-shimmer {
+		-webkit-text-fill-color: var(--color-ink-muted);
+	}
+}
+
+/* Literal-color classes from this file that can't ride the token flip. */
+html[data-theme='dark'] ::selection {
+	color: #0b0c0e;
+}
+
+html[data-theme='dark'] .pin-divider {
+	box-shadow: inset -1px 0 0 0 rgba(255, 255, 255, 0.1);
+}
+html[data-theme='dark'] .pin-divider::after {
+	background: linear-gradient(to right, rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0));
+}
+
+/* Native UA surfaces (form controls, autofill, default scrollbars) follow the
+   stamped theme. */
+html {
+	color-scheme: light;
+}
+html[data-theme='dark'] {
+	color-scheme: dark;
+}
+
+/* Neutral-white island — surfaces that must render on a TRUE WHITE canvas in
+   BOTH themes (recipient-authored email HTML in the inbox reading pane, email
+   template previews: email bodies assume white, not the app's graphite
+   surfaces). Unconditional since the 2026-07-19 graphite graduation: the
+   light shell's card is #f8f9fb, so the island must re-pin white under light
+   too, not only under dark. Element-scoped custom properties beat the
+   inherited theme values in either shell. */
+.theme-light {
+	--color-surface: #ffffff;
+	--color-surface-alt: #fafafa;
+	--color-surface-raised: #ffffff;
+	--color-ink: #000000;
+	--color-ink-muted: #50565f;
+	--color-ink-faint: #656c78;
+	--color-rule: #e5e7eb;
+	--color-rule-strong: #d4d7dc;
+	--color-accent: #0077c0;
+	--color-accent-soft: rgba(0, 119, 192, 0.08);
+	--color-accent-bold: #005a93;
+	--color-accent-light: #c7eeff;
+	--color-accent-muted: #c7eeff;
+	/* Islands render real product copy (email drafts carry amber/rose/positive
+	   chips), so EVERY token they can consume must return to its light value —
+	   a dark-theme amber on a white canvas is ~1.5:1. */
+	--color-teal: #3a8b95;
+	--color-teal-soft: rgba(58, 139, 149, 0.1);
+	--color-amber: #f59e0b;
+	--color-amber-soft: #fef3c7;
+	--color-rose: #dc2626;
+	--color-rose-soft: #fef2f2;
+	--color-rose-deep: #b91c1c;
+	--color-rose-solid-hover: #dc2626;
+	--color-verified: #0077c0;
+	--color-positive: #10b981;
+	--color-warning: #f59e0b;
+	--color-danger: #ef4444;
+	--color-btn-ink: #131316;
+	--color-btn-ink-hover: #26262b;
+	--color-btn-ink-active: #000000;
+	/* The island is a TRUE-WHITE canvas, so the sky plate needs its light-theme
+	   steps back even when the shell around it is dark — otherwise a CTA inside
+	   an email preview inherits the dark ramp and glows on white paper. */
+	--color-btn-primary: #8ed0f5;
+	--color-btn-primary-hover: #74c4ef;
+	--color-btn-primary-active: #5db4e4;
+	--color-btn-primary-fg: #06344f;
+	--color-btn-primary-edge: rgba(6, 52, 79, 0.4);
+	--color-row-hover: #eff6fb;
+	--color-row-selected: #e1edf6;
+	color-scheme: light;
+	background-color: var(--color-surface);
+	color: var(--color-ink);
+}
+
+/* Theme flips snap: the global button/link/row transitions would otherwise
+   animate a two-speed re-paint. theme.svelte.ts adds this for one frame. */
+html.theme-snap *,
+html.theme-snap *::before,
+html.theme-snap *::after {
+	transition: none !important;
+}
+
+/* Status text (lib/format.ts: engagement, score and post gap) runs one Tailwind step deep in light, 4.5:1 or more on
+   surface (green-700 4.69, amber-700 4.78, red-600 4.53), and those steps fail on dark planes, so dark takes the
+   theme's lifted text tokens. */
+html[data-theme='dark'] .text-green-700 {
+	color: var(--color-positive);
+}
+html[data-theme='dark'] .text-amber-700 {
+	color: var(--color-amber);
+}
+html[data-theme='dark'] .text-red-600 {
+	color: var(--color-rose);
+}
+
+/* Accent text on an accent-soft tint takes accent-bold, the theme's text-on-tint step: plain accent measured 3.76 to
+   4.08:1 on the tint (a11y.spec.ts, box run box-e2e-1), accent-bold gives 5.75 to 6.23. */
+.bg-accent-soft.text-accent,
+.bg-accent-soft .text-accent {
+	color: var(--color-accent-bold);
+}

@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { codeText } from '../src/lib/code-text.mjs';
 import { definitionText } from '../src/lib/definitions.mjs';
 import { entryKeys, knownMembers, memberKeys, namedEntries } from '../src/lib/stale-rules.mjs';
 import { pageRepo } from './page-repo.mjs';
@@ -311,6 +312,51 @@ test('a comment-only change in a cited Caddyfile, Dockerfile, systemd unit or .e
 	w.commit('2026-10-20T04:00:00Z', 'comments only');
 	assert.deepEqual(w.refsByPage(), {}, 'a # comment holding the page word is no code');
 	for (const [file, text] of Object.entries(files({ port: 9090 }))) w.write(file, text);
+	w.commit('2026-10-20T05:00:00Z', 'values');
+	const rows = w.refsByPage();
+	for (const [file, word] of Object.entries(words)) assert.deepEqual(rows[`apps/${word}.html`], [{ ref: file, ...at('05') }]);
+});
+
+// 2026-11-17: the comment sweep commits 11139836fa (apps/search/src/app.css) and 4a10188905
+// (apps/infra/metal/config/clickhouse/query-mcp.sql) changed only comments, and design-system.html and both
+// clickhouse-schema pages read as behind code, because code-text.mjs kept CSS and SQL comments.
+test('the CSS and SQL of the 11-17 comment-only commits read as the same code before and after', () => {
+	const fixtures = new URL('./fixtures/code-text/', import.meta.url);
+	for (const [sha, file] of [['11139836fa', 'app.css'], ['4a10188905', 'query-mcp.sql']]) {
+		const [before, after] = ['before', 'after'].map((side) => readFileSync(new URL(`${sha}-${side}-${file}`, fixtures), 'utf8'));
+		assert.notEqual(before, after);
+		assert.equal(codeText(before, file), codeText(after, file), `${sha} ${file}`);
+	}
+});
+
+test('CSS, SCSS, SQL and Svelte style comments are no code, and a comment marker inside a string or url() is', () => {
+	const cases = [
+		['a.css', 'a { /* x */ color: red; content: "/* kept */"; }\n/* gone\n   too */\n', 'a {   color: red; content: "/* kept */"; }'],
+		['a.css', 'a { b: url(https://x.example/y.png); } // css has no line comment\n', 'a { b: url(https://x.example/y.png); } // css has no line comment'],
+		['a.scss', '// gone\na { b: url(https://x.example/y.png); /* x */ } // gone\n', 'a { b: url(https://x.example/y.png);   }'],
+		['q.sql', "-- gone\nSELECT '--kept', 'it''s -- kept', \"a--b\" /* x /* nested */ y */ FROM t -- gone\n", "SELECT '--kept', 'it''s -- kept', \"a--b\"   FROM t"],
+		['q.sql', "SELECT 'a\\' -- kept', 1 -- gone\n", "SELECT 'a\\' -- kept', 1"],
+		['A.svelte', '<style>\n/* gone */\na { content: "/* kept */"; }\n</style>\n', '<style>\na { content: "/* kept */"; }\n</style>'],
+		['A.svelte', '<style lang="scss">\n// gone\na { b: c; }\n</style>\n', '<style lang="scss">\na { b: c; }\n</style>'],
+	];
+	for (const [file, text, code] of cases) assert.equal(codeText(text, file), code, `${file}: ${text}`);
+});
+
+test('a comment-only change in a cited CSS or SQL file leaves the page current, and a value change counts', (t) => {
+	const w = fixture(t);
+	const files = ({ note = 'rounded', radius = 4 } = {}) => ({
+		'app.css': `/* ${note} border-radius */\n.card { border-radius: ${radius}px; /* ${note} border-radius */ }\n`,
+		'schema.sql': `-- ${note} ttl_days\nCREATE TABLE t (ttl_days UInt8 DEFAULT ${radius}) /* ${note} ttl_days */ ENGINE = Memory;\n`,
+	});
+	const words = { 'app.css': 'border-radius', 'schema.sql': 'ttl_days' };
+	for (const [file, text] of Object.entries(files())) w.write(file, text);
+	for (const [file, word] of Object.entries(words)) w.page(`${word}.html`, [file], { body: `<p><code>${word}</code> is set.</p>` });
+	w.init();
+	w.commit('2026-10-20T01:00:00Z', 'pages');
+	for (const [file, text] of Object.entries(files({ note: 'measured, see' }))) w.write(file, text);
+	w.commit('2026-10-20T04:00:00Z', 'comments only');
+	assert.deepEqual(w.refsByPage(), {}, 'a comment holding the page word is no code');
+	for (const [file, text] of Object.entries(files({ radius: 8 }))) w.write(file, text);
 	w.commit('2026-10-20T05:00:00Z', 'values');
 	const rows = w.refsByPage();
 	for (const [file, word] of Object.entries(words)) assert.deepEqual(rows[`apps/${word}.html`], [{ ref: file, ...at('05') }]);
