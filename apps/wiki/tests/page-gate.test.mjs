@@ -370,6 +370,12 @@ test('the page API warns on a write that adds a not-landed line, names the dev-s
 	assert.match(warning, /"on dev\/sieun since 8c1f60df87"/);
 	assert.match(pageWriteWarnings(f.repo, PAGE, before, prod).join('\n'), /which says 8c1f60df87 has not reached prod/);
 	assert.deepEqual(pageWriteReasons(f.repo, PAGE, before, unlanded), [], 'the line is a warning, never a refusal');
+	// The 2026-11-17 02:15Z dream run wrote these two forms on workers.html and accounts-and-exits.html, and rule 9 missed both.
+	for (const line of [
+		'Since <code>ab983c134d</code> the role runs the box keeper.</li><li>That commit was on dev/sieun at 02:15Z on 2026-11-17, and no staging land had carried it yet.',
+		'Staging land 98295cce5b, the newest at 02:15Z on 2026-11-17, did not carry <code>ab983c134d</code>.',
+	])
+		assert.match(pageWriteWarnings(f.repo, PAGE, before, page([base, line])).join('\n'), /which says ab983c134d has not reached staging/);
 
 	assert.deepEqual(pageWriteWarnings(f.repo, PAGE, unlanded, unlanded.replace('once a day', 'each day')), [], 'a line the page already held passes');
 	assert.deepEqual(

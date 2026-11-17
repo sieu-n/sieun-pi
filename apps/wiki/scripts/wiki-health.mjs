@@ -462,14 +462,15 @@ export function addMissingCodeRefs(stale, missing) {
 const DEV_BRANCH = String.raw`(?:dev\/[\w-]+|sieun\/dev)`;
 /**
  * The phrases that say a commit has not reached a stage, each with the stage whose land makes the line stale. Staging: not on staging
- * yet, not landed, on neither the staging nor the prod crawler, no staging land holding it, or a value only a dev branch runs, as in "4,
+ * yet, not landed, on neither the staging nor the prod crawler, no staging land holding it ("no staging land had carried it yet", or "staging land
+ * 98295cce5b ... did not carry ab983c134d", two forms the 2026-11-17 02:15Z dream run wrote that the rule missed), or a value only a dev branch runs, as in "4,
  * or up to 84 on dev/sieun", whose `value` a dated line on the page states with its sha. Prod: not on main or prod yet, or it reaches
  * prod only with a promote.
  */
 const NOT_LANDED = [
 	{
 		stage: 'staging',
-		re: /\b(?:not (?:yet )?(?:on|in) (?:origin\/)?staging|(?:n't|not) (?:yet )?(?:landed|reached (?:origin\/)?staging)|neither (?:the )?staging|no (?:staging )?land (?:yet )?(?:carried|carries|held|holds))\b(?! (?:on|in|to) (?:origin\/)?(?:main|prod))/i,
+		re: /\b(?:not (?:yet )?(?:on|in) (?:origin\/)?staging|(?:n't|not) (?:yet )?(?:landed|reached (?:origin\/)?staging)|neither (?:the )?staging|no (?:staging )?land (?:yet )?(?:(?:had|has) )?(?:carried|carries|held|holds)|\bland\b(?:(?!\b(?:main|prod)\b)[^.;]){0,80}?\b(?:did|does) not (?:yet )?(?:carry|hold))\b(?! (?:on|in|to) (?:origin\/)?(?:main|prod))/i,
 	},
 	{ stage: 'staging', re: new RegExp(String.raw`\bor (?<value>[^.,;]{1,40}?) on (?<branch>${DEV_BRANCH})\b`, 'i') },
 	{
