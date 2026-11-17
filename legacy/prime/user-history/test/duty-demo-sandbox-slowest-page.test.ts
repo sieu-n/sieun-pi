@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { boxLoadLine, measureSandbox, PAGE_TIMEOUT_MS, pageMs, readWalk, slowestPage, WALK_FILE, type BoxLoad, type PageTiming, type WalkReport } from "../scripts/duties/demo-sandbox.ts";
+import { boxLoadLine, measureSandbox, TUNNEL_NOTE, PAGE_TIMEOUT_MS, pageMs, readWalk, slowestPage, WALK_FILE, type BoxLoad, type PageTiming, type WalkReport } from "../scripts/duties/demo-sandbox.ts";
 
 /** One page with one try of each: a 300 ms switch and a 4 s load with 100 ms of long tasks, unless `over` says otherwise. */
 const timing = (path: string, over: Partial<PageTiming> = {}): PageTiming =>
@@ -53,11 +53,11 @@ test("a walk from before the tries were kept reads as pages that never showed", 
 test("the box load line names the walk's browser host, its cores and the load range, and says when no read came back", () => {
   const read = (round: number, load1: number): BoxLoad => ({ scenario: "kbeauty-brand", pass: `switch ${round}`, host: "us-metal02", load1, cores: 80 });
   assert.equal(boxLoadLine([read(1, 180.5), read(2, 242.1), read(3, 201)]),
-    "the walk's browser ran on us-metal02 (80 cores) at 1-min load 180.5 to 242.1 over 3 reads, one at the start of each timed pass");
-  assert.equal(boxLoadLine([read(1, 12)]), "the walk's browser ran on us-metal02 (80 cores) at 1-min load 12 over 1 read, one at the start of each timed pass");
+    `the walk's browser ran on us-metal02 (80 cores) at 1-min load 180.5 to 242.1 over 3 reads, one at the start of each timed pass; ${TUNNEL_NOTE}`);
+  assert.equal(boxLoadLine([read(1, 12)]), `the walk's browser ran on us-metal02 (80 cores) at 1-min load 12 over 1 read, one at the start of each timed pass; ${TUNNEL_NOTE}`);
   assert.equal(boxLoadLine([read(1, 12), { scenario: "fresh-start", pass: "switch 1", host: "us-metal02", error: "ssh: connect to host us-metal02 port 22: Operation timed out" }]),
-    "the walk's browser ran on us-metal02 (80 cores) at 1-min load 12 over 1 read, one at the start of each timed pass; 1 read failed: ssh: connect to host us-metal02 port 22: Operation timed out");
-  assert.equal(boxLoadLine([]), "no load read of the walk's browser host in the walk report");
+    `the walk's browser ran on us-metal02 (80 cores) at 1-min load 12 over 1 read, one at the start of each timed pass; 1 read failed: ssh: connect to host us-metal02 port 22: Operation timed out; ${TUNNEL_NOTE}`);
+  assert.equal(boxLoadLine([]), `no load read of the walk's browser host in the walk report; ${TUNNEL_NOTE}`);
 });
 
 test("slowest_page_ms names the slowest page and scenario, and a scenario with no timings reads as the timeout", () => {
@@ -98,7 +98,7 @@ test("the precheck reports slowest_page_ms from the walk's fastest tries in plac
   const slice = (kind: string) => (run.flagged ?? []).find(entry => entry.kind === kind)!.excerpt;
   assert.match(slice("slowest_page"), /\/app\/analytics\/creators \(kbeauty-brand\): 2400 ms/);
   assert.match(slice("slowest_page"), /\/app\/analytics\/creators 2400 \(switch 300, load long tasks 12692\/2400\/2600\)/);
-  assert.equal(slice("box_load"), "the walk's browser ran on us-metal02 (80 cores) at 1-min load 96 to 242 over 2 reads, one at the start of each timed pass");
+  assert.equal(slice("box_load"), `the walk's browser ran on us-metal02 (80 cores) at 1-min load 96 to 242 over 2 reads, one at the start of each timed pass; ${TUNNEL_NOTE}`);
   const duty = JSON.parse(readFileSync(new URL("../scripts/duties/demo-sandbox.duty.json", import.meta.url), "utf8")) as { metrics: { key: string }[] };
   for (const metric of duty.metrics) assert.ok(metric.key in run.metrics, `${metric.key} is judged but the precheck never writes it`);
 });

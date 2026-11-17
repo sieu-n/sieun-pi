@@ -11,7 +11,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  * (apps/virev-demo in auto-sns-agent). No model call, no browser. Since 10-19 the demo runs only on the owner's Mac (owner: "for demo frontend
  * for now it should all be here"), so the duty's precheck command runs this script from the Mac's sieun-pi checkout over `ssh mac`. Its judged metrics (owner c75, 10-15: one headline plus at most 3):
  * - walk_problems, the headline: problems in the last offline walk of the 8 app pages (demo-sandbox-walk.ts walks /app, search, dashboards,
- *   campaigns, watchlist, outreach, inbox and connections in two scenarios, plus the marketing pages, through the owner's Aside on the Mac, c177). Each outside request counts 1, each test that
+ *   campaigns, watchlist, outreach, inbox and connections in two scenarios, plus the marketing pages, in a box Chrome on us-metal02 that loads the
+ *   Mac's 5180 through an ssh tunnel, box-repl.ts). Each outside request counts 1, each test that
  *   failed for another reason counts 1, a missing walk or one over a day old counts 1, and so does a /configure probe without a 200. The owner: "no external connection should work
  *   off of internal fake database". This script reads the walk's Playwright-shaped JSON report from WALK_FILE and its stderr from WALK_ERR_FILE,
  *   and starts the next walk itself, detached (WALK_COMMAND), when the last one started over WALK_REFRESH_MS ago and none is running, so the
@@ -21,7 +22,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   annotation per page and scenario, with each of its 3 tries). A page's time is the slower of its fastest in-app switch (the click to the
  *   first frame whose <main> shows new text) and the lowest long-task time of its full loads (pageMs). Load on the walk's browser host only adds
  *   time to a try: on 10-20, with the browser on us-metal02 at load 242 on 80 cores, one try read 12.7 s of long tasks for a page that loads in
- *   under 2 s. The fastest try is the page's own cost, and the box_load slice names the host's load during the walk. The load's own wall time is
+ *   under 2 s. The fastest try is the page's own cost, and the box_load slice names the host's load during the walk. Each
+ *   time includes the ssh tunnel from the box Chrome to the Mac, so it measures the tunnel too, not the Mac's own browser. The load's own wall time is
  *   left out, since it counts every module of a cold load. It replaced health_ms on 10-19, because /health answered in 25 ms while the owner
  *   found switching "infuriatingly slow" (10-09) and Creators slow to load (10-19, 2.3 s of long tasks before 7966ebbfd). A down server fails the
  *   walk, and a /configure probe that gets no 200 adds 1 to walk_problems, since the walk is a day old. A page that never showed or a scenario test with no timings reads as PAGE_TIMEOUT_MS. A missing or stale
@@ -121,7 +123,7 @@ export const WALK_ERR_FILE = ".cache/duties/virev-demo-offline.err";
 /**
  * A stderr line that means the walk command itself broke and the walk never ran. From 10-18 to 10-19 a plain `ssh mac` PATH lacked node, so
  * the walk gave `env: node: No such file or directory` (exit 127) on 17 runs in a row, which showed only as walk_stale. demo-sandbox-walk.ts
- * starts its own fatal errors, such as an Aside that does not answer, with `demo-sandbox-walk: `.
+ * starts its own fatal errors, such as a box browser that does not answer, with `demo-sandbox-walk: `.
  */
 const WALK_COMMAND_BROKE = /No such file or directory|command not found|Cannot find module|ERR_MODULE_NOT_FOUND|^demo-sandbox-walk: /;
 /**
@@ -139,8 +141,10 @@ export const WALK_STALE_MS = 25 * 3_600_000;
 /** The test file the walk names in its report, which readWalk reads results from. */
 export const WALK_SOURCE = "demo-sandbox-walk.ts";
 /**
- * The offline walk as the precheck starts it, run with `sh -c` from the sieun-pi checkout's legacy/prime/user-history. It drives the owner's
- * Aside on the Mac (c177: no headless browser) and writes WALK_FILE itself.
+ * The offline walk as the precheck starts it on the Mac, run with `sh -c` from the sieun-pi checkout's legacy/prime/user-history. It drives a
+ * box Chrome on us-metal02 over `ssh` (box-repl.ts), never the owner's Aside, so a Mac with no Aside window still gets its walk, and it writes
+ * WALK_FILE itself. Until 11-18 it drove his Aside, and from the Mac's reboot near 05:35 KST that day every walk failed with "Failed to
+ * request daemon auth challenge: fetch failed" while 5180 answered.
  */
 export const WALK_COMMAND = `node --import tsx scripts/duties/${WALK_SOURCE} 2> "\${LLM_WIKI_REPO:-$HOME/Documents/Github/auto-sns-agent}/${WALK_ERR_FILE}"`;
 /** The pids of running offline walks, from `ps -axo pid=,ppid=,args=`. */
@@ -321,20 +325,26 @@ export function pageMs(timing: PageTiming): number {
   return Math.max(fastest(timing.switches, entry => entry.ms), fastest(timing.loads, entry => entry.long_ms));
 }
 
+/** What every box_load slice says about the page times: the walk's box Chrome loads 5180 from the Mac through the aside-browser ssh tunnel. */
+export const TUNNEL_NOTE = "its Chrome loads the Mac's 5180 through the ssh tunnel, so page times measure the tunnel too, not the Mac's own browser";
+
 /** One read of the 1-minute load and core count of the host that ran the walk's browser, or the error that read gave. */
 export type BoxLoad = { scenario: string; pass: string; host: string; load1: number; cores: number } | { scenario: string; pass: string; host: string; error: string };
 
-/** The box_load slice: the load range of the walk's browser host over the walk, so a slow page reads against how busy the box was. */
+/**
+ * The box_load slice: the load range of the walk's browser host over the walk, so a slow page reads against how busy the box was, and a
+ * reminder that the box Chrome loads the Mac's 5180 through the ssh tunnel, so every page time includes the tunnel.
+ */
 export function boxLoadLine(loads: readonly BoxLoad[]): string {
   const read = loads.filter((entry): entry is Extract<BoxLoad, { load1: number }> => "load1" in entry);
   const failed = loads.filter((entry): entry is Extract<BoxLoad, { error: string }> => "error" in entry);
   const reads = (count: number) => `${count} read${count === 1 ? "" : "s"}`;
   const errors = failed.length ? `; ${reads(failed.length)} failed: ${failed[0]!.error}` : "";
-  if (!read.length) return `no load read of the walk's browser host in the walk report${errors}`;
+  if (!read.length) return `no load read of the walk's browser host in the walk report${errors}; ${TUNNEL_NOTE}`;
   const values = read.map(entry => entry.load1);
   const range = Math.min(...values) === Math.max(...values) ? `${values[0]}` : `${Math.min(...values)} to ${Math.max(...values)}`;
   const hosts = [...new Set(read.map(entry => `${entry.host} (${entry.cores} cores)`))].join(", ");
-  return `the walk's browser ran on ${hosts} at 1-min load ${range} over ${reads(read.length)}, one at the start of each timed pass${errors}`;
+  return `the walk's browser ran on ${hosts} at 1-min load ${range} over ${reads(read.length)}, one at the start of each timed pass${errors}; ${TUNNEL_NOTE}`;
 }
 
 /**
@@ -483,7 +493,7 @@ export async function measureSandbox(deps: SandboxDeps): Promise<PrecheckOutput>
     psArgs = await deps.exec("ps", ["-axo", "pid=,ppid=,args="]);
     const chrome = headlessChrome(psArgs);
     metrics.headless_chrome = chrome.browsers;
-    flagged.push({ at, kind: "headless_chrome", excerpt: `${chrome.browsers} headless Chrome browsers run on this host in ${chrome.processes} processes; agents browse only through Aside (c177), so each one is a leftover to stop` });
+    flagged.push({ at, kind: "headless_chrome", excerpt: `${chrome.browsers} headless Chrome browsers run on this host in ${chrome.processes} processes; agents browse only in Aside or a headful box Chrome (c177), so each one is a leftover to stop` });
   } catch (error) {
     if (error instanceof Error) psArgs = error;
     sourceError("source", `ps for headless Chrome: ${error instanceof Error ? error.message : String(error)}`);

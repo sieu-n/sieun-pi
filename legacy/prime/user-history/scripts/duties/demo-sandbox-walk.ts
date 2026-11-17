@@ -1,9 +1,9 @@
 import { realpathSync } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
-import { cpus, hostname, loadavg } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { asideCli, asideRepl, type Repl } from "./aside-repl.ts";
+import type { Repl } from "./aside-repl.ts";
+import { boxCommand, boxRepl } from "./box-repl.ts";
 import { BASE_URL, REPO, WALK_FILE, WALK_SOURCE, type BoxLoad, type WalkReport } from "./demo-sandbox.ts";
 
 /**
@@ -14,21 +14,24 @@ import { BASE_URL, REPO, WALK_FILE, WALK_SOURCE, type BoxLoad, type WalkReport }
 export const BROWSER_URL = BASE_URL.replace("//localhost:", "//d1walk.localhost:");
 
 /**
- * The offline walk of the 5180 demo for d1 (demo-sandbox.ts), driven through the owner's Aside browser on the Mac where 5180 runs. Owner c177,
- * 10-27: "can you remove Headless browser???? NEVER put it back in. we'll always use Aside only." Until then the walk was
- * apps/virev-demo/tests/e2e/offline.spec.ts under Playwright with its browser on us-metal02 (shot-browser.mjs --run).
+ * The offline walk of the 5180 demo for d1 (demo-sandbox.ts). It runs on the Mac where 5180 runs and drives a box Chrome on us-metal02
+ * (box-repl.ts), the aside-browser skill's browser for every page with no login, which loads the Mac's 5180 through an ssh tunnel. No
+ * headless browser runs (c177). From 10-27 to 11-18 it drove the owner's Aside over `aside mcp`, so a Mac with no Aside window failed every
+ * walk; before 10-27 it was apps/virev-demo/tests/e2e/offline.spec.ts under Playwright.
  *
- * The precheck starts it on the Mac, detached (WALK_COMMAND). It speaks MCP to one `aside mcp` process, so the REPL keeps its state between
- * calls, opens one background tab per test and closes it at the end. It walks the same pages as offline.spec.ts did: per scenario /configure,
+ * The precheck starts it on the Mac, detached (WALK_COMMAND). It keeps one box runner for the whole walk, so the REPL keeps its state between
+ * calls, opens one tab per test and closes it at the end. It walks the same pages as offline.spec.ts did: per scenario /configure,
  * the old campaigns URL, a full load of every /app page, a warmup switch to each, TRIES timed switch passes and TRIES - 1 more load passes; then
  * the marketing, legal and auth pages. It writes the same Playwright-shaped JSON report to WALK_FILE: one spec per test with a `page-timing`
- * annotation per page and scenario, a `box-load` annotation per timed pass, and the failed checks as error messages.
+ * annotation per page and scenario, a `box-load` annotation per timed pass, and the failed checks as error messages. Every page time includes
+ * the tunnel to the Mac, so it is not what a browser on the Mac shows.
  *
- * The Aside REPL has no addInitScript and no request or console events, so each document gets its observers right after its navigation
- * commits, and buffered entries cover what came before: outside requests and failed assets from Resource Timing, CSP violations from a buffered
- * ReportingObserver (violations from Aside's own extension are skipped), and long tasks from a buffered PerformanceObserver. A document the app
- * replaces between two reads (the /configure bounce page) can lose its entries; the dev server's own egress record still lists every outside
- * call it refused. A load's first shown frame is watched from the commit, so a page that showed before the watcher ran reads at the watcher's start.
+ * The REPL code was written for the Aside REPL, which has no addInitScript and no request or console events, and keeps that shape: each
+ * document gets its observers right after its navigation commits, and buffered entries cover what came before: outside requests and failed
+ * assets from Resource Timing, CSP violations from a buffered ReportingObserver (violations from a browser extension are skipped), and long
+ * tasks from a buffered PerformanceObserver. A document the app replaces between two reads (the /configure bounce page) can lose its entries;
+ * the dev server's own egress record still lists every outside call it refused. A load's first shown frame is watched from the commit, so a
+ * page that showed before the watcher ran reads at the watcher's start.
  */
 
 /** The whole walk stops here; the Playwright walk took 8.4 min for 3 tries of every page through us-metal02 (10-20). */
@@ -301,7 +304,7 @@ export interface StepFailure { path: string; step: string; error: string }
 const firstLine = (error: unknown) => String(error instanceof Error ? error.message : error).split("\n")[0]!;
 const js = (value: unknown) => JSON.stringify(value);
 /** A tab that closed or a REPL call that never answered gets a new tab before the step runs again. */
-const tabGone = (error: unknown) => /Target closed|has been closed|detached|crash|no answer from aside mcp|timed? ?out/i.test(String(error));
+const tabGone = (error: unknown) => /Target closed|has been closed|detached|crash|timed? ?out/i.test(String(error));
 
 /** The failure messages a test ends with, in the order offline.spec.ts checked them; the first failed check of expectClean ends the list. */
 export function testErrors(failures: readonly StepFailure[], pages: number, seen: Seen, egress: string[] | Error): string[] {
@@ -348,8 +351,14 @@ async function serverEgress(since: number): Promise<string[] | Error> {
   } catch (error) { return error instanceof Error ? error : new Error(String(error)); }
 }
 
-/** The 1-minute load and core count of this host, which runs Aside and so the walk's browser. */
-const hostLoad = (): Omit<Extract<BoxLoad, { load1: number }>, "scenario" | "pass"> => ({ host: hostname(), load1: Math.round(loadavg()[0]! * 100) / 100, cores: cpus().length });
+/** The REPL body that reads the 1-minute load, core count and name of the box that runs the walk's browser, from its /proc. */
+export const BOX_LOAD = String.raw`const load1 = Number(fs.readFileSync("/proc/loadavg", "utf8").split(" ")[0]);
+const cores = fs.readFileSync("/proc/cpuinfo", "utf8").split("\n").filter(line => line.startsWith("processor")).length;
+return { host: fs.readFileSync("/proc/sys/kernel/hostname", "utf8").trim(), load1: Math.round(load1 * 100) / 100, cores };`;
+
+/** The browser box's load for one timed pass, or the error its read gave. */
+const boxLoad = (repl: Repl, scenario: string, pass: string): Promise<BoxLoad> => repl.call<Omit<Extract<BoxLoad, { load1: number }>, "scenario" | "pass">>("read the box load", BOX_LOAD)
+  .then(read => ({ scenario, pass, ...read }), (error: unknown) => ({ scenario, pass, host: "box", error: firstLine(error) }));
 
 /** One stderr line per step, so a slow or stuck walk shows where it is in WALK_ERR_FILE. */
 const progress = (line: string) => process.stderr.write(`step ${new Date().toISOString().slice(11, 19)}Z ${line}\n`);
@@ -442,7 +451,7 @@ async function scenarioTest(repl: Repl, scenario: string, since: number): Promis
   for (const failure of walk.failures.splice(beforeWarmup)) note("warmup-failed", { scenario, ...failure });
   const switches = new Map<string, (Shown & { document: boolean })[]>();
   for (let round = 1; round <= TRIES; round++) {
-    note("box-load", { scenario, pass: `switch ${round}`, at: new Date().toISOString(), ...hostLoad() });
+    note("box-load", { ...await boxLoad(repl, scenario, `switch ${round}`), at: new Date().toISOString() });
     for (const [index, path] of PAGES.entries()) {
       if (!loads.has(path)) continue;
       const switched = await switchTo(index, `timed switch ${round}`);
@@ -450,7 +459,7 @@ async function scenarioTest(repl: Repl, scenario: string, since: number): Promis
     }
   }
   for (let round = 2; round <= TRIES; round++) {
-    note("box-load", { scenario, pass: `load ${round}`, at: new Date().toISOString(), ...hostLoad() });
+    note("box-load", { ...await boxLoad(repl, scenario, `load ${round}`), at: new Date().toISOString() });
     for (const [path, loaded] of loads) {
       const again = await walk.step(path, `load ${round}`, async () => {
         await goto(inWorld(path));
@@ -516,10 +525,10 @@ export function walkRepl(repl: Repl): Repl {
 /** A test that could not run at all, such as one whose tab never opened, as one failed spec. */
 const brokenTest = (title: string, error: unknown): WalkTest => ({ title, annotations: [], errors: [`the test did not run: ${firstLine(error)}`] });
 
-export async function runWalk(aside: Repl, now: () => number = Date.now): Promise<WalkReport> {
+export async function runWalk(box: Repl, now: () => number = Date.now): Promise<WalkReport> {
   const startedAt = now();
-  const repl = walkRepl(aside);
-  await aside.call("define the walk", REPL_LIB.replace(/"ok";\s*$/, "") + "return 'ok';");
+  const repl = walkRepl(box);
+  await box.call("define the walk", REPL_LIB.replace(/"ok";\s*$/, "") + "return 'ok';");
   const tests: WalkTest[] = [];
   for (const scenario of SCENARIOS) tests.push(await scenarioTest(repl, scenario, startedAt).catch(error => brokenTest(scenarioTitle(scenario), error)));
   tests.push(await marketingTest(repl, startedAt).catch(error => brokenTest(MARKETING_TITLE, error)));
@@ -527,10 +536,10 @@ export async function runWalk(aside: Repl, now: () => number = Date.now): Promis
 }
 
 async function main(): Promise<void> {
-  const repl = asideRepl(asideCli());
+  const repl = boxRepl(...boxCommand());
   const hardStop = setTimeout(() => { process.stderr.write(`demo-sandbox-walk: the walk ran past ${WALK_TIMEOUT_MS / 60_000} min and stopped\n`); repl.stop(); process.exit(1); }, WALK_TIMEOUT_MS);
   try {
-    await repl.call("check Aside", "return 'ok';").catch(error => { throw new Error(`Aside did not answer: ${firstLine(error)}`); });
+    await repl.call("check the box browser", "return 'ok';").catch(error => { throw new Error(`the box browser did not answer: ${firstLine(error)}`); });
     const report = await runWalk(repl);
     const file = join(REPO, WALK_FILE);
     await mkdir(dirname(file), { recursive: true });

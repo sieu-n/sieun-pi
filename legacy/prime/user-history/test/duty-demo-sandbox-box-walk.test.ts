@@ -1,5 +1,5 @@
-// Guards d1's offline walk after owner c177 (10-27): "can you remove Headless browser???? NEVER put it back in. we'll always use Aside only."
-// The walk moved from Playwright with a headless browser on us-metal02 to demo-sandbox-walk.ts, which drives the owner's Aside over `aside mcp`.
+// Guards d1's offline walk after owner c177 (10-27): "can you remove Headless browser???? NEVER put it back in." The walk is demo-sandbox-walk.ts,
+// which drove the owner's Aside over `aside mcp` until 11-18 and since then a headful box Chrome on us-metal02 (box-repl.ts).
 import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { readWalk, slowestPage } from "../scripts/duties/demo-sandbox.ts";
 import { asideRepl, type Repl } from "../scripts/duties/aside-repl.ts";
+import { boxCommand, boxRepl } from "../scripts/duties/box-repl.ts";
 import { BROWSER_URL, egressLines, MARK_OLD, MARKETING_TITLE, NEW_TEXT, REPL_LIB, runWalk, scenarioTitle, testErrors, walkRepl, walkReport } from "../scripts/duties/demo-sandbox-walk.ts";
 import { BASE_URL } from "../scripts/duties/demo-sandbox.ts";
 
@@ -157,4 +158,37 @@ process.stdin.on("data", chunk => {
     assert.equal(first.pid, second.pid, "one process for the whole walk, so the REPL scope survives between calls");
     await assert.rejects(repl.call("three", "boom"), /Error: boom/);
   } finally { repl.stop(); }
+});
+
+// 11-18: the Mac rebooted with no Aside window, and every walk failed with "Failed to request daemon auth challenge: fetch failed" for over 25 h.
+test("the walk keeps one box runner, returns each call's value, raises a REPL error and never starts the owner's Aside", async () => {
+  const [command, args] = boxCommand();
+  assert.equal(command, "ssh");
+  assert.ok(args.includes("us-metal02") && args.at(-1)!.includes("BOX_LOOPBACK_VIA=mac exec node box.mjs"), args.join(" "));
+  assert.ok(!/aside (mcp|repl)|\.local\/bin\/aside|ASIDE_CLI/.test(args.join(" ")));
+  const dir = mkdtempSync(join(tmpdir(), "box-walk-"));
+  const fake = join(dir, "box.mjs");
+  writeFileSync(fake, `
+let calls = 0, buffer = "";
+process.stdin.on("data", chunk => {
+  buffer += chunk;
+  for (let i = buffer.indexOf("\\n"); i >= 0; i = buffer.indexOf("\\n")) {
+    const message = JSON.parse(buffer.slice(0, i)); buffer = buffer.slice(i + 1);
+    if (message.code.includes("boom")) process.stdout.write(JSON.stringify({ id: message.id, error: "Error: boom\\n    at x" }) + "\\n");
+    else process.stdout.write(JSON.stringify({ id: message.id, out: "noise\\nWALK_RESULT " + JSON.stringify({ calls: ++calls, pid: process.pid }) }) + "\\n");
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+`);
+  const repl = boxRepl(process.execPath, [fake]);
+  try {
+    const first = await repl.call<{ calls: number; pid: number }>("one", "return 1;");
+    const second = await repl.call<{ calls: number; pid: number }>("two", "return 2;");
+    assert.equal(first.calls, 1);
+    assert.equal(second.calls, 2);
+    assert.equal(first.pid, second.pid, "one runner for the whole walk, so the REPL scope survives between calls");
+    await assert.rejects(repl.call("three", "boom"), /Error: boom$/);
+  } finally { repl.stop(); }
+  const gone = boxRepl(process.execPath, ["-e", "process.stderr.write('ssh: connect to host us-metal02 port 22: Connection refused\\n'); process.exit(255)"]);
+  await assert.rejects(gone.call("check", "return 1;"), /the box runner exited with code 255: ssh: connect to host us-metal02/);
 });

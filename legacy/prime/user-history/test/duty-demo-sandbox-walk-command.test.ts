@@ -25,8 +25,8 @@ test("a missing node after the last walk report is its own cause", async () => {
   assert.deepEqual(await walkCommandBroke(deps("zsh:1: command not found: playwright\n", ERR_AT)), { at: ERR_AT, line: "zsh:1: command not found: playwright" });
 });
 
-test("an Aside that does not answer is the walk command's cause (10-27, the walk moved to Aside, c177)", async () => {
-  const line = "demo-sandbox-walk: Aside did not answer: Profile 0 is not connected to the daemon";
+test("a box browser that does not answer is the walk command's cause", async () => {
+  const line = "demo-sandbox-walk: the box browser did not answer: the box runner exited with code 255: ssh: connect to host us-metal02 port 22: Connection refused";
   assert.deepEqual(await walkCommandBroke(deps(WARNING + line + "\n", ERR_AT, WALK_AT)), { at: ERR_AT, line });
 });
 
@@ -43,5 +43,5 @@ test("the walk command in onMiss sets the same node PATH as the precheck", () =>
   assert.ok(walk.startsWith(`ssh mac '${path}`), walk);
   assert.ok(walk.includes(`/${WALK_ERR_FILE}"`), walk);
   assert.ok(walk.endsWith(`${WALK_COMMAND}'`), "onMiss runs the walk the precheck starts");
-  assert.ok(!/playwright|shot-browser|headless/i.test(walk), "the walk drives Aside, never a headless browser (c177)");
+  assert.ok(!/playwright|shot-browser|headless/i.test(walk), "the walk drives a headful box Chrome, never a headless browser (c177)");
 });
