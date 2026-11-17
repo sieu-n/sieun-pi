@@ -139,13 +139,6 @@
       "target": ".prime/agent/skills/skills"
     },
     {
-      "id": "skill:spec-report",
-      "kind": "link",
-      "source": "skills/spec-report",
-      "scope": "home",
-      "target": ".prime/agent/skills/spec-report"
-    },
-    {
       "id": "skill:swarm",
       "kind": "link",
       "source": "skills/swarm",

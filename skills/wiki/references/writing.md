@@ -94,6 +94,25 @@ The same facts as numbered lines:
 </ol>
 ```
 
+## Plan, spec and status pages
+
+A plan shows that the writer cared about the problem, as the owner asked on 2026-09-10: "make sure future prime-agents report a plan in a format/style and insight just like [this page], not just superficially, but care about the problem!"
+These lines held the spec-report skill's rules until 2026-11-18, when that skill went unread for 14 days and moved here.
+
+1. A plan, spec, design or status page starts from the user's job and the real artifact, says why today's flow fails, and makes one concrete recommendation.
+2. Trace the whole task a person does, such as create, edit, preview, publish and use, past the symptom someone reported.
+3. Inspect the real workflow, source, data and lifecycle through their own interfaces, and drive web pages with the `aside-browser` skill.
+4. Keep the owner's own words, what others said and your own proposals apart, and quote the owner as he wrote.
+5. Each claim says whether it is observed behavior, a source risk, a proposal or a verified change, and the page names the evidence you could not get.
+6. A line about today states what you checked this turn in the tree, a query or a screenshot, never what a worker said.
+7. Correctness and trust come before cosmetic work when the evidence supports that order.
+8. Steps go in order of dependency and risk, each one ends in a check a reader can run, and work already in flight says so.
+9. A real product choice names the concrete alternatives, why each one lost, and the default you recommend.
+10. You check an observable fact yourself instead of asking the owner.
+11. A rendered spec or mock proves the design, never the implementation.
+12. A status page names the final state, what is true today with its check, and the next steps in order.
+13. The page is ready when a reader can say what the user wants to finish, why today's flow fails, which facts changed the plan and how each step gets proven.
+
 ## Tables and bold
 
 1. A table holds numbers and short facts in cells of a few words.

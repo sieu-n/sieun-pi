@@ -189,15 +189,6 @@
   ]
  },
  {
-  "id": "skill-spec-report",
-  "tool": "skill spec-report",
-  "probes": [
-   {
-    "path": "~/.prime/agent/skills/spec-report/SKILL.md"
-   }
-  ]
- },
- {
   "id": "skill-swarm",
   "tool": "skill swarm",
   "probes": [

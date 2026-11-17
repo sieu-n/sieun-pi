@@ -402,11 +402,6 @@
       "sha256": "b7ef4db5c093dea2366abb5e1c2715e71c9e5f06cd39570522e4d4ec3a64c714"
     },
     {
-      "path": "skills/spec-report/SKILL.md",
-      "origin": "~/.prime/agent/skills/spec-report/SKILL.md",
-      "sha256": "efe172f5123912684317ae8a38c787a189bcd1ae6a145c4e6f019afa6ddc4779"
-    },
-    {
       "path": "skills/principle-sequence-verifiable-units/SKILL.md",
       "origin": "~/.prime/agent/skills/principle-sequence-verifiable-units/SKILL.md",
       "sha256": "7478f8160ba5701ca40c742a81e90aff12d45f53ac9191e80ad79b9763e4489f"

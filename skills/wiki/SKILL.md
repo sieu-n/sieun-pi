@@ -57,6 +57,7 @@ wiki.close("what changed", no_durable_knowledge=True)  # or graduated_to=[...] o
 Every page, curated or workspace, is in the 메르 style: numbered short lines in `<ol>`, one plain sentence each, with a mermaid diagram or image for every flow, structure or comparison.
 A subagent writes every page, one page per subagent, and the parent reviews it.
 Before you write a page, read `references/writing.md` and the format section of `references/page-authoring.md`.
+A plan, spec, design or status page also follows the "Plan, spec and status pages" section of `references/writing.md`.
 The page API refuses a write that adds errors from `node apps/wiki/scripts/prose-lint.mjs <page>`, run from the sieun-pi checkout.
 
 ## The rules

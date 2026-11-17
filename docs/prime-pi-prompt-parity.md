@@ -116,7 +116,7 @@ On 2026-10-28 at 18:35 UTC `scripts/prompt-parity.mjs` compared every tool of Pr
 | `attach_image` | Python skill | the same skill, installed with Pillow and the vendored `prime-agent-runtime`; `model.info` gives the model's input types | equivalent |
 | `goal`, `compact`, `rlm_heartbeat` | Python skills | `compact.run` asks pi-durable to compact; `goal.*` and `rlm_heartbeat.*` answer that they do not run in durable threads yet | missing except `compact` |
 | `websearch`, `aside_browser`, the `mcp` object for `aside` | Python skills and REPL | the agent dir's `websearch` and `aside_browser` load in the kernel, and `mcp` is the vendored runtime's | equivalent as far as their own code goes |
-| markdown skills (`unslop`, `how`, `why`, `spec-report`, `setup-pstack`, `typescript-best-practices`, `resume-paused-sessions`, `skill-creator`, `mcp`) | read with ipython | read with ipython or `read` at the same `<location>` | equivalent |
+| markdown skills (`unslop`, `why`, `setup-pstack`, `typescript-best-practices`, `resume-paused-sessions`, `skill-creator`, `mcp`) | read with ipython | read with ipython or `read` at the same `<location>` | equivalent |
 | none | | `read`, `write`, `edit`, `bash`, `subagent`, `send_message` | pi only |
 
 The tool list a pi chat thread offers is `read, write, edit, bash, subagent, send_message, search_history, chat_board, tell_owner, correction_add, poteto_mode, ipython`; a Prime chat's is `ipython, search_history, chat_board, tell_owner, correction_add, poteto_mode`.
