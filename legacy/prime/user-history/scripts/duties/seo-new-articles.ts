@@ -15,7 +15,8 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *    REASK_AFTER_MS, or at every run for one with an accepted Request indexing in REQUESTS_LOG;
  * 3. for detail lines only: metrics/indexnow-sent.json of the SEO program, for sitemap URLs `seo indexnow --new` would still send, and the
  *    program's ledger.jsonl, for checks past their date with no result and the share of the last 30 days' scored checks that won.
- * The state keeps each article's first-seen day, so the day an article went live is the day the sitemap first listed it. On the first run
+ * The state keeps each article's first-seen day, so the day an article went live is the day the sitemap first listed it, and an article
+ * whose old URL left the sitemap and redirects to a new one keeps the old URL's day. On the first run
  * (no state) that day is the page's published date. A source that fails counts in source_errors and gives its metrics the miss value.
  */
 
@@ -256,6 +257,18 @@ export async function measureArticles(deps: ArticlesDeps, previous: ArticlesStat
       if (!known && previous && kind === "article") fresh.push(page.url);
       state.articles[page.url] = { published, firstSeen, status: page.status, ...(kind ? { kind } : {}) };
     }
+    // A moved article keeps the day its old URL went live. On 11-16 how-long-do-facebook-ads-run, live since 11-08 and never indexed, moved
+    // to a new slug with a 308, the new URLs got firstSeen 11-16, and new_unindexed_3d read 0 on 11-17 with all 3 editions still out of Google.
+    const gone = Object.keys(previous?.articles ?? {}).filter(url => !sitemap.has(url) && previous!.articles[url]!.kind === "article");
+    const moved: string[] = [];
+    if (fresh.length) for (const { from, to } of await mapLimit(gone, PAGE_CONCURRENCY, async from => ({ from, to: await deps.fetch(from).then(response => response.url, () => "") }))) {
+      const old = previous!.articles[from]!, target = fresh.includes(to) ? state.articles[to] : undefined;
+      if (!target || old.firstSeen >= target.firstSeen) continue;
+      target.firstSeen = old.firstSeen;
+      moved.push(`${path(from)} to ${path(to)} (live since ${old.firstSeen})`);
+      fresh.splice(fresh.indexOf(to), 1);
+    }
+    if (moved.length) flagged.push(...listSlice("moved_articles", `Articles that moved to a new URL and keep their first live day (${moved.length}):`, moved, at));
     for (const url of Object.keys(state.articles)) if (!sitemap.has(url)) delete state.articles[url];
     const broken = articles.filter(url => state.articles[url]!.status !== 200);
     if (broken.length) flagged.push(...listSlice("not_200", "Articles in the sitemap that did not answer 200:", broken.map(url => `${path(url)} (${state.articles[url]!.status || "no answer"})`), at));
