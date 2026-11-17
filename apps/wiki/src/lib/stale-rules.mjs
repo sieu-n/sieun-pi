@@ -279,9 +279,7 @@ function classMembers(definition) {
 export function memberKeys(source, definition) {
 	const members = classMembers(definition);
 	if (!members) return [];
-	/** @type {Set<string>} */
-	const cited = new Set();
-	for (const text of codeSpans(source)) for (const name of text.match(/[A-Za-z_$#][\w$]*/g) ?? []) cited.add(name);
+	const cited = codeNames(source);
 	const known = members.map(({ name }) => name);
 	if (known.filter((name) => cited.has(name)).length < 2) return [];
 	return [...new Set([...known, ...cited])];
@@ -304,10 +302,92 @@ export function knownMembers(definition, keys) {
 	return lines.filter((_, at) => !dropped.has(at)).join('\n');
 }
 
+/** The head of a YAML env map: `env:` of a GitHub Actions workflow, job or step, or `environment:` of a compose service. */
+const ENV_HEAD = /^(\s*)(?:env|environment):\s*$/;
+/** The key of an env map entry, `KEY: value` or the compose list forms `- KEY=value` and `- KEY`. */
+const ENV_KEY = /^\s*(?:-\s*)?["']?([A-Za-z_][\w.-]*)["']?\s*(?:[:=]|$)/;
+
+/** Every identifier of the page's `<code>` spans.
+ * @param {string} source
+ */
+const codeNames = (source) => {
+	/** @type {Set<string>} */
+	const names = new Set();
+	for (const text of codeSpans(source)) for (const name of text.match(/[A-Za-z_$#][\w$]*/g) ?? []) names.add(name);
+	return names;
+};
+
+/**
+ * The entries of each env map of `definition`, as `{ key, start, end }` line ranges: an entry is a line at the map's first
+ * depth and every deeper or blank line under it, such as a block scalar value.
+ * @param {readonly string[]} lines
+ * @returns {{ key: string; start: number; end: number }[]}
+ */
+function envEntries(lines) {
+	/** @type {{ key: string; start: number; end: number }[]} */
+	const entries = [];
+	for (let at = 0; at < lines.length; at += 1) {
+		const head = ENV_HEAD.exec(lines[at]);
+		if (!head) continue;
+		let line = at + 1;
+		while (line < lines.length && (!lines[line].trim() || depthOf(lines[line]) > head[1].length)) {
+			if (!lines[line].trim()) {
+				line += 1;
+				continue;
+			}
+			const start = line;
+			for (line += 1; line < lines.length && (!lines[line].trim() || depthOf(lines[line]) > depthOf(lines[start])); ) line += 1;
+			entries.push({ key: ENV_KEY.exec(lines[start])?.[1] ?? '', start, end: line });
+		}
+		at = line - 1;
+	}
+	return entries;
+}
+
+/**
+ * The env keys a page follows in a YAML `path::name` definition: every identifier of its `<code>` spans, or null to follow
+ * the whole definition when it holds no env map or the page names two or more of its env keys at the check, since such a
+ * page lists the map. On 2026-11-17 auto-sns-agent 3be3b8bb5a added only `ISOLATE_MAX_USER_HEAP_SIZE` to the
+ * `environment` of `convex-backend` in apps/infra/metal/compose.convex-prod.yml and compose.staging.yml, and fedf54d3a3
+ * added only `CONVEX_SELF_HOSTED_ADMIN_KEY_STAGING` to the `CI_ENV` value of the golden step's `env` in
+ * .github/workflows/promote.yml, and the two flagged 21 pages in the dream run at 20:07Z, of which this rule clears 18:
+ * 17 rechecks that changed only `last_verified` and one that only named a staging land. On a replay of the 1,123 dream rechecks in the 7 days to 2026-11-17 20:17Z, 989 behind a flag, the rule drops
+ * 42 of the 461 `last_verified`-only rechecks and 3 of the 528 that changed the body, none of those 3 for a fact the env
+ * change made: two named a staging land and one added a function from a commit no ref of the page covered
+ * (~/work/wiki-stale-env-keys/). Without the two-key floor it also dropped domains/devops/convex-release-path.html, which
+ * lists the `convex-backend` knobs and added `ISOLATE_ANALYZE_USER_TIMEOUT_SECONDS` when 99609c20ab set it.
+ * @param {string} source
+ * @param {string} definition
+ * @returns {string[] | null}
+ */
+export function envKeys(source, definition) {
+	const entries = envEntries(definition.split('\n'));
+	if (!entries.length) return null;
+	const cited = codeNames(source);
+	if (entries.filter(({ key }) => cited.has(key)).length >= 2) return null;
+	return [...cited];
+}
+
+/** `definition` without the env map entries whose key `keys` lacks, or null for a null definition.
+ * @param {string | null} definition
+ * @param {readonly string[]} keys
+ * @returns {string | null}
+ */
+export function namedEnv(definition, keys) {
+	if (definition === null) return null;
+	const lines = definition.split('\n');
+	const known = new Set(keys);
+	const dropped = new Set();
+	for (const { key, start, end } of envEntries(lines))
+		if (!known.has(key)) for (let at = start; at < end; at += 1) dropped.add(at);
+	return lines.filter((_, at) => !dropped.has(at)).join('\n');
+}
+
 /**
  * What a page's `path::name` ref follows of a version of the definition, given its text at the page's check: for a table
  * only the entries the page names (`entryKeys`), for a class all but a field added with a default the page does not name
- * (`memberKeys`), else the whole text.
+ * (`memberKeys`), for a YAML block with an env map all but the entries whose key the page does not name (`envKeys`), else
+ * the whole text.
  * @param {string} source
  * @param {string | null} atCheck
  * @returns {(definition: string | null) => string | null}
@@ -316,7 +396,9 @@ export function followed(source, atCheck) {
 	const keys = atCheck === null ? [] : entryKeys(source, atCheck);
 	if (keys.length) return (definition) => namedEntries(definition, keys);
 	const members = atCheck === null ? [] : memberKeys(source, atCheck);
-	return members.length ? (definition) => knownMembers(definition, members) : (definition) => definition;
+	if (members.length) return (definition) => knownMembers(definition, members);
+	const env = atCheck === null ? null : envKeys(source, atCheck);
+	return env ? (definition) => namedEnv(definition, env) : (definition) => definition;
 }
 
 /** Whether the page states line numbers or a line count of `ref`, such as `fast.py:380` or `convex/crons.ts at lines 120, 126`, which any edit can move.

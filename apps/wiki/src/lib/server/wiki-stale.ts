@@ -331,7 +331,8 @@ async function siblingTouched(held: string | undefined, now: { root: string; pin
  * once per report (pinHead), so file mtimes from a checkout count for nothing. `since` is the first commit after the check.
  * A `path::name` ref counts only commits that changed that definition's code (codeText), or for a table only its entries keyed by
  * the keys the page names (`entryKeys`), or for a class all but the fields added with a default the page does not name
- * (`memberKeys`), and only while the pinned code differs.
+ * (`memberKeys`), or for a YAML block all but the env map entries whose key the page does not name (`envKeys`), and only
+ * while the pinned code differs.
  * A commit that changes a ref and the page together counts as the page's check of that ref, since its writer updated the page with
  * the code, as the follow gate (scripts/follow-gate.mjs) asks, and so does a commit whose `Wiki-Checked` trailer names the page
  * (CHECKED_TRAILER in stale-rules.mjs), the one way a code commit can vouch for a page since the pages left git on 2026-11-03.

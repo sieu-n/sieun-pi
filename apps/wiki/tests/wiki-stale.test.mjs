@@ -6,7 +6,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { codeText } from '../src/lib/code-text.mjs';
 import { definitionText } from '../src/lib/definitions.mjs';
-import { entryKeys, knownMembers, memberKeys, namedEntries } from '../src/lib/stale-rules.mjs';
+import { entryKeys, envKeys, knownMembers, memberKeys, namedEntries, namedEnv } from '../src/lib/stale-rules.mjs';
 import { pageRepo } from './page-repo.mjs';
 import { engineReports, snapshotTree } from '../scripts/wiki-health.mjs';
 
@@ -674,6 +674,45 @@ test('a path::name class follows all but a field added with a default that the p
 	assert.notEqual(follow(fingerprint('', '20.0')), follow(was), 'an edit of a field the page does not name is a change');
 	assert.deepEqual(memberKeys('<p>A <code>Fingerprint</code> holds <code>headers</code>.</p>', was), [], 'a page naming one member follows the class');
 	assert.deepEqual(memberKeys(page, 'def fingerprint(x):\n    return x'), [], 'a function is no class');
+});
+
+// 2026-11-17: auto-sns-agent 3be3b8bb5a added only ISOLATE_MAX_USER_HEAP_SIZE to the environment of convex-backend in both
+// compose files, and fedf54d3a3 only CONVEX_SELF_HOSTED_ADMIN_KEY_STAGING to the CI_ENV value of a promote.yml step's env,
+// and the two flagged 21 pages that named neither key.
+test('a path::name YAML block follows only the env entries the page names, unless the page lists two or more', (t) => {
+	const w = fixture(t);
+	const compose = (extra = '', parallelism = '32') =>
+		`services:\n  convex-backend:\n    image: convex:1\n    environment:\n      # knobs\n      SCHEDULED_JOB_EXECUTION_PARALLELISM: "${parallelism}"\n      DOCUMENT_RETENTION_DELAY: "172800"\n${extra}    ports:\n      - 3210:3210\n`;
+	const workflow = (keys) =>
+		`jobs:\n  gate:\n    steps:\n      - name: golden\n        env:\n          CI_ENV: ci/staging:${keys}\n          GOLDEN_SHA: \${{ steps.git.outputs.sha }}\n        run: node golden.mjs\n`;
+	w.write('compose.yml', compose());
+	w.write('promote.yml', workflow('VERCEL_TOKEN'));
+	for (const [name, ref, body] of [
+		['none', 'compose.yml::convex-backend', '<p>The <code>convex-backend</code> service runs <code>convex:1</code>.</p>'],
+		['one', 'compose.yml::convex-backend', '<p><code>SCHEDULED_JOB_EXECUTION_PARALLELISM</code> is 32.</p>'],
+		['list', 'compose.yml::convex-backend', '<p>It sets <code>SCHEDULED_JOB_EXECUTION_PARALLELISM</code> and <code>DOCUMENT_RETENTION_DELAY</code>.</p>'],
+		['step', 'promote.yml::golden', '<p>The golden step runs <code>golden.mjs</code>.</p>'],
+		['secret', 'promote.yml::golden', '<p>The golden step loads <code>CI_ENV</code>.</p>'],
+	])
+		w.page(`${name}.html`, [ref], { body });
+	w.init();
+	w.commit('2026-10-20T01:00:00Z', 'pages');
+	w.write('compose.yml', compose('      ISOLATE_MAX_USER_HEAP_SIZE: "134217728"\n'));
+	w.write('promote.yml', workflow('VERCEL_TOKEN,CONVEX_SELF_HOSTED_ADMIN_KEY_STAGING'));
+	w.commit('2026-10-20T04:00:00Z', 'unnamed env entries');
+	w.write('compose.yml', compose('      ISOLATE_MAX_USER_HEAP_SIZE: "134217728"\n', '64'));
+	w.commit('2026-10-20T05:00:00Z', 'a named entry');
+
+	const rows = w.refsByPage();
+	assert.equal(rows['apps/none.html'], undefined, 'an entry whose key the page does not name is no change');
+	assert.equal(rows['apps/step.html'], undefined, 'a value change of an unnamed workflow env key is no change');
+	assert.deepEqual(rows['apps/one.html'], [{ ref: 'compose.yml::convex-backend', ...at('05') }], 'a named entry counts');
+	assert.deepEqual(rows['apps/list.html'], [{ ref: 'compose.yml::convex-backend', ...at('04', '05') }], 'a page listing the map follows it whole');
+	assert.deepEqual(rows['apps/secret.html'], [{ ref: 'promote.yml::golden', ...at('04') }], 'a named key follows its value');
+
+	const list = 'web:\n  environment:\n    - A_KEY=1\n    - B_KEY\n  image: web\n';
+	assert.equal(namedEnv(list, envKeys('<code>A_KEY</code>', list)), 'web:\n  environment:\n    - A_KEY=1\n  image: web\n', 'compose list form');
+	assert.equal(envKeys('<code>web</code>', 'web:\n  image: web\n'), null, 'a block with no env map follows whole');
 });
 
 // 2026-10-28: a ref could not name a route key or a Markdown section, so writers kept convex/http.ts and the runbooks whole.
