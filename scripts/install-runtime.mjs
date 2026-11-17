@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, uptime } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -140,6 +140,33 @@ export function refreshKernelPaths(home, release) {
   return rewritten;
 }
 
+/** When a live pid started, in ms to the second, or undefined once it is gone. */
+function processStart(pid) {
+  try { process.kill(pid, 0); } catch (error) { if (error.code !== "EPERM") return undefined; }
+  const out = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).stdout ?? "";
+  const at = Date.parse(out.trim().split(/\s+/).join(" "));
+  return Number.isNaN(at) ? undefined : at;
+}
+
+/**
+ * Removes the install lock at `lock` when its owner is gone and returns true, or returns false while the owner runs. The owner is gone when
+ * the lock predates this boot, its pid is dead, or the pid now names a process that started after the lock was written. On 11-17 install pid
+ * 95074 held the Mac's lock from 19:52Z through a 20:35Z reboot, and prime-sync skipped every install and link until a hand removal.
+ * components/prime-sync/sync.py held_lock judges a lock the same way.
+ */
+export function clearStaleLock(lock) {
+  let owner = {};
+  try { owner = JSON.parse(readFileSync(join(lock, "owner.json"), "utf8")); } catch {}
+  let since = Date.parse(owner.startedAt ?? "");
+  try { if (Number.isNaN(since)) since = statSync(lock).mtimeMs; } catch { return true; }
+  const start = Number.isInteger(owner.pid) && owner.pid > 0 ? processStart(owner.pid) : 0;
+  if (since >= Date.now() - uptime() * 1000 && start !== undefined && start <= since) return false;
+  const aside = `${lock}.stale-${process.pid}`;
+  try { renameSync(lock, aside); } catch (error) { if (error.code === "ENOENT") return true; throw error; }
+  rmSync(aside, { recursive: true, force: true });
+  return true;
+}
+
 export function installRuntime({ repo = checkout, home = homedir(), ref = "HEAD", prepareOnly = false } = {}, { execute = run, archive = exportCommit } = {}) {
   repo = realpathSync(repo);
   home = realpathSync(home);
@@ -151,8 +178,9 @@ export function installRuntime({ repo = checkout, home = homedir(), ref = "HEAD"
   physicalDirectory(releases);
   const lock = join(root, ".installing");
   try { mkdirSync(lock); } catch (error) {
-    if (error.code === "EEXIST") throw new Error(`Runtime install is locked at ${lock}; inspect owner.json and remove this directory only after its process has exited.`);
-    throw error;
+    if (error.code !== "EEXIST") throw error;
+    if (!clearStaleLock(lock)) throw new Error(`Runtime install is locked at ${lock} by a running install; see its owner.json.`);
+    mkdirSync(lock);
   }
   let scratch;
   try {

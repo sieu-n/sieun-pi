@@ -219,6 +219,49 @@ with open(runtime / "history.jsonl", "a") as log:
         self.assertIn("installation is in progress", report["links"])
         self.assertEqual(os.readlink(skill), before)
 
+    def lock(self, box, pid, started):
+        lock = box / ".local/share/sieun-pi-runtime/.installing"
+        lock.mkdir(parents=True)
+        (lock / "owner.json").write_text(json.dumps({"pid": pid, "sha": "a" * 40, "startedAt": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(started))}))
+        return lock
+
+    def test_an_install_lock_whose_owner_is_gone_is_taken_over(self):
+        # 11-17: install pid 95074 held the Mac's lock through a 20:35Z reboot, and every run skipped links for hours.
+        dead = subprocess.Popen(["true"])
+        dead.wait()
+        reused = subprocess.Popen(["python3", "-c", "import time; time.sleep(60)"])
+        self.addCleanup(lambda: (reused.kill(), reused.wait()))
+        for name, pid, started in (("dead", dead.pid, time.time()), ("boot", os.getpid(), time.time() - 400 * 86400), ("reused", reused.pid, time.time() - 60)):
+            with self.subTest(name):
+                box = self.box(name, [], [])
+                lock = self.lock(box, pid, started)
+                report = self.sync(box)
+                self.assertIn(f"cleared the stale install lock of pid {pid}", " ".join(report["runtime"]))
+                self.assertFalse(lock.exists())
+                self.assertEqual(os.readlink(box / ".prime/agent/skills/unslop"), str(box / "src/sieun-pi/skills/unslop"))
+
+    def test_a_live_install_lock_is_logged_once_and_raised_after_30_min(self):
+        box = self.box("mac", [], [])
+        self.sync(box)
+        before = os.readlink(box / ".prime/agent/skills/unslop")
+        self.lock(box, os.getpid(), time.time())
+        log = box / ".local/share/prime-sync/sync.log"
+        lines = len(log.read_text().splitlines())
+        for _ in range(2):
+            report = self.sync(box)
+            self.assertIn(f"runtime installation by pid {os.getpid()} since", report["links"])
+            self.assertTrue((box / ".local/share/sieun-pi-runtime/.installing").exists())
+            self.assertEqual(os.readlink(box / ".prime/agent/skills/unslop"), before)
+        self.assertEqual(len(log.read_text().splitlines()), lines + 1)
+        calls = self.root / "calls.txt"
+        stub = self.root / "stub.sh"
+        stub.write_text(f"#!/bin/sh\necho \"$@\" >> {calls}\necho 'Added a todo t9'\n")
+        stub.chmod(0o755)
+        report = self.sync(box, code=1, env={"PRIME_SYNC_FORYOU_S": "0", "PRIME_SYNC_PRIME_BIN": str(stub), "PRIME_SYNC_BOARD_APPLY": str(stub)})
+        self.assertIn("its process still runs", report["links"])
+        self.assertIn("runtime installation by pid", calls.read_text())
+        self.assertEqual(json.loads((box / ".local/share/prime-sync/blocked.json").read_text())["todo"], "t9")
+
     def test_broken_runtime_does_not_relink_to_protected_source(self):
         box = self.box("mac", [], [])
         self.sync(box)

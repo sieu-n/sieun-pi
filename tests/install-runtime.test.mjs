@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { spawn, spawnSync } from "node:child_process";
+import { homedir, uptime } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -179,6 +180,24 @@ test("concurrent installation refuses the existing lock without removing it", t 
   assert.throws(() => installRuntime(f.options, f.hooks), /Runtime install is locked/);
   assert.equal(existsSync(join(f.root, ".installing/owner.json")), true);
   assert.equal(f.calls.some(call => call.command === "npm"), false);
+});
+
+// 11-17: install pid 95074 held the Mac's lock from 19:52Z through a 20:35Z reboot, and prime-sync skipped every install for hours.
+test("an install takes over a lock whose owner is dead, predates this boot or lost its pid to a newer process", t => {
+  const dead = spawnSync("true").pid;
+  const reused = spawn("sleep", ["60"]);
+  t.after(() => reused.kill());
+  const at = ms => new Date(ms).toISOString();
+  for (const owner of [{ pid: dead, startedAt: at(Date.now()) }, { pid: process.pid, startedAt: at(Date.now() - (uptime() + 3600) * 1000) },
+    { pid: reused.pid, startedAt: at(Date.now() - 60_000) }]) {
+    const f = fixture(t);
+    f.write(join(f.root, ".installing/owner.json"), JSON.stringify(owner));
+    assert.equal(installRuntime({ ...f.options, prepareOnly: true }, f.hooks).prepared, true, JSON.stringify(owner));
+    assert.equal(existsSync(join(f.root, ".installing")), false);
+  }
+  const f = fixture(t);
+  f.write(join(f.root, ".installing/owner.json"), JSON.stringify({ pid: process.pid, startedAt: at(Date.now()) }));
+  assert.throws(() => installRuntime(f.options, f.hooks), /Runtime install is locked/);
 });
 
 test("a release builds the user-history bundle with its own esbuild and node and leaves package.json's entry alone", t => {

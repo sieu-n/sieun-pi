@@ -11,6 +11,7 @@
 5. Global harness entries (harness_state.json) and the corrections ledger (browser-chat/corrections.json)
    merge three ways with the private state repo, one file per entry, and the newer side wins a clash.
 6. When the checkout has not followed main for 10 min, the session that wrote a blocking path hears of it, and at 30 min the AI harness chat gets a todo.
+   A live runtime install lock counts as a block too, and a lock whose owner is gone is removed (held_lock).
 
 Prime and the chat only read local files, so this run writes them in place, the way each of them writes:
 harness_state.json by atomic replace, the ledger under the chat's <file>.lock directory.
@@ -381,6 +382,60 @@ def _ancestor(repo: Path, older: str, newer: str) -> bool:
 
 RUNTIME_SOURCES = ("config", "skills", "install-manifest.json")
 NOT_A_HOST = re.compile(r"--daemon-socket \S*/daemon\.sock\b| --version$")
+INSTALLING = "runtime installation"
+
+
+def boot_time() -> float:
+    try:
+        return next(float(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines() if line.startswith("btime "))
+    except (OSError, StopIteration, ValueError):
+        out = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True).stdout
+        found = re.search(r"sec = (\d+)", out)
+        return float(found.group(1)) if found else 0.0
+
+
+def process_start(pid: int) -> float | None:
+    """When a live pid started, to the second, or None once it is gone."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        pass
+    out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, env={**os.environ, "LC_ALL": "C"}).stdout
+    try:
+        return time.mktime(time.strptime(" ".join(out.split()), "%a %b %d %H:%M:%S %Y"))
+    except ValueError:
+        return None
+
+
+def held_lock(runtime: Path, cleared: list[str] | None = None) -> dict | None:
+    """The live owner of runtime/.installing as {"pid", "startedAt", "since"}, or None. A lock whose owner is gone is removed and noted in
+    cleared: it predates this boot, its pid is dead, or its pid now names a process that started after the lock was written. On 11-17 install
+    pid 95074 held the Mac's lock from 19:52Z through a 20:35Z reboot, and every run skipped the runtime and links until a hand removal."""
+    lock = runtime / ".installing"
+    try:
+        made = lock.stat().st_mtime
+    except FileNotFoundError:
+        return None
+    try:
+        owner = json.loads((lock / "owner.json").read_text())
+        since = datetime.fromisoformat(owner["startedAt"].replace("Z", "+00:00")).timestamp()
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        owner, since = {}, made
+    pid = owner.get("pid") if isinstance(owner.get("pid"), int) and owner["pid"] > 0 else None
+    start = process_start(pid) if pid else 0.0
+    if since >= boot_time() and start is not None and start <= since:
+        return {"pid": pid, "startedAt": owner.get("startedAt"), "since": since}
+    aside = runtime / f".installing.stale-{os.getpid()}"
+    try:
+        lock.rename(aside)
+    except FileNotFoundError:
+        return None
+    shutil.rmtree(aside, ignore_errors=True)
+    if cleared is not None:
+        cleared.append(f"cleared the stale install lock of pid {pid} from {owner.get('startedAt') or 'before boot'}")
+    return None
 
 
 def follow_runtime(checkout: Path, home: Path, agent_dir: Path, installer: list[str] | None) -> list[str]:
@@ -390,13 +445,13 @@ def follow_runtime(checkout: Path, home: Path, agent_dir: Path, installer: list[
     hold stays where the coordinator put it. On 10-20 the Mac kept the old ~/.prime/agent/AGENTS.md until two hand installs."""
     runtime = home / ".local/share/sieun-pi-runtime"
     current = runtime / "current"
-    if not os.path.lexists(current) or (runtime / ".installing").exists():
-        return []
+    changes: list[str] = []
+    if held_lock(runtime, changes) or not os.path.lexists(current):
+        return changes
     try:
         installed = json.loads((current.resolve(strict=True) / "release.json").read_text())["sha"]
     except (OSError, ValueError, KeyError, TypeError):
-        return []
-    changes = []
+        return changes
     remote = rev(checkout, "origin/main")
     if remote and remote != installed and _ancestor(checkout, installed, remote) \
             and git(checkout, "diff", "--name-only", installed, remote, "--", *RUNTIME_SOURCES):
@@ -447,7 +502,7 @@ def prune_releases(runtime: Path, agent_dir: Path) -> list[str]:
     line names it, and every Prime process that hosts sessions started after it was retired, since a session that loaded an
     extension from a release spawns helpers from that release's path later. The Prime supervisor and a `--version` probe host no session."""
     releases = runtime / "releases"
-    if (runtime / ".installing").exists() or not releases.is_dir():
+    if held_lock(runtime) or not releases.is_dir():
         return []
     current = (runtime / "current").resolve()
     retired = retirements(runtime / "history.jsonl")
@@ -481,8 +536,14 @@ def remove_path(path: Path) -> None:
 
 def link_manifest(checkout: Path, home: Path, agent_dir: Path) -> list[str]:
     runtime = home / ".local/share/sieun-pi-runtime"
-    if (runtime / ".installing").exists():
-        raise Skip("runtime installation is in progress; resource links stay as they are")
+    owner = held_lock(runtime)
+    if owner:
+        who = f" by pid {owner['pid']} since {owner['startedAt']}" if owner["pid"] else ""
+        text = f"{INSTALLING}{who} is in progress; resource links stay as they are"
+        minutes = int((time.time() - owner["since"]) // 60)
+        if minutes * 60 >= FORYOU_S:
+            raise Alert(f"{text}, {minutes} min now, and its process still runs")
+        raise Skip(text)
     source_root = checkout
     current = runtime / "current"
     if os.path.lexists(current):
@@ -847,6 +908,8 @@ def watch_block(report: dict, config: dict, paths: list[str]) -> None:
     except (OSError, ValueError):
         state = {}
     code, now = str(report.get("code", "")), time.time()
+    if code.startswith(FOLLOWING) and INSTALLING in str(report.get("links")):
+        code = str(report["links"])
     if code.startswith(FOLLOWING):
         if state.get("todo"):
             board_ops([{"op": "todo_update", "id": state["todo"], "done": True}])
@@ -1002,8 +1065,13 @@ def run() -> dict:
             watch_block(report, config, blocking)
         except Exception as error:
             report["watch"] = f"error: {type(error).__name__}: {error}"
+    try:
+        before = json.loads((SHARE / "status.json").read_text())
+    except (OSError, ValueError):
+        before = {}
+    again = str(report.get("links")).startswith("skipped: ") and report.get("links") == before.get("links")
     write_atomic(SHARE / "status.json", (json.dumps(report, indent=2) + "\n").encode(), 0o644)
-    if any(report.get(key) for key in ("index", "runtime", "links", "settings", "modes", "state")) or str(report.get("code")).startswith(("pulled", "rebased", "skipped", "alert")) \
+    if any(report.get(key) for key in ("index", "runtime", "links", "settings", "modes", "state") if not (key == "links" and again)) or str(report.get("code")).startswith(("pulled", "rebased", "skipped", "alert")) \
             or str(report.get("bundle")).startswith("built") or "error" in json.dumps(report):
         with open(SHARE / "sync.log", "a") as log:
             log.write(json.dumps(report) + "\n")

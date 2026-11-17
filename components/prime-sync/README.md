@@ -20,6 +20,7 @@ Prime and the chat read only local files, so prime-sync writes those files in pl
 2. After 10 min it finds the Prime session that last wrote each blocking path, from the tool calls in `~/.prime/agent/sessions` and `session-artifacts`, and tells it once to commit the edit or put it back, through sieun-pi's `daemon-cli.mjs send` (a 30 s hello wait with a second try) or, on a box with no reader, `prime-agent send` with a second try after a missed hello.
 3. After 30 min it adds one todo to the AI harness chat's For you list with the chat's `scripts/board-apply.ts`, which forwards it to the chat host, and the first run that follows `main` again checks the todo off.
 4. The AI harness chat asked for both on 10-18, after the Mac's checkout sat at 461986e from 08:26Z to 10:45Z with nobody told.
+5. A runtime install lock (`~/.local/share/sieun-pi-runtime/.installing`) whose owner is gone is removed, and the run says so in its `runtime` line. The owner is gone when the lock predates this boot, its pid is dead, or its pid now names a process that started after the lock was written; `scripts/install-runtime.mjs` takes over such a lock the same way. A lock whose install still runs puts one `skipped:` line in `sync.log`, counts as a block for the For you todo above, and turns into an `alert:` once the lock is 30 min old. On 11-17 install pid 95074 held the Mac's lock through a 20:35Z reboot, and every run skipped the runtime and links in silence until a hand removal the next morning.
 
 ## How the merge works
 
