@@ -98,12 +98,28 @@ function promptOn(page: { url: string; text: string }): Prompted | undefined {
   return undefined;
 }
 
-/** Every claude.ai sign-in link in the owner's Gmail, which gets every slack.green address, sent to `email` in the last 30 min. */
+/**
+ * Every claude.ai sign-in link in the owner's Gmail, which gets every slack.green address, sent to `email` in the last 30 min. It reads through
+ * Aside's `gmail` helper, and when that fails through a Gmail search tab and each thread's print view: from 05:42Z on 11-17 the helper's
+ * search answered "/i/bv failed: HTTP 400" for every query while Gmail's own pages loaded.
+ */
 async function magicLinks(repl: AsideRepl, email: string): Promise<string[]> {
-  const out = await repl.run(`const found = await gmail.search(0, ${js(`to:${email} newer_than:30m subject:"secure link"`)}); const links = [];
-for (const hit of found.results.slice(0, 10)) { const thread = await gmail.getThread(0, hit.threadId); for (const message of thread.messages) links.push(...[...message.body.matchAll(/https:\\/\\/claude\\.ai\\/magic-link[^\\s)\\]"'<>]+/g)].map(m => m[0])); }
-console.log(JSON.stringify(links));`);
-  return JSON.parse(out.slice(out.lastIndexOf("["), out.lastIndexOf("]") + 1) || "[]") as string[];
+  const query = `to:${email} newer_than:30m subject:"secure link"`;
+  const out = await repl.run(`const query = ${js(query)}; const pattern = /https:\\/\\/claude\\.ai\\/magic-link#[^\\s)\\]"'<>&]+/g; const links = [];
+try {
+  const found = await gmail.search(0, query);
+  for (const hit of found.results.slice(0, 10)) { const thread = await gmail.getThread(0, hit.threadId); for (const message of thread.messages) links.push(...[...message.body.matchAll(pattern)].map(m => m[0])); }
+} catch {
+  const searchTab = await openTab('https://mail.google.com/mail/u/0/#search/' + encodeURIComponent(query)); await sleep(6000);
+  try {
+    const ids = await searchTab.evaluate(() => [...document.querySelectorAll('[data-legacy-thread-id]')].map(row => row.getAttribute('data-legacy-thread-id')));
+    for (const id of [...new Set(ids)].slice(0, 10)) links.push(...[...(await (await fetch('https://mail.google.com/mail/u/0/?ui=2&view=pt&search=all&th=' + id)).text()).matchAll(pattern)].map(m => m[0]));
+  } finally { await closeTab(searchTab); }
+}
+console.log("LINKS " + JSON.stringify([...new Set(links)]));`);
+  const line = out.split("\n").find(row => row.startsWith("LINKS "));
+  if (!line) throw new Error(`Gmail gave no link list: ${out.slice(0, 200)}`);
+  return JSON.parse(line.slice(6)) as string[];
 }
 
 /** The sign-in link claude.ai sent after `before` was read: on 11-16 the newest Gmail thread held an older, spent link, which said "This link has expired". */
