@@ -655,6 +655,37 @@ test('a path::name ref names a route key or a Markdown heading', (t) => {
 	assert.deepEqual(rows['apps/gone.html'], [{ ref: 'README.md::Upgrade', modified: 'missing — ref no longer exists' }]);
 });
 
+// 2026-11-17: auto-sns-agent ab983c134d re-padded the EVIDENCE.md table and added row L33, which flagged 7 pages that
+// quote other rows, because a ref could name no table row and the file's one heading spans the whole table.
+test('a path::name ref names a Markdown table row by its first cell, with its cells trimmed', (t) => {
+	const table = (pad, l6, extra = '') =>
+		`# Ledger\n\n| id${pad} | what |\n| ---${pad} | --- |\n| L1${pad} | One. |\n| L6${pad} | ${l6} |\n${extra}`;
+	assert.equal(definitionText(table('', 'Six.'), 'L6'), '| L6 | Six. |');
+	assert.equal(definitionText(table('   ', 'Six.'), 'L6'), definitionText(table('', 'Six.'), 'L6'), 'a re-pad changes no row');
+	assert.equal(definitionText(table('', 'Six.'), 'L7'), null);
+	assert.equal(definitionText('| a \\| b | c |\n', 'a \\| b'), '| a \\| b | c |', 'an escaped pipe splits no cell');
+	assert.equal(definitionText('type T =\n\t| L6\n\t| L7;\n', 'L6'), null, 'a union member is no table row');
+	assert.equal(definitionText('# Ledger\n\n## L6\n\nHeading.\n\n| L6 | Row. |\n', 'L6'), '## L6\n\nHeading.\n\n| L6 | Row. |', 'a heading wins');
+
+	const w = fixture(t);
+	w.write('EVIDENCE.md', table('', 'Six.'));
+	w.page('row.html', ['EVIDENCE.md::L6']);
+	w.page('whole.html', ['EVIDENCE.md']);
+	w.init();
+	w.commit('2026-10-20T01:00:00Z', 'pages');
+	w.write('EVIDENCE.md', table('   ', 'Six.', '| L7    | Seven. |\n'));
+	w.commit('2026-10-20T04:00:00Z', 're-pad and add L7');
+
+	let rows = w.refsByPage();
+	assert.equal(rows['apps/row.html'], undefined, 'a re-pad and an added row leave L6 as it was');
+	assert.deepEqual(rows['apps/whole.html'], [{ ref: 'EVIDENCE.md', ...at('04') }]);
+
+	w.write('EVIDENCE.md', table('   ', 'Six, edited.', '| L7    | Seven. |\n'));
+	w.commit('2026-10-20T05:00:00Z', 'edit L6');
+	rows = w.refsByPage();
+	assert.deepEqual(rows['apps/row.html'], [{ ref: 'EVIDENCE.md::L6', ...at('05') }]);
+});
+
 // 2026-10-28: 2a8c77c496 added a local `const refresh` inside storeCounts, and the ref to the exported refresh action went stale.
 test('a path::name ref follows the top-level definition, not a local of the same name', (t) => {
 	const w = fixture(t);

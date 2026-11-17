@@ -7,7 +7,8 @@ import { codeText } from './code-text.mjs';
 /**
  * A `source_refs` entry `path::name` cites one definition in a file; the name is what wiki-health.mjs citedRefs strips. A name
  * may be a route key such as `convex/http.ts::/api/search-admin/access` or a Markdown heading such as
- * `ops/runbooks/dev-boxes.md::When an alert fires`.
+ * `ops/runbooks/dev-boxes.md::When an alert fires`, or the first cell of a Markdown table row such as
+ * `apps/crawler-v3/src/platforms/instagram/engage/EVIDENCE.md::L6`.
  * @param {string} ref
  * @returns {{ file: string; name: string } | null}
  */
@@ -52,7 +53,8 @@ const closes = (line) => {
  * 10:28Z commits to other sections of ops/runbooks/dev-boxes.md and apps/infra/metal/README.md flagged
  * domains/devops/local-store-box/index.html and domains/devops/aws-estate.html 11 times and none of them changed the page.
  * Before the headings, a block that opens with `{` at the end of a line that names `name` runs to its matching close brace
- * (`braceBlocks`), which names a Caddyfile site, snippet, matcher or directive block.
+ * (`braceBlocks`), which names a Caddyfile site, snippet, matcher or directive block. Failing a heading too, a Markdown table
+ * row whose first cell is `name` (`tableRows`) is that row alone.
  * @param {string} text
  * @param {string} name
  * @returns {string | null}
@@ -105,7 +107,27 @@ export function definitionText(text, name) {
 		while (end < lines.length && (/^(#{1,6})\s/.exec(lines[end])?.[1].length ?? 7) > level) end += 1;
 		sections.push(lines.slice(start, end).join('\n').trimEnd());
 	}
-	return sections.length ? sections.join('\n') : null;
+	if (sections.length) return sections.join('\n');
+	const rows = tableRows(lines, name);
+	return rows.length ? rows.join('\n') : null;
+}
+
+/**
+ * Each Markdown table row whose first cell is `name`, as `| a | b |` with every cell trimmed, so a commit that only re-pads
+ * the table changes no row. A row opens and ends with `|`, and an escaped `\|` splits no cell. On 2026-11-17 auto-sns-agent
+ * ab983c134d re-padded the table of apps/crawler-v3/src/platforms/instagram/engage/EVIDENCE.md and added row L33, which
+ * flagged 7 pages under apps/crawler-v3/architecture/instagram-authed-engage/ that cite the file whole, and every recheck
+ * that finished changed only `last_verified`, because the rows they quote did not change.
+ * @param {readonly string[]} lines
+ * @param {string} name
+ * @returns {string[]}
+ */
+function tableRows(lines, name) {
+	return lines.flatMap((line) => {
+		if (!/^\s*\|.*\|\s*$/.test(line)) return [];
+		const cells = line.trim().slice(1, -1).split(/(?<!\\)\|/).map((cell) => cell.trim());
+		return cells[0] === name ? [`| ${cells.join(' | ')} |`] : [];
+	});
 }
 
 /**
