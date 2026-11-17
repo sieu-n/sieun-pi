@@ -149,6 +149,11 @@ const renamedHidden = (row: WatchRow): boolean => row.renamed && isHidden(row);
  * of them (a dead doc_id, F16) stays visible. A rule about the row's state, never a list of handles.
  */
 export const isAcceptedHidden = (row: WatchRow): boolean => !row.paused && !renamedHidden(row) && isHidden(row);
+/**
+ * More accepted-hidden owner watches than this is one Watchlist risk: a wave of public accounts read hidden, never the owner's t31 set.
+ * measured: d2 read 29 to 46 hidden from 10-22 to 11-14, then 130 on 11-15 and 676 on 11-16, public accounts such as chuu_official (401k followers).
+ */
+const HIDDEN_WAVE_LINE = 100;
 /** The codes and limits of words.ts that decide a Stopped chip. */
 const HIDDEN_CODES = new Set(["timeline_hidden"]);
 const TRANSIENT_CODES = new Set(["scrape_blocked", "login_wall", "rate_limited", "challenge", "blocked", "asset_error", "transport", "timeout", "unreachable", "upstream_unavailable", "geo_target_unavailable"]);
@@ -316,9 +321,11 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
     detail.owner_hidden_watches = owner.hidden;
     flagged.push({ at, kind: "owner_hidden", excerpt: `${owner.hidden} hidden by Instagram: owner watches that read Stopped because Instagram hides the account, kept Stopped by the owner's t31 answer and counted green; a wave of them can mean a dead doc_id, F16` });
     if (data.streams) {
-      metrics.watchlist_risks = owner.stopped + data.streams.length + (owner.collabs - owner.pushed) + (late.length || !screen.length ? 1 : 0) + (groupSlow ? 1 : 0);
+      const hiddenWave = owner.hidden > HIDDEN_WAVE_LINE ? 1 : 0;
+      metrics.watchlist_risks = owner.stopped + hiddenWave + data.streams.length + (owner.collabs - owner.pushed) + (late.length || !screen.length ? 1 : 0) + (groupSlow ? 1 : 0);
       flagged.push({ at, kind: "watchlist_risks", excerpt: (`${metrics.watchlist_risks} Watchlist risks firing: ${owner.stopped} owner watches read Stopped`
         + (owner.stops.length ? ` (${listWhy(owner.stops)})` : "")
+        + `; ${hiddenWave} hidden wave (${owner.hidden} owner watches read hidden, line ${HIDDEN_WAVE_LINE})`
         + `; ${data.streams.length} prod Kafka stream faults${data.streams.length ? ` (${data.streams.map(fault => `${fault.topic}: ${fault.why}`).join("; ")})` : ""}`
         + `; ${owner.collabs - owner.pushed} owner collab watches prod does not read`
         + `; ${late.length || !screen.length ? 1 : 0} Watchlist status read failing (${late.length} of ${screen.length} chunks would read Status unavailable)`

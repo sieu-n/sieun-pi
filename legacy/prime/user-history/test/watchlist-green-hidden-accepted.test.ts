@@ -51,3 +51,11 @@ test("the rule reads the row's state: paused or renamed hidden rows are not acce
   assert.equal(isAcceptedHidden(row({ lastStopReason: "hidden", renamed: true })), false);
   assert.equal(isAcceptedHidden(row({ lastStopReason: "private" })), false);
 });
+
+test("a wave of hidden owner watches is one Watchlist risk while each stays green (11-16, 676 public accounts read hidden)", () => {
+  const rows = [row({ target: "a" }), ...Array.from({ length: 101 }, (_, i) => row({ target: `h${i}`, lastStopReason: "hidden" }))];
+  const { metrics, risks } = owner(rows);
+  assert.equal(metrics.owner_green_pct, 100);
+  assert.equal(metrics.watchlist_risks, 1);
+  assert.match(risks, /1 hidden wave \(101 owner watches read hidden/);
+});
