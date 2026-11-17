@@ -1,13 +1,13 @@
 """The Box tools parity duty's probe: one host's side of each tool row in box-parity.rows.json, printed as one JSON object.
 
 The precheck (box-parity.ts) runs this file on the box and, over one `ssh mac`, on the owner's MacBook Pro. On the Mac it only reads: file
-and folder presence, hashes, JSON keys, localhost ports, one `launchctl list`, and a CLI version from its install path (Homebrew Cellar,
+and folder presence, hashes, JSON keys, localhost ports, one `launchctl list`, `aside account status`, and a CLI version from its install path (Homebrew Cellar,
 npm package.json); a CLI whose path carries no version is run with `--version` once and cached by its path and mtime.
 On the box it also makes the real calls: logins, kernel imports and MCP initialize plus tools/list. Python 3.9 stdlib, because ssh on the
 Mac starts /usr/bin/python3.
 Usage: python3 box-parity-probe.py <base64 of {"host": "mac"|"box", "rows": [...], "known": {cli: version read}}>
 A value is "ok", "absent", "fail: <why>", "v:<version>", "=<output>", "sha:<hex>", "blobs:<json list>", "set:<json list>"
-or "synced:<json of the box's entries and the shared state's>".
+"synced:<json of the box's entries and the shared state's>" or "pruned:<json of the box's entries and the names its repo deleted>".
 """
 import base64, configparser, glob, hashlib, json, os, re, select, socket, subprocess, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor
@@ -18,7 +18,7 @@ REPO = HOME + "/Documents/Github/auto-sns-agent"
 # 80 cores (10-19 at 20:59Z), and at 20:06Z a `cli vercel` call ran past the 25 s limit this replaced. A call that hangs still fails.
 TIMEOUT_S = 60
 VERSION = re.compile(r"\d+(?:\.\d+)+[a-z]?")
-READS = {"const", "path", "which", "glob", "ls", "keys", "sha", "port", "launchd", "version", "distinfo", "gitconfig", "ini", "tip", "blob"}
+READS = {"const", "path", "which", "glob", "ls", "keys", "sha", "port", "launchd", "version", "distinfo", "gitconfig", "ini", "tip", "blob", "aside"}
 
 
 def nvm_bin():
@@ -89,6 +89,39 @@ def entries(pattern, regex=None):
     if not folders or not os.path.isdir(folders[0]):
         return "absent"
     return names(n for n in os.listdir(folders[0]) if (re.search(regex, n) if regex else not n.startswith(".")))
+
+
+def pruned(listing, spec):
+    """A box folder listing of entries a repo provides, as "pruned:<json>": the entries, and the names the repo's `ref` deleted from `folders`
+    and does not hold now. The Mac links its skills into a sieun-pi runtime release, which can lag origin/main: on 11-18 the Mac still linked
+    spec-report from release 6da1fff2 after 2801a053 deleted skills/spec-report, so such a Mac entry is the Mac being behind, not a box gap."""
+    if not listing.startswith("set:"):
+        return listing
+    repo, ref, folders = expand(spec["repo"]), spec.get("ref", "origin/main"), spec["folders"]
+    done = subprocess.run(["git", "-C", repo, "log", ref, "--diff-filter=D", "--no-renames", "--name-only", "--format=", "--"] + folders,
+                          capture_output=True, text=True, timeout=TIMEOUT_S, env=ENV)
+    now = subprocess.run(["git", "-C", repo, "ls-tree", "-d", "--name-only", ref, "--"] + [folder + "/" for folder in folders],
+                         capture_output=True, text=True, timeout=TIMEOUT_S, env=ENV)
+    if done.returncode != 0 or now.returncode != 0:
+        return "fail: git %s: %s" % (ref, brief(done.stderr or now.stderr))
+    def first(path):
+        for folder in folders:
+            rest = path[len(folder) + 1:] if path.startswith(folder + "/") else ""
+            if "/" in rest:
+                return rest.split("/")[0]
+        return None
+    held = set(os.path.basename(path) for path in now.stdout.splitlines())
+    gone = set(first(path) for path in done.stdout.splitlines() if path.strip()) - held - {None}
+    return "pruned:" + json.dumps({"have": json.loads(listing[4:]), "gone": sorted(gone)})
+
+
+def aside_status():
+    """`aside account status`, which only reads: "ok" when the host's Aside Browser answers. On the box `aside` is aside-remote, which runs
+    the Mac's CLI over ssh, so a Mac whose Aside app is not running fails on both hosts, as it did after the Mac's reboot on 11-18."""
+    done, text = run(["aside", "account", "status"])
+    if done is None:
+        return text
+    return "ok" if done.returncode == 0 else "fail: exit %d: %s" % (done.returncode, brief(text))
 
 
 def distinfo(pattern):
@@ -429,7 +462,7 @@ def blobs(path, host):
 
 
 def probe(spec, host):
-    kind = next(k for k in spec if k not in ("expect", "cwd", "pattern", "at", "depth", "key", "names", "atTip", "intended", "shared", "follow", "synced"))
+    kind = next(k for k in spec if k not in ("expect", "cwd", "pattern", "at", "depth", "key", "names", "atTip", "intended", "shared", "follow", "synced", "gone"))
     if host == "mac" and kind not in READS:
         return "fail: %s is not a read, so the Mac side never runs it" % kind
     if kind == "const":
@@ -449,7 +482,10 @@ def probe(spec, host):
             return names(at_tip(paths, host) if spec.get("atTip") else paths)
         return "ok" if found else "absent"
     if kind == "ls":
-        return entries(spec["ls"], spec.get("pattern"))
+        listing = entries(spec["ls"], spec.get("pattern"))
+        return pruned(listing, spec["gone"]) if host == "box" and spec.get("gone") else listing
+    if kind == "aside":
+        return aside_status()
     if kind == "keys":
         return keys(spec["keys"], spec.get("at"), spec.get("depth", 1), spec.get("synced"))
     if kind == "sha":

@@ -268,7 +268,7 @@
     "const": "ok"
    },
    {
-    "const": "ok"
+    "aside": "account status"
    }
   ],
   "box": [
@@ -280,11 +280,7 @@
     ]
    },
    {
-    "run": [
-     "aside",
-     "account",
-     "status"
-    ]
+    "aside": "account status"
    }
   ]
  },
@@ -479,7 +475,15 @@
   "tool": "settings.json skills list",
   "probes": [
    {
-    "ls": "~/.prime/agent/skills"
+    "ls": "~/.prime/agent/skills",
+    "gone": {
+     "repo": "~/src/sieun-pi",
+     "ref": "origin/main",
+     "folders": [
+      "skills",
+      "legacy/prime/skills"
+     ]
+    }
    }
   ]
  },
@@ -898,7 +902,7 @@
     ]
    },
    {
-    "const": "ok"
+    "aside": "account status"
    }
   ],
   "box": [
@@ -909,11 +913,7 @@
     ]
    },
    {
-    "run": [
-     "aside",
-     "account",
-     "status"
-    ]
+    "aside": "account status"
    }
   ]
  },
@@ -2309,7 +2309,7 @@
   "tool": "tools-panel check aside_tabs",
   "mac": [
    {
-    "const": "ok"
+    "aside": "account status"
    }
   ],
   "box": [
@@ -2323,7 +2323,7 @@
   "tool": "tools-panel check aside_account",
   "mac": [
    {
-    "const": "ok"
+    "aside": "account status"
    }
   ],
   "box": [

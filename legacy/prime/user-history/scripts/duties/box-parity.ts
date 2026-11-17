@@ -15,7 +15,9 @@ import { CHECKS, type Outcome, realDeps, runChecks } from "./skills-and-tools.ts
  *   what the Mac has: a file, folder entry, config hash, CLI version, port, service, or a real call that fails on the box. box-parity-probe.py reads
  *   both sides, the Mac over one `ssh mac` that only reads (see the probe's docstring). The Mac is the standard, so a Mac value that is absent or
  *   failing asks nothing of the box, a set on the box may hold more than the Mac's, and a CLI version on the box may be newer. The global
- *   harness entries count only a Mac entry the shared state still holds, so a deletion the Mac has not synced yet is no box gap (syncedShortfall). A probe with `intended` (Poppler), a row with `byDesign`
+ *   harness entries count only a Mac entry the shared state still holds, so a deletion the Mac has not synced yet is no box gap (syncedShortfall), and the
+ *   skills folder skips a Mac entry sieun-pi's origin/main deleted (prunedShortfall), listed as `mac_stale`. The Aside rows read `aside account status` on the
+ *   Mac too, so a Mac whose Aside app is down asks nothing of the box, whose `aside` runs the Mac's CLI over ssh. A probe with `intended` (Poppler), a row with `byDesign`
  *   and a Mac commit the Mac never pushed to origin (`mac_unpushed`) are listed and never counted. Rows with a `panel` probe run that Skills and tools check (skills-and-tools.ts) here, without its fixes; a fail
  *   whose detail the probe's `shared` regex matches comes from a service both hosts use, such as Google on Virev or an account in the box's
  *   pi-pool, which the Mac reads through ~/.config/pi-pool/remote.json, so it is no box gap.
@@ -51,7 +53,7 @@ export type Probe = Record<string, unknown>;
 export interface Row { id: string; tool: string; probes?: Probe[]; mac?: Probe[]; box?: Probe[]; note?: string; byDesign?: string }
 export interface ProbeOutput { host: "mac" | "box"; values: Record<string, string[]>; versions: Record<string, unknown>; ms: number }
 export interface RowVerdict { row: Row; why: string }
-export interface RowsResult { off: RowVerdict[]; byDesign: RowVerdict[]; intended: RowVerdict[]; unpushed: RowVerdict[]; matched: number }
+export interface RowsResult { off: RowVerdict[]; byDesign: RowVerdict[]; intended: RowVerdict[]; unpushed: RowVerdict[]; stale: RowVerdict[]; matched: number }
 
 const setOf = (value: string): string[] | undefined => value.startsWith("set:") ? JSON.parse(value.slice(4)) as string[] : undefined;
 const failing = (value: string | undefined): boolean => value === undefined || value === "absent" || value.startsWith("fail");
@@ -67,6 +69,7 @@ export function shortfall(mac: string | undefined, box: string | undefined): str
   if (mac!.startsWith("blobs:")) return blobShortfall(mac!, box);
   const macSet = setOf(mac!);
   if (macSet && box.startsWith("synced:")) return syncedShortfall(macSet, box);
+  if (macSet && box.startsWith("pruned:")) return prunedShortfall(macSet, box);
   if (macSet) {
     const boxSet = setOf(box);
     if (!boxSet) return `Mac has ${macSet.length} entries, box ${box.slice(0, 120)}`;
@@ -89,6 +92,30 @@ export function syncedShortfall(macSet: readonly string[], box: string): string 
   const sharedHas = new Set(shared);
   const missing = macSet.filter(entry => !boxHas.has(entry) && sharedHas.has(entry));
   return missing.length ? `box lacks ${missing.length} of the Mac's ${macSet.length} that the shared state holds: ${listed(missing)}` : null;
+}
+
+interface Pruned { have: string[]; gone: string[] }
+const prunedParts = (macSet: readonly string[], box: string) => {
+  const { have, gone } = JSON.parse(box.slice(7)) as Pruned;
+  const absent = macSet.filter(entry => !have.includes(entry));
+  return { missing: absent.filter(entry => !gone.includes(entry)), stale: absent.filter(entry => gone.includes(entry)) };
+};
+
+/**
+ * The entries the box lacks, from a box `pruned:` value: a Mac entry the box's repo deleted at its ref and holds no longer is no box gap. The Mac
+ * links its skills into a runtime release that can lag sieun-pi's origin/main, and on 11-18 it still linked spec-report, which 2801a053 deleted.
+ */
+export function prunedShortfall(macSet: readonly string[], box: string): string | null {
+  const { missing } = prunedParts(macSet, box);
+  return missing.length ? `box lacks ${missing.length} of the Mac's ${macSet.length}: ${listed(missing)}` : null;
+}
+
+/** The Mac entries its repo has deleted since, for a `mac_stale` item that names them and counts toward no metric. */
+export function staleNote(mac: string | undefined, box: string | undefined): string | null {
+  const macSet = mac === undefined ? undefined : setOf(mac);
+  if (!macSet || !box?.startsWith("pruned:")) return null;
+  const { stale } = prunedParts(macSet, box);
+  return stale.length ? `the Mac still has entries its repo's ref deleted, so its copy is behind: ${listed(stale)}` : null;
 }
 
 /**
@@ -159,7 +186,7 @@ const probesOf = (row: Row, host: "mac" | "box"): Probe[] => row[host] ?? row.pr
 
 /** Each row's verdict from both hosts' probe values and the box's Skills and tools outcomes. */
 export function judgeRows(rows: readonly Row[], mac: ProbeOutput, box: ProbeOutput, panel: ReadonlyMap<string, Outcome>): RowsResult {
-  const result: RowsResult = { off: [], byDesign: [], intended: [], unpushed: [], matched: 0 };
+  const result: RowsResult = { off: [], byDesign: [], intended: [], unpushed: [], stale: [], matched: 0 };
   for (const row of rows) {
     const boxProbes = probesOf(row, "box");
     const macValues = mac.values[row.id] ?? [];
@@ -169,6 +196,8 @@ export function judgeRows(rows: readonly Row[], mac: ProbeOutput, box: ProbeOutp
     probesOf(row, "mac").forEach((_, index) => {
       const unpushed = unpushedNote(macValues[index], boxValues[index]);
       if (unpushed) result.unpushed.push({ row, why: unpushed });
+      const stale = staleNote(macValues[index], boxValues[index]);
+      if (stale) result.stale.push({ row, why: stale });
       const why = shortfall(macValues[index], boxValues[index]);
       if (!why) return;
       const reason = boxProbes[index]?.intended;
@@ -555,6 +584,7 @@ export async function measure(rows: readonly Row[], known: Record<string, unknow
     for (const { row, why } of result.intended) flagged.push({ at, kind: "intended", item: row.id, excerpt: `${row.tool}: ${why}`.slice(0, 600) });
     for (const { row, why } of result.byDesign) flagged.push({ at, kind: "by_design", item: row.id, excerpt: `${row.tool}: ${why}`.slice(0, 600) });
     for (const { row, why } of result.unpushed) flagged.push({ at, kind: "mac_unpushed", item: row.id, excerpt: `${row.tool}: ${why}`.slice(0, 600) });
+    for (const { row, why } of result.stale) flagged.push({ at, kind: "mac_stale", item: row.id, excerpt: `${row.tool}: ${why}`.slice(0, 600) });
     flagged.push({ at, kind: "rows", excerpt: `${result.matched} of ${rows.length} rows match; the Mac read took ${mac.ms} ms and the box probe ${box.ms} ms` });
   }
 

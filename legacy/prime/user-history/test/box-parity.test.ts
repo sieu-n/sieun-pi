@@ -547,3 +547,56 @@ test("the box reads the checkout tip row only after the Mac read settles, so a c
   assert.deepEqual(failed.values.tip, ["read tip"], "a failed Mac read still lets the tip row read");
   assert.match(shortfall('commits:[["aaaaaaaaaa","",[],true]]', "fail: git fetch: could not read from remote")!, /box fail: git fetch/);
 });
+
+const PROBE = join(import.meta.dirname, "../scripts/duties/box-parity-probe.py");
+const realRows = () => JSON.parse(readFileSync(join(import.meta.dirname, "../scripts/duties/box-parity.rows.json"), "utf8")) as Row[];
+const runProbe = (host: "mac" | "box", rows: readonly Row[], home: string): ProbeOutput => {
+  const arg = Buffer.from(JSON.stringify({ host, rows, known: {} })).toString("base64");
+  return JSON.parse(execFileSync("python3", [PROBE, arg], { env: { ...process.env, HOME: home }, encoding: "utf8" })) as ProbeOutput;
+};
+
+test("the Aside rows read aside account status on the Mac, so a Mac whose Aside app is down asks nothing of the box", () => {
+  const ids = ["skill-aside-browser-python", "cli-aside", "tools-panel-check-aside-tabs", "tools-panel-check-aside-account"];
+  const rows = realRows().filter(row => ids.includes(row.id));
+  assert.equal(rows.length, 4);
+  const home = mkdtempSync(join(tmpdir(), "box-parity-aside-"));
+  mkdirSync(join(home, ".local/bin"), { recursive: true });
+  const down = "Failed to request daemon auth challenge: fetch failed Aside isn't running on this machine.";
+  const macWith = (code: number) => {
+    writeFileSync(join(home, ".local/bin/aside"), `#!/bin/sh\n[ "$1" = --version ] && { echo 1.26.1015.732; exit 0; }\necho "${code ? down : "signed in"}"\nexit ${code}\n`, { mode: 0o755 });
+    return runProbe("mac", rows, home);
+  };
+  const fail = `fail: exit 1: ${down}`;
+  const box = output("box", { "skill-aside-browser-python": ["ok", fail], "cli-aside": ["v:1.26.1015.732", fail],
+    "tools-panel-check-aside-tabs": ["panel"], "tools-panel-check-aside-account": ["panel"] });
+  const panel = new Map([["aside_tabs", { status: "fail" as const, fixer: "agent" as const, detail: `repl gave ${down}`, fix: "start Aside" }],
+    ["aside_account", { status: "fail" as const, fixer: "agent" as const, detail: `aside account status: exit 1: ${down}`, fix: "start Aside" }]]);
+  const macDown = macWith(1);
+  assert.equal(macDown.values["cli-aside"]![1], fail);
+  assert.deepEqual(judgeRows(rows, macDown, box, panel).off, []);
+  assert.deepEqual(judgeRows(rows, macWith(0), box, panel).off.map(verdict => verdict.row.id).sort(), [...ids].sort());
+});
+
+test("the skills folder row skips a Mac skill sieun-pi's origin/main deleted, lists it as mac_stale, and still counts one it never had", () => {
+  const home = mkdtempSync(join(tmpdir(), "box-parity-skills-"));
+  const repo = join(home, "src/sieun-pi");
+  const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env });
+  for (const skill of ["skills/keep", "skills/spec-report", "legacy/prime/skills/skills"]) {
+    mkdirSync(join(repo, skill), { recursive: true });
+    writeFileSync(join(repo, skill, "SKILL.md"), skill);
+  }
+  git("init", "-q");
+  git("add", ".");
+  git("commit", "-q", "-m", "skills");
+  git("rm", "-q", "-r", "skills/spec-report");
+  git("commit", "-q", "-m", "delete spec-report");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  for (const name of ["keep", "skills"]) mkdirSync(join(home, ".prime/agent/skills", name), { recursive: true });
+  const row = realRows().find(entry => entry.id === "settings-json-skills-list")!;
+  const box = runProbe("box", [row], home);
+  const mac = output("mac", { [row.id]: ['set:["keep","mac-only","skills","spec-report"]'] });
+  const result = judgeRows([row], mac, box, new Map());
+  assert.equal(result.off[0]?.why, "box lacks 1 of the Mac's 4: mac-only");
+  assert.match(result.stale[0]!.why, /entries its repo's ref deleted, so its copy is behind: spec-report$/);
+});
