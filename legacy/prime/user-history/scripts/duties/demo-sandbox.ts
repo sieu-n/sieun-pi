@@ -268,20 +268,23 @@ export function editsBefore(outLog: string, at: number, zone: string): number {
   return count;
 }
 
+/** vite's own exit lines before a restart it asks pm2 for: a config edit, and a PIN move that a fresh server must materialize (4 of 4 on 11-17). */
+const PLANNED_EXIT_LINES = ["config changed, exiting so pm2 starts a fresh dev server", "PIN changed, exiting so pm2 starts a fresh dev server"];
+
 export type ExitKind = "guard" | "command" | "config" | "crash";
 export interface Exit { at: number; code: number; kind: ExitKind }
 export interface RestartEvent { at: number; exits: Exit[]; kinds: ExitKind[] }
 /**
  * The dev server's exits over the last 24 h from pm2.log (`App [virev-demo:4] exited with code [97] via signal [SIGINT]`; pm2 starts it again
  * after each). Code 97 is a dev-guard memory kill (scripts/dev/dev-guard.mjs); a `Stopping app:virev-demo` up to 15 s before is a pm2 restart by
- * hand; a code 0 exit with vite's `config changed, exiting so pm2 starts a fresh dev server` in the out log up to 5 s before is a config edit
+ * hand; a code 0 exit with vite's `config changed` or `PIN changed, exiting so pm2 starts a fresh dev server` in the out log up to 5 s before is a config edit
  * (outLog undefined: unknown, so it counts); anything else is a crash. Restarts are the unplanned exits (guard and crash) grouped into events,
  * so the crash loop of 10-15 04:26 KST (about 30 exits with code 2 in 40 s, materialize refusing hand edits) counts once. Hand restarts and
  * config edits are planned and come back in `planned`.
  */
 export function restarts(pm2Log: string, outLog: string | undefined, now: number, zone: string): { events: RestartEvent[]; config: Exit[]; planned: Exit[] } {
   const stops = recentLines(pm2Log, now, zone, line => line.includes(`Stopping app:${PM2_NAME} `)).map(entry => entry.at);
-  const configs = outLog === undefined ? [] : recentLines(outLog, now, zone, line => line.includes("config changed, exiting so pm2 starts a fresh dev server")).map(entry => entry.at);
+  const configs = outLog === undefined ? [] : recentLines(outLog, now, zone, line => PLANNED_EXIT_LINES.some(text => line.includes(text))).map(entry => entry.at);
   const exits: Exit[] = recentLines(pm2Log, now, zone, line => line.includes(`App [${PM2_NAME}:`) && line.includes("] exited with code [")).map(({ at, line }) => {
     const code = Number(/exited with code \[(-?\d+)\]/.exec(line)?.[1] ?? NaN);
     const kind: ExitKind = code === 97 ? "guard"

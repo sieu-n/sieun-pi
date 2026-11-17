@@ -30,3 +30,11 @@ test("a crash and a dev-guard memory kill still count", () => {
   assert.deepEqual(events.map(event => [iso(event.at), event.kinds.join()]), [["2026-10-19T09:00:00Z", "crash"], ["2026-10-19T10:00:00Z", "guard"]]);
   assert.equal(planned.length, 3);
 });
+
+test("a PIN move restart that vite asks for is planned, as on 11-17", () => {
+  const log = "2026-10-19T10:58:43: PM2 log: App [virev-demo:3] exited with code [0] via signal [SIGINT]";
+  const out = "2026-10-19T10:58:43: 10:58:43 AM [vite] PIN changed, exiting so pm2 starts a fresh dev server that materializes it";
+  const { events, config } = restarts(log, out, RUN_AT, "Etc/UTC");
+  assert.equal(events.length, 0);
+  assert.equal(config.length, 1);
+});
