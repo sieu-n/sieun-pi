@@ -230,7 +230,10 @@ interface HandOff { items: FlaggedSlice[]; detail: string }
 interface Handed { job: string; keys: string[] }
 /** An item is handed again once its `sig` changes: a wiki page a writer checked and that a later commit put behind again is new work. */
 const handOffKey = (slice: FlaggedSlice): string => `${slice.kind}|${slice.item ?? slice.excerpt}${slice.sig === undefined ? "" : `|${slice.sig}`}`;
-/** The `keys` no item of `items` replaces: one with the same kind and item and another `sig`, which a later commit put behind again. */
+/**
+ * The `keys` no item of `items` replaces: one with the same kind and item and another `sig`. A wiki page's sig is its check time, so a key
+ * whose page a writer checked since and a later commit put behind again is finished, and the new staleness is the duty job's work.
+ */
 const stillTaken = (keys: readonly string[], items: readonly FlaggedSlice[]): string[] => keys.filter(key => !items.some(slice => {
   const base = `${slice.kind}|${slice.item ?? slice.excerpt}`;
   return key !== handOffKey(slice) && (key === base || key.startsWith(`${base}|`));
@@ -1332,6 +1335,7 @@ export class Duties {
     const previous = await this.previous(chatId, dutyId, schedule, slot);
     if (previous === null) return previous;
     if ("skipped" in previous) {
+      if (handOff && dutyId !== CHECK_IN_DUTY_ID) await this.dropFinishedTaken(chatId, dutyId, handOff.items);
       const plural = (count: number) => `${count} new flagged item${count === 1 ? "" : "s"}`;
       const asked = previous.held && handOff && dutyId !== CHECK_IN_DUTY_ID ? await this.handToMakers(chatId, dutyId, previous.held, handOff, brief.duty.name, at) : 0;
       const skipped = asked ? `${previous.skipped}; asked the sessions that made them to fix ${asked} item${asked === 1 ? "" : "s"}` : previous.skipped;
@@ -1403,12 +1407,9 @@ export class Duties {
     if (!steer) return 0;
     const taken = await this.chatTaken(chatId, dutyId);
     const mine = { ...handOff, items: handOff.items.filter(slice => !taken.includes(handOffKey(slice))) };
-    const handed = await this.handNew(chatId, dutyId, job, mine, fresh => steer(job, [`The ${dutyName} run of ${new Date(at).toISOString().slice(0, 16)}Z found ` +
+    return await this.handNew(chatId, dutyId, job, mine, fresh => steer(job, [`The ${dutyName} run of ${new Date(at).toISOString().slice(0, 16)}Z found ` +
       `${fresh.length} flagged item${fresh.length === 1 ? "" : "s"} that your brief and earlier runs did not name. Work them like your brief's items ` +
       `before you end. The run's findings are in ${handOff.detail}.`, ...fresh.map(itemLine)].join("\n")), job.name);
-    // A page the chat took and a later commit put behind again is the job's now, so the job's check of the list no longer skips it.
-    if (handed) await this.writeChatTaken(chatId, dutyId, stillTaken(taken, mine.items));
-    return handed;
   }
 
   /**
@@ -1446,7 +1447,7 @@ export class Duties {
     if (!fresh.length) return 0;
     try { await send(fresh); }
     catch (error) { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: hand the chat ${fresh.length} items: ${message(error)}`); return 0; }
-    await this.writeChatTaken(chatId, dutyId, [...stillTaken(known, fresh), ...fresh.map(handOffKey)]);
+    await this.writeChatTaken(chatId, dutyId, [...known, ...fresh.map(handOffKey)]);
     this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: handed the chat ${fresh.length} new flagged items`);
     return fresh.length;
   }
@@ -1462,6 +1463,17 @@ export class Duties {
   private async chatTaken(chatId: string, dutyId: string): Promise<string[]> {
     const stored = await readFile(this.chatHandedFile(chatId, dutyId), "utf8").then(text => JSON.parse(text) as unknown, () => null);
     return (Array.isArray(stored) ? stored : []).filter((key): key is string => typeof key === "string");
+  }
+
+  /**
+   * Drops from `<dutyId>.chat-handed.json` each key a run's item replaces (`stillTaken`), on every run beside the duty's job, whether or not
+   * the run hands anything. On 11-17 the key of apps/search/campaigns/settle.html checked at 06:21Z stayed after the chat's writer checked the
+   * page at 11:13Z and funnelSettle.ts put it behind again at 11:19Z, and the 16:37 dream job skipped the new staleness as the chat's.
+   */
+  private async dropFinishedTaken(chatId: string, dutyId: string, items: readonly FlaggedSlice[]): Promise<void> {
+    const taken = await this.chatTaken(chatId, dutyId);
+    const kept = stillTaken(taken, items);
+    if (kept.length < taken.length) await this.writeChatTaken(chatId, dutyId, kept);
   }
 
   private async writeChatTaken(chatId: string, dutyId: string, keys: readonly string[]): Promise<void> {

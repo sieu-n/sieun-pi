@@ -80,12 +80,13 @@ async function rig() {
   return { dir, store, rows, schedules, briefs, steered, told, run, transcript, close: async () => { duties.close(); await rm(dir, { recursive: true, force: true }); } };
 }
 
-/** What a job does with its brief's line: the items it was handed, less each one whose kind and item open a key in the file the brief names. */
+/** What a job does with its brief's line: the items it was handed, less each one whose whole key is in the file the brief names. */
 async function workList(brief: string, handed: readonly FlaggedSlice[]): Promise<string[]> {
   const file = /read (\S+chat-handed\.json) if it exists/.exec(brief)?.[1];
   assert.ok(file, "the brief names the list of items the chat took");
+  assert.ok(brief.includes("skip each flagged item whose `kind|item|sig` key equals a key there"), "the brief skips only the exact key");
   const taken: string[] = await readFile(file, "utf8").then(text => JSON.parse(text) as string[], () => []);
-  return handed.filter(slice => !taken.some(entry => entry.startsWith(`${slice.kind}|${slice.item}|`) || entry === `${slice.kind}|${slice.item}`)).map(slice => slice.item!);
+  return handed.filter(slice => !taken.includes(key(slice))).map(slice => slice.item!);
 }
 
 test("a dream job that gets its slot after the chat took 2 of its pages works only the rest (11-10 00:30Z and 01:19Z)", async () => {
@@ -133,5 +134,26 @@ test("a new job of the duty starts with an empty list of pages the chat took", a
     await writeFile(join(r.store.chatDir(CHAT), "d4.chat-handed.json"), JSON.stringify([key(A)]));
     await r.run(0, [A, B]);
     assert.deepEqual(await workList(r.briefs[0]!, [A, B]), [A.item, B.item]);
+  } finally { await r.close(); }
+});
+
+// 11-17: the chat's writer checked apps/search/campaigns/settle.html at 11:13Z, funnelSettle.ts put it behind again at 11:19Z, and the
+// 16:37 dream job skipped it because d4.chat-handed.json still held the key of its 06:21Z check.
+test("a page the chat fixed that falls behind again is the dream job's, and its old key leaves the list (11-17 settle.html)", async () => {
+  const r = await rig();
+  try {
+    const settle = (sig: string, maker?: boolean): FlaggedSlice => ({ ...page("apps/search/campaigns/settle.html", maker), sig });
+    const first = await r.run(0, [A]);
+    const job = first.job!;
+    await writeFile(r.transcript(job), [reply(iso(1)), slotWait(iso(2), iso(600))].join("\n") + "\n");
+    await r.run(100, [A, settle("2026-11-17T06:21:59.999Z")]);
+    assert.ok(r.told.at(-1)!.includes("settle.html"), "the parked job's page reaches the chat");
+    const file = join(r.store.chatDir(CHAT), "d4.chat-handed.json");
+    assert.ok((JSON.parse(await readFile(file, "utf8")) as string[]).includes(key(settle("2026-11-17T06:21:59.999Z"))));
+    const again = settle("2026-11-17T11:13:59.999Z", true);
+    await r.run(200, [A, again]);
+    assert.deepEqual((JSON.parse(await readFile(file, "utf8")) as string[]).filter(entry => entry.includes("settle.html")), [],
+      "the key of the 06:21Z check leaves once the page's check time moved");
+    assert.deepEqual(await workList(r.briefs[0]!, [A, again]), [again.item]);
   } finally { await r.close(); }
 });

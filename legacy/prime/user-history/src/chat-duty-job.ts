@@ -305,12 +305,16 @@ export function partLines(duty: Pick<DutyCard, "metrics">, parts: Readonly<Recor
 /**
  * The brief line that keeps each flagged item with one owner: a run that finds the job parked hands the chat the items no session works, and
  * the job, which may get its slot later, skips them. On 11-10 the 09:14 dream job worked again from 01:19Z and started writers at 01:25Z for
- * the pages the chat's "wiki stale pages 0929" subagent had taken at 00:30Z.
+ * the pages the chat's "wiki stale pages 0929" subagent had taken at 00:30Z. The job matches the whole key: on 11-17 the 16:37 dream job
+ * matched kind and item alone and skipped apps/search/campaigns/settle.html, which fell behind again at 11:19Z after the chat's writer had
+ * checked it at 11:13Z, so the key of its 06:21Z check kept the new staleness from everyone.
  */
 const takenLine = (file: string): string =>
   `Right before you start work on a flagged item, whether from this brief, a later message or a precheck you rerun, read ${file} if it exists. ` +
   "It lists the items the server handed the chat while you took no message, such as while pi-pool parked you, as `kind|item|sig` keys. The " +
-  "chat's own subagents own those items, so skip each flagged item whose kind and item open a key there, and name the skipped items in your report.";
+  "chat's own subagents own those items, so skip each flagged item whose `kind|item|sig` key equals a key there, and name the skipped items " +
+  "in your report. A wiki page's sig is its check time, so a key with an older sig is a staleness the chat already fixed, and the page's new " +
+  "staleness is yours.";
 
 /**
  * The duty job's brief (owner 10-09: "every (n min/h/day) -> code precheck -> run job with that context to 'fix issues, check what duty
