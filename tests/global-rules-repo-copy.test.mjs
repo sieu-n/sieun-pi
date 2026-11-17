@@ -85,6 +85,17 @@ test("the kernel half refuses a worktree add whose command the cell builds at ru
   assert.deepEqual(sendCheck.judgeCheck({ kind: "shell", text: "git worktree list", cwd: root }), { block: false });
 });
 
+test("a clone of a bare repo passes, since it has no working tree to copy, and a clone of its checkout is still refused", () => {
+  const bare = join(root, "fixture.git");
+  execFileSync("git", ["init", "-q", "--bare", bare]);
+  const checkout = join(root, "fixture-seed");
+  execFileSync("git", ["init", "-q", checkout]);
+  assert.deepEqual(sendCheck.judgeCheck({ kind: "shell", text: `git clone -q ${bare} ${join(root, "seed")}`, cwd: root }), { block: false });
+  assert.deepEqual(sendCheck.judgeCheck({ kind: "shell", text: `git clone file://${bare} seed2`, cwd: root }), { block: false });
+  assert.equal(sendCheck.judgeCheck({ kind: "shell", text: `git clone ${join(checkout, ".git")} copy`, cwd: root }).block, true);
+  assert.equal(sendCheck.judgeCheck({ kind: "shell", text: `git clone ${checkout} copy`, cwd: root }).block, true);
+});
+
 // At 12:04Z on 10-30 a slack green guy job that the guard refused a new worktree ran `pnpm install` in an old one, and its tree held 6.6 GB.
 test("an install, build, dev server, type check or test inside an existing worktree or renamed clone is refused", () => {
   const repo = join(root, "Github", "slack-green");

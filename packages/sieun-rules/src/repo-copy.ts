@@ -285,6 +285,18 @@ const CLONE_VALUE = new Set(["-o", "--origin", "-b", "--branch", "-u", "--upload
 const localSource = (source: string): boolean =>
 	source.startsWith("file://") || (!/^[\w+.-]+:\/\//.test(source) && !/^[^/]*:/.test(source));
 
+/**
+ * A bare repository has no working tree to copy, so a clone of it is a clone from a remote, which passes. tests/test_prime_sync.py clones the
+ * bare repos it makes in its temp folder, and on 11-15 and 11-17 the guard refused that suite in two sessions.
+ */
+function bareRepo(path: string): boolean {
+	try {
+		return /^\s*bare\s*=\s*true\s*$/im.test(readFileSync(join(path, "config"), "utf8"));
+	} catch {
+		return false;
+	}
+}
+
 function judge(text: string, depth: number, out: Verdict[], start?: string): void {
 	if (depth > 6) return;
 	const { commands, nested } = lex(stripHeredocs(text));
@@ -316,7 +328,8 @@ function judge(text: string, depth: number, out: Verdict[], start?: string): voi
 					if (rest[k].startsWith("-")) { if (CLONE_VALUE.has(rest[k])) k++; continue; }
 					words.push(rest[k]);
 				}
-				if (words[0] && localSource(words[0])) push(eff, "clones a checkout on this host");
+				if (words[0] && localSource(words[0]) && !bareRepo(at(cwd ?? process.cwd(), words[0].replace(/^file:\/\//, ""))))
+					push(eff, "clones a checkout on this host");
 			} else if (sub === "archive" && (rest.some((a) => a === "-o" || a.startsWith("--output")) || /^(?:tar|bsdtar|gtar)$/.test(basename(effective(commands[c + 1] ?? [])[0] ?? ""))))
 				push(eff, "exports the tree into a copy");
 			continue;
