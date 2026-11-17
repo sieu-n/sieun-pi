@@ -1,7 +1,7 @@
 // 10-28 us-metal02: ~/scratch/mac-run held 56 per-job repo copies of Mac jobs that no owner record names, 43 of them links into the attic, and
 // the kernel's guard refused every job's rm of them, since no session family owns them (c193 cleanup). `unowned` deletes exactly those.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -77,4 +77,31 @@ test("unowned deletes an idle tree whose hard-linked file has a new ctime and an
   assert.deepEqual(removed, [linked]);
   assert.ok(!existsSync(linked));
   assert.match(kept.get(copied) ?? "", /package\.json changed within the last 2 h/);
+});
+
+// 11-18 Mac: BSD find refused `-newermt @<epoch>` with "Can't parse date/time", the reaper read that as a fresh tree, and it kept
+// ~/scratch/sieun-pi-runtime-8fClKx (258 MB, idle since 19:52Z 11-17) and every other tree. A find failure keeps the tree and says so.
+test("unowned reads idle trees with a find that takes no @<epoch> date, and a failed find keeps its tree as unread, not fresh", { skip: process.platform !== "linux" }, async t => {
+  const home = mkdtempSync(join(tmpdir(), "job-unowned-"));
+  const path = process.env.PATH;
+  t.after(() => { process.env.PATH = path; rmSync(home, { recursive: true, force: true }); });
+  process.env.HOME = home;
+  const { reapUnowned, unownedSource, UNOWNED_IDLE_MS } = await import("../src/job-leftovers.ts");
+  const real = execFileSync("sh", ["-c", "command -v find"], { encoding: "utf8" }).trim();
+  const bin = join(home, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "find"), `#!/bin/sh\nfor a in "$@"; do case "$a" in @*) echo "find: Can't parse date/time: $a" >&2; exit 1;; esac; done\nexec ${real} "$@"\n`, { mode: 0o755 });
+  process.env.PATH = `${bin}:${path}`;
+  const idle = join(home, "scratch", "sieun-pi-runtime-8fClKx");
+  const broken = join(home, "scratch", "sieun-pi-runtime-x");
+  for (const dir of [idle, broken]) write(join(dir, "release", "package.json"));
+  const later = Date.now() + UNOWNED_IDLE_MS + 60_000;
+  const source = { ...unownedSource, mounted: async () => [], records: async () => [] };
+  const first = await reapUnowned(source, [idle], later);
+  assert.deepEqual(first.removed, [idle], first.kept.get(idle));
+  writeFileSync(join(bin, "find"), "#!/bin/sh\necho 'find: boom' >&2\nexit 1\n", { mode: 0o755 });
+  const { removed, kept } = await reapUnowned(source, [broken], later);
+  assert.deepEqual(removed, []);
+  assert.match(kept.get(broken) ?? "", /could not be read whole: find failed: find: boom/);
+  assert.ok(existsSync(join(broken, "release", "package.json")));
 });

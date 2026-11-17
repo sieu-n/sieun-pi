@@ -741,7 +741,7 @@ export interface UnownedSource extends Pick<LeftoverSource, "inside" | "removeTm
   /** Every path an owner record on any box names for this box, with the record's folder; throws when a box's records cannot be read. */
   records: () => Promise<readonly { path: string; owner: string }[]>;
   /**
-   * A file or folder in the tree at `dir` that changed at or after `since` (epoch ms), or `dir` when the tree cannot be read whole; null otherwise.
+   * A file or folder in the tree at `dir` that changed at or after `since` (epoch ms), or null; rejects when the tree cannot be read whole.
    * A path with more than one link counts by its mtime alone, since a link made or removed anywhere moves its ctime: on 10-28 one pnpm-store file
    * linked 47 times across ~/scratch/mac-run kept all 13 idle repo copies there fresh, as each delete of another copy moved the file's ctime.
    */
@@ -775,7 +775,10 @@ export async function reapUnowned(source: UnownedSource, candidates: readonly st
   const real = new Map<string, string>();
   for (const path of paths.filter(path => !kept.has(path))) {
     real.set(path, await realFolder(path));
-    const file = await source.written(real.get(path)!, now - UNOWNED_IDLE_MS);
+    const file = await source.written(real.get(path)!, now - UNOWNED_IDLE_MS).catch((error: unknown) => {
+      kept.set(path, `its tree could not be read whole: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    });
     if (file) kept.set(path, `${file} changed within the last ${UNOWNED_IDLE_MS / 3_600_000} h`);
   }
   const idle = paths.filter(path => !kept.has(path));
@@ -828,20 +831,23 @@ export const unownedSource: UnownedSource = {
     const away = await Promise.all(registry.hosts.filter(host => host.name !== self.name).map(host => hostRecords(host, self.name)));
     return [...local, ...away.flat()];
   },
-  written: (dir, since) => new Promise(resolve => {
-    const at = `@${Math.floor(since / 1000)}`;
-    hostExecFile("find", [dir, "(", "-newermt", at, "-o", "-links", "1", "-newerct", at, ")", "-print", "-quit"], { maxBuffer: 1024 * 1024 }, (error, stdout) => {
-      const found = String(stdout).split("\n")[0]!.trim();
-      resolve(found || (error ? dir : null));
-    });
+  written: (dir, since) => new Promise((resolve, reject) => {
+    // The Mac's BSD find refused the old `@<epoch>` ("Can't parse date/time"), so its reaper kept every tree. Both finds read this form under TZ=UTC.
+    const at = new Date(Math.floor(since / 1000) * 1000).toISOString().slice(0, 19).replace("T", " ");
+    hostExecFile("find", [dir, "(", "-newermt", at, "-o", "-links", "1", "-newerct", at, ")", "-print", "-quit"], { maxBuffer: 1024 * 1024, env: { ...process.env, TZ: "UTC" } },
+      (error, stdout, stderr) => {
+        const found = String(stdout).split("\n")[0]!.trim();
+        if (found || !error) resolve(found || null);
+        else reject(new Error(`find failed: ${String(stderr).trim().slice(0, 300) || error.message}`));
+      });
   }),
   mounted: async dirs => { const running = await runningContainers(); return dirs.filter(dir => mountedIn(running, [dir]).length); },
 };
 
-/** The bytes of the tree at `dir`, as `du -sb` counts them; 0 when du fails. */
+/** The bytes the tree at `dir` takes on disk, from `du -sk`, which the Mac's BSD du has and `-b` is not; 0 when du fails. */
 function treeBytes(dir: string): Promise<number> {
   return new Promise(resolve => {
-    hostExecFile("du", ["-sb", "--", dir], { maxBuffer: 1024 * 1024 }, (_error, stdout) => resolve(Number(String(stdout).split("\t")[0]) || 0));
+    hostExecFile("du", ["-sk", "--", dir], { maxBuffer: 1024 * 1024 }, (_error, stdout) => resolve((Number(String(stdout).split("\t")[0]) || 0) * 1024));
   });
 }
 
