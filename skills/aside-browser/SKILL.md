@@ -183,6 +183,7 @@ On the owner's Mac the same split holds, and the box is us-metal02 (`ASIDE_BROWS
 2. That runner opens `ssh -D` back to the Mac (`ASIDE_BROWSER_LOOPBACK_HOST`, default `mac`) and sends Chrome's requests through it, so `http://localhost:5180`, `http://[::1]:5180` and `http://cc.localhost:5180` load the Mac's own servers with the Mac's uncommitted edits.
 3. The page renders on us-metal02, so it takes no memory in the owner's Aside, and `screenshot()` still writes its PNG on the Mac.
 4. The REPL's `fs` in a box tab is us-metal02's file system, so pass files back through `screenshot()` or the call's output.
+5. A relative path in box code, as in `page.screenshot({path: 'shot.png'})`, lands in `~/work/aside-box/` on us-metal02, so give an absolute path in your workspace for a file you keep.
 
 On 2026-10-29 the Mac read unusable from 14:42Z while agents' Aside tabs held 12 of 25 tabs at 4.22 GB (15:06Z) and 16 of 31 at 5.34 GB (15:21Z), nearly all on `localhost:5180` and `:5174`, and at 16:40Z at least 5 of the agents' local-app tabs had no owner record, so no park, job end or sweep could close them.
 A Mac page load takes longer this way, because each request crosses the ssh tunnel at about 190 ms: on 10-29 the 5174 landing page with 250 resources loaded in 22 s, and staging.virev.ai in 5.7 s.

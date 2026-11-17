@@ -22,6 +22,12 @@ for (const name of fs.readdirSync(TMP)) {
   try { process.kill(pid, 0); } catch (e) { if (e.code === "ESRCH") fs.rmSync(path.join(TMP, name), { recursive: true, force: true }); }
 }
 const profileRoot = fs.mkdtempSync(path.join(TMP, `aside-box-${process.pid}-`));
+// The REPL code's relative paths, as in page.screenshot({ path: "shot.png" }) or fs.writeFileSync("x.cpuprofile"), resolve
+// against this folder. The runner used to keep the skill's own folder as its cwd, and by 11-18 jobs had left 27 screenshots,
+// CPU profiles and websocket dumps there, untracked in the sieun-pi checkout.
+const OUT = path.join(os.homedir(), "work", "aside-box");
+fs.mkdirSync(OUT, { recursive: true });
+process.chdir(OUT);
 process.env.TMPDIR = profileRoot;
 const cleanup = () => fs.rmSync(profileRoot, { recursive: true, force: true });
 pruneShared();
