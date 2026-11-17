@@ -463,19 +463,21 @@ const DEV_BRANCH = String.raw`(?:dev\/[\w-]+|sieun\/dev)`;
 /**
  * The phrases that say a commit has not reached a stage, each with the stage whose land makes the line stale. Staging: not on staging
  * yet, not landed, on neither the staging nor the prod crawler, no staging land holding it ("no staging land had carried it yet", or "staging land
- * 98295cce5b ... did not carry ab983c134d", two forms the 2026-11-17 02:15Z dream run wrote that the rule missed), or a value only a dev branch runs, as in "4,
- * or up to 84 on dev/sieun", whose `value` a dated line on the page states with its sha. Prod: not on main or prod yet, or it reaches
- * prod only with a promote.
+ * 98295cce5b ... did not carry ab983c134d", two forms the 2026-11-17 02:15Z dream run wrote that the rule missed), "neither 07366ca93b nor
+ * 8c1f60df87 had landed on staging" (deploy-stores.html on 2026-11-17), or a value only a dev branch runs, as in "4, or up to 84 on
+ * dev/sieun", whose `value` a dated line on the page states with its sha. Prod: not on main or prod yet, it reaches prod only with a
+ * promote, it waits "until a promote carries" its land, or it "still needs a promote" (douyin/index.html and own-services.html on
+ * 2026-11-17).
  */
 const NOT_LANDED = [
 	{
 		stage: 'staging',
-		re: /\b(?:not (?:yet )?(?:on|in) (?:origin\/)?staging|(?:n't|not) (?:yet )?(?:landed|reached (?:origin\/)?staging)|neither (?:the )?staging|no (?:staging )?land (?:yet )?(?:(?:had|has) )?(?:carried|carries|held|holds)|\bland\b(?:(?!\b(?:main|prod)\b)[^.;]){0,80}?\b(?:did|does) not (?:yet )?(?:carry|hold))\b(?! (?:on|in|to) (?:origin\/)?(?:main|prod))/i,
+		re: /\b(?:not (?:yet )?(?:on|in) (?:origin\/)?staging|(?:n't|not) (?:yet )?(?:landed|reached (?:origin\/)?staging)|neither (?:the )?staging|no (?:staging )?land (?:yet )?(?:(?:had|has) )?(?:carried|carries|held|holds)|\bland\b(?:(?!\b(?:main|prod)\b)[^.;]){0,80}?\b(?:did|does) not (?:yet )?(?:carry|hold)|\bneither\b[^.;]{1,80}?\bnor\b[^.;]{1,80}?\b(?:had|has|have) (?:yet )?(?:landed|reached (?:origin\/)?staging))\b(?! (?:on|in|to) (?:origin\/)?(?:main|prod))/i,
 	},
 	{ stage: 'staging', re: new RegExp(String.raw`\bor (?<value>[^.,;]{1,40}?) on (?<branch>${DEV_BRANCH})\b`, 'i') },
 	{
 		stage: 'prod',
-		re: /\b(?:(?:n't|not) (?:yet )?(?:(?:landed |deployed |promoted )?(?:on|in|to) (?:origin\/)?(?:main|prod)|reached (?:origin\/)?(?:main|prod)|promoted)|reach(?:es)? prod only with (?:a|the next) (?:full )?promote)\b/i,
+		re: /\b(?:(?:n't|not) (?:yet )?(?:(?:landed |deployed |promoted )?(?:on|in|to) (?:origin\/)?(?:main|prod)|reached (?:origin\/)?(?:main|prod)|promoted)|reach(?:es)? prod only with (?:a|the next) (?:full )?promote|until (?:a|the next) promote carries|(?:still )?needs? (?:a|the next) promote)\b/i,
 	},
 ];
 /** The first not-landed phrase in `text`, with its stage. */
@@ -489,6 +491,8 @@ function notLandedPhrase(text) {
 }
 /** Words that make the clause before a not-landed phrase a rule about any commit, as in "refuses a sha whose crawler code is not on staging". */
 const RULE_CLAUSE = /\b(?:whose|if|unless|until|when|whenever|once|before)\b/i;
+/** A phrase about "a commit" or "a code commit" is about any commit, as in "a write that adds a line saying a code commit has not landed". */
+const ANY_COMMIT = /\ba (?:code )?commit(?:\s+(?:has|have|had|is|are|was|were))?\s*$/i;
 /** A restrictive relative clause, as in "every task that has not landed"; one after a comma, as in "73ca23e07f, which had not", is about that commit. */
 const RELATIVE_SUBJECT = /(?:\b(?:that|who)|(?<!,)\s+which)(?:\s+(?:has|have|had|is|are|was|were))?\s*$/i;
 const COMMIT_LINK = /<(?:a|wiki-cite)\b[^>]*?\b(?:href|src)\s*=\s*"[^"]*?github\.com\/[\w.-]+\/[\w.-]+\/commit\/([0-9a-f]{7,40})\b[^>]*>/gi;
@@ -500,6 +504,16 @@ const THE_COMMIT = /^(?:the|that|this|the same) commit\b/i;
 const MARK = (sha) => `\u2063${sha}\u2063`;
 /** Where a clause of a sentence ends: a semicolon, a dash, "but", or a comma before a conjunction, as in ", and the newest land carried". */
 const CLAUSE_BREAK = /;|\s[\u2013\u2014]\s|\s+but\s+|,\s+(?=(?:and|but|or|so|while|whereas|though|although|because|since|when|then)\b)/gi;
+
+/**
+ * The shas the phrase's own clause names after it. They make a `RULE_CLAUSE` phrase a claim about those commits, as in "checked at
+ * 23:25Z, when no staging land carried 4a9b3a985c yet" on jobs-worker-reads.html on 2026-11-17; a rule about any commit names none.
+ */
+function shasAfter(sentence, hit) {
+	const end = hit.index + hit[0].length;
+	const next = [...sentence.text.matchAll(CLAUSE_BREAK)].map((m) => m.index).find((b) => b >= end) ?? sentence.text.length;
+	return [...new Set(sentence.hits.filter((h) => h.at >= end && h.at < next).map((h) => h.sha))];
+}
 
 /**
  * The shas a not-landed phrase is about: its subject, the shas of the last clause before the phrase that names one, or else those after
@@ -551,8 +565,11 @@ export function notLandedLines(html) {
 		if (!phrase) return;
 		const { stage, hit } = phrase;
 		const before = sentence.text.slice(0, hit.index);
-		if (RELATIVE_SUBJECT.test(before) || RULE_CLAUSE.test(before.split(/[,;:(]/).pop())) return;
-		let shas = subjectShas(sentence, hit);
+		if (RELATIVE_SUBJECT.test(before) || ANY_COMMIT.test(before)) return;
+		const after = shasAfter(sentence, hit);
+		const ruled = RULE_CLAUSE.test(before.split(/[,;:(]/).pop());
+		if (ruled && !after.length) return;
+		let shas = ruled ? after : subjectShas(sentence, hit);
 		if (!shas.length && hit.groups?.value) {
 			const { value, branch } = hit.groups;
 			shas = sentences.find((s) => s.shas.length && s.text.includes(value) && s.text.includes(branch))?.shas ?? [];

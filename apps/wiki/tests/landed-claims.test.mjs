@@ -95,6 +95,31 @@ test('a not-landed phrase is about the sha before it in its clause, not one in a
 	);
 });
 
+// 2026-11-17: the stock sweep of the curated pages found four lines a land or promote had made false that notLandedLines missed, on
+// deploy-stores.html, jobs-worker-reads.html, douyin/index.html and own-services.html, and one rule on apps/llm-wiki/index.html it read as
+// a claim about the sieun-pi commit that set the rule.
+test('neither-nor, a dated when clause, a wait for a promote and a needed promote are claims, and a line about any commit is none', () => {
+	const html = [
+		'<ol>',
+		'<li>At 10:26Z on 2026-11-09 neither <code>07366ca93b</code> nor <code>8c1f60df87</code> had landed on staging, so prod still runs the old script.</li>',
+		'<li>The box pass was checked at dev/sieun <code>1a5216a0ff</code> at 23:25Z on 2026-11-16, when no staging land carried <code>4a9b3a985c</code> yet.</li>',
+		'<li>Prod keeps that pool until a promote carries staging land 3505168a74 , whose <code>86c15c417e</code> reads from the box instead.</li>',
+		'<li>At 20:07Z on 2026-11-08, staging land 64f9fa7591 carried <code>ecae857c8</code>, but main did not hold that land, so the switch still needs a promote.</li>',
+		'<li>Since sieun-pi <code>aea0b1bf</code> on 2026-11-16, a write that adds a line saying a code commit has not landed gets a 422.</li>',
+		'<li>Since <code>de9faac24e</code> a red head waits when no staging land carries it.</li>',
+		'</ol>',
+	].join('\n');
+	assert.deepEqual(
+		notLandedLines(html).map((l) => [l.shas, l.stage]),
+		[
+			[['07366ca93b', '8c1f60df87'], 'staging'],
+			[['4a9b3a985c'], 'staging'],
+			[['86c15c417e'], 'prod'],
+			[['ecae857c8'], 'prod'],
+		],
+	);
+});
+
 // 2026-11-09: notLandedLines dropped every block whose text opens on an inline tag, so it never read
 // "<li><code>8c1f60df87</code> was not on staging yet.</li>".
 test('a line that opens on a code tag or a commit link is read', () => {
