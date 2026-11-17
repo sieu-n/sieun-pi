@@ -585,6 +585,20 @@
       "match": {
         "box_exec_regex": "engage_world_move|engage_intake"
       }
+    },
+    {
+      "id": "F38",
+      "title": "engage accounts bound to the tier's box addresses by hand: engage_box_bind --execute runs stepped each address to 8 accounts and replaced parked ones, because no product writer holds a box address at its account count",
+      "designs": [
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p353",
+        "01a11bd7-072f-7591-ad1d-f123c276cde5/p354"
+      ],
+      "owner": "Prospect feature bro (01a11bd7), job 'd3 box binds keep themselves' (session 01a1e723), steps p353 and p354, filed by d3 at 11-17 01:30Z. The job 'watchlist collabs supply 11-16b' (board p350) gave Watchlist collab reads box supply after GeoNode lapsed by running crawler-v3 scripts/engage_box_bind.py --execute by hand, which writes proxy_endpoints.box through gateway_switch.bind_box as actor engage_box_bind: prod audits 37892 (11-16 05:09Z, p35 collabs from the box), 38486 (13:22Z, 6 per address), 38532 and 38533 (13:58Z and 13:59Z, replace parked 176 and 181) and 38829 (18:17Z, 8 per address), and staging audits 24943, 24953, 24960 and 24967 (the same steps as prod). The design is a box keeper in the engage-session-renewal role's pool keeper that holds each box address at a control count of live bound accounts (8, measured on 11-16) and binds a fresh candidate whose jar reads live from that address when a bound account parks, through the same jar check and bind_box under its own actor. A hand engage_box_bind --execute after the keeper serves on staging and prod is a repeat, unless it quotes an owner order.",
+      "match": {
+        "config_key_prefixes": [
+          "proxy_endpoints.box"
+        ]
+      }
     }
   ],
   "exempt": {
