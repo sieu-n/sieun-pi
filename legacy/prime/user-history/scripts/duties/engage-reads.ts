@@ -28,10 +28,10 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.du
 
 /*
  * Targets in engage-reads.duty.json and their sources (owner rule c75: one headline and at most 3 supporting metrics):
- * - prod_capacity_pages_day >= 100000 is the headline: the owner, 10-09, "read 100k pages/day". Capacity is the healthy prod accounts times provenRate(). Healthy is
- *   admissible_now plus the active accounts whose proxy session binding ran out while the renewal loop retries it: Instagram did nothing to
- *   them, and they read again on their own once the proxy gives them an exit. A GeoNode outage from 23:05Z on 10-14 let 20 bindings lapse
- *   and dropped admissible_now from 122 to 106 with 0 Instagram verdicts; the proxy outage is the proxy's alert, not lost account capacity.
+ * - prod_capacity_pages_day >= 100000 is the headline: the owner, 10-09, "read 100k pages/day". Capacity is admissible_now, the prod accounts that can
+ *   read now, times provenRate(). The active accounts whose proxy session binding ran out are left out and get their own line in the capacity flag:
+ *   an account that cannot read is no capacity (the launch VP, 11-18: the line read 75,460 as 140 x 539 while 116 of the 140 had no binding and
+ *   waited on a proxy purchase, todo t43, so 24 accounts read).
  * - fleet_ig_killed_pct <= 2: the owner's own number, 10-14 02:13Z. His canary number, at most 3 canary deaths an hour, stays as the run detail
  *   canary_ig_deaths_1h and on the canary flag line: a daily run reads only its own last hour, and the crawler stops the canary itself at
  *   engage.rate_test_stop_deaths. Its judged slot went to engage_accounts_stuck on 10-18 (c75 keeps 3 supporting metrics).
@@ -441,8 +441,9 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
     if (data.days && data.healthy !== undefined && data.lapsed) {
       const { newestDays, newest: proof, best } = provenRates(data.days, data.deaths, want, data.hours ? servedDays(data.days, data.hours, data.heldHours) : data.days);
       const rate = proof?.rate ?? 0;
-      const healthy = data.healthy + data.lapsed.waiting;
-      const counted = `${healthy} healthy prod accounts (${data.healthy} admissible now${data.lapsed.waiting ? `, ${data.lapsed.waiting} waiting on a proxy session renewal` : ""})`;
+      const healthy = data.healthy;
+      const counted = `${healthy} prod accounts that can read now (admissible: active, bound and passing egress admission)`;
+      const waiting = data.lapsed.waiting ? ` ${data.lapsed.waiting} wait on a proxy, would add ${fmt(data.lapsed.waiting * rate)}.` : "";
       metrics.prod_capacity_pages_day = healthy * rate;
       const windowEnd = newestDays ? Date.parse(`${nextDay(newestDays.at(-1)!)}T00:00:00Z`) : undefined;
       if (windowEnd !== undefined) lastEventAt.prod_capacity_pages_day = windowEnd;
@@ -452,13 +453,13 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
       const lag = windowEnd !== undefined ? ` This reads the window ${newestDays!.join(" and ")}, and each day leaves it ${PROOF_DAYS} days after it ends: the newest window day leaves at ${utc(windowEnd + CAPACITY_WINDOW_MS)}.` : "";
       const older = best && best !== proof ? ` The best older window, ${best.days.join(" and ")}, proved ${fmt(best.rate)} (run detail only, not the headline).` : "";
       flagged.push({ at, kind: "capacity", excerpt: (proof
-        ? `${counted} x ${fmt(rate)} pages a day per account, proven on the newest window ${proof.days.join(" and ")} (the ${want}th account could serve that much each day, at its median pages in hours its pace was full times its serveable hours; since then ${proof.hiDeaths} Instagram verdicts in ${fmt(proof.hiDays)} account-days at or over it and ${proof.loDeaths} in ${fmt(proof.loDays)} under it, p ${proof.p.toFixed(2)}) = ${fmt(healthy * rate)} pages a day. `
-          + `${need! > healthy ? `${need! - healthy} more healthy accounts at that rate, or ${fmt(Math.ceil(PAGES_A_DAY_GOAL / Math.max(1, healthy)))} pages a day on these, reach ${fmt(PAGES_A_DAY_GOAL)}. ` : ""}`
-          + `${onHand} prod accounts on hand (not dead, not moved to another world) x ${fmt(rate)} = ${fmt(onHand * rate)}${onHand * rate < PAGES_A_DAY_GOAL ? `, short of ${fmt(PAGES_A_DAY_GOAL)}` : ", enough once they are healthy"}.${lag}${older}`
+        ? `${counted} x ${fmt(rate)} pages a day per account, proven on the newest window ${proof.days.join(" and ")} (the ${want}th account could serve that much each day, at its median pages in hours its pace was full times its serveable hours; since then ${proof.hiDeaths} Instagram verdicts in ${fmt(proof.hiDays)} account-days at or over it and ${proof.loDeaths} in ${fmt(proof.loDays)} under it, p ${proof.p.toFixed(2)}) = ${fmt(healthy * rate)} pages a day.${waiting} `
+          + `${need! > healthy ? `${need! - healthy} more accounts that can read at that rate, or ${fmt(Math.ceil(PAGES_A_DAY_GOAL / Math.max(1, healthy)))} pages a day on these, reach ${fmt(PAGES_A_DAY_GOAL)}. ` : ""}`
+          + `${onHand} prod accounts on hand (not dead, not moved to another world) x ${fmt(rate)} = ${fmt(onHand * rate)}${onHand * rate < PAGES_A_DAY_GOAL ? `, short of ${fmt(PAGES_A_DAY_GOAL)}` : ", enough once they can read"}.${lag}${older}`
         : `${counted}, and the newest window ${newestDays ? newestDays.join(" and ") : "(none)"} proves no rate: it had no ${want} accounts read at one rate whose readers did not die more often than the rest.${lag}${older}`).slice(0, 1000) });
     }
     if (data.lapsed && (data.lapsed.waiting || data.lapsed.blocked)) flagged.push({ at, kind: "lapsed_bindings", excerpt: (`${data.lapsed.waiting + data.lapsed.blocked} active prod accounts have no live proxy session binding, the oldest since ${utc(data.lapsed.oldestAt!)}. `
-      + `${data.lapsed.waiting} wait on the renewal loop and count as capacity: they read again once the proxy answers (a GeoNode supply hold or neutral_address_unresolved renewals point at the proxy). `
+      + `${data.lapsed.waiting} wait on the renewal loop and are left out of capacity until they read again once the proxy answers (a GeoNode supply hold or neutral_address_unresolved renewals point at the proxy). `
       + (data.lapsed.blocked ? `${data.lapsed.blocked} have a blocked renewal row that nothing retries and are left out of capacity: clear them through the shipped rotation path.` : "")).slice(0, 600) });
   }
   if (data.deepWalks) {

@@ -85,6 +85,16 @@ test("the capacity headline reports its window: lastEventAt is the newest window
   assert.match(line, /reads the window 2026-10-29 and 2026-10-30, .* the newest window day leaves at 11-02 00:00Z/);
 });
 
+test("capacity counts only accounts that can read now, and lapsed bindings get their own line (launch VP, 11-18)", () => {
+  const days = [...fleet("2026-10-29", [[14, 600], [100, 150]]), ...fleet("2026-10-30", [[13, 1100], [1, 472], [100, 150]])];
+  const accounts = Array.from({ length: 140 }, (_, i) => ({ id: i + 1, status: "active" }));
+  const output = report({ now: at("2026-10-31T02:00:00Z"), errors: [], accounts, config: {}, deaths: [], days, healthy: 24,
+    lapsed: { waiting: 116, blocked: 0, oldestAt: at("2026-10-30T09:00:00Z") } } satisfies EngageData, []);
+  assert.equal(output.metrics.prod_capacity_pages_day, 24 * 472);
+  const line = output.flagged?.find(flag => flag.kind === "capacity")?.excerpt ?? "";
+  assert.match(line, /116 wait on a proxy, would add 54,752\./);
+});
+
 test("a canary short of demand proves what its saturated hours serve, not the pages it got (launch VP, 11-08)", () => {
   // 14 members read 45 an hour for 24 h on day one with a busy refusal each hour, and 30 an hour with none on day two.
   const hours: AccountHour[] = Array.from({ length: 14 }, (_, i) => i + 1).flatMap(accountId => [
