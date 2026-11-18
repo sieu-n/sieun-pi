@@ -1,0 +1,1532 @@
+{
+	"$schema": "https://turborepo.com/schema.json",
+	// VIREV_CI_TOOLCHAIN (node and pnpm versions, set by scripts/ci/turbo-run.mjs) is
+	// hashed, so a ci/** probe that changes the toolchain writes cache entries under
+	// other hashes than sieun/dev reads. A change to a global dependency makes every
+	// task miss, so only files every task reads are global. convex/**, checks.yml,
+	// verify-dev.yml and packages/sirocco/** were: in 58 lint job logs from 2026-10-14
+	// and 10-15, 13 of 49 Air jobs replayed no task, and 12 of them came with a new
+	// copy of one of these four (llm-wiki sessions/2026/10/16/0734-turbo-convex-inputs).
+	// The packages that read convex/ or packages/sirocco/ hash it in their own transit
+	// entry. Under strict env mode a workflow edit reaches a task only through the
+	// unhashed NODE_OPTIONS below, so no workflow is hashed. T7 in
+	// scripts/ci/turbo-cache.test.mjs fails if one of them comes back here.
+	"globalDependencies": [".npmrc", "pnpm-workspace.yaml"],
+	"globalEnv": ["NODE_ENV", "VIREV_CI_TOOLCHAIN"],
+	// STRICT is turbo's own default and the only mode that "guarantees cache
+	// correctness"; loose is documented as a migration/debugging mode that can
+	// "restore incorrect results if unhashed variables change". That hazard is not
+	// hypothetical here: SvelteKit bakes a `$env/static/*` declaration into
+	// .svelte-kit/ambient.d.ts for EVERY variable in the ambient environment, so
+	// under loose a cached .svelte-kit could carry type declarations from a
+	// different environment and change what `check` accepts.
+	"envMode": "strict",
+	// Available to tasks but NOT hashed: purely presentational/system vars. Without
+	// these, tools pick a different reporter under strict mode (svelte-check stops
+	// emitting its machine-format line), which changes diagnostic FORMAT without
+	// changing any result. TMPDIR is not in turbo's built-in pass-through list, so
+	// without it every task's os.tmpdir() fell back to world-readable /tmp on the
+	// m1-air runners (vitest's per-run cache dirs piled up there).
+	// NODE_OPTIONS carries a heap limit (checks.yml sets one per step); under strict
+	// mode it never reached a task before, so search's 6 GB step heap did not apply.
+	// VITEST_MAX_WORKERS and NODE_TEST_CONCURRENCY size the test worker pools to the host threads over its
+	// runner slots (scripts/ci/turbo-run.mjs); they change how many files run at once, not a result.
+	// UV_CACHE_DIR is each m1-air runner's own uv cache (its .env); without it crawler-v3's test tasks would use the
+	// ~/.cache/uv that every runner shares (ops/runbooks/m1-air-runner.md).
+	"globalPassThroughEnv": [
+		"TERM",
+		"NO_COLOR",
+		"FORCE_COLOR",
+		"COLUMNS",
+		"CI",
+		"TMPDIR",
+		"NODE_OPTIONS",
+		"VITEST_MAX_WORKERS",
+		"NODE_TEST_CONCURRENCY",
+		"UV_CACHE_DIR",
+		// The folder of vitest's fs module cache that turbo-run.mjs restores and saves (scripts/ci/vitest-fs-cache.mjs). A
+		// cached entry is the transform of the same file content, so it changes how long a run takes, not a result.
+		"VITEST_FS_MODULE_CACHE"
+	],
+	"tasks": {
+		// Prints the V8 heap limit a turbo task sees, so a CI log proves NODE_OPTIONS
+		// reaches tasks (checks.yml lint, js / lint + typecheck + unit). A root task
+		// reads no package files, so it waits on no transit node.
+		"//#ci:heap": { "cache": false },
+		// Every CI check that is not a package task runs as a root task here, so turbo hashes its declared inputs
+		// and scripts/ci/plan.mjs skips a job whose tasks all hit (llm-wiki sessions/2026/10/18/1654-ci-redesign).
+		// Most input lists come from ci-scope.mjs LIGHT_SUITES and FIXED_COST. A task that reads most of the
+		// tree hashes every tracked file but llm-wiki session pages, which no check reads except the secrets scan; the
+		// land's secrets scan of staging..T still covers them. The nightly --force run on staging
+		// (.github/workflows/turbo-force.yml) finds an input a task forgot to declare. turbo hashes ignored files
+		// that an explicit glob matches, such as __pycache__ a test run leaves, so each explicit list drops them.
+		// CI_RANGE (scripts/ci/plan.mjs rangeFor) makes exec-bits walk only the push's commits; hashed, so a range run
+		// never replays as a full one.
+		"//#ci:guards": {
+			"inputs": ["$TURBO_DEFAULT$", "!apps/llm-wiki/content/sessions/**"],
+			"env": ["CI_RANGE"],
+			"outputs": []
+		},
+		"//#ci:dm-extension": {
+			"inputs": [
+				"apps/dm-extension/**",
+				"scripts/ci/tasks/node-junit.sh",
+				"scripts/ci/junit-log*",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		"//#ci:convex-generated": {
+			"inputs": [
+				"convex/**",
+				"apps/research-agent-be/src/search/private_life.json",
+				"scripts/ci/land-checks.mjs",
+				"scripts/ci/alembic-revisions.mjs",
+				"scripts/repo/agent/convex-schema-diff.mjs",
+				"scripts/repo/agent/file-stdin.mjs",
+				"apps/crawler-v3/alembic/versions/**",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		"//#ci:guard-agent": {
+			"inputs": [
+				"scripts/repo/**",
+				"scripts/lib/**",
+				"scripts/redact*",
+				".claude/hooks/**",
+				".claude/settings*",
+				"ops/health/**",
+				"convex/search/tables.ts",
+				"package.json",
+				"scripts/ci/branches.mjs",
+				"scripts/ci/json-merge.mjs",
+				"scripts/ci/is-probe.mjs",
+				"scripts/ci/land-critical.mjs",
+				"scripts/ci/runner-lost.mjs",
+				"scripts/dev/ci-code-metrics.mjs",
+				"scripts/duties/repo/limit-scan.mjs",
+				"scripts/repo/agent/**",
+				"scripts/repo/convex/**",
+				"scripts/ci/tasks/guard-tests.sh",
+				"scripts/ci/tasks/guard-suites.*",
+				"scripts/ci/junit-log*",
+				"apps/vent/pyproject.toml",
+				"apps/vent/uv.lock",
+				"apps/crawler-v3/pyproject.toml",
+				"apps/crawler-v3/uv.lock",
+				// The modules and files these tests import or read outside the globs above (guard-ci-inputs.mjs testReadGaps), such as
+				// plan.mjs, which commit-message.test.mjs imports, and its closure.
+				"apps/infra/metal/config/turbo-cache/server.mjs",
+				"apps/search/tests/e2e/projects.mjs",
+				"apps/search/tests/e2e/warn-only-weights.json",
+				"apps/search/tests/e2e/warn-only.txt",
+				"apps/virev-demo/overlay/src/lib/variants/chain.js",
+				"apps/virev-demo/overlay/src/lib/variants/line-hash.ts",
+				"apps/virev-demo/overlay/src/lib/variants/line-moves.js",
+				"convex/lib/bundleSize.bounds.mjs",
+				"ops/alert-relay/owners.json",
+				"scripts/ci/app-manifest.mjs",
+				"scripts/ci/backend-file-seconds.json",
+				"scripts/ci/backend-regressions.mjs",
+				"scripts/ci/backend-related.mjs",
+				"scripts/ci/ci-scope.mjs",
+				"scripts/ci/demo-unit-related.mjs",
+				"scripts/ci/deploy-staging.mjs",
+				"scripts/ci/gh-annotate.mjs",
+				"scripts/ci/gh-quota.mjs",
+				"scripts/ci/git-token.mjs",
+				"scripts/ci/land-base.mjs",
+				"scripts/ci/land-dispatch.mjs",
+				"scripts/ci/linux-groups.mjs",
+				"scripts/ci/plan.mjs",
+				"scripts/ci/probe-judged.mjs",
+				"scripts/ci/promote-critical.mjs",
+				"scripts/ci/search-build-imports.mjs",
+				"scripts/ci/search-e2e-shards.mjs",
+				"scripts/ci/search-unit-related-globals.mjs",
+				"scripts/ci/search-unit-related-scans.mjs",
+				"scripts/ci/search-unit-related.mjs",
+				"scripts/ci/turbo-run.mjs",
+				"scripts/ci/vitest-fs-cache.mjs",
+				"scripts/ci/warn-shard.mjs",
+				"scripts/dev/dev-apps.cjs",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		"//#ci:guard-golden": {
+			"inputs": [
+				"ops/**",
+				"scripts/ci/**",
+				"scripts/dev/**",
+				"scripts/lib/**",
+				"scripts/repo/test-git-env*",
+				"scripts/repo/agent/file-stdin.mjs",
+				".claude/hooks/**",
+				".github/workflows/**",
+				"apps/crawler-v3/src/**",
+				"apps/crawler-v3/scripts/**",
+				"apps/crawler-v3/tests/**",
+				"apps/infra/**",
+				"apps/search/src/**",
+				"apps/search/messages/**",
+				"apps/search/package.json",
+				"apps/specs/lib/onboarding-walk.mjs",
+				"convex/**",
+				"apps/research-agent-be/src/search/private_life.json",
+				"package.json",
+				"docker-compose.yml",
+				// The files these tests import or read outside the globs above (guard-ci-inputs.mjs testReadGaps).
+				"apps/search/tests/e2e/projects.mjs",
+				"apps/search/tests/e2e/warn-only-weights.json",
+				"apps/search/tests/e2e/warn-only.txt",
+				"scripts/repo/clickhouse-admin-reads.mjs",
+				"scripts/repo/probe-image-files.mjs",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		// patches/convex-test@* is the patch scripts/ci/convex-test-fuzz.test.mjs checks, through the convex-test that
+		// pnpm installs with it, so the fuzz reruns when the patch changes.
+		"//#ci:guard-land-poll": {
+			"inputs": [
+				"scripts/ci/**",
+				".github/workflows/**",
+				"scripts/lib/**",
+				"scripts/repo/test-git-env*",
+				"scripts/repo/agent/file-stdin.mjs",
+				"scripts/repo/env/vercel-blobs.mjs",
+				"scripts/repo/env/env-var.mjs",
+				"apps/infra/metal/advance-staging-probe.mjs",
+				"patches/convex-test@*",
+				// The files these tests import or read outside the globs above (guard-ci-inputs.mjs testReadGaps).
+				"apps/infra/metal/config/turbo-cache/server.mjs",
+				"apps/search/tests/e2e/projects.mjs",
+				"apps/search/tests/e2e/warn-only-weights.json",
+				"apps/search/tests/e2e/warn-only.txt",
+				"ops/golden/tests/fixtures/ci/verify-dev-40194948485-jobs.json",
+				"ops/golden/tests/fixtures/ci/verify-dev-turbo-lines.json",
+				"scripts/repo/agent/blob-texts.mjs",
+				"scripts/repo/agent/convex-api-bindings.mjs",
+				"scripts/repo/agent/convex-schema-diff.mjs",
+				"scripts/repo/missing-imports.mjs",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		// The guard tests whose reads sit in scripts/, the workflows and the files named below (guard-tests.sh ci), from an
+		// strace -f -e trace=%file of a guard-tests.sh rest run on 2026-10-29; scripts/ci/guard-ci-inputs.test.mjs checks
+		// that these inputs hold each test's import closure. measured: in //#ci:guard-rest from 10-27 00:20Z to 10-29 00:20Z
+		// they ran on 380 of 382 linux (rest) jobs, p50 46 s; these inputs changed on 218 of the 433 dev and staging pushes
+		// of that window, and they hold 102 of guard-rest's 166 test-seconds (run 40791854871).
+		"//#ci:guard-ci": {
+			"inputs": [
+				"scripts/**",
+				".github/workflows/**",
+				"package.json",
+				"turbo.json",
+				"docker-compose.yml",
+				// dev-lib.test.mjs checks staleApps against the real pm2 entries.
+				"ecosystem.config.cjs",
+				".gitattributes",
+				".gitignore",
+				"packages/config/box-browser.mjs",
+				"packages/config/box-browser.test.mjs",
+				"packages/config/kit-check.mjs",
+				"packages/config/kit-check.test.mjs",
+				// kit-check.test.mjs runs the installed svelte-check, and its patch file names the version.
+				"patches/svelte-check@*.patch",
+				"packages/config/vite-cache-dir.mjs",
+				"packages/config/vite-world-one-tree.mjs",
+				"packages/config/vite-world-one-tree.test.mjs",
+				"apps/infra/metal/tests/turbo-cache-server.test.mjs",
+				"apps/infra/metal/config/turbo-cache/**",
+				"apps/infra/metal/lib/**",
+				"apps/infra/metal/ssh/**",
+				"apps/infra/metal/compose.prod.yml",
+				"apps/infra/ci-server/host-vars.ci02.yml",
+				"apps/infra/ci-server/image/user-data.j2",
+				"ops/dev-boxes/air-ci.sh",
+				// staging-proof-report.mjs imports the provider-down read of the promote's golden gate.
+				"ops/golden/lib/provider-outage.mjs",
+				"apps/search/tests/e2e/helpers/clerk-vent.ts",
+				// plan.test.mjs's spec probe case reads which project runs each spec (plan.mjs specProbe).
+				"apps/search/tests/e2e/projects.mjs",
+				// guard-ci-inputs.test.mjs walks the commit object fixtures' imports, and commit.mjs's tree-gates.mjs imports it.
+				"apps/search/scripts/search-auth-layer.mjs",
+				// firewall.test.mjs checks the firewall rules against the browser the Playwright projects run.
+				"apps/search/firewall.json",
+				"apps/search/tests/e2e/helpers/own-browser.mjs",
+				"apps/search/tests/e2e/warn-only.txt",
+				// projects.mjs specPart reads its spec seconds there.
+				"apps/search/tests/e2e/warn-only-weights.json",
+				"apps/search/src/lib/search/group-scope.ts",
+				// prod-search-works.test.mjs checks that every filter key this mapper reads has a probe.
+				"apps/search/src/lib/search/build-search-payload.ts",
+				// prod-search-works.test.mjs checks that no probe sends a filter the crawler refuses as unsupported.
+				"apps/crawler-v3/src/index/profiles.py",
+				"packages/taxonomy/categories.json",
+				"packages/taxonomy/src/index.ts",
+				"convex/lib/categoryIds/idsData.ts",
+				"convex/lib/categoryIds/index.ts",
+				// house-token.mjs hashes the house token as the tokens table does.
+				"convex/lib/tokens.ts",
+				// convex-world-env.mjs builds a world's backend env from its rows.
+				"convex/lib/envNames.ts",
+				// clerk-ci-fixtures.mjs gives virev-ci the Clerk template each deploy gives staging and prod.
+				"convex/org/convexJwtTemplate.ts",
+				// i18n-edit.test.mjs runs i18n-edit.mjs, which checks each value against these rules.
+				"apps/search/scripts/message-rules.mjs",
+				"apps/infra/convex/local/**",
+				"apps/crawler-v3/alembic/**",
+				"apps/crawler-v3/alembic.ini",
+				"apps/crawler-v3/.gitignore",
+				"apps/crawler-v3/src/catalog/schema/alembic.py",
+				"apps/crawler-v3/src/catalog/schema/bootstrap.py",
+				".agents/skills/repo/deployment/SKILL.md",
+				".agents/skills/repo/git-workflow/SKILL.md",
+				"ops/bin/schema-drift.mjs",
+				"ops/bin/apply-otel-schema.mjs",
+				"ops/bin/ch-ro",
+				"ops/bin/ch-ro.mjs",
+				"ops/bin/ch-ro.sh",
+				"ops/bin/grafana-vent.mjs",
+				"apps/virev-demo/overlay/src/lib/variants/chain.js",
+				"apps/virev-demo/overlay/src/lib/variants/line-hash.ts",
+				"apps/virev-demo/overlay/src/lib/variants/line-moves.js",
+				"apps/search/.env",
+				"apps/search/.env.staging",
+				"apps/search/package.json",
+				"apps/vent/.env.staging",
+				"convex/lib/env.ts",
+				"apps/*/package.json",
+				"apps/*/turbo.json",
+				"packages/*/package.json",
+				"packages/*/turbo.json",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		// The guard tests that walk app trees, the whole tracked tree or HEAD's tree (guard-tests.sh rest).
+		"//#ci:guard-rest": {
+			"inputs": ["$TURBO_DEFAULT$", "!apps/llm-wiki/content/sessions/**"],
+			"outputs": []
+		},
+		// CI_RANGE makes the scan read only the push's changed files and commits (scripts/ci/secrets-scan.mjs range mode).
+		"//#ci:secrets-scan": {
+			"inputs": ["$TURBO_DEFAULT$", "!apps/llm-wiki/content/sessions/**"],
+			"env": ["CI_RANGE"],
+			"outputs": []
+		},
+		"//#ci:secrets-tests": {
+			"inputs": [
+				"scripts/ci/secrets-scan.mjs",
+				"scripts/ci/secrets-scan.test.mjs",
+				"scripts/repo/agent/file-stdin.mjs",
+				"scripts/ci/gitleaks-config.mjs",
+				"scripts/ci/betterleaks-linux.sh",
+				"scripts/ci/ci-scope.mjs",
+				"scripts/ci/app-manifest.mjs",
+				"scripts/repo/test-git-env.mjs",
+				".gitleaks.toml",
+				".github/workflows/nightly.yml",
+				".github/workflows/ci-cd-health.yml",
+				".github/workflows/secrets-history.yml",
+				"scripts/ci/tasks/node-junit.sh",
+				"scripts/ci/junit-log*",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		// The grafana checks are four tasks (scripts/ci/tasks/grafana.sh), each hashing what its own files read, measured with
+		// strace -e trace=%file in a scratch clone of 2110d91fc2.
+		// measured: as one task over all three input lists it ran on 75 of the 88 sieun/dev pushes from 2026-10-25 11:04Z to
+		// 10-26 11:04Z at p50 192 s. Split, the lists below give 54 runs of //#ci:grafana, 1 of //#ci:grafana-keeper (its
+		// three files took 65, 32 and 12 s of junit time) and 74 of //#ci:clickhouse-db-split (14 s) on the same pushes.
+		"//#ci:grafana": {
+			"inputs": [
+				"apps/infra/grafana/**",
+				// test_board45_model_prices.py pins board 45's price rows to the one price list.
+				"convex/search/modelPrices.json",
+				"!apps/infra/grafana/tests/test_air_disk_keeper*",
+				"!apps/infra/grafana/tests/test_clickhouse_db_split.py",
+				"apps/infra/metal/config/**",
+				"apps/infra/metal/compose*.yml",
+				"apps/infra/metal/tests/fixtures/log-drain/**",
+				// test_board_contract.py reads the store tiers.
+				"apps/infra/metal/store-config.tsv",
+				// test_otel_tier_scope.py reads every doc and code file under apps/infra for otel reads.
+				"apps/infra/**/*.md",
+				"apps/infra/**/*.sh",
+				"apps/infra/**/*.mjs",
+				"apps/infra/**/*.ts",
+				"apps/infra/**/*.py",
+				"apps/infra/**/*.sql",
+				"apps/crawler-v3/src/control/**",
+				"ops/dev-boxes/**",
+				"!ops/dev-boxes/air-disk-*",
+				"ops/runbooks/**",
+				"ops/schema/**",
+				// test_otel_tier_scope.py checks the otel reads in the duties and in the docs agents copy them from.
+				"ops/README.md",
+				"scripts/duties/**",
+				".agents/skills/**/*.md",
+				"scripts/ci/turbo-run.mjs",
+				"scripts/ci/tasks/grafana.sh",
+				"scripts/ci/junit-log*",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		"//#ci:grafana-keeper": {
+			"inputs": [
+				"ops/dev-boxes/air-disk-*",
+				"apps/infra/grafana/tests/test_air_disk_keeper*",
+				"apps/infra/grafana/tests/unittest_junit.py",
+				"scripts/ci/turbo-run.mjs",
+				"scripts/ci/tasks/grafana.sh",
+				"scripts/ci/junit-log*",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		// test_clickhouse_db_split.py runs scripts/ci/check-clickhouse-db-split.py on the repo, which reads every glob that
+		// apps/infra/metal/config/clickhouse/databases.json maps, so those globs are inputs here.
+		// RepoTree.test_task_inputs_cover_the_mapped_paths keeps the two lists in step, and reads this file.
+		"//#ci:clickhouse-db-split": {
+			"inputs": [
+				"scripts/ci/check-clickhouse-db-split.py",
+				"apps/infra/grafana/tests/test_clickhouse_db_split.py",
+				"apps/infra/grafana/tests/unittest_junit.py",
+				"apps/infra/clickstack/**",
+				"apps/infra/grafana/**",
+				"apps/infra/metal/config/**",
+				"apps/crawler-v3/src/**",
+				"apps/crawler-v3/scripts/**",
+				"apps/crawler-v3/tests/**",
+				"apps/search/src/**",
+				"apps/search/scripts/**",
+				"apps/search/tests/**",
+				"ops/gateway/**",
+				"ops/schema/**",
+				"ops/health/requests.yaml",
+				"turbo.json",
+				"scripts/ci/turbo-run.mjs",
+				"scripts/ci/tasks/grafana.sh",
+				"scripts/ci/junit-log*",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		"//#ci:ci-server": {
+			"inputs": [
+				"apps/infra/ci-server/**",
+				"scripts/ci/tasks/ci-server.sh",
+				// test_ci02_app_minter.py checks MATRIX_LIMITS against every workflow's max-parallel, and only this one sets one.
+				// measured: 131 dev/sieun commits touched .github/workflows in the 7 days to 11-03 and 6 touched this file, at 50 s per ci:ci-server run.
+				".github/workflows/search-e2e-warn.yml",
+				"scripts/ci/runner-allowlist.json",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		"//#ci:runner-labels": {
+			"inputs": [
+				".github/workflows/**",
+				"scripts/ci/check-runner-labels*",
+				"scripts/ci/runner-allowlist*",
+				"scripts/ci/no-ci-on-metal01.test.mjs",
+				"scripts/ci/turbo-run.mjs",
+				"apps/infra/metal/host.yml",
+				"apps/infra/metal/host-ci.yml",
+				"apps/infra/metal/compose.obs.yml",
+				"apps/infra/metal/inventory.yml",
+				"apps/infra/ci-server/host-vars.ci02.yml",
+				"scripts/ci/tasks/node-junit.sh",
+				"scripts/ci/junit-log*",
+				// check-runner-labels.test.mjs reads JOB_S from ci02-slot.py, and turbo-run.mjs, which no-ci-on-metal01.test.mjs imports, imports the rest.
+				"apps/infra/ci-server/minter/ci02-slot.py",
+				"apps/infra/metal/config/turbo-cache/server.mjs",
+				"scripts/ci/gh-annotate.mjs",
+				"scripts/ci/vitest-fs-cache.mjs",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		"//#ci:turbo-cache-tests": {
+			"inputs": [
+				"scripts/ci/**",
+				"scripts/repo/test-git-env.mjs",
+				"scripts/repo/agent/file-stdin.mjs",
+				"apps/infra/metal/config/turbo-cache/**",
+				"turbo.json",
+				"apps/*/turbo.json",
+				".github/workflows/**",
+				"package.json",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		// Every file the env tests import or read, from an strace of their run on 2026-10-23: env-var.test.mjs imports
+		// apps/infra/metal/lib, renders the metal compose files and reads the apps/infra tiers at HEAD.
+		// env-tests reads the metal playbooks and compose files, their mount sources under config/, lib/ and deploy-obs.mjs, not
+		// the alert packs, host scripts and tests that change on most pushes (strace -e trace=%file of the three files in a
+		// scratch clone of 2110d91fc2). measured: with apps/infra/metal/** it ran on 56 of the 88 sieun/dev pushes from
+		// 2026-10-25 11:04Z to 10-26 11:04Z at p50 131 s, 40 of them for an apps/infra/metal change alone; these inputs give 34.
+		"//#ci:env-tests": {
+			"inputs": [
+				"scripts/ci/check-env-policy*",
+				"scripts/repo/env/**",
+				".github/workflows/staging-deploy.yml",
+				"scripts/lib/**",
+				"scripts/repo/test-git-env.mjs",
+				"scripts/repo/agent/file-stdin.mjs",
+				"apps/*/.env",
+				"apps/*/.env.staging",
+				"apps/infra/metal/*.yml",
+				"apps/infra/metal/*.mjs",
+				"apps/infra/metal/*.py",
+				"apps/infra/metal/lib/**",
+				"apps/infra/metal/ssh/**",
+				"apps/infra/metal/config/**",
+				// apps/infra/metal/deploy-obs.mjs, which env-var.test.mjs imports, imports it.
+				"scripts/ci/served-vent.mjs",
+				"!apps/infra/metal/config/obs/grafana/alerting/**",
+				"!apps/infra/metal/config/host/**",
+				"apps/infra/grafana/**",
+				"apps/infra/clickhouse/local/config.d/**",
+				"apps/infra/clickhouse/local/users.d/**",
+				"scripts/ci/tasks/node-junit.sh",
+				"scripts/ci/junit-log*",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		// The p66 auth gate (scripts/ci/tasks/auth-gate.sh), in plan.mjs's search-check group, so the fast basics run it.
+		"//#ci:auth-gate": {
+			"dependsOn": ["search#transit", "search#i18n:compile", "search#sync"],
+			"env": [
+				"CI",
+				"CONVEX_DEPLOYMENT",
+				"PUBLIC_CONVEX_URL",
+				"PUBLIC_CONVEX_SITE_URL",
+				"ALLOW_IMPERSONATION",
+				"PUBLIC_CLERK_PUBLISHABLE_KEY",
+				"CLERK_PUBLISHABLE_KEY"
+			],
+			"inputs": [
+				"convex/**",
+				"apps/research-agent-be/src/search/private_life.json",
+				"apps/search/src/**",
+				"apps/search/tests/unit/route-auth.test.ts",
+				"apps/search/tests/unit/mcp-route-auth.test.ts",
+				"apps/search/tests/unit/security-headers.test.ts",
+				"apps/search/tests/unit/admin-actions.test.ts",
+				"apps/search/tests/*.ts",
+				"apps/search/vitest.config.ts",
+				"apps/search/svelte.config.js",
+				"apps/search/tsconfig.json",
+				"apps/search/package.json",
+				"scripts/ci/tasks/auth-gate.sh",
+				"scripts/ci/tasks/vitest-junit.sh",
+				"scripts/ci/junit-log*",
+				"package.json",
+				"pnpm-lock.yaml",
+				"!**/node_modules/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		// No dependsOn: no convex file imports apps/search since retainedCrawlGuards left, and the search#sync edge put its
+		// start behind 10 busy turbo slots, 22 s p50 and 89 s p90 (max 125 s) in 89 sieun/dev linux (rest) jobs to 10-25 13:33Z.
+		// healthProbe.integration.test.ts reads the two apps/infra/metal files.
+		"//#ci:backend-regressions": {
+			"inputs": [
+				"convex/**",
+				"apps/research-agent-be/src/search/private_life.json",
+				"apps/infra/metal/config/caddy/prod.Caddyfile",
+				"apps/infra/metal/config/obs/grafana/alerting/services.yaml",
+				"scripts/ci/backend-regressions*",
+				// backendShard splits by this table, so both shards hash the same one and a replayed shard keeps its split.
+				"scripts/ci/backend-file-seconds.json",
+				// convex/vitest.config.ts imports its globCacheBailout plugin.
+				"scripts/ci/vitest-fs-cache.mjs",
+				"scripts/ci/vitest-receipt*",
+				"scripts/ci/tasks/backend-regressions.sh",
+				// Files convex/ tests and the code they load import from outside convex/ (guard-ci-inputs.mjs convexTestGaps).
+				"apps/crawler-v3/src/index/rate_rules.json",
+				"apps/search/messages/en.json",
+				"apps/search/tests/e2e/helpers/crawler-stub/roster.mjs",
+				"ops/schema/convex-usage.sql",
+				"scripts/ci/backend-related.mjs",
+				"package.json",
+				"pnpm-lock.yaml",
+				"scripts/ci/junit-log*",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			// The plan's selection of files (scripts/ci/plan.mjs backendSelection), so a scoped pass never replays as a full one.
+			"env": ["BACKEND_REGRESSIONS"],
+			"outputs": []
+		},
+		// The second shard of the Convex backend regressions (scripts/ci/backend-regressions.mjs BACKEND_TASKS), on a linux leg
+		// of its own, with the first shard's inputs and env (backend-related.test.mjs checks that they match).
+		"//#ci:backend-regressions-2": {
+			"inputs": [
+				"convex/**",
+				"apps/research-agent-be/src/search/private_life.json",
+				"apps/infra/metal/config/caddy/prod.Caddyfile",
+				"apps/infra/metal/config/obs/grafana/alerting/services.yaml",
+				"scripts/ci/backend-regressions*",
+				// backendShard splits by this table, so both shards hash the same one and a replayed shard keeps its split.
+				"scripts/ci/backend-file-seconds.json",
+				// convex/vitest.config.ts imports its globCacheBailout plugin.
+				"scripts/ci/vitest-fs-cache.mjs",
+				"scripts/ci/vitest-receipt*",
+				"scripts/ci/tasks/backend-regressions.sh",
+				// Files convex/ tests and the code they load import from outside convex/ (guard-ci-inputs.mjs convexTestGaps).
+				"apps/crawler-v3/src/index/rate_rules.json",
+				"apps/search/messages/en.json",
+				"apps/search/tests/e2e/helpers/crawler-stub/roster.mjs",
+				"ops/schema/convex-usage.sql",
+				"scripts/ci/backend-related.mjs",
+				"package.json",
+				"pnpm-lock.yaml",
+				"scripts/ci/junit-log*",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			// The plan's selection of files (scripts/ci/plan.mjs backendSelection), so a scoped pass never replays as a full one.
+			"env": ["BACKEND_REGRESSIONS"],
+			"outputs": []
+		},
+		"//#ci:vent-ts-contract": {
+			"inputs": [
+				"apps/vent/**",
+				"scripts/ci/tasks/node-junit.sh",
+				// guard-agent's uv sync in this leg writes the same apps/vent/.venv this task's `uv run` installs vent into.
+				"scripts/ci/tasks/guard-tests.sh",
+				"scripts/ci/junit-log*",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		"//#ci:vent": {
+			"inputs": [
+				"apps/vent/**",
+				"apps/infra/metal/config/obs/grafana/alerting/vent-health.yaml",
+				"apps/infra/grafana/tests/fixtures/vent_health_cases.json",
+				"ops/golden/flows/review-template-send.mjs",
+				"convex/search/watches/crawlerRoutes.tsv",
+				"apps/infra/grafana/agent_reader.py",
+				"ops/runbooks/vent-external-apis.md",
+				"ops/schema/vent-calls.sql",
+				"scripts/duties/search/zero-result-filters.mjs",
+				"scripts/dev/seed-org-fixture.mjs",
+				"scripts/dev/search-clean-world.mjs",
+				"scripts/dev/app-view-coverage/own-org.mjs",
+				"scripts/staging/proof-org*.mjs",
+				"scripts/staging/mcp-test-org.mjs",
+				"scripts/dev/staging-walk/clerk-sessions.mjs",
+				"scripts/repo/agent/stripe-read.mjs",
+				"scripts/lib/ops-notes.mjs",
+				"ops/bin/grafana-vent.mjs",
+				"ops/bin/ch-ro.mjs",
+				"ops/bin/pg-ro.mjs",
+				"ops/bin/os-ro.mjs",
+				"scripts/dev/vent-target.mjs",
+				"apps/infra/metal/config/host/vendor-usage/*.py",
+				"apps/infra/metal/config/host/tailscale/apply-policy.mjs",
+				"ops/dev-boxes/b2-viewer.py",
+				"scripts/ci/clerk-ci-fixtures.mjs",
+				"convex/lib/vent.ts",
+				"convex/search/modelPrices.json",
+				"convex/search/senders/resendDomainShared.ts",
+				"scripts/ci/ci-scope.mjs",
+				"scripts/ci/netbox*",
+				"scripts/ci/tasks/python-app.sh",
+				".github/workflows/*.yml",
+				"scripts/ci/**/*.sh",
+				".agents/skills/apps/vent-mock/SKILL.md",
+				"apps/search/tests/e2e/helpers/world.ts",
+				"apps/search/tests/e2e/helpers/test-workspace.ts",
+				"apps/search/tests/e2e/helpers/billing-world.ts",
+				"apps/search/tests/e2e/helpers/mcp-client.ts",
+				"apps/search/tests/e2e/helpers/clerk-vent.ts",
+				"apps/search/tests/e2e/billing-flow.spec.ts",
+				"apps/search/tests/e2e/billing-flow-limits.spec.ts",
+				"apps/search/tests/e2e/billing-flow-metering.spec.ts",
+				"apps/search/tests/e2e/billing-flow-plan-tab.spec.ts",
+				"apps/search/tests/e2e/hosted-flow-signup-to-dashboards.spec.ts",
+				"apps/search/tests/e2e/org-ids-probe.spec.ts",
+				"apps/search/tests/e2e/org-isolation.spec.ts",
+				"apps/search/tests/e2e/sign-in-ticket.spec.ts",
+				"apps/search/tests/e2e/admin-only.spec.ts",
+				"apps/search/tests/e2e/dashboards-final-member.spec.ts",
+				"apps/search/tests/e2e/hosted-flow-signup-to-dashboards.spec.ts",
+				"apps/search/tests/e2e/hosted-org-roles.spec.ts",
+				"apps/search/tests/e2e/hosted-zz-monitor-flow.spec.ts",
+				"apps/search/tests/e2e/org-member-clerk.spec.ts",
+				"scripts/ci/junit-log*",
+				// tests/contract/test_stop_drain.py reads the metal compose, and test_ci_scope_reads.py checks this task's inputs here.
+				"apps/infra/metal/compose.yml",
+				"turbo.json",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		"//#ci:research-agent-be": {
+			"inputs": [
+				"apps/research-agent-be/**",
+				// test_email_line_judge.py pins JUDGE_MODEL to the model Settings > AI names (EMAIL_LINE_CHECK_MODEL).
+				"convex/search/aiModels.ts",
+				// test_search_campaign_read_tools.py reads the keys the crawler's CreatorFilters takes.
+				"apps/crawler-v3/src/index/schemas.py",
+				"scripts/ci/netbox*",
+				"scripts/ci/tasks/python-app.sh",
+				"scripts/ci/junit-log*",
+				// test_search_tool_niches.py reads the crawler's niche slugs, and test_search_query_creators_metadata.py its rate ceilings.
+				"apps/crawler-v3/src/catalog/niches.json",
+				"apps/crawler-v3/src/index/rate_rules.json",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		// scripts/ci/ci-scope.mjs builds this suite's macOS read sandbox from these inputs (FIXED_COST.commit_fixtures), so the
+		// task reads only files it hashes. guard-ci-inputs.mjs fixtureGaps fails a commit and guard-ci-inputs.test.mjs fails CI
+		// when a module the fixtures load is missing here.
+		"//#ci:commit-fixtures": {
+			"inputs": [
+				// commit.mjs, land-object.mjs, the two harness files, the scripts the harness runs by path, and every module they
+				// import (fixtureGaps lists them). The stale-tree cases run the checkout's commit.mjs, which reads files beside it.
+				"scripts/repo/agent/**",
+				"apps/search/scripts/search-auth-layer.mjs",
+				"apps/search/tests/e2e/projects.mjs",
+				"apps/virev-demo/overlay/src/lib/variants/chain.js",
+				"apps/virev-demo/overlay/src/lib/variants/line-hash.ts",
+				"apps/virev-demo/overlay/src/lib/variants/line-moves.js",
+				"scripts/ci/branches.mjs",
+				"scripts/ci/guard-ci-inputs.mjs",
+				"scripts/ci/import-closure.mjs",
+				"scripts/ci/is-probe.mjs",
+				"scripts/ci/json-merge.mjs",
+				"scripts/ci/land-base.mjs",
+				"scripts/ci/land-critical.mjs",
+				"scripts/ci/probe-judged.mjs",
+				"scripts/ci/runner-lost.mjs",
+				"scripts/ci/search-build-imports.mjs",
+				"scripts/ci/search-e2e-shards.mjs",
+				"scripts/ci/tasks/guard-suites.mjs",
+				"scripts/ci/test-reads.mjs",
+				"scripts/ci/warn-shard.mjs",
+				"scripts/dev/ci-code-metrics.mjs",
+				"scripts/duties/repo/limit-scan.mjs",
+				"scripts/lib/known-secret-values.mjs",
+				"scripts/lib/redact.mjs",
+				"scripts/redact.mjs",
+				"scripts/repo/clickhouse-admin-reads.mjs",
+				"scripts/repo/fixture-git-scan.mjs",
+				"scripts/repo/missing-imports.mjs",
+				"scripts/repo/test-git-env.mjs",
+				// Files read or run by path: the env policy commit.mjs runs, the toolchain that installs the prettier the fixture
+				// links from node_modules, the Python fixture env, the touched-test runner's python-app.sh (509a9429fc), and
+				// check-skill-paths.mjs with the gh-annotate.mjs it prints through (9175faa12d).
+				"scripts/ci/check-env-policy.mjs",
+				"package.json",
+				"pnpm-lock.yaml",
+				"pnpm-workspace.yaml",
+				".npmrc",
+				"scripts/repo/git_fixture_env.py",
+				"scripts/ci/tasks/python-app.sh",
+				"scripts/ci/check-skill-paths.mjs",
+				"scripts/ci/gh-annotate.mjs",
+				// The runner: node-junit.sh builds the sandbox with ci-scope.mjs and prints the junit file with junit-log.sh.
+				"scripts/ci/tasks/node-junit.sh",
+				"scripts/ci/ci-scope.mjs",
+				"scripts/ci/app-manifest.mjs",
+				"scripts/ci/junit-log*",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		"//#ci:services-test": {
+			"inputs": [
+				"scripts/ci/services*",
+				"scripts/ci/tasks/node-junit.sh",
+				"scripts/ci/junit-log*",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		"//#ci:convex-codegen": {
+			"inputs": [
+				"convex/**",
+				"apps/research-agent-be/src/search/private_life.json",
+				"scripts/ci/services.sh",
+				"scripts/ci/tasks/convex-codegen.sh",
+				// convex/vitest.config.ts imports FILE_SECONDS from it (fb781643b8), and convex/tsconfig.json types that config.
+				"scripts/ci/backend-regressions.mjs",
+				"scripts/ci/backend-file-seconds.json",
+				// convex/vitest.config.ts imports its globCacheBailout plugin.
+				"scripts/ci/vitest-fs-cache.mjs",
+				// Files convex/ tests and the code they load import from outside convex/ (guard-ci-inputs.mjs convexTestGaps).
+				"apps/crawler-v3/src/index/rate_rules.json",
+				"apps/search/messages/en.json",
+				"apps/search/tests/e2e/helpers/crawler-stub/roster.mjs",
+				"ops/schema/convex-usage.sql",
+				"scripts/ci/backend-related.mjs",
+				"package.json",
+				"pnpm-lock.yaml",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		"//#ci:card-check": {
+			"inputs": [
+				"ops/golden/tests/browser/**",
+				"ops/golden/lib/**",
+				"apps/search/package.json",
+				"package.json",
+				"pnpm-lock.yaml",
+				"pnpm-workspace.yaml",
+				".npmrc",
+				"scripts/ci/tasks/node-junit.sh",
+				"scripts/ci/junit-log*",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		// lint-mac's load of the unpacked dm-extension into a real Chromium (apps/dm-extension/tests/browser-load.mjs),
+		// with the Playwright the lockfile pins.
+		"//#ci:dm-extension-browser": {
+			"inputs": [
+				"apps/dm-extension/**",
+				"packages/config/box-browser.mjs",
+				"apps/search/package.json",
+				"package.json",
+				"pnpm-lock.yaml",
+				"pnpm-workspace.yaml",
+				".npmrc",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**",
+				"!**/.pytest_cache/**",
+				"!**/.ruff_cache/**",
+				"!**/.turbo/**",
+				"!**/.svelte-kit/**",
+				"!**/paraglide/**"
+			],
+			"outputs": []
+		},
+		"search#i18n:audit": { "dependsOn": ["transit"], "outputs": [] },
+		// The search integration and browser tests (scripts/ci/tasks/search-e2e.sh). search#transit carries search's own
+		// files and its workspace dependencies into the hash. The secrets pass unhashed, and the virev-ci publishable key,
+		// a repo variable, is hashed.
+		"//#ci:search-e2e": {
+			// search#sync writes .svelte-kit/tsconfig.json, which a job that installs with --ignore-scripts lacks.
+			"dependsOn": ["search#transit", "search#sync"],
+			"inputs": [
+				"convex/**",
+				// The gate and spec runs start research-agent-be from this tree (search-e2e.sh research-start), so its whole
+				// source, pyproject and uv.lock are inputs. With only private_life.json listed, verify-dev 41562088937 failed four
+				// email and screening specs on aefaecbdc1, and a pass on 83684302d2, whose tree differs in research's email_draft.py,
+				// shared its task hash, so ci-test-flaky-same-inputs paired two runs of different research code.
+				"apps/research-agent-be/**",
+				"apps/vent/**",
+				"scripts/ci/services.sh",
+				"scripts/ci/tasks/search-e2e.sh",
+				// The gate sources its guest sampler from it.
+				"scripts/ci/guest-sample.sh",
+				// The lanes take every port they bind later from it.
+				"scripts/ci/free-port.mjs",
+				// The gate reads its shard count there, which sets the world parts each shard runs.
+				"scripts/ci/search-e2e-shards.mjs",
+				// The gate runs it beside its lanes and ends a stuck one, so an edit to it alone changes what the task does.
+				"scripts/ci/tasks/search-e2e-watch.sh",
+				"scripts/ci/clerk-ci-fixtures.mjs",
+				"scripts/ci/clerk-outage.mjs",
+				// The gate compares the inline loopback Clerk keys with Clerk's live ones before any lane signs in.
+				"scripts/ci/clerk-jwks-check.mjs",
+				// The gate prints its junit files with these, so virev-ci-history stores each e2e test.
+				"scripts/ci/junit-log.sh",
+				"scripts/ci/tasks/vitest-junit.sh",
+				// The gate and world lanes write a clean world's app env from vent-target.mjs MOCK_PRICES and mock-egress.mjs
+				// MOCK_APP_ENV, and vent-target.mjs loads vent-mail.mjs and dev-apps.cjs as it does. plan.test.mjs checks that
+				// every scripts/ci and scripts/dev file those lanes run is listed here or in plan.mjs E2E_RUNNER's closure.
+				"scripts/dev/vent-target.mjs",
+				"scripts/dev/vent-mail.mjs",
+				"scripts/dev/dev-apps.cjs",
+				"scripts/dev/search-clean-world/mock-egress.mjs",
+				// The world and warn lanes start research-agent-be through these, before their specs run.
+				"scripts/ci/research-agent.mjs",
+				"scripts/dev/search-clean-world/research.mjs",
+				// The lanes set their Convex backend's env through it, from convex/lib/envNames.ts.
+				"scripts/dev/convex-world-env.mjs",
+				"scripts/ci/ci-config.json",
+				"packages/config/box-browser.mjs",
+				"pnpm-lock.yaml",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**"
+			],
+			// A spec probe's spec files and repeat count (scripts/ci/plan.mjs specProbe), unset on every other run, so a spec
+			// run never replays as the gate's result, nor the gate's as a spec run's. A touched run's most world parts
+			// (SEARCH_E2E_PARTS, e2e-touched.mjs leg) decide which specs a shard runs, so a shard of a two-leg run never
+			// replays as a one-leg run's whole result.
+			"env": ["CLERK_CI_PUBLISHABLE_KEY", "SEARCH_E2E_SPECS", "SEARCH_E2E_REPEAT", "SEARCH_E2E_PARTS"],
+			// PLAYWRIGHT_HOST_PLATFORM_OVERRIDE is the ci02 runner's drop-in (apps/infra/ci-server/image/user-data.j2): the
+			// repo's Playwright 1.58.2 refuses ubuntu26.04 without it, and strict env mode dropped it, so probe run 39457190358
+			// failed "Playwright does not support chromium on ubuntu26.04-x64".
+			"passThroughEnv": [
+				"CLERK_CI_SECRET_KEY",
+				"PLAYWRIGHT_HOST_PLATFORM_OVERRIDE",
+				"RUNNER_TEMP",
+				"GITHUB_STEP_SUMMARY",
+				"SEARCH_E2E_PREBUILT"
+			],
+			"outputs": []
+		},
+		// Shard 2 of search / e2e, the same task on another guest (scripts/ci/search-e2e-shards.mjs). Its entry equals the one
+		// above (search-e2e-shards.test.mjs).
+		"//#ci:search-e2e-2": {
+			// search#sync writes .svelte-kit/tsconfig.json, which a job that installs with --ignore-scripts lacks.
+			"dependsOn": ["search#transit", "search#sync"],
+			"inputs": [
+				"convex/**",
+				// The gate and spec runs start research-agent-be from this tree, as in //#ci:search-e2e above.
+				"apps/research-agent-be/**",
+				"apps/vent/**",
+				"scripts/ci/services.sh",
+				"scripts/ci/tasks/search-e2e.sh",
+				// The gate sources its guest sampler from it.
+				"scripts/ci/guest-sample.sh",
+				// The lanes take every port they bind later from it.
+				"scripts/ci/free-port.mjs",
+				// The gate reads its shard count there, which sets the world parts each shard runs.
+				"scripts/ci/search-e2e-shards.mjs",
+				// The gate runs it beside its lanes and ends a stuck one, so an edit to it alone changes what the task does.
+				"scripts/ci/tasks/search-e2e-watch.sh",
+				"scripts/ci/clerk-ci-fixtures.mjs",
+				"scripts/ci/clerk-outage.mjs",
+				// The gate compares the inline loopback Clerk keys with Clerk's live ones before any lane signs in.
+				"scripts/ci/clerk-jwks-check.mjs",
+				// The gate prints its junit files with these, so virev-ci-history stores each e2e test.
+				"scripts/ci/junit-log.sh",
+				"scripts/ci/tasks/vitest-junit.sh",
+				// The gate and world lanes write a clean world's app env from vent-target.mjs MOCK_PRICES and mock-egress.mjs
+				// MOCK_APP_ENV, and vent-target.mjs loads vent-mail.mjs and dev-apps.cjs as it does. plan.test.mjs checks that
+				// every scripts/ci and scripts/dev file those lanes run is listed here or in plan.mjs E2E_RUNNER's closure.
+				"scripts/dev/vent-target.mjs",
+				"scripts/dev/vent-mail.mjs",
+				"scripts/dev/dev-apps.cjs",
+				"scripts/dev/search-clean-world/mock-egress.mjs",
+				// The world and warn lanes start research-agent-be through these, before their specs run.
+				"scripts/ci/research-agent.mjs",
+				"scripts/dev/search-clean-world/research.mjs",
+				// The lanes set their Convex backend's env through it, from convex/lib/envNames.ts.
+				"scripts/dev/convex-world-env.mjs",
+				"scripts/ci/ci-config.json",
+				"packages/config/box-browser.mjs",
+				"pnpm-lock.yaml",
+				"!**/node_modules/**",
+				"!**/.venv/**",
+				"!**/__pycache__/**"
+			],
+			// A spec probe's spec files and repeat count (scripts/ci/plan.mjs specProbe), unset on every other run, so a spec
+			// run never replays as the gate's result, nor the gate's as a spec run's. A touched run's most world parts
+			// (SEARCH_E2E_PARTS, e2e-touched.mjs leg) decide which specs a shard runs, so a shard of a two-leg run never
+			// replays as a one-leg run's whole result.
+			"env": ["CLERK_CI_PUBLISHABLE_KEY", "SEARCH_E2E_SPECS", "SEARCH_E2E_REPEAT", "SEARCH_E2E_PARTS"],
+			// PLAYWRIGHT_HOST_PLATFORM_OVERRIDE is the ci02 runner's drop-in (apps/infra/ci-server/image/user-data.j2): the
+			// repo's Playwright 1.58.2 refuses ubuntu26.04 without it, and strict env mode dropped it, so probe run 39457190358
+			// failed "Playwright does not support chromium on ubuntu26.04-x64".
+			"passThroughEnv": [
+				"CLERK_CI_SECRET_KEY",
+				"PLAYWRIGHT_HOST_PLATFORM_OVERRIDE",
+				"RUNNER_TEMP",
+				"GITHUB_STEP_SUMMARY",
+				"SEARCH_E2E_PREBUILT"
+			],
+			"outputs": []
+		},
+		// The search production build as a check (checks.yml search / build until 2026-10-19, land candidates only). The
+		// app reads only $env/dynamic, so the build bakes no env value; check-convex-env.mjs reads the Convex and Clerk
+		// variables below. search / e2e restores its cached .svelte-kit/output before its task (plan.mjs restoreSearchBuild)
+		// and serves it with vite preview; svelte.config.js makes the e2e's no-adapter build write the same bytes.
+		// It hashes what the bundle can read: the app's files but its tests (app.css tells Tailwind to skip tests/ and
+		// scan every other app file), @virev/ui through ^transit, the tsconfig the app extends, and SEARCH_BUILD_IMPORTS,
+		// the digest of every file outside the app it imports, such as the convex/ modules (scripts/ci/search-build-imports.mjs).
+		// It waits on no transit or sync node, because search#transit hashes all of convex/ and the tests, and vite build
+		// runs svelte-kit sync itself. measured: in 54 e2e lookups from 2026-10-25 06:20Z to 10-26 01:23Z, 15 hit, and
+		// these inputs replay to 25 hits (~/work/push-wait-root-cause/build-hit/findings.md). plan.test.mjs pins them.
+		"search#build": {
+			"dependsOn": ["^transit", "i18n:compile"],
+			"inputs": ["$TURBO_DEFAULT$", "!tests/**", "$TURBO_ROOT$/packages/config/tsconfig.svelte.json"],
+			"env": [
+				"CI",
+				"PUBLIC_CONVEX_URL",
+				"PUBLIC_CONVEX_SITE_URL",
+				"CONVEX_DEPLOYMENT",
+				"ALLOW_IMPERSONATION",
+				"PUBLIC_CLERK_PUBLISHABLE_KEY",
+				"CLERK_PUBLISHABLE_KEY",
+				"SEARCH_BUILD_IMPORTS"
+			],
+			// Where the build lists the modules it loaded (packages/config/vite-module-ids.mjs), which plan.mjs checks
+			// against SEARCH_BUILD_IMPORTS. A path, so it is not hashed. SEARCH_SKIP_ADAPTER, which plan.mjs jobCommand sets,
+			// leaves out the Vercel adapter, which writes only .vercel/output, so the cached output is the same either way.
+			"passThroughEnv": ["SEARCH_BUILD_MODULES_FILE", "SEARCH_SKIP_ADAPTER"],
+			"outputs": [".svelte-kit/output/**"]
+		},
+		// Transit node (turbo docs: crafting-your-repository/configuring-tasks,
+		// core-concepts/package-and-task-graph). No package has a `transit` script, so it runs nothing;
+		// its hash covers the package's files and, through ^transit, every
+		// workspace dependency's. A task that depends on it misses the cache when a
+		// package it imports changes, without waiting for that package's tasks.
+		// Files a package reads outside its own directory and outside its declared
+		// workspace dependencies are listed in its own `<package>#transit` below;
+		// each one repeats the generic inputs and dependsOn.
+		"transit": {
+			"dependsOn": ["^transit"],
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"!$TURBO_ROOT$/**/__pycache__/**",
+				"!$TURBO_ROOT$/**/node_modules/**",
+				"!$TURBO_ROOT$/**/.venv/**",
+				"!$TURBO_ROOT$/**/.svelte-kit/**",
+				"!$TURBO_ROOT$/**/paraglide/**"
+			]
+		},
+		// Each transit names the packages/config files its package reads (scripts/ci/app-manifest.test.mjs checks it), so an
+		// edit there misses only the tasks of the packages that read it.
+		"admin#transit": {
+			"dependsOn": ["^transit"],
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/packages/config/kit-check.mjs",
+				"$TURBO_ROOT$/packages/config/tsconfig.svelte.json",
+				// svelte.config.js aliases the root convex/ for the console's wire types (2a46020617).
+				"$TURBO_ROOT$/convex/**",
+				"!$TURBO_ROOT$/**/__pycache__/**",
+				"!$TURBO_ROOT$/**/node_modules/**",
+				"!$TURBO_ROOT$/**/.venv/**",
+				"!$TURBO_ROOT$/**/.svelte-kit/**",
+				"!$TURBO_ROOT$/**/paraglide/**"
+			]
+		},
+		// tests/sync.test.ts compares convex/lib/categoryIds/idsData.ts, which sync.mjs writes outside the package, and index.ts re-exports that folder.
+		"@virev/taxonomy#transit": {
+			"dependsOn": ["^transit"],
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/convex/lib/categoryIds/**",
+				"!$TURBO_ROOT$/**/__pycache__/**",
+				"!$TURBO_ROOT$/**/node_modules/**",
+				"!$TURBO_ROOT$/**/.venv/**",
+				"!$TURBO_ROOT$/**/.svelte-kit/**",
+				"!$TURBO_ROOT$/**/paraglide/**"
+			]
+		},
+		// Imports @virev/ui through a kit alias without declaring the dependency.
+		"@virev/blog#transit": {
+			"dependsOn": ["^transit"],
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/packages/config/kit-check.mjs",
+				"$TURBO_ROOT$/packages/ui/**",
+				"!$TURBO_ROOT$/**/__pycache__/**",
+				"!$TURBO_ROOT$/**/node_modules/**",
+				"!$TURBO_ROOT$/**/.venv/**",
+				"!$TURBO_ROOT$/**/.svelte-kit/**",
+				"!$TURBO_ROOT$/**/paraglide/**"
+			]
+		},
+		"api-portal#transit": {
+			"dependsOn": ["^transit"],
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/packages/config/kit-check.mjs",
+				"$TURBO_ROOT$/packages/config/playwright-plain-stdio-reporter.ts",
+				"$TURBO_ROOT$/packages/config/tsconfig.svelte.json",
+				"$TURBO_ROOT$/convex/**",
+				"$TURBO_ROOT$/apps/crawler-v3/src/catalog/niches.json",
+				"$TURBO_ROOT$/apps/crawler-v3/src/platforms/instagram/example_responses.json",
+				"$TURBO_ROOT$/apps/crawler-v3/src/platforms/serp/locations.py",
+				"$TURBO_ROOT$/apps/crawler-v3/tests/unit/fixtures/instagram/after-openapi.json",
+				"$TURBO_ROOT$/apps/search/src/lib/server/crawler-client.ts",
+				"!$TURBO_ROOT$/**/__pycache__/**",
+				"!$TURBO_ROOT$/**/node_modules/**",
+				"!$TURBO_ROOT$/**/.venv/**",
+				"!$TURBO_ROOT$/**/.svelte-kit/**",
+				"!$TURBO_ROOT$/**/paraglide/**"
+			]
+		},
+		"search#transit": {
+			"dependsOn": ["^transit"],
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/packages/config/kit-check.mjs",
+				"$TURBO_ROOT$/packages/config/paraglide-compile.mjs",
+				"$TURBO_ROOT$/packages/config/paraglide-count-format.mjs",
+				"$TURBO_ROOT$/packages/config/tsconfig.svelte.json",
+				"$TURBO_ROOT$/packages/config/vite-cache-dir.mjs",
+				"$TURBO_ROOT$/packages/config/vite-kit-console-warn.mjs",
+				"$TURBO_ROOT$/packages/config/vite-lucide-ssr.mjs",
+				"$TURBO_ROOT$/packages/config/vite-module-ids.mjs",
+				"$TURBO_ROOT$/packages/config/vite-ssr-retry.mjs",
+				"$TURBO_ROOT$/packages/config/vite-world-one-tree.mjs",
+				"$TURBO_ROOT$/convex/**",
+				"$TURBO_ROOT$/apps/research-agent-be/src/search/private_life.json",
+				"$TURBO_ROOT$/apps/crawler-v3/src/catalog/niches.json",
+				// Swipe's rankRate (swipe/algorithm.ts) reads the crawler's rate table and rate rules.
+				"$TURBO_ROOT$/apps/crawler-v3/src/index/rate_by_size.json",
+				"$TURBO_ROOT$/apps/crawler-v3/src/index/rate_rules.json",
+				"$TURBO_ROOT$/apps/crawler-v3/src/events/**",
+				// svelte.config.js aliases @virev/taxonomy to packages/taxonomy/src/index.ts, which reads ../categories.json.
+				"$TURBO_ROOT$/packages/taxonomy/src/**",
+				"$TURBO_ROOT$/packages/taxonomy/categories.json",
+				"$TURBO_ROOT$/apps/dm-extension/scripts/**",
+				"!$TURBO_ROOT$/**/__pycache__/**",
+				"!$TURBO_ROOT$/**/node_modules/**",
+				"!$TURBO_ROOT$/**/.venv/**",
+				"!$TURBO_ROOT$/**/.svelte-kit/**",
+				"!$TURBO_ROOT$/**/paraglide/**"
+			]
+		},
+		// The Python package crawler-v3 imports and the category trees src/catalog/taxonomy reads; its test tasks list
+		// them too (apps/crawler-v3/turbo.json).
+		"crawler-v3#transit": {
+			"dependsOn": ["^transit"],
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/packages/sirocco/**",
+				"$TURBO_ROOT$/packages/taxonomy/categories.json",
+				"$TURBO_ROOT$/packages/taxonomy/legacy-maps.json",
+				"!$TURBO_ROOT$/**/__pycache__/**",
+				"!$TURBO_ROOT$/**/node_modules/**",
+				"!$TURBO_ROOT$/**/.venv/**",
+				"!$TURBO_ROOT$/**/.svelte-kit/**",
+				"!$TURBO_ROOT$/**/paraglide/**"
+			]
+		},
+		// i18n:compile reads files scripts/materialize.mjs generates from PIN and overlay/
+		// (untracked since abe2f71504), so the task runs materialize first and hashes its inputs.
+		"virev-demo#i18n:compile": {
+			"inputs": [
+				"PIN",
+				"REMOVED",
+				"overlay/messages/**",
+				"overlay/project.inlang/**",
+				"overlay/paraglide.config.js",
+				"scripts/materialize.mjs",
+				"scripts/materialize-sync.mjs",
+				"scripts/line-folders.mjs",
+				"scripts/compile-paraglide.mjs",
+				"$TURBO_ROOT$/packages/config/paraglide-compile.mjs"
+			],
+			"outputs": ["src/lib/paraglide/**"]
+		},
+		// The declarations of the convex/ copy materialize.mjs writes from PIN (packages/config/convex-dts.mjs), so
+		// check reads the Convex API's types instead of inferring every function again (tsconfig.check.json). Like
+		// i18n:compile it names every file it reads and waits on no transit, so it replays until PIN or these change.
+		// Each of the two reads only its own slice of overlay/: overlay/** changed in 75 commits over 10-18 and
+		// 10-19, overlay/convex/** in 2. TypeScript and the convex package come in through the lockfile hash.
+		"virev-demo#convex:dts": {
+			"inputs": [
+				"PIN",
+				"REMOVED",
+				"overlay/convex/**",
+				"scripts/materialize.mjs",
+				"scripts/materialize-sync.mjs",
+				"scripts/line-folders.mjs",
+				"$TURBO_ROOT$/packages/config/convex-dts.mjs"
+			],
+			"outputs": [".convex-dts/**"]
+		},
+		"virev-demo#check": {
+			"dependsOn": ["transit", "i18n:compile", "sync", "convex:dts"],
+			"outputs": []
+		},
+		// Its own guest runs it (scripts/ci/plan.mjs LINUX_GROUPS demo-unit), so it waits on no check, as search#test:unit
+		// does; the generic test:unit's check edge put check's 381 to 597 s before its 160 to 177 s in linux (demo).
+		// It names no env: every demo test sets its own fixed service env (src/lib/demo-env/env.ts applyDemoServiceEnv).
+		// The copied list named CLERK_SECRET_KEY, so turbo-run.mjs secretBearing kept a red off the known-red record, and
+		// each push reran the same red hash: from 07:52Z to 10:37Z on 2026-10-26, 9 sieun/dev pushes ran 2 hashes for 368 to
+		// 593 s each.
+		// Unit files that read or import repo files outside the app name those files as inputs: deploy-tree-paths.test.ts
+		// reads the deploy-ref workflow, convex-one-copy.test.ts the root importer's convex in pnpm-lock.yaml,
+		// follow-inputs.test.ts turbo.json, line-edit and line-folders import scripts/repo/test-git-env.mjs, pin-crawler-routes
+		// and pin-exports import their scripts/demo modules, and scout-plain-words.test.ts reads the crawler's failure codes.
+		// Without them a push that changed only one of those files replayed a green test:unit from the cache. packages/ui
+		// reaches the hash through transit's ^transit, and the Dockerfile sits in the app under $TURBO_DEFAULT$.
+		"virev-demo#test:unit": {
+			"dependsOn": ["transit", "i18n:compile", "sync"],
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/.github/workflows/virev-demo-deploy-ref.yml",
+				"$TURBO_ROOT$/pnpm-lock.yaml",
+				"$TURBO_ROOT$/turbo.json",
+				"$TURBO_ROOT$/scripts/repo/test-git-env.mjs",
+				"$TURBO_ROOT$/scripts/repo/agent/file-stdin.mjs",
+				"$TURBO_ROOT$/scripts/demo/pin-crawler-routes.mjs",
+				"$TURBO_ROOT$/scripts/demo/pin-exports.mjs",
+				"$TURBO_ROOT$/apps/crawler-v3/src/enrichment/column_exec.py",
+				"$TURBO_ROOT$/apps/crawler-v3/src/enrichment/typesafe.py",
+				"$TURBO_ROOT$/apps/crawler-v3/src/enrichment/column_runs.py",
+				"$TURBO_ROOT$/packages/sirocco/src/sirocco/errors.py",
+				// Under CI the script runs vitest through vitest-junit.sh, which prints its junit file for virev-ci-history.
+				"$TURBO_ROOT$/scripts/ci/tasks/vitest-junit.sh",
+				"$TURBO_ROOT$/scripts/ci/junit-log*",
+				// With DEMO_UNIT_CHANGED set, vitest-junit.sh runs only the files this walk picks (scripts/ci/plan.mjs demoSelection).
+				"$TURBO_ROOT$/scripts/ci/demo-unit-related.mjs"
+			],
+			// The plan's changed variant and unit test paths, so a scoped pass never replays as a full one.
+			"env": ["DEMO_UNIT_CHANGED"],
+			"outputs": []
+		},
+		// The FOLLOW block names the apps/search and convex/ files that apps/virev-demo/FOLLOW makes materialize.mjs copy
+		// from the building commit, so virev-demo#check and virev-demo#test:unit, which wait on this transit, miss when one
+		// changes. Without them an edit to one replayed a stale green. apps/virev-demo/tests/unit/follow-inputs.test.ts fails when
+		// this block and FOLLOW disagree.
+		"virev-demo#transit": {
+			"dependsOn": ["^transit"],
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/packages/config/kit-check.mjs",
+				"$TURBO_ROOT$/packages/config/paraglide-compile.mjs",
+				"$TURBO_ROOT$/packages/config/tsconfig.svelte.json",
+				"$TURBO_ROOT$/packages/config/vite-lucide-ssr.mjs",
+				"$TURBO_ROOT$/apps/crawler-v3/src/catalog/niches.json",
+				"$TURBO_ROOT$/apps/search/src/lib/analytics/replay-hold.ts",
+				"$TURBO_ROOT$/apps/search/src/lib/analytics/replay-options.ts",
+				"$TURBO_ROOT$/apps/search/src/lib/analytics/replay-recorders.ts",
+				"$TURBO_ROOT$/apps/search/src/lib/ui/AddRow.svelte",
+				"$TURBO_ROOT$/apps/search/src/lib/ui/ChoiceTiles.svelte",
+				"$TURBO_ROOT$/apps/search/src/lib/ui/FormSection.svelte",
+				"$TURBO_ROOT$/apps/search/src/lib/ui/InlineField.svelte",
+				"$TURBO_ROOT$/apps/search/src/lib/ui/Tag.svelte",
+				"$TURBO_ROOT$/apps/search/src/lib/ui/TextInput.svelte",
+				"$TURBO_ROOT$/apps/search/src/lib/ui/TreeLines.svelte",
+				"$TURBO_ROOT$/apps/search/src/lib/ui/animated-icon/AnimatedIcon.svelte",
+				"$TURBO_ROOT$/apps/search/src/lib/ui/animated-icon/kit.ts",
+				"$TURBO_ROOT$/apps/search/src/lib/ui/animated-icon/parts/Eye.svelte",
+				"$TURBO_ROOT$/apps/search/src/lib/ui/animated-icon/parts/LayoutDashboard.svelte",
+				"$TURBO_ROOT$/apps/search/src/lib/ui/animated-icon/parts/Plug.svelte",
+				"$TURBO_ROOT$/apps/search/src/lib/ui/animated-icon/parts/Search.svelte",
+				"$TURBO_ROOT$/apps/search/src/lib/ui/animated-icon/parts/Sparkles.svelte",
+				"$TURBO_ROOT$/apps/search/src/lib/ui/filter-match.ts",
+				"$TURBO_ROOT$/apps/search/src/lib/ui/image-view.css",
+				"$TURBO_ROOT$/apps/search/src/lib/ui/menu-look.ts",
+				"!$TURBO_ROOT$/**/__pycache__/**",
+				"!$TURBO_ROOT$/**/node_modules/**",
+				"!$TURBO_ROOT$/**/.venv/**",
+				"!$TURBO_ROOT$/**/.svelte-kit/**",
+				"!$TURBO_ROOT$/**/paraglide/**"
+			]
+		},
+		// The specs package's node tests read a few root files: the junit printer, log-file.sh and log-file.mjs (specs-public-rows,
+		// run.mjs pull), the clean-world helpers that onboarding-walk.mjs imports, and the specs-daily workflow (specs-run.test.mjs).
+		"specs#test": {
+			"dependsOn": ["transit"],
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/scripts/ci/junit-log*",
+				"$TURBO_ROOT$/scripts/ci/log-file*",
+				"$TURBO_ROOT$/scripts/dev/search-clean-world/**",
+				"$TURBO_ROOT$/.github/workflows/specs-daily.yml",
+				// onboarding-walk-cleanup.test.mjs bundles the onboarding page code from HEAD's PAGE_TREES
+				// (apps/specs/lib/onboarding-walk.mjs), so each of those paths is an input.
+				"$TURBO_ROOT$/apps/search/src/**",
+				"$TURBO_ROOT$/apps/search/messages/**",
+				"$TURBO_ROOT$/convex/**",
+				"$TURBO_ROOT$/packages/**",
+				"$TURBO_ROOT$/apps/crawler-v3/src/index/rate_rules.json",
+				// search-clean-world's clerk-gc.mjs and keep-org.mjs import these.
+				"$TURBO_ROOT$/scripts/ci/clerk-ci-fixtures.mjs",
+				"$TURBO_ROOT$/scripts/lib/tier-env.mjs"
+			],
+			"env": ["CI"],
+			"outputs": []
+		},
+		"i18n:compile": {
+			"inputs": [
+				"messages/**",
+				"project.inlang/settings.json",
+				"scripts/compile-paraglide.mjs",
+				"paraglide.config.js",
+				"$TURBO_ROOT$/packages/config/paraglide-compile.mjs"
+			],
+			"outputs": ["src/lib/paraglide/**"]
+		},
+		// sync never writes .svelte-kit/output, but search / e2e restores search#build's output before its search#sync runs,
+		// so a sync entry made then would carry another task's output.
+		"sync": {
+			"dependsOn": ["transit", "i18n:compile"],
+			"outputs": [".svelte-kit/**", "!.svelte-kit/output/**"]
+		},
+		// Python apps only today (ruff check + format --check). JS formatting runs
+		// through lint-staged on commit, so JS packages have no `lint` script and
+		// turbo simply skips them.
+		"lint": {
+			"dependsOn": ["transit"],
+			"outputs": []
+		},
+		"check": {
+			"dependsOn": ["transit", "i18n:compile", "sync"],
+			"outputs": []
+		},
+		// A test starts beside its app's check, not after it. measured: from 10-27 00:20Z to 10-29 00:20Z api-portal#test, started
+		// after api-portal#check, was the last task of 118 of 382 linux (rest) jobs.
+		// Under CI a vitest test prints its junit into the log through scripts/ci/tasks/vitest-junit.sh, which the package
+		// script names, so both root files are in the hash (scripts/ci/junit-suites.mjs).
+		"test": {
+			"dependsOn": ["transit", "i18n:compile", "sync"],
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/scripts/ci/tasks/vitest-junit.sh",
+				"$TURBO_ROOT$/scripts/ci/junit-log*"
+			],
+			"env": [
+				"CI",
+				"CONVEX_DEPLOYMENT",
+				"PUBLIC_CONVEX_URL",
+				"PUBLIC_CONVEX_SITE_URL",
+				"ALLOW_IMPERSONATION",
+				"PUBLIC_CLERK_PUBLISHABLE_KEY",
+				"CLERK_PUBLISHABLE_KEY",
+				"CLERK_SECRET_KEY"
+			],
+			"outputs": []
+		},
+		// vue-single-runtime.test.ts reads the lockfile to check that one vue runtime resolves (guard-ci-inputs.mjs testReadGaps).
+		"api-portal#test": {
+			"dependsOn": ["transit", "i18n:compile", "sync"],
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/scripts/ci/tasks/vitest-junit.sh",
+				"$TURBO_ROOT$/scripts/ci/junit-log*",
+				"$TURBO_ROOT$/pnpm-lock.yaml"
+			],
+			"env": [
+				"CI",
+				"CONVEX_DEPLOYMENT",
+				"PUBLIC_CONVEX_URL",
+				"PUBLIC_CONVEX_SITE_URL",
+				"ALLOW_IMPERSONATION",
+				"PUBLIC_CLERK_PUBLISHABLE_KEY",
+				"CLERK_PUBLISHABLE_KEY",
+				"CLERK_SECRET_KEY"
+			],
+			"outputs": []
+		},
+		// search#test:unit leaves out the check edge. In 23 of 23 saved lint logs where search#check ran in
+		// the "search / lint + typecheck" step, the next step missed it under a new hash and ran it again,
+		// 230 s p50 (llm-wiki sessions/2026/10/18/1501-ci-tooling-sota/svelte/report.md). The workflow adds
+		// search#test:unit only after that step passed, so the check still gates it.
+		"search#test:unit": {
+			"dependsOn": ["transit", "i18n:compile", "sync"],
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/scripts/ci/tasks/vitest-junit.sh",
+				"$TURBO_ROOT$/scripts/ci/junit-log*",
+				// vitest.config.ts imports its glob bail-out plugin (turbo-cache.test.mjs T7b).
+				"$TURBO_ROOT$/scripts/ci/vitest-fs-cache.mjs",
+				// ig-web.test.ts, mcp-db-clickhouse-grant.test.ts and hosted-auth-binding.test.ts read these (guard-ci-inputs.mjs testReadGaps).
+				"$TURBO_ROOT$/apps/dm-extension/src/ig-page.js",
+				"$TURBO_ROOT$/apps/infra/metal/config/clickhouse/explorer-ro.sql",
+				"$TURBO_ROOT$/scripts/repo/convex/call.mjs"
+			],
+			"env": [
+				"CI",
+				"CONVEX_DEPLOYMENT",
+				"PUBLIC_CONVEX_URL",
+				"PUBLIC_CONVEX_SITE_URL",
+				"ALLOW_IMPERSONATION",
+				"PUBLIC_CLERK_PUBLISHABLE_KEY",
+				"CLERK_PUBLISHABLE_KEY",
+				"CLERK_SECRET_KEY",
+				// The plan's selection of unit files (scripts/ci/plan.mjs searchUnitSelection), so a scoped pass never replays as a full one.
+				"SEARCH_UNIT_FILES"
+			],
+			// Set by the nightly turbo --force run only (scripts/ci/plan.mjs), where paraglide-fast-compile.test.ts also
+			// compiles the real messages both ways. Pass-through, so it never changes the hash.
+			"passThroughEnv": ["VIREV_TURBO_FORCE"],
+			"outputs": []
+		},
+		"test:unit": {
+			"dependsOn": ["transit", "i18n:compile", "sync", "check"],
+			"env": [
+				"CI",
+				"CONVEX_DEPLOYMENT",
+				"PUBLIC_CONVEX_URL",
+				"PUBLIC_CONVEX_SITE_URL",
+				"ALLOW_IMPERSONATION",
+				"PUBLIC_CLERK_PUBLISHABLE_KEY",
+				"CLERK_PUBLISHABLE_KEY",
+				"CLERK_SECRET_KEY"
+			],
+			"outputs": []
+		}
+	}
+}

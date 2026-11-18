@@ -362,6 +362,34 @@ test('a comment-only change in a cited CSS or SQL file leaves the page current, 
 	for (const [file, word] of Object.entries(words)) assert.deepEqual(rows[`apps/${word}.html`], [{ ref: file, ...at('05') }]);
 });
 
+// 2026-11-18: 81509c85af changed only comments inside turbo.json's //#ci:search-e2e and //#ci:search-e2e-2 blocks, and
+// python-and-task-order.html and search-legs-and-build.html read as behind code, because code-text.mjs kept JSONC comments.
+test('the turbo.json of 81509c85af keeps both search-e2e tasks current, and a real input change still counts', (t) => {
+	const fixtures = new URL('./fixtures/code-text/', import.meta.url);
+	const [before, after] = ['before', 'after'].map((side) => readFileSync(new URL(`81509c85af-${side}-turbo.json`, fixtures), 'utf8'));
+	const w = fixture(t);
+	w.write('turbo.json', before);
+	w.page('e2e.html', ['turbo.json:://#ci:search-e2e', 'turbo.json:://#ci:search-e2e-2']);
+	w.page('guard.html', ['turbo.json:://#ci:guard-agent']);
+	w.init();
+	w.commit('2026-10-20T01:00:00Z', 'pages');
+	w.write('turbo.json', after);
+	w.commit('2026-10-20T04:00:00Z', '81509c85af');
+	const grown = after.replace('"scripts/ci/guest-sample.sh",', '"scripts/ci/guest-sample.sh",\n\t\t\t\t"scripts/ci/new-input.mjs",');
+	assert.notEqual(grown, after);
+	w.write('turbo.json', grown);
+	w.commit('2026-10-20T05:00:00Z', 'an input');
+	const rows = w.refsByPage();
+	assert.deepEqual(rows['apps/e2e.html'], [{ ref: 'turbo.json:://#ci:search-e2e', ...at('05') }], 'a comment-only change is no change to the task');
+	assert.deepEqual(rows['apps/guard.html'], [{ ref: 'turbo.json:://#ci:guard-agent', ...at('04') }], 'guard-agent lost 19 inputs');
+});
+
+test('JSONC and JSON5 comments are no code, and a comment marker inside a string is', () => {
+	const text = '{\n\t// gone\n\t"//#ci:x": { "url": "https://x.example/*kept*/", /* gone */ "a": 1 } // gone\n}\n';
+	for (const file of ['turbo.json', 'tsconfig.jsonc', 'a.json5'])
+		assert.equal(codeText(text, file), '{\n\t"//#ci:x": { "url": "https://x.example/*kept*/",   "a": 1 }\n}', file);
+});
+
 // 2026-10-29: enterprise-mock.html cited apps/virev-demo/src/routes/dev/design/charts/+page.svelte, a gitignored file a
 // materialize step rewrites, and the engine dated it by mtime, so every materialize flagged the page as changed.
 test('a ref git does not track reads as missing even when a gitignored file sits at its path', (t) => {

@@ -154,7 +154,9 @@ function script(text) {
 
 /**
  * A style sheet without `/* *\/` comments, and without `//` line comments when `lines` is set, as SCSS and Less read
- * them, outside quoted strings and an unquoted `url(...)`, so `url(https://a.example/x.png)` stays.
+ * them, outside quoted strings and an unquoted `url(...)`, so `url(https://a.example/x.png)` stays. JSON with comments
+ * (JSONC, JSON5) reads the same way, because valid JSON holds no `url(` outside a string, so a turbo.json key such as
+ * `"//#ci:guards"` and a value such as `"https://x"` stay.
  * @param {boolean} lines
  */
 const css = (lines) => (/** @type {string} */ text) => {
@@ -400,6 +402,7 @@ const LANGUAGES = [
 	{ match: /\.(?:css|pcss|postcss)$/, strip: css(false) },
 	{ match: /\.(?:scss|less)$/, strip: css(true) },
 	{ match: /\.sql$/, strip: sql },
+	{ match: /\.json[c5]?$/, strip: css(true) },
 	{ match: /\.(?:sh|bash|zsh)$/, strip: shell },
 	{ match: /\.ya?ml$/, strip: yaml },
 	{ match: /\.toml$|^\.env(?:\.[\w.-]+)?$/, strip: toml },
