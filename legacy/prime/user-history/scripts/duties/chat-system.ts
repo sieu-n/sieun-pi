@@ -237,7 +237,13 @@ export function fixWindowWait(metric: { key: string; windowMs?: number } | undef
 /** A red duty whose live fix job does not move its number, with the push line that asks its chat to replace that fix. */
 export interface NotMoving { chat: string; duty: string; line: string;
   /** Set on a serial ask (`SERIAL_MS`): the `serialKey` the push records, so the duty's streak gets the ask once (`serialAsked`). */
-  serial?: string }
+  serial?: string;
+  /**
+   * The `serialKey` the push records for either ask, a replace ask about one fix step or a serial ask, since each asks for a root-cause job: on
+   * 11-18 at 00:27Z d9 asked CI and RepoOps to replace p737 on d1, the chat made p743 at 00:28Z, and with only "d1" recorded the next run would
+   * have asked for a root-cause job again, as a serial ask about p743's 0-run streak.
+   */
+  asks?: string }
 /**
  * How long a duty's metric has missed with no move, across all of its fix steps, before d9 asks once per step for one shared root cause. Each
  * new step starts its own count (`fixNotMoving`), so a duty whose fixes were replaced step after step never read as not moving: CI and RepoOps'
@@ -309,7 +315,7 @@ export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => st
       const lastAsk = asked.get(serialAskKey(duty.chat, duty.duty));
       if (now === undefined || metric.moved || metric.misses < CHANGE_APPROACH_MISSES || now - metric.since < SERIAL_MS || (lastAsk !== undefined && lastAsk >= metric.since)) return [];
       const hours = Math.floor((now - metric.since) / 3_600_000);
-      return [{ chat: duty.chat, duty: duty.duty, serial: key, line: `${name(duty.chat)}: ${duty.name} (${duty.duty}) missed ${metric.key} ${metric.misses} runs in a row over ${hours} h with no move ` +
+      return [{ chat: duty.chat, duty: duty.duty, serial: key, asks: key, line: `${name(duty.chat)}: ${duty.name} (${duty.duty}) missed ${metric.key} ${metric.misses} runs in a row over ${hours} h with no move ` +
         `across all its fix steps, ${shownValue(metric.value, metric.target)} against ${metric.op} ${show(metric.target)}, and its newest step ${duty.fix} began ${under.misses} ` +
         `${under.misses === 1 ? "run" : "runs"} ago. Each new step restarts the count, so replacing steps has not moved it. Start one root-cause job (rlm.spawn, not a new thread) ` +
         `that finds the cause its fix steps share and fixes that cause, on one step with duty "${duty.duty}/${metric.key}", and fold ${duty.fix} into it` }];
@@ -318,7 +324,7 @@ export function fixNotMoving(red: readonly RedDuty[], name: (chat: string) => st
     const worked = under.worked;
     const stall = worked ? `${worked.item}, the item ${duty.fix} works, read ${show(worked.to)} against ${show(worked.target)}, no closer than its ${show(worked.from)} when the first of those runs measured it`
       : `${shownValue(metric.value, metric.target)} against ${metric.op} ${show(metric.target)} and no closer than when ${duty.fix} began`;
-    return [{ chat: duty.chat, duty: duty.duty, line: `${name(duty.chat)}: ${duty.name} (${duty.duty}) missed ${metric.key} ${metric.misses} runs in a row, ` +
+    return [{ chat: duty.chat, duty: duty.duty, asks: serialKey(duty.duty, duty.fix), line: `${name(duty.chat)}: ${duty.name} (${duty.duty}) missed ${metric.key} ${metric.misses} runs in a row, ` +
       `${under.misses} of them under its fix step ${duty.fix}, ${stall}, ` +
       `while ${duty.fix} has a live job. Replace that fix: start a root-cause job (rlm.spawn, not a new thread) that finds why ${duty.fix} does not move the number and fixes that cause, ` +
       `give it its own step with duty "${duty.duty}/${metric.key}", and close or drop ${duty.fix} with a note naming the new step` }];
@@ -786,7 +792,7 @@ export function pushList(facts: Pick<ChatSystemFacts, "idleGoals" | "stuckDuties
   for (const entry of facts.idleGoals) if (entry.goals.length) at(entry.chat).goals = entry.goals;
   for (const step of facts.stuck ?? []) if (!chats.get(step.chat)?.goals.some(goal => goal.id === step.id)) at(step.chat).steps.push(step);
   for (const duty of [...facts.stuckDuties, ...facts.lagging ?? [], ...facts.notMoving ?? []]) at(duty.chat).duties.push(duty.line);
-  for (const duty of facts.notMoving ?? []) if (duty.serial) (at(duty.chat).serials ??= []).push(duty.serial);
+  for (const duty of facts.notMoving ?? []) if (duty.asks) (at(duty.chat).serials ??= []).push(duty.asks);
   for (const item of facts.upkeep) at(item.chat).upkeep.push(item);
   return [...chats].map(([chat, entry]) => ({ chat, ...entry }));
 }

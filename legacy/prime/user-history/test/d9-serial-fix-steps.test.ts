@@ -99,3 +99,28 @@ test("metal d3's root-cause step p269, made after d9's 21:18Z ask, gets no new s
   assert.equal(judged[0]!.serial, undefined);
   assert.match(judged[0]!.line, /under its fix step p269/);
 });
+
+test("a replace ask about one fix step counts as the streak's ask, so the root-cause step that answers it gets no serial ask", () => {
+  // 11-18: CI and RepoOps' d1 push_to_verdict_p90_min missed 9 runs from 11-15 to 11-17 23:21Z, 4 of them under p737. d9's 00:27Z run asked to
+  // replace p737, the chat made p743 at 00:28Z, and the push recorded only "d1", so the next run would have asked again about p743's streak.
+  const ci = "01a1180e-6567-747f-bf44-452520ebdd1b";
+  const asked = Date.parse("2026-11-18T00:27:00Z");
+  const read = (at: number, step: string): DutyRunRecord => ({ duty: "d1", at, trigger: "schedule", ms: 1, verdict: "missed", summary: "",
+    fixes: { push_to_verdict_p90_min: { step, job: `job ${step}`, live: true } satisfies FixLink },
+    metrics: { push_to_verdict_p90_min: { value: 17.7, target: 10, op: "<=", met: false } } });
+  const before = Array.from({ length: 9 }, (_, i) => read(asked - (9 - i) * 6 * HOUR, i < 5 ? "p706" : "p737")).reverse();
+  const d1 = (history: readonly DutyRunRecord[], step: string): RedDuty => {
+    const metric = { ...metricStreaks(history)[0]!, fix: { step, job: `job ${step}`, live: true } };
+    return { chat: ci, duty: "d1", name: "CI system", green: false, misses: metric.misses, stuck: false, metric, fix: step,
+      underFix: fixStepStreak(history, "push_to_verdict_p90_min", step) };
+  };
+  const replace = fixNotMoving([d1(before, "p737")], () => "CI and RepoOps", new Map(), asked);
+  assert.equal(replace.length, 1);
+  assert.match(replace[0]!.line, /Replace that fix/);
+  const log = pushRecords(pushList({ idleGoals: [], stuckDuties: [], upkeep: [], notMoving: replace }), "[d9 push 2026-11-18T00:27Z]", asked)
+    .map(line => JSON.stringify(line)).join("\n");
+  const next = Date.parse("2026-11-18T02:27:00Z");
+  const after = [read(next, "p743"), ...before];
+  assert.deepEqual(fixNotMoving([d1(after, "p743")], () => "CI and RepoOps", serialAsked(log), next), [], "p743 answers the 00:27Z ask");
+  assert.equal(fixNotMoving([d1(after, "p743")], () => "CI and RepoOps", new Map(), next).length, 1, "with no record the serial ask fires");
+});
