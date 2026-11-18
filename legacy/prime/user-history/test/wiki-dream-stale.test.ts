@@ -5,10 +5,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { dateMissingRefs, FLAGGED_MAX, FOLLOW_WINDOW_MS, measureDream, parseDeletions, parseStale, piRef, piRemovalArgs, pickFlagged, staleExcerpt, type DreamDeps } from "../scripts/duties/wiki-dream.ts";
+import { dateMissingRefs, FLAGGED_MAX, FOLLOW_WINDOW_MS, measureDream, parseDeletions, parseStale, piRef, pickFlagged, removableRef, removalArgs, staleExcerpt, type DreamDeps } from "../scripts/duties/wiki-dream.ts";
 import { judge, type DutyMetric } from "../src/shared/chat-duties.ts";
 
 const DUTY = JSON.parse(readFileSync(new URL("../scripts/duties/wiki-dream.duty.json", import.meta.url), "utf8")) as { metrics: unknown[] };
@@ -116,33 +116,45 @@ test("dateMissingRefs matches a deleted file by its path, an app-relative or fol
 });
 
 // On 2026-11-03 sieun-pi 187b2866 (14:47Z) removed apps/chat/server/search.ts `missingNote`, and the 15:08Z run counted
-// domains/devops/sw-factory-threads/index.html at once, since no sieun-pi hook runs the follow gate that covers auto-sns-agent.
-test("a missing sieun-pi definition is followed from the sieun-pi commit that removed it, and a missing auto-sns-agent definition counts at once", async () => {
+// domains/devops/sw-factory-threads/index.html at once. On 2026-11-18 the auto-sns-agent take-in 86af8e8f17 (00:04:42Z) removed
+// scripts/dev/release-runner-toggle.mjs `STANDING` past the follow gate, and the 09:10 KST run counted domains/architecture/ci-deploy/runners.html at once.
+test("a missing definition is followed from the commit that removed it in either repo, and one no commit explains counts at once", async () => {
   const now = Date.parse("2026-11-03T15:08:00Z");
   const missing = "missing — ref no longer exists";
   const stale = { stale: [
     { path: "domains/devops/sw-factory-threads/index.html", last_verified: "2026-11-03T14:00Z", verified_at: "2026-11-03T14:00:00.000Z",
       staleRefs: [{ ref: "sieun-pi:apps/chat/server/search.ts::run", modified: missing }, { ref: "sieun-pi:apps/chat/server/search.ts::missingNote", modified: missing }] },
+    { path: "domains/architecture/ci-deploy/runners.html", last_verified: "2026-11-03T14:00Z", verified_at: "2026-11-03T14:00:00.000Z",
+      staleRefs: [{ ref: "scripts/dev/release-runner-toggle.mjs::STANDING", modified: missing }] },
     { path: "apps/search/ads-library.html", last_verified: "2026-11-03T14:00Z", verified_at: "2026-11-03T14:00:00.000Z",
       staleRefs: [{ ref: "convex/search/adLibrary.ts::pruneOrphanAds", modified: missing }] },
   ] };
   const base = deps();
-  const piLogs: string[][] = [];
+  const removals: string[][] = [];
   const result = await measureDream({ ...base, now, exec: async (file, args, options) => {
-    if (file === "node") return JSON.stringify({ facts: { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 2, lint_failing_pages: 0 },
+    if (file === "node") return JSON.stringify({ facts: { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 3, lint_failing_pages: 0 },
       items: [], errors: [], dupPairs: [], signals: [], stale });
-    if (file === "git" && args[1] === "/pi" && args.includes("-n1")) { piLogs.push([...args]); return `${Date.parse("2026-11-03T14:47:00Z") / 1000}\n`; }
+    if (file === "git" && args.includes("-n1")) {
+      removals.push([...args]);
+      if (args[1] === "/pi") return `${Date.parse("2026-11-03T14:47:00Z") / 1000}\n`;
+      return args.includes(":(literal)scripts/dev/release-runner-toggle.mjs") ? `${Date.parse("2026-11-03T14:50:00Z") / 1000}\n` : "";
+    }
     if (file === "git" && args.includes("--diff-filter=D")) return "";
     return base.exec(file, args, options);
   } }, []);
-  assert.equal(result.metrics.pages_behind_code, 1, "only the auto-sns-agent page counts, since the follow gate refuses such a commit there");
+  assert.equal(result.metrics.pages_behind_code, 1, "only the page whose definition no commit removed counts");
   assert.equal(result.metrics.source_errors, 0);
-  assert.equal(piLogs.length, 2);
-  assert.ok(piLogs[0]!.includes("--first-parent") && piLogs[0]!.at(-1) === "apps/chat/server/search.ts" && piLogs[0]!.includes("--since-as-filter=2026-11-03T14:00:00.000Z"),
+  assert.equal(removals.length, 4);
+  const pi = removals.find(args => args[1] === "/pi")!;
+  assert.ok(pi.includes("--first-parent") && pi.at(-1) === ":(literal)apps/chat/server/search.ts" && pi.includes("--since-as-filter=2026-11-03T14:00:00.000Z"),
     "it reads commits after the page's check, which is inside the window");
-  assert.ok(piLogs.some(args => args.includes("-G(^|[^[:alnum:]_$])missingNote([^[:alnum:]_$]|$)")), "only a commit that changed a line naming the definition dates it");
-  const page = (result.flagged ?? []).find(slice => slice.item === "domains/devops/sw-factory-threads/index.html");
-  assert.match(page!.excerpt, /behind since 14:47Z, counted from 15:57Z; code changed since: sieun-pi:apps\/chat\/server\/search\.ts::run \(missing\)/);
+  assert.ok(removals.some(args => args.includes("-G(^|[^[:alnum:]_$])missingNote([^[:alnum:]_$]|$)")), "only a commit that changed a line naming the definition dates it");
+  const runners = removals.find(args => args.includes(":(literal)scripts/dev/release-runner-toggle.mjs"))!;
+  assert.deepEqual(runners.slice(0, 2), ["-C", "/wiki"]);
+  assert.ok(runners.includes(":(glob)apps/*/scripts/dev/release-runner-toggle.mjs") && runners.includes("-G(^|[^[:alnum:]_$])STANDING([^[:alnum:]_$]|$)"));
+  const excerpt = (path: string) => (result.flagged ?? []).find(slice => slice.item === path)!.excerpt;
+  assert.match(excerpt("domains/devops/sw-factory-threads/index.html"), /behind since 14:47Z, counted from 15:57Z; code changed since: sieun-pi:apps\/chat\/server\/search\.ts::run \(missing\)/);
+  assert.match(excerpt("domains/architecture/ci-deploy/runners.html"), /behind since 14:50Z, counted from 16:00Z/);
 });
 
 test("piRef reads a sieun-pi file or definition ref and drops a line suffix", () => {
@@ -153,7 +165,7 @@ test("piRef reads a sieun-pi file or definition ref and drops a line suffix", ()
 
 // On 2026-11-04 the auto-sns-agent tip held addbbf5329 (13:12:35Z) above afc3ff7332 (13:13:02Z), and `--since=13:12:40Z` stopped at
 // the first and never listed the second.
-test("piRemovalArgs finds a removal dated after the check below a commit dated before it", (t) => {
+test("removalArgs finds a removal dated after the check below a commit dated before it", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "wiki-dream-since-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const env: NodeJS.ProcessEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), GIT_CEILING_DIRECTORIES: dirname(dir) };
@@ -168,6 +180,32 @@ test("piRemovalArgs finds a removal dated after the check below a commit dated b
   commit("search.ts", "export function missingNote() {}\nexport function run() {}\n", "2026-11-04T13:00:00Z");
   commit("search.ts", "export function run() {}\n", "2026-11-04T13:13:02Z");
   commit("other.ts", "x\n", "2026-11-04T13:12:35Z");
-  const removedAt = git(piRemovalArgs(dir, { path: "search.ts", name: "missingNote" }, Date.parse("2026-11-04T13:12:40Z"))).trim();
+  const removedAt = git(removalArgs(dir, removableRef("sieun-pi:search.ts::missingNote")!, Date.parse("2026-11-04T13:12:40Z"))).trim();
   assert.equal(Number(removedAt) * 1000, Date.parse("2026-11-04T13:13:02Z"));
+});
+
+// The runners.html case: the file stays and only its `STANDING` definition goes, in a commit after the page's check.
+test("removalArgs dates an auto-sns-agent definition taken off a file that stays, under the root or an app folder, and leaves an unexplained one undated", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "wiki-dream-def-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const env: NodeJS.ProcessEnv = { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))), GIT_CEILING_DIRECTORIES: dirname(dir) };
+  const git = (args: string[], at?: string) => execFileSync("git", args, { cwd: dir, encoding: "utf8",
+    env: at ? { ...env, GIT_AUTHOR_DATE: at, GIT_COMMITTER_DATE: at } : env });
+  const commit = (file: string, text: string, at: string) => {
+    mkdirSync(dirname(join(dir, file)), { recursive: true });
+    writeFileSync(join(dir, file), text);
+    git(["add", file]);
+    git(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", file], at);
+  };
+  git(["init", "-q"]);
+  commit("scripts/dev/release-runner-toggle.mjs", "const STANDING = 1;\nconst STANDINGS = 2;\nrun();\n", "2026-11-17T20:00:00Z");
+  commit("apps/web/src/lib/tick.ts", "export const tock = 1;\n", "2026-11-17T20:00:00Z");
+  commit("scripts/dev/release-runner-toggle.mjs", "const STANDINGS = 2;\nrun();\n", "2026-11-18T00:04:42Z");
+  commit("apps/web/src/lib/tick.ts", "export const other = 1;\n", "2026-11-18T00:05:00Z");
+  const after = Date.parse("2026-11-17T23:00:00Z");
+  const at = (ref: string) => git(removalArgs(dir, removableRef(ref)!, after)).trim();
+  assert.equal(Number(at("scripts/dev/release-runner-toggle.mjs::STANDING")) * 1000, Date.parse("2026-11-18T00:04:42Z"));
+  assert.equal(Number(at("src/lib/tick.ts::tock")) * 1000, Date.parse("2026-11-18T00:05:00Z"));
+  assert.equal(at("scripts/dev/release-runner-toggle.mjs::NEVER"), "");
+  assert.equal(removableRef("scripts/dev/release-runner-toggle.mjs"), null);
 });

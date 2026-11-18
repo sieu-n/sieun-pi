@@ -338,33 +338,50 @@ export function piRef(ref: string): { path: string; name?: string } | null {
   return match[2] ? { path, name: match[2] } : { path };
 }
 
+/** A ref whose removal a commit can date: the repo that holds it, the pathspecs its file resolves to, and the definition name it cites. */
+export interface RemovableRef { repo: "pi" | "wiki"; paths: string[]; name?: string }
+
 /**
- * The `git log` arguments that find the newest first-parent sieun-pi commit after `after` that took the ref off HEAD: one that changed a line
+ * The commit-datable form of a ref: a `sieun-pi:` file or definition ref, or an auto-sns-agent `<path>::<name>` ref. wiki-health resolves a
+ * bare auto-sns-agent path under the repo root or an app folder, so both are read. A bare auto-sns-agent file ref is left to dateMissingRefs.
+ */
+export function removableRef(ref: string): RemovableRef | null {
+  const pi = piRef(ref);
+  if (pi) return { repo: "pi", paths: [`:(literal)${pi.path}`], ...pi.name ? { name: pi.name } : {} };
+  const file = refFile(ref);
+  const name = /::(\S(?:.*\S)?)$/.exec(ref)?.[1];
+  if (!file || !name) return null;
+  return { repo: "wiki", paths: [`:(literal)${file}`, `:(glob)apps/*/${file.replace(/[*?[\]\\]/g, "\\$&")}`], name };
+}
+
+/**
+ * The `git log` arguments that find the newest first-parent commit after `after` that took the ref off HEAD: one that changed a line
  * holding the definition's name as a word, or for a whole-file ref one that touched the path. Renames stay off, so a moved file reads as the
  * deletion it is for the ref. Every date-limited log in this duty passes `--since-as-filter`, because `--since` stops at the first commit dated
  * before the cutoff, and on 2026-11-04 parallel lands left the auto-sns-agent tip dated out of order, so `--since=13:12:40Z` missed afc3ff7332 (13:13:02Z).
  */
-export function piRemovalArgs(repo: string, ref: { path: string; name?: string }, after: number): string[] {
+export function removalArgs(repo: string, ref: { paths: readonly string[]; name?: string }, after: number): string[] {
   const word = ref.name && `(^|[^[:alnum:]_$])${ref.name.replace(/[.[\]()*+?{}|^$\\]/g, "\\$&")}([^[:alnum:]_$]|$)`;
-  return ["-C", repo, "--literal-pathspecs", "log", "HEAD", "--first-parent", "--no-renames", "-n1", "--format=%ct", `--since-as-filter=${new Date(after).toISOString()}`,
-    ...(word ? [`-G${word}`] : []), "--", ref.path];
+  return ["-C", repo, "log", "HEAD", "--first-parent", "--no-renames", "-n1", "--format=%ct", `--since-as-filter=${new Date(after).toISOString()}`,
+    ...(word ? [`-G${word}`] : []), "--", ...ref.paths];
 }
 
 /**
- * Dates each undated `sieun-pi:` ref by the sieun-pi commit that removed it (`removedAt`, given the ref and the earliest time worth reading),
- * so a page whose cited sieun-pi definition or file went away gets the follow window a deleted auto-sns-agent file gets. auto-sns-agent's
- * commit.mjs runs the follow gate (apps/wiki/scripts/follow-gate.mjs), which refuses a commit that removes a definition a page cites, so an
- * undated auto-sns-agent definition still counts at once; no sieun-pi hook runs that gate. On 2026-11-03 sieun-pi 187b2866 (14:47Z) removed
- * apps/chat/server/search.ts `missingNote`, and the 15:08Z run counted domains/devops/sw-factory-threads/index.html at once with no
- * window to follow it. Only a commit after the page's check and inside the window is read, since an older removal counts anyway.
+ * Dates each undated ref that `removableRef` reads by the commit that removed it (`removedAt`, given the ref and the earliest time worth
+ * reading), so a page whose cited definition or sieun-pi file went away gets the follow window a deleted auto-sns-agent file gets. On
+ * 2026-11-03 sieun-pi 187b2866 (14:47Z) removed apps/chat/server/search.ts `missingNote`, and the 15:08Z run counted
+ * domains/devops/sw-factory-threads/index.html at once. auto-sns-agent's follow gate (apps/wiki/scripts/follow-gate.mjs) does not stop every
+ * such removal there: on 2026-11-18 the take-in 86af8e8f17 (00:04:42Z) removed scripts/dev/release-runner-toggle.mjs `STANDING`, and the
+ * 09:10 KST run counted domains/architecture/ci-deploy/runners.html at once. Only a commit after the page's check and inside the window is
+ * read, since an older removal counts anyway; a ref no commit explains stays undated.
  */
-export async function datePiRefs(pages: readonly StalePage[], now: number,
-  removedAt: (ref: { path: string; name?: string }, after: number) => Promise<number | undefined>): Promise<StalePage[]> {
+export async function dateRemovedRefs(pages: readonly StalePage[], now: number,
+  removedAt: (ref: RemovableRef, after: number) => Promise<number | undefined>): Promise<StalePage[]> {
   return Promise.all(pages.map(async page => {
     const checked = Date.parse(page.verified_at ?? page.last_verified);
     const after = Math.max(Number.isFinite(checked) ? checked : 0, now - FOLLOW_WINDOW_MS);
     const staleRefs = await Promise.all(page.staleRefs.map(async ref => {
-      const cited = piRef(ref.ref);
+      const cited = removableRef(ref.ref);
       if (!cited || ref.since !== undefined || Number.isFinite(Date.parse(ref.modified))) return ref;
       const at = await removedAt(cited, after);
       return at === undefined || at <= after ? ref : { ...ref, since: new Date(at).toISOString() };
@@ -689,10 +706,10 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
       "--format=%x1e%ct", "--name-only"], { cwd: deps.repos.wiki, timeoutMs: GIT_TIMEOUT_MS })
       .then(text => dateMissingRefs(listed, parseDeletions(text))).catch(error => { fail("git log deletions", error); return listed; })
     : listed;
-  const stalePages = datedWiki && await datePiRefs(datedWiki, now, (ref, after) =>
-    deps.exec("git", piRemovalArgs(deps.repos.pi, ref, after), { cwd: deps.repos.pi, timeoutMs: GIT_TIMEOUT_MS })
+  const stalePages = datedWiki && await dateRemovedRefs(datedWiki, now, (ref, after) =>
+    deps.exec("git", removalArgs(deps.repos[ref.repo], ref, after), { cwd: deps.repos[ref.repo], timeoutMs: GIT_TIMEOUT_MS })
       .then(text => { const at = Number(text.trim()) * 1000; return at > 0 ? at : undefined; })
-      .catch(error => { fail(`git log sieun-pi ${ref.path}`, error); return undefined; }));
+      .catch(error => { fail(`git log ${ref.repo === "pi" ? "sieun-pi" : "auto-sns-agent"} ${ref.paths[0]}`, error); return undefined; }));
   const metrics: Record<string, number> = {};
   for (const key of HEALTH_METRICS) metrics[key] = health?.facts[key] ?? UNMEASURED;
   const following = stalePages?.filter(page => { const fell = behindSince(page); return fell > 0 && now - fell <= FOLLOW_WINDOW_MS; });
