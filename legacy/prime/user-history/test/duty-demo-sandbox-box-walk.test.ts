@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { readWalk, slowestPage } from "../scripts/duties/demo-sandbox.ts";
 import { asideRepl, type Repl } from "../scripts/duties/aside-repl.ts";
 import { boxCommand, boxRepl } from "../scripts/duties/box-repl.ts";
-import { BROWSER_URL, egressLines, MARK_OLD, MARKETING_TITLE, NEW_TEXT, REPL_LIB, runWalk, scenarioTitle, testErrors, walkRepl, walkReport } from "../scripts/duties/demo-sandbox-walk.ts";
+import { BROWSER_URL, egressLines, LONG_CPU, MARK_OLD, MARKETING_TITLE, NEW_TEXT, REPL_LIB, runWalk, scenarioTitle, testErrors, walkRepl, walkReport } from "../scripts/duties/demo-sandbox-walk.ts";
 import { BASE_URL } from "../scripts/duties/demo-sandbox.ts";
 
 const clean = { outside: [], violations: [], failed: [] };
@@ -125,6 +125,25 @@ test("a kept view that a switch shows again counts as shown, while the view on s
   campaigns.shown = true;
   assert.equal(newText(page(main)), true);
   assert.ok(REPL_LIB.includes(NEW_TEXT) && REPL_LIB.includes(MARK_OLD));
+});
+
+// 11-18 00:49Z: the walk read /app/dashboards at 9,440 ms of long tasks at box load 118 to 194; the 02:20Z walk at load 43 read it at 547.
+test("a load counts its long tasks by main-thread CPU time from the trace, so a busy box adds nothing", () => {
+  const longCpu = new Function("TASK", `return ${LONG_CPU}`)("ThreadControllerImpl::RunTask") as (events: object[], read: { at: number; until: number }) => number | null;
+  const task = (ts: number, tdur: number, tid = 7) => ({ name: "ThreadControllerImpl::RunTask", pid: 7, tid, ts, dur: tdur * 10, tdur });
+  const origin = 1_000_000_000;
+  const events = [
+    task(origin - 500_000, 300_000),
+    task(origin + 100_000, 120_000),
+    task(origin + 900_000, 40_000),
+    task(origin + 1_200_000, 200_000, 9),
+    task(origin + 2_500_000, 80_000),
+    task(origin + 6_000_000, 400_000),
+    { name: "walk-load-read", pid: 7, tid: 7, ts: origin + 8_000_000 },
+  ];
+  assert.equal(longCpu(events, { at: 8000, until: 5000 }), 200);
+  assert.equal(longCpu(events.slice(0, -1), { at: 8000, until: 5000 }), null);
+  assert.match(REPL_LIB, /const longCpu = function longCpu/);
 });
 
 test("the REPL side of the walk is valid JavaScript with no TypeScript left in it", () => {

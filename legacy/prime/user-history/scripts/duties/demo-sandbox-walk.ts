@@ -29,7 +29,8 @@ export const BROWSER_URL = BASE_URL.replace("//localhost:", "//d1walk.localhost:
  * The REPL code was written for the Aside REPL, which has no addInitScript and no request or console events, and keeps that shape: each
  * document gets its observers right after its navigation commits, and buffered entries cover what came before: outside requests and failed
  * assets from Resource Timing, CSP violations from a buffered ReportingObserver (violations from a browser extension are skipped), and long
- * tasks from a buffered PerformanceObserver. A document the app replaces between two reads (the /configure bounce page) can lose its entries;
+ * tasks from a buffered PerformanceObserver. A full load's long tasks come from a Chrome trace its goto records instead (LONG_CPU), timed by
+ * thread CPU time, so the box's load no longer counts as page time. A document the app replaces between two reads (the /configure bounce page) can lose its entries;
  * the dev server's own egress record still lists every outside call it refused. A load's first shown frame is watched from the commit, so a
  * page that showed before the watcher ran reads at the watcher's start.
  */
@@ -83,6 +84,23 @@ export const NEW_TEXT = String.raw`function newText(element) {
 }`;
 
 /**
+ * Node-side source, put into REPL_LIB, that counts a load's long tasks from the Chrome trace its goto recorded: main-thread tasks of the
+ * document's renderer that started between its time origin and `read.until` (the first shown frame, or the read when it never showed), and
+ * that ran 50 ms or more of thread CPU time, summed by that CPU time. `read.at` is the page's clock at its `walk-load-read` mark, which places
+ * the time origin on the trace's clock. The page's own longtask entries time each task by the wall clock, so every other process on the box
+ * Chrome's host stretched them: at box load 146 on 11-18, one load of /app/dashboards read 13,307 ms of long tasks by the wall clock and
+ * 1,239 ms by CPU time before it showed, and the 00:49Z walk at load 118 to 194 read 9,440 ms for a page the 02:20Z walk at load 43 read at 547.
+ */
+export const LONG_CPU = String.raw`function longCpu(events, read) {
+  const mark = events.findLast((event) => event.name === "walk-load-read");
+  if (!mark) return null;
+  const origin = mark.ts - read.at * 1000, until = origin + read.until * 1000;
+  let sum = 0;
+  for (const event of events) if (event.name === TASK && event.pid === mark.pid && event.tid === mark.tid && event.ts >= origin && event.ts < until && event.tdur >= 50000) sum += event.tdur;
+  return Math.round(sum / 1000);
+}`;
+
+/**
  * The REPL side of the walk, defined once as `globalThis.__walk`. Functions passed to `evaluate` run in the page. It keeps what every document
  * of the current test showed in `seen`, read before each navigation and at the end of each step.
  */
@@ -90,8 +108,11 @@ export const REPL_LIB = String.raw`
 globalThis.__walk = (() => {
   const LOCAL = ["localhost", "127.0.0.1", "[::1]"];
   const ASSETS = ["img", "script", "link", "css", "video", "audio", "font"];
+  const TASK = "ThreadControllerImpl::RunTask";
   let tab = null;
+  let trace = null;
   let seen = { outside: [], violations: [], failed: [] };
+  const longCpu = ${LONG_CPU};
   const destroyed = (error) => /Execution context was destroyed|Cannot find context with specified id|navigation|Target closed|detached/i.test(String(error));
 
   function pageInstall() {
@@ -157,9 +178,11 @@ globalThis.__walk = (() => {
 
   function pageTimeLoad() {
     const clock = window;
-    const until = clock.__walkFirstShown ?? performance.now();
-    const longMs = clock.__walkLong.filter(([at]) => at < until).reduce((sum, [, duration]) => sum + duration, 0);
-    return { ms: clock.__walkFirstShown === null ? null : Math.round(clock.__walkFirstShown), longMs: Math.round(longMs), origin: performance.timeOrigin };
+    performance.mark("walk-load-read");
+    const at = performance.now();
+    const until = clock.__walkFirstShown ?? at;
+    const longMs = clock.__walkLong.filter(([start]) => start < until).reduce((sum, [, duration]) => sum + duration, 0);
+    return { ms: clock.__walkFirstShown === null ? null : Math.round(clock.__walkFirstShown), longMs: Math.round(longMs), origin: performance.timeOrigin, at, until };
   }
 
   /**
@@ -227,8 +250,42 @@ globalThis.__walk = (() => {
     if (out) for (const key of Object.keys(seen)) seen[key].push(...out[key]);
   }
 
+  /** Starts the Chrome trace of the next document, keeping only what longCpu reads, and ends the one an earlier goto left running. */
+  async function traceStart() {
+    await traceStop().catch(() => {});
+    const cdp = await tab.context().newCDPSession(tab);
+    const events = [];
+    cdp.on("Tracing.dataCollected", ({ value }) => {
+      for (const event of value) if (event.name === "walk-load-read" || (event.name === TASK && event.tdur >= 50000)) events.push(event);
+    });
+    await cdp.send("Tracing.start", { traceConfig: { includedCategories: ["toplevel", "blink.user_timing"] }, transferMode: "ReportEvents" });
+    trace = { cdp, events };
+  }
+
+  /** Ends the running trace and returns its events, or null when no goto started one. */
+  async function traceStop() {
+    const running = trace;
+    trace = null;
+    if (!running) return null;
+    const complete = new Promise((resolve) => running.cdp.once("Tracing.tracingComplete", resolve));
+    await running.cdp.send("Tracing.end");
+    await complete;
+    await running.cdp.detach().catch(() => {});
+    return running.events;
+  }
+
+  /** A load's reading with its long tasks counted by CPU time from its goto's trace; a document no goto traced, such as a switch the browser ran as a document load, keeps the page's own longtask entries. */
+  async function withCpu(read) {
+    const events = await traceStop();
+    if (!events) return read;
+    const longMs = longCpu(events, read);
+    if (longMs === null) throw new Error("the load's trace holds no walk-load-read mark");
+    return { ...read, longMs };
+  }
+
   async function goto(url) {
     await collect();
+    await traceStart();
     await tab.goto(url, { waitUntil: "commit" });
     return install();
   }
@@ -246,9 +303,11 @@ globalThis.__walk = (() => {
   async function timeLoad(timeout) {
     const begin = Date.now();
     for (;;) {
+      let read = null;
       try {
-        if (await tab.evaluate(() => window.__walkFirstShown !== null) || Date.now() - begin > timeout) return await tab.evaluate(pageTimeLoad);
+        if (await tab.evaluate(() => window.__walkFirstShown !== null) || Date.now() - begin > timeout) read = await tab.evaluate(pageTimeLoad);
       } catch (error) { if (!destroyed(error)) throw error; await install(); }
+      if (read) return withCpu(read);
       await sleep(200);
     }
   }
@@ -284,9 +343,9 @@ globalThis.__walk = (() => {
   }
 
   return {
-    async open() { tab = await openTab("about:blank"); seen = { outside: [], violations: [], failed: [] }; return tab.targetId; },
-    async reopen() { const old = tab; tab = null; if (old) await Promise.race([closeTab(old).catch(() => {}), sleep(5000)]); tab = await openTab("about:blank"); },
-    async close() { if (tab) { await collect(); const old = tab; tab = null; await closeTab(old).catch(() => {}); } return seen; },
+    async open() { trace = null; tab = await openTab("about:blank"); seen = { outside: [], violations: [], failed: [] }; return tab.targetId; },
+    async reopen() { const old = tab; tab = null; trace = null; if (old) await Promise.race([closeTab(old).catch(() => {}), sleep(5000)]); tab = await openTab("about:blank"); },
+    async close() { if (tab) { await collect(); await traceStop().catch(() => {}); const old = tab; tab = null; await closeTab(old).catch(() => {}); } return seen; },
     async drain() { await collect(); const out = seen; seen = { outside: [], violations: [], failed: [] }; return out; },
     path: () => new URL(tab.url()).pathname,
     goto, land, collect, timeLoad, timeSwitch,

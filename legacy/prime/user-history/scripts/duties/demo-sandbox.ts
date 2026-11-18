@@ -20,9 +20,10 @@ import type { FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.
  *   10-21 read a 19.6 h old walk and started nothing, and the push run at 02:56Z on 10-22 found it 25 h old and went red with no page at fault.
  * - slowest_page_ms: the slowest app page in the last offline walk, timed in the page itself (demo-sandbox-walk.ts writes one `page-timing`
  *   annotation per page and scenario, with each of its 3 tries). A page's time is the slower of its fastest in-app switch (the click to the
- *   first frame whose <main> shows new text) and the lowest long-task time of its full loads (pageMs). Load on the walk's browser host only adds
- *   time to a try: on 10-20, with the browser on us-metal02 at load 242 on 80 cores, one try read 12.7 s of long tasks for a page that loads in
- *   under 2 s. The fastest try is the page's own cost, and the box_load slice names the host's load during the walk. Each
+ *   first frame whose <main> shows new text) and the lowest long-task time of its full loads (pageMs). A load's long tasks count their main-thread
+ *   CPU time from a Chrome trace (LONG_CPU in demo-sandbox-walk.ts), because the wall clock counted the box's load as page time: on 10-20 at
+ *   load 242 on 80 cores one try read 12.7 s of long tasks for a page that loads in under 2 s, and on 11-18 the 00:49Z walk read /app/dashboards
+ *   at 9,440 ms while the 02:20Z walk at load 43 read it at 547. The fastest try is the page's own cost, and the box_load slice names the host's load during the walk. Each
  *   time includes the ssh tunnel from the box Chrome to the Mac, so it measures the tunnel too, not the Mac's own browser. The load's own wall time is
  *   left out, since it counts every module of a cold load. It replaced health_ms on 10-19, because /health answered in 25 ms while the owner
  *   found switching "infuriatingly slow" (10-09) and Creators slow to load (10-19, 2.3 s of long tasks before 7966ebbfd). A down server fails the
