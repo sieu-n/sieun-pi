@@ -775,7 +775,8 @@ export function notLandedWarnings(old, html) {
 			const sha = shas.find((s) => !had.has(landedKey(s, line))).slice(0, 10);
 			return (
 				`it adds "${line}", which says ${sha} has not reached ${stage}, and the next land makes that line false and costs the page ` +
-				`another write; state what dev/sieun runs and name the dev sha instead, as in "on dev/sieun since ${sha}", which stays ` +
+				`another write; state what dev/sieun runs and name the dev sha instead, as in "on dev/sieun since ${sha}", with no clause about ` +
+				`what staging runs or lacks, which stays ` +
 				`true after the land (skills/wiki/references/writing.md item 10)`
 			);
 		});

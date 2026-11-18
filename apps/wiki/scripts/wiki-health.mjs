@@ -468,16 +468,21 @@ const DEV_BRANCH = String.raw`(?:dev\/[\w-]+|sieun\/dev)`;
  * dev/sieun", whose `value` a dated line on the page states with its sha. Prod: not on main or prod yet, it reaches prod only with a
  * promote, it waits "until a promote carries" its land, or it "still needs a promote" (douyin/index.html and own-services.html on
  * 2026-11-17).
+ * Since 2026-11-18 staging also reads "no staging land had taken it", "on dev/sieun only", "staging runs them once a land carries them",
+ * "wait for its next land", and an "on dev/sieun since" clause set against what staging holds ("46 tests on staging and 50 on dev/sieun
+ * since", or after "staging land X carried" in the same sentence), and prod reads "until a promote puts it there". From 06:30Z on 11-17
+ * to 08:51Z on 11-18 writers added 17 lines in such wordings that no warning named. A plain "On dev/sieun since <sha>" line stays
+ * true after the land and is no claim.
  */
 const NOT_LANDED = [
 	{
 		stage: 'staging',
-		re: /\b(?:not (?:yet )?(?:on|in) (?:origin\/)?staging|(?:n't|not) (?:yet )?(?:landed|reached (?:origin\/)?staging)|neither (?:the )?staging|no (?:staging )?land (?:yet )?(?:(?:had|has) )?(?:carried|carries|held|holds)|\bland\b(?:(?!\b(?:main|prod)\b)[^.;]){0,80}?\b(?:did|does) not (?:yet )?(?:carry|hold)|\bneither\b[^.;]{1,80}?\bnor\b[^.;]{1,80}?\b(?:had|has|have) (?:yet )?(?:landed|reached (?:origin\/)?staging))\b(?! (?:on|in|to) (?:origin\/)?(?:main|prod))/i,
+		re: /\b(?:not (?:yet )?(?:on|in) (?:origin\/)?staging|(?:n't|not) (?:yet )?(?:landed|reached (?:origin\/)?staging)|neither (?:the )?staging|no (?:staging )?land (?:yet )?(?:(?:had|has) )?(?:carried|carries|held|holds|taken)|only on (?:origin\/)?dev\/[\w-]+|on (?:origin\/)?dev\/[\w-]+ only|(?:staging|prod) (?:runs|reads|gets|holds) (?:it|them|this|these|that|those)\b[^.;]{0,20}?\b(?:once|when|after) (?:a|the next|its next) land|(?<=\bon (?:origin\/)?dev\/[\w-]+\b[^.;]{0,40}?)\bwait(?:s|ing)? for (?:a|the|its) next land|(?<=\bon (?:origin\/)?staging\b[^.;]{0,80}?\band [^.,;]{1,40}?)on (?:origin\/)?dev\/[\w-]+ since|(?<=\bstaging land\b[^.;]{0,160}?\b(?:and|but|while)\b[^.;]{0,60}?)\bon (?:origin\/)?dev\/[\w-]+ since|\bland\b(?:(?!\b(?:main|prod)\b)[^.;]){0,80}?\b(?:did|does) not (?:yet )?(?:carry|hold)|\bneither\b[^.;]{1,80}?\bnor\b[^.;]{1,80}?\b(?:had|has|have) (?:yet )?(?:landed|reached (?:origin\/)?staging))\b(?! (?:on|in|to) (?:origin\/)?(?:main|prod))/i,
 	},
 	{ stage: 'staging', re: new RegExp(String.raw`\bor (?<value>[^.,;]{1,40}?) on (?<branch>${DEV_BRANCH})\b`, 'i') },
 	{
 		stage: 'prod',
-		re: /\b(?:(?:n't|not) (?:yet )?(?:(?:landed |deployed |promoted )?(?:on|in|to) (?:origin\/)?(?:main|prod)|reached (?:origin\/)?(?:main|prod)|promoted)|reach(?:es)? prod only with (?:a|the next) (?:full )?promote|until (?:a|the next) promote carries|(?:still )?needs? (?:a|the next) promote)\b/i,
+		re: /\b(?:(?:n't|not) (?:yet )?(?:(?:landed |deployed |promoted )?(?:on|in|to) (?:origin\/)?(?:main|prod)|reached (?:origin\/)?(?:main|prod)|promoted)|reach(?:es)? prod only with (?:a|the next) (?:full )?promote|until (?:a|the next) promote (?:carries|puts|brings|takes|moves)|(?:still )?needs? (?:a|the next) promote)\b/i,
 	},
 ];
 /** The first not-landed phrase in `text`, with its stage. */
@@ -489,6 +494,11 @@ function notLandedPhrase(text) {
 	}
 	return first;
 }
+/**
+ * A phrase that ends on its verb or on "since" takes the sha after it as its object, as in "checked at dev/sieun b2260b2418, and no
+ * staging land carried 479e9a1619 by then" on jobs-worker-reads.html v15 on 2026-11-18, whose page API warning named b2260b2418.
+ */
+const OBJECT_VERB = /\b(?:carri(?:ed|es)|carry|held|holds?|taken|since)$/i;
 /** Words that make the clause before a not-landed phrase a rule about any commit, as in "refuses a sha whose crawler code is not on staging". */
 const RULE_CLAUSE = /\b(?:whose|if|unless|until|when|whenever|once|before)\b/i;
 /** A phrase about "a commit" or "a code commit" is about any commit, as in "a write that adds a line saying a code commit has not landed". */
@@ -569,7 +579,7 @@ export function notLandedLines(html) {
 		const after = shasAfter(sentence, hit);
 		const ruled = RULE_CLAUSE.test(before.split(/[,;:(]/).pop());
 		if (ruled && !after.length) return;
-		let shas = ruled ? after : subjectShas(sentence, hit);
+		let shas = ruled || (OBJECT_VERB.test(hit[0]) && after.length) ? after : subjectShas(sentence, hit);
 		if (!shas.length && hit.groups?.value) {
 			const { value, branch } = hit.groups;
 			shas = sentences.find((s) => s.shas.length && s.text.includes(value) && s.text.includes(branch))?.shas ?? [];

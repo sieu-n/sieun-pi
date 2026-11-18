@@ -250,3 +250,38 @@ test('a prod claim turns false when main gets its land, so a page checked before
 	assert.equal(wrong[0].since, undefined, 'a staging line checked after its land was wrong at the check and counts from the land');
 	assert.deepEqual(addLandedClaims({ count: 0, stale: [] }, wrong).stale[0].staleRefs[0].modified, '2026-11-14T23:55:14.000Z');
 });
+
+// 2026-11-18: the 04:11Z dream run fixed 5 not-landed lines notLandedLines missed, and 17 such lines were added from 06:30Z on
+// 11-17 to 08:51Z on 11-18, in wordings such as "no staging land had taken it", "on dev/sieun only", "staging runs them once a land
+// carries them", "42 on staging and 46 on dev/sieun since" and "until a promote puts it there". A line in the plain dev-sha phrasing
+// stays true after the land and is no claim.
+test('the 11-18 wordings of a missing land are claims, and a plain dev-sha line is none', () => {
+	const html = [
+		'<!--wiki {"title":"T"}-->',
+		'<ol>',
+		'<li>At 15:20Z on 11-17 <code>91bf2c97b6</code> sat on <code>origin/dev/sieun</code>, and no staging land had taken it yet.</li>',
+		'<li>The loop changed in <code>a1b2c3d4e5</code>.</li>',
+		'<li>The newest change to that loop is on dev/sieun only, and the next lines describe what the dev branch runs.</li>',
+		'<li>The parser came in <code>b1c2d3e4f5</code> and <code>c1d2e3f4a5</code>.</li>',
+		'<li>Both of those commits sit on dev/sieun since 02:17Z on 2026-11-18, and staging runs them once a land carries them.</li>',
+		'<li>Both <code>1636070260</code> and <code>f3fc56c92b</code> sit on dev/sieun and wait for its next land into staging.</li>',
+		'<li><code>test_serp_dataforseo.py</code> holds 46 tests on staging since land <code>66d01ebb6f</code> and 50 on dev/sieun since <code>e8399dc95d</code>.</li>',
+		'<li>Staging land <code>66d01ebb6f</code> carried the first four of these five cases at 02:37Z on 2026-11-18, and the fifth is on dev/sieun since <code>e49634870f</code>.</li>',
+		'<li>The trigger moved to <code>new-reds.yml</code> in <code>d1e2f3a4b5</code>.</li>',
+		'<li>GitHub reads that trigger only from the file\'s copy on <code>main</code>, so the verify-dev job keeps its dispatch until a promote puts the trigger there.</li>',
+		'<li>The grid read was checked at dev/sieun <code>b2260b2418</code> at 07:29Z on 2026-11-18, and no staging land carried <code>479e9a1619</code> by then.</li>',
+		'<li>On dev/sieun since <code>6f8c28973d</code>, a thank-you rests on her one dated post with us.</li>',
+		'<li>Since 01:21Z on 2026-11-17 <code>95d48292e</code> runs on staging, carried by land <code>ef1e0c7df0</code> of dev/sieun <code>c978ba46e</code>.</li>',
+		'</ol>',
+	].join('\n');
+	assert.deepEqual(notLandedLines(html), [
+		{ line: 'At 15:20Z on 11-17 91bf2c97b6 sat on origin/dev/sieun , and no staging land had taken it yet.', shas: ['91bf2c97b6'], stage: 'staging' },
+		{ line: 'The newest change to that loop is on dev/sieun only, and the next lines describe what the dev branch runs.', shas: ['a1b2c3d4e5'], stage: 'staging' },
+		{ line: 'Both of those commits sit on dev/sieun since 02:17Z on 2026-11-18, and staging runs them once a land carries them.', shas: ['b1c2d3e4f5', 'c1d2e3f4a5'], stage: 'staging' },
+		{ line: 'Both 1636070260 and f3fc56c92b sit on dev/sieun and wait for its next land into staging.', shas: ['f3fc56c92b'], stage: 'staging' },
+		{ line: 'test_serp_dataforseo.py holds 46 tests on staging since land 66d01ebb6f and 50 on dev/sieun since e8399dc95d .', shas: ['e8399dc95d'], stage: 'staging' },
+		{ line: 'Staging land 66d01ebb6f carried the first four of these five cases at 02:37Z on 2026-11-18, and the fifth is on dev/sieun since e49634870f .', shas: ['e49634870f'], stage: 'staging' },
+		{ line: "GitHub reads that trigger only from the file's copy on main , so the verify-dev job keeps its dispatch until a promote puts the trigger there.", shas: ['d1e2f3a4b5'], stage: 'prod' },
+		{ line: 'The grid read was checked at dev/sieun b2260b2418 at 07:29Z on 2026-11-18, and no staging land carried 479e9a1619 by then.', shas: ['479e9a1619'], stage: 'staging' },
+	]);
+});
