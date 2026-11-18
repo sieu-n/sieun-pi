@@ -764,7 +764,7 @@ export async function reapUnowned(source: UnownedSource, candidates: readonly st
   const kept = new Map<string, string>();
   for (const path of paths) {
     if (!path.startsWith(scratch + "/")) kept.set(path, "it is not below ~/scratch");
-    else if (SESSION.test(path.slice(scratch.length + 1).split("/")[0]!)) kept.set(path, "it is a job's own ~/scratch/<session id> folder");
+    else if (JOB_SESSION.test(path.slice(scratch.length + 1).split("/")[0]!)) kept.set(path, "it is a job's own ~/scratch/<session id> folder");
   }
   const records = await source.records().catch((error: unknown) => {
     for (const path of paths) if (!kept.has(path)) kept.set(path, `the owner records could not all be read: ${error instanceof Error ? error.message : String(error)}`);

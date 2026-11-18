@@ -21,15 +21,16 @@ test("unowned deletes an idle tree no record names with its attic copy, and keep
   const used = join(runs, "dev_sieun-mac-mail");
   const fresh = join(runs, "dev_sieun-mac-schema-tag");
   const job = join(home, "scratch", "01a15769-0000-7000-8000-0000000000c1");
+  const piJob = join(home, "scratch", "230bbdbf-4d84-475f-95d2-63db2f90ca34-15612");
   const linked = join(runs, "fix-egress");
-  for (const dir of [idle, recorded, used, fresh, job]) write(join(dir, "repo", "package.json"));
+  for (const dir of [idle, recorded, used, fresh, job, piJob]) write(join(dir, "repo", "package.json"));
   const later = Date.now() + UNOWNED_IDLE_MS + 60_000;
   utimesSync(join(fresh, "repo", "package.json"), new Date(later - 60_000), new Date(later - 60_000));
   if (attic) { write(join(ATTIC + linked, "repo", "package.json")); symlinkSync(ATTIC + linked, linked); }
   const holder = spawn("sleep", ["60"], { cwd: join(used, "repo"), stdio: "ignore" });
   t.after(() => holder.kill());
   const source = { ...unownedSource, mounted: async () => [], records: async () => [{ path: join(recorded, "repo"), owner: "mac:01a11ba8/sub-3f5892fd" }] };
-  const { removed, kept } = await reapUnowned(source, [idle, recorded, used, fresh, job, ...attic ? [linked] : []], later);
+  const { removed, kept } = await reapUnowned(source, [idle, recorded, used, fresh, job, piJob, ...attic ? [linked] : []], later);
   assert.deepEqual(removed.sort(), [idle, ...attic ? [linked] : []].sort());
   assert.ok(!existsSync(idle));
   if (attic) assert.ok(!existsSync(ATTIC + linked) && !lstatSync(linked, { throwIfNoEntry: false }), "the attic copy and its link go");
@@ -37,7 +38,8 @@ test("unowned deletes an idle tree no record names with its attic copy, and keep
   assert.match(kept.get(used) ?? "", /process/);
   assert.match(kept.get(fresh) ?? "", /changed within the last 2 h/);
   assert.match(kept.get(job) ?? "", /own ~\/scratch\/<session id>/);
-  for (const dir of [recorded, used, fresh, job]) assert.ok(existsSync(join(dir, "repo", "package.json")), `${dir} stays`);
+  assert.match(kept.get(piJob) ?? "", /own ~\/scratch\/<session id>/, "a pi-host job's <thread>-<conversation> folder is its own too");
+  for (const dir of [recorded, used, fresh, job, piJob]) assert.ok(existsSync(join(dir, "repo", "package.json")), `${dir} stays`);
 });
 
 test("unowned keeps every tree when a box's records cannot be read", { skip: process.platform !== "linux" }, async t => {
