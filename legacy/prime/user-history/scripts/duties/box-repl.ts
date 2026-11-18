@@ -23,17 +23,19 @@ export function boxCommand(): [string, string[]] {
 /** measured: on 2026-11-03 on us-metal02 a runner exited 0.16 to 0.28 s after its stdin closed (3 runs), so one still up after 5 s gets a kill. */
 const STOP_MS = 5_000;
 
+interface Answer { out?: string; error?: string }
+
 /**
- * One box runner over JSON lines, so the REPL scope and its tabs live for the whole run: `{id, code}` goes in, `{id, out}` or `{id, error}`
- * comes back, where `out` is the code's console.log lines. `call` runs `body` (the inside of an async function, which returns a JSON value)
- * and resolves that value; a REPL error or a runner that exits rejects, with the runner's last stderr lines.
+ * One box runner process over JSON lines: `{id, code}` goes in, `{id, out}` or `{id, error}` comes back, where `out` is the code's
+ * console.log lines. The runner runs one call at a time, so a call with no answer within `timeoutMs` stops the runner, since every later
+ * call would wait behind it, and `gone` turns true.
  */
-export function boxRepl(command: string, args: readonly string[]): Repl {
+function startRunner(command: string, args: readonly string[]) {
   const child = spawn(command, [...args], { stdio: ["pipe", "pipe", "pipe"] });
   let buffer = "", stderr = "", nextId = 0, exited: string | null = null;
-  const waiting = new Map<number, (message: { out?: string; error?: string }) => void>();
+  const waiting = new Map<number, (message: Answer) => void>();
   const fail = (why: string) => {
-    exited = `the box runner ${why}${stderr.trim() ? `: ${stderr.trim().split("\n").slice(-3).join(" | ")}` : ""}`;
+    exited ??= `the box runner ${why}${stderr.trim() ? `: ${stderr.trim().split("\n").slice(-3).join(" | ")}` : ""}`;
     for (const answer of waiting.values()) answer({ error: exited });
     waiting.clear();
   };
@@ -46,25 +48,49 @@ export function boxRepl(command: string, args: readonly string[]): Repl {
     for (let index = buffer.indexOf("\n"); index >= 0; index = buffer.indexOf("\n")) {
       const line = buffer.slice(0, index).trim();
       buffer = buffer.slice(index + 1);
-      let message: { id?: number; out?: string; error?: string };
+      let message: { id?: number } & Answer;
       try { message = JSON.parse(line); } catch { continue; }
       if (typeof message.id === "number") { waiting.get(message.id)?.(message); waiting.delete(message.id); }
     }
   });
+  const stop = () => { child.stdin.end(); setTimeout(() => { if (child.exitCode === null) child.kill("SIGKILL"); }, STOP_MS).unref(); };
   return {
-    async call<T>(_title: string, body: string): Promise<T> {
-      if (exited) throw new Error(exited);
+    gone: () => exited !== null,
+    stop,
+    send(code: string, timeoutMs: number): Promise<Answer> {
+      if (exited) return Promise.resolve({ error: exited });
       const id = ++nextId;
-      const code = `{ const __walkValue = await (async () => { ${body} })(); console.log("WALK_RESULT " + JSON.stringify(__walkValue ?? null)); }`;
-      const answer = await new Promise<{ out?: string; error?: string }>(resolve => {
-        waiting.set(id, resolve);
+      return new Promise<Answer>(resolve => {
+        const timer = setTimeout(() => {
+          waiting.delete(id);
+          exited = `the box call timed out after ${timeoutMs} ms, so its runner was stopped and the next call starts a new one`;
+          child.kill("SIGKILL");
+          resolve({ error: exited });
+        }, timeoutMs);
+        waiting.set(id, message => { clearTimeout(timer); resolve(message); });
         child.stdin.write(JSON.stringify({ id, code }) + "\n");
       });
+    },
+  };
+}
+
+/**
+ * A box runner as a REPL that keeps its scope and tabs between calls. `call` runs `body` (the inside of an async function, which returns a
+ * JSON value) and resolves that value; a REPL error, a runner that exits or a call with no answer within `callTimeoutMs` rejects, with the
+ * runner's last stderr lines. After a runner exits or times out, the next call starts a new one, whose REPL holds none of the old scope.
+ */
+export function boxRepl(command: string, args: readonly string[], callTimeoutMs: number): Repl {
+  let runner: ReturnType<typeof startRunner> | null = null;
+  return {
+    async call<T>(_title: string, body: string): Promise<T> {
+      if (!runner || runner.gone()) runner = startRunner(command, args);
+      const code = `{ const __walkValue = await (async () => { ${body} })(); console.log("WALK_RESULT " + JSON.stringify(__walkValue ?? null)); }`;
+      const answer = await runner.send(code, callTimeoutMs);
       if (answer.error !== undefined) throw new Error(answer.error.split("\n")[0]);
       const line = (answer.out ?? "").split("\n").reverse().find(entry => entry.startsWith("WALK_RESULT "));
       if (!line) throw new Error(`no result in the REPL output: ${(answer.out ?? "").slice(0, 300)}`);
       return JSON.parse(line.slice("WALK_RESULT ".length)) as T;
     },
-    stop() { child.stdin.end(); setTimeout(() => { if (child.exitCode === null) child.kill("SIGKILL"); }, STOP_MS).unref(); },
+    stop() { runner?.stop(); runner = null; },
   };
 }

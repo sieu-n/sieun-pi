@@ -40,6 +40,12 @@ const WALK_TIMEOUT_MS = 45 * 60_000;
 const SHOW_TIMEOUT_MS = 30_000;
 /** How long a /configure or a redirect gets to land on its world: a cold /configure took 41 s through the box's tunnel on 10-19. */
 const LAND_TIMEOUT_MS = 100_000;
+/**
+ * A box call with no answer in this long stops its runner, the step fails that try and runs again in a new runner. Every call's own waits
+ * end within land's LAND_TIMEOUT_MS plus one SHOW_TIMEOUT_MS for the evaluate and install calls around it; the longest call of the 11-18
+ * 00:31Z box walk took 34 s. The walk at 23:46Z on 11-17 had no such limit, one call never answered, and the walk ran into WALK_TIMEOUT_MS.
+ */
+const CALL_TIMEOUT_MS = LAND_TIMEOUT_MS + SHOW_TIMEOUT_MS;
 /** Each page's switch and load are timed this often, and d1 reads the fastest, so a busy moment spoils one try, not the page. */
 export const TRIES = 3;
 export const SCENARIOS = ["kbeauty-brand", "fresh-start"];
@@ -281,7 +287,7 @@ globalThis.__walk = (() => {
     async open() { tab = await openTab("about:blank"); seen = { outside: [], violations: [], failed: [] }; return tab.targetId; },
     async reopen() { const old = tab; tab = null; if (old) await Promise.race([closeTab(old).catch(() => {}), sleep(5000)]); tab = await openTab("about:blank"); },
     async close() { if (tab) { await collect(); const old = tab; tab = null; await closeTab(old).catch(() => {}); } return seen; },
-    seen: () => seen,
+    async drain() { await collect(); const out = seen; seen = { outside: [], violations: [], failed: [] }; return out; },
     path: () => new URL(tab.url()).pathname,
     goto, land, collect, timeLoad, timeSwitch,
     async settle(waitMs, scroll) {
@@ -363,15 +369,20 @@ const boxLoad = (repl: Repl, scenario: string, pass: string): Promise<BoxLoad> =
 /** One stderr line per step, so a slow or stuck walk shows where it is in WALK_ERR_FILE. */
 const progress = (line: string) => process.stderr.write(`step ${new Date().toISOString().slice(11, 19)}Z ${line}\n`);
 
-/** One test's tab and steps: a step that fails runs once more, on a new tab when the old one closed or stopped answering, and fails after that. */
+/**
+ * One test's tab and steps: a step that fails runs once more, on a new tab when the old one closed or stopped answering, and fails after that.
+ * What each step's documents showed moves into `seen` here after the step, so a box runner that a timed-out call stopped loses none of it.
+ */
 function testWalk(repl: Repl) {
   const failures: StepFailure[] = [];
+  const seen: Seen = { outside: [], violations: [], failed: [] };
+  const keep = (found: Seen | null) => { if (found) for (const key of ["outside", "violations", "failed"] as const) seen[key].push(...found[key]); };
   async function step<T>(path: string, name: string, run: (attempt: number) => Promise<T>): Promise<T | null> {
     for (let attempt = 1; ; attempt++) {
       const began = Date.now();
       try {
         const value = await run(attempt);
-        await repl.call("collect", "await __walk.collect();").catch(() => {});
+        keep(await repl.call<Seen>("collect", "return await __walk.drain();").catch(() => null));
         progress(`${name} ${path}: ok in ${Date.now() - began} ms${value && typeof value === "object" && "ms" in value ? ` (page ${String(value.ms)} ms)` : ""}`);
         return value;
       } catch (error) {
@@ -381,7 +392,9 @@ function testWalk(repl: Repl) {
       }
     }
   }
-  return { step, failures };
+  /** Closes the test's tab and returns everything its documents showed. */
+  const close = async () => { keep(await repl.call<Seen>("close the tab", "return await __walk.close();")); return seen; };
+  return { step, failures, close };
 }
 
 async function scenarioTest(repl: Repl, scenario: string, since: number): Promise<WalkTest> {
@@ -478,7 +491,7 @@ async function scenarioTest(repl: Repl, scenario: string, since: number): Promis
     });
   }
   for (const failure of walk.failures) note("page-failed", { scenario, ...failure });
-  const seen = await repl.call<Seen>("close the tab", "return await __walk.close();");
+  const seen = await walk.close();
   return { title: scenarioTitle(scenario), annotations, errors: testErrors(walk.failures, PAGES.length, seen, await serverEgress(since)) };
 }
 
@@ -494,7 +507,7 @@ async function marketingTest(repl: Repl, since: number): Promise<WalkTest> {
     });
   }
   for (const failure of walk.failures) annotations.push({ type: "page-failed", description: JSON.stringify({ scenario: "marketing", ...failure }) });
-  const seen = await repl.call<Seen>("close the tab", "return await __walk.close();");
+  const seen = await walk.close();
   return { title: MARKETING_TITLE, annotations, errors: testErrors(walk.failures, MARKETING_PAGES.length, seen, await serverEgress(since)) };
 }
 
@@ -536,7 +549,7 @@ export async function runWalk(box: Repl, now: () => number = Date.now): Promise<
 }
 
 async function main(): Promise<void> {
-  const repl = boxRepl(...boxCommand());
+  const repl = boxRepl(...boxCommand(), CALL_TIMEOUT_MS);
   const hardStop = setTimeout(() => { process.stderr.write(`demo-sandbox-walk: the walk ran past ${WALK_TIMEOUT_MS / 60_000} min and stopped\n`); repl.stop(); process.exit(1); }, WALK_TIMEOUT_MS);
   try {
     await repl.call("check the box browser", "return 'ok';").catch(error => { throw new Error(`the box browser did not answer: ${firstLine(error)}`); });

@@ -160,7 +160,8 @@ process.stdin.on("data", chunk => {
   } finally { repl.stop(); }
 });
 
-// 11-18: the Mac rebooted with no Aside window, and every walk failed with "Failed to request daemon auth challenge: fetch failed" for over 25 h.
+// 11-18: the Mac rebooted with no Aside window, and every walk failed with "Failed to request daemon auth challenge: fetch failed" for over 25 h;
+// then the first box walk at 23:46Z sat 45 min on one call that never answered.
 test("the walk keeps one box runner, returns each call's value, raises a REPL error and never starts the owner's Aside", async () => {
   const [command, args] = boxCommand();
   assert.equal(command, "ssh");
@@ -174,13 +175,14 @@ process.stdin.on("data", chunk => {
   buffer += chunk;
   for (let i = buffer.indexOf("\\n"); i >= 0; i = buffer.indexOf("\\n")) {
     const message = JSON.parse(buffer.slice(0, i)); buffer = buffer.slice(i + 1);
+    if (message.code.includes("hang")) continue;
     if (message.code.includes("boom")) process.stdout.write(JSON.stringify({ id: message.id, error: "Error: boom\\n    at x" }) + "\\n");
     else process.stdout.write(JSON.stringify({ id: message.id, out: "noise\\nWALK_RESULT " + JSON.stringify({ calls: ++calls, pid: process.pid }) }) + "\\n");
   }
 });
 process.stdin.on("end", () => process.exit(0));
 `);
-  const repl = boxRepl(process.execPath, [fake]);
+  const repl = boxRepl(process.execPath, [fake], 2000);
   try {
     const first = await repl.call<{ calls: number; pid: number }>("one", "return 1;");
     const second = await repl.call<{ calls: number; pid: number }>("two", "return 2;");
@@ -188,7 +190,10 @@ process.stdin.on("end", () => process.exit(0));
     assert.equal(second.calls, 2);
     assert.equal(first.pid, second.pid, "one runner for the whole walk, so the REPL scope survives between calls");
     await assert.rejects(repl.call("three", "boom"), /Error: boom$/);
+    await assert.rejects(repl.call("four", "hang"), /the box call timed out after 2000 ms/);
+    const fresh = await repl.call<{ calls: number; pid: number }>("five", "return 5;");
+    assert.notEqual(fresh.pid, first.pid, "a call after a timeout runs in a new runner instead of waiting behind the hung one");
   } finally { repl.stop(); }
-  const gone = boxRepl(process.execPath, ["-e", "process.stderr.write('ssh: connect to host us-metal02 port 22: Connection refused\\n'); process.exit(255)"]);
+  const gone = boxRepl(process.execPath, ["-e", "process.stderr.write('ssh: connect to host us-metal02 port 22: Connection refused\\n'); process.exit(255)"], 2000);
   await assert.rejects(gone.call("check", "return 1;"), /the box runner exited with code 255: ssh: connect to host us-metal02/);
 });
