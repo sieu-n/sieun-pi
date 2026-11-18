@@ -94,8 +94,8 @@ export function usableAround(watch: readonly WatchLine[], box: string, from: num
 export const UNREACHED = /^(?:fetch failed|The operation was aborted due to timeout)/;
 
 /**
- * Whether Tailscale read `box` offline within OFFLINE_LAG_READS watch lines before [from, to) or after it, each line within a minute of the
- * one before, with every line between them unreached (UNREACHED) or unread at a stop. A box the relay could not reach next to such a minute was
+ * Whether Tailscale read `box` offline within OFFLINE_LAG_READS watch lines before [from, to) or after it, each line within LINE_REACH_MS of
+ * the one before, with every line between them unreached (UNREACHED) or unread at a stop. A box the relay could not reach next to such a minute was
  * falling asleep, waking or flapping, so that minute is offline too. On 10-23 Tailscale read the Mac offline 13:53Z to 13:55Z and 13:57Z to
  * 14:22Z, its relay read "fetch failed" at 13:56Z, and d7 counted the minute unknown; at 14:29Z, between offline stretches, the same read came
  * with 2 handshake timeouts to the Mac and d7 counted the minute dirty. Of the Mac's 233 unreached reads from 10-01 to 10-23, 8 sat next to an
@@ -109,8 +109,8 @@ export function offlineAround(watch: readonly WatchLine[], box: string, from: nu
   for (const back of [true, false]) {
     let edge = back ? from : to;
     for (let step = 0; step < OFFLINE_LAG_READS; step++) {
-      const line = back ? watch.findLast(entry => { const at = Date.parse(entry.at); return at < edge && at >= edge - MINUTE; })
-        : watch.find(entry => { const at = Date.parse(entry.at); return at >= edge && at < edge + MINUTE; });
+      const line = back ? watch.findLast(entry => { const at = Date.parse(entry.at); return at < edge && at >= edge - LINE_REACH_MS; })
+        : watch.find(entry => { const at = Date.parse(entry.at); return at >= edge && at < edge + LINE_REACH_MS; });
       if (!line) break;
       if (view(line)?.offline || (back && flatBattery(view(line)?.usable ?? null))) return true;
       if (!unreached(line)) break;
@@ -126,6 +126,14 @@ export function offlineAround(watch: readonly WatchLine[], box: string, from: nu
  * to its sessions, and Tailscale first read it offline at 01:41:30Z, last seen 1 min before; d7 counted 01:38Z and 01:39Z dirty.
  */
 const OFFLINE_LAG_READS = 3;
+
+/**
+ * How far `offlineAround` looks for the next watch line. The watch writes a line every minute, a few ms late each time: from 11-10 to 11-18,
+ * 5,530 of 12,566 gaps between lines ran 60.0 to 60.7 s, so a reach of exactly a minute broke the chain at nearly half the lines. On 11-18 the
+ * relay timed out on the Mac at 02:56:30.014Z, read "fetch failed" at 02:57:30.016Z, and Tailscale read it offline at 02:58:30.020Z, 60.004 s
+ * after the line before, so d7 counted 02:56Z unknown, 29 of 30 clean. Half a minute past the cadence reaches the next line and never two.
+ */
+const LINE_REACH_MS = 90_000;
 
 /**
  * A Mac on battery at this charge or less is out of service that minute, like a box Tailscale reads offline, so its daemon calls are left

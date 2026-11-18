@@ -124,3 +124,14 @@ test("a daemon call begun while its box read offline and ended as the box came b
   const noStart = run(back, [noFrom]);
   assert.equal(noStart.metrics.daemon_fail_min_30, 1, "a fault whose line gives no start stays a fault");
 });
+
+// Guards d7's 02:56Z minute on 11-18: the watch's lines ran a few ms over a minute apart, the relay timed out at 02:56:30.014Z, read "fetch
+// failed" at 02:57:30.016Z and Tailscale read the Mac offline at 02:58:30.020Z, 4 ms past a minute from the line before, and d7 counted 02:56Z unknown.
+test("an unreached Mac minute two lines before an offline read counts offline when the watch's lines run a few ms over a minute apart", () => {
+  const late = (minute: number, read: MacRead): WatchLine => ({ ...line(minute, read), at: new Date(minuteAt(minute) + 30_000 + minute * 2).toISOString() });
+  const watch = Array.from({ length: 30 }, (_, minute) => late(minute, minute < 26 ? "usable" : minute === 26 ? "The operation was aborted due to timeout" :
+    minute === 27 ? "fetch failed" : "offline"));
+  const out = run(watch, []);
+  assert.equal(out.metrics.unknown_min_30, 0);
+  assert.equal(out.metrics.clean_min_30, 30);
+});
