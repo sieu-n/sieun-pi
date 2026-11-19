@@ -40,8 +40,6 @@ export class SessionIndex {
   /** Each subagent row's place in `children`, by its place in the lists. */
   private childSlot = new Map<number, number>();
   private built = false;
-  /** Session ids `forget` dropped, placed again by the next update. */
-  private readonly forgotten = new Set<string>();
 
   constructor(private readonly isTop: (row: SessionSummary) => boolean, private readonly duplicate: (row: SessionSummary) => void = () => {}) {}
 
@@ -91,7 +89,6 @@ export class SessionIndex {
     for (const row of build.rows) if (!was.has(row)) added.add(row);
     for (const row of was) if (!build.rows.has(row)) removed.add(row);
     ({ segments: this.segments, summaries: this.summaries, childById: this.childById, children: this.children, rows: this.rows, topAt: this.topAt, childAt: this.childAt, childSlot: this.childSlot } = build);
-    this.forgotten.clear();
     this.built = true;
     return { added, removed, wasChild: id => wasChildren.get(id), childrenChanged: true };
   }
@@ -108,10 +105,10 @@ export class SessionIndex {
     }
     this.segments = segments;
     this.visited = changed.length;
-    if (!changed.length && !this.forgotten.size) return null;
+    if (!changed.length) return null;
     const wasRows = new Set<SessionSummary>();
     const nowRows = new Set<SessionSummary>();
-    const tops = new Set<string>(this.forgotten);
+    const tops = new Set<string>();
     const kids = new Set<string>();
     let childrenChanged = false;
     // A subagent row that changed in its place keeps its slot in `children`; any other change of a subagent row lists them all again.
@@ -135,8 +132,6 @@ export class SessionIndex {
     const removed = new Set<SessionSummary>();
     for (const row of nowRows) if (!wasRows.has(row) && !this.rows.has(row)) added.add(row);
     for (const row of wasRows) if (!nowRows.has(row)) removed.add(row);
-    for (const id of this.forgotten) for (const place of this.topAt.get(id) ?? []) { const row = this.at(place); if (!this.rows.has(row)) added.add(row); }
-    this.forgotten.clear();
     for (const row of removed) this.rows.delete(row);
     for (const row of added) this.rows.add(row);
     for (const id of tops) {
@@ -167,14 +162,6 @@ export class SessionIndex {
       this.children = children;
     }
     return { added, removed, wasChild: id => childWas.has(id) ? childWas.get(id) : this.childById.get(id), childrenChanged };
-  }
-
-  /** Drops a session's top-level row until the next index places it again (`Catalog.forget`). */
-  forget(sessionId: string): void {
-    const row = this.summaries.get(sessionId);
-    if (row) this.rows.delete(row);
-    this.summaries.delete(sessionId);
-    this.forgotten.add(sessionId);
   }
 
   private at(place: number): SessionSummary { return this.segments[Math.floor(place / SEGMENT)]![place % SEGMENT]!; }

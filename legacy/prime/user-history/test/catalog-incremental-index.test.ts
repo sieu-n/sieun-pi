@@ -69,7 +69,7 @@ type Internals = { summaries: Map<string, SessionSummary>; childById: Map<string
 const plain = (row: SessionSummary): SessionSummary => ({ ...row });
 const byId = (map: Map<string, SessionSummary>) => [...map].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([id, row]) => [id, plain(row)]);
 
-test("the incremental index holds what a full index of the same rows holds, over random roster changes, removals and forgets", async (t: TestContext) => {
+test("the incremental index holds what a full index of the same rows holds, over random roster changes, removals and held lifecycles", async (t: TestContext) => {
   const rows = new Map<string, SessionSummary>();
   for (let n = 0; n < 80; n++) rows.set(`s${n}`, top(n, n % 7 === 0 ? { activeSessionId: `a-s${n}` } : {}));
   for (let n = 0; n < 60; n++) rows.set(`k${n}`, kid(n, n % 3 === 0 ? `k${Math.max(0, n - 3)}` : `s${n % 80}`, n % 5 === 0 ? { activeSessionId: `a-k${n}` } : {}));
@@ -82,10 +82,8 @@ test("the incremental index holds what a full index of the same rows holds, over
   // the rows cannot place) answers the rows as they were before any step. The steps take about 0.9 s, so under the load of a release's scoped
   // checks such a list landed on one side mid-run, and the release of 94a63a67 on 11-19 failed this test twice, and 3 of 24 runs at once did.
   for (const side of [incremental, full]) t.mock.method((side.catalog as unknown as { peer: { sync(): Promise<void> } }).peer, "sync", async () => {});
-  // Frames are off too: a frame (`peerChanged`) whose projection ran across a step's forget left the forgotten row out of the next event until a
-  // later frame put it back, within 500 ms, in a run where performance.now gained 3 ms a call so every projection yielded. With both stubs
-  // that run passed 10 of 10; with the frames left on it failed 1 of 6, and the release's scoped checks failed it three times at a forget.
-  for (const side of [incremental, full]) t.mock.method(side.catalog as unknown as { peerChanged(): void }, "peerChanged", () => {});
+  // Each projection, frame and sliced index yields at every look at the clock, so the frames that each roster step starts run across the steps.
+  { let clock = performance.now(); t.mock.method(performance, "now", () => (clock += 3)); }
   const pick = random(11);
   const any = (size: number) => Math.floor(pick() * size);
   let tops = 80;
@@ -94,7 +92,7 @@ test("the incremental index holds what a full index of the same rows holds, over
   for (let step = 0; step < 150; step++) {
     const kind = any(9);
     let update: RosterUpdate | undefined;
-    let forget: string | undefined;
+    let hold: string | undefined;
     if (kind === 0) { const n = any(tops); update = { changed: [{ agentId: `s${n}`, summary: top(n, { activeSessionId: `a-s${n}`, sessionName: `renamed ${step}` }) }] }; }
     else if (kind === 1) { const n = any(tops); update = { changed: [{ agentId: `s${n}`, status: "running", summary: top(n, { activeSessionId: `a-s${n}`, summary: `step ${step}` }) }] }; }
     else if (kind === 2) { const n = tops++; update = { changed: [{ agentId: `s${n}`, status: "idle", summary: top(n, { activeSessionId: `a-s${n}` }) }] }; }
@@ -102,11 +100,11 @@ test("the incremental index holds what a full index of the same rows holds, over
     else if (kind === 4) { const n = any(kids); update = { changed: [{ agentId: `k${n}`, status: pick() < 0.5 ? "running" : "idle", summary: kid(n, `s${n % 80}`, { activeSessionId: `a-k${n}`, summary: `kid step ${step}` }) }] }; }
     else if (kind === 5) { const n = any(tops); update = { removed: [`a-s${n}`] }; }
     else if (kind === 6) { const n = any(kids); update = { removed: [`a-k${n}`] }; }
-    else if (kind === 7) forget = `s${any(tops)}`;
+    else if (kind === 7) hold = `s${any(tops)}`;
     else { const n = any(tops); const m = any(kids); update = { changed: [{ agentId: `s${n}`, status: "running", summary: top(n, { activeSessionId: `a-s${n}` }) }, { agentId: `k${m}`, status: "idle", summary: kid(m, `s${n}`, { activeSessionId: `a-k${m}` }) }] }; }
     for (const side of [incremental, full]) {
       if (update) await side.roster(JSON.parse(JSON.stringify(update)) as RosterUpdate);
-      if (forget) side.catalog.forget(forget);
+      if (hold) side.catalog.holdLifecycle(hold, "active");
     }
     const left = incremental.catalog as unknown as Internals;
     const right = full.catalog as unknown as Internals;

@@ -73,7 +73,7 @@ test("an open Mac thread whose bridge link drops attaches again and its page nev
   const mac = await macDaemon(socketPath, file, dir);
   const catalog = { summary: async (id: string) => ({ sessionId: id, activeSessionId: ACTIVE, workerState: "ready", sessionFile: file, cwd: dir, lifecycle: "live", messageCount: 1 }),
     hostOf: () => "mac", socketPathFor: () => socketPath, localFile: async (summary: { sessionFile: string }) => summary.sessionFile,
-    refresh: async () => {}, forget: () => {} } as unknown as Catalog;
+    refresh: async () => {} } as unknown as Catalog;
   const hub = new ThreadHub(join(dir, "box.sock"), catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
   t.after(async () => { await hub.close(); mac.close(); });
 
@@ -112,7 +112,7 @@ test("a service stop that closes the bridge before the hub leaves the page recon
   const mac = await macDaemon(socketPath, file, dir);
   const catalog = { summary: async (id: string) => ({ sessionId: id, activeSessionId: ACTIVE, workerState: "ready", sessionFile: file, cwd: dir, lifecycle: "live", messageCount: 1 }),
     hostOf: () => "mac", socketPathFor: () => socketPath, localFile: async (summary: { sessionFile: string }) => summary.sessionFile,
-    refresh: async () => {}, forget: () => {} } as unknown as Catalog;
+    refresh: async () => {} } as unknown as Catalog;
   const hub = new ThreadHub(join(dir, "box.sock"), catalog, () => ({ provider: null, modelId: null, thinkingLevel: null }));
   t.after(() => mac.close());
 

@@ -1039,7 +1039,6 @@ export class ThreadHub {
         case "closed":
           thread.broadcast({ type: "status", connection: "closed", ...(event.error ? { error: event.error } : {}) });
           await this.dispose(thread.id);
-          this.catalog.forget(thread.id);
           void this.catalog.refresh().catch(() => {});
           return;
         default: return;
@@ -1984,7 +1983,6 @@ export class ThreadHub {
   private reactivate(id: string, summary: SessionSummary): Promise<void> {
     const written = this.setSessionState(summary, "active");
     this.catalog.holdLifecycle(id, "active");
-    this.catalog.forget(id);
     return written;
   }
 

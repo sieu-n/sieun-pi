@@ -1780,14 +1780,6 @@ export class Catalog {
       ...(row.usage && Number.isFinite(row.usage.cost) ? { cost: row.usage.cost } : {}) }));
   }
 
-  forget(sessionId: string): void {
-    this.settle();
-    // The next index lists the row again as new, as the projection after a forget did before the row stage kept its rows.
-    this.sessionIndex.forget(sessionId);
-    this.pending.add(sessionId);
-    this.inputs++;
-  }
-
   /** Changes the row of a session this server changed itself, such as a saved session's new name, in the copy of the box that lists it. */
   patchRow(sessionId: string, fields: Partial<SessionSummary>): void {
     if (!this.hosts?.patch(sessionId, fields) && !this.peer.patch(sessionId, fields)) return;
