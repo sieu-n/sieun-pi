@@ -64,23 +64,42 @@ function roomPost(item: Item): Item {
 }
 
 /**
+ * The preview of each image of a send that landed from this page, by the url the server gave it. The landed message draws the bytes the
+ * page already holds, where on 11-19 the owner's page fetched the 1.76 MB PNG it had just uploaded back from the box to draw it.
+ */
+const previews = new Map<string, string>();
+const withPreviews = (item: Item): Item =>
+  item.kind === "message" && item.images.some(image => previews.has(image.url))
+    ? { ...item, images: item.images.map(image => ({ ...image, url: previews.get(image.url) ?? image.url })) }
+    : item;
+
+/**
  * Upserts items by id, oldest first. A pending send never steps back from sent to sending and never comes back once it landed, and the
- * owner's real message (a post with its requestId, or an input with its text) replaces the pending send it came from.
+ * owner's real message (a post with its requestId, or an input with its text) replaces the pending send it came from. An image of that
+ * send keeps showing from the preview (`previews`).
  */
 function merge(items: readonly Item[], incoming: readonly Item[], landed: Set<string>, removed: readonly string[] = []): Item[] {
   for (const id of removed) landed.add(id);
   const next = items.filter(item => !removed.includes(item.id));
-  for (const item of incoming) {
+  for (const arrived of incoming) {
+    let item = withPreviews(arrived);
     const index = next.findIndex(i => i.id === item.id);
     const old = index >= 0 ? next[index] : undefined;
     if (isPending(item)) {
       if (landed.has(item.id)) continue;
       if (old?.kind === "message" && item.kind === "message" && old.send === "sent" && item.send === "sending") continue;
+      if (old?.kind === "message" && item.kind === "message" && old.images.length === item.images.length) item = { ...item, images: old.images };
     } else if (item.kind === "message" && item.author.id === "owner") {
+      const real = item;
       const pending = next.findIndex(i => i.kind === "message" && isPending(i) &&
-        (item.requestId ? i.id === `r:${item.requestId}` : sameText(i.text, item.text) && item.at >= i.at - LAND_SLACK_MS));
+        (real.requestId ? i.id === `r:${real.requestId}` : sameText(i.text, real.text) && real.at >= i.at - LAND_SLACK_MS));
       if (pending >= 0) {
-        landed.add(next[pending]!.id);
+        const sent = next[pending]!;
+        if (sent.kind === "message" && sent.images.length === real.images.length) {
+          for (const [i, image] of real.images.entries()) if (sent.images[i]!.url.startsWith("blob:")) previews.set(image.url, sent.images[i]!.url);
+          item = withPreviews(real);
+        }
+        landed.add(sent.id);
         next.splice(pending, 1);
       }
     }

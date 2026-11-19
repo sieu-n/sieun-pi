@@ -96,6 +96,45 @@ test("a pasted image shows as a thumbnail and goes out with the message", async 
   await expect(conversation(page).locator(".thumb")).toHaveCount(0);
 });
 
+test("a pasted PNG screenshot uploads as a smaller WebP and the landed message shows the bytes the page holds", async ({ page }) => {
+  await open(page, `#/c/${FRONTEND}`);
+  const input = composerInput(conversation(page));
+  await input.click();
+  const fetched: string[] = [];
+  page.on("request", (r) => {
+    if (r.method() === "GET") fetched.push(new URL(r.url()).pathname);
+  });
+  const uploaded = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/api/uploads"));
+  const pngSize = await input.evaluate(async (el) => {
+    const canvas = new OffscreenCanvas(1600, 1000);
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "#222";
+    ctx.fillRect(0, 0, 1600, 1000);
+    ctx.fillStyle = "#ddd";
+    ctx.font = "20px sans-serif";
+    for (let y = 30; y < 1000; y += 28) ctx.fillText(`line ${y}: the quick brown fox jumps over the lazy dog 0123456789 `.repeat(3), 10, y);
+    const png = await canvas.convertToBlob({ type: "image/png" });
+    const data = new DataTransfer();
+    data.items.add(new File([png], "shot.png", { type: "image/png" }));
+    el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+    return png.size;
+  });
+  const upload = await uploaded;
+  expect(upload.headers()["content-type"]).toBe("image/webp");
+  const text = `shot ${tag()}`;
+  await page.keyboard.type(text);
+  const sent = page.waitForResponse((r) => r.url().includes(`/api/c/${FRONTEND}/send`));
+  await page.keyboard.press("Enter");
+  const request = (await sent).request().postDataJSON() as { images: { url: string; mimeType: string }[] };
+  expect(request.images[0]!.mimeType).toBe("image/webp");
+  const kept = await page.request.get(request.images[0]!.url);
+  expect(kept.headers()["content-type"]).toBe("image/webp");
+  expect((await kept.body()).length).toBeLessThan(pngSize);
+  const row = conversation(page).locator("[data-message-id]:not([data-message-id^='r:'])").filter({ hasText: text });
+  await expect(row.locator(".images img")).toHaveAttribute("src", /^blob:/);
+  expect(fetched).not.toContain(request.images[0]!.url);
+});
+
 test("Reply to thread in the side pane sends to the job", async ({ page }) => {
   await open(page, `#/c/${VENT}?thread=${encodeURIComponent(VENT_JOB)}`);
   const pane = page.getByTestId("thread-pane");

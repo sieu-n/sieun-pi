@@ -7,6 +7,7 @@ import type {
   ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, ImageRef, Item, JobNode, Me, MemoryInput, ModelCatalog, ProjectList, SearchQuery, SearchResult, SendRequest,
   ReactionRequest, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, TimelinePage, UsageReport, AccountsView,
 } from "./types.ts";
+import { shrink } from "./shrink.ts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -132,14 +133,16 @@ const query = (params: Record<string, string | number | boolean | undefined | nu
 export const requestId = (): string => (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
 /**
- * An image the owner attached. Its bytes go to POST /api/uploads the moment it is attached, while he types, so the send names only the ref
- * and answers at once. `preview` shows it before the upload ends, and `ref()` is that upload, started again after a failure.
+ * An image the owner attached. Its bytes, a PNG as a smaller WebP (`shrink`), go to POST /api/uploads the moment it is attached, while he
+ * types, so the send names only the ref and answers at once. `preview` shows it before the upload ends, and `ref()` is that upload, started
+ * again after a failure.
  */
 export interface Attached { preview: string; mimeType: string; ref: () => Promise<ImageRef> }
 
 export function attach(file: Blob): Attached {
+  const smaller = shrink(file);
   let upload: Promise<ImageRef> | undefined;
-  const ref = (): Promise<ImageRef> => (upload ??= api.upload(file).catch((error: unknown) => {
+  const ref = (): Promise<ImageRef> => (upload ??= smaller.then(api.upload).catch((error: unknown) => {
     upload = undefined;
     throw error;
   }));
