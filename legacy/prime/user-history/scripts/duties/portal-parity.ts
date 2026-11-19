@@ -150,7 +150,7 @@ export const CHAINED = /\{(job_id|snapshot_id)\}/;
  * A Xiaohongshu note opens only with the xsec_token an explore answer issues, so note_detail's fixed docs example answered 502
  * acquisition_credential_unavailable on staging on 2026-10-28 at 00:02Z, while 10 of 10 notes from an explore answer opened there at 01:4xZ.
  */
-export const QUERY_CHAINS: Readonly<Record<string, { from: string; what: string; query: (body: unknown) => Record<string, string> | undefined }>> = {
+export const QUERY_CHAINS: Readonly<Record<string, { from: string; what: string; query: (body: unknown, from: Record<string, string>) => Record<string, string> | undefined }>> = {
   "GET /v1/xiaohongshu/note_detail": { from: "GET /v1/xiaohongshu/explore", what: "note_id", query: body => {
     const id = firstItemId(body);
     return id ? { note_id: id } : undefined;
@@ -158,9 +158,13 @@ export const QUERY_CHAINS: Readonly<Record<string, { from: string; what: string;
   /**
    * A Facebook expansion_token stops working 7 days after post_comments issues it: the docs example token of 10-27 20:35Z read its
    * replies on prod at 6.88 days and got field_exception on staging at 7.2 days (d2, 11-04 01:53Z), while a token from a fresh
-   * post_comments answer read the same comment and its page 2 on staging at 11-04 02:39Z.
+   * post_comments answer read the same comment and its page 2 on staging at 11-04 02:39Z. Since crawler 837085764e (11-19) the replies read
+   * the page of the post the comment is on, so the call also sends that post_comments call's post as url.
    */
-  "GET /v1/facebook/post_comment_replies": { from: "GET /v1/facebook/post_comments", what: "feedback_id and expansion_token", query: firstReplyKeys },
+  "GET /v1/facebook/post_comment_replies": { from: "GET /v1/facebook/post_comments", what: "feedback_id, expansion_token and post url", query: (body, from) => {
+    const keys = firstReplyKeys(body);
+    return keys && from.post ? { ...keys, url: from.post } : keys;
+  } },
 };
 
 /** The first comment of a list answer that carries both `extra.feedback_id` and `extra.expansion_token`, as post_comment_replies' query. */
@@ -814,12 +818,16 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
     const chain = QUERY_CHAINS[op]!;
     const index = first.findIndex(([name]) => name === chain.from);
     const source = index >= 0 ? phase1[index] : undefined;
-    const values = source?.verdict === "ok" ? chain.query(source.body) : undefined;
+    const fromRequest = index >= 0 ? buildRequest(chain.from, first[index]![1]) : undefined;
+    const fromQuery = fromRequest && !("missing" in fromRequest) ? fromRequest.query : {};
+    const values = source?.verdict === "ok" ? chain.query(source.body, fromQuery) : undefined;
     if (!values) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: `no ${chain.what} from a ${chain.from} answer in this run`, body: null };
     const request = buildRequest(op, operation);
     if ("missing" in request) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: request.missing, body: null };
     const org = orgs[index % orgs.length]!;
-    const fedRequest = { ...request, query: { ...request.query, ...values } };
+    // Only the names this env documents go out, so an env whose portal does not take url yet gets no url and no 400.
+    const documented = new Set((operation.parameters ?? []).filter(param => param.in === "query").map(param => param.name));
+    const fedRequest = { ...request, query: { ...request.query, ...Object.fromEntries(Object.entries(values).filter(([name]) => documented.has(name))) } };
     const result = await call(org, op, fedRequest, `${chain.what} from this run's ${chain.from} answer`);
     const next = result.verdict === "ok" ? nextPage(operation, result.body) : null;
     if (next) pageTwo.set(op, await call(org, `${op} page 2`, pageTwoRequest(fedRequest, next), `page 2 with its own ${next.param}`));

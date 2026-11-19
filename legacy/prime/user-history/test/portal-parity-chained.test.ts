@@ -22,19 +22,20 @@ test("no chained write starts before every chained read of the run has answered"
 test("note_detail takes its note_id from the first note of this run's explore answer", () => {
   const chain = QUERY_CHAINS["GET /v1/xiaohongshu/note_detail"]!;
   assert.equal(chain.from, "GET /v1/xiaohongshu/explore");
-  assert.deepEqual(chain.query({ data: [{ id: "6a8f9ae4000000001803c2f0" }, { id: "other" }] }), { note_id: "6a8f9ae4000000001803c2f0" });
+  assert.deepEqual(chain.query({ data: [{ id: "6a8f9ae4000000001803c2f0" }, { id: "other" }] }, {}), { note_id: "6a8f9ae4000000001803c2f0" });
   assert.equal(firstItemId({ data: { items: [{ id: "6ab90fef000000000b0074a1" }] } }), "6ab90fef000000000b0074a1");
-  assert.equal(chain.query({ data: [] }), undefined);
+  assert.equal(chain.query({ data: [] }, {}), undefined);
   assert.equal(firstItemId(null), undefined);
 });
 
-// 11-04: post_comment_replies' docs example token was 7.2 days old and Facebook answered field_exception; a token from post_comments reads.
-test("post_comment_replies takes feedback_id and expansion_token from this run's post_comments answer", () => {
+// 11-04: post_comment_replies' docs example token was 7.2 days old and Facebook answered field_exception; 11-19: crawler 837085764e needs the post url.
+test("post_comment_replies takes feedback_id, expansion_token and the post url from this run's post_comments call", () => {
   const chain = QUERY_CHAINS["GET /v1/facebook/post_comment_replies"]!;
   assert.equal(chain.from, "GET /v1/facebook/post_comments");
   const items = [{ id: "1", extra: { feedback_id: "f1" } }, { id: "2", extra: { feedback_id: "f2", expansion_token: "t2" } }];
-  assert.deepEqual(chain.query({ data: { items } }), { feedback_id: "f2", expansion_token: "t2" });
-  assert.equal(chain.query({ data: { items: [] } }), undefined);
+  const post = "https://www.facebook.com/photo/?fbid=1688249899339100";
+  assert.deepEqual(chain.query({ data: { items } }, { post, max_pages: "1" }), { feedback_id: "f2", expansion_token: "t2", url: post });
+  assert.equal(chain.query({ data: { items: [] } }, { post }), undefined);
 });
 
 // 10-29: the run read GET /v1/batch/snapshot/{snapshot_id} 0.8 s after the trigger and got 409 snapshot_not_ready while the job still ran.
