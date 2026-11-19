@@ -397,16 +397,21 @@ export async function getWikiIndex(): Promise<WikiIndex> {
 		!needsFullScan &&
 		(changedPaths.size > 0 || store.stale) &&
 		changedPaths.size <= 200 &&
-		[...changedPaths].every(isPageEvent);
+		[...changedPaths].every(isFileEvent);
 	const refresh = refreshWikiIndex();
 	if (wait) return refresh;
 	refresh.catch((error) => console.error('[llm-wiki] index refresh failed', error));
 	return cachedIndex;
 }
 
-/** A watcher event for a page file. A folder or a temp file has no page extension. */
-function isPageEvent(filename: string): boolean {
-	return !isIgnoredWikiPath(filename.split(path.sep).join('/'));
+/**
+ * A watcher event the refresh re-reads in milliseconds: a page file, or a file the index skips, such as the
+ * `<page>.<pid>.<id>.write` temp name a curated page lands through. A name with no extension may be a folder,
+ * whose walk can take seconds. On 2026-11-19 at 18:10Z the temp name made every new apps/convex page miss the
+ * index its verify read, and verify answered 404.
+ */
+function isFileEvent(filename: string): boolean {
+	return !isIgnoredWikiPath(filename.split(path.sep).join('/')) || path.extname(filename) !== '';
 }
 
 function refreshWikiIndex(): Promise<WikiIndex> {

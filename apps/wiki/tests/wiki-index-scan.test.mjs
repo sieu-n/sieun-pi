@@ -86,6 +86,11 @@ async function withIndex(
 		addEntries(fullPath);
 		notify(fullPath);
 	}
+	/** Land a page the way wiki-write.ts writePageFile lands a curated page: a `.write` temp file renamed over it. */
+	function writeThroughTemp(name, content) {
+		notify(path.resolve(contentRoot, `${name}.4242.k3x9.write`));
+		write(name, content);
+	}
 	for (const fullPath of contents.keys()) addEntries(fullPath);
 	globalThis[key] = {
 		async readdir(dir) {
@@ -191,7 +196,7 @@ async function withIndex(
 		});
 		const wiki = await vite.ssrLoadModule('/src/lib/server/wiki.ts');
 		const load = (id) => vite.ssrLoadModule(id);
-		await run(wiki, { visited, opened, watchers, peak: () => peak, active: () => active, write, copyTree, load });
+		await run(wiki, { visited, opened, watchers, peak: () => peak, active: () => active, write, writeThroughTemp, copyTree, load });
 	} finally {
 		await vite?.close();
 		delete globalThis[key];
@@ -362,3 +367,19 @@ test('on a Linux box the index watches each folder it walks and does not rescan 
 	);
 });
 
+
+// On 2026-11-19 at 18:10Z wiki.publish wrote three new apps/convex pages and each verify answered 404 "Page not found",
+// because the `.write` temp name in the watcher batch made the index serve its stale copy without the new page.
+test('a curated page written through a temp file resolves on the next index read', async () => {
+	for (const platform of ['linux', 'darwin']) {
+		await onPlatform(platform, () =>
+			withIndex({ 'apps/hub/index.html': '<h1>Hub</h1>' }, async (wiki, fs) => {
+				await indexWith(wiki, 'apps/hub/index.html');
+				fs.writeThroughTemp('apps/hub/new.html', '<h1>New</h1>');
+				const index = await wiki.getWikiIndex();
+				assert.ok(index.byPath.has('apps/hub/new.html'), `${platform}: the new page is in the index`);
+				assert.ok(!index.byPath.has('apps/hub/new.html.4242.k3x9.write'), `${platform}: the temp file is not`);
+			}),
+		);
+	}
+});
