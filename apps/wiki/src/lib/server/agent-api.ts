@@ -31,7 +31,7 @@ import {
 	searchPages,
 } from './wiki';
 import { getMirrorHistory } from './wiki-git-history';
-import { getLintReport } from './wiki-lint';
+import { getLintReport, linkCheck } from './wiki-lint';
 import { facetMatch, find, grep, sliceLines, sliceSection } from './wiki-query';
 import { rowFor, rowsFor } from './wiki-results';
 import { appendEvent, closeSession, openSession } from './wiki-sessions';
@@ -337,9 +337,7 @@ async function verify(pagePath: string | null): Promise<Response> {
 	if (!pagePath) return fail('Missing path', 400);
 	const page = await readPage(pagePath);
 	if (!page) return fail('Page not found', 404);
-	const index = await getWikiIndex();
-	const broken = page.links.filter((link) => !index.byPath.has(link));
-	const inbound = page.backlinks.length;
+	const links = await linkCheck(page);
 	let rendered = false;
 	let htmlLen = 0;
 	let renderError: string | null = null;
@@ -356,7 +354,7 @@ async function verify(pagePath: string | null): Promise<Response> {
 			kind: page.meta.kind ?? null,
 			date: page.meta.date ?? null,
 		},
-		L2_links: { ok: broken.length === 0 && inbound > 0, broken, inbound },
+		L2_links: links,
 		L3_render: { ok: rendered && htmlLen > 0, htmlLen, error: renderError },
 	};
 	return json({ path: page.path, pass: checks.L1_schema.ok && checks.L2_links.ok && checks.L3_render.ok, checks });

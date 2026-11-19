@@ -205,6 +205,21 @@ export async function missingHubRow(pagePath: string): Promise<{ hub: string; hr
 	return { hub, href: path.posix.relative(path.posix.dirname(hub), pagePath) };
 }
 
+/**
+ * The verify gate's L2 check: no broken link, and at least one way in, which is a page linking it or an ancestor hub
+ * whose `<wiki-children>` tag lists it. A retired page needs no way in, because the page API refuses a current hub's
+ * new link to it. Before 2026-11-20 only links counted, so every page a self-building hub table listed failed L2, such
+ * as the desired-outcome pages of projects/ai-email-writer, and so did seven archived domains/devops snapshots.
+ */
+export async function linkCheck(page: { path: string; links: string[]; backlinks: unknown[]; meta: { status?: string } }) {
+	const index = await getWikiIndex();
+	const broken = page.links.filter((link) => !index.byPath.has(link));
+	const inbound = page.backlinks.length;
+	const retired = isRetiredStatus(page.meta.status);
+	const hubListed = inbound === 0 && !retired && (await missingHubRow(page.path)) === null;
+	return { ok: broken.length === 0 && (inbound > 0 || hubListed || retired), broken, inbound, hubListed, retired };
+}
+
 /** Hub pages of every folder above `pagePath`, home first. A folder page is not above itself. */
 export function ancestorHubs(pagePath: string, exists: (wikiPath: string) => boolean): string[] {
 	const parts = pagePath.split('/');
