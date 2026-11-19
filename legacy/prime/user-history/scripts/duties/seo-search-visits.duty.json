@@ -27,7 +27,7 @@
     },
     {
       "key": "source_errors",
-      "label": "Data sources that failed or were stale (PostHog, Search Console, Clerk, git)",
+      "label": "Data sources that failed or were stale (PostHog, Search Console, Clerk, git), plus the Request indexing window when it is due 24 h with no signed-in browser",
       "op": "<=",
       "target": 0
     }

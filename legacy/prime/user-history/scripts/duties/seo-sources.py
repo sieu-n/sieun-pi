@@ -2,8 +2,8 @@
 to the program's daily metrics file. Run inside auto-sns-agent's SEO CLI project, from that repo's root:
 `uv run --project scripts/seo --frozen python <this file> visits|inspect`. Prints one JSON object on stdout.
 
-visits: PostHog blog and tool visits (virev_seo.traffic), Search Console totals and impressions per page (virev_seo.gsc) and 28-day
-sign-ups with their first page (virev_seo.signups and virev_seo.goal). Each source is read on its own, so one failure leaves the others.
+visits: PostHog blog and tool visits (virev_seo.traffic), Search Console totals and impressions per page (virev_seo.gsc), 28-day
+sign-ups with their first page (virev_seo.signups and virev_seo.goal) and the state of the Request indexing window. Each source is read on its own, so one failure leaves the others.
 inspect: URL Inspection for the URLs on stdin (one per line), each POST, re-asks included, counted in metrics/inspect-quota.json by
 virev_seo.gsc.VentSession.post like every other caller.
 """
@@ -86,10 +86,20 @@ def signups_read() -> dict[str, Any]:
     return out
 
 
+def window_read() -> dict[str, Any]:
+    """The daily Request indexing window (virev_seo.request_window): since when a due window has had no signed-in browser, as epoch
+    seconds or None, the time Google last took a request, and how many hand-pinned URLs still wait."""
+    from virev_seo import request_window
+
+    state = request_window.read_json(request_window.STATE_FILE, {})
+    return {"down_since": state.get("down_since"), "last_accepted": request_window.last_accept_time(),
+            "pinned_left": len(request_window.read_priority())}
+
+
 def visits() -> dict[str, Any]:
     out: dict[str, Any] = {}
-    with ThreadPoolExecutor(3) as pool:
-        futures = {name: pool.submit(read) for name, read in (("traffic", traffic_read), ("gsc", gsc_read), ("signups", signups_read))}
+    with ThreadPoolExecutor(4) as pool:
+        futures = {name: pool.submit(read) for name, read in (("traffic", traffic_read), ("gsc", gsc_read), ("signups", signups_read), ("window", window_read))}
         for name, future in futures.items():
             try:
                 out[name] = future.result()

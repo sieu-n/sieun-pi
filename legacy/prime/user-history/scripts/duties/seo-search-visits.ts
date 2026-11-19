@@ -106,7 +106,13 @@ export interface SignupsRead { clerk_users: number; d28: number; attribution: st
 export interface TipCommit { sha: string; committedAt: number; subject: string }
 export interface ShipRead { tipRef: string; commits: TipCommit[] }
 export interface CopyRead { pages: number; banned: BannedPage[] }
-export interface VisitsRead { traffic?: TrafficRead | Err; gsc?: GscRead | Err; signups?: SignupsRead | Err; ship?: ShipRead | Err; copy?: CopyRead | Err; noindex?: string[] }
+/** The daily Request indexing window: `down_since` is the epoch second from which a due window has found no signed-in browser, else null. */
+export interface WindowRead { down_since: number | null; last_accepted: string; pinned_left: number }
+export interface VisitsRead { traffic?: TrafficRead | Err; gsc?: GscRead | Err; signups?: SignupsRead | Err; window?: WindowRead | Err; ship?: ShipRead | Err; copy?: CopyRead | Err; noindex?: string[] }
+/** A window due this long with no signed-in browser counts in source_errors. From 2026-11-18 00:20Z the box Chrome had no Google user and the
+ * Aside app on the Mac was closed, the timer ran every minute with exit 0, and the 10 dropped pages of the 11-18 run got no recrawl request
+ * for 40 h before anyone looked. A window starts 24 h after the last one, so 24 h down is one day of requests lost. */
+export const WINDOW_DOWN_MS = 24 * 3_600_000;
 export interface DroppedPage { page: string; baseDaily: number; recentDaily: number }
 
 const isErr = (value: unknown): value is Err => typeof value === "object" && value !== null && "error" in value;
@@ -240,6 +246,17 @@ export function visitsOutput(read: VisitsRead, at: number): PrecheckOutput {
     const fromGoal = GOAL_SECTIONS.reduce((sum, section) => sum + (signups.by_section![section] ?? 0), 0);
     metrics.signups_goal_d28 = round(fromGoal / 28);
     flagged.push({ at, kind: "signups", excerpt: `Sign-ups in 28 days: ${signups.d28}, ${signups.matched} matched in PostHog, ${fromGoal} with a blog or tool first page. By first page: ${Object.entries(signups.by_section).map(([key, value]) => `${key} ${value}`).join(", ")}.` });
+  }
+  const win = read.window;
+  if (win && isErr(win)) {
+    metrics.source_errors! += 1;
+    flagged.push({ at, kind: "source_error", excerpt: `Request indexing window (virev_seo.request_window): ${win.error}. Its state was not read this run.` });
+  } else if (win) {
+    const downMs = win.down_since ? at - win.down_since * 1000 : 0;
+    if (downMs >= WINDOW_DOWN_MS) metrics.source_errors! += 1;
+    flagged.push({ at, kind: downMs >= WINDOW_DOWN_MS ? "source_error" : "request_window", excerpt: win.down_since
+      ? `Request indexing window: due for ${Math.round(downMs / 3_600_000)} h with no signed-in browser, since ${new Date(win.down_since * 1000).toISOString().slice(0, 16)}Z. The box Chrome has no live Google user and the Mac's Aside is closed or signed out. Google last took a request at ${win.last_accepted}, and ${win.pinned_left} pinned recrawl URLs wait. Sign a Google user of the property in to the box profile (auto-sns-agent scripts/seo/README.md, "seo window").`
+      : `Request indexing window: Google last took a request at ${win.last_accepted}, and ${win.pinned_left} pinned recrawl URLs wait.` });
   }
   const ship = read.ship;
   if (!ship || isErr(ship)) fail(`Git (auto-sns-agent tip against origin/${BRANCH})`, ship?.error ?? "no answer", ["unshipped_blog_changes"]);
