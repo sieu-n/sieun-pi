@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type AgentSummary } from "$lib/api";
+  import { api, sendFirst, type AgentSummary } from "$lib/api";
   import { router } from "$lib/router.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import Button from "$lib/ui/Button.svelte";
@@ -23,10 +23,10 @@
 
   async function startChat(out: Outgoing) {
     // A new chat is a solo root chat, never an agent: untitled agents filled every picker on 10-29.
+    const since = performance.now();
     const agent = await api.createAgent({ kind: "solo" });
     const room = agent.room ?? agent.id;
-    const images = await Promise.all(out.images.map((image) => image.ref()));
-    await api.send(room, { text: out.text, images, mentions: out.mentions, requestId: crypto.randomUUID() });
+    sendFirst(room, out.text, { images: out.images, mentions: out.mentions }, since);
     router.openConversation(room);
   }
 

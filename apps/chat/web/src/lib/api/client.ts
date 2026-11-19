@@ -48,9 +48,9 @@ type Timing = { m: string; p: string; s: number; ms: number; net?: number; enc?:
 export type Wait = {
   background?: "ahead" | "shown";
   /**
-   * An image send: `since` is his Enter and `shownMs` the time from it until the message's bubble was painted. The bubble, with the image
-   * from the page and Sending, is all he waits for, so the line's `ms` is `shownMs`; the time from Enter until the server stored the
-   * message, its uploads included, goes beside it as `stored` and is no wait of his.
+   * A send: `since` is his Enter and `shownMs` the time from it until the message's bubble was painted. The bubble, with Sending and any
+   * image from the page, is all he waits for, so the line's `ms` is `shownMs`; the time from Enter until the server stored the message,
+   * its uploads included, goes beside it as `stored` and is no wait of his.
    */
   since?: number;
   shownMs?: number;

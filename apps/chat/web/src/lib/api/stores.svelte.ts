@@ -176,6 +176,15 @@ const draftOf = (held: HeldSend, files: Promise<Blob[] | undefined>): SendDraft 
   ...(held.whenBusy ? { whenBusy: held.whenBusy } : {}),
 });
 
+/**
+ * The first message of a chat made a moment ago, by its room: the room's timeline sends it as it opens, through the same path as any
+ * other send, and its wait counts from `since`, the Enter that also made the chat.
+ */
+const firstSends = new Map<ConversationId, { text: string; opts: SendOpts; since: number }>();
+export function sendFirst(room: ConversationId, text: string, opts: SendOpts, since: number): void {
+  firstSends.set(room, { text, opts, since });
+}
+
 /** The requestIds a live view shows, so a second view of the same conversation does not show or send them again. */
 const shownSends = new Set<string>();
 
@@ -225,20 +234,20 @@ class Sends {
 
   /**
    * Shows the send at once and posts it behind, after the sends before it (`inOrder`); the promise settles when the chat server has it or
-   * it failed. A send with images is kept at once with their bytes, so a reload while they upload sends it again, and its timing line
-   * counts his Enter to the painted bubble (`Wait.shownMs`).
+   * it failed. A send with images is kept at once with their bytes, so a reload while they upload sends it again. Every send's timing
+   * line counts from `since`, his Enter, to the painted bubble (`Wait.shownMs`).
    */
-  async send(request: SendDraft, show = true): Promise<SendResult | undefined> {
+  async send(request: SendDraft, show = true, since = performance.now()): Promise<SendResult | undefined> {
     this.requests.set(request.requestId, request);
     shownSends.add(request.requestId);
     const files = request.images ?? [];
-    const wait: Wait | undefined = files.length ? { since: performance.now() } : undefined;
+    const wait: Wait = { since };
     if (show) this.merge([optimistic(request)]);
-    if (wait && files.length) {
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => setTimeout(() => (wait.shownMs = performance.now() - since)));
+    if (files.length) {
       const { images: _files, ...rest } = request;
       heldSends.keep({ ...rest, conversation: this.conversation, images: [], uploading: files.length, at: Date.now() });
       void heldImages.put(request.requestId, files.map(image => image.file));
-      if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => setTimeout(() => (wait.shownMs = performance.now() - wait.since!)));
     }
     return this.fly(request.requestId, () => inOrder(this.conversation, () => post(this.conversation, request, wait)), `r:${request.requestId}`);
   }
@@ -743,6 +752,11 @@ export class Timeline {
     timelinePages.open(id);
     void this.load(opts.around);
     for (const id of this.sends.restore()) this.retrySend(id);
+    const first = firstSends.get(id);
+    if (first) {
+      firstSends.delete(id);
+      void this.send(first.text, first.opts, first.since);
+    }
   }
 
   private around: string | undefined;
@@ -827,9 +841,9 @@ export class Timeline {
    * Sends text and images; mentions route as agent messages. The message shows at once as sending and the call returns; the post runs
    * behind with retries, and a send that cannot reach the chat server stays on screen as failed, with Retry and Discard.
    */
-  send(text: string, opts: SendOpts = {}): Promise<void> {
+  send(text: string, opts: SendOpts = {}, since?: number): Promise<void> {
     const request: SendDraft = { text, requestId: crypto.randomUUID(), ...opts };
-    void this.sends.send(request, !opts.threadRoot).then(result => this.sent(result, request));
+    void this.sends.send(request, !opts.threadRoot, since).then(result => this.sent(result, request));
     return Promise.resolve();
   }
 

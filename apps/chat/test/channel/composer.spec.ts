@@ -240,6 +240,43 @@ test("a text sent while the image send before it still uploads reaches the serve
   await expect(landed.first()).toContainText("first with image");
 });
 
+test("the first message of a new chat shows its bubble with the image while the image uploads", async ({ page }) => {
+  const release = await holdUploads(page);
+  await open(page, "#/c/new?kind=chat", "composer-input");
+  const input = composerInput(page);
+  await input.click();
+  const uploading = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/api/uploads"));
+  await pasteShot(input);
+  await uploading;
+  const text = `new chat with image ${tag()}`;
+  await page.keyboard.type(text);
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/#\/c\/(?!dm_|ch_|new)[^/?]+$/);
+  const bubble = conversation(page).locator("[data-message-id^='r:']").filter({ hasText: text });
+  await expect(bubble.locator(".images img")).toHaveAttribute("src", /^blob:/);
+  release();
+  const landed = conversation(page).locator("[data-kind='message']:not([data-message-id^='r:'])").filter({ hasText: text });
+  await expect(landed).toHaveCount(1, { timeout: 15_000 });
+  await expect(landed.locator(".images img")).toBeVisible();
+});
+
+test("a text send's line logs Enter to bubble, with the time until the server kept it apart", async ({ page }) => {
+  test.setTimeout(45_000);
+  const samples = timingSamples(page) as Sample2[];
+  await page.route(`**/api/c/${FRONTEND}/send`, async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await route.continue();
+  });
+  await open(page, `#/c/${FRONTEND}`);
+  await composerInput(conversation(page)).click();
+  await page.keyboard.type(`slow text ${tag()}`);
+  await page.keyboard.press("Enter");
+  const send = () => samples.find((s) => s.p === `/api/c/${FRONTEND}/send`);
+  await expect.poll(send, { timeout: 20_000 }).toBeTruthy();
+  expect(send()!.ms).toBeLessThan(1000);
+  expect(send()!.stored).toBeGreaterThanOrEqual(1200);
+});
+
 test("a reload while the image uploads sends the message again from the next page", async ({ page }) => {
   let hold = true;
   await page.route("**/api/uploads", async (route) => {
