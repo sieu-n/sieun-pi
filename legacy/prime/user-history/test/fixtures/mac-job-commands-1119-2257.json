@@ -1,0 +1,304 @@
+[
+  {
+    "at": "2026-11-19T22:56:30.020Z",
+    "host": "us-metal02",
+    "usable": {
+      "kind": "linux",
+      "memSomeAvg10": 0.5,
+      "memFullAvg10": 0.5,
+      "cpuSomeAvg10": 10,
+      "swapoutsPerS": 0,
+      "runnablePerCore": 0.4,
+      "allowedCpus": 80
+    },
+    "workers": 0,
+    "workerGb": 0,
+    "top": [],
+    "live": 0,
+    "working": 0,
+    "queue": null,
+    "mac": {
+      "swapGb": null,
+      "pressureLevel": null
+    },
+    "cpuMs": 0,
+    "hosts": [
+      {
+        "name": "mac",
+        "usable": {
+          "pressureLevel": 2,
+          "swapoutsPerS": 0,
+          "kernelTaskPct": 32.7,
+          "owners": [
+            {
+              "owner": "browser:chrome",
+              "label": "Google Chrome",
+              "gb": 24.54
+            },
+            {
+              "owner": "other:com.apple.WebKit.WebContent",
+              "label": "com.apple.WebKit.WebContent",
+              "gb": 7.01
+            },
+            {
+              "owner": "browser:helium",
+              "label": "Helium",
+              "gb": 6.93
+            },
+            {
+              "owner": "other:rest",
+              "label": "other names under 0.1 GiB each",
+              "gb": 3.81
+            },
+            {
+              "owner": "other:ChatGPT",
+              "label": "ChatGPT",
+              "gb": 2.92
+            },
+            {
+              "owner": "other:Visual Studio Code",
+              "label": "Visual Studio Code",
+              "gb": 2.58
+            },
+            {
+              "owner": "browser:aside",
+              "label": "Aside",
+              "gb": 1.82
+            },
+            {
+              "owner": "pm2:virev-demo",
+              "label": "virev-demo",
+              "gb": 1.33
+            }
+          ],
+          "groups": {
+            "browsers": 40.43,
+            "other": 9.27,
+            "coding": 2.71,
+            "dev": 2.39,
+            "agents": 1.57,
+            "docker": 0.3,
+            "system": 4.23
+          },
+          "battery": {
+            "pct": 100,
+            "ac": true
+          }
+        },
+        "workers": 1,
+        "workerGb": 1.02,
+        "top": [
+          {
+            "pid": 51476,
+            "gb": 1.02,
+            "sessions": 2,
+            "root": "01a11ba8-9d2c-727c-8ded-38f819ca9f29",
+            "tree": "designer bro, works on 5180 only",
+            "workGb": 0.3
+          }
+        ],
+        "byWorker": [
+          {
+            "pid": 51476,
+            "gb": 1.02,
+            "root": "01a11ba8-9d2c-727c-8ded-38f819ca9f29",
+            "tree": "designer bro, works on 5180 only",
+            "sessions": 2,
+            "working": 1,
+            "workGb": 0.3
+          }
+        ],
+        "live": 2,
+        "working": 1,
+        "agents": {
+          "gb": 1.57,
+          "working": 1,
+          "children": 1,
+          "retry": 0,
+          "idle": 0,
+          "hung": 0
+        },
+        "swapGb": 16.5,
+        "trees": [
+          {
+            "root": "01a11ba8-9d2c-727c-8ded-38f819ca9f29",
+            "tree": "designer bro, works on 5180 only",
+            "gb": 0.35,
+            "biggest": {
+              "pid": 52630,
+              "gb": 0.2,
+              "started": 1795128938,
+              "command": "node scripts/demo/snapshot-media.mjs --subjects post:B16ihYDAa0g,post:B4qlEM3pFt3,post:B5RIdMTJxAe,post:B_0upvvJgOQ,post:C--aCU_JaO5,post:C-DgmflIFuX,post:C-ECDddyiZ6,post:C-S4EMnP_mQ,post:C0MsTWgJVDv"
+            }
+          }
+        ],
+        "asideTabs": {
+          "agent": 0,
+          "all": 2
+        },
+        "kernelRigs": [
+          {
+            "session": "01a1f603-69f4-71ad-81cb-6287331774c5",
+            "root": "01a11ba8-9d2c-727c-8ded-38f819ca9f29",
+            "tree": "designer bro, works on 5180 only",
+            "job": "5180 viewer feed pictures",
+            "gb": 0.22,
+            "pids": 1,
+            "command": "node scripts/demo/snapshot-media.mjs --subjects post:B16ihYDAa0g,post:B4qlEM3pFt3,post:B5RIdMTJxAe,post:B_0upvvJgOQ,post"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "at": "2026-11-19T22:57:30.023Z",
+    "host": "us-metal02",
+    "usable": {
+      "kind": "linux",
+      "memSomeAvg10": 0.5,
+      "memFullAvg10": 0.5,
+      "cpuSomeAvg10": 10,
+      "swapoutsPerS": 0,
+      "runnablePerCore": 0.4,
+      "allowedCpus": 80
+    },
+    "workers": 0,
+    "workerGb": 0,
+    "top": [],
+    "live": 0,
+    "working": 0,
+    "queue": null,
+    "mac": {
+      "swapGb": null,
+      "pressureLevel": null
+    },
+    "cpuMs": 0,
+    "hosts": [
+      {
+        "name": "mac",
+        "usable": {
+          "pressureLevel": 2,
+          "swapoutsPerS": 6412.2,
+          "kernelTaskPct": 56.1,
+          "owners": [
+            {
+              "owner": "browser:chrome",
+              "label": "Google Chrome",
+              "gb": 24.58
+            },
+            {
+              "owner": "other:com.apple.WebKit.WebContent",
+              "label": "com.apple.WebKit.WebContent",
+              "gb": 7.04
+            },
+            {
+              "owner": "browser:helium",
+              "label": "Helium",
+              "gb": 6.97
+            },
+            {
+              "owner": "other:rest",
+              "label": "other names under 0.1 GiB each",
+              "gb": 3.81
+            },
+            {
+              "owner": "chat:01a11ba8-9d2c-727c-8ded-38f819ca9f29",
+              "label": "designer bro, works on 5180 only",
+              "gb": 3.24
+            },
+            {
+              "owner": "other:ChatGPT",
+              "label": "ChatGPT",
+              "gb": 2.92
+            },
+            {
+              "owner": "other:Visual Studio Code",
+              "label": "Visual Studio Code",
+              "gb": 2.62
+            },
+            {
+              "owner": "browser:aside",
+              "label": "Aside",
+              "gb": 1.83
+            }
+          ],
+          "groups": {
+            "browsers": 40.57,
+            "other": 9.47,
+            "agents": 3.8,
+            "coding": 2.75,
+            "dev": 2.18,
+            "docker": 0.3,
+            "system": 5.37
+          },
+          "battery": {
+            "pct": 100,
+            "ac": true
+          }
+        },
+        "workers": 1,
+        "workerGb": 3.34,
+        "top": [
+          {
+            "pid": 51476,
+            "gb": 3.34,
+            "sessions": 2,
+            "root": "01a11ba8-9d2c-727c-8ded-38f819ca9f29",
+            "tree": "designer bro, works on 5180 only",
+            "workGb": 2.61
+          }
+        ],
+        "byWorker": [
+          {
+            "pid": 51476,
+            "gb": 3.34,
+            "root": "01a11ba8-9d2c-727c-8ded-38f819ca9f29",
+            "tree": "designer bro, works on 5180 only",
+            "sessions": 2,
+            "working": 1,
+            "workGb": 2.61
+          }
+        ],
+        "live": 2,
+        "working": 1,
+        "agents": {
+          "gb": 3.8,
+          "working": 1,
+          "children": 1,
+          "retry": 0,
+          "idle": 0,
+          "hung": 0
+        },
+        "swapGb": 17.6,
+        "trees": [
+          {
+            "root": "01a11ba8-9d2c-727c-8ded-38f819ca9f29",
+            "tree": "designer bro, works on 5180 only",
+            "gb": 2.65,
+            "biggest": {
+              "pid": 55737,
+              "gb": 0.24,
+              "started": 1795129037,
+              "command": "node scripts/demo/snapshot-media.mjs --subjects post:DKGPhFfP5qi,post:DKZ6iubxfh8,post:DKkwqHYT41w,post:DL-yfsOyJE1,post:DLDkY1IymUL,post:DLcsUyAuptW,post:DM-cKl1umDv,post:DM8gOZjsuei,post:DMVTX1EgfsV"
+            }
+          }
+        ],
+        "asideTabs": {
+          "agent": 0,
+          "all": 2
+        },
+        "kernelRigs": [
+          {
+            "session": "01a1f603-69f4-71ad-81cb-6287331774c5",
+            "root": "01a11ba8-9d2c-727c-8ded-38f819ca9f29",
+            "tree": "designer bro, works on 5180 only",
+            "job": "5180 viewer feed pictures",
+            "gb": 2.45,
+            "pids": 11,
+            "command": "node scripts/demo/snapshot-media.mjs --subjects post:DKGPhFfP5qi,post:DKZ6iubxfh8,post:DKkwqHYT41w,post:DL-yfsOyJE1,post"
+          }
+        ]
+      }
+    ]
+  }
+]

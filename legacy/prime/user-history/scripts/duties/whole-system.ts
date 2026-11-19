@@ -13,7 +13,7 @@ import { type PoolQueue, readPoolQueue, slotParkOf } from "../../src/slot-park.t
 import { stepSessions, unmovedSteps } from "../../src/unmoved-steps.ts";
 import { waitHolds } from "../../src/checkin-end-state.ts";
 import type { ChatBoard, MemoryGroupId, PlanItem } from "../../src/shared/types.ts";
-import { type AgentLine, type AsideTabs, FEED_OWNERS, type HostUsable, type JobRig, LINGER_MS, type LingerLine, isLinuxReading, parseLinuxReading, readWatch, type StrayServerLine, type IdlePm2Line, type TestBrowserLine, UNREAD_AT_STOP, unusable, type UsableReading, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
+import { type AgentLine, type AsideTabs, FEED_OWNERS, type HostUsable, type JobRig, type KernelRig, LINGER_MS, type LingerLine, isLinuxReading, parseLinuxReading, readWatch, type StrayServerLine, type IdlePm2Line, type TestBrowserLine, UNREAD_AT_STOP, unusable, type UsableReading, type WaitingTree, type WatchLine, type WorkerLine, type WorkerTree } from "../../src/mac-usable-watch.ts";
 import { QUIET_MINUTES, QUIET_TARGET_GB, quietMinutes } from "../../src/quiet-minutes.ts";
 import { type HungCall, PROGRESS_CORES } from "../../src/hung-calls.ts";
 import type { StoppedCall } from "../../src/hung-stop.ts";
@@ -53,6 +53,8 @@ export interface HostView { name: string; usable: HostUsable | null; workers: nu
   asideTabs?: AsideTabs;
   /** The box's job rigs that minute (HostWatchLine.jobRigs). */
   jobRigs?: readonly JobRig[];
+  /** The box's sessions by what their commands held that minute (HostWatchLine.kernelRigs). */
+  kernelRigs?: readonly KernelRig[];
   /** The swap in use on the box that minute in GB (HostWatchLine.swapGb). */
   swapGb?: number }
 /** Lines written before 10-18 04:5xZ name no box, and the Mac wrote every one of them. */
@@ -154,7 +156,7 @@ export function hostViews(line: WatchLine): HostView[] {
     { name: lineHost(line), usable: own.usable, workers: line.workers, workerGb: line.workerGb, top: line.top,
       ...line.serviceGb === undefined ? {} : { serviceGb: line.serviceGb }, ...line.agents ? { agents: line.agents } : {}, ...own.error ? { error: own.error } : {},
       ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {}, ...line.strayServers ? { strayServers: line.strayServers } : {}, ...line.idlePm2 ? { idlePm2: line.idlePm2 } : {}, ...line.byWorker ? { byWorker: line.byWorker } : {},
-      ...line.lingering ? { lingering: line.lingering } : {} },
+      ...line.lingering ? { lingering: line.lingering } : {}, ...line.kernelRigs ? { kernelRigs: line.kernelRigs } : {} },
     ...(line.hosts ?? []).map(host => {
       const read = checked(host.usable);
       const error = host.error ?? read.error;
@@ -162,7 +164,7 @@ export function hostViews(line: WatchLine): HostView[] {
         ...host.agents ? { agents: host.agents } : {}, ...error ? { error } : {}, ...host.offline ? { offline: true as const } : {}, ...host.testBrowsers ? { testBrowsers: host.testBrowsers } : {},
         ...host.strayServers ? { strayServers: host.strayServers } : {}, ...host.idlePm2 ? { idlePm2: host.idlePm2 } : {},
         ...host.byWorker ? { byWorker: host.byWorker } : {}, ...host.lingering ? { lingering: host.lingering } : {}, ...host.asideTabs ? { asideTabs: host.asideTabs } : {},
-        ...host.jobRigs ? { jobRigs: host.jobRigs } : {}, ...typeof host.swapGb === "number" ? { swapGb: host.swapGb } : {} };
+        ...host.jobRigs ? { jobRigs: host.jobRigs } : {}, ...host.kernelRigs ? { kernelRigs: host.kernelRigs } : {}, ...typeof host.swapGb === "number" ? { swapGb: host.swapGb } : {} };
     }),
   ];
 }
@@ -244,6 +246,37 @@ export function jobRigWords(view: HostView, owner: RigOwner): string {
 }
 
 /**
+ * What the Mac's sessions' commands held that minute in GB (HostView.kernelRigs): what jobs started under their kernels, in whatever dir. The
+ * feed already counts them in their chat's owner, so they stay in the agents' share as they are. 0 on a Linux box, whose rigs read by cgroup.
+ */
+export function kernelRigGb(view: HostView): number {
+  if (!view.usable || isLinuxReading(view.usable)) return 0;
+  return Math.round(100 * (view.kernelRigs ?? []).reduce((sum, rig) => sum + rig.gb, 0)) / 100;
+}
+
+/** A session's commands' owner in the flag's words: `chat <tree>, job <job>`, or `chat <tree>` for a chat's own kernel. */
+const kernelRigOwner = (rig: KernelRig): string => `chat ${rig.tree}${rig.job ? `, job ${rig.job}` : ""}`;
+
+/** The Mac's sessions whose commands held the most in the flag's words, the 3 largest each with its largest command; empty when none held any. */
+export function kernelRigWords(view: HostView): string {
+  const gb = kernelRigGb(view);
+  if (!(gb > 0)) return "";
+  return `; job commands ${gb} GB: ${view.kernelRigs!.slice(0, 3).map(rig => `${kernelRigOwner(rig)} ${rig.gb} GB${rig.command ? ` (${rig.command.slice(0, 60)})` : ""}`).join(", ")}`;
+}
+
+/** A minute's largest rig to steer: a rig dir outside every worker tree or a session's commands, by what it held. */
+interface HeldRig { key: string; owner: SessionOwner | undefined; who: string; where: string; gb: number; command: string }
+export function heldRig(view: HostView, owner: RigOwner): HeldRig | undefined {
+  const dir = view.jobRigs?.[0], session = view.kernelRigs?.[0];
+  if (session && session.gb > (dir?.gb ?? 0)) {
+    const named: SessionOwner = { chat: session.tree, ...session.job ? { job: session.job } : {} };
+    return { key: `session:${session.session}`, owner: named, who: kernelRigOwner(session), where: "in its commands", gb: session.gb, command: session.command };
+  }
+  if (!dir) return undefined;
+  return { key: rigOwnerWords(dir.dir, owner), owner: owner(dir.dir), who: `The ${rigOwnerWords(dir.dir, owner)} that owns ~/${dir.dir}`, where: `under ~/${dir.dir}`, gb: dir.gb, command: dir.command };
+}
+
+/**
  * The part of Aside's footprint the agents' tabs hold, by their share of its open tabs (HostView.asideTabs), in GB; 0 with no tab count or no
  * Aside owner among the feed's largest. The feed sums every Aside process into one browser:aside owner in Browsers, beside the owner's Chrome and
  * Helium, so from 19:05Z to 19:17Z on 10-29 Aside grew from 5.17 to 10.22 GB with 15 of its 17 tabs opened by live 5180 jobs, and d7 put 7 of
@@ -287,12 +320,23 @@ export function memoryHolders(view: HostView, owner: RigOwner): Map<string, Memo
 
 const gbRound = (gb: number): number => Math.round(100 * gb) / 100;
 
+/** The session of chat `root` whose commands grew the most from `then` to `now`, when any grew. */
+function grownRig(root: string, now: readonly KernelRig[] = [], then: readonly KernelRig[] = []): KernelRig | undefined {
+  let top: { rig: KernelRig; growth: number } | undefined;
+  for (const rig of now) {
+    const growth = rig.gb - (then.find(old => old.session === rig.session)?.gb ?? 0);
+    if (rig.root === root && growth > (top?.growth ?? 0)) top = { rig, growth };
+  }
+  return top?.rig;
+}
+
 /**
  * A Mac minute's cause in the flag's words: the holder whose memory grew the most since the same box in the line before, with its GB before and
  * after and the swap's rise; the agents' Aside tabs (`asideWords`) when that line is missing, over 2 minutes older or has no feed owners, or
  * when nothing grew. A feed owner missing from the line before held at most its smallest owner, or nothing when the feed listed fewer than
  * FEED_OWNERS. At 07:21Z on 11-04 a `pnpm check` (tsgo with an 8 GB heap) that a sep launch!! job started at 07:20:55Z took that chat from 0.55
  * to 7.52 GB and swap from 11.5 to 13.3 GB, while one agent tab opened in Aside, and d7 named only "agents' Aside tabs 1 of 4, about 0.83 GB".
+ * A chat that jumped names the session in it whose commands grew the most (`KernelRig`), with its largest command, so the run can steer that job.
  */
 export function jumpWords(lines: readonly WatchLine[], owner: RigOwner): (line: WatchLine, view: HostView) => string {
   const previous = new Map(lines.map((line, at) => [line, lines[at - 1]] as const));
@@ -311,7 +355,10 @@ export function jumpWords(lines: readonly WatchLine[], owner: RigOwner): (line: 
     }
     if (!top) return asideWords(view);
     const swap = same!.swapGb !== undefined && view.swapGb !== undefined ? `, swap ${same!.swapGb} to ${view.swapGb} GB` : "";
-    return `; the largest jump since ${clock(Date.parse(before!.at))} was ${top.words} +${gbRound(top.to - top.from)} GB (${gbRound(top.from)} to ${gbRound(top.to)} GB)${swap}` +
+    const grown = top.key.startsWith("chat:") ? grownRig(top.key.slice(5), view.kernelRigs, same!.kernelRigs) : undefined;
+    const words = grown?.job ? `${top.words}, job ${grown.job}` : top.words;
+    return `; the largest jump since ${clock(Date.parse(before!.at))} was ${words} +${gbRound(top.to - top.from)} GB (${gbRound(top.from)} to ${gbRound(top.to)} GB` +
+      `${grown?.command ? `, ${grown.command.slice(0, 60)}` : ""})${swap}` +
       (top.key === "browser:aside" ? asideWords(view) : "");
   };
 }
@@ -403,19 +450,25 @@ export function rigWords(view: HostView, name: (fault: DaemonFault) => string | 
 export const MEMORY_STALL_PCT = 10;
 const memoryStalled = (usable: HostUsable): boolean => isLinuxReading(usable) && usable.memFullAvg10 >= MEMORY_STALL_PCT;
 
-/** A Linux memory stall in the flag's words: the stall, the swap-outs, the group that held the most and the worker tree whose work held the most. */
+/** A Linux memory stall in the flag's words: the stall, the swap-outs, the group that held the most, the worker tree whose work held the most and the session whose commands held the most. */
 export function memoryWords(view: HostView): string {
   const usable = view.usable;
   if (!usable || !isLinuxReading(usable) || !memoryStalled(usable)) return "";
   const most = view.top.reduce<WorkerLine | null>((top, worker) => (worker.workGb ?? 0) > (top?.workGb ?? 0) ? worker : top, null);
+  const session = view.kernelRigs?.[0];
   return `; memory full ${usable.memFullAvg10}% of the last 10 s with ${usable.swapoutsPerS} swap-outs a second` +
-    (view.agents?.largest ? `, the ${view.agents.largest} group held the most memory` : "") + (most?.workGb ? `, the job processes of ${most.tree} ${most.workGb} GB` : "");
+    (view.agents?.largest ? `, the ${view.agents.largest} group held the most memory` : "") + (most?.workGb ? `, the job processes of ${most.tree} ${most.workGb} GB` : "") +
+    (session ? `, the most of them ${kernelRigOwner(session)} ${session.gb} GB${session.command ? ` (${session.command.slice(0, 60)})` : ""}` : "");
 }
 
-/** Whether a reading's harness cores went mostly to job rigs (rig-cpu.ts), or on the Mac whether job rigs held most of the harness's memory (`jobRigGb`). */
+/**
+ * Whether a reading's harness cores went mostly to job rigs (rig-cpu.ts), or on the Mac whether job rigs held most of the harness's memory: the
+ * rig dirs outside every worker tree (`jobRigGb`) and the commands sessions run under their kernels (`kernelRigGb`), as a Linux box counts the
+ * commands kernels run as rigs.
+ */
 export const rigsLead = (view: HostView): boolean => {
   const usable = view.usable;
-  if (usable && !isLinuxReading(usable)) { const rigs = jobRigGb(view); return rigs > 0 && 2 * rigs > (memoryShares(view).get("agents") ?? 0); }
+  if (usable && !isLinuxReading(usable)) { const rigs = jobRigGb(view) + kernelRigGb(view); return rigs > 0 && 2 * rigs > (memoryShares(view).get("agents") ?? 0); }
   return !!usable && isLinuxReading(usable) && !!usable.harnessSplit && usable.harnessSplit.rigs > usable.harnessSplit.own;
 };
 
@@ -1671,7 +1724,7 @@ export function measure(input: Inputs): PrecheckOutput {
   let clean = 0, usable = 0, fed = 0, unwatched = 0, unknownMin = 0, held = 0, freeSlot = 0, cellWait = 0, harness = 0, rigMin = 0, busyMin = 0, ciMin = 0, other = 0, unattributed = 0, daemonFail = 0, primeMin = 0, primeStallMin = 0, slowRenameMin = 0, hungMin = 0;
   const faultName = chatNamer(input.chats, input.named, input.listed);
   const rigOwner = rigOwners(input.chats, input.named, input.listed);
-  const rigHeld = new Map<string, { at: number[]; gb: number; dir: string; command: string; box: string }>();
+  const rigHeld = new Map<string, HeldRig & { at: number[]; box: string }>();
   const slotWaits = (input.slotWaits ?? []).filter(wait => wait.fault.at >= start && wait.fault.at < start + WINDOW_MS);
   const side = sideOf(input.watch);
   const ciAt = ciWords(input.watch);
@@ -1732,17 +1785,16 @@ export function measure(input: Inputs): PrecheckOutput {
       const daemonOnly = miss.every(kind => kind === "cpu") && slow.length > 0 && slow.every(words => !words.startsWith("the chat"));
       const led = side(line, view);
       const read = found.includes("cpu") && (slowChat(own, line.chat) || started !== undefined || daemonOnly) ? "harness" : led;
-      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${startWords}${memoryWords(view)}${jumpAt(line, view)}${led === "ci" ? ciAt(line, view) : ""}${rigWords(view, faultName)}${jobRigWords(view, rigOwner)})`);
+      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${startWords}${memoryWords(view)}${jumpAt(line, view)}${led === "ci" ? ciAt(line, view) : ""}${rigWords(view, faultName)}${jobRigWords(view, rigOwner)}${rigsLead(view) ? kernelRigWords(view) : ""})`);
       sides.add(read);
       if (read === "harness" && rigsLead(view)) {
         rigged = true;
-        const top = view.jobRigs?.[0];
+        const top = heldRig(view, rigOwner);
         if (top) {
-          const key = rigOwnerWords(top.dir, rigOwner);
-          const held = rigHeld.get(key) ?? { at: [], gb: 0, dir: top.dir, command: top.command, box: view.name };
+          const held = rigHeld.get(top.key) ?? { ...top, at: [], box: view.name };
           held.at.push(from);
-          if (top.gb > held.gb) Object.assign(held, { gb: top.gb, dir: top.dir, command: top.command, box: view.name });
-          rigHeld.set(key, held);
+          if (top.gb > held.gb) Object.assign(held, { ...top, box: view.name });
+          rigHeld.set(top.key, held);
         }
       }
     }
@@ -1930,10 +1982,10 @@ export function measure(input: Inputs): PrecheckOutput {
     "; a stall's line carries its CPU profile and a rename's its parts (ready, find, check, worker)." });
   // A Mac minute its job rigs held is the job's to fix, so the run steers that chat in one line.
   for (const held of rigHeld.values()) {
-    const owner = rigOwner(held.dir);
-    const who = owner ? owner.job ? `${owner.chat}'s job ${owner.job}` : owner.chat : `The ${rigOwnerWords(held.dir, rigOwner)} that owns ~/${held.dir}`;
+    const owner = held.owner;
+    const who = owner ? owner.job ? `${owner.chat}'s job ${owner.job}` : owner.chat : held.who;
     flagged.push({ kind: "job_rig_minutes", excerpt: `${who} held most of the harness's memory on ${held.box} with its rigs in ${held.at.length} unusable ` +
-      `${held.at.length === 1 ? "minute" : "minutes"} (${spans(held.at)}), up to ${held.gb} GB under ~/${held.dir}${held.command ? ` (${held.command.slice(0, 80)})` : ""}. ` +
+      `${held.at.length === 1 ? "minute" : "minutes"} (${spans(held.at)}), up to ${held.gb} GB ${held.where}${held.command ? ` (${held.command.slice(0, 80)})` : ""}. ` +
       (owner && !owner.alike ? `Steer ${owner.chat} to run them with the box's memory free or on a Linux box.` : `Find its chat by that dir and steer it.`) });
   }
   if (unknownLines.length) flagged.push({ kind: "unknown_minutes", excerpt: unknownLines.slice(-10).join("; ") });

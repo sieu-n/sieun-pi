@@ -240,7 +240,9 @@ export interface HostWatchLine { name: string; usable: HostUsable | null; worker
   jobRigs?: JobRig[];
   /** The box's chat trees by footprint with each one's largest process (`TreeLine`), at most 5; absent on lines written before 10-28 10:xxZ and when
    * none holds a kernel or orphan. On 10-28 the Mac's 09:15:30Z swap minute left d1 no process to name, because remote lines dropped them. */
-  trees?: TreeLine[] }
+  trees?: TreeLine[];
+  /** The box's sessions by what their commands hold (`KernelRig`), at most 5; absent when none holds any and on lines written before 11-20. */
+  kernelRigs?: KernelRig[] }
 
 export interface WatchLine {
   at: string;
@@ -259,6 +261,8 @@ export interface WatchLine {
   queue: QueueLine | null;
   /** The chat trees with the largest footprint, kernel subtrees plus orphans, at most 5; absent on older lines. */
   trees?: TreeLine[];
+  /** This box's sessions by what their commands hold (`KernelRig`), at most 5; absent when none holds any and on lines written before 11-20. */
+  kernelRigs?: KernelRig[];
   /** This box's Agent sessions as Settings > Hosts reads them (`agentLine`); absent on lines written before 10-19. */
   agents?: AgentLine;
   /** The chat service's own resident memory; absent on older lines. */
@@ -404,6 +408,16 @@ const strayLines = (footprints: Footprints): StrayServerLine[] => (footprints.st
 export interface TestBrowserLine { pid: number; started: number | null; root: string; tree: string; session: string; command: string }
 /** A chat tree's footprint (its kernels' subtrees and its orphans) and its largest process that is no Prime process, `started` kept to catch pid reuse. */
 export interface TreeLine { root: string; tree: string; gb: number; biggest: { pid: number; gb: number; started: number | null; command: string } | null }
+/**
+ * What one session's commands hold on a box: its kernel's subtree past the kernel process and the processes it left detached (worker-footprint.py
+ * `kernels` and `orphans`), in whatever dir they run, with its chat tree, its job name (absent for a chat's own kernel), how many processes
+ * they are and the largest one's command. At 22:57Z on 11-19 designer bro's job "5180 viewer feed pictures" ran 11 `node
+ * scripts/demo/snapshot-media.mjs` on the Mac in ~/Documents/Github/auto-sns-agent, the chat's feed owner went from 1.02 to 3.24 GB and swap
+ * from 16.5 to 17.6 GB, and d7 named only the chat, since the runs sat in no rig dir.
+ */
+export interface KernelRig { session: string; root: string; tree: string; job?: string; gb: number; pids: number; command: string }
+/** Most sessions a line keeps, as `trees` keeps 5. */
+const KERNEL_RIGS = 5;
 const round = (value: number, places = 2): number => Math.round(value * 10 ** places) / 10 ** places;
 
 /** Each row's chat tree: its top ancestor among the rows, by id and name (`title` first, then the row's name, then the short id). */
@@ -483,6 +497,7 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
   }, input.idleClock);
   const idlePm2 = strayPm2(input.footprints.pm2_daemons ?? []).map((daemon): IdlePm2Line => ({ pid: daemon.pid, started: daemon.started, home: daemon.home,
     apps: daemon.apps, mb: Math.round(daemon.bytes / 2 ** 20), ...daemon.root || daemon.session ? owner(daemon.session, daemon.root) : { root: "", tree: "" }, session: daemon.session }));
+  const rigs = kernelRigs(input.footprints, byId, owner);
   return {
     at: new Date(input.now).toISOString(),
     usable: input.usable ?? null, chatsLive,
@@ -491,6 +506,7 @@ export function watchLine(input: { now: number; rows: readonly unknown[]; footpr
     top, byWorker, live: live.length, working: working.length,
     queue,
     trees: treeLines(input.footprints, owner).slice(0, 5),
+    ...rigs.length ? { kernelRigs: rigs } : {},
     ...input.footprints.test_browsers?.length ? { testBrowsers: input.footprints.test_browsers.map(browser => ({ pid: browser.pid, started: browser.started,
       ...browser.root || browser.session ? owner(browser.session, browser.root) : { root: "", tree: "" }, session: browser.session, command: browser.command })) } : {},
     ...input.footprints.stray_servers?.length ? { strayServers: strayLines(input.footprints) } : {},
@@ -542,6 +558,26 @@ function treeLines(footprints: Footprints, owner: (session: string, root: string
   for (const orphan of footprints.orphans ?? []) add(orphan.session, orphan.root, orphan.bytes, orphan);
   return [...trees.values()].sort((a, b) => b.bytes - a.bytes).map(({ root, tree, bytes, biggest }) => ({ root, tree, gb: round(bytes / GB),
     biggest: biggest && { pid: biggest.pid, gb: round(biggest.bytes / GB), started: biggest.started, command: biggest.command } }));
+}
+
+/** Each session's commands from the helper's kernels and orphans (`KernelRig`), the largest KERNEL_RIGS of those that hold any. */
+function kernelRigs(footprints: Footprints, rows: ReadonlyMap<string, Row>, owner: (session: string, root: string) => { root: string; tree: string }): KernelRig[] {
+  const sessions = new Map<string, { root: string; bytes: number; pids: number; biggest: RawProcess | null }>();
+  const add = (session: string, root: string, bytes: number, pids: number, biggest: RawProcess | null) => {
+    if (!session) return;
+    const entry = sessions.get(session) ?? { root, bytes: 0, pids: 0, biggest: null };
+    entry.bytes += bytes;
+    entry.pids += pids;
+    if (biggest && (!entry.biggest || biggest.bytes > entry.biggest.bytes)) entry.biggest = biggest;
+    sessions.set(session, entry);
+  };
+  for (const kernel of footprints.kernels ?? []) add(kernel.session, kernel.root, kernel.bytes - (kernel.own ?? kernel.bytes), kernel.pids - 1, kernel.biggest);
+  for (const orphan of footprints.orphans ?? []) add(orphan.session, orphan.root, orphan.bytes, 1, orphan);
+  return [...sessions].map(([session, entry]): KernelRig => {
+    const found = owner(session, entry.root);
+    const job = found.root === session ? undefined : rows.get(session)?.name ?? session.slice(0, 8);
+    return { session, ...found, ...job ? { job: job.slice(0, 60) } : {}, gb: round(entry.bytes / GB), pids: entry.pids, command: entry.biggest?.command.slice(0, 120) ?? "" };
+  }).filter(rig => rig.gb > 0).sort((a, b) => b.gb - a.gb).slice(0, KERNEL_RIGS);
 }
 
 /** The queue reading the watch needs. */
@@ -710,7 +746,7 @@ export async function hostWatchLine(remote: RemoteWatch, input: { now: number; c
     return { name: remote.name, usable, workers: line.workers, workerGb: line.workerGb, top: line.top, ...line.byWorker ? { byWorker: line.byWorker } : {}, live: line.live,
       working: line.working, agents, swapGb: line.mac.swapGb,
       ...line.testBrowsers ? { testBrowsers: line.testBrowsers } : {}, ...line.strayServers ? { strayServers: line.strayServers } : {}, ...line.idlePm2 ? { idlePm2: line.idlePm2 } : {},
-      ...line.lingering ? { lingering: line.lingering } : {}, ...line.trees?.length ? { trees: line.trees } : {}, ...asideTabs ? { asideTabs } : {},
+      ...line.lingering ? { lingering: line.lingering } : {}, ...line.trees?.length ? { trees: line.trees } : {}, ...line.kernelRigs ? { kernelRigs: line.kernelRigs } : {}, ...asideTabs ? { asideTabs } : {},
       ...jobRigs.length ? { jobRigs } : {} };
   } catch (error) {
     return { name: remote.name, usable: null, workers: 0, workerGb: 0, top: [], live: 0, working: 0, swapGb: null, error: (error instanceof Error ? error.message : String(error)).slice(0, 200) };
