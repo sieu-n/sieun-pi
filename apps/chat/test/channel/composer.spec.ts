@@ -135,6 +135,70 @@ test("a pasted PNG screenshot uploads as a smaller WebP and the landed message s
   expect(fetched).not.toContain(request.images[0]!.url);
 });
 
+const pasteShot = (input: import("@playwright/test").Locator) => input.evaluate(async (el) => {
+  const canvas = new OffscreenCanvas(800, 500);
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillStyle = "#222";
+  ctx.fillRect(0, 0, 800, 500);
+  ctx.fillStyle = "#ddd";
+  ctx.font = "20px sans-serif";
+  for (let y = 30; y < 500; y += 28) ctx.fillText(`line ${y}: the quick brown fox jumps over the lazy dog`, 10, y);
+  const data = new DataTransfer();
+  data.items.add(new File([await canvas.convertToBlob({ type: "image/png" })], "shot.png", { type: "image/png" }));
+  el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+});
+
+type Sample = { m: string; p: string; ms: number; enc?: number; bg?: string };
+const timingSamples = (page: import("@playwright/test").Page): Sample[] => {
+  const samples: Sample[] = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && r.url().endsWith("/api/timings")) samples.push(...((r.postDataJSON() as { samples: Sample[] }).samples ?? []));
+  });
+  return samples;
+};
+
+test("an upload that ended before Enter logs as background, with its encode time", async ({ page }) => {
+  test.setTimeout(45_000);
+  const samples = timingSamples(page);
+  await open(page, `#/c/${FRONTEND}`);
+  const input = composerInput(conversation(page));
+  await input.click();
+  const uploaded = page.waitForResponse((r) => r.request().method() === "POST" && r.url().endsWith("/api/uploads"));
+  await pasteShot(input);
+  await uploaded;
+  await page.keyboard.type(`after upload ${tag()}`);
+  await page.keyboard.press("Enter");
+  await expect.poll(() => samples.find((s) => s.p === "/api/uploads"), { timeout: 20_000 }).toBeTruthy();
+  const upload = samples.find((s) => s.p === "/api/uploads")!;
+  expect(upload.bg).toBe("shown");
+  expect(upload.enc).toBeGreaterThanOrEqual(0);
+});
+
+test("a send whose image is still uploading counts its wait from Enter, and that upload logs as waited", async ({ page }) => {
+  test.setTimeout(45_000);
+  const samples = timingSamples(page);
+  let release = (): void => undefined;
+  const entered = new Promise<void>((resolve) => (release = resolve));
+  await page.route("**/api/uploads", async (route) => {
+    await entered;
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await route.continue();
+  });
+  await open(page, `#/c/${FRONTEND}`);
+  const input = composerInput(conversation(page));
+  await input.click();
+  const uploading = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/api/uploads"));
+  await pasteShot(input);
+  await uploading;
+  await page.keyboard.type(`during upload ${tag()}`);
+  await page.keyboard.press("Enter");
+  release();
+  const send = () => samples.find((s) => s.p === `/api/c/${FRONTEND}/send`);
+  await expect.poll(() => send() && samples.find((s) => s.p === "/api/uploads"), { timeout: 20_000 }).toBeTruthy();
+  expect(samples.find((s) => s.p === "/api/uploads")!.bg).toBeUndefined();
+  expect(send()!.ms).toBeGreaterThanOrEqual(1000);
+});
+
 test("Reply to thread in the side pane sends to the job", async ({ page }) => {
   await open(page, `#/c/${VENT}?thread=${encodeURIComponent(VENT_JOB)}`);
   const pane = page.getByTestId("thread-pane");

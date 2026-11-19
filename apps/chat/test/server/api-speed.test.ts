@@ -237,6 +237,20 @@ test("a read ahead of any view counts in no speed, and a refresh behind a page t
   }
 });
 
+test("an upload's client line keeps the ms its image encode took", async () => {
+  const dataDir = tempDir();
+  const chat = await start({ dataDir });
+  try {
+    await chat.send("POST", "/api/timings", { samples: [
+      { m: "POST", p: "/api/uploads", s: 200, ms: 800, enc: 412, bg: "shown" }, { m: "POST", p: "/api/uploads", s: 200, ms: 801, enc: "slow" },
+    ] });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.deepEqual(lines(dataDir).filter(line => line.src === "client").map(line => [line.ms, line.enc, line.bg]), [[800, 412, "shown"], [801, undefined, undefined]]);
+  } finally {
+    await chat.close();
+  }
+});
+
 test("a walk never sets a metric, and with no tailnet line the server's handler time stands alone", () => {
   const dir = tempDir();
   mkdirSync(join(dir, "requests"));

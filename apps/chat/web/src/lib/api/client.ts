@@ -37,7 +37,7 @@ const boardBase = (chat: string): string => (chat.startsWith("ag_") ? `/api/agen
  * busy before it could send the call or read the answer: on 11-03 a thread open in the box Chrome waited 2,135 ms for /api/rooms, of which
  * the network and the server took 29 ms.
  */
-type Timing = { m: string; p: string; s: number; ms: number; net?: number; err?: string; shown?: true; wait?: Wait };
+type Timing = { m: string; p: string; s: number; ms: number; net?: number; enc?: number; err?: string; shown?: true; wait?: Wait };
 
 /**
  * What the owner saw while a call ran, which its caller sets and may change until the batch is posted. `ahead` is a read ahead of any
@@ -45,7 +45,20 @@ type Timing = { m: string; p: string; s: number; ms: number; net?: number; err?:
  * a page the screen already showed from the page's cache; the caller clears it when the answer changed what the screen showed, since he
  * waited for that. Without one the screen waited on the call. The speed duty reads it as `bg` (request-log.ts).
  */
-export type Wait = { background?: "ahead" | "shown" };
+export type Wait = {
+  background?: "ahead" | "shown";
+  /** When the owner's wait began, where that is before the call: a send whose image was still uploading waited from his Enter. */
+  since?: number;
+  /** The ms an image's encode took before its upload (shrink.ts), logged beside the call as `enc`. */
+  encodeMs?: number;
+};
+
+/**
+ * The page's round trip to the server: the least network time of its last 20 calls, since the fastest handlers answer in about 1 ms
+ * (replies 1.2 ms and read 2.3 ms in the 11-20 duty run).
+ */
+const recentNet: number[] = [];
+const roundTripMs = (): number | undefined => (recentNet.length ? Math.min(...recentNet) : undefined);
 const timings: Timing[] = [];
 let timingsTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -81,7 +94,14 @@ function networkMs(path: string, started: number): number | undefined {
 function recordTiming(m: string, path: string, s: number, started: number, err?: string, wait?: Wait): void {
   if (typeof window === "undefined") return;
   const net = networkMs(path, started);
-  timings.push({ m, p: path.split("?")[0]!, s, ms: Math.round(performance.now() - started), ...(net === undefined ? {} : { net }), ...(err ? { err } : {}), ...(wait ? { wait } : {}) });
+  if (net !== undefined && s > 0) {
+    recentNet.push(net);
+    if (recentNet.length > 20) recentNet.shift();
+  }
+  timings.push({
+    m, p: path.split("?")[0]!, s, ms: Math.round(performance.now() - (wait?.since ?? started)), ...(net === undefined ? {} : { net }),
+    ...(wait?.encodeMs === undefined ? {} : { enc: wait.encodeMs }), ...(err ? { err } : {}), ...(wait ? { wait } : {}),
+  });
   if (err) sendTimings();
   else timingsTimer ??= setTimeout(sendTimings, 10_000);
 }
@@ -141,20 +161,40 @@ const query = (params: Record<string, string | number | boolean | undefined | nu
 export const requestId = (): string => (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
 /**
- * An image the owner attached. Its bytes, a PNG as a smaller WebP (`shrink`), go to POST /api/uploads the moment it is attached, while he
- * types, so the send names only the ref and answers at once. `preview` shows it before the upload ends, and `ref()` is that upload, started
- * again after a failure.
+ * An image the owner attached. Its bytes, a PNG as a smaller WebP when that pays (`shrink`), go to POST /api/uploads the moment it is
+ * attached, while he types, so the send names only the ref and answers at once. `preview` shows it before the upload ends, and `ref()` is
+ * that upload for a send, started again after a failure. The thumbnail and the sent message show without the upload, so its line is
+ * background (`Wait`) unless a send asked for the ref while it ran; that send's line then counts from his Enter.
  */
 export interface Attached { preview: string; mimeType: string; ref: () => Promise<ImageRef> }
 
 export function attach(file: Blob): Attached {
-  const smaller = shrink(file);
-  let upload: Promise<ImageRef> | undefined;
-  const ref = (): Promise<ImageRef> => (upload ??= smaller.then(api.upload).catch((error: unknown) => {
-    upload = undefined;
-    throw error;
-  }));
-  void ref().catch(() => undefined);
+  const smaller = shrink(file, roundTripMs());
+  let upload: { ref: Promise<ImageRef>; wait: Wait; done: boolean } | undefined;
+  const start = (): NonNullable<typeof upload> => {
+    if (upload) return upload;
+    const wait: Wait = { background: "shown" };
+    const started = {
+      wait, done: false,
+      ref: smaller.then(({ blob, encodeMs }) => {
+        if (encodeMs !== undefined) wait.encodeMs = encodeMs;
+        return api.upload(blob, wait);
+      }).then(image => {
+        started.done = true;
+        return image;
+      }, (error: unknown) => {
+        upload = undefined;
+        throw error;
+      }),
+    };
+    return (upload = started);
+  };
+  void start().ref.catch(() => undefined);
+  const ref = (): Promise<ImageRef> => {
+    const running = start();
+    if (!running.done) delete running.wait.background;
+    return running.ref;
+  };
   return { preview: URL.createObjectURL(file), mimeType: file.type || "image/png", ref };
 }
 
@@ -200,8 +240,8 @@ export const api = {
   /** A tool step's output, which a page leaves out until the owner opens it. */
   stepOutput: (ref: StepOutputRef) => call<{ output: string }>("GET", `/api/c/${enc(ref.conversation)}/output/${ref.entry}`),
   /** Keeps an image's bytes on the server; a send names the ref it answers (`attach`). */
-  upload: (file: Blob) => call<ImageRef>("POST", "/api/uploads", file),
-  send: (id: ConversationId, request: SendRequest) => call<SendResult>("POST", `/api/c/${enc(id)}/send`, request),
+  upload: (file: Blob, wait?: Wait) => call<ImageRef>("POST", "/api/uploads", file, undefined, wait),
+  send: (id: ConversationId, request: SendRequest, wait?: Wait) => call<SendResult>("POST", `/api/c/${enc(id)}/send`, request, undefined, wait),
   /** Tries a pending send that failed again now. */
   retrySend: (id: ConversationId, requestId: string) => call<SendResult>("POST", `/api/c/${enc(id)}/send/${enc(requestId)}/retry`),
   /** Drops a pending send that failed. */

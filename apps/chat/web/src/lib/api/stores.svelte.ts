@@ -118,10 +118,11 @@ async function post(conversation: ConversationId, draft: SendDraft): Promise<Sen
   let kept = heldSends.has(draft.requestId);
   for (let attempt = 0; ; attempt++) {
     try {
+      const since = performance.now();
       const images = await Promise.all((draft.images ?? []).map(image => image.ref()));
       if (!kept) heldSends.keep({ ...draft, conversation, images, at: Date.now() });
       kept = true;
-      return await api.send(conversation, { ...draft, images });
+      return await api.send(conversation, { ...draft, images }, images.length ? { since } : undefined);
     } catch (error) {
       const unreachable = !(error instanceof ApiError) || error.status >= 500;
       if (!unreachable || attempt >= SEND_RETRIES) throw error;
