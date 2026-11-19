@@ -37,7 +37,7 @@ const boardBase = (chat: string): string => (chat.startsWith("ag_") ? `/api/agen
  * busy before it could send the call or read the answer: on 11-03 a thread open in the box Chrome waited 2,135 ms for /api/rooms, of which
  * the network and the server took 29 ms.
  */
-type Timing = { m: string; p: string; s: number; ms: number; net?: number; enc?: number; err?: string; shown?: true; wait?: Wait };
+type Timing = { m: string; p: string; s: number; ms: number; net?: number; enc?: number; stored?: number; err?: string; shown?: true; wait?: Wait };
 
 /**
  * What the owner saw while a call ran, which its caller sets and may change until the batch is posted. `ahead` is a read ahead of any
@@ -47,8 +47,13 @@ type Timing = { m: string; p: string; s: number; ms: number; net?: number; enc?:
  */
 export type Wait = {
   background?: "ahead" | "shown";
-  /** When the owner's wait began, where that is before the call: a send whose image was still uploading waited from his Enter. */
+  /**
+   * An image send: `since` is his Enter and `shownMs` the time from it until the message's bubble was painted. The bubble, with the image
+   * from the page and Sending, is all he waits for, so the line's `ms` is `shownMs`; the time from Enter until the server stored the
+   * message, its uploads included, goes beside it as `stored` and is no wait of his.
+   */
   since?: number;
+  shownMs?: number;
   /** The ms an image's encode took before its upload (shrink.ts), logged beside the call as `enc`. */
   encodeMs?: number;
 };
@@ -98,9 +103,11 @@ function recordTiming(m: string, path: string, s: number, started: number, err?:
     recentNet.push(net);
     if (recentNet.length > 20) recentNet.shift();
   }
+  const now = performance.now();
   timings.push({
-    m, p: path.split("?")[0]!, s, ms: Math.round(performance.now() - (wait?.since ?? started)), ...(net === undefined ? {} : { net }),
-    ...(wait?.encodeMs === undefined ? {} : { enc: wait.encodeMs }), ...(err ? { err } : {}), ...(wait ? { wait } : {}),
+    m, p: path.split("?")[0]!, s, ms: Math.round(wait?.shownMs ?? now - (wait?.since ?? started)), ...(net === undefined ? {} : { net }),
+    ...(wait?.encodeMs === undefined ? {} : { enc: wait.encodeMs }), ...(wait?.since === undefined ? {} : { stored: Math.round(now - wait.since) }),
+    ...(err ? { err } : {}), ...(wait ? { wait } : {}),
   });
   if (err) sendTimings();
   else timingsTimer ??= setTimeout(sendTimings, 10_000);
@@ -162,40 +169,22 @@ export const requestId = (): string => (globalThis.crypto?.randomUUID?.() ?? `${
 
 /**
  * An image the owner attached. Its bytes, a PNG as a smaller WebP when that pays (`shrink`), go to POST /api/uploads the moment it is
- * attached, while he types, so the send names only the ref and answers at once. `preview` shows it before the upload ends, and `ref()` is
- * that upload for a send, started again after a failure. The thumbnail and the sent message show without the upload, so its line is
- * background (`Wait`) unless a send asked for the ref while it ran; that send's line then counts from his Enter.
+ * attached, while he types, so the send names only the ref. `preview` shows it before the upload ends, `file` is what he attached, and
+ * `ref()` is that upload, started again after a failure. The thumbnail and the sent message show without the upload, so its line is
+ * background (`Wait`).
  */
-export interface Attached { preview: string; mimeType: string; ref: () => Promise<ImageRef> }
+export interface Attached { preview: string; mimeType: string; file: Blob; ref: () => Promise<ImageRef> }
 
 export function attach(file: Blob): Attached {
   const smaller = shrink(file, roundTripMs());
-  let upload: { ref: Promise<ImageRef>; wait: Wait; done: boolean } | undefined;
-  const start = (): NonNullable<typeof upload> => {
-    if (upload) return upload;
-    const wait: Wait = { background: "shown" };
-    const started = {
-      wait, done: false,
-      ref: smaller.then(({ blob, encodeMs }) => {
-        if (encodeMs !== undefined) wait.encodeMs = encodeMs;
-        return api.upload(blob, wait);
-      }).then(image => {
-        started.done = true;
-        return image;
-      }, (error: unknown) => {
-        upload = undefined;
-        throw error;
-      }),
-    };
-    return (upload = started);
-  };
-  void start().ref.catch(() => undefined);
-  const ref = (): Promise<ImageRef> => {
-    const running = start();
-    if (!running.done) delete running.wait.background;
-    return running.ref;
-  };
-  return { preview: URL.createObjectURL(file), mimeType: file.type || "image/png", ref };
+  let upload: Promise<ImageRef> | undefined;
+  const ref = (): Promise<ImageRef> => (upload ??= smaller.then(({ blob, encodeMs }) =>
+    api.upload(blob, { background: "shown", ...(encodeMs === undefined ? {} : { encodeMs }) })).catch((error: unknown) => {
+    upload = undefined;
+    throw error;
+  }));
+  void ref().catch(() => undefined);
+  return { preview: URL.createObjectURL(file), mimeType: file.type || "image/png", file, ref };
 }
 
 export const api = {

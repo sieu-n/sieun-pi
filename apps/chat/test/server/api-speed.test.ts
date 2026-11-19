@@ -237,15 +237,17 @@ test("a read ahead of any view counts in no speed, and a refresh behind a page t
   }
 });
 
-test("an upload's client line keeps the ms its image encode took", async () => {
+test("an upload's client line keeps the ms its image encode took, and an image send's the ms until it was stored", async () => {
   const dataDir = tempDir();
   const chat = await start({ dataDir });
   try {
     await chat.send("POST", "/api/timings", { samples: [
       { m: "POST", p: "/api/uploads", s: 200, ms: 800, enc: 412, bg: "shown" }, { m: "POST", p: "/api/uploads", s: 200, ms: 801, enc: "slow" },
+      { m: "POST", p: "/api/c/dm_x/send", s: 200, ms: 12, stored: 1900 },
     ] });
     await new Promise(resolve => setTimeout(resolve, 50));
-    assert.deepEqual(lines(dataDir).filter(line => line.src === "client").map(line => [line.ms, line.enc, line.bg]), [[800, 412, "shown"], [801, undefined, undefined]]);
+    assert.deepEqual(lines(dataDir).filter(line => line.src === "client").map(line => [line.ms, line.enc, line.stored, line.bg]),
+      [[800, 412, undefined, "shown"], [801, undefined, undefined, undefined], [12, undefined, 1900, undefined]]);
   } finally {
     await chat.close();
   }

@@ -6,12 +6,13 @@
  * lands; nothing waits on the network before the composer takes the next message. An attached image shows from its preview while its
  * upload ends, and the post names the uploaded ref.
  */
-import { api, ApiError, reportNotDelivered, roomOf, type Attached, type Wait } from "./client.ts";
+import { api, ApiError, attach, reportNotDelivered, roomOf, type Attached, type Wait } from "./client.ts";
+import { heldImages } from "./held-images.ts";
 import { heldSends, type HeldSend } from "./held-sends.ts";
 import { holdReload, releaseReload } from "./reload.ts";
 import { live } from "./live.svelte.ts";
 import type {
-  AgentId, AgentSummary, BoardOp, BoardView, ConversationHeader, ConversationId, ConversationSummary, ForYouItem, Item, Me,
+  AgentId, AgentSummary, BoardOp, BoardView, ConversationHeader, ConversationId, ConversationSummary, ForYouItem, ImageRef, Item, Me,
   RunStatus, SendRequest, SendResult, Sidebar, TurnPlace,
 } from "./types.ts";
 
@@ -39,7 +40,7 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 function optimistic(request: SendDraft, failed?: { at: number; error: string }): Item {
   return {
     kind: "message", id: `r:${request.requestId}`, at: failed?.at ?? Date.now(), author: global.me?.owner ?? { id: "owner", kind: "owner", name: "You", avatar: { initials: "Me", hue: 210 } },
-    text: request.text, images: (request.images ?? []).map(image => ({ url: image.preview, mimeType: image.mimeType })),
+    text: request.text, images: (request.images ?? []).filter(image => image.preview).map(image => ({ url: image.preview, mimeType: image.mimeType })),
     mentions: request.mentions ?? [], deliveries: [], pending: true, requestId: request.requestId,
     ...(failed ? { send: "failed" as const, sendError: failed.error } : { send: "sending" as const }),
     ...(request.threadRoot ? { threadRoot: request.threadRoot } : {}),
@@ -111,18 +112,37 @@ function merge(items: readonly Item[], incoming: readonly Item[], landed: Set<st
 }
 
 /**
- * Posts a send once its images are uploaded, trying again with the same requestId while the chat server cannot be reached; a refused send
- * throws at once. Once the images have refs the send is kept in localStorage (held-sends.ts) until it lands, so a reload cannot lose it.
+ * Runs the sends of one conversation one after the other, in the order of his Enters, so a text sent while the image send before it still
+ * uploads reaches the server after it. A send that failed does not hold the next.
  */
-async function post(conversation: ConversationId, draft: SendDraft): Promise<SendResult> {
-  let kept = heldSends.has(draft.requestId);
+const tails = new Map<ConversationId, Promise<unknown>>();
+function inOrder<T>(conversation: ConversationId, run: () => Promise<T>): Promise<T> {
+  const result = (tails.get(conversation) ?? Promise.resolve()).then(run);
+  const tail = result.catch(() => undefined);
+  tails.set(conversation, tail);
+  void tail.then(() => {
+    if (tails.get(conversation) === tail) tails.delete(conversation);
+  });
+  return result;
+}
+
+/**
+ * Posts a send once its images are uploaded, trying again with the same requestId while the chat server cannot be reached; a refused send
+ * throws at once. The send is kept in localStorage (held-sends.ts) until it lands, so a reload cannot lose it: with its images' refs once
+ * they are uploaded, and before that as `Sends.send` kept it, with their bytes.
+ */
+async function post(conversation: ConversationId, draft: SendDraft, wait?: Wait): Promise<SendResult> {
+  let kept = heldSends.hasRefs(draft.requestId);
   for (let attempt = 0; ; attempt++) {
     try {
-      const since = performance.now();
       const images = await Promise.all((draft.images ?? []).map(image => image.ref()));
-      if (!kept) heldSends.keep({ ...draft, conversation, images, at: Date.now() });
+      if (!kept) {
+        const { images: _files, ...rest } = draft;
+        heldSends.keep({ ...rest, conversation, images, at: Date.now() });
+        void heldImages.drop(draft.requestId);
+      }
       kept = true;
-      return await api.send(conversation, { ...draft, images }, images.length ? { since } : undefined);
+      return await api.send(conversation, { ...draft, images }, wait);
     } catch (error) {
       const unreachable = !(error instanceof ApiError) || error.status >= 500;
       if (!unreachable || attempt >= SEND_RETRIES) throw error;
@@ -131,10 +151,27 @@ async function post(conversation: ConversationId, draft: SendDraft): Promise<Sen
   }
 }
 
-/** A kept send as the page holds it again, its images already uploaded. */
-const draftOf = (held: HeldSend): SendDraft => ({
+/**
+ * An image of a kept send whose upload had not ended (`HeldSend.uploading`): its bytes come back from held-images.ts and upload again when
+ * the send asks for the ref. Bytes that did not reach IndexedDB before the page went fail the send at once, so it shows Not delivered with
+ * the reason and never goes out without its image.
+ */
+function heldImage(files: Promise<Blob[] | undefined>, index: number): Attached {
+  let again: Promise<Attached> | undefined;
+  const ref = (): Promise<ImageRef> => (again ??= files.then(list => {
+    const file = list?.[index];
+    if (!file) throw new ApiError(400, "Its image was not kept before the page reloaded");
+    return attach(file);
+  })).then(image => image.ref());
+  return { preview: "", mimeType: "image/png", file: new Blob(), ref };
+}
+
+/** A kept send as the page holds it again: its images already uploaded, or their bytes read back from `files`. */
+const draftOf = (held: HeldSend, files: Promise<Blob[] | undefined>): SendDraft => ({
   text: held.text, requestId: held.requestId,
-  images: held.images.map(ref => ({ preview: ref.url, mimeType: ref.mimeType, ref: () => Promise.resolve(ref) })),
+  images: held.uploading
+    ? Array.from({ length: held.uploading }, (_, index) => heldImage(files, index))
+    : held.images.map(ref => ({ preview: ref.url, mimeType: ref.mimeType, file: new Blob(), ref: () => Promise.resolve(ref) })),
   ...(held.mentions ? { mentions: held.mentions } : {}), ...(held.threadRoot ? { threadRoot: held.threadRoot } : {}),
   ...(held.whenBusy ? { whenBusy: held.whenBusy } : {}),
 });
@@ -144,8 +181,7 @@ const shownSends = new Set<string>();
 
 /**
  * The optimistic side of sending, shared by a timeline and a channel thread: requests by id, landed ids, and failure marks. Each send holds
- * the page's reload after a release (reload.ts) while it is on its way, and a failed one whose images never uploaded holds it until it
- * lands or is discarded, since only this page has those images.
+ * the page's reload after a release (reload.ts) while it is on its way.
  */
 class Sends {
   readonly requests = new Map<string, SendDraft>();
@@ -167,9 +203,13 @@ class Sends {
     for (const held of heldSends.of(this.conversation, this.threadRoot)) {
       if (shownSends.has(held.requestId)) continue;
       shownSends.add(held.requestId);
-      const draft = draftOf(held);
+      const files = held.uploading ? heldImages.get(held.requestId) : Promise.resolve(undefined);
+      const draft = draftOf(held, files);
       this.requests.set(held.requestId, draft);
       this.merge([optimistic(draft, { at: held.at, error: held.error ?? "Not sent before the page reloaded" })]);
+      void files.then(list => {
+        if (list) this.patch(`r:${held.requestId}`, { images: list.map(file => ({ url: URL.createObjectURL(file), mimeType: file.type || "image/png" })) });
+      });
       if (held.error === undefined) resend.push(`r:${held.requestId}`);
     }
     return resend;
@@ -183,12 +223,24 @@ class Sends {
     }
   }
 
-  /** Shows the send at once and posts it behind; the promise settles when the chat server has it or it failed. */
+  /**
+   * Shows the send at once and posts it behind, after the sends before it (`inOrder`); the promise settles when the chat server has it or
+   * it failed. A send with images is kept at once with their bytes, so a reload while they upload sends it again, and its timing line
+   * counts his Enter to the painted bubble (`Wait.shownMs`).
+   */
   async send(request: SendDraft, show = true): Promise<SendResult | undefined> {
     this.requests.set(request.requestId, request);
     shownSends.add(request.requestId);
+    const files = request.images ?? [];
+    const wait: Wait | undefined = files.length ? { since: performance.now() } : undefined;
     if (show) this.merge([optimistic(request)]);
-    return this.fly(request.requestId, () => post(this.conversation, request), `r:${request.requestId}`);
+    if (wait && files.length) {
+      const { images: _files, ...rest } = request;
+      heldSends.keep({ ...rest, conversation: this.conversation, images: [], uploading: files.length, at: Date.now() });
+      void heldImages.put(request.requestId, files.map(image => image.file));
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => setTimeout(() => (wait.shownMs = performance.now() - wait.since!)));
+    }
+    return this.fly(request.requestId, () => inOrder(this.conversation, () => post(this.conversation, request, wait)), `r:${request.requestId}`);
   }
 
   private async fly(requestId: string, call: () => Promise<SendResult>, id: string): Promise<SendResult | undefined> {
@@ -210,6 +262,7 @@ class Sends {
 
   /** The send landed or was discarded: nothing keeps it any more. */
   private settle(requestId: string): void {
+    if (heldSends.has(requestId)) void heldImages.drop(requestId);
     heldSends.drop(requestId);
     releaseReload(`send:${requestId}`);
   }
@@ -234,7 +287,7 @@ class Sends {
     const requestId = (item?.kind === "message" && item.requestId) || id.slice(2);
     this.patch(id, { send: "sending", sendError: undefined });
     const request = this.requests.get(requestId);
-    return this.fly(requestId, () => (request ? post(this.conversation, request) : api.retrySend(this.conversation, requestId)), id);
+    return this.fly(requestId, () => inOrder(this.conversation, () => (request ? post(this.conversation, request) : api.retrySend(this.conversation, requestId))), id);
   }
 
   discard(id: string): void {

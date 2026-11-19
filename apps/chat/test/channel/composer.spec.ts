@@ -174,15 +174,50 @@ test("an upload that ended before Enter logs as background, with its encode time
   expect(upload.enc).toBeGreaterThanOrEqual(0);
 });
 
-test("a send whose image is still uploading counts its wait from Enter, and that upload logs as waited", async ({ page }) => {
-  test.setTimeout(45_000);
-  const samples = timingSamples(page);
+type Sample2 = Sample & { stored?: number };
+
+/** Holds every POST /api/uploads until `release()`, then for `ms` more. */
+async function holdUploads(page: import("@playwright/test").Page, ms = 0): Promise<() => void> {
   let release = (): void => undefined;
-  const entered = new Promise<void>((resolve) => (release = resolve));
+  const released = new Promise<void>((resolve) => (release = resolve));
   await page.route("**/api/uploads", async (route) => {
-    await entered;
-    await new Promise((resolve) => setTimeout(resolve, 1200));
-    await route.continue();
+    await released;
+    await new Promise((resolve) => setTimeout(resolve, ms));
+    await route.continue().catch(() => undefined);
+  });
+  return release;
+}
+
+test("an image send shows its bubble at Enter while the image uploads, and its line logs Enter to bubble with the time to stored apart", async ({ page }) => {
+  test.setTimeout(45_000);
+  const samples = timingSamples(page) as Sample2[];
+  const release = await holdUploads(page, 1200);
+  await open(page, `#/c/${FRONTEND}`);
+  const input = composerInput(conversation(page));
+  await input.click();
+  const uploading = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/api/uploads"));
+  await pasteShot(input);
+  await uploading;
+  const text = `during upload ${tag()}`;
+  await page.keyboard.type(text);
+  await page.keyboard.press("Enter");
+  const bubble = conversation(page).locator("[data-message-id^='r:']").filter({ hasText: text });
+  await expect(bubble.locator(".images img")).toHaveAttribute("src", /^blob:/);
+  await expect(input).toHaveText("");
+  await expect(conversation(page).locator(".thumb")).toHaveCount(0);
+  release();
+  const send = () => samples.find((s) => s.p === `/api/c/${FRONTEND}/send`);
+  await expect.poll(() => send() && samples.find((s) => s.p === "/api/uploads"), { timeout: 20_000 }).toBeTruthy();
+  expect(samples.find((s) => s.p === "/api/uploads")!.bg).toBe("shown");
+  expect(send()!.ms).toBeLessThan(1000);
+  expect(send()!.stored).toBeGreaterThanOrEqual(1200);
+});
+
+test("a text sent while the image send before it still uploads reaches the server after it", async ({ page }) => {
+  const release = await holdUploads(page, 800);
+  const order: string[] = [];
+  page.on("request", (r) => {
+    if (r.method() === "POST" && r.url().endsWith(`/api/c/${FRONTEND}/send`)) order.push((r.postDataJSON() as { text: string }).text);
   });
   await open(page, `#/c/${FRONTEND}`);
   const input = composerInput(conversation(page));
@@ -190,13 +225,53 @@ test("a send whose image is still uploading counts its wait from Enter, and that
   const uploading = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/api/uploads"));
   await pasteShot(input);
   await uploading;
-  await page.keyboard.type(`during upload ${tag()}`);
+  const word = tag();
+  await page.keyboard.type(`first with image ${word}`);
   await page.keyboard.press("Enter");
+  await page.keyboard.type(`second text ${word}`);
+  await page.keyboard.press("Enter");
+  await expect(conversation(page).locator("[data-message-id^='r:']").filter({ hasText: word })).toHaveCount(2);
+  await page.waitForTimeout(500);
+  expect(order.filter((sent) => sent.includes(word))).toEqual([]);
   release();
-  const send = () => samples.find((s) => s.p === `/api/c/${FRONTEND}/send`);
-  await expect.poll(() => send() && samples.find((s) => s.p === "/api/uploads"), { timeout: 20_000 }).toBeTruthy();
-  expect(samples.find((s) => s.p === "/api/uploads")!.bg).toBeUndefined();
-  expect(send()!.ms).toBeGreaterThanOrEqual(1000);
+  await expect.poll(() => order.filter((sent) => sent.includes(word))).toEqual([`first with image ${word}`, `second text ${word}`]);
+  const landed = conversation(page).locator("[data-message-id]:not([data-message-id^='r:']).own").filter({ hasText: word });
+  await expect(landed).toHaveCount(2);
+  await expect(landed.first()).toContainText("first with image");
+});
+
+test("a reload while the image uploads sends the message again from the next page", async ({ page }) => {
+  let hold = true;
+  await page.route("**/api/uploads", async (route) => {
+    if (!hold) await route.continue();
+  });
+  await open(page, `#/c/${FRONTEND}`);
+  const input = composerInput(conversation(page));
+  await input.click();
+  const uploading = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/api/uploads"));
+  await pasteShot(input);
+  await uploading;
+  const text = `reload mid upload ${tag()}`;
+  await page.keyboard.type(text);
+  await page.keyboard.press("Enter");
+  await expect(conversation(page).locator("[data-message-id^='r:']").filter({ hasText: text })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => new Promise<number>((resolve) => {
+    const request = indexedDB.open("chat.heldImages");
+    request.onsuccess = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains("images")) return resolve(0);
+      const count = db.transaction("images").objectStore("images").count();
+      count.onsuccess = () => resolve(count.result);
+    };
+    request.onerror = () => resolve(0);
+  }))).toBeGreaterThan(0);
+  hold = false;
+  await page.reload();
+  const landed = conversation(page).locator("[data-kind='message']:not([data-message-id^='r:'])").filter({ hasText: text });
+  await expect(landed).toHaveCount(1, { timeout: 15_000 });
+  await expect(landed.locator(".images img")).toBeVisible();
+  await expect(conversation(page).getByText("Not delivered")).toHaveCount(0);
+  expect(await page.evaluate(() => localStorage.getItem("chat.heldSends"))).toBeNull();
 });
 
 test("Reply to thread in the side pane sends to the job", async ({ page }) => {
