@@ -312,12 +312,12 @@ class Global {
           this.conversations = event.conversations;
           this.forYouCount = event.sidebar.forYou;
           this.ready = true;
-          rooms.sync(event.sidebar);
+          roomsAhead(event.sidebar);
           break;
         case "sidebar":
           this.sidebar = event.sidebar;
           this.forYouCount = event.sidebar.forYou;
-          rooms.sync(event.sidebar);
+          roomsAhead(event.sidebar);
           break;
         case "agent":
           this.agents = upsert(this.agents, event.agent);
@@ -440,7 +440,7 @@ export const connection = {
  * The last page each thread showed, kept when its view closes so the next open shows it at once and reads it again behind, and the read
  * a thread pill click starts before the pane mounts. `warm` fills it before the first open: on 11-19 the owner, 197 ms from the box,
  * waited 403 to 455 ms for a room's first page and 648 ms for a thread's replies, each time with nothing on the screen. It keeps the
- * newest 20 threads: a job page measured 434 KB on 11-03 (work/fast-thread/before.md), so 20 hold under 9 MB.
+ * newest `keep` pages: a job page measured 434 KB on 11-03 (work/fast-thread/before.md), so the 40 timelines hold under 18 MB.
  */
 class PageCache<Raw, Shown> {
   private readonly shown = new Map<string, Shown>();
@@ -520,12 +520,16 @@ class PageCache<Raw, Shown> {
 }
 
 type TimelineRead = { page: Awaited<ReturnType<typeof api.items>>; header: ConversationHeader };
-type TimelineShown = { items: Item[]; older: string | undefined; header: ConversationHeader };
-const readTimeline = async (id: ConversationId, around?: string, wait?: Wait): Promise<TimelineRead> => {
-  const [page, header] = await Promise.all([api.items(id, around ? { around } : {}, wait), api.header(id, wait)]);
+/** `limit` is set on a short page read ahead (`JOB_PAGE`), so its open refreshes it at that size. */
+type TimelineShown = { items: Item[]; older: string | undefined; header: ConversationHeader; limit?: number };
+const readTimeline = async (id: ConversationId, around?: string, wait?: Wait, limit?: number): Promise<TimelineRead> => {
+  const [page, header] = await Promise.all([api.items(id, around ? { around } : limit ? { limit } : {}, wait), api.header(id, wait)]);
   return { page, header };
 };
-const timelinePages = new PageCache<TimelineRead, TimelineShown>(20);
+/** How many sidebar rooms and how many job pills of the open timeline are read ahead; the cache keeps both sets. */
+const ROOMS_AHEAD = 20;
+const JOBS_AHEAD = 20;
+const timelinePages = new PageCache<TimelineRead, TimelineShown>(ROOMS_AHEAD + JOBS_AHEAD);
 
 /** A page's items as a timeline of `id` shows them: a channel without its thread replies, a DM's owner posts with their send line. */
 /** Whether `fresh` holds an item the screen's `shown` lacks or shows differently, so the owner waited for the read that brought it. */
@@ -554,40 +558,42 @@ export function prefetchThread(channel: ConversationId | null, key: string): voi
   } else if (!timelinePages.has(key)) timelinePages.prefetch(key, () => readTimeline(key));
 }
 
+/** What a read ahead needs to know of a conversation: when it last changed, and whether a run is changing it now. */
+type Ahead = { id: ConversationId; at: number; working: boolean };
+
 /**
- * Reads the sidebar's rooms before the owner opens them, one at a time, so a room's first open shows its newest page from the page's
- * cache with no call in front of it. A room is read again when the sidebar shows activity newer than the page kept, once it is idle: a
- * working room changes with every step, and its open view reads it live. A hidden page reads nothing until it shows again; those first
- * reads also open the connection again after a sleep, where on 11-19 a lone replies call 29 min after the last one took 3 round trips.
+ * Reads conversations before the owner opens them, one at a time, so a first open shows the newest page from the page's cache with no
+ * call in front of it. A conversation is read again when it shows activity newer than the page kept, once it is idle: a working one
+ * changes with every step, and its open view reads it live. A hidden page reads nothing until it shows again; those first reads also open
+ * the connection again after a sleep, where on 11-19 a lone replies call 29 min after the last one took 3 round trips.
  */
-class RoomWarmer {
-  /** Each room's `lastActivityAt` when its kept page was read. */
+class ReadAhead {
+  /** Each conversation's `at` when its kept page was read. */
   private readonly readAt = new Map<ConversationId, number>();
-  private wanted: ConversationSummary[] = [];
+  private wanted: Ahead[] = [];
   private running = false;
 
-  constructor() {
+  /** `limit` is the page size to read and keep, the server's own when absent. */
+  constructor(private readonly limit?: number) {
     if (typeof document !== "undefined") document.addEventListener("visibilitychange", () => void this.run());
   }
 
-  /** Unread rooms first, then the newest, as many as the cache keeps. */
-  sync(sidebar: Sidebar): void {
-    const unread = (room: ConversationSummary) => Number(room.unread > 0 || room.hasNew);
-    this.wanted = [...sidebar.solo, ...sidebar.channels, ...sidebar.dms]
-      .sort((a, b) => unread(b) - unread(a) || b.lastActivityAt - a.lastActivityAt).slice(0, timelinePages.keep);
+  /** The conversations to keep read, the first one first. */
+  want(list: Ahead[]): void {
+    this.wanted = list;
     void this.run();
   }
 
-  /** A view of the room closed with its page current as of the sidebar's newest activity. */
+  /** A view of the conversation closed with its page current as of its newest activity. */
   seen(id: ConversationId): void {
-    const room = this.wanted.find(r => r.id === id);
-    if (room) this.readAt.set(id, room.lastActivityAt);
+    const found = this.wanted.find(c => c.id === id);
+    if (found) this.readAt.set(id, found.at);
   }
 
-  private next(): ConversationSummary | undefined {
-    return this.wanted.find(room => {
-      const readAt = this.readAt.get(room.id);
-      return !timelinePages.viewing(room.id) && (readAt === undefined || (room.status !== "working" && room.lastActivityAt > readAt));
+  private next(): Ahead | undefined {
+    return this.wanted.find(c => {
+      const readAt = this.readAt.get(c.id);
+      return !timelinePages.viewing(c.id) && (readAt === undefined || (!c.working && c.at > readAt));
     });
   }
 
@@ -595,18 +601,38 @@ class RoomWarmer {
     if (this.running || typeof document === "undefined") return;
     this.running = true;
     try {
-      for (let room = this.next(); room && document.visibilityState === "visible"; room = this.next()) {
-        const { id } = room;
-        this.readAt.set(id, room.lastActivityAt);
-        await timelinePages.warm(id, wait => readTimeline(id, undefined, wait),
-          ({ page, header }) => ({ items: shownItems(id, page.items), older: page.older, header }));
+      for (let c = this.next(); c && document.visibilityState === "visible"; c = this.next()) {
+        const { id } = c;
+        this.readAt.set(id, c.at);
+        await timelinePages.warm(id, wait => readTimeline(id, undefined, wait, this.limit),
+          ({ page, header }) => ({ items: shownItems(id, page.items), older: page.older, header, ...(this.limit ? { limit: this.limit } : {}) }));
       }
     } finally {
       this.running = false;
     }
   }
 }
-const rooms = new RoomWarmer();
+
+/** The sidebar's rooms: unread ones first, then the newest, `ROOMS_AHEAD` of them. */
+const rooms = new ReadAhead();
+function roomsAhead(sidebar: Sidebar): void {
+  const unread = (room: ConversationSummary) => Number(room.unread > 0 || room.hasNew);
+  rooms.want([...sidebar.solo, ...sidebar.channels, ...sidebar.dms]
+    .sort((a, b) => unread(b) - unread(a) || b.lastActivityAt - a.lastActivityAt).slice(0, ROOMS_AHEAD)
+    .map(room => ({ id: room.id, at: room.lastActivityAt, working: room.status === "working" })));
+}
+
+/**
+ * The jobs whose pills the open timeline shows, the newest `JOBS_AHEAD` first, each as a short page of its newest 10 entries. On 11-20
+ * that page was 2.1 to 5.4 KB as brotli for three jobs, where the server's own page of 40 entries was 8.1 to 16.9 KB. A pill's open
+ * shows the short page and refreshes it at the same size; the entries above it load when the owner scrolls up.
+ */
+const JOB_PAGE = 10;
+const jobPills = new ReadAhead(JOB_PAGE);
+function jobsAhead(items: readonly Item[]): void {
+  const refs = items.flatMap(item => (item.kind === "turn" ? item.jobs : item.kind === "message" ? item.jobs ?? [] : []));
+  jobPills.want(refs.reverse().slice(0, JOBS_AHEAD).map(job => ({ id: job.conversation, at: job.lastAt, working: job.status === "working" })));
+}
 
 /** A channel root post's thread as its pill shows it; a change means the kept replies are old. */
 const threadMark = (item: Item): string | undefined => (item.kind === "message" && item.thread?.replies ? `${item.thread.replies}:${item.thread.lastAt}` : undefined);
@@ -667,6 +693,8 @@ export class Timeline {
   }
 
   private around: string | undefined;
+  /** The size of the short page this view opened from, kept with the page it leaves. */
+  private limit: number | undefined;
 
   private async load(around?: string): Promise<void> {
     this.around = around;
@@ -681,7 +709,8 @@ export class Timeline {
     try {
       // With the kept page on the screen, this read is a refresh behind it, unless it changes what the screen shows.
       const wait: Wait = last ? { background: "shown" } : {};
-      const { page, header } = around ? await readTimeline(this.id, around) : await timelinePages.take(this.id, () => readTimeline(this.id, undefined, wait));
+      this.limit = last?.limit;
+      const { page, header } = around ? await readTimeline(this.id, around) : await timelinePages.take(this.id, () => readTimeline(this.id, undefined, wait, last?.limit));
       this.header = header;
       this.status = header.summary.status;
       this.queue = header.queue ?? null;
@@ -715,6 +744,7 @@ export class Timeline {
   upsert(incoming: Item[], removed: string[] = []): void {
     const shown = incoming.filter(item => !(this.isChannel && item.kind === "message" && item.threadRoot));
     if (this.isChannel) warmReplies(this.id, shown);
+    else jobsAhead(this.items.concat(shown));
     this.sends.merge(this.isRoom ? shown.filter(item => this.newest(item)).map(roomPost) : shown, removed);
   }
 
@@ -792,8 +822,11 @@ export class Timeline {
     this.stopListen?.();
     this.sends.close();
     const keep = !this.around && this.header && !this.error;
-    timelinePages.close(this.id, keep ? { items: this.items.filter(item => !isPending(item)), older: this.older, header: this.header! } : undefined);
-    if (keep) rooms.seen(this.id);
+    timelinePages.close(this.id, keep ? { items: this.items.filter(item => !isPending(item)), older: this.older, header: this.header!, ...(this.limit ? { limit: this.limit } : {}) } : undefined);
+    if (keep) {
+      rooms.seen(this.id);
+      jobPills.seen(this.id);
+    }
   }
 }
 

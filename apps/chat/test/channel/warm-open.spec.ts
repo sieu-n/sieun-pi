@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { conversation, open, row } from "./helpers";
+import { conversation, open, row, VENT, VENT_JOB } from "./helpers";
 
 /**
  * The owner reads :5184 from Korea at a 197 ms round trip (11-19). On that day a room's first page took him 403 to 455 ms and a thread's
@@ -65,4 +65,22 @@ test("a read ahead and an unchanged refresh are logged as background, and a firs
   expect(of("/api/c/ch_cutover/items")).toEqual(["waited"]);
   expect(of(`/api/c/${dm}/items`)).toEqual(["ahead", "shown"]);
   expect(of("/api/c/ch_cutover/replies/p1")).toEqual(["ahead"]);
+});
+
+test("a job pill opens from a short page read ahead, and its refresh asks for the same short page", async ({ page }) => {
+  const job = `/api/c/${encodeURIComponent(VENT_JOB)}`;
+  const ahead = page.waitForResponse((r) => new URL(r.url()).pathname === `${job}/items`);
+  await open(page, `#/c/${VENT}`);
+  expect(new URL((await ahead).url()).searchParams.get("limit")).toBe("10");
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
+
+  const asked: string[] = [];
+  await page.route((url) => url.pathname.startsWith(job), (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    asked.push(new URL(route.request().url()).search);
+  });
+  await row(page, "t12").locator("[data-thread-pill]").click();
+  const pane = page.getByTestId("thread-pane");
+  await expect(pane.locator("[data-message-id]").first()).toBeVisible();
+  expect(asked).toContain("?limit=10");
 });
