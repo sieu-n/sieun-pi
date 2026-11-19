@@ -82,6 +82,10 @@ test("the incremental index holds what a full index of the same rows holds, over
   // the rows cannot place) answers the rows as they were before any step. The steps take about 0.9 s, so under the load of a release's scoped
   // checks such a list landed on one side mid-run, and the release of 94a63a67 on 11-19 failed this test twice, and 3 of 24 runs at once did.
   for (const side of [incremental, full]) t.mock.method((side.catalog as unknown as { peer: { sync(): Promise<void> } }).peer, "sync", async () => {});
+  // Frames are off too: a frame (`peerChanged`) whose projection ran across a step's forget left the forgotten row out of the next event until a
+  // later frame put it back, within 500 ms, in a run where performance.now gained 3 ms a call so every projection yielded. With both stubs
+  // that run passed 10 of 10; with the frames left on it failed 1 of 6, and the release's scoped checks failed it three times at a forget.
+  for (const side of [incremental, full]) t.mock.method(side.catalog as unknown as { peerChanged(): void }, "peerChanged", () => {});
   const pick = random(11);
   const any = (size: number) => Math.floor(pick() * size);
   let tops = 80;
