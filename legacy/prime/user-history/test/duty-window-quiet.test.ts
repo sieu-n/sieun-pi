@@ -68,3 +68,19 @@ test("a cut run still dates the quiet window, so Crawler VP d6's 11:38Z run on 1
   assert.equal(streak!.quietSince, t("2026-10-21T01:02:00Z"));
   assert.equal(streak!.stuck, false);
 });
+
+test("a floor count like clean_min_30 reads quiet when its newest dirty minute predates the run before, and stuck when a fresh one came after it", () => {
+  const clean: DutyMetric = { key: "clean_min_30", label: "Minutes in the last 30 the system ran clean", op: ">=", target: 30 };
+  const at = (when: string, last: string): DutyRunRecord => {
+    const { verdict, metrics, summary } = judge([clean], { metrics: { clean_min_30: 29 }, lastEventAt: { clean_min_30: t(last) }, windowMs: { clean_min_30: 30 * 60_000 } });
+    return { duty: "d7", at: t(when), trigger: "schedule", ms: 1, verdict, metrics, summary };
+  };
+  const old = [at("2026-11-19T20:54:03Z", "2026-11-19T20:34:00Z"), at("2026-11-19T20:39:03Z", "2026-11-19T20:34:00Z"), at("2026-11-19T20:35:03Z", "2026-11-19T20:34:00Z")];
+  const [quiet] = metricStreaks(old);
+  assert.equal(quiet!.misses, 3);
+  assert.equal(quiet!.quietSince, t("2026-11-19T20:34:00Z"));
+  assert.equal(quiet!.stuck, false);
+  const [fresh] = metricStreaks([at("2026-11-19T20:54:03Z", "2026-11-19T20:46:00Z"), ...old.slice(1)]);
+  assert.equal(fresh!.quietSince, undefined);
+  assert.equal(fresh!.stuck, true);
+});

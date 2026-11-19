@@ -1681,6 +1681,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const unknownLines: string[] = [];
   const perHost = new Map<string, { usable: number; unusable: number; unknown: number; offline: number }>();
   const hostCount = (name: string) => { const known = perHost.get(name) ?? { usable: 0, unusable: 0, unknown: 0, offline: 0 }; perHost.set(name, known); return known; };
+  let uncleanUntil: number | undefined;
   for (let minute = 0; minute < 30; minute++) {
     const from = start + minute * MINUTE, to = from + MINUTE;
     const line = input.watch.findLast(entry => { const at = Date.parse(entry.at); return at >= from && at < to; });
@@ -1785,6 +1786,7 @@ export function measure(input: Inputs): PrecheckOutput {
     if (why.length) dirty.push(`${clock(from)} ${why.join(", ")}`);
     else if (unknown.length) { unknownMin++; unknownLines.push(`${clock(from)} ${unknown.join(", ")}`); }
     else clean++;
+    if (why.length || unknown.length) uncleanUntil = to;
   }
   const inWindow = updates.filter(update => update.to >= start && update.from < start + WINDOW_MS);
   const updateMin = Array.from({ length: 30 }, (_, minute) => start + minute * MINUTE)
@@ -1993,7 +1995,10 @@ export function measure(input: Inputs): PrecheckOutput {
     flagged.push({ kind: "cut_job", chat: job.chat, item: job.session, excerpt: `${job.name} (${job.session}, chat ${job.chat}) was ${cutWords(job.cause)} at ` +
       `${clock(job.at)}${job.proof ? `, ${job.proof},` : ""} and got no input in ${minutes(now - job.at)} min: ${admitted.length ? `${admitted.join("; ")}, and nothing reached the session` : "no continue or wake was let through for it"}.` });
   }
-  return { metrics, flagged };
+  // clean_min_30 dates its newest dirty or unknown minute by the minute's end, when a run's window first holds it, so the duty runner reads a
+  // minute that only waits to leave the window as quiet (`metricStreaks`). On 11-19 the Mac's 20:33Z minute alone held the headline at 29 in
+  // the 20:35Z, 20:39Z and 20:54Z runs, and the 20:54Z run read 3 misses that did not move and asked for a new root-cause job.
+  return { metrics, flagged, windowMs: { clean_min_30: WINDOW_MS }, ...uncleanUntil === undefined ? {} : { lastEventAt: { clean_min_30: uncleanUntil } } };
 }
 
 /**
