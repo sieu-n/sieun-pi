@@ -1,0 +1,12 @@
+# Two minutes apart: on 11-19 a search 131 s after the one before it found every page still cached (7.7 ms in Meilisearch at 21:32:35Z),
+# and a search a day after did not.
+[Unit]
+Description=Read Meilisearch's index file every 2 minutes (meilisearch-warm.service)
+
+[Timer]
+OnActiveSec=10s
+OnUnitActiveSec=2min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

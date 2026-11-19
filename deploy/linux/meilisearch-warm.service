@@ -1,0 +1,16 @@
+# Reads Meilisearch's index file, so the kernel keeps its pages in the page cache between searches (meilisearch-warm.timer runs it).
+# The chat's only daily search for days was the d2 duty's probe at 21:30Z, and Meilisearch's own log line for that first search read
+# 42 ms on 11-10 and 75 ms on 11-19 (time.busy plus time.idle), against about 10 ms for each search after it: the box reclaims file pages
+# nothing touched for a day, and the search reads them back from disk one fault at a time. With every file page of its cgroup dropped on
+# 11-19 the first search took 101 ms with 294 major faults; with only its heap swapped out it took 18 ms. A search for another word first
+# did not help (duty still took 84 ms after "the"), so the whole file is read. The read took 0.14 s for the 1.9 GB file while cached.
+# The unit's memlock limit is 8 MB and the user manager cannot raise it or set memory.low above its own slice, so no lock or cgroup
+# protection can hold the pages instead.
+[Unit]
+Description=Keep Meilisearch's index file in the page cache
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'cat %h/.local/share/meilisearch/data.ms/indexes/*/data.mdb > /dev/null'
+# The start and end lines of a run every two minutes stay out of the journal; a failed run is still logged.
+LogLevelMax=notice

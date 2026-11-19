@@ -4,6 +4,7 @@
  * 1. The pinned release binary, checked against its sha256, under ~/.local/opt/meilisearch/v<version>, with `current` pointing at it.
  * 2. A master key, made once, in ~/.config/meilisearch/master.key (the chat reads it) and ~/.config/meilisearch/env (the unit reads it).
  * 3. deploy/linux/meilisearch.service in ~/.config/systemd/user, enabled and started, and a wait for its /health.
+ * 4. deploy/linux/meilisearch-warm.timer and its service, enabled and started, which keep the index file in the page cache.
  *
  * Usage: node scripts/install-meilisearch.mjs. Run it again to move to a new pinned version; it keeps the key and the data.
  */
@@ -50,9 +51,11 @@ mkdirSync(join(home, ".local/share/meilisearch"), { recursive: true });
 
 mkdirSync(dirname(unit), { recursive: true });
 copyFileSync(join(repo, "deploy/linux/meilisearch.service"), unit);
+for (const name of ["meilisearch-warm.service", "meilisearch-warm.timer"]) copyFileSync(join(repo, "deploy/linux", name), join(dirname(unit), name));
 execFileSync("systemctl", ["--user", "daemon-reload"], { stdio: "inherit" });
 execFileSync("systemctl", ["--user", "enable", "meilisearch.service"], { stdio: "inherit" });
 execFileSync("systemctl", ["--user", "restart", "meilisearch.service"], { stdio: "inherit" });
+execFileSync("systemctl", ["--user", "enable", "--now", "meilisearch-warm.timer"], { stdio: "inherit" });
 
 for (let pause = 50; ; pause = Math.min(pause * 2, 1000)) {
   try {
