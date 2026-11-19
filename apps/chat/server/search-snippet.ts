@@ -25,16 +25,65 @@ export interface Described {
 
 export { snippetTerms as searchTerms };
 
-const fold = (text: string): string => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+const NOT_ASCII = /[^\x00-\x7f]/;
+/** A word without its accents, in lower case. An ASCII word has no accent to take off, which skips the normalize of nearly every word. */
+const fold = (text: string): string => (NOT_ASCII.test(text) ? text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase() : text.toLowerCase());
+
+const WORD = /[\p{L}\p{N}]+/gu;
+
+function wordHit(word: string, terms: readonly string[]): boolean {
+  const folded = fold(word);
+  for (const term of terms) if (folded.startsWith(term)) return true;
+  return false;
+}
 
 /** Whether the text holds a word that starts with one of the terms, the way FTS5 reads a bare word. */
 export function matches(text: string, terms: readonly string[]): boolean {
   if (!terms.length) return false;
-  for (const m of text.matchAll(/[\p{L}\p{N}]+/gu)) {
-    const word = fold(m[0]);
-    if (terms.some(t => word.startsWith(t))) return true;
-  }
+  const word = new RegExp(WORD);
+  for (let m = word.exec(text); m; m = word.exec(text)) if (wordHit(m[0], terms)) return true;
   return false;
+}
+
+/**
+ * pi-host's `snippetOf` for a text that holds a match, or nothing for one that holds none: `size` words around the first match, each
+ * matching word in <mark>, with … where the text is cut. It reads the words only as far as the snippet's last one, where `snippetOf`
+ * reads every word of the text and takes the accents off each. On 11-19 the 20 hits of `kimchi` on :5184 held 141,785 characters, and
+ * their snippets took 23 ms of the search's 55 to 60 ms.
+ */
+function cutAround(text: string, terms: readonly string[], size: number): string | undefined {
+  if (!terms.length) return undefined;
+  const words: { at: number; end: number; hit: boolean }[] = [];
+  const word = new RegExp(WORD);
+  let first = -1;
+  // The snippet starts a quarter of its size before the first match; one word past its end says whether the text goes on.
+  let last = Infinity;
+  let more = false;
+  for (let m = word.exec(text); m; m = word.exec(text)) {
+    const hit = wordHit(m[0], terms);
+    if (hit && first < 0) {
+      first = words.length;
+      last = Math.max(0, first - Math.floor(size / 4)) + size;
+    }
+    if (words.length === last) {
+      more = true;
+      break;
+    }
+    words.push({ at: m.index, end: m.index + m[0].length, hit });
+  }
+  if (first < 0) return undefined;
+  const from = Math.max(0, more ? first - Math.floor(size / 4) : Math.min(first - Math.floor(size / 4), words.length - size));
+  const shown = words.slice(from, from + size);
+  const start = from === 0 ? 0 : shown[0]!.at;
+  const end = more ? shown.at(-1)!.end : text.length;
+  let out = from === 0 ? "" : "…";
+  let cursor = start;
+  for (const w of shown) {
+    if (!w.hit) continue;
+    out += `${text.slice(cursor, w.at)}<mark>${text.slice(w.at, w.end)}</mark>`;
+    cursor = w.end;
+  }
+  return `${out}${text.slice(cursor, end)}${end < text.length ? "…" : ""}`;
 }
 
 /** Tool output and call arguments as words: escapes undone, `"key": value` as `key: value`, and braces, brackets and quotes dropped. */
@@ -150,7 +199,8 @@ export function safeSnippet(raw: string): string {
 
 /** About 36 words around the first match, escaped, with every match in <mark>; empty when the text holds no match. */
 export function snippet(text: string, terms: readonly string[], size = 36): string {
-  return matches(text, terms) ? safeSnippet(snippetOf(text, terms, size)) : "";
+  const cut = cutAround(text, terms, size);
+  return cut === undefined ? "" : safeSnippet(cut);
 }
 
 /** The longer text "Show more" opens: up to `max` characters from a little before the first match, escaped and marked. */
@@ -161,5 +211,5 @@ export function fullText(text: string, terms: readonly string[], max = 2000): st
     start = first ? Math.max(0, Math.min(first.index - 300, text.length - max)) : 0;
   }
   const slice = text.slice(start, start + max);
-  return (start > 0 ? "…" : "") + safeSnippet(snippetOf(slice, terms, 1e9)) + (start + max < text.length ? "…" : "");
+  return (start > 0 ? "…" : "") + safeSnippet(cutAround(slice, terms, 1e9) ?? snippetOf(slice, terms, 1e9)) + (start + max < text.length ? "…" : "");
 }
