@@ -45,7 +45,7 @@ const aiEntry = execFileSync(process.execPath, ["--input-type=module", "-e",
   'process.stdout.write(import.meta.resolve("@earendil-works/pi-ai"))'],
   { cwd: primeRoot, encoding: "utf8" });
 const { getModel, streamSimple } = await import(aiEntry);
-const model = getModel("anthropic", "claude-fable-5-2");
+const model = getModel("anthropic", "claude-fable-5");
 assert(model, "The native catalog must include the chosen serialization model");
 const noNetwork = new Error("offline provider payload capture");
 let fetchCalls = 0;
@@ -99,7 +99,7 @@ for (let pass = 1; pass <= 2; pass++) {
   assert(extensionPaths.includes(rulesPath));
   assert(!extensionPaths.some(path => path.includes("/components/virev/")), "The retired extension must not load");
   const rules = result.extensions.find(extension => realpathSync(extension.resolvedPath) === rulesPath);
-  assert.deepEqual([...rules.handlers.keys()].sort(), ["tool_call"], "A clean load registers no failure notice");
+  assert.deepEqual([...rules.handlers.keys()].sort(), ["agent_end", "tool_call", "tool_result"], "A clean load registers no failure notice");
   assert.deepEqual([...rules.tools.keys()], [], "global-rules adds no tool and no prompt text");
   const ctx = { cwd, hasUI: false };
   try {

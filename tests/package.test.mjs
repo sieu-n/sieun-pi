@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -144,5 +144,26 @@ test("packed production install, native reload, update, rollback and uninstall",
     await reaper.stop();
     if (process.env.SIEUN_PI_KEEP_PACKAGE_TEST) process.stdout.write(`Package proof retained at ${base}\n`);
     else rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("npm pack skips test fixtures, so a stray captured cgroup tree or dangling link cannot break it", () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "sieun-pi-pack-files-")));
+  try {
+    const { files } = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    writeFileSync(join(base, "package.json"), JSON.stringify({ name: "pack-files-probe", version: "0.0.0", files }));
+    mkdirSync(join(base, "legacy/prime/x/src"), { recursive: true });
+    writeFileSync(join(base, "legacy/prime/x/src/keep.json"), "{}");
+    const fixtures = join(base, "legacy/prime/x/test/fixtures");
+    mkdirSync(join(fixtures, "cgroup/system-wg\\x2dquick.slice"), { recursive: true });
+    writeFileSync(join(fixtures, "cgroup/system-wg\\x2dquick.slice/memory.stat"), "anon 1\n");
+    writeFileSync(join(fixtures, "processes.json"), "[]");
+    symlinkSync(join(base, "missing"), join(fixtures, "dangling.json"));
+    const packed = JSON.parse(run("npm", ["pack", "--dry-run", "--ignore-scripts", "--json"], { cwd: base }))[0];
+    const paths = packed.files.map(file => file.path);
+    assert(paths.includes("legacy/prime/x/src/keep.json"), paths.join("\n"));
+    assert(!paths.some(path => path.includes("test/fixtures/")), paths.join("\n"));
+  } finally {
+    rmSync(base, { recursive: true, force: true });
   }
 });
