@@ -579,7 +579,7 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       return null;
     }) };
   };
-  // A stop saves the Agent queue chart's hours for the next start (TURN_HISTORY_FILE), as the catalog saves its heads and tails.
+  // A stop or a hand-over saves the Agent queue chart's hours for the next start (TURN_HISTORY_FILE) when it quiesces.
   const turnHistoryRead = turnHistory(POOL_LOG, options.saveAgents ? join(dataDir, TURN_HISTORY_FILE) : null);
   let closed = false;
   async function quiesce(): Promise<void> {
@@ -604,6 +604,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     archives.close();
     chats.close();
     awake.close();
+    // Before a hand-over's fence, which refuses every write under the agent dir: the successor's first Agent queue read then reads only what
+    // came since. Saved at the stop instead, it never landed, and at 16:30:00Z on 11-19 the successor of release-e5c7eae read all 787 MB of
+    // pi-pool.log 2 s after it took the port (turn-history.ts).
+    await turnHistoryRead.save().catch(error => dutyLog(`agent queue: saving the turn history: ${error instanceof Error ? error.message : String(error)}`));
   }
   return {
     catalog, threads, readState, labels, defaults, newChat, chats, boards, created, usage, duties, poolPriorities, calls,
@@ -629,7 +633,6 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
       unwatchBoards();
       await threads.close();
       await catalog.close();
-      await turnHistoryRead.save().catch(error => dutyLog(`agent queue: saving the turn history: ${error instanceof Error ? error.message : String(error)}`));
       closeWriters();
       usage.close();
     },
