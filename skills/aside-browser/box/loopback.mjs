@@ -87,8 +87,12 @@ const hostPort = (authority, fallback) => {
 // socket the Mac already closed gets ECONNRESET. Chrome resends such a request itself; this proxy does the same, because a failed
 // module fetch stops the whole SvelteKit start and the page never hydrates. A request with a body is read whole first so it can be
 // sent again: on 11-08 POSTs to 5180's /__demo/convex on such sockets answered 502 with no line in the 5180 log, and onboarding's
-// Filing said "This did not save" on its first try. Vite reads no request on a socket it closes for idling, so the resend runs once.
-function forward(stream, headers, agent, attempt, body) {
+// Filing said "This did not save" on its first try. Vite reads no request on a socket it closes for idling. A resend goes out again
+// as long as it too lands on a reused socket, because the agent hands it the next idle one, which Vite may have closed as well: on 11-19
+// at box load 190, 1 to 3 of the 1,399 module fetches of 5180's /app/dashboards answered 502 after a single resend hit a second closed
+// socket, while the Mac served all 1,399 with 200 three times. One failed module fetch stops SvelteKit's navigation, which then
+// loads the whole document again. Each closed socket leaves the pool when it fails, and a new socket is never a reused one.
+function forward(stream, headers, agent, body) {
   const authority = headers[":authority"];
   const { host, port } = hostPort(authority, 80);
   const method = headers[":method"];
@@ -99,7 +103,7 @@ function forward(stream, headers, agent, attempt, body) {
   });
   req.on("error", () => {
     if (stream.destroyed) return;
-    if (req.reusedSocket && attempt === 0 && !stream.headersSent) { forward(stream, headers, agent, 1, body); return; }
+    if (req.reusedSocket && !stream.headersSent) { forward(stream, headers, agent, body); return; }
     if (!stream.headersSent) stream.respond({ ":status": 502 });
     stream.end();
   });
@@ -110,10 +114,10 @@ function forward(stream, headers, agent, attempt, body) {
 /** Reads a request's body whole, then forwards it; a GET or HEAD has none. */
 function forwardWhole(stream, headers, agent) {
   const method = headers[":method"];
-  if (method === "GET" || method === "HEAD") { forward(stream, headers, agent, 0, undefined); return; }
+  if (method === "GET" || method === "HEAD") { forward(stream, headers, agent, undefined); return; }
   const chunks = [];
   stream.on("data", (chunk) => chunks.push(chunk));
-  stream.once("end", () => forward(stream, headers, agent, 0, Buffer.concat(chunks)));
+  stream.once("end", () => forward(stream, headers, agent, Buffer.concat(chunks)));
 }
 
 // Our own sites leave from this box, whose IP the virev.ai firewall skips, and never from the Mac's home line, which it does not.
