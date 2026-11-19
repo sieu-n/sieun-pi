@@ -27,10 +27,10 @@ test("the hash cohort picks the accounts prod picks, and d1 counts 15 of 169 wit
   const line = canaryLine(output);
   assert.match(line, /^canary from the hash cohort engage.canary_pct 10, engage.canary_offset 65, started 10-15 13:47Z: 15 of 169 active prod accounts/);
   assert.match(line, /they read 3,400 pages on 2026-10-17, the busiest 1,900/);
-  assert.match(line, /Instagram killed 1 of them in 24 h and 1 since the start/);
+  assert.match(line, /Instagram killed 1 of them in 24 h, at most 1 in any 60 minutes, and 1 since the start/);
   assert.equal(output.metrics.canary_accounts_short, 2);
   assert.equal(output.metrics.canary_ig_deaths_1h, 1);
-  assert.equal(output.metrics.fleet_ig_killed_pct, 0.6);
+  assert.equal(output.metrics.fleet_ig_killed_pct, 0);
 });
 
 test("the roster engage.canary_accounts wins over the hash keys once it is set", () => {
@@ -38,26 +38,27 @@ test("the roster engage.canary_accounts wins over the hash keys once it is set",
   assert.match(canaryLine(output), /^canary from engage.canary_accounts, started 10-15 13:47Z: 2 of 169 active prod accounts \(3 in it with the dead\)/);
   assert.match(canaryLine(output), /add 15 active accounts through engage.canary_accounts$/);
   assert.equal(output.metrics.canary_accounts_short, 15);
-  assert.equal(output.metrics.fleet_ig_killed_pct, 0.6);
+  assert.equal(output.metrics.fleet_ig_killed_pct, 0);
 });
 
-test("no canary runs without engage.canary_started_at", () => {
+test("no canary runs without engage.canary_started_at, and a death then counts against the fleet", () => {
   const output = run({ ...HASH_CONFIG, "engage.canary_started_at": "" });
   assert.match(canaryLine(output), /^no canary runs: the hash cohort .* engage.canary_started_at "" is empty/);
   assert.equal(output.metrics.canary_accounts_short, 17);
   assert.equal(output.metrics.fleet_ig_killed_pct, 0.6);
 });
 
-test("24 canary deaths read as kills, and a roster edit after them moves nothing", () => {
-  // d1 read 0% while Instagram suspended all 24 reading prod accounts, every one a canary member, from 23:13Z 11-18 to 00:02Z 11-19.
+test("a daily run sees the worst canary hour of its day, and a canary holding every reader is flagged", () => {
+  // Instagram suspended 24 canary accounts, every account that read, from 23:13Z 11-18, and the 09:00Z 11-19 run read 0 for both.
   const now = Date.parse("2026-11-19T09:00:00Z");
   const dead = Array.from({ length: 24 }, (_, i) => 300 + i);
   const accounts: Account[] = [...dead.map(id => ({ id, status: "frozen" })), ...Array.from({ length: 116 }, (_, i) => ({ id: 400 + i, status: "active" }))];
   const deaths = dead.map((accountId, i) => ({ accountId, at: Date.parse("2026-11-18T23:13:00Z") + i * 120_000, status: "frozen", code: "account_suspended", readBefore: true, pages24h: 539, transition: true }));
-  const read = (roster: string): ReturnType<typeof report> => report({ now, accounts, deaths, errors: [],
-    config: { "engage.canary_accounts": roster, "engage.canary_started_at": "2026-11-01T00:00:00Z" } } satisfies EngageData, []);
-  const listed = read(dead.join(","));
-  assert.equal(listed.metrics.fleet_ig_killed_pct, 17.1);
-  assert.match(canaryLine(listed), /Instagram killed 24 of them in 24 h/);
-  assert.equal(read("400,401").metrics.fleet_ig_killed_pct, 17.1);
+  const output = report({ now, accounts, deaths, errors: [], days: dead.map(accountId => ({ day: "2026-11-18", accountId, pages: 1100 })),
+    config: { "engage.canary_accounts": dead.join(","), "engage.canary_started_at": "2026-11-01T00:00:00Z" } } satisfies EngageData, []);
+  assert.equal(output.metrics.canary_ig_deaths_1h, 24);
+  assert.equal(output.metrics.fleet_ig_killed_pct, 0);
+  const oversize = (output.flagged ?? []).find(flag => flag.kind === "canary_oversize");
+  assert.equal(oversize?.handOff, true);
+  assert.match(oversize!.excerpt, /^the canary holds 24 of the 24 prod accounts that read on 2026-11-18 UTC, and ~10% is 2/);
 });

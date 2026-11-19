@@ -32,11 +32,11 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.du
  *   read now, times provenRate(). The active accounts whose proxy session binding ran out are left out and get their own line in the capacity flag:
  *   an account that cannot read is no capacity (the launch VP, 11-18: the line read 75,460 as 140 x 539 while 116 of the 140 had no binding and
  *   waited on a proxy purchase, todo t43, so 24 accounts read).
- * - fleet_ig_killed_pct <= 2: the owner's own number, 10-14 02:13Z. It counts every prod account Instagram killed after it read pages in its last
- *   24 h, canary or not, over the active accounts plus those killed, by death time, so a roster edit after the deaths moves nothing. Until 11-19 it
- *   left the canary roster out, and when Instagram suspended all 24 reading prod accounts from 23:13Z 11-18 to 00:02Z 11-19 it read 0%, because the
- *   roster held every reading account. The canary flag line still counts the canary's own deaths. His canary number, at most 3 canary deaths an hour, stays as the run detail
- *   canary_ig_deaths_1h and on the canary flag line: a daily run reads only its own last hour, and the crawler stops the canary itself at
+ * - fleet_ig_killed_pct <= 2: the owner's own metric, 10-14 02:14Z, "Prod accounts outside the canary that Instagram killed in 24 h ≤ 2%" and
+ *   "Canary accounts that Instagram killed in the last 60 min <= 3" "are good metrics". It counts the accounts outside the canary roster over the
+ *   active accounts. His canary number stays as the run detail canary_ig_deaths_1h, the most canary accounts Instagram killed in any 60 minutes of
+ *   the last 24 h, so a daily run sees an hour it did not run in: on 11-18 Instagram suspended 23 canary accounts from 23:13Z to 00:02Z, and the
+ *   11-19 run read 0 for its own last hour. The canary flag line carries it, and the crawler stops the canary itself at
  *   engage.rate_test_stop_deaths. Its judged slot went to engage_accounts_stuck on 10-18 (c75 keeps 3 supporting metrics).
  * - engage_accounts_stuck <= 0: "without accounts dieing" (10-09). It counts the prod accounts that sit out of reading for over STUCK_HOURS
  *   on a fault our code is meant to heal, the two standing risks on the chat's risk page (wiki apps/crawler-v3/engage-reads-and-watchlist-risks):
@@ -399,6 +399,20 @@ export function stagingStallFlag(data: EngageData): FlaggedSlice | null {
   return { at: data.now, kind: "staging_stall", excerpt: excerpt.slice(0, 1200) };
 }
 
+/**
+ * The canary_oversize flag when the canary holds more than its ~10% of the prod accounts that read on the newest full day, a handOff so a met run
+ * acts on it; null otherwise. fleet_ig_killed_pct leaves the canary out, so an oversize canary hides the fleet's deaths: on 11-18 every one of the
+ * accounts that read was on engage.canary_accounts, Instagram suspended 23 of them from 23:13Z to 00:02Z, and the 11-19 run read 0%.
+ */
+export function canaryOversizeFlag(roster: ReadonlySet<number>, days: readonly DayPages[], day: string, at: number): FlaggedSlice | null {
+  const readers = new Set(days.filter(row => row.day === day && row.pages > 0).map(row => row.accountId));
+  const inCanary = [...readers].filter(id => roster.has(id)).length;
+  const want = canaryWant(readers.size);
+  if (inCanary <= want) return null;
+  return { at, kind: "canary_oversize", handOff: true, sig: day, excerpt: (`the canary holds ${inCanary} of the ${readers.size} prod accounts that read on ${day} UTC, `
+    + `and ~10% is ${want}, so fleet_ig_killed_pct leaves out ${inCanary - want} accounts that belong to the fleet. Cut engage.canary_accounts to ${want} of them.`).slice(0, 600) };
+}
+
 /** The precheck output from measured data. */
 export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): PrecheckOutput {
   const { now } = data;
@@ -418,10 +432,10 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
     metrics.canary_accounts_short = Math.max(0, want - have);
     const day = data.deaths.filter(death => now - death.at <= DAY);
     const killed = (deaths: readonly Death[]): number => new Set(deaths.filter(death => causeOf(death) === "instagram").map(death => death.accountId)).size;
-    const dayKilled = new Set(day.filter(death => causeOf(death) === "instagram").map(death => death.accountId));
-    const fleet = new Set([...active.map(account => account.id), ...dayKilled]).size;
-    metrics.fleet_ig_killed_pct = fleet ? round1(100 * dayKilled.size / fleet) : 0;
-    metrics.canary_ig_deaths_1h = killed(day.filter(death => now - death.at <= HOUR && roster.ids.has(death.accountId)));
+    const fleetKilled = killed(day.filter(death => !roster.ids.has(death.accountId)));
+    metrics.fleet_ig_killed_pct = active.length ? round1(100 * fleetKilled / active.length) : fleetKilled ? 100 : 0;
+    const canaryDay = day.filter(death => roster.ids.has(death.accountId));
+    metrics.canary_ig_deaths_1h = Math.max(0, ...canaryDay.map(start => killed(canaryDay.filter(death => death.at >= start.at && death.at - start.at < HOUR))));
     const lastDay = data.days?.reduce<string | null>((latest, row) => latest && latest > row.day ? latest : row.day, null) ?? null;
     const canaryPages = data.days?.filter(row => row.day === lastDay && roster.ids.has(row.accountId)).map(row => row.pages) ?? [];
     const pagesText = !data.days ? "their pages are not measured" : lastDay
@@ -432,8 +446,10 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
     flagged.push({ at, kind: metrics.canary_accounts_short ? "canary_short" : "canary", excerpt: (roster.empty
       ? `no canary runs: ${roster.empty}; 0 of ${active.length} active prod accounts are in it, and ~10% is ${want}`
       : `canary from ${roster.source}, started ${utc(startAt)}: ${have} of ${active.length} active prod accounts (${roster.ids.size} in it with the dead), ~10% is ${want}; ${pagesText}; `
-        + `Instagram killed ${killed(day.filter(death => roster.ids.has(death.accountId)))} of them in 24 h and ${sinceStart} since the start${stop ? ` (the canary stops at ${stop})` : ""}`)
+        + `Instagram killed ${killed(canaryDay)} of them in 24 h, at most ${metrics.canary_ig_deaths_1h} in any 60 minutes, and ${sinceStart} since the start${stop ? ` (the canary stops at ${stop})` : ""}`)
       + (metrics.canary_accounts_short ? `: add ${metrics.canary_accounts_short} active accounts through ${roster.resize}` : "") });
+    const oversize = data.days && lastDay ? canaryOversizeFlag(roster.ids, data.days, lastDay, at) : null;
+    if (oversize) flagged.push(oversize);
     const reasonOf = (id: number): string => { const reason = data.accounts!.find(account => account.id === id)?.reason; return reason ? `; status_reason: ${reason}` : ""; };
     for (const death of day) flagged.push({ at: death.at, kind: "death",
       excerpt: `account ${death.accountId} went ${death.status} at ${utc(death.at)}, code ${death.code ?? "none"}, cause ${causeOf(death)}${roster.ids.has(death.accountId) ? ", canary" : ""}, ${fmt(death.pages24h)} pages in its last 24 h${death.readBefore ? "" : ", never read a page"}${reasonOf(death.accountId)}`.slice(0, 600) });
