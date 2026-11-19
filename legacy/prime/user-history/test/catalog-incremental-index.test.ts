@@ -78,6 +78,10 @@ test("the incremental index holds what a full index of the same rows holds, over
   full.catalog.incrementalIndex = false;
   await incremental.catalog.refresh();
   await full.catalog.refresh();
+  // After the first list the rows change only by the steps: a roster list (session-peer.ts `sync`, such as the catch-up 1 s after an update
+  // the rows cannot place) answers the rows as they were before any step. The steps take about 0.9 s, so under the load of a release's scoped
+  // checks such a list landed on one side mid-run, and the release of 94a63a67 on 11-19 failed this test twice, and 3 of 24 runs at once did.
+  for (const side of [incremental, full]) t.mock.method((side.catalog as unknown as { peer: { sync(): Promise<void> } }).peer, "sync", async () => {});
   const pick = random(11);
   const any = (size: number) => Math.floor(pick() * size);
   let tops = 80;
