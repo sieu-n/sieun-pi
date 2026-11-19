@@ -790,7 +790,7 @@ def refill(state, provider, account_id, accounts, cfg, now):
 
 
 def book_line(state, provider, account_ids, accounts, cfg, now):
-    """A usage read of each of `account_ids` landed, so such an account may take trees before the cells the waiting trees hold. R5
+    """Each of `account_ids` may take trees again (`book_opened`), before the cells the waiting trees hold. R5
     gives its cells to the waiting trees by priority, then wait start, whatever account each one waits for, so each tree whose next
     request would get an earlier cell on one of them, first in line first, is booked into that cell now, and the trees ranked behind
     it see the cell taken. `flush_wakes` wakes each booked tree, and a cell a booked tree left on another account opens to that
@@ -829,9 +829,10 @@ def book_line(state, provider, account_ids, accounts, cfg, now):
     return booked
 
 
-def book_read(provider, account_ids):
-    """`book_line` for the accounts a usage read just landed for, under the pool flock (`pi-pool refresh` and `sample`). A flock
-    that stays busy past STATE_LOCK_TIMEOUT skips the booking, and each tree takes the accounts' cells when it asks, as before."""
+def book_opened(provider, account_ids):
+    """`book_line` for accounts that may take trees again, under the pool flock: a usage read landed (`pi-pool refresh` and
+    `sample`), a sign-in filed a credential (`file_login`), or `pi-pool on` or `unlimited` ran. A flock that stays busy past
+    STATE_LOCK_TIMEOUT skips the booking, and each tree takes the accounts' cells when it asks, as before."""
     if not account_ids:
         return []
     cfg = base.config()

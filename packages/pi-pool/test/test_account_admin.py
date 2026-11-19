@@ -390,6 +390,38 @@ class InProcessStore(PoolFixture):
         return out
 
 
+class SignInBooksTheLine(InProcessStore):
+    """R5 when a sign-in brings an account back. At 15:30:33Z on 11-19 `pi-pool login` reauthed claude-virev3, whose 5h figure was
+    fresh, so no read ran and nothing booked its cells. pi-durable:c4a194d9, normal and waiting since 00:00:21Z, asked a second later
+    and entered it, while 25 trees ranked ahead of it, 6 of them normal and waiting since 15:50Z to 23:09Z the day before, waited
+    another 14 to 16 min for cells on other accounts. claude-virev1's reauth at 15:27:52Z let two later trees in ahead of 01a14d31,
+    high, the same way. The sign-in now books the account's cells for the trees in line, first in line first."""
+
+    def test_a_reauth_books_the_trees_in_line_before_a_later_tree_that_asks(self):
+        from vend.pool import registry, sched, vending
+        now = time.time()
+        windows = lambda pct: [{"usedPercentage": pct, "windowSeconds": 18000, "resetsAt": (now + 4 * 3600) * 1000, "sampledAt": now * 1000},
+                               {"usedPercentage": 10, "windowSeconds": 604800, "resetsAt": (now + 3 * 86400) * 1000, "sampledAt": now * 1000}]
+        self.write_index("anthropic", {"version": 1, "accounts": [
+            {**CLAUDE_INDEX["accounts"][0], "windows": windows(100), "lastUsageAt": now * 1000},
+            {**CLAUDE_INDEX["accounts"][1], "windows": windows(10), "lastUsageAt": now * 1000, "needsReauth": True}]})
+        state = {"version": 2, "providers": {p: registry.empty_provider_state() for p in base.PROVIDERS}, "sessions": {}}
+        for n, (name, since) in enumerate((("first", now - 900), ("second", now - 800), ("asker", now - 300))):
+            state["sessions"][name] = {"uuid": name, "active_id": None, "pins": {}, "last_seen": now, "vends": {},
+                                       "wait": {"anthropic": {"account": A, "slot_at": now + 4 * 3600 + n * 120, "since": since}}}
+        self.write_state(state)
+        with unittest.mock.patch.object(vending, "flush_wakes"):
+            signin.file_login("anthropic", harvest(B, "org-b", "b@x"), "b@x")
+        state = registry.load_state()
+
+        def decide(name):
+            return vending.decision(state, registry.SessionKey(name, name, None), "anthropic", registry.load_index("anthropic"), base.config(), now + 1)[0]
+        d = decide("asker")
+        self.assertIsInstance(d, sched.Wait, "the later tree takes no cell of b@x a tree ahead of it was booked into")
+        self.assertNotEqual(d.slot_at, now + 1)
+        self.assertEqual((type(decide("first")), decide("first").account.id), (sched.Admit, B), "the first tree in line takes the cell")
+
+
 class FakeInput:
     """Input.lines() from a script: each call returns the next batch; a batch may be a
     callable that gets the events emitted so far. An exhausted script waits."""

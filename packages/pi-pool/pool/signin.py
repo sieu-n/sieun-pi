@@ -349,11 +349,16 @@ def file_login(provider, harvest, target=None, *, off=False):
     base.log("login_filed", provider=provider, account=label, id=account_id, new=existing is None)
     account = next(a for a in registry.load_index(provider) if a.id == account_id)
     drop_login_blocks(provider, account)
+    from . import usage, vending
+    # A reauthed account whose usage figure is fresh takes trees at once, and one that needs a read takes them once the read
+    # lands, so each books the account's cells for the trees in line (R5). On 11-19 claude-virev3, reauthed at 15:30:33Z with no
+    # read due, went to pi-durable:c4a194d9 a second later, while 25 trees ranked ahead of it waited 14 to 16 min more.
+    vending.book_opened(provider, [account_id])
     try:
-        from . import usage
         usage.read_account(provider, account, base.config())
     except Exception as e:
         base.log("login_read_failed", provider=provider, account=label, error=str(e)[:200])
+    vending.book_opened(provider, [account_id])
     tier = f" ({h['tier']})" if h.get("tier") else ""
     said = f"added {label}{tier} \u2192 pool now has {size} accounts" if existing is None else f"reauthed {label}{tier}"
     return said, account_id

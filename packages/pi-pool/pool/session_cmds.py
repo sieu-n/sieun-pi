@@ -289,6 +289,8 @@ def cmd_toggle(rest, off):
         vending.IntentWriter(state).set_disabled(provider, account.id, off, time.time())
         base.save_json(base.STATE, state)
     base.log("account_" + verb, provider=provider, account=account.label)
+    if not off:
+        vending.book_opened(provider, [account.id])
     print(f"{account.label} is {verb}" + ("; excluded from Auto, available in Manual" if off else "; Auto can pick it again"))
     return 0
 
@@ -314,6 +316,7 @@ def cmd_unlimited(rest):
             return 0
         base.save_json(base.STATE, state)
     base.log("limit_dropped", provider=provider, account=account.label, reason="unlimited")
+    vending.book_opened(provider, [account.id])
     print(f"{account.label} is no longer limited (was until {time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(limit['until']))})")
     return 0
 

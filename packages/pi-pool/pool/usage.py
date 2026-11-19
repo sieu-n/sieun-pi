@@ -310,7 +310,7 @@ def cmd_sample(rest=()):
     read_many(selection, note)
     base.log("usage_sample", accounts=sum(len(v) for v in selection.values()), failed=failed)
     for provider, ids in read.items():
-        vending.book_read(provider, ids)
+        vending.book_opened(provider, ids)
     failed_claude = set(selection.get("anthropic") or ()) & {a.id for a in registry.load_index("anthropic") if a.label in failed}
     if failed_claude:
         vending.probe_failed_reads(failed_claude)
