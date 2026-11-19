@@ -32,12 +32,16 @@ const deps = (platform?: NodeJS.Platform): Deps => ({
 test("aside_tabs on the linux box points the fix at the Mac over ssh", async () => {
   const outcome = await asideTabs.run(deps("linux"));
   assert.equal(outcome.status, "fail");
-  assert.ok(outcome.status === "fail" && outcome.fix.includes("aside-remote"), JSON.stringify(outcome));
+  assert.ok(outcome.status === "fail" && outcome.fix.includes("aside-remote") && outcome.fix.includes("aside --start-hidden"), JSON.stringify(outcome));
 });
 
-test("aside_tabs on macOS keeps the local open -a Aside fix", async () => {
-  const outcome = await asideTabs.run(deps());
-  assert.ok(outcome.status === "fail" && outcome.fix.startsWith("open Aside with `open -a Aside`"), JSON.stringify(outcome));
+// 11-18 to 11-20: the owner's MacBook ran no Aside after a reboot, and `open -a Aside` would bring it to the front of his screen (c103).
+test("aside_tabs and aside_account on macOS name the hidden start", async () => {
+  const down = { code: 1, stdout: "", stderr: "Failed to request daemon auth challenge: fetch failed\nAside isn't running on this machine.", ms: 0 };
+  for (const id of ["aside_tabs", "aside_account"]) {
+    const outcome = await CHECKS.find(check => check.id === id)!.run({ ...deps(), exec: async () => down });
+    assert.ok(outcome.status === "fail" && outcome.fix.includes("aside-start-hidden") && !outcome.fix.includes("open -a"), JSON.stringify(outcome));
+  }
 });
 
 // 10-22 11:56 KST: the box parity run failed aside_tabs on the box alone after the owner closed his last Aside window at 01:08Z.

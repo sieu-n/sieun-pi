@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+Starts Aside Browser hidden at login, through deploy/mac/aside-start-hidden, so a reboot of the owner's MacBook Pro no
+longer leaves agents without Aside (11-18 to 11-20). It never takes the owner's focus: the start uses open -g -j and
+then hides Aside, and an Aside that already runs is left as it is.
+Install (from sieun-pi on a box that reaches the Mac):
+  scp deploy/mac/aside-start-hidden mac:.local/bin/aside-start-hidden
+  scp deploy/mac/ai.virev.aside-start.plist mac:Library/LaunchAgents/
+  ssh mac 'mkdir -p ~/.local/state/aside-start; launchctl bootout gui/$(id -u)/ai.virev.aside-start 2>/dev/null; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.virev.aside-start.plist'
+-->
+<plist version="1.0"><dict>
+<key>Label</key><string>ai.virev.aside-start</string>
+<key>ProgramArguments</key><array><string>/bin/sh</string><string>/Users/sieunpark/.local/bin/aside-start-hidden</string></array>
+<key>EnvironmentVariables</key><dict><key>HOME</key><string>/Users/sieunpark</string><key>USER</key><string>sieunpark</string><key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+<key>RunAtLoad</key><true/>
+<key>StandardOutPath</key><string>/Users/sieunpark/.local/state/aside-start/launchd.log</string>
+<key>StandardErrorPath</key><string>/Users/sieunpark/.local/state/aside-start/launchd.log</string>
+</dict></plist>

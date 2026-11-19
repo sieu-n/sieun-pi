@@ -197,7 +197,9 @@ async function offIfMacGone(deps: Deps, failed: Outcome): Promise<Outcome> {
  * going down, and the 11:56 KST box parity run then failed aside_tabs on the box alone. His window is his to open (c103), so it is off.
  */
 const NO_ASIDE_WINDOW = /is not connected to the daemon/;
-const MAC_REACH_FIX = "the box's `aside` runs a Mac's Aside CLI over ssh (~/.local/bin/aside, deploy/linux/aside-remote, its target in ~/.config/aside-remote/host), so check ssh to that Mac, check Aside runs there, and re-check";
+const MAC_REACH_FIX = "the box's `aside` runs a Mac's Aside CLI over ssh (~/.local/bin/aside, deploy/linux/aside-remote, its target in ~/.config/aside-remote/host), so check ssh to that Mac, start Aside there hidden with `aside --start-hidden` (sieun-pi deploy/mac/aside-start-hidden), and re-check";
+/** `open -a Aside` brings Aside to the front of the owner's screen (c103); the hidden start leaves his frontmost app as it is. */
+const MAC_START_FIX = "start Aside hidden with `/bin/sh ~/.local/bin/aside-start-hidden` (sieun-pi deploy/mac/aside-start-hidden) and re-check";
 const ASIDE_SIGN_IN_FIX = "sign it in again yourself: in `aside repl` open chrome-extension://fjdhphbdlfjogobdofoaagnlnkoibdge/main.html, enter the account email, Continue, read the 6-digit code from no-reply@asidehq.com with the `gmail` global (uid 0), type it and Verify, all in one repl call because the tab closes when the call ends; ask the owner only if Gmail shows no code";
 
 const missingServer = (name: string, why: string) => FAIL("agent", why, `re-add the ${name} server with \`prime-agent mcp add\` and the command from its vendor docs`);
@@ -655,7 +657,7 @@ export const CHECKS: readonly Check[] = [
     if (!answer.error && result?.isError !== true && count >= 1) return PASS(`${count} tabs`);
     if (NO_ASIDE_WINDOW.test(text)) return { status: "off", detail: `the owner's Aside has no open window, so it answers again when he opens one: ${brief(text, 160)}` };
     return offIfMacGone(deps, FAIL("agent", answer.error ? `MCP ${answer.error}` : `repl gave ${brief(text || "no text", 200)}`, deps.platform === "linux"
-      ? MAC_REACH_FIX : "open Aside with `open -a Aside` and re-check"));
+      ? MAC_REACH_FIX : MAC_START_FIX));
   } },
   /**
  * A signed-out account is an agent's fix: on 11-10 a job signed u0 in again through the email code, read from his Gmail in Aside. Aside
@@ -669,7 +671,7 @@ export const CHECKS: readonly Check[] = [
     const result = await deps.exec("aside", ["account", "status"], { timeoutMs: CALL_TIMEOUT_MS });
     const line = /^\*\s+\S+\s+\S+@\S+\s+signed in.*$/m.exec(result.stdout);
     if (line) return PASS(brief(line[0], 100));
-    if (result.code !== 0) return offIfMacGone(deps, FAIL("agent", `aside account status: ${failText(result)}`, deps.platform === "linux" ? MAC_REACH_FIX : "open Aside with `open -a Aside` and re-check"));
+    if (result.code !== 0) return offIfMacGone(deps, FAIL("agent", `aside account status: ${failText(result)}`, deps.platform === "linux" ? MAC_REACH_FIX : MAC_START_FIX));
     return FAIL("agent", `aside account status shows no signed-in account: ${brief(both(result), 200)}`, ASIDE_SIGN_IN_FIX);
   } },
   { id: "prime_daemon", group: "prime skills", tool: "Prime daemon (agent-message, agent-observe, goal, heartbeat, compact, mcp)", run: async deps => {

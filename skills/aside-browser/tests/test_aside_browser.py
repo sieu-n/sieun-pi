@@ -219,6 +219,49 @@ class CallLimitTests(Base):
         self.assertIn("isn't running on this machine", str(err))
 
 
+# Live text from 11-18 01:15Z to 02:37Z, when the owner's MacBook ran no Aside after a crash and reboot.
+LIVE_NOT_RUNNING = (
+    "Failed to request daemon auth challenge: fetch failed\nAside isn't running on this machine.\n"
+    "  - Start Aside Browser and retry, or\n"
+)
+
+
+class NotRunningTests(Base):
+    """11-18 15:31Z to 11-20 20:3xZ: Aside was down on the owner's MacBook after a reboot, and over 30 agent calls failed with no start."""
+
+    def started(self, returncode=0, out="aside-start-hidden: Aside answers (started hidden in 6 s)"):
+        return patch.object(ab.subprocess, "run", return_value=subprocess.CompletedProcess([], returncode, out, ""))
+
+    def test_aside_down_starts_it_hidden_and_repeats_the_call_once(self):
+        mcp = self.fake(RuntimeError(LIVE_NOT_RUNNING), "2 tabs")
+        with self.started() as run, patch.object(ab.sys, "platform", "linux"):
+            out = self.call(ab.run("console.log('2 tabs')"))
+        self.assertIn("2 tabs", out)
+        self.assertEqual(len(mcp.calls), 2)
+        self.assertEqual(mcp.calls[0], mcp.calls[1])
+        self.assertEqual(run.call_args.args[0], [ab.CLI, "--start-hidden"])
+
+    def test_on_the_mac_it_runs_the_start_script_there(self):
+        self.fake(RuntimeError(LIVE_NOT_RUNNING), "ok")
+        with self.started() as run, patch.object(ab.sys, "platform", "darwin"):
+            self.call(ab.run("return 1"))
+        self.assertEqual(run.call_args.args[0], ["/bin/sh", os.path.expanduser("~/.local/bin/aside-start-hidden")])
+
+    def test_a_failed_start_raises_once_without_a_repeat(self):
+        mcp = self.fake(RuntimeError(LIVE_NOT_RUNNING))
+        with self.started(1, "aside-start-hidden: Aside gave no answer in 60 s"), self.assertRaises(ab.AsideError) as caught:
+            self.call(ab.run("return 1"))
+        self.assertIn("starting it hidden failed", str(caught.exception))
+        self.assertEqual(len(mcp.calls), 1)
+
+    def test_a_call_past_the_120_s_limit_starts_nothing(self):
+        mcp = self.fake(RuntimeError(LIVE_LIMIT))
+        with self.started() as run, self.assertRaises(ab.AsideError):
+            self.call(ab.run("return 1"))
+        run.assert_not_called()
+        self.assertEqual(len(mcp.calls), 1)
+
+
 class TabOwnershipTests(Base):
     def test_open_tab_records_and_close_tab_allows_own_tab(self):
         mcp = self.fake(

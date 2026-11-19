@@ -1,0 +1,58 @@
+#!/bin/sh
+# Starts Aside Browser on this Mac hidden, without taking the owner's focus, and waits until its daemon answers.
+#
+# From 11-18 15:31Z to 11-20 20:3xZ the owner's MacBook Pro ran no Aside: it crashed and rebooted on 11-18, Aside is not
+# a login item, and nothing started it again, so every agent call read "Aside isn't running on this machine". `open -a
+# Aside` would fix that but brings a window to the front of the owner's screen (c103). This script opens Aside with
+# `open -g -j` (no activation, launched hidden), then hides it through NSRunningApplication, which needs no Apple Events
+# permission, so the frontmost app stays the one the owner uses. An Aside that already runs is left as it is.
+#
+# Callers:
+#   1. launchd agent ai.virev.aside-start (deploy/mac/ai.virev.aside-start.plist) runs it once at login.
+#   2. The box's `aside` wrapper (deploy/linux/aside-remote) runs it over ssh when a call fails with Aside's own
+#      "Aside isn't running on this machine", then repeats the call once. `aside --start-hidden` runs only this script.
+#   3. The aside-browser skill's run() does the same for an MCP call, on the Mac and on the box.
+#
+# Install (from sieun-pi on a box that reaches the Mac):
+#   scp deploy/mac/aside-start-hidden mac:.local/bin/aside-start-hidden
+#   scp deploy/mac/ai.virev.aside-start.plist mac:Library/LaunchAgents/
+#   ssh mac 'mkdir -p ~/.local/state/aside-start; launchctl bootout gui/$(id -u)/ai.virev.aside-start 2>/dev/null; launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.virev.aside-start.plist'
+#
+# Exit 0 once `aside account status` answers (signed in or not), 1 when Aside gave no answer in WAIT_S seconds.
+# ASIDE_START_WAIT_S overrides WAIT_S. ASIDE_CLI and ASIDE_START_PGREP, ASIDE_START_OPEN and ASIDE_START_HIDE replace the
+# commands for tests.
+# WAIT_S: on 11-20 20:33Z an `open -g -j -a Aside` on this Mac answered `aside account status` within the 20 s the d5 duty job slept, so
+# 60 s is three times that. That start also left Aside visible, so this script hides it on every poll and once more after the answer.
+WAIT_S="${ASIDE_START_WAIT_S:-60}"
+cli="${ASIDE_CLI:-$HOME/.local/bin/aside}"
+bundle=at.studio.AsideBrowser
+
+running() { ${ASIDE_START_PGREP:-pgrep -qx Aside}; }
+launch() { ${ASIDE_START_OPEN:-open -g -j -a Aside}; }
+hide() {
+  if [ -n "${ASIDE_START_HIDE-}" ]; then $ASIDE_START_HIDE; return; fi
+  osascript -l JavaScript -e "ObjC.import('AppKit'); var a = \$.NSRunningApplication.runningApplicationsWithBundleIdentifier('$bundle'); for (var i = 0; i < a.count; i++) a.objectAtIndex(i).hide; ''" >/dev/null 2>&1
+}
+answers() {
+  out=$("$cli" account status 2>&1)
+  case "$out" in *"isn't running on this machine"*) return 1 ;; esac
+  return 0
+}
+
+started=0
+if ! running; then
+  launch || { echo "aside-start-hidden: open -g -j -a Aside failed" >&2; exit 1; }
+  started=1
+fi
+t0=$(date +%s)
+while :; do
+  [ "$started" = 1 ] && hide
+  if answers; then
+    echo "aside-start-hidden: Aside answers ($([ "$started" = 1 ] && echo "started hidden in $(( $(date +%s) - t0 )) s" || echo "it was running"))"
+    exit 0
+  fi
+  [ $(( $(date +%s) - t0 )) -ge "$WAIT_S" ] && break
+  sleep 1
+done
+echo "aside-start-hidden: Aside gave no answer in ${WAIT_S} s: $out" >&2
+exit 1

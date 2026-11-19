@@ -728,6 +728,47 @@ def past_limit(message: str, elapsed: float) -> bool:
     return "other side closed" in message and elapsed >= REPL_LIMIT_S
 
 
+# Aside's own text when its daemon does not answer. It refuses the call at its auth challenge, before any code runs, so a repeat
+# cannot run code twice; the 120 s limit case above carries "other side closed" and stays apart (past_limit).
+# The owner's MacBook ran no Aside from 11-18 15:31Z to 11-20 20:3xZ after a crash and reboot, and agent calls failed over 30 times.
+_NOT_RUNNING = "isn't running on this machine"
+
+
+def not_running(message: str) -> bool:
+    """True when Aside is down, as opposed to a call it closed at its per-call limit."""
+    return _NOT_RUNNING in message and "other side closed" not in message
+
+
+def _start_command() -> list[str]:
+    """sieun-pi deploy/mac/aside-start-hidden on the Mac, or the box wrapper's `aside --start-hidden`, which runs it there over ssh."""
+    if sys.platform == "darwin":
+        return ["/bin/sh", os.path.expanduser("~/.local/bin/aside-start-hidden")]
+    return [CLI, "--start-hidden"]
+
+
+async def start_hidden() -> str:
+    """Start Aside on the Mac hidden, leaving the owner's frontmost app as it is (c103), and wait until its daemon answers."""
+    try:
+        proc = await asyncio.to_thread(subprocess.run, _start_command(), capture_output=True, text=True)
+    except OSError as exc:
+        raise AsideError(f"could not start Aside: {exc}") from exc
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    if proc.returncode != 0:
+        raise AsideError(f"Aside is not running, and starting it hidden failed (exit {proc.returncode}): {out[-1000:]}")
+    return out
+
+
+async def _aside_repl(code: str, title: str) -> str:
+    """One Aside REPL call. When Aside is down it starts Aside hidden and repeats the call once."""
+    try:
+        return await _call("repl", {"title": title, "code": code})
+    except AsideError as exc:
+        if not not_running(str(exc)):
+            raise
+        await start_hidden()
+    return await _call("repl", {"title": title, "code": code})
+
+
 # rlm.repl's own texts when this process has no Prime host, such as the detached close that sieun-rules' aside-tabs.ts starts at a job's turn end.
 _NO_HOST = ("repl runtime is not serving", "host connection closed")
 
@@ -1135,7 +1176,7 @@ async def _repl_now(code: str, title: str, owner_ok: str | None = None, plain: s
         code = guard_clicks(code)
     started = time.monotonic()
     try:
-        text = await (_box_call(code) if browser == "box" else _call("repl", {"title": title, "code": code}))
+        text = await (_box_call(code) if browser == "box" else _aside_repl(code, title))
     except AsideError as exc:
         message, opened = _strip_opened(str(exc))
         _remember(opened)

@@ -2,14 +2,38 @@
 # Runs the Aside CLI of a Mac that has Aside Browser, over ssh, because Aside has no Linux build and Remote Control
 # (aside host use) answers 403 on this account. ASIDE_REMOTE, or the first word of ~/.config/aside-remote/host, picks the Mac,
 # and mac, the owner's MacBook, is the only one. Long-lived `aside mcp` servers share their own ssh master.
+#
+# A call that fails with Aside's own "Aside isn't running on this machine", with no "other side closed" (Aside's 120 s
+# per-call limit, where Aside is up), starts Aside hidden on the Mac with deploy/mac/aside-start-hidden and runs once more.
+# Aside refuses such a call at its auth challenge, before any code runs, so the repeat cannot run code twice. The Mac ran
+# no Aside from 11-18 15:31Z to 11-20 20:3xZ after a crash and reboot. Only a call whose stdin is not a terminal, and not
+# `aside mcp`, gets the repeat, because its output is held until the call ends. `aside --start-hidden` runs only the start.
+# ASIDE_REMOTE_SSH replaces /usr/bin/ssh for tests.
 target="${ASIDE_REMOTE:-$(head -c 64 "$HOME/.config/aside-remote/host" 2>/dev/null | awk '{print $1; exit}')}"
 case "${target:-mac}" in
-  mac) host="mac"; cli="/Users/sieunpark/.local/bin/aside" ;;
+  mac) host="mac"; cli="/Users/sieunpark/.local/bin/aside"; starter="/Users/sieunpark/.local/bin/aside-start-hidden" ;;
   air) echo "aside-remote: the M2 Air runs no Aside. The owner kept the MacBook's Aside on 2026-10-19, and an Aside a job started there on 11-18 synced his 16 extensions and pushed the store box into swap. Use mac, or the box Chrome for a page with no login." >&2; exit 2 ;;
   *) echo "aside-remote: unknown target '$target' (use mac)" >&2; exit 2 ;;
 esac
+ssh_bin="${ASIDE_REMOTE_SSH:-/usr/bin/ssh}"
+opts=(-T -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o LogLevel=ERROR)
+[ "${1-}" = --start-hidden ] && exec "$ssh_bin" "${opts[@]}" "$host" "exec /bin/sh $starter"
 q=""
 for a in "$@"; do q+=" $(printf '%q' "$a")"; done
 mux=()
 [ "${1-}" = mcp ] && mux=(-o ControlMaster=auto -o ControlPersist=yes -o "ControlPath=$HOME/.ssh/cm/mcp-%r@%h:%p")
-exec /usr/bin/ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 -o LogLevel=ERROR "${mux[@]}" "$host" "exec $cli$q"
+call=("$ssh_bin" "${opts[@]}" "${mux[@]}" "$host" "exec $cli$q")
+{ [ "${1-}" = mcp ] || [ -t 0 ]; } && exec "${call[@]}"
+out=$(mktemp) err=$(mktemp)
+trap 'rm -f "$out" "$err"' EXIT
+"${call[@]}" >"$out" 2>"$err"
+code=$?
+if [ "$code" -ne 0 ] && cat "$out" "$err" | grep -q "isn't running on this machine" && ! cat "$out" "$err" | grep -q "other side closed"; then
+  if "$ssh_bin" "${opts[@]}" "$host" "exec /bin/sh $starter" >&2; then
+    rm -f "$out" "$err"
+    exec "${call[@]}"
+  fi
+fi
+cat "$out"
+cat "$err" >&2
+exit "$code"
