@@ -32,6 +32,11 @@ export interface RequestTiming {
   err?: string;
   /** On a client line, the page gave up on the send and showed it as Not delivered; `ms` is 0, since it times no call. */
   shown?: true;
+  /**
+   * On a client line, the screen did not wait on the call (web client.ts `Wait`): `ahead` is a read ahead of any view, such as a room's
+   * page before the owner opens it, and `shown` is a refresh behind a page the screen already showed, whose answer changed nothing on it.
+   */
+  bg?: "ahead" | "shown";
 }
 
 /**
@@ -70,7 +75,7 @@ export class LoopStalls {
 }
 
 /** A client sample as POST /api/timings takes it; the server names its route. */
-export interface ClientTiming { m: string; p: string; s: number; ms: number; net?: number; err?: string; shown?: true }
+export interface ClientTiming { m: string; p: string; s: number; ms: number; net?: number; err?: string; shown?: true; bg?: "ahead" | "shown" }
 
 /** A 24 h window spans at most two UTC days, so a file older than yesterday holds no line the duty reads. */
 const KEEP_DAYS = 2;
@@ -117,8 +122,9 @@ export function clientTimings(body: unknown): ClientTiming[] {
   return samples.filter((sample): sample is ClientTiming => {
     const { m, p, s, ms } = (sample ?? {}) as Record<string, unknown>;
     return typeof m === "string" && typeof p === "string" && p.startsWith("/api/") && typeof s === "number" && typeof ms === "number" && Number.isFinite(ms) && ms >= 0;
-  }).map(({ m, p, s, ms, net, err, shown }) => ({
+  }).map(({ m, p, s, ms, net, err, shown, bg }) => ({
     m, p: p.split("?")[0]!, s, ms, ...(typeof net === "number" && Number.isFinite(net) && net >= 0 ? { net } : {}),
     ...(typeof err === "string" && err ? { err: err.slice(0, 500) } : {}), ...(shown === true ? { shown } : {}),
+    ...(bg === "ahead" || bg === "shown" ? { bg } : {}),
   }));
 }

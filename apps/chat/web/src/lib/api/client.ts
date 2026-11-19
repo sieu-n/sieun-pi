@@ -37,7 +37,15 @@ const boardBase = (chat: string): string => (chat.startsWith("ag_") ? `/api/agen
  * busy before it could send the call or read the answer: on 11-03 a thread open in the box Chrome waited 2,135 ms for /api/rooms, of which
  * the network and the server took 29 ms.
  */
-type Timing = { m: string; p: string; s: number; ms: number; net?: number; err?: string; shown?: true };
+type Timing = { m: string; p: string; s: number; ms: number; net?: number; err?: string; shown?: true; wait?: Wait };
+
+/**
+ * What the owner saw while a call ran, which its caller sets and may change until the batch is posted. `ahead` is a read ahead of any
+ * view, such as a room's page before he opens it; the caller clears it when a view starts to wait on the read. `shown` is a refresh behind
+ * a page the screen already showed from the page's cache; the caller clears it when the answer changed what the screen showed, since he
+ * waited for that. Without one the screen waited on the call. The speed duty reads it as `bg` (request-log.ts).
+ */
+export type Wait = { background?: "ahead" | "shown" };
 const timings: Timing[] = [];
 let timingsTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -50,7 +58,7 @@ function sendTimings(beacon = false): void {
   timingsTimer = undefined;
   if (!timings.length) return;
   const samples = timings.splice(0);
-  const body = JSON.stringify({ samples });
+  const body = JSON.stringify({ samples: samples.map(({ wait, ...sample }) => (wait?.background ? { ...sample, bg: wait.background } : sample)) });
   // The browser keeps 250 resource entries by default and then drops new ones, so each batch empties the buffer.
   performance.clearResourceTimings();
   if (beacon && navigator.sendBeacon?.("/api/timings", new Blob([body], { type: "application/json" }))) return;
@@ -70,10 +78,10 @@ function networkMs(path: string, started: number): number | undefined {
 }
 
 /** Records one call; a failed call names its error and goes out at once, so the server log holds it beside the request it failed on. */
-function recordTiming(m: string, path: string, s: number, started: number, err?: string): void {
+function recordTiming(m: string, path: string, s: number, started: number, err?: string, wait?: Wait): void {
   if (typeof window === "undefined") return;
   const net = networkMs(path, started);
-  timings.push({ m, p: path.split("?")[0]!, s, ms: Math.round(performance.now() - started), ...(net === undefined ? {} : { net }), ...(err ? { err } : {}) });
+  timings.push({ m, p: path.split("?")[0]!, s, ms: Math.round(performance.now() - started), ...(net === undefined ? {} : { net }), ...(err ? { err } : {}), ...(wait ? { wait } : {}) });
   if (err) sendTimings();
   else timingsTimer ??= setTimeout(sendTimings, 10_000);
 }
@@ -94,7 +102,7 @@ export function reportNotDelivered(conversation: ConversationId, status: number,
  * A Blob body goes as its own bytes with its own type, any other body as JSON. A call that fails, refused by the server or never reaching
  * it, posts its error with its timing (`recordTiming`), so the server's log holds every failure the page shows, such as a Not delivered send.
  */
-async function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+async function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal, wait?: Wait): Promise<T> {
   const started = performance.now();
   const blob = body instanceof Blob;
   let response: Response;
@@ -108,7 +116,7 @@ async function call<T>(method: string, path: string, body?: unknown, signal?: Ab
     });
     text = await response.text();
   } catch (error) {
-    if (!signal?.aborted) recordTiming(method, path, 0, started, error instanceof Error ? `${error.name}: ${error.message}` : String(error));
+    if (!signal?.aborted) recordTiming(method, path, 0, started, error instanceof Error ? `${error.name}: ${error.message}` : String(error), wait);
     throw error;
   }
   let value: unknown;
@@ -119,7 +127,7 @@ async function call<T>(method: string, path: string, body?: unknown, signal?: Ab
     error = `${method} ${path} answered ${response.status} with a body that is not JSON`;
   }
   const failure = response.ok ? error : (value as { error?: string } | undefined)?.error ?? error ?? `${method} ${path} failed with ${response.status}`;
-  recordTiming(method, path, response.status, started, failure);
+  recordTiming(method, path, response.status, started, failure, wait);
   if (failure !== undefined) throw response.ok ? new Error(failure) : new ApiError(response.status, failure);
   return value as T;
 }
@@ -184,10 +192,11 @@ export const api = {
   stopAgent: (id: AgentId) => call<{ ok: true }>("POST", `/api/c/${enc(roomOf(id))}/abort`),
   archiveAgent: (id: AgentId, archived = true) => call<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { archived }),
 
-  header: (id: ConversationId) => call<ConversationHeader>("GET", `/api/c/${enc(id)}`),
-  items: (id: ConversationId, opts: { before?: string; after?: string; around?: string; limit?: number } = {}) =>
-    call<TimelinePage>("GET", `/api/c/${enc(id)}/items${query(opts)}`),
-  replies: (id: ConversationId, root: string) => call<{ root: Item; items: Item[] }>("GET", `/api/c/${enc(id)}/replies/${enc(root)}`),
+  header: (id: ConversationId, wait?: Wait) => call<ConversationHeader>("GET", `/api/c/${enc(id)}`, undefined, undefined, wait),
+  items: (id: ConversationId, opts: { before?: string; after?: string; around?: string; limit?: number } = {}, wait?: Wait) =>
+    call<TimelinePage>("GET", `/api/c/${enc(id)}/items${query(opts)}`, undefined, undefined, wait),
+  replies: (id: ConversationId, root: string, wait?: Wait) =>
+    call<{ root: Item; items: Item[] }>("GET", `/api/c/${enc(id)}/replies/${enc(root)}`, undefined, undefined, wait),
   /** A tool step's output, which a page leaves out until the owner opens it. */
   stepOutput: (ref: StepOutputRef) => call<{ output: string }>("GET", `/api/c/${enc(ref.conversation)}/output/${ref.entry}`),
   /** Keeps an image's bytes on the server; a send names the ref it answers (`attach`). */
@@ -224,7 +233,7 @@ export const api = {
   search: (params: SearchQuery, options: { signal?: AbortSignal } = {}) =>
     call<SearchResult>("GET", `/api/search${query({ ...params, brief: params.brief ? 1 : undefined })}`, undefined, options.signal),
   /** The recent messages the Cmd K search matches in the page (pages/search/recent.ts), only those after `after` when given. */
-  searchRecent: (params: { after?: number } = {}) => call<SearchResult>("GET", `/api/search/recent${query(params)}`),
+  searchRecent: (params: { after?: number } = {}) => call<SearchResult>("GET", `/api/search/recent${query(params)}`, undefined, undefined, { background: "ahead" }),
 
   board: (chat: string) => call<BoardView>("GET", `${boardBase(chat)}/board`),
   boardOps: (chat: string, ops: BoardOp[]) => call<BoardView>("POST", `${boardBase(chat)}/board`, { ops }),

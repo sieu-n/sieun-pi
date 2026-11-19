@@ -3,7 +3,9 @@
  * 느리거든? 이거 계속 느린 api 뭔지 꾸준히 (daily) monitoring 하는걸 add to duty and keep it snappy"). It reads the request log
  * (server/request-log.ts) of the last 24 h and gives each route's p90 as the owner waits for it: his own devices' lines (via tailnet), else
  * the server's handler time plus his network p50 from his other tailnet lines, and each metric says which in `metricSources`. A box
- * browser's line, such as a job's walk, never sets a metric; its slowest routes are walk_slow_api rows apart. A client line's `net` is the
+ * browser's line, such as a job's walk, never sets a metric; its slowest routes are walk_slow_api rows apart. A call the screen did not
+ * wait on says so in `bg` (request-log.ts): a read ahead of any view counts nowhere, and a refresh behind a page already on the screen
+ * counts as a 0 ms wait. A client line's `net` is the
  * browser's network time for the call, so a flagged route whose network p90 is far below its wait was held by the page's main thread. *
  * When no tailnet or server line of the window reached search, messages or replies, the precheck times a few GETs of that route against the
  * live server itself and says so in `metricSources`; a probe that fails gives no value and a probe_failed row.
@@ -30,7 +32,17 @@ const sourceOf = (t: RequestTiming): SpeedSource => (t.src === "client" && t.via
  * One route's speed from one source. `netP50` and `netP90` come from the client lines that carry the browser's network time, so a client
  * p90 far above its `netP90` is the page's own main thread, not the server or the network.
  */
-export interface RouteSpeed { route: string; src: SpeedSource; count: number; p50: number; p90: number; max: number; slowestPath: string; netCount?: number; netP50?: number; netP90?: number }
+export interface RouteSpeed {
+  route: string; src: SpeedSource; count: number; p50: number; p90: number; max: number; slowestPath: string; netCount?: number; netP50?: number; netP90?: number;
+  /** How many of `count` ran behind a page the screen already showed from the page's cache, a wait of 0 ms. */
+  shown?: number;
+}
+
+/**
+ * The wait a line counts as. A refresh behind a page the screen already showed, whose answer changed nothing on it (`bg: "shown"`), is
+ * an open the owner waited 0 ms for. A read ahead of any view (`bg: "ahead"`) is no wait of his at all, so no speed counts it.
+ */
+const waitOf = (t: RequestTiming): number => (t.bg === "shown" ? 0 : t.ms);
 
 /** The routes each metric reads, by `<method> <route pattern>`. */
 export const ROUTES = {
@@ -68,19 +80,21 @@ export function readTimings(dir: string, now: number, windowMs: number): Request
 export function routeSpeeds(timings: readonly RequestTiming[]): RouteSpeed[] {
   const groups = new Map<string, RequestTiming[]>();
   for (const timing of timings) {
-    if (timing.s === 0 || timing.shown) continue;
+    if (timing.s === 0 || timing.shown || timing.bg === "ahead") continue;
     const key = `${sourceOf(timing)} ${timing.m} ${timing.r}`;
     const group = groups.get(key);
     if (group) group.push(timing);
     else groups.set(key, [timing]);
   }
   return [...groups.values()].map(group => {
-    const sorted = group.map(t => t.ms).sort((a, b) => a - b);
-    const slowest = group.reduce((a, b) => (b.ms > a.ms ? b : a));
+    const sorted = group.map(waitOf).sort((a, b) => a - b);
+    const slowest = group.reduce((a, b) => (waitOf(b) > waitOf(a) ? b : a));
+    const shown = group.filter(t => t.bg === "shown").length;
     const net = group.flatMap(t => (t.net === undefined ? [] : [t.net])).sort((a, b) => a - b);
     return {
       route: `${group[0]!.m} ${group[0]!.r}`, src: sourceOf(group[0]!), count: group.length, p50: percentile(sorted, 0.5), p90: percentile(sorted, 0.9), max: sorted.at(-1)!, slowestPath: slowest.p,
       ...(net.length ? { netCount: net.length, netP50: percentile(net, 0.5), netP90: percentile(net, 0.9) } : {}),
+      ...(shown ? { shown } : {}),
     };
   }).sort((a, b) => b.p90 - a.p90);
 }
@@ -102,7 +116,7 @@ export interface OwnerSpeed { route: string; p90: number; source: string; speed:
 
 export function ownerSpeed(speeds: readonly RouteSpeed[], route: string, net: OwnerNetwork | undefined): OwnerSpeed | undefined {
   const own = speeds.find(s => s.src === "tailnet" && s.route === route);
-  if (own) return { route, p90: own.p90, source: `the owner's devices, ${own.count} requests`, speed: own };
+  if (own) return { route, p90: own.p90, source: `the owner's devices, ${own.count} requests${own.shown ? `, ${own.shown} of them behind a page the screen already showed (0 ms)` : ""}`, speed: own };
   const server = speeds.find(s => s.src === "server" && s.route === route);
   if (!server) return undefined;
   const handler = `no request of the owner's in the window, so the server's handler p90 ${server.p90} ms over ${server.count} requests`;

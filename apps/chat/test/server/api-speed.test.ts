@@ -205,6 +205,38 @@ test("the precheck reads each metric from the owner's lines, falls back to the s
   assert.match(out.flagged[3]!.excerpt, /from browsers on the box, such as job walks.*no line carries the network time yet/);
 });
 
+test("a read ahead of any view counts in no speed, and a refresh behind a page the screen already showed counts as a 0 ms wait", async () => {
+  const dir = tempDir();
+  mkdirSync(join(dir, "requests"));
+  const now = Date.UTC(2026, 10, 20, 9);
+  const row = (r: string, ms: number, bg?: string) =>
+    JSON.stringify({ at: now - 3600_000, src: "client", via: "tailnet", m: "GET", r, p: r.replace(":id", "dm_x").replace(":root", "p1"), s: 200, ms, net: ms, ...(bg ? { bg } : {}) });
+  writeFileSync(join(dir, "requests", "2026-11-20.jsonl"), `${[
+    row("/api/c/:id/items", 410, "ahead"), row("/api/c/:id/items", 405, "ahead"),
+    ...[0, 1, 2, 3, 4, 5, 6, 7, 8].map(() => row("/api/c/:id/items", 205, "shown")), row("/api/c/:id/items", 230),
+    row("/api/c/:id/replies/:root", 648), row("/api/c/:id/replies/:root", 210, "shown"),
+  ].join("\n")}\n`);
+  const out = apiSpeed(dir, now, 24 * 3600_000);
+  assert.equal(out.metrics.thread_open_p90_ms_messages, 0);
+  assert.equal(out.metrics.thread_open_p90_ms_replies, 648);
+  assert.equal(out.metrics.thread_open_p90_ms, 648);
+  assert.equal(out.metricSources.messages, "GET /api/c/:id/items: the owner's devices, 10 requests, 9 of them behind a page the screen already showed (0 ms)");
+  const items = out.routes.find(s => s.route === "GET /api/c/:id/items")!;
+  assert.deepEqual([items.count, items.shown, items.max, items.netP50], [10, 9, 230, 205]);
+
+  const dataDir = tempDir();
+  const chat = await start({ dataDir });
+  try {
+    await chat.send("POST", "/api/timings", { samples: [
+      { m: "GET", p: "/api/rooms", s: 200, ms: 200, bg: "ahead" }, { m: "GET", p: "/api/rooms", s: 200, ms: 201, bg: "shown" }, { m: "GET", p: "/api/rooms", s: 200, ms: 202, bg: true },
+    ] });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.deepEqual(lines(dataDir).filter(line => line.src === "client").map(line => [line.ms, line.bg]), [[200, "ahead"], [201, "shown"], [202, undefined]]);
+  } finally {
+    await chat.close();
+  }
+});
+
 test("a walk never sets a metric, and with no tailnet line the server's handler time stands alone", () => {
   const dir = tempDir();
   mkdirSync(join(dir, "requests"));

@@ -6,7 +6,7 @@
  * lands; nothing waits on the network before the composer takes the next message. An attached image shows from its preview while its
  * upload ends, and the post names the uploaded ref.
  */
-import { api, ApiError, reportNotDelivered, roomOf, type Attached } from "./client.ts";
+import { api, ApiError, reportNotDelivered, roomOf, type Attached, type Wait } from "./client.ts";
 import { heldSends, type HeldSend } from "./held-sends.ts";
 import { holdReload, releaseReload } from "./reload.ts";
 import { live } from "./live.svelte.ts";
@@ -311,10 +311,12 @@ class Global {
           this.conversations = event.conversations;
           this.forYouCount = event.sidebar.forYou;
           this.ready = true;
+          rooms.sync(event.sidebar);
           break;
         case "sidebar":
           this.sidebar = event.sidebar;
           this.forYouCount = event.sidebar.forYou;
+          rooms.sync(event.sidebar);
           break;
         case "agent":
           this.agents = upsert(this.agents, event.agent);
@@ -435,14 +437,16 @@ export const connection = {
 
 /**
  * The last page each thread showed, kept when its view closes so the next open shows it at once and reads it again behind, and the read
- * a thread pill click starts before the pane mounts. It keeps the newest 20 threads: a job page measured 434 KB on 11-03
- * (work/fast-thread/before.md), so 20 hold under 9 MB.
+ * a thread pill click starts before the pane mounts. `warm` fills it before the first open: on 11-19 the owner, 197 ms from the box,
+ * waited 403 to 455 ms for a room's first page and 648 ms for a thread's replies, each time with nothing on the screen. It keeps the
+ * newest 20 threads: a job page measured 434 KB on 11-03 (work/fast-thread/before.md), so 20 hold under 9 MB.
  */
 class PageCache<Raw, Shown> {
   private readonly shown = new Map<string, Shown>();
-  private readonly reads = new Map<string, { read: Promise<Raw>; at: number }>();
+  private readonly reads = new Map<string, { read: Promise<Raw>; at: number; wait?: Wait }>();
+  private readonly views = new Map<string, number>();
 
-  constructor(private readonly keep: number) {}
+  constructor(readonly keep: number) {}
 
   /** Starts the read now; the store that opens this thread next takes it instead of reading again. */
   prefetch(key: string, read: () => Promise<Raw>): void {
@@ -452,17 +456,56 @@ class PageCache<Raw, Shown> {
   }
 
   /**
-   * The prefetched read, or a new one. A prefetch counts for 2 s: the slowest click to pane mount measured 817 ms on 11-03
+   * Reads a page nobody has opened yet and keeps it as the page to show, unless a view of it is open or a read of it is on its way.
+   * Its calls are logged as ahead of any view, until a view takes the read while it runs and so waits on it.
+   */
+  warm(key: string, read: (wait: Wait) => Promise<Raw>, show: (raw: Raw) => Shown): Promise<void> {
+    if (this.views.has(key) || this.reads.has(key)) return Promise.resolve();
+    const wait: Wait = { background: "ahead" };
+    const entry = { read: read(wait), at: Date.now(), wait };
+    this.reads.set(key, entry);
+    return entry.read.then(raw => {
+      if (wait.background && !this.views.has(key)) this.remember(key, show(raw));
+    }, () => undefined).finally(() => {
+      if (this.reads.get(key) === entry) this.reads.delete(key);
+    });
+  }
+
+  /**
+   * The prefetched or warming read, or a new one. A read counts for 2 s: the slowest click to pane mount measured 817 ms on 11-03
    * (work/fast-thread/before.md), and an older one may miss changes made since.
    */
   take(key: string, read: () => Promise<Raw>): Promise<Raw> {
     const prefetched = this.reads.get(key);
     this.reads.delete(key);
-    return prefetched && Date.now() - prefetched.at < 2_000 ? prefetched.read : read();
+    if (!prefetched || Date.now() - prefetched.at >= 2_000) return read();
+    if (prefetched.wait) prefetched.wait.background = undefined;
+    return prefetched.read;
   }
 
   last(key: string): Shown | undefined {
     return this.shown.get(key);
+  }
+
+  has(key: string): boolean {
+    return this.shown.has(key) || this.reads.has(key);
+  }
+
+  /** A view of the page opened; while it is open the view keeps the page current, so `warm` leaves it alone. */
+  open(key: string): void {
+    this.views.set(key, (this.views.get(key) ?? 0) + 1);
+  }
+
+  /** The view closed and leaves the page it showed. */
+  close(key: string, value?: Shown): void {
+    const left = (this.views.get(key) ?? 1) - 1;
+    if (left > 0) this.views.set(key, left);
+    else this.views.delete(key);
+    if (value !== undefined) this.remember(key, value);
+  }
+
+  viewing(key: string): boolean {
+    return this.views.has(key);
   }
 
   remember(key: string, value: Shown): void {
@@ -477,11 +520,23 @@ class PageCache<Raw, Shown> {
 
 type TimelineRead = { page: Awaited<ReturnType<typeof api.items>>; header: ConversationHeader };
 type TimelineShown = { items: Item[]; older: string | undefined; header: ConversationHeader };
-const readTimeline = async (id: ConversationId, around?: string): Promise<TimelineRead> => {
-  const [page, header] = await Promise.all([api.items(id, around ? { around } : {}), api.header(id)]);
+const readTimeline = async (id: ConversationId, around?: string, wait?: Wait): Promise<TimelineRead> => {
+  const [page, header] = await Promise.all([api.items(id, around ? { around } : {}, wait), api.header(id, wait)]);
   return { page, header };
 };
 const timelinePages = new PageCache<TimelineRead, TimelineShown>(20);
+
+/** A page's items as a timeline of `id` shows them: a channel without its thread replies, a DM's owner posts with their send line. */
+/** Whether `fresh` holds an item the screen's `shown` lacks or shows differently, so the owner waited for the read that brought it. */
+const brought = (shown: readonly Item[], fresh: readonly Item[]): boolean => {
+  const old = new Map(shown.map(item => [item.id, item]));
+  return fresh.some(item => JSON.stringify(old.get(item.id)) !== JSON.stringify(item));
+};
+
+const shownItems = (id: ConversationId, items: readonly Item[]): Item[] => {
+  const visible = id.startsWith("ch_") ? items.filter(item => !(item.kind === "message" && item.threadRoot)) : items;
+  return merge([], isRoom(id) ? visible.map(roomPost) : visible, new Set());
+};
 
 type RepliesRead = Awaited<ReturnType<typeof api.replies>>;
 type RepliesShown = { root: Item | null; items: Item[] };
@@ -493,8 +548,82 @@ const repliesKey = (channel: ConversationId, root: string) => `${channel}\u0000$
  * channel post's replies with `channel`, else the job's or thread's newest page and header.
  */
 export function prefetchThread(channel: ConversationId | null, key: string): void {
-  if (channel) repliesPages.prefetch(repliesKey(channel, key), () => api.replies(channel, key));
-  else timelinePages.prefetch(key, () => readTimeline(key));
+  if (channel) {
+    if (!repliesPages.has(repliesKey(channel, key))) repliesPages.prefetch(repliesKey(channel, key), () => api.replies(channel, key));
+  } else if (!timelinePages.has(key)) timelinePages.prefetch(key, () => readTimeline(key));
+}
+
+/**
+ * Reads the sidebar's rooms before the owner opens them, one at a time, so a room's first open shows its newest page from the page's
+ * cache with no call in front of it. A room is read again when the sidebar shows activity newer than the page kept, once it is idle: a
+ * working room changes with every step, and its open view reads it live. A hidden page reads nothing until it shows again; those first
+ * reads also open the connection again after a sleep, where on 11-19 a lone replies call 29 min after the last one took 3 round trips.
+ */
+class RoomWarmer {
+  /** Each room's `lastActivityAt` when its kept page was read. */
+  private readonly readAt = new Map<ConversationId, number>();
+  private wanted: ConversationSummary[] = [];
+  private running = false;
+
+  constructor() {
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", () => void this.run());
+  }
+
+  /** Unread rooms first, then the newest, as many as the cache keeps. */
+  sync(sidebar: Sidebar): void {
+    const unread = (room: ConversationSummary) => Number(room.unread > 0 || room.hasNew);
+    this.wanted = [...sidebar.solo, ...sidebar.channels, ...sidebar.dms]
+      .sort((a, b) => unread(b) - unread(a) || b.lastActivityAt - a.lastActivityAt).slice(0, timelinePages.keep);
+    void this.run();
+  }
+
+  /** A view of the room closed with its page current as of the sidebar's newest activity. */
+  seen(id: ConversationId): void {
+    const room = this.wanted.find(r => r.id === id);
+    if (room) this.readAt.set(id, room.lastActivityAt);
+  }
+
+  private next(): ConversationSummary | undefined {
+    return this.wanted.find(room => {
+      const readAt = this.readAt.get(room.id);
+      return !timelinePages.viewing(room.id) && (readAt === undefined || (room.status !== "working" && room.lastActivityAt > readAt));
+    });
+  }
+
+  private async run(): Promise<void> {
+    if (this.running || typeof document === "undefined") return;
+    this.running = true;
+    try {
+      for (let room = this.next(); room && document.visibilityState === "visible"; room = this.next()) {
+        const { id } = room;
+        this.readAt.set(id, room.lastActivityAt);
+        await timelinePages.warm(id, wait => readTimeline(id, undefined, wait),
+          ({ page, header }) => ({ items: shownItems(id, page.items), older: page.older, header }));
+      }
+    } finally {
+      this.running = false;
+    }
+  }
+}
+const rooms = new RoomWarmer();
+
+/** A channel root post's thread as its pill shows it; a change means the kept replies are old. */
+const threadMark = (item: Item): string | undefined => (item.kind === "message" && item.thread?.replies ? `${item.thread.replies}:${item.thread.lastAt}` : undefined);
+const warmedThreads = new Map<string, string>();
+
+/**
+ * Reads the replies of each thread a channel page shows, so its pill opens with the replies on the screen. The reads go out together, for the
+ * newest threads the cache keeps: the replies handler took 1.2 ms on 11-19, and on one HTTP/2 connection they share the round trip.
+ */
+function warmReplies(channel: ConversationId, items: readonly Item[]): void {
+  const threads = items.filter(item => threadMark(item) !== undefined).slice(-repliesPages.keep);
+  for (const item of threads) {
+    const mark = threadMark(item)!;
+    const key = repliesKey(channel, item.id);
+    if (warmedThreads.get(key) === mark || repliesPages.viewing(key)) continue;
+    warmedThreads.set(key, mark);
+    void repliesPages.warm(key, wait => api.replies(channel, item.id, wait), page => ({ root: page.root, items: merge([], page.items, new Set()) }));
+  }
 }
 
 /** One conversation's timeline: the newest page, older pages on demand, live upserts, status, send and Stop. Nothing streams. */
@@ -531,6 +660,7 @@ export class Timeline {
       else if (event.type === "queue" && event.conversation === id) this.queue = event.place;
       else if (event.type === "room" && event.room.id === id) void this.refreshHeader();
     });
+    timelinePages.open(id);
     void this.load(opts.around);
     for (const id of this.sends.restore()) this.retrySend(id);
   }
@@ -548,13 +678,16 @@ export class Timeline {
       this.loading = false;
     }
     try {
-      const { page, header } = around ? await readTimeline(this.id, around) : await timelinePages.take(this.id, () => readTimeline(this.id));
+      // With the kept page on the screen, this read is a refresh behind it, unless it changes what the screen shows.
+      const wait: Wait = last ? { background: "shown" } : {};
+      const { page, header } = around ? await readTimeline(this.id, around) : await timelinePages.take(this.id, () => readTimeline(this.id, undefined, wait));
       this.header = header;
       this.status = header.summary.status;
       this.queue = header.queue ?? null;
       if (last) {
         const kept = new Set(page.items.map(item => item.id));
         const gone = new Set(last.items.map(item => item.id).filter(itemId => !kept.has(itemId)));
+        if (gone.size || brought(this.items, shownItems(this.id, page.items))) wait.background = undefined;
         this.items = this.items.filter(item => !gone.has(item.id));
       }
       this.upsert(page.items);
@@ -580,6 +713,7 @@ export class Timeline {
   /** Adds or replaces items by id and drops `removed`. A pending send drops when the real message it became lands. */
   upsert(incoming: Item[], removed: string[] = []): void {
     const shown = incoming.filter(item => !(this.isChannel && item.kind === "message" && item.threadRoot));
+    if (this.isChannel) warmReplies(this.id, shown);
     this.sends.merge(this.isRoom ? shown.filter(item => this.newest(item)).map(roomPost) : shown, removed);
   }
 
@@ -656,7 +790,9 @@ export class Timeline {
     this.stopWatch?.();
     this.stopListen?.();
     this.sends.close();
-    if (!this.around && this.header && !this.error) timelinePages.remember(this.id, { items: this.items.filter(item => !isPending(item)), older: this.older, header: this.header });
+    const keep = !this.around && this.header && !this.error;
+    timelinePages.close(this.id, keep ? { items: this.items.filter(item => !isPending(item)), older: this.older, header: this.header! } : undefined);
+    if (keep) rooms.seen(this.id);
   }
 }
 
@@ -683,12 +819,16 @@ export class Replies {
     this.stopWatch = live.watch(channel);
     const key = repliesKey(channel, rootId);
     const last = repliesPages.last(key);
+    repliesPages.open(key);
     if (last) {
       this.root = last.root;
       this.items = last.items;
       this.loading = false;
     }
-    void repliesPages.take(key, () => api.replies(channel, rootId)).then(page => {
+    // With the kept replies on the screen, this read is a refresh behind them, unless it changes what the screen shows.
+    const wait: Wait = last ? { background: "shown" } : {};
+    void repliesPages.take(key, () => api.replies(channel, rootId, wait)).then(page => {
+      if (last && (brought(this.items, page.items) || this.items.some(item => !isPending(item) && !page.items.some(fresh => fresh.id === item.id)))) wait.background = undefined;
       this.root = page.root;
       if (last) {
         const kept = new Set(page.items.map(item => item.id));
@@ -721,7 +861,7 @@ export class Replies {
     this.stopWatch?.();
     this.stopListen?.();
     this.sends.close();
-    if (!this.loading && !this.error) repliesPages.remember(repliesKey(this.channel, this.rootId), { root: this.root, items: this.items.filter(item => !isPending(item)) });
+    repliesPages.close(repliesKey(this.channel, this.rootId), !this.loading && !this.error ? { root: this.root, items: this.items.filter(item => !isPending(item)) } : undefined);
   }
 }
 
