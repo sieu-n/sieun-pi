@@ -398,3 +398,19 @@ test('a page written while a refresh runs resolves on the next index read', asyn
 		}),
 	);
 });
+
+// On 2026-11-20 a probe's wiki.publish of experiments/verify-404-probe-1120/index.html, a page in a new folder, got 404
+// from verify: the watcher reported the folder, and no read waits for a folder walk.
+test('a page the page API writes into a new folder resolves on the next index read', async () => {
+	await onPlatform('linux', () =>
+		withIndex({ 'apps/hub/index.html': '<h1>Hub</h1>' }, async (wiki, fs) => {
+			await indexWith(wiki, 'apps/hub/index.html');
+			fs.write('apps/hub/new/page.html', '<h1>New</h1>');
+			const missed = await wiki.getWikiIndex();
+			assert.ok(!missed.byPath.has('apps/hub/new/page.html'), 'a folder event alone leaves the read without the page');
+			await wiki.indexWrittenPage('apps/hub/new/page.html');
+			const index = await wiki.getWikiIndex();
+			assert.equal(index.byPath.get('apps/hub/new/page.html')?.title, 'New');
+		}),
+	);
+});

@@ -36,11 +36,13 @@ const { DatabaseSync } = await import('node:sqlite');
 const settle = (promise) => promise.then((r) => ({ version: r.version }), (e) => ({ status: e.status, message: String(e.message) }));
 const first = await settle(commitPage({ rawPath: rel, content: bodies[0], author: 'revision-atomic test' }));
 const child = spawn(process.execPath, ['--input-type=module', '-e', locker, dbFile, holdMs], { stdio: ['ignore', 'pipe', 'inherit'] });
+// Listen now: the locker can exit while the locked write still awaits, and a listener added after that waits forever.
+const exited = new Promise((resolve) => child.once('exit', resolve));
 await new Promise((resolve) => child.stdout.once('data', resolve));
 const started = performance.now();
 const locked = await settle(commitPage({ rawPath: rel, content: bodies[1], author: 'revision-atomic test' }));
 const waitedMs = performance.now() - started;
-await new Promise((resolve) => child.once('exit', resolve));
+await exited;
 const other = new DatabaseSync(dbFile);
 other.exec("CREATE TRIGGER refuse_revision BEFORE INSERT ON revisions BEGIN SELECT RAISE(ABORT, 'forced revision failure'); END");
 other.close();

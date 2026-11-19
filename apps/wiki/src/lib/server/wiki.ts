@@ -405,6 +405,19 @@ export async function getWikiIndex(): Promise<WikiIndex> {
 }
 
 /**
+ * Put a page the page API just wrote into the index before the write answers. Every snapshot shares the store's
+ * byPath, so a read or verify right after the write finds the page. Without it a page that made a new folder waited
+ * for a refresh no read waits for, because the watcher reports the folder, and on 2026-11-20 a probe's
+ * wiki.publish of experiments/verify-404-probe-1120/index.html got 404 from verify.
+ */
+export async function indexWrittenPage(wikiPath: string): Promise<void> {
+	if (retired || !cachedIndex) return;
+	const changes: PageChanges = new Map();
+	await readContentChange(wikiPath, changes);
+	commit(changes);
+}
+
+/**
  * A watcher event the refresh re-reads in milliseconds: a page file, or a file the index skips, such as the
  * `<page>.<pid>.<id>.write` temp name a curated page lands through. A name with no extension may be a folder,
  * whose walk can take seconds. On 2026-11-19 at 18:10Z the temp name made every new apps/convex page miss the

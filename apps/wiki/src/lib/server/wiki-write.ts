@@ -8,7 +8,7 @@ import { mkdir, readFile, stat } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { normalizeLinkTarget, normalizeRequestedPath, PAGE_READ_LIMIT, readLimitFor } from './wiki';
+import { indexWrittenPage, normalizeLinkTarget, normalizeRequestedPath, PAGE_READ_LIMIT, readLimitFor } from './wiki';
 import { extractHtmlTitle, META_COMMENT, parseHtmlMeta } from './wiki-html';
 import { hubsLinking, isCuratedPath, missingHubRow, isRetiredStatus, retiredLinksAdded, titleMatchesH1 } from './wiki-lint';
 import { addRevision, currentVersion } from './wiki-store';
@@ -558,6 +558,7 @@ async function writeLogged(input: {
 			restore: () => (input.existed ? writePageFile(input.full, input.before, gated) : rmSync(input.full, { force: true })),
 		},
 	);
+	await indexWrittenPage(input.rel);
 	return {
 		path: input.rel,
 		version,
