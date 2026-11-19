@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DutyMetric, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
-import { DAY, type DsQuery, grafanaClient, PG, readGrafanaAuth, REPO, settle, SOURCE_DEADLINE_MS, sqlRows, unmeasuredFlag, utc } from "./estate-reads.ts";
+import { DAY, REPO, settle, SOURCE_DEADLINE_MS, unmeasuredFlag, utc } from "./estate-reads.ts";
 
 /**
  * The chrome extension chat's "DM extension working" precheck (`node --import tsx scripts/duties/dm-extension.ts`). No model call. It sends
@@ -15,12 +15,9 @@ import { DAY, type DsQuery, grafanaClient, PG, readGrafanaAuth, REPO, settle, SO
  * 1. It builds the store zip and the dev zip from the auto-sns-agent checkout with apps/dm-extension/scripts/package.mjs. The store zip drops
  *    staging.virev.ai from host_permissions, externally_connectable and the page bridge, so it cannot pair with staging; the run then loads
  *    the dev zip of the same tree, which holds the same files with the repo manifest, and a `build` slice says so.
- * 2. It reads the sender's and the replier's saved Instagram sessions from the crawler's Postgres of both worlds through Grafana
- *    (estate_pg_prod and estate_pg_stg, as grafana_ro) and the view dm_extension_test_accounts, which joins ig_engage_browser_jars,
- *    ig_engage_accounts and proxy_endpoints for these two handles only (auto-sns-agent apps/infra/metal/config/postgres/grafana-ro-*.sql;
- *    grafana_ro reads no other account's cookies or exit). It takes each handle from the one world, prod or staging, where its row is
- *    active, because the crawler keeps only an active row's session and exit fresh. They go into a mode 700 temp folder it deletes, and
- *    an `accounts` slice names each account's world, row and endpoint.
+ * 2. It reads the sender's and the replier's saved Instagram sessions and current exits from the crawler (BROWSER_JAR), which answers
+ *    from the world that holds each account and gives a box route as its address's CONNECT proxy on us-metal01. They go into a mode 700
+ *    temp folder it deletes, and an `accounts` slice names each account's world and exit host.
  * 3. It starts a staging clean world (scripts/dev/search-clean-world.mjs up --target staging --allow-features instagramDm), a fresh
  *    Clerk user and org approved on staging with the instagramDm allow, and runs the two real-Instagram rigs in it as that user and org
  *    (the world's `run` hands them E2E_USER_EMAIL and E2E_ORG_ID) with DM_EXTENSION_DIR set to the unpacked zip:
@@ -54,17 +51,14 @@ import { DAY, type DsQuery, grafanaClient, PG, readGrafanaAuth, REPO, settle, SO
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DUTY_FILE = join(HERE, "dm-extension.duty.json");
 /**
- * The two test accounts by handle. The crawler moves an account between its prod and staging worlds (an engage_world_move parks the
- * old row), so each run reads the one row that is active in either world, and never drives a session from the exit of a parked row.
- * measured: on 10-31 @caiyiting8674 was active as prod 206 (endpoint 8078) and parked as staging 179, and @glenmyftiu945 was parked as
- * prod 264 since 09:43:46Z and active as staging 334 (endpoint 1388), so the replier now comes from staging.
- * A new handle here also goes in the username list of the view dm_extension_test_accounts in both grafana-ro files, which the metal box
- * owner applies on each tier, because grafana_ro reads no other account's jar.
+ * The two test accounts by handle. The replier was @glenmyftiu945 (prod 264) until 11-20, when Instagram answered each of its sends
+ * with field_exception and sentry_block_user_info from two exits (wiki agents/chrome-extension/jobs/2026/11/20/0640-dm-ext-205-thread-check).
+ * @gimnayeon1396 (prod 285) sent to the sender from its box exit on 11-20 (wiki agents/chrome-extension/jobs/2026/11/20/0707-dm-extension-new-replier-account).
  */
 export const SENDER = "caiyiting8674";
-export const REPLIER = "glenmyftiu945";
-/** The crawler worlds, each read through its Grafana Postgres datasource. */
-export type World = keyof typeof PG;
+export const REPLIER = "gimnayeon1396";
+/** GET /ops/engage/browser-jar on the staging crawler (crawler-v3 engage/browser_jar.py), which asks prod for an account staging does not hold. */
+export const BROWSER_JAR = "https://staging-crawler.virev.ai/ops/engage/browser-jar";
 export const WORLD = "dm-ext-duty";
 /**
  * The rigs run as the world's own fresh user and org. They ran in Virev Test until 10-30, because observe skipped an Instagram thread
@@ -303,45 +297,45 @@ export async function build(tmp: string): Promise<{ build: Build; dir: string }>
   return { build: { sha, loaded, dirty, sameFiles: store.files.join() === dev.files.join(), version: manifest.version }, dir };
 }
 
-export interface JarRow { world: World; id: number; username: string; ig_user_id: string | null; cookies: { name: string; value: string }[] | null; status: string; valid: boolean; jar_at: string | null; endpoint: number }
+/** One account's saved session and the exit a browser drives it through now, as the crawler answers it (BROWSER_JAR). */
+export interface BrowserJar { world: string; username: string; ig_user_id: string | null; cookies: { name: string; value: string }[] | null; user_agent: string; valid: boolean; proxy_url: string }
+/** Reads the BrowserJar of one handle. */
+export type ReadJar = (username: string) => Promise<BrowserJar>;
 
-/** The Instagram id a jar is signed in as. ig_engage_accounts.ig_user_id is null for 206 on 10-31, so the session's
- *  ds_user_id cookie names it, as the rigs read it (apps/dm-extension/tests/lib/real-world.mjs). */
-export function jarIgUserId(row: JarRow): string {
-  const id = row.ig_user_id ?? row.cookies?.find(cookie => cookie.name === "ds_user_id")?.value;
-  if (!id) throw new Error(`account ${row.id} @${row.username} has no ig_user_id and its jar no ds_user_id cookie`);
+/** The Instagram id a jar is signed in as: its ig_user_id, else its session's ds_user_id cookie, as the rigs read it
+ *  (apps/dm-extension/tests/lib/real-world.mjs). */
+export function jarIgUserId(jar: BrowserJar): string {
+  const id = jar.ig_user_id ?? jar.cookies?.find(cookie => cookie.name === "ds_user_id")?.value;
+  if (!id) throw new Error(`@${jar.username} has no ig_user_id and its jar no ds_user_id cookie`);
   return String(id);
 }
 
-/** The one row of `username` that is active in either crawler world. */
-export function activeRow(rows: readonly JarRow[], username: string): JarRow {
-  const mine = rows.filter(row => row.username === username);
-  const active = mine.filter(row => row.status === "active");
-  if (active.length === 1) return active[0]!;
-  const seen = mine.map(row => `${row.world} ${row.id} ${row.status}`).join(", ") || "no row";
-  throw new Error(`@${username} is active in ${active.length} crawler worlds (${seen}); a run needs exactly one`);
+/** The BROWSER_JAR reader with the staging crawler key, which the repo's staging-proof spec reads the same way
+ *  (auto-sns-agent apps/search/scripts/ig-peer-jar.mjs). */
+export async function crawlerJars(fetcher: typeof fetch = fetch): Promise<ReadJar> {
+  const key = (await sh("npx", ["dotenvx", "get", "CRAWLER_API_KEY", "-f", "apps/ci-specs/.env.staging"])).trim();
+  return async username => {
+    const response = await fetcher(`${BROWSER_JAR}?username=${encodeURIComponent(username)}`, { headers: { "X-API-Key": key }, signal: AbortSignal.timeout(SOURCE_DEADLINE_MS) });
+    const body = await response.text();
+    if (!response.ok) throw new Error(`browser-jar @${username} answered ${response.status}: ${body.slice(0, 300)}`);
+    const jar = (JSON.parse(body) as { data: BrowserJar | null }).data;
+    if (!jar) throw new Error(`no crawler world holds @${username}`);
+    return jar;
+  };
 }
 
-export const jarSql = (world: World) => `select json_build_object('world', world, 'id', id, 'username', username, 'ig_user_id', ig_user_id,
-  'cookies', cookies, 'user_agent', user_agent, 'proxy_url', proxy_url, 'endpoint', endpoint, 'status', status, 'valid', valid, 'jar_at', jar_at)::text as j
-from dm_extension_test_accounts where world = '${world}' and username in ('${SENDER}', '${REPLIER}')`;
-
-/** The two accounts' saved sessions, each from the crawler world where it is active, as the rigs' jar files (mode 600). Prints no cookie. */
-export async function jars(tmp: string, query: DsQuery): Promise<{ sender: string; senderIgId: string; replier: string; accounts: string; notes: string[] }> {
-  const rows: JarRow[] = [];
-  for (const world of Object.keys(PG) as World[]) {
-    rows.push(...(await sqlRows(query, PG[world], jarSql(world))).map(row => JSON.parse(String(row.j)) as JarRow));
-  }
+/** The two accounts' saved sessions and current exits, as the rigs' jar files (mode 600). Prints no cookie or exit credential. */
+export async function jars(tmp: string, read: ReadJar): Promise<{ sender: string; senderIgId: string; replier: string; accounts: string; notes: string[] }> {
   const notes: string[] = [];
-  const file = async (row: JarRow) => {
-    const path = join(tmp, `jar-${row.world}-${row.id}.json`);
-    await writeFile(path, JSON.stringify(row), { mode: 0o600 });
-    if (!row.valid) notes.push(`${row.world} ${row.id} @${row.username} has an invalid jar (saved ${row.jar_at ?? "at an unknown time"})`);
+  const file = async (jar: BrowserJar) => {
+    const path = join(tmp, `jar-${jar.username}.json`);
+    await writeFile(path, JSON.stringify(jar), { mode: 0o600 });
+    if (!jar.valid) notes.push(`${jar.world} @${jar.username} has a jar the crawler marked invalid`);
     return path;
   };
-  const sender = activeRow(rows, SENDER);
-  const replier = activeRow(rows, REPLIER);
-  const describe = (role: string, row: JarRow) => `${role} @${row.username} is ${row.world} ${row.id} on endpoint ${row.endpoint}`;
+  const sender = await read(SENDER);
+  const replier = await read(REPLIER);
+  const describe = (role: string, jar: BrowserJar) => `${role} @${jar.username} is ${jar.world} on exit ${new URL(jar.proxy_url).host}`;
   const accounts = `${describe("sender", sender)}; ${describe("replier", replier)}`;
   return { sender: await file(sender), senderIgId: jarIgUserId(sender), replier: await file(replier), accounts, notes };
 }
@@ -452,7 +446,7 @@ async function measure(now: number, budgetMs: number): Promise<DutyData> {
     await mkdir(OUT, { recursive: true });
     const built = await step("build", () => build(tmp));
     if (built) data.build = built.build;
-    const jarFiles = await step("jars", async () => jars(tmp, grafanaClient(fetch, await readGrafanaAuth(), now, AbortSignal.timeout(SOURCE_DEADLINE_MS))));
+    const jarFiles = await step("jars", async () => jars(tmp, await crawlerJars()));
     if (jarFiles) data.accounts = jarFiles.accounts;
     if (jarFiles?.notes.length) data.errors.push({ source: "jars", message: jarFiles.notes.join("; ") });
     if (built && jarFiles) {
@@ -473,7 +467,8 @@ async function measure(now: number, budgetMs: number): Promise<DutyData> {
         const sender = await step("sender", () => senderCount(jarFiles.senderIgId));
         if (sender) data.sender = sender;
         if (!sender || senderFits(sender)) {
-          data.e2eExit = await run("staging-real-ig.mjs", ["--a", jarFiles.sender, "--b", jarFiles.replier], "e2e");
+          // --accept-first, because a new replier's first DM to the sender waits as a request the sender never accepted (11-20).
+          data.e2eExit = await run("staging-real-ig.mjs", ["--a", jarFiles.sender, "--b", jarFiles.replier, "--accept-first"], "e2e");
           const e2e = await step("e2e", async () => JSON.parse(await readFile(join(OUT, "e2e/evidence.json"), "utf8")) as E2eEvidence);
           if (e2e) data.e2e = e2e;
         }

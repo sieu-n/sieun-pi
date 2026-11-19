@@ -7,8 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
-import { activeRow, errorCounts, jarIgUserId, jars, otherRuns, outreachAccounts, parts, report, rigDeadline, senderFits, TAIL_MS, type AutopairEvidence, type DmRow, type E2eEvidence, type JarRow } from "../scripts/duties/dm-extension.ts";
-import { type DsQuery, PG } from "../scripts/duties/estate-reads.ts";
+import { type BrowserJar, errorCounts, jarIgUserId, jars, otherRuns, outreachAccounts, parts, report, rigDeadline, senderFits, TAIL_MS, type AutopairEvidence, type DmRow, type E2eEvidence } from "../scripts/duties/dm-extension.ts";
 
 const METRICS = (JSON.parse(readFileSync(new URL("../scripts/duties/dm-extension.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] }).metrics;
 const NOW = Date.parse("2026-10-30T12:00:00Z");
@@ -110,7 +109,7 @@ test("24 h counts take extension rows of the last day by their last attempt", ()
 });
 
 test("a jar with a null ig_user_id is named by its ds_user_id cookie, as on 10-31 for 206", () => {
-  const jar = (ig_user_id: string | null, cookies: JarRow["cookies"]): JarRow => ({ world: "prod", id: 206, username: "caiyiting8674", ig_user_id, cookies, status: "active", valid: true, jar_at: "2026-10-31", endpoint: 8078 });
+  const jar = (ig_user_id: string | null, cookies: BrowserJar["cookies"]): BrowserJar => ({ world: "prod", username: "caiyiting8674", ig_user_id, cookies, user_agent: "ua", valid: true, proxy_url: "http://exit:1" });
   assert.equal(jarIgUserId(jar(null, [{ name: "csrftoken", value: "x" }, { name: "ds_user_id", value: "29063885913" }])), "29063885913");
   assert.equal(jarIgUserId(jar("29063885913", null)), "29063885913");
   assert.throws(() => jarIgUserId(jar(null, [])), /no ds_user_id/);
@@ -132,37 +131,22 @@ test("the precheck waits on another copy of itself or a rig, never on itself or 
   assert.ok(out.flagged?.some(slice => slice.kind === "waited" && slice.excerpt.startsWith("waited 332 s")));
 });
 
-test("each account comes from the one world where its row is active, as @glenmyftiu945 moved to staging 334 on 10-31", () => {
-  const row = (world: JarRow["world"], id: number, username: string, status: string): JarRow =>
-    ({ world, id, username, ig_user_id: null, cookies: null, status, valid: true, jar_at: null, endpoint: id + 1000 });
-  const rows = [row("prod", 206, "caiyiting8674", "active"), row("staging", 179, "caiyiting8674", "parked"), row("prod", 264, "glenmyftiu945", "parked"), row("staging", 334, "glenmyftiu945", "active")];
-  assert.equal(activeRow(rows, "caiyiting8674").id, 206);
-  assert.equal(activeRow(rows, "glenmyftiu945").world, "staging");
-  assert.throws(() => activeRow(rows.slice(0, 3), "glenmyftiu945"), /active in 0 crawler worlds \(prod 264 parked\)/);
-  assert.throws(() => activeRow([...rows, row("prod", 206, "glenmyftiu945", "active")], "glenmyftiu945"), /active in 2/);
-});
-
-test("jars reads both crawler worlds through Grafana's estate_pg datasources and the two-account view, never ssh (p245, 2026-11-03)", async () => {
+test("jars writes each account as the crawler answers it, box exit included, and names its world and exit host (11-20)", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "dm-ext-jars-"));
-  const sent: Record<string, unknown>[] = [];
-  const cell = (world: JarRow["world"], id: number, username: string, status: string) => JSON.stringify({ world, id, username, ig_user_id: null,
-    cookies: [{ name: "ds_user_id", value: String(id * 10) }], user_agent: "ua", proxy_url: "http://exit", endpoint: id + 1000, status, valid: true, jar_at: "2026-11-03T00:00:00Z" });
-  const byUid: Record<string, string[]> = {
-    [PG.prod]: [cell("prod", 206, "caiyiting8674", "active"), cell("prod", 264, "glenmyftiu945", "parked")],
-    [PG.staging]: [cell("staging", 179, "caiyiting8674", "parked"), cell("staging", 334, "glenmyftiu945", "active")],
-  };
-  const query: DsQuery = async q => {
-    sent.push(q);
-    const uid = (q.datasource as { uid: string }).uid;
-    return [{ schema: { fields: [{ name: "j" }] }, data: { values: [byUid[uid] ?? []] } }];
+  const answer = (username: string, proxy_url: string, valid = true): BrowserJar =>
+    ({ world: "prod", username, ig_user_id: null, cookies: [{ name: "ds_user_id", value: `${username}-id` }], user_agent: "ua", valid, proxy_url });
+  const asked: string[] = [];
+  const read = async (username: string) => {
+    asked.push(username);
+    return username === "caiyiting8674" ? answer(username, "http://u:p@gw.example:12001") : answer(username, "http://box:pw@us-metal01.example:7244", false);
   };
   try {
-    const out = await jars(tmp, query);
-    assert.deepEqual(sent.map(q => (q.datasource as { uid: string }).uid), [PG.prod, PG.staging]);
-    for (const q of sent) assert.match(String(q.rawSql), /from dm_extension_test_accounts where world = '(prod|staging)'/);
-    assert.equal(out.senderIgId, "2060");
-    assert.equal(out.accounts, "sender @caiyiting8674 is prod 206 on endpoint 1206; replier @glenmyftiu945 is staging 334 on endpoint 1334");
-    assert.equal(JSON.parse(await readFile(out.replier, "utf8")).cookies[0].value, "3340");
+    const out = await jars(tmp, read);
+    assert.deepEqual(asked, ["caiyiting8674", "gimnayeon1396"]);
+    assert.equal(out.senderIgId, "caiyiting8674-id");
+    assert.equal(out.accounts, "sender @caiyiting8674 is prod on exit gw.example:12001; replier @gimnayeon1396 is prod on exit us-metal01.example:7244");
+    assert.equal(JSON.parse(await readFile(out.replier, "utf8")).proxy_url, "http://box:pw@us-metal01.example:7244");
+    assert.deepEqual(out.notes, ["prod @gimnayeon1396 has a jar the crawler marked invalid"]);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
