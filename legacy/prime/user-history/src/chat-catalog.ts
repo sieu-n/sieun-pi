@@ -27,7 +27,7 @@ import type { ChatAgent, ChatBriefState, CheckInState, ChildAgent, QueuePlace, T
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
-/** The chats' agents a run saves in its data dir at its stop (`Catalog.heldAgents`); the next start reads the file once and deletes it. */
+/** The chats' agents a run saves in its data dir as it quiesces or stops (`Catalog.save`); the next start reads the file once and deletes it. */
 export const AGENTS_FILE = "chat-agents.json";
 type SavedAgents = { savedAt: string; chats: Record<string, readonly ChatAgent[]> };
 /**
@@ -47,7 +47,7 @@ function takeSavedAgents(path: string): ReadonlyMap<string, readonly ChatAgent[]
 }
 
 /**
- * What a run read from session file heads (each file's origin, first task and title), saved beside AGENTS_FILE at its stop for the next start.
+ * What a run read from session file heads (each file's origin, first task and title), saved beside AGENTS_FILE as it quiesces for the next start.
  * The first projection after a start read the head of every listed file: in the CPU profile of the run started at 03:31:39Z on 10-25 that was
  * 3.1 s of fileDecides and 1.4 s of firstTask on the main thread between 3.5 and 10.2 s after the start, in blocks of 256 rows, and at the
  * 06:17:13Z start an api/threads/<id>/agents read in that window took 2.2 s (d7 counted 06:17Z dirty). On a scratch serve on a copy of
@@ -59,7 +59,7 @@ function takeSavedAgents(path: string): ReadonlyMap<string, readonly ChatAgent[]
 export const HEADS_FILE = "chat-heads.json";
 
 /**
- * The session file tails a run read (`SessionCuts` and the slot-park readings), saved beside AGENTS_FILE at its stop for the next start. Each
+ * The session file tails a run read (`SessionCuts` and the slot-park readings), saved beside AGENTS_FILE as it quiesces for the next start. Each
  * start read the tail of every stopped job again, up to 4 MB each: in the CPU profile of the run started at 18:19:36Z on 10-28 that was 6.6 s
  * of readTail on the main thread between 6 and 25 s after the start, and an api/threads/<id>/older read in that window took 1.2 s. Each
  * reading carries the key it was read at (the daemon row's modified time and message count, or the file's size and mtime), so a file that
@@ -1977,12 +1977,25 @@ export class Catalog {
       .filter(entry => { const shown = perHost.get(entry.host) ?? 0; perHost.set(entry.host, shown + 1); return shown < 30; });
   }
 
+  private stateSaved = false;
+  /**
+   * Saves the chats' agents, the session heads and the session tails for the next start, once; `close` saves them when nothing did before. A
+   * chat backend saves them as it quiesces (chat-backend.ts), before a hand-over's fence refuses every write under the agent dir: saved at the
+   * stop, none landed after a hand-over from 11-08 on, chat-heads.json stayed at its Nov 8 copy, and the start of the 16:26:16Z successor on 11-19
+   * spent 11.2 s in readTail and about 3.5 s in fileDecides, firstTask and scanFirst on its main thread reading again what those files held.
+   */
+  async save(): Promise<void> {
+    if (this.stateSaved) return;
+    this.stateSaved = true;
+    await this.saveAgents().catch(error => { process.stderr.write(`catalog: saving the chats' agents: ${error instanceof Error ? error.message : String(error)}\n`); });
+    await this.saveHeads().catch(error => { process.stderr.write(`catalog: saving the session heads: ${error instanceof Error ? error.message : String(error)}\n`); });
+    await this.saveTails().catch(error => { process.stderr.write(`catalog: saving the session tails: ${error instanceof Error ? error.message : String(error)}\n`); });
+  }
+
   async close(): Promise<void> {
     const first = !this.closed;
     this.closed = true;
-    if (first) await this.saveAgents().catch(error => { process.stderr.write(`catalog: saving the chats' agents: ${error instanceof Error ? error.message : String(error)}\n`); });
-    if (first) await this.saveHeads().catch(error => { process.stderr.write(`catalog: saving the session heads: ${error instanceof Error ? error.message : String(error)}\n`); });
-    if (first) await this.saveTails().catch(error => { process.stderr.write(`catalog: saving the session tails: ${error instanceof Error ? error.message : String(error)}\n`); });
+    if (first) await this.save();
     clearInterval(this.projectionTimer);
     this.peer.close();
     clearTimeout(this.schedulesTimer);

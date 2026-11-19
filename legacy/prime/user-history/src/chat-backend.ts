@@ -604,9 +604,10 @@ export async function createChatBackend(options: { socketPath?: string; dataDir?
     archives.close();
     chats.close();
     awake.close();
-    // Before a hand-over's fence, which refuses every write under the agent dir: the successor's first Agent queue read then reads only what
-    // came since. Saved at the stop instead, it never landed, and at 16:30:00Z on 11-19 the successor of release-e5c7eae read all 787 MB of
-    // pi-pool.log 2 s after it took the port (turn-history.ts).
+    // Before a hand-over's fence, which refuses every write under the agent dir, so the successor, which starts once this resolves, reads only
+    // what came since. Saved at the stop instead, none landed: at 16:30:00Z on 11-19 the successor of release-e5c7eae read all 787 MB of
+    // pi-pool.log 2 s after it took the port (turn-history.ts), and each start read again the session heads and tails (Catalog.save).
+    await catalog.save();
     await turnHistoryRead.save().catch(error => dutyLog(`agent queue: saving the turn history: ${error instanceof Error ? error.message : String(error)}`));
   }
   return {

@@ -51,6 +51,31 @@ test("a stop saves each job's cut, and the next start takes it without reading t
   assert.equal(next.cuts.of(file), null);
 });
 
+// A hand-over's fence refuses every write under the agent dir before the old chat stops, so the stop's save failed with EACCES after each
+// hand-over from 11-08 on, chat-heads.json stayed at its Nov 8 copy, and the 16:26:16Z start on 11-19 spent 11.2 s in readTail reading tails again.
+test("a catalog saves its heads and tails when its chat quiesces, and its close does not write them again", async t => {
+  const dir = mkdtempSync(join(tmpdir(), "catalog-save-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "job.jsonl");
+  writeFileSync(file, line({ type: "session", id: "job" }) +
+    line({ type: "message", timestamp: "2026-11-19T16:00:00.000Z", message: { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "bash", arguments: {} }], stopReason: "toolUse" } }) +
+    line({ type: "message", timestamp: "2026-11-19T16:00:04.000Z", message: { role: "toolResult", toolCallId: "c1", content: "Request was aborted" } }));
+  const first = catalogIn(t, dir);
+  await first.cuts.update([{ file, key: "k1|3" }]);
+  const cut = first.cuts.of(file);
+  assert.ok(cut, "the file ends cut mid-tool");
+  await first.save();
+  assert.ok(existsSync(join(dir, TAILS_FILE)), "the save writes the tails before any stop");
+  assert.ok(existsSync(join(dir, "chat-heads.json")), "and the heads");
+  // The successor starts here, while the old chat still answers reads and its stop's writes are refused.
+  const next = catalogIn(t, dir);
+  rmSync(join(dir, TAILS_FILE));
+  await first.close();
+  assert.equal(existsSync(join(dir, TAILS_FILE)), false, "the close of a catalog that saved writes nothing more");
+  rmSync(file);
+  assert.deepEqual(next.cuts.of(file), cut, "the successor took the reading without the file");
+});
+
 test("the Agent queue chart's next start reads only the pi-pool.log lines added since the stop", async t => {
   const dir = mkdtempSync(join(tmpdir(), "turn-history-saved-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
