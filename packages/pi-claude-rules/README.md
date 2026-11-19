@@ -10,7 +10,7 @@ Until 10-28 it lived in `components/claude-rules`. Prime itself loads only AGENT
 3. A session started outside a repo, such as a chat job started in home, gets that repo's unscoped rules with its first touch of a file there.
 4. A compaction drops the appended rules from context, so a rule loads again on its next match after one.
 5. The user rules in `~/.claude/rules` apply in every repo, as in Claude Code. An unscoped one loads at session start, and a scoped one loads with the first touched file its globs match, read against that file's repo, or against the home folder outside a repo.
-   sieun-pi installs `config/claude-rules/*.md` there, such as `typescript.md`, which points every session that touches a TypeScript file at the typescript-best-practices skill.
+   sieun-pi installs `config/claude-rules/*.md` there, such as `typescript.md`, which points every session that touches a TypeScript file at the typescript-best-practices skill, and `web.md`, which points every session that touches a Svelte, Vue, Astro, HTML, CSS, SCSS, JSX or TSX file at the modern-web-guidance skill.
 
 Globs are relative to the folder that holds `.claude/`. `**` spans folders, `*` and `?` stay inside one, and `{a,b}` picks one, as in Claude Code. `paths:` takes a YAML list or one comma-separated string.
 
