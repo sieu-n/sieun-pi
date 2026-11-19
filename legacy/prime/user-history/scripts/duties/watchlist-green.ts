@@ -154,6 +154,8 @@ const renamedHidden = (row: WatchRow): boolean => row.renamed && isHidden(row);
  * of them (a dead doc_id, F16) stays visible. A rule about the row's state, never a list of handles.
  */
 export const isAcceptedHidden = (row: WatchRow): boolean => !row.paused && !renamedHidden(row) && isHidden(row);
+/** The owner's t31 answer covers a handle no read ever found too: it reads Stopped on the screen and counts green, with no risk. */
+const isAccepted = (row: WatchRow): boolean => isAcceptedHidden(row) || (!row.paused && handleNotFound(row));
 /**
  * More accepted-hidden owner watches than this is one Watchlist risk: a wave of public accounts read hidden, never the owner's t31 set.
  * measured: d2 read 29 to 46 hidden from 10-22 to 11-14, then 130 on 11-15 and 676 on 11-16, public accounts such as chuu_official (401k followers).
@@ -214,7 +216,7 @@ const closedOnScreen = (row: WatchRow): boolean =>
   || (row.lastOutcome !== "gone" && (row.walkEnd === "private" || row.walkEnd === "hidden"));
 /** Green as the Watchlist paints the row; `held` is a tier whose watch_paused_by is not empty, which paints every open row Waiting. */
 export const isGreen = (row: WatchRow | undefined, now: number, held = false): boolean =>
-  !!row && !row.paused && (held ? closedThroughHold(row) : isClosed(row) || isAcceptedHidden(row) || readOk(row, now) || isYoung(row, now));
+  !!row && !row.paused && (held ? closedThroughHold(row) : isClosed(row) || isAccepted(row) || readOk(row, now) || isYoung(row, now));
 /** Why a watch is not green, as a flag phrase. */
 function notGreen(kind: string, row: WatchRow | undefined, now: number, held = false): string {
   if (!row) return `${kind} no unpaused monitor row`;
@@ -251,6 +253,7 @@ export function ownerGreen(keys: readonly string[], rows: readonly WatchRow[], n
     if (want.kind === "tagged") { collabs++; if (row && !row.paused) pushed++; }
     if (!green) { const reason = notGreen(want.kind, row, now, held); why.set(reason, (why.get(reason) ?? 0) + 1); }
     if (row && isAcceptedHidden(row)) { hidden++; continue; }
+    if (row && isAccepted(row)) continue;
     // Under a hold words.ts reads the hold before a no-account or failed stop, so the chip is Waiting, never Stopped.
     const stop = !held && row && stopReason(row, now);
     if (stop) { const reason = `${want.kind} ${stop}`; stops.set(reason, (stops.get(reason) ?? 0) + 1); }
@@ -271,7 +274,7 @@ export function rowsGreen(rows: readonly WatchRow[], now: number, kinds: readonl
     byKind[row.kind]!.rows++;
     if (green) byKind[row.kind]!.green++;
     else { const reason = notGreen(row.kind, row, now, held); why.set(reason, (why.get(reason) ?? 0) + 1); }
-    if (green && !held && !isClosed(row) && !isAcceptedHidden(row) && !readOk(row, now)) young++;
+    if (green && !held && !isClosed(row) && !isAccepted(row) && !readOk(row, now)) young++;
   }
   return { rows: live.length, green: Object.values(byKind).reduce((sum, kind) => sum + kind.green, 0), byKind, why: tally(why), young };
 }
