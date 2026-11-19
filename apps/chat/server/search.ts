@@ -25,7 +25,15 @@ export const OWNER_ZONE_OFFSET_MS = 9 * 3600_000;
 /** `from` is `owner`, `agents` or one agent id, and `type` keeps messages only or tool output only. */
 export interface SearchParams {
   q: string; from?: string; in?: string; after?: string; before?: string; sort?: "relevance" | "recent"; type?: "messages" | "tools"; limit?: number; cursor?: string;
+  /** Leaves each hit's longer `text` out: the Cmd K rows show only the snippet, and the 20 hits of "kimchi" were 52.0 KB with it on 11-19. */
+  brief?: boolean;
 }
+
+/**
+ * How many messages `recent` gives at most. On 11-20 every room post and every input of the owner's, 2,397 documents over 32 days, came to
+ * 327 KB of text cut at 2,000 characters each and 72 KB gzipped.
+ */
+export const RECENT_LIMIT = 3000;
 
 /** Tool output ranks after every message by relevance and is what `type` keeps or leaves out. */
 const TOOL_KINDS = ["pi.tool-result"];
@@ -151,9 +159,37 @@ export class Search {
     let hits = mine.docs.slice(offset, offset + limit).flatMap(doc => this.docHit(doc, scope?.thread, summaries, marks, testOf) ?? []);
     // An answer whose match sits only in a tool call's arguments is found by its text, so it sinks below the messages of its own page.
     if (sort === "relevance") hits = [...hits.filter(hit => hit.role !== "tool"), ...hits.filter(hit => hit.role === "tool")];
+    if (query.brief) hits = hits.map(({ text: _text, ...hit }) => hit);
     return {
       hits, total, ...(offset + limit < total ? { nextCursor: String(offset + limit) } : {}), ...(missing.length ? { missing } : {}),
     };
+  }
+
+  /**
+   * The newest messages people wrote to each other, newest first: every room, channel and DM post an unscoped search finds and the owner's
+   * own inputs to a thread, each with up to 2,000 characters of its text as `snippet`. The Cmd K search keeps them in the page and matches
+   * each keystroke against them itself, so its first rows wait on no request; `after` (epoch ms) asks only for the ones written since.
+   */
+  async recent(params: { after?: number; limit?: number } = {}): Promise<SearchResult> {
+    const limit = Math.min(Math.max(params.limit ?? RECENT_LIMIT, 1), RECENT_LIMIT);
+    const range: Cond[] = params.after === undefined ? [] : [{ op: "gte", field: "at", value: params.after + 1 }];
+    const tests = this.testSends();
+    const comms = this.commThreads();
+    const testRooms = this.testRooms();
+    const where = or(
+      and(eq("source", "entry"), eq("channelCopy", false), eq("author", "owner"), ...range,
+        ...(comms.length ? [not(isIn("threads", comms))] : []), ...(tests.length ? [not(isIn("keys", tests.map(t => `${t.thread}:${t.entry}`)))] : [])),
+      and(eq("source", "post"), eq("dm", false), not(isIn("room", testRooms)), ...range),
+      and(eq("source", "post"), eq("dm", true), eq("listed", true), not(isIn("room", testRooms)), ...range),
+    );
+    const found = await this.engine.search("", where, { sort: "recent", limit });
+    const known = new Map<string, ConversationSummary | undefined>();
+    const summaries = { get: (id: string) => (known.has(id) ? known.get(id) : known.set(id, this.threads.conversation(id)).get(id)) };
+    const hits = found.docs.flatMap(doc => this.docHit(doc, undefined, summaries, [], new Map()) ?? [])
+      // An input the chat or Prime wrote as the owner's turn, such as a check-in or a duty push, is no message of his.
+      .filter(hit => hit.role !== "system")
+      .map(({ text, ...hit }) => ({ ...hit, snippet: text ?? hit.snippet }));
+    return { hits, total: hits.length };
   }
 
   /** A document's hit: an entry opens in the scope's thread or the unarchived, newest thread that holds it, a post in its room. */
@@ -214,7 +250,7 @@ export class Search {
       kind: hit.kind === "pi.assistant" ? "turn" : hit.kind === "pi.tool-result" ? "tool" : "message", role,
       ...(said?.tool ? { tool: said.tool } : hit.kind === "pi.tool-result" ? { tool: hit.author.replace(/^tool:/, "") } : {}),
       ...(said?.inCall ? { inCall: true } : {}),
-      snippet: shown || safeSnippet(hit.snippet), ...(said && said.text.length > 240 ? { text: long } : {}),
+      snippet: shown || long || safeSnippet(hit.snippet), ...(said && said.text.length > 240 ? { text: long } : {}),
     };
   }
 

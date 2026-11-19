@@ -222,7 +222,9 @@ export const api = {
   removeMember: (id: string, agent: AgentId) => call<Room>("DELETE", `/api/rooms/${enc(id)}/members/${enc(agent)}`),
 
   search: (params: SearchQuery, options: { signal?: AbortSignal } = {}) =>
-    call<SearchResult>("GET", `/api/search${query({ ...params })}`, undefined, options.signal),
+    call<SearchResult>("GET", `/api/search${query({ ...params, brief: params.brief ? 1 : undefined })}`, undefined, options.signal),
+  /** The recent messages the Cmd K search matches in the page (pages/search/recent.ts), only those after `after` when given. */
+  searchRecent: (params: { after?: number } = {}) => call<SearchResult>("GET", `/api/search/recent${query(params)}`),
 
   board: (chat: string) => call<BoardView>("GET", `${boardBase(chat)}/board`),
   boardOps: (chat: string, ops: BoardOp[]) => call<BoardView>("POST", `${boardBase(chat)}/board`, { ops }),

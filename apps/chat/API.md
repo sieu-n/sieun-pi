@@ -127,7 +127,9 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 
 ## Search
 
-`api.search({q, from, in, after, before, sort, type, limit, cursor})` is `GET /api/search` and returns `SearchResult`: `{hits, total, nextCursor, missing}`.
+`api.search({q, from, in, after, before, sort, type, limit, cursor, brief})` is `GET /api/search` and returns `SearchResult`: `{hits, total, nextCursor, missing}`. `brief=1` leaves each hit's longer `text` out, for rows that show only the snippet.
+
+`api.searchRecent({after})` is `GET /api/search/recent` and returns the newest room, channel and DM posts and the owner's own inputs as hits, newest first, each with up to 2,000 characters of its text as `snippet`. The Cmd K search matches each keystroke against them in the page (`web/src/pages/search/local-index.ts`) and shows those rows until the server's answer replaces them. `after` (epoch ms) gives only the messages written since.
 
 1. It covers every thread entry of every box and every channel and Solo room post, from one Meilisearch index (`server/search-engine.ts`). The server reads this box's pi-host `index.sqlite` (`--durable-index`, default `~/.prime/agent/pi-host/durable/index.sqlite`) on its own read-only connection, and every other box's rows through its agent relay's `durable_index_read` every 5 s, so a search asks no other box and still finds an offline box's threads. `missing` names a box whose newest rows may lack: one that is offline, or whose first read is still being indexed.
 2. `q` may carry `from:`, `in:`, `after:` and `before:` tokens, and the separate params win over them.

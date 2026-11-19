@@ -387,6 +387,8 @@ export interface SearchResult { hits: SearchHit[]; total: number; nextCursor?: s
 export interface SearchQuery {
   q: string; from?: string; in?: string; after?: string; before?: string; sort?: "relevance" | "recent"; type?: "messages" | "tools";
   limit?: number; cursor?: string;
+  /** Leaves each hit's `text` out, for rows that show only the snippet. */
+  brief?: boolean;
 }
 
 export interface JobNode { id: ConversationId; parent: ConversationId | null; name: string; depth: number; status: RunStatus; model: string | null; createdAt: Ms | null }

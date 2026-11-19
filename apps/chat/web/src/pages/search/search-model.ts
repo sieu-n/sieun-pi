@@ -34,7 +34,8 @@ export type Sort = "relevance" | "recent";
 
 export type Messages =
   | { state: "idle" }
-  | { state: "loading" }
+  /** The server has not answered yet; `hits` are the page's own matches (local-index.ts), which the answer replaces. */
+  | { state: "loading"; hits: readonly Hit[] }
   | { state: "error"; message: string }
   | { state: "ready"; hits: readonly Hit[]; total: number; more: boolean; loadingMore: boolean };
 export type Ready = Extract<Messages, { state: "ready" }>;
@@ -136,7 +137,7 @@ export function formatDay(at: number, now: Date): string {
 }
 
 function messageRows(input: SearchInput): Row[] {
-  if (input.messages.state !== "ready") return [];
+  if (input.messages.state !== "ready" && input.messages.state !== "loading") return [];
   const rows: Row[] = input.messages.hits.map(hit => ({
     key: `hit:${hit.id}`,
     label: snippetPieces(hit.snippet).map(piece => piece.text).join(""),
@@ -146,7 +147,7 @@ function messageRows(input: SearchInput): Row[] {
     hit,
     action: { type: "open", conversation: hit.conversation.id, messageId: hit.messageId },
   }));
-  if (input.messages.more)
+  if (input.messages.state === "ready" && input.messages.more)
     rows.push({ key: "more-messages", label: input.messages.loadingMore ? "Loading more messages…" : "Show more messages", icon: "more", action: { type: "more" } });
   return rows;
 }

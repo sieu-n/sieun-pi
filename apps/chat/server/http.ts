@@ -236,9 +236,10 @@ export function routes(app: App): Route[] {
     route("GET", "/api/dms", async () => app.rooms.summaries()),
     route("GET", "/api/search", async (_r, _p, q) => app.search.run({
       q: q.get("q") ?? "", from: str(q.get("from")), in: str(q.get("in")), after: str(q.get("after")), before: str(q.get("before")),
-      sort: q.get("sort") === "recent" ? "recent" : "relevance", limit: num(q.get("limit")), cursor: str(q.get("cursor")),
+      sort: q.get("sort") === "recent" ? "recent" : "relevance", limit: num(q.get("limit")), cursor: str(q.get("cursor")), brief: q.get("brief") === "1",
       ...(q.get("type") === "messages" || q.get("type") === "tools" ? { type: q.get("type") as "messages" | "tools" } : {}),
     })),
+    route("GET", "/api/search/recent", async (_r, _p, q) => app.search.recent({ after: num(q.get("after")), limit: num(q.get("limit")) })),
     // An agent's board, duties, check-in and jobs by agent id. The thread routes take a thread id and resolve it to its agent through the
     // aliases, because pi-host's chat_board tool and the duty briefs name the thread.
     ...(["agents", "threads"] as const).flatMap(scope => [

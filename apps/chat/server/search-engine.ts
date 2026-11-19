@@ -574,7 +574,7 @@ export class SearchEngine {
       void this.settle().catch(error => this.deps.log(`search: ${String(error)}`));
     }
     const words = queryWords(q);
-    const local = [...this.pending.values()].flatMap(p => (p.doc && holds(where, p.doc) ? [{ doc: p.doc, score: docMatches(p.doc, words) }] : [])).filter(m => m.score > 0);
+    const local = [...this.pending.values()].flatMap(p => (p.doc && holds(where, p.doc) ? [{ doc: p.doc, score: words.length ? docMatches(p.doc, words) : 1 }] : [])).filter(m => m.score > 0);
     local.sort((a, b) => (opts.sort === "recent" ? b.doc.at - a.doc.at : a.doc.tier - b.doc.tier || b.score - a.score || b.doc.at - a.doc.at));
     const fresh = local.map(m => m.doc);
     if (this.filling) return { docs: fresh.slice(0, opts.limit), total: fresh.length };

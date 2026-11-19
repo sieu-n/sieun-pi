@@ -176,3 +176,62 @@ test("Cmd K rows are one line and 32 px tall, so message hits show above the fol
   const heights = await palette(page).locator("[data-search-result]").evaluateAll(rows => rows.map(row => row.getBoundingClientRect().height));
   for (const height of heights) expect(height).toBeLessThanOrEqual(34);
 });
+
+/**
+ * On 11-20 the owner's round trip was 197 ms, and at a simulated 200 ms each keystroke's rows waited 399 to 474 ms for the server
+ * (~/work/p101-search-rtt/before-200ms.json). The page matches its own feed of recent messages at the keystroke, and the server's answer
+ * replaces those rows.
+ */
+test("a keystroke shows message rows from the page before the server answers, and the answer then brings the exact count", async ({ page }) => {
+  const feed = page.waitForResponse(response => response.url().includes("/api/search/recent") && response.ok());
+  await page.reload();
+  await feed;
+  let release = () => {};
+  const held = new Promise<void>(resolve => (release = resolve));
+  let asked = 0;
+  await page.route(/\/api\/search\?/, async route => {
+    asked += 1;
+    await held;
+    await route.continue();
+  });
+  await page.keyboard.press(`${mod}+k`);
+  await field(page).pressSequentially("relay");
+  const rows = palette(page).locator("[role=group][aria-label='Messages'] [data-search-result]");
+  await expect(rows.first()).toBeVisible();
+  await expect(palette(page).getByTestId("search-pending")).toBeVisible();
+  await expect(count(page)).toHaveCount(0);
+  const marks = await palette(page).locator("[role=group][aria-label='Messages'] mark").allInnerTexts();
+  expect(marks.length).toBeGreaterThan(0);
+  for (const mark of marks) expect(mark.toLowerCase()).toBe("relay");
+  // Every key sent its request at once, with no wait for the typing to stop.
+  expect(asked).toBe(5);
+  release();
+  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay" })));
+  await expect(palette(page).getByTestId("search-pending")).toHaveCount(0);
+});
+
+test("the search never waits on the feed: with it blocked, the server's rows and count still show", async ({ page }) => {
+  await page.route(/\/api\/search\/recent/, route => route.abort());
+  await page.reload();
+  await expect(page.getByTestId("nav-capsule")).toBeVisible();
+  await page.keyboard.press(`${mod}+k`);
+  await field(page).fill("relay");
+  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay" })));
+  await expect(palette(page).locator("[role=group][aria-label='Messages'] [data-search-result]").first()).toBeVisible();
+});
+
+test("a word typed again shows its earlier answer with no new request", async ({ page }) => {
+  await page.keyboard.press(`${mod}+k`);
+  await field(page).fill("relay");
+  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay" })));
+  await field(page).fill("canary");
+  await expect(count(page)).toHaveText(messages(await total(page, { q: "canary" })));
+  expect(await total(page, { q: "canary" })).not.toBe(await total(page, { q: "relay" }));
+  let asked = 0;
+  page.on("request", request => {
+    if (/\/api\/search\?/.test(request.url())) asked += 1;
+  });
+  await field(page).fill("relay");
+  await expect(count(page)).toHaveText(messages(await total(page, { q: "relay" })));
+  expect(asked).toBe(0);
+});

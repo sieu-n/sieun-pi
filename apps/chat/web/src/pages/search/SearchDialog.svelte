@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { agents, api, conversations, me, type SearchMissing, type SearchResult } from "$lib/api";
   import { hrefFor, router } from "$lib/router.svelte";
   import type { SearchScope } from "$lib/shell/search.svelte";
@@ -17,7 +17,9 @@
   import HitAvatar from "./HitAvatar.svelte";
   import HitMeta from "./HitMeta.svelte";
   import { shortAge } from "./hit-view";
+  import { localHits } from "./local-index";
   import { pieces } from "./match";
+  import { recentMessages } from "./recent";
   import { resultParams } from "./results-model";
   import { absorb, chipLabel, filters, prompt, withOperator, withoutPrompt, type NamedOperator, type Operator } from "./operators";
   import { answered, buildGroups, messageGroupLabel, SEE_ALL, type Action, type Icon, type Messages, type Person, type Row, type Sort } from "./search-model";
@@ -26,7 +28,6 @@
   let { open, scope, query, onclose }: Props = $props();
 
   const PAGE = 20;
-  const DEBOUNCE_MS = 150;
   const icons: Record<Icon, string> = { chat: "chat", channel: "hash", calendar: "clock", search: "search", more: "more" };
 
   let text = $state("");
@@ -54,7 +55,18 @@
     sort = "relevance";
     messages = { state: "idle" };
     active = undefined;
+    answers.clear();
+    recentMessages.refresh();
   });
+
+  // The feed loads once the page is idle, so the first Cmd K already matches in the page.
+  onMount(() => {
+    const idle = globalThis.requestIdleCallback ?? ((run: () => void) => setTimeout(run, 1));
+    idle(() => recentMessages.refresh());
+  });
+
+  /** The server's first page for each request of this opening, so a key taken back or typed again shows its answer with no request. */
+  const answers = new Map<string, SearchResult>();
 
   const owner = $derived(me.value?.owner);
   const people = $derived<Person[]>([
@@ -108,25 +120,31 @@
       return;
     }
     const mine = ++generation;
-    messages = { state: "loading" };
-    // A newer keystroke or a close aborts this one's requests, and an aborted request shows no error.
+    const known = answers.get(key);
+    if (known) {
+      show(known, false);
+      return;
+    }
+    // The page's own matches show at this keystroke: the hits on screen that still match, then the feed's. The server's answer replaces them.
+    const shown = untrack(() => (messages.state === "ready" || messages.state === "loading" ? messages.hits : []));
+    const plain = !params.from && !params.after && !params.before;
+    messages = { state: "loading", hits: plain ? localHits(shown, recentMessages.feed.entries(), { q: params.q, in: params.in, sort: params.sort, limit: PAGE }) : [] };
+    // A newer keystroke or a close aborts this one's request, and an aborted request shows no error. The request leaves at the keystroke:
+    // a wait before it added 150 ms to every answer, and the server answers a search in about 20 ms (11-19, 5 GETs of q=duty).
     const controller = new AbortController();
     const { signal } = controller;
-    const timer = setTimeout(async () => {
-      const ask = { ...params, limit: PAGE };
-      // One search answers for every box with the exact count: the index holds every box's rows (server/search-engine.ts).
-      try {
-        const result = await api.search(ask, { signal });
+    // One search answers for every box with the exact count: the index holds every box's rows (server/search-engine.ts).
+    api.search({ ...params, limit: PAGE, brief: true }, { signal }).then(
+      result => {
+        answers.set(key, result);
         if (mine === generation) show(result, false);
-      } catch (error) {
+      },
+      (error: unknown) => {
         if (mine !== generation || signal.aborted) return;
         messages = { state: "error", message: error instanceof Error ? error.message : String(error) };
-      }
-    }, DEBOUNCE_MS);
-    return () => {
-      clearTimeout(timer);
-      controller.abort();
-    };
+      },
+    );
+    return () => controller.abort();
   });
 
   function show(result: SearchResult, append: boolean) {
@@ -140,7 +158,7 @@
     const mine = generation;
     messages = { ...messages, loadingMore: true };
     try {
-      const result = await api.search({ ...request, limit: PAGE, cursor });
+      const result = await api.search({ ...request, limit: PAGE, cursor, brief: true });
       if (mine === generation) show(result, true);
     } catch (error) {
       if (mine === generation) messages = { state: "error", message: error instanceof Error ? error.message : String(error) };
@@ -325,6 +343,8 @@
                 <span>{group.label}</span>
                 {#if group.count !== undefined}
                   <span class="count" data-testid="search-count">{`${group.count.toLocaleString("en-US")} ${group.count === 1 ? "message" : "messages"}`}</span>
+                {:else if messages.state === "loading" && group.label === messageLabel && group.rows.length}
+                  <span class="count" data-testid="search-pending"><LoadingText text="Searching all messages…" /></span>
                 {/if}
               </h2>
               {#each group.rows as row (row.key)}

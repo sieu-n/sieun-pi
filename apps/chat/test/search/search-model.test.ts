@@ -110,7 +110,7 @@ test("global search always reads Messages, whatever the scoped sort was", () => 
 });
 
 test("loading says it is searching, and an error says search is unavailable", () => {
-  assert.equal(buildGroups({ ...base, text: "a", messages: { state: "loading" } }).at(-1)!.empty, "Searching messages…");
+  assert.equal(buildGroups({ ...base, text: "a", messages: { state: "loading", hits: [] } }).at(-1)!.empty, "Searching messages…");
   assert.equal(buildGroups({ ...base, text: "a", messages: { state: "error", message: "x" } }).at(-1)!.empty, "Message search is unavailable.");
 });
 
