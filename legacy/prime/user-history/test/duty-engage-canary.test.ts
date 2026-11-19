@@ -30,7 +30,7 @@ test("the hash cohort picks the accounts prod picks, and d1 counts 15 of 169 wit
   assert.match(line, /Instagram killed 1 of them in 24 h and 1 since the start/);
   assert.equal(output.metrics.canary_accounts_short, 2);
   assert.equal(output.metrics.canary_ig_deaths_1h, 1);
-  assert.equal(output.metrics.fleet_ig_killed_pct, 0);
+  assert.equal(output.metrics.fleet_ig_killed_pct, 0.6);
 });
 
 test("the roster engage.canary_accounts wins over the hash keys once it is set", () => {
@@ -38,12 +38,26 @@ test("the roster engage.canary_accounts wins over the hash keys once it is set",
   assert.match(canaryLine(output), /^canary from engage.canary_accounts, started 10-15 13:47Z: 2 of 169 active prod accounts \(3 in it with the dead\)/);
   assert.match(canaryLine(output), /add 15 active accounts through engage.canary_accounts$/);
   assert.equal(output.metrics.canary_accounts_short, 15);
-  assert.equal(output.metrics.fleet_ig_killed_pct, 0);
+  assert.equal(output.metrics.fleet_ig_killed_pct, 0.6);
 });
 
-test("no canary runs without engage.canary_started_at, and a death then counts against the fleet", () => {
+test("no canary runs without engage.canary_started_at", () => {
   const output = run({ ...HASH_CONFIG, "engage.canary_started_at": "" });
   assert.match(canaryLine(output), /^no canary runs: the hash cohort .* engage.canary_started_at "" is empty/);
   assert.equal(output.metrics.canary_accounts_short, 17);
   assert.equal(output.metrics.fleet_ig_killed_pct, 0.6);
+});
+
+test("24 canary deaths read as kills, and a roster edit after them moves nothing", () => {
+  // d1 read 0% while Instagram suspended all 24 reading prod accounts, every one a canary member, from 23:13Z 11-18 to 00:02Z 11-19.
+  const now = Date.parse("2026-11-19T09:00:00Z");
+  const dead = Array.from({ length: 24 }, (_, i) => 300 + i);
+  const accounts: Account[] = [...dead.map(id => ({ id, status: "frozen" })), ...Array.from({ length: 116 }, (_, i) => ({ id: 400 + i, status: "active" }))];
+  const deaths = dead.map((accountId, i) => ({ accountId, at: Date.parse("2026-11-18T23:13:00Z") + i * 120_000, status: "frozen", code: "account_suspended", readBefore: true, pages24h: 539, transition: true }));
+  const read = (roster: string): ReturnType<typeof report> => report({ now, accounts, deaths, errors: [],
+    config: { "engage.canary_accounts": roster, "engage.canary_started_at": "2026-11-01T00:00:00Z" } } satisfies EngageData, []);
+  const listed = read(dead.join(","));
+  assert.equal(listed.metrics.fleet_ig_killed_pct, 17.1);
+  assert.match(canaryLine(listed), /Instagram killed 24 of them in 24 h/);
+  assert.equal(read("400,401").metrics.fleet_ig_killed_pct, 17.1);
 });

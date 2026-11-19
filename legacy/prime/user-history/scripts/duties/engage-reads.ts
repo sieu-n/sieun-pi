@@ -32,7 +32,10 @@ const DUTY_FILE = join(dirname(fileURLToPath(import.meta.url)), "engage-reads.du
  *   read now, times provenRate(). The active accounts whose proxy session binding ran out are left out and get their own line in the capacity flag:
  *   an account that cannot read is no capacity (the launch VP, 11-18: the line read 75,460 as 140 x 539 while 116 of the 140 had no binding and
  *   waited on a proxy purchase, todo t43, so 24 accounts read).
- * - fleet_ig_killed_pct <= 2: the owner's own number, 10-14 02:13Z. His canary number, at most 3 canary deaths an hour, stays as the run detail
+ * - fleet_ig_killed_pct <= 2: the owner's own number, 10-14 02:13Z. It counts every prod account Instagram killed after it read pages in its last
+ *   24 h, canary or not, over the active accounts plus those killed, by death time, so a roster edit after the deaths moves nothing. Until 11-19 it
+ *   left the canary roster out, and when Instagram suspended all 24 reading prod accounts from 23:13Z 11-18 to 00:02Z 11-19 it read 0%, because the
+ *   roster held every reading account. The canary flag line still counts the canary's own deaths. His canary number, at most 3 canary deaths an hour, stays as the run detail
  *   canary_ig_deaths_1h and on the canary flag line: a daily run reads only its own last hour, and the crawler stops the canary itself at
  *   engage.rate_test_stop_deaths. Its judged slot went to engage_accounts_stuck on 10-18 (c75 keeps 3 supporting metrics).
  * - engage_accounts_stuck <= 0: "without accounts dieing" (10-09). It counts the prod accounts that sit out of reading for over STUCK_HOURS
@@ -415,8 +418,9 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
     metrics.canary_accounts_short = Math.max(0, want - have);
     const day = data.deaths.filter(death => now - death.at <= DAY);
     const killed = (deaths: readonly Death[]): number => new Set(deaths.filter(death => causeOf(death) === "instagram").map(death => death.accountId)).size;
-    const fleetKilled = killed(day.filter(death => !roster.ids.has(death.accountId)));
-    metrics.fleet_ig_killed_pct = active.length ? round1(100 * fleetKilled / active.length) : fleetKilled ? 100 : 0;
+    const dayKilled = new Set(day.filter(death => causeOf(death) === "instagram").map(death => death.accountId));
+    const fleet = new Set([...active.map(account => account.id), ...dayKilled]).size;
+    metrics.fleet_ig_killed_pct = fleet ? round1(100 * dayKilled.size / fleet) : 0;
     metrics.canary_ig_deaths_1h = killed(day.filter(death => now - death.at <= HOUR && roster.ids.has(death.accountId)));
     const lastDay = data.days?.reduce<string | null>((latest, row) => latest && latest > row.day ? latest : row.day, null) ?? null;
     const canaryPages = data.days?.filter(row => row.day === lastDay && roster.ids.has(row.accountId)).map(row => row.pages) ?? [];

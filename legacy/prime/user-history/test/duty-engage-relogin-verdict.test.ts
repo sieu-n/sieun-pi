@@ -30,5 +30,5 @@ test("a re-login verdict is a death with its cause, and the death gauge check le
   assert.match(deaths.find(line => line.startsWith("account 24 "))!, /code relogin_bad_password, cause bad_password/);
   assert.equal((output.flagged ?? []).some(flag => flag.kind === "death_gauge"), false);
   assert.equal(output.metrics.engage_accounts_stuck, 0);
-  assert.equal(output.metrics.fleet_ig_killed_pct, 100);
+  assert.equal(output.metrics.fleet_ig_killed_pct, 50);
 });
