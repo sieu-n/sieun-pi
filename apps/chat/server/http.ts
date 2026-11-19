@@ -22,6 +22,7 @@ import { type ClientVia, clientTimings, LoopStalls, RequestLog } from "./request
 import { accountRoutes, PoolError } from "./accounts.ts";
 import { serveWiki } from "./wiki/routes.ts";
 import { WORKSPACE_ROUTE } from "./wiki/workspaces.ts";
+import { compressibleFile, sendCompressed, sendFileCompressed } from "./compress.ts";
 
 type Params = Record<string, string>;
 type Handler = (req: IncomingMessage, params: Params, query: URLSearchParams, body: () => Promise<unknown>) => Promise<unknown>;
@@ -334,9 +335,7 @@ async function takeTimings(table: Route[], requests: RequestLog, log: (line: str
 }
 
 function json(res: ServerResponse, status: number, value: unknown): void {
-  const body = JSON.stringify(value);
-  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-  res.end(body);
+  sendCompressed(res, status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }, JSON.stringify(value));
 }
 
 async function handle(app: App, table: Route[], req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -345,7 +344,7 @@ async function handle(app: App, table: Route[], req: IncomingMessage, res: Serve
   try {
     if (await serveWiki(app, req, res, url)) return;
     if (path.startsWith("/api/images/")) return await serveEntryImage(app, path, res);
-    if (path.startsWith("/api/uploads/")) return serveFile(res, app.store.imagePath(path.slice("/api/uploads/".length).replace(/[^\w.-]/g, "")), true);
+    if (path.startsWith("/api/uploads/")) return await serveFile(res, app.store.imagePath(path.slice("/api/uploads/".length).replace(/[^\w.-]/g, "")), true);
     if (path === "/api/local-image" && req.method === "GET") return await serveLocalImage(url.searchParams.get("path") ?? "", res);
     if (path.startsWith("/api/")) {
       for (const r of table) {
@@ -371,7 +370,7 @@ async function handle(app: App, table: Route[], req: IncomingMessage, res: Serve
       }
       return refuse(app, table, req, res, 404, `No endpoint ${req.method} ${path}.`);
     }
-    return serveWeb(app, path, res);
+    return await serveWeb(app, path, res);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const status = error instanceof PoolError || error instanceof ReactionError ? error.status : isHostAway(error) ? 503
@@ -429,21 +428,22 @@ async function serveLocalImage(path: string, res: ServerResponse): Promise<void>
   res.end(image.bytes);
 }
 
-function serveFile(res: ServerResponse, file: string, immutable = false): void {
-  if (!existsSync(file) || !statSync(file).isFile()) throw new NotFound("Not found.");
-  res.writeHead(200, { "content-type": TYPES[extname(file)] ?? "application/octet-stream", "cache-control": immutable ? "private, max-age=31536000, immutable" : "no-cache" });
+function serveFile(res: ServerResponse, file: string, immutable = false): void | Promise<void> {
+  const stat = existsSync(file) ? statSync(file) : undefined;
+  if (!stat?.isFile()) throw new NotFound("Not found.");
+  const headers = { "content-type": TYPES[extname(file)] ?? "application/octet-stream", "cache-control": immutable ? "private, max-age=31536000, immutable" : "no-cache" };
+  if (compressibleFile(file)) return sendFileCompressed(res, headers, file, stat);
+  res.writeHead(200, headers);
   createReadStream(file).pipe(res);
 }
 
-function serveWeb(app: App, path: string, res: ServerResponse): void {
+function serveWeb(app: App, path: string, res: ServerResponse): void | Promise<void> {
   const root = app.config.webDir;
   const file = normalize(join(root, path));
   if (file.startsWith(root) && existsSync(file) && statSync(file).isFile()) return serveFile(res, file, path.startsWith("/assets/"));
   const index = join(root, "index.html");
   if (existsSync(index)) {
-    res.writeHead(200, { "content-type": TYPES[".html"]!, "cache-control": "no-cache" });
-    res.end(readFileSync(index));
-    return;
+    return sendCompressed(res, 200, { "content-type": TYPES[".html"]!, "cache-control": "no-cache" }, readFileSync(index));
   }
   res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
   res.end("apps/chat server is running. Build the web client with `npm run build` in apps/chat/web.\n");
