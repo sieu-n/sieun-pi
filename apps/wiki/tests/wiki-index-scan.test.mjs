@@ -383,3 +383,18 @@ test('a curated page written through a temp file resolves on the next index read
 		);
 	}
 });
+
+// On 2026-11-04 about 20 jobs split pages at once, and verify answered 404 for new pages while another write's refresh ran.
+test('a page written while a refresh runs resolves on the next index read', async () => {
+	await onPlatform('linux', () =>
+		withIndex({ 'apps/hub/index.html': '<h1>Hub</h1>' }, async (wiki, fs) => {
+			await indexWith(wiki, 'apps/hub/index.html');
+			fs.write('apps/hub/first.html', '<h1>First</h1>');
+			const running = wiki.getWikiIndex();
+			fs.write('apps/hub/second.html', '<h1>Second</h1>');
+			const index = await wiki.getWikiIndex();
+			await running;
+			assert.ok(index.byPath.has('apps/hub/second.html'), 'the page written during the refresh is in the index');
+		}),
+	);
+});

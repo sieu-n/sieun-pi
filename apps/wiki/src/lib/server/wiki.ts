@@ -382,7 +382,12 @@ export async function getWikiIndex(): Promise<WikiIndex> {
 	if (!cachedIndex) return refreshWikiIndex();
 	// One refresh at a time. A caller during it must not flag another full scan: the TTL is still due until
 	// the running refresh re-lists the mirror, so without a watcher that flag queued a second walk of content/.
-	if (inFlightIndex) return cachedIndex;
+	// A caller with a few page events since that refresh took its batch waits for it and refreshes once more,
+	// because on 2026-11-04 a verify during another job's refresh got the index without the page just written.
+	if (inFlightIndex) {
+		if (watching && !fullScanRunning && !needsFullScan && quickBatch()) return inFlightIndex.then(getWikiIndex, getWikiIndex);
+		return cachedIndex;
+	}
 	const due = Date.now() - mirrorCheckedAt >= CACHE_TTL_MS;
 	if (!watching && due) needsFullScan = true;
 	if (!needsFullScan && changedPaths.size === 0 && !store.stale && !due) return cachedIndex;
@@ -392,12 +397,7 @@ export async function getWikiIndex(): Promise<WikiIndex> {
 	// the @code mirror re-list stats about 150 files. Under swap the first caller waited on those past the
 	// d1 probe's 5 s (GET / 8.7 s on 2026-10-17 at 22:41Z while /health, served the cached index, took 3.6 s).
 	// The background artifact listing only marks the store stale, and its snapshot builds without a read.
-	const wait =
-		watching &&
-		!needsFullScan &&
-		(changedPaths.size > 0 || store.stale) &&
-		changedPaths.size <= 200 &&
-		[...changedPaths].every(isFileEvent);
+	const wait = watching && !needsFullScan && (quickBatch() || (changedPaths.size === 0 && store.stale));
 	const refresh = refreshWikiIndex();
 	if (wait) return refresh;
 	refresh.catch((error) => console.error('[llm-wiki] index refresh failed', error));
@@ -414,11 +414,17 @@ function isFileEvent(filename: string): boolean {
 	return !isIgnoredWikiPath(filename.split(path.sep).join('/')) || path.extname(filename) !== '';
 }
 
+/** Changed paths a refresh re-reads in milliseconds: at most 200, none of them a folder. */
+function quickBatch(): boolean {
+	return changedPaths.size > 0 && changedPaths.size <= 200 && [...changedPaths].every(isFileEvent);
+}
+
 function refreshWikiIndex(): Promise<WikiIndex> {
 	inFlightIndex ??= updateWikiIndex()
 		.then((index) => (cachedIndex = index))
 		.finally(() => {
 			inFlightIndex = null;
+			fullScanRunning = false;
 		});
 	return inFlightIndex;
 }
@@ -436,6 +442,8 @@ function refreshWikiIndex(): Promise<WikiIndex> {
  * on its own timer, at most every CACHE_TTL_MS, and not on every content change.
  */
 let needsFullScan = true;
+/** True while the running refresh walks all of content/, which takes seconds, so no caller waits on it. */
+let fullScanRunning = false;
 let artifactScan: Promise<void> | null = null;
 const SESSIONS_ROOT = path.join(CONTENT_ROOT, 'sessions');
 const changedPaths = new Set<string>();
@@ -549,6 +557,7 @@ function stopFolderWatch(): void {
 async function updateWikiIndex(): Promise<WikiIndex> {
 	const full = needsFullScan || !cachedIndex;
 	const changed = full ? [] : [...changedPaths];
+	fullScanRunning = full;
 	needsFullScan = false;
 	changedPaths.clear();
 	try {
