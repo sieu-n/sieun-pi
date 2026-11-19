@@ -104,6 +104,8 @@ export interface WatchRow {
   addedAt: number | null;
   /** The row's last run named the account's newer handle (crawl_batch_targets.retry_evidence renamed_to, as read.py's renamed_to). */
   renamed: boolean;
+  /** walk_end: how the row's walk closed, where `private` or `hidden` reads the feed closed (words.ts closedFeed). */
+  walkEnd?: string;
 }
 /** One prod Kafka stream fault watchlist_risks counts: a fill over BUS_FILL_LIMIT, a retention.bytes changed by hand, or missing byte gauges. */
 export interface StreamFault { topic: string; why: string }
@@ -134,10 +136,13 @@ export function rowKeyOf(key: string): { platform: string; kind: string; target:
 const id = (row: { platform: string; kind: string; target: string }): string => `${row.platform}:${row.kind}:${row.target}`;
 /** The not-found codes words.ts reads as a removed account (NOT_FOUND_CODES). */
 const NOT_FOUND_CODES = new Set(["profile_not_found", "post_not_found", "advertiser_not_found", "not_found"]);
-/** A row whose account the platform removed, or holds private: words.ts walkGone and walkPrivate, which read it checked. */
+/** A row whose last run found no account under the handle: words.ts gone(). */
+const isGone = (row: WatchRow): boolean => row.lastOutcome === "gone" || (row.lastOutcome === "error" && NOT_FOUND_CODES.has(row.lastErrorCode));
+/** A gone row no run ever read ok, with no newer handle: words.ts handleNotFound(), a Stopped chip with Fix handle, never "Removed on". */
+const handleNotFound = (row: WatchRow): boolean => isGone(row) && !row.renamed && row.lastOkAt === null;
+/** A row whose account the platform removed after a read, or holds private: words.ts gone() and closedFeed(), which read it closed. */
 export const isClosed = (row: WatchRow): boolean =>
-  row.lastOutcome === "gone" || (row.lastOutcome === "error" && NOT_FOUND_CODES.has(row.lastErrorCode))
-  || row.isPrivate || (row.lastOutcome === "ok" && row.lastStopReason === "private") || renamedHidden(row);
+  (isGone(row) && !handleNotFound(row)) || row.isPrivate || (row.lastOutcome === "ok" && row.lastStopReason === "private") || renamedHidden(row);
 /** A row whose last run found the account hidden from every reader we have: words.ts hidden(), a Stopped chip. */
 const isHidden = (row: WatchRow): boolean =>
   (row.lastOutcome === "ok" && row.lastStopReason === "hidden") || (row.lastOutcome === "error" && HIDDEN_CODES.has(row.lastErrorCode));
@@ -166,6 +171,7 @@ const STOP_AFTER_FAILURES = 3;
  * checked there, never Stopped. Holds (heldBy) read Waiting and are not modelled; pause.watch has its own flag.
  */
 export function stopReason(row: WatchRow, now: number): string | null {
+  if (!row.paused && handleNotFound(row)) return "handle not found";
   if (row.paused || isClosed(row)) return null;
   const code = row.lastErrorCode;
   if ((row.lastOutcome === "ok" && row.lastStopReason === "hidden") || (row.lastOutcome === "error" && HIDDEN_CODES.has(code))) return "Instagram hides this account";
@@ -195,6 +201,17 @@ export const isYoung = (row: WatchRow, now: number): boolean => row.addedAt !== 
  */
 export const closedThroughHold = (row: WatchRow): boolean =>
   row.lastOutcome === "gone" || row.isPrivate || (row.lastOutcome === "ok" && (row.lastStopReason === "private" || row.lastStopReason === "hidden"));
+/**
+ * Whether the Watchlist foot counts the row's account as one that needs a look: words.ts readFails, a Stopped or closed chip, as
+ * apps/search/src/lib/server/monitoring/watch-state.ts tallyWatchState counts it (rw81 put private and hidden accounts there). A hold paints
+ * an open row Waiting, but a closed feed and a handle no read found keep their chip under it. On prod at 06:4xZ on 11-20 the screen said 775
+ * need a look while d2 read 398 not green: 511 accounts no read ever found and 144 private ones that d2 read green.
+ */
+export const needsLook = (row: WatchRow, now: number, held = false): boolean =>
+  !row.paused && (closedOnScreen(row) || handleNotFound(row) || (!held && stopReason(row, now) !== null));
+const closedOnScreen = (row: WatchRow): boolean =>
+  row.isPrivate || isHidden(row) || (row.lastOutcome === "ok" && row.lastStopReason === "private") || (row.renamed && (isGone(row) || isHidden(row)))
+  || (row.lastOutcome !== "gone" && (row.walkEnd === "private" || row.walkEnd === "hidden"));
 /** Green as the Watchlist paints the row; `held` is a tier whose watch_paused_by is not empty, which paints every open row Waiting. */
 export const isGreen = (row: WatchRow | undefined, now: number, held = false): boolean =>
   !!row && !row.paused && (held ? closedThroughHold(row) : isClosed(row) || isAcceptedHidden(row) || readOk(row, now) || isYoung(row, now));
@@ -221,6 +238,7 @@ export function ownerGreen(keys: readonly string[], rows: readonly WatchRow[], n
   let pushed = 0;
   let unread = 0;
   const stops = new Map<string, number>();
+  const look = new Set<string>();
   let hidden = 0;
   for (const key of keys) {
     const want = rowKeyOf(key);
@@ -229,6 +247,7 @@ export function ownerGreen(keys: readonly string[], rows: readonly WatchRow[], n
     const green = isGreen(row, now, held);
     const account = `${want.platform}:${want.target}`;
     accounts.set(account, (accounts.get(account) ?? true) && green);
+    if (row && needsLook(row, now, held)) look.add(account);
     if (want.kind === "tagged") { collabs++; if (row && !row.paused) pushed++; }
     if (!green) { const reason = notGreen(want.kind, row, now, held); why.set(reason, (why.get(reason) ?? 0) + 1); }
     if (row && isAcceptedHidden(row)) { hidden++; continue; }
@@ -238,7 +257,7 @@ export function ownerGreen(keys: readonly string[], rows: readonly WatchRow[], n
   }
   const green = [...accounts.values()].filter(Boolean).length;
   const stopped = [...stops.values()].reduce((sum, count) => sum + count, 0);
-  return { accounts: accounts.size, green, collabs, pushed, unread, why: tally(why), stopped, stops: tally(stops), hidden };
+  return { accounts: accounts.size, green, collabs, pushed, unread, why: tally(why), stopped, stops: tally(stops), hidden, needLook: look.size };
 }
 
 /** The unpaused monitor rows of the given kinds (posts and tagged: the Watchlist's posts and collabs), how many are green, and why the rest are not. */
@@ -319,6 +338,7 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
     detail.collab_pushed_pct = owner.collabs ? round1(100 * owner.pushed / owner.collabs) : 100;
     detail.owner_stopped_watches = owner.stopped;
     detail.owner_hidden_watches = owner.hidden;
+    detail.owner_need_look = owner.needLook;
     flagged.push({ at, kind: "owner_hidden", excerpt: `${owner.hidden} hidden by Instagram: owner watches that read Stopped because Instagram hides the account, kept Stopped by the owner's t31 answer and counted green; a wave of them can mean a dead doc_id, F16` });
     if (data.streams) {
       const hiddenWave = owner.hidden > HIDDEN_WAVE_LINE ? 1 : 0;
@@ -331,7 +351,7 @@ export function report(data: WatchData, dutyMetrics: readonly DutyMetric[]): Pre
         + `; ${late.length || !screen.length ? 1 : 0} Watchlist status read failing (${late.length} of ${screen.length} chunks would read Status unavailable)`
         + `; ${groupSlow ? 1 : 0} owner org group read slow or failing (${groupTimes})). Risk page: wiki apps/crawler-v3/engage-reads-and-watchlist-risks.`).slice(0, 1200) });
     }
-    flagged.push({ at, kind: "owner_watchlist", excerpt: `${owner.green} of ${owner.accounts} owner org accounts green on prod; ${owner.pushed} of ${owner.collabs} collab watches have an unpaused prod tagged monitor row` +
+    flagged.push({ at, kind: "owner_watchlist", excerpt: `${owner.green} of ${owner.accounts} owner org accounts green on prod; ${owner.needLook} need a look as the Watchlist foot counts them (a Stopped, private or hidden watch); ${owner.pushed} of ${owner.collabs} collab watches have an unpaused prod tagged monitor row` +
       (owner.why.length ? `; watches not green: ${listWhy(owner.why)}` : "") + (owner.unread ? `; ${owner.unread} keys not in platform:kind:target form` : "") });
     if (!owner.accounts) flagged.push({ at, kind: "no_keys", excerpt: `Convex pageKeys returned no watch key for ${OWNER_ORG}` });
   }
@@ -387,17 +407,18 @@ function holdFlags(tier: string, hold: HoldRead, at: number): FlaggedSlice[] {
 }
 
 /** The tab-separated monitor rows psql prints (rowLines for Grafana's): platform, kind, target, paused (t or f), last_outcome, last_run_at epoch ms or empty,
- *  last_stop_reason, last_error_code, the account's is_private (t or f), err_streak, next_due_at set (t or f), the last ok run's time and created_at. */
+ *  last_stop_reason, last_error_code, the account's is_private (t or f), err_streak, next_due_at set (t or f), the last ok run's time, created_at,
+ *  walk_end and renamed (t or f). */
 export function parseRows(text: string): WatchRow[] {
   const rows: WatchRow[] = [];
   for (const line of text.split("\n")) {
     const cells = line.split("\t");
-    if (cells.length !== 14) continue;
-    const [platform, kind, target, paused, lastOutcome, lastRunAt, lastStopReason, lastErrorCode, isPrivate, errStreak, due, lastOkAt, addedAt, renamed] = cells as
-      [string, string, string, string, string, string, string, string, string, string, string, string, string, string];
+    if (cells.length !== 15) continue;
+    const [platform, kind, target, paused, lastOutcome, lastRunAt, lastStopReason, lastErrorCode, isPrivate, errStreak, due, lastOkAt, addedAt, walkEnd, renamed] = cells as
+      [string, string, string, string, string, string, string, string, string, string, string, string, string, string, string];
     rows.push({ platform, kind, target, paused: paused === "t", lastOutcome, lastRunAt: lastRunAt ? Number(lastRunAt) : null,
       lastStopReason, lastErrorCode, isPrivate: isPrivate === "t", errStreak: Number(errStreak) || 0, due: due === "t", lastOkAt: lastOkAt ? Number(lastOkAt) : null,
-      addedAt: addedAt ? Number(addedAt) : null, renamed: renamed === "t" });
+      addedAt: addedAt ? Number(addedAt) : null, walkEnd, renamed: renamed === "t" });
   }
   return rows;
 }
@@ -656,12 +677,13 @@ const ROWS_SQL = "select w.platform, w.kind, lower(w.target) as target, case whe
   "w.err_streak, case when w.next_due_at is null then 'f' else 't' end as due, " +
   "coalesce((extract(epoch from case when w.last_outcome = 'ok' then w.last_run_at else (select max(c.settled_at) from watch_target_claims c " +
   "where c.platform = w.platform and c.kind = w.kind and c.target = w.target and c.outcome = 'ok') end) * 1000)::bigint::text, '') as last_ok_at, " +
-  "(extract(epoch from w.created_at) * 1000)::bigint::text as added_at, ";
-/** Whether the row's last run named a newer handle. Only a hidden row can read renamed (renamedHidden), so the CASE asks the claims
- *  join of hidden rows alone: asked of all 19,700 monitor rows it ran past prod's statement_timeout at 17:00Z on 2026-10-20. Staging's Grafana role (grafana_ro on estate_pg_stg) has no SELECT on
+  "(extract(epoch from w.created_at) * 1000)::bigint::text as added_at, coalesce(w.walk_end, '') as walk_end, ";
+/** Whether the row's last run named a newer handle. Only a hidden or gone row reads renamed (words.ts hidden() and gone()), so the CASE
+ *  asks the claims join of those rows alone (about 1,050 gone rows on prod on 11-20): asked of all 19,700 monitor rows it ran past prod's statement_timeout at 17:00Z on 2026-10-20. Staging's Grafana role (grafana_ro on estate_pg_stg) has no SELECT on
  *  watch_target_claims, so the staging read sends 'f' and its rows never read renamed. */
 const RENAMED_SQL = "case when w.platform <> 'instagram' or w.last_batch_id is null " +
-  "or not (coalesce(w.last_stop_reason, '') = 'hidden' or coalesce(w.last_error_code, '') = 'timeline_hidden') then 'f' " +
+  "or not (coalesce(w.last_stop_reason, '') = 'hidden' or coalesce(w.last_error_code, '') in ('timeline_hidden', 'profile_not_found', 'post_not_found', 'advertiser_not_found', 'not_found') " +
+  "or w.last_outcome = 'gone') then 'f' " +
   "when exists (select 1 from watch_target_claims c join crawl_batch_targets t on t.batch_id = c.batch_id " +
   "and t.index = any(c.op_indexes) where c.batch_id = w.last_batch_id and c.platform = w.platform and c.kind = w.kind and c.target = w.target " +
   "and jsonb_typeof(t.retry_evidence -> 'renamed_to') = 'object' offset 0) then 't' else 'f' end as renamed from watch_targets w where w.tier = 'monitor'";
@@ -697,7 +719,7 @@ export const prodRowsSql = (part: number): string => `${PROD_ROWS_SQL} and (hash
 export const NO_SEQSCAN = "set local enable_seqscan = off; ";
 export const STAGING_ROWS_SQL = NO_JIT + NO_SEQSCAN + ROWS_SQL + "'f' as renamed from watch_targets w where w.tier = 'monitor' and not w.paused";
 /** ROWS_SQL's columns in parseRows order, to print Grafana's table rows as the lines psql prints. */
-const ROW_COLUMNS = ["platform", "kind", "target", "paused", "last_outcome", "last_run_at", "last_stop_reason", "last_error_code", "is_private", "err_streak", "due", "last_ok_at", "added_at", "renamed"];
+const ROW_COLUMNS = ["platform", "kind", "target", "paused", "last_outcome", "last_run_at", "last_stop_reason", "last_error_code", "is_private", "err_streak", "due", "last_ok_at", "added_at", "walk_end", "renamed"];
 export const rowLines = (rows: Record<string, unknown>[]): string => rows.map(row => ROW_COLUMNS.map(column => String(row[column] ?? "")).join("\t")).join("\n");
 export const RECEIPTS_SQL = "select 'receipt' as kind, outcome, count(*) as runs, (extract(epoch from date_trunc('hour', settled_at)) * 1000)::bigint as hour"
   + " from watch_target_claims where settled_at > now() - interval '24 hours' and outcome is not null group by outcome, hour";

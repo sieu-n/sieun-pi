@@ -48,7 +48,7 @@ test("an error row with its retry due is green on a fresh ok read, and a failed 
 });
 
 test("parseRows reads last_ok_at from the 12th column", () => {
-  const [parsed] = parseRows(["instagram", "tagged", "a", "f", "starved", String(NOW - HOUR), "", "fleet_exhausted", "f", "0", "t", String(NOW - 23 * HOUR), String(NOW - 10 * DAY), "f"].join("\t"));
+  const [parsed] = parseRows(["instagram", "tagged", "a", "f", "starved", String(NOW - HOUR), "", "fleet_exhausted", "f", "0", "t", String(NOW - 23 * HOUR), String(NOW - 10 * DAY), "", "f"].join("\t"));
   assert.equal(parsed!.lastOkAt, NOW - 23 * HOUR);
-  assert.equal(parseRows(["instagram", "tagged", "a", "f", "", "", "", "", "f", "0", "t", "", String(NOW), "f"].join("\t"))[0]!.lastOkAt, null);
+  assert.equal(parseRows(["instagram", "tagged", "a", "f", "", "", "", "", "f", "0", "t", "", String(NOW), "", "f"].join("\t"))[0]!.lastOkAt, null);
 });

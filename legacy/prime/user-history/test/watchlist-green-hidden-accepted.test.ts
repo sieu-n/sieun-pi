@@ -59,3 +59,17 @@ test("a wave of hidden owner watches is one Watchlist risk while each stays gree
   assert.equal(metrics.watchlist_risks, 1);
   assert.match(risks, /1 hidden wave \(101 owner watches read hidden/);
 });
+
+test("d2 counts the accounts the Watchlist foot says need a look: a handle no read found, a private and a hidden one (11-20, 775 against 398)", () => {
+  const { metrics, detail } = owner([
+    row({ target: "a" }),
+    row({ target: "b", lastOutcome: "gone", lastErrorCode: "profile_not_found", lastOkAt: null }),
+    row({ target: "c", isPrivate: true }),
+    row({ target: "d", lastStopReason: "hidden" }),
+    row({ target: "e", lastOutcome: "gone", lastErrorCode: "profile_not_found", lastOkAt: NOW - 20 * DAY }),
+    row({ target: "f", lastOutcome: "error", lastErrorCode: "login_wall", errStreak: 2, lastOkAt: NOW - 2 * DAY }),
+  ]);
+  assert.equal(detail.owner_need_look, 3);
+  assert.equal(detail.owner_stopped_watches, 1);
+  assert.equal(metrics.owner_green_pct, 66.7);
+});

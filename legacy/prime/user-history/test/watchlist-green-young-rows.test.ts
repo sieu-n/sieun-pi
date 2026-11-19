@@ -38,13 +38,13 @@ test("a young row the Watchlist reads Stopped stays red", () => {
 });
 
 test("parseRows reads created_at as addedAt from the 13th column", () => {
-  const [parsed] = parseRows(["instagram", "tagged", "glossier", "f", "", "", "", "", "f", "0", "t", "", String(NOW - 40_000), "f"].join("\t"));
+  const [parsed] = parseRows(["instagram", "tagged", "glossier", "f", "", "", "", "", "f", "0", "t", "", String(NOW - 40_000), "", "f"].join("\t"));
   assert.equal(parsed!.addedAt, NOW - 40_000);
   assert.equal(parsed!.lastRunAt, null);
 });
 
 test("a hidden row whose last run named a newer handle reads closed, as the screen's Removed on Instagram, and a plain hidden row stays Stopped", () => {
-  const renamed = parseRows(["instagram", "posts", "haruna_kr", "f", "ok", String(NOW - 60_000), "hidden", "", "f", "0", "t", "", String(NOW - 10 * DAY), "t"].join("\t"))[0]!;
+  const renamed = parseRows(["instagram", "posts", "haruna_kr", "f", "ok", String(NOW - 60_000), "hidden", "", "f", "0", "t", "", String(NOW - 10 * DAY), "", "t"].join("\t"))[0]!;
   assert.equal(renamed.renamed, true);
   assert.equal(isClosed(renamed), true);
   assert.equal(stopReason(renamed, NOW), null);
