@@ -66,9 +66,12 @@ test("a long run saves its profile each window at 10 ms a sample and keeps profi
   try {
     await mkdir(join(dir, CPU_PROFILE_DIR));
     const profile = await startRunProfile({ dataDir: dir, log: () => {}, rollMs: 400 });
+    const saved = async () => (await readdir(join(dir, CPU_PROFILE_DIR))).filter(name => name.endsWith(".cpuprofile"));
+    // Under release-chat's 20 concurrent test files on 11-19 the first window had not reached the disk 1 s in, so the run waits for it.
     const started = Date.now();
-    while (Date.now() - started < 1_000) { burn(40); await sleep(5); }
-    const rolled = (await readdir(join(dir, CPU_PROFILE_DIR))).filter(name => name.endsWith(".cpuprofile"));
+    while ((await saved()).length === 0 && Date.now() - started < 30_000) { burn(40); await sleep(5); }
+    const rolled = await saved();
+    if (rolled.length === 0) await profile.stop();
     assert.ok(rolled.length >= 1, `${rolled.length} profiles saved before the stop`);
     assert.ok((await readdir(join(dir, CPU_PROFILE_DIR))).some(name => name.endsWith(HEAP_PROFILE_SUFFIX)));
     burn(300);
