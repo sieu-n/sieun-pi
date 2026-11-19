@@ -329,7 +329,10 @@ globalThis.__walk = (() => {
     }
   }
 
+  /** The document on screen may be a new one since the last step, so it gets the walk's observers first: on 11-19 at 16:20Z a page that
+   *  loaded itself again after its step read "clock.__walkMarkOld is not a function" at the next switch, 15 times in one walk. */
   async function timeSwitch(path, timeout) {
+    await install();
     try { await tab.evaluate(pageSwitchStart, { path, timeout, clickKey: "__walkClickAt", retryMs: 15000 }); }
     catch (error) { if (!destroyed(error)) throw error; return documentSwitch(path, timeout, error); }
     for (;;) {
