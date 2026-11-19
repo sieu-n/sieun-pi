@@ -846,12 +846,20 @@ export function startMacUsableWatch(source: WatchSource, firstMs = 5_000): () =>
   // A start tick asks whether its minute has a line once the seed is read and the sample would start: at the release-1ca77d6 start on
   // 10-25 it asked before, with the catalog still empty, and the catalog's copy loaded while the seed read the watch files, so the sample
   // wrote a second 11:14Z line at 11:14:44.904Z beside the old process's 11:14:30.010Z one.
-  const run = (fill = false) => seeded.then(() => {
+  // A sample whose spawn host died under it (spawn-host.ts ESPAWNHOST) wrote no line yet, so it runs once more on a new host. A hand-over's
+  // fence SIGKILLs this process's helpers (chat-handoff.ts fenceHandedOver): at 17:54:30.014Z on 11-19 it killed the host the 17:54:30Z
+  // sample read its footprints through, and 17:54Z had no line.
+  const run = (fill = false, retry = true): Promise<void> => seeded.then(() => {
     if (!fill || !written()) return sample(source, stopping);
     if (source.rows().length) landed = true;
     return null;
   }).then(line => { if (line) { landed = true; lastAt = Date.parse(line.at); } })
-    .catch(error => source.log(`mac usable watch: ${error instanceof Error ? error.message : String(error)}`));
+    .catch(error => {
+      const message = `mac usable watch: ${error instanceof Error ? error.message : String(error)}`;
+      if (!retry || (error as { code?: unknown } | null)?.code !== "ESPAWNHOST" || written()) { source.log(message); return; }
+      source.log(`${message}; the sample runs again`);
+      return run(fill, false);
+    });
   let queued = false;
   const tick = (queue = false, fill = false) => {
     if (running) { queued ||= queue; return; }

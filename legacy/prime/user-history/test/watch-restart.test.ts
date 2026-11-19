@@ -78,3 +78,24 @@ test("a start whose catalog fills while the seed is read writes no line in a min
   assert.equal(reads.count, 0, "no start sample went out");
   assert.deepEqual(lines(dataDir, at), []);
 });
+
+// At 17:54:30.014Z on 11-19 the hand-over fence of release-e0a18ae's chat SIGKILLed its spawn host while the 17:54:30Z sample read its footprints
+// through it, and 17:54Z had no line.
+test("a sample whose spawn host died under it samples again and writes the minute's one line", async (t) => {
+  const dataDir = setup(t, "2026-11-19T17:53:30.019Z");
+  const at = Date.parse("2026-11-19T17:54:30.000Z");
+  const logged: string[] = [];
+  let asked = 0;
+  const stop = startMacUsableWatch({ ...source(dataDir, () => at, { count: 0 }), remotes: () => [], log: line => { logged.push(line); },
+    footprints: async () => {
+      if (asked++ === 0) throw Object.assign(new Error("spawn host exited (SIGKILL)"), { code: "ESPAWNHOST" });
+      return FOOTPRINTS;
+    } }, 60_000);
+  for (let waited = 0; waited < 30 && !lines(dataDir, at).length; waited++) await settle();
+  assert.deepEqual(lines(dataDir, at).map(line => [line.at, line.workers]), [["2026-11-19T17:54:30.000Z", 1]], "the line lands before the next tick, with no stop to fill it");
+  assert.equal(JSON.parse(readFileSync(join(dataDir, "mac-usable", "last-sample.json"), "utf8")).at, at);
+  await stop();
+  assert.equal(asked, 2);
+  assert.equal(lines(dataDir, at).length, 1);
+  assert.deepEqual(logged, ["mac usable watch: spawn host exited (SIGKILL); the sample runs again"]);
+});
