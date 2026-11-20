@@ -218,6 +218,11 @@ export function routes(app: App): Route[] {
     route("POST", "/api/threads/:id/reactions", async (_r, p, _q, body) => {
       return app.reactAsAgent(p.id!, ((await body()) ?? {}) as { message?: unknown; emoji?: unknown; on?: unknown });
     }),
+    // An agent's save_message, remind_me and list_saved_messages (later-agents.ts), as its thread.
+    route("GET", "/api/threads/:id/later", async (_r, p, q) => app.laterListAsAgent(p.id!, q.get("state"))),
+    route("POST", "/api/threads/:id/later", async (_r, p, _q, body) => {
+      return app.laterAsAgent(p.id!, ((await body()) ?? {}) as { message?: unknown; state?: unknown; remindAt?: unknown });
+    }),
     // The owner's Save for later list (later.ts); pi-host's agent tools use the /api/threads/:id/later routes.
     route("GET", "/api/later", async (_r, _p, q) => {
       const state = q.get("state");

@@ -7,12 +7,14 @@
  * asks the agent to mark the post it works on with 👀, swap it for ✅ once the work is done, and react the way people do in Slack
  * (`agent-profile.ts`); no code here treats an emoji specially (contract: /home/sieun/work/slack-reactions/contract.md).
  *
- * `list_for_me_messages` and `mark_message` (`for-me.ts`) read the agent's For list and mark its items.
+ * `list_for_me_messages` and `mark_message` (`for-me.ts`) read the agent's For list and mark its items, and `save_message`, `remind_me` and
+ * `list_saved_messages` (`later.ts`) keep its Later list.
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type Extension } from "@earendil-works/pi-durable";
 import type { ChatApp } from "./chat-app.ts";
 import { forMeTools } from "./for-me.ts";
+import { laterTools } from "./later.ts";
 
 export const ROOM_TOOLS_EXTENSION = "room-tools";
 export const SET_EMOJI_TOOL = "set_emoji";
@@ -59,6 +61,7 @@ export function roomTools(app: ChatApp, thread: string): Extension {
         },
       }),
       ...forMeTools(app, thread),
+      ...laterTools(app, thread),
     ],
   });
 }

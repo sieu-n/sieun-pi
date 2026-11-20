@@ -13,7 +13,7 @@ import type {
 import type { AllowedModel } from "../../../config/allowed-models.ts";
 import type { FeedRow } from "../../../components/prime-relay/agents/protocol.ts";
 import { AgentFolders, type BoxFiles } from "./agent-folder.ts";
-import { AgentStore, type AgentRecord, type RoomDelivery, type RoomPost } from "./agent-store.ts";
+import { AgentStore, type AgentRecord, type RoomDelivery, type RoomId, type RoomPost } from "./agent-store.ts";
 import { Agents, isGroupRoomId, isRoomId, type SplitPlan } from "./agents.ts";
 import { Boards } from "./boards.ts";
 import { MIN_BYTES } from "./compress.ts";
@@ -22,6 +22,7 @@ import { assertOwnPost, deleteNotice, deliveriesOf, editNotice } from "./post-ed
 import { ForMe } from "./for-me.ts";
 import { Later } from "./later.ts";
 import { LaterDue } from "./later-due.ts";
+import { AgentLater } from "./later-agents.ts";
 import type { ForMeItem, ForMeList, ForMeStatus, LaterItem } from "../web/src/lib/api/types.ts";
 import { DEFAULT_MODEL, DEFAULT_THINKING, type Config } from "./config.ts";
 import { MultiHost } from "./host/multi-host.ts";
@@ -94,6 +95,8 @@ export class App {
   readonly later: Later;
   /** Remind me: the one timer that fires the owner's due reminders (later-due.ts). */
   readonly laterDue: LaterDue<LaterItem>;
+  /** The agents' side of Save for later and Remind me: their tools' answers and their reminders' wakes (later-agents.ts). */
+  readonly agentLater: AgentLater;
   private readonly clients = new Set<Client>();
   private sidebarTimer?: NodeJS.Timeout;
   private lastSidebar = "";
@@ -216,6 +219,7 @@ export class App {
       },
       uploaded: ref => this.uploaded(ref), readUpload: ref => this.readUpload(ref), log, ...(linkOf ? { linkOf } : {}),
       laterMark: post => this.later.mark("owner", post.room, post.id),
+      agentLaterMark: (agent, post) => this.later.mark(agent, post.room, post.id),
     });
     this.threads.groupSummaries = () => this.groups.summaries().filter(c => !this.agentStore.isTest(c.id));
     this.threads.roomsOf = agent => this.groups.memberRooms(agent).map(row => row.id);
@@ -228,6 +232,17 @@ export class App {
       duties: (chatId, duties) => this.broadcast({ type: "duties", chatId, duties }),
     }, log);
     this.boards.selfUrl = `http://127.0.0.1:${config.port}`;
+    this.agentLater = new AgentLater({
+      later: this.later, wakeDir: this.boards.wakeDir, postsOf: room => this.agentStore.postsOf(room), principal: id => this.threads.principal(id),
+      label: (record, room) => {
+        const row = this.groups.row(room);
+        return row ? roomLabel(row) : room === record.room ? "DM" : room;
+      },
+      thread: (record, room) => (room === record.room ? this.agents.roomThread(record) : this.groups.row(room) ? record.comm?.[room] : undefined),
+      record: id => this.agents.record(id), log,
+    });
+    this.later.onChange(({ item, removed }) => this.agentLater.syncWake(item, removed));
+    this.boards.wakeHooks = { expand: text => this.agentLater.expand(text), delivered: text => this.agentLater.delivered(text) };
     if (routing) {
       // A check wake of a thread on another box runs its check there.
       this.boards.checkOn = thread => {
@@ -564,21 +579,43 @@ export class App {
    * post there, or `<room>/<post>` in another room the agent is in (reactions.ts `agentPost`). The answer's `text` is the tool's result.
    */
   reactAsAgent(thread: string, input: { message?: unknown; emoji?: unknown; on?: unknown }): { room: string; post: string; reactions: Reaction[]; text: string } {
-    const comm = this.agents.ofComm(thread);
-    const record = comm?.record ?? this.agents.ofWorkThread(thread);
-    if (!record) throw new ReactionError(404, `Thread ${thread} is no agent's comm thread or work thread; call set_emoji from the agent's own thread.`);
-    if (typeof input.message !== "string" || !input.message.trim()) {
-      throw new ReactionError(400, "A reaction names its post as message, such as p12, dm_vent/p12 or the [message id: ...] value after an owner message.");
-    }
     const { emoji, on } = reactionInput(input);
-    const slash = input.message.indexOf("/");
-    const room = slash < 0 ? comm?.room ?? record.room : input.message.slice(0, slash).trim();
-    const roomThread = room === record.room ? this.agents.roomThread(record) : this.groups.row(room) ? record.comm?.[room] : undefined;
-    if (!roomThread) throw new ReactionError(404, `${record.name} is not in room ${room}; name a post in its DM ${record.room} or in a channel it is in, such as ${record.room}/p12.`);
-    const post = agentPost(this.agentStore.postsOf(room), record, slash < 0 ? thread : roomThread, room, input.message.slice(slash + 1));
+    const { record, room, post } = this.agentMessage(thread, input.message, "set_emoji");
     this.setReaction(room, post, record.id, emoji, on);
     const principal = (id: string) => this.threads.principal(id);
-    return { room, post: post.id, reactions: reactionsOf(principal, post).reactions ?? [], text: reactionText(principal, post, emoji, on, slash >= 0) };
+    return { room, post: post.id, reactions: reactionsOf(principal, post).reactions ?? [], text: reactionText(principal, post, emoji, on, String(input.message).includes("/")) };
+  }
+
+  /**
+   * The agent and post an agent's room tool names: the thread names the agent and its room (a comm thread its room's, the work thread the
+   * DM), and `message` names a post there, or `<room>/<post>` in another room the agent is in (reactions.ts `agentPost`).
+   */
+  private agentMessage(thread: string, message: unknown, tool: string): { record: AgentRecord; room: RoomId; post: RoomPost } {
+    const comm = this.agents.ofComm(thread);
+    const record = comm?.record ?? this.agents.ofWorkThread(thread);
+    if (!record) throw new ReactionError(404, `Thread ${thread} is no agent's comm thread or work thread; call ${tool} from the agent's own thread.`);
+    if (typeof message !== "string" || !message.trim()) {
+      throw new ReactionError(400, `${tool} names its post as message, such as p12, dm_vent/p12 or the [message id: ...] value after an owner message.`);
+    }
+    const slash = message.indexOf("/");
+    const room = (slash < 0 ? comm?.room ?? record.room : message.slice(0, slash).trim()) as RoomId;
+    const roomThread = room === record.room ? this.agents.roomThread(record) : this.groups.row(room) ? record.comm?.[room] : undefined;
+    if (!roomThread) throw new ReactionError(404, `${record.name} is not in room ${room}; name a post in its DM ${record.room} or in a channel it is in, such as ${record.room}/p12.`);
+    return { record, room, post: agentPost(this.agentStore.postsOf(room), record, slash < 0 ? thread : roomThread, room, message.slice(slash + 1)) };
+  }
+
+  /** An agent's save_message or remind_me (later-agents.ts `set`); the answer's `text` is the tool's result. */
+  laterAsAgent(thread: string, input: { message?: unknown; state?: unknown; remindAt?: unknown }): { text: string } {
+    const { record, room, post } = this.agentMessage(thread, input.message, input.remindAt !== undefined ? "remind_me" : "save_message");
+    return { text: this.agentLater.set(record, room, post, input) };
+  }
+
+  /** An agent's list_saved_messages (later-agents.ts `listText`). */
+  laterListAsAgent(thread: string, state: string | null): { text: string } {
+    const record = this.agents.ofComm(thread)?.record ?? this.agents.ofWorkThread(thread);
+    if (!record) throw new ReactionError(404, `Thread ${thread} is no agent's comm thread or work thread; call list_saved_messages from the agent's own thread.`);
+    if (state !== null && state !== "open" && state !== "done") throw new ReactionError(400, "A saved list's state is open or done.");
+    return { text: this.agentLater.listText(record, state ?? "open") };
   }
 
   /** The owner's own post in a DM, a channel or a Solo room, with the room it is in. */
@@ -874,7 +911,14 @@ export class App {
 
   /** The agent's For list (for-me.ts); `id` is its agent id or one of its thread ids, so a pi-host tool passes its own thread. */
   forMeList(id: string, status: ForMeStatus | "all"): ForMeList {
-    return this.forMe.list(this.forMeAgent(id), status);
+    const record = this.forMeAgent(id);
+    const list = this.forMe.list(record, status);
+    return {
+      ...list, items: list.items.map(item => {
+        const later = this.later.mark(record.id, item.room, item.post);
+        return later ? { ...item, later } : item;
+      }),
+    };
   }
 
   /** Marks an item on the agent's For list completed or pending; a page that watches the list hears of a change at once. */

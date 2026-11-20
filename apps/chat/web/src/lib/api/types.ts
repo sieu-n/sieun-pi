@@ -182,6 +182,8 @@ export interface ForMeItem {
   activityAt: Ms;
   reasons: ForMeReason[];
   reactions?: Reaction[];
+  /** The agent's own save of the post (server/later-agents.ts); absent when it has no open save of it. */
+  later?: LaterMark;
   status: ForMeStatus;
   /** When the agent marked it completed; absent on a completed item from before the list existed. */
   completedAt?: Ms;

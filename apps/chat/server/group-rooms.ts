@@ -26,6 +26,7 @@ import type { Agents } from "./agents.ts";
 import { isHostAway, type EntryRecord, type Host, type Submitted } from "./host/types.ts";
 import { refusedForGood, retryWait } from "./outbox.ts";
 import { postState } from "./post-edits.ts";
+import { laterLine, reminderPost } from "./later-agents.ts";
 import { reactionsLine, reactionsOf } from "./reactions.ts";
 import { agedPost, agentPostParts, queuedNote, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
 import { readMark, type Store } from "./store.ts";
@@ -71,6 +72,8 @@ export interface GroupDeps {
   linkOf?(box: string): "up" | "away";
   /** The owner's own Save for later mark on a post (later.ts `mark`). */
   laterMark?(post: RoomPost): LaterMark | undefined;
+  /** An agent's own Save for later mark on a post, which its room reads show (later-agents.ts `laterLine`). */
+  agentLaterMark?(agent: AgentId, post: RoomPost): LaterMark | undefined;
 }
 
 type Draft = Omit<RoomPost, "id" | "seq" | "room" | "deliveries"> & { hops: number };
@@ -85,14 +88,18 @@ const HEADER = /· post (\d+) from [^\n]* · hops (\d+)\]$/;
  * or in a bundle, which opens with its age.
  */
 function envelopeHeaders(entry: EntryRecord): { seq: number; hops: number }[] {
-  const content = entry.model?.[0]?.content;
-  const text = typeof content === "string" ? content : (content ?? []).flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n");
-  const lines = text.split("\n");
+  const lines = inputText(entry).split("\n");
   const named = HEADER.test(lines[0] ?? "") ? [lines[0]!] : /^\[(written |\d+ posts in )/.test(lines[0] ?? "") ? lines.filter(line => HEADER.test(line)).reverse() : [];
   return named.map(line => {
     const [, seq, hops] = HEADER.exec(line)!;
     return { seq: Number(seq), hops: Number(hops) };
   });
+}
+
+/** The text of a thread input. */
+function inputText(entry: EntryRecord): string {
+  const content = entry.model?.[0]?.content;
+  return typeof content === "string" ? content : (content ?? []).flatMap(b => (b.type === "text" ? [b.text] : [])).join("\n");
 }
 
 /** A Solo room's default name: the agenda's first line, cut at a word near 48 characters. */
@@ -498,8 +505,8 @@ export class GroupRooms {
         };
       const now = Date.now();
       const text = bundle
-        ? this.bundleText(row, members, missed, record.host, now)
-        : delivery.waited ? agedPost(this.envelope(row, post, missed), post.at, record.host, now) : this.envelope(row, post, missed);
+        ? this.bundleText(row, members, missed, record.host, now, record.id)
+        : delivery.waited ? agedPost(this.envelope(row, post, missed, record.id), post.at, record.host, now) : this.envelope(row, post, missed, record.id);
       const requestId = bundle?.requestId ?? delivery.requestId;
       const result = await this.deps.host.submit(thread, { text, ...(images.length ? { images } : {}), requestId, ...from });
       set(d => ({
@@ -537,9 +544,9 @@ export class GroupRooms {
    * The posts of one bundle in one input, as rooms.ts `bundlePosts` writes a DM's: a line that says how many, then each post's envelope under
    * its place and age. The channel posts its target missed before the first one go with that first envelope.
    */
-  private bundleText(row: GroupRoom, members: RoomPost[], missed: RoomPost[], box: string, now: number): string {
+  private bundleText(row: GroupRoom, members: RoomPost[], missed: RoomPost[], box: string, now: number, reader: AgentId): string {
     return [`[${members.length} posts in ${roomLabel(row)} waited while ${box} was offline and go together in this one input, oldest first]`,
-      ...members.map((p, index) => `${agedPost(this.envelope(row, p, index === 0 ? missed : []), p.at, box, now).replace(/^\[written /, `[${index + 1} of ${members.length}, written `)}`)].join("\n\n");
+      ...members.map((p, index) => `${agedPost(this.envelope(row, p, index === 0 ? missed : [], reader), p.at, box, now).replace(/^\[written /, `[${index + 1} of ${members.length}, written `)}`)].join("\n\n");
   }
 
   /**
@@ -597,9 +604,10 @@ export class GroupRooms {
   /**
    * The text a member reads: `[<label> · post <seq> from <author>[ (owner)] · hops <n>]`, a blank line and the post. A Solo room's label
    * carries its agenda and members; a channel root post adds the root posts its target missed, and a channel reply adds up to five earlier
-   * posts of its thread. Each of those context lines ends with the post's reactions (reactions.ts `reactionsLine`).
+   * posts of its thread. Each of those context lines ends with the post's reactions (reactions.ts `reactionsLine`) and the reader's own save
+   * of it (later-agents.ts `laterLine`).
    */
-  envelope(row: GroupRoom, post: RoomPost, missed: RoomPost[] = []): string {
+  envelope(row: GroupRoom, post: RoomPost, missed: RoomPost[] = [], reader?: AgentId): string {
     const author = this.deps.threads.principal(post.author);
     const label = row.kind === "channel"
       ? `#${row.name}`
@@ -608,7 +616,8 @@ export class GroupRooms {
     const context = (p: RoomPost) => {
       const images = p.images.length ? ` [${p.images.length} image${p.images.length > 1 ? "s" : ""} attached]` : "";
       const reactions = reactionsLine(id => this.deps.threads.principal(id), p);
-      return `${p.seq} ${this.deps.threads.principal(p.author).name}: ${p.text.slice(0, CONTEXT_CLIP)}${images}${reactions ? ` ${reactions}` : ""}`;
+      const saved = reader ? laterLine(this.deps.agentLaterMark?.(reader, p)) : "";
+      return `${p.seq} ${this.deps.threads.principal(p.author).name}: ${p.text.slice(0, CONTEXT_CLIP)}${images}${reactions ? ` ${reactions}` : ""}${saved ? ` ${saved}` : ""}`;
     };
     if (missed.length) lines.push("", "(channel before this post)", ...missed.map(context));
     if (row.kind === "channel") {
@@ -691,6 +700,9 @@ export class GroupRooms {
           const post = headers.map(h => this.store.postsOf(row.id).find(p => p.seq === h.seq)).find(p => p !== undefined);
           return { input: entry.id, channel: false, ...(post ? { post: post.id } : {}), hops: Math.max(0, ...headers.map(h => h.hops)) };
         }
+        // A due remind_me names its post, so what the agent posts on it goes in that post's thread (later-agents.ts).
+        const reminded = entry.kind === "agent.message" && data?.via === "wake" ? reminderPost(inputText(entry), row.id) : undefined;
+        if (reminded) return { input: entry.id, channel: false, post: reminded, hops: 0 };
         return { input: entry.id, channel: false, ...(previous?.post ? { post: previous.post } : {}), ...(previous?.hops !== undefined ? { hops: previous.hops } : {}) };
       },
       speaks: () => true,

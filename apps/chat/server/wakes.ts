@@ -69,6 +69,10 @@ export interface ThreadWakeOptions {
   check?: WakeDeps["check"];
   /** The check of a thread on another box, run by that box's relay; undefined runs it on this box. */
   checkOn?: (thread: string) => BoxCheckRun | undefined;
+  /** The text a due wake sends, from the ticker's text; Remind me swaps its `[wake]` line for the post it names (later-agents.ts). */
+  expand?: (text: string) => string;
+  /** Runs once the thread took a due wake's text, with the ticker's text. */
+  delivered?: (text: string) => void;
 }
 
 /**
@@ -115,9 +119,10 @@ export function startThreadWakes(options: ThreadWakeOptions): () => void {
     deliver: async (session, text, _root, _kind, setAt) => {
       const { thread, conversation } = wakeTarget(session);
       await options.host.submit(thread, {
-        ...(conversation !== 1 ? { conversation } : {}), text, whenBusy: "followUp", requestId: `wake:${session}:${setAt ?? 0}`,
+        ...(conversation !== 1 ? { conversation } : {}), text: options.expand?.(text) ?? text, whenBusy: "followUp", requestId: `wake:${session}:${setAt ?? 0}`,
         entry: { kind: "agent.message", data: { from: "board", via: "wake" } },
       });
+      options.delivered?.(text);
     },
   }, options.everyMs);
 }

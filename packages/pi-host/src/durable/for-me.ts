@@ -25,7 +25,8 @@ export const LIST_FOR_ME_DESCRIPTION =
   "author, time, why it is on the list, its reactions, its status and its text.";
 
 export const MARK_MESSAGE_DESCRIPTION =
-  "Mark an item of your For list completed once you answered or handled it, or pending again. Marking it the same way twice changes nothing.";
+  "Mark an item of your For list completed once you answered or handled it, or pending again, as Slack's Mark unread brings a message back. " +
+  "Marking it the same way twice changes nothing.";
 
 /** The owner as an agent reads him, as in a post's reactions (apps/chat/server/reactions.ts). */
 const OWNER_FOR_AGENTS = "Sieun (owner)";
@@ -38,6 +39,12 @@ export function reactionsText(item: Pick<ForMeItem, "reactions">): string {
   return rows.length ? `[reactions: ${rows.map(row => `${row.emoji} ${row.by.map(who).join(", ")}`).join(" · ")}]` : "";
 }
 
+/** The agent's own save of an item, in the form every agent-facing surface shows it: `[saved for later · reminder 2026-11-20 05:42Z]`. */
+export function laterText(item: Pick<ForMeItem, "later">): string {
+  if (!item.later?.saved) return "";
+  return `[saved for later${item.later.remindAt !== undefined ? ` · reminder ${time(item.later.remindAt)}` : ""}]`;
+}
+
 /** One item as the agent reads it: a header line, its reactions when it has any, then the post's text. */
 export function itemText(item: ForMeItem): string {
   const head = [
@@ -48,7 +55,8 @@ export function itemText(item: ForMeItem): string {
     item.status === "completed" && item.completedAt !== undefined ? `completed ${time(item.completedAt)}` : item.status,
   ].join(" · ");
   const reactions = reactionsText(item);
-  return [head, ...(reactions ? [reactions] : []), item.text].join("\n");
+  const later = laterText(item);
+  return [head, ...(reactions || later ? [[reactions, later].filter(Boolean).join(" ")] : []), item.text].join("\n");
 }
 
 /** The tool's answer: a count line, then one block per item, newest activity first as the server sorts them. */

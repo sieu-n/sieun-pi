@@ -7,6 +7,7 @@
 import type { CheckInSetting, CheckInSettings } from "../../../../legacy/prime/user-history/src/checkin-settings.ts";
 import type { ChatAgent, ChatBoard, OwnerTodo } from "../../../../legacy/prime/user-history/src/shared/types.ts";
 import type { ForMeItem, ForMeList, ForMeStatus } from "../../../../apps/chat/web/src/lib/api/types.ts";
+import type { LaterChange } from "./later.ts";
 
 export const CHAT_URL_ENV = "PI_HOST_CHAT_URL";
 export const DEFAULT_CHAT_URL = "http://127.0.0.1:5184";
@@ -73,6 +74,18 @@ export class ChatApp {
   async react(thread: string, change: { message: string; emoji: string; on: boolean }, signal?: AbortSignal): Promise<{ text: string }> {
     const body = await this.call<{ text?: unknown }>("POST", this.thread(thread, "reactions"), change, signal);
     return { text: typeof body?.text === "string" ? body.text : `${change.emoji} is ${change.on ? "on" : "off"} ${change.message}.` };
+  }
+
+  /** Sets this thread's agent's Later item for a post (`POST /api/threads/:id/later`); the answer's `text` is the tool's result line. */
+  async later(thread: string, change: LaterChange, signal?: AbortSignal): Promise<{ text: string }> {
+    const body = await this.call<{ text?: unknown }>("POST", this.thread(thread, "later"), change, signal);
+    return { text: typeof body?.text === "string" ? body.text : `Saved ${change.message}.` };
+  }
+
+  /** This thread's agent's Later list with `state`, written as the agent reads it (`GET /api/threads/:id/later`). */
+  async laterList(thread: string, state: "open" | "done", signal?: AbortSignal): Promise<{ text: string }> {
+    const body = await this.call<{ text?: unknown }>("GET", this.thread(thread, `later?state=${state}`), undefined, signal);
+    return { text: typeof body?.text === "string" ? body.text : "No saved messages." };
   }
 
   /** The open todos the owner's other chats asked him, which tell_owner's same-ask check reads (Prime's `otherAsks`). */
