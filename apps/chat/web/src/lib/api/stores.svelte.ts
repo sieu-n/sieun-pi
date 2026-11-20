@@ -791,9 +791,48 @@ function boardsAhead(agents: readonly AgentSummary[] = global.agents): void {
 const rooms = new ReadAhead(warmTimeline(), viewingTimeline);
 function roomsAhead(sidebar: Sidebar): void {
   const unread = (room: ConversationSummary) => Number(room.unread > 0 || room.hasNew);
-  rooms.want([...sidebar.solo, ...sidebar.channels, ...sidebar.dms]
-    .sort((a, b) => unread(b) - unread(a) || b.lastActivityAt - a.lastActivityAt).slice(0, ROOMS_AHEAD)
-    .map(room => ({ id: room.id, at: room.lastActivityAt, working: room.status === "working" })));
+  const list = [...sidebar.solo, ...sidebar.channels, ...sidebar.dms]
+    .sort((a, b) => unread(b) - unread(a) || b.lastActivityAt - a.lastActivityAt).slice(0, ROOMS_AHEAD);
+  rooms.want(list.map(room => ({ id: room.id, at: room.lastActivityAt, working: room.status === "working" })));
+  followRooms(list.map(room => room.id));
+}
+
+/**
+ * The sidebar rooms read ahead, each watched on the socket for as long as it is in that list, so the page kept for each one and for each
+ * kept thread of a channel takes every post and reply as it lands, and an open shows them in the first frame. On 11-20 the owner's opens
+ * of rooms that got posts after the page last read them waited one round trip, 197 to 259 ms, for those posts (requests/2026-11-20.jsonl):
+ * a room an agent works in is not read ahead again until it goes idle. A watch also brings the posts after the newest one the kept page
+ * holds, so a page load catches up a kept room before it opens.
+ */
+const followed = new Map<ConversationId, () => void>();
+let following = false;
+
+function followRooms(ids: readonly ConversationId[]): void {
+  if (!following) {
+    following = true;
+    live.on(event => (event.type === "items" && followed.has(event.conversation) ? keepArrived(event.conversation, event.items, event.removed ?? []) : undefined));
+  }
+  const wanted = new Set(ids);
+  for (const [id, stop] of followed) {
+    if (wanted.has(id)) continue;
+    stop();
+    followed.delete(id);
+  }
+  for (const id of wanted) if (!followed.has(id)) followed.set(id, live.watch(id, () => timelinePages.last(id)?.items.findLast(item => !isPending(item))?.id));
+}
+
+/** Puts posts and replies the socket brought into the pages kept for a room and its threads that no view shows now. */
+function keepArrived(id: ConversationId, items: readonly Item[], removed: readonly string[]): void {
+  const page = timelinePages.viewing(id) ? undefined : timelinePages.last(id);
+  if (page) timelinePages.remember(id, { ...page, items: merge(page.items, shownItems(id, items), new Set(), removed) });
+  if (!id.startsWith("ch_")) return;
+  for (const item of items) {
+    if (item.kind !== "message") continue;
+    const key = repliesKey(id, item.threadRoot ?? item.id);
+    const thread = repliesPages.viewing(key) ? undefined : repliesPages.last(key);
+    if (!thread) continue;
+    repliesPages.remember(key, item.threadRoot ? { ...thread, items: merge(thread.items, [item], new Set()) } : { ...thread, root: item });
+  }
 }
 
 /**
@@ -1106,8 +1145,10 @@ export class Timeline {
   /** `page()`, or undefined when the view shows what it showed the last time this was asked. */
   private showing(): TimelineShown | undefined {
     if (this.keptOf?.items === this.items && this.keptOf.header === this.header) return undefined;
-    this.keptOf = { items: this.items, header: this.header };
-    return this.page();
+    const page = this.page();
+    // A view that shows no page yet, still loading or failed, records nothing, so its first page is kept when it comes.
+    if (page) this.keptOf = { items: this.items, header: this.header };
+    return page;
   }
 
   close(): void {
@@ -1200,9 +1241,11 @@ export class Replies {
 
   private keptOf: { root: Item | null; items: Item[] } | undefined;
   private showing(): RepliesShown | undefined {
+    const page = this.page();
     if (this.keptOf?.root === this.root && this.keptOf.items === this.items) return undefined;
-    this.keptOf = { root: this.root, items: this.items };
-    return this.page();
+    // While the replies load, root and items may already be the ones the first page brings, so nothing is recorded until it shows.
+    if (page) this.keptOf = { root: this.root, items: this.items };
+    return page;
   }
 }
 

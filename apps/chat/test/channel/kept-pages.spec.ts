@@ -155,3 +155,56 @@ test("a reload after live posts shows them from the page it kept, so the reads b
   expect(of(`/api/c/${room.id}/items`)).toEqual(["shown"]);
   expect(of(`/api/c/${room.id}/replies/${root}`)).toEqual(["shown"]);
 });
+
+test("a room and a thread that got posts while the owner was elsewhere open with those posts, kept from the socket", async ({ page, request }) => {
+  await page.addInitScript(() => {
+    navigator.sendBeacon = () => false;
+  });
+  const word = tag();
+  const room = (await (await request.post("/api/rooms", { data: { kind: "channel", name: `kept-follow-${word}`, members: [] } })).json()) as { id: string };
+  const send = async (text: string, threadRoot?: string) => {
+    const response = await request.post(`/api/c/${room.id}/send`, { data: { text, requestId: crypto.randomUUID(), ...(threadRoot ? { threadRoot } : {}) } });
+    expect(response.ok()).toBe(true);
+  };
+  await send(`root ${word}`);
+  const root = ((await (await request.get(`/api/c/${room.id}/items`)).json()) as { items: { id: string }[] }).items[0]!.id;
+  await send(`first reply ${word}`, root);
+  const frames: string[] = [];
+  page.on("websocket", (socket) => socket.on("framereceived", (frame) => frames.push(String(frame.payload))));
+  await open(page, `#/c/${room.id}?thread=${root}`);
+  const pane = page.getByTestId("thread-pane");
+  await expect(pane.getByText(`first reply ${word}`)).toBeVisible();
+  await page.evaluate(() => (location.hash = "#/c/ch_general"));
+  await expect(conversation(page).locator("[data-message-id]").first()).toBeVisible();
+
+  // Agents post in the room and its thread while he reads another one.
+  await send(`later post ${word}`);
+  await send(`later reply ${word}`, root);
+  await expect.poll(() => frames.some((f) => f.includes(`later post ${word}`)) && frames.some((f) => f.includes(`later reply ${word}`))).toBe(true);
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
+
+  let release = (): void => undefined;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  await page.route(held, async (route) => {
+    if (route.request().method() !== "GET" || !route.request().url().includes(`/api/c/${room.id}`)) return route.fallback();
+    await gate;
+    await route.fallback();
+  });
+  const refreshed = Promise.all([
+    page.waitForResponse((r) => r.url().includes(`/api/c/${room.id}/items`)),
+    page.waitForResponse((r) => r.url().includes(`/api/c/${room.id}/replies/${root}`)),
+  ]);
+  await page.evaluate(([id, thread]) => (location.hash = `#/c/${id}?thread=${thread}`), [room.id, root]);
+  await expect(conversation(page).getByText(`later post ${word}`)).toBeVisible();
+  await expect(pane.getByText(`later reply ${word}`)).toBeVisible();
+
+  release();
+  await refreshed;
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
+  const batch = page.waitForRequest((r) => r.url().endsWith("/api/timings"));
+  await page.evaluate(() => dispatchEvent(new Event("pagehide")));
+  const samples = ((await batch).postDataJSON() as { samples: { p: string; bg?: string }[] }).samples;
+  const of = (path: string) => samples.filter((s) => s.p === path).map((s) => s.bg ?? "waited");
+  expect(of(`/api/c/${room.id}/items`).at(-1)).toBe("shown");
+  expect(of(`/api/c/${room.id}/replies/${root}`).at(-1)).toBe("shown");
+});
