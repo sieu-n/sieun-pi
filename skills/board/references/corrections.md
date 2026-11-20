@@ -2,7 +2,7 @@
 
 Read this when the owner corrects how you work, whether about board shape, tone or what to report. Apply the correction now and make it hold for every future chat. The owner should never have to give the same correction twice.
 
-1. Change the brief or a skill, because a local note or a local memory alone does not count.
+1. Change the brief or a skill, because a local note or a local memory alone does not count. The refine-harness skill says which skill or AGENTS rule owns a general rule.
 2. For a brief or code change, send the owner's exact words to the thread named `realtime layer` with `await agent_message.send(..., receiver_role="sibling", receiver_name="realtime layer")`.
 3. Leave the harness refine to the service. When a turn that called `correction_add` ends, the chat service runs `/refine --global` in your session aimed at that correction, and when an owner message reads as a correction with nothing recorded, it sends one `[correction check]` line. Call `refine.run` yourself only for a lesson that is no owner correction.
 4. In the same turn, call `correction_add` with the owner's exact words, a one-line rule, 3 to 6 theme key words and what enforces it. Reuse an earlier entry's theme words for the same thing. Set `enforcedBy` to brief, code or test (brief when you leave it out), and `ref` to the brief bullet, file, commit or test, or `pending <job>`.

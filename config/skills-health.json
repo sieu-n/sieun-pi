@@ -45,7 +45,8 @@
   "principle-prove-it-works": "poteto principles",
   "principle-separate-before-serializing-shared-state": "poteto principles",
   "principle-sequence-verifiable-units": "poteto principles",
-  "sw-factory": "board and jobs"
+  "sw-factory": "board and jobs",
+  "refine-harness": "board and jobs"
  },
  "verdicts": [
   {
@@ -814,6 +815,12 @@
    "verdict": "keep",
    "reason": "Written on 11-20 for sw factory reply behavior; too new to judge use.",
    "pathContains": "src/sieun-pi/skills/sw-factory"
+  },
+  {
+   "name": "refine-harness",
+   "verdict": "keep",
+   "reason": "Written on 11-20 for owner p110, where a lesson goes; too new to judge use.",
+   "pathContains": "src/sieun-pi/skills/refine-harness"
   }
  ],
  "harnessRules": [

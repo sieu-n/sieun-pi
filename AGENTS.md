@@ -20,6 +20,8 @@ Every limit in sieun-pi and pi-pool is a soft cap, which states its target, flag
 
 Target Prime Agent first. Do not claim upstream Pi compatibility without a separate real runtime check.
 
+To install a third-party skill the owner names, install that upstream package once and untouched, with no rewritten sections, second copy or extra rules beside it (c226).
+
 Use the repository environment for Python and TypeScript checks. Keep source provenance and third-party notices. Do not publish this repository publicly or to npm without approval.
 
 Several sessions share this checkout and its index. Commit only your own files with `git add -- <new files>` and then `git commit -m "..." -- <your files>`. That commit also updates the shared index for those paths. If you commit through a private index built from HEAD instead, run `git add -- <your files>` on the shared index afterwards, or the shared index keeps the old entries. `npm run develop` sets `core.hooksPath` to `scripts/git-hooks`, whose pre-commit hook refuses a commit that carries stale index entries left behind by another session's private-index commit. Its commit-msg and pre-push hooks refuse a commit that deletes more than 20 tracked files or more than 5% of the tree, as 5557c587a did on 10-18 from a private index built from an empty tree. A real cleanup passes with the line `Deletes: <n> files on purpose` in its message.

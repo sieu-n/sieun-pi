@@ -70,6 +70,7 @@
       "./skills/principle-separate-before-serializing-shared-state/SKILL.md",
       "./skills/principle-sequence-verifiable-units/SKILL.md",
       "./legacy/prime/skills/resume-paused-sessions/SKILL.md",
+      "./skills/refine-harness/SKILL.md",
       "./skills/setup-pstack/SKILL.md",
       "./skills/show-me-your-work/SKILL.md",
       "./skills/sw-factory/SKILL.md",
