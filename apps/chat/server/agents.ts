@@ -97,6 +97,7 @@ export class Agents {
   hostState: (box: string) => AgentHostState | undefined = () => undefined;
   /** The `from` of each unrecorded root's first input as `fileSpawned` read it, or null for an owner input, so a run reads each root once. */
   private readonly starters = new Map<string, string | null>();
+  private filing?: Promise<string[]>;
 
   constructor(
     readonly store: AgentStore,
@@ -330,11 +331,17 @@ export class Agents {
   /**
    * Files each root thread another agent's thread started under that agent, as a job. pi-host's `rlm.create_session` makes a root thread whose
    * first input is an `agent.message` from the thread that called it, and records no other parent. Until 11-20 nothing filed those, so a
-   * job's own `rlm.create_session` jobs, 13 of seo's and 1 of chrome extension's, sat in the sidebar's Solo group as root chats no agent
+   * job's own `rlm.create_session` jobs, 12 of seo's and 1 of chrome extension's, sat in the sidebar's Solo group as root chats no agent
    * holds and got check-ins of their own. The poll calls this after each thread list read. It reads each unrecorded root's first input once
-   * per run, oldest root first, so a job started by a job filed earlier in the same pass is filed too. Answers the threads it filed.
+   * per run, oldest root first, so a job started by a job filed earlier in the same pass is filed too. Answers the threads it filed. A call
+   * while a pass runs gets that pass, because on the 11-20 release the poll and a second refresh each read and filed all 13.
    */
-  async fileSpawned(rows: ReadonlyMap<string, DurableThread>): Promise<string[]> {
+  fileSpawned(rows: ReadonlyMap<string, DurableThread>): Promise<string[]> {
+    this.filing ??= this.fileSpawnedOnce(rows).finally(() => { this.filing = undefined; });
+    return this.filing;
+  }
+
+  private async fileSpawnedOnce(rows: ReadonlyMap<string, DurableThread>): Promise<string[]> {
     const filed: string[] = [];
     const open = this.unrecorded(rows.values()).filter(t => !this.starters.has(t.id)).sort((a, b) => a.createdAt - b.createdAt);
     for (const thread of open) {

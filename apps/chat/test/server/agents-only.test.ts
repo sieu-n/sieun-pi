@@ -165,7 +165,8 @@ describe("registration", () => {
     host.append(nested, 1, { kind: "agent.message", data: { from: spawned.row.id, via: "rlm.create_session" }, model: brief("Refresh the stats.") });
     const owners = host.addThread({ name: "New thread", createdAt: at + 2 });
     host.append(owners, 1, { kind: "pi.user", model: brief("does sft distillation work?") });
-    await s.app.threads.refresh();
+    const passes = await Promise.all([s.app.agents.fileSpawned(new Map([spawned, nested, owners].map(t => [t.row.id, t.row]))), s.app.threads.refresh()]);
+    assert.deepEqual(passes[0], [spawned.row.id, nested.row.id], "a refresh during a pass gets that pass and files nothing twice");
     const jobs = await s.get<AgentSummary[]>("/api/jobs");
     for (const thread of [spawned, nested]) {
       assert.equal(jobs.find(j => j.id === thread.row.id)?.agent?.id, agents.harness, `${thread.row.name} is a job of the agent whose job started it`);
