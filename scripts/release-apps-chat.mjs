@@ -126,6 +126,8 @@ async function archive(repo, sha, into) {
     "packages/pi-host/src/durable/relay-line.ts",
     // It reads an owner post as asking the way the comm guard does (comm-guard.ts asks), so a progress post that answers him is no relay.
     "packages/pi-host/src/durable/comm-guard.ts",
+    // server/agent-folder.ts lists a folder's instruction files with the function pi-host's prompt loads them by.
+    "packages/pi-host/src/durable/context-files.ts",
     // server/host/relay-host.ts speaks the agent relay's frames as agents/protocol.ts defines them, and the legacy shared types the step rules
     // import (server/step-owners.ts) name host-stats.ts's machine view.
     "components/prime-relay",
