@@ -12,7 +12,7 @@
   import { api, markUnread } from "$lib/api";
   import { later, laterMenuItem } from "$lib/later.svelte";
   import RemindDialog from "$lib/RemindDialog.svelte";
-  import { remindedText, remindMenu } from "$lib/remind";
+  import { dueLabel, remindedText, remindMenu } from "$lib/remind";
   import { askNotifyPermission } from "$lib/remind-notify";
   import Markdown from "$lib/ui/Markdown.svelte";
   import LinkCards from "$lib/ui/LinkCards.svelte";
@@ -209,7 +209,7 @@
 {/snippet}
 
 {#snippet savedLabel()}
-  <p class="saved-label" data-saved-label><Icon name="bookmark-filled" size={12} /><a href={hrefFor("later")}>Saved for later</a></p>
+  <p class="saved-label" data-saved-label><Icon name="bookmark-filled" size={12} /><a href={hrefFor("later")}>Saved for later</a>{#if reactable?.later?.remindAt !== undefined}{@const due = dueLabel(reactable.later.remindAt)}<span aria-hidden="true">·</span><span class="saved-due" class:overdue={due.due} data-saved-due>{due.text}</span>{/if}</p>
 {/snippet}
 
 {#snippet images()}
@@ -718,6 +718,12 @@
     font: var(--text-caption);
     letter-spacing: var(--tracking-caption);
     color: var(--accent-link);
+  }
+  .saved-due {
+    color: var(--text-metadata);
+  }
+  .saved-due.overdue {
+    color: var(--text-danger);
   }
   .saved-label a {
     color: inherit;

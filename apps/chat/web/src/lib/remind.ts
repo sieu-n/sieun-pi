@@ -113,3 +113,14 @@ export function remindMenu(opts: {
     ],
   };
 }
+
+/** True when the row's reminder time has come and the row is still open: Slack's Overdue, which the Later badge counts. */
+export function isOverdue(row: { state: string; remindAt?: number }, now = Date.now()): boolean {
+  return row.state === "open" && row.remindAt !== undefined && row.remindAt <= now;
+}
+
+/** In progress with its overdue rows on top, the oldest reminder first, and the rest in the order they came. */
+export function dueFirst<T extends { state: string; remindAt?: number }>(rows: readonly T[], now = Date.now()): T[] {
+  const due = rows.filter(r => isOverdue(r, now)).sort((a, b) => a.remindAt! - b.remindAt!);
+  return [...due, ...rows.filter(r => !isOverdue(r, now))];
+}

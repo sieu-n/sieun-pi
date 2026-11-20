@@ -6,6 +6,12 @@
   import { Avatar, Button, EmptyState, Icon, IconButton, LoadingText, PanelHeader, Tabs, stampLabel } from "$lib/ui";
   import { forTarget, previewText } from "$pages/agents/agents-model";
   import { avatarOf } from "$pages/channel/present";
+  import { api } from "$lib/api";
+  import Menu from "$lib/ui/Menu.svelte";
+  import RemindDialog from "$lib/RemindDialog.svelte";
+  import { dueFirst, dueLabel, isOverdue, remindedText, remindMenu } from "$lib/remind";
+  import { askNotifyPermission } from "$lib/remind-notify";
+  import { toast } from "$lib/ui/toast.svelte";
 
   later.start();
   let now = $state(Date.now());
@@ -14,7 +20,7 @@
 
   /** `#/later` is In progress and `#/later/done` Completed, so back and a link keep the tab. */
   const tab = $derived<LaterState>(router.route.rest[0] === "done" ? "done" : "open");
-  const rows = $derived(later.lists[tab]);
+  const rows = $derived(tab === "open" && later.lists.open ? dueFirst(later.lists.open, now) : later.lists[tab]);
   const tabs = $derived([
     { id: "open" as const, label: "In progress", badge: later.open || null },
     { id: "done" as const, label: "Completed" },
@@ -23,6 +29,29 @@
     const target = forTarget(row);
     return conversationHref(target.id, { messageId: target.messageId, thread: target.thread });
   };
+  /** The row whose Remind me menu is open, and the button it hangs from; the row whose Custom picker is open. */
+  let remindOpen = $state(false);
+  let remindRow = $state<LaterRow | null>(null);
+  let remindAnchor = $state<HTMLElement | null>(null);
+  let customRow = $state<LaterRow | null>(null);
+  const remindItems = $derived(remindRow ? remindMenu({ remindAt: remindRow.remindAt, set: (at) => remindRow && remind(remindRow, at), custom: () => (customRow = remindRow), clear: () => remindRow && remind(remindRow, null) }).items : []);
+
+  function openRemind(row: LaterRow, e: MouseEvent) {
+    remindRow = row;
+    remindAnchor = e.currentTarget as HTMLElement;
+    remindOpen = true;
+  }
+
+  /** Sets, snoozes or clears a row's reminder; the live later event re-reads the list. */
+  async function remind(row: LaterRow, at: number | null) {
+    try {
+      if (at !== null) void askNotifyPermission();
+      await api.patchLater(row.id, { remindAt: at });
+      toast.show(at === null ? "Reminder removed" : remindedText(at));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not change the reminder");
+    }
+  }
   const roomIcon = (row: LaterRow) => (row.roomKind === "dm" ? "user" : row.roomKind === "solo" ? "chat" : null);
 </script>
 
@@ -47,7 +76,8 @@
     {:else}
       <ul class="rows" aria-label={tab === "open" ? "In progress" : "Completed"}>
         {#each rows as row (row.id)}
-          <li class="row" data-later-id={row.id}>
+          {@const overdue = isOverdue(row, now)}
+          <li class="row" class:overdue data-later-id={row.id} data-overdue={overdue || undefined}>
             <a class="open" href={hrefOf(row)} data-later-open>
               <span class="avatar">
                 {#if row.author}<Avatar {...avatarOf(row.author)} seed={row.author.id} size={36} />{:else}<span class="no-author"><Icon name="trash" size={16} /></span>{/if}
@@ -62,6 +92,9 @@
                   <strong class="author t-label-sm">{row.author?.name ?? "Deleted message"}</strong>
                   <time class="t-caption" datetime={new Date(row.at).toISOString()} title={stampLabel(row.at, now)}>{stampLabel(row.at, now)}</time>
                 </span>
+                {#if row.state === "open" && row.remindAt !== undefined}
+                  <span class="due t-caption" class:overdue data-later-due><Icon name="clock" size={12} />{dueLabel(row.remindAt, now).text}</span>
+                {/if}
                 {#if row.gone}
                   <span class="preview t-body gone">This message was deleted.</span>
                 {:else}
@@ -72,6 +105,7 @@
             <span class="row-actions">
               {#if row.state === "open"}
                 <IconButton size="sm" icon="check" label="Mark complete" onclick={() => later.setState(row, "done")} data-later-done />
+                <IconButton size="sm" icon="clock" label={overdue ? "Snooze" : row.remindAt !== undefined ? "Change reminder" : "Remind me"} aria-haspopup="menu" onclick={(e: MouseEvent) => openRemind(row, e)} data-later-remind />
               {:else}
                 <IconButton size="sm" icon="refresh" label="Move to In progress" onclick={() => later.setState(row, "open")} data-later-reopen />
               {/if}
@@ -83,6 +117,8 @@
     {/if}
   </div>
 </div>
+{#if remindOpen}<Menu bind:open={remindOpen} anchor={remindAnchor} items={remindItems} placement="bottom-end" label={remindRow && isOverdue(remindRow, now) ? "Snooze" : "Remind me"} />{/if}
+{#if customRow}<RemindDialog title="Remind me" at={customRow.remindAt} onpick={(at) => (customRow ? remind(customRow, at) : undefined)} onclose={() => (customRow = null)} />{/if}
 
 <style>
   .page { display: flex; flex-direction: column; height: 100%; min-height: 0; }
@@ -105,6 +141,8 @@
   .heading time { color: var(--text-metadata); flex: none; }
   .preview { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; max-inline-size: 72ch; white-space: pre-line; color: var(--text-standard); }
   .preview.gone { color: var(--text-subtle); font-style: italic; }
+  .due { display: flex; align-items: center; gap: 4px; color: var(--text-metadata); }
+  .due.overdue { color: var(--text-danger); font-weight: 600; }
   .row-actions { position: absolute; top: 8px; right: var(--space-3); display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--surface-panel); box-shadow: var(--shadow-float); opacity: 0; }
   .row:hover .row-actions, .row:focus-within .row-actions { opacity: 1; }
 </style>
