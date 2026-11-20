@@ -56,6 +56,9 @@ test("a comm thread's post after its hand-over in the turn is refused unless it 
   assert.match(commPostRefusal(RELAYS[0]![0], handed)!, /handed this to your work thread/);
   assert.equal(commPostRefusal("Which repo should the panel list cover, auto-sns-agent only or every repo?", handed), undefined);
   assert.match(commPostRefusal("The vent thread is listing the panels now, want the logins too?", handed)!, /handed this to your work thread/);
+  assert.equal(commPostRefusal("mostly yes, prod and staging are off. checking the leftovers\n- [x] prod moved on 11-07\n- [ ] 83 repo files name the old cloud", handed), undefined, "a checklist with an open item goes out");
+  assert.match(commPostRefusal("done\n- [x] prod moved on 11-07", handed)!, /handed this to your work thread/, "a list with no open item is a result, which waits for the report");
+  assert.match(commPostRefusal("- [ ] the vent thread is listing the panels now", handed)!, /handed this to your work thread/, "relay words still refuse a checklist");
 });
 
 test("hand-over words are refused on any turn, and progress words unless the owner started the turn with a question", () => {

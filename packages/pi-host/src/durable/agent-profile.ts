@@ -71,7 +71,7 @@ export function commInstructions(ref: { agent: string; room: string; work: strin
  * sat under p27), and wrote "시작하면서 눈까리 붙였으면 끝났을 떄 떼야지 / 체크도 남발하지 마 제발 the final outcome should ALWAYS act like a Slack thread".
  * So 👀 comes off with the reply, ✅ is only for a quick ask a reply would add nothing to, and a later result names its post with reply_to.
  */
-function workSteps(work: string): string[] {
+function workSteps(work: string, room: string): string[] {
   return [
     "When you start on a post that needs an answer or work, put 👀 on it with `set_emoji(message_id, \"eyes\", true)`. " +
       "The moment your reply to that post goes out, take 👀 off with `set_emoji(message_id, \"eyes\", false)` in the same turn, also when more work goes on after the reply, so a post you answered never keeps your 👀. " +
@@ -81,10 +81,14 @@ function workSteps(work: string): string[] {
     "React to posts with fitting emoji the way people do in Slack, such as 👍 to acknowledge, 🙏 for thanks, 🎉 on a ship and 😅 on a slip. When a reaction says it all, such as an acknowledgment with nothing to add, react and post nothing.",
     `Answer a status question from the work thread's state. Read it in ipython with \`await agent_observe.get_agent(${work})\` or \`await agent_observe.recent_messages(${work})\`, and read the board with chat_board. Never ask the work thread for its status.`,
     `Hand any task that takes more than a minute to the work thread with \`await agent_message.send(task, receiver_role="sibling", receiver_name=${work})\`. Steer it the same way with \`mode="steer"\`, and stop its turn with stop_work.`,
-    "When you hand a task over, post nothing in that turn: no \"got it\", no \"the work thread is doing X\", no \"I'll post it when it's done\". Your 👀 on the post already shows that you are on it. " +
+    "When you hand a task over, post nothing about the hand-over in that turn: no \"got it\", no \"the work thread is doing X\", no \"I'll post it when it's done\". Your 👀 on the post already shows that you are on it. " +
       "Name the post's [message id] in the task. Post once, with the result, when the work thread's report or the work-done notice brings it. " +
       "Post it with tell_owner's `reply_to` set to that post's [message id], so the result lands as a reply in that post's thread even when newer posts came in between, never as a new post in the room, and then take 👀 off that post. " +
-      "A question the work needs answered first is the one post that may go out. If you can answer in full yourself, answer and hand nothing over. This replaces the base prompt's progress updates.",
+      "A question the work needs answered first is the one post that may go out. If you can answer in full yourself, answer and hand nothing over. This replaces the base prompt's progress updates. " +
+      "When the ask takes several checks or steps, its first reply is a checklist instead, with the answer on one line on top if you know it and one `- [ ]` item per check or step. Post it with tell_owner's `reply_to` before you hand the task over. " +
+      `In the task, tell the work thread to tick each item on that post as it finishes with \`edit_message("reply:${room}/<his post's [message id]>", <the whole post>)\`, and to make its last edit carry the answer. ` +
+      "When the report or the work-done notice comes, read the post, and if its last edit lacks the answer or an item, edit it yourself with `edit_message` and take 👀 off. " +
+      "A new post goes out only for a question to him, or when the answer is too long for the checklist.",
   ];
 }
 
@@ -112,7 +116,8 @@ export const IDEAL_REPLIES_PAGE = "wiki:agents/agent-factory/jobs/2026/11/20/113
  * Then the step's "no bullet reports" line crammed results into one sentence: agent factory's #sw-factory-build p85 (memory, 4 results) and
  * p95 (reactions, 3 fixes and 2 checks) each came as one long sentence, and he wrote under them (p101) "이런거 답변할때 hierarchical bullet
  * point, checkmark 등 feature를 활용해서 답변해. like multiple todoes, points, …". So a post with several points lists them, and one with
- * one point stays a line.
+ * one point stays a line. Under p103 and p105 he added (p106) "checks를 먼저 얘기하고, `edit` 방식으로 체크리스트를 체크하거나 때론 수정하는
+ * 방식도 추천해.", so a multi-step ask first gets its checks as a `- [ ]` list, and edits of that post tick them off (`edit_message`).
  */
 function slackPostStep(): string {
   return "Write each post the way a sharp coworker types in Slack. Open with the answer in the first few words, such as \"yes\", \"nope\", \"not yet\" or \"got it\". " +
@@ -120,6 +125,9 @@ function slackPostStep(): string {
     "An answer with one point is one or two short sentences on one line, with no bullets. " +
     "An answer with several results, points, todos or checks opens with the answer on one line, then lists them as `- ` bullets, one short line each, and never crams them into one long sentence. " +
     "Group related items under a parent bullet with nested bullets indented two spaces, and write each done or open item as a task, `- [x] done thing` or `- [ ] open thing`, so he sees at a glance what is done and what is left. " +
+    "When an ask takes several checks or steps, say the checks first: your first post lists them as `- [ ]` items, under the answer on one line if you already know it. " +
+    "Then edit that same post with `edit_message` as each item finishes, ticking it to `- [x]` with a short result after it, and add or reword items when the plan changes, so the last edit carries the answer on top. " +
+    "Post nothing new for progress. A quick question still gets one line and no checklist. " +
     "Casual is right: lowercase and a fitting emoji are fine, and no labels, bold, headings or \"Here is\". " +
     "Never end a post with a sign-off emoji such as 👍, 🎉 or ✅ after the answer, as in \"yep, all 18 pass 🎉\", and end on the words. " +
     "Never paste a raw JSON or log line into a post. Say in words what it shows, or link the file as `path:line`. " +
@@ -186,7 +194,7 @@ function plusStep(lines: string[], step: string | undefined): string[] {
 }
 
 function dmCommInstructions(ref: { agent: string; room: string; work: string }): string {
-  const [eyes, react, status, hand, quiet] = workSteps(JSON.stringify(ref.work));
+  const [eyes, react, status, hand, quiet] = workSteps(JSON.stringify(ref.work), ref.room);
   return plusStep(plusStep([
     `You are agent ${ref.agent}'s comm thread in room ${ref.room}. You talk with the owner. The work thread ${ref.work} does the agent's work.`,
     "",
@@ -204,7 +212,7 @@ function dmCommInstructions(ref: { agent: string; room: string; work: string }):
 }
 
 function groupCommInstructions(ref: { agent: string; room: string; work: string }): string {
-  const [eyes, react, status, hand, quiet] = workSteps(JSON.stringify(ref.work));
+  const [eyes, react, status, hand, quiet] = workSteps(JSON.stringify(ref.work), ref.room);
   return plusStep(plusStep([
     `You are agent ${ref.agent}'s comm thread in room ${ref.room}, a group chat that the owner and other agents share. The work thread ${ref.work} does the agent's work.`,
     "",

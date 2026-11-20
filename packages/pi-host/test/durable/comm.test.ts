@@ -162,7 +162,7 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
     assert.ok(tools.includes(STOP_WORK_TOOL) && tools.includes("read"), tools.join(", "));
     assert.match(commInstructions(comm), /comm thread in room dm_vent[\s\S]*receiver_name="w-1"[\s\S]*stop_work[\s\S]*c117[\s\S]*tell_owner/);
     for (const room of ["dm_vent", "so_1a2b3c4d", "ch_1a2b3c4d"]) {
-      assert.match(commInstructions({ ...comm, room }), /When you hand a task over, post nothing in that turn[\s\S]*Post once, with the result[\s\S]*replaces the base prompt's progress updates/, room);
+      assert.match(commInstructions({ ...comm, room }), /When you hand a task over, post nothing about the hand-over in that turn[\s\S]*Post once, with the result[\s\S]*replaces the base prompt's progress updates/, room);
       assert.match(commInstructions({ ...comm, room }), /put 👀 on it with `set_emoji\(message_id, "eyes", true\)`\. The moment your reply to that post goes out, take 👀 off with `set_emoji\(message_id, "eyes", false\)` in the same turn, also when more work goes on/, room);
       assert.match(commInstructions({ ...comm, room }), /put no ✅ on a post you replied to\. Put ✅ on a post only for a quick ask/, room);
       assert.doesNotMatch(commInstructions({ ...comm, room }), /white_check_mark|swap 👀 for ✅/, room);
@@ -178,6 +178,8 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
       assert.doesNotMatch(commInstructions({ ...comm, room }), /tables, links|diagram, table or link/, room);
       assert.match(commInstructions({ ...comm, room }), /one point is one or two short sentences on one line, with no bullets[\s\S]*several results, points, todos or checks opens with the answer on one line, then lists them as `- ` bullets[\s\S]*nested bullets[\s\S]*`- \[x\] done thing` or `- \[ \] open thing`[\s\S]*no bullets unless he asks for a list/, room);
       assert.doesNotMatch(commInstructions({ ...comm, room }), /bullet reports/, room);
+      assert.match(commInstructions({ ...comm, room }), /several checks or steps, say the checks first[\s\S]*`- \[ \]` items[\s\S]*edit that same post with `edit_message`[\s\S]*Post nothing new for progress\. A quick question still gets one line and no checklist/, room);
+      assert.match(commInstructions({ ...comm, room }), new RegExp(`its first reply is a checklist instead[\\s\\S]*Post it with tell_owner's \`reply_to\` before you hand the task over[\\s\\S]*edit_message\\("reply:${room}/<his post's \\[message id\\]>"`), room);
     }
     for (const room of ["so_1a2b3c4d", "ch_1a2b3c4d"]) {
       const group = commInstructions({ ...comm, room });
