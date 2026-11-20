@@ -280,11 +280,16 @@ function shell(text) {
 const YAML_VALUE = /(?:^|[:?-][ \t]|[[{,])[ \t]*$/;
 /** A YAML line whose value is a block scalar, `key: |`, `- >-` or `key: |2`. */
 const YAML_BLOCK = /(?:^|[:?-])[ \t]+[|>][-+1-9]{0,2}[ \t]*$/;
+/** A block scalar under a `run` key, a GitHub Actions step's script, as `run: |` or `- run: >-`. */
+const YAML_RUN = /^[ \t]*(?:-[ \t]+)?run[ \t]*:/;
+/** A shell heredoc opener in a script line, `<<EOF`, `<<-'EOF'` or `<< "EOF"`, whose body lines are text, not comments. */
+const HEREDOC_OPEN = /(?<!<)<<-?[ \t]*(['"]?)([A-Za-z_][\w-]*)\1/;
 
 /**
  * YAML or TOML without `#` comments: a `#` at a line start or after a space or tab, outside a quoted string, a TOML
  * `"""` or `'''` string and a YAML block scalar body (the lines under `key: |` or `key: >` that sit deeper than that key),
- * which all stay as they are. A YAML quote opens a string only where a value starts. It does not read a TOML comment with
+ * which all stay as they are, except that a `run` block scalar drops its whole-line shell `#` comments outside a heredoc and
+keeps a `#!` line. A YAML quote opens a string only where a value starts. It does not read a TOML comment with
  * no space before its `#` (`a = 1#note`), a YAML block scalar with an explicit indent less than its key's, or a YAML tag or
  * anchor before a quote (`!!str "a # b"`), so those keep their comment text as code.
  * @param {string} text
@@ -295,13 +300,19 @@ function hashComments(text, yaml) {
 	let lineStart = 0;
 	let outLine = 0;
 	let block = -1;
+	let run = false;
+	let heredoc = '';
 	let i = 0;
 	while (i < text.length) {
 		const c = text[i];
 		if (i === lineStart && block >= 0) {
 			const line = text.slice(i, lineEnd(text, i));
 			if (!line.trim() || indent(line) > block) {
-				out += text.slice(i, i + line.length + 1);
+				const body = line.trim();
+				const comment = run && !heredoc && body.startsWith('#') && !body.startsWith('#!');
+				if (heredoc && body === heredoc) heredoc = '';
+				else if (run && !heredoc && !comment) heredoc = HEREDOC_OPEN.exec(body)?.[2] ?? '';
+				if (!comment) out += text.slice(i, i + line.length + 1);
 				i += line.length + 1;
 				lineStart = i;
 				outLine = out.length;
@@ -314,7 +325,11 @@ function hashComments(text, yaml) {
 			continue;
 		}
 		if (c === '\n') {
-			if (yaml && YAML_BLOCK.test(out.slice(outLine))) block = indent(text.slice(lineStart, i));
+			if (yaml && YAML_BLOCK.test(out.slice(outLine))) {
+				block = indent(text.slice(lineStart, i));
+				run = YAML_RUN.test(out.slice(outLine));
+				heredoc = '';
+			}
 			out += c;
 			i += 1;
 			lineStart = i;

@@ -266,7 +266,7 @@ test('a path::name ref to a YAML list item follows only that item', (t) => {
 test('a comment-only change in a cited YAML or TOML block leaves the page current, and a value change counts', (t) => {
 	const w = fixture(t);
 	const hosts = ({ note = 'heavy keeps 16', vcpus = 16, run = 'echo "#1"' } = {}) =>
-		`ci:\n  guest:\n    # ${note}\n    vcpus_by_class: {heavy: ${vcpus}}  # ${note}\n    label: "ci # guest"\n    run: |\n      # ${run}\n      ${run}\n  slots: 24\n`;
+		`ci:\n  guest:\n    # ${note}\n    vcpus_by_class: {heavy: ${vcpus}}  # ${note}\n    label: "ci # guest"\n    script: |\n      # ${run}\n      ${run}\n  slots: 24\n`;
 	const pyproject = ({ note = 'pinned', line = 100 } = {}) => `[tool.ruff]\n# ${note}\nline-length = ${line} # ${note}\n`;
 	w.write('host-vars.yml', hosts());
 	w.write('pyproject.toml', pyproject());
@@ -382,6 +382,50 @@ test('the turbo.json of 81509c85af keeps both search-e2e tasks current, and a re
 	const rows = w.refsByPage();
 	assert.deepEqual(rows['apps/e2e.html'], [{ ref: 'turbo.json:://#ci:search-e2e', ...at('05') }], 'a comment-only change is no change to the task');
 	assert.deepEqual(rows['apps/guard.html'], [{ ref: 'turbo.json:://#ci:guard-agent', ...at('04') }], 'guard-agent lost 19 inputs');
+});
+
+// 2026-11-20: 4a8e6903ac only re-wrapped a shell comment in the run: | block of staging-deploy.yml's staging_proof job, and 7
+// pages read as behind code on staging-deploy.yml::staging_proof, because code-text.mjs kept every block scalar body as code.
+test('the staging-deploy.yml of 4a8e6903ac keeps staging_proof current, and a changed command still counts', (t) => {
+	const fixtures = new URL('./fixtures/code-text/', import.meta.url);
+	const [before, after] = ['before', 'after'].map((side) => readFileSync(new URL(`4a8e6903ac-${side}-staging-deploy.yml`, fixtures), 'utf8'));
+	const w = fixture(t);
+	w.write('.github/workflows/staging-deploy.yml', before);
+	w.page('proof.html', ['.github/workflows/staging-deploy.yml::staging_proof']);
+	w.init();
+	w.commit('2026-10-20T01:00:00Z', 'pages');
+	w.write('.github/workflows/staging-deploy.yml', after);
+	w.commit('2026-10-20T04:00:00Z', '4a8e6903ac');
+	assert.deepEqual(w.refsByPage(), {}, 'a comment-only change is no change to staging_proof');
+	const command = 'actions/workflows/staging-proof.yml/runs" -f event=workflow_dispatch';
+	const changed = after.replace(command, command.replace('workflow_dispatch', 'push'));
+	assert.notEqual(changed, after);
+	w.write('.github/workflows/staging-deploy.yml', changed);
+	w.commit('2026-10-20T05:00:00Z', 'a command');
+	assert.deepEqual(w.refsByPage(), { 'apps/proof.html': [{ ref: '.github/workflows/staging-deploy.yml::staging_proof', ...at('05') }] });
+});
+
+test('a run block scalar drops whole-line shell comments, and keeps a #! line, a heredoc and every other block scalar', () => {
+	const text = [
+		'steps:',
+		'  - run: |',
+		'      #!/bin/bash',
+		'      # gone',
+		'      echo a # kept',
+		"      cat <<'EOF' > x",
+		'      # kept in a heredoc',
+		'      EOF',
+		'  - name: b',
+		'    run: >-',
+		'      # gone',
+		'      echo b',
+		'    with:',
+		'      script: |',
+		'        # kept in a block that is no run',
+		'',
+	].join('\n');
+	const kept = text.split('\n').filter((line) => !line.endsWith('# gone')).filter(Boolean).join('\n');
+	assert.equal(codeText(text, 'ci.yml'), kept);
 });
 
 test('JSONC and JSON5 comments are no code, and a comment marker inside a string is', () => {

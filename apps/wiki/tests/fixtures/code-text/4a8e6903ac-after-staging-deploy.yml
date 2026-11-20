@@ -1,0 +1,1112 @@
+name: staging-deploy
+
+# Deploy each staging push to the staging stack. land.yml moves staging by a fast-forward pushed with GH_PUSH_TOKEN,
+# and that push starts this workflow (a push made with GITHUB_TOKEN would start none). A red deploy leaves the land
+# green and does not hold the next land, which pushes staging again and starts a new run here.
+#
+# 1. job scope reads the deploy scope (scripts/ci/deploy-staging.mjs scope-land: every app changed since the newest
+#    staging sha with a bound deploy/staging success, and the crawler when its inputs differ from what the staging
+#    crawler serves), checks the crawler gates, and posts the deploy/staging admission (pending) on the sha. Then job
+#    staging_check dispatches staging-check.yml on the admitted sha, so the sha's staging check runs beside its deploy.
+# 2. job metal_image builds and pushes the crawler image first. Then job metal (metal-deploy.yml) deploys the crawler
+#    to us-metal01, while job previews deploys the Vercel apps in scope with prebuilt output (vercel build, then
+#    deploy --prebuilt) and no alias. Job deploy waits for both, pushes Convex, and moves the staging aliases to the new
+#    previews, then deploys research-api on us-metal01 at this sha. When a crawler deploy in scope fails or is skipped, job
+#    deploy first reads the staging crawler (deploy-staging.mjs crawler-serves): it deploys when the crawler serves this
+#    sha's crawler inputs, as after a swap whose later check failed, and fails before any effect when it does not, so
+#    the app stays on its previous version. With Vent in scope it also reads staging Vent (vent-ship-order.mjs
+#    --staging). A failed crawler deploy keeps the run and the deploy/staging fact red.
+# 3. job deploy_staging_status records this run attempt's deploy/staging fact in its log and posts it, which
+#    promote.yml's gate reads (scripts/ci/deploy-staging.mjs).
+# 4. job finish, on every run: it finds whether every run of the staging tip was cancelled, so job converge dispatches a
+#    deploy of the tip, and fails when the staging crawler does not serve through caddy, naming its container state.
+#    Each workflow dispatch (staging_check, staging_proof, converge) is a job of its own that holds actions: write and
+#    runs no repo code, because that grant can dispatch, cancel and re-run any workflow. Job staging_proof dispatches
+#    staging-proof.yml on the deployed sha and ends, so the next deploy starts while the proof runs, except on a release
+#    pin, whose run waits for its proof (see concurrency below).
+# 5. job obs dispatches obs-deploy.yml on this sha once the deploy jobs end, and this run ends without waiting for it.
+#    That run deploys the obs stack, Grafana rules and boards and the otel schema, to prod when this sha changes them
+#    against the release obs serves (owner rule c154), and on a deploy/staging success moves the staging golden probe on
+#    us-metal01 to metal-ops of this sha (owner rule c63). It holds no part of group staging-deploy, so the next land
+#    deploys while obs deploys, and a red obs deploy leaves the deploy/staging fact alone.
+#
+# To deploy staging again without a land, such as after a red deploy or before a promote of a sha land.yml deployed:
+#
+#   gh workflow run staging-deploy.yml --ref staging
+#
+# To deploy a staging land the release owner will promote while later lands queue behind it, pin it before its run
+# starts, while the run waits in the queue. The ref triggers no workflow and needs no force:
+#
+#   git push origin <full staging sha>:refs/release-pin/<full staging sha>
+#
+# Its run then admits although staging landed past it, as long as Convex staging serves no later land, holds the group
+# until its staging-proof ends, and the runs of the later lands deploy the tip after that proof. A pin of the tip itself
+# holds the group through its proof too. A pin left after its promote changes nothing, because only a run of that sha
+# reads it. Delete the old pin when you move it, with git push origin :refs/release-pin/<old sha>: a run still waiting
+# on that pin's proof then frees the group within a minute.
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+# One staging deploy at a time and never cancelled: a deploy mid-flight finishes or fails on its own. queue: max keeps
+# every run waiting in order (GitHub queues up to 100 per group and cancels past that; changelog 2026-05-07), where the
+# default kept one pending run and a newer push replaced it. On 10-30 at 09:36Z the push run of 9380234bdd replaced the
+# pending run of f98e8e1155, the version the release owner meant to promote, so the release slipped a cycle. A queued
+# run of an older sha starts, finds staging landed past it in job scope and admits nothing, so the newest staging sha
+# still deploys, unless that sha is a release pin (refs/release-pin/<sha> above). Job finish still dispatches the tip when
+# every run of it was cancelled (deploy-staging.mjs converge). The group covers the deploy: a run frees it once job
+# staging_proof has dispatched the staging-proof of its sha, so the next land deploys while that proof runs. Only a release
+# pin's run holds the group until the pin's proof ends, so the sha the release owner promotes has a proof about itself
+# alone. Any other proof ends cancelled once a later head's proof starts, and checks at its end whether a later land
+# deployed under it (staging-proof.yml, deploy-staging.mjs proof-served), and then reports itself superseded by that
+# land, whose own proof covers the sha. Lands never wait on this group.
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: false
+  queue: max
+
+# GH_TOKEN sits only on the steps that call GitHub (gh, and the deploy-staging.mjs commands that read or post to it), so
+# a step that runs pnpm, the Vercel or Convex CLI, or env-var.mjs over ssh never holds it in its environment.
+env:
+  # Loads connect-retry.mjs into every Node process of a job once its connect-retry step copies it to $RUNNER_TEMP, and does nothing in a job with no such step. GitHub refuses NODE_OPTIONS in $GITHUB_ENV.
+  NODE_OPTIONS: "--import=data:text/javascript,import{existsSync}from'node:fs';import{pathToFileURL}from'node:url';const{RUNNER_TEMP:t=''}=process.env;const[p]=[t+'/connect-retry.mjs'];if(t&&existsSync(p))await(import(pathToFileURL(p).href))"
+  VERCEL_ORG_ID: team_HkFeqFbbJa5UAIjN0IYINUS0
+  VERCEL_CLI: vercel@53.2.0
+  SHA: ${{ github.sha }}
+
+jobs:
+  # Every job here reads a secret or the Air's tools, so it asks for m1-air-release (check-runner-labels rule 8).
+  scope:
+    name: scope / light
+    runs-on: [self-hosted, m1-air-release]
+    timeout-minutes: 69  # measured: one GitHub rate-limit reset wait in deploy-staging.mjs post (RESET_WAIT_MAX_MS, vendor limit, 60 min) plus 3x the slowest green run, 40075836510 at 2.7 min over 30 days to 2026-11-03
+    permissions:
+      contents: read
+      actions: read
+      statuses: write
+    outputs:
+      admitted: ${{ steps.admit.outputs.admitted }}
+      superseded: ${{ steps.at.outputs.superseded }}
+      pinned: ${{ steps.at.outputs.pinned }}
+      release_pin: ${{ steps.at.outputs.release_pin }}
+      sha: ${{ steps.admit.outputs.admitted == 'true' && github.sha || '' }}
+      search: ${{ steps.scope.outputs.search }}
+      api_portal: ${{ steps.scope.outputs.api_portal }}
+      admin: ${{ steps.scope.outputs.admin }}
+      research_be: ${{ steps.scope.outputs.research_be }}
+      demo: ${{ steps.scope.outputs.demo }}
+      metal: ${{ steps.scope.outputs.metal }}
+      vent: ${{ steps.scope.outputs.vent }}
+    steps:
+      # A sparse checkout another job left in this runner's workspace survives
+      # actions/checkout and hides most files (scripts/ci/clear-sparse.test.mjs).
+      - name: clear a sparse checkout left in the workspace
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE" && [ -d .git ] || exit 0
+          git sparse-checkout disable || true
+          git config --worktree --unset-all core.sparseCheckout || true
+          git config --local --unset-all core.sparseCheckout || true
+          rm -f .git/info/sparse-checkout
+          if [ -n "$(git config --get core.sparseCheckout)" ] || [ -n "$(git config --get-regexp '^remote\..*\.promisor$|^extensions\.partialclone$')" ] || git ls-files -v 2>/dev/null | grep -q '^S '; then rm -rf .git; fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - &connect-retry
+        name: connect-retry / one more try of a fetch whose connect timed out
+        env: { PRELOAD: scripts/ci/connect-retry.mjs }
+        run: |
+          if [ ! -f "$GITHUB_WORKSPACE/$PRELOAD" ]; then echo "::notice title=connect-retry::no $PRELOAD in this checkout"; exit 0; fi
+          cp "$GITHUB_WORKSPACE/$PRELOAD" "$RUNNER_TEMP/connect-retry.mjs"
+          PATH="/opt/homebrew/bin:$PATH" node -e 'console.log(globalThis.fetch[Symbol.for("virev.connectRetry")] ? "connect-retry: loaded" : "::warning title=connect-retry::NODE_OPTIONS did not load connect-retry.mjs")' || echo "::warning title=connect-retry::node did not start with NODE_OPTIONS=$NODE_OPTIONS"
+      - run: |
+          echo /opt/homebrew/bin >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # Staging landed past this sha before the run started: the run of that land deploys it later in the queue, so this
+      # run skips every later step, admits nothing and passes (deploy-staging.mjs stagingAt writes superseded=<tip>),
+      # unless origin holds refs/release-pin/<sha> and Convex staging serves no later land. An admitted run deploys to the end
+      # even when staging lands past it meanwhile. An admitted release pin writes release_pin=true, so job staging_proof
+      # holds the group through its proof.
+      - name: gate / staging still points at this sha
+        id: at
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/deploy-staging.mjs staging-at
+      - name: deploy scope (changed files vs the last staging sha with a deploy/staging success)
+        id: scope
+        if: steps.at.outputs.superseded == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/deploy-staging.mjs scope-land "$(git rev-parse HEAD^1)"
+
+      - name: ci-env / the CI tiers and their reader at the workflow's own commit
+        if: steps.at.outputs.superseded == ''
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .ci-env
+          persist-credentials: false
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            scripts/ci/ci-env.mjs
+            scripts/ci/ci-config.json
+            apps/ci/.env
+            apps/ci/.env.staging
+            apps/ci-e2e/.env.staging
+            apps/ci-push/.env.staging
+            apps/ci-read/.env.staging
+            apps/ci-specs/.env
+            apps/ci-specs/.env.staging
+            apps/infra/metal/ssh/known_hosts
+      # deploy.sh renders /srv/staging/secrets/release.env from apps/infra/.env.staging at the release and keeps the
+      # box wiring, so every name compose requires needs an infra tier row (or, for wiring, a line on the box). On
+      # 2026-10-09 42b95d894e made compose.staging.yml require DEVBOX_PUSH_TOKEN while release.env was hand-kept.
+      # Prints names only. The export takes every module env-var.mjs imports, and export-imports.mjs names any one it
+      # lacks, because run 39856360527 died on 2026-10-22 when it lacked scripts/lib/redact.mjs.
+      - name: gate / staging release.env sets every variable compose requires
+        if: steps.scope.outputs.metal == 'true' || steps.scope.outputs.vent == 'true'
+        env:
+          CI_ENV: ci/staging:KEY=METAL_DEPLOY_SSH_KEY
+          CI_DOTENVX_PRIVATE_KEY_STAGING: ${{ secrets.CI_DOTENVX_PRIVATE_KEY_STAGING }}
+        run: |
+          ci_env_file="$RUNNER_TEMP/ci-env-$$"; PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" node "$GITHUB_WORKSPACE/.ci-env/scripts/ci/ci-env.mjs" --to "$ci_env_file"; . "$ci_env_file"; rm -f "$ci_env_file"; unset ci_env_file
+          dir=$(mktemp -d "$RUNNER_TEMP/ssh.XXXXXX")
+          trap 'rm -rf -- "$dir"' EXIT
+          printf '%s\n' "$KEY" > "$dir/key" && chmod 600 "$dir/key"
+          cp "$GITHUB_WORKSPACE/.ci-env/apps/infra/metal/ssh/known_hosts" "$dir/known_hosts"
+          git archive HEAD -- scripts/repo/env apps/infra/metal/lib apps/infra/metal/ssh scripts/lib/redact.mjs scripts/lib/known-secret-values.mjs ':!*.test.mjs' | tar -x -C "$dir"
+          node scripts/repo/env/export-imports.mjs "$dir"
+          node "$dir/scripts/repo/env/env-var.mjs" required virev-staging --ref "$SHA" --ssh-dir "$dir"
+
+      # The pending status admits this run to deploy SHA: every deployment effect of the run comes after it. A failed
+      # post stops the run here, before any effect, so an earlier deploy/staging fact on SHA stays valid. Job
+      # deploy_staging_status runs only for an admitted run.
+      - name: status / deploy/staging pending (admission before the first deployment effect)
+        id: admit
+        if: steps.at.outputs.superseded == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/deploy-staging.mjs pending
+
+  # The staging check of the admitted sha, in a verify-dev group of its own (staging-check.yml), so the next land never
+  # replaces it and every sha with its own deploy/staging fact gets its own verify-dev/probe. It is its own job so that
+  # actions: write, which can dispatch, cancel and re-run any workflow, reaches no step that runs repo code: job scope
+  # runs repo scripts and env-var.mjs over ssh on this runner. A failed dispatch leaves the deploy going;
+  # staging-check.yml's cron checks the head every 6 h.
+  staging_check:
+    name: dispatch / staging check of the admitted sha
+    needs: scope
+    if: ${{ needs.scope.outputs.admitted == 'true' }}
+    runs-on: [self-hosted, m1-air-release]
+    timeout-minutes: 2  # measured: slowest green run 41297822697 took 0.6 min over 30 days to 2026-11-03, 3x
+    permissions:
+      actions: write
+    steps:
+      - name: dispatch / staging check of the admitted sha
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ADMITTED: ${{ needs.scope.outputs.sha }}
+        run: |
+          [[ "$ADMITTED" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job scope admitted no full sha: '$ADMITTED'"; exit 1; }
+          PATH="/opt/homebrew/bin:$PATH" gh workflow run staging-check.yml --repo "$GITHUB_REPOSITORY" --ref staging -f sha="$ADMITTED"
+
+  # The crawler-v3 (and Vent) images of this sha, built and pushed before job previews starts. metal-deploy.yml's build
+  # and job previews both hold build-slot. When the build and the Vercel builds (then in job deploy) queued together,
+  # the Vercel builds took the slot first and the box deploy waited for all of it: 15.6 min in run 39285580785 and
+  # 15.3 min in run 39254244270, on 2026-10-19. This build took 1.3 to 5.9 min in those 10-19 runs.
+  metal_image:
+    name: metal staging image
+    needs: scope
+    if: ${{ needs.scope.outputs.admitted == 'true' && (needs.scope.outputs.metal == 'true' || needs.scope.outputs.vent == 'true' || needs.scope.outputs.research_be == 'true') }}
+    permissions:
+      contents: read
+      packages: write
+      # metal-deploy.yml's build job reads verify-dev runs and statuses for its prod gate.
+      actions: read
+      statuses: read
+    uses: ./.github/workflows/metal-deploy.yml
+    with:
+      environment: staging
+      ref: ${{ github.sha }}
+      vent: ${{ needs.scope.outputs.vent == 'true' }}
+      research: ${{ needs.scope.outputs.research_be == 'true' }}
+      # A land that changes only research-agent-be builds no crawler-v3, because job metal deploys no crawler for it.
+      crawler: ${{ needs.scope.outputs.metal == 'true' || needs.scope.outputs.vent == 'true' }}
+      dry_run: true
+    secrets: inherit
+
+  # crawler-v3 (and Vent when its inputs changed) on us-metal01: read the digests job metal_image pushed (prebuilt, so
+  # outside build-slot), migration one-shot, compose up, /health + /health/schema. require_staging makes its deploy job
+  # skip and pass when the staging crawler already serves a later land (output superseded), and refuse when staging was
+  # rewound.
+  metal:
+    name: metal staging deploy
+    needs: [scope, metal_image]
+    if: ${{ needs.scope.outputs.admitted == 'true' && (needs.scope.outputs.metal == 'true' || needs.scope.outputs.vent == 'true') }}
+    permissions:
+      contents: read
+      packages: write
+      # metal-deploy.yml's build job reads verify-dev runs and statuses for its prod gate.
+      actions: read
+      statuses: read
+    uses: ./.github/workflows/metal-deploy.yml
+    with:
+      environment: staging
+      ref: ${{ github.sha }}
+      require_staging: true
+      vent: ${{ needs.scope.outputs.vent == 'true' }}
+      prebuilt: true
+    secrets: inherit
+
+  # The Vercel previews of this sha: search, api-portal and admin built and deployed with prebuilt output and no alias.
+  # It needs only job scope and job metal_image, so it runs beside job metal's crawler deploy on us-metal01, and job deploy
+  # moves the aliases once both have succeeded. It starts after job metal_image because both hold build-slot: when job
+  # deploy and metal-deploy.yml's build queued together, the box deploy waited 15.6 min (run 39285580785, 10-19).
+  previews:
+    name: deploy previews / m1-air
+    needs: [scope, metal_image]
+    if: ${{ !cancelled() && needs.scope.outputs.admitted == 'true' }}
+    runs-on: [self-hosted, m1-air-release]
+    # build-slot is the box-wide build heap slot shared with promote.yml, verify-dev and the metal-deploy build: the
+    # 16GB Air cannot hold two build heaps, and one search build already needs a 12GB heap. Every build-slot job sets
+    # queue: max, so a newer waiter never cancels an older one (scripts/ci/build-slot-queue.test.mjs).
+    concurrency:
+      group: build-slot
+      cancel-in-progress: false
+      queue: max
+    timeout-minutes: 121  # measured: slowest green deploy run 38255361872 took 40.3 min over 30 days to 2026-10-13, 3x
+    outputs:
+      search: ${{ steps.dep_search.outputs.url }}
+      api_portal: ${{ steps.dep_api.outputs.url }}
+      admin: ${{ steps.dep_admin.outputs.url }}
+    steps:
+      # A sparse checkout another job left in this runner's workspace survives
+      # actions/checkout and hides most files (scripts/ci/clear-sparse.test.mjs).
+      - name: clear a sparse checkout left in the workspace
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE" && [ -d .git ] || exit 0
+          git sparse-checkout disable || true
+          git config --worktree --unset-all core.sparseCheckout || true
+          git config --local --unset-all core.sparseCheckout || true
+          rm -f .git/info/sparse-checkout
+          if [ -n "$(git config --get core.sparseCheckout)" ] || [ -n "$(git config --get-regexp '^remote\..*\.promisor$|^extensions\.partialclone$')" ] || git ls-files -v 2>/dev/null | grep -q '^S '; then rm -rf .git; fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - *connect-retry
+      # A re-run of an older sha must not roll staging back under a newer sha's deploy/staging fact. When Convex staging
+      # serves a later staging land, the gate writes superseded=<land> and every later step skips. Otherwise the job
+      # deploys this sha even when staging has landed past it, since the newer land's run comes after this one: the old
+      # skip on any newer land starved staging during the lands of 10-27 23:20Z to 10-28 01:04Z (deploy-staging.mjs).
+      - name: gate / Convex staging serves no later land
+        id: at
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          export PATH="/opt/homebrew/bin:$PATH"
+          node scripts/ci/deploy-staging.mjs forward convex
+      # Both runners share $HOME, so pnpm goes to runner.temp. The pnpm store stays in this runner's tool cache.
+      - if: steps.at.outputs.superseded == ''
+        run: |
+          echo /opt/homebrew/bin >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "npm_config_store_dir=$RUNNER_TOOL_CACHE/pnpm-store" >> "$GITHUB_ENV"
+      - if: steps.at.outputs.superseded == ''
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+          dest: ${{ runner.temp }}/setup-pnpm
+      - if: steps.at.outputs.superseded == ''
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - if: steps.at.outputs.superseded == ''
+        run: pnpm install --frozen-lockfile
+
+      # Every app's blob from this tree (a no-op when its fingerprint comment matches), then all four checked,
+      # before any deployment is created, so the store equals the tree this run deploys. A source without a required
+      # key, or a changed CONVEX_WEBHOOK_SECRET, refuses here; the rotation runbook is in
+      # .agents/skills/repo/env-dotenvx/references/env-and-secrets.md (Rotating CONVEX_WEBHOOK_SECRET).
+      - name: ci-env / the CI tiers and their reader at the workflow's own commit
+        if: steps.at.outputs.superseded == ''
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .ci-env
+          persist-credentials: false
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            scripts/ci/ci-env.mjs
+            scripts/ci/ci-config.json
+            apps/ci/.env
+            apps/ci/.env.staging
+            apps/ci-e2e/.env.staging
+            apps/ci-push/.env.staging
+            apps/ci-read/.env.staging
+            apps/ci-specs/.env
+            apps/ci-specs/.env.staging
+      - name: deploy / staging Vercel blobs from this tree
+        if: steps.at.outputs.superseded == ''
+        env:
+          CI_ENV: ci/staging:VERCEL_TOKEN
+          CI_DOTENVX_PRIVATE_KEY_STAGING: ${{ secrets.CI_DOTENVX_PRIVATE_KEY_STAGING }}
+        run: |
+          ci_env_file="$RUNNER_TEMP/ci-env-$$"; PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" node "$GITHUB_WORKSPACE/.ci-env/scripts/ci/ci-env.mjs" --to "$ci_env_file"; . "$ci_env_file"; rm -f "$ci_env_file"; unset ci_env_file
+          node scripts/repo/env/vercel-blobs.mjs push --tier staging --ref HEAD --since HEAD^1
+          node scripts/repo/env/vercel-blobs.mjs check --tier staging
+
+      # search and api-portal build and deploy their prebuilt previews here, before the Convex push, and job deploy moves their
+      # staging aliases in the step right after it. When they deployed after the push, the old search build read the new Convex
+      # answers until its alias moved: in run 41040562758 on 10-30 Convex staging took a644a567e2 at 10:32:02Z, the new
+      # search took staging.virev.ai at 10:34:50Z, and a /app/dashboards load at 10:33:44Z answered 500 in navCounts on
+      # the new workspaceFunnel.fold shape. Each alias took about 3 s there.
+      - name: deploy / vercel / search (staging preview, before Convex)
+        id: dep_search
+        if: steps.at.outputs.superseded == '' && needs.scope.outputs.search == 'true'
+        env:
+          CI_ENV: ci/staging:VERCEL_TOKEN
+          CI_DOTENVX_PRIVATE_KEY_STAGING: ${{ secrets.CI_DOTENVX_PRIVATE_KEY_STAGING }}
+          VERCEL_PROJECT_ID: prj_5LOUeXPNiEAUUgCaPykI3mvEWEFi
+          DOTENVX_PRIVATE_KEY: ${{ secrets.SEARCH_DOTENVX_PRIVATE_KEY_STAGING }}
+        run: |
+          ci_env_file="$RUNNER_TEMP/ci-env-$$"; PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" node "$GITHUB_WORKSPACE/.ci-env/scripts/ci/ci-env.mjs" --to "$ci_env_file"; . "$ci_env_file"; rm -f "$ci_env_file"; unset ci_env_file
+          rm -rf .vercel
+          npx -y $VERCEL_CLI pull --yes --environment=preview --git-branch=staging
+          node scripts/ci/vercel-build.mjs search staging
+          url=$(node scripts/ci/vercel-deploy.mjs)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: deploy / vercel / api-portal (staging preview, before Convex)
+        id: dep_api
+        if: steps.at.outputs.superseded == '' && needs.scope.outputs.api_portal == 'true'
+        env:
+          CI_ENV: ci/staging:VERCEL_TOKEN
+          CI_DOTENVX_PRIVATE_KEY_STAGING: ${{ secrets.CI_DOTENVX_PRIVATE_KEY_STAGING }}
+          VERCEL_PROJECT_ID: prj_PdIcDaTQjbvB0ijNL9eUsq4tPAuL
+          DOTENVX_PRIVATE_KEY: ${{ secrets.API_PORTAL_DOTENVX_PRIVATE_KEY_STAGING }}
+        run: |
+          ci_env_file="$RUNNER_TEMP/ci-env-$$"; PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" node "$GITHUB_WORKSPACE/.ci-env/scripts/ci/ci-env.mjs" --to "$ci_env_file"; . "$ci_env_file"; rm -f "$ci_env_file"; unset ci_env_file
+          rm -rf .vercel
+          npx -y $VERCEL_CLI pull --yes --environment=preview --git-branch=staging
+          node scripts/ci/vercel-build.mjs api-portal staging
+          # A land whose api-portal output and env match what staging-api.virev.ai serves deploys nothing, and the next job
+          # points that domain at the same deployment again (outputTree in vercel-deploy.mjs, p777).
+          url=$(node scripts/ci/vercel-deploy.mjs --unless-served staging-api.virev.ai)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      # admin reads no Convex and has no alias, so its preview goes out here too.
+      - name: deploy / vercel / admin (staging preview)
+        id: dep_admin
+        if: steps.at.outputs.superseded == '' && needs.scope.outputs.admin == 'true'
+        env:
+          CI_ENV: ci/staging:VERCEL_TOKEN
+          CI_DOTENVX_PRIVATE_KEY_STAGING: ${{ secrets.CI_DOTENVX_PRIVATE_KEY_STAGING }}
+          VERCEL_PROJECT_ID: prj_Ef3aF1Nm4efeUiRGwwvcpz4wTFYV
+          DOTENVX_PRIVATE_KEY: ${{ secrets.ADMIN_DOTENVX_PRIVATE_KEY_STAGING }}
+        run: |
+          ci_env_file="$RUNNER_TEMP/ci-env-$$"; PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" node "$GITHUB_WORKSPACE/.ci-env/scripts/ci/ci-env.mjs" --to "$ci_env_file"; . "$ci_env_file"; rm -f "$ci_env_file"; unset ci_env_file
+          rm -rf .vercel
+          npx -y $VERCEL_CLI pull --yes --environment=preview --git-branch=staging
+          node scripts/ci/vercel-build.mjs admin staging
+          # admin has no staging domain, so a build that matches its newest ready preview deploys nothing (p777).
+          url=$(node scripts/ci/vercel-deploy.mjs --unless-served newest-preview)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+  # Convex, then the staging aliases of the previews job's deployments, then the health checks. It runs after job metal
+  # ends, so Convex never calls a crawler contract the box does not serve. In run 41064244340 on 10-30 Convex and search
+  # went out beside job metal at 13:45:49Z, the crawler deploy failed at 13:47:53Z, and for 36 min the app called
+  # brandAccounts on crawler bd24798, so 8 /creators/org/rebuild calls answered 422. What the app needs is a crawler
+  # that serves this sha's contract, not a green job metal: in run 41754641960 on 11-04 the crawler swap served
+  # 6512e8b63 at 01:52:47Z, a later OpenSearch check failed at 02:32:44Z while the metal box owner had staging OpenSearch
+  # paused for a disk move, and the old rule skipped this job, so Convex and Vercel stayed behind a crawler that already
+  # served them. So when job metal did not succeed with the crawler or Vent in scope, step crawler-serves reads the
+  # staging crawler and fails this job before any effect unless it serves this sha's crawler inputs. With Vent in scope,
+  # the next step also fails it unless staging Vent serves every integration this sha's staging callers may call. Job
+  # metal also succeeds when the staging crawler already serves a later land (output superseded). It builds nothing, so
+  # it holds no build-slot entry and starts as soon as both jobs end.
+  deploy:
+    name: deploy / m1-air
+    needs: [scope, previews, metal_image, metal]
+    if: ${{ !cancelled() && needs.scope.outputs.admitted == 'true' && needs.previews.result == 'success' }}
+    runs-on: [self-hosted, m1-air-release]
+    # packages: read lets the research-api step log the box in to GHCR with this job's token for its pull.
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    timeout-minutes: 121  # measured: slowest green deploy run 38255361872 took 40.3 min over 30 days to 2026-10-13, 3x, when this job also built the previews
+    outputs:
+      sha: ${{ steps.deployed.outputs.sha }}
+      superseded: ${{ steps.at.outputs.superseded }}
+    steps:
+      # A sparse checkout another job left in this runner's workspace survives
+      # actions/checkout and hides most files (scripts/ci/clear-sparse.test.mjs).
+      - name: clear a sparse checkout left in the workspace
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE" && [ -d .git ] || exit 0
+          git sparse-checkout disable || true
+          git config --worktree --unset-all core.sparseCheckout || true
+          git config --local --unset-all core.sparseCheckout || true
+          rm -f .git/info/sparse-checkout
+          if [ -n "$(git config --get core.sparseCheckout)" ] || [ -n "$(git config --get-regexp '^remote\..*\.promisor$|^extensions\.partialclone$')" ] || git ls-files -v 2>/dev/null | grep -q '^S '; then rm -rf .git; fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - *connect-retry
+      # A re-run of an older sha must not roll staging back under a newer sha's deploy/staging fact. When Convex staging
+      # serves a later staging land, the gate writes superseded=<land> and every later step skips. Otherwise the job
+      # deploys this sha even when staging has landed past it, since the newer land's run comes after this one: the old
+      # skip on any newer land starved staging during the lands of 10-27 23:20Z to 10-28 01:04Z (deploy-staging.mjs).
+      - name: gate / Convex staging serves no later land
+        id: at
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          export PATH="/opt/homebrew/bin:$PATH"
+          node scripts/ci/deploy-staging.mjs forward convex
+      # The crawler deploy in scope failed or was skipped: Convex and the aliases go out only when the staging crawler
+      # already serves this sha's crawler inputs (see the job comment). A lost scope output counts as in scope.
+      - name: gate / the staging crawler serves this sha's crawler contract after a failed crawler deploy
+        if: steps.at.outputs.superseded == '' && needs.metal.result != 'success' && !(needs.metal.result == 'skipped' && needs.scope.outputs.metal == 'false' && needs.scope.outputs.vent == 'false')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          export PATH="/opt/homebrew/bin:$PATH"
+          node scripts/ci/deploy-staging.mjs crawler-serves
+      # The Vent deploy in scope failed or was skipped: deploy.sh swaps the crawler before Vent, so the gate above can pass
+      # while staging Vent still runs an older land. Convex and the aliases go out only when staging Vent serves every
+      # integration the staging callers of this sha may call, which keeps out the 404 vent_unknown_integration of the
+      # 11-03 15:01Z prod incident (scripts/ci/vent-ship-order.mjs --staging). A lost scope output counts as in scope.
+      - name: gate / staging Vent serves what this sha's staging callers call after a failed Vent deploy
+        if: steps.at.outputs.superseded == '' && needs.metal.result != 'success' && needs.scope.outputs.vent != 'false'
+        run: |
+          export PATH="/opt/homebrew/bin:$PATH"
+          node scripts/ci/vent-ship-order.mjs --target "$SHA" --staging
+      # Job deploy_staging_status records success only when this equals the sha it posts on.
+      - name: record / the commit this job deploys
+        if: steps.at.outputs.superseded == ''
+        id: deployed
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      # Both runners share $HOME, so pnpm goes to runner.temp. The pnpm store stays in this runner's tool cache.
+      - if: steps.at.outputs.superseded == ''
+        run: |
+          echo /opt/homebrew/bin >> "$GITHUB_PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "npm_config_store_dir=$RUNNER_TOOL_CACHE/pnpm-store" >> "$GITHUB_ENV"
+      - if: steps.at.outputs.superseded == ''
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+          dest: ${{ runner.temp }}/setup-pnpm
+      - if: steps.at.outputs.superseded == ''
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+      - if: steps.at.outputs.superseded == ''
+        run: pnpm install --frozen-lockfile
+
+      - name: ci-env / the CI tiers and their reader at the workflow's own commit
+        if: steps.at.outputs.superseded == ''
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .ci-env
+          persist-credentials: false
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            scripts/ci/ci-env.mjs
+            scripts/ci/ci-config.json
+            apps/ci/.env
+            apps/ci/.env.staging
+            apps/ci-e2e/.env.staging
+            apps/ci-push/.env.staging
+            apps/ci-read/.env.staging
+            apps/ci-specs/.env
+            apps/ci-specs/.env.staging
+            apps/infra/metal/ssh/known_hosts
+      # GET /health on the Convex site answers DEPLOY_GIT_SHA, which this step
+      # writes into convex/lib/deployment.ts, so the bundle carries its own
+      # commit (specs runner revision probe, surface convex). No Convex env var.
+      - name: deploy / convex staging
+        if: steps.at.outputs.superseded == ''
+        env:
+          CI_ENV: ci/staging:CONVEX_SELF_HOSTED_ADMIN_KEY=CONVEX_SELF_HOSTED_ADMIN_KEY_STAGING
+          CONVEX_SELF_HOSTED_URL: https://convex-staging.virev.ai
+          CI_DOTENVX_PRIVATE_KEY_STAGING: ${{ secrets.CI_DOTENVX_PRIVATE_KEY_STAGING }}
+        run: |
+          ci_env_file="$RUNNER_TEMP/ci-env-$$"; PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" node "$GITHUB_WORKSPACE/.ci-env/scripts/ci/ci-env.mjs" --to "$ci_env_file"; . "$ci_env_file"; rm -f "$ci_env_file"; unset ci_env_file
+          # Staging Convex is the self-hosted convex-staging on us-metal01 (apps/infra/metal/README.md, "Staging Convex
+          # on us-metal01"), which the Convex CLI and convex-blobs.mjs reach through the CONVEX_SELF_HOSTED_* pair.
+          sha=$(git rev-parse HEAD)
+          line="export const DEPLOY_GIT_SHA: string | null"
+          sed -i.bak "s/^$line = null;$/$line = '$sha';/" convex/lib/deployment.ts
+          rm convex/lib/deployment.ts.bak
+          # A tree older than the line (a pin or a rollback) deploys as before;
+          # its /health answers revision null. Never fail here: staging or main
+          # has already moved and the crawler is deployed by this point.
+          grep -qx "$line = '$sha';" convex/lib/deployment.ts \
+            || echo "::warning::convex/lib/deployment.ts has no DEPLOY_GIT_SHA null line; /health answers revision null"
+          # The tier blob goes first (repo/env-dotenvx): convex/lib/env.ts reads it beside DOTENV_PRIVATE_KEY_STAGING,
+          # and convex-blobs.mjs skips a deployment that holds no key. Its check runs after the aliases below.
+          node scripts/repo/env/convex-blobs.mjs push --tier staging
+          # --skip-large-indexes-check: the CLI otherwise asks an interactive terminal to confirm any push that deletes an
+          # index over its size line, and CI has none, so an index a commit means to drop fails the deploy. On 2026-10-29
+          # staging-deploy 40860597704 and 40862938906 failed on the two searchContactFindRequests lane indexes
+          # (274,103 documents each) that ec5719d1ee replaced, and neither Mac land deployed.
+          # One retry, only on CommitterFullError: Convex refuses start_push while its committer queue is full.
+          # measured: staging-deploy 40980204332 got that 503 at 01:10:35Z on 2026-10-30 under about 70k writes/min, while
+          # 40977385042 uploaded at 00:35Z under about 130k, so a spike passes; a CLI run takes 11 s to reach start_push.
+          # The step runs as bash -e with no pipefail, so the CLI writes to a file, not through a pipe whose status is tee's.
+          deploy_log="$RUNNER_TEMP/convex-deploy-$$.log"
+          rc=0
+          npx convex deploy --cmd 'echo deployed' --skip-large-indexes-check > "$deploy_log" 2>&1 || rc=$?
+          cat "$deploy_log"
+          if [ "$rc" != 0 ]; then
+            grep -q 'CommitterFullError' "$deploy_log" || exit "$rc"
+            echo "::warning::Convex staging answered CommitterFullError; retrying the upload once"
+            npx convex deploy --cmd 'echo deployed' --skip-large-indexes-check
+          fi
+
+      # The house token row search's HOUSE_TOKEN names, made before the aliases move so the new build finds it at its
+      # first public read, as promote.yml does for prod after promote 26 (11-08) left prod search without its row for
+      # 8 minutes. issueHouse keeps a live row of the same hash, so a land whose token Convex holds writes nothing, and a
+      # failure never holds the aliases, because public pages still answer 200 without the row.
+      - name: deploy / convex staging house token from search's HOUSE_TOKEN (right after Convex)
+        if: steps.at.outputs.superseded == ''
+        continue-on-error: true
+        env:
+          CI_ENV: ci/staging:CONVEX_SELF_HOSTED_ADMIN_KEY=CONVEX_SELF_HOSTED_ADMIN_KEY_STAGING
+          CONVEX_SELF_HOSTED_URL: https://convex-staging.virev.ai
+          CI_DOTENVX_PRIVATE_KEY_STAGING: ${{ secrets.CI_DOTENVX_PRIVATE_KEY_STAGING }}
+          SEARCH_KEY: ${{ secrets.SEARCH_DOTENVX_PRIVATE_KEY_STAGING }}
+        run: |
+          ci_env_file="$RUNNER_TEMP/ci-env-$$"; PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" node "$GITHUB_WORKSPACE/.ci-env/scripts/ci/ci-env.mjs" --to "$ci_env_file"; . "$ci_env_file"; rm -f "$ci_env_file"; unset ci_env_file
+          node scripts/ci/house-token.mjs staging
+
+      # The aliases move right after the Convex push, so the staging domains serve the build that reads its answers.
+      # staging-api.virev.ai is the api-portal staging origin: the golden staging profile (ops/golden/envs/staging.yaml
+      # api-portal.base_url) and the Stripe test-mode webhook (we_1ULhs9HVK1R9hs09aPf0cNe4) use it. It stays behind
+      # Vercel Authentication like every preview; the webhook URL carries its own automation-bypass secret. alias set
+      # ignores VERCEL_ORG_ID and runs in the token's default (personal) scope, which cannot see the team-owned domains.
+      # The step first fails when job previews passed no url for an app in scope, admin included, before any alias.
+      - name: deploy / vercel / staging.virev.ai and staging-api.virev.ai aliases (right after Convex)
+        if: steps.at.outputs.superseded == '' && (needs.scope.outputs.search == 'true' || needs.scope.outputs.api_portal == 'true' || needs.scope.outputs.admin == 'true')
+        env:
+          CI_ENV: ci/staging:VERCEL_TOKEN
+          CI_DOTENVX_PRIVATE_KEY_STAGING: ${{ secrets.CI_DOTENVX_PRIVATE_KEY_STAGING }}
+          URL_SEARCH: ${{ needs.previews.outputs.search }}
+          URL_API: ${{ needs.previews.outputs.api_portal }}
+          URL_ADMIN: ${{ needs.previews.outputs.admin }}
+          SEARCH: ${{ needs.scope.outputs.search }}
+          API_PORTAL: ${{ needs.scope.outputs.api_portal }}
+          ADMIN: ${{ needs.scope.outputs.admin }}
+        run: |
+          if { [ "$SEARCH" = true ] && [ -z "$URL_SEARCH" ]; } || { [ "$API_PORTAL" = true ] && [ -z "$URL_API" ]; } || { [ "$ADMIN" = true ] && [ -z "$URL_ADMIN" ]; }; then
+            echo "::error::job previews passed no preview url for an app in scope (search '$URL_SEARCH', api-portal '$URL_API', admin '$URL_ADMIN')"; exit 1
+          fi
+          ci_env_file="$RUNNER_TEMP/ci-env-$$"; PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" node "$GITHUB_WORKSPACE/.ci-env/scripts/ci/ci-env.mjs" --to "$ci_env_file"; . "$ci_env_file"; rm -f "$ci_env_file"; unset ci_env_file
+          if [ -n "$URL_SEARCH" ]; then npx -y $VERCEL_CLI alias set "$URL_SEARCH" staging.virev.ai --scope "$VERCEL_ORG_ID"; fi
+          if [ -n "$URL_API" ]; then npx -y $VERCEL_CLI alias set "$URL_API" staging-api.virev.ai --scope "$VERCEL_ORG_ID"; fi
+
+      # The Clerk convex JWT template of this tier's instance, declared in convex/org/jwtTemplate.ts. Its lifetime sets how
+      # often an idle tab re-runs every subscribed query: at 60 s prod re-ran each tab's page every 51 s (9,751
+      # identityChange runs an hour against 307 dataChange, 11-10), and 900 s cut staging from about 11,000 to about 290
+      # reruns per tab per hour. A template that matches gets no write. Job metal ships Vent before this job, so its
+      # jwt_templates allow lines are live by now. When that Vent deploy failed, this step fails after the aliases
+      # moved, and the next deploy applies the template.
+      - name: deploy / convex staging Clerk convex JWT template (after the aliases)
+        if: steps.at.outputs.superseded == ''
+        continue-on-error: true
+        env:
+          CI_ENV: ci/staging:CONVEX_SELF_HOSTED_ADMIN_KEY=CONVEX_SELF_HOSTED_ADMIN_KEY_STAGING
+          CONVEX_SELF_HOSTED_URL: https://convex-staging.virev.ai
+          CI_DOTENVX_PRIVATE_KEY_STAGING: ${{ secrets.CI_DOTENVX_PRIVATE_KEY_STAGING }}
+        run: |
+          ci_env_file="$RUNNER_TEMP/ci-env-$$"; PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" node "$GITHUB_WORKSPACE/.ci-env/scripts/ci/ci-env.mjs" --to "$ci_env_file"; . "$ci_env_file"; rm -f "$ci_env_file"; unset ci_env_file
+          npx convex run org/jwtTemplate:ensureConvexTemplate '{}'
+
+      # research-api on us-metal01 at this sha, after the Convex push and the aliases, as job research-api of promote.yml
+      # deploys prod: its runner reads Convex answers at start. At 00:30Z on 10-31 Railway deployed research-api
+      # 29ed928aa0 before staging Convex took c4bad8a98a, it crashed at every start, and staging answered 502. Staging
+      # Vent calls it as http://staging-research-api:8788 (RESEARCH_API_URL in apps/vent/.env.staging). The box pulls
+      # the image job metal_image pushed, logged in with this job's token, and then deploy-unit.sh --service runs deploy.sh --research
+      # in the box unit virev-deploy-staging, as metal-deploy.yml runs a deploy, so a cancel or a lost ssh session never
+      # cuts the swap and its receipt is checked. deploy.sh swaps research-api through its bridge on the live release.
+      # The login stays in this run's own REGISTRY_AUTH dir until this job's last step, so deploy.sh pulls the image again
+      # when a prune deleted it (image_ready, prod metal-deploy 42424090258). A staging metal-deploy job keeps its login in
+      # /run/virev-registry-auth/staging and removes that dir, so this run's dir sits beside it.
+      - name: deploy / staging research-api (us-metal01) at this sha, after Convex
+        id: research
+        if: steps.at.outputs.superseded == '' && needs.scope.outputs.research_be == 'true'
+        env:
+          CI_ENV: ci/staging:KEY=METAL_DEPLOY_SSH_KEY
+          CI_DOTENVX_PRIVATE_KEY_STAGING: ${{ secrets.CI_DOTENVX_PRIVATE_KEY_STAGING }}
+          RESEARCH_REF: ${{ needs.metal_image.outputs.research }}
+          METAL_HOST: us-metal01.tail0c093d.ts.net
+          TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          [[ "$RESEARCH_REF" =~ ^ghcr\.io/.+@sha256:[0-9a-f]{64}$ ]] || { echo "::error::job metal_image passed no research-agent-be image: '$RESEARCH_REF'"; exit 1; }
+          ci_env_file="$RUNNER_TEMP/ci-env-$$"; PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" node "$GITHUB_WORKSPACE/.ci-env/scripts/ci/ci-env.mjs" --to "$ci_env_file"; . "$ci_env_file"; rm -f "$ci_env_file"; unset ci_env_file
+          SSH_DIR="$RUNNER_TEMP/ssh-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-research"; export SSH_DIR
+          REGISTRY_AUTH="/run/virev-registry-auth/staging-research-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"; export REGISTRY_AUTH
+          printf 'SSH_DIR=%s\nREGISTRY_AUTH=%s\n' "$SSH_DIR" "$REGISTRY_AUTH" >> "$GITHUB_ENV"
+          mkdir -m 700 "$SSH_DIR"
+          printf '%s\n' "$KEY" > "$SSH_DIR/key" && chmod 600 "$SSH_DIR/key"
+          cp "$GITHUB_WORKSPACE/.ci-env/apps/infra/metal/ssh/known_hosts" "$SSH_DIR/known_hosts"
+          pull='set -e
+          export DOCKER_CONFIG=$1
+          mkdir -p -m 700 "$DOCKER_CONFIG"
+          docker login ghcr.io -u "$2" --password-stdin > /dev/null
+          docker pull -q "$3" > /dev/null'
+          printf '%s\n' "$TOKEN" | command ssh -i "$SSH_DIR/key" -o UserKnownHostsFile="$SSH_DIR/known_hosts" -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            "root@$METAL_HOST" "bash -c $(printf '%q' "$pull") pull $(printf '%q ' "$REGISTRY_AUTH" "$ACTOR" "$RESEARCH_REF")"
+          bash apps/infra/metal/deploy-unit.sh --service staging "$SHA" --research "research=$RESEARCH_REF"
+
+      - name: check / convex staging env fingerprints
+        if: steps.at.outputs.superseded == ''
+        env:
+          CI_ENV: ci/staging:CONVEX_SELF_HOSTED_ADMIN_KEY=CONVEX_SELF_HOSTED_ADMIN_KEY_STAGING
+          CONVEX_SELF_HOSTED_URL: https://convex-staging.virev.ai
+          CI_DOTENVX_PRIVATE_KEY_STAGING: ${{ secrets.CI_DOTENVX_PRIVATE_KEY_STAGING }}
+        run: |
+          ci_env_file="$RUNNER_TEMP/ci-env-$$"; PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" node "$GITHUB_WORKSPACE/.ci-env/scripts/ci/ci-env.mjs" --to "$ci_env_file"; . "$ci_env_file"; rm -f "$ci_env_file"; unset ci_env_file
+          node scripts/repo/env/convex-blobs.mjs check --tier staging
+
+      # ---- staging previews: every deployed function must answer -----------
+      # The previews sit behind Vercel Authentication, so the request carries
+      # the project's automation bypass secret. A function that dies at cold
+      # start (2026-09-04: api-portal, Cannot find module
+      # 'picomatch') fails HERE instead of in production after promote.
+      - name: health / staging previews (every deployed function answers)
+        if: steps.at.outputs.superseded == ''
+        env:
+          CI_ENV: ci/staging:VERCEL_TOKEN
+          CI_DOTENVX_PRIVATE_KEY_STAGING: ${{ secrets.CI_DOTENVX_PRIVATE_KEY_STAGING }}
+          URL_API: ${{ needs.previews.outputs.api_portal }}
+          URL_ADMIN: ${{ needs.previews.outputs.admin }}
+          SEARCH_DEPLOYED: ${{ needs.scope.outputs.search }}
+        run: |
+          ci_env_file="$RUNNER_TEMP/ci-env-$$"; PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" node "$GITHUB_WORKSPACE/.ci-env/scripts/ci/ci-env.mjs" --to "$ci_env_file"; . "$ci_env_file"; rm -f "$ci_env_file"; unset ci_env_file
+          fail=0
+          # The token goes to curl in a 0600 file, not argv, which ps shows to
+          # every process on the shared runner. printf is a builtin, so no argv.
+          hdr="$RUNNER_TEMP/vercel-auth-header"
+          bypass_hdr="$RUNNER_TEMP/vercel-bypass-header"
+          # The project answer holds the bypass secret, so it goes to a 0600 file too. -o lets curl truncate it before
+          # a retry, where a pipe would hand node the 5xx body and the 200 body together.
+          proj="$RUNNER_TEMP/vercel-project.json"
+          trap 'rm -f "$hdr" "$bypass_hdr" "$proj"' EXIT
+          (umask 077 && printf 'Authorization: Bearer %s\n' "$VERCEL_TOKEN" > "$hdr" && : > "$proj")
+          # measured: --retry 1 sends this GET once more on a transport failure, as connect-retry.mjs does for fetch: 23 of the 30 failed specs of staging-proof 44001359022 (11-17) lost their connect from the Air.
+          check() { # project id, preview url, label
+            if [ -z "$2" ]; then echo "  skip $3 (not deployed this run)"; return; fi
+            curl --retry 1 --retry-all-errors --no-progress-meter -o "$proj" -H @"$hdr" \
+              "https://api.vercel.com/v9/projects/$1?teamId=$VERCEL_ORG_ID"
+            secret=$(node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).protectionBypass||{};process.stdout.write(Object.keys(p)[0]||"")' "$proj")
+            (umask 077 && printf 'x-vercel-protection-bypass: %s\n' "$secret" > "$bypass_hdr")
+            code=$(curl --retry 1 --retry-all-errors --no-progress-meter -o /dev/null -L -w '%{http_code}' -H @"$bypass_hdr" "$2/" || true)
+            case "$code" in
+              2*) echo "  ok $3 ($code)";;
+              *) echo "::error::$3 staging preview returned $code - $2 - the function does not answer; promote would fail the same way"; fail=1;;
+            esac
+          }
+          check prj_PdIcDaTQjbvB0ijNL9eUsq4tPAuL "$URL_API" "api-portal"
+          check prj_Ef3aF1Nm4efeUiRGwwvcpz4wTFYV "$URL_ADMIN" "admin"
+          if [ "$SEARCH_DEPLOYED" = "true" ]; then
+            code=$(curl --retry 1 --retry-all-errors --no-progress-meter -o /dev/null -L -w '%{http_code}' https://staging.virev.ai/ || true)
+            case "$code" in 2*) echo "  ok search ($code)";; *) echo "::error::search staging.virev.ai returned $code"; fail=1;; esac
+          fi
+          exit $fail
+
+      # The job token ends with the job, so the research step's login goes too, and then the ssh key. Only step
+      # 'deploy / staging research-api' writes the login, and it may fail before it names REGISTRY_AUTH.
+      - name: remove the research-api GHCR login from the box
+        if: ${{ always() && steps.research.outcome != 'skipped' }}
+        env:
+          METAL_HOST: us-metal01.tail0c093d.ts.net
+        run: |
+          [ -n "${REGISTRY_AUTH:-}" ] || exit 0
+          rc=0
+          command ssh -i "$SSH_DIR/key" -o UserKnownHostsFile="$SSH_DIR/known_hosts" -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            "root@$METAL_HOST" "rm -rf $(printf '%q' "$REGISTRY_AUTH")" < /dev/null || rc=$?
+          rm -rf -- "$SSH_DIR"
+          exit "$rc"
+
+  # demo.virev.ai health, required when the sha touches the demo (apps/virev-demo or packages/ui). Railway deploys the
+  # demo from its own push webhook, so this proves health, not a version.
+  demo_health:
+    name: demo health / light
+    needs: scope
+    if: ${{ needs.scope.outputs.admitted == 'true' && needs.scope.outputs.demo == 'true' }}
+    runs-on: [self-hosted, m1-air-release]
+    timeout-minutes: 13  # measured: the step's own 600 s deadline plus 3x the slowest green run, 39471431225 at 0.7 min over 30 days to 2026-11-03
+    steps:
+      - name: health / demo.virev.ai (Railway webhook deploy)
+        # apps/virev-demo is the pinned public demo. Railway builds it from
+        # deploy/virev-demo, which virev-demo-deploy-ref.yml writes from each
+        # dev/sieun push, so this probe only proves the live demo still answers.
+        # /__demo/health never seeds a workspace, so the probe stays cheap.
+        run: |
+          deadline=$(( $(date +%s) + 600 ))
+          while left=$(( deadline - $(date +%s) )); [ "$left" -gt 0 ]; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$left" https://demo.virev.ai/__demo/health || true)
+            [ "$code" = "200" ] && { echo "demo.virev.ai /__demo/health 200"; exit 0; }
+            echo "waiting: demo.virev.ai ($code)"; sleep 15
+          done
+          echo "::error::demo.virev.ai did not return 200 within 600s"; exit 1
+
+  # deploy/staging on this sha: the fact promote.yml's gate reads (scripts/ci/deploy-staging.mjs). It runs for every
+  # admitted run and needs every deploy job, so any re-run attempt runs it again and posts that attempt's fact. It
+  # prints the fact as one line of this job's log, which the gate reads back by this job's name, so keep `name:` the
+  # job's first line. Then it posts success or failure; a failure also fails this job.
+  deploy_staging_status:
+    name: deploy/staging status / light
+    needs: [scope, metal, previews, deploy, demo_health]
+    if: ${{ always() && needs.scope.outputs.admitted == 'true' }}
+    runs-on: [self-hosted, m1-air-release]
+    timeout-minutes: 68  # measured: one GitHub rate-limit reset wait in deploy-staging.mjs post (RESET_WAIT_MAX_MS, vendor limit, 60 min) plus 3x the slowest green run, 39291229734 at 2.4 min over 30 days to 2026-11-03
+    permissions:
+      contents: read
+      statuses: write
+    outputs:
+      state: ${{ steps.record.outputs.state }}
+    steps:
+      # A sparse checkout another job left in this runner's workspace survives
+      # actions/checkout and hides most files (scripts/ci/clear-sparse.test.mjs).
+      - name: clear a sparse checkout left in the workspace
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE" && [ -d .git ] || exit 0
+          git sparse-checkout disable || true
+          git config --worktree --unset-all core.sparseCheckout || true
+          git config --local --unset-all core.sparseCheckout || true
+          rm -f .git/info/sparse-checkout
+          if [ -n "$(git config --get core.sparseCheckout)" ] || [ -n "$(git config --get-regexp '^remote\..*\.promisor$|^extensions\.partialclone$')" ] || git ls-files -v 2>/dev/null | grep -q '^S '; then rm -rf .git; fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - *connect-retry
+      - run: echo /opt/homebrew/bin >> "$GITHUB_PATH"
+      - name: status / deploy/staging fact of this run attempt
+        id: record
+        env:
+          SCOPE: ${{ needs.scope.result }}
+          METAL: ${{ needs.metal.result }}
+          # Job metal also runs for a Vent-only sha, so its scope is metal or vent.
+          METAL_SCOPE: ${{ needs.scope.outputs.metal == 'true' || needs.scope.outputs.vent == 'true' }}
+          # A failed previews job skips job deploy, so the fact names it beside the skipped deploy.
+          PREVIEWS: ${{ needs.previews.result }}
+          DEPLOY: ${{ needs.deploy.result }}
+          DEPLOYED: ${{ needs.deploy.outputs.sha }}
+          # The later land each deploy job skipped under because its service already served it (forward), else empty.
+          DEPLOY_SUPERSEDED: ${{ needs.deploy.outputs.superseded }}
+          METAL_SUPERSEDED: ${{ needs.metal.outputs.superseded }}
+          DEMO: ${{ needs.demo_health.result }}
+          DEMO_SCOPE: ${{ needs.scope.outputs.demo }}
+        run: node scripts/ci/deploy-staging.mjs record
+      - name: status / deploy/staging success or failure
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/deploy-staging.mjs post
+
+  # staging-proof.yml runs the hosted specs against the sha this run deployed, once per staging head: a re-run of this
+  # deploy on a sha with a finished proof, or a dispatch once a later land is the staging head, gives a run that skips
+  # its specs (scripts/ci/staging-proof-gate.mjs). A workflow_run trigger would fire only from
+  # main's copy, which moves only on a prod promote (c154), so this job dispatches it on staging. A failed dispatch leaves
+  # the deploy green. A superseded attempt, a re-run under a later land, has nothing deployed to prove.
+  # On any sha but a release pin the job ends after the dispatch, so the run frees group staging-deploy and the next land
+  # deploys while the proof runs. A later deploy can then reach staging under the proof: from 10-28 16:00Z to 10-29
+  # 21:40Z, 24 of 52 proofs ran while another sha deployed under them. The proof reads at its end whether that happened
+  # (deploy-staging.mjs proof-served) and reports itself superseded by that later land, whose own proof covers this sha,
+  # because staging moves along one first-parent line. On a release pin (job scope release_pin) the job then waits for
+  # the proof run to end, so staging serves the pinned sha for its whole proof and the release owner promotes a sha whose
+  # proof is about itself alone. The wait also ends once origin no longer holds refs/release-pin/<sha>, which the
+  # release owner deletes when he moves the pin to a later land, so that land deploys at once. The wait reports the
+  # proof's conclusion and ends green, because a red proof is the
+  # staging-proof status's to report (ci-staging-proof-spec-red), not the deploy's. deploy-drain.mjs counts a run in
+  # this job as drained. m1-air-poll, outside build-slot, as promote.yml's deploy_drain wait.
+  staging_proof:
+    name: dispatch / staging-proof of the deployed sha, and wait for it on a release pin
+    needs: [scope, deploy_staging_status]
+    # !cancelled(): a job with no status function runs only when every job above it succeeded, so a skipped demo_health
+    # skipped this dispatch in run 40745744052 (81e47430a6, 10-28) although deploy_staging_status recorded success.
+    if: ${{ !cancelled() && needs.deploy_staging_status.outputs.state == 'success' }}
+    runs-on: [self-hosted, m1-air-poll]
+    timeout-minutes: 132  # measured: the wait step's 127 min bound plus the dispatch step, which took under a minute
+    permissions:
+      actions: write
+      contents: read
+      statuses: read
+    steps:
+      - name: dispatch / staging-proof of the deployed sha
+        id: dispatch
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PIN: ${{ needs.scope.outputs.release_pin }}
+        run: |
+          export PATH=/opt/homebrew/bin:$PATH
+          # A proof of this sha that is queued or running already proves it, so this run dispatches none and a pin's wait
+          # follows that run. scripts/ci/served-revisions.mjs on us-metal02 dispatches the proof as soon as staging serves the
+          # sha, before this job: in the 7 days to 11-09, 54 of the 57 repeat dispatches of a sha came from this job behind
+          # such a run, and 20 of them ran the specs again, 42564898413 on 10a9ac9deb because its pin came while the first
+          # proof ran.
+          # measured: no other staging-proof dispatch came between a sha's two dispatches for any of those 68 shas, so the
+          # first page holds the running proof. A failed read dispatches, and staging-proof.yml's gate reads the status.
+          running=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/staging-proof.yml/runs" -f event=workflow_dispatch -f branch=staging \
+            --jq "[.workflow_runs[] | select(.display_title == \"staging-proof $SHA\" and .status != \"completed\") | .id] | min // empty") || running=
+          if [[ "$running" =~ ^[0-9]+$ ]]; then
+            echo "before=$((running - 1))" >> "$GITHUB_OUTPUT"
+            echo "staging-proof run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$running already proves $SHA, so this run dispatches none" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # A green finished proof already proves the sha, and staging-proof.yml's gate would skip the specs of a dispatch
+          # with no reason, so only a release pin's dispatch, which gives a reason, proves it again. A red or cancelled proof,
+          # or a failed read, still dispatches. The combined status holds the newest state of each context.
+          if [ "$PIN" != true ]; then
+            state=$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$SHA/status?per_page=100" --jq '.statuses[] | select(.context == "staging-proof") | .state') || state=
+            if [ "$state" = success ]; then
+              echo "$SHA already has a green staging-proof, so this run dispatches none" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          fi
+          # A failed read gives 0, so the wait can match an older proof of this sha and only gives up its hold early.
+          before=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/staging-proof.yml/runs" -f per_page=1 --jq '.workflow_runs[0].id // 0') || before=0
+          [[ "$before" =~ ^[0-9]+$ ]] || before=0
+          echo "before=$before" >> "$GITHUB_OUTPUT"
+          # staging-proof.yml skips a sha that already has a finished proof unless the dispatch gives a reason, and a
+          # release pin's held proof is the one the release owner promotes on, so it always gives one.
+          reason=()
+          [ "$PIN" = true ] && reason=(-f reason="held proof of release pin $SHA")
+          gh workflow run staging-proof.yml --repo "$GITHUB_REPOSITORY" --ref staging -f sha="$SHA" "${reason[@]}"
+      # Run ids only grow, so the proof this job dispatched is the first run of this sha past the newest id read before.
+      # A wait past its bound fails only this step, so a stuck proof never turns a good deploy run red; the next step warns.
+      - name: wait / a release pin's proof run ends before the next staging deploy starts
+        id: wait
+        if: steps.dispatch.outcome == 'success' && needs.scope.outputs.release_pin == 'true'
+        continue-on-error: true
+        timeout-minutes: 127  # measured: 3x the slowest staging-proof run, 42.3 min from dispatch to end over 137 runs, 10-26 to 10-29
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ steps.dispatch.outputs.before }}
+        run: |
+          export PATH=/opt/homebrew/bin:$PATH
+          # measured: proofs took p50 13.0 and p90 22.5 min from dispatch to end (137 runs, 10-26 to 10-29), so two reads a
+          # minute add at most a minute to the chain and spend about 30 of the 1,000 REST requests an hour GitHub gives
+          # the repository, which every GITHUB_TOKEN job shares, deploy-drain.mjs's 180 an hour among them.
+          poll=60
+          # The release owner deletes refs/release-pin/<sha> when he moves the pin to a later land, so this sha will not be
+          # promoted and its proof no longer needs staging to itself. On 11-02 he deleted 8a86300279's pin at 10:30Z and this
+          # wait held two later lands until its proof ended at 10:39Z. Only a 404 ends the wait; a failed read keeps it.
+          unpinned() {
+            local out
+            out=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/release-pin/$SHA" --jq .object.sha 2>&1) && return 1
+            if [[ "$out" == *"HTTP 404"* ]]; then
+              echo "refs/release-pin/$SHA is gone, so the release owner moved the pin; the next staging deploy may start" | tee -a "$GITHUB_STEP_SUMMARY"
+              return 0
+            fi
+            return 1
+          }
+          # The first run of this sha past the newest id read before the dispatch. staging-proof.yml's gate skips a later
+          # dispatch of the sha while that run is queued or running, and keeps every other proof from cancelling a pinned
+          # sha's run. When the run still ends cancelled or skipped its specs, as after a hand dispatch with a reason
+          # replaced it, the next run of the sha takes over.
+          after() {
+            gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/staging-proof.yml/runs" -f event=workflow_dispatch -f branch=staging -f per_page=20 \
+              --jq "[.workflow_runs[] | select(.id > $1 and .display_title == \"staging-proof $SHA\") | .id] | min // empty"
+          }
+          id=
+          until [ -n "$id" ]; do
+            sleep "$poll"
+            unpinned && exit 0
+            id=$(after "$BEFORE") || id=
+          done
+          while :; do
+            url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$id"
+            echo "waiting on staging-proof run $url, so staging keeps serving release pin $SHA until it ends"
+            until [ "$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id" --jq .status || true)" = completed ]; do
+              sleep "$poll"
+              unpinned && exit 0
+            done
+            conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id" --jq .conclusion) || conclusion=unread
+            hosted=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" --jq '.jobs[] | select(.name == "hosted specs / staging") | .conclusion') || hosted=unread
+            [ "$conclusion" != cancelled ] && [ "$hosted" != skipped ] && break
+            next=$(after "$id") || next=
+            if [ -z "$next" ] || [ "$next" = "$id" ]; then
+              if [ "$conclusion" = cancelled ]; then
+                echo "::error title=staging-proof wait::staging-proof run $url of release pin $SHA was cancelled and no later run of $SHA replaced it, so the pin has no held proof"
+              else
+                echo "::error title=staging-proof wait::staging-proof run $url of release pin $SHA skipped its specs, so the pin has no held proof"
+              fi
+              exit 1
+            fi
+            id=$next
+          done
+          echo "staging-proof run $url of release pin $SHA ended $conclusion; the next staging deploy may start" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: wait / warn when the proof wait failed or ran past its bound
+        if: steps.wait.outcome == 'failure'
+        run: echo "::warning title=staging-proof wait::the wait for the staging-proof run of release pin $SHA failed or passed 127 min, so the next staging deploy started without its verdict"
+
+  # Every run ends here, admitted or not, and whether it deployed the crawler or not. Run 40611161592 on fc2ae706ae went
+  # green on 10-28 while virev-staging-crawler-api sat Exited after the failed crawler deploy of fa5c3b857d, because a run
+  # that does not deploy the crawler read nothing about it, so the health step reads it on every run. The converge step
+  # dispatches a deploy of the staging tip when every run of the tip was cancelled: before queue: max a re-run of an
+  # older run entered the group as its pending run and cancelled the tip's (40609546294 attempt 2 cancelled 40612066812
+  # at 01:00:19Z on 10-28), and that tip then had no deploy until the next land. GitHub still cancels a run past the 100
+  # the queue holds.
+  finish:
+    name: staging tip and crawler health / light
+    needs: [scope, metal, deploy, deploy_staging_status]
+    if: ${{ always() }}
+    runs-on: [self-hosted, m1-air-release]
+    timeout-minutes: 3  # measured: slowest green run 41343283933 took 0.9 min over 30 days to 2026-11-03, 3x
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      dispatch: ${{ steps.converge.outputs.dispatch }}
+    env:
+      METAL_HOST: us-metal01.tail0c093d.ts.net
+    steps:
+      # A sparse checkout another job left in this runner's workspace survives
+      # actions/checkout and hides most files (scripts/ci/clear-sparse.test.mjs).
+      - name: clear a sparse checkout left in the workspace
+        working-directory: ${{ runner.temp }}
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE" && [ -d .git ] || exit 0
+          git sparse-checkout disable || true
+          git config --worktree --unset-all core.sparseCheckout || true
+          git config --local --unset-all core.sparseCheckout || true
+          rm -f .git/info/sparse-checkout
+          if [ -n "$(git config --get core.sparseCheckout)" ] || [ -n "$(git config --get-regexp '^remote\..*\.promisor$|^extensions\.partialclone$')" ] || git ls-files -v 2>/dev/null | grep -q '^S '; then rm -rf .git; fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - run: echo /opt/homebrew/bin >> "$GITHUB_PATH"
+      - name: ci-env / the CI tiers and their reader at the workflow's own commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .ci-env
+          persist-credentials: false
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            scripts/ci/connect-retry.mjs
+            scripts/ci/ci-env.mjs
+            scripts/ci/ci-config.json
+            apps/ci/.env
+            apps/ci/.env.staging
+            apps/ci-e2e/.env.staging
+            apps/ci-push/.env.staging
+            apps/ci-read/.env.staging
+            apps/ci-specs/.env
+            apps/ci-specs/.env.staging
+            apps/infra/metal/ssh/known_hosts
+      - name: connect-retry / one more try of a fetch whose connect timed out
+        env: { PRELOAD: .ci-env/scripts/ci/connect-retry.mjs }
+        run: |
+          if [ ! -f "$GITHUB_WORKSPACE/$PRELOAD" ]; then echo "::notice title=connect-retry::no $PRELOAD in this checkout"; exit 0; fi
+          cp "$GITHUB_WORKSPACE/$PRELOAD" "$RUNNER_TEMP/connect-retry.mjs"
+          PATH="/opt/homebrew/bin:$PATH" node -e 'console.log(globalThis.fetch[Symbol.for("virev.connectRetry")] ? "connect-retry: loaded" : "::warning title=connect-retry::NODE_OPTIONS did not load connect-retry.mjs")' || echo "::warning title=connect-retry::node did not start with NODE_OPTIONS=$NODE_OPTIONS"
+      - name: ssh key
+        id: key
+        env:
+          CI_ENV: ci/staging:KEY=METAL_DEPLOY_SSH_KEY
+          CI_DOTENVX_PRIVATE_KEY_STAGING: ${{ secrets.CI_DOTENVX_PRIVATE_KEY_STAGING }}
+        run: |
+          ci_env_file="$RUNNER_TEMP/ci-env-$$"; PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" node "$GITHUB_WORKSPACE/.ci-env/scripts/ci/ci-env.mjs" --to "$ci_env_file"; . "$ci_env_file"; rm -f "$ci_env_file"; unset ci_env_file
+          dir="$RUNNER_TEMP/ssh-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-finish"
+          mkdir -p "$dir" && chmod 700 "$dir"
+          printf '%s\n' "$KEY" > "$dir/key" && chmod 600 "$dir/key"
+          cp "$GITHUB_WORKSPACE/.ci-env/apps/infra/metal/ssh/known_hosts" "$dir/known_hosts"
+          echo "SSH_DIR=$dir" >> "$GITHUB_ENV"
+      - name: converge / whether every run of the staging tip was cancelled
+        id: converge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/deploy-staging.mjs converge
+      # It starts nothing: a stopped crawler comes back with the next deploy.
+      - name: health / the staging crawler serves through caddy (staging-crawler.virev.ai)
+        if: ${{ !cancelled() && steps.key.outcome == 'success' }}
+        run: node scripts/ci/deploy-staging.mjs crawler-health
+      - name: remove ssh key
+        if: ${{ always() && steps.key.outcome != 'skipped' }}
+        run: rm -rf "$SSH_DIR"
+
+  # A deploy of the staging tip when job finish found every run of it cancelled. always() keeps the dispatch when job
+  # finish fails on the crawler health step after it wrote dispatch=true.
+  converge:
+    name: dispatch / a deploy of the staging tip when every run of it was cancelled
+    needs: finish
+    if: ${{ always() && needs.finish.outputs.dispatch == 'true' }}
+    runs-on: [self-hosted, m1-air-release]
+    timeout-minutes: 2  # measured: no green run yet; it makes one gh workflow run call, as job staging_check, whose slowest green run 41297822697 took 0.6 min over 30 days to 2026-11-03, 3x
+    permissions:
+      actions: write
+    steps:
+      - name: dispatch / staging-deploy.yml on staging, which deploys the tip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PATH="/opt/homebrew/bin:$PATH" gh workflow run staging-deploy.yml --repo "$GITHUB_REPOSITORY" --ref staging
+
+  # obs-deploy.yml at this sha, dispatched on staging as its own run once the deploy jobs here have ended, so this run
+  # frees group staging-deploy without waiting for it. It deploys the obs stack to prod when the plan says deploy (c154),
+  # and on a deploy/staging success it moves golden-probe-staging to metal-ops of this sha (c63). Until 11-02 job obs
+  # called obs-deploy.yml here and jobs probe_image and probe_advance ran here, so this run held the group until they
+  # ended. measured: in the 7 days to 11-02 11:32Z such a run held a waiting staging deploy for 218 min with only obs or
+  # the probe still open (119 min obs, 99 min probe, otel.ci_workflow_jobs), and on 11-02 an obs re-run held six landed
+  # shas from deploying from 11:12Z. A superseded run dispatches nothing, because the later land's run dispatches its
+  # newer sha. A release pin admitted past the tip asks for no obs deploy (input obs false), because obs deploys prod and
+  # a later obs release may already serve there, and the tip's run deploys obs (runner review 01a11d25 of d1efc8736).
+  # !cancelled(): it runs when job scope fails or the deploy is not admitted, as job obs did, so a land after a failed
+  # deploy still ships obs. Nothing needs it, so deploy/staging never waits on it.
+  obs:
+    name: dispatch / obs deploy and staging probe of this sha
+    needs: [scope, deploy_staging_status]
+    if: ${{ !cancelled() && needs.scope.outputs.superseded == '' && (needs.scope.outputs.pinned == '' || needs.deploy_staging_status.outputs.state == 'success') }}
+    runs-on: [self-hosted, m1-air-poll]
+    permissions:
+      actions: write
+    steps:
+      - name: dispatch / obs-deploy.yml on staging at this sha
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OBS: ${{ needs.scope.outputs.pinned == '' }}
+          PROBE: ${{ needs.deploy_staging_status.outputs.state == 'success' }}
+        # A GitHub 5xx answer is tried again, inline because this job runs no repo code: run 41805288157 failed here on
+        # "HTTP 502: Server Error" at 09:43:11Z on 2026-11-04, the one failure of this step in 80 runs over 30 days, and
+        # paged ci-staging-deploy-failed. A dispatch GitHub took before its 5xx starts a second obs-deploy.yml run of the
+        # same sha, which deploys nothing new. vendor: octokit's plugin-retry, GitHub's own JS client, tries 3 more times
+        # by default and waits (try number)^2 s before each, as scripts/ci/github-retry.mjs does.
+        run: |
+          for try in 1 2 3 4; do
+            out=$(PATH="/opt/homebrew/bin:$PATH" gh workflow run obs-deploy.yml --repo "$GITHUB_REPOSITORY" --ref staging -f sha="$SHA" -f obs="$OBS" -f probe="$PROBE" 2>&1) && { printf '%s\n' "$out"; exit 0; }
+            printf '%s\n' "$out"
+            [[ $try -lt 4 && "$out" == *"HTTP 5"[0-9][0-9]* ]] || exit 1
+            echo "::warning::GitHub answered the obs-deploy.yml dispatch with a 5xx; try $((try + 1)) of 4 in $((try * try)) s"
+            sleep $((try * try))
+          done
