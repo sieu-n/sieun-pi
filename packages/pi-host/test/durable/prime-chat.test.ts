@@ -416,6 +416,7 @@ test("edit_message posts the agent's edit of its own post as the thread, returns
 test("edit_message's own text tells the agent to keep a checklist in one post and edit it as items finish", () => {
   assert.match(EDIT_MESSAGE_DESCRIPTION, /edit that same post as each item finishes, change `- \[ \]` to `- \[x\]` with a short result/);
   assert.match(EDIT_MESSAGE_DESCRIPTION, /put the answer in the last edit/);
+  assert.match(EDIT_MESSAGE_DESCRIPTION, /Keep the post's shape in every edit, the last one too: the topic bullets[\s\S]*one short sentence of at most 20 words/);
   assert.match(EDIT_MESSAGE_DESCRIPTION, /You can edit only your own posts/);
 });
 

@@ -145,6 +145,22 @@ test("a list of options explains its most interesting one with an example and ho
   }
 });
 
+test("a multi-point post and its checklist edits keep a one-sentence answer, short items with nested detail, and their topic groups (owner, #sw-factory-build p101, p106)", () => {
+  for (const room of ["dm_vent", "ch_1a2b3c4d"]) {
+    const text = commInstructions({ agent: "ag_vent", room, work: "w1" });
+    assert.match(text, /opens with the answer in one short sentence of about 15 words, at most 20/);
+    assert.match(text, /Every other fact goes into an item, never into more sentences on that top line and never into a paragraph after the list/);
+    assert.match(text, /Each item is one short line of at most about 25 words, and any detail[\s\S]*goes in a bullet nested under its item/);
+    assert.match(text, /Keep the topic groups in the first post and in every edit, the last one too[\s\S]*never flattens them into one list/);
+    assert.match(text, /the last edit carries the answer on top as one short sentence/);
+    assert.match(text, /Tell it too to keep the post's shape in every edit, the last one included: the topic bullets[\s\S]*one short sentence of at most 20 words/);
+    assert.match(text, /lost that shape, edit it yourself with `edit_message`/);
+    assert.doesNotMatch(text, /answer on one line/);
+    assert.match(text, /Never end a post with a sign-off emoji[\s\S]*Never paste a raw JSON or log line/);
+    assert.match(text, /Keep ✅ and 👀 out of your post text too/);
+  }
+});
+
 test("an agent thread gets Prime's preamble first, the brief after the AGENTS.md files, and the agent's memory in its digest", async () => {
   const f = fixture("first");
   const { threads, roots, ask, systems } = threadsOn(f, "first");

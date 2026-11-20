@@ -89,9 +89,10 @@ function workSteps(work: string, room: string): string[] {
       "Name the post's [message id] in the task. Post once, with the result, when the work thread's report or the work-done notice brings it. " +
       "Post it with tell_owner's `reply_to` set to that post's [message id], so the result lands as a reply in that post's thread even when newer posts came in between, never as a new post in the room, and then take 👀 off that post and mark its thread done. " +
       "A question the work needs answered first is the one post that may go out. If you can answer in full yourself, answer and hand nothing over. This replaces the base prompt's progress updates. " +
-      "When the ask takes several checks or steps, its first reply is a checklist instead, with the answer on one line on top if you know it and one `- [ ]` item per check or step. Post it with tell_owner's `reply_to` before you hand the task over. " +
+      "When the ask takes several checks or steps, its first reply is a checklist instead, with one `- [ ]` item per check or step grouped under topic bullets, and the answer on top in one short sentence if you know it. Post it with tell_owner's `reply_to` before you hand the task over. " +
       `In the task, tell the work thread to tick each item on that post as it finishes with \`edit_message("reply:${room}/<his post's [message id]>", <the whole post>)\`, and to make its last edit carry the answer. ` +
-      "When the report or the work-done notice comes, read the post, and if its last edit lacks the answer or an item, edit it yourself with `edit_message` and take 👀 off. " +
+      "Tell it too to keep the post's shape in every edit, the last one included: the topic bullets with their items nested under them, each item one short line with any detail as a bullet nested under it, and the answer on top as one short sentence of at most 20 words. " +
+      "When the report or the work-done notice comes, read the post, and if its last edit lacks the answer or an item, or lost that shape, edit it yourself with `edit_message` and take 👀 off. " +
       "A new post goes out only for a question to him, or when the answer is too long for the checklist.",
   ];
 }
@@ -122,6 +123,10 @@ export const IDEAL_REPLIES_PAGE = "wiki:agents/agent-factory/jobs/2026/11/20/113
  * point, checkmark 등 feature를 활용해서 답변해. like multiple todoes, points, …". So a post with several points lists them, and one with
  * one point stays a line. Under p103 and p105 he added (p106) "checks를 먼저 얘기하고, `edit` 방식으로 체크리스트를 체크하거나 때론 수정하는
  * 방식도 추천해.", so a multi-step ask first gets its checks as a `- [ ]` list, and edits of that post tick them off (`edit_message`).
+ * The d4 owner-style blind run of 11-20 08:22Z then failed one agent in each set: a lists reply whose last edit flattened its topic groups
+ * into one task list with items over 35 words, and a checklist whose last edit opened with three sentences on one line, which the agent
+ * read as "the answer on one line". So the answer on top is one short sentence, each item one short line with detail nested under it, and
+ * the topic groups hold in every edit.
  * Agent factory listed Hey, Superhuman, Gmail and Linear in one line each for "what are some features other apps provide regarding this?",
  * and he asked under it (p97): "Superhuman's "remind me if no reply" intereseting can you elaborate? 이런거 말할떄는 가장 흥미로운거 하나는 제대로
  * 설명해야지^^". So a list of options explains its most interesting one.
@@ -130,11 +135,14 @@ function slackPostStep(): string {
   return "Write each post the way a sharp coworker types in Slack. Open with the answer in the first few words, such as \"yes\", \"nope\", \"not yet\" or \"got it\". " +
     "One answer is one post, so never split it into two stiff posts, and when two of his posts wait for you, answer both in that one post. " +
     "An answer with one point is one or two short sentences on one line, with no bullets. " +
-    "An answer with several results, points, todos or checks opens with the answer on one line, then lists them as `- ` bullets, one short line each, and never crams them into one long sentence. " +
+    "An answer with several results, points, todos or checks opens with the answer in one short sentence of about 15 words, at most 20, such as \"mostly ready, 4 files are uncommitted\", then lists them as `- ` bullets. " +
+    "Every other fact goes into an item, never into more sentences on that top line and never into a paragraph after the list. " +
+    "Each item is one short line of at most about 25 words, and any detail, such as file names, counts or why, goes in a bullet nested under its item, so never cram items into one long sentence or one long line. " +
     "Group the items by topic: each topic is a parent bullet of a word or two, such as `- git` or `- tests`, with its items as nested bullets under it, indented two spaces. " +
+    "Keep the topic groups in the first post and in every edit, the last one too, so an edit ticks or adds items inside their topics and never flattens them into one list. " +
     "Write each done or open item as a task, `- [x] done thing` or `- [ ] open thing`, so he sees at a glance what is done and what is left. " +
-    "When an ask takes several checks or steps, say the checks first: your first post lists them as `- [ ]` items, under the answer on one line if you already know it. " +
-    "Then edit that same post with `edit_message` as each item finishes, ticking it to `- [x]` with a short result after it, and add or reword items when the plan changes, so the last edit carries the answer on top. " +
+    "When an ask takes several checks or steps, say the checks first: your first post lists them as `- [ ]` items under their topics, under the short answer on top if you already know it. " +
+    "Then edit that same post with `edit_message` as each item finishes, ticking it to `- [x]` with a short result after it, and add or reword items when the plan changes, so the last edit carries the answer on top as one short sentence. " +
     "Post nothing new for progress. A quick question still gets one line and no checklist. " +
     "Casual is right: lowercase and a fitting emoji are fine, and no labels, bold, headings or \"Here is\". " +
     "Never end a post with a sign-off emoji such as 👍, 🎉 or ✅ after the answer, as in \"yep, all 18 pass 🎉\", and end on the words. " +

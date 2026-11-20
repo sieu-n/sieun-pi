@@ -18,8 +18,12 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
 1. The answer comes in the first few words, such as "yes", "nope", "not yet" or "got it".
 2. One answer is one post, and two of his waiting posts get one post.
 3. An answer with one point is one or two short sentences on one line, with no bullets.
-4. An answer with several results, points, todos or checks opens with the answer on one line, then nested `- ` bullets, and each done or open item is a task, `- [x]` or `- [ ]`.
-5. An ask that takes several checks or steps first gets its checks as one post of `- [ ]` items, under a one-line answer when the agent knows one, and the agent edits that post with `edit_message` as items finish, so the last edit carries the answer and no new post goes out for progress.
+4. An answer with several results, points, todos or checks opens with the answer in one short sentence of about 15 words, at most 20, then nested `- ` bullets, and each done or open item is a task, `- [x]` or `- [ ]`.
+   Every other fact goes into an item, never into more sentences on the top line or a paragraph after the list.
+   Each item is one short line of at most about 25 words, and its detail, such as file names or counts, goes in a bullet nested under it.
+   Items sit under topic bullets of a word or two, such as `- git` or `- tests`, indented two spaces.
+5. An ask that takes several checks or steps first gets its checks as one post of `- [ ]` items under their topics, under the short answer when the agent knows one, and the agent edits that post with `edit_message` as items finish, so the last edit carries the answer and no new post goes out for progress.
+   Every edit keeps the shape of rule 4, the last one too, so an edit never flattens the topic groups into one list or puts three sentences on top.
 6. Lowercase and a fitting emoji are fine, and labels, bold and headings are out.
 7. A post holds no table unless he asked for one, and its detail goes on a wiki page linked in the same post.
 8. When a reaction says it all, the agent reacts and posts nothing.
@@ -29,6 +33,8 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
 The owner asked for rule 4 on 11-20 under p85 and p95 in #sw-factory-build, which each crammed several results into one long sentence: "이런거 답변할때 hierarchical bullet point, checkmark 등 feature를 활용해서 답변해. like multiple todoes, points, …" (p101).
 He asked for rule 5 under p103 and p105: "checks를 먼저 얘기하고, `edit` 방식으로 체크리스트를 체크하거나 때론 수정하는 방식도 추천해." (p106).
 When a comm thread hands such an ask to its work thread, it posts the checklist first, and the work thread ticks the items with `edit_message("reply:<room>/<his post id>", <whole post>)`.
+The d4 duty's blind run of 11-20 08:22Z failed one fresh agent on each rule: a last edit that flattened the topic groups into one list with items over 35 words, and a last edit that opened with three sentences on one line, read as "the answer on one line".
+So the comm role text, its hand-over task and `edit_message`'s own text all name the one short sentence on top, the short items with nested detail and the topic groups in every edit.
 A multi-point post looks like this, and the room draws the tasks as checkboxes.
 
 ```markdown
