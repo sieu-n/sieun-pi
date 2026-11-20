@@ -25,6 +25,13 @@ class LaterStore {
   private started = false;
   private latest = 0;
   private timer: ReturnType<typeof setTimeout> | undefined;
+  /** The last Later toast, which the next one replaces, so three quick saves show one toast as in Slack. */
+  private toastId: number | undefined;
+
+  private note(text: string, action: { label: string; run: () => void }): void {
+    if (this.toastId !== undefined) toast.dismiss(this.toastId);
+    this.toastId = toast.show(text, { action });
+  }
 
   start(): void {
     if (this.started) return;
@@ -67,7 +74,7 @@ class LaterStore {
     this.optimistic.set(key(room, post), true);
     try {
       await api.saveLater(room, post);
-      toast.show("Saved for later", { action: { label: "View", run: () => router.navigate(hrefFor("later")) } });
+      this.note("Saved for later", { label: "View", run: () => router.navigate(hrefFor("later")) });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not save the message");
     } finally {
@@ -79,7 +86,7 @@ class LaterStore {
     this.optimistic.set(key(room, post), false);
     try {
       await api.unsaveLater(key(room, post));
-      toast.show("Removed from Later", { action: { label: "Undo", run: () => void this.save(room, post) } });
+      this.note("Removed from Later", { label: "Undo", run: () => void this.save(room, post) });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not remove the message from Later");
     } finally {
@@ -97,7 +104,7 @@ class LaterStore {
     this.move(row, state);
     try {
       await api.patchLater(row.id, { state });
-      if (state === "done") toast.show("Marked complete", { action: { label: "Undo", run: () => void this.setState({ ...row, state: "done" }, "open") } });
+      if (state === "done") this.note("Marked complete", { label: "Undo", run: () => void this.setState({ ...row, state: "done" }, "open") });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not change the item");
     }
