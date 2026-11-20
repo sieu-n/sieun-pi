@@ -176,3 +176,27 @@ test("wakes set through the route survive a restart of the chat server", async t
     && lines.some(line => line.includes("Your note: file of the old chat")));
   assert.deepEqual(readdirSync(join(dataDir, "wakes")).filter(name => name.endsWith(".json")).length, 1, "the check wake waits on");
 });
+
+test("a job thread aliased to an agent gets its wakes itself, not the agent's work thread, and the route lists a conversation's pending wakes", async t => {
+  const dataDir = mkdtempSync(join(tmpdir(), "apps-chat-wakes-job-"));
+  t.after(() => rmSync(dataDir, { recursive: true, force: true }));
+  const chat = await start({ dataDir });
+  t.after(() => chat.close());
+  const job = FIXTURE_IDS.cutover;
+  const at = Date.now() + 60 * MIN;
+  const armed = await chat.send("POST", `/api/threads/${job}/wakes`, { id: `${job}-2-time`, conversation: 2, on: { kind: "time", at }, note: "job wake", since: Date.now() });
+  assert.equal(armed.status, 200, JSON.stringify(armed.body));
+  assert.equal(armed.body.wake.session, `${job}--2`);
+  const listed = await chat.get(`/api/threads/${job}/wakes?conversation=2`);
+  assert.deepEqual(listed.wakes.map((w: { note: string }) => w.note), ["job wake"]);
+  assert.deepEqual((await chat.get(`/api/threads/${job}/wakes?conversation=3`)).wakes, []);
+  assert.deepEqual((await chat.get(`/api/threads/${FIXTURE_IDS.harness}/wakes?conversation=2`)).wakes, []);
+  const due = await chat.send("POST", `/api/threads/${job}/wakes`, { id: `${job}-1-time`, conversation: 1, on: { kind: "time", at: Date.now() - 1000 }, note: "due now", since: Date.now() });
+  assert.equal(due.body.wake.session, `${job}--1`);
+  const woke = async (thread: string) => (await chat.host.entries(thread, { conversation: 1, limit: 1000 })).entries
+    .filter(e => e.kind === "agent.message" && JSON.stringify(e.model).includes("Your note: due now"));
+  const end = Date.now() + 40_000;
+  while ((await woke(job)).length < 1 && Date.now() < end) await new Promise(done => setTimeout(done, 50));
+  assert.equal((await woke(job)).length, 1, "the job's own conversation gets its wake");
+  assert.equal((await woke(FIXTURE_IDS.harness)).length, 0, "the agent's work thread gets none");
+});

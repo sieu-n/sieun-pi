@@ -75,9 +75,20 @@ export type DeliverInput = {
  * (`rlm.ts` `workDone`). A thread with no kernel host has none.
  */
 export const childWork = new Map<string, (conversation: number, signal: AbortSignal) => Promise<boolean>>();
+/**
+ * Per thread, whether a conversation has a `board.wake` set that has not gone out yet (`rlm.ts` `wakePending`, read from apps/chat). A thread
+ * with none never holds its children for a wake.
+ */
+export const childWakes = new Map<string, (conversation: number, signal: AbortSignal) => Promise<boolean>>();
+/**
+ * How long a child held for a wake sleeps before its wakes are read again. apps/chat's wake ticker beats every 30 s (legacy wakes.ts
+ * `TICK_MS`), so a wake goes out no sooner than that.
+ */
+const wakePollMs = (): number => Number(process.env.PI_HOST_WAKE_POLL_MS ?? 30_000);
 
 type DeliverState =
   | { phase: "deliver" }
+  | { phase: "hold"; child: number; since: number; answer?: number }
   | { phase: "report"; child: number; since: number; status: "done" | "unanswered"; answer?: number; text: string; stopReason?: string; reason?: string; error?: string };
 
 export const textOfMessage = (message: Message | undefined): string => {
@@ -87,8 +98,8 @@ export const textOfMessage = (message: Message | undefined): string => {
 };
 
 /**
- * One message from a parent to a child, and the child's notice to the parent when the run it starts, and the `bash()` handles that run
- * left going, settle without a reply: a
+ * One message from a parent to a child, and the child's notice to the parent when the run it starts, the `bash()` handles that run left
+ * going and the `board.wake`s it set, settle without a reply: a
  * background task of the parent conversation, so the parent's own runs end and its Esc does not reach the child. Its first run owns the
  * child conversation. A restart reruns a phase from its top; the request ids find the submissions it already made.
  */
@@ -116,25 +127,44 @@ export const DeliverTask = defineTask<DeliverInput, DeliverState, null>({
         entry: { kind: "agent.message", data: { from: task.input.from, via: task.input.via } },
       }, ctx);
       const settled = await submission.wait(ctx);
-      // A `bash()` handle the child started may outlive this run, and its `[bash-done]` input starts the child's next one. The child is
-      // over when those are, as under Prime, and its last text is then the newest run's.
-      const later = settled.status === "done" && await childWork.get(task.input.thread)?.(child, runtime.signal)
-        ? (await runtime.context(child as ConversationId, ctx)).messages.findLast(message => message.role === "assistant")
-        : undefined;
       await runtime.commit(async tx => {
-        const first = settled.status === "done" && settled.answer !== undefined ? (await tx.entry(settled.answer))?.model?.[0] : undefined;
-        const answer = (later ?? first) as (Message & { stopReason?: string; errorMessage?: string }) | undefined;
+        if (settled.status === "done") return { status: "running", checkpoint: { phase: "hold", child: child!, since, ...(settled.answer !== undefined ? { answer: settled.answer } : {}) } };
         return {
           status: "running",
           checkpoint: {
-            phase: "report", child: child!, since, status: settled.status, text: textOfMessage(answer),
-            ...(settled.status === "done" ? { answer: settled.answer } : { reason: settled.reason }),
-            ...(answer?.stopReason ? { stopReason: answer.stopReason } : {}),
-            ...(answer?.stopReason === "error" ? { error: answer.errorMessage ?? "the child's last model call failed" } : {}),
-            ...(settled.status === "unanswered" && settled.detail !== undefined ? { error: typeof settled.detail === "string" ? settled.detail : JSON.stringify(settled.detail) } : {}),
+            phase: "report", child: child!, since, status: settled.status, text: "", reason: settled.reason,
+            ...(settled.detail !== undefined ? { error: typeof settled.detail === "string" ? settled.detail : JSON.stringify(settled.detail) } : {}),
           },
         };
       }, ctx);
+    },
+    // The child's run is over, but it is not done while a `bash()` handle it started runs, while the run a `[bash-done]` input or a wake
+    // started goes on, or while a `board.wake` it set has not gone out, as Prime's `waitForRlmQuiescence` holds it. A wait for a wake is a
+    // durable sleep, so it holds nothing and outlives a restart. The report then carries the newest run's last text.
+    hold: async (task, runtime, ctx) => {
+      const s = task.state.checkpoint;
+      const handle = await runtime.conversation(s.child as ConversationId, ctx);
+      const doc = await runtime.snapshot(RlmChildDoc, s.child as ConversationId, ctx);
+      if (handle && !doc?.deleted) {
+        do await handle.waitForIdle(ctx);
+        while (await childWork.get(task.input.thread)?.(s.child, runtime.signal));
+        const waking = await childWakes.get(task.input.thread)?.(s.child, runtime.signal);
+        if (waking) {
+          await runtime.sleepUntil(runtime.now() + wakePollMs(), s, ctx);
+          return;
+        }
+      }
+      const answer = (await runtime.context(s.child as ConversationId, ctx)).messages.findLast(message => message.role === "assistant") as
+        (Message & { stopReason?: string; errorMessage?: string }) | undefined;
+      await runtime.commit(() => ({
+        status: "running",
+        checkpoint: {
+          phase: "report", child: s.child, since: s.since, status: "done", text: textOfMessage(answer),
+          ...(s.answer !== undefined ? { answer: s.answer } : {}),
+          ...(answer?.stopReason ? { stopReason: answer.stopReason } : {}),
+          ...(answer?.stopReason === "error" ? { error: answer.errorMessage ?? "the child's last model call failed" } : {}),
+        },
+      }), ctx);
     },
     report: async (task, runtime, ctx) => {
       const s = task.state.checkpoint;

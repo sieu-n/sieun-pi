@@ -264,6 +264,11 @@ export function routes(app: App): Route[] {
       route("GET", `/api/${scope}/:id/check-in`, async (_r, p) => app.boards.checkIn(p.id!)),
       route("POST", `/api/${scope}/:id/check-in`, async (_r, p, _q, body) => app.boards.setCheckIn(p.id!, (await body()) as never)),
     ]),
+    route("GET", "/api/threads/:id/wakes", async (_r, p, q) => {
+      const conversation = Number(q.get("conversation") ?? 1);
+      if (!Number.isInteger(conversation) || conversation < 1) throw new BadRequest("conversation is a whole number from 1.");
+      return { wakes: app.boards.wakes(p.id!, conversation) };
+    }),
     route("POST", "/api/threads/:id/wakes", async (_r, p, _q, body) => {
       try {
         return await app.boards.addWake(p.id!, (await body()) as Record<string, unknown>);

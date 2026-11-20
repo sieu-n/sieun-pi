@@ -11,6 +11,7 @@ import {
 import type { Host } from "./host/types.ts";
 import { writeJson } from "./store.ts";
 
+export { parseWake };
 export type { CheckResult, Wake } from "../../../legacy/prime/user-history/src/wakes.ts";
 
 /** A wake's `session` for a thread's conversation; the legacy file format keys every wake by one session id. */

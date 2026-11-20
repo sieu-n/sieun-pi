@@ -20,7 +20,7 @@ import { readJson, writeJson, type Store } from "./store.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
 import type { Threads } from "./threads.ts";
 import { StepOwners } from "./step-owners.ts";
-import { armWake, startThreadWakes, wakeTarget, type BoxCheckRun } from "./wakes.ts";
+import { armWake, parseWake, startThreadWakes, wakeSession, wakeTarget, type BoxCheckRun, type Wake } from "./wakes.ts";
 
 export const BOARD_DOC = "chat.board";
 const DEFAULT_CHECK_IN_MS = 120 * 60_000;
@@ -659,12 +659,30 @@ export class Boards {
 
   /**
    * Sets a wake for a thread's conversation, as the board skill's `board.wake(...)` asks for it from a durable thread's kernel: a run, a time
-   * or a check (server/wakes.ts). The same file id twice writes one file, so a retried request sets one wake.
+   * or a check (server/wakes.ts). The same file id twice writes one file, so a retried request sets one wake. The wake goes back to the thread
+   * that armed it. Until 11-20 a job thread aliased to an agent had its wakes set on the agent's work thread, where its conversation is missing,
+   * so the 22 job wakes set there from 10-29 to 11-19 failed on every tick and their jobs slept until someone messaged them.
    */
   async addWake(id: string, body: Record<string, unknown>): Promise<ReturnType<typeof armWake>> {
-    const thread = this.threadOf(this.chatId(id));
+    const thread = this.wakeThread(id);
     if (!this.threads.thread(thread)) await this.threads.refresh().catch(() => undefined);
     if (!this.threads.thread(thread)) throw new Error(`No thread ${thread}.`);
     return armWake(this.wakeDir, thread, body);
+  }
+
+  /** The wakes set on a thread's conversation that have not gone out yet, which pi-host reads to keep a child running until they do. */
+  wakes(id: string, conversation: number): Wake[] {
+    const session = wakeSession(this.wakeThread(id), conversation);
+    let names: string[] = [];
+    try { names = readdirSync(this.wakeDir).filter(name => name.endsWith(".json")); } catch { names = []; }
+    return names.flatMap(name => {
+      const wake = parseWake(readJson<unknown>(join(this.wakeDir, name), null));
+      return wake?.session === session ? [wake] : [];
+    });
+  }
+
+  /** The thread a wake request names: a thread id as it is, and an agent id as the agent's work thread. */
+  private wakeThread(id: string): string {
+    return id.startsWith("ag_") ? this.threadOf(id) : id;
   }
 }

@@ -58,6 +58,12 @@ export class ChatApp {
     return this.call<CheckInView>("POST", this.thread(thread, "check-in"), patch, signal);
   }
 
+  /** The wakes set on a conversation of this thread that have not gone out yet (`GET /api/threads/:id/wakes`). */
+  async wakes(thread: string, conversation: number, signal?: AbortSignal): Promise<unknown[]> {
+    const body = await this.call<{ wakes?: unknown }>("GET", this.thread(thread, `wakes?conversation=${conversation}`), undefined, signal);
+    return Array.isArray(body?.wakes) ? body.wakes : [];
+  }
+
   async agents(thread: string, signal?: AbortSignal): Promise<ChatAgent[]> {
     const body = await this.call<{ agents?: unknown }>("GET", this.thread(thread, "agents"), undefined, signal);
     return Array.isArray(body.agents) ? body.agents as ChatAgent[] : [];

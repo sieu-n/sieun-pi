@@ -50,8 +50,8 @@ import type { Leftovers, LeftoverSource } from "../../../../legacy/prime/user-hi
 import { withKernelGuard } from "../../../sieun-rules/src/kernel-guard.ts";
 import { enabled } from "../../../sieun-rules/src/log.ts";
 import { conversationHarnessDir, dropAgentRole, harnessSessionOf, threadAgent } from "./agent-profile.ts";
-import { CHAT_URL_ENV, DEFAULT_CHAT_URL } from "./chat-app.ts";
-import { agentIdOf, artifactDirOf, childWork, DeliverTask, RlmChildDoc, sessionOf, textOfMessage, type RlmChild } from "./children.ts";
+import { CHAT_URL_ENV, ChatApp, DEFAULT_CHAT_URL } from "./chat-app.ts";
+import { agentIdOf, artifactDirOf, childWakes, childWork, DeliverTask, RlmChildDoc, sessionOf, textOfMessage, type RlmChild } from "./children.ts";
 import { childTitle } from "./job-title.ts";
 import { durableTool, loadPiExtension, type PiTool, type PiToolResult } from "./pi-extensions.ts";
 import { PrimeChatName } from "./prime-chat.ts";
@@ -284,6 +284,7 @@ export class DurableRlm {
   extension(thread: RlmThread): Extension {
     this.threads.set(thread.id, thread);
     childWork.set(thread.id, (conversation, signal) => this.workDone(thread.id, conversation, signal));
+    childWakes.set(thread.id, (conversation, signal) => this.wakePending(thread.id, conversation, signal));
     return defineExtension({
       name: RLM_EXTENSION,
       tools: [durableTool(this.tool, {
@@ -565,6 +566,7 @@ export class DurableRlm {
     }));
     this.threads.delete(threadId);
     childWork.delete(threadId);
+    childWakes.delete(threadId);
     await Promise.all(this.modules.map(module => module.closeThread?.(threadId).catch(() => undefined)));
   }
 
@@ -724,6 +726,19 @@ export class DurableRlm {
       signal.removeEventListener("abort", aborted);
     }
     return waited;
+  }
+
+  /**
+   * Whether the conversation has a `board.wake` that apps/chat has not sent yet, which keeps a child running as Prime holds it. The kernel arms
+   * a wake at the chat its `PI_HOST_CHAT_URL` names, so this asks the same chat. A chat that does not answer holds nothing.
+   */
+  private async wakePending(threadId: string, conversation: number, signal: AbortSignal): Promise<boolean> {
+    try {
+      return (await new ChatApp(this.options.chatUrl ?? process.env[CHAT_URL_ENV] ?? DEFAULT_CHAT_URL).wakes(threadId, conversation, signal)).length > 0;
+    } catch (error) {
+      this.log(`${threadId}:${conversation}: the chat's wakes were not read: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
   }
 
   private async submit(thread: RlmThread, input: RlmSubmit): Promise<unknown> {
