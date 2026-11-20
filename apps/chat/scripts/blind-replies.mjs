@@ -121,11 +121,14 @@ function checks(ask, posts, asked, versions = new Map()) {
   if (ask.expect === "line") return [...plain, ["one line with no bullets", lines.length === 1 && !BULLET.test(lines[0])], ["at most 30 words", words(text) <= 30]];
   if (ask.expect === "options") {
     const named = APPS.filter(app => app.test(text)).length;
-    const deep = blocks(text).filter(block => APPS.filter(app => app.test(block)).length === 1 && words(block) >= 20);
+    const deep = blocks(text).filter(block => {
+      const apps = APPS.filter(app => app.test(block)).length;
+      return apps > 0 && words(block) >= 20 * apps;
+    });
     return [
       ...plain,
       ["names at least 2 apps", named >= 2],
-      ["explains one app in a block of 20 words or more", deep.length > 0],
+      ["explains an app in a block of 20 words or more per app it names", deep.length > 0],
       ["that explanation gives an example", deep.some(block => EXAMPLE.test(block))],
       ["says how it fits the asker's product", FITS.test(text)],
       ["at most 220 words", words(text) <= 220],

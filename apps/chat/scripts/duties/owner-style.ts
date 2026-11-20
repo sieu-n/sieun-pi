@@ -138,7 +138,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const dataDir = resolve(values["data-dir"] ?? process.env.APPS_CHAT_DATA_DIR ?? join(homedir(), ".pi/agent/chat"));
   const server = values.server ?? process.env.APPS_CHAT_URL ?? "http://127.0.0.1:5184";
   const now = Date.now();
-  const stamp = new Date(now).toISOString().slice(0, 16).replace(/[-T:]/g, "");
+  /** To the second plus the pid, since the duty's run and a hand run started in one minute on 11-20 wrote into one folder. */
+  const stamp = `${new Date(now).toISOString().slice(0, 19).replace(/[-T:]/g, "")}-${process.pid}`;
   const runs = resolve(values.runs ?? join(homedir(), "work/owner-style/runs"), stamp);
 
   const file = JSON.parse(readFileSync(notesFile, "utf8")) as NotesFile;
