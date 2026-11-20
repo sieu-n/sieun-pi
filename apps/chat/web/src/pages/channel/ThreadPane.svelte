@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { markedUnread, replies, timeline, type Item } from "$lib/api";
+  import { markedUnread, replies, threadMarkKey, timeline, type Item } from "$lib/api";
   import type { MarkdownContext } from "$lib/ui/markdown";
   import type { Status } from "$lib/ui/types";
   import Composer from "./Composer.svelte";
@@ -31,9 +31,13 @@
   const job = channel ? null : timeline(threadKey);
   // svelte-ignore state_referenced_locally
   const posts = channel ? replies(channel, threadKey) : null;
+  // A thread reply marked unread draws the New line while the pane stays open; its Keep unread item in Later stays until he handles it.
+  // svelte-ignore state_referenced_locally
+  const markKey = channel ? threadMarkKey(channel, threadKey) : null;
   onDestroy(() => {
     job?.close();
     posts?.close();
+    if (markKey) markedUnread.delete(markKey);
   });
 
   const channelRoom = $derived.by(() => {
@@ -52,6 +56,8 @@
 
   function send(out: Outgoing): Promise<void> {
     if (job) return job.send(out.text, { images: out.images, mentions: out.mentions });
+    // A reply answers the reply he marked unread here, so its New line goes with it.
+    if (markKey) markedUnread.delete(markKey);
     return posts?.send(out.text, { images: out.images, mentions: out.mentions }) ?? Promise.resolve();
   }
 
@@ -90,7 +96,7 @@
       {onmention}
       {onboardid}
       {onartifact}
-      newLine={channel ? markedUnread.get(channel) : null}
+      newLine={markKey ? markedUnread.get(markKey) : null}
     />
   {/key}
   <Composer

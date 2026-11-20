@@ -719,7 +719,7 @@ export class Rooms {
     return {
       id: record.room, kind: "dm", name, status, archived: agent?.archived ?? record.archived,
       lastActivityAt: posts.reduce((max, p) => Math.max(max, p.at), record.createdAt), preview: last ? last.text.slice(0, 200) : "",
-      unread, hasNew: unread > 0, working: status === "working" ? [{ id: record.id, name }] : [], agent: record.id,
+      unread, hasNew: unread > 0, ...(read?.from && posts.some(p => p.id === read.from && p.seq > mark) ? { unreadFrom: read.from } : {}), working: status === "working" ? [{ id: record.id, name }] : [], agent: record.id,
       ...(commStatus ? { commStatus } : {}),
     };
   }
@@ -730,7 +730,7 @@ export class Rooms {
 
   /** Moves the read point to `seq`, the newest post when absent, or with `unreadFrom` to just before that post, as Slack's Mark unread does. */
   markRead(record: AgentRecord, seq?: number, unreadFrom?: string): void {
-    this.deps.state.state.reads[record.room] = readMark(this.store.postsOf(record.room), seq, unreadFrom, record.name);
+    this.deps.state.state.reads[record.room] = readMark(this.store.postsOf(record.room), seq, unreadFrom, record.name, this.deps.state.state.reads[record.room]);
     this.deps.state.saveState();
     this.deps.events.changed();
   }

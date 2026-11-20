@@ -105,6 +105,8 @@ export interface ConversationSummary {
   unread: number;
   /** New posts since his read mark, for a channel row's bold. */
   hasNew: boolean;
+  /** The top-level post he marked unread, while the room reads unread from it (server/keep-unread.ts). */
+  unreadFrom?: string;
   /** Agents working in it now. */
   working: { id: AgentId; name: string }[];
   /** For a dm or job: the agent it belongs to. */
@@ -209,6 +211,11 @@ export interface LaterItem {
   /** Remind me: when the reminder is due, and when it fired. A new `remindAt` clears `notifiedAt`. */
   remindAt?: Ms;
   notifiedAt?: Ms;
+  /**
+   * Keep unread: the owner marked the post unread (server/keep-unread.ts). It sits pinned atop In progress until he replies, reacts or checks
+   * it off, and its reminder marks the room unread from it again.
+   */
+  unread?: true;
 }
 /** A Later item with what its row shows of the post. `gone` is a post that was deleted or whose room is gone, which has no text. */
 export interface LaterRow extends LaterItem {
@@ -230,7 +237,7 @@ export interface LaterRow extends LaterItem {
 /** `GET /api/later?state=open|done`: the owner's rows, newest first, with the counts of both tabs. */
 export interface LaterList { items: LaterRow[]; open: number; done: number }
 /** What a room post shows its reader about the reader's own save; absent when the reader has no open save of it. */
-export interface LaterMark { saved: boolean; remindAt?: Ms }
+export interface LaterMark { saved: boolean; remindAt?: Ms; /** Kept unread: the owner marked it unread and has not handled it. */ unread?: true }
 /** `POST /api/later`. Saving a saved post keeps its one item. */
 export interface LaterRequest { room: RoomId; post: string; remindAt?: Ms }
 /** `PATCH /api/later/:id`: check off or reopen, and set or clear (`null`) the reminder. */

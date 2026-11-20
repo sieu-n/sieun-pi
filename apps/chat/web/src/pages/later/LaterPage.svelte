@@ -25,6 +25,15 @@
   /** `#/c/later` is In progress and `#/c/later/done` Completed, so back and a link keep the tab. */
   const tab = $derived<LaterState>(router.route.rest[1] === "done" ? "done" : "open");
   const rows = $derived(tab === "open" && later.lists.open ? dueFirst(later.lists.open, now) : later.lists[tab]);
+  /** In progress pins the posts he marked unread on top, as their own Keep unread stack, until he handles each one (server/keep-unread.ts). */
+  const stacks = $derived.by(() => {
+    if (!rows) return [];
+    if (tab !== "open") return [{ id: "all", label: null, rows }];
+    const kept = rows.filter((r) => r.unread);
+    if (!kept.length) return [{ id: "all", label: null, rows }];
+    const saved = rows.filter((r) => !r.unread);
+    return [{ id: "unread", label: "Keep unread", rows: kept }, ...(saved.length ? [{ id: "saved", label: "Saved", rows: saved }] : [])];
+  });
   const tabs = $derived([
     { id: "open" as const, label: "In progress", badge: later.open || null },
     { id: "done" as const, label: "Completed" },
@@ -77,43 +86,46 @@
       </div>
     {:else}
       <ul class="rows" aria-label={tab === "open" ? "In progress" : "Completed"}>
-        {#each rows as row (row.id)}
-          {@const overdue = isOverdue(row, now)}
-          <li class="row" class:overdue data-later-id={row.id} data-overdue={overdue || undefined}>
-            <a class="open" href={hrefOf(row)} data-later-open>
-              <span class="avatar">
-                {#if row.author}<Avatar {...avatarOf(row.author)} seed={row.author.id} size={36} />{:else}<span class="no-author"><Icon name="trash" size={16} /></span>{/if}
-              </span>
-              <span class="main">
-                <span class="where t-caption">
-                  {#if roomIcon(row)}<Icon name={roomIcon(row)!} size={12} />{/if}
-                  <span class="room">{row.roomName}</span>
-                  {#if row.threadRoot}<span aria-hidden="true">·</span><span>Thread</span>{/if}
+        {#each stacks as stack (stack.id)}
+          {#if stack.label}<li class="stack t-caption" role="presentation" data-later-stack={stack.id}>{stack.label}</li>{/if}
+          {#each stack.rows as row (row.id)}
+            {@const overdue = isOverdue(row, now)}
+            <li class="row" class:overdue data-later-id={row.id} data-overdue={overdue || undefined}>
+              <a class="open" href={hrefOf(row)} data-later-open>
+                <span class="avatar">
+                  {#if row.author}<Avatar {...avatarOf(row.author)} seed={row.author.id} size={36} />{:else}<span class="no-author"><Icon name="trash" size={16} /></span>{/if}
                 </span>
-                <span class="heading">
-                  <strong class="author t-label-sm">{row.author?.name ?? "Deleted message"}</strong>
-                  <time class="t-caption" datetime={new Date(row.at).toISOString()} title={stampLabel(row.at, now)}>{stampLabel(row.at, now)}</time>
+                <span class="main">
+                  <span class="where t-caption">
+                    {#if roomIcon(row)}<Icon name={roomIcon(row)!} size={12} />{/if}
+                    <span class="room">{row.roomName}</span>
+                    {#if row.threadRoot}<span aria-hidden="true">·</span><span>Thread</span>{/if}
+                  </span>
+                  <span class="heading">
+                    <strong class="author t-label-sm">{row.author?.name ?? "Deleted message"}</strong>
+                    <time class="t-caption" datetime={new Date(row.at).toISOString()} title={stampLabel(row.at, now)}>{stampLabel(row.at, now)}</time>
+                  </span>
+                  {#if row.state === "open" && row.remindAt !== undefined}
+                    <span class="due t-caption" class:overdue data-later-due><Icon name="clock" size={12} />{dueLabel(row.remindAt, now).text}</span>
+                  {/if}
+                  {#if row.gone}
+                    <span class="preview t-body gone">This message was deleted.</span>
+                  {:else}
+                    <span class="preview t-body">{previewText(row.text) || (row.images ? `${row.images} image${row.images === 1 ? "" : "s"}` : "")}</span>
+                  {/if}
                 </span>
-                {#if row.state === "open" && row.remindAt !== undefined}
-                  <span class="due t-caption" class:overdue data-later-due><Icon name="clock" size={12} />{dueLabel(row.remindAt, now).text}</span>
-                {/if}
-                {#if row.gone}
-                  <span class="preview t-body gone">This message was deleted.</span>
+              </a>
+              <span class="row-actions">
+                {#if row.state === "open"}
+                  <IconButton size="sm" icon="check" label="Mark complete" onclick={() => later.setState(row, "done")} data-later-done />
+                  <IconButton size="sm" icon="clock" label={overdue ? "Snooze" : row.remindAt !== undefined ? "Change reminder" : "Remind me"} aria-haspopup="menu" onclick={(e: MouseEvent) => openRemind(row, e)} data-later-remind />
                 {:else}
-                  <span class="preview t-body">{previewText(row.text) || (row.images ? `${row.images} image${row.images === 1 ? "" : "s"}` : "")}</span>
+                  <IconButton size="sm" icon="refresh" label="Move to In progress" onclick={() => later.setState(row, "open")} data-later-reopen />
                 {/if}
+                <IconButton size="sm" icon="bookmark-filled" label="Remove from Later" onclick={() => later.remove(row)} data-later-remove />
               </span>
-            </a>
-            <span class="row-actions">
-              {#if row.state === "open"}
-                <IconButton size="sm" icon="check" label="Mark complete" onclick={() => later.setState(row, "done")} data-later-done />
-                <IconButton size="sm" icon="clock" label={overdue ? "Snooze" : row.remindAt !== undefined ? "Change reminder" : "Remind me"} aria-haspopup="menu" onclick={(e: MouseEvent) => openRemind(row, e)} data-later-remind />
-              {:else}
-                <IconButton size="sm" icon="refresh" label="Move to In progress" onclick={() => later.setState(row, "open")} data-later-reopen />
-              {/if}
-              <IconButton size="sm" icon="bookmark-filled" label="Remove from Later" onclick={() => later.remove(row)} data-later-remove />
-            </span>
-          </li>
+            </li>
+          {/each}
         {/each}
       </ul>
     {/if}
@@ -130,6 +142,7 @@
   .notice p { margin: 0; }
   .empty { display: grid; place-items: center; min-height: 60%; padding: var(--space-page-section-gap) var(--space-panel-inset); }
   .rows { list-style: none; margin: 0; padding: var(--space-1) var(--space-1-5) var(--space-panel-inset); display: grid; gap: 2px; }
+  .stack { padding: var(--space-3) var(--space-3) var(--space-1); color: var(--text-subtle); font-weight: 600; }
   .row { position: relative; min-width: 0; border-radius: var(--radius-row); }
   .row:hover, .row:focus-within { background: var(--neutral-3); }
   .open { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: var(--space-3); padding: 10px var(--space-3); color: inherit; text-decoration: none; border-radius: inherit; }

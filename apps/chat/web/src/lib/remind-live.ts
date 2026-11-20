@@ -25,7 +25,8 @@ export function laterDue(row: LaterRow): void {
   const from = row.roomKind === "dm"
     ? (mine ? `Your message to ${row.roomName}` : row.author?.name ?? row.roomName)
     : mine ? `Your message in ${row.roomName}` : row.author ? `${row.author.name} in ${row.roomName}` : row.roomName;
-  const title = `Reminder: ${from}`;
+  // A post he marked unread and has not handled comes back each morning (server/keep-unread.ts).
+  const title = row.unread ? `Still unread: ${from}` : `Reminder: ${from}`;
   const body = snippet(row);
   toast.show(`${title}: ${body}`, { duration: 0, action: { label: "View", run: () => openReminded(row) } });
   const fire = () => void notifySystem(title, body, `later:${row.id}:${row.remindAt ?? 0}`, () => openReminded(row));

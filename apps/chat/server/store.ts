@@ -8,20 +8,27 @@ import { readLatest, writeJsonLater } from "./disk.ts";
 import type { AgentId, ConversationId, ThinkingLevel } from "../web/src/lib/api/types.ts";
 
 export interface ThreadMeta { kind: "chat" | "job"; parent?: AgentId }
-/** The owner's read point in a conversation. `from` is the post he marked unread, which counts as unread whoever wrote it and wherever it sits. */
+/**
+ * The owner's read point in a conversation. `from` is the top-level post he marked unread, which counts as unread whoever wrote it, until a
+ * read of the room or his handling of the post (keep-unread.ts) clears it.
+ */
 export interface ReadMark { at: number; seq?: number; from?: string }
 
 /**
  * The read point that reading to `seq`, or to the newest post when absent, leaves; `unreadFrom` puts it just before that post instead and
- * keeps the post as `from`, so it counts as unread even when it is the owner's own or a thread reply.
+ * keeps the post as `from`, so it counts as unread even when it is the owner's own. A thread reply marked unread leaves the room's read
+ * point where it was, as Slack marks only its thread unread; its Keep unread item in Later stands for the thread.
  */
-export function readMark(posts: readonly { id: string; seq: number }[], seq: number | undefined, unreadFrom: string | undefined, room: string): ReadMark {
+export function readMark(
+  posts: readonly { id: string; seq: number; threadRoot?: string }[], seq: number | undefined, unreadFrom: string | undefined, room: string, current?: ReadMark,
+): ReadMark {
+  const last = posts.at(-1)?.seq ?? 0;
   if (unreadFrom !== undefined) {
     const post = posts.find(p => p.id === unreadFrom);
     if (!post) throw new Error(`No post ${unreadFrom} in ${room}.`);
+    if (post.threadRoot) return current ?? { at: Date.now(), seq: 0 };
     return { at: Date.now(), seq: post.seq - 1, from: post.id };
   }
-  const last = posts.at(-1)?.seq ?? 0;
   return { at: Date.now(), seq: Math.min(seq ?? last, last) };
 }
 

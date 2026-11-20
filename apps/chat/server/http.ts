@@ -251,7 +251,8 @@ export function routes(app: App): Route[] {
     }),
     route("POST", "/api/c/:id/read", async (_r, p, _q, body) => {
       const { seq, unreadFrom } = ((await body()) ?? {}) as { seq?: number; unreadFrom?: string };
-      app.markRead(p.id!, typeof seq === "number" ? seq : undefined, typeof unreadFrom === "string" ? unreadFrom : undefined);
+      if (typeof unreadFrom === "string") app.markUnread(p.id!, unreadFrom);
+      else app.markRead(p.id!, typeof seq === "number" ? seq : undefined);
       return { ok: true };
     }),
     route("GET", "/api/threads/:id/jobs", async (_r, p) => app.threads.jobs(p.id!)),

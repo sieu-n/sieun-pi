@@ -160,6 +160,38 @@
     anchor = row ? { row, top: row.getBoundingClientRect().top } : null;
   }
 
+  /**
+   * Mark unread draws the New line, and the marked post's byline, over a post on screen. The post stays under his pointer, as in Slack, so
+   * the rows above it move instead, and neither the stick to the bottom nor the scroll this makes reads as his own scroll to the bottom.
+   */
+  let pinned: { row: Element; top: number } | null = null;
+  let lineShown: string | null = null;
+  $effect.pre(() => {
+    const id = newLine ?? null;
+    if (id === lineShown) return;
+    lineShown = id;
+    const row = id && scroller && !loading ? scroller.querySelector(`[data-message-id="${CSS.escape(id)}"]`) : null;
+    if (!row) return;
+    pinned = { row, top: row.getBoundingClientRect().top };
+    stick = false;
+    void tick().then(() => {
+      holdPinned();
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        holdPinned();
+        // Later changes in height, such as the post's own Later mark landing, keep the post where it is too, until he scrolls.
+        anchor = pinned;
+        pinned = null;
+      }));
+    });
+  });
+
+  function holdPinned(): boolean {
+    if (!scroller || !pinned?.row.isConnected) return false;
+    const moved = pinned.row.getBoundingClientRect().top - pinned.top;
+    if (moved) scroller.scrollTop += moved;
+    return true;
+  }
+
   let rowsEl = $state<HTMLElement>();
   $effect(() => {
     if (!rowsEl) return;
@@ -168,6 +200,7 @@
         scroller.scrollTop += held.row.getBoundingClientRect().top - held.top;
         return;
       }
+      if (holdPinned()) return;
       if (stick) toBottom();
       else if (scroller && anchor?.row.isConnected) {
         const moved = anchor.row.getBoundingClientRect().top - anchor.top;
@@ -203,14 +236,20 @@
   }
 
   function onscroll() {
-    if (!scroller) return;
+    if (!scroller || pinned) return;
     const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
     const wasStuck = stick;
     stick = distance < 80;
     showJump = distance > 400;
-    if (stick && !wasStuck) onbottom?.(true);
+    // Reaching the bottom is his own read, except while the post he marked unread is still on screen: only scrolling past it reads it.
+    if (stick && !wasStuck) onbottom?.(!lineOnScreen());
     if (!stick && !held) noteAnchor();
     if (scroller.scrollTop < 240 && full && hasOlder && !loadingOlder) void older();
+  }
+
+  function lineOnScreen(): boolean {
+    const row = newLine && scroller ? scroller.querySelector(`[data-message-id="${CSS.escape(newLine)}"]`) : null;
+    return !!row && !!scroller && row.getBoundingClientRect().bottom > scroller.getBoundingClientRect().top;
   }
 
   function jump() {
@@ -218,7 +257,19 @@
     scroller?.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
     onbottom?.(true);
   }
+
+  /** U marks the post under the pointer, or the focused one, unread, as in Slack; MessageRow takes the `markunread` event. */
+  function markHovered(e: KeyboardEvent) {
+    if (e.key.toLowerCase() !== "u" || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || e.repeat) return;
+    if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
+    const row = scroller?.querySelector("[data-message-id]:hover, [data-message-id]:focus-within");
+    if (!row) return;
+    e.preventDefault();
+    row.dispatchEvent(new CustomEvent("markunread"));
+  }
 </script>
+
+<svelte:window onkeydown={markHovered} />
 
 <div class="timeline" class:compact>
   <div class="feed" bind:this={scroller} {onscroll} data-testid="timeline">

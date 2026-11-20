@@ -6,7 +6,6 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import Lightbox from "$lib/ui/Lightbox.svelte";
   import Menu from "$lib/ui/Menu.svelte";
-  import { isMac } from "$lib/ui/keyboard";
   import type { MenuEntry } from "$lib/ui/menu";
   import { toast } from "$lib/ui/toast.svelte";
   import { api, markUnread } from "$lib/api";
@@ -147,7 +146,7 @@
   let moreButton = $state<HTMLButtonElement>();
   const menuItems = $derived<MenuEntry[]>(
     reactable ? [
-      { id: "unread", label: "Mark unread", icon: "dot", shortcut: isMac ? "⌥ Click" : "Alt+Click", onselect: unread },
+      { id: "unread", label: "Mark unread", icon: "dot", shortcut: "U", onselect: unread },
       remindMenu({ remindAt: reactable.later?.remindAt, set: remind, custom: () => (customRemind = true), clear: () => remind(null) }),
       ...(doneable ? [{ id: "done", label: done ? "Reopen thread" : "Mark thread done", icon: "check", onselect: toggleDone }] : []),
       ...(room ? [laterMenuItem(room, reactable)] : []),
@@ -172,11 +171,25 @@
     }
   }
 
-  /** Slack's Mark unread: the room reads as unread from this post on, in the sidebar of every tab and the app. */
+  /** Mark unread: the room reads as unread from this post on, in every tab and the app, and the post waits in Later until he handles it. */
   function unread() {
     if (!reactable || !room) return;
-    void markUnread(room, reactable.id).catch(() => toast.error("Could not mark the message unread"));
+    markUnread(room, reactable.id, reactable.threadRoot).then(
+      () => toast.show("Marked as unread. It stays in Later until you reply, react or check it off."),
+      () => toast.error("Could not mark the message unread"),
+    );
+    // The menu hands focus back to More actions, which would keep the hover bar up; Slack drops it once the pick is made.
+    requestAnimationFrame(() => {
+      if (document.activeElement instanceof HTMLElement && rowEl?.contains(document.activeElement)) document.activeElement.blur();
+    });
   }
+
+  $effect(() => {
+    const el = rowEl;
+    if (!el) return;
+    el.addEventListener("markunread", unread);
+    return () => el.removeEventListener("markunread", unread);
+  });
 
   /** Alt-click, Option-click on a Mac, marks the post unread as in Slack, before a link or button inside it acts on the click. */
   function altClick(e: MouseEvent) {
@@ -224,7 +237,7 @@
 {/snippet}
 
 {#snippet savedLabel()}
-  <p class="saved-label" data-saved-label><Icon name="bookmark-filled" size={12} /><a href={laterHref()}>Saved for later</a>{#if reactable?.later?.remindAt !== undefined}{@const due = dueLabel(reactable.later.remindAt)}<span aria-hidden="true">·</span><span class="saved-due" class:overdue={due.due} data-saved-due>{due.text}</span>{/if}</p>
+  <p class="saved-label" data-saved-label><Icon name="bookmark-filled" size={12} /><a href={laterHref()}>{reactable?.later?.unread ? "Kept unread in Later" : "Saved for later"}</a>{#if reactable?.later?.remindAt !== undefined}{@const due = dueLabel(reactable.later.remindAt)}<span aria-hidden="true">·</span><span class="saved-due" class:overdue={due.due} data-saved-due>{due.text}</span>{/if}</p>
 {/snippet}
 
 {#snippet images()}

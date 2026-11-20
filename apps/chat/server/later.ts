@@ -103,7 +103,7 @@ export class Later {
   mark(by: string, room: RoomId, post: string): LaterMark | undefined {
     const item = PRINCIPAL.test(by) ? this.find(by, room, post) : undefined;
     if (item?.state !== "open") return undefined;
-    return { saved: true, ...(item.remindAt !== undefined ? { remindAt: item.remindAt } : {}) };
+    return { saved: true, ...(item.remindAt !== undefined ? { remindAt: item.remindAt } : {}), ...(item.unread ? { unread: true as const } : {}) };
   }
 
   /**
@@ -123,6 +123,21 @@ export class Later {
       return this.write(who, { ...this.reopened(old), ...(remindAt !== undefined ? { remindAt } : {}) }, remindAt !== undefined);
     }
     return this.write(who, { id: laterId(room, post), by: who, room, post, savedAt: Date.now(), state: "open", ...(remindAt !== undefined ? { remindAt } : {}) }, false);
+  }
+
+  /**
+   * Mark unread's Later side (keep-unread.ts): the post sits open in the Keep unread stack until the owner handles it, and its reminder at
+   * `remindAt` marks its room unread again. A sooner reminder he already set stays; marking a done item unread opens it again.
+   */
+  keepUnread(by: string, room: RoomId, post: string, remindAt: Ms): LaterItem {
+    const who = principalOf(by);
+    if (!this.deps.store.postsOf(room).some(p => p.id === post)) throw new LaterError(404, `No post ${post} in ${room} to keep unread.`);
+    const old = this.find(who, room, post);
+    if (!old) return this.write(who, { id: laterId(room, post), by: who, room, post, savedAt: Date.now(), state: "open", unread: true, remindAt }, false);
+    const keepSooner = old.state === "open" && old.remindAt !== undefined && old.remindAt > Date.now() && old.remindAt < remindAt;
+    const next: LaterItem = { ...this.reopened(old), unread: true, remindAt: keepSooner ? old.remindAt! : remindAt };
+    if (old.state === "open" && old.unread && next.remindAt === old.remindAt) return old;
+    return this.write(who, next, next.remindAt !== old.remindAt);
   }
 
   /** Checks the item off (`done`) or opens it again (`open`), and sets or clears (`null`) its reminder. A patch that changes nothing writes nothing. */

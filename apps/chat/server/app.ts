@@ -22,6 +22,7 @@ import { assertEditable, deleteNotice, deliveriesOf, editNotice } from "./post-e
 import { ForMe } from "./for-me.ts";
 import { Later } from "./later.ts";
 import { LaterDue } from "./later-due.ts";
+import { answers, nextMorning } from "./keep-unread.ts";
 import { AgentLater } from "./later-agents.ts";
 import type { ForMeItem, ForMeList, ForMeStatus, LaterItem } from "../web/src/lib/api/types.ts";
 import { DEFAULT_MODEL, DEFAULT_THINKING, type Config } from "./config.ts";
@@ -137,13 +138,23 @@ export class App {
       items: () => this.later.items("owner"),
       notified: (item, at) => (this.later.get("owner", item.id) ? this.later.update("owner", item.id, { notifiedAt: at }) : undefined),
       fire: item => {
+        if (item.unread) {
+          try {
+            this.roomUnreadFrom(item.room, item.post);
+          } catch (error) {
+            log(`later: ${item.id} kept unread, but its room or post is gone: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
         const row = this.later.list("owner", "open").items.find(r => r.id === item.id);
         if (row) this.broadcast({ type: "later_due", row });
       },
       log,
     });
-    this.later.onChange(({ by }) => {
-      if (by === "owner") this.laterDue.arm();
+    this.later.onChange(({ by, item, removed }) => {
+      if (by !== "owner") return;
+      this.laterDue.arm();
+      // Checking a Keep unread item off, or unsaving it, handles the post, so its room stops reading unread from it.
+      if (item.unread && (removed || item.state === "done") && this.store.state.reads[item.room]?.from === item.post) this.markRead(item.room);
     });
     const linkOf = routing ? (box: string) => routing.link(box).state : undefined;
     this.threads = new Threads(host, this.store, {
@@ -524,12 +535,14 @@ export class App {
     if (isRoomId(id)) {
       const record = this.roomAgent(id);
       const result = this.rooms.post(record, request);
+      this.answeredKeptUnread(record.room, request.requestId);
       if (request.mentions?.length) void this.deliverMentions({ requestId: request.requestId, conversation: id, text: request.text ?? "", mentions: request.mentions });
       await this.agentStore.written(record.room);
       return result;
     }
     if (this.isGroup(id)) {
       const result = this.groups.post(id, request);
+      this.answeredKeptUnread(id, request.requestId);
       await this.agentStore.written(id);
       return result;
     }
@@ -572,7 +585,42 @@ export class App {
     if (!post) throw new NotFound(`No post ${postId} in ${id}.`);
     const { emoji, on } = reactionInput(input);
     this.setReaction(room, post, "owner", emoji, on);
+    if (on) this.handledKeptUnread(room, post.id);
     return { item: this.postItem(room, post) };
+  }
+
+  /**
+   * Mark unread (keep-unread.ts): the room reads unread from the post, and the post stays in Later's Keep unread stack until the owner
+   * handles it, with a reminder at the next 9:00 in Seoul that marks the room unread from it again.
+   */
+  markUnread(id: ConversationId, post: string): void {
+    const room = isRoomId(id) ? this.roomAgent(id).room : this.groups.row(id)?.id;
+    if (!room) throw new NotFound(`No room ${id}; Mark unread is for posts in a DM, a channel or a Solo room.`);
+    this.roomUnreadFrom(room, post);
+    this.later.keepUnread("owner", room, post, nextMorning(Date.now()));
+  }
+
+  private roomUnreadFrom(room: RoomId, post: string): void {
+    if (this.isGroup(room)) this.groups.markRead(room, undefined, post);
+    else this.rooms.markRead(this.roomAgent(room), undefined, post);
+  }
+
+  /** The owner's send answers each post he kept unread in the room that it replies to, which checks them off. */
+  private answeredKeptUnread(room: RoomId, requestId: string): void {
+    const reply = this.agentStore.byRequestId(room, requestId);
+    if (!reply) return;
+    const posts = this.agentStore.postsOf(room);
+    for (const item of this.later.items("owner")) {
+      if (item.room !== room || !item.unread || item.state !== "open") continue;
+      const marked = posts.find(p => p.id === item.post);
+      if (marked && answers(marked, reply)) this.later.update("owner", item.id, { state: "done" });
+    }
+  }
+
+  /** The owner reacted to a post he kept unread, which handles it. */
+  private handledKeptUnread(room: RoomId, post: string): void {
+    const item = this.later.find("owner", room, post);
+    if (item?.unread && item.state === "open") this.later.update("owner", item.id, { state: "done" });
   }
 
   /**
@@ -1023,14 +1071,14 @@ export class App {
     return this.rooms.summary(record);
   }
 
-  /** The owner read the conversation to `seq`, or to its newest post; `unreadFrom` marks a room unread from that post on, as Slack's Mark unread does. */
-  markRead(id: ConversationId, seq?: number, unreadFrom?: string): void {
+  /** The owner read the conversation to `seq`, or to its newest post. */
+  markRead(id: ConversationId, seq?: number): void {
     if (isRoomId(id)) {
-      this.rooms.markRead(this.roomAgent(id), seq, unreadFrom);
+      this.rooms.markRead(this.roomAgent(id), seq);
       return;
     }
     if (this.isGroup(id)) {
-      this.groups.markRead(id, seq, unreadFrom);
+      this.groups.markRead(id, seq);
       return;
     }
     this.store.state.reads[id] = { at: Date.now() };

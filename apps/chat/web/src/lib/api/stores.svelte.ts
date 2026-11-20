@@ -363,6 +363,7 @@ class Global {
           this.me = event.me;
           document.body.dataset.wiki = event.me.wikiBase;
           this.sidebar = event.sidebar;
+          syncMarked(event.sidebar);
           this.agents = event.agents;
           this.jobs = event.jobs;
           this.conversations = event.conversations;
@@ -374,6 +375,7 @@ class Global {
           break;
         case "sidebar":
           this.sidebar = event.sidebar;
+          syncMarked(event.sidebar);
           this.forYouCount = event.sidebar.forYou;
           roomsAhead(event.sidebar);
           break;
@@ -848,22 +850,44 @@ function warmReplies(channel: ConversationId, items: readonly Item[]): void {
   }
 }
 
-/** One conversation's timeline: the newest page, older pages on demand, live upserts, status, send and Stop. Nothing streams. */
 /**
- * The rooms the owner marked unread on this page, each with the post he marked. While a room is here its open view draws the New line over
- * that post and posts no /read of its own, as in Slack, until he scrolls back to the bottom or opens the room again.
+ * The posts the owner marked unread, keyed by room, or by `<room>:<root>` for a thread reply, whose mark leaves the channel read. While a
+ * room is here its open view draws the New line over that post and posts no /read of its own, as in Slack, until he scrolls back to the
+ * bottom or opens the room again. The server's summaries keep it in step (`syncMarked`): its 9:00 reminder puts a room back, and a reply,
+ * a reaction or Mark complete in any tab takes it out.
  */
-export const markedUnread = new SvelteMap<ConversationId, string>();
+export const markedUnread = new SvelteMap<string, string>();
+/** The marks on their way to the server, which a summary from before the mark must not undo. */
+const marking = new Set<string>();
 
-/** Slack's Mark unread: the room's read point moves to just before `post`, on the server, so the sidebar of every tab and the app shows it. */
-export function markUnread(room: ConversationId, post: string): Promise<unknown> {
-  markedUnread.set(room, post);
-  return api.markUnread(room, post).catch(error => {
-    if (markedUnread.get(room) === post) markedUnread.delete(room);
+export const threadMarkKey = (room: ConversationId, root: string): string => `${room}:${root}`;
+
+/** Mark unread (server/keep-unread.ts): the room reads unread from `post` in every tab and the app, and the post stays in Later's Keep unread stack. */
+export async function markUnread(room: ConversationId, post: string, threadRoot?: string): Promise<void> {
+  const key = threadRoot ? threadMarkKey(room, threadRoot) : room;
+  markedUnread.set(key, post);
+  marking.add(key);
+  try {
+    await api.markUnread(room, post);
+  } catch (error) {
+    if (markedUnread.get(key) === post) markedUnread.delete(key);
     throw error;
-  });
+  } finally {
+    marking.delete(key);
+  }
 }
 
+/** Keeps the room marks in step with the server's summaries, so a mark set or cleared elsewhere shows in this tab. */
+function syncMarked(sidebar: Sidebar): void {
+  for (const row of [...sidebar.solo, ...sidebar.channels, ...sidebar.dms]) {
+    if (marking.has(row.id)) continue;
+    if (row.unreadFrom) {
+      if (markedUnread.get(row.id) !== row.unreadFrom) markedUnread.set(row.id, row.unreadFrom);
+    } else if (markedUnread.has(row.id)) markedUnread.delete(row.id);
+  }
+}
+
+/** One conversation's timeline: the newest page, older pages on demand, live upserts, status, send and Stop. Nothing streams. */
 export class Timeline {
   /** Raw state: each change replaces the list, and a job page measured 434 KB on 11-03, too big to proxy deeply. */
   items = $state.raw<Item[]>([]);
@@ -890,6 +914,8 @@ export class Timeline {
   openedUnread = $state<string | undefined>(undefined);
   /** Ends when the view's own read of the room lands, so the first /read cannot move the read point before the view saw where it was. */
   private readonly loaded: Promise<void>;
+  /** The post marked unread when the view opened, which its first read clears, as opening a room in Slack does; a mark after that holds. */
+  private openedFrom: string | undefined;
 
   constructor(readonly id: ConversationId, opts: { around?: string } = {}) {
     this.isChannel = id.startsWith("ch_");
@@ -902,7 +928,7 @@ export class Timeline {
       else if (event.type === "room" && event.room.id === id) void this.refreshHeader();
     });
     timelinePages.open(id, () => this.showing());
-    markedUnread.delete(id);
+    this.openedFrom = markedUnread.get(id);
     this.loaded = this.load(opts.around);
     for (const id of this.sends.restore()) this.retrySend(id);
   }
@@ -1003,6 +1029,8 @@ export class Timeline {
    */
   send(text: string, opts: SendOpts = {}, since?: number): Promise<void> {
     const request: SendDraft = { text, requestId: crypto.randomUUID(), ...opts };
+    // His own post answers what was new, so the New line goes, as in Slack.
+    if (!opts.threadRoot) this.openedUnread = undefined;
     void this.sends.send(request, !opts.threadRoot, since).then(result => this.sent(result, request));
     return Promise.resolve();
   }
@@ -1028,9 +1056,17 @@ export class Timeline {
     return api.abort(this.id);
   }
 
-  /** The post the New line goes over: the one he marked unread here, else the first unread one when the view opened. */
+  /** Set once a mark made while the view is open shows, so clearing it leaves no line rather than bringing back the line from the open. */
+  private markShown = false;
+
+  /** The post the New line goes over: the one he marked unread, else the first unread one when the view opened, until a send or a cleared mark. */
   get newLine(): string | undefined {
-    return markedUnread.get(this.id) ?? this.openedUnread;
+    const held = markedUnread.get(this.id);
+    if (held !== undefined) {
+      if (held !== this.openedFrom) this.markShown = true;
+      return held;
+    }
+    return this.markShown ? undefined : this.openedUnread;
   }
 
   /**
@@ -1040,7 +1076,8 @@ export class Timeline {
    */
   async markRead(byUser = false): Promise<unknown> {
     await this.loaded;
-    if (markedUnread.has(this.id)) {
+    const held = markedUnread.get(this.id);
+    if (held !== undefined && held !== this.openedFrom) {
       if (!byUser) return;
       markedUnread.delete(this.id);
       this.marked = undefined;
@@ -1049,6 +1086,7 @@ export class Timeline {
     const own = newest?.kind === "message" && newest.author.id === "owner";
     if (!newest || newest === this.marked || (own && this.marked)) return Promise.resolve();
     this.marked = newest;
+    this.openedFrom = undefined;
     const seq = this.items.findLast(i => i.kind === "message" && i.seq !== undefined);
     return api.read(this.id, seq?.kind === "message" ? seq.seq : undefined).catch(error => {
       if (this.marked === newest) this.marked = undefined;

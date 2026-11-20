@@ -231,7 +231,7 @@ export class GroupRooms {
       id: row.id, kind: row.kind, name: row.name, status: working.length ? "working" : "idle", archived: row.archived,
       lastActivityAt: last?.at ?? row.createdAt,
       preview: last ? `${this.deps.threads.principal(last.author).name}: ${last.text}`.slice(0, 200) : (row.kind === "solo" ? row.agenda : row.purpose).slice(0, 200),
-      unread, hasNew: unseen.length > 0, working,
+      unread, hasNew: unseen.length > 0, ...(read?.from && unseen.some(p => p.id === read.from) ? { unreadFrom: read.from } : {}), working,
       ...(row.kind === "solo" ? { agenda: row.agenda, ...(row.closedAt !== undefined ? { closedAt: row.closedAt } : {}) } : {}),
     };
   }
@@ -836,7 +836,7 @@ export class GroupRooms {
   /** Moves the read point to `seq`, the newest post when absent, or with `unreadFrom` to just before that post, as Slack's Mark unread does. */
   markRead(id: string, seq?: number, unreadFrom?: string): void {
     const row = this.require(id);
-    this.deps.state.state.reads[row.id] = readMark(this.store.postsOf(row.id), seq, unreadFrom, roomLabel(row));
+    this.deps.state.state.reads[row.id] = readMark(this.store.postsOf(row.id), seq, unreadFrom, roomLabel(row), this.deps.state.state.reads[row.id]);
     this.deps.state.saveState();
     this.deps.events.conversations([this.summary(row)]);
   }
