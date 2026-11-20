@@ -174,7 +174,11 @@ test("wakes set through the route survive a restart of the chat server", async t
   assert.ok(lines.every(line => line.startsWith("[wake] It is ")));
   assert.ok(lines.some(line => line.includes("Your note: after restart")) && lines.some(line => line.includes("Your note: old kernel"))
     && lines.some(line => line.includes("Your note: file of the old chat")));
-  assert.deepEqual(readdirSync(join(dataDir, "wakes")).filter(name => name.endsWith(".json")).length, 1, "the check wake waits on");
+  // The ticker removes the delivered files after the submit answers, so under a full suite's load the message can show first.
+  const files = () => readdirSync(join(dataDir, "wakes")).filter(name => name.endsWith(".json")).length;
+  const gone = Date.now() + 10_000;
+  while (files() > 1 && Date.now() < gone) await new Promise(done => setTimeout(done, 50));
+  assert.equal(files(), 1, "the check wake waits on");
 });
 
 test("a job thread aliased to an agent gets its wakes itself, not the agent's work thread, and the route lists a conversation's pending wakes", async t => {

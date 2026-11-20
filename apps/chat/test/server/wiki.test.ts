@@ -64,7 +64,11 @@ test("an engine route under /wiki passes through to the engine", { skip }, async
 test("a conversation opens its workspace, writes, edits and closes it, and every write names its caller", { skip }, async () => {
   // The fixture's solo chat holds no agent, so its folder lands in sessions/ and no real agent's space (agents/<slug>/) gets a test folder.
   const solo = FIXTURE_IDS.solo;
-  const opened = await server.send("POST", `/api/c/${solo}/workspace`, { slug: "apps-chat-wiki-test", goal: "Check the /wiki routes of apps/chat end to end.", tags: ["test"] });
+  // The engine is the box's real wiki and the fixture's ids never change, so a run that stopped before its close left this conversation's
+  // folder open (sessions/2026/11/03/1841-apps-chat-wiki-test stayed open until 11-20). Each run closes such a folder first and names its own folder,
+  // since two runs in one minute would name the same one.
+  await server.send("POST", `/api/c/${solo}/workspace/close`, { outcome: "Closed by apps/chat wiki.test.ts: an earlier run stopped before its close.", no_durable_knowledge: true });
+  const opened = await server.send("POST", `/api/c/${solo}/workspace`, { slug: `apps-chat-wiki-test-${Date.now().toString(36)}`, goal: "Check the /wiki routes of apps/chat end to end.", tags: ["test"] });
   assert.equal(opened.status, 201, JSON.stringify(opened.body));
   assert.deepEqual([opened.body.conversation, opened.body.agent, opened.body.opened], [solo, null, true]);
   const folder: string = opened.body.id;
