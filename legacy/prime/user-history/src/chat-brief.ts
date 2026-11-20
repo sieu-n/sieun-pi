@@ -196,7 +196,7 @@ export function jobReplyGuideline(job: ChatJobOf, session: string): string {
     "helpers other jobs run under ~/work/<job>/ or the repo, never in your scratch folder. " +
     `No cap, throttle, timeout, rate or caution line without a measurement, a vendor limit or an incident cited next to the number; remove unbacked ones. ` +
     "Work, reason and write in English, including reports, logs, files, commits, docs and wiki pages, even pages made for the owner; quote the " +
-    "owner's words as-is; only chat replies to the owner use his language (c2, c102).";
+    "owner's words as-is; replies to the owner are in English too, even when he writes in Korean, unless he asks for Korean (c159).";
 }
 
 /**
