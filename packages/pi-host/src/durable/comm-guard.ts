@@ -13,11 +13,12 @@
  *    11-03 chrome extension answered the owner's "proxy가 아니라 근데 Client browser에서" with "... A job is testing whether that can be
  *    avoided.", a relay nobody asked for, and agent factory answered his "are you working on Meilisearch then?" with "Yes, the search job
  *    (p56) is timing Meilisearch ...", which answers him.
- *
- * A post with a markdown table goes out, and its tool result carries a note (`commPostNote`) unless the post that started the turn asks
- * for a table (`asksTable`), so the next post links a wiki page instead (soft, c81 and c98). A room reads like Slack, and a thread pane is
- * about 400 px wide: on 11-20 Search product, misc. answered "what is our definitive catalog now?" in a #dev-search-general thread with a
- * 4-column table the pane cut off on the right and at the bottom, and the owner asked "does this feel like slack to you?".
+ * 4. A post with a markdown table is held once, unless the post that started the turn asks for a table (`asksTable`), and the very same
+ *    text sent again goes out, the soft cap Prime's own tell_owner guard keeps for a long reply (chat-guard.ts `resent`, c98). A room reads
+ *    like Slack, and a thread pane is about 400 px wide: on 11-20 Search product, misc. answered "what is our definitive catalog now?" in a
+ *    #dev-search-general thread with a 4-column table the pane cut off on the right and at the bottom, and the owner asked "does this feel
+ *    like slack to you?". A note on the sent post's result was tried first, and in the blind runs that day two of two fresh agents asked
+ *    "what pieces make up the skill setup?" posted a table anyway, since the note came only after the post was out.
  */
 import { relayWords } from "./relay-line.ts";
 
@@ -30,6 +31,8 @@ export interface CommPostTurn {
   asked: boolean;
   /** Whether the post that started the turn asks for a table (`asksTable`). */
   tableAsked?: boolean;
+  /** Whether this very text was held for its table already in this turn, so sending it again sends it (`tableResent`). */
+  tableResent?: boolean;
 }
 
 /**
@@ -68,15 +71,30 @@ export function commPostRefusal(text: string, turn: CommPostTurn): string | unde
     return `Not sent: "${relay.words}" is progress on work still going, and nobody asked for it on this turn. End the turn with no ` +
       "message, and post once when the result is in.";
   }
+  if (hasTable(text) && !turn.tableAsked && !turn.tableResent) {
+    return `${TABLE_MARK}, and a room reads like Slack: a table gets cut off in its narrow thread pane. Answer in one or two casual sentences ` +
+      "and put the detail on a wiki page with `wiki.write` in ipython, linked in the same post as `full list → [name](wiki:<path>)`. " +
+      "If he must see this table as it is, send the very same text again and it goes out (c98).";
+  }
   return undefined;
 }
 
-/** The note a comm thread's sent post gets in its tool result, or undefined when it needs none: a table nobody asked for. */
-export function commPostNote(text: string, turn: Pick<CommPostTurn, "tableAsked">): string | undefined {
-  if (!hasTable(text) || turn.tableAsked) return undefined;
-  return "Note: this post holds a table nobody asked for. A room reads like Slack, and a table gets cut off in its narrow thread pane. " +
-    "From the next post on, answer in one or two casual sentences and put the detail on a wiki page with `wiki.write` in ipython, linked " +
-    "in the same post as `full list → [name](wiki:<path>)`.";
+/** How a post held for its table opens. */
+export const TABLE_MARK = "Not sent, it holds a table nobody asked for";
+
+interface TurnCall { role: string; content?: unknown; toolCallId?: unknown }
+
+/** Whether a speaking call with this very text was held for its table earlier in the turn; a blocked call's result wraps the mark in a harness line. */
+export function tableResent(messages: readonly TurnCall[], text: string): boolean {
+  const start = messages.findLastIndex(message => message.role === "user" || message.role === "custom");
+  const held = new Set<string>();
+  for (const message of messages.slice(start + 1)) {
+    if (message.role === "toolResult" && typeof message.toolCallId === "string" && Array.isArray(message.content)
+      && (message.content as { type?: unknown; text?: unknown }[]).some(part => part.type === "text" && typeof part.text === "string" && part.text.includes(TABLE_MARK))) held.add(message.toolCallId);
+  }
+  return messages.slice(start + 1).some(message => message.role === "assistant" && Array.isArray(message.content)
+    && (message.content as { type?: unknown; id?: unknown; arguments?: { text?: unknown } }[])
+      .some(part => part.type === "toolCall" && typeof part.id === "string" && held.has(part.id) && part.arguments?.text === text));
 }
 
 interface TurnMessage { role: string; timestamp?: unknown; content?: unknown }

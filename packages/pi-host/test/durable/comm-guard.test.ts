@@ -5,7 +5,7 @@
  */
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { asks, asksTable, commPostNote, commPostRefusal, hasTable, turnAsked, turnAskedTable, turnStartedAt } from "../../src/durable/comm-guard.ts";
+import { asks, asksTable, commPostRefusal, hasTable, tableResent, TABLE_MARK, turnAsked, turnAskedTable, turnStartedAt } from "../../src/durable/comm-guard.ts";
 import { relayWords } from "../../src/durable/relay-line.ts";
 
 /** Agent posts from the room logs that relay the agent's own work, with the kind each one reads as. */
@@ -92,15 +92,20 @@ test("the turn starts at the newest owner or agent message before the call", () 
 const CATALOG = "Sorry, here is the setup now, five pieces over Google's 211 guides.\n\n| Piece | Where it lives | Who reads it | What it says |\n|---|---|---|---|\n" +
   "| Prime skill | sieun-pi `skills/modern-web-guidance` | every agent session lists it | Google's flow |\n| CLI | installed on us-metal02 | both skills | `search`, `retrieve` |";
 
-test("a post with a table goes out, with a note to link a wiki page unless the post that started the turn asks for a table", () => {
+test("a post with a table is held once unless the post that started the turn asks for one, and the very same text sent again goes out", () => {
   const owner = { owner: true, asked: true, handed: false };
   assert.equal(hasTable(CATALOG), true);
   assert.equal(hasTable(":---|---: |\n| a | b |"), false);
   assert.equal(hasTable("5 pieces: google's skill, a repo copy, and the CLI. paths → [skill catalog](wiki:agents/x/catalog.html)"), false);
-  assert.equal(commPostRefusal(CATALOG, owner), undefined);
-  assert.match(commPostNote(CATALOG, owner)!, /^Note: this post holds a table nobody asked for[\s\S]*wiki\.write/);
-  assert.equal(commPostNote(CATALOG, { tableAsked: true }), undefined);
-  assert.equal(commPostNote("nope 😬 the table gets cut off in the thread", {}), undefined);
+  assert.match(commPostRefusal(CATALOG, owner)!, /^Not sent, it holds a table nobody asked for[\s\S]*wiki\.write[\s\S]*very same text again/);
+  assert.equal(commPostRefusal(CATALOG, { ...owner, tableAsked: true }), undefined);
+  assert.equal(commPostRefusal(CATALOG, { ...owner, tableResent: true }), undefined);
+  assert.equal(commPostRefusal("nope 😬 the table gets cut off in the thread", owner), undefined);
+  const call = (id: string, text: string) => ({ role: "assistant", content: [{ type: "toolCall", id, name: "tell_owner", arguments: { text } }] });
+  const held = (id: string) => ({ role: "toolResult", toolCallId: id, content: [{ type: "text", text: `${TABLE_MARK}, and a room reads like Slack` }] });
+  assert.equal(tableResent([{ role: "user", content: "catalog?" }, call("a", CATALOG), held("a"), call("b", CATALOG)], CATALOG), true);
+  assert.equal(tableResent([{ role: "user", content: "catalog?" }, call("a", CATALOG)], CATALOG), false);
+  assert.equal(tableResent([call("a", CATALOG), held("a"), { role: "user", content: "and now?" }, call("b", CATALOG)], CATALOG), false, "a new turn holds it again");
   for (const text of ["can you put it in a table?", "표로 정리해줘", "show it as a table"]) assert.equal(asksTable(text), true, text);
   for (const text of ["what is our definitive catalog now after this update?", "발표 자료 대표 이미지 표시해줘", "is it stable?"]) assert.equal(asksTable(text), false, text);
   const header = "[#dev-search-general · post 15 from You (owner) · hops 0]\n\n";

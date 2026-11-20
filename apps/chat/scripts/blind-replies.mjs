@@ -7,7 +7,8 @@
  *   node apps/chat/scripts/blind-replies.mjs [--asks <file.json>] [--cwd <project>] [--host <box>] [--out <file.jsonl>] [--server http://127.0.0.1:5184]
  *
  * The first ask is the channel's root post and every later one a reply in its thread, as the owner asks in a channel. An ask is
- * `{text, expect}`, where `expect` is "reply" (one short Slack post) or "reaction" (no post). The agent and the room are `test: true`, so no
+ * `{text, expect, wait}`, where `expect` is "reply" (one short Slack post) or "reaction" (no post), and `wait: false` sends the next ask at
+ * once, so the agent answers both together, as when the owner sent p14 and p15 7 s apart on 11-20. The agent and the room are `test: true`, so no
  * owner list shows them. Each line of --out is one ask with its replies, its checks and pass or fail; the last line is the run's summary.
  *
  * Waits: an ask waits up to 20 min for its first answer, since of 45 owner posts in channel threads by 11-20 the agent's first post came
@@ -32,8 +33,19 @@ const DEFAULT_ASKS = [
 ];
 const asks = values.asks ? JSON.parse(readFileSync(values.asks, "utf8")) : DEFAULT_ASKS;
 
+/** One API call; while a release restarts the chat server the call is retried within the ask's own wait, since runs 2 and 3 on 11-20 died on it. */
 async function call(method, path, body) {
-  const response = await fetch(`${server}${path}`, { method, headers: { "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const until = Date.now() + FIRST_MS;
+  let response;
+  for (;;) {
+    try {
+      response = await fetch(`${server}${path}`, { method, headers: { "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
+      break;
+    } catch (error) {
+      if (Date.now() > until) throw error;
+      await sleep(POLL_MS);
+    }
+  }
   const text = await response.text();
   if (!response.ok) throw new Error(`${method} ${path}: ${response.status} ${text}`);
   return text ? JSON.parse(text) : undefined;
@@ -45,14 +57,14 @@ const words = text => text.replace(/\]\([^)]*\)/g, "]").split(/\s+/).filter(Bool
 const sentences = text => text.replace(/\]\([^)]*\)/g, "]").split(/(?<=[.!?])\s+/).filter(Boolean);
 
 /** The ideal replies page's rules that a script can read; the reader judges the tone from the printed text. */
-function checks(ask, posts) {
+function checks(ask, posts, asked) {
   const text = posts.map(p => p.text).join("\n\n");
   if (ask.expect === "reaction") return [["no post, a reaction says it", posts.length === 0]];
   return [
-    ["one post", posts.length === 1],
+    ["one post for the posts it answers", posts.length === 1],
     ["no table", !TABLE.test(text)],
     ["no heading, bold or label opener", !/^#{1,6} |\*\*|^[A-Z][\w ]{0,20}:\s/m.test(text)],
-    ["at most 80 words, as config/AGENTS.md rule 5", words(text) <= 80],
+    ["at most 80 words, as config/AGENTS.md rule 5", words(text) <= 80 * asked],
     ["no sentence over 35 words", sentences(text).every(s => words(s) <= 35)],
   ];
 }
@@ -64,29 +76,35 @@ console.log(`agent ${agent.id}, room ${room.id}`);
 
 let root;
 const results = [];
+/** Asks sent with `wait: false` go out at once, and the next ask waits for the answers to all of them, as when he sends two posts in a row. */
+let group = [];
 for (const [index, ask] of asks.entries()) {
   const sent = await call("POST", `/api/c/${room.id}/send`, { text: ask.text, requestId: `blind-${stamp}-${index}`, ...(root ? { threadRoot: root } : {}) });
-  const askId = sent.item.id;
-  root ??= askId;
+  root ??= sent.item.id;
+  group.push({ ...ask, id: sent.item.id });
+  if (ask.wait === false) continue;
+  const ids = new Set(group.map(g => g.id));
   const started = Date.now();
   let posts = [];
   let lastNew = 0;
   for (;;) {
     await sleep(POLL_MS);
     const thread = await call("GET", `/api/c/${room.id}/replies/${root}`);
-    const now = thread.items.filter(i => i.author?.id === agent.id && i.answers === askId);
+    const now = thread.items.filter(i => i.author?.id === agent.id && ids.has(i.answers));
     if (now.length > posts.length) lastNew = Date.now();
     posts = now;
-    const reacted = [thread.root, ...thread.items].find(i => i.id === askId)?.reactions?.some(r => r.by.some(b => b.id === agent.id));
+    const reacted = [thread.root, ...thread.items].find(i => i.id === ask.id)?.reactions?.some(r => r.by.some(b => b.id === agent.id));
     if (posts.length && Date.now() - lastNew > QUIET_MS) break;
     if (!posts.length && ask.expect === "reaction" && reacted && Date.now() - started > QUIET_MS) break;
     if (Date.now() - started > FIRST_MS) break;
   }
-  const result = checks(ask, posts);
-  const line = { ask: ask.text, askId, expect: ask.expect, seconds: Math.round((Date.now() - started) / 1000), replies: posts.map(p => p.text), checks: Object.fromEntries(result), pass: result.every(([, ok]) => ok) };
+  const text = group.map(g => g.text).join(" / ");
+  const result = checks(ask, posts, group.length);
+  const line = { ask: text, askIds: [...ids], expect: ask.expect, seconds: Math.round((Date.now() - started) / 1000), replies: posts.map(p => p.text), checks: Object.fromEntries(result), pass: result.every(([, ok]) => ok) };
   results.push(line);
-  console.log(`\n${line.pass ? "PASS" : "FAIL"} ${ask.text}\n${posts.map(p => `  > ${p.text.replace(/\n/g, "\n    ")}`).join("\n") || "  (no post)"}\n  ${result.filter(([, ok]) => !ok).map(([name]) => `failed: ${name}`).join(", ")}`);
+  console.log(`\n${line.pass ? "PASS" : "FAIL"} ${text}\n${posts.map(p => `  > ${p.text.replace(/\n/g, "\n    ")}`).join("\n") || "  (no post)"}\n  ${result.filter(([, ok]) => !ok).map(([name]) => `failed: ${name}`).join(", ")}`);
   if (values.out) appendFileSync(values.out, `${JSON.stringify({ room: room.id, agent: agent.id, ...line })}\n`);
+  group = [];
 }
 const summary = { room: room.id, root, agent: agent.id, passed: results.filter(r => r.pass).length, of: results.length, pass: results.every(r => r.pass) };
 if (values.out) appendFileSync(values.out, `${JSON.stringify(summary)}\n`);

@@ -243,9 +243,9 @@ test("in a comm thread, a post after the turn's hand-over and a relay line are r
   assert.doesNotMatch(told[5]!.text, /Not sent/, "the result passes the comm check");
 });
 
-test("in a comm thread, a post with a table nobody asked for goes out and its result says to link a wiki page next time", async () => {
+test("in a comm thread, a post with a table nobody asked for is held once, the same text again goes out, and a table he asked for goes out", async () => {
   const table = "5 pieces.\n\n| Piece | Where |\n|---|---|\n| skill | skills/x |";
-  const steps = [{ text: table }, null, { text: table }, null];
+  const steps = [{ text: table }, { text: table }, null, { text: table }, null];
   let made = 0;
   const { harness, root } = await open("comm-table", () => {
     const step = steps[made++];
@@ -258,10 +258,11 @@ test("in a comm thread, a post with a table nobody asked for goes out and its re
   await (await root.submit({ type: "input", content: "[#dev · post 15 from You (owner) · hops 0]\n\nput it in a table" }, context)).wait(context);
   const told = results(await entriesOf(root)).filter(result => result.name === "tell_owner");
   await harness.close(context);
-  assert.equal(told.length, 2);
-  assert.equal(told[0]!.isError, false, "the post goes out");
-  assert.match(told[0]!.text, /^told the owner[\s\S]*Note: this post holds a table nobody asked for[\s\S]*wiki\.write/);
-  assert.doesNotMatch(told[1]!.text, /Note:/, "a table he asked for gets no note");
+  assert.equal(told.length, 3);
+  assert.equal(told[0]!.isError, true);
+  assert.match(told[0]!.text, /Not sent, it holds a table nobody asked for[\s\S]*wiki\.write/);
+  assert.equal(told[1]!.text, "told the owner", "the very same text again goes out");
+  assert.equal(told[2]!.text, "told the owner", "a table he asked for goes out");
 });
 
 test("in a DM comm thread, an answer left as text on the owner's turn queues one note and then posts, also past his next post, and a handed, posted, notice or group turn gets none", async () => {

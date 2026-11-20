@@ -59,7 +59,7 @@ import { SEARCH_HISTORY_TOOL } from "../../../pi-history/src/pi/index.ts";
 import { threadAgent } from "./agent-profile.ts";
 import { ChatApp } from "./chat-app.ts";
 import { CommHandedDoc } from "./comm.ts";
-import { commPostNote, commPostRefusal, turnAsked, turnAskedTable, turnStartedAt, type CommPostTurn } from "./comm-guard.ts";
+import { commPostRefusal, tableResent, turnAsked, turnAskedTable, turnStartedAt, type CommPostTurn } from "./comm-guard.ts";
 import { unpostedReply, unpostedReplyRequest } from "./comm-reply.ts";
 import { durableTool, loadPiExtension, piContext, type LoadedPiExtension, type PiSession, type PiTool, type PiToolResult } from "./pi-extensions.ts";
 
@@ -270,7 +270,7 @@ async function commTurn(chat: PrimeChat, thread: ChatThread, call: { id: string;
     const handedAt = (await harness.snapshot(CommHandedDoc, ROOT_CONVERSATION_ID, context))?.at ?? 0;
     const startedAt = turnStartedAt(messages as never);
     const handed = handedAt > 0 && startedAt !== undefined && handedAt >= startedAt;
-    return { text, turn: { owner, asked: turnAsked(messages as never), tableAsked: turnAskedTable(messages as never), handed } };
+    return { text, turn: { owner, asked: turnAsked(messages as never), tableAsked: turnAskedTable(messages as never), tableResent: tableResent(messages as never, text), handed } };
   } catch {
     return undefined;
   }
@@ -343,12 +343,6 @@ export function primeChat(chat: PrimeChat, thread: ChatThread): Extension {
         const comm = await commTurn(chat, thread, call, api.conversationId, context);
         const refused = comm && commPostRefusal(comm.text, comm.turn);
         return refused ? { block: refused } : undefined;
-      },
-      afterTool: async (call, result, api, context) => {
-        if (!SPEAKING_TOOLS.has(call.name) || result.isError) return undefined;
-        const comm = await commTurn(chat, thread, call, api.conversationId, context);
-        const note = comm && commPostNote(comm.text, comm.turn);
-        return note ? { ...result, output: [...result.output, { type: "text", text: note }] } : undefined;
       },
     }), hook(GenerationTask, {
       onYield: async (answer, api, context) => {
