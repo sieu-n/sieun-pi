@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
-import { boxExit, type BrowserJar, errorCounts, jarIgUserId, jars, otherRuns, outreachAccounts, parts, report, rigDeadline, senderFits, TAIL_MS, type AutopairEvidence, type DmRow, type E2eEvidence } from "../scripts/duties/dm-extension.ts";
+import { boxExit, type BrowserJar, errorCounts, jarIgUserId, jarReader, jars, otherRuns, outreachAccounts, parts, report, rigDeadline, senderFits, TAIL_MS, type AutopairEvidence, type DmRow, type E2eEvidence } from "../scripts/duties/dm-extension.ts";
 
 const METRICS = (JSON.parse(readFileSync(new URL("../scripts/duties/dm-extension.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] }).metrics;
 const NOW = Date.parse("2026-10-30T12:00:00Z");
@@ -131,23 +131,50 @@ test("the precheck waits on another copy of itself or a rig, never on itself or 
   assert.ok(out.flagged?.some(slice => slice.kind === "waited" && slice.excerpt.startsWith("waited 332 s")));
 });
 
-test("jars writes each account as the crawler answers it, names its world and exit host, and lists a box exit (c229, 11-20)", async () => {
+test("jars writes each account as the crawler answers it, names its world and exit host, and writes no jar file when one sits on a box exit (c229, 11-20)", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "dm-ext-jars-"));
   const answer = (username: string, proxy_url: string, valid = true): BrowserJar =>
     ({ world: "prod", username, ig_user_id: null, cookies: [{ name: "ds_user_id", value: `${username}-id` }], user_agent: "ua", valid, proxy_url });
   const asked: string[] = [];
-  const read = async (username: string) => {
+  const read = (replierExit: string) => async (username: string) => {
     asked.push(username);
-    return username === "caiyiting8674" ? answer(username, "http://u:p@gw.example:12001") : answer(username, "http://box:pw@us-metal01.example:7244", false);
+    return username === "caiyiting8674" ? answer(username, "http://u:p@gw.example:12001") : answer(username, replierExit, false);
   };
   try {
-    const out = await jars(tmp, read);
+    const boxed = await jars(tmp, read("http://box:pw@us-metal01.example:7244"));
     assert.deepEqual(asked, ["caiyiting8674", "gimnayeon1396"]);
-    assert.equal(out.senderIgId, "caiyiting8674-id");
-    assert.equal(out.accounts, "sender @caiyiting8674 is prod on exit gw.example:12001; replier @gimnayeon1396 is prod on exit us-metal01.example:7244");
-    assert.equal(JSON.parse(await readFile(out.replier, "utf8")).proxy_url, "http://box:pw@us-metal01.example:7244");
+    assert.equal(boxed.accounts, "sender @caiyiting8674 is prod on exit gw.example:12001; replier @gimnayeon1396 is prod on exit us-metal01.example:7244");
+    assert.deepEqual(boxed.boxed, ["replier @gimnayeon1396 is prod on exit us-metal01.example:7244"]);
+    assert.equal(boxed.files, undefined);
+    const out = await jars(tmp, read("http://u:p@gw.example:12002"));
+    assert.equal(out.files?.senderIgId, "caiyiting8674-id");
+    assert.equal(JSON.parse(await readFile(out.files?.replier ?? "", "utf8")).proxy_url, "http://u:p@gw.example:12002");
     assert.deepEqual(out.notes, ["prod @gimnayeon1396 has a jar the crawler marked invalid"]);
-    assert.deepEqual(out.boxed, ["replier @gimnayeon1396 is prod on exit us-metal01.example:7244"]);
+    assert.deepEqual(out.boxed, []);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
+// Crawler 698493e50d (11-20): browser-jar answers 503 proxy_required for an account on a box route instead of a box proxy.
+test("a 503 proxy_required from browser-jar reads as no residential exit with no jar file, and any other non-200 throws", async () => {
+  const tmp = await mkdtemp(join(tmpdir(), "dm-ext-held-"));
+  const answers: Record<string, Response> = {
+    caiyiting8674: new Response(JSON.stringify({ error: "c229: engage route on server address 64.34.205.244 refused; it waits for a proxy", error_type: "proxy_required" }), { status: 503 }),
+    gimnayeon1396: new Response(JSON.stringify({ ok: true, data: { world: "prod", username: "gimnayeon1396", ig_user_id: "2", cookies: [], user_agent: "ua", valid: true, proxy_url: "http://u:p@gw.example:12001" } })),
+    down: new Response(JSON.stringify({ error: "supply down", error_type: "provider_down" }), { status: 503 }),
+    broken: new Response("oops", { status: 500 }),
+  };
+  const read = jarReader("key", (async (url: string) => answers[new URL(url).searchParams.get("username") ?? ""]) as typeof fetch);
+  try {
+    const out = await jars(tmp, read);
+    assert.equal(out.files, undefined);
+    assert.deepEqual(out.boxed, ["sender @caiyiting8674: the crawler holds its jar, browser-jar answered 503 proxy_required (c229: engage route on server address 64.34.205.244 refused; it waits for a proxy)"]);
+    const slices = report({ now: NOW, accounts: out.accounts, boxed: out.boxed, errors: [] }, METRICS).flagged ?? [];
+    assert.ok(slices.some(s => s.kind === "exit_down" && s.excerpt.startsWith("no residential exit: sender @caiyiting8674: the crawler holds its jar")));
+    assert.ok(!slices.some(s => s.kind === "source_error"));
+    await assert.rejects(read("down"), /browser-jar @down answered 503/);
+    await assert.rejects(read("broken"), /browser-jar @broken answered 500/);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }

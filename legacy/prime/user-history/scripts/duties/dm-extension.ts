@@ -137,7 +137,7 @@ export interface DutyData {
   build?: Build;
   /** Which crawler world and endpoint each test account came from. */
   accounts?: string;
-  /** The test accounts whose exit is on our own servers (boxExit), so no rig ran. */
+  /** The test accounts the crawler holds (503 proxy_required) or whose exit is on our own servers (boxExit), so no rig ran. */
   boxed?: string[];
   autopair?: AutopairEvidence;
   sender?: Sender;
@@ -316,8 +316,6 @@ export function boxExit(proxyUrl: string): boolean {
 
 /** One account's saved session and the exit a browser drives it through now, as the crawler answers it (BROWSER_JAR). */
 export interface BrowserJar { world: string; username: string; ig_user_id: string | null; cookies: { name: string; value: string }[] | null; user_agent: string; valid: boolean; proxy_url: string }
-/** Reads the BrowserJar of one handle. */
-export type ReadJar = (username: string) => Promise<BrowserJar>;
 
 /** The Instagram id a jar is signed in as: its ig_user_id, else its session's ds_user_id cookie, as the rigs read it
  *  (apps/dm-extension/tests/lib/real-world.mjs). */
@@ -327,13 +325,21 @@ export function jarIgUserId(jar: BrowserJar): string {
   return String(id);
 }
 
-/** The BROWSER_JAR reader with the staging crawler key, which the repo's staging-proof spec reads the same way
- *  (auto-sns-agent apps/search/scripts/ig-peer-jar.mjs). */
-export async function crawlerJars(fetcher: typeof fetch = fetch): Promise<ReadJar> {
-  const key = (await sh("npx", ["dotenvx", "get", "CRAWLER_API_KEY", "-f", "apps/ci-specs/.env.staging"])).trim();
+/** The crawler's 503 proxy_required for an account on a box route (crawler-v3 fleet/box_exit.py, since 698493e50d): it hands out no
+ *  jar there, which owner rule c229 keeps test accounts off, so the run reads it as no residential exit and waits on the proxy (t112). */
+export interface HeldJar { username: string; held: string }
+/** Reads the BrowserJar of one handle, or the crawler's hold on it. */
+export type ReadJar = (username: string) => Promise<BrowserJar | HeldJar>;
+
+/** The BROWSER_JAR reader with `key`. A 503 whose error_type is proxy_required is a HeldJar, and any other non-200 throws. */
+export function jarReader(key: string, fetcher: typeof fetch = fetch): ReadJar {
   return async username => {
     const response = await fetcher(`${BROWSER_JAR}?username=${encodeURIComponent(username)}`, { headers: { "X-API-Key": key }, signal: AbortSignal.timeout(SOURCE_DEADLINE_MS) });
     const body = await response.text();
+    if (response.status === 503) {
+      const error = (() => { try { return JSON.parse(body) as { error_type?: string; error?: string }; } catch { return {}; } })();
+      if (error.error_type === "proxy_required") return { username, held: `the crawler holds its jar, browser-jar answered 503 proxy_required (${error.error ?? "no reason"})` };
+    }
     if (!response.ok) throw new Error(`browser-jar @${username} answered ${response.status}: ${body.slice(0, 300)}`);
     const jar = (JSON.parse(body) as { data: BrowserJar | null }).data;
     if (!jar) throw new Error(`no crawler world holds @${username}`);
@@ -341,8 +347,15 @@ export async function crawlerJars(fetcher: typeof fetch = fetch): Promise<ReadJa
   };
 }
 
-/** The two accounts' saved sessions and current exits, as the rigs' jar files (mode 600). Prints no cookie or exit credential. */
-export async function jars(tmp: string, read: ReadJar): Promise<{ sender: string; senderIgId: string; replier: string; accounts: string; notes: string[]; boxed: string[] }> {
+/** jarReader with the staging crawler key, which the repo's staging-proof spec reads the same way
+ *  (auto-sns-agent apps/search/scripts/ig-peer-jar.mjs). */
+export async function crawlerJars(): Promise<ReadJar> {
+  return jarReader((await sh("npx", ["dotenvx", "get", "CRAWLER_API_KEY", "-f", "apps/ci-specs/.env.staging"])).trim());
+}
+
+/** The two accounts as the crawler answers them. `boxed` names each one held or on a box exit, and only when none is do the
+ *  rigs' jar files (mode 600) get written, in `files`. Prints no cookie or exit credential. */
+export async function jars(tmp: string, read: ReadJar): Promise<{ accounts: string; notes: string[]; boxed: string[]; files?: { sender: string; senderIgId: string; replier: string } }> {
   const notes: string[] = [];
   const file = async (jar: BrowserJar) => {
     const path = join(tmp, `jar-${jar.username}.json`);
@@ -352,10 +365,12 @@ export async function jars(tmp: string, read: ReadJar): Promise<{ sender: string
   };
   const sender = await read(SENDER);
   const replier = await read(REPLIER);
-  const describe = (role: string, jar: BrowserJar) => `${role} @${jar.username} is ${jar.world} on exit ${new URL(jar.proxy_url).host}`;
+  const describe = (role: string, jar: BrowserJar | HeldJar) =>
+    "held" in jar ? `${role} @${jar.username}: ${jar.held}` : `${role} @${jar.username} is ${jar.world} on exit ${new URL(jar.proxy_url).host}`;
   const accounts = `${describe("sender", sender)}; ${describe("replier", replier)}`;
-  const boxed = ([["sender", sender], ["replier", replier]] as const).filter(([, jar]) => boxExit(jar.proxy_url)).map(([role, jar]) => describe(role, jar));
-  return { sender: await file(sender), senderIgId: jarIgUserId(sender), replier: await file(replier), accounts, notes, boxed };
+  const boxed = ([["sender", sender], ["replier", replier]] as const).filter(([, jar]) => "held" in jar || boxExit(jar.proxy_url)).map(([role, jar]) => describe(role, jar));
+  if ("held" in sender || "held" in replier || boxed.length) return { accounts, notes, boxed };
+  return { accounts, notes, boxed, files: { sender: await file(sender), senderIgId: jarIgUserId(sender), replier: await file(replier) } };
 }
 
 type OutreachAccount = { platformUserId: string | null; username: string; sentToday: number; dailyLimit: number };
@@ -468,7 +483,8 @@ async function measure(now: number, budgetMs: number): Promise<DutyData> {
     if (jarFiles) data.accounts = jarFiles.accounts;
     if (jarFiles?.notes.length) data.errors.push({ source: "jars", message: jarFiles.notes.join("; ") });
     if (jarFiles?.boxed.length) data.boxed = jarFiles.boxed;
-    if (built && jarFiles && !jarFiles.boxed.length) {
+    const files = jarFiles?.files;
+    if (built && files) {
       // A rig a job started while this run built and fetched the jars.
       const again = await waitForOtherRuns();
       if (again.ms >= 1_000) data.waited = { ms: (data.waited?.ms ?? 0) + again.ms, on: [...new Set([...(data.waited?.on ?? []), ...again.on])] };
@@ -480,14 +496,14 @@ async function measure(now: number, budgetMs: number): Promise<DutyData> {
         const env = { ...process.env, DM_EXTENSION_DIR: built.dir, DM_RIG_DEADLINE: String(rigDeadline(now, budgetMs)) };
         // `run` starts its command in apps/search, so the rig path is absolute.
         const run = (rig: string, args: string[], name: string) => logged([...world, "run", "--name", WORLD, "--", "node", join(REPO, "apps/dm-extension/tests", rig), ...args, "--out", join(OUT, name)], join(OUT, `${name}.log`), env);
-        await run("autopair-real-ig.mjs", ["--a", jarFiles.sender], "autopair");
+        await run("autopair-real-ig.mjs", ["--a", files.sender], "autopair");
         const autopair = await step("autopair", async () => JSON.parse(await readFile(join(OUT, "autopair/evidence.json"), "utf8")) as AutopairEvidence);
         if (autopair) data.autopair = autopair;
-        const sender = await step("sender", () => senderCount(jarFiles.senderIgId));
+        const sender = await step("sender", () => senderCount(files.senderIgId));
         if (sender) data.sender = sender;
         if (!sender || senderFits(sender)) {
           // --accept-first, because a new replier's first DM to the sender waits as a request the sender never accepted (11-20).
-          data.e2eExit = await run("staging-real-ig.mjs", ["--a", jarFiles.sender, "--b", jarFiles.replier, "--accept-first"], "e2e");
+          data.e2eExit = await run("staging-real-ig.mjs", ["--a", files.sender, "--b", files.replier, "--accept-first"], "e2e");
           const e2e = await step("e2e", async () => JSON.parse(await readFile(join(OUT, "e2e/evidence.json"), "utf8")) as E2eEvidence);
           if (e2e) data.e2e = e2e;
         }
