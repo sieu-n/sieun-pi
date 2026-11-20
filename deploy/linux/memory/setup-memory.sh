@@ -61,6 +61,11 @@ systemctl restart thp-defrag.service
 install -m 644 "$here/90-agent-memory.conf" /etc/sysctl.d/90-agent-memory.conf
 sysctl -q -p /etc/sysctl.d/90-agent-memory.conf
 
+# 8. Kexec handover off from the next boot. Ubuntu 7.0 turns it on by default and marks its scratch memory as CMA pageblocks, which only
+# movable allocations use and every other watermark check leaves out of free memory.
+install -m 644 "$here/91-kho-off.cfg" /etc/default/grub.d/91-kho-off.cfg
+update-grub
+
 # 4. heavy on DEV_USER's PATH.
 home=$(getent passwd "$DEV_USER" | cut -d: -f6)
 install -d -m 755 -o "$DEV_USER" -g "$DEV_USER" "$home/.local/bin"
