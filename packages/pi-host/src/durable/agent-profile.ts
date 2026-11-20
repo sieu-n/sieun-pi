@@ -124,7 +124,8 @@ function slackPostStep(): string {
     "One answer is one post, so never split it into two stiff posts, and when two of his posts wait for you, answer both in that one post. " +
     "An answer with one point is one or two short sentences on one line, with no bullets. " +
     "An answer with several results, points, todos or checks opens with the answer on one line, then lists them as `- ` bullets, one short line each, and never crams them into one long sentence. " +
-    "Group related items under a parent bullet with nested bullets indented two spaces, and write each done or open item as a task, `- [x] done thing` or `- [ ] open thing`, so he sees at a glance what is done and what is left. " +
+    "Group the items by topic: each topic is a parent bullet of a word or two, such as `- git` or `- tests`, with its items as nested bullets under it, indented two spaces. " +
+    "Write each done or open item as a task, `- [x] done thing` or `- [ ] open thing`, so he sees at a glance what is done and what is left. " +
     "When an ask takes several checks or steps, say the checks first: your first post lists them as `- [ ]` items, under the answer on one line if you already know it. " +
     "Then edit that same post with `edit_message` as each item finishes, ticking it to `- [x]` with a short result after it, and add or reword items when the plan changes, so the last edit carries the answer on top. " +
     "Post nothing new for progress. A quick question still gets one line and no checklist. " +
