@@ -1256,6 +1256,48 @@ class ResumePausedTests(unittest.TestCase):
         self.assertEqual(self.sent, [(sid, "continue")])
         self.assertFalse(resume_paused.unload_stop_holds({"lifecycle": "archived"}, ("error", "Connection error.")), "a network error the unload met gets its continue")
 
+    def test_a_stopped_run_whose_own_slot_is_stale_is_resumed_once_pi_pool_lets_its_session_in(self):
+        # slack green tests 11-19 19:22 (01a1f354), slack green guy's d7 job: its first turn parked at 10:23:06Z on 11-19 for a 11-20 03:37Z
+        # cell on claude3 while no anthropic account served, and the idle unload stopped it at 10:26:30Z. Accounts served again from 15:27Z,
+        # and every pass held it on the slot time in its error until the 00:20Z run replaced it, so the overdue test got no call for 14 h.
+        sid = "01a1f354-ce3a-7359-846e-f9fe1d9adedc"
+        hook = ("token hook gave no token (credential_unavailable): pi-pool: this session waits for its slot at 2026-11-20T03:37:00.000Z.")
+        sessions = self.root / "sessions"
+        sessions.mkdir(exist_ok=True)
+        entries = [{"type": "message", "timestamp": "2026-11-19T10:23:05.000Z", "message": {"role": "user", "content": [{"type": "text", "text": "the d7 brief"}]}},
+                   {"type": "message", "timestamp": "2026-11-19T10:23:06.435Z", "message": {"role": "assistant", "stopReason": "error", "provider": "anthropic",
+                                                                                           "content": [], "errorMessage": hook}},
+                   {"type": "session_state", "timestamp": "2026-11-19T10:26:30.500Z", "state": {"status": "archived"}},
+                   {"type": "session_state", "timestamp": "2026-11-19T10:26:30.700Z", "state": {"status": "active"}}]
+        (sessions / f"{sid}.jsonl").write_text("\n".join(json.dumps(entry) for entry in entries) + "\n")
+        args = argparse.Namespace(message="continue", since_minutes=1440, dry_run=False, include_children=False, direct=True, only="", state=str(self.root / "state.json"))
+        cell = dt.datetime(2026, 11, 20, 3, 37, tzinfo=dt.timezone.utc).timestamp()
+
+        def run(who):
+            def pool(cmd, **kwargs):
+                if cmd[1] == "ls":
+                    return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps({"rows": [{"id": "virev1", "usable": True}, {"id": "claude3", "usable": False}]}), "")
+                self.assertEqual(cmd[cmd.index("--session") + 1], sid)
+                return resume_paused.subprocess.CompletedProcess(cmd, 0, json.dumps(who), "")
+            now = dt.datetime(2026, 11, 19, 15, 40, tzinfo=dt.timezone.utc)
+            with patch.object(resume_paused, "SESSIONS_DIR", sessions), patch.object(resume_paused, "ARTIFACTS_DIR", self.root / "artifacts"), \
+                    patch.dict(resume_paused.UNLOADED, {sid: resume_paused.parse_ts("2026-11-19T10:26:30.600Z")}, clear=True), \
+                    patch.object(resume_paused, "DELETED_JOBS", self.root / "deleted-jobs.json"), patch.object(resume_paused, "ARCHIVED_CHATS", self.root / "archived-chats.json"), \
+                    patch.object(resume_paused, "pool_bin", return_value="pi-pool"), patch.object(resume_paused.subprocess, "run", side_effect=pool), \
+                    patch.object(resume_paused.time, "time", return_value=now.timestamp()), \
+                    patch.object(resume_paused, "send", side_effect=lambda target, text: self.sent.append((target, text)) or {"deliveryStatus": "delivered"}):
+                rows = resume_paused.with_saved_owners([], resume_paused.saved_rows({sid}), {sid})
+                return resume_paused.resume(rows, args, now)
+
+        held = run({"providers": {"anthropic": {"account": None, "wait": {"account": "claude3", "slot_at": cell, "reserved": True}}}})
+        self.assertEqual((held["paused"], self.sent), ([], []), "pi-pool still holds the session for its own cell")
+        self.assertEqual([entry["pool_at"] for entry in resume_paused.HELD], ["2026-11-20T03:37:00+00:00"])
+        unknown = run({"error": f"--session {sid} matches no known session"})
+        self.assertEqual((unknown["paused"], self.sent), ([], []), "a session pi-pool does not know keeps its own slot")
+        report = run({"providers": {"anthropic": {"account": "virev1", "wait": None}}})
+        self.assertEqual([(p["reason"], p["errored_at"]) for p in report["paused"]], [("error", "2026-11-19T10:23:06.435Z")])
+        self.assertEqual(self.sent, [(sid, "continue")])
+
     def test_a_job_whose_chat_is_archived_asks_pi_pool_for_its_chats_tree_and_stays_held(self):
         # scratch deletion (01a151ed), a job of chat-057a (01a14210) on 10-19: claude7 hit its 5h cap at 02:29:12Z, and the tree's waits ran
         # to an R5 backoff. The idle unload stopped the job at 02:45:25Z on this 429. The job sweep held it at 02:56Z and 03:05Z, while the

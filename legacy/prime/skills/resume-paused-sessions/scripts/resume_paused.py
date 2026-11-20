@@ -1608,6 +1608,17 @@ def own_slot_at(error, now, lead=0):
     return max(ahead) if ahead and max(ahead) > now + lead else None
 
 
+def pool_lets_in(session_id, provider, cache):
+    """Whether pi-pool, asked now about the run's own session, serves its next request or holds it in no cell of its own, so the slot
+    time in the run's error is stale. pi-pool moves a waiting tree to an earlier cell only when the tree asks or answers its wake, and a
+    run the idle unload stopped does neither. On 11-19 slack green guy's d7 job 01a1f354 parked at 10:23Z for a 11-20 03:37Z cell on
+    claude3 while no anthropic account served, was unloaded at 10:26Z, and stayed held here until its replace at 00:20Z on 11-20, though
+    11 accounts served from 15:27Z and pi-pool made 342 anthropic vends to 177 sessions in that time. A session pi-pool keys under
+    another tree reads "unknown" and keeps its own slot, since an answer about another key says nothing about it (5b9a363c)."""
+    blocker, _ = account_blocker(session_id, provider, cache, strict=True)
+    return blocker is None
+
+
 def own_slot_hold(slot_at):
     return f"pi-pool gave this session a slot at {dt.datetime.fromtimestamp(slot_at, dt.timezone.utc).isoformat(timespec='seconds')}"
 
@@ -2366,6 +2377,8 @@ def find_paused(sessions, since_minutes, state, now, direct=False, only=frozense
                 continue  # someone sent the head a message after the interruption
         root_id, provider = pool_tree(s, by_id.get(head, s)), run_provider(entries_of(sid))
         slot_at = own_slot_at(verdict[1], time.time(), POOL_LEAD_S) if verdict[0] == "error" else None
+        if slot_at and pool_lets_in(full, provider, accounts):
+            slot_at = None
         if slot_at:
             blocker, free_at = own_slot_hold(slot_at), slot_at
         elif verdict[0] == "error" and TOKEN_HOOK_ERROR.search(verdict[1]):
