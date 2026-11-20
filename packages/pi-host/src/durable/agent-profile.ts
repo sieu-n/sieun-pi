@@ -88,14 +88,46 @@ function richPostStep(): string {
     "This replaces the brief's line that a diagram or explanation he asks for goes on a wiki page. It goes in the post, and only a design or plan he must decide on goes on a page (c83).";
 }
 
+/** The agent that owns sw factory itself, apps/chat and pi-host, which the other agents tag with the owner's feedback on it. */
+export const PLATFORM_AGENT = { id: "ag_agent-factory", name: "agent factory" } as const;
+
+/**
+ * The step that brings the owner's feedback on sw factory itself to agent factory, the way a person tags the platform team in a Slack thread.
+ * On 11-20 the owner asked in #sw-factory-build (msg mwodd2v6) that a comment he leaves in a thread, such as "i dont like this response
+ * shape/format isn't appropriate to sw-factory", reach agent factory, which looks at it and fixes it. He had just seen Search product, misc.
+ * answer in a #dev-search-general thread with a 4-column table the pane cut off. A mention reaches an agent outside the room
+ * (apps/chat group-rooms.ts `wakes`), so agent factory's comm thread for that room gets the tag, hands it to its work thread and answers in
+ * the same thread. A DM post names no one, so another agent's DM gets no tag step; agent factory's own comm threads get theirs everywhere.
+ */
+function platformFeedbackStep(ref: { agent: string; room: string }): string | undefined {
+  if (ref.agent === PLATFORM_AGENT.id) {
+    return "Feedback about sw factory itself is your agent's work, whether the owner gives it here or another agent tags you with a post he commented on: the shape, format, length or tone of a reply, how a post renders, the reactions, or the app. " +
+      `Hand it to your work thread as a task with his words and the id of the post he means, such as ${ref.room}/p12. ` +
+      "The work thread looks at that post, fixes the cause, in apps/chat when it is the rendering or in the agent's prompt or skills when it is the agent's behavior, checks the fix with a fresh session (c84), and reports. " +
+      "Post its result once, in the thread the feedback came from, also when another agent's tag started the turn.";
+  }
+  if (!isGroupRoom(ref.room)) return undefined;
+  const name = PLATFORM_AGENT.name;
+  return `When the owner's post is about sw factory itself rather than your agent's work, such as the shape, format, length or tone of a reply, how a post renders, the reactions, or the app, tag @${name} for it, the way a person tags the platform team in Slack. ` +
+    `Reply once in the same thread with @${name}, his point in a few words, and the post he means as ${ref.room}/p<number>, such as ${ref.room}/p12, and post nothing else about it. ` +
+    `${name} fixes it and answers in that thread. Follow his feedback in your own later posts too.`;
+}
+
 /** The step that has a comm thread work its agent's For list (`for-me.ts`), the way a person works Slack's Activity view. */
 function forMeStep(room: string): string {
   return `When a turn starts, read your pending For list with \`list_for_me_messages()\`. Handle the items of room ${room}, since each other room's comm thread handles its own. Mark an item completed with \`mark_message(message_id, true)\` once you answered or handled it, also when it needs nothing from you. Leave an item pending while its work still runs, and mark it once the work thread's report or the work-done notice brings the result.`;
 }
 
+/** The lines with one more numbered step after the last one, or the lines as they are when the role has no such step. */
+function plusStep(lines: string[], step: string | undefined): string[] {
+  if (!step) return lines;
+  const last = Number(/^(\d+)\./.exec(lines.at(-1) ?? "")?.[1] ?? 0);
+  return [...lines, `${last + 1}. ${step}`];
+}
+
 function dmCommInstructions(ref: { agent: string; room: string; work: string }): string {
   const [eyes, react, status, hand, quiet] = workSteps(JSON.stringify(ref.work));
-  return [
+  return plusStep([
     `You are agent ${ref.agent}'s comm thread in room ${ref.room}. You talk with the owner. The work thread ${ref.work} does the agent's work.`,
     "",
     `1. ${status}`,
@@ -107,12 +139,12 @@ function dmCommInstructions(ref: { agent: string; room: string; work: string }):
     "7. A `[work-done ...]` or `[work-failed ...]` input is a notice from pi-host, not the owner's turn. Tell the owner about it only when he asked for that result or it needs his decision (c117). Otherwise end the turn without a message.",
     "8. Speak to the owner only with tell_owner, since the DM shows nothing else you write. End a turn that posts nothing, such as one your reaction answers, with no text, or pi-host asks you to post your answer. You do not edit files, so you have no write, edit, bash or subagent tool.",
     `9. ${richPostStep()}`,
-  ].join("\n");
+  ], platformFeedbackStep(ref)).join("\n");
 }
 
 function groupCommInstructions(ref: { agent: string; room: string; work: string }): string {
   const [eyes, react, status, hand, quiet] = workSteps(JSON.stringify(ref.work));
-  return [
+  return plusStep([
     `You are agent ${ref.agent}'s comm thread in room ${ref.room}, a group chat that the owner and other agents share. The work thread ${ref.work} does the agent's work.`,
     "",
     "1. Each post arrives with a header that names the room, the post's author and its hops. A Solo room's header also gives its agenda and members.",
@@ -128,7 +160,7 @@ function groupCommInstructions(ref: { agent: string; room: string; work: string 
     "11. A `[work-done ...]` or `[work-failed ...]` input is a notice from pi-host. Tell the room about it only when the owner or a member asked for that result or it needs the owner's decision (c117). Otherwise end the turn without a message.",
     "12. You do not edit files, so you have no write, edit, bash or subagent tool.",
     `13. ${richPostStep()}`,
-  ].join("\n");
+  ], platformFeedbackStep(ref)).join("\n");
 }
 
 /** The root conversation's instructions for a work thread whose agent has a comm thread; `comm` is the DM comm thread. */

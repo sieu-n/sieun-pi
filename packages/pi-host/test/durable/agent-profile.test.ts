@@ -106,6 +106,18 @@ test("an agent.ref value reads as an agent only in its exact shape", () => {
   assert.equal(conversationHarnessDir({ id: "t", file }, 3, { agent: "a", dir: "/a/vent", role: "work" }), "/a/vent/harness");
 });
 
+test("feedback on sw factory goes to agent factory: another agent tags it in a group room, and agent factory hands it to its work thread", () => {
+  const other = commInstructions({ agent: "ag_search-product-misc", room: "ch_1a2b3c4d", work: "w1" });
+  assert.match(other, /tag @agent factory for it/);
+  assert.match(other, /ch_1a2b3c4d\/p12/);
+  assert.doesNotMatch(commInstructions({ agent: "ag_vent", room: "dm_vent", work: "w1" }), /@agent factory/, "a DM post names no one");
+  for (const room of ["ch_1a2b3c4d", "dm_agent-factory"]) {
+    const own = commInstructions({ agent: "ag_agent-factory", room, work: "w1" });
+    assert.match(own, /Hand it to your work thread as a task with his words and the id of the post he means/);
+    assert.doesNotMatch(own, /tag @agent factory/);
+  }
+});
+
 test("an agent thread gets Prime's preamble first, the brief after the AGENTS.md files, and the agent's memory in its digest", async () => {
   const f = fixture("first");
   const { threads, roots, ask, systems } = threadsOn(f, "first");
