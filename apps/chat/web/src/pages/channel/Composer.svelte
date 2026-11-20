@@ -10,6 +10,7 @@
   import { insertChip, insertPlainText, readDraft, textBeforeCaret, type ChipTarget } from "./composer-dom";
   import { matchCandidates, openQuery, type Query } from "./typeahead";
   import type { Outgoing } from "./present";
+  import { composing } from "$lib/ui/keyboard";
 
   type Props = {
     placeholder: string;
@@ -119,7 +120,7 @@
     if (!box) return;
     const draft = readDraft(box);
     empty = draft.text.trim() === "";
-    if (empty && box.innerHTML !== "" && !box.querySelector("[data-chip-id]")) box.innerHTML = "";
+    if (empty && box.hasChildNodes() && !box.querySelector("[data-chip-id]")) box.replaceChildren();
     mentions = draft.mentions;
     if (draftKey) {
       if (empty) localStorage.removeItem(`chat.draft.${draftKey}`);
@@ -164,7 +165,7 @@
       window.dispatchEvent(new CustomEvent("chat:edit-last", { detail: box }));
       return;
     }
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    if (e.key === "Enter" && !e.shiftKey && !composing(e)) {
       e.preventDefault();
       submit();
     } else if (e.key === "Enter" && e.shiftKey) {
@@ -212,7 +213,7 @@
     const draft = readDraft(box);
     if (!draft.text.trim() && !attachments.length) return;
     const images: Outgoing["images"] = attachments.map((a) => a.image);
-    box.innerHTML = "";
+    box.replaceChildren();
     attachments = [];
     sync();
     onsend({ text: draft.text, mentions: draft.mentions, images }).catch((error: unknown) => {

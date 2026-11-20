@@ -12,7 +12,7 @@
   import Menu from "$lib/ui/Menu.svelte";
   import NavItem from "$lib/ui/NavItem.svelte";
   import SearchField from "$lib/ui/SearchField.svelte";
-  import { isMac } from "$lib/ui/keyboard";
+  import { composing, isMac } from "$lib/ui/keyboard";
   import Highlight from "./Highlight.svelte";
   import HitAvatar from "./HitAvatar.svelte";
   import HitMeta from "./HitMeta.svelte";
@@ -248,7 +248,7 @@
   }
 
   function onkeydown(e: KeyboardEvent) {
-    if (e.isComposing) return;
+    if (composing(e)) return;
     const index = active ? rows.findIndex(row => row.key === active) : -1;
     const digit = /^Digit([1-9])$/.exec(e.code)?.[1];
     if (digit && e.shiftKey && (isMac ? e.metaKey : e.ctrlKey) && !e.altKey) {

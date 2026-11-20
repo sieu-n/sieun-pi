@@ -16,6 +16,7 @@
   import { contextOf, replyContextOf, type HitContext } from "./context";
   import ResultCard from "./ResultCard.svelte";
   import { dateLabel, dateRanges, readResults, resultCount, resultParams, searchParams, type Results, type ResultType } from "./results-model";
+  import { composing } from "$lib/ui/keyboard";
 
   const PAGE = 20;
 
@@ -120,7 +121,7 @@
   }
 
   function submit(e: KeyboardEvent) {
-    if (e.key !== "Enter" || e.isComposing) return;
+    if (e.key !== "Enter" || composing(e)) return;
     e.preventDefault();
     go({ q: draft.trim() });
   }
@@ -203,7 +204,7 @@
   }
 
   function onkeydown(e: KeyboardEvent) {
-    if (searchDialog.isOpen || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
+    if (searchDialog.isOpen || e.metaKey || e.ctrlKey || e.altKey || composing(e)) return;
     const target = e.target as HTMLElement | null;
     if (target?.closest("input, textarea, [contenteditable=true], [role=menu], [role=dialog], [role=listbox]")) return;
     if (!hits.length) return;

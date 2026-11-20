@@ -6,6 +6,7 @@
   import SearchField from "./SearchField.svelte";
   import type { Anchor, Placement } from "./floating";
   import type { PickerItem } from "./types";
+  import { composing } from "./keyboard";
 
   type Props = {
     open: boolean;
@@ -94,6 +95,7 @@
     const keys = typeahead?.keys;
     if (!open || !keys) return;
     const onKeys = (e: KeyboardEvent) => {
+      if (composing(e)) return;
       if (e.key === "Tab") {
         const item = filtered[active];
         if (item) {
@@ -118,6 +120,7 @@
     if (!multiple) close();
   }
   function onKeydown(e: KeyboardEvent) {
+    if (composing(e)) return;
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       const n = filtered.length;

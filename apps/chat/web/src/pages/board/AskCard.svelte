@@ -3,6 +3,7 @@
   import type { BoardOp, OwnerTodo } from "$lib/api";
   import { Button, Chip, Input, Markdown, toast } from "$lib/ui";
   import { linkView, openTarget } from "./links";
+  import { composing } from "$lib/ui/keyboard";
 
   let {
     chatId,
@@ -65,7 +66,7 @@
     void run("edit", [{ op: "todo_update", id: ask.id, text }]);
   };
   function onKey(event: KeyboardEvent, submit: () => void) {
-    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); submit(); }
+    if (event.key === "Enter" && !event.shiftKey && !composing(event)) { event.preventDefault(); submit(); }
     if (event.key === "Escape") { event.preventDefault(); replying = false; editing = false; }
   }
 </script>

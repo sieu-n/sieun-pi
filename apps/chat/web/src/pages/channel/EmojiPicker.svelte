@@ -4,6 +4,7 @@
   import Tabs from "$lib/ui/Tabs.svelte";
   import type { IconName } from "$lib/ui/icons";
   import { frequentEmoji } from "./frequent-emoji.svelte";
+  import { composing } from "$lib/ui/keyboard";
 
   type Props = {
     /** `keepOpen` is a Shift pick, which Slack uses to add several reactions in one go. */
@@ -79,7 +80,7 @@
       Enter: () => focused && onpick(focused.char, e.shiftKey),
     };
     const action = keys[e.key];
-    if (!action || e.isComposing) return;
+    if (!action || composing(e)) return;
     e.preventDefault();
     action();
   }

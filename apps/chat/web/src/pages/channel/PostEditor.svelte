@@ -3,6 +3,7 @@
   import Button from "$lib/ui/Button.svelte";
   import TextArea from "$lib/ui/TextArea.svelte";
   import { toast } from "$lib/ui/toast.svelte";
+  import { composing } from "$lib/ui/keyboard";
 
   /**
    * Slack's inline Edit message on the owner's own room post: the post's text in a box in place of the post, Enter saves, Shift+Enter breaks
@@ -48,7 +49,7 @@
       e.preventDefault();
       e.stopPropagation();
       ondone();
-    } else if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    } else if (e.key === "Enter" && !e.shiftKey && !composing(e)) {
       e.preventDefault();
       void save();
     }
