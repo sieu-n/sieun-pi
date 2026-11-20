@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { conversation, open } from "./helpers";
+import { conversation, open, tag } from "./helpers";
 
 /**
  * A new release reloads the page when the owner switches away (reload.ts). On 11-20, 197 ms from the box, four such loads from 06:43 to
@@ -104,4 +104,54 @@ test("a message hit Cmd K lists is read before the owner picks it, so it opens a
   await expect(conversation(page).locator("[data-message-id]").first()).toBeVisible();
   expect(asked.some((search) => search.includes("around="))).toBe(true);
   expect(around.pathname).toMatch(/\/items$/);
+});
+
+test("a reload after live posts shows them from the page it kept, so the reads behind it change nothing on the screen", async ({ page, request }) => {
+  await page.addInitScript(() => {
+    navigator.sendBeacon = () => false;
+  });
+  const word = tag();
+  const room = (await (await request.post("/api/rooms", { data: { kind: "channel", name: `kept-live-${word}`, members: [], test: true } })).json()) as { id: string };
+  const send = async (text: string, threadRoot?: string) => {
+    const response = await request.post(`/api/c/${room.id}/send`, { data: { text, requestId: crypto.randomUUID(), ...(threadRoot ? { threadRoot } : {}) } });
+    expect(response.ok()).toBe(true);
+  };
+  await send(`root ${word}`);
+  const root = ((await (await request.get(`/api/c/${room.id}/items`)).json()) as { items: { id: string }[] }).items[0]!.id;
+  await send(`first reply ${word}`, root);
+  await open(page, `#/c/${room.id}?thread=${root}`);
+  const pane = page.getByTestId("thread-pane");
+  await expect(pane.getByText(`first reply ${word}`)).toBeVisible();
+  // The owner switches away, and agents post while he is away.
+  await page.evaluate(() => dispatchEvent(new Event("blur")));
+  await send(`later post ${word}`);
+  await send(`later reply ${word}`, root);
+  await expect(conversation(page).getByText(`later post ${word}`)).toBeVisible();
+  await expect(pane.getByText(`later reply ${word}`)).toBeVisible();
+
+  // A new release reloads the tab while he is away (reload.ts), with no event of its own before it goes.
+  let release = (): void => undefined;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  await page.route(held, async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await gate;
+    await route.fallback();
+  });
+  await page.evaluate(() => location.reload());
+  await expect(conversation(page).getByText(`later post ${word}`)).toBeVisible();
+  await expect(pane.getByText(`later reply ${word}`)).toBeVisible();
+
+  const refreshed = Promise.all([
+    page.waitForResponse((r) => r.url().includes(`/api/c/${room.id}/items`)),
+    page.waitForResponse((r) => r.url().includes(`/api/c/${room.id}/replies/${root}`)),
+  ]);
+  release();
+  await refreshed;
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
+  const batch = page.waitForRequest((r) => r.url().endsWith("/api/timings"));
+  await page.evaluate(() => dispatchEvent(new Event("pagehide")));
+  const samples = ((await batch).postDataJSON() as { samples: { p: string; bg?: string }[] }).samples;
+  const of = (path: string) => samples.filter((s) => s.p === path).map((s) => s.bg ?? "waited");
+  expect(of(`/api/c/${room.id}/items`)).toEqual(["shown"]);
+  expect(of(`/api/c/${room.id}/replies/${root}`)).toEqual(["shown"]);
 });

@@ -500,30 +500,25 @@ export const connection = {
 };
 
 /**
- * The last page each thread showed, kept when its view closes so the next open shows it at once and reads it again behind, and the read
- * a thread pill click starts before the pane mounts. `warm` fills it before the first open: on 11-19 the owner, 197 ms from the box,
- * waited 403 to 455 ms for a room's first page and 648 ms for a thread's replies, each time with nothing on the screen. It keeps the
- * newest `keep` pages: a job page measured 434 KB on 11-03 (work/fast-thread/before.md), so the 60 timelines hold under 27 MB.
+ * The last page each thread showed, kept so the next open shows it at once and reads it again behind, and the read a thread pill click
+ * starts before the pane mounts. `warm` fills it before the first open: on 11-19 the owner, 197 ms from the box, waited 403 to 455 ms for
+ * a room's first page and 648 ms for a thread's replies, each time with nothing on the screen. It keeps the newest `keep` pages: a job
+ * page measured 434 KB on 11-03 (work/fast-thread/before.md), so the 60 timelines hold under 27 MB.
  *
  * Each kept page also goes to IndexedDB under the cache's `name` (page-db.ts), and `restore` brings them back on a page load, so the
- * room and the thread a reload opens show at once too. An open view's page is kept when its first read ends and again when the page
- * is hidden, loses focus or goes away, which is when a new release reloads it (reload.ts).
+ * room and the thread a reload opens show at once too. An open view's page is kept each time what it shows changes. A write started as the
+ * page goes away never lands: on 11-20 every release reload of #sw-factory-build, which came while the owner was away and agents posted,
+ * showed the page kept when he last switched away, and its read waited 400 to 590 ms to bring the newer posts (requests/2026-11-20.jsonl).
  */
 class PageCache<Raw, Shown> {
   private readonly shown = new Map<string, Shown>();
   private readonly reads = new Map<string, { read: Promise<Raw>; at: number; wait?: Wait }>();
   private readonly views = new Map<string, number>();
-  /** What each open view shows now, or undefined when that is what it gave last time. */
-  private readonly showing = new Map<string, () => Shown | undefined>();
+  /** The effect that keeps each open view's page as it changes, by key; it ends when the last view of the key closes. */
+  private readonly keeping = new Map<string, () => void>();
 
   /** With `stored` false the pages live in memory only. */
-  constructor(readonly name: string, readonly keep: number, private readonly stored = true) {
-    if (typeof window === "undefined") return;
-    const keepOpen = () => this.keepOpen();
-    addEventListener("pagehide", keepOpen);
-    addEventListener("blur", keepOpen);
-    document.addEventListener("visibilitychange", () => (document.hidden ? keepOpen() : undefined));
-  }
+  constructor(readonly name: string, readonly keep: number, private readonly stored = true) {}
 
   /** Takes the pages a page before this one kept, the oldest first; a page this one already holds stays. */
   restore(pages: readonly KeptPage[]): void {
@@ -534,14 +529,6 @@ class PageCache<Raw, Shown> {
     this.shown.clear();
     for (const page of mine.slice(extra)) if (!fresh.has(page.key)) this.shown.set(page.key, page.value as Shown);
     for (const [key, value] of fresh) this.shown.set(key, value);
-  }
-
-  /** Keeps what the open view of `key` shows now, or what every open view shows. */
-  keepOpen(key?: string): void {
-    for (const [open, showing] of key === undefined ? [...this.showing] : [[key, this.showing.get(key)] as const]) {
-      const value = showing?.();
-      if (value !== undefined) this.remember(open, value);
-    }
   }
 
   /** Starts the read now; the store that opens this thread next takes it instead of reading again. */
@@ -590,12 +577,19 @@ class PageCache<Raw, Shown> {
   }
 
   /**
-   * A view of the page opened; while it is open the view keeps the page current, so `warm` leaves it alone. `showing` gives what the
-   * view shows, for `keepOpen`.
+   * A view of the page opened; while it is open the view keeps the page current, so `warm` leaves it alone. `showing` reads what the view
+   * shows, or undefined when that is what it gave last time, and the page is kept each time it changes.
    */
   open(key: string, showing?: () => Shown | undefined): void {
     this.views.set(key, (this.views.get(key) ?? 0) + 1);
-    if (showing) this.showing.set(key, showing);
+    if (!showing) return;
+    this.keeping.get(key)?.();
+    this.keeping.set(key, $effect.root(() => {
+      $effect(() => {
+        const value = showing();
+        if (value !== undefined) this.remember(key, value);
+      });
+    }));
   }
 
   /** The view closed and leaves the page it showed. */
@@ -604,7 +598,8 @@ class PageCache<Raw, Shown> {
     if (left > 0) this.views.set(key, left);
     else {
       this.views.delete(key);
-      this.showing.delete(key);
+      this.keeping.get(key)?.();
+      this.keeping.delete(key);
     }
     if (value !== undefined) this.remember(key, value);
   }
@@ -980,7 +975,6 @@ export class Timeline {
       this.older = page.older;
       this.focus = page.focus;
       this.stopWatch = live.watch(this.id, () => this.items.findLast(i => !isPending(i))?.id);
-      timelinePages.keepOpen(this.id);
     } catch (error) {
       this.error = message(error);
     } finally {
@@ -1171,7 +1165,6 @@ export class Replies {
       this.sends.merge(page.items);
     }).catch(error => (this.error = message(error))).finally(() => {
       this.loading = false;
-      repliesPages.keepOpen(key);
     });
     for (const id of this.sends.restore()) this.retrySend(id);
   }
