@@ -124,7 +124,7 @@ test("a run wake follows the latest attempt, waits for attempt= on a rerun, and 
   Object.assign(ci.state, { status: "completed", conclusion: "success", attempt: 2 });
   await step();
   await until(1);
-  assert.equal(sent[0]!.input.text, "[wake] Run 39493311906 finished: success (attempt 2, land on main). https://github.com/sieu-n/auto-sns-agent/actions/runs/39493311906 You set this wake with board.wake. Your note: land r11");
+  assert.match(sent[0]!.input.text!, /^\[wake\] Run 39493311906 finished: success \(attempt 2, land on main\)\. It ended at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\. https:\/\/github\.com\/sieu-n\/auto-sns-agent\/actions\/runs\/39493311906 You set this wake with board\.wake\. Your note: land r11$/);
 });
 
 test("a run wake in another repo reads gh with that repo", async t => {

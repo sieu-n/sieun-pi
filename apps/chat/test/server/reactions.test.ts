@@ -130,6 +130,7 @@ describe("reactions on the fixture server", () => {
 
     const live = await s.live();
     live.watch(ROOM);
+    await live.waitFor(e => e.type === "status" && e.conversation === ROOM);
     const on = await agentReact(thread, { message: stamped.toString(36), emoji: "eyes", on: true });
     assert.equal(on.status, 200, on.body.error);
     assert.equal(on.body.post, p.id);

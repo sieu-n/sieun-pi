@@ -12,6 +12,7 @@ test("top bar pills open each page and mark the current one", async ({ page }) =
   for (const [label, hash] of [
     ["Agents", "#/agents"],
     ["Board", "#/board"],
+    ["Later", "#/later"],
   ] as const) {
     await nav.getByRole("tab", { name: label }).click();
     await expect(page).toHaveURL(new RegExp(`${hash}$`));
@@ -21,9 +22,9 @@ test("top bar pills open each page and mark the current one", async ({ page }) =
   await expect(page).toHaveURL(/#\/c\/ch_general$/);
 });
 
-test("the top bar holds only Messages, Agents and Board, with Usage, Hosts and Accounts behind Settings", async ({ page }) => {
+test("the top bar holds only Messages, Agents, Board and Later, with Usage, Hosts and Accounts behind Settings", async ({ page }) => {
   const nav = page.getByRole("navigation", { name: "Pages" });
-  await expect(nav.getByRole("tab")).toHaveText(["Messages", "Agents", "Board"]);
+  await expect(nav.getByRole("tab")).toHaveText(["Messages", "Agents", "Board", /^\s*Later\b/]);
   const bar = page.locator("header.topbar");
   await expect(bar.getByText("Usage")).toHaveCount(0);
   await expect(bar.getByText("Hosts")).toHaveCount(0);
