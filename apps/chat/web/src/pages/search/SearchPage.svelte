@@ -1,21 +1,20 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
-  import { agents, api, conversations, type SearchHit, type SearchMissing } from "$lib/api";
+  import { api, type SearchHit, type SearchMissing } from "$lib/api";
   import { hrefFor, router } from "$lib/router.svelte";
   import { search as searchDialog } from "$lib/shell/search.svelte";
   import Button from "$lib/ui/Button.svelte";
-  import Chip from "$lib/ui/Chip.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import LoadingText from "$lib/ui/LoadingText.svelte";
   import Menu from "$lib/ui/Menu.svelte";
   import Page from "$lib/ui/Page.svelte";
-  import Picker from "$lib/ui/Picker.svelte";
   import SearchField from "$lib/ui/SearchField.svelte";
-  import type { PickerItem } from "$lib/ui/types";
   import { contextOf, replyContextOf, type HitContext } from "./context";
+  import FilterBar from "./FilterBar.svelte";
+  import { hasFilters, NO_FILTERS } from "./filters";
   import ResultCard from "./ResultCard.svelte";
-  import { dateLabel, dateRanges, MESSAGES_WHERE, readResults, resultCount, resultParams, searchParams, TOOLS_WHERE, type Results } from "./results-model";
+  import { readResults, resultCount, resultParams, searchParams, type Results } from "./results-model";
   import { composing } from "$lib/ui/keyboard";
 
   const PAGE = 20;
@@ -96,7 +95,7 @@
     if (contexts.has(hit.id)) return;
     contexts.set(hit.id, "loading");
     try {
-      if (hit.threadRoot) contexts.set(hit.id, replyContextOf(await api.replies(hit.conversation.id, hit.threadRoot), hit));
+      if (hit.thread) contexts.set(hit.id, replyContextOf(await api.replies(hit.conversation.id, hit.thread.root), hit));
       else contexts.set(hit.id, contextOf(await api.items(hit.conversation.id, { around: hit.messageId, limit: 6 }), hit));
     } catch {
       contexts.set(hit.id, "error");
@@ -126,58 +125,11 @@
     go({ q: draft.trim() });
   }
 
-  // Filters
+  // Filters: the same chip bar as the Cmd K search, writing to the address.
 
-  const ownerOnly = $derived(results.from === "owner");
-  const agentsOnly = $derived(results.from === "agents");
-  const ranges = $derived(dateRanges(now));
-  const lastWeek = $derived(ranges.find(range => range.id === "7d")!);
-  const inLastWeek = $derived(results.after === lastWeek.after && !results.before);
-  const fromLabel = $derived(
-    !results.from ? undefined : results.from === "owner" ? "You" : results.from === "agents" ? "Agents" : (agents.byId(results.from)?.name ?? conversations.byId(results.from)?.name ?? results.from),
-  );
-  const inLabel = $derived(results.in ? (conversations.byId(results.in)?.name ?? results.in) : undefined);
-  const whereLabels: Record<string, string> = { [MESSAGES_WHERE]: "Messages only", [TOOLS_WHERE]: "Tool output only", root: "Top-level messages", thread: "Thread replies", "root,tool": "Top level and tools", "thread,tool": "Replies and tools" };
-  const anyFilter = $derived(!!(results.from || results.in || results.after || results.before || results.where));
-
-  let typeAnchor = $state<HTMLElement>();
-  let typeOpen = $state(false);
-  let fromAnchor = $state<HTMLElement>();
-  let fromOpen = $state(false);
-  let inAnchor = $state<HTMLElement>();
-  let inOpen = $state(false);
-  let dateAnchor = $state<HTMLElement>();
-  let dateOpen = $state(false);
+  const anyFilter = $derived(hasFilters(results.filters));
   let sortAnchor = $state<HTMLButtonElement>();
   let sortOpen = $state(false);
-
-  const typeItems = $derived([
-    { type: "radio" as const, id: "all", group: "type", label: "Everything", detail: "Messages first, then tool output", checked: !results.where, onselect: () => go({ where: undefined }) },
-    { type: "radio" as const, id: "messages", group: "type", label: "Messages only", detail: "What you and agents wrote", checked: results.where === MESSAGES_WHERE, onselect: () => go({ where: MESSAGES_WHERE }) },
-    { type: "radio" as const, id: "tools", group: "type", label: "Tool output only", detail: "Inside agents' work: tool calls, output and jobs", checked: results.where === TOOLS_WHERE, onselect: () => go({ where: TOOLS_WHERE }) },
-  ]);
-  const fromItems = $derived<PickerItem[]>([
-    { id: "", label: "Anyone", icon: "users" },
-    { id: "owner", label: "You", icon: "user" },
-    { id: "agents", label: "Agents only", icon: "robot", detail: "Everyone but you" },
-    ...agents.list
-      .filter(agent => !agent.archived)
-      .map(agent => ({ id: agent.id, label: agent.name, group: "Agents", avatar: { name: agent.name, kind: "agent" as const, seed: agent.id } })),
-  ]);
-  const inItems = $derived<PickerItem[]>([
-    { id: "", label: "Anywhere", icon: "search" },
-    ...[...conversations.list]
-      .filter(c => !c.archived)
-      .sort((a, b) => b.lastActivityAt - a.lastActivityAt)
-      .map(c => ({ id: c.id, label: c.kind === "channel" ? c.name.replace(/^#?/, "#") : c.name, group: c.kind === "channel" ? "Channels" : c.kind === "job" ? "Jobs" : "Conversations", icon: c.kind === "channel" ? "hash" : c.kind === "job" ? "robot" : "chat" })),
-  ]);
-  const dateItems = $derived(
-    ranges.map(range => ({
-      type: "radio" as const, id: range.id, group: "date", label: range.label,
-      checked: range.id === "any" ? !results.after && !results.before : results.after === range.after && results.before === range.before,
-      onselect: () => go({ after: range.after, before: range.before }),
-    })),
-  );
   const sortItems = $derived([
     { type: "radio" as const, id: "relevance", group: "sort", label: "Most relevant", detail: "Default", checked: results.sort === "relevance", onselect: () => go({ sort: "relevance" }) },
     { type: "radio" as const, id: "recent", group: "sort", label: "Most recent", checked: results.sort === "recent", onselect: () => go({ sort: "recent" }) },
@@ -217,7 +169,7 @@
     } else if (e.key === "Enter" && !target?.closest("a, button")) {
       e.preventDefault();
       const hit = hits[focusedIndex];
-      if (hit) router.openConversation(hit.conversation.id, { messageId: hit.messageId });
+      if (hit) router.navigate(hit.link);
     }
   }
 </script>
@@ -235,40 +187,11 @@
           <SearchField bind:value={draft} placeholder="Search messages" label="Search messages" onkeydown={submit} maxlength={256} />
         </div>
       </div>
-      <div class="filters" role="toolbar" aria-label="Filters" data-search-filters>
-        <span bind:this={typeAnchor}>
-          <Chip selected={!!results.where} onclick={() => (typeOpen = !typeOpen)}>
-            <span class="chip-label">{results.where ? (whereLabels[results.where] ?? results.where) : "Messages"}</span><Icon name="chevron-down" size={14} />
-          </Chip>
-        </span>
-        <Menu bind:open={typeOpen} anchor={typeAnchor} items={typeItems} label="Result type" />
-        <span bind:this={fromAnchor}>
-          <Chip selected={!!results.from} onclick={() => (fromOpen = !fromOpen)}>
-            <span class="chip-label">{fromLabel ? `From: ${fromLabel}` : "From"}</span><Icon name="chevron-down" size={14} />
-          </Chip>
-        </span>
-        <Picker bind:open={fromOpen} anchor={fromAnchor} items={fromItems} value={results.from ?? ""} label="From" placeholder="Find a person or agent" onselect={id => go({ from: id || undefined })} />
-        <span bind:this={inAnchor}>
-          <Chip selected={!!results.in} onclick={() => (inOpen = !inOpen)}>
-            <span class="chip-label">{inLabel ? `In: ${inLabel}` : "In"}</span><Icon name="chevron-down" size={14} />
-          </Chip>
-        </span>
-        <Picker bind:open={inOpen} anchor={inAnchor} items={inItems} value={results.in ?? ""} label="In" placeholder="Find a conversation" onselect={id => go({ in: id || undefined })} />
-        <span bind:this={dateAnchor}>
-          <Chip selected={!!(results.after || results.before)} onclick={() => (dateOpen = !dateOpen)}>
-            <span class="chip-label">{dateLabel(results, now) ?? "Date"}</span><Icon name="chevron-down" size={14} />
-          </Chip>
-        </span>
-        <Menu bind:open={dateOpen} anchor={dateAnchor} items={dateItems} label="Date" />
-        <span class="divider" aria-hidden="true"></span>
-        <Chip label="You only" selected={ownerOnly} onclick={() => go({ from: ownerOnly ? undefined : "owner" })} />
-        <Chip label="Agents only" selected={agentsOnly} onclick={() => go({ from: agentsOnly ? undefined : "agents" })} />
-        <Chip label="Last 7 days" selected={inLastWeek} onclick={() => go(inLastWeek ? { after: undefined, before: undefined } : { after: lastWeek.after, before: undefined })} />
-        <Chip label="No tool output" selected={results.where === MESSAGES_WHERE} onclick={() => go({ where: results.where === MESSAGES_WHERE ? undefined : MESSAGES_WHERE })} />
-        {#if anyFilter}
-          <Button variant="ghost" size="sm" onclick={() => go({ from: undefined, in: undefined, after: undefined, before: undefined, where: undefined })}>Clear filters</Button>
-        {/if}
-      </div>
+      <FilterBar filters={results.filters} {now} onchange={filters => go({ filters })}>
+        {#snippet trailing()}
+          {#if anyFilter}<Button variant="ghost" size="sm" onclick={() => go({ filters: NO_FILTERS })}>Clear filters</Button>{/if}
+        {/snippet}
+      </FilterBar>
       <div class="summary">
         <span class="sort">
           Sorted by
@@ -348,21 +271,6 @@
   }
   .field {
     width: min(22rem, 100%);
-  }
-  .filters {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .chip-label {
-    margin-right: 2px;
-  }
-  .divider {
-    width: 1px;
-    height: 20px;
-    margin: 0 4px;
-    background: var(--border-standard);
   }
   .summary {
     display: flex;

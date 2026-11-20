@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import type { SearchResult } from "../../web/src/lib/api/types.ts";
 import { FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
+import { NO_FILTERS } from "../../web/src/pages/search/filters.ts";
 import { entryOf, LocalFeed, localHits } from "../../web/src/pages/search/local-index.ts";
 import { start, type Running } from "./helpers.ts";
 
@@ -32,7 +33,7 @@ test("every message of the feed that the page matches for a word is one the serv
   const recent = await s.get<SearchResult>("/api/search/recent");
   const feed = new LocalFeed();
   feed.add(recent.hits);
-  const local = localHits([], feed.entries(), { q: "relay", limit: 100 });
+  const local = localHits([], feed.entries(), { q: "relay", filters: NO_FILTERS, limit: 100 });
   assert.ok(local.length > 0);
   const server = await s.get<SearchResult>("/api/search?q=relay&limit=100");
   const found = new Set(server.hits.map(h => h.id));

@@ -3,11 +3,12 @@ import { test } from "node:test";
 import type { Item, TimelinePage } from "../../web/src/lib/api/types.ts";
 import { contextOf, replyContextOf } from "../../web/src/pages/search/context.ts";
 import { author, location, locationText, longStamp, shortAge, what, type Hit } from "../../web/src/pages/search/hit-view.ts";
-import { dateLabel, dateRanges, readResults, resultCount, resultParams, searchParams } from "../../web/src/pages/search/results-model.ts";
+import { NO_FILTERS } from "../../web/src/pages/search/filters.ts";
+import { readResults, resultCount, resultParams, searchParams } from "../../web/src/pages/search/results-model.ts";
 
 const hit = (over: Partial<Hit> = {}): Hit => ({
   id: "c1/e5", conversation: { id: "c1", kind: "solo", name: "Vent" }, messageId: "e5", author: { id: "c1", name: "Vent", kind: "agent" },
-  at: new Date(2026, 9, 28, 15, 34).getTime(), kind: "turn", role: "agent", snippet: "the <mark>relay</mark> is up", ...over,
+  at: new Date(2026, 9, 28, 15, 34).getTime(), kind: "turn", role: "agent", where: "root", link: "#/c/c1?m=e5", snippet: "the <mark>relay</mark> is up", ...over,
 });
 
 test("a hit names its author with a badge, its place with an icon, and the kind of text that holds the match", () => {
@@ -19,9 +20,9 @@ test("a hit names its author with a badge, its place with an icon, and the kind 
   assert.equal(locationText({ id: "j", kind: "dm", name: "Vent integrations duty", parent: { id: "c1", name: "vent" } }), "vent › Vent integrations duty");
   assert.equal(locationText({ id: "w", kind: "dm", name: "vent", parent: { id: "c1", name: "vent" } }), "vent");
   assert.equal(location({ id: "d", kind: "dm", name: "frontend bro" }).icon, "lock");
-  assert.equal(what(hit({ role: "tool", kind: "tool", tool: "bash" })), "in tool output · bash");
-  assert.equal(what(hit({ role: "tool", tool: "ipython", inCall: true })), "in a tool call · ipython");
-  assert.equal(what(hit({ kind: "post", threadRoot: "p1" })), "reply in thread");
+  assert.equal(what(hit({ role: "tool", kind: "tool", tool: "bash" })), "tool output · bash");
+  assert.equal(what(hit({ role: "tool", tool: "ipython", inCall: true })), "tool call · ipython");
+  assert.equal(what(hit({ kind: "post", where: "thread" })), "reply in thread");
   assert.equal(what(hit()), undefined);
 });
 
@@ -38,18 +39,15 @@ test("times read like Slack's: Today at, Yesterday at, Oct 12th at, and short ag
 });
 
 test("the results address keeps only set filters and reads back the same search", () => {
-  const params = resultParams({ q: "relay", from: "owner", sort: "relevance", where: "root,thread" });
-  assert.deepEqual(Object.fromEntries(Object.entries(params).filter(([, v]) => v)), { q: "relay", from: "owner", where: "root,thread" });
-  const read = readResults({ q: " relay ", from: "agents", sort: "recent", after: "2026-10-22", before: "bad", where: "x" });
-  assert.deepEqual(read, { q: "relay", from: "agents", sort: "recent", after: "2026-10-22" });
-  assert.equal(readResults({ q: "relay", where: "tool,root,tool" }).where, "root,tool");
-  assert.equal(readResults({ q: "relay", where: "thread,root,tool" }).where, undefined);
+  const results = { q: "relay", sort: "relevance" as const, filters: { ...NO_FILTERS, from: ["owner", "ag_vent"], where: ["root" as const, "thread" as const] } };
+  const params = resultParams(results);
+  assert.deepEqual(Object.fromEntries(Object.entries(params).filter(([, v]) => v)), { q: "relay", from: "owner,ag_vent", where: "root,thread" });
+  assert.deepEqual(readResults({ ...params, q: " relay " } as Record<string, string>), results);
+  const read = readResults({ q: "relay", from: "agents", sort: "recent", after: "2026-10-22", before: "bad", where: "x" });
+  assert.deepEqual(read, { q: "relay", sort: "recent", filters: { from: ["agents"], where: [], after: "2026-10-22" } });
+  assert.deepEqual(readResults({ q: "relay", where: "thread,root,tool" }).filters.where, []);
   assert.deepEqual(searchParams(readResults({ q: "relay", where: "tool,root" })), { q: "relay", sort: "relevance", where: ["root", "tool"] });
-  assert.deepEqual(searchParams(read), { q: "relay", sort: "recent", from: "agents", after: "2026-10-22" });
-  const now = new Date(2026, 9, 28);
-  assert.equal(dateRanges(now).find(r => r.id === "7d")!.after, "2026-10-22");
-  assert.equal(dateLabel({ after: "2026-10-22" }, now), "Last 7 days");
-  assert.equal(dateLabel({ after: "2026-10-01", before: "2026-10-05" }, now), "2026-10-01 to 2026-10-05");
+  assert.deepEqual(searchParams(read), { q: "relay", sort: "recent", from: ["agents"], after: "2026-10-22" });
   assert.equal(resultCount(1), "1 result");
   assert.equal(resultCount(6391), "6,391 results");
 });
@@ -66,5 +64,5 @@ test("context is the message before and after the hit's item; a hit in tool outp
   const envelope: TimelinePage = { items: [message("e3", "[agent-message from child:vent grafana]\n\nThe folder is Vent."), turn("t3", "ok")], focus: "t3" };
   assert.deepEqual(contextOf(envelope, hit()).before, { id: "e3", author: "vent grafana", kind: "agent", at: 1, text: "The folder is Vent." });
   const thread = { root: message("p1", "what blocks the migration?"), items: [message("p2", "two items", person("c2", "Harness")), message("p3", "the relay port")] };
-  assert.deepEqual(Object.values(replyContextOf(thread, hit({ messageId: "p2", threadRoot: "p1" }))).map(l => l?.text), ["what blocks the migration?", "the relay port"]);
+  assert.deepEqual(Object.values(replyContextOf(thread, hit({ messageId: "p2", where: "thread" }))).map(l => l?.text), ["what blocks the migration?", "the relay port"]);
 });

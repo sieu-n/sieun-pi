@@ -5,7 +5,8 @@
 import { avatarOf } from "../channel/present.ts";
 import { author, locationText, what, type Hit } from "./hit-view.ts";
 import { leadIn, matchName, snippetPieces, type Piece } from "./match.ts";
-import { datePresets, filters, prompt, searchText, type Operator } from "./operators.ts";
+import { hasFilters, type Filters } from "./filters.ts";
+import { datePresets, prompt, searchText, type Operator } from "./operators.ts";
 
 export type { Hit } from "./hit-view.ts";
 
@@ -51,7 +52,8 @@ export function answered(answer: Answer, before: readonly Hit[] = []): Ready {
 }
 
 export type Action =
-  | { type: "open"; conversation: string; messageId?: string }
+  /** A hit's `link` is its own route (hit-view.ts `Hit.link`), which opens a reply in its thread pane and a job's entry in the job. */
+  | { type: "open"; conversation: string; messageId?: string; link?: string }
   | { type: "scope"; conversation: string }
   | { type: "operator"; operator: Operator }
   | { type: "more" }
@@ -78,8 +80,8 @@ export const SEE_ALL = "see-all";
 
 export type SearchInput = {
   text: string;
-  operators: readonly Operator[];
-  scope?: string | undefined;
+  /** The chips' filters; `filters.in` scopes the search to one conversation. */
+  filters: Filters;
   current?: string | undefined;
   sort: Sort;
   conversations: readonly Conversation[];
@@ -142,10 +144,10 @@ function messageRows(input: SearchInput): Row[] {
     key: `hit:${hit.id}`,
     label: snippetPieces(hit.snippet).map(piece => piece.text).join(""),
     snippet: leadIn(snippetPieces(hit.snippet)),
-    detail: [author(hit).name, input.scope ? undefined : locationText(hit.conversation), what(hit), formatDay(hit.at, input.now)].filter(Boolean).join(" · "),
+    detail: [author(hit).name, input.filters.in ? undefined : locationText(hit.conversation), what(hit), formatDay(hit.at, input.now)].filter(Boolean).join(" · "),
     icon: "chat",
     hit,
-    action: { type: "open", conversation: hit.conversation.id, messageId: hit.messageId },
+    action: { type: "open", conversation: hit.conversation.id, messageId: hit.messageId, link: hit.link },
   }));
   if (input.messages.state === "ready" && input.messages.more)
     rows.push({ key: "more-messages", label: input.messages.loadingMore ? "Loading more messages…" : "Show more messages", icon: "more", action: { type: "more" } });
@@ -154,7 +156,7 @@ function messageRows(input: SearchInput): Row[] {
 
 /** The first row once something is typed: Enter on it, the default, opens the full results page. */
 function seeAll(input: SearchInput): Group {
-  const q = filters(input.text, input.operators).q;
+  const q = searchText(input.text);
   const total = input.messages.state === "ready" ? input.messages.total : undefined;
   const count = total === undefined ? undefined : `${total.toLocaleString("en-US")} ${total === 1 ? "result" : "results"}`;
   return {
@@ -174,7 +176,7 @@ function messageEmpty(input: SearchInput, hasText: boolean): string | undefined 
   const messages = input.messages;
   if (messages.state === "loading") return "Searching messages…";
   if (messages.state === "error") return "Message search is unavailable.";
-  if (!hasText) return input.scope ? "Type to search messages in this conversation." : "Type to search messages.";
+  if (!hasText) return input.filters.in ? "Type to search messages in this conversation." : "Type to search messages.";
   return "No matching messages in accessible conversations.";
 }
 
@@ -187,7 +189,7 @@ export function buildGroups(input: SearchInput): Group[] {
 
   if (open?.kind === "from") {
     const choices = needle ? ranked(input.people, person => [person.name, ...(person.aliases ?? [])], needle, (a, b) => a.name.localeCompare(b.name)) : [...input.people];
-    const row = (person: Person) => personRow(person, needle, { type: "operator", operator: { kind: "from", id: person.id, label: person.name } }, person.kind === "owner" ? "You" : "Agent");
+    const row = (person: Person) => personRow(person, needle, { type: "operator", operator: { kind: "from", id: person.id } }, person.kind === "owner" ? "You" : "Agent");
     return [
       { label: "People", rows: choices.filter(person => person.kind === "owner").map(row), empty: choices.length ? undefined : "No matching people. Try a different name." },
       { label: "Agents", rows: choices.filter(person => person.kind === "agent").slice(0, 12).map(row) },
@@ -201,7 +203,7 @@ export function buildGroups(input: SearchInput): Group[] {
         label: "Conversations",
         rows: choices.slice(0, 12).map(conversation => ({
           ...conversationRow(conversation, needle),
-          action: { type: "operator", operator: { kind: "in", id: conversation.id, label: conversation.name.replace(/^#/, "") } },
+          action: { type: "operator", operator: { kind: "in", id: conversation.id } },
         })),
         empty: "No matching conversations.",
       },
@@ -224,14 +226,15 @@ export function buildGroups(input: SearchInput): Group[] {
   }
 
   const text = searchText(input.text);
-  const hasQuery = !!text || input.operators.length > 0;
+  const filtered = hasFilters(input.filters);
   const messages: Group = {
-    label: messageGroupLabel(input.sort, !!input.scope),
+    label: messageGroupLabel(input.sort, !!input.filters.in),
     rows: messageRows(input),
-    empty: messageEmpty(input, hasQuery),
-    count: input.messages.state === "ready" && hasQuery ? input.messages.total : undefined,
+    empty: messageEmpty(input, !!text),
+    count: input.messages.state === "ready" && text ? input.messages.total : undefined,
   };
-  if (input.scope) return hasQuery ? [seeAll(input), messages] : [messages];
+  // The server matches words, so filters with no words wait for them under one Messages group.
+  if (input.filters.in || (filtered && !text)) return text ? [seeAll(input), messages] : [messages];
 
   const current = input.current ? input.conversations.find(conversation => conversation.id === input.current) : undefined;
   // One slim row with no heading, under See all results when something is typed.
@@ -249,7 +252,7 @@ export function buildGroups(input: SearchInput): Group[] {
       }]
     : [];
 
-  if (!hasQuery) {
+  if (!text) {
     const recent = input.conversations
       .filter(conversation => !conversation.archived)
       .sort((a, b) => activity(b) - activity(a))
@@ -258,7 +261,7 @@ export function buildGroups(input: SearchInput): Group[] {
     return [...thisConversation, { label: "Recent activity", rows: recent, empty: "No recent activity yet." }];
   }
 
-  if (input.operators.length) return [seeAll(input), ...thisConversation, messages];
+  if (filtered) return [seeAll(input), ...thisConversation, messages];
 
   // Chats, DMs, channels and agents rank together: live before archived, then by how well the name matches, then by activity.
   type Named = { row: Row; name: string; archived: boolean; at: number };

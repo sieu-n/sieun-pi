@@ -1,10 +1,12 @@
 /**
- * Slack-style search operators as typed chips. The field holds free text, and each completed operator moves out of
- * the text into a chip, so the query the server gets is the chips plus the text.
+ * Slack-style search operators typed in the field. Each completed operator moves out of the text into the filter chips under the field
+ * (filters.ts), so typing `from:vent` and picking Vent in the From chip land in the same state.
  */
+import type { Filters } from "./filters.ts";
 
 export type DateOperator = { kind: "after" | "before"; date: string };
-export type NamedOperator = { kind: "from" | "in"; id: string; label: string };
+export type NamedOperator = { kind: "from" | "in"; id: string };
+/** One typed filter, which lands in the one filter state that the chips show (filters.ts). */
 export type Operator = DateOperator | NamedOperator;
 export type OperatorKind = Operator["kind"];
 
@@ -29,9 +31,17 @@ export function isDate(value: string): boolean {
   return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
 }
 
-/** Adds an operator, replacing one of the same kind, as a later Slack operator wins. */
-export function withOperator(operators: readonly Operator[], next: Operator): Operator[] {
-  return [...operators.filter(operator => operator.kind !== next.kind), next];
+/** Applies a typed operator: `from:` adds a person to the ones already picked, and `in:`, `after:` and `before:` replace their value. */
+export function withOperator(filters: Filters, operator: Operator): Filters {
+  switch (operator.kind) {
+    case "from":
+      return filters.from.includes(operator.id) ? filters : { ...filters, from: [...filters.from, operator.id] };
+    case "in":
+      return { ...filters, in: operator.id };
+    case "after":
+    case "before":
+      return { ...filters, [operator.kind]: operator.date };
+  }
 }
 
 /** Drops the prompt token from the text once its choice became a chip. */
@@ -41,54 +51,35 @@ export function withoutPrompt(text: string, at: Prompt): string {
 
 const COMPLETED_RE = /(?:^|\s)(from|in|after|before):(\S+)(?=\s)/gi;
 
-/** Resolves a typed `from:` or `in:` value, such as a name or an id, to the one principal or conversation it names. */
-export type ResolveNamed = (kind: NamedOperator["kind"], value: string) => NamedOperator | undefined;
+/** Resolves a typed `from:` or `in:` value, such as a name or an id, to the id of the one principal or conversation it names. */
+export type ResolveNamed = (kind: NamedOperator["kind"], value: string) => string | undefined;
 
 /**
- * Moves every completed operator (one followed by a space) out of the text into chips: a valid date, or a name that
- * resolves to exactly one choice. A bad date or an unknown name stays in the text, so it still matches as words.
+ * Moves every completed operator (one followed by a space) out of the text into the filters: a valid date, or a name that resolves to
+ * exactly one choice. A bad date or an unknown name stays in the text, so it still matches as words.
  */
-export function absorb(text: string, operators: readonly Operator[], resolve: ResolveNamed): { text: string; operators: Operator[] } {
-  let next = [...operators];
+export function absorb(text: string, filters: Filters, resolve: ResolveNamed): { text: string; filters: Filters } {
+  let next = filters;
   const rest = text.replace(COMPLETED_RE, (whole, kind: string, value: string) => {
     const lower = kind.toLowerCase() as OperatorKind;
     const clean = value.replace(/[.,;!?]+$/, "");
-    const operator: Operator | undefined =
-      lower === "after" || lower === "before" ? (isDate(clean) ? { kind: lower, date: clean } : undefined) : resolve(lower, clean.replace(/^[@#]/, ""));
+    let operator: Operator | undefined;
+    if (lower === "after" || lower === "before") operator = isDate(clean) ? { kind: lower, date: clean } : undefined;
+    else {
+      const id = resolve(lower, clean.replace(/^[@#]/, ""));
+      operator = id ? { kind: lower, id } : undefined;
+    }
     if (!operator) return whole;
     next = withOperator(next, operator);
     return whole.startsWith(" ") || whole.startsWith("\t") ? " " : "";
   });
-  return { text: rest.replace(/^\s+/, "").replace(/\s{2,}/g, " "), operators: next };
-}
-
-export function chipLabel(operator: Operator): string {
-  switch (operator.kind) {
-    case "from":
-      return `from:@${operator.label}`;
-    case "in":
-      return `in:#${operator.label}`;
-    case "after":
-    case "before":
-      return `${operator.kind}:${operator.date}`;
-  }
+  return { text: rest.replace(/^\s+/, "").replace(/\s{2,}/g, " "), filters: next };
 }
 
 /** The text of the query once operators are removed, with an unfinished operator prompt left out. */
 export function searchText(text: string): string {
   const open = prompt(text);
   return (open ? text.slice(0, open.start) : text).replace(/\s+/g, " ").trim();
-}
-
-export type SearchFilters = { q: string; from?: string; in?: string; after?: string; before?: string };
-
-export function filters(text: string, operators: readonly Operator[]): SearchFilters {
-  const result: SearchFilters = { q: searchText(text) };
-  for (const operator of operators) {
-    if ("date" in operator) result[operator.kind] = operator.date;
-    else result[operator.kind] = operator.id;
-  }
-  return result;
 }
 
 const pad = (value: number) => String(value).padStart(2, "0");

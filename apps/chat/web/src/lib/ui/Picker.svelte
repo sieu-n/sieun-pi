@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Snippet } from "svelte";
+  import { untrack, type Snippet } from "svelte";
   import Avatar from "./Avatar.svelte";
   import Icon from "./Icon.svelte";
   import Popover from "./Popover.svelte";
@@ -76,12 +76,14 @@
     return out;
   });
 
+  // Only an opening resets the query and the highlight: a pick in a `multiple` list changes `value` and must leave both as they are.
   $effect(() => {
-    if (open) {
-      query = "";
-      const at = items.findIndex((i) => selected.has(i.id));
-      active = Math.max(0, at);
-    }
+    if (open)
+      untrack(() => {
+        query = "";
+        const at = items.findIndex((i) => selected.has(i.id));
+        active = Math.max(0, at);
+      });
   });
   $effect(() => {
     if (active >= filtered.length) active = Math.max(0, filtered.length - 1);
@@ -145,7 +147,7 @@
 <Popover bind:open {anchor} {placement} {width} surface="glass" role="dialog" {label} onclose={close} padding={6} autofocus={!typeahead}>
   <div class="picker" onkeydown={onKeydown} onmousedown={(e) => typeahead && e.preventDefault()} role="presentation">
     {#if showSearch}
-      <div class="search"><SearchField bind:value={query} {placeholder} label={placeholder} data-autofocus aria-controls={listId} aria-activedescendant={filtered[active] ? `${listId}-${active}` : undefined} /></div>
+      <div class="search"><SearchField bind:value={query} {placeholder} label={placeholder} oninput={() => (active = 0)} data-autofocus aria-controls={listId} aria-activedescendant={filtered[active] ? `${listId}-${active}` : undefined} /></div>
     {/if}
     <div class="list" id={listId} role="listbox" aria-multiselectable={multiple || undefined} bind:this={listEl} tabindex={showSearch ? -1 : 0}>
       {#each groups as g (g.name)}

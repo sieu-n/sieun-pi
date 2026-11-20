@@ -3,14 +3,22 @@
   import Icon from "$lib/ui/Icon.svelte";
   import { author, location, what, type Hit } from "./hit-view";
 
-  /** Who said a hit, an AGENT or SYSTEM badge, where (with its icon) and what kind of text holds the match. */
+  /**
+   * Who said a hit, an AGENT or SYSTEM badge, where it sits and what kind of text holds the match. The place reads "in # room" for a
+   * top-level post, "reply in <thread title>" with the thread icon for a reply, and "in <job>" with a tool or job icon for a hit inside an
+   * agent's work (owner p115: root message, in thread, "diggen in some internal tool call").
+   */
   type Props = { hit: Hit; showAuthor?: boolean; showPlace?: boolean; showWhat?: boolean; showThread?: boolean };
   let { hit, showAuthor = true, showPlace = true, showWhat = true, showThread = true }: Props = $props();
   const who = $derived(author(hit));
   const where = $derived(location(hit.conversation));
-  const kind = $derived(!showWhat || (!showThread && hit.threadRoot && hit.role !== "tool") ? undefined : what(hit));
-  /** A thread reply shows as a quiet thread icon; tool text keeps its words, which name the tool. */
-  const reply = $derived(!!kind && !!hit.threadRoot && hit.role !== "tool");
+  const place = $derived(hit.where);
+  const reply = $derived(place === "thread" && showThread);
+  const roomName = $derived(`${hit.conversation.kind === "channel" ? "#" : ""}${where.name}`);
+  const threadTitle = $derived(hit.thread?.title || "a thread");
+  /** A tool's call or output shows the terminal icon; a job's own messages show the job's. */
+  const placeIcon = $derived(place === "tool" && (hit.role === "tool" || hit.kind === "tool") ? "terminal" : where.icon);
+  const kind = $derived(showWhat && place !== "thread" ? what(hit) : undefined);
 </script>
 
 <span class="meta" data-hit-meta>
@@ -18,17 +26,22 @@
     <span class="name" data-hit-author>{who.name}</span>
     {#if who.badge}<Badge tone="outline">{who.badge}</Badge>{/if}
   {/if}
-  {#if showPlace}
-    <span class="place" data-hit-place title={`${where.kind}: ${where.parent ? `${where.parent} › ` : ""}${where.name}`}>
-      <Icon name={where.icon} size={14} label={where.kind} />
+  {#if reply}
+    <span class="place" data-hit-place data-where="thread" title={`Reply in “${threadTitle}” in ${where.kind.toLowerCase()} ${roomName}`}>
+      <Icon name="thread" size={14} label="Thread reply" />
+      <span class="lead">reply in</span>
+      <span class="where">{threadTitle}</span>
+    </span>
+  {:else if showPlace}
+    <span class="place" data-hit-place data-where={place} title={`${place === "tool" ? "Inside work in" : "In"} ${where.kind.toLowerCase()} ${where.parent ? `${where.parent} › ` : ""}${roomName}`}>
+      <span class="lead">in</span>
+      <Icon name={placeIcon} size={14} label={place === "tool" ? "Inside work" : where.kind} />
       {#if where.parent}<span class="parent">{where.parent}</span><span class="crumb" aria-hidden="true">›</span>{/if}
       <span class="where">{where.name}</span>
       {#if where.archived}<span class="archived">(archived)</span>{/if}
     </span>
   {/if}
-  {#if reply}
-    <span class="reply" data-hit-what title="Reply in thread"><Icon name="thread" size={14} label="Reply in thread" /></span>
-  {:else if kind}<span class="what" data-hit-what>{kind}</span>{/if}
+  {#if kind}<span class="what" data-hit-what>{kind}</span>{/if}
 </span>
 
 <style>
@@ -79,8 +92,7 @@
     flex: none;
     color: var(--text-metadata);
   }
-  .reply {
-    display: inline-flex;
+  .lead {
     flex: none;
     color: var(--text-metadata);
   }

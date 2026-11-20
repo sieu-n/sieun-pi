@@ -14,15 +14,27 @@
     /** Shows an x button that calls this. */
     onremove?: () => void;
     removeLabel?: string;
+    /** The chip opens a dropdown, such as a search filter's: it reads as a menu button with a chevron instead of a toggle. */
+    popup?: { kind: "menu" | "dialog"; open: boolean };
+    /** The chip's box, which a dropdown anchors to. */
+    element?: HTMLSpanElement | undefined;
     children?: Snippet;
   };
-  let { label, prefix, icon, leading, selected = false, size = "md", onclick, onremove, removeLabel, children }: Props = $props();
+  let { label, prefix, icon, leading, selected = false, size = "md", onclick, onremove, removeLabel, popup, element = $bindable(), children }: Props = $props();
 </script>
 
-<span class="chip {size}" class:selected class:clickable={!!onclick}>
+<span class="chip {size}" class:selected class:clickable={!!onclick} bind:this={element}>
   {#if onclick}
-    <button type="button" class="hit" {onclick} aria-pressed={selected}>
+    <button
+      type="button"
+      class="hit"
+      {onclick}
+      aria-pressed={popup ? undefined : selected}
+      aria-haspopup={popup?.kind}
+      aria-expanded={popup ? popup.open : undefined}
+    >
       {@render body()}
+      {#if popup}<Icon name="chevron-down" size={14} />{/if}
     </button>
   {:else}
     {@render body()}
@@ -74,6 +86,14 @@
     color: inherit;
     font: inherit;
   }
+  /* The ring goes around the whole chip, so a chip with an x reads as one control under the keyboard. */
+  .hit:focus-visible {
+    outline: none;
+  }
+  :global(html[data-keyboard-navigation]) .chip:has(.hit:focus-visible) {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 2px;
+  }
   .prefix {
     color: var(--text-subtle);
   }
@@ -96,6 +116,10 @@
     border-radius: 50%;
     background: transparent;
     color: var(--text-subtle);
+  }
+  .selected .remove {
+    color: inherit;
+    opacity: 0.75;
   }
   .remove:hover {
     background: var(--affordance-ghost-hover);

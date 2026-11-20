@@ -53,11 +53,13 @@
     {...rest}
   />
   {#if clearable && value}
+    <!-- Out of the tab order, as a native search field's clear button is, so Tab goes from the text to the controls after it. -->
     <IconButton
       icon="close"
       label="Clear"
       size={variant === "palette" ? "sm" : "xs"}
       tip={false}
+      tabindex={-1}
       onclick={() => {
         value = "";
         oninput?.("");

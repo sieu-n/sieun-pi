@@ -39,7 +39,7 @@ test("Cmd K message rows show the author, an AGENT badge, the place and what kin
     await expect(row.locator("[data-hit-author]")).toHaveText(hit.author.kind === "owner" ? "You" : hit.author.name);
     await expect(row.locator("[data-hit-place]")).toContainText(hit.conversation.name);
     if (hit.author.kind === "agent") await expect(row.getByText("AGENT", { exact: true })).toBeVisible();
-    if (hit.role === "tool") await expect(row.locator("[data-hit-what]")).toHaveText(`in tool output · ${hit.tool}`);
+    if (hit.role === "tool") await expect(row.locator("[data-hit-what]")).toHaveText(`tool output · ${hit.tool}`);
   }
   // A job reads under its parent agent.
   const job = hits.find(hit => hit.conversation.id.includes(":"))!;
@@ -75,29 +75,32 @@ test("Enter on the query opens the full results page with the exact count and on
   expect(kinds.slice(kinds.indexOf("tool")).every(kind => kind === "tool")).toBe(true);
 });
 
-test("filter chips narrow the results through the address, and back undoes them", async ({ page }) => {
+test("the same filter chips as Cmd K narrow the results through the address, and back undoes them", async ({ page }) => {
   await page.goto("/#/search?q=relay");
   const all = await search(page, { q: "relay" });
   await expect(count(page)).toHaveText(results(all.total));
-  await filters(page).getByRole("button", { name: "You only" }).click();
+  await filters(page).getByRole("button", { name: "From", exact: true }).click();
+  await page.getByRole("dialog", { name: "From" }).getByRole("option", { name: /You/ }).click();
   await expect(page).toHaveURL(/from=owner/);
+  await page.keyboard.press("Escape");
   const mine = await search(page, { q: "relay", from: "owner" });
   await expect(count(page)).toHaveText(results(mine.total));
   expect(mine.total).toBeLessThan(all.total);
   await expect(cards(page)).toHaveCount(mine.total);
   for (const name of await cards(page).locator("[data-hit-author]").allInnerTexts()) expect(name).toBe("You");
 
-  await filters(page).getByRole("button", { name: "You only" }).click();
+  await filters(page).getByRole("button", { name: "Remove the From filter" }).click();
   await expect(page).not.toHaveURL(/from=/);
-  await filters(page).getByRole("button", { name: "Messages", exact: true }).click();
-  await page.getByRole("menuitemradio", { name: /Tool output only/ }).click();
+  await filters(page).getByRole("button", { name: "Where" }).click();
+  await page.getByRole("menuitemcheckbox", { name: /Inside work/ }).click();
   await expect(page).toHaveURL(/where=tool/);
+  await page.keyboard.press("Escape");
   const tools = await search(page, { q: "relay", where: "tool" });
   expect(tools.total).toBeGreaterThan(0);
   await expect(count(page)).toHaveText(results(tools.total));
-  await expect(filters(page).getByRole("button", { name: "Tool output only" })).toBeVisible();
-  await expect(cards(page)).toHaveCount(tools.total);
-  expect(tools.hits.every(hit => (hit as { where?: string }).where === "tool")).toBe(true);
+  await expect(filters(page).locator("[data-chip=where]")).toHaveText("Inside work");
+  await expect(cards(page).first()).toBeVisible();
+  for (const where of await cards(page).locator("[data-hit-place]").evaluateAll(list => list.map(place => place.getAttribute("data-where")))) expect(where).toBe("tool");
 
   await page.goBack();
   await expect(page).not.toHaveURL(/where=/);
@@ -119,7 +122,7 @@ test("a card shows the messages around it and opens its message in the conversat
 
   await page.goto("/#/search?q=relay&in=ch_cutover");
   // A reply lives in its thread, not in the channel's timeline, so the card opened is a top-level post.
-  const post = (await search(page, { q: "relay", in: "ch_cutover" })).hits.find(hit => !(hit as { threadRoot?: string }).threadRoot)!;
+  const post = (await search(page, { q: "relay", in: "ch_cutover" })).hits.find(hit => (hit as { where?: string }).where === "root")!;
   await page.locator(`[data-result-card][data-hit-id="${post.id}"] [data-result-open]`).click();
   await expect(page).toHaveURL(new RegExp(`#/c/${post.conversation.id}\\?m=${post.messageId}$`));
   const message = page.locator(`[data-message-id="${post.messageId}"]`);

@@ -4,6 +4,7 @@
  * (~/work/p101-search-rtt/before-200ms.json). The pool is the server's feed of recent messages (GET /api/search/recent) and the hits of
  * the answer on screen. The server's answer replaces these rows when it comes, so the final results are the server's.
  */
+import { passes, type Filters } from "./filters.ts";
 import type { Hit } from "./hit-view.ts";
 
 const fold = (text: string): string => text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
@@ -61,17 +62,18 @@ function score(entry: LocalEntry, terms: readonly string[]): number {
   return total;
 }
 
-export type LocalQuery = { q: string; in?: string | undefined; sort?: "relevance" | "recent" | undefined; limit: number };
+export type LocalQuery = { q: string; filters: Filters; sort?: "relevance" | "recent" | undefined; limit: number };
 
 /**
  * The hits to show before the server answers. The hits already on screen that still match stay first in their order, since the server
  * ranked them, and the feed's matches follow by score, then newest first; `recent` sorts all of them by time. Each hit's snippet is cut
- * and marked here for the new words.
+ * and marked here for the new words. Only hits the page can tell pass the filters show (filters.ts `passes`), so no row shows that the
+ * filters leave out, and with an agent in From no row shows until the server answers.
  */
 export function localHits(onScreen: readonly Hit[], feed: readonly LocalEntry[], query: LocalQuery): Hit[] {
   const terms = queryWords(query.q);
   if (!terms.length) return [];
-  const inScope = (entry: LocalEntry) => !query.in || entry.hit.conversation.id === query.in;
+  const inScope = (entry: LocalEntry) => passes(entry.hit, query.filters);
   const kept = onScreen.map(entryOf).filter(entry => inScope(entry) && score(entry, terms) > 0);
   const seen = new Set(kept.map(entry => entry.hit.id));
   const found = feed.flatMap(entry => {

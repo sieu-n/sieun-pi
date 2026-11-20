@@ -5,7 +5,6 @@
   import type { SearchScope } from "$lib/shell/search.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import Button from "$lib/ui/Button.svelte";
-  import Chip from "$lib/ui/Chip.svelte";
   import Dialog from "$lib/ui/Dialog.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import LoadingText from "$lib/ui/LoadingText.svelte";
@@ -13,6 +12,8 @@
   import NavItem from "$lib/ui/NavItem.svelte";
   import SearchField from "$lib/ui/SearchField.svelte";
   import { composing, isMac } from "$lib/ui/keyboard";
+  import FilterBar from "./FilterBar.svelte";
+  import { filterQuery, hasFilters, NO_FILTERS, withoutLast, type Filters } from "./filters";
   import Highlight from "./Highlight.svelte";
   import HitAvatar from "./HitAvatar.svelte";
   import HitMeta from "./HitMeta.svelte";
@@ -21,7 +22,7 @@
   import { pieces } from "./match";
   import { recentMessages } from "./recent";
   import { resultParams } from "./results-model";
-  import { absorb, chipLabel, filters, prompt, withOperator, withoutPrompt, type NamedOperator, type Operator } from "./operators";
+  import { absorb, prompt, searchText, withOperator, withoutPrompt, type NamedOperator } from "./operators";
   import { answered, buildGroups, messageGroupLabel, SEE_ALL, type Action, type Icon, type Messages, type Person, type Row, type Sort } from "./search-model";
 
   type Props = { open: boolean; scope: SearchScope; query: string; onclose: () => void };
@@ -31,8 +32,8 @@
   const icons: Record<Icon, string> = { chat: "chat", channel: "hash", calendar: "clock", search: "search", more: "more" };
 
   let text = $state("");
-  let operators = $state<Operator[]>([]);
-  let scopeId = $state<string | undefined>();
+  /** The one filter state: the chips under the field set it, and so do typed operators such as `from:vent` (operators.ts `absorb`). */
+  let filters = $state<Filters>(NO_FILTERS);
   let sort = $state<Sort>("relevance");
   let messages = $state<Messages>({ state: "idle" });
   let cursor = $state<string | undefined>();
@@ -50,8 +51,7 @@
     if (!open) return;
     text = query;
     now = new Date();
-    operators = [];
-    scopeId = scope.kind === "conversation" ? scope.id : undefined;
+    filters = scope.kind === "conversation" ? { ...NO_FILTERS, in: scope.id } : NO_FILTERS;
     sort = "relevance";
     messages = { state: "idle" };
     active = undefined;
@@ -70,7 +70,7 @@
 
   const owner = $derived(me.value?.owner);
   const people = $derived<Person[]>([
-    ...(owner ? [{ id: owner.id, name: owner.name, kind: "owner" as const, aliases: ["owner", "me", "you"] }] : []),
+    ...(owner ? [{ id: "owner", name: owner.name, kind: "owner" as const, aliases: ["owner", "me", "you"] }] : []),
     ...agents.list
       .filter(agent => !agent.archived)
       .map(agent => ({
@@ -81,30 +81,28 @@
         detail: agent.status === "working" ? "Agent · working now" : "Agent",
       })),
   ]);
-  const scopeConversation = $derived(scopeId ? conversations.byId(scopeId) : undefined);
 
-  function resolveNamed(kind: NamedOperator["kind"], value: string): NamedOperator | undefined {
+  function resolveNamed(kind: NamedOperator["kind"], value: string): string | undefined {
     const needle = value.toLowerCase();
     if (kind === "from") {
-      if (needle === "owner" || needle === "me") return owner ? { kind, id: owner.id, label: owner.name } : undefined;
+      if (needle === "owner" || needle === "me" || needle === "agents") return needle === "agents" ? "agents" : "owner";
       const found = people.filter(person => person.id.toLowerCase() === needle || person.name.toLowerCase() === needle);
-      return found.length === 1 ? { kind, id: found[0]!.id, label: found[0]!.name } : undefined;
+      return found.length === 1 ? found[0]!.id : undefined;
     }
     const found = conversations.list.filter(c => c.id.toLowerCase() === needle || c.name.replace(/^#/, "").toLowerCase() === needle);
-    return found.length === 1 ? { kind, id: found[0]!.id, label: found[0]!.name.replace(/^#/, "") } : undefined;
+    return found.length === 1 ? found[0]!.id : undefined;
   }
 
   function setText(value: string) {
-    const next = absorb(value, operators, resolveNamed);
+    const next = absorb(value, filters, resolveNamed);
     text = next.text;
-    operators = next.operators;
+    filters = next.filters;
   }
 
+  /** The server matches words, so a search asks only once some are typed; the filters narrow them. */
   const request = $derived.by(() => {
-    const base = filters(text, operators);
-    const scoped = scopeId ? { ...base, in: scopeId } : base;
-    const asks = !!scoped.q || operators.length > 0;
-    return asks && !prompt(text)?.kind ? { ...scoped, sort: scopeId ? sort : ("relevance" as Sort) } : undefined;
+    const q = searchText(text);
+    return q && !prompt(text)?.kind ? { q, ...filterQuery(filters), sort } : undefined;
   });
   const requestKey = $derived(request ? JSON.stringify(request) : "");
 
@@ -127,8 +125,7 @@
     }
     // The page's own matches show at this keystroke: the hits on screen that still match, then the feed's. The server's answer replaces them.
     const shown = untrack(() => (messages.state === "ready" || messages.state === "loading" ? messages.hits : []));
-    const plain = !params.from && !params.after && !params.before;
-    messages = { state: "loading", hits: plain ? localHits(shown, recentMessages.feed.entries(), { q: params.q, in: params.in, sort: params.sort, limit: PAGE }) : [] };
+    messages = { state: "loading", hits: localHits(shown, recentMessages.feed.entries(), { q: params.q, filters, sort: params.sort, limit: PAGE }) };
     // A newer keystroke or a close aborts this one's request, and an aborted request shows no error. The request leaves at the keystroke:
     // a wait before it added 150 ms to every answer, and the server answers a search in about 20 ms (11-19, 5 GETs of q=duty).
     const controller = new AbortController();
@@ -168,8 +165,7 @@
   const groups = $derived(
     buildGroups({
       text,
-      operators,
-      scope: scopeId,
+      filters,
       current: router.conversationId ?? undefined,
       sort,
       conversations: conversations.list,
@@ -179,15 +175,15 @@
     }),
   );
   const rows = $derived(groups.flatMap(group => group.rows));
-  const messageLabel = $derived(messageGroupLabel(sort, !!scopeId));
+  const messageLabel = $derived(messageGroupLabel(sort, !!filters.in));
   /** Shift Cmd 1 to 9 pick the conversations and messages, past "See all results" and the search-here row. */
   const numbered = $derived(rows.filter(row => row.key !== SEE_ALL && row.action.type !== "scope"));
-  const hasQuery = $derived(!!text.trim() || operators.length > 0);
+  const hasQuery = $derived(!!text.trim() || hasFilters(filters));
 
   $effect(() => {
     const keys = rows.map(row => row.key);
     if (active && keys.includes(active)) return;
-    active = hasQuery || scopeId ? keys[0] : undefined;
+    active = hasQuery ? keys[0] : undefined;
   });
 
   // The conversations and message hits listed are read ahead, so the one the owner picks opens from the page's cache.
@@ -215,16 +211,17 @@
     switch (action.type) {
       case "open":
         close();
-        router.openConversation(action.conversation, action.messageId ? { messageId: action.messageId } : {});
+        if (action.link) router.navigate(action.link);
+        else router.openConversation(action.conversation, action.messageId ? { messageId: action.messageId } : {});
         return;
       case "scope":
-        scopeId = action.conversation;
+        filters = { ...filters, in: action.conversation };
         text = "";
         focusInput();
         return;
       case "operator": {
         const open = prompt(text);
-        operators = withOperator(operators, action.operator);
+        filters = withOperator(filters, action.operator);
         text = open ? withoutPrompt(text, open) : text;
         focusInput();
         return;
@@ -233,18 +230,11 @@
         void loadMore();
         focusInput();
         return;
-      case "page": {
-        const params = request ?? filters(text, operators);
+      case "page":
         close();
-        router.navigate(hrefFor("search", [], resultParams({ ...params, ...(scopeId ? { in: scopeId } : {}), sort: scopeId ? sort : "relevance" })));
+        router.navigate(hrefFor("search", [], resultParams({ q: searchText(text), sort, filters })));
         return;
-      }
     }
-  }
-
-  function removeOperator(operator: Operator) {
-    operators = operators.filter(item => item !== operator);
-    focusInput();
   }
 
   function onkeydown(e: KeyboardEvent) {
@@ -277,18 +267,13 @@
         e.preventDefault();
         run(row.action);
       }
-    } else if (e.key === "Backspace" && input && input.selectionStart === 0 && input.selectionEnd === 0) {
-      if (operators.length) {
-        e.preventDefault();
-        operators = operators.slice(0, -1);
-      } else if (scopeId && !text) {
-        e.preventDefault();
-        scopeId = undefined;
-      }
+    } else if (e.key === "Backspace" && input && input.selectionStart === 0 && input.selectionEnd === 0 && hasFilters(filters)) {
+      e.preventDefault();
+      filters = withoutLast(filters);
     }
   }
 
-  const label = $derived(scopeId ? "Search this conversation" : "Search");
+  const label = $derived(filters.in ? "Search this conversation" : "Search");
   const sortItems = $derived([
     { type: "radio" as const, id: "relevance", label: "Most relevant", group: "sort", checked: sort === "relevance", onselect: () => (sort = "relevance") },
     { type: "radio" as const, id: "recent", label: "Most recent", group: "sort", checked: sort === "recent", onselect: () => (sort = "recent") },
@@ -298,20 +283,6 @@
 
 <Dialog {open} onclose={close} presentation="search" {label}>
   <div class="palette" data-search-palette>
-    {#if scopeId}
-      <div class="scope-row">
-        <Chip
-          label={scopeConversation?.name ?? "This conversation"}
-          onremove={() => {
-            scopeId = undefined;
-            focusInput();
-          }}
-          removeLabel={`Remove ${scopeConversation?.name ?? "this conversation"} search scope`}
-        />
-        <IconButton bind:element={sortButton} icon="sort" label="Sort messages" size="sm" pressed={sortOpen} onclick={() => (sortOpen = !sortOpen)} />
-        <Menu bind:open={sortOpen} anchor={sortButton} items={sortItems} placement="bottom-end" label="Sort messages" />
-      </div>
-    {/if}
     <div class="field">
       <SearchField
         variant="palette"
@@ -327,15 +298,15 @@
         aria-activedescendant={active ? optionId(active) : undefined}
         maxlength={256}
         data-autofocus
-      >
-        {#snippet prefix()}
-          {#if operators.length}
-            {#each operators as operator (operator.kind)}
-              <Chip label={chipLabel(operator)} onremove={() => removeOperator(operator)} removeLabel={`Remove ${chipLabel(operator)}`} />
-            {/each}
-          {/if}
+      />
+    </div>
+    <div class="filters">
+      <FilterBar {filters} {now} onchange={next => (filters = next)}>
+        {#snippet trailing()}
+          <IconButton bind:element={sortButton} icon="sort" label="Sort messages" size="sm" pressed={sortOpen} onclick={() => (sortOpen = !sortOpen)} />
+          <Menu bind:open={sortOpen} anchor={sortButton} items={sortItems} placement="bottom-end" label="Sort messages" />
         {/snippet}
-      </SearchField>
+      </FilterBar>
     </div>
     <div class="scroll" bind:this={list}>
       <div id={listId} role="listbox" aria-label="Search results" class="results">
@@ -413,10 +384,10 @@
 
 {#snippet hitRow(row: Row, hit: NonNullable<Row["hit"]>)}
   {#snippet lead()}<HitAvatar {hit} size={20} />{/snippet}
-  {#snippet meta()}<span class="who"><HitMeta {hit} showPlace={false} showWhat={false} /></span>{/snippet}
+  {#snippet meta()}<span class="who"><HitMeta {hit} showPlace={false} showWhat={false} showThread={false} /></span>{/snippet}
   {#snippet text()}<span class="snippet" class:tool={hit.role === "tool"}><Highlight pieces={row.snippet ?? []} /></span>{/snippet}
   {#snippet age()}
-    <span class="place-cell"><HitMeta {hit} showAuthor={false} showPlace={!scopeId} /></span>
+    <span class="place-cell"><HitMeta {hit} showAuthor={false} showPlace={!filters.in} /></span>
     <time class="age" datetime={new Date(hit.at).toISOString()} title={new Date(hit.at).toLocaleString()}>{shortAge(hit.at, now)}</time>
   {/snippet}
   <NavItem
@@ -446,15 +417,9 @@
     min-height: 0;
     max-height: calc(100vh - 128px - 48px);
   }
-  .field {
+  .filters {
+    padding: 8px 8px;
     border-bottom: 1px solid var(--border-standard);
-  }
-  .scope-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 8px 0 0;
   }
   .scroll {
     position: relative;

@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { conversationHref } from "$lib/router.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import type { ContextLine, HitContext } from "./context";
   import Highlight from "./Highlight.svelte";
@@ -21,14 +20,14 @@
   let { hit, now, focused, expanded, context, ontoggle, onfocus }: Props = $props();
 
   const pieces = $derived(snippetPieces(expanded && hit.text ? hit.text : hit.snippet));
-  const href = $derived(conversationHref(hit.conversation.id, { messageId: hit.messageId }));
+  const href = $derived(hit.link);
   const showContext = $derived(expanded || focused);
   const lines = $derived(typeof context === "object" ? context : undefined);
   const where = $derived(location(hit.conversation));
 </script>
 
 <article class="card" class:focused class:expanded data-result-card data-hit-id={hit.id} data-role={hit.role ?? ""} data-kind={hit.kind} aria-current={focused || undefined}>
-  {#if hit.threadRoot}
+  {#if hit.thread}
     <p class="thread" data-thread-label>
       <Icon name="thread" size={14} />
       <span>Thread in</span>

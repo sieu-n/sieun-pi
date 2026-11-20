@@ -20,7 +20,12 @@ export type Hit = {
   role?: "owner" | "agent" | "tool" | "system" | undefined;
   tool?: string | undefined;
   inCall?: boolean | undefined;
-  threadRoot?: string | undefined;
+  /** Where the hit sits: a top-level post or root-chat message, a thread reply, or inside an agent's work (filters.ts `Where`). */
+  where: "root" | "thread" | "tool";
+  /** A reply's thread: its root post and that post's first words. */
+  thread?: { root: string; title: string } | undefined;
+  /** The hash route that opens the hit, built once by the server: the room's thread pane at a reply, a job at its entry. */
+  link: string;
   snippet: string;
   text?: string | undefined;
 };
@@ -71,11 +76,11 @@ export function author(hit: Hit): Author {
   return { name: hit.author.name, badge: "AGENT", avatar: "agent", seed: hit.author.id };
 }
 
-/** "in tool output · bash", "in a tool call · ipython", "reply in thread", or nothing for a plain message. */
+/** "tool output · bash", "tool call · ipython", "reply in thread", or nothing for a plain message. */
 export function what(hit: Hit): string | undefined {
   const role = hit.role ?? (hit.kind === "tool" ? "tool" : undefined);
-  if (role === "tool") return `${hit.inCall ? "in a tool call" : "in tool output"}${hit.tool ? ` · ${hit.tool}` : ""}`;
-  if (hit.threadRoot) return "reply in thread";
+  if (role === "tool") return `${hit.inCall ? "tool call" : "tool output"}${hit.tool ? ` · ${hit.tool}` : ""}`;
+  if (hit.where === "thread") return "reply in thread";
   return undefined;
 }
 

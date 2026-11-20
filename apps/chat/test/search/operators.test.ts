@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { absorb, withoutPrompt, chipLabel, datePresets, filters, isDate, prompt, searchText, withOperator } from "../../web/src/pages/search/operators.ts";
+import { NO_FILTERS } from "../../web/src/pages/search/filters.ts";
+import { absorb, withoutPrompt, datePresets, isDate, prompt, searchText, withOperator } from "../../web/src/pages/search/operators.ts";
 import { matchName, pieces, snippetPieces } from "../../web/src/pages/search/match.ts";
 
 test("prompt finds the operator being typed at the end only", () => {
@@ -10,29 +11,25 @@ test("prompt finds the operator being typed at the end only", () => {
   assert.equal(prompt("from:ann deploy"), undefined);
 });
 
-const resolve = (kind: "from" | "in", value: string) =>
-  value.toLowerCase() === "owner" ? { kind, id: "owner", label: "Sieun" } : undefined;
+const resolve = (_kind: "from" | "in", value: string) => (value.toLowerCase() === "owner" ? "owner" : undefined);
 
-test("a completed valid date or known name becomes a chip, and the rest stays as text", () => {
-  assert.deepEqual(absorb("canary after:2026-10-01 ", [], resolve), { text: "canary ", operators: [{ kind: "after", date: "2026-10-01" }] });
-  assert.deepEqual(absorb("after:2026-02-30 x", [], resolve), { text: "after:2026-02-30 x", operators: [] });
-  assert.deepEqual(absorb("from:@owner relay", [], resolve), { text: "relay", operators: [{ kind: "from", id: "owner", label: "Sieun" }] });
-  assert.deepEqual(absorb("from:nobody relay", [], resolve).operators, []);
-  assert.equal(absorb("relay from:owner", [], resolve).text, "relay from:owner");
+test("a completed valid date or known name lands in the filters, and the rest stays as text", () => {
+  assert.deepEqual(absorb("canary after:2026-10-01 ", NO_FILTERS, resolve), { text: "canary ", filters: { ...NO_FILTERS, after: "2026-10-01" } });
+  assert.deepEqual(absorb("after:2026-02-30 x", NO_FILTERS, resolve), { text: "after:2026-02-30 x", filters: NO_FILTERS });
+  assert.deepEqual(absorb("from:@owner relay", NO_FILTERS, resolve), { text: "relay", filters: { ...NO_FILTERS, from: ["owner"] } });
+  assert.deepEqual(absorb("from:nobody relay", NO_FILTERS, resolve).filters, NO_FILTERS);
+  assert.equal(absorb("relay from:owner", NO_FILTERS, resolve).text, "relay from:owner");
   assert.equal(withoutPrompt("relay from:ow", { kind: "from", needle: "ow", start: 6 }), "relay ");
   assert.equal(isDate("2026-02-28"), true);
   assert.equal(isDate("yesterday"), false);
 });
 
-test("a later operator of one kind replaces the earlier one", () => {
-  const ops = withOperator([{ kind: "from", id: "a", label: "Ann" }, { kind: "after", date: "2026-01-01" }], { kind: "from", id: "b", label: "Bo" });
-  assert.deepEqual(ops.map(chipLabel), ["after:2026-01-01", "from:@Bo"]);
-});
-
-test("filters send ids and dates, and leave an unfinished prompt out of q", () => {
-  assert.deepEqual(filters("rate limit from:a", [{ kind: "in", id: "c1", label: "general" }, { kind: "before", date: "2026-10-20" }]), {
-    q: "rate limit", in: "c1", before: "2026-10-20",
-  });
+test("a typed from: adds a person to the From chip, and in:, after: and before: replace their value", () => {
+  let filters = withOperator({ ...NO_FILTERS, from: ["a"], in: "c1" }, { kind: "from", id: "b" });
+  filters = withOperator(filters, { kind: "from", id: "a" });
+  filters = withOperator(filters, { kind: "in", id: "c2" });
+  assert.deepEqual(filters, { from: ["a", "b"], where: [], in: "c2" });
+  assert.equal(searchText("rate limit from:a"), "rate limit");
   assert.equal(searchText("  two   words "), "two words");
 });
 
