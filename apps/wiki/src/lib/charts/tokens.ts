@@ -16,7 +16,7 @@ export interface ChartTokens {
 	positive: string;
 	mono: string;
 	sans: string;
-	/** Categorical series hues — dataviz-validated per mode, fixed order. */
+	/** Categorical series hues for the mode, in a fixed order. */
 	palette: string[];
 	/** Neutral fold-in color for an "Other" series. */
 	other: string;
@@ -32,8 +32,8 @@ export interface ChartTokens {
 	credit: string;
 }
 
-/** Validated with the dataviz palette validator (ALL PASS, 2026-08-06). The cool family runs first and the
- *  warm amber is the tail slot, so a 2-series chart never jumps from ocean to mustard. */
+/** The cool family runs first and the warm amber is the tail slot, so a 2-series chart never jumps from ocean
+ *  to mustard. */
 const PALETTE_LIGHT = ['#0077C0', '#0F8A6D', '#7C5CE0', '#C4386B', '#B45309'];
 const PALETTE_DARK = ['#1E8FD5', '#189A82', '#8F6FF0', '#DD5590', '#C58208'];
 
