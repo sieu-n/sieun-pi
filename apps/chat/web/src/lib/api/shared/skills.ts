@@ -38,7 +38,8 @@ export type SkillRow = {
   duplicateOf: string[];
   flags: SkillFlag[];
   useful: { verdict: SkillVerdict | null; reason: string; mergeInto: string | null };
-  loadedBy: { agents: string[]; sessions: number | null; how: string[] };
+  /** The agents that load it, the sessions that read or called it in the last 7 and 30 days, and how it gets loaded. */
+  loadedBy: { agents: string[]; agentsCount: number; sessions7d: number | null; sessions30d: number | null; how: string[] };
   uses7d: number | null;
   uses30d: number | null;
   uses: SkillUse[];
@@ -106,7 +107,10 @@ function parseRow(raw: Json): SkillRow | null {
     duplicateOf: strings(raw.duplicateOf),
     flags: objects(raw.flags).flatMap(flag => (str(flag.kind) ? [{ kind: String(flag.kind), detail: str(flag.detail) ?? "" }] : [])),
     useful: { verdict: isVerdict(useful.verdict) ? useful.verdict : null, reason: str(useful.reason) ?? "", mergeInto: str(useful.mergeInto) },
-    loadedBy: { agents: strings(loadedBy.agents), sessions: num(loadedBy.sessions7d) ?? num(loadedBy.sessions30d) ?? num(loadedBy.sessions), how: strings(loadedBy.how) },
+    loadedBy: {
+      agents: strings(loadedBy.agents), agentsCount: num(loadedBy.agentsCount) ?? strings(loadedBy.agents).length, how: strings(loadedBy.how),
+      sessions7d: num(loadedBy.sessions7d) ?? num(raw.sessions7d), sessions30d: num(loadedBy.sessions30d) ?? num(raw.sessions30d),
+    },
     uses7d: num(raw.uses7d),
     uses30d: num(raw.uses30d),
     uses: objects(raw.uses).flatMap(use => parseUse(use) ?? []).sort((a, b) => b.at.localeCompare(a.at)),

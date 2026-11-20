@@ -2,8 +2,8 @@
   import { api } from "$lib/api";
   import type { SkillsReport } from "$lib/api/shared/skills";
   import { openView } from "$lib/shell/viewer.svelte";
-  import { Badge, Button, CardGroup, EmptyState, IconButton, LoadingText, NavItem, Page, PanelHeader, SearchField, Tabs } from "$lib/ui";
-  import { FILTERS, VERDICT_TONE, agoText, flagBadges, grouped, isFlagged, needsAction, rowDetail, type Filter } from "./model";
+  import { Badge, Button, CardGroup, Disclosure, EmptyState, IconButton, LoadingText, Markdown, NavItem, Page, PanelHeader, SearchField, Tabs } from "$lib/ui";
+  import { FILTERS, VERDICT_TONE, agoText, definitionMarkdown, flagBadges, grouped, isFlagged, needsAction, rowDetail, type Filter } from "./model";
 
   /**
    * Skills: every skill on the boxes from the skills inventory (server/skills.ts), grouped by kind, with its path, box, loaders, last use
@@ -15,6 +15,7 @@
   let filter = $state<Filter>("all");
   let text = $state("");
   let now = $state(Date.now());
+  let definitionOpen = $state(false);
 
   /** Read the inventory, which starts a scan, then wait for that scan and show the inventory it wrote. */
   async function load(): Promise<void> {
@@ -40,7 +41,7 @@
   const toAct = $derived(rows.filter(needsAction).length);
   const generated = $derived(report?.inventory?.generatedAt ? Date.parse(report.inventory.generatedAt) : null);
   const scanning = $derived(report?.scan.running ?? false);
-  const tabs = $derived(FILTERS.map(f => ({ id: f.id, label: f.label, badge: f.id === "flagged" ? flagged : f.id === "act" ? toAct : rows.length })));
+  const tabs = $derived(FILTERS.map(f => ({ id: f.id, label: f.label, badge: String(f.id === "flagged" ? flagged : f.id === "act" ? toAct : rows.length) })));
   const shown = $derived(groups.reduce((sum, entry) => sum + entry.rows.length, 0));
 </script>
 
@@ -67,7 +68,9 @@
         <b>{rows.length} skills</b> on {boxes.length === 1 ? "1 box" : `${boxes.length} boxes`}. <b>{flagged} flagged</b> for duplication, drift or no use, and <b>{toAct} to merge or remove</b>.
         {#if generated !== null}Scanned {agoText(generated, now)}{scanning ? ", and a new scan runs now." : "."}{/if}
       </p>
-      {#if report.inventory.definition}<p class="definition">{report.inventory.definition}</p>{/if}
+      {#if report.inventory.definition}
+        <Disclosure title="What a useful skill is" bind:open={definitionOpen}><div class="definition"><Markdown text={definitionMarkdown(report.inventory.definition)} /></div></Disclosure>
+      {/if}
       {#each boxes.filter(b => !b.ok) as box (box.box)}<p class="notice" role="status">{box.box} did not scan: {box.error ?? "the scanner gave no reason"}</p>{/each}
       {#if report.scan.error}<p class="notice" role="status">The last scan failed: {report.scan.error}</p>{/if}
       {#if error}<p class="notice" role="status">The last read failed: {error}</p>{/if}
@@ -109,7 +112,7 @@
   .intro { display: flex; flex-direction: column; gap: 8px; max-width: 48rem; }
   .summary { margin: 0; color: var(--text-subtle); font: var(--text-body-lg); letter-spacing: var(--tracking-body-lg); }
   .summary b { color: var(--text-standard); font-weight: 500; }
-  .definition { margin: 0; color: var(--text-subtle); font: var(--text-body); }
+  .definition { color: var(--text-subtle); }
   .notice { margin: 0; color: var(--text-danger); font: var(--text-body); }
   .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
   .search { flex: 1 1 16rem; max-width: 24rem; }

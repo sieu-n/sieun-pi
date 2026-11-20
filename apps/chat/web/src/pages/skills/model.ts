@@ -57,15 +57,16 @@ export const VERDICT_TONE: Readonly<Record<SkillVerdict, Tone>> = { keep: "succe
 
 /** The second line of a row: its path, then who loads it and its last use. */
 export function rowDetail(row: SkillRow, now: number): string {
-  const loaders = row.loadedBy.agents.length ? `loaded by ${listOf(row.loadedBy.agents, 3)}` : row.loadedBy.how.length ? `loaded through ${row.loadedBy.how.join(", ")}` : "";
+  const loaders = row.loadedBy.agents.length ? `loaded by ${listOf(row.loadedBy.agents, 3, row.loadedBy.agentsCount)}` : row.loadedBy.how.length ? `loaded through ${row.loadedBy.how.join(", ")}` : "";
   const last = row.uses[0];
   const used = last ? `last used ${agoText(Date.parse(last.at), now)}${last.agent ? ` by ${last.agent}` : ""}` : row.uses30d === 0 ? "no use in 30 days" : "";
   return [shortPath(row.path), loaders, used].filter(Boolean).join(" · ");
 }
 
-export function listOf(names: readonly string[], max: number): string {
-  if (names.length <= max) return names.join(", ");
-  return `${names.slice(0, max).join(", ")} and ${names.length - max} more`;
+/** Up to `max` names, then "and N more" for the rest of `total`, which may count names the list leaves out. */
+export function listOf(names: readonly string[], max: number, total = names.length): string {
+  const shown = names.slice(0, max);
+  return total > shown.length ? `${shown.join(", ")} and ${total - shown.length} more` : shown.join(", ");
 }
 
 /** A path with the home folder shown as ~. */
@@ -86,3 +87,6 @@ export function splitFrontmatter(text: string): { frontmatter: string | null; bo
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
   return match ? { frontmatter: match[1]!, body: text.slice(match[0].length) } : { frontmatter: null, body: text };
 }
+
+/** The scanner's one-paragraph definition with each numbered test on a line of its own, so it reads as a list. */
+export const definitionMarkdown = (text: string): string => text.replace(/\s+(\d+)\. (?=[A-Z])/g, "\n$1. ").replace(/^([^\n]*?)\n1\. /, "$1\n\n1. ");

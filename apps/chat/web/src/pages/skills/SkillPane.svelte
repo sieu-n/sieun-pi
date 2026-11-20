@@ -24,6 +24,14 @@
     void navigator.clipboard.writeText(path).then(() => toast.show("Path copied"), () => toast.error("Could not copy the path"));
   }
 
+  /** "4 sessions in 7 days and 12 in 30", from whichever windows the scanner counted. */
+  function sessionsText(skill: SkillRow): string {
+    const { sessions7d: week, sessions30d: month } = skill.loadedBy;
+    const noun = (n: number) => (n === 1 ? "session" : "sessions");
+    if (week !== null && month !== null) return `${week} ${noun(week)} in 7 days and ${month} in 30`;
+    return week !== null ? `${week} ${noun(week)} in 7 days` : `${month} ${noun(month ?? 0)} in 30 days`;
+  }
+
   const otherLabel = (other: SkillRow): string => `${other.name} (${other.kind} on ${other.box})`;
 </script>
 
@@ -66,7 +74,7 @@
       {/if}
       <dt>Loaded by</dt>
       <dd>
-        {row.loadedBy.agents.length ? listOf(row.loadedBy.agents, 8) : "No agent named"}{#if row.loadedBy.sessions !== null}, in {row.loadedBy.sessions} {row.loadedBy.sessions === 1 ? "session" : "sessions"} over 7 days{/if}{#if row.loadedBy.how.length}, through {row.loadedBy.how.join(", ")}{/if}
+        {row.loadedBy.agents.length ? listOf(row.loadedBy.agents, 20, row.loadedBy.agentsCount) : "No agent named"}{#if row.loadedBy.sessions7d !== null || row.loadedBy.sessions30d !== null}, used in {sessionsText(row)}{/if}{#if row.loadedBy.how.length}, through {row.loadedBy.how.join(", ")}{/if}
       </dd>
       {#if row.lastChange}
         <dt>Last change</dt>
