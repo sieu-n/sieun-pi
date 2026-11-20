@@ -29,6 +29,7 @@
    - A change to a variant he accepted goes into a new fork, because a job edited the Paper v5 watchlist in place on 2026-10-09 (c26).
    - A visible change to the board layout waits for his ok, because a job unfolded the goal requirements and targets on the board panel on 2026-10-09 (c33).
    - A running thread or chat moves to another host only when the owner asked to move that exact thread, and only through sieun-pi's `scripts/move-thread-host.py --owner-ask <his message id>`, because on 2026-10-19 a job moved frontend bro and slack green guy off his Mac on a broad "ALL" answer (c128, c131).
+   - Never move crawls or logged-in accounts onto our own server IPs as a workaround for a lapsed paid proxy without his explicit approval, and raise the lapse with him as a decision, because "do whatever it takes, grind" is not approval. After GeoNode lapsed on 11-09, Prospect feature bro jobs on 11-13 and 11-15 and then Crawler VP put logged-in Instagram readers and the census on the prod box's .244, .246 and .247 addresses, all 24 box accounts were suspended on 11-19, and no owner message approved it (c229).
 
    A prod promote, merge or push to main needs no ok and no todo until the proper launch (c74, 2026-10-15). Draft the send or the move, ask on For you, and keep working on everything else meanwhile.
 
