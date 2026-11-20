@@ -1,0 +1,183 @@
+{"ts":"2026-11-20T07:14:02.797Z","src":"chat","method":"list","host":"mac","ms":212,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:13.565Z","src":"chat","method":"list","ms":203,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:13.565Z","src":"chat","method":"get_state","target":"01a1f7b1-61c2-7768-80a7-6d5de9382047","ms":26,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:13.625Z","src":"chat","method":"get_state","target":"01a1e9ec-39f4-73c9-92ce-9982b912ae4b","ms":85,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:13.625Z","src":"chat","method":"get_state","target":"01a1f7b0-1bba-71ec-a31c-2ee8a2a857a0","ms":85,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:13.625Z","src":"chat","method":"get_state","target":"44a8eba6a60a","ms":86,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:13.773Z","src":"chat","method":"list","ms":116,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:13.920Z","src":"chat","method":"kill","target":"01a1f7b1-61c2-7768-80a7-6d5de9382047","ms":262,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:14.116Z","src":"chat","method":"list","ms":117,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:14.208Z","src":"chat","method":"kill","target":"01a1e9ec-39f4-73c9-92ce-9982b912ae4b","ms":541,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:14.216Z","src":"chat","method":"kill","target":"01a1f7b0-1bba-71ec-a31c-2ee8a2a857a0","ms":549,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:14.327Z","src":"chat","method":"list","ms":92,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:14.368Z","src":"chat","method":"send_message","target":"01a1ea4c-e436-71fa-ae34-bc9c68034778","ms":150,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:14.368Z","src":"chat","method":"send_message","target":"01a05c09-c392-75d5-975c-003a9b1b30d8","ms":2128,"outcome":"refused","error":"Unknown active session: 01a05c09-c392-75d5-975c-003a9b1b30d8"}
+{"ts":"2026-11-20T07:14:14.448Z","src":"chat","method":"list","ms":95,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:14.738Z","src":"chat","method":"kill","target":"44a8eba6a60a","ms":1071,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:15.122Z","src":"chat","method":"list","ms":284,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:15.286Z","src":"chat","method":"list","ms":144,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:15.707Z","src":"chat","method":"list","ms":77,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:18.023Z","src":"chat","method":"list","host":"mac","ms":223,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:21.151Z","src":"chat","method":"send_message","target":"230bbdbf-4d84-475f-95d2-63db2f90ca34","ms":1979,"outcome":"refused","error":"Unknown active session: 230bbdbf-4d84-475f-95d2-63db2f90ca34"}
+{"ts":"2026-11-20T07:14:21.261Z","src":"chat","method":"list","ms":110,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:23.293Z","src":"chat","method":"list","ms":88,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:23.362Z","src":"chat","method":"cron_list","ms":32,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:25.198Z","src":"chat","method":"list","ms":91,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:25.346Z","src":"chat","method":"list","ms":79,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:33.229Z","src":"chat","method":"list","host":"mac","ms":204,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:45.467Z","src":"chat","method":"send_message","target":"01a1e94d-0b29-73e8-96b0-de6470f059c9","ms":47,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:48.462Z","src":"chat","method":"list","host":"mac","ms":220,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:54.048Z","src":"chat","method":"cron_list","ms":94,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:55.523Z","src":"chat","method":"list","ms":99,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:55.690Z","src":"chat","method":"list","ms":102,"outcome":"ok"}
+{"ts":"2026-11-20T07:14:57.142Z","src":"chat","method":"send_message","target":"01a05c09-c392-75d5-975c-003a9b1b30d8","ms":1947,"outcome":"refused","error":"Unknown active session: 01a05c09-c392-75d5-975c-003a9b1b30d8"}
+{"ts":"2026-11-20T07:14:57.676Z","src":"chat","method":"list","ms":98,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:03.677Z","src":"chat","method":"list","host":"mac","ms":213,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:03.726Z","src":"chat","method":"send_message","target":"230bbdbf-4d84-475f-95d2-63db2f90ca34","ms":2446,"outcome":"refused","error":"Unknown active session: 230bbdbf-4d84-475f-95d2-63db2f90ca34"}
+{"ts":"2026-11-20T07:15:03.831Z","src":"chat","method":"list","ms":96,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:05.728Z","src":"chat","method":"list","ms":108,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:06.936Z","src":"chat","method":"list","ms":103,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:07.697Z","src":"chat","method":"list","ms":99,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:07.849Z","src":"chat","method":"list","ms":94,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:09.026Z","src":"chat","method":"list","ms":98,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:12.691Z","src":"chat","method":"get_state","target":"01a1f478-5e03-7199-ab24-3016f0cd0f49","ms":118,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:12.691Z","src":"chat","method":"get_state","target":"01a1f57e-7277-75ec-b319-4ac0b323289d","ms":118,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:12.691Z","src":"chat","method":"get_state","target":"01a1f6e2-8cf6-73f8-ba16-9a4ef314a720","ms":118,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:12.691Z","src":"chat","method":"get_state","target":"01a1f747-4262-74b0-a975-59107ca7c8d8","ms":118,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:12.691Z","src":"chat","method":"get_state","target":"01a1f747-77ee-7407-8e9b-c41921002c65","ms":118,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:12.691Z","src":"chat","method":"get_state","target":"01a1f792-f9d9-74ee-a890-550fbd6d37ea","ms":118,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:12.691Z","src":"chat","method":"get_state","target":"01a1f7b3-e15b-776b-bccc-e97d1fec267f","ms":118,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:12.691Z","src":"chat","method":"get_state","target":"01a1f7b4-36ba-77fc-949e-617d2ec18e42","ms":118,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:12.691Z","src":"chat","method":"get_state","target":"01a1f7ba-0560-75db-9631-41c8c449e15d","ms":116,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:12.691Z","src":"chat","method":"get_state","target":"01a1f7ba-10dd-728a-9593-5a292b9529c0","ms":116,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:12.691Z","src":"chat","method":"get_state","target":"84e700a38b78","ms":119,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:13.065Z","src":"chat","method":"kill","target":"01a1f478-5e03-7199-ab24-3016f0cd0f49","ms":277,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:13.065Z","src":"chat","method":"kill","target":"01a1f747-77ee-7407-8e9b-c41921002c65","ms":276,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:13.129Z","src":"chat","method":"kill","target":"01a1f7b4-36ba-77fc-949e-617d2ec18e42","ms":340,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:13.169Z","src":"chat","method":"kill","target":"01a1f6e2-8cf6-73f8-ba16-9a4ef314a720","ms":381,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:13.188Z","src":"chat","method":"kill","target":"01a1f7ba-10dd-728a-9593-5a292b9529c0","ms":398,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:13.188Z","src":"chat","method":"kill","target":"01a1f7ba-0560-75db-9631-41c8c449e15d","ms":398,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:13.322Z","src":"chat","method":"list","ms":92,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:13.322Z","src":"chat","method":"kill","target":"01a1f57e-7277-75ec-b319-4ac0b323289d","ms":533,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:13.374Z","src":"chat","method":"kill","target":"01a1f747-4262-74b0-a975-59107ca7c8d8","ms":585,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:13.488Z","src":"chat","method":"list","ms":144,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:13.488Z","src":"chat","method":"kill","target":"01a1f7b3-e15b-776b-bccc-e97d1fec267f","ms":699,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:13.613Z","src":"chat","method":"kill","target":"01a1f792-f9d9-74ee-a890-550fbd6d37ea","ms":824,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:13.620Z","src":"chat","method":"list","ms":122,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:13.927Z","src":"chat","method":"list","ms":176,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:14.084Z","src":"chat","method":"list","ms":134,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:14.435Z","src":"chat","method":"kill","target":"84e700a38b78","ms":1645,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:14.542Z","src":"chat","method":"list","ms":88,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:14.701Z","src":"chat","method":"list","ms":82,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:18.881Z","src":"chat","method":"list","host":"mac","ms":202,"outcome":"ok"}
+{"ts": "2026-11-20T07:15:21.877Z", "src": "kernel", "method": "agent_observe.list", "ms": 1431, "outcome": "ok"}
+{"ts": "2026-11-20T07:15:24.606Z", "src": "kernel", "method": "agent_message.send", "target": "CI and RepoOps", "ms": 1437, "outcome": "ok"}
+{"ts":"2026-11-20T07:15:24.725Z","src":"chat","method":"cron_list","ms":156,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:24.777Z","src":"chat","method":"get_queue","target":"a9cc8148d776","ms":51,"outcome":"ok"}
+{"ts": "2026-11-20T07:15:26.447Z", "src": "kernel", "method": "agent_observe.list", "ms": 1452, "outcome": "ok"}
+{"ts":"2026-11-20T07:15:28.890Z","src":"chat","method":"get_queue","target":"a9cc8148d776","ms":98,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:28.997Z","src":"chat","method":"get_connection_state","target":"a9cc8148d776","ms":107,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:33.898Z","src":"chat","method":"list","ms":124,"outcome":"ok"}
+{"ts": "2026-11-20T07:15:34.060Z", "src": "kernel", "method": "agent_message.send", "target": "01a10810-34b5-710f-88fe-3d369f89a8c9", "ms": 7165, "outcome": "ok"}
+{"ts":"2026-11-20T07:15:34.174Z","src":"chat","method":"list","host":"mac","ms":240,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:34.996Z","src":"chat","method":"list","ms":76,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:36.122Z","src":"chat","method":"list","ms":91,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:36.230Z","src":"chat","method":"list","ms":96,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:37.328Z","src":"chat","method":"list","ms":101,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:54.698Z","src":"chat","method":"hello","host":"mac","ms":3003,"outcome":"timeout","error":"Timed out after 3000ms waiting for the Prime Agent daemon handshake. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log."}
+{"ts":"2026-11-20T07:15:55.132Z","src":"chat","method":"cron_list","ms":75,"outcome":"ok"}
+{"ts":"2026-11-20T07:15:57.800Z","src":"chat","method":"hello","host":"mac","ms":3001,"outcome":"timeout","error":"Timed out after 3000ms waiting for the Prime Agent daemon handshake. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log."}
+{"ts":"2026-11-20T07:16:00.340Z","src":"chat","method":"create","ms":2097,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:00.364Z","src":"chat","method":"rename","target":"6f20e0844836","ms":24,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:00.366Z","src":"chat","method":"hello","ms":1,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:00.373Z","src":"chat","method":"attach","target":"6f20e0844836","ms":7,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:00.376Z","src":"chat","method":"get_queue","target":"6f20e0844836","ms":2,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:00.458Z","src":"chat","method":"list","ms":80,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:00.751Z","src":"chat","method":"prompt","target":"6f20e0844836","ms":338,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:00.787Z","src":"chat","method":"get_queue","target":"6f20e0844836","ms":36,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:00.787Z","src":"chat","method":"get_queue","target":"6f20e0844836","ms":36,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:00.787Z","src":"chat","method":"get_queue","target":"6f20e0844836","ms":25,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:01.004Z","src":"chat","method":"hello","host":"mac","ms":3002,"outcome":"timeout","error":"Timed out after 3000ms waiting for the Prime Agent daemon handshake. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log."}
+{"ts":"2026-11-20T07:16:04.436Z","src":"chat","method":"hello","host":"mac","ms":3032,"outcome":"timeout","error":"Timed out after 3000ms waiting for the Prime Agent daemon handshake. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log."}
+{"ts":"2026-11-20T07:16:07.985Z","src":"chat","method":"list","ms":82,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:08.126Z","src":"chat","method":"list","ms":83,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:08.181Z","src":"chat","method":"send_message","target":"01a05c09-c392-75d5-975c-003a9b1b30d8","ms":1894,"outcome":"refused","error":"Unknown active session: 01a05c09-c392-75d5-975c-003a9b1b30d8"}
+{"ts":"2026-11-20T07:16:08.237Z","src":"chat","method":"hello","host":"mac","ms":3001,"outcome":"timeout","error":"Timed out after 3000ms waiting for the Prime Agent daemon handshake. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log."}
+{"ts":"2026-11-20T07:16:11.199Z","src":"chat","method":"list","ms":75,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:12.847Z","src":"chat","method":"hello","host":"mac","ms":3009,"outcome":"timeout","error":"Timed out after 3000ms waiting for the Prime Agent daemon handshake. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log."}
+{"ts":"2026-11-20T07:16:13.286Z","src":"chat","method":"send_message","target":"01a1f7c2-a792-7747-8b13-cccaddac0b58","ms":301,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:14.957Z","src":"chat","method":"send_message","target":"230bbdbf-4d84-475f-95d2-63db2f90ca34","ms":995,"outcome":"refused","error":"Unknown active session: 230bbdbf-4d84-475f-95d2-63db2f90ca34"}
+{"ts":"2026-11-20T07:16:15.032Z","src":"chat","method":"list","ms":74,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:16.153Z","src":"chat","method":"list","ms":72,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:16.527Z","src":"chat","method":"get_state","target":"01a1f5cd-be8e-76e8-adea-fff624f307ec","ms":18,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:16.604Z","src":"chat","method":"list","ms":78,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:16.825Z","src":"chat","method":"kill","target":"01a1f5cd-be8e-76e8-adea-fff624f307ec","ms":277,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:16.910Z","src":"chat","method":"list","ms":72,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:17.848Z","src":"chat","method":"hello","host":"mac","ms":3000,"outcome":"timeout","error":"Timed out after 3000ms waiting for the Prime Agent daemon handshake. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log."}
+{"ts":"2026-11-20T07:16:18.036Z","src":"chat","method":"list","ms":68,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:18.140Z","src":"chat","method":"list","ms":76,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:18.277Z","src":"chat","method":"list","ms":95,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:22.851Z","src":"chat","method":"hello","host":"mac","ms":3002,"outcome":"timeout","error":"Timed out after 3000ms waiting for the Prime Agent daemon handshake. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log."}
+{"ts":"2026-11-20T07:16:25.288Z","src":"chat","method":"cron_list","ms":36,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:27.852Z","src":"chat","method":"hello","host":"mac","ms":3000,"outcome":"timeout","error":"Timed out after 3000ms waiting for the Prime Agent daemon handshake. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log."}
+{"ts":"2026-11-20T07:16:32.854Z","src":"chat","method":"hello","host":"mac","ms":3001,"outcome":"timeout","error":"Timed out after 3000ms waiting for the Prime Agent daemon handshake. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log."}
+{"ts":"2026-11-20T07:16:37.867Z","src":"chat","method":"hello","host":"mac","ms":3012,"outcome":"timeout","error":"Timed out after 3000ms waiting for the Prime Agent daemon handshake. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log."}
+{"ts":"2026-11-20T07:16:42.953Z","src":"chat","method":"hello","host":"mac","ms":3086,"outcome":"timeout","error":"Timed out after 3000ms waiting for the Prime Agent daemon handshake. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log."}
+{"ts":"2026-11-20T07:16:45.162Z","src":"chat","method":"send_message","target":"01a1f7b4-36ba-77fc-949e-617d2ec18e42","ms":1520,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:47.955Z","src":"chat","method":"hello","host":"mac","ms":3001,"outcome":"timeout","error":"Timed out after 3000ms waiting for the Prime Agent daemon handshake. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log."}
+{"ts":"2026-11-20T07:16:52.963Z","src":"chat","method":"hello","host":"mac","ms":3001,"outcome":"timeout","error":"Timed out after 3000ms waiting for the Prime Agent daemon handshake. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502fe7.log."}
+{"ts":"2026-11-20T07:16:52.965Z","src":"chat","method":"detach","target":"578c66ee1367","host":"mac","ms":0,"outcome":"closed","error":"Cannot send daemon command \"detach\" because the Prime Agent daemon is not connected. Socket: /home/sieun/.local/state/sieun-pi/hosts/mac.sock. Daemon log: /home/sieun/.prime/agent/logs/mac.sock.7f502f"}
+{"ts":"2026-11-20T07:16:53.062Z","src":"chat","method":"list","ms":96,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:55.855Z","src":"chat","method":"cron_list","ms":42,"outcome":"ok"}
+{"ts":"2026-11-20T07:16:56.178Z","src":"chat","method":"cron_list","ms":16,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:05.295Z","src":"chat","method":"hello","host":"mac","ms":413,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:05.575Z","src":"chat","method":"attach","target":"578c66ee1367","host":"mac","ms":280,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:07.561Z","src":"chat","method":"get_queue","target":"578c66ee1367","host":"mac","ms":211,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:07.778Z","src":"chat","method":"set_steering_mode","target":"578c66ee1367","host":"mac","ms":206,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:07.981Z","src":"chat","method":"heartbeat_get","target":"578c66ee1367","host":"mac","ms":202,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:12.440Z","src":"chat","method":"get_state","target":"f06ac02f64da","ms":9,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:12.441Z","src":"chat","method":"get_state","target":"01a1f7b0-2625-71ae-a813-b7ef22f466ec","ms":10,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:12.453Z","src":"chat","method":"get_state","target":"74d5c7a52b04","ms":22,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:12.453Z","src":"chat","method":"get_state","target":"01a1f478-4667-75fc-b60f-98f652578869","ms":22,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:12.746Z","src":"chat","method":"kill","target":"01a1f478-4667-75fc-b60f-98f652578869","ms":261,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:12.757Z","src":"chat","method":"kill","target":"01a1f7b0-2625-71ae-a813-b7ef22f466ec","ms":309,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:12.817Z","src":"chat","method":"kill","target":"f06ac02f64da","ms":375,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:12.977Z","src":"chat","method":"list","ms":127,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:13.086Z","src":"chat","method":"list","ms":84,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:13.553Z","src":"chat","method":"kill","target":"74d5c7a52b04","ms":1068,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:13.660Z","src":"chat","method":"list","ms":91,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:14.150Z","src":"chat","method":"send_message","target":"01a1ea47-6024-7042-97c5-8717e35ff7d8","ms":50,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:17.413Z","src":"chat","method":"send_message","target":"01a1e9ec-488e-77ef-8bf4-fbb2373acc81","ms":3252,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:26.709Z","src":"chat","method":"cron_list","ms":47,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:35.260Z","src":"chat","method":"list","host":"mac","ms":106052,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:50.482Z","src":"chat","method":"list","host":"mac","ms":211,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:56.846Z","src":"chat","method":"cron_list","ms":57,"outcome":"ok"}
+{"ts":"2026-11-20T07:17:58.430Z","src":"chat","method":"list","ms":98,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:05.711Z","src":"chat","method":"list","host":"mac","ms":227,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:12.883Z","src":"chat","method":"get_state","target":"bcd59842f644","host":"mac","ms":230,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:18.439Z","src":"chat","method":"list","ms":94,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:18.640Z","src":"chat","method":"list","ms":124,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:18.751Z","src":"chat","method":"kill","target":"bcd59842f644","host":"mac","ms":5868,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:20.126Z","src":"chat","method":"send_message","target":"01a05c09-c392-75d5-975c-003a9b1b30d8","ms":2049,"outcome":"refused","error":"Unknown active session: 01a05c09-c392-75d5-975c-003a9b1b30d8"}
+{"ts":"2026-11-20T07:18:20.524Z","src":"chat","method":"list","ms":84,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:20.741Z","src":"chat","method":"list","ms":92,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:20.945Z","src":"chat","method":"list","host":"mac","ms":231,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:21.958Z","src":"chat","method":"send_message","target":"01a1f5cd-be8e-76e8-adea-fff624f307ec","ms":2602,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:26.007Z","src":"chat","method":"send_message","target":"230bbdbf-4d84-475f-95d2-63db2f90ca34","ms":1798,"outcome":"refused","error":"Unknown active session: 230bbdbf-4d84-475f-95d2-63db2f90ca34"}
+{"ts":"2026-11-20T07:18:26.108Z","src":"chat","method":"list","ms":101,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:27.184Z","src":"chat","method":"cron_list","ms":68,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:28.190Z","src":"chat","method":"list","ms":87,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:29.989Z","src":"chat","method":"send_message","target":"01a1164b-4a2d-742d-b27a-82f086ed0200","ms":400,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:30.045Z","src":"chat","method":"get_queue","target":"9b0b6ab683aa","ms":11,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:30.159Z","src":"chat","method":"list","ms":75,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:30.298Z","src":"chat","method":"list","ms":73,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:36.176Z","src":"chat","method":"list","host":"mac","ms":229,"outcome":"ok"}
+{"ts": "2026-11-20T07:18:37.912Z", "src": "kernel", "method": "rlm.run", "ms": 3173, "outcome": "ok"}
+{"ts":"2026-11-20T07:18:39.361Z","src":"chat","method":"get_queue","target":"9b0b6ab683aa","ms":26,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:39.397Z","src":"chat","method":"get_connection_state","target":"9b0b6ab683aa","ms":36,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:45.600Z","src":"chat","method":"send_message","target":"01a1f789-1980-7633-bea1-eb356de6f8f1","ms":731,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:50.508Z","src":"chat","method":"get_queue","target":"9b0b6ab683aa","ms":33,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:51.388Z","src":"chat","method":"list","host":"mac","ms":210,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:51.999Z","src":"chat","method":"get_queue","target":"9b0b6ab683aa","ms":23,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:52.033Z","src":"chat","method":"get_connection_state","target":"9b0b6ab683aa","ms":34,"outcome":"ok"}
+{"ts":"2026-11-20T07:18:57.743Z","src":"chat","method":"cron_list","ms":62,"outcome":"ok"}
