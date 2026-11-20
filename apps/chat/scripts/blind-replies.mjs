@@ -4,11 +4,12 @@
  * real kinds of asks with no steering, and each reply is checked against the ideal replies page
  * (wiki:agents/agent-factory/jobs/2026/11/20/1139-slack-style-replies/ideal-replies.html).
  *
- *   node apps/chat/scripts/blind-replies.mjs [--asks <file.json> | --set lists] [--cwd <project>] [--host <box>] [--out <file.jsonl>] [--server http://127.0.0.1:5184]
+ *   node apps/chat/scripts/blind-replies.mjs [--asks <file.json> | --set lists | --set checklist] [--cwd <project>] [--host <box>] [--out <file.jsonl>] [--server http://127.0.0.1:5184]
  *
  * The first ask is the channel's root post and every later one a reply in its thread, as the owner asks in a channel. An ask is
  * `{text, expect, wait}`, where `expect` is "reply" (one short Slack post), "list" (a one-line answer, then nested bullets and a task list,
- * as the owner asked under p85 and p95 in #sw-factory-build on 11-20, p101), "line" (one short line with no bullets) or "reaction"
+ * as the owner asked under p85 and p95 in #sw-factory-build on 11-20, p101), "checklist" (one post of open `- [ ]` checks that edits tick
+ * off, p106), "line" (one short line with no bullets) or "reaction"
  * (no post), and `wait: false` sends the next ask at
  * once, so the agent answers both together, as when the owner sent p14 and p15 7 s apart on 11-20. The agent and the room are `test: true`, so no
  * owner list shows them. Each line of --out is one ask with its replies, its checks and pass or fail; the last line is the run's summary.
@@ -25,6 +26,8 @@ const server = values.server ?? "http://127.0.0.1:5184";
 const FIRST_MS = 20 * 60_000;
 const QUIET_MS = 60_000;
 const POLL_MS = 3_000;
+/** A checklist post's edits come as the work thread finishes items, minutes apart, so its answer counts as whole only after this long with no edit. */
+const CHECKLIST_QUIET_MS = 5 * 60_000;
 
 /** The owner's kinds of asks from #dev-search-general and #sw-factory-build on 11-20. */
 const DEFAULT_ASKS = [
@@ -39,7 +42,15 @@ const LIST_ASKS = [
   { text: "which node version does this box run?", expect: "line" },
   { text: "ok thanks", expect: "reaction" },
 ];
-const SETS = { default: DEFAULT_ASKS, lists: LIST_ASKS };
+/**
+ * A multi-step ask that should get one checklist post the agent then edits to done, as the owner asked under p103 and p105 in
+ * #sw-factory-build on 11-20 (p106), and a yes/no question that should stay one line; run with `--cwd` at this repo.
+ */
+const CHECKLIST_ASKS = [
+  { text: "before i ship, can you check: is local main in sync with origin/main, how many files are uncommitted, does pi-host's comm-guard test pass, and is any TODO left in packages/pi-host/src/durable?", expect: "checklist" },
+  { text: "is this checkout on main right now?", expect: "line" },
+];
+const SETS = { default: DEFAULT_ASKS, lists: LIST_ASKS, checklist: CHECKLIST_ASKS };
 const asks = values.asks ? JSON.parse(readFileSync(values.asks, "utf8")) : SETS[values.set ?? "default"];
 if (!asks) throw new Error(`--set is one of ${Object.keys(SETS).join(", ")}`);
 
@@ -71,7 +82,7 @@ const NESTED = /^ {2,}[-*+] /m;
 const TASK = /^\s*[-*+] \[[ xX]\] /m;
 
 /** The ideal replies page's rules that a script can read; the reader judges the tone from the printed text. */
-function checks(ask, posts, asked) {
+function checks(ask, posts, asked, versions = new Map()) {
   const text = posts.map(p => p.text).join("\n\n");
   if (ask.expect === "reaction") return [["no post, a reaction says it", posts.length === 0]];
   const lines = text.split("\n").filter(line => line.trim());
@@ -81,6 +92,17 @@ function checks(ask, posts, asked) {
     ["no heading, bold or label opener", !/^#{1,6} |\*\*|^[A-Z][\w ]{0,20}:\s/m.test(text)],
   ];
   if (ask.expect === "line") return [...plain, ["one line with no bullets", lines.length === 1 && !BULLET.test(lines[0])], ["at most 30 words", words(text) <= 30]];
+  if (ask.expect === "checklist") {
+    const first = posts[0] ? (versions.get(posts[0].id) ?? [posts[0].text])[0] : "";
+    return [
+      ...plain,
+      ["the first version lists the checks as open tasks", (first.match(/^\s*[-*+] \[ \] /gm) ?? []).length >= 2],
+      ["the post was edited after it went out", (versions.get(posts[0]?.id) ?? []).length > 1],
+      ["the last version ticks tasks done", /^\s*[-*+] \[[xX]\] /m.test(text)],
+      ["the last version opens with a one-line answer", lines.length > 1 && !BULLET.test(lines[0]) && words(lines[0]) <= 25],
+      ["no line over 35 words", lines.every(line => words(line) <= 35)],
+    ];
+  }
   if (ask.expect === "list") {
     return [
       ...plain,
@@ -116,20 +138,30 @@ for (const [index, ask] of asks.entries()) {
   const started = Date.now();
   let posts = [];
   let lastNew = 0;
+  /** Every text each answer post had, in order, so a checklist's first version and its edits can be checked. */
+  const versions = new Map();
+  const quiet = ask.expect === "checklist" ? CHECKLIST_QUIET_MS : QUIET_MS;
   for (;;) {
     await sleep(POLL_MS);
     const thread = await call("GET", `/api/c/${room.id}/replies/${root}`);
     const now = thread.items.filter(i => i.author?.id === agent.id && ids.has(i.answers));
     if (now.length > posts.length) lastNew = Date.now();
+    for (const post of now) {
+      const seen = versions.get(post.id) ?? [];
+      if (seen.at(-1) !== post.text) {
+        versions.set(post.id, [...seen, post.text]);
+        lastNew = Date.now();
+      }
+    }
     posts = now;
     const reacted = [thread.root, ...thread.items].find(i => i.id === ask.id)?.reactions?.some(r => r.by.some(b => b.id === agent.id));
-    if (posts.length && Date.now() - lastNew > QUIET_MS) break;
+    if (posts.length && Date.now() - lastNew > quiet) break;
     if (!posts.length && ask.expect === "reaction" && reacted && Date.now() - started > QUIET_MS) break;
-    if (Date.now() - started > FIRST_MS) break;
+    if (Date.now() - started > (ask.expect === "checklist" ? 2 * FIRST_MS : FIRST_MS)) break;
   }
   const text = group.map(g => g.text).join(" / ");
-  const result = checks(ask, posts, group.length);
-  const line = { ask: text, askIds: [...ids], expect: ask.expect, seconds: Math.round((Date.now() - started) / 1000), replies: posts.map(p => p.text), checks: Object.fromEntries(result), pass: result.every(([, ok]) => ok) };
+  const result = checks(ask, posts, group.length, versions);
+  const line = { ask: text, askIds: [...ids], expect: ask.expect, seconds: Math.round((Date.now() - started) / 1000), replies: posts.map(p => p.text), versions: posts.map(p => versions.get(p.id) ?? [p.text]), checks: Object.fromEntries(result), pass: result.every(([, ok]) => ok) };
   results.push(line);
   console.log(`\n${line.pass ? "PASS" : "FAIL"} ${text}\n${posts.map(p => `  > ${p.text.replace(/\n/g, "\n    ")}`).join("\n") || "  (no post)"}\n  ${result.filter(([, ok]) => !ok).map(([name]) => `failed: ${name}`).join(", ")}`);
   if (values.out) appendFileSync(values.out, `${JSON.stringify({ room: room.id, agent: agent.id, ...line })}\n`);
