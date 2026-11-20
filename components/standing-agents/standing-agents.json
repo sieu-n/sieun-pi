@@ -1,0 +1,21 @@
+{
+	"comment": "Standing agents and their durable triggers on us-metal02 (moved from the Mac 2026-10-19). kind=wake entries are resumed by wake.sh from a systemd --user timer (<name>-wake.timer, OnCalendar from `fires`, UTC) with `prime-agent -p -r <newest jsonl in session_dir>`; when session_dir has no transcript, wake.sh births one from `birth`. Register every new standing agent here and run install.sh; an unregistered agent dies silently with the next worker restart (harness-keeper 2026-09-08, seo wakes 2026-09-16). Check: `systemctl --user list-timers | grep wake`, `tail ~/.prime/agent/standing-agents/wakes.jsonl`.",
+	"agents": [
+		{
+			"name": "harness-keeper",
+			"kind": "wake",
+			"session_dir": "~/.prime/agent/standing-agents/sessions/harness-keeper",
+			"cwd": "/home/sieun/Documents/Github/auto-sns-agent",
+			"birth": "/home/sieun/.pi/agent/agents/harness-keeper/RESURRECT.md",
+			"fires": [
+				{
+					"hour": 23,
+					"minute": 45
+				}
+			],
+			"fires_utc": "23:45",
+			"message": "Daily wake for harness-keeper from the systemd --user timer harness-keeper-wake.timer on us-metal02 (~/.prime/agent/standing-agents/wake.sh), one fire a day. Work from /home/sieun/Documents/Github/auto-sns-agent. Read /home/sieun/.pi/agent/agents/harness-keeper/SOUL.md first (since 2026-11-03 b767305544 the agent files live there, outside git), then decisions.log, then reflections/retired-*.jsonl, then everything since the last report: transcript jsonl files under ~/.prime/agent/sessions selected by mtime (including sessions the user has deleted; never enumerate live sessions as the record), git log, wiki.db views, the virev guard log. The precheck already scanned the last 24.5 h of transcripts into /home/sieun/.pi/agent/agents/harness-keeper/data/scan-latest.json (wakes.jsonl records its rc); read it instead of scanning from the kernel, whose tool calls end at 120 s. Print the top samples behind every count. Subagents are allowed; the 2026-09-08 spawn ban was rolled back the same day (refine_0113), and the model policy is ~/.prime/agent/pstack-models.json. Pick the highest-value work yourself: harness rewrites and retirements with a proof command per false claim, wiki articles agents opened this week checked against HEAD, and rechecks of earlier attempts (did the same pattern still happen, did anything worsen). Log every decision in decisions.log with sev=N. Write reports/YYYY-MM-DD.md. Commit repo files you change (guards, scripts) with node scripts/repo/agent/commit.mjs. Your own files outside the repo are saved by wiki-backup.timer to sieu-n/wiki-content, which takes only .md files, so check that the report reached ~/.pi/wiki/backup.git. This session runs headless with no parent and no tmux pane: do not create rlm heartbeats, they die with the worker; the next wake comes from the timer. Finish the turn when the report is written and backed up.",
+			"precheck": "mkdir -p /home/sieun/.pi/agent/agents/harness-keeper/data && heavy 8G -- python3 /home/sieun/.pi/agent/agents/harness-keeper/scan.py 24.5 /home/sieun/.pi/agent/agents/harness-keeper/data/scan-latest.json"
+		}
+	]
+}

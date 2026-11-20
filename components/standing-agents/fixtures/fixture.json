@@ -1,0 +1,60 @@
+{
+	"comment": "Fixture manifest for test-wake.sh. The test puts a stub prime-agent on PATH, so no model is billed.",
+	"agents": [
+		{
+			"name": "fixture-resume",
+			"kind": "wake",
+			"session_dir": "FIXTURE_DIR/resume",
+			"cwd": "/Users/sieunpark",
+			"fires": [
+				{
+					"hour": 0,
+					"minute": 0
+				}
+			],
+			"message": "FIXTURE_WAKE_MESSAGE"
+		},
+		{
+			"name": "fixture-birth",
+			"kind": "wake",
+			"session_dir": "FIXTURE_DIR/birth",
+			"cwd": "/Users/sieunpark",
+			"birth": "FIXTURE_DIR/birth.md",
+			"fires": [
+				{
+					"hour": 0,
+					"minute": 0
+				}
+			],
+			"message": "FIXTURE_WAKE_MESSAGE"
+		},
+		{
+			"name": "fixture-precheck",
+			"kind": "wake",
+			"session_dir": "FIXTURE_DIR/resume",
+			"cwd": "/Users/sieunpark",
+			"fires": [
+				{
+					"hour": 0,
+					"minute": 0
+				}
+			],
+			"message": "FIXTURE_WAKE_MESSAGE",
+			"precheck": "echo PRE > FIXTURE_DIR/pre.txt; test ! -e FIXTURE_DIR/calls.txt && echo before >> FIXTURE_DIR/pre.txt"
+		},
+		{
+			"name": "fixture-precheck-fail",
+			"kind": "wake",
+			"session_dir": "FIXTURE_DIR/resume",
+			"cwd": "/Users/sieunpark",
+			"fires": [
+				{
+					"hour": 0,
+					"minute": 0
+				}
+			],
+			"message": "FIXTURE_WAKE_MESSAGE",
+			"precheck": "exit 3"
+		}
+	]
+}
