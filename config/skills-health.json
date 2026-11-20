@@ -206,7 +206,7 @@
   {
    "name": "principle-boundary-discipline",
    "verdict": "merge",
-   "reason": "One principle that typescript-best-practices already states, and no session read it.",
+   "reason": "One principle that typescript-best-practices already states, and almost no session read it.",
    "pathContains": "src/sieun-pi/skills/principle-boundary-discipline",
    "mergeInto": "typescript-best-practices"
   },
@@ -566,7 +566,7 @@
   {
    "name": null,
    "verdict": "merge",
-   "reason": "It carries an edited upstream Langfuse copy, and no session read it in 30 days.",
+   "reason": "Few sessions read it, and it carries an edited upstream Langfuse copy.",
    "pathContains": "auto-sns-agent/.agents/skills/stack/llm-usage",
    "mergeInto": "repo routing rules here, langfuse/skills installed unedited",
    "group": "repo auto-sns-agent"
