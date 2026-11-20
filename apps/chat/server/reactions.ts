@@ -9,6 +9,7 @@
 import type { Principal, Reaction } from "../web/src/lib/api/types.ts";
 import { emojiOf } from "../web/src/lib/api/shared/emoji.ts";
 import type { AgentRecord, RoomId, RoomPost, StoredReaction } from "./agent-store.ts";
+import { doneLine } from "./thread-done.ts";
 
 /** A reaction request the server refuses: 400 for a bad emoji or message id, 404 for a room or post that is not there. */
 export class ReactionError extends Error {
@@ -33,10 +34,13 @@ export function reactionList(principal: (id: string) => Principal, post: RoomPos
   return rows.map(row => `${row.emoji} ${row.by.map(p => (p.kind === "owner" ? OWNER_FOR_AGENTS : p.name)).join(", ")}`).join(" · ");
 }
 
-/** The one form every agent-facing surface shows a post's reactions in: `[reactions: 👀 vent, agent factory · 👍 Sieun (owner)]`, or "" with none. */
+/**
+ * The one form every agent-facing surface shows a post's reactions in, `[reactions: 👀 vent, agent factory · 👍 Sieun (owner)]`, followed on
+ * a done thread's root by its flag (thread-done.ts `doneLine`), `[thread done by vent]`; "" with neither.
+ */
 export function reactionsLine(principal: (id: string) => Principal, post: RoomPost): string {
   const list = reactionList(principal, post);
-  return list ? `[reactions: ${list}]` : "";
+  return [list ? `[reactions: ${list}]` : "", doneLine(principal, post)].filter(Boolean).join(" ");
 }
 
 /** The emoji and direction of a reaction request: a Slack name (`eyes`, `:eyes:`) or the emoji itself, and `on`, true unless given. */

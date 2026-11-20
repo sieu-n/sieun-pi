@@ -218,6 +218,11 @@ export function routes(app: App): Route[] {
     route("POST", "/api/threads/:id/reactions", async (_r, p, _q, body) => {
       return app.reactAsAgent(p.id!, ((await body()) ?? {}) as { message?: unknown; emoji?: unknown; on?: unknown });
     }),
+    // A thread's done flag (thread-done.ts): the owner's from the page and an agent's set_thread_done, through the one app.ts setThreadDone.
+    route("POST", "/api/c/:id/posts/:post/done", async (_r, p, _q, body) => app.threadDone(p.id!, p.post!, ((await body()) ?? {}) as { done?: unknown })),
+    route("POST", "/api/threads/:id/done", async (_r, p, _q, body) => {
+      return app.threadDoneAsAgent(p.id!, ((await body()) ?? {}) as { message?: unknown; done?: unknown });
+    }),
     route("POST", "/api/threads/:id/edits", async (_r, p, _q, body) => {
       return app.editAsAgent(p.id!, ((await body()) ?? {}) as { message?: unknown; text?: unknown });
     }),

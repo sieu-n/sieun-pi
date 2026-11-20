@@ -110,7 +110,12 @@ export interface RoomPost {
   editedAt?: Ms;
   /** When the owner deleted his post; its text and images are gone (post-edits.ts). */
   deletedAt?: Ms;
+  /** A thread's root post: whether its thread is done, who set that last and when (thread-done.ts). */
+  done?: StoredDone;
 }
+
+/** The done flag on a thread's root post; reopening keeps the row with `done: false`, so the log records who reopened it. */
+export interface StoredDone { done: boolean; by: "owner" | AgentId; at: Ms }
 
 /** One emoji one principal put on a post. */
 export interface StoredReaction { emoji: string; by: "owner" | AgentId; at: Ms }
@@ -122,7 +127,7 @@ export interface StoredReaction { emoji: string; by: "owner" | AgentId; at: Ms }
  */
 export interface TestSend { by: string; reason: string; at: Ms; entry?: number; notice?: Ms }
 
-export type PostPatch = Partial<Pick<RoomPost, "delivery" | "deliveries" | "jobs" | "text" | "testSend" | "reactions" | "images" | "editedAt" | "deletedAt">>;
+export type PostPatch = Partial<Pick<RoomPost, "delivery" | "deliveries" | "jobs" | "text" | "testSend" | "reactions" | "images" | "editedAt" | "deletedAt" | "done">>;
 type LogLine = { t: "post"; post: RoomPost } | { t: "set"; post: string; patch: PostPatch };
 
 /**

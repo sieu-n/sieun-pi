@@ -30,6 +30,7 @@ import type { Host } from "./host/types.ts";
 import { Outbox, type OutboxRow } from "./outbox.ts";
 import { boxCwd, projectCwd, projectList } from "./projects.ts";
 import { agentPost, react, ReactionError, reactionInput, reactionList, reactionsOf, reactionText } from "./reactions.ts";
+import { doneInput, doneText, markDone, threadRootOf } from "./thread-done.ts";
 import { Rooms } from "./rooms.ts";
 import { Unfurler } from "./unfurl.ts";
 import { Search } from "./search.ts";
@@ -708,6 +709,36 @@ export class App {
         this.log(`posts: telling ${d.target} about ${room} ${post.id} failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+  }
+
+  /** The owner marks the thread of a room post done or reopens it (thread-done.ts); the room's watchers get its root at once. */
+  threadDone(id: ConversationId, postId: string, input: { done?: unknown }): { item: Item } {
+    const room = isRoomId(id) ? this.roomAgent(id).room : this.groups.row(id)?.id;
+    if (!room) throw new NotFound(`No room ${id}; a thread is marked done in a DM, a channel or a Solo room.`);
+    const posts = this.agentStore.postsOf(room);
+    const post = posts.find(p => p.id === postId);
+    if (!post) throw new NotFound(`No post ${postId} in ${id}.`);
+    const root = threadRootOf(posts, post);
+    this.setThreadDone(room, root, "owner", doneInput(input));
+    return { item: this.postItem(room, root) };
+  }
+
+  /** An agent's set_thread_done: `message` names any post of the thread as set_emoji names a post, and the flag goes on its root. */
+  threadDoneAsAgent(thread: string, input: { message?: unknown; done?: unknown }): { room: string; post: string; done: boolean; text: string } {
+    const done = doneInput(input);
+    const { record, room, post } = this.agentMessage(thread, input.message, "set_thread_done");
+    const root = threadRootOf(this.agentStore.postsOf(room), post);
+    const changed = this.setThreadDone(room, root, record.id, done);
+    return { room, post: root.id, done, text: doneText(root, done, changed) };
+  }
+
+  /** The one change of a thread's done flag, the owner's and an agent's alike; false when the root already reads that way. */
+  private setThreadDone(room: string, root: RoomPost, by: "owner" | AgentRecord["id"], done: boolean): boolean {
+    const flag = markDone(root, by, done);
+    if (!flag) return false;
+    this.agentStore.set(root, { done: flag });
+    this.emitPosts(room, [root]);
+    return true;
   }
 
   private setReaction(room: string, post: RoomPost, by: "owner" | AgentRecord["id"], emoji: string, on: boolean): void {

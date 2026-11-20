@@ -5,7 +5,7 @@
 import type {
   AgentConfig, AgentFolder, AgentHostList, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
   ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, ImageRef, Item, JobNode, Me, MemoryInput, ModelCatalog, ProjectList, SearchQuery, SearchResult, SendRequest,
-  LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, TimelinePage, UsageReport, AccountsView,
+  LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageReport, AccountsView,
 } from "./types.ts";
 import type { SkillDoc, SkillsReport } from "./shared/skills.ts";
 import { shrink } from "./shrink.ts";
@@ -258,6 +258,9 @@ export const api = {
   /** Puts the owner's emoji on a room post, or with `on` false takes it off; the room's live `items` event carries the change too. */
   react: (id: ConversationId, post: string, emoji: string, on = true) =>
     call<{ item: Item }>("POST", `/api/c/${enc(id)}/posts/${enc(post)}/reactions`, { emoji, on } satisfies ReactionRequest),
+  /** Marks the thread of a room post done, or with `done` false reopens it; the flag sits on the thread's root (server/thread-done.ts). */
+  threadDone: (id: ConversationId, post: string, done: boolean) =>
+    call<{ item: Item }>("POST", `/api/c/${enc(id)}/posts/${enc(post)}/done`, { done } satisfies ThreadDoneRequest),
   /** The owner's Save for later rows in one tab, newest first, with both tabs' counts (server/later.ts). */
   later: (state?: LaterState) => call<LaterList>("GET", `/api/later${query({ state })}`),
   /** Saves a room post for later; saving a saved post keeps its one item and opens it again when it was done. */

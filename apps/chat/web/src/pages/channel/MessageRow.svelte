@@ -129,6 +129,19 @@
   let active = $state(false);
   const activate = () => (active = true);
 
+  /**
+   * A thread's root, a channel post with no threadRoot or any DM post, takes Mark thread done and Reopen thread (server/thread-done.ts). A
+   * done root draws a small check and reads a little dimmed, with its replies bar, as the owner asked on 11-20 (p113).
+   */
+  const doneable = $derived(reactable && room && !reactable.threadRoot ? reactable : null);
+  const done = $derived(message?.done ?? null);
+  const doneLabel = $derived(done ? `Done, marked by ${done.by.kind === "owner" ? "you" : done.by.name} ${stampLabel(done.at)}` : "");
+
+  function toggleDone() {
+    if (!doneable || !room) return;
+    api.threadDone(room, doneable.id, !done).catch(() => toast.error(done ? "Could not reopen the thread" : "Could not mark the thread done"));
+  }
+
   /** The message menu behind the hover bar's More actions; every message action that is not a hover bar button goes in this one list. */
   let menuOpen = $state(false);
   let moreButton = $state<HTMLButtonElement>();
@@ -136,6 +149,7 @@
     reactable ? [
       { id: "unread", label: "Mark unread", icon: "dot", shortcut: isMac ? "⌥ Click" : "Alt+Click", onselect: unread },
       remindMenu({ remindAt: reactable.later?.remindAt, set: remind, custom: () => (customRemind = true), clear: () => remind(null) }),
+      ...(doneable ? [{ id: "done", label: done ? "Reopen thread" : "Mark thread done", icon: "check", onselect: toggleDone }] : []),
       ...(room ? [laterMenuItem(room, reactable)] : []),
     ] : [],
   );
@@ -190,6 +204,7 @@
       <span class="divider" aria-hidden="true"></span>
     {/if}
     {#if canReply}<IconButton icon="reply" label="Reply in thread" size="sm" onclick={() => onthread(item.id)} />{/if}
+    {#if doneable}<IconButton icon="check" label={done ? "Reopen thread" : "Mark thread done"} size="sm" pressed={!!done} onclick={toggleDone} data-thread-done-toggle />{/if}
     {#if workHref && !why}<IconButton icon="robot" label="Show work" size="sm" onclick={() => workHref && router.navigate(workHref)} data-show-work />{/if}
     <IconButton icon="link" label="Copy link" size="sm" onclick={() => oncopylink(item)} />
     <IconButton icon={copied ? "check" : "copy"} label={copied ? "Copied" : "Copy message"} size="sm" onclick={copyText} />
@@ -225,6 +240,10 @@
   {#if !live && (sent?.length || item.text)}
     <LinkCards text={sent ? sent.join("\n\n") : item.text} onopen={(path, e) => (onartifact ? onartifact(`wiki:${path}`, e) : window.open(wikiUrl(path), "_blank", "noopener"))} />
   {/if}
+{/snippet}
+
+{#snippet doneMark()}
+  <span class="done-mark" title={doneLabel} data-thread-done><Icon name="check" size={12} /><span class="sr-only">{doneLabel}</span></span>
 {/snippet}
 
 {#snippet tail()}
@@ -287,12 +306,13 @@
 {/snippet}
 
 {#if slack}
-  <li bind:this={rowEl} class="row slack" class:own class:first class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
+  <li bind:this={rowEl} class="row slack" class:own class:first class:done={!!done} class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
     <div class="gutter">
       {#if first}
         <Avatar name={avatarOf(item.author).name} kind={avatarKind(item.author)} seed={item.author.id} size={36} status={statusOf?.(item.author.id) ?? null} />
       {:else}
         <time class="clock" datetime={new Date(item.at).toISOString()} title={stampLabel(item.at)}>{clockLabel(item.at)}</time>
+        {#if done}{@render doneMark()}{/if}
       {/if}
     </div>
     <div class="body">
@@ -301,6 +321,7 @@
         <div class="head">
           <span class="author">{item.author.name}</span>
           <time datetime={new Date(item.at).toISOString()} title={stampLabel(item.at)}>{fullTime ? stampLabel(item.at) : timeLabel(item.at)}</time>
+          {#if done}{@render doneMark()}{/if}
         </div>
       {/if}
       {#if replyTo?.kind === "message"}
@@ -344,12 +365,13 @@
     {#if active}{@render actionBar()}{/if}
   </li>
 {:else}
-  <li bind:this={rowEl} class="row" class:own class:first class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
+  <li bind:this={rowEl} class="row" class:own class:first class:done={!!done} class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
     {#if first}
       <div class="byline">
         {#if !own && item.author.kind !== "owner"}<Icon name="robot" size={13} />{/if}
         <span class="author">{item.author.name}</span>
         <time datetime={new Date(item.at).toISOString()} title={stampLabel(item.at)}>{timeLabel(item.at)}</time>
+        {#if done}{@render doneMark()}{/if}
       </div>
     {/if}
     <div class="line">
@@ -359,6 +381,7 @@
         {/if}
       </div>
       <div class="stack">
+        {#if done && !first}{@render doneMark()}{/if}
         {#if saved}{@render savedLabel()}{/if}
         {#if turn && sent}
           {#if turn.steps.length || live}
@@ -709,6 +732,42 @@
   .slack .gutter {
     display: block;
     flex: none;
+  }
+  /* A done thread's root reads quieter, its replies bar too, and full again under the pointer or focus; the hover bar stays at full ink. */
+  .slack.done > :is(.gutter, .body),
+  .row.done:not(.slack) > :not(.line),
+  .row.done:not(.slack) .line > .gutter,
+  .row.done:not(.slack) .stack > :not(.actions) {
+    opacity: 0.55;
+    transition: opacity var(--duration-fast) var(--ease-standard);
+  }
+  .slack.done:is(:hover, :focus-within) > :is(.gutter, .body),
+  .row.done:not(.slack):is(:hover, :focus-within) > :not(.line),
+  .row.done:not(.slack):is(:hover, :focus-within) .line > .gutter,
+  .row.done:not(.slack):is(:hover, :focus-within) .stack > :not(.actions) {
+    opacity: 1;
+  }
+  .done-mark {
+    display: inline-grid;
+    place-items: center;
+    align-self: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--status-online);
+    color: white;
+  }
+  .done-mark :global(.icon) {
+    stroke-width: 2.5;
+  }
+  /* On a stacked root the check takes the gutter's hidden clock place, and the clock comes back under the pointer. */
+  .slack .gutter .done-mark {
+    display: grid;
+    margin: 3px 0 0 auto;
+  }
+  .slack.done:not(:hover) .gutter .clock,
+  .slack:hover .gutter .done-mark {
+    display: none;
   }
   .saved-label {
     display: flex;

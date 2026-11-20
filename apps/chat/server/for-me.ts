@@ -111,10 +111,12 @@ export class ForMe {
 
   private view(row: RoomRow, post: RoomPost, reasons: ForMeReason[], activityAt: Ms): ForMeItem {
     const shown = this.deps.item(row, post) as MessageItem;
+    const root = post.threadRoot ? this.deps.store.postsOf(row.id).find(p => p.id === post.threadRoot) : undefined;
+    const done = root ? (this.deps.item(row, root) as MessageItem).done : shown.done;
     return {
       id: `${row.id}/${post.id}`, room: row.id, roomKind: row.kind, roomName: !isGroupRoom(row) ? "DM" : row.kind === "channel" ? `#${row.name}` : row.name,
       post: post.id, ...(post.threadRoot ? { threadRoot: post.threadRoot } : {}), author: shown.author, text: post.text, at: post.at, activityAt, reasons,
-      ...(shown.reactions?.length ? { reactions: shown.reactions } : {}), status: "pending",
+      ...(shown.reactions?.length ? { reactions: shown.reactions } : {}), ...(done ? { done } : {}), status: "pending",
     };
   }
 

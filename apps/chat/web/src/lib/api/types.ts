@@ -182,6 +182,8 @@ export interface ForMeItem {
   activityAt: Ms;
   reasons: ForMeReason[];
   reactions?: Reaction[];
+  /** The done flag of the post's thread, on its root (server/thread-done.ts); absent while the thread is open. */
+  done?: ThreadDone;
   /** The agent's own save of the post (server/later-agents.ts); absent when it has no open save of it. */
   later?: LaterMark;
   status: ForMeStatus;
@@ -292,6 +294,8 @@ export type Item =
       editedAt?: Ms;
       /** Room posts: the owner deleted it, so it has no text; the page drops it, or shows a stub on a channel root with replies. */
       deleted?: true;
+      /** A thread's root post the owner or an agent marked done (server/thread-done.ts); absent while the thread is open. */
+      done?: ThreadDone;
     }
   | {
       kind: "turn"; id: string; at: Ms; author: Principal; text: string; live: boolean; steps: Step[]; images: ImageRef[]; jobs: JobRef[];
@@ -369,6 +373,10 @@ export interface SendRequest {
 export interface SendResult { item: Item; deliveries: Delivery[]; queue?: TurnPlace | null }
 /** `POST /api/c/:id/posts/:post/reactions`: the owner adds (`on`, the default) or takes off his own `emoji` on a room post. */
 export interface ReactionRequest { emoji: string; on?: boolean }
+/** Who marked a thread done and when, on its root post. */
+export interface ThreadDone { by: Principal; at: Ms }
+/** `POST /api/c/:id/posts/:post/done`: the owner marks the thread of a post done, or reopens it. */
+export interface ThreadDoneRequest { done: boolean }
 
 /**
  * A channel (`ch_<id>`) or a Solo room (`so_<id>`), as `/api/rooms` returns it (agent-model.md phase 5). `agenda` is a Solo room's agenda
