@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { api, boardStore, live, type BoardOp, type ChatAgent, type CheckInView, type DutyRow } from "$lib/api";
+  import { boardStore, reads, view, type BoardOp } from "$lib/api";
   import { Button, EmptyState, Icon, LoadingText } from "$lib/ui";
   import AskCard from "./AskCard.svelte";
   import PlanTree from "./PlanTree.svelte";
@@ -27,28 +27,16 @@
     return () => current.close();
   });
 
-  let duties = $state<DutyRow[]>([]);
-  let checkIn = $state<CheckInView | null>(null);
-  let agents = $state<ChatAgent[]>([]);
+  /** Each shows from the page's kept answer and reads again behind it; the socket's duties events keep the rows current. */
+  const dutyRows = view(() => reads.duties(chatId));
+  const checkIn = view(() => reads.checkIn(chatId));
+  const jobs = view(() => reads.chatAgents(chatId));
+  const duties = $derived(dutyRows.value?.duties ?? []);
+  const agents = $derived(jobs.value?.agents ?? []);
   let doneOpen = $state(false);
   let now = $state(Date.now());
   const clock = setInterval(() => { now = Date.now(); }, 30_000);
   onDestroy(() => clearInterval(clock));
-
-  $effect(() => {
-    const id = chatId;
-    duties = [];
-    checkIn = null;
-    agents = [];
-    void api.duties(id).then(body => { if (id === chatId) duties = body.duties; }).catch(() => {});
-    void api.checkIn(id).then(view => { if (id === chatId) checkIn = view; }).catch(() => {});
-    void api.chatAgents(id).then(body => { if (id === chatId) agents = body.agents; }).catch(() => {});
-    // A run that starts or ends while the card is open, or a socket that comes back after missing one, replaces the rows.
-    return live.on(event => {
-      if (event.type === "duties" && event.chatId === id) duties = event.duties;
-      if (event.type === "hello") void api.duties(id).then(body => { if (id === chatId) duties = body.duties; }).catch(() => {});
-    });
-  });
 
   const board = $derived(store.view?.board ?? null);
   const awaitingGo = $derived(new Set(store.view?.awaitingGo ?? []));
@@ -110,13 +98,13 @@
     {#if duties.length}
       <section class="group" aria-label="Duties">
         <h3 class="heading t-label-sm">Duties <span class="count">{dutiesCount(duties)}</span></h3>
-        <DutyList {chatId} bind:duties {now} {focus} />
+        <DutyList {chatId} {duties} onchange={next => dutyRows.set({ duties: next })} {now} {focus} />
       </section>
     {/if}
 
     <section class="group" aria-label="Check-in">
       <h3 class="heading t-label-sm">Check-in</h3>
-      <CheckInControl {chatId} bind:view={checkIn} {now} />
+      <CheckInControl {chatId} view={checkIn.value} onchange={checkIn.set} {now} />
     </section>
   {/if}
 </div>

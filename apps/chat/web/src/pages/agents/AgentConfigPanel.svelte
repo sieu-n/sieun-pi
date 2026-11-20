@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { agents, api, conversations, type AgentConfig, type AgentFolder, type AgentSummary, type ConfigFile, type ModelCatalog, type ProjectList, type RunStatus, type ThinkingLevel } from "$lib/api";
+  import { agents, api, conversations, reads, view, type AgentFolder, type AgentSummary, type ConfigFile, type ModelCatalog, type ProjectList, type RunStatus, type ThinkingLevel } from "$lib/api";
   import { Avatar, Badge, Button, Chip, EmptyState, IconButton, LoadingText, Markdown, Menu, Meter, ModelPicker, PanelHeader, StatusDot, Tabs, TypingDots, stampLabel, toast, type MenuEntry } from "$lib/ui";
   import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import {
@@ -25,8 +25,10 @@
   };
   let { agentId, agent: liveAgent, catalog, section, onsection, onmessage, onmodel, onstop, onarchive }: Props = $props();
 
-  let config = $state<AgentConfig | null>(null);
-  let error = $state("");
+  /** The agent's configuration, from the page's kept answer when it holds one and read again behind it. */
+  const answer = view(() => reads.agentConfig(agentId));
+  const config = $derived(answer.value);
+  const error = $derived(answer.error ?? "");
   let moving = $state(false);
   let projects = $state<ProjectList | null>(null);
   let nextCwd = $state("");
@@ -47,7 +49,7 @@
       await api.setAgentCwd(agentId, nextCwd.trim());
       moving = false;
       toast.success("Its next turn runs in the new folder");
-      await load(agentId);
+      await load();
     } catch (reason) {
       moveError = reason instanceof Error ? reason.message : String(reason);
     } finally {
@@ -55,26 +57,16 @@
     }
   }
 
-  async function load(id: string) {
-    error = "";
-    try {
-      const next = await api.agentConfig(id);
-      if (id === agentId) config = next;
-    } catch (reason) {
-      if (id === agentId) error = reason instanceof Error ? reason.message : String(reason);
-    }
-  }
+  const load = () => answer.refresh();
   $effect(() => {
-    const id = agentId;
-    config = null;
+    void agentId;
     moving = false;
-    void load(id);
   });
   // A new status or model on the live card reads the config again, so jobs, board and usage follow the run.
   let seen = "";
   $effect(() => {
     const key = liveAgent ? `${liveAgent.status}|${liveAgent.model?.id ?? ""}|${liveAgent.thinkingLevel ?? ""}` : "";
-    if (seen && key && key !== seen) void load(agentId);
+    if (seen && key && key !== seen) void load();
     seen = key;
   });
 
@@ -115,7 +107,7 @@
   /** A job loads the folder of the registered agent it works for, which may sit above a job that started it. */
   const folderName = $derived(ownFolder ? (agent?.name ?? "") : (agent?.agent?.name ?? (folder ? agents.byId(folder.agent)?.name : undefined) ?? "its agent"));
   function setFolder(next: AgentFolder) {
-    if (config && next.agent === config.folder?.agent) config = { ...config, folder: next };
+    if (config && next.agent === config.folder?.agent) answer.set({ ...config, folder: next });
   }
   /** A comm thread is named by its room, never as an agent or a job. */
   const commLabel = (room: string) => {
@@ -208,7 +200,7 @@
       <AgentForMe {agentId} name={forName || agentId} />
     {:else if error && !config}
       <EmptyState icon="warning" title="The configuration could not load" description={error} size="sm">
-        {#snippet action()}<Button size="sm" icon="refresh" onclick={() => load(agentId)}>Retry</Button>{/snippet}
+        {#snippet action()}<Button size="sm" icon="refresh" onclick={load}>Retry</Button>{/snippet}
       </EmptyState>
     {:else if !config}
       <div class="loading"><LoadingText text="Reading its configuration…" /></div>

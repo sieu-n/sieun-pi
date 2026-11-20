@@ -4,7 +4,7 @@
   import { Button, Menu, toast, type MenuEntry } from "$lib/ui";
   import { checkInButton, checkInChoices, checkInStatus, everyLabel, nextLabel, pauseNow } from "./schedule";
 
-  let { chatId, view = $bindable(), now }: { chatId: string; view: CheckInView | null; now: number } = $props();
+  let { chatId, view, onchange, now }: { chatId: string; view: CheckInView | null; onchange: (view: CheckInView) => void; now: number } = $props();
 
   let open = $state(false);
   let anchor = $state<HTMLElement>();
@@ -16,7 +16,7 @@
   async function set(change: { everyMs?: number; pause?: CheckInPause | null }) {
     busy = true;
     try {
-      view = await api.setCheckIn(chatId, change);
+      onchange(await api.setCheckIn(chatId, change));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "The check-in did not change.");
     } finally {

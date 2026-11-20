@@ -4,7 +4,7 @@
   import { boardHref } from "./chips";
   import { lastLabel, nextLabel, VERDICT_WORDS, whenLabel, type Verdict } from "./schedule";
 
-  let { chatId, duties = $bindable(), now, focus = null }: { chatId: string; duties: DutyRow[]; now: number; focus?: string | null } = $props();
+  let { chatId, duties, onchange, now, focus = null }: { chatId: string; duties: DutyRow[]; onchange: (duties: DutyRow[]) => void; now: number; focus?: string | null } = $props();
 
   let busy = $state<string | null>(null);
   let opened = $state<string | null>(null);
@@ -16,7 +16,7 @@
   async function act(duty: DutyRow, action: "run" | "pause" | "resume") {
     busy = `${duty.duty.id}:${action}`;
     try {
-      duties = (await api.dutyAction(chatId, { duty: duty.duty.id, action })).duties;
+      onchange((await api.dutyAction(chatId, { duty: duty.duty.id, action })).duties);
       if (action === "run") toast.success(`Started a run of ${duty.duty.id}`);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "The duty did not change.");

@@ -3,7 +3,7 @@
    * The For <agent> tab: every message the agent is involved in, as Slack's Activity list shows a person's. The server derives the items
    * from the room posts (server/for-me.ts); the agent marks them with its mark_message tool, and the owner can mark one here too.
    */
-  import { api, live, type ForMeItem, type ForMeList, type Reaction } from "$lib/api";
+  import { api, live, reads, view, type ForMeItem, type ForMeList, type Reaction } from "$lib/api";
   import { Avatar, Button, Chip, Icon, IconButton, LoadingText, Tabs, ageLabel, stampLabel, toast } from "$lib/ui";
   import { conversationHref } from "$lib/router.svelte";
   import { avatarOf } from "$pages/channel/present";
@@ -13,32 +13,20 @@
   let { agentId, name }: Props = $props();
 
   let filter = $state<ForFilter>("pending");
-  let list = $state<ForMeList | null>(null);
-  let error = $state("");
+  /** The list of the agent and filter, from the page's kept answer when it holds one and read again behind it. */
+  const answer = view(() => reads.forMe(agentId, filter));
+  /** The last list this agent's tab showed, which stays while another filter's first answer is on its way. */
+  let last = $state.raw<{ agent: string; list: ForMeList } | null>(null);
+  const list = $derived(answer.value ?? (last?.agent === agentId ? last.list : null));
+  const error = $derived(answer.error ?? "");
   let marking = $state<string | null>(null);
   let now = $state(Date.now());
-  let latest = 0;
-
-  /** Only the newest call writes, so a slow answer never replaces a newer one. */
-  async function load() {
-    const mine = ++latest;
-    const id = agentId;
-    const status = filter;
-    try {
-      const next = await api.forMe(id, status);
-      if (mine !== latest) return;
-      list = next;
-      error = "";
-      now = Date.now();
-    } catch (reason) {
-      if (mine === latest) error = reason instanceof Error ? reason.message : String(reason);
-    }
-  }
+  const load = () => answer.refresh();
 
   $effect(() => {
-    void agentId;
-    void filter;
-    void load();
+    if (!answer.value) return;
+    last = { agent: agentId, list: answer.value };
+    now = Date.now();
   });
   $effect(() => {
     const id = agentId;
@@ -71,7 +59,7 @@
       if (list) {
         const moved = list.pending - pending;
         const items = filter === "all" ? list.items.map((row) => (row.id === next.id ? next : row)) : list.items.filter((row) => row.id !== next.id);
-        list = { ...list, items, pending, completed: list.completed + moved };
+        answer.set({ ...list, items, pending, completed: list.completed + moved });
       }
     } catch (reason) {
       toast.error(reason instanceof Error ? reason.message : "Could not mark the message");

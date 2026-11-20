@@ -1,37 +1,38 @@
-import { api, live, type BoardRow } from "$lib/api";
+import { kept, live, reads, type BoardRow } from "$lib/api";
 
-/** Every chat's board row from /api/boards, shared by the Board sidebar and the index so they fetch once and agree; reloads on board and hello events. */
+/**
+ * Every chat's board row from /api/boards, shared by the Board sidebar and the index so they read once and agree. It is the page's kept
+ * answer (kept.svelte.ts), read again on each board event and after the socket comes back.
+ */
 class Boards {
-  rows = $state<BoardRow[] | null>(null);
-  error = $state<string | null>(null);
+  private get kept() {
+    return kept(reads.boards());
+  }
+
   private started = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
-  private latest = 0;
 
   start(): void {
     if (this.started) return;
     this.started = true;
+    this.kept.open();
     live.on(event => {
-      if (event.type === "board" || event.type === "hello") {
-        clearTimeout(this.timer);
-        this.timer = setTimeout(() => void this.load(), 150);
-      }
+      if (event.type !== "board") return;
+      clearTimeout(this.timer);
+      this.timer = setTimeout(() => void this.kept.read(), 150);
     });
-    void this.load();
   }
 
-  /** Only the newest call writes, so a slow answer never replaces a newer one. */
-  async load(): Promise<void> {
-    const mine = ++this.latest;
-    try {
-      const rows = await api.boards();
-      if (mine !== this.latest) return;
-      this.rows = rows;
-      this.error = null;
-    } catch (e) {
-      if (mine !== this.latest) return;
-      this.error = e instanceof Error ? e.message : "The boards did not load.";
-    }
+  load(): Promise<void> {
+    return this.kept.read();
+  }
+
+  get rows(): BoardRow[] | null {
+    return this.kept.value;
+  }
+
+  get error(): string | null {
+    return this.kept.error;
   }
 
   row(chatId: string): BoardRow | undefined {

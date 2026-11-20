@@ -187,13 +187,36 @@ export function attach(file: Blob): Attached {
   return { preview: URL.createObjectURL(file), mimeType: file.type || "image/png", file, ref };
 }
 
+/**
+ * A GET whose answer the page keeps and shows before it reads it again (kept.svelte.ts): its path and, in the type only, its answer.
+ * `live` marks one the socket keeps current between reads, by the event that carries its whole answer.
+ */
+export interface Read<T> { readonly path: string; readonly live?: true; readonly answer?: T }
+const read = <T>(path: string, live?: true): Read<T> => ({ path, ...(live ? { live } : {}) });
+export const get = <T>(of: Read<T>, wait?: Wait): Promise<T> => call<T>("GET", of.path, undefined, undefined, wait);
+
+/** The reads of the panels the owner opens: the Agents page, an agent's page, and a chat's board with its duties, check-in and jobs. */
+export const reads = {
+  agents: () => read<AgentSummary[]>("/api/agents"),
+  models: () => read<ModelCatalog>("/api/models"),
+  /** Channels and Solo rooms; a DM is listed by agent, never here. */
+  rooms: () => read<Room[]>("/api/rooms"),
+  boards: () => read<BoardRow[]>("/api/boards"),
+  /** One agent as a role: purpose, where it runs, its board, memory, instructions and swarm (API.md, Agents). */
+  agentConfig: (id: AgentId) => read<AgentConfig>(`/api/agents/${enc(id)}/config`),
+  /** An agent's For list, newest activity first; the counts cover the whole list whatever `status` picks (API.md, For <agent>). */
+  forMe: (agent: AgentId, status: ForMeStatus | "all" = "pending") => read<ForMeList>(`/api/agents/${enc(agent)}/for-me${query({ status })}`),
+  board: (chat: string) => read<BoardView>(`${boardBase(chat)}/board`, true),
+  duties: (chat: string) => read<{ duties: DutyRow[] }>(`${boardBase(chat)}/duties`, true),
+  checkIn: (chat: string) => read<CheckInView>(`${boardBase(chat)}/check-in`),
+  chatAgents: (chat: string) => read<{ agents: ChatAgent[] }>(`${boardBase(chat)}/agents`),
+};
+
 export const api = {
   me: () => call<Me>("GET", "/api/me"),
   sidebar: () => call<Sidebar>("GET", "/api/sidebar"),
   conversations: (opts: { archived?: boolean } = {}) => call<ConversationSummary[]>("GET", `/api/conversations${query({ archived: opts.archived ? 1 : undefined })}`),
-  models: () => call<ModelCatalog>("GET", "/api/models"),
 
-  agents: (opts: { archived?: boolean } = {}) => call<AgentSummary[]>("GET", `/api/agents${query({ archived: opts.archived ? 1 : undefined })}`),
   jobs: (opts: { archived?: boolean } = {}) => call<AgentSummary[]>("GET", `/api/jobs${query({ archived: opts.archived ? 1 : undefined })}`),
   /**
    * A new agent with its work thread and DM room (`room`); `kind` "job" with a `parent` files a root thread under that agent as a job instead,
@@ -203,8 +226,6 @@ export const api = {
     call<AgentSummary>("POST", "/api/agents", input),
   /** The boxes that run pi-host and can hold an agent, the chat's own box marked `self`, each up or away (agent-model.md phase 6). */
   agentHosts: () => call<AgentHostList>("GET", "/api/agent-hosts"),
-  /** One agent as a role: purpose, where it runs, its board, memory, instructions and swarm (API.md, Agents). */
-  agentConfig: (id: AgentId) => call<AgentConfig>("GET", `/api/agents/${enc(id)}/config`),
   /** The agent folder: its brief and its memory, which every thread of the agent loads (API.md, Agent folder). */
   agentFolder: (id: AgentId) => call<AgentFolder>("GET", `/api/agents/${enc(id)}/folder`),
   setBrief: (id: AgentId, text: string) => call<AgentFolder>("PUT", `/api/agents/${enc(id)}/brief`, { text }),
@@ -250,8 +271,6 @@ export const api = {
   threadJobs: (thread: string) => call<JobNode[]>("GET", `/api/threads/${enc(thread)}/jobs`),
   openDm: (agent: AgentId) => call<ConversationSummary>("POST", "/api/dms", { agent }),
 
-  /** Channels and Solo rooms; a DM is listed by agent, never here. */
-  rooms: () => call<Room[]>("GET", "/api/rooms"),
   createRoom: (input: RoomInput) => call<Room>("POST", "/api/rooms", input),
   /** `closed` closes or reopens a Solo room. */
   updateRoom: (id: string, patch: RoomPatch) => call<Room>("PATCH", `/api/rooms/${enc(id)}`, patch),
@@ -264,24 +283,17 @@ export const api = {
   /** The recent messages the Cmd K search matches in the page (pages/search/recent.ts), only those after `after` when given. */
   searchRecent: (params: { after?: number } = {}) => call<SearchResult>("GET", `/api/search/recent${query(params)}`, undefined, undefined, { background: "ahead" }),
 
-  board: (chat: string) => call<BoardView>("GET", `${boardBase(chat)}/board`),
   boardOps: (chat: string, ops: BoardOp[]) => call<BoardView>("POST", `${boardBase(chat)}/board`, { ops }),
   /** Copies a Prime chat's board, duties and check-in interval into the thread it moved to. */
   importPrime: (chat: string, prime: string) =>
     call<{ board: boolean; duties: number; runs: number; checkInMs: number | null }>("POST", `/api/threads/${enc(chat)}/import-prime`, { prime }),
-  chatAgents: (chat: string) => call<{ agents: ChatAgent[] }>("GET", `${boardBase(chat)}/agents`),
-  duties: (chat: string) => call<{ duties: DutyRow[] }>("GET", `${boardBase(chat)}/duties`),
   /** `result` says what a set or remove did, such as "added d3", "updated d1", "unchanged d1" or "removed d2". */
   dutyAction: (chat: string, action: DutyAction) => call<{ duties: DutyRow[]; result?: string }>("POST", `${boardBase(chat)}/duties`, action),
-  checkIn: (chat: string) => call<CheckInView>("GET", `${boardBase(chat)}/check-in`),
   setCheckIn: (chat: string, patch: CheckInPatch) => call<CheckInView>("POST", `${boardBase(chat)}/check-in`, patch),
   forYou: (signal?: AbortSignal) => call<{ items: ForYouItem[] }>("GET", "/api/for-you", undefined, signal),
-  /** An agent's For list, newest activity first; the counts cover the whole list whatever `status` picks (API.md, For <agent>). */
-  forMe: (agent: AgentId, status: ForMeStatus | "all" = "pending") => call<ForMeList>("GET", `/api/agents/${enc(agent)}/for-me${query({ status })}`),
   /** Marks one item, `<room id>/<post id>`, completed or pending again; the same mark twice changes nothing. */
   markForMe: (agent: AgentId, messageId: string, completed: boolean) =>
     call<{ item: ForMeItem; pending: number }>("POST", `/api/agents/${enc(agent)}/for-me`, { messageId, completed }),
-  boards: () => call<BoardRow[]>("GET", "/api/boards"),
 
   usage: (opts: { days: number; thread?: string; host?: string }) => call<UsageReport>("GET", `/api/usage${query(opts)}`),
   pool: () => call<AccountsView>("GET", "/api/pool"),

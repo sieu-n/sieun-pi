@@ -6,7 +6,8 @@
  * lands; nothing waits on the network before the composer takes the next message. An attached image shows from its preview while its
  * upload ends, and the post names the uploaded ref.
  */
-import { api, ApiError, attach, reportNotDelivered, roomOf, type Attached, type Wait } from "./client.ts";
+import { api, ApiError, attach, reads, reportNotDelivered, roomOf, type Attached, type Read, type Wait } from "./client.ts";
+import { kept, type Kept } from "./kept.svelte.ts";
 import { heldImages } from "./held-images.ts";
 import { heldSends, type HeldSend } from "./held-sends.ts";
 import { holdReload, releaseReload } from "./reload.ts";
@@ -375,6 +376,8 @@ class Global {
           this.forYouCount = event.sidebar.forYou;
           this.ready = true;
           roomsAhead(event.sidebar);
+          for (const queue of panelQueues.values()) queue.again();
+          boardsAhead(this.agents);
           break;
         case "sidebar":
           this.sidebar = event.sidebar;
@@ -383,9 +386,11 @@ class Global {
           break;
         case "agent":
           this.agents = upsert(this.agents, event.agent);
+          boardsAhead(this.agents);
           break;
         case "agent_removed":
           this.agents = this.agents.filter(a => a.id !== event.id);
+          boardsAhead(this.agents);
           break;
         case "job":
           this.jobs = upsert(this.jobs, event.job);
@@ -404,6 +409,7 @@ class Global {
           this.agents = withStatus(this.agents, this.agents.find(a => a.id === id || a.thread === id || (a.room === id && !a.comm?.length)), status);
           this.jobs = withStatus(this.jobs, this.jobsById.get(id), status);
           this.conversations = withStatus(this.conversations, this.conversationsById.get(id), status);
+          boardsAhead(this.agents);
           break;
         }
         case "for_you":
@@ -620,42 +626,47 @@ export function prefetchThread(channel: ConversationId | null, key: string): voi
   } else if (!timelinePages.has(key)) timelinePages.prefetch(key, () => readTimeline(key));
 }
 
-/** What a read ahead needs to know of a conversation: when it last changed, and whether a run is changing it now. */
-type Ahead = { id: ConversationId; at: number; working: boolean };
+/** What a read ahead needs to know of a conversation or a chat: when it last changed, and whether a run is changing it now. */
+type Ahead = { id: string; at: number; working: boolean };
 
 /**
- * Reads conversations before the owner opens them, one at a time, so a first open shows the newest page from the page's cache with no
- * call in front of it. A conversation is read again when it shows activity newer than the page kept, once it is idle: a working one
- * changes with every step, and its open view reads it live. A hidden page reads nothing until it shows again; those first reads also open
- * the connection again after a sleep, where on 11-19 a lone replies call 29 min after the last one took 3 round trips.
+ * Reads conversations and panels before the owner opens them, one at a time, so a first open shows from the page's cache with no call in
+ * front of it. One is read again when it shows activity newer than what the page kept, once it is idle: a working one changes with every
+ * step, and its open view reads it live. A hidden page reads nothing until it shows again; those first reads also open the connection
+ * again after a sleep, where on 11-19 a lone replies call 29 min after the last one took 3 round trips.
  */
-class ReadAhead {
-  /** Each conversation's `at` when its kept page was read. */
-  private readonly readAt = new Map<ConversationId, number>();
-  private wanted: Ahead[] = [];
+class ReadAhead<Wanted extends Ahead = Ahead> {
+  /** Each one's `at` when its kept answer was read. */
+  private readonly readAt = new Map<string, number>();
+  private wanted: Wanted[] = [];
   private running = false;
 
-  /** `limit` is the page size to read and keep, the server's own when absent. */
-  constructor(private readonly limit?: number) {
+  /** `warm` reads one and keeps the answer; one that `viewing` names has an open view, which keeps it current itself. */
+  constructor(private readonly warm: (wanted: Wanted) => Promise<unknown>, private readonly viewing: (id: string) => boolean = () => false) {
     if (typeof document !== "undefined") document.addEventListener("visibilitychange", () => void this.run());
   }
 
-  /** The conversations to keep read, the first one first. */
-  want(list: Ahead[]): void {
+  /** What to keep read, the first one first. */
+  want(list: Wanted[]): void {
     this.wanted = list;
     void this.run();
   }
 
   /** A view of the conversation closed with its page current as of its newest activity. */
-  seen(id: ConversationId): void {
+  seen(id: string): void {
     const found = this.wanted.find(c => c.id === id);
     if (found) this.readAt.set(id, found.at);
   }
 
-  private next(): Ahead | undefined {
+  /** The socket came back, so what the page kept may have missed changes: everything wanted is read again. */
+  again(): void {
+    this.readAt.clear();
+  }
+
+  private next(): Wanted | undefined {
     return this.wanted.find(c => {
       const readAt = this.readAt.get(c.id);
-      return !timelinePages.viewing(c.id) && (readAt === undefined || (!c.working && c.at > readAt));
+      return !this.viewing(c.id) && (readAt === undefined || (!c.working && c.at > readAt));
     });
   }
 
@@ -664,10 +675,8 @@ class ReadAhead {
     this.running = true;
     try {
       for (let c = this.next(); c && document.visibilityState === "visible"; c = this.next()) {
-        const { id } = c;
-        this.readAt.set(id, c.at);
-        await timelinePages.warm(id, wait => readTimeline(id, undefined, wait, this.limit),
-          ({ page, header }) => ({ items: shownItems(id, page.items), older: page.older, header, ...(this.limit ? { limit: this.limit } : {}) }));
+        this.readAt.set(c.id, c.at);
+        await this.warm(c).catch(() => undefined);
       }
     } finally {
       this.running = false;
@@ -675,8 +684,61 @@ class ReadAhead {
   }
 }
 
+/** Reads a conversation's newest page ahead and keeps it as the page to show; `limit` is the page size, the server's own when absent. */
+const warmTimeline = (limit?: number) => ({ id }: Ahead): Promise<void> =>
+  timelinePages.warm(id, wait => readTimeline(id, undefined, wait, limit),
+    ({ page, header }) => {
+      sawHeader(header);
+      return { items: shownItems(id, page.items), older: page.older, header, ...(limit ? { limit } : {}) };
+    });
+const viewingTimeline = (id: string): boolean => timelinePages.viewing(id);
+
+/** A panel to keep read: the reads it shows when it opens (`reads` in client.ts). */
+type PanelAhead = Ahead & { reads: Read<unknown>[] };
+const panelQueues = new Map<string, ReadAhead<PanelAhead>>();
+
+/**
+ * Keeps the panels of one screen read ahead, the first one first, each read kept in kept.svelte.ts; `screen` names the list, and a new
+ * list replaces the last one of that screen.
+ */
+export function panelsAhead(screen: string, list: PanelAhead[]): void {
+  let queue = panelQueues.get(screen);
+  if (!queue) {
+    queue = new ReadAhead<PanelAhead>(async panel => {
+      for (const read of panel.reads) await kept(read).ahead();
+    });
+    panelQueues.set(screen, queue);
+  }
+  queue.want(list);
+}
+
+/**
+ * What a chat's board shows when it opens: the board and the duties, which every room of the chat also reads for its board id chips, then
+ * the check-in and the jobs. On 11-20 the four were 47 KB, and 142, 54, 0.1 and 55 KB before brotli, for ag_vent, the largest of 8 agents.
+ */
+export const boardReads = (chat: string): Read<unknown>[] => [reads.board(chat), reads.duties(chat), reads.checkIn(chat), reads.chatAgents(chat)];
+/** As many chats as kept.svelte.ts holds the four reads of beside the Agents page's own. */
+const BOARDS_AHEAD = 20;
+/** The home chats of the channels whose headers the page read, which no agent's summary names. */
+const homeChats = new Set<string>();
+
+/** A header the page read: a channel's names its home chat, whose board the channel's board pane shows. */
+function sawHeader(header: ConversationHeader): void {
+  if (!header.homeChat || homeChats.has(header.homeChat)) return;
+  homeChats.add(header.homeChat);
+  boardsAhead();
+}
+
+/** Every registered agent's board panel and each channel's home chat's, the agent that worked last first. */
+function boardsAhead(agents: readonly AgentSummary[] = global.agents): void {
+  const chats = agents.filter(agent => agent.kind === "chat" && !agent.archived).sort((a, b) => b.updatedAt - a.updatedAt)
+    .map(agent => ({ id: agent.id, at: agent.updatedAt, working: agent.status === "working" }));
+  const homes = [...homeChats].filter(chat => !chats.some(agent => agent.id === chat)).map(chat => ({ id: chat, at: 0, working: false }));
+  panelsAhead("boards", [...chats, ...homes].slice(0, BOARDS_AHEAD).map(chat => ({ ...chat, reads: boardReads(chat.id) })));
+}
+
 /** The sidebar's rooms: unread ones first, then the newest, `ROOMS_AHEAD` of them. */
-const rooms = new ReadAhead();
+const rooms = new ReadAhead(warmTimeline(), viewingTimeline);
 function roomsAhead(sidebar: Sidebar): void {
   const unread = (room: ConversationSummary) => Number(room.unread > 0 || room.hasNew);
   rooms.want([...sidebar.solo, ...sidebar.channels, ...sidebar.dms]
@@ -690,7 +752,7 @@ function roomsAhead(sidebar: Sidebar): void {
  * shows the short page and refreshes it at the same size; the entries above it load when the owner scrolls up.
  */
 const JOB_PAGE = 10;
-const jobPills = new ReadAhead(JOB_PAGE);
+const jobPills = new ReadAhead(warmTimeline(JOB_PAGE), viewingTimeline);
 function jobsAhead(items: readonly Item[]): void {
   const refs = items.flatMap(item => (item.kind === "turn" ? item.jobs : item.kind === "message" ? item.jobs ?? [] : []));
   jobPills.want(refs.reverse().slice(0, JOBS_AHEAD).map(job => ({ id: job.conversation, at: job.lastAt, working: job.status === "working" })));
@@ -779,6 +841,7 @@ export class Timeline {
       this.limit = last?.limit;
       const { page, header } = around ? await readTimeline(this.id, around) : await timelinePages.take(this.id, () => readTimeline(this.id, undefined, wait, last?.limit));
       this.header = header;
+      sawHeader(header);
       this.status = header.summary.status;
       this.queue = header.queue ?? null;
       if (last) {
@@ -968,39 +1031,38 @@ export class Replies {
 
 export const replies = (channel: ConversationId, root: string): Replies => new Replies(channel, root);
 
-/** One chat's board, live: the server sends the whole board on each change, so the store replaces it. */
+/** One chat's board as a view holds it until `close()`: the kept answer (kept.svelte.ts), which the socket's board events keep current. */
 export class BoardStore {
-  /** Raw state, replaced whole on each change; a board measured 60 KB on 11-03. */
-  view = $state.raw<BoardView | null>(null);
-  loading = $state(true);
-  error = $state<string | null>(null);
-  private stopListen: () => void;
+  private readonly kept: Kept<BoardView>;
+  private readonly leave: () => void;
 
   constructor(readonly chatId: string) {
-    this.stopListen = live.on(event => {
-      if (event.type === "board" && event.chatId === chatId) this.view = { board: event.board, awaitingGo: event.awaitingGo };
-      if (event.type === "hello") void this.refresh();
-    });
-    void this.refresh();
+    this.kept = kept(reads.board(chatId));
+    this.leave = this.kept.open();
   }
 
-  async refresh(): Promise<void> {
-    try {
-      this.view = await api.board(this.chatId);
-      this.error = null;
-    } catch (error) {
-      this.error = message(error);
-    } finally {
-      this.loading = false;
-    }
+  get view(): BoardView | null {
+    return this.kept.value;
+  }
+
+  get loading(): boolean {
+    return this.kept.loading;
+  }
+
+  get error(): string | null {
+    return this.kept.error;
+  }
+
+  refresh(): Promise<void> {
+    return this.kept.read();
   }
 
   async apply(ops: BoardOp[]): Promise<void> {
-    this.view = await api.boardOps(this.chatId, ops);
+    this.kept.set(await api.boardOps(this.chatId, ops));
   }
 
   close(): void {
-    this.stopListen();
+    this.leave();
   }
 }
 export const boardStore = (chatId: string): BoardStore => new BoardStore(chatId);

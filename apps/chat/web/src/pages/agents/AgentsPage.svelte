@@ -1,22 +1,24 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { agents, api, connection, jobs, type AgentSummary, type ModelCatalog, type ThinkingLevel } from "$lib/api";
+  import { agents, api, connection, jobs, panelsAhead, reads, view, type AgentSummary, type ThinkingLevel } from "$lib/api";
   import { Button, EmptyState, Menu, PanelHeader, Skeleton, toast, type Anchor, type MenuEntry } from "$lib/ui";
   import { router, hrefFor } from "$lib/router.svelte";
   import AgentCard from "./AgentCard.svelte";
   import AgentConfigPanel from "./AgentConfigPanel.svelte";
   import CreateAgentDialog from "./CreateAgentDialog.svelte";
   import NewAgentTile from "./NewAgentTile.svelte";
-  import { ACTION_LABEL, actionsFor, agentFromRoute, agentsShown, jobCounts, jobsLabel, openTarget, renamedSection, sectionFromParams, type ConfigSection } from "./agents-model";
+  import { ACTION_LABEL, actionsFor, agentFromRoute, agentsShown, hasForList, jobCounts, jobsLabel, openTarget, renamedSection, sectionFromParams, type ConfigSection } from "./agents-model";
   import { createAgent } from "./create-agent.svelte";
 
   /** `#/agents/<id>` opens that agent's page in place of the grid, or a job's, which its agent's Jobs tab links to. */
   const configId = $derived(agentFromRoute(router.route.rest));
   const section = $derived(sectionFromParams(router.route.params));
-  let catalog = $state<ModelCatalog | null>(null);
-  /** The first list of registered agents over HTTP, so the page can show an error when the live socket never connects. */
-  let fetched = $state<AgentSummary[] | null>(null);
-  let loadError = $state("");
+  const models = view(() => reads.models());
+  const catalog = $derived(models.value);
+  /** The list of registered agents over HTTP, so the page can show an error when the live socket never connects. */
+  const listed = view(() => reads.agents());
+  const fetched = $derived(listed.value);
+  const loadError = $derived(agents.ready ? "" : (listed.error ?? ""));
   let menu = $state<{ agent: AgentSummary; anchor: Anchor } | null>(null);
   let focused = $state<string | null>(null);
   let now = $state(Date.now());
@@ -31,17 +33,16 @@
   const shown = $derived(agentsShown(all));
   const jobsOf = $derived(jobCounts(jobs.list));
 
-  async function load() {
-    loadError = "";
-    try {
-      fetched = await api.agents();
-    } catch (reason) {
-      if (!agents.ready) loadError = reason instanceof Error ? reason.message : String(reason);
-    }
-  }
+  const load = () => listed.refresh();
+  /** Each card's page is read ahead while the grid shows, so a card opens with its configuration on the screen. */
+  $effect(() => {
+    panelsAhead("agents", shown.map((agent) => ({
+      id: agent.id, at: agent.updatedAt, working: agent.status === "working",
+      reads: [reads.agentConfig(agent.id), ...(hasForList(agent.id) ? [reads.forMe(agent.id)] : [])],
+    })));
+    return () => panelsAhead("agents", []);
+  });
   onMount(() => {
-    void load();
-    api.models().then((next) => (catalog = next), () => (catalog = null));
     const timer = setInterval(() => (now = Date.now()), 30_000);
     return () => clearInterval(timer);
   });
@@ -75,7 +76,7 @@
   }
   function archive(agent: AgentSummary) {
     void run("Archive", () => api.archiveAgent(agent.id), `Archived ${agent.name}`).then(() => {
-      if (fetched) fetched = fetched.map((a) => (a.id === agent.id ? { ...a, archived: true } : a));
+      if (fetched) listed.set(fetched.map((a) => (a.id === agent.id ? { ...a, archived: true } : a)));
       if (configId === agent.id) router.navigate(hrefFor("agents", []));
     });
   }

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { agents, api, boardStore, isSoloRoom, jobs, me, prefetchThread, timeline, type Item } from "$lib/api";
+  import { agents, api, boardStore, isSoloRoom, jobs, me, prefetchThread, reads, timeline, view, type Item } from "$lib/api";
   import BoardPanel from "$pages/board/BoardPanel.svelte";
   import { boardHref, boardTitles, rememberTitles } from "$pages/board/chips";
   import { conversationHref, router } from "$lib/router.svelte";
@@ -132,12 +132,8 @@
     const current = boardView;
     return () => current?.close();
   });
-  let dutyTitles = $state<{ id: string; name: string }[]>([]);
-  $effect(() => {
-    const chat = boardChat;
-    dutyTitles = [];
-    if (chat) void api.duties(chat).then((body) => (dutyTitles = body.duties.map((d) => d.duty))).catch(() => undefined);
-  });
+  const dutyRows = view(() => (boardChat ? reads.duties(boardChat) : null));
+  const dutyTitles = $derived(dutyRows.value?.duties.map((d) => d.duty) ?? []);
   const boardContext = $derived(boardChat && boardView?.view?.board ? { chatId: boardChat, titles: boardTitles(boardView.view.board, dutyTitles) } : null);
   $effect(() => {
     if (boardContext) rememberTitles(boardContext.chatId, boardContext.titles);
