@@ -68,23 +68,34 @@ test("a thread hit opens the page around its entry, focused on the item that hol
   assert.ok(page.items.some(i => i.id === page.focus));
 });
 
-test("each keystroke answers in under 150 ms at the 90th percentile with the exact count, once Meilisearch holds the index", async () => {
+/** Each keystroke's time is the median of three, so one stall of a box under load (us-metal02 ran at load 250 on 80 cores on 11-03) reads as one. */
+async function keystrokes(filters: string, expected: number): Promise<void> {
   await s.app.searchEngine.settled();
-  const expected: Record<string, number> = { z: ENTRIES, ze: ENTRIES, zep: ENTRIES, zeph: ENTRIES, zephy: ENTRIES, zephyr: ENTRIES, r: ENTRIES, re: ENTRIES, rel: ENTRIES, rela: ENTRIES, relay: ENTRIES };
-  // Each keystroke's time is the median of three, so one stall of a box under load (us-metal02 ran at load 250 on 80 cores on 11-03) reads as one.
   const times: number[] = [];
-  for (const q of Object.keys(expected)) {
+  for (const q of ["z", "ze", "zep", "zeph", "zephy", "zephyr", "r", "re", "rel", "rela", "relay"]) {
     const runs: number[] = [];
     for (let round = 0; round < 3; round++) {
-      const { ms, body } = await timed(`/api/search?q=${q}&limit=20`);
+      const { ms, body } = await timed(`/api/search?q=${q}&limit=20${filters}`);
       runs.push(ms);
-      assert.ok(body.total >= expected[q]!, `${q}: ${body.total}`);
+      assert.ok(body.total >= expected, `${q}${filters}: ${body.total}`);
       assert.equal(body.hits.length, 20);
     }
     times.push(runs.sort((a, b) => a - b)[1]!);
   }
   const sorted = [...times].sort((a, b) => a - b);
   const p90 = sorted[Math.ceil(sorted.length * 0.9) - 1]!;
-  assert.ok(p90 < 150, `keystrokes took ${times.map(ms => ms.toFixed(0)).join(", ")} ms, p90 ${p90.toFixed(0)} ms`);
+  assert.ok(p90 < 150, `keystrokes${filters} took ${times.map(ms => ms.toFixed(0)).join(", ")} ms, p90 ${p90.toFixed(0)} ms`);
+}
+
+test("each keystroke answers in under 150 ms at the 90th percentile with the exact count, once Meilisearch holds the index", async () => {
+  await keystrokes("", ENTRIES);
   assert.equal((await s.get<SearchResult>("/api/search?q=zephyr%20relay")).total, ENTRIES);
+});
+
+test("so does each keystroke with filters on: many from values and where", async () => {
+  // "Big" is a root chat no agent holds: the owner's inputs are its root words, and the tool output is inside the work.
+  await keystrokes("&where=tool&from=owner,agents", ENTRIES - ENTRIES / 50);
+  await keystrokes("&where=root,thread&from=owner", ENTRIES / 50);
+  assert.equal((await s.get<SearchResult>("/api/search?q=zephyr&where=tool")).total, ENTRIES - ENTRIES / 50);
+  assert.equal((await s.get<SearchResult>("/api/search?q=zephyr&where=root")).total, ENTRIES / 50);
 });
