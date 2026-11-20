@@ -294,13 +294,19 @@ export function buildDelta(state: HarnessState, delivered: string[], since: numb
   return out.join("\n");
 }
 
-/** Prime's `VFn`: the state as the planner and the review gate see it, 40 entries per kind and 240 characters each. */
-export function plannerOverview(state: HarnessState): string {
+/**
+ * Prime's `VFn`: the state as the planner and the review gate see it, 40 entries per kind and 240 characters each. With `localFirst`, for a
+ * sw factory agent's refine, every local entry (the agent's memory) comes first and only the global entries share the 40: with the global
+ * store's 758 memories (11-21) ahead of them, Prime's order showed the planner none of an agent's own entries, so it saved near copies it could not see.
+ */
+export function plannerOverview(state: HarnessState, options: { localFirst?: boolean } = {}): string {
   const lines: string[] = [];
   for (const kind of Object.keys(state.entries) as (keyof HarnessState["entries"])[]) {
     const entries = Object.values(state.entries[kind]);
+    const local = options.localFirst ? entries.filter(e => e.scope === "local") : [];
+    const rest = options.localFirst ? entries.filter(e => e.scope !== "local") : entries;
     lines.push(`${kind}: ${entries.length}`);
-    for (const e of entries.slice(0, 40)) {
+    for (const e of [...local, ...rest.slice(0, 40)]) {
       const bad = malformedEntry(e);
       if (bad) {
         lines.push(`- harness: skipped malformed entry ${e.id} (${bad})`);
@@ -311,7 +317,7 @@ export function plannerOverview(state: HarnessState): string {
       const ref = e.kind === "skill" && Object.keys(e.reference).length > 0 ? ` ref=${JSON.stringify(e.reference).slice(0, 240)}` : "";
       lines.push(`- [${e.scope ?? "global"}:${e.id}] ${e.title} (${e.path}, v${e.version})${ref}${args}: ${content}`);
     }
-    if (entries.length > 40) lines.push(`- +${entries.length - 40} more ${kind} entries`);
+    if (rest.length > 40) lines.push(`- +${rest.length - 40} more ${kind} entries`);
   }
   return lines.join("\n");
 }

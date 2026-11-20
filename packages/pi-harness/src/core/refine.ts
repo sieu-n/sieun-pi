@@ -444,7 +444,7 @@ export const ROUTE_POLICY =
 export function plannerPrompt(state: HarnessState, history: RefineResult[], conversation: string, args: { global: boolean; instructions?: string; agent?: string; routes?: boolean }): string {
   const policy = args.global ? GLOBAL_POLICY : args.agent ? agentPolicy(args.agent) : LOCAL_POLICY;
   return [
-    `<current_harness_state>\n${plannerOverview(state)}\n</current_harness_state>`,
+    `<current_harness_state>\n${plannerOverview(state, { localFirst: !args.global && args.agent !== undefined })}\n</current_harness_state>`,
     `<refinement_history>\n${historyText(history)}\n</refinement_history>`,
     `<conversation>\n${conversation}\n</conversation>`,
     `<scope_policy>\n${args.routes ? `${policy}\n${ROUTE_POLICY}` : policy}\n</scope_policy>`,
@@ -461,7 +461,7 @@ export type AutoReason = "turn_interval" | "compact";
 export function reviewPrompt(state: HarnessState, history: RefineResult[], conversation: string, trigger: { reason: AutoReason; turnsSinceLastReview: number; agent?: string }): string {
   return [
     `<trigger>\n${trigger.reason}; ${trigger.turnsSinceLastReview} assistant turns since last auto-refine review\n</trigger>`,
-    `<current_harness_state>\n${plannerOverview(state)}\n</current_harness_state>`,
+    `<current_harness_state>\n${plannerOverview(state, { localFirst: trigger.agent !== undefined })}\n</current_harness_state>`,
     `<refinement_history>\n${historyText(history)}\n</refinement_history>`,
     `<conversation>\n${conversation}\n</conversation>`,
     trigger.agent
