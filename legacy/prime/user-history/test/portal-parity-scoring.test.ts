@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { MEDIA_OP, UNMEASURED_PCT, firstMediaUrl, heldPaidReads, parityMetrics, probeMedia, scoredRoutes, type OpenApi, type ProbeResult, type Route } from "../scripts/duties/portal-parity.ts";
+import { MEDIA_OP, UNMEASURED_PCT, classify, firstMediaUrl, heldEgress, heldPaidReads, parityMetrics, probeMedia, scoredRoutes, supplyHoldOf, type OpenApi, type ProbeResult, type Route } from "../scripts/duties/portal-parity.ts";
 
 const doc = (...ops: string[]): OpenApi => {
   const paths: NonNullable<OpenApi["paths"]> = {};
@@ -145,12 +145,55 @@ test("the keyless /v1/media read scores from its own probe though no openapi lis
   assert.equal(fixed.prod_working_pct, 100);
 });
 
-test("a keyless media read the crawler held on purpose scores as the crawler's, not the portal's", async (t) => {
+test("a keyless media read the crawler held on purpose scores as held, not the portal's", async (t) => {
   // 11-20 11:05Z: a refresh_paused staging slot under pause.media_refresh answered 503 and d2 read routes_failing_portal 1.
   const answer = (code: string) => async () => Response.json({ ok: false, error: { code, message: "paused" } }, { status: 503 });
   const url = "https://staging-api.virev.ai/v1/media/tiktok_account/275923/profile_pic?e=1795824000&s=7334454549c453ddf83cf23898bf4a00";
   t.mock.method(globalThis, "fetch", answer("source_paused"));
-  assert.equal((await probeMedia(url, {})).verdict, "crawler");
+  assert.equal((await probeMedia(url, {})).verdict, "held");
   t.mock.method(globalThis, "fetch", answer("media_unavailable"));
   assert.equal((await probeMedia(url, {})).verdict, "portal");
+});
+
+test("while an env's crawler reports a proxy supply hold, the run sends none of its box-egress /v1/crawl calls", () => {
+  // 11-20: d2 sent 108 /v1/crawl direct preset calls to staging in one hour after the owner's rule c230.
+  const status = { ok: true, data: { supply_holds: [{ provider: "geonode", code: "proxy_auth_failed", connect_status: 407, since: 1794213898.7 }] } };
+  const hold = supplyHoldOf(status);
+  assert.match(hold!, /geonode proxy_auth_failed since 2026-11-09/);
+  assert.equal(supplyHoldOf({ ok: true, data: { supply_holds: [] } }), null);
+  assert.ok(supplyHoldOf({ ok: true, data: {} }));
+  const both = doc("GET /v1/crawl/linktree/page", "POST /v1/crawl/web-scraping-api", "GET /v1/instagram/user_feed");
+  const held = heldEgress(both, hold);
+  assert.deepEqual([...held.keys()].sort(), ["GET /v1/crawl/linktree/page", "POST /v1/crawl/web-scraping-api"]);
+  assert.equal(held.get("GET /v1/crawl/linktree/page")!.verdict, "held");
+  assert.equal(heldEgress(both, null).size, 0);
+});
+
+test("an answer that names a proxy supply hold or a switched-off Vent is held, not the crawler's", () => {
+  // 11-20 11:21Z: prod answered 35 calls 503 upstream_error "upstream temporarily unavailable" and d2 read routes_failing_crawler 20.
+  const error = (code: string, message: string) => ({ ok: false, error: { code, message } });
+  assert.equal(classify(503, error("upstream_error", "upstream temporarily unavailable")).verdict, "held");
+  assert.equal(classify(503, error("upstream_error", "integration crawler is switched off on this Vent: c230")).verdict, "held");
+  assert.equal(classify(503, error("upstream_error", "vent_integration_disabled")).verdict, "held");
+  assert.equal(classify(502, error("upstream_error", "The crawl job failed")).verdict, "crawler");
+});
+
+test("a held route counts in neither share nor failure count, and the run lists it under a held count", () => {
+  // 11-20 11:21Z: held answers pinned prod_working_pct at 89% and routes_failing_crawler at 20 while the proxy supply was held.
+  const notSent: ProbeResult = { op: "GET /v1/youtube/live/channel", verdict: "held", status: 0, ms: 0, note: "not sent: held" };
+  const answered: ProbeResult = { op: "GET /v1/tiktok/user_detail", verdict: "held", status: 503, ms: 200, code: "upstream_error", note: "docs example" };
+  const previous = { verdicts: { "staging GET /v1/tiktok/user_detail": "ok" as const } };
+  const { output, state } = parityMetrics({ routes: ROUTES, crawler, docs, sourceErrors: [], at: 1, previous,
+    probes: { prod: [ok("GET /v1/tiktok/live/profile"), notSent], staging: [answered, ok("GET /v1/youtube/channel"), ok("GET /v1/douyin/stored/profile")] } });
+  const { metrics, flagged = [] } = output;
+  assert.equal(metrics.prod_working_pct, 100);
+  assert.equal(metrics.staging_working_pct, 100);
+  assert.equal(metrics.routes_failing_crawler, 0);
+  assert.equal(metrics.prod_routes_held, 1);
+  assert.equal(metrics.staging_routes_held, 1);
+  assert.equal(metrics.routes_held, 2);
+  assert.equal(metrics.prod_v1_ops_called, 1);
+  assert.deepEqual(flagged.filter(slice => slice.kind.startsWith("held_")).map(slice => slice.kind), ["held_prod", "held_staging"]);
+  assert.ok(!flagged.some(slice => slice.kind === "regression"));
+  assert.equal(state.verdicts["staging GET /v1/tiktok/user_detail"], "ok");
 });

@@ -17,8 +17,10 @@ import { checkCleanup } from "./test-org-cleanup.ts";
  *    orgs that it seeds through the staging Convex /api/test/seed route and deletes again through /api/test/cleanup. Prod calls use
  *    VIREV_API_KEY_PROD and skip only the writes SPEC-93 never makes on prod. The paid reads SPEC-93 leaves out of its prod run for cost
  *    (intelligence profile and contact reads) are called here once a UTC day, and the run output lists what each prod call cost.
- * 3. It sorts each answer: 2xx works, an `upstream_*` or `capacity_exhausted` code is a crawler cause (the portal passes crawler errors on that way), anything
- *    else is a portal cause, and a call it could not make or judge is unprobed. A page-1 answer with a cursor gets one page-2 call.
+ * 3. It sorts each answer: 2xx works, an answer that names a proxy supply hold or a paused source is held, an `upstream_*` or `capacity_exhausted`
+ *    code is a crawler cause (the portal passes crawler errors on that way), anything else is a portal cause, and a call it could not make or
+ *    judge is unprobed. A page-1 answer with a cursor gets one page-2 call. While an env's crawler reports a proxy supply hold, the run sends
+ *    no operation that reads from the crawler box (isBoxEgress) and scores each as held. Held routes count in neither share nor failure count.
  * 4. It maps answers to crawler routes through portal-parity.routes.json: an env scores a route its own crawler lists, the route works there
  *    when one of its /v1 operations works there, and a route with no /v1 operation in that env's openapi is missing there.
  * A source it cannot read, an env's crawler openapi included, gives -1 for that env's share, a source_errors count and a flagged slice.
@@ -105,7 +107,7 @@ export type OpenApi = { paths?: Record<string, Record<string, Operation>> };
  */
 export interface Route { crawler: string; group: string; portal: string[]; aliases?: string[]; byDesign?: string; envs?: Env[] }
 export interface ProbeRequest { method: string; path: string; query: Record<string, string>; body?: unknown }
-export type Verdict = "ok" | "crawler" | "portal" | "unprobed" | "skipped";
+export type Verdict = "ok" | "crawler" | "portal" | "held" | "unprobed" | "skipped";
 export interface ProbeResult { op: string; verdict: Verdict; status: number; ms: number; code?: string | undefined; note: string; costUsd?: number }
 /**
  * `ms` holds each "<env> <op>" call's last answer time, which orders the next run's page-1 calls slowest first. `paidAt` holds when each
@@ -178,6 +180,35 @@ export function firstReplyKeys(body: unknown): Record<string, string> | undefine
     }
   }
   return undefined;
+}
+
+/**
+ * Whether an operation reads from the crawler box: every /v1/crawl operation compiles onto the crawler door (POST /api/crawl/fetch), whose
+ * `direct` preset read from the box's own address until auto-sns-agent 5088551f80 reaches that env. On 11-20 d2 sent 108 such calls to
+ * staging in one hour after the owner's rule c230 ("NEVER EVER FUCKING RUN WITHOUT PROXY JUST STOP FOR NOW").
+ */
+export const isBoxEgress = (op: string) => / \/v1\/crawl\//.test(op);
+
+/** What holds an env's proxy supply in its crawler's GET /ops/status answer (`supply_holds`), or null when nothing does. */
+export function supplyHoldOf(status: unknown): string | null {
+  const holds = (status as { data?: { supply_holds?: unknown } } | null)?.data?.supply_holds;
+  if (!Array.isArray(holds)) return "the crawler's /ops/status answer has no supply_holds list";
+  if (!holds.length) return null;
+  return holds.map(hold => {
+    const { provider, code, message, since } = (hold ?? {}) as { provider?: unknown; code?: unknown; message?: unknown; since?: unknown };
+    const what = [provider, code ?? message].filter(part => typeof part === "string" && part).join(" ") || "a hold";
+    return typeof since === "number" ? `${what} since ${new Date(since * 1000).toISOString().slice(0, 16)}Z` : what;
+  }).join("; ");
+}
+
+/** A held result with no call for each box-egress operation of `doc` while `hold` names what holds the env's proxy supply. */
+export function heldEgress(doc: OpenApi, hold: string | null): Map<string, ProbeResult> {
+  const held = new Map<string, ProbeResult>();
+  if (!hold) return held;
+  for (const op of operations(doc).keys()) {
+    if (isBoxEgress(op)) held.set(op, { op, verdict: "held", status: 0, ms: 0, note: `not sent: it reads from the crawler box while the proxy supply is held (${hold}), c230` });
+  }
+  return held;
 }
 
 /** The first item id of a list answer, whose `data` is the list or holds it as `items`. */
@@ -308,9 +339,19 @@ export function errorCode(body: unknown): string | undefined {
 }
 
 /**
- * Who a probe answer blames. 2xx works. `upstream_*` is the crawler, because the portal passes crawler failures on with that code
- * (audit findings-brief.md), and so are capacity_exhausted, temporarily_unavailable and source_paused. 429 and 402 come from this run's own test orgs, and status 0 is a call that got no answer, so those are unprobed.
- * Every other answer is the portal's: a 503 batch_unavailable, a 400 on the docs example or on the portal's own cursor, a 5xx of its own.
+ * The words of an answer the crawler held on purpose while its proxy supply is held or a Vent switch is off (owner rule c230): the crawler's
+ * 503 proxy_provider_down says "upstream temporarily unavailable" (crawler-v3 http/errors.py PUBLIC_SUPPLY_ERROR), which the portal passes on
+ * as 503 upstream_error, and a switched-off Vent integration says "is switched off on this Vent" (vent proxy.py). On 11-20 at 11:21Z prod
+ * answered 35 calls this way, 18 of them /v1/crawl presets, and staging 20, and d2 read them as 20 routes failing in the crawler.
+ */
+const HELD_ANSWER = /\b(proxy_provider_down|proxy_auth_failed|proxy_quota_exhausted|proxy_unreachable|vent_integration_disabled)\b|upstream temporarily unavailable|is switched off on this Vent/;
+
+/**
+ * Who a probe answer blames. 2xx works. An answer that names a proxy supply hold or a paused source (source_paused) is held: nobody fixes it
+ * while the hold lasts. `upstream_*` is the crawler, because the portal passes crawler failures on with that code (audit findings-brief.md),
+ * and so are capacity_exhausted and temporarily_unavailable. 429 and 402 come from this run's own test orgs, and status 0 is a call that got
+ * no answer, so those are unprobed. Every other answer is the portal's: a 503 batch_unavailable, a 400 on the docs example or on the
+ * portal's own cursor, a 5xx of its own.
  */
 export function classify(status: number, body: unknown): { verdict: Verdict; code?: string | undefined } {
   const code = errorCode(body);
@@ -318,7 +359,8 @@ export function classify(status: number, body: unknown): { verdict: Verdict; cod
   // A cancel of a job that already ended answers 409 job_finished with the job's real state, which is the route working.
   if (status === 409 && code === JOB_FINISHED) return { verdict: "ok", code };
   if (status === 0 || status === 429 || status === 402) return { verdict: "unprobed", code };
-  if (code?.startsWith("upstream_") || code === CRAWLER_CAPACITY || code === CRAWLER_CLOSED || code === CRAWLER_PAUSED) return { verdict: "crawler", code };
+  if (code === CRAWLER_PAUSED || HELD_ANSWER.test(JSON.stringify(body ?? null))) return { verdict: "held", code };
+  if (code?.startsWith("upstream_") || code === CRAWLER_CAPACITY || code === CRAWLER_CLOSED) return { verdict: "crawler", code };
   return { verdict: "portal", code };
 }
 
@@ -399,7 +441,7 @@ export type Env = typeof ENVS[number];
 /** The "could not measure" value of a share: below any target, so a run that measured nothing never looks on target. */
 export const UNMEASURED_PCT = -1;
 /** How one crawler route does through the portal on one env. `skipped` is a route SPEC-93 does not call on prod because it is a write. */
-export type RouteVerdict = "works" | "missing" | "portal" | "crawler" | "unprobed" | "skipped";
+export type RouteVerdict = "works" | "missing" | "portal" | "crawler" | "held" | "unprobed" | "skipped";
 
 /** Whether a route entry applies to an env: it names no envs, or names this one. */
 export const appliesTo = (route: Route, env: Env) => !route.envs || route.envs.includes(env);
@@ -468,6 +510,7 @@ export function routeVerdict(route: Route, ops: Map<string, Operation> | null, b
   const results = listed.map(op => byOp.get(op));
   if (results.some(result => result?.verdict === "portal")) return "portal";
   if (results.some(result => result?.verdict === "crawler")) return "crawler";
+  if (results.some(result => result?.verdict === "held")) return "held";
   if (results.some(result => result?.verdict === "ok")) return "works";
   if (results.every(result => result?.verdict === "skipped")) return "skipped";
   return "unprobed";
@@ -477,7 +520,8 @@ export function routeVerdict(route: Route, ops: Map<string, Operation> | null, b
  * The duty's metrics. The headline is the share of customer crawler routes whose /v1 route works on prod; staging_working_pct is the same on
  * staging. Each env scores the routes its own crawler openapi lists (scoredRoutes), and an env whose crawler openapi is unread has an
  * unmeasured share. routes_failing_portal counts routes that fail on either env for a portal cause (no /v1 route there, or a portal error), and
- * routes_failing_crawler those that fail with an upstream crawler error and no portal cause. Every other count goes to the run detail.
+ * routes_failing_crawler those that fail with an upstream crawler error and no portal cause. A held route counts in neither share nor
+ * failure count, and `<env>_routes_held` and `routes_held` show it. Every other count goes to the run detail.
  */
 export function parityMetrics(input: {
   routes: readonly Route[]; crawler: Record<Env, OpenApi | null>; docs: Record<Env, OpenApi | null>; probes: Record<Env, readonly ProbeResult[]>;
@@ -501,17 +545,25 @@ export function parityMetrics(input: {
     const byOp = new Map(input.probes[env].map(probe => [probe.op, probe]));
     for (const route of scoredBy[env]) verdicts[env].set(route, crawlerOps[env] ? routeVerdict(route, ops, byOp) : "unprobed");
     const count = (verdict: RouteVerdict) => [...verdicts[env].values()].filter(value => value === verdict).length;
-    const judged = scoredBy[env].length - count("skipped");
+    const judged = scoredBy[env].length - count("skipped") - count("held");
     metrics[`${env}_routes_scored`] = scoredBy[env].length;
     metrics[`${env}_working_pct`] = ops && crawlerOps[env] && input.probes[env].length && judged ? Math.round(1000 * count("works") / judged) / 10 : UNMEASURED_PCT;
-    for (const verdict of ["works", "missing", "portal", "crawler", "unprobed", "skipped"] as const) metrics[`${env}_routes_${verdict}`] = count(verdict);
-    metrics[`${env}_v1_ops_called`] = input.probes[env].filter(probe => probe.verdict !== "skipped").length;
+    for (const verdict of ["works", "missing", "portal", "crawler", "held", "unprobed", "skipped"] as const) metrics[`${env}_routes_${verdict}`] = count(verdict);
+    const notSent = (probe: ProbeResult) => probe.verdict === "skipped" || (probe.verdict === "held" && probe.status === 0);
+    metrics[`${env}_v1_ops_called`] = input.probes[env].filter(probe => !notSent(probe)).length;
+    const held = input.probes[env].filter(probe => probe.verdict === "held");
+    metrics[`${env}_v1_ops_held`] = held.length;
+    for (const [sent, list] of [[false, held.filter(notSent)], [true, held.filter(probe => !notSent(probe))]] as const) {
+      if (!list.length) continue;
+      flagged.push({ at, kind: `held_${env}`, excerpt: `${list.length} /v1 operations ${sent ? "answered held" : "not sent"} on ${env}, out of the shares and failure counts with no fix job (c230): ${
+        sent ? list.map(probe => `${probe.op} ${probe.status} ${probe.code ?? ""}`.trim()).join(", ") : `${list[0]!.note}: ${list.map(probe => probe.op).join(", ")}`}`.slice(0, 600) });
+    }
     const missing = scoredBy[env].filter(route => verdicts[env].get(route) === "missing");
     const byGroup = new Map<string, string[]>();
     for (const route of missing) byGroup.set(route.group, [...(byGroup.get(route.group) ?? []), route.crawler]);
     for (const [group, list] of byGroup) flagged.push({ at, kind: `missing_${env}`, item: group, excerpt: `${group}: ${list.length} crawler routes with no /v1 route on ${env}: ${list.join(", ")}`.slice(0, 600) });
     for (const probe of input.probes[env]) {
-      if (probe.verdict === "ok") continue;
+      if (probe.verdict === "ok" || probe.verdict === "held") continue;
       flagged.push({ at, kind: probe.verdict === "unprobed" || probe.verdict === "skipped" ? `${probe.verdict}_${env}` : `broken_${probe.verdict}_${env}`,
         excerpt: `${probe.op} on ${env}: ${probe.status || "no answer"}${probe.code ? ` ${probe.code}` : ""} after ${probe.ms} ms, ${probe.note}`.slice(0, 400) });
       const before = input.previous?.verdicts[`${env} ${probe.op}`] ?? (env === "staging" ? input.previous?.verdicts[probe.op] : undefined);
@@ -523,6 +575,8 @@ export function parityMetrics(input: {
   const portalSet = new Set(portalRoutes);
   metrics.routes_failing_portal = portalRoutes.length;
   metrics.routes_failing_crawler = either(["crawler"]).filter(route => !portalSet.has(route)).length;
+  const failing = new Set(either(["missing", "portal", "crawler"]));
+  metrics.routes_held = either(["held"]).filter(route => !failing.has(route)).length;
   metrics.routes_scored = scored.length;
   metrics.source_errors = input.sourceErrors.length + cleanupErrors.length;
   // A run whose staging test orgs were not deleted never passes: its staging share is unmeasured (test-org-cleanup.ts).
@@ -531,7 +585,8 @@ export function parityMetrics(input: {
   const paid = input.probes.prod.filter(probe => probe.costUsd).sort((a, b) => b.costUsd! - a.costUsd!);
   if (paid.length) flagged.push({ at, kind: "prod_cost", excerpt: `Prod cost per call, highest first: ${paid.map(probe => `${probe.op} $${probe.costUsd}`).join(", ")}`.slice(0, 600) });
   const state: ParityState = { verdicts: { ...input.previous?.verdicts } };
-  for (const env of ENVS) for (const probe of input.probes[env]) if (probe.verdict !== "skipped" && probe.verdict !== "unprobed") state.verdicts[`${env} ${probe.op}`] = probe.verdict;
+  // A held answer keeps the verdict from before the hold, so a route that breaks once the hold ends still reads as a regression.
+  for (const env of ENVS) for (const probe of input.probes[env]) if (probe.verdict !== "skipped" && probe.verdict !== "unprobed" && probe.verdict !== "held") state.verdicts[`${env} ${probe.op}`] = probe.verdict;
   state.ms = { ...input.previous?.ms };
   for (const env of ENVS) for (const probe of input.probes[env]) if (probe.ms > 0) state.ms[`${env} ${probe.op}`] = probe.ms;
   state.paidAt = { ...input.previous?.paidAt };
@@ -841,11 +896,12 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
   }));
   const media = probeMedia(firstMediaUrl([...phase1, ...fed].filter(result => result.verdict === "ok").map(result => result.body)), target.headers);
   await Promise.all([...pageTwoRuns, ...opened.map(job => cancel(job.org, job.id))]);
-  // A page-2 failure counts against the operation: a customer cannot get past page 1. A page 2 the run did not reach leaves page 1's verdict.
+  // A page-2 failure counts against the operation, and a held page 2 holds it: a customer cannot get past page 1. A page 2 the run did not
+  // reach leaves page 1's verdict.
   const out: ProbeResult[] = [];
   for (const result of [...phase1, ...jobs, ...phase2, ...fed]) {
     const second = pageTwo.get(result.op);
-    const failed = second && (second.verdict === "portal" || second.verdict === "crawler" || (second.verdict === "unprobed" && second.status === 0 && second.ms > 0));
+    const failed = second && (second.verdict === "portal" || second.verdict === "crawler" || second.verdict === "held" || (second.verdict === "unprobed" && second.status === 0 && second.ms > 0));
     const { body: _body, ...plain } = failed ? { ...second, op: result.op, note: `page 1 worked, ${second.note}` } : result;
     out.push(plain);
   }
@@ -903,6 +959,17 @@ async function main(): Promise<void> {
     try { return await run(); } catch (error) { sourceErrors.push(`${what}: ${error instanceof Error ? error.message : String(error)}`); return null; }
   };
   type EnvFile = { urls: Record<string, string>; keySources: Record<string, { cmd: string }> };
+  // A supply hold the run cannot read counts as held, so an unread /ops/status never lets a box-egress call out (c230).
+  const supplyHold = async (name: Env, file: EnvFile | null): Promise<string | null> => {
+    if (!file) return null;
+    const read = await attempt(`the ${name} crawler's /ops/status supply holds`, async () => {
+      const key = await sh(file.keySources.CRAWLER_API_KEY!.cmd, REPO);
+      const response = await fetch(`${file.urls.crawler}/ops/status`, { headers: { "x-api-key": key, ...CALLER }, redirect: "manual" });
+      if (response.status !== 200) throw new Error(`GET ${file.urls.crawler}/ops/status gave HTTP ${response.status}`);
+      return { hold: supplyHoldOf(await response.json()) };
+    });
+    return read ? read.hold : "its supply holds are unreadable, see the source_error row";
+  };
   const readEnv = (name: string) => attempt(`auto-sns-agent apps/specs/envs/${name}.json`, async () =>
     JSON.parse(await readFile(join(REPO, `apps/specs/envs/${name}.json`), "utf8")) as EnvFile);
   const [env, prodEnv] = await Promise.all([readEnv("staging"), readEnv("prod")]);
@@ -915,6 +982,7 @@ async function main(): Promise<void> {
     process.env.VIREV_API_KEY_PROD || attempt("VIREV_API_KEY_PROD from apps/api-portal/.env", () => sh(PROD_KEY_CMD, REPO)),
     attempt("SPEC-93 prod skips in apps/specs/lib/api-portal", prodSkips),
   ]);
+  const [stagingHold, prodHold] = await Promise.all([supplyHold("staging", env), supplyHold("prod", prodEnv)]);
   const base = env?.urls.apiPortal ?? "";
   const staging = bypass ? await attempt(`${base}/openapi.json`, () => getJson(`${base}/openapi.json`, { "x-vercel-protection-bypass": bypass })) : null;
   const probes: Record<Env, ProbeResult[]> = { prod: [], staging: [] };
@@ -929,9 +997,9 @@ async function main(): Promise<void> {
       if (seeded) orgs.push(...seeded);
     }
     await Promise.all([
-      orgs.length && staging && bypass ? probeEnv({ env: "staging", base, doc: staging, orgs, headers: { "x-vercel-protection-bypass": bypass }, skip: new Map(), perMinute: perMinute(orgs), lastMs: previous?.ms }, routes)
+      orgs.length && staging && bypass ? probeEnv({ env: "staging", base, doc: staging, orgs, headers: { "x-vercel-protection-bypass": bypass }, skip: new Map(), held: heldEgress(staging, stagingHold), perMinute: perMinute(orgs), lastMs: previous?.ms }, routes)
         .then(results => { probes.staging = results; }) : null,
-      prod && prodOrg && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [prodOrg], headers: {}, skip: skips.skip, held, perMinute: perMinute([prodOrg]), spend, lastMs: previous?.ms, ledger: jobLedger(JOBS_DIR) }, routes)
+      prod && prodOrg && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [prodOrg], headers: {}, skip: skips.skip, held: new Map([...held, ...heldEgress(prod, prodHold)]), perMinute: perMinute([prodOrg]), spend, lastMs: previous?.ms, ledger: jobLedger(JOBS_DIR) }, routes)
         .then(results => { probes.prod = results; }) : null,
     ]);
   } finally {
