@@ -301,7 +301,13 @@ function splitParts(prime: PrimeModules, options: Record<string, unknown> & { sk
   return parts.map(part => part.text).join("\n\n") === full ? parts : whole;
 }
 
-const claudeRules = new SessionRules({ cellStart: () => "", cellSteps: (code, start) => [{ code, cwd: start }] });
+/**
+ * claude-rules for every thread, made at the first prompt so its user rules come from the HOME of that moment. Since 5ae38e2c the
+ * constructor takes the home that holds the user rules; without it `startup` threw and every thread lost its rules section until 11-20.
+ */
+let claudeRules: SessionRules | undefined;
+const sessionRules = (): SessionRules =>
+  claudeRules ??= new SessionRules({ cellStart: () => "", cellSteps: (code, start) => [{ code, cwd: start }] }, homedir());
 
 /** The parts Prime sends as messages rather than in its system prompt, in the order they reach the model there. */
 function extraParts(input: PrimePromptInput, tools: readonly string[], skills: readonly Skill[]): PromptPart[] {
@@ -309,7 +315,7 @@ function extraParts(input: PrimePromptInput, tools: readonly string[], skills: r
   // claude-rules' context hook puts the cwd repo's unscoped .claude/rules first in every request.
   let rules: string | null = null;
   try {
-    rules = claudeRules.startup(input.cwd).text;
+    rules = sessionRules().startup(input.cwd).text;
   } catch {
     rules = null;
   }
