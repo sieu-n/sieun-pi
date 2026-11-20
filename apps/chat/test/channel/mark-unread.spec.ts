@@ -54,6 +54,51 @@ test("Alt-click marks a post unread with the New line over it, a toast, no jump 
   await expect(line).toHaveCount(0);
 });
 
+test("a send takes the New line away, and the room reopens with the line in view when it sits above the newest posts", async ({ page }) => {
+  const { room, posts } = await channel(page);
+  await open(page, `#/c/${room}`);
+  const line = page.getByTestId("new-line");
+  await row(page, posts[29]!.id).click({ modifiers: ["Alt"], position: { x: 80, y: 12 } });
+  await expect(line).toHaveCount(1);
+  await page.getByTestId("composer-input").first().fill("done with it");
+  await page.keyboard.press("Enter");
+  await expect(line).toHaveCount(0);
+
+  await page.request.post(`/api/c/${room}/read`, { data: { unreadFrom: posts[2]!.id } });
+  await open(page, "#/c/dm_vent");
+  await open(page, `#/c/${room}`);
+  await expect(line).toHaveCount(1);
+  const feed = page.getByTestId("timeline").first();
+  await expect.poll(async () => {
+    const [box, at] = await Promise.all([feed.boundingBox(), line.boundingBox()]);
+    return !!box && !!at && at.y >= box.y && at.y < box.y + box.height;
+  }).toBe(true);
+});
+
+test("a menu mark in a DM never scrolls past where it settles", async ({ page }) => {
+  await open(page, "#/c/dm_vent");
+  const feed = page.getByTestId("timeline").first();
+  const own = page.locator("section.conversation [data-own-post]").last();
+  await own.scrollIntoViewIfNeeded();
+  await page.waitForTimeout(400);
+  await feed.evaluate((el) => {
+    const tops: number[] = [];
+    (window as unknown as { tops: number[] }).tops = tops;
+    el.addEventListener("scroll", () => tops.push(el.scrollTop));
+  });
+  const before = await own.evaluate((el) => el.getBoundingClientRect().top);
+  await own.hover();
+  await own.locator("[data-message-menu]").click();
+  await page.getByRole("menuitem", { name: /Mark unread/ }).click();
+  await expect(page.getByTestId("new-line")).toHaveCount(1);
+  await page.waitForTimeout(2500);
+  expect(Math.abs((await own.evaluate((el) => el.getBoundingClientRect().top)) - before)).toBeLessThan(2);
+  const tops = await page.evaluate(() => (window as unknown as { tops: number[] }).tops);
+  const last = await feed.evaluate((el) => el.scrollTop);
+  expect(Math.max(last, ...tops) - last).toBeLessThan(2);
+  await page.request.post("/api/c/dm_vent/read", { data: {} });
+});
+
 test("U marks the hovered post unread, the menu names U, and the hover bar drops after a menu pick", async ({ page }) => {
   const { room, posts } = await channel(page);
   await open(page, `#/c/${room}`);
@@ -66,6 +111,12 @@ test("U marks the hovered post unread, the menu names U, and the hover bar drops
   await expect(page.getByTestId("new-line")).toHaveCount(1);
   await page.mouse.move(0, 0);
   await expect(target.locator(".actions")).toHaveCSS("opacity", "0");
+
+  await target.hover();
+  await target.locator("[data-message-menu]").click();
+  await page.keyboard.press("u");
+  await expect(page.getByRole("menu")).toBeVisible();
+  await page.keyboard.press("Escape");
 
   const other = row(page, posts[25]!.id);
   await other.hover();

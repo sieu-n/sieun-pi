@@ -879,12 +879,15 @@ export async function markUnread(room: ConversationId, post: string, threadRoot?
 
 /** Keeps the room marks in step with the server's summaries, so a mark set or cleared elsewhere shows in this tab. */
 function syncMarked(sidebar: Sidebar): void {
-  for (const row of [...sidebar.solo, ...sidebar.channels, ...sidebar.dms]) {
-    if (marking.has(row.id)) continue;
-    if (row.unreadFrom) {
-      if (markedUnread.get(row.id) !== row.unreadFrom) markedUnread.set(row.id, row.unreadFrom);
-    } else if (markedUnread.has(row.id)) markedUnread.delete(row.id);
-  }
+  for (const row of [...sidebar.solo, ...sidebar.channels, ...sidebar.dms]) syncMark(row);
+}
+
+/** One room's mark as its summary says, from the sidebar or from the room's own header, which also covers rooms the sidebar leaves out. */
+function syncMark(row: Pick<ConversationSummary, "id" | "unreadFrom">): void {
+  if (marking.has(row.id)) return;
+  if (row.unreadFrom) {
+    if (markedUnread.get(row.id) !== row.unreadFrom) markedUnread.set(row.id, row.unreadFrom);
+  } else if (markedUnread.has(row.id)) markedUnread.delete(row.id);
 }
 
 /** One conversation's timeline: the newest page, older pages on demand, live upserts, status, send and Stop. Nothing streams. */
@@ -963,6 +966,7 @@ export class Timeline {
       const readSeq = header.readSeq;
       if (readSeq !== undefined) this.openedUnread = page.items.find(i => i.kind === "message" && !i.threadRoot && (i.seq ?? 0) > readSeq)?.id;
       this.header = header;
+      syncMark(header.summary);
       sawHeader(header);
       this.status = header.summary.status;
       this.queue = header.queue ?? null;
@@ -988,6 +992,7 @@ export class Timeline {
   async refreshHeader(): Promise<void> {
     try {
       this.header = await api.header(this.id);
+      syncMark(this.header.summary);
     } catch (error) {
       this.error = message(error);
     }
@@ -1030,7 +1035,10 @@ export class Timeline {
   send(text: string, opts: SendOpts = {}, since?: number): Promise<void> {
     const request: SendDraft = { text, requestId: crypto.randomUUID(), ...opts };
     // His own post answers what was new, so the New line goes, as in Slack.
-    if (!opts.threadRoot) this.openedUnread = undefined;
+    if (!opts.threadRoot) {
+      this.openedUnread = undefined;
+      markedUnread.delete(this.id);
+    }
     void this.sends.send(request, !opts.threadRoot, since).then(result => this.sent(result, request));
     return Promise.resolve();
   }
