@@ -156,7 +156,7 @@ export function agentScopeLines(agent: string): [string, string] {
   return [
     `Local entries are agent ${agent}'s own memory: every thread and job of ${agent} reads them in this digest, in any later week. \`rlm.harness\` writes there unless you pass \`global_=True\`, and so does \`await refine.run()\`. Global entries are shared by every agent and Prime chat.`,
     `Save to ${agent}'s memory, in the turn you learn it, each fact ${agent} needs again in a later thread: an owner rule or correction for its work in his words with its message id, a console URL and how to sign in (where a secret lives, never its value), a release or deploy command, and how one of its systems works. ` +
-      `First look for the entry that covers the point with \`rlm.harness.search("<topic words>", "memory")\`, then call \`rlm.harness.update_memory(id, title, content)\` on it or \`rlm.harness.create_memory(title, content)\` for a new one; these calls are synchronous and take no \`await\`. ` +
+      `First look for the entry that covers the point with \`rlm.harness.search("<topic words>", "memory")\`, then call \`rlm.harness.update_memory(id, title, content)\` on it or \`rlm.harness.create_memory(title, content)\` for a new one; these calls are synchronous and take no \`await\`. Put the fact first and keep an entry under 600 characters, the length this block shows. ` +
       `Keep step status, progress, open waits and session notes on the board, never in memory. Use \`global_=True\` only for a lesson every agent needs.`,
   ];
 }

@@ -392,6 +392,7 @@ export const agentPolicy = (agent: string): string =>
   `Propose an edit only for a fact ${agent} will need again in a later thread: an owner rule or correction for its work, quoted with its message or correction id; a console URL and how to sign in, naming where a secret lives and never its value; a release or deploy command; how one of its systems works; a lesson from a failure. ` +
   `Do not save session state, step status, progress, open waits, job names in flight or next steps, which belong on the agent's board, and do not copy a rule the corrections ledger already gives every agent. ` +
   `Update the local entry that covers the point instead of adding a near copy, and delete a local entry the conversation shows is wrong or is session scratch. ` +
+  "Put the fact a later thread needs first and keep an entry under 600 characters, since the agent's digest shows only its first 600; split a longer lesson into entries by point. " +
   "Global entries in the overview are read-only context: do not propose update or delete edits for them; create a local entry instead if an override is needed.";
 
 /** The planner's user prompt for one conversation text; `agent` names the sw factory agent whose memory the local store is. */
