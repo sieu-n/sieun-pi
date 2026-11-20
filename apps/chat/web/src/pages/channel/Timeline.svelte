@@ -124,6 +124,8 @@
       if (!row) return;
       stick = false;
       row.scrollIntoView({ block: "center" });
+      // Rows above still draw at their real heights after this, so the feed holds the linked post where it centered it, as Slack does.
+      anchor = { row, top: row.getBoundingClientRect().top };
       if (!flashFocus) return;
       flashId = id;
       setTimeout(() => {
