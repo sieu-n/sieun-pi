@@ -13,6 +13,10 @@
  *    11-03 chrome extension answered the owner's "proxy가 아니라 근데 Client browser에서" with "... A job is testing whether that can be
  *    avoided.", a relay nobody asked for, and agent factory answered his "are you working on Meilisearch then?" with "Yes, the search job
  *    (p56) is timing Meilisearch ...", which answers him.
+ * 4. A post with a markdown table is refused unless the post that started the turn asks for a table (`asksTable`). A room reads like Slack,
+ *    and a thread pane is about 400 px wide: on 11-20 Search product, misc. answered "what is our definitive catalog now?" in a
+ *    #dev-search-general thread with a 4-column table the pane cut off on the right and at the bottom, and the owner asked "does this feel
+ *    like slack to you?". The refusal asks for one or two sentences and a linked wiki page, as `agent-profile.ts` `slackPostStep` does.
  */
 import { relayWords } from "./relay-line.ts";
 
@@ -23,6 +27,8 @@ export interface CommPostTurn {
   handed: boolean;
   /** Whether the post that started the turn asks something (`asks`). */
   asked: boolean;
+  /** Whether the post that started the turn asks for a table (`asksTable`). */
+  tableAsked?: boolean;
 }
 
 /**
@@ -35,6 +41,15 @@ const QUESTION_LINE = /(?:[?？][\s)"”.~!ㅋㅎ]*(?:@.*)?|(?:어때|나요|까
 
 /** Whether the owner's post asks something, so progress may answer it. apps/chat's relay-posts precheck counts with it too. */
 export const asks = (text: string): boolean => QUESTION_LINE.test(text);
+
+/** A markdown table: a row of cells over its `|---|` divider line. */
+const TABLE = /^[ \t]*\|?.*\|.*\n[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)*\|?[ \t]*$/m;
+
+/** Whether a post holds a markdown table. */
+export const hasTable = (text: string): boolean => TABLE.test(text);
+
+/** Whether the owner's post asks for a table, in English or in the Korean he writes ("표로", "표 형식"). */
+export const asksTable = (text: string): boolean => /\btables?\b|\btabular\b|표로|표를|표 ?형식|표 ?형태/iu.test(text);
 
 /** Why a comm thread's post must not go out, or undefined when it may. */
 export function commPostRefusal(text: string, turn: CommPostTurn): string | undefined {
@@ -52,6 +67,11 @@ export function commPostRefusal(text: string, turn: CommPostTurn): string | unde
     return `Not sent: "${relay.words}" is progress on work still going, and nobody asked for it on this turn. End the turn with no ` +
       "message, and post once when the result is in.";
   }
+  if (hasTable(text) && !turn.tableAsked) {
+    return "Not sent: a room reads like Slack, and a table gets cut off in its narrow thread pane. Post the answer in one or two casual " +
+      "sentences instead, and put the detail on a wiki page with `wiki.write` in ipython, linked in the same post as `full list → [name](wiki:<path>)`. " +
+      "Send a table only when the post you answer asks for one.";
+  }
   return undefined;
 }
 
@@ -67,10 +87,19 @@ export function turnStartedAt(messages: readonly TurnMessage[]): number | undefi
   return typeof timestamp === "number" ? timestamp : undefined;
 }
 
-/** Whether the current turn's input asks something (`asks`). */
-export function turnAsked(messages: readonly TurnMessage[]): boolean {
+/** The text of the current turn's input. */
+function turnText(messages: readonly TurnMessage[]): string {
   const content = turnInput(messages)?.content;
-  if (typeof content === "string") return asks(content);
+  if (typeof content === "string") return content;
   const blocks = Array.isArray(content) ? (content as { type?: unknown; text?: unknown }[]) : [];
-  return blocks.some(block => block.type === "text" && typeof block.text === "string" && asks(block.text));
+  return blocks.flatMap(block => (block.type === "text" && typeof block.text === "string" ? [block.text] : [])).join("\n");
 }
+
+/** Whether the current turn's input asks something (`asks`). */
+export const turnAsked = (messages: readonly TurnMessage[]): boolean => asks(turnText(messages));
+
+/** A room post's input without the earlier posts apps/chat adds under it (group-rooms.ts `envelope`), which may hold a table of their own. */
+const ownPost = (text: string): string => text.split(/\n\((?:thread so far|channel before this post)\)\n/u)[0]!;
+
+/** Whether the current turn's input asks for a table (`asksTable`), in its own post only. */
+export const turnAskedTable = (messages: readonly TurnMessage[]): boolean => asksTable(ownPost(turnText(messages)));

@@ -83,9 +83,28 @@ function workSteps(work: string): string[] {
  * render in the room.
  */
 function richPostStep(): string {
-  return "Shape each post for the eye, as config/AGENTS.md rule 5 says. The room renders markdown, tables, links, images and a ```mermaid block as a drawn diagram. " +
+  return "Shape each post for the eye, as config/AGENTS.md rule 5 says. The room renders markdown, links, images and a ```mermaid block as a drawn diagram. " +
     "When someone asks for a diagram or a picture, or a flow reads shorter as one, draw it yourself as a ```mermaid block in your post, with about 8 nodes of one to three words, and one short sentence beside it. " +
     "This replaces the brief's line that a diagram or explanation he asks for goes on a wiki page. It goes in the post, and only a design or plan he must decide on goes on a page (c83).";
+}
+
+/** The page of real before and after pairs that `slackPostStep` follows, written on 11-20 from the owner's rooms. */
+export const IDEAL_REPLIES_PAGE = "wiki:agents/agent-factory/jobs/2026/11/20/1139-slack-style-replies/ideal-replies.html";
+
+/**
+ * The step that has a comm thread write like a coworker in Slack. The chat brief it shares with Prime's chats asks for one dry sentence per
+ * message and two calls for two points (c97), and rule 5 asks for a table for a comparison. In a room that read as a report: on 11-20 the
+ * owner asked Search product, misc. in a #dev-search-general thread for "our definitive catalog", and it posted a 4-column table the thread
+ * pane cut off, then two more posts, the last a bare "No." that answered his next post. Asked "does this feel like slack to you?", agent
+ * factory answered with two stiff posts, and he wrote "no this is not Chat. this is Slack."
+ */
+function slackPostStep(): string {
+  return "Write each post the way a sharp coworker types in Slack. Open with the answer in the first few words, such as \"yes\", \"nope\", \"not yet\" or \"got it\". " +
+    "One answer is one post of one or two short sentences, so never split it into two stiff posts, and when two of his posts wait for you, answer both in that one post. " +
+    "Casual is right: lowercase and a fitting emoji are fine, and no labels, bold, headings, bullet reports or \"Here is\". " +
+    "Post no table unless the post you answer asks for one. Put the detail on a wiki page with `wiki.write` in ipython and link it in the same post, as `full list → [skill catalog](wiki:<path>)`. " +
+    `When you answer an older post of his while a newer one sits below it, open with his line quoted as \`> ...\`. Real before and after pairs are on ${IDEAL_REPLIES_PAGE}. ` +
+    "This replaces the brief's one point per message and two calls for two points (c97), and rule 5's table for a comparison, because a room reads like Slack, not like a chat.";
 }
 
 /** The agent that owns sw factory itself, apps/chat and pi-host, which the other agents tag with the owner's feedback on it. */
@@ -138,7 +157,8 @@ function dmCommInstructions(ref: { agent: string; room: string; work: string }):
     `6. ${forMeStep(ref.room)}`,
     "7. A `[work-done ...]` or `[work-failed ...]` input is a notice from pi-host, not the owner's turn. Tell the owner about it only when he asked for that result or it needs his decision (c117). Otherwise end the turn without a message.",
     "8. Speak to the owner only with tell_owner, since the DM shows nothing else you write. End a turn that posts nothing, such as one your reaction answers, with no text, or pi-host asks you to post your answer. You do not edit files, so you have no write, edit, bash or subagent tool.",
-    `9. ${richPostStep()}`,
+    `9. ${slackPostStep()}`,
+    `10. ${richPostStep()}`,
   ], platformFeedbackStep(ref)).join("\n");
 }
 
@@ -149,7 +169,7 @@ function groupCommInstructions(ref: { agent: string; room: string; work: string 
     "",
     "1. Each post arrives with a header that names the room, the post's author and its hops. A Solo room's header also gives its agenda and members.",
     "2. Every post reaches every member. Speak in the room only when the post concerns your agent or you add something no one said. Otherwise end the turn without a message, also when the owner's post is for another member or an agent's post needs nothing from you.",
-    "3. Speak only with tell_owner, one point per message in one or two short sentences, plus the diagram, table or link that carries the point (step 13). Name another member as @<name> to hand that member something.",
+    "3. Speak only with tell_owner, one post per answer (step 13). Name another member as @<name> to hand that member something.",
     "4. An agent's post or a notice is not the owner's turn, so set why and about there. A message that answers the agenda or a question put to your agent is why \"answer\", with about naming that point.",
     `5. ${status}`,
     `6. ${hand}`,
@@ -159,7 +179,8 @@ function groupCommInstructions(ref: { agent: string; room: string; work: string 
     `10. ${forMeStep(ref.room)}`,
     "11. A `[work-done ...]` or `[work-failed ...]` input is a notice from pi-host. Tell the room about it only when the owner or a member asked for that result or it needs the owner's decision (c117). Otherwise end the turn without a message.",
     "12. You do not edit files, so you have no write, edit, bash or subagent tool.",
-    `13. ${richPostStep()}`,
+    `13. ${slackPostStep()}`,
+    `14. ${richPostStep()}`,
   ], platformFeedbackStep(ref)).join("\n");
 }
 
