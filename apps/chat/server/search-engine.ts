@@ -12,7 +12,8 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { openIndexReadOnly, readIndexRows, type IndexRead, type IndexRow } from "../../../packages/pi-host/src/durable/index-db.ts";
-import { Meili, MeiliError } from "./meili.ts";
+import { Meili, MeiliError, type MeiliTask } from "./meili.ts";
+import { indexedAuthor, SYSTEM_AUTHOR } from "./search-snippet.ts";
 
 export const SEARCH_INDEX = "search";
 /** The documents' shape; a saved cursor of another version fills the index again. */
@@ -252,8 +253,10 @@ export class SearchEngine {
       this.meili = await this.deps.connect();
       const stats = await this.openIndex();
       if (!first) {
-        if (stats.numberOfDocuments > 0) await this.putDocs(posts);
-        else {
+        if (stats.numberOfDocuments > 0) {
+          await this.putDocs(posts);
+          void this.markSystemInputs().catch(error => this.deps.log(`search: ${String(error)}`));
+        } else {
           // Meilisearch lost its documents: fill it again, and read every other box again from its first row.
           this.deps.log("search: the Meilisearch index is empty while a cursor is saved; indexing every entry again");
           this.readCursors.clear();
@@ -308,6 +311,25 @@ export class SearchEngine {
       const cursor = this.readCursors.get(source.box);
       if (cursor !== undefined && cursor !== this.deps.cursors.get(source.box)) this.deps.cursors.set(source.box, cursor);
     }
+  }
+
+  /**
+   * Gives the entries indexed before 11-20 under the owner whose text is a turn the chat or Prime wrote for him, such as a duty push, the
+   * author `system`, as `entryDocs` does for new rows. It reads only the owner's inputs, 1,926 documents and 418 KB in 57 ms on us-metal02
+   * on 11-20, of which 413 were such turns, and sends nothing once none is left, so it runs at every start in place of a refill.
+   */
+  private async markSystemInputs(): Promise<void> {
+    const filter = `source = "entry" AND author = "owner" AND kind IN ["pi.user", "agent.message"]`;
+    const updates: { id: string; author: string }[] = [];
+    const PAGE = 5_000;
+    for (let offset = 0; ; offset += PAGE) {
+      const page = await this.meili.call<{ results: Pick<EntryDoc, "id" | "kind" | "text">[] }>("POST", `/indexes/${SEARCH_INDEX}/documents/fetch`, { filter, fields: ["id", "kind", "text"], limit: PAGE, offset });
+      for (const doc of page.results) if (indexedAuthor(doc.kind, "owner", doc.text) === SYSTEM_AUTHOR) updates.push({ id: doc.id, author: SYSTEM_AUTHOR });
+      if (page.results.length < PAGE) break;
+    }
+    if (!updates.length) return;
+    this.deps.log(`search: ${updates.length} turns the chat wrote as the owner's are now indexed under ${SYSTEM_AUTHOR}`);
+    await this.meili.waitTask(await this.meili.call<MeiliTask>("PUT", `/indexes/${SEARCH_INDEX}/documents`, updates));
   }
 
   /** Creates the index or changes its settings only when they differ, since each change is a task that waits behind any indexing. */
@@ -445,7 +467,7 @@ export class SearchEngine {
     return [...groups].map(([id, copies]) => {
       const first = copies[0]!;
       return {
-        id, source: "entry", text: first.text, at: first.at, tier: first.kind === "pi.tool-result" ? 1 : 0, kind: first.kind, author: first.author, entry: first.entryId,
+        id, source: "entry", text: first.text, at: first.at, tier: first.kind === "pi.tool-result" ? 1 : 0, kind: first.kind, author: indexedAuthor(first.kind, first.author, first.text), entry: first.entryId,
         threads: [...new Set(copies.map(c => c.thread))], convs: [...new Set(copies.map(c => `${c.thread}:${c.conversation}`))],
         keys: [...new Set(copies.map(c => `${c.thread}:${c.entryId}`))],
         channelCopy: first.kind === "agent.message" && this.deps.channelCopy.test(first.text),

@@ -9,6 +9,7 @@ import type { SearchResult } from "../../web/src/lib/api/types.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { and, eq, holds, not, type EntryDoc, type PostDoc } from "../../server/search-engine.ts";
 import { hitLink, parseQuery, threadTitle } from "../../server/search.ts";
+import { describe, indexedAuthor } from "../../server/search-snippet.ts";
 import { start, type Running } from "./helpers.ts";
 
 const ids_ = (result: SearchResult) => result.hits.map(hit => hit.id).sort();
@@ -120,6 +121,20 @@ suite("search filters", () => {
     assert.deepEqual([thread.hits[0]!.where, thread.hits[0]!.thread?.root], ["thread", "p1"]);
     assert.equal((await s.get<SearchResult>("/api/search?q=zanzibar&where=root")).total, 0);
   });
+
+  test("a duty push the chat typed as the owner's turn is no word of his, and from=agents leaves it out too", async () => {
+    const pushed = await s.send("POST", `/api/c/${ids.solo}/send`, { text: "[d9 push 2026-10-23T04:07Z] quokka found in your chat", requestId: "filters-push" });
+    assert.equal(pushed.status, 200, JSON.stringify(pushed.body));
+    const said = await s.send("POST", `/api/c/${ids.solo}/send`, { text: "does the quokka still show", requestId: "filters-said" });
+    assert.equal(said.status, 200, JSON.stringify(said.body));
+    const all = await s.get<SearchResult>("/api/search?q=quokka");
+    const push = all.hits.find(hit => hit.kind === "message" && hit.snippet.includes("found in your chat"))!;
+    assert.deepEqual([push.role, push.author.kind, push.author.name], ["system", "system", "Duty"]);
+    const owner = await s.get<SearchResult>("/api/search?q=quokka&from=owner");
+    assert.deepEqual(owner.hits.map(hit => hit.role), ["owner"]);
+    const agentsSaid = await s.get<SearchResult>("/api/search?q=quokka&from=agents");
+    assert.ok(agentsSaid.total > 0 && agentsSaid.hits.every(hit => hit.role === "agent"), "the echo turns, and no push");
+  });
 });
 
 suite("the pieces filters are built from", () => {
@@ -138,6 +153,14 @@ suite("the pieces filters are built from", () => {
   test("from: tokens add values, and explicit params win", () => {
     assert.deepEqual(parseQuery({ q: "relay from:owner from:vent,crawler" }).from, ["owner", "vent", "crawler"]);
     assert.deepEqual(parseQuery({ q: "relay from:owner", from: ["agents"] }).from, ["agents"]);
+  });
+
+  test("an owner turn the chat or Prime wrote is indexed under system, and his own words under owner", () => {
+    assert.equal(indexedAuthor("pi.user", "owner", "[d9 push 2026-10-23T04:07Z] The chat system duty (d9) found these"), "system");
+    assert.equal(indexedAuthor("pi.user", "owner", "[check-in] Keep going"), "system");
+    assert.equal(indexedAuthor("pi.user", "owner", "does 5174 connect to local Convex?"), "owner");
+    assert.equal(indexedAuthor("pi.user", "ag_vent", "[check-in] Keep going"), "ag_vent");
+    assert.deepEqual(describe("pi.user", "system", "[duty d1] relay is down", []), { role: "system", label: "Duty", text: "relay is down" });
   });
 
   test("links and thread titles", () => {

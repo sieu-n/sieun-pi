@@ -9,7 +9,7 @@
  */
 import type { ConversationKind, ConversationSummary, SearchHit, SearchMissing, SearchResult, SearchWhere } from "../web/src/lib/api/types.ts";
 import { CHANNEL_COPY_LIKE, type GroupRooms } from "./group-rooms.ts";
-import { describe, fullText, searchTerms, snippet } from "./search-snippet.ts";
+import { describe, fullText, searchTerms, snippet, SYSTEM_AUTHOR } from "./search-snippet.ts";
 import { safeSnippet } from "./search-snippet.ts";
 import type { LinkState } from "./host/relay-host.ts";
 import type { SearchHit as HostHit } from "./host/types.ts";
@@ -37,6 +37,13 @@ export interface SearchParams {
  * 327 KB of text cut at 2,000 characters each and 72 KB gzipped.
  */
 export const RECENT_LIMIT = 3000;
+
+/** Root chats' first conversations and the threads agents work in, for `where` (Search `rootChats`). */
+interface RootChats { convs: string[]; held: string[] }
+type RootSets = { [K in keyof RootChats]: ReadonlySet<string> };
+
+/** The entry authors that are no agent: the owner, and the turns the chat or Prime wrote as his (search-snippet.ts `indexedAuthor`). */
+const NOT_AGENTS = ["owner", SYSTEM_AUTHOR];
 
 /** Tool output ranks after every message by relevance, and in a root chat it is the root chat's `tool` part. */
 const TOOL_KINDS = ["pi.tool-result"];
@@ -175,8 +182,8 @@ export class Search {
     const scope = !inChannel && inId ? parseConversationId(this.threads.conversationOf(inId)) : undefined;
     const comms = scope ? [] : this.commThreads();
     const testRooms = this.testRooms();
-    const rootConvs = this.rootChatConvs();
-    const entryWhere = this.entryWhere(where, rootConvs);
+    const rootChats = this.rootChats();
+    const entryWhere = this.entryWhere(where, rootChats);
     const postWhere = where.has("root") && where.has("thread") ? [] : where.has("root") ? [not(eq("kind", POST_KINDS.reply))] : where.has("thread") ? [eq("kind", POST_KINDS.reply)] : undefined;
     const anyOf = (conds: Cond[]): Cond[] => (from.length ? [or(...conds)] : []);
     if (!inChannel && entryWhere) {
@@ -184,8 +191,8 @@ export class Search {
         eq("source", "entry"), eq("channelCopy", false), ...range, ...entryWhere,
         ...(scope ? [eq("convs", `${scope.thread}:${scope.conversation}`)] : comms.length ? [not(isIn("threads", comms))] : []),
         ...anyOf(from.map(f => f.kind === "owner" ? and(eq("author", "owner"), ...(tests.length ? [not(isIn("keys", tests.map(t => `${t.thread}:${t.entry}`)))] : []))
-          : f.kind === "agents" ? not(eq("author", "owner"))
-          : or(and(eq("kind", "agent.message"), isIn("author", f.authors)), and(not(eq("kind", "agent.message")), not(eq("author", "owner")), f.work)))),
+          : f.kind === "agents" ? not(isIn("author", NOT_AGENTS))
+          : or(and(eq("kind", "agent.message"), isIn("author", f.authors)), and(not(eq("kind", "agent.message")), not(isIn("author", NOT_AGENTS)), f.work)))),
       ));
     }
     if ((!inId || inChannel) && postWhere) {
@@ -212,7 +219,7 @@ export class Search {
       const note = boxNote(box, this.engine.boxState(box.box));
       return note ? [{ box: box.box, note }] : [];
     });
-    const roots = new Set(rootConvs);
+    const roots = { convs: new Set(rootChats.convs), held: new Set(rootChats.held) };
     let hits = mine.docs.slice(offset, offset + limit).flatMap(doc => this.docHit(doc, scope?.thread, summaries, marks, testOf, roots) ?? []);
     // An answer whose match sits only in a tool call's arguments is found by its text, so it sinks below the messages of its own page.
     if (sort === "relevance") hits = [...hits.filter(hit => hit.role !== "tool"), ...hits.filter(hit => hit.role === "tool")];
@@ -242,7 +249,8 @@ export class Search {
     const found = await this.engine.search("", where, { sort: "recent", limit });
     const known = new Map<string, ConversationSummary | undefined>();
     const summaries = { get: (id: string) => (known.has(id) ? known.get(id) : known.set(id, this.threads.conversation(id)).get(id)) };
-    const roots = new Set(this.rootChatConvs());
+    const rootChats = this.rootChats();
+    const roots = { convs: new Set(rootChats.convs), held: new Set(rootChats.held) };
     const hits = found.docs.flatMap(doc => this.docHit(doc, undefined, summaries, [], new Map(), roots) ?? [])
       // An input the chat or Prime wrote as the owner's turn, such as a check-in or a duty push, is no message of his.
       .filter(hit => hit.role !== "system")
@@ -304,29 +312,39 @@ export class Search {
     return found[0];
   }
 
-  /** `<thread>:1` of each root chat no agent holds (threads.ts `rootChats`), where the owner talks to the thread himself. */
-  private rootChatConvs(): string[] {
-    return this.threads.rootChats().map(thread => `${thread}:1`);
+  /**
+   * Where the owner talks to a thread himself and where agents work: `convs` is `<thread>:1` of each root chat no agent holds (threads.ts
+   * `rootChats`), and `held` every work thread and job thread of an agent that is no walk's test agent.
+   */
+  private rootChats(): RootChats {
+    const records = this.threads.agentRecords;
+    const roots = this.threads.rootChats();
+    const rootSet = new Set(roots);
+    const held = new Set<string>();
+    for (const record of records?.list() ?? []) if (!record.test) held.add(record.workThread);
+    for (const [thread, id] of Object.entries(records?.store.agents.aliases ?? {})) if (!records?.record(id)?.test) held.add(thread);
+    return { convs: roots.map(thread => `${thread}:1`), held: [...held].filter(thread => !rootSet.has(thread)) };
   }
 
   /**
    * The entry filter for `where`, or undefined when it keeps no entry. A root chat's words are `root` and its tool output `tool`; every
-   * entry of a work thread or job is `tool`. An entry copied into several threads counts as a root chat's when any copy is in one.
+   * entry of a work thread or job is `tool`. An entry copied into a root chat and an agent's thread is the agent's: on 11-20 vent's work
+   * thread shared its first 9,481 entries, duty pushes included, with a root chat forked from it, and they read as his root messages.
    */
-  private entryWhere(where: ReadonlySet<SearchWhere>, rootConvs: string[]): Cond[] | undefined {
+  private entryWhere(where: ReadonlySet<SearchWhere>, roots: RootChats): Cond[] | undefined {
     if (where.has("root") && where.has("tool")) return [];
-    if (where.has("root")) return [isIn("convs", rootConvs), not(isIn("kind", TOOL_KINDS))];
-    if (where.has("tool")) return [or(not(isIn("convs", rootConvs)), isIn("kind", TOOL_KINDS))];
+    if (where.has("root")) return [isIn("convs", roots.convs), not(isIn("threads", roots.held)), not(isIn("kind", TOOL_KINDS))];
+    if (where.has("tool")) return [or(not(isIn("convs", roots.convs)), isIn("threads", roots.held), isIn("kind", TOOL_KINDS))];
     return undefined;
   }
 
   /** Where an entry sits, by the rule `entryWhere` filters with. */
-  private static entryPlace(doc: EntryDoc, rootConvs: ReadonlySet<string>): SearchWhere {
-    return !TOOL_KINDS.includes(doc.kind) && doc.convs.some(conv => rootConvs.has(conv)) ? "root" : "tool";
+  private static entryPlace(doc: EntryDoc, roots: RootSets): SearchWhere {
+    return !TOOL_KINDS.includes(doc.kind) && doc.convs.some(conv => roots.convs.has(conv)) && !doc.threads.some(thread => roots.held.has(thread)) ? "root" : "tool";
   }
 
   /** A document's hit: an entry opens in the scope's thread or the unarchived, newest thread that holds it, a post in its room. */
-  private docHit(doc: SearchDoc, scopeThread: string | undefined, summaries: { get(id: string): ConversationSummary | undefined }, marks: string[], testOf: Map<string, TestSendEntry>, roots: ReadonlySet<string>): SearchHit | undefined {
+  private docHit(doc: SearchDoc, scopeThread: string | undefined, summaries: { get(id: string): ConversationSummary | undefined }, marks: string[], testOf: Map<string, TestSendEntry>, roots: RootSets): SearchHit | undefined {
     if (doc.source === "post") return this.postHit(doc, marks);
     const thread = scopeThread ?? this.copyThread(doc);
     const conversation = Number(doc.convs.find(c => c.startsWith(`${thread}:`))?.slice(thread.length + 1) ?? 1);

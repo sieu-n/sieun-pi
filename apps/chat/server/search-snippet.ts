@@ -178,16 +178,35 @@ export function describe(kind: string, author: string, whole: string, terms: rea
     return { role: "system", label: tag ? titleCase(tag[1]!) : "Note", text: tag ? text.slice(tag[0].length) : text };
   }
   if (kind === "agent.message" && author === "board") return { role: "system", label: "Board", text: text.replace(/^\[board\]\s*/, "") };
-  // An agent message's routing header, such as `[#pi-cutover · post 3 from Crawler VP]` or `[duty d1]`, says nothing the row does not.
-  const body = kind === "agent.message" ? text.replace(/^\[(?:#|duty )[^\]\n]*\]\s*/, "") : text;
-  if (author === "owner") {
-    for (const [re, label] of SYSTEM_INPUTS) {
-      const m = re.exec(body);
-      if (m) return { role: "system", label, text: body.slice(m[0].length) };
-    }
-    return { role: "owner", text: body };
+  const body = messageBody(kind, text);
+  if (author === "owner" || author === SYSTEM_AUTHOR) {
+    const input = systemInput(body);
+    if (input) return { role: "system", label: input.label, text: body.slice(input.prefix) };
+    return author === SYSTEM_AUTHOR ? { role: "system", label: "Note", text: body } : { role: "owner", text: body };
   }
   return { role: "agent", text: body };
+}
+
+/**
+ * The author the search index gives an input the chat or Prime wrote as the owner's turn, such as a duty push or a check-in, so `from=owner`
+ * finds only his own words. On 11-20 13 of the 21 hits of "does" from him were vent's duty pushes.
+ */
+export const SYSTEM_AUTHOR = "system";
+
+/** An agent message's routing header, such as `[#pi-cutover · post 3 from Crawler VP]` or `[duty d1]`, says nothing the row does not. */
+const messageBody = (kind: string, text: string): string => (kind === "agent.message" ? text.replace(/^\[(?:#|duty )[^\]\n]*\]\s*/, "") : text);
+
+function systemInput(body: string): { label: string; prefix: number } | undefined {
+  for (const [re, label] of SYSTEM_INPUTS) {
+    const m = re.exec(body);
+    if (m) return { label, prefix: m[0].length };
+  }
+  return undefined;
+}
+
+/** The author an entry is indexed under: pi-host's author column, except an owner's turn the chat or Prime wrote, which is `system`. */
+export function indexedAuthor(kind: string, author: string, text: string): string {
+  return author === "owner" && systemInput(messageBody(kind, text)) ? SYSTEM_AUTHOR : author;
 }
 
 const escapeHtml = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
