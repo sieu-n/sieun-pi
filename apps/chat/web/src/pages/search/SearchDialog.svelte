@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick, untrack } from "svelte";
-  import { agents, api, conversations, conversationsAhead, me, type SearchMissing, type SearchResult } from "$lib/api";
+  import { agents, api, conversations, listedAhead, me, type SearchMissing, type SearchResult } from "$lib/api";
   import { hrefFor, router } from "$lib/router.svelte";
   import type { SearchScope } from "$lib/shell/search.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
@@ -190,8 +190,8 @@
     active = hasQuery || scopeId ? keys[0] : undefined;
   });
 
-  // The conversations listed are read ahead, so the one the owner picks opens from the page's cache.
-  $effect(() => conversationsAhead(rows.flatMap(row => (row.action.type === "open" && !row.action.messageId ? [row.action.conversation] : []))));
+  // The conversations and message hits listed are read ahead, so the one the owner picks opens from the page's cache.
+  $effect(() => listedAhead(rows.flatMap(row => (row.action.type === "open" ? [row.action] : []))));
 
   $effect(() => {
     if (!active || !list) return;

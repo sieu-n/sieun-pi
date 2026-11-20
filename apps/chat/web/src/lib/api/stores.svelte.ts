@@ -522,7 +522,8 @@ class PageCache<Raw, Shown> {
   /** What each open view shows now, or undefined when that is what it gave last time. */
   private readonly showing = new Map<string, () => Shown | undefined>();
 
-  constructor(readonly name: string, readonly keep: number) {
+  /** With `stored` false the pages live in memory only. */
+  constructor(readonly name: string, readonly keep: number, private readonly stored = true) {
     if (typeof window === "undefined") return;
     const keepOpen = () => this.keepOpen();
     addEventListener("pagehide", keepOpen);
@@ -621,18 +622,18 @@ class PageCache<Raw, Shown> {
   remember(key: string, value: Shown): void {
     this.shown.delete(key);
     this.shown.set(key, value);
-    void pageDb.put(this.name, key, value);
+    if (this.stored) void pageDb.put(this.name, key, value);
     for (const oldest of this.shown.keys()) {
       if (this.shown.size <= this.keep) break;
       this.shown.delete(oldest);
-      void pageDb.drop(this.name, oldest);
+      if (this.stored) void pageDb.drop(this.name, oldest);
     }
   }
 }
 
 type TimelineRead = { page: Awaited<ReturnType<typeof api.items>>; header: ConversationHeader };
 /** `limit` is set on a short page read ahead (`JOB_PAGE`), so its open refreshes it at that size. */
-type TimelineShown = { items: Item[]; older: string | undefined; header: ConversationHeader; limit?: number };
+type TimelineShown = { items: Item[]; older: string | undefined; header: ConversationHeader; limit?: number; focus?: string };
 const readTimeline = async (id: ConversationId, around?: string, wait?: Wait, limit?: number): Promise<TimelineRead> => {
   const [page, header] = await Promise.all([api.items(id, around ? { around } : limit ? { limit } : {}, wait), api.header(id, wait)]);
   return { page, header };
@@ -660,6 +661,12 @@ const shownItems = (id: ConversationId, items: readonly Item[]): Item[] => {
 
 type RepliesRead = Awaited<ReturnType<typeof api.replies>>;
 type RepliesShown = { root: Item | null; items: Item[] };
+/**
+ * The page around one message, by conversation and message, for the search hits Cmd K lists: two pages of 20 hits. They stay in memory
+ * only, since a page load lists no hit.
+ */
+const aroundPages = new PageCache<TimelineRead, TimelineShown>("around", 40, false);
+const aroundKey = (id: ConversationId, message: string) => `${id}\u0000${message}`;
 const repliesPages = new PageCache<RepliesRead, RepliesShown>("replies", 20);
 
 /** Brings back the pages the last page load kept, before the first view mounts (main.ts). */
@@ -801,11 +808,21 @@ function roomsAhead(sidebar: Sidebar): void {
 }
 
 /**
- * The conversations the Cmd K palette lists, which the owner is about to pick one of: each one the page holds no page of is read now, all at once. On
- * 11-20 a 200 ms walk waited 231 ms for a room picked there that the sidebar's read ahead had not reached (work/p107-opens).
+ * What the Cmd K palette lists, which the owner is about to pick one of: each conversation and each message hit the page holds no page
+ * of is read now, all at once, a hit as the page around its message. On 11-20 a 200 ms walk waited 231 ms for a room picked there that
+ * the sidebar's read ahead had not reached (work/p107-opens), and a hit's page around its message was never kept, so every hit waited
+ * one round trip. The server's page of 40 entries was 8.1 to 16.9 KB as brotli for three jobs that day, so a list of 20 hits reads
+ * under 340 KB.
  */
-export function conversationsAhead(ids: readonly ConversationId[]): void {
-  for (const id of ids) if (!timelinePages.has(id)) void warmTimeline()({ id, at: 0, working: false });
+export function listedAhead(listed: readonly { conversation: ConversationId; messageId?: string }[]): void {
+  for (const { conversation: id, messageId } of listed) {
+    if (!messageId) {
+      if (!timelinePages.has(id)) void warmTimeline()({ id, at: 0, working: false });
+    } else if (!aroundPages.has(aroundKey(id, messageId))) {
+      void aroundPages.warm(aroundKey(id, messageId), wait => readTimeline(id, messageId, wait),
+        ({ page, header }) => ({ items: shownItems(id, page.items), older: page.older, header, ...(page.focus ? { focus: page.focus } : {}) }));
+    }
+  }
 }
 
 /**
@@ -889,8 +906,11 @@ export class Timeline {
 
   private async load(around?: string): Promise<void> {
     this.around = around;
-    const last = around ? undefined : timelinePages.last(this.id);
+    const pages = around ? aroundPages : timelinePages;
+    const key = around ? aroundKey(this.id, around) : this.id;
+    const last = pages.last(key);
     if (last) {
+      this.focus = last.focus;
       this.header = last.header;
       this.status = last.header.summary.status;
       this.items = last.items;
@@ -904,7 +924,7 @@ export class Timeline {
       // With the kept page on the screen, this read is a refresh behind it, unless it changes what the screen shows.
       const asked: Wait = last ? { background: "shown" } : {};
       this.limit = last?.limit;
-      const taken = around ? { read: readTimeline(this.id, around), wait: asked } : timelinePages.take(this.id, asked, () => readTimeline(this.id, undefined, asked, last?.limit));
+      const taken = pages.take(key, asked, () => readTimeline(this.id, around, asked, last?.limit));
       const { wait } = taken;
       const { page, header } = await taken.read;
       this.header = header;

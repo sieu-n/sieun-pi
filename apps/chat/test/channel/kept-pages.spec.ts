@@ -80,3 +80,28 @@ test("a room Cmd K lists is read before the owner picks it", async ({ page, requ
   await expect.poll(() => asked).toContain(`/api/c/${last.id}/items`);
   release();
 });
+
+test("a message hit Cmd K lists is read before the owner picks it, so it opens at its message with no call in front of it", async ({ page }) => {
+  await open(page, "#/c/ch_general");
+  const ahead = page.waitForResponse((r) => new URL(r.url()).searchParams.has("around"));
+  await page.keyboard.press("Control+k");
+  const palette = page.locator("[data-search-palette]");
+  await palette.getByRole("combobox").fill("relay");
+  const hit = palette.locator('[data-key^="hit:"]').first();
+  await expect(hit).toBeVisible();
+  const around = new URL((await ahead).url());
+  // Every hit listed is read, and one more turn of the page's loop keeps the answers.
+  await page.waitForLoadState("networkidle");
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
+
+  const asked: string[] = [];
+  await page.route(held, (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    asked.push(new URL(route.request().url()).search);
+  });
+  await hit.click();
+  await expect(page).toHaveURL(/\?m=/);
+  await expect(conversation(page).locator("[data-message-id]").first()).toBeVisible();
+  expect(asked.some((search) => search.includes("around="))).toBe(true);
+  expect(around.pathname).toMatch(/\/items$/);
+});
