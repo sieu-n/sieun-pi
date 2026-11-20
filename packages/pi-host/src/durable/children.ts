@@ -7,7 +7,7 @@
  * `subagent` tool (`subagent.ts`) both start children this way.
  */
 import type { Message, TextContent } from "@earendil-works/pi-ai";
-import { defineDoc, defineExtension, defineTask, ROOT_CONVERSATION_ID, type ConversationId, type Extension } from "@earendil-works/pi-durable";
+import { defineDoc, defineExtension, defineTask, ROOT_CONVERSATION_ID, type ConversationId, type Extension, type TaskId } from "@earendil-works/pi-durable";
 import { dirname, join } from "node:path";
 import { label, PREVIEW } from "../../../pi-rlm/src/pi/children.ts";
 
@@ -85,6 +85,8 @@ export const childWakes = new Map<string, (conversation: number, signal: AbortSi
  * `TICK_MS`), so a wake goes out no sooner than that.
  */
 const wakePollMs = (): number => Number(process.env.PI_HOST_WAKE_POLL_MS ?? 30_000);
+/** The statuses of a task that is not over yet (pi-durable's scheduler `LIVE_STATUSES`). */
+const LIVE = ["pending", "running", "waiting", "sleeping", "completing"] as const;
 
 type DeliverState =
   | { phase: "deliver" }
@@ -99,7 +101,7 @@ export const textOfMessage = (message: Message | undefined): string => {
 
 /**
  * One message from a parent to a child, and the child's notice to the parent when the run it starts, the `bash()` handles that run left
- * going and the `board.wake`s it set, settle without a reply: a
+ * going, the deliveries to its own children and the `board.wake`s it set, settle without a reply: a
  * background task of the parent conversation, so the parent's own runs end and its Esc does not reach the child. Its first run owns the
  * child conversation. A restart reruns a phase from its top; the request ids find the submissions it already made.
  */
@@ -139,8 +141,9 @@ export const DeliverTask = defineTask<DeliverInput, DeliverState, null>({
       }, ctx);
     },
     // The child's run is over, but it is not done while a `bash()` handle it started runs, while the run a `[bash-done]` input or a wake
-    // started goes on, or while a `board.wake` it set has not gone out, as Prime's `waitForRlmQuiescence` holds it. A wait for a wake is a
-    // durable sleep, so it holds nothing and outlives a restart. The report then carries the newest run's last text.
+    // started goes on, while a delivery to one of its own children is going, whose reply or notice starts its next run, or while a
+    // `board.wake` it set has not gone out, as Prime's `waitForRlmQuiescence` holds it. The waits for its children and its wakes are
+    // durable, so they hold nothing and outlive a restart. The report then carries the newest run's last text.
     hold: async (task, runtime, ctx) => {
       const s = task.state.checkpoint;
       const handle = await runtime.conversation(s.child as ConversationId, ctx);
@@ -148,6 +151,23 @@ export const DeliverTask = defineTask<DeliverInput, DeliverState, null>({
       if (handle && !doc?.deleted) {
         do await handle.waitForIdle(ctx);
         while (await childWork.get(task.input.thread)?.(s.child, runtime.signal));
+        const subagents = await new Promise<TaskId[]>((resolve, reject) => void runtime.commit(async tx => {
+          const live: TaskId[] = [];
+          for (const status of LIVE) {
+            let cursor: Parameters<typeof tx.scanTasks>[2];
+            do {
+              const page = await tx.scanTasks({ conversationId: s.child as ConversationId, kind: "rlm.deliver", status }, 500, cursor);
+              live.push(...page.items.filter(t => (t.input as DeliverInput).parent === s.child).map(t => t.id));
+              cursor = page.next;
+            } while (cursor !== undefined);
+          }
+          resolve(live);
+          return undefined;
+        }, ctx).catch(reject));
+        if (subagents.length) {
+          await runtime.commit(() => ({ status: "waiting", checkpoint: s, on: subagents, policy: "allSettled" }), ctx);
+          return;
+        }
         const waking = await childWakes.get(task.input.thread)?.(s.child, runtime.signal);
         if (waking) {
           await runtime.sleepUntil(runtime.now() + wakePollMs(), s, ctx);
