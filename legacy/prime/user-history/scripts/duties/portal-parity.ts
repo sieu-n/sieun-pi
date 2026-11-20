@@ -372,7 +372,7 @@ export function errorCode(body: unknown): string | undefined {
  * as 503 upstream_error, and a switched-off Vent integration says "is switched off on this Vent" (vent proxy.py). On 11-20 at 11:21Z prod
  * answered 35 calls this way, 18 of them /v1/crawl presets, and staging 20, and d2 read them as 20 routes failing in the crawler.
  */
-const HELD_ANSWER = /\b(proxy_provider_down|proxy_auth_failed|proxy_quota_exhausted|proxy_unreachable|vent_integration_disabled)\b|upstream temporarily unavailable|is switched off on this Vent/;
+export const HELD_ANSWER = /\b(proxy_provider_down|proxy_auth_failed|proxy_quota_exhausted|proxy_unreachable|vent_integration_disabled)\b|upstream temporarily unavailable|is switched off on this Vent/;
 
 /**
  * Who a probe answer blames. 2xx works. An answer that names a proxy supply hold or a paused source (source_paused) is held: nobody fixes it

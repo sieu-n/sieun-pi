@@ -209,8 +209,23 @@ test("websearch_query reads a timeout or Google down as held while another chat'
   assert.ok(alone.status === "fail" && alone.fixer === "agent" && alone.detail === "the search gave no answer in 75 s (ReadTimeout)", JSON.stringify(alone));
 });
 
-// 11-13: Google left GeoNode for the crawler box's own address (auto-sns-agent 19ca60b4a7), so a GeoNode hold no longer explains Google down.
-test("websearch_query reads Google down with no live fix step as an agent fix, whatever holds GeoNode", async () => {
+// 11-20: owner rule c230 stopped every search while the paid proxy is lapsed, and the portal answers 503 "upstream temporarily unavailable".
+const HELD = { ...DOWN, stdout: "Results for query \"Prime Intellect\":\n\nGoogle is unavailable on the Virev search backend right now (HTTP 503: upstream temporarily unavailable). No charge was taken.\n" };
+
+test("websearch_query reads the crawler's proxy hold as off without a second search", async () => {
+  const calls = { n: 0 };
+  const outcome = await websearchQuery.run(searchDeps([HELD, GOOGLE], calls));
+  assert.ok(outcome.status === "off" && outcome.detail.includes("c230") && outcome.detail.includes("owner picks a proxy"), JSON.stringify(outcome));
+  assert.equal(calls.n, 1);
+});
+
+test("websearch_query keeps another 503 as an agent fix", async () => {
+  const other = { ...DOWN, stdout: DOWN.stdout.replace("HTTP 502: Upstream error", "HTTP 503: capacity_exhausted") };
+  const outcome = await websearchQuery.run(searchDeps([other], { n: 0 }));
+  assert.ok(outcome.status === "fail" && outcome.fixer === "agent", JSON.stringify(outcome));
+});
+
+test("websearch_query reads Google down with no live fix step as an agent fix", async () => {
   const outcome = await websearchQuery.run(searchDeps([DOWN], { n: 0 }));
   assert.ok(outcome.status === "fail" && outcome.fixer === "agent" && outcome.fix.includes("crawler side"), JSON.stringify(outcome));
 });

@@ -16,6 +16,7 @@ import { fixLiveReader, type FixLiveness } from "../../src/shared/duty-fixes.ts"
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
 import { pendingWakes } from "../../src/wakes.ts";
 import { daemonSessions as daemonList, sessionRows } from "./duty-fleet.ts";
+import { HELD_ANSWER } from "./portal-parity.ts";
 
 /**
  * The Skills and tools duty's precheck (`node --import tsx scripts/duties/skills-and-tools.ts [--only id,id]`): whether every skill and tool agents
@@ -608,6 +609,11 @@ export const CHECKS: readonly Check[] = [
     // when the first answer leaves the check enough of its time for it.
     const down = /Google is unavailable on the Virev search backend right now \((HTTP .*?)\)\. No charge was taken/;
     const first = await search(SEARCH_TIMEOUT_S);
+    // While the paid proxy is lapsed the crawler holds every search before it leaves (owner rule c230, 11-20), and the portal answers
+    // 503 "upstream temporarily unavailable". No agent can fix that hold and a retry cannot pass, so it counts again once a proxy is picked.
+    const held = down.exec(both(first));
+    if (held && HELD_ANSWER.test(held[1]!))
+      return { status: "off", detail: `Google search is held while the paid proxy is lapsed (c230, ${brief(held[1]!, 120)}), and it counts again once the owner picks a proxy` };
     const left = Math.floor((CHECK_TIMEOUT_MS - first.ms) / 1000) - 15;
     const result = down.test(both(first)) && left >= 10 ? await search(Math.min(left, SEARCH_TIMEOUT_S)) : first;
     const text = both(result);

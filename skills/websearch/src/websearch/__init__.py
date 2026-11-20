@@ -134,9 +134,15 @@ def _friendly_http_error(status: int, body_text: str) -> str:
         # A 429 is Google refusing the crawler's exits. A 502 or 504 can also be the
         # crawler itself being down: on 2026-10-15 a prod deploy hold stopped it from
         # 09:16Z to 10:24Z and every call came back as 502 "Upstream error".
+        held = (
+            " The crawler holds every search while its paid proxy is lapsed, so no retry helps"
+            " until the owner picks a proxy."
+            if "upstream temporarily unavailable" in message
+            else ""
+        )
         return (
             f"Google is unavailable on the Virev search backend right now (HTTP {status}: {message}). "
-            "No charge was taken."
+            f"No charge was taken.{held}"
         )
     return f"Virev search error ({status}): {message}"
 
