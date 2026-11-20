@@ -12,6 +12,7 @@
  *    that post's thread), and at the end neither keeps the agent's 👀 or a ✅.
  * 2. "ok thanks" gets one reaction from the agent and no post.
  * 3. In the channel no agent post is a root post.
+ * 4. No agent post has ✅ or 👀 in its text, since the owner asked for fewer of both.
  * 👀 counts as seen when a poll saw it on the post or the agent's comm thread called set_emoji with eyes on it, since a fast answer can put
  * it on and take it off between two polls.
  *
@@ -89,7 +90,18 @@ async function emojiCalls(room) {
   }
   return calls;
 }
-const names = (call, room, post) => [post.id, `${room}/${post.id}`, String(post.seq), `post ${post.seq}`].includes(call.message.trim());
+/**
+ * Whether a set_emoji call names `post`: by its id, seq or room-qualified id, or by the [message id] pi-host stamped on its input, a base-36
+ * time that falls after the post and before the next owner post (apps/chat/server/reactions.ts agentPost).
+ */
+function names(call, room, post, posts) {
+  const id = call.message.trim().replace(new RegExp(`^${room}/`), "");
+  if ([post.id, String(post.seq), `post ${post.seq}`].includes(id)) return true;
+  if (!/^[0-9a-z]{6,10}$/.test(id)) return false;
+  const at = parseInt(id, 36);
+  const next = posts.find(p => p.author?.id !== agent.id && p.seq > post.seq);
+  return post.at <= at && (!next || at < next.at);
+}
 
 async function runRoom(kind) {
   const room = kind === "dm" ? agent.room : (await call("POST", "/api/rooms", { kind: "channel", name: `blind-reactions-${stamp}`, agenda: "", members: [agent.id], test: true })).id;
@@ -134,7 +146,7 @@ async function runRoom(kind) {
 
   const calls = await emojiCalls(room);
   const byId = id => posts.find(p => p.id === id);
-  const eyesSeen = post => seen.has(post.id) || calls.some(c => c.on && emojiName(c.emoji) === "eyes" && names(c, room, post));
+  const eyesSeen = post => seen.has(post.id) || calls.some(c => c.on && emojiName(c.emoji) === "eyes" && names(c, room, post, posts));
   const replyChecks = (post, label) => {
     const replies = answersOf(posts, post.id);
     return [
@@ -153,6 +165,7 @@ async function runRoom(kind) {
     ["ok thanks got no post", afterThanks.length === 0],
     ...(kind === "channel" ? [["no agent post is a root post", posts.every(p => p.author?.id !== agent.id || p.threadRoot)]] : []),
     ["no ✅ by the agent anywhere", posts.every(p => !mine(p, CHECK))],
+    ["no ✅ or 👀 in the agent's post text", posts.every(p => p.author?.id !== agent.id || !/[✅👀]/u.test(p.text))],
   ];
   const line = {
     room, kind, agent: agent.id, questionSeconds, taskSeconds,

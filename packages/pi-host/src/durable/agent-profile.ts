@@ -77,7 +77,7 @@ function workSteps(work: string): string[] {
       "The moment your reply to that post goes out, take 👀 off with `set_emoji(message_id, \"eyes\", false)` in the same turn, also when more work goes on after the reply, so a post you answered never keeps your 👀. " +
       "Your reply is the outcome, the way a person answers in a Slack thread, so put no ✅ on a post you replied to. " +
       "Put ✅ on a post only for a quick ask you did where a reply would add nothing, such as \"pin that\", and take 👀 off then too. " +
-      "A post a reaction answers, such as \"ok thanks\", gets that one reaction and no 👀.",
+      "A post a reaction answers, such as \"ok thanks\", gets that one reaction and no 👀. Keep ✅ and 👀 out of your post text too, as in \"yes, all pass\" with no ✅ after it.",
     "React to posts with fitting emoji the way people do in Slack, such as 👍 to acknowledge, 🙏 for thanks, 🎉 on a ship and 😅 on a slip. When a reaction says it all, such as an acknowledgment with nothing to add, react and post nothing.",
     `Answer a status question from the work thread's state. Read it in ipython with \`await agent_observe.get_agent(${work})\` or \`await agent_observe.recent_messages(${work})\`, and read the board with chat_board. Never ask the work thread for its status.`,
     `Hand any task that takes more than a minute to the work thread with \`await agent_message.send(task, receiver_role="sibling", receiver_name=${work})\`. Steer it the same way with \`mode="steer"\`, and stop its turn with stop_work.`,
