@@ -5,7 +5,8 @@
 </script>
 
 <script lang="ts">
-  import { setContext, type Snippet } from "svelte";
+  import { getContext, setContext, type Snippet } from "svelte";
+  import { NAV_PAGE, type NavPageState } from "./NavPage.svelte";
   import LoadingText from "$lib/ui/LoadingText.svelte";
   import ResizeHandle from "$lib/ui/ResizeHandle.svelte";
   import { sidebar, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN } from "./sidebar.svelte";
@@ -31,6 +32,8 @@
     children: Snippet;
   };
   let { title, root, label, actions, head, state = "ready", loadingText = "Loading…", offlineText = "Offline · Showing the last list.", children }: Props = $props();
+  /** A sidebar the shell keeps mounted behind another is not the page's sidebar, so only the one on the screen carries the test id. */
+  const page = getContext<NavPageState | undefined>(NAV_PAGE);
   setContext<FrameState>(FRAME_STATE, {
     get loading() {
       return state === "loading";
@@ -38,7 +41,7 @@
   });
 </script>
 
-<nav class="sidebar" aria-label={label ?? title} data-root={root} data-testid="sidebar">
+<nav class="sidebar" aria-label={label ?? title} data-root={root} data-testid={page && !page.active ? undefined : "sidebar"}>
   <div class="title">
     <h1 class="t-label">{title}</h1>
     {#if actions}<span class="actions">{@render actions()}</span>{/if}

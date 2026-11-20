@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { agents, api, connection, jobs, panelsAhead, reads, view, type AgentSummary, type ThinkingLevel } from "$lib/api";
-  import { Button, EmptyState, Menu, PanelHeader, Skeleton, toast, type Anchor, type MenuEntry } from "$lib/ui";
+  import { agents, api, connection, jobs, kept, panelsAhead, reads, view, type AgentSummary, type ThinkingLevel } from "$lib/api";
+  import { Button, EmptyState, Menu, PanelHeader, Skeleton, renderMarkdown, toast, type Anchor, type MenuEntry } from "$lib/ui";
   import { router, hrefFor } from "$lib/router.svelte";
   import AgentCard from "./AgentCard.svelte";
   import AgentConfigPanel from "./AgentConfigPanel.svelte";
@@ -41,6 +41,21 @@
       reads: [reads.agentConfig(agent.id), ...(hasForList(agent.id) ? [reads.forMe(agent.id)] : [])],
     })));
     return () => panelsAhead("agents", []);
+  });
+  /**
+   * The markdown of each card's page, its first input and its brief, is rendered while the page is idle, so the open finds the HTML in
+   * the renderer's cache. On 11-20 that render took 31 to 44 ms of an agent page's 104 to 177 ms open (~/work/p106-panel-open/summary.md).
+   */
+  $effect(() => {
+    const idle = typeof requestIdleCallback === "function" ? requestIdleCallback : (run: () => void) => setTimeout(run, 0);
+    for (const agent of shown) {
+      const config = kept(reads.agentConfig(agent.id)).value;
+      if (!config) continue;
+      idle(() => {
+        if (config.identity.purpose) renderMarkdown(config.identity.purpose.text);
+        if (config.folder?.brief.text) renderMarkdown(config.folder.brief.text);
+      });
+    }
   });
   onMount(() => {
     const timer = setInterval(() => (now = Date.now()), 30_000);

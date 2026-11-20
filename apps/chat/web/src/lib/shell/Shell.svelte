@@ -2,6 +2,7 @@
   import type { Component, Snippet } from "svelte";
   import TopBar from "./TopBar.svelte";
   import SidePanelHost from "./SidePanelHost.svelte";
+  import NavPage from "./NavPage.svelte";
   import { sidebar } from "./sidebar.svelte";
   import { router, type PageId } from "$lib/router.svelte";
   import MessagesSidebar from "$pages/channel/MessagesSidebar.svelte";
@@ -22,6 +23,12 @@
     ui: null,
   };
   const Nav = $derived(SIDEBARS[router.route.page]);
+  /** Each sidebar this page has shown, in the order it first showed; all stay mounted and only `Nav` is on the screen (NavPage.svelte). */
+  const shownNavs = new Set<Component>();
+  const navs = $derived.by(() => {
+    if (Nav) shownNavs.add(Nav);
+    return [...shownNavs];
+  });
 
   let bodyWidth = $state(1440);
   /** The main panel keeps at least this much room when the side panel grows. */
@@ -54,7 +61,9 @@
         <button class="scrim" type="button" aria-label="Close sidebar" onclick={() => (sidebar.drawerOpen = false)}></button>
       {/if}
       <div class="nav-slot" class:collapsed={!sidebarShown} class:drawer={narrow} style:--w="{narrow ? 220 : sidebar.width}px">
-        {#if sidebarShown}<Nav />{/if}
+        {#if sidebarShown}
+          {#each navs as Side (Side)}<NavPage {Side} active={Side === Nav} />{/each}
+        {/if}
       </div>
     {/if}
     <main class="main-panel" data-testid="main-panel">
