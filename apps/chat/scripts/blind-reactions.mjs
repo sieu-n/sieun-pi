@@ -36,7 +36,7 @@ const CHECK = "✅";
 
 /** The owner's kinds of posts from #sw-factory-build on 11-20: a task with a result to come, a question while it runs, and a thanks. */
 const TASK = "can you run the apps/chat server tests for reactions and emoji and tell me if they pass?";
-const QUESTION = "where does the chat server keep a post's reactions?";
+const QUESTION = "where does the chat server keep a room's posts?";
 const THANKS = "ok thanks";
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
