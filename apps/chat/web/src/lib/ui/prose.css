@@ -40,27 +40,68 @@
 .prose ol {
   padding-left: 22px;
 }
-.prose li + li {
+/* Slack's markers: disc, circle, square by depth, set here because a post sits inside a timeline <li> and the browser's own nesting rule would start it at circle. */
+.prose ul {
+  list-style-type: disc;
+}
+.prose ul ul {
+  list-style-type: circle;
+}
+.prose ul ul ul {
+  list-style-type: square;
+}
+.prose ol {
+  list-style-type: decimal;
+}
+.prose ol ol {
+  list-style-type: lower-alpha;
+}
+.prose ol ol ol {
+  list-style-type: lower-roman;
+}
+.prose li + li,
+.prose li > :is(ul, ol) {
   margin-top: 2px;
+}
+/* A nested list and a loose item's paragraphs keep the list's 2px rhythm, as Slack draws a list, with no paragraph gap inside it. */
+.prose li > :is(ul, ol),
+.prose li > p {
+  margin-bottom: 0;
+}
+.prose li > p + :is(p, .code-block, .table-block, blockquote) {
+  margin-top: 6px;
+}
+/* A list right under its lead-in line sits 4px below it, also inside a bubble. */
+.prose > p:has(+ :is(ul, ol)) {
+  margin-bottom: 4px;
+}
+.prose > p + :is(ul, ol) {
+  margin-top: 4px;
 }
 .prose li.task-item {
   list-style: none;
 }
+/* A task's box sits in the marker's gutter, so its text lines up with a plain bullet's; drawn here, since a disabled native box reads as greyed out. */
 .prose li.task-item > input[type="checkbox"],
 .prose li.task-item > p:first-child > input[type="checkbox"] {
-  width: 13px;
-  height: 13px;
-  margin: 0 6px 0 -19px;
+  appearance: none;
+  box-sizing: border-box;
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin: 0 6px 0 -20px;
+  border: 1.5px solid color-mix(in srgb, currentColor 45%, transparent);
+  border-radius: 4px;
+  background: transparent center / 10px 10px no-repeat;
   vertical-align: -2px;
-  accent-color: var(--status-online);
+  opacity: 1;
   pointer-events: none;
 }
-.prose li.task-item.done {
-  color: var(--text-subtle);
-}
-.prose li > input[type="checkbox"] {
-  margin: 0 6px 0 -18px;
-  vertical-align: -1px;
+.prose li.task-item > input[type="checkbox"]:checked,
+.prose li.task-item > p:first-child > input[type="checkbox"]:checked {
+  border-color: var(--status-online);
+  background-color: var(--status-online);
+  background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M2 5.2 4.1 7.3 8 2.9' fill='none' stroke='white' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 .prose a {
   color: var(--text-message-link);
@@ -548,7 +589,8 @@
   }
 }
 /* A block after a paragraph keeps its gap, also inside a bubble, which zeroes paragraph margins. */
-.prose > * + :is(.callout, .code-block, .table-block, details, ul, ol, blockquote, .md-image),
+.prose > * + :is(.callout, .code-block, .table-block, details, blockquote, .md-image),
+.prose > :not(p) + :is(ul, ol),
 .prose > * + p:has(> .md-image:only-child) {
   margin-top: 10px;
 }

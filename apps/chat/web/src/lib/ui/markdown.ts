@@ -591,7 +591,8 @@ const marked = new Marked({
       return `<div class="code-block${fold ? " folded" : ""}"><div class="code-head"><span class="code-lang">${escapeHtml(language || "text")}</span><span class="code-actions"><button type="button" data-open-code>Open</button><button type="button" data-copy>Copy</button></span></div><pre tabindex="0"><code${language ? ` class="language-${escapeHtml(language)}"` : ""}>${escapeHtml(text)}</code></pre>${more}</div>\n`;
     },
     checkbox({ checked }) {
-      return `<input type="checkbox" disabled${checked ? " checked" : ""}> `;
+      // No space after the box: its right margin is the gap, so a task's text lines up with a plain bullet's (prose.css).
+      return `<input type="checkbox" disabled${checked ? " checked" : ""}>`;
     },
     strong({ tokens }) {
       return ctx.plain ? this.parser.parseInline(tokens) : false;

@@ -42,8 +42,32 @@ test("code blocks carry a language label and a copy button, and fold past the li
 
 test("task lists render read-only checkboxes on task items", () => {
   const html = renderMarkdown("- [x] Done step.\n- [ ] Open step.");
-  assert.match(html, /<li class="task-item done"><input type="checkbox" disabled checked> Done step\.<\/li>/);
-  assert.match(html, /<li class="task-item"><input type="checkbox" disabled> Open step\.<\/li>/);
+  assert.match(html, /<li class="task-item done"><input type="checkbox" disabled checked>Done step\.<\/li>/);
+  assert.match(html, /<li class="task-item"><input type="checkbox" disabled>Open step\.<\/li>/);
+});
+
+test("a chat post's nested bullets and task items stay one list, with checkboxes and no literal [x] or [ ]", () => {
+  const post = [
+    "done, memory is on target for every agent",
+    "- stores",
+    "  - 8 of 8 agents match the ideal",
+    "  - 0 scratch entries left",
+    "- [x] 21 of 21 recall questions right",
+    "- [ ] Mac install still open",
+  ].join("\n");
+  const html = renderMarkdown(post, { plain: true });
+  assert.match(html, /^<p>done, memory is on target for every agent<\/p>\n<ul>\n<li>stores<ul>\n<li>8 of 8 agents match the ideal<\/li>\n<li>0 scratch entries left<\/li>\n<\/ul>\n<\/li>\n<li class="task-item done"><input type="checkbox" disabled checked>21 of 21/);
+  assert.match(html, /<li class="task-item"><input type="checkbox" disabled>Mac install still open<\/li>\n<\/ul>/);
+  assert.equal(html.match(/<ul>/g)?.length, 2);
+  assert.doesNotMatch(html, /\[[x ]\]|<br>/i);
+});
+
+test("nested task lists and loose task items keep their checkboxes", () => {
+  const html = renderMarkdown("- [ ] Ship the Mac install.\n  - [x] Build the release.\n  - [ ] Boot check.\n\n- [x] Memory fixes.", { plain: true });
+  assert.match(html, /<li class="task-item"><p><input type="checkbox" disabled>Ship the Mac install\.<\/p>\n<ul>\n<li class="task-item done"><input type="checkbox" disabled checked>Build the release\.<\/li>/);
+  assert.match(html, /<li class="task-item done"><p><input type="checkbox" disabled checked>Memory fixes\.<\/p>/);
+  assert.equal(html.match(/<input type="checkbox"/g)?.length, 4);
+  assert.doesNotMatch(html, /\[[x ]\]/i);
 });
 
 test("details and summary survive, and every other raw tag shows as text", () => {
