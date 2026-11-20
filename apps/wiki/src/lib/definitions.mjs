@@ -48,7 +48,13 @@ const closes = (line) => {
  * covers a Python block, a TypeScript function or object, a YAML job, a JSON value, a call and a shell function. A top-level
  * declaration wins over a local one of the same name, because on 2026-10-28 2a8c77c496 added `const refresh = ...` inside
  * storeCounts in convex/search/campaigns/screening/refresh.ts, and that edit flagged every page citing the exported
- * `refresh` action, which it never touched. Failing all of
+ * `refresh` action, which it never touched. A key that heads a block, such as the compose service `  redis:`, wins over
+ * one-line keys of the same name, such as `redis: { condition: service_healthy }` under another service's `depends_on`,
+ * because on 2026-11-20 auto-sns-agent 698493e50d dropped such a line with the box-proxy service and flagged 4 pages citing
+ * apps/infra/metal/compose.yml::redis. On a replay of the 7 days to 2026-11-20 08:15Z this drops 8 of the 1,241 flagged
+ * dream rechecks, all on that ref, and two of them that changed a page body changed only box-proxy lines; keeping the
+ * shallowest key instead also dropped 5 rechecks that fixed a one-line key, such as `includedSeats: 1,` of a new plan in
+ * convex/search/pricing.ts, whose interface field sat shallower (~/work/wiki-stale-yaml-key-depth/). Failing all of
  * those, a Markdown heading `## name` runs to the next heading of its level or higher, because on the 7 days to 2026-10-28
  * 10:28Z commits to other sections of ops/runbooks/dev-boxes.md and apps/infra/metal/README.md flagged
  * domains/devops/local-store-box/index.html and domains/devops/aws-estate.html 11 times and none of them changed the page.
@@ -73,7 +79,7 @@ export function definitionText(text, name) {
 	];
 	const lines = text.split('\n');
 	for (const pattern of patterns) {
-		/** @type {{ top: boolean; text: string }[]} */
+		/** @type {{ depth: number; text: string }[]} */
 		const blocks = [];
 		for (let start = 0; start < lines.length; start += 1) {
 			if (!lines[start].includes(name) || !pattern.test(lines[start])) continue;
@@ -90,10 +96,11 @@ export function definitionText(text, name) {
 				if (line.trim() && (indent(line) < depth || (indent(line) === depth && !/^\s*[)\]}]/.test(line)))) break;
 				end += 1;
 			}
-			blocks.push({ top: indent(lines[head]) === 0, text: lines.slice(head, end).join('\n').trimEnd() });
+			blocks.push({ depth, text: lines.slice(head, end).join('\n').trimEnd() });
 		}
-		const top = pattern === patterns[0] ? blocks.filter((block) => block.top) : [];
-		if (blocks.length) return (top.length ? top : blocks).map((block) => block.text).join('\n');
+		const heads = pattern === patterns[1] ? blocks.filter((block) => block.text.includes('\n')) : [];
+		const kept = pattern === patterns[0] ? blocks.filter((block) => block.depth === 0) : heads;
+		if (blocks.length) return (kept.length ? kept : blocks).map((block) => block.text).join('\n');
 	}
 	const blocks = braceBlocks(lines, name);
 	if (blocks.length) return blocks.join('\n');

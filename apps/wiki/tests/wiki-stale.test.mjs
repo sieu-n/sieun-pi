@@ -261,6 +261,28 @@ test('a path::name ref to a YAML list item follows only that item', (t) => {
 	assert.deepEqual(rows['apps/gone.html'], [{ ref: 'alerts.yaml::door-dev', modified: 'missing — ref no longer exists' }]);
 });
 
+// 2026-11-20: auto-sns-agent 698493e50d dropped the box-proxy service, whose depends_on held `redis: { condition: ... }`,
+// and that flagged 4 pages citing apps/infra/metal/compose.yml::redis, because a key ref kept every line that held the key.
+test('a path::name key that heads a block wins over one-line keys of the same name', (t) => {
+	const w = fixture(t);
+	const compose = (image, needs) =>
+		`services:\n  redis:\n    image: redis:${image}\n\n  api:\n    image: api\n    depends_on:\n      redis: { condition: ${needs} }\n`;
+	w.write('compose.yml', compose('8.8', 'service_healthy'));
+	w.page('redis.html', ['compose.yml::redis']);
+	w.init();
+	w.commit('2026-10-20T01:00:00Z', 'pages');
+	w.write('compose.yml', compose('8.8', 'service_started'));
+	w.commit('2026-10-20T04:00:00Z', 'depends_on');
+	assert.deepEqual(w.refsByPage(), {}, 'a depends_on edit is no change to the redis service');
+	w.write('compose.yml', compose('8.9', 'service_started'));
+	w.commit('2026-10-20T05:00:00Z', 'image');
+
+	assert.deepEqual(w.refsByPage()['apps/redis.html'], [{ ref: 'compose.yml::redis', ...at('05') }]);
+	assert.equal(definitionText(compose('8.8', 'x'), 'redis'), '  redis:\n    image: redis:8.8');
+	const plans = 'interface PlanDef {\n\tseats: number;\n}\nconst PLANS = {\n\tfree: {\n\t\tseats: 1,\n\t},\n};\n';
+	assert.equal(definitionText(plans, 'seats'), '\tseats: number;\n\t\tseats: 1,', 'one-line keys alone all count');
+});
+
 // 2026-10-28: 6a0b8a728a only reworded a comment in the guest block of apps/infra/ci-server/host-vars.ci02.yml, and
 // runners.html read as behind code through its ref host-vars.ci02.yml::guest, because code-text.mjs kept YAML comments.
 test('a comment-only change in a cited YAML or TOML block leaves the page current, and a value change counts', (t) => {
@@ -631,6 +653,32 @@ test('a path::name tuple table follows only the quoted keys the page names', (t)
 	assert.equal(rows['apps/meta-ads.html'], undefined, 'an edit of the engage row is no change to the meta_ads row');
 	assert.deepEqual(rows['apps/engage.html'], [{ ref: ref[0], ...at('04') }]);
 	assert.deepEqual(rows['apps/whole.html'], [{ ref: ref[0], ...at('04') }], 'a page naming no key follows the table');
+});
+
+// 2026-11-20: auto-sns-agent 1202c1dff0 dropped `box_proxy_ports=` from the call `_PROD_PROFILE = RuntimeProfile(` in
+// apps/crawler-v3/src/settings.py and flagged all 8 pages citing it, 5 of which name only other keyword arguments.
+test('a path::name call follows only the one keyword argument the page names', (t) => {
+	const w = fixture(t);
+	const settings = (evidence, ports) =>
+		`_PROD_PROFILE = RuntimeProfile(\n    bootstrap=False,\n    parent_evidence=frozenset({${evidence}}),\n${ports ? '    box_proxy_ports=(\n        ("64.34.205.244", 7244),\n    ),\n' : ''})\n`;
+	w.write('settings.py', settings('"path"', true));
+	const ref = ['settings.py::_PROD_PROFILE'];
+	w.page('parents.html', ref, { body: '<p><code>parent_evidence</code> holds path.</p>' });
+	w.page('modes.html', ref, { body: '<p><code>box_proxy_ports</code> maps .244 to 7244.</p>' });
+	w.page('whole.html', ref, { body: '<p>The prod profile.</p>' });
+	w.page('two.html', ref, { body: '<p><code>bootstrap</code> is off and <code>parent_evidence</code> holds path.</p>' });
+	w.init();
+	w.commit('2026-10-20T01:00:00Z', 'pages');
+	w.write('settings.py', settings('"path"', false));
+	w.commit('2026-10-20T04:00:00Z', 'box proxy goes');
+	w.write('settings.py', settings('"path", "line"', false));
+	w.commit('2026-10-20T05:00:00Z', 'line evidence');
+
+	const rows = w.refsByPage();
+	assert.deepEqual(rows['apps/parents.html'], [{ ref: ref[0], ...at('05') }], 'the box_proxy_ports drop is no change to parent_evidence');
+	assert.deepEqual(rows['apps/modes.html'], [{ ref: ref[0], ...at('04') }]);
+	assert.deepEqual(rows['apps/whole.html'], [{ ref: ref[0], ...at('04', '05') }], 'a page naming no argument follows the call');
+	assert.deepEqual(rows['apps/two.html'], [{ ref: ref[0], ...at('04', '05') }], 'a page naming two arguments follows the call');
 });
 
 // 2026-10-29: 419233997b and 950b9b00e4 edited rows of the array table OPERATION_ROWS in

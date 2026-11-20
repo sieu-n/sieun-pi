@@ -181,7 +181,9 @@ export function linesTouch(lines, { tokens, paths }) {
  * @returns {string[]}
  */
 export function entryKeys(source, definition) {
-	if (!/=\s*[({[]\s*$/.test(definition.split('\n')[0] ?? '')) return [];
+	const head = definition.split('\n')[0] ?? '';
+	if (KWARG_CALL.test(head)) return kwargKeys(source, definition);
+	if (!/=\s*[({[]\s*$/.test(head)) return [];
 	/** @type {Set<string>} */
 	const keys = new Set();
 	for (const text of codeSpans(source))
@@ -192,6 +194,34 @@ export function entryKeys(source, definition) {
 			if (entry(definition, key) !== null) keys.add(key);
 		}
 	return [...keys];
+}
+
+/** The head of a call that a definition assigns, as `_PROD_PROFILE = RuntimeProfile(` or `LIMITS = dict(`. */
+const KWARG_CALL = /=\s*[A-Za-z_][\w.]*\(\s*$/;
+
+/**
+ * The keyword argument of a call definition (`KWARG_CALL`) that the page names in `<code>`, a `name=` line at the call's
+ * first depth, which `definitionText` finds as a key, or none when the page names none or two or more. On 2026-11-20
+ * auto-sns-agent 1202c1dff0 dropped `box_proxy_ports=` from `apps/crawler-v3/src/settings.py::_PROD_PROFILE` and flagged
+ * all 8 pages citing it, and 5 of their rechecks changed only `last_verified`, because they name `parent_evidence` or
+ * another argument the commit left alone. On a replay of the 7 days to 2026-11-20 08:15Z this drops 11 of the 1,233
+ * flagged dream rechecks and none of the 749 that changed a page body. Keying a page that names two or more arguments too
+ * would have dropped 15, with 2 body changes, because apps/crawler-v3/workers.html names `role_processes` and
+ * `mode_processes` and its writer added the `parent_evidence` and `watch-scheduler` pool facts of 3b70dc9955 and
+ * c9a1a1159c (~/work/wiki-stale-yaml-key-depth/).
+ * @param {string} source
+ * @param {string} definition
+ * @returns {string[]}
+ */
+function kwargKeys(source, definition) {
+	const lines = definition.split('\n');
+	const first = lines.slice(1).find((line) => line.trim() && !/^\s*#/.test(line));
+	if (first === undefined) return [];
+	const args = new Set(
+		lines.flatMap((line) => (depthOf(line) === depthOf(first) ? (/^\s*([A-Za-z_]\w*)\s*=(?!=)/.exec(line)?.[1] ?? []) : [])),
+	);
+	const named = [...codeNames(source)].filter((name) => args.has(name));
+	return named.length === 1 ? named : [];
 }
 
 /** The text of the entries of `definition` keyed by one of `keys`, in key order, or null for a null definition.
@@ -385,7 +415,7 @@ export function namedEnv(definition, keys) {
 
 /**
  * What a page's `path::name` ref follows of a version of the definition, given its text at the page's check: for a table
- * only the entries the page names (`entryKeys`), for a class all but a field added with a default the page does not name
+ * only the entries the page names and for a keyword call the one argument it names (`entryKeys`), for a class all but a field added with a default the page does not name
  * (`memberKeys`), for a YAML block with an env map all but the entries whose key the page does not name (`envKeys`), else
  * the whole text.
  * @param {string} source
