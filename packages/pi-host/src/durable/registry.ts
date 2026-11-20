@@ -6,11 +6,13 @@
  * document and entry kinds, the child delivery task (`children.ts`), and the comm thread's hand-over task and `stop_work` (`comm.ts`).
  * Each thread file gets its own registry, so its prompt can name its file.
  */
+import { delimiter } from "node:path";
 import type { JsonValue } from "@earendil-works/chord";
 import { createRegistry, defineDocFamily, defineEntry, type Extension, type Registry } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { Preamble } from "./open.ts";
+import { ownerTag } from "./owner-tag.ts";
 import { primeChat, type ChatThread, type PrimeChat } from "./prime-chat.ts";
 import { primePrompt, type PrimePromptOptions } from "./prime-prompt.ts";
 import { roomTools } from "./room-tools.ts";
@@ -60,5 +62,12 @@ export function threadRegistry(prompt?: PrimePromptOptions, chat?: { chat: Prime
   return registry;
 }
 
-/** The environment a conversation's tools run in: the host's machine, in the conversation's cwd or else the thread's cwd at that call. */
-export const threadEnv = (defaultCwd: () => string) => (target: { cwd?: string }) => new NodeExecutionEnv({ cwd: target.cwd ?? defaultCwd() });
+/**
+ * The environment a conversation's tools run in: the host's machine, in the conversation's cwd or else the thread's cwd at that call, with the
+ * thread's owner tag. On 11-20 the unit blind-replies-run4, which an agent factory thread started from its `bash` tool, named no owner,
+ * because only the thread's kernel had the tag.
+ */
+export const threadEnv = (threadId: string, defaultCwd: () => string) => (target: { cwd?: string }) => new NodeExecutionEnv({
+  cwd: target.cwd ?? defaultCwd(),
+  shellEnv: ownerTag(threadId, process.env.PATH ?? "", delimiter),
+});

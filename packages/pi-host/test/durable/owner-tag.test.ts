@@ -3,10 +3,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { ownerTag, UNIT_TAG_DIR } from "../../src/durable/rlm.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { ownerTag, UNIT_TAG_DIR } from "../../src/durable/owner-tag.ts";
+import { threadEnv } from "../../src/durable/registry.ts";
 
 const THREAD = "39ca7bbb-37a8-47e5-a06a-d6cea515b3cc";
 
@@ -46,4 +48,18 @@ test("with sieun-rules' unit-env shim and the unit-tag shim both on PATH, either
       assert.deepEqual(run.stdout.trim().split("\n"), ["-E", "LC_PRIME_SESSION", "--user", "--unit=t", "sleep", "1"]);
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// p825 (11-20): blind-replies-run4, a unit an agent factory thread started with its `bash` tool, named no owner, because only the thread's
+// kernel had the tag. The env every tool call of a thread runs in now carries it.
+test("a command a thread's bash tool runs gets the thread's owner tag and the unit-tag systemd-run first", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "unit-tag-"));
+  try {
+    let out = "";
+    const env = threadEnv(THREAD, () => dir)({});
+    const result = await env.exec(`printf '%s\\n' "$LC_PRIME_SESSION" "$(command -v systemd-run)" "$PWD"`,
+      { env: {}, inheritEnv: true, onOutput: text => { out += text; } }, BACKGROUND_CONTEXT);
+    assert.ok(result.ok && result.value.exitCode === 0, out);
+    assert.deepEqual(out.trim().split("\n"), [`${THREAD}@${hostname().split(".")[0]}`, join(UNIT_TAG_DIR, "systemd-run"), dir]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

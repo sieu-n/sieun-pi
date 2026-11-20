@@ -353,7 +353,7 @@ export class DurableThreads {
           ...(this.options.rlm ? { rlm: this.options.rlm.extension(this.rlmThread(id, file, name, cwd, () => openHarness, models)) } : {}),
           ...(this.options.rules ? { rules: this.options.rules.extension({ id, file, name, cwd }) } : {}),
         }),
-        env: threadEnv(cwd),
+        env: threadEnv(id, cwd),
         ...(this.options.settings === undefined ? {} : { settings: this.options.settings(id) }),
         onWake: next => {
           wake = next;

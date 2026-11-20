@@ -63,7 +63,7 @@ async function run(id: string, steps: ((last: string) => ReturnType<typeof say> 
   faux.setResponses(Array.from({ length: 50 }, () => ({ messages }: { messages: never[] }) => steps[step++]?.(lastText(messages)) ?? say("done")));
   models.setProvider(faux.provider);
   const registry = threadRegistry(undefined, undefined, { thread: { id, file }, rlm: rlm.extension(thread), rules: rules.extension({ id, file, name: thread.name, cwd: () => dir }) });
-  harness = await Harness.open(await openNodeSqliteStorage(file), { models, registry, env: threadEnv(() => dir) }, context);
+  harness = await Harness.open(await openNodeSqliteStorage(file), { models, registry, env: threadEnv(id, () => dir) }, context);
   const root = await harness.root(context, { agent: { model: MODEL, thinkingLevel: "off", cwd: dir } });
   harness.resume();
   await (await root.submit({ type: "input", content: "go" }, context)).wait(context);

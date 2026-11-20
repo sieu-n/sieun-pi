@@ -181,7 +181,7 @@ test("a job's dir names its transcript, a pending wake keeps it live, and a live
   } finally { await rm(home, { recursive: true, force: true }); }
 });
 
-// The pi-host half of p661: a pi thread's kernel tags its processes with LC_PRIME_SESSION=<thread id>@<host> (pi-host rlm.ts ownerTag), and a
+// The pi-host half of p661: a pi thread's kernel and bash tool tag their processes with LC_PRIME_SESSION=<thread id>@<host> (pi-host owner-tag.ts), and a
 // thread is the owner's chat, so its processes stop only once it is archived.
 test("a pi-host thread from the durable index is live until it is archived, and an archived one has ended at its last update", async () => {
   const home = await mkdtemp(join(tmpdir(), "orphan-reaper-pi-"));
