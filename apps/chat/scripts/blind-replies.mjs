@@ -69,7 +69,8 @@ function checks(ask, posts, asked) {
   ];
 }
 
-const stamp = new Date().toISOString().slice(5, 16).replace(/[-T:]/g, "");
+/** Month, day, time to the second and 2 random letters, since two runs started in one minute on 11-20 got one channel name. */
+const stamp = `${new Date().toISOString().slice(5, 19).replace(/[-T:]/g, "")}${Math.random().toString(36).slice(2, 4)}`;
 const agent = await call("POST", "/api/agents", { name: `blind replies ${stamp}`, test: true, ...(values.cwd ? { cwd: values.cwd } : {}), ...(values.host ? { host: values.host } : {}) });
 const room = await call("POST", "/api/rooms", { kind: "channel", name: `blind-replies-${stamp}`, agenda: "", members: [agent.id], test: true });
 console.log(`agent ${agent.id}, room ${room.id}`);
