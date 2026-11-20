@@ -10,6 +10,7 @@ The Rust shell only wires the window, the menu and links, and the chat itself st
 - The window remembers its size and position through tauri-plugin-window-state.
 - The window has no title bar strip. The macOS window buttons sit inside the chat's top row (`trafficLightPosition` x 20, y 30 centers them 28 px from the top, the middle of the 56 px row). The chat sees Tauri's `__TAURI_INTERNALS__` global, pads that row 88 px on the left and marks it `data-tauri-drag-region="deep"`, and `src-tauri/capabilities/main.json` lets the box's page call the window's drag and zoom commands.
 - The menu has the usual macOS App, Edit (copy, paste, undo), View (Reload, full screen) and Window items.
+- Remind me notifications go through tauri-plugin-notification, because WKWebView has no Web `Notification`. The chat calls the plugin's `notify` command (`apps/chat/web/src/lib/remind-notify.ts`), and the capability grants `notification:default` to the box's page. macOS asks the first time the owner sets a reminder.
 
 ## Build on the Mac
 

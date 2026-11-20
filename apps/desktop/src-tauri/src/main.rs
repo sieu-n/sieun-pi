@@ -69,6 +69,7 @@ fn menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .menu(menu)
