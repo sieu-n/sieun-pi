@@ -15,18 +15,17 @@ test.afterEach(async ({ request }) => {
   made = [];
 });
 
-test("a new chat sends its first message to a real agent and the answer lands in a bubble", async ({ page }) => {
-  await open(page, "#/c/new?kind=chat", "composer-input");
-  await composerInput(page).click();
+test("a message to a new real agent gets its answer in a bubble", async ({ page, request }) => {
+  const agent = (await (await request.post("/api/agents", { data: { kind: "chat", name: `pong spec ${tag()}`, test: true } })).json()) as { id: string; room: string };
+  made.push(agent.id);
+  await open(page, `#/c/${agent.room}`);
+  await composerInput(conversation(page)).click();
   const word = `pong${tag()}`;
   await page.keyboard.type(`Reply with the single word ${word} and nothing else.`);
   await page.keyboard.press("Enter");
-  await expect(page).not.toHaveURL(/new/, { timeout: 30_000 });
-  made.push(decodeURIComponent(page.url().split("#/c/")[1]!.split("?")[0]!));
   await expect(conversation(page).locator(".row.own").filter({ hasText: word })).toBeVisible();
-  const answer = conversation(page).locator('[data-kind="turn"]').filter({ hasText: word }).last();
+  const answer = conversation(page).locator("[data-kind='message']:not(.own)").filter({ hasText: word }).last();
   await expect(answer).toBeVisible({ timeout: 200_000 });
-  await expect(answer).not.toHaveAttribute("data-live", "");
 });
 
 test("Stop ends a long real answer", async ({ page, request }) => {

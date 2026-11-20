@@ -13,7 +13,7 @@ test.use({ baseURL: url ?? "http://127.0.0.1:5192" });
 type Result = { hits: { conversation: { id: string }; messageId: string; snippet: string }[]; total: number };
 
 test("a real message search shows the server's exact count and opens the hit at its message", async ({ page }) => {
-  await page.goto("/#/c/new?kind=chat");
+  await page.goto("/#/c");
   const sample = (await (await page.request.get("/api/search?q=the&limit=1")).json()) as Result;
   test.skip(!sample.hits.length, "the real host has no indexed messages");
   const word = sample.hits[0]!.snippet.match(/<mark>([^<]+)<\/mark>/)![1]!;
@@ -30,7 +30,7 @@ test("a real message search shows the server's exact count and opens the hit at 
 });
 
 test("from:me on the real host counts only the owner's messages", async ({ page }) => {
-  await page.goto("/#/c/new?kind=chat");
+  await page.goto("/#/c");
   const real = (await (await page.request.get("/api/search?q=the&from=owner&limit=1")).json()) as Result;
   await page.keyboard.press(`${mod}+k`);
   const field = page.locator("[data-search-palette]").getByRole("combobox");

@@ -123,7 +123,7 @@ Rules that keep it simple:
 | Channels | Channels the owner is in. | The room |
 | Direct messages | One row per Agent, never per thread. The status dot is the agent's: working while any of its work threads runs. | The DM room with that agent |
 
-Work threads, comm threads and jobs are reached from the Agents page (tabs Overview, Work, Jobs, Board, Memory, Instructions) and from job pills under a message. A root chat becomes an agent with a DM only when the owner makes it one (`POST /api/agents`) or the migrate CLI does. A root thread that an agent's thread started with `rlm.create_session` is filed as a job of that agent, because its first input is an agent message from the thread that started it (`fileSpawned` in `server/agents.ts`). The Solo group lists Solo rooms only and hides when there are none, so a root chat no agent holds is in no sidebar group; search still finds it.
+Work threads, comm threads and jobs are reached from the Agents page (tabs Overview, Work, Jobs, Board, Memory, Instructions) and from job pills under a message. A root chat becomes an agent with a DM only when the owner makes it one (`POST /api/agents`) or the migrate CLI does. A root thread that an agent's thread started with `rlm.create_session` is filed as a job of that agent, because its first input is an agent message from the thread that started it (`fileSpawned` in `server/agents.ts`). The Solo group lists Solo rooms only and hides when there are none, so a root chat no agent holds is in no sidebar group; search still finds it. To start talking, ⌘N and the + menu's New DM open the DM picker, and nothing makes a bare root chat.
 
 ### (a) The owner asks for work in a DM
 

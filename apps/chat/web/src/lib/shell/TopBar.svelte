@@ -32,10 +32,9 @@
   const tabs = $derived(PAGES.map((p) => ({ id: p.id, label: p.label, icon: p.icon, href: router.tabHref(p.id), ...(p.id === "later" ? { badge: overdue || null } : {}) })));
 
   const newItems: MenuEntry[] = [
-    { id: "chat", label: "New chat", icon: "chat", shortcut: isMac ? "⌘N" : "Ctrl N", onselect: () => router.navigate(hrefFor("messages", ["new"], { kind: "chat" })) },
+    { id: "dm", label: "New DM", icon: "messages", shortcut: isMac ? "⌘N" : "Ctrl N", onselect: () => router.navigate(hrefFor("messages", ["new"], { kind: "dm" })) },
     { id: "solo", label: "New Solo room", icon: "users", onselect: () => soloDialog.open() },
     { id: "channel", label: "New channel", icon: "hash", onselect: () => router.navigate(hrefFor("messages", ["new"], { kind: "channel" })) },
-    { id: "dm", label: "New DM", icon: "messages", onselect: () => router.navigate(hrefFor("messages", ["new"], { kind: "dm" })) },
   ];
   const profileItems: MenuEntry[] = $derived([
     { id: "settings", label: "Settings", icon: "settings", onselect: () => router.navigate(hrefFor("settings", ["usage"])) },

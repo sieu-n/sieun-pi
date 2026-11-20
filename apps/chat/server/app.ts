@@ -849,11 +849,10 @@ export class App {
 
   /**
    * A new agent: its work thread in a project folder (the one given, else the default project, never the home folder), its record and its DM
-   * room, made at once. With `kind: "job"` or a `parent`, the thread is a root job filed under that agent instead. With `kind: "solo"` it is
-   * a root chat no agent holds, as the composer's "new chat" makes, which shows in the sidebar's solo group and in no agent list. With `test`
-   * it is a walk's throwaway agent, which no owner list, live event or badge shows (`AgentStore.isTest`).
+   * room, made at once. With `kind: "job"` or a `parent`, the thread is a root job filed under that agent instead. With `test` it is a walk's
+   * throwaway agent, which no owner list, live event or badge shows (`AgentStore.isTest`).
    */
-  async createAgent(input: { name?: string; model?: string; thinkingLevel?: string; cwd?: string; kind?: "chat" | "job" | "solo"; parent?: string; test?: boolean; host?: string }): Promise<AgentSummary> {
+  async createAgent(input: { name?: string; model?: string; thinkingLevel?: string; cwd?: string; kind?: "chat" | "job"; parent?: string; test?: boolean; host?: string }): Promise<AgentSummary> {
     const box = input.host ?? this.config.box;
     let cwd: string;
     let agentsDir: string | undefined;
@@ -870,7 +869,6 @@ export class App {
       ...(input.name ? { name: input.name } : {}), model: input.model ?? MODELS.default.model, thinkingLevel: input.thinkingLevel ?? MODELS.default.thinkingLevel, cwd,
       ...(box === this.config.box ? {} : { box }),
     }, thread => {
-      if (input.kind === "solo") return;
       if (input.kind === "job" || input.parent) {
         this.store.state.threads[thread.id] = { kind: "job", ...(input.parent ? { parent: this.agents.record(input.parent)?.id ?? input.parent } : {}) };
         this.store.saveState();

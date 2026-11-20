@@ -179,15 +179,6 @@ const draftOf = (held: HeldSend, files: Promise<Blob[] | undefined>): SendDraft 
   ...(held.whenBusy ? { whenBusy: held.whenBusy } : {}),
 });
 
-/**
- * The first message of a chat made a moment ago, by its room: the room's timeline sends it as it opens, through the same path as any
- * other send, and its wait counts from `since`, the Enter that also made the chat.
- */
-const firstSends = new Map<ConversationId, { text: string; opts: SendOpts; since: number }>();
-export function sendFirst(room: ConversationId, text: string, opts: SendOpts, since: number): void {
-  firstSends.set(room, { text, opts, since });
-}
-
 /** The requestIds a live view shows, so a second view of the same conversation does not show or send them again. */
 const shownSends = new Set<string>();
 
@@ -914,11 +905,6 @@ export class Timeline {
     markedUnread.delete(id);
     this.loaded = this.load(opts.around);
     for (const id of this.sends.restore()) this.retrySend(id);
-    const first = firstSends.get(id);
-    if (first) {
-      firstSends.delete(id);
-      void this.send(first.text, first.opts, first.since);
-    }
   }
 
   private around: string | undefined;

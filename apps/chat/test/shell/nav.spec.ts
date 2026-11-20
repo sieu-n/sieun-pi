@@ -76,10 +76,11 @@ test("the capsule is 40 px tall and centered in a 56 px top bar", async ({ page 
   expect(Math.round(bar.height)).toBe(56);
 });
 
-test("the + menu starts a new chat", async ({ page }) => {
+test("the + menu starts with New DM, which opens the DM picker, and has no New chat", async ({ page }) => {
   await page.getByRole("button", { name: "New", exact: true }).click();
-  await page.getByRole("menuitem", { name: /New chat/ }).click();
-  await expect(page).toHaveURL(/#\/c\/new\?kind=chat$/);
+  await expect(page.getByRole("menuitem", { name: /New chat/ })).toHaveCount(0);
+  await page.getByRole("menuitem", { name: /New DM/ }).click();
+  await expect(page).toHaveURL(/#\/c\/new\?kind=dm$/);
 });
 
 test("Cmd K and the search pill open search, and Esc closes it", async ({ page }) => {

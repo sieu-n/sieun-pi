@@ -219,11 +219,8 @@ export const api = {
   conversations: (opts: { archived?: boolean } = {}) => call<ConversationSummary[]>("GET", `/api/conversations${query({ archived: opts.archived ? 1 : undefined })}`),
 
   jobs: (opts: { archived?: boolean } = {}) => call<AgentSummary[]>("GET", `/api/jobs${query({ archived: opts.archived ? 1 : undefined })}`),
-  /**
-   * A new agent with its work thread and DM room (`room`); `kind` "job" with a `parent` files a root thread under that agent as a job instead,
-   * and `kind` "solo" makes a root chat no agent holds.
-   */
-  createAgent: (input: { name?: string; model?: string; thinkingLevel?: ThinkingLevel; cwd?: string; kind?: "chat" | "job" | "solo"; parent?: AgentId; host?: string }) =>
+  /** A new agent with its work thread and DM room (`room`); `kind` "job" with a `parent` files a root thread under that agent as a job instead. */
+  createAgent: (input: { name?: string; model?: string; thinkingLevel?: ThinkingLevel; cwd?: string; kind?: "chat" | "job"; parent?: AgentId; host?: string }) =>
     call<AgentSummary>("POST", "/api/agents", input),
   /** The boxes that run pi-host and can hold an agent, the chat's own box marked `self`, each up or away (agent-model.md phase 6). */
   agentHosts: () => call<AgentHostList>("GET", "/api/agent-hosts"),

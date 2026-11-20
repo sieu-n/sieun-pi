@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { composerInput, conversation, open, tag } from "./helpers";
+import { open, tag } from "./helpers";
 
 test("New channel makes the room and opens it", async ({ page }) => {
   await open(page, "#/c/new?kind=channel", "main-panel");
@@ -17,18 +17,16 @@ test("New channel makes the room and opens it", async ({ page }) => {
   await expect(intro).toContainText("A spec room");
 });
 
-test("New chat starts a solo chat from its first message, and no agent", async ({ page, request }) => {
-  const before = ((await (await request.get("/api/agents")).json()) as { id: string }[]).length;
-  await open(page, "#/c/new?kind=chat", "composer-input");
-  const input = composerInput(page);
-  await expect(input).toHaveAttribute("aria-label", "Message your agents");
-  await input.click();
-  const word = tag();
-  await page.keyboard.type(`hello ${word}`);
-  await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(/#\/c\/(?!dm_|ch_|new)[^/?]+$/);
-  await expect(conversation(page).locator(".row.own").filter({ hasText: word })).toBeVisible();
-  expect(((await (await request.get("/api/agents")).json()) as { id: string }[]).length).toBe(before);
+test("Cmd N and an old New chat link open the DM picker, and picking an agent opens its DM", async ({ page }) => {
+  await open(page, "#/c", "main-panel");
+  await page.keyboard.press(`${process.platform === "darwin" ? "Meta" : "Control"}+n`);
+  await expect(page).toHaveURL(/#\/c\/new\?kind=dm$/);
+  await expect(page.getByRole("heading", { name: "New message" })).toBeVisible();
+  await page.goto("/#/c/new?kind=chat");
+  await expect(page.getByRole("heading", { name: "New message" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.locator(".recent button.agent").filter({ hasText: "Vent" }).click();
+  await expect(page).toHaveURL(/#\/c\/dm_vent$/);
 });
 
 test("Messages with nothing open asks to pick a conversation", async ({ page }) => {

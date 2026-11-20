@@ -12,7 +12,7 @@
 </script>
 
 {#if router.messagesView === "new"}
-  <NewConversation kind={router.route.params.kind ?? "chat"} />
+  <NewConversation kind={router.route.params.kind ?? "dm"} />
 {:else if !id}
   <PanelHeader title="Messages" icon="messages" level={1} />
   <EmptyState icon="messages" title="Pick a conversation" description="Choose a chat, channel or direct message in the sidebar, or start one with +." />

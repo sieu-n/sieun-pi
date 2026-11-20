@@ -240,26 +240,6 @@ test("a text sent while the image send before it still uploads reaches the serve
   await expect(landed.first()).toContainText("first with image");
 });
 
-test("the first message of a new chat shows its bubble with the image while the image uploads", async ({ page }) => {
-  const release = await holdUploads(page);
-  await open(page, "#/c/new?kind=chat", "composer-input");
-  const input = composerInput(page);
-  await input.click();
-  const uploading = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/api/uploads"));
-  await pasteShot(input);
-  await uploading;
-  const text = `new chat with image ${tag()}`;
-  await page.keyboard.type(text);
-  await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(/#\/c\/(?!dm_|ch_|new)[^/?]+$/);
-  const bubble = conversation(page).locator("[data-message-id^='r:']").filter({ hasText: text });
-  await expect(bubble.locator(".images img")).toHaveAttribute("src", /^blob:/);
-  release();
-  const landed = conversation(page).locator("[data-kind='message']:not([data-message-id^='r:'])").filter({ hasText: text });
-  await expect(landed).toHaveCount(1, { timeout: 15_000 });
-  await expect(landed.locator(".images img")).toBeVisible();
-});
-
 test("a text send's line logs Enter to bubble, with the time until the server kept it apart", async ({ page }) => {
   test.setTimeout(45_000);
   const samples = timingSamples(page) as Sample2[];

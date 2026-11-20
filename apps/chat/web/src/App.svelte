@@ -48,7 +48,7 @@
       search.open({ kind: "conversation", id: router.conversationId });
     } else if (key === "n" && !e.shiftKey) {
       e.preventDefault();
-      router.navigate(hrefFor("messages", ["new"], { kind: "chat" }));
+      router.navigate(hrefFor("messages", ["new"], { kind: "dm" }));
     } else if (key === "=" || key === "+") {
       e.preventDefault();
       stepZoom(0.1);

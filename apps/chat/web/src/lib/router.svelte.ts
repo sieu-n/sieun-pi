@@ -4,7 +4,7 @@
  * Routes:
  *   #/c/<id>?thread=<jobId>&m=<messageId>   Messages, one conversation, optional side thread and message
  *   #/c                                     Messages with nothing open
- *   #/c/new?kind=chat|channel|dm            Messages, starting a new conversation
+ *   #/c/new?kind=dm|channel                 Messages, starting a DM or a channel
  *   #/c/for-you, #/c/for-you/<chat>/<todo>  Messages, For you, optionally with one ask open
  *   #/agents, #/agents/<sub>                Agents
  *   #/board, #/board/<chat>                 Board, the index or one chat's board

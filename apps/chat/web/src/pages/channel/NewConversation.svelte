@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, sendFirst, type AgentSummary } from "$lib/api";
+  import { api, type AgentSummary } from "$lib/api";
   import { router } from "$lib/router.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import Button from "$lib/ui/Button.svelte";
@@ -9,10 +9,10 @@
   import PanelHeader from "$lib/ui/PanelHeader.svelte";
   import Picker from "$lib/ui/Picker.svelte";
   import { toast } from "$lib/ui/toast.svelte";
-  import Composer from "./Composer.svelte";
   import { directory } from "./directory.svelte";
-  import { agentPickerItems, type Outgoing } from "./present";
+  import { agentPickerItems } from "./present";
 
+  /** `channel` opens the new-channel form; any other kind, an old `chat` link too, opens the DM picker. */
   type Props = { kind: string };
   let { kind }: Props = $props();
 
@@ -20,15 +20,6 @@
   const live = $derived(directory.agents.filter((a) => a.id.startsWith("ag_") && !a.archived));
   const agentItems = $derived(agentPickerItems(directory.agents));
   const fail = (error: unknown) => toast.error(error instanceof Error ? error.message : "That did not work");
-
-  async function startChat(out: Outgoing) {
-    // A new chat is a solo root chat, never an agent: untitled agents filled every picker on 10-29.
-    const since = performance.now();
-    const agent = await api.createAgent({ kind: "solo" });
-    const room = agent.room ?? agent.id;
-    sendFirst(room, out.text, { images: out.images, mentions: out.mentions }, since);
-    router.openConversation(room);
-  }
 
   let name = $state("");
   let purpose = $state("");
@@ -98,7 +89,7 @@
     label="Add members"
     onselect={(id) => (members = members.includes(id) ? members.filter((m) => m !== id) : [...members, id])}
   />
-{:else if kind === "dm"}
+{:else}
   <PanelHeader title="New message" icon="chat" level={1} divider />
   <div class="form">
     <div class="to" bind:this={dmAnchor}>
@@ -115,15 +106,6 @@
     </div>
   </div>
   <Picker bind:open={dmOpen} anchor={dmAnchor} items={agentItems} searchable label="Message" onselect={(id) => openDm(id)} />
-{:else}
-  <PanelHeader title="New chat" icon="chat" level={1} divider />
-  <div class="draft">
-    <div class="hello">
-      <p class="t-heading">What should your new chat work on?</p>
-      <p class="sub">The first message starts a new chat on the default model.</p>
-    </div>
-    <Composer placeholder="Message your agents" agents={directory.agents} channels={directory.channels} draftKey="new-chat" autofocus onsend={startChat} />
-  </div>
 {/if}
 
 <style>
@@ -174,24 +156,5 @@
   }
   .agent:hover {
     background: var(--affordance-ghost-hover);
-  }
-  .draft {
-    display: flex;
-    flex: 1;
-    flex-direction: column;
-    justify-content: flex-end;
-    min-height: 0;
-  }
-  .hello {
-    margin: auto auto 24px;
-    text-align: center;
-  }
-  .hello p {
-    margin: 0;
-  }
-  .sub {
-    margin-top: 8px !important;
-    color: var(--text-subtle);
-    font: var(--text-body-sm);
   }
 </style>
