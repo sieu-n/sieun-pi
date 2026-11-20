@@ -91,6 +91,11 @@ export interface DutyHost {
    */
   poolHolds?: (tree: string) => Promise<PoolHold | null>;
   /**
+   * When pi-pool next gives the tree rooted at `tree` an account on the provider new sessions start on (`treeFreeAt`), in epoch ms, or null
+   * when the pool cannot be read or says nothing. A run beside a held duty job asks it for the chat (`writersWait`); absent: every hand-off goes out.
+   */
+  writerFreeAt?: (tree: string) => Promise<number | null>;
+  /**
    * The Prime update restoring the daemon's sessions now (`primeUpdateRunning`), or null; absent: none. While one runs no duty job is stopped,
    * archived or retired: a restored root reads idle until the coordinator restores its subagents, and from 03:08:28Z to 03:09:07Z on 10-20
    * the runner archived 10 restored roots of update ctl-847650, so 8 of their subagents failed their restore at 03:11:38Z to 03:12:11Z.
@@ -239,6 +244,12 @@ const stillTaken = (keys: readonly string[], items: readonly FlaggedSlice[]): st
   return key !== handOffKey(slice) && (key === base || key.startsWith(`${base}|`));
 }));
 const itemLine = (slice: FlaggedSlice): string => `- ${slice.kind}${slice.item ? ` ${slice.item}` : ""}: ${slice.excerpt}`;
+
+/** What a run beside a held job says when pi-pool gives the chat no account until `until` (`writersWait`), so it handed `count` items to nobody. */
+export function noWriterWords(count: number, until: number): string {
+  return `pi-pool gives this chat no account until ${new Date(until).toISOString().slice(11, 16)}Z, so no session can write the ${count} flagged ` +
+    `item${count === 1 ? "" : "s"} now; the first run after that hands them to the sessions that made them and to the chat`;
+}
 async function readPending(file: string): Promise<PendingStart | null> {
   try { const value = JSON.parse(await readFile(file, "utf8")) as PendingStart; return typeof value?.at === "number" && value.schedule && value.brief ? value : null; }
   catch { return null; }
@@ -1337,14 +1348,16 @@ export class Duties {
     if ("skipped" in previous) {
       if (handOff && dutyId !== CHECK_IN_DUTY_ID) await this.dropFinishedTaken(chatId, dutyId, handOff.items);
       const plural = (count: number) => `${count} new flagged item${count === 1 ? "" : "s"}`;
-      const asked = previous.held && handOff && dutyId !== CHECK_IN_DUTY_ID ? await this.handToMakers(chatId, dutyId, previous.held, handOff, brief.duty.name, at) : 0;
-      const skipped = asked ? `${previous.skipped}; asked the sessions that made them to fix ${asked} item${asked === 1 ? "" : "s"}` : previous.skipped;
+      const waitsUntil = previous.held && handOff && handOff.items.length && dutyId !== CHECK_IN_DUTY_ID ? await this.writersWait(chatId, dutyId) : null;
+      const asked = previous.held && handOff && dutyId !== CHECK_IN_DUTY_ID && waitsUntil === null ? await this.handToMakers(chatId, dutyId, previous.held, handOff, brief.duty.name, at) : 0;
+      const skipped = (asked ? `${previous.skipped}; asked the sessions that made them to fix ${asked} item${asked === 1 ? "" : "s"}` : previous.skipped) +
+        (waitsUntil === null || !handOff ? "" : `; ${noWriterWords(handOff.items.length, waitsUntil)}`);
       if (previous.working && handOff) {
         const handed = await this.handOff(chatId, dutyId, previous.working, handOff, brief.duty.name, at);
         if (handed) return { skipped: `${skipped}; handed it ${plural(handed)}` };
       }
       // A held job that takes no hand-off (POOL_PARKED, a quota park) leaves the chat the items no maker works: never asked, or parked by pi-pool.
-      if (previous.held && handOff && (dutyId === CHECK_IN_DUTY_ID || !previous.working)) {
+      if (previous.held && handOff && (dutyId === CHECK_IN_DUTY_ID || !previous.working) && waitsUntil === null) {
         const left = dutyId === CHECK_IN_DUTY_ID ? handOff : await this.unmoved(chatId, dutyId, handOff, previous.held);
         const told = await this.handToChat(chatId, dutyId, previous.held, left, brief.duty.name, at);
         if (told) return { skipped: `${skipped}; handed the chat ${plural(told)}` };
@@ -1482,6 +1495,34 @@ export class Duties {
   }
 
   private makersFile(chatId: string, dutyId: string): string { return join(this.store.chatDir(chatId), `${dutyId}.makers.json`); }
+
+  /**
+   * When pi-pool gives the chat itself no account until past POOL_LEAD_MS (`DutyHost.writerFreeAt`), that time: no maker and no subagent of the
+   * chat can write a page then, so the run hands nobody the items and records the wait in `<dutyId>.pool-wait.json`. Null when the chat can
+   * write now or the pool says nothing. The first run after such a wait forgets every hand-off made before it (`<dutyId>.makers.json`,
+   * `<dutyId>.chat-handed.json`), so each page that still counts goes out again to a maker at work and to the chat, whose sessions lost their
+   * accounts in the wait. From 13:04Z on 11-18 to 15:27:56Z on 11-19 pi-pool vended no account to any session (pi-pool.log, 0 vend events),
+   * and the 22 pages the 12:49Z to 13:20Z runs handed the makers and the chat counted through 99 runs until the chat read the queued notices
+   * at 15:34Z. On 11-12 the 4 pages asked of their makers at 18:41Z counted from 19:28Z through the 23:00Z return of accounts to 00:44Z on
+   * 11-13, since makers.json kept them asked and no run handed them again until a new job cleared the chat's list at 00:07Z.
+   */
+  private async writersWait(chatId: string, dutyId: string): Promise<number | null> {
+    const read = this.host.writerFreeAt;
+    if (!read) return null;
+    const freeAt = await read(chatId).catch(error => { this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: read the chat's pi-pool account: ${message(error)}`); return null; });
+    const marker = join(this.store.chatDir(chatId), `${dutyId}.pool-wait.json`);
+    if (freeAt !== null && freeAt > this.now() + POOL_LEAD_MS) {
+      await writeFile(marker, JSON.stringify({ since: this.now(), until: freeAt }), { mode: 0o600, flag: "wx" }).catch(() => {});
+      return freeAt;
+    }
+    const waited = await readFile(marker, "utf8").then(() => true, () => false);
+    if (!waited) return null;
+    for (const file of [this.makersFile(chatId, dutyId), this.chatHandedFile(chatId, dutyId), marker]) {
+      await rm(file, { force: true }).catch(error => this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: clear ${basename(file)}: ${message(error)}`));
+    }
+    this.log(`duty ${chatId.slice(0, 8)}/${dutyId}: pi-pool gives the chat an account again, so the items handed before its wait go out again`);
+    return null;
+  }
 
   /**
    * The `handOff` items no maker works: those no run asked a maker to fix (`<dutyId>.makers.json`), and those whose maker's tree pi-pool parked
