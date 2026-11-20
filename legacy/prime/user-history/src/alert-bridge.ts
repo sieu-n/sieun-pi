@@ -37,14 +37,18 @@ export const GRAFANA_ALERTS_PATH = "/api/alertmanager/grafana/api/v2/alerts?acti
 /** Every rule with its last evaluation and no alert instances: 527 KB for 309 rules on 10-19, against 1.3 MB with the instances. */
 export const GRAFANA_RULES_PATH = "/api/prometheus/grafana/api/v1/rules?limit_alerts=0";
 
-export interface FiringAlert { fingerprint: string; startsAt: string; alertname: string; labels: Record<string, string>; summary: string; url: string; values?: string }
+/** `held`: this poll's Grafana list lacked the alert, and `holdStillFiring` kept it because its rule still fires. */
+export interface FiringAlert { fingerprint: string; startsAt: string; alertname: string; labels: Record<string, string>; summary: string; url: string; values?: string; held?: true }
 /**
  * One firing label set of a rule, keyed in `Tracked.instances` by alertKey (fingerprint@startsAt). `seenAt` is when the bridge first listed
  * it, so a fire names the label sets it saw at or after the rule's `wokeAt` (`alertLine`). A state saved before 10-31 has none. `values` are
  * the alert's values at `seenAt`, since Grafana rewrites `__values__` at each evaluation: on 11-10 viewer-wall-walls-spike fired at 03:34:30Z
  * at A=26, C=1, its fire waited for ops guy's thread until 06:21Z, and the message printed A=0, C=0 from an evaluation after it cleared.
+ *
+ * `listedAt` is the last poll whose Grafana list held it, as opposed to `holdStillFiring` keeping it (`advance` step 4). A state saved before
+ * 11-20 has none.
  */
-export interface Instance { startsAt: string; labels: Record<string, string>; seenAt?: number; resolvedAt?: number; values?: string }
+export interface Instance { startsAt: string; labels: Record<string, string>; seenAt?: number; listedAt?: number; resolvedAt?: number; values?: string }
 /** The session that took a fire: the owning chat's thread, or a triage job from before 11-07. */
 export interface AlertJob { id: string; name: string }
 /** The triage job a rule's fire went to, and when the bridge gave it (started the job with it, or sent it by message). */
@@ -240,8 +244,12 @@ const newFault = (rule: Tracked, alert: FiringAlert): boolean => {
  * 4. A rule that fired sets `wokeAt`, so its job owes the fire (`owed`). A new label set on a rule that still fires is the same incident, and
  *    so is a fire within REFIRE_MS of the rule resolving, which keeps the rule's entry and its job and fires nothing here. Once that job has
  *    ended, `reopen` fires the rule for the label sets it never read (`dueReopens`). A label set back within REFIRE_MS keeps the `seenAt` of
- *    the instance it repeats, so a Grafana reset reopens nothing, and so does a fingerprint that fires again with a new startsAt while
- *    `holdStillFiring` still holds its old instance through a reset.
+ *    the instance it repeats, so a Grafana reset reopens nothing. A fingerprint with a new startsAt while its old instance is open keeps the
+ *    old `seenAt` only when the new startsAt is at or after the old instance's `listedAt`: Grafana started it in the gap a reset left, which
+ *    `holdStillFiring` held (11-03). An earlier startsAt is a new fire that Grafana's alertmanager hid, since it merges a refresh into the
+ *    active alert and keeps the earliest startsAt, so it counts as a label set the job never read. On 11-19 ci-jobs-waiting went Recovering
+ *    at 21:11:10Z and Alerting again at 21:51:10Z, the list kept startsAt 17:16:10Z until Grafana restarted at 22:22:41Z, and the bridge
+ *    first listed 21:51:10Z at 22:23:41Z and sent the VP of CI nothing.
  * 5. A rule whose label `incident_by` names one of its labels, such as `spec`, holds one fault per value of that label: a new label set whose
  *    value no open instance of the rule has fires the rule again, so its job owes it. On 10-30 at 17:06Z hosted-app-chat.spec.ts went red on
  *    ci-staging-proof-spec-red while hosted-inbox-whatsapp-dm.spec.ts, held red on Meta's name approval, kept the rule open, and no job got it.
@@ -260,8 +268,10 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
     const rule = rules[key]!;
     delete rule.resolvedAt;
     rule.rule = ruleOf(alert);
-    const { seenAt: seen, values } = rule.instances[id]!;
-    rule.instances[id] = { startsAt: alert.startsAt, labels: alert.labels, ...seen === undefined ? {} : { seenAt: seen }, ...values === undefined ? {} : { values } };
+    const { seenAt: seen, values, listedAt: listed } = rule.instances[id]!;
+    const listedAt = alert.held ? listed : now;
+    rule.instances[id] = { startsAt: alert.startsAt, labels: alert.labels, ...seen === undefined ? {} : { seenAt: seen }, ...listedAt === undefined ? {} : { listedAt },
+      ...values === undefined ? {} : { values } };
   }
   for (const alert of rest) {
     const chat = route(alert);
@@ -289,11 +299,13 @@ export function advance(alerts: readonly FiringAlert[], state: BridgeState, rout
     const rule = rules[key]!;
     if (!fired.has(key) && newFault(rule, alert)) fired.add(key);
     const labels = labelText(alert.labels);
-    const held = Object.entries(rule.instances).find(([id, instance]) => instance.resolvedAt === undefined && id.startsWith(`${alert.fingerprint}@`))?.[1];
-    const before = blips.has(key) ? Object.values(rule.instances).find(instance => labelText(instance.labels) === labels) : held;
+    const open = Object.entries(rule.instances).find(([id, instance]) => instance.resolvedAt === undefined && id.startsWith(`${alert.fingerprint}@`))?.[1];
+    const reset = open && (open.listedAt === undefined || Date.parse(alert.startsAt) >= open.listedAt) ? open : undefined;
+    const before = blips.has(key) ? Object.values(rule.instances).find(instance => labelText(instance.labels) === labels) : reset;
     for (const [id, instance] of Object.entries(rule.instances)) if (instance.resolvedAt !== undefined && id.startsWith(`${alert.fingerprint}@`)) delete rule.instances[id];
     const values = before?.seenAt !== undefined ? before.values : alert.values || undefined;
-    rule.instances[alertKey(alert)] = { startsAt: alert.startsAt, labels: alert.labels, seenAt: before?.seenAt ?? now, ...values === undefined ? {} : { values } };
+    rule.instances[alertKey(alert)] = { startsAt: alert.startsAt, labels: alert.labels, seenAt: before?.seenAt ?? now, ...alert.held ? {} : { listedAt: now },
+      ...values === undefined ? {} : { values } };
     if (fired.has(key) && alert.startsAt < rule.startsAt) rule.startsAt = alert.startsAt;
   }
   for (const rule of Object.values(rules)) {
@@ -916,7 +928,7 @@ export async function holdStillFiring(previous: readonly FiringAlert[] | null, c
     return rule.pending > 0 && (await pendingOf(alert)).has(setKey(alert.labels));
   };
   const held = await Promise.all(gone.map(fires));
-  return [...current, ...gone.filter((_, index) => held[index])];
+  return [...current, ...gone.flatMap((alert, index): FiringAlert[] => held[index] ? [{ ...alert, held: true }] : [])];
 }
 
 export async function readOwnersFor(configFile: string, home: string): Promise<OwnerMap | null> {

@@ -4,11 +4,14 @@
 // read alerts_firing 0. Now a missing alert stays on the list while its rule is unevaluated or Grafana counts more of its instances alerting
 // than the list holds, and a failed rule read fails the poll. A missing state file fails the duty's read instead of counting 0. 11-03 22:44Z:
 // an obs deploy that changed crawler-prod-kafka-writer-lag reset its firing sets, they fired again an hour later, and the bridge paged again.
+// 11-19 22:23:41Z: Grafana's restart showed ci-jobs-waiting's 21:51:10Z fire, which its alertmanager had listed as the 17:16:10Z one, and the
+// bridge sent nothing. A new startsAt from before the bridge last listed the old one is a new fire, and one from after it is a reset's.
 import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { advance, dueReopens, emptyState, holdStillFiring, owed, parsePendingSets, parseRuleStates, readFiringRules, setKey, type BridgeState, type FiringAlert, type RuleState } from "../src/alert-bridge.ts";
+import { AlertBridge, advance, dueReopens, emptyState, holdStillFiring, owed, parsePendingSets, parseRuleStates, readFiringRules, setKey, type BridgeState, type FiringAlert, type RuleState } from "../src/alert-bridge.ts";
 
 const NOW = Date.parse("2026-10-19T17:22:07Z");
 const alert = (uid: string, startsAt: string, fingerprint = `f-${uid}`): FiringAlert => ({ fingerprint, startsAt, alertname: uid,
@@ -31,7 +34,7 @@ test("the rule list gives each rule whether it is unevaluated and how many of it
 test("after a Grafana restart a missing alert of an unevaluated rule stays firing, and one of an evaluated rule with no alerting instance resolves", async () => {
   const before = advance([WAITING, STEPS], emptyState(), () => "ci", NOW - 60_000).state;
   const list = await holdStillFiring([WAITING, STEPS], [], states({ "ci-jobs-waiting": ruleState(true, 0), "ci-steps-stale": ruleState(false, 0) }));
-  assert.deepEqual(list, [WAITING]);
+  assert.deepEqual(list, [{ ...WAITING, held: true }]);
   const after = advance(list, before, () => "ci", NOW);
   assert.equal(after.fired.size, 0);
   assert.equal(after.state.rules["ci/ci-jobs-waiting"]!.resolvedAt, undefined);
@@ -43,7 +46,7 @@ test("10-29: an evaluated rule Grafana still counts alerting stays firing while 
   const RED = alert("ci-staging-check-task-red", "2026-10-29T15:06:10.000Z");
   const before = advance([TURBO, RED], emptyState(), () => "ci", NOW - 60_000).state;
   const list = await holdStillFiring([TURBO, RED], [], states({ "ci-turbo-force-failed": ruleState(false, 1), "ci-staging-check-task-red": ruleState(false, 3) }));
-  assert.deepEqual(list, [TURBO, RED]);
+  assert.deepEqual(list, [TURBO, RED].map(alert => ({ ...alert, held: true })));
   const after = advance(list, before, () => "ci", NOW);
   assert.equal(after.state.rules["ci/ci-turbo-force-failed"]!.resolvedAt, undefined);
   assert.equal(after.state.rules["ci/ci-staging-check-task-red"]!.resolvedAt, undefined);
@@ -53,7 +56,7 @@ test("one instance of a firing rule resolves when the alert list holds as many o
   const one = alert("ci-staging-check-task-red", "2026-10-29T05:10:10.000Z", "f-one");
   const two = alert("ci-staging-check-task-red", "2026-10-29T09:46:10.000Z", "f-two");
   assert.deepEqual(await holdStillFiring([one, two], [two], states({ "ci-staging-check-task-red": ruleState(false, 1) })), [two]);
-  assert.deepEqual(await holdStillFiring([one, two], [two], states({ "ci-staging-check-task-red": ruleState(false, 2) })), [two, one]);
+  assert.deepEqual(await holdStillFiring([one, two], [two], states({ "ci-staging-check-task-red": ruleState(false, 2) })), [two, { ...one, held: true }]);
 });
 
 test("the rule list is read only when an alert went missing, and a failed read fails the poll", async () => {
@@ -90,12 +93,12 @@ test("11-03: a deploy that resets a changed rule's firing sets holds them throug
   // 22:44:20Z the reload resets both sets to "Normal (Updated)" with no evaluation, so the next list lacks them.
   let list = await holdStillFiring([os, pg], [], states({ [uid]: ruleState(false, 0, { evaluatedAt: at("22:43:30") }) }),
     { since: at("22:43:45"), pending: pending(ruleList()) });
-  assert.deepEqual(list, [os, pg]);
+  assert.deepEqual(list, [os, pg].map(alert => ({ ...alert, held: true })));
   state = advance(list, state, () => "crawler", at("22:44:25")).state;
   // 22:44:30Z the first evaluation after the reset puts both sets into Pending, where they wait out the rule's hour.
   list = await holdStillFiring(list, [], states({ [uid]: ruleState(false, 0, { pending: 2, evaluatedAt: at("22:44:30") }) }),
     { since: at("22:44:25"), pending: pending(ruleList(instances("instagram-census-os", "Pending"), instances("instagram-census-pg", "Pending"))) });
-  assert.deepEqual(list, [os, pg]);
+  assert.deepEqual(list, [os, pg].map(alert => ({ ...alert, held: true })));
   state = advance(list, state, () => "crawler", at("22:44:55")).state;
   assert.equal(state.rules[key]!.resolvedAt, undefined);
   // 23:44:30Z both fire again with a new startsAt: the same incident, and the job that held it owes nothing.
@@ -122,7 +125,7 @@ test("a held set resolves at the first evaluation that leaves it Normal, and a h
   const set = (startsAt: string): FiringAlert => ({ ...alert("lag", startsAt, "f-a"), labels: { __alert_rule_uid__: "lag", alertname: "lag", group: "a" } });
   const old = set("2026-11-05T08:00:00.000Z");
   const none = { since: NOW - 30_000, pending: async () => new Set<string>() };
-  assert.deepEqual(await holdStillFiring([old], [], states({ lag: ruleState(false, 0, { evaluatedAt: NOW - 45_000 }) }), none), [old]);
+  assert.deepEqual(await holdStillFiring([old], [], states({ lag: ruleState(false, 0, { evaluatedAt: NOW - 45_000 }) }), none), [{ ...old, held: true }]);
   assert.deepEqual(await holdStillFiring([old], [], states({ lag: ruleState(false, 0, { evaluatedAt: NOW - 10_000 }) }), none), []);
   const again = set("2026-11-05T09:00:00.000Z");
   assert.deepEqual(await holdStillFiring([old], [again], states({ lag: ruleState(false, 1, { evaluatedAt: NOW - 45_000 }) }), none), [again]);
@@ -132,4 +135,26 @@ test("11-05: a set the rule list writes with an empty label matches the alert li
   const listed = { alertname: "over pace", owner: "ops", vendor: "railway" };
   const value = { data: { groups: [{ rules: [{ uid: "vendor-bill-over-pace", alerts: [{ labels: { ...listed, project: "" }, state: "Pending" }] }] }] } };
   assert.deepEqual([...parsePendingSets(value, "vendor-bill-over-pace")], [setKey({ __alert_rule_uid__: "vendor-bill-over-pace", ...listed })]);
+});
+
+test("11-19: a fingerprint Grafana lists after a restart with a startsAt from before its last listing fires again to the thread that held it", async () => {
+  const at = (time: string) => Date.parse(`2026-11-19T${time}Z`);
+  const waiting = (startsAt: string): FiringAlert => ({ fingerprint: "0844960a01cb106c", startsAt, alertname: "CI jobs waited over 10 min for a runner",
+    labels: { __alert_rule_uid__: "ci-jobs-waiting", alertname: "CI jobs waited over 10 min for a runner", grafana_folder: "metal" }, summary: "", url: "" });
+  const sent: string[] = [];
+  let list: FiringAlert[] = [];
+  let now = 0;
+  const bridge = new AlertBridge({ file: join(await mkdtemp(join(tmpdir(), "alert-bridge-refire-")), "alert-bridge.json"), now: () => now, log: () => {},
+    alerts: async () => list, deliver: async (_session, text) => { sent.push(text); }, jobTurn: async (_job, since) => ({ ran: true, at: since }) });
+  const poll = async (time: string, alerts: FiringAlert[]) => { now = at(time); list = alerts; await bridge.tick(); };
+  const first = waiting("2026-11-19T17:16:10.000Z");
+  await poll("17:17:03", [first]);
+  await poll("17:17:33", [first]);
+  // Grafana's alertmanager kept startsAt 17:16:10Z through the 21:51:10Z fire, until Grafana restarted at 22:22:41Z.
+  await poll("22:22:30", [first]);
+  await poll("22:23:11", [{ ...first, held: true }]);
+  assert.equal(sent.length, 1);
+  await poll("22:23:41", [waiting("2026-11-19T21:51:10.000Z")]);
+  assert.equal(sent.length, 2);
+  assert.match(sent[1]!, /ci-jobs-waiting/);
 });
