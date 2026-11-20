@@ -73,10 +73,11 @@ const WIDE_TABLE = [
 test("each table column gets a wrap floor from its longest cell, and a short first column is pinned", () => {
   assert.equal(columnClass([{ text: "CLI" }, { text: "yes" }]), "col-tiny");
   assert.equal(columnClass([{ text: "Piece" }, { text: "Frontend workflow line" }]), "col-short");
-  assert.equal(columnClass([{ text: "Who reads it" }, { text: "every agent session lists it" }]), "col-long");
+  assert.equal(columnClass([{ text: "Who reads it" }, { text: "every agent session lists it" }]), "col-short");
+  assert.equal(columnClass([{ text: "What it says" }, { text: "load the skill, look up a guide per UI pattern" }]), "col-long");
   assert.equal(columnClass([{ text: "[the board panel page](wiki:sessions/2026/10/28/board-panel.md)" }]), "col-short");
   const html = renderMarkdown(WIDE_TABLE, { plain: true });
-  assert.deepEqual([...html.matchAll(/<th class="(col-\w+)"/g)].map((m) => m[1]), ["col-short", "col-long", "col-long", "col-long"]);
+  assert.deepEqual([...html.matchAll(/<th class="(col-\w+)"/g)].map((m) => m[1]), ["col-short", "col-long", "col-short", "col-long"]);
   assert.match(html, /<table class="sticky-first">/);
   assert.match(renderMarkdown("| Step | Note |\n|---|---|\n| a whole sentence in the first column | x |"), /<table class="">/);
 });

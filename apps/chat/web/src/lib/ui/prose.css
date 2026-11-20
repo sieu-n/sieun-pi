@@ -315,6 +315,8 @@
     mask-image: var(--fold-mask), linear-gradient(to left, transparent, #000 var(--scroll-end-fade));
     mask-composite: intersect;
     animation: scroll-start-shade linear both, scroll-end-fade linear both;
+    /* The shorthand sets a 0s duration, which makes a scroll-driven animation jump to its end; auto spreads it over the range. */
+    animation-duration: auto;
     animation-timeline: scroll(self inline);
     animation-range: 0 1.5rem, calc(100% - 2.5rem) 100%;
   }

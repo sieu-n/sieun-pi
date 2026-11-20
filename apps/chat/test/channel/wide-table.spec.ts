@@ -49,7 +49,7 @@ test("a wide table in a 360 px thread pane shows every row, keeps each column re
   // Each column keeps its floor: a short label column 6rem, a sentence column 11rem, so no column runs a word a line.
   const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
   const widths = await wrap.locator("thead th").evaluateAll((ths) => ths.map((th) => [th.className, th.getBoundingClientRect().width]));
-  expect(widths.map(([cls]) => cls)).toEqual(["col-short", "col-long", "col-long", "col-long"]);
+  expect(widths.map(([cls]) => cls)).toEqual(["col-short", "col-long", "col-short", "col-long"]);
   for (const [cls, width] of widths as [string, number][]) expect(width, cls).toBeGreaterThanOrEqual((cls === "col-long" ? 11 : 6) * rem);
   // "Prime skill" sits on one line, where the old pane broke it into "Prim / e / skill".
   const lines = await wrap.locator("tbody td").first().evaluate((td) => {
@@ -58,16 +58,19 @@ test("a wide table in a 360 px thread pane shows every row, keeps each column re
     return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
   });
   expect(lines).toBe(1);
+  // The cut edge fades while there is more to the right.
+  expect(await wrap.evaluate((el) => getComputedStyle(el).maskImage)).toMatch(/linear-gradient\(to left/);
+  const fade = async () => wrap.evaluate((el) => parseFloat(getComputedStyle(el).getPropertyValue("--scroll-end-fade")));
+  expect(await fade()).toBeGreaterThan(20);
+  const shade = async () => wrap.locator("tbody td").first().evaluate((td) => getComputedStyle(td).getPropertyValue("--scroll-start-shade").trim());
+  expect(await shade(), "no pinned-column shadow before a scroll").toBe("0");
   await wrap.evaluate((el) => (el.scrollLeft = 200));
+  await expect.poll(shade).toBe("1");
   const [wrapLeft, firstLeft] = await Promise.all([
     wrap.evaluate((el) => el.getBoundingClientRect().left + el.clientLeft),
     wrap.locator("tbody td").first().evaluate((td) => td.getBoundingClientRect().left),
   ]);
   expect(Math.abs(firstLeft - wrapLeft), "the first column stays pinned").toBeLessThan(1.5);
-  // The cut edge fades while there is more to the right.
-  expect(await wrap.evaluate((el) => getComputedStyle(el).maskImage)).toMatch(/linear-gradient\(to left/);
-  const fade = async () => wrap.evaluate((el) => parseFloat(getComputedStyle(el).getPropertyValue("--scroll-end-fade")));
-  expect(await fade()).toBeGreaterThan(20);
   await wrap.evaluate((el) => (el.scrollLeft = el.scrollWidth));
   await expect.poll(fade).toBe(0);
 });

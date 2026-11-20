@@ -194,12 +194,13 @@ const slashBreaks = (html: string): string => html.replaceAll("/", "/<wbr>");
 
 /**
  * How a table column may wrap, from the longest text among its cells: a tiny one (a number, yes or no) stays on one line, a short one
- * (a name, a label) wraps above a 6rem floor, and a long one (a sentence) above an 11rem floor, so no column shrinks to a word a line.
+ * (a name, a label, a few words) wraps above a 6rem floor, and a long one (a sentence) above an 11rem floor, so no column shrinks to a
+ * word a line.
  * A table whose columns cannot all meet their floor scrolls sideways (prose.css).
  */
 export function columnClass(cells: readonly { text: string }[]): "col-tiny" | "col-short" | "col-long" {
   const longest = Math.max(0, ...cells.map((cell) => cell.text.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[`*_~]/g, "").trim().length));
-  return longest <= 8 ? "col-tiny" : longest <= 24 ? "col-short" : "col-long";
+  return longest <= 8 ? "col-tiny" : longest <= 32 ? "col-short" : "col-long";
 }
 
 /** A shorter label for a long id: a UUID keeps its first 8 characters, and a job conversation keeps its `:n`. */
