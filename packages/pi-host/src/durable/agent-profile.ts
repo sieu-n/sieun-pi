@@ -107,29 +107,41 @@ function slackPostStep(): string {
     "This replaces the brief's one point per message and two calls for two points (c97), and rule 5's table for a comparison, because a room reads like Slack, not like a chat.";
 }
 
-/** The agent that owns sw factory itself, apps/chat and pi-host, which the other agents tag with the owner's feedback on it. */
+/** The agent that owns sw factory itself, apps/chat and pi-host, which the other agents bring the owner's feedback on it. */
 export const PLATFORM_AGENT = { id: "ag_agent-factory", name: "agent factory" } as const;
+/** Agent factory's DM comm thread by the name apps/chat gives it (`agents.ts` `commCreate`), which another agent's DM comm thread sends to. */
+export const PLATFORM_DM_COMM = `${PLATFORM_AGENT.name} · DM`;
 
 /**
- * The step that brings the owner's feedback on sw factory itself to agent factory, the way a person tags the platform team in a Slack thread.
- * On 11-20 the owner asked in #sw-factory-build (msg mwodd2v6) that a comment he leaves in a thread, such as "i dont like this response
+ * The step that brings the owner's feedback on sw factory itself to agent factory, the way a person pings the platform team in Slack. On
+ * 11-20 the owner asked in #sw-factory-build (msg mwodd2v6) that a comment he leaves in a thread, such as "i dont like this response
  * shape/format isn't appropriate to sw-factory", reach agent factory, which looks at it and fixes it. He had just seen Search product, misc.
- * answer in a #dev-search-general thread with a 4-column table the pane cut off. A mention reaches an agent outside the room
- * (apps/chat group-rooms.ts `wakes`), so agent factory's comm thread for that room gets the tag, hands it to its work thread and answers in
- * the same thread. A DM post names no one, so another agent's DM gets no tag step; agent factory's own comm threads get theirs everywhere.
+ * answer in a #dev-search-general thread with a 4-column table the pane cut off.
+ *
+ * 1. In a channel or Solo room the agent tags @agent factory in the same thread. A mention reaches an agent outside the room
+ *    (apps/chat group-rooms.ts `wakes`), so agent factory's comm thread for that room gets it and answers in that thread.
+ * 2. A DM post names no one, so in a DM the agent sends the feedback to agent factory's DM comm thread with `agent_message`, which reaches
+ *    any pi-host root by its exact name, and posts agent factory's answer in the DM when it comes back.
+ * 3. Agent factory's own comm threads hand such feedback to the work thread and answer where it came from.
  */
 function platformFeedbackStep(ref: { agent: string; room: string }): string | undefined {
-  if (ref.agent === PLATFORM_AGENT.id) {
-    return "Feedback about sw factory itself is your agent's work, whether the owner gives it here or another agent tags you with a post he commented on: the shape, format, length or tone of a reply, how a post renders, the reactions, or the app. " +
-      `Hand it to your work thread as a task with his words and the id of the post he means, such as ${ref.room}/p12. ` +
-      "The work thread looks at that post, fixes the cause, in apps/chat when it is the rendering or in the agent's prompt or skills when it is the agent's behavior, checks the fix with a fresh session (c84), and reports. " +
-      "Post its result once, in the thread the feedback came from, also when another agent's tag started the turn.";
-  }
-  if (!isGroupRoom(ref.room)) return undefined;
   const name = PLATFORM_AGENT.name;
-  return `When the owner's post is about sw factory itself rather than your agent's work, such as the shape, format, length or tone of a reply, how a post renders, the reactions, or the app, tag @${name} for it, the way a person tags the platform team in Slack. ` +
-    `Reply once in the same thread with @${name}, his point in a few words, and the post he means as ${ref.room}/p<number>, such as ${ref.room}/p12, and post nothing else about it. ` +
-    `${name} fixes it and answers in that thread. Follow his feedback in your own later posts too.`;
+  const what = "the shape, format, length or tone of a reply, how a post renders, the reactions, or the app";
+  if (ref.agent === PLATFORM_AGENT.id) {
+    return `Feedback about sw factory itself is your agent's work: ${what}. It comes from the owner here, from another agent that tags you on a post he commented on, or from another agent's DM comm thread as an agent message. ` +
+      "Hand it to your work thread as a task with his words and the id of the post he means, such as dm_vent/p12 or ch_1a2b3c4d/p12. " +
+      "The work thread looks at that post, fixes the cause, in apps/chat when it is the rendering or in the agent's prompt or skills when it is the agent's behavior, checks the fix with a fresh session (c84), and reports. " +
+      "Answer once, with the result, where the feedback came from: in the thread of the post that tagged you, even when another agent started the turn, or, for an agent message, back to that comm thread with " +
+      "`await agent_message.send(result, receiver_role=\"sibling\", receiver_name=\"<its name from the header>\")`, which posts it in its DM. Post nothing about it in your own room then.";
+  }
+  if (isGroupRoom(ref.room)) {
+    return `When the owner's post is about sw factory itself rather than your agent's work, such as ${what}, tag @${name} for it, the way a person tags the platform team in Slack. ` +
+      `Reply once in the same thread with @${name}, his point in a few words, and the post he means as ${ref.room}/p<number>, such as ${ref.room}/p12, and post nothing else about it. ` +
+      `${name} fixes it and answers in that thread. Follow his feedback in your own later posts too.`;
+  }
+  return `When the owner's post is about sw factory itself rather than your agent's work, such as ${what}, pass it to ${name}, the way a person pings the platform team in Slack. ` +
+    `Send \`await agent_message.send(text, receiver_role="sibling", receiver_name=${JSON.stringify(PLATFORM_DM_COMM)})\` with his point in a few words and the post he means as ${ref.room}/p<number>, such as ${ref.room}/p12. ` +
+    `Put 👀 on his post and post nothing about it yet. When ${name}'s answer comes back as an agent message, post it here in one short post that says it is from ${name}, and swap 👀 for ✅. Follow his feedback in your own later posts too.`;
 }
 
 /** The step that has a comm thread work its agent's For list (`for-me.ts`), the way a person works Slack's Activity view. */
