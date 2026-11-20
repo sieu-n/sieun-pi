@@ -1,17 +1,17 @@
 # The agent model: agents, rooms, and comm and work threads
 
-Status: design, for the owner's review. Phases 1 to 6 are built.
+Status: built. Phases 1 to 6 are live, and section 2 lists the tools as built.
 
 ## The answer
 
 1. An **Agent** is a shared template, not a thread. It is a folder holding a name, a brief (its responsibility), skills, a home directory, a host and a model. It has one board and one memory, and every thread that works for it shares them.
 2. A **Room** is where people and agents talk: a DM (the owner and one agent), a Channel, or a Solo room (a group chat of invited agents around one agenda). The chat server stores every room message, as Slack does, and no message is a projection of a pi thread.
-3. Each (agent, room) pair has its own **comm thread**: a thin, cheap pi thread that reads the room and speaks only through `send_message`. It does no real work. It reads the agent's state with read-only tools, and it hands work to the agent's work thread or steers it.
+3. Each (agent, room) pair has its own **comm thread**: a thin pi thread that reads the room and speaks only through `tell_owner` (`send_message` is its alias). It does no real work. It reads the agent's state with `agent_observe`, and it hands work to the agent's work thread or steers it with `agent_message`.
 4. The agent's **work** happens in its main work thread and the subagents and jobs that thread starts. Work threads never talk to people; they report to the comm thread, and the comm thread decides whether the owner needs to hear it.
 5. "So what is status?" asked mid-work starts a turn in the comm thread only. That turn reads the work thread's state and answers, and the worker's context never sees the question.
 6. The sidebar shows Solo rooms, Channels and DMs, and the DMs list holds agents only. Work threads, comm threads and jobs open from the Agents page and from job pills, never from the sidebar.
-7. There are three tiers. The chat server runs on metal only and owns messaging. A relay on each box delivers room messages to that box's pi-host and carries `send_message` back. pi-host runs the threads.
-8. We build it in six phases, each shippable alone. Phases 1 to 5 are built: `send_message`, DMs as rooms the chat server owns, the agent folder with its brief and memory, the comm and work split, and Solo rooms with channels on rooms.
+7. There are three tiers. The chat server runs on metal only and owns messaging. A relay on each box delivers room messages to that box's pi-host and tells the chat server when a thread speaks. pi-host runs the threads.
+8. We built it in six phases, each shippable alone. All six are built: `send_message`, DMs as rooms the chat server owns, the agent folder with its brief and memory, the comm and work split, Solo rooms with channels on rooms, and the relay tier with the Mac.
 
 ## What the owner asked for
 
@@ -24,7 +24,7 @@ Status: design, for the owner's review. Phases 1 to 6 are built.
 | 5 | "client \| chat-server 이건 진짜 Slack처럼 동작해야됨. chat server (@each machine)에서 알아서 orchestration하는거지" and "no need to stream tool calls/… AT ALL." | Three tiers; the client never gets tool calls |
 | 6 | "Direct message는 thread를 그냥 relay하는게 아니라니까? prime-agent-chat처럼 send_message로만 보내는거 할말이 있을때, 그리고 as a human would" | Comm thread tools, phase 2 |
 | 7 | "that's why i prefer an actual main thread/subagent doing the work. this channel's thread is more on the communication layer between human." | Comm and work split, phase 4 |
-| 8 | "막 일하고 있는데, 중간에 'so what is status?' 이렇게 물으면, chat-channel-thread를 관조하는 thread가 알아서 working thread의 상태를 읽고 답변하는거지. 딱히 전달해서 context를 pollute할 필요 없이." | Sequence (b), `agent_status` |
+| 8 | "막 일하고 있는데, 중간에 'so what is status?' 이렇게 물으면, chat-channel-thread를 관조하는 thread가 알아서 working thread의 상태를 읽고 답변하는거지. 딱히 전달해서 context를 pollute할 필요 없이." | Sequence (b), `agent_observe` |
 | 9 | "prime-agent-chat와 essentially same UX를 지향해." | UX kept from prime-agent-chat |
 | 10 | The Agents page shows each agent's configuration: host and home directory, memory and board. | Memory and instructions, phase 3 |
 
@@ -32,15 +32,15 @@ Status: design, for the owner's review. Phases 1 to 6 are built.
 
 | Part | Today | File |
 |---|---|---|
-| Agent | Each root pi-host thread is an agent, and its id is the thread id. A job is `<thread>:<conversation>` or a root thread of kind `job` with a parent. | `server/threads.ts`, `server/store.ts` (`ThreadMeta`) |
-| DM | A root chat the owner opened with `openDm`. Its timeline is built from the thread's entries. | `server/threads.ts`, `server/timeline.ts` |
-| Owner send to a thread | Lands in the chat server's outbox at once, then goes to pi-host with retries. | `server/outbox.ts` |
+| Agent | A record `ag_<slug>` in the chat server's `agents.json` with its DM room, work thread, host, home and one comm thread per room, plus its folder `~/.pi/agent/agents/<slug>/`. A job is `<thread>:<conversation>` or a root thread filed under the agent. | `server/agents.ts`, `server/agent-store.ts` |
+| DM | Room `dm_<slug>`, whose posts the chat server stores. An owner post goes to the agent's DM comm thread, and its `tell_owner` calls come back as posts. | `server/rooms.ts`, `<data dir>/rooms/<id>.jsonl` |
+| Owner send to a thread no agent holds | Lands in the chat server's outbox at once, then goes to pi-host with retries. | `server/outbox.ts` |
 | Channel and Solo room | Rooms whose posts the chat server stores. A post goes to each woken member's comm thread for the room, and its tell_owner calls come back as posts. Hop cap 6. | `server/group-rooms.ts`, `<data dir>/rooms/<id>.jsonl` |
-| Board | The `chat.board` doc of each chat's root conversation in pi-host. | `server/boards.ts` |
-| Duties, check-in | `<data dir>/boards/<chat>/duties.json`. | `server/boards.ts`, `server/duty-run.ts` |
+| Board | The `chat.board` doc of the agent's work thread's root conversation in pi-host. | `server/boards.ts` |
+| Duties, check-in | `<data dir>/agents/<agent id>/duties.json`. | `server/boards.ts`, `server/duty-run.ts` |
 | Agent config | Read from pi-host's thread row and the agent folder: the brief, the agent's harness store and Prime's global one, and the instruction files Prime's loader takes, each marked loaded. | `server/agent-config.ts`, `server/agent-folder.ts` |
-| Thread setup | Every thread gets Prime's preamble, the coding tools and `subagent`, and nothing else. | `packages/pi-host/src/durable/registry.ts` |
-| Hosts | The chat server talks to the local pi-host socket only. `/api/hosts` reads each box's prime-relay `GET /v1/host`. | `server/host/pi-host.ts`, `server/usage.ts` |
+| Thread setup | Every thread gets Prime's prompt, the coding tools, `subagent`, `send_message`, Prime's chat tools, the room tools, child tasks, `ipython` with its RLM runtime, the comm extension and sieun-rules' guards. A role then removes tools (section 2). | `packages/pi-host/src/durable/registry.ts` `threadRegistry`, `agent-profile.ts` |
+| Hosts | The chat server reaches every box listed in `~/.config/sieun-pi/hosts.json`, metal too, through that box's agent relay on :7791, and keeps the local pi-host socket only for a box the registry does not list. `/api/hosts` shows each relay link. | `server/main.ts` `boxes`, `server/host/multi-host.ts`, `server/usage.ts` |
 
 pi-durable already supports most of what the model needs. Each conversation stores its own agent state (`AgentState`: model, extensions, tools filter, instructions, cwd), and a prompt section's `render` gets the conversation id and its documents. So a comm thread and a work thread can run on different extensions and tools without a fork of pi-durable.
 
@@ -102,17 +102,17 @@ classDiagram
 
 | Thing | What it is | Who stores it | Example |
 |---|---|---|---|
-| Agent | A template with a responsibility. It has no transcript of its own. | The agent folder on its host, plus a row in the chat server's `agents.json` | `ag_vent`, home `~/work/vent`, on us-metal02 |
+| Agent | A template with a responsibility. It has no transcript of its own. | The agent folder on its host, plus a row in the chat server's `agents.json` | `ag_vent`, home `/Users/sieunpark/Documents/Github/auto-sns-agent`, on us-metal02 |
 | Room | A conversation of people and agents. | The chat server | `dm_vent`, `ch_cutover`, `so_relay-protocol` |
-| Comm thread | That agent's local context in that room. It reads the room's posts as inputs and speaks with `send_message`. | pi-host on the agent's host, one durable thread file | "vent · DM" |
+| Comm thread | That agent's local context in that room. It reads the room's posts as inputs and speaks with `tell_owner`. | pi-host on the agent's host, one durable thread file | "vent · DM" |
 | Work thread | Where the agent works: the main thread, its subagents and its jobs. | pi-host on the agent's host | "vent", the existing thread |
 | Job | A background thread the work thread starts for one goal, such as a duty run. | pi-host, filed under the agent | "relay uptime duty" |
 
 Rules that keep it simple:
 
 1. One agent has exactly one main work thread at a time. The comm threads of all its rooms delegate to it, so the owner's DM and a channel never fight over two copies of the work.
-2. A comm thread never runs coding tools that write. It may read files in the agent's home, read the agent's state, and post. Its context stays small (soft cap 40k tokens, then compaction). It runs Opus 5.5 at high thinking, as every thread does (owner rule c31).
-3. A work thread never posts to a room. It writes to the board and calls `report`, and the comm thread decides whether to speak (owner rule c117: on a turn the owner did not start, the default is to say nothing).
+2. A comm thread never runs coding tools that write. It may read files in the agent's home, read the agent's state, and post. No token cap of its own applies, so it compacts like any Prime thread, and on 11-20 one channel turn read 303,230 cached tokens. It runs Opus 5.5 at high thinking, as every thread does (owner rule c31).
+3. A work thread never posts to a room. It writes to the board and reports to the comm thread with `agent_message.send`, and the comm thread decides whether to speak (owner rule c117: on a turn the owner did not start, the default is to say nothing).
 4. Room messages belong to the chat server. A thread holds copies of the posts it was given as inputs, and the room never reads its timeline from a thread.
 
 ### What the sidebar shows
@@ -136,15 +136,15 @@ sequenceDiagram
   participant C as comm thread (vent · DM)
   participant K as work thread (vent)
   O->>W: "make the relay page show Mac uptime"
-  W->>S: POST /api/rooms/dm_vent/send {requestId}
+  W->>S: POST /api/c/dm_vent/send {requestId}
   S-->>W: post 41 stored, shown at once
   S->>R: deliver {post 41, agent vent, room dm_vent, ownerTurn}
-  R->>C: durable_submit requestId d:41:vent
+  R->>C: durable_submit requestId d:p41:ag_vent
   R-->>S: ack admitted (delivery "delivered")
-  C->>C: agent_status() reads that the worker is idle
-  C->>K: delegate({task}) with ownerTurn carried over
-  C->>R: send_message("On it. I'll show you the page when it's up.")
-  R->>S: event message m:<thread>:<toolCallId>
+  C->>C: agent_observe reads that the worker is idle
+  C->>K: agent_message.send(task, receiver_role sibling), a comm.hand task
+  C->>R: tell_owner("On it. I'll show you the page when it's up.")
+  R->>S: feed row, then the server reads the post m:<thread>:<toolCallId>
   S-->>W: post 42 from vent
   Note over K: works: coding tools, subagents, board steps
 ```
@@ -159,12 +159,12 @@ sequenceDiagram
   participant K as work thread (running)
   O->>S: "so what is status?" (post 43)
   S->>C: deliver post 43 (ownerTurn)
-  C->>K: agent_status() is a read only: tree, last entries, queue place, open steps
+  C->>K: agent_observe is a read only: status, recent messages, live children, queue place
   Note over K: gets no input, no steer and no new context
-  C->>S: send_message("Page builds, uptime query is wired. Waiting on the Mac relay to answer, about 10 min.")
+  C->>S: tell_owner("Page builds, uptime query is wired. Waiting on the Mac relay to answer, about 10 min.")
 ```
 
-The comm thread's turn is the only new run. `agent_status` reads the work thread's file through pi-host in process (`durable_tree`, `durable_entries`, `durable_ticket`), so the worker's turn and its context do not change.
+The comm thread's turn is the only new run. `agent_observe` in the comm thread's ipython reads the work thread through pi-host in the same process, so the worker's turn and its context do not change.
 
 ### (c) The worker finishes, and the comm thread decides whether to speak
 
@@ -174,16 +174,16 @@ sequenceDiagram
   participant H as pi-host (agent's box)
   participant C as comm thread
   participant S as chat-server
-  K->>H: the delegated input settles (final answer, board step p12 done)
-  H->>C: notice "[work done w7]" with the final answer clipped to 2k, not an owner turn
+  K->>C: agent_message.send(report), or when the hand-over settles with no report
+  H->>C: notice "[work-done: no-reply agent:vent]" with the last text, not an owner turn
   alt the owner asked for this, or it needs his decision
-    C->>S: send_message({text: "The relay page shows Mac uptime now: <link>", why: "done"})
+    C->>S: tell_owner({text: "The relay page shows Mac uptime now: <link>", why: "done"})
   else routine (a job report, a check-in result)
     C->>C: ends the turn with no message, the board already shows it
   end
 ```
 
-pi-host knows which comm thread delegated each work input (the `delegate` call records it), so the notice goes back to the room it came from. A `report({kind: "question"})` from the worker takes the same path while the work goes on.
+pi-host runs each hand-over as a `comm.hand` task of the comm thread that sent it (`packages/pi-host/src/durable/comm.ts`), so the notice goes back to the room it came from. A question the worker sends with `agent_message.send` takes the same path while the work goes on.
 
 ### (d) A Solo room with two agents and an agenda
 
@@ -197,15 +197,15 @@ sequenceDiagram
   O->>S: create Solo "pick the relay protocol", invite infra and chat
   S->>A: deliver agenda + post 1 (wakeOn all)
   S->>B: deliver agenda + post 1
-  A->>S: send_message("WebSocket per box, chat server dials. Reconnect by cursor.") post 2
+  A->>S: tell_owner("WebSocket per box, chat server dials. Reconnect by cursor.") post 2
   S->>B: deliver post 2 (hops 1)
-  B->>S: send_message("Fine for chat. Mac sleeps, so deliveries must queue.") post 3
+  B->>S: tell_owner("Fine for chat. Mac sleeps, so deliveries must queue.") post 3
   S->>A: deliver post 3 (hops 2)
-  A->>KA: delegate("prototype the queue with a 6h offline test")
-  A->>S: send_message("Prototyping it, back with numbers.") post 4
+  A->>KA: agent_message.send("prototype the queue with a 6h offline test")
+  A->>S: tell_owner("Prototyping it, back with numbers.") post 4
   Note over S: a post 6 agent hops from the owner is not delivered (hard cap: money)
-  KA-->>A: [work done] numbers
-  A->>S: send_message(result, why "done") post 5
+  KA-->>A: agent_message.send(numbers)
+  A->>S: tell_owner(result, why "done") post 5
   O->>S: close the room (agenda done)
 ```
 
@@ -213,24 +213,25 @@ Every invited agent hears every post, and each speaks only when it has something
 
 ## 2. Tools per kind of thread
 
-| Tool | Signature | Comm | Work | Job | Implemented in |
-|---|---|---|---|---|---|
-| `send_message` | `({text, why?: "answer"\|"done"\|"decision"\|"blocker"\|"update", replyTo?: PostId, images?: string[]}) => {requestId}` | yes | no | no | pi-host registry (`durable/comm.ts`). It commits a `chat.send` entry, and the relay carries it to the chat server. |
-| `agent_status` | `({part?: "summary"\|"work"\|"jobs"\|"board", job?: string}) => text` | yes | no | no | pi-host, in process: thread rows, tree, last entries, ticket, plus the agent's board copy (an `agent.board` doc) |
-| `delegate` | `({task, to?: "main"\|<job name>\|"new", name?, model?}) => {to, submission}` | yes | no | no | pi-host: `durable_submit` to the work thread, requestId `w:<thread>:<toolCallId>`, records who asked |
-| `steer_work` | `({to?: "main"\|<job>, text?, stop?: boolean}) => {state}` | yes | no | no | pi-host: submit with `whenBusy: "steer"`, or `durable_abort` |
-| `report` | `({text, kind: "progress"\|"done"\|"blocked"\|"question"}) => ok` | no | yes | yes (to its work thread) | pi-host: a notice into the comm threads that delegated, or the DM comm thread when none did |
-| `board` | `({ops?: BoardOp[]}) => BoardView text` | read, and owner-asked edits | yes | yes | chat-server API `POST /api/agents/:id/board {actor: "agent"}`, reached through the relay |
-| `rlm.harness` | Prime's kernel API: `create_memory`, `update_memory`, `delete_memory`, the prompt, skill and subagent calls, `search`, and `refine.run()` | yes | yes | yes | Prime's kernel, with `RLM_HARNESS_STATE_DIR` at the agent's store (section 3, built in phase 3) |
-| `room_history` | `({room?, before?, q?, limit?}) => posts` | yes | no | no | chat-server API `GET /api/rooms/:id/items`, through the relay |
-| `start_job` | `({name, brief, model?}) => {job}` | no | yes | no | pi-host: `durable_create` with `{agent, role: "job"}` and the first input |
-| `wake` | `({at?, run?, check?, every?, note}) => {wake}` | no | yes | yes | relay timers on the agent's box (today the chat server's `wakes/`) |
-| `subagent` | as today | no | yes | yes | pi-host `durable/subagent.ts` |
-| coding tools | as today | read, ls, grep only (tools filter) | all | all | pi-durable `CodingTools` |
+Phase 4 built these calls from Prime's own tools, and the table at the end of phase 4 maps each tool this doc first planned to the call that replaced it.
 
-The comm thread stays thin because its tools are few and cheap, its inputs are only its room's posts and work notices, and the system prompt tells it to answer from state and delegate anything over a minute (today's chat brief rule c52). Comm, work and job threads all run Opus 5.5 at high thinking (owner rule c31).
+| Tool or call | Comm | Work | Job | Implemented in |
+|---|---|---|---|---|
+| `tell_owner` (`send_message` is its alias) | yes | no, when the agent has a comm thread | yes | Prime's chat tool with its guard (`legacy/prime/user-history/src/chat-guard.ts`), installed by `packages/pi-host/src/durable/registry.ts` |
+| `agent_message.send` in ipython | hands work over or steers | reports to the comm thread | reports to its parent | pi-host `durable/rlm.ts`; a comm-to-work message becomes a `comm.hand` task (`durable/threads.ts`, `durable/comm.ts`) |
+| `agent_observe` in ipython | reads the work thread | yes | yes | pi-host `durable/rlm.ts`, read in process with no input to the thread it reads |
+| `stop_work` | yes | no | no | `durable/comm.ts`, a tool only comm threads load |
+| `chat_board` and `board.*` | read, and owner-asked edits | yes | yes | Prime's chat tool and the kernel's `board` module, through the chat server's board API |
+| `set_emoji`, `list_for_me_messages`, `mark_message` | yes | yes | yes | the room tools (`durable/room-tools.ts`) and Prime's chat tools |
+| `save_message`, `remind_me`, `list_saved_messages` | yes | yes | yes | `durable/later.ts`, listed in the room tools |
+| `rlm.harness` and `refine.run()` | yes | yes | yes | Prime's kernel, with `RLM_HARNESS_STATE_DIR` at the agent's store (section 3) |
+| `rlm.spawn`, `rlm.create_session`, `board.wake` | no | yes | yes | pi-host `durable/rlm.ts` and the chat server's wakes (`server/wakes.ts`) |
+| `subagent`, `write`, `edit`, `bash` | no | yes | yes | pi-host `durable/subagent.ts` and pi-durable `CodingTools`; a comm thread loses them (`COMM_REMOVED_TOOLS` in `durable/agent-profile.ts`) |
+| `read`, `ipython`, `search_history`, `correction_add`, `poteto_mode` | yes | yes | yes | pi-durable `CodingTools`, `durable/rlm.ts` and Prime's chat tools |
 
-`send_message` keeps `tell_owner`'s rules from `legacy/prime/user-history/src/chat-brief.ts`: one point per message, short sentences (c104) with a mermaid block, table or link where it carries the point better (rule 5 of `config/AGENTS.md`, which the comm role text puts above the brief's wiki-page line for a diagram he asks for), no message on a turn the owner did not start unless something finished that he asked for, a decision, a blocker or an answer (c117), and `replyTo` only for a wake-up that answers an older message. The text a turn ends with is not posted; it shows in the comm thread's fold. When a DM turn the owner started ends with text, no post and no hand-over, pi-host queues Prime's note for his unanswered message as its next input, once, so the model posts its answer or ends with no text (`packages/pi-host/src/durable/comm-reply.ts`).
+The comm thread stays thin because it cannot change files, its inputs are only its room's posts and work notices, and its role text tells it to answer from state and hand over anything over a minute (today's chat brief rule c52). Comm, work and job threads all run Opus 5.5 at high thinking (owner rule c31).
+
+A comm thread's `tell_owner` keeps Prime's rules from `legacy/prime/user-history/src/chat-brief.ts`: one point per message, short sentences (c104) with a mermaid block, table or link where it carries the point better (rule 5 of `config/AGENTS.md`, which the comm role text puts above the brief's wiki-page line for a diagram he asks for), no message on a turn the owner did not start unless something finished that he asked for, a decision, a blocker or an answer (c117), and `replyTo` only for a wake-up that answers an older message. The text a turn ends with is not posted; it shows in the comm thread's fold. When a DM turn the owner started ends with text, no post and no hand-over, pi-host queues Prime's note for his unanswered message as its next input, once, so the model posts its answer or ends with no text (`packages/pi-host/src/durable/comm-reply.ts`).
 
 ## 3. Memory and instructions
 
@@ -289,12 +290,14 @@ flowchart LR
 | Tier | Runs on | Owns | Never does |
 |---|---|---|---|
 | chat-server | metal only | rooms, posts, read marks, the delivery outbox, routing by membership and mention, hop cap, search over posts, boards, For you, duties' schedule | run a model, stream tool calls to the client |
-| relay | each box | the link to the chat server; maps (agent, room) to a comm thread and creates it on first use; delivers inputs; drains `send_message` events; wakes, check-ins and duty prechecks that must run on this box; health | store room messages |
+| relay | each box | the link to the chat server; delivers inputs to the thread the chat server names; tells the chat server about new rows in pi-host's `outbox` table; wake checks, file reads and the box's instruction files; health | store room messages, pick a comm thread |
 | pi-host | each box | durable threads, the turn queue through pi-pool, the tools in section 2, resume after restart | talk to the chat server directly |
 
-The relay does the orchestration on each box, as the owner asked ("chat server (@each machine)에서 알아서 orchestration하는거지"). The chat server routes a post to (agent, room), and the relay on that agent's box decides which thread takes it.
+The owner asked for orchestration on each box ("chat server (@each machine)에서 알아서 orchestration하는거지"). The chat server routes a post to (agent, room) and picks the comm thread with `Agents.ensureComm`, and the relay on that agent's box only carries it, as phase 6 explains.
 
 ### Protocol sketch: one WebSocket per box
+
+This sketch is the plan. Phase 6 built a smaller protocol, whose frames are in `components/prime-relay/agents/protocol.ts`: the server sends `call` frames for pi-host commands, watches, wake checks and instruction lists, the relay sends `hello` and pi-host's feed rows as `event` frames, and a thread reaches the chat server's HTTP API through the relay's local port as a `chat_http` call. No `deliver`, `board` or `room_history` frame exists.
 
 The chat server dials `ws://<box>:7791/v2/agents` with the box's bearer token from `hosts.json`, as `/api/hosts` does today. Frames are JSON lines.
 
@@ -337,8 +340,8 @@ The chat server dials `ws://<box>:7791/v2/agents` with the box's bearer token fr
 | A DM with that chat | Room `dm_<slug>`. The old thread's owner messages and its text answers (no tool calls) are copied in as posts with their original times, and older history sits behind "Earlier, in the work thread" (open question 1). |
 | A chat listed under Solo today | The same as a DM when it has a name: an agent with a DM room. An untitled chat ("New thread", "Untitled" or no name) becomes no agent and has no sidebar row. |
 | A job (`<thread>:<n>`) or a root job with a parent | A job of that agent. Duty threads are the agent's jobs, with kind `duty`. |
-| `chat.board` doc per chat | `agents/<id>/board.json`, copied once. Ids stay, so p12 and t4 keep working. |
-| `boards/<chat>/duties.json`, check-in, wakes | Under `agents/<id>/`. Wakes fire on the agent's box from phase 6. |
+| `chat.board` doc per chat | The `chat.board` doc of the agent's work thread, so the board did not move. Ids stay, so p12 and t4 keep working. |
+| `boards/<chat>/duties.json`, check-in, wakes | Under the chat server's `agents/<id>/`. Wakes fire from the chat server's `server/wakes.ts`, and a wake's shell check runs on the agent's box through the relay's `check` op. |
 | Channel members (thread ids) | Agent ids. The thread-id-to-agent map is kept, so old links `#/c/<thread id>` open the agent's DM. |
 | A channel mention | A delivery to that agent's comm thread for the channel. Until phase 4, it goes to the work thread as today. A mention of an agent that is not a member reaches its comm thread for the channel too, made on demand, and its answer lands in the channel without adding it as a member. |
 
@@ -368,7 +371,7 @@ Each phase ships alone through `scripts/release-chat.mjs` (and pi-host's own ins
 
 | Phase | Owner gets | Size |
 |---|---|---|
-| 1. `send_message` (in progress) | Agents speak only when they mean to; the rest folds | pi-host 2 files, chat server 1, web 2 |
+| 1. `send_message` (built) | Agents speak only when they mean to; the rest folds | pi-host 2 files, chat server 1, web 2 |
 | 2. Agents and DM rooms | Slack-like DMs whose messages the chat server owns; the DM list holds agents only; per-agent boards | chat server ~7, web ~6, pi-host 2, 1 script |
 | 3. Agent folder: brief and memory (built) | Each agent knows its job and remembers; the Agents page shows host, home, brief, memory and board | pi-host 3, chat server 2, web 3 |
 | 4. Comm and work split | "So what is status?" answered from state; the worker is never interrupted by chat | pi-host 4, chat server 2, web 2 |
@@ -414,11 +417,13 @@ Built and live on 2026-10-29: pi-host d3368356 (the folder in a163066e), apps/ch
 
 ### Phase 4: Comm and work split
 
+The plan was:
+
 1. pi-host `durable/comm.ts` (`agent_status`, `delegate`, `steer_work`, `room_history` through the chat server) and `durable/work.ts` (`report`, `start_job`, `wake`). Work-done notices go back to the comm thread that delegated, keyed `n:<thread>:<submission>`.
 2. `server/relay/` (in the chat server for now) maps (agent, room) to a comm thread and creates it on first delivery with `role: "comm"` and the agent's model, Opus 5.5 at high thinking (c31).
 3. DM deliveries go to the comm thread. The web shows the comm thread's turns in the fold and adds a "Work" pill when work is running.
 
-Built and live on 2026-10-29: pi-host fc286a05 and apps/chat 6821aa3f, both as release-6821aa3. It uses Prime's own tools where Prime has one, so the tools table above maps like this:
+Built and live on 2026-10-29: pi-host fc286a05 and apps/chat 6821aa3f, both as release-6821aa3. It uses Prime's own tools where Prime has one, so the tools this phase planned map to the built calls like this, and section 2 lists the built calls:
 
 | Doc tool | Built as |
 |---|---|
