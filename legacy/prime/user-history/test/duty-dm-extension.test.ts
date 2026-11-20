@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
-import { type BrowserJar, errorCounts, jarIgUserId, jars, otherRuns, outreachAccounts, parts, report, rigDeadline, senderFits, TAIL_MS, type AutopairEvidence, type DmRow, type E2eEvidence } from "../scripts/duties/dm-extension.ts";
+import { boxExit, type BrowserJar, errorCounts, jarIgUserId, jars, otherRuns, outreachAccounts, parts, report, rigDeadline, senderFits, TAIL_MS, type AutopairEvidence, type DmRow, type E2eEvidence } from "../scripts/duties/dm-extension.ts";
 
 const METRICS = (JSON.parse(readFileSync(new URL("../scripts/duties/dm-extension.duty.json", import.meta.url), "utf8")) as { metrics: DutyMetric[] }).metrics;
 const NOW = Date.parse("2026-10-30T12:00:00Z");
@@ -131,7 +131,7 @@ test("the precheck waits on another copy of itself or a rig, never on itself or 
   assert.ok(out.flagged?.some(slice => slice.kind === "waited" && slice.excerpt.startsWith("waited 332 s")));
 });
 
-test("jars writes each account as the crawler answers it, box exit included, and names its world and exit host (11-20)", async () => {
+test("jars writes each account as the crawler answers it, names its world and exit host, and lists a box exit (c229, 11-20)", async () => {
   const tmp = await mkdtemp(join(tmpdir(), "dm-ext-jars-"));
   const answer = (username: string, proxy_url: string, valid = true): BrowserJar =>
     ({ world: "prod", username, ig_user_id: null, cookies: [{ name: "ds_user_id", value: `${username}-id` }], user_agent: "ua", valid, proxy_url });
@@ -147,6 +147,7 @@ test("jars writes each account as the crawler answers it, box exit included, and
     assert.equal(out.accounts, "sender @caiyiting8674 is prod on exit gw.example:12001; replier @gimnayeon1396 is prod on exit us-metal01.example:7244");
     assert.equal(JSON.parse(await readFile(out.replier, "utf8")).proxy_url, "http://box:pw@us-metal01.example:7244");
     assert.deepEqual(out.notes, ["prod @gimnayeon1396 has a jar the crawler marked invalid"]);
+    assert.deepEqual(out.boxed, ["replier @gimnayeon1396 is prod on exit us-metal01.example:7244"]);
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
@@ -188,4 +189,15 @@ test("listOutreach's answer gives its accounts, and an error answer throws with 
   assert.deepEqual(outreachAccounts(JSON.stringify({ status: "success", value: { accounts: [account], devices: [] } })), [account]);
   assert.throws(() => outreachAccounts(JSON.stringify({ status: "error", errorMessage: "Uncaught ConvexError: unauthenticated" })), /search\/dmSenders:listOutreach answered error: Uncaught ConvexError: unauthenticated/);
   assert.throws(() => outreachAccounts(JSON.stringify({ status: "success", value: null })), /answered success/);
+});
+
+test("a test account on a box exit reads exit_down with no residential exit and an unmeasured e2e_pass, with no rig run (c229, 11-20)", () => {
+  assert.equal(boxExit("box://64.34.205.244/206"), true);
+  assert.equal(boxExit("http://box:pw@us-metal01.tail0c093d.ts.net:7244"), true);
+  assert.equal(boxExit("http://user:pw@residential-unlimited-us-08-proxy.geonode.io:12001"), false);
+  const out = report({ now: NOW, boxed: ["sender @caiyiting8674 is prod on exit us-metal01.tail0c093d.ts.net:7244"], errors: [] }, METRICS);
+  assert.notEqual(out.metrics.e2e_pass, 1);
+  const slice = out.flagged?.find(s => s.kind === "exit_down");
+  assert.ok(slice?.excerpt.startsWith("no residential exit: sender @caiyiting8674 is prod on exit us-metal01"));
+  assert.ok(!out.flagged?.some(s => s.kind === "e2e_part"));
 });

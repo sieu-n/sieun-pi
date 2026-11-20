@@ -17,7 +17,8 @@ import { DAY, REPO, settle, SOURCE_DEADLINE_MS, unmeasuredFlag, utc } from "./es
  *    the dev zip of the same tree, which holds the same files with the repo manifest, and a `build` slice says so.
  * 2. It reads the sender's and the replier's saved Instagram sessions and current exits from the crawler (BROWSER_JAR), which answers
  *    from the world that holds each account and gives a box route as its address's CONNECT proxy on us-metal01. They go into a mode 700
- *    temp folder it deletes, and an `accounts` slice names each account's world and exit host.
+ *    temp folder it deletes, and an `accounts` slice names each account's world and exit host. When either exit is on our own servers
+ *    (boxExit), it starts no world and opens no browser, and an exit_down slice says "no residential exit" (owner rule c229, 11-20).
  * 3. It starts a staging clean world (scripts/dev/search-clean-world.mjs up --target staging --allow-features instagramDm), a fresh
  *    Clerk user and org approved on staging with the instagramDm allow, and runs the two real-Instagram rigs in it as that user and org
  *    (the world's `run` hands them E2E_USER_EMAIL and E2E_ORG_ID) with DM_EXTENSION_DIR set to the unpacked zip:
@@ -136,6 +137,8 @@ export interface DutyData {
   build?: Build;
   /** Which crawler world and endpoint each test account came from. */
   accounts?: string;
+  /** The test accounts whose exit is on our own servers (boxExit), so no rig ran. */
+  boxed?: string[];
   autopair?: AutopairEvidence;
   sender?: Sender;
   e2e?: E2eEvidence;
@@ -217,6 +220,10 @@ export function report(data: DutyData, dutyMetrics: readonly DutyMetric[]): Prec
     flagged.push({ at, kind: "build", excerpt: `${version} from auto-sns-agent ${sha.slice(0, 10)}: ${loaded === "dev" ? "the store zip lists no staging host, so the run loaded the dev zip of the same tree" : "the run loaded the store zip"}${sameFiles ? ", same files in both zips" : "; the store and dev zips hold DIFFERENT files"}${dirty.length ? `; uncommitted in apps/dm-extension: ${dirty.join(", ")}` : ""}`.slice(0, 300) });
   }
   if (data.accounts) flagged.push({ at, kind: "accounts", excerpt: data.accounts.slice(0, 300) });
+  if (data.boxed?.length) {
+    unmeasured.add("e2e_pass");
+    flagged.push({ at, kind: "exit_down", item: "jars", excerpt: `no residential exit: ${data.boxed.join("; ")}, so the run opened no browser, because owner rule c229 keeps logged-in test accounts off our own server IPs`.slice(0, 300) });
+  }
   if (data.waited) flagged.push({ at, kind: "waited", excerpt: `waited ${Math.round(data.waited.ms / 1000)} s for another run on this box before its own work: ${data.waited.on.join("; ")}`.slice(0, 300) });
   const blocked = data.sender !== undefined && !senderFits(data.sender);
   if (data.sender && blocked) {
@@ -297,6 +304,16 @@ export async function build(tmp: string): Promise<{ build: Build; dir: string }>
   return { build: { sha, loaded, dirty, sameFiles: store.files.join() === dev.files.join(), version: manifest.version }, dir };
 }
 
+/**
+ * Whether a jar's exit leaves from our own servers: a `box://` route, or the box CONNECT proxy on us-metal01 that BROWSER_JAR answers for
+ * one (crawler-v3 fleet/box_proxy.py, user `box`). Owner rule c229 (11-20) keeps logged-in test accounts off our own server IPs, after
+ * all 24 box accounts were suspended on 11-19, so the run opens no browser on such a jar (apps/dm-extension/tests/lib/real-world.mjs boxExit).
+ */
+export function boxExit(proxyUrl: string): boolean {
+  const url = new URL(proxyUrl);
+  return url.protocol === "box:" || decodeURIComponent(url.username) === "box" || /^us-metal01(\.|$)/.test(url.hostname);
+}
+
 /** One account's saved session and the exit a browser drives it through now, as the crawler answers it (BROWSER_JAR). */
 export interface BrowserJar { world: string; username: string; ig_user_id: string | null; cookies: { name: string; value: string }[] | null; user_agent: string; valid: boolean; proxy_url: string }
 /** Reads the BrowserJar of one handle. */
@@ -325,7 +342,7 @@ export async function crawlerJars(fetcher: typeof fetch = fetch): Promise<ReadJa
 }
 
 /** The two accounts' saved sessions and current exits, as the rigs' jar files (mode 600). Prints no cookie or exit credential. */
-export async function jars(tmp: string, read: ReadJar): Promise<{ sender: string; senderIgId: string; replier: string; accounts: string; notes: string[] }> {
+export async function jars(tmp: string, read: ReadJar): Promise<{ sender: string; senderIgId: string; replier: string; accounts: string; notes: string[]; boxed: string[] }> {
   const notes: string[] = [];
   const file = async (jar: BrowserJar) => {
     const path = join(tmp, `jar-${jar.username}.json`);
@@ -337,7 +354,8 @@ export async function jars(tmp: string, read: ReadJar): Promise<{ sender: string
   const replier = await read(REPLIER);
   const describe = (role: string, jar: BrowserJar) => `${role} @${jar.username} is ${jar.world} on exit ${new URL(jar.proxy_url).host}`;
   const accounts = `${describe("sender", sender)}; ${describe("replier", replier)}`;
-  return { sender: await file(sender), senderIgId: jarIgUserId(sender), replier: await file(replier), accounts, notes };
+  const boxed = ([["sender", sender], ["replier", replier]] as const).filter(([, jar]) => boxExit(jar.proxy_url)).map(([role, jar]) => describe(role, jar));
+  return { sender: await file(sender), senderIgId: jarIgUserId(sender), replier: await file(replier), accounts, notes, boxed };
 }
 
 type OutreachAccount = { platformUserId: string | null; username: string; sentToday: number; dailyLimit: number };
@@ -449,7 +467,8 @@ async function measure(now: number, budgetMs: number): Promise<DutyData> {
     const jarFiles = await step("jars", async () => jars(tmp, await crawlerJars()));
     if (jarFiles) data.accounts = jarFiles.accounts;
     if (jarFiles?.notes.length) data.errors.push({ source: "jars", message: jarFiles.notes.join("; ") });
-    if (built && jarFiles) {
+    if (jarFiles?.boxed.length) data.boxed = jarFiles.boxed;
+    if (built && jarFiles && !jarFiles.boxed.length) {
       // A rig a job started while this run built and fetched the jars.
       const again = await waitForOtherRuns();
       if (again.ms >= 1_000) data.waited = { ms: (data.waited?.ms ?? 0) + again.ms, on: [...new Set([...(data.waited?.on ?? []), ...again.on])] };
