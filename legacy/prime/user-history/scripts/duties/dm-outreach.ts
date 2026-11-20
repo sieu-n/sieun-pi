@@ -9,22 +9,20 @@ import { REPO, SOURCE_DEADLINE_MS, grafanaClient, prodReader, readGrafanaAuth, s
 
 /**
  * The api portal vp chat's "DM outreach works" precheck (`node --import tsx scripts/duties/dm-outreach.ts`). No model call, reads only, sends nothing.
- * It answers what the owner checks by hand on https://api.virev.ai/playground/dm-playground: does the page let him start a conversation, and do sends go out.
- * 1. It finds the commit prod runs from the newest READY production deployment of the api-portal Vercel project (vercelApi in auto-sns-agent
+ * It answers what the owner checks by hand on https://api.virev.ai/playground/dm-playground: can a new conversation go out, does the page say so, and do sends go out.
+ * 1. It reads `sendable_now` from the prod crawler's GET /ops/engage/health: the accounts the outreach claim can take whose exit passes the send's
+ *    stored egress admission. On 11-20 at 18:34Z prod held 58 active accounts and no paid proxy, so no send could go out, while the census sum this
+ *    duty read before (new plus active) kept it green.
+ * 2. It finds the commit prod runs from the newest READY production deployment of the api-portal Vercel project (vercelApi in auto-sns-agent
  *    scripts/repo/env/vercel-blobs.mjs), reads `sendingState` from apps/api-portal/src/lib/server/engage-dm.ts at that commit, and runs it on the
- *    crawler's GET /ops/engage/health answer, so the headline is the state the prod page shows. On 10-15 prod's sendingState counted only aiograpi
- *    accounts and the page showed "Paused while we add capacity" with 127 active jar accounts (auto-sns-agent 60aa3284dc fixed it on sieun/dev).
- * 2. It sums census.new and census.active over every login mode from the same answer, the accounts the crawler's outreach claim can take.
+ *    same answer, so a flag names a page that offers Start conversation while nothing can send, or shows Paused while sends can go.
  * 3. It reads prod ig_engage_messages through Grafana's estate_pg_prod (estate-reads.ts prodReader): outbound rows of the last 24 h whose
  *    status is failed or delivery_unknown. A daily_send_limit_reached refusal writes no row (fleet/budget charges before the row), and the query
  *    leaves one out if it ever does.
  *
  * Targets in dm-outreach.duty.json (the JSON cannot hold comments):
- * - sending_available >= 1: 0 when prod's sendingState says paused, else 1. The owner's p17 done line is Start conversation enabled with no
- *   Paused line, and the playground page disables Start only for paused (canStart in its +page.svelte), so unknown still lets a customer start.
- *   Unknown keeps its own flag: on 11-02 prod 416fae9ac8 read per-login-mode census bands that the crawler stopped serving after 0210
- *   (auto-sns-agent a2ac03c64f), so its page could no longer show Paused, while prod sent DMs on 10-29 and 10-30.
- * - sendable_accounts >= 1: sendingState's own rule, one new or active account is enough to start an outreach.
+ * - sending_available >= 1: 1 when sendable_now is at least 1, the owner's p17 done line of a customer who can start a conversation.
+ * - sendable_accounts >= 1: sendable_now itself.
  * - failed_sends_24h <= 0: a failed send is a customer's message that did not go out. 3 of 4 prod sends went out on 10-15 and the 4th failed
  *   ui_no_compose, so no failure is normal.
  * A source that failed makes the metrics it feeds read missValue() and adds a source_error flag.
@@ -37,13 +35,11 @@ const ENGAGE_DM = "apps/api-portal/src/lib/server/engage-dm.ts";
 export const DAILY_LIMIT_CODE = "daily_send_limit_reached";
 
 export type Sending = "available" | "paused" | "unknown";
-/** A status's count, or its count per login mode, the shape prod serves until auto-sns-agent a2ac03c64f (0210) drops login_mode there. */
-export type Census = Record<string, number | Record<string, number>>;
 export interface FailedSend { id: number; status: string; code: string; at: number }
 export type Source = "prod deployment" | "prod sendingState" | "crawler engage health" | "prod sends";
 export const FEEDS: Readonly<Record<Source, readonly string[]>> = {
-  "prod deployment": ["sending_available"],
-  "prod sendingState": ["sending_available"],
+  "prod deployment": [],
+  "prod sendingState": [],
   "crawler engage health": ["sending_available", "sendable_accounts"],
   "prod sends": ["failed_sends_24h"],
 };
@@ -51,7 +47,7 @@ export interface DmData {
   now: number;
   sha?: string;
   sending?: Sending;
-  census?: Census;
+  sendable?: number;
   failed?: FailedSend[];
   errors: { source: Source; message: string }[];
 }
@@ -89,18 +85,13 @@ export async function runSendingState(source: string, health: { status: number; 
   }
 }
 
-/** The census of a /ops/engage/health answer; throws when it has no new or active band. */
-export function censusOf(body: unknown): Census {
+/** The accounts a new outreach can claim and send from now, from a /ops/engage/health answer; throws when it has no sendable_now. */
+export function sendableOf(body: unknown): number {
   const data = (body as { data?: unknown } | null)?.data ?? body;
-  const census = (data as { census?: Census } | null)?.census;
-  const band = (value: unknown): boolean => typeof value === "number" || (typeof value === "object" && value !== null);
-  if (!census || !band(census.new) || !band(census.active)) throw new Error("GET /ops/engage/health has no census.new or census.active");
-  return census;
+  const sendable = (data as { sendable_now?: unknown } | null)?.sendable_now;
+  if (typeof sendable !== "number" || !Number.isFinite(sendable)) throw new Error("GET /ops/engage/health has no sendable_now");
+  return sendable;
 }
-
-export const sendableOf = (census: Census): number =>
-  [census.new, census.active].reduce<number>((sum, band) =>
-    sum + (typeof band === "number" ? band : Object.values(band ?? {}).reduce((total, count) => total + (Number(count) || 0), 0)), 0);
 
 /** The outbound sends of the last 24 h that did not go out, as one TSV row each: id, status, code, created_at in ms. */
 export const FAILED_SQL = `select m.id, m.status, coalesce(nullif(m.last_error_code, ''), nullif(m.error, ''), 'none') as error, round(extract(epoch from m.created_at) * 1000) as at
@@ -131,15 +122,15 @@ export function report(data: DmData, dutyMetrics: readonly DutyMetric[]): Preche
     flagged.push({ at, kind: "source_error", excerpt: `${error.source}: ${error.message}`.slice(0, 300) });
   }
   const sha = data.sha?.slice(0, 10) ?? "unknown";
-  if (data.sending) {
-    metrics.sending_available = data.sending === "paused" ? 0 : 1;
-    const held = data.census ? ` while the census holds ${sendableOf(data.census)} new or active accounts (${JSON.stringify({ new: data.census.new, active: data.census.active })})` : "";
-    if (data.sending === "paused") flagged.push({ at, kind: "paused", excerpt: `the prod DM playground shows Paused: sendingState at prod's deployed ${sha} answers paused${held}` });
-    if (data.sending === "unknown") flagged.push({ at, kind: "unknown", excerpt: `sendingState at prod's deployed ${sha} answers unknown${held}, so the page keeps Start conversation enabled but cannot show Paused when the census empties` });
+  if (data.sendable !== undefined) {
+    metrics.sending_available = data.sendable >= 1 ? 1 : 0;
+    metrics.sendable_accounts = data.sendable;
+    if (data.sendable < 1) flagged.push({ at, kind: "no_capacity", excerpt: "no prod account can send a new outreach now: GET /ops/engage/health sendable_now is 0, so no account the outreach claim can take passes the send's egress admission" });
   }
-  if (data.census) {
-    metrics.sendable_accounts = sendableOf(data.census);
-    if (metrics.sendable_accounts < 1) flagged.push({ at, kind: "no_capacity", excerpt: `prod has no new or active reader account to send from; account capacity is the launch chat's Engage reads scale safely duty` });
+  if (data.sending && data.sendable !== undefined) {
+    const page = `sendingState at prod's deployed ${sha} answers ${data.sending} while sendable_now is ${data.sendable}`;
+    if (data.sending !== "paused" && data.sendable < 1) flagged.push({ at, kind: "page_offers_start", excerpt: `the prod DM playground keeps Start conversation enabled while nothing can send: ${page}` });
+    if (data.sending === "paused" && data.sendable >= 1) flagged.push({ at, kind: "paused", excerpt: `the prod DM playground shows Paused while sends can go: ${page}` });
   }
   if (data.failed) {
     metrics.failed_sends_24h = data.failed.length;
@@ -188,8 +179,8 @@ async function measure(now: number, signal: AbortSignal): Promise<DmData> {
   if (sha) data.sha = sha;
   if (failed) data.failed = failed;
   if (health) {
-    const census = await step("crawler engage health", async () => censusOf(health.body));
-    if (census) data.census = census;
+    const sendable = await step("crawler engage health", async () => sendableOf(health.body));
+    if (sendable !== undefined) data.sendable = sendable;
   }
   if (sha && health) {
     const sending = await step("prod sendingState", async () => {

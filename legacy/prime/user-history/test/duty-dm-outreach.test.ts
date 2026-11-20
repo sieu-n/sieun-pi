@@ -1,78 +1,69 @@
-// Guards the DM outreach works duty (d3 of the api portal vp chat). On 2026-10-15 prod's sendingState counted only aiograpi accounts, so
-// https://api.virev.ai/playground/dm-playground showed Paused with 127 active jar accounts (auto-sns-agent 60aa3284dc), and at 20:18Z prod
-// message 1 failed WebSendError ui_no_compose. The duty runs the deployed sendingState on the census and counts that failure.
+// Guards the DM outreach works duty (d3 of the api portal vp chat). On 11-20 at 18:34Z prod's GET /ops/engage/health held 58 active accounts
+// and no paid proxy, so no outreach could send, while the portal and this duty counted census.new plus census.active and read green. The duty
+// reads the crawler's sendable_now, runs the deployed sendingState on the same answer, and counts failed sends (10-15 ui_no_compose).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DutyMetric } from "../src/shared/chat-duties.ts";
-import { censusOf, codeOf, failedOf, report, runSendingState, sendableOf } from "../scripts/duties/dm-outreach.ts";
+import { codeOf, failedOf, report, runSendingState, sendableOf } from "../scripts/duties/dm-outreach.ts";
 
-/** sendingState as prod runs it at a8f85b4206, with the constant it names, and as auto-sns-agent sieun/dev has it after 60aa3284dc. */
-const DEPLOYED = `const HEALTH_TIMEOUT_MS = 3_000;
-export async function sendingState(): Promise<Sending> {
-	const out = await crawler('/ops/engage/health', { method: 'GET', signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS) });
-	if (!out.ok) return 'unknown';
-	const census = (out.data as { census?: Record<string, Record<string, unknown>> } | null)?.census;
-	const counts = [census?.new?.aiograpi, census?.active?.aiograpi];
-	if (!counts.every((n) => typeof n === 'number')) return 'unknown';
-	return (counts as number[]).some((n) => n > 0) ? 'available' : 'paused';
-}
-`;
-const FIXED = `export async function sendingState(): Promise<Sending> {
-	const out = await crawler('/ops/engage/health');
+/** sendingState as prod runs it on 11-20, counting census.new plus census.active, and as auto-sns-agent dev/sieun has it after it read sendable_now. */
+const CENSUS_SUM = `export async function sendingState(who: Record<string, string>): Promise<Sending> {
+	const out = await crawler('/ops/engage/health', who);
 	if (!out.ok) return 'unknown';
 	const census = (out.data as { census?: Record<string, unknown> } | null)?.census;
-	const bands = [census?.new, census?.active];
-	if (!bands.every((band) => typeof band === 'object' && band !== null)) return 'unknown';
-	const counts = bands.flatMap((band) => Object.values(band as Record<string, unknown>));
-	if (counts.length === 0 || !counts.every((n) => typeof n === 'number')) return 'unknown';
-	return (counts as number[]).some((n) => n > 0) ? 'available' : 'paused';
+	const counts = [census?.new, census?.active];
+	if (!counts.every((n): n is number => typeof n === 'number')) return 'unknown';
+	return counts.some((n) => n > 0) ? 'available' : 'paused';
 }
 `;
-/** GET /ops/engage/health on prod, 10-15 20:0xZ: every account is a jar account. */
-const HEALTH = { status: 200, body: { ok: true, data: { census: { new: { aiograpi: 0, jar: 0 }, active: { aiograpi: 0, jar: 127 }, challenged: { aiograpi: 0, jar: 15 } } } } };
+const SENDABLE = `export async function sendingState(who: Record<string, string>): Promise<Sending> {
+	const out = await crawler('/ops/engage/health', who);
+	if (!out.ok) return 'unknown';
+	const sendable = (out.data as { sendable_now?: unknown } | null)?.sendable_now;
+	if (typeof sendable !== 'number') return 'unknown';
+	return sendable > 0 ? 'available' : 'paused';
+}
+`;
+/** GET /ops/engage/health on prod, 11-20 18:34Z, with the sendable_now the crawler now answers. */
+const HEALTH = { status: 200, body: { ok: true, data: { census: { new: 0, active: 58, parked: 103 }, claimable_now: 0, admissible_now: 0, sendable_now: 0 } } };
 const METRICS: DutyMetric[] = [
   { key: "sending_available", label: "", op: ">=", target: 1, headline: true },
   { key: "sendable_accounts", label: "", op: ">=", target: 1 },
   { key: "failed_sends_24h", label: "", op: "<=", target: 0 },
 ];
-const NOW = Date.parse("2026-10-15T21:00:00Z");
+const NOW = Date.parse("2026-11-20T18:40:00Z");
+const SHA = "a8f85b4206990cd73b4adbb87a88f04af8507040";
 
-test("the deployed aiograpi-only sendingState reads Paused on the all-jar census, and the fixed one reads available", async () => {
-  assert.equal(await runSendingState(DEPLOYED, HEALTH), "paused");
-  assert.equal(await runSendingState(FIXED, HEALTH), "available");
-  assert.equal(await runSendingState(FIXED, { status: 503, body: { ok: false, error: { code: "upstream_unavailable" } } }), "unknown");
-  assert.equal(sendableOf(HEALTH.body.data.census), 127);
+test("with nothing sendable the duty reads red and flags a deployed page that still offers Start conversation (prod 11-20 18:34Z)", async () => {
+  assert.equal(await runSendingState(CENSUS_SUM, HEALTH), "available");
+  assert.equal(await runSendingState(SENDABLE, HEALTH), "paused");
+  const output = report({ now: NOW, sha: SHA, sending: "available", sendable: sendableOf(HEALTH.body), failed: [], errors: [] }, METRICS);
+  assert.deepEqual(output.metrics, { sending_available: 0, sendable_accounts: 0, failed_sends_24h: 0 });
+  assert.ok(output.flagged!.some(flag => flag.kind === "no_capacity"));
+  assert.match(output.flagged!.find(flag => flag.kind === "page_offers_start")!.excerpt, /deployed a8f85b4206 answers available while sendable_now is 0/);
 });
 
-test("a Paused page misses the headline while the census has capacity, and the 10-15 ui_no_compose send counts as failed", () => {
+test("with an account to send from the duty reads green, and a page that shows Paused is flagged", () => {
+  const output = report({ now: NOW, sha: SHA, sending: "paused", sendable: 3, failed: [], errors: [] }, METRICS);
+  assert.deepEqual(output.metrics, { sending_available: 1, sendable_accounts: 3, failed_sends_24h: 0 });
+  assert.match(output.flagged!.find(flag => flag.kind === "paused")!.excerpt, /answers paused while sendable_now is 3/);
+  assert.deepEqual(report({ now: NOW, sha: SHA, sending: "available", sendable: 3, failed: [], errors: [] }, METRICS).flagged, []);
+});
+
+test("the 10-15 ui_no_compose send counts as failed", () => {
   const failed = failedOf("1\tfailed\tWebSendError: ui_no_compose: no New message control on this page\t1792095503599\n");
   assert.deepEqual(failed.map(send => send.code), ["WebSendError: ui_no_compose"]);
-  const output = report({ now: NOW, sha: "a8f85b4206990cd73b4adbb87a88f04af8507040", sending: "paused", census: HEALTH.body.data.census, failed, errors: [] }, METRICS);
-  assert.deepEqual(output.metrics, { sending_available: 0, sendable_accounts: 127, failed_sends_24h: 1 });
-  assert.match(output.flagged!.find(flag => flag.kind === "paused")!.excerpt, /deployed a8f85b4206 answers paused while the census holds 127/);
+  const output = report({ now: NOW, sendable: 1, failed, errors: [] }, METRICS);
+  assert.equal(output.metrics.failed_sends_24h, 1);
   assert.match(output.flagged!.find(flag => flag.kind === "failed_sends")!.excerpt, /WebSendError: ui_no_compose x1/);
   assert.equal(codeOf("daily_send_limit_reached"), "daily_send_limit_reached");
 });
 
-test("an unknown sending state keeps Start enabled, as the page does, and still flags that Paused cannot show (prod 416fae9ac8, 11-02)", async () => {
-  const flat = { status: 200, body: { ok: true, data: { census: { new: 0, active: 113 } } } };
-  assert.equal(await runSendingState(FIXED, flat), "unknown");
-  const output = report({ now: NOW, sha: "416fae9ac80c0886171058687372ae577a214bba", sending: "unknown", census: flat.body.data.census, failed: [], errors: [] }, METRICS);
-  assert.deepEqual(output.metrics, { sending_available: 1, sendable_accounts: 113, failed_sends_24h: 0 });
-  assert.match(output.flagged!.find(flag => flag.kind === "unknown")!.excerpt, /deployed 416fae9ac8 answers unknown while the census holds 113 new or active accounts/);
-});
-
-test("an unread source misses every metric it feeds instead of reading green", () => {
-  const output = report({ now: NOW, failed: [], errors: [{ source: "crawler engage health", message: "HTTP 502" }] }, METRICS);
+test("an unread source misses every metric it feeds instead of reading green, and a crawler without sendable_now is unread", () => {
+  assert.throws(() => sendableOf({ ok: true, data: { census: { new: 0, active: 58 } } }), /no sendable_now/);
+  const output = report({ now: NOW, failed: [], errors: [{ source: "crawler engage health", message: "GET /ops/engage/health has no sendable_now" }] }, METRICS);
   assert.ok(output.metrics.sending_available! < 1);
   assert.ok(output.metrics.sendable_accounts! < 1);
   assert.equal(output.metrics.failed_sends_24h, 0);
   assert.ok(output.flagged!.some(flag => flag.kind === "source_error"));
-});
-
-// auto-sns-agent a2ac03c64f (migration 0210) drops login_mode, and GET /ops/engage/health's census then counts each status as one number.
-test("the census counts a status given as one number, the shape after 0210", () => {
-  const census = censusOf({ ok: true, data: { census: { new: 2, active: 153, challenged: 16 } } });
-  assert.equal(sendableOf(census), 155);
-  assert.throws(() => censusOf({ ok: true, data: { census: { frozen: 14 } } }), /no census.new or census.active/);
 });
