@@ -316,6 +316,8 @@ def main() -> None:
 
 def family(row: dict) -> str:
     src = row["source"]
+    if src == "sieun-pi-package":
+        return src
     if "claude-rules" in row["realPath"]:
         return "sieun-pi-rules"
     if src in ("sieun-pi", "prime-links") or "/sieun-pi-runtime/" in row["realPath"] or "/src/sieun-pi/" in row["realPath"]:
@@ -354,9 +356,21 @@ def merge_usage(scans: list[dict]) -> dict:
             m["agents"].update(a for a in u.get("agents", []) if a)
             m["uses"].extend(u.get("uses", []))
     for m in merged.values():
-        m["agents"] = sorted(m["agents"])
+        m["agentsCount"] = len(m["agents"])
+        m["agents"] = sorted(m["agents"])[:20]
         m["uses"] = sorted(m["uses"], key=lambda u: u.get("at") or "", reverse=True)[:10]
     return merged
+
+
+def usage_for(row: dict, usage: dict) -> dict:
+    keys = {row["name"], row.get("dirName")} | {Path(link).name for link in row.get("links", [])}
+    found = [usage[k] for k in sorted(k for k in keys if k) if k in usage]
+    if len(found) <= 1:
+        return found[0] if found else {}
+    out = {k: sum(f.get(k, 0) for f in found) for k in ("uses7d", "uses30d", "sessions7d", "sessions30d", "agentsCount")}
+    out["agents"] = sorted({a for f in found for a in f.get("agents", [])})[:20]
+    out["uses"] = sorted((u for f in found for u in f.get("uses", [])), key=lambda u: u.get("at") or "", reverse=True)[:10]
+    return out
 
 
 def build(scans: list[dict], config: dict) -> dict:
@@ -417,7 +431,7 @@ def build(scans: list[dict], config: dict) -> dict:
             elif up:
                 pristine = up.get("sha256")
                 kind = "upstream" if not pristine or pristine == row.get("hash") else "fork"
-            elif row["source"] == "user-dir":
+            elif row["source"] in ("user-dir", "claude-plugin", "codex-plugin"):
                 kind = "upstream"
             else:
                 kind = "ours"
@@ -448,7 +462,7 @@ def build(scans: list[dict], config: dict) -> dict:
             flags.append({"kind": "unrequested", "detail": v.get("unrequested") if isinstance(v.get("unrequested"), str) else "Installed without an ask."})
         if v.get("rulerepeats"):
             flags.append({"kind": "rule-repeats-skill", "detail": v["rulerepeats"]})
-        u = usage.get(row["name"]) or usage.get(row.get("pythonImport") or "", None) or {}
+        u = usage_for(row, usage)
         if not u.get("uses30d") and kind not in ("rule",) and any(s.get("usage") for s in scans):
             flags.append({"kind": "unused", "detail": "No session read or called it in the last 30 days."})
         loaded = bool(row["runtimes"])
@@ -468,7 +482,7 @@ def build(scans: list[dict], config: dict) -> dict:
             "duplicateOf": [r["id"] for r in dups],
             "flags": flags,
             "useful": {"verdict": v.get("verdict"), "reason": v.get("reason"), "mergeInto": v.get("mergeInto"), "action": bool(v.get("verdict") in ("merge", "remove") and not v.get("noAction"))},
-            "loadedBy": {"how": row["how"] if loaded else ["not loaded"], "agents": u.get("agents", []), "sessions30d": u.get("sessions30d", 0)},
+            "loadedBy": {"how": row["how"] if loaded else ["not loaded"], "agents": u.get("agents", []), "agentsCount": u.get("agentsCount", 0), "sessions30d": u.get("sessions30d", 0)},
             "uses7d": u.get("uses7d", 0),
             "uses30d": u.get("uses30d", 0),
             "sessions7d": u.get("sessions7d", 0),

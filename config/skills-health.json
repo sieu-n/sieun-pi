@@ -75,7 +75,7 @@
   {
    "name": "resume-paused-sessions",
    "verdict": "keep",
-   "reason": "Read in 37 chats and jobs in 30 days, and it ships the recovery script.",
+   "reason": "It ships the recovery script that resumes runs a restart stopped.",
    "pathContains": "resume-paused-sessions"
   },
   {
@@ -143,7 +143,7 @@
   {
    "name": "show-me-your-work",
    "verdict": "merge",
-   "reason": "No session read it in 30 days, and only poteto-mode routes to it.",
+   "reason": "Almost no session read it in 30 days, and only poteto-mode routes to it.",
    "pathContains": "src/sieun-pi/skills/show-me-your-work",
    "mergeInto": "poteto-mode playbooks/figure-it-out.md"
   },
@@ -219,19 +219,19 @@
   {
    "name": "interrogate",
    "verdict": "remove",
-   "reason": "Unlinked since 10-14 for zero use, and no session read it in 30 days.",
+   "reason": "Unlinked since 10-14 for lack of use, and no session read it in 30 days.",
    "pathContains": "src/sieun-pi/skills/interrogate"
   },
   {
    "name": "create-verification-skill",
    "verdict": "remove",
-   "reason": "Unlinked since 10-18, no reads in 30 days, and repos keep their own verify skills.",
+   "reason": "Unlinked since 10-18, no session read it in 30 days, and repos keep their own verify skills.",
    "pathContains": "src/sieun-pi/skills/create-verification-skill"
   },
   {
    "name": "linear-ticket",
    "verdict": "remove",
-   "reason": "Unlinked since 10-18, one read in 30 days, and its Linear module is not installed.",
+   "reason": "Unlinked since 10-18, and the Linear module it imports is not installed.",
    "pathContains": "src/sieun-pi/skills/linear-ticket"
   },
   {
@@ -305,15 +305,16 @@
   },
   {
    "name": "skill-creator",
-   "verdict": "keep",
-   "reason": "Rarely read, but it is the only Prime skill-package contract, and c99 points at it.",
+   "verdict": "remove",
+   "reason": "No session read it in 30 days; c99 already lives in AGENTS.md and a harness note.",
    "pathContains": "prime-agent/releases/"
   },
   {
    "name": "agent-observe",
    "verdict": "keep",
    "reason": "Jobs inspect their family with it; its text ships with the local daemon patch.",
-   "pathContains": "prime-agent/releases/"
+   "pathContains": "prime-agent/releases/",
+   "kind": "fork"
   },
   {
    "name": "prime-intellect",
@@ -334,49 +335,56 @@
    "verdict": "merge",
    "reason": "A byte-identical second SKILL.md next to the module; the Prime bundle copy is the one agents read.",
    "pathContains": "packages/pi-rlm/skills/compact",
-   "mergeInto": "Prime release bundle copy"
+   "mergeInto": "Prime release bundle copy",
+   "kind": "upstream"
   },
   {
    "name": "edit",
    "verdict": "merge",
    "reason": "A byte-identical second SKILL.md next to the module; the Prime bundle copy is the one agents read.",
    "pathContains": "packages/pi-rlm/skills/edit",
-   "mergeInto": "Prime release bundle copy"
+   "mergeInto": "Prime release bundle copy",
+   "kind": "upstream"
   },
   {
    "name": "goal",
    "verdict": "merge",
    "reason": "A byte-identical second SKILL.md next to the module; the Prime bundle copy is the one agents read.",
    "pathContains": "packages/pi-rlm/skills/goal",
-   "mergeInto": "Prime release bundle copy"
+   "mergeInto": "Prime release bundle copy",
+   "kind": "upstream"
   },
   {
    "name": "refine",
    "verdict": "merge",
    "reason": "A byte-identical second SKILL.md next to the module; the Prime bundle copy is the one agents read.",
    "pathContains": "packages/pi-harness/skills/refine",
-   "mergeInto": "Prime release bundle copy"
+   "mergeInto": "Prime release bundle copy",
+   "kind": "upstream"
   },
   {
    "name": "rlm-heartbeat",
    "verdict": "merge",
    "reason": "A byte-identical second SKILL.md next to the module; the Prime bundle copy is the one agents read.",
    "pathContains": "packages/pi-host/skills/rlm-heartbeat",
-   "mergeInto": "Prime release bundle copy"
+   "mergeInto": "Prime release bundle copy",
+   "kind": "upstream"
   },
   {
    "name": "agent-message",
    "verdict": "merge",
    "reason": "pi-host agents read the Prime text but call this edited module, so the documented API differs.",
    "pathContains": "packages/pi-rlm/skills/agent-message",
-   "mergeInto": "one SKILL.md that the pi-host prompt lists"
+   "mergeInto": "one SKILL.md that the pi-host prompt lists",
+   "kind": "fork"
   },
   {
    "name": "agent-observe",
    "verdict": "merge",
    "reason": "pi-host agents read the Prime text but call this edited module, so the documented API differs.",
    "pathContains": "packages/pi-rlm/skills/agent-observe",
-   "mergeInto": "one SKILL.md that the pi-host prompt lists"
+   "mergeInto": "one SKILL.md that the pi-host prompt lists",
+   "kind": "fork"
   },
   {
    "name": null,
@@ -539,11 +547,12 @@
   },
   {
    "name": null,
-   "verdict": "remove",
-   "reason": "A pointer stub to the sieun-pi wiki skill, which every Prime session already loads.",
+   "verdict": "merge",
+   "reason": "A pointer stub that agents read often only to reach the wiki skill.",
    "pathContains": "auto-sns-agent/.agents/skills/apps/llm-wiki",
    "kind": "pointer",
-   "group": "repo auto-sns-agent"
+   "group": "repo auto-sns-agent",
+   "mergeInto": "one AGENTS.md line in auto-sns-agent that points at the wiki skill"
   },
   {
    "name": null,
@@ -669,7 +678,7 @@
   {
    "name": null,
    "verdict": "remove",
-   "reason": "A pointer list and generic advice a model already follows.",
+   "reason": "A pointer list and generic design advice that almost no session read.",
    "pathContains": "slack-green/.agents/skills/stack/frontend-design",
    "kind": "pointer",
    "group": "repo slack-green"
@@ -733,35 +742,35 @@
   {
    "name": null,
    "verdict": "remove",
-   "reason": "A score-gate ceremony for Codex plus Claude that no session ran in 30 days (c47).",
+   "reason": "A score-gate ceremony for Codex plus Claude that few sessions ran (c47).",
    "pathContains": "slack-green/.agents/skills/workflows/code-review",
    "group": "repo slack-green"
   },
   {
    "name": null,
    "verdict": "remove",
-   "reason": "A score-gate ceremony for Codex plus Claude that no session ran in 30 days (c47).",
+   "reason": "A score-gate ceremony for Codex plus Claude that few sessions ran (c47).",
    "pathContains": "slack-green/.agents/skills/workflows/common/claude-in-codex",
    "group": "repo slack-green"
   },
   {
    "name": null,
    "verdict": "remove",
-   "reason": "A score-gate ceremony for Codex plus Claude that no session ran in 30 days (c47).",
+   "reason": "A score-gate ceremony for Codex plus Claude that few sessions ran (c47).",
    "pathContains": "slack-green/.agents/skills/workflows/common/debate",
    "group": "repo slack-green"
   },
   {
    "name": null,
    "verdict": "remove",
-   "reason": "A score-gate ceremony for Codex plus Claude that no session ran in 30 days (c47).",
+   "reason": "A score-gate ceremony for Codex plus Claude that few sessions ran (c47).",
    "pathContains": "slack-green/.agents/skills/workflows/common/quality-gates",
    "group": "repo slack-green"
   },
   {
    "name": null,
    "verdict": "remove",
-   "reason": "A score-gate ceremony for Codex plus Claude that no session ran in 30 days (c47).",
+   "reason": "A score-gate ceremony for Codex plus Claude that few sessions ran (c47).",
    "pathContains": "slack-green/.agents/skills/workflows/common/request-workflow",
    "group": "repo slack-green"
   },
@@ -1015,7 +1024,7 @@
    "id": "no_one_rule_skills_add_the_rule_inside_the_existing_skill_or_guide_for_that_area",
    "skill": "skill-creator",
    "verdict": "keep",
-   "reason": "c226 keeps upstream skill-creator unedited, so this note is the one place for c99.",
+   "reason": "It carries c99 into every session, since skill-creator stays as Prime ships it.",
    "mergeInto": null
   },
   {

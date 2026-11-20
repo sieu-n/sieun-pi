@@ -26,7 +26,7 @@ import tokenize
 
 DAY_MS = 86400000
 # Bump when the matcher or an event changes shape, so old cached events are dropped.
-CACHE_VERSION = 2
+CACHE_VERSION = 4
 HOW_READ = "read SKILL.md"
 HOW_PY = "python call"
 HOW_CLI = "cli"
@@ -38,7 +38,8 @@ DEFAULT_IMPORTS = {
     "refine": "refine", "attach_image": "attach-image", "agent_observe": "agent-observe", "compact": "compact",
     "agent_message": "agent-message", "rlm_heartbeat": "rlm-heartbeat", "linear_ticket": "linear-ticket", "mcp": "mcp",
 }
-SKILL_MD = re.compile(r"skills/([A-Za-z0-9][\w.-]*)/SKILL\.md")
+SKILL_MD = re.compile(r"skills/(?:[\w.-]+/)*?([A-Za-z0-9][\w.-]*)/SKILL\.md")
+READ_SKILL = re.compile(r"read-skill\.mjs\s+['\"]?([\w./-]+)")
 READ_VERBS = re.compile(r"open\(|read_text|read_bytes|\bcat\b|\bsed\b|\bhead\b|\btail\b|\bless\b|\bbat\b|\brg\b|\bgrep\b|\bawk\b|\bnl\b")
 WRITE_MARKS = re.compile(r"write|\bedit\(|>\s*\S*SKILL\.md|\btee\b|sed\s+-i|\bcp\b|\bmv\b|\brm\b|apply_patch")
 BASH_CALL = re.compile(r"""\bbash\(\s*[rRfFbBuU]{0,2}('''|\"\"\"|'|")(.*?)\1""", re.S)
@@ -99,7 +100,7 @@ class Matcher:
         words = "|".join(sorted((re.escape(w) for w in cli), key=len, reverse=True))
         # A cheap byte filter: the text a use leaves in a raw transcript line or SQLite record.
         self.prefilter = re.compile(
-            (r"SKILL\.md|(?<![\w.])(?:" + alternatives + r")(?:\.\w+)?\s*\(|(?:(?<![\w./-])|(?<=\\n))(?:" + words + r")\s").encode())
+            (r"SKILL\.md|read-skill\.mjs|(?<![\w.])(?:" + alternatives + r")(?:\.\w+)?\s*\(|(?:(?<![\w./-])|(?<=\\n))(?:" + words + r")\s").encode())
         self.like_terms = ["SKILL.md"] + sorted(imports) + sorted(set(cli) - set(imports))
         self.key = sorted(cli.items())
 
@@ -110,6 +111,10 @@ class Matcher:
         if "SKILL.md" in text and not WRITE_MARKS.search(text):
             for name in self.skill_reads(text):
                 out.add((name, HOW_READ))
+        for m in READ_SKILL.finditer(text):
+            parts = [part for part in m.group(1).split("/") if part and part != "SKILL.md"]
+            if parts:
+                out.add((parts[-1], HOW_READ))
         for segment in SEGMENT_SPLIT.split(text):
             words = segment.strip().split()
             while words and (ASSIGN.match(words[0]) or words[0] in WRAPPERS or words[0].startswith("-") or words[0].isdigit()):
