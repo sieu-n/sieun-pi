@@ -27,7 +27,7 @@ import { isHostAway, type EntryRecord, type Host, type Submitted } from "./host/
 import { refusedForGood, retryWait } from "./outbox.ts";
 import { postState } from "./post-edits.ts";
 import { laterLine, reminderPost } from "./later-agents.ts";
-import { reactionsLine, reactionsOf } from "./reactions.ts";
+import { reactionsLine, reactionsOf, repliedPost } from "./reactions.ts";
 import { agedPost, agentPostParts, queuedNote, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
 import { readMark, type Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
@@ -710,9 +710,9 @@ export class GroupRooms {
         const name = to.trim().replace(/^#/, "").toLowerCase();
         return name === row.id.toLowerCase() || name === row.name.toLowerCase();
       },
-      post: (spoken: Spoken, turn: FeedCursor["turn"]) => {
+      post: ({ replyTo, ...spoken }: Spoken, turn: FeedCursor["turn"]) => {
         const posts = this.store.postsOf(row.id);
-        const started = turn?.post ? posts.find(p => p.id === turn.post) : undefined;
+        const started = repliedPost(posts, record, thread, row.id, replyTo) ?? (turn?.post ? posts.find(p => p.id === turn.post) : undefined);
         const threadRoot = row.kind === "channel" && started ? started.threadRoot ?? started.id : undefined;
         return this.write(row, {
           author: record.id, images: [], ...spoken, hops: (turn?.hops ?? 0) + 1, mentions: this.mentionsIn(row, spoken.text, record.id),

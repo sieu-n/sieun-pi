@@ -87,6 +87,22 @@ export function agentPost(posts: readonly RoomPost[], record: AgentRecord, threa
   return post;
 }
 
+/**
+ * The post a speaking call's `reply_to` names in `room`, as `agentPost` reads an id, or undefined when it names none there, so the post goes
+ * where its turn's post is. A result that a work thread's report brings names the post it answers this way, which puts it in that post's
+ * thread when newer posts came in between (c210, 11-20: "the final outcome should ALWAYS act like a Slack thread").
+ */
+export function repliedPost(posts: readonly RoomPost[], record: AgentRecord, thread: string, room: RoomId, id: string | undefined): RoomPost | undefined {
+  if (!id?.trim()) return undefined;
+  const slash = id.indexOf("/");
+  if (slash >= 0 && id.slice(0, slash).trim() !== room) return undefined;
+  try {
+    return agentPost(posts, record, thread, room, id.slice(slash + 1));
+  } catch {
+    return undefined;
+  }
+}
+
 /** The one line set_emoji answers with, such as `👀 is on p12 in dm_vent. Reactions now: 👀 vent · 👍 Sieun (owner).` */
 export function reactionText(principal: (id: string) => Principal, post: RoomPost, emoji: string, on: boolean, qualified: boolean): string {
   const where = qualified ? `${post.room}/${post.id}` : `${post.id} in ${post.room}`;

@@ -24,10 +24,10 @@ const posts = async (s: Running, room: string): Promise<Message[]> => (await s.g
 const commOf = (s: Running, agent: string, room: string): string | undefined => s.app.agents.record(agent)!.comm?.[room];
 const stored = (s: Running, room: string) => s.app.agentStore.postsOf(room);
 
-/** A tell_owner call and its result in conversation 1 of `thread`. */
-function told(host: FixtureHost, thread: string, id: string, text: string): void {
+/** A tell_owner call and its result in conversation 1 of `thread`, with `reply_to` when given. */
+function told(host: FixtureHost, thread: string, id: string, text: string, replyTo?: string): void {
   const t = host.threadsById.get(thread)!;
-  const content: ContentBlock[] = [{ type: "toolCall", id, name: "tell_owner", arguments: { text, why: "answer" } }];
+  const content: ContentBlock[] = [{ type: "toolCall", id, name: "tell_owner", arguments: { text, why: "answer", ...(replyTo ? { reply_to: replyTo } : {}) } }];
   host.append(t, 1, { kind: "pi.assistant", model: [{ role: "assistant", content, provider: "anthropic", model: "claude-opus-5-5", stopReason: "toolUse", timestamp: Date.now() }] });
   host.append(t, 1, { kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: id, toolName: "tell_owner", content: [{ type: "text", text: "told the owner" }], isError: false, timestamp: Date.now() }] });
 }
@@ -243,6 +243,29 @@ describe("a channel on rooms", () => {
     assert.equal(answerOf(first.body.item.id), a1!.id);
     assert.equal(answerOf(second.body.item.id), a2!.id);
     assert.equal(thread.items.find(i => i.id === a2!.id)!.answers, second.body.item.id, "the page gets the post it answers");
+    host.beforeSubmit = undefined;
+  });
+
+  test("a result posted with reply_to goes in the thread of the post it names, not of the newer root post whose turn it came in", async () => {
+    // #sw-factory-build on 11-20: the result for p37 came in a turn after p27 and landed in p27's thread (c210).
+    const submits: { thread: string; input: SubmitInput }[] = [];
+    host.beforeSubmit = (thread, input) => void submits.push({ thread, input });
+    const comm = commOf(s, agents.crawler, ids.cutoverChannel)!;
+    const toComm = () => submits.filter(x => x.thread === comm).length;
+    const asked = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "quiet, run the reactions tests", requestId: "rt-asked" });
+    await until(async () => toComm(), n => n === 1);
+    const newer = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "quiet, what is solo?", requestId: "rt-newer" });
+    await until(async () => toComm(), n => n === 2);
+    told(host, comm, "rt-a", "solo is a group room, quiet.");
+    host.append(host.threadsById.get(comm)!, 1, { kind: "agent.message", model: [{ role: "user", content: [{ type: "text", text: "tests pass" }], timestamp: Date.now() }], data: { from: "w-1", via: "agent" } });
+    told(host, comm, "rt-b", "tests pass, quiet.", asked.body.item.id);
+    told(host, comm, "rt-c", "and again, quiet.", `${ids.cutoverChannel}/${asked.body.item.id}`);
+    await s.app.groups.feed(comm);
+    const [a, b, c] = ["rt-a", "rt-b", "rt-c"].map(id => stored(s, ids.cutoverChannel).find(p => p.requestId === `m:${comm}:${id}`)!);
+    assert.deepEqual([a!.threadRoot, a!.answers], [newer.body.item.id, newer.body.item.id], "with no reply_to a post goes where its turn's post is");
+    assert.deepEqual([b!.threadRoot, b!.answers], [asked.body.item.id, asked.body.item.id]);
+    assert.deepEqual([c!.threadRoot, c!.answers], [asked.body.item.id, asked.body.item.id]);
+    assert.equal("replyTo" in b!, false, "the post stores no reply_to");
     host.beforeSubmit = undefined;
   });
 

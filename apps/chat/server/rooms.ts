@@ -16,12 +16,12 @@
  */
 import type { ConversationSummary, Delivery, ImageRef, Item, JobRef, LaterMark, RunStatus, SendRequest, SendResult, TimelinePage } from "../web/src/lib/api/types.ts";
 import { serverNote, TELL_OWNER_HELD, TELL_OWNER_TOOL } from "../web/src/lib/api/shared/chat-feed.ts";
-import type { AgentRecord, AgentStore, FeedCursor, RoomId, RoomPost, TestSend } from "./agent-store.ts";
+import type { AgentRecord, AgentStore, FeedCursor, RoomDelivery, RoomId, RoomPost, TestSend } from "./agent-store.ts";
 import type { Agents } from "./agents.ts";
 import { isHostAway, type ContentBlock, type EntryRecord, type Host, type Message, type Submitted } from "./host/types.ts";
 import { refusedForGood, retryWait } from "./outbox.ts";
 import { postState } from "./post-edits.ts";
-import { reactionsOf } from "./reactions.ts";
+import { reactionsOf, repliedPost } from "./reactions.ts";
 import { readMark, type Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
 import { isInput, sentMessage } from "./timeline.ts";
@@ -120,6 +120,8 @@ export interface Spoken {
   at: number;
   requestId: string;
   why?: string;
+  /** The call's `reply_to`: the post it answers, as a `[message id]`, a post id or `<room>/<post>`, which the side reads and never stores. */
+  replyTo?: string;
   source: { thread: string; conversation: number; entry: number };
   jobs?: string[];
 }
@@ -168,7 +170,8 @@ function readFeedEntry(store: AgentStore, side: FeedSide, thread: string, cursor
       const sent = sentMessage(block);
       if (!sent || (sent.to && !side.aimedHere(sent.to)) || block.type !== "toolCall") continue;
       const why = typeof block.arguments?.why === "string" && block.arguments.why.trim() ? block.arguments.why.trim() : undefined;
-      cursor.open[sent.id] = { text: sent.text, entry: entry.id, ...(why ? { why } : {}) };
+      const replyTo = typeof block.arguments?.reply_to === "string" && block.arguments.reply_to.trim() ? block.arguments.reply_to.trim() : undefined;
+      cursor.open[sent.id] = { text: sent.text, entry: entry.id, ...(why ? { why } : {}), ...(replyTo ? { replyTo } : {}) };
     }
     return;
   }
@@ -180,7 +183,7 @@ function readFeedEntry(store: AgentStore, side: FeedSide, thread: string, cursor
       const pending = cursor.turn?.jobs;
       const post = side.post({
         text: call.text, at: message.timestamp ?? Date.now(), requestId: `m:${thread}:${message.toolCallId}`, ...(call.why ? { why: call.why } : {}),
-        source: { thread, conversation: 1, entry: call.entry }, ...(pending?.length ? { jobs: pending } : {}),
+        ...(call.replyTo ? { replyTo: call.replyTo } : {}), source: { thread, conversation: 1, entry: call.entry }, ...(pending?.length ? { jobs: pending } : {}),
       }, cursor.turn);
       touched.set(post.id, post);
       if (cursor.turn) {
@@ -612,17 +615,29 @@ export class Rooms {
   }
 
   private async readThread(record: AgentRecord, cursor: FeedCursor): Promise<void> {
-    await readFeedThread(this.deps.host, this.store, this.dmSide(record), cursor.thread ?? record.workThread, cursor, posts => this.changed(record, posts));
+    await readFeedThread(this.deps.host, this.store, this.dmSide(record, cursor.thread ?? record.workThread), cursor.thread ?? record.workThread, cursor, posts => this.changed(record, posts));
   }
 
   /** The DM's side of the feed: a turn a channel post started in the work thread before phase 5 speaks to that channel, so it posts nothing here. */
-  private dmSide(record: AgentRecord): FeedSide {
+  private dmSide(record: AgentRecord, thread: string): FeedSide {
+    const posts = () => this.store.postsOf(record.room);
     return {
       room: record.room,
-      turn: entry => ({ input: entry.id, channel: entry.kind === "agent.message" && isChannelVia((entry.data as { via?: unknown } | undefined)?.via) }),
+      turn: entry => {
+        const channel = entry.kind === "agent.message" && isChannelVia((entry.data as { via?: unknown } | undefined)?.via);
+        // The owner post an input delivered is the newest one sent to this thread by the input's time. The feed may read the input while its
+        // delivery still reads as sending, with no thread yet, so this skips agentPost's delivered check.
+        const at = entry.kind === "pi.user" ? entry.model?.[0]?.timestamp : undefined;
+        const sentHere = (d: RoomDelivery | undefined): boolean => d !== undefined && (d.thread ?? (d.state === "delivered" ? record.workThread : thread)) === thread;
+        const post = typeof at === "number" ? posts().findLast(p => p.author === "owner" && p.at <= at && sentHere(p.delivery)) : undefined;
+        return { input: entry.id, channel, ...(post ? { post: post.id } : {}) };
+      },
       speaks: turn => !turn?.channel,
       aimedHere: () => false,
-      post: spoken => this.store.append({ room: record.room, author: record.id, images: [], ...spoken }).post,
+      post: ({ replyTo, ...spoken }, turn) => {
+        const answered = repliedPost(posts(), record, thread, record.room, replyTo) ?? (turn?.post ? posts().find(p => p.id === turn.post) : undefined);
+        return this.store.append({ room: record.room, author: record.id, images: [], ...spoken, ...(answered?.author === "owner" ? { answers: answered.id } : {}) }).post;
+      },
     };
   }
 
@@ -651,7 +666,9 @@ export class Rooms {
         ...(d ? { send: d.state === "delivered" ? "sent" as const : d.state === "stopped" ? "failed" as const : d.state, ...(d.error ? { sendError: d.error } : {}) } : {}),
       };
     }
-    return { ...base, author: this.deps.threads.principal(post.author), deliveries: [], ...agentPostParts(this.deps.threads, post) };
+    return {
+      ...base, author: this.deps.threads.principal(post.author), deliveries: [], ...(post.answers ? { answers: post.answers } : {}), ...agentPostParts(this.deps.threads, post),
+    };
   }
 
   /** A page of the room's posts, oldest first; `before`, `after` and `around` are post ids. */

@@ -21,6 +21,17 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
 4. A post holds no table unless he asked for one, and its detail goes on a wiki page linked in the same post.
 5. When a reaction says it all, the agent reacts and posts nothing.
 
+## Reactions and threads
+
+The owner wrote on 11-20 in #sw-factory-build: "시작하면서 눈까리 붙였으면 끝났을 떄 떼야지 / 체크도 남발하지 마 제발 the final outcome should ALWAYS act like a Slack thread".
+
+1. An agent puts 👀 on a post when it starts on it, and takes 👀 off in the same turn its reply to that post goes out, also when more work goes on after the reply.
+2. The reply is the outcome, so a post the agent replied to keeps no emoji of the agent's, and ✅ goes only on a quick ask where a reply would add nothing.
+3. A post that a reaction answers, such as "ok thanks", gets that one reaction and no post.
+4. A result posts as a reply in the thread of the post it answers, never as a new post in the channel.
+5. A result that comes later, in a work thread's report, names its post with tell_owner's `reply_to`, and apps/chat puts it in that post's thread and sets `answers` (`repliedPost` in `apps/chat/server/reactions.ts`).
+6. No code sets or clears a reaction (c210), so these rules live in the comm role text and the blind run checks them.
+
 ## Where reply behavior lives
 
 Put behavior in code defaults and the tools' own text first, and never in a reminder (c130).
@@ -29,7 +40,8 @@ Put behavior in code defaults and the tools' own text first, and never in a remi
 |---|---|
 | Comm thread role text, DM and group | `packages/pi-host/src/durable/agent-profile.ts`, `slackPostStep` and `richPostStep` |
 | Refusals and notes on a comm post | `packages/pi-host/src/durable/comm-guard.ts`, run from `prime-chat.ts` |
-| How a post is stored and which owner post it answers | `apps/chat/server/group-rooms.ts`, `RoomPost.answers` |
+| How a post is stored and which owner post it answers | `apps/chat/server/group-rooms.ts` and `rooms.ts`, `RoomPost.answers`, set from the turn's post or the call's `reply_to` |
+| When 👀 comes off and when ✅ goes on | `packages/pi-host/src/durable/agent-profile.ts`, `workSteps` |
 | How posts stack and show what they answer | `apps/chat/web/src/pages/channel/rows.ts` and `MessageRow.svelte` |
 | Prime chat tone | `config/AGENTS.md` rule 5 and the chat brief guidance |
 
@@ -43,7 +55,7 @@ So a change to how agents write is done only when a blind fresh session, given t
 
 1. Write the ideal replies first, as before and after pairs from real posts, before you change any prompt.
 2. Change the code defaults and tool text, test them, push, and release apps/chat and pi-host on every box.
-3. Run `node apps/chat/scripts/blind-replies.mjs --out ~/work/<job>/blind-runs.jsonl` against live :5184.
+3. Run `node apps/chat/scripts/blind-replies.mjs --out ~/work/<job>/blind-runs.jsonl` against live :5184, and `node apps/chat/scripts/blind-reactions.mjs --out ~/work/<job>/reaction-runs.jsonl` for reactions and threads.
 4. The script makes a `test: true` agent and channel, posts the asks as the owner with no hint about format, and checks each answer for one post, no table, no labels and the rule 5 lengths.
 5. Read every reply yourself against the pairs, because tone is a judgment the script cannot make, and take a shot of the thread pane.
 6. Record each run's pass or fail with its replies in the job's wiki folder.

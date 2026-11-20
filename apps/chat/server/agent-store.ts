@@ -99,7 +99,7 @@ export interface RoomPost {
   hops?: number;
   /** Channels: the root post of the Buzz-style thread this reply is in. */
   threadRoot?: string;
-  /** Group rooms: the owner post whose turn this agent post answers, so its delivery reads as answered by it and the page draws it apart. */
+  /** An agent post: the owner post it answers, its turn's or the one its call's reply_to names, so its delivery reads as answered and the page draws it apart. */
   answers?: string;
   imported?: boolean;
   /** Set on an owner post that a job typed into the room to test it: the post reads as that job's, never as the owner's. */
@@ -153,7 +153,7 @@ export interface FeedCursor {
   /** The last entry id read. */
   entry: number;
   /** Speaking calls seen whose result has not landed yet. */
-  open: Record<string, { text: string; entry: number; why?: string }>;
+  open: Record<string, { text: string; entry: number; why?: string; replyTo?: string }>;
   /**
    * The input that started the current turn, whether a channel post started it, the turn's newest post, and the jobs the turn started before
    * it had a post, which go on its next one.

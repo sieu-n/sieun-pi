@@ -65,14 +65,26 @@ export function commInstructions(ref: { agent: string; room: string; work: strin
   return isGroupRoom(ref.room) ? groupCommInstructions(ref) : dmCommInstructions(ref);
 }
 
-/** The steps a comm thread takes with its work thread, in a DM or a group room. */
+/**
+ * The steps a comm thread takes with its work thread, in a DM or a group room. On 11-20 the owner saw 👀 stay on his #sw-factory-build p72
+ * after its answer, ✅ on most of his posts, and results land in the thread of a newer post (p44, the compaction answer to p37,
+ * sat under p27), and wrote "시작하면서 눈까리 붙였으면 끝났을 떄 떼야지 / 체크도 남발하지 마 제발 the final outcome should ALWAYS act like a Slack thread".
+ * So 👀 comes off with the reply, ✅ is only for a quick ask a reply would add nothing to, and a later result names its post with reply_to.
+ */
 function workSteps(work: string): string[] {
   return [
-    "When you start on a post, put 👀 on it with `set_emoji(message_id, \"eyes\", true)`. Once its work is done, take 👀 off with `on: false` and put ✅ on with `set_emoji(message_id, \"white_check_mark\", true)`, also when the result comes later in the work thread's report or a work-done notice. If the post needed nothing from you, just take 👀 off.",
+    "When you start on a post that needs an answer or work, put 👀 on it with `set_emoji(message_id, \"eyes\", true)`. " +
+      "The moment your reply to that post goes out, take 👀 off with `set_emoji(message_id, \"eyes\", false)` in the same turn, also when more work goes on after the reply, so a post you answered never keeps your 👀. " +
+      "Your reply is the outcome, the way a person answers in a Slack thread, so put no ✅ on a post you replied to. " +
+      "Put ✅ on a post only for a quick ask you did where a reply would add nothing, such as \"pin that\", and take 👀 off then too. " +
+      "A post a reaction answers, such as \"ok thanks\", gets that one reaction and no 👀.",
     "React to posts with fitting emoji the way people do in Slack, such as 👍 to acknowledge, 🙏 for thanks, 🎉 on a ship and 😅 on a slip. When a reaction says it all, such as an acknowledgment with nothing to add, react and post nothing.",
     `Answer a status question from the work thread's state. Read it in ipython with \`await agent_observe.get_agent(${work})\` or \`await agent_observe.recent_messages(${work})\`, and read the board with chat_board. Never ask the work thread for its status.`,
     `Hand any task that takes more than a minute to the work thread with \`await agent_message.send(task, receiver_role="sibling", receiver_name=${work})\`. Steer it the same way with \`mode="steer"\`, and stop its turn with stop_work.`,
-    "When you hand a task over, post nothing in that turn: no \"got it\", no \"the work thread is doing X\", no \"I'll post it when it's done\". Your 👀 on the post already shows that you are on it. Post once, with the result, when the work thread's report or the work-done notice brings it. A question the work needs answered first is the one post that may go out. If you can answer in full yourself, answer and hand nothing over. This replaces the base prompt's progress updates.",
+    "When you hand a task over, post nothing in that turn: no \"got it\", no \"the work thread is doing X\", no \"I'll post it when it's done\". Your 👀 on the post already shows that you are on it. " +
+      "Name the post's [message id] in the task. Post once, with the result, when the work thread's report or the work-done notice brings it. " +
+      "Post it with tell_owner's `reply_to` set to that post's [message id], so the result lands as a reply in that post's thread even when newer posts came in between, never as a new post in the room, and then take 👀 off that post. " +
+      "A question the work needs answered first is the one post that may go out. If you can answer in full yourself, answer and hand nothing over. This replaces the base prompt's progress updates.",
   ];
 }
 
@@ -141,7 +153,7 @@ function platformFeedbackStep(ref: { agent: string; room: string }): string | un
   }
   return `When the owner's post is about sw factory itself rather than your agent's work, such as ${what}, pass it to ${name}, the way a person pings the platform team in Slack. ` +
     `Send \`await agent_message.send(text, receiver_role="sibling", receiver_name=${JSON.stringify(PLATFORM_DM_COMM)})\` with his point in a few words and the post he means as ${ref.room}/p<number>, such as ${ref.room}/p12. ` +
-    `Put 👀 on his post and post nothing about it yet. When ${name}'s answer comes back as an agent message, post it here in one short post that says it is from ${name}, and swap 👀 for ✅. Follow his feedback in your own later posts too.`;
+    `Put 👀 on his post and post nothing about it yet. When ${name}'s answer comes back as an agent message, post it here in one short post that says it is from ${name}, with \`reply_to\` set to his post's [message id], and take 👀 off his post. Follow his feedback in your own later posts too.`;
 }
 
 /** The step that has a comm thread work its agent's For list (`for-me.ts`), the way a person works Slack's Activity view. */

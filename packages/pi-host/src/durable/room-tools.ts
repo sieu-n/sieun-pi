@@ -4,8 +4,8 @@
  * drops the chat's own tools.
  *
  * `set_emoji` puts the agent's reaction on a post or takes it off, as Slack's `reactions.add` and `reactions.remove` do. The comm role text
- * asks the agent to mark the post it works on with 👀, swap it for ✅ once the work is done, and react the way people do in Slack
- * (`agent-profile.ts`); no code here treats an emoji specially (contract: /home/sieun/work/slack-reactions/contract.md).
+ * asks the agent to mark the post it works on with 👀, take it off once its reply goes out, keep ✅ for a quick ask a reply would add nothing
+ * to, and react the way people do in Slack (`agent-profile.ts`); no code here treats an emoji specially (contract: /home/sieun/work/slack-reactions/contract.md).
  *
  * `list_for_me_messages` and `mark_message` (`for-me.ts`) read the agent's For list and mark its items, and `save_message`, `remind_me` and
  * `list_saved_messages` (`later.ts`) keep its Later list.
@@ -43,7 +43,7 @@ export function roomTools(app: ChatApp, thread: string): Extension {
             description: "The message: a room-qualified id such as dm_vent/p7 or ch_1a2b3c4d/p12, a post id such as p12 from a room post's header " +
               "or a room read, or the [message id: ...] value after an owner message.",
           }),
-          emoji: Type.String({ description: "The emoji's Slack name, such as eyes, white_check_mark or +1, or the emoji itself." }),
+          emoji: Type.String({ description: "The emoji's Slack name, such as eyes, +1 or pray, or the emoji itself." }),
           on: Type.Boolean({ description: "true adds your reaction, false removes it." }),
         }),
         // Both directions are idempotent on the server, so a rerun after a crash leaves the same reactions.

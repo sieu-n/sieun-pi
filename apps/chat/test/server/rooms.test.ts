@@ -85,6 +85,7 @@ describe("owner posts and the feed", () => {
     assert.equal(inputs(host, ids.vent, text).length, 0, "the work thread gets no input");
     const replies = await until(() => posts(s), page => page.filter(p => p.author.id === agents.vent && p.seq! > mine[0]!.seq!).length === 2);
     assert.deepEqual(replies.filter(p => p.seq! > mine[0]!.seq!).map(p => p.text), [`Got it. You said: "${text}".`, "I checked the canary and the relay, and both answer."]);
+    assert.deepEqual(replies.filter(p => p.seq! > mine[0]!.seq!).map(p => p.answers), [mine[0]!.id, mine[0]!.id], "each answer names the post its turn started from");
     await live.waitFor(e => e.type === "status" && e.conversation === ROOM && e.status === "working");
     await live.waitFor((e: LiveEvent) => e.type === "items" && e.conversation === ROOM && e.items.some(i => i.kind === "message" && i.text === "I checked the canary and the relay, and both answer." && i.author.id === agents.vent));
     live.close();
@@ -114,6 +115,23 @@ describe("owner posts and the feed", () => {
     cursor.entry -= 12;
     await s.app.rooms.feed(vent());
     assert.equal((await posts(s)).length, page.length);
+  });
+
+  test("a result posted with reply_to answers the post it names, not the newer post whose turn it came in", async () => {
+    // #sw-factory-build on 11-20: the result for p37 came in the turn after p27 and landed under p27 (c210).
+    const asked = await s.send("POST", `/api/c/${ROOM}/send`, { text: `quiet, run the reactions tests ${Date.now()}`, requestId: "reply-to-1" });
+    const newer = await s.send("POST", `/api/c/${ROOM}/send`, { text: `quiet, also what is p9? ${Date.now()}`, requestId: "reply-to-2" });
+    await until(() => posts(s), page => page.find(p => p.id === newer.body.item.id)?.deliveries[0]?.state === "delivered");
+    host.append(thread(), 1, { kind: "agent.message", model: [{ role: "user", content: [{ type: "text", text: "tests pass" }], timestamp: Date.now() }], data: { from: ids.vent, via: "agent" } });
+    for (const [id, replyTo] of [["c_rt1", asked.body.item.id], ["c_rt2", `${ROOM}/${asked.body.item.id}`], ["c_rt3", "dm_other/p1"]] as const) {
+      assistant([{ type: "toolCall", id, name: "tell_owner", arguments: { text: `result ${id}`, why: "answer", about: "tests", reply_to: replyTo } }]);
+      result(id, "tell_owner", "told the owner");
+    }
+    await s.app.rooms.feed(vent());
+    const page = await posts(s);
+    const answers = ["c_rt1", "c_rt2", "c_rt3"].map(id => page.find(p => p.text === `result ${id}`)?.answers);
+    assert.deepEqual(answers, [asked.body.item.id, asked.body.item.id, undefined], "a reply_to in another room names nothing here");
+    assert.equal(s.app.agentStore.postsOf(ROOM).some(p => "replyTo" in p), false, "the post stores no reply_to");
   });
 
   test("a turn a channel post started speaks to the channel, not the DM", async () => {
