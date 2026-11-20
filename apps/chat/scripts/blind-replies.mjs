@@ -8,8 +8,8 @@
  *
  * The first ask is the channel's root post and every later one a reply in its thread, as the owner asks in a channel. An ask is
  * `{text, expect, wait}`, where `expect` is "reply" (one short Slack post), "list" (a one-line answer, then nested bullets and a task list,
- * as the owner asked under p85 and p95 in #sw-factory-build on 11-20, p101), "options" (names several apps and explains one in 30 words or
- * more, with an example and how it fits us, p97), "checklist" (one post of open `- [ ]` checks that edits tick off, p106), "line" (one short line with no bullets) or "reaction"
+ * as the owner asked under p85 and p95 in #sw-factory-build on 11-20, p101), "options" (names several apps and explains one in 20 words or
+ * more, with an example and how it fits the asker's product, p97), "checklist" (one post of open `- [ ]` checks that edits tick off, p106), "line" (one short line with no bullets) or "reaction"
  * (no post), and `wait: false` sends the next ask at
  * once, so the agent answers both together, as when the owner sent p14 and p15 7 s apart on 11-20. The agent and the room are `test: true`, so no
  * owner list shows them. Each line of --out is one ask with its replies, its checks and pass or fail; the last line is the run's summary.
@@ -44,10 +44,11 @@ const LIST_ASKS = [
 ];
 /**
  * A "what do other apps do" question, as the owner asked in #sw-factory-build p90 on 11-20 ("what are some features other apps provide
- * regarding this?"), which should explain the most interesting option properly (p97), and a thanks.
+ * regarding this?"), which should explain the most interesting option properly (p97), and a thanks. The ask names a product of its own:
+ * asked about adding the feature "here", 2 of 3 test agents on 11-20 read it as a change to sw factory and tagged @agent factory.
  */
 const OPTIONS_ASKS = [
-  { text: "what do other apps do for snoozing a message or getting reminded about it later? thinking about adding something like it here", expect: "options" },
+  { text: "we're building a small team todo app. what do other apps do for snoozing a task or getting reminded about it later?", expect: "options" },
   { text: "ok thanks", expect: "reaction" },
 ];
 /**
@@ -83,7 +84,8 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 const TABLE = /^[ \t]*\|?.*\|.*\n[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)*\|?[ \t]*$/m;
 const words = text => text.replace(/\]\([^)]*\)/g, "]").split(/\s+/).filter(Boolean).length;
-const sentences = text => text.replace(/\]\([^)]*\)/g, "]").split(/(?<=[.!?])\s+/).filter(Boolean);
+/** A post's sentences; a line break ends one too, since a bullet line seldom ends on a period and 3 bullets read as one 40-word sentence on 11-20. */
+const sentences = text => text.replace(/\]\([^)]*\)/g, "]").split(/(?<=[.!?])\s+|\n+/).filter(line => line.trim());
 
 const BULLET = /^\s*[-*+] /;
 const NESTED = /^ {2,}[-*+] /m;
@@ -91,11 +93,11 @@ const TASK = /^\s*[-*+] \[[ xX]\] /m;
 
 /** Apps with a snooze or remind-later feature that an answer to OPTIONS_ASKS names. */
 const APPS = ["Slack", "Superhuman", "Gmail", "Outlook", "Linear", "Discord", "Teams", "Spark", "Hey", "Front", "Missive", "Todoist", "Notion", "Telegram", "WhatsApp", "Apple Mail", "Shortwave", "Boomerang"]
-  .map(app => new RegExp(`\\b${app}\\b`));
+  .map(app => new RegExp(`\\b${app}\\b`, "i"));
 /** An example: a cue word, a quoted action or a time such as "3 days". */
 const EXAMPLE = /\b(e\.g\.|for example|for instance|say you|like when|you (send|pick|hit|get|set|mark|snooze)|\d+\s*(min|minutes|h|hours?|days?|am|pm)\b|tomorrow|monday)|"[^"]{3,}"|“[^”]{3,}”/i;
-/** How the option fits us: our product, agents or rooms named. */
-const FITS = /\b(for us|we could|we can|we'd|our|here|sw factory|agents?|rooms?|threads? here|this app)\b/i;
+/** How the option fits the asker's product: "for us", "your app", "you'd", "here" and the like. */
+const FITS = /\b(for us|we could|we can|we'd|our|your (app|team|todo|users)|you'd|you could|fit|here|this app|a todo app|for todos?|on a task|tasks?)\b/i;
 /** The blocks of a post: a paragraph, or a top-level bullet with its nested lines. */
 const blocks = text => text.split(/\n(?=\S)|\n\s*\n/).map(block => block.trim()).filter(Boolean);
 
@@ -112,13 +114,13 @@ function checks(ask, posts, asked, versions = new Map()) {
   if (ask.expect === "line") return [...plain, ["one line with no bullets", lines.length === 1 && !BULLET.test(lines[0])], ["at most 30 words", words(text) <= 30]];
   if (ask.expect === "options") {
     const named = APPS.filter(app => app.test(text)).length;
-    const deep = blocks(text).find(block => APPS.some(app => app.test(block)) && words(block) >= 30);
+    const deep = blocks(text).filter(block => APPS.filter(app => app.test(block)).length === 1 && words(block) >= 20);
     return [
       ...plain,
       ["names at least 2 apps", named >= 2],
-      ["explains one option in 30 words or more", !!deep],
-      ["that explanation gives an example", !!deep && EXAMPLE.test(deep)],
-      ["that explanation says how it fits us", !!deep && FITS.test(deep)],
+      ["explains one app in a block of 20 words or more", deep.length > 0],
+      ["that explanation gives an example", deep.some(block => EXAMPLE.test(block))],
+      ["says how it fits the asker's product", FITS.test(text)],
       ["at most 220 words", words(text) <= 220],
     ];
   }
