@@ -254,6 +254,16 @@ export function missLine(dutyId: string, streak: MetricStreak, label: string, un
     `${fix ? `set that job and its sessionId on ${fix.step} if it is still open, else add a plan step` : "add a plan step"} with duty ${link}, that job and its sessionId.`;
 }
 
+/** An aggregate metric's miss whose every counted red has an owner (`MetricStreak.redOwners`), which `missLine` starts no job for. */
+const ownedReds = (streak: MetricStreak): boolean => streak.redOwners?.none === 0;
+/** The missed metrics' section header: a fix step for each, less the misses whose every red has an owner (`ownedReds`). */
+function missedHeader(shown: readonly MetricStreak[]): string {
+  const owned = shown.filter(ownedReds).length;
+  if (!owned) return "## Missed metrics: each one needs a fix step with a live job";
+  if (owned === shown.length) return "## Missed metrics: every red they count has an owner, so they need no fix step of this chat";
+  return "## Missed metrics: each one needs a fix step with a live job, except where its line says every red it counts has an owner";
+}
+
 /** The rules every job the server starts for a chat follows, in brief order. */
 function chatJobRules(): string[] {
   return [
@@ -354,10 +364,11 @@ export function dutyJobBrief({ duty, chat, job, at, measure, findings, focus = [
     `Measured against the targets: ${measure}. This is information, not a verdict: a met target does not mean nothing needs work, and code ` +
       "cannot see everything. Check the real state.",
     findings,
-    ...(shown.length ? [`## Missed metrics: each one needs a fix step with a live job\n` +
+    ...(shown.length ? [`${missedHeader(shown)}\n` +
       shown.map(streak => { const metric = counted.find(entry => entry.key === streak.key); return `- ${missLine(duty.id ?? "<dutyId>", streak, metric?.label ?? streak.key, metric?.unit, at)}`; }).join("\n") +
-      "\n\nA miss is never accepted as it stands. A fix step is a plan step with `duty` set to `<dutyId>/<metricKey>` and `job` set to a job that " +
-      "works on a code change, not a note or a later wait. When a fix step closes, the server runs this duty again at once to check the number moved."] : []),
+      (shown.every(ownedReds) ? "\n\nSuch a miss still reads as not ok: this run moves it through the push list, since each red it counts belongs to another chat's fix or wait."
+        : "\n\nA miss is never accepted as it stands. A fix step is a plan step with `duty` set to `<dutyId>/<metricKey>` and `job` set to a job that " +
+          "works on a code change, not a note or a later wait. When a fix step closes, the server runs this duty again at once to check the number moved.")] : []),
     ...(due.length ? [`## Work due before it counts\n${due.map(line => `- ${line}`).join("\n")}\n\nThis run started for these items. Fix each one ` +
       "now as you would a miss, even though the target reads met, because the next push may come only after they count."] : []),
     "## How to work",

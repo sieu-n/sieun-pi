@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { chatSystemOutput, type ChatSystemFacts, type RedDuty, redOwners } from "../scripts/duties/chat-system.ts";
-import { missLine } from "../src/chat-duty-job.ts";
+import { dutyJobBrief, missLine } from "../src/chat-duty-job.ts";
 import { judge, type DutyMetric, type DutyRunRecord } from "../src/shared/chat-duties.ts";
 import { metricStreaks } from "../src/shared/duty-streak.ts";
 
@@ -31,13 +31,18 @@ test("d9 names the owner of every red duties_green_pct counts", () => {
   assert.deepEqual(out.redOwners?.duties_green_pct, { live: 5, owner: 8, aging: 4, swFactory: 4, ownRuns: 2, none: 0 });
 });
 
-const briefLine = (output: ReturnType<typeof chatSystemOutput>): string => {
-  const judged = judge([GREEN], output);
+const STUCK: DutyMetric = { key: "stuck_duties", label: "Red duties with no live fix job", op: "<=", target: 0 };
+const streaksOf = (output: ReturnType<typeof chatSystemOutput>) => {
+  const judged = judge([GREEN, STUCK], output);
   const run: DutyRunRecord = { duty: "d9", at: NOW, trigger: "schedule", ms: 1, verdict: judged.verdict, metrics: judged.metrics, summary: judged.summary,
     fixes: { duties_green_pct: { step: "p1381", job: "d9 counts 5184 chats", live: false } } };
-  const streak = metricStreaks([run]).find(entry => entry.key === "duties_green_pct")!;
-  return missLine("d9", { ...streak, misses: 424 }, GREEN.label, GREEN.unit, NOW);
+  return metricStreaks([run]).map(streak => ({ ...streak, misses: streak.key === GREEN.key ? 424 : 1 }));
 };
+const briefLine = (output: ReturnType<typeof chatSystemOutput>): string =>
+  missLine("d9", streaksOf(output).find(entry => entry.key === GREEN.key)!, GREEN.label, GREEN.unit, NOW);
+const brief = (output: ReturnType<typeof chatSystemOutput>): string => dutyJobBrief({ duty: { id: "d9", name: "Chat system", ownerWords: "(10-15, c75) why is duties not all passing?",
+  goal: "Every chat keeps its duties green.", metrics: [GREEN, STUCK] }, chat: { id: "harness", name: "AI harness", board: "/tmp/data/boards/harness.json" },
+  job: "d9 test", at: NOW, measure: "duties_green_pct 66.6%", findings: "", misses: streaksOf(output) });
 
 test("a duties_green_pct miss whose every red is owned starts no job and adds no step", () => {
   const line = briefLine(chatSystemOutput(facts()));
@@ -56,4 +61,17 @@ test("a duties_green_pct miss with a stuck red still asks for a fix job", () => 
 test("a precheck's redOwners entry with a bad count is dropped", () => {
   const bad = judge([GREEN], { metrics: { duties_green_pct: 50 }, redOwners: { duties_green_pct: { live: 1, owner: -1, aging: 0, swFactory: 0, ownRuns: 0, none: 0 } } });
   assert.equal(bad.metrics.duties_green_pct?.redOwners, undefined);
+});
+
+test("the missed metrics header follows the same owner rule as the line", () => {
+  const owned = brief(chatSystemOutput(facts()));
+  assert.match(owned, /## Missed metrics: every red they count has an owner, so they need no fix step of this chat\n/);
+  assert.match(owned, /Such a miss still reads as not ok: this run moves it through the push list/);
+  assert.doesNotMatch(owned, /each one needs a fix step with a live job|A miss is never accepted as it stands/);
+  const stuck = [{ chat: "slack", duty: "d3", line: "slack green guy: d3 red, no live fix job" }];
+  const unowned = brief(chatSystemOutput(facts(stuck)));
+  assert.match(unowned, /## Missed metrics: each one needs a fix step with a live job\n/);
+  assert.match(unowned, /A miss is never accepted as it stands/);
+  const mixed = { ...chatSystemOutput(facts()), metrics: { ...chatSystemOutput(facts()).metrics, stuck_duties: 1 } };
+  assert.match(brief(mixed), /## Missed metrics: each one needs a fix step with a live job, except where its line says every red it counts has an owner\n/);
 });
