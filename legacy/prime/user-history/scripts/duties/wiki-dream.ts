@@ -58,7 +58,7 @@ export interface DreamDeps {
   repos: { wiki: string; pi: string };
   /** `agentDir` is Prime's agent folder, which holds the clean-room indexes under browser-chat and the session transcripts. */
   files: { corrections: string; harness: string; ledger: string; agentDir: string };
-  /** The page revisions the wiki recorded since an ISO time (wiki.db `revisions`); left out, the precheck reads no page churn. */
+  /** The page revisions the wiki recorded since an ISO time (wiki.db `revisions`); left out, the precheck reads no page churn and follows no near-cap page. */
   revisions?: (sinceIso: string) => Promise<PageRevision[]>;
   /** The root of the Prime session tree that holds a session (`sessionTree`); left out, no page names its maker. */
   treeOf?: (session: string) => Promise<string | null>;
@@ -67,8 +67,8 @@ export interface DreamDeps {
 }
 /** A curated page's wiki path, its stored HTML size in bytes and the `status` of its header. */
 export interface PageSize { path: string; bytes: number; status?: string }
-/** One row of the wiki's `revisions` table: the page's wiki path, who wrote it and the write's summary. */
-export interface PageRevision { path: string; author: string; summary: string }
+/** One row of the wiki's `revisions` table: the page's wiki path, who wrote it, the write's summary, its ISO time and the page's stored bytes around it. */
+export interface PageRevision { path: string; author: string; summary: string; ts?: string; bytesBefore?: number | null; bytesAfter?: number | null }
 
 /** What `wiki-health.mjs` prints (build contract part A). */
 export interface HealthItem { kind: string; path: string; excerpt?: string; target?: string }
@@ -491,10 +491,28 @@ export function nearReadCap(pages: readonly PageSize[]): PageSize[] {
   return pages.filter(page => page.bytes >= NEAR_READ_CAP && !isSettledStatus(page.status)).sort((a, b) => b.bytes - a.bytes);
 }
 
-/** The flagged line of a page near or over the read cap. */
-export function readCapExcerpt(page: PageSize): string {
+/**
+ * When each page last crossed NEAR_READ_CAP through the page API: the newest revision that left it at the line or more from below it.
+ * A page that crossed within FOLLOW_WINDOW_MS is followed like a page behind its code, so it counts in `wiki_problems_following` and a push run
+ * hands it to a writer to split before it counts. The page API has warned such a writer since 56254797, yet on 2026-11-20 the dream writer of
+ * apps/search/brand-tracking-ui.html took it to 63,426 B at 05:06:41Z, put the warning in its report and split nothing, so the 05:16Z run
+ * read wiki_problems 1, as the 11-18 run did for apps/crawler-v3/workers.html (p1585).
+ */
+export function nearCapSince(rows: readonly PageRevision[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const row of rows) {
+    const at = Date.parse(row.ts ?? "");
+    if (!(at > 0) || (row.bytesAfter ?? 0) < NEAR_READ_CAP || (row.bytesBefore ?? 0) >= NEAR_READ_CAP) continue;
+    if (!((out.get(row.path) ?? 0) >= at)) out.set(row.path, at);
+  }
+  return out;
+}
+
+/** The flagged line of a page near or over the read cap, with the time it counts when it is still followed. */
+export function readCapExcerpt(page: PageSize, since?: number): string {
   const where = page.bytes > PAGE_READ_CAP ? `${page.bytes - PAGE_READ_CAP} B over` : `${PAGE_READ_CAP - page.bytes} B under`;
-  return `${page.bytes} B, ${where} the ${PAGE_READ_CAP} B read cap, and a dream rewrite adds ${DREAM_GROWTH_P90} B at p90: split it into a short index and topic child pages`;
+  const followed = since ? `; crossed the line at ${new Date(since).toISOString().slice(11, 16)}Z, counts in wiki_problems at ${new Date(since + FOLLOW_WINDOW_MS).toISOString().slice(11, 16)}Z` : "";
+  return `${page.bytes} B, ${where} the ${PAGE_READ_CAP} B read cap, and a dream rewrite adds ${DREAM_GROWTH_P90} B at p90${followed}: split it into a short index and topic child pages`;
 }
 
 /** The curated pages under `content` (the four spaces and the home page), with no dot, data or assets folder and no symlink, as wiki-health.mjs walks them. */
@@ -657,7 +675,7 @@ export function pickFlagged(slices: readonly FlaggedSlice[]): FlaggedSlice[] {
 const HEALTH_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "stale_vs_code"] as const;
 /**
  * The sync problems wiki_problems adds up; pages_behind_code counts the pages of wiki-health's stale list (parseStale) behind for longer than
- * FOLLOW_WINDOW_MS, and pages_near_read_cap the current curated pages at NEAR_READ_CAP bytes or more.
+ * FOLLOW_WINDOW_MS, and pages_near_read_cap the current curated pages at NEAR_READ_CAP bytes or more that crossed it longer ago (`nearCapSince`).
  */
 const PROBLEM_METRICS = ["hub_orphans", "dead_links", "session_links", "superseded_linked", "missing_meta", "pages_behind_code", "pages_near_read_cap"] as const;
 
@@ -720,8 +738,10 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
     (files, after) => deps.exec("git", makerLogArgs(deps.repos.wiki, files, after), { cwd: deps.repos.wiki, timeoutMs: GIT_TIMEOUT_MS }), treeOf)
     .catch(error => { fail("git log makers", error); return new Map<string, PageMaker>(); }) : new Map<string, PageMaker>();
   metrics.pages_behind_code = stalePages && following ? stalePages.length - following.length : UNMEASURED;
-  metrics.pages_near_read_cap = nearCap?.length ?? UNMEASURED;
-  if (following) metrics.wiki_problems_following = following.length - waiting.size;
+  const crossed = pageRows ? nearCapSince(pageRows) : new Map<string, number>();
+  const capFollowed = new Map((nearCap ?? []).flatMap(page => { const at = crossed.get(page.path) ?? 0; return at > 0 && now - at <= FOLLOW_WINDOW_MS ? [[page.path, at] as const] : []; }));
+  metrics.pages_near_read_cap = nearCap ? nearCap.length - capFollowed.size : UNMEASURED;
+  if (following || capFollowed.size) metrics.wiki_problems_following = (following ? following.length - waiting.size : 0) + capFollowed.size;
   metrics.wiki_problems = PROBLEM_METRICS.some(key => metrics[key] === UNMEASURED) ? UNMEASURED : PROBLEM_METRICS.reduce((sum, key) => sum + metrics[key]!, 0);
   const lintFailing = health?.facts.lint_failing_pages;
   metrics.lint_over_glide = lintFailing === undefined ? UNMEASURED : lintFailing - glide(LINT_GLIDE, now);
@@ -791,7 +811,7 @@ export async function measureDream(deps: DreamDeps, lastRuns: readonly DutyRunRe
   const staleOrder = [...stalePages ?? []].sort((a, b) => { const [x, y] = [behindOrder(a), behindOrder(b)]; return x[0] - y[0] || x[1] - y[1]; });
   // The page's check time is its sig, so a run hands the dream job a page again once a writer checked it and a later commit put it behind again.
   for (const page of staleOrder) slices.push({ kind: "stale_vs_code", item: page.path, excerpt: clip(staleExcerpt(page, now)), sig: page.verified_at ?? page.last_verified });
-  for (const page of nearCap ?? []) slices.push({ kind: "near_read_cap", item: page.path, excerpt: readCapExcerpt(page) });
+  for (const page of nearCap ?? []) slices.push({ kind: "near_read_cap", item: page.path, excerpt: readCapExcerpt(page, capFollowed.get(page.path)) });
   for (const item of health?.items ?? []) {
     if (item.kind === "signal" || (item.kind === "stale_vs_code" && stalePages)) continue;
     slices.push({ kind: item.kind, item: item.path, excerpt: clip(`${item.excerpt ?? item.path}${item.target ? ` -> ${item.target}` : ""}`) });
@@ -834,7 +854,8 @@ async function readRevisions(db: string, sinceIso: string): Promise<PageRevision
   const { DatabaseSync } = await import("node:sqlite");
   const database = new DatabaseSync(db, { readOnly: true });
   try {
-    return database.prepare("SELECT path, author, summary FROM revisions WHERE ts >= ?").all(sinceIso) as unknown as PageRevision[];
+    return database.prepare("SELECT path, author, summary, ts, bytes_before AS bytesBefore, bytes_after AS bytesAfter FROM revisions WHERE ts >= ?")
+      .all(sinceIso) as unknown as PageRevision[];
   } finally { database.close(); }
 }
 

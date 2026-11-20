@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { measureDream, NEAR_READ_CAP, PAGE_READ_CAP, readPageSizes, type DreamDeps } from "../scripts/duties/wiki-dream.ts";
+import { FOLLOW_WINDOW_MS, measureDream, NEAR_READ_CAP, PAGE_READ_CAP, readPageSizes, type DreamDeps } from "../scripts/duties/wiki-dream.ts";
 
 const facts = { hub_orphans: 0, dead_links: 0, session_links: 0, superseded_linked: 0, missing_meta: 0, stale_vs_code: 0, lint_failing_pages: 0 };
 const deps: DreamDeps = {
@@ -34,6 +34,37 @@ test("each current curated page at NEAR_READ_CAP bytes or more counts in wiki_pr
   assert.ok(flagged.every(slice => slice.handOff));
   assert.match(flagged[0]!.excerpt, new RegExp(`65788 B, ${65_788 - PAGE_READ_CAP} B over the 65536 B read cap`));
   assert.match(flagged[2]!.excerpt, /64564 B, 972 B under the 65536 B read cap.*split it/);
+});
+
+test("a page that crossed NEAR_READ_CAP within FOLLOW_WINDOW_MS is followed and handed off, and counts in wiki_problems once the window ends", async () => {
+  // The 2026-11-20 case: a dream writer took apps/search/brand-tracking-ui.html from 62,279 B to 63,426 B at 05:06:41Z, got the page API's
+  // near-cap warning and split nothing, and the 05:16Z precheck read wiki_problems 1.
+  const revisions: DreamDeps["revisions"] = async () => [
+    { path: "apps/search/brand-tracking-ui.html", author: "prime (01a1f755/sub-ced9633c)", summary: "wiki-dream: pausedSince", ts: "2026-11-20T04:18:36.910Z", bytesBefore: 60_509, bytesAfter: 62_279 },
+    { path: "apps/search/brand-tracking-ui.html", author: "prime (01a1f755/sub-ced9633c)", summary: "wiki-dream: pausedSince", ts: "2026-11-20T05:06:41.497Z", bytesBefore: 62_279, bytesAfter: 63_426 },
+    { path: "apps/convex/schema.html", author: "prime", summary: "", ts: "2026-11-20T05:10:00.000Z", bytesBefore: 64_300, bytesAfter: 64_327 },
+    { path: "apps/crawler-v3/workers.html", author: "prime", summary: "", ts: "2026-11-20T03:50:00.000Z", bytesBefore: 62_466, bytesAfter: 63_239 },
+  ];
+  const pageSizes: DreamDeps["pageSizes"] = async () => [
+    { path: "apps/search/brand-tracking-ui.html", bytes: 63_426, status: "active" },
+    { path: "apps/convex/schema.html", bytes: 64_327, status: "current" },
+    { path: "apps/crawler-v3/workers.html", bytes: 63_239, status: "current" },
+  ];
+  const at = (iso: string) => measureDream({ ...deps, now: Date.parse(iso), revisions, pageSizes }, []);
+
+  const early = await at("2026-11-20T05:16:00Z");
+  assert.equal(early.metrics.pages_near_read_cap, 2);
+  assert.equal(early.metrics.wiki_problems, 2);
+  assert.equal(early.metrics.wiki_problems_following, 1);
+  const followed = (early.flagged ?? []).find(slice => slice.item === "apps/search/brand-tracking-ui.html")!;
+  assert.equal(followed.kind, "near_read_cap");
+  assert.equal(followed.handOff, true);
+  assert.match(followed.excerpt, /crossed the line at 05:06Z, counts in wiki_problems at 06:16Z: split it/);
+
+  const late = await at(new Date(Date.parse("2026-11-20T05:06:41.497Z") + FOLLOW_WINDOW_MS + 1).toISOString());
+  assert.equal(late.metrics.pages_near_read_cap, 3);
+  assert.equal(late.metrics.wiki_problems, 3);
+  assert.equal(late.metrics.wiki_problems_following, 0);
 });
 
 test("page sizes that cannot be read put 999999 on wiki_problems with a source_error", async () => {
