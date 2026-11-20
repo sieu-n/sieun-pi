@@ -89,6 +89,8 @@
   }
 
   const threadParam = $derived(router.route.params.thread ?? null);
+  /** `?thread=<root>&m=<reply>` names a reply: the thread pane flashes it, and the room only scrolls to its root, as in Slack. */
+  const replyFocus = $derived(isChannel && threadParam && around && around !== threadParam ? around : undefined);
   let paneKey: string | null = null;
   const threadTitle = $derived.by(() => {
     if (!threadParam) return "";
@@ -295,6 +297,7 @@
       <ThreadPane
         channel={isChannel ? id : null}
         threadKey={threadParam}
+        focus={replyFocus}
         {layout}
         {context}
         {statusOf}
@@ -397,6 +400,7 @@
     loadingOlder={store.loadingOlder}
     loadOlder={() => store.loadOlder()}
     focus={store.focus}
+    flashFocus={!replyFocus}
     {context}
     {liveLabel}
     queue={store.queue}

@@ -4,7 +4,7 @@
   import { later } from "$lib/later.svelte";
   import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import { Avatar, Button, EmptyState, Icon, IconButton, LoadingText, PanelHeader, Tabs, stampLabel } from "$lib/ui";
-  import { forTarget, previewText } from "$pages/agents/agents-model";
+  import { previewText } from "$pages/agents/agents-model";
   import { avatarOf } from "$pages/channel/present";
   import { api } from "$lib/api";
   import Menu from "$lib/ui/Menu.svelte";
@@ -25,10 +25,8 @@
     { id: "open" as const, label: "In progress", badge: later.open || null },
     { id: "done" as const, label: "Completed" },
   ]);
-  const hrefOf = (row: LaterRow) => {
-    const target = forTarget(row);
-    return conversationHref(target.id, { messageId: target.messageId, thread: target.thread });
-  };
+  /** A saved reply opens its thread at the reply, and any other post its room at the post. */
+  const hrefOf = (row: LaterRow) => conversationHref(row.room, row.threadRoot ? { thread: row.threadRoot, messageId: row.post } : { messageId: row.post });
   /** The row whose Remind me menu is open, and the button it hangs from; the row whose Custom picker is open. */
   let remindOpen = $state(false);
   let remindRow = $state<LaterRow | null>(null);

@@ -22,8 +22,10 @@
     onartifact?: (target: string, e: MouseEvent) => void;
     /** slack draws the root post, an "N replies" rule and the replies as Slack rows. */
     layout?: "bubble" | "slack";
+    /** The reply a link names, such as a saved reply on the Later page: the pane scrolls to it and flashes it. */
+    focus?: string;
   };
-  let { channel = null, threadKey, context, statusOf, oncopylink, onthread, onmention, onboardid, onartifact, layout = "bubble" }: Props = $props();
+  let { channel = null, threadKey, focus, context, statusOf, oncopylink, onthread, onmention, onboardid, onartifact, layout = "bubble" }: Props = $props();
 
   // svelte-ignore state_referenced_locally
   const job = channel ? null : timeline(threadKey);
@@ -75,6 +77,7 @@
       hasOlder={!!job?.older}
       loadingOlder={job?.loadingOlder ?? false}
       loadOlder={() => job?.loadOlder() ?? Promise.resolve()}
+      {focus}
       {context}
       queue={job?.queue ?? null}
       compact

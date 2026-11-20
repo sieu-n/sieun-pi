@@ -20,6 +20,8 @@
     loadOlder: () => Promise<void>;
     /** The item to scroll to and flash, from a search hit or a link. */
     focus?: string;
+    /** False scrolls to `focus` without flashing it, as the room under a thread pane does when the link names a reply. */
+    flashFocus?: boolean;
     context: MarkdownContext;
     liveLabel?: string | null;
     /** The run's place in the turn queue, shown under the send that waits for it. */
@@ -50,7 +52,7 @@
     onbottom?: (byUser: boolean) => void;
   };
   let {
-    items, loading, error, hasOlder, loadingOlder, loadOlder, focus, context, liveLabel = null, queue = null, openThread = null, canReply = false, compact = false,
+    items, loading, error, hasOlder, loadingOlder, loadOlder, focus, flashFocus = true, context, liveLabel = null, queue = null, openThread = null, canReply = false, compact = false,
     layout = "bubble", beginning = null, replyCount = null, newLine = null,
     statusOf, onretry, onretrysend, ondiscardsend, onthread, oncopylink, onmention, onboardid, onartifact, onbottom,
   }: Props = $props();
@@ -122,6 +124,7 @@
       if (!row) return;
       stick = false;
       row.scrollIntoView({ block: "center" });
+      if (!flashFocus) return;
       flashId = id;
       setTimeout(() => {
         if (flashId === id) flashId = null;
