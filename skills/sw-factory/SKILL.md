@@ -107,3 +107,4 @@ So a change to how agents write is done only when a blind fresh session, given t
 7. On a fail, change the code defaults or the tool text and run again with a new agent, until a run passes.
 
 Never steer the test agent, never tell it it is a test, and never reuse an agent that saw an earlier run, because each of those makes the run no longer blind.
+Any walk on live :5184 that needs an owner send, blind or not, makes its own agent and room with `test: true` (`POST /api/agents`, `POST /api/rooms`) or runs the fixture, never types into a real agent's DM, and archives them after the walk, because on 10-29 a walk's probes in dm_vent became owner posts that vent answered as his asks.
