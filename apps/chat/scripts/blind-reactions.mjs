@@ -12,7 +12,7 @@
  *    that post's thread), and at the end neither keeps the agent's 👀 or a ✅.
  * 2. "ok thanks" gets one reaction from the agent and no post.
  * 3. In the channel no agent post is a root post.
- * 4. No agent post has ✅ or 👀 in its text outside code, since the owner asked for fewer of both.
+ * 4. No agent post has ✅ or 👀 in its text outside code, ends on a sign-off emoji, or pastes a raw JSON or log line.
  * 👀 counts as seen when a poll saw it on the post or the agent's comm thread called set_emoji with eyes on it, since a fast answer can put
  * it on and take it off between two polls.
  *
@@ -38,6 +38,11 @@ const CHECK = "✅";
 const TASK = "can you run the apps/chat server tests for reactions and emoji and tell me if they pass?";
 const QUESTION = "where does the chat server keep a room's posts?";
 const THANKS = "ok thanks";
+
+/** A post that ends on an emoji after its words, such as "yep, all 18 pass 🎉". */
+const SIGN_OFF = /\p{Extended_Pictographic}\uFE0F?\s*$/u;
+/** A code span or block that holds a JSON object or array with a key, such as `{"t":"set","post":"p1",...}`, or a timestamped log line. */
+const RAW_LINE = /`{1,3}(?:json)?\s*[{[][^`]*"[^"`]+"\s*:|`{1,3}[^`]*\d{4}-\d\d-\d\dT\d\d:\d\d/;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -166,6 +171,8 @@ async function runRoom(kind) {
     ...(kind === "channel" ? [["no agent post is a root post", posts.every(p => p.author?.id !== agent.id || p.threadRoot)]] : []),
     ["no ✅ by the agent anywhere", posts.every(p => !mine(p, CHECK))],
     ["no ✅ or 👀 in the agent's post text", posts.every(p => p.author?.id !== agent.id || !/[✅👀]/u.test(p.text.replace(/```[\s\S]*?```|`[^`\n]*`/g, "")))],
+    ["no agent post ends with a sign-off emoji", posts.every(p => p.author?.id !== agent.id || !SIGN_OFF.test(p.text))],
+    ["no agent post pastes a raw JSON or log line", posts.every(p => p.author?.id !== agent.id || !RAW_LINE.test(p.text))],
   ];
   const line = {
     room, kind, agent: agent.id, questionSeconds, taskSeconds,

@@ -167,6 +167,7 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
       assert.match(commInstructions({ ...comm, room }), /put no ✅ on a post you replied to\. Put ✅ on a post only for a quick ask/, room);
       assert.doesNotMatch(commInstructions({ ...comm, room }), /white_check_mark|swap 👀 for ✅/, room);
       assert.match(commInstructions({ ...comm, room }), /Keep ✅ and 👀 out of your post text too/, room);
+      assert.match(commInstructions({ ...comm, room }), /Never end a post with a sign-off emoji[\s\S]*Never paste a raw JSON or log line into a post/, room);
       assert.match(commInstructions({ ...comm, room }), /tell_owner's `reply_to` set to that post's \[message id\][\s\S]*never as a new post in the room, and then take 👀 off that post/, room);
       assert.match(commInstructions({ ...comm, room }), /React to posts with fitting emoji[\s\S]*👍 to acknowledge[\s\S]*When a reaction says it all[\s\S]*react and post nothing\./, room);
       assert.match(commInstructions({ ...comm, room }), /Your 👀 on the post already shows that you are on it\./, room);

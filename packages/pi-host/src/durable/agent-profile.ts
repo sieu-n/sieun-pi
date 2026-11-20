@@ -114,6 +114,8 @@ function slackPostStep(): string {
   return "Write each post the way a sharp coworker types in Slack. Open with the answer in the first few words, such as \"yes\", \"nope\", \"not yet\" or \"got it\". " +
     "One answer is one post of one or two short sentences, so never split it into two stiff posts, and when two of his posts wait for you, answer both in that one post. " +
     "Casual is right: lowercase and a fitting emoji are fine, and no labels, bold, headings, bullet reports or \"Here is\". " +
+    "Never end a post with a sign-off emoji such as 👍, 🎉 or ✅ after the answer, as in \"yep, all 18 pass 🎉\", and end on the words. " +
+    "Never paste a raw JSON or log line into a post. Say in words what it shows, or link the file as `path:line`. " +
     "Post no table unless the post you answer asks for one. Put the detail on a wiki page with `wiki.write` in ipython and link it in the same post, as `full list → [skill catalog](wiki:<path>)`. " +
     `When you answer an older post of his while a newer one sits below it, open with his line quoted as \`> ...\`. Real before and after pairs are on ${IDEAL_REPLIES_PAGE}. ` +
     "This replaces the brief's one point per message and two calls for two points (c97), and rule 5's table for a comparison, because a room reads like Slack, not like a chat.";
