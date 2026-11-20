@@ -1,4 +1,4 @@
-import { headlineMetric, type DutyMetric, type DutyRunRecord, type FixLink, type MetricResult } from "./chat-duties.ts";
+import { headlineMetric, type DutyMetric, type DutyRunRecord, type FixLink, type MetricResult, type RedOwners } from "./chat-duties.ts";
 
 /**
  * Miss streaks per metric, read from a duty's runs. A run's verdict is its measure after its own job ended when it has one (`effectiveRun`),
@@ -30,6 +30,8 @@ export interface MetricStreak {
   /** The window the precheck named for this count (`MetricResult.windowMs`), and its newest event (`MetricResult.lastEventAt`). */
   windowMs?: number;
   lastEventAt?: number;
+  /** The owners of the reds an aggregate metric counts in the newest run (`MetricResult.redOwners`). */
+  redOwners?: RedOwners;
   /**
    * CHANGE_APPROACH_MISSES or more misses, no move toward the target, and not `quietSince`. With a fix step, only the misses its run records name
    * the same fix for count (`fixMisses`): a fix job younger than the misses has not had them yet. Demo sandbox 10-18: restarts_24h read 4 from
@@ -212,7 +214,7 @@ export function metricStreaks(runs: readonly DutyRunRecord[]): MetricStreak[] {
     const quiet = result.lastEventAt !== undefined && previous !== undefined && result.lastEventAt < previous.at;
     streaks.push({ key, misses, moved, since, value: result.value, target: result.target, op: result.op, ...(fix ? { fix } : {}),
       ...(quiet ? { quietSince: result.lastEventAt } : {}), ...(result.windowMs !== undefined ? { windowMs: result.windowMs } : {}),
-      ...(result.lastEventAt !== undefined ? { lastEventAt: result.lastEventAt } : {}), stuck: judged >= CHANGE_APPROACH_MISSES && !moved && !quiet });
+      ...(result.lastEventAt !== undefined ? { lastEventAt: result.lastEventAt } : {}), ...(result.redOwners ? { redOwners: result.redOwners } : {}), stuck: judged >= CHANGE_APPROACH_MISSES && !moved && !quiet });
   }
   return streaks;
 }

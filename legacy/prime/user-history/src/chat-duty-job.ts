@@ -9,7 +9,7 @@ import type { PrimeUpdate } from "./prime-update.ts";
 import { BRIEF_ITEMS } from "./shared/brief-cap.ts";
 import { MERGE_RULE } from "./shared/chat-board.ts";
 import { releaseGo } from "./shared/release-go.ts";
-import { type DutyCard, type DutyCut, type DutyJobRef, headlineMetric, type MetricResult, verdictMetrics } from "./shared/chat-duties.ts";
+import { type DutyCard, type DutyCut, type DutyJobRef, headlineMetric, type MetricResult, type RedOwners, verdictMetrics } from "./shared/chat-duties.ts";
 import { poolSlot } from "./shared/chat-feed.ts";
 import { CUT_TAIL_BYTES, tailLines } from "./cut-end.ts";
 import { lastTurnError } from "./held-turns.ts";
@@ -203,6 +203,11 @@ export function checkInJobBrief({ chat, job, at, prompt, report }: Pick<DutyJobI
 }
 
 const runs = (count: number): string => `${count} ${count === 1 ? "run" : "runs"}`;
+/** The owned classes of an aggregate metric's reds in words, like "5 with a live fix job, 8 waiting on the owner". */
+const ownersWords = (owners: RedOwners): string => ([
+  [owners.live, "with a live fix job"], [owners.owner, "waiting on the owner's For you todo"], [owners.aging, "aging out of a trailing window"],
+  [owners.swFactory, "in :5184 chats sw factory runs"], [owners.ownRuns, "pushed by their own duty's runs"],
+] as const).filter(([count]) => count > 0).map(([count, words]) => `${count} ${words}`).join(", ");
 const owner = (fix: NonNullable<MetricStreak["fix"]>): string => fix.job ? `job ${fix.job}` : "no job";
 
 /**
@@ -210,12 +215,17 @@ const owner = (fix: NonNullable<MetricStreak["fix"]>): string => fix.job ? `job 
  * new fix job, and a stuck one (CHANGE_APPROACH_MISSES misses with no move) gets a new root-cause job that names the fix that did not work. A
  * windowed count with no new event since the last run (`quietSince`) gets no job, and nor does one whose fix step an open For you todo or the
  * owner's own sign-in prompt holds (`FixLink.hold`) with no live job, stuck or not: on 10-23 d5's runs pushed for a new job on p919, which waited only on Railway Breach's t11.
+ * Nor does an aggregate metric whose every counted red has an owner (`MetricStreak.redOwners`), such as d9's duties_green_pct.
  */
 export function missLine(dutyId: string, streak: MetricStreak, label: string, unit = "", now: number = Date.now()): string {
   const link = JSON.stringify(dutyLink(dutyId, streak.key));
   const where = `${streak.key} (${label}) is ${streak.value}${unit}, target ${streak.op} ${streak.target}${unit}, missed ${runs(streak.misses)} in a row` +
     `${streak.misses > 1 ? streak.moved ? ", moving toward the target" : ", not moving toward the target" : ""}.`;
   const fix = streak.fix;
+  if (streak.redOwners && streak.redOwners.none === 0) {
+    return `${where} Every red it counts has an owner that this duty's other metrics judge: ${ownersWords(streak.redOwners)}. Start no job and add ` +
+      `no plan step for it${fix ? `, and give ${fix.step} no successor when it closes` : ""}; push the chats on the push list, which moves these reds.`;
+  }
   if (fix?.stalled && !fix.live) {
     const pid = fix.stalled.process?.pid;
     return `${where} Its fix step ${fix.step} has the job ${fix.job ?? fix.stalled.session}, which is stalled, not live: it ${stallWords(fix.stalled, now)}. ` +

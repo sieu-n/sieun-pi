@@ -16,7 +16,7 @@ export { type ChatDown, downLine, failingTurns, manualSelection, type Push, type
 import { fileSlotPark } from "../../src/slot-park.ts";
 import { ownerChats } from "../../src/owner-chats.ts";
 import { chatDataDir } from "../../src/owner-ok.ts";
-import { CHECK_IN_DUTY_ID, type DutyPrecheck, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput, shownValue } from "../../src/shared/chat-duties.ts";
+import { CHECK_IN_DUTY_ID, type DutyPrecheck, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput, type RedOwners, shownValue } from "../../src/shared/chat-duties.ts";
 import { DutyStore } from "../../src/chat-duty-store.ts";
 import { D9_PUSH_PREFIX, serverNote } from "../../src/shared/chat-feed.ts";
 import type { ChatBoard, PlanItem } from "../../src/shared/types.ts";
@@ -659,7 +659,7 @@ export interface ChatSystemFacts {
   stuck: readonly StuckStep[];
   upkeep: readonly PlanFlag[];
   fleet: { pct: number; red: readonly RedDuty[] };
-  stuckDuties: readonly { chat: string; line: string }[];
+  stuckDuties: readonly { chat: string; duty?: string; line: string }[];
   /** The open steps and red duties held on a box Tailscale reads offline (`HostHeldStep`), by chat id; absent: none. */
   hostHeld?: readonly { chat: string; id: string; host: string; duty?: string }[];
   /** Per chat, the open goals with no live job (`goalsWithNoJob`) the run's job pushes it on, beside its stuck duties. */
@@ -694,6 +694,22 @@ export function actingFacts(facts: ChatSystemFacts): ChatSystemFacts {
     ...facts.hostHeld ? { hostHeld: acts(facts.hostHeld) } : {}, ...facts.down ? { down: acts(facts.down) } : {},
     ...facts.jobPushes ? { jobPushes: acts(facts.jobPushes) } : {}, ...facts.stepMoves ? { stepMoves: acts(facts.stepMoves) } : {},
     ...facts.unknownOwners ? { unknownOwners: acts(facts.unknownOwners) } : {} };
+}
+
+/**
+ * The owner of each red duties_green_pct counts (`RedOwners`), first class that fits: a sw factory chat, a count that ages out, a fix the owner's
+ * todo holds, a live fix or the duty's own job at work, a stuck duty (`none`, matched by chat alone when the entry names no duty), else its own
+ * duty's runs, which push it until d9 counts it as stuck. On 11-20 each d9 run was told to start a job for duties_green_pct at 66.6% though
+ * none of its 23 reds was stuck: 5 had a live fix job, 8 waited on t112 or t81, 4 aged out, 4 sat in sw factory chats and 2 were their own duties' to push.
+ */
+export function redOwners(all: Pick<ChatSystemFacts, "fleet" | "stuckDuties" | "noPush">): RedOwners {
+  const owners: RedOwners = { live: 0, owner: 0, aging: 0, swFactory: 0, ownRuns: 0, none: 0 };
+  const stuck = (duty: RedDuty): boolean => all.stuckDuties.some(entry => entry.chat === duty.chat && (entry.duty === undefined || entry.duty === duty.duty));
+  for (const duty of all.fleet.red) {
+    owners[all.noPush?.has(duty.chat) ? "swFactory" : duty.agingSince !== undefined ? "aging" : duty.held ?? duty.leadHeld ? "owner"
+      : duty.fix ?? duty.working ? "live" : stuck(duty) ? "none" : "ownRuns"]++;
+  }
+  return owners;
 }
 
 /**
@@ -774,6 +790,7 @@ export function chatSystemOutput(all: ChatSystemFacts): PrecheckOutput {
     metrics: { stuck_steps_all: stuckCount, plan_upkeep_all: facts.upkeep.length, duties_green_pct: facts.fleet.pct, stuck_duties: facts.stuckDuties.length,
       fix_not_moving: notMoving.length },
     flagged,
+    redOwners: { duties_green_pct: redOwners(all) },
   };
 }
 

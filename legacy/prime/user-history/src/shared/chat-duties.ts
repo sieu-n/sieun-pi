@@ -97,7 +97,26 @@ export interface PrecheckOutput { metrics: Record<string, number>; flagged?: Fla
    * Duties the runner starts a verify run of when the precheck ends, as it does for a closed fix step: d9's red duties whose fix job worked
    * after their newest reading (`unreadFixes` in scripts/duties/chat-system.ts), so the next d9 run judges that fix on a fresh reading.
    */
-  verify?: { chat: string; duty: string }[] }
+  verify?: { chat: string; duty: string }[];
+  /**
+   * For an aggregate metric over other chats' duties, the owner of each red it counts (`RedOwners`): d9's duties_green_pct. With no red left
+   * unowned, the brief starts no job for its miss (`missLine`): on 11-20 every d9 run was told to start a fix job and add a step for
+   * duties_green_pct at 66.6%, while each of its 23 reds had a live fix job, waited on the owner, aged out of a window or sat in a sw factory chat.
+   */
+  redOwners?: Record<string, RedOwners> }
+/**
+ * Who owns each red duty an aggregate metric counts, one class per red: a live fix job or the duty's own job at work (`live`), an open For you
+ * todo that holds its fix (`owner`), a windowed count that ages out (`aging`), a :5184 chat sw factory runs (`swFactory`), its own duty's runs,
+ * which push it while d9 does not count it as stuck (`ownRuns`), or nobody (`none`, the stuck duties d9 counts).
+ */
+export interface RedOwners { live: number; owner: number; aging: number; swFactory: number; ownRuns: number; none: number }
+/** A precheck's `redOwners` entry when every class is a whole count of 0 or more, else undefined. */
+const parseRedOwners = (value: unknown): RedOwners | undefined => {
+  if (!isRecord(value)) return undefined;
+  const count = (entry: unknown): entry is number => typeof entry === "number" && Number.isInteger(entry) && entry >= 0;
+  const { live, owner, aging, swFactory, ownRuns, none } = value;
+  return count(live) && count(owner) && count(aging) && count(swFactory) && count(ownRuns) && count(none) ? { live, owner, aging, swFactory, ownRuns, none } : undefined;
+};
 /**
  * One thing the precheck found that the duty job should read: the chat (session id), when, what kind, a short excerpt, and the plan item it is
  * about. `handOff` marks work a run hands to the duty's job while that job still works (`Duties.handOff`), so a later run's finding reaches it.
@@ -169,7 +188,9 @@ export type DutyVerdict = "met" | "missed" | "error" | "skipped";
  * `lastEventAt` is the precheck's time of the newest event a windowed count counts (`PrecheckOutput.lastEventAt`), `windowMs` its window, and
  * `rollsAt` when the closed window the metric reads rolls over (`PrecheckOutput.rollsAt`).
  */
-export interface MetricResult { value: number; target: number; op: DutyMetric["op"]; met: boolean; lastEventAt?: number; windowMs?: number; rollsAt?: number }
+export interface MetricResult { value: number; target: number; op: DutyMetric["op"]; met: boolean; lastEventAt?: number; windowMs?: number; rollsAt?: number;
+  /** The owners of the reds an aggregate metric counts (`PrecheckOutput.redOwners`). */
+  redOwners?: RedOwners }
 /** A duty job the server started: its session id and name. */
 export interface DutyJobRef { id: string; name: string }
 /**
@@ -479,9 +500,10 @@ function judgeCounted(metrics: readonly DutyMetric[], output: PrecheckOutput): {
     const lastEventAt = output.lastEventAt?.[metric.key];
     const windowMs = output.windowMs?.[metric.key];
     const rollsAt = output.rollsAt?.[metric.key];
+    const redOwners = parseRedOwners(output.redOwners?.[metric.key]);
     results[metric.key] = { value, target: metric.target, op: metric.op, met: met(metric, value), ...typeof lastEventAt === "number" && Number.isFinite(lastEventAt) ? { lastEventAt } : {},
       ...typeof windowMs === "number" && windowMs > 0 && Number.isFinite(windowMs) ? { windowMs } : {},
-      ...typeof rollsAt === "number" && Number.isFinite(rollsAt) ? { rollsAt } : {} };
+      ...typeof rollsAt === "number" && Number.isFinite(rollsAt) ? { rollsAt } : {}, ...redOwners ? { redOwners } : {} };
     if (!results[metric.key]!.met) misses.push(`${metric.key} ${show(metric, value)} (target ${metric.op === "<=" ? "at most" : "at least"} ${show(metric, metric.target)})`);
   }
   const lead = headline && results[headline.key]!.met ? `${headline.key} ${show(headline, results[headline.key]!.value)} (on target)` : undefined;
