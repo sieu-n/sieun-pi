@@ -38,10 +38,13 @@ test("times read like Slack's: Today at, Yesterday at, Oct 12th at, and short ag
 });
 
 test("the results address keeps only set filters and reads back the same search", () => {
-  const params = resultParams({ q: "relay", from: "owner", sort: "relevance", type: "messages" });
-  assert.deepEqual(Object.fromEntries(Object.entries(params).filter(([, v]) => v)), { q: "relay", from: "owner", type: "messages" });
-  const read = readResults({ q: " relay ", from: "agents", sort: "recent", after: "2026-10-22", before: "bad", type: "x" });
+  const params = resultParams({ q: "relay", from: "owner", sort: "relevance", where: "root,thread" });
+  assert.deepEqual(Object.fromEntries(Object.entries(params).filter(([, v]) => v)), { q: "relay", from: "owner", where: "root,thread" });
+  const read = readResults({ q: " relay ", from: "agents", sort: "recent", after: "2026-10-22", before: "bad", where: "x" });
   assert.deepEqual(read, { q: "relay", from: "agents", sort: "recent", after: "2026-10-22" });
+  assert.equal(readResults({ q: "relay", where: "tool,root,tool" }).where, "root,tool");
+  assert.equal(readResults({ q: "relay", where: "thread,root,tool" }).where, undefined);
+  assert.deepEqual(searchParams(readResults({ q: "relay", where: "tool,root" })), { q: "relay", sort: "relevance", where: ["root", "tool"] });
   assert.deepEqual(searchParams(read), { q: "relay", sort: "recent", from: "agents", after: "2026-10-22" });
   const now = new Date(2026, 9, 28);
   assert.equal(dateRanges(now).find(r => r.id === "7d")!.after, "2026-10-22");

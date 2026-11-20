@@ -33,7 +33,7 @@ import { agentPost, react, ReactionError, reactionInput, reactionList, reactions
 import { doneInput, doneText, markDone, threadRootOf } from "./thread-done.ts";
 import { Rooms } from "./rooms.ts";
 import { Unfurler } from "./unfurl.ts";
-import { Search } from "./search.ts";
+import { POST_KINDS, Search } from "./search.ts";
 import { likeRegex, postDocId, SEARCH_DOC_VERSION, SearchEngine, SqliteEntries, type EntrySource, type PostDoc } from "./search-engine.ts";
 import { Meili, startOwnMeili, type OwnMeili } from "./meili.ts";
 import type { FixtureHost } from "./host/fixture.ts";
@@ -390,7 +390,10 @@ export class App {
   /** A post's search document, or null for a post in no DM, channel or Solo room. */
   private postDoc(room: string, post: RoomPost): PostDoc | null {
     const principal = (id: string) => this.threads.principal(id);
-    const base = { id: postDocId(room, post.id), source: "post", text: post.text, reactions: reactionList(principal, post), at: post.at, tier: 0, author: post.author, room, post: post.id } as const;
+    const base = {
+      id: postDocId(room, post.id), source: "post", kind: post.threadRoot ? POST_KINDS.reply : POST_KINDS.root, text: post.text, reactions: reactionList(principal, post),
+      at: post.at, tier: 0, author: post.author, room, post: post.id,
+    } as const;
     const record = this.agents.record(room);
     if (record?.room === room) return { ...base, dm: true, listed: this.rooms.searchListed(record, post), ownerPost: post.author === "owner" && !post.testSend };
     if (this.groups.row(room)?.id === room) return { ...base, dm: false, listed: true, ownerPost: post.author === "owner" };

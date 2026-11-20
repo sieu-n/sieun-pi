@@ -71,6 +71,11 @@ export interface PostDoc {
   id: string; source: "post"; text: string; reactions: string; at: number; tier: 0; author: string; room: string; post: string;
   /** A DM post; `listed` is false for a DM post search leaves out (rooms.ts `searchListed`); `ownerPost` is the owner's and no test send. */
   dm: boolean; listed: boolean; ownerPost: boolean;
+  /**
+   * `room.reply` for a reply in a thread (`RoomPost.threadRoot`), `room.post` for a top-level post (search.ts `POST_KINDS`). Every start
+   * sends every post again, so a post Meilisearch holds without it gains it then, and `pending` answers for it meanwhile.
+   */
+  kind: "room.post" | "room.reply";
 }
 export type SearchDoc = EntryDoc | PostDoc;
 

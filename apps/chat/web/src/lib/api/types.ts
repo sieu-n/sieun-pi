@@ -402,8 +402,22 @@ export interface ConversationPatch { name?: string; archived?: boolean; model?: 
 export interface ProjectFolder { path: string; name: string }
 export interface ProjectList { projects: ProjectFolder[]; default: string | null; home: string }
 
+/**
+ * Where a search hit sits: a top-level post or root-chat message (`root`), a reply in a channel thread (`thread`), or inside an agent's
+ * work (`tool`): every entry of a work thread or job, and the tool output of a root chat.
+ */
+export type SearchWhere = "root" | "thread" | "tool";
+
 export interface SearchHit {
   id: string;
+  where: SearchWhere;
+  /** For `where: "thread"`: the thread's root post and its first words, so a row reads "reply in <title>". */
+  thread?: { root: string; title: string };
+  /**
+   * The web hash route that opens the hit, built once on the server: `#/c/<room>?m=<post>` for a post, `#/c/<room>?thread=<root>&m=<reply>`
+   * for a thread reply, and `#/c/<conversation>?m=e<entry>` for a thread entry.
+   */
+  link: string;
   /** Where it was said: a channel, a solo chat, a DM or a job, with the agent a job or DM belongs to as `parent`. */
   conversation: { id: ConversationId; kind: ConversationKind; name: string; parent?: { id: ConversationId; name: string }; archived?: boolean };
   /** `e<entry>` for a thread hit and `p<n>` for a post: open `/api/c/<conversation>/items?around=<messageId>`, whose `focus` is the item that holds it. */
@@ -421,7 +435,7 @@ export interface SearchHit {
   role: "owner" | "agent" | "tool" | "system";
   tool?: string;
   inCall?: boolean;
-  /** A channel reply: the root post of its thread. */
+  /** A channel reply: the root post of its thread. Same as `thread.root`, which replaces it once the search pages read `thread`. */
   threadRoot?: string;
   /** Escaped text with only <mark> tags around matches, about 36 words of the human text; tool output comes cleaned of JSON punctuation. */
   snippet: string;
@@ -438,11 +452,12 @@ export interface SearchMissing { box: string; note: string }
  */
 export interface SearchResult { hits: SearchHit[]; total: number; nextCursor?: string; missing?: SearchMissing[] }
 /**
- * `from` is `owner`, `agents` (anyone but the owner) or one agent id; `type` keeps only messages (no tool output) or only tool output;
- * `in` is a conversation id; `after` and `before` are YYYY-MM-DD in KST.
+ * `from` takes many values, each `owner`, `agents` (anyone but the owner), an agent id or an agent name; `where` takes many of `root`,
+ * `thread` and `tool`, all three when absent. Many values of one filter are OR-ed. `in` is a conversation id, a channel or Solo room name
+ * (with or without `#`) or an agent name for its DM; `after` and `before` are YYYY-MM-DD in KST.
  */
 export interface SearchQuery {
-  q: string; from?: string; in?: string; after?: string; before?: string; sort?: "relevance" | "recent"; type?: "messages" | "tools";
+  q: string; from?: string | string[]; in?: string; where?: SearchWhere | SearchWhere[]; after?: string; before?: string; sort?: "relevance" | "recent";
   limit?: number; cursor?: string;
   /** Leaves each hit's `text` out, for rows that show only the snippet. */
   brief?: boolean;

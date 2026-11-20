@@ -160,9 +160,13 @@ async function call<T>(method: string, path: string, body?: unknown, signal?: Ab
   return value as T;
 }
 
-const query = (params: Record<string, string | number | boolean | undefined | null>): string => {
-  const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== "") as [string, string | number | boolean][];
-  return entries.length ? `?${entries.map(([k, v]) => `${enc(k)}=${enc(String(v))}`).join("&")}` : "";
+/** A list value goes as one comma list, such as `from=owner,ag_vent`; an empty list is left out. */
+const query = (params: Record<string, string | number | boolean | readonly string[] | undefined | null>): string => {
+  const entries = Object.entries(params).flatMap(([k, v]) => {
+    const value = Array.isArray(v) ? v.join(",") : v;
+    return value === undefined || value === null || value === "" ? [] : [[k, String(value)] as const];
+  });
+  return entries.length ? `?${entries.map(([k, v]) => `${enc(k)}=${enc(v)}`).join("&")}` : "";
 };
 
 /** A fresh id for `SendRequest.requestId`, so a retried send lands once. */

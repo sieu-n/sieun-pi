@@ -91,16 +91,16 @@ test("filter chips narrow the results through the address, and back undoes them"
   await expect(page).not.toHaveURL(/from=/);
   await filters(page).getByRole("button", { name: "Messages", exact: true }).click();
   await page.getByRole("menuitemradio", { name: /Tool output only/ }).click();
-  await expect(page).toHaveURL(/type=tools/);
-  const tools = await search(page, { q: "relay", type: "tools" });
+  await expect(page).toHaveURL(/where=tool/);
+  const tools = await search(page, { q: "relay", where: "tool" });
   expect(tools.total).toBeGreaterThan(0);
   await expect(count(page)).toHaveText(results(tools.total));
   await expect(filters(page).getByRole("button", { name: "Tool output only" })).toBeVisible();
   await expect(cards(page)).toHaveCount(tools.total);
-  await expect(page.locator("[data-result-card]:not([data-role=tool])")).toHaveCount(0);
+  expect(tools.hits.every(hit => (hit as { where?: string }).where === "tool")).toBe(true);
 
   await page.goBack();
-  await expect(page).not.toHaveURL(/type=/);
+  await expect(page).not.toHaveURL(/where=/);
   await expect(count(page)).toHaveText(results(all.total));
   await page.goBack();
   await expect(page).toHaveURL(/from=owner/);

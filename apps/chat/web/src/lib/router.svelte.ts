@@ -11,7 +11,7 @@
  *   #/c/later, #/c/later/done               Messages, Later: the posts the owner saved, In progress or Completed
  *   #/settings/<section>                    Settings, one section: usage, hosts, accounts or skills, opened from the Settings button
  *   #/settings/accounts/<provider>?thread=<id>   Settings > Accounts, the pi-pool accounts of claude or codex, optionally for one thread
- *   #/search?q=&from=&in=&after=&before=&sort=&type=   Full search results, opened with Enter in the Cmd K search
+ *   #/search?q=&from=&in=&after=&before=&sort=&where=   Full search results, opened with Enter in the Cmd K search
  *   #/ui                                    The lib/ui gallery, not in the top bar
  *
  * Messages, Agents and Board are the roots in the top bar; each picks its own left sidebar in lib/shell/Shell.svelte.

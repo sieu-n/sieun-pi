@@ -15,7 +15,7 @@
   import type { PickerItem } from "$lib/ui/types";
   import { contextOf, replyContextOf, type HitContext } from "./context";
   import ResultCard from "./ResultCard.svelte";
-  import { dateLabel, dateRanges, readResults, resultCount, resultParams, searchParams, type Results, type ResultType } from "./results-model";
+  import { dateLabel, dateRanges, MESSAGES_WHERE, readResults, resultCount, resultParams, searchParams, TOOLS_WHERE, type Results } from "./results-model";
   import { composing } from "$lib/ui/keyboard";
 
   const PAGE = 20;
@@ -137,8 +137,8 @@
     !results.from ? undefined : results.from === "owner" ? "You" : results.from === "agents" ? "Agents" : (agents.byId(results.from)?.name ?? conversations.byId(results.from)?.name ?? results.from),
   );
   const inLabel = $derived(results.in ? (conversations.byId(results.in)?.name ?? results.in) : undefined);
-  const typeLabels: Record<ResultType, string> = { messages: "Messages only", tools: "Tool output only" };
-  const anyFilter = $derived(!!(results.from || results.in || results.after || results.before || results.type));
+  const whereLabels: Record<string, string> = { [MESSAGES_WHERE]: "Messages only", [TOOLS_WHERE]: "Tool output only", root: "Top-level messages", thread: "Thread replies", "root,tool": "Top level and tools", "thread,tool": "Replies and tools" };
+  const anyFilter = $derived(!!(results.from || results.in || results.after || results.before || results.where));
 
   let typeAnchor = $state<HTMLElement>();
   let typeOpen = $state(false);
@@ -152,9 +152,9 @@
   let sortOpen = $state(false);
 
   const typeItems = $derived([
-    { type: "radio" as const, id: "all", group: "type", label: "Everything", detail: "Messages first, then tool output", checked: !results.type, onselect: () => go({ type: undefined }) },
-    { type: "radio" as const, id: "messages", group: "type", label: "Messages only", detail: "What you and agents wrote", checked: results.type === "messages", onselect: () => go({ type: "messages" }) },
-    { type: "radio" as const, id: "tools", group: "type", label: "Tool output only", detail: "Commands and their output", checked: results.type === "tools", onselect: () => go({ type: "tools" }) },
+    { type: "radio" as const, id: "all", group: "type", label: "Everything", detail: "Messages first, then tool output", checked: !results.where, onselect: () => go({ where: undefined }) },
+    { type: "radio" as const, id: "messages", group: "type", label: "Messages only", detail: "What you and agents wrote", checked: results.where === MESSAGES_WHERE, onselect: () => go({ where: MESSAGES_WHERE }) },
+    { type: "radio" as const, id: "tools", group: "type", label: "Tool output only", detail: "Inside agents' work: tool calls, output and jobs", checked: results.where === TOOLS_WHERE, onselect: () => go({ where: TOOLS_WHERE }) },
   ]);
   const fromItems = $derived<PickerItem[]>([
     { id: "", label: "Anyone", icon: "users" },
@@ -237,8 +237,8 @@
       </div>
       <div class="filters" role="toolbar" aria-label="Filters" data-search-filters>
         <span bind:this={typeAnchor}>
-          <Chip selected={!!results.type} onclick={() => (typeOpen = !typeOpen)}>
-            <span class="chip-label">{results.type ? typeLabels[results.type] : "Messages"}</span><Icon name="chevron-down" size={14} />
+          <Chip selected={!!results.where} onclick={() => (typeOpen = !typeOpen)}>
+            <span class="chip-label">{results.where ? (whereLabels[results.where] ?? results.where) : "Messages"}</span><Icon name="chevron-down" size={14} />
           </Chip>
         </span>
         <Menu bind:open={typeOpen} anchor={typeAnchor} items={typeItems} label="Result type" />
@@ -264,9 +264,9 @@
         <Chip label="You only" selected={ownerOnly} onclick={() => go({ from: ownerOnly ? undefined : "owner" })} />
         <Chip label="Agents only" selected={agentsOnly} onclick={() => go({ from: agentsOnly ? undefined : "agents" })} />
         <Chip label="Last 7 days" selected={inLastWeek} onclick={() => go(inLastWeek ? { after: undefined, before: undefined } : { after: lastWeek.after, before: undefined })} />
-        <Chip label="No tool output" selected={results.type === "messages"} onclick={() => go({ type: results.type === "messages" ? undefined : "messages" })} />
+        <Chip label="No tool output" selected={results.where === MESSAGES_WHERE} onclick={() => go({ where: results.where === MESSAGES_WHERE ? undefined : MESSAGES_WHERE })} />
         {#if anyFilter}
-          <Button variant="ghost" size="sm" onclick={() => go({ from: undefined, in: undefined, after: undefined, before: undefined, type: undefined })}>Clear filters</Button>
+          <Button variant="ghost" size="sm" onclick={() => go({ from: undefined, in: undefined, after: undefined, before: undefined, where: undefined })}>Clear filters</Button>
         {/if}
       </div>
       <div class="summary">

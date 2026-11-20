@@ -7,7 +7,7 @@
  * posts instead, so a hit opens the DM at the post. Channel and Solo room posts are searched as posts of their room (phase 5).
 
  */
-import type { ConversationKind, ConversationSummary, SearchHit, SearchMissing, SearchResult } from "../web/src/lib/api/types.ts";
+import type { ConversationKind, ConversationSummary, SearchHit, SearchMissing, SearchResult, SearchWhere } from "../web/src/lib/api/types.ts";
 import { CHANNEL_COPY_LIKE, type GroupRooms } from "./group-rooms.ts";
 import { describe, fullText, searchTerms, snippet } from "./search-snippet.ts";
 import { safeSnippet } from "./search-snippet.ts";
@@ -22,9 +22,12 @@ import { and, eq, isIn, not, or, type BoxIndexState, type Cond, type EntryDoc, t
 /** The owner reads dates in KST. */
 export const OWNER_ZONE_OFFSET_MS = 9 * 3600_000;
 
-/** `from` is `owner`, `agents` or one agent id, and `type` keeps messages only or tool output only. */
+/**
+ * `from` holds `owner`, `agents`, agent ids and agent names, and `where` holds `root`, `thread` and `tool` (all three when empty); many
+ * values of one filter are OR-ed. `in` is a conversation id, a channel or Solo room name, or an agent name for its DM.
+ */
 export interface SearchParams {
-  q: string; from?: string; in?: string; after?: string; before?: string; sort?: "relevance" | "recent"; type?: "messages" | "tools"; limit?: number; cursor?: string;
+  q: string; from?: readonly string[]; in?: string; where?: readonly string[]; after?: string; before?: string; sort?: "relevance" | "recent"; limit?: number; cursor?: string;
   /** Leaves each hit's longer `text` out: the Cmd K rows show only the snippet, and the 20 hits of "kimchi" were 52.0 KB with it on 11-19. */
   brief?: boolean;
 }
@@ -35,23 +38,76 @@ export interface SearchParams {
  */
 export const RECENT_LIMIT = 3000;
 
-/** Tool output ranks after every message by relevance and is what `type` keeps or leaves out. */
+/** Tool output ranks after every message by relevance, and in a root chat it is the root chat's `tool` part. */
 const TOOL_KINDS = ["pi.tool-result"];
 
-/** Pulls `from:x in:y after:2026-10-01 before:2026-10-28` out of the text; explicit params win. */
+/** A post's `kind` in the index (app.ts `postDoc`): a thread reply, or a top-level post. */
+export const POST_KINDS = { root: "room.post", reply: "room.reply" } as const;
+
+export const SEARCH_WHERE: readonly SearchWhere[] = ["root", "thread", "tool"];
+
+/** A filter value search cannot read, such as an unknown agent name; the API answers 400 with its message. */
+export class SearchFilterError extends Error {}
+
+/**
+ * Pulls `from:x in:y after:2026-10-01 before:2026-10-28` out of the text; explicit params win. Each `from:` adds a value, and a comma list
+ * in one token adds each of its values.
+ */
 export function parseQuery(params: SearchParams): Required<Pick<SearchParams, "q">> & Omit<SearchParams, "q"> {
   const out: SearchParams = { ...params, q: "" };
   const words: string[] = [];
+  const from: string[] = [];
   for (const token of params.q.match(/"[^"]*"|\S+/g) ?? []) {
     const match = /^(from|in|after|before):(.+)$/.exec(token);
-    if (match) {
-      const key = match[1] as "from" | "in" | "after" | "before";
-      out[key] ??= match[2]!.replace(/^"|"$/g, "");
-    } else words.push(token);
+    if (!match) words.push(token);
+    else if (match[1] === "from") from.push(...listValues([match[2]!.replace(/^"|"$/g, "")]));
+    else out[match[1] as "in" | "after" | "before"] ??= match[2]!.replace(/^"|"$/g, "");
   }
+  if (!out.from?.length && from.length) out.from = from;
   out.q = words.join(" ");
   return out as Required<Pick<SearchParams, "q">> & Omit<SearchParams, "q">;
 }
+
+/** Repeated params and comma lists as one list of values, with blanks dropped. */
+export function listValues(values: readonly string[]): string[] {
+  return values.flatMap(value => value.split(",")).map(value => value.trim()).filter(Boolean);
+}
+
+/** The `where` values, all three when none is given; an unknown value is refused by name. */
+export function parseWhere(values: readonly string[] | undefined): Set<SearchWhere> {
+  if (!values?.length) return new Set(SEARCH_WHERE);
+  const out = new Set<SearchWhere>();
+  for (const value of values) {
+    const where = SEARCH_WHERE.find(w => w === value.toLowerCase());
+    if (!where) throw new SearchFilterError(`No where value "${value}"; use root, thread or tool.`);
+    out.add(where);
+  }
+  return out;
+}
+
+/** The web hash route that opens a hit, written as web/src/lib/router.svelte.ts `conversationHref` writes it. */
+export function hitLink(conversation: string, messageId: string, threadRoot?: string): string {
+  const params = new URLSearchParams({ ...(threadRoot ? { thread: threadRoot } : {}), m: messageId });
+  return `#/c/${encodeURIComponent(conversation)}?${params}`;
+}
+
+/** A thread's title in a reply's row: the root post's first words, markdown marks dropped, cut at a word near 60 characters. */
+export function threadTitle(text: string): string {
+  const plain = text.replace(/```[\s\S]*?```/g, " ").replace(/[`*_#>|[\]]/g, "").replace(/\s+/g, " ").trim();
+  if (plain.length <= 60) return plain;
+  const cut = plain.slice(0, 60);
+  const space = cut.lastIndexOf(" ");
+  return `${space > 30 ? cut.slice(0, space) : cut}…`;
+}
+
+/** Who `from` names: the owner, every agent, or one agent with the threads its work runs in. */
+type From = { kind: "owner" } | { kind: "agents" } | {
+  kind: "agent"; id: string;
+  /** The ids its posts and agent messages carry. */
+  authors: string[];
+  /** The entries of its own work, which it wrote unless the owner did. */
+  work: Cond;
+};
 
 /** YYYY-MM-DD at 00:00 in the owner's zone, as epoch ms. */
 export function dayStart(day: string): number {
@@ -109,41 +165,41 @@ export class Search {
     const range: Cond[] = [...(after === undefined ? [] : [{ op: "gte", field: "at", value: after } as Cond]), ...(before === undefined ? [] : [{ op: "lt", field: "at", value: before } as Cond])];
     const parts: Cond[] = [];
 
-    const inId = query.in;
+    const where = parseWhere(query.where);
+    const inId = query.in ? this.resolveIn(query.in) : undefined;
     const inChannel = inId ? this.groups.row(inId) : undefined;
     const inRoom = inId && (isRoomId(inId) || isAgentId(inId)) ? this.threads.agentRecords?.record(inId) : undefined;
-    const agents = query.from === "agents";
+    const from = (query.from ?? []).map(value => this.resolveFrom(value));
     const tests = this.testSends();
     const testOf = new Map(tests.map(t => [`${t.thread}:${t.entry}`, t]));
     const scope = !inChannel && inId ? parseConversationId(this.threads.conversationOf(inId)) : undefined;
     const comms = scope ? [] : this.commThreads();
     const testRooms = this.testRooms();
-    if (!inChannel) {
-      const fromAgent = query.from && query.from !== "owner" && !agents ? parseConversationId(this.threads.conversationOf(query.from)) : undefined;
+    const rootConvs = this.rootChatConvs();
+    const entryWhere = this.entryWhere(where, rootConvs);
+    const postWhere = where.has("root") && where.has("thread") ? [] : where.has("root") ? [not(eq("kind", POST_KINDS.reply))] : where.has("thread") ? [eq("kind", POST_KINDS.reply)] : undefined;
+    const anyOf = (conds: Cond[]): Cond[] => (from.length ? [or(...conds)] : []);
+    if (!inChannel && entryWhere) {
       parts.push(and(
-        eq("source", "entry"), eq("channelCopy", false), ...range,
-        ...(query.type === "tools" ? [isIn("kind", TOOL_KINDS)] : query.type === "messages" ? [not(isIn("kind", TOOL_KINDS))] : []),
+        eq("source", "entry"), eq("channelCopy", false), ...range, ...entryWhere,
         ...(scope ? [eq("convs", `${scope.thread}:${scope.conversation}`)] : comms.length ? [not(isIn("threads", comms))] : []),
-        ...(query.from === "owner" ? [eq("author", "owner"), ...(tests.length ? [not(isIn("keys", tests.map(t => `${t.thread}:${t.entry}`)))] : [])] : agents ? [not(eq("author", "owner"))] : []),
-        ...(fromAgent ? [or(and(eq("kind", "agent.message"), eq("author", query.from!)),
-          and(not(eq("kind", "agent.message")), not(eq("author", "owner")), eq("convs", `${fromAgent.thread}:${fromAgent.conversation}`)))] : []),
+        ...anyOf(from.map(f => f.kind === "owner" ? and(eq("author", "owner"), ...(tests.length ? [not(isIn("keys", tests.map(t => `${t.thread}:${t.entry}`)))] : []))
+          : f.kind === "agents" ? not(eq("author", "owner"))
+          : or(and(eq("kind", "agent.message"), isIn("author", f.authors)), and(not(eq("kind", "agent.message")), not(eq("author", "owner")), f.work)))),
       ));
     }
-    if ((!inId || inChannel) && query.type !== "tools") {
-      const fromId = query.from && query.from !== "owner" && !agents ? this.threads.registered(query.from)?.id ?? query.from : query.from;
+    if ((!inId || inChannel) && postWhere) {
       parts.push(and(
-        eq("source", "post"), eq("dm", false), ...range,
+        eq("source", "post"), eq("dm", false), ...range, ...postWhere,
         inChannel ? eq("room", inChannel.id) : not(isIn("room", testRooms)),
-        ...(agents ? [not(eq("author", "owner"))] : fromId ? [eq("author", fromId)] : []),
+        ...anyOf(from.map(f => f.kind === "owner" ? eq("author", "owner") : f.kind === "agents" ? not(eq("author", "owner")) : isIn("author", f.authors))),
       ));
     }
-    if ((!inId || inRoom) && query.type !== "tools") {
-      const fromRecord = query.from && query.from !== "owner" && !agents ? this.threads.agentRecords?.record(query.from) : undefined;
+    if ((!inId || inRoom) && postWhere) {
       parts.push(and(
-        eq("source", "post"), eq("dm", true), eq("listed", true), ...range,
+        eq("source", "post"), eq("dm", true), eq("listed", true), ...range, ...postWhere,
         inRoom ? eq("room", inRoom.room) : not(isIn("room", testRooms)),
-        ...(query.from === "owner" ? [eq("ownerPost", true)] : agents ? [eq("ownerPost", false)]
-          : query.from ? [isIn("author", [query.from, ...(fromRecord ? [fromRecord.id] : [])])] : []),
+        ...anyOf(from.map(f => f.kind === "owner" ? eq("ownerPost", true) : f.kind === "agents" ? eq("ownerPost", false) : isIn("author", f.authors))),
       ));
     }
 
@@ -156,7 +212,8 @@ export class Search {
       const note = boxNote(box, this.engine.boxState(box.box));
       return note ? [{ box: box.box, note }] : [];
     });
-    let hits = mine.docs.slice(offset, offset + limit).flatMap(doc => this.docHit(doc, scope?.thread, summaries, marks, testOf) ?? []);
+    const roots = new Set(rootConvs);
+    let hits = mine.docs.slice(offset, offset + limit).flatMap(doc => this.docHit(doc, scope?.thread, summaries, marks, testOf, roots) ?? []);
     // An answer whose match sits only in a tool call's arguments is found by its text, so it sinks below the messages of its own page.
     if (sort === "relevance") hits = [...hits.filter(hit => hit.role !== "tool"), ...hits.filter(hit => hit.role === "tool")];
     if (query.brief) hits = hits.map(({ text: _text, ...hit }) => hit);
@@ -185,21 +242,91 @@ export class Search {
     const found = await this.engine.search("", where, { sort: "recent", limit });
     const known = new Map<string, ConversationSummary | undefined>();
     const summaries = { get: (id: string) => (known.has(id) ? known.get(id) : known.set(id, this.threads.conversation(id)).get(id)) };
-    const hits = found.docs.flatMap(doc => this.docHit(doc, undefined, summaries, [], new Map()) ?? [])
+    const roots = new Set(this.rootChatConvs());
+    const hits = found.docs.flatMap(doc => this.docHit(doc, undefined, summaries, [], new Map(), roots) ?? [])
       // An input the chat or Prime wrote as the owner's turn, such as a check-in or a duty push, is no message of his.
       .filter(hit => hit.role !== "system")
       .map(({ text, ...hit }) => ({ ...hit, snippet: text ?? hit.snippet }));
     return { hits, total: hits.length };
   }
 
+  /** An agent's work: the entries of its work thread and its root job threads. A job or thread id names that conversation's entries. */
+  private resolveFrom(value: string): From {
+    const lower = value.toLowerCase();
+    if (lower === "owner" || lower === "agents") return { kind: lower };
+    const records = this.threads.agentRecords;
+    const named = this.threads.registered(value) ?? this.byName(records?.list() ?? [], value, "from");
+    if (named && records) {
+      const threads = [named.workThread, ...records.jobThreads(named)];
+      return { kind: "agent", id: named.id, authors: [named.id, named.workThread], work: isIn("threads", threads) };
+    }
+    const job = this.threads.agent(value);
+    if (job) {
+      const at = parseConversationId(job.id);
+      return { kind: "agent", id: job.id, authors: [job.id], work: eq("convs", `${at.thread}:${at.conversation}`) };
+    }
+    throw new SearchFilterError(`No agent named "${value}" for from; use owner, agents, an agent id or an agent's name.`);
+  }
+
+  /**
+   * The id `in` names: a room or conversation id, a channel or Solo room by name (`#` optional), or an agent by name for its DM, with
+   * case ignored. A name that fits a room and an agent, or two rooms, is refused with the ids to use instead.
+   */
+  private resolveIn(value: string): string {
+    if (this.groups.row(value) || ((isRoomId(value) || isAgentId(value)) && this.threads.agentRecords?.record(value))) return value;
+    const name = value.replace(/^#/, "").toLowerCase();
+    const rooms = this.groups.rows().filter(row => row.name.toLowerCase() === name);
+    const open = rooms.filter(row => !row.archived);
+    const room = (open.length ? open : rooms);
+    const agent = value.startsWith("#") ? undefined : this.byName(this.threads.agentRecords?.list() ?? [], value, "in");
+    if (room.length + (agent ? 1 : 0) > 1) {
+      const ids = [...room.map(row => row.id), ...(agent ? [agent.id] : [])].join(", ");
+      throw new SearchFilterError(`"${value}" for in names more than one place (${ids}); pass one of those ids.`);
+    }
+    if (room[0]) return room[0].id;
+    if (agent) return agent.id;
+    const scope = parseConversationId(this.threads.conversationOf(value));
+    if (this.threads.thread(scope.thread)) return value;
+    throw new SearchFilterError(`No channel, Solo room, agent or thread named "${value}" for in.`);
+  }
+
+  /** The agent whose name, as the app shows it, is `value` with case ignored; two such agents are refused. */
+  private byName(records: readonly AgentRecord[], value: string, param: "from" | "in"): AgentRecord | undefined {
+    const lower = value.toLowerCase();
+    const found = records.filter(r => (this.threads.agent(r.id)?.name ?? r.name).toLowerCase() === lower || r.name.toLowerCase() === lower);
+    if (found.length > 1) throw new SearchFilterError(`"${value}" for ${param} names ${found.length} agents (${found.map(r => r.id).join(", ")}); pass one of those ids.`);
+    return found[0];
+  }
+
+  /** `<thread>:1` of each root chat no agent holds (threads.ts `rootChats`), where the owner talks to the thread himself. */
+  private rootChatConvs(): string[] {
+    return this.threads.rootChats().map(thread => `${thread}:1`);
+  }
+
+  /**
+   * The entry filter for `where`, or undefined when it keeps no entry. A root chat's words are `root` and its tool output `tool`; every
+   * entry of a work thread or job is `tool`. An entry copied into several threads counts as a root chat's when any copy is in one.
+   */
+  private entryWhere(where: ReadonlySet<SearchWhere>, rootConvs: string[]): Cond[] | undefined {
+    if (where.has("root") && where.has("tool")) return [];
+    if (where.has("root")) return [isIn("convs", rootConvs), not(isIn("kind", TOOL_KINDS))];
+    if (where.has("tool")) return [or(not(isIn("convs", rootConvs)), isIn("kind", TOOL_KINDS))];
+    return undefined;
+  }
+
+  /** Where an entry sits, by the rule `entryWhere` filters with. */
+  private static entryPlace(doc: EntryDoc, rootConvs: ReadonlySet<string>): SearchWhere {
+    return !TOOL_KINDS.includes(doc.kind) && doc.convs.some(conv => rootConvs.has(conv)) ? "root" : "tool";
+  }
+
   /** A document's hit: an entry opens in the scope's thread or the unarchived, newest thread that holds it, a post in its room. */
-  private docHit(doc: SearchDoc, scopeThread: string | undefined, summaries: { get(id: string): ConversationSummary | undefined }, marks: string[], testOf: Map<string, TestSendEntry>): SearchHit | undefined {
+  private docHit(doc: SearchDoc, scopeThread: string | undefined, summaries: { get(id: string): ConversationSummary | undefined }, marks: string[], testOf: Map<string, TestSendEntry>, roots: ReadonlySet<string>): SearchHit | undefined {
     if (doc.source === "post") return this.postHit(doc, marks);
     const thread = scopeThread ?? this.copyThread(doc);
     const conversation = Number(doc.convs.find(c => c.startsWith(`${thread}:`))?.slice(thread.length + 1) ?? 1);
     const hit: HostHit = { thread, conversation, entryId: doc.entry, kind: doc.kind, author: doc.author, at: doc.at, snippet: "", text: doc.text };
     const test = doc.kind === "pi.user" ? doc.keys.map(key => testOf.get(key)).find(Boolean) : undefined;
-    return this.threadHit(hit, summaries.get(conversationIdOf(thread, conversation)), marks, test);
+    return this.threadHit(hit, summaries.get(conversationIdOf(thread, conversation)), marks, Search.entryPlace(doc, roots), test);
   }
 
   /** Copies of one entry show from the unarchived, most recently updated thread (pi-host's rule in index-db.ts `searchIndex`). */
@@ -222,16 +349,24 @@ export class Search {
     if (!row) return undefined;
     const author = this.threads.principal(post.author);
     const long = fullText(post.text, marks);
+    const root = post.threadRoot ? this.posts(doc.room).find(p => p.id === post.threadRoot) : undefined;
     return {
-      id: `${row.id}/${post.id}`, conversation: { id: row.id, kind: row.kind, name: row.name, ...(row.archived ? { archived: true } : {}) }, messageId: post.id,
+      id: `${row.id}/${post.id}`, ...this.placeOf(row.id, post.id, post.threadRoot, root),
+      conversation: { id: row.id, kind: row.kind, name: row.name, ...(row.archived ? { archived: true } : {}) }, messageId: post.id,
       author: { id: author.id, name: author.name, kind: author.kind === "owner" ? "owner" : "agent" }, at: post.at, kind: "post",
       role: author.kind === "owner" ? "owner" : "agent", ...(post.threadRoot ? { threadRoot: post.threadRoot } : {}),
       snippet: snippet(post.text, marks) || long, ...(post.text.length > 240 ? { text: long } : {}), ...this.reactionsOf(post),
     };
   }
 
+  /** A post's `where`, `thread` and `link`: a reply opens its room with the thread pane at the reply, a top-level post the room at it. */
+  private placeOf(room: string, post: string, threadRoot: string | undefined, root: RoomPost | undefined): Pick<SearchHit, "where" | "thread" | "link"> {
+    if (!threadRoot) return { where: "root", link: hitLink(room, post) };
+    return { where: "thread", thread: { root: threadRoot, title: root && !root.deletedAt ? threadTitle(root.text) : "" }, link: hitLink(room, post, threadRoot) };
+  }
+
   /** A thread hit opens at its entry: the timeline's `around=e<id>` answers with the item that holds it as `focus`. */
-  private threadHit(hit: HostHit, summary: ConversationSummary | undefined, marks: string[], test?: TestSendEntry): SearchHit {
+  private threadHit(hit: HostHit, summary: ConversationSummary | undefined, marks: string[], where: SearchWhere, test?: TestSendEntry): SearchHit {
     const conversationId = conversationIdOf(hit.thread, hit.conversation);
     const kind: ConversationKind = summary?.kind ?? (hit.conversation === 1 ? "solo" : "job");
     const said = hit.text === undefined ? undefined : describe(hit.kind, hit.author, hit.text, marks);
@@ -240,7 +375,7 @@ export class Search {
     const long = said ? fullText(said.text, marks) : "";
     const parentId = summary?.parent ?? (kind === "solo" ? undefined : this.threads.principal(conversationId).parent);
     return {
-      id: `${conversationId}/e${hit.entryId}`,
+      id: `${conversationId}/e${hit.entryId}`, where, link: hitLink(conversationId, `e${hit.entryId}`),
       conversation: {
         id: conversationId, kind, name: summary?.name ?? this.threads.thread(hit.thread)?.name ?? hit.thread,
         ...(parentId && parentId !== conversationId ? { parent: { id: parentId, name: this.threads.principal(parentId).name } } : {}),
@@ -260,8 +395,9 @@ export class Search {
     const owner = author.kind === "owner";
     const long = fullText(post.text, marks);
     const name = this.threads.agent(agent.id)?.name ?? agent.name;
+    const root = post.threadRoot ? this.posts(room).find(p => p.id === post.threadRoot) : undefined;
     return {
-      id: `${room}/${post.id}`, conversation: { id: room, kind: "dm", name, ...(agent.archived ? { archived: true } : {}) }, messageId: post.id,
+      id: `${room}/${post.id}`, ...this.placeOf(room, post.id, post.threadRoot, root), conversation: { id: room, kind: "dm", name, ...(agent.archived ? { archived: true } : {}) }, messageId: post.id,
       author: { id: author.id, name: author.name, kind: owner ? "owner" : "agent" }, at: post.at, kind: "post", role: owner ? "owner" : "agent",
       ...(post.testSend ? { testSend: { reason: post.testSend.reason } } : {}),
       snippet: snippet(post.text, marks) || long, ...(post.text.length > 240 ? { text: long } : {}), ...this.reactionsOf(post),

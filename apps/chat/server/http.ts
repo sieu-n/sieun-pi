@@ -16,6 +16,7 @@ import { LocalImageError, readLocalImage } from "./local-image.ts";
 import { ReactionError } from "./reactions.ts";
 import { LaterError } from "./later.ts";
 import { CwdRefused } from "./projects.ts";
+import { listValues, SearchFilterError } from "./search.ts";
 import { isHostAway } from "./host/types.ts";
 import { readJson } from "./store.ts";
 import { usageReport, hostsReport } from "./usage.ts";
@@ -264,10 +265,13 @@ export function routes(app: App): Route[] {
     route("DELETE", "/api/rooms/:id/members/:agent", async (_r, p) => app.groups.removeMember(p.id!, p.agent!)),
     route("POST", "/api/dms", async (_r, _p, _q, body) => app.openDm(((await body()) as { agent: string }).agent)),
     route("GET", "/api/dms", async () => app.rooms.summaries()),
+    // `from` and `where` take comma lists and repeated params alike; a value search cannot read is the caller's error.
     route("GET", "/api/search", async (_r, _p, q) => app.search.run({
-      q: q.get("q") ?? "", from: str(q.get("from")), in: str(q.get("in")), after: str(q.get("after")), before: str(q.get("before")),
-      sort: q.get("sort") === "recent" ? "recent" : "relevance", limit: num(q.get("limit")), cursor: str(q.get("cursor")), brief: q.get("brief") === "1",
-      ...(q.get("type") === "messages" || q.get("type") === "tools" ? { type: q.get("type") as "messages" | "tools" } : {}),
+      q: q.get("q") ?? "", from: listValues(q.getAll("from")), where: listValues(q.getAll("where")), in: str(q.get("in")), after: str(q.get("after")),
+      before: str(q.get("before")), sort: q.get("sort") === "recent" ? "recent" : "relevance", limit: num(q.get("limit")), cursor: str(q.get("cursor")),
+      brief: q.get("brief") === "1",
+    }).catch((error: unknown) => {
+      throw error instanceof SearchFilterError ? new BadRequest(error.message) : error;
     })),
     route("GET", "/api/search/recent", async (_r, _p, q) => app.search.recent({ after: num(q.get("after")), limit: num(q.get("limit")) })),
     // An agent's board, duties, check-in and jobs by agent id. The thread routes take a thread id and resolve it to its agent through the

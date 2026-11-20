@@ -63,14 +63,14 @@ suite("search hits", () => {
     assert.ok(!call.snippet.includes("{"), call.snippet);
   });
 
-  test("by relevance tool output ranks after every message, and type keeps one side", async () => {
+  test("by relevance tool output ranks after every message, and where=tool keeps every tool output", async () => {
     const all = await s.get<SearchResult>("/api/search?q=relay&limit=100");
     const firstOutput = all.hits.findIndex(h => h.kind === "tool");
     assert.ok(firstOutput > 0);
     assert.ok(all.hits.slice(firstOutput).every(h => h.kind === "tool"));
-    const tools = await s.get<SearchResult>("/api/search?q=relay&type=tools&limit=100");
-    const messages = await s.get<SearchResult>("/api/search?q=relay&type=messages&limit=100");
-    assert.ok(tools.total > 0 && tools.hits.every(h => h.kind === "tool"));
+    const tools = await s.get<SearchResult>("/api/search?q=relay&where=tool&limit=100");
+    const messages = await s.get<SearchResult>("/api/search?q=relay&where=root,thread&limit=100");
+    assert.ok(tools.total > 0 && all.hits.filter(h => h.kind === "tool").every(h => tools.hits.some(t => t.id === h.id)));
     assert.ok(messages.hits.every(h => h.kind !== "tool"));
     assert.equal(tools.total + messages.total, all.total);
   });

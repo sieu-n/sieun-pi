@@ -1,12 +1,18 @@
 /**
- * The full results page's state lives in its address, `#/search?q=&from=&in=&after=&before=&sort=&type=`, so back, forward and links
+ * The full results page's state lives in its address, `#/search?q=&from=&in=&after=&before=&sort=&where=`, so back, forward and links
  * work. These turn the address into the server's search params and the filter chips into address changes.
  */
+import type { SearchWhere } from "../../lib/api/types.ts";
 import { dayString } from "./operators.ts";
 import type { Sort } from "./search-model.ts";
 
-export type ResultType = "messages" | "tools";
-export type Results = { q: string; from?: string; in?: string; after?: string; before?: string; sort: Sort; type?: ResultType };
+const WHERE: readonly SearchWhere[] = ["root", "thread", "tool"];
+/** The `where` lists the page's menu offers: what people wrote, and what agents did inside their work. */
+export const MESSAGES_WHERE = "root,thread";
+export const TOOLS_WHERE = "tool";
+
+/** `where` is a comma list of `root`, `thread` and `tool` in that order, absent for all three. */
+export type Results = { q: string; from?: string; in?: string; after?: string; before?: string; sort: Sort; where?: string };
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -16,7 +22,8 @@ export function readResults(params: Record<string, string>): Results {
   if (params.in) out.in = params.in;
   if (params.after && DATE.test(params.after)) out.after = params.after;
   if (params.before && DATE.test(params.before)) out.before = params.before;
-  if (params.type === "messages" || params.type === "tools") out.type = params.type;
+  const where = WHERE.filter(w => (params.where ?? "").split(",").includes(w));
+  if (where.length && where.length < WHERE.length) out.where = where.join(",");
   return out;
 }
 
@@ -29,14 +36,17 @@ export function resultParams(results: Partial<Results>): Record<string, string |
     after: results.after,
     before: results.before,
     sort: results.sort === "recent" ? "recent" : undefined,
-    type: results.type,
+    where: results.where,
   };
 }
 
 /** What the server reads; it returns nothing for an empty query. */
-export function searchParams(results: Results): { q: string; from?: string; in?: string; after?: string; before?: string; sort: Sort; type?: ResultType } {
-  const { q, sort, ...rest } = results;
-  return { q, sort, ...Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined)) };
+export function searchParams(results: Results): { q: string; from?: string; in?: string; after?: string; before?: string; sort: Sort; where?: SearchWhere[] } {
+  const { q, sort, where, ...rest } = results;
+  return {
+    q, sort, ...Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined)),
+    ...(where ? { where: WHERE.filter(w => where.split(",").includes(w)) } : {}),
+  };
 }
 
 export type DateRange = { id: string; label: string; after?: string; before?: string };

@@ -431,6 +431,11 @@ export class Threads {
     return [...this.list.values()].filter(row => !this.isComm(row.id) && !this.agentRecords?.store.isTest(row.id)).flatMap(row => this.rowConversations(row));
   }
 
+  /** The threads that are root chats no agent holds, the `solo` rows of `threadConversations`, read with no summary built. */
+  rootChats(): string[] {
+    return [...this.list.keys()].filter(id => this.meta(id).kind !== "job" && !this.agentRecords?.ofWorkThread(id) && !this.isComm(id));
+  }
+
   /** The summary of any conversation by id: a DM room, a channel or Solo room, a thread or job, or a comm or test thread or one of its jobs. */
   conversation(id: ConversationId): ConversationSummary | undefined {
     const row = this.list.get(parseConversationId(id).thread);
