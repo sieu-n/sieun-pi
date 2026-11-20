@@ -120,7 +120,7 @@ export interface ConversationSummary {
 }
 
 export interface Sidebar {
-  /** Solo rooms (`so_<id>`, with `agenda`), open ones first, then root chats that no agent holds, each newest first. */
+  /** Solo rooms (`so_<id>`, with `agenda`), open ones first, each newest first. */
   solo: ConversationSummary[];
   /** Channels he is a member of, by name. */
   channels: ConversationSummary[];

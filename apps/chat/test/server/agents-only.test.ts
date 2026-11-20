@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
-import type { AgentSummary, LiveEvent, Sidebar } from "../../web/src/lib/api/types.ts";
+import type { AgentSummary, ConversationSummary, LiveEvent, Sidebar } from "../../web/src/lib/api/types.ts";
 import { AgentStore } from "../../server/agent-store.ts";
 import { FixtureHost } from "../../server/host/fixture.ts";
 import type { EntryRecord } from "../../server/host/types.ts";
@@ -62,10 +62,10 @@ describe("lists", () => {
     assert.deepEqual(directory.jobs.map(j => j.id), jobs.map(j => j.id));
   });
 
-  test("the root chat no agent holds sits in the sidebar's solo group", async () => {
+  test("the sidebar's Solo group holds Solo rooms only, never a root chat no agent holds", async () => {
     const sidebar = await s.get<Sidebar>("/api/sidebar");
-    assert.deepEqual(sidebar.solo.filter(c => !c.id.startsWith("so_")).map(c => [c.id, c.name]), [[ids.solo, "New thread"]], "after the Solo rooms");
-    assert.ok(!sidebar.dms.some(c => c.name === "New thread"));
+    assert.ok(sidebar.solo.every(c => c.id.startsWith("so_")));
+    assert.ok(![...sidebar.solo, ...sidebar.dms].some(c => c.id === ids.solo || c.name === "New thread"));
   });
 
   test("hello carries the registered agents and their jobs", async () => {
@@ -152,7 +152,27 @@ describe("registration", () => {
     const list = await s.get<AgentSummary[]>("/api/agents");
     assert.ok(!list.some(a => a.thread === untitled || a.thread === named));
     const solo = (await s.get<Sidebar>("/api/sidebar")).solo.map(c => c.id);
-    assert.ok(solo.includes(untitled) && solo.includes(named));
+    assert.ok(!solo.includes(untitled) && !solo.includes(named));
+  });
+
+  test("a root thread a job started with rlm.create_session is filed under the job's agent, and so is one that job started", async () => {
+    const at = Date.now();
+    const brief = (text: string) => [{ role: "user" as const, content: [{ type: "text" as const, text }], timestamp: at }];
+    // pi-host's rlm.create_session makes a root thread and gives it its first input as an agent message from the calling thread.
+    const spawned = host.addThread({ name: "dropped pages cause", createdAt: at });
+    host.append(spawned, 1, { kind: "agent.message", data: { from: ids.cutover, via: "rlm.create_session" }, model: brief("Find why pages dropped.") });
+    const nested = host.addThread({ name: "dropped pages round 2", createdAt: at + 1 });
+    host.append(nested, 1, { kind: "agent.message", data: { from: spawned.row.id, via: "rlm.create_session" }, model: brief("Refresh the stats.") });
+    const owners = host.addThread({ name: "New thread", createdAt: at + 2 });
+    host.append(owners, 1, { kind: "pi.user", model: brief("does sft distillation work?") });
+    await s.app.threads.refresh();
+    const jobs = await s.get<AgentSummary[]>("/api/jobs");
+    for (const thread of [spawned, nested]) {
+      assert.equal(jobs.find(j => j.id === thread.row.id)?.agent?.id, agents.harness, `${thread.row.name} is a job of the agent whose job started it`);
+      assert.deepEqual(s.app.store.state.threads[thread.row.id], { kind: "job", parent: agents.harness });
+    }
+    assert.ok(!jobs.some(j => j.id === owners.row.id), "a root chat the owner started is no job");
+    assert.ok((await s.get<Sidebar>("/api/sidebar")).solo.every(c => c.id.startsWith("so_")));
   });
 
   test("the migrate CLI skips an untitled root chat", async () => {
@@ -201,10 +221,9 @@ describe("registration", () => {
       assert.equal(saved.agents.aliases[untitled], undefined);
       assert.equal(saved.agents.aliases[job], undefined);
       assert.equal(saved.rooms.rooms.find(r => r.id === "dm_new-thread")?.archived, true);
-      const sidebar = await server.get<Sidebar>("/api/sidebar");
-      assert.ok(sidebar.solo.some(c => c.id === untitled));
-      assert.ok(sidebar.solo.some(c => c.id === made));
-      assert.ok(!sidebar.dms.some(c => c.id === "dm_new-thread"));
+      const chats = (await server.get<ConversationSummary[]>("/api/conversations")).filter(c => c.kind === "solo").map(c => c.id);
+      assert.ok(chats.includes(untitled) && chats.includes(made), "each is a root chat no agent holds again");
+      assert.ok(!(await server.get<Sidebar>("/api/sidebar")).dms.some(c => c.id === "dm_new-thread"));
       await server.close();
       server = await start({ dataDir: dir, host: fresh });
       assert.deepEqual((await server.get<AgentSummary[]>("/api/agents")).map(a => a.id).sort(), kept);

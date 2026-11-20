@@ -1,4 +1,4 @@
-import { connection, isSoloRoom, sidebar as liveSidebar, type ConversationSummary, type Sidebar as SidebarData } from "$lib/api";
+import { connection, sidebar as liveSidebar, type ConversationSummary, type Sidebar as SidebarData } from "$lib/api";
 
 const WIDTH_KEY = "chat.sidebarWidth";
 export const SIDEBAR_DEFAULT = 260;
@@ -20,13 +20,13 @@ function write(key: string, value: string): void {
   } catch {}
 }
 
-/** The Solo group's three parts: open Solo rooms, the untitled root chats no agent holds, then closed rooms under "Done". */
-export type SoloGroups = { open: ConversationSummary[]; done: ConversationSummary[]; chats: ConversationSummary[] };
+/** The Solo group's two parts: open Solo rooms, then closed ones under "Done". */
+export type SoloGroups = { open: ConversationSummary[]; done: ConversationSummary[] };
 
-/** Splits the server's Solo rows, keeping its order inside each part. */
+/** Splits the server's Solo rooms, keeping its order inside each part. */
 export function soloGroups(rows: readonly ConversationSummary[]): SoloGroups {
-  const groups: SoloGroups = { open: [], done: [], chats: [] };
-  for (const row of rows) (isSoloRoom(row.id) ? (row.closedAt ? groups.done : groups.open) : groups.chats).push(row);
+  const groups: SoloGroups = { open: [], done: [] };
+  for (const row of rows) (row.closedAt ? groups.done : groups.open).push(row);
   return groups;
 }
 

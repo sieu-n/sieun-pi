@@ -15,11 +15,9 @@ test("the sidebar's Direct messages hold one row per agent and no job", async ({
     expect(dm.agent).toBe(`ag_${dm.id.slice(3)}`);
     await expect(sidebar(page).locator(`a[href="#/c/${dm.id}"]`)).toBeVisible();
   }
-  // An untitled root chat is no agent, so it sits in Solo beside the Solo rooms (`so_`) and never among the DMs. New chat specs add more.
-  const chats = listed.solo.filter((c) => !c.id.startsWith("so_"));
-  expect(chats.length).toBeGreaterThan(0);
-  for (const chat of chats) expect(chat.name).toBe("New thread");
-  expect(listed.dms.some((dm) => dm.name === "New thread")).toBe(false);
+  // An untitled root chat is no agent and no Solo room, so no sidebar group lists it: Solo holds Solo rooms (`so_`) only.
+  for (const room of listed.solo) expect(room.id).toMatch(/^so_/);
+  expect([...listed.solo, ...listed.dms].some((c) => c.name === "New thread")).toBe(false);
   const jobs = all.filter((c) => c.kind === "job" && !c.archived);
   expect(jobs.length).toBeGreaterThan(0);
   for (const job of jobs) await expect(sidebar(page).locator(`a[href="#/c/${encodeURIComponent(job.id)}"]`)).toHaveCount(0);

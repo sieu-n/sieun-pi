@@ -16,6 +16,9 @@ import { DEFAULT_MODEL, DEFAULT_THINKING, type Config } from "./config.ts";
 import type { CreateOptions, DurableThread, Host, TreeNode } from "./host/types.ts";
 import type { Store } from "./store.ts";
 
+/** How many entries of a root thread `fileSpawned` reads for its first input; the input follows a few setup entries. */
+const FIRST_INPUT_SCAN = 20;
+
 export const isAgentId = (id: string): boolean => id.startsWith("ag_");
 /** A DM room id, `dm_<slug>`. */
 export const isRoomId = (id: string): boolean => id.startsWith("dm_");
@@ -92,6 +95,8 @@ export class Agents {
   };
   /** Whether the server has a live link to a box; undefined on a server with one box. The App sets it over its `MultiHost`. */
   hostState: (box: string) => AgentHostState | undefined = () => undefined;
+  /** The `from` of each unrecorded root's first input as `fileSpawned` read it, or null for an owner input, so a run reads each root once. */
+  private readonly starters = new Map<string, string | null>();
 
   constructor(
     readonly store: AgentStore,
@@ -320,6 +325,62 @@ export class Agents {
     this.store.saveRooms();
     for (const record of dropped) this.log(`dropped ${record.id} (${record.name}): an untitled root chat the old migration made an agent; ${record.workThread} is a solo chat again`);
     return dropped;
+  }
+
+  /**
+   * Files each root thread another agent's thread started under that agent, as a job. pi-host's `rlm.create_session` makes a root thread whose
+   * first input is an `agent.message` from the thread that called it, and records no other parent. Until 11-20 nothing filed those, so a
+   * job's own `rlm.create_session` jobs, 13 of seo's and 1 of chrome extension's, sat in the sidebar's Solo group as root chats no agent
+   * holds and got check-ins of their own. The poll calls this after each thread list read. It reads each unrecorded root's first input once
+   * per run, oldest root first, so a job started by a job filed earlier in the same pass is filed too. Answers the threads it filed.
+   */
+  async fileSpawned(rows: ReadonlyMap<string, DurableThread>): Promise<string[]> {
+    const filed: string[] = [];
+    const open = this.unrecorded(rows.values()).filter(t => !this.starters.has(t.id)).sort((a, b) => a.createdAt - b.createdAt);
+    for (const thread of open) {
+      const from = await this.starter(thread.id);
+      if (from === undefined) continue;
+      this.starters.set(thread.id, from);
+      const record = from === null ? undefined : this.ownerOf(from);
+      if (!record) continue;
+      this.fileJob(thread.id, record);
+      filed.push(thread.id);
+      this.log(`filed ${thread.id} (${thread.name}) under ${record.id} as a job: ${from} started it`);
+    }
+    return filed;
+  }
+
+  /** Files a root thread under the agent as one of its jobs: its kind becomes a job with the agent as parent, and it is aliased to the agent. */
+  fileJob(thread: string, record: AgentRecord): void {
+    this.state.state.threads[thread] = { kind: "job", parent: record.id };
+    this.state.saveState();
+    this.alias(thread, record.id);
+  }
+
+  /** The agent a thread works for: as its work, comm or aliased thread, or as a root job filed under it. */
+  private ownerOf(thread: string): AgentRecord | undefined {
+    const id = thread.split(":")[0]!;
+    const meta = this.state.state.threads[id];
+    return this.record(id) ?? this.ofComm(id)?.record ?? (meta?.kind === "job" && meta.parent ? this.record(meta.parent) : undefined);
+  }
+
+  /**
+   * Who sent the thread's first input: the sender of an `agent.message`, null for an owner input or a scan with no input, and undefined while
+   * the thread has no entry to read yet or the read failed, so the next poll reads it again.
+   */
+  private async starter(thread: string): Promise<string | null | undefined> {
+    try {
+      const page = await this.host.entries(thread, { conversation: 1, after: 0, limit: FIRST_INPUT_SCAN });
+      const first = page.entries.find(e => e.kind === "agent.message" || e.kind === "pi.user");
+      if (first?.kind === "agent.message") {
+        const from = (first.data as { from?: unknown } | undefined)?.from;
+        return typeof from === "string" ? from : null;
+      }
+      return first || page.more ? null : undefined;
+    } catch (error) {
+      this.log(`could not read the first input of ${thread}, the next poll tries again: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
   }
 
   /** Root chats that belong to no agent: not archived, not a job, and in no record, alias or comm thread. */

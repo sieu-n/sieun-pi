@@ -412,11 +412,8 @@ export class App {
     const groups = this.groups.summaries().filter(c => !c.archived && !this.agentStore.isTest(c.id));
     const solo = groups.filter(c => c.kind === "solo");
     return {
-      // Solo rooms, open ones first, then the root chats no agent holds.
-      solo: [
-        ...solo.filter(c => c.closedAt === undefined).sort(byNew), ...solo.filter(c => c.closedAt !== undefined).sort(byNew),
-        ...this.threads.threadConversations().filter(c => c.kind === "solo" && !c.archived).sort(byNew),
-      ],
+      // Solo rooms only, open ones first. A root thread is a job on its agent's page (agents.ts `fileSpawned`), never a sidebar row.
+      solo: [...solo.filter(c => c.closedAt === undefined).sort(byNew), ...solo.filter(c => c.closedAt !== undefined).sort(byNew)],
       channels: groups.filter(c => c.kind === "channel").sort((a, b) => a.name.localeCompare(b.name)),
       dms: this.rooms.summaries().filter(c => !c.archived && !this.agentStore.isTest(c.id)).sort(byNew),
       forYou: await this.boards.forYouCount().catch(() => 0),

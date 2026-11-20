@@ -25,7 +25,7 @@ const turnText = (page: TimelinePage) => page.items.filter(i => i.kind === "turn
 describe("conversations", () => {
   test("the sidebar groups channels and one DM per agent", async () => {
     const sidebar = await s.get<Sidebar>("/api/sidebar");
-    assert.deepEqual(sidebar.solo.map(c => c.id), [ids.soloRoom, ids.closedSolo, ids.solo], "Solo rooms, open first, then a root chat no agent holds");
+    assert.deepEqual(sidebar.solo.map(c => c.id), [ids.soloRoom, ids.closedSolo], "Solo rooms only, open first");
     assert.equal(sidebar.solo[0]!.agenda?.startsWith("Pick the relay protocol"), true);
     assert.equal(sidebar.solo[0]!.unread, 2, "two agent posts after the read mark");
     assert.equal(typeof sidebar.solo[1]!.closedAt, "number");

@@ -137,14 +137,12 @@ test("Add agents offers only registered agents not in the room, and a chip's x r
   await expect(members.getByRole("button", { name: "Remove Vent" })).toBeVisible();
 });
 
-test("the Solo group lists open rooms first, then the untitled chats, and closed ones last under a folded Done", async ({ page }) => {
+test("the Solo group lists open rooms first and closed ones last under a folded Done, and no root chat", async ({ page }) => {
   await open(page, "#/c", "main-panel");
   const group = soloGroup(page);
   const relay = group.locator(`a[href="#/c/${RELAY}"]`);
-  const chat = group.getByRole("link", { name: "New thread" }).first();
   await expect(relay).toBeVisible();
-  await expect(chat).toBeVisible();
-  expect((await relay.boundingBox())!.y).toBeLessThan((await chat.boundingBox())!.y);
+  await expect(group.getByRole("link", { name: "New thread" })).toHaveCount(0);
 
   const fold = group.locator('[data-fold="done"]');
   await expect(fold).toHaveAttribute("aria-expanded", "false");
@@ -152,7 +150,7 @@ test("the Solo group lists open rooms first, then the untitled chats, and closed
   await fold.click();
   const wiki = group.locator('[data-group="done"]').locator(`a[href="#/c/${WIKI}"]`);
   await expect(wiki).toBeVisible();
-  expect((await fold.boundingBox())!.y).toBeGreaterThan((await chat.boundingBox())!.y);
+  expect((await fold.boundingBox())!.y).toBeGreaterThan((await relay.boundingBox())!.y);
   await wiki.click();
   await expect(page.getByTestId("closed-banner")).toBeVisible();
   await expect(composerInput(conversation(page))).toHaveCount(0);

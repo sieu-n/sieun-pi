@@ -14,9 +14,9 @@ test("one list holds For you, Solo, Channels and Direct messages, with no All, S
   await expect(sidebar(page).getByRole("heading", { name: "Team" })).toHaveCount(0);
   await expect(sidebar(page).getByRole("link", { name: "For you" })).toBeVisible();
   for (const name of ["Solo", "Channels", "Direct messages"]) await expect(sidebar(page).getByRole("heading", { name, exact: true })).toBeVisible();
-  await expect(sidebar(page).locator('[data-section="solo"]')).toContainText("New thread");
-  await page.goto("/#/c/dm_vent");
-  await expect(sidebar(page).locator('[data-section="solo"]')).toContainText("New thread");
+  // Solo holds Solo rooms only: the fixture's untitled root chat no agent holds is in no group.
+  await expect(sidebar(page).locator('[data-section="solo"]')).toContainText("relay protocol");
+  await expect(sidebar(page).getByRole("link", { name: "New thread" })).toHaveCount(0);
 });
 
 test("a row opens its agent's DM and takes the soft citrus fill", async ({ page }) => {

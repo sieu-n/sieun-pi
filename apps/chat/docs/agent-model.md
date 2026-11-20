@@ -123,7 +123,7 @@ Rules that keep it simple:
 | Channels | Channels the owner is in. | The room |
 | Direct messages | One row per Agent, never per thread. The status dot is the agent's: working while any of its work threads runs. | The DM room with that agent |
 
-Work threads, comm threads and jobs are reached from the Agents page (tabs Overview, Work, Jobs, Board, Memory, Instructions) and from job pills under a message. A root chat becomes an agent with a DM only when the owner makes it one (`POST /api/agents`) or the migrate CLI does; an untitled root chat ("New thread") stays in the Solo group (see Migration).
+Work threads, comm threads and jobs are reached from the Agents page (tabs Overview, Work, Jobs, Board, Memory, Instructions) and from job pills under a message. A root chat becomes an agent with a DM only when the owner makes it one (`POST /api/agents`) or the migrate CLI does. A root thread that an agent's thread started with `rlm.create_session` is filed as a job of that agent, because its first input is an agent message from the thread that started it (`fileSpawned` in `server/agents.ts`). The Solo group lists Solo rooms only and hides when there are none, so a root chat no agent holds is in no sidebar group; search still finds it.
 
 ### (a) The owner asks for work in a DM
 
@@ -335,7 +335,7 @@ The chat server dials `ws://<box>:7791/v2/agents` with the box's bearer token fr
 |---|---|
 | A root thread of kind chat ("agent factory", "vent", the VPs) | An Agent `ag_<slug>`. Its thread becomes its first work thread with all its history, its cwd becomes its home, its host is us-metal02, and its first message (today's `purpose`) seeds `brief.md` for the owner to edit. |
 | A DM with that chat | Room `dm_<slug>`. The old thread's owner messages and its text answers (no tool calls) are copied in as posts with their original times, and older history sits behind "Earlier, in the work thread" (open question 1). |
-| A chat listed under Solo today | The same as a DM when it has a name: an agent with a DM room. An untitled chat ("New thread", "Untitled" or no name) stays a Solo row and becomes no agent. |
+| A chat listed under Solo today | The same as a DM when it has a name: an agent with a DM room. An untitled chat ("New thread", "Untitled" or no name) becomes no agent and has no sidebar row. |
 | A job (`<thread>:<n>`) or a root job with a parent | A job of that agent. Duty threads are the agent's jobs, with kind `duty`. |
 | `chat.board` doc per chat | `agents/<id>/board.json`, copied once. Ids stay, so p12 and t4 keep working. |
 | `boards/<chat>/duties.json`, check-in, wakes | Under `agents/<id>/`. Wakes fire on the agent's box from phase 6. |

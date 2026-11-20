@@ -185,6 +185,7 @@ export class Threads {
     this.summaries.clear();
     this.agentRecords?.dropUntitled(next);
     this.agentRecords?.follow(next);
+    await this.agentRecords?.fileSpawned(next);
     const cache = JSON.stringify({ threads, trees: [...this.trees] } satisfies ThreadsCache);
     if (cache !== this.cached) {
       this.cached = cache;
@@ -421,8 +422,8 @@ export class Threads {
   }
 
   /**
-   * A row per thread and job for the directory, search and the transcript view. A root chat no agent holds yet is `solo`; an agent's work
-   * thread and every job are `job`, under the agent's DM room or their parent, so no thread sits in the sidebar beside its agent's DM. A
+   * A row per thread and job for the directory, search and the transcript view. A root chat no agent holds yet is `solo`, and no sidebar
+   * group lists it; an agent's work thread and every job are `job`, under the agent's DM room or their parent. A
    * comm thread and its jobs, and every thread of a walk's test agent, have no row here; `conversation` still finds them, so they open as a
    * transcript by id.
    */

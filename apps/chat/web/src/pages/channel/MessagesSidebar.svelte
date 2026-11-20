@@ -151,22 +151,23 @@
     <SidebarRow href={forYouHref()} label="For you" icon="inbox" selected={forYouSelected} unread={sidebar.data.forYou} />
   </div>
 
-  <SidebarSection id="solo" label="Solo" folded={folded("solo")} ontoggle={() => sidebarSections.toggle("solo")} empty="No Solo rooms yet." isEmpty={!sidebar.data.solo.length}>
-    {#snippet actions()}<IconButton icon="plus" label="New Solo room" size="xs" onclick={() => soloDialog.open()} />{/snippet}
-    {#each shown(solo.open, "solo") as row (row.id)}{@render soloRow(row, "users")}{/each}
-    {#each shown(solo.chats, "solo") as row (row.id)}{@render soloRow(row, "chat")}{/each}
-    {#if folded("solo")}
-      {#each shown(solo.done, "solo") as row (row.id)}{@render soloRow(row, "check")}{/each}
-    {:else if solo.done.length}
-      <SidebarSection id="done" label="Done" count={solo.done.length} folded={!sidebar.doneOpen} ontoggle={() => (sidebar.doneOpen = !sidebar.doneOpen)}>
-        {#if sidebar.doneOpen}
-          <div class="done" data-group="done">
-            {#each solo.done as row (row.id)}{@render soloRow(row, "check")}{/each}
-          </div>
-        {/if}
-      </SidebarSection>
-    {/if}
-  </SidebarSection>
+  {#if sidebar.data.solo.length}
+    <SidebarSection id="solo" label="Solo" folded={folded("solo")} ontoggle={() => sidebarSections.toggle("solo")}>
+      {#snippet actions()}<IconButton icon="plus" label="New Solo room" size="xs" onclick={() => soloDialog.open()} />{/snippet}
+      {#each shown(solo.open, "solo") as row (row.id)}{@render soloRow(row, "users")}{/each}
+      {#if folded("solo")}
+        {#each shown(solo.done, "solo") as row (row.id)}{@render soloRow(row, "check")}{/each}
+      {:else if solo.done.length}
+        <SidebarSection id="done" label="Done" count={solo.done.length} folded={!sidebar.doneOpen} ontoggle={() => (sidebar.doneOpen = !sidebar.doneOpen)}>
+          {#if sidebar.doneOpen}
+            <div class="done" data-group="done">
+              {#each solo.done as row (row.id)}{@render soloRow(row, "check")}{/each}
+            </div>
+          {/if}
+        </SidebarSection>
+      {/if}
+    </SidebarSection>
+  {/if}
 
   {#each channels.sections as { section, rows } (section.id)}
     <div class="drop" data-section-id={section.id} use:channelDrop={(id) => sidebarSections.move(id, section.id)}>
