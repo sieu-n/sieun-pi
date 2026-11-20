@@ -1764,6 +1764,23 @@ export function readChatStarts(lines: readonly string[]): number[] {
   return lines.flatMap(line => { const at = Date.parse(CHAT_LISTENING.exec(line)?.[1] ?? ""); return Number.isFinite(at) ? [at] : []; });
 }
 
+/** The swap ceiling d7 holds the owner's Mac to (goal p1616, c110): over it, idle browser tabs and agents have pushed the Mac out of memory. */
+export const SWAP_GB_MAX = 15;
+
+/** The largest swap each remote box read in a watch line of the window and the minute of that line; a box with no reading has no entry. */
+export function swapPeaks(watch: readonly WatchLine[], from: number, to: number): Map<string, { gb: number; at: number }> {
+  const peaks = new Map<string, { gb: number; at: number }>();
+  for (const line of watch) {
+    const at = Date.parse(line.at);
+    if (!(at >= from && at < to)) continue;
+    for (const view of hostViews(line)) {
+      if (view.swapGb === undefined || (peaks.get(view.name)?.gb ?? -1) >= view.swapGb) continue;
+      peaks.set(view.name, { gb: Math.round(view.swapGb * 100) / 100, at });
+    }
+  }
+  return peaks;
+}
+
 export function measure(input: Inputs): PrecheckOutput {
   const { now } = input;
   // A call that failed inside a supported Prime update restart on its box met the update's planned stop, not a harness fault: at 20:10:21Z on
@@ -2042,6 +2059,10 @@ export function measure(input: Inputs): PrecheckOutput {
     metrics[`unusable_min_30_${key}`] = count.unusable;
     metrics[`unknown_min_30_${key}`] = count.unknown;
     metrics[`offline_min_30_${key}`] = count.offline;
+  }
+  for (const [name, peak] of swapPeaks(input.watch, start, start + WINDOW_MS)) {
+    metrics[`swap_gb_max_30_${name.replace(/[^A-Za-z0-9]+/g, "_")}`] = peak.gb;
+    if (peak.gb > SWAP_GB_MAX) flagged.push({ kind: "swap_high", excerpt: `${name} read ${peak.gb} GB of swap at ${clock(peak.at)}, its most in the window and over the ${SWAP_GB_MAX} GB target.` });
   }
   const byHost = [...perHost].map(([name, count]) => `${name} read usable in ${count.usable}, unusable in ${count.unusable}, unknown in ${count.unknown} and offline in ${count.offline}`).join("; ");
   flagged.push({ kind: "minutes", excerpt: `${clean} of the last 30 minutes ran clean and ${unknownMin} are unknown. ${byHost || "No box was read"} ` +

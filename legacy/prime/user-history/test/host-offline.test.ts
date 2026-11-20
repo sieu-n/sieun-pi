@@ -181,3 +181,21 @@ test("an unreached read more than three lines before Tailscale reads the box off
   assert.equal(result.metrics.offline_min_30_mac, 4);
   assert.equal(result.metrics.daemon_fail_min_30, 1);
 });
+
+// Goal p1616 (11-20): d7 keeps the Mac's swap, so the check-in sees when idle browser tabs push it out of memory again.
+test("the precheck keeps the most swap the Mac read in the window, flags it over 15 GB, and leaves it out while the Mac is offline", () => {
+  const macUp = { pressureLevel: 1, swapoutsPerS: 0, kernelTaskPct: 5, owners: [] };
+  const swapAt = (gbOf: (minute: number) => number) => Array.from({ length: 30 }, (_line, minute): WatchLine => {
+    const line = lineAt(minute, "offline");
+    const { offline: _offline, error: _error, ...rest } = line.hosts![0]!;
+    return { ...line, hosts: [{ ...rest, usable: macUp, swapGb: gbOf(minute) }] } as WatchLine;
+  });
+  const low = measure({ now: RUN, watch: swapAt(minute => 8 + minute / 10), log: { holds: [] }, chats: [], daemonFaults: [] });
+  assert.equal(low.metrics.swap_gb_max_30_mac, 10.9);
+  assert.equal(low.flagged?.find(slice => slice.kind === "swap_high"), undefined);
+  const high = measure({ now: RUN, watch: swapAt(minute => minute === 12 ? 17.456 : 9), log: { holds: [] }, chats: [], daemonFaults: [] });
+  assert.equal(high.metrics.swap_gb_max_30_mac, 17.46);
+  assert.equal(high.flagged?.find(slice => slice.kind === "swap_high")?.excerpt, "mac read 17.46 GB of swap at 15:44Z, its most in the window and over the 15 GB target.");
+  const off = measure({ now: RUN, watch: Array.from({ length: 30 }, (_, minute) => lineAt(minute, "offline")), log: { holds: [] }, chats: [], daemonFaults: [] });
+  assert.equal("swap_gb_max_30_mac" in off.metrics, false);
+});
