@@ -91,8 +91,9 @@ const BULLET = /^\s*[-*+] /;
 const NESTED = /^ {2,}[-*+] /m;
 const TASK = /^\s*[-*+] \[[ xX]\] /m;
 
-/** Apps with a snooze or remind-later feature that an answer to OPTIONS_ASKS names. */
-const APPS = ["Slack", "Superhuman", "Gmail", "Outlook", "Linear", "Discord", "Teams", "Spark", "Hey", "Front", "Missive", "Todoist", "Notion", "Telegram", "WhatsApp", "Apple Mail", "Shortwave", "Boomerang"]
+/** Apps with a snooze or remind-later feature, mail and chat apps and the todo apps OPTIONS_ASKS asks about, which an answer names. */
+const APPS = ["Slack", "Superhuman", "Gmail", "Outlook", "Linear", "Discord", "Teams", "Spark", "Hey", "Front", "Missive", "Todoist", "Notion", "Telegram", "WhatsApp", "Apple Mail", "Shortwave", "Boomerang",
+  "Things 3", "Apple Reminders", "TickTick", "Asana", "Microsoft To Do", "Any\\.do", "OmniFocus", "Google Tasks", "Trello", "Jira", "ClickUp", "Basecamp"]
   .map(app => new RegExp(`\\b${app}\\b`, "i"));
 /** An example: a cue word, a quoted action or a time such as "3 days". */
 const EXAMPLE = /\b(e\.g\.|for example|for instance|say you|like when|you (send|pick|hit|get|set|mark|snooze)|\d+\s*(min|minutes|h|hours?|days?|am|pm)\b|tomorrow|monday)|"[^"]{3,}"|“[^”]{3,}”/i;
