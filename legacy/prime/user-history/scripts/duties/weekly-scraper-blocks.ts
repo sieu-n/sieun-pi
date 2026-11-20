@@ -14,7 +14,8 @@ import { classify, ENGINES, PREVIEW_UA, ROUTES, type Row, typicalChrome, uaFamil
  * pages and their APIs (the routes of public-page-scrapers.ts) from otel.otel_logs through Grafana in one aggregate query, and lists every
  * crawler client that the Vercel Firewall let through, whatever its size. A client is one reason and one UA across all its IPs, so a scraper
  * that rotates IPs is one client. A call is a crawler's when, in this order:
- * - its UA claims an allowed search indexer from an IP outside that engine's published ranges, or a link preview fetched an image or API route;
+ * - its UA claims an allowed search indexer from an IP outside that engine's published ranges, or a link preview fetched an image or API route
+ *   from outside its vendor's own network (PREVIEW_NETS);
  * - its UA is empty or matches the deny tokens or bot patterns of apps/search/firewall.json (AI training and AI fetch bots, HTTP libraries);
  * - classify() in public-page-scrapers.ts reads it as automated (bare-origin referer, fake or stale Chrome);
  * - it is a browser UA from a hosting or cloud network (ip-asn.ts);
@@ -150,6 +151,23 @@ export const needsNetwork = (row: WeekRow, judge: Judge): boolean =>
 
 export const FORGED = "forged-referer: virev.ai referer on its pages and no asset, __data.json or API call";
 
+/**
+ * The networks registered to the link preview vendors that fetch from their own, by AS number. A preview fetches a shared page's og:image from
+ * there: in the 14 days to 11-20, 22 facebookexternalhit calls to /api routes all came from Facebook's AS32934, 3 per image in the same
+ * millisecond. Slack (AWS), Discord (Google Cloud), WhatsApp (the sender's phone) and Pinterest fetch from networks anyone can rent or use, so
+ * their UAs on an image or API route stay flagged, as does a listed UA from any network outside its row.
+ */
+export const PREVIEW_NETS: readonly { ua: RegExp; asns: readonly number[] }[] = [
+  // Meta tells sites to allow its crawler by AS32934 (developers.facebook.com/docs/sharing/webmasters/web-crawlers).
+  { ua: /facebookexternalhit/i, asns: [32934] },
+  { ua: /Twitterbot/i, asns: [13414, 35995] },
+  { ua: /LinkedInBot/i, asns: [14413, 55163] },
+  { ua: /TelegramBot/i, asns: [62041, 62014, 59930, 44907, 211157] },
+  { ua: /kakaotalk-scrap/i, asns: [38099, 9764] },
+];
+const fromPreviewNet = (ua: string, asn: Asn | undefined): boolean =>
+  !!asn && PREVIEW_NETS.some(vendor => vendor.ua.test(ua) && vendor.asns.includes(asn.asn));
+
 /** The client a crawler's call belongs to (reason | UA), or null for an allowed indexer or preview, our own box or a person. */
 export function clientKey(row: WeekRow, judge: Judge, asn: Asn | undefined): string | null {
   const ua = row.ua.trim();
@@ -158,7 +176,7 @@ export function clientKey(row: WeekRow, judge: Judge, asn: Asn | undefined): str
   if (judge.firewall.allow.test(ua)) {
     const engine = ENGINES.find(candidate => candidate.ua.test(ua));
     if (engine && judge.verify.engine(engine, row.ip) === false) return `UA claims ${engine.name} from an IP outside its ranges | ${family}`;
-    if (PREVIEW_UA.test(ua) && !row.page) return `link preview UA on an image or API route | ${family}`;
+    if (PREVIEW_UA.test(ua) && !row.page && !fromPreviewNet(ua, asn)) return `link preview UA on an image or API route | ${family}`;
     return null;
   }
   if (!ua || judge.firewall.bot.test(ua)) return `bot, AI or HTTP library UA | ${family}`;

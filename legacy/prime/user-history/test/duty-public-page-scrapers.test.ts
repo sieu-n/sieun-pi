@@ -130,6 +130,15 @@ test("the weekly list names every crawler whatever its size, and never a person,
   assert.equal(listed(blocked)[0]![0], "scraper_client_stopped", "a client the firewall denies after its last passed call reads as blocked the same day");
 });
 
+test("a link preview fetching an image counts as wanted only from its vendor's own network (d7, 11-20)", () => {
+  const FB: Asn = { asn: 32934, name: "FACEBOOK - Facebook, Inc., US", cc: "US" };
+  const image = { ua: "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)", refk: "none", page: false, path: "/api/img?media=/api/media/instagram_post/1/post_image", calls: 3 };
+  const rows = [week({ ...image, ip: "57.141.0.7" }), week({ ...image, ip: "183.108.170.148" })];
+  const output = weekly(rows, new Map([["57.141.0.7", FB], ["183.108.170.148", KT]]));
+  assert.deepEqual(listed(output), [["scraper_client", "link preview UA on an image or API route | facebookexternalhit"]]);
+  assert.match(output.flagged!.find(slice => slice.kind === "scraper_client")!.excerpt, /from 1 IPs.*AS4766/);
+});
+
 /** acts() of auto-sns-agent scripts/repo/vercel/firewall.mjs for the condition ops these cases use, without its compile step. */
 const fakeActs: Acts = (file, request) => file.rules.flatMap(rule => rule.groups.flatMap((group, at) => group.conditions.every(condition => {
   const have = condition.type === "path" ? request.path : condition.type === "user_agent" ? request.headers["user-agent"]
