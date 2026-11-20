@@ -133,10 +133,11 @@ test("mark_message posts the mark as the thread and answers one line, and an err
 });
 
 test("both comm texts ask the thread to read its pending list at a turn's start, handle its own room's items and mark each one handled", () => {
-  for (const [room, n] of [["dm_vent", 6], ["ch_1a2b3c4d", 10], ["so_plan", 10]] as const) {
+  for (const room of ["dm_vent", "ch_1a2b3c4d", "so_plan"]) {
     const lines = commInstructions({ agent: "ag_vent", room, work: "vent" }).split("\n");
     const line = lines.find(l => l.includes("list_for_me_messages"))!;
-    assert.ok(line.startsWith(`${n}. When a turn starts, read your pending For list with \`list_for_me_messages()\`. Handle the items of room ${room},`), line);
+    assert.match(line, /^\d+\. When a turn starts, read your pending For list with `list_for_me_messages\(\)`\./, "a numbered step of its own, wherever role text edits put it");
+    assert.ok(line.includes(`Handle the items of room ${room},`), line);
     assert.match(line, /Mark an item completed with `mark_message\(message_id, true\)` once you answered or handled it/);
     assert.match(line, /Leave an item pending while its work still runs/);
     // The numbers stay in order after the inserted line.
