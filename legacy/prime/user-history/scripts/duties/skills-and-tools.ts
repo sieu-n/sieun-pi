@@ -72,8 +72,6 @@ export interface Deps {
   env?: NodeJS.ProcessEnv;
   /** A page's body, or "" when it does not load; absent in tests that do not cover it. */
   fetchText?: (url: string) => Promise<string>;
-  /** The Convex team's usageState ("Default" when healthy, "Disabled" when unpaid); throws when it cannot be read. Absent reads as a failed read. */
-  convexUsageState?: () => Promise<string>;
   /** The live fix step that holds a slow or down Google search (`searchFixStep`); absent or undefined means none. */
   searchFix?: () => Promise<SearchFix | undefined>;
 }
@@ -102,8 +100,6 @@ export async function searchFixStep(boards: Iterable<readonly [string, ChatBoard
 
 /** The bare-metal box the repo skills reach as root: an ssh config alias (us-metal01 by default) or METAL_SSH_HOST, so no address lives in this repo. */
 const METAL_HOST = process.env.METAL_SSH_HOST || "us-metal01";
-/** The Convex team behind the Virev API's key store (prod and staging), read with the Convex CLI's login token. */
-const CONVEX_TEAM = 453421;
 export const CHECK_TIMEOUT_MS = 90_000;
 /**
  * How long one CLI or MCP call may take before its check fails. The slowest call that finished on us-metal02 took 26.4 s (`prime-agent --offline
@@ -617,16 +613,10 @@ export const CHECKS: readonly Check[] = [
     const text = both(result);
     if (/no Virev API key|rejected the key \((401|403)|balance is empty \(402/.test(text))
       return FAIL("owner", brief(text.split("\n").find(line => /Virev/.test(line)) ?? text, 200), "put a working Virev API key in ~/.prime/agent/auth.json (virev) or top up its balance");
-    // The Virev API checks each key in Convex and answers this 503 when that call throws. On 11-04 Convex had disabled team 453421 for unpaid
-    // invoices since 11-03 18:13Z, and 2 runs in a row counted it as an agent fix and started jobs that could not act.
-    if (/\(503\): API key checks are temporarily unavailable/.test(text)) {
-      const line = brief(text.split("\n").find(line => /Virev/.test(line)) ?? text, 200).replace(/\.?$/, ".");
-      const state = await (deps.convexUsageState ?? (() => Promise.reject(new Error("no Convex state reader"))))().then(value => value, (error: Error) => error);
-      if (typeof state === "string" && state !== "Default") return FAIL("owner", `${line} Convex team ${CONVEX_TEAM} reads usageState ${state}`,
-        `the owner pays the Convex invoices (ops guy's t53), and the check passes once the team reads Default`);
-      return FAIL("agent", `${line} Convex team ${CONVEX_TEAM} ${typeof state === "string" ? "reads Default" : `state read failed: ${brief(state.message, 120)}`}`,
-        "read the api-portal key check error in auto-sns-agent apps/api-portal/src/lib/server/gateway.ts and the Convex logs");
-    }
+    // The Virev API checks each key in self-hosted convex-prod (https://convex.virev.ai) and answers this 503 when that call throws.
+    if (/\(503\): API key checks are temporarily unavailable/.test(text))
+      return FAIL("agent", brief(text.split("\n").find(line => /Virev/.test(line)) ?? text, 200),
+        "read the api-portal key check error in auto-sns-agent apps/api-portal/src/lib/server/gateway.ts and the convex-prod logs");
     // A search that times out or finds Google down waits on the crawler, so an open step on any chat's board that names the route and has a
     // live job holds it (`searchFixStep`). On 11-07 d5's 18:19Z run failed on a ReadTimeout while the api portal's p164 job worked on prod
     // Google, and from 18:30Z prod searches took 8 to 21 s, and up to 60 s while a crawler process earned its Google cookie jar.
@@ -786,8 +776,6 @@ export const CHECKS: readonly Check[] = [
   { id: "gh_auth", group: "service clis", tool: "gh", run: deps => cliLogin(deps, "gh", ["auth", "status"], result => both(result).includes("Logged in to github.com"), "run `gh auth login --web` in the owner's Aside browser") },
   { id: "vercel_auth", group: "service clis", tool: "vercel", run: deps => cliLogin(deps, "vercel", ["whoami"], () => true, "run `vercel login` in the owner's Aside browser") },
   { id: "railway_auth", group: "service clis", tool: "railway", run: railwayAuth },
-  { id: "convex_auth", group: "service clis", tool: "convex", run: deps => cliLogin(deps, join(deps.repo, "node_modules/.bin/convex"), ["login", "status"],
-    result => both(result).includes("Status: Logged in"), "run `npx convex login` in auto-sns-agent through the owner's Aside browser", deps.repo) },
   { id: "ssh_metal", group: "service clis", tool: "ssh us-metal01", run: async deps => {
     const result = await deps.exec("ssh", ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", METAL_HOST, "true"], { timeoutMs: CALL_TIMEOUT_MS });
     if (result.code === 0) return PASS(`${METAL_HOST} answers`);
@@ -1012,17 +1000,6 @@ export function realMcp(path: string): Deps["mcp"] {
   });
 }
 
-async function convexUsageState(home: string): Promise<string> {
-  const token = (JSON.parse(await readFile(join(home, ".convex/config.json"), "utf8")) as { accessToken?: string }).accessToken;
-  if (!token) throw new Error("~/.convex/config.json has no accessToken");
-  const response = await fetch(`https://api.convex.dev/api/dashboard/teams/${CONVEX_TEAM}/usage/team_usage_state`,
-    { headers: { Authorization: `Bearer ${token}`, Origin: "https://dashboard.convex.dev" }, signal: AbortSignal.timeout(CALL_TIMEOUT_MS) });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const state = (await response.json() as { usageState?: unknown }).usageState;
-  if (typeof state !== "string") throw new Error("the answer has no usageState");
-  return state;
-}
-
 export function realDeps(scratchDir: string): Deps {
   const home = homedir();
   const path = searchPath(home);
@@ -1046,7 +1023,6 @@ export function realDeps(scratchDir: string): Deps {
     platform: process.platform,
     pinSkillPaths: () => pinSkillPaths({ home }),
     fetchText: url => fetch(url, { signal: AbortSignal.timeout(CALL_TIMEOUT_MS) }).then(response => response.ok ? response.text() : "").catch(() => ""),
-    convexUsageState: () => convexUsageState(home),
     searchFix: () => liveSearchFix(join(home, ".prime/agent/browser-chat")),
   };
 }
