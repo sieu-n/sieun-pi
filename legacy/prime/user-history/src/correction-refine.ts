@@ -35,8 +35,10 @@ export const refineCovers = (command: string, id: string, words: string): boolea
  */
 export function refineCommand(recorded: readonly Pick<Recorded, "id" | "words" | "rule">[], global = true): string {
   const items = recorded.map(item => `${refineItem(item.id, item.words)} (rule: ${oneLine(item.rule)})`).join("; ");
-  return `/refine${global ? " --global" : ""} The owner corrected an agent in this chat: ${items}. Make the smallest ${global ? "global " : ""}edit, a prompt ` +
-    `note or memory in his terms, so every ${global ? "future session" : "later turn"} follows it, and fix any entry that says otherwise.`;
+  return `/refine${global ? " --global" : ""} The owner corrected an agent in this chat: ${items}. The ledger already gives every chat each rule, and a ` +
+    `general standard belongs in the skill or AGENTS rule the chat edits through a commit (sieun-pi skills/refine-harness, #sw-factory-build p110), ` +
+    `so add no prompt note that repeats one. Make the smallest ${global ? "global " : ""}edit, a memory in his terms, only for a fact or a decision ` +
+    `about one project that the rule leaves out, so every ${global ? "future session" : "later turn"} follows it, and fix or delete any entry that says otherwise.`;
 }
 
 /** A refinement the chat ran itself (refine.run) or the service's `/refine`, after `at`; an auto-refinement is aimed at nothing in particular. */
