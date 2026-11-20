@@ -16,7 +16,7 @@ import { AgentDoc, ROOT_CONVERSATION_ID, type AgentState, type EntryRecord } fro
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { PRIME_BASE_PROMPT } from "@sieun-pi/pi-family/preamble";
 import { CHAT_BRIEF } from "../../../../legacy/prime/user-history/src/chat-brief.ts";
-import { agentHarnessDir, AgentRoleDoc, briefFile, commInstructions, conversationHarnessDir, parseAgentRef, type AppliedRole } from "../../src/durable/agent-profile.ts";
+import { agentHarnessDir, AgentRoleDoc, briefFile, commInstructions, conversationHarnessDir, parseAgentRef, SHARED_STYLE_TEXT, workInstructions, type AppliedRole } from "../../src/durable/agent-profile.ts";
 import { threadHarnessDir } from "../../src/durable/prime-harness.ts";
 import { primeModules, primePromptParts, primeResources } from "../../src/durable/prime-prompt.ts";
 import { DurableThreads } from "../../src/durable/threads.ts";
@@ -119,6 +119,29 @@ test("feedback on sw factory goes to agent factory: a tag in a group room, an ag
     assert.match(own, /Hand it to your work thread as a task with his words and the id of the post he means/);
     assert.doesNotMatch(own, /tag @agent factory|pass it to agent factory/);
     assert.match(own, /back to that comm thread/);
+  }
+});
+
+test("owner feedback on how agents write reaches every agent: others bring it to agent factory, which puts it into the shared skill and role text", () => {
+  for (const ref of [{ agent: "ag_vent", room: "dm_vent", work: "w1" }, { agent: "ag_search-product-misc", room: "ch_1a2b3c4d", work: "w1" }]) {
+    const text = commInstructions(ref);
+    assert.match(text, /A correction of how you wrote a post counts too, also when he aims it at you only/);
+    assert.match(text, /save it for your own posts and also bring it to agent factory/);
+    assert.match(text, /general rule, such as how agents write or behave in a room, also goes into the shared skills, as the refine-harness skill says \(#sw-factory-build p110\)/);
+  }
+  for (const room of ["ch_1a2b3c4d", "dm_agent-factory"]) {
+    const own = commInstructions({ agent: "ag_agent-factory", room, work: "w1" });
+    assert.ok(own.includes(SHARED_STYLE_TEXT));
+    assert.match(own, /skills\/sw-factory\/SKILL\.md[\s\S]*never only in one agent's memory[\s\S]*blind fresh session \(c84\)/);
+    assert.match(own, /is your agent's job: save it to memory and hand it to your work thread/);
+  }
+  assert.match(workInstructions({ agent: "ag_agent-factory", comm: "c-1" }), /yours to put into the sw-factory skill[\s\S]*agent-profile\.ts[\s\S]*blind fresh session[\s\S]*p110/);
+  assert.doesNotMatch(workInstructions({ agent: "ag_vent", comm: "c-1" }), /sw-factory skill/);
+});
+
+test("a list of options explains its most interesting one with an example and how it fits (owner, #sw-factory-build p97)", () => {
+  for (const room of ["dm_vent", "ch_1a2b3c4d"]) {
+    assert.match(commInstructions({ agent: "ag_vent", room, work: "w1" }), /When you list options[\s\S]*pick the most interesting one and explain it properly: how it works, a concrete example of it in use, and how it would fit/);
   }
 });
 

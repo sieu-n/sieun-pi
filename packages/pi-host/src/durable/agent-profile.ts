@@ -118,6 +118,9 @@ export const IDEAL_REPLIES_PAGE = "wiki:agents/agent-factory/jobs/2026/11/20/113
  * point, checkmark 등 feature를 활용해서 답변해. like multiple todoes, points, …". So a post with several points lists them, and one with
  * one point stays a line. Under p103 and p105 he added (p106) "checks를 먼저 얘기하고, `edit` 방식으로 체크리스트를 체크하거나 때론 수정하는
  * 방식도 추천해.", so a multi-step ask first gets its checks as a `- [ ]` list, and edits of that post tick them off (`edit_message`).
+ * Agent factory listed Hey, Superhuman, Gmail and Linear in one line each for "what are some features other apps provide regarding this?",
+ * and he asked under it (p97): "Superhuman's "remind me if no reply" intereseting can you elaborate? 이런거 말할떄는 가장 흥미로운거 하나는 제대로
+ * 설명해야지^^". So a list of options explains its most interesting one.
  */
 function slackPostStep(): string {
   return "Write each post the way a sharp coworker types in Slack. Open with the answer in the first few words, such as \"yes\", \"nope\", \"not yet\" or \"got it\". " +
@@ -132,6 +135,7 @@ function slackPostStep(): string {
     "Casual is right: lowercase and a fitting emoji are fine, and no labels, bold, headings or \"Here is\". " +
     "Never end a post with a sign-off emoji such as 👍, 🎉 or ✅ after the answer, as in \"yep, all 18 pass 🎉\", and end on the words. " +
     "Never paste a raw JSON or log line into a post. Say in words what it shows, or link the file as `path:line`. " +
+    "When you list options, such as products, tools or what other apps do, pick the most interesting one and explain it properly: how it works, a concrete example of it in use, and how it would fit our product or the work at hand. Name the others in a few words each. " +
     "Post no table unless the post you answer asks for one. Put the detail on a wiki page with `wiki.write` in ipython and link it in the same post, as `full list → [skill catalog](wiki:<path>)`. " +
     `When you answer an older post of his while a newer one sits below it, open with his line quoted as \`> ...\`. Real before and after pairs are on ${IDEAL_REPLIES_PAGE}. ` +
     "This replaces the brief's one point per message, two calls for two points (c97) and no bullets unless he asks for a list, and rule 5's table for a comparison, because a room reads like Slack, not like a chat.";
@@ -141,6 +145,13 @@ function slackPostStep(): string {
 export const PLATFORM_AGENT = { id: "ag_agent-factory", name: "agent factory" } as const;
 /** Agent factory's DM comm thread by the name apps/chat gives it (`agents.ts` `commCreate`), which another agent's DM comm thread sends to. */
 export const PLATFORM_DM_COMM = `${PLATFORM_AGENT.name} · DM`;
+/**
+ * Where the owner's feedback on how agents write or behave goes so that it reaches every agent: one agent's memory reaches only that agent.
+ * On 11-20 agent factory saved p97 ("이런거 말할떄는 가장 흥미로운거 하나는 제대로 설명해야지^^") only to its own memory, and the owner asked under it
+ * (p107) "at a meta level will these messages be conveyed to you and be fixed ?". The duty "Owner style reaches every agent"
+ * (apps/chat/scripts/duties/owner-style.ts) counts the notes that this text holds.
+ */
+export const SHARED_STYLE_TEXT = "the sw-factory skill (skills/sw-factory/SKILL.md, \"How agents should write in a room\") and the comm role text in packages/pi-host/src/durable/agent-profile.ts";
 
 /**
  * The step that brings the owner's feedback on sw factory itself to agent factory, the way a person pings the platform team in Slack. On
@@ -156,20 +167,21 @@ export const PLATFORM_DM_COMM = `${PLATFORM_AGENT.name} · DM`;
  */
 function platformFeedbackStep(ref: { agent: string; room: string }): string | undefined {
   const name = PLATFORM_AGENT.name;
-  const what = "the shape, format, length or tone of a reply, how a post renders, the reactions, or the app";
+  const what = "how agents write or behave, such as the shape, format, length or tone of a post, how a list or an explanation should look or the reactions, and how a post renders or the app works";
+  const counts = "A correction of how you wrote a post counts too, also when he aims it at you only, because such a rule holds for every agent. ";
   if (ref.agent === PLATFORM_AGENT.id) {
     return `Feedback about sw factory itself is your agent's work: ${what}. It comes from the owner here, from another agent that tags you on a post he commented on, or from another agent's DM comm thread as an agent message. ` +
       "Hand it to your work thread as a task with his words and the id of the post he means, such as dm_vent/p12 or ch_1a2b3c4d/p12. " +
-      "The work thread looks at that post, fixes the cause, in apps/chat when it is the rendering or in the agent's prompt or skills when it is the agent's behavior, checks the fix with a fresh session (c84), and reports. " +
+      `The work thread looks at that post and fixes the cause: in apps/chat when it is the rendering, and when it is how agents write or behave, in the shared text every agent loads, ${SHARED_STYLE_TEXT}, never only in one agent's memory. It checks the fix with a blind fresh session (c84) and reports. ` +
       "Answer once, with the result, where the feedback came from: in the thread of the post that tagged you, even when another agent started the turn, or, for an agent message, back to that comm thread with " +
       "`await agent_message.send(result, receiver_role=\"sibling\", receiver_name=\"<its name from the header>\")`, which posts it in its DM. Post nothing about it in your own room then.";
   }
   if (isGroupRoom(ref.room)) {
-    return `When the owner's post is about sw factory itself rather than your agent's work, such as ${what}, tag @${name} for it, the way a person tags the platform team in Slack. ` +
+    return `When the owner's post is about sw factory itself rather than your agent's work, such as ${what}, tag @${name} for it, the way a person tags the platform team in Slack. ${counts}` +
       `Reply once in the same thread with @${name}, his point in a few words, and the post he means as ${ref.room}/p<number>, such as ${ref.room}/p12, and post nothing else about it. ` +
       `${name} fixes it and answers in that thread. Follow his feedback in your own later posts too.`;
   }
-  return `When the owner's post is about sw factory itself rather than your agent's work, such as ${what}, pass it to ${name}, the way a person pings the platform team in Slack. ` +
+  return `When the owner's post is about sw factory itself rather than your agent's work, such as ${what}, pass it to ${name}, the way a person pings the platform team in Slack. ${counts}` +
     `Send \`await agent_message.send(text, receiver_role="sibling", receiver_name=${JSON.stringify(PLATFORM_DM_COMM)})\` with his point in a few words and the post he means as ${ref.room}/p<number>, such as ${ref.room}/p12. ` +
     `Put 👀 on his post and post nothing about it yet. When ${name}'s answer comes back as an agent message, post it here in one short post that says it is from ${name}, with \`reply_to\` set to his post's [message id], and take 👀 off his post. Follow his feedback in your own later posts too.`;
 }
@@ -183,8 +195,14 @@ function forMeStep(room: string): string {
  * The step that has a comm thread keep the owner's rules and facts in its agent's memory, since it is the thread that reads his words first
  * and the work thread and jobs see only what it hands on (c228).
  */
-function memoryStep(agent: string): string {
-  return `When the owner gives a rule, a correction or a lasting fact for ${agent}'s work, such as a URL, a sign-in, a command or how something must work, save it to ${agent}'s memory in that turn with his words and the post's message id: find the entry that covers it with \`rlm.harness.search("<topic words>", "memory")\`, then \`rlm.harness.update_memory(id, title, content)\` it or \`rlm.harness.create_memory(title, content)\`. A task or a one-off answer is not memory.`;
+function memoryStep(ref: { agent: string }): string {
+  const agent = agentName(ref);
+  const save = `When the owner gives a rule, a correction or a lasting fact for ${agent}'s work, such as a URL, a sign-in, a command or how something must work, save it to ${agent}'s memory in that turn with his words and the post's message id: find the entry that covers it with \`rlm.harness.search("<topic words>", "memory")\`, then \`rlm.harness.update_memory(id, title, content)\` it or \`rlm.harness.create_memory(title, content)\`. A task or a one-off answer is not memory. `;
+  const scope = "A rule about one project or product stays in memory, and a general rule, such as how agents write or behave in a room, also goes into the shared skills, as the refine-harness skill says (#sw-factory-build p110). ";
+  if (ref.agent === PLATFORM_AGENT.id) {
+    return save + scope + `Every other agent brings such general feedback to you, so putting it into ${SHARED_STYLE_TEXT} is your agent's job: save it to memory and hand it to your work thread as the step above says, in the same turn.`;
+  }
+  return save + scope + `So for feedback on how agents write or behave, save it for your own posts and also bring it to ${PLATFORM_AGENT.name} as the step above says, since only ${PLATFORM_AGENT.name} puts it into the text every agent loads.`;
 }
 
 /** The lines with one more numbered step after the last one, or the lines as they are when the role has no such step. */
@@ -209,7 +227,7 @@ function dmCommInstructions(ref: { agent: string; room: string; work: string }):
     "8. Speak to the owner only with tell_owner, since the DM shows nothing else you write. End a turn that posts nothing, such as one your reaction answers, with no text, or pi-host asks you to post your answer. You do not edit files, so you have no write, edit, bash or subagent tool.",
     `9. ${slackPostStep()}`,
     `10. ${richPostStep()}`,
-  ], platformFeedbackStep(ref)), memoryStep(agentName(ref))).join("\n");
+  ], platformFeedbackStep(ref)), memoryStep(ref)).join("\n");
 }
 
 function groupCommInstructions(ref: { agent: string; room: string; work: string }): string {
@@ -231,7 +249,7 @@ function groupCommInstructions(ref: { agent: string; room: string; work: string 
     "12. You do not edit files, so you have no write, edit, bash or subagent tool.",
     `13. ${slackPostStep()}`,
     `14. ${richPostStep()}`,
-  ], platformFeedbackStep(ref)), memoryStep(agentName(ref))).join("\n");
+  ], platformFeedbackStep(ref)), memoryStep(ref)).join("\n");
 }
 
 /** The root conversation's instructions for a work thread whose agent has a comm thread; `comm` is the DM comm thread. */
@@ -245,6 +263,11 @@ export function workInstructions(ref: { agent: string; comm: string }): string {
     "A task you pass on to a job still reports to the comm thread that handed it to you, once the job's result is in, so note that name on the task's board step.",
     `Send a report no comm thread asked for to the DM comm thread with \`await agent_message.send(report, receiver_role="sibling", receiver_name=${JSON.stringify(ref.comm)})\`.`,
     "If a handed task ends with no report, pi-host sends your last text to the comm thread that handed it.",
+    ...ref.agent === PLATFORM_AGENT.id ? [
+      `The owner's feedback on how agents write or behave, which your comm threads and the other agents bring you, is yours to put into ${SHARED_STYLE_TEXT}, since one agent's memory reaches no other agent. ` +
+        "Add the rule there with his words and the post's id, push, send the pi-host sha for release, and check it with a blind fresh session as the sw-factory skill says (c84). " +
+        "A rule that only fits one agent's project goes into that agent's memory instead (#sw-factory-build p110).",
+    ] : [],
   ].join("\n");
 }
 

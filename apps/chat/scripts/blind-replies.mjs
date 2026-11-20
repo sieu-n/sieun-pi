@@ -4,12 +4,12 @@
  * real kinds of asks with no steering, and each reply is checked against the ideal replies page
  * (wiki:agents/agent-factory/jobs/2026/11/20/1139-slack-style-replies/ideal-replies.html).
  *
- *   node apps/chat/scripts/blind-replies.mjs [--asks <file.json> | --set lists | --set checklist] [--cwd <project>] [--host <box>] [--out <file.jsonl>] [--server http://127.0.0.1:5184]
+ *   node apps/chat/scripts/blind-replies.mjs [--asks <file.json> | --set lists | --set options | --set checklist] [--cwd <project>] [--host <box>] [--out <file.jsonl>] [--server http://127.0.0.1:5184]
  *
  * The first ask is the channel's root post and every later one a reply in its thread, as the owner asks in a channel. An ask is
  * `{text, expect, wait}`, where `expect` is "reply" (one short Slack post), "list" (a one-line answer, then nested bullets and a task list,
- * as the owner asked under p85 and p95 in #sw-factory-build on 11-20, p101), "checklist" (one post of open `- [ ]` checks that edits tick
- * off, p106), "line" (one short line with no bullets) or "reaction"
+ * as the owner asked under p85 and p95 in #sw-factory-build on 11-20, p101), "options" (names several apps and explains one in 30 words or
+ * more, with an example and how it fits us, p97), "checklist" (one post of open `- [ ]` checks that edits tick off, p106), "line" (one short line with no bullets) or "reaction"
  * (no post), and `wait: false` sends the next ask at
  * once, so the agent answers both together, as when the owner sent p14 and p15 7 s apart on 11-20. The agent and the room are `test: true`, so no
  * owner list shows them. Each line of --out is one ask with its replies, its checks and pass or fail; the last line is the run's summary.
@@ -43,6 +43,14 @@ const LIST_ASKS = [
   { text: "ok thanks", expect: "reaction" },
 ];
 /**
+ * A "what do other apps do" question, as the owner asked in #sw-factory-build p90 on 11-20 ("what are some features other apps provide
+ * regarding this?"), which should explain the most interesting option properly (p97), and a thanks.
+ */
+const OPTIONS_ASKS = [
+  { text: "what do other apps do for snoozing a message or getting reminded about it later? thinking about adding something like it here", expect: "options" },
+  { text: "ok thanks", expect: "reaction" },
+];
+/**
  * A multi-step ask that should get one checklist post the agent then edits to done, as the owner asked under p103 and p105 in
  * #sw-factory-build on 11-20 (p106), and a yes/no question that should stay one line; run with `--cwd` at this repo.
  */
@@ -50,7 +58,7 @@ const CHECKLIST_ASKS = [
   { text: "before i ship, can you check: is local main in sync with origin/main, how many files are uncommitted, does pi-host's comm-guard test pass, and is any TODO left in packages/pi-host/src/durable?", expect: "checklist" },
   { text: "is this checkout on main right now?", expect: "line" },
 ];
-const SETS = { default: DEFAULT_ASKS, lists: LIST_ASKS, checklist: CHECKLIST_ASKS };
+const SETS = { default: DEFAULT_ASKS, lists: LIST_ASKS, options: OPTIONS_ASKS, checklist: CHECKLIST_ASKS };
 const asks = values.asks ? JSON.parse(readFileSync(values.asks, "utf8")) : SETS[values.set ?? "default"];
 if (!asks) throw new Error(`--set is one of ${Object.keys(SETS).join(", ")}`);
 
@@ -81,6 +89,16 @@ const BULLET = /^\s*[-*+] /;
 const NESTED = /^ {2,}[-*+] /m;
 const TASK = /^\s*[-*+] \[[ xX]\] /m;
 
+/** Apps with a snooze or remind-later feature that an answer to OPTIONS_ASKS names. */
+const APPS = ["Slack", "Superhuman", "Gmail", "Outlook", "Linear", "Discord", "Teams", "Spark", "Hey", "Front", "Missive", "Todoist", "Notion", "Telegram", "WhatsApp", "Apple Mail", "Shortwave", "Boomerang"]
+  .map(app => new RegExp(`\\b${app}\\b`));
+/** An example: a cue word, a quoted action or a time such as "3 days". */
+const EXAMPLE = /\b(e\.g\.|for example|for instance|say you|like when|you (send|pick|hit|get|set|mark|snooze)|\d+\s*(min|minutes|h|hours?|days?|am|pm)\b|tomorrow|monday)|"[^"]{3,}"|“[^”]{3,}”/i;
+/** How the option fits us: our product, agents or rooms named. */
+const FITS = /\b(for us|we could|we can|we'd|our|here|sw factory|agents?|rooms?|threads? here|this app)\b/i;
+/** The blocks of a post: a paragraph, or a top-level bullet with its nested lines. */
+const blocks = text => text.split(/\n(?=\S)|\n\s*\n/).map(block => block.trim()).filter(Boolean);
+
 /** The ideal replies page's rules that a script can read; the reader judges the tone from the printed text. */
 function checks(ask, posts, asked, versions = new Map()) {
   const text = posts.map(p => p.text).join("\n\n");
@@ -92,6 +110,18 @@ function checks(ask, posts, asked, versions = new Map()) {
     ["no heading, bold or label opener", !/^#{1,6} |\*\*|^[A-Z][\w ]{0,20}:\s/m.test(text)],
   ];
   if (ask.expect === "line") return [...plain, ["one line with no bullets", lines.length === 1 && !BULLET.test(lines[0])], ["at most 30 words", words(text) <= 30]];
+  if (ask.expect === "options") {
+    const named = APPS.filter(app => app.test(text)).length;
+    const deep = blocks(text).find(block => APPS.some(app => app.test(block)) && words(block) >= 30);
+    return [
+      ...plain,
+      ["names at least 2 apps", named >= 2],
+      ["explains one option in 30 words or more", !!deep],
+      ["that explanation gives an example", !!deep && EXAMPLE.test(deep)],
+      ["that explanation says how it fits us", !!deep && FITS.test(deep)],
+      ["at most 220 words", words(text) <= 220],
+    ];
+  }
   if (ask.expect === "checklist") {
     const first = posts[0] ? (versions.get(posts[0].id) ?? [posts[0].text])[0] : "";
     return [

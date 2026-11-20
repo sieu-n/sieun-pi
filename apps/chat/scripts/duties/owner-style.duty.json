@@ -1,0 +1,47 @@
+{
+ "name": "Owner style reaches every agent",
+ "ownerWords": "Superhuman's \"remind me if no reply\" intereseting can you elaborate? 이런거 말할떄는 가장 흥미로운거 하나는 제대로 설명해야지^^\n(#sw-factory-build p97, 11-20)\n\n> Superhuman's \"remind me if no reply\" intereseting can you elaborate? 이런거 말할떄는 가장 흥미로운거 하나는 제대로 설명해야지^^\n\nat a meta level will these messages be conveyed to you and be fixed ?\n(#sw-factory-build p107, 11-20)",
+ "goal": "Every correction the owner gives on how agents write or behave in sw factory reaches every agent: it is in the shared text every agent loads, the sw-factory skill (skills/sw-factory/SKILL.md, as ~/.prime/agent/skills/sw-factory links it) and the comm role text the live pi-host release renders (packages/pi-host/src/durable/agent-profile.ts), never only in one agent's memory, and a blind fresh agent follows it. Each style note is listed in ~/work/owner-style/notes.json with his words, its posts, the words the skill and the role text must hold and the blind-replies.mjs set that checks it; owner posts that look like style feedback and are not go in its not_style list with the reason. The precheck (apps/chat/scripts/duties/owner-style.ts) finds the owner posts of the last day in real rooms that read like style feedback, counts the notes of the last day the shared text holds (an unsorted candidate counts as not shared), checks every listed note again, and reruns the blind set of each note of the last 7 days with a fresh test agent. Its first run on 11-20 listed 7 notes from 10 candidates. The precheck's 25 min target covers one blind ask's 20 min first-answer wait in blind-replies.mjs, whose p90 was 1,082 s on 11-20, with the sets run in parallel.",
+ "metrics": [
+  {
+   "key": "style_notes_shared_pct",
+   "label": "Owner style notes of the last day, plus unsorted candidate posts, that the sw-factory skill or the live comm role text holds",
+   "op": ">=",
+   "target": 100,
+   "unit": "%",
+   "headline": true
+  },
+  {
+   "key": "blind_follow_pct",
+   "label": "Style notes of the last 7 days whose blind-replies.mjs set a fresh test agent passes",
+   "op": ">=",
+   "target": 100,
+   "unit": "%"
+  },
+  {
+   "key": "shared_all_pct",
+   "label": "Every listed style note that the shared text still holds",
+   "op": ">=",
+   "target": 100,
+   "unit": "%"
+  },
+  {
+   "key": "unsorted_candidates",
+   "label": "Owner posts of the last day in real rooms that read like style feedback and that notes.json does not sort",
+   "op": "<=",
+   "target": 0,
+   "unit": " posts"
+  }
+ ],
+ "precheck": {
+  "command": [
+   "node",
+   "--import",
+   "tsx",
+   "scripts/duties/owner-style.ts"
+  ],
+  "cwd": "../..",
+  "timeoutMs": 1500000
+ },
+ "onMiss": "Start one fix job per missed note or candidate; a miss is never accepted as it stands. For unsorted_candidate, read the post in its room and thread: when it corrects how agents write or behave, add a note to ~/work/owner-style/notes.json with his words, posts, the rule, skill and role match words and a blind set, then do the not_shared fix; when it is not style, add it to not_style with the reason. For not_shared, a job adds the rule with his words and the post id to skills/sw-factory/SKILL.md 'How agents should write in a room' and to the comm role text in packages/pi-host/src/durable/agent-profile.ts (slackPostStep or the step it fits), with a test in packages/pi-host/test/durable/agent-profile.test.ts, pushes to main and sends the pi-host sha to the agent factory work thread for release; when the note's text is another live job's (its owner field), message that job instead of editing beside it. A new rule needs a blind set: add its asks and checks to apps/chat/scripts/blind-replies.mjs. For blind_failed, read the replies in the run file: a reply that follows the rule but trips a check means fixing the check; a reply that breaks the rule means making the role text clearer and running the set again with a new agent until it passes (c84). Never steer a blind agent. When the match words of a note are stale after a reword, update notes.json and say why in the report."
+}
