@@ -11,7 +11,7 @@
  *   style_notes_shared_pct, the headline: of the owner style notes of the last day, the share whose words the live skill or the live role
  *     text holds. A candidate post of the last day that neither list names counts as a note that is not shared yet.
  *   blind_follow_pct: of the notes of the last 7 days with a blind set, the share whose blind run passes; each run is a fresh `test: true`
- *     agent in a fresh channel (apps/chat/scripts/blind-replies.mjs --set <set>), archived after.
+ *     agent in a fresh channel (apps/chat/scripts/blind-replies.mjs --set <set> --no-reaction), archived after.
  *   shared_all_pct: of every listed note, the share the shared text still holds, so a later edit that drops one shows.
  *   unsorted_candidates: owner posts of the last day in real rooms that read like style feedback and that neither list names.
  *
@@ -108,7 +108,7 @@ const pct = (part: number, whole: number): number => (whole ? Math.round((1000 *
 /** One blind-replies.mjs run of a set; answers its summary line, or an error when the run printed none. */
 function blindRun(script: string, set: string, out: string, server: string): Promise<{ pass: boolean; passed?: number; of?: number; room?: string; agent?: string; error?: string }> {
   return new Promise(done => {
-    const child = spawn(process.execPath, [script, "--set", set, "--out", out, "--server", server], { stdio: ["ignore", "ignore", "pipe"] });
+    const child = spawn(process.execPath, [script, "--set", set, "--no-reaction", "--out", out, "--server", server], { stdio: ["ignore", "ignore", "pipe"] });
     let err = "";
     child.stderr.on("data", chunk => { err = (err + String(chunk)).slice(-400); });
     child.on("close", () => {

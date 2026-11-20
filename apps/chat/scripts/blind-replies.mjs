@@ -4,7 +4,7 @@
  * real kinds of asks with no steering, and each reply is checked against the ideal replies page
  * (wiki:agents/agent-factory/jobs/2026/11/20/1139-slack-style-replies/ideal-replies.html).
  *
- *   node apps/chat/scripts/blind-replies.mjs [--asks <file.json> | --set lists | --set options | --set checklist] [--cwd <project>] [--host <box>] [--out <file.jsonl>] [--server http://127.0.0.1:5184]
+ *   node apps/chat/scripts/blind-replies.mjs [--asks <file.json> | --set lists | --set options | --set checklist] [--no-reaction] [--cwd <project>] [--host <box>] [--out <file.jsonl>] [--server http://127.0.0.1:5184]
  *
  * The first ask is the channel's root post and every later one a reply in its thread, as the owner asks in a channel. An ask is
  * `{text, expect, wait}`, where `expect` is "reply" (one short Slack post), "list" (a one-line answer, then nested bullets and a task list,
@@ -21,7 +21,7 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
-const { values } = parseArgs({ options: { asks: { type: "string" }, set: { type: "string" }, cwd: { type: "string" }, host: { type: "string" }, out: { type: "string" }, server: { type: "string" } } });
+const { values } = parseArgs({ options: { asks: { type: "string" }, set: { type: "string" }, cwd: { type: "string" }, host: { type: "string" }, out: { type: "string" }, server: { type: "string" }, "no-reaction": { type: "boolean" } } });
 const server = values.server ?? "http://127.0.0.1:5184";
 const FIRST_MS = 20 * 60_000;
 const QUIET_MS = 60_000;
@@ -60,8 +60,14 @@ const CHECKLIST_ASKS = [
   { text: "is this checkout on main right now?", expect: "line" },
 ];
 const SETS = { default: DEFAULT_ASKS, lists: LIST_ASKS, options: OPTIONS_ASKS, checklist: CHECKLIST_ASKS };
-const asks = values.asks ? JSON.parse(readFileSync(values.asks, "utf8")) : SETS[values.set ?? "default"];
-if (!asks) throw new Error(`--set is one of ${Object.keys(SETS).join(", ")}`);
+const chosen = values.asks ? JSON.parse(readFileSync(values.asks, "utf8")) : SETS[values.set ?? "default"];
+if (!chosen) throw new Error(`--set is one of ${Object.keys(SETS).join(", ")}`);
+/**
+ * `--no-reaction` drops the "ok thanks" asks: an agent that answers one with no post and no reaction holds the run for the whole 20 min first
+ * wait, as the p97 run 1 did on 11-20 (1,202 s), and the owner-style duty's precheck runs inside the chat server, which other releases restarted
+ * twice within its first 45 min that day.
+ */
+const asks = values["no-reaction"] ? chosen.filter(ask => ask.expect !== "reaction") : chosen;
 
 /** One API call; while a release restarts the chat server the call is retried within the ask's own wait, since runs 2 and 3 on 11-20 died on it. */
 async function call(method, path, body) {
