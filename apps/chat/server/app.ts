@@ -43,6 +43,7 @@ import { readJson, Store, writeJson } from "./store.ts";
 import { modelRef, OWNER, parseConversationId, Threads } from "./threads.ts";
 import { QueueWatch, waitingPlace } from "./queue.ts";
 import { webEntry } from "./web-entry.ts";
+import { fileImageSize, imageSize, withSize } from "./image-size.ts";
 
 /** An image as a page from before 11-03 15:01Z sends it: its base64 bytes inline (see `App.uploaded`). */
 type LegacyImage = { data: string; mimeType: string };
@@ -866,7 +867,7 @@ export class App {
     if (!bytes.length) throw new Error("An upload needs the image's bytes.");
     const name = `${randomUUID()}.${mimeType.split("/")[1]!.replace(/[^a-z0-9]/g, "") || "bin"}`;
     await writeFile(this.store.imagePath(name), bytes);
-    return { url: `/api/uploads/${name}`, mimeType };
+    return { url: `/api/uploads/${name}`, mimeType, ...imageSize(bytes) };
   }
 
   /**
@@ -880,16 +881,17 @@ export class App {
     const legacy = ref as Partial<LegacyImage>;
     if (typeof legacy?.data === "string" && typeof legacy.mimeType === "string" && legacy.mimeType.startsWith("image/") && legacy.data) {
       const name = `${randomUUID()}.${legacy.mimeType.split("/")[1]!.replace(/[^a-z0-9]/g, "") || "bin"}`;
-      writeFileSync(this.store.imagePath(name), Buffer.from(legacy.data, "base64"));
+      const bytes = Buffer.from(legacy.data, "base64");
+      writeFileSync(this.store.imagePath(name), bytes);
       this.log(`send: an inline image from a page on a web build before b2058046, kept as /api/uploads/${name}`);
-      return { url: `/api/uploads/${name}`, mimeType: legacy.mimeType };
+      return { url: `/api/uploads/${name}`, mimeType: legacy.mimeType, ...imageSize(bytes) };
     }
     ref = ref as ImageRef;
     const name = typeof ref?.url === "string" && ref.url.startsWith("/api/uploads/") ? ref.url.slice("/api/uploads/".length).replace(/[^\w.-]/g, "") : "";
     if (!name || !existsSync(this.store.imagePath(name))) {
       throw new Error(`No upload ${String(ref?.url)}; post the image to POST /api/uploads first and send the {url, mimeType} it answers.`);
     }
-    return { url: `/api/uploads/${name}`, mimeType: ref.mimeType };
+    return withSize({ url: `/api/uploads/${name}`, mimeType: ref.mimeType }, () => fileImageSize(this.store.imagePath(name)));
   }
 
   private readUpload(ref: ImageRef): { data: string; mimeType: string } | undefined {

@@ -190,8 +190,9 @@ describe("send speed", () => {
       const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
       const upload = await fetch(`${s.base}/api/uploads`, { method: "POST", headers: { "content-type": "image/png" }, body: png });
       assert.equal(upload.status, 200);
-      const image = await upload.json() as { url: string; mimeType: string };
+      const image = await upload.json() as { url: string; mimeType: string; width?: number; height?: number };
       assert.match(image.url, /^\/api\/uploads\/[\w-]+\.png$/);
+      assert.deepEqual([image.width, image.height], [1, 1]);
       assert.deepEqual(Buffer.from(await (await fetch(s.base + image.url)).arrayBuffer()), png);
       const everyone = Object.values(agents);
       const channel = (await s.send("POST", "/api/rooms", { kind: "channel", name: `fan-out-${Date.now()}`, members: everyone })).body.id as string;
@@ -204,7 +205,7 @@ describe("send speed", () => {
         const { value: sent, ms } = await timed(() => s.send("POST", `/api/c/${conversation}/send`, { ...body, requestId: `speed-${conversation}` }));
         assert.equal(sent.status, 200, sent.body.error);
         assert.ok(ms < 150, `a send to ${conversation} took ${Math.round(ms)} ms`);
-        assert.deepEqual(sent.body.item.images.map((i: { url: string }) => i.url), [image.url]);
+        assert.deepEqual(sent.body.item.images, [image]);
       }
       await until(async () => submits, n => n > 0);
       const refused = await s.send("POST", "/api/c/dm_vent/send", { text: "no bytes", images: [{ url: "/api/uploads/nothing.png", mimeType: "image/png" }], requestId: "speed-missing" });
@@ -214,13 +215,31 @@ describe("send speed", () => {
       for (const [conversation, body] of sends) {
         const sent = await s.send("POST", `/api/c/${conversation}/send`, { ...body, images: [{ data: png.toString("base64"), mimeType: "image/png" }], requestId: `legacy-${conversation}` });
         assert.equal(sent.status, 200, sent.body.error);
-        const [kept] = sent.body.item.images as { url: string }[];
+        const [kept] = sent.body.item.images as { url: string; width?: number; height?: number }[];
         assert.match(kept!.url, /^\/api\/uploads\/[\w-]+\.png$/);
+        assert.deepEqual([kept!.width, kept!.height], [1, 1]);
         assert.deepEqual(Buffer.from(await (await fetch(s.base + kept!.url)).arrayBuffer()), png);
       }
     } finally {
       host.beforeSubmit = undefined;
       release();
+    }
+  });
+});
+
+describe("image sizes", () => {
+  test("an upload's size reaches the items of a DM, a channel and a thread, so the page draws each image box before its bytes", async () => {
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+    const image = await (await fetch(`${s.base}/api/uploads`, { method: "POST", headers: { "content-type": "image/png" }, body: png })).json() as { url: string };
+    const channel = (await s.send("POST", "/api/rooms", { kind: "channel", name: `sizes-${Date.now()}`, members: [agents.vent] })).body.id as string;
+    for (const conversation of ["dm_vent", channel, ids.frontend]) {
+      const text = `sized ${conversation} ${Date.now()}`;
+      const sent = await s.send("POST", `/api/c/${conversation}/send`, { text, images: [{ url: image.url, mimeType: "image/png" }], requestId: `sized-${conversation}` });
+      assert.equal(sent.status, 200, sent.body.error);
+      const page = await until(() => s.get<TimelinePage>(`/api/c/${conversation}/items`), p => owned(p, text).length > 0);
+      const [shown] = owned(page, text)[0]!.images;
+      assert.equal(shown!.mimeType, "image/png", conversation);
+      assert.deepEqual([shown!.width, shown!.height], [1, 1], conversation);
     }
   });
 });

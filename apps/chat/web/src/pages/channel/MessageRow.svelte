@@ -245,7 +245,11 @@
     <div class="images">
       {#each item.images as image, index (image.url + index)}
         <button type="button" class="image" aria-label="View image {index + 1}" onclick={() => (lightbox = image.url)}>
-          <img src={image.url} alt="Attached image {index + 1}" loading="lazy" />
+          {#if image.width && image.height}
+            <img class="sized" src={image.url} alt="Attached image {index + 1}" loading="lazy" width={image.width} height={image.height} style:--w={image.width} style:--h={image.height} />
+          {:else}
+            <img src={image.url} alt="Attached image {index + 1}" loading="lazy" />
+          {/if}
         </button>
       {/each}
     </div>
@@ -559,9 +563,16 @@
     cursor: zoom-in;
   }
   .image img {
+    --cap: 280px;
     display: block;
     max-width: 280px;
     max-height: 280px;
+  }
+  /* An image whose size the server read from its header draws its box at the shown size before its bytes arrive, so the rows below never move. */
+  .image img.sized {
+    width: min(calc(var(--w) * 1px), var(--cap), calc(var(--cap) * var(--w) / var(--h)));
+    height: auto;
+    aspect-ratio: var(--w) / var(--h);
   }
   .actions {
     position: absolute;
@@ -900,8 +911,12 @@
     border-radius: 8px;
   }
   .slack .image img {
+    --cap: 360px;
     max-width: min(360px, calc(100cqi - 2px));
     max-height: 360px;
+  }
+  .slack .image img.sized {
+    width: min(calc(var(--w) * 1px), var(--cap), calc(100cqi - 2px), calc(var(--cap) * var(--w) / var(--h)));
   }
   .slack .actions {
     top: -14px;

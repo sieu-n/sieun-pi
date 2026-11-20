@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { AgentId, ImageRef, Ms } from "../web/src/lib/api/types.ts";
 import { appendLater, readLatest, writeJsonLater, written } from "./disk.ts";
 import { readJson, writeJson } from "./store.ts";
+import { fileImageSize, withSize } from "./image-size.ts";
 
 export type RoomId = string;
 
@@ -302,6 +303,8 @@ export class AgentStore {
         }
         if (parsed.t === "post") {
           if (byId.has(parsed.post.id)) continue;
+          // A post from before its upload's size was kept reads it from the file's header here, so every room draws its images at size.
+          if (parsed.post.images?.length) parsed.post.images = parsed.post.images.map(ref => withSize(ref, () => this.uploadSize(ref)));
           byId.set(parsed.post.id, parsed.post);
           list.push(parsed.post);
         } else {
@@ -344,6 +347,11 @@ export class AgentStore {
   /** Settles once every post and change queued for the room's log so far is on disk (disk.ts). */
   written(room: RoomId): Promise<void> {
     return written(this.logFile(room));
+  }
+
+  private uploadSize(ref: ImageRef): { width: number; height: number } | undefined {
+    const name = ref.url.startsWith("/api/uploads/") ? ref.url.slice("/api/uploads/".length).replace(/[^\w.-]/g, "") : "";
+    return name ? fileImageSize(join(this.dir, "images", name)) : undefined;
   }
 
   private logFile(room: RoomId): string {

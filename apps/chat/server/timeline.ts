@@ -12,6 +12,7 @@
  */
 import type { ImageRef, Item, JobRef, Principal, RunStatus, Step } from "../web/src/lib/api/types.ts";
 import type { ContentBlock, EntryRecord, Message, TreeNode } from "./host/types.ts";
+import { imageSize, type ImageSize } from "./image-size.ts";
 import { TELL_OWNER_HELD, TELL_OWNER_TOOL } from "../web/src/lib/api/shared/chat-feed.ts";
 
 export const INPUT_KINDS = new Set(["pi.user", "agent.message", "prime.custom"]);
@@ -132,8 +133,24 @@ export function isInput(entry: EntryRecord): boolean {
   return entry.model?.[0]?.role === "user" && !TURN_KINDS.has(entry.kind);
 }
 
+/** Each thread image's size by its url, read once from its bytes' header, since a timeline is built again on every read and live change. */
+const threadImageSizes = new Map<string, ImageSize | null>();
+
+function threadImageSize(url: string, data: string): ImageSize | undefined {
+  let size = threadImageSizes.get(url);
+  if (size === undefined) {
+    size = imageSize(Buffer.from(data.slice(0, 350_000), "base64")) ?? imageSize(Buffer.from(data, "base64")) ?? null;
+    threadImageSizes.set(url, size);
+  }
+  return size ?? undefined;
+}
+
 const imageRefs = (thread: string, entry: EntryRecord): ImageRef[] =>
-  blocks(entry.model?.[0]).flatMap((b, index) => (b.type === "image" ? [{ url: `/api/images/${thread}/${entry.id}/${index}`, mimeType: b.mimeType }] : []));
+  blocks(entry.model?.[0]).flatMap((b, index) => {
+    if (b.type !== "image") return [];
+    const url = `/api/images/${thread}/${entry.id}/${index}`;
+    return [{ url, mimeType: b.mimeType, ...threadImageSize(url, b.data) }];
+  });
 
 /** One line that says what a tool call does, from its name and arguments. */
 export function toolSummary(name: string, args: Record<string, unknown>): string {
