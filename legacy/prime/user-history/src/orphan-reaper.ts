@@ -373,17 +373,26 @@ export async function readUnitHolds(groups: readonly Group[], context: ReadConte
   const holds = new Map<string, string>();
   const units = new Set(groups.flatMap(group => group.unit ? [group.unit] : []));
   if (!units.size) return holds;
-  for (const dir of await ownedDirs(artifacts(context.home))) {
+  const piRoot = piArtifacts(context.home);
+  for (const dir of [...await ownedDirs(artifacts(context.home)), ...await piOwnedDirs(piRoot)]) {
     const record = await readFile(join(dir, "owned.json"), "utf8").then(text => JSON.parse(text) as { units?: unknown }, () => null);
     const named = Array.isArray(record?.units) ? record.units.filter((unit): unit is string => typeof unit === "string" && units.has(unit) && !holds.has(unit)) : [];
     if (!named.length) continue;
-    const found = await dirSession(dir, context.home);
-    if (!found) continue;
-    const state = await settle(await boxFacts(found, dir, context, read), found.session, context);
-    if (state.state === "live") for (const unit of named) holds.set(unit, `${found.session} recorded ${unit} with board.own and is live: ${state.why}`);
+    const thread = dirname(dir) === piRoot ? PI_DIR.exec(basename(dir))?.[1] : undefined;
+    const found = thread ? null : await dirSession(dir, context.home);
+    const session = thread ?? found?.session;
+    if (!session) continue;
+    const state = await settle(found ? await boxFacts(found, dir, context, read) : await boxFactsById(session, context, read), session, context);
+    if (state.state === "live") for (const unit of named) holds.set(unit, `${session} recorded ${unit} with board.own and is live: ${state.why}`);
   }
   return holds;
 }
+
+/** A pi-host thread's kernel dir, `<thread id>-<conversation>`; on 11-20 d2 listed p106-fx-new.service as orphan_unknown although the live thread 28350de8 had recorded it there. */
+const PI_DIR = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-\d+$/;
+const piArtifacts = (home: string): string => join(home, ".prime", "agent", "pi-host", "durable", "session-artifacts");
+const piOwnedDirs = async (root: string): Promise<string[]> => (await Promise.all((await readdir(root).catch(() => [] as string[])).filter(name => PI_DIR.test(name))
+  .map(name => stat(join(root, name, "owned.json")).then(() => join(root, name), () => null)))).filter((dir): dir is string => dir !== null).sort();
 
 /** The box session dirs that hold an owned.json: each `<uuid>` under session-artifacts and, below it, its `sub-*` jobs and `session-artifacts/<uuid>` children. */
 export async function ownedDirs(root: string): Promise<string[]> {

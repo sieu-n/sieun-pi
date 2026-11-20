@@ -287,6 +287,26 @@ test("10-31: a unit a live session recorded with board.own is held even when the
   } finally { await rm(gone.home, { recursive: true, force: true }); }
 });
 
+// Guards 11-20: the live pi-host thread 28350de8 recorded p106-fx-new.service with board.own in its kernel dir under pi-host/durable/session-artifacts,
+// which the walk of ~/.prime/agent/session-artifacts never read, so d2 listed the unit as orphan_unknown.
+test("11-20: a unit a pi-host thread recorded with board.own in its kernel dir is held until the thread is archived", async () => {
+  const home = await mkdtemp(join(tmpdir(), "orphan-reaper-pi-own-"));
+  try {
+    const thread = "28350de8-55d3-46c6-bcf5-a440f7956d17";
+    const unit = "p106-fx-new.service";
+    const dir = join(home, ".prime/agent/pi-host/durable/session-artifacts", `${thread}-61`);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "owned.json"), JSON.stringify({ paths: [], units: [unit] }));
+    const fixture: Group = { key: `unit:${unit}`, unit, root: 1, pids: [1, 2, 3], bytes: 0, started: 0, command: "node --import tsx server/main.ts --fixture", owners: [] };
+    const context = (archived: boolean) => ({ here: "us-metal02", home, dataDir: join(home, "chat"), now: 10 * ENDED_FOR_MS, remote: async () => "",
+      list: async () => JSON.stringify({ sessions: [] }), piThread: async (id: string) => id === thread ? { archived, updatedAt: 1_000 } : null });
+    const holds = await readUnitHolds([fixture], context(false));
+    assert.match(holds.get(unit) ?? "", new RegExp(`${thread} recorded ${unit} with board\\.own and is live`));
+    assert.deepEqual(decide([fixture], new Map(), 10 * ENDED_FOR_MS, holds).unknown, []);
+    assert.equal((await readUnitHolds([fixture], context(true))).size, 0);
+  } finally { await rm(home, { recursive: true, force: true }); }
+});
+
 // Guards 11-13: `prime-agent list --all` passed the Prime CLI's fixed 30 s daemon timeout three times from 15:18Z, and each failure lost d2's whole
 // orphan read, while a herd of such lists held every other daemon call up to 657 s. The read now asks the daemon only for its live list and
 // reads a top-level session's archive state from its file.
