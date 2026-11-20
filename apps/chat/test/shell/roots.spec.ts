@@ -9,7 +9,7 @@ const sidebarWidth = async (page: Page) => Math.round((await sidebar(page).bound
 /** A hash change inside the open page, so the router's in-memory tab memory stays. */
 const go = (page: Page, hash: string) => page.evaluate((h) => (location.hash = h), hash);
 
-test("each root shows its own sidebar, and the Messages sidebar is gone on Agents and Board", async ({ page }) => {
+test("each root shows its own sidebar, and the Messages sidebar hides on Agents and Board", async ({ page }) => {
   await page.goto("/#/c/ch_general");
   await expect(sidebar(page)).toHaveAttribute("data-root", "messages");
   for (const [name, root] of [
@@ -18,7 +18,7 @@ test("each root shows its own sidebar, and the Messages sidebar is gone on Agent
   ] as const) {
     await tab(page, name).click();
     await expect(sidebar(page)).toHaveAttribute("data-root", root);
-    await expect(page.locator('[data-root="messages"]')).toHaveCount(0);
+    await expect(page.locator('[data-root="messages"]')).toBeHidden();
   }
   await go(page, "#/settings/hosts");
   await expect(sidebar(page)).toHaveAttribute("data-root", "settings");

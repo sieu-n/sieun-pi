@@ -79,8 +79,11 @@ for (const size of WINDOWS) {
       });
 
       test("the emoji picker and the profile menu stay in the window", async ({ page }) => {
-        await open(page, scale, "/#/c/dm_vent");
+        // The link names p10, because other specs post into Vent's DM and push it behind "Load older messages" on a plain open.
+        await open(page, scale, "/#/c/dm_vent?m=p10");
         const post = page.locator('section.conversation [data-message-id="p10"]');
+        // A linked post lands at the top edge, where the byline above it covers its hover toolbar.
+        await post.evaluate((el) => el.scrollIntoView({ block: "center" }));
         await post.hover();
         await post.getByRole("toolbar", { name: "Message actions" }).getByRole("button", { name: "Add reaction" }).click();
         const picker = page.locator("[data-emoji-picker]");
