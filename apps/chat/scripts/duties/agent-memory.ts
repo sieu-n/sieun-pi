@@ -14,18 +14,21 @@
  *   scratch_entries: entries in the agents' stores that are session state or step status instead of lasting knowledge (target 0).
  *   recall_right_pct: a blind fresh session of each agent answers its 3 questions; the share whose answer holds the expected words. The
  *     session is a throwaway `test: true` agent made through POST /api/agents with a copy of the agent's brief and store, so no answer writes
- *     into the real store and no owner list shows it; it is archived and its folder deleted after the answer.
+ *     into the real store and no owner list shows it; it is archived and its folder deleted after the answer, and a sweep before and after
+ *     the run archives and deletes any recall agent a killed run left.
+ *   recall_agents_left: recall agents still unarchived or with a folder after the run (target 0).
  *
- * A match word list is all-of, case-insensitive, and a word written "a|b" takes either form.
+ * A match word list is all-of, case-insensitive, and a word written "a|b" takes either form. A form starts at a word start, and a form of
+ * up to 3 characters is a whole word, so "no" does not match "now"; a longer form may run on, so "revok" matches "revoked".
  *
  * Usage: OUTPUT_FILE=<file> node --import tsx scripts/duties/agent-memory.ts [--no-recall] [--only <slug,...>] [--ideal <file>]
  *   [--data-dir <dir>] [--agents-dir <dir>] [--corrections <file>] [--server http://127.0.0.1:5184]
  * Defaults: APPS_CHAT_DATA_DIR else ~/.pi/agent/chat, APPS_CHAT_AGENTS_DIR else ~/.pi/agent/agents,
  * ~/.prime/agent/browser-chat/corrections.json, APPS_CHAT_URL else http://127.0.0.1:5184. Without OUTPUT_FILE the result prints to stdout.
  */
-import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 const DAY_MS = 86_400_000;
@@ -45,10 +48,23 @@ interface Correction { id: string; at: string; chat: { id: string; name?: string
 
 export interface Finding { kind: string; excerpt: string; sig: string }
 
+/** The longest form that must match as a whole word: on 11-20 seo's "no" matched inside "now". */
+const SHORT_FORM = 3;
+const wordChar = (char: string | undefined): boolean => !!char && /[a-z0-9_]/.test(char);
+
+/** A form as a pattern: it starts at a word start, and a short form also ends at a word end. */
+function formPattern(form: string): RegExp {
+  const text = form.toLowerCase().replace(/\s+/g, " ").trim();
+  const head = wordChar(text[0]) ? "(?<![a-z0-9_])" : "";
+  const tail = text.length <= SHORT_FORM && wordChar(text.at(-1)) ? "(?![a-z0-9_])" : "";
+  const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(head + escaped + tail);
+}
+
 /** All-of match: each word, or one of its `a|b` forms, appears in the text, case-insensitive. */
 export function holds(text: string, words: readonly string[]): boolean {
   const hay = text.toLowerCase().replace(/\s+/g, " ");
-  return words.every(word => word.split("|").some(form => hay.includes(form.toLowerCase().replace(/\s+/g, " ").trim())));
+  return words.every(word => word.split("|").some(form => formPattern(form).test(hay)));
 }
 
 /** The entries of a store, every kind; a store that is missing or does not parse is empty. */
@@ -70,10 +86,14 @@ const entryText = (entry: StoreEntry): string => `${entry.title}\n${entry.conten
 /**
  * Whether an entry is session state or step status: a title or path that says so, or a body that lists the status of two or more plan
  * steps. search-product-misc's 11-20 entry "Session state: modern-web-guidance install cleanup, p14 fixes, p11 Prospect answer" is one.
+ * A title reads as session state when it says "session state", or opens with a word such as Status or WIP used as a label (followed by a
+ * colon, dash or bracket, or alone) or followed by a plan step. A lasting entry about the wip 👀 reaction ("WIP and done reactions are
+ * prompt-level") is not one.
  */
 export function scratchReason(entry: StoreEntry): string | null {
   if (/^session\b/i.test(entry.path ?? "")) return `path ${entry.path}`;
-  if (/\bsession state\b|^(status|progress|scratch|wip|todo|next steps?|handoff|hand-off)\b/i.test(entry.title)) return "title reads as session state";
+  const label = /^(status|progress|scratch|wip|todo|next steps?|handoff|hand-off)\b\s*(?:[:(\[\-\u2013]|$|.*\b[pt]\d{1,4}\b)/i;
+  if (/\bsession state\b/i.test(entry.title) || label.test(entry.title.trim())) return "title reads as session state";
   const steps = entry.content.match(/\b[pt]\d{1,4}\b[^.\n]{0,60}\b(done|open|closed|in progress|blocked|left|pending|waiting|next)\b/gi) ?? [];
   return steps.length >= 2 ? `${steps.length} step-status lines` : null;
 }
@@ -152,38 +172,77 @@ export function finishedReply(items: readonly TurnItem[]): { reply: string; cost
   return { reply, ...(turn.usage?.cost !== undefined ? { cost: turn.usage.cost } : {}), ...(failed ? { error: failed } : {}) };
 }
 
+/** The name every recall agent starts with; its stamp ends it. */
+const RECALL_NAME = "memory recall ";
+/**
+ * The age past which a recall agent belongs to a run that died: a recall waits at most ANSWER_WAIT_MS after it makes its agent, plus one
+ * poll and its calls, so one older than twice that is no live run's. A younger agent of another stamp is a run still going.
+ */
+const STALE_MS = 2 * ANSWER_WAIT_MS;
+
+interface Made { id: string; thread: string }
+const folderOf = (agentsDir: string, id: string): string => join(agentsDir, id.replace(/^ag_/, ""));
+
+/** Deletes a recall agent's folder and archives its work thread; answers whether the server took the archive. */
+async function discard(server: string, agentsDir: string, made: Made): Promise<boolean> {
+  rmSync(folderOf(agentsDir, made.id), { recursive: true, force: true });
+  return call(server, "PATCH", `/api/c/${made.thread}`, { archived: true }).then(() => true, () => false);
+}
+
+/**
+ * Archives and deletes the recall agents a run leaves: those of `stamp`, and those older than STALE_MS that a killed run left (the duty's
+ * hard stop sends SIGKILL, which skips every finally; on 11-20 seven recall agents stayed unarchived). It also deletes each recall folder
+ * whose agent is archived or gone. Answers what it cleaned and the agents the server would not archive.
+ */
+export async function sweepRecallAgents(server: string, agentsDir: string, opts: { stamp?: string; now: number }): Promise<{ swept: string[]; left: string[] }> {
+  const folders = existsSync(agentsDir) ? readdirSync(agentsDir).filter(name => name.startsWith("memory-recall-")).map(name => join(agentsDir, name)) : [];
+  const agents = await call(server, "GET", "/api/agents?test=1") as { id: string; name: string; thread: string; archived?: boolean; createdAt?: number }[];
+  const recall = agents.filter(agent => agent.name.startsWith(RECALL_NAME) && !agent.archived);
+  const dead = recall.filter(agent => (opts.stamp && agent.name.endsWith(` ${opts.stamp}`)) || (agent.createdAt ?? 0) < opts.now - STALE_MS);
+  const swept: string[] = [];
+  const left: string[] = [];
+  for (const agent of dead) (await discard(server, agentsDir, agent) ? swept : left).push(agent.id);
+  const live = new Set(recall.filter(agent => !dead.includes(agent)).map(agent => folderOf(agentsDir, agent.id)));
+  for (const folder of folders.filter(folder => !live.has(folder))) {
+    rmSync(folder, { recursive: true, force: true });
+    if (!swept.includes(`ag_${basename(folder)}`)) swept.push(`ag_${basename(folder)}`);
+  }
+  return { swept, left };
+}
+
 /**
  * One blind recall session: a throwaway test agent with a copy of the agent's brief and store gets the questions as the owner would ask
- * them, and the reply is read once its turn ends. The agent is archived and its folder removed after, whatever happens.
+ * them, and the reply is read once its turn ends. The agent is archived and its folder removed after, on an answer, an error or the wait
+ * running out.
  */
-async function recall(server: string, agentsDir: string, record: AgentRecord, questions: readonly Question[], stamp: string): Promise<{ reply: string; seconds: number; cost?: number; thread?: string; error?: string }> {
+export async function recall(server: string, agentsDir: string, record: AgentRecord, questions: readonly Question[], stamp: string,
+  timing: { waitMs: number; pollMs: number } = { waitMs: ANSWER_WAIT_MS, pollMs: POLL_MS }): Promise<{ reply: string; seconds: number; cost?: number; thread?: string; error?: string }> {
   const started = Date.now();
-  let made: { id: string; thread: string } | undefined;
+  let made: Made | undefined;
   const cwd = record.home && existsSync(record.home) ? realpathSync(record.home) : undefined;
   try {
-    made = await call(server, "POST", "/api/agents", { name: `memory recall ${record.slug} ${stamp}`, test: true, ...(cwd ? { cwd } : {}) });
-    const dir = join(agentsDir, made!.id.replace(/^ag_/, ""));
+    made = await call(server, "POST", "/api/agents", { name: `${RECALL_NAME}${record.slug} ${stamp}`, test: true, ...(cwd ? { cwd } : {}) }) as Made;
+    const dir = folderOf(agentsDir, made.id);
     mkdirSync(join(dir, "harness"), { recursive: true });
     const source = join(agentsDir, record.slug);
     if (existsSync(join(source, "brief.md"))) cpSync(join(source, "brief.md"), join(dir, "brief.md"));
     if (existsSync(join(source, "harness", "harness_state.json"))) cpSync(join(source, "harness", "harness_state.json"), join(dir, "harness", "harness_state.json"));
     const text = ["Quick questions, answer each from what you remember, without searching the repo, wiki or web. Number your answers 1 to " +
       `${questions.length}, one or two sentences each, and say "don't know" when you don't.`, ...questions.map((q, i) => `${i + 1}. ${q.q}`)].join("\n");
-    await call(server, "POST", `/api/c/${made!.thread}/send`, { text, requestId: `memory-recall-${record.slug}-${stamp}` });
+    await call(server, "POST", `/api/c/${made.thread}/send`, { text, requestId: `memory-recall-${record.slug}-${stamp}` });
     for (;;) {
-      await sleep(POLL_MS);
-      const { items } = await call(server, "GET", `/api/c/${made!.thread}/items`) as { items: TurnItem[] };
+      await sleep(timing.pollMs);
+      const { items } = await call(server, "GET", `/api/c/${made.thread}/items`) as { items: TurnItem[] };
       const done = finishedReply(items);
-      if (done) return { ...done, seconds: Math.round((Date.now() - started) / 1000), thread: made!.thread };
-      if (Date.now() - started > ANSWER_WAIT_MS) return { reply: "", seconds: Math.round((Date.now() - started) / 1000), thread: made!.thread, error: "no answer within 15 min" };
+      if (done) return { ...done, seconds: Math.round((Date.now() - started) / 1000), thread: made.thread };
+      if (Date.now() - started > timing.waitMs) {
+        return { reply: "", seconds: Math.round((Date.now() - started) / 1000), thread: made.thread, error: `no answer within ${Math.round(timing.waitMs / 1000)} s` };
+      }
     }
   } catch (error) {
     return { reply: "", seconds: Math.round((Date.now() - started) / 1000), error: error instanceof Error ? error.message : String(error) };
   } finally {
-    if (made) {
-      await call(server, "PATCH", `/api/c/${made.thread}`, { archived: true }).catch(() => undefined);
-      rmSync(join(agentsDir, made.id.replace(/^ag_/, "")), { recursive: true, force: true });
-    }
+    if (made) await discard(server, agentsDir, made);
   }
 }
 
@@ -215,6 +274,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   let correctionsKept = 0;
   let scratch = 0;
   const recalls: Promise<void>[] = [];
+  const recallOn = !values["no-recall"];
+  const sweeps: { swept: string[]; left: string[] }[] = [];
+  if (recallOn) {
+    sweeps.push(await sweepRecallAgents(server, agentsDir, { now }));
+    for (const signal of ["SIGINT", "SIGTERM"] as const) {
+      process.once(signal, () => void sweepRecallAgents(server, agentsDir, { stamp, now: Date.now() }).finally(() => process.exit(signal === "SIGINT" ? 130 : 143)));
+    }
+  }
   let questionsAsked = 0;
   let questionsRight = 0;
 
@@ -260,7 +327,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
 
     const questions = want?.questions ?? [];
-    if (!values["no-recall"] && questions.length) {
+    if (recallOn && questions.length) {
       recalls.push(recall(server, agentsDir, record, questions, stamp).then(result => {
         const answers = splitAnswers(result.reply, questions.length);
         const graded = questions.map((q, i) => ({ q: q.q, right: !result.error && holds(answers[i]!, q.match), answer: answers[i]!.trim().slice(0, 600) }));
@@ -276,6 +343,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
   }
   await Promise.all(recalls);
+  if (recallOn) sweeps.push(await sweepRecallAgents(server, agentsDir, { stamp, now: Date.now() }));
+  const left = sweeps.at(-1)?.left ?? [];
+  for (const id of left) flagged.push({ kind: "recall_agent_left", excerpt: `${id} is a recall agent the server would not archive`, sig: `left:${id}` });
 
   const measured = records.filter(record => !record.agentsDir).length;
   const metrics: Record<string, number> = {
@@ -287,6 +357,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     corrections_kept: correctionsKept,
   };
   if (ideal) metrics.agents_on_ideal_pct = pct(onIdeal, measured);
+  if (recallOn) {
+    metrics.recall_agents_left = left.length;
+    metrics.recall_agents_swept = sweeps.reduce((sum, sweep) => sum + sweep.swept.length, 0);
+  }
   if (questionsAsked) {
     metrics.recall_right_pct = pct(questionsRight, questionsAsked);
     metrics.recall_asked = questionsAsked;
