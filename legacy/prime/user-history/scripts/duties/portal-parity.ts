@@ -276,6 +276,26 @@ export function batchRowsBroken(progress: BatchProgress | undefined): string | n
   return `every row of the job failed (rows_failed ${String(failed)} of ${total})`;
 }
 
+/**
+ * The held result of an operation whose input comes from other answers of this run, when none of those answers worked and one was held, or
+ * null. On 11-20 at 11:5xZ staging held its post_comments, explore and every answer that links a media URL, and d2 read post_comment_replies,
+ * note_detail and the keyless media read as unprobed, 3 of the 8 routes staging judged.
+ */
+export function heldInput(op: string, what: string, sources: readonly Pick<ProbeResult, "verdict">[]): ProbeResult | null {
+  if (sources.some(source => source.verdict === "ok") || !sources.some(source => source.verdict === "held")) return null;
+  return { op, verdict: "held", status: 0, ms: 0, note: `not sent: no ${what}, because the answers it comes from were held` };
+}
+
+/**
+ * A downloaded snapshot whose every row failed: held while the env's proxy supply is held (`hold`), because each row is a crawler read the hold
+ * refuses, else the portal's. On 11-20 at 11:5xZ every staging row failed under the geonode hold and d2 flagged a portal fix.
+ */
+export function snapshotRowsVerdict<T extends ProbeResult>(result: T, broken: string | null, hold: string | null | undefined): T {
+  if (!broken) return result;
+  return hold ? { ...result, verdict: "held", code: "batch_rows_failed", note: `${result.note}: ${broken} while the proxy supply is held (${hold})` }
+    : { ...result, verdict: "portal", code: "batch_rows_failed", note: `${result.note}: ${broken}` };
+}
+
 const exampleOf = (param: Param) => param.example ?? param.schema?.example ?? Object.values(param.examples ?? {})[0]?.value;
 
 /**
@@ -553,11 +573,13 @@ export function parityMetrics(input: {
     metrics[`${env}_v1_ops_called`] = input.probes[env].filter(probe => !notSent(probe)).length;
     const held = input.probes[env].filter(probe => probe.verdict === "held");
     metrics[`${env}_v1_ops_held`] = held.length;
-    for (const [sent, list] of [[false, held.filter(notSent)], [true, held.filter(probe => !notSent(probe))]] as const) {
-      if (!list.length) continue;
-      flagged.push({ at, kind: `held_${env}`, excerpt: `${list.length} /v1 operations ${sent ? "answered held" : "not sent"} on ${env}, out of the shares and failure counts with no fix job (c230): ${
-        sent ? list.map(probe => `${probe.op} ${probe.status} ${probe.code ?? ""}`.trim()).join(", ") : `${list[0]!.note}: ${list.map(probe => probe.op).join(", ")}`}`.slice(0, 600) });
-    }
+    const answered = held.filter(probe => !notSent(probe));
+    const byNote = new Map<string, string[]>();
+    for (const probe of held.filter(notSent)) byNote.set(probe.note, [...byNote.get(probe.note) ?? [], probe.op]);
+    const heldRow = (excerpt: string) => flagged.push({ at, kind: `held_${env}`, excerpt: excerpt.slice(0, 600) });
+    const tail = `on ${env}, out of the shares and failure counts with no fix job (c230)`;
+    for (const [note, ops] of byNote) heldRow(`${ops.length} /v1 operations not sent ${tail}: ${note}: ${ops.join(", ")}`);
+    if (answered.length) heldRow(`${answered.length} /v1 operations answered held ${tail}: ${answered.map(probe => `${probe.op} ${probe.status} ${probe.code ?? ""}`.trim()).join(", ")}`);
     const missing = scoredBy[env].filter(route => verdicts[env].get(route) === "missing");
     const byGroup = new Map<string, string[]>();
     for (const route of missing) byGroup.set(route.group, [...(byGroup.get(route.group) ?? []), route.crawler]);
@@ -761,7 +783,7 @@ export function pacedSlot(perMinute: number, now: () => number = Date.now, sleep
   };
 }
 
-interface ProbeTarget { env: Env; base: string; doc: OpenApi; orgs: Org[]; headers: Record<string, string>; skip: ReadonlyMap<string, string>; held?: ReadonlyMap<string, ProbeResult>; perMinute?: number; spend?: { usd: number }; lastMs?: Record<string, number> | undefined; ledger?: JobLedger }
+interface ProbeTarget { env: Env; base: string; doc: OpenApi; orgs: Org[]; headers: Record<string, string>; skip: ReadonlyMap<string, string>; held?: ReadonlyMap<string, ProbeResult>; hold?: string | null; perMinute?: number; spend?: { usd: number }; lastMs?: Record<string, number> | undefined; ledger?: JobLedger }
 
 /**
  * Calls every documented non-DM operation of one env once with its docs example, the job-mode route entries with max_pages 2, the chained
@@ -870,8 +892,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
     if (op !== SNAPSHOT_READ) return call(org, op, request, "id from this run, same test org");
     const { reads, progress } = await untilBatchEnds(() => call(org, "GET /v1/batch/progress/{snapshot_id}", { method: "GET", path: `/v1/batch/progress/${encodeURIComponent(ids.snapshot_id!)}`, query: {} }, "progress poll"));
     const result = await call(org, op, request, `id from this run, same test org, after ${reads} progress read${reads === 1 ? "" : "s"}`);
-    const broken = result.verdict === "ok" ? batchRowsBroken(progress) : null;
-    return broken ? { ...result, verdict: "portal" as const, code: "batch_rows_failed", note: `${result.note}: ${broken}` } : result;
+    return snapshotRowsVerdict(result, result.verdict === "ok" ? batchRowsBroken(progress) : null, target.hold);
   });
   const fed = await Promise.all(fedLater.map(async ([op, operation]) => {
     const before = preset(op);
@@ -882,7 +903,10 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
     const fromRequest = index >= 0 ? buildRequest(chain.from, first[index]![1]) : undefined;
     const fromQuery = fromRequest && !("missing" in fromRequest) ? fromRequest.query : {};
     const values = source?.verdict === "ok" ? chain.query(source.body, fromQuery) : undefined;
-    if (!values) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: `no ${chain.what} from a ${chain.from} answer in this run`, body: null };
+    if (!values) {
+      const held = heldInput(op, `${chain.what} from a ${chain.from} answer`, source ? [source] : []);
+      return { ...held ?? { op, verdict: "unprobed" as const, status: 0, ms: 0, note: `no ${chain.what} from a ${chain.from} answer in this run` }, body: null };
+    }
     const request = buildRequest(op, operation);
     if ("missing" in request) return { op, verdict: "unprobed" as const, status: 0, ms: 0, note: request.missing, body: null };
     const org = orgs[index % orgs.length]!;
@@ -894,7 +918,9 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
     if (next) pageTwo.set(op, await call(org, `${op} page 2`, pageTwoRequest(fedRequest, next), `page 2 with its own ${next.param}`));
     return result;
   }));
-  const media = probeMedia(firstMediaUrl([...phase1, ...fed].filter(result => result.verdict === "ok").map(result => result.body)), target.headers);
+  const mediaUrl = firstMediaUrl([...phase1, ...fed].filter(result => result.verdict === "ok").map(result => result.body));
+  const mediaHeld = mediaUrl ? null : heldInput(MEDIA_OP, "/v1/media URL in this run's answers", [...phase1, ...fed]);
+  const media = mediaHeld ? Promise.resolve(mediaHeld) : probeMedia(mediaUrl, target.headers);
   await Promise.all([...pageTwoRuns, ...opened.map(job => cancel(job.org, job.id))]);
   // A page-2 failure counts against the operation, and a held page 2 holds it: a customer cannot get past page 1. A page 2 the run did not
   // reach leaves page 1's verdict.
@@ -997,9 +1023,9 @@ async function main(): Promise<void> {
       if (seeded) orgs.push(...seeded);
     }
     await Promise.all([
-      orgs.length && staging && bypass ? probeEnv({ env: "staging", base, doc: staging, orgs, headers: { "x-vercel-protection-bypass": bypass }, skip: new Map(), held: heldEgress(staging, stagingHold), perMinute: perMinute(orgs), lastMs: previous?.ms }, routes)
+      orgs.length && staging && bypass ? probeEnv({ env: "staging", base, doc: staging, orgs, headers: { "x-vercel-protection-bypass": bypass }, skip: new Map(), held: heldEgress(staging, stagingHold), hold: stagingHold, perMinute: perMinute(orgs), lastMs: previous?.ms }, routes)
         .then(results => { probes.staging = results; }) : null,
-      prod && prodOrg && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [prodOrg], headers: {}, skip: skips.skip, held: new Map([...held, ...heldEgress(prod, prodHold)]), perMinute: perMinute([prodOrg]), spend, lastMs: previous?.ms, ledger: jobLedger(JOBS_DIR) }, routes)
+      prod && prodOrg && skips && prodEnv ? probeEnv({ env: "prod", base: prodEnv.urls.apiPortal!, doc: prod, orgs: [prodOrg], headers: {}, skip: skips.skip, held: new Map([...held, ...heldEgress(prod, prodHold)]), hold: prodHold, perMinute: perMinute([prodOrg]), spend, lastMs: previous?.ms, ledger: jobLedger(JOBS_DIR) }, routes)
         .then(results => { probes.prod = results; }) : null,
     ]);
   } finally {

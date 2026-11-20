@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { MEDIA_OP, UNMEASURED_PCT, classify, firstMediaUrl, heldEgress, heldPaidReads, parityMetrics, probeMedia, scoredRoutes, supplyHoldOf, type OpenApi, type ProbeResult, type Route } from "../scripts/duties/portal-parity.ts";
+import { MEDIA_OP, UNMEASURED_PCT, classify, firstMediaUrl, heldEgress, heldInput, heldPaidReads, parityMetrics, probeMedia, scoredRoutes, snapshotRowsVerdict, supplyHoldOf, type OpenApi, type ProbeResult, type Route } from "../scripts/duties/portal-parity.ts";
 
 const doc = (...ops: string[]): OpenApi => {
   const paths: NonNullable<OpenApi["paths"]> = {};
@@ -196,4 +196,22 @@ test("a held route counts in neither share nor failure count, and the run lists 
   assert.deepEqual(flagged.filter(slice => slice.kind.startsWith("held_")).map(slice => slice.kind), ["held_prod", "held_staging"]);
   assert.ok(!flagged.some(slice => slice.kind === "regression"));
   assert.equal(state.verdicts["staging GET /v1/tiktok/user_detail"], "ok");
+});
+
+test("a call whose input comes only from held answers is held, not unprobed", () => {
+  // 11-20 11:5xZ: staging held post_comments, explore and every answer with a media URL, and d2 read 3 of its 8 judged routes as unprobed.
+  const held: ProbeResult = { op: "GET /v1/facebook/post_comments", verdict: "held", status: 503, ms: 200, code: "upstream_error", note: "docs example" };
+  assert.equal(heldInput("GET /v1/facebook/post_comment_replies", "expansion_token", [held])!.verdict, "held");
+  assert.equal(heldInput(MEDIA_OP, "/v1/media URL", [held, { ...held, verdict: "crawler" }])!.verdict, "held");
+  assert.equal(heldInput(MEDIA_OP, "/v1/media URL", [held, ok("GET /v1/instagram/user_feed")]), null);
+  assert.equal(heldInput(MEDIA_OP, "/v1/media URL", [{ ...held, verdict: "crawler" }]), null);
+});
+
+test("a snapshot whose every row failed is held while the proxy supply is held, and the portal's otherwise", () => {
+  // 11-20 11:5xZ: every staging batch row failed under the geonode hold, and d2 flagged GET /v1/batch/snapshot/{snapshot_id} as a portal fix.
+  const read = ok("GET /v1/batch/snapshot/{snapshot_id}");
+  const broken = "every row of the job failed (rows_failed 3 of 3)";
+  assert.equal(snapshotRowsVerdict(read, broken, "geonode proxy_auth_failed").verdict, "held");
+  assert.equal(snapshotRowsVerdict(read, broken, null).verdict, "portal");
+  assert.equal(snapshotRowsVerdict(read, null, "geonode proxy_auth_failed").verdict, "ok");
 });
