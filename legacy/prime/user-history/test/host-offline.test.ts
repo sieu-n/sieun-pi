@@ -198,4 +198,6 @@ test("the precheck keeps the most swap the Mac read in the window, flags it over
   assert.equal(high.flagged?.find(slice => slice.kind === "swap_high")?.excerpt, "mac read 17.46 GB of swap at 15:44Z, its most in the window and over the 15 GB target.");
   const off = measure({ now: RUN, watch: Array.from({ length: 30 }, (_, minute) => lineAt(minute, "offline")), log: { holds: [] }, chats: [], daemonFaults: [] });
   assert.equal("swap_gb_max_30_mac" in off.metrics, false);
+  assert.deepEqual(off.flagged?.filter(slice => slice.kind === "host_away"), [{ kind: "host_away", host: "mac", excerpt: "mac is offline on Tailscale and read no swap in the window, so swap_gb_max_30_mac is not measured" }]);
+  assert.equal(low.flagged?.find(slice => slice.kind === "host_away"), undefined);
 });

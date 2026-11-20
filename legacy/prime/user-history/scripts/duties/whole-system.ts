@@ -25,7 +25,7 @@ import { blameSupervisorStalls, chatNamer, type DaemonFault, type SessionOwner, 
 import { readRecords } from "../../src/orphan-services.ts";
 import { hostUpdateSpans, readUpdateSpans, type UpdateSpan } from "../../src/prime-update.ts";
 import { deliveryCandidates, outboxLandings, readSessionMarks, type SlotWaitTimeout, splitSlotWaits } from "../../src/slot-wait-timeouts.ts";
-import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { CHECK_IN_DUTY_ID, type DutyRunRecord, type FlaggedSlice, HOST_AWAY, type PrecheckOutput } from "../../src/shared/chat-duties.ts";
 import { effectiveRun, metricStreaks, missStreak, newestReading } from "../../src/shared/duty-streak.ts";
 import { type PrimeEvent, primeWords, readCallLogs, readPrimeEvents } from "./prime-call-logs.ts";
 import { missedKeys, parseDutyLink } from "../../src/shared/duty-fixes.ts";
@@ -2060,9 +2060,15 @@ export function measure(input: Inputs): PrecheckOutput {
     metrics[`unknown_min_30_${key}`] = count.unknown;
     metrics[`offline_min_30_${key}`] = count.offline;
   }
-  for (const [name, peak] of swapPeaks(input.watch, start, start + WINDOW_MS)) {
+  const peaks = swapPeaks(input.watch, start, start + WINDOW_MS);
+  for (const [name, peak] of peaks) {
     metrics[`swap_gb_max_30_${name.replace(/[^A-Za-z0-9]+/g, "_")}`] = peak.gb;
     if (peak.gb > SWAP_GB_MAX) flagged.push({ kind: "swap_high", excerpt: `${name} read ${peak.gb} GB of swap at ${clock(peak.at)}, its most in the window and over the ${SWAP_GB_MAX} GB target.` });
+  }
+  // A box Tailscale reads offline now with no swap reading in the window leaves its swap metric unmeasured, so the run waits on it and reruns once
+  // it is back (HOST_AWAY, `Duties.rerunHostBack`) instead of counting as a failed precheck each time the Mac sleeps.
+  for (const view of latest ? hostViews(latest) : []) {
+    if (view.offline && !peaks.has(view.name)) flagged.push({ kind: HOST_AWAY, host: view.name, excerpt: `${view.name} is offline on Tailscale and read no swap in the window, so swap_gb_max_30_${view.name.replace(/[^A-Za-z0-9]+/g, "_")} is not measured` });
   }
   const byHost = [...perHost].map(([name, count]) => `${name} read usable in ${count.usable}, unusable in ${count.unusable}, unknown in ${count.unknown} and offline in ${count.offline}`).join("; ");
   flagged.push({ kind: "minutes", excerpt: `${clean} of the last 30 minutes ran clean and ${unknownMin} are unknown. ${byHost || "No box was read"} ` +
