@@ -204,7 +204,11 @@ export function metricStreaks(runs: readonly DutyRunRecord[]): MetricStreak[] {
       if (!found || found.met) break;
       streak.push(run);
       oldest = found;
-      since = run.at;
+      // A run whose own reading met and whose after-job measure missed first missed when that measure was taken. On 11-20 Slack green's
+      // d3 run of 01:00Z on 11-19 read met, its stalled job's after measure was written at 01:00Z on 11-20 with a send of 19:17Z on 11-19,
+      // and the streak dated from 01:00Z on 11-19, so d9 read that send as landing after the first miss and called the aging red chronic.
+      const own = run.metrics?.[key];
+      since = run.after && (!own || own.met) ? run.after.at : run.at;
     }
     const misses = streak.length;
     const moved = gap(result) < gap(oldest);
