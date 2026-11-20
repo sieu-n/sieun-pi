@@ -45,7 +45,12 @@ export function laterText(item: Pick<ForMeItem, "later">): string {
   return `[saved for later${item.later.remindAt !== undefined ? ` · reminder ${time(item.later.remindAt)}` : ""}]`;
 }
 
-/** One item as the agent reads it: a header line, its reactions when it has any, then the post's text. */
+/** The done flag of the item's thread in the form every agent-facing surface shows it: `[thread done by vent]`. */
+export function doneText(item: Pick<ForMeItem, "done">): string {
+  return item.done ? `[thread done by ${who(item.done.by)}]` : "";
+}
+
+/** One item as the agent reads it: a header line, its reactions, done flag and save when it has any, then the post's text. */
 export function itemText(item: ForMeItem): string {
   const head = [
     `${item.id} in ${item.roomName}${item.threadRoot ? `, thread ${item.threadRoot}` : ""}`,
@@ -54,9 +59,8 @@ export function itemText(item: ForMeItem): string {
     item.reasons.join(", "),
     item.status === "completed" && item.completedAt !== undefined ? `completed ${time(item.completedAt)}` : item.status,
   ].join(" · ");
-  const reactions = reactionsText(item);
-  const later = laterText(item);
-  return [head, ...(reactions || later ? [[reactions, later].filter(Boolean).join(" ")] : []), item.text].join("\n");
+  const marks = [reactionsText(item), doneText(item), laterText(item)].filter(Boolean).join(" ");
+  return [head, ...(marks ? [marks] : []), item.text].join("\n");
 }
 
 /** The tool's answer: a count line, then one block per item, newest activity first as the server sorts them. */

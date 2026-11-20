@@ -4,8 +4,10 @@
  * drops the chat's own tools.
  *
  * `set_emoji` puts the agent's reaction on a post or takes it off, as Slack's `reactions.add` and `reactions.remove` do. The comm role text
- * asks the agent to mark the post it works on with 👀, take it off once its reply goes out, keep ✅ for a quick ask a reply would add nothing
- * to, and react the way people do in Slack (`agent-profile.ts`); no code here treats an emoji specially (contract: /home/sieun/work/slack-reactions/contract.md).
+ * asks the agent to mark the post it works on with 👀, take it off once its reply goes out, mark the thread done instead of adding ✅,
+ * and react the way people do in Slack (`agent-profile.ts`); no code here treats an emoji specially (contract: /home/sieun/work/slack-reactions/contract.md).
+ *
+ * `set_thread_done` (`thread-done.ts`) marks a thread done or open again with the flag on its root post, which the room shows with a check.
  *
  * `edit_message` replaces the text of one of the agent's own posts, as Slack's `chat.update` does, through apps/chat's edit of the owner's
  * posts (app.ts `rewrite`): the room shows it with (edited) at once and no new post. An agent posts a checklist of what it will check and
@@ -20,6 +22,7 @@ import type { ChatApp } from "./chat-app.ts";
 import { forMeTools } from "./for-me.ts";
 import { laterTools } from "./later.ts";
 import { searchTools } from "./search-messages.ts";
+import { threadDoneTools } from "./thread-done.ts";
 
 export const ROOM_TOOLS_EXTENSION = "room-tools";
 export const SET_EMOJI_TOOL = "set_emoji";
@@ -99,6 +102,7 @@ export function roomTools(app: ChatApp, thread: string): Extension {
           }
         },
       }),
+      ...threadDoneTools(app, thread),
       ...forMeTools(app, thread),
       ...laterTools(app, thread),
       ...searchTools(app),

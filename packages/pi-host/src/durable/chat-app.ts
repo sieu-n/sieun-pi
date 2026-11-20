@@ -83,6 +83,12 @@ export class ChatApp {
     return { text: typeof body?.text === "string" ? body.text : `Edited ${change.message}.` };
   }
 
+  /** Marks the thread of a room post done or open again (`POST /api/threads/:id/done`); the flag goes on the root, and `text` names it. */
+  async threadDone(thread: string, change: { message: string; done: boolean }, signal?: AbortSignal): Promise<{ text: string }> {
+    const body = await this.call<{ text?: unknown }>("POST", this.thread(thread, "done"), change, signal);
+    return { text: typeof body?.text === "string" ? body.text : `The thread of ${change.message} is ${change.done ? "done" : "open"}.` };
+  }
+
   /** Sets this thread's agent's Later item for a post (`POST /api/threads/:id/later`); the answer's `text` is the tool's result line. */
   async later(thread: string, change: LaterChange, signal?: AbortSignal): Promise<{ text: string }> {
     const body = await this.call<{ text?: unknown }>("POST", this.thread(thread, "later"), change, signal);

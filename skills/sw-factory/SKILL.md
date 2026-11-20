@@ -69,11 +69,13 @@ He drew the line in p110: a request about one product or scope goes to that agen
 The owner wrote on 11-20 in #sw-factory-build: "시작하면서 눈까리 붙였으면 끝났을 떄 떼야지 / 체크도 남발하지 마 제발 the final outcome should ALWAYS act like a Slack thread".
 
 1. An agent puts 👀 on a post when it starts on it, and takes 👀 off in the same turn its reply to that post goes out, also when more work goes on after the reply.
-2. The reply is the outcome, so a post the agent replied to keeps no emoji of the agent's, and ✅ goes only on a quick ask where a reply would add nothing.
-3. A post that a reaction answers, such as "ok thanks", gets that one reaction and no post.
-4. A result posts as a reply in the thread of the post it answers, never as a new post in the channel.
-5. A result that comes later, in a work thread's report, names its post with tell_owner's `reply_to`, and apps/chat puts it in that post's thread and sets `answers` (`repliedPost` in `apps/chat/server/reactions.ts`).
-6. No code sets or clears a reaction (c210), so these rules live in the comm role text and the blind run checks them.
+2. The reply is the outcome, so a post the agent replied to keeps no emoji of the agent's, and no ✅ marks a post finished.
+3. Once an ask is fully handled, the agent marks its thread done with `set_thread_done(message_id, true)` (`packages/pi-host/src/durable/thread-done.ts`), which puts the flag on the thread's root post, and the room shows that root with a check and dimmed (owner p113).
+   A new owner reply in a done thread reopens it, and the agent marks it done again once that reply is handled, or opens it with `done: false` when something is left.
+4. A post that a reaction answers, such as "ok thanks", gets that one reaction and no post.
+5. A result posts as a reply in the thread of the post it answers, never as a new post in the channel.
+6. A result that comes later, in a work thread's report, names its post with tell_owner's `reply_to`, and apps/chat puts it in that post's thread and sets `answers` (`repliedPost` in `apps/chat/server/reactions.ts`).
+7. No code sets or clears a reaction or the done flag (c210), so these rules live in the comm role text and the blind run checks them.
 
 ## Where reply behavior lives
 
@@ -84,7 +86,7 @@ Put behavior in code defaults and the tools' own text first, and never in a remi
 | Comm thread role text, DM and group | `packages/pi-host/src/durable/agent-profile.ts`, `slackPostStep` and `richPostStep` |
 | Refusals and notes on a comm post | `packages/pi-host/src/durable/comm-guard.ts`, run from `prime-chat.ts` |
 | How a post is stored and which owner post it answers | `apps/chat/server/group-rooms.ts` and `rooms.ts`, `RoomPost.answers`, set from the turn's post or the call's `reply_to` |
-| When 👀 comes off and when ✅ goes on | `packages/pi-host/src/durable/agent-profile.ts`, `workSteps` |
+| When 👀 comes off and when a thread is marked done | `packages/pi-host/src/durable/agent-profile.ts`, `workSteps` |
 | How posts stack and show what they answer | `apps/chat/web/src/pages/channel/rows.ts` and `MessageRow.svelte` |
 | Prime chat tone | `config/AGENTS.md` rule 5 and the chat brief guidance |
 

@@ -69,21 +69,25 @@ export function commInstructions(ref: { agent: string; room: string; work: strin
  * The steps a comm thread takes with its work thread, in a DM or a group room. On 11-20 the owner saw 👀 stay on his #sw-factory-build p72
  * after its answer, ✅ on most of his posts, and results land in the thread of a newer post (p44, the compaction answer to p37,
  * sat under p27), and wrote "시작하면서 눈까리 붙였으면 끝났을 떄 떼야지 / 체크도 남발하지 마 제발 the final outcome should ALWAYS act like a Slack thread".
- * So 👀 comes off with the reply, ✅ is only for a quick ask a reply would add nothing to, and a later result names its post with reply_to.
+ * So 👀 comes off with the reply and a later result names its post with reply_to. Then he asked (p113) "끝난 쓰레드를 Check로 살짝 흐릿하게
+ * 만들수 있으면 좋겠다. make it a boolean flag that applies to the root thread message, and view/editable by agent too", so a handled ask
+ * gets its thread marked done with set_thread_done (`thread-done.ts`) in place of ✅.
  */
 function workSteps(work: string, room: string): string[] {
   return [
     "When you start on a post that needs an answer or work, put 👀 on it with `set_emoji(message_id, \"eyes\", true)`. " +
       "The moment your reply to that post goes out, take 👀 off with `set_emoji(message_id, \"eyes\", false)` in the same turn, also when more work goes on after the reply, so a post you answered never keeps your 👀. " +
       "Your reply is the outcome, the way a person answers in a Slack thread, so put no ✅ on a post you replied to. " +
-      "Put ✅ on a post only for a quick ask you did where a reply would add nothing, such as \"pin that\", and take 👀 off then too. " +
+      "Once all his post asked is handled, its answer or result posted or the quick ask done, mark its thread done with `set_thread_done(message_id, true)`, never while the work thread still works on it. " +
+      "The room shows a done thread with a check, so that mark is the finished signal and no ✅ is. A quick ask you did where a reply would add nothing, such as \"pin that\", gets the done mark and no post, and take 👀 off then too. " +
+      "His new post in a done thread opens it again, so mark it done again once that post is handled, and open a thread yourself with `set_thread_done(message_id, false)` when something in it is still left to do. " +
       "A post a reaction answers, such as \"ok thanks\", gets that one reaction and no 👀. Keep ✅ and 👀 out of your post text too, as in \"yes, all pass\" with no ✅ after it.",
     "React to posts with fitting emoji the way people do in Slack, such as 👍 to acknowledge, 🙏 for thanks, 🎉 on a ship and 😅 on a slip. When a reaction says it all, such as an acknowledgment with nothing to add, react and post nothing.",
     `Answer a status question from the work thread's state. Read it in ipython with \`await agent_observe.get_agent(${work})\` or \`await agent_observe.recent_messages(${work})\`, and read the board with chat_board. Never ask the work thread for its status.`,
     `Hand any task that takes more than a minute to the work thread with \`await agent_message.send(task, receiver_role="sibling", receiver_name=${work})\`. Steer it the same way with \`mode="steer"\`, and stop its turn with stop_work.`,
     "When you hand a task over, post nothing about the hand-over in that turn: no \"got it\", no \"the work thread is doing X\", no \"I'll post it when it's done\". Your 👀 on the post already shows that you are on it. " +
       "Name the post's [message id] in the task. Post once, with the result, when the work thread's report or the work-done notice brings it. " +
-      "Post it with tell_owner's `reply_to` set to that post's [message id], so the result lands as a reply in that post's thread even when newer posts came in between, never as a new post in the room, and then take 👀 off that post. " +
+      "Post it with tell_owner's `reply_to` set to that post's [message id], so the result lands as a reply in that post's thread even when newer posts came in between, never as a new post in the room, and then take 👀 off that post and mark its thread done. " +
       "A question the work needs answered first is the one post that may go out. If you can answer in full yourself, answer and hand nothing over. This replaces the base prompt's progress updates. " +
       "When the ask takes several checks or steps, its first reply is a checklist instead, with the answer on one line on top if you know it and one `- [ ]` item per check or step. Post it with tell_owner's `reply_to` before you hand the task over. " +
       `In the task, tell the work thread to tick each item on that post as it finishes with \`edit_message("reply:${room}/<his post's [message id]>", <the whole post>)\`, and to make its last edit carry the answer. ` +

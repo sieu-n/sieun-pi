@@ -1,7 +1,7 @@
 /**
  * An agent's comm thread and work thread (`comm.ts`, `agent-profile.ts`), on DurableThreads with a real kernel and the faux model:
  * 1. An `agent.ref` parses in its three shapes, and writing one sets the root's tools filter and instructions for the role in the same
- *    commit, again with no change, and never clears a value pi-host did not set. Both comm texts ask for 👀 with set_emoji on the post, taken off once the reply goes out, no ✅ on a post they replied to, a later result posted with
+ *    commit, again with no change, and never clears a value pi-host did not set. Both comm texts ask for 👀 with set_emoji on the post, taken off once the reply goes out, no ✅ on a post they replied to, its thread marked done with set_thread_done once handled, a later result posted with
  *    reply_to naming its post, and a fitting reaction in place of a post that only acknowledges.
  * 2. While the work thread runs a slow turn, a status turn of the comm thread reads it with agent_observe (status, messages, live rlm
  *    child with its progress note), and the work conversation's entries and inputs do not change; stop_work then ends the work turn.
@@ -164,7 +164,10 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
     for (const room of ["dm_vent", "so_1a2b3c4d", "ch_1a2b3c4d"]) {
       assert.match(commInstructions({ ...comm, room }), /When you hand a task over, post nothing about the hand-over in that turn[\s\S]*Post once, with the result[\s\S]*replaces the base prompt's progress updates/, room);
       assert.match(commInstructions({ ...comm, room }), /put 👀 on it with `set_emoji\(message_id, "eyes", true\)`\. The moment your reply to that post goes out, take 👀 off with `set_emoji\(message_id, "eyes", false\)` in the same turn, also when more work goes on/, room);
-      assert.match(commInstructions({ ...comm, room }), /put no ✅ on a post you replied to\. Put ✅ on a post only for a quick ask/, room);
+      assert.match(commInstructions({ ...comm, room }), /put no ✅ on a post you replied to\. Once all his post asked is handled[\s\S]*mark its thread done with `set_thread_done\(message_id, true\)`, never while the work thread still works on it/, room);
+      assert.match(commInstructions({ ...comm, room }), /that mark is the finished signal and no ✅ is\. A quick ask[\s\S]*gets the done mark and no post/, room);
+      assert.match(commInstructions({ ...comm, room }), /His new post in a done thread opens it again, so mark it done again once that post is handled[\s\S]*`set_thread_done\(message_id, false\)`/, room);
+      assert.match(commInstructions({ ...comm, room }), /take 👀 off that post and mark its thread done\./, room);
       assert.doesNotMatch(commInstructions({ ...comm, room }), /white_check_mark|swap 👀 for ✅/, room);
       assert.match(commInstructions({ ...comm, room }), /Keep ✅ and 👀 out of your post text too/, room);
       assert.match(commInstructions({ ...comm, room }), /Never end a post with a sign-off emoji[\s\S]*Never paste a raw JSON or log line into a post/, room);

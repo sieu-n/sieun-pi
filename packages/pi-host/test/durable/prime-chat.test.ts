@@ -36,6 +36,7 @@ import { guidelines } from "../../src/durable/prime-prompt.ts";
 import { ChatDoc, threadRegistry } from "../../src/durable/registry.ts";
 import { EDIT_MESSAGE_DESCRIPTION, EDIT_MESSAGE_TOOL, SET_EMOJI_TOOL } from "../../src/durable/room-tools.ts";
 import { SEND_MESSAGE_TOOL } from "../../src/durable/send-message.ts";
+import { SET_THREAD_DONE_TOOL } from "../../src/durable/thread-done.ts";
 import { MODEL, textOf } from "./crash-scenario.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -145,7 +146,7 @@ test("a durable chat thread offers the extension's tools with its exact definiti
   });
   await (await root.submit({ type: "input", content: "hi" }, context)).wait(context);
   await harness.close(context);
-  assert.deepEqual(tools.map(tool => tool.name), ["read", "write", "edit", "bash", "subagent", SEND_MESSAGE_TOOL, ...PRIME_CHAT_TOOLS, SET_EMOJI_TOOL, EDIT_MESSAGE_TOOL, LIST_FOR_ME_TOOL, MARK_MESSAGE_TOOL, SAVE_MESSAGE_TOOL, REMIND_ME_TOOL, LIST_SAVED_TOOL, SEARCH_MESSAGES_TOOL]);
+  assert.deepEqual(tools.map(tool => tool.name), ["read", "write", "edit", "bash", "subagent", SEND_MESSAGE_TOOL, ...PRIME_CHAT_TOOLS, SET_EMOJI_TOOL, EDIT_MESSAGE_TOOL, SET_THREAD_DONE_TOOL, LIST_FOR_ME_TOOL, MARK_MESSAGE_TOOL, SAVE_MESSAGE_TOOL, REMIND_ME_TOOL, LIST_SAVED_TOOL, SEARCH_MESSAGES_TOOL]);
   for (const name of PRIME_CHAT_TOOLS) {
     const registered = chat.loaded.tools.get(name)!;
     assert.deepEqual(tools.find(tool => tool.name === name), toToolDeclaration({ name, description: registered.description, parameters: registered.parameters as never }), name);
