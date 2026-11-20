@@ -161,10 +161,14 @@ test("a code span that is one target or one job name is its link, and bare absol
   assert.ok(html.includes("but not and/or or /s."));
 });
 
-test("a job named as a whole word is a job link, but not inside a word, a hyphenated word, quotes or a link", () => {
-  const html = renderMarkdown('Ask fast search, then fast-search-x, "fast search", [fast search](https://e.com) and xfast search.', { jobs: ["fast", "fast search"] });
-  assert.equal(html.match(/data-target="job:fast search"/g)?.length, 1);
-  assert.doesNotMatch(html, /data-target="job:fast"/);
+test("a job's name in plain text stays text, and only an explicit job form is a job link", () => {
+  const jobs = ["remind me", "save for later", "mark unread", "fast search"];
+  const plain = renderMarkdown("remind me tomorrow, save for later, then mark unread. Ask fast search too.", { jobs });
+  assert.doesNotMatch(plain, /data-target="job:/);
+  assert.doesNotMatch(plain, /artifact-link/);
+  assert.ok(plain.includes("remind me tomorrow, save for later, then mark unread. Ask fast search too."));
+  const explicit = renderMarkdown("job:check-ci, [the reminder](job:remind me) and `save for later`", { jobs });
+  for (const target of ["job:check-ci", "job:remind me", "job:save for later"]) assert.ok(explicit.includes(`data-target="${target}"`), target);
 });
 
 test("loopback links keep their port and draw a server icon, not a favicon, and links into this app open in place", () => {
@@ -181,7 +185,7 @@ test("loopback links keep their port and draw a server icon, not a favicon, and 
 
 test("a post's board ids and job names resolve against its author's board and jobs", () => {
   const room = { board, jobs: ["room job"], authors: new Map([["ag_other", { board: { chatId: "other", titles: new Map([["p9", "Other step"]]) }, jobs: ["other job"] }]]) };
-  const own = renderMarkdown("p9, p2, other job and room job", withAuthor(room, "ag_other"));
+  const own = renderMarkdown("p9, p2, `other job` and `room job`", withAuthor(room, "ag_other"));
   assert.ok(own.includes('data-board-id="p9" data-chat-id="other"'));
   assert.doesNotMatch(own, /data-board-id="p2"/);
   assert.ok(own.includes('data-target="job:other job"'));

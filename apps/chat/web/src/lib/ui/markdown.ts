@@ -11,7 +11,8 @@ import { ICONS } from "./icons";
  * Beyond GFM it renders:
  * - wiki links: `[[path]]`, `[[path|label]]`, `wiki:path`, and links to `<wiki>/page/<path>` or `https://<host>:5184/wiki/<path>`;
  * - artifact links: `job:<name>`, `thread:<id>`, `file:<path>`, carried as `data-target` for the page to open, also bare or alone in a code span;
- * - the job names the context lists, as a whole word or alone in a code span, as job links, after legacy/prime/user-history's client;
+ * - a job name the context lists, alone in a code span, as its job link; the same name in plain text stays text, since jobs are named
+ *   after plain words such as "remind me" (on 11-20 the owner's plain "remind me" rendered as a job pill);
  * - wiki content paths (`apps/llm-wiki/content/<path>`, `~/.pi/wiki/content/<path>`) as wiki links, and bare absolute paths as path pills;
  * - links into this app (`https://<host>:5184/#/c/<id>`) as in-app links that open the conversation in place;
  * - loopback links (`http://localhost:5180/x`, and `localhost:5180/x` written bare) with their port and a server icon in place of a favicon;
@@ -36,7 +37,7 @@ export type MarkdownContext = {
   cwd?: string;
   /** Chat message mode: bold renders as text, headings as paragraphs, and a single line break as a break. */
   plain?: boolean;
-  /** The names of the jobs whose bare mention becomes a job link. */
+  /** The names of the jobs whose name alone in a code span becomes a job link; the same name in plain text stays text. */
   jobs?: readonly string[];
   /** Per post author (an agent id): its own board and jobs, which `withAuthor` puts in place of the room's for that author's posts. */
   authors?: ReadonlyMap<string, AuthorContext> | null;
@@ -421,7 +422,7 @@ const loopbackLinks: TokenizerAndRendererExtension = {
   },
 };
 
-/** A job name list's join, kept per list, since marked asks `start` at each inline token and a room's agents had 349 jobs on 11-03. */
+/** A job name list's join, kept per list for the render cache key, since a room's agents had 349 jobs on 11-03. */
 const joinedNames = new WeakMap<readonly string[], string>();
 function namesKey(names: readonly string[]): string {
   let key = joinedNames.get(names);
@@ -431,47 +432,6 @@ function namesKey(names: readonly string[]): string {
   }
   return key;
 }
-
-const jobPatterns = new Map<string, { start: RegExp; at: RegExp }>();
-/** The start and match patterns for a list of job names, longest name first, so a name that starts another loses to it. */
-function jobPattern(names: readonly string[]): { start: RegExp; at: RegExp } | null {
-  if (!names.length) return null;
-  const key = namesKey(names);
-  let hit = jobPatterns.get(key);
-  if (!hit) {
-    const alt = [...new Set(names)].sort((a, b) => b.length - a.length).map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-    hit = { start: new RegExp(`(^|[^\\w-])(?:${alt})(?![\\w-])`), at: new RegExp(`^(?:${alt})(?![\\w-])`) };
-    jobPatterns.set(key, hit);
-    if (jobPatterns.size > 50) jobPatterns.delete(jobPatterns.keys().next().value!);
-  }
-  return hit;
-}
-
-/**
- * A job of the context named as a whole word becomes a job link. A name inside a word or a hyphenated word, inside a link, or in quotes
- * (the chat quoting it, not pointing at the job) stays text. After legacy/prime/user-history's `jobMentions`.
- */
-const jobNames: TokenizerAndRendererExtension = {
-  name: "jobName",
-  level: "inline",
-  start(src) {
-    const m = jobPattern(ctx.jobs ?? [])?.start.exec(src);
-    return m ? m.index + m[1]!.length : undefined;
-  },
-  tokenizer(src, tokens) {
-    const pattern = jobPattern(ctx.jobs ?? []);
-    if (!pattern || this.lexer.state.inLink) return undefined;
-    const m = pattern.at.exec(src);
-    if (!m) return undefined;
-    const before = tokens.at(-1)?.raw ?? "";
-    const after = src.slice(m[0].length);
-    if (/[\w-]$/.test(before) || /["\u201c]$/.test(before) || (/['\u2018]$/.test(before) && /^['\u2019]/.test(after))) return undefined;
-    return { type: "jobName", raw: m[0], name: m[0] };
-  },
-  renderer(token) {
-    return artifactLink(`job:${String(token.name)}`, escapeHtml(String(token.name)));
-  },
-};
 
 const boardIds: TokenizerAndRendererExtension = {
   name: "boardId",
@@ -545,7 +505,7 @@ const shortcodes: TokenizerAndRendererExtension = {
 const marked = new Marked({
   gfm: true,
   async: false,
-  extensions: [spacedLinks, wikiLinks, filePaths, loopbackLinks, boardIds, jobNames, mentions, shortcodes],
+  extensions: [spacedLinks, wikiLinks, filePaths, loopbackLinks, boardIds, mentions, shortcodes],
   walkTokens(token) {
     // A GitHub callout: a quote whose first line is `[!NOTE]` and the like. The marker comes off the first paragraph.
     if (token.type !== "blockquote") return;

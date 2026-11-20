@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { composerInput, conversation, CRAWLER, FRONTEND, open, tag } from "./helpers";
 
 /** The patterns config/AGENTS.md rule 5 asks agents to write, as one post, and what each must render as in a room post. */
-test("a post's wiki links, loopback links, app links, bare paths and job names render as pills, and its wiki page as a card", async ({ page }) => {
+test("a post's wiki links, loopback links, app links, and bare paths render as pills, and its wiki page as a card", async ({ page }) => {
   await open(page, `#/c/${FRONTEND}`);
   const word = tag();
   await composerInput(conversation(page)).click();
