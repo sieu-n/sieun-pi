@@ -50,12 +50,15 @@ export type SkillBox = { box: string; scannedAt: string | null; ok: boolean; err
 
 export type SkillInventory = { generatedAt: string | null; definition: string | null; boxes: SkillBox[]; skills: SkillRow[] };
 
-/** What GET /api/skills answers: the last inventory read, and the scan the read started or found running. */
+/** The scanner's last or running scan, which POST /api/skills/scan starts and the `skills` live event sends as it starts and ends. */
+export type SkillScan = { running: boolean; startedAt: number | null; endedAt: number | null; error: string | null };
+
+/** What GET /api/skills answers: the last inventory read, and the last or running scan. */
 export type SkillsReport = {
   inventory: SkillInventory | null;
   /** Why the inventory file did not read, such as "no inventory yet"; null when it read. */
   readError: string | null;
-  scan: { running: boolean; startedAt: number | null; endedAt: number | null; error: string | null };
+  scan: SkillScan;
 };
 
 /**

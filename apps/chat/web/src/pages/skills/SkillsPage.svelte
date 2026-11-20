@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api } from "$lib/api";
+  import { live } from "$lib/api/live.svelte";
   import type { SkillsReport } from "$lib/api/shared/skills";
   import { openView } from "$lib/shell/viewer.svelte";
   import { Badge, Button, CardGroup, Disclosure, EmptyState, IconButton, LoadingText, Markdown, NavItem, Page, PanelHeader, SearchField, Tabs } from "$lib/ui";
@@ -7,8 +8,8 @@
 
   /**
    * Skills: every skill on the boxes from the skills inventory (server/skills.ts), grouped by kind, with its path, box, loaders, last use
-   * and flags. Opening the page starts a scan; the page shows the last inventory at once and the new one when the scan ends. A row opens its
-   * SKILL.md in the viewer popup.
+   * and flags. Opening the page shows the last inventory and starts a scan; the `skills` live event says when the scan ends, and the page
+   * reads the new inventory then. A row opens its SKILL.md in the viewer popup.
    */
   let report = $state<SkillsReport | null>(null);
   let error = $state<string | null>(null);
@@ -17,21 +18,39 @@
   let now = $state(Date.now());
   let definitionOpen = $state(false);
 
-  /** Read the inventory, which starts a scan, then wait for that scan and show the inventory it wrote. */
-  async function load(): Promise<void> {
+  async function read(): Promise<void> {
     try {
       report = await api.skills();
       error = null;
-      if (report.scan.running) report = await api.skills({ wait: true });
       now = Date.now();
+    } catch (reason) {
+      error = reason instanceof Error ? reason.message : String(reason);
+    }
+  }
+
+  /** Shows the last inventory, then starts a scan, whose end the live event brings. */
+  async function load(): Promise<void> {
+    await read();
+    try {
+      const { scan } = await api.scanSkills();
+      if (report) report = { ...report, scan };
     } catch (reason) {
       error = reason instanceof Error ? reason.message : String(reason);
     }
   }
   $effect(() => {
     void load();
+    const off = live.on(event => {
+      if (event.type !== "skills") return;
+      if (event.scan.running) {
+        if (report) report = { ...report, scan: event.scan };
+      } else void read();
+    });
     const tick = setInterval(() => (now = Date.now()), 60_000);
-    return () => clearInterval(tick);
+    return () => {
+      off();
+      clearInterval(tick);
+    };
   });
 
   const rows = $derived(report?.inventory?.skills ?? []);

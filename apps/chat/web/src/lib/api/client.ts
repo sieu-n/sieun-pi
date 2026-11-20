@@ -7,7 +7,7 @@ import type {
   ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, ImageRef, Item, JobNode, Me, MemoryInput, ModelCatalog, ProjectList, SearchQuery, SearchResult, SendRequest,
   LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageReport, AccountsView,
 } from "./types.ts";
-import type { SkillDoc, SkillsReport } from "./shared/skills.ts";
+import type { SkillDoc, SkillScan, SkillsReport } from "./shared/skills.ts";
 import { shrink } from "./shrink.ts";
 
 export class ApiError extends Error {
@@ -313,7 +313,9 @@ export const api = {
   usage: (opts: { days: number; thread?: string; host?: string }) => call<UsageReport>("GET", `/api/usage${query(opts)}`),
   pool: () => call<AccountsView>("GET", "/api/pool"),
   hosts: () => call<HostsReport>("GET", "/api/hosts"),
-  skills: (opts: { wait?: boolean } = {}) => call<SkillsReport>("GET", `/api/skills${opts.wait ? "?wait=1" : ""}`),
+  skills: () => call<SkillsReport>("GET", "/api/skills"),
+  /** Starts a scan of the boxes unless one runs; the `skills` live event says when it ends. */
+  scanSkills: () => call<{ scan: SkillScan }>("POST", "/api/skills/scan"),
   skillDoc: (id: string) => call<SkillDoc>("GET", `/api/skills/doc?id=${enc(id)}`),
   corrections: () => call<{ corrections: unknown[] }>("GET", "/api/corrections"),
 };

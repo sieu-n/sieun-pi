@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { Skills } from "../../server/skills.ts";
-import { parseInventory, useConversation } from "../../web/src/lib/api/shared/skills.ts";
+import { parseInventory, useConversation, type SkillScan, type SkillsReport } from "../../web/src/lib/api/shared/skills.ts";
 
 const row = (over: Record<string, unknown>) => ({ id: "box1:a", name: "a", kind: "ours", box: "box1", path: "/nowhere/SKILL.md", ...over });
 
@@ -14,24 +14,51 @@ function folder(t: { after: (fn: () => void) => void }): string {
   return dir;
 }
 
-test("a read starts one scan, a second read joins it, and wait answers with the scanner's new inventory", async t => {
+test("a read never starts a scan; a scan starts once, a second start joins it, and its end comes after the new inventory parsed", async t => {
   const dir = folder(t);
   const inventory = join(dir, "inventory.json");
   const count = join(dir, "runs");
   const script = join(dir, "scan.sh");
   writeFileSync(script, `sleep 0.3; echo x >> "${count}"; printf '{"skills":[{"id":"box1:u","name":"unslop","kind":"ours","box":"box1","path":"/x"}]}' > "${inventory}"\n`);
-  const skills = new Skills({ inventory, scanner: { command: "sh", args: [script], cwd: dir } }, "box1");
+  const events: SkillScan[] = [];
+  let atEnd: Promise<SkillsReport> | undefined;
+  const skills = new Skills({ inventory, scanner: { command: "sh", args: [script], cwd: dir } }, "box1", () => {}, scan => {
+    events.push(scan);
+    if (!scan.running) atEnd = skills.report();
+  });
   const first = await skills.report();
   assert.equal(first.inventory, null);
   assert.match(first.readError ?? "", /No inventory/);
-  assert.equal(first.scan.running, true);
+  assert.equal(first.scan.running, false, "a read starts no scan");
+  const started = skills.startScan();
+  assert.equal(started.scan.running, true);
+  const joined = skills.startScan();
+  assert.equal(joined.done, started.done, "the second start joined the running scan");
   assert.equal((await skills.report()).scan.running, true);
-  const after = await skills.report({ wait: true });
-  assert.equal(after.scan.running, false);
-  assert.equal(after.scan.error, null);
-  assert.deepEqual(after.inventory?.skills.map(s => s.name), ["unslop"]);
-  const { readFileSync } = await import("node:fs");
-  assert.equal(readFileSync(count, "utf8").trim().split("\n").length, 1, "the second read joined the running scan");
+  await started.done;
+  assert.deepEqual(events.map(e => e.running), [true, false]);
+  assert.equal(events[1]!.error, null);
+  assert.deepEqual((await atEnd)?.inventory?.skills.map(s => s.name), ["unslop"], "a read at the end event gets the new inventory");
+  assert.equal(readFileSync(count, "utf8").trim().split("\n").length, 1);
+});
+
+test("a read parses the file once and again only when it changed", async t => {
+  const dir = folder(t);
+  const inventory = join(dir, "inventory.json");
+  writeFileSync(inventory, JSON.stringify({ skills: [row({})] }));
+  const skills = new Skills({ inventory, scanner: null }, "box1");
+  const [a, b] = await Promise.all([skills.report(), skills.report()]);
+  assert.equal(a.inventory?.skills.length, 1);
+  assert.equal(a.inventory, b.inventory, "two reads share one parse");
+  assert.equal((await skills.report()).inventory, a.inventory, "an unchanged file is not parsed again");
+  writeFileSync(inventory, JSON.stringify({ skills: [row({}), row({ id: "box1:b", name: "b" })] }));
+  utimesSync(inventory, new Date(), new Date(Date.now() + 5000));
+  const changed = await skills.report();
+  assert.deepEqual(changed.inventory?.skills.map(s => s.id), ["box1:a", "box1:b"]);
+  rmSync(inventory);
+  const gone = await skills.report();
+  assert.equal(gone.inventory, null);
+  assert.match(gone.readError ?? "", /No inventory/);
 });
 
 test("a failed scan keeps the last inventory and names its error", async t => {
@@ -39,8 +66,8 @@ test("a failed scan keeps the last inventory and names its error", async t => {
   const inventory = join(dir, "inventory.json");
   writeFileSync(inventory, JSON.stringify({ skills: [row({})] }));
   const skills = new Skills({ inventory, scanner: { command: "sh", args: ["-c", "echo 'no scanner here' >&2; exit 2"], cwd: dir } }, "box1");
-  await skills.report();
-  const after = await skills.report({ wait: true });
+  await skills.startScan().done;
+  const after = await skills.report();
   assert.equal(after.scan.error, "no scanner here");
   assert.equal(after.inventory?.skills.length, 1);
 });

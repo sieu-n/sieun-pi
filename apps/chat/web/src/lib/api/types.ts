@@ -5,6 +5,7 @@
 import type { BoardOp, ChatBoard, CheckInPause, CheckInView, ChatAgent, OwnerTodo, PlanStatus, AccountsView, MachineView } from "./shared/types.ts";
 import type { DutySchedule, DutyView } from "./shared/chat-duties.ts";
 import type { DutyCardModel } from "./shared/duty-card.ts";
+import type { SkillScan } from "./shared/skills.ts";
 
 export type { BoardOp, ChatBoard, CheckInPause, CheckInView, ChatAgent, OwnerTodo, PlanItem, PlanStatus, AccountsView, MachineView } from "./shared/types.ts";
 export type { DutyView } from "./shared/chat-duties.ts";
@@ -664,6 +665,8 @@ export type LiveEvent =
   | { type: "later"; by: string; open: number }
   /** The owner's reminder on a saved post fell due (server/later-due.ts); every tab shows it and one of them notifies. */
   | { type: "later_due"; row: LaterRow }
+  /** The skills scanner started or ended (server/skills.ts); an end comes after its inventory is parsed, so a page reads it at once. */
+  | { type: "skills"; scan: SkillScan }
   /** Only to pages that watch `for:<agent id>`: the agent's For list changed, with its new pending count. */
   | { type: "for_me"; agent: AgentId; pending: number }
   | { type: "error"; message: string };
