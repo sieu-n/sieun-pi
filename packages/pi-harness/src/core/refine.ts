@@ -22,11 +22,23 @@ export interface RefineEdit {
   reason?: string;
 }
 
+/**
+ * A general standard the planner found, which belongs in a skill or an AGENTS rule rather than in a store: the planner cannot edit a file,
+ * so the thread makes the edit through a commit (sieun-pi `skills/refine-harness`, owner's #sw-factory-build p110).
+ */
+export interface SkillRoute {
+  /** The file that owns the rule, such as `skills/sw-factory/SKILL.md` or `config/AGENTS.md`. */
+  target: string;
+  rule: string;
+  evidence?: string;
+}
+
 export interface RefineProposal {
   summary: string;
   rationale: string;
   expectedOutcome: string;
   edits: RefineEdit[];
+  skillRoutes?: SkillRoute[];
 }
 
 export interface AppliedEdit extends RefineEdit {
@@ -47,6 +59,7 @@ export interface RefineResult {
   harnessStatePath: string;
   rollbackOf?: string;
   scope?: Scope;
+  skillRoutes?: SkillRoute[];
 }
 
 export interface ReviewDecision {
@@ -151,7 +164,13 @@ export function extractJson(reply: string): unknown {
 export function normalizeProposal(value: unknown): RefineProposal {
   const v = record(value) ?? {};
   const edits = Array.isArray(v.edits) ? v.edits : [];
+  const routes = (Array.isArray(v.skillRoutes) ? v.skillRoutes : []).flatMap(raw => {
+    const r = record(raw);
+    if (!r || typeof r.target !== "string" || !r.target.trim() || typeof r.rule !== "string" || !r.rule.trim()) return [];
+    return [{ target: r.target.trim(), rule: r.rule.trim(), ...(typeof r.evidence === "string" && r.evidence.trim() ? { evidence: r.evidence.trim() } : {}) }];
+  });
   return {
+    ...(routes.length ? { skillRoutes: routes } : {}),
     summary: typeof v.summary === "string" ? v.summary : "Refined continual harness state",
     rationale: typeof v.rationale === "string" ? v.rationale : "",
     expectedOutcome: typeof v.expectedOutcome === "string" ? v.expectedOutcome : "",
@@ -277,7 +296,8 @@ export function applyProposal(state: HarnessState, proposal: RefineProposal, opt
     touched.add(key);
     results.push({ ...edit, id, before, after: clone(entry), applied: true });
   }
-  const changes = results.filter(r => r.applied).map(r => `${r.action} ${r.kind}:${r.id}`);
+  const routes = proposal.skillRoutes ?? [];
+  const changes = [...results.filter(r => r.applied).map(r => `${r.action} ${r.kind}:${r.id}`), ...routes.map(r => `route ${r.target}`)];
   state.refinements.push({ id: options.id, trigger: proposal.summary, changes, evidence: proposal.rationale, outcome: proposal.expectedOutcome, created_at: now() });
   return {
     id: options.id,
@@ -288,6 +308,7 @@ export function applyProposal(state: HarnessState, proposal: RefineProposal, opt
     harnessStatePath: "",
     rollbackOf: options.rollbackOf,
     scope: options.scope,
+    ...(routes.length ? { skillRoutes: routes } : {}),
   };
 }
 
@@ -349,6 +370,20 @@ export function noticeDetails(record: RefineResult, source: RefineSource) {
   return { refinementId: record.id, summary: record.summary, scope: record.scope ?? "local", ...(record.rollbackOf ? { rollbackOf: record.rollbackOf } : {}), edits: record.appliedEdits, source };
 }
 
+/** The input that hands a refine's skill routes to the thread, which makes each edit through a commit (sieun-pi `skills/refine-harness`). */
+export function skillRouteContent(record: RefineResult, job?: number): string {
+  const routes = (record.skillRoutes ?? []).map(r => `- ${r.target}: ${r.rule}${r.evidence ? ` (${r.evidence})` : ""}`);
+  return [
+    `[skill-route]${job === undefined ? "" : ` from job conversation ${job}`}`,
+    "",
+    "Refine found a general standard that belongs in a skill or an AGENTS rule, not in memory, as the owner said in #sw-factory-build p110. " +
+      "Read the refine-harness skill and put each rule into its target with the smallest edit, unless the target already says it. Commit only that file, push to main, and check it with a blind fresh session (c84). " +
+      "A comm thread has no edit tool, so it hands the rule to its work thread as a task, and a rule about how agents write in a room goes to agent factory. " +
+      "This notice comes from pi-host, not from the owner, so post nothing about it in a room.",
+    ...routes,
+  ].join("\n");
+}
+
 export const outcomeContent = (record: RefineResult) => `Refinement complete: ${record.summary}`;
 
 export function outcomeDetails(record: RefineResult) {
@@ -395,13 +430,24 @@ export const agentPolicy = (agent: string): string =>
   "Put the fact a later thread needs first and keep an entry under 600 characters, since the agent's digest shows only its first 600; split a longer lesson into entries by point. " +
   "Global entries in the overview are read-only context: do not propose update or delete edits for them; create a local entry instead if an override is needed.";
 
-/** The planner's user prompt for one conversation text; `agent` names the sw factory agent whose memory the local store is. */
-export function plannerPrompt(state: HarnessState, history: RefineResult[], conversation: string, args: { global: boolean; instructions?: string; agent?: string }): string {
+/**
+ * The route policy pi-host adds to every scope (owner, #sw-factory-build p110, msg mwomnedj): a decision about one product stays in memory, and a
+ * general standard goes to the skill or AGENTS rule that owns it, which the thread edits through a commit after a `[skill-route]` notice.
+ */
+export const ROUTE_POLICY =
+  "Route a general standard to a skill, never to a memory or a prompt note: a coding or review standard, a rule for how every agent writes or behaves, or a harness-level decision that another agent or repo would need too. " +
+  "You cannot edit files, so return each one in a top-level `skillRoutes` array beside `edits`, as {\"target\": \"the file that owns the rule, such as skills/sw-factory/SKILL.md, skills/<name>/SKILL.md, config/AGENTS.md or a repo's AGENTS.md\", \"rule\": \"the rule in one or two sentences with the owner's words and the post or correction id\", \"evidence\": \"where the conversation says it\"}. " +
+  "The thread then makes that edit through a commit, as sieun-pi's refine-harness skill says. Leave out a rule the conversation shows was already put in that file. " +
+  "Keep memory for facts and decisions about this session's or agent's own products and systems, and route a one-off request or a task nowhere.";
+
+/** The planner's user prompt for one conversation text; `agent` names the sw factory agent whose memory the local store is, and `routes` adds `ROUTE_POLICY`. */
+export function plannerPrompt(state: HarnessState, history: RefineResult[], conversation: string, args: { global: boolean; instructions?: string; agent?: string; routes?: boolean }): string {
+  const policy = args.global ? GLOBAL_POLICY : args.agent ? agentPolicy(args.agent) : LOCAL_POLICY;
   return [
     `<current_harness_state>\n${plannerOverview(state)}\n</current_harness_state>`,
     `<refinement_history>\n${historyText(history)}\n</refinement_history>`,
     `<conversation>\n${conversation}\n</conversation>`,
-    `<scope_policy>\n${args.global ? GLOBAL_POLICY : args.agent ? agentPolicy(args.agent) : LOCAL_POLICY}\n</scope_policy>`,
+    `<scope_policy>\n${args.routes ? `${policy}\n${ROUTE_POLICY}` : policy}\n</scope_policy>`,
     args.instructions ? `<user_refine_instructions>\n${args.instructions}\n</user_refine_instructions>` : "",
     "Return only JSON edits. If no useful edit is justified, return an empty edits array with a rationale.",
   ]
@@ -419,7 +465,9 @@ export function reviewPrompt(state: HarnessState, history: RefineResult[], conve
     `<refinement_history>\n${historyText(history)}\n</refinement_history>`,
     `<conversation>\n${conversation}\n</conversation>`,
     trigger.agent
-      ? `Return shouldRefine=true when the trajectory holds a fact agent ${trigger.agent} will need again in a later thread and its memory lacks or states wrongly: an owner rule or correction, a console URL or sign-in, a release or deploy command, how one of its systems works, or a lesson from a failure. Return false for progress, step status and session coordination, which the agent's board holds.`
+      ? `Return shouldRefine=true when the trajectory holds a fact agent ${trigger.agent} will need again in a later thread and its memory lacks or states wrongly: an owner rule or correction, a console URL or sign-in, a release or deploy command, how one of its systems works, or a lesson from a failure. ` +
+        "Also return true for a general standard the owner gave, such as a coding standard or how every agent writes, that no skill holds yet, since refine routes it to a skill edit. " +
+        "Return false for progress, step status and session coordination, which the agent's board holds."
       : "Return shouldRefine=true when the trajectory contains evidence useful to this session's future turns. Prefer local harness edits for current task progress, temporary blockers, and current-run coordination. Ask for global refinement only for durable cross-session lessons or explicitly project-qualified facts likely to be reused in future sessions.",
   ].join("\n\n");
 }
@@ -427,7 +475,7 @@ export function reviewPrompt(state: HarnessState, history: RefineResult[], conve
 /** Prime's `gmt`: the planner instructions after the review gate said yes. */
 export function autoRefineInstructions(reason: AutoReason, review: ReviewDecision, agent?: string): string {
   const extra = review.instructions ? `\nReviewer instructions: ${review.instructions}` : "";
-  if (agent) return `Automatic refine review triggered by ${reason}. Only create/update/delete entries of agent ${agent}'s memory for facts it will need again in a later thread. Prefer an empty edits array over speculative or one-off memories. Do not promote anything global unless explicitly requested. Reviewer rationale: ${review.rationale}${extra}`;
+  if (agent) return `Automatic refine review triggered by ${reason}. Only create/update/delete entries of agent ${agent}'s memory for facts it will need again in a later thread, and return a general standard as a skillRoutes item instead of an entry. Prefer an empty edits array over speculative or one-off memories. Do not promote anything global unless explicitly requested. Reviewer rationale: ${review.rationale}${extra}`;
   return `Automatic refine review triggered by ${reason}. Only create/update/delete local harness entries if there is clear evidence that should help this session continue. Prefer an empty edits array over speculative or one-off memories. Do not promote anything global unless explicitly requested. Reviewer rationale: ${review.rationale}${extra}`;
 }
 

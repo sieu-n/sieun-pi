@@ -27,6 +27,8 @@ export interface HostCall {
   workOut(): Promise<boolean>;
   /** Admits an input to this conversation. */
   submit(input: Omit<RlmSubmit, "conversation">): Promise<unknown>;
+  /** Admits an input to the thread's root conversation, the one a job reports to. */
+  submitRoot(input: Omit<RlmSubmit, "conversation">): Promise<unknown>;
   log(line: string): void;
 }
 

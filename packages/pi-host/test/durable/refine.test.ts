@@ -59,6 +59,11 @@ function model(messages: Message[]): ReturnType<typeof say> {
   }
   if (text.startsWith("<current_harness_state>")) {
     planned.push(text);
+    if (text.includes("agent seo's memory")) return fauxAssistantMessage([fauxText(JSON.stringify({
+      summary: "Keep the keyword decision and route the JSON rule", rationale: "The owner gave a product decision and a general standard.", expectedOutcome: "Memory holds the decision and a skill gets the rule.",
+      edits: [{ action: "create", kind: "memory", id: "keyword_list", title: "keyword list", content: "seo targets the 40 keywords in keywords.csv.", path: "test" }],
+      skillRoutes: [{ target: "skills/sw-factory/SKILL.md", rule: "Never paste raw JSON in a post (p9).", evidence: "the owner's second message" }, { target: "", rule: "dropped" }],
+    }))]);
     if (text.includes("agent vent's memory")) return fauxAssistantMessage([fauxText(edit("release_rule", "Release apps/chat with scripts/release-apps-chat.mjs."))]);
     return fauxAssistantMessage([fauxText(text.includes("scope: global") ? edit("global_deploy_rule", "Deploys ship on green CI.") : edit("deploy_rule", "Staging deploys need no ok."))]);
   }
@@ -154,6 +159,49 @@ test("in an agent's thread, auto-refine reviews after the turn interval and writ
     assert.match(planned.at(-1)!, /Requested refinement scope: agent vent's memory/);
     assert.match(planned.at(-1)!, /Automatic refine review triggered by turn_interval\. Only create\/update\/delete entries of agent vent's memory/);
     assert.equal(reviewed.length, 1, "the next settle counts turns after the review");
+  } finally {
+    await threads.shutdown();
+    if (kept === undefined) rmSync(settings, { force: true });
+    else writeFileSync(settings, kept);
+  }
+});
+
+test("in an agent's thread, a general standard goes to a skill route that starts a turn of the root, and the product decision stays in memory", { timeout: 180_000 }, async () => {
+  const settings = join(dir, "agent", "settings.json");
+  const kept = existsSync(settings) ? readFileSync(settings, "utf8") : undefined;
+  writeFileSync(settings, JSON.stringify({ ...(kept ? JSON.parse(kept) : {}), autoRefine: { turnInterval: 2, cooldownMs: 0 } }));
+  const folder = join(dir, "agents", "seo");
+  const threads = new DurableThreads({
+    dir: join(dir, "threads-route"),
+    models: () => {
+      const faux = fauxProvider({ provider: MODEL.provider, models: [{ id: MODEL.modelId }], tokensPerSecond: 0 });
+      faux.setResponses(Array.from({ length: 50 }, () => ({ messages }: { messages: Message[] }) => model(messages)));
+      const models = createModels();
+      models.setProvider(faux.provider);
+      return models;
+    },
+    defaultModel: MODEL, defaultThinkingLevel: "off", defaultCwd: dir, rlm, primeRoots: null,
+  });
+  try {
+    const { id } = await threads.create({ name: "seo" });
+    await threads.docPut(id, "agent.ref", { agent: "ag_seo", dir: folder, role: "work" });
+    for (const text of ["target the 40 keywords in keywords.csv", "never paste raw JSON in a post"]) {
+      const sent = await threads.submit(id, { text });
+      assert.equal((await threads.wait(id, sent.submission)).status, "done");
+    }
+    const entries = async () => (await threads.entries(id, { after: 0, limit: 500 })).entries;
+    const [route] = await until("the skill route", async () => { const r = inputs(await entries()).filter(i => i.data?.via === "skill-route"); return r.length ? r : undefined; }, 30_000);
+    assert.match(route!.text, /^\[skill-route\]\n\nRefine found a general standard that belongs in a skill/);
+    assert.match(route!.text, /refine-harness skill/);
+    assert.match(route!.text, /\n- skills\/sw-factory\/SKILL\.md: Never paste raw JSON in a post \(p9\)\. \(the owner's second message\)$/);
+    assert.equal(route!.text.split("\n- ").length, 2, "a route with no target is dropped");
+    const store = JSON.parse(readFileSync(join(folder, "harness", "harness_state.json"), "utf8"));
+    assert.equal(store.entries.memory.keyword_list.content, "seo targets the 40 keywords in keywords.csv.");
+    assert.deepEqual(store.refinements.at(-1).changes, ["create memory:keyword_list", "route skills/sw-factory/SKILL.md"]);
+    const plan = planned.findLast(p => p.includes("agent seo's memory"))!;
+    assert.match(plan, /Route a general standard to a skill, never to a memory or a prompt note/);
+    assert.match(plan, /return a general standard as a skillRoutes item instead of an entry/);
+    assert.match(reviewed.at(-1)!, /a general standard the owner gave/);
   } finally {
     await threads.shutdown();
     if (kept === undefined) rmSync(settings, { force: true });

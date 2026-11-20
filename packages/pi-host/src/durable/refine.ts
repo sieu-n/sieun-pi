@@ -11,6 +11,10 @@
  * thread the root and every job conversation refine and auto-refine into the agent's store, with the planner and review told it is the
  * agent's memory (pi-harness `agentPolicy`), so an agent keeps its own memory with no one asking.
  *
+ * A general standard, such as a coding standard or how every agent writes, goes to a skill rather than a store (owner, #sw-factory-build p110):
+ * the planner returns it as a skill route (pi-harness `ROUTE_POLICY`), and the thread's root gets a `[skill-route]` input that has it make the
+ * edit through a commit, as sieun-pi's `skills/refine-harness` says.
+ *
  * The planning, the edit rules and the texts are pi-harness's port of Prime 0.9.8 (`packages/pi-harness/src/core`). A store write goes through its
  * `updateState`, which holds the file lock Prime's `harness.py` takes, and two refines of one store run one after the other.
  */
@@ -24,7 +28,7 @@ import { defineDoc, ROOT_CONVERSATION_ID, type ConversationId, type JsonObject }
 import { conversationText, fitPrompt } from "../../../pi-harness/src/core/conversation.ts";
 import {
   applyProposal, autoRefineInstructions, mergeHistory, newRefineId, noticeContent, outcomeContent, parseProposal, parseReview, plannerPrompt, PLANNER_PROMPT,
-  REVIEW_PROMPT, reviewPrompt, type AutoReason, type RefineResult,
+  REVIEW_PROMPT, reviewPrompt, skillRouteContent, type AutoReason, type RefineResult,
 } from "../../../pi-harness/src/core/refine.ts";
 import { appendRefinementLog, mergeStates, readRefinementLog, readState, stateFile, updateState, type Scope } from "../../../pi-harness/src/core/store.ts";
 import type { HostCall, HostModule, HostModuleOptions } from "./host-modules.ts";
@@ -146,7 +150,7 @@ export function refineModule(options: RefineModuleOptions): HostModule {
       const global = readState(globalDir, "global");
       const local = readState(call.harnessDir, "local");
       const text = conversationText(await contextMessages(call) as never).slice(-PLANNER_CONVERSATION);
-      const args = { global: scope === "global", ...(ask.instructions ? { instructions: ask.instructions } : {}), ...(scope === "local" && call.agent ? { agent: call.agent } : {}) };
+      const args = { global: scope === "global", routes: true, ...(ask.instructions ? { instructions: ask.instructions } : {}), ...(scope === "local" && call.agent ? { agent: call.agent } : {}) };
       const reply = await planner(call, PLANNER_PROMPT, text, c => plannerPrompt(scope === "global" ? global : mergeStates(global, local), records, c, args), signal);
       const proposal = parseProposal(reply);
       if (signal.aborted) throw new Error("Refinement cancelled.");
@@ -229,7 +233,17 @@ export function refineModule(options: RefineModuleOptions): HostModule {
           d.records.push(json(result) as unknown as JsonObject);
         });
         const applied = result.appliedEdits.filter(e => e.applied).length;
-        call.log(`${outcomeContent(result)} (${result.id}, ${applied} of ${result.appliedEdits.length} edits applied, ${result.scope}${served.auto ? `, auto ${served.auto}` : ""})`);
+        const routed = result.skillRoutes?.length ? `, ${result.skillRoutes.length} skill routes` : "";
+        call.log(`${outcomeContent(result)} (${result.id}, ${applied} of ${result.appliedEdits.length} edits applied, ${result.scope}${routed}${served.auto ? `, auto ${served.auto}` : ""})`);
+        // A general standard goes to a skill through a commit (skills/refine-harness, #sw-factory-build p110), so its routes start a turn of
+        // the thread's root, also for an auto-refine or a job's refine, since the root is the conversation that edits and commits or hands it on.
+        if (result.skillRoutes?.length) {
+          const job = call.conversation === ROOT_CONVERSATION_ID ? undefined : call.conversation;
+          call.submitRoot({
+            text: skillRouteContent(result, job), requestId: `skill-route:${call.session}:${result.id}`, whenBusy: "followUp",
+            entry: { kind: "agent.message", data: { from: "refine", via: "skill-route" } },
+          }).catch(error => call.log(`skill route ${result.id} failed: ${message(error)}`));
+        }
         // Prime posts no notice for a refine with no applied edit, and an auto-refine's notice starts no turn; a job is not resumed either.
         if (applied > 0 && !served.auto && call.conversation === ROOT_CONVERSATION_ID) {
           call.submit({

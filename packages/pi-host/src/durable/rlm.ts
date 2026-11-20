@@ -584,6 +584,7 @@ export class DurableRlm {
         return slot.kernel ? (await this.liveHandles(slot.kernel)) > 0 : false;
       },
       submit: input => this.submit(thread, { ...input, conversation: slot.conversation }),
+      submitRoot: input => this.submit(thread, { ...input, conversation: ROOT_CONVERSATION_ID }),
       log: line => this.log(`${slot.session}: ${line}`),
     };
   }
