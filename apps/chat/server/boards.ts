@@ -25,15 +25,16 @@ import { armWake, parseWake, startThreadWakes, wakeSession, wakeTarget, type Box
 export const BOARD_DOC = "chat.board";
 
 /**
- * The names of the jobs at work: each working summary and every summary above it through `parent`, so a job that is idle only because it
- * waits on its own working subagents counts as working (a duty brief once called such a job "not working" and nearly got a duplicate fix job).
+ * The names of the jobs at work: each summary that works or has a pending wake (its `<thread>--<conversation>` in `waking`), and every summary
+ * above it through `parent`. A job that is idle only because it waits on its own working subagents, or on a wake it or a subagent set, counts
+ * as working: a duty brief once called such jobs "not working", and duty runs nearly started duplicate fix jobs (11-21, p155-fix on a check wake).
  */
-export function workingJobs(summaries: readonly AgentSummary[]): Set<string> {
+export function workingJobs(summaries: readonly AgentSummary[], waking: ReadonlySet<string>): Set<string> {
   const byId = new Map(summaries.map(a => [a.id, a]));
   const names = new Set<string>();
   const seen = new Set<string>();
   for (const summary of summaries) {
-    if (summary.status !== "working") continue;
+    if (summary.status !== "working" && !waking.has(wakeSession(summary.thread, summary.conversation))) continue;
     for (let at: AgentSummary | undefined = summary; at && !seen.has(at.id); at = at.parent ? byId.get(at.parent.id) : undefined) {
       seen.add(at.id);
       names.add(at.name);
@@ -478,7 +479,7 @@ export class Boards {
     this.save(chat, before);
     const dir = join(this.dir(chat), "duties");
     const thread = this.threadOf(chat);
-    const working = workingJobs(this.threads.allSummaries());
+    const working = workingJobs(this.threads.allSummaries(), new Set(this.pendingWakes().map(wake => wake.session)));
     const { record, brief } = await measure({
       duty, chat: { id: chat, name: this.nameOf(chat) }, dir, trigger, previous: before.runs[dutyId] ?? [], board: await this.board(chat),
       liveJob: job => working.has(job), boardApi: `${this.selfUrl}/api/threads/${thread}/board`, log: this.log,
@@ -694,11 +695,16 @@ export class Boards {
   /** The wakes set on a thread's conversation that have not gone out yet, which pi-host reads to keep a child running until they do. */
   wakes(id: string, conversation: number): Wake[] {
     const session = wakeSession(this.wakeThread(id), conversation);
+    return this.pendingWakes().filter(wake => wake.session === session);
+  }
+
+  /** Every wake that has not gone out yet, one per file in the wake folder. */
+  private pendingWakes(): Wake[] {
     let names: string[] = [];
     try { names = readdirSync(this.wakeDir).filter(name => name.endsWith(".json")); } catch { names = []; }
     return names.flatMap(name => {
       const wake = parseWake(readJson<unknown>(join(this.wakeDir, name), null));
-      return wake?.session === session ? [wake] : [];
+      return wake ? [wake] : [];
     });
   }
 
