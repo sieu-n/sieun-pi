@@ -240,7 +240,7 @@ Phase 3 is built this way. The agent folder lives on the agent's host, at `~/.pi
 
 | Path | Holds | Written by | Loaded into |
 |---|---|---|---|
-| `brief.md` | The responsibility, in the owner's words, with what done looks like. Missing or blank means no brief. | the owner on the Agents card (`PUT /api/agents/:id/brief`) | every thread of the agent, as one more Prime context file |
+| `brief.md` | The responsibility, in the owner's words, with what done looks like. Missing or blank means no brief. | the owner in the Create agent dialog (`POST /api/agents {brief}`) or on the Agents card (`PUT /api/agents/:id/brief`) | every thread of the agent, as one more Prime context file |
 | `harness/harness_state.json` | The agent's memory: a Prime harness store in Prime's own format, with memories, prompt notes, skills and subagent specs | the agent's kernels through `rlm.harness` and `refine.run()`, and the owner on the Agents card (`/api/agents/:id/memory`) | every thread of the agent, through Prime's harness digest |
 
 The agent record stays in the chat server's `agents.json`. An `agent.json` on the box waits for phase 6, when the relay needs it there.

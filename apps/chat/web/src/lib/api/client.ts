@@ -224,7 +224,7 @@ export const api = {
 
   jobs: (opts: { archived?: boolean } = {}) => call<AgentSummary[]>("GET", `/api/jobs${query({ archived: opts.archived ? 1 : undefined })}`),
   /** A new agent with its work thread and DM room (`room`); `kind` "job" with a `parent` files a root thread under that agent as a job instead. */
-  createAgent: (input: { name?: string; model?: string; thinkingLevel?: ThinkingLevel; cwd?: string; kind?: "chat" | "job"; parent?: AgentId; host?: string }) =>
+  createAgent: (input: { name?: string; brief?: string; model?: string; thinkingLevel?: ThinkingLevel; cwd?: string; kind?: "chat" | "job"; parent?: AgentId; host?: string }) =>
     call<AgentSummary & { opened?: OpenedPage }>("POST", "/api/agents", input),
   /** The boxes that run pi-host and can hold an agent, the chat's own box marked `self`, each up or away (agent-model.md phase 6). */
   agentHosts: () => call<AgentHostList>("GET", "/api/agent-hosts"),

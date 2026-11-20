@@ -175,6 +175,7 @@ export function routes(app: App): Route[] {
     route("GET", "/api/agent-hosts", async () => app.agentHosts()),
     route("POST", "/api/agents", async (_r, _p, _q, body) => {
       const input = (await body()) as Parameters<App["createAgent"]>[0];
+      if (input.brief !== undefined && typeof input.brief !== "string") throw new BadRequest("A new agent's brief is text, a string, when given.");
       const agent = await app.createAgent(input);
       // A job thread opens by link later, so only a new agent's DM comes with its first page.
       return input.kind === "job" || input.parent || !agent.room ? agent : { ...agent, opened: await app.opened(agent.room) };

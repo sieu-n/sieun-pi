@@ -44,6 +44,11 @@ export function workingJobs(summaries: readonly AgentSummary[], waking: Readonly
 }
 
 const DEFAULT_CHECK_IN_MS = 120 * 60_000;
+/**
+ * The check-in turn. It names the brief because an agent whose board is empty has nothing else to move: the knowledge manager agent
+ * (11-20) answered seven check-ins with "the board is empty, nothing changed" while its name held the owner's ask.
+ */
+export const CHECK_IN_TEXT = "[check-in] Read your board and your jobs, move each open step, add the next steps your brief calls for when none is open, and tell the owner only what needs him.";
 const BOARD_TTL_MS = 15_000;
 
 interface CheckInState { everyMs: number; pausedUntil: number | "forever" | null; lastAt: number | null }
@@ -649,7 +654,7 @@ export class Boards {
           file.checkIn = { ...state, lastAt: now };
           dirty = true;
           await this.host.submit(this.threadOf(chat), {
-            text: "[check-in] Read your board and your jobs, move each open step, and tell the owner only what needs him.", whenBusy: "followUp",
+            text: CHECK_IN_TEXT, whenBusy: "followUp",
             requestId: `checkin:${chat}:${now}`, entry: { kind: "agent.message", data: { from: "board", via: "check-in" } },
           }).catch(error => this.log(`check-in for ${chat} failed: ${String(error)}`));
         }

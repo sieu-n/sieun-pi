@@ -983,7 +983,12 @@ export class App {
    * room, made at once. With `kind: "job"` or a `parent`, the thread is a root job filed under that agent instead. With `test` it is a walk's
    * throwaway agent, which no owner list, live event or badge shows (`AgentStore.isTest`).
    */
-  async createAgent(input: { name?: string; model?: string; thinkingLevel?: string; cwd?: string; kind?: "chat" | "job"; parent?: string; test?: boolean; host?: string }): Promise<AgentSummary> {
+  /**
+   * A new agent, or a job when `kind` is "job" or `parent` names one. `brief`, the owner's words for what the agent is for, becomes its
+   * brief.md: until 11-21 creation wrote none, so the knowledge manager agent (11-20) sat with an empty board and a responsibility only its
+   * name held, and its check-ins said "nothing changed" for a day.
+   */
+  async createAgent(input: { name?: string; brief?: string; model?: string; thinkingLevel?: string; cwd?: string; kind?: "chat" | "job"; parent?: string; test?: boolean; host?: string }): Promise<AgentSummary> {
     const box = input.host ?? this.config.box;
     let cwd: string;
     let agentsDir: string | undefined;
@@ -1013,6 +1018,7 @@ export class App {
       await this.threads.refresh();
       return this.threads.agent(created.id)!;
     }
+    if (input.brief?.trim()) await this.folders.writeBrief(record, input.brief.trim());
     await this.threads.refresh();
     this.roomsChanged();
     return this.threads.agent(record.id)!;

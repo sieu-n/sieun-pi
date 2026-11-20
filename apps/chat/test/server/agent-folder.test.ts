@@ -88,6 +88,23 @@ test("a new agent's work thread and a root job filed under an agent get their re
   assert.deepEqual(refOf(host(), job.body.thread), { agent: agents.vent, dir: ventDir(), role: "job" });
 });
 
+test("a new agent's brief from the create form lands in its brief.md, a blank one writes none, and a brief that is no string is refused", async () => {
+  const words = "Keep the llm-wiki info and the skills always up to date.";
+  const made = await s.send<AgentSummary>("POST", "/api/agents", { name: "Brief probe", brief: `  ${words}\n` });
+  assert.equal(made.status, 200);
+  assert.equal(readFileSync(join(s.app.config.agentsDir, "brief-probe", "brief.md"), "utf8"), words);
+  const view = await folder(made.body.id);
+  assert.deepEqual([view.brief.text, view.brief.loaded], [words, true]);
+
+  const blank = await s.send<AgentSummary>("POST", "/api/agents", { name: "Blank brief probe", brief: "  " });
+  assert.equal(blank.status, 200);
+  assert.equal(existsSync(join(s.app.config.agentsDir, "blank-brief-probe", "brief.md")), false);
+
+  const refused = await s.send<{ error: string }>("POST", "/api/agents", { name: "Bad brief probe", brief: 7 });
+  assert.equal(refused.status, 400);
+  assert.match(refused.body.error, /brief is text/);
+});
+
 test("a folder reads by agent id, DM room, work thread and a job inside it, and the brief round-trips and deletes with empty text", async () => {
   const job = (await s.get<ConversationSummary[]>("/api/conversations")).find(c => c.id.startsWith(`${ids.vent}:`))!;
   for (const id of [agents.vent, "dm_vent", ids.vent, job.id]) assert.equal((await folder(id)).agent, agents.vent, id);

@@ -4,6 +4,7 @@
   import { levelsFor, modelOptions } from "./agents-model";
   import { defaultHost, hostOptions, hostProjects } from "./host-badge";
   import ProjectPicker from "./ProjectPicker.svelte";
+  import TextArea from "$lib/ui/TextArea.svelte";
 
   type Props = {
     open: boolean;
@@ -14,6 +15,8 @@
   let { open = $bindable(), catalog, onclose, oncreated }: Props = $props();
 
   let name = $state("");
+  /** What the agent is for, in the owner's words; the server writes it to the agent's brief.md, which every thread of it loads. */
+  let brief = $state("");
   let model = $state("");
   let level = $state<ThinkingLevel | undefined>();
   let pending = $state(false);
@@ -66,6 +69,7 @@
 
   function reset() {
     name = "";
+    brief = "";
     model = catalog?.default.model ?? "";
     level = catalog?.default.thinkingLevel;
     host = hosts ? defaultHost(hosts) : "";
@@ -90,7 +94,7 @@
     pending = true;
     error = "";
     try {
-      const agent = await api.createAgent({ name: name.trim(), ...(model ? { model } : {}), ...(level ? { thinkingLevel: level } : {}), ...(cwd.trim() ? { cwd: cwd.trim() } : {}), ...(picked && !picked.self ? { host: picked.box } : {}) });
+      const agent = await api.createAgent({ name: name.trim(), ...(brief.trim() ? { brief: brief.trim() } : {}), ...(model ? { model } : {}), ...(level ? { thinkingLevel: level } : {}), ...(cwd.trim() ? { cwd: cwd.trim() } : {}), ...(picked && !picked.self ? { host: picked.box } : {}) });
       if (agent.room) keepOpened(agent.room, agent.opened);
       open = false;
       reset();
@@ -121,6 +125,17 @@
           nameError = null;
           error = "";
         }}
+      />
+    </Field>
+    <Field label="What it does" id="create-agent-brief" hint="Saved as its brief, which every thread of it reads.">
+      <TextArea
+        id="create-agent-brief"
+        bind:value={brief}
+        rows={3}
+        maxRows={10}
+        placeholder="Keep the llm-wiki and skills up to date with what the other agents learn"
+        disabled={pending}
+        oninput={() => (touched = true)}
       />
     </Field>
     <div class="settings">
