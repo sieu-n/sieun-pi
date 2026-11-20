@@ -287,6 +287,14 @@ export function heldInput(op: string, what: string, sources: readonly Pick<Probe
 }
 
 /**
+ * The held media read when no working answer of this run linked a /v1/media URL and some answer was held, or null. On 11-20 at 12:0xZ staging
+ * held every profile and feed read, its 5 working answers linked no media, and d2 read the media route as unprobed.
+ */
+export function heldMedia(url: string | null, results: readonly Pick<ProbeResult, "verdict">[]): ProbeResult | null {
+  return url ? null : heldInput(MEDIA_OP, "/v1/media URL in this run's working answers", results.filter(result => result.verdict !== "ok"));
+}
+
+/**
  * A downloaded snapshot whose every row failed: held while the env's proxy supply is held (`hold`), because each row is a crawler read the hold
  * refuses, else the portal's. On 11-20 at 11:5xZ every staging row failed under the geonode hold and d2 flagged a portal fix.
  */
@@ -919,7 +927,7 @@ async function probeEnv(target: ProbeTarget, routes: readonly Route[]): Promise<
     return result;
   }));
   const mediaUrl = firstMediaUrl([...phase1, ...fed].filter(result => result.verdict === "ok").map(result => result.body));
-  const mediaHeld = mediaUrl ? null : heldInput(MEDIA_OP, "/v1/media URL in this run's answers", [...phase1, ...fed]);
+  const mediaHeld = heldMedia(mediaUrl, [...phase1, ...fed]);
   const media = mediaHeld ? Promise.resolve(mediaHeld) : probeMedia(mediaUrl, target.headers);
   await Promise.all([...pageTwoRuns, ...opened.map(job => cancel(job.org, job.id))]);
   // A page-2 failure counts against the operation, and a held page 2 holds it: a customer cannot get past page 1. A page 2 the run did not

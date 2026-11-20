@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { MEDIA_OP, UNMEASURED_PCT, classify, firstMediaUrl, heldEgress, heldInput, heldPaidReads, parityMetrics, probeMedia, scoredRoutes, snapshotRowsVerdict, supplyHoldOf, type OpenApi, type ProbeResult, type Route } from "../scripts/duties/portal-parity.ts";
+import { MEDIA_OP, UNMEASURED_PCT, classify, firstMediaUrl, heldEgress, heldInput, heldMedia, heldPaidReads, parityMetrics, probeMedia, scoredRoutes, snapshotRowsVerdict, supplyHoldOf, type OpenApi, type ProbeResult, type Route } from "../scripts/duties/portal-parity.ts";
 
 const doc = (...ops: string[]): OpenApi => {
   const paths: NonNullable<OpenApi["paths"]> = {};
@@ -214,4 +214,13 @@ test("a snapshot whose every row failed is held while the proxy supply is held, 
   assert.equal(snapshotRowsVerdict(read, broken, "geonode proxy_auth_failed").verdict, "held");
   assert.equal(snapshotRowsVerdict(read, broken, null).verdict, "portal");
   assert.equal(snapshotRowsVerdict(read, null, "geonode proxy_auth_failed").verdict, "ok");
+});
+
+test("the media read is held when no working answer linked a media URL and the answers that would have were held", () => {
+  // 11-20 12:0xZ: staging's 5 working answers linked no /v1/media URL, every profile read was held, and d2 read the media route as unprobed.
+  const held: ProbeResult = { op: "GET /v1/instagram/user_feed", verdict: "held", status: 503, ms: 200, code: "upstream_error", note: "docs example" };
+  const url = "https://staging-api.virev.ai/v1/media/tiktok_account/275923/profile_pic?e=1795824000&s=7334454549c453ddf83cf23898bf4a00";
+  assert.equal(heldMedia(null, [ok("GET /v1/search/languages"), held])!.verdict, "held");
+  assert.equal(heldMedia(url, [held]), null);
+  assert.equal(heldMedia(null, [ok("GET /v1/search/languages")]), null);
 });
