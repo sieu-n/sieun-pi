@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -104,23 +104,6 @@ test("a user rule in ~/.claude/rules loads in any repo, with its globs read agai
 	assert.doesNotMatch(first, /USER-ALWAYS-RULE-BODY/);
 	assert.doesNotMatch(await s.cell("open('apps/web/src/page.svelte').read()"), /USER-TS-RULE-BODY/);
 	assert.ok(globRegex("**/*.{ts,tsx}").test("src/main.ts"));
-});
-
-test("sieun-pi's user rules each have a manifest link, and the web rule loads for a Svelte file but not for a server TypeScript file", async () => {
-	const root = join(import.meta.dirname, "..", "..", "..");
-	const shipped = readdirSync(join(root, "config", "claude-rules")).filter((name) => name.endsWith(".md"));
-	const links = JSON.parse(readFileSync(join(root, "install-manifest.json"), "utf8")).entries ?? [];
-	for (const name of shipped) assert.ok(JSON.stringify(links).includes(`"config/claude-rules/${name}"`), `${name} has an install-manifest link`);
-	const home = join(repo, "shipped-home");
-	mkdirSync(join(home, ".claude", "rules"), { recursive: true });
-	for (const name of shipped) symlinkSync(join(root, "config", "claude-rules", name), join(home, ".claude", "rules", name));
-	const s = session([], home);
-	const svelte = await s.cell("open('apps/web/src/page.svelte').read()");
-	assert.match(svelte, /modern-web-guidance/);
-	assert.doesNotMatch(svelte, /typescript-best-practices/);
-	const ts = await s.cell("open('src/main.ts').read()");
-	assert.match(ts, /typescript-best-practices/);
-	assert.doesNotMatch(ts, /modern-web-guidance/);
 });
 
 test("a resumed session keeps a rule it already loaded, and a compaction lets it load again", async () => {

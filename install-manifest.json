@@ -231,13 +231,6 @@
       "target": ".claude/rules/typescript.md"
     },
     {
-      "id": "user-rule:web",
-      "kind": "link",
-      "source": "config/claude-rules/web.md",
-      "scope": "home",
-      "target": ".claude/rules/web.md"
-    },
-    {
       "id": "user-history",
       "kind": "link",
       "source": "legacy/prime/user-history",

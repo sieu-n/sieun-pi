@@ -45,9 +45,13 @@ When generating or modifying code, cross-check the implementation against the re
 - **Task Fulfillment**: Confirm that the implementation fully satisfies the user's request.
 - Do not run `legacy-scan`; it's for detecting legacy patterns to modernize, not this.
 
-### Step 4. Name the guides you used
+### Step 4. Disclose Skill Usage
 
-When a retrieved guide shaped your code, name its id and the rule it made you follow in one plain sentence in the commit message or the reply, such as "Followed `ime-safe-enter-submit`, so the Enter handler skips keys pressed during Korean IME composition." Our writing rules (the unslop skill) replace the upstream `### Modern Web Guidance` section with bold bullets.
+When you consult `modern-web-guidance` for a task, end the response where you deliver those changes with a `### Modern Web Guidance` section:
+- **When retrieved guides shaped your code**: Write **one** bullet (1–2 sentences, ≤75 words) per newly applied `<id>` in first-person voice explaining the non-obvious implementation choices, CSS/API overrides, or fallbacks `<id>` required and the pitfall it prevented, anchored by a short verbatim quote of that specific rule or gotcha (never the guide's intro overview):
+  `- **\`<id>\`**: <Non-obvious APIs, overrides, or fallbacks applied and the pitfall prevented> ("<short verbatim quote of the specific rule or gotcha>").`
+  - **Never** guess `<id>`s or quotes from memory after context compaction (re-run `search`/`retrieve` if needed), and credit **only** guide-backed changes from the current turn.
+- **When searched/listed in this turn but zero guides applied**: Write one first-person sentence naming which topics or guides you checked in `modern-web-guidance` and why none applied (omit if any guide applied).
 
 ## Alternative flow: Modernize an existing codebase
 
@@ -84,9 +88,3 @@ npx -y modern-web-guidance@latest legacy-scan <path> --json
 * **Default Behavior**: All guides assume **Baseline Widely available** features are safe to use without fallbacks. For features that are not Baseline widely available, you **MUST** follow the fallback recommendations in the guide, unless the user has specified a custom browser support policy.
 * **Custom Policies**: If the user defines explicit browser support requirements, use the guide's compatibility data to determine if a fallback can be ignored (for `Baseline YYYY` targets, a feature satisfies the target if its "Baseline since" date is `<= YYYY`). Examples: _"Do not implement feature fallbacks"_, _"Safari 17.4+"_, _"Never implement polyfills; use a lightweight custom fallback or redesign"_, or _"Allow Newly Available features if feature-detected with graceful degradation"_.
 * **Reactive Policy Discovery**: Suggest documenting a policy in `AGENTS.md` or `CLAUDE.md` (e.g., `**Browser Support:** Allow Newly Available features, but only adopt custom fallback code that adds <= 20 lines and no external dependencies`) if the developer targets a restricted runtime (Electron/Tauri), excludes specific browsers, hesitates over polyfill size/complexity, or asks if a feature is safe without fallbacks.
-
-## Local install (sieun-pi)
-
-This skill is upstream `GoogleChrome/modern-web-guidance` at commit 64a6d708 (npm 1.0.1, skill version 2026_11_10-47b4c80e), Apache-2.0, with Step 4 rewritten for our writing rules and this section added.
-The CLI is installed globally on us-metal02 (`npm i -g modern-web-guidance`), so `modern-web-guidance search|retrieve|legacy-scan` also runs there without npx; on the Mac use the `npx -y modern-web-guidance@latest` form above.
-In auto-sns-agent, `legacy-scan` of `apps/search/src` took 35 s and returned 91 findings on 2026-11-20, 72 of them `toSorted()` style rewrites with no user effect, so prefer `search` and `retrieve` on the feature you are building over a scan.
