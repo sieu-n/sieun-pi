@@ -126,11 +126,29 @@
     });
   });
 
+  /**
+   * A row off screen skips layout and paint (content-visibility in .day-rows) and stands at a guessed height until it nears the view. When
+   * one above the view then draws at its real height, it would push the rows on screen, and the feed turns the browser's scroll anchoring
+   * off (WebKit has none), so the feed keeps the row in the middle of the view where it was itself.
+   */
+  let anchor: { row: Element; top: number } | null = null;
+  function noteAnchor() {
+    if (!scroller) return;
+    const box = scroller.getBoundingClientRect();
+    const row = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)?.closest(".day-rows > li");
+    anchor = row ? { row, top: row.getBoundingClientRect().top } : null;
+  }
+
   let rowsEl = $state<HTMLElement>();
   $effect(() => {
     if (!rowsEl) return;
     const observer = new ResizeObserver(() => {
       if (stick) toBottom();
+      else if (scroller && anchor?.row.isConnected) {
+        const moved = anchor.row.getBoundingClientRect().top - anchor.top;
+        if (moved) scroller.scrollTop += moved;
+        noteAnchor();
+      }
     });
     observer.observe(rowsEl);
     if (scroller) observer.observe(scroller);
@@ -166,6 +184,7 @@
     stick = distance < 80;
     showJump = distance > 400;
     if (stick && !wasStuck) onbottom?.();
+    if (!stick) noteAnchor();
     if (scroller.scrollTop < 240 && full && hasOlder && !loadingOlder) void older();
   }
 
@@ -296,6 +315,19 @@
     margin-block: 0;
     padding: 0;
     list-style: none;
+  }
+  /*
+   * A long thread holds over 12,000 nodes, and on 11-20 each older page that came in blocked the main thread for 230 to 330 ms. A row off
+   * screen skips its layout and paint and keeps the height it last drew at; the newest rows, on screen when a thread opens, always draw.
+   */
+  .day-rows > :global(li) {
+    content-visibility: auto;
+    contain-intrinsic-size: auto none auto 160px;
+  }
+  /* Containment clips what a row draws outside itself, so a row that shows its hover toolbar above its top edge drops it. */
+  .day-group:last-child .day-rows > :global(li:nth-last-child(-n + 16)),
+  .day-rows > :global(li:is(:hover, :focus-within, .picking)) {
+    content-visibility: visible;
   }
   .edge {
     display: flex;
