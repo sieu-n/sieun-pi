@@ -81,9 +81,14 @@ export function cssWidth(rect: DOMRect): number {
   return rect.width / viewport().scale;
 }
 
-/** Move the node to document.body so no parent's overflow or stacking context clips it. */
+/**
+ * Move the node to document.body so no parent's overflow or stacking context clips it. While a modal dialog is open it moves to the end of
+ * the innermost one instead, because the browser makes everything outside it inert and draws it under the dialog's top layer, and a
+ * picker a dialog opens may sit beside the dialog in the markup.
+ */
 export function portal(node: HTMLElement) {
-  document.body.appendChild(node);
+  const modals = document.querySelectorAll("dialog:modal");
+  (modals[modals.length - 1] ?? document.body).appendChild(node);
   return {
     destroy() {
       node.remove();

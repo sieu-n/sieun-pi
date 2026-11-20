@@ -16,36 +16,16 @@ export function trackKeyboardNavigation(): void {
 
 export const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 
+/**
+ * True while an IME such as Korean composes text, so an Enter keydown confirms a syllable and must not send, save or pick. WebKit can
+ * deliver that Enter after compositionend with isComposing false (WebKit bug 165004), and sw factory renders in WKWebView on the Mac, so
+ * keyCode 229, which a keydown reports while an IME takes the key, counts too.
+ */
+export function composing(e: KeyboardEvent): boolean {
+  return e.isComposing || e.keyCode === 229;
+}
+
 /** True for Cmd on a Mac and Ctrl elsewhere. */
 export function modKey(e: KeyboardEvent | MouseEvent): boolean {
   return isMac ? e.metaKey : e.ctrlKey;
-}
-
-const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"]),[contenteditable="true"]';
-
-export function focusables(root: HTMLElement): HTMLElement[] {
-  return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => el.offsetParent !== null || el === document.activeElement);
-}
-
-/** Keep Tab and Shift Tab inside `node`. */
-export function trapFocus(node: HTMLElement) {
-  function onKeydown(e: KeyboardEvent) {
-    if (e.key !== "Tab") return;
-    const items = focusables(node);
-    if (items.length === 0) {
-      e.preventDefault();
-      return;
-    }
-    const first = items[0]!;
-    const last = items[items.length - 1]!;
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  }
-  node.addEventListener("keydown", onKeydown);
-  return { destroy: () => node.removeEventListener("keydown", onKeydown) };
 }

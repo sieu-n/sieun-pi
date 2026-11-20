@@ -2,8 +2,7 @@
   import type { Snippet } from "svelte";
   import { tick } from "svelte";
   import IconButton from "./IconButton.svelte";
-  import { nextLayer, portal } from "./floating";
-  import { trapFocus } from "./keyboard";
+  import { portal } from "./floating";
 
   type Props = {
     open: boolean;
@@ -45,8 +44,7 @@
     children,
   }: Props = $props();
 
-  let card = $state<HTMLDivElement>();
-  let z = $state(1000);
+  let card = $state<HTMLDialogElement>();
   const titleId = `dlg-${Math.random().toString(36).slice(2, 8)}`;
 
   function close() {
@@ -54,10 +52,23 @@
     onclose?.();
   }
 
+  /**
+   * Opens the dialog in the top layer, where the browser makes the page behind it inert, so Tab stays inside it. showModal moves focus
+   * into the dialog, so the element to give it back to is read before it.
+   */
+  function modal(node: HTMLDialogElement) {
+    const returnTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    node.showModal();
+    return {
+      destroy() {
+        node.close();
+        if (returnTo?.isConnected && (node.contains(document.activeElement) || document.activeElement === document.body)) returnTo.focus({ preventScroll: true });
+      },
+    };
+  }
+
   $effect(() => {
     if (!open) return;
-    z = nextLayer();
-    const returnTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     void tick().then(() => {
       if (!card) return;
       const target =
@@ -67,87 +78,97 @@
         card.querySelector<HTMLElement>(".dialog-body button, .dialog-actions button");
       (target ?? card).focus({ preventScroll: true });
     });
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && dismissible && !e.defaultPrevented) {
-        e.preventDefault();
-        close();
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      if (returnTo?.isConnected) returnTo.focus({ preventScroll: true });
-    };
   });
 
-  function onScrimPointer(e: PointerEvent) {
-    if (e.target === e.currentTarget && dismissible && !dirty) close();
+  /** Esc fires cancel; a menu or picker inside the dialog takes its own Esc first and prevents it. */
+  function onCancel(e: Event) {
+    e.preventDefault();
+    if (dismissible) close();
+  }
+
+  /** The browser can close a modal without a cancel it lets us prevent, such as a second Esc in Safari, so the state follows it. */
+  function onNativeClose() {
+    if (open && card?.isConnected) close();
+  }
+
+  /** A press and a release both on the backdrop close the dialog, so a text selection dragged out of it does not. */
+  let pressedOutside = false;
+  const outside = (e: PointerEvent): boolean => {
+    const r = card!.getBoundingClientRect();
+    return e.target === card && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom);
+  };
+  function onPointerDown(e: PointerEvent) {
+    pressedOutside = outside(e);
+  }
+  function onPointerUp(e: PointerEvent) {
+    if (pressedOutside && outside(e) && dismissible && !dirty) close();
+    pressedOutside = false;
   }
 </script>
 
 {#if open}
-  <div use:portal class="scrim {presentation}" style:z-index={z} onpointerdown={onScrimPointer} role="presentation">
-    <div
-      bind:this={card}
-      use:trapFocus
-      class="dialog {presentation}"
-      style:width={width ? `${width}px` : undefined}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={title ? titleId : undefined}
-      aria-label={title ? undefined : label}
-      tabindex="-1"
-    >
-      {#if title}
-        <header class="dialog-header">
-          <div>
-            <h2 id={titleId}>{title}</h2>
-            {#if description}<p>{description}</p>{/if}
+  <dialog
+    bind:this={card}
+    use:portal
+    use:modal
+    class="dialog {presentation}"
+    style:width={width ? `${width}px` : undefined}
+    aria-labelledby={title ? titleId : undefined}
+    aria-label={title ? undefined : label}
+    tabindex="-1"
+    oncancel={onCancel}
+    onclose={onNativeClose}
+    onpointerdown={onPointerDown}
+    onpointerup={onPointerUp}
+  >
+    {#if title}
+      <header class="dialog-header">
+        <div>
+          <h2 id={titleId}>{title}</h2>
+          {#if description}<p>{description}</p>{/if}
+        </div>
+        {#if headerActions || (showClose && dismissible)}
+          <div class="dialog-header-actions">
+            {#if headerActions}{@render headerActions()}{/if}
+            {#if showClose && dismissible}<IconButton icon="close" label="Close" size="sm" onclick={close} />{/if}
           </div>
-          {#if headerActions || (showClose && dismissible)}
-            <div class="dialog-header-actions">
-              {#if headerActions}{@render headerActions()}{/if}
-              {#if showClose && dismissible}<IconButton icon="close" label="Close" size="sm" onclick={close} />{/if}
-            </div>
-          {/if}
-        </header>
-      {/if}
-      <div class="dialog-body">{@render children()}</div>
-      {#if actions}<footer class="dialog-actions">{@render actions()}</footer>{/if}
-    </div>
-  </div>
+        {/if}
+      </header>
+    {/if}
+    <div class="dialog-body">{@render children()}</div>
+    {#if actions}<footer class="dialog-actions">{@render actions()}</footer>{/if}
+  </dialog>
 {/if}
 
 <style>
-  .scrim {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    padding: 24px;
-    background: var(--bg-scrim);
-    animation: fade var(--duration-base) var(--ease-standard);
-  }
-  .scrim.search {
-    align-items: flex-start;
-    padding-top: 128px;
-  }
-  .dialog {
+  .dialog[open] {
     display: flex;
     flex-direction: column;
+  }
+  .dialog {
     width: 480px;
-    max-width: 100%;
+    max-width: calc(100% - 48px);
     max-height: calc(100vh - 48px);
+    margin: auto;
+    padding: 0;
+    border: none;
     border-radius: var(--radius-panel);
     background: var(--surface-popover);
     box-shadow: var(--shadow-float);
     color: var(--text-standard);
     overflow: hidden;
+    overscroll-behavior: contain;
     animation: pop var(--duration-medium) var(--ease-enter);
+  }
+  .dialog::backdrop {
+    overflow: hidden;
+    overscroll-behavior: contain;
+    background: var(--bg-scrim);
+    animation: fade var(--duration-base) var(--ease-standard);
   }
   .dialog.search {
     width: 640px;
+    margin-top: 128px;
     max-height: calc(100vh - 128px - 48px);
     padding: 0 12px;
     border-radius: var(--radius-control);

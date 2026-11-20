@@ -1,6 +1,6 @@
 <script lang="ts">
   import IconButton from "./IconButton.svelte";
-  import { nextLayer, portal } from "./floating";
+  import { portal } from "./floating";
 
   type Props = {
     /** Image URL to show; null hides the lightbox. */
@@ -11,24 +11,23 @@
     onclose: () => void;
   };
   let { src, alt = "", svg, onclose }: Props = $props();
-  let z = $state(5000);
 
-  $effect(() => {
-    if (!src) return;
-    z = nextLayer();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onclose();
-      }
+  /** A modal dialog in the top layer: the page behind it is inert, and Esc fires cancel. */
+  function modal(node: HTMLDialogElement) {
+    const returnTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    node.showModal();
+    return {
+      destroy() {
+        node.close();
+        if (returnTo?.isConnected && (node.contains(document.activeElement) || document.activeElement === document.body)) returnTo.focus({ preventScroll: true });
+      },
     };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  });
+  }
 </script>
 
 {#if src}
-  <div use:portal class="lightbox" style:z-index={z} role="dialog" aria-modal="true" aria-label={alt || "Image"} tabindex="-1" onclick={onclose} onkeydown={() => {}}>
+  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions: Esc closes it through cancel, and the Close button is the keyboard path. -->
+  <dialog use:portal use:modal class="lightbox" aria-label={alt || "Image"} onclick={onclose} oncancel={(e) => (e.preventDefault(), onclose())} onclose={(e) => e.currentTarget.isConnected && onclose()}>
     {#if svg}
       <div class="svg-frame">{@html svg}</div>
     {:else}
@@ -38,16 +37,28 @@
       <IconButton icon="external" label="Open original" variant="glass" onclick={(e) => (e.stopPropagation(), window.open(src, "_blank", "noopener"))} />
       <IconButton icon="close" label="Close" variant="glass" onclick={onclose} />
     </div>
-  </div>
+  </dialog>
 {/if}
 
 <style>
-  .lightbox {
-    position: fixed;
-    inset: 0;
+  .lightbox[open] {
     display: grid;
-    place-items: center;
+  }
+  .lightbox {
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    max-height: none;
+    margin: 0;
     padding: 48px;
+    border: none;
+    place-items: center;
+    background: transparent;
+    overscroll-behavior: contain;
+  }
+  .lightbox::backdrop {
+    overflow: hidden;
+    overscroll-behavior: contain;
     background: rgb(0 0 0 / 80%);
     animation: fade var(--duration-base) var(--ease-standard);
   }

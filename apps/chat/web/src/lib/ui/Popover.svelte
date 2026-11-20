@@ -74,7 +74,9 @@
       return;
     }
     z = nextLayer();
-    returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    // A click does not focus a button in WebKit, so the anchor stands in for a focus that sat on body.
+    const focused = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+    returnFocus = focused ?? (anchor instanceof HTMLElement ? anchor : null);
     void tick().then(() => {
       reposition();
       if (autofocus && element && !element.contains(document.activeElement)) {
@@ -92,6 +94,7 @@
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        e.preventDefault();
         e.stopPropagation();
         close();
       }
@@ -112,7 +115,9 @@
       window.removeEventListener("resize", onResize);
       window.removeEventListener("scroll", onResize, true);
       sizes.disconnect();
-      if (returnFocus?.isConnected && element?.contains(document.activeElement)) returnFocus.focus({ preventScroll: true });
+      // By the time this runs the popover may be gone with the focus it held, which leaves focus on body.
+      const lost = !document.activeElement || document.activeElement === document.body;
+      if (returnFocus?.isConnected && (lost || element?.contains(document.activeElement))) returnFocus.focus({ preventScroll: true });
     };
   });
 

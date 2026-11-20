@@ -1,9 +1,21 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
   import { toast } from "./toast.svelte";
+
+  let toaster = $state<HTMLDivElement>();
+  /**
+   * The toaster is a manual popover in the top layer, shown again for each new toast, so a toast lands above an open modal dialog instead
+   * of under its backdrop.
+   */
+  $effect(() => {
+    void toast.items.length;
+    if (!toaster?.showPopover) return;
+    if (toaster.matches(":popover-open")) toaster.hidePopover();
+    toaster.showPopover();
+  });
 </script>
 
-<div class="toaster" role="region" aria-label="Notifications" aria-live="polite">
+<div bind:this={toaster} popover="manual" class="toaster" role="region" aria-label="Notifications" aria-live="polite">
   {#each toast.items as t (t.id)}
     <div class="toast {t.tone}" role={t.tone === "danger" ? "alert" : "status"}>
       {#if t.tone === "success"}<Icon name="check" size={16} />{:else if t.tone === "danger"}<Icon name="warning" size={16} />{/if}
@@ -27,8 +39,12 @@
 <style>
   .toaster {
     position: fixed;
-    left: 50%;
-    bottom: 24px;
+    inset: auto auto 24px 50%;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    overflow: visible;
     z-index: 50000;
     display: flex;
     flex-direction: column;
