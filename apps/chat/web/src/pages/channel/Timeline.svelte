@@ -124,8 +124,7 @@
       if (!row) return;
       stick = false;
       row.scrollIntoView({ block: "center" });
-      // Rows above still draw at their real heights after this, so the feed holds the linked post where it centered it, as Slack does.
-      anchor = { row, top: row.getBoundingClientRect().top };
+      held = { row, top: row.getBoundingClientRect().top };
       if (!flashFocus) return;
       flashId = id;
       setTimeout(() => {
@@ -140,6 +139,20 @@
    * off (WebKit has none), so the feed keeps the row in the middle of the view where it was itself.
    */
   let anchor: { row: Element; top: number } | null = null;
+  /**
+   * The post a link opened, which stays where the open centered it, as in Slack, until he scrolls himself. On 11-20 the rows above a
+   * linked post on live drew at their real heights after the scroll (scrollHeight 1854 to 4170) and pushed it out of view, and holding it
+   * only through noteAnchor still lost it in 6 of 10 opens.
+   */
+  let held: { row: Element; top: number } | null = null;
+  $effect(() => {
+    const feed = scroller;
+    if (!feed) return;
+    const release = () => (held = null);
+    const events = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
+    for (const type of events) feed.addEventListener(type, release, { passive: true });
+    return () => events.forEach((type) => feed.removeEventListener(type, release));
+  });
   function noteAnchor() {
     if (!scroller) return;
     const box = scroller.getBoundingClientRect();
@@ -151,6 +164,10 @@
   $effect(() => {
     if (!rowsEl) return;
     const observer = new ResizeObserver(() => {
+      if (scroller && held?.row.isConnected) {
+        scroller.scrollTop += held.row.getBoundingClientRect().top - held.top;
+        return;
+      }
       if (stick) toBottom();
       else if (scroller && anchor?.row.isConnected) {
         const moved = anchor.row.getBoundingClientRect().top - anchor.top;
@@ -192,7 +209,7 @@
     stick = distance < 80;
     showJump = distance > 400;
     if (stick && !wasStuck) onbottom?.(true);
-    if (!stick) noteAnchor();
+    if (!stick && !held) noteAnchor();
     if (scroller.scrollTop < 240 && full && hasOlder && !loadingOlder) void older();
   }
 
