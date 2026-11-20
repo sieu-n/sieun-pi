@@ -2,7 +2,7 @@
   import { mount, unmount } from "svelte";
   import Lightbox from "./Lightbox.svelte";
   import Mermaid from "./Mermaid.svelte";
-  import { openArtifact } from "./artifact-opener";
+  import { openArtifact, openBlock } from "./artifact-opener";
   import { renderInline, renderMarkdown, type MarkdownContext } from "./markdown";
   import { whenVisible } from "./mermaid";
 
@@ -120,6 +120,23 @@
         copy.textContent = "Copied";
         setTimeout(() => (copy.textContent = "Copy"), 1200);
       });
+      return;
+    }
+    const openTable = el.closest<HTMLElement>("[data-open-table]");
+    if (openTable) {
+      const table = openTable.closest(".table-block");
+      const columns = table?.querySelectorAll("thead th").length ?? 0;
+      const rows = table?.querySelectorAll("tbody tr").length ?? 0;
+      openBlock({ kind: "table", markdown: openTable.dataset.openTable ?? "", label: `${columns} columns, ${rows} rows` });
+      return;
+    }
+    const openCode = el.closest<HTMLElement>("[data-open-code]");
+    if (openCode) {
+      const block = openCode.closest(".code-block");
+      const code = block?.querySelector("code")?.textContent ?? "";
+      const language = block?.querySelector(".code-lang")?.textContent ?? "";
+      const fence = "`".repeat(Math.max(3, ...[...code.matchAll(/`+/g)].map((m) => m[0].length + 1)));
+      openBlock({ kind: "code", markdown: `${fence}${language === "text" ? "" : language}\n${code}\n${fence}`, label: language === "text" ? "Code" : language });
       return;
     }
     const expand = el.closest<HTMLElement>("[data-expand]");

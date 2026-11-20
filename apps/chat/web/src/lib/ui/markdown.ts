@@ -21,7 +21,8 @@ import { ICONS } from "./icons";
  * - file paths in code spans or bare text (`apps/chat/server/http.ts:42`) as a pill that copies the path;
  * - GitHub pull request, issue and commit URLs as a compact card, and other web links with the site's icon and domain;
  * - GitHub callouts (`> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`), task lists, and `<details>`/`<summary>`;
- * - code blocks with a language label, a copy button and a fold past CODE_FOLD_LINES lines, and mermaid blocks that draw when they scroll into view;
+ * - code blocks with a language label, Copy and Open buttons and a fold past CODE_FOLD_LINES lines, and mermaid blocks that draw when they scroll into view;
+ * - tables that wrap with a readable floor per column (`columnClass`), scroll sideways with a sticky first column, and open large with a button;
  * - Slack emoji names such as `:eyes:` as the emoji, and in chat message mode every line break as a break, as Slack shows a post.
  * Every other raw HTML tag shows as text.
  */
@@ -186,7 +187,20 @@ function artifactLink(target: string, inner: string, extraClass = ""): string {
 }
 
 /** A file path as a pill that copies it; the text keeps the `:line`. */
-const pathPill = (path: string): string => artifactLink(`file:${path}`, escapeHtml(path), " path-pill");
+const pathPill = (path: string): string => artifactLink(`file:${path}`, slashBreaks(escapeHtml(path)), " path-pill");
+
+/** A break chance after each slash, so a path in a narrow table cell wraps at a folder instead of inside a name. */
+const slashBreaks = (html: string): string => html.replaceAll("/", "/<wbr>");
+
+/**
+ * How a table column may wrap, from the longest text among its cells: a tiny one (a number, yes or no) stays on one line, a short one
+ * (a name, a label) wraps above a 6rem floor, and a long one (a sentence) above an 11rem floor, so no column shrinks to a word a line.
+ * A table whose columns cannot all meet their floor scrolls sideways (prose.css).
+ */
+export function columnClass(cells: readonly { text: string }[]): "col-tiny" | "col-short" | "col-long" {
+  const longest = Math.max(0, ...cells.map((cell) => cell.text.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[`*_~]/g, "").trim().length));
+  return longest <= 8 ? "col-tiny" : longest <= 24 ? "col-short" : "col-long";
+}
 
 /** A shorter label for a long id: a UUID keeps its first 8 characters, and a job conversation keeps its `:n`. */
 function shortId(id: string): string {
@@ -531,9 +545,6 @@ const marked = new Marked({
   gfm: true,
   async: false,
   extensions: [spacedLinks, wikiLinks, filePaths, loopbackLinks, boardIds, jobNames, mentions, shortcodes],
-  hooks: {
-    postprocess: (html) => html.replaceAll("<table>", '<div class="table-wrap"><table>').replaceAll("</table>", "</table></div>"),
-  },
   walkTokens(token) {
     // A GitHub callout: a quote whose first line is `[!NOTE]` and the like. The marker comes off the first paragraph.
     if (token.type !== "blockquote") return;
@@ -573,7 +584,19 @@ const marked = new Marked({
       // A code span that is exactly one target or one job name is its link, since the chats write `wiki:<path>` and job names in backticks.
       const target = ctx.jobs?.includes(text) ? `job:${text}` : bareTarget(text);
       if (target && !(target.startsWith("file:") && IMAGE_FILE.test(target))) return artifactLink(target, escapeHtml(text));
-      return FILE_PATH.test(text) || FILE_LINE.test(text) ? pathPill(text) : false;
+      return FILE_PATH.test(text) || FILE_LINE.test(text) ? pathPill(text) : `<code>${slashBreaks(escapeHtml(text))}</code>`;
+    },
+    table(token) {
+      const columns = token.header.map((_, i) => columnClass([token.header[i]!, ...token.rows.map((row) => row[i]).filter((cell) => cell !== undefined)]));
+      const cell = (c: Tokens.TableCell, i: number) => {
+        const tag = c.header ? "th" : "td";
+        return `<${tag} class="${columns[i]}"${c.align ? ` align="${c.align}"` : ""}>${this.parser.parseInline(c.tokens)}</${tag}>`;
+      };
+      const head = `<thead><tr>${token.header.map(cell).join("")}</tr></thead>`;
+      const body = token.rows.length ? `<tbody>${token.rows.map((row) => `<tr>${row.map(cell).join("")}</tr>`).join("\n")}</tbody>` : "";
+      const sticky = columns[0] !== "col-long" ? " sticky-first" : "";
+      const label = `Table, ${token.header.length} columns, ${token.rows.length} rows`;
+      return `<div class="table-block"><div class="table-wrap" tabindex="0" role="region" aria-label="${label}"><table class="${sticky.trim()}">${head}${body}</table></div><button type="button" class="table-open" data-open-table="${escapeHtml(token.raw.trim())}" aria-label="Open table" title="Open table"><svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.expand}</svg></button></div>\n`;
     },
     link({ href, title, tokens }) {
       const text = this.parser.parseInline(tokens);
@@ -604,7 +627,7 @@ const marked = new Marked({
       const lines = text.split("\n").length;
       const fold = lines > CODE_FOLD_LINES;
       const more = fold ? `<button type="button" class="code-more" data-expand data-lines="${lines}" aria-expanded="false">Show all ${lines} lines</button>` : "";
-      return `<div class="code-block${fold ? " folded" : ""}"><div class="code-head"><span class="code-lang">${escapeHtml(language || "text")}</span><span class="code-actions"><button type="button" data-copy>Copy</button></span></div><pre><code${language ? ` class="language-${escapeHtml(language)}"` : ""}>${escapeHtml(text)}</code></pre>${more}</div>\n`;
+      return `<div class="code-block${fold ? " folded" : ""}"><div class="code-head"><span class="code-lang">${escapeHtml(language || "text")}</span><span class="code-actions"><button type="button" data-open-code>Open</button><button type="button" data-copy>Copy</button></span></div><pre tabindex="0"><code${language ? ` class="language-${escapeHtml(language)}"` : ""}>${escapeHtml(text)}</code></pre>${more}</div>\n`;
     },
     checkbox({ checked }) {
       return `<input type="checkbox" disabled${checked ? " checked" : ""}> `;
@@ -621,7 +644,7 @@ const marked = new Marked({
 const PURIFY = {
   ADD_ATTR: [
     "target", "data-target", "data-board-id", "data-chat-id", "data-mention-kind", "data-mention-id", "data-copy", "data-diagram", "data-diagram-toggle", "data-diagram-expand",
-    "data-source", "data-expand", "data-lines", "data-callout", "data-gh",
+    "data-source", "data-expand", "data-lines", "data-callout", "data-gh", "data-open-table", "data-open-code",
   ],
   ADD_TAGS: ["button", "details", "summary"],
 };

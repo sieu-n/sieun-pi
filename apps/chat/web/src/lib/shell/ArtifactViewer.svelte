@@ -4,6 +4,7 @@
   import Button from "$lib/ui/Button.svelte";
   import Dialog from "$lib/ui/Dialog.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
+  import Markdown from "$lib/ui/Markdown.svelte";
   import { wikiUrl } from "$lib/ui/markdown";
   import { toast } from "$lib/ui/toast.svelte";
   import BoardPanel from "$pages/board/BoardPanel.svelte";
@@ -11,14 +12,19 @@
   import ThreadPane from "$pages/channel/ThreadPane.svelte";
   import { directory } from "$pages/channel/directory.svelte";
   import { mentionContext } from "$pages/channel/present";
-  import { closeView, currentView, openArtifactTarget, openView, type View } from "./viewer.svelte";
+  import { closeView, currentView, openArtifactTarget, openView, viewedBlock, type View } from "./viewer.svelte";
 
   /**
    * The popup the viewer's `?view=` param opens over any page (viewer.svelte.ts): a wiki page in a frame of this server's /wiki, a
-   * conversation's timeline, or a chat's board. Esc, the close button, a click outside and Back close it; Open in new tab takes the same
-   * thing to a tab of its own.
+   * conversation's timeline, a chat's board, or a post's table or code block at full size. Esc, the close button, a click outside and
+   * Back close it; Open in new tab takes the same thing to a tab of its own.
    */
   const view = $derived(currentView());
+  const block = $derived(view?.kind === "block" ? viewedBlock(view.id) : null);
+  // A block lives in the page's memory, so after a reload its view has nothing to show and closes.
+  $effect(() => {
+    if (view?.kind === "block" && !block) closeView();
+  });
 
   /** The wiki page on screen: the frame follows links inside the wiki, so its title and path are read back from the frame. */
   let frameTitle = $state("");
@@ -45,6 +51,7 @@
       case "wiki": return frameTitle || lastSegment(view.path);
       case "thread": return threadName(view.id);
       case "board": return `Board of ${agents.byId(view.chatId)?.name ?? view.chatId}`;
+      case "block": return block?.kind === "table" ? "Table" : "Code";
     }
   });
   const description = $derived.by(() => {
@@ -53,6 +60,7 @@
       case "wiki": return `wiki: ${framePath ?? view.path}`;
       case "thread": return jobs.byId(view.id) ? `Job thread of ${jobs.byId(view.id)?.parent?.name ?? "an agent"}` : view.id;
       case "board": return view.focus ? `Focused on ${view.focus}` : "";
+      case "block": return block?.label ?? "";
     }
   });
   /** Where Open in new tab goes: the wiki's own page, or this app at the conversation or the board. */
@@ -62,8 +70,16 @@
       case "wiki": return wikiUrl(framePath ?? view.path);
       case "thread": return appHref(conversationHref(view.id));
       case "board": return appHref(boardHref(view.chatId, view.focus ?? undefined));
+      case "block": return "";
     }
   });
+
+  function copyBlock() {
+    void navigator.clipboard.writeText(block?.markdown ?? "").then(
+      () => toast.show(block?.kind === "table" ? "Table copied as markdown" : "Code copied"),
+      () => toast.error("Could not copy"),
+    );
+  }
 
   function copyLink() {
     void navigator.clipboard.writeText(tabHref).then(
@@ -163,13 +179,17 @@
     else if (kind === "agent") router.openConversation(agents.room(id));
   }
 
-  const keyOf = (v: View): string => (v.kind === "wiki" ? `wiki:${v.path}` : v.kind === "thread" ? `thread:${v.id}` : `board:${v.chatId}:${v.focus ?? ""}`);
+  const keyOf = (v: View): string => (v.kind === "board" ? `board:${v.chatId}:${v.focus ?? ""}` : v.kind === "wiki" ? `wiki:${v.path}` : `${v.kind}:${v.id}`);
 </script>
 
 {#snippet headerActions()}
+  {#if view?.kind === "block"}
+    <Button size="sm" variant="ghost" icon="copy" onclick={copyBlock}>Copy</Button>
+  {:else}
   {#if view?.kind !== "wiki"}<Button size="sm" variant="ghost" icon="arrow-right" onclick={goThere}>Go to {view?.kind === "board" ? "board" : "conversation"}</Button>{/if}
   <IconButton icon="link" label="Copy link" size="sm" onclick={copyLink} />
   <Button size="sm" variant="ghost" icon="external" href={tabHref} target="_blank">Open in new tab</Button>
+  {/if}
 {/snippet}
 
 <Dialog open={view !== null} {title} {description} presentation="sheet" {headerActions} onclose={closeView}>
@@ -179,6 +199,8 @@
         {#if view.kind === "wiki"}
           <iframe class="wiki-frame" src={frameSrc(view.path)} title={title} onload={onFrameLoad}></iframe>
           {#if frameFailed}<p class="frame-note t-body-sm">The wiki did not show a page for {view.path}. Open in new tab shows what the wiki answered.</p>{/if}
+        {:else if view.kind === "block"}
+          {#if block}<div class="block-view"><Markdown text={block.markdown} {context} {onartifact} {onmention} /></div>{/if}
         {:else if view.kind === "thread"}
           <ThreadPane threadKey={view.id} {context} oncopylink={copyItemLink} onthread={(key) => openView({ kind: "thread", id: key })} {onmention} onboardid={(id, chatId) => openView({ kind: "board", chatId, focus: id })} {onartifact} />
         {:else}
@@ -216,6 +238,34 @@
     background: var(--surface-popover);
     box-shadow: var(--shadow-float);
     color: var(--text-subtle);
+  }
+  /* A post's table or code block at full size: every row and line shows, and only a table wider than the sheet scrolls sideways. */
+  .block-view {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 16px 24px 24px;
+  }
+  .block-view :global(.table-open),
+  .block-view :global(.code-head),
+  .block-view :global(.code-more) {
+    display: none;
+  }
+  /* The sheet shows every character of a code block, so its long lines wrap here. */
+  .block-view :global(pre) {
+    padding-top: 12px;
+  }
+  .block-view :global(pre code) {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .block-view :global(table) {
+    font-size: 14px;
+    line-height: 20px;
+  }
+  .block-view :global(.code-block.folded pre) {
+    --fold-mask: linear-gradient(#000, #000);
+    max-height: none;
   }
   .board {
     flex: 1;

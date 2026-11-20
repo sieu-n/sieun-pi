@@ -83,12 +83,12 @@ test("code blocks have a language label and a copy button, and a long one folds 
   await expect(log.getByRole("button", { name: "Show less" })).toHaveAttribute("aria-expanded", "true");
 });
 
-test("tables keep a sticky header in a scroll box, and the task list is read-only checkboxes", async ({ page }) => {
+test("tables pin their first column in a sideways scroll box with every row shown, and the task list is read-only checkboxes", async ({ page }) => {
   await open(page, `#/c/${CRAWLER}`);
   const table = rich(page).locator(".table-wrap");
   await expect(table.locator("th").first()).toHaveText("Surface");
   expect(await table.locator("th").first().evaluate((th) => getComputedStyle(th).position)).toBe("sticky");
-  expect(await table.evaluate((el) => getComputedStyle(el).overflowY)).toBe("auto");
+  expect(await table.evaluate((el) => [getComputedStyle(el).overflowX, getComputedStyle(el).overflowY, el.scrollHeight - el.clientHeight])).toEqual(["auto", "hidden", 0]);
   const boxes = rich(page).locator("li.task-item input[type=checkbox]");
   await expect(boxes).toHaveCount(3);
   await expect(boxes.nth(0)).toBeChecked();

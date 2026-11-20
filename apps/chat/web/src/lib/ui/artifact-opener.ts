@@ -14,3 +14,20 @@ export function setArtifactOpener(next: Opener | null): void {
 export function openArtifact(target: string): boolean {
   return opener?.(target) ?? false;
 }
+
+/** A table or code block of a post, as markdown, for the viewer to show large. */
+export type BlockContent = { kind: "table" | "code"; markdown: string; label: string };
+type BlockOpener = (block: BlockContent) => void;
+
+let blockOpener: BlockOpener | null = null;
+
+export function setBlockOpener(next: BlockOpener | null): void {
+  blockOpener = next;
+}
+
+/** Hand a block to the registered viewer; false when none is registered. */
+export function openBlock(block: BlockContent): boolean {
+  if (!blockOpener) return false;
+  blockOpener(block);
+  return true;
+}

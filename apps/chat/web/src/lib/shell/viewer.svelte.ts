@@ -1,6 +1,7 @@
 import { parseArtifactTarget } from "$lib/api/shared/artifact-link";
 import { router } from "$lib/router.svelte";
-import { setArtifactOpener } from "$lib/ui/artifact-opener";
+import { setArtifactOpener, setBlockOpener, type BlockContent } from "$lib/ui/artifact-opener";
+import { hashString } from "$lib/ui/hash";
 
 /**
  * The artifact viewer: one popup over any page that shows a wiki page, a conversation or a chat's board, so a link in a message opens
@@ -10,17 +11,20 @@ import { setArtifactOpener } from "$lib/ui/artifact-opener";
  *   ?view=wiki:<path>            the wiki page at /wiki/<path>, in a frame
  *   ?view=thread:<id>            a conversation's timeline with its composer
  *   ?view=board:<chat>[/<id>]    a chat's board, focused on one step or todo
+ *   ?view=block:<id>             a table or code block of a post, large; the block lives in this page's memory, so a reload closes it
  */
 export type View =
   | { kind: "wiki"; path: string }
   | { kind: "thread"; id: string }
-  | { kind: "board"; chatId: string; focus: string | null };
+  | { kind: "board"; chatId: string; focus: string | null }
+  | { kind: "block"; id: string };
 
 export function encodeView(view: View): string {
   switch (view.kind) {
     case "wiki": return `wiki:${view.path}`;
     case "thread": return `thread:${view.id}`;
     case "board": return `board:${view.chatId}${view.focus ? `/${view.focus}` : ""}`;
+    case "block": return `block:${view.id}`;
   }
 }
 
@@ -39,6 +43,7 @@ export function parseView(value: string | null | undefined): View | null {
     const [chatId = "", focus = null] = rest.split("/");
     return chatId ? { kind: "board", chatId, focus: focus || null } : null;
   }
+  if (kind === "block") return /^[a-z0-9]{1,13}$/.test(rest) ? { kind: "block", id: rest } : null;
   return null;
 }
 
@@ -86,3 +91,16 @@ export function openArtifactTarget(target: string): boolean {
 }
 
 setArtifactOpener(openArtifactTarget);
+
+/** The blocks opened in this page, by the hash of their markdown, so the same table opens under the same `?view=block:<id>`. */
+const blocks = new Map<string, BlockContent>();
+
+export const viewedBlock = (id: string): BlockContent | null => blocks.get(id) ?? null;
+
+export function openBlockView(block: BlockContent): void {
+  const id = hashString(block.markdown).toString(36);
+  blocks.set(id, block);
+  openView({ kind: "block", id });
+}
+
+setBlockOpener(openBlockView);

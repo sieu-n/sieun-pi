@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CODE_FOLD_LINES, previewLinks, renderInline, renderMarkdown, wikiLinkPath, withAuthor } from "../../web/src/lib/ui/markdown.ts";
+import { CODE_FOLD_LINES, columnClass, previewLinks, renderInline, renderMarkdown, wikiLinkPath, withAuthor } from "../../web/src/lib/ui/markdown.ts";
 import { readable } from "../../web/src/lib/ui/mermaid.ts";
 
 const board = { chatId: "vent", titles: new Map([["p2", "Watch the week"]]) };
@@ -55,17 +55,44 @@ test("details and summary survive, and every other raw tag shows as text", () =>
   assert.ok(html.includes("a <br> break"));
 });
 
-test("tables sit in a scroll wrapper", () => {
-  assert.match(renderMarkdown("| a | b |\n| --- | ---: |\n| 1 | 2 |"), /<div class="table-wrap"><table>.*<td align="right">2<\/td>.*<\/table><\/div>/s);
+test("tables sit in a scroll wrapper with an open button that carries the table's markdown", () => {
+  const html = renderMarkdown("| a | b |\n| --- | ---: |\n| 1 | 2 |");
+  assert.match(html, /<div class="table-block"><div class="table-wrap" tabindex="0" role="region" aria-label="Table, 2 columns, 1 rows"><table class="sticky-first">.*<td class="col-tiny" align="right">2<\/td>.*<\/table><\/div><button type="button" class="table-open" data-open-table="\| a \| b \|\n\| --- \| ---: \|\n\| 1 \| 2 \|" aria-label="Open table"/s);
+});
+
+/** The table the owner saw cut in a thread pane on 11-20 (#dev-search-general, 'Search product, misc.'). */
+const WIDE_TABLE = [
+  "| Piece | Where it lives | Who reads it | What it says |",
+  "|---|---|---|---|",
+  "| Prime skill | sieun-pi `skills/modern-web-guidance`, linked into every box's skill folder | every agent session lists it | Google's flow, search a guide, read it, build with it, name it in the commit |",
+  "| Repo skill | `.agents/skills/stack/modern-web-guidance/SKILL.md` | agents in this repo | covers search, admin, api portal, blog, demo, shared UI, Chrome extension, plus 6 rules from the sweep |",
+  "| Frontend workflow line | `workflows/frontend-implementation` | every UI build | load the skill, look up a guide per UI pattern |",
+  "| CLI | installed on us-metal02, `npx` on the Mac | both skills | `search`, `retrieve`, `legacy-scan` |",
+].join("\n");
+
+test("each table column gets a wrap floor from its longest cell, and a short first column is pinned", () => {
+  assert.equal(columnClass([{ text: "CLI" }, { text: "yes" }]), "col-tiny");
+  assert.equal(columnClass([{ text: "Piece" }, { text: "Frontend workflow line" }]), "col-short");
+  assert.equal(columnClass([{ text: "Who reads it" }, { text: "every agent session lists it" }]), "col-long");
+  assert.equal(columnClass([{ text: "[the board panel page](wiki:sessions/2026/10/28/board-panel.md)" }]), "col-short");
+  const html = renderMarkdown(WIDE_TABLE, { plain: true });
+  assert.deepEqual([...html.matchAll(/<th class="(col-\w+)"/g)].map((m) => m[1]), ["col-short", "col-long", "col-long", "col-long"]);
+  assert.match(html, /<table class="sticky-first">/);
+  assert.match(renderMarkdown("| Step | Note |\n|---|---|\n| a whole sentence in the first column | x |"), /<table class="">/);
+});
+
+test("a path in a code span breaks after each slash, so a table cell wraps it at a folder", () => {
+  assert.match(renderMarkdown("Run `workflows/frontend-implementation` now."), /<code>workflows\/<wbr>frontend-implementation<\/code>/);
+  assert.match(renderMarkdown("See `apps/chat/server/http.ts:42`."), /<span class="link-text">apps\/<wbr>chat\/<wbr>server\/<wbr>http\.ts:42<\/span>/);
 });
 
 test("file paths in code spans and in text become pills that copy, and other code spans stay code", () => {
   const html = renderMarkdown("See `apps/chat/server/http.ts:42`, `markdown.ts:10` and web/src/lib/ui/prose.css, but not `npm test` or `a/b`.");
-  assert.match(html, /<a class="artifact-link file-link path-pill" data-target="file:apps\/chat\/server\/http\.ts:42"[^>]*><svg[^>]*>.*?<\/svg><span class="link-text">apps\/chat\/server\/http\.ts:42<\/span><\/a>/);
+  assert.match(html, /<a class="artifact-link file-link path-pill" data-target="file:apps\/chat\/server\/http\.ts:42"[^>]*><svg[^>]*>.*?<\/svg><span class="link-text">apps\/<wbr>chat\/<wbr>server\/<wbr>http\.ts:42<\/span><\/a>/);
   assert.ok(html.includes('data-target="file:markdown.ts:10"'));
   assert.ok(html.includes('data-target="file:web/src/lib/ui/prose.css"'), "a bare path in text, without the trailing comma");
   assert.ok(html.includes("<code>npm test</code>"));
-  assert.ok(html.includes("<code>a/b</code>"));
+  assert.ok(html.includes("<code>a/<wbr>b</code>"));
   assert.doesNotMatch(renderMarkdown("Open https://example.com/a/b.ts now."), /path-pill/, "a URL is no path");
 });
 

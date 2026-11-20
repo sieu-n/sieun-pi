@@ -19,7 +19,7 @@
 .prose ol,
 .prose blockquote,
 .prose .code-block,
-.prose .table-wrap {
+.prose .table-block {
   margin: 0 0 10px;
 }
 .prose h1,
@@ -284,10 +284,56 @@
 }
 /* A long code block shows its first 20 lines and a Show all button. */
 .prose .code-block.folded pre {
+  --fold-mask: linear-gradient(to bottom, #000 75%, transparent);
   max-height: calc(20 * 16px + 14px);
   overflow-y: hidden;
-  -webkit-mask-image: linear-gradient(to bottom, #000 75%, transparent);
-  mask-image: linear-gradient(to bottom, #000 75%, transparent);
+}
+/*
+ * A table or code block wider than its post scrolls sideways, and its cut edge fades out until the scroll reaches the end, so a cut word
+ * reads as more to see. The fade and the sticky column's shadow follow the scroll position (scroll-driven animations), and neither shows
+ * when the block fits. `--fold-mask` adds a folded code block's bottom fade.
+ */
+@property --scroll-end-fade {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --scroll-start-shade {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+.prose .table-wrap,
+.prose pre {
+  --fold-mask: linear-gradient(#000, #000);
+}
+@supports (animation-timeline: scroll()) {
+  .prose .table-wrap,
+  .prose pre {
+    -webkit-mask-image: var(--fold-mask), linear-gradient(to left, transparent, #000 var(--scroll-end-fade));
+    -webkit-mask-composite: source-in;
+    mask-image: var(--fold-mask), linear-gradient(to left, transparent, #000 var(--scroll-end-fade));
+    mask-composite: intersect;
+    animation: scroll-start-shade linear both, scroll-end-fade linear both;
+    animation-timeline: scroll(self inline);
+    animation-range: 0 1.5rem, calc(100% - 2.5rem) 100%;
+  }
+}
+@supports not (animation-timeline: scroll()) {
+  .prose .code-block.folded pre {
+    -webkit-mask-image: var(--fold-mask);
+    mask-image: var(--fold-mask);
+  }
+}
+@keyframes scroll-start-shade {
+  to {
+    --scroll-start-shade: 1;
+  }
+}
+@keyframes scroll-end-fade {
+  from {
+    --scroll-end-fade: 2.5rem;
+  }
 }
 .prose .code-more {
   display: block;
@@ -329,13 +375,25 @@
   color: var(--text-metadata);
   font: var(--text-caption);
 }
-/* Tables stay compact, scroll both ways past 420 px, and keep their header row in view. */
+/*
+ * A table fills its post and wraps its cells. Each column keeps the floor its class sets (markdown.ts `columnClass`), so none shrinks to a
+ * word a line; a table whose floors do not fit scrolls sideways with its first column pinned. Every row shows, with no inner vertical
+ * scroll, and the corner button opens the table large in the viewer.
+ */
+.prose .table-block {
+  position: relative;
+}
 .prose .table-wrap {
-  max-height: 420px;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  border: 1px solid var(--border-standard);
   border-radius: 12px;
-  box-shadow: inset 0 0 0 1px var(--border-standard);
   background: var(--surface-panel);
+}
+.prose .table-wrap:focus-visible {
+  outline: 2px solid var(--affordance-accent-prominent);
+  outline-offset: 1px;
 }
 .prose table {
   width: 100%;
@@ -345,6 +403,7 @@
   font-size: 13px;
   line-height: 18px;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: break-word;
 }
 .prose th,
 .prose td {
@@ -365,16 +424,91 @@
   border-bottom: 0;
 }
 .prose th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
   background: var(--surface-inset);
   font-weight: 500;
   color: var(--text-subtle);
+}
+.prose :is(th, td).col-tiny {
   white-space: nowrap;
 }
-.prose td code {
-  white-space: nowrap;
+.prose :is(th, td).col-short {
+  min-width: 6rem;
+}
+.prose :is(th, td).col-long {
+  min-width: 11rem;
+}
+.prose th:last-child {
+  padding-right: 36px;
+}
+.prose table.sticky-first :is(th, td):first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--surface-panel);
+  box-shadow: 6px 0 6px -6px rgb(0 0 0 / calc(0.3 * var(--scroll-start-shade)));
+}
+.prose table.sticky-first th:first-child {
+  background: var(--surface-inset);
+}
+/* A path or code in a cell wraps at its slashes (markdown.ts `slashBreaks`) instead of widening its column. */
+.prose td .artifact-link {
+  display: inline;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.prose td .artifact-link .link-text {
+  white-space: normal;
+}
+.prose .table-open {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: var(--surface-panel);
+  box-shadow: 0 0 0 1px var(--border-standard);
+  color: var(--text-subtle);
+  cursor: zoom-in;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-standard);
+}
+.prose .table-block:hover .table-open,
+.prose .table-block:focus-within .table-open {
+  opacity: 1;
+}
+.prose .table-open:hover {
+  color: var(--text-standard);
+  box-shadow: 0 0 0 1px var(--border-prominent);
+}
+@media (hover: none) {
+  .prose .table-open {
+    opacity: 1;
+  }
+}
+/* A table that scrolls sideways shows its open button at all times: the button follows the wrap's scroll timeline, which is active only then. */
+@supports (animation-timeline: scroll()) {
+  .prose .table-block {
+    timeline-scope: --table-scroll;
+  }
+  .prose .table-block > .table-wrap {
+    scroll-timeline: --table-scroll inline;
+  }
+  .prose .table-open {
+    animation: table-open-shown linear both;
+    animation-timeline: --table-scroll;
+  }
+}
+@keyframes table-open-shown {
+  from,
+  to {
+    opacity: 1;
+  }
 }
 .prose .md-image {
   display: block;
@@ -412,7 +546,7 @@
   }
 }
 /* A block after a paragraph keeps its gap, also inside a bubble, which zeroes paragraph margins. */
-.prose > * + :is(.callout, .code-block, .table-wrap, details, ul, ol, blockquote, .md-image),
+.prose > * + :is(.callout, .code-block, .table-block, details, ul, ol, blockquote, .md-image),
 .prose > * + p:has(> .md-image:only-child) {
   margin-top: 10px;
 }

@@ -47,6 +47,7 @@ export const ICONS = {
   "stop": `<rect x="6" y="6" width="8" height="8" rx="1.5" fill="currentColor"/>`,
   "copy": `<rect x="7" y="7" width="9.5" height="9.5" rx="2"/><path d="M13 7V5a1.5 1.5 0 0 0-1.5-1.5h-6A1.5 1.5 0 0 0 4 5v6a1.5 1.5 0 0 0 1.5 1.5H7"/>`,
   "link": `<path d="M8.5 11.5a3 3 0 0 0 4.2 0l2.6-2.6a3 3 0 0 0-4.2-4.2l-.9.9M11.5 8.5a3 3 0 0 0-4.2 0l-2.6 2.6a3 3 0 0 0 4.2 4.2l.9-.9"/>`,
+  "expand": `<path d="M12 4h4v4M8 16H4v-4M16 4l-5 5M4 16l5-5"/>`,
   "external": `<path d="M11.5 3.5h5v5M16.5 3.5 9.5 10.5M14 11.5v3a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3"/>`,
   "settings": `<path d="M4 6h7M15 6h1M4 14h1M9 14h7"/><circle cx="13" cy="6" r="2"/><circle cx="7" cy="14" r="2"/>`,
   "user": `<circle cx="10" cy="7" r="3"/><path d="M4.5 16.5a5.5 5.5 0 0 1 11 0"/>`,
