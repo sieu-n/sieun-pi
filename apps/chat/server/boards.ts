@@ -7,7 +7,7 @@
  */
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import type { BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyRow, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
+import type { AgentSummary, BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyRow, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
 import { morningTime, upsertDuty, type Duty, type DutyRunRecord, type DutySchedule, type DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
 import { DEFAULT_MODEL, DEFAULT_THINKING } from "./config.ts";
@@ -23,6 +23,25 @@ import { StepOwners } from "./step-owners.ts";
 import { armWake, parseWake, startThreadWakes, wakeSession, wakeTarget, type BoxCheckRun, type ThreadWakeOptions, type Wake } from "./wakes.ts";
 
 export const BOARD_DOC = "chat.board";
+
+/**
+ * The names of the jobs at work: each working summary and every summary above it through `parent`, so a job that is idle only because it
+ * waits on its own working subagents counts as working (a duty brief once called such a job "not working" and nearly got a duplicate fix job).
+ */
+export function workingJobs(summaries: readonly AgentSummary[]): Set<string> {
+  const byId = new Map(summaries.map(a => [a.id, a]));
+  const names = new Set<string>();
+  const seen = new Set<string>();
+  for (const summary of summaries) {
+    if (summary.status !== "working") continue;
+    for (let at: AgentSummary | undefined = summary; at && !seen.has(at.id); at = at.parent ? byId.get(at.parent.id) : undefined) {
+      seen.add(at.id);
+      names.add(at.name);
+    }
+  }
+  return names;
+}
+
 const DEFAULT_CHECK_IN_MS = 120 * 60_000;
 const BOARD_TTL_MS = 15_000;
 
@@ -459,7 +478,7 @@ export class Boards {
     this.save(chat, before);
     const dir = join(this.dir(chat), "duties");
     const thread = this.threadOf(chat);
-    const working = new Set(this.threads.allSummaries().filter(a => a.status === "working").map(a => a.name));
+    const working = workingJobs(this.threads.allSummaries());
     const { record, brief } = await measure({
       duty, chat: { id: chat, name: this.nameOf(chat) }, dir, trigger, previous: before.runs[dutyId] ?? [], board: await this.board(chat),
       liveJob: job => working.has(job), boardApi: `${this.selfUrl}/api/threads/${thread}/board`, log: this.log,
