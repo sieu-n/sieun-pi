@@ -172,6 +172,8 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | `api.usage({days, thread, host})` | `GET /api/usage` | `UsageReport`: rows per thread and model with tokens and the cost of each kind, one row per local day by model, and the period before. |
 | `api.pool()` | `GET /api/pool` | `AccountsView` with no thread, from the pi-pool reading the Accounts endpoints share. |
 | `api.hosts()` | `GET /api/hosts` | `HostsReport`: each box's relay, pi-host, machine reading and threads. |
+| `api.skills({wait})` | `GET /api/skills?wait=1` | `SkillsReport`: the skills inventory of scripts/skills-inventory.py and its scan. A read without `wait` starts a scan when none runs; `wait=1` answers after the running scan. |
+| `api.skillDoc(id)` | `GET /api/skills/doc?id=` | `SkillDoc`: one row's SKILL.md text, read on this box or carried in the inventory for a row on another box. |
 | `api.corrections()` | `GET /api/corrections` | The owner's corrections ledger, read only. |
 | none, `call()` posts it | `POST /api/timings` | `{samples: [{m, p, s, ms, net?, err?, bg?}]}`, the page's wait for each call, where `bg` is `ahead` for a read ahead of any view and `shown` for a refresh behind a page the screen already showed, whose answer changed nothing on it; the server logs it with its own handler time per /api request in `<data dir>/requests/<UTC day>.jsonl`, which `scripts/duties/api-speed.ts` reads. A failed call carries `err`, with `s` 0 when it never reached the server, and goes at once; the server writes it to its log too, as it does for each /api request it refuses or fails (route, status, reason). |
 

@@ -1,0 +1,283 @@
+{
+  "generatedAt": "2026-11-20T03:00:00Z",
+  "definition": "A skill is useful when agents load it for tasks it names, it changed an agent's work in the last 30 days, and no other skill already says the same thing.",
+  "boxes": [
+    {
+      "box": "us-metal02",
+      "scannedAt": "2026-11-20T03:00:00Z",
+      "ok": true,
+      "error": null
+    },
+    {
+      "box": "mac",
+      "scannedAt": null,
+      "ok": false,
+      "error": "ssh: connect to host mac port 22: Connection timed out"
+    }
+  ],
+  "skills": [
+    {
+      "id": "us-metal02:skills/unslop",
+      "name": "unslop",
+      "kind": "ours",
+      "group": "writing",
+      "description": "The writing standard. Use for any text a human will read.",
+      "box": "us-metal02",
+      "path": "/home/sieun/src/sieun-pi/skills/unslop/SKILL.md",
+      "links": [
+        "~/.prime/agent/skills/unslop"
+      ],
+      "runtimes": [
+        "prime",
+        "pi-host"
+      ],
+      "upstream": null,
+      "duplicateOf": [],
+      "flags": [],
+      "useful": {
+        "verdict": "keep",
+        "reason": "Every reply and commit reads it."
+      },
+      "loadedBy": {
+        "agents": [
+          "agent factory",
+          "vent"
+        ],
+        "sessions7d": 212,
+        "how": [
+          "prime-sync link"
+        ]
+      },
+      "uses7d": 96,
+      "uses30d": 388,
+      "uses": [
+        {
+          "at": "2026-11-20T02:40:00Z",
+          "session": "th_fixture",
+          "agent": "agent factory",
+          "how": "read SKILL.md",
+          "runtime": "pi-host",
+          "box": "us-metal02",
+          "conversation": 1,
+          "entry": 12
+        },
+        {
+          "at": "2026-11-19T21:10:00Z",
+          "session": "01a0cc5e-0ca4",
+          "agent": "vent",
+          "how": "read SKILL.md",
+          "runtime": "prime",
+          "box": "mac"
+        }
+      ],
+      "lastChange": {
+        "sha": "2c209d35",
+        "at": "2026-11-19T18:08:00Z",
+        "subject": "fix(skills): keep modern-web-guidance as upstream ships it"
+      }
+    },
+    {
+      "id": "us-metal02:skills/modern-web-guidance",
+      "name": "modern-web-guidance",
+      "kind": "upstream",
+      "group": "web",
+      "description": "Search tool for modern web development best practices.",
+      "box": "us-metal02",
+      "path": "/home/sieun/src/sieun-pi/skills/modern-web-guidance/SKILL.md",
+      "links": [
+        "~/.prime/agent/skills/modern-web-guidance"
+      ],
+      "runtimes": [
+        "prime"
+      ],
+      "upstream": {
+        "url": "https://www.npmjs.com/package/modern-web-guidance",
+        "status": "same"
+      },
+      "duplicateOf": [
+        "us-metal02:auto-sns-agent/.agents/skills/stack/modern-web-guidance"
+      ],
+      "flags": [
+        {
+          "kind": "duplicate",
+          "detail": "A second copy lives in auto-sns-agent .agents/skills/stack."
+        }
+      ],
+      "useful": {
+        "verdict": "keep",
+        "reason": "Agents call it before web UI work."
+      },
+      "loadedBy": {
+        "agents": [
+          "agent factory"
+        ],
+        "sessions7d": 40,
+        "how": [
+          "prime-sync link"
+        ]
+      },
+      "uses7d": 5,
+      "uses30d": 11,
+      "uses": [],
+      "lastChange": null
+    },
+    {
+      "id": "us-metal02:auto-sns-agent/.agents/skills/stack/modern-web-guidance",
+      "name": "modern-web-guidance",
+      "kind": "fork",
+      "group": "web",
+      "description": "A repo copy of modern-web-guidance, rewritten in place.",
+      "box": "us-metal02",
+      "path": "/home/sieun/src/auto-sns-agent/.agents/skills/stack/modern-web-guidance/SKILL.md",
+      "links": [],
+      "runtimes": [
+        "claude",
+        "codex"
+      ],
+      "upstream": {
+        "url": "https://www.npmjs.com/package/modern-web-guidance",
+        "status": "drift"
+      },
+      "duplicateOf": [
+        "us-metal02:skills/modern-web-guidance"
+      ],
+      "flags": [
+        {
+          "kind": "duplicate",
+          "detail": "Same skill as skills/modern-web-guidance."
+        },
+        {
+          "kind": "drift",
+          "detail": "Rewritten in place; 41 lines differ from upstream."
+        }
+      ],
+      "useful": {
+        "verdict": "merge",
+        "reason": "The upstream copy says the same.",
+        "mergeInto": "us-metal02:skills/modern-web-guidance"
+      },
+      "loadedBy": {
+        "agents": [],
+        "sessions7d": 3,
+        "how": [
+          "repo .agents"
+        ]
+      },
+      "uses7d": 0,
+      "uses30d": 2,
+      "uses": [],
+      "lastChange": null
+    },
+    {
+      "id": "us-metal02:config/claude-rules/web.md",
+      "name": "web rule",
+      "kind": "rule",
+      "group": "web",
+      "description": "A Claude rule that pushes every web task to modern-web-guidance.",
+      "box": "us-metal02",
+      "path": "/home/sieun/src/sieun-pi/config/claude-rules/web.md",
+      "links": [],
+      "runtimes": [
+        "claude"
+      ],
+      "upstream": null,
+      "duplicateOf": [],
+      "flags": [
+        {
+          "kind": "pointer",
+          "detail": "Only points at another skill."
+        }
+      ],
+      "useful": {
+        "verdict": "remove",
+        "reason": "The skill's own description already triggers it."
+      },
+      "loadedBy": {
+        "agents": [],
+        "sessions7d": null,
+        "how": []
+      },
+      "uses7d": null,
+      "uses30d": null,
+      "uses": [],
+      "lastChange": null
+    },
+    {
+      "id": "mac:chrome-extensions",
+      "name": "chrome-extensions",
+      "kind": "upstream",
+      "group": "web",
+      "description": "Build Chrome extensions.",
+      "box": "mac",
+      "path": "/Users/sieun/.claude/skills/chrome-extensions/SKILL.md",
+      "links": [],
+      "runtimes": [
+        "claude"
+      ],
+      "upstream": {
+        "url": "https://github.com/anthropics/skills",
+        "status": "unknown"
+      },
+      "duplicateOf": [],
+      "flags": [
+        {
+          "kind": "unrequested",
+          "detail": "Installed with no ask from the owner (c226)."
+        },
+        {
+          "kind": "unused",
+          "detail": "No use in 30 days."
+        }
+      ],
+      "useful": {
+        "verdict": "remove",
+        "reason": "Nobody asked for it and nobody used it."
+      },
+      "loadedBy": {
+        "agents": [],
+        "sessions7d": 0,
+        "how": [
+          "claude plugin"
+        ]
+      },
+      "uses7d": 0,
+      "uses30d": 0,
+      "uses": [],
+      "lastChange": null,
+      "text": "---\nname: chrome-extensions\ndescription: Build Chrome extensions.\n---\n\n# Chrome extensions\n\nThis copy is the fixture's carried text for a row on the Mac.\n"
+    },
+    {
+      "id": "us-metal02:harness/global:local_checks",
+      "name": "local checks",
+      "kind": "harness",
+      "group": "testing",
+      "description": "Run only the local checks relevant to the files changed.",
+      "box": "us-metal02",
+      "path": "/home/sieun/.prime/agent/harness/global/prompt/local_checks.md",
+      "links": [],
+      "runtimes": [
+        "prime"
+      ],
+      "upstream": null,
+      "duplicateOf": [],
+      "flags": [],
+      "useful": {
+        "verdict": "keep",
+        "reason": "Cuts suite runs."
+      },
+      "loadedBy": {
+        "agents": [
+          "vent"
+        ],
+        "sessions7d": 30,
+        "how": [
+          "harness digest"
+        ]
+      },
+      "uses7d": null,
+      "uses30d": null,
+      "uses": [],
+      "lastChange": null
+    }
+  ]
+}

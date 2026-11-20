@@ -7,6 +7,7 @@ import type {
   ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, ImageRef, Item, JobNode, Me, MemoryInput, ModelCatalog, ProjectList, SearchQuery, SearchResult, SendRequest,
   ReactionRequest, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, TimelinePage, UsageReport, AccountsView,
 } from "./types.ts";
+import type { SkillDoc, SkillsReport } from "./shared/skills.ts";
 import { shrink } from "./shrink.ts";
 
 export class ApiError extends Error {
@@ -298,5 +299,7 @@ export const api = {
   usage: (opts: { days: number; thread?: string; host?: string }) => call<UsageReport>("GET", `/api/usage${query(opts)}`),
   pool: () => call<AccountsView>("GET", "/api/pool"),
   hosts: () => call<HostsReport>("GET", "/api/hosts"),
+  skills: (opts: { wait?: boolean } = {}) => call<SkillsReport>("GET", `/api/skills${opts.wait ? "?wait=1" : ""}`),
+  skillDoc: (id: string) => call<SkillDoc>("GET", `/api/skills/doc?id=${enc(id)}`),
   corrections: () => call<{ corrections: unknown[] }>("GET", "/api/corrections"),
 };

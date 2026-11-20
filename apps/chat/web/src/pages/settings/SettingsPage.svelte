@@ -2,6 +2,7 @@
   import UsagePage from "$pages/usage/UsagePage.svelte";
   import HostsPage from "$pages/hosts/HostsPage.svelte";
   import AccountsPage from "$pages/accounts/AccountsPage.svelte";
+  import SkillsPage from "$pages/skills/SkillsPage.svelte";
   import { openSection } from "./sections";
 
   const section = $derived(openSection());
@@ -12,6 +13,8 @@
     <UsagePage />
   {:else if section === "accounts"}
     <AccountsPage />
+  {:else if section === "skills"}
+    <SkillsPage />
   {:else}
     <HostsPage />
   {/if}

@@ -18,6 +18,7 @@ import { CwdRefused } from "./projects.ts";
 import { isHostAway } from "./host/types.ts";
 import { readJson } from "./store.ts";
 import { usageReport, hostsReport } from "./usage.ts";
+import { Skills } from "./skills.ts";
 import { type ClientVia, clientTimings, LoopStalls, RequestLog } from "./request-log.ts";
 import { accountRoutes, PoolError } from "./accounts.ts";
 import { serveWiki } from "./wiki/routes.ts";
@@ -118,6 +119,7 @@ function harnessKind(query: URLSearchParams): HarnessKind {
 
 export function routes(app: App): Route[] {
   const str = (value: string | null): string | undefined => (value === null || value === "" ? undefined : value);
+  const skills = new Skills(app.config.skills, app.config.box, app.log);
   const folderAgent = (id: string): AgentRecord => {
     const agent = agentRecordOf(app, id);
     if (!agent) throw new NotFound(`No agent ${id}.`);
@@ -287,6 +289,12 @@ export function routes(app: App): Route[] {
     route("GET", "/api/usage", async (_r, _p, q) => usageReport(app.host, app.threads, app.config.box, { days: num(q.get("days")) ?? 7, thread: str(q.get("thread")), host: str(q.get("host")) })),
     ...accountRoutes(app, route),
     route("GET", "/api/hosts", async () => hostsReport(app.host, app.threads, app.config.box, app.config.socket, app.config.hostsFile)),
+    route("GET", "/api/skills", async (_r, _p, q) => skills.report({ wait: q.get("wait") === "1" })),
+    route("GET", "/api/skills/doc", async (_r, _p, q) => {
+      const id = q.get("id");
+      if (!id) throw new BadRequest("A skill doc names its row as ?id=, the id GET /api/skills lists.");
+      return skills.doc(id);
+    }),
     route("GET", "/api/corrections", async () => readJson(join(app.config.sharedDir, "corrections.json"), { corrections: [] })),
   ];
 }

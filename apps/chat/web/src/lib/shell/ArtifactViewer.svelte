@@ -1,6 +1,6 @@
 <script lang="ts">
   import { agents, jobs, me, type Item } from "$lib/api";
-  import { conversationHref, router } from "$lib/router.svelte";
+  import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import Button from "$lib/ui/Button.svelte";
   import Dialog from "$lib/ui/Dialog.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
@@ -8,6 +8,8 @@
   import { wikiUrl } from "$lib/ui/markdown";
   import { toast } from "$lib/ui/toast.svelte";
   import BoardPanel from "$pages/board/BoardPanel.svelte";
+  import SkillPane from "$pages/skills/SkillPane.svelte";
+  import { skillView } from "$pages/skills/skill-view.svelte";
   import { boardHref } from "$pages/board/chips";
   import ThreadPane from "$pages/channel/ThreadPane.svelte";
   import { directory } from "$pages/channel/directory.svelte";
@@ -16,7 +18,7 @@
 
   /**
    * The popup the viewer's `?view=` param opens over any page (viewer.svelte.ts): a wiki page in a frame of this server's /wiki, a
-   * conversation's timeline, a chat's board, or a post's table or code block at full size. Esc, the close button, a click outside and
+   * conversation's timeline, a chat's board, one skill of Settings > Skills, or a post's table or code block at full size. Esc, the close button, a click outside and
    * Back close it; Open in new tab takes the same thing to a tab of its own.
    */
   const view = $derived(currentView());
@@ -51,6 +53,7 @@
       case "wiki": return frameTitle || lastSegment(view.path);
       case "thread": return threadName(view.id);
       case "board": return `Board of ${agents.byId(view.chatId)?.name ?? view.chatId}`;
+      case "skill": return skillView.title(view.id);
       case "block": return block?.kind === "table" ? "Table" : "Code";
     }
   });
@@ -60,6 +63,7 @@
       case "wiki": return `wiki: ${framePath ?? view.path}`;
       case "thread": return jobs.byId(view.id) ? `Job thread of ${jobs.byId(view.id)?.parent?.name ?? "an agent"}` : view.id;
       case "board": return view.focus ? `Focused on ${view.focus}` : "";
+      case "skill": return skillView.description(view.id);
       case "block": return block?.label ?? "";
     }
   });
@@ -70,6 +74,7 @@
       case "wiki": return wikiUrl(framePath ?? view.path);
       case "thread": return appHref(conversationHref(view.id));
       case "board": return appHref(boardHref(view.chatId, view.focus ?? undefined));
+      case "skill": return appHref(hrefFor("settings", ["skills"], { view: `skill:${view.id}` }));
       case "block": return "";
     }
   });
@@ -186,7 +191,7 @@
   {#if view?.kind === "block"}
     <Button size="sm" variant="ghost" icon="copy" onclick={copyBlock}>Copy</Button>
   {:else}
-  {#if view?.kind !== "wiki"}<Button size="sm" variant="ghost" icon="arrow-right" onclick={goThere}>Go to {view?.kind === "board" ? "board" : "conversation"}</Button>{/if}
+  {#if view?.kind === "thread" || view?.kind === "board"}<Button size="sm" variant="ghost" icon="arrow-right" onclick={goThere}>Go to {view?.kind === "board" ? "board" : "conversation"}</Button>{/if}
   <IconButton icon="link" label="Copy link" size="sm" onclick={copyLink} />
   <Button size="sm" variant="ghost" icon="external" href={tabHref} target="_blank">Open in new tab</Button>
   {/if}
@@ -201,6 +206,8 @@
           {#if frameFailed}<p class="frame-note t-body-sm">The wiki did not show a page for {view.path}. Open in new tab shows what the wiki answered.</p>{/if}
         {:else if view.kind === "block"}
           {#if block}<div class="block-view"><Markdown text={block.markdown} {context} {onartifact} {onmention} /></div>{/if}
+        {:else if view.kind === "skill"}
+          <SkillPane id={view.id} />
         {:else if view.kind === "thread"}
           <ThreadPane threadKey={view.id} {context} oncopylink={copyItemLink} onthread={(key) => openView({ kind: "thread", id: key })} {onmention} onboardid={(id, chatId) => openView({ kind: "board", chatId, focus: id })} {onartifact} />
         {:else}

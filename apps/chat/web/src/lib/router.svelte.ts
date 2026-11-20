@@ -8,7 +8,7 @@
  *   #/c/for-you, #/c/for-you/<chat>/<todo>  Messages, For you, optionally with one ask open
  *   #/agents, #/agents/<sub>                Agents
  *   #/board, #/board/<chat>                 Board, the index or one chat's board
- *   #/settings/<section>                    Settings, one section: usage, hosts or accounts, opened from the Settings button
+ *   #/settings/<section>                    Settings, one section: usage, hosts, accounts or skills, opened from the Settings button
  *   #/settings/accounts/<provider>?thread=<id>   Settings > Accounts, the pi-pool accounts of claude or codex, optionally for one thread
  *   #/search?q=&from=&in=&after=&before=&sort=&type=   Full search results, opened with Enter in the Cmd K search
  *   #/ui                                    The lib/ui gallery, not in the top bar

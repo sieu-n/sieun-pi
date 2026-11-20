@@ -11,12 +11,14 @@ import { hashString } from "$lib/ui/hash";
  *   ?view=wiki:<path>            the wiki page at /wiki/<path>, in a frame
  *   ?view=thread:<id>            a conversation's timeline with its composer
  *   ?view=board:<chat>[/<id>]    a chat's board, focused on one step or todo
+ *   ?view=skill:<id>             one skill of the Skills section in Settings: its inventory row and its SKILL.md
  *   ?view=block:<id>             a table or code block of a post, large; the block lives in this page's memory, so a reload closes it
  */
 export type View =
   | { kind: "wiki"; path: string }
   | { kind: "thread"; id: string }
   | { kind: "board"; chatId: string; focus: string | null }
+  | { kind: "skill"; id: string }
   | { kind: "block"; id: string };
 
 export function encodeView(view: View): string {
@@ -24,6 +26,7 @@ export function encodeView(view: View): string {
     case "wiki": return `wiki:${view.path}`;
     case "thread": return `thread:${view.id}`;
     case "board": return `board:${view.chatId}${view.focus ? `/${view.focus}` : ""}`;
+    case "skill": return `skill:${view.id}`;
     case "block": return `block:${view.id}`;
   }
 }
@@ -43,6 +46,7 @@ export function parseView(value: string | null | undefined): View | null {
     const [chatId = "", focus = null] = rest.split("/");
     return chatId ? { kind: "board", chatId, focus: focus || null } : null;
   }
+  if (kind === "skill") return { kind: "skill", id: rest };
   if (kind === "block") return /^[a-z0-9]{1,13}$/.test(rest) ? { kind: "block", id: rest } : null;
   return null;
 }
