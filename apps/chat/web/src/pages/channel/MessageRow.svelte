@@ -733,7 +733,7 @@
     display: block;
     flex: none;
   }
-  /* A done thread's root reads quieter, its replies bar too, and full again under the pointer or focus; the hover bar stays at full ink. */
+  /* A done thread's root reads quieter, its replies bar too, and full again under the pointer or keyboard focus; the hover bar stays at full ink. */
   .slack.done > :is(.gutter, .body),
   .row.done:not(.slack) > :not(.line),
   .row.done:not(.slack) .line > .gutter,
@@ -741,10 +741,10 @@
     opacity: 0.55;
     transition: opacity var(--duration-fast) var(--ease-standard);
   }
-  .slack.done:is(:hover, :focus-within) > :is(.gutter, .body),
-  .row.done:not(.slack):is(:hover, :focus-within) > :not(.line),
-  .row.done:not(.slack):is(:hover, :focus-within) .line > .gutter,
-  .row.done:not(.slack):is(:hover, :focus-within) .stack > :not(.actions) {
+  .slack.done:is(:hover, :has(:focus-visible)) > :is(.gutter, .body),
+  .row.done:not(.slack):is(:hover, :has(:focus-visible)) > :not(.line),
+  .row.done:not(.slack):is(:hover, :has(:focus-visible)) .line > .gutter,
+  .row.done:not(.slack):is(:hover, :has(:focus-visible)) .stack > :not(.actions) {
     opacity: 1;
   }
   .done-mark {
