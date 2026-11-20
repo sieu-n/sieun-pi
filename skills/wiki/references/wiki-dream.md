@@ -163,8 +163,8 @@ Log hits are keyword matches, and logs mention CI and git in normal work, so rea
 10. A wiki page change needs no commit: write it with `wiki.write()` or `PUT https://us-metal02-dev.tail0c093d.ts.net:5184/wiki/<path>`, and `wiki-backup.timer` copies it to the private repo `sieu-n/wiki-content` within 5 minutes.
     A revert of a page is a new write of its older revision, read from `GET /wiki/api/agent/history?path=<path>` and `/wiki/api/agent/diff`, and the ledger records the page version instead of a commit.
 11. Commit a global skill or `config/AGENTS.md` in sieun-pi locally with `git -C <sieun-pi checkout> add -- <new files>` and `git -C <sieun-pi checkout> commit -m "docs(wiki-dream): <what>" -- <files>`, then confirm it with `git log -3 --stat`, where the checkout is `/Users/sieunpark/Documents/Github/sieun-pi` on the Mac and `/home/sieun/src/sieun-pi` on us-metal02.
-12. A sieun-pi commit is live at once through the `~/.prime/agent/skills` symlinks.
-13. Never push either repo, and never pass `--allow-shared`.
+12. A sieun-pi commit is live on this box at once through the `~/.prime/agent/skills` symlinks, and it reaches the other boxes only after `git -C <sieun-pi checkout> push origin HEAD:main`, which prime-sync then fast-forwards each minute, so push it right after the commit (c74). On 2026-11-20 the 19:27 run committed AGENTS rule 9 for c230 as 11ef45fd under the old "never push" line and left it on one box while the 17:00 run had pushed its own.
+13. Never push auto-sns-agent `dev/sieun`, and never pass `--allow-shared`.
 14. After the commit lands, set the class to `fixed` with `fixCommit`, `fixedAt`, and `watchUntil` 7 days out.
 15. Every fix commit, a fix job's included, carries one `Dream-class: <slug>` trailer line per class, and every fix job brief must name that trailer with the class slug, because the precheck takes the newer of `fixedAt` and that commit as the class's fix time.
 16. On 2026-11-04 sieun-pi 76bd7a2f fixed dream_second_writes at 18:16Z with no dream run alive to copy it into the ledger, and mistakes_back read 1 for 3 runs until a run fixed the row by hand.
