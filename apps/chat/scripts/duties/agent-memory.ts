@@ -135,6 +135,23 @@ export function splitAnswers(text: string, count: number): string[] {
   return out.every(answer => !answer.trim()) ? Array(count).fill(text) : out;
 }
 
+interface TurnItem { kind: string; live?: boolean; text?: string; sent?: string[]; stop?: string; error?: string; usage?: { cost?: number } }
+
+/**
+ * The reply of a recall session's newest turn once it is over, or null while it runs. A turn is over when it is not live and holds an
+ * answer, a stop or an error. `live` alone is not enough: without a watcher it comes from the server's cached thread status, and a fresh test
+ * thread can read idle while its run works. On 11-20 at 05:43Z, right after a pi-host restart, 4 of 7 sessions read as an empty, not-live
+ * turn at cost 0 within 18 to 48 s and their real answers landed in the same turn moments later.
+ */
+export function finishedReply(items: readonly TurnItem[]): { reply: string; cost?: number; error?: string } | null {
+  const turn = items.findLast(item => item.kind === "turn");
+  if (!turn || turn.live !== false) return null;
+  const reply = [turn.text ?? "", ...(turn.sent ?? []).filter(post => post !== turn.text)].join("\n");
+  if (!reply.trim() && !turn.stop && !turn.error) return null;
+  const failed = reply.trim() ? undefined : turn.error ?? `turn ${turn.stop}`;
+  return { reply, ...(turn.usage?.cost !== undefined ? { cost: turn.usage.cost } : {}), ...(failed ? { error: failed } : {}) };
+}
+
 /**
  * One blind recall session: a throwaway test agent with a copy of the agent's brief and store gets the questions as the owner would ask
  * them, and the reply is read once its turn ends. The agent is archived and its folder removed after, whatever happens.
@@ -155,12 +172,9 @@ async function recall(server: string, agentsDir: string, record: AgentRecord, qu
     await call(server, "POST", `/api/c/${made!.thread}/send`, { text, requestId: `memory-recall-${record.slug}-${stamp}` });
     for (;;) {
       await sleep(POLL_MS);
-      const { items } = await call(server, "GET", `/api/c/${made!.thread}/items`) as { items: { kind: string; live?: boolean; text?: string; sent?: string[]; usage?: { cost?: number } }[] };
-      const turn = items.findLast(item => item.kind === "turn");
-      if (turn && turn.live === false) {
-        const reply = [turn.text ?? "", ...(turn.sent ?? []).filter(post => post !== turn.text)].join("\n");
-        return { reply, seconds: Math.round((Date.now() - started) / 1000), thread: made!.thread, ...(turn.usage?.cost !== undefined ? { cost: turn.usage.cost } : {}) };
-      }
+      const { items } = await call(server, "GET", `/api/c/${made!.thread}/items`) as { items: TurnItem[] };
+      const done = finishedReply(items);
+      if (done) return { ...done, seconds: Math.round((Date.now() - started) / 1000), thread: made!.thread };
       if (Date.now() - started > ANSWER_WAIT_MS) return { reply: "", seconds: Math.round((Date.now() - started) / 1000), thread: made!.thread, error: "no answer within 15 min" };
     }
   } catch (error) {
