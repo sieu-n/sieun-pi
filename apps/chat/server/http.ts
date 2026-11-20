@@ -236,7 +236,8 @@ export function routes(app: App): Route[] {
       return { ok: true };
     }),
     route("POST", "/api/c/:id/read", async (_r, p, _q, body) => {
-      app.markRead(p.id!, ((await body()) as { seq?: number }).seq);
+      const { seq, unreadFrom } = ((await body()) ?? {}) as { seq?: number; unreadFrom?: string };
+      app.markRead(p.id!, typeof seq === "number" ? seq : undefined, typeof unreadFrom === "string" ? unreadFrom : undefined);
       return { ok: true };
     }),
     route("GET", "/api/threads/:id/jobs", async (_r, p) => app.threads.jobs(p.id!)),

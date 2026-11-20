@@ -5,6 +5,11 @@
   import Icon from "$lib/ui/Icon.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import Lightbox from "$lib/ui/Lightbox.svelte";
+  import Menu from "$lib/ui/Menu.svelte";
+  import { isMac } from "$lib/ui/keyboard";
+  import type { MenuEntry } from "$lib/ui/menu";
+  import { toast } from "$lib/ui/toast.svelte";
+  import { markUnread } from "$lib/api";
   import Markdown from "$lib/ui/Markdown.svelte";
   import LinkCards from "$lib/ui/LinkCards.svelte";
   import TypingDots from "$lib/ui/TypingDots.svelte";
@@ -120,6 +125,27 @@
   let active = $state(false);
   const activate = () => (active = true);
 
+  /** The message menu behind the hover bar's More actions; every message action that is not a hover bar button goes in this one list. */
+  let menuOpen = $state(false);
+  let moreButton = $state<HTMLButtonElement>();
+  const menuItems = $derived<MenuEntry[]>(
+    reactable ? [{ id: "unread", label: "Mark unread", icon: "dot", shortcut: isMac ? "⌥ Click" : "Alt+Click", onselect: unread }] : [],
+  );
+
+  /** Slack's Mark unread: the room reads as unread from this post on, in the sidebar of every tab and the app. */
+  function unread() {
+    if (!reactable || !room) return;
+    void markUnread(room, reactable.id).catch(() => toast.error("Could not mark the message unread"));
+  }
+
+  /** Alt-click, Option-click on a Mac, marks the post unread as in Slack, before a link or button inside it acts on the click. */
+  function altClick(e: MouseEvent) {
+    if (!e.altKey || !reactable || editing || (e.target as Element).closest("input, textarea, [contenteditable]")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    unread();
+  }
+
   function copyText() {
     void navigator.clipboard.writeText(item.text).then(() => {
       copied = true;
@@ -145,7 +171,11 @@
       <IconButton icon="edit" label="Edit message" size="sm" onclick={() => (editing = true)} data-edit-post />
       <IconButton icon="trash" label="Delete message" size="sm" onclick={() => (deleting = true)} data-delete-post />
     {/if}
+    {#if menuItems.length}
+      <IconButton icon="more" label="More actions" size="sm" aria-haspopup="menu" aria-expanded={menuOpen} bind:element={moreButton} onclick={() => (menuOpen = !menuOpen)} data-message-menu />
+    {/if}
   </div>
+  {#if menuOpen}<Menu bind:open={menuOpen} anchor={moreButton} items={menuItems} placement="bottom-end" label="Message actions" />{/if}
 {/snippet}
 
 {#snippet images()}
@@ -223,7 +253,7 @@
 {/snippet}
 
 {#if slack}
-  <li bind:this={rowEl} class="row slack" class:own class:first class:pending class:picking data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate}>
+  <li bind:this={rowEl} class="row slack" class:own class:first class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
     <div class="gutter">
       {#if first}
         <Avatar name={avatarOf(item.author).name} kind={avatarKind(item.author)} seed={item.author.id} size={36} status={statusOf?.(item.author.id) ?? null} />
@@ -279,7 +309,7 @@
     {#if active}{@render actionBar()}{/if}
   </li>
 {:else}
-  <li bind:this={rowEl} class="row" class:own class:first class:pending class:picking data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate}>
+  <li bind:this={rowEl} class="row" class:own class:first class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
     {#if first}
       <div class="byline">
         {#if !own && item.author.kind !== "owner"}<Icon name="robot" size={13} />{/if}

@@ -892,13 +892,14 @@ export class App {
     return this.rooms.summary(record);
   }
 
-  markRead(id: ConversationId, seq?: number): void {
+  /** The owner read the conversation to `seq`, or to its newest post; `unreadFrom` marks a room unread from that post on, as Slack's Mark unread does. */
+  markRead(id: ConversationId, seq?: number, unreadFrom?: string): void {
     if (isRoomId(id)) {
-      this.rooms.markRead(this.roomAgent(id), seq);
+      this.rooms.markRead(this.roomAgent(id), seq, unreadFrom);
       return;
     }
     if (this.isGroup(id)) {
-      this.groups.markRead(id, seq);
+      this.groups.markRead(id, seq, unreadFrom);
       return;
     }
     this.store.state.reads[id] = { at: Date.now() };

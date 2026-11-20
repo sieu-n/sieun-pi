@@ -278,6 +278,7 @@ export const api = {
   rename: (id: ConversationId, name: string) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { name }),
   archive: (id: ConversationId, archived = true) => call<ConversationHeader>("PATCH", `/api/c/${enc(id)}`, { archived }),
   read: (id: ConversationId, seq?: number) => call<{ ok: true }>("POST", `/api/c/${enc(id)}/read`, seq === undefined ? {} : { seq }),
+  markUnread: (id: ConversationId, post: string) => call<{ ok: true }>("POST", `/api/c/${enc(id)}/read`, { unreadFrom: post }),
   threadJobs: (thread: string) => call<JobNode[]>("GET", `/api/threads/${enc(thread)}/jobs`),
   openDm: (agent: AgentId) => call<ConversationSummary>("POST", "/api/dms", { agent }),
 

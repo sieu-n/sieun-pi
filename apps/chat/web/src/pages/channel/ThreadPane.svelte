@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { replies, timeline, type Item } from "$lib/api";
+  import { markedUnread, replies, timeline, type Item } from "$lib/api";
   import type { MarkdownContext } from "$lib/ui/markdown";
   import type { Status } from "$lib/ui/types";
   import Composer from "./Composer.svelte";
@@ -87,6 +87,7 @@
       {onmention}
       {onboardid}
       {onartifact}
+      newLine={channel ? markedUnread.get(channel) : null}
     />
   {/key}
   <Composer

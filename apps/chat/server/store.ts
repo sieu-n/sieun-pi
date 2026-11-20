@@ -8,7 +8,23 @@ import { readLatest, writeJsonLater } from "./disk.ts";
 import type { AgentId, ConversationId, ThinkingLevel } from "../web/src/lib/api/types.ts";
 
 export interface ThreadMeta { kind: "chat" | "job"; parent?: AgentId }
-export interface ReadMark { at: number; seq?: number }
+/** The owner's read point in a conversation. `from` is the post he marked unread, which counts as unread whoever wrote it and wherever it sits. */
+export interface ReadMark { at: number; seq?: number; from?: string }
+
+/**
+ * The read point that reading to `seq`, or to the newest post when absent, leaves; `unreadFrom` puts it just before that post instead and
+ * keeps the post as `from`, so it counts as unread even when it is the owner's own or a thread reply.
+ */
+export function readMark(posts: readonly { id: string; seq: number }[], seq: number | undefined, unreadFrom: string | undefined, room: string): ReadMark {
+  if (unreadFrom !== undefined) {
+    const post = posts.find(p => p.id === unreadFrom);
+    if (!post) throw new Error(`No post ${unreadFrom} in ${room}.`);
+    return { at: Date.now(), seq: post.seq - 1, from: post.id };
+  }
+  const last = posts.at(-1)?.seq ?? 0;
+  return { at: Date.now(), seq: Math.min(seq ?? last, last) };
+}
+
 export interface StateFile {
   v: 1;
   threads: Record<string, ThreadMeta>;

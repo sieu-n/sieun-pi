@@ -22,7 +22,7 @@ import { isHostAway, type ContentBlock, type EntryRecord, type Host, type Messag
 import { refusedForGood, retryWait } from "./outbox.ts";
 import { postState } from "./post-edits.ts";
 import { reactionsOf } from "./reactions.ts";
-import type { Store } from "./store.ts";
+import { readMark, type Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
 import { isInput, sentMessage } from "./timeline.ts";
 
@@ -693,8 +693,9 @@ export class Rooms {
     const commStatus = this.commStatus(record);
     const posts = this.store.postsOf(record.room);
     const last = posts.at(-1);
-    const mark = this.deps.state.state.reads[record.room]?.seq ?? 0;
-    const unread = posts.filter(p => p.seq > mark && p.author !== "owner").length;
+    const read = this.deps.state.state.reads[record.room];
+    const mark = read?.seq ?? 0;
+    const unread = posts.filter(p => p.seq > mark && (p.author !== "owner" || p.id === read?.from)).length;
     const status = this.status(record);
     const name = agent?.name ?? record.name;
     return {
@@ -709,9 +710,9 @@ export class Rooms {
     return this.deps.agents.list().map(record => this.summary(record));
   }
 
-  markRead(record: AgentRecord, seq?: number): void {
-    const last = this.store.postsOf(record.room).at(-1)?.seq ?? 0;
-    this.deps.state.state.reads[record.room] = { at: Date.now(), seq: Math.min(seq ?? last, last) };
+  /** Moves the read point to `seq`, the newest post when absent, or with `unreadFrom` to just before that post, as Slack's Mark unread does. */
+  markRead(record: AgentRecord, seq?: number, unreadFrom?: string): void {
+    this.deps.state.state.reads[record.room] = readMark(this.store.postsOf(record.room), seq, unreadFrom, record.name);
     this.deps.state.saveState();
     this.deps.events.changed();
   }

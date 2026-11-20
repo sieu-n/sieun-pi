@@ -159,11 +159,16 @@
   let menuOpen = $state(false);
   let menuAnchor = $state<HTMLButtonElement>();
   let readTimer: ReturnType<typeof setTimeout> | undefined;
+  let readByUser = false;
 
-  function markRead() {
+  /** `byUser` when the owner himself scrolled to the bottom, which reads past a post he marked unread. */
+  function markRead(byUser: boolean) {
     clearTimeout(readTimer);
+    readByUser ||= byUser;
     readTimer = setTimeout(() => {
-      if (document.visibilityState === "visible") void store.markRead().catch(() => undefined);
+      const user = readByUser;
+      readByUser = false;
+      if (document.visibilityState === "visible") void store.markRead(user).catch(() => undefined);
     }, 400);
   }
 
@@ -406,6 +411,7 @@
     {onmention}
     {onboardid}
     {onartifact}
+    newLine={store.newLine}
     onbottom={markRead}
   />
   <div class="typing" aria-live="polite">

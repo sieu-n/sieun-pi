@@ -13,6 +13,7 @@ import { pageDb, type KeptPage } from "./page-db.ts";
 import { heldSends, type HeldSend } from "./held-sends.ts";
 import { holdReload, releaseReload } from "./reload.ts";
 import { live } from "./live.svelte.ts";
+import { SvelteMap } from "svelte/reactivity";
 import type {
   AgentId, AgentSummary, BoardOp, BoardView, ConversationHeader, ConversationId, ConversationSummary, ForYouItem, ImageRef, Item, Me,
   RunStatus, SendRequest, SendResult, Sidebar, TurnPlace,
@@ -857,6 +858,21 @@ function warmReplies(channel: ConversationId, items: readonly Item[]): void {
 }
 
 /** One conversation's timeline: the newest page, older pages on demand, live upserts, status, send and Stop. Nothing streams. */
+/**
+ * The rooms the owner marked unread on this page, each with the post he marked. While a room is here its open view draws the New line over
+ * that post and posts no /read of its own, as in Slack, until he scrolls back to the bottom or opens the room again.
+ */
+export const markedUnread = new SvelteMap<ConversationId, string>();
+
+/** Slack's Mark unread: the room's read point moves to just before `post`, on the server, so the sidebar of every tab and the app shows it. */
+export function markUnread(room: ConversationId, post: string): Promise<unknown> {
+  markedUnread.set(room, post);
+  return api.markUnread(room, post).catch(error => {
+    if (markedUnread.get(room) === post) markedUnread.delete(room);
+    throw error;
+  });
+}
+
 export class Timeline {
   /** Raw state: each change replaces the list, and a job page measured 434 KB on 11-03, too big to proxy deeply. */
   items = $state.raw<Item[]>([]);
@@ -879,6 +895,10 @@ export class Timeline {
   private readonly deliveredAt = new Map<string, number>();
   /** The newest item when the page last posted /read. */
   private marked: Item | undefined;
+  /** The first post after the read point this view opened at, which the New line marks, as Slack's does, for as long as the view is open. */
+  openedUnread = $state<string | undefined>(undefined);
+  /** Ends when the view's own read of the room lands, so the first /read cannot move the read point before the view saw where it was. */
+  private readonly loaded: Promise<void>;
 
   constructor(readonly id: ConversationId, opts: { around?: string } = {}) {
     this.isChannel = id.startsWith("ch_");
@@ -891,7 +911,8 @@ export class Timeline {
       else if (event.type === "room" && event.room.id === id) void this.refreshHeader();
     });
     timelinePages.open(id, () => this.showing());
-    void this.load(opts.around);
+    markedUnread.delete(id);
+    this.loaded = this.load(opts.around);
     for (const id of this.sends.restore()) this.retrySend(id);
     const first = firstSends.get(id);
     if (first) {
@@ -927,6 +948,8 @@ export class Timeline {
       const taken = pages.take(key, asked, () => readTimeline(this.id, around, asked, last?.limit));
       const { wait } = taken;
       const { page, header } = await taken.read;
+      const readSeq = header.readSeq;
+      if (readSeq !== undefined) this.openedUnread = page.items.find(i => i.kind === "message" && !i.threadRoot && (i.seq ?? 0) > readSeq)?.id;
       this.header = header;
       sawHeader(header);
       this.status = header.summary.status;
@@ -1019,11 +1042,23 @@ export class Timeline {
     return api.abort(this.id);
   }
 
+  /** The post the New line goes over: the one he marked unread here, else the first unread one when the view opened. */
+  get newLine(): string | undefined {
+    return markedUnread.get(this.id) ?? this.openedUnread;
+  }
+
   /**
    * Marks the conversation read up to its newest item, once per item. The server marks it read when it stores an owner send, so after the
    * open's first mark the page posts nothing while the newest item is the owner's own, and a send posts /read at most once, for the reply.
+   * After Mark unread only the owner's own scroll to the bottom (`byUser`) reads past the post he marked.
    */
-  markRead(): Promise<unknown> {
+  async markRead(byUser = false): Promise<unknown> {
+    await this.loaded;
+    if (markedUnread.has(this.id)) {
+      if (!byUser) return;
+      markedUnread.delete(this.id);
+      this.marked = undefined;
+    }
     const newest = this.items.at(-1);
     const own = newest?.kind === "message" && newest.author.id === "owner";
     if (!newest || newest === this.marked || (own && this.marked)) return Promise.resolve();

@@ -44,11 +44,14 @@
     onmention?: (id: string, kind: string, e: MouseEvent) => void;
     onboardid?: (id: string, chatId: string, e: MouseEvent) => void;
     onartifact?: (target: string, e: MouseEvent) => void;
-    onbottom?: () => void;
+    /** The post the red New line goes over, as in Slack: the first unread one, or the one the owner marked unread. */
+    newLine?: string | null;
+    /** The feed reached its bottom; `byUser` when the owner scrolled or jumped there himself rather than a new row pulling the feed down. */
+    onbottom?: (byUser: boolean) => void;
   };
   let {
     items, loading, error, hasOlder, loadingOlder, loadOlder, focus, context, liveLabel = null, queue = null, openThread = null, canReply = false, compact = false,
-    layout = "bubble", beginning = null, replyCount = null,
+    layout = "bubble", beginning = null, replyCount = null, newLine = null,
     statusOf, onretry, onretrysend, ondiscardsend, onthread, oncopylink, onmention, onboardid, onartifact, onbottom,
   }: Props = $props();
 
@@ -158,7 +161,7 @@
   function toBottom() {
     if (!scroller) return;
     scroller.scrollTop = scroller.scrollHeight;
-    onbottom?.();
+    onbottom?.(false);
   }
 
   /** Draws the rows above the first ones and keeps the view where it was, before a scroll event can read the new height as a scroll up. */
@@ -183,7 +186,7 @@
     const wasStuck = stick;
     stick = distance < 80;
     showJump = distance > 400;
-    if (stick && !wasStuck) onbottom?.();
+    if (stick && !wasStuck) onbottom?.(true);
     if (!stick) noteAnchor();
     if (scroller.scrollTop < 240 && full && hasOlder && !loadingOlder) void older();
   }
@@ -191,7 +194,7 @@
   function jump() {
     stick = true;
     scroller?.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
-    onbottom?.();
+    onbottom?.(true);
   }
 </script>
 
@@ -238,6 +241,9 @@
                     />
                   </li>
                 {:else if row.item.kind !== "system"}
+                  {#if row.item.id === newLine}
+                    <li class="new-line" role="separator" aria-label="New messages" data-testid="new-line"><span>New</span></li>
+                  {/if}
                   <MessageRow
                     item={row.item}
                     first={row.first}
@@ -387,6 +393,24 @@
     flex: 1;
     height: 1px;
     background: var(--border-standard);
+  }
+  /* Slack's New line: a red rule over the first unread post with "New" at its right end. */
+  .new-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 6px 0;
+    color: var(--border-danger);
+    font: var(--text-caption);
+    font-weight: 700;
+    letter-spacing: var(--tracking-caption);
+    list-style: none;
+  }
+  .new-line::before {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border-danger);
   }
   .state {
     display: flex;

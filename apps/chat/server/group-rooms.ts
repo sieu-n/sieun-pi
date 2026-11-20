@@ -28,7 +28,7 @@ import { refusedForGood, retryWait } from "./outbox.ts";
 import { postState } from "./post-edits.ts";
 import { reactionsLine, reactionsOf } from "./reactions.ts";
 import { agedPost, agentPostParts, queuedNote, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
-import type { Store } from "./store.ts";
+import { readMark, type Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
 
 /** Hard: money, an agent loop runs paid model turns nobody reads (channels.md 4.3). */
@@ -209,10 +209,12 @@ export class GroupRooms {
 
   summary(row: GroupRoom): ConversationSummary {
     const posts = this.store.postsOf(row.id);
-    const mark = this.deps.state.state.reads[row.id]?.seq ?? 0;
+    const read = this.deps.state.state.reads[row.id];
+    const mark = read?.seq ?? 0;
     const last = posts.at(-1);
     // As in Slack, a thread reply leaves the room read: the thread's reply count and For you show it, and opening the room marks read only its top-level posts.
-    const unseen = posts.filter(p => p.seq > mark && p.author !== "owner" && !p.threadRoot);
+    // The post he marked unread counts, his own or a thread reply too.
+    const unseen = posts.filter(p => p.seq > mark && ((p.author !== "owner" && !p.threadRoot) || p.id === read?.from));
     const working = this.commThreads(row).filter(c => this.deps.threads.statusOfConversation(c.thread, 1) === "working")
       .map(c => ({ id: c.agent.id, name: this.deps.threads.principal(c.agent.id).name }));
     // In a Solo room every post is about the owner's agenda; in a channel only a post that names him counts as unread.
@@ -773,14 +775,14 @@ export class GroupRooms {
     };
   }
 
-  /** A page of the room's root posts, oldest first; `before`, `after` and `around` are post ids, and `around` a reply opens its root. */
-  timeline(id: string, opts: { before?: string; after?: string; around?: string; limit?: number }): TimelinePage {
   /** The owner's Save for later mark on a post, as the page reads it. */
   private laterOf(post: RoomPost): { later?: LaterMark } {
     const later = this.deps.laterMark?.(post);
     return later ? { later } : {};
   }
 
+  /** A page of the room's root posts, oldest first; `before`, `after` and `around` are post ids, and `around` a reply opens its root. */
+  timeline(id: string, opts: { before?: string; after?: string; around?: string; limit?: number }): TimelinePage {
     const row = this.require(id);
     const all = this.store.postsOf(row.id);
     const roots = all.filter(p => !p.threadRoot);
@@ -815,10 +817,10 @@ export class GroupRooms {
     return { root: this.item(row, rootPost, all), items: all.filter(p => p.threadRoot === root).map(p => this.item(row, p, all)) };
   }
 
-  markRead(id: string, seq?: number): void {
+  /** Moves the read point to `seq`, the newest post when absent, or with `unreadFrom` to just before that post, as Slack's Mark unread does. */
+  markRead(id: string, seq?: number, unreadFrom?: string): void {
     const row = this.require(id);
-    const last = this.store.postsOf(row.id).at(-1)?.seq ?? 0;
-    this.deps.state.state.reads[row.id] = { at: Date.now(), seq: Math.min(seq ?? last, last) };
+    this.deps.state.state.reads[row.id] = readMark(this.store.postsOf(row.id), seq, unreadFrom, roomLabel(row));
     this.deps.state.saveState();
     this.deps.events.conversations([this.summary(row)]);
   }
