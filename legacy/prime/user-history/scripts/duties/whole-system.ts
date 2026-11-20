@@ -2597,7 +2597,8 @@ async function main(): Promise<void> {
     const effort = effortOffDefault((await catalogCopyFiles(dataDir)).map(copy => ({ host: copy.host ?? box, text: copy.text })), want,
       host => host !== box && (!latestLine || !!hostViews(latestLine).find(view => view.name === host)?.offline || offlineAround(watch, host, now, now)));
     result.metrics.sessions_off_high = effort.off.length;
-    result.metrics.sessions_off_high_unread_boxes = effort.unread.length;
+    // No sessions_off_high_unread_boxes metric: the server reads a "<metric>_*" key as work that counts soon (partLines), so the Mac's closed
+    // lid started a d7 push run at 12:01Z on 11-20 that nobody could act on. The gap line below names the unread box instead.
     result.flagged ??= [];
     if (effort.off.length) result.flagged.push({ kind: "gap", excerpt: `${effort.off.length} live session${effort.off.length === 1 ? "" : "s"} not on ${want.model}/${want.thinking}: ` +
       effort.off.slice(0, 8).map(entry => `${entry.name} (${entry.host}, ${entry.sessionId.slice(0, 8)}) on ${entry.model}/${entry.thinking}`).join("; ") });
