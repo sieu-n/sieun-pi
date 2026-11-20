@@ -67,6 +67,9 @@ after(async () => {
 });
 
 test("the Mac's threads are found and counted from the one index, and a search sends the Mac no call", async () => {
+  // The index reads the Mac every 5 s on its own, and in a full suite run on 11-20 one search took 5.2 s, so that read fell inside the
+  // count. With the timer stopped, any call counted is the search's; the next test reads the Mac through `settled`.
+  app.searchEngine.stop();
   const calls = relay.calls.length;
   const found = await search("quokka");
   assert.equal(found.total, 2);
