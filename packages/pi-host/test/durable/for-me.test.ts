@@ -133,7 +133,7 @@ test("mark_message posts the mark as the thread and answers one line, and an err
 });
 
 test("both comm texts ask the thread to read its pending list at a turn's start, handle its own room's items and mark each one handled", () => {
-  for (const [room, n] of [["dm_vent", 5], ["ch_1a2b3c4d", 9], ["so_plan", 9]] as const) {
+  for (const [room, n] of [["dm_vent", 6], ["ch_1a2b3c4d", 10], ["so_plan", 10]] as const) {
     const lines = commInstructions({ agent: "ag_vent", room, work: "vent" }).split("\n");
     const line = lines.find(l => l.includes("list_for_me_messages"))!;
     assert.ok(line.startsWith(`${n}. When a turn starts, read your pending For list with \`list_for_me_messages()\`. Handle the items of room ${room},`), line);
