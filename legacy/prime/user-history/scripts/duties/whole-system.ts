@@ -330,13 +330,21 @@ function grownRig(root: string, now: readonly KernelRig[] = [], then: readonly K
   return top?.rig;
 }
 
+/** The smallest of a Mac reading's feed owners when the feed listed FEED_OWNERS of them, else 0: the most a feed owner left off its list held. */
+const feedFloor = (view: HostView): number => {
+  const listed = view.usable && !isLinuxReading(view.usable) ? view.usable.owners ?? [] : [];
+  return listed.length >= FEED_OWNERS ? Math.min(...listed.map(feed => feed.gb)) : 0;
+};
+
 /**
- * A Mac minute's cause in the flag's words: the holder whose memory grew the most since the same box in the line before, with its GB before and
- * after and the swap's rise; the agents' Aside tabs (`asideWords`) when that line is missing, over 2 minutes older or has no feed owners, or
- * when nothing grew. A feed owner missing from the line before held at most its smallest owner, or nothing when the feed listed fewer than
- * FEED_OWNERS. At 07:21Z on 11-04 a `pnpm check` (tsgo with an 8 GB heap) that a sep launch!! job started at 07:20:55Z took that chat from 0.55
- * to 7.52 GB and swap from 11.5 to 13.3 GB, while one agent tab opened in Aside, and d7 named only "agents' Aside tabs 1 of 4, about 0.83 GB".
- * A chat that jumped names the session in it whose commands grew the most (`KernelRig`), with its largest command, so the run can steer that job.
+ * A Mac minute's cause in the flag's words: the holder whose memory changed the most either way since the same box in the line before, with its
+ * GB before and after and the swap's change; the agents' Aside tabs (`asideWords`) when that line is missing, over 2 minutes older or has no
+ * feed owners, or when nothing changed. A feed owner missing from one of the two lines held at most that line's smallest owner, or nothing when
+ * the feed listed fewer than FEED_OWNERS; a chat tree or job rig missing from one held nothing. At 07:21Z on 11-04 a `pnpm check` (tsgo with an
+ * 8 GB heap) that a sep launch!! job started at 07:20:55Z took that chat from 0.55 to 7.52 GB and swap from 11.5 to 13.3 GB, while one agent tab
+ * opened in Aside, and d7 named only "agents' Aside tabs 1 of 4, about 0.83 GB". A chat that jumped names the session in it whose commands grew
+ * the most (`KernelRig`), with its largest command, so the run can steer that job. At 05:57Z on 11-20 the owner's Helium went from 13.04 to
+ * 1.29 GB and swap from 15.5 to 10.5 GB in a 6,433 swapouts a second minute, and d7 named "Aside +0.25 GB", the largest rise.
  */
 export function jumpWords(lines: readonly WatchLine[], owner: RigOwner): (line: WatchLine, view: HostView) => string {
   const previous = new Map(lines.map((line, at) => [line, lines[at - 1]] as const));
@@ -346,18 +354,25 @@ export function jumpWords(lines: readonly WatchLine[], owner: RigOwner): (line: 
     const same = gap <= 2 * MINUTE ? hostViews(before!).find(candidate => candidate.name === view.name) : undefined;
     const then = same ? memoryHolders(same, owner) : new Map<string, MemoryHolder>();
     if (!then.size) return asideWords(view);
-    const listed = same!.usable && !isLinuxReading(same!.usable) ? same!.usable.owners ?? [] : [];
-    const floor = listed.length >= FEED_OWNERS ? Math.min(...listed.map(feed => feed.gb)) : 0;
+    const now = memoryHolders(view, owner);
+    const missing = (key: string, floor: number): number => key.startsWith("chat:") || key.startsWith("rig:") ? 0 : floor;
+    const [thenFloor, nowFloor] = [feedFloor(same!), feedFloor(view)];
     let top: { key: string; words: string; from: number; to: number } | undefined;
-    for (const [key, holder] of memoryHolders(view, owner)) {
-      const from = then.get(key)?.gb ?? (key.startsWith("chat:") || key.startsWith("rig:") ? 0 : floor);
-      if (holder.gb - from > (top ? top.to - top.from : 0)) top = { key, words: holder.words, from, to: holder.gb };
+    for (const key of new Set([...now.keys(), ...then.keys()])) {
+      const from = then.get(key)?.gb ?? missing(key, thenFloor);
+      const to = now.get(key)?.gb ?? missing(key, nowFloor);
+      if (Math.abs(to - from) > (top ? Math.abs(top.to - top.from) : 0)) top = { key, words: (now.get(key) ?? then.get(key))!.words, from, to };
     }
     if (!top) return asideWords(view);
     const swap = same!.swapGb !== undefined && view.swapGb !== undefined ? `, swap ${same!.swapGb} to ${view.swapGb} GB` : "";
+    const since = clock(Date.parse(before!.at));
+    if (top.to < top.from) {
+      return `; the largest change since ${since} was ${top.words} -${gbRound(top.from - top.to)} GB (${gbRound(top.from)} to ${gbRound(top.to)} GB, ` +
+        `it quit, restarted or released memory)${swap}`;
+    }
     const grown = top.key.startsWith("chat:") ? grownRig(top.key.slice(5), view.kernelRigs, same!.kernelRigs) : undefined;
     const words = grown?.job ? `${top.words}, job ${grown.job}` : top.words;
-    return `; the largest jump since ${clock(Date.parse(before!.at))} was ${words} +${gbRound(top.to - top.from)} GB (${gbRound(top.from)} to ${gbRound(top.to)} GB` +
+    return `; the largest jump since ${since} was ${words} +${gbRound(top.to - top.from)} GB (${gbRound(top.from)} to ${gbRound(top.to)} GB` +
       `${grown?.command ? `, ${grown.command.slice(0, 60)}` : ""})${swap}` +
       (top.key === "browser:aside" ? asideWords(view) : "");
   };
