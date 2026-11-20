@@ -97,19 +97,18 @@ export function remindMenu(opts: {
   now?: number;
 }): MenuSubmenu {
   const now = opts.now ?? Date.now();
-  const set: MenuEntry[] = opts.remindAt !== undefined
-    ? [{ type: "label", label: dueLabel(opts.remindAt, now).text }, { id: "remind-clear", label: "Remove reminder", icon: "close", onselect: opts.clear }, { type: "separator" }]
-    : [];
+  const set = opts.remindAt !== undefined;
   return {
     type: "submenu",
     id: "remind",
     label: opts.label ?? "Remind me about this",
     icon: "clock",
     items: [
-      ...set,
+      ...(set ? [{ type: "label", label: dueLabel(opts.remindAt!, now).text } satisfies MenuEntry] : []),
       ...remindPresets(now).map((p): MenuEntry => ({ id: `remind-${p.id}`, label: p.label, onselect: () => opts.set(p.at) })),
       { type: "separator" },
       { id: "remind-custom", label: "Custom…", onselect: opts.custom },
+      ...(set ? [{ id: "remind-clear", label: "Remove reminder", tone: "danger", onselect: opts.clear } satisfies MenuEntry] : []),
     ],
   };
 }

@@ -88,7 +88,7 @@ test("the toast and the submenu word a reminder as Slack does", () => {
   const plain = remindMenu({ set: at => picked.push(at), custom: () => {}, clear: () => {}, now });
   assert.deepEqual(plain.items.map((e: MenuEntry) => ("label" in e ? e.label : "-")), ["In 20 minutes", "In 1 hour", "In 3 hours", "Tomorrow", "Next week", "-", "Custom…"]);
   const set = remindMenu({ remindAt: new Date(2026, 10, 18, 15, 40).getTime(), set: () => {}, custom: () => {}, clear: () => {}, now });
-  assert.deepEqual(set.items.slice(0, 2).map((e: MenuEntry) => ("label" in e ? e.label : "-")), ["Due 3:40 PM", "Remove reminder"]);
+  assert.deepEqual(set.items.map((e: MenuEntry) => ("label" in e ? e.label : "-")), ["Due 3:40 PM", "In 20 minutes", "In 1 hour", "In 3 hours", "Tomorrow", "Next week", "-", "Custom…", "Remove reminder"]);
 });
 
 test("the Custom picker names the day in words", () => {
