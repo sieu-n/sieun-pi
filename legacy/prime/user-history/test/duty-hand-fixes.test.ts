@@ -338,6 +338,20 @@ test("a hand bind of engage accounts to a box address is fault F38, and the box 
   assert.equal(kept.kind, "automatic");
 });
 
+// On 11-20 d3 read 5 hand writes under 3 keys as undesigned (Prospect feature bro p362 and p363).
+test("the batch rules switch is F39, a hand rebind off a refused exit is F40, and the box keeper's per-address count is an operator cap", async () => {
+  const reg = await registry();
+  const at = Date.parse("2026-11-19T15:50:00Z");
+  const batch: AuditRow = { id: 41769, ts: at, actor: "api-key", source: "ops-api", key: "enrich.column_batch_rules",
+    reason: "p1179: one Jev call per creator for all of a campaign's profile rules; jev-batch-replay matched batched answers to one-rule answers" };
+  const first: AuditRow = { id: 42070, ts: at, actor: "api-key", source: "ops-api", key: "engage.box_bind_first",
+    reason: "Bind prod engage 206 (@caiyiting8674), the chrome extension d1 DM sender, to a box address" };
+  const count: AuditRow = { id: 42159, ts: at, actor: "api-key", source: "ops-api", key: "engage.box_accounts_per_address",
+    reason: "Launch VP 11-20: hold 8 per address until a per-address measurement shows L21 does not hold for box addresses" };
+  const id = (row: AuditRow) => { const verdict = classifyConfig(groupAudit("prod", [row])[0]!, reg); return verdict.kind === "fault" ? verdict.fault.id : verdict.kind; };
+  assert.deepEqual([id(batch), id(first), id(count)], ["F39", "F40", "exempt"]);
+});
+
 // F1 as it stood on 10-19, designed by p170 alone, before later designs (p235, p246 and their commits) joined it.
 const asOf1019 = async () => { const reg = await registry(); return { ...reg, faults: reg.faults.map(fault => fault.id === "F1" ? { ...fault, designs: [P170] } : fault) }; };
 
