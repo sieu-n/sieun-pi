@@ -178,17 +178,17 @@ test("an answer that names a proxy supply hold or a switched-off Vent is held, n
   assert.equal(classify(502, error("upstream_error", "The crawl job failed")).verdict, "crawler");
 });
 
-test("a held route counts in neither share nor failure count, and the run lists it under a held count", () => {
-  // 11-20 11:21Z: held answers pinned prod_working_pct at 89% and routes_failing_crawler at 20 while the proxy supply was held.
+test("a held route counts as not working in its share and as a crawler failure, and the run counts it apart as held", () => {
+  // 11-20 d9 audit: d2 left held routes out of the shares and read 100% while 18 prod routes did not answer (145 of 165 worked).
   const notSent: ProbeResult = { op: "GET /v1/youtube/live/channel", verdict: "held", status: 0, ms: 0, note: "not sent: held" };
   const answered: ProbeResult = { op: "GET /v1/tiktok/user_detail", verdict: "held", status: 503, ms: 200, code: "upstream_error", note: "docs example" };
   const previous = { verdicts: { "staging GET /v1/tiktok/user_detail": "ok" as const } };
   const { output, state } = parityMetrics({ routes: ROUTES, crawler, docs, sourceErrors: [], at: 1, previous,
     probes: { prod: [ok("GET /v1/tiktok/live/profile"), notSent], staging: [answered, ok("GET /v1/youtube/channel"), ok("GET /v1/douyin/stored/profile")] } });
   const { metrics, flagged = [] } = output;
-  assert.equal(metrics.prod_working_pct, 100);
-  assert.equal(metrics.staging_working_pct, 100);
-  assert.equal(metrics.routes_failing_crawler, 0);
+  assert.equal(metrics.prod_working_pct, 50);
+  assert.equal(metrics.staging_working_pct, 66.7);
+  assert.equal(metrics.routes_failing_crawler, 2);
   assert.equal(metrics.prod_routes_held, 1);
   assert.equal(metrics.staging_routes_held, 1);
   assert.equal(metrics.routes_held, 2);

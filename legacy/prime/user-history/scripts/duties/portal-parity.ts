@@ -20,7 +20,7 @@ import { checkCleanup } from "./test-org-cleanup.ts";
  * 3. It sorts each answer: 2xx works, an answer that names a proxy supply hold or a paused source is held, an `upstream_*` or `capacity_exhausted`
  *    code is a crawler cause (the portal passes crawler errors on that way), anything else is a portal cause, and a call it could not make or
  *    judge is unprobed. A page-1 answer with a cursor gets one page-2 call. While an env's crawler reports a proxy supply hold, the run sends
- *    no operation that reads from the crawler box (isBoxEgress) and scores each as held. Held routes count in neither share nor failure count.
+ *    no operation that reads from the crawler box (isBoxEgress) and scores each as held. A held route counts as not working in its env's share.
  * 4. It maps answers to crawler routes through portal-parity.routes.json: an env scores a route its own crawler lists, the route works there
  *    when one of its /v1 operations works there, and a route with no /v1 operation in that env's openapi is missing there.
  * A source it cannot read, an env's crawler openapi included, gives -1 for that env's share, a source_errors count and a flagged slice.
@@ -548,8 +548,9 @@ export function routeVerdict(route: Route, ops: Map<string, Operation> | null, b
  * The duty's metrics. The headline is the share of customer crawler routes whose /v1 route works on prod; staging_working_pct is the same on
  * staging. Each env scores the routes its own crawler openapi lists (scoredRoutes), and an env whose crawler openapi is unread has an
  * unmeasured share. routes_failing_portal counts routes that fail on either env for a portal cause (no /v1 route there, or a portal error), and
- * routes_failing_crawler those that fail with an upstream crawler error and no portal cause. A held route counts in neither share nor
- * failure count, and `<env>_routes_held` and `routes_held` show it. Every other count goes to the run detail.
+ * routes_failing_crawler those that fail with an upstream crawler error or a held answer and no portal cause, because a proxy supply hold
+ * stops the crawler's reads. A held route counts as not working, and `<env>_routes_held` and `routes_held` count it apart. Every other count
+ * goes to the run detail.
  */
 export function parityMetrics(input: {
   routes: readonly Route[]; crawler: Record<Env, OpenApi | null>; docs: Record<Env, OpenApi | null>; probes: Record<Env, readonly ProbeResult[]>;
@@ -573,7 +574,7 @@ export function parityMetrics(input: {
     const byOp = new Map(input.probes[env].map(probe => [probe.op, probe]));
     for (const route of scoredBy[env]) verdicts[env].set(route, crawlerOps[env] ? routeVerdict(route, ops, byOp) : "unprobed");
     const count = (verdict: RouteVerdict) => [...verdicts[env].values()].filter(value => value === verdict).length;
-    const judged = scoredBy[env].length - count("skipped") - count("held");
+    const judged = scoredBy[env].length - count("skipped");
     metrics[`${env}_routes_scored`] = scoredBy[env].length;
     metrics[`${env}_working_pct`] = ops && crawlerOps[env] && input.probes[env].length && judged ? Math.round(1000 * count("works") / judged) / 10 : UNMEASURED_PCT;
     for (const verdict of ["works", "missing", "portal", "crawler", "held", "unprobed", "skipped"] as const) metrics[`${env}_routes_${verdict}`] = count(verdict);
@@ -585,7 +586,7 @@ export function parityMetrics(input: {
     const byNote = new Map<string, string[]>();
     for (const probe of held.filter(notSent)) byNote.set(probe.note, [...byNote.get(probe.note) ?? [], probe.op]);
     const heldRow = (excerpt: string) => flagged.push({ at, kind: `held_${env}`, excerpt: excerpt.slice(0, 600) });
-    const tail = `on ${env}, out of the shares and failure counts with no fix job (c230)`;
+    const tail = `on ${env}, counted as not working with no fix job (c230)`;
     for (const [note, ops] of byNote) heldRow(`${ops.length} /v1 operations not sent ${tail}: ${note}: ${ops.join(", ")}`);
     if (answered.length) heldRow(`${answered.length} /v1 operations answered held ${tail}: ${answered.map(probe => `${probe.op} ${probe.status} ${probe.code ?? ""}`.trim()).join(", ")}`);
     const missing = scoredBy[env].filter(route => verdicts[env].get(route) === "missing");
@@ -604,7 +605,7 @@ export function parityMetrics(input: {
   const portalRoutes = either(["missing", "portal"]);
   const portalSet = new Set(portalRoutes);
   metrics.routes_failing_portal = portalRoutes.length;
-  metrics.routes_failing_crawler = either(["crawler"]).filter(route => !portalSet.has(route)).length;
+  metrics.routes_failing_crawler = either(["crawler", "held"]).filter(route => !portalSet.has(route)).length;
   const failing = new Set(either(["missing", "portal", "crawler"]));
   metrics.routes_held = either(["held"]).filter(route => !failing.has(route)).length;
   metrics.routes_scored = scored.length;
