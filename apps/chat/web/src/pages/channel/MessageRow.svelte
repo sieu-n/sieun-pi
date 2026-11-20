@@ -10,6 +10,7 @@
   import type { MenuEntry } from "$lib/ui/menu";
   import { toast } from "$lib/ui/toast.svelte";
   import { api, markUnread } from "$lib/api";
+  import { later, laterMenuItem } from "$lib/later.svelte";
   import RemindDialog from "$lib/RemindDialog.svelte";
   import { remindedText, remindMenu } from "$lib/remind";
   import { askNotifyPermission } from "$lib/remind-notify";
@@ -19,7 +20,7 @@
   import { clockLabel, stampLabel, timeLabel } from "$lib/ui/datetime";
   import { wikiUrl, withAuthor, type MarkdownContext } from "$lib/ui/markdown";
   import type { Status } from "$lib/ui/types";
-  import { conversationHref, router } from "$lib/router.svelte";
+  import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import { frequentEmoji } from "./frequent-emoji.svelte";
   import Reactions from "./Reactions.svelte";
   import StepLine from "./StepLine.svelte";
@@ -135,8 +136,11 @@
     reactable ? [
       { id: "unread", label: "Mark unread", icon: "dot", shortcut: isMac ? "⌥ Click" : "Alt+Click", onselect: unread },
       remindMenu({ remindAt: reactable.later?.remindAt, set: remind, custom: () => (customRemind = true), clear: () => remind(null) }),
+      ...(room ? [laterMenuItem(room, reactable)] : []),
     ] : [],
   );
+  /** Slack's Save for later: the hover bar's bookmark, the menu item and the label over a saved post (lib/later.svelte.ts). */
+  const saved = $derived(reactable && room ? later.saved(room, reactable) : false);
   let customRemind = $state(false);
 
   /** Remind me about this: saves the post for later with the reminder, or clears the reminder and keeps the save. */
@@ -193,12 +197,19 @@
       <IconButton icon="edit" label="Edit message" size="sm" onclick={() => (editing = true)} data-edit-post />
       <IconButton icon="trash" label="Delete message" size="sm" onclick={() => (deleting = true)} data-delete-post />
     {/if}
+    {#if reactable && room}
+      <IconButton icon={saved ? "bookmark-filled" : "bookmark"} label={saved ? "Remove from Later" : "Save for later"} size="sm" pressed={saved} onclick={() => room && reactable && later.toggle(room, reactable)} data-save-later />
+    {/if}
     {#if menuItems.length}
       <IconButton icon="more" label="More actions" size="sm" aria-haspopup="menu" aria-expanded={menuOpen} bind:element={moreButton} onclick={() => (menuOpen = !menuOpen)} data-message-menu />
     {/if}
   </div>
   {#if menuOpen}<Menu bind:open={menuOpen} anchor={moreButton} items={menuItems} placement="bottom-end" label="Message actions" />{/if}
   {#if customRemind}<RemindDialog at={reactable?.later?.remindAt} onpick={remind} onclose={() => (customRemind = false)} />{/if}
+{/snippet}
+
+{#snippet savedLabel()}
+  <p class="saved-label" data-saved-label><Icon name="bookmark-filled" size={12} /><a href={hrefFor("later")}>Saved for later</a></p>
 {/snippet}
 
 {#snippet images()}
@@ -285,6 +296,7 @@
       {/if}
     </div>
     <div class="body">
+      {#if saved}{@render savedLabel()}{/if}
       {#if first}
         <div class="head">
           <span class="author">{item.author.name}</span>
@@ -347,6 +359,7 @@
         {/if}
       </div>
       <div class="stack">
+        {#if saved}{@render savedLabel()}{/if}
         {#if turn && sent}
           {#if turn.steps.length || live}
             <div class="fold" data-fold data-quiet={!sent.length && !live ? "" : undefined}>
@@ -696,6 +709,22 @@
   .slack .gutter {
     display: block;
     flex: none;
+  }
+  .saved-label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin: 0 0 2px;
+    font: var(--text-caption);
+    letter-spacing: var(--tracking-caption);
+    color: var(--accent-link);
+  }
+  .saved-label a {
+    color: inherit;
+    text-decoration: none;
+  }
+  .saved-label a:hover {
+    text-decoration: underline;
   }
   .reply-to {
     display: flex;

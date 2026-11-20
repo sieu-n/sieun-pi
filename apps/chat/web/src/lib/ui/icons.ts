@@ -63,6 +63,8 @@ export const ICONS = {
   "sort": `<path d="M6 4v12M3 13l3 3 3-3M14 16V4M11 7l3-3 3 3"/>`,
   "star": `<path d="m10 3.5 2 4.2 4.5.6-3.3 3.1.8 4.5L10 13.7l-4 2.2.8-4.5-3.3-3.1 4.5-.6z"/>`,
   "pin": `<path d="M7 3.5h6l-1 4 3 3H5l3-3zM10 10.5v6"/>`,
+  "bookmark": `<path d="M6.5 3.5h7A1.5 1.5 0 0 1 15 5v11.5l-5-3.25-5 3.25V5a1.5 1.5 0 0 1 1.5-1.5z"/>`,
+  "bookmark-filled": `<path d="M6.5 3.5h7A1.5 1.5 0 0 1 15 5v11.5l-5-3.25-5 3.25V5a1.5 1.5 0 0 1 1.5-1.5z" fill="currentColor"/>`,
   "clock": `<circle cx="10" cy="10" r="6.5"/><path d="M10 6.5V10l2.5 1.5"/>`,
   "terminal": `<rect x="3" y="4" width="14" height="12" rx="2.5"/><path d="m6.5 8 2.5 2-2.5 2M10.5 12.5h3"/>`,
   "folder": `<path d="M3.5 6A1.5 1.5 0 0 1 5 4.5h3.5l1.5 2h5A1.5 1.5 0 0 1 16.5 8v6.5A1.5 1.5 0 0 1 15 16H5a1.5 1.5 0 0 1-1.5-1.5z"/>`,

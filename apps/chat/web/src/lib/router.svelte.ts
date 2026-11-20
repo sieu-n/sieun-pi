@@ -8,17 +8,18 @@
  *   #/c/for-you, #/c/for-you/<chat>/<todo>  Messages, For you, optionally with one ask open
  *   #/agents, #/agents/<sub>                Agents
  *   #/board, #/board/<chat>                 Board, the index or one chat's board
+ *   #/later, #/later/done                   Later, the posts the owner saved: In progress, or Completed
  *   #/settings/<section>                    Settings, one section: usage, hosts, accounts or skills, opened from the Settings button
  *   #/settings/accounts/<provider>?thread=<id>   Settings > Accounts, the pi-pool accounts of claude or codex, optionally for one thread
  *   #/search?q=&from=&in=&after=&before=&sort=&type=   Full search results, opened with Enter in the Cmd K search
  *   #/ui                                    The lib/ui gallery, not in the top bar
  *
- * Messages, Agents and Board are the roots in the top bar; each picks its own left sidebar in lib/shell/Shell.svelte.
+ * Messages, Agents, Board and Later are the roots in the top bar; each picks its own left sidebar in lib/shell/Shell.svelte.
  * The old #/usage, #/hosts, #/accounts and #/board/for-you links redirect to #/settings/usage, #/settings/hosts, #/settings/accounts
  * and #/c/for-you with the rest of their path and their query kept.
  */
 
-export type PageId = "messages" | "agents" | "board" | "settings" | "search" | "ui";
+export type PageId = "messages" | "agents" | "board" | "later" | "settings" | "search" | "ui";
 
 export type Route = {
   page: PageId;
@@ -32,6 +33,7 @@ export const PAGES: readonly { id: PageId; label: string; segment: string; icon:
   { id: "messages", label: "Messages", segment: "c", icon: "messages" },
   { id: "agents", label: "Agents", segment: "agents", icon: "robot" },
   { id: "board", label: "Board", segment: "board", icon: "board" },
+  { id: "later", label: "Later", segment: "later", icon: "bookmark" },
 ];
 
 /** Pages reachable by URL but not shown in the top bar. */
