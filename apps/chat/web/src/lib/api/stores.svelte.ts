@@ -9,6 +9,7 @@
 import { api, ApiError, attach, reads, reportNotDelivered, roomOf, type Attached, type Read, type Wait } from "./client.ts";
 import { kept, type Kept } from "./kept.svelte.ts";
 import { heldImages } from "./held-images.ts";
+import { pageDb, type KeptPage } from "./page-db.ts";
 import { heldSends, type HeldSend } from "./held-sends.ts";
 import { holdReload, releaseReload } from "./reload.ts";
 import { live } from "./live.svelte.ts";
@@ -508,14 +509,45 @@ export const connection = {
  * The last page each thread showed, kept when its view closes so the next open shows it at once and reads it again behind, and the read
  * a thread pill click starts before the pane mounts. `warm` fills it before the first open: on 11-19 the owner, 197 ms from the box,
  * waited 403 to 455 ms for a room's first page and 648 ms for a thread's replies, each time with nothing on the screen. It keeps the
- * newest `keep` pages: a job page measured 434 KB on 11-03 (work/fast-thread/before.md), so the 40 timelines hold under 18 MB.
+ * newest `keep` pages: a job page measured 434 KB on 11-03 (work/fast-thread/before.md), so the 60 timelines hold under 27 MB.
+ *
+ * Each kept page also goes to IndexedDB under the cache's `name` (page-db.ts), and `restore` brings them back on a page load, so the
+ * room and the thread a reload opens show at once too. An open view's page is kept when its first read ends and again when the page
+ * is hidden, loses focus or goes away, which is when a new release reloads it (reload.ts).
  */
 class PageCache<Raw, Shown> {
   private readonly shown = new Map<string, Shown>();
   private readonly reads = new Map<string, { read: Promise<Raw>; at: number; wait?: Wait }>();
   private readonly views = new Map<string, number>();
+  /** What each open view shows now, or undefined when that is what it gave last time. */
+  private readonly showing = new Map<string, () => Shown | undefined>();
 
-  constructor(readonly keep: number) {}
+  constructor(readonly name: string, readonly keep: number) {
+    if (typeof window === "undefined") return;
+    const keepOpen = () => this.keepOpen();
+    addEventListener("pagehide", keepOpen);
+    addEventListener("blur", keepOpen);
+    document.addEventListener("visibilitychange", () => (document.hidden ? keepOpen() : undefined));
+  }
+
+  /** Takes the pages a page before this one kept, the oldest first; a page this one already holds stays. */
+  restore(pages: readonly KeptPage[]): void {
+    const mine = pages.filter(page => page.cache === this.name);
+    const extra = Math.max(0, mine.length - this.keep);
+    for (const page of mine.slice(0, extra)) void pageDb.drop(this.name, page.key);
+    const fresh = new Map(this.shown);
+    this.shown.clear();
+    for (const page of mine.slice(extra)) if (!fresh.has(page.key)) this.shown.set(page.key, page.value as Shown);
+    for (const [key, value] of fresh) this.shown.set(key, value);
+  }
+
+  /** Keeps what the open view of `key` shows now, or what every open view shows. */
+  keepOpen(key?: string): void {
+    for (const [open, showing] of key === undefined ? [...this.showing] : [[key, this.showing.get(key)] as const]) {
+      const value = showing?.();
+      if (value !== undefined) this.remember(open, value);
+    }
+  }
 
   /** Starts the read now; the store that opens this thread next takes it instead of reading again. */
   prefetch(key: string, read: () => Promise<Raw>): void {
@@ -541,15 +573,17 @@ class PageCache<Raw, Shown> {
   }
 
   /**
-   * The prefetched or warming read, or a new one. A read counts for 2 s: the slowest click to pane mount measured 817 ms on 11-03
+   * The prefetched or warming read, or a new one, with the `Wait` its line is logged by, which the view clears when the answer changed
+   * what it showed. `wait` says what the view shows as it asks. A read counts for 2 s: the slowest click to pane mount measured 817 ms on 11-03
    * (work/fast-thread/before.md), and an older one may miss changes made since.
    */
-  take(key: string, read: () => Promise<Raw>): Promise<Raw> {
+  take(key: string, wait: Wait, read: () => Promise<Raw>): { read: Promise<Raw>; wait: Wait } {
     const prefetched = this.reads.get(key);
     this.reads.delete(key);
-    if (!prefetched || Date.now() - prefetched.at >= 2_000) return read();
-    if (prefetched.wait) prefetched.wait.background = undefined;
-    return prefetched.read;
+    if (!prefetched || Date.now() - prefetched.at >= 2_000) return { read: read(), wait };
+    // A read ahead a view takes over counts as that view's read: a wait, or a refresh behind the page it already shows.
+    if (prefetched.wait) prefetched.wait.background = wait.background;
+    return { read: prefetched.read, wait: prefetched.wait ?? wait };
   }
 
   last(key: string): Shown | undefined {
@@ -560,16 +594,23 @@ class PageCache<Raw, Shown> {
     return this.shown.has(key) || this.reads.has(key);
   }
 
-  /** A view of the page opened; while it is open the view keeps the page current, so `warm` leaves it alone. */
-  open(key: string): void {
+  /**
+   * A view of the page opened; while it is open the view keeps the page current, so `warm` leaves it alone. `showing` gives what the
+   * view shows, for `keepOpen`.
+   */
+  open(key: string, showing?: () => Shown | undefined): void {
     this.views.set(key, (this.views.get(key) ?? 0) + 1);
+    if (showing) this.showing.set(key, showing);
   }
 
   /** The view closed and leaves the page it showed. */
   close(key: string, value?: Shown): void {
     const left = (this.views.get(key) ?? 1) - 1;
     if (left > 0) this.views.set(key, left);
-    else this.views.delete(key);
+    else {
+      this.views.delete(key);
+      this.showing.delete(key);
+    }
     if (value !== undefined) this.remember(key, value);
   }
 
@@ -580,9 +621,11 @@ class PageCache<Raw, Shown> {
   remember(key: string, value: Shown): void {
     this.shown.delete(key);
     this.shown.set(key, value);
+    void pageDb.put(this.name, key, value);
     for (const oldest of this.shown.keys()) {
       if (this.shown.size <= this.keep) break;
       this.shown.delete(oldest);
+      void pageDb.drop(this.name, oldest);
     }
   }
 }
@@ -594,10 +637,14 @@ const readTimeline = async (id: ConversationId, around?: string, wait?: Wait, li
   const [page, header] = await Promise.all([api.items(id, around ? { around } : limit ? { limit } : {}, wait), api.header(id, wait)]);
   return { page, header };
 };
-/** How many sidebar rooms and how many job pills of the open timeline are read ahead; the cache keeps both sets. */
-const ROOMS_AHEAD = 20;
+/**
+ * How many sidebar rooms and how many job pills of the open timeline are read ahead; the cache keeps both sets. On 11-20 the owner's
+ * sidebar held 33 rooms (GET /api/sidebar: 15 solo, 10 channels, 8 DMs), and with 20 read ahead a 200 ms walk waited one round trip, 231
+ * to 306 ms, for each room past the 20th (work/p107-opens/before-f8cf70a.json).
+ */
+const ROOMS_AHEAD = 40;
 const JOBS_AHEAD = 20;
-const timelinePages = new PageCache<TimelineRead, TimelineShown>(ROOMS_AHEAD + JOBS_AHEAD);
+const timelinePages = new PageCache<TimelineRead, TimelineShown>("timeline", ROOMS_AHEAD + JOBS_AHEAD);
 
 /** A page's items as a timeline of `id` shows them: a channel without its thread replies, a DM's owner posts with their send line. */
 /** Whether `fresh` holds an item the screen's `shown` lacks or shows differently, so the owner waited for the read that brought it. */
@@ -613,7 +660,14 @@ const shownItems = (id: ConversationId, items: readonly Item[]): Item[] => {
 
 type RepliesRead = Awaited<ReturnType<typeof api.replies>>;
 type RepliesShown = { root: Item | null; items: Item[] };
-const repliesPages = new PageCache<RepliesRead, RepliesShown>(20);
+const repliesPages = new PageCache<RepliesRead, RepliesShown>("replies", 20);
+
+/** Brings back the pages the last page load kept, before the first view mounts (main.ts). */
+export async function restorePages(): Promise<void> {
+  const pages = await pageDb.all();
+  timelinePages.restore(pages);
+  repliesPages.restore(pages);
+}
 const repliesKey = (channel: ConversationId, root: string) => `${channel}\u0000${root}`;
 
 /**
@@ -747,6 +801,14 @@ function roomsAhead(sidebar: Sidebar): void {
 }
 
 /**
+ * The conversations the Cmd K palette lists, which the owner is about to pick one of: each one the page holds no page of is read now, all at once. On
+ * 11-20 a 200 ms walk waited 231 ms for a room picked there that the sidebar's read ahead had not reached (work/p107-opens).
+ */
+export function conversationsAhead(ids: readonly ConversationId[]): void {
+  for (const id of ids) if (!timelinePages.has(id)) void warmTimeline()({ id, at: 0, working: false });
+}
+
+/**
  * The jobs whose pills the open timeline shows, the newest `JOBS_AHEAD` first, each as a short page of its newest 10 entries. On 11-20
  * that page was 2.1 to 5.4 KB as brotli for three jobs, where the server's own page of 40 entries was 8.1 to 16.9 KB. A pill's open
  * shows the short page and refreshes it at the same size; the entries above it load when the owner scrolls up.
@@ -811,7 +873,7 @@ export class Timeline {
       else if (event.type === "queue" && event.conversation === id) this.queue = event.place;
       else if (event.type === "room" && event.room.id === id) void this.refreshHeader();
     });
-    timelinePages.open(id);
+    timelinePages.open(id, () => this.showing());
     void this.load(opts.around);
     for (const id of this.sends.restore()) this.retrySend(id);
     const first = firstSends.get(id);
@@ -834,12 +896,17 @@ export class Timeline {
       this.items = last.items;
       this.older = last.older;
       this.loading = false;
+      // The threads and jobs of the kept page are read now, not one round trip later when its refresh lands.
+      if (this.isChannel) warmReplies(this.id, last.items);
+      else jobsAhead(last.items);
     }
     try {
       // With the kept page on the screen, this read is a refresh behind it, unless it changes what the screen shows.
-      const wait: Wait = last ? { background: "shown" } : {};
+      const asked: Wait = last ? { background: "shown" } : {};
       this.limit = last?.limit;
-      const { page, header } = around ? await readTimeline(this.id, around) : await timelinePages.take(this.id, () => readTimeline(this.id, undefined, wait, last?.limit));
+      const taken = around ? { read: readTimeline(this.id, around), wait: asked } : timelinePages.take(this.id, asked, () => readTimeline(this.id, undefined, asked, last?.limit));
+      const { wait } = taken;
+      const { page, header } = await taken.read;
       this.header = header;
       sawHeader(header);
       this.status = header.summary.status;
@@ -854,6 +921,7 @@ export class Timeline {
       this.older = page.older;
       this.focus = page.focus;
       this.stopWatch = live.watch(this.id, () => this.items.findLast(i => !isPending(i))?.id);
+      timelinePages.keepOpen(this.id);
     } catch (error) {
       this.error = message(error);
     } finally {
@@ -947,12 +1015,26 @@ export class Timeline {
     });
   }
 
+  /** The page this view leaves for the next open, unless it shows the page around one message or failed. */
+  private page(): TimelineShown | undefined {
+    if (this.around || !this.header || this.error) return undefined;
+    return { items: this.items.filter(item => !isPending(item)), older: this.older, header: this.header, ...(this.limit ? { limit: this.limit } : {}) };
+  }
+
+  private keptOf: { items: Item[]; header: ConversationHeader | null } | undefined;
+  /** `page()`, or undefined when the view shows what it showed the last time this was asked. */
+  private showing(): TimelineShown | undefined {
+    if (this.keptOf?.items === this.items && this.keptOf.header === this.header) return undefined;
+    this.keptOf = { items: this.items, header: this.header };
+    return this.page();
+  }
+
   close(): void {
     this.stopWatch?.();
     this.stopListen?.();
     this.sends.close();
-    const keep = !this.around && this.header && !this.error;
-    timelinePages.close(this.id, keep ? { items: this.items.filter(item => !isPending(item)), older: this.older, header: this.header!, ...(this.limit ? { limit: this.limit } : {}) } : undefined);
+    const keep = this.page();
+    timelinePages.close(this.id, keep);
     if (keep) {
       rooms.seen(this.id);
       jobPills.seen(this.id);
@@ -983,15 +1065,16 @@ export class Replies {
     this.stopWatch = live.watch(channel);
     const key = repliesKey(channel, rootId);
     const last = repliesPages.last(key);
-    repliesPages.open(key);
+    repliesPages.open(key, () => this.showing());
     if (last) {
       this.root = last.root;
       this.items = last.items;
       this.loading = false;
     }
     // With the kept replies on the screen, this read is a refresh behind them, unless it changes what the screen shows.
-    const wait: Wait = last ? { background: "shown" } : {};
-    void repliesPages.take(key, () => api.replies(channel, rootId, wait)).then(page => {
+    const asked: Wait = last ? { background: "shown" } : {};
+    const { read, wait } = repliesPages.take(key, asked, () => api.replies(channel, rootId, asked));
+    void read.then(page => {
       if (last && (brought(this.items, page.items) || this.items.some(item => !isPending(item) && !page.items.some(fresh => fresh.id === item.id)))) wait.background = undefined;
       this.root = page.root;
       if (last) {
@@ -999,7 +1082,10 @@ export class Replies {
         this.items = this.items.filter(item => isPending(item) || kept.has(item.id) || !last.items.some(old => old.id === item.id));
       }
       this.sends.merge(page.items);
-    }).catch(error => (this.error = message(error))).finally(() => (this.loading = false));
+    }).catch(error => (this.error = message(error))).finally(() => {
+      this.loading = false;
+      repliesPages.keepOpen(key);
+    });
     for (const id of this.sends.restore()) this.retrySend(id);
   }
 
@@ -1025,7 +1111,18 @@ export class Replies {
     this.stopWatch?.();
     this.stopListen?.();
     this.sends.close();
-    repliesPages.close(repliesKey(this.channel, this.rootId), !this.loading && !this.error ? { root: this.root, items: this.items.filter(item => !isPending(item)) } : undefined);
+    repliesPages.close(repliesKey(this.channel, this.rootId), this.page());
+  }
+
+  private page(): RepliesShown | undefined {
+    return !this.loading && !this.error ? { root: this.root, items: this.items.filter(item => !isPending(item)) } : undefined;
+  }
+
+  private keptOf: { root: Item | null; items: Item[] } | undefined;
+  private showing(): RepliesShown | undefined {
+    if (this.keptOf?.root === this.root && this.keptOf.items === this.items) return undefined;
+    this.keptOf = { root: this.root, items: this.items };
+    return this.page();
   }
 }
 
