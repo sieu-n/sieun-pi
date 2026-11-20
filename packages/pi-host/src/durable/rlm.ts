@@ -250,6 +250,8 @@ export class DurableRlm {
   private readonly modules: HostModule[];
   /** Each thread whose extension was built, so a settle reaches the host modules of a conversation that has no kernel slot yet. */
   private readonly threads = new Map<string, RlmThread>();
+  /** Whether the chat has answered a wake read since this pi-host started (`wakePending`). */
+  private chatAnswered = false;
 
   private constructor(readonly tool: PiTool, private readonly options: DurableRlmOptions) {
     const moduleOptions = { agentDir: options.agentDir, log: (line: string) => this.log(line) };
@@ -717,14 +719,18 @@ export class DurableRlm {
 
   /**
    * Whether the conversation has a `board.wake` that apps/chat has not sent yet, which keeps a child running as Prime holds it. The kernel arms
-   * a wake at the chat its `PI_HOST_CHAT_URL` names, so this asks the same chat. A chat that does not answer holds nothing.
+   * a wake at the chat its `PI_HOST_CHAT_URL` names, so this asks the same chat. A chat that fails to answer after it answered once is
+   * restarting, as an apps/chat release does, so it holds the child until the next read; one that never answered, as on a box with no chat,
+   * holds nothing. On 11-20 a read during a release of :5184 failed and pi-host reported the job 'skills viewer' done with two wakes pending.
    */
   private async wakePending(threadId: string, conversation: number, signal: AbortSignal): Promise<boolean> {
     try {
-      return (await new ChatApp(this.options.chatUrl ?? process.env[CHAT_URL_ENV] ?? DEFAULT_CHAT_URL).wakes(threadId, conversation, signal)).length > 0;
+      const pending = (await new ChatApp(this.options.chatUrl ?? process.env[CHAT_URL_ENV] ?? DEFAULT_CHAT_URL).wakes(threadId, conversation, signal)).length > 0;
+      this.chatAnswered = true;
+      return pending;
     } catch (error) {
       this.log(`${threadId}:${conversation}: the chat's wakes were not read: ${error instanceof Error ? error.message : String(error)}`);
-      return false;
+      return this.chatAnswered;
     }
   }
 

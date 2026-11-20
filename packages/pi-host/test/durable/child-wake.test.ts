@@ -3,6 +3,7 @@
  * hears from it after that run. pi-host's `rlm.deliver` task holds such a child while apps/chat still lists its wake:
  * 1. A child that replies from its wake run reaches the parent with its reply and no `[child-exited ...]`.
  * 2. A child that stays silent is reported once, after its wake run, with that run's last text.
+ * 3. A wake read that fails while the chat restarts keeps holding the child, as on 11-20 when a :5184 release let 'skills viewer' go.
  * On 11-19 two jobs of a d2 duty session set wakes, ended their turns and sat until the duty session messaged them.
  */
 import { strict as assert } from "node:assert";
@@ -34,6 +35,10 @@ process.env.PI_HOST_WAKE_POLL_MS = "100";
 const wakes: { thread: string; conversation: number; note: string }[] = [];
 /** Every wake the fake chat was asked to set, sent or not. */
 const armed: typeof wakes = [];
+/** While set, the fake chat drops every wake read, as :5184 does while a release restarts it. */
+let down = false;
+/** The wake reads the fake chat answered, by conversation. */
+const reads = new Map<number, number>();
 let chat: Server;
 let rlm: DurableRlm;
 before(async () => {
@@ -53,6 +58,11 @@ before(async () => {
         return;
       }
       const conversation = Number(url.searchParams.get("conversation"));
+      if (down) {
+        request.socket.destroy();
+        return;
+      }
+      reads.set(conversation, (reads.get(conversation) ?? 0) + 1);
       response.end(JSON.stringify({ wakes: wakes.filter(w => w.thread === thread && w.conversation === conversation) }));
     });
   });
@@ -88,6 +98,8 @@ function model(messages: Message[]): ReturnType<typeof say> {
   if (last.includes("spawned replier")) return say("spawned the replier");
   if (last.startsWith("[agent-message from child:replier]")) return cell(`b = await rlm.spawn("wake later and stay silent", name="silent")\nprint("spawned", b.name)`);
   if (last.includes("spawned silent")) return say("spawned the silent one");
+  if (last === "spawn flaky") return cell(`c = await rlm.spawn("wake later and stay silent", name="flaky")\nprint("spawned", c.name)`);
+  if (last.includes("spawned flaky")) return say("spawned the flaky one");
   if (last.startsWith("[child-exited")) return say("exit seen");
   return say(`unexpected: ${last.slice(0, 120)}`);
 }
@@ -127,6 +139,40 @@ test("a child that set a board.wake stays running until the wake's run, then its
     assert.ok(seen.includes("[agent-message from child:replier]\n\nwoke"), seen.join(" | "));
     assert.deepEqual(seen.filter(t => t.startsWith("[child-exited")), ["[child-exited: no-reply child:silent]\n\nLast assistant text: woke quietly"]);
   } finally {
+    await threads.shutdown();
+  }
+});
+
+test("a child whose wake is pending stays running while the chat restarts and its wake reads fail", { timeout: 180_000 }, async () => {
+  const threads = new DurableThreads({
+    dir: join(dir, "threads-flaky"),
+    models: () => {
+      const faux = fauxProvider({ provider: MODEL.provider, models: [{ id: MODEL.modelId }], tokensPerSecond: 0 });
+      faux.setResponses(Array.from({ length: 200 }, () => ({ messages }: { messages: Message[] }) => model(messages)));
+      const models = createModels();
+      models.setProvider(faux.provider);
+      return models;
+    },
+    defaultModel: MODEL, defaultThinkingLevel: "off", defaultCwd: dir, rlm, primeRoots: null,
+  });
+  try {
+    const { id } = await threads.create({ name: "child wake while the chat restarts" });
+    const rootInputs = async () => inputs((await threads.entries(id, { after: 0, limit: 500 })).entries).map(i => i.text);
+    const first = await threads.submit(id, { text: "spawn flaky" });
+    assert.equal((await threads.wait(id, first.submission)).status, "done");
+    const wake = await until("the flaky child's wake", async () => armed.find(w => w.thread === id));
+    await until("a wake read the chat answered", async () => (reads.get(wake.conversation) ?? 0) > 0);
+    down = true;
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    const heard = (await rootInputs()).filter(t => t.startsWith("[child-exited"));
+    assert.deepEqual(heard, [], "a failed wake read while the chat restarts does not end the hold");
+    down = false;
+    wakes.splice(wakes.indexOf(wake), 1);
+    await threads.submit(id, { conversation: wake.conversation, text: `[wake] It is now. Your note: ${wake.note}`, whenBusy: "followUp", entry: { kind: "agent.message", data: { from: "board", via: "wake" } } });
+    await until("the flaky child's exit notice", async () => (await rootInputs()).some(t => t.startsWith("[child-exited: no-reply child:flaky]")), 60_000);
+    assert.deepEqual((await rootInputs()).filter(t => t.startsWith("[child-exited")), ["[child-exited: no-reply child:flaky]\n\nLast assistant text: woke quietly"]);
+  } finally {
+    down = false;
     await threads.shutdown();
   }
 });
