@@ -41,6 +41,24 @@ test("a thread's first reply starts its own group under the root, with its bylin
   assert.deepEqual(rows.map(row => row.kind === "post" ? `${row.key}:${row.first ? "F" : ""}${row.last ? "L" : ""}` : row.kind), ["day", "root:FL", "r1:F", "r2:L"]);
 });
 
+test("an answer to another owner post starts its own stack, and names that post when it is not the row above", () => {
+  // #dev-search-general on 11-20: p14 and p15 from the owner, then p16 and p17 answering p14 and p18 answering p15, 7 s later.
+  const owner = { id: "owner" };
+  const agent = { id: "ag_search" };
+  const items = [
+    { id: "p14", at: at(20, 2, 31), kind: "message", author: owner },
+    { id: "p15", at: at(20, 2, 31) + 7_000, kind: "message", author: owner },
+    { id: "p16", at: at(20, 2, 31) + 16_000, kind: "message", author: agent, answers: "p14" },
+    { id: "p17", at: at(20, 2, 31) + 16_002, kind: "message", author: agent, answers: "p14" },
+    { id: "p18", at: at(20, 2, 31) + 23_000, kind: "message", author: agent, answers: "p15" },
+  ];
+  const rows = layoutRows(items);
+  assert.deepEqual(rows.map(row => row.kind === "post" ? `${row.key}:${row.first ? "F" : ""}${row.last ? "L" : ""}>${row.replyTo?.id ?? ""}` : row.kind),
+    ["day", "p14:F>", "p15:L>", "p16:F>p14", "p17:L>", "p18:FL>p15"]);
+  const direct = layoutRows([items[1]!, { ...items[4]!, at: items[1]!.at + 1_000 }]);
+  assert.deepEqual(direct.map(row => row.kind === "post" ? `${row.key}>${row.replyTo?.id ?? ""}` : row.kind), ["day", "p15>", "p18>"]);
+});
+
 test("rows group by day under their divider, and the first paint keeps the newest rows under their own day", () => {
   const owner = { id: "owner" };
   const groups = dayGroups(layoutRows([

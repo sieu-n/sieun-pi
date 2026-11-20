@@ -216,6 +216,8 @@ export type Item =
       seq?: number;
       /** Channel posts: the root of the Buzz-style thread this reply is in. */
       threadRoot?: string;
+      /** Group room agent posts: the owner post this one answers, which the page draws apart from the agent's other answers. */
+      answers?: string;
       /** Channel root posts: the thread's size and last reply. */
       thread?: { replies: number; lastAt: Ms; authors: Principal[] };
       deliveries: Delivery[];

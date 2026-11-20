@@ -3,23 +3,28 @@ export const STACK_MS = 5 * 60_000;
 
 export const sameDay = (a: number, b: number): boolean => new Date(a).toDateString() === new Date(b).toDateString();
 
-export type RowSource = { id: string; at: number; kind: string; author?: { id: string }; requestId?: string };
+export type RowSource = { id: string; at: number; kind: string; author?: { id: string }; requestId?: string; answers?: string };
 
 export type Row<I extends RowSource> =
   | { kind: "day"; key: string; at: number }
   | { kind: "system"; key: string; item: I }
-  | { kind: "post"; key: string; item: I; first: boolean; last: boolean };
+  /** `replyTo` is the post a stack answers, when that post is not the row right above it. */
+  | { kind: "post"; key: string; item: I; first: boolean; last: boolean; replyTo?: I };
 
 /**
  * Lays items, oldest first, out as day dividers, system lines and posts, where `first` shows the byline, and the avatar in slack layout, and `last` the avatar in bubble layout.
  * The post after `breakAfter` starts a new group, as a thread's first reply does under its root.
  * An owner send keys its row by its requestId, so the stored post that replaces the pending `r:<requestId>` keeps the row the send drew.
+ * A post that answers another post (`answers`) joins a stack only of posts that answer the same one, and when the post it answers is not
+ * the row right above, the stack names it in `replyTo`. On 11-20 an agent answered the owner's p14 with p16 and p17 and his p15 with p18,
+ * 7 s later, and one byline over all three made p18's "No." read as the end of the p14 answer.
  */
 export function layoutRows<I extends RowSource>(items: readonly I[], breakAfter?: string): Row<I>[] {
   const rows: Row<I>[] = [];
   const keys = new Set<string>();
   let previous: I | null = null;
   let lastPost: Extract<Row<I>, { kind: "post" }> | null = null;
+  const byId = new Map<string, I>(items.map(item => [item.id, item]));
   for (const item of items) {
     const sendKey = item.requestId ? `r:${item.requestId}` : item.id;
     const key = keys.has(sendKey) ? item.id : sendKey;
@@ -32,9 +37,11 @@ export function layoutRows<I extends RowSource>(items: readonly I[], breakAfter?
       rows.push({ kind: "system", key, item });
       lastPost = null;
     } else {
-      const joins: boolean = lastPost !== null && lastPost.item.author?.id === item.author.id && item.at - lastPost.item.at < STACK_MS;
+      const joins: boolean = lastPost !== null && lastPost.item.author?.id === item.author.id && item.at - lastPost.item.at < STACK_MS
+        && lastPost.item.answers === item.answers;
       if (joins && lastPost) lastPost.last = false;
-      lastPost = { kind: "post", key, item, first: !joins, last: true };
+      const replyTo: I | undefined = !joins && item.answers && previous?.id !== item.answers ? byId.get(item.answers) : undefined;
+      lastPost = { kind: "post", key, item, first: !joins, last: true, ...(replyTo ? { replyTo } : {}) };
       rows.push(lastPost);
     }
     if (item.id === breakAfter) lastPost = null;
@@ -62,7 +69,7 @@ type DayRow<I extends RowSource> = DayGroup<I>["rows"][number];
 
 function sameRow<I extends RowSource>(a: DayRow<I>, b: DayRow<I>): boolean {
   if (a.kind !== b.kind || a.key !== b.key || a.item !== b.item) return false;
-  return a.kind === "system" || (b.kind === "post" && a.first === b.first && a.last === b.last);
+  return a.kind === "system" || (b.kind === "post" && a.first === b.first && a.last === b.last && a.replyTo === b.replyTo);
 }
 
 /**

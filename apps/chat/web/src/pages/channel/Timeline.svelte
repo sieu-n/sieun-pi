@@ -223,6 +223,7 @@
                     item={row.item}
                     first={row.first}
                     last={row.last}
+                    replyTo={row.replyTo ?? null}
                     {layout}
                     fullTime={slack && compact}
                     {context}

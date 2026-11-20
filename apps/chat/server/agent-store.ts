@@ -99,6 +99,8 @@ export interface RoomPost {
   hops?: number;
   /** Channels: the root post of the Buzz-style thread this reply is in. */
   threadRoot?: string;
+  /** Group rooms: the owner post whose turn this agent post answers, so its delivery reads as answered by it and the page draws it apart. */
+  answers?: string;
   imported?: boolean;
   /** Set on an owner post that a job typed into the room to test it: the post reads as that job's, never as the owner's. */
   testSend?: TestSend;

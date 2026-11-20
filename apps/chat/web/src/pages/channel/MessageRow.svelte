@@ -48,8 +48,10 @@
     onmention?: (id: string, kind: string, e: MouseEvent) => void;
     onboardid?: (id: string, chatId: string, e: MouseEvent) => void;
     onartifact?: (target: string, e: MouseEvent) => void;
+    /** The post this one answers, when it is not the row right above (rows.ts `replyTo`): a slack row names it in one line over the text. */
+    replyTo?: Item | null;
   };
-  let { item, first, last, layout = "bubble", fullTime = false, context: roomContext, liveLabel = null, queue = null, flash = false, openThread = null, canReply = false, statusOf, onretrysend, ondiscardsend, onthread, oncopylink, onmention, onboardid, onartifact }: Props = $props();
+  let { item, first, last, layout = "bubble", fullTime = false, replyTo = null, context: roomContext, liveLabel = null, queue = null, flash = false, openThread = null, canReply = false, statusOf, onretrysend, ondiscardsend, onthread, oncopylink, onmention, onboardid, onartifact }: Props = $props();
 
   const own = $derived(isOwn(item));
   /** Board ids and job names in a post chip against its author's board and jobs, so p12 in vent's post is vent's p12. */
@@ -235,6 +237,11 @@
           <span class="author">{item.author.name}</span>
           <time datetime={new Date(item.at).toISOString()} title={stampLabel(item.at)}>{fullTime ? stampLabel(item.at) : timeLabel(item.at)}</time>
         </div>
+      {/if}
+      {#if replyTo?.kind === "message"}
+        <p class="reply-to" data-reply-to={replyTo.id} title={replyTo.text}>
+          <Icon name="reply" size={12} /><span class="reply-author">{replyTo.author.name}</span><span class="reply-text">{replyTo.text}</span>
+        </p>
       {/if}
       {#if turn && sent}
         {#if turn.steps.length || live}
@@ -636,6 +643,28 @@
   .slack .gutter {
     display: block;
     flex: none;
+  }
+  .reply-to {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin: 0 0 2px;
+    padding-left: 8px;
+    border-left: 2px solid var(--border-message-thread);
+    font: var(--text-caption);
+    letter-spacing: var(--tracking-caption);
+    color: var(--text-metadata);
+    white-space: nowrap;
+  }
+  .reply-author {
+    flex: none;
+    font-weight: 500;
+    color: var(--text-subtle);
+  }
+  .reply-text {
+    min-inline-size: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .clock {
     display: block;

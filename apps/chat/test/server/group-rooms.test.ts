@@ -220,6 +220,32 @@ describe("a channel on rooms", () => {
     host.beforeSubmit = undefined;
   });
 
+  test("an agent's answers to two owner posts in one thread each record the post they answer, and each delivery reads as answered by its own", async () => {
+    // #dev-search-general on 11-20: p15 came as a steer after the turn of p14 posted, and p15's delivery read as answered by the p14 answer.
+    const submits: { thread: string; input: SubmitInput }[] = [];
+    host.beforeSubmit = (thread, input) => void submits.push({ thread, input });
+    const root = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "quiet catalog root", requestId: "ans-root" });
+    const comm = commOf(s, agents.crawler, ids.cutoverChannel)!;
+    const toComm = () => submits.filter(x => x.thread === comm).length;
+    await until(async () => toComm(), n => n === 1);
+    const first = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "quiet, what is the catalog now?", threadRoot: root.body.item.id, requestId: "ans-1" });
+    await until(async () => toComm(), n => n === 2);
+    told(host, comm, "a1", "5 pieces, quiet.");
+    const second = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "quiet, is all code on it?", threadRoot: root.body.item.id, requestId: "ans-2" });
+    await until(async () => toComm(), n => n === 3);
+    told(host, comm, "a2", "not yet, quiet.");
+    await s.app.groups.feed(comm);
+    const [a1, a2] = ["a1", "a2"].map(id => stored(s, ids.cutoverChannel).find(p => p.requestId === `m:${comm}:${id}`)!);
+    assert.equal(a1!.answers, first.body.item.id);
+    assert.equal(a2!.answers, second.body.item.id);
+    const thread = await s.get<{ root: Message; items: Message[] }>(`/api/c/${ids.cutoverChannel}/replies/${root.body.item.id}`);
+    const answerOf = (id: string) => thread.items.find(i => i.id === id)!.deliveries.find(d => d.target === agents.crawler)!.answer;
+    assert.equal(answerOf(first.body.item.id), a1!.id);
+    assert.equal(answerOf(second.body.item.id), a2!.id);
+    assert.equal(thread.items.find(i => i.id === a2!.id)!.answers, second.body.item.id, "the page gets the post it answers");
+    host.beforeSubmit = undefined;
+  });
+
   test("an agent's mention of an agent outside the channel reaches that agent's comm thread for the channel, and it stays out of the members", async () => {
     const submits: { thread: string; input: SubmitInput }[] = [];
     host.beforeSubmit = (thread, input) => void submits.push({ thread, input });

@@ -700,7 +700,7 @@ export class GroupRooms {
         const threadRoot = row.kind === "channel" && started ? started.threadRoot ?? started.id : undefined;
         return this.write(row, {
           author: record.id, images: [], ...spoken, hops: (turn?.hops ?? 0) + 1, mentions: this.mentionsIn(row, spoken.text, record.id),
-          ...(threadRoot ? { threadRoot } : {}),
+          ...(threadRoot ? { threadRoot } : {}), ...(started?.author === "owner" ? { answers: started.id } : {}),
         });
       },
     };
@@ -742,11 +742,15 @@ export class GroupRooms {
     this.deps.events.conversations([this.summary(row)]);
   }
 
-  /** A delivery as the page shows it: `sending` reads as queued, and a delivered one reads as answered once its member posted after it. */
+  /**
+   * A delivery as the page shows it: `sending` reads as queued, and a delivered one reads as answered once its member posted the answer, the
+   * first post that `answers` it, or for a post from before `answers`, the first post of the member after it.
+   */
   private publicDelivery(row: GroupRoom, post: RoomPost, d: RoomDelivery, all: RoomPost[]): Delivery {
     const answer = d.state === "delivered"
-      ? all.find(p => p.author === d.target && p.seq > post.seq && (d.thread === undefined || p.source?.thread === d.thread)
-        && (row.kind !== "channel" || (p.threadRoot ?? p.id) === (post.threadRoot ?? post.id)))
+      ? all.find(p => p.author === d.target && p.answers === post.id)
+        ?? all.find(p => p.author === d.target && p.answers === undefined && p.seq > post.seq && (d.thread === undefined || p.source?.thread === d.thread)
+          && (row.kind !== "channel" || (p.threadRoot ?? p.id) === (post.threadRoot ?? post.id)))
       : undefined;
     return {
       target: d.target, name: this.deps.threads.principal(d.target).name, state: d.state === "sending" ? "queued" : answer ? "answered" : d.state, at: d.at,
@@ -759,7 +763,7 @@ export class GroupRooms {
     const authors = [...new Set(replies.map(r => r.author))].slice(0, 3).map(a => this.deps.threads.principal(a));
     return {
       kind: "message", id: post.id, seq: post.seq, at: post.at, author: this.deps.threads.principal(post.author), text: post.text, images: post.images,
-      mentions: (post.mentions ?? []) as AgentId[], ...(post.threadRoot ? { threadRoot: post.threadRoot } : {}),
+      mentions: (post.mentions ?? []) as AgentId[], ...(post.threadRoot ? { threadRoot: post.threadRoot } : {}), ...(post.answers ? { answers: post.answers } : {}),
       ...(post.author === "owner" ? { requestId: post.requestId } : agentPostParts(this.deps.threads, post)),
       ...(replies.length ? { thread: { replies: replies.length, lastAt: replies.at(-1)!.at, authors } } : {}),
       deliveries: (post.deliveries ?? []).map(d => this.publicDelivery(row, post, d, all)), ...reactionsOf(id => this.deps.threads.principal(id), post),
