@@ -103,6 +103,7 @@ So a change to how agents write is done only when a blind fresh session, given t
 3. Run `node apps/chat/scripts/blind-replies.mjs --out ~/work/<job>/blind-runs.jsonl` against live :5184, and `node apps/chat/scripts/blind-reactions.mjs --out ~/work/<job>/reaction-runs.jsonl` for reactions and threads.
    For lists, run `blind-replies.mjs --set lists --cwd /home/sieun/src/sieun-pi`, which asks for a multi-result check and a one-line answer.
    For a list of options (rule 10), run `blind-replies.mjs --set options`, which asks what other apps do for a feature.
+   For the thread done flag, run `node apps/chat/scripts/blind-thread-done.mjs --out ~/work/<job>/blind-runs.jsonl`, which checks the root reads done after the answer, open after an owner follow-up and done again after its answer.
 4. The script makes a `test: true` agent and channel, posts the asks as the owner with no hint about format, and checks each answer for one post, no table, no labels and the rule 5 lengths, and with `--set lists` for a one-line answer over nested bullets and a task list, and for one short line.
 5. Read every reply yourself against the pairs, because tone is a judgment the script cannot make, and take a shot of the thread pane.
 6. Record each run's pass or fail with its replies in the job's wiki folder.
