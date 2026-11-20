@@ -3,7 +3,7 @@
  * Times are the browser's local time, which is the owner's (KST on his Mac), so Tomorrow is 9:00 AM where he is.
  */
 
-import type { MenuEntry, MenuSubmenu } from "./ui/menu";
+import type { MenuEntry, MenuSubmenu } from "./ui/menu.ts";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
