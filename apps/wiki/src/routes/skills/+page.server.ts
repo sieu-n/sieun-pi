@@ -5,7 +5,7 @@ import { statsFor } from '$lib/server/wiki-store';
 
 const GROUP_ORDER = ['apps', 'stack', 'repo', 'workflows', 'symphony', 'claude-native'] as const;
 const GROUP_LABEL: Record<string, string> = {
-	apps: 'Apps — one per product surface',
+	apps: 'Apps — skills for single apps (not every app has one)',
 	stack: 'Stack — technologies and external APIs',
 	repo: 'Repo — cross-cutting engineering system',
 	workflows: 'Workflows — task loops and gates',
