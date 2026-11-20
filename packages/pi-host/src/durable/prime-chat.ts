@@ -59,7 +59,7 @@ import { SEARCH_HISTORY_TOOL } from "../../../pi-history/src/pi/index.ts";
 import { threadAgent } from "./agent-profile.ts";
 import { ChatApp } from "./chat-app.ts";
 import { CommHandedDoc } from "./comm.ts";
-import { commPostRefusal, turnAsked, turnAskedTable, turnStartedAt } from "./comm-guard.ts";
+import { commPostNote, commPostRefusal, turnAsked, turnAskedTable, turnStartedAt, type CommPostTurn } from "./comm-guard.ts";
 import { unpostedReply, unpostedReplyRequest } from "./comm-reply.ts";
 import { durableTool, loadPiExtension, piContext, type LoadedPiExtension, type PiSession, type PiTool, type PiToolResult } from "./pi-extensions.ts";
 
@@ -254,11 +254,10 @@ async function chatBoard(chat: PrimeChat, thread: ChatThread, params: unknown, s
 }
 
 /**
- * In a comm thread's root, why a speaking call (tell_owner or send_message) must not go out (`comm-guard.ts`): it came after a hand-over in
- * the same turn, or it relays the work. Undefined in any other thread or conversation, and when the role, the turn or the hand-over cannot be
- * read, so a read failure lets the post through as before.
+ * In a comm thread's root, the speaking call's text and its turn (`comm-guard.ts`). Undefined in any other thread or conversation, and when
+ * the role, the turn or the hand-over cannot be read, so a read failure lets the post through as before.
  */
-async function commRefusal(chat: PrimeChat, thread: ChatThread, call: { id: string; arguments?: unknown }, conversation: ConversationId, context: Context): Promise<string | undefined> {
+async function commTurn(chat: PrimeChat, thread: ChatThread, call: { id: string; arguments?: unknown }, conversation: ConversationId, context: Context): Promise<{ text: string; turn: CommPostTurn } | undefined> {
   const text = (call.arguments as { text?: unknown } | undefined)?.text;
   const harness = thread.harness();
   if (typeof text !== "string" || !harness || conversation !== ROOT_CONVERSATION_ID) return undefined;
@@ -270,7 +269,8 @@ async function commRefusal(chat: PrimeChat, thread: ChatThread, call: { id: stri
     const owner = (await liveGuard(chat.agentDir)).tellTurn(messages).owner;
     const handedAt = (await harness.snapshot(CommHandedDoc, ROOT_CONVERSATION_ID, context))?.at ?? 0;
     const startedAt = turnStartedAt(messages as never);
-    return commPostRefusal(text, { owner, asked: turnAsked(messages as never), tableAsked: turnAskedTable(messages as never), handed: handedAt > 0 && startedAt !== undefined && handedAt >= startedAt });
+    const handed = handedAt > 0 && startedAt !== undefined && handedAt >= startedAt;
+    return { text, turn: { owner, asked: turnAsked(messages as never), tableAsked: turnAskedTable(messages as never), handed } };
   } catch {
     return undefined;
   }
@@ -340,8 +340,15 @@ export function primeChat(chat: PrimeChat, thread: ChatThread): Extension {
     hooks: [hook(ToolTask, {
       beforeTool: async (call, api, context) => {
         if (!SPEAKING_TOOLS.has(call.name)) return undefined;
-        const refused = await commRefusal(chat, thread, call, api.conversationId, context);
+        const comm = await commTurn(chat, thread, call, api.conversationId, context);
+        const refused = comm && commPostRefusal(comm.text, comm.turn);
         return refused ? { block: refused } : undefined;
+      },
+      afterTool: async (call, result, api, context) => {
+        if (!SPEAKING_TOOLS.has(call.name) || result.isError) return undefined;
+        const comm = await commTurn(chat, thread, call, api.conversationId, context);
+        const note = comm && commPostNote(comm.text, comm.turn);
+        return note ? { ...result, output: [...result.output, { type: "text", text: note }] } : undefined;
       },
     }), hook(GenerationTask, {
       onYield: async (answer, api, context) => {

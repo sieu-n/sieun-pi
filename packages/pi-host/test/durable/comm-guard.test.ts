@@ -5,7 +5,7 @@
  */
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { asks, asksTable, commPostRefusal, hasTable, turnAsked, turnAskedTable, turnStartedAt } from "../../src/durable/comm-guard.ts";
+import { asks, asksTable, commPostNote, commPostRefusal, hasTable, turnAsked, turnAskedTable, turnStartedAt } from "../../src/durable/comm-guard.ts";
 import { relayWords } from "../../src/durable/relay-line.ts";
 
 /** Agent posts from the room logs that relay the agent's own work, with the kind each one reads as. */
@@ -92,13 +92,15 @@ test("the turn starts at the newest owner or agent message before the call", () 
 const CATALOG = "Sorry, here is the setup now, five pieces over Google's 211 guides.\n\n| Piece | Where it lives | Who reads it | What it says |\n|---|---|---|---|\n" +
   "| Prime skill | sieun-pi `skills/modern-web-guidance` | every agent session lists it | Google's flow |\n| CLI | installed on us-metal02 | both skills | `search`, `retrieve` |";
 
-test("a post with a table is refused unless the post that started the turn asks for one", () => {
+test("a post with a table goes out, with a note to link a wiki page unless the post that started the turn asks for a table", () => {
   const owner = { owner: true, asked: true, handed: false };
   assert.equal(hasTable(CATALOG), true);
   assert.equal(hasTable(":---|---: |\n| a | b |"), false);
   assert.equal(hasTable("5 pieces: google's skill, a repo copy, and the CLI. paths → [skill catalog](wiki:agents/x/catalog.html)"), false);
-  assert.match(commPostRefusal(CATALOG, owner)!, /^Not sent: a room reads like Slack[\s\S]*wiki\.write/);
-  assert.equal(commPostRefusal(CATALOG, { ...owner, tableAsked: true }), undefined);
+  assert.equal(commPostRefusal(CATALOG, owner), undefined);
+  assert.match(commPostNote(CATALOG, owner)!, /^Note: this post holds a table nobody asked for[\s\S]*wiki\.write/);
+  assert.equal(commPostNote(CATALOG, { tableAsked: true }), undefined);
+  assert.equal(commPostNote("nope 😬 the table gets cut off in the thread", {}), undefined);
   for (const text of ["can you put it in a table?", "표로 정리해줘", "show it as a table"]) assert.equal(asksTable(text), true, text);
   for (const text of ["what is our definitive catalog now after this update?", "발표 자료 대표 이미지 표시해줘", "is it stable?"]) assert.equal(asksTable(text), false, text);
   const header = "[#dev-search-general · post 15 from You (owner) · hops 0]\n\n";

@@ -243,6 +243,27 @@ test("in a comm thread, a post after the turn's hand-over and a relay line are r
   assert.doesNotMatch(told[5]!.text, /Not sent/, "the result passes the comm check");
 });
 
+test("in a comm thread, a post with a table nobody asked for goes out and its result says to link a wiki page next time", async () => {
+  const table = "5 pieces.\n\n| Piece | Where |\n|---|---|\n| skill | skills/x |";
+  const steps = [{ text: table }, null, { text: table }, null];
+  let made = 0;
+  const { harness, root } = await open("comm-table", () => {
+    const step = steps[made++];
+    return step ? fauxAssistantMessage([fauxToolCall("tell_owner", step)], { stopReason: "toolUse" }) : fauxAssistantMessage("");
+  });
+  await harness.commit(async tx => {
+    (await tx.doc(ChatDoc, ROOT_CONVERSATION_ID, AGENT_REF_DOC, null)).value = { agent: "ag_vent", dir: agentDir, role: "comm", room: "ch_1a2b3c4d", work: "w-1" };
+  }, context);
+  await (await root.submit({ type: "input", content: "[#dev · post 14 from You (owner) · hops 0]\n\nwhat is the catalog now?" }, context)).wait(context);
+  await (await root.submit({ type: "input", content: "[#dev · post 15 from You (owner) · hops 0]\n\nput it in a table" }, context)).wait(context);
+  const told = results(await entriesOf(root)).filter(result => result.name === "tell_owner");
+  await harness.close(context);
+  assert.equal(told.length, 2);
+  assert.equal(told[0]!.isError, false, "the post goes out");
+  assert.match(told[0]!.text, /^told the owner[\s\S]*Note: this post holds a table nobody asked for[\s\S]*wiki\.write/);
+  assert.doesNotMatch(told[1]!.text, /Note:/, "a table he asked for gets no note");
+});
+
 test("in a DM comm thread, an answer left as text on the owner's turn queues one note and then posts, also past his next post, and a handed, posted, notice or group turn gets none", async () => {
   const markdown = "The dashboards are on [Grafana dashboards](wiki:apps/infra/grafana-boards.html).";
   let steer: Promise<unknown> | undefined;

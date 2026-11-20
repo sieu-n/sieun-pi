@@ -13,10 +13,11 @@
  *    11-03 chrome extension answered the owner's "proxy가 아니라 근데 Client browser에서" with "... A job is testing whether that can be
  *    avoided.", a relay nobody asked for, and agent factory answered his "are you working on Meilisearch then?" with "Yes, the search job
  *    (p56) is timing Meilisearch ...", which answers him.
- * 4. A post with a markdown table is refused unless the post that started the turn asks for a table (`asksTable`). A room reads like Slack,
- *    and a thread pane is about 400 px wide: on 11-20 Search product, misc. answered "what is our definitive catalog now?" in a
- *    #dev-search-general thread with a 4-column table the pane cut off on the right and at the bottom, and the owner asked "does this feel
- *    like slack to you?". The refusal asks for one or two sentences and a linked wiki page, as `agent-profile.ts` `slackPostStep` does.
+ *
+ * A post with a markdown table goes out, and its tool result carries a note (`commPostNote`) unless the post that started the turn asks
+ * for a table (`asksTable`), so the next post links a wiki page instead (soft, c81 and c98). A room reads like Slack, and a thread pane is
+ * about 400 px wide: on 11-20 Search product, misc. answered "what is our definitive catalog now?" in a #dev-search-general thread with a
+ * 4-column table the pane cut off on the right and at the bottom, and the owner asked "does this feel like slack to you?".
  */
 import { relayWords } from "./relay-line.ts";
 
@@ -67,12 +68,15 @@ export function commPostRefusal(text: string, turn: CommPostTurn): string | unde
     return `Not sent: "${relay.words}" is progress on work still going, and nobody asked for it on this turn. End the turn with no ` +
       "message, and post once when the result is in.";
   }
-  if (hasTable(text) && !turn.tableAsked) {
-    return "Not sent: a room reads like Slack, and a table gets cut off in its narrow thread pane. Post the answer in one or two casual " +
-      "sentences instead, and put the detail on a wiki page with `wiki.write` in ipython, linked in the same post as `full list → [name](wiki:<path>)`. " +
-      "Send a table only when the post you answer asks for one.";
-  }
   return undefined;
+}
+
+/** The note a comm thread's sent post gets in its tool result, or undefined when it needs none: a table nobody asked for. */
+export function commPostNote(text: string, turn: Pick<CommPostTurn, "tableAsked">): string | undefined {
+  if (!hasTable(text) || turn.tableAsked) return undefined;
+  return "Note: this post holds a table nobody asked for. A room reads like Slack, and a table gets cut off in its narrow thread pane. " +
+    "From the next post on, answer in one or two casual sentences and put the detail on a wiki page with `wiki.write` in ipython, linked " +
+    "in the same post as `full list → [name](wiki:<path>)`.";
 }
 
 interface TurnMessage { role: string; timestamp?: unknown; content?: unknown }
