@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type AgentHost, type AgentSummary, type ModelCatalog, type ProjectList, type ThinkingLevel } from "$lib/api";
+  import { api, keepOpened, type AgentHost, type AgentSummary, type ModelCatalog, type ProjectList, type ThinkingLevel } from "$lib/api";
   import { Button, Dialog, Field, Input, ModelPicker, Select, mascotSvg } from "$lib/ui";
   import { levelsFor, modelOptions } from "./agents-model";
   import { defaultHost, hostOptions, hostProjects } from "./host-badge";
@@ -91,6 +91,7 @@
     error = "";
     try {
       const agent = await api.createAgent({ name: name.trim(), ...(model ? { model } : {}), ...(level ? { thinkingLevel: level } : {}), ...(cwd.trim() ? { cwd: cwd.trim() } : {}), ...(picked && !picked.self ? { host: picked.box } : {}) });
+      if (agent.room) keepOpened(agent.room, agent.opened);
       open = false;
       reset();
       oncreated(agent);

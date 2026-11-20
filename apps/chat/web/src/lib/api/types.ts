@@ -337,6 +337,13 @@ export interface TimelinePage {
   focus?: string;
 }
 
+/**
+ * A conversation's first page and header, which `POST /api/rooms` and `POST /api/agents` send with the new room, so its first open shows
+ * from the page's cache. On 11-20 the owner's first open of a channel and of an agent's DM he had just made waited 212 and 197 ms for an
+ * empty page (requests/2026-11-20.jsonl).
+ */
+export interface OpenedPage { page: TimelinePage; header: ConversationHeader }
+
 export interface Member { principal: Principal; role: "owner" | "member"; wakeOn: "all" | "none"; status?: RunStatus }
 
 export interface ConversationHeader {

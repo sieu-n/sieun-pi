@@ -208,3 +208,36 @@ test("a room and a thread that got posts while the owner was elsewhere open with
   expect(of(`/api/c/${room.id}/items`).at(-1)).toBe("shown");
   expect(of(`/api/c/${room.id}/replies/${root}`).at(-1)).toBe("shown");
 });
+
+test("a channel he just made opens from the page its create call sent, with no read in front of it", async ({ page }) => {
+  await page.addInitScript(() => {
+    navigator.sendBeacon = () => false;
+  });
+  await open(page, "#/c/new?kind=channel", "main-panel");
+  const name = `fresh ${tag()}`;
+  await page.getByLabel("Name").fill(name);
+  await page.getByLabel(/Purpose/).fill("A fresh room");
+  // Every read of a new channel hangs, so only the create call's own page can fill the screen.
+  let release = (): void => undefined;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  await page.route(/\/api\/c\/ch_[^/]+(\/items)?(\?.*)?$/, async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await gate;
+    await route.fallback();
+  });
+  await page.getByTestId("main-panel").getByRole("button", { name: "Create channel" }).click();
+  await expect(page).toHaveURL(/#\/c\/ch_/);
+  const id = /#\/c\/(ch_[^/?]+)/.exec(page.url())![1]!;
+  const slug = name.replace(" ", "-");
+  await expect(page.getByTestId("conversation-title")).toHaveText(slug);
+  await expect(page.getByTestId("channel-intro")).toContainText("A fresh room");
+
+  const refreshed = page.waitForResponse((r) => r.url().includes(`/api/c/${id}/items`));
+  release();
+  await refreshed;
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
+  const batch = page.waitForRequest((r) => r.url().endsWith("/api/timings"));
+  await page.evaluate(() => dispatchEvent(new Event("pagehide")));
+  const samples = ((await batch).postDataJSON() as { samples: { p: string; bg?: string }[] }).samples;
+  expect(samples.filter((s) => s.p === `/api/c/${id}/items`).map((s) => s.bg ?? "waited")).toEqual(["shown"]);
+});

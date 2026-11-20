@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api } from "$lib/api";
+  import { api, keepOpened } from "$lib/api";
   import { router } from "$lib/router.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import Button from "$lib/ui/Button.svelte";
@@ -59,6 +59,7 @@
     error = "";
     try {
       const room = await api.createRoom({ kind: "solo", agenda: agenda.trim(), members, ...(name.trim() ? { name: name.trim() } : {}) });
+      keepOpened(room.id, room.opened);
       open = false;
       reset();
       onclose();

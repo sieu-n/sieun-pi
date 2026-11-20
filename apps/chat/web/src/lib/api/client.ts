@@ -4,7 +4,7 @@
  */
 import type {
   AgentConfig, AgentFolder, AgentHostList, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
-  ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, ImageRef, Item, JobNode, Me, MemoryInput, ModelCatalog, ProjectList, SearchQuery, SearchResult, SendRequest,
+  ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, ImageRef, Item, JobNode, Me, MemoryInput, ModelCatalog, OpenedPage, ProjectList, SearchQuery, SearchResult, SendRequest,
   LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageReport, AccountsView,
 } from "./types.ts";
 import type { SkillDoc, SkillScan, SkillsReport } from "./shared/skills.ts";
@@ -225,7 +225,7 @@ export const api = {
   jobs: (opts: { archived?: boolean } = {}) => call<AgentSummary[]>("GET", `/api/jobs${query({ archived: opts.archived ? 1 : undefined })}`),
   /** A new agent with its work thread and DM room (`room`); `kind` "job" with a `parent` files a root thread under that agent as a job instead. */
   createAgent: (input: { name?: string; model?: string; thinkingLevel?: ThinkingLevel; cwd?: string; kind?: "chat" | "job"; parent?: AgentId; host?: string }) =>
-    call<AgentSummary>("POST", "/api/agents", input),
+    call<AgentSummary & { opened?: OpenedPage }>("POST", "/api/agents", input),
   /** The boxes that run pi-host and can hold an agent, the chat's own box marked `self`, each up or away (agent-model.md phase 6). */
   agentHosts: () => call<AgentHostList>("GET", "/api/agent-hosts"),
   /** The agent folder: its brief and its memory, which every thread of the agent loads (API.md, Agent folder). */
@@ -286,7 +286,7 @@ export const api = {
   threadJobs: (thread: string) => call<JobNode[]>("GET", `/api/threads/${enc(thread)}/jobs`),
   openDm: (agent: AgentId) => call<ConversationSummary>("POST", "/api/dms", { agent }),
 
-  createRoom: (input: RoomInput) => call<Room>("POST", "/api/rooms", input),
+  createRoom: (input: RoomInput) => call<Room & { opened: OpenedPage }>("POST", "/api/rooms", input),
   /** `closed` closes or reopens a Solo room. */
   updateRoom: (id: string, patch: RoomPatch) => call<Room>("PATCH", `/api/rooms/${enc(id)}`, patch),
   /** Only registered agents join; the server refuses a job, a work thread or a comm thread. */

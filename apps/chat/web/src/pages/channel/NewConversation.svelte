@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type AgentSummary } from "$lib/api";
+  import { api, keepOpened, type AgentSummary } from "$lib/api";
   import { router } from "$lib/router.svelte";
   import Avatar from "$lib/ui/Avatar.svelte";
   import Button from "$lib/ui/Button.svelte";
@@ -36,6 +36,7 @@
     busy = true;
     try {
       const channel = await api.createRoom({ kind: "channel", name: slug, agenda: purpose.trim(), members });
+      keepOpened(channel.id, channel.opened);
       router.openConversation(channel.id);
     } catch (error) {
       fail(error);

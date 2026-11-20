@@ -16,7 +16,7 @@ import { live } from "./live.svelte.ts";
 import { SvelteMap } from "svelte/reactivity";
 import type {
   AgentId, AgentSummary, BoardOp, BoardView, ConversationHeader, ConversationId, ConversationSummary, ForYouItem, ImageRef, Item, Me,
-  RunStatus, SendRequest, SendResult, Sidebar, TurnPlace,
+  OpenedPage, RunStatus, SendRequest, SendResult, Sidebar, TurnPlace,
 } from "./types.ts";
 
 const byTime = (a: Item, b: Item) => a.at - b.at || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -833,6 +833,11 @@ function keepArrived(id: ConversationId, items: readonly Item[], removed: readon
     if (!thread) continue;
     repliesPages.remember(key, item.threadRoot ? { ...thread, items: merge(thread.items, [item], new Set()) } : { ...thread, root: item });
   }
+}
+
+/** Keeps the first page a create call sent with a new room or agent DM (`OpenedPage`), so its first open shows it with no read in front. */
+export function keepOpened(id: ConversationId, opened: OpenedPage | undefined): void {
+  if (opened) timelinePages.remember(id, { items: shownItems(id, opened.page.items), older: opened.page.older, header: opened.header });
 }
 
 /**

@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import type {
-  AgentHostList, AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, Item, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, ProjectList, Reaction, SendRequest, SendResult, Sidebar, ThinkingLevel,
+  AgentHostList, AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, Item, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, OpenedPage, ProjectList, Reaction, SendRequest, SendResult, Sidebar, ThinkingLevel,
   TimelinePage,
 } from "../web/src/lib/api/types.ts";
 import type { AllowedModel } from "../../../config/allowed-models.ts";
@@ -489,6 +489,12 @@ export class App {
   /** Whether the id names a channel or Solo room. */
   isGroup(id: ConversationId): boolean {
     return this.groups.row(id) !== undefined;
+  }
+
+  /** A new conversation's first page and header, as its first open reads them (`OpenedPage`). */
+  async opened(id: ConversationId): Promise<OpenedPage> {
+    const [page, header] = await Promise.all([this.items(id, {}), this.header(id)]);
+    return { page, header };
   }
 
   async header(id: ConversationId): Promise<ConversationHeader> {

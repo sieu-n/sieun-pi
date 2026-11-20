@@ -173,7 +173,12 @@ export function routes(app: App): Route[] {
       return app.folders.read(agent);
     }),
     route("GET", "/api/agent-hosts", async () => app.agentHosts()),
-    route("POST", "/api/agents", async (_r, _p, _q, body) => app.createAgent((await body()) as Parameters<App["createAgent"]>[0])),
+    route("POST", "/api/agents", async (_r, _p, _q, body) => {
+      const input = (await body()) as Parameters<App["createAgent"]>[0];
+      const agent = await app.createAgent(input);
+      // A job thread opens by link later, so only a new agent's DM comes with its first page.
+      return input.kind === "job" || input.parent || !agent.room ? agent : { ...agent, opened: await app.opened(agent.room) };
+    }),
     route("POST", "/api/agents/:id/split", async (_r, p, _q, body) => {
       const { apply } = ((await body()) ?? {}) as { apply?: unknown };
       if (apply !== undefined && typeof apply !== "boolean") throw new BadRequest("A split's apply is true or false when given.");
@@ -257,7 +262,10 @@ export function routes(app: App): Route[] {
     }),
     route("GET", "/api/threads/:id/jobs", async (_r, p) => app.threads.jobs(p.id!)),
     route("GET", "/api/rooms", async (_r, _p, q) => app.groups.list({ test: q.get("test") === "1" })),
-    route("POST", "/api/rooms", async (_r, _p, _q, body) => app.groups.create((await body()) as RoomInput)),
+    route("POST", "/api/rooms", async (_r, _p, _q, body) => {
+      const room = await app.groups.create((await body()) as RoomInput);
+      return { ...room, opened: await app.opened(room.id) };
+    }),
     route("PATCH", "/api/rooms/:id", async (_r, p, _q, body) => app.groups.update(p.id!, ((await body()) ?? {}) as RoomPatch)),
     route("POST", "/api/rooms/:id/members", async (_r, p, _q, body) => {
       const input = ((await body()) ?? {}) as { agents?: string[]; wakeOn?: WakeOn };
