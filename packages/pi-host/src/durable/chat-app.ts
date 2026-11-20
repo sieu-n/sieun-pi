@@ -76,6 +76,12 @@ export class ChatApp {
     return { text: typeof body?.text === "string" ? body.text : `${change.emoji} is ${change.on ? "on" : "off"} ${change.message}.` };
   }
 
+  /** Replaces the text of one of this thread's agent's own room posts (`POST /api/threads/:id/edits`); the answer's `text` names the post. */
+  async editPost(thread: string, change: { message: string; text: string }, signal?: AbortSignal): Promise<{ text: string }> {
+    const body = await this.call<{ text?: unknown }>("POST", this.thread(thread, "edits"), change, signal);
+    return { text: typeof body?.text === "string" ? body.text : `Edited ${change.message}.` };
+  }
+
   /** Sets this thread's agent's Later item for a post (`POST /api/threads/:id/later`); the answer's `text` is the tool's result line. */
   async later(thread: string, change: LaterChange, signal?: AbortSignal): Promise<{ text: string }> {
     const body = await this.call<{ text?: unknown }>("POST", this.thread(thread, "later"), change, signal);

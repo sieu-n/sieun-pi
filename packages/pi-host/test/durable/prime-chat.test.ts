@@ -6,7 +6,8 @@
  * new chat's board through its HTTP API, correction_add writes the shared ledger, and a subagent's child conversation gets none of them. In a
  * comm thread, tell_owner refuses a post after the turn's hand-over and a relay line (`comm-guard.ts`) before Prime's guard reads it.
  * A DM comm thread's answer left as text on the owner's turn queues one note that asks it to post (`comm-reply.ts`), also when his next post waits.
- * `set_emoji` (`room-tools.ts`) posts the thread's reaction to the chat server and passes its answer or its error through.
+ * `set_emoji` (`room-tools.ts`) posts the thread's reaction to the chat server and passes its answer or its error through, and `edit_message`
+ * posts the agent's edit of its own post the same way.
  */
 import { strict as assert } from "node:assert";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -28,10 +29,11 @@ import { ChatApp } from "../../src/durable/chat-app.ts";
 import { CommHandedDoc } from "../../src/durable/comm.ts";
 import { UNPOSTED_REPLY, unpostedReply, unpostedReplyNote, unpostedReplyRequest } from "../../src/durable/comm-reply.ts";
 import { LIST_FOR_ME_TOOL, MARK_MESSAGE_TOOL } from "../../src/durable/for-me.ts";
+import { LIST_SAVED_TOOL, REMIND_ME_TOOL, SAVE_MESSAGE_TOOL } from "../../src/durable/later.ts";
 import { loadPrimeChat, PRIME_CHAT_TOOLS, withTurnWrappers, type ChatThread, type PrimeChat } from "../../src/durable/prime-chat.ts";
 import { guidelines } from "../../src/durable/prime-prompt.ts";
 import { ChatDoc, threadRegistry } from "../../src/durable/registry.ts";
-import { SET_EMOJI_TOOL } from "../../src/durable/room-tools.ts";
+import { EDIT_MESSAGE_DESCRIPTION, EDIT_MESSAGE_TOOL, SET_EMOJI_TOOL } from "../../src/durable/room-tools.ts";
 import { SEND_MESSAGE_TOOL } from "../../src/durable/send-message.ts";
 import { MODEL, textOf } from "./crash-scenario.ts";
 
@@ -80,6 +82,11 @@ before(async () => {
       const { message, emoji, on } = body as { message: string; emoji: string; on: boolean };
       if (message === "p404") { res.writeHead(404, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: "No post p404 in dm_vent. Pass a post id such as p12." })); }
       return send({ room: "dm_vent", post: message, reactions: on ? [{ emoji: "👀", by: ["vent"] }] : [], text: `${emoji === "eyes" ? "👀" : emoji} is ${on ? "on" : "off"} ${message} in dm_vent.` });
+    }
+    if (req.url!.endsWith("/edits")) {
+      const { message } = body as { message: string; text: string };
+      if (message === "p3") { res.writeHead(400, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: "You edit only your own posts; p3 in dm_vent is the owner's post." })); }
+      return send({ room: "dm_vent", post: "p14", text: "Edited p14 in dm_vent; the room shows the new text with (edited)." });
     }
     res.writeHead(404).end("{}");
   });
@@ -137,7 +144,7 @@ test("a durable chat thread offers the extension's tools with its exact definiti
   });
   await (await root.submit({ type: "input", content: "hi" }, context)).wait(context);
   await harness.close(context);
-  assert.deepEqual(tools.map(tool => tool.name), ["read", "write", "edit", "bash", "subagent", SEND_MESSAGE_TOOL, ...PRIME_CHAT_TOOLS, SET_EMOJI_TOOL, LIST_FOR_ME_TOOL, MARK_MESSAGE_TOOL]);
+  assert.deepEqual(tools.map(tool => tool.name), ["read", "write", "edit", "bash", "subagent", SEND_MESSAGE_TOOL, ...PRIME_CHAT_TOOLS, SET_EMOJI_TOOL, EDIT_MESSAGE_TOOL, LIST_FOR_ME_TOOL, MARK_MESSAGE_TOOL, SAVE_MESSAGE_TOOL, REMIND_ME_TOOL, LIST_SAVED_TOOL]);
   for (const name of PRIME_CHAT_TOOLS) {
     const registered = chat.loaded.tools.get(name)!;
     assert.deepEqual(tools.find(tool => tool.name === name), toToolDeclaration({ name, description: registered.description, parameters: registered.parameters as never }), name);
@@ -385,6 +392,29 @@ test("set_emoji posts the reaction to the chat server as the thread, returns its
   assert.deepEqual(out.map(result => [result.text, result.isError]), [
     ["👀 is on dm_vent/p7 in dm_vent.", false], ["👀 is off dm_vent/p7 in dm_vent.", false], ["No post p404 in dm_vent. Pass a post id such as p12.", true],
   ]);
+});
+
+test("edit_message posts the agent's edit of its own post as the thread, returns the server's line, and a refusal becomes the call's error", async () => {
+  const plan = [{ message_id: "reply:dm_vent/p12", text: "checking\n- [x] relay up\n- [ ] Mac" }, { message_id: "p3", text: "not mine" }];
+  let made = 0;
+  const { harness, root } = await open("edits", () => {
+    const args = plan[made++];
+    return args ? fauxAssistantMessage([fauxToolCall(EDIT_MESSAGE_TOOL, args)], { stopReason: "toolUse" }) : fauxAssistantMessage("done");
+  });
+  await (await root.submit({ type: "input", content: "Tick the relay item." }, context)).wait(context);
+  const out = results(await entriesOf(root)).filter(result => result.name === EDIT_MESSAGE_TOOL);
+  await harness.close(context);
+  const posts = calls.filter(call => call.method === "POST" && call.path === "/api/threads/edits/edits").map(call => call.body);
+  assert.deepEqual(posts, [{ message: "reply:dm_vent/p12", text: "checking\n- [x] relay up\n- [ ] Mac" }, { message: "p3", text: "not mine" }]);
+  assert.deepEqual(out.map(result => [result.text, result.isError]), [
+    ["Edited p14 in dm_vent; the room shows the new text with (edited).", false], ["You edit only your own posts; p3 in dm_vent is the owner's post.", true],
+  ]);
+});
+
+test("edit_message's own text tells the agent to keep a checklist in one post and edit it as items finish", () => {
+  assert.match(EDIT_MESSAGE_DESCRIPTION, /edit that same post as each item finishes, change `- \[ \]` to `- \[x\]` with a short result/);
+  assert.match(EDIT_MESSAGE_DESCRIPTION, /put the answer in the last edit/);
+  assert.match(EDIT_MESSAGE_DESCRIPTION, /You can edit only your own posts/);
 });
 
 test("correction_add runs the extension's own execute and writes the shared ledger with the thread as the chat", async () => {

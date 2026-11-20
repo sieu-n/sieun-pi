@@ -18,7 +18,7 @@ import { Agents, isGroupRoomId, isRoomId, type SplitPlan } from "./agents.ts";
 import { Boards } from "./boards.ts";
 import { MIN_BYTES } from "./compress.ts";
 import { CHANNEL_COPY_LIKE, GroupRooms, roomLabel } from "./group-rooms.ts";
-import { assertOwnPost, deleteNotice, deliveriesOf, editNotice } from "./post-edits.ts";
+import { assertEditable, deleteNotice, deliveriesOf, editNotice } from "./post-edits.ts";
 import { ForMe } from "./for-me.ts";
 import { Later } from "./later.ts";
 import { LaterDue } from "./later-due.ts";
@@ -588,6 +588,12 @@ export class App {
    * DM), and `message` names a post there, or `<room>/<post>` in another room the agent is in (reactions.ts `agentPost`).
    */
   private agentMessage(thread: string, message: unknown, tool: string): { record: AgentRecord; room: RoomId; post: RoomPost } {
+    const { record, room, via, id } = this.agentTarget(thread, message, tool);
+    return { record, room, post: agentPost(this.agentStore.postsOf(room), record, via, room, id) };
+  }
+
+  /** The agent, room and post id `message` names, with the thread the agent reads that room's posts through. */
+  private agentTarget(thread: string, message: unknown, tool: string): { record: AgentRecord; room: RoomId; via: string; id: string } {
     const comm = this.agents.ofComm(thread);
     const record = comm?.record ?? this.agents.ofWorkThread(thread);
     if (!record) throw new ReactionError(404, `Thread ${thread} is no agent's comm thread or work thread; call ${tool} from the agent's own thread.`);
@@ -598,7 +604,33 @@ export class App {
     const room = (slash < 0 ? comm?.room ?? record.room : message.slice(0, slash).trim()) as RoomId;
     const roomThread = room === record.room ? this.agents.roomThread(record) : this.groups.row(room) ? record.comm?.[room] : undefined;
     if (!roomThread) throw new ReactionError(404, `${record.name} is not in room ${room}; name a post in its DM ${record.room} or in a channel it is in, such as ${record.room}/p12.`);
-    return { record, room, post: agentPost(this.agentStore.postsOf(room), record, slash < 0 ? thread : roomThread, room, message.slice(slash + 1)) };
+    return { record, room, via: slash < 0 ? thread : roomThread, id: message.slice(slash + 1) };
+  }
+
+  /**
+   * An agent's edit_message on its own post, through the owner's edit (`rewrite`). `message` names the post as set_emoji does, or as
+   * `reply:<id>`, the agent's first post that answers that owner post (`RoomPost.answers`), or `last`, its newest post in the room. The room's
+   * feed is read first, so a post the agent's turn made a moment ago is there.
+   */
+  async editAsAgent(thread: string, input: { message?: unknown; text?: unknown }): Promise<{ room: string; post: string; text: string }> {
+    const named = typeof input.message === "string" ? input.message.trim() : input.message;
+    const reply = typeof named === "string" && /^reply:/i.test(named);
+    const { record, room, via, id } = this.agentTarget(thread, reply ? (named as string).slice("reply:".length) : named, "edit_message");
+    const group = this.groups.row(room);
+    await (group ? this.groups.feed(record.comm?.[room] ?? "") : this.rooms.feed(record));
+    const posts = this.agentStore.postsOf(room);
+    const mine = (p: RoomPost) => p.author === record.id && p.deletedAt === undefined;
+    let post: RoomPost | undefined;
+    if (reply) {
+      const asked = agentPost(posts, record, via, room, id);
+      post = posts.find(p => mine(p) && p.answers === asked.id);
+      if (!post) throw new ReactionError(404, `${record.name} has no post in ${room} that answers ${asked.id}; name your post by its id, such as ${room}/p12, or as last.`);
+    } else if (/^last$/i.test(id.trim())) {
+      post = posts.findLast(mine);
+      if (!post) throw new ReactionError(404, `${record.name} has no post in ${room} yet; post with tell_owner first.`);
+    } else post = agentPost(posts, record, via, room, id);
+    const changed = this.rewrite(room, post, record.id, input.text) !== undefined;
+    return { room, post: post.id, text: changed ? `Edited ${post.id} in ${room}; the room shows the new text with (edited).` : `${post.id} in ${room} already reads that way; nothing changed.` };
   }
 
   /** An agent's save_message or remind_me (later-agents.ts `set`); the answer's `text` is the tool's result. */
@@ -621,23 +653,32 @@ export class App {
     if (!room) throw new NotFound(`No room ${id}; you edit and delete posts in a DM, a channel or a Solo room.`);
     const post = this.agentStore.postsOf(room).find(p => p.id === postId);
     if (!post) throw new NotFound(`No post ${postId} in ${id}.`);
-    assertOwnPost(post);
+    assertEditable(post, "owner");
     return { room, post };
   }
 
   /** Slack's Edit message on the owner's own post (post-edits.ts): a delivery on its way carries the new text, and an agent that read it gets the edit. */
   editPost(id: ConversationId, postId: string, input: { text?: unknown }): { item: Item } {
     const { room, post } = this.ownPost(id, postId);
-    if (typeof input.text !== "string") throw new Error("A post edit carries text, a string.");
-    const text = input.text.trim();
-    if (!text && !post.images.length) throw new Error("A post needs text or an image; delete it instead of clearing it.");
-    if (text !== post.text) {
-      const before = post.text;
-      this.agentStore.set(post, { text, editedAt: Date.now() });
-      this.emitPosts(room, [post]);
-      void this.tellReaders(room, post, `e${post.editedAt}`, place => editNotice(post, place, before));
-    }
+    const before = this.rewrite(room, post, "owner", input.text);
+    if (before !== undefined) void this.tellReaders(room, post, `e${post.editedAt}`, place => editNotice(post, place, before));
     return { item: this.postItem(room, post) };
+  }
+
+  /**
+   * The one edit of a room post, the owner's and an agent's alike (post-edits.ts): `by`'s own post gets the new text and `editedAt`, keeps its
+   * place, thread, `answers` and reactions, and the room's watchers get it. Returns the text before, or undefined when the text is the same.
+   */
+  private rewrite(room: string, post: RoomPost, by: RoomPost["author"], input: unknown): string | undefined {
+    assertEditable(post, by);
+    if (typeof input !== "string") throw new ReactionError(400, "A post edit carries text, a string.");
+    const text = input.trim();
+    if (!text && !post.images.length) throw new ReactionError(400, "A post needs text or an image; delete it instead of clearing it.");
+    if (text === post.text) return undefined;
+    const before = post.text;
+    this.agentStore.set(post, { text, editedAt: Date.now() });
+    this.emitPosts(room, [post]);
+    return before;
   }
 
   /** Slack's Delete message on the owner's own post (post-edits.ts): its words go, a delivery on its way stops, and an agent that read it is told. */

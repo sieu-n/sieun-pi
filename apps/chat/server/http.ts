@@ -218,6 +218,9 @@ export function routes(app: App): Route[] {
     route("POST", "/api/threads/:id/reactions", async (_r, p, _q, body) => {
       return app.reactAsAgent(p.id!, ((await body()) ?? {}) as { message?: unknown; emoji?: unknown; on?: unknown });
     }),
+    route("POST", "/api/threads/:id/edits", async (_r, p, _q, body) => {
+      return app.editAsAgent(p.id!, ((await body()) ?? {}) as { message?: unknown; text?: unknown });
+    }),
     // An agent's save_message, remind_me and list_saved_messages (later-agents.ts), as its thread.
     route("GET", "/api/threads/:id/later", async (_r, p, q) => app.laterListAsAgent(p.id!, q.get("state"))),
     route("POST", "/api/threads/:id/later", async (_r, p, _q, body) => {

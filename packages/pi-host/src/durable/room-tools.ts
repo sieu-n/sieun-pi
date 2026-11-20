@@ -7,6 +7,10 @@
  * asks the agent to mark the post it works on with 👀, take it off once its reply goes out, keep ✅ for a quick ask a reply would add nothing
  * to, and react the way people do in Slack (`agent-profile.ts`); no code here treats an emoji specially (contract: /home/sieun/work/slack-reactions/contract.md).
  *
+ * `edit_message` replaces the text of one of the agent's own posts, as Slack's `chat.update` does, through apps/chat's edit of the owner's
+ * posts (app.ts `rewrite`): the room shows it with (edited) at once and no new post. An agent posts a checklist of what it will check and
+ * edits that same post as items finish, instead of a new post per step (owner p106, c207).
+ *
  * `list_for_me_messages` and `mark_message` (`for-me.ts`) read the agent's For list and mark its items, and `save_message`, `remind_me` and
  * `list_saved_messages` (`later.ts`) keep its Later list.
  */
@@ -18,6 +22,7 @@ import { laterTools } from "./later.ts";
 
 export const ROOM_TOOLS_EXTENSION = "room-tools";
 export const SET_EMOJI_TOOL = "set_emoji";
+export const EDIT_MESSAGE_TOOL = "edit_message";
 
 /** Only the name, so a child conversation drops the extension without the thread it was made for. */
 export const RoomToolsName: Extension = defineExtension({ name: ROOM_TOOLS_EXTENSION });
@@ -25,6 +30,15 @@ export const RoomToolsName: Extension = defineExtension({ name: ROOM_TOOLS_EXTEN
 export const SET_EMOJI_DESCRIPTION =
   "Add your emoji reaction to a message, or remove it. Adding a reaction that is already there, or removing one that is not, changes nothing. " +
   "The result names the post and lists its reactions now.";
+
+export const EDIT_MESSAGE_DESCRIPTION =
+  "Replace the text of one of your own posts, as Slack's edit does. The post keeps its place, its thread and its reactions, and the room shows " +
+  "it with (edited) at once, with no new post and no notification. Use it to keep one post current instead of posting again: when your reply " +
+  "is a checklist of what you will check or do, edit that same post as each item finishes, change `- [ ]` to `- [x]` with a short result " +
+  "after the item, add or reword items when the plan changes, and put the answer in the last edit. You can edit only your own posts. " +
+  "The result names the post, such as p14, so a later edit can use that id.";
+
+export interface EditMessageArgs { message_id: string; text: string }
 
 export interface SetEmojiArgs { message_id: string; emoji: string; on: boolean }
 
@@ -53,6 +67,30 @@ export function roomTools(app: ChatApp, thread: string): Extension {
           if (api.conversationId !== ROOT_CONVERSATION_ID) return { output: text("set_emoji works only in your agent's own thread, not in a job."), isError: true };
           try {
             const answer = await app.react(thread, { message: args.message_id, emoji: args.emoji, on: args.on }, context.abortSignal);
+            return { output: text(answer.text) };
+          } catch (error) {
+            if (context.abortSignal?.aborted) throw error;
+            return { output: text(error instanceof Error ? error.message : String(error)), isError: true };
+          }
+        },
+      }),
+      defineTool({
+        name: EDIT_MESSAGE_TOOL,
+        description: EDIT_MESSAGE_DESCRIPTION,
+        parameters: Type.Object({
+          message_id: Type.String({
+            description: "Your post: its id such as p14 or a room-qualified id such as dm_vent/p14 or ch_1a2b3c4d/p14; reply:<id> for your first " +
+              "post that answers that owner post, such as reply:p12, reply:dm_vent/p12 or reply: with the [message id: ...] after his message; " +
+              "or last for your newest post in the room.",
+          }),
+          text: Type.String({ description: "The whole new text of the post, which replaces the old text." }),
+        }),
+        // The same text again changes nothing on the server, so a rerun after a crash leaves the same post.
+        replay: "safe",
+        execute: async (args, api, context) => {
+          if (api.conversationId !== ROOT_CONVERSATION_ID) return { output: text("edit_message works only in your agent's own thread, not in a job."), isError: true };
+          try {
+            const answer = await app.editPost(thread, { message: args.message_id, text: args.text }, context.abortSignal);
             return { output: text(answer.text) };
           } catch (error) {
             if (context.abortSignal?.aborted) throw error;
