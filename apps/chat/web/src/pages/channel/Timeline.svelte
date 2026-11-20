@@ -249,7 +249,7 @@
                   {/if}
                   <MessageRow
                     item={row.item}
-                    first={row.first}
+                    first={row.first || row.item.id === newLine}
                     last={row.last}
                     replyTo={row.replyTo ?? null}
                     {layout}
