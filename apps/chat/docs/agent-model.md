@@ -265,7 +265,7 @@ The chat server writes a `chat.doc` named `agent.ref`, `{agent, dir, role: "work
 | Prime's preamble and the rest of Prime's prompt | unchanged, preamble first | `prime-prompt.ts` |
 | `brief.md` | one more context file after the AGENTS.md files Prime's loader found, so Prime's own `buildSystemPrompt` renders it under its path in "# Project Context" | `agent-profile.ts` `briefFile` |
 | agent memory | the local store of Prime's harness digest: the root's digest message, a child's `harness` section, and the kernels' `RLM_HARNESS_STATE_DIR` | `agent-profile.ts` `conversationHarnessDir` |
-| AGENTS.md and CLAUDE.md | as before, through Prime's resource loader | `prime-prompt.ts` |
+| AGENTS.md and CLAUDE.md | Prime's resource loader, plus the CLAUDE.md beside each AGENTS.md, which Prime's loader leaves out | `prime-prompt.ts`, `context-files.ts` |
 
 The context section is not pinned, so a brief edit reaches the next request of every thread as a new `pi.system` entry that holds the `context` section alone, and an unchanged brief sends nothing new. A new memory reaches the next turn as a `[harness-digest update]`, as in Prime.
 

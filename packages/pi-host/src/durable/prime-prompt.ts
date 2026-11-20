@@ -22,7 +22,8 @@ import { defineExtension, GenerationTask, hook, LiveDoc, ROOT_CONVERSATION_ID, s
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, jobReplyGuideline, personaGuideline } from "../../../../legacy/prime/user-history/src/chat-brief.ts";
 import { jobLedgerPrompt, ledgerPrompt, parseLedger, type Ledger } from "../../../../legacy/prime/user-history/src/chat-corrections.ts";
 import { SessionRules } from "../../../pi-claude-rules/src/core/rules.ts";
-import { agentHarnessDir, agentName, briefFile, conversationHarnessDir, threadAgent, type ContextFile } from "./agent-profile.ts";
+import { agentHarnessDir, agentName, briefFile, conversationHarnessDir, threadAgent } from "./agent-profile.ts";
+import { withFolderFiles, type ContextFile } from "./context-files.ts";
 import { goalObjective } from "./goal.ts";
 import { contextTail, contextTexts, digestFlags, digestQueryTerms, formatDigest, HarnessDigestDoc, mergedHarnessState, nextDelivery, placeDeliveries, queryText, withDigests } from "./prime-harness.ts";
 import { HARNESS_DIGEST_PREFIX, HARNESS_DIGEST_SUFFIX } from "./vendor/prime-harness.ts";
@@ -202,7 +203,10 @@ const stampOf = (paths: readonly string[]): string => paths.map(path => {
 
 const loaded = new Map<string, { paths: string[]; stamp: string; resources: Resources }>();
 
-/** Prime's skills, context files and MCP servers for one cwd, read again only when a file it read changed. */
+/**
+ * Prime's skills, context files and MCP servers for one cwd, read again only when a file it read changed. The context files are Prime's
+ * loader's plus the CLAUDE.md beside each AGENTS.md it took, which Prime's loader leaves out (`context-files.ts`).
+ */
 export async function primeResources(agentDir: string, cwd: string, bundled: string): Promise<Resources> {
   const key = `${agentDir}\0${cwd}\0${bundled}`;
   const kept = loaded.get(key);
@@ -211,7 +215,7 @@ export async function primeResources(agentDir: string, cwd: string, bundled: str
   const loader = new prime.DefaultResourceLoader({ cwd, agentDir, bundledSkillsDir: bundled, noExtensions: true, noPromptTemplates: true, noThemes: true });
   await loader.reload();
   const skills = inDirectoryOrder(loader.getSkills().skills, [join(agentDir, "skills"), bundled, join(homedir(), ".agents", "skills"), join(cwd, ".agents", "skills"), join(cwd, ".prime", "skills")]);
-  const resources: Resources = { skills, contextFiles: loader.getAgentsFiles().agentsFiles, mcpServers: mcpServers(agentDir) };
+  const resources: Resources = { skills, contextFiles: withFolderFiles(loader.getAgentsFiles().agentsFiles), mcpServers: mcpServers(agentDir) };
   const paths = watchedPaths(agentDir, cwd, bundled, skills);
   loaded.set(key, { paths, stamp: stampOf(paths), resources });
   return resources;
@@ -283,7 +287,7 @@ function splitParts(prime: PrimeModules, options: Record<string, unknown> & { sk
     ["delegation", delegationAt >= 0 ? head.slice(delegationAt, mcpAt >= 0 ? mcpAt : head.length) : "", "prime-agent buildSubagentGuidance"],
     ["mcp", mcpAt >= 0 ? head.slice(mcpAt) : "", "prime-agent formatGenericMcpGuidance, settings.json mcpServers"],
     ["guidance", guidance, "Additional Guidance: chat-brief.ts CHAT_BRIEF or jobReplyGuideline, and personaGuideline"],
-    ["context", context, "Project Context: Prime's loadProjectContextFiles"],
+    ["context", context, "Project Context: Prime's loadProjectContextFiles, plus each CLAUDE.md beside an AGENTS.md (context-files.ts)"],
     ["skills", skills, "prime-agent formatSkillsForPrompt over Prime's loaded skills"],
   ];
   const whole: PromptPart[] = [{ key: "preamble", text: full, source: SPLIT_ERROR }];

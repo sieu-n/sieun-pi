@@ -11,7 +11,7 @@
  * | duties, check-in | `<data dir>/agents/<agent>/duties.json`, and each duty's precheck state in `<data dir>/agents/<agent>/duties/` |
  * | folder | its agent's folder, `<agents dir>/<slug>/` with `brief.md` and the harness store (`agent-folder.ts`) |
  * | memory | Prime's harness digest in pi-host: Prime's global store merged with the agent's store, or with the thread's own store when no agent holds it |
- * | instructions | AGENTS.md or CLAUDE.md in its cwd and each folder above it, and `<agent dir>/AGENTS.md`, which pi-host loads through Prime's resource loader, read on the box that runs the thread |
+ * | instructions | AGENTS.md and CLAUDE.md in its cwd and each folder above it, and `<agent dir>/AGENTS.md`, which pi-host loads through Prime's resource loader plus the CLAUDE.md beside each AGENTS.md (`context-files.ts`), read on the box that runs the thread |
  * | usage | pi-host's `durable_usage` sums for the thread over the last 7 days |
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -281,8 +281,9 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
     },
     instructions: {
       files: instructions.files,
-      note: "pi-host builds its system prompt with Prime's own builder, which puts these files in the Project Context part as Prime's resource loader finds "
-        + "them, global first, then each folder down to its cwd, and its agent's brief.md after them. An edit shows in its next request."
+      note: "pi-host builds its system prompt with Prime's own builder, which puts these files in the Project Context part, global first, then each "
+        + "folder down to its cwd, and its agent's brief.md after them. Each folder gives its AGENTS.md and then its CLAUDE.md, which Prime's own "
+        + "loader leaves out, unless one already holds the other's text. An edit shows in its next request."
         + (instructions.away ? ` ${instructions.away}` : ""),
     },
     swarm: {

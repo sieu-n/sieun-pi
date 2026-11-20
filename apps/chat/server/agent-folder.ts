@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import type { AgentFolder, AgentId, ConfigFile, HarnessEntryView, MemoryInput } from "../web/src/lib/api/types.ts";
+import { folderContextFiles } from "../../../packages/pi-host/src/durable/context-files.ts";
 import type { AgentRecord, RoomId } from "./agent-store.ts";
 
 const PREVIEW_CAP = 400;
@@ -72,28 +73,31 @@ export function fileInfo(label: string, path: string, opts: { preview?: boolean;
 }
 
 /**
- * The context files Prime's resource loader finds for `cwd` on this box, nearest first, then the agent dir's global AGENTS.md. The loader
- * takes one file per folder, AGENTS.md before CLAUDE.md, so a CLAUDE.md beside an AGENTS.md is listed as not loaded. For an agent on
- * another box, that box's agent relay runs this function (its `instructions` op).
+ * The context files a pi thread loads for `cwd` on this box, nearest folder first, then the agent dir's global ones. Each folder gives
+ * its AGENTS.md and then its CLAUDE.md, less one whose text the other holds (`folderContextFiles`, which pi-host's prompt uses too), so
+ * a file is listed as not loaded only when the file beside it already says everything in it. For an agent on another box, that box's
+ * agent relay runs this function (its `instructions` op).
  */
 export function instructionFiles(cwd: string, agentDir: string): ConfigFile[] {
   const out: ConfigFile[] = [];
+  const listFolder = (dir: string, label: (name: string) => string): void => {
+    const loaded = new Set(folderContextFiles(dir).map(file => basename(file.path)));
+    const names = ["AGENTS.md", "CLAUDE.md"].filter(name => existsSync(join(dir, name)));
+    for (const name of names) {
+      const other = names.find(n => n !== name);
+      const note = !loaded.has(name) && other ? { note: `pi-host leaves it out, because the ${other} beside it already holds its text.` } : {};
+      out.push(fileInfo(label(name), join(dir, name), { preview: true, loaded: loaded.has(name), ...note }));
+    }
+  };
   let dir = resolve(cwd || "/");
   for (;;) {
-    let taken = false;
-    for (const name of ["AGENTS.md", "CLAUDE.md"]) {
-      const path = join(dir, name);
-      if (!existsSync(path)) continue;
-      const label = dir === resolve(cwd) ? `${name} in its cwd` : `${name} above its cwd`;
-      out.push(fileInfo(label, path, { preview: true, loaded: !taken, ...(taken ? { note: "Prime loads one file per folder, and the AGENTS.md beside it comes first." } : {}) }));
-      taken = true;
-    }
+    const where = dir === resolve(cwd) ? "in its cwd" : "above its cwd";
+    listFolder(dir, name => `${name} ${where}`);
     const up = dirname(dir);
     if (up === dir) break;
     dir = up;
   }
-  const global = join(agentDir, "AGENTS.md");
-  if (existsSync(global)) out.push(fileInfo("Prime's global AGENTS.md", global, { preview: true, loaded: true }));
+  listFolder(agentDir, name => `Prime's global ${name}`);
   return out;
 }
 
