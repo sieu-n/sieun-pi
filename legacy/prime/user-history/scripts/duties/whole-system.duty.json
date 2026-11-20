@@ -1,7 +1,7 @@
 {
   "name": "Whole system",
   "ownerWords": "F*UCKING WATCH THIS!QQQQ!!!!!!!!!!!!!!!!!!!!!!!! \n\nreorganize duties have a 30 minute trigger that checks all this",
-  "goal": "Every minute of the last 30 runs clean, the number the owner feels: the boxes stay usable, no start or wake waits over 10 minutes, no turn waits while slots are free, no daemon call fails or runs over 30 s, no Prime worker or supervisor event loop stalls 5 s or more, no session rename takes over 1 s, and no tool call sits an hour with no output and no progress. Each dirty minute names its cause in the dirty_minutes line, and the prime_calls and hung_call lines hold the detail. When nobody works, agent RAM drops: once no session has streamed or run a tool for the quiet window (15 min by default), Settings > Hosts shows Agent sessions under 5 GB. queue_holds_30 also counts jobs cut off by a token or account error that did not resume within 10 minutes, the problem the owner raised on 10-11, 10-12 twice, 10-15 and 10-19; the board goal p711 holds its fix steps and closes into this metric. This duty keeps one headline and 2 supporting metrics (c75, c133). Hung calls, Prime renames (p1373) and worker stalls (p1360) were separate metrics until 11-04 and now count as dirty minutes of clean_min_30.",
+  "goal": "Every minute of the last 30 runs clean, the number the owner feels: the boxes stay usable, no start or wake waits over 10 minutes, no turn waits while slots are free, no daemon call fails or runs over 30 s, no Prime worker or supervisor event loop stalls 5 s or more, no session rename takes over 1 s, and no tool call sits an hour with no output and no progress. Each dirty minute names its cause in the dirty_minutes line, and the prime_calls and hung_call lines hold the detail. When nobody works, agent RAM drops: once no session has streamed or run a tool for the quiet window (15 min by default), Settings > Hosts shows Agent sessions under 5 GB. queue_holds_30 also counts jobs cut off by a token or account error that did not resume within 10 minutes, the problem the owner raised on 10-11, 10-12 twice, 10-15 and 10-19; the board goal p711 holds its fix steps and closes into this metric. This duty keeps one headline and 3 supporting metrics (c75, c133). sessions_off_high, added 11-20 for p1623 after the owner's \"check all threads if they are on high effort\", counts live loaded sessions on either box off Opus 5.5 high, the default (c31); an offline box reads unread, never 0. Hung calls, Prime renames (p1373) and worker stalls (p1360) were separate metrics until 11-04 and now count as dirty minutes of clean_min_30.",
   "metrics": [
     {
       "key": "clean_min_30",
@@ -21,6 +21,12 @@
     {
       "key": "queue_holds_30",
       "label": "Starts, wakes or cut-off jobs held over 10 min, chat turns queued over 30 s, or jobs parked over 10 min after a later job got an account",
+      "op": "<=",
+      "target": 0
+    },
+    {
+      "key": "sessions_off_high",
+      "label": "Live sessions on either box not on the default model and effort (Opus 5.5 high); an offline box counts as unread",
       "op": "<=",
       "target": 0
     }

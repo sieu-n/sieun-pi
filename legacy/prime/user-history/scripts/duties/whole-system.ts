@@ -2453,6 +2453,42 @@ export async function catalogCopies(dataDir: string): Promise<string[]> {
 
 const readJson = async (file: string): Promise<unknown> => JSON.parse(await readFile(file, "utf8").catch(() => "null")) as unknown;
 
+/** A session a box's catalog copy lists live with its own model and effort, on another model or effort than the box's default (`effortOffDefault`). */
+export interface OffDefault { host: string; sessionId: string; name: string; model: string; thinking: string }
+
+/**
+ * The live sessions each box's catalog copy lists with a loaded state (a model and a thinking level) that are not on `want`, the default
+ * ~/.prime/agent/settings.json gives a new or resumed session (claude-opus-5-5 at high since c31, back on 11-13). An unloaded row lists no model,
+ * and Prime wakes it on its own last thinking_level_change or else the default, so a session that wakes below high counts once it loads. A box
+ * `isUnread` names (offline, or its copy unreadable) is unread, never 0 off: on 11-20 the owner saw "off effort" on slack green guy while the Mac
+ * was offline, and the 318 live sessions on us-metal02 all read claude-opus-5-5/high (p1623).
+ */
+export function effortOffDefault(copies: readonly { host: string; text: string }[], want: { model: string; thinking: string },
+  isUnread: (host: string) => boolean): { off: OffDefault[]; read: string[]; unread: string[] } {
+  const off: OffDefault[] = [];
+  const read: string[] = [];
+  const unread: string[] = [];
+  for (const copy of copies) {
+    let rows: { lifecycle?: string; sessionId?: string; sessionName?: string; model?: string | { id?: string } | null; thinkingLevel?: string | null }[];
+    try { rows = (JSON.parse(copy.text) as { rows?: typeof rows }).rows ?? []; } catch { rows = []; }
+    if (!rows.length || isUnread(copy.host)) { unread.push(copy.host); continue; }
+    read.push(copy.host);
+    for (const row of rows) {
+      const model = typeof row.model === "string" ? row.model : row.model?.id;
+      if (row.lifecycle !== "live" || !model || !row.thinkingLevel || !row.sessionId) continue;
+      if (model === want.model && row.thinkingLevel === want.thinking) continue;
+      off.push({ host: copy.host, sessionId: row.sessionId, name: row.sessionName?.trim() || row.sessionId.slice(0, 8), model, thinking: row.thinkingLevel });
+    }
+  }
+  return { off, read, unread };
+}
+
+/** The model and effort a new or resumed session gets on this box, from Prime's settings (sdk.ts falls to `defaultThinkingLevel`). */
+export async function sessionDefault(file = join(homedir(), ".prime/agent/settings.json")): Promise<{ model: string; thinking: string } | null> {
+  const settings = await readJson(file) as { defaultModel?: string; defaultThinkingLevel?: string } | null;
+  return settings?.defaultModel && settings.defaultThinkingLevel ? { model: settings.defaultModel, thinking: settings.defaultThinkingLevel } : null;
+}
+
 /**
  * The chats, live boards and step owners `planCounts` reads, from the chat service's data dir. Only the owner's chats (`ownerChats`): an archived
  * or clean-room test chat stays out of his counts and the job's messages. `names` titles a chat; one it lacks reads as its short id.
@@ -2553,6 +2589,19 @@ async function main(): Promise<void> {
     await writeFile(file, text);
     const slice = result.flagged?.find(item => item.kind === "oversized" && item.excerpt === entry.text);
     if (slice) slice.excerpt += `; its memory map and threads: ${file}`;
+  }
+  // sessions_off_high (p1623, owner 11-20 "check all threads if they are on high effort"): live sessions off the box default, per box copy.
+  const want = await sessionDefault();
+  if (want) {
+    const latestLine = watch.at(-1);
+    const effort = effortOffDefault((await catalogCopyFiles(dataDir)).map(copy => ({ host: copy.host ?? box, text: copy.text })), want,
+      host => host !== box && (!latestLine || !!hostViews(latestLine).find(view => view.name === host)?.offline || offlineAround(watch, host, now, now)));
+    result.metrics.sessions_off_high = effort.off.length;
+    result.metrics.sessions_off_high_unread_boxes = effort.unread.length;
+    result.flagged ??= [];
+    if (effort.off.length) result.flagged.push({ kind: "gap", excerpt: `${effort.off.length} live session${effort.off.length === 1 ? "" : "s"} not on ${want.model}/${want.thinking}: ` +
+      effort.off.slice(0, 8).map(entry => `${entry.name} (${entry.host}, ${entry.sessionId.slice(0, 8)}) on ${entry.model}/${entry.thinking}`).join("; ") });
+    if (effort.unread.length) result.flagged.push({ kind: "gap", excerpt: `sessions_off_high reads only ${effort.read.join(" and ") || "no box"}: ${effort.unread.join(" and ")} is offline or its catalog copy is unreadable, so its sessions are unread, not 0` });
   }
   // The Chat system duty (d9, chat-system.ts) has counted stuck steps and stuck duties since 10-19, so this duty's job gets neither.
   delete result.metrics.stuck_steps_all;
