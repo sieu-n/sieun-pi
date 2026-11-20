@@ -14,9 +14,10 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall, type Message } from "
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness, type EntryRecord } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import type { SearchHit, SearchResult } from "../../../../apps/chat/web/src/lib/api/types.ts";
 import { ChatApp } from "../../src/durable/chat-app.ts";
 import { roomTools } from "../../src/durable/room-tools.ts";
-import { SEARCH_MESSAGES_TOOL, searchHitLine, searchQuery, type FilteredHit, type FilteredResult } from "../../src/durable/search-messages.ts";
+import { SEARCH_MESSAGES_TOOL, searchHitLine, searchQuery } from "../../src/durable/search-messages.ts";
 import { MODEL, textOf } from "./crash-scenario.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -24,13 +25,13 @@ const dir = mkdtempSync(join(tmpdir(), "pi-host-search-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 const AT = Date.UTC(2026, 10, 20, 6, 12);
-const reply: FilteredHit = {
+const reply: SearchHit = {
   id: "ch_1a2b/p90", conversation: { id: "ch_1a2b", kind: "channel", name: "sw-factory-build" }, messageId: "p90",
   author: { id: "ag_vent", name: "vent", kind: "agent" }, at: AT, kind: "post", role: "agent", threadRoot: "p85",
   where: "thread", thread: { root: "p85", title: "does search filter" }, snippet: "the index &lt;b&gt; holds <mark>kimchi</mark> &amp; more",
   link: "#/c/ch_1a2b?thread=p85&m=p90",
 };
-const tool: FilteredHit = {
+const tool: SearchHit = {
   id: "th_9:3/e41", conversation: { id: "th_9:3", kind: "job", name: "count rows", parent: { id: "ag_vent", name: "vent" } }, messageId: "e41",
   author: { id: "ag_vent", name: "vent", kind: "agent" }, at: AT, kind: "tool", role: "tool", tool: "bash", where: "tool",
   snippet: "rows <mark>4812</mark>", link: "#/c/th_9:3?m=e41",
@@ -46,7 +47,7 @@ before(async () => {
     const answer = (status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
     if (url.pathname !== "/api/search") return answer(404, { error: "No such route." });
     if (url.searchParams.get("in") === "#nowhere") return answer(400, { error: "No room named #nowhere." });
-    const body: FilteredResult = url.searchParams.get("where") === "tool" ? { hits: [tool], total: 1 } : { hits: [reply], total: 7, nextCursor: "1" };
+    const body: SearchResult = url.searchParams.get("where") === "tool" ? { hits: [tool], total: 1 } : { hits: [reply], total: 7, nextCursor: "1" };
     return answer(200, body);
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
@@ -81,14 +82,15 @@ test("the filters go to /api/search as comma lists, with brief on and nothing fo
   assert.equal(q.toString(), "q=kimchi&brief=1&from=vent%2Cowner&where=thread%2Ctool&in=%23sw-factory-build&after=2026-11-19&before=2026-11-21&sort=recent&limit=5");
   assert.equal(searchQuery({ query: "x", from: "vent", where: "tool" }).toString(), "q=x&brief=1&from=vent&where=tool");
   assert.equal(searchQuery({ query: "x" }).toString(), "q=x&brief=1");
+  assert.equal(searchQuery({ query: "x", in: "th_9:3", full: true }).toString(), "q=x&in=th_9%3A3");
 });
 
 test("a hit line says where it sits, who wrote it, its plain words, its id and its link", () => {
   assert.equal(searchHitLine(reply), "- 2026-11-20 06:12Z #sw-factory-build, reply in thread p85 \"does search filter\" · vent: the index <b> holds kimchi & more · id ch_1a2b/p90 · #/c/ch_1a2b?thread=p85&m=p90");
   assert.equal(searchHitLine(tool), "- 2026-11-20 06:12Z job \"count rows\" of vent, tool output bash · vent: rows 4812 · id th_9:3/e41 · #/c/th_9:3?m=e41");
   assert.match(searchHitLine({ ...tool, inCall: true }), /tool call bash/);
-  const { where: _w, thread: _t, link: _l, ...old } = reply;
-  assert.match(searchHitLine(old), /#sw-factory-build, reply in thread p85 · vent/);
+  assert.equal(searchHitLine({ ...tool, text: "v0.2 &lt;new&gt;\nv0.1" }, true), `${searchHitLine(tool)}\n  v0.2 <new>\n  v0.1`);
+  assert.equal(searchHitLine({ ...tool, text: "long" }), searchHitLine(tool));
 });
 
 test("the tool returns the count, the hits and the next page, and the server's refusal as the call's error", async () => {
