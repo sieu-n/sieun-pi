@@ -49,6 +49,11 @@ type Timing = { m: string; p: string; s: number; ms: number; net?: number; enc?:
 export type Wait = {
   background?: "ahead" | "shown";
   /**
+   * A read ahead of what the owner looks at now, such as the rows Cmd K lists or the thread and job pills of the open room: the lane sends
+   * it before the sidebar's reads ahead.
+   */
+  first?: true;
+  /**
    * A send: `since` is his Enter and `shownMs` the time from it until the message's bubble was painted. The bubble, with Sending and any
    * image from the page, is all he waits for, so the line's `ms` is `shownMs`; the time from Enter until the server stored the message,
    * its uploads included, goes beside it as `stored` and is no wait of his.
@@ -127,10 +132,130 @@ export function reportNotDelivered(conversation: ConversationId, status: number,
 }
 
 /**
+ * The lane every read ahead (`Wait.background` "ahead") goes through, so it never delays a call the owner waits on. On 11-21 at 06:30
+ * KST his page fired about 90 reads ahead at each load, and his POST /read, a 4 ms handler, waited 1.1 to 4.7 s behind them, his GET
+ * /api/later up to 1.2 s (d2 findings, requests/2026-11-20.jsonl). While any other call is on its way, his own or a refresh behind a
+ * shown page, the lane starts no read ahead, and it stops the ones on their way and sends them again once his calls end. A read ahead
+ * goes at fetch priority low, what he looks at now (`Wait.first`) before the rest, and at most `AHEAD_LANE` at once.
+ *
+ * A stopped read ahead's bytes already in the pipe still arrive before his answer, so fewer at once serve him better. In a walk of live
+ * data over HTTP/2 and TLS at a 200 ms round trip, MTU 1280 and TCP slow start after idle (~/work/p155-readahead/lane-summary.md, 12 page
+ * loads each, box load 31 to 238), his read mark took p50 207 / p90 216 ms with 2 at once, 280 / 306 with 4 and 211 / 284 with 8,
+ * against 369 / 387 before the lane. With 2 the page's reads ahead settle 11.5 s after a load, as before the lane (11.2 s).
+ */
+export const AHEAD_LANE = 2;
+
+/** One read ahead's place in the lane: waiting, on its way and stoppable, taken over by a view and so his, or settled. */
+type TicketState = { kind: "queued" } | { kind: "flying"; controller: AbortController } | { kind: "taken" } | { kind: "settled" };
+type Ticket = { readonly wait: Wait; state: TicketState; readonly send: (signal: AbortSignal | undefined) => void; readonly drop: () => void };
+
+const queued: Ticket[] = [];
+const flying = new Set<Ticket>();
+/** The calls on their way that the owner waits on, a read ahead a view took over included. */
+let busy = 0;
+
+function pump(): void {
+  while (!busy && flying.size < AHEAD_LANE && queued.length) {
+    const first = queued.findIndex(ticket => ticket.wait.first);
+    const [ticket] = queued.splice(Math.max(first, 0), 1);
+    const controller = new AbortController();
+    ticket!.state = { kind: "flying", controller };
+    flying.add(ticket!);
+    ticket!.send(controller.signal);
+  }
+}
+
+/** A call he waits on starts: every read ahead on its way stops and goes back to the front of the queue, in its order. */
+function yieldLane(): void {
+  const stopped = [...flying];
+  flying.clear();
+  for (const ticket of stopped) {
+    if (ticket.state.kind === "flying") ticket.state.controller.abort();
+    ticket.state = { kind: "queued" };
+  }
+  queued.unshift(...stopped);
+}
+
+function settle(ticket: Ticket): void {
+  const { kind } = ticket.state;
+  ticket.state = { kind: "settled" };
+  if (kind === "taken") busy -= 1;
+  else if (kind === "flying") flying.delete(ticket);
+  else if (kind === "queued") queued.splice(queued.indexOf(ticket), 1);
+  pump();
+}
+
+async function waited<T>(send: () => Promise<T>): Promise<T> {
+  busy += 1;
+  yieldLane();
+  try {
+    return await send();
+  } finally {
+    busy -= 1;
+    pump();
+  }
+}
+
+/** A read ahead's call, sent when the lane has room; one the lane stopped is sent again from the start, and its stop is no error. */
+function ahead<T>(wait: Wait, attempt: (signal: AbortSignal | undefined) => Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const ticket: Ticket = {
+      wait,
+      state: { kind: "queued" },
+      send: signal => void attempt(signal).then(value => {
+        if (ticket.state.kind === "settled") return;
+        settle(ticket);
+        resolve(value);
+      }, (error: unknown) => {
+        if (signal?.aborted || ticket.state.kind === "settled") return;
+        settle(ticket);
+        reject(error);
+      }),
+      drop: () => {
+        settle(ticket);
+        reject(new DOMException("The read ahead was dropped before it was sent", "AbortError"));
+      },
+    };
+    queued.push(ticket);
+    pump();
+  });
+}
+
+/**
+ * A view starts to wait on a read ahead, or shows its answer behind a page it shows (`background`). Its calls leave the lane at once: a
+ * queued one is sent now and one on its way is never stopped, and each counts as his call until it ends.
+ */
+export function takeOver(wait: Wait, background: Wait["background"]): void {
+  wait.background = background;
+  if (background === "ahead") return;
+  const mine = [...queued, ...flying].filter(ticket => ticket.wait === wait);
+  if (!mine.length) return;
+  const unsent = mine.filter(ticket => ticket.state.kind === "queued");
+  for (const ticket of mine) {
+    if (ticket.state.kind === "queued") queued.splice(queued.indexOf(ticket), 1);
+    else flying.delete(ticket);
+    ticket.state = { kind: "taken" };
+    busy += 1;
+  }
+  yieldLane();
+  for (const ticket of unsent) ticket.send(undefined);
+}
+
+/** Drops the queued calls of a read ahead nobody wants any more, which then fails as aborted and is logged nowhere; sent ones finish. */
+export function dropAhead(wait: Wait): void {
+  for (const ticket of queued.filter(ticket => ticket.wait === wait)) ticket.drop();
+}
+
+/**
  * A Blob body goes as its own bytes with its own type, any other body as JSON. A call that fails, refused by the server or never reaching
  * it, posts its error with its timing (`recordTiming`), so the server's log holds every failure the page shows, such as a Not delivered send.
  */
-async function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal, wait?: Wait): Promise<T> {
+function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal, wait?: Wait): Promise<T> {
+  if (wait?.background === "ahead" && !signal) return ahead(wait, own => send<T>(method, path, body, own, wait));
+  return waited(() => send<T>(method, path, body, signal, wait));
+}
+
+async function send<T>(method: string, path: string, body: unknown, signal: AbortSignal | undefined, wait: Wait | undefined): Promise<T> {
   const started = performance.now();
   const blob = body instanceof Blob;
   let response: Response;
@@ -141,6 +266,7 @@ async function call<T>(method: string, path: string, body?: unknown, signal?: Ab
       headers: body === undefined ? {} : { "content-type": blob ? body.type || "application/octet-stream" : "application/json" },
       ...(body === undefined ? {} : { body: blob ? body : JSON.stringify(body) }),
       ...(signal ? { signal } : {}),
+      ...(wait?.background === "ahead" ? { priority: "low" as const } : {}),
     });
     text = await response.text();
   } catch (error) {

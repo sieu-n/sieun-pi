@@ -6,7 +6,7 @@
  * lands; nothing waits on the network before the composer takes the next message. An attached image shows from its preview while its
  * upload ends, and the post names the uploaded ref.
  */
-import { api, ApiError, attach, reads, reportNotDelivered, roomOf, type Attached, type Read, type Wait } from "./client.ts";
+import { AHEAD_LANE, api, ApiError, attach, dropAhead, reads, reportNotDelivered, roomOf, takeOver, type Attached, type Read, type Wait } from "./client.ts";
 import { kept, type Kept } from "./kept.svelte.ts";
 import { heldImages } from "./held-images.ts";
 import { pageDb, type KeptPage } from "./page-db.ts";
@@ -512,7 +512,8 @@ export const connection = {
  */
 class PageCache<Raw, Shown> {
   private readonly shown = new Map<string, Shown>();
-  private readonly reads = new Map<string, { read: Promise<Raw>; at: number; wait?: Wait }>();
+  /** `listed` marks a read ahead of a row a list shows, which a newer list may drop (`drop`). */
+  private readonly reads = new Map<string, { read: Promise<Raw>; at: number; wait?: Wait; listed?: boolean }>();
   private readonly views = new Map<string, number>();
   /** The effect that keeps each open view's page as it changes, by key; it ends when the last view of the key closes. */
   private readonly keeping = new Map<string, () => void>();
@@ -540,12 +541,17 @@ class PageCache<Raw, Shown> {
 
   /**
    * Reads a page nobody has opened yet and keeps it as the page to show, unless a view of it is open or a read of it is on its way.
-   * Its calls are logged as ahead of any view, until a view takes the read while it runs and so waits on it.
+   * Its calls are logged as ahead of any view, until a view takes the read while it runs and so waits on it. A `first` read is of what
+   * the owner looks at now, which the lane sends before the rest (`Wait.first`). A `listed` one is of a row a list shows, which `drop`
+   * may cancel, unless a read ahead that is not listed asked for the same page meanwhile.
    */
-  warm(key: string, read: (wait: Wait) => Promise<Raw>, show: (raw: Raw) => Shown): Promise<void> {
-    if (this.views.has(key) || this.reads.has(key)) return Promise.resolve();
-    const wait: Wait = { background: "ahead" };
-    const entry = { read: read(wait), at: Date.now(), wait };
+  warm(key: string, read: (wait: Wait) => Promise<Raw>, show: (raw: Raw) => Shown, opts: { first?: boolean; listed?: boolean } = {}): Promise<void> {
+    const pending = this.reads.get(key);
+    if (pending && !opts.listed) pending.listed = false;
+    if (pending?.wait && opts.first) pending.wait.first = true;
+    if (this.views.has(key) || pending) return Promise.resolve();
+    const wait: Wait = opts.first ? { background: "ahead", first: true } : { background: "ahead" };
+    const entry = { read: read(wait), at: Date.now(), wait, listed: opts.listed ?? false };
     this.reads.set(key, entry);
     return entry.read.then(raw => {
       if (wait.background && !this.views.has(key)) this.remember(key, show(raw));
@@ -556,16 +562,23 @@ class PageCache<Raw, Shown> {
 
   /**
    * The prefetched or warming read, or a new one, with the `Wait` its line is logged by, which the view clears when the answer changed
-   * what it showed. `wait` says what the view shows as it asks. A read counts for 2 s: the slowest click to pane mount measured 817 ms on 11-03
-   * (work/fast-thread/before.md), and an older one may miss changes made since.
+   * what it showed. `wait` says what the view shows as it asks. A prefetched read counts for 2 s: the slowest click to pane mount measured
+   * 817 ms on 11-03 (work/fast-thread/before.md), and an older one may miss changes made since. A read ahead still on its way counts
+   * however long it waited, since its calls leave the lane and go out now if they had not (`takeOver`).
    */
   take(key: string, wait: Wait, read: () => Promise<Raw>): { read: Promise<Raw>; wait: Wait } {
     const prefetched = this.reads.get(key);
     this.reads.delete(key);
-    if (!prefetched || Date.now() - prefetched.at >= 2_000) return { read: read(), wait };
+    if (!prefetched || (!prefetched.wait && Date.now() - prefetched.at >= 2_000)) return { read: read(), wait };
     // A read ahead a view takes over counts as that view's read: a wait, or a refresh behind the page it already shows.
-    if (prefetched.wait) prefetched.wait.background = wait.background;
+    if (prefetched.wait) takeOver(prefetched.wait, wait.background);
     return { read: prefetched.read, wait: prefetched.wait ?? wait };
+  }
+
+  /** Drops a listed read ahead of the page that a newer list no longer shows, unless its calls went out (`dropAhead`). */
+  drop(key: string): void {
+    const entry = this.reads.get(key);
+    if (entry?.listed && entry.wait?.background === "ahead") dropAhead(entry.wait);
   }
 
   last(key: string): Shown | undefined {
@@ -680,8 +693,8 @@ export function prefetchThread(channel: ConversationId | null, key: string): voi
 type Ahead = { id: string; at: number; working: boolean };
 
 /**
- * Reads conversations and panels before the owner opens them, one at a time, so a first open shows from the page's cache with no call in
- * front of it. One is read again when it shows activity newer than what the page kept, once it is idle: a working one changes with every
+ * Reads conversations and panels before the owner opens them, as many at once as the lane sends (client.ts `AHEAD_LANE`), so a first open
+ * shows from the page's cache with no call in front of it. One is read again when it shows activity newer than what the page kept, once it is idle: a working one changes with every
  * step, and its open view reads it live. A hidden page reads nothing until it shows again; those first reads also open the connection
  * again after a sleep, where on 11-19 a lone replies call 29 min after the last one took 3 round trips.
  */
@@ -689,17 +702,17 @@ class ReadAhead<Wanted extends Ahead = Ahead> {
   /** Each one's `at` when its kept answer was read. */
   private readonly readAt = new Map<string, number>();
   private wanted: Wanted[] = [];
-  private running = false;
+  private reading = 0;
 
   /** `warm` reads one and keeps the answer; one that `viewing` names has an open view, which keeps it current itself. */
   constructor(private readonly warm: (wanted: Wanted) => Promise<unknown>, private readonly viewing: (id: string) => boolean = () => false) {
-    if (typeof document !== "undefined") document.addEventListener("visibilitychange", () => void this.run());
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", () => this.run());
   }
 
   /** What to keep read, the first one first. */
   want(list: Wanted[]): void {
     this.wanted = list;
-    void this.run();
+    this.run();
   }
 
   /** A view of the conversation closed with its page current as of its newest activity. */
@@ -720,27 +733,31 @@ class ReadAhead<Wanted extends Ahead = Ahead> {
     });
   }
 
-  private async run(): Promise<void> {
-    if (this.running || typeof document === "undefined") return;
-    this.running = true;
-    try {
-      for (let c = this.next(); c && document.visibilityState === "visible"; c = this.next()) {
-        this.readAt.set(c.id, c.at);
-        await this.warm(c).catch(() => undefined);
-      }
-    } finally {
-      this.running = false;
+  private run(): void {
+    if (typeof document === "undefined") return;
+    while (this.reading < AHEAD_LANE && document.visibilityState === "visible") {
+      const c = this.next();
+      if (!c) return;
+      this.readAt.set(c.id, c.at);
+      this.reading += 1;
+      void this.warm(c).catch(() => undefined).finally(() => {
+        this.reading -= 1;
+        this.run();
+      });
     }
   }
 }
 
-/** Reads a conversation's newest page ahead and keeps it as the page to show; `limit` is the page size, the server's own when absent. */
-const warmTimeline = (limit?: number) => ({ id }: Ahead): Promise<void> =>
+/**
+ * Reads a conversation's newest page ahead and keeps it as the page to show; `limit` is the page size, the server's own when absent, and
+ * `opts` say whether the owner looks at it now (`PageCache.warm`).
+ */
+const warmTimeline = (limit?: number, opts: { first?: boolean; listed?: boolean } = {}) => ({ id }: Ahead): Promise<void> =>
   timelinePages.warm(id, wait => readTimeline(id, undefined, wait, limit),
     ({ page, header }) => {
       sawHeader(header);
       return { items: shownItems(id, page.items), older: page.older, header, ...(limit ? { limit } : {}) };
-    });
+    }, opts);
 const viewingTimeline = (id: string): boolean => timelinePages.viewing(id);
 
 /** A panel to keep read: the reads it shows when it opens (`reads` in client.ts). */
@@ -754,9 +771,7 @@ const panelQueues = new Map<string, ReadAhead<PanelAhead>>();
 export function panelsAhead(screen: string, list: PanelAhead[]): void {
   let queue = panelQueues.get(screen);
   if (!queue) {
-    queue = new ReadAhead<PanelAhead>(async panel => {
-      for (const read of panel.reads) await kept(read).ahead();
-    });
+    queue = new ReadAhead<PanelAhead>(panel => Promise.all(panel.reads.map(read => kept(read).ahead())));
     panelQueues.set(screen, queue);
   }
   queue.want(list);
@@ -842,18 +857,25 @@ export function keepOpened(id: ConversationId, opened: OpenedPage | undefined): 
 
 /**
  * What the Cmd K palette lists, which the owner is about to pick one of: each conversation and each message hit the page holds no page
- * of is read now, all at once, a hit as the page around its message. On 11-20 a 200 ms walk waited 231 ms for a room picked there that
+ * of is read now, a hit as the page around its message. The lane sends them before the sidebar's reads, the top row first, and a new list
+ * drops the queued reads of the rows it no longer shows. On 11-20 a 200 ms walk waited 231 ms for a room picked there that
  * the sidebar's read ahead had not reached (work/p107-opens), and a hit's page around its message was never kept, so every hit waited
  * one round trip. The server's page of 40 entries was 8.1 to 16.9 KB as brotli for three jobs that day, so a list of 20 hits reads
  * under 340 KB.
  */
+let listedPages: { pages: PageCache<TimelineRead, TimelineShown>; key: string }[] = [];
 export function listedAhead(listed: readonly { conversation: ConversationId; messageId?: string }[]): void {
+  const next = listed.map(({ conversation: id, messageId }) =>
+    (messageId ? { pages: aroundPages, key: aroundKey(id, messageId) } : { pages: timelinePages, key: id }));
+  for (const old of listedPages) if (!next.some(row => row.pages === old.pages && row.key === old.key)) old.pages.drop(old.key);
+  listedPages = next;
   for (const { conversation: id, messageId } of listed) {
     if (!messageId) {
-      if (!timelinePages.has(id)) void warmTimeline()({ id, at: 0, working: false });
+      if (!timelinePages.has(id)) void warmTimeline(undefined, { first: true, listed: true })({ id, at: 0, working: false });
     } else if (!aroundPages.has(aroundKey(id, messageId))) {
       void aroundPages.warm(aroundKey(id, messageId), wait => readTimeline(id, messageId, wait),
-        ({ page, header }) => ({ items: shownItems(id, page.items), older: page.older, header, ...(page.focus ? { focus: page.focus } : {}) }));
+        ({ page, header }) => ({ items: shownItems(id, page.items), older: page.older, header, ...(page.focus ? { focus: page.focus } : {}) }),
+        { first: true, listed: true });
     }
   }
 }
@@ -864,7 +886,7 @@ export function listedAhead(listed: readonly { conversation: ConversationId; mes
  * shows the short page and refreshes it at the same size; the entries above it load when the owner scrolls up.
  */
 const JOB_PAGE = 10;
-const jobPills = new ReadAhead(warmTimeline(JOB_PAGE), viewingTimeline);
+const jobPills = new ReadAhead(warmTimeline(JOB_PAGE, { first: true }), viewingTimeline);
 function jobsAhead(items: readonly Item[]): void {
   const refs = items.flatMap(item => (item.kind === "turn" ? item.jobs : item.kind === "message" ? item.jobs ?? [] : []));
   jobPills.want(refs.reverse().slice(0, JOBS_AHEAD).map(job => ({ id: job.conversation, at: job.lastAt, working: job.status === "working" })));
@@ -885,7 +907,7 @@ function warmReplies(channel: ConversationId, items: readonly Item[]): void {
     const key = repliesKey(channel, item.id);
     if (warmedThreads.get(key) === mark || repliesPages.viewing(key)) continue;
     warmedThreads.set(key, mark);
-    void repliesPages.warm(key, wait => api.replies(channel, item.id, wait), page => ({ root: page.root, items: merge([], page.items, new Set()) }));
+    void repliesPages.warm(key, wait => api.replies(channel, item.id, wait), page => ({ root: page.root, items: merge([], page.items, new Set()) }), { first: true });
   }
 }
 
@@ -991,15 +1013,15 @@ export class Timeline {
       this.items = last.items;
       this.older = last.older;
       this.loading = false;
-      // The threads and jobs of the kept page are read now, not one round trip later when its refresh lands.
-      if (this.isChannel) warmReplies(this.id, last.items);
-      else jobsAhead(last.items);
     }
     try {
       // With the kept page on the screen, this read is a refresh behind it, unless it changes what the screen shows.
       const asked: Wait = last ? { background: "shown" } : {};
       this.limit = last?.limit;
       const taken = pages.take(key, asked, () => readTimeline(this.id, around, asked, last?.limit));
+      // The threads and jobs of the kept page queue now, behind this read, not one round trip later when its refresh lands.
+      if (last && this.isChannel) warmReplies(this.id, last.items);
+      else if (last) jobsAhead(last.items);
       const { wait } = taken;
       const { page, header } = await taken.read;
       const readSeq = header.readSeq;
