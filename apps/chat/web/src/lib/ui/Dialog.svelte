@@ -11,7 +11,7 @@
     description?: string;
     /** Accessible name when there is no visible title. */
     label?: string;
-    /** center: a 28 px radius card in the middle. search: a 640 px palette anchored 128 px from the top. sheet: a reader as tall as the window, up to 1200 px wide, with an unpadded body. */
+    /** center: a 28 px radius card in the middle. search: a 640 px palette anchored 128 px from the top. sheet: a reader up to 1200 px wide that fills the window under its top bar, with an unpadded body. */
     presentation?: "center" | "search" | "sheet";
     width?: number;
     /** Esc and an outside click close the dialog. With `dirty`, an outside click is ignored so typed input is never lost. */
@@ -145,10 +145,16 @@
     display: flex;
     flex-direction: column;
   }
+  /*
+   * Sizes are percentages of the window, the modal's containing block, and never vh or vw. The interface size (lib/shell/zoom.ts) sets
+   * CSS zoom on the root, which multiplies a vh length, so at 120% a sheet 100vh tall ran 66 px past the window's top and bottom edges.
+   * --dialog-top is the room kept above a dialog, more in the Mac app, where the window buttons sit in the top bar.
+   */
   .dialog {
+    --dialog-top: 24px;
     width: 480px;
     max-width: calc(100% - 48px);
-    max-height: calc(100vh - 48px);
+    max-height: calc(100% - 2 * var(--dialog-top));
     margin: auto;
     padding: 0;
     border: none;
@@ -169,7 +175,7 @@
   .dialog.search {
     width: 640px;
     margin-top: 128px;
-    max-height: calc(100vh - 128px - 48px);
+    max-height: calc(100% - 128px - 48px);
     padding: 0 12px;
     border-radius: var(--radius-control);
     box-shadow: var(--shadow-sm);
@@ -204,9 +210,18 @@
     align-items: center;
     gap: 4px;
   }
+  /* The sheet sits under the app's top bar, so the bar and the Mac app's window buttons stay clear, and keeps 24 px to the other edges. */
   .dialog.sheet {
+    --dialog-top: var(--size-topbar);
     width: 1200px;
-    height: calc(100vh - 48px);
+    height: calc(100% - var(--dialog-top) - 24px);
+    max-height: none;
+    margin: var(--dialog-top) auto 24px;
+  }
+  /* apps/desktop keeps its top bar 56 px tall at any interface size (TopBar.svelte), so the room above a dialog does too. */
+  :global(html[data-shell="desktop"]) .dialog,
+  :global(html[data-shell="desktop"]) .dialog.sheet {
+    --dialog-top: calc(var(--size-topbar) / var(--interface-scale, 1));
   }
   .sheet .dialog-header {
     align-items: center;

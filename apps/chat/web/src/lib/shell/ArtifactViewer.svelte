@@ -15,6 +15,7 @@
   import { directory } from "$pages/channel/directory.svelte";
   import { mentionContext } from "$pages/channel/present";
   import { closeView, currentView, openArtifactTarget, openView, viewedBlock, type View } from "./viewer.svelte";
+  import { styleWikiFrame } from "./wiki-embed";
 
   /**
    * The popup the viewer's `?view=` param opens over any page (viewer.svelte.ts): a wiki page in a frame of this server's /wiki, a
@@ -32,12 +33,20 @@
   let frameTitle = $state("");
   let framePath = $state<string | null>(null);
   let frameFailed = $state(false);
+  /** The frame shows only once the app's look is in it, so a dark app never flashes the wiki's white page. */
+  let frameStyled = $state(false);
+  let unstyle: (() => void) | null = null;
   const wikiPath = $derived(view?.kind === "wiki" ? view.path : null);
   $effect(() => {
     void wikiPath;
     frameTitle = "";
     framePath = null;
     frameFailed = false;
+    frameStyled = false;
+    return () => {
+      unstyle?.();
+      unstyle = null;
+    };
   });
 
   const appHref = (hash: string): string => `${location.origin}${location.pathname}${hash}`;
@@ -60,8 +69,8 @@
   const description = $derived.by(() => {
     if (!view) return "";
     switch (view.kind) {
-      case "wiki": return `wiki: ${framePath ?? view.path}`;
-      case "thread": return jobs.byId(view.id) ? `Job thread of ${jobs.byId(view.id)?.parent?.name ?? "an agent"}` : view.id;
+      case "wiki": return "";
+      case "thread": return jobs.byId(view.id) ? `Job thread of ${jobs.byId(view.id)?.parent?.name ?? "an agent"}` : "";
       case "board": return view.focus ? `Focused on ${view.focus}` : "";
       case "skill": return skillView.description(view.id);
       case "block": return block?.label ?? "";
@@ -102,9 +111,6 @@
   /** The /wiki path of a page, each segment encoded. */
   const frameSrc = (path: string): string => `/wiki/${path.split("/").map(encodeURIComponent).join("/")}`;
 
-  /** The wiki's own top bar and page tree are hidden in the popup; its page, contents and backlinks stay. */
-  const EMBED_CSS = ".topbar, .browse-btn, .rail-tab, .tree-rail { display: none !important; } .body { grid-template-columns: minmax(0, 1fr) !important; }";
-
   /** The content path of a frame location such as /wiki/page/<path> or /wiki/<path>, or null for a wiki route that is not a page. */
   function pathOf(pathname: string): string | null {
     const match = /^\/wiki\/(?:page\/)?(.+)$/.exec(pathname);
@@ -120,13 +126,10 @@
       doc = null;
     }
     const win = frame.contentWindow;
+    frameStyled = true;
     if (!doc || !win) return;
-    if (!doc.querySelector("style[data-chat-embed]")) {
-      const style = doc.createElement("style");
-      style.dataset.chatEmbed = "";
-      style.textContent = EMBED_CSS;
-      doc.head.append(style);
-    }
+    unstyle?.();
+    unstyle = styleWikiFrame(doc);
     const read = () => {
       frameTitle = doc.title.replace(/\s*[·|–-]\s*llm-wiki\s*$/i, "").trim();
       framePath = pathOf(win.location.pathname);
@@ -202,7 +205,7 @@
     {#key keyOf(view)}
       <div class="viewer" data-testid="artifact-viewer" data-view={view.kind}>
         {#if view.kind === "wiki"}
-          <iframe class="wiki-frame" src={frameSrc(view.path)} title={title} onload={onFrameLoad}></iframe>
+          <iframe class="wiki-frame" class:styled={frameStyled} src={frameSrc(view.path)} title={title} onload={onFrameLoad}></iframe>
           {#if frameFailed}<p class="frame-note t-body-sm">The wiki did not show a page for {view.path}. Open in new tab shows what the wiki answered.</p>{/if}
         {:else if view.kind === "block"}
           {#if block}<div class="block-view"><Markdown text={block.markdown} {context} {onartifact} {onmention} /></div>{/if}
@@ -232,7 +235,14 @@
     width: 100%;
     min-height: 0;
     border: 0;
-    background: var(--surface-panel);
+    background: var(--surface-popover);
+    opacity: 0;
+    /* The page in the frame takes the interface size on its own root (wiki-embed.ts), so the frame element undoes the app's. */
+    zoom: calc(1 / var(--interface-scale, 1));
+  }
+  .wiki-frame.styled {
+    opacity: 1;
+    transition: opacity var(--duration-base) var(--ease-standard);
   }
   .frame-note {
     position: absolute;
