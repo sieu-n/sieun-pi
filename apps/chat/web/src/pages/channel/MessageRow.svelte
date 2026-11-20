@@ -10,7 +10,7 @@
   import type { MenuEntry } from "$lib/ui/menu";
   import { toast } from "$lib/ui/toast.svelte";
   import { api, markUnread } from "$lib/api";
-  import { later, laterMenuItem } from "$lib/later.svelte";
+  import { later, laterHref, laterMenuItem } from "$lib/later.svelte";
   import RemindDialog from "$lib/RemindDialog.svelte";
   import { dueLabel, remindedText, remindMenu } from "$lib/remind";
   import { askNotifyPermission } from "$lib/remind-notify";
@@ -20,7 +20,7 @@
   import { clockLabel, stampLabel, timeLabel } from "$lib/ui/datetime";
   import { wikiUrl, withAuthor, type MarkdownContext } from "$lib/ui/markdown";
   import type { Status } from "$lib/ui/types";
-  import { conversationHref, hrefFor, router } from "$lib/router.svelte";
+  import { conversationHref, router } from "$lib/router.svelte";
   import { frequentEmoji } from "./frequent-emoji.svelte";
   import Reactions from "./Reactions.svelte";
   import StepLine from "./StepLine.svelte";
@@ -209,7 +209,7 @@
 {/snippet}
 
 {#snippet savedLabel()}
-  <p class="saved-label" data-saved-label><Icon name="bookmark-filled" size={12} /><a href={hrefFor("later")}>Saved for later</a>{#if reactable?.later?.remindAt !== undefined}{@const due = dueLabel(reactable.later.remindAt)}<span aria-hidden="true">·</span><span class="saved-due" class:overdue={due.due} data-saved-due>{due.text}</span>{/if}</p>
+  <p class="saved-label" data-saved-label><Icon name="bookmark-filled" size={12} /><a href={laterHref()}>Saved for later</a>{#if reactable?.later?.remindAt !== undefined}{@const due = dueLabel(reactable.later.remindAt)}<span aria-hidden="true">·</span><span class="saved-due" class:overdue={due.due} data-saved-due>{due.text}</span>{/if}</p>
 {/snippet}
 
 {#snippet images()}

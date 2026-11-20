@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import type { LaterRow, LaterState } from "$lib/api";
-  import { later } from "$lib/later.svelte";
-  import { conversationHref, hrefFor, router } from "$lib/router.svelte";
+  import { later, laterHref } from "$lib/later.svelte";
+  import { conversationHref, router } from "$lib/router.svelte";
   import { Avatar, Button, EmptyState, Icon, IconButton, LoadingText, PanelHeader, Tabs, stampLabel } from "$lib/ui";
   import { previewText } from "$pages/agents/agents-model";
   import { avatarOf } from "$pages/channel/present";
@@ -22,8 +22,8 @@
     if (later.lists.open) now = Date.now();
   });
 
-  /** `#/later` is In progress and `#/later/done` Completed, so back and a link keep the tab. */
-  const tab = $derived<LaterState>(router.route.rest[0] === "done" ? "done" : "open");
+  /** `#/c/later` is In progress and `#/c/later/done` Completed, so back and a link keep the tab. */
+  const tab = $derived<LaterState>(router.route.rest[1] === "done" ? "done" : "open");
   const rows = $derived(tab === "open" && later.lists.open ? dueFirst(later.lists.open, now) : later.lists[tab]);
   const tabs = $derived([
     { id: "open" as const, label: "In progress", badge: later.open || null },
@@ -60,7 +60,7 @@
 <div class="page" data-testid="later-page">
   <PanelHeader title="Later" icon="bookmark" level={1} />
   <div class="tabs">
-    <Tabs items={tabs} value={tab} variant="underline" size="sm" label="Later" onchange={(id: LaterState) => router.navigate(hrefFor("later", id === "done" ? ["done"] : []), { replace: true })} />
+    <Tabs items={tabs} value={tab} variant="underline" size="sm" label="Later" onchange={(id: LaterState) => router.navigate(laterHref(id === "done"), { replace: true })} />
   </div>
   <div class="scroll">
     {#if later.error && !rows}

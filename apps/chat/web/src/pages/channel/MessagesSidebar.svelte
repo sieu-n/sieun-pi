@@ -17,12 +17,15 @@
   import { renameDialog } from "$lib/shell/rename-dialog.svelte";
   import { CHANNEL_DRAG_TYPE, channelDrop, groupChannels, sidebarSections, visibleRows, type BuiltinSection, type SectionId } from "$lib/shell/sidebar-sections.svelte";
   import { forYouHref } from "$pages/board/chips";
+  import { later, laterHref } from "$lib/later.svelte";
+  import Badge from "$lib/ui/Badge.svelte";
   import HostBadge from "$pages/agents/HostBadge.svelte";
 
   const current = $derived(router.conversationId);
   const names = (row: ConversationSummary): string[] => row.working.map((w) => w.name);
   const solo = $derived(sidebar.solo);
-  const forYouSelected = $derived(router.route.page === "messages" && router.route.rest[0] === "for-you");
+  const forYouSelected = $derived(router.messagesView === "for-you");
+  later.start();
   const channels = $derived(groupChannels(sidebar.data.channels, sidebarSections.model));
   const folded = (id: BuiltinSection | SectionId): boolean => sidebarSections.isFolded(id);
   /** A folded section still shows the open conversation and every unread one, as Slack does. */
@@ -148,6 +151,12 @@
   {/snippet}
 
   <div class="rows">
+    <SidebarRow href={laterHref()} label="Later" icon="bookmark" selected={router.messagesView === "later"}>
+      {#snippet trailing()}
+        {#if later.open}<span class="count" title="{later.open} in progress">{later.open}</span>{/if}
+        {#if later.due}<Badge value={later.due} tone="danger" title="{later.due} due" />{/if}
+      {/snippet}
+    </SidebarRow>
     <SidebarRow href={forYouHref()} label="For you" icon="inbox" selected={forYouSelected} unread={sidebar.data.forYou} />
   </div>
 
@@ -228,6 +237,11 @@
   }
   .done {
     opacity: 0.8;
+  }
+  .count {
+    color: var(--text-metadata);
+    font: var(--text-caption);
+    font-variant-numeric: tabular-nums;
   }
   .drop {
     border-radius: var(--radius-row);

@@ -7,6 +7,7 @@ import { SvelteMap } from "svelte/reactivity";
 import { api, type Item, type LaterList, type LaterRow, type LaterState } from "$lib/api";
 import { live } from "$lib/api/live.svelte";
 import { hrefFor, router } from "$lib/router.svelte";
+import { isOverdue } from "$lib/remind";
 import type { MenuEntry } from "$lib/ui/menu";
 import { toast } from "$lib/ui/toast.svelte";
 
@@ -65,6 +66,11 @@ class LaterStore {
     this.done = open.done;
   }
 
+  /** Open rows whose reminder came due and is not done or snoozed, which the sidebar's Later row counts in red, as Slack's Later badge does. */
+  get due(): number {
+    return this.lists.open?.filter((row) => isOverdue(row)).length ?? 0;
+  }
+
   /** Whether the post reads as saved: his click on its way, else the post's own mark. */
   saved(room: string, message: Pick<Message, "id" | "later">): boolean {
     return this.optimistic.get(key(room, message.id)) ?? !!message.later?.saved;
@@ -74,7 +80,7 @@ class LaterStore {
     this.optimistic.set(key(room, post), true);
     try {
       await api.saveLater(room, post);
-      this.note("Saved for later", { label: "View", run: () => router.navigate(hrefFor("later")) });
+      this.note("Saved for later", { label: "View", run: () => router.navigate(laterHref()) });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not save the message");
     } finally {
@@ -128,6 +134,9 @@ class LaterStore {
 }
 
 export const later = new LaterStore();
+
+/** Later is a Messages view: `#/c/later` is In progress and `#/c/later/done` Completed. */
+export const laterHref = (done = false): string => hrefFor("messages", done ? ["later", "done"] : ["later"]);
 
 /** The message menu's Save for later item, or Remove from Later on a saved post. */
 export function laterMenuItem(room: string, message: Pick<Message, "id" | "later">): MenuEntry {

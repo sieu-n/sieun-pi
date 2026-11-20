@@ -19,7 +19,6 @@
     search: MessagesSidebar,
     agents: AgentsSidebar,
     board: BoardSidebar,
-    later: null,
     settings: SettingsSidebar,
     ui: null,
   };

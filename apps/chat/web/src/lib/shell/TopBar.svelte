@@ -9,8 +9,6 @@
   import { isMac } from "$lib/ui/keyboard";
   import { tooltip } from "$lib/ui/tooltip";
   import { PAGES, hrefFor, router, type PageId } from "$lib/router.svelte";
-  import { later } from "$lib/later.svelte";
-  import { isOverdue } from "$lib/remind";
   import { sidebar } from "./sidebar.svelte";
   import { search } from "./search.svelte";
   import { soloDialog } from "./solo-dialog.svelte";
@@ -26,10 +24,7 @@
   let profileOpen = $state(false);
   let profileAnchor = $state<HTMLButtonElement>();
 
-  /** Later's tab counts the reminders that came due and are not done or snoozed, as Slack's Later badge does. */
-  later.start();
-  const overdue = $derived(later.lists.open?.filter((row) => isOverdue(row)).length ?? 0);
-  const tabs = $derived(PAGES.map((p) => ({ id: p.id, label: p.label, icon: p.icon, href: router.tabHref(p.id), ...(p.id === "later" ? { badge: overdue || null } : {}) })));
+  const tabs = $derived(PAGES.map((p) => ({ id: p.id, label: p.label, icon: p.icon, href: router.tabHref(p.id) })));
 
   const newItems: MenuEntry[] = [
     { id: "dm", label: "New DM", icon: "messages", shortcut: isMac ? "⌘N" : "Ctrl N", onselect: () => router.navigate(hrefFor("messages", ["new"], { kind: "dm" })) },

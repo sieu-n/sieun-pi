@@ -72,13 +72,11 @@
 
 <Shell>
   {#if router.route.page === "messages"}
-    {#if router.messagesView === "for-you"}<ForYouPage />{:else}<ChannelPage />{/if}
+    {#if router.messagesView === "for-you"}<ForYouPage />{:else if router.messagesView === "later"}<LaterPage />{:else}<ChannelPage />{/if}
   {:else if router.route.page === "agents"}
     <AgentsPage />
   {:else if router.route.page === "board"}
     <BoardPage />
-  {:else if router.route.page === "later"}
-    <LaterPage />
   {:else if router.route.page === "settings"}
     <SettingsPage />
   {:else if router.route.page === "search"}
