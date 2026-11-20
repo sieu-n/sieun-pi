@@ -85,7 +85,7 @@ export function searchTools(app: ChatApp) {
       from: Type.Optional(strings("Who wrote it: owner, agents for any agent, or an agent's name or id such as vent. Use it when you know who " +
         "said or did it. Several values match any of them.")),
       in: Type.Optional(Type.String({ description: "Which room: a channel name such as #sw-factory-build, a Solo room's name, an agent's name for " +
-        "its DM, or a room or job id; for a job, pass the part of a hit's id before the slash. Use it when you know where it was said." })),
+        "its DM, a job's name as a hit shows it, or a room or job id. Use it when you know where it was said or which job did it." })),
       where: Type.Optional(Type.Union([Type.Array(Type.Union(WHERE.map(w => Type.Literal(w)))), Type.Union(WHERE.map(w => Type.Literal(w)))], {
         description: "root is a top-level post in a room or DM; thread is a reply inside a post's thread; tool is inside an agent's work, " +
           "a tool call, its output or a job's message, which never shows as a post. Use thread for an answer given as a reply, and tool " +
