@@ -41,7 +41,10 @@
     return { id, name: agents.byId(id)?.name ?? id, kind: "agent" };
   }
   const picked = $derived(filters.from.map(who));
-  const fromLabel = $derived(picked.length ? `From: ${picked[0]!.name}${picked.length > 1 ? ` +${picked.length - 1}` : ""}` : "From");
+  /** "From: You, agent factory" names up to two picks, as Slack's chip does, and "+2" counts the rest; the chip ellipsizes a long pair. */
+  const fromLabel = $derived(
+    picked.length ? `From: ${picked.slice(0, 2).map(one => one.name).join(", ")}${picked.length > 2 ? ` +${picked.length - 2}` : ""}` : "From",
+  );
   const fromItems = $derived<PickerItem[]>([
     { id: "owner", label: owner?.name ?? "You", detail: owner && owner.name !== "You" ? "You" : undefined, avatar: { name: owner?.name ?? "You", kind: "person", seed: "owner" }, keywords: ["me", "owner"] },
     { id: "agents", label: "Any agent", detail: "Everyone but you", icon: "robot" },

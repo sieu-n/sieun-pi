@@ -19,6 +19,11 @@
   /** A tool's call or output shows the terminal icon; a job's own messages show the job's. */
   const placeIcon = $derived(place === "tool" && (hit.role === "tool" || hit.kind === "tool") ? "terminal" : where.icon);
   const kind = $derived(showWhat && place !== "thread" ? what(hit) : undefined);
+  /**
+   * A job that wrote the hit is already named as its author, so its place shows only the agent it works for and the row's width goes to the
+   * snippet: "kernel exits on spawn AGENT … in agent factory", with the whole path in the tooltip.
+   */
+  const named = $derived(!!where.parent && hit.author.name === hit.conversation.name);
 </script>
 
 <span class="meta" data-hit-meta>
@@ -30,14 +35,17 @@
     <span class="place" data-hit-place data-where="thread" title={`Reply in “${threadTitle}” in ${where.kind.toLowerCase()} ${roomName}`}>
       <Icon name="thread" size={14} label="Thread reply" />
       <span class="lead">reply in</span>
-      <span class="where">{threadTitle}</span>
+      <span class="where">“{threadTitle}”</span>
     </span>
   {:else if showPlace}
-    <span class="place" data-hit-place data-where={place} title={`${place === "tool" ? "Inside work in" : "In"} ${where.kind.toLowerCase()} ${where.parent ? `${where.parent} › ` : ""}${roomName}`}>
+    <span class="place" data-hit-place data-where={place} title={`${place === "tool" ? "Inside work in" : `In ${where.kind.toLowerCase()}`} ${where.parent ? `${where.parent} › ` : ""}${roomName}`}>
       <span class="lead">in</span>
       <Icon name={placeIcon} size={14} label={place === "tool" ? "Inside work" : where.kind} />
-      {#if where.parent}<span class="parent">{where.parent}</span><span class="crumb" aria-hidden="true">›</span>{/if}
-      <span class="where">{where.name}</span>
+      {#if named}<span class="where">{where.parent}</span>
+      {:else}
+        {#if where.parent}<span class="parent">{where.parent}</span><span class="crumb" aria-hidden="true">›</span>{/if}
+        <span class="where">{where.name}</span>
+      {/if}
       {#if where.archived}<span class="archived">(archived)</span>{/if}
     </span>
   {/if}
@@ -73,8 +81,10 @@
   .place :global(svg) {
     flex: none;
   }
+  /* The agent and the job both give way when the row is narrow, each in proportion to its length, and each keeps its ellipsis. */
   .parent {
-    flex: none;
+    flex: 0 1 auto;
+    min-width: 0;
     max-width: 12rem;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -84,6 +94,7 @@
     color: var(--text-metadata);
   }
   .where {
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;

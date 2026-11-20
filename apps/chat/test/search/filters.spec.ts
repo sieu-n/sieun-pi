@@ -58,7 +58,7 @@ test("two people in From, then Inside work, by keyboard: the request carries bot
   await expect(picker).toBeHidden();
   await expect(palette(page)).toBeVisible();
   const fromChip = bar(page).locator("[data-chip=from]");
-  await expect(fromChip).toHaveText("From: Vent +1");
+  await expect(fromChip).toHaveText("From: Vent, You");
   await expect(count(page)).toHaveText(messages(await total(page, { q: "relay", from: "ag_vent,owner" })));
 
   // The arrows move along the row: the From chip's x, In, then Where.

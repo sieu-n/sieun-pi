@@ -7,7 +7,7 @@ import { expect, test, type Page } from "@playwright/test";
  */
 const mod = process.platform === "darwin" ? "Meta" : "Control";
 
-type Hit = { id: string; conversation: { id: string; name: string; kind: string }; messageId: string; author: { name: string; kind: string }; role: string; kind: string; tool?: string };
+type Hit = { id: string; conversation: { id: string; name: string; kind: string; parent?: { id: string; name: string } }; messageId: string; author: { name: string; kind: string }; role: string; kind: string; tool?: string };
 type Result = { hits: Hit[]; total: number };
 
 const palette = (page: Page) => page.locator("[data-search-palette]");
@@ -37,13 +37,15 @@ test("Cmd K message rows show the author, an AGENT badge, the place and what kin
   for (const hit of hits) {
     const row = palette(page).locator(`[data-key="hit:${hit.id}"]`);
     await expect(row.locator("[data-hit-author]")).toHaveText(hit.author.kind === "owner" ? "You" : hit.author.name);
-    await expect(row.locator("[data-hit-place]")).toContainText(hit.conversation.name);
+    // A job that wrote the hit is named as its author, so its place names the agent it works for.
+    const named = hit.conversation.parent && hit.author.name === hit.conversation.name;
+    await expect(row.locator("[data-hit-place]")).toContainText(named ? hit.conversation.parent!.name : hit.conversation.name);
     if (hit.author.kind === "agent") await expect(row.getByText("AGENT", { exact: true })).toBeVisible();
     if (hit.role === "tool") await expect(row.locator("[data-hit-what]")).toHaveText(`tool output · ${hit.tool}`);
   }
   // A job reads under its parent agent.
   const job = hits.find(hit => hit.conversation.id.includes(":"))!;
-  await expect(palette(page).locator(`[data-key="hit:${job.id}"] [data-hit-place]`)).toContainText("Vent›");
+  await expect(palette(page).locator(`[data-key="hit:${job.id}"] [data-hit-place]`)).toHaveAttribute("title", new RegExp(`Vent › ${job.conversation.name}`));
 });
 
 test("Enter on the query opens the full results page with the exact count and one card per hit", async ({ page }) => {
