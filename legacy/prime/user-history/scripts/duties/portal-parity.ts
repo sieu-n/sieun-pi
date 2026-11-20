@@ -292,6 +292,12 @@ const CRAWLER_CAPACITY = "capacity_exhausted";
  */
 const CRAWLER_CLOSED = "temporarily_unavailable";
 const JOB_FINISHED = "job_finished";
+/**
+ * The portal's unbilled 503 when the crawler paused the source on purpose: a crawler `pipeline_paused`, or a /v1/media slot whose page refresh
+ * an operator pause holds, which the crawler marks with x-crawler-held (auto-sns-agent apps/api-portal media route). On 11-20 at 11:05Z a
+ * refresh_paused staging media slot under pause.media_refresh read as a portal media_unavailable and d2 read routes_failing_portal 1.
+ */
+const CRAWLER_PAUSED = "source_paused";
 /** The portal's 429 when the org's calls this clock minute reached its limit; it answers with Retry-After (apps/api-portal/src/lib/server/gateway.ts). */
 const RATE_LIMITED = "rate_limit_exceeded";
 
@@ -303,7 +309,7 @@ export function errorCode(body: unknown): string | undefined {
 
 /**
  * Who a probe answer blames. 2xx works. `upstream_*` is the crawler, because the portal passes crawler failures on with that code
- * (audit findings-brief.md). 429 and 402 come from this run's own test orgs, and status 0 is a call that got no answer, so those are unprobed.
+ * (audit findings-brief.md), and so are capacity_exhausted, temporarily_unavailable and source_paused. 429 and 402 come from this run's own test orgs, and status 0 is a call that got no answer, so those are unprobed.
  * Every other answer is the portal's: a 503 batch_unavailable, a 400 on the docs example or on the portal's own cursor, a 5xx of its own.
  */
 export function classify(status: number, body: unknown): { verdict: Verdict; code?: string | undefined } {
@@ -312,7 +318,7 @@ export function classify(status: number, body: unknown): { verdict: Verdict; cod
   // A cancel of a job that already ended answers 409 job_finished with the job's real state, which is the route working.
   if (status === 409 && code === JOB_FINISHED) return { verdict: "ok", code };
   if (status === 0 || status === 429 || status === 402) return { verdict: "unprobed", code };
-  if (code?.startsWith("upstream_") || code === CRAWLER_CAPACITY || code === CRAWLER_CLOSED) return { verdict: "crawler", code };
+  if (code?.startsWith("upstream_") || code === CRAWLER_CAPACITY || code === CRAWLER_CLOSED || code === CRAWLER_PAUSED) return { verdict: "crawler", code };
   return { verdict: "portal", code };
 }
 

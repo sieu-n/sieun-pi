@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { MEDIA_OP, UNMEASURED_PCT, firstMediaUrl, heldPaidReads, parityMetrics, scoredRoutes, type OpenApi, type ProbeResult, type Route } from "../scripts/duties/portal-parity.ts";
+import { MEDIA_OP, UNMEASURED_PCT, firstMediaUrl, heldPaidReads, parityMetrics, probeMedia, scoredRoutes, type OpenApi, type ProbeResult, type Route } from "../scripts/duties/portal-parity.ts";
 
 const doc = (...ops: string[]): OpenApi => {
   const paths: NonNullable<OpenApi["paths"]> = {};
@@ -143,4 +143,14 @@ test("the keyless /v1/media read scores from its own probe though no openapi lis
   assert.equal(broken.prod_routes_missing, 0);
   const fixed = run({ routes: [...ROUTES, MEDIA], crawler: withMedia, probes: { ...probes, prod: [...probes.prod, ok(MEDIA_OP)] } }).metrics;
   assert.equal(fixed.prod_working_pct, 100);
+});
+
+test("a keyless media read the crawler held on purpose scores as the crawler's, not the portal's", async (t) => {
+  // 11-20 11:05Z: a refresh_paused staging slot under pause.media_refresh answered 503 and d2 read routes_failing_portal 1.
+  const answer = (code: string) => async () => Response.json({ ok: false, error: { code, message: "paused" } }, { status: 503 });
+  const url = "https://staging-api.virev.ai/v1/media/tiktok_account/275923/profile_pic?e=1795824000&s=7334454549c453ddf83cf23898bf4a00";
+  t.mock.method(globalThis, "fetch", answer("source_paused"));
+  assert.equal((await probeMedia(url, {})).verdict, "crawler");
+  t.mock.method(globalThis, "fetch", answer("media_unavailable"));
+  assert.equal((await probeMedia(url, {})).verdict, "portal");
 });
