@@ -24,6 +24,8 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
    Items sit under topic bullets of a word or two, such as `- git` or `- tests`, indented two spaces.
 5. An ask that takes several checks or steps first gets its checks as one post of `- [ ]` items under their topics, under the short answer when the agent knows one, and the agent edits that post with `edit_message` as items finish, so the last edit carries the answer and no new post goes out for progress.
    Every edit keeps the shape of rule 4, the last one too, so an edit never flattens the topic groups into one list or puts three sentences on top.
+   Every version of the checklist stays within 80 words, the last edit too, and a nested detail line stays only when it adds a fact the top line and its item lack.
+   A finished or blocked item says so in its own line, such as `- [ ] Mac links, unreachable while it sleeps`, with no sub-bullets that repeat the top line or promise a later check.
 6. Lowercase and a fitting emoji are fine, and labels, bold and headings are out.
 7. A post holds no table unless he asked for one, and its detail goes on a wiki page linked in the same post.
 8. When a reaction says it all, the agent reacts and posts nothing.
@@ -35,6 +37,8 @@ He asked for rule 5 under p103 and p105: "checks를 먼저 얘기하고, `edit` 
 When a comm thread hands such an ask to its work thread, it posts the checklist first, and the work thread ticks the items with `edit_message("reply:<room>/<his post id>", <whole post>)`.
 The d4 duty's blind run of 11-20 08:22Z failed one fresh agent on each rule: a last edit that flattened the topic groups into one list with items over 35 words, and a last edit that opened with three sentences on one line, read as "the answer on one line".
 So the comm role text, its hand-over task and `edit_message`'s own text all name the one short sentence on top, the short items with nested detail and the topic groups in every edit.
+The 17:52 KST d4 run failed a checklist for "is it all working?" whose last edit grew from 63 to 95 words, because its open Mac items got sub-bullets that repeated the top line, such as "I'll check again once it wakes".
+So the same three texts now keep every edit within 80 words and allow a nested detail only for a new fact.
 A multi-point post looks like this, and the room draws the tasks as checkboxes.
 
 ```markdown

@@ -92,6 +92,7 @@ function workSteps(work: string, room: string): string[] {
       "When the ask takes several checks or steps, its first reply is a checklist instead, with one `- [ ]` item per check or step grouped under topic bullets, and the answer on top in one short sentence if you know it. Post it with tell_owner's `reply_to` before you hand the task over. " +
       `In the task, tell the work thread to tick each item on that post as it finishes with \`edit_message("reply:${room}/<his post's [message id]>", <the whole post>)\`, and to make its last edit carry the answer. ` +
       "Tell it too to keep the post's shape in every edit, the last one included: the topic bullets with their items nested under them, each item one short line with any detail as a bullet nested under it, and the answer on top as one short sentence of at most 20 words. " +
+      "Tell it that every edit, the last one too, stays within 80 words, that a nested detail line stays only when it adds a fact the top line and its item lack, and that a finished or blocked item says so in its own line with no sub-bullets. " +
       "When the report or the work-done notice comes, read the post, and if its last edit lacks the answer or an item, or lost that shape, edit it yourself with `edit_message` and take 👀 off. " +
       "A new post goes out only for a question to him, or when the answer is too long for the checklist.",
   ];
@@ -127,6 +128,9 @@ export const IDEAL_REPLIES_PAGE = "wiki:agents/agent-factory/jobs/2026/11/20/113
  * into one task list with items over 35 words, and a checklist whose last edit opened with three sentences on one line, which the agent
  * read as "the answer on one line". So the answer on top is one short sentence, each item one short line with detail nested under it, and
  * the topic groups hold in every edit.
+ * The 17:52 KST d4 run then failed a checklist for "is it all working?" whose last edit grew from 63 to 95 words: its open Mac items got
+ * sub-bullets that repeated the top line ("its last memory sync push was at 14:17 KST today", "I'll check again once it wakes"). So every
+ * edit stays within 80 words, a nested detail must add a fact, and a finished or blocked item says so in its own line.
  * Agent factory listed Hey, Superhuman, Gmail and Linear in one line each for "what are some features other apps provide regarding this?",
  * and he asked under it (p97): "Superhuman's "remind me if no reply" intereseting can you elaborate? 이런거 말할떄는 가장 흥미로운거 하나는 제대로
  * 설명해야지^^". So a list of options explains its most interesting one.
@@ -143,6 +147,9 @@ function slackPostStep(): string {
     "Write each done or open item as a task, `- [x] done thing` or `- [ ] open thing`, so he sees at a glance what is done and what is left. " +
     "When an ask takes several checks or steps, say the checks first: your first post lists them as `- [ ]` items under their topics, under the short answer on top if you already know it. " +
     "Then edit that same post with `edit_message` as each item finishes, ticking it to `- [x]` with a short result after it, and add or reword items when the plan changes, so the last edit carries the answer on top as one short sentence. " +
+    "The checklist post stays within 80 words in its first version and in every edit, the last one too, so an edit that ticks an item rewords that item instead of adding lines under it. " +
+    "Nest a detail line under an item only when it adds a fact the top line and the item lack, and never repeat there the top line's reason, a time it already gives or a promise to check again. " +
+    "A finished or blocked item says so in its own line, as in `- [x] links resolve` or `- [ ] Mac links, unreachable while it sleeps`, with no sub-bullets under it, and more detail goes on a linked wiki page. " +
     "Post nothing new for progress. A quick question still gets one line and no checklist. " +
     "Casual is right: lowercase and a fitting emoji are fine, and no labels, bold, headings or \"Here is\". " +
     "Never end a post with a sign-off emoji such as 👍, 🎉 or ✅ after the answer, as in \"yep, all 18 pass 🎉\", and end on the words. " +

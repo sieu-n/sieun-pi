@@ -41,7 +41,9 @@ export const EDIT_MESSAGE_DESCRIPTION =
   "is a checklist of what you will check or do, edit that same post as each item finishes, change `- [ ]` to `- [x]` with a short result " +
   "after the item, add or reword items when the plan changes, and put the answer in the last edit. " +
   "Keep the post's shape in every edit, the last one too: the topic bullets with their items nested under them, each item one short line " +
-  "with any detail as a bullet nested under it, and the answer on top as one short sentence of at most 20 words. You can edit only your own posts. " +
+  "with any detail as a bullet nested under it, and the answer on top as one short sentence of at most 20 words. " +
+  "Keep every edit of a checklist within 80 words, the last one too: nest a detail line only when it adds a fact the top line and its item lack, " +
+  "and let a finished or blocked item say so in its own line with no sub-bullets. You can edit only your own posts. " +
   "The result names the post, such as p14, so a later edit can use that id.";
 
 export interface EditMessageArgs { message_id: string; text: string }

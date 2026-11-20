@@ -18,6 +18,7 @@ import { PRIME_BASE_PROMPT } from "@sieun-pi/pi-family/preamble";
 import { CHAT_BRIEF } from "../../../../legacy/prime/user-history/src/chat-brief.ts";
 import { agentHarnessDir, AgentRoleDoc, briefFile, commInstructions, conversationHarnessDir, parseAgentRef, SHARED_STYLE_TEXT, workInstructions, type AppliedRole } from "../../src/durable/agent-profile.ts";
 import { threadHarnessDir } from "../../src/durable/prime-harness.ts";
+import { EDIT_MESSAGE_DESCRIPTION } from "../../src/durable/room-tools.ts";
 import { primeModules, primePromptParts, primeResources } from "../../src/durable/prime-prompt.ts";
 import { DurableThreads } from "../../src/durable/threads.ts";
 import { MODEL, textOf } from "./crash-scenario.ts";
@@ -159,6 +160,19 @@ test("a multi-point post and its checklist edits keep a one-sentence answer, sho
     assert.match(text, /Never end a post with a sign-off emoji[\s\S]*Never paste a raw JSON or log line/);
     assert.match(text, /Keep ✅ and 👀 out of your post text too/);
   }
+});
+
+test("every edit of a checklist stays within 80 words, with nested detail only for a new fact (d4 blind run, 11-20 17:52 KST)", () => {
+  for (const room of ["dm_vent", "ch_1a2b3c4d"]) {
+    const text = commInstructions({ agent: "ag_vent", room, work: "w1" });
+    assert.match(text, /The checklist post stays within 80 words in its first version and in every edit, the last one too/);
+    assert.match(text, /Nest a detail line under an item only when it adds a fact the top line and the item lack/);
+    assert.match(text, /A finished or blocked item says so in its own line[\s\S]*with no sub-bullets under it/);
+    assert.match(text, /Tell it that every edit, the last one too, stays within 80 words/);
+    assert.match(text, /Never end a post with a sign-off emoji[\s\S]*Never paste a raw JSON or log line/);
+    assert.match(text, /Keep ✅ and 👀 out of your post text too/);
+  }
+  assert.match(EDIT_MESSAGE_DESCRIPTION, /Keep every edit of a checklist within 80 words, the last one too: nest a detail line only when it adds a fact/);
 });
 
 test("an agent thread gets Prime's preamble first, the brief after the AGENTS.md files, and the agent's memory in its digest", async () => {
