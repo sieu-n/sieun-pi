@@ -280,7 +280,7 @@ export interface Proof { rate: number; days: string[]; hiDays: number; hiDeaths:
  * headline must be today's capacity, not a two-week-old window", because the fleet, its seller lots and the pace changed after the 10-15 and
  * 10-16 pair proved 1,459. `best` is the highest rate any window proved, a later window winning ties, kept as run detail.
  */
-export interface ProvenRates { newestDays: string[] | null; newest: Proof | null; best: Proof | null }
+export interface ProvenRates { newestDays: string[] | null; newest: Proof | null; best: Proof | null; massActions: Death[][] }
 
 /**
  * The saturated hours an account needs before its hourly rate counts; with fewer, its day counts at the pages it read.
@@ -334,26 +334,63 @@ const median = (values: readonly number[]): number => {
 };
 
 /**
+ * More than this many first Instagram verdicts inside MASS_ACTION_MS make one mass action: the owner's canary line, 10-14, "Canary accounts that
+ * Instagram killed in the last 60 min <= 3".
+ */
+export const MASS_ACTION_DEATHS = 3;
+export const MASS_ACTION_MS = HOUR;
+
+/**
+ * The first Instagram verdicts that belong to a mass action, grouped by action, oldest first: every verdict in a MASS_ACTION_MS window that holds more
+ * than MASS_ACTION_DEATHS of them, with verdicts under MASS_ACTION_MS apart joined into one action. Such an action is Instagram acting on a cluster of
+ * accounts at once, and its victims' read rates do not separate them from the survivors: from 23:13Z on 11-18 to 00:02Z on 11-19 one action took 23
+ * of the 24 prod box readers on 64.34.205.244, .246 and .247 and 5 of staging's 8 on .245, at every pace from about 15 to 50 pages an hour, while the
+ * 23 replacements on the same addresses read about 16,000 pages the next day with 0 deaths (auto-sns-agent EVIDENCE.md L34). Counted as per-account
+ * verdicts, its 23 deaths at about 1,100 pages each against the few account-days under that left the 11-18 and 11-19 window proving 37 pages a day.
+ */
+export function massActions(verdicts: readonly Death[]): Death[][] {
+  const sorted = [...verdicts].sort((a, b) => a.at - b.at);
+  const inAction = new Set<Death>();
+  for (let i = 0, j = 0; i < sorted.length; i++) {
+    while (sorted[j]!.at < sorted[i]!.at - MASS_ACTION_MS) j++;
+    if (i - j + 1 > MASS_ACTION_DEATHS) for (let k = j; k <= i; k++) inAction.add(sorted[k]!);
+  }
+  const actions: Death[][] = [];
+  for (const death of sorted.filter(death => inAction.has(death))) {
+    const last = actions.at(-1);
+    if (last && death.at - last.at(-1)!.at < MASS_ACTION_MS) last.push(death);
+    else actions.push([death]);
+  }
+  return actions;
+}
+
+/**
  * The newest window's proof and the best one, as ProvenRates says. `served` (servedDays) sets the rates tried and the cohort ceiling, and the
- * death evidence stays the pages each account read.
+ * death evidence stays the pages each account read. A mass action (massActions) proves nothing about one account's rate, so its verdicts leave the
+ * evidence, and so do its victims' account-days on the day of their verdict and the day before, read and served alike, the days its pages24h
+ * covers, so those pages count neither as a death nor as a survival. ProvenRates.massActions lists the actions for the capacity line.
  */
 export function provenRates(days: readonly DayPages[], deaths: readonly Death[], cohort: number, served: readonly DayPages[] = days): ProvenRates {
-  if (cohort < 1) return { newestDays: null, newest: null, best: null };
+  if (cohort < 1) return { newestDays: null, newest: null, best: null, massActions: [] };
+  const firstVerdicts = new Map<number, Death>();
+  for (const death of [...deaths].sort((a, b) => a.at - b.at))
+    if (causeOf(death) === "instagram" && death.pages24h > 0 && !firstVerdicts.has(death.accountId)) firstVerdicts.set(death.accountId, death);
+  const actions = massActions([...firstVerdicts.values()]);
+  const acted = new Set(actions.flat());
+  const dayOf = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
+  const actedDays = new Set(actions.flat().flatMap(death => [`${dayOf(death.at - DAY)} ${death.accountId}`, `${dayOf(death.at)} ${death.accountId}`]));
   const dayPages = (rows: readonly DayPages[]): Map<string, number[]> => {
     const byDay = new Map<string, number[]>();
-    for (const row of rows) if (row.pages > 0) byDay.set(row.day, [...byDay.get(row.day) ?? [], row.pages]);
+    for (const row of rows) if (row.pages > 0 && !actedDays.has(`${row.day} ${row.accountId}`)) byDay.set(row.day, [...byDay.get(row.day) ?? [], row.pages]);
     for (const pages of byDay.values()) pages.sort((a, b) => b - a);
     return byDay;
   };
   const byDay = dayPages(served);
   const readByDay = dayPages(days);
-  const firstVerdicts = new Map<number, Death>();
-  for (const death of [...deaths].sort((a, b) => a.at - b.at))
-    if (causeOf(death) === "instagram" && death.pages24h > 0 && !firstVerdicts.has(death.accountId)) firstVerdicts.set(death.accountId, death);
   const proofOf = (run: string[]): Proof | null => {
     const first = run[0]!;
     const start = Date.parse(`${first}T00:00:00Z`);
-    const verdicts = [...firstVerdicts.values()].filter(death => death.at >= start).map(death => death.pages24h);
+    const verdicts = [...firstVerdicts.values()].filter(death => death.at >= start && !acted.has(death)).map(death => death.pages24h);
     const accountDays = [...readByDay].filter(([day]) => day >= first).flatMap(([, pages]) => pages);
     const ceiling = Math.min(...run.map(day => byDay.get(day)![cohort - 1] ?? 0));
     const rates = [...new Set(run.flatMap(day => byDay.get(day)!))].filter(rate => rate <= ceiling).sort((a, b) => b - a);
@@ -366,7 +403,7 @@ export function provenRates(days: readonly DayPages[], deaths: readonly Death[],
     }
     return null;
   };
-  const result: ProvenRates = { newestDays: null, newest: null, best: null };
+  const result: ProvenRates = { newestDays: null, newest: null, best: null, massActions: actions };
   for (const first of [...byDay.keys()].sort()) {
     const run = [first];
     while (run.length < PROOF_DAYS && byDay.has(nextDay(run.at(-1)!))) run.push(nextDay(run.at(-1)!));
@@ -459,7 +496,7 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
     const pauses = Object.entries(data.config).filter(([key, value]) => key.startsWith("pause.engage") && value === "true").map(([key]) => key);
     if (pauses.length) flagged.push({ at, kind: "pause", excerpt: `prod pause keys on: ${pauses.join(", ")}` });
     if (data.days && data.healthy !== undefined && data.lapsed) {
-      const { newestDays, newest: proof, best } = provenRates(data.days, data.deaths, want, data.hours ? servedDays(data.days, data.hours, data.heldHours) : data.days);
+      const { newestDays, newest: proof, best, massActions: actions } = provenRates(data.days, data.deaths, want, data.hours ? servedDays(data.days, data.hours, data.heldHours) : data.days);
       const rate = proof?.rate ?? 0;
       const healthy = data.healthy;
       const counted = `${healthy} prod accounts that can read now (admissible: active, bound and passing egress admission)`;
@@ -472,11 +509,13 @@ export function report(data: EngageData, dutyMetrics: readonly DutyMetric[]): Pr
       const need = rate ? Math.ceil(PAGES_A_DAY_GOAL / rate) : null;
       const lag = windowEnd !== undefined ? ` This reads the window ${newestDays!.join(" and ")}, and each day leaves it ${PROOF_DAYS} days after it ends: the newest window day leaves at ${utc(windowEnd + CAPACITY_WINDOW_MS)}.` : "";
       const older = best && best !== proof ? ` The best older window, ${best.days.join(" and ")}, proved ${fmt(best.rate)} (run detail only, not the headline).` : "";
+      const action = actions.at(-1);
+      const mass = action ? ` Left out as a mass action, not a rate: ${action.length} Instagram verdicts from ${utc(action[0]!.at)} to ${utc(action.at(-1)!.at)} and their accounts' days.` : "";
       flagged.push({ at, kind: "capacity", excerpt: (proof
         ? `${counted} x ${fmt(rate)} pages a day per account, proven on the newest window ${proof.days.join(" and ")} (the ${want}th account could serve that much each day, at its median pages in hours its pace was full times its serveable hours; since then ${proof.hiDeaths} Instagram verdicts in ${fmt(proof.hiDays)} account-days at or over it and ${proof.loDeaths} in ${fmt(proof.loDays)} under it, p ${proof.p.toFixed(2)}) = ${fmt(healthy * rate)} pages a day.${waiting} `
           + `${need! > healthy ? `${need! - healthy} more accounts that can read at that rate, or ${fmt(Math.ceil(PAGES_A_DAY_GOAL / Math.max(1, healthy)))} pages a day on these, reach ${fmt(PAGES_A_DAY_GOAL)}. ` : ""}`
-          + `${onHand} prod accounts on hand (not dead, not moved to another world) x ${fmt(rate)} = ${fmt(onHand * rate)}${onHand * rate < PAGES_A_DAY_GOAL ? `, short of ${fmt(PAGES_A_DAY_GOAL)}` : ", enough once they can read"}.${lag}${older}`
-        : `${counted}, and the newest window ${newestDays ? newestDays.join(" and ") : "(none)"} proves no rate: it had no ${want} accounts read at one rate whose readers did not die more often than the rest.${lag}${older}`).slice(0, 1000) });
+          + `${onHand} prod accounts on hand (not dead, not moved to another world) x ${fmt(rate)} = ${fmt(onHand * rate)}${onHand * rate < PAGES_A_DAY_GOAL ? `, short of ${fmt(PAGES_A_DAY_GOAL)}` : ", enough once they can read"}.${mass}${lag}${older}`
+        : `${counted}, and the newest window ${newestDays ? newestDays.join(" and ") : "(none)"} proves no rate: it had no ${want} accounts read at one rate whose readers did not die more often than the rest.${mass}${lag}${older}`).slice(0, 1200) });
     }
     if (data.lapsed && (data.lapsed.waiting || data.lapsed.blocked)) flagged.push({ at, kind: "lapsed_bindings", excerpt: (`${data.lapsed.waiting + data.lapsed.blocked} active prod accounts have no live proxy session binding, the oldest since ${utc(data.lapsed.oldestAt!)}. `
       + `${data.lapsed.waiting} wait on the renewal loop and are left out of capacity until they read again once the proxy answers (a GeoNode supply hold or neutral_address_unresolved renewals point at the proxy). `

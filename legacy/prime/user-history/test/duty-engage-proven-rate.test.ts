@@ -47,6 +47,20 @@ test("two verdicts among few high readers unprove their rate, and the rate under
   assert.equal(provenRates(days, deaths.slice(1), 11).newest?.rate, 640, "one verdict among 26 high account-days is within chance");
 });
 
+test("a mass action's verdicts and its victims' days leave the proof, so it does not read as a per-account rate (prod box action 11-18)", () => {
+  const survivors = (day: string): DayPages[] => [
+    ...Array.from({ length: 21 }, (_, i) => ({ day, accountId: 300 + i, pages: 700 })),
+    ...Array.from({ length: 4 }, (_, i) => ({ day, accountId: 330 + i, pages: 300 })),
+  ];
+  const victims = Array.from({ length: 20 }, (_, i) => i + 1);
+  const days = [...victims.map(accountId => ({ day: "2026-11-18", accountId, pages: 1100 })), ...survivors("2026-11-19"), ...survivors("2026-11-20")];
+  const deaths = victims.map((id, i) => verdict(id, `2026-11-19T00:0${i % 3}:00Z`, "account_suspended", 1100));
+  const rates = provenRates(days, deaths, 11);
+  assert.equal(rates.newest?.rate, 700);
+  assert.deepEqual(rates.massActions.map(action => action.length), [20]);
+  assert.deepEqual(provenRates(days, deaths.slice(0, 3), 11).massActions, [], "3 verdicts in an hour are within the owner's canary line and stay rate evidence");
+});
+
 test("a verdict with no page in its last 24 h and a cause that is not Instagram's say nothing about a rate", () => {
   const days = [...fleet("2026-10-28", [[13, 640], [145, 150]]), ...fleet("2026-10-29", [[13, 640], [145, 150]])];
   const deaths = [
@@ -58,7 +72,7 @@ test("a verdict with no page in its last 24 h and a cause that is not Instagram'
 
 test("no rate is proven when fewer than a cohort read on a day", () => {
   const rates = provenRates([...fleet("2026-10-28", [[10, 640]]), ...fleet("2026-10-29", [[13, 640]])], [], 11);
-  assert.deepEqual(rates, { newestDays: ["2026-10-28", "2026-10-29"], newest: null, best: null });
+  assert.deepEqual(rates, { newestDays: ["2026-10-28", "2026-10-29"], newest: null, best: null, massActions: [] });
 });
 
 test("the headline is the newest window, and an older higher proof is only the best (launch VP, 10-30)", () => {
