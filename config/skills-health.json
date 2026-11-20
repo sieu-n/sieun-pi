@@ -1,0 +1,1279 @@
+{
+ "about": "Judgments behind scripts/skills-inventory.py: the useful-skill definition, a group per skill, a keep/merge/remove verdict per copy (matched by name and a path fragment), and the harness notes that restate a skill. Facts such as hashes, links and usage come from the scan, never from this file.",
+ "definition": "A useful skill is one that real sessions load and act on, and it passes five tests. 1. Transcripts from the last 30 days show agents reading its SKILL.md, calling its Python module or CLI, or invoking it through Claude Code's Skill tool; being listed in the system prompt does not count. 2. Its text changes what an agent does: it carries a procedure, an API, paths or checks a model would get wrong without it. 3. It holds more than one rule (c99); a single rule belongs in AGENTS.md or the area's existing skill. 4. It exists once per box and loads one way; an upstream skill stays as upstream ships it (c226), with no unrecorded in-place edit, second repo copy, pointer stub or rule file that repeats it. 5. Every path, script, tool and sibling skill it names still exists. Keep means it passes all five; merge means it has real content but fails test 3 or 4, so it folds into a named target; remove means it fails test 1 with nothing unique, or it is a copy, pointer, stray install or dead folder.",
+ "groups": {
+  "unslop": "writing and docs",
+  "wiki": "writing and docs",
+  "no-comments": "writing and docs",
+  "linear-ticket": "writing and docs",
+  "board": "board and jobs",
+  "resume-paused-sessions": "board and jobs",
+  "skills": "board and jobs",
+  "agent-message": "Prime runtime",
+  "agent-observe": "Prime runtime",
+  "refine": "Prime runtime",
+  "goal": "Prime runtime",
+  "compact": "Prime runtime",
+  "rlm-heartbeat": "Prime runtime",
+  "edit": "Prime runtime",
+  "attach-image": "Prime runtime",
+  "mcp": "Prime runtime",
+  "skill-creator": "Prime runtime",
+  "prime-intellect": "Prime runtime",
+  "aside-browser": "browser and web",
+  "websearch": "browser and web",
+  "modern-web-guidance": "browser and web",
+  "poteto-mode": "poteto workflow",
+  "poteto-agent": "poteto workflow",
+  "architect": "poteto workflow",
+  "swarm": "poteto workflow",
+  "show-me-your-work": "poteto workflow",
+  "why": "poteto workflow",
+  "setup-pstack": "poteto workflow",
+  "figure-it-out": "poteto workflow",
+  "interrogate": "poteto workflow",
+  "create-verification-skill": "poteto workflow",
+  "typescript-best-practices": "poteto workflow",
+  "typescript": "poteto workflow",
+  "principle-boundary-discipline": "poteto principles",
+  "principle-encode-lessons-in-structure": "poteto principles",
+  "principle-fix-root-causes": "poteto principles",
+  "principle-laziness-protocol": "poteto principles",
+  "principle-make-operations-idempotent": "poteto principles",
+  "principle-minimize-reader-load": "poteto principles",
+  "principle-model-the-domain": "poteto principles",
+  "principle-prove-it-works": "poteto principles",
+  "principle-separate-before-serializing-shared-state": "poteto principles",
+  "principle-sequence-verifiable-units": "poteto principles",
+  "sw-factory": "board and jobs"
+ },
+ "verdicts": [
+  {
+   "name": "board",
+   "verdict": "keep",
+   "reason": "Agents call its board API in most chats and jobs, and nothing else holds it.",
+   "pathContains": "src/sieun-pi/skills/board"
+  },
+  {
+   "name": "wiki",
+   "verdict": "keep",
+   "reason": "Agents read it for the wiki API and page rules in most writing jobs.",
+   "pathContains": "src/sieun-pi/skills/wiki"
+  },
+  {
+   "name": "aside-browser",
+   "verdict": "keep",
+   "reason": "It wraps a browser API agents cannot guess, and many jobs call it.",
+   "pathContains": "src/sieun-pi/skills/aside-browser"
+  },
+  {
+   "name": "websearch",
+   "verdict": "keep",
+   "reason": "Our Virev search API; the bundled copy is off, so it loads once.",
+   "pathContains": "src/sieun-pi/skills/websearch"
+  },
+  {
+   "name": "resume-paused-sessions",
+   "verdict": "keep",
+   "reason": "Read in 37 chats and jobs in 30 days, and it ships the recovery script.",
+   "pathContains": "resume-paused-sessions"
+  },
+  {
+   "name": "poteto-mode",
+   "verdict": "keep",
+   "reason": "AGENTS.md sends every job to it; its pstack edits are a recorded port.",
+   "pathContains": "src/sieun-pi/skills/poteto-mode"
+  },
+  {
+   "name": "poteto-agent",
+   "verdict": "keep",
+   "reason": "It holds the spawn snippet every poteto child brief needs.",
+   "pathContains": "src/sieun-pi/skills/poteto-agent"
+  },
+  {
+   "name": "unslop",
+   "verdict": "keep",
+   "reason": "AGENTS.md rule 1 sends every session to it before prose.",
+   "pathContains": "src/sieun-pi/skills/unslop"
+  },
+  {
+   "name": "typescript-best-practices",
+   "verdict": "keep",
+   "reason": "It holds concrete type patterns that change how types get written.",
+   "pathContains": "src/sieun-pi/skills/typescript-best-practices"
+  },
+  {
+   "name": "no-comments",
+   "verdict": "keep",
+   "reason": "It holds a real review procedure for comments in a diff.",
+   "pathContains": "src/sieun-pi/skills/no-comments"
+  },
+  {
+   "name": "setup-pstack",
+   "verdict": "keep",
+   "reason": "It owns the role model file every pstack skill reads before a spawn.",
+   "pathContains": "src/sieun-pi/skills/setup-pstack"
+  },
+  {
+   "name": "why",
+   "verdict": "keep",
+   "reason": "It holds an investigation procedure and prompts a model would not have.",
+   "pathContains": "src/sieun-pi/skills/why"
+  },
+  {
+   "name": "modern-web-guidance",
+   "verdict": "keep",
+   "reason": "The owner asked for it on 11-19, and it is byte-identical to upstream and linked once.",
+   "pathContains": "src/sieun-pi/skills/modern-web-guidance"
+  },
+  {
+   "name": "architect",
+   "verdict": "merge",
+   "reason": "Few sessions read it, though poteto-mode names it, so its steps fit a playbook.",
+   "pathContains": "src/sieun-pi/skills/architect",
+   "mergeInto": "poteto-mode playbooks/architect.md"
+  },
+  {
+   "name": "swarm",
+   "verdict": "merge",
+   "reason": "No session read it in 30 days, and Prime's delegation prompt covers most of it.",
+   "pathContains": "src/sieun-pi/skills/swarm",
+   "mergeInto": "poteto-mode Subagents section"
+  },
+  {
+   "name": "show-me-your-work",
+   "verdict": "merge",
+   "reason": "No session read it in 30 days, and only poteto-mode routes to it.",
+   "pathContains": "src/sieun-pi/skills/show-me-your-work",
+   "mergeInto": "poteto-mode playbooks/figure-it-out.md"
+  },
+  {
+   "name": "principle-fix-root-causes",
+   "verdict": "merge",
+   "reason": "One principle that poteto-mode's Principles table already sums up, and few sessions read it.",
+   "pathContains": "src/sieun-pi/skills/principle-fix-root-causes",
+   "mergeInto": "poteto-mode Principles section"
+  },
+  {
+   "name": "principle-laziness-protocol",
+   "verdict": "merge",
+   "reason": "One principle that poteto-mode's Principles table already sums up, and few sessions read it.",
+   "pathContains": "src/sieun-pi/skills/principle-laziness-protocol",
+   "mergeInto": "poteto-mode Principles section"
+  },
+  {
+   "name": "principle-prove-it-works",
+   "verdict": "merge",
+   "reason": "One principle that poteto-mode's Principles table already sums up, and few sessions read it.",
+   "pathContains": "src/sieun-pi/skills/principle-prove-it-works",
+   "mergeInto": "poteto-mode Principles section"
+  },
+  {
+   "name": "principle-separate-before-serializing-shared-state",
+   "verdict": "merge",
+   "reason": "One principle that poteto-mode's Principles table already sums up, and few sessions read it.",
+   "pathContains": "src/sieun-pi/skills/principle-separate-before-serializing-shared-state",
+   "mergeInto": "poteto-mode Principles section"
+  },
+  {
+   "name": "principle-sequence-verifiable-units",
+   "verdict": "merge",
+   "reason": "One principle that poteto-mode's Principles table already sums up, and few sessions read it.",
+   "pathContains": "src/sieun-pi/skills/principle-sequence-verifiable-units",
+   "mergeInto": "poteto-mode Principles section"
+  },
+  {
+   "name": "principle-make-operations-idempotent",
+   "verdict": "merge",
+   "reason": "One principle that poteto-mode's Principles table already sums up, and few sessions read it.",
+   "pathContains": "src/sieun-pi/skills/principle-make-operations-idempotent",
+   "mergeInto": "poteto-mode Principles section"
+  },
+  {
+   "name": "principle-model-the-domain",
+   "verdict": "merge",
+   "reason": "One principle that poteto-mode's Principles table already sums up, and few sessions read it.",
+   "pathContains": "src/sieun-pi/skills/principle-model-the-domain",
+   "mergeInto": "poteto-mode Principles section"
+  },
+  {
+   "name": "principle-encode-lessons-in-structure",
+   "verdict": "merge",
+   "reason": "One principle that poteto-mode's Principles table already sums up, and few sessions read it.",
+   "pathContains": "src/sieun-pi/skills/principle-encode-lessons-in-structure",
+   "mergeInto": "poteto-mode Principles section"
+  },
+  {
+   "name": "principle-boundary-discipline",
+   "verdict": "merge",
+   "reason": "One principle that typescript-best-practices already states, and no session read it.",
+   "pathContains": "src/sieun-pi/skills/principle-boundary-discipline",
+   "mergeInto": "typescript-best-practices"
+  },
+  {
+   "name": "figure-it-out",
+   "verdict": "remove",
+   "reason": "Commit 7ff9d62e moved it into a poteto-mode playbook, but the folder stayed.",
+   "pathContains": "src/sieun-pi/skills/figure-it-out"
+  },
+  {
+   "name": "interrogate",
+   "verdict": "remove",
+   "reason": "Unlinked since 10-14 for zero use, and no session read it in 30 days.",
+   "pathContains": "src/sieun-pi/skills/interrogate"
+  },
+  {
+   "name": "create-verification-skill",
+   "verdict": "remove",
+   "reason": "Unlinked since 10-18, no reads in 30 days, and repos keep their own verify skills.",
+   "pathContains": "src/sieun-pi/skills/create-verification-skill"
+  },
+  {
+   "name": "linear-ticket",
+   "verdict": "remove",
+   "reason": "Unlinked since 10-18, one read in 30 days, and its Linear module is not installed.",
+   "pathContains": "src/sieun-pi/skills/linear-ticket"
+  },
+  {
+   "name": "principle-minimize-reader-load",
+   "verdict": "remove",
+   "reason": "An unlinked one-rule skill that principle-laziness-protocol already states.",
+   "pathContains": "src/sieun-pi/skills/principle-minimize-reader-load"
+  },
+  {
+   "name": "skills",
+   "verdict": "remove",
+   "reason": "The link points at the fleet_health Python package, which has no SKILL.md.",
+   "pathContains": "legacy/prime/skills/skills",
+   "kind": "pointer"
+  },
+  {
+   "name": "typescript",
+   "verdict": "merge",
+   "reason": "A pointer rule like web.md; its trigger belongs in the skill description.",
+   "pathContains": "claude-rules/typescript.md",
+   "mergeInto": "typescript-best-practices description",
+   "kind": "rule"
+  },
+  {
+   "name": "agent-message",
+   "verdict": "keep",
+   "reason": "Every job reports and steers through it.",
+   "pathContains": "prime-agent/releases/"
+  },
+  {
+   "name": "attach-image",
+   "verdict": "keep",
+   "reason": "It is the only way a REPL agent can look at a screenshot.",
+   "pathContains": "prime-agent/releases/"
+  },
+  {
+   "name": "edit",
+   "verdict": "keep",
+   "reason": "The Prime prompt tells agents to use it for targeted edits.",
+   "pathContains": "prime-agent/releases/"
+  },
+  {
+   "name": "compact",
+   "verdict": "keep",
+   "reason": "Low use, but nothing else lets a long run compact itself.",
+   "pathContains": "prime-agent/releases/"
+  },
+  {
+   "name": "goal",
+   "verdict": "keep",
+   "reason": "Low use, but it is the thread goal API.",
+   "pathContains": "prime-agent/releases/"
+  },
+  {
+   "name": "mcp",
+   "verdict": "keep",
+   "reason": "The aside MCP server and aside_browser need it.",
+   "pathContains": "prime-agent/releases/"
+  },
+  {
+   "name": "refine",
+   "verdict": "keep",
+   "reason": "It drives every harness update.",
+   "pathContains": "prime-agent/releases/"
+  },
+  {
+   "name": "rlm-heartbeat",
+   "verdict": "keep",
+   "reason": "Low use, but it is the heartbeat API.",
+   "pathContains": "prime-agent/releases/"
+  },
+  {
+   "name": "skill-creator",
+   "verdict": "keep",
+   "reason": "Rarely read, but it is the only Prime skill-package contract, and c99 points at it.",
+   "pathContains": "prime-agent/releases/"
+  },
+  {
+   "name": "agent-observe",
+   "verdict": "keep",
+   "reason": "Jobs inspect their family with it; its text ships with the local daemon patch.",
+   "pathContains": "prime-agent/releases/"
+  },
+  {
+   "name": "prime-intellect",
+   "verdict": "remove",
+   "reason": "A vendor product guide nobody uses; Prime settings already switch it off.",
+   "pathContains": "prime-agent/releases/",
+   "noAction": true
+  },
+  {
+   "name": "websearch",
+   "verdict": "remove",
+   "reason": "Replaced by our websearch; Prime settings already switch the bundled one off.",
+   "pathContains": "prime-agent/releases/",
+   "noAction": true
+  },
+  {
+   "name": "compact",
+   "verdict": "merge",
+   "reason": "A byte-identical second SKILL.md next to the module; the Prime bundle copy is the one agents read.",
+   "pathContains": "packages/pi-rlm/skills/compact",
+   "mergeInto": "Prime release bundle copy"
+  },
+  {
+   "name": "edit",
+   "verdict": "merge",
+   "reason": "A byte-identical second SKILL.md next to the module; the Prime bundle copy is the one agents read.",
+   "pathContains": "packages/pi-rlm/skills/edit",
+   "mergeInto": "Prime release bundle copy"
+  },
+  {
+   "name": "goal",
+   "verdict": "merge",
+   "reason": "A byte-identical second SKILL.md next to the module; the Prime bundle copy is the one agents read.",
+   "pathContains": "packages/pi-rlm/skills/goal",
+   "mergeInto": "Prime release bundle copy"
+  },
+  {
+   "name": "refine",
+   "verdict": "merge",
+   "reason": "A byte-identical second SKILL.md next to the module; the Prime bundle copy is the one agents read.",
+   "pathContains": "packages/pi-harness/skills/refine",
+   "mergeInto": "Prime release bundle copy"
+  },
+  {
+   "name": "rlm-heartbeat",
+   "verdict": "merge",
+   "reason": "A byte-identical second SKILL.md next to the module; the Prime bundle copy is the one agents read.",
+   "pathContains": "packages/pi-host/skills/rlm-heartbeat",
+   "mergeInto": "Prime release bundle copy"
+  },
+  {
+   "name": "agent-message",
+   "verdict": "merge",
+   "reason": "pi-host agents read the Prime text but call this edited module, so the documented API differs.",
+   "pathContains": "packages/pi-rlm/skills/agent-message",
+   "mergeInto": "one SKILL.md that the pi-host prompt lists"
+  },
+  {
+   "name": "agent-observe",
+   "verdict": "merge",
+   "reason": "pi-host agents read the Prime text but call this edited module, so the documented API differs.",
+   "pathContains": "packages/pi-rlm/skills/agent-observe",
+   "mergeInto": "one SKILL.md that the pi-host prompt lists"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "Synced from claude.ai; no Claude Code session here used it, and its tools live on claude.ai.",
+   "pathContains": ".claude/skills/synced/",
+   "group": "Claude Code user skills",
+   "unrequested": "Synced from a claude.ai account, not installed on purpose."
+  },
+  {
+   "name": "find-skills",
+   "verdict": "remove",
+   "reason": "A stray skills-CLI install that no session used and that invites more unasked installs (c226).",
+   "pathContains": ".agents/skills/find-skills",
+   "group": "Claude Code user skills",
+   "unrequested": "Installed by the skills CLI without an ask."
+  },
+  {
+   "name": "but",
+   "verdict": "remove",
+   "reason": "The gitbutler skill pushes a `but` CLI that is not installed, and the repos use plain git.",
+   "pathContains": ".claude/skills/gitbutler",
+   "group": "Claude Code user skills",
+   "unrequested": "Installed without an ask."
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "A Claude Code plugin skill that no session invoked in 30 days.",
+   "pathContains": ".claude/plugins/cache/",
+   "group": "Claude Code plugins",
+   "unrequested": "Came with a plugin install."
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "Codex re-seeds this system skill, no Codex run used it, and only a Codex setting drops it.",
+   "pathContains": ".codex/skills/.system/",
+   "group": "Codex skills"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "A Codex app plugin skill that no run used and that has no role here.",
+   "pathContains": ".codex/plugins/cache/",
+   "group": "Codex plugins",
+   "unrequested": "Came with a Codex plugin install."
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A repo procedure that sessions in auto-sns-agent read and a model would get wrong.",
+   "pathContains": "auto-sns-agent/.agents/skills/apps/api-portal",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A repo procedure that sessions in auto-sns-agent read and a model would get wrong.",
+   "pathContains": "auto-sns-agent/.agents/skills/apps/vent-mock",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A repo procedure that sessions in auto-sns-agent read and a model would get wrong.",
+   "pathContains": "auto-sns-agent/.agents/skills/repo/agent-auth",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A repo procedure that sessions in auto-sns-agent read and a model would get wrong.",
+   "pathContains": "auto-sns-agent/.agents/skills/repo/data-contracts",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A repo procedure that sessions in auto-sns-agent read and a model would get wrong.",
+   "pathContains": "auto-sns-agent/.agents/skills/repo/deployment",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A repo procedure that sessions in auto-sns-agent read and a model would get wrong.",
+   "pathContains": "auto-sns-agent/.agents/skills/repo/env-dotenvx",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A repo procedure that sessions in auto-sns-agent read and a model would get wrong.",
+   "pathContains": "auto-sns-agent/.agents/skills/repo/git-workflow",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A repo procedure that sessions in auto-sns-agent read and a model would get wrong.",
+   "pathContains": "auto-sns-agent/.agents/skills/repo/infra-monorepo",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A repo procedure that sessions in auto-sns-agent read and a model would get wrong.",
+   "pathContains": "auto-sns-agent/.agents/skills/repo/skill-creation",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A repo procedure that sessions in auto-sns-agent read and a model would get wrong.",
+   "pathContains": "auto-sns-agent/.agents/skills/repo/verify",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A repo procedure that sessions in auto-sns-agent read and a model would get wrong.",
+   "pathContains": "auto-sns-agent/.agents/skills/stack/convex",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A repo procedure that sessions in auto-sns-agent read and a model would get wrong.",
+   "pathContains": "auto-sns-agent/.agents/skills/stack/dataviz",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A repo procedure that sessions in auto-sns-agent read and a model would get wrong.",
+   "pathContains": "auto-sns-agent/.agents/skills/stack/python",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A repo procedure that sessions in auto-sns-agent read and a model would get wrong.",
+   "pathContains": "auto-sns-agent/.agents/skills/stack/sveltekit",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A repo procedure that sessions in auto-sns-agent read and a model would get wrong.",
+   "pathContains": "auto-sns-agent/.agents/skills/workflows/frontend-implementation",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A repo procedure that sessions in auto-sns-agent read and a model would get wrong.",
+   "pathContains": "auto-sns-agent/.agents/skills/workflows/specs",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "A pointer stub to the sieun-pi wiki skill, which every Prime session already loads.",
+   "pathContains": "auto-sns-agent/.agents/skills/apps/llm-wiki",
+   "kind": "pointer",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "merge",
+   "reason": "The upstream ClickHouse skill edited in place with repo lessons, which c226 forbids.",
+   "pathContains": "auto-sns-agent/.agents/skills/stack/clickhouse-best-practices",
+   "mergeInto": "upstream v0.5.0 unedited, repo lines into .claude/rules/app-crawler-v3.md",
+   "kind": "fork",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "merge",
+   "reason": "It carries an edited upstream Langfuse copy, and no session read it in 30 days.",
+   "pathContains": "auto-sns-agent/.agents/skills/stack/llm-usage",
+   "mergeInto": "repo routing rules here, langfuse/skills installed unedited",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "A second repo copy of an upstream skill; dev/sieun dropped it, other branches still carry it.",
+   "pathContains": "auto-sns-agent/.agents/skills/stack/modern-web-guidance",
+   "kind": "fork",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "A stack skill nobody asked for (c226).",
+   "pathContains": "auto-sns-agent/.agents/skills/stack/chrome-extensions",
+   "group": "repo auto-sns-agent",
+   "unrequested": "Installed with modern-web-guidance without an ask (c226)."
+  },
+  {
+   "name": "history-tracking",
+   "verdict": "merge",
+   "reason": "An always-on rule that repeats the wiki skill every Prime session loads.",
+   "pathContains": "auto-sns-agent/.claude/rules/history-tracking.md",
+   "mergeInto": "wiki skill",
+   "kind": "rule",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": "app-specs",
+   "verdict": "keep",
+   "reason": "A loader rule with two rules of its own; it fixed a measured missed trigger.",
+   "pathContains": "auto-sns-agent/.claude/rules/app-specs.md",
+   "kind": "rule",
+   "group": "repo auto-sns-agent"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A Slack Green procedure that sessions in that repo read.",
+   "pathContains": "slack-green/.agents/skills/repo/code-quality",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A Slack Green procedure that sessions in that repo read.",
+   "pathContains": "slack-green/.agents/skills/repo/data-contracts",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A Slack Green procedure that sessions in that repo read.",
+   "pathContains": "slack-green/.agents/skills/repo/docs-and-skills",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A Slack Green procedure that sessions in that repo read.",
+   "pathContains": "slack-green/.agents/skills/repo/infra-monorepo",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A Slack Green procedure that sessions in that repo read.",
+   "pathContains": "slack-green/.agents/skills/repo/verify",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A Slack Green procedure that sessions in that repo read.",
+   "pathContains": "slack-green/.agents/skills/stack/skill-creation",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A Slack Green procedure that sessions in that repo read.",
+   "pathContains": "slack-green/.agents/skills/workflows/frontend-implementation",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A Slack Green procedure that sessions in that repo read.",
+   "pathContains": "slack-green/.agents/skills/workflows/pr-and-linear",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "keep",
+   "reason": "A Slack Green procedure that sessions in that repo read.",
+   "pathContains": "slack-green/.agents/skills/workflows/seo-daily-article",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "A pointer list and generic advice a model already follows.",
+   "pathContains": "slack-green/.agents/skills/repo/orientation",
+   "kind": "pointer",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "A pointer list and generic advice a model already follows.",
+   "pathContains": "slack-green/.agents/skills/stack/frontend-design",
+   "kind": "pointer",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "Symphony issue agents run nowhere now, and no session read it in 30 days.",
+   "pathContains": "slack-green/.agents/skills/symphony/commit",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "Symphony issue agents run nowhere now, and no session read it in 30 days.",
+   "pathContains": "slack-green/.agents/skills/symphony/land",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "Symphony issue agents run nowhere now, and no session read it in 30 days.",
+   "pathContains": "slack-green/.agents/skills/symphony/linear",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "Symphony issue agents run nowhere now, and no session read it in 30 days.",
+   "pathContains": "slack-green/.agents/skills/symphony/orchestration",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "Symphony issue agents run nowhere now, and no session read it in 30 days.",
+   "pathContains": "slack-green/.agents/skills/symphony/pull",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "Symphony issue agents run nowhere now, and no session read it in 30 days.",
+   "pathContains": "slack-green/.agents/skills/symphony/push",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "Symphony issue agents run nowhere now, and no session read it in 30 days.",
+   "pathContains": "slack-green/.agents/skills/symphony/resume-durability",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "Symphony issue agents run nowhere now, and no session read it in 30 days.",
+   "pathContains": "slack-green/.agents/skills/symphony/workpad",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "A score-gate ceremony for Codex plus Claude that no session ran in 30 days (c47).",
+   "pathContains": "slack-green/.agents/skills/workflows/code-review",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "A score-gate ceremony for Codex plus Claude that no session ran in 30 days (c47).",
+   "pathContains": "slack-green/.agents/skills/workflows/common/claude-in-codex",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "A score-gate ceremony for Codex plus Claude that no session ran in 30 days (c47).",
+   "pathContains": "slack-green/.agents/skills/workflows/common/debate",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "A score-gate ceremony for Codex plus Claude that no session ran in 30 days (c47).",
+   "pathContains": "slack-green/.agents/skills/workflows/common/quality-gates",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "A score-gate ceremony for Codex plus Claude that no session ran in 30 days (c47).",
+   "pathContains": "slack-green/.agents/skills/workflows/common/request-workflow",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "No session read it in 30 days, and its content is generic.",
+   "pathContains": "slack-green/.agents/skills/stack/nextjs",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "No session read it in 30 days, and its content is generic.",
+   "pathContains": "slack-green/.agents/skills/workflows/feature-development",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "No session read it in 30 days, and its content is generic.",
+   "pathContains": "slack-green/.agents/skills/workflows/frontend-refactor",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "No session read it in 30 days, and its content is generic.",
+   "pathContains": "slack-green/.agents/skills/workflows/planning",
+   "group": "repo slack-green"
+  },
+  {
+   "name": null,
+   "verdict": "remove",
+   "reason": "No session read it in 30 days, and its content is generic.",
+   "pathContains": "slack-green/.agents/skills/workflows/smoke-verification",
+   "group": "repo slack-green"
+  },
+  {
+   "name": "sw-factory",
+   "verdict": "keep",
+   "reason": "Written on 11-20 for sw factory reply behavior; too new to judge use.",
+   "pathContains": "src/sieun-pi/skills/sw-factory"
+  }
+ ],
+ "harnessRules": [
+  {
+   "id": "browser_work_routes_to_aside_browser_skill",
+   "skill": "aside-browser",
+   "verdict": "remove",
+   "reason": "Every point already sits in aside-browser SKILL.md lines 8-15, 23 and 196.",
+   "mergeInto": null
+  },
+  {
+   "id": "owner_s_macbook_pro_gui_app_experiments_run_headless_off_screen_or_on_another_ho",
+   "skill": "aside-browser",
+   "verdict": "merge",
+   "reason": "Its GUI-app ban is unique, but point 1 contradicts the skill's Mac routing.",
+   "mergeInto": "/home/sieun/src/sieun-pi/skills/aside-browser/SKILL.md (Mac section)"
+  },
+  {
+   "id": "owner_logins_use_saved_aside_login_before_asking_c129",
+   "skill": "board",
+   "verdict": "remove",
+   "reason": "board owner.md logins item 7 and aside-browser line 178 already carry this rule.",
+   "mergeInto": null
+  },
+  {
+   "id": "aside_down_and_a_login_or_token_needed_get_it_yourself_never_ask_the_owner_save_",
+   "skill": "board",
+   "verdict": "merge",
+   "reason": "Only the ~/.zshenv token rule is new; the rest repeats owner.md logins.",
+   "mergeInto": "/home/sieun/src/sieun-pi/skills/board/references/owner.md (Review asks and logins)"
+  },
+  {
+   "id": "ui_illustrations_and_animation_coded_with_a_proper_library_in_the_landing_page_s",
+   "skill": "frontend-implementation",
+   "verdict": "merge",
+   "reason": "A UI build rule with a dead script path belongs in the repo's frontend-implementation skill.",
+   "mergeInto": "/home/sieun/Documents/Github/auto-sns-agent/.agents/skills/workflows/frontend-implementation/SKILL.md"
+  },
+  {
+   "id": "plans_and_status_reports_use_spec_report_format",
+   "skill": "wiki",
+   "verdict": "remove",
+   "reason": "It only points at writing.md lines 97-114, which hold the same rules.",
+   "mergeInto": null
+  },
+  {
+   "id": "design_or_plan_pages_for_the_owner_about_1_10_a_full_spec_extremely_unslopped_st",
+   "skill": "wiki",
+   "verdict": "remove",
+   "reason": "wiki writing.md lines 33-34 already state the 1/10 length, order and 메르 style.",
+   "mergeInto": null
+  },
+  {
+   "id": "every_number_on_an_owner_wiki_page_shows_its_source_on_hover_unmeasured_numbers_",
+   "skill": "wiki",
+   "verdict": "remove",
+   "reason": "wiki writing.md lines 42-43 already require wiki-cite hovers and unknown for unmeasured numbers.",
+   "mergeInto": null
+  },
+  {
+   "id": "board_wake_check_commands_must_be_false_when_armed_and_turn_true_only_on_the_awa",
+   "skill": "board",
+   "verdict": "remove",
+   "reason": "board SKILL.md line 39 holds the same rule and the same pi-pool.log incident.",
+   "mergeInto": null
+  },
+  {
+   "id": "board_a_different_kind_of_work_gets_its_own_top_level_goal_every_open_step_is_vi",
+   "skill": "board",
+   "verdict": "merge",
+   "reason": "Goal placement and stale waits are in the board skill; only the verbatim-requirements line is new.",
+   "mergeInto": "/home/sieun/src/sieun-pi/skills/board/SKILL.md (goals section)"
+  },
+  {
+   "id": "plan_is_finishable_owner_work_pushed_to_done_standing_risks_and_upkeep_go_to_dut",
+   "skill": "board",
+   "verdict": "remove",
+   "reason": "board plan-and-duties.md lines 10-14 and 36 carry the same rule and quote.",
+   "mergeInto": null
+  },
+  {
+   "id": "auto_sns_agent_git_trunk_based_development_into_staging_dev_branches_land_into_s",
+   "skill": "board",
+   "verdict": "remove",
+   "reason": "It summarizes git.md lines 38-40 and git-workflow, and its c74 line contradicts c154.",
+   "mergeInto": null
+  },
+  {
+   "id": "each_developer_works_on_their_own_dev_name_branch_demo_work_is_committed_on_dev_",
+   "skill": "board",
+   "verdict": "remove",
+   "reason": "Same rule as the reopened c119 note and board git.md line 39.",
+   "mergeInto": null
+  },
+  {
+   "id": "one_dev_branch_per_machine_dev_sieun_on_metal02_dev_sieun_mac_on_mac_c119",
+   "skill": "board",
+   "verdict": "remove",
+   "reason": "board git.md line 39 quotes the same owner words and rule.",
+   "mergeInto": null
+  },
+  {
+   "id": "agents_regular_work_ends_at_staging_prod_deploys_are_walked_with_the_owner_excep",
+   "skill": "board",
+   "verdict": "remove",
+   "reason": "board git.md line 42 and owner.md line 14 carry c154; the ledger holds it too.",
+   "mergeInto": null
+  },
+  {
+   "id": "owner_chat_replies_may_use_diagrams_length_and_several_messages_policy_owner_rep",
+   "skill": "board",
+   "verdict": "remove",
+   "reason": "board owner.md item 9 and AGENTS.md rule 5 state the same reply shape.",
+   "mergeInto": null
+  },
+  {
+   "id": "owner_replies_for_you_and_plan_text_short_plain_easy_to_read_policy_owner_replie",
+   "skill": "board",
+   "verdict": "merge",
+   "reason": "Most lines repeat owner.md items 6, 9 and 11; the banned shop-talk verbs are new.",
+   "mergeInto": "/home/sieun/src/sieun-pi/skills/board/references/owner.md (Links, images and names in a reply)"
+  },
+  {
+   "id": "owner_messages_name_plan_steps_duties_and_todos_by_their_id_like_p684_or_d9_poli",
+   "skill": "board",
+   "verdict": "remove",
+   "reason": "board owner.md item 6 holds the same bare-id rule.",
+   "mergeInto": null
+  },
+  {
+   "id": "cached_reads_are_reuse_not_evidence_of_waste_c157",
+   "skill": "board",
+   "verdict": "remove",
+   "reason": "board owner.md item 12 and jobs.md line 25 carry the same cache split rule.",
+   "mergeInto": null
+  },
+  {
+   "id": "token_cost_estimates_the_shared_system_prompt_and_instructions_are_priced_as_cac",
+   "skill": "board",
+   "verdict": "remove",
+   "reason": "board jobs.md line 25 and owner.md item 12 already price instructions at cache-read rates.",
+   "mergeInto": null
+  },
+  {
+   "id": "ui_work_is_reviewed_on_the_5180_screens_not_in_design_docs_policy_ui_review_c124",
+   "skill": "board",
+   "verdict": "remove",
+   "reason": "board owner.md review item 1 holds the same rule and quote.",
+   "mergeInto": null
+  },
+  {
+   "id": "ui_work_send_the_owner_the_localhost_5180_link_and_shots_as_soon_as_screens_rend",
+   "skill": "board",
+   "verdict": "remove",
+   "reason": "board owner.md review items 1 and 2 hold the variant, link and screenshot rules.",
+   "mergeInto": null
+  },
+  {
+   "id": "ask_the_owner_clarifying_questions_as_a_chat_message_plus_a_for_you_todo_policy_",
+   "skill": "board",
+   "verdict": "remove",
+   "reason": "board owner.md todo items 1 and 2 state the same rule.",
+   "mergeInto": null
+  },
+  {
+   "id": "owner_asked_moves_run_at_once_never_queue_them_behind_an_unrelated_release_a_pee",
+   "skill": "board",
+   "verdict": "remove",
+   "reason": "board owner.md item 6, AGENTS.md rule 7 and the c62 ledger entry say the same.",
+   "mergeInto": null
+  },
+  {
+   "id": "ui_never_uses_an_inline_text_box_with_an_add_and_cancel_button_pair_policy_ui_pa",
+   "skill": "frontend-implementation",
+   "verdict": "remove",
+   "reason": "frontend-implementation SKILL.md line 183 holds the same rule.",
+   "mergeInto": null
+  },
+  {
+   "id": "blue_marks_only_a_commonly_used_clickable_action_other_controls_black_count_badg",
+   "skill": "frontend-implementation",
+   "verdict": "remove",
+   "reason": "frontend-implementation SKILL.md line 184 holds the same rule.",
+   "mergeInto": null
+  },
+  {
+   "id": "ui_work_follow_the_frontend_design_skill_model_screens_on_the_app_the_owner_name",
+   "skill": "frontend-implementation",
+   "verdict": "remove",
+   "reason": "frontend-implementation lines 39 and 97 and board jobs.md line 27 carry it.",
+   "mergeInto": null
+  },
+  {
+   "id": "ui_work_reuses_the_shared_design_system_never_invent_one_for_a_new_view_policy_u",
+   "skill": "frontend-implementation",
+   "verdict": "remove",
+   "reason": "frontend-implementation lines 10-18 and jobs.md line 29 hold the rule, and its paths are dead.",
+   "mergeInto": null
+  },
+  {
+   "id": "auto_sns_agent_5180_every_app_uses_the_one_shared_full_height_sidebar_and_page_f",
+   "skill": "frontend-implementation",
+   "verdict": "merge",
+   "reason": "The written-once rule is in frontend-implementation; the one-code-path-per-kind line is not.",
+   "mergeInto": "/home/sieun/Documents/Github/auto-sns-agent/.agents/skills/workflows/frontend-implementation/SKILL.md"
+  },
+  {
+   "id": "no_one_rule_skills_add_the_rule_inside_the_existing_skill_or_guide_for_that_area",
+   "skill": "skill-creator",
+   "verdict": "keep",
+   "reason": "c226 keeps upstream skill-creator unedited, so this note is the one place for c99.",
+   "mergeInto": null
+  },
+  {
+   "id": "refine_run_global_intents_can_land_session_local",
+   "skill": "refine",
+   "verdict": "keep",
+   "reason": "It patches a bundled upstream skill gotcha and stranded local notes show it still happens.",
+   "mergeInto": null
+  },
+  {
+   "id": "job_briefs_vendor_portal_aside_only_no_support_pages",
+   "skill": "aside-browser",
+   "verdict": "remove",
+   "reason": "aside-browser login routing and the c79 and c103 ledger rules already cover it.",
+   "mergeInto": null
+  },
+  {
+   "id": "websearch_preimport_is_serper_use_virev_run_or_google_in_aside",
+   "skill": "websearch",
+   "verdict": "merge",
+   "reason": "Points 1-2 copy the skill; the primary-source tips belong in the skill.",
+   "mergeInto": "/home/sieun/src/sieun-pi/skills/websearch/SKILL.md"
+  },
+  {
+   "id": "jp_serps_yahoo_japan_plain_http_works_when_websearch_google_502s_and_ddg_times_o",
+   "skill": "websearch",
+   "verdict": "remove",
+   "reason": "It describes a removed fallback and contradicts the no-switch websearch rule.",
+   "mergeInto": null
+  },
+  {
+   "id": "japanese_web_research_note_com_api_and_yahoo_japan_html_work_when_websearch_fail",
+   "skill": "websearch",
+   "verdict": "merge",
+   "reason": "The note.com API tip is unique, the Yahoo part repeats another memory.",
+   "mergeInto": "/home/sieun/src/sieun-pi/skills/websearch/SKILL.md"
+  },
+  {
+   "id": "slack_green_local_dev_port_3000_is_grafana_in_docker_not_the_app_tmp_pwv_may_not",
+   "skill": "aside-browser",
+   "verdict": "merge",
+   "reason": "The port fact is real, but its browser advice contradicts the skill.",
+   "mergeInto": "slack-green repo CLAUDE.md (port fact); drop the Aside line"
+  },
+  {
+   "id": "aside_a_tab_a_job_leaves_open_for_the_owner_must_be_opened_with_open_a_aside_url",
+   "skill": "aside-browser",
+   "verdict": "remove",
+   "reason": "It tells agents to run `open -a Aside`, which aside-browser bans under c103.",
+   "mergeInto": null
+  },
+  {
+   "id": "aside_profile_0_is_not_connected_to_the_daemon_means_the_owner_s_aside_has_no_op",
+   "skill": "aside-browser",
+   "verdict": "remove",
+   "reason": "aside-browser SKILL.md line 80 states the same cause and rule.",
+   "mergeInto": null
+  },
+  {
+   "id": "aside_browser_open_tab_about_blank_opens_in_the_owner_s_aside_open_an_http_url_f",
+   "skill": "aside-browser",
+   "verdict": "remove",
+   "reason": "aside-browser SKILL.md line 175 already routes non-http URLs to Aside.",
+   "mergeInto": null
+  },
+  {
+   "id": "aside_browser_routes_youtube_com_to_the_owner_s_aside_pass_browser_box_for_publi",
+   "skill": "aside-browser",
+   "verdict": "remove",
+   "reason": "aside-browser lines 46 and 175-177 already cover LOGIN_HOSTS and browser='box'.",
+   "mergeInto": null
+  },
+  {
+   "id": "box_chrome_has_navigator_webdriver_true_so_posthog_js_drops_every_client_event_o",
+   "skill": "aside-browser",
+   "verdict": "merge",
+   "reason": "Three copies of one box gotcha; one line in the skill would replace all three.",
+   "mergeInto": "/home/sieun/src/sieun-pi/skills/aside-browser/SKILL.md (box section)"
+  },
+  {
+   "id": "posthog_drops_every_event_from_the_box_chrome_navigator_webdriver_true_set_it_fa",
+   "skill": "aside-browser",
+   "verdict": "merge",
+   "reason": "Three copies of one box gotcha; one line in the skill would replace all three.",
+   "mergeInto": "/home/sieun/src/sieun-pi/skills/aside-browser/SKILL.md (box section)"
+  },
+  {
+   "id": "slack_green_box_chrome_walks_send_no_posthog_events_navigator_webdriver_marks_th",
+   "skill": "aside-browser",
+   "verdict": "merge",
+   "reason": "Three copies of one box gotcha; one line in the skill would replace all three.",
+   "mergeInto": "/home/sieun/src/sieun-pi/skills/aside-browser/SKILL.md (box section)"
+  },
+  {
+   "id": "us_metal02_box_chromium_fonts_installed_after_box_mjs_starts_are_not_seen_run_a_",
+   "skill": "aside-browser",
+   "verdict": "remove",
+   "reason": "It routes around the box Chrome with a headless launch that c177 forbids.",
+   "mergeInto": null
+  },
+  {
+   "id": "chrome_web_app_install_over_cdp_on_a_mac_needs_a_pipe_and_a_non_default_profile",
+   "skill": "aside-browser",
+   "verdict": "remove",
+   "reason": "It drives the owner's Chrome with screen control, which c103 bans.",
+   "mergeInto": null
+  },
+  {
+   "id": "aside_cannot_load_unpacked_extension_by_automation",
+   "skill": "aside-browser",
+   "verdict": "remove",
+   "reason": "A newer memory loads unpacked add-ons on the box Chrome without the owner.",
+   "mergeInto": null
+  },
+  {
+   "id": "aside_closetab_of_a_tab_opened_by_another_repl_session_only_detaches_it_use_page",
+   "skill": "aside-browser",
+   "verdict": "remove",
+   "reason": "The fix shipped in code and the skill states the new tab behavior.",
+   "mergeInto": null
+  },
+  {
+   "id": "aside_browser_run_routes_code_containing_slack_green_to_the_owner_s_aside",
+   "skill": "aside-browser",
+   "verdict": "remove",
+   "reason": "It records a bug that code already fixed.",
+   "mergeInto": null
+  },
+  {
+   "id": "demo_shots_from_the_mac_box_browser_via_shot_browser_mjs_relay_requests_never_ex",
+   "skill": "aside-browser",
+   "verdict": "remove",
+   "reason": "Its script was deleted and aside-browser now runs Mac pages on the box.",
+   "mergeInto": null
+  },
+  {
+   "id": "a_board_wake_pgrep_f_check_matches_its_own_sh_c_and_never_passes_check_with_lsof",
+   "skill": "board",
+   "verdict": "merge",
+   "reason": "Two copies of one gotcha; one line in board SKILL.md line 39 replaces both.",
+   "mergeInto": "/home/sieun/src/sieun-pi/skills/board/SKILL.md:39 (check wake paragraph)"
+  },
+  {
+   "id": "board_wake_check_pgrep_f_name_never_turns_true_because_it_matches_the_check_s_ow",
+   "skill": "board",
+   "verdict": "merge",
+   "reason": "Two copies of one gotcha; one line in board SKILL.md line 39 replaces both.",
+   "mergeInto": "/home/sieun/src/sieun-pi/skills/board/SKILL.md:39 (check wake paragraph)"
+  }
+ ],
+ "upstreams": {
+  "architect": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/architect",
+   "sha256": "897a59beaa3cab107d98c256206e062cc4a5e9421a45b9d462fbded19291fea5"
+  },
+  "arena": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/arena",
+   "sha256": "8d431f7b1aa19daf6300366fc876c4d1aadac06417ec5502407345ffaf4e90d9"
+  },
+  "create-verification-skill": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/create-verification-skill",
+   "sha256": "644f2551403c1bca01a2855b34611b6e7be0ce0dc5b204514c376c0f6a6e6ac4"
+  },
+  "figure-it-out": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/figure-it-out",
+   "sha256": "e041c64a39f1084a20e60ee99762c4dbd3ec8be56ed33fd68ea867b8bd8bd3e4"
+  },
+  "how": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/how",
+   "sha256": "06b714dbd830bc829bfb89e33a1c39daf6d72ea412e488ea9d65f5f33b885a0c"
+  },
+  "interrogate": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/interrogate",
+   "sha256": "2867910309e81411123ae4edca68ffca5795e66521d3f3bc0876f6213b542fb9"
+  },
+  "no-comments": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/no-comments",
+   "sha256": "5c5b0882297d704c3a9720c52b7a793c68b013eaf717989f0945624efdfe2b05"
+  },
+  "poteto-agent": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/agents",
+   "sha256": "c3850be1b97bc97cec0568ed8b26d04e7693c4e07868137c58fe546d37f288e9"
+  },
+  "poteto-mode": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/poteto-mode",
+   "sha256": "b3c505602b82fb3641a3983e9c46fb974881faa12ece1af804fae27afb7be532"
+  },
+  "principle-boundary-discipline": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/principle-boundary-discipline",
+   "sha256": "62ac2862c2caa22dd14531f51c9c6bb445ceb198ca98a687e25b4d47c1f10a28"
+  },
+  "principle-build-the-lever": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/principle-build-the-lever",
+   "sha256": "458b269eab8e95a1573276955312f7d2a13ae8599879a9efc748248f6bc34b56"
+  },
+  "principle-encode-lessons-in-structure": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/principle-encode-lessons-in-structure",
+   "sha256": "77044c83a9ac6df78fc643887ea5f1f11f082adaf14b717c060cdaed03cce863"
+  },
+  "principle-fix-root-causes": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/principle-fix-root-causes",
+   "sha256": "ba4cd38da1dcc8fe5432feb64457cba95594736a9b21b2ebf8f8c52aee068707"
+  },
+  "principle-laziness-protocol": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/principle-laziness-protocol",
+   "sha256": "9006579e9e3f33955d17569733db688ae65f22577dc3b21803d219a5a8445aff"
+  },
+  "principle-make-operations-idempotent": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/principle-make-operations-idempotent",
+   "sha256": "540738217c3da7bf513b9886924ad6a2bc77e58be867f5bd2e1831c74bf2ce70"
+  },
+  "principle-minimize-reader-load": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/principle-minimize-reader-load",
+   "sha256": "42551c5dc74cd578163c148da552db3ff67d29b78600ef216bfd311fb828fe69"
+  },
+  "principle-model-the-domain": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/principle-model-the-domain",
+   "sha256": "bbadbb9a723fac3f76e782ae45665eb94058ec10993e4bae36d4dc6b0e4eac07"
+  },
+  "principle-prove-it-works": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/principle-prove-it-works",
+   "sha256": "ae13d287984a5864312b6286899d4ee2b60f8272b5e5e8fcc586a7c3ea51020b"
+  },
+  "principle-separate-before-serializing-shared-state": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/principle-separate-before-serializing-shared-state",
+   "sha256": "05294b40448e927c5da1c7b6f5c6b9fed3744637e3833d2d948b9154a9dd00bb"
+  },
+  "principle-sequence-verifiable-units": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/principle-sequence-verifiable-units",
+   "sha256": "761390804ee36c32f5338d8db47ec54463d40ff96dbb296dfafabcd5f2593eec"
+  },
+  "setup-pstack": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/setup-pstack",
+   "sha256": "5acdc3db4f15f3e9b81fb56eab7f17cdccde1a11a40053ed7743f7467729c8a9"
+  },
+  "show-me-your-work": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/show-me-your-work",
+   "sha256": "831e85ba3f84f38bf338cd03e6af050fea357752e25a825e334c99f59d7f2077"
+  },
+  "swarm": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/swarm",
+   "sha256": "d578d877c3b8b9de7163f52579c4683337a940acc0fbe4496a498f5d3b27df30"
+  },
+  "typescript-best-practices": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/typescript-best-practices",
+   "sha256": "28f9e61710e205f6f3c5476f333483cff0e988f6a5b639e2faad536344b40c5e"
+  },
+  "unslop": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/unslop",
+   "sha256": "c6d2572294d933a428211921069e9a248490e9b466ca59437cb4d9de248600ca"
+  },
+  "why": {
+   "url": "https://github.com/cursor/plugins/tree/f5bdd6826fd0a0d9cbc4347134c3a74a200b9d9d/pstack/skills/why",
+   "sha256": "222b93789754ba6ee901835137184acdca667f7e47c523bcc85aca86675fb249"
+  },
+  "modern-web-guidance": {
+   "url": "https://github.com/googlechrome/modern-web-guidance/tree/64a6d708",
+   "sha256": "1292f0ce14794a5bc49af58e99d5f6d4edf10acd9472cade94ab0c5590892716"
+  }
+ }
+}
