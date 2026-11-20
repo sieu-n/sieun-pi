@@ -269,8 +269,9 @@ export class Search {
   }
 
   /**
-   * The id `in` names: a room or conversation id, a channel or Solo room by name (`#` optional), or an agent by name for its DM, with
-   * case ignored. A name that fits a room and an agent, or two rooms, is refused with the ids to use instead.
+   * The id `in` names: a room or conversation id, a channel or Solo room by name (`#` optional), an agent by name for its DM, or a job by
+   * name, with case ignored. A room or agent wins over a job of the same name, since agents read job names in hits and room names in posts.
+   * A name that fits a room and an agent, two rooms, or two jobs that are both open or both archived is refused with the ids to use instead.
    */
   private resolveIn(value: string): string {
     if (this.groups.row(value) || ((isRoomId(value) || isAgentId(value)) && this.threads.agentRecords?.record(value))) return value;
@@ -287,7 +288,12 @@ export class Search {
     if (agent) return agent.id;
     const scope = parseConversationId(this.threads.conversationOf(value));
     if (this.threads.thread(scope.thread)) return value;
-    throw new SearchFilterError(`No channel, Solo room, agent or thread named "${value}" for in.`);
+    const jobs = this.threads.jobList({ archived: true }).filter(job => job.name.toLowerCase() === name);
+    const live = jobs.filter(job => !job.archived);
+    const job = live.length ? live : jobs;
+    if (job.length > 1) throw new SearchFilterError(`"${value}" for in names ${job.length} jobs (${job.map(j => j.id).join(", ")}); pass one of those ids.`);
+    if (job[0]) return job[0].id;
+    throw new SearchFilterError(`No channel, Solo room, agent, job or thread named "${value}" for in.`);
   }
 
   /** The agent whose name, as the app shows it, is `value` with case ignored; two such agents are refused. */

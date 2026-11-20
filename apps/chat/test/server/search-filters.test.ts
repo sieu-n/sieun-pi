@@ -96,6 +96,14 @@ suite("search filters", () => {
     assert.deepEqual(ids_(await search("in=vent")), ids_(await search(`in=${agents.vent}`)));
   });
 
+  test("in takes a job's name as a hit shows it, so an agent scopes to a job the way it reads it", async () => {
+    const id = `${ids.vent}:14`;
+    const job = (await search("")).hits.find(hit => hit.conversation.id === id)!;
+    const byId = await search(`in=${encodeURIComponent(id)}`);
+    assert.ok(byId.total > 0);
+    assert.deepEqual(ids_(await search(`in=${encodeURIComponent(job.conversation.name.toUpperCase())}`)), ids_(byId));
+  });
+
   test("an unknown value is a 400 that names it", async () => {
     for (const [query, word] of [["where=replies", "replies"], ["from=nobody", "nobody"], ["from=owner,nobody", "nobody"], ["in=nowhere", "nowhere"]] as const) {
       const answer = await s.send("GET", `/api/search?q=relay&${query}`);
