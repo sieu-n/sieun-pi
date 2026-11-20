@@ -630,6 +630,8 @@ export type LiveEvent =
   | { type: "room"; room: Room }
   /** A principal's Later list changed (server/later.ts): `by` is owner or an agent id, `open` its In progress count. */
   | { type: "later"; by: string; open: number }
+  /** The owner's reminder on a saved post fell due (server/later-due.ts); every tab shows it and one of them notifies. */
+  | { type: "later_due"; row: LaterRow }
   /** Only to pages that watch `for:<agent id>`: the agent's For list changed, with its new pending count. */
   | { type: "for_me"; agent: AgentId; pending: number }
   | { type: "error"; message: string };

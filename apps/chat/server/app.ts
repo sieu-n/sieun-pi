@@ -21,7 +21,8 @@ import { CHANNEL_COPY_LIKE, GroupRooms, roomLabel } from "./group-rooms.ts";
 import { assertOwnPost, deleteNotice, deliveriesOf, editNotice } from "./post-edits.ts";
 import { ForMe } from "./for-me.ts";
 import { Later } from "./later.ts";
-import type { ForMeItem, ForMeList, ForMeStatus } from "../web/src/lib/api/types.ts";
+import { LaterDue } from "./later-due.ts";
+import type { ForMeItem, ForMeList, ForMeStatus, LaterItem } from "../web/src/lib/api/types.ts";
 import { DEFAULT_MODEL, DEFAULT_THINKING, type Config } from "./config.ts";
 import { MultiHost } from "./host/multi-host.ts";
 import type { Host } from "./host/types.ts";
@@ -91,6 +92,8 @@ export class App {
   readonly forMe: ForMe;
   /** Save for later: each principal's saved room posts (later.ts). */
   readonly later: Later;
+  /** Remind me: the one timer that fires the owner's due reminders (later-due.ts). */
+  readonly laterDue: LaterDue<LaterItem>;
   private readonly clients = new Set<Client>();
   private sidebarTimer?: NodeJS.Timeout;
   private lastSidebar = "";
@@ -125,6 +128,18 @@ export class App {
       this.broadcast({ type: "later", by, open: this.later.items(by).filter(i => i.state === "open").length });
       const post = by === "owner" ? this.agentStore.postsOf(item.room).find(p => p.id === item.post) : undefined;
       if (post) this.emitPosts(item.room, [post]);
+    });
+    this.laterDue = new LaterDue({
+      items: () => this.later.items("owner"),
+      notified: (item, at) => (this.later.get("owner", item.id) ? this.later.update("owner", item.id, { notifiedAt: at }) : undefined),
+      fire: item => {
+        const row = this.later.list("owner", "open").items.find(r => r.id === item.id);
+        if (row) this.broadcast({ type: "later_due", row });
+      },
+      log,
+    });
+    this.later.onChange(({ by }) => {
+      if (by === "owner") this.laterDue.arm();
     });
     const linkOf = routing ? (box: string) => routing.link(box).state : undefined;
     this.threads = new Threads(host, this.store, {
@@ -273,6 +288,7 @@ export class App {
     this.groups.start();
     this.boards.start();
     this.outbox.start();
+    this.laterDue.arm();
     if (this.config.meili) void this.searchEngine.refresh().catch(error => this.log(`search: ${String(error)}`));
   }
 
@@ -281,6 +297,7 @@ export class App {
     this.groups.stop();
     this.boards.stop();
     this.outbox.stop();
+    this.laterDue.stop();
     this.queues.stop();
     clearTimeout(this.sidebarTimer);
     // The host client closes first: a watch's unwatch sent to a pi-host that restarts beside the chat retried for 30 s, past systemd's

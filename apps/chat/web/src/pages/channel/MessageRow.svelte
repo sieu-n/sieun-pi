@@ -9,7 +9,10 @@
   import { isMac } from "$lib/ui/keyboard";
   import type { MenuEntry } from "$lib/ui/menu";
   import { toast } from "$lib/ui/toast.svelte";
-  import { markUnread } from "$lib/api";
+  import { api, markUnread } from "$lib/api";
+  import RemindDialog from "$lib/RemindDialog.svelte";
+  import { remindedText, remindMenu } from "$lib/remind";
+  import { askNotifyPermission } from "$lib/remind-notify";
   import Markdown from "$lib/ui/Markdown.svelte";
   import LinkCards from "$lib/ui/LinkCards.svelte";
   import TypingDots from "$lib/ui/TypingDots.svelte";
@@ -129,8 +132,27 @@
   let menuOpen = $state(false);
   let moreButton = $state<HTMLButtonElement>();
   const menuItems = $derived<MenuEntry[]>(
-    reactable ? [{ id: "unread", label: "Mark unread", icon: "dot", shortcut: isMac ? "⌥ Click" : "Alt+Click", onselect: unread }] : [],
+    reactable ? [
+      { id: "unread", label: "Mark unread", icon: "dot", shortcut: isMac ? "⌥ Click" : "Alt+Click", onselect: unread },
+      remindMenu({ remindAt: reactable.later?.remindAt, set: remind, custom: () => (customRemind = true), clear: () => remind(null) }),
+    ] : [],
   );
+  let customRemind = $state(false);
+
+  /** Remind me about this: saves the post for later with the reminder, or clears the reminder and keeps the save. */
+  async function remind(at: number | null) {
+    if (!reactable || !room) return;
+    try {
+      if (at === null) await api.patchLater(`${room}:${reactable.id}`, { remindAt: null });
+      else {
+        void askNotifyPermission();
+        await api.saveLater(room, reactable.id, at);
+        toast.show(remindedText(at));
+      }
+    } catch {
+      toast.error(at === null ? "Could not remove the reminder" : "Could not set the reminder");
+    }
+  }
 
   /** Slack's Mark unread: the room reads as unread from this post on, in the sidebar of every tab and the app. */
   function unread() {
@@ -176,6 +198,7 @@
     {/if}
   </div>
   {#if menuOpen}<Menu bind:open={menuOpen} anchor={moreButton} items={menuItems} placement="bottom-end" label="Message actions" />{/if}
+  {#if customRemind}<RemindDialog at={reactable?.later?.remindAt} onpick={remind} onclose={() => (customRemind = false)} />{/if}
 {/snippet}
 
 {#snippet images()}
