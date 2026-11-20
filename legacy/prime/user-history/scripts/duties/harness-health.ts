@@ -66,6 +66,8 @@ export interface HarnessDeps {
   harnessFixes: HarnessFixes;
   /** The Prime Agent transcript files that changed since the given time, for the reads of `transcripts` roots. */
   transcripts: (since: number) => Promise<string[]>;
+  /** When the skill directory's SKILL.md was added (`gitSkillAdded`), undefined when that cannot be read, which leaves the skill counted. */
+  added: (dir: string) => Promise<number | undefined>;
   smoke: SmokeEnv;
 }
 
@@ -225,6 +227,12 @@ export function markReads(skills: Skill[], roots: readonly SkillRoot[], views: r
   }
 }
 
+/** When the newest commit that added `SKILL.md` in `dir` landed, from the git repo that holds the directory; undefined outside git or before a commit. */
+export function gitSkillAdded(dir: string): Promise<number | undefined> {
+  return new Promise(resolve => execFile("git", ["-C", dir, "log", "--diff-filter=A", "-1", "--format=%ct", "--", "SKILL.md"],
+    (error, stdout) => { const seconds = Number(stdout.trim()); resolve(!error && seconds > 0 ? seconds * 1000 : undefined); }));
+}
+
 const readKinds = (root: SkillRoot | undefined) => [root?.views && "view event", root?.transcripts && "agent read in a Prime transcript"].filter(Boolean).join(" or ");
 
 export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput & { skills: Skill[]; smoke: SkillSmoke[] }> {
@@ -242,7 +250,12 @@ export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput 
   markReads(skills, deps.roots, [...await deps.views(since), ...reads]);
   const listed = overlaps(skills, OVERLAP_LIST);
   const pairs = listed.filter(pair => pair.score >= OVERLAP_MIN);
-  const unread = skills.filter(skill => skill.lastRead === null);
+  // A skill added within the window has had less than UNREAD_DAYS to be read: on 11-20 d5 counted refine-harness, added 12 hours before the run.
+  const neverRead = skills.filter(skill => skill.lastRead === null);
+  const addedAt = await Promise.all(neverRead.map(skill => deps.added(skill.dir)));
+  const isYoung = (at: number | undefined): at is number => at !== undefined && at > sinceMs;
+  const young = neverRead.flatMap((skill, i) => { const at = addedAt[i]; return isYoung(at) ? [{ skill, at }] : []; });
+  const unread = neverRead.filter((_, i) => !isYoung(addedAt[i]));
   const repeats = await splitRepeats(await repeatsBetween(await new CorrectionLedger(deps.dataDir).read(), deps.now - REPEAT_DAYS * DAY, deps.now, deps.history,
     entry => firstFixLanded(fixRefs(entry), Date.parse(entry.at), deps.now, deps.commitTime, deps.harnessFixes.get(entry.id))), deps.now, deps.commitTime, deps.harnessFixes);
   const smoke = await smokeSkills(skills, deps.roots, deps.smoke);
@@ -252,6 +265,7 @@ export async function measureHarness(deps: HarnessDeps): Promise<PrecheckOutput 
     ...repeats.map(item => ({ chat: item.repeat.chat.id, at: item.said, kind: "repeat_corrections_7d",
       excerpt: `${sideLabel(item)}: ${item.entry.id} "${item.entry.rule}" (enforced by ${item.entry.enforcedBy}: ${item.entry.ref}) given again in ${item.repeat.chat.name || item.repeat.chat.id}: ${item.repeat.words}`.slice(0, EXCERPT_MAX) })),
     ...unread.map(skill => ({ kind: "unread_14d", excerpt: `${skill.id} (${skill.dir}) has no ${readKinds(deps.roots.find(root => root.name === skill.root))} since ${since.slice(0, 10)}` })),
+    ...young.map(({ skill, at }) => ({ kind: "unread_young", excerpt: `${skill.id} has no read yet, but its SKILL.md was added ${new Date(at).toISOString().slice(0, 10)}, so unread_14d counts it from ${new Date(at + UNREAD_DAYS * DAY).toISOString().slice(0, 10)}` })),
     ...listed.slice(0, 8).map(pair => ({ kind: "overlap", excerpt: `${pair.a} and ${pair.b} share ${Math.round(pair.score * 100)}% of description words: ${pair.shared.slice(0, 12).join(", ")}` })),
   ];
   // A cache check that throws leaves both shares out, so the judge reads them as not measured, and the skill checks still report.
@@ -393,7 +407,7 @@ async function main(): Promise<void> {
     return [];
   })];
   const { skills, smoke, ...result } = await measureHarness({ roots, views, dataDir, now: Date.now(), cache,
-    history, commitTime: gitCommitTime(fixRepos(AUTO_SNS)), harnessFixes: await readHarnessFixes(harnessDirs()), transcripts: since => primeTranscripts(homedir(), since), smoke: { python } });
+    history, commitTime: gitCommitTime(fixRepos(AUTO_SNS)), harnessFixes: await readHarnessFixes(harnessDirs()), transcripts: since => primeTranscripts(homedir(), since), added: gitSkillAdded, smoke: { python } });
   for (const error of macErrors) result.flagged = [...result.flagged ?? [], error.startsWith("views: ")
     ? { kind: "unread_14d_mac", excerpt: `no data: the Mac's skill view events could not be read, so its read-skill.mjs reads are left out: ${error}`.slice(0, EXCERPT_MAX) }
     : { kind: "repeat_corrections_mac", excerpt: `no data: the Mac read of a chat's session failed, so its repeats are left out: ${error}`.slice(0, EXCERPT_MAX) }];

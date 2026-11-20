@@ -1,11 +1,11 @@
 // d5 on 11-01 flagged prime:principle-sequence-verifiable-units as unread since 10-18, while er-truthset read it on 10-28 through
 // f'/home/sieun/.prime/agent/skills/{n}/SKILL.md' with n taken from a list, a path the skills/<name> pattern never sees.
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { markReads, READS_VERSION, transcriptReads, type ReadState, type Skill, type SkillRoot } from "../scripts/duties/harness-health.ts";
+import { markReads, measureHarness, READS_VERSION, transcriptReads, type ReadState, type Skill, type SkillRoot } from "../scripts/duties/harness-health.ts";
 
 const roots: SkillRoot[] = [{ name: "prime", dir: "/skills", transcripts: true }];
 const skill = (name: string): Skill => ({ id: `prime:${name}`, root: "prime", dir: `/skills/${name}`, description: "" });
@@ -54,4 +54,22 @@ test("a repo skill read through rg of its reference or read-skill.mjs counts, an
   assert.deepEqual(found, { "repo:repo/skill-creation/": "2026-11-09T09:06:00.000Z", "repo:stack/dataviz/": "2026-11-08T10:59:00.000Z" });
   markReads(tracked, repoRoots, [...Object.entries(found).map(([path, ts]) => ({ path, ts })), { path: "@code/.agents/skills/stack/python/SKILL.md", ts: "2026-11-10T00:00:00.000Z" }]);
   assert.deepEqual(tracked.map(skill => skill.lastRead), ["2026-11-09T09:06:00.000Z", "2026-11-08T10:59:00.000Z", "2026-11-10T00:00:00.000Z"]);
+});
+
+// On 11-20 d5 counted prime:refine-harness as unread in 14 days, though its SKILL.md landed in b400228f 12 hours before the run.
+test("a never-read skill added within 14 days stays out of unread_14d and is listed as young", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "young-skills-"));
+  for (const name of ["young", "old", "unknown"]) {
+    mkdirSync(join(dir, name));
+    writeFileSync(join(dir, name, "SKILL.md"), `---\nname: ${name}\ndescription: The ${name} skill.\n---\n`);
+  }
+  const now = Date.parse("2026-11-20T19:33:00Z");
+  const added: Record<string, number> = { young: Date.parse("2026-11-20T07:07:19Z"), old: Date.parse("2026-10-01T00:00:00Z") };
+  const output = await measureHarness({ roots: [{ name: "prime", dir, transcripts: true }], views: async () => [], dataDir: mkdtempSync(join(tmpdir(), "young-data-")), now,
+    cache: async () => ({ metrics: {}, flagged: [] }), history: async () => ({ owner: [], refines: [] }), commitTime: async () => undefined, harnessFixes: new Map(),
+    transcripts: async () => [], added: async skillDir => added[skillDir.split("/").pop()!], smoke: { python: "python3" } });
+  assert.equal(output.metrics.unread_14d, 2);
+  assert.deepEqual(output.flagged!.filter(slice => slice.kind === "unread_14d").map(slice => slice.excerpt.split(" ")[0]), ["prime:old", "prime:unknown"]);
+  assert.deepEqual(output.flagged!.filter(slice => slice.kind === "unread_young").map(slice => slice.excerpt),
+    ["prime:young has no read yet, but its SKILL.md was added 2026-11-20, so unread_14d counts it from 2026-12-04"]);
 });

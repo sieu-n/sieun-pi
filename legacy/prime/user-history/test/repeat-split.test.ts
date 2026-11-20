@@ -68,7 +68,7 @@ test("the d10 precheck reports the split next to repeat_corrections_7d and leads
   const repeat = { at: "2026-10-19T06:00:13Z", chat: vp, words: "NONONONONONO" };
   writeFileSync(join(dataDir, "corrections.json"), JSON.stringify({ corrections: [{ ...c79, repeats: [repeat] }] }));
   const output = await measureHarness({ roots: [], views: async () => [], dataDir, now, cache: async () => ({ metrics: { cache_read_ratio_1h: 95, cache_read_ratio_24h: 95 }, flagged: [] }),
-    history: async () => ({ owner: [{ text: repeat.words, at: at("2026-10-19T05:32:49.192Z") }], refines: [] }), commitTime, harnessFixes: new Map(), transcripts: async () => [], smoke: { python: "python3" } });
+    history: async () => ({ owner: [{ text: repeat.words, at: at("2026-10-19T05:32:49.192Z") }], refines: [] }), commitTime, harnessFixes: new Map(), transcripts: async () => [], added: async () => undefined, smoke: { python: "python3" } });
   assert.equal(output.metrics.repeat_corrections_7d, 1);
   assert.deepEqual([output.metrics.repeats_before_fix_7d, output.metrics.repeats_after_fix_7d, output.metrics.repeats_no_fix_7d], [1, 0, 0]);
   const line = output.flagged!.find(slice => slice.kind === "repeat_corrections_7d")!;
@@ -155,7 +155,7 @@ test("a harness entry whose metadata names the correction is a fix at each of it
   const words = "NEVER EVER put bullshit like \"Not guaranteed to be hidden.\"";
   writeFileSync(join(dataDir, "corrections.json"), JSON.stringify({ corrections: [{ ...c215, repeats: [{ at: "2026-11-13T02:58:06.700Z", chat: sg, words }] }] }));
   const measure = (harnessFixes: typeof harness) => measureHarness({ roots: [], views: async () => [], dataDir, now: later, cache: async () => ({ metrics: { cache_read_ratio_1h: 95, cache_read_ratio_24h: 95 }, flagged: [] }),
-    history: async () => ({ owner: [{ text: words, at: at(said) }], refines: [] }), commitTime, harnessFixes, transcripts: async () => [], smoke: { python: "python3" } });
+    history: async () => ({ owner: [{ text: words, at: at(said) }], refines: [] }), commitTime, harnessFixes, transcripts: async () => [], added: async () => undefined, smoke: { python: "python3" } });
   const output = await measure(harness);
   assert.deepEqual([output.metrics.repeat_corrections_7d, output.metrics.repeats_before_fix_7d, output.metrics.repeats_after_fix_7d, output.metrics.repeats_no_fix_7d], [1, 0, 1, 0]);
   assert.match(output.flagged!.find(slice => slice.kind === "repeat_corrections_7d")!.excerpt, /^after fix of 11-05 00:00Z, fixed again 11-13 03:00Z: c215 /);
