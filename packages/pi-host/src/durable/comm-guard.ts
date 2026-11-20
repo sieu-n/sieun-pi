@@ -72,8 +72,8 @@ export function commPostRefusal(text: string, turn: CommPostTurn): string | unde
       "message, and post once when the result is in.";
   }
   if (hasTable(text) && !turn.tableAsked && !turn.tableResent) {
-    return `${TABLE_MARK}, and a room reads like Slack: a table gets cut off in its narrow thread pane. Answer in one or two casual sentences ` +
-      "and put the detail on a wiki page with `wiki.write` in ipython, linked in the same post as `full list → [name](wiki:<path>)`. " +
+    return `${TABLE_MARK}, and a room reads like Slack: a table gets cut off in its narrow thread pane. Answer in one or two casual sentences, ` +
+      "or in one line over short `- ` bullets when it holds several points, and put the detail on a wiki page with `wiki.write` in ipython, linked in the same post as `full list → [name](wiki:<path>)`. " +
       "If he must see this table as it is, send the very same text again and it goes out (c98).";
   }
   return undefined;

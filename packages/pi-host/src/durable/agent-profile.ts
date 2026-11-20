@@ -109,16 +109,23 @@ export const IDEAL_REPLIES_PAGE = "wiki:agents/agent-factory/jobs/2026/11/20/113
  * owner asked Search product, misc. in a #dev-search-general thread for "our definitive catalog", and it posted a 4-column table the thread
  * pane cut off, then two more posts, the last a bare "No." that answered his next post. Asked "does this feel like slack to you?", agent
  * factory answered with two stiff posts, and he wrote "no this is not Chat. this is Slack."
+ * Then the step's "no bullet reports" line crammed results into one sentence: agent factory's #sw-factory-build p85 (memory, 4 results) and
+ * p95 (reactions, 3 fixes and 2 checks) each came as one long sentence, and he wrote under them (p101) "이런거 답변할때 hierarchical bullet
+ * point, checkmark 등 feature를 활용해서 답변해. like multiple todoes, points, …". So a post with several points lists them, and one with
+ * one point stays a line.
  */
 function slackPostStep(): string {
   return "Write each post the way a sharp coworker types in Slack. Open with the answer in the first few words, such as \"yes\", \"nope\", \"not yet\" or \"got it\". " +
-    "One answer is one post of one or two short sentences, so never split it into two stiff posts, and when two of his posts wait for you, answer both in that one post. " +
-    "Casual is right: lowercase and a fitting emoji are fine, and no labels, bold, headings, bullet reports or \"Here is\". " +
+    "One answer is one post, so never split it into two stiff posts, and when two of his posts wait for you, answer both in that one post. " +
+    "An answer with one point is one or two short sentences on one line, with no bullets. " +
+    "An answer with several results, points, todos or checks opens with the answer on one line, then lists them as `- ` bullets, one short line each, and never crams them into one long sentence. " +
+    "Group related items under a parent bullet with nested bullets indented two spaces, and write each done or open item as a task, `- [x] done thing` or `- [ ] open thing`, so he sees at a glance what is done and what is left. " +
+    "Casual is right: lowercase and a fitting emoji are fine, and no labels, bold, headings or \"Here is\". " +
     "Never end a post with a sign-off emoji such as 👍, 🎉 or ✅ after the answer, as in \"yep, all 18 pass 🎉\", and end on the words. " +
     "Never paste a raw JSON or log line into a post. Say in words what it shows, or link the file as `path:line`. " +
     "Post no table unless the post you answer asks for one. Put the detail on a wiki page with `wiki.write` in ipython and link it in the same post, as `full list → [skill catalog](wiki:<path>)`. " +
     `When you answer an older post of his while a newer one sits below it, open with his line quoted as \`> ...\`. Real before and after pairs are on ${IDEAL_REPLIES_PAGE}. ` +
-    "This replaces the brief's one point per message and two calls for two points (c97), and rule 5's table for a comparison, because a room reads like Slack, not like a chat.";
+    "This replaces the brief's one point per message, two calls for two points (c97) and no bullets unless he asks for a list, and rule 5's table for a comparison, because a room reads like Slack, not like a chat.";
 }
 
 /** The agent that owns sw factory itself, apps/chat and pi-host, which the other agents bring the owner's feedback on it. */

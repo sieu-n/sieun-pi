@@ -176,6 +176,8 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
       assert.doesNotMatch(commInstructions({ ...comm, room }), /short plain sentences/, room);
       assert.match(commInstructions({ ...comm, room }), /coworker types in Slack[\s\S]*answer in the first few words[\s\S]*One answer is one post[\s\S]*answer both in that one post[\s\S]*no table unless[\s\S]*wiki\.write[\s\S]*ideal-replies\.html[\s\S]*replaces the brief's one point per message/, room);
       assert.doesNotMatch(commInstructions({ ...comm, room }), /tables, links|diagram, table or link/, room);
+      assert.match(commInstructions({ ...comm, room }), /one point is one or two short sentences on one line, with no bullets[\s\S]*several results, points, todos or checks opens with the answer on one line, then lists them as `- ` bullets[\s\S]*nested bullets[\s\S]*`- \[x\] done thing` or `- \[ \] open thing`[\s\S]*no bullets unless he asks for a list/, room);
+      assert.doesNotMatch(commInstructions({ ...comm, room }), /bullet reports/, room);
     }
     for (const room of ["so_1a2b3c4d", "ch_1a2b3c4d"]) {
       const group = commInstructions({ ...comm, room });

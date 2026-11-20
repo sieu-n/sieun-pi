@@ -4,10 +4,12 @@
  * real kinds of asks with no steering, and each reply is checked against the ideal replies page
  * (wiki:agents/agent-factory/jobs/2026/11/20/1139-slack-style-replies/ideal-replies.html).
  *
- *   node apps/chat/scripts/blind-replies.mjs [--asks <file.json>] [--cwd <project>] [--host <box>] [--out <file.jsonl>] [--server http://127.0.0.1:5184]
+ *   node apps/chat/scripts/blind-replies.mjs [--asks <file.json> | --set lists] [--cwd <project>] [--host <box>] [--out <file.jsonl>] [--server http://127.0.0.1:5184]
  *
  * The first ask is the channel's root post and every later one a reply in its thread, as the owner asks in a channel. An ask is
- * `{text, expect, wait}`, where `expect` is "reply" (one short Slack post) or "reaction" (no post), and `wait: false` sends the next ask at
+ * `{text, expect, wait}`, where `expect` is "reply" (one short Slack post), "list" (a one-line answer, then nested bullets and a task list,
+ * as the owner asked under p85 and p95 in #sw-factory-build on 11-20, p101), "line" (one short line with no bullets) or "reaction"
+ * (no post), and `wait: false` sends the next ask at
  * once, so the agent answers both together, as when the owner sent p14 and p15 7 s apart on 11-20. The agent and the room are `test: true`, so no
  * owner list shows them. Each line of --out is one ask with its replies, its checks and pass or fail; the last line is the run's summary.
  *
@@ -18,7 +20,7 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
-const { values } = parseArgs({ options: { asks: { type: "string" }, cwd: { type: "string" }, host: { type: "string" }, out: { type: "string" }, server: { type: "string" } } });
+const { values } = parseArgs({ options: { asks: { type: "string" }, set: { type: "string" }, cwd: { type: "string" }, host: { type: "string" }, out: { type: "string" }, server: { type: "string" } } });
 const server = values.server ?? "http://127.0.0.1:5184";
 const FIRST_MS = 20 * 60_000;
 const QUIET_MS = 60_000;
@@ -31,7 +33,15 @@ const DEFAULT_ASKS = [
   { text: "is it all working?", expect: "reply" },
   { text: "ok thanks", expect: "reaction" },
 ];
-const asks = values.asks ? JSON.parse(readFileSync(values.asks, "utf8")) : DEFAULT_ASKS;
+/** A multi-result check that should come back as a list, a one-line question that should stay a line, and a thanks; run with `--cwd` at this repo. */
+const LIST_ASKS = [
+  { text: "can you check where this repo stands before i ship? git state (main vs origin, uncommitted files) and whether pi-host's comm guard has tests", expect: "list" },
+  { text: "which node version does this box run?", expect: "line" },
+  { text: "ok thanks", expect: "reaction" },
+];
+const SETS = { default: DEFAULT_ASKS, lists: LIST_ASKS };
+const asks = values.asks ? JSON.parse(readFileSync(values.asks, "utf8")) : SETS[values.set ?? "default"];
+if (!asks) throw new Error(`--set is one of ${Object.keys(SETS).join(", ")}`);
 
 /** One API call; while a release restarts the chat server the call is retried within the ask's own wait, since runs 2 and 3 on 11-20 died on it. */
 async function call(method, path, body) {
@@ -56,14 +66,32 @@ const TABLE = /^[ \t]*\|?.*\|.*\n[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,
 const words = text => text.replace(/\]\([^)]*\)/g, "]").split(/\s+/).filter(Boolean).length;
 const sentences = text => text.replace(/\]\([^)]*\)/g, "]").split(/(?<=[.!?])\s+/).filter(Boolean);
 
+const BULLET = /^\s*[-*+] /;
+const NESTED = /^ {2,}[-*+] /m;
+const TASK = /^\s*[-*+] \[[ xX]\] /m;
+
 /** The ideal replies page's rules that a script can read; the reader judges the tone from the printed text. */
 function checks(ask, posts, asked) {
   const text = posts.map(p => p.text).join("\n\n");
   if (ask.expect === "reaction") return [["no post, a reaction says it", posts.length === 0]];
-  return [
+  const lines = text.split("\n").filter(line => line.trim());
+  const plain = [
     ["one post for the posts it answers", posts.length === 1],
     ["no table", !TABLE.test(text)],
     ["no heading, bold or label opener", !/^#{1,6} |\*\*|^[A-Z][\w ]{0,20}:\s/m.test(text)],
+  ];
+  if (ask.expect === "line") return [...plain, ["one line with no bullets", lines.length === 1 && !BULLET.test(lines[0])], ["at most 30 words", words(text) <= 30]];
+  if (ask.expect === "list") {
+    return [
+      ...plain,
+      ["opens with a one-line answer, not a bullet", lines.length > 1 && !BULLET.test(lines[0]) && words(lines[0]) <= 25],
+      ["nested bullets", NESTED.test(text)],
+      ["a task list", TASK.test(text)],
+      ["no line over 35 words", lines.every(line => words(line) <= 35)],
+    ];
+  }
+  return [
+    ...plain,
     ["at most 80 words, as config/AGENTS.md rule 5", words(text) <= 80 * asked],
     ["no sentence over 35 words", sentences(text).every(s => words(s) <= 35)],
   ];
