@@ -17,6 +17,10 @@
   let now = $state(Date.now());
   const clock = setInterval(() => (now = Date.now()), 30_000);
   onDestroy(() => clearInterval(clock));
+  /** A reminder that fires writes the list, so the clock moves with each new list and the row turns Overdue at once. */
+  $effect(() => {
+    if (later.lists.open) now = Date.now();
+  });
 
   /** `#/later` is In progress and `#/later/done` Completed, so back and a link keep the tab. */
   const tab = $derived<LaterState>(router.route.rest[0] === "done" ? "done" : "open");

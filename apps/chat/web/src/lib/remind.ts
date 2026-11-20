@@ -124,3 +124,11 @@ export function dueFirst<T extends { state: string; remindAt?: number }>(rows: r
   const due = rows.filter(r => isOverdue(r, now)).sort((a, b) => a.remindAt! - b.remindAt!);
   return [...due, ...rows.filter(r => !isOverdue(r, now))];
 }
+
+const LONG_DATE = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric" });
+
+/** The Custom picker's line under its fields, with the day in words: "Today at 2:44 PM", "Tomorrow at 9:00 AM", "Mon, Nov 23 at 9:00 AM". */
+export function pickedLabel(at: number, now = Date.now()): string {
+  const day = sameDay(at, now) ? "Today" : sameDay(at, morningAfter(now, 1)) ? "Tomorrow" : LONG_DATE.format(at);
+  return `${day} at ${TIME.format(at)}`;
+}

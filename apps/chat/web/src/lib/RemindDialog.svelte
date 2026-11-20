@@ -3,7 +3,7 @@
   import Dialog from "$lib/ui/Dialog.svelte";
   import Field from "$lib/ui/Field.svelte";
   import Input from "$lib/ui/Input.svelte";
-  import { fromPicker, pickerValues, remindPresets, whenLabel } from "./remind";
+  import { fromPicker, pickedLabel, pickerValues, remindPresets } from "./remind";
 
   /** Remind me's Custom: a date and a time in the owner's local time, which must be ahead of now. */
   type Props = { title?: string; at?: number; onpick: (at: number) => void | Promise<void>; onclose: () => void };
@@ -37,7 +37,7 @@
     <Field label="Date" id="remind-date">
       <Input id="remind-date" type="date" bind:value={date} min={pickerValues(Date.now()).date} required disabled={pending} />
     </Field>
-    <Field label="Time" id="remind-time" error={error && date && time ? error : null} hint={picked && !error ? whenLabel(picked) : undefined}>
+    <Field label="Time" id="remind-time" error={error && date && time ? error : null} hint={picked && !error ? pickedLabel(picked) : undefined}>
       <Input id="remind-time" type="time" bind:value={time} required disabled={pending} invalid={!!error && !!date && !!time} />
     </Field>
   </form>

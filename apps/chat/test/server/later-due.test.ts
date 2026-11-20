@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { LaterDue, type DueItem } from "../../server/later-due.ts";
 import type { MenuEntry } from "../../web/src/lib/ui/menu.ts";
-import { dueLabel, fromPicker, nextMonday, pickerValues, remindedText, remindMenu, remindPresets } from "../../web/src/lib/remind.ts";
+import { dueLabel, fromPicker, pickedLabel, nextMonday, pickerValues, remindedText, remindMenu, remindPresets } from "../../web/src/lib/remind.ts";
 
 function rig(items: DueItem[], start: number) {
   let now = start;
@@ -89,4 +89,11 @@ test("the toast and the submenu word a reminder as Slack does", () => {
   assert.deepEqual(plain.items.map((e: MenuEntry) => ("label" in e ? e.label : "-")), ["In 20 minutes", "In 1 hour", "In 3 hours", "Tomorrow", "Next week", "-", "Custom…"]);
   const set = remindMenu({ remindAt: new Date(2026, 10, 18, 15, 40).getTime(), set: () => {}, custom: () => {}, clear: () => {}, now });
   assert.deepEqual(set.items.slice(0, 2).map((e: MenuEntry) => ("label" in e ? e.label : "-")), ["Due 3:40 PM", "Remove reminder"]);
+});
+
+test("the Custom picker names the day in words", () => {
+  const now = new Date(2026, 10, 18, 14, 30).getTime();
+  assert.equal(pickedLabel(new Date(2026, 10, 18, 14, 44).getTime(), now), "Today at 2:44 PM");
+  assert.equal(pickedLabel(new Date(2026, 10, 19, 9, 0).getTime(), now), "Tomorrow at 9:00 AM");
+  assert.equal(pickedLabel(new Date(2026, 10, 23, 9, 0).getTime(), now), "Mon, Nov 23 at 9:00 AM");
 });
