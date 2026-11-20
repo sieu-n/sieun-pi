@@ -17,6 +17,7 @@ import http2 from "node:http2";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { isPlatformHost, refusal } from "./platforms.mjs";
 
 const accepts = (port) => new Promise((resolve) => {
   const c = net.connect(port, "127.0.0.1");
@@ -125,8 +126,9 @@ function forwardWhole(stream, headers, agent) {
 // answered 403 on the public data pages.
 const DIRECT = /(?:^|\.)virev\.ai$/;
 
-/** Connects to host:port from this box for our own sites and through the Mac for every other host. */
+/** Connects to host:port from this box for our own sites and through the Mac for every other host, and refuses platform hosts (c230). */
 function open(socksPort, host, port, callback) {
+  if (isPlatformHost(host)) { callback(refusal(host)); return; }
   if (!DIRECT.test(host)) { socksConnect(socksPort, host, port, callback); return; }
   const sock = net.connect(port, host);
   let connected = false;

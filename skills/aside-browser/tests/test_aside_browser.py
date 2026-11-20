@@ -497,6 +497,23 @@ class BrowserRoutingTests(Base):
     def test_box_off_sends_everything_to_aside(self):
         self.assertEqual(ab.browser_for("https://example.com/"), "aside")
 
+    def test_box_refuses_platform_pages_under_c230_before_any_runner_starts(self):
+        box = AsyncMock(return_value="box out")
+        with patch.object(ab, "box_available", return_value=True), patch.object(ab, "_box_call", box):
+            for url in (
+                "https://www.instagram.com/",
+                "https://www.tiktok.com/@u/video/1",
+                "https://youtu.be/x",
+                "https://i.ytimg.com/vi/a.jpg",
+                "https://x.com/virev",
+                "https://www.xiaohongshu.com/explore",
+            ):
+                with self.assertRaisesRegex(ab.AsideError, "c230"):
+                    self.call(ab.open_tab(url, browser="box"))
+            self.assertEqual(box.await_count, 0)
+            for url in ("https://box.com/", "https://staging.virev.ai/brands?url=instagram.com", "https://example.com/"):
+                self.assertFalse(ab.platform_host(url), url)
+
     def test_bracketed_ipv6_pages_on_this_host_go_to_the_box(self):
         with patch.object(ab, "box_available", return_value=True):
             for url in ("http://[::1]:5180/", "http://[::1]/configure", "http://[fd7a:115c:a1e0::5]:5180/x"):

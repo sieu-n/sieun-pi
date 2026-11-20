@@ -167,11 +167,14 @@ The check also gets the page URL, so when one todo asks about two sites and the 
 
 ## Which browser opens a page
 
+The box Chrome has no paid proxy, so under owner rule c230 it refuses Instagram, TikTok, YouTube, Facebook, LinkedIn, X, Threads, Douyin, Xiaohongshu and their CDNs (`box/platform-hosts.json`).
+`box/platforms.mjs` blocks each such page, redirect, subresource and Node `fetch` and raises an error that names c230, and you never route that read around it, because these reads stay stopped until a paid proxy exists.
+
 On a Linux box the default is the box's own headful Chrome:
 
 1. `open_tab(url)` with no `browser` opens the page in the box's Chrome, because every Aside tab renders on the owner's Mac, even in the background.
 2. `run(code)` before any tab runs in the box's Chrome, and `openTab('<url>')` inside `run()` picks its browser by that URL in the same way.
-3. Our own apps (`localhost`, `127.0.0.1`, `[::1]`, the tailnet), public pages and demo pages such as `http://[::1]:5180` always open on the box.
+3. Our own apps (`localhost`, `127.0.0.1`, `[::1]`, the tailnet), public pages and demo pages such as `http://[::1]:5180` always open on the box, except social platform pages.
 4. Only a page that needs one of the owner's logins opens in his Aside: a host in `LOGIN_HOSTS` (Google, GitHub, vendor dashboards, social sites), a mail, ticket or social page, or a non-http URL (c82, c103).
 5. `agent()`, `memory_search()` and the site skill globals (`gmail`, `slack`, `googleDocs` and the rest) run in Aside, because they exist only there.
 6. When a box page lands on a sign-in page, the result says so, and only then you open it again with `open_tab(url, browser="aside")`.
@@ -216,4 +219,4 @@ An agent on the Mac never launches a Playwright, Puppeteer or Chrome for Testing
 ## Tests
 
 From the sieun-pi repository root, `uv run python -m unittest discover -s skills/aside-browser/tests -v` runs the offline tests with a fake MCP server, plus two box tests when the runner is installed: one serves a page on 127.0.0.1 and drives it, and one checks that Chrome runs headful on its own Xvfb display and that a SIGKILL of the runner leaves no Xvfb or Chrome behind.
-`node --test --test-force-exit --test-isolation=none skills/aside-browser/box/http-cache.test.mjs` starts the runner twice against a local page and checks that the second start takes the page's immutable file from the disk cache, then drives `http-cache.mjs` with a fake Chrome to check which /api/img answers it keeps. `node --test --test-force-exit --test-isolation=none skills/aside-browser/box/leave.test.mjs` drives `leave.mjs` with a fake page to check that a box tab's `page.goto` and `page.reload` wait for the page's unanswered Convex writes and stop waiting once its Convex socket closes or the e2e write guard dropped a write.
+`node --test --test-force-exit --test-isolation=none skills/aside-browser/box/http-cache.test.mjs` starts the runner twice against a local page and checks that the second start takes the page's immutable file from the disk cache, then drives `http-cache.mjs` with a fake Chrome to check which /api/img answers it keeps. `node --test --test-force-exit --test-isolation=none skills/aside-browser/box/platforms.test.mjs` maps every host to a local server and checks that the runner refuses platform pages on goto, after a redirect and as subresources under c230 while a normal page loads. `node --test --test-force-exit --test-isolation=none skills/aside-browser/box/leave.test.mjs` drives `leave.mjs` with a fake page to check that a box tab's `page.goto` and `page.reload` wait for the page's unanswered Convex writes and stop waiting once its Convex socket closes or the e2e write guard dropped a write.

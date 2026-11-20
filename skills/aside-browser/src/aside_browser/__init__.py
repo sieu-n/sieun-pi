@@ -845,6 +845,29 @@ LOGIN_HOSTS = re.compile(
     r"|x\.com|twitter\.com|linkedin\.com|discord\.com|facebook\.com|instagram\.com|reddit\.com|threads\.net|bsky\.app)$",
     re.I,
 )
+# Owner rule c230 (2026-11-20): no crawl or platform read leaves our servers without a paid proxy, and the box Chrome has none, so it
+# refuses these hosts and their subdomains (box/platforms.mjs reads the same list). open_tab() refuses them here before a runner starts.
+with open(os.path.join(BOX_DIR, "platform-hosts.json"), encoding="utf-8") as _hosts:
+    PLATFORM_HOSTS: tuple[str, ...] = tuple(json.load(_hosts))
+
+
+def platform_host(url: str) -> bool:
+    """Whether url's host is one of PLATFORM_HOSTS or a subdomain of one."""
+    try:
+        host = (urlsplit(url or "").hostname or "").rstrip(".").lower()
+    except ValueError:
+        return False
+    return any(host == p or host.endswith("." + p) for p in PLATFORM_HOSTS)
+
+
+def _platform_refusal(url: str) -> AsideError:
+    return AsideError(
+        f"aside-box refused {url}: owner rule c230 allows no crawl or platform read from our servers without a paid proxy, "
+        "and the box Chrome has none, so these reads stay stopped.",
+        "Do not route the read around the refusal. Note the blocked step and move on.",
+    )
+
+
 _LOGIN_PAGE = re.compile(r"^https?://(?:accounts\.|login\.|auth\.|sso\.)|/(?:log-?in|sign-?in|sign_in|auth|sso|oauth|session)(?:[/?#.]|$)", re.I)
 
 
@@ -1300,6 +1323,8 @@ async def open_tab(url: str, browser: str | None = None, keep: bool = False) -> 
     where = browser or browser_for(url)
     if where not in ("aside", "box"):
         raise ValueError("browser must be 'aside' or 'box'")
+    if where == "box" and platform_host(url):
+        raise _platform_refusal(url)
     if where == "aside":
         _drop_parked()
     await _sweep_quietly()

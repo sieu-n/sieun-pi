@@ -11,6 +11,7 @@ import { chromium } from "playwright-core";
 import { hasDisplayServer, startDisplay } from "./display.mjs";
 import { cacheShared, pruneShared } from "./http-cache.mjs";
 import { holdLeaves } from "./leave.mjs";
+import { CHROME_ARGS, guardPage, refuseInNode } from "./platforms.mjs";
 import { startLoopbackTunnel } from "./loopback.mjs";
 
 // Chrome's profile lives in a folder named for this runner's pid, because Playwright makes it under os.tmpdir() and a
@@ -40,7 +41,8 @@ if (!hasDisplayServer()) {
 }
 const screen = await startDisplay();
 const loopback = process.env.BOX_LOOPBACK_VIA ? await startLoopbackTunnel(process.env.BOX_LOOPBACK_VIA) : null;
-const proxy = loopback ? { proxy: loopback.proxy, args: loopback.args } : {};
+refuseInNode();
+const proxy = { args: [...CHROME_ARGS, ...(loopback?.args ?? [])], ...(loopback ? { proxy: loopback.proxy } : {}) };
 const chrome = process.env.BOX_CHROME || (fs.existsSync("/usr/bin/google-chrome") ? "/usr/bin/google-chrome" : chromium.executablePath());
 const env = { ...process.env, DISPLAY: screen.display };
 // Chromium fails every in-flight request with ERR_NETWORK_CHANGED when a host interface changes address. On us-metal02
@@ -61,7 +63,7 @@ browser.newContext = async (options) => {
   const ctx = await newContext(options);
   const ready = new WeakMap();
   const share = (p) => {
-    if (!ready.has(p)) ready.set(p, cacheShared(ctx, p).catch(() => {}));
+    if (!ready.has(p)) ready.set(p, prepare(ctx, p));
     return ready.get(p);
   };
   ctx.on("page", share);
@@ -73,6 +75,8 @@ browser.newContext = async (options) => {
   };
   return ctx;
 };
+// The disk cache and the c230 platform refusal go on each page before its first request.
+const prepare = (ctx, p) => Promise.all([cacheShared(ctx, p), guardPage(ctx, p)]).catch(() => {});
 const ids = new WeakMap();
 const cached = new WeakMap();
 let next = 1;
@@ -87,11 +91,11 @@ const getTabByTargetId = (id) => tabs.find((p) => targetId(p) === id) || null;
 function adopt(p) {
   if (ids.has(p)) return p;
   ids.set(p, `box-${next++}`);
-  cached.set(p, cacheShared(context, p).catch(() => {}));
+  holdLeaves(p);
+  cached.set(p, prepare(context, p));
   Object.defineProperty(p, "targetId", { get: () => ids.get(p) });
   const locator = p.locator.bind(p);
   p.locator = (selector, options) => locator(/^e\d+$/.test(selector) ? `aria-ref=${selector}` : selector, options);
-  holdLeaves(p);
   p.on("close", () => {
     const i = tabs.indexOf(p);
     if (i >= 0) tabs.splice(i, 1);
