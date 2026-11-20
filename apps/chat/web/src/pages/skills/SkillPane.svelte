@@ -96,7 +96,7 @@
               </li>
             {/each}
           </ul>
-          {#if row.uses7d !== null || row.uses30d !== null}<p class="subtle counts">{row.uses7d ?? "?"} uses in 7 days, {row.uses30d ?? "?"} in 30 days.</p>{/if}
+          {#if row.uses7d !== null || row.uses30d !== null}<p class="subtle counts">{row.uses7d ?? "?"} {row.uses7d === 1 ? "use" : "uses"} in 7 days, {row.uses30d ?? "?"} in 30 days.</p>{/if}
         {:else}
           No use found in the transcripts.
         {/if}
