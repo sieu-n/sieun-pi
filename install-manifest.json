@@ -146,6 +146,13 @@
       "target": ".prime/agent/skills/skills"
     },
     {
+      "id": "skill:sw-factory",
+      "kind": "link",
+      "source": "skills/sw-factory",
+      "scope": "home",
+      "target": ".prime/agent/skills/sw-factory"
+    },
+    {
       "id": "skill:swarm",
       "kind": "link",
       "source": "skills/swarm",
