@@ -9,8 +9,9 @@ import type { SearchResult } from "../server.ts";
 
 export const SEARCH_HISTORY_TOOL = "search_history";
 
+/** `from`, `in`, `where`, `after` and `before` mean what they mean in sw factory's search_messages and the owner's Cmd K search. */
 export interface SearchHistoryParams {
-  query?: string; kind?: string; chat?: string; agent?: string; box?: string; since?: string; until?: string; sort?: string; limit?: number; read?: string;
+  query?: string; from?: string[] | string; in?: string[] | string; where?: string[] | string; kind?: string; box?: string; after?: string; before?: string; sort?: string; limit?: number; read?: string;
 }
 
 /** The part of a session's context the tool reads: who is calling, so the socket applies that session's scope. */
@@ -37,10 +38,33 @@ export function readText(answer: ReadAnswer): string {
     `${message.hit ? ">" : " "} ${stamp(message.at)} ${message.author} ${message.tool ? `${message.kind} (${message.tool})` : message.kind}: ${message.text}`)].join("\n");
 }
 
-const DESCRIPTION = "Search every agent session transcript on every box: messages, tool calls and results, agent messages and summaries. " +
-  "Newest first by default. The query takes Slack-style modifiers: in:<chat or thread>, from:<agent>|owner|tool, kind:message|tool|agent|thinking|summary, " +
-  "box:mac|us-metal02, before:/after:/on:YYYY-MM-DD (KST), -word, is:error, \"exact phrase\". Pass read=<ref> from a hit to get the messages around it. " +
-  "An agent sees its own chat family unless the owner widened the scope.";
+const DESCRIPTION = "Search every agent session transcript on every box, Prime chats and jobs as well as sw factory threads: messages, tool calls " +
+  "and their output, agent messages and summaries. Newest first by default. Use it for what happened inside a session, such as a command an " +
+  "agent ran, an error it saw or a Prime chat's words; for what people and agents posted in sw factory rooms, DMs and threads, an " +
+  "sw factory agent uses search_messages. Narrow with from (who wrote it), in (which chat or thread), where=tool (only tool calls and their output), and " +
+  "after/before (dates). The query also takes in:, from:, kind:, box:, before:, after:, on:, -word, is:error and \"exact phrase\". " +
+  "Pass read=<ref> from a hit to get the messages around it. An agent sees its own chat family unless the owner widened the scope.";
+
+const KST_MS = 9 * 3_600_000;
+
+/**
+ * The socket's own params for the shared filters. `after` keeps its day, as since= does; `before` leaves its day out, as in search_messages,
+ * so it becomes the ISO time that day starts in KST. `where` takes only `tool` here, because a transcript has no room posts or thread replies.
+ */
+export function socketFilters(params: SearchHistoryParams): Record<string, string | undefined> {
+  const where = values(params.where);
+  const posts = where.filter(value => value !== "tool");
+  if (posts.length) throw new Error(`where=${posts.join(",")} is for room posts and thread replies, which search_messages searches; search_history takes where=tool or no where.`);
+  if (where.length && params.kind) throw new Error("Pass where=tool or kind, not both.");
+  const day = params.before && /^(\d{4})-(\d{2})-(\d{2})$/.exec(params.before);
+  const before = day ? new Date(Date.UTC(Number(day[1]), Number(day[2]) - 1, Number(day[3])) - KST_MS).toISOString() : params.before;
+  const joined = (list: string[]) => list.length ? list.join(",") : undefined;
+  return { agent: joined(values(params.from)), chat: joined(values(params.in)), kind: where.length ? "tool" : params.kind, since: params.after, until: before };
+}
+
+/** A list param as the model sent it: an array, or one string that may hold a comma list. */
+const values = (value: string[] | string | undefined): string[] =>
+  (Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : []).map(part => part.trim()).filter(Boolean);
 
 /** The tool definition, in the shape Pi's and Prime's registerTool take. */
 export function searchHistoryTool(): {
@@ -55,12 +79,13 @@ export function searchHistoryTool(): {
       type: "object",
       properties: {
         query: { type: "string", description: "Words to find, with optional modifiers." },
-        kind: { type: "string", description: "message, tool, agent, thinking, summary, or an exact kind such as tool_result." },
-        chat: { type: "string", description: "A chat or thread name, or a session id prefix." },
-        agent: { type: "string", description: "An agent name, owner or tool." },
+        from: { type: "array", items: { type: "string" }, description: "Who wrote it: an agent's name, owner, or tool. Use it when you know who said or ran it. Several values match any of them." },
+        in: { type: "array", items: { type: "string" }, description: "Which chat or thread: its name, or a session id prefix. Use it when you know where it happened. Several values match any of them." },
+        where: { type: "array", items: { type: "string", enum: ["tool"] }, description: "tool keeps only tool calls and their output, for a command, a file read or an error that never showed in a message." },
+        kind: { type: "string", description: "An exact kind when where is not enough: message, agent, thinking, summary, or one such as tool_result." },
         box: { type: "string", description: "mac or us-metal02." },
-        since: { type: "string", description: "YYYY-MM-DD (KST) or an ISO time." },
-        until: { type: "string", description: "YYYY-MM-DD (KST, the whole day) or an ISO time." },
+        after: { type: "string", description: "YYYY-MM-DD (KST), that day included, or an ISO time: only what came then or later." },
+        before: { type: "string", description: "YYYY-MM-DD (KST), that day left out, or an ISO time: only what came earlier." },
         sort: { type: "string", enum: ["newest", "relevant"] },
         limit: { type: "number", description: "Hits to return, 20 by default, 100 at most." },
         read: { type: "string", description: "A hit's ref: return the messages around that hit instead of searching." },
@@ -72,11 +97,9 @@ export function searchHistoryTool(): {
       try {
         if (params.read) text = readText(await historyGet<ReadAnswer>("/v1/read", { ref: params.read, ...caller }));
         else {
-          if (!params.query?.trim() && !params.chat && !params.agent && !params.kind && !params.since && !params.until) throw new Error("Pass a query, a filter, or read=<ref>.");
-          text = resultText(await historyGet<SearchResult>("/v1/search", {
-            q: params.query, kind: params.kind, chat: params.chat, agent: params.agent, box: params.box, since: params.since, until: params.until,
-            sort: params.sort, limit: params.limit, ...caller,
-          }));
+          const filters = socketFilters(params);
+          if (!params.query?.trim() && !Object.values(filters).some(Boolean)) throw new Error("Pass a query, a filter, or read=<ref>.");
+          text = resultText(await historyGet<SearchResult>("/v1/search", { q: params.query, ...filters, box: params.box, sort: params.sort, limit: params.limit, ...caller }));
         }
       } catch (error) {
         text = `search_history failed: ${error instanceof Error ? error.message : String(error)}`;

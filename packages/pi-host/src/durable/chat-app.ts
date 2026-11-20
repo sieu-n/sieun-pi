@@ -8,6 +8,7 @@ import type { CheckInSetting, CheckInSettings } from "../../../../legacy/prime/u
 import type { ChatAgent, ChatBoard, OwnerTodo } from "../../../../legacy/prime/user-history/src/shared/types.ts";
 import type { ForMeItem, ForMeList, ForMeStatus } from "../../../../apps/chat/web/src/lib/api/types.ts";
 import type { LaterChange } from "./later.ts";
+import type { FilteredResult } from "./search-messages.ts";
 
 export const CHAT_URL_ENV = "PI_HOST_CHAT_URL";
 export const DEFAULT_CHAT_URL = "http://127.0.0.1:5184";
@@ -92,6 +93,11 @@ export class ChatApp {
   async laterList(thread: string, state: "open" | "done", signal?: AbortSignal): Promise<{ text: string }> {
     const body = await this.call<{ text?: unknown }>("GET", this.thread(thread, `later?state=${state}`), undefined, signal);
     return { text: typeof body?.text === "string" ? body.text : "No saved messages." };
+  }
+
+  /** The owner's Cmd K search with the filters in `query` (`GET /api/search`), as the search_messages tool reads it (`search-messages.ts`). */
+  search(query: URLSearchParams, signal?: AbortSignal): Promise<FilteredResult> {
+    return this.call<FilteredResult>("GET", `/api/search?${query}`, undefined, signal);
   }
 
   /** The open todos the owner's other chats asked him, which tell_owner's same-ask check reads (Prime's `otherAsks`). */

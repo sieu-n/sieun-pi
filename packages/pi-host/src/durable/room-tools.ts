@@ -12,13 +12,14 @@
  * edits that same post as items finish, instead of a new post per step (owner p106, c207).
  *
  * `list_for_me_messages` and `mark_message` (`for-me.ts`) read the agent's For list and mark its items, and `save_message`, `remind_me` and
- * `list_saved_messages` (`later.ts`) keep its Later list.
+ * `list_saved_messages` (`later.ts`) keep its Later list, and `search_messages` (`search-messages.ts`) runs the owner's Cmd K search with his filters.
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type Extension } from "@earendil-works/pi-durable";
 import type { ChatApp } from "./chat-app.ts";
 import { forMeTools } from "./for-me.ts";
 import { laterTools } from "./later.ts";
+import { searchTools } from "./search-messages.ts";
 
 export const ROOM_TOOLS_EXTENSION = "room-tools";
 export const SET_EMOJI_TOOL = "set_emoji";
@@ -100,6 +101,7 @@ export function roomTools(app: ChatApp, thread: string): Extension {
       }),
       ...forMeTools(app, thread),
       ...laterTools(app, thread),
+      ...searchTools(app),
     ],
   });
 }
