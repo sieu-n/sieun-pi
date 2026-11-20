@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { getContext, type Snippet } from "svelte";
+  import type { Snippet } from "svelte";
   import Icon from "$lib/ui/Icon.svelte";
-  import { FRAME_STATE, type FrameState } from "./SidebarFrame.svelte";
 
   /**
    * One block of a root's sidebar: a heading and its rows, as Slack draws Channels or Direct messages. With `ontoggle` the heading is a fold
@@ -24,7 +23,6 @@
     children?: Snippet;
   };
   let { id, label, count, folded = false, ontoggle, actions, empty, isEmpty = false, children }: Props = $props();
-  const frame = getContext<FrameState | undefined>(FRAME_STATE);
 </script>
 
 <section class="section" data-section={id} aria-label={label}>
@@ -44,7 +42,7 @@
   </div>
   <div class="rows">
     {@render children?.()}
-    {#if isEmpty && !folded && empty && !frame?.loading}<p class="empty">{empty}</p>{/if}
+    {#if isEmpty && !folded && empty}<p class="empty">{empty}</p>{/if}
   </div>
 </section>
 
