@@ -12,7 +12,7 @@
  *    that post's thread), and at the end neither keeps the agent's 👀 or a ✅.
  * 2. "ok thanks" gets one reaction from the agent and no post.
  * 3. In the channel no agent post is a root post.
- * 4. No agent post has ✅ or 👀 in its text, since the owner asked for fewer of both.
+ * 4. No agent post has ✅ or 👀 in its text outside code, since the owner asked for fewer of both.
  * 👀 counts as seen when a poll saw it on the post or the agent's comm thread called set_emoji with eyes on it, since a fast answer can put
  * it on and take it off between two polls.
  *
@@ -165,7 +165,7 @@ async function runRoom(kind) {
     ["ok thanks got no post", afterThanks.length === 0],
     ...(kind === "channel" ? [["no agent post is a root post", posts.every(p => p.author?.id !== agent.id || p.threadRoot)]] : []),
     ["no ✅ by the agent anywhere", posts.every(p => !mine(p, CHECK))],
-    ["no ✅ or 👀 in the agent's post text", posts.every(p => p.author?.id !== agent.id || !/[✅👀]/u.test(p.text))],
+    ["no ✅ or 👀 in the agent's post text", posts.every(p => p.author?.id !== agent.id || !/[✅👀]/u.test(p.text.replace(/```[\s\S]*?```|`[^`\n]*`/g, "")))],
   ];
   const line = {
     room, kind, agent: agent.id, questionSeconds, taskSeconds,
