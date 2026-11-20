@@ -12,7 +12,7 @@ import { promisify } from "node:util";
 export type Encoding = "br" | "gzip";
 
 /** A body that fits one packet gains nothing: Tailscale's MTU is 1,280 bytes, and the headers take part of it. */
-const MIN_BYTES = 1_000;
+export const MIN_BYTES = 1_000;
 
 /**
  * Brotli quality 4 for an answer made per request: it took 2.4 ms for the 291 KB of /api/conversations and 0.5 ms for a 20 KB search on

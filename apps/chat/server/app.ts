@@ -16,6 +16,7 @@ import { AgentFolders, type BoxFiles } from "./agent-folder.ts";
 import { AgentStore, type AgentRecord, type RoomDelivery, type RoomPost } from "./agent-store.ts";
 import { Agents, isGroupRoomId, isRoomId, type SplitPlan } from "./agents.ts";
 import { Boards } from "./boards.ts";
+import { MIN_BYTES } from "./compress.ts";
 import { CHANNEL_COPY_LIKE, GroupRooms, roomLabel } from "./group-rooms.ts";
 import { assertOwnPost, deleteNotice, deliveriesOf, editNotice } from "./post-edits.ts";
 import { ForMe } from "./for-me.ts";
@@ -92,7 +93,11 @@ export class App {
   private lastSidebar = "";
   /** Each DM room's summary as last sent, so a room event goes out only when its row changed. */
   private roomCache = new Map<string, string>();
-  readonly wss = new WebSocketServer({ noServer: true });
+  /**
+   * The socket compresses each frame over one packet (permessage-deflate). On 11-20 the hello frame was 742 KB of JSON, sent on every connect
+   * to the owner 197 ms away; zlib level 3 made it 88 KB in 4.7 ms on us-metal02 (min of 30), against 80 KB in 14.1 ms at the default level 6.
+   */
+  readonly wss = new WebSocketServer({ noServer: true, perMessageDeflate: { threshold: MIN_BYTES, zlibDeflateOptions: { level: 3 } } });
   /** Slack-style link previews of the web links posts hold (unfurl.ts). */
   readonly unfurl = new Unfurler();
 
