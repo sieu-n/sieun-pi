@@ -363,6 +363,35 @@ export function jumpWords(lines: readonly WatchLine[], owner: RigOwner): (line: 
   };
 }
 
+/**
+ * A Mac minute's largest memory holders in the flag's words: the HOLDERS largest by GB (`memoryHolders`), each with its growth since the
+ * oldest reading of the same box in the hour before (`lines`, oldest first), so a slow climb that a one-minute jump misses names its owner. At
+ * 00:43Z on 11-20 the Mac swapped out 8,020 pages a second while the largest jump since 00:42Z was Aside +0.09 GB; over the hour before,
+ * Google Chrome went from 21.51 to 22.85 GB and Helium from 6.98 to 10.13 GB, and d7 named neither. Empty for a Linux reading or one with no holders.
+ */
+export function holderWords(lines: readonly WatchLine[], owner: RigOwner): (line: WatchLine, view: HostView) => string {
+  return (line, view) => {
+    const now = [...memoryHolders(view, owner)].sort(([, a], [, b]) => b.gb - a.gb).slice(0, HOLDERS);
+    if (!now.length) return "";
+    const at = Date.parse(line.at);
+    const base = lines.find(entry => {
+      const time = Date.parse(entry.at);
+      return time >= at - HOUR - MINUTE && time < at - MINUTE && hostViews(entry).some(candidate => candidate.name === view.name && memoryHolders(candidate, owner).size);
+    });
+    const baseView = base && hostViews(base).find(candidate => candidate.name === view.name);
+    const then = baseView ? memoryHolders(baseView, owner) : undefined;
+    const listed = baseView?.usable && !isLinuxReading(baseView.usable) ? baseView.usable.owners ?? [] : [];
+    const floor = listed.length >= FEED_OWNERS ? Math.min(...listed.map(feed => feed.gb)) : 0;
+    const words = now.map(([key, holder], index) => {
+      if (!then) return `${holder.words} ${gbRound(holder.gb)} GB`;
+      const growth = gbRound(holder.gb - (then.get(key)?.gb ?? (key.startsWith("chat:") || key.startsWith("rig:") ? 0 : floor)));
+      const since = index === 0 ? ` since ${clock(Date.parse(base!.at))}` : "";
+      return `${holder.words} ${gbRound(holder.gb)} GB (${growth >= 0 ? "+" : ""}${growth} GB${since})`;
+    });
+    return `; the largest holders were ${words.join(", ")}`;
+  };
+}
+
 const leads = (shares: ReadonlyMap<MemoryGroupId, number>): boolean => {
   const agents = shares.get("agents") ?? 0;
   return agents > 0 && [...shares].every(([id, gb]) => id === "agents" || gb < agents);
@@ -504,6 +533,9 @@ export function sideOf(lines: readonly WatchLine[]): (line: WatchLine, view: Hos
 
 export const WINDOW_MS = 30 * 60_000;
 const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+/** How many of a Mac minute's largest memory holders its dirty line names (`holderWords`). */
+const HOLDERS = 3;
 /** A start, wake or parked job waiting longer than this is a hold: the owner's line on 10-15, when 38 jobs' wakes sat held 3,374 times. */
 export const HOLD_MS = 10 * MINUTE;
 /** Free slots that make a queued turn a queue fault: two, so one slot a release just freed is not counted. */
@@ -1729,6 +1761,7 @@ export function measure(input: Inputs): PrecheckOutput {
   const side = sideOf(input.watch);
   const ciAt = ciWords(input.watch);
   const jumpAt = jumpWords(input.watch, rigOwner);
+  const holdersAt = holderWords(input.day ?? input.watch, rigOwner);
   const dirty: string[] = [];
   const busy: string[] = [];
   const unknownLines: string[] = [];
@@ -1785,7 +1818,7 @@ export function measure(input: Inputs): PrecheckOutput {
       const daemonOnly = miss.every(kind => kind === "cpu") && slow.length > 0 && slow.every(words => !words.startsWith("the chat"));
       const led = side(line, view);
       const read = found.includes("cpu") && (slowChat(own, line.chat) || started !== undefined || daemonOnly) ? "harness" : led;
-      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${startWords}${memoryWords(view)}${jumpAt(line, view)}${led === "ci" ? ciAt(line, view) : ""}${rigWords(view, faultName)}${jobRigWords(view, rigOwner)}${rigsLead(view) ? kernelRigWords(view) : ""})`);
+      why.push(`${view.name} unusable (${miss.join(", ")}${slow.length ? `: ${slow.join(", ")}` : ""}${startWords}${memoryWords(view)}${jumpAt(line, view)}${holdersAt(line, view)}${led === "ci" ? ciAt(line, view) : ""}${rigWords(view, faultName)}${jobRigWords(view, rigOwner)}${rigsLead(view) ? kernelRigWords(view) : ""})`);
       sides.add(read);
       if (read === "harness" && rigsLead(view)) {
         rigged = true;
