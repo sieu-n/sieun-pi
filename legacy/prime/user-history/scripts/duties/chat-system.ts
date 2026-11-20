@@ -1163,7 +1163,7 @@ async function main(): Promise<void> {
         `${duty.agingUntil !== undefined ? `, clears at ${new Date(duty.agingUntil).toISOString().slice(0, 16)}Z` : ""}), so it owes no fix job` : ""}` +
       `${duty.windowWait !== undefined ? `, the count's window can show its fix at ${minute(duty.windowWait)} at the earliest` : ""}.`)),
     section(`Red duties with no live fix job (${stuckDuties.length})`, stuckDuties.map(duty => `${duty.line}.`)),
-    section(`Red duty metrics that wait on the owner's open For you todo (${owned.ownerHeld.length})`, owned.ownerHeld.map(duty => `${duty.line}.`)),
+    section(`Red duty metrics that wait on the owner's open For you todo or a correction that parks their fix (${owned.ownerHeld.length})`, owned.ownerHeld.map(duty => `${duty.line}.`)),
     section(`Red duties whose live fix job does not move the number (${notMoving.length})`, notMoving.map(duty => `${duty.line}.`)),
     section(`Red duties whose fix job worked after their newest reading, measured again by a verify run (${verify.length})`,
       verify.map(ask => `${name(ask.chat)}: ${ask.duty}.`)),

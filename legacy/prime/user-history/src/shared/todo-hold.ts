@@ -220,22 +220,37 @@ export async function linkedBoards(board: ChatBoard, self: string, read: (chat: 
   return new Map(await Promise.all([...named].map(async chat => [chat, await read(chat).catch(() => null) ?? null] as const)));
 }
 
+/**
+ * The owner correction that parks a step, or undefined (frontend bro 10-12: c40 parks every real-app fix until the owner says 5180 is good
+ * enough, with no For you question; the check-in still flagged p52 and p31 as stalled, stale chases and a missing go todo every 15 min). The
+ * step is blocked, its note says it is parked, and it names a correction id that is in force (`active`, the ledger's ids not retired; every
+ * id when no ledger was read). A parked step is the owner's to release: no chase, no stall, no go question.
+ */
+export function parkedBy(item: Pick<PlanItem, "status" | "note">, active?: ReadonlySet<string>): string | undefined {
+  if (item.status !== "blocked" || !/\bpark(?:ed|s)?\b/i.test(item.note ?? "")) return undefined;
+  return (item.note!.match(/\bc\d+\b/g) ?? []).find(id => active === undefined || active.has(id));
+}
+/** How a hold by `parkedBy` reads in a line: "the owner's correction c230, which parks it". */
+const parkedHold = (id: string): string => `the owner's correction ${id}, which parks it`;
+
 const OPEN: ReadonlySet<PlanItem["status"]> = new Set(["todo", "doing", "blocked"]);
 /**
- * The fix steps and their holds when an open For you todo or the owner's own sign-in prompt holds an open fix step (`duty`
- * "<dutyId>/<metricKey>") of every one of `keys` (`stepHold`, an explicit link only, c88), like "p919 on t11 on thread
- * 01a16213-54c6-73fa-b399-20e2713c41ba"; otherwise undefined.
+ * The fix steps and their holds when an open For you todo, the owner's own sign-in prompt or an owner correction in force (`parkedBy`, with the
+ * ledger's ids in `active`) holds an open fix step (`duty` "<dutyId>/<metricKey>") of every one of `keys` (`stepHold`, an explicit link only,
+ * c88), like "p919 on t11 on thread 01a16213-54c6-73fa-b399-20e2713c41ba"; otherwise undefined.
  * Give it the board with its linked todos (`withLinkedBoards`, with the chat catalog). Such a red duty waits on the owner: d9 counts it in no stuck_duties and no
  * fix_not_moving. On 10-23 d9 pushed the AI harness chat to replace p919's fix 5 runs in a row, while p919 waited only on the owner's Apple
- * sign-in, Railway Breach's open t11.
+ * sign-in, Railway Breach's open t11. On 11-20 d9 read stuck_duties 3 from Prospect feature bro's d1 and Crawler VP's d7 and d10, red only
+ * because c230 stopped every crawl until the owner picks a proxy, and pushed both chats to start the fix jobs c230 forbids.
  */
-export function dutyHold(duty: string, keys: readonly string[], board: ChatBoard | null | undefined): string | undefined {
+export function dutyHold(duty: string, keys: readonly string[], board: ChatBoard | null | undefined, active?: ReadonlySet<string>): string | undefined {
   if (!board || !keys.length) return undefined;
   const holds = keys.map(key => {
     let found: string | undefined;
     const visit = (items: readonly PlanItem[]): void => {
       for (const item of items) {
-        const hold = !found && item.duty === `${duty}/${key}` && OPEN.has(item.status) ? stepHold(item, board.todos) : undefined;
+        const parked = () => { const id = parkedBy(item, active); return id && parkedHold(id); };
+        const hold = !found && item.duty === `${duty}/${key}` && OPEN.has(item.status) ? stepHold(item, board.todos) ?? parked() : undefined;
         if (hold) found = `${item.id} on ${hold}`;
         visit(item.children);
       }

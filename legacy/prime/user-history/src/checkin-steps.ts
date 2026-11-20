@@ -5,7 +5,10 @@ import { savedStatePath } from "./job-resume.ts";
 import type { OwnerMessage } from "./shared/brief-check.ts";
 import type { StalledCall } from "./shared/stalled-calls.ts";
 import { stepIds } from "./shared/step-ids.ts";
+import { parkedBy } from "./shared/todo-hold.ts";
 import { slotParkWords, type SlotPark } from "./slot-park.ts";
+
+export { parkedBy };
 
 /** The check-in's step classes: the chat's job facts, the class of each open plan step (`stepClass`), and the line the duty job reads for it. */
 
@@ -606,16 +609,6 @@ export function stepView(item: PlanItem, changedAt: number, self: ReadonlySet<st
   return { ...base, cls, ...(target ? { target } : {}), ...(waitsWith ? { waitsWith } : {}) };
 }
 
-/**
- * The owner correction that parks a step, or undefined (frontend bro 10-12: c40 parks every real-app fix until the owner says 5180 is good
- * enough, with no For you question; the check-in still flagged p52 and p31 as stalled, stale chases and a missing go todo every 15 min). The
- * step is blocked, its note says it is parked, and it names a correction id that is in force (`active`, the ledger's ids not retired; every
- * id when no ledger was read). A parked step is the owner's to release: no chase, no stall, no go question.
- */
-export function parkedBy(item: Pick<PlanItem, "status" | "note">, active?: ReadonlySet<string>): string | undefined {
-  if (item.status !== "blocked" || !/\bpark(?:ed|s)?\b/i.test(item.note ?? "")) return undefined;
-  return (item.note!.match(/\bc\d+\b/g) ?? []).find(id => active === undefined || active.has(id));
-}
 /** One open leaf step as the check-in sees it: its class and the thread to chase. */
 export interface StepView extends StepFacts { cls: StepClass; target?: { id: string; name: string } | undefined;
   /** A chat-owned step's reported job that it names while it waits (`waitBoundJob`). */
