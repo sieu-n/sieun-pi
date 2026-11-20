@@ -15,6 +15,8 @@ export interface HostCall {
   readonly session: string;
   /** The conversation's local harness store, the agent's in a thread that belongs to one (`conversationHarnessDir`). */
   readonly harnessDir: string;
+  /** The thread's agent (`agentName`) when `harnessDir` is that agent's store. */
+  readonly agent?: string;
   readonly harness: Harness;
   /** The ipython call running now; absent for a request outside a cell and at a settle. */
   readonly api?: ToolExecutionApi;

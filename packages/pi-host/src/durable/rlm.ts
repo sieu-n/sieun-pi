@@ -47,7 +47,7 @@ import piRlm, { baseEnv, BUSY_NO_UI, formatCell, KERNEL_RESET, noticeMessage, re
 import type { Leftovers, LeftoverSource } from "../../../../legacy/prime/user-history/src/job-leftovers.ts";
 import { withKernelGuard } from "../../../sieun-rules/src/kernel-guard.ts";
 import { enabled } from "../../../sieun-rules/src/log.ts";
-import { conversationHarnessDir, dropAgentRole, harnessSessionOf, threadAgent } from "./agent-profile.ts";
+import { agentName, conversationHarnessDir, dropAgentRole, harnessSessionOf, threadAgent } from "./agent-profile.ts";
 import { CHAT_URL_ENV, ChatApp, DEFAULT_CHAT_URL } from "./chat-app.ts";
 import { agentIdOf, artifactDirOf, childWakes, childWork, DeliverTask, RlmChildDoc, sessionOf, textOfMessage, type RlmChild } from "./children.ts";
 import { childTitle } from "./job-title.ts";
@@ -571,9 +571,10 @@ export class DurableRlm {
     const harness = this.harnessOf(thread);
     const api = inCell ? slot.call?.api : undefined;
     const models = api?.models ?? thread.models;
+    const agent = await threadAgent(harness, context);
     return {
       thread, conversation: slot.conversation, session: harnessSessionOf(thread.id, slot.conversation), harness,
-      harnessDir: conversationHarnessDir(thread, slot.conversation, await threadAgent(harness, context)),
+      harnessDir: conversationHarnessDir(thread, slot.conversation, agent), ...(agent ? { agent: agentName(agent) } : {}),
       ...(api ? { api } : {}), ...(models ? { models } : {}),
       running: () => this.running(slot),
       workOut: async () => {

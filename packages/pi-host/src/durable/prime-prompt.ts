@@ -22,10 +22,10 @@ import { defineExtension, GenerationTask, hook, LiveDoc, ROOT_CONVERSATION_ID, s
 import { BRIEF_CORRECTIONS, CHAT_BRIEF, jobReplyGuideline, personaGuideline } from "../../../../legacy/prime/user-history/src/chat-brief.ts";
 import { jobLedgerPrompt, ledgerPrompt, parseLedger, type Ledger } from "../../../../legacy/prime/user-history/src/chat-corrections.ts";
 import { SessionRules } from "../../../pi-claude-rules/src/core/rules.ts";
-import { agentHarnessDir, briefFile, conversationHarnessDir, threadAgent, type ContextFile } from "./agent-profile.ts";
+import { agentHarnessDir, agentName, briefFile, conversationHarnessDir, threadAgent, type ContextFile } from "./agent-profile.ts";
 import { goalObjective } from "./goal.ts";
-import { contextTail, contextTexts, digestFlags, digestQueryTerms, HarnessDigestDoc, mergedHarnessState, nextDelivery, placeDeliveries, withDigests } from "./prime-harness.ts";
-import { formatHarnessStateForPrompt, HARNESS_DIGEST_PREFIX, HARNESS_DIGEST_SUFFIX } from "./vendor/prime-harness.ts";
+import { contextTail, contextTexts, digestFlags, digestQueryTerms, formatDigest, HarnessDigestDoc, mergedHarnessState, nextDelivery, placeDeliveries, queryText, withDigests } from "./prime-harness.ts";
+import { HARNESS_DIGEST_PREFIX, HARNESS_DIGEST_SUFFIX } from "./vendor/prime-harness.ts";
 
 /**
  * Which tools Prime's builder is told the session has. It gates the REPL parts of Prime's text on `ipython`.
@@ -73,6 +73,8 @@ export interface PrimePromptInput {
   ledgerDir?: string;
   /** The conversation's local harness store (`conversationHarnessDir`), merged over the global one in the digest. */
   harnessDir?: string;
+  /** The thread's agent (`agentName`) when `harnessDir` is its store, which the digest shows as the agent's memory (`formatDigest`). */
+  agent?: string;
   /** The thread's agent's `brief.md` (`briefFile`), rendered after the AGENTS.md files in "# Project Context". */
   agentBrief?: ContextFile;
   /** Leave out the parts Prime sends as messages: claude-rules, the harness digest and the corrections block. */
@@ -311,8 +313,8 @@ function extraParts(input: PrimePromptInput, tools: readonly string[], skills: r
   // Prime's harness digest at a session's first turn: the global store merged with the session's local one, ranked by the turn's input.
   if (!input.skip?.has("harness")) {
     const state = mergedHarnessState(input.agentDir, input.harnessDir);
-    const digest = formatHarnessStateForPrompt(state, { ...digestFlags(tools, skills), ...(input.query ? { queryTerms: digestQueryTerms([input.query], []) } : {}) });
-    out.push({ key: "harness", text: HARNESS_DIGEST_PREFIX + digest + HARNESS_DIGEST_SUFFIX, source: "Prime's formatHarnessStateForPrompt (vendor/prime-harness.ts) over <agentDir>/harness and the local store (Prime: [harness-digest] message)" });
+    const digest = formatDigest(state, { ...digestFlags(tools, skills), ...(input.query ? { queryTerms: digestQueryTerms([input.query], []) } : {}) }, input.agent);
+    out.push({ key: "harness", text: HARNESS_DIGEST_PREFIX + digest + HARNESS_DIGEST_SUFFIX, source: "Prime's formatHarnessStateForPrompt (vendor/prime-harness.ts) over <agentDir>/harness and the local store, with the agent's block in an agent's thread (prime-harness.ts formatDigest) (Prime: [harness-digest] message)" });
   }
   // The legacy chat's corrections block, which its context hook puts in once per context.
   if (input.skip?.has("corrections")) return out;
@@ -366,11 +368,15 @@ export function primePrompt(options: PrimePromptOptions): Extension {
     const agent = await threadAgent(input.read, context);
     const brief = agent && briefFile(agent);
     const harnessDir = thread ? conversationHarnessDir(thread, input.conversationId, agent) : agent && agentHarnessDir(agent);
+    // A job's digest is ranked by its task, the first input of its conversation, as Prime ranks a session's first digest by its first input.
+    const query = depth > 0 && input.shown.harness === undefined ? await firstInput(thread?.harness?.(), input.conversationId, context) : undefined;
     const built = await primePromptParts({
       agentDir: options.agentDir,
       cwd,
       ...(thread ? { messagesPath: thread.file, parentName: thread.name(), session: `${thread.id}-${input.conversationId}` } : {}),
       ...(harnessDir ? { harnessDir } : {}),
+      ...(agent ? { agent: agentName(agent) } : {}),
+      ...(query ? { query } : {}),
       ...(brief ? { agentBrief: brief } : {}),
       depth,
       tools: options.tools ?? "prime",
@@ -411,6 +417,19 @@ export function primePrompt(options: PrimePromptOptions): Extension {
   });
 }
 
+/** The text of a conversation's first input, a job's task, or undefined when it has none yet. */
+async function firstInput(harness: Harness | undefined, conversationId: ConversationId, context: Context): Promise<string | undefined> {
+  const view = harness && await (await harness.conversation(conversationId, context))?.context(context);
+  if (!view) return undefined;
+  for (const [index, entry] of view.entries.entries()) {
+    const message = view.contributions[index]?.[0];
+    if (message?.role !== "user" || entry.kind === "pi.compaction" || entry.kind === "pi.reset") continue;
+    const text = queryText(entry, message);
+    if (text.trim()) return text;
+  }
+  return undefined;
+}
+
 /**
  * Prime's harness check at a turn it starts, for an input about to be submitted to a thread's root conversation: records the digest or the
  * update the turn gets, if any, in the conversation's `prime.harness-digests` document. A steer into a running turn gets none, as Prime
@@ -426,12 +445,13 @@ export async function deliverHarnessDigest(options: PrimePromptOptions & { threa
   const cwd = (await conversation.agent(context)).cwd ?? options.thread.cwd;
   const tools = TOOLS[options.tools ?? "prime"].root;
   const { skills } = await primeResources(options.agentDir, cwd, options.bundledSkillsDir ?? bundledSkillsDir());
-  const state = mergedHarnessState(options.agentDir, conversationHarnessDir(options.thread, conversationId, await threadAgent(harness, context)));
+  const agent = await threadAgent(harness, context);
+  const state = mergedHarnessState(options.agentDir, conversationHarnessDir(options.thread, conversationId, agent));
   const goal = await goalObjective(harness, conversationId);
   await conversation.commit(async tx => {
     const doc = await tx.doc(HarnessDigestDoc, conversationId);
     const kept = placeDeliveries(view, doc.deliveries).map(placed => placed.delivery);
-    const next = nextDelivery({ state, flags: digestFlags(tools, skills), input: [input.text], recent: contextTexts(view), goal, delivered: kept, after: contextTail(view), now });
+    const next = nextDelivery({ state, flags: digestFlags(tools, skills), input: [input.text], recent: contextTexts(view), goal, delivered: kept, after: contextTail(view), now, ...(agent ? { agent: agentName(agent) } : {}) });
     if (next || kept.length !== doc.deliveries.length) doc.deliveries = [...kept, ...(next ? [next] : [])];
   }, context);
 }

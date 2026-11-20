@@ -383,13 +383,24 @@ const GLOBAL_POLICY =
 const LOCAL_POLICY =
   "Requested refinement scope: local. Prefer local continual harness edits for current task progress, temporary blockers, current-run coordination, and project facts that are not clearly reusable across Prime Agent sessions. Global entries in the overview are read-only context: do not propose update or delete edits for them; create a local entry instead if an override is needed.";
 
-/** The planner's user prompt for one conversation text. */
-export function plannerPrompt(state: HarnessState, history: RefineResult[], conversation: string, args: { global: boolean; instructions?: string }): string {
+/**
+ * The local scope in a thread of a sw factory agent, whose local store is the agent's memory that every later thread of the agent reads
+ * (pi-host `agent-profile.ts`): keep what the agent needs again, never the run's own progress, which the board holds.
+ */
+export const agentPolicy = (agent: string): string =>
+  `Requested refinement scope: agent ${agent}'s memory. Local entries are ${agent}'s own memory, which every later thread and job of ${agent} reads. ` +
+  `Propose an edit only for a fact ${agent} will need again in a later thread: an owner rule or correction for its work, quoted with its message or correction id; a console URL and how to sign in, naming where a secret lives and never its value; a release or deploy command; how one of its systems works; a lesson from a failure. ` +
+  `Do not save session state, step status, progress, open waits, job names in flight or next steps, which belong on the agent's board, and do not copy a rule the corrections ledger already gives every agent. ` +
+  `Update the local entry that covers the point instead of adding a near copy, and delete a local entry the conversation shows is wrong or is session scratch. ` +
+  "Global entries in the overview are read-only context: do not propose update or delete edits for them; create a local entry instead if an override is needed.";
+
+/** The planner's user prompt for one conversation text; `agent` names the sw factory agent whose memory the local store is. */
+export function plannerPrompt(state: HarnessState, history: RefineResult[], conversation: string, args: { global: boolean; instructions?: string; agent?: string }): string {
   return [
     `<current_harness_state>\n${plannerOverview(state)}\n</current_harness_state>`,
     `<refinement_history>\n${historyText(history)}\n</refinement_history>`,
     `<conversation>\n${conversation}\n</conversation>`,
-    `<scope_policy>\n${args.global ? GLOBAL_POLICY : LOCAL_POLICY}\n</scope_policy>`,
+    `<scope_policy>\n${args.global ? GLOBAL_POLICY : args.agent ? agentPolicy(args.agent) : LOCAL_POLICY}\n</scope_policy>`,
     args.instructions ? `<user_refine_instructions>\n${args.instructions}\n</user_refine_instructions>` : "",
     "Return only JSON edits. If no useful edit is justified, return an empty edits array with a rationale.",
   ]
@@ -400,19 +411,22 @@ export function plannerPrompt(state: HarnessState, history: RefineResult[], conv
 export type AutoReason = "turn_interval" | "compact";
 
 /** The review gate's user prompt for one conversation text. */
-export function reviewPrompt(state: HarnessState, history: RefineResult[], conversation: string, trigger: { reason: AutoReason; turnsSinceLastReview: number }): string {
+export function reviewPrompt(state: HarnessState, history: RefineResult[], conversation: string, trigger: { reason: AutoReason; turnsSinceLastReview: number; agent?: string }): string {
   return [
     `<trigger>\n${trigger.reason}; ${trigger.turnsSinceLastReview} assistant turns since last auto-refine review\n</trigger>`,
     `<current_harness_state>\n${plannerOverview(state)}\n</current_harness_state>`,
     `<refinement_history>\n${historyText(history)}\n</refinement_history>`,
     `<conversation>\n${conversation}\n</conversation>`,
-    "Return shouldRefine=true when the trajectory contains evidence useful to this session's future turns. Prefer local harness edits for current task progress, temporary blockers, and current-run coordination. Ask for global refinement only for durable cross-session lessons or explicitly project-qualified facts likely to be reused in future sessions.",
+    trigger.agent
+      ? `Return shouldRefine=true when the trajectory holds a fact agent ${trigger.agent} will need again in a later thread and its memory lacks or states wrongly: an owner rule or correction, a console URL or sign-in, a release or deploy command, how one of its systems works, or a lesson from a failure. Return false for progress, step status and session coordination, which the agent's board holds.`
+      : "Return shouldRefine=true when the trajectory contains evidence useful to this session's future turns. Prefer local harness edits for current task progress, temporary blockers, and current-run coordination. Ask for global refinement only for durable cross-session lessons or explicitly project-qualified facts likely to be reused in future sessions.",
   ].join("\n\n");
 }
 
 /** Prime's `gmt`: the planner instructions after the review gate said yes. */
-export function autoRefineInstructions(reason: AutoReason, review: ReviewDecision): string {
+export function autoRefineInstructions(reason: AutoReason, review: ReviewDecision, agent?: string): string {
   const extra = review.instructions ? `\nReviewer instructions: ${review.instructions}` : "";
+  if (agent) return `Automatic refine review triggered by ${reason}. Only create/update/delete entries of agent ${agent}'s memory for facts it will need again in a later thread. Prefer an empty edits array over speculative or one-off memories. Do not promote anything global unless explicitly requested. Reviewer rationale: ${review.rationale}${extra}`;
   return `Automatic refine review triggered by ${reason}. Only create/update/delete local harness entries if there is clear evidence that should help this session continue. Prefer an empty edits array over speculative or one-off memories. Do not promote anything global unless explicitly requested. Reviewer rationale: ${review.rationale}${extra}`;
 }
 

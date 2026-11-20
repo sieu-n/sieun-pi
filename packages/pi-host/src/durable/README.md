@@ -65,10 +65,12 @@ apps/chat writes an `agent.ref` chat.doc into the root conversation of each agen
 3. `{agent, dir, role: "comm", room, work}` marks the thread that talks with the owner in room `room` (`dm_<slug>`) and hands work to the work thread `work`.
 
 A value of any other shape reads as no agent.
-Every conversation of such a thread, its root and each child conversation, differs from a plain thread in two ways.
+Every conversation of such a thread, its root and each child conversation, differs from a plain thread in four ways.
 
 1. The agent's `<dir>/brief.md` is one more Prime context file after the AGENTS.md and CLAUDE.md files Prime's resource loader found, so Prime's own `buildSystemPrompt` renders it in "# Project Context" under its path. That is the `context` section, which is not pinned, so an edit reaches the next request of every thread of the agent as a new `context` section alone, and an unchanged brief sends nothing new. A missing or blank brief adds nothing.
-2. The local harness store is the agent's, `<dir>/harness`, in place of the thread's own `session-artifacts/<thread>[-<conversation>]/harness`. The root's digest and a child's `harness` section merge it over the global store, and every kernel of the thread gets it as `RLM_HARNESS_STATE_DIR`, so `rlm.harness.create_memory(...)` and `refine.run()` write the agent's memory, and `global_=True` still writes the global store.
+2. The local harness store is the agent's, `<dir>/harness`, in place of the thread's own `session-artifacts/<thread>[-<conversation>]/harness`. Every kernel of the thread gets it as `RLM_HARNESS_STATE_DIR`, so `rlm.harness.create_memory(...)` and `refine.run()` write the agent's memory, and `global_=True` still writes the global store.
+3. The digest is the agent's (`prime-harness.ts` `formatDigest`). Prime's two lines that call the local store one session's become lines that call it the agent's memory and say what to keep there and what belongs on the board. The agent's whole store follows as its own block, up to 40 entries of 600 characters each, and Prime's six ranked lines per kind cover the global store alone. A job's digest is ranked by its task, its first input.
+4. The root and every job conversation get `refine.run()`, and Prime's auto-refine runs in each of them (`refine.ts`): after 25 assistant messages or a compaction, 20 minutes apart (Prime's `autoRefine` settings), Prime's review gate decides and the planner writes the agent's store. The planner and the gate are told the store is the agent's memory (pi-harness `agentPolicy`), so they keep owner rules, consoles, commands and how its systems work, and leave progress to the board.
 
 A thread with no ref keeps its own store, whose root conversation is `session-artifacts/<thread>/harness` for both the digest and the root's kernel, and gets no brief. A kernel reads the ref when it starts, so a ref written while a kernel runs reaches that kernel at its next start.
 

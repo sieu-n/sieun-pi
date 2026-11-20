@@ -21,8 +21,8 @@ import { statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   formatHarnessDigestDelta, formatHarnessStateForPrompt, getGlobalHarnessStateDir, getHarnessStatePath, getLocalHarnessStateDir, HARNESS_DIGEST_DELTA_PREFIX,
-  HARNESS_DIGEST_DELTA_SUFFIX, HARNESS_DIGEST_PREFIX, HARNESS_DIGEST_SUFFIX, harnessDigestFingerprint, harnessDigestQueryTerms, loadHarnessState,
-  mergeHarnessStates, type HarnessQueryTerms, type HarnessState,
+  HARNESS_DIGEST_DELTA_SUFFIX, HARNESS_DIGEST_PREFIX, HARNESS_DIGEST_SUFFIX, harnessDigestFingerprint, harnessDigestQueryTerms, harnessEntryMalformation,
+  loadHarnessState, mergeHarnessStates, scoreHarnessEntries, type HarnessEntry, type HarnessQueryTerms, type HarnessState, type RefinementKind,
 } from "./vendor/prime-harness.ts";
 
 /** One digest the conversation got: Prime's digest message content (`text`) and details, and the entry it was sent after. */
@@ -127,17 +127,96 @@ export function nextDelivery(input: {
   state: HarnessState; flags: DigestFlags; input: readonly string[]; recent: readonly string[]; delivered: readonly DigestDelivery[]; after: number; now: number;
   /** The conversation's goal objective, which Prime ranks entries by at weight 3. */
   goal?: string;
+  /** The agent whose store is the local one (`formatDigest`). */
+  agent?: string;
 }): DigestDelivery | undefined {
   const stateFingerprint = harnessDigestFingerprint(input.state, input.flags);
   const latest = input.delivered.at(-1);
   // Ranking a large store takes most of a second, so a fresh context skips it; Prime renders first and compares after, with the same result.
   if (latest?.stateFingerprint === stateFingerprint) return undefined;
-  const digest = formatHarnessStateForPrompt(input.state, { ...input.flags, queryTerms: digestQueryTerms(input.input, input.recent, input.goal) });
+  const digest = formatDigest(input.state, { ...input.flags, queryTerms: digestQueryTerms(input.input, input.recent, input.goal) }, input.agent);
   const full = HARNESS_DIGEST_PREFIX + digest + HARNESS_DIGEST_SUFFIX;
   if (!latest) return { after: input.after, at: input.now, text: full, digest, stateFingerprint };
   const delta = formatHarnessDigestDelta(input.state, input.delivered.map(delivery => delivery.text), latest.at);
   const text = delta === undefined ? full : HARNESS_DIGEST_DELTA_PREFIX + delta + HARNESS_DIGEST_DELTA_SUFFIX;
   return { after: input.after, at: input.now, text, digest, stateFingerprint, stacked: true };
+}
+
+/**
+ * Prime's two lines on scope, which read the local store as one session's. In a thread that belongs to an agent the local store is the
+ * agent's memory, which every thread and job of the agent reads, so `formatDigest` puts `agentScopeLines` in their place.
+ */
+const PRIME_SCOPE_LINES = [
+  "Local continual harness entries belong to this Prime Agent session. Global continual harness entries persist across Prime Agent sessions.",
+  "Default to local continual harness refinement for current task progress, temporary blockers, and session coordination. Use global continual harness refinement only for stable cross-session lessons, durable user preferences, reusable skills/subagents, or explicitly project-qualified facts.",
+] as const;
+
+/** What an agent keeps in its own memory and what it leaves out, said where the model reads its memory (c130). */
+export function agentScopeLines(agent: string): [string, string] {
+  return [
+    `Local entries are agent ${agent}'s own memory: every thread and job of ${agent} reads them in this digest, in any later week. \`rlm.harness\` writes there unless you pass \`global_=True\`, and so does \`await refine.run()\`. Global entries are shared by every agent and Prime chat.`,
+    `Save to ${agent}'s memory, in the turn you learn it, each fact ${agent} needs again in a later thread: an owner rule or correction for its work in his words with its message id, a console URL and how to sign in (where a secret lives, never its value), a release or deploy command, and how one of its systems works. ` +
+      `First look for the entry that covers the point with \`rlm.harness.search("<topic words>", "memory")\`, then call \`rlm.harness.update_memory(id, title, content)\` on it or \`rlm.harness.create_memory(title, content)\` for a new one; these calls are synchronous and take no \`await\`. ` +
+      `Keep step status, progress, open waits and session notes on the board, never in memory. Use \`global_=True\` only for a lesson every agent needs.`,
+  ];
+}
+
+/**
+ * The agent block lists the whole agent store, since an agent's memory is short and a recall question must find its entry; Prime's six
+ * ranked lines of 180 characters per kind stay for the global store. ideal.json (agent-memory review, 11-20) gives each agent 3 to 5
+ * entries of under 450 characters, so 40 lines of 600 characters show a full store with room to grow; past that the block points at search.
+ */
+const AGENT_BLOCK_ENTRIES = 40;
+const AGENT_BLOCK_CONTENT = 600;
+const AGENT_KINDS: readonly RefinementKind[] = ["prompt", "memory", "skill", "subagent"];
+
+const compact = (text: string, max: number): string => {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length <= max ? flat : `${flat.slice(0, max - 3)}...`;
+};
+
+/**
+ * The agent's own entries, prompt notes first, each kind ranked by the query when there is one and newest first otherwise. A line names the
+ * entry as `[agent:<id>]`, which Prime's delta does not read as one it delivered, so a later change to the entry still shows in the update.
+ */
+function agentBlock(agent: string, entries: readonly HarnessEntry[], queryTerms: HarnessQueryTerms | undefined): string[] {
+  if (!entries.length) {
+    return [`## Agent ${agent}'s memory`, "", `${agent} has no saved memory yet. Save the first durable fact or owner rule you learn for its work.`, ""];
+  }
+  const scores = queryTerms?.size ? scoreHarnessEntries(entries, queryTerms) : new Map<HarnessEntry, number>();
+  const ranked = AGENT_KINDS.flatMap(kind => entries.filter(entry => entry.kind === kind).sort((a, b) =>
+    (scores.get(b) ?? 0) - (scores.get(a) ?? 0) || (Date.parse(b.updated_at) || 0) - (Date.parse(a.updated_at) || 0) || a.id.localeCompare(b.id)));
+  const lines = [`## Agent ${agent}'s memory (${entries.length} entries)`, ""];
+  for (const entry of ranked.slice(0, AGENT_BLOCK_ENTRIES)) {
+    const bad = harnessEntryMalformation(entry);
+    lines.push(bad ? `harness: skipped malformed entry ${entry.id} (${bad})` : `- [agent:${entry.id}] ${entry.kind}: ${entry.title}: ${compact(entry.content, AGENT_BLOCK_CONTENT)}`);
+  }
+  if (ranked.length > AGENT_BLOCK_ENTRIES) lines.push(`- +${ranked.length - AGENT_BLOCK_ENTRIES} more; find them with \`rlm.harness.search(...)\``);
+  lines.push("");
+  return lines;
+}
+
+/**
+ * Prime's digest of `state`, or in an agent's thread (`agent` set) the digest an agent gets: Prime's scope lines replaced by the agent's,
+ * the agent's whole store as its own block after the header, and Prime's ranked kind sections over the global entries alone, so the
+ * agent's entries do not compete with hundreds of shared ones for six lines.
+ */
+export function formatDigest(state: HarnessState, options: Parameters<typeof formatHarnessStateForPrompt>[1] & {}, agent?: string): string {
+  if (!agent) return formatHarnessStateForPrompt(state, options);
+  const own: HarnessEntry[] = [];
+  const shared: HarnessState = { ...state, entries: { prompt: {}, memory: {}, skill: {}, subagent: {} } };
+  for (const kind of Object.keys(state.entries) as RefinementKind[]) {
+    for (const [id, entry] of Object.entries(state.entries[kind])) {
+      if (entry.scope === "local") own.push(entry);
+      else (shared.entries[kind] ??= {})[id] = entry;
+    }
+  }
+  const text = formatHarnessStateForPrompt(shared, options);
+  const [scope, keep] = agentScopeLines(agent);
+  const lines = text.split("\n").map(line => (line === PRIME_SCOPE_LINES[0] ? scope : line === PRIME_SCOPE_LINES[1] ? keep : line));
+  const at = lines.findIndex((line, index) => index > 0 && line === "" && lines[index - 1]?.startsWith("Use these continual harness"));
+  const block = agentBlock(agent, own, options.queryTerms);
+  return (at < 0 ? [...lines, "", ...block] : [...lines.slice(0, at + 1), ...block, ...lines.slice(at + 1)]).join("\n").trim();
 }
 
 /** An input the model reads as a user message: an owner's or agent's message, an imported Prime custom message. Not a summary or a reset. */

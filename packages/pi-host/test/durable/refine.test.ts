@@ -3,10 +3,12 @@
  * 1. `refine.run` in a cell schedules, `refine.status` shows it pending, and when the run settles the planner runs on the conversation's model,
  *    the edit lands in the thread's local store with its refinement event, and the `[self-refinement]` notice arrives as a refine input.
  * 2. `refine.run(global=True)` writes the global store and appends Prime's `refinements.jsonl`.
- * 3. Outside a run it answers Prime's "no active turn", and a child conversation gets no refine, as Prime registers it only at depth 0.
+ * 3. In an agent's thread, Prime's auto-refine reviews after the turn interval and writes the agent's store, told it is the agent's memory.
+ * 4. Outside a run it answers Prime's "no active turn", and a child conversation gets no refine, as Prime registers it only at depth 0, unless
+ *    the thread belongs to an agent, whose store outlives the job.
  */
 import { strict as assert } from "node:assert";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { after, before, test } from "node:test";
@@ -41,6 +43,7 @@ after(async () => {
 });
 
 const planned: string[] = [];
+const reviewed: string[] = [];
 const edit = (id: string, content: string) => JSON.stringify({
   summary: `Remember ${id}`, rationale: "The owner gave a rule.", expectedOutcome: "The rule shows in the digest.",
   edits: [{ action: "create", kind: "memory", id, title: id.replace(/_/g, " "), content, path: "test" }],
@@ -50,8 +53,13 @@ const REQUEST = (args: string) => `from rlm import host_request\nbefore = await 
 function model(messages: Message[]): ReturnType<typeof say> {
   const at = messages.findLastIndex(m => m.role === "user");
   const text = at < 0 ? "" : textOf(messages[at]!.content as never);
+  if (text.startsWith("<trigger>")) {
+    reviewed.push(text);
+    return fauxAssistantMessage([fauxText(JSON.stringify({ shouldRefine: true, rationale: "The owner gave a release rule." }))]);
+  }
   if (text.startsWith("<current_harness_state>")) {
     planned.push(text);
+    if (text.includes("agent vent's memory")) return fauxAssistantMessage([fauxText(edit("release_rule", "Release apps/chat with scripts/release-apps-chat.mjs."))]);
     return fauxAssistantMessage([fauxText(text.includes("scope: global") ? edit("global_deploy_rule", "Deploys ship on green CI.") : edit("deploy_rule", "Staging deploys need no ok."))]);
   }
   const answered = messages.slice(at + 1).some(m => m.role === "toolResult");
@@ -116,6 +124,43 @@ test("refine.run schedules, the settle plans and applies, and the notice arrives
   }
 });
 
+test("in an agent's thread, auto-refine reviews after the turn interval and writes the agent's store with the agent's scope", { timeout: 180_000 }, async () => {
+  const settings = join(dir, "agent", "settings.json");
+  const kept = existsSync(settings) ? readFileSync(settings, "utf8") : undefined;
+  writeFileSync(settings, JSON.stringify({ ...(kept ? JSON.parse(kept) : {}), autoRefine: { turnInterval: 2, cooldownMs: 0 } }));
+  const folder = join(dir, "agents", "vent");
+  const threads = new DurableThreads({
+    dir: join(dir, "threads-auto"),
+    models: () => {
+      const faux = fauxProvider({ provider: MODEL.provider, models: [{ id: MODEL.modelId }], tokensPerSecond: 0 });
+      faux.setResponses(Array.from({ length: 50 }, () => ({ messages }: { messages: Message[] }) => model(messages)));
+      const models = createModels();
+      models.setProvider(faux.provider);
+      return models;
+    },
+    defaultModel: MODEL, defaultThinkingLevel: "off", defaultCwd: dir, rlm, primeRoots: null,
+  });
+  try {
+    const { id } = await threads.create({ name: "vent" });
+    await threads.docPut(id, "agent.ref", { agent: "ag_vent", dir: folder, role: "work" });
+    for (const text of ["hello", "release with the script"]) {
+      const sent = await threads.submit(id, { text });
+      assert.equal((await threads.wait(id, sent.submission)).status, "done");
+    }
+    const store = join(folder, "harness", "harness_state.json");
+    const saved = await until("the agent's store", async () => (existsSync(store) ? JSON.parse(readFileSync(store, "utf8")) : undefined), 30_000);
+    assert.equal(saved.entries.memory.release_rule.content, "Release apps/chat with scripts/release-apps-chat.mjs.");
+    assert.match(reviewed[0]!, /a fact agent vent will need again in a later thread/);
+    assert.match(planned.at(-1)!, /Requested refinement scope: agent vent's memory/);
+    assert.match(planned.at(-1)!, /Automatic refine review triggered by turn_interval\. Only create\/update\/delete entries of agent vent's memory/);
+    assert.equal(reviewed.length, 1, "the next settle counts turns after the review");
+  } finally {
+    await threads.shutdown();
+    if (kept === undefined) rmSync(settings, { force: true });
+    else writeFileSync(settings, kept);
+  }
+});
+
 test("refine.run outside a run answers no active turn, and a child conversation has no refine", async () => {
   const module = refineModule({ agentDir: join(dir, "agent"), log: () => {} });
   const call = (conversation: number, running: boolean) => ({
@@ -124,5 +169,7 @@ test("refine.run outside a run answers no active turn, and a child conversation 
   assert.deepEqual(await module.request(call(1, false), "refine.run", {}), { scheduled: false, reason: NO_ACTIVE_TURN });
   await assert.rejects(async () => module.request(call(1, true), "refine.run", { global: "yes" }), /global must be a boolean/);
   await assert.rejects(async () => module.request(call(2, true), "refine.run", {}), /only in a thread's root conversation/);
+  const job = { ...call(2, true), agent: "vent" } as HostCall;
+  await assert.rejects(async () => module.request(job, "refine.run", { global: "yes" }), /global must be a boolean/, "a job of an agent's thread gets refine");
   assert.equal(existsSync(join(dir, "nowhere")), false);
 });

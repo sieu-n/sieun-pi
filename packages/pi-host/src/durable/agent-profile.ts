@@ -161,6 +161,14 @@ function forMeStep(room: string): string {
   return `When a turn starts, read your pending For list with \`list_for_me_messages()\`. Handle the items of room ${room}, since each other room's comm thread handles its own. Mark an item completed with \`mark_message(message_id, true)\` once you answered or handled it, also when it needs nothing from you. Leave an item pending while its work still runs, and mark it once the work thread's report or the work-done notice brings the result.`;
 }
 
+/**
+ * The step that has a comm thread keep the owner's rules and facts in its agent's memory, since it is the thread that reads his words first
+ * and the work thread and jobs see only what it hands on (c228).
+ */
+function memoryStep(agent: string): string {
+  return `When the owner gives a rule, a correction or a lasting fact for ${agent}'s work, such as a URL, a sign-in, a command or how something must work, save it to ${agent}'s memory in that turn with his words and the post's message id: find the entry that covers it with \`rlm.harness.search("<topic words>", "memory")\`, then \`rlm.harness.update_memory(id, title, content)\` it or \`rlm.harness.create_memory(title, content)\`. A task or a one-off answer is not memory.`;
+}
+
 /** The lines with one more numbered step after the last one, or the lines as they are when the role has no such step. */
 function plusStep(lines: string[], step: string | undefined): string[] {
   if (!step) return lines;
@@ -170,7 +178,7 @@ function plusStep(lines: string[], step: string | undefined): string[] {
 
 function dmCommInstructions(ref: { agent: string; room: string; work: string }): string {
   const [eyes, react, status, hand, quiet] = workSteps(JSON.stringify(ref.work));
-  return plusStep([
+  return plusStep(plusStep([
     `You are agent ${ref.agent}'s comm thread in room ${ref.room}. You talk with the owner. The work thread ${ref.work} does the agent's work.`,
     "",
     `1. ${status}`,
@@ -183,12 +191,12 @@ function dmCommInstructions(ref: { agent: string; room: string; work: string }):
     "8. Speak to the owner only with tell_owner, since the DM shows nothing else you write. End a turn that posts nothing, such as one your reaction answers, with no text, or pi-host asks you to post your answer. You do not edit files, so you have no write, edit, bash or subagent tool.",
     `9. ${slackPostStep()}`,
     `10. ${richPostStep()}`,
-  ], platformFeedbackStep(ref)).join("\n");
+  ], platformFeedbackStep(ref)), memoryStep(agentName(ref))).join("\n");
 }
 
 function groupCommInstructions(ref: { agent: string; room: string; work: string }): string {
   const [eyes, react, status, hand, quiet] = workSteps(JSON.stringify(ref.work));
-  return plusStep([
+  return plusStep(plusStep([
     `You are agent ${ref.agent}'s comm thread in room ${ref.room}, a group chat that the owner and other agents share. The work thread ${ref.work} does the agent's work.`,
     "",
     "1. Each post arrives with a header that names the room, the post's author and its hops. A Solo room's header also gives its agenda and members.",
@@ -205,7 +213,7 @@ function groupCommInstructions(ref: { agent: string; room: string; work: string 
     "12. You do not edit files, so you have no write, edit, bash or subagent tool.",
     `13. ${slackPostStep()}`,
     `14. ${richPostStep()}`,
-  ], platformFeedbackStep(ref)).join("\n");
+  ], platformFeedbackStep(ref)), memoryStep(agentName(ref))).join("\n");
 }
 
 /** The root conversation's instructions for a work thread whose agent has a comm thread; `comm` is the DM comm thread. */
@@ -288,6 +296,9 @@ export async function threadAgent(reader: Pick<DocumentReader, "snapshot"> | und
   const doc = await reader.snapshot(ChatDoc, ROOT_CONVERSATION_ID, AGENT_REF_DOC, context);
   return parseAgentRef(doc?.value);
 }
+
+/** The name the agent goes by in its prompt: its slug, the id without `ag_`. */
+export const agentName = (ref: Pick<AgentRef, "agent">): string => ref.agent.replace(/^ag_/, "");
 
 /** The agent's Prime harness store, `<agent folder>/harness`. */
 export const agentHarnessDir = (ref: AgentRef): string => getLocalHarnessStateDir(ref.dir)!;
