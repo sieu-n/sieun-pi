@@ -18,7 +18,7 @@ import { transientTurnError } from "./turn-error.ts";
 import type { TellSource } from "./clean-room-subjects.ts";
 import type { PrimeUpdate } from "./prime-update.ts";
 import { closedFixes, dutyFixes, type FixLiveness, missedKeys, verifyNoteOps } from "./shared/duty-fixes.ts";
-import { type NamedChat, stepHold, withBoardLinks } from "./shared/todo-hold.ts";
+import { type NamedChat, ownerHold, withBoardLinks } from "./shared/todo-hold.ts";
 import { effectiveRun, metricStreaks, type MetricStreak } from "./shared/duty-streak.ts";
 import { type BoardOp, CHECK_IN_MIN_MINUTES, type ChatBoard, type CheckInPause, type CheckInView, type PlanItem, type PoolPriority } from "./shared/types.ts";
 
@@ -496,6 +496,8 @@ export class Duties {
     // A miss whose fix step waits on the owner's open For you todo (`hold`) owes no fix job, as d9 reads it, so a push run for it starts a job
     // with nothing to do. From 10-24 19:30Z to 02:08Z on 10-25 vent's d1 got 14 push runs, each with a job, while p79 waited on t15, and SEO
     // guy's d2 got one every 2 h while p101 waited on t30. The duty's own schedule still measures it, and a push comes back once the todo closes.
+    // A fix step an owner correction parks (`ownerHold`) holds the same way: on 11-20 api portal vp's d2 got a push run with a job every 15 min
+    // from 10:35Z, each calling about 250 portal routes, while c230 parked p217, p218 and p219 until the owner picks a proxy.
     if (!parts && misses.length && misses.every(miss => fixes[miss]?.hold !== undefined)) return;
     if (this.afters.has(key)) return;
     if (this.start(chatId, duty.id, "push", this.now())) this.log(`duty ${chatId.slice(0, 8)}/${duty.id}: ${misses.length ? `red on ${misses.join(", ")} with no job at work on it`
@@ -778,7 +780,7 @@ export class Duties {
     const live = this.host.fixLive;
     const read = this.host.board;
     const todos = board && read ? (await withBoardLinks(board, chatId, read, await this.host.chats?.().catch(() => []) ?? [])).todos : board?.todos ?? [];
-    const held = (item: PlanItem) => stepHold(item, todos);
+    const held = (item: PlanItem) => ownerHold(item, todos);
     return dutyFixes(board, dutyId, metrics, item => live ? live(chatId, item).catch(() => false) : Promise.resolve(false), flagged, goal, held);
   }
 

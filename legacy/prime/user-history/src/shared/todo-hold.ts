@@ -232,6 +232,13 @@ export function parkedBy(item: Pick<PlanItem, "status" | "note">, active?: Reado
 }
 /** How a hold by `parkedBy` reads in a line: "the owner's correction c230, which parks it". */
 const parkedHold = (id: string): string => `the owner's correction ${id}, which parks it`;
+/** Whether a hold (`ownerHold`) is an owner correction that parks the step, not a todo or a sign-in prompt. */
+export const isParkedHold = (hold: string): boolean => /^the owner's correction c\d+, which parks it$/.test(hold);
+/** What holds a step for the owner: an open For you todo or his own sign-in prompt (`stepHold`), or a correction in force that parks it (`parkedBy`). */
+export function ownerHold(item: Pick<PlanItem, "id" | "text" | "waitFor" | "note" | "status">, todos: readonly HoldingTodo[], active?: ReadonlySet<string>): string | undefined {
+  const parked = parkedBy(item, active);
+  return stepHold(item, todos) ?? (parked && parkedHold(parked));
+}
 
 const OPEN: ReadonlySet<PlanItem["status"]> = new Set(["todo", "doing", "blocked"]);
 /**
@@ -249,8 +256,7 @@ export function dutyHold(duty: string, keys: readonly string[], board: ChatBoard
     let found: string | undefined;
     const visit = (items: readonly PlanItem[]): void => {
       for (const item of items) {
-        const parked = () => { const id = parkedBy(item, active); return id && parkedHold(id); };
-        const hold = !found && item.duty === `${duty}/${key}` && OPEN.has(item.status) ? stepHold(item, board.todos) ?? parked() : undefined;
+        const hold = !found && item.duty === `${duty}/${key}` && OPEN.has(item.status) ? ownerHold(item, board.todos, active) : undefined;
         if (hold) found = `${item.id} on ${hold}`;
         visit(item.children);
       }

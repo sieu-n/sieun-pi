@@ -14,7 +14,7 @@ import { poolSlot } from "./shared/chat-feed.ts";
 import { CUT_TAIL_BYTES, tailLines } from "./cut-end.ts";
 import { lastTurnError } from "./held-turns.ts";
 import { dutyLink } from "./shared/duty-fixes.ts";
-import { OWNER_PROMPT_HOLD } from "./shared/todo-hold.ts";
+import { isParkedHold, OWNER_PROMPT_HOLD } from "./shared/todo-hold.ts";
 import { stallWords } from "./shared/stalled-calls.ts";
 import type { MetricStreak } from "./shared/duty-streak.ts";
 import type { JobModel } from "./job-resume.ts";
@@ -213,8 +213,8 @@ const owner = (fix: NonNullable<MetricStreak["fix"]>): string => fix.job ? `job 
 /**
  * One line per missed metric: its streak and what this run must do about it. A metric with a live fix job gets a steer, one with none gets a
  * new fix job, and a stuck one (CHANGE_APPROACH_MISSES misses with no move) gets a new root-cause job that names the fix that did not work. A
- * windowed count with no new event since the last run (`quietSince`) gets no job, and nor does one whose fix step an open For you todo or the
- * owner's own sign-in prompt holds (`FixLink.hold`) with no live job, stuck or not: on 10-23 d5's runs pushed for a new job on p919, which waited only on Railway Breach's t11.
+ * windowed count with no new event since the last run (`quietSince`) gets no job, and nor does one whose fix step an open For you todo, the
+ * owner's own sign-in prompt or a correction that parks it holds (`FixLink.hold`) with no live job, stuck or not: on 10-23 d5's runs pushed for a new job on p919, which waited only on Railway Breach's t11.
  * Nor does an aggregate metric whose every counted red has an owner (`MetricStreak.redOwners`), such as d9's duties_green_pct.
  */
 export function missLine(dutyId: string, streak: MetricStreak, label: string, unit = "", now: number = Date.now()): string {
@@ -238,9 +238,11 @@ export function missLine(dutyId: string, streak: MetricStreak, label: string, un
       `moves toward its target as older events leave its window. Start no new job for it${fix ? ` and leave ${fix.step} as it is` : ""}; check the source for a new event.`;
   }
   if (fix?.hold !== undefined && !fix.live) {
-    const todo = fix.hold !== OWNER_PROMPT_HOLD;
-    return `${where} Its fix step ${fix.step} waits on ${todo ? `the owner's open For you todo ${fix.hold}` : OWNER_PROMPT_HOLD}, and only he moves this number. Start no job ` +
-      `and steer none for it, and leave ${fix.step} as it is until ${todo ? "that todo is done" : "he has passed it, with no For you todo for it"}.`;
+    const [on, until] = fix.hold === OWNER_PROMPT_HOLD ? [OWNER_PROMPT_HOLD, "he has passed it, with no For you todo for it"]
+      : isParkedHold(fix.hold) ? [fix.hold, "he lifts that correction, with no For you todo for it"]
+      : [`the owner's open For you todo ${fix.hold}`, "that todo is done"];
+    return `${where} Its fix step ${fix.step} waits on ${on}, and only he moves this number. Start no job ` +
+      `and steer none for it, and leave ${fix.step} as it is until ${until}.`;
   }
   if (streak.stuck) {
     return `${where} Change approach: ${fix ? `the fix ${fix.step} (${owner(fix)}) did not move it` : "no fix step moved it"}. Start a new ` +

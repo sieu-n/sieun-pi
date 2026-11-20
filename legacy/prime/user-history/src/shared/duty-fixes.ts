@@ -69,7 +69,7 @@ function linked(board: ChatBoard | null, duty: string): Map<string, Linked[]> {
  * The duty's own goal (`goal`, its `boardGoal`) is left out when given: a job that holds the goal watches the metric and fixes nothing, and on
  * 10-20 the job "wiki goal hold" on p200 (d4/wiki_problems) slept on a board.wake from 08:19Z, so it read as a live fix and no d4 push run
  * started until wiki_problems reached 26 at 09:36Z.
- * With no live step, an open step an open For you todo holds (`held`, the todo's name) comes next and carries `hold`: on 10-23 every d5 run
+ * With no live step, an open step the owner holds (`held`: an open For you todo, his sign-in prompt or a correction that parks it) comes next and carries `hold`: on 10-23 every d5 run
  * of the AI harness chat told its job to start a fix job on p919, which waited only on the owner's Apple sign-in, Railway Breach's t11.
  * An open step whose job is stalled in one tool call (`FixLiveness` a `StalledCall`) comes after a live one and before a held one, and carries
  * `stalled`, so the brief names the process to stop and the job to steer.
