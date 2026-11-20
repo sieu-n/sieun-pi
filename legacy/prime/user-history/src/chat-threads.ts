@@ -29,11 +29,13 @@ import { FirstPages, firstPage, wireEvent } from "./first-page.ts";
 import { DAEMON_WORKER_START_MS, handedOverAnswer, workerStartThroughUpdates } from "./daemon-worker-start.ts";
 import { isPrepareRefusal, prepareEnd, updateRecords, type UpdateRecords, type UpdateWindow } from "./prime-update.ts";
 import { movedImages } from "./moved-images.ts";
+import { lastThinkingLevel } from "./session-file-end.ts";
 import { ImageStore, Projector, projectChild, projectInfo, projectModel, sessionUsage } from "./chat-projection.ts";
 import type { ChatImage } from "./chat-images.ts";
 import { boardDelta, boardStep, type BoardStep, feedBoard } from "./shared/board-delta.ts";
 import { applyThreadEvent, boardKey, isThreadBusy, isTurnRunning, runStartedAtFromMessages, threadStateFromSnapshot } from "./shared/thread-state.ts";
 import type { ChatBoard, ChatDefaults, ChatWait, ChildAgent, Command, FirstMessage, ModelCatalog, ModelInfo, OlderPage, ProjectedSessionEvent, SendMode, SessionRow, ThreadEvent, ThreadHave, ThreadInfo, ThreadMessage, ThreadStats, ThreadSnapshot, ThreadState, ThinkingLevel } from "./shared/types.ts";
+import { isThinkingLevel } from "./shared/types.ts";
 
 type Listener = (event: ThreadEvent) => void;
 /** What chats watch on the hub: each attach (with the children known then), every change of a thread's subagent list while attached, and each turn's end. */
@@ -250,10 +252,10 @@ function userText(message: { content: string | readonly { type: string; text?: s
   return (typeof message.content === "string" ? message.content : message.content.map(part => part.type === "text" ? part.text ?? "" : "").join("")).trim();
 }
 
-/** What a thread shows of a resident session before its file or the daemon said more: the catalog's name, folder and usage. */
-function emptyInfo(summary: SessionSummary): ThreadInfo {
+/** What a thread shows of a resident session before its file or the daemon said more: the catalog's name, folder, usage and effort, else the default effort. */
+function emptyInfo(summary: SessionSummary, defaultLevel: ThinkingLevel): ThreadInfo {
   const name = summary.sessionName?.trim();
-  return { sessionId: summary.sessionId, ...(name ? { name } : {}), cwd: summary.cwd, model: null, thinkingLevel: summary.thinkingLevel ?? "off", availableThinkingLevels: [],
+  return { sessionId: summary.sessionId, ...(name ? { name } : {}), cwd: summary.cwd, model: null, thinkingLevel: summary.thinkingLevel ?? defaultLevel, availableThinkingLevels: [],
     isStreaming: false, isCompacting: false, isBashRunning: false, retryAttempt: 0, messageCount: summary.messageCount ?? 0, context: null, usage: sessionUsage(summary.usage),
     sessionAction: null, queuedActions: 0 };
 }
@@ -864,12 +866,31 @@ export class ThreadHub {
     return entries;
   }
 
+  /** Per session file, its size at the last read and the effort its last thinking_level_change set, so a reread scans only what was added. */
+  private readonly fileLevels = new Map<string, { size: number; level: ThinkingLevel | undefined }>();
+
+  /** The effort a saved session wakes on from its file's last thinking_level_change; undefined when the file never set one. */
+  private async fileLevel(file: string): Promise<ThinkingLevel | undefined> {
+    const known = this.fileLevels.get(file);
+    const read = await lastThinkingLevel(file, known?.size ?? 0).catch(() => null);
+    if (!read) return known?.level;
+    const level = isThinkingLevel(read.level) ? read.level : read.whole ? undefined : known?.level;
+    this.fileLevels.set(file, { size: read.size, level });
+    return level;
+  }
+
+  /** The effort a session with none of its own starts on: the Prime Agent default, as a new or resumed session does. */
+  private defaultLevel(): ThinkingLevel {
+    return this.defaults().thinkingLevel ?? "off";
+  }
+
   /** A saved thread's snapshot from its newest `limit` messages, with what the file says of its name, model and effort. */
   private async savedSnapshot(summary: SessionSummary, limit = FIRST_PAGE_MESSAGES): Promise<ThreadSnapshot> {
-    const { entries, older, places } = await this.entries(summary, null, { messages: limit, bytes: TAIL_BYTES });
+    const file = await this.sessionFile(summary);
+    const { entries, older, places } = await this.entries(summary, null, { messages: limit, bytes: TAIL_BYTES }, file);
     const messages = this.placed(entries, places);
     let name: string | undefined;
-    let thinkingLevel: ThinkingLevel = "off";
+    let thinkingLevel: ThinkingLevel | undefined;
     let ran: { provider: string; id: string } | null = null;
     for (const entry of entries) {
       if (entry.type === "session_info" && entry.name?.trim()) name = entry.name;
@@ -879,7 +900,8 @@ export class ThreadHub {
     }
     name ??= summary.sessionName?.trim() || undefined;
     const info: ThreadInfo = { sessionId: summary.sessionId, ...(name ? { name } : {}), cwd: summary.cwd, model: this.catalogModel(summary.model ?? ran),
-      thinkingLevel: summary.thinkingLevel ?? thinkingLevel, availableThinkingLevels: [], isStreaming: false, isCompacting: false, isBashRunning: false, retryAttempt: 0,
+      thinkingLevel: summary.thinkingLevel ?? thinkingLevel ?? (older ? await this.fileLevel(file) : undefined) ?? this.defaultLevel(),
+      availableThinkingLevels: [], isStreaming: false, isCompacting: false, isBashRunning: false, retryAttempt: 0,
       messageCount: older ? Math.max(summary.messageCount ?? 0, messages.length) : messages.length, context: null, usage: sessionUsage(summary.usage), sessionAction: null, queuedActions: 0 };
     return { kind: "saved", info, messages, streaming: null, queue: { steering: [], followUp: [] }, children: [], tools: [], retry: null, runStartedAt: null, ...(older ? { older } : {}) };
   }
@@ -1080,7 +1102,7 @@ export class ThreadHub {
       const board = this.board(id).catch(error => { process.stderr.write(`board ${id.slice(0, 8)}: ${error instanceof Error ? error.message : String(error)}\n`); return undefined; });
       const first = activeSessionId === undefined ? await this.savedSnapshot(summary)
         : await this.savedSnapshot(summary).catch(error => { marks.push(`no file page (${error instanceof Error ? error.message : String(error)})`); return null; });
-      const snapshot: ThreadSnapshot = first ? { ...first, kind: activeSessionId === undefined ? "saved" : "live" } : { kind: "live", info: emptyInfo(summary), messages: [], streaming: null,
+      const snapshot: ThreadSnapshot = first ? { ...first, kind: activeSessionId === undefined ? "saved" : "live" } : { kind: "live", info: emptyInfo(summary, this.defaultLevel()), messages: [], streaming: null,
         queue: { steering: [], followUp: [] }, children: [], tools: [], retry: null, runStartedAt: null };
       this.evict("saved");
       const outbox = this.outboxes.get(id);

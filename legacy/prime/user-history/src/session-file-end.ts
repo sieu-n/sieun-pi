@@ -1,4 +1,5 @@
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { open } from "node:fs/promises";
 
 /** The bytes read at a time from a session file's end. A kill's archived state is the file's last line, so one read finds it. */
 export const CHUNK = 256 * 1024;
@@ -61,4 +62,37 @@ export function fileArchived(sessionFile: string): boolean | null {
       return entry?.type === "session_state" && typeof status === "string" ? ARCHIVED_STATUS[status] : undefined;
     }) ?? false;
   } catch { return null; } finally { closeSync(fd); }
+}
+
+const LEVEL = Buffer.from('{"type":"thinking_level_change"');
+
+/**
+ * The thinking level of the file's last thinking_level_change after byte `after`, read backwards CHUNK bytes at a time; `whole` says the read
+ * started at the file's start, as it does when the file is now shorter than `after`. A saved thread wakes on that level (Prime's resume), and on
+ * 11-20 long threads whose change sat before their first page showed "off" in the chat while they ran on high.
+ */
+export async function lastThinkingLevel(file: string, after = 0): Promise<{ size: number; whole: boolean; level: string | undefined }> {
+  const handle = await open(file, "r");
+  try {
+    const { size } = await handle.stat();
+    const start = after <= size ? after : 0;
+    let end = size;
+    let carry = Buffer.alloc(0);
+    while (end > start) {
+      const from = Math.max(start, end - CHUNK);
+      const chunk = Buffer.alloc(end - from);
+      await handle.read(chunk, 0, chunk.length, from);
+      const data = carry.length ? Buffer.concat([chunk, carry]) : chunk;
+      for (let at = data.lastIndexOf(LEVEL); at >= 0; at = at > 0 ? data.lastIndexOf(LEVEL, at - 1) : -1) {
+        if (at > 0 ? data[at - 1] !== 0x0a : from > start) continue;
+        const stop = data.indexOf(0x0a, at);
+        const level = parsed(data.subarray(at, stop < 0 ? data.length : stop))?.thinkingLevel;
+        if (typeof level === "string") return { size, whole: start === 0, level };
+      }
+      const firstLine = data.indexOf(0x0a);
+      carry = data.subarray(0, firstLine < 0 ? data.length : firstLine);
+      end = from;
+    }
+    return { size, whole: start === 0, level: undefined };
+  } finally { await handle.close(); }
 }
