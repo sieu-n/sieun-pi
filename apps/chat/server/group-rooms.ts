@@ -19,7 +19,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type {
-  AgentId, ConversationSummary, Delivery, ImageRef, Item, Member, Room, RoomInput, RoomPatch, RunStatus, SendRequest, SendResult, TimelinePage,
+  AgentId, ConversationSummary, Delivery, ImageRef, Item, LaterMark, Member, Room, RoomInput, RoomPatch, RunStatus, SendRequest, SendResult, TimelinePage,
 } from "../web/src/lib/api/types.ts";
 import { isGroupRoom, type AgentRecord, type AgentStore, type FeedCursor, type GroupRoom, type RoomDelivery, type RoomId, type RoomMember, type RoomPost, type WakeOn } from "./agent-store.ts";
 import type { Agents } from "./agents.ts";
@@ -69,6 +69,8 @@ export interface GroupDeps {
   log(line: string): void;
   /** Whether the server has a live link to a box; absent on a server with one box. */
   linkOf?(box: string): "up" | "away";
+  /** The owner's own Save for later mark on a post (later.ts `mark`). */
+  laterMark?(post: RoomPost): LaterMark | undefined;
 }
 
 type Draft = Omit<RoomPost, "id" | "seq" | "room" | "deliveries"> & { hops: number };
@@ -767,12 +769,18 @@ export class GroupRooms {
       ...(post.author === "owner" ? { requestId: post.requestId } : agentPostParts(this.deps.threads, post)),
       ...(replies.length ? { thread: { replies: replies.length, lastAt: replies.at(-1)!.at, authors } } : {}),
       deliveries: (post.deliveries ?? []).map(d => this.publicDelivery(row, post, d, all)), ...reactionsOf(id => this.deps.threads.principal(id), post),
-      ...postState(post),
+      ...postState(post), ...this.laterOf(post),
     };
   }
 
   /** A page of the room's root posts, oldest first; `before`, `after` and `around` are post ids, and `around` a reply opens its root. */
   timeline(id: string, opts: { before?: string; after?: string; around?: string; limit?: number }): TimelinePage {
+  /** The owner's Save for later mark on a post, as the page reads it. */
+  private laterOf(post: RoomPost): { later?: LaterMark } {
+    const later = this.deps.laterMark?.(post);
+    return later ? { later } : {};
+  }
+
     const row = this.require(id);
     const all = this.store.postsOf(row.id);
     const roots = all.filter(p => !p.threadRoot);

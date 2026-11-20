@@ -14,7 +14,7 @@
  * Every post has one dedup key (`requestId`), so a repeated send or a re-read page lands nothing twice. The feed reader (`readFeedThread`) is
  * shared with the channels and Solo rooms in group-rooms.ts, which give their own `FeedSide`.
  */
-import type { ConversationSummary, Delivery, ImageRef, Item, JobRef, RunStatus, SendRequest, SendResult, TimelinePage } from "../web/src/lib/api/types.ts";
+import type { ConversationSummary, Delivery, ImageRef, Item, JobRef, LaterMark, RunStatus, SendRequest, SendResult, TimelinePage } from "../web/src/lib/api/types.ts";
 import { serverNote, TELL_OWNER_HELD, TELL_OWNER_TOOL } from "../web/src/lib/api/shared/chat-feed.ts";
 import type { AgentRecord, AgentStore, FeedCursor, RoomId, RoomPost, TestSend } from "./agent-store.ts";
 import type { Agents } from "./agents.ts";
@@ -55,6 +55,8 @@ export interface RoomDeps {
   log(line: string): void;
   /** Whether the server has a live link to a box; absent on a server with one box, whose box is always up. */
   linkOf?(box: string): "up" | "away";
+  /** The owner's own Save for later mark on a post (later.ts `mark`). */
+  laterMark?(post: RoomPost): LaterMark | undefined;
 }
 
 /** The delivery error of a post that waits for an offline box; the page shows it as a neutral "queued" line. */
@@ -626,11 +628,17 @@ export class Rooms {
 
   // Reading
 
+  /** The owner's Save for later mark on a post, as the page reads it. */
+  private laterOf(post: RoomPost): { later?: LaterMark } {
+    const later = this.deps.laterMark?.(post);
+    return later ? { later } : {};
+  }
+
   item(post: RoomPost): Item {
     const record = this.deps.agents.record(post.room);
     const base = {
       kind: "message" as const, id: post.id, seq: post.seq, at: post.at, text: post.text, images: post.images, mentions: [],
-      ...reactionsOf(id => this.deps.threads.principal(id), post), ...postState(post),
+      ...reactionsOf(id => this.deps.threads.principal(id), post), ...postState(post), ...this.laterOf(post),
     };
     if (post.author === "owner") {
       const d = post.delivery;

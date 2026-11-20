@@ -20,6 +20,7 @@ import { MIN_BYTES } from "./compress.ts";
 import { CHANNEL_COPY_LIKE, GroupRooms, roomLabel } from "./group-rooms.ts";
 import { assertOwnPost, deleteNotice, deliveriesOf, editNotice } from "./post-edits.ts";
 import { ForMe } from "./for-me.ts";
+import { Later } from "./later.ts";
 import type { ForMeItem, ForMeList, ForMeStatus } from "../web/src/lib/api/types.ts";
 import { DEFAULT_MODEL, DEFAULT_THINKING, type Config } from "./config.ts";
 import { MultiHost } from "./host/multi-host.ts";
@@ -88,6 +89,8 @@ export class App {
   readonly folders: AgentFolders;
   /** Each agent's For list and its completed marks (for-me.ts). */
   readonly forMe: ForMe;
+  /** Save for later: each principal's saved room posts (later.ts). */
+  readonly later: Later;
   private readonly clients = new Set<Client>();
   private sidebarTimer?: NodeJS.Timeout;
   private lastSidebar = "";
@@ -114,6 +117,15 @@ export class App {
     }
     this.folders = new AgentFolders(record => ({ agentsDir: this.agents.agentsDirOf(record), ...(routing && record.host !== config.box ? { files: this.boxFiles(record.host) } : {}) }));
     this.forMe = new ForMe({ store: this.agentStore, dataDir: config.dataDir, item: (row, post) => (row.kind === "dm" ? this.rooms.item(post) : this.groups.item(row, post)) });
+    this.later = new Later({
+      store: this.agentStore, dataDir: config.dataDir, principal: id => this.threads.principal(id),
+      item: (row, post) => (row.kind === "dm" ? this.rooms.item(post) : this.groups.item(row, post)),
+    });
+    this.later.onChange(({ by, item }) => {
+      this.broadcast({ type: "later", by, open: this.later.items(by).filter(i => i.state === "open").length });
+      const post = by === "owner" ? this.agentStore.postsOf(item.room).find(p => p.id === item.post) : undefined;
+      if (post) this.emitPosts(item.room, [post]);
+    });
     const linkOf = routing ? (box: string) => routing.link(box).state : undefined;
     this.threads = new Threads(host, this.store, {
       agents: (changed, removed) => {
@@ -165,6 +177,7 @@ export class App {
         submitted: (thread, result) => this.queues.follow(thread, result.ticket?.place ?? null),
       },
       uploaded: ref => this.uploaded(ref), readUpload: ref => this.readUpload(ref), log, ...(linkOf ? { linkOf } : {}),
+      laterMark: post => this.later.mark("owner", post.room, post.id),
     });
     this.threads.roomSummaries = () => this.rooms.summaries().filter(c => !this.agentStore.isTest(c.id));
     this.threads.testSendsOf = thread => this.rooms.testSendsOf(thread);
@@ -187,6 +200,7 @@ export class App {
         submitted: (thread, result) => this.queues.follow(thread, result.ticket?.place ?? null),
       },
       uploaded: ref => this.uploaded(ref), readUpload: ref => this.readUpload(ref), log, ...(linkOf ? { linkOf } : {}),
+      laterMark: post => this.later.mark("owner", post.room, post.id),
     });
     this.threads.groupSummaries = () => this.groups.summaries().filter(c => !this.agentStore.isTest(c.id));
     this.threads.roomsOf = agent => this.groups.memberRooms(agent).map(row => row.id);

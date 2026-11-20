@@ -189,6 +189,49 @@ export interface ForMeItem {
 /** `GET /api/agents/:id/for-me`: the agent's items, newest activity first, and its counts. */
 export interface ForMeList { agent: AgentId; items: ForMeItem[]; pending: number; completed: number }
 
+/** Save for later (server/later.ts): Slack's In progress is `open`, its Completed is `done`. */
+export type LaterState = "open" | "done";
+/** One room post a principal saved for later, the owner or an agent (`by`), stored in `<data dir>/later/<by>.json`. */
+export interface LaterItem {
+  /** `<room id>:<post id>`, such as `ch_1a2b3c4d:p12`: one item per saved post. */
+  id: string;
+  by: "owner" | AgentId;
+  room: RoomId;
+  post: string;
+  savedAt: Ms;
+  state: LaterState;
+  /** When it was checked off; absent while open. */
+  doneAt?: Ms;
+  /** Remind me: when the reminder is due, and when it fired. A new `remindAt` clears `notifiedAt`. */
+  remindAt?: Ms;
+  notifiedAt?: Ms;
+}
+/** A Later item with what its row shows of the post. `gone` is a post that was deleted or whose room is gone, which has no text. */
+export interface LaterRow extends LaterItem {
+  roomKind: "dm" | "channel" | "solo";
+  /** `#name` for a channel, the Solo room's name, or the agent's name for its DM. */
+  roomName: string;
+  /** Absent on a post that is gone. */
+  author?: Principal;
+  text: string;
+  /** When the post was written. */
+  at: Ms;
+  images: number;
+  /** Channels: the root post of the thread the post is in. */
+  threadRoot?: string;
+  gone?: true;
+  /** A post in a `test: true` room. */
+  test?: true;
+}
+/** `GET /api/later?state=open|done`: the owner's rows, newest first, with the counts of both tabs. */
+export interface LaterList { items: LaterRow[]; open: number; done: number }
+/** What a room post shows its reader about the reader's own save; absent when the reader has no open save of it. */
+export interface LaterMark { saved: boolean; remindAt?: Ms }
+/** `POST /api/later`. Saving a saved post keeps its one item. */
+export interface LaterRequest { room: RoomId; post: string; remindAt?: Ms }
+/** `PATCH /api/later/:id`: check off or reopen, and set or clear (`null`) the reminder. */
+export interface LaterPatch { state?: LaterState; remindAt?: Ms | null }
+
 /** A job a turn spawned, drawn as a thread pill under that turn. */
 export interface JobRef { conversation: ConversationId; name: string; status: RunStatus; replies: number; lastAt: Ms }
 
@@ -241,6 +284,8 @@ export type Item =
       testSend?: { by: Principal; reason: string };
       /** Room posts: the emoji the owner and agents put under the post. */
       reactions?: Reaction[];
+      /** Room posts the owner saved for later (server/later.ts); absent when he has no open save of it. */
+      later?: LaterMark;
       /** Room posts: when the owner last edited his post; the page shows "(edited)". */
       editedAt?: Ms;
       /** Room posts: the owner deleted it, so it has no text; the page drops it, or shows a stub on a channel root with replies. */
@@ -583,6 +628,8 @@ export type LiveEvent =
   /** A chat's duty rows, sent when a run starts or ends and when a duty is paused, resumed or rescheduled. */
   | { type: "duties"; chatId: string; duties: DutyRow[] }
   | { type: "room"; room: Room }
+  /** A principal's Later list changed (server/later.ts): `by` is owner or an agent id, `open` its In progress count. */
+  | { type: "later"; by: string; open: number }
   /** Only to pages that watch `for:<agent id>`: the agent's For list changed, with its new pending count. */
   | { type: "for_me"; agent: AgentId; pending: number }
   | { type: "error"; message: string };

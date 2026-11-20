@@ -5,7 +5,7 @@
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
-import type { ConversationPatch, DutyAction, MemoryInput, RoomInput, RoomPatch, SendRequest } from "../web/src/lib/api/types.ts";
+import type { ConversationPatch, DutyAction, LaterPatch, MemoryInput, RoomInput, RoomPatch, SendRequest } from "../web/src/lib/api/types.ts";
 import { parseSchedule } from "../web/src/lib/api/shared/chat-duties.ts";
 import { agentConfig, agentRecordOf } from "./agent-config.ts";
 import { EntryExists, EntryMissing, HARNESS_KINDS, type HarnessKind } from "./agent-folder.ts";
@@ -14,6 +14,7 @@ import type { AgentRecord, WakeOn } from "./agent-store.ts";
 import { App, MODELS, NotFound } from "./app.ts";
 import { LocalImageError, readLocalImage } from "./local-image.ts";
 import { ReactionError } from "./reactions.ts";
+import { LaterError } from "./later.ts";
 import { CwdRefused } from "./projects.ts";
 import { isHostAway } from "./host/types.ts";
 import { readJson } from "./store.ts";
@@ -217,6 +218,19 @@ export function routes(app: App): Route[] {
     route("POST", "/api/threads/:id/reactions", async (_r, p, _q, body) => {
       return app.reactAsAgent(p.id!, ((await body()) ?? {}) as { message?: unknown; emoji?: unknown; on?: unknown });
     }),
+    // The owner's Save for later list (later.ts); pi-host's agent tools use the /api/threads/:id/later routes.
+    route("GET", "/api/later", async (_r, _p, q) => {
+      const state = q.get("state");
+      if (state !== null && state !== "open" && state !== "done") throw new BadRequest("A Later list's state is open or done.");
+      return app.later.list("owner", state ?? undefined);
+    }),
+    route("POST", "/api/later", async (_r, _p, _q, body) => ({ item: app.later.save("owner", ((await body()) ?? {}) as Record<string, unknown>) })),
+    route("PATCH", "/api/later/:id", async (_r, p, _q, body) => {
+      const { state, remindAt, ...rest } = ((await body()) ?? {}) as Record<string, unknown>;
+      if (Object.keys(rest).length) throw new BadRequest("A Later patch carries only state and remindAt.");
+      return { item: app.later.update("owner", p.id!, { ...(state !== undefined ? { state } : {}), ...(remindAt !== undefined ? { remindAt } : {}) } as LaterPatch) };
+    }),
+    route("DELETE", "/api/later/:id", async (_r, p) => ({ item: app.later.remove("owner", p.id!) ?? null })),
     route("POST", "/api/c/:id/abort", async (_r, p) => {
       await app.abort(p.id!);
       return { ok: true };
@@ -387,7 +401,7 @@ async function handle(app: App, table: Route[], req: IncomingMessage, res: Serve
     return await serveWeb(app, path, res);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const status = error instanceof PoolError || error instanceof ReactionError ? error.status : isHostAway(error) ? 503
+    const status = error instanceof PoolError || error instanceof ReactionError || error instanceof LaterError ? error.status : isHostAway(error) ? 503
       : error instanceof NotFound || error instanceof EntryMissing ? 404 : error instanceof EntryExists ? 409
       : error instanceof BadRequest || error instanceof CwdRefused || /^(No |A |An |Dates|around|after|.* is not in (#|Solo "))/.test(message) ? 400 : 500;
     refuse(app, table, req, res, status, message, status === 500 && error instanceof Error ? error.stack : undefined);

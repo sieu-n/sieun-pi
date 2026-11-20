@@ -5,7 +5,7 @@
 import type {
   AgentConfig, AgentFolder, AgentHostList, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
   ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, ImageRef, Item, JobNode, Me, MemoryInput, ModelCatalog, ProjectList, SearchQuery, SearchResult, SendRequest,
-  ReactionRequest, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, TimelinePage, UsageReport, AccountsView,
+  LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, TimelinePage, UsageReport, AccountsView,
 } from "./types.ts";
 import type { SkillDoc, SkillsReport } from "./shared/skills.ts";
 import { shrink } from "./shrink.ts";
@@ -261,6 +261,15 @@ export const api = {
   /** Puts the owner's emoji on a room post, or with `on` false takes it off; the room's live `items` event carries the change too. */
   react: (id: ConversationId, post: string, emoji: string, on = true) =>
     call<{ item: Item }>("POST", `/api/c/${enc(id)}/posts/${enc(post)}/reactions`, { emoji, on } satisfies ReactionRequest),
+  /** The owner's Save for later rows in one tab, newest first, with both tabs' counts (server/later.ts). */
+  later: (state?: LaterState) => call<LaterList>("GET", `/api/later${query({ state })}`),
+  /** Saves a room post for later; saving a saved post keeps its one item and opens it again when it was done. */
+  saveLater: (room: ConversationId, post: string, remindAt?: number) =>
+    call<{ item: LaterItem }>("POST", "/api/later", { room, post, ...(remindAt !== undefined ? { remindAt } : {}) } satisfies LaterRequest),
+  /** Checks a saved post off (`done`) or opens it again, and sets or clears (`null`) its reminder. */
+  patchLater: (id: string, patch: LaterPatch) => call<{ item: LaterItem }>("PATCH", `/api/later/${enc(id)}`, patch),
+  /** Unsaves a post; unsaving one that is gone answers `{item: null}`. */
+  unsaveLater: (id: string) => call<{ item: LaterItem | null }>("DELETE", `/api/later/${enc(id)}`),
   /** Slack's Edit message on the owner's own room post. */
   editPost: (id: ConversationId, post: string, text: string) => call<{ item: Item }>("PATCH", `/api/c/${enc(id)}/posts/${enc(post)}`, { text }),
   /** Slack's Delete message on the owner's own room post. */
