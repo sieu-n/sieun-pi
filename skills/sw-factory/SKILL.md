@@ -109,6 +109,7 @@ To see what a live comm thread got, read its newest `pi.system` entry from `~/.p
 Unit tests prove the text and the guard, but only a fresh agent shows whether the model follows them.
 A test of role text or prompt steps finds a step by its text, never by its index or number, so a role-text edit that adds a step breaks no test, as `for-me.test.ts` did on 11-20 when the For list step moved from 5 to 6 (37605a62).
 So a change to how agents write is done only when a blind fresh session, given the owner's real kinds of asks with no steering, replies like the ideal pairs (c84).
+A new param on an agent tool gets the same check: its tool and param text say when to use it with a concrete case, such as `place: ["jobs","tools"]` when a job said something you can't name, and a blind fresh agent must pick it unprompted, since on 11-21 three agents ignored `place` until 84469deb added that case (c210).
 
 1. Write the ideal replies first, as before and after pairs from real posts, before you change any prompt.
 2. Change the code defaults and tool text, test them, push, and release apps/chat and pi-host on every box.
