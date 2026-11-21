@@ -21,6 +21,7 @@ const result = (value: number) => ({ up: { value, target: 99, op: ">=" as const,
 
 let s: Running;
 let work: string;
+let lostSubmission = 0;
 const now = Date.now();
 const chatDir = () => join(s.app.store.dir, "boards", ids.vent);
 const dutiesFile = () => join(chatDir(), "duties.json");
@@ -47,14 +48,18 @@ before(async () => {
   host.addThread({ id: "job-ended", name: "Duty d1 job", createdAt: now - HOUR });
   host.addThread({ id: "job-working", name: "Duty d2 job", status: "running", createdAt: now - HOUR });
   host.addThread({ id: "job-waking", name: "Duty d3 job", createdAt: now - HOUR });
+  host.addThread({ id: "job-lost", name: "Duty d5 job", createdAt: now - HOUR });
+  lostSubmission = (await host.submit("job-lost", { text: "sweep everything" })).submission;
+  await host.wait("job-lost", lostSubmission);
   await s.app.threads.refresh();
-  const duties = ["d1", "d2", "d3", "d4"].map(id => ({ ...duty(id), precheck: { ...duty(id).precheck, cwd: work } }));
+  const duties = ["d1", "d2", "d3", "d4", "d5"].map(id => ({ ...duty(id), precheck: { ...duty(id).precheck, cwd: work } }));
   mkdirSync(chatDir(), { recursive: true });
   writeFileSync(dutiesFile(), JSON.stringify({ duties, runs: {
     d1: [missed("d1", now - HOUR, "job-ended"), missed("d1", now - 25 * HOUR)],
     d2: [missed("d2", now - HOUR, "job-working")],
     d3: [missed("d3", now - HOUR, "job-waking")],
     d4: [missed("d4", now - 25 * HOUR, "job-gone")],
+    d5: [{ ...missed("d5", now - HOUR, "job-lost"), job: { id: "job-lost", name: "Duty d5 job", submission: lostSubmission } }],
   } }));
   mkdirSync(s.app.boards.wakeDir, { recursive: true });
   writeFileSync(join(s.app.boards.wakeDir, "job-waking--1-time-1.json"), JSON.stringify({ session: "job-waking--1", on: { kind: "time", at: now + HOUR }, note: "", since: now }));
@@ -116,4 +121,15 @@ test("a missed run's own job ends and the server measures the run after it on it
   assert.equal(newest!.after?.verdict, "met");
   assert.deepEqual(modes("d4"), ["run", "after"]);
   assert.deepEqual((await row("d4")).last, { verdict: "met", at: newest!.at, streak: 0, afterJob: true });
+});
+
+test("a job's report that a server restart cut off reaches the chat from the after-job measure, once", async () => {
+  const reports = async () => (await s.host.entries(ids.vent, { conversation: 1, limit: 500 })).entries
+    .filter(entry => entry.kind === "agent.message" && JSON.stringify(entry.model).includes("[duty d5]"));
+  assert.equal((await reports()).length, 0);
+  await s.app.boards.afterJob(ids.vent, "d5");
+  assert.equal((await reports()).length, 1);
+  const [newest] = runsOf("d5");
+  assert.equal(newest!.job?.reported, true);
+  assert.equal(newest!.after?.verdict, "met");
 });

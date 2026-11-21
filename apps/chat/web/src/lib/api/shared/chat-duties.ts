@@ -146,7 +146,11 @@ export type DutyVerdict = "met" | "missed" | "error" | "skipped";
 /** `lastEventAt` is the precheck's time of the newest event a windowed count counts (`PrecheckOutput.lastEventAt`), `windowMs` its window. */
 export interface MetricResult { value: number; target: number; op: DutyMetric["op"]; met: boolean; lastEventAt?: number; windowMs?: number }
 /** A duty job the server started: its session id and name. */
-export interface DutyJobRef { id: string; name: string }
+/**
+ * `submission` is the job's first input; `reported` is set once the job's report reached its chat, so a report that a restart of this server
+ * cut off is sent from the after-job measure (`deliverReport` in server/boards.ts).
+ */
+export interface DutyJobRef { id: string; name: string; submission?: number; reported?: boolean }
 /**
  * One line of `<dataDir>/duties/<chatId>.runs.jsonl`. `slot` is the scheduled time the run covers (one duty job per duty per slot); `detail` the
  * saved precheck output; `job` the duty job the run started. The verdict is the measure against the targets, kept as information; `skipped`

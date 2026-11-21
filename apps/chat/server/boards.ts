@@ -561,7 +561,7 @@ export class Boards {
         });
         await this.threads.refresh().catch(() => undefined);
         const submitted = await this.host.submit(job.id, { text: brief, requestId: `duty:${chat}:${duty.id}:${record.at}`, entry: { kind: "agent.message", data: { from: chat, via: `duty ${duty.id}` } } });
-        record.job = { id: job.id, name };
+        record.job = { id: job.id, name, submission: submitted.submission };
         void this.reportDutyJob(chat, duty, job.id, submitted.submission);
       } catch (error) {
         this.log(`duty ${chat}/${duty.id}: the duty job did not start: ${String(error)}`);
@@ -585,16 +585,32 @@ export class Boards {
   private async reportDutyJob(chat: string, duty: Duty, job: string, submission: number): Promise<void> {
     this.waiting.add(job);
     try {
-      const settled = await this.host.wait(job, submission);
-      const text = (await this.threads.said(job, 1, settled)).map(m => m.text).join("\n\n");
-      if (!text.trim() || /^nothing to report\.?$/i.test(text.trim())) return;
-      await this.host.submit(this.threadOf(chat), { text: `[duty ${duty.id}] ${text}`, whenBusy: "followUp", requestId: `duty-report:${job}`, entry: { kind: "agent.message", data: { from: job, via: `duty ${duty.id}` } } });
+      await this.deliverReport(chat, duty.id, job, submission);
     } catch (error) {
       this.log(`duty ${chat}/${duty.id}: its job's report did not reach the chat: ${String(error)}`);
     } finally {
       this.waiting.delete(job);
       await this.threads.refresh().catch(() => undefined);
       void this.afterJob(chat, duty.id);
+    }
+  }
+
+  /**
+   * Sends the job's report to the chat once its first turn settled and marks the run's job `reported`. The request id makes a second send land
+   * once, so the after-job measure sends it again when a restart of this server cut `reportDutyJob` off: on 11-22 the fable auditor's first sweep
+   * report was lost that way while its job waited for a Fable slot across two apps/chat releases.
+   */
+  private async deliverReport(chat: string, dutyId: string, job: string, submission: number): Promise<void> {
+    const settled = await this.host.wait(job, submission);
+    const text = (await this.threads.said(job, 1, settled)).map(m => m.text).join("\n\n");
+    if (text.trim() && !/^nothing to report\.?$/i.test(text.trim())) {
+      await this.host.submit(this.threadOf(chat), { text: `[duty ${dutyId}] ${text}`, whenBusy: "followUp", requestId: `duty-report:${job}`, entry: { kind: "agent.message", data: { from: job, via: `duty ${dutyId}` } } });
+    }
+    const file = this.file(chat);
+    const run = file.runs[dutyId]?.find(entry => entry.job?.id === job);
+    if (run?.job && !run.job.reported) {
+      run.job.reported = true;
+      this.save(chat, file);
     }
   }
 
@@ -636,6 +652,7 @@ export class Boards {
       this.endChecks.delete(key);
       if (!ended || this.dutyRuns.has(key) || this.afters.has(key)) return;
       const task = (async () => {
+        if (job.submission !== undefined && !job.reported) await this.deliverReport(chat, dutyId, job.id, job.submission);
         const after = await measureAfter({ duty, dir: join(this.dir(chat), "duties"), runs, log: this.log });
         const latest = this.file(chat);
         const target = latest.runs[dutyId]?.find(entry => entry.at === run.at);
