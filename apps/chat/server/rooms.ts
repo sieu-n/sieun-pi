@@ -622,9 +622,17 @@ export class Rooms {
     await readFeedThread(this.deps.host, this.store, this.dmSide(record, cursor.thread ?? record.workThread), cursor.thread ?? record.workThread, cursor, posts => this.changed(record, posts));
   }
 
-  /** The DM's side of the feed: a turn a channel post started in the work thread before phase 5 speaks to that channel, so it posts nothing here. */
+  /**
+   * The DM's side of the feed: a turn a channel post started in the work thread before phase 5 speaks to that channel, so it posts nothing here.
+   * A post with no `reply_to` answers its turn's owner post, and in a turn no owner post started, such as one a work thread's report woke, the
+   * newest owner post sent here that no post of the agent answers yet and whose thread is not done. On 11-21 a blind run's comm thread answered
+   * the owner's quick question in the turn the work thread's report woke, with no reply_to, and the answer named no post.
+   */
   private dmSide(record: AgentRecord, thread: string): FeedSide {
     const posts = () => this.store.postsOf(record.room);
+    const sentHere = (d: RoomDelivery | undefined): boolean => d !== undefined && (d.thread ?? (d.state === "delivered" ? record.workThread : thread)) === thread;
+    const open = (all: readonly RoomPost[]): RoomPost | undefined =>
+      all.findLast(p => p.author === "owner" && sentHere(p.delivery) && !p.done?.done && !all.some(q => q.author === record.id && q.answers === p.id));
     return {
       room: record.room,
       turn: entry => {
@@ -632,14 +640,14 @@ export class Rooms {
         // The owner post an input delivered is the newest one sent to this thread by the input's time. The feed may read the input while its
         // delivery still reads as sending, with no thread yet, so this skips agentPost's delivered check.
         const at = entry.kind === "pi.user" ? entry.model?.[0]?.timestamp : undefined;
-        const sentHere = (d: RoomDelivery | undefined): boolean => d !== undefined && (d.thread ?? (d.state === "delivered" ? record.workThread : thread)) === thread;
         const post = typeof at === "number" ? posts().findLast(p => p.author === "owner" && p.at <= at && sentHere(p.delivery)) : undefined;
         return { input: entry.id, channel, ...(post ? { post: post.id } : {}) };
       },
       speaks: turn => !turn?.channel,
       aimedHere: () => false,
       post: ({ replyTo, ...spoken }, turn) => {
-        const answered = repliedPost(posts(), record, thread, record.room, replyTo) ?? (turn?.post ? posts().find(p => p.id === turn.post) : undefined);
+        const all = posts();
+        const answered = repliedPost(all, record, thread, record.room, replyTo) ?? (turn?.post ? all.find(p => p.id === turn.post) : replyTo?.trim() ? undefined : open(all));
         return this.store.append({ room: record.room, author: record.id, images: [], ...spoken, ...(answered?.author === "owner" ? { answers: answered.id } : {}) }).post;
       },
     };

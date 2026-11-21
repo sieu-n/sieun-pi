@@ -134,6 +134,24 @@ describe("owner posts and the feed", () => {
     assert.equal(s.app.agentStore.postsOf(ROOM).some(p => "replyTo" in p), false, "the post stores no reply_to");
   });
 
+  test("in a turn a report woke, a post with no reply_to answers the newest owner post nothing answers yet", async () => {
+    // A blind run on 11-21: the comm thread answered the owner's quick question in the turn its work thread's report woke, with no reply_to.
+    const task = await s.send("POST", `/api/c/${ROOM}/send`, { text: `quiet, run the tests ${Date.now()}`, requestId: "open-1" });
+    const question = await s.send("POST", `/api/c/${ROOM}/send`, { text: `quiet, where do posts live? ${Date.now()}`, requestId: "open-2" });
+    await until(() => posts(s), page => page.find(p => p.id === question.body.item.id)?.deliveries[0]?.state === "delivered");
+    host.append(thread(), 1, { kind: "agent.message", model: [{ role: "user", content: [{ type: "text", text: "tests pass" }], timestamp: Date.now() }], data: { from: ids.vent, via: "agent" } });
+    assistant([
+      { type: "toolCall", id: "c_open1", name: "tell_owner", arguments: { text: "in one file per room", why: "answer", about: "posts" } },
+      { type: "toolCall", id: "c_open2", name: "tell_owner", arguments: { text: "all tests pass", why: "answer", about: "tests", reply_to: task.body.item.id } },
+    ]);
+    result("c_open1", "tell_owner", "told the owner");
+    result("c_open2", "tell_owner", "told the owner");
+    await s.app.rooms.feed(vent());
+    const page = await posts(s);
+    assert.equal(page.find(p => p.text === "in one file per room")?.answers, question.body.item.id);
+    assert.equal(page.find(p => p.text === "all tests pass")?.answers, task.body.item.id);
+  });
+
   test("a turn a channel post started speaks to the channel, not the DM", async () => {
     const before = (await posts(s)).length;
     host.append(thread(), 1, { kind: "agent.message", model: [{ role: "user", content: [{ type: "text", text: "[#pi-cutover · post 9 from You (owner)] status?" }], timestamp: Date.now() }], data: { from: "owner", via: "#pi-cutover" } });

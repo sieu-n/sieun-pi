@@ -12,6 +12,7 @@
  * `edit_message` replaces the text of one of the agent's own posts, as Slack's `chat.update` does, through apps/chat's edit of the owner's
  * posts (app.ts `rewrite`): the room shows it with (edited) at once and no new post. An agent posts a checklist of what it will check and
  * edits that same post as items finish, instead of a new post per step (owner p106, c207).
+ * An edit that runs long by tell_owner's check is held once with a note, and the same text sent again goes out (`longEdit`, c98).
  *
  * `list_for_me_messages` and `mark_message` (`for-me.ts`) read the agent's For list and mark its items, and `save_message`, `remind_me` and
  * `list_saved_messages` (`later.ts`) keep its Later list, and `search_messages` (`search-messages.ts`) runs the owner's Cmd K search with his filters.
@@ -20,6 +21,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type Extension } from "@earendil-works/pi-durable";
 import type { ChatApp } from "./chat-app.ts";
 import { closingControl, forMeTools } from "./for-me.ts";
+import { longReply } from "../../../../legacy/prime/user-history/src/shared/reply-lint.ts";
 import { laterTools } from "./later.ts";
 import { searchTools } from "./search-messages.ts";
 import { threadDoneTools } from "./thread-done.ts";
@@ -48,6 +50,22 @@ export const EDIT_MESSAGE_DESCRIPTION =
 
 export interface EditMessageArgs { message_id: string; text: string }
 
+export const LONG_EDIT_MARK = "Not edited, it runs long";
+
+/**
+ * The note for an edit that runs long by tell_owner's check (`longReply`: a sentence over 35 words or over 80 words in all, list markers not
+ * counted), or undefined when it does not. The same text sent again goes out, so the check is a soft cap (c98). On 11-21 a blind run's work
+ * thread grew a checklist over its edits from 54 to 78 to 86 words, as the d4 run of 11-20 saw it grow from 63 to 95, and edit_message had no check.
+ */
+export function longEdit(edit: string, held: Set<string>): string | undefined {
+  if (held.has(edit)) return undefined;
+  const long = longReply(edit);
+  if (!long.length) return undefined;
+  held.add(edit);
+  return `${LONG_EDIT_MARK}, with ${long.join(" and ")}. Keep the post within 80 words: the answer on top in one short sentence, short items, ` +
+    "and a nested detail only for a fact the item lacks, with the rest on a wiki page you link. Sending the very same text again edits it as it is (c104, c98).";
+}
+
 export interface SetEmojiArgs { message_id: string; emoji: string; on: boolean }
 
 const text = (value: string) => [{ type: "text" as const, text: value }];
@@ -57,6 +75,7 @@ const isEyes = (emoji: string): boolean => ["eyes", ":eyes:", "👀"].includes(e
 
 /** The room tools of one thread, which call apps/chat as that thread. */
 export function roomTools(app: ChatApp, thread: string): Extension {
+  const heldEdits = new Set<string>();
   return defineExtension({
     name: ROOM_TOOLS_EXTENSION,
     tools: [
@@ -100,6 +119,8 @@ export function roomTools(app: ChatApp, thread: string): Extension {
         replay: "safe",
         execute: async (args, api, context) => {
           if (api.conversationId !== ROOT_CONVERSATION_ID) return { output: text("edit_message works only in your agent's own thread, not in a job."), isError: true };
+          const long = longEdit(args.text.trim(), heldEdits);
+          if (long) return { output: text(long), isError: true };
           try {
             const answer = await app.editPost(thread, { message: args.message_id, text: args.text }, context.abortSignal);
             return { output: text(answer.text) };
