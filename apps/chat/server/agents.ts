@@ -177,9 +177,9 @@ export class Agents {
 
   /**
    * The agent's comm thread for `room`: the one the record holds, or a new thread on Opus 5.5 at high thinking (c31) in the agent's home,
-   * saved in the record before anything else. Each call then writes the comm thread's `agent.ref` and the work thread's, which names the
-   * comm thread, and throws while the comm thread's ref is not written, so the caller tries again before the comm thread gets an input
-   * without its role.
+   * saved in the record before anything else. Each call then writes the comm thread's `agent.ref` and the work thread's, which names a
+   * comm thread (`agentRef`), and throws while the comm thread's ref is not written, so the caller tries again before the comm thread gets an
+   * input without its role.
    */
   async ensureComm(record: AgentRecord, room: RoomId = record.room): Promise<string> {
     const key = `${record.id}/${room}`;
@@ -197,7 +197,7 @@ export class Agents {
       thread = await making;
     }
     const wrote = await this.putRef(thread, commRef(this.agentsDirOf(record), record, room));
-    if (room === record.room) await this.putRef(record.workThread, agentRef(this.agentsDirOf(record), record, "work"));
+    await this.putRef(record.workThread, agentRef(this.agentsDirOf(record), record, "work"));
     if (!wrote) throw new Error(`The agent.ref of ${record.id}'s comm thread ${thread} is not written yet.`);
     return thread;
   }

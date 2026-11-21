@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import type { Item, TimelinePage } from "../../web/src/lib/api/types.ts";
-import { FIXTURE_AGENTS as agents } from "../../server/fixture/seed.ts";
+import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { start, until, type Running } from "./helpers.ts";
 
 type Message = Extract<Item, { kind: "message" }>;
@@ -132,7 +132,11 @@ describe("an agent editing its own posts", () => {
     assert.deepEqual(item.reactions?.map(r => r.emoji), ["👍"], "the reactions stay");
     assert.equal(reply()!.answers, asked()!.id, "the post still answers the owner's post");
     assert.equal(s.app.agentStore.postsOf(ROOM).length, count, "an edit adds no post");
-    const same = await agentEdit(thread, { message: post.id, text: "relay and Mac are fine\n- [x] relay up\n- [x] Mac" });
+    assert.equal(reply()!.editedFrom, thread, "the post keeps the thread that edited it");
+    const fromWork = await agentEdit(ids.vent, { message: `reply:${asked()!.id}`, text: "relay and Mac are fine, checked twice\n- [x] relay up\n- [x] Mac" });
+    assert.equal(fromWork.status, 200, fromWork.body.error);
+    assert.equal(reply()!.editedFrom, ids.vent, "an edit from the work thread names the work thread");
+    const same = await agentEdit(thread, { message: post.id, text: "relay and Mac are fine, checked twice\n- [x] relay up\n- [x] Mac" });
     assert.equal(same.body.text, `${post.id} in ${ROOM} already reads that way; nothing changed.`);
     const newest = s.app.agentStore.postsOf(ROOM).findLast(p => p.author === agents.vent)!;
     assert.equal((await agentEdit(thread, { message: `${ROOM}/last`, text: newest.text })).body.post, newest.id, "last names the agent's newest post");

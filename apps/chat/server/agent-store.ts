@@ -109,6 +109,8 @@ export interface RoomPost {
   reactions?: StoredReaction[];
   /** When the owner last edited his post (post-edits.ts). */
   editedAt?: Ms;
+  /** An agent post's last edit: the thread whose edit_message made it, a comm, work or job thread, so a trace needs no request log. */
+  editedFrom?: string;
   /** When the owner deleted his post; its text and images are gone (post-edits.ts). */
   deletedAt?: Ms;
   /** A thread's root post: whether its thread is done, who set that last and when (thread-done.ts). */
@@ -128,7 +130,7 @@ export interface StoredReaction { emoji: string; by: "owner" | AgentId; at: Ms }
  */
 export interface TestSend { by: string; reason: string; at: Ms; entry?: number; notice?: Ms }
 
-export type PostPatch = Partial<Pick<RoomPost, "delivery" | "deliveries" | "jobs" | "text" | "testSend" | "reactions" | "images" | "editedAt" | "deletedAt" | "done">>;
+export type PostPatch = Partial<Pick<RoomPost, "delivery" | "deliveries" | "jobs" | "text" | "testSend" | "reactions" | "images" | "editedAt" | "editedFrom" | "deletedAt" | "done">>;
 type LogLine = { t: "post"; post: RoomPost } | { t: "set"; post: string; patch: PostPatch };
 
 /**

@@ -687,7 +687,7 @@ export class App {
       post = posts.findLast(mine);
       if (!post) throw new ReactionError(404, `${record.name} has no post in ${room} yet; post with tell_owner first.`);
     } else post = agentPost(posts, record, via, room, id);
-    const changed = this.rewrite(room, post, record.id, input.text) !== undefined;
+    const changed = this.rewrite(room, post, record.id, input.text, thread) !== undefined;
     return { room, post: post.id, text: changed ? `Edited ${post.id} in ${room}; the room shows the new text with (edited).` : `${post.id} in ${room} already reads that way; nothing changed.` };
   }
 
@@ -725,16 +725,17 @@ export class App {
 
   /**
    * The one edit of a room post, the owner's and an agent's alike (post-edits.ts): `by`'s own post gets the new text and `editedAt`, keeps its
-   * place, thread, `answers` and reactions, and the room's watchers get it. Returns the text before, or undefined when the text is the same.
+   * place, thread, `answers` and reactions, and the room's watchers get it. An agent's edit also stores `from`, the thread that sent it.
+   * Returns the text before, or undefined when the text is the same.
    */
-  private rewrite(room: string, post: RoomPost, by: RoomPost["author"], input: unknown): string | undefined {
+  private rewrite(room: string, post: RoomPost, by: RoomPost["author"], input: unknown, from?: string): string | undefined {
     assertEditable(post, by);
     if (typeof input !== "string") throw new ReactionError(400, "A post edit carries text, a string.");
     const text = input.trim();
     if (!text && !post.images.length) throw new ReactionError(400, "A post needs text or an image; delete it instead of clearing it.");
     if (text === post.text) return undefined;
     const before = post.text;
-    this.agentStore.set(post, { text, editedAt: Date.now() });
+    this.agentStore.set(post, { text, editedAt: Date.now(), ...(from ? { editedFrom: from } : {}) });
     this.emitPosts(room, [post]);
     return before;
   }

@@ -22,9 +22,9 @@ const PREVIEW_CAP = 400;
 export const AGENT_REF_DOC = "agent.ref";
 
 /**
- * `agent.ref`: the agent, its folder, and the thread's role (phase 4). The work thread names its DM comm thread once the agent is split, a
- * root job filed under the agent is a job, and a comm thread names its room and the work thread it hands tasks to. pi-host parses the same
- * JSON and reads any other shape as no agent.
+ * `agent.ref`: the agent, its folder, and the thread's role (phase 4). The work thread names a comm thread once it has one, its DM's or
+ * else its first room's, a root job filed under the agent is a job, and a comm thread names its room and the work thread it hands tasks to.
+ * pi-host parses the same JSON and reads any other shape as no agent.
  */
 export type AgentRef =
   | { agent: AgentId; dir: string; role: "work"; comm?: string }
@@ -107,10 +107,13 @@ const briefPath = (dir: string): string => join(dir, "brief.md");
 /** Prime's `getHarnessStatePath(getLocalHarnessStateDir(<agent folder>))`. */
 export const harnessPath = (dir: string): string => join(dir, "harness", "harness_state.json");
 
-/** The `agent.ref` value for the agent's work thread, which names the DM comm thread once there is one, or for a root job filed under it. */
+/**
+ * The `agent.ref` value for the agent's work thread, which names a comm thread once the agent has one, its DM's or else its first room's,
+ * or for a root job filed under it. An agent that talks only in channels still gets the work role, so its work thread has no tell_owner.
+ */
 export function agentRef(agentsDir: string, record: AgentRecord, role: "work" | "job"): AgentRef {
   const base = { agent: record.id, dir: agentFolderDir(agentsDir, record) };
-  const comm = record.comm?.[record.room];
+  const comm = record.comm?.[record.room] ?? Object.values(record.comm ?? {})[0];
   return role === "job" ? { ...base, role } : { ...base, role, ...(comm ? { comm } : {}) };
 }
 

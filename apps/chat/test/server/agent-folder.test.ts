@@ -44,6 +44,9 @@ test("the sweep writes agent.ref into each work thread and root job thread once,
     await until(async () => refOf(h, ids.uptimeDuty), ref => ref !== undefined);
     assert.deepEqual(refOf(h, ids.vent), { agent: agents.vent, dir: dirOf("vent"), role: "work" });
     assert.deepEqual(refOf(h, ids.harness), { agent: agents.harness, dir: dirOf("ai-harness-developer-environment-vp"), role: "work" });
+    const crawlerComm = first.app.agents.record(agents.crawler)!.comm![ids.cutoverChannel]!;
+    assert.deepEqual(refOf(h, ids.crawler), { agent: agents.crawler, dir: dirOf("crawler-vp"), role: "work", comm: crawlerComm },
+      "Crawler VP talks only in #pi-cutover, so its work thread names that comm thread and gets the work role");
     assert.deepEqual(refOf(h, ids.cutover), { agent: agents.harness, dir: dirOf("ai-harness-developer-environment-vp"), role: "job" });
     assert.deepEqual(refOf(h, ids.uptimeDuty), { agent: agents.harness, dir: dirOf("ai-harness-developer-environment-vp"), role: "job" });
 
