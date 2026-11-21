@@ -52,6 +52,7 @@ Thirty files were byte-identical to the current comparison revision.
 `no-comments/references/comment-sicko.md` and `poteto-agent/SKILL.md` correspond to upstream files under `pstack/agents/`.
 Other counterparts retain their paths under `pstack/skills/`.
 The exact file mapping and upstream hashes are in [`attribution-pstack.json`](attribution-pstack.json).
+Its `import_sha256` values are the import-time digests from `config/source-inventory.json`, so they do not change when a skill file is edited later.
 
 The initial import did not record its upstream commit.
 The comparison revision is evidence of origin, not a claim that the initial import used that revision.
