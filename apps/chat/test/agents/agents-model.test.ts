@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ACTION_LABEL, actionsFor, agentFromRoute, agentGroups, agentOfRoute, agentsShown, bytesLabel, canArchive, everyLabel, forCount, forTarget, hasForList, jobCounts, jobsLabel, levelsFor, modelOptions, openTarget, previewText, reasonChips, renamedSection, sectionFromParams, shortPath } from "../../web/src/pages/agents/agents-model.ts";
+import { ACTION_LABEL, actionsFor, agentFromRoute, agentGroups, agentOfRoute, agentsFilterFromParams, agentsShown, bytesLabel, canRename, everyLabel, forCount, forTarget, hasForList, jobCounts, jobsLabel, levelsFor, modelOptions, openTarget, previewText, reasonChips, renamedSection, sectionFromParams, shortPath } from "../../web/src/pages/agents/agents-model.ts";
 
 type Agent = Parameters<typeof agentsShown>[0][number];
 const agent = (over: Partial<Agent>): Agent => ({
@@ -12,13 +12,18 @@ const agent = (over: Partial<Agent>): Agent => ({
 test("the Agents page shows live agents by newest activity", () => {
   const list = [agent({ id: "ag_a", updatedAt: 1 }), agent({ id: "ag_b", updatedAt: 3 }), agent({ id: "ag_c", archived: true, updatedAt: 9 })];
   assert.deepEqual(agentsShown(list).map((a) => a.id), ["ag_b", "ag_a"]);
+  assert.deepEqual(agentsShown(list, "archived").map((a) => a.id), ["ag_c"]);
+  assert.equal(agentsFilterFromParams({ show: "archived" }), "archived");
+  assert.equal(agentsFilterFromParams({}), "active");
 });
 
-test("Stop shows only while an agent works or waits", () => {
-  assert.deepEqual(actionsFor(agent({ status: "working" })), ["open", "model", "stop", "archive"]);
-  assert.deepEqual(actionsFor(agent({ status: "sleeping" })), ["open", "model", "stop", "archive"]);
-  assert.deepEqual(actionsFor(agent({ status: "idle" })), ["open", "model", "archive"]);
-  assert.deepEqual(actionsFor(agent({ status: "failed" })), ["open", "model", "archive"]);
+test("an agent's one menu: Stop only while it works or waits, Unarchive when archived, no Rename for a job inside a thread", () => {
+  assert.deepEqual(actionsFor(agent({ status: "working" }), { model: true }), ["open", "model", "rename", "stop", "archive"]);
+  assert.deepEqual(actionsFor(agent({ status: "sleeping" })), ["open", "rename", "stop", "archive"]);
+  assert.deepEqual(actionsFor(agent({ status: "idle" }), { message: false }), ["rename", "archive"]);
+  assert.deepEqual(actionsFor(agent({ status: "failed" })), ["open", "rename", "archive"]);
+  assert.deepEqual(actionsFor(agent({ archived: true, status: "working" })), ["unarchive", "rename"]);
+  assert.deepEqual(actionsFor(agent({ id: "t1:4", kind: "job", conversation: 4 })), ["open", "archive"]);
 });
 
 test("an agent opens its DM, a job opens its agent's DM with the job's pane, and a thread no agent holds opens itself", () => {
@@ -92,10 +97,10 @@ test("the sidebar groups live agents into Working, Failed only when one failed, 
   assert.deepEqual(groups([]), [["working", []], ["idle", []]]);
 });
 
-test("Message replaces Open thread, and only a root thread archives", () => {
+test("Message replaces Open thread, and only a root thread takes a new name", () => {
   assert.equal(ACTION_LABEL.open, "Message");
-  assert.equal(canArchive(agent({ conversation: 1 })), true);
-  assert.equal(canArchive(agent({ id: "t1:4", kind: "job", conversation: 4 })), false);
+  assert.equal(canRename(agent({ conversation: 1 })), true);
+  assert.equal(canRename(agent({ id: "t1:4", kind: "job", conversation: 4 })), false);
 });
 
 test("sizes, home paths and check-in intervals read short", () => {

@@ -56,6 +56,8 @@ export const ICONS = {
   "moon": `<path d="M15.5 12A6 6 0 0 1 8 4.5a6 6 0 1 0 7.5 7.5z"/>`,
   "lock": `<rect x="4.5" y="9" width="11" height="8" rx="2"/><path d="M7 9V7a3 3 0 0 1 6 0v2"/>`,
   "trash": `<path d="M4 6h12M8 6V4.5h4V6M5.5 6l.8 10h7.4l.8-10"/>`,
+  "archive": `<rect x="3.5" y="4" width="13" height="3.5" rx="1"/><path d="M4.5 7.5v7.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V7.5M8 10.5h4"/>`,
+  "unarchive": `<rect x="3.5" y="4" width="13" height="3.5" rx="1"/><path d="M4.5 7.5v7.5a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V7.5M10 14.5v-4.5M8 12l2-2 2 2"/>`,
   "edit": `<path d="M12.5 4.5 15.5 7.5 7.5 15.5H4.5v-3z"/><path d="m11 6 3 3"/>`,
   "reply": `<path d="M8 5 3.5 9.5 8 14"/><path d="M3.5 9.5H11a5 5 0 0 1 5 5v1"/>`,
   "thread": `<path d="M4 4.5h12M4 8.5h8"/><path d="M6.5 12v2a2 2 0 0 0 2 2H16"/>`,

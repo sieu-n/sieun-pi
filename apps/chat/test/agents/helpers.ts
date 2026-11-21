@@ -41,10 +41,13 @@ export const agentPage = (page: Page) => page.getByTestId("agent-config");
 export const agentsSidebar = (page: Page) => page.locator('[data-testid="sidebar"][data-root="agents"]');
 export const sidebarRow = (page: Page, agent: Pick<Agent, "id">) => agentsSidebar(page).locator(`a[href="#/agents/${encodeURIComponent(agent.id)}"]`);
 
+/** The Active and Archived tabs above the grid. */
+export const agentsFilter = (page: Page) => page.getByRole("tablist", { name: "Agents to show" });
+
 /** The first load in a fresh browser pulls every module from the dev server, which can take longer than the default 5 s. */
 export async function openAgents(page: Page) {
   await page.goto("/#/agents");
-  await expect(page.getByRole("heading", { name: "Your agents" })).toBeVisible({ timeout: 20_000 });
+  await expect(agentsFilter(page)).toBeVisible({ timeout: 20_000 });
 }
 
 /** A name no other run uses, so parallel specs and reruns never collide. */
