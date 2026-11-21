@@ -581,8 +581,11 @@ export class GroupRooms {
     }
   }
 
-  /** The member's comm thread for the room, made on its first delivery, with its feed cursor set before the thread gets an input. */
-  private async commThread(row: GroupRoom, record: AgentRecord): Promise<string> {
+  /**
+   * The member's comm thread for the room, made once it joins (`App.ensureComms`) or else on its first delivery, with its feed cursor set
+   * before the thread gets an input.
+   */
+  async commThread(row: GroupRoom, record: AgentRecord): Promise<string> {
     const thread = await this.deps.agents.ensureComm(record, row.id);
     const feed = (this.store.rooms.commFeed ??= {});
     if (!feed[thread]) {

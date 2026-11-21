@@ -5,9 +5,8 @@
  * agent only through `POST /api/agents` or the migrate CLI (`scripts/migrate-agents.ts`); the server never registers one on its own.
  *
  * Phase 4 splits an agent into its work thread and one comm thread per room (`ensureComm`): the comm thread takes the room's posts and talks
- * in the room, and the work thread does the work. A room's first delivery to the agent makes its comm thread there, a DM's as a channel's or
- * a Solo room's (phase 5, group-rooms.ts), and `POST /api/agents/:id/split` makes the DM's for the migration (`scripts/split-agents.ts`),
- * whose dry run reads `splitPlan`.
+ * in the room, and the work thread does the work. The server makes it for the agent's DM and each room it joins after each thread list read
+ * (`App.ensureComms`), and a delivery that comes first makes it then, a DM's as a channel's or a Solo room's (phase 5, group-rooms.ts).
  */
 import type { AgentHostState, AgentId, AgentSummary, RunStatus, ThinkingLevel } from "../web/src/lib/api/types.ts";
 import { AGENT_REF_DOC, agentRef, commRef, sameRef, type AgentRef } from "./agent-folder.ts";
@@ -52,17 +51,6 @@ const runStatus = (row: DurableThread | undefined): RunStatus => (row?.status ==
 export function agentStatus(rows: AgentRows): RunStatus {
   if (rows.row?.status === "running" || rows.tree.some(n => n.status === "running") || rows.jobs.some(j => j.status === "running")) return "working";
   return rows.row?.status ?? "idle";
-}
-
-/** What `ensureComm` does for an agent's room, without doing it; `"<new>"` stands for the id of a comm thread not made yet. */
-export interface SplitPlan {
-  agent: AgentId; room: RoomId; workThread: string;
-  /** The comm thread the record holds for the room, or the one ensureComm would create. */
-  comm: { thread: string; created: false } | { thread: null; created: true; create: { name: string; model: string; thinkingLevel: string; cwd: string } };
-  /** agent.ref of the comm thread after the split. */
-  commRef: AgentRef;
-  /** agent.ref of the work thread now (as docGet reads it, or null) and after. */
-  workRef: { before: unknown; after: AgentRef };
 }
 
 /** The agent as the pages see it: its record, with the name, model, status, preview and archived flag of its work thread. */
@@ -161,18 +149,6 @@ export class Agents {
     let name = `${record.name} · ${label}`;
     if (row && row.kind !== "dm" && (await this.host.threads().catch(() => [])).some(t => t.name === name)) name = `${name} (${room})`;
     return { name, model: DEFAULT_MODEL, thinkingLevel: DEFAULT_THINKING, cwd: record.home };
-  }
-
-  /** What `ensureComm(record)` would do, read with no writes, for the migration's dry run. */
-  async splitPlan(record: AgentRecord, room: RoomId = record.room): Promise<SplitPlan> {
-    const known = record.comm?.[room];
-    const after = { ...record, comm: { ...record.comm, [room]: known ?? "<new>" } };
-    return {
-      agent: record.id, room, workThread: record.workThread,
-      comm: known ? { thread: known, created: false } : { thread: null, created: true, create: await this.commCreate(record, room) },
-      commRef: commRef(this.agentsDirOf(record), record, room),
-      workRef: { before: (await this.host.docGet(record.workThread, AGENT_REF_DOC)) ?? null, after: agentRef(this.agentsDirOf(record), after, "work") },
-    };
   }
 
   /**

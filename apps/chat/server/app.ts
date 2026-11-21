@@ -14,7 +14,7 @@ import type { AllowedModel } from "../../../config/allowed-models.ts";
 import type { FeedRow } from "../../../components/prime-relay/agents/protocol.ts";
 import { AgentFolders, type BoxFiles } from "./agent-folder.ts";
 import { AgentStore, type AgentRecord, type RoomDelivery, type RoomId, type RoomPost } from "./agent-store.ts";
-import { Agents, isGroupRoomId, isRoomId, type SplitPlan } from "./agents.ts";
+import { Agents, isGroupRoomId, isRoomId } from "./agents.ts";
 import { Boards } from "./boards.ts";
 import { MIN_BYTES } from "./compress.ts";
 import { CHANNEL_COPY_LIKE, GroupRooms, roomLabel } from "./group-rooms.ts";
@@ -105,6 +105,11 @@ export class App {
   private lastSidebar = "";
   /** Each DM room's summary as last sent, so a room event goes out only when its row changed. */
   private roomCache = new Map<string, string>();
+  /** The `ensureComms` pass going now, and the one queued behind it, so passes run one at a time. */
+  private commsRun?: Promise<void>;
+  private commsNext?: Promise<void>;
+  /** The `<agent>/<room>` pairs whose last comm thread try failed, so a failure logs once until it heals. */
+  private readonly commFailed = new Set<string>();
   /**
    * The socket compresses each frame over one packet (permessage-deflate). On 11-20 the hello frame was 742 KB of JSON, sent on every connect
    * to the owner 197 ms away; zlib level 3 made it 88 KB in 4.7 ms on us-metal02 (min of 30), against 80 KB in 14.1 ms at the default level 6.
@@ -216,6 +221,7 @@ export class App {
       this.rooms.poll();
       this.groups.poll();
       this.sweepRefs();
+      void this.ensureComms();
     };
     this.groups = new GroupRooms({
       store: this.agentStore, state: this.store, host, threads: this.threads, agents: this.agents,
@@ -450,6 +456,48 @@ export class App {
   /** Points each listed thread of each agent at its folder with an `agent.ref` doc (agents.ts), in the background. */
   private sweepRefs(): void {
     void this.agents.sweepRefs(thread => this.threads.thread(thread) !== undefined);
+  }
+
+  /**
+   * Gives each open agent its comm thread in its DM and in each open channel or Solo room it is a member of, in the background after each
+   * thread list read, so its work thread holds the work role and only comm threads post in its rooms (docs/agent-model.md). Until 11-21 a
+   * room's first delivery made it, so search-product-misc, seo, mcp, api-portal, feature-probe and the knowledge manager had a DM the
+   * owner never wrote in, whose feed read the work thread. Their work threads posted there with the chat brief, and the five with no comm
+   * thread at all held no work role. An agent whose box is away or whose work thread pi-host does not list waits for the next read.
+   * Resolves once a pass that began after this call ends, so the caller's new record or member is in it.
+   */
+  ensureComms(): Promise<void> {
+    if (!this.commsRun) return (this.commsRun = this.commsPass().finally(() => { this.commsRun = undefined; }));
+    // A record added while a pass runs gets the next pass, at most one queued behind it.
+    return (this.commsNext ??= this.commsRun.then(() => {
+      this.commsNext = undefined;
+      return this.ensureComms();
+    }));
+  }
+
+  private async commsPass(): Promise<void> {
+    const missing = this.agents.list().filter(record => !record.archived && this.threads.thread(record.workThread) !== undefined
+      && this.routing?.link(record.host).state !== "away").flatMap(record => [
+      ...(record.comm?.[record.room] ? [] : [{ record, room: record.room, make: () => this.rooms.commThread(record) }]),
+      ...this.groups.memberRooms(record.id).filter(row => !record.comm?.[row.id]).map(row => ({ record, room: row.id, make: () => this.groups.commThread(row, record) })),
+    ]);
+    if (!missing.length) return;
+    let made = 0;
+    for (const { record, room, make } of missing) {
+      const key = `${record.id}/${room}`;
+      try {
+        const thread = await make();
+        made++;
+        this.commFailed.delete(key);
+        this.log(`agents: ${record.id} has comm thread ${thread} in ${room}`);
+      } catch (error) {
+        if (!this.commFailed.has(key)) this.log(`agents: no comm thread for ${record.id} in ${room} yet, the next thread list read tries again: ${String(error)}`);
+        this.commFailed.add(key);
+      }
+    }
+    if (!made) return;
+    await this.threads.refresh();
+    this.roomsChanged();
   }
 
   /** Each page that watches the room watches `thread` too, as a room watch opened after the comm thread came would. */
@@ -1021,23 +1069,6 @@ export class App {
     await this.threads.refresh();
     this.roomsChanged();
     return this.threads.agent(record.id)!;
-  }
-
-  /**
-   * The split of an agent into its work thread and DM comm thread: the plan, or with `apply` the comm thread `ensureComm` holds after it,
-   * with the room's feed moved onto it. The migration (`scripts/split-agents.ts`) goes through this route, so the running server stays the
-   * only writer of agents.json.
-   */
-  async split(agent: string, apply: boolean): Promise<SplitPlan | { plan: SplitPlan; comm: string }> {
-    const record = this.agents.record(agent);
-    if (!record) throw new NotFound(`No agent ${agent}.`);
-    const plan = await this.agents.splitPlan(record);
-    if (!apply) return plan;
-    const comm = await this.agents.ensureComm(record);
-    await this.rooms.feed(record);
-    await this.threads.refresh();
-    this.roomsChanged();
-    return { plan, comm };
   }
 
   /** The agent's For list (for-me.ts); `id` is its agent id or one of its thread ids, so a pi-host tool passes its own thread. */

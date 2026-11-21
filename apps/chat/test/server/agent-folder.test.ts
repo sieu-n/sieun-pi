@@ -42,11 +42,11 @@ test("the sweep writes agent.ref into each work thread and root job thread once,
     const h = first.host as FixtureHost;
     const dirOf = (slug: string) => join(first.app.config.agentsDir, slug);
     await until(async () => refOf(h, ids.uptimeDuty), ref => ref !== undefined);
-    assert.deepEqual(refOf(h, ids.vent), { agent: agents.vent, dir: dirOf("vent"), role: "work" });
-    assert.deepEqual(refOf(h, ids.harness), { agent: agents.harness, dir: dirOf("ai-harness-developer-environment-vp"), role: "work" });
-    const crawlerComm = first.app.agents.record(agents.crawler)!.comm![ids.cutoverChannel]!;
-    assert.deepEqual(refOf(h, ids.crawler), { agent: agents.crawler, dir: dirOf("crawler-vp"), role: "work", comm: crawlerComm },
-      "Crawler VP talks only in #pi-cutover, so its work thread names that comm thread and gets the work role");
+    const dmComm = (agent: string) => { const record = first.app.agents.record(agent)!; return record.comm![record.room]!; };
+    assert.deepEqual(refOf(h, ids.vent), { agent: agents.vent, dir: dirOf("vent"), role: "work", comm: dmComm(agents.vent) });
+    assert.deepEqual(refOf(h, ids.harness), { agent: agents.harness, dir: dirOf("ai-harness-developer-environment-vp"), role: "work", comm: dmComm(agents.harness) });
+    assert.deepEqual(refOf(h, ids.crawler), { agent: agents.crawler, dir: dirOf("crawler-vp"), role: "work", comm: dmComm(agents.crawler) },
+      "the server made Crawler VP's DM comm thread beside its #pi-cutover one, and its work thread names the DM's");
     assert.deepEqual(refOf(h, ids.cutover), { agent: agents.harness, dir: dirOf("ai-harness-developer-environment-vp"), role: "job" });
     assert.deepEqual(refOf(h, ids.uptimeDuty), { agent: agents.harness, dir: dirOf("ai-harness-developer-environment-vp"), role: "job" });
 
@@ -82,8 +82,10 @@ test("the sweep writes agent.ref into each work thread and root job thread once,
 test("a new agent's work thread and a root job filed under an agent get their ref at once", async () => {
   const made = await s.send<AgentSummary>("POST", "/api/agents", { name: "Ref probe" });
   assert.equal(made.status, 200);
-  await until(async () => refOf(host(), made.body.thread), ref => ref !== undefined);
-  assert.deepEqual(refOf(host(), made.body.thread), { agent: "ag_ref-probe", dir: join(s.app.config.agentsDir, "ref-probe"), role: "work" });
+  await s.app.ensureComms();
+  const comm = s.app.agents.record("ag_ref-probe")!.comm!["dm_ref-probe"];
+  assert.ok(comm, "its DM's comm thread, made with no post");
+  assert.deepEqual(refOf(host(), made.body.thread), { agent: "ag_ref-probe", dir: join(s.app.config.agentsDir, "ref-probe"), role: "work", comm });
 
   const job = await s.send<AgentSummary>("POST", "/api/agents", { name: "Ref probe job", kind: "job", parent: agents.vent });
   assert.equal(job.status, 200);

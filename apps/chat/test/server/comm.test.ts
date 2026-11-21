@@ -1,7 +1,7 @@
 /**
- * The comm and work split (apps/chat/docs/agent-model.md, phase 4) on the fixture host: the DM's first delivery makes one comm thread and
- * every owner post lands on it as the owner's turn, the feed moves from the work thread to the comm thread once, a comm thread shows in no
- * list but opens by its id, and `POST /api/agents/:id/split` plans with no writes and applies once.
+ * The comm and work split (apps/chat/docs/agent-model.md, phase 4) on the fixture host: the server makes each agent's comm thread in its DM
+ * and its rooms before any post, also for an agent made or added to a room later, every owner post lands on it as the owner's turn, the
+ * feed moves from the work thread to the comm thread once, and a comm thread shows in no list but opens by its id.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none --test-timeout=120000 test/server/comm.test.ts
  */
 import assert from "node:assert/strict";
@@ -30,25 +30,25 @@ function told(host: FixtureHost, thread: string, id: string, text: string): void
 }
 
 describe("delivery to the comm thread", () => {
-  test("the first owner post makes one comm thread and lands on it as the owner's turn, a second post and a restart reuse it", async () => {
+  test("the server makes the DM's comm thread before any post, each owner post lands on it as the owner's turn, and a restart reuses it", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "apps-chat-comm-"));
     const host = new FixtureHost();
     host.wordMs = 0;
     seedFixture(host, dataDir);
     const submits: { thread: string; input: SubmitInput }[] = [];
     host.beforeSubmit = (thread, input) => void submits.push({ thread, input });
-    const threadsBefore = host.threadsById.size;
     try {
       const first = await start({ host, dataDir });
+      const threadsBefore = host.threadsById.size;
       try {
-        assert.equal(commOf(first), undefined, "no comm thread before the first delivery");
+        assert.ok(commOf(first), "the comm thread is there before the first post");
         const workEntries = host.threadsById.get(ids.vent)!.entries.length;
         await first.send("POST", `/api/c/${ROOM}/send`, { text: "first comm post", requestId: "comm-1" });
         await first.send("POST", `/api/c/${ROOM}/send`, { text: "second comm post", requestId: "comm-2" });
         await until(() => posts(first), page => page.filter(p => p.author.id === "owner" && p.send === "sent").length >= 2 && page.some(p => p.text.includes("second comm post") && p.author.id === agents.vent));
         const comm = commOf(first)!;
         assert.ok(comm);
-        assert.equal(host.threadsById.size, threadsBefore + 1, "two posts make one comm thread");
+        assert.equal(host.threadsById.size, threadsBefore, "the posts make no thread");
         const row = host.threadsById.get(comm)!.row;
         assert.equal(row.name, "Vent · DM");
         assert.equal(`${row.provider}/${row.modelId}`, "anthropic/claude-opus-5-5");
@@ -71,7 +71,7 @@ describe("delivery to the comm thread", () => {
         const comm = commOf(second)!;
         await second.send("POST", `/api/c/${ROOM}/send`, { text: "after the restart", requestId: "comm-3" });
         await until(() => posts(second), page => page.some(p => p.author.id === agents.vent && p.text.includes("after the restart")));
-        assert.equal(host.threadsById.size, threadsBefore + 1, "the restart reuses the comm thread");
+        assert.equal(host.threadsById.size, threadsBefore, "the restart reuses the comm thread");
         assert.equal(submits.filter(x => x.input.requestId?.startsWith("d:")).at(-1)!.thread, comm);
       } finally {
         await second.close();
@@ -85,18 +85,21 @@ describe("delivery to the comm thread", () => {
 describe("the feed's switch", () => {
   let s: Running;
   let host: FixtureHost;
+  const dataDir = mkdtempSync(join(tmpdir(), "apps-chat-switch-"));
   before(async () => {
-    s = await start({ wordMs: 0 });
-    host = s.host as FixtureHost;
+    host = new FixtureHost();
+    host.wordMs = 0;
+    seedFixture(host, dataDir);
+    // A DM from before its comm thread: the work thread spoke there, and the feed has not read it yet.
+    told(host, ids.vent, "w_before", "said in the work thread before the split");
+    s = await start({ host, dataDir });
   });
   after(async () => {
     await s.close();
+    rmSync(dataDir, { recursive: true, force: true });
   });
 
   test("an unread work-thread call posts once, the comm thread's calls post, and the work thread's calls after the switch never do", async () => {
-    told(host, ids.vent, "w_before", "said in the work thread before the split");
-    await s.send("POST", `/api/c/${ROOM}/send`, { text: "split me", requestId: "switch-1" });
-    await until(() => posts(s), page => page.some(p => p.author.id === agents.vent && p.text.includes("split me")));
     const comm = commOf(s)!;
     const cursor = s.app.agentStore.rooms.feed[agents.vent]!;
     assert.equal(cursor.thread, comm);
@@ -130,7 +133,7 @@ describe("the feed's switch", () => {
       assert.equal(dm.commStatus, "working");
       const agent = (await s.get<AgentSummary[]>("/api/agents")).find(a => a.id === agents.vent)!;
       assert.equal(agent.status, "idle", "a status answer does not light the Work pill");
-      assert.deepEqual(agent.comm, [{ room: ROOM, thread: comm, status: "working" }]);
+      assert.deepEqual(agent.comm?.find(c => c.room === ROOM), { room: ROOM, thread: comm, status: "working" });
     } finally {
       thread.row.status = "idle";
       await s.app.threads.refresh();
@@ -212,7 +215,7 @@ describe("a comm thread in the lists", () => {
   });
 });
 
-describe("POST /api/agents/:id/split", () => {
+describe("an agent no one wrote to yet", () => {
   let s: Running;
   let host: FixtureHost;
   before(async () => {
@@ -223,39 +226,39 @@ describe("POST /api/agents/:id/split", () => {
     await s.close();
   });
 
-  test("a dry run writes nothing, and two applies make one comm thread", async () => {
-    const agentsFile = join(s.app.config.dataDir, "agents.json");
-    const record = s.app.agents.record(agents.crawler)!;
-    const before = readFileSync(agentsFile, "utf8");
+  test("every open agent has its comm thread in its DM and each open room it is in, and its work thread holds the work role", async () => {
+    for (const record of s.app.agents.list().filter(r => !r.archived)) {
+      const rooms = [record.room, ...s.app.groups.memberRooms(record.id).map(r => r.id)];
+      for (const room of rooms) assert.ok(record.comm?.[room], `${record.id} has a comm thread in ${room}`);
+      const ref = host.threadsById.get(record.workThread)!.docs.get(AGENT_REF_DOC) as { role: string; comm?: string };
+      assert.equal(ref.role, "work");
+      assert.equal(ref.comm, record.comm![record.room]);
+    }
+  });
+
+  test("a new test agent gets its DM's comm thread with no post, and one for a channel it joins", async () => {
+    const made = await s.send("POST", "/api/agents", { name: "comm probe", test: true });
+    assert.equal(made.status, 200);
+    await s.app.ensureComms();
+    const record = s.app.agents.record(made.body.id)!;
+    const dm = record.comm?.[record.room];
+    assert.ok(dm, "the DM's comm thread");
+    assert.equal(s.app.agentStore.rooms.feed[record.id]!.thread, dm, "the DM's feed reads the comm thread");
+    assert.deepEqual(host.threadsById.get(dm)!.docs.get(AGENT_REF_DOC), {
+      agent: record.id, dir: join(s.app.config.agentsDir, record.slug), role: "comm", room: record.room, work: record.workThread, test: true,
+    });
+    assert.equal((host.threadsById.get(record.workThread)!.docs.get(AGENT_REF_DOC) as { comm?: string }).comm, dm);
+    assert.equal(host.threadsById.get(dm)!.entries.filter(e => e.kind === "pi.user").length, 0, "no input reached it");
+
+    s.app.groups.addMembers(ids.generalChannel, [record.id]);
+    await s.app.threads.refresh();
+    await s.app.ensureComms();
+    const channel = s.app.agents.record(record.id)!.comm?.[ids.generalChannel];
+    assert.ok(channel, "the channel's comm thread");
+    assert.equal(host.threadsById.get(channel)!.row.name, "comm probe · #general");
     const threads = host.threadsById.size;
-    const workRef = host.threadsById.get(record.workThread)!.docs.get(AGENT_REF_DOC);
-
-    const plan = await s.send("POST", `/api/agents/${agents.crawler}/split`, {});
-    assert.equal(plan.status, 200);
-    assert.equal(plan.body.comm.created, true);
-    assert.deepEqual(plan.body.comm.create, { name: "Crawler VP · DM", model: "anthropic/claude-opus-5-5", thinkingLevel: "high", cwd: record.home });
-    assert.equal(plan.body.workRef.after.comm, "<new>");
-    assert.deepEqual(plan.body.workRef.before, workRef ?? null);
-    assert.deepEqual(plan.body.commRef, { agent: agents.crawler, dir: join(s.app.config.agentsDir, record.slug), role: "comm", room: record.room, work: record.workThread });
-    assert.deepEqual((await s.send("POST", `/api/agents/${agents.crawler}/split`, { apply: false })).body, plan.body);
-    assert.equal(readFileSync(agentsFile, "utf8"), before);
-    assert.equal(host.threadsById.size, threads);
-    assert.deepEqual(host.threadsById.get(record.workThread)!.docs.get(AGENT_REF_DOC), workRef);
-    assert.equal((await s.send("POST", `/api/agents/${agents.crawler}/split`, { apply: "yes" })).status, 400);
-    assert.equal((await s.send("POST", "/api/agents/ag_nobody/split", {})).status, 404);
-
-    const [one, two] = await Promise.all([
-      s.send("POST", `/api/agents/${agents.crawler}/split`, { apply: true }),
-      s.send("POST", `/api/agents/${agents.crawler}/split`, { apply: true }),
-    ]);
-    assert.equal(one.status, 200);
-    assert.equal(one.body.comm, two.body.comm);
-    const again = await s.send("POST", `/api/agents/${agents.crawler}/split`, { apply: true });
-    assert.equal(again.body.comm, one.body.comm);
-    assert.deepEqual(again.body.plan.comm, { thread: one.body.comm, created: false });
-    assert.equal(host.threadsById.size, threads + 1);
-    assert.deepEqual(JSON.parse(readFileSync(agentsFile, "utf8")).agents.find((a: { id: string }) => a.id === agents.crawler).comm, { [ids.cutoverChannel]: record.comm![ids.cutoverChannel], [record.room]: one.body.comm });
-    assert.equal((host.threadsById.get(record.workThread)!.docs.get(AGENT_REF_DOC) as { comm?: string }).comm, one.body.comm);
-    assert.equal(s.app.agentStore.rooms.feed[agents.crawler]!.thread, one.body.comm, "the apply moves the room's feed onto the comm thread");
+    await s.app.threads.refresh();
+    await s.app.ensureComms();
+    assert.equal(host.threadsById.size, threads, "a second pass makes nothing");
   });
 });

@@ -2,8 +2,8 @@
  * DM rooms (apps/chat/docs/agent-model.md, phases 2 and 4). A DM is a room of posts the chat server stores, as Slack does, never a view of a
  * thread:
  *
- * 1. An owner post is written and shown at once, then delivered with retries to the agent's comm thread for the room, which the first
- *    delivery makes (`Agents.ensureComm`); its delivery state is a `set` line.
+ * 1. An owner post is written and shown at once, then delivered with retries to the agent's comm thread for the room, which the server
+ *    makes once the agent exists (`App.ensureComms`) or else its first delivery does (`Agents.ensureComm`); its delivery state is a `set` line.
  * 2. The feed reads the comm thread's entries after its cursor and turns each speaking call (`tell_owner`, `send_message` with no `to`) whose
  *    result says it went out into an agent post, and the jobs its turn started into the post's job pills. Only these calls and the owner's own
  *    room posts become posts: a plain input a job, a script or another chat submits to the thread is the thread's, not the room's. A turn
@@ -496,7 +496,7 @@ export class Rooms {
    * The room's comm thread, made on the first delivery, with the feed moved onto it first: a post reaches the comm thread only once the
    * feed has read the work thread to its end and reads the comm thread, so no work-thread entry after the switch becomes a post.
    */
-  private async commThread(record: AgentRecord): Promise<string> {
+  async commThread(record: AgentRecord): Promise<string> {
     const thread = await this.deps.agents.ensureComm(record);
     if (this.store.rooms.feed[record.id]?.thread !== thread) await this.feed(record);
     if (this.store.rooms.feed[record.id]?.thread !== thread) throw new Error(`The feed of ${record.id} has not moved to its comm thread ${thread} yet.`);

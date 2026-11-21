@@ -52,6 +52,8 @@ export async function start(opts: { real?: boolean; wordMs?: number; url?: strin
   }
   const app = new App(config, host, opts.log ?? (() => {}));
   await app.start();
+  // The comm threads the first thread list read starts making, so no spec races them.
+  await app.ensureComms();
   const server = serve(app);
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
