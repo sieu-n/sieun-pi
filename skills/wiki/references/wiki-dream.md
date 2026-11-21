@@ -22,7 +22,7 @@ The owner asked for it in these words: "a daily job that cleans wiki, find anti-
 1. `wiki-health.mjs` reads a snapshot of the content root and its `.wiki/wiki.db` on disk, so it runs while the wiki server is down. It names each input it could not read in `errors` and exits 1 only when it crashes, and the precheck counts each such input in `source_errors` and puts 999999 on the metrics that input feeds.
 2. A wiki that is down is the ops guy's to fix (owner correction c36), so report it and stop, and never start or restart the wiki server from this job.
 3. Never read a session folder's `data/` dumps or whole transcripts, and open only the page, log or memory the precheck names.
-4. Search the repo with `rg` and a narrow path, never over the content root `~/.pi/wiki/content` as a whole, which is 97 GiB and mostly session data.
+4. Search the repo with `rg` and a narrow path, never over the content root `~/.pi/wiki/content` as a whole, which held 114 GiB on 2026-11-21, mostly session data.
 
 ## Phase 1 · orient, then the quiet-day gate
 
