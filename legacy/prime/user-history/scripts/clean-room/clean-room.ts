@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * The clean-room check for a harness, skill or tool change (skills/board/references/clean-room.md). It makes a throwaway test chat on the live
- * chat service through the server's own routes, seeds its board from a copy of a real board, sets its check-in interval, and then only watches:
+ * chat service through the server's own routes, seeds the board its scenario builds on an empty board or the `--board` file, sets its check-in interval, and then only watches:
  * the server runs the chat on its own clock, `collect` saves the evidence, `evaluate` judges it against the criteria written before the run,
  * and `teardown` archives the chat and its jobs. Evaluate tears the run down on a pass, fail or void, and collect evaluates when its window ends,
  * so every run is torn down (owner 10-18: "btw when blind test done always clean up").

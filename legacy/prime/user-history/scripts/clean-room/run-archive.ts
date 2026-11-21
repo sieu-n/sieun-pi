@@ -18,7 +18,7 @@ import { headerParent, PRIME_DIR, readSessionFile, type RunState, sessionFiles, 
  *                        sessions and their descendants, the header line of each outside sender, the window's slice of service.log, the d9
  *                        pushes file, the CI cache and the chat's check-in precheck files
  *   ownership.json       the chat-jobs.json entries that file a session under the run's chats
- *   identity.jsonl       each delivery receipt collect kept from service.log: path, source chat and session, target session and delivery id
+ *   identity.jsonl       each delivery or refused receipt collect kept from service.log: path, source chat and session, target session, delivery id and, for a refused one, its trial
  *   outbox/              the service's agent-outbox and owner outbox entries addressed to the run's sessions
  *   verdicts/            the verdict files written so far
  *   archive.json         the manifest: the run, its window, the criteria's sha256, the judge versions, the sessions and every input file
@@ -63,8 +63,11 @@ export interface HeldSession { id: string; kind: "run" | "descendant" | "unliste
 /** A file for `sealSupplement`: the selected bytes of `source`, laid at `path` under the archive root, with the source ranges a slice took. */
 export interface SupplementFile { source: string; path: string; bytes: Uint8Array; selection: Selection; ranges?: readonly ByteRange[] }
 
-/** A delivery receipt line, `deliveryLine` in src/clean-room-subjects.ts. */
-export const DELIVERY = /\bdelivery (sibling send|d9 push|job-steer): from session (.+?)(?: \((.*)\))? of chat (\S+) to session (\S+) as (\S+?)(?:, taken to the trial owner (\S+))?\s*$/;
+/**
+ * A delivery or refused receipt line, `deliveryLine` in src/clean-room-subjects.ts: group 8 is the trial of a refused one. Group 7 reads the
+ * ", taken to the trial owner" tail that receipts wrote from 10-24 until 784005c2 on 10-26, so a rejudge of an archive from then still reads it.
+ */
+export const DELIVERY = /\b(?:delivery|refused) (sibling send|cross-host send|queued send|d9 push|job-steer): from session (.+?)(?: \((.*)\))? of chat (\S+) to session (\S+) as (\S+?)(?:, taken to the trial owner (\S+)|, clean-room trial (\S+))?\s*$/;
 /** The time stamp that opens a stamped service.log line. */
 export const STAMP = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z) /;
 
@@ -77,8 +80,8 @@ export function deliveries(serviceLog: string): Record<string, string>[] {
   return [...new Set(readFileSync(serviceLog, "utf8").split("\n"))].flatMap(line => {
     const match = DELIVERY.exec(line);
     if (!match) return [];
-    const [, path, from, fromName, fromChat, to, id, owner] = match;
-    return [{ path: path!, from: from!, ...fromName ? { fromName } : {}, fromChat: fromChat!, to: to!, id: id!, ...owner ? { owner } : {}, line: line.trim() }];
+    const [, path, from, fromName, fromChat, to, id, owner, refused] = match;
+    return [{ path: path!, from: from!, ...fromName ? { fromName } : {}, fromChat: fromChat!, to: to!, id: id!, ...owner ? { owner } : {}, ...refused ? { refused } : {}, line: line.trim() }];
   });
 }
 

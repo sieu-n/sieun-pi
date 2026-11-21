@@ -213,6 +213,9 @@ test("unrelated-ci-wait: a job that saw an unrelated run and left the carried st
   const redirectedPush = run({ delivery: { pushes: [{ at: AFTER, chat: idOf("01a16e31", count + 1), tag: "[d9 push 2026-10-24T19:50Z]" }],
     receipts: [receipt({ path: "d9 push", from: "01a1164b-0000-7000-8000-000000000009", to: idOf("01a16e31", count + 1), id: "m-1", owner: "01a16e22-0000-7000-8000-000000000001" })] } });
   assert.equal(redirectedPush.verdict, "pass", `a d9 push taken to the trial owner never reached the chat, though the push record names it: ${redirectedPush.check("f")}`);
+  const refusedPush = run({ delivery: { pushes: [{ at: AFTER, chat: idOf("01a16e31", count + 1), tag: "[d9 push 2026-10-24T19:50Z]" }],
+    receipts: [receipt({ path: "d9 push", from: "01a1164b-0000-7000-8000-000000000009", to: idOf("01a16e31", count + 1), id: "m-1", refused: idOf("01a16e31", count + 1) })] } });
+  assert.equal(refusedPush.verdict, "pass", `a d9 push the trial's wall refused never reached the chat: ${refusedPush.check("f")}`);
   const unreceipted = run({ delivery: { pushes: [{ at: AFTER, chat: idOf("01a16e31", count + 1), tag: "[d9 push 2026-10-24T19:50Z]" }] } });
   assert.equal(unreceipted.verdict, "open", "a push record after activation with no receipt leaves its delivery unknown");
   const deliveredSibling = run({ delivery: { receipts: [receipt({ path: "sibling send", from: "01a1164b-0000-7000-8000-000000000009", to: SAMPLER, id: "sha256:abcdefabcdef" })] } });
@@ -220,10 +223,12 @@ test("unrelated-ci-wait: a job that saw an unrelated run and left the carried st
 
   const routed = parseServiceLog(["2026-10-24T14:00:00.000Z serve", "2026-10-24T14:40:00.000Z wakes", "chat 01a16e49: check-in nudged job memory sampling: nothing moved for 2 h",
     "2026-10-24T19:50:00.000Z delivery d9 push: from session 01a1164b-4a2d-742d-b27a-82f086ed0200 (d9 of AI harness) of chat 01a1164b-4a2d-742d-b27a-82f086ed0200 to session 01a16e49-71ae-74b3-8490-220e5bb38507 as m-77, taken to the trial owner 01a16e22-91e0-7783-8ab3-dd7d6021ed6f",
-    "2026-10-24T19:51:00.000Z delivery job-steer: from session an unnamed caller of chat unknown to session 01a16e4a-b352-7219-b017-f3c5ab891ffe as sha256:0123456789ab"], START, at(400));
+    "2026-10-24T19:51:00.000Z delivery job-steer: from session an unnamed caller of chat unknown to session 01a16e4a-b352-7219-b017-f3c5ab891ffe as sha256:0123456789ab",
+    "2026-10-24T19:52:00.000Z refused cross-host send: from session 01a1164b-4a2d-742d-b27a-82f086ed0200 of chat 01a1164b-4a2d-742d-b27a-82f086ed0200 to session 01a16e49-71ae-74b3-8490-220e5bb38507 as sha256:abcdefabcdef, clean-room trial 01a16e49-71ae-74b3-8490-220e5bb38507"], START, at(400));
   assert.deepEqual(routed.nudges?.map(entry => `${entry.chat8} ${entry.job}`), ["01a16e49 memory sampling"]);
-  assert.deepEqual(routed.receipts?.map(entry => `${entry.path} ${entry.from ?? "-"} ${entry.fromChat ?? "-"} ${entry.to.slice(0, 8)} ${entry.id} ${entry.owner?.slice(0, 8) ?? "-"}`),
-    ["d9 push 01a1164b-4a2d-742d-b27a-82f086ed0200 01a1164b-4a2d-742d-b27a-82f086ed0200 01a16e49 m-77 01a16e22", "job-steer - - 01a16e4a sha256:0123456789ab -"]);
+  assert.deepEqual(routed.receipts?.map(entry => `${entry.path} ${entry.from ?? "-"} ${entry.fromChat ?? "-"} ${entry.to.slice(0, 8)} ${entry.id} ${entry.owner?.slice(0, 8) ?? "-"} ${entry.refused?.slice(0, 8) ?? "-"}`),
+    ["d9 push 01a1164b-4a2d-742d-b27a-82f086ed0200 01a1164b-4a2d-742d-b27a-82f086ed0200 01a16e49 m-77 01a16e22 -", "job-steer - - 01a16e4a sha256:0123456789ab - -",
+      "cross-host send 01a1164b-4a2d-742d-b27a-82f086ed0200 01a1164b-4a2d-742d-b27a-82f086ed0200 01a16e49 sha256:abcdefabcdef - 01a16e49"]);
 
 
   // carried-wait run-4 on 10-24: free-space-page-writer (01a16f95), a subagent of the chat's job "free space page", replied to that job as its

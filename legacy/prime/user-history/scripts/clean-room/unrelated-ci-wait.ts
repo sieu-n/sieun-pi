@@ -305,12 +305,17 @@ export interface ResumeLine { job: string; raw: string }
 export interface Delivery { logCovered: boolean; steers: SteerLine[]; resumes: ResumeLine[]; pushesRead: boolean; pushes: { at: number; chat: string; tag: string }[];
   /** The service's own check-in nudges and restarts of jobs (`Chats.pushJobs`), which deliver "The check-in is checking on you" notes. */
   nudges?: NudgeLine[];
-  /** The delivery receipts the routed service writes per sibling send, d9 push and job-steer (`deliveryLine` in src/clean-room-subjects.ts). */
+  /** The delivery and refused receipts the routed service writes per message that touches a trial (`deliveryLine` in src/clean-room-subjects.ts). */
   receipts?: Receipt[] }
 /** One check-in nudge or restart of a job by name (`chat <id8>: check-in nudged job <name>: <why>`). */
 export interface NudgeLine { chat8: string; job: string; raw: string }
-/** One delivery receipt: where a message went. `owner` is set when the service took it to the trial owner instead of its target. */
-export interface Receipt { at: number; path: "sibling send" | "d9 push" | "job-steer"; from?: string; fromChat?: string; to: string; id: string; owner?: string; raw: string }
+/**
+ * One receipt: where a message went. `owner` is set when the service took it to the trial owner instead of its target (until 10-26), and
+ * `refused` names the trial whose wall stopped it. Either way it never reached its target.
+ */
+export interface Receipt { at: number; path: "sibling send" | "cross-host send" | "queued send" | "d9 push" | "job-steer"; from?: string; fromChat?: string; to: string; id: string;
+  owner?: string; refused?: string; raw: string }
+const reached = (receipt: Receipt): boolean => receipt.owner === undefined && receipt.refused === undefined;
 /**
  * When the routed delivery with receipts went live: the routing owner reported activation at 04:47:42 KST on 10-25 (19:47:42Z on 10-24), in
  * release-4311297 from 04:52:53 KST. Deliveries before it have no receipt and are judged by the legacy steer lines and pushes file.
@@ -339,7 +344,8 @@ export function parseServiceLog(lines: Iterable<string>, since: number, until: n
       if (at >= since) inside = true;
       const receipt = inside ? line.match(DELIVERY) : null;
       if (receipt) receipts.push({ at, path: receipt[1] as Receipt["path"], to: receipt[5]!, id: receipt[6]!, raw: line,
-        ...receipt[2] !== "an unnamed caller" ? { from: receipt[2]! } : {}, ...receipt[4] !== "unknown" ? { fromChat: receipt[4]! } : {}, ...receipt[7] ? { owner: receipt[7] } : {} });
+        ...receipt[2] !== "an unnamed caller" ? { from: receipt[2]! } : {}, ...receipt[4] !== "unknown" ? { fromChat: receipt[4]! } : {}, ...receipt[7] ? { owner: receipt[7] } : {},
+        ...receipt[8] ? { refused: receipt[8] } : {} });
       continue;
     }
     if (!inside) continue;
@@ -434,10 +440,10 @@ export function steering(sessions: readonly TrialSession[], chat: string, since:
   const chat8 = chat.slice(0, 8);
   const receipts = (delivery?.receipts ?? []).filter(receipt => receipt.at >= since);
   const ownSource = (receipt: Receipt): boolean => receipt.from === chat || receipt.fromChat === chat || (receipt.from !== undefined && own.has(receipt.from));
-  // Effective delivery: a receipt the service took to the trial owner never reached the subject, whatever an older push record names. A receipt
+  // Effective delivery: a receipt the service took to the trial owner or refused never reached the subject, whatever an older push record names. A receipt
   // delivered to a trial session from outside the trial is someone stepping in.
   for (const receipt of receipts) {
-    if (!ids.has(receipt.to) || receipt.owner !== undefined || ownSource(receipt)) continue;
+    if (!ids.has(receipt.to) || !reached(receipt) || ownSource(receipt)) continue;
     outside.push(`${receipt.path} to ${receipt.to} at ${iso(receipt.at)}: "${clip(receipt.raw)}"`);
   }
   if (!delivery?.pushesRead) unknown.push("the d9 pushes file was not read, so no d9 push to the trial's sessions can be ruled out");
@@ -455,7 +461,7 @@ export function steering(sessions: readonly TrialSession[], chat: string, since:
     const events = readSessionFile(session.file).filter(event => event.at >= since && event.kind === "text");
     const checkIns: string[] = [];
     let briefed = false;
-    const steerReceipt = (text: string): Receipt | undefined => receipts.find(receipt => receipt.path === "job-steer" && receipt.to === session.id && receipt.owner === undefined &&
+    const steerReceipt = (text: string): Receipt | undefined => receipts.find(receipt => receipt.path === "job-steer" && receipt.to === session.id && reached(receipt) &&
       receipt.id === messageId(text.slice(CHECK_IN_NOTE.length)));
     const nudged = (text: string): void => {
       const quote = `${session.name ?? session.id}: "${clip(text, 160)}"`;
