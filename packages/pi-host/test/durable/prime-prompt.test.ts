@@ -165,6 +165,55 @@ test("a thread sends Prime's prompt, keeps it across turns, and sends only a cha
   await harness.close(context);
 });
 
+test("a comm thread's root goes without claude-rules, CLAUDE.md and the chat's long corrections block, and a thread that showed them drops them", async () => {
+  const f = fixture("comm");
+  writeFileSync(join(f.cwd, "CLAUDE.md"), "# Coding guide\n\nIndent with two spaces.\n");
+  const folder = join(dir, "comm", "agents", "vent");
+  mkdirSync(folder, { recursive: true });
+  const roots: Message[][] = [];
+  const threads = new DurableThreads({
+    dir: join(dir, "comm", "durable"),
+    models: () => {
+      const faux = fauxProvider({ provider: MODEL.provider, models: [{ id: MODEL.modelId }], tokensPerSecond: 0 });
+      faux.setResponses(Array.from({ length: 4 }, () => ({ messages }: { messages: Message[] }) => {
+        roots.push(messages);
+        return fauxAssistantMessage("ok");
+      }));
+      const models = createModels();
+      models.setProvider(faux.provider);
+      return models;
+    },
+    defaultModel: MODEL,
+    defaultThinkingLevel: "off",
+    defaultCwd: f.cwd,
+    prompt: { agentDir: f.agentDir, bundledSkillsDir: f.bundled, ledgerDir: f.ledgerDir },
+  });
+  const ask = async (id: string, text: string) => {
+    const { submission } = await threads.submit(id, { text });
+    assert.equal((await threads.wait(id, submission)).status, "done");
+  };
+  try {
+    const { id } = await threads.create({ name: "vent comm" });
+    await ask(id, "first");
+    const before = getCurrentSystemPrompt(roots[0]!);
+    assert.match(before, /Always name the file you changed\./, "a thread with no role gets its repo's claude-rules");
+    assert.match(before, /Indent with two spaces\./, "and the CLAUDE.md beside the repo's AGENTS.md");
+    assert.match(before, /\[corrections\] The owner's corrections in force/, "and the chat's corrections block");
+
+    await threads.docPut(id, "agent.ref", { agent: "ag_vent", dir: folder, role: "comm", room: "dm_vent", work: "w-1" });
+    await ask(id, "second");
+    const comm = getCurrentSystemPrompt(roots.at(-1)!);
+    assert.doesNotMatch(comm, /Always name the file you changed\./);
+    assert.doesNotMatch(comm, /Indent with two spaces\./);
+    assert.match(comm, /Run npm test before a commit\./, "the repo's AGENTS.md stays, as Prime's loader gives it");
+    const job = (await primePromptParts({ agentDir: f.agentDir, cwd: f.cwd, depth: 1, bundledSkillsDir: f.bundled, ledgerDir: f.ledgerDir })).find(part => part.key === "corrections")!.text;
+    assert.ok(comm.includes(job), "the comm thread gets the short block a chat's job gets");
+    assert.doesNotMatch(comm, /\[corrections\] The owner's corrections in force/);
+  } finally {
+    await threads.shutdown();
+  }
+});
+
 test("pi-host's threads run with it: the thread file is the conversation log, and the digest before the owner's words is ranked by them", async () => {
   const f = fixture("threads");
   // A second memory that only a question about deploys ranks first: the digest shows six entries a kind, so add enough to cut.

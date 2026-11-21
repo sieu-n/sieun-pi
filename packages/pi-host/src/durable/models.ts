@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { poolProvider, type TurnQueue } from "@sieun-pi/pi-pool/durable";
 import type { ModelThinkingLevel, Provider } from "@earendil-works/pi-ai";
 import type { ModelRef } from "@earendil-works/pi-durable";
+import { withCacheShape } from "./cache-shape.ts";
 import { compactionLine, readJson, withPrimeWindows } from "./prime-compaction.ts";
 
 type Json = Record<string, unknown>;
@@ -98,12 +99,15 @@ export interface DurableModelsOptions {
   tree?: () => string;
 }
 
-/** One thread's model registry with Prime's context windows, asking pi-pool for the thread's tree (`pool-labels.ts`). */
+/**
+ * One thread's model registry with Prime's context windows, asking pi-pool for the thread's tree (`pool-labels.ts`), and each request shaped
+ * for the prompt cache (`cache-shape.ts`).
+ */
 export function durableModels(threadId: string, options: DurableModelsOptions = {}): ReturnType<typeof createModels> {
   const models = createModels();
   const treeKey = options.tree ?? `pi-durable:${threadId}`;
   for (const inner of [anthropicProvider(), openaiCodexProvider()]) {
-    models.setProvider(poolProvider({ treeKey, agentDir: options.agentDir, turns: options.turns, inner: withPrimeWindows(withPrimeModels(inner, options.agentDir), options.agentDir) }));
+    models.setProvider(poolProvider({ treeKey, agentDir: options.agentDir, turns: options.turns, inner: withCacheShape(withPrimeWindows(withPrimeModels(inner, options.agentDir), options.agentDir)) }));
   }
   return models;
 }

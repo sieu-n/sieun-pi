@@ -13,6 +13,7 @@
  * A thread that belongs to an agent (an `agent.ref` doc in its root conversation, `agent-profile.ts`) differs in two ways, in every one of its
  * conversations: the agent's `brief.md` is one more Prime context file after the AGENTS.md files Prime's loader found, so Prime's builder
  * renders it in "# Project Context" and an edit reaches the next request; and the local harness store is the agent's, not the thread's.
+ * A comm thread's root conversation also goes without the parts that guide coding (`commRoot`).
  */
 import { existsSync, opendirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -80,6 +81,8 @@ export interface PrimePromptInput {
   agentBrief?: ContextFile;
   /** Leave out the parts Prime sends as messages: claude-rules, the harness digest and the corrections block. */
   primeOnly?: boolean;
+  /** The root conversation of a comm thread, which gets the lean parts `commParts` names. */
+  comm?: boolean;
   /** Extra parts not to build, such as pinned ones a conversation already shows. */
   skip?: ReadonlySet<PromptKey>;
   /** The input of the turn the digest goes with, which ranks its entries as Prime's digest at that turn does. */
@@ -258,7 +261,7 @@ export async function primePromptParts(input: PrimePromptInput): Promise<PromptP
     cwd: input.cwd,
     messagesPath: input.messagesPath,
     skills: resources.skills,
-    contextFiles: input.agentBrief ? [...resources.contextFiles, input.agentBrief] : resources.contextFiles,
+    contextFiles: [...input.comm ? resources.contextFiles.filter(file => !CLAUDE_MD.test(file.path)) : resources.contextFiles, ...input.agentBrief ? [input.agentBrief] : []],
     selectedTools: tools,
     promptGuidelines: guidelines(input),
     allowRecursion: true,
@@ -319,7 +322,7 @@ function extraParts(input: PrimePromptInput, tools: readonly string[], skills: r
   } catch {
     rules = null;
   }
-  if (rules && !input.skip?.has("rules")) out.push({ key: "rules", text: rules, source: "packages/pi-claude-rules SessionRules.startup (Prime: first user message)" });
+  if (rules && !input.comm && !input.skip?.has("rules")) out.push({ key: "rules", text: rules, source: "packages/pi-claude-rules SessionRules.startup (Prime: first user message)" });
   // Prime's harness digest at a session's first turn: the global store merged with the session's local one, ranked by the turn's input.
   if (!input.skip?.has("harness")) {
     const state = mergedHarnessState(input.agentDir, input.harnessDir);
@@ -329,7 +332,7 @@ function extraParts(input: PrimePromptInput, tools: readonly string[], skills: r
   // The legacy chat's corrections block, which its context hook puts in once per context.
   if (input.skip?.has("corrections")) return out;
   const ledger = readLedger(input.ledgerDir ?? chatDataDir(input.agentDir));
-  const corrections = input.depth === 0 ? ledger && ledgerPrompt(ledger, BRIEF_CORRECTIONS) : jobLedgerPrompt(ledger);
+  const corrections = input.depth === 0 && !input.comm ? ledger && ledgerPrompt(ledger, BRIEF_CORRECTIONS) : jobLedgerPrompt(ledger);
   if (corrections) out.push({ key: "corrections", text: corrections, source: "chat-corrections.ts ledgerPrompt or jobLedgerPrompt (Prime: [corrections] message)" });
   return out;
 }
@@ -373,6 +376,7 @@ export function primePrompt(options: PrimePromptOptions): Extension {
   const builds = new WeakMap<object, Promise<Map<PromptKey, string>>>();
   const parts = async (input: PromptInput, context: Context): Promise<Map<PromptKey, string>> => {
     const depth = input.conversationId === ROOT_CONVERSATION_ID ? 0 : 1;
+    const comm = await commRoot(input, context);
     const cwd = input.agent.cwd ?? (input.env as { cwd?: string } | undefined)?.cwd ?? options.thread?.cwd ?? process.cwd();
     const thread = options.thread;
     const agent = await threadAgent(input.read, context);
@@ -389,8 +393,9 @@ export function primePrompt(options: PrimePromptOptions): Extension {
       ...(query ? { query } : {}),
       ...(brief ? { agentBrief: brief } : {}),
       depth,
+      ...(comm ? { comm } : {}),
       tools: options.tools ?? "prime",
-      skip: new Set([...PINNED_SECTIONS].filter(key => input.shown[key] !== undefined || (key === "harness" && depth === 0))),
+      skip: new Set([...PINNED_SECTIONS].filter(key => (input.shown[key] !== undefined && !(comm && key === "corrections")) || (key === "harness" && depth === 0))),
       ...(options.bundledSkillsDir ? { bundledSkillsDir: options.bundledSkillsDir } : {}),
       ...(options.ledgerDir ? { ledgerDir: options.ledgerDir } : {}),
     });
@@ -407,7 +412,7 @@ export function primePrompt(options: PrimePromptOptions): Extension {
   };
   const render = (key: PromptKey) => async (input: PromptInput, context: Context): Promise<string | undefined> => {
     if (key === "harness" && input.conversationId === ROOT_CONVERSATION_ID) return undefined;
-    if (PINNED_SECTIONS.has(key) && input.shown[key] !== undefined) return input.shown[key];
+    if (PINNED_SECTIONS.has(key) && input.shown[key] !== undefined && !(key === "corrections" && await commRoot(input, context))) return input.shown[key];
     return (await build(input, context)).get(key);
   };
   return defineExtension({
@@ -426,6 +431,18 @@ export function primePrompt(options: PrimePromptOptions): Extension {
     })],
   });
 }
+
+/**
+ * Whether the request is a comm thread's root conversation. A comm thread talks in its room and hands each task to its work thread, with no
+ * tool that edits files (`agent-profile.ts`), so it goes without the parts that guide coding: the claude-rules of its cwd repo and each
+ * CLAUDE.md beside an AGENTS.md. In place of the chat's corrections block it gets the short one a chat's job gets, rebuilt at each request
+ * rather than pinned, so a thread that showed the long one moves to it. On 11-21 those three parts were 72k, 44k and 28k of the 238k
+ * characters of prompt and tools that comm thread 5d50e997 sent with each request.
+ */
+async function commRoot(input: PromptInput, context: Context): Promise<boolean> {
+  return input.conversationId === ROOT_CONVERSATION_ID && (await threadAgent(input.read, context))?.role === "comm";
+}
+const CLAUDE_MD = /(^|\/)CLAUDE\.md$/i;
 
 /** The text of a conversation's first input, a job's task, or undefined when it has none yet. */
 async function firstInput(harness: Harness | undefined, conversationId: ConversationId, context: Context): Promise<string | undefined> {

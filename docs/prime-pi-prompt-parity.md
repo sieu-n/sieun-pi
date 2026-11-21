@@ -281,6 +281,11 @@ A model without that support gets the whole system prompt rebuilt, which is one 
 The builder keeps what it loaded until a file it read changes. It checks about 100 file stamps per request, and a request with pinned sections builds in about 3 ms.
 A thread from before this change keeps its first system message, the old preamble, and gets every new section in one update at its next request.
 
+Each update stays in the history, so a long-lived thread carries every old copy of a changed section; on 11-21 comm thread 5d50e997 held 181k tokens of them in a 303k-token context.
+The first request after the 1 h cache lapsed writes its whole prefix anyway, so `packages/pi-host/src/durable/cache-shape.ts` folds every update before that point into the leading system message, and later requests find the same point from the assistant timestamps and read the cache.
+pi-ai puts the conversation's breakpoint on the last block of the last message, and Anthropic writes no cache on a `tool_addition` or `tool_removal` block, so on 11-21 each of 24 tool updates in comm threads sent the whole history as fresh input; `cache-shape.ts` moves that breakpoint to the block before it.
+A comm thread's root conversation goes without the parts that guide coding, its repo's claude-rules and each CLAUDE.md, and gets a chat job's short corrections block in place of the chat's (`commRoot` in `prime-prompt.ts`).
+
 ## Remaining gaps and decisions
 
 | Gap | Recommendation |
