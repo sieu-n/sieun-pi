@@ -17,13 +17,13 @@ export const SEARCH_MESSAGES_TOOL = "search_messages";
 
 export const SEARCH_MESSAGES_DESCRIPTION =
   "Search sw factory the way the owner's Cmd K search does: posts in channels, Solo rooms and DMs, the replies in their threads, and what " +
-  "agents said or did inside their work threads and jobs, such as a job's message, a command or its output. The total is the exact count " +
-  "for the filters. Use place when you know what kind of place it sits in but not which one: jobs for something an agent said or did " +
-  "inside some job when you don't know which job, tools for a command, file, error or number in a tool call or its output, threads for an " +
-  "answer given as a reply, and channels, dms or solo for a top-level post. Use in when you know the one room or job, from when you know " +
-  "who wrote it, and after or before for dates. Each hit says where it sits, such as reply in thread p85 or tool output bash in job " +
-  "<name>, and ends with its id and link; a post's id works in set_emoji, edit_message and save_message. To read more of a hit, such as a " +
-  "tool's whole output, search again narrowly with full: true. For a Prime chat on :5182 or thinking, use search_history.";
+  "agents and their jobs said or did inside their work, such as a job's report, a command or its output. When the ask is about " +
+  "something a job or an agent did, found or said while working and you don't know which job, search with place: [\"jobs\", \"tools\"]: " +
+  "jobs holds what agents and jobs wrote, and tools holds commands and their output. Use place threads for an answer given as a reply, and " +
+  "channels, dms or solo for a top-level post. Use in when you know the one room or job, from when you know who wrote it, and after or " +
+  "before for dates. The total is the exact count for the filters. Each hit says where it sits, such as reply in thread p85 or tool output " +
+  "bash in job <name>, and ends with its id and link; a post's id works in set_emoji, edit_message and save_message. To read more of a " +
+  "hit, such as a tool's whole output, search again narrowly with full: true. For a Prime chat on :5182 or thinking, use search_history.";
 
 const WHERE = ["root", "thread", "tool"] as const satisfies readonly SearchWhere[];
 
@@ -95,8 +95,8 @@ export function searchTools(app: ChatApp) {
       place: Type.Optional(Type.Union([Type.Array(Type.Union(SEARCH_PLACES.map(p => Type.Literal(p)))), Type.String()], {
         description: "What kind of place, as the owner's Cmd K pills: channels (top-level posts in channels), dms (top-level posts in DMs), " +
           "solo (top-level posts in Solo rooms and the owner's own chats), threads (replies inside a post's thread), jobs (what agents said " +
-          "or did inside their work threads and jobs, other than tool output) and tools (tool calls and their output anywhere). Use jobs " +
-          "when an agent said or did it inside some job you can't name, and add tools when it was a command or its output. An array or a " +
+          "or did inside their work threads and jobs, other than tool output) and tools (tool calls and their output anywhere). Pass " +
+          "[\"jobs\", \"tools\"] when a job or an agent did, found or said it while working and you can't name the job. An array or a " +
           "comma list; several values match any of them, and none searches every place.",
       })),
       in: Type.Optional(Type.String({ description: "Which one room or job: a channel name such as #sw-factory-build, a Solo room's name, an " +

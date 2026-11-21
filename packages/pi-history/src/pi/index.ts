@@ -40,8 +40,8 @@ export function readText(answer: ReadAnswer): string {
 
 const DESCRIPTION = "Search every agent session transcript on every box, Prime chats and jobs as well as sw factory threads: messages, tool calls " +
   "and their output, agent messages and summaries. Newest first by default. Use it for what happened inside a session, such as a command an " +
-  "agent ran, an error it saw or a Prime chat's words; for what people and agents posted in sw factory rooms, DMs and threads, an " +
-  "sw factory agent uses search_messages. Narrow with from (who wrote it), in (which chat, job or thread), place=tools (only tool calls and their " +
+  "agent ran, an error it saw or a Prime chat's words. An sw factory agent uses search_messages first for what people and agents posted in " +
+  "sw factory rooms, DMs and threads and for what its agents' jobs said or did, with place=jobs,tools when it can't name the job. Narrow with from (who wrote it), in (which chat, job or thread), place=tools (only tool calls and their " +
   "output), and after/before (dates). place takes only tools here: a transcript holds no room posts, and its index does not mark which session " +
   "is a job, so to find something said in some job use search_messages with place=jobs, or name the job with in. The query also takes in:, from:, kind:, box:, before:, after:, on:, -word, is:error and \"exact phrase\". " +
   "Pass read=<ref> from a hit to get the messages around it. An agent sees its own chat family unless the owner widened the scope.";
