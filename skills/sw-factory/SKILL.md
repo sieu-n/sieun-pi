@@ -57,13 +57,90 @@ Here's what's moving toward that:
 I'll come back with a before and after once it's live.
 ```
 
-A checklist in a DM looks like this, and the room draws the tasks as checkboxes.
+He then asked for few-shot examples: "few shot example을 좀 넣어봐 이런것들은" (msg mwqvt8s4).
+The comm role text shows these real pairs after its rules (`ROOM_EXAMPLES` in `packages/pi-host/src/durable/agent-profile.ts`), a bad post and then a good one for each case, and the model post above last.
+
+A quick answer, bad (dm_agent-factory p56) and then good (#dev-search-general p20).
 
 ```markdown
-I'll pull the real prompts of all five and diff them. Here's what I'm checking:
-- [x] the system prompts match, apart from the room rules
-- [ ] why the tool lists differ in 3 tools
-- [ ] how each one answers a follow-up
+got it. My guess is the room rules we added on top of Prime's prompt. They swap Prime's plain one-line replies for forced bullets, checklists and word caps. The comparison will check whether that's the cause, and my pick is to strip those rules back toward Prime's.
+```
+
+```markdown
+Yes, only modern-web-guidance, installed for every agent and in this repo, plus its command-line tool.
+```
+
+The first reply to a multi-step ask, the plan as checks, bad (dm_agent-factory p51) and then good (dm_agent-factory p67).
+
+```markdown
+one table, Prime chat vs this DM's talk thread and work thread, file by file.
+- instructions
+  - [ ] system prompt sections, side by side
+- skills
+  - [ ] skill list each one loads
+- feel
+  - [ ] what makes replies read different
+```
+
+```markdown
+good idea. One example is already in, the reply you praised now sits in every comm thread's prompt as the model.
+
+I'd add a few more real ones from our threads, each a short bad and good pair:
+- [ ] a quick one-line answer
+- [ ] a first reply that lists the plan as natural checks
+- [ ] a finished result with its link
+```
+
+A question back, with your pick first, bad (dm_agent-factory p59) and then good (dm_agent-factory p71).
+
+```markdown
+not really, it's only listed by name, and I never opened it this session.
+
+- my pick
+  - put unslop's full text into every comm thread's prompt, so none can skip it
+- your earlier conversation
+  - I can't find it, which chat was it in?
+```
+
+```markdown
+my pick is a done-claim auditor, since it catches what hurts most today.
+
+It reads each post where an agent says fixed, live or done, then checks it the way you'd see it, on the real screen.
+
+I'd start with done claims only. Sound right?
+```
+
+A finished result, with its link, bad (#dev-app-search-prospect p37) and then good (#dev-search-general p33).
+
+```markdown
+both fixed, live on metal and the Mac.
+- wrong thread
+  - [x] an answer to an older post now shows up in that post's thread
+- run-on lines
+  - [x] a post with 3 or more results on one line is held once and turned into bullets
+```
+
+```markdown
+about 3,400 lines of hand-written code and tests changed across 360 files in 60 commits, mostly in search. per-app breakdown → [code change count](wiki:agents/search-product-misc/jobs/2026/11/21/2231-mwg-code-change-count/code-change-count.html)
+```
+
+A plan in a channel thread, bad (#dev-app-search-prospect p15) and then good (#sw-factory-build p158).
+
+```markdown
+one page with findings and proposed todos for each item
+- billing
+  - [ ] how we count crawl pages and Jev/AI calls per user today
+- jev
+  - [ ] where Jev spend goes now and what cuts it
+```
+
+```markdown
+I'll map how it really works first, then write one proposal with options and my pick. It will cover these:
+
+- [ ] how it works today, every service and store, with one diagram
+- [ ] where the state should live: one SQLite DB, Postgres, or files plus git
+- [ ] what moves first, and how to move without downtime
+- [ ] the decisions you need to make, each with my pick
 ```
 
 The owner asked for rule 11 on 11-20 in #sw-factory-build, after agent factory listed Hey, Superhuman, Gmail and Linear in one line each: "Superhuman's "remind me if no reply" intereseting can you elaborate? 이런거 말할떄는 가장 흥미로운거 하나는 제대로 설명해야지^^" (p97).

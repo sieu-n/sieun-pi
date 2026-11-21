@@ -5,7 +5,7 @@
  * child conversation's harness section. A thread with no ref, or a ref of a bad shape, keeps its own store and no brief.
  */
 import { strict as assert } from "node:assert";
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -16,7 +16,7 @@ import { AgentDoc, ROOT_CONVERSATION_ID, type AgentState, type EntryRecord } fro
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { PRIME_BASE_PROMPT } from "@sieun-pi/pi-family/preamble";
 import { CHAT_BRIEF } from "../../../../legacy/prime/user-history/src/chat-brief.ts";
-import { agentHarnessDir, AgentRoleDoc, briefFile, commInstructions, conversationHarnessDir, parseAgentRef, roleFields, SHARED_STYLE_TEXT, workInstructions, type AppliedRole } from "../../src/durable/agent-profile.ts";
+import { agentHarnessDir, AgentRoleDoc, briefFile, commInstructions, conversationHarnessDir, parseAgentRef, roleFields, ROOM_EXAMPLES, SHARED_STYLE_TEXT, workInstructions, type AppliedRole } from "../../src/durable/agent-profile.ts";
 import { threadHarnessDir } from "../../src/durable/prime-harness.ts";
 import { EDIT_MESSAGE_DESCRIPTION } from "../../src/durable/room-tools.ts";
 import { primeModules, primePromptParts, primeResources } from "../../src/durable/prime-prompt.ts";
@@ -171,7 +171,8 @@ test("a room post opens with a plain answer and breaks into lines like the post 
     assert.match(text, /Write each post as the chat brief says, like a coworker types in Slack: the answer first in a plain sentence/);
     assert.doesNotMatch(text, /in the first few words/);
     assert.doesNotMatch(text, /answer both in that one post/, "two posts that each ask their own thing get two answers (blind-reactions run 1, 11-21)");
-    assert.match(text, /Put the answer on its own line and each point on its own line or `- ` bullet below it, never into one paragraph, as in this post he called a model:\n\nyes, all three are running\.\n\nThe way I read your intent/);
+    assert.match(text, /Put the answer on its own line and each point on its own line or `- ` bullet below it, never into one paragraph\./);
+    assert.match(text, /the post he called a model \(dm_agent-factory p63\):\n```\nyes, all three are running\.\n\nThe way I read your intent/);
     assert.match(text, /let the last edit carry the answer\. Post nothing new for progress/);
     assert.match(text, /if its last edit lacks the answer or an item, edit it yourself with `edit_message`/);
     assert.match(text, /Never end a post with a sign-off emoji[\s\S]*Never paste a raw JSON or log line/);
@@ -183,14 +184,27 @@ test("a room post opens with a plain answer and breaks into lines like the post 
 test("a checklist opens with a natural sentence for the place, has no topic labels, and a question carries the agent's pick (owner, dm_agent-factory p54, msg mwqt6ry1)", () => {
   for (const room of ["dm_vent", "ch_1a2b3c4d"]) {
     const text = commInstructions({ agent: "ag_vent", room, work: "w1" });
-    assert.match(text, /your first post opens with a natural sentence on what you will do that fits the place[\s\S]*Here's what I'm checking:\" in a DM or a plain channel post in a channel/);
-    assert.match(text, /lists one `- \[ \]` item per step, each a short plain sentence, never a bare topic word such as `- git`/);
-    assert.match(text, /When you ask him something, lead with your own pick/);
+    assert.match(text, /your first post is the plan: a natural sentence on what you will do, then one `- \[ \]` item per step, never a bare topic word such as `- git`/);
+    assert.match(text, /A question to him leads with your own pick\./);
     assert.match(text, /its first reply is your plan instead, within about a minute \(c224\)/);
     assert.doesNotMatch(text, /topic bullets|topic groups|under their topics|at most 20|about 25 words/);
   }
   assert.doesNotMatch(EDIT_MESSAGE_DESCRIPTION, /topic|at most 20|\b80 words/);
   assert.match(EDIT_MESSAGE_DESCRIPTION, /change `- \[ \]` to `- \[x\]` with a short result[\s\S]*put the answer in the last edit\. You can edit only your own posts/);
+});
+
+test("the role text shows real bad and good posts for each case, and the sw-factory skill shows the same pairs (owner, dm_agent-factory msg mwqvt8s4)", () => {
+  const skill = readFileSync(new URL("../../../../skills/sw-factory/SKILL.md", import.meta.url), "utf8");
+  for (const room of ["dm_vent", "ch_1a2b3c4d"]) {
+    const text = commInstructions({ agent: "ag_vent", room, work: "w1" });
+    for (const pair of ROOM_EXAMPLES) {
+      assert.ok(text.includes(`${pair.case}. Bad (${pair.bad.at}):\n\`\`\`\n${pair.bad.text}\n\`\`\`\nGood (${pair.good.at}):\n\`\`\`\n${pair.good.text}\n\`\`\``), pair.case);
+    }
+  }
+  for (const pair of ROOM_EXAMPLES) {
+    assert.ok(skill.includes(`\`\`\`markdown\n${pair.bad.text}\n\`\`\``) && skill.includes(`\`\`\`markdown\n${pair.good.text}\n\`\`\``), pair.case);
+  }
+  assert.deepEqual(ROOM_EXAMPLES.map(pair => pair.case).length, 5);
 });
 
 test("an answer to an older post names it with reply_to and quotes nothing (owner, #dev-app-search-prospect p33, 11-21)", () => {

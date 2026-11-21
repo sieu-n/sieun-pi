@@ -186,7 +186,7 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
       assert.match(commInstructions({ ...comm, room }), /An answer with one point is one or two short sentences on one line\. Three sentences or three numbers in a row[\s\S]*each point on its own line or `- ` bullet[\s\S]*`- \[ \]` item per step/, room);
       assert.doesNotMatch(commInstructions({ ...comm, room }), /bullet reports/, room);
       assert.match(commInstructions({ ...comm, room }), /on one line\. Three sentences or three numbers in a row[\s\S]*are several results, never one point, so they never share a line/, room);
-      assert.match(commInstructions({ ...comm, room }), /several checks or steps, say the checks first[\s\S]*`- \[ \]` item per step[\s\S]*editing that post with `edit_message`[\s\S]*Post nothing new for progress\./, room);
+      assert.match(commInstructions({ ...comm, room }), /several checks or steps, your first post is the plan[\s\S]*`- \[ \]` item per step[\s\S]*editing that post with `edit_message`[\s\S]*Post nothing new for progress\./, room);
       assert.match(commInstructions({ ...comm, room }), new RegExp(`its first reply is your plan instead, within about a minute \\(c224\\)[\\s\\S]*Post it with tell_owner's \`reply_to\` before you hand the task over[\\s\\S]*edit_message\\("reply:${room}/<his post's \\[message id\\]>"`), room);
     }
     for (const room of ["so_1a2b3c4d", "ch_1a2b3c4d"]) {

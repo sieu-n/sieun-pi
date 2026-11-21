@@ -140,6 +140,47 @@ Here's what's moving toward that:
 I'll come back with a before and after once it's live.`;
 
 /**
+ * Real posts from the rooms as bad and good pairs, which `slackPostStep` shows after its rules (owner, dm_agent-factory msg mwqvt8s4, 11-21:
+ * "few shot example을 좀 넣어봐 이런것들은"). Each pair names its room and post. The bad ones are the shapes he called out: topic labels over
+ * empty boxes (dm_agent-factory p51, his p54), a wall of sentences (p56, his p57 "이런것도 엔터, bullet point 똑바로 쓰고."), a question
+ * under labels with no pick in front, and a result split into topic groups. sw-factory SKILL.md shows the same pairs.
+ */
+export const ROOM_EXAMPLES: readonly { case: string; bad: { at: string; text: string }; good: { at: string; text: string } }[] = [
+  {
+    case: "A quick answer",
+    bad: { at: "dm_agent-factory p56", text: "got it. My guess is the room rules we added on top of Prime's prompt. They swap Prime's plain one-line replies for forced bullets, checklists and word caps. The comparison will check whether that's the cause, and my pick is to strip those rules back toward Prime's." },
+    good: { at: "#dev-search-general p20", text: "Yes, only modern-web-guidance, installed for every agent and in this repo, plus its command-line tool." },
+  },
+  {
+    case: "The first reply to a multi-step ask, the plan as checks",
+    bad: { at: "dm_agent-factory p51", text: "one table, Prime chat vs this DM's talk thread and work thread, file by file.\n- instructions\n  - [ ] system prompt sections, side by side\n- skills\n  - [ ] skill list each one loads\n- feel\n  - [ ] what makes replies read different" },
+    good: { at: "dm_agent-factory p67", text: "good idea. One example is already in, the reply you praised now sits in every comm thread's prompt as the model.\n\nI'd add a few more real ones from our threads, each a short bad and good pair:\n- [ ] a quick one-line answer\n- [ ] a first reply that lists the plan as natural checks\n- [ ] a finished result with its link" },
+  },
+  {
+    case: "A question back, with your pick first",
+    bad: { at: "dm_agent-factory p59", text: "not really, it's only listed by name, and I never opened it this session.\n\n- my pick\n  - put unslop's full text into every comm thread's prompt, so none can skip it\n- your earlier conversation\n  - I can't find it, which chat was it in?" },
+    good: { at: "dm_agent-factory p71", text: "my pick is a done-claim auditor, since it catches what hurts most today.\n\nIt reads each post where an agent says fixed, live or done, then checks it the way you'd see it, on the real screen.\n\nI'd start with done claims only. Sound right?" },
+  },
+  {
+    case: "A finished result, with its link",
+    bad: { at: "#dev-app-search-prospect p37", text: "both fixed, live on metal and the Mac.\n- wrong thread\n  - [x] an answer to an older post now shows up in that post's thread\n- run-on lines\n  - [x] a post with 3 or more results on one line is held once and turned into bullets" },
+    good: { at: "#dev-search-general p33", text: "about 3,400 lines of hand-written code and tests changed across 360 files in 60 commits, mostly in search. per-app breakdown → [code change count](wiki:agents/search-product-misc/jobs/2026/11/21/2231-mwg-code-change-count/code-change-count.html)" },
+  },
+  {
+    case: "A plan in a channel thread",
+    bad: { at: "#dev-app-search-prospect p15", text: "one page with findings and proposed todos for each item\n- billing\n  - [ ] how we count crawl pages and Jev/AI calls per user today\n- jev\n  - [ ] where Jev spend goes now and what cuts it" },
+    good: { at: "#sw-factory-build p158", text: "I'll map how it really works first, then write one proposal with options and my pick. It will cover these:\n\n- [ ] how it works today, every service and store, with one diagram\n- [ ] where the state should live: one SQLite DB, Postgres, or files plus git\n- [ ] what moves first, and how to move without downtime\n- [ ] the decisions you need to make, each with my pick" },
+  },
+];
+
+/** The pairs as the role text shows them, each post in a fence, and the model post last. */
+export function roomExamples(): string {
+  const fence = (text: string) => `\`\`\`\n${text}\n\`\`\``;
+  const pairs = ROOM_EXAMPLES.map(pair => `${pair.case}. Bad (${pair.bad.at}):\n${fence(pair.bad.text)}\nGood (${pair.good.at}):\n${fence(pair.good.text)}`);
+  return [...pairs, `An answer with several points, the post he called a model (dm_agent-factory p63):\n${fence(MODEL_POST)}`].join("\n\n");
+}
+
+/**
  * The step that has a comm thread write like a coworker in Slack. The chat brief it shares with Prime's chats asks for one dry sentence per
  * message and two calls for two points (c97), and rule 5 asks for a table for a comparison. In a room that read as a report: on 11-20 the
  * owner asked Search product, misc. in a #dev-search-general thread for "our definitive catalog", and it posted a 4-column table the thread
@@ -187,20 +228,20 @@ I'll come back with a before and after once it's live.`;
  * into one that answered only the first, so each post that asks its own thing gets its own answer with reply_to.
  */
 function slackPostStep(): string {
-  return "Write each post as the chat brief says, like a coworker types in Slack: the answer first in a plain sentence, as a Prime chat reply opens, with the why when it helps. " +
+  return "Write each post as the chat brief says, like a coworker types in Slack: the answer first in a plain sentence, with the why when it helps. " +
     "One answer is one post. When two of his posts wait for you and each asks its own thing, answer each with its own tell_owner call whose `reply_to` is that post, so in a channel each answer lands in its own thread. " +
     "Merge them into one post only when the second adds to or corrects the first. An answer with one point is one or two short sentences on one line. " +
     "Three sentences or three numbers in a row, such as a monthly cost, the cost per brand and a plan's price, are several results, never one point, so they never share a line. " +
-    `Put the answer on its own line and each point on its own line or \`- \` bullet below it, never into one paragraph, as in this post he called a model:\n\n${MODEL_POST}\n\n` +
-    "When an ask takes several checks or steps, say the checks first: your first post opens with a natural sentence on what you will do that fits the place, such as \"I'll pull the real prompts of all five and diff them. Here's what I'm checking:\" in a DM or a plain channel post in a channel, " +
-    "then lists one `- [ ]` item per step, each a short plain sentence, never a bare topic word such as `- git`. " +
+    "Put the answer on its own line and each point on its own line or `- ` bullet below it, never into one paragraph. " +
+    "When an ask takes several checks or steps, your first post is the plan: a natural sentence on what you will do, then one `- [ ]` item per step, never a bare topic word such as `- git`. " +
     "Tick each item to `- [x]` with a short result by editing that post with `edit_message` as it finishes, and let the last edit carry the answer. Post nothing new for progress. " +
-    "When you ask him something, lead with your own pick, as in \"I'd diff the live prompts, unless you want last week's too?\". " +
-    "No labels, bold, headings or tables unless he asks. Put the detail on a wiki page with `wiki.write` in ipython and link it in the same post, as `full list → [skill catalog](wiki:<path>)`. " +
+    "A question to him leads with your own pick. " +
+    "No labels, bold, headings or tables unless he asks. Put the detail on a wiki page with `wiki.write` in ipython and link it in the same post. " +
     "Never end a post with a sign-off emoji such as 👍, 🎉 or ✅, and end on the words. Never paste a raw JSON or log line into a post; say in words what it shows, or link the file as `path:line`. " +
     "When you list options, such as products, tools or what other apps do, pick the most interesting one and explain it properly: how it works, a concrete example of it in use, and how it would fit our product or the work at hand. Name the others in a few words each. " +
-    "When you answer an older post of his while a newer one sits below it, set tell_owner's `reply_to` to that older post's [message id], so the answer goes in its thread, and quote nothing from it, since a quoted line in the thread of his newer post still reads as an answer to that newer post. " +
-    "This replaces rule 5's table for a comparison, because a room reads like Slack, not like a chat.";
+    "When you answer an older post of his while a newer one sits below it, set tell_owner's `reply_to` to that older post's [message id] and quote nothing from it. " +
+    "This replaces rule 5's table for a comparison, because a room reads like Slack, not like a chat. " +
+    `Real posts from our rooms show the rules, a bad one and then a good one for each case:\n\n${roomExamples()}`;
 }
 
 /** The agent that owns sw factory itself, apps/chat and pi-host, which the other agents bring the owner's feedback on it. */
