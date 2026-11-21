@@ -58,9 +58,8 @@ Every page, curated or workspace, is in the 메르 style: numbered short lines i
 A subagent writes every page, one page per subagent, and the parent reviews it.
 Before you write a page, read `references/writing.md` and the format section of `references/page-authoring.md`.
 A plan, spec, design or status page also follows the "Plan, spec and status pages" section of `references/writing.md`.
-The page API refuses a write that adds errors from `node apps/wiki/scripts/prose-lint.mjs <page>`, run from the sieun-pi checkout.
-The writing standard is `skills/wiki/references/writing.md` in sieun-pi, linked at `~/.prime/agent/skills/wiki/references/writing.md`, and a 422 from the prose lint names it.
-The lint reads HTML only, so a markdown draft prints `skipped` and checks nothing; lint the HTML file, or fix the findings that the 422 of the write lists.
+The page API refuses a write that adds errors from `node apps/wiki/scripts/prose-lint.mjs <page>`, run from the sieun-pi checkout, and its 422 names `references/writing.md`.
+The lint reads HTML only, so a markdown draft prints `skipped` and checks nothing.
 
 ## The rules
 
