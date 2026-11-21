@@ -21,7 +21,7 @@ import { CwdRefused } from "./projects.ts";
 import { listValues, SearchFilterError } from "./search.ts";
 import { isHostAway } from "./host/types.ts";
 import { readJson } from "./store.ts";
-import { usageReport, hostsReport } from "./usage.ts";
+import { usageLive, usageReport, hostsReport } from "./usage.ts";
 import { Skills } from "./skills.ts";
 import { consolesReport } from "./consoles.ts";
 import { decideBody, ReviewRefused, SkillsReview, undoBody } from "./skills-review.ts";
@@ -404,6 +404,7 @@ export function routes(app: App): Route[] {
     route("GET", "/api/for-you", async () => ({ items: await app.boards.forYou() })),
     route("GET", "/api/boards", async () => app.boards.index()),
     route("GET", "/api/usage", async (_r, _p, q) => usageReport(app.usage, app.threads, app.config.box, { range: str(q.get("range")), bucket: str(q.get("bucket")), thread: str(q.get("thread")), host: str(q.get("host")) })),
+    route("GET", "/api/usage/live", async (_r, _p, q) => usageLive(app.usage, app.config.box, { thread: str(q.get("thread")), host: str(q.get("host")) })),
     ...accountRoutes(app, route),
     route("GET", "/api/hosts", async () => hostsReport(app.host, app.threads, app.config.box, app.config.socket, app.config.hostsFile)),
     route("GET", "/api/consoles", async () => consolesReport(app.config.consoles)),
@@ -442,9 +443,12 @@ export function serve(app: App): Server {
   const table = routes(app);
   const requests = new RequestLog(join(app.config.dataDir, "requests"), app.log);
   const stalls = new LoopStalls();
+  const calls = new Set<ServerResponse>();
   const server = createServer((req, res) => {
     const path = (req.url ?? "/").split("?")[0]!;
     const method = req.method ?? "GET";
+    calls.add(res);
+    res.once("close", () => calls.delete(res));
     if (path === "/api/timings" && method === "POST") return void takeTimings(table, requests, app.log, req, res);
     if (path.startsWith("/api/")) {
       const started = performance.now();
@@ -457,6 +461,7 @@ export function serve(app: App): Server {
     }
     void handle(app, table, req, res);
   });
+  inFlight.set(server, calls);
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url ?? "/", "http://x");
     if (url.pathname !== "/api/live") {
@@ -466,6 +471,28 @@ export function serve(app: App): Server {
     app.wss.handleUpgrade(req, socket, head, ws => app.wss.emit("connection", ws, req));
   });
   return server;
+}
+
+/** Each server's calls in flight, which `drain` waits for. */
+const inFlight = new WeakMap<Server, Set<ServerResponse>>();
+
+/**
+ * Stops taking calls and resolves once the calls in flight have answered, or after `maxMs` with the rest cut. A release restart used to end
+ * the process mid-call, so a send or a change in flight failed with "Load failed" in the owner's browser. 99.9% of the 128,600 server lines of
+ * 11-21 and 11-22 answered within 1.5 s, so the default waits 2 s; the longest took 10.8 s, and the port stays closed while it waits. The live
+ * sockets stay open meanwhile and end with the process.
+ */
+export async function drain(server: Server, maxMs = 2000): Promise<void> {
+  server.close();
+  server.closeIdleConnections();
+  const calls = inFlight.get(server) ?? new Set<ServerResponse>();
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<void>(resolve => { timer = setTimeout(resolve, maxMs); });
+  const answered = (async () => {
+    while (calls.size) await Promise.all([...calls].map(res => new Promise(resolve => res.once("close", resolve))));
+  })();
+  await Promise.race([answered, late]);
+  clearTimeout(timer);
 }
 
 const viaOf = (req: IncomingMessage): ClientVia => (req.headers["tailscale-user-login"] ? "tailnet" : "local");

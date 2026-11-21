@@ -14,7 +14,7 @@ import { PiHost } from "./host/pi-host.ts";
 import { RelayHost } from "./host/relay-host.ts";
 import type { Host } from "./host/types.ts";
 import { projectList } from "./projects.ts";
-import { serve } from "./http.ts";
+import { drain, serve } from "./http.ts";
 import { seedFixture } from "./fixture/seed.ts";
 
 const config = readConfig();
@@ -47,10 +47,11 @@ if (config.fixture) void app.searchEngine.start().catch(() => undefined);
 const server = serve(app);
 server.listen(config.port, config.listen, () => log(`apps/chat on http://${config.listen}:${config.port} (${config.fixture ? "fixture" : `pi-host ${config.socket}`}, data ${config.dataDir})`));
 
-const shutdown = async () => {
-  server.close();
+let stopping: Promise<void> | undefined;
+const shutdown = () => (stopping ??= (async () => {
+  await drain(server);
   await app.stop().catch(() => undefined);
   process.exit(0);
-};
+})());
 process.on("SIGTERM", () => void shutdown());
 process.on("SIGINT", () => void shutdown());
