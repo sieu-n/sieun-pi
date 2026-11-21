@@ -15,11 +15,11 @@
  */
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { AgentDoc, defineDoc, ROOT_CONVERSATION_ID, type AgentState, type ConversationId, type DocumentReader, type Tx } from "@earendil-works/pi-durable";
-import { readFileSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { threadHarnessDir } from "./prime-harness.ts";
 import { ChatDoc } from "./registry.ts";
-import { getLocalHarnessStateDir } from "./vendor/prime-harness.ts";
+import { getHarnessStatePath, getLocalHarnessStateDir } from "./vendor/prime-harness.ts";
 
 /**
  * An `agent.ref` value: the agent's id, its folder on this box, and what the thread is to it. `work` is the agent's work thread, with `comm`
@@ -384,6 +384,18 @@ export const agentName = (ref: Pick<AgentRef, "agent">): string => ref.agent.rep
 
 /** The agent's Prime harness store, `<agent folder>/harness`. */
 export const agentHarnessDir = (ref: AgentRef): string => getLocalHarnessStateDir(ref.dir)!;
+
+/**
+ * A test agent's global store for its kernel's `RLM_GLOBAL_HARNESS_STATE_DIR`: a copy of the real one in the agent's folder, made again at each
+ * kernel start, so `rlm.harness` reads every global entry and a `global_=True` write stays in the folder that goes with the agent. On 11-21 a
+ * test agent told to keep a rule "for every agent" wrote a global prompt note straight from its kernel.
+ */
+export function testGlobalHarnessDir(ref: AgentRef, globalDir: string): string {
+  const dir = join(ref.dir, "harness-global");
+  mkdirSync(dir, { recursive: true });
+  if (existsSync(getHarnessStatePath(globalDir))) copyFileSync(getHarnessStatePath(globalDir), getHarnessStatePath(dir));
+  return dir;
+}
 
 /**
  * A conversation's local harness store: the agent's for a thread with a ref, else the thread's own, by Prime's rule for a session

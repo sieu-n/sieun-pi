@@ -110,6 +110,26 @@ test("the kernel's RLM_HARNESS_STATE_DIR is the agent's store in an agent's thre
   assert.equal(await where("plain"), join(dir, "session-artifacts", "plain", "harness"));
 });
 
+test("a test agent's kernel points global_=True at a copy of the global store in its own folder", async () => {
+  const globalDir = join(dir, "agent", "harness");
+  mkdirSync(globalDir, { recursive: true });
+  writeFileSync(join(globalDir, "harness_state.json"), JSON.stringify({ schema: 1, entries: { prompt: { shared: { id: "shared" } }, memory: {}, skill: {}, subagent: {} }, refinements: [] }));
+  const before = readFileSync(join(globalDir, "harness_state.json"), "utf8");
+  const folder = join(dir, "agents", "walk");
+  const code = "from rlm.harness import get_harness_state\nprint(get_harness_state(global_=True).file_path)";
+  const { harness, root } = await openThread(join(dir, "threads", "test-agent.sqlite"), "test-agent", rlm, ({ messages }) => {
+    if (lastText(messages) === "where") return cell(code);
+    return say("done");
+  }, dir);
+  await harness.commit(async tx => { (await tx.doc(ChatDoc, ROOT_CONVERSATION_ID, "agent.ref", null)).value = { agent: "ag_walk", dir: folder, role: "work", test: true } as never; }, context);
+  await (await root.submit({ type: "input", content: "where" }, context)).wait(context);
+  const out = results(await entriesOf(harness));
+  await harness.close(context);
+  await rlm.closeThread("test-agent", "idle");
+  assert.equal(out[0]?.text.trim(), join(folder, "harness-global", "harness_state.json"));
+  assert.equal(readFileSync(join(folder, "harness-global", "harness_state.json"), "utf8"), before, "the copy holds every global entry to read");
+});
+
 test("a thread whose cwd changed moves its live kernel there before the next cell", async () => {
   const moved = join(dir, "moved-project");
   mkdirSync(moved, { recursive: true });

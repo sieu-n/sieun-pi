@@ -52,6 +52,6 @@ A global prompt note is never the place for a general standard, because a note r
 ## How refine routes a general standard
 
 In a pi-host thread, the refine planner returns a general standard as a `skillRoutes` item with its target file instead of a memory or a prompt note. pi-host then hands the thread's root a `[skill-route]` input, also for an auto-refine and for a job's refine, and that thread makes the edit as above.
-A walk's test agent (`POST /api/agents {test: true}`) gets no route, and its refine writes only its own store, because on 11-21 a blind run's test agent took a route and pushed d87524e0, a config/AGENTS.md change for every agent.
+A walk's test agent (`POST /api/agents {test: true}`) gets no route, its refine writes only its own store, and its kernel's `global_=True` writes land in a copy of the global store in its folder, because on 11-21 a blind run's test agent took a route and pushed d87524e0, a config/AGENTS.md change for every agent.
 
 Prime's own `refine.run` is upstream. Its planner cannot edit a file or return a route, so in a Prime chat make the skill edit yourself in the turn that taught it, and call `refine.run` only for a fact or a local decision.

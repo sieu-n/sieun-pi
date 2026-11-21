@@ -47,7 +47,8 @@ import piRlm, { baseEnv, BUSY_NO_UI, formatCell, KERNEL_RESET, noticeMessage, re
 import type { Leftovers, LeftoverSource } from "../../../../legacy/prime/user-history/src/job-leftovers.ts";
 import { withKernelGuard } from "../../../sieun-rules/src/kernel-guard.ts";
 import { enabled } from "../../../sieun-rules/src/log.ts";
-import { agentName, conversationHarnessDir, dropAgentRole, harnessSessionOf, threadAgent } from "./agent-profile.ts";
+import { agentName, conversationHarnessDir, dropAgentRole, harnessSessionOf, testGlobalHarnessDir, threadAgent } from "./agent-profile.ts";
+import { getGlobalHarnessStateDir } from "./vendor/prime-harness.ts";
 import { CHAT_URL_ENV, ChatApp, DEFAULT_CHAT_URL } from "./chat-app.ts";
 import { agentIdOf, artifactDirOf, childWakes, childWork, DeliverTask, RlmChildDoc, sessionOf, textOfMessage, type RlmChild } from "./children.ts";
 import { childTitle } from "./job-title.ts";
@@ -351,12 +352,14 @@ export class DurableRlm {
     }
     const sep = process.platform === "win32" ? ";" : ":";
     const env = baseEnv();
+    const agent = await threadAgent(slot.thread.harness(), context);
     Object.assign(env, {
       PYTHONPATH: [RUNTIME_SRC, ...skills.map(s => s.src), env.PYTHONPATH].filter(Boolean).join(sep),
       PYTHONUNBUFFERED: "1",
       ...ownerTag(slot.thread.id, [binDir, env.PATH].filter(Boolean).join(sep), sep),
       RLM_SESSION_DIR: slot.artifactDir,
-      RLM_HARNESS_STATE_DIR: conversationHarnessDir(slot.thread, slot.conversation, await threadAgent(slot.thread.harness(), context)),
+      RLM_HARNESS_STATE_DIR: conversationHarnessDir(slot.thread, slot.conversation, agent),
+      ...(agent?.test ? { RLM_GLOBAL_HARNESS_STATE_DIR: testGlobalHarnessDir(agent, getGlobalHarnessStateDir(this.options.agentDir)) } : {}),
       RLM_DEPTH: String(depth),
       RLM_MAX_DEPTH: String(this.maxDepth),
       PI_CODING_AGENT_DIR: this.options.agentDir,
