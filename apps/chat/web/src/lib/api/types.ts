@@ -616,6 +616,8 @@ export interface ForYouItem { chatId: string; chatName: string; todo: OwnerTodo;
 export interface BoardRow {
   chatId: string; chatName: string; rev: number; progress: { done: number; total: number }; openAsks: number; needsGo: number;
   checkIn?: { nextAt: Ms | null; paused: boolean }; duties: { id: string; name: string; nextAt: Ms | null; lastVerdict: string | null }[];
+  /** The owner hid it from All boards and the Board sidebar. */
+  hidden?: true;
 }
 /**
  * A change to a board's duties. `set` takes a whole duty definition, Prime's duty JSON, and adds it or updates the duty with the same name;
@@ -626,7 +628,8 @@ export type DutyAction =
   | { action: "schedule"; duty: string; schedule: DutySchedule }
   | { action: "goal"; duty: string; goal: string }
   | { action: "set"; duty: unknown };
-export interface CheckInPatch { everyMs?: number; pause?: CheckInPause | null }
+/** `pause` is a preset, or `{ until }` for the owner's own date and time, which must be ahead of now. */
+export interface CheckInPatch { everyMs?: number; pause?: CheckInPause | { until: Ms } | null }
 
 export interface UsageRow {
   thread: string; threadName: string; host: string; model: string; turns: number;

@@ -366,7 +366,20 @@ export function routes(app: App): Route[] {
         });
       }),
       route("GET", `/api/${scope}/:id/check-in`, async (_r, p) => app.boards.checkIn(p.id!)),
-      route("POST", `/api/${scope}/:id/check-in`, async (_r, p, _q, body) => app.boards.setCheckIn(p.id!, (await body()) as never)),
+      route("POST", `/api/${scope}/:id/check-in`, async (_r, p, _q, body) => {
+        const patch = (await body()) as never;
+        try {
+          return app.boards.setCheckIn(p.id!, patch);
+        } catch (error) {
+          throw new BadRequest(error instanceof Error ? error.message : String(error));
+        }
+      }),
+      route("POST", `/api/${scope}/:id/board/hidden`, async (_r, p, _q, body) => {
+        const input = (await body()) as { hidden?: unknown } | null;
+        if (typeof input?.hidden !== "boolean") throw new BadRequest("A board hide body is { hidden: true } or { hidden: false }.");
+        if (!app.boards.has(p.id!)) throw new NotFound(`No agent or thread ${p.id}.`);
+        return app.boards.setHidden(p.id!, input.hidden);
+      }),
     ]),
     route("GET", "/api/threads/:id/wakes", async (_r, p, q) => {
       const conversation = Number(q.get("conversation") ?? 1);

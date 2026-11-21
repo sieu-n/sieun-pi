@@ -53,7 +53,8 @@ export const CHECK_IN_TEXT = "[check-in] Read your board and your jobs, move eac
 const BOARD_TTL_MS = 15_000;
 
 interface CheckInState { everyMs: number; pausedUntil: number | "forever" | null; lastAt: number | null }
-export interface DutyFile { duties: Duty[]; runs: Record<string, DutyRunRecord[]>; checkIn?: CheckInState }
+/** `hidden` is when the owner hid the board from All boards and the Board sidebar; it still opens by its link. */
+export interface DutyFile { duties: Duty[]; runs: Record<string, DutyRunRecord[]>; checkIn?: CheckInState; hidden?: number }
 
 export interface BoardEvents {
   board(chatId: string, board: ChatBoard, awaitingGo: string[]): void;
@@ -292,7 +293,8 @@ export class Boards {
 
   async index(): Promise<BoardRow[]> {
     const rows: BoardRow[] = [];
-    const chats = this.chats();
+    // A walk's test agent stays out of All boards and the Board sidebar, as it stays out of For you.
+    const chats = this.chats().filter(chat => !this.agents.store.isTest(chat));
     const boards = await Promise.all(chats.map(chat => this.known(chat)));
     for (const [i, chat] of chats.entries()) {
       const board = boards[i];
@@ -310,9 +312,22 @@ export class Boards {
         openAsks: board.todos.filter(t => !t.done).length, needsGo: awaitingGo(board).length,
         checkIn: { nextAt: checkIn.nextAt, paused: checkIn.paused },
         duties: this.duties(chat).map(d => ({ id: d.duty.id, name: d.duty.name, nextAt: d.nextAt, lastVerdict: d.last?.verdict ?? null })),
+        ...(this.file(chat).hidden ? { hidden: true } : {}),
       });
     }
     return rows;
+  }
+
+  /** Hides a board from All boards and the Board sidebar, or shows it again; open boards read the change from the board event. */
+  async setHidden(id: string, hidden: boolean): Promise<{ hidden: boolean }> {
+    const chat = this.chatId(id);
+    const file = this.file(chat);
+    if (hidden) file.hidden = Date.now();
+    else delete file.hidden;
+    this.save(chat, file);
+    const board = await this.known(chat);
+    if (board) this.events.board(chat, board, awaitingGo(board));
+    return { hidden };
   }
 
   /**
@@ -653,7 +668,9 @@ export class Boards {
       if (patch.pause === null) state.pausedUntil = null;
       else if (patch.pause === "forever") state.pausedUntil = "forever";
       else if (patch.pause === "1h") state.pausedUntil = now + 3600_000;
-      else state.pausedUntil = nextRun({ kind: "daily", at: "09:00" }, now);
+      else if (patch.pause === "tomorrow") state.pausedUntil = nextRun({ kind: "daily", at: "09:00" }, now);
+      else if (typeof patch.pause === "object" && Number.isFinite(patch.pause.until) && patch.pause.until > now) state.pausedUntil = Math.round(patch.pause.until);
+      else throw new Error('pause is "1h", "tomorrow", "forever", { until: <ms ahead of now> } or null.');
     }
     file.checkIn = state;
     this.save(chat, file);

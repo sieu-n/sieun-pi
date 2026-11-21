@@ -1,12 +1,19 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
-  import { Avatar, Badge, Button, EmptyState, Icon, IdChip, LoadingText, Meter, PanelHeader, timeLabel } from "$lib/ui";
-  import { boards } from "./boards.svelte";
+  import { Avatar, Badge, Button, EmptyState, Icon, IconButton, IdChip, LoadingText, Menu, Meter, PanelHeader, timeLabel, type MenuEntry } from "$lib/ui";
+  import { boardMenu, boards } from "./boards.svelte";
   import { boardHref, forYouHref } from "./chips";
   import { WHEN_LABEL, whenGroup, type When } from "./schedule";
 
   boards.start();
   const rows = $derived(boards.rows);
+  let showHidden = $state(false);
+  const hiddenCount = $derived((rows ?? []).filter(row => row.hidden).length);
+  const plans = $derived((rows ?? []).filter(row => showHidden || !row.hidden));
+  let menu = $state<{ id: string; anchor: HTMLElement | { x: number; y: number }; items: MenuEntry[] } | null>(null);
+  const viewMenu = $derived<MenuEntry[]>([
+    { type: "checkbox", id: "show-hidden", label: "Show hidden boards", detail: hiddenCount ? String(hiddenCount) : undefined, checked: showHidden, disabled: !hiddenCount && !showHidden, keepOpen: false, onselect: checked => { showHidden = checked; } },
+  ]);
   const error = $derived(boards.error);
   let now = $state(Date.now());
   const clock = setInterval(() => { now = Date.now(); }, 30_000);
@@ -37,6 +44,8 @@
   <PanelHeader title="All boards" icon="board" level={1} divider>
     {#snippet actions()}
       <Button size="sm" variant="ghost" icon="inbox" href={forYouHref()}>For you{totals.asks ? ` ${totals.asks}` : ""}</Button>
+      <IconButton icon="more" label="Board list options" size="sm" aria-haspopup="menu" aria-expanded={menu?.id === "view"}
+        onclick={(e: MouseEvent) => { menu = { id: "view", anchor: e.currentTarget as HTMLElement, items: viewMenu }; }} />
     {/snippet}
   </PanelHeader>
   <div class="scroll">
@@ -49,14 +58,21 @@
         <EmptyState icon="board" title="No boards yet" description="A chat's plan, its asks for you, its duties and its check-in show here once it writes them." />
       {:else}
         <section class="group" aria-label="Plans">
-          <h2 class="heading t-label">Plans <span class="count">{rows.length}</span></h2>
+          <h2 class="heading t-label">Plans <span class="count">{plans.length}</span></h2>
+          {#if !plans.length}
+            <EmptyState icon="eye-off" title="Every board is hidden" description="Hidden boards still open from their links and still send their asks to For you." size="sm">
+              {#snippet action()}<Button size="sm" onclick={() => { showHidden = true; }}>Show hidden boards</Button>{/snippet}
+            </EmptyState>
+          {/if}
           <ul class="list">
-            {#each rows as row (row.chatId)}
-              <li class="row">
-                <a class="plan" href={boardHref(row.chatId)} data-chat={row.chatId}>
+            {#each plans as row (row.chatId)}
+              <li class="row plan-row" class:hidden-board={row.hidden} class:menu-open={menu?.id === row.chatId}>
+                <a class="plan" href={boardHref(row.chatId)} data-chat={row.chatId}
+                  oncontextmenu={(e) => { e.preventDefault(); menu = { id: row.chatId, anchor: { x: e.clientX, y: e.clientY }, items: boardMenu(row) }; }}>
                   <Avatar name={row.chatName} kind="agent" seed={row.chatId} size={28} />
                   <span class="plan-main">
                     <span class="name t-body-sm">{row.chatName}</span>
+                    {#if row.hidden}<Badge value="Hidden" tone="outline" />{/if}
                     {#if row.openAsks || row.needsGo}
                       <span class="badges">
                         {#if row.openAsks}<Badge value={`${row.openAsks} for you`} tone="accent" />{/if}
@@ -66,6 +82,10 @@
                   </span>
                   <span class="meter"><Meter percent={row.progress.total ? (100 * row.progress.done) / row.progress.total : 0} compact warn={101} danger={101} label="{row.progress.done} of {row.progress.total} done" /></span>
                 </a>
+                <span class="more">
+                  <IconButton icon="more" label="{row.chatName} options" size="xs" aria-haspopup="menu" aria-expanded={menu?.id === row.chatId}
+                    onclick={(e: MouseEvent) => { menu = { id: row.chatId, anchor: e.currentTarget as HTMLElement, items: boardMenu(row) }; }} />
+                </span>
               </li>
             {/each}
           </ul>
@@ -97,6 +117,8 @@
   </div>
 </div>
 
+<Menu open={menu !== null} anchor={menu?.anchor} items={menu?.items ?? []} label={menu?.id === "view" ? "Board list options" : "Board actions"} onclose={() => (menu = null)} />
+
 <style>
   .page { display: flex; flex-direction: column; height: 100%; min-height: 0; }
   .scroll { flex: 1; min-height: 0; overflow-y: auto; }
@@ -109,6 +131,11 @@
   .list { list-style: none; margin: 0; padding: 0; }
   .row { border-bottom: 1px solid var(--border-standard); }
   .row:last-child { border-bottom: 0; }
+  .plan-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-1); }
+  .more { display: inline-flex; opacity: 0; }
+  .plan-row:hover .more, .plan-row:focus-within .more, .plan-row.menu-open .more { opacity: 1; }
+  @media (hover: none) { .more { opacity: 1; } }
+  .hidden-board .plan { opacity: 0.6; }
   .plan { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-1); color: inherit; text-decoration: none; border-radius: var(--radius-row); }
   .plan:hover, .due-main:hover .due-name { color: var(--text-standard); }
   .plan:hover { background: var(--surface-inset); }

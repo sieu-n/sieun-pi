@@ -524,6 +524,8 @@ export const api = {
   /** `result` says what a set or remove did, such as "added d3", "updated d1", "unchanged d1" or "removed d2". */
   dutyAction: (chat: string, action: DutyAction) => call<{ duties: DutyRow[]; result?: string }>("POST", `${boardBase(chat)}/duties`, action),
   setCheckIn: (chat: string, patch: CheckInPatch) => call<CheckInView>("POST", `${boardBase(chat)}/check-in`, patch),
+  /** Hides a board from All boards and the Board sidebar, or shows it again. */
+  setBoardHidden: (chat: string, hidden: boolean) => call<{ hidden: boolean }>("POST", `${boardBase(chat)}/board/hidden`, { hidden }),
   forYou: (signal?: AbortSignal) => call<{ items: ForYouItem[] }>("GET", "/api/for-you", undefined, signal),
   /** Marks one item, `<room id>/<post id>`, completed or pending again; the same mark twice changes nothing. */
   markForMe: (agent: AgentId, messageId: string, completed: boolean) =>

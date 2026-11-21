@@ -72,6 +72,18 @@ export function dutiesCount(duties: readonly { last: { verdict: string } | null 
 
 export type CheckInPause = "1h" | "tomorrow" | "forever";
 
+/** The units the check-in's Custom interval dialog takes. */
+export const INTERVAL_UNITS = { minutes: MINUTE, hours: 60 * MINUTE, days: DAY } as const;
+export type IntervalUnit = keyof typeof INTERVAL_UNITS;
+
+/** An interval as the Custom dialog shows it: the largest unit that divides it whole, so 90 min stays minutes and 48 h reads 2 days. */
+export function intervalParts(everyMs: number): { amount: number; unit: IntervalUnit } {
+  const minutes = Math.max(1, Math.round(everyMs / MINUTE));
+  if (minutes % (24 * 60) === 0) return { amount: minutes / (24 * 60), unit: "days" };
+  if (minutes % 60 === 0) return { amount: minutes / 60, unit: "hours" };
+  return { amount: minutes, unit: "minutes" };
+}
+
 export interface CheckInState {
   everyMs: number;
   planEveryMs?: number;
@@ -82,14 +94,15 @@ export interface CheckInState {
 
 /** The intervals the check-in menu offers: today's presets, plus the chat's own interval when it is not one of them. */
 export function checkInChoices(presets: readonly number[], everyMs: number): number[] {
-  const all = new Set([...presets.map(minutes => minutes * MINUTE), 120 * MINUTE, everyMs]);
+  const all = new Set([...presets.map(minutes => minutes * MINUTE), 120 * MINUTE, DAY, everyMs]);
   return [...all].sort((left, right) => left - right);
 }
 
-/** "5m", "2h" or "daily". */
+/** "5m", "2h", "daily" or "3d". */
 export function everyLabel(everyMs: number): string {
   const minutes = Math.round(everyMs / MINUTE);
   if (minutes === 24 * 60) return "daily";
+  if (minutes % (24 * 60) === 0) return `${minutes / (24 * 60)}d`;
   return minutes % 60 === 0 ? `${minutes / 60}h` : `${minutes}m`;
 }
 
@@ -103,10 +116,17 @@ export function checkInStatus(state: CheckInState | null, now: number): { text: 
   if (pause === null) {
     const every = state.planEveryMs !== undefined
       ? `daily while the plan has no open step, then every ${Math.round(state.planEveryMs / MINUTE)} min`
-      : `every ${Math.round(state.everyMs / MINUTE)} min`;
+      : everyWords(state.everyMs);
     return { text: `Check-in ${every}, one check-in job each`, on: true };
   }
-  return { text: pause === "forever" ? "Check-in paused until you resume it" : `Check-in paused until ${clockTime(pause)}`, on: false };
+  return { text: pause === "forever" ? "Check-in paused until you resume it" : `Check-in paused until ${whenLabel(pause, now)}`, on: false };
+}
+
+/** "every 120 min", "daily" or "every 3 days". */
+function everyWords(everyMs: number): string {
+  const { amount, unit } = intervalParts(everyMs);
+  if (unit !== "days") return `every ${Math.round(everyMs / MINUTE)} min`;
+  return amount === 1 ? "daily" : `every ${amount} days`;
 }
 
 /** The control's short value: "Check-in 2h", "Paused" or "Paused 45m". */
@@ -115,7 +135,7 @@ export function checkInButton(state: CheckInState, now: number): string {
   if (pause === null) return `Check-in ${everyLabel(state.everyMs)}`;
   if (pause === "forever") return "Paused";
   const minutes = Math.max(1, Math.ceil((pause - now) / MINUTE));
-  return `Paused ${minutes < 60 ? `${minutes}m` : `${Math.ceil(minutes / 60)}h`}`;
+  return `Paused ${minutes < 60 ? `${minutes}m` : minutes < 24 * 60 ? `${Math.ceil(minutes / 60)}h` : `${Math.ceil(minutes / (24 * 60))}d`}`;
 }
 
 export type When = "overdue" | "today" | "upcoming";

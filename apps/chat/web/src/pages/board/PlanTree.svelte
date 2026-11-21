@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onDestroy, tick, untrack } from "svelte";
   import { agents as agentList, api, requestId, type BoardOp, type ChatAgent, type PlanItem } from "$lib/api";
-  import { Badge, Button, Chip, Dialog, IconButton, IdChip, Icon, Input, Menu, TextArea, toast, type MenuEntry } from "$lib/ui";
+  import { Badge, Button, Chip, Dialog, EmptyState, IconButton, IdChip, Icon, Input, Menu, TextArea, toast, type MenuEntry } from "$lib/ui";
   import PlanMark from "./PlanMark.svelte";
   import { router } from "$lib/router.svelte";
   import { boardHref } from "./chips";
+  import { NO_FILTER, filterActive, filterPlan, menuCount, pathIds, planOwners, type PlanFilter } from "./plan-filter";
   import {
     STATUS_LABEL, finishedSteps, firstSentence, isFinished, ownerName, parentIds, pathTo, planGroups, stepProgress, treeRows, waitWords,
     type Row, type Step,
@@ -41,8 +42,21 @@
   let flash = $state<string | null>(null);
   let root = $state<HTMLElement>();
 
-  const view = $derived({ open: (id: string) => openIds.has(id), showDone: (parent: string) => shownDone.has(parent) });
-  const shownSteps = $derived(steps.filter(step => !deleting.has(step.id)));
+  /** The Find field and the Filter menu, as Slack Lists has them: the plan shows only matching steps and the path above each. */
+  let filter = $state<PlanFilter>(NO_FILTER);
+  let finding = $state(false);
+  let filterMenuOpen = $state(false);
+  let filterAnchor = $state<HTMLElement>();
+  const ownerOf = (step: Step): string | null => agentOf(step)?.name ?? ownerName(step);
+  const filtering = $derived(filterActive(filter));
+  const cut = $derived(filtering ? filterPlan(steps, filter, { awaitingGo, ownerOf }) : null);
+  const cutOpen = $derived(new Set(cut ? pathIds(cut.plan) : []));
+  const isOpen = (id: string): boolean => (cut ? cutOpen.has(id) : openIds.has(id));
+  const clearFilter = () => { filter = NO_FILTER; finding = false; };
+
+  const view = $derived({ open: isOpen, showDone: (parent: string) => filtering || shownDone.has(parent) });
+  const shownSteps = $derived((cut?.plan ?? steps).filter(step => !deleting.has(step.id)));
+  const doneOpen = $derived(filtering || shownDone.has("top"));
   /** A new top-level step is a To do step, so its field sits at the end of To do, which shows for it while it is typed. */
   const groups = $derived.by(() => {
     const list = planGroups(shownSteps);
@@ -72,6 +86,7 @@
     const path = pathTo(steps, id);
     if (!path) return;
     untrack(() => {
+      if (cut && !cut.matches.has(id)) clearFilter();
       openIds = new Set([...openIds, ...path.slice(0, -1).map(step => step.id)]);
       if (path.some(isFinished)) shownDone = new Set([...shownDone, "top", ...path.map(step => step.id)]);
       flash = id;
@@ -202,8 +217,8 @@
       { type: "separator" },
       { id: "rename", label: "Rename", icon: "edit", onselect: () => rename(step) },
       { id: "add", label: "Add step under", icon: "plus", onselect: () => addUnder(step.id) },
-      { id: "up", label: "Move up", icon: "arrow-up", disabled: at <= 0, onselect: () => move(step, parent, -1) },
-      { id: "down", label: "Move down", icon: "arrow-down", disabled: at < 0 || at >= shown.length - 1, onselect: () => move(step, parent, 1) },
+      { id: "up", label: "Move up", icon: "arrow-up", disabled: filtering || at <= 0, onselect: () => move(step, parent, -1) },
+      { id: "down", label: "Move down", icon: "arrow-down", disabled: filtering || at < 0 || at >= shown.length - 1, onselect: () => move(step, parent, 1) },
       { type: "separator" },
       { id: "ask", label: `Ask ${agentName} about it`, icon: "reply", onselect: () => { askText = ""; asking = step; } },
       { type: "separator" },
@@ -211,6 +226,38 @@
     ];
   }
   const focusField = (input: HTMLInputElement) => { input.focus(); input.select(); };
+
+  const STATUSES = ["doing", "todo", "blocked", "done", "dropped"] as const;
+  const owners = $derived(planOwners(steps, ownerOf));
+  const filterItems = $derived<MenuEntry[]>([
+    { type: "label", label: "Status" },
+    ...STATUSES.map(status => ({
+      type: "checkbox" as const, id: `filter-${status}`, label: STATUS_LABEL[status], checked: filter.statuses.has(status),
+      onselect: (checked: boolean) => {
+        const statuses = new Set(filter.statuses);
+        if (checked) statuses.add(status);
+        else statuses.delete(status);
+        filter = { ...filter, statuses };
+      },
+    })),
+    { type: "separator" },
+    {
+      type: "checkbox", id: "filter-go", label: "Needs your go", detail: awaitingGo.size ? String(awaitingGo.size) : undefined, checked: filter.needsGo,
+      disabled: !awaitingGo.size && !filter.needsGo, onselect: (checked: boolean) => { filter = { ...filter, needsGo: checked }; },
+    },
+    ...(owners.length ? [{
+      type: "submenu" as const, id: "filter-owner", label: "Owner", icon: "robot", detail: filter.owner ?? undefined,
+      items: [
+        { type: "radio" as const, id: "owner-any", group: "owner", label: "Anyone", checked: filter.owner === null, onselect: () => { filter = { ...filter, owner: null }; } },
+        ...owners.map(owner => ({
+          type: "radio" as const, id: `owner-${owner.name}`, group: "owner", label: owner.name, detail: String(owner.count), checked: filter.owner === owner.name,
+          onselect: () => { filter = { ...filter, owner: owner.name }; },
+        })),
+      ],
+    }] : []),
+    { type: "separator" },
+    { id: "filter-clear", label: "Clear filters", icon: "close", disabled: !filtering, onselect: clearFilter },
+  ]);
 </script>
 
 {#snippet stepRow(row: Row)}
@@ -226,11 +273,12 @@
     {@const wait = waitWords(step)}
     {@const agent = agentOf(step)}
     {@const owner = agent?.name ?? ownerName(step)}
-    {@const open = openIds.has(step.id)}
+    {@const open = isOpen(step.id)}
     <li class="row-item" style:--depth={row.depth}>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="row {step.status}"
+        class:context={cut !== null && !cut.matches.has(step.id)}
         class:flash={flash === step.id}
         class:menu-open={menu?.step === step.id}
         data-step={step.id}
@@ -320,11 +368,42 @@
 {/snippet}
 
 <div class="plan" bind:this={root}>
-  {#if allIds.length || onops}
+  {#if steps.length || onops}
     <div class="plan-tools">
-      {#if onops}<button type="button" class="tool t-caption" onclick={() => addUnder(null)}><Icon name="plus" size={14} />Add step</button>{/if}
-      {#if allIds.length}<button type="button" class="tool t-caption" onclick={() => { openIds = anyOpen ? new Set() : new Set(allIds); }}>{anyOpen ? "Collapse all" : "Expand all"}</button>{/if}
+      {#if steps.length}
+        {#if finding || filter.query}
+          <span class="find">
+            <Input
+              size="sm"
+              icon="search"
+              value={filter.query}
+              oninput={(e: Event) => { filter = { ...filter, query: (e.currentTarget as HTMLInputElement).value }; }}
+              placeholder="Find steps"
+              aria-label="Find steps"
+              {@attach focusField}
+              onkeydown={(e: KeyboardEvent) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); filter = { ...filter, query: "" }; finding = false; } }}
+              onblur={() => { if (!filter.query.trim()) { filter = { ...filter, query: "" }; finding = false; } }}
+            />
+          </span>
+        {:else}
+          <button type="button" class="tool t-caption" onclick={() => { finding = true; }}><Icon name="search" size={14} />Find</button>
+        {/if}
+        <button type="button" class="tool t-caption" class:on={menuCount(filter) > 0} bind:this={filterAnchor} aria-haspopup="menu" aria-expanded={filterMenuOpen}
+          onclick={() => { filterMenuOpen = !filterMenuOpen; }}><Icon name="filter" size={14} />Filter{menuCount(filter) ? ` ${menuCount(filter)}` : ""}</button>
+      {/if}
+      {#if cut}
+        <span class="tally t-caption" aria-live="polite">{cut.matches.size} of {cut.total}</span>
+        <button type="button" class="tool t-caption" onclick={clearFilter}>Clear</button>
+      {:else}
+        {#if onops}<button type="button" class="tool t-caption" onclick={() => addUnder(null)}><Icon name="plus" size={14} />Add step</button>{/if}
+        {#if allIds.length}<button type="button" class="tool t-caption" onclick={() => { openIds = anyOpen ? new Set() : new Set(allIds); }}>{anyOpen ? "Collapse all" : "Expand all"}</button>{/if}
+      {/if}
     </div>
+  {/if}
+  {#if cut && !cut.plan.length}
+    <EmptyState icon="filter" title="No steps match" description="Change the words or the filter to see more of the plan." size="sm">
+      {#snippet action()}<Button size="sm" onclick={clearFilter}>Clear filters</Button>{/snippet}
+    </EmptyState>
   {/if}
   {#each groups as group (group.status)}
     <section class="group" aria-label={STATUS_LABEL[group.status]}>
@@ -339,10 +418,10 @@
   {/each}
   {#if finished.length}
     <section class="group" aria-label="Done">
-      <button type="button" class="heading t-label-sm fold-group" aria-expanded={shownDone.has("top")} onclick={() => { shownDone = toggle(shownDone, "top"); }}>
-        <Icon name={shownDone.has("top") ? "chevron-down" : "chevron-right"} size={14} />Done <span class="count">{finished.length}</span>
+      <button type="button" class="heading t-label-sm fold-group" aria-expanded={doneOpen} disabled={filtering} onclick={() => { shownDone = toggle(shownDone, "top"); }}>
+        <Icon name={doneOpen ? "chevron-down" : "chevron-right"} size={14} />Done <span class="count">{finished.length}</span>
       </button>
-      {#if shownDone.has("top")}
+      {#if doneOpen}
         <ul class="list">{#each finished as step (step.id)}{@render stepRow({ kind: "step", step, depth: 0, parent: "top" })}{/each}</ul>
       {/if}
     </section>
@@ -351,6 +430,7 @@
 </div>
 
 <Menu open={menu !== null} anchor={menu?.anchor} items={menu?.items ?? []} label="Step actions" onclose={() => (menu = null)} />
+<Menu bind:open={filterMenuOpen} anchor={filterAnchor} items={filterItems} placement="bottom-end" label="Filter steps" />
 
 <Dialog
   open={asking !== null}
@@ -375,7 +455,11 @@
 
 <style>
   .plan { position: relative; display: grid; gap: var(--space-6); container-type: inline-size; }
-  .plan-tools { position: absolute; top: 0; right: 0; z-index: 1; display: flex; gap: var(--space-3); }
+  .plan-tools { position: absolute; top: 0; right: 0; z-index: 1; display: flex; align-items: center; gap: var(--space-3); }
+  .find { width: 11rem; margin-block: calc(-1 * var(--space-1)); }
+  .tool.on { color: var(--text-standard); font-weight: 500; }
+  .tally { color: var(--text-subtle); white-space: nowrap; }
+  .row.context .text { color: var(--text-subtle); }
   .tool, .fold-done, .fold-group { border: 0; background: none; padding: 0; color: var(--text-subtle); cursor: pointer; display: inline-flex; align-items: center; gap: var(--space-1); font: inherit; }
   .tool:hover, .fold-done:hover, .fold-group:hover { color: var(--text-standard); }
   .group { display: grid; }
