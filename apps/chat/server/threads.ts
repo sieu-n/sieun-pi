@@ -10,6 +10,7 @@ import type { AgentEvent, CreateOptions, DurableEvent, DurableThread, EntryRecor
 import type { Store } from "./store.ts";
 import type { AgentRecord } from "./agent-store.ts";
 import { agentSummary, isAgentId, isRoomId, type AgentRows, type Agents } from "./agents.ts";
+import { TailCache } from "./tail-cache.ts";
 import { buildItems, earliest, entryOf, firstSendIn, isInput, itemIdFor, sentMessages, speaks, speaksThroughSendMessage, stepOutputOf, type TimelineContext } from "./timeline.ts";
 
 export const OWNER: Principal = { id: "owner", kind: "owner", name: "You", avatar: { initials: "Me", hue: 210 } };
@@ -95,6 +96,7 @@ export class Threads {
    * through send_message reads that way even when the page itself holds no call, such as a run of quiet turns.
    */
   private readonly firstSends = new Map<ConversationId, number>();
+  private readonly tails: TailCache;
   private timer?: NodeJS.Timeout;
   /** The channels and Solo rooms (group-rooms.ts), merged into conversations(). */
   groupSummaries: () => ConversationSummary[] = () => [];
@@ -121,6 +123,7 @@ export class Threads {
     this.list = new Map(cache.threads.map(t => [t.id, t]));
     this.trees = new Map(cache.trees);
     this.cached = JSON.stringify(cache);
+    this.tails = new TailCache(host, 64, TURN_READ_CAP + 200 + WIDEN);
   }
 
   /**
@@ -531,17 +534,19 @@ export class Threads {
 
   /**
    * Entries before `before` (exclusive), oldest first, widened up to the input that starts the oldest turn; lean, as a page draws them.
-   * The first read asks for WIDEN entries past `limit`, so a page whose oldest turn starts within them takes one pi-host call, not two.
+   * The first read asks for WIDEN entries past `limit`, so a page whose oldest turn starts within them takes one pi-host call, not two. The
+   * reads go through `tails`, so a repeat read of a page it holds costs one one-entry pi-host read.
    */
   private async pageBefore(thread: string, conversation: number, before: number | undefined, limit: number): Promise<{ entries: EntryRecord[]; more: boolean }> {
-    const got = await this.host.entries(thread, { conversation, ...(before === undefined ? {} : { before }), limit: limit + WIDEN, lean: true });
+    const read = await this.tails.reader(thread, conversation, before);
+    const got = await read(before, limit + WIDEN);
     const entries = got.entries.slice(0, limit);
     let rest = got.entries.slice(limit);
     let hostMore = got.more;
     while (entries.length && !isInput(entries.at(-1)!) && entries.length < TURN_READ_CAP) {
       if (!rest.length) {
         if (!hostMore) break;
-        const next = await this.host.entries(thread, { conversation, before: entries.at(-1)!.id, limit: WIDEN, lean: true });
+        const next = await read(entries.at(-1)!.id, WIDEN);
         rest = next.entries;
         hostMore = next.more;
         if (!rest.length) {
