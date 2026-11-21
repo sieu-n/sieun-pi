@@ -46,7 +46,7 @@ function onNotice(notice: Notice): void {
   if (!wantsNotice(notice) || inView(notice)) return;
   const body = notice.text || (notice.images ? (notice.images > 1 ? `${notice.images} images` : "Image") : "");
   const tag = `notice:${notice.room}:${notice.post}`;
-  notifyOnce(tag, () => void notifySystem(noticeTitle(notice), body, tag, () => openNotice(notice)));
+  notifyOnce(tag, () => void notifySystem(noticeTitle(notice), body, tag, () => openNotice(notice)).then(sent => sent || offerPermission()));
 }
 
 /** The unread count Slack's Dock badge shows: the sum of the sidebar's counts (DMs, Solo rooms and mentions), less channels he left. */
@@ -69,9 +69,13 @@ function placeLabel(): string {
   return PAGES.find(p => p.id === page)?.label ?? page.charAt(0).toUpperCase() + page.slice(1);
 }
 
-/** On a browser with the permission not asked yet, offers it once per device from a toast, since the prompt must come from a click. */
+/**
+ * On a browser with the permission not asked yet, offers it once per device from a toast, since the prompt must come from a click. It comes
+ * with the first message that would have notified, so it names a reason, and never in an automated browser, where it would cover the
+ * composer in every fresh Playwright context.
+ */
 function offerPermission(): void {
-  if (inDesktopShell || notifyPermission.value !== "default" || notifyPrefs.level === "off") return;
+  if (inDesktopShell || navigator.webdriver || notifyPermission.value !== "default") return;
   try {
     if (localStorage.getItem(ASKED)) return;
     localStorage.setItem(ASKED, "1");
@@ -79,13 +83,13 @@ function offerPermission(): void {
     return;
   }
   toast.show("Turn on desktop notifications to hear about new DMs and mentions.", {
-    duration: 0, action: { label: "Turn on", run: () => void askNotifyPermission() },
+    duration: 15_000, action: { label: "Turn on", run: () => void askNotifyPermission() },
   });
 }
 
 /** Listens for new messages and keeps the Dock badge and the title for the life of the page. */
 export function watchNotices(): () => void {
-  void (inDesktopShell ? askNotifyPermission() : readNotifyPermission()).then(offerPermission);
+  void (inDesktopShell ? askNotifyPermission() : readNotifyPermission());
   const off = live.on(event => {
     if (event.type === "notice") onNotice(event.notice);
   });
