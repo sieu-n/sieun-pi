@@ -411,12 +411,18 @@ export async function measureFacts(deps: FactsDeps): Promise<PrecheckOutput & { 
   const judgeSource = async (from: Source): Promise<Awaited<ReturnType<typeof judgeDocs>> | undefined> => {
     if (from.broken) return undefined;
     const names = [...new Set(from.docs.flatMap(doc => doc.facts.filter(fact => fact.kind === "name").map(fact => fact.ref)))].sort();
-    // rg over the checkout reads HEAD plus other jobs' uncommitted edits, which can only keep a name present; git grep -f over a whole tree is
-    // refused by the repo guard (one with 1,117 names ran 63 min on 2026-10-24), and rg's one pass took 3 s for 1,300 names on 2026-11-20.
-    const namesAtHead = names.length ? await deps.run("rg", ["--hidden", "--no-filename", "--no-line-number", "-I", "-o", "-w", "-F", "-f", "-",
+    // rg over the checkout reads HEAD plus other jobs' uncommitted edits; git grep -f over a whole tree is refused by the repo guard (one with
+    // 1,117 names ran 63 min on 2026-10-24), and rg's one pass took 3 s for 1,300 names on 2026-11-20. An uncommitted delete hides a name HEAD
+    // still has (funnelSettle.ts's SYNC_ROWS on 2026-11-21), so each name rg misses is looked up in HEAD's own tree.
+    const onDisk = names.length ? await deps.run("rg", ["--hidden", "--no-filename", "--no-line-number", "-I", "-o", "-w", "-F", "-f", "-",
       "--glob", "!.git", "--glob", "!*.md", "--glob", "!apps/llm-wiki/content", "."], { cwd: from.repo, input: names.join("\n") + "\n", okCodes: [1] })
       .then(out => new Set(out.toString("utf8").split("\n").filter(Boolean))).catch(error => fail(`${from.label} rg names`, error)) : new Set<string>();
-    if (!namesAtHead) return undefined;
+    if (!onDisk) return undefined;
+    const missing = names.filter(name => !onDisk.has(name));
+    const inHead = missing.length ? await namesAtRevs(from, new Map([["HEAD", missing]])).then(had => had.get("HEAD") ?? new Set<string>())
+      .catch(error => fail(`${from.label} git grep HEAD names`, error)) : new Set<string>();
+    if (!inHead) return undefined;
+    const namesAtHead = new Set([...onDisk, ...inHead]);
     return judgeDocs(from.docs, doc => from.revs.get(doc), {
       objects: list => from.catFile(list, "--batch-check"),
       blobs: list => from.catFile(list, "--batch-check=%(objectname)"),

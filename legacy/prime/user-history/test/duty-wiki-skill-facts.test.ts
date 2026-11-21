@@ -120,6 +120,20 @@ test("a rule file or a root contract counts in skills_with_stale_facts and its r
   } finally { done(); }
 });
 
+test("a name an uncommitted delete hides from the checkout still counts as present when HEAD has it", async () => {
+  // p7 (2026-11-21): another job's uncommitted delete of funnelSettle.ts hid SYNC_ROWS from rg, so apps/search/campaigns/settle.html counted.
+  const { repo, piRepo, content, done } = world({
+    "scripts/keep.mjs": "const KEEP_ROWS = 200;\n",
+    ".claude/rules/keep.md": "Runs write `KEEP_ROWS` rows at a time.\n",
+  });
+  try {
+    rmSync(join(repo, "scripts/keep.mjs"));
+    const result = await measureFacts({ run: runNoShell, repo, piRepo, content, readText: path => Promise.resolve(readFileSync(path, "utf8")), listPages: async () => [] });
+    assert.equal(result.metrics.source_errors, 0, JSON.stringify(result.flagged));
+    assert.equal(result.metrics.skills_with_stale_facts_rules, 0, JSON.stringify(result.flagged));
+  } finally { done(); }
+});
+
 test("the curated pages include projects/ beside apps/ and domains/", async () => {
   const { content, done } = world();
   try {
