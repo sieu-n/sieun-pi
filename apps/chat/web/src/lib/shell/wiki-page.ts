@@ -160,12 +160,15 @@ export type ShareRow = { href: string; place: string; detail: string };
  * the page sit beside the pages that link it. Each row's link is this app's address of the post, which the frame's link handler opens.
  */
 export function showShares(doc: Document, rows: ShareRow[]): void {
-  doc.querySelector("[data-chat-shared]")?.remove();
+  const key = JSON.stringify(rows);
+  const drawn = doc.querySelector<HTMLElement>("[data-chat-shared]");
+  if (drawn?.dataset.chatShared === key) return;
+  drawn?.remove();
   const rail = doc.querySelector(".rail");
   if (!rail) return;
   const card = doc.createElement("section");
   card.className = "rail-card";
-  card.dataset.chatShared = "";
+  card.dataset.chatShared = key;
   const heading = doc.createElement("h2");
   heading.append("Shared in ");
   const badge = doc.createElement("span");

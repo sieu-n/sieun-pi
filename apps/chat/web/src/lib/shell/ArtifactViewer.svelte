@@ -164,6 +164,7 @@
     }
     const before = page.raw;
     toast.success("Page saved", {
+      duration: 10_000,
       action: {
         label: "Undo",
         run: () => void writePage(page.path, before, saved.version).then((back) => {
