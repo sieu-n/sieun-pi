@@ -579,7 +579,7 @@ def link_manifest(checkout: Path, home: Path, agent_dir: Path) -> list[str]:
         for path in skills.iterdir():
             if path.name in wanted_skills or not path.is_symlink():
                 continue
-            if os.readlink(path).startswith((str(checkout / "skills") + os.sep, str(runtime / "releases") + os.sep)):
+            if os.readlink(path).startswith((str(checkout) + os.sep, str(runtime / "releases") + os.sep)):
                 path.unlink()
                 changes.append(f"unlinked skills/{path.name}")
     return changes

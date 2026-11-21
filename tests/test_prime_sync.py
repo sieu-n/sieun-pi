@@ -136,6 +136,25 @@ class PrimeSyncTests(unittest.TestCase):
         self.assertIn("pulled", self.sync(box)["code"])
         self.assertEqual((skill / "SKILL.md").read_text(), "v2\n")
 
+    def test_a_link_dropped_from_the_manifest_goes_even_outside_skills(self):
+        (self.seed / "legacy/helpers").mkdir(parents=True)
+        (self.seed / "legacy/helpers/__init__.py").write_text("")
+        manifest = json.loads((self.seed / "install-manifest.json").read_text())
+        manifest["entries"].append({"id": "skill:helpers", "kind": "link", "source": "legacy/helpers", "scope": "home",
+                                    "target": ".prime/agent/skills/helpers"})
+        (self.seed / "install-manifest.json").write_text(json.dumps(manifest))
+        self.commit(self.seed, "add helpers")
+        box = self.box("box", [], [])
+        self.sync(box)
+        helpers = box / ".prime/agent/skills/helpers"
+        self.assertTrue(helpers.is_symlink())
+        manifest["entries"].pop()
+        (self.seed / "install-manifest.json").write_text(json.dumps(manifest))
+        self.commit(self.seed, "drop helpers")
+        self.assertIn("unlinked skills/helpers", self.sync(box)["links"])
+        self.assertFalse(os.path.lexists(helpers))
+        self.assertTrue((box / ".prime/agent/skills/unslop").is_symlink())
+
     def install_runtime(self, box):
         """A stand-in for scripts/install-runtime.mjs: export the ref into releases/<sha>, switch current and log the activation."""
         installer = self.root / "fake-install.py"
