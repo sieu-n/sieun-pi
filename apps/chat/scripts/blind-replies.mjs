@@ -135,7 +135,8 @@ function checks(ask, posts, asked, versions = new Map()) {
   if (ask.expect === "reaction") return [["no post, a reaction says it", posts.length === 0]];
   const lines = text.split("\n").filter(line => line.trim());
   const plain = [
-    ["one post for the posts it answers", posts.length === 1],
+    // A natural answer may add one post that asks a follow-up question, which the owner allowed in p54.
+    ["one post for the posts it answers", posts.length === 1 || (ask.expect === "natural" && posts.length === 2 && posts[1].text.includes("?"))],
     ["no table", !TABLE.test(text)],
     ["no heading, bold or label opener", !/^#{1,6} |\*\*|^[A-Z][\w ]{0,20}:\s/m.test(text)],
   ];
@@ -229,7 +230,8 @@ for (const [index, ask] of asks.entries()) {
     const open = edited && posts.some(post => /^\s*[-*+] \[ \] /m.test(post.text));
     if (posts.length && Date.now() - lastNew > (open ? OPEN_QUIET_MS : quiet)) break;
     if (!posts.length && ask.expect === "reaction" && reacted && Date.now() - started > QUIET_MS) break;
-    if (Date.now() - started > (edited ? 2 * FIRST_MS : FIRST_MS)) break;
+    // A natural ask is a research task, and both after runs at 20:39Z on 11-21 still worked on it at 44 min.
+    if (Date.now() - started > (ask.expect === "natural" ? 3 * FIRST_MS : edited ? 2 * FIRST_MS : FIRST_MS)) break;
   }
   const text = group.map(g => g.text).join(" / ");
   const result = checks(ask, posts, group.length, versions);

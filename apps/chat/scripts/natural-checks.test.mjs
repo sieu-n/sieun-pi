@@ -36,7 +36,7 @@ test("p51 fails on its opening line and its bare topic labels", () => {
 test("the p55 wall fails on its 4-sentence line and its buried answer", () => {
   const fails = failed([[P55]]);
   assert.ok(fails.includes("no line of any version holds 3 or more sentences"));
-  assert.ok(fails.includes("the last version's answer sits alone on its first line"));
+  assert.ok(fails.includes("the first post's last version opens with a line of at most 2 sentences"));
 });
 
 test("a checklist of short sentences passes once an edit ticks it, and fails while its boxes stay open", () => {
@@ -46,8 +46,13 @@ test("a checklist of short sentences passes once an edit ticks it, and fails whi
   assert.ok(failed([[first]]).includes("open tasks in the first post get ticked by a later edit"));
 });
 
+test("an ack such as Working on it is no natural opening", () => {
+  assert.ok(failed([["Working on it. Three research jobs read the code now.\n- I read the spec.\n- I read the adapter."]]).includes("the first post opens with a natural sentence"));
+});
+
 test("a question passes only with the agent's pick before or with it", () => {
   const items = "\n- I read the tracker adapter.\n- I read the workspace hooks.";
   assert.ok(failed([[`The tracker sits behind one adapter, so both ways work.${items}\n\nShould we adapt it or move to linear?`]]).includes("every question comes with the agent's pick"));
   assert.deepEqual(failed([[`The tracker sits behind one adapter, so both ways work.${items}\n\nI'd adapt it, unless you'd rather move to linear?`]]), []);
+  assert.deepEqual(failed([[`The tracker sits behind one adapter, so both ways work.${items}\n\nWhich backlog do you mean? I'd plan around our GitHub issues.`]]), []);
 });

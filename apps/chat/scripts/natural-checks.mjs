@@ -19,16 +19,16 @@ export const bareLabel = line => {
   const text = item(line).replace(/[:.]$/, "");
   return !text || (text.split(/\s+/).length <= 3 && !VERB.test(text));
 };
-/** A natural opening line for the place: five words or more with a verb, no `label:` opener and no ack such as "on it". */
-export const naturalLine = line => !BULLET.test(line) && words(line) >= 5 && VERB.test(line) && !/^[^:\n]{1,25}:\s*\S/.test(line) && !/^\W*on it\b/i.test(line);
+/** A natural opening line for the place: five words or more with a verb, no `label:` opener and no ack such as "on it" or "Working on it." */
+export const naturalLine = line => !BULLET.test(line) && words(line) >= 5 && VERB.test(line) && !/^[^:\n]{1,25}:\s*\S/.test(line) && !/^\W*(?:on it|working on it|got it)\b/i.test(line);
 /**
  * The sentences of each line of a text, with code and link targets left out. A wall of text, such as dm_agent-factory p55 on 11-21, a
  * paragraph of the guess, the cause, the plan and the pick, holds 3 or more on one line.
  */
 export const lineSentences = text => text.replace(/```[\s\S]*?```/g, "").replace(/`[^`\n]*`|\]\([^)]*\)/g, "x").split("\n").filter(line => line.trim())
   .map(line => item(line).split(/(?<=[.!?])\s+/).filter(part => /\w/.test(part)).length);
-/** Words that state the agent's own pick. */
-const PICK = /\b(i'd (go|pick|start|use|lean|suggest|recommend|keep|stay|move|adapt|write|run)|my pick|i'll|i'm going|i suggest|suggest|recommend|unless you'd rather|i lean|lean toward|my vote|going with|default to)\b/i;
+/** Words that state the agent's own pick, such as "I'd plan around ..." in an after run on 11-21. */
+const PICK = /\b(i'd|my pick|i'll|i'm going|i suggest|suggest|recommend|unless you'd rather|i lean|lean toward|my vote|going with|default to)\b/i;
 /** Whether every question in a text comes with a pick in or before the paragraph that asks it; code, links and URLs hold no question. */
 export const pickFirst = text => {
   const clean = text.replace(/```[\s\S]*?```|`[^`\n]*`|\]\([^)]*\)|https?:\/\/\S+/g, " ");
@@ -49,7 +49,7 @@ export function naturalChecks(postVersions) {
   const first = postVersions[0] ?? [];
   const firstLine = (first[0] ?? "").split("\n").find(line => line.trim())?.trim() ?? "";
   const open = (first[0]?.match(OPEN) ?? []).length;
-  const last = postVersions.at(-1)?.at(-1) ?? "";
+  const last = first.at(-1) ?? "";
   const counts = lineSentences(last);
   return [
     ["the first post opens with a natural sentence", naturalLine(firstLine)],
@@ -58,6 +58,7 @@ export function naturalChecks(postVersions) {
     ["open tasks in the first post get ticked by a later edit", open === 0 || first.slice(1).some(text => TICKED.test(text))],
     ["every question comes with the agent's pick", all.every(pickFirst)],
     ["no line of any version holds 3 or more sentences", all.every(text => lineSentences(text).every(n => n < 3))],
-    ["the last version's answer sits alone on its first line", counts.length > 1 && counts[0] <= 2 && words(last.split("\n")[0]) <= 25],
+    // The checklist post's last version, since a later post is often a one-line question; 35 words is config/AGENTS.md rule 5's sentence cap.
+    ["the first post's last version opens with a line of at most 2 sentences", counts.length > 0 && counts[0] <= 2 && words(last.split("\n")[0]) <= 35],
   ];
 }

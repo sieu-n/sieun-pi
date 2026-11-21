@@ -157,6 +157,10 @@ async function runRoom(kind) {
     if (agentReactions(p).length && reactedAt === undefined) reactedAt = Date.now();
     return reactedAt !== undefined && Date.now() - reactedAt > THANKS_QUIET_MS;
   });
+  // 👀 stays on the task until its checklist's last edit (pi-host 035ad3c8), which on 11-21 at 20:39Z came 10 min after the thanks, so the
+  // end checks wait for the task's answers to hold no open item and for its 👀 to come off.
+  posts = await waitFor(Math.max(0, TASK_MS - (Date.now() - started)), ps => !mine(ps.find(p => p.id === task.id), EYES)
+    && answersOf(ps, task.id).every(p => !/^\s*[-*+] \[ \] /m.test(p.text)));
 
   const calls = await emojiCalls(room);
   const byId = id => posts.find(p => p.id === id);
