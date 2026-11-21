@@ -2,6 +2,9 @@
 // Rust only wires the window, the menu and link handling; the chat itself lives in apps/chat.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(target_os = "macos")]
+mod find;
+
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder, Wry};
@@ -52,6 +55,13 @@ fn menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         &PredefinedMenuItem::copy(app, None)?,
         &PredefinedMenuItem::paste(app, None)?,
         &PredefinedMenuItem::select_all(app, None)?,
+        &PredefinedMenuItem::separator(app)?,
+        &Submenu::with_items(app, "Find", true, &[
+            &MenuItem::with_id(app, "find", "Find…", true, Some("CmdOrCtrl+F"))?,
+            &MenuItem::with_id(app, "find-next", "Find Next", true, Some("CmdOrCtrl+G"))?,
+            &MenuItem::with_id(app, "find-previous", "Find Previous", true, Some("CmdOrCtrl+Shift+G"))?,
+            &MenuItem::with_id(app, "find-selection", "Use Selection for Find", true, Some("CmdOrCtrl+E"))?,
+        ])?,
     ])?;
     let view = Submenu::with_items(app, "View", true, &[
         &MenuItem::with_id(app, "reload", "Reload", true, Some("CmdOrCtrl+R"))?,
@@ -74,10 +84,15 @@ fn main() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .menu(menu)
         .on_menu_event(|app, event| {
+            let Some(window) = app.get_webview_window("main") else { return };
+            #[cfg(target_os = "macos")]
+            if let Some(action) = find::Action::from_menu_id(event.id().as_ref()) {
+                find::perform(&window, action);
+                return;
+            }
             if event.id() != "reload" {
                 return;
             }
-            let Some(window) = app.get_webview_window("main") else { return };
             let home = box_url(app);
             // Reload goes through the start page, so a box that stopped answering shows the retry page, not a blank window.
             let target = window.url().ok().filter(|url| url.origin() == home.origin()).unwrap_or(home);
