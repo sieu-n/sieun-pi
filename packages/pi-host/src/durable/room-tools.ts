@@ -97,7 +97,7 @@ export function roomTools(app: ChatApp, thread: string): Extension {
           if (api.conversationId !== ROOT_CONVERSATION_ID) return { output: text("set_emoji works only in your agent's own thread, not in a job."), isError: true };
           try {
             const answer = await app.react(thread, { message: args.message_id, emoji: args.emoji, on: args.on }, context.abortSignal);
-            return { output: text(answer.text), ...await closingControl(!args.on && isEyes(args.emoji), api, context) };
+            return { output: text(answer.text), ...await closingControl(args.on !== isEyes(args.emoji), api, context) };
           } catch (error) {
             if (context.abortSignal?.aborted) throw error;
             return { output: text(error instanceof Error ? error.message : String(error)), isError: true };
@@ -123,7 +123,7 @@ export function roomTools(app: ChatApp, thread: string): Extension {
           if (long) return { output: text(long), isError: true };
           try {
             const answer = await app.editPost(thread, { message: args.message_id, text: args.text }, context.abortSignal);
-            return { output: text(answer.text) };
+            return { output: text(answer.text), ...await closingControl(true, api, context) };
           } catch (error) {
             if (context.abortSignal?.aborted) throw error;
             return { output: text(error instanceof Error ? error.message : String(error)), isError: true };

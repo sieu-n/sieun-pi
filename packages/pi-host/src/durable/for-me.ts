@@ -14,6 +14,7 @@ import { Type, type Message } from "@earendil-works/pi-ai";
 import { defineTool, ROOT_CONVERSATION_ID, type Cursor, type ToolControl, type ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { ForMeItem, ForMeList, ForMeStatus, Principal } from "../../../../apps/chat/web/src/lib/api/types.ts";
 import { threadAgent } from "./agent-profile.ts";
+import { roundEndsTurn } from "./turn-end.ts";
 import type { ChatApp } from "./chat-app.ts";
 
 export const LIST_FOR_ME_TOOL = "list_for_me_messages";
@@ -87,45 +88,31 @@ async function isCommThread(api: Parameters<typeof threadAgent>[0], context: Par
   }
 }
 
-/** The entry kinds that start a turn: an owner post or notice, and an agent message. */
-const TURN_INPUTS = new Set(["pi.user", "agent.message"]);
-/** The calls that answer a post: a post or an edit of one, or a reaction other than 👀, which answers a post that needs no words. */
-const answers = (name: string, args: Record<string, unknown>): boolean =>
-  name === "tell_owner" || name === "edit_message" || (name === "set_emoji" && args.on === true && !["eyes", ":eyes:", "👀"].includes(String(args.emoji).trim()));
-
-/**
- * Whether an earlier round of this turn answered: a tell_owner, edit_message or non-👀 reaction whose result came back with no error, read
- * newest first back to the turn's input. A call of the running round has no result yet, so it never counts.
- */
-async function answeredThisTurn(api: ToolExecutionApi, context: Context): Promise<boolean> {
+/** The conversation's messages back to the turn's input, oldest first, as `roundEndsTurn` reads them. */
+async function turnMessages(api: ToolExecutionApi, context: Context): Promise<Message[]> {
   return api.commit(async tx => {
-    const ok = new Set<string>();
+    const out: Message[] = [];
     let cursor: Cursor | undefined;
     for (;;) {
       const page = await tx.scanEntries({ conversationId: api.conversationId, order: "descending" }, 100, cursor);
       for (const entry of page.items) {
-        if (TURN_INPUTS.has(entry.kind)) return false;
-        for (const message of (entry.model ?? []) as Message[]) {
-          if (message.role === "toolResult" && !message.isError) ok.add(message.toolCallId);
-          if (message.role === "assistant" && message.content.some(part => part.type === "toolCall" && ok.has(part.id) && answers(part.name, part.arguments))) return true;
-        }
+        const messages = (entry.model ?? []) as Message[];
+        out.push(...[...messages].reverse());
+        if (messages.some(message => message.role === "user")) return out.reverse();
       }
-      if (!page.next) return false;
+      if (!page.next) return out.reverse();
       cursor = page.next;
     }
   }, context);
 }
 
 /**
- * The control a comm thread's closing call returns: `terminate`, so a round made only of closing calls ends the turn with no further model
- * request. The closing calls are mark_message that leaves no item pending, set_thread_done(true) and set_emoji taking 👀 off, the ones the
- * comm role text puts after the post. On 11-21 fresh channel agents in blind runs on live :5184 ended 9 of 20 turns with a summary no
- * room shows, 8 of them right after such a round, while their role text and then mark_message's answer said to end with no text. A round
- * with any other call, such as tell_owner, runs on as before. It ends the turn only once an earlier round of the turn answered, so an agent
- * that takes 👀 off before it posts still gets to post.
+ * The control a comm thread's post or closing call returns when it went through (`own`): `terminate` when its round ends the turn
+ * (`turn-end.ts`), so a round of posts and closing calls ends the turn with no closing summary, and nothing otherwise.
  */
-export async function closingControl(closing: boolean, api: ToolExecutionApi, context: Context): Promise<{ control?: ToolControl }> {
-  return closing && (await isCommThread(api, context)) && (await answeredThisTurn(api, context)) ? { control: { terminate: true } } : {};
+export async function closingControl(own: boolean, api: ToolExecutionApi, context: Context): Promise<{ control?: ToolControl }> {
+  if (!own || !(await isCommThread(api, context))) return {};
+  return roundEndsTurn(await turnMessages(api, context), api.callId) ? { control: { terminate: true } } : {};
 }
 
 const text = (value: string) => [{ type: "text" as const, text: value }];

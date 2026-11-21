@@ -57,6 +57,7 @@ import { boardLimitFlag } from "../../../../legacy/prime/user-history/src/shared
 import type { ChatBoard, PlanItem, ThreadMessage } from "../../../../legacy/prime/user-history/src/shared/types.ts";
 import { SEARCH_HISTORY_TOOL } from "../../../pi-history/src/pi/index.ts";
 import { threadAgent } from "./agent-profile.ts";
+import { roundEndsTurn, TOLD } from "./turn-end.ts";
 import { ChatApp } from "./chat-app.ts";
 import { CommHandedDoc } from "./comm.ts";
 import { commPostRefusal, tableResent, turnAsked, turnAskedTable, turnStartedAt, type CommPostTurn } from "./comm-guard.ts";
@@ -343,6 +344,14 @@ export function primeChat(chat: PrimeChat, thread: ChatThread): Extension {
         const comm = await commTurn(chat, thread, call, api.conversationId, context);
         const refused = comm && commPostRefusal(comm.text, comm.turn);
         return refused ? { block: refused } : undefined;
+      },
+      // A comm thread's post that went out in a round of posts and closing calls ends the turn with the round (`turn-end.ts`).
+      afterTool: async (call, result, api, context) => {
+        if (call.name !== TELL_OWNER_TOOL || result.isError || api.conversationId !== ROOT_CONVERSATION_ID) return undefined;
+        if (!(result.output ?? []).some(part => part.type === "text" && part.text.trim() === TOLD)) return undefined;
+        if ((await threadAgent(api, context))?.role !== "comm") return undefined;
+        const view = await contextOf(thread, api.conversationId, context).catch(() => undefined);
+        return view && roundEndsTurn(view.messages, call.id) ? { ...result, control: { terminate: true } } : undefined;
       },
     }), hook(GenerationTask, {
       onYield: async (answer, api, context) => {
