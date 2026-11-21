@@ -4,7 +4,7 @@
  * agent/user), in root message, in thread, diggen in some internal tool call"). The server's contract is GET /api/search with `from` and
  * `where` as lists that it ORs (~/work/search-filters/contract.md).
  */
-import type { Hit } from "./hit-view.ts";
+import { shortDay, type Hit } from "./hit-view.ts";
 import { dayString } from "./operators.ts";
 
 /** Where a hit sits: a top-level post or root-chat message, a thread reply, or inside an agent's work (a tool call, its output, a job's entry). */
@@ -123,17 +123,16 @@ export function dateRanges(now: Date): DateRange[] {
   ];
 }
 
-const shortDay = (day: string, now: Date): string => {
+const dayOf = (day: string, now: Date): string => {
   const [year, month, date] = day.split("-").map(Number) as [number, number, number];
-  const at = new Date(year, month - 1, date);
-  return at.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(year === now.getFullYear() ? {} : { year: "numeric" }) });
+  return shortDay(new Date(year, month - 1, date), now);
 };
 
 /** The Date chip's label: a preset's name, or the days themselves, such as "Oct 1 to Oct 5", "On or after Oct 1" and "Before Oct 5". */
 export function dateLabel({ after, before }: Pick<Filters, "after" | "before">, now: Date): string | undefined {
   const preset = dateRanges(now).find(range => range.id !== "any" && range.after === after && range.before === before);
   if (preset) return preset.label;
-  if (after && before) return `${shortDay(after, now)} to ${shortDay(before, now)}`;
-  if (after) return `On or after ${shortDay(after, now)}`;
-  return before ? `Before ${shortDay(before, now)}` : undefined;
+  if (after && before) return `${dayOf(after, now)} to ${dayOf(before, now)}`;
+  if (after) return `On or after ${dayOf(after, now)}`;
+  return before ? `Before ${dayOf(before, now)}` : undefined;
 }

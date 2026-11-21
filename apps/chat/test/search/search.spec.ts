@@ -212,6 +212,34 @@ test("a keystroke shows message rows from the page before the server answers, an
   await expect(palette(page).getByTestId("search-pending")).toHaveCount(0);
 });
 
+/**
+ * The page records a search's wait from before its fetch until its answer is read (client.ts `send`), so work that runs after the fetch in
+ * the keystroke's task holds the answer once that work outlasts the round trip. The request goes before any row renders, and the rows
+ * render once per keystroke: before p156 a render of the old rows came first and a second render followed the fetch, and at 4x CPU
+ * throttling the task after the fetch took p90 728 ms (~/work/p156-search/p156-client/summary.md).
+ */
+test("a keystroke's search leaves before its rows render", async ({ page }) => {
+  await page.addInitScript(() => {
+    const seen: string[] = [];
+    (window as unknown as { seenAtSearch: string[] }).seenAtSearch = seen;
+    const fetch0 = window.fetch;
+    window.fetch = function (input, init) {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (/\/api\/search\?/.test(url)) seen.push(document.querySelector("[data-search-palette] [data-key=see-all]")?.textContent ?? "");
+      return fetch0.call(this, input, init);
+    };
+  });
+  await page.reload();
+  await expect(page.getByTestId("nav-capsule")).toBeVisible();
+  await page.keyboard.press(`${mod}+k`);
+  await field(page).pressSequentially("rel");
+  await expect(count(page)).toHaveText(messages(await total(page, { q: "rel" })));
+  await field(page).press("a");
+  await expect(count(page)).toHaveText(messages(await total(page, { q: "rela" })));
+  const seen = await page.evaluate(() => (window as unknown as { seenAtSearch: string[] }).seenAtSearch);
+  expect(seen.at(-1)).toContain("“rel”");
+});
+
 test("the search never waits on the feed: with it blocked, the server's rows and count still show", async ({ page }) => {
   await page.route(/\/api\/search\/recent/, route => route.abort());
   await page.reload();

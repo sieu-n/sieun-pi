@@ -47,7 +47,9 @@
   let now = $state(new Date());
   const listId = "search-results";
 
-  $effect(() => {
+  // This and the request below run before the DOM updates, so a keystroke's request leaves before any row renders and its rows render
+  // once, with the page's own matches: as an $effect it waited behind a render of the old rows and went before a second one (p156).
+  $effect.pre(() => {
     if (!open) return;
     text = query;
     now = new Date();
@@ -108,7 +110,7 @@
 
   let generation = 0;
   let attempt = $state(0);
-  $effect(() => {
+  $effect.pre(() => {
     const key = requestKey;
     void attempt;
     if (!open) return;

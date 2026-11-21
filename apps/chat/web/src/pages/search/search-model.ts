@@ -3,7 +3,7 @@
  * rows the palette shows. Rows carry their action as data, so the dialog runs it and tests can read it.
  */
 import { avatarOf } from "../channel/present.ts";
-import { author, locationText, what, type Hit } from "./hit-view.ts";
+import { author, locationText, shortDay, what, type Hit } from "./hit-view.ts";
 import { leadIn, matchName, snippetPieces, type Piece } from "./match.ts";
 import { hasFilters, type Filters } from "./filters.ts";
 import { datePresets, prompt, searchText, type Operator } from "./operators.ts";
@@ -132,23 +132,20 @@ function ranked<T>(rows: readonly T[], name: (row: T) => string | readonly strin
     .map(({ row }) => row);
 }
 
-export function formatDay(at: number, now: Date): string {
-  const date = new Date(at);
-  const sameYear = date.getFullYear() === now.getFullYear();
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) });
-}
-
 function messageRows(input: SearchInput): Row[] {
   if (input.messages.state !== "ready" && input.messages.state !== "loading") return [];
-  const rows: Row[] = input.messages.hits.map(hit => ({
-    key: `hit:${hit.id}`,
-    label: snippetPieces(hit.snippet).map(piece => piece.text).join(""),
-    snippet: leadIn(snippetPieces(hit.snippet)),
-    detail: [author(hit).name, input.filters.in ? undefined : locationText(hit.conversation), what(hit), formatDay(hit.at, input.now)].filter(Boolean).join(" · "),
-    icon: "chat",
-    hit,
-    action: { type: "open", conversation: hit.conversation.id, messageId: hit.messageId, link: hit.link },
-  }));
+  const rows: Row[] = input.messages.hits.map(hit => {
+    const pieces = snippetPieces(hit.snippet);
+    return {
+      key: `hit:${hit.id}`,
+      label: pieces.map(piece => piece.text).join(""),
+      snippet: leadIn(pieces),
+      detail: [author(hit).name, input.filters.in ? undefined : locationText(hit.conversation), what(hit), shortDay(hit.at, input.now)].filter(Boolean).join(" · "),
+      icon: "chat",
+      hit,
+      action: { type: "open", conversation: hit.conversation.id, messageId: hit.messageId, link: hit.link },
+    };
+  });
   if (input.messages.state === "ready" && input.messages.more)
     rows.push({ key: "more-messages", label: input.messages.loadingMore ? "Loading more messages…" : "Show more messages", icon: "more", action: { type: "more" } });
   return rows;

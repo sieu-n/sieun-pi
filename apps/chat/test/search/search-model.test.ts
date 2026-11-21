@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { snippetPieces } from "../../web/src/pages/search/match.ts";
 import { NO_FILTERS } from "../../web/src/pages/search/filters.ts";
+import { shortAge } from "../../web/src/pages/search/hit-view.ts";
 import { answered, buildGroups, SEE_ALL, type Conversation, type Hit, type Person, type SearchInput } from "../../web/src/pages/search/search-model.ts";
 
 const conversations: Conversation[] = [
@@ -147,4 +148,37 @@ test("filters with no words wait for words under one Messages group, and a hit w
   const link = "#/c/ch_cut?thread=p1&m=p4";
   const groups = buildGroups({ ...base, text: "x", messages: { state: "ready", total: 1, more: false, loadingMore: false, hits: [{ ...hit("r"), where: "thread", thread: { root: "p1", title: "what blocks" }, link }] } });
   assert.deepEqual(groups.at(-1)!.rows[0]!.action, { type: "open", conversation: "c-cut", messageId: "m-r", link });
+});
+
+/**
+ * Cmd K builds its rows at every keystroke and again at the answer. Each toLocaleDateString call made a new formatter, 257 us in Node on
+ * us-metal02 against 4 us for a kept one, and with two per row it was the largest single cost of a keystroke (p156,
+ * ~/work/p156-search/p156-client/summary.md).
+ */
+test("the rows of a page of hits read their days with kept formatters, never one per row", () => {
+  const hits: Hit[] = Array.from({ length: 20 }, (_, n) => ({
+    id: `h${n}`, conversation: { id: "c-cut", kind: "channel", name: "pi-cutover" }, messageId: `m${n}`, author: { id: "owner", name: "Sieun", kind: "owner" },
+    at: new Date(2025 + (n % 2), 9, 1 + n).getTime(), kind: "post", role: "owner", where: "root", link: `#/c/c-cut?m=m${n}`, snippet: "a <mark>rate</mark> limit",
+  }));
+  const kept = { date: Date.prototype.toLocaleDateString, time: Date.prototype.toLocaleTimeString };
+  const made: string[] = [];
+  Date.prototype.toLocaleDateString = function (this: Date, ...args: Parameters<Date["toLocaleDateString"]>) {
+    made.push("date");
+    return kept.date.apply(this, args);
+  };
+  Date.prototype.toLocaleTimeString = function (this: Date, ...args: Parameters<Date["toLocaleTimeString"]>) {
+    made.push("time");
+    return kept.time.apply(this, args);
+  };
+  try {
+    const rows = buildGroups({ ...base, text: "rate", messages: { state: "loading", hits } }).at(-1)!.rows;
+    const ages = hits.map(hit => shortAge(hit.at, base.now));
+    assert.equal(rows[0]!.detail, "You · #pi-cutover · Oct 1, 2025");
+    assert.equal(rows[1]!.detail, "You · #pi-cutover · Oct 2");
+    assert.deepEqual(ages.slice(0, 2), ["Oct 1, 2025", "Oct 2"]);
+    assert.deepEqual(made, []);
+  } finally {
+    Date.prototype.toLocaleDateString = kept.date;
+    Date.prototype.toLocaleTimeString = kept.time;
+  }
 });

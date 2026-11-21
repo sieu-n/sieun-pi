@@ -99,14 +99,30 @@ const startOfDay = (t: number): number => {
   return d.getTime();
 };
 
+/**
+ * One formatter each, made once, as lib/ui/datetime.ts does: toLocaleDateString builds a new formatter on every call, 257 us each in Node
+ * on us-metal02 against 4 us for a kept one, and the Cmd K rows paid it twice per row on each keystroke and each answer (p156).
+ */
+const TIME = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" });
+const MONTH = new Intl.DateTimeFormat("en-US", { month: "short" });
+const WEEKDAY = new Intl.DateTimeFormat("en-US", { weekday: "short" });
+const DAY = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
+const DAY_YEAR = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+/** "Oct 12" this year, "Oct 12, 2025" before. */
+export const shortDay = (at: number | Date, now: Date): string => {
+  const date = new Date(at);
+  return (date.getFullYear() === now.getFullYear() ? DAY : DAY_YEAR).format(date);
+};
+
 /** Slack's result stamp: "Today at 3:34 PM", "Yesterday at 9:02 AM", "Oct 12th at 3:34 PM", "Oct 12th, 2025 at 3:34 PM". */
 export function longStamp(at: number, now: Date): string {
-  const time = new Date(at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  const time = TIME.format(at);
   const days = Math.round((startOfDay(now.getTime()) - startOfDay(at)) / 86_400_000);
   if (days === 0) return `Today at ${time}`;
   if (days === 1) return `Yesterday at ${time}`;
   const date = new Date(at);
-  const month = date.toLocaleDateString("en-US", { month: "short" });
+  const month = MONTH.format(date);
   const year = date.getFullYear() === now.getFullYear() ? "" : `, ${date.getFullYear()}`;
   return `${month} ${ordinal(date.getDate())}${year} at ${time}`;
 }
@@ -120,6 +136,6 @@ export function shortAge(at: number, now: Date): string {
   if (days === 0) return `${Math.round(seconds / 3600)}h`;
   if (days === 1) return "Yesterday";
   const date = new Date(at);
-  if (days < 7) return date.toLocaleDateString("en-US", { weekday: "short" });
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(date.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) });
+  if (days < 7) return WEEKDAY.format(date);
+  return shortDay(date, now);
 }
