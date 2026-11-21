@@ -87,13 +87,16 @@ export function pageText(html: string): string {
   return coded.split("```").map((part, index) => index % 2 ? part : unescape(part.replace(/<[^>]+>/g, " "))).join("```");
 }
 
-/** The code spans of markdown text that a reader takes as current: each line of a fence, and each backtick span outside a history sentence. */
-export function codeSpans(text: string): string[] {
+/**
+ * The code spans of markdown text that a reader takes as current: each line of a fence, and each backtick span outside a history sentence.
+ * With `history`, the backtick spans inside history sentences instead.
+ */
+export function codeSpans(text: string, history = false): string[] {
   const spans: string[] = [];
   text.split(/^```[^\n]*$/m).forEach((part, index) => {
-    if (index % 2) { spans.push(...part.split("\n").filter(line => line.trim())); return; }
+    if (index % 2) { if (!history) spans.push(...part.split("\n").filter(line => line.trim())); return; }
     for (const sentence of part.split(/(?<=[.!?])\s+|\n\s*\n/)) {
-      if (HISTORY.test(sentence.replace(/`[^`\n]*`/g, ""))) continue;
+      if (HISTORY.test(sentence.replace(/`[^`\n]*`/g, "")) !== history) continue;
       for (const match of sentence.matchAll(/`([^`\n]+)`/g)) spans.push(match[1]!);
     }
   });
@@ -115,9 +118,20 @@ export function pathToken(token: string): { path: string; name?: string } | null
  * when it resolves under one of the doc's app folders or its own folder (`candidates`), which the judge decides.
  */
 export function readFacts(kind: DocKind, text: string): Fact[] {
+  const markdown = kind === "page" ? pageText(text) : text;
+  const told = factsOf(codeSpans(markdown, true));
+  return [...factsOf(codeSpans(markdown))].filter(([key]) => !told.has(key)).map(([, fact]) => fact);
+}
+
+/**
+ * The facts of code spans by `kind\x1fref`. readFacts drops a fact the doc also names in a history sentence, because the doc tells that name's
+ * history: on 2026-11-21 .claude/rules/convex.md counted for `VIEW_READS = false` in a sentence telling what 2613785a3e set, while its next
+ * sentence said S7b (01f9017846) deleted `VIEW_READS`.
+ */
+function factsOf(spans: readonly string[]): Map<string, Fact> {
   const facts = new Map<string, Fact>();
   const add = (fact: Fact): void => { const key = `${fact.kind}\x1f${fact.ref}`; if (!facts.has(key)) facts.set(key, fact); };
-  for (const span of codeSpans(kind === "page" ? pageText(text) : text)) {
+  for (const span of spans) {
     const tokens = span.split(/\s+/).filter(Boolean);
     let script: string | undefined;
     for (const token of tokens) {
@@ -141,7 +155,7 @@ export function readFacts(kind: DocKind, text: string): Fact[] {
       add({ kind: "script", ref: `pnpm ${where ? `${where} ` : ""}${match[2]}`, dir, name: match[2]! });
     }
   }
-  return [...facts.values()];
+  return facts;
 }
 
 /** The apps a doc covers: a page's `apps` header, an app rule's or app skill's app name. */

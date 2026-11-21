@@ -79,6 +79,12 @@ test("a code span in a sentence that tells a removal is not read, and a fence li
   assert.deepEqual(readFacts("skill", "```\nE_F=1 node scripts/x.mjs --go\n```\n").map(fact => fact.ref).sort(), ["E_F", "scripts/x.mjs", "scripts/x.mjs --go"]);
 });
 
+test("a name the doc also names in a history sentence is history in every sentence of that doc", () => {
+  // 2026-11-21: .claude/rules/convex.md counted for `VIEW_READS = false` in a past-tense sentence, while the next one said S7b deleted it.
+  const text = "Then 2613785a3e set `VIEW_READS = false` in `convex/x/viewRead.ts`. Later S7b deleted `VIEW_READS`. Keep `OTHER_NAME` on.\n";
+  assert.deepEqual(readFacts("rule", text).map(fact => fact.ref).sort(), ["OTHER_NAME", "convex/x/viewRead.ts"]);
+});
+
 test("a Prime skill counts when a sieun-pi fact it names is gone at sieun-pi's HEAD, and a test fixture or an auto-sns-agent path does not", async () => {
   // p6 (2026-11-21): the knowledge manager's d1 read only auto-sns-agent's skills, so the Prime skills another job fixed could drift again unseen.
   const { repo, piRepo, content, done } = world();
