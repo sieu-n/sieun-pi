@@ -199,7 +199,7 @@ export class Later {
   }
 
   private reopened(item: LaterItem): LaterItem {
-    const { doneAt: _d, archivedAt: _a, ...rest } = item;
+    const { doneAt: _d, ...rest } = item;
     return { ...rest, state: "open" };
   }
 
