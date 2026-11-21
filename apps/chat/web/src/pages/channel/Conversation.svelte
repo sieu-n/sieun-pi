@@ -34,7 +34,7 @@
   import ChannelMembers from "./ChannelMembers.svelte";
   import ChannelDetailsDialog from "./ChannelDetailsDialog.svelte";
   import MemberPicker from "./MemberPicker.svelte";
-  import { removeMembership } from "./membership";
+  import { addMembership, removeMembership } from "./membership";
   import ThreadPane from "./ThreadPane.svelte";
   import PinnedButton from "./PinnedButton.svelte";
   import { roomDraftKey, threadDraftKey } from "$lib/drafts.svelte";
@@ -402,9 +402,34 @@
           ? { name: "reopen", description: "Reopen this room", run: () => setClosed(false) }
           : { name: "close", description: "Close this room, as its agenda is done", run: () => setClosed(true) }]
       : []),
+    ...((isChannel && !archived) || (isSolo && !closedAt)
+      ? [
+          { name: "invite", args: "[@agent]", description: "Add agents to this room", run: ({ mentions }: { mentions: string[] }) => inviteAgents(mentions) },
+          { name: "remove", args: "[@agent]", description: "Remove an agent from this room", run: ({ mentions }: { mentions: string[] }) => removeAgents(mentions) },
+        ]
+      : []),
+    ...(isChannel && header && !archived ? [{ name: "archive", description: "Archive this channel", run: () => archiveRoom(id, name) }] : []),
     { name: "search", args: "[words]", description: "Search in this conversation", run: ({ args }) => search.open({ kind: "conversation", id }, args) },
     ...(working ? [{ name: "stop", description: "Stop the answer the agent is writing", run: stop }] : []),
   ]);
+
+  /** Slack's /invite @agent: with no agent named it opens the room's add picker. */
+  async function inviteAgents(mentions: string[]) {
+    if (!mentions.length) {
+      if (isChannel) channelMembers?.openAdd();
+      else inviteOpen = true;
+      return;
+    }
+    for (const agentId of mentions.filter((m) => !others.some((o) => o.principal.id === m)))
+      await addMembership({ room: id, roomName: name, agent: agentId, agentName: memberName(agentId) }, { refresh: refreshHeader });
+  }
+
+  async function removeAgents(mentions: string[]) {
+    const members = others.filter((m) => mentions.includes(m.principal.id));
+    if (!members.length) throw new Error(mentions.length ? "That agent is not in this room" : "Name the agent after /remove, such as /remove @Vent");
+    for (const m of members)
+      await removeMembership({ room: id, roomName: name, agent: m.principal.id, agentName: m.principal.name }, { wakeOn: m.wakeOn, refresh: refreshHeader });
+  }
 
   function onkeydown(e: KeyboardEvent) {
     if (modKey(e) && !e.shiftKey && e.key.toLowerCase() === "l") {

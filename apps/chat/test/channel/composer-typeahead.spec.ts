@@ -3,11 +3,6 @@ import { composerInput, conversation, FRONTEND, open, tag } from "./helpers";
 
 /** The composer's emoji button, its `:name` list and its `/` commands (Composer.svelte, typeahead.ts). */
 
-// The notification offer (lib/notices.svelte.ts) is a toast that stays until dismissed and sits over the composer.
-test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem("chat.notify.asked", "1"));
-});
-
 test(":thu opens the emoji list, a pick puts the emoji in the draft, and a whole :name: turns into its emoji", async ({ page }) => {
   await open(page, `#/c/${FRONTEND}`);
   const input = composerInput(conversation(page));
@@ -80,4 +75,28 @@ test("a draft that starts with a path still posts", async ({ page }) => {
   const sent = page.waitForRequest((r) => r.url().includes(`/api/c/${FRONTEND}/send`));
   await page.keyboard.press("Enter");
   expect(((await sent).postDataJSON() as { text: string }).text.startsWith("/home/sieun/src")).toBe(true);
+});
+
+test("/invite @agent adds it, /remove @agent takes it out with Undo, and /archive archives the channel", async ({ page, request }) => {
+  const created = await request.post("/api/rooms", { data: { kind: "channel", name: `slash-members-${tag()}`, members: [], test: true } });
+  const { id } = (await created.json()) as { id: string };
+  await open(page, `#/c/${id}`);
+  const input = composerInput(conversation(page));
+  const count = page.getByTestId("channel-members");
+  const before = await count.getAttribute("aria-label");
+  await input.click();
+  await page.keyboard.type("/invite @Ven");
+  await page.getByRole("option", { name: /^Vent/ }).click();
+  await page.keyboard.press("Enter");
+  await expect(page.getByText(/Added Vent to #slash-members/)).toBeVisible();
+  await expect(count).not.toHaveAttribute("aria-label", before ?? "");
+  await page.keyboard.type("/remove @Ven");
+  await page.getByRole("option", { name: /^Vent/ }).click();
+  await page.keyboard.press("Enter");
+  await expect(page.getByText(/Removed Vent from #slash-members/)).toBeVisible();
+  await expect(count).toHaveAttribute("aria-label", before ?? "");
+  await page.keyboard.type("/archive");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Enter");
+  await expect(page.getByText(/Archived #slash-members/)).toBeVisible();
 });
