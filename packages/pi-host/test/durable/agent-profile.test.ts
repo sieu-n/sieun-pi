@@ -98,6 +98,8 @@ async function until<T>(what: string, check: () => T | undefined | false, timeou
 
 test("an agent.ref value reads as an agent only in its exact shape", () => {
   assert.deepEqual(parseAgentRef({ agent: "ag_vent", dir: "/a/vent", role: "job" }), { agent: "ag_vent", dir: "/a/vent", role: "job" });
+  assert.deepEqual(parseAgentRef({ agent: "ag_t", dir: "/a/t", role: "work", test: true }), { agent: "ag_t", dir: "/a/t", role: "work", test: true });
+  assert.deepEqual(parseAgentRef({ agent: "ag_t", dir: "/a/t", role: "work", test: "yes" }), { agent: "ag_t", dir: "/a/t", role: "work" });
   for (const bad of [null, "ag_vent", [], { agent: "", dir: "/a", role: "work" }, { agent: "a", dir: "relative", role: "work" }, { agent: "a", dir: "/a", role: "boss" }, { agent: "a", role: "work" }]) {
     assert.equal(parseAgentRef(bad), undefined, JSON.stringify(bad));
   }

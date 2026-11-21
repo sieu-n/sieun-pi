@@ -24,12 +24,14 @@ import { getLocalHarnessStateDir } from "./vendor/prime-harness.ts";
 /**
  * An `agent.ref` value: the agent's id, its folder on this box, and what the thread is to it. `work` is the agent's work thread, with `comm`
  * the id of its main comm thread once it has one, its DM's or else its first room's; `job` is a job filed under it; `comm` speaks for the
- * agent in room `room` (a DM `dm_<slug>`, a channel `ch_` or a Solo room `so_`) and hands work to the work thread `work`.
+ * agent in room `room` (a DM `dm_<slug>`, a channel `ch_` or a Solo room `so_`) and hands work to the work thread `work`. `test` marks a walk's
+ * throwaway agent (apps/chat `POST /api/agents {test: true}`), whose refine keeps every lesson in its own store (`refine.ts`).
  */
-export type AgentRef =
+export type AgentRef = (
   | { agent: string; dir: string; role: "work"; comm?: string }
   | { agent: string; dir: string; role: "job" }
-  | { agent: string; dir: string; role: "comm"; room: string; work: string };
+  | { agent: string; dir: string; role: "comm"; room: string; work: string }
+) & { test?: true };
 export type AgentRole = AgentRef["role"];
 export const AGENT_REF_DOC = "agent.ref";
 
@@ -38,14 +40,15 @@ const isId = (value: unknown): value is string => typeof value === "string" && v
 /** The ref in a chat.doc value, or undefined for any other shape. */
 export function parseAgentRef(value: unknown): AgentRef | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const { agent, dir, role, comm, room, work } = value as Record<string, unknown>;
+  const { agent, dir, role, comm, room, work, test } = value as Record<string, unknown>;
   if (!isId(agent) || typeof dir !== "string" || !isAbsolute(dir)) return undefined;
-  if (role === "job") return { agent, dir, role };
+  const flag = test === true ? { test } : {};
+  if (role === "job") return { agent, dir, role, ...flag };
   if (role === "work") {
-    if (comm === undefined) return { agent, dir, role };
-    return isId(comm) ? { agent, dir, role, comm } : undefined;
+    if (comm === undefined) return { agent, dir, role, ...flag };
+    return isId(comm) ? { agent, dir, role, comm, ...flag } : undefined;
   }
-  if (role === "comm" && isId(room) && isId(work)) return { agent, dir, role, room, work };
+  if (role === "comm" && isId(room) && isId(work)) return { agent, dir, role, room, work, ...flag };
   return undefined;
 }
 

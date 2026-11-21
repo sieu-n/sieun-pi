@@ -17,6 +17,8 @@ export interface HostCall {
   readonly harnessDir: string;
   /** The thread's agent (`agentName`) when `harnessDir` is that agent's store. */
   readonly agent?: string;
+  /** The thread's agent is a walk's throwaway test agent (`AgentRef.test`). */
+  readonly test?: true;
   readonly harness: Harness;
   /** The ipython call running now; absent for a request outside a cell and at a settle. */
   readonly api?: ToolExecutionApi;

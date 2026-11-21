@@ -205,32 +205,25 @@ export class Agents {
   /**
    * A record for a work thread just made: its slug is its name's (with -2, -3 on a clash), its room is `dm_<slug>`, and its feed starts at
    * the thread's first entry. A thread on another box (`thread.box`) makes an agent of that box, whose folder lives in that box's `agentsDir`.
+   * `test` makes the agent and its DM room a walk's test agent and room, which no owner list, live event or badge shows, before its first
+   * `agent.ref` is written, so pi-host reads it as a test agent from the start.
    */
-  add(thread: DurableThread, agentsDir?: string): AgentRecord {
+  add(thread: DurableThread, agentsDir?: string, test = false): AgentRecord {
     const known = this.ofWorkThread(thread.id);
     if (known) return known;
     const slug = freeSlug(thread.name || "agent", new Set(this.store.agents.agents.map(a => a.slug)));
     const record: AgentRecord = {
       id: `ag_${slug}`, slug, name: thread.name || slug, room: `dm_${slug}`, workThread: thread.id, host: thread.box ?? this.config.box,
-      ...(thread.box && thread.box !== this.config.box && agentsDir ? { agentsDir } : {}), home: thread.cwd, createdAt: thread.createdAt, archived: thread.archived,
+      ...(thread.box && thread.box !== this.config.box && agentsDir ? { agentsDir } : {}), home: thread.cwd, createdAt: thread.createdAt, archived: thread.archived, ...(test ? { test: true as const } : {}),
     };
     this.store.agents.agents.push(record);
     this.store.agents.aliases[thread.id] = record.id;
-    this.store.rooms.rooms.push({ id: record.room, kind: "dm", agent: record.id, createdAt: record.createdAt, archived: record.archived });
+    this.store.rooms.rooms.push({ id: record.room, kind: "dm", agent: record.id, createdAt: record.createdAt, archived: record.archived, ...(test ? { test: true as const } : {}) });
     this.store.rooms.feed[record.id] = { entry: 0, open: {} };
     this.store.saveAgents();
     this.store.saveRooms();
     void this.putRef(thread.id, agentRef(this.agentsDirOf(record), record, "work"));
     return record;
-  }
-
-  /** Makes the agent and its DM room a walk's test agent and room, which no owner list, live event or badge shows. */
-  markTest(record: AgentRecord): void {
-    record.test = true;
-    const room = this.store.rooms.rooms.find(r => r.id === record.room);
-    if (room) room.test = true;
-    this.store.saveAgents();
-    this.store.saveRooms();
   }
 
   /** Files a root job thread under the agent `parent` names (an agent id or one of its thread ids). */

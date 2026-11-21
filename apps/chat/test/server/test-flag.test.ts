@@ -68,6 +68,16 @@ describe("a walk's test agent, test channel and test DM", () => {
 
   const leaks = (ids: string[]) => ids.filter(id => testIds.has(id) || [...testIds].some(t => id.startsWith(`${t}:`)));
 
+  test("every agent.ref of the test agent says test, so pi-host routes none of its refine lessons to a shared skill", async () => {
+    const record = s.app.agents.record(testAgent.id)!;
+    for (const thread of [testAgent.thread, ...Object.values(record.comm ?? {})]) {
+      const ref = await until(async () => s.host.docGet(thread, "agent.ref") as Promise<Record<string, unknown> | undefined>, r => !!r);
+      assert.equal(ref?.test, true, thread);
+    }
+    const plain = await until(async () => s.host.docGet(plainAgent.thread, "agent.ref") as Promise<Record<string, unknown> | undefined>, r => !!r);
+    assert.equal(plain?.test, undefined);
+  });
+
   test("the sidebar lists none of them, and the plain agent's DM is there", async () => {
     const sidebar = await s.get<Sidebar>("/api/sidebar");
     const rows = [...sidebar.solo, ...sidebar.channels, ...sidebar.dms];

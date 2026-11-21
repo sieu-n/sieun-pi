@@ -575,7 +575,7 @@ export class DurableRlm {
     return {
       thread, conversation: slot.conversation, session: harnessSessionOf(thread.id, slot.conversation), harness,
       harnessDir: conversationHarnessDir(thread, slot.conversation, agent), ...(agent ? { agent: agentName(agent) } : {}),
-      ...(api ? { api } : {}), ...(models ? { models } : {}),
+      ...(agent?.test ? { test: true as const } : {}), ...(api ? { api } : {}), ...(models ? { models } : {}),
       running: () => this.running(slot),
       workOut: async () => {
         for (const child of await this.children(thread, slot.conversation)) {

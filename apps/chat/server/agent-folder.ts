@@ -24,14 +24,16 @@ export const AGENT_REF_DOC = "agent.ref";
 /**
  * `agent.ref`: the agent, its folder, and the thread's role (phase 4). The work thread names a comm thread once it has one, its DM's or
  * else its first room's, a root job filed under the agent is a job, and a comm thread names its room and the work thread it hands tasks to.
- * pi-host parses the same JSON and reads any other shape as no agent.
+ * pi-host parses the same JSON and reads any other shape as no agent. `test` marks a walk's throwaway agent, whose refine pi-host keeps out of
+ * shared skills and rules.
  */
-export type AgentRef =
+export type AgentRef = (
   | { agent: AgentId; dir: string; role: "work"; comm?: string }
   | { agent: AgentId; dir: string; role: "job" }
-  | { agent: AgentId; dir: string; role: "comm"; room: RoomId; work: string };
+  | { agent: AgentId; dir: string; role: "comm"; room: RoomId; work: string }
+) & { test?: true };
 
-const REF_KEYS = ["agent", "dir", "role", "comm", "room", "work"] as const;
+const REF_KEYS = ["agent", "dir", "role", "comm", "room", "work", "test"] as const;
 
 /** Whether a doc value is this ref, field by field, so key order does not count. */
 export const sameRef = (a: unknown, b: AgentRef): boolean => {
@@ -112,14 +114,14 @@ export const harnessPath = (dir: string): string => join(dir, "harness", "harnes
  * or for a root job filed under it. An agent that talks only in channels still gets the work role, so its work thread has no tell_owner.
  */
 export function agentRef(agentsDir: string, record: AgentRecord, role: "work" | "job"): AgentRef {
-  const base = { agent: record.id, dir: agentFolderDir(agentsDir, record) };
+  const base = { agent: record.id, dir: agentFolderDir(agentsDir, record), ...(record.test ? { test: true as const } : {}) };
   const comm = record.comm?.[record.room] ?? Object.values(record.comm ?? {})[0];
   return role === "job" ? { ...base, role } : { ...base, role, ...(comm ? { comm } : {}) };
 }
 
 /** The `agent.ref` value for the agent's comm thread in `room`. */
 export const commRef = (agentsDir: string, record: AgentRecord, room: RoomId): AgentRef =>
-  ({ agent: record.id, dir: agentFolderDir(agentsDir, record), role: "comm", room, work: record.workThread });
+  ({ agent: record.id, dir: agentFolderDir(agentsDir, record), role: "comm", room, work: record.workThread, ...(record.test ? { test: true as const } : {}) });
 
 /** Prime's `_slug`: lowercase letters and digits of any script, every other character to `_`, runs collapsed, at most 80 characters. */
 export function harnessSlug(raw: string, fallback: string): string {

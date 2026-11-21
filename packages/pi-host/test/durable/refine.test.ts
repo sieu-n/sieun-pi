@@ -6,6 +6,7 @@
  * 3. In an agent's thread, Prime's auto-refine reviews after the turn interval and writes the agent's store, told it is the agent's memory.
  * 4. Outside a run it answers Prime's "no active turn", and a child conversation gets no refine, as Prime registers it only at depth 0, unless
  *    the thread belongs to an agent, whose store outlives the job.
+ * 5. A walk's test agent (`agent.ref` `test: true`) gets no skill route, and its refine writes its own store even when asked for global.
  */
 import { strict as assert } from "node:assert";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -63,6 +64,11 @@ function model(messages: Message[]): ReturnType<typeof say> {
       summary: "Keep the keyword decision and route the JSON rule", rationale: "The owner gave a product decision and a general standard.", expectedOutcome: "Memory holds the decision and a skill gets the rule.",
       edits: [{ action: "create", kind: "memory", id: "keyword_list", title: "keyword list", content: "seo targets the 40 keywords in keywords.csv.", path: "test" }],
       skillRoutes: [{ target: "skills/sw-factory/SKILL.md", rule: "Never paste raw JSON in a post (p9).", evidence: "the owner's second message" }, { target: "", rule: "dropped" }],
+    }))]);
+    if (text.includes("agent blind's memory")) return fauxAssistantMessage([fauxText(JSON.stringify({
+      summary: "Keep the file rule and route it", rationale: "The test task taught a rule.", expectedOutcome: "The rule reaches every agent.",
+      edits: [{ action: "create", kind: "memory", id: "file_rule", title: "file rule", content: "Write a large file with the write tool.", path: "test" }],
+      skillRoutes: [{ target: "config/AGENTS.md", rule: "Write a large file with the write tool.", evidence: "the made-up task" }],
     }))]);
     if (text.includes("agent vent's memory")) return fauxAssistantMessage([fauxText(edit("release_rule", "Release apps/chat with scripts/release-apps-chat.mjs."))]);
     return fauxAssistantMessage([fauxText(text.includes("scope: global") ? edit("global_deploy_rule", "Deploys ship on green CI.") : edit("deploy_rule", "Staging deploys need no ok."))]);
@@ -206,6 +212,39 @@ test("in an agent's thread, a general standard goes to a skill route that starts
     await threads.shutdown();
     if (kept === undefined) rmSync(settings, { force: true });
     else writeFileSync(settings, kept);
+  }
+});
+
+test("a test agent's refine sends no skill route and writes only its own store, also when asked for global", { timeout: 180_000 }, async () => {
+  const folder = join(dir, "agents", "blind");
+  const threads = new DurableThreads({
+    dir: join(dir, "threads-test-agent"),
+    models: () => {
+      const faux = fauxProvider({ provider: MODEL.provider, models: [{ id: MODEL.modelId }], tokensPerSecond: 0 });
+      faux.setResponses(Array.from({ length: 50 }, () => ({ messages }: { messages: Message[] }) => model(messages)));
+      const models = createModels();
+      models.setProvider(faux.provider);
+      return models;
+    },
+    defaultModel: MODEL, defaultThinkingLevel: "off", defaultCwd: dir, rlm, primeRoots: null,
+  });
+  try {
+    const { id } = await threads.create({ name: "blind" });
+    await threads.docPut(id, "agent.ref", { agent: "ag_blind", dir: folder, role: "work", test: true });
+    const sent = await threads.submit(id, { text: "remember it for every session" });
+    assert.equal((await threads.wait(id, sent.submission)).status, "done");
+    const entries = async () => (await threads.entries(id, { after: 0, limit: 500 })).entries;
+    const [notice] = await until("the refine notice", async () => { const n = inputs(await entries()).filter(i => i.data?.from === "refine"); return n.length ? n : undefined; }, 30_000);
+    assert.equal(notice!.data?.via, "refine-notice", "the only refine input is the notice");
+    const plan = planned.findLast(p => p.includes("agent blind's memory"))!;
+    assert.doesNotMatch(plan, /skillRoutes/, "the planner is not offered routes");
+    const store = JSON.parse(readFileSync(join(folder, "harness", "harness_state.json"), "utf8"));
+    assert.equal(store.entries.memory.file_rule.scope, "local");
+    const global = join(dir, "agent", "harness", "harness_state.json");
+    assert.equal(existsSync(global) && JSON.parse(readFileSync(global, "utf8")).entries.memory.file_rule, undefined);
+    assert.equal(inputs(await entries()).filter(i => i.data?.via === "skill-route").length, 0);
+  } finally {
+    await threads.shutdown();
   }
 });
 

@@ -13,7 +13,9 @@
  *
  * A general standard, such as a coding standard or how every agent writes, goes to a skill rather than a store (owner, #sw-factory-build p110):
  * the planner returns it as a skill route (pi-harness `ROUTE_POLICY`), and the thread's root gets a `[skill-route]` input that has it make the
- * edit through a commit, as sieun-pi's `skills/refine-harness` says.
+ * edit through a commit, as sieun-pi's `skills/refine-harness` says. A walk's throwaway test agent (`HostCall.test`) gets no route and no global
+ * write: every refine of it writes its own store, which goes with it, since a lesson from a made-up task must not change shared rules. On 11-21
+ * a blind run's test agent got a route and pushed d87524e0, a config/AGENTS.md change for every agent.
  *
  * The planning, the edit rules and the texts are pi-harness's port of Prime 0.9.8 (`packages/pi-harness/src/core`). A store write goes through its
  * `updateState`, which holds the file lock Prime's `harness.py` takes, and two refines of one store run one after the other.
@@ -143,14 +145,14 @@ export function refineModule(options: RefineModuleOptions): HostModule {
 
   /** One refine: plan on the conversation's context, then apply under the store lock and record the event (agent-session.ts `_planRefine`, `_applyRefine`). */
   const refine = async (call: HostCall, ask: Pending, signal: AbortSignal): Promise<RefineResult> => {
-    const scope: Scope = ask.global ? "global" : "local";
+    const scope: Scope = ask.global && !call.test ? "global" : "local";
     const dir = scope === "global" ? globalDir : call.harnessDir;
     return exclusive(dir, async () => {
       const records = mergeHistory(readRefinementLog<RefineResult>(globalDir), ((await read(call))?.records ?? []) as unknown as RefineResult[]);
       const global = readState(globalDir, "global");
       const local = readState(call.harnessDir, "local");
       const text = conversationText(await contextMessages(call) as never).slice(-PLANNER_CONVERSATION);
-      const args = { global: scope === "global", routes: true, ...(ask.instructions ? { instructions: ask.instructions } : {}), ...(scope === "local" && call.agent ? { agent: call.agent } : {}) };
+      const args = { global: scope === "global", routes: !call.test, ...(ask.instructions ? { instructions: ask.instructions } : {}), ...(scope === "local" && call.agent ? { agent: call.agent } : {}) };
       const reply = await planner(call, PLANNER_PROMPT, text, c => plannerPrompt(scope === "global" ? global : mergeStates(global, local), records, c, args), signal);
       const proposal = parseProposal(reply);
       if (signal.aborted) throw new Error("Refinement cancelled.");
@@ -237,7 +239,8 @@ export function refineModule(options: RefineModuleOptions): HostModule {
         call.log(`${outcomeContent(result)} (${result.id}, ${applied} of ${result.appliedEdits.length} edits applied, ${result.scope}${routed}${served.auto ? `, auto ${served.auto}` : ""})`);
         // A general standard goes to a skill through a commit (skills/refine-harness, #sw-factory-build p110), so its routes start a turn of
         // the thread's root, also for an auto-refine or a job's refine, since the root is the conversation that edits and commits or hands it on.
-        if (result.skillRoutes?.length) {
+        if (result.skillRoutes?.length && call.test) call.log(`skill routes of ${result.id} dropped: a test agent changes no shared rule`);
+        else if (result.skillRoutes?.length) {
           const job = call.conversation === ROOT_CONVERSATION_ID ? undefined : call.conversation;
           call.submitRoot({
             text: skillRouteContent(result, job), requestId: `skill-route:${call.session}:${result.id}`, whenBusy: "followUp",

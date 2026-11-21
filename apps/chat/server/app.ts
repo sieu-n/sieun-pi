@@ -1011,8 +1011,7 @@ export class App {
         if (input.parent) this.agents.alias(thread.id, input.parent);
         return;
       }
-      record = this.agents.add(thread, agentsDir);
-      if (input.test === true) this.agents.markTest(record);
+      record = this.agents.add(thread, agentsDir, input.test === true);
     });
     if (!record) {
       await this.threads.refresh();
