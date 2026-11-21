@@ -39,7 +39,7 @@ Everything you send another agent (briefs, relays, answers) is in English. After
 3. The job plans, coordinates and checks its subagents' results.
 4. Work of 1 to 3 tool calls stays inline, so do not start a job for it.
 5. A job with 2 or more independent parts fans out to sub-jobs.
-6. The check-in flags a goal with more than 3, or over half, of its open steps on one other session, such as the release owner thread.
+6. The check-in flags a goal when one other session, such as the release owner thread, owns more than 3 of its open steps, or more than half of them once the goal has 4 or more, and runs fewer than one working subagent per 3 of those steps. A step that waits on purpose (`waitFor` or `waitUntil`) does not count.
 
 ## Steer and end a job
 
