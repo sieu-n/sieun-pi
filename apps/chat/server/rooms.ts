@@ -446,7 +446,7 @@ export class Rooms {
       const asTest = post.testSend;
       const from = asTest ? { entry: { kind: "agent.message" as const, data: { from: asTest.by, via: TEST_SEND_VIA } } } : { ownerTurn: true };
       const now = Date.now();
-      const posts = members.map(p => ({ at: p.at, text: this.deps.fileNotes(this.inputText(p), p.images) }));
+      const posts = members.map(p => ({ at: p.at, text: this.inputText(p) }));
       const text = bundle ? bundlePosts(posts, record.host, now) : delivery.waited ? agedPost(posts[0]!.text, post.at, record.host, now) : posts[0]!.text;
       const result = await this.deps.host.submit(thread, {
         text, ...(images.length ? { images } : {}), requestId: bundle?.requestId ?? delivery.requestId, whenBusy: "steer", ...from,
