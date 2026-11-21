@@ -1,7 +1,7 @@
 # The page publish gate
 
 A curated page is not done until it passes this gate.
-§8 of the system spec defines what the engine enforces, and this file is the procedure you run against `https://us-metal02-dev.tail0c093d.ts.net:5184/wiki`.
+The section "The verification gate" of the system spec (`apps/llm-wiki/index.html#gate`) defines what the engine checks, and this file is the procedure you run against `https://us-metal02-dev.tail0c093d.ts.net:5184/wiki`.
 
 ```
 0 · LOCATE → 1 · DRAFT → 2 · VERIFY (5 layers, loop until green) → publish → 3 · WRAP
@@ -25,8 +25,8 @@ A curated page is not done until it passes this gate.
 | #   | Layer                     | How to check                                                                                                                          | Pass condition                                                                                                                                                             |
 | --- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | L1  | Schema                    | Read the file head; check meta JSON parses, one `<h1>`, `date`/`updated` present and current, correct space                           | All true; page linked from its hub                                                                                                                                         |
-| L2  | Links                     | `curl -s '…/api/agent/lint' \| jq '{broken,orphans}'` filtered to your path                                                           | 0 broken links involving the page; page has ≥1 inbound link (not an orphan)                                                                                                |
-| L3  | Render                    | `curl -s '…/api/agent/page?path=<path>' \| jq '{title,toc:(.toc\|length),htmlLen:(.html\|length)}'`                                   | HTTP 200; title correct; TOC non-empty; html contains your tables/figures (components expanded, nothing load-bearing stripped)                                             |
+| L2  | Links                     | `curl -s '…/api/agent/verify?path=<path>' \| jq .checks.L2_links` | `broken` is empty, and the page has a way in: `inbound` above 0, `hubListed` true (an ancestor hub's `<wiki-children>` table lists it) or `retired` true |
+| L3  | Render                    | `curl -s '…/api/agent/page?path=<path>' \| jq '{title,headings:(.headings\|length),contentLen:(.content\|length)}'`, plus `.checks.L3_render` of the verify call | HTTP 200; title correct; `headings` non-empty; `L3_render.ok` true with `htmlLen` above 0; the rendered page at `/wiki/<path>` shows your tables and figures (components expanded, nothing load-bearing stripped) |
 | L4  | Content quality + writing | Read the rendered page end-to-end at `/wiki/<path>` against `writing.md`, then run `node apps/wiki/scripts/prose-lint.mjs <file>` | Every claim traceable to raw source or a cited log; real numbers; no hallucination; the page is numbered one-sentence lines with diagrams; the prose lint reports 0 errors |
 | L5  | Freshness / graduation    | Review adjacent state                                                                                                                 | Affected app/domain pages updated; session log closed; `updated` dates bumped; graduation check done                                                                       |
 
@@ -42,7 +42,7 @@ Its L1 also needs `kind` in the meta.
 
 ## Gate semantics
 
-1. L1 to L3 are mandatory machine checks, so no page publishes with a broken link, a parse error, a missing H1, or a render that drops content.
+1. L1 to L3 are mandatory machine checks, but `/api/agent/verify` only reports them and never blocks a write, so `wiki.publish` saves a failing page, and you fix a broken link, a missing title, `kind` or `date`, or an empty render before you call the page done.
 2. L4 and L5 are a review pass, careful for a spec, architecture page or project hub, and a self-review for a session log or small fix.
 3. If the user asked for a peer review of the work, put the page in that same peer conversation, not a separate one per page.
 4. A page that fails any layer goes back to Draft.
@@ -56,8 +56,8 @@ P=apps/llm-wiki/index.html   # the engine spec page; a folder path resolves to i
 # L1-L3 in one call
 curl -s -X POST "$WIKI/api/agent/verify" -H 'content-type: application/json' -d "{\"path\":\"$P\"}" | jq .
 
-# L3: page renders, components expanded, TOC built
-curl -s "$WIKI/api/agent/page?path=$P" | jq '{title, kind, toc: (.toc|length), htmlLen: (.html|length)}'
+# L3: the page object has its title and headings; the verify call's L3_render.htmlLen is the rendered size
+curl -s "$WIKI/api/agent/page?path=$P" | jq '{title, kind, headings: (.headings|length), contentLen: (.content|length)}'
 
 # whole-wiki health must stay clean
 curl -s "$WIKI/api/agent/health" | jq .
