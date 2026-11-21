@@ -29,6 +29,8 @@ export class Kept<T> {
   private views = 0;
   /** A `live` read holds what the socket's events said since its last answer, so reading it ahead again would bring the same. */
   private current = false;
+  /** When the read of the kept answer left the page (`Wait.sent`), unset for an answer the last page load kept. */
+  private sent = -Infinity;
 
   constructor(private readonly of: Read<T>, value: T | null) {
     this.value = value;
@@ -64,6 +66,7 @@ export class Kept<T> {
     const flight = {
       wait,
       read: get(this.of, wait).then(next => {
+        this.sent = wait.sent ?? -Infinity;
         // A refresh that changed what the panel shows is one the owner waited for.
         if (same(this.value, next)) this.error = null;
         else {
@@ -95,8 +98,14 @@ export class Kept<T> {
     return () => void (this.views -= 1);
   }
 
-  /** The socket came back, so events may have been missed: an open panel reads again, and a read ahead may run again. */
+  /**
+   * The socket came back, so events may have been missed: an open panel reads again, and a read ahead may run again. An answer whose read
+   * left after the socket opened, or one still waiting to leave, missed nothing. On a page load the panels read before the socket's hello
+   * came, and the hello read each of them again: in a walk at a 200 ms round trip on 11-22 every load read /api/rooms, the board and its
+   * duties twice (~/work/p189-rooms).
+   */
   missed(): void {
+    if ((this.flight ? this.flight.wait.sent ?? Infinity : this.sent) >= live.openedAt) return;
     this.current = false;
     if (this.views) void this.read();
   }

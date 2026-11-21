@@ -8,6 +8,8 @@ type Listener = (event: LiveEvent) => void;
 
 class Live {
   connected = $state(false);
+  /** When the socket last opened (`performance.now()`); a read that left after it missed no event the socket brings. */
+  openedAt = Infinity;
   private socket: WebSocket | null = null;
   private listeners = new Set<Listener>();
   /** Watch counts per conversation, and the newest item id each one holds for a reconnect. */
@@ -27,6 +29,7 @@ class Live {
     const socket = new WebSocket(url);
     this.socket = socket;
     socket.onopen = () => {
+      this.openedAt = performance.now();
       this.connected = true;
       this.retry = 0;
       for (const [conversation, watch] of this.watches) this.send({ type: "watch", conversation, ...(watch.after() ? { after: watch.after()! } : {}) });

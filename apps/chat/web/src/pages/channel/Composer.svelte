@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { attach, type AgentSummary, type Attached, type Room } from "$lib/api";
+  import { attach, type AgentSummary, type Attached, type ListedRoom } from "$lib/api";
   import { holdReload, releaseReload } from "$lib/api/reload";
   import { emojiOf, searchEmoji } from "$lib/api/shared/emoji";
   import AvatarStack from "$lib/ui/AvatarStack.svelte";
@@ -27,7 +27,7 @@
     /** Registered agents, the only rows the @ picker lists. */
     agents: AgentSummary[];
     /** Channels, the only rows the # picker lists. */
-    channels: Room[];
+    channels: ListedRoom[];
     /** The channel or Solo room this box posts into: its members lead the @ picker, and an agent outside it reads "not in <label>". */
     room?: { label: string; members: string[] } | null;
     /** The agent works now: Stop shows beside Send. */

@@ -46,7 +46,7 @@ export function deliveryText(delivery: Delivery): string | null {
 }
 
 /** Mention targets for Markdown: every agent and channel by lower-case name, and the owner as the lime self chip. */
-export function mentionContext(agents: readonly AgentSummary[], channels: readonly Room[], ownerName: string): MarkdownContext["mentions"] {
+export function mentionContext(agents: readonly AgentSummary[], channels: readonly Pick<Room, "id" | "name">[], ownerName: string): MarkdownContext["mentions"] {
   const map = new Map<string, { id: string; kind: "person" | "agent" | "channel"; self?: boolean }>();
   for (const channel of channels) map.set(channel.name.toLowerCase(), { id: channel.id, kind: "channel" });
   for (const agent of agents) map.set(agent.name.toLowerCase(), { id: agent.id, kind: "agent" });

@@ -1,4 +1,4 @@
-import { agents, kept, live, reads, type Room } from "$lib/api";
+import { agents, kept, listedRoom, live, reads, type ListedRoom } from "$lib/api";
 
 /** Channels and Solo rooms, fetched once and kept current from the live socket's room events. */
 class RoomDirectory {
@@ -8,7 +8,7 @@ class RoomDirectory {
 
   private started = false;
 
-  get list(): Room[] {
+  get list(): ListedRoom[] {
     return this.kept.value ?? [];
   }
 
@@ -18,8 +18,10 @@ class RoomDirectory {
     this.kept.open();
     live.on((event) => {
       if (event.type !== "room") return;
-      const index = this.list.findIndex((r) => r.id === event.room.id);
-      this.kept.set(index >= 0 ? this.list.map((r, i) => (i === index ? event.room : r)) : [...this.list, event.room]);
+      const room = listedRoom(event.room);
+      const index = this.list.findIndex((r) => r.id === room.id);
+      if (index >= 0 && JSON.stringify(this.list[index]) === JSON.stringify(room)) return;
+      this.kept.set(index >= 0 ? this.list.map((r, i) => (i === index ? room : r)) : [...this.list, room]);
     });
   }
 }
@@ -35,7 +37,7 @@ export const directory = {
     roomDirectory.start();
     return roomDirectory.list.filter((r) => r.kind === "channel");
   },
-  room(id: string): Room | undefined {
+  room(id: string): ListedRoom | undefined {
     roomDirectory.start();
     return roomDirectory.list.find((r) => r.id === id);
   },

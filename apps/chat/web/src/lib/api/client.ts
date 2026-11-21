@@ -4,7 +4,7 @@
  */
 import type {
   AgentConfig, AgentFolder, AgentHostList, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
-  ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, ImageRef, Item, JobNode, Me, MemoryInput, ModelCatalog, OpenedPage, ProjectList, SearchQuery, SearchResult, SendRequest, WikiPages,
+  ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, ImageRef, Item, JobNode, Me, Member, MemoryInput, ModelCatalog, OpenedPage, ProjectList, SearchQuery, SearchResult, SendRequest, WikiPages,
   LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, ReadAllRequest, ReadPoint, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageBucket, UsageRange, UsageReport, AccountsView,
 } from "./types.ts";
 import type {
@@ -69,6 +69,11 @@ export type Wait = {
   shownMs?: number;
   /** The ms an image's encode took before its upload (shrink.ts), logged beside the call as `enc`. */
   encodeMs?: number;
+  /**
+   * When the call last left the page (`performance.now()`), which `send` sets. A kept answer whose read left after the live socket opened
+   * missed no event of it, so the socket's hello reads it no more (kept.svelte.ts `missed`).
+   */
+  sent?: number;
 };
 
 /**
@@ -335,6 +340,7 @@ function call<T>(method: string, path: string, body?: unknown, signal?: AbortSig
 
 async function send<T>(method: string, path: string, body: unknown, signal: AbortSignal | undefined, wait: Wait | undefined, asked?: number): Promise<T> {
   const started = performance.now();
+  if (wait) wait.sent = started;
   const blob = body instanceof Blob;
   let response: Response;
   let text: string;
@@ -409,11 +415,22 @@ export function attach(file: Blob): Attached {
 
 /**
  * A GET whose answer the page keeps and shows before it reads it again (kept.svelte.ts): its path and, in the type only, its answer.
- * `live` marks one the socket keeps current between reads, by the event that carries its whole answer.
+ * `live` marks one the socket keeps current between reads, by the event that carries its whole answer. `pick` keeps only the part of the
+ * server's answer the page shows, so a refresh that changed only the rest leaves the screen as it was and counts as no wait of his.
  */
-export interface Read<T> { readonly path: string; readonly live?: true; readonly answer?: T }
+export interface Read<T> { readonly path: string; readonly live?: true; readonly pick?: (answer: never) => T; readonly answer?: T }
 const read = <T>(path: string, live?: true): Read<T> => ({ path, ...(live ? { live } : {}) });
-export const get = <T>(of: Read<T>, wait?: Wait): Promise<T> => call<T>("GET", of.path, undefined, undefined, wait);
+export const get = <T>(of: Read<T>, wait?: Wait): Promise<T> =>
+  of.pick ? call<never>("GET", of.path, undefined, undefined, wait).then(of.pick) : call<T>("GET", of.path, undefined, undefined, wait);
+
+/**
+ * A channel or Solo room as the page lists it, for the # typeahead, mention chips and pickers (pages/channel/directory.svelte.ts):
+ * without its `lastSeq` and its members' run status, which change with every post and turn and which no list shows. On 11-21 his
+ * GET /api/rooms refreshes waited p90 1151 ms (d2 run of 11-22 06:30 KST) because each answer differed in those two, so each counted as
+ * a wait and drew every open message's mentions again.
+ */
+export type ListedRoom = Omit<Room, "lastSeq" | "members"> & { members: Omit<Member, "status">[] };
+export const listedRoom = ({ lastSeq: _lastSeq, members, ...room }: Room): ListedRoom => ({ ...room, members: members.map(({ status: _status, ...member }) => member) });
 
 /** The reads of the panels the owner opens: the Agents page, an agent's page, and a chat's board with its duties, check-in and jobs. */
 export const reads = {
@@ -425,7 +442,7 @@ export const reads = {
   allAgents: () => read<AgentSummary[]>("/api/agents?archived=1"),
   models: () => read<ModelCatalog>("/api/models"),
   /** Channels and Solo rooms; a DM is listed by agent, never here. */
-  rooms: () => read<Room[]>("/api/rooms"),
+  rooms: (): Read<ListedRoom[]> => ({ path: "/api/rooms", pick: (rooms: Room[]) => rooms.map(listedRoom) }),
   /** Archived channels and Solo rooms, newest first, for the sidebar's Archived channels list. */
   archivedRooms: () => read<Room[]>("/api/rooms?archived=1"),
   boards: () => read<BoardRow[]>("/api/boards"),
