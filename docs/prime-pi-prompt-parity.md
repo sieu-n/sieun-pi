@@ -41,9 +41,12 @@ Bytes are from Prime chat `01a1180e` (VP of CI) at 18:05 UTC on 2026-10-28, cwd 
 | 7 | `rules` | claude-rules (`packages/pi-claude-rules`): the cwd repo's unscoped `.claude/rules/*.md` | first user message of every request | 52,028 | no | identical text, in the system prompt |
 | 8 | `harness` | Prime's harness digest (`formatHarnessStateForPrompt` of the running release) over `~/.prime/agent/harness` merged with the session's local store | `[harness-digest]` message before a turn's input, then `[harness-digest update]` messages | 10,616 (pi before: 9,898, global only) | no | identical bytes, as a message before the turn's input, see [Harness digest](#harness-digest) |
 | 9 | `corrections` | `ledgerPrompt` over `browser-chat/corrections.json` (`chat-corrections.ts`), or `jobLedgerPrompt` for a job | `[corrections]` user message, once per context | 21,750 (Prime: 21,418) | no | same rules; pi lists the 1 correction added since that chat's snapshot |
+| 10 | `writing` | the unslop skill's `SKILL.md` without its frontmatter, from the path the skills list names (`writingStandard` in `prime-prompt.ts`) | not sent; the model sees the skill's name and opens the file itself | 10,077 | no | pi only, in every conversation, since 11-21 |
 
 Sections 1 to 6 joined with a blank line are the exact string Prime's `buildSystemPrompt` returns.
 Sections 7 and 9 follow them in the system prompt, because pi-durable can add text only as sections or as hooks that are not stored.
+Section 10 closes the leading system block, before its cache breakpoint, so a warm request reads it from the cache.
+Before it, a measure of 7 days on us-metal02 (`~/work/unslop-loaded/measure_reads.py`) found unslop opened before the first post, report or commit in 0 of 187 comm roots, 1 of 226 work roots and 339 of 538 jobs.
 Section 8 goes where Prime puts it, as the next section explains.
 
 ## Harness digest

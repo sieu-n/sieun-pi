@@ -7,8 +7,9 @@
  *
  * The parts render as pi-durable sections in Prime's order. pi-ai joins sections with a blank line, so `preamble` through `skills`
  * join to the exact string Prime's builder returns for the same inputs (`primeSystemPrompt`); `rules` and `corrections` follow them, where
- * Prime sends the same texts as messages. A thread's root conversation gets the harness digest where Prime puts it, as a message before
- * the turn's input (`prime-harness.ts`); a child conversation still gets it as the `harness` section.
+ * Prime sends the same texts as messages, and then `writing`, the unslop skill's text, which a Prime chat sees only by name (`writingStandard`).
+ * A thread's root conversation gets the harness digest where Prime puts it, as a message before the turn's input (`prime-harness.ts`); a child
+ * conversation still gets it as the `harness` section.
  *
  * A thread that belongs to an agent (an `agent.ref` doc in its root conversation, `agent-profile.ts`) differs in two ways, in every one of its
  * conversations: the agent's `brief.md` is one more Prime context file after the AGENTS.md files Prime's loader found, so Prime's builder
@@ -45,7 +46,7 @@ export const TOOLS: Record<PromptTools, { root: string[]; child: string[] }> = {
 
 /** Section keys in the order they render. `preamble` stays first and keeps its old key, so a thread from before keeps its order. */
 export const PRIME_SECTIONS = ["preamble", "delegation", "mcp", "guidance", "context", "skills"] as const;
-export const EXTRA_SECTIONS = ["rules", "harness", "corrections"] as const;
+export const EXTRA_SECTIONS = ["rules", "harness", "corrections", "writing"] as const;
 export type PromptKey = (typeof PRIME_SECTIONS)[number] | (typeof EXTRA_SECTIONS)[number];
 /**
  * Sections that keep the text a conversation first got, as Prime pins them: the chat brief (`pinnedBrief`), the corrections block and the
@@ -138,7 +139,7 @@ export function chatDataDir(agentDir: string, env: NodeJS.ProcessEnv = process.e
 // ---------------------------------------------------------------------------------------------------------------------------
 // Skills and context files, loaded by Prime's resource loader and kept until one of the files it read changes.
 
-interface Resources { skills: Skill[]; contextFiles: ContextFile[]; mcpServers: string[] }
+interface Resources { skills: Skill[]; contextFiles: ContextFile[]; mcpServers: string[]; writing?: ContextFile }
 
 /**
  * Prime runs as a Bun binary, whose readdir returns entries in directory order, while Node's sorts them by name. Prime's
@@ -218,7 +219,8 @@ export async function primeResources(agentDir: string, cwd: string, bundled: str
   const loader = new prime.DefaultResourceLoader({ cwd, agentDir, bundledSkillsDir: bundled, noExtensions: true, noPromptTemplates: true, noThemes: true });
   await loader.reload();
   const skills = inDirectoryOrder(loader.getSkills().skills, [join(agentDir, "skills"), bundled, join(homedir(), ".agents", "skills"), join(cwd, ".agents", "skills"), join(cwd, ".prime", "skills")]);
-  const resources: Resources = { skills, contextFiles: withFolderFiles(loader.getAgentsFiles().agentsFiles), mcpServers: mcpServers(agentDir) };
+  const writing = writingStandard(skills);
+  const resources: Resources = { skills, contextFiles: withFolderFiles(loader.getAgentsFiles().agentsFiles), mcpServers: mcpServers(agentDir), ...(writing ? { writing } : {}) };
   const paths = watchedPaths(agentDir, cwd, bundled, skills);
   loaded.set(key, { paths, stamp: stampOf(paths), resources });
   return resources;
@@ -272,7 +274,7 @@ export async function primePromptParts(input: PrimePromptInput): Promise<PromptP
   const full = prime.buildSystemPrompt(options);
   const parts = splitParts(prime, options, full, tools);
   if (input.primeOnly) return parts;
-  return [...parts, ...extraParts(input, tools, resources.skills)];
+  return [...parts, ...extraParts(input, tools, resources)];
 }
 
 function splitParts(prime: PrimeModules, options: Record<string, unknown> & { skills: Skill[] }, full: string, tools: readonly string[]): PromptPart[] {
@@ -312,8 +314,8 @@ let claudeRules: SessionRules | undefined;
 const sessionRules = (): SessionRules =>
   claudeRules ??= new SessionRules({ cellStart: () => "", cellSteps: (code, start) => [{ code, cwd: start }] }, homedir());
 
-/** The parts Prime sends as messages rather than in its system prompt, in the order they reach the model there. */
-function extraParts(input: PrimePromptInput, tools: readonly string[], skills: readonly Skill[]): PromptPart[] {
+/** The parts Prime sends as messages rather than in its system prompt, in the order they reach the model there, then the unslop skill's text. */
+function extraParts(input: PrimePromptInput, tools: readonly string[], { skills, writing }: Resources): PromptPart[] {
   const out: PromptPart[] = [];
   // claude-rules' context hook puts the cwd repo's unscoped .claude/rules first in every request.
   let rules: string | null = null;
@@ -330,14 +332,39 @@ function extraParts(input: PrimePromptInput, tools: readonly string[], skills: r
     out.push({ key: "harness", text: HARNESS_DIGEST_PREFIX + digest + HARNESS_DIGEST_SUFFIX, source: "Prime's formatHarnessStateForPrompt (vendor/prime-harness.ts) over <agentDir>/harness and the local store, with the agent's block in an agent's thread (prime-harness.ts formatDigest) (Prime: [harness-digest] message)" });
   }
   // The legacy chat's corrections block, which its context hook puts in once per context.
-  if (input.skip?.has("corrections")) return out;
-  const ledger = readLedger(input.ledgerDir ?? chatDataDir(input.agentDir));
-  const corrections = input.comm ? commLedgerPrompt(ledger) : input.depth === 0 ? ledger && ledgerPrompt(ledger, BRIEF_CORRECTIONS) : jobLedgerPrompt(ledger);
+  const ledger = input.skip?.has("corrections") ? undefined : readLedger(input.ledgerDir ?? chatDataDir(input.agentDir));
+  const corrections = ledger === undefined ? undefined : input.comm ? commLedgerPrompt(ledger) : input.depth === 0 ? ledger && ledgerPrompt(ledger, BRIEF_CORRECTIONS) : jobLedgerPrompt(ledger);
   if (corrections) out.push({ key: "corrections", text: corrections, source: "chat-corrections.ts ledgerPrompt or jobLedgerPrompt (Prime: [corrections] message)" });
   return out;
+  if (writing && !input.skip?.has("writing")) out.push({ key: "writing", text: writingSection(writing), source: "the unslop skill's SKILL.md without its frontmatter (Prime: only its name and description in the skills list)" });
 }
 
 function readLedger(dir: string): Ledger | null {
+/** The skill every thread gets in full in its `writing` section. */
+export const WRITING_SKILL = "unslop";
+
+/**
+ * The unslop skill's SKILL.md without its frontmatter, from the path the skills list names. Every thread gets it in full, because a skill
+ * shows only its name and description until the model opens the file, and on 11-21 a measure of the last 7 days (`~/work/unslop-loaded/
+ * measure_reads.py`) found it opened before the first post, report or commit in 0 of 187 comm roots, 1 of 226 work roots and 339 of 538
+ * jobs. A comm thread cannot open a file at all. The owner asked in dm_agent-factory p58 (msg mwqtk65x): "skill:unslop 이거 로드되고 있지?"
+ */
+function writingStandard(skills: readonly Skill[]): ContextFile | undefined {
+  const skill = skills.find(entry => entry.name === WRITING_SKILL);
+  if (!skill) return undefined;
+  try {
+    const text = readFileSync(skill.filePath, "utf8").replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim();
+    return text ? { path: skill.filePath, content: text } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The `writing` section: a line that says the skill is loaded, then its text as the file holds it. */
+export function writingSection(file: ContextFile): string {
+  return `# Writing standard\n\nThe ${WRITING_SKILL} skill (${file.path}) is loaded here in full, so you need not open it. Follow it in every line a person reads.\n\n${file.content}`;
+}
+
   try {
     return parseLedger(JSON.parse(readFileSync(join(dir, "corrections.json"), "utf8")));
   } catch {
