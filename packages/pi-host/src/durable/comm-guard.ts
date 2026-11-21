@@ -21,6 +21,11 @@
  *    #dev-search-general thread with a 4-column table the pane cut off on the right and at the bottom, and the owner asked "does this feel
  *    like slack to you?". A note on the sent post's result was tried first, and in the blind runs that day two of two fresh agents asked
  *    "what pieces make up the skill setup?" posted a table anyway, since the note came only after the post was out.
+ * 5. A post with a line outside its list items that crams several results, 3 or more sentences or 3 or more clauses that each carry a
+ *    number (`crammedLine`), is held once the same way, and the very same text sent again goes out. On 11-20 Search product, misc. answered
+ *    the owner's cost ask in #dev-app-search-prospect with p13, "breathing costs about $1,850-2,210 a month on GeoNode's 200 Mbps plan, ...
+ *    one tracked brand adds under 2 cents a month. the demo load alone would fit a $148.50 metered GeoNode plan, ...", three results in three
+ *    sentences on one line, and he wrote "slop slop slop" under it on 11-21 (p33). Its role text then still said "no bullet reports".
  */
 import { relayWords } from "./relay-line.ts";
 
@@ -35,6 +40,8 @@ export interface CommPostTurn {
   tableAsked?: boolean;
   /** Whether this very text was held for its table already in this turn, so sending it again sends it (`tableResent`). */
   tableResent?: boolean;
+  /** Whether this very text was held for a crammed line already in this turn, so sending it again sends it (`crammedResent`). */
+  crammedResent?: boolean;
 }
 
 /**
@@ -81,21 +88,70 @@ export function commPostRefusal(text: string, turn: CommPostTurn): string | unde
       "or in one line over short `- ` bullets when it holds several points, and put the detail on a wiki page with `wiki.write` in ipython, linked in the same post as `full list → [name](wiki:<path>)`. " +
       "If he must see this table as it is, send the very same text again and it goes out (c98).";
   }
+  const crammed = crammedLine(text);
+  if (crammed && !turn.crammedResent) {
+    return `${CRAMMED_MARK}: "${crammed.length > 120 ? `${crammed.slice(0, 117)}...` : crammed}" holds several results in a row, and a room reads like Slack. ` +
+      "Open with the answer in one short sentence, then give each result its own `- ` bullet of one short line, and put the rest on a wiki page " +
+      "linked in the same post. An answer with one point stays one or two short sentences. If it must go as it is, send the very same text again " +
+      "and it goes out (c98).";
+  }
   return undefined;
 }
 
 /** How a post held for its table opens. */
 export const TABLE_MARK = "Not sent, it holds a table nobody asked for";
+/** How a post held for a crammed line opens. */
+export const CRAMMED_MARK = "Not sent, one line crams several results";
+
+/** A list item, a quote, a table row or a heading, which `crammedLine` leaves alone. */
+const NOT_PROSE = /^[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+|>|\||#)/;
+
+/**
+ * A line with its links, code, ids, dates, times, ports and versions taken out, so a number in a URL, a path, a post id such as p12, a sha,
+ * 11-20, 05:28, :5184 or v0.2.25 does not count, and "175 of 178" or 7/7 reads as one figure.
+ */
+const plainLine = (line: string): string => line
+  .replace(/`[^`]*`/g, " ").replace(/!\[[^\]]*\]/g, " ").replace(/\]\([^)]*\)/g, "]").replace(/\b(?:https?|wiki|job|thread):\S+/g, " ")
+  .replace(/\b(?:[a-z]{1,3}_[0-9a-f]+\/)?[ptdc]\d+\b/g, " ").replace(/\b(?=[0-9a-z]*\d)(?=[0-9a-z]*[a-z])[0-9a-z]{7,40}\b/g, " ")
+  .replace(/\bv\d+(?:\.\d+)+\b/g, " ").replace(/\b\d{4}-\d\d-\d\d\b|\b\d\d?:\d\d\b|\b\d\d?-\d\d\b/g, " ").replace(/:\d{2,5}\b/g, " ")
+  .replace(/\b(\d+)\s*\/\s*\d+\b/g, "$1").replace(/\d[\d,.]*\s+of\s+(?=\d)/g, "");
+
+const NUMBER = /\$?\d[\d,.]*/;
+
+/**
+ * The first line outside the post's list items, quotes and code that crams several results: 3 or more sentences, or 3 or more clauses (split
+ * at sentence ends, semicolons, commas, dashes and arrows) that each carry a number. Undefined when no line does.
+ * On 11-21 this held 97 of the 1,177 tell_owner posts in the 217 comm threads on us-metal02 (8.2%), and 30 of the 310 sent since the role
+ * text asked for bullets on 11-20 (9.7%): 84 for their sentences and 13 more for their numbers. Read one by one, most were results or
+ * explanations the room rules put in bullets, such as "memory runs on its own now: today's check has 8 of 8 agents holding what they should,
+ * 0 scratch notes, and fresh copies answered 21 of 21 questions"; the few one-point answers among them go out when sent again. p12 of the
+ * same thread, "yes, 175 of 178 routes work, and 11 of 11 real customer calls just returned data. ...", has two numbered clauses and passes.
+ */
+export function crammedLine(text: string): string | undefined {
+  return text.replace(/```[\s\S]*?```/g, "").split("\n").find(line => {
+    if (!line.trim() || NOT_PROSE.test(line)) return false;
+    const plain = plainLine(line);
+    const sentences = plain.split(/(?<=[.!?])\s+(?=\S)/).filter(part => /\w/.test(part)).length;
+    const numbered = plain.split(/(?<=[.!?;])\s+|,\s+|\s+→\s+|\s[-–]\s/).filter(part => NUMBER.test(part)).length;
+    return sentences >= 3 || numbered >= 3;
+  })?.trim();
+}
 
 interface TurnCall { role: string; content?: unknown; toolCallId?: unknown }
 
-/** Whether a speaking call with this very text was held for its table earlier in the turn; a blocked call's result wraps the mark in a harness line. */
-export function tableResent(messages: readonly TurnCall[], text: string): boolean {
+/** Whether a speaking call with this very text was held for its table earlier in the turn. */
+export const tableResent = (messages: readonly TurnCall[], text: string): boolean => heldResent(messages, text, TABLE_MARK);
+
+/** Whether a speaking call with this very text was held for a crammed line earlier in the turn. */
+export const crammedResent = (messages: readonly TurnCall[], text: string): boolean => heldResent(messages, text, CRAMMED_MARK);
+
+/** Whether a speaking call with this very text was held with this mark earlier in the turn; a blocked call's result wraps the mark in a harness line. */
+function heldResent(messages: readonly TurnCall[], text: string, mark: string): boolean {
   const start = messages.findLastIndex(message => message.role === "user" || message.role === "custom");
   const held = new Set<string>();
   for (const message of messages.slice(start + 1)) {
     if (message.role === "toolResult" && typeof message.toolCallId === "string" && Array.isArray(message.content)
-      && (message.content as { type?: unknown; text?: unknown }[]).some(part => part.type === "text" && typeof part.text === "string" && part.text.includes(TABLE_MARK))) held.add(message.toolCallId);
+      && (message.content as { type?: unknown; text?: unknown }[]).some(part => part.type === "text" && typeof part.text === "string" && part.text.includes(mark))) held.add(message.toolCallId);
   }
   return messages.slice(start + 1).some(message => message.role === "assistant" && Array.isArray(message.content)
     && (message.content as { type?: unknown; id?: unknown; arguments?: { text?: unknown } }[])

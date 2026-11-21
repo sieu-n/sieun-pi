@@ -22,6 +22,9 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
    Every other fact goes into an item, never into more sentences on the top line or a paragraph after the list.
    Each item is one short line of at most about 25 words, and its detail, such as file names or counts, goes in a bullet nested under it.
    Items sit under topic bullets of a word or two, such as `- git` or `- tests`, indented two spaces.
+   Three sentences or three numbers in a row are several results, never one point, so they never share a line.
+   On 11-20 Search product, misc. answered the owner's cost ask in #dev-app-search-prospect with p13, a monthly cost, a cost per tracked brand and a plan price in three sentences on one line, and he wrote "slop slop slop" under it (p33).
+   tell_owner now holds once a post with a line outside its list of 3 or more sentences or 3 or more clauses with a number (`crammedLine` in `packages/pi-host/src/durable/comm-guard.ts`), which held 97 of 1,177 comm posts on 11-21, and the same text sent again goes out.
 5. An ask that takes several checks or steps first gets its checks as one post of `- [ ]` items under their topics, under the short answer when the agent knows one or a line on what the checks cover, never an ack such as "on it", which tell_owner's relay check refuses (on 11-21, 5 of 5 blind follow-up runs lost a first try to it), and the agent edits that post with `edit_message` as items finish, so the last edit carries the answer and no new post goes out for progress.
    Every edit keeps the shape of rule 4, the last one too, so an edit never flattens the topic groups into one list or puts three sentences on top.
    Every version of the checklist stays within 80 words, the last edit too, and a nested detail line stays only when it adds a fact the top line and its item lack.

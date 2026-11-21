@@ -5,7 +5,7 @@
  */
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { asks, asksTable, commPostRefusal, hasTable, tableResent, TABLE_MARK, turnAsked, turnAskedTable, turnStartedAt } from "../../src/durable/comm-guard.ts";
+import { asks, asksTable, commPostRefusal, CRAMMED_MARK, crammedLine, crammedResent, hasTable, tableResent, TABLE_MARK, turnAsked, turnAskedTable, turnStartedAt } from "../../src/durable/comm-guard.ts";
 import { relayWords } from "../../src/durable/relay-line.ts";
 
 /** Agent posts from the room logs that relay the agent's own work, with the kind each one reads as. */
@@ -114,4 +114,35 @@ test("a post with a table is held once unless the post that started the turn ask
   const header = "[#dev-search-general · post 15 from You (owner) · hops 0]\n\n";
   assert.equal(turnAskedTable([{ role: "user", content: `${header}what pieces make up the skill?\n\n(thread so far)\n11 agent: | a | b |\n|---|---|\nput it in a table` }]), false);
   assert.equal(turnAskedTable([{ role: "user", content: `${header}put it in a table please\n\n(thread so far)\n11 agent: ok` }]), true);
+});
+
+/** Search product, misc.'s answer to the owner's cost ask in #dev-app-search-prospect (p13, 11-20), under which he wrote "slop slop slop" (p33). */
+const P13 = "breathing costs about $1,850-2,210 a month on GeoNode's 200 Mbps plan, almost all of it the flat GeoNode fee. one tracked brand adds under 2 cents a month. " +
+  "the demo load alone would fit a $148.50 metered GeoNode plan, about $200-560 a month total → [breathing cost](https://us-metal02-dev.tail0c093d.ts.net:5184/wiki/agents/search-product-misc/jobs/2026/11/20/1417-breathing-cost-page/breathing-cost.html)";
+/** p12 of the same thread, one point in two sentences. */
+const P12 = "> is our API serving?\n\nyes, 175 of 178 routes work, and 11 of 11 real customer calls just returned data. but every working route now goes out from the prod server's own IPs too, " +
+  "details → [crawl api serving](https://us-metal02-dev.tail0c093d.ts.net:5184/wiki/agents/search-product-misc/jobs/2026/11/20/1415-crawl-api-route-logs/crawl-api-serving.html)";
+
+test("a post that crams several results on one line is held once, and the very same text sent again goes out", () => {
+  const owner = { owner: true, asked: true, handed: false };
+  assert.match(commPostRefusal(P13, owner)!, /^Not sent, one line crams several results: "breathing costs[\s\S]*`- ` bullet[\s\S]*very same text again/);
+  assert.equal(commPostRefusal(P13, { ...owner, crammedResent: true }), undefined);
+  assert.equal(commPostRefusal(P12, owner), undefined, "a one-point answer of two sentences goes out");
+  assert.equal(crammedLine("yep, all 18 pass with 0 failures, across reactions.test.ts (7), emoji.test.ts (2) and for-me.test.ts (9) under apps/chat/test/server."),
+    "yep, all 18 pass with 0 failures, across reactions.test.ts (7), emoji.test.ts (2) and for-me.test.ts (9) under apps/chat/test/server.", "three numbered clauses in one sentence");
+  const bulleted = "breathing costs about $1,850-2,210 a month, almost all of it the GeoNode fee\n- one tracked brand adds under 2 cents a month\n" +
+    "- the demo load alone fits a $148.50 metered plan, about $200-560 a month\n- detail → [breathing cost](wiki:agents/search-product-misc/breathing-cost.html)";
+  assert.equal(commPostRefusal(bulleted, owner), undefined, "the same numbers as an answer over bullets go out");
+  for (const text of [
+    "fixed in 8e8b7ef7 on 11-21 at 16:05, see p159 and ch_4c388a00/p12 on :5184.",
+    "newest was v0.2.25, published today at 09:18 KST (00:18 UTC). the oldest is v0.2.6",
+    "yes, all pass, reactions 7/7 and `emoji.test.ts` 2 of 2.",
+    "```\na. b. c. 1, 2, 3\n```\nyes, it runs.",
+  ]) assert.equal(crammedLine(text), undefined, text);
+  const call = (id: string, text: string) => ({ role: "assistant", content: [{ type: "toolCall", id, name: "tell_owner", arguments: { text } }] });
+  const held = (id: string) => ({ role: "toolResult", toolCallId: id, content: [{ type: "text", text: `${CRAMMED_MARK}: "breathing costs"` }] });
+  assert.equal(crammedResent([{ role: "user", content: "cost?" }, call("a", P13), held("a"), call("b", P13)], P13), true);
+  assert.equal(crammedResent([{ role: "user", content: "cost?" }, call("a", P13), held("a")], `${P13} edited`), false, "a changed text is checked again");
+  assert.equal(crammedResent([call("a", P13), held("a"), { role: "user", content: "and now?" }, call("b", P13)], P13), false, "a new turn holds it again");
+  assert.equal(tableResent([{ role: "user", content: "cost?" }, call("a", P13), held("a"), call("b", P13)], P13), false, "a crammed hold is no table hold");
 });

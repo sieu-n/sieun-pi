@@ -60,7 +60,7 @@ import { threadAgent } from "./agent-profile.ts";
 import { roundEndsTurn, TOLD } from "./turn-end.ts";
 import { ChatApp } from "./chat-app.ts";
 import { CommHandedDoc } from "./comm.ts";
-import { commPostRefusal, tableResent, turnAsked, turnAskedTable, turnStartedAt, type CommPostTurn } from "./comm-guard.ts";
+import { commPostRefusal, crammedResent, tableResent, turnAsked, turnAskedTable, turnStartedAt, type CommPostTurn } from "./comm-guard.ts";
 import { unpostedReply, unpostedReplyRequest } from "./comm-reply.ts";
 import { durableTool, loadPiExtension, piContext, type LoadedPiExtension, type PiSession, type PiTool, type PiToolResult } from "./pi-extensions.ts";
 
@@ -271,7 +271,7 @@ async function commTurn(chat: PrimeChat, thread: ChatThread, call: { id: string;
     const handedAt = (await harness.snapshot(CommHandedDoc, ROOT_CONVERSATION_ID, context))?.at ?? 0;
     const startedAt = turnStartedAt(messages as never);
     const handed = handedAt > 0 && startedAt !== undefined && handedAt >= startedAt;
-    return { text, turn: { owner, asked: turnAsked(messages as never), tableAsked: turnAskedTable(messages as never), tableResent: tableResent(messages as never, text), handed } };
+    return { text, turn: { owner, asked: turnAsked(messages as never), tableAsked: turnAskedTable(messages as never), tableResent: tableResent(messages as never, text), crammedResent: crammedResent(messages as never, text), handed } };
   } catch {
     return undefined;
   }

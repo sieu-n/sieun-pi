@@ -153,11 +153,16 @@ export const IDEAL_REPLIES_PAGE = "wiki:agents/agent-factory/jobs/2026/11/20/113
  * #dev-app-search-prospect the comm thread answered the owner's p9 "is our API serving?" in a turn the work thread's report woke after his
  * newer cost ask p11, opened the post with "> is our API serving?" and set no reply_to, so the answer sat in p11's thread, and he wrote
  * "slop slop slop" under it (p33). So an answer to an older post names it with reply_to and quotes nothing.
+ * The same post p33 was also about p13, the cost answer beside it, which put three results in three sentences on one line ("breathing
+ * costs about $1,850-2,210 a month ... one tracked brand adds under 2 cents a month. the demo load alone would fit a $148.50 metered
+ * GeoNode plan, ..."). So the step says what counts as several results, and tell_owner holds such a line once (`comm-guard.ts`
+ * `crammedLine`).
  */
 function slackPostStep(): string {
   return "Write each post the way a sharp coworker types in Slack. Open with the answer in the first few words, such as \"yes\", \"nope\", \"not yet\" or \"got it\". " +
     "One answer is one post, so never split it into two stiff posts, and when two of his posts wait for you, answer both in that one post. " +
     "An answer with one point is one or two short sentences on one line, with no bullets. " +
+    "Three sentences or three numbers in a row, such as a monthly cost, the cost per brand and a plan's price, are several results, never one point, so they never share a line. " +
     "An answer with several results, points, todos or checks opens with the answer in one short sentence of about 15 words, at most 20, such as \"mostly ready, 4 files are uncommitted\", then lists them as `- ` bullets. " +
     "Every other fact goes into an item, never into more sentences on that top line and never into a paragraph after the list. " +
     "Each item is one short line of at most about 25 words, and any detail, such as file names, counts or why, goes in a bullet nested under its item, so never cram items into one long sentence or one long line. " +
