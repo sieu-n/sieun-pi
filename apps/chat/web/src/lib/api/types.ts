@@ -121,7 +121,28 @@ export interface ConversationSummary {
   agenda?: string;
   /** For a closed Solo room: when the owner closed it; the sidebar folds it under "Done". */
   closedAt?: Ms;
+  /** The owner starred it, so the sidebar lists it under Starred (server/sidebar-prefs.ts). */
+  starred?: true;
+  /** The owner muted it: new posts make no bold and a DM shows no count, while a mention in a channel still counts. */
+  muted?: true;
+  /** Out of the sidebar: a DM he closed or that has no posts yet, until a new post comes, or a channel he left, until he posts there or joins. */
+  hidden?: "closed" | "left";
 }
+
+/** The owner's sidebar choices for one room, in the server's state.json under `sidebar`. */
+export interface ConversationPrefs {
+  starred?: true;
+  muted?: true;
+  hidden?: { kind: "closed" | "left"; at: Ms };
+}
+
+/** `PUT /api/c/:id/prefs`: each given field sets or clears that choice; `hidden: null` puts the room back in the sidebar. */
+export interface PrefsPatch {
+  starred?: boolean;
+  muted?: boolean;
+  hidden?: "closed" | "left" | null;
+}
+
 
 /** Where a room read from before Mark all as read, which its Undo puts back: `seq` 0 when he had read nothing, `from` the post he marked unread. */
 export interface ReadPoint { room: ConversationId; seq: number; from?: string }

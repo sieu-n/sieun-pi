@@ -12,7 +12,7 @@
   import SidebarSection from "$lib/shell/SidebarSection.svelte";
   import SidebarRow from "$lib/shell/SidebarRow.svelte";
   import SectionDialog from "$lib/shell/SectionDialog.svelte";
-  import { sidebar } from "$lib/shell/sidebar.svelte";
+  import { sidebar, soloGroups } from "$lib/shell/sidebar.svelte";
   import { soloDialog } from "$lib/shell/solo-dialog.svelte";
   import { renameDialog } from "$lib/shell/rename-dialog.svelte";
   import { CHANNEL_DRAG_TYPE, channelDrop, groupChannels, sidebarSections, visibleRows, type BuiltinSection, type SectionId } from "$lib/shell/sidebar-sections.svelte";
@@ -20,6 +20,7 @@
   import { later, laterHref } from "$lib/later.svelte";
   import { drafts, draftsHref } from "$lib/drafts.svelte";
   import Badge from "$lib/ui/Badge.svelte";
+  import { roomActions, rowUnread, starredRows, unstarred } from "$lib/shell/room-actions.svelte";
   import { isUnread, markAllRead, unreadRooms, unreadsHref } from "$lib/unreads.svelte";
   import HostBadge from "$pages/agents/HostBadge.svelte";
 
@@ -27,14 +28,15 @@
   const names = (row: ConversationSummary): string[] => row.working.map((w) => w.name);
   /** Slack's pencil on a room whose box holds a draft, left off the open room, whose box shows the draft itself. */
   const hasDraft = (row: ConversationSummary): boolean => row.id !== current && drafts.inRoom(row.id);
-  const solo = $derived(sidebar.solo);
+  const starred = $derived(starredRows(current));
+  const solo = $derived(soloGroups(unstarred(sidebar.data.solo, current)));
   const forYouSelected = $derived(router.messagesView === "for-you");
   later.start();
-  const channels = $derived(groupChannels(sidebar.data.channels, sidebarSections.model));
+  const channels = $derived(groupChannels(unstarred(sidebar.data.channels, current), sidebarSections.model));
   const folded = (id: BuiltinSection | SectionId): boolean => sidebarSections.isFolded(id);
   /** A folded section still shows the open conversation and every unread one, as Slack does. */
   const shown = (rows: readonly ConversationSummary[], id: BuiltinSection | SectionId): ConversationSummary[] =>
-    visibleRows(rows, folded(id), (row) => row.id === current || row.unread > 0 || row.hasNew);
+    visibleRows(rows, folded(id), (row) => row.id === current || rowUnread(row).unread > 0 || rowUnread(row).fresh);
   const channelCount = (id: string): number => channels.sections.find((s) => s.section.id === id)?.rows.length ?? 0;
   const newChannel = () => router.navigate(hrefFor("messages", ["new"], { kind: "channel" }));
 
@@ -52,23 +54,31 @@
 
   /** The items every conversation row's menu starts with, whatever its kind. */
   function rowMenu(row: ConversationSummary): MenuEntry[] {
-    const items: MenuEntry[] = [];
-    if (row.unread > 0 || row.hasNew) {
-      items.push({ id: "read", label: "Mark as read", icon: "check", onselect: () => void api.read(row.id).catch(() => toast.error(`Could not mark ${row.name} as read`)) });
-    }
-    items.push({
-      id: "link",
-      label: "Copy link",
-      icon: "link",
-      onselect: () => void navigator.clipboard.writeText(`${location.origin}${location.pathname}${conversationHref(row.id)}`).then(() => toast.show("Link copied")),
-    });
-    return items;
+    return [
+      {
+        id: "read",
+        label: "Mark as read",
+        icon: "check",
+        disabled: !(row.unread > 0 || row.hasNew),
+        onselect: () => void api.read(row.id).catch(() => toast.error(`Could not mark ${row.name} as read`)),
+      },
+      {
+        id: "link",
+        label: "Copy link",
+        icon: "link",
+        onselect: () => void navigator.clipboard.writeText(`${location.origin}${location.pathname}${conversationHref(row.id)}`).then(() => toast.show("Link copied")),
+      },
+    ];
   }
 
   function dmMenu(row: ConversationSummary): MenuEntry[] {
     const agent = row.agent;
-    if (!agent) return rowMenu(row);
-    return [...rowMenu(row), { type: "separator" }, { id: "agent", label: "Open agent", icon: "robot", onselect: () => router.navigate(hrefFor("agents", [agent])) }];
+    const open: MenuEntry[] = agent ? [{ type: "separator" }, { id: "agent", label: "Open agent", icon: "robot", onselect: () => router.navigate(hrefFor("agents", [agent])) }] : [];
+    return [...rowMenu(row), ...open, { type: "separator" }, ...roomActions(row.id)];
+  }
+
+  function soloMenu(row: ConversationSummary): MenuEntry[] {
+    return [...rowMenu(row), { type: "separator" }, ...roomActions(row.id)];
   }
 
   function channelMenu(row: ConversationSummary): MenuEntry[] {
@@ -90,6 +100,8 @@
           { id: "new-section", label: "New section…", icon: "plus", onselect: () => (sidebarSections.dialog = { kind: "new", channelId: row.id }) },
         ],
       },
+      { type: "separator" },
+      ...roomActions(row.id),
     ];
   }
 
@@ -131,8 +143,9 @@
     label={row.name}
     icon="hash"
     selected={current === row.id}
-    unread={row.unread}
-    fresh={row.hasNew}
+    unread={rowUnread(row).unread}
+    fresh={rowUnread(row).fresh}
+    muted={row.muted}
     working={names(row)}
     draft={hasDraft(row)}
     ondragstart={(e) => dragChannel(e, row.id)}
@@ -149,13 +162,38 @@
     title={row.agenda ? `${row.name}: ${row.agenda}` : row.name}
     {icon}
     selected={current === row.id}
-    unread={row.unread}
-    fresh={row.hasNew}
+    unread={rowUnread(row).unread}
+    fresh={rowUnread(row).fresh}
+    muted={row.muted}
     working={names(row)}
     draft={hasDraft(row)}
-    oncontextmenu={(e) => contextMenu(e, row.id, rowMenu(row))}
+    oncontextmenu={(e) => contextMenu(e, row.id, soloMenu(row))}
   >
-    {#snippet actions()}{@render more(row.id, `${row.name} options`, () => rowMenu(row))}{/snippet}
+    {#snippet actions()}{@render more(row.id, `${row.name} options`, () => soloMenu(row))}{/snippet}
+  </SidebarRow>
+{/snippet}
+
+{#snippet dmRow(row: ConversationSummary)}
+  <SidebarRow
+    href={conversationHref(row.id)}
+    label={row.name}
+    title={row.preview ? `${row.name}: ${row.preview}` : row.name}
+    selected={current === row.id}
+    unread={rowUnread(row).unread}
+    fresh={rowUnread(row).fresh}
+    muted={row.muted}
+    working={names(row)}
+    draft={hasDraft(row)}
+    oncontextmenu={(e) => contextMenu(e, row.id, dmMenu(row))}
+  >
+    {#snippet actions()}{@render more(row.id, `${row.name} options`, () => dmMenu(row))}{/snippet}
+    {#snippet leading()}
+      <Avatar name={row.name} kind="agent" seed={row.agent ?? row.id} size={20} status={row.status === "working" ? "online" : row.status === "failed" ? "busy" : null} />
+    {/snippet}
+    {#snippet tag()}
+      {@const agent = row.agent ? agents.byId(row.agent) : undefined}
+      {#if agent}<HostBadge {agent} self={me.value?.host} />{/if}
+    {/snippet}
   </SidebarRow>
 {/snippet}
 
@@ -179,6 +217,14 @@
     <SidebarRow href={forYouHref()} label="For you" icon="inbox" selected={forYouSelected} unread={sidebar.data.forYou} />
     <SidebarRow href={unreadsHref()} label="All unreads" icon="messages" selected={router.messagesView === "unreads"} fresh={unreadRooms().length > 0} />
   </div>
+
+  {#if starred.length}
+    <SidebarSection id="starred" label="Starred" folded={folded("starred")} ontoggle={() => sidebarSections.toggle("starred")}>
+      {#each shown(starred, "starred") as row (row.id)}
+        {#if row.kind === "dm"}{@render dmRow(row)}{:else if row.kind === "channel"}{@render channelRow(row)}{:else}{@render soloRow(row, row.closedAt ? "check" : "users")}{/if}
+      {/each}
+    </SidebarSection>
+  {/if}
 
   {#if sidebar.data.solo.length}
     <SidebarSection id="solo" label="Solo" folded={folded("solo")} ontoggle={() => sidebarSections.toggle("solo")}>
@@ -226,27 +272,8 @@
       {@render more("dms", "Direct messages options", () => [readAllItem(sidebar.data.dms)])}
       <IconButton icon="plus" label="New message" size="xs" onclick={() => router.navigate(hrefFor("messages", ["new"], { kind: "dm" }))} />
     {/snippet}
-    {#each shown(sidebar.data.dms, "dms") as row (row.id)}
-      <SidebarRow
-        href={conversationHref(row.id)}
-        label={row.name}
-        title={row.preview ? `${row.name}: ${row.preview}` : row.name}
-        selected={current === row.id}
-        unread={row.unread}
-        fresh={row.hasNew}
-        working={names(row)}
-        draft={hasDraft(row)}
-        oncontextmenu={(e) => contextMenu(e, row.id, dmMenu(row))}
-      >
-        {#snippet actions()}{@render more(row.id, `${row.name} options`, () => dmMenu(row))}{/snippet}
-        {#snippet leading()}
-          <Avatar name={row.name} kind="agent" seed={row.agent ?? row.id} size={20} status={row.status === "working" ? "online" : row.status === "failed" ? "busy" : null} />
-        {/snippet}
-        {#snippet tag()}
-          {@const agent = row.agent ? agents.byId(row.agent) : undefined}
-          {#if agent}<HostBadge {agent} self={me.value?.host} />{/if}
-        {/snippet}
-      </SidebarRow>
+    {#each shown(unstarred(sidebar.data.dms, current), "dms") as row (row.id)}
+      {@render dmRow(row)}
     {/each}
   </SidebarSection>
 </SidebarFrame>

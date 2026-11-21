@@ -3,7 +3,7 @@ import type { ConversationSummary } from "$lib/api";
 const KEY = "chat.sidebarSections";
 
 /** The sidebar's built-in sections, each of which folds on its own. */
-export type BuiltinSection = "solo" | "channels" | "dms";
+export type BuiltinSection = "starred" | "solo" | "channels" | "dms";
 export type SectionId = `sec_${string}`;
 
 /** A section the owner made in the Team group, holding the channels he moves there. */
@@ -31,7 +31,7 @@ export interface ChannelGroups {
 /** The section dialog's job: name a new section, optionally moving a channel into it, rename one, or confirm deleting one that holds channels. */
 export type SectionDialogTarget = { kind: "new"; channelId?: string } | { kind: "rename"; id: SectionId } | { kind: "delete"; id: SectionId };
 
-const empty = (): SectionsModel => ({ sections: [], placement: {}, collapsed: { solo: false, channels: false, dms: false } });
+const empty = (): SectionsModel => ({ sections: [], placement: {}, collapsed: { starred: false, solo: false, channels: false, dms: false } });
 
 const isSectionId = (v: unknown): v is SectionId => typeof v === "string" && /^sec_[\w-]+$/.test(v);
 
@@ -61,7 +61,7 @@ export function parseSections(raw: string | null): SectionsModel {
     }
   }
   if (collapsed && typeof collapsed === "object") {
-    for (const key of ["solo", "channels", "dms"] as const) model.collapsed[key] = (collapsed as Record<string, unknown>)[key] === true;
+    for (const key of ["starred", "solo", "channels", "dms"] as const) model.collapsed[key] = (collapsed as Record<string, unknown>)[key] === true;
   }
   return model;
 }

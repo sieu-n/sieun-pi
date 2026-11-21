@@ -25,6 +25,7 @@ import { LaterDue } from "./later-due.ts";
 import { answers, nextMorning } from "./keep-unread.ts";
 import { AgentLater } from "./later-agents.ts";
 import type { ForMeItem, ForMeList, ForMeStatus, LaterItem } from "../web/src/lib/api/types.ts";
+import type { ConversationPrefs, PrefsPatch } from "../web/src/lib/api/types.ts";
 import { DEFAULT_MODEL, DEFAULT_THINKING, type Config } from "./config.ts";
 import { MultiHost } from "./host/multi-host.ts";
 import type { Host } from "./host/types.ts";
@@ -34,6 +35,7 @@ import { agentPost, react, ReactionError, reactionInput, reactionList, reactions
 import { doneInput, doneText, markDone, threadRootOf } from "./thread-done.ts";
 import { markPin, pinInput, pinnedPosts } from "./pins.ts";
 import { Rooms } from "./rooms.ts";
+import { applyPrefs, withPrefs } from "./sidebar-prefs.ts";
 import { Unfurler } from "./unfurl.ts";
 import { POST_KINDS, Search } from "./search.ts";
 import { likeRegex, postDocId, SEARCH_DOC_VERSION, SearchEngine, SqliteEntries, type EntrySource, type PostDoc } from "./search-engine.ts";
@@ -436,13 +438,15 @@ export class App {
 
   async sidebar(): Promise<Sidebar> {
     const byNew = (a: ConversationSummary, b: ConversationSummary) => b.lastActivityAt - a.lastActivityAt;
-    const groups = this.groups.summaries().filter(c => !c.archived && !this.agentStore.isTest(c.id));
+    const prefs = this.store.state.sidebar ?? {};
+    const mark = (c: ConversationSummary) => withPrefs(c, prefs[c.id], this.agentStore.postsOf(c.id));
+    const groups = this.groups.summaries().filter(c => !c.archived && !this.agentStore.isTest(c.id)).map(mark);
     const solo = groups.filter(c => c.kind === "solo");
     return {
       // Solo rooms only, open ones first. A root thread is a job on its agent's page (agents.ts `fileSpawned`), never a sidebar row.
       solo: [...solo.filter(c => c.closedAt === undefined).sort(byNew), ...solo.filter(c => c.closedAt !== undefined).sort(byNew)],
       channels: groups.filter(c => c.kind === "channel").sort((a, b) => a.name.localeCompare(b.name)),
-      dms: this.rooms.summaries().filter(c => !c.archived && !this.agentStore.isTest(c.id)).sort(byNew),
+      dms: this.rooms.summaries().filter(c => !c.archived && !this.agentStore.isTest(c.id)).map(mark).sort(byNew),
       forYou: await this.boards.forYouCount().catch(() => 0),
     };
   }
@@ -523,6 +527,18 @@ export class App {
     const record = this.agents.record(id);
     if (!record || record.room !== id) throw new NotFound(`No DM ${id}.`);
     return record;
+  }
+
+  /** Stars, mutes, closes or leaves a DM, channel or Solo room for the owner's sidebar. */
+  setPrefs(id: ConversationId, patch: PrefsPatch): ConversationPrefs {
+    if (!this.isGroup(id)) this.roomAgent(id);
+    const all = (this.store.state.sidebar ??= {});
+    const next = applyPrefs(all[id], patch, Date.now());
+    if (next) all[id] = next;
+    else delete all[id];
+    this.store.saveState();
+    this.sidebarSoon();
+    return next ?? {};
   }
 
   private sidebarSoon(): void {

@@ -14,6 +14,7 @@ import type { AgentRecord, WakeOn } from "./agent-store.ts";
 import { App, MODELS, NotFound } from "./app.ts";
 import { LocalImageError, readLocalImage } from "./local-image.ts";
 import { ReactionError } from "./reactions.ts";
+import { parsePrefsPatch } from "./sidebar-prefs.ts";
 import { LaterError } from "./later.ts";
 import { CwdRefused } from "./projects.ts";
 import { listValues, SearchFilterError } from "./search.ts";
@@ -276,6 +277,11 @@ export function routes(app: App): Route[] {
     route("POST", "/api/c/:id/abort", async (_r, p) => {
       await app.abort(p.id!);
       return { ok: true };
+    }),
+    route("PUT", "/api/c/:id/prefs", async (_r, p, _q, body) => {
+      const patch = parsePrefsPatch(await body());
+      if (typeof patch === "string") throw new BadRequest(patch);
+      return app.setPrefs(p.id!, patch);
     }),
     route("POST", "/api/c/:id/read", async (_r, p, _q, body) => {
       const { seq, unreadFrom } = ((await body()) ?? {}) as { seq?: number; unreadFrom?: string };

@@ -9,6 +9,7 @@ import type {
 } from "./types.ts";
 import type { SkillDoc, SkillScan, SkillsReport } from "./shared/skills.ts";
 import type { PinRequest } from "./types.ts";
+import type { ConversationPrefs, PrefsPatch } from "./types.ts";
 import { shrink } from "./shrink.ts";
 
 export class ApiError extends Error {
@@ -495,6 +496,7 @@ export const api = {
   createRoom: (input: RoomInput) => call<Room & { opened: OpenedPage }>("POST", "/api/rooms", input),
   /** `closed` closes or reopens a Solo room. */
   updateRoom: (id: string, patch: RoomPatch) => call<Room>("PATCH", `/api/rooms/${enc(id)}`, patch),
+  setPrefs: (id: ConversationId, patch: PrefsPatch) => call<ConversationPrefs>("PUT", `/api/c/${enc(id)}/prefs`, patch),
   /** Only registered agents join; the server refuses a job, a work thread or a comm thread. */
   addMembers: (id: string, agents: AgentId[], wakeOn?: "all" | "none") => call<Room>("POST", `/api/rooms/${enc(id)}/members`, { agents, ...(wakeOn ? { wakeOn } : {}) }),
   removeMember: (id: string, agent: AgentId) => call<Room>("DELETE", `/api/rooms/${enc(id)}/members/${enc(agent)}`),

@@ -5,7 +5,7 @@
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { readLatest, writeJsonLater } from "./disk.ts";
-import type { AgentId, ConversationId, ThinkingLevel } from "../web/src/lib/api/types.ts";
+import type { AgentId, ConversationId, ConversationPrefs, ThinkingLevel } from "../web/src/lib/api/types.ts";
 
 export interface ThreadMeta { kind: "chat" | "job"; parent?: AgentId }
 /**
@@ -38,6 +38,8 @@ export interface StateFile {
   reads: Record<ConversationId, ReadMark>;
   /** Jobs inside a thread the owner archived, with when: pi-host has no archive of its own for a conversation inside a thread. */
   archivedJobs?: Record<ConversationId, number>;
+  /** The owner's star, mute and close or leave per room (sidebar-prefs.ts). */
+  sidebar?: Record<ConversationId, ConversationPrefs>;
 }
 
 export function writeJson(path: string, value: unknown): void {

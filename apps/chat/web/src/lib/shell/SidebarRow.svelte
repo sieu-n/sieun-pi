@@ -15,6 +15,8 @@
     unread?: number;
     /** New activity since the read mark: bold label and a dot when there is no count. */
     fresh?: boolean;
+    /** A room the owner muted: dimmed label. */
+    muted?: boolean;
     /** Agents working here now; non-empty shows typing dots, with the count after them when there is one. */
     working?: string[];
     title?: string;
@@ -30,7 +32,7 @@
     /** Shown right after the label and always, such as the host badge of a DM whose agent runs on another box. */
     tag?: Snippet;
   };
-  let { href, label, icon, leading, selected = false, unread = 0, fresh = false, working = [], title, oncontextmenu, actions, ondragstart, trailing, tag, draft = false }: Props = $props();
+  let { href, label, icon, leading, selected = false, unread = 0, fresh = false, muted = false, working = [], title, oncontextmenu, actions, ondragstart, trailing, tag, draft = false }: Props = $props();
   const workingLabel = $derived(working.length ? `${working.join(", ")} working in ${label}` : "");
 </script>
 
@@ -40,6 +42,7 @@
     class="row"
     class:selected
     class:unread={fresh || unread > 0}
+    class:muted
     aria-current={selected ? "page" : undefined}
     title={title ?? label}
     data-sidebar-row
@@ -100,6 +103,9 @@
   .row.unread {
     color: var(--text-navigation-unread);
     font-weight: 500;
+  }
+  .row.muted:not(.unread) {
+    color: var(--text-metadata);
   }
   .row.selected {
     background: var(--surface-sidebar-selected);

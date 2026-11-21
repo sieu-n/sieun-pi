@@ -3,17 +3,18 @@ import { conversationHref, router } from "$lib/router.svelte";
 import { laterHref } from "$lib/later.svelte";
 import { draftsHref } from "$lib/drafts.svelte";
 import { forYouHref } from "$pages/board/chips";
-import { sidebar } from "./sidebar.svelte";
+import { sidebar, soloGroups } from "./sidebar.svelte";
+import { rowUnread, starredRows, unstarred } from "./room-actions.svelte";
 import { groupChannels, sidebarSections, visibleRows, type BuiltinSection, type SectionId } from "./sidebar-sections.svelte";
 
 /** One row of the Messages sidebar that Alt+Up and Alt+Down step through. `conversation` is null for Later, Drafts and For you. */
 export type SidebarStop = { key: string; href: string; conversation: ConversationSummary | null };
 
-const isUnread = (row: ConversationSummary): boolean => row.unread > 0 || row.hasNew;
+const isUnread = (row: ConversationSummary): boolean => rowUnread(row).unread > 0 || rowUnread(row).fresh;
 
 /**
- * The Messages sidebar's rows top to bottom, in the order pages/channel/MessagesSidebar.svelte draws them: Later, Drafts, For you, open Solo
- * rooms, the Done fold, each custom section, Channels, then Direct messages. With `asShown`, a folded section keeps only the open and the
+ * The Messages sidebar's rows top to bottom, in the order pages/channel/MessagesSidebar.svelte draws them: Later, Drafts, For you, Starred, open
+ * Solo rooms, the Done fold, each custom section, Channels, then Direct messages. With `asShown`, a folded section keeps only the open and the
  * unread rows, as on the screen; without it every conversation counts, for the next-unread keys. test/shell/conversation-keys.spec.ts
  * checks this order against the drawn rows.
  */
@@ -21,15 +22,16 @@ export function sidebarStops(asShown: boolean): SidebarStop[] {
   const current = router.conversationId;
   const shown = (rows: readonly ConversationSummary[], id: BuiltinSection | SectionId): ConversationSummary[] =>
     visibleRows(rows, asShown && sidebarSections.isFolded(id), (row) => row.id === current || isUnread(row));
-  const solo = sidebar.solo;
-  const channels = groupChannels(sidebar.data.channels, sidebarSections.model);
+  const solo = soloGroups(unstarred(sidebar.data.solo, current));
+  const channels = groupChannels(unstarred(sidebar.data.channels, current), sidebarSections.model);
   const done = !asShown ? solo.done : sidebarSections.isFolded("solo") ? shown(solo.done, "solo") : sidebar.doneOpen ? solo.done : [];
   const rows = [
+    ...shown(starredRows(current), "starred"),
     ...shown(solo.open, "solo"),
     ...done,
     ...channels.sections.flatMap(({ section, rows }) => shown(rows, section.id)),
     ...shown(channels.rest, "channels"),
-    ...shown(sidebar.data.dms, "dms"),
+    ...shown(unstarred(sidebar.data.dms, current), "dms"),
   ];
   return [
     { key: "later", href: laterHref(), conversation: null },
