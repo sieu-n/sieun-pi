@@ -97,7 +97,7 @@ export class App {
   readonly queues: QueueWatch;
   readonly searchEngine: SearchEngine;
   private searchStop: () => void = () => {};
-  /** api/usage's sums, every box's usage rows kept in memory; reads go to the host itself when this box has no pi-host index. */
+  /** api/usage's sums, every box's usage rows kept in memory; a fixture, or a box with no pi-host index, reads the host itself. */
   readonly usage: Pick<Host, "usage">;
   private readonly keptUsage?: KeptUsage;
   private keptUsageClose: () => void = () => {};
@@ -301,7 +301,7 @@ export class App {
       if (name === "chat.board") this.boards.docChanged(thread, value);
     };
     this.searchEngine = this.newSearchEngine(routing?.list()[0]!.host ?? host, routing);
-    if (config.durableIndex) {
+    if (!config.fixture && config.durableIndex) {
       const own = new SqliteUsage(config.box, config.durableIndex);
       const sources = (): UsageSource[] => [own, ...(routing?.list() ?? []).flatMap(({ box }): UsageSource[] => {
         const relay = box === config.box ? undefined : routing!.relay(box);
