@@ -34,6 +34,13 @@ const THANKS_QUIET_MS = 90_000;
 const THANKS_MS = 6 * 60_000;
 const POLL_MS = 1_500;
 const EYES = "👀";
+/**
+ * Whether a post uses ✅ or 👀 as a status mark outside code, as in "yes, all pass ✅". A post may name the reaction as a thing: "my 👀
+ * reaction on p1", or after my, your, the or a, as in "my 👀 on p1 is a later `set` line", which two of four fresh agents wrote on 11-21
+ * when asked where a room's posts live.
+ */
+const statusMark = text => [...text.replace(/```[\s\S]*?```|`[^`\n]*`/g, "").matchAll(/[✅👀]/gu)]
+  .some(m => !/^\s*(?:reactions?|emoji|marks?)\b/u.test(m.input.slice(m.index + m[0].length)) && !/\b(?:my|your|his|the|a|an|its|their)\s+$/iu.test(m.input.slice(0, m.index)));
 const CHECK = "✅";
 
 /** The owner's kinds of posts from #sw-factory-build on 11-20: a task with a result to come, a question while it runs, and a thanks. */
@@ -172,7 +179,7 @@ async function runRoom(kind) {
     ["ok thanks got no post", afterThanks.length === 0],
     ...(kind === "channel" ? [["no agent post is a root post", posts.every(p => p.author?.id !== agent.id || p.threadRoot)]] : []),
     ["no ✅ by the agent anywhere", posts.every(p => !mine(p, CHECK))],
-    ["no ✅ or 👀 in the agent's post text", posts.every(p => p.author?.id !== agent.id || !/[✅👀](?!\s*(?:reactions?|emoji)\b)/u.test(p.text.replace(/```[\s\S]*?```|`[^`\n]*`/g, "")))],
+    ["no ✅ or 👀 in the agent's post text", posts.every(p => p.author?.id !== agent.id || !statusMark(p.text))],
     ["no agent post ends with a sign-off emoji", posts.every(p => p.author?.id !== agent.id || !SIGN_OFF.test(p.text))],
     ["no agent post pastes a raw JSON or log line", posts.every(p => p.author?.id !== agent.id || !RAW_LINE.test(p.text))],
   ];
