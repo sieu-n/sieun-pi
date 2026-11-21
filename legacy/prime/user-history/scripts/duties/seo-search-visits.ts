@@ -45,6 +45,18 @@ export const DROP_SHARE = 0.2;
  */
 export const DROP_LAUNCH_DAYS = 2;
 /**
+ * A page needs DROP_MIN_BASE_DAYS base days after its launch days before it can read as dropped. On 11-21 /ko/blog/tag/korea (1, 2, 6, 1
+ * impressions on 11-13..11-16) and /ko/blog/how-many-followers-to-make-money (2, 9, 5, 1) each had the one base day 11-15 left, read as 6 and
+ * 5 a day, and were flagged. The smallest base that held a real drop was 3 days: /ja/blog/how-much-does-youtube-pay-per-view on the 10-15
+ * final day, 10-10..10-12 at 196 a day before 2 a day. A base of 7 days would have hidden that drop until 10-17.
+ */
+export const DROP_MIN_BASE_DAYS = 3;
+/**
+ * A dropped page counts as moved when a sibling page took at least MOVED_SIBLING_SHARE of the impressions a day it lost. A sibling is
+ * another page in the same folder whose slug differs only in its last word and that shares a named search with the dropped page.
+ */
+export const MOVED_SIBLING_SHARE = 0.8;
+/**
  * unshipped_blog_changes: a commit under apps/blog on the dev/sieun tip that is not on GitHub's dev/sieun UNSHIPPED_AFTER_MS after its commit
  * time. On 10-16 and 10-17 35 creator pages waited about 25 h unpushed, and on 10-18 five blog changes waited 7 h.
  */
@@ -149,7 +161,7 @@ export function droppedPages(daily: PagesDaily, noindex: ReadonlySet<string> = n
   return [...pages].flatMap(([page, rows]) => {
     if (noindex.has(page)) return [];
     const from = baseFrom(rows.reduce((min, row) => (row.date < min ? row.date : min), recent.end), base);
-    if (from > base.end) return [];
+    if (daysBetween(from, base.end) + 1 < DROP_MIN_BASE_DAYS) return [];
     const sum = (start: string, end: string): number => rows.reduce((total, row) => (row.date >= start && row.date <= end ? total + row.impressions : total), 0);
     const baseDaily = sum(from, base.end) / (daysBetween(from, base.end) + 1);
     const recentDaily = sum(recent.start, recent.end) / DROP_RECENT_DAYS;
@@ -157,13 +169,22 @@ export function droppedPages(daily: PagesDaily, noindex: ReadonlySet<string> = n
   }).sort((a, b) => b.baseDaily - a.baseDaily);
 }
 
-export interface MovedPage { page: string; lostDaily: number; takenDaily: number }
+export interface MovedPage { page: string; lostDaily: number; takenDaily: number; sibling?: string }
 
-/** The dropped pages whose named searches went to other virev.ai pages: what the page lost a day on the searches it had in its base,
- * against what other pages gained a day on those searches, and a page is moved when they took at least what it lost. On 11-06 d1 read
- * /blog/fitness-influencers 71.2 to 6.7, while Google showed /en/top-fitness-influencers-in-singapore at position 3.9 for "top fitness
- * influencers": the page lost 24.6 impressions a day on its 55 named searches, other pages gained 26.8, and the fitness pages rose from
- * 112 to 173 a day in all. */
+/** A page's folder and its slug without the last word: https://virev.ai/ja/blog/influencer-rates-study gives https://virev.ai/ja/blog/influencer-rates. */
+const stemOf = (page: string): string => page.replace(/-[^/-]*$/, "");
+
+/** The dropped pages whose searches went to other virev.ai pages, by either of two rules.
+ * 1. Named searches: what the page lost a day on the searches it had in its base, against what other pages gained a day on those searches,
+ * and a page is moved when they took at least what it lost. On 11-06 d1 read /blog/fitness-influencers 71.2 to 6.7, while Google showed
+ * /en/top-fitness-influencers-in-singapore at position 3.9 for "top fitness influencers": the page lost 24.6 impressions a day on its 55
+ * named searches, other pages gained 26.8, and the fitness pages rose from 112 to 173 a day in all.
+ * 2. A sibling page: a page with the same stemOf that shares a named search and gained at least MOVED_SIBLING_SHARE of all the impressions a
+ * day the dropped page lost, over the same windows. On 11-21 /ja/blog/influencer-rates-study fell from 5.4 to 0.7 a day over 11-02..11-15
+ * against 11-16..11-18, while /ja/blog/influencer-rates-japan (published 11-02) rose from 12.3 to 17.3, so the pair held at 17.7 and 18.
+ * Rule 1 missed it, since the two shared one named search ("インフルエンサー ギャラ 相場"). The stem alone is not enough: on the same day
+ * /en/top-fitness-influencers-in-brazil fell 6 a day while six other top-fitness-influencers-in country pages each gained 3.6 to 11.1, with
+ * no named search in common. */
 export function movedPages(dropped: readonly DroppedPage[], daily: PagesDaily, queries: QueriesDaily): MovedPage[] {
   const { base, recent } = dropWindows(daily.end);
   return dropped.flatMap(({ page }) => {
@@ -172,14 +193,25 @@ export function movedPages(dropped: readonly DroppedPage[], daily: PagesDaily, q
     const baseDays = daysBetween(from, base.end) + 1;
     const rows = queries.rows.filter(row => row.date >= from && row.date <= recent.end);
     const named = new Set(rows.filter(row => pageOf(row.page) === page && row.date <= base.end).map(row => row.query));
+    const change = (row: { date: string; impressions: number }): number =>
+      row.date >= from && row.date <= base.end ? -row.impressions / baseDays : row.date >= recent.start && row.date <= recent.end ? row.impressions / DROP_RECENT_DAYS : 0;
     let lost = 0, taken = 0;
     for (const row of rows) {
       if (!named.has(row.query)) continue;
-      const change = row.date <= base.end ? -row.impressions / baseDays : row.date >= recent.start ? row.impressions / DROP_RECENT_DAYS : 0;
-      if (pageOf(row.page) === page) lost -= change;
-      else taken += change;
+      if (pageOf(row.page) === page) lost -= change(row);
+      else taken += change(row);
     }
-    return lost > 0 && taken >= lost ? [{ page, lostDaily: round(lost, 1), takenDaily: round(taken, 1) }] : [];
+    if (lost > 0 && taken >= lost) return [{ page, lostDaily: round(lost, 1), takenDaily: round(taken, 1) }];
+    const gained = new Map<string, number>();
+    for (const row of daily.rows) {
+      const other = pageOf(row.page);
+      gained.set(other, (gained.get(other) ?? 0) + change(row));
+    }
+    const pageLost = -(gained.get(page) ?? 0);
+    const sharing = new Set(queries.rows.filter(row => named.has(row.query)).map(row => pageOf(row.page)));
+    const sibling = [...gained].filter(([other, gain]) => other !== page && stemOf(other) === stemOf(page) && sharing.has(other) && gain >= MOVED_SIBLING_SHARE * pageLost)
+      .sort((a, b) => b[1] - a[1])[0];
+    return pageLost > 0 && sibling ? [{ page, lostDaily: round(pageLost, 1), takenDaily: round(sibling[1], 1), sibling: sibling[0] }] : [];
   });
 }
 
@@ -228,7 +260,7 @@ export function visitsOutput(read: VisitsRead, at: number): PrecheckOutput {
     const dropped = fell.filter(page => !moved.some(move => move.page === page.page));
     const skipped = droppedPages(gsc.pages).filter(page => noindex.has(page.page));
     const left = (skipped.length ? ` Left out, since they answer robots noindex: ${skipped.map(page => `${page.page} ${page.baseDaily} to ${page.recentDaily}`).join(", ")}.` : "") +
-      (moved.length ? ` Left out, since other virev.ai pages took the named searches they lost: ${moved.map(move => `${move.page} lost ${move.lostDaily} a day, others took ${move.takenDaily}`).join(", ")}.` : "");
+      (moved.length ? ` Left out, since other virev.ai pages took the searches they lost: ${moved.map(move => `${move.page} lost ${move.lostDaily} a day, ${move.sibling ?? "others"} took ${move.takenDaily}`).join(", ")}.` : "");
     metrics.dropped_pages = dropped.length;
     flagged.push({ at, kind: "dropped_pages", excerpt: (dropped.length
       ? `Pages whose Google impressions a day fell under ${DROP_SHARE * 100}% (${base.start}..${base.end} against ${recent.start}..${recent.end}): ${dropped.map(page => `${page.page} ${page.baseDaily} to ${page.recentDaily}`).join(", ")}.`

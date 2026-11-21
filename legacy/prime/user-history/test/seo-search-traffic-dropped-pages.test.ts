@@ -3,7 +3,7 @@
 // Also guards the 10-18 false drop: /blog/will-ai-kill-us-all's launch days (1,248 and 263) made its usual 4 to 56 a day read as a fall.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { droppedPages, readNoindex, visitsOutput, type GscRead, type PagesDaily, type QueriesDaily } from "../scripts/duties/seo-search-visits.ts";
+import { droppedPages, movedPages, readNoindex, visitsOutput, type GscRead, type PagesDaily, type QueriesDaily } from "../scripts/duties/seo-search-visits.ts";
 
 const JA_PAY = "https://virev.ai/ja/blog/how-much-does-youtube-pay-per-view";
 const IG_ALGO = "https://virev.ai/blog/instagram-algorithm";
@@ -92,5 +92,40 @@ test("a dropped page whose named searches another virev.ai page took is left out
   assert.equal(output.metrics.dropped_pages, 1);
   const excerpt = output.flagged!.find(slice => slice.kind === "dropped_pages")!.excerpt;
   assert.match(excerpt, /yoga-influencers 24 to 3\./);
-  assert.match(excerpt, /took the named searches they lost: https:\/\/virev\.ai\/blog\/fitness-influencers lost 25 a day, others took 30/);
+  assert.match(excerpt, /took the searches they lost: https:\/\/virev\.ai\/blog\/fitness-influencers lost 25 a day, others took 30/);
+});
+
+test("a page with under 3 base days after its launch days is not a drop (11-21: two ko pages read one launch-tail day as their base)", () => {
+  const KOREA = "https://virev.ai/ko/blog/tag/korea", FOLLOWERS = "https://virev.ai/ko/blog/how-many-followers-to-make-money";
+  const STEALTH = "https://virev.ai/ja/blog/stealth-marketing-regulation-japan";
+  const rows = [
+    ...[["11-13", 1], ["11-14", 2], ["11-15", 6], ["11-16", 1]].map(([day, impressions]) => ({ page: KOREA, date: `2026-${day}`, impressions: Number(impressions) })),
+    ...[["11-13", 2], ["11-14", 9], ["11-15", 5], ["11-16", 1]].map(([day, impressions]) => ({ page: FOLLOWERS, date: `2026-${day}`, impressions: Number(impressions) })),
+    ...[10, 13, 11, 17, 10, 17, 11, 16, 11, 14].map((impressions, i) => ({ page: STEALTH, date: `2026-11-${String(2 + i).padStart(2, "0")}`, impressions })),
+    { page: STEALTH, date: "2026-11-16", impressions: 1 },
+  ];
+  assert.deepEqual(droppedPages({ start: "2026-11-02", end: "2026-11-18", rows }), [{ page: STEALTH, baseDaily: 9.3, recentDaily: 0.3 }]);
+});
+
+test("a dropped page whose sibling slug took most of its impressions is left out (11-21: influencer-rates-study to influencer-rates-japan)", () => {
+  const STUDY = "https://virev.ai/ja/blog/influencer-rates-study", JAPAN = "https://virev.ai/ja/blog/influencer-rates-japan";
+  const BRAZIL = "https://virev.ai/en/top-fitness-influencers-in-brazil", CANADA = "https://virev.ai/en/top-fitness-influencers-in-canada";
+  const day = (page: string, list: [number, number][]) => list.map(([d, impressions]) => ({ page, date: `2026-11-${String(d).padStart(2, "0")}`, impressions }));
+  const pages: PagesDaily = { start: "2026-11-02", end: "2026-11-18", rows: [
+    ...day(STUDY, [[2, 2], [3, 19], [4, 25], [5, 19], [6, 10], [7, 1], [16, 1], [17, 1]]),
+    ...day(JAPAN, [[4, 1], [5, 8], [6, 14], [7, 21], [8, 15], [9, 11], [10, 16], [11, 17], [12, 14], [13, 15], [14, 21], [15, 19], [16, 17], [17, 15], [18, 20]]),
+    ...day(BRAZIL, [[2, 7], [3, 7], [4, 7], [5, 7], [6, 7], [7, 7], [8, 7], [9, 7], [10, 7], [11, 7], [12, 7], [13, 6], [14, 6], [15, 6], [16, 2]]),
+    ...day(CANADA, [[2, 1], [3, 1], [4, 1], [5, 1], [6, 1], [7, 1], [8, 1], [9, 1], [10, 1], [11, 1], [12, 1], [13, 1], [14, 1], [15, 1], [16, 9], [17, 9], [18, 9]]),
+  ] };
+  const queries: QueriesDaily = { start: pages.start, end: pages.end, rows: [
+    { query: "インスタ pr案件 いくら", page: STUDY, date: "2026-11-04", impressions: 7 },
+    { query: "インフルエンサー ギャラ 相場", page: STUDY, date: "2026-11-05", impressions: 3 },
+    { query: "インフルエンサー ギャラ 相場", page: JAPAN, date: "2026-11-17", impressions: 1 },
+    { query: "15万フォロワーのインフルエンサー", page: JAPAN, date: "2026-11-17", impressions: 5 },
+    { query: "fitness influencers brazil", page: BRAZIL, date: "2026-11-05", impressions: 4 },
+    { query: "fitness influencers canada", page: CANADA, date: "2026-11-17", impressions: 4 },
+  ] };
+  const fell = droppedPages(pages);
+  assert.deepEqual(fell.map(page => page.page), [BRAZIL, STUDY]);
+  assert.deepEqual(movedPages(fell, pages, queries), [{ page: STUDY, lostDaily: 4.8, takenDaily: 5, sibling: JAPAN }]);
 });
