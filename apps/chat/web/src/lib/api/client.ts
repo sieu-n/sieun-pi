@@ -404,6 +404,8 @@ export const get = <T>(of: Read<T>, wait?: Wait): Promise<T> => call<T>("GET", o
 export const reads = {
   /** `test` adds the test agents of walks, for a test room's member picker. */
   agents: (opts: { test?: boolean } = {}) => read<AgentSummary[]>(opts.test ? "/api/agents?test=1" : "/api/agents"),
+  /** Live and archived agents, for the Agents page's Archived tab. */
+  allAgents: () => read<AgentSummary[]>("/api/agents?archived=1"),
   models: () => read<ModelCatalog>("/api/models"),
   /** Channels and Solo rooms; a DM is listed by agent, never here. */
   rooms: () => read<Room[]>("/api/rooms"),
@@ -448,6 +450,7 @@ export const api = {
     call<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { model, ...(thinkingLevel ? { thinkingLevel } : {}) }),
   stopAgent: (id: AgentId) => call<{ ok: true }>("POST", `/api/c/${enc(roomOf(id))}/abort`),
   archiveAgent: (id: AgentId, archived = true) => call<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { archived }),
+  renameAgent: (id: AgentId, name: string) => call<ConversationHeader>("PATCH", `/api/c/${enc(roomOf(id))}`, { name }),
 
   header: (id: ConversationId, wait?: Wait) => call<ConversationHeader>("GET", `/api/c/${enc(id)}`, undefined, undefined, wait),
   items: (id: ConversationId, opts: { before?: string; after?: string; around?: string; limit?: number } = {}, wait?: Wait) =>
