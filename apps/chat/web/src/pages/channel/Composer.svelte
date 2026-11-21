@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { attach, type AgentSummary, type Attached, type Room } from "$lib/api";
   import { holdReload, releaseReload } from "$lib/api/reload";
   import { emojiOf, searchEmoji } from "$lib/api/shared/emoji";
@@ -17,6 +17,9 @@
   import { closedEmojiName, matchCandidates, openQuery, parseCommand, type Query, type SlashCommand } from "./typeahead";
   import type { Outgoing } from "./present";
   import { composing } from "$lib/ui/keyboard";
+  import { activeFormats, applyFormat, fillDraft, formatForKey, inCodeBlock, insertLink, linkAtSelection, listBreak, pasteLink, STRUCTURE, type Format } from "./composer-format";
+  import FormatBar from "./FormatBar.svelte";
+  import LinkDialog from "./LinkDialog.svelte";
   import { drafts } from "$lib/drafts.svelte";
 
   type Props = {
@@ -47,6 +50,11 @@
   type Attachment = { file: File; image: Attached };
   let box = $state<HTMLDivElement>();
   let empty = $state(true);
+  /** A list, quote or code block with no text yet still hides the placeholder. */
+  let structured = $state(false);
+  let formats = $state<ReadonlySet<Format>>(new Set());
+  /** The Add link dialog, with the selection it puts the link in. */
+  let link = $state<{ text: string; url: string; range: Range } | null>(null);
   let mentions = $state<string[]>([]);
   let attachments = $state<Attachment[]>([]);
   // An attached image not sent yet lives only in this page, so it holds the reload a new release asks for (lib/api/reload.ts).
@@ -117,7 +125,7 @@
     if (!box) return;
     const saved = draftKey ? drafts.text(draftKey) : null;
     if (saved) {
-      box.textContent = saved;
+      fillDraft(box, saved);
       sync();
     }
     // After the first frame, so the focus and its caret do not force a style and layout pass in the middle of the page's mount: on 11-03
@@ -128,6 +136,7 @@
       const selection = document.getSelection();
       if (selection?.rangeCount && box?.contains(selection.getRangeAt(0).startContainer)) lastRange = selection.getRangeAt(0).cloneRange();
       updateQuery();
+      formats = activeFormats(box!);
     };
     document.addEventListener("selectionchange", onSelection);
     return () => document.removeEventListener("selectionchange", onSelection);
@@ -152,7 +161,8 @@
     if (!box) return;
     const draft = readDraft(box);
     empty = draft.text.trim() === "";
-    if (empty && box.hasChildNodes() && !box.querySelector("[data-chip-id]")) box.replaceChildren();
+    structured = !!box.querySelector(STRUCTURE);
+    if (empty && box.hasChildNodes() && !box.querySelector("[data-chip-id]") && !structured) box.replaceChildren();
     mentions = draft.mentions;
     if (draftKey) drafts.write(draftKey, empty ? "" : draft.text);
     updateQuery();
@@ -225,8 +235,47 @@
     caretBack();
   }
 
+  function format(kind: Format) {
+    if (!box) return;
+    if (document.activeElement !== box) caretBack();
+    if (kind === "link") {
+      if (document.getSelection()?.rangeCount) link = { ...linkAtSelection(box), range: document.getSelection()!.getRangeAt(0).cloneRange() };
+      return;
+    }
+    applyFormat(box, kind);
+    sync();
+    formats = activeFormats(box);
+  }
+
+  /** Runs after the dialog has closed, since the page behind an open modal dialog takes no focus or edit. */
+  async function saveLink(text: string, url: string) {
+    if (!box || !link) return;
+    lastRange = link.range;
+    link = null;
+    await tick();
+    caretBack();
+    insertLink(box, text, url);
+    sync();
+  }
+
   function onkeydown(e: KeyboardEvent) {
     if (e.defaultPrevented) return;
+    const kind = formatForKey(e);
+    if (kind) {
+      e.preventDefault();
+      format(kind);
+      return;
+    }
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !composing(e)) {
+      e.preventDefault();
+      submit();
+      return;
+    }
+    if (e.key === "Enter" && !composing(e) && box && (e.shiftKey ? listBreak(box) : !query && inCodeBlock(box) && document.execCommand("insertLineBreak"))) {
+      e.preventDefault();
+      sync();
+      return;
+    }
     if (e.key === "Escape" && query) {
       e.preventDefault();
       dismiss();
@@ -272,7 +321,7 @@
     if (files.length) addFiles(files);
     // A file copied in Finder pastes its name as text too; an image copied from a page or app keeps its text, as before.
     const text = files.some((f) => !f.type.startsWith("image/")) ? "" : e.clipboardData.getData("text/plain");
-    if (text) insertPlainText(box, text);
+    if (text && !pasteLink(box, text)) insertPlainText(box, text);
     sync();
   }
 
@@ -300,7 +349,7 @@
     sync();
     onsend({ text: draft.text, mentions: draft.mentions, images, ...(alsoInChannel ? { alsoInChannel } : {}) }).catch((error: unknown) => {
       if (box && !readDraft(box).text) {
-        box.textContent = draft.text;
+        fillDraft(box, draft.text);
         alsoChecked = alsoInChannel;
         sync();
       }
@@ -352,10 +401,11 @@
   ondragleave={() => (dragging = false)}
   {ondrop}
 >
+  <FormatBar active={formats} onformat={format} />
   <div
     bind:this={box}
     class="input"
-    class:empty
+    class:empty={empty && !structured}
     contenteditable="true"
     role="textbox"
     tabindex="0"
@@ -404,6 +454,10 @@
     <IconButton icon="arrow-up" label="Send" size="md" variant={hasContent ? "accent" : "ghost"} disabled={!hasContent} onclick={submit} data-testid="send" />
   </div>
 </div>
+
+{#if link}
+  <LinkDialog open text={link.text} url={link.url} onsave={saveLink} onclose={() => ((link = null), caretBack())} />
+{/if}
 
 <Picker
   bind:open={pickerOpen}
@@ -476,6 +530,47 @@
   }
   .input :global(.mention) {
     user-select: all;
+  }
+  /* The formats as a post draws them (lib/ui/prose.css), so the box shows what the post will. */
+  .input :global(:is(b, strong)) {
+    font-weight: 600;
+  }
+  .input :global(a) {
+    color: var(--text-message-link);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .input :global(code) {
+    padding: 1px 5px;
+    border-radius: 6px;
+    background: color-mix(in srgb, currentColor 8%, transparent);
+    font: var(--text-mono);
+    font-size: 0.9em;
+  }
+  .input :global(pre) {
+    margin: 4px 0;
+    padding: 8px 10px;
+    border: 1px solid var(--border-standard);
+    border-radius: 8px;
+    background: var(--surface-inset);
+    font: var(--text-mono);
+    white-space: pre-wrap;
+  }
+  .input :global(blockquote) {
+    margin: 4px 0;
+    padding-left: 12px;
+    border-left: 2px solid var(--border-message-thread);
+    color: var(--text-subtle);
+  }
+  .input :global(:is(ul, ol)) {
+    margin: 4px 0;
+    padding-left: 22px;
+  }
+  .input :global(ul) {
+    list-style-type: disc;
+  }
+  .input :global(ol) {
+    list-style-type: decimal;
   }
   .tools {
     display: flex;

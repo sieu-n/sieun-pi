@@ -34,7 +34,7 @@
   letter-spacing: var(--tracking-heading);
 }
 .prose strong {
-  font-weight: 500;
+  font-weight: 600;
 }
 .prose ul,
 .prose ol {

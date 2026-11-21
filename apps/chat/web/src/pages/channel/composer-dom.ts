@@ -1,31 +1,28 @@
-/** The composer's editable box holds text nodes, <br> line breaks and chip spans; these helpers read and change it. */
+/** The composer's editable box holds text nodes, line breaks, chip spans and Slack's formatting; these helpers read and change it. */
+import { writeMarkdown } from "./composer-format";
 
 export type ChipTarget = { id: string; name: string; kind: string; self?: boolean };
 export type Draft = { text: string; mentions: string[]; channels: string[] };
 
 const CHIP = "data-chip-id";
 
-/** The draft as plain text, with each chip written as @name or #name, plus the ids the chips name. */
-export function readDraft(root: HTMLElement): Draft {
+/**
+ * The draft as text, with each chip written as @name or #name, plus the ids the chips name. With `markup` the text carries the box's
+ * formatting as the markdown the post renders (composer-format.ts); without it the text is bare, as the typeahead reads it.
+ */
+export function readDraft(root: HTMLElement, markup = true): Draft {
   const mentions: string[] = [];
   const channels: string[] = [];
-  let text = "";
-  const walk = (node: Node): void => {
-    if (node.nodeType === Node.TEXT_NODE) { text += node.textContent ?? ""; return; }
-    if (!(node instanceof HTMLElement)) return;
-    const id = node.getAttribute(CHIP);
-    if (id) {
+  const text = writeMarkdown(root, {
+    markup,
+    chip: (node) => {
+      const id = node.getAttribute(CHIP);
+      if (!id) return null;
       const isChannel = node.dataset.chipKind === "channel";
       (isChannel ? channels : mentions).push(id);
-      text += `${isChannel ? "#" : "@"}${node.dataset.chipName ?? ""}`;
-      return;
-    }
-    if (node.tagName === "BR") { text += "\n"; return; }
-    const block = node !== root && (node.tagName === "DIV" || node.tagName === "P");
-    if (block && text && !text.endsWith("\n")) text += "\n";
-    node.childNodes.forEach(walk);
-  };
-  root.childNodes.forEach(walk);
+      return `${isChannel ? "#" : "@"}${node.dataset.chipName ?? ""}`;
+    },
+  });
   return { text: text.replace(/\u00a0/g, " ").replace(/\s+$/, ""), mentions: [...new Set(mentions)], channels: [...new Set(channels)] };
 }
 
@@ -41,7 +38,7 @@ export function textBeforeCaret(root: HTMLElement): { text: string; range: Range
   const holder = root.ownerDocument.createElement("div");
   holder.append(before.cloneContents());
   for (const chip of holder.querySelectorAll(`[${CHIP}]`)) chip.replaceWith(CHIP_MARK);
-  return { text: readDraft(holder).text + trailingSpace(before.toString()), range };
+  return { text: readDraft(holder, false).text + trailingSpace(before.toString()), range };
 }
 
 /** Stands in for a chip in the text before the caret, so the @name inside a chip never reads as an open query. */

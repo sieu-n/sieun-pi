@@ -35,7 +35,7 @@ export type MarkdownContext = {
   mentions?: ReadonlyMap<string, { id: string; kind: "person" | "agent" | "channel"; self?: boolean }> | null;
   /** Folder that relative image paths resolve against. */
   cwd?: string;
-  /** Chat message mode: bold renders as text, headings as paragraphs, and a single line break as a break. */
+  /** Chat message mode: headings render as paragraphs and a single line break as a break, as Slack shows a post. */
   plain?: boolean;
   /** The names of the jobs whose name alone in a code span becomes a job link; the same name in plain text stays text. */
   jobs?: readonly string[];
@@ -593,9 +593,6 @@ const marked = new Marked({
     checkbox({ checked }) {
       // No space after the box: its right margin is the gap, so a task's text lines up with a plain bullet's (prose.css).
       return `<input type="checkbox" disabled${checked ? " checked" : ""}>`;
-    },
-    strong({ tokens }) {
-      return ctx.plain ? this.parser.parseInline(tokens) : false;
     },
     heading({ tokens }) {
       return ctx.plain ? `<p>${this.parser.parseInline(tokens)}</p>\n` : false;

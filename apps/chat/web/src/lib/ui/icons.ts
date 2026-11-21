@@ -87,6 +87,14 @@ export const ICONS = {
   "play": `<path d="M6.5 4.5v11l9-5.5z"/>`,
   "cpu": `<rect x="5" y="5" width="10" height="10" rx="2"/><rect x="8" y="8" width="4" height="4" rx=".5"/><path d="M8 2.5V5M12 2.5V5M8 15v2.5M12 15v2.5M2.5 8H5M2.5 12H5M15 8h2.5M15 12h2.5"/>`,
   "command": `<path d="M7 7h6v6H7zM7 7V5.5A1.5 1.5 0 1 0 5.5 7H7M13 7V5.5A1.5 1.5 0 1 1 14.5 7H13M7 13v1.5A1.5 1.5 0 1 1 5.5 13H7M13 13v1.5a1.5 1.5 0 1 0 1.5-1.5H13"/>`,
+  "bold": `<path d="M6.5 4.5h4.25a2.75 2.75 0 0 1 0 5.5H6.5zM6.5 10h5a3 3 0 0 1 0 6h-5z" stroke-width="1.75"/>`,
+  "italic": `<path d="M9 4.5h6M5 15.5h6M12.5 4.5l-3.5 11"/>`,
+  "strike": `<path d="M4 10h12M13.5 6.5c-.5-1.3-1.8-2-3.5-2-2 0-3.5 1-3.5 2.5 0 .8.4 1.5 1.2 2M6.5 13.5c.5 1.3 1.8 2 3.7 2 2.1 0 3.5-1 3.5-2.6 0-.5-.1-.9-.4-1.2"/>`,
+  "list-bullet": `<path d="M8.5 5.5h8M8.5 10h8M8.5 14.5h8"/><circle cx="4.75" cy="5.5" r="1.1" fill="currentColor" stroke="none"/><circle cx="4.75" cy="10" r="1.1" fill="currentColor" stroke="none"/><circle cx="4.75" cy="14.5" r="1.1" fill="currentColor" stroke="none"/>`,
+  "list-ordered": `<path d="M9 5.5h7.5M9 10h7.5M9 14.5h7.5M4 3.75h1.25v3.5M3.75 7.25h3M3.75 12.5a1.1 1.1 0 0 1 2.2.15c0 .75-2.2 1.6-2.2 2.6h2.4"/>`,
+  "quote": `<path d="M4.5 4.5v11M8.5 6.5h7M8.5 10h7M8.5 13.5h5"/>`,
+  "code": `<path d="M7.5 6 3.5 10l4 4M12.5 6l4 4-4 4"/>`,
+  "code-block": `<rect x="3" y="3.5" width="14" height="13" rx="2.5"/><path d="M8.5 8 6.5 10l2 2M11.5 8l2 2-2 2"/>`,
 } as const satisfies Record<string, string>;
 
 export type IconName = keyof typeof ICONS;
