@@ -3,10 +3,12 @@
   import HostsPage from "$pages/hosts/HostsPage.svelte";
   import AccountsPage from "$pages/accounts/AccountsPage.svelte";
   import SkillsPage from "$pages/skills/SkillsPage.svelte";
+  import ReviewPage from "$pages/skills-review/ReviewPage.svelte";
   import PreferencesPage from "$pages/preferences/PreferencesPage.svelte";
   import NotificationsPage from "$pages/notifications/NotificationsPage.svelte";
   import KeyboardPage from "$pages/keyboard/KeyboardPage.svelte";
   import ConsolesPage from "$pages/consoles/ConsolesPage.svelte";
+  import { router } from "$lib/router.svelte";
   import { openSection } from "./sections";
 
   const section = $derived(openSection());
@@ -25,6 +27,8 @@
     <ConsolesPage />
   {:else if section === "accounts"}
     <AccountsPage />
+  {:else if section === "skills" && router.route.rest[1] === "review"}
+    <ReviewPage />
   {:else if section === "skills"}
     <SkillsPage />
   {:else}

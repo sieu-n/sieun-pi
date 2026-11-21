@@ -12,6 +12,7 @@ import type {
   SkillsReport, SkillsView, UndoBody,
 } from "./shared/skills.ts";
 import type { ConsolesReport } from "./shared/consoles.ts";
+import type { ReviewDecideBody, ReviewItem, ReviewReport, ReviewResult, ReviewUndoBody } from "./shared/skills-review.ts";
 import type { PinRequest } from "./types.ts";
 import type { SavedLayout, SidebarLayout } from "./types.ts";
 import type { ConversationPrefs, PrefsPatch } from "./types.ts";
@@ -616,5 +617,10 @@ export const api = {
   /** Starts a scan of the boxes unless one runs; the `skills` live event says when it ends. */
   scanSkills: () => call<{ scan: SkillScan }>("POST", "/api/skills/scan"),
   skillDoc: (id: string) => call<SkillDoc>("GET", `/api/skills/doc?id=${enc(id)}`),
+  /** The skills review: the cleanup items of a set in review order, one item with its copies and diffs, and the owner's decide and undo. */
+  skillsReview: (set?: string) => call<ReviewReport>("GET", `/api/skills/review${query({ set })}`),
+  skillsReviewItem: (set: string, id: string) => call<ReviewItem>("GET", `/api/skills/review/item${query({ set, id })}`),
+  decideSkillsReview: (body: ReviewDecideBody) => call<ReviewResult>("POST", "/api/skills/review/decide", body),
+  undoSkillsReview: (body: ReviewUndoBody) => call<ReviewResult>("POST", "/api/skills/review/undo", body),
   corrections: () => call<{ corrections: unknown[] }>("GET", "/api/corrections"),
 };
