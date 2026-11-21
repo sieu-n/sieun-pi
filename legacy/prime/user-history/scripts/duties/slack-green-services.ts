@@ -25,6 +25,8 @@ import { CONNECTION_FAILURE, RETRY_PAUSE_MS, retryUnreached, retryingFetch } fro
  * counted, because since 10-30 slack.green builds on us-metal02 (c200) and each prod deploy waits for the release owner (c154). owner_slack_green reads the owner's presence with Slack's users.getPresence
  * through the session tokens Slack Green stores for his ppwc workspace, read only. api_routes_failing calls the add-on's and the CLI's routes
  * with a bogus login and expects their JSON 401, and counts each /api/ route that answered 500 or more during the page walk.
+ * connect_check_red reads 1 while the newest Connect check run on main failed or a connect-check issue is open (readConnectCheck), so a red
+ * connect check of the add-account path starts a fix job on the next run.
  */
 
 /** SLACK_GREEN_BASE points the walk at one deployment's URL, such as a candidate before a promote (c205). */
@@ -68,7 +70,12 @@ export function pageFailure(read: PageRead): string | null {
 export interface WorkerRead { status: string; deployAt: number; lastActiveAt?: number; activeLines: number }
 export interface Presence { presence: string; online: boolean; connectionCount: number; lastActivity?: number }
 export interface RouteRead { route: string; status?: number; body?: string; error?: string; ok: boolean }
-export interface Readings { pages: PageRead[]; deploys?: PrecheckOutput; worker?: WorkerRead; presence?: Presence; routes: RouteRead[]; errors: string[] }
+export interface ConnectCheckRun { id: number; conclusion: string; event: string; url: string; createdAt: string }
+export interface ConnectCheckIssue { number: number; title: string; url: string; latest: string }
+/** The newest finished Connect check run on main that ran the check, and the open issues labeled connect-check. */
+export interface ConnectCheckRead { run?: ConnectCheckRun; issues: ConnectCheckIssue[] }
+export interface Readings { pages: PageRead[]; deploys?: PrecheckOutput; worker?: WorkerRead; presence?: Presence; routes: RouteRead[];
+  connectCheck?: ConnectCheckRead; errors: string[] }
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error)).replace(/(Bearer\s+)\S+/g, "$1***");
 const when = (ms: number) => new Date(ms).toISOString().slice(0, 16).replace("T", " ") + "Z";
@@ -108,12 +115,20 @@ export function servicesOutput(read: Readings, now: number): PrecheckOutput {
     excerpt: `${route.route} answered ${route.error ?? `HTTP ${route.status} ${route.body?.slice(0, 120) ?? ""}`}` });
   for (const hit of walked5xx) flagged.push({ at: now, kind: "api_failing", excerpt: `${hit} during the page walk` });
 
+  const check = read.connectCheck;
+  const runRed = check?.run?.conclusion === "failure";
+  const connectRed = check ? Number(runRed || check.issues.length > 0) : 1;
+  if (check?.run) flagged.push({ at: now, kind: runRed ? "connect_check_red" : "connect_check_ok",
+    excerpt: `the newest Connect check run on main (${check.run.event}, ${check.run.createdAt}) ended ${check.run.conclusion}: ${check.run.url}` });
+  for (const issue of check?.issues ?? []) flagged.push({ at: now, kind: "connect_check_red",
+    excerpt: `open issue #${issue.number} ${issue.title} ${issue.url}: ${issue.latest.replace(/\s+/g, " ").slice(0, 700)}` });
+
   const failedAt = deploys?.lastEventAt?.main_checks_failed_24h;
   // When failed main runs are all deploy_problems counts, it is a day's window that ages out, so it names that window: without it, d9 and
   // duty-fleet read the 4 failed runs of 11-03 (a vercel-render-check timeout fixed by 97dd3a2 at 14:52Z) as a stuck duty with no clear time.
   const onlyChecks = deployProblems > 0 && deployProblems === checksFailed;
   return { metrics: { pages_failing: pagesFailing, deploy_problems: deployProblems, owner_slack_green: green, api_routes_failing: routesFailing,
-    source_errors: read.errors.length }, flagged, ...failedAt === undefined ? {} : { lastEventAt: { deploy_problems: failedAt } },
+    connect_check_red: connectRed, source_errors: read.errors.length }, flagged, ...failedAt === undefined ? {} : { lastEventAt: { deploy_problems: failedAt } },
     ...onlyChecks && failedAt !== undefined ? { windowMs: { deploy_problems: CHECKS_WINDOW_MS } } : {} };
 }
 
@@ -222,6 +237,23 @@ export async function readRoutes(fetcher: typeof fetch, now: number): Promise<Ro
   }));
 }
 
+/**
+ * The connect check (slack-green scripts/connect-check, workflow connect-check.yml) signs a fresh QA user up on slack.green and connects the
+ * lab Slack in Chrome, a device-bound Chrome and Brave after every main deploy; it was added after a customer's connect failed on 11-21. Its
+ * hourly schedule runs that find the store add-on version already checked end green without checking anything, so the run read here is the
+ * newest finished one started by a CI run or by hand; a failed scheduled run opens the connect-check issue, which this also reads.
+ */
+export async function readConnectCheck(run: Exec): Promise<ConnectCheckRead> {
+  const runs = JSON.parse(await run("gh", ["run", "list", "--repo", "sieu-n/slack-green", "--workflow", "connect-check.yml", "--branch", "main",
+    "--limit", "30", "--json", "databaseId,conclusion,event,url,createdAt"])) as { databaseId: number; conclusion: string; event: string; url: string; createdAt: string }[];
+  const newest = runs.filter(r => r.event !== "schedule" && ["success", "failure"].includes(r.conclusion))
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+  const open = JSON.parse(await run("gh", ["issue", "list", "--repo", "sieu-n/slack-green", "--label", "connect-check", "--state", "open",
+    "--json", "number,title,url,body,comments"])) as { number: number; title: string; url: string; body: string; comments: { body: string }[] }[];
+  return { ...newest ? { run: { id: newest.databaseId, conclusion: newest.conclusion, event: newest.event, url: newest.url, createdAt: newest.createdAt } } : {},
+    issues: open.map(issue => ({ number: issue.number, title: issue.title, url: issue.url, latest: issue.comments.at(-1)?.body ?? issue.body })) };
+}
+
 interface RailwayRow { status: string; createdAt: string }
 /**
  * The worker's newest deployment that is not skipped, removed, waiting or failed, and its newest presence check log line, from a temp-linked
@@ -274,10 +306,11 @@ async function main(): Promise<void> {
     const worker = await readWorker(exec).catch(fail("Railway worker status and logs"));
     return { deploys, worker };
   })();
-  const [pageReads, { deploys, worker }, presence, routes] = await Promise.all([pages, backend,
-    sb ? readOwnerPresence(net, sb).catch(fail("owner's Slack presence")) : undefined, readRoutes(net, now)]);
+  const [pageReads, { deploys, worker }, presence, routes, connectCheck] = await Promise.all([pages, backend,
+    sb ? readOwnerPresence(net, sb).catch(fail("owner's Slack presence")) : undefined, readRoutes(net, now),
+    readConnectCheck(exec).catch(fail("Connect check runs and issues"))]);
   const result = servicesOutput({ pages: pageReads, deploys, routes, errors,
-    ...worker ? { worker } : {}, ...presence ? { presence } : {} }, now);
+    ...worker ? { worker } : {}, ...presence ? { presence } : {}, ...connectCheck ? { connectCheck } : {} }, now);
   await writeFile(output, JSON.stringify(result, null, 2) + "\n");
 }
 

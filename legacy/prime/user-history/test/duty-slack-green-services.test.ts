@@ -2,7 +2,7 @@
 // variables" in the browser, because the us-metal02 prebuilt build had no NEXT_PUBLIC_SUPABASE_* values, and no duty saw it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type PageRead, PAGES, pageFailure, readWorker, servicesOutput } from "../scripts/duties/slack-green-services.ts";
+import { type PageRead, PAGES, pageFailure, readConnectCheck, readWorker, servicesOutput } from "../scripts/duties/slack-green-services.ts";
 
 const NOW = Date.parse("2026-10-30T12:10:00Z");
 const page = (key: string, extra: Partial<PageRead> = {}): PageRead =>
@@ -64,4 +64,23 @@ test("the worker read asks for the CLI's full deployment list, so skipped rows n
   assert.equal(worker.status, "SUCCESS");
   assert.equal(worker.deployAt, NOW - 7_200_000);
   assert.ok(seen.some(args => args[0] === "deployment" && args.includes("1000")));
+});
+
+// 11-21: a customer's Slack connect failed on prod after add-on 1.6 shipped; the connect check now runs after every main deploy.
+test("connect_check_red reads the newest connect check run that ran, not an hourly run that skipped, and any open connect-check issue", async () => {
+  const runs = [
+    { databaseId: 3, conclusion: "success", event: "schedule", url: "https://x/3", createdAt: "2026-11-21T13:17:00Z" },
+    { databaseId: 2, conclusion: "failure", event: "workflow_run", url: "https://x/2", createdAt: "2026-11-21T12:25:00Z" },
+    { databaseId: 1, conclusion: "success", event: "workflow_run", url: "https://x/1", createdAt: "2026-11-21T11:00:00Z" },
+  ];
+  const issues = [{ number: 599, title: "Connect check failing on slack.green", url: "https://x/599", body: "first", comments: [{ body: "| chrome-bound | first | FAIL |" }] }];
+  const exec = async (_file: string, args: readonly string[]): Promise<string> => JSON.stringify(args[0] === "run" ? runs : issues);
+  const check = await readConnectCheck(exec);
+  assert.equal(check.run?.id, 2);
+  assert.equal(check.issues[0]?.latest, "| chrome-bound | first | FAIL |");
+  const base = { pages: PAGES.map(spec => page(spec.key)), routes: [], errors: [] };
+  assert.equal(servicesOutput({ ...base, connectCheck: check }, NOW).metrics.connect_check_red, 1);
+  const green = servicesOutput({ ...base, connectCheck: { run: { ...check.run!, conclusion: "success" }, issues: [] } }, NOW);
+  assert.equal(green.metrics.connect_check_red, 0);
+  assert.equal(servicesOutput(base, NOW).metrics.connect_check_red, 1);
 });
