@@ -17,7 +17,7 @@ The HTML shape, with a worked example, is the format section of `page-authoring.
 3. The writer runs the prose lint on its page and fixes every error and warning before it reports back.
 4. The parent reads the rendered page against this file and runs the lint again before it links the page to anyone.
 
-Every chat brief carries this line:
+A brief for a job that writes a wiki page carries this line. No brief template adds it, and every job also gets the rule as owner rule c20 in its corrections block:
 
 > A wiki page is always written by its own subagent, one page per
 > subagent. The writer follows `skills/wiki/references/writing.md` in sieun-pi
@@ -97,7 +97,7 @@ The same facts as numbered lines:
 ## Plan, spec and status pages
 
 A plan shows that the writer cared about the problem, as the owner asked on 2026-09-10: "make sure future prime-agents report a plan in a format/style and insight just like [this page], not just superficially, but care about the problem!"
-These lines held the spec-report skill's rules until 2026-11-18, when that skill went unread for 14 days and moved here.
+These lines held the spec-report skill's rules until 2026-11-17, when that skill went unread for 14 days and moved here.
 
 1. A plan, spec, design or status page starts from the user's job and the real artifact, says why today's flow fails, and makes one concrete recommendation.
 2. Trace the whole task a person does, such as create, edit, preview, publish and use, past the symptom someone reported.
