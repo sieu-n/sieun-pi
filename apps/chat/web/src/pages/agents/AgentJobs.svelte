@@ -28,10 +28,12 @@
   const filter = $derived(jobFilterOf(router.route.params.jobs, jobFilterCounts(list, "")));
   const shown = $derived(jobsShown(list, filter, query));
   const names = $derived(new Map(list.map((job) => [job.id, job.name])));
+  /** Each count shows in full, as a string, since a number badge stops at 99+ and agent factory has over 300 finished jobs. */
+  const count = (n: number) => (n ? String(n) : null);
   const tabs = $derived([
-    { id: "active" as const, label: "Active", badge: counts.active },
-    { id: "finished" as const, label: "Finished", badge: counts.finished },
-    { id: "archived" as const, label: "Archived", badge: counts.archived },
+    { id: "active" as const, label: "Active", badge: count(counts.active) },
+    { id: "finished" as const, label: "Finished", badge: count(counts.finished) },
+    { id: "archived" as const, label: "Archived", badge: count(counts.archived) },
   ]);
   const setFilter = (next: JobFilter) => router.setParams({ jobs: next }, { replace: true });
   const setQuery = (next: string) => router.setParams({ jobq: next || null }, { replace: true });
