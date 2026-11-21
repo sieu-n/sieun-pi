@@ -5,9 +5,9 @@
 import { filterParams, filterQuery, hasFilters, readFilters, type Filters } from "./filters.ts";
 import type { Sort } from "./search-model.ts";
 
-/** The results page's tabs, as Slack's: the messages, then the channels and the people whose name matches. */
-export type ResultTab = "messages" | "channels" | "people";
-const TABS: readonly ResultTab[] = ["messages", "channels", "people"];
+/** The results page's tabs, as Slack's: the messages, then the channels and the people whose name matches, then the wiki pages. */
+export type ResultTab = "messages" | "channels" | "people" | "pages";
+const TABS: readonly ResultTab[] = ["messages", "channels", "people", "pages"];
 
 export type Results = { q: string; sort: Sort; filters: Filters; tab?: ResultTab | undefined };
 

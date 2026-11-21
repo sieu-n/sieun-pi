@@ -24,6 +24,8 @@
   import { readResults, resultCount, resultParams, searchable, searchParams, type Results, type ResultTab } from "./results-model";
   import { channelMatches, NO_HITS, peopleMatches, widenRows, type Person } from "./search-model";
   import { composing } from "$lib/ui/keyboard";
+  import type { WikiPageRow } from "$lib/api";
+  import PageRows from "$pages/wiki/PageRows.svelte";
 
   const PAGE = 20;
 
@@ -210,10 +212,30 @@
   const people = $derived<Person[]>(agents.list.map(agent => ({ id: agent.id, name: agent.name, kind: "agent", conversationId: agents.room(agent.id), archived: !!agent.archived, detail: agent.archived ? "Archived agent" : agent.status === "working" ? "Agent · working now" : "Agent" })));
   const channels = $derived(channelMatches(conversations.list, results.q));
   const peopleFound = $derived(peopleMatches(people, results.q));
+  /** The wiki pages whose title or words match (GET /api/pages), a title match first, as Slack's Canvases tab. */
+  const PAGES_LIMIT = 50;
+  let pagesFound = $state<{ state: "idle" | "loading" | "error" } | { state: "ready"; pages: WikiPageRow[] }>({ state: "idle" });
+  $effect(() => {
+    const q = results.q;
+    if (!q) {
+      pagesFound = { state: "idle" };
+      return;
+    }
+    const controller = new AbortController();
+    pagesFound = { state: "loading" };
+    api.pages({ q, limit: PAGES_LIMIT }, { signal: controller.signal }).then(
+      answer => (pagesFound = { state: "ready", pages: answer.pages }),
+      () => {
+        if (!controller.signal.aborted) pagesFound = { state: "error" };
+      },
+    );
+    return () => controller.abort();
+  });
   const tabs = $derived([
     { id: "messages" as const, label: "Messages", badge: status.state === "ready" ? total : null },
     { id: "channels" as const, label: "Channels", badge: channels.length },
     { id: "people" as const, label: "People", badge: peopleFound.length },
+    { id: "pages" as const, label: "Pages", badge: pagesFound.state === "ready" ? (pagesFound.pages.length >= PAGES_LIMIT ? `${PAGES_LIMIT}+` : pagesFound.pages.length) : null },
   ]);
   const widen = $derived(widenRows(results.filters));
 
@@ -291,6 +313,20 @@
         </CardGroup>
       {:else}
         <EmptyState icon="hash" title={`No channels match “${results.q}”`} description="Check the spelling, or look in Messages for what was said." />
+      {/if}
+    </section>
+  {:else if tab === "pages"}
+    <section class="names" aria-label="Pages" data-search-pages>
+      {#if pagesFound.state === "ready" && pagesFound.pages.length}
+        <PageRows rows={pagesFound.pages} label="Pages" />
+      {:else if pagesFound.state === "idle"}
+        <p class="note">Type words to find a page by its title.</p>
+      {:else if pagesFound.state === "ready"}
+        <EmptyState icon="file" title={`No pages match “${results.q}”`} description="Check the spelling, or browse every page from the sidebar's Wiki." />
+      {:else if pagesFound.state === "error"}
+        <p class="note">The wiki did not answer. Try the search again.</p>
+      {:else}
+        <p class="note"><LoadingText text="Searching pages…" /></p>
       {/if}
     </section>
   {:else if tab === "people"}

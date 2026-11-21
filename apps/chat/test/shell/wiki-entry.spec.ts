@@ -66,3 +66,17 @@ test("Cmd K lists a page whose title is typed above the messages, and Enter on i
   await expect(page).toHaveURL(/view=wiki%3Aagents/);
   await expect(page.getByTestId("artifact-viewer")).toBeVisible();
 });
+
+test("the full results page has a Pages tab that lists the matching pages, a title match first", async ({ page }) => {
+  await stub(page);
+  await page.goto(`/#/search?q=${encodeURIComponent(TITLE)}`);
+  const tabs = page.getByRole("tablist", { name: "Result types" });
+  await expect(tabs.getByRole("tab", { name: /Pages/ })).toContainText("2");
+  await tabs.getByRole("tab", { name: /Pages/ }).click();
+  await expect(page).toHaveURL(/tab=pages/);
+  const rows = page.locator("[data-search-pages] [data-wiki-page-row]");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.first()).toContainText(TITLE);
+  await rows.first().click();
+  await expect(page.getByTestId("artifact-viewer")).toBeVisible();
+});

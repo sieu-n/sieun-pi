@@ -1,11 +1,11 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { api, type WikiPageRow, type WikiPages } from "$lib/api";
-  import { hrefFor, router } from "$lib/router.svelte";
+  import { api, type WikiPages } from "$lib/api";
+  import { router } from "$lib/router.svelte";
   import { openView } from "$lib/shell/viewer.svelte";
-  import { Button, EmptyState, Icon, LoadingText, PanelHeader, SearchField } from "$lib/ui";
-  import { shortAge } from "$pages/search/hit-view";
-  import { pagePlace, WIKI_HOME, withoutFavorites } from "./wiki-pages";
+  import { Button, EmptyState, LoadingText, PanelHeader, SearchField } from "$lib/ui";
+  import PageRows from "./PageRows.svelte";
+  import { WIKI_HOME, withoutFavorites } from "./wiki-pages";
 
   /**
    * The Wiki view at `#/c/wiki`, Slack's Canvases list for this app's wiki: the favorites and the pages updated last, and a field that finds a
@@ -59,19 +59,10 @@
     router.setParams({ q: value.trim() || null }, { replace: true });
   }
 
-  const viewHref = (path: string) => hrefFor("messages", ["wiki"], { ...router.route.params, view: `wiki:${path}` });
-
-  /** A plain click opens the page in the viewer over this list; Cmd or Ctrl click keeps the link's own new tab. */
-  function open(e: MouseEvent, path: string) {
-    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-    e.preventDefault();
-    openView({ kind: "wiki", path });
-  }
-
   /** ArrowDown in the field moves to the first page, and the arrows move between pages, as in Slack's lists. */
   function onkeydown(e: KeyboardEvent) {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
-    const links = [...document.querySelectorAll<HTMLAnchorElement>("[data-wiki-page-row]")];
+    const links = [...(e.currentTarget as HTMLElement).querySelectorAll<HTMLAnchorElement>("[data-wiki-page-row]")];
     if (!links.length) return;
     const at = links.indexOf(document.activeElement as HTMLAnchorElement);
     if (at < 0 && e.key === "ArrowUp") return;
@@ -79,12 +70,6 @@
     if (at === 0 && e.key === "ArrowUp") return field?.focus();
     links[Math.min(links.length - 1, at < 0 ? 0 : at + (e.key === "ArrowDown" ? 1 : -1))]?.focus();
   }
-
-  /** When the page last changed, as Cmd K stamps a hit: "3h", "Yesterday", "Mon", "Sep 2". */
-  const updated = (row: WikiPageRow) => {
-    const at = Date.parse(row.updated);
-    return Number.isFinite(at) ? `Updated ${shortAge(at, new Date())}` : "";
-  };
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -121,20 +106,7 @@
           {#if section.rows.length}
             <section aria-labelledby="wiki-{section.id}">
               <h2 id="wiki-{section.id}" class="heading t-caption" data-wiki-section={section.id}>{section.label}</h2>
-              <ul class="rows">
-                {#each section.rows as row (row.path)}
-                  <li>
-                    <a class="row" href={viewHref(row.path)} onclick={e => open(e, row.path)} data-wiki-page-row={row.path}>
-                      <span class="icon"><Icon name="file" size={18} /></span>
-                      <span class="main">
-                        <span class="title t-label-sm">{row.title}</span>
-                        {#if row.description}<span class="desc t-body-sm">{row.description}</span>{/if}
-                        <span class="meta t-caption">{[pagePlace(row.path), updated(row)].filter(Boolean).join(" · ")}</span>
-                      </span>
-                    </a>
-                  </li>
-                {/each}
-              </ul>
+              <PageRows rows={section.rows} />
             </section>
           {/if}
         {/each}
@@ -153,12 +125,4 @@
   .sections { padding: var(--space-1) var(--space-1-5) var(--space-panel-inset); transition: opacity 120ms; }
   .sections.stale { opacity: 0.6; }
   .heading { margin: 0; padding: var(--space-3) var(--space-3) var(--space-1); color: var(--text-subtle); font-weight: 600; }
-  .rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
-  .row { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: var(--space-3); padding: 10px var(--space-3); color: inherit; text-decoration: none; border-radius: var(--radius-row); }
-  .row:hover, .row:focus-visible { background: var(--neutral-3); }
-  .icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: var(--neutral-3); color: var(--text-subtle); }
-  .main { display: grid; gap: 2px; min-width: 0; }
-  .title { color: var(--text-standard); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .desc { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-inline-size: 80ch; color: var(--text-standard); }
-  .meta { color: var(--text-metadata); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
