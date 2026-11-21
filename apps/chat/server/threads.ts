@@ -230,6 +230,27 @@ export class Threads {
     return this.store.state.threads[thread] ?? { kind: "chat" };
   }
 
+  /** Whether the owner archived a job inside `thread`, or a job it runs under, so archiving a job takes the jobs it started with it. */
+  jobArchived(thread: string, conversation: number): boolean {
+    const archived = this.store.state.archivedJobs;
+    if (!archived) return false;
+    const nodes = this.tree(thread);
+    for (let at: number | null | undefined = conversation; at && at !== 1; at = nodes.find(n => n.id === at)?.parent) {
+      if (archived[conversationIdOf(thread, at)] !== undefined) return true;
+    }
+    return false;
+  }
+
+  /** Archives or restores a job inside a thread; a root thread's archive is pi-host's. */
+  setJobArchived(thread: string, conversation: number, archived: boolean): void {
+    const id = conversationIdOf(thread, conversation);
+    const all = (this.store.state.archivedJobs ??= {});
+    if (archived === (all[id] !== undefined)) return;
+    if (archived) all[id] = Date.now();
+    else delete all[id];
+    this.store.saveState();
+  }
+
   statusOfConversation(thread: string, conversation: number): RunStatus {
     const row = this.list.get(thread);
     if (!row) return "idle";
@@ -378,7 +399,7 @@ export class Threads {
       const parentName = node.parent === 1 ? root.name : names.get(node.parent) ?? parentId;
       out.push({
         id, kind: "job", name: node.name, avatar: avatarOf(node.name), model: modelRef(node.model), thinkingLevel: root.thinkingLevel,
-        status: statusOf(node.status), parent: { id: parentId, name: parentName }, thread: row.id, conversation: node.id, archived: row.archived,
+        status: statusOf(node.status), parent: { id: parentId, name: parentName }, thread: row.id, conversation: node.id, archived: row.archived || this.jobArchived(row.id, node.id),
         createdAt: node.createdAt ?? row.createdAt, updatedAt: row.updatedAt, preview: "", rooms: [], host: this.box,
         ...(worksFor ? { agent: worksFor } : {}),
       });
@@ -391,7 +412,8 @@ export class Threads {
    * the owner sees does, because it holds threads no agent owns.
    */
   allSummaries(opts: { archived?: boolean } = {}): AgentSummary[] {
-    return [...this.list.values()].filter(t => (opts.archived || !t.archived) && !this.isComm(t.id)).flatMap(t => this.agentsOf(t)).sort(newestFirst);
+    return [...this.list.values()].filter(t => (opts.archived || !t.archived) && !this.isComm(t.id)).flatMap(t => this.agentsOf(t))
+      .filter(a => opts.archived || !a.archived).sort(newestFirst);
   }
 
   /** The registered agents (`agents.json`), newest first. A thread is an agent only through a record. */
@@ -462,7 +484,7 @@ export class Threads {
     }];
     for (const agent of agents.slice(1)) {
       out.push({
-        id: agent.id, kind: "job", name: agent.name, status: agent.status, archived: row.archived, lastActivityAt: agent.updatedAt,
+        id: agent.id, kind: "job", name: agent.name, status: agent.status, archived: agent.archived, lastActivityAt: agent.updatedAt,
         preview: "", unread: 0, hasNew: false, working: agent.status === "working" ? [{ id: agent.id, name: agent.name }] : [], agent: agent.id,
         ...(agent.parent ? { parent: agent.parent.id } : {}),
       });

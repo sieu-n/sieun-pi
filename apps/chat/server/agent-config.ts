@@ -201,13 +201,14 @@ export async function agentConfig(app: App, id: AgentId): Promise<AgentConfig> {
   const jobs: AgentConfig["swarm"]["jobs"] = nodes.filter(n => children.has(n.id)).map(n => ({
     id: conversationIdOf(thread, n.id), name: n.name, kind: "job" as const, status: app.threads.statusOfConversation(thread, n.id), createdAt: n.createdAt,
     parent: n.parent === null ? null : conversationIdOf(thread, n.parent), depth: n.depth - (nodes.find(x => x.id === conversation)?.depth ?? 0),
+    archived: app.threads.jobArchived(thread, n.id),
   }));
   for (const other of app.threads.threadsList()) {
     const meta = app.threads.meta(other.id);
     if (meta.kind !== "job" || (meta.parent !== agent.id && meta.parent !== thread) || other.id === thread) continue;
     jobs.push({
       id: other.id, name: other.name || "Untitled", kind: dutyJobs.has(other.id) ? "duty" : "root job", status: app.threads.statusOfConversation(other.id, 1),
-      createdAt: other.createdAt, parent: agent.id, depth: 1,
+      createdAt: other.createdAt, parent: agent.id, depth: 1, archived: other.archived,
     });
   }
   jobs.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));

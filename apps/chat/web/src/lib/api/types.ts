@@ -648,7 +648,7 @@ export interface AgentConfig {
   instructions: { files: ConfigFile[]; note: string };
   swarm: {
     parent: { id: AgentId; name: string } | null;
-    jobs: { id: AgentId; name: string; kind: "job" | "duty" | "root job"; status: RunStatus; createdAt: Ms | null; parent: AgentId | null; depth: number }[];
+    jobs: { id: AgentId; name: string; kind: "job" | "duty" | "root job"; status: RunStatus; createdAt: Ms | null; parent: AgentId | null; depth: number; archived: boolean }[];
     /** The channels and Solo rooms it is a member of. */
     rooms: { id: RoomId; kind: "channel" | "solo"; name: string }[];
     duties: { id: string; name: string; goal: string; schedule: string; paused: boolean; nextAt: Ms | null; lastVerdict: string | null; lastAt: Ms | null; runs: number }[];

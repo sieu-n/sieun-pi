@@ -36,6 +36,8 @@ export interface StateFile {
   v: 1;
   threads: Record<string, ThreadMeta>;
   reads: Record<ConversationId, ReadMark>;
+  /** Jobs inside a thread the owner archived, with when: pi-host has no archive of its own for a conversation inside a thread. */
+  archivedJobs?: Record<ConversationId, number>;
 }
 
 export function writeJson(path: string, value: unknown): void {

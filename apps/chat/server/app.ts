@@ -1008,13 +1008,17 @@ export class App {
       return this.header(id);
     }
     const { thread, conversation } = parseConversationId(isRoomId(id) ? this.roomAgent(id).workThread : id);
-    if (conversation !== 1 && (patch.name !== undefined || patch.archived !== undefined)) throw new Error("Rename and archive the job's thread instead; a job inside a thread has no name of its own in pi-host.");
+    if (conversation !== 1 && patch.name !== undefined) throw new Error("Rename the job's thread instead; a job inside a thread has no name of its own in pi-host.");
     if (conversation !== 1 && patch.cwd !== undefined) throw new Error("A job inside a thread runs in its thread's folder; move the thread's root instead.");
-    await this.host.set(thread, {
-      ...(patch.name !== undefined ? { name: patch.name } : {}), ...(patch.archived !== undefined ? { archived: patch.archived } : {}),
+    // pi-host archives only a root thread, so the archive of a job inside a thread is the chat server's own flag.
+    const jobArchive = conversation !== 1 && patch.archived !== undefined;
+    if (jobArchive) this.threads.setJobArchived(thread, conversation, patch.archived!);
+    const set = {
+      ...(patch.name !== undefined ? { name: patch.name } : {}), ...(patch.archived !== undefined && !jobArchive ? { archived: patch.archived } : {}),
       ...(patch.cwd !== undefined ? { cwd: projectCwd(this.config, patch.cwd) } : {}),
       ...(patch.model !== undefined ? { model: patch.model } : {}), ...(patch.thinkingLevel !== undefined ? { thinkingLevel: patch.thinkingLevel } : {}),
-    });
+    };
+    if (Object.keys(set).length) await this.host.set(thread, set);
     await this.threads.refresh();
     return this.header(id);
   }
