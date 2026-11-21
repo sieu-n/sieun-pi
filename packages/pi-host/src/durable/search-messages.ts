@@ -1,8 +1,9 @@
 /**
  * `search_messages`: an agent's search of sw factory, the same search the owner's Cmd K runs, through apps/chat's `GET /api/search`
  * (apps/chat/server/search.ts). It finds room, Solo and DM posts, the replies in their threads, and what agents did inside their work
- * threads and jobs, with the owner's filters and their meaning: `from` (who wrote it), `in` (which room), `where` (a top-level post, a thread
- * reply, or inside a tool call or job), `after` and `before` (owner p115, msg mwomrz5y; contract: ~/work/search-filters/contract.md).
+ * threads and jobs, with the owner's filters and their meaning: `from` (who wrote it), `place` (the Cmd K pills: channels, DMs, Solo, threads,
+ * jobs, tool calls; owner p125 and p126, contract ~/work/search-in-category/contract.md), `in` (which room), `after` and `before` (owner p115,
+ * msg mwomrz5y). `where` (root, thread, tool) is the older form of `place` and keeps working.
  *
  * Each hit prints as one line that says where it sits, who wrote it, its words and the id other room tools take, with the link that opens it.
  * The room-tools extension lists it beside `set_emoji` (`room-tools.ts`). Searching only reads, so a rerun after a crash is safe.
@@ -16,17 +17,22 @@ export const SEARCH_MESSAGES_TOOL = "search_messages";
 
 export const SEARCH_MESSAGES_DESCRIPTION =
   "Search sw factory the way the owner's Cmd K search does: posts in channels, Solo rooms and DMs, the replies in their threads, and what " +
-  "agents did inside their work threads and jobs, such as a command, its output or a job's message. The total is the exact count for the " +
-  "filters. Narrow with the filters when you know something about what you want: from when you know who wrote it, in when you know the room, " +
-  "where when you know if it was a top-level post, a reply in a thread or something done inside a tool call or job, and after or before for " +
-  "dates. Each hit says where it sits, such as reply in thread p85 or tool call bash in job <name>, and ends with its id and link; a post's " +
-  "id works in set_emoji, edit_message and save_message. To read more of a hit, such as a tool's whole output, search again narrowly with " +
-  "full: true. For a Prime chat on :5182 or thinking, use search_history.";
+  "agents said or did inside their work threads and jobs, such as a job's message, a command or its output. The total is the exact count " +
+  "for the filters. Use place when you know what kind of place it sits in but not which one: jobs for something an agent said or did " +
+  "inside some job when you don't know which job, tools for a command, file, error or number in a tool call or its output, threads for an " +
+  "answer given as a reply, and channels, dms or solo for a top-level post. Use in when you know the one room or job, from when you know " +
+  "who wrote it, and after or before for dates. Each hit says where it sits, such as reply in thread p85 or tool output bash in job " +
+  "<name>, and ends with its id and link; a post's id works in set_emoji, edit_message and save_message. To read more of a hit, such as a " +
+  "tool's whole output, search again narrowly with full: true. For a Prime chat on :5182 or thinking, use search_history.";
 
 const WHERE = ["root", "thread", "tool"] as const satisfies readonly SearchWhere[];
 
+/** The Cmd K place pills, in their row order; `GET /api/search` takes them as `place` (contract ~/work/search-in-category/contract.md). */
+export const SEARCH_PLACES = ["channels", "dms", "solo", "threads", "jobs", "tools"] as const;
+export type SearchPlace = typeof SEARCH_PLACES[number];
+
 export interface SearchMessagesArgs {
-  query: string; from?: string[] | string; in?: string; where?: SearchWhere[] | SearchWhere; after?: string; before?: string;
+  query: string; from?: string[] | string; place?: SearchPlace[] | string; in?: string; where?: SearchWhere[] | SearchWhere; after?: string; before?: string;
   sort?: "relevance" | "recent"; limit?: number; cursor?: string; full?: boolean;
 }
 
@@ -35,8 +41,10 @@ export function searchQuery(args: SearchMessagesArgs): URLSearchParams {
   const params = new URLSearchParams({ q: args.query, ...(args.full ? {} : { brief: "1" }) });
   const list = (value: string[] | string | undefined) => (Array.isArray(value) ? value : value ? value.split(",") : []).map(v => v.trim()).filter(Boolean);
   const from = list(args.from);
+  const place = list(args.place);
   const where = list(args.where);
   if (from.length) params.set("from", from.join(","));
+  if (place.length) params.set("place", place.join(","));
   if (where.length) params.set("where", where.join(","));
   for (const key of ["in", "after", "before", "sort", "cursor"] as const) if (args[key]) params.set(key, String(args[key]));
   if (args.limit) params.set("limit", String(args.limit));
@@ -84,12 +92,18 @@ export function searchTools(app: ChatApp) {
       query: Type.String({ description: "Words to find; \"exact phrase\" keeps words together." }),
       from: Type.Optional(strings("Who wrote it: owner, agents for any agent, or an agent's name or id such as vent. Use it when you know who " +
         "said or did it. Several values match any of them.")),
-      in: Type.Optional(Type.String({ description: "Which room: a channel name such as #sw-factory-build, a Solo room's name, an agent's name for " +
-        "its DM, a job's name as a hit shows it, or a room or job id. Use it when you know where it was said or which job did it." })),
+      place: Type.Optional(Type.Union([Type.Array(Type.Union(SEARCH_PLACES.map(p => Type.Literal(p)))), Type.String()], {
+        description: "What kind of place, as the owner's Cmd K pills: channels (top-level posts in channels), dms (top-level posts in DMs), " +
+          "solo (top-level posts in Solo rooms and the owner's own chats), threads (replies inside a post's thread), jobs (what agents said " +
+          "or did inside their work threads and jobs, other than tool output) and tools (tool calls and their output anywhere). Use jobs " +
+          "when an agent said or did it inside some job you can't name, and add tools when it was a command or its output. An array or a " +
+          "comma list; several values match any of them, and none searches every place.",
+      })),
+      in: Type.Optional(Type.String({ description: "Which one room or job: a channel name such as #sw-factory-build, a Solo room's name, an " +
+        "agent's name for its DM, a job's name as a hit shows it, or a room or job id. Use it when you know where it was said or which job did it." })),
       where: Type.Optional(Type.Union([Type.Array(Type.Union(WHERE.map(w => Type.Literal(w)))), Type.Union(WHERE.map(w => Type.Literal(w)))], {
-        description: "root is a top-level post in a room or DM; thread is a reply inside a post's thread; tool is inside an agent's work, " +
-          "a tool call, its output or a job's message, which never shows as a post. Use thread for an answer given as a reply, and tool " +
-          "for a command, a file, an error or a number an agent found while working. Several values match any of them; none searches all three.",
+        description: "The older form of place, kept for old calls: root is a top-level post, thread is a reply in a thread, tool is " +
+          "anything inside an agent's work. Prefer place.",
       })),
       after: Type.Optional(Type.String({ description: "YYYY-MM-DD in KST, that day included: only what came then or later." })),
       before: Type.Optional(Type.String({ description: "YYYY-MM-DD in KST, that day left out: only what came earlier." })),

@@ -85,6 +85,12 @@ test("the filters go to /api/search as comma lists, with brief on and nothing fo
   assert.equal(searchQuery({ query: "x", in: "th_9:3", full: true }).toString(), "q=x&in=th_9%3A3");
 });
 
+test("place goes to /api/search as one comma list, from an array or a comma string, beside where and in", () => {
+  assert.equal(searchQuery({ query: "x", place: ["jobs", "tools"] }).toString(), "q=x&brief=1&place=jobs%2Ctools");
+  assert.equal(searchQuery({ query: "x", place: " jobs, tools ", in: "#sw-factory-build" }).toString(), "q=x&brief=1&place=jobs%2Ctools&in=%23sw-factory-build");
+  assert.equal(searchQuery({ query: "x", place: "threads", where: "thread" }).toString(), "q=x&brief=1&place=threads&where=thread");
+});
+
 test("a hit line says where it sits, who wrote it, its plain words, its id and its link", () => {
   assert.equal(searchHitLine(reply), "- 2026-11-20 06:12Z #sw-factory-build, reply in thread p85 \"does search filter\" · vent: the index <b> holds kimchi & more · id ch_1a2b/p90 · #/c/ch_1a2b?thread=p85&m=p90");
   assert.equal(searchHitLine(tool), "- 2026-11-20 06:12Z job \"count rows\" of vent, tool output bash · vent: rows 4812 · id th_9:3/e41 · #/c/th_9:3?m=e41");
@@ -94,9 +100,10 @@ test("a hit line says where it sits, who wrote it, its plain words, its id and i
 });
 
 test("the tool returns the count, the hits and the next page, and the server's refusal as the call's error", async () => {
-  const out = await run([{ query: "kimchi", from: "vent", where: ["thread"] }, { query: "4812", where: "tool" }, { query: "x", in: "#nowhere" }]);
-  assert.deepEqual(asked.map(q => [q.get("from"), q.get("where"), q.get("in")]), [["vent", "thread", null], [null, "tool", null], [null, null, "#nowhere"]]);
-  assert.deepEqual(out.map(r => r.isError), [false, false, true]);
+  const out = await run([{ query: "kimchi", from: "vent", where: ["thread"] }, { query: "4812", where: "tool" }, { query: "x", in: "#nowhere" }, { query: "4812", place: ["jobs", "tools"] }]);
+  assert.deepEqual(asked.map(q => [q.get("from"), q.get("where"), q.get("in"), q.get("place")]),
+    [["vent", "thread", null, null], [null, "tool", null, null], [null, null, "#nowhere", null], [null, null, null, "jobs,tools"]]);
+  assert.deepEqual(out.map(r => r.isError), [false, false, true, false]);
   assert.match(out[0]!.text, /^1 of 7 hits\.\n- .*reply in thread p85.*\nMore: pass cursor=1\.$/);
   assert.match(out[1]!.text, /^1 of 1 hits\.\n- .*tool output bash · vent: rows 4812/);
   assert.equal(out[2]!.text, "search_messages failed: No room named #nowhere.");

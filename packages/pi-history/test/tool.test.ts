@@ -24,4 +24,8 @@ test("the shared filters become the socket's params: from and in as lists, where
   assert.deepEqual(socketFilters({ before: "2026-11-20T03:00:00Z", kind: "thinking" }), { agent: undefined, chat: undefined, kind: "thinking", since: undefined, until: "2026-11-20T03:00:00Z" });
   assert.throws(() => socketFilters({ where: ["thread"] }), /search_messages/);
   assert.throws(() => socketFilters({ where: "tool", kind: "thinking" }), /not both/);
+  assert.equal(socketFilters({ place: "tools" }).kind, "tool");
+  assert.equal(socketFilters({ place: ["Tools"], where: "tool" }).kind, "tool");
+  assert.throws(() => socketFilters({ place: "jobs,tools" }), /place=jobs is not in session transcripts; search_messages/);
+  assert.throws(() => socketFilters({ place: "tools", kind: "thinking" }), /not both/);
 });
