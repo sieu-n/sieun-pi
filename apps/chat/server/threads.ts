@@ -62,6 +62,9 @@ interface LiveConversation {
   ready: Promise<void>;
 }
 
+/** What `Threads.change` sends a thread's host without waiting for it: every field of `Host.set` but the folder, which the host checks. */
+export interface ThreadChange { name?: string; model?: string; thinkingLevel?: string; archived?: boolean }
+
 export interface ThreadEvents {
   /** Registered agents only. */
   agents(changed: AgentSummary[], removed: AgentId[]): void;
@@ -79,6 +82,10 @@ type ThreadsCache = { threads: DurableThread[]; trees: [string, { updatedAt: num
 
 export class Threads {
   private list = new Map<string, DurableThread>();
+  /** The rows `put` holds until a list read as new as each comes back. */
+  private readonly fresh = new Map<string, DurableThread>();
+  /** Each thread's last change sent to its host, which its next change waits for. */
+  private readonly changing = new Map<string, Promise<void>>();
   private trees = new Map<string, { updatedAt: number; nodes: TreeNode[] }>();
   private agentCache = new Map<AgentId, string>();
   /** Agent and thread ids by name, for `principal`; refresh drops it. */
@@ -168,13 +175,43 @@ export class Threads {
   /**
    * A row pi-host answered a create or a change with, in the list at once, and the next poll sends what changed. A change used to wait for a
    * whole thread list read: on 11-21 the owner's model change on his agent's DM took 590 to 1830 ms in the handler, since the read lists 979
-   * threads (467 KB from the box's pi-host, 50 to 530 ms) and waits for the Mac's relay as well.
+   * threads (467 KB from the box's pi-host, 50 to 530 ms) and waits for the Mac's relay as well. The row stays over any list read older than it.
    */
   put(row: DurableThread): void {
+    this.fresh.set(row.id, row);
     this.list.set(row.id, row);
     this.names = undefined;
     this.agentRecords?.follow(this.list);
     void this.poll();
+  }
+
+  /**
+   * A change of a thread's name, model, thinking level or archive, shown at once and sent to its host behind the thread's earlier changes.
+   * With the list's own read out of the way, the owner's change on a test agent's DM still took 17 to 1179 ms on 11-21 at a box load of 121,
+   * all of it pi-host's answer to durable_set, so the answer no longer waits for it. If the host refuses, the list reads the thread as it
+   * stands again and the pages follow. Answers false for a thread the list does not hold.
+   */
+  change(thread: string, set: ThreadChange): boolean {
+    const row = this.list.get(thread);
+    if (!row) return false;
+    const [provider, ...model] = set.model?.split("/") ?? [];
+    this.put({
+      ...row, ...(set.name !== undefined ? { name: set.name } : {}), ...(set.archived !== undefined ? { archived: set.archived } : {}),
+      ...(set.thinkingLevel !== undefined ? { thinkingLevel: set.thinkingLevel } : {}), ...(provider ? { provider, modelId: model.join("/") } : {}),
+      updatedAt: Math.max(Date.now(), row.updatedAt + 1),
+    });
+    const sent: Promise<void> = (this.changing.get(thread) ?? Promise.resolve()).then(() => this.host.set(thread, set)).then(
+      // The answer to an earlier change would show the thread without the later ones until they land.
+      answered => { if (this.changing.get(thread) === sent) this.put(answered); },
+      error => {
+        this.log(`change of ${thread} (${JSON.stringify(set)}) failed, so the list reads it again: ${String(error)}`);
+        this.fresh.delete(thread);
+        void this.poll();
+      },
+    );
+    this.changing.set(thread, sent);
+    void sent.finally(() => { if (this.changing.get(thread) === sent) this.changing.delete(thread); });
+    return true;
   }
 
   /** Reads the thread list, and the tree of every thread whose file changed, and sends what changed. */
@@ -182,14 +219,9 @@ export class Threads {
     // A box link that went up or down reads in hostState before the list does.
     this.summaries.clear();
     const read = await this.host.threads();
-    // A thread new to this read may be one a create in flight has not claimed yet; the next read lists it. A row `put` after this read
-    // started is newer than the read's, so it stays.
-    const threads = (this.creating ? read.filter(t => this.list.has(t.id)) : read).map(t => {
-      const known = this.list.get(t.id);
-      return known && known.updatedAt > t.updatedAt ? known : t;
-    });
-    const next = new Map(threads.map(t => [t.id, t]));
-    for (const thread of threads) {
+    // A thread new to this read may be one a create in flight has not claimed yet; the next read lists it.
+    const listed = this.creating ? read.filter(t => this.list.has(t.id)) : read;
+    for (const thread of listed) {
       const tree = this.trees.get(thread.id);
       if (thread.children > 0 && (!tree || tree.updatedAt !== thread.updatedAt || thread.status === "running")) {
         const nodes = await this.host.tree(thread.id).catch(() => tree?.nodes ?? []);
@@ -199,6 +231,15 @@ export class Threads {
         if (JSON.stringify(nodes) !== before) this.events.jobs(thread.id, this.jobs(thread.id));
       }
     }
+    // A row `put` while this read ran is newer than the read's, so it stays, as does a change the host has not answered yet.
+    const threads = listed.map(t => {
+      const known = this.fresh.get(t.id);
+      if (!known) return t;
+      if (this.changing.has(t.id) || known.updatedAt > t.updatedAt) return known;
+      this.fresh.delete(t.id);
+      return t;
+    });
+    const next = new Map(threads.map(t => [t.id, t]));
     this.list = next;
     this.names = undefined;
     this.summaries.clear();

@@ -1135,8 +1135,9 @@ export class App {
       ...(patch.cwd !== undefined ? { cwd: projectCwd(this.config, patch.cwd) } : {}),
       ...(patch.model !== undefined ? { model: patch.model } : {}), ...(patch.thinkingLevel !== undefined ? { thinkingLevel: patch.thinkingLevel } : {}),
     };
-    if (Object.keys(set).length) this.threads.put(await this.host.set(thread, set));
-    else void this.threads.poll();
+    const known = patch.model === undefined || MODELS.models.some(m => `${m.provider}/${m.id}` === patch.model);
+    if (!Object.keys(set).length) void this.threads.poll();
+    else if (!(patch.cwd === undefined && known && this.threads.change(thread, set))) this.threads.put(await this.host.set(thread, set));
     return this.header(id);
   }
 
