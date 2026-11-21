@@ -1,6 +1,6 @@
 /**
- * Search popover state. The shell opens it from the top bar pill, Cmd K (global) and Cmd F (this conversation,
- * only while a conversation is open). pages/search/SearchDialog.svelte reads it.
+ * Search popover state. The shell opens it from the top bar pill and Cmd K (global), and a conversation's menu opens it on that
+ * conversation. Cmd F stays the browser's own find in page (owner, p124). pages/search/SearchDialog.svelte reads it.
  */
 export type SearchScope = { kind: "global" } | { kind: "conversation"; id: string };
 

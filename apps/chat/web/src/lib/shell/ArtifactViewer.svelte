@@ -6,6 +6,7 @@
   import IconButton from "$lib/ui/IconButton.svelte";
   import Markdown from "$lib/ui/Markdown.svelte";
   import { wikiUrl } from "$lib/ui/markdown";
+  import { modKey } from "$lib/ui/keyboard";
   import { toast } from "$lib/ui/toast.svelte";
   import BoardPanel from "$pages/board/BoardPanel.svelte";
   import SkillPane from "$pages/skills/SkillPane.svelte";
@@ -15,6 +16,7 @@
   import { directory } from "$pages/channel/directory.svelte";
   import { mentionContext } from "$pages/channel/present";
   import { closeView, currentView, openArtifactTarget, openView, viewedBlock, type View } from "./viewer.svelte";
+  import { search } from "./search.svelte";
   import { styleWikiFrame } from "./wiki-embed";
 
   /**
@@ -137,7 +139,15 @@
     };
     read();
     new MutationObserver(read).observe(doc.head, { childList: true, subtree: true, characterData: true });
-    // Keys typed in the frame never reach this document, so Esc is caught in the frame too.
+    // Keys typed in the frame never reach this document, so Esc is caught in the frame too. Cmd K opens this app's search, before the
+    // wiki's own page opener sees it (owner, p124: "llm-wiki opener is super unnatural. Cmd K should be the search").
+    win.addEventListener("keydown", (event) => {
+      if (modKey(event) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        search.toggle({ kind: "global" });
+      }
+    }, true);
     win.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !event.defaultPrevented) closeView();
     });

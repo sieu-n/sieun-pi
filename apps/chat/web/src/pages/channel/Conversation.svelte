@@ -272,7 +272,7 @@
   }
 
   const menuItems = $derived<MenuEntry[]>([
-    { id: "search", label: "Search in this conversation", icon: "search", shortcut: "⌘F", onselect: () => search.open({ kind: "conversation", id }) },
+    { id: "search", label: "Search in this conversation", icon: "search", onselect: () => search.open({ kind: "conversation", id }) },
     { id: "link", label: "Copy link", icon: "link", onselect: () => void navigator.clipboard.writeText(`${location.origin}${location.pathname}${conversationHref(id)}`).then(() => toast.show("Link copied")) },
     ...(paneBoard
       ? [

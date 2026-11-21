@@ -43,9 +43,6 @@
     if (key === "k" && !e.shiftKey) {
       e.preventDefault();
       search.toggle({ kind: "global" });
-    } else if (key === "f" && !e.shiftKey && router.conversationId) {
-      e.preventDefault();
-      search.open({ kind: "conversation", id: router.conversationId });
     } else if (key === "n" && !e.shiftKey) {
       e.preventDefault();
       router.navigate(hrefFor("messages", ["new"], { kind: "dm" }));

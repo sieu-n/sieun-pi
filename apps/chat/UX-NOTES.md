@@ -18,7 +18,7 @@ We copied no Buzz code, icon, image, font file or mascot art. Every component he
 10. Day dividers use relative labels such as Today and Yesterday, and they update at midnight.
 11. Loading text waits one second before it shows, so fast loads never flicker.
 12. Keyboard focus rings show only after keyboard use, so mouse clicks leave no ring.
-13. Search opens with Cmd K, Cmd F scopes it to the open conversation, and it takes `from:`, `in:`, `after:` and `before:` operators.
+13. Search opens with Cmd K, a conversation's menu scopes it to that conversation, Cmd F stays the browser's find in page, and search takes `from:`, `in:`, `after:` and `before:` operators.
 14. The mention list never reorders under the pointer, and a space completes a mention only when the typed name is exact and unique.
 
 ## Channels read like Slack

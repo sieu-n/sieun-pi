@@ -1,8 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
 /**
- * Cmd K and Cmd F search against the chat server's fixture: groups, operators as chips, keyboard moves, exact counts
- * and opening a hit at its message.
+ * Cmd K search against the chat server's fixture: groups, operators as chips, keyboard moves, exact counts and opening a hit at its
+ * message. Cmd F stays the browser's find in page, and a conversation's menu scopes search to it (owner, p124).
  */
 const mod = process.platform === "darwin" ? "Meta" : "Control";
 
@@ -128,9 +128,21 @@ test("a hit opens the conversation scrolled to that message with a flash", async
   await expect(message).toHaveAttribute("data-flash", /.*/);
 });
 
-test("Cmd F scopes search to this conversation, sorts, and the scope chip removes the scope", async ({ page }) => {
-  await page.goto("/#/c/ch_cutover");
+test("Cmd F leaves the page to the browser's find", async ({ page }) => {
+  const prevented = await page.evaluate(() => {
+    const event = new KeyboardEvent("keydown", { key: "f", code: "KeyF", metaKey: true, ctrlKey: true, bubbles: true, cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(prevented).toBe(false);
   await page.keyboard.press(`${mod}+f`);
+  await expect(palette(page)).toBeHidden();
+});
+
+test("the conversation menu scopes search to this conversation, sorts, and the scope chip removes the scope", async ({ page }) => {
+  await page.goto("/#/c/ch_cutover");
+  await page.getByRole("button", { name: "Channel actions" }).click();
+  await page.getByRole("menuitem", { name: "Search in this conversation" }).click();
   await expect(page.getByRole("dialog", { name: "Search this conversation" })).toBeVisible();
   await field(page).fill("relay");
   await expect(count(page)).toHaveText(messages(await total(page, { q: "relay", in: "ch_cutover" })));

@@ -97,3 +97,25 @@ test("Esc and a click outside the viewer close it", async ({ page }) => {
   await page.mouse.click(8, 600);
   await expect(dialog).toBeHidden();
 });
+
+test("Cmd K in a wiki page opens this app's search, not the wiki's page opener, and Cmd F stays the browser's find", async ({ page }) => {
+  const mod = process.platform === "darwin" ? "Meta" : "Control";
+  const dialog = await open(page, 1, "light", true);
+  const frame = dialog.locator("iframe.wiki-frame").contentFrame();
+  await expect(frame.locator(".prose")).toBeVisible();
+  await frame.locator(".prose").evaluate(() => {
+    window.addEventListener("keydown", (event) => {
+      if (event.key.toLowerCase() === "k") document.body.dataset.wikiOpener = "shown";
+    });
+  });
+  const findPrevented = await frame.locator(".prose").evaluate(() => {
+    const event = new KeyboardEvent("keydown", { key: "f", code: "KeyF", metaKey: true, ctrlKey: true, bubbles: true, cancelable: true });
+    document.body.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  expect(findPrevented).toBe(false);
+  await frame.locator(".prose").click();
+  await page.keyboard.press(`${mod}+k`);
+  await expect(page.locator("[data-search-palette]")).toBeVisible();
+  await expect(frame.locator("body")).not.toHaveAttribute("data-wiki-opener", "shown");
+});

@@ -97,5 +97,5 @@ The shell in `src/lib/shell` uses these parts. Pages reach it through four small
 
 1. `router` in `$lib/router.svelte` gives `router.route`, `router.conversationId`, `navigate`, `openConversation(id, { thread, messageId })` and `setParams`.
 2. `sidePanel` in `$lib/shell/side-panel.svelte` opens one 420 px resizable pane with `sidePanel.open({ key, title, body })`.
-3. `search` in `$lib/shell/search.svelte` holds the Cmd K and Cmd F search state that pages/search reads.
+3. `search` in `$lib/shell/search.svelte` holds the Cmd K search state that pages/search reads.
 4. `openView` in `$lib/shell/viewer.svelte` opens a wiki page, a conversation or a chat's board in the viewer popup over any page, kept in the route's `view` param so Back and Esc close it; a `Markdown` with no `onartifact` sends its wiki and thread links there.
