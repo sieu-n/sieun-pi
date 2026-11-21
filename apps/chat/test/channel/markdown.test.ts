@@ -224,3 +224,8 @@ test("previewLinks lists each linked wiki page once, with no images and no other
   );
   assert.deepEqual(previewLinks("no pages here"), []);
 });
+
+test("a chat post keeps an agent's bold as text, and the owner's own post draws his bold", () => {
+  assert.doesNotMatch(renderMarkdown("**Status:** shipped", { plain: true }), /<strong>/);
+  assert.match(renderMarkdown("**ship it** today", { plain: true, bold: true }), /<strong>ship it<\/strong> today/);
+});

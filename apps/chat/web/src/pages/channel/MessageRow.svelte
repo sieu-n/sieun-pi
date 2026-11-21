@@ -78,8 +78,11 @@
   /** An agent's name and avatar open its profile card, as a person's do in Slack; the owner's and a job's stay plain. */
   const profiled = $derived(item.author.kind === "chat");
   const openProfile = (e: MouseEvent) => profileCard.toggle(item.author.id, item.author.name, e.currentTarget as HTMLElement);
-  /** Board ids and job names in a post chip against its author's board and jobs, so p12 in vent's post is vent's p12. */
-  const context = $derived(withAuthor(roomContext, item.author.id));
+  /**
+   * Board ids and job names in a post chip against its author's board and jobs, so p12 in vent's post is vent's p12. The owner's own post
+   * draws its bold, as he formatted it in the composer; an agent's keeps bold as text.
+   */
+  const context = $derived(withAuthor(item.author.kind === "owner" ? { ...roomContext, bold: true } : roomContext, item.author.id));
   const slack = $derived(layout === "slack");
   const turn = $derived(item.kind === "turn" ? item : null);
   const message = $derived(item.kind === "message" ? item : null);

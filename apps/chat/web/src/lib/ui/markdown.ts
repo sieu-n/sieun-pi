@@ -35,8 +35,13 @@ export type MarkdownContext = {
   mentions?: ReadonlyMap<string, { id: string; kind: "person" | "agent" | "channel"; self?: boolean }> | null;
   /** Folder that relative image paths resolve against. */
   cwd?: string;
-  /** Chat message mode: headings render as paragraphs and a single line break as a break, as Slack shows a post. */
+  /**
+   * Chat message mode: bold renders as text, headings as paragraphs, and a single line break as a break. Bold stays text in an agent's post,
+   * since agents' bold labels read as slop to the owner.
+   */
   plain?: boolean;
+  /** In chat message mode, draw bold anyway: the owner's own posts, so what he formatted in the composer shows as he typed it. */
+  bold?: boolean;
   /** The names of the jobs whose name alone in a code span becomes a job link; the same name in plain text stays text. */
   jobs?: readonly string[];
   /** Per post author (an agent id): its own board and jobs, which `withAuthor` puts in place of the room's for that author's posts. */
@@ -594,6 +599,9 @@ const marked = new Marked({
       // No space after the box: its right margin is the gap, so a task's text lines up with a plain bullet's (prose.css).
       return `<input type="checkbox" disabled${checked ? " checked" : ""}>`;
     },
+    strong({ tokens }) {
+      return ctx.plain && !ctx.bold ? this.parser.parseInline(tokens) : false;
+    },
     heading({ tokens }) {
       return ctx.plain ? `<p>${this.parser.parseInline(tokens)}</p>\n` : false;
     },
@@ -629,7 +637,7 @@ function cached(key: string, make: () => string): string {
   return html;
 }
 function contextKey(c: MarkdownContext): string {
-  return [c.plain ? 1 : 0, c.cwd ?? "", c.board ? `${c.board.chatId}:${c.board.titles.size}` : "", c.mentions ? c.mentions.size : "", c.jobs ? namesKey(c.jobs) : ""].join("|");
+  return [c.plain ? (c.bold ? 2 : 1) : 0, c.cwd ?? "", c.board ? `${c.board.chatId}:${c.board.titles.size}` : "", c.mentions ? c.mentions.size : "", c.jobs ? namesKey(c.jobs) : ""].join("|");
 }
 
 /** A link a post previews as a card under its text: a wiki page, or a web page as Slack unfurls it. */
