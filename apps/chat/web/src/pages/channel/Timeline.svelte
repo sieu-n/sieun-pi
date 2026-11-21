@@ -191,7 +191,8 @@
       const top = scroller.getBoundingClientRect().top;
       if (row.getBoundingClientRect().top >= top + 24) return;
       stick = false;
-      scroller.scrollTop += row.getBoundingClientRect().top - top - 48;
+      // 72 px clears the sticky date over the feed's top, so the New line above the post shows whole.
+      scroller.scrollTop += row.getBoundingClientRect().top - top - 72;
       held = { row, top: row.getBoundingClientRect().top };
     });
   });
@@ -274,12 +275,13 @@
     return { count: shown.slice(from).filter((item) => item.kind !== "system").length, at: shown[from]!.at };
   });
 
+  /** The bar's jump puts the New line under the sticky date, which covers the top 40 px of the feed. */
   function toNewLine() {
-    const row = newLine && scroller ? scroller.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(newLine)}"]`) : null;
-    if (!scroller || !row) return;
+    const line = scroller?.querySelector<HTMLElement>("[data-testid=new-line]");
+    if (!scroller || !line) return;
     stick = false;
-    scroller.scrollTop += row.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 48;
-    held = { row, top: row.getBoundingClientRect().top };
+    scroller.scrollTop += line.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 40;
+    held = { row: line, top: line.getBoundingClientRect().top };
   }
 
   function jump() {
