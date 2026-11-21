@@ -58,6 +58,8 @@ export interface DutyFile { duties: Duty[]; runs: Record<string, DutyRunRecord[]
 export interface BoardEvents {
   board(chatId: string, board: ChatBoard, awaitingGo: string[]): void;
   forYou(count: number): void;
+  /** Open For you asks whose Remind me came due, which the page notifies about (notices.ts). */
+  asksDue?(items: ForYouItem[], at: number): void;
   /** A chat's duty rows after a run starts or ends or a duty changes, so an open Duties card shows the new run without a reload. */
   duties(chatId: string, duties: DutyRow[]): void;
 }
@@ -98,6 +100,8 @@ export class Boards {
   private timer?: NodeJS.Timeout;
   /** Sends the For you count again when the soonest Remind me on an open todo comes due. */
   private snoozeTimer?: NodeJS.Timeout;
+  /** Up to when the asks that came due were sent; a Remind me that falls due while the server is down sends none. */
+  private dueSentTo = Date.now();
   private stopWakes?: () => void;
   /** Tells each chat what nobody owns on its board (server/step-owners.ts), on every tick. */
   readonly owners: StepOwners;
@@ -284,10 +288,22 @@ export class Boards {
     clearTimeout(this.snoozeTimer);
     if (due.length) {
       // setTimeout takes at most 2^31-1 ms (about 24.8 days); a later reminder re-arms when this one fires.
-      this.snoozeTimer = setTimeout(() => void this.forYouCount().then(count => this.events.forYou(count), () => undefined), Math.min(Math.min(...due) - now + 50, 2 ** 31 - 1));
+      this.snoozeTimer = setTimeout(() => void this.snoozeDue().catch(() => undefined), Math.min(Math.min(...due) - now + 50, 2 ** 31 - 1));
       this.snoozeTimer.unref?.();
     }
     return open.length - due.length;
+  }
+
+  /** The soonest Remind me came due: the asks back on For you go out as notices, and the count again. */
+  private async snoozeDue(now = Date.now()): Promise<void> {
+    const since = this.dueSentTo;
+    this.dueSentTo = now;
+    const due = (await this.forYou()).filter(item => {
+      const at = item.todo.remindAt ? Date.parse(item.todo.remindAt) : NaN;
+      return !item.todo.done && at > since && at <= now;
+    });
+    if (due.length) this.events.asksDue?.(due, now);
+    this.events.forYou(await this.forYouCount(now));
   }
 
   async index(): Promise<BoardRow[]> {

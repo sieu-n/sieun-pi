@@ -1,9 +1,10 @@
 /**
- * The owner's message notices: each new post someone else writes in a room he sees goes to every page as a `notice` event, with why it is
- * for him, and the page decides from his notification setting whether to raise a system notification (web/src/lib/notices.ts). Slack's
- * default notifies for direct messages, mentions and replies in threads he is in; "all" adds every other channel post.
+ * The owner's notices: each new post someone else writes in a room he sees goes to every page as a `notice` event, with why it is for him,
+ * and so does each For you ask whose Remind me comes due (boards.ts). The page decides from his notification setting whether to raise a
+ * system notification (web/src/lib/notices.svelte.ts). Slack's default notifies for direct messages, mentions and replies in threads he
+ * is in; "all" adds every other channel post.
  */
-import type { Ms, Notice, NoticeReason, Principal } from "../web/src/lib/api/types.ts";
+import type { AskNotice, ForYouItem, Ms, NoticeReason, PostNotice, Principal } from "../web/src/lib/api/types.ts";
 import type { RoomPost, RoomRow } from "./agent-store.ts";
 
 /** A post the feed appends later than this after it was written, such as one read back after a restart, raises no notice. */
@@ -26,11 +27,20 @@ export function noticeReason(row: RoomRow, post: RoomPost, posts: readonly RoomP
 }
 
 /** The notice the page shows for the post. */
-export function noticeOf(row: RoomRow, post: RoomPost, reason: NoticeReason, author: Principal, agentName: (id: string) => string): Notice {
-  const text = post.text.replace(/\s+/g, " ").trim();
+export function noticeOf(row: RoomRow, post: RoomPost, reason: NoticeReason, author: Principal, agentName: (id: string) => string): PostNotice {
   return {
-    room: row.id, roomKind: row.kind, roomName: row.kind === "dm" ? agentName(row.agent) : row.kind === "channel" ? `#${row.name}` : row.name,
+    kind: "post", room: row.id, roomKind: row.kind, roomName: row.kind === "dm" ? agentName(row.agent) : row.kind === "channel" ? `#${row.name}` : row.name,
     post: post.id, ...(post.threadRoot ? { threadRoot: post.threadRoot } : {}), author, reason, at: post.at, images: post.images.length,
-    text: text.length > SNIPPET ? `${text.slice(0, SNIPPET - 1)}…` : text,
+    text: oneLine(post.text),
   };
+}
+
+/** The notice of a For you ask whose Remind me came due at `at`. */
+export function askNoticeOf(item: ForYouItem, at: Ms): AskNotice {
+  return { kind: "ask", chatId: item.chatId, chatName: item.chatName, todo: item.todo.id, text: oneLine(item.todo.text), at };
+}
+
+function oneLine(raw: string): string {
+  const text = raw.replace(/\s+/g, " ").trim();
+  return text.length > SNIPPET ? `${text.slice(0, SNIPPET - 1)}…` : text;
 }

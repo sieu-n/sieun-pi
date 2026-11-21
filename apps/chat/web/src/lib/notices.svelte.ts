@@ -2,15 +2,15 @@
  * What the page does with new messages, as Slack's desktop app does: a system notification for each new post his setting asks for
  * (notify-prefs.svelte.ts), the unread count on the Dock icon, and the open place and that count in the window title.
  *
- * The server sends each new post someone else wrote as a `notice` (server/notices.ts). One tab notifies, unless the owner is looking at
- * that post's room or thread in a focused window. A muted room notifies only when it mentions him, and a channel he left never does.
+ * The server sends each new post someone else wrote, and each For you ask whose Remind me came due, as a `notice` (server/notices.ts).
+ * One tab notifies, unless the owner is looking at that post's room or thread, or at For you, in a focused window. A muted room notifies only when it mentions him, and a channel he left never does.
  */
 import { live } from "./api/live.svelte";
 import { conversations, sidebar } from "./api/stores.svelte";
 import type { ConversationSummary, Notice } from "./api/types";
 import { notificationsPaused, notifyPermission, notifyPrefs } from "./notify-prefs.svelte";
 import { askNotifyPermission, notifyOnce, notifySystem, readNotifyPermission, setDockBadge, setWindowTitle } from "./remind-notify";
-import { conversationHref, PAGES, router } from "./router.svelte";
+import { conversationHref, hrefFor, PAGES, router } from "./router.svelte";
 import { inDesktopShell } from "./shell/desktop";
 import { rowUnread } from "./shell/room-actions.svelte";
 import { toast } from "./ui/toast.svelte";
@@ -18,35 +18,43 @@ import { toast } from "./ui/toast.svelte";
 const APP = "sw factory";
 const ASKED = "chat.notify.asked";
 
-export function openNotice(notice: Pick<Notice, "room" | "post" | "threadRoot">): void {
+/** Opens what the notice is about: the post in its room or thread, or the ask on For you. */
+export function openNotice(notice: Notice): void {
+  if (notice.kind === "ask") return router.navigate(hrefFor("messages", ["for-you", notice.chatId, notice.todo]));
   router.navigate(conversationHref(notice.room, notice.threadRoot ? { thread: notice.threadRoot, messageId: notice.post } : { messageId: notice.post }));
 }
 
-/** Whether the owner sees the post now: his focused window shows its room, and its thread pane for a thread reply that is not in the room. */
+/** Whether the owner sees it now in a focused window: the post's room, and its thread pane for a thread reply, or For you for an ask. */
 function inView(notice: Notice): boolean {
-  if (document.visibilityState !== "visible" || !document.hasFocus() || router.conversationId !== notice.room) return false;
+  if (document.visibilityState !== "visible" || !document.hasFocus()) return false;
+  if (notice.kind === "ask") return router.messagesView === "for-you";
+  if (router.conversationId !== notice.room) return false;
   return !notice.threadRoot || router.route.params.thread === notice.threadRoot;
 }
 
+/** Whether his setting asks for it: an ask is always to him, a muted room's post only when it mentions him, and a left channel's never. */
 export function wantsNotice(notice: Notice, now = Date.now()): boolean {
   if (notifyPrefs.level === "off" || notificationsPaused(now)) return false;
+  if (notice.kind === "ask") return true;
   const row = conversations.byId(notice.room);
   if (row?.hidden === "left") return false;
   if (row?.muted) return notice.reason === "mention";
   return notifyPrefs.level === "all" || notice.reason !== "post";
 }
 
-export function noticeTitle(notice: Notice): string {
+/** The system notification's title, body and tag, which keeps tabs and repeats to one notification. */
+export function noticeText(notice: Notice): { title: string; body: string; tag: string } {
+  if (notice.kind === "ask") return { title: `Reminder: ${notice.chatName} asks`, body: notice.text, tag: `notice:ask:${notice.chatId}:${notice.todo}:${notice.at}` };
   const who = notice.author.name;
-  if (notice.roomKind === "dm") return who;
-  return notice.threadRoot ? `${who} replied in ${notice.roomName}` : `${who} in ${notice.roomName}`;
+  const title = notice.roomKind === "dm" ? who : notice.threadRoot ? `${who} replied in ${notice.roomName}` : `${who} in ${notice.roomName}`;
+  const body = notice.text || (notice.images ? (notice.images > 1 ? `${notice.images} images` : "Image") : "");
+  return { title, body, tag: `notice:${notice.room}:${notice.post}` };
 }
 
 function onNotice(notice: Notice): void {
   if (!wantsNotice(notice) || inView(notice)) return;
-  const body = notice.text || (notice.images ? (notice.images > 1 ? `${notice.images} images` : "Image") : "");
-  const tag = `notice:${notice.room}:${notice.post}`;
-  notifyOnce(tag, () => void notifySystem(noticeTitle(notice), body, tag, () => openNotice(notice)).then(sent => sent || offerPermission()));
+  const { title, body, tag } = noticeText(notice);
+  notifyOnce(tag, () => void notifySystem(title, body, tag, () => openNotice(notice)).then(sent => sent || offerPermission()));
 }
 
 /** The unread count Slack's Dock badge shows: the sum of the sidebar's counts (DMs, Solo rooms and mentions), less channels he left. */

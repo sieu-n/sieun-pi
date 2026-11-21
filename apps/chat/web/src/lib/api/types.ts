@@ -309,8 +309,11 @@ export interface LaterRow extends LaterItem {
  * answers his post), `thread` (it replies in a thread he wrote in) or `post` (any other).
  */
 export type NoticeReason = "dm" | "mention" | "reply" | "thread" | "post";
-/** A new post someone else wrote, for the page's system notification. */
-export interface Notice {
+/** What raises a system notification on the page (lib/notices.svelte.ts): a new post, or a For you ask whose Remind me came due. */
+export type Notice = PostNotice | AskNotice;
+/** A new post someone else wrote. */
+export interface PostNotice {
+  kind: "post";
   room: ConversationId;
   roomKind: "dm" | "channel" | "solo";
   /** `#name` for a channel, the Solo room's name, or the agent's name for its DM. */
@@ -324,6 +327,8 @@ export interface Notice {
   reason: NoticeReason;
   at: Ms;
 }
+/** An open For you ask whose Remind me came due (server/boards.ts), so it is back on For you. */
+export interface AskNotice { kind: "ask"; chatId: string; chatName: string; todo: string; text: string; at: Ms }
 /** `GET /api/later?state=open|archived|done&test=1`: the owner's rows, newest first, with each tab's count; `test=1` keeps posts in test rooms. */
 export interface LaterList { items: LaterRow[]; open: number; archived: number; done: number }
 /** What a room post shows its reader about the reader's own save; absent when the reader has no open save of it. */

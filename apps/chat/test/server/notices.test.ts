@@ -1,13 +1,13 @@
 /**
- * The owner's message notices (server/notices.ts): each new post someone else writes goes to every page as a `notice` with why it is for
- * him, and a test room's notice goes only to the pages that watch it.
+ * The owner's notices (server/notices.ts): each new post someone else writes goes to every page as a `notice` with why it is for him, a
+ * test room's notice goes only to the pages that watch it, and a For you ask whose Remind me comes due goes out as an ask notice.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/notices.test.ts
  */
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import type { RoomPost, RoomRow } from "../../server/agent-store.ts";
 import { NOTICE_FRESH_MS, noticeReason } from "../../server/notices.ts";
-import type { LiveEvent, Notice } from "../../web/src/lib/api/types.ts";
+import type { LiveEvent, PostNotice } from "../../web/src/lib/api/types.ts";
 import { start, type Running } from "./helpers.ts";
 
 const NOW = 1_800_000_000_000;
@@ -37,7 +37,8 @@ describe("notice events", () => {
     await s.close();
   });
 
-  const isNotice = (room: string) => (event: LiveEvent): event is Extract<LiveEvent, { type: "notice" }> => event.type === "notice" && event.notice.room === room;
+  const isNotice = (room: string) => (event: LiveEvent): event is Extract<LiveEvent, { type: "notice" }> =>
+    event.type === "notice" && event.notice.kind === "post" && event.notice.room === room;
   const agentPost = (room: string, text: string, fields: Partial<RoomPost> = {}) =>
     s.app.agentStore.append({ room, author: "ag_vent", text, images: [], at: Date.now(), requestId: crypto.randomUUID(), ...fields }).post;
 
@@ -46,10 +47,12 @@ describe("notice events", () => {
     const live = await s.live();
     const written = agentPost(room, "@You the  deploy\nfinished", { mentions: ["owner"] });
     const { notice } = await live.waitFor(isNotice(room), 5000);
+    assert.equal(notice.kind, "post");
+    if (notice.kind !== "post") return;
     assert.deepEqual({ ...notice, author: notice.author.id }, {
-      room, roomKind: "channel", roomName: notice.roomName, post: written.id, author: "ag_vent", reason: "mention", at: written.at, images: 0,
+      kind: "post", room, roomKind: "channel", roomName: notice.roomName, post: written.id, author: "ag_vent", reason: "mention", at: written.at, images: 0,
       text: "@You the deploy finished",
-    } satisfies Omit<Notice, "author"> & { author: string });
+    } satisfies Omit<PostNotice, "author"> & { author: string });
     assert.match(notice.roomName, /^#notice-/);
   });
 
@@ -63,5 +66,14 @@ describe("notice events", () => {
     await watching.waitFor(isNotice(room), 5000);
     await new Promise(resolve => setTimeout(resolve, 200));
     assert.equal(other.events.some(isNotice(room)), false);
+  });
+
+  test("a For you ask whose Remind me comes due reaches every page as an ask notice", async () => {
+    const item = (await s.app.boards.forYou()).find(i => !i.todo.done)!;
+    const live = await s.live();
+    await s.app.boards.apply(item.chatId, [{ op: "todo_update", id: item.todo.id, remindAt: new Date(Date.now() + 300).toISOString() }]);
+    const { notice } = await live.waitFor((e): e is Extract<LiveEvent, { type: "notice" }> => e.type === "notice" && e.notice.kind === "ask", 5000);
+    assert.deepEqual(notice.kind === "ask" && { chatId: notice.chatId, todo: notice.todo, chatName: notice.chatName }, { chatId: item.chatId, todo: item.todo.id, chatName: item.chatName });
+    await s.app.boards.apply(item.chatId, [{ op: "todo_update", id: item.todo.id, remindAt: null }]);
   });
 });

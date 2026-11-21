@@ -53,7 +53,7 @@ import { QueueWatch, waitingPlace } from "./queue.ts";
 import { webEntry } from "./web-entry.ts";
 import { isImage, uploadExtension, withFileNotes } from "./files.ts";
 import { fileImageSize, imageSize, withSize } from "./image-size.ts";
-import { noticeOf, noticeReason } from "./notices.ts";
+import { askNoticeOf, noticeOf, noticeReason } from "./notices.ts";
 
 /** An image as a page from before 11-03 15:01Z sends it: its base64 bytes inline (see `App.uploaded`). */
 type LegacyImage = { data: string; mimeType: string };
@@ -264,6 +264,9 @@ export class App {
       forYou: count => {
         this.broadcast({ type: "for_you", count });
         this.sidebarSoon();
+      },
+      asksDue: (items, at) => {
+        for (const item of items) this.broadcast({ type: "notice", notice: askNoticeOf(item, at) });
       },
       duties: (chatId, duties) => this.broadcast({ type: "duties", chatId, duties }),
     }, log);
