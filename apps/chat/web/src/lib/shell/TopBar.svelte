@@ -12,7 +12,6 @@
   import { PAGES, hrefFor, router, type PageId } from "$lib/router.svelte";
   import { sidebar } from "./sidebar.svelte";
   import { search } from "./search.svelte";
-  import { soloDialog } from "./solo-dialog.svelte";
   import { theme } from "./theme.svelte";
   import { inDesktopShell } from "./desktop";
   import { navHistory, describePlace } from "./nav-history.svelte";
@@ -38,7 +37,7 @@
 
   const newItems: MenuEntry[] = [
     { id: "dm", label: "New DM", icon: "messages", shortcut: shortcutLabel("new-dm"), onselect: () => router.navigate(hrefFor("messages", ["new"], { kind: "dm" })) },
-    { id: "solo", label: "New Solo room", icon: "users", onselect: () => soloDialog.open() },
+    { id: "solo", label: "New Solo room", icon: "users", onselect: () => router.navigate(hrefFor("messages", ["new"], { kind: "solo" })) },
     { id: "channel", label: "New channel", icon: "hash", onselect: () => router.navigate(hrefFor("messages", ["new"], { kind: "channel" })) },
   ];
   const clock = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });

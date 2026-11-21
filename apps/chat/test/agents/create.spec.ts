@@ -37,6 +37,37 @@ test("Create agent asks for a name, makes the agent and opens its DM", async ({ 
   await expect(cell).toHaveCount(0);
 });
 
+test("Create agent shows What it does at its full three rows and adds the new agent to the channels picked", async ({ page, request }) => {
+  const channel = (await (await request.post("/api/rooms", { data: { kind: "channel", name: `spec-join-${Date.now().toString(36)}`, members: [] } })).json()) as { id: string; name: string };
+  let agentId: string | undefined;
+  try {
+    await openAgents(page);
+    await newAgentButton(page).click();
+    const dialog = page.getByRole("dialog", { name: "Create agent" });
+    const brief = dialog.getByRole("textbox", { name: "What it does" });
+    expect(await brief.evaluate((el) => el.getBoundingClientRect().height)).toBeGreaterThan(60);
+
+    const name = uniqueName("spec joins");
+    await dialog.getByRole("textbox", { name: "Name" }).fill(name);
+    await dialog.getByRole("button", { name: /Add to channels/ }).click();
+    const picker = page.getByRole("dialog", { name: "Add to channels" });
+    await picker.getByRole("searchbox").fill(channel.name);
+    await picker.getByRole("option", { name: channel.name }).click();
+    await page.keyboard.press("Escape");
+    await expect(dialog.getByRole("button", { name: /Add to channels/ })).toContainText(`#${channel.name}`);
+    await dialog.getByRole("button", { name: "Create agent" }).click();
+    await expect(page).toHaveURL(/#\/c\/dm_[^/?]+$/);
+    agentId = `ag_${decodeURIComponent(page.url().split("#/c/dm_")[1]!)}`;
+    await expect.poll(async () => {
+      const rooms = (await (await request.get("/api/rooms")).json()) as { id: string; members: { agent?: string; id?: string }[] }[];
+      return JSON.stringify(rooms.find((r) => r.id === channel.id)?.members ?? []);
+    }).toContain(agentId);
+  } finally {
+    await request.patch(`/api/rooms/${channel.id}`, { data: { archived: true } });
+    if (agentId) await request.patch(`/api/c/${encodeURIComponent(agentId)}`, { data: { archived: true } });
+  }
+});
+
 test("Change model in the card menu opens the picker and saves the new model", async ({ page, request }) => {
   const models = (await (await request.get("/api/models")).json()) as { models: { provider: string; id: string; label: string }[] };
   test.skip(models.models.length < 2, "needs two models");

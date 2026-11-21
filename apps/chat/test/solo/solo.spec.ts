@@ -22,7 +22,7 @@ test.beforeEach(async ({ page }) => {
   await page.evaluate(() => localStorage.clear());
 });
 
-test("New Solo room invites only registered agents, and opens the room with its agenda pinned", async ({ page, request }) => {
+test("New Solo room opens New message, whose To: lists only registered agents, and opens the room with its agenda pinned", async ({ page, request }) => {
   const registered = ((await (await request.get("/api/agents")).json()) as Summary[]).filter((a) => a.id.startsWith("ag_") && !a.archived);
   const jobs = (await (await request.get("/api/jobs")).json()) as Summary[];
   const all = (await (await request.get("/api/conversations")).json()) as (Summary & { kind: string })[];
@@ -30,28 +30,34 @@ test("New Solo room invites only registered agents, and opens the room with its 
 
   await open(page, "#/c", "main-panel");
   await soloGroup(page).getByRole("button", { name: "New Solo room" }).click();
-  const dialog = page.getByRole("dialog", { name: "New Solo room" });
-  await expect(dialog).toBeVisible();
-  const agenda = `Pick the relay protocol ${tag()}`;
-  await dialog.getByLabel("Agenda").fill(agenda);
-  await dialog.getByRole("button", { name: "Invite agents" }).click();
+  await expect(page).toHaveURL(/#\/c\/new\?kind=solo$/);
+  await expect(page.getByRole("heading", { name: "New Solo room" })).toBeVisible();
+  const to = page.getByRole("combobox", { name: "To:" });
+  await expect(to).toBeFocused();
 
-  const picker = page.getByRole("dialog", { name: "Invite agents" });
-  const options = picker.getByRole("option");
+  const list = page.getByRole("dialog", { name: "Agents" });
+  const options = list.getByRole("option");
   await expect(options).toHaveCount(registered.length);
   const labels = await options.locator(".label").allInnerTexts();
   expect(labels.sort()).toEqual(registered.map((a) => a.name).sort());
   const outsiders = [...jobs.map((j) => j.name), ...all.filter((c) => c.kind === "job" || c.kind === "solo").map((c) => c.name)];
   for (const name of outsiders) if (!registered.some((a) => a.name === name)) expect(labels).not.toContain(name);
 
-  await picker.getByRole("option", { name: /Vent/ }).click();
-  await picker.getByRole("option", { name: /frontend bro/ }).click();
-  await page.keyboard.press("Escape");
-  await expect(dialog.getByTestId("solo-invite")).toContainText("Vent");
-  await expect(dialog.getByTestId("solo-invite")).toContainText("frontend bro");
+  await to.fill("ven");
+  await page.keyboard.press("Enter");
+  await to.fill("frontend");
+  await list.getByRole("option", { name: /frontend bro/ }).click();
+  const field = page.getByTestId("new-to-field");
+  await expect(field).toContainText("Vent");
+  await expect(field).toContainText("frontend bro");
 
+  const create = page.getByRole("button", { name: "Create Solo room" });
+  await expect(create).toBeDisabled();
+  const agenda = `Pick the relay protocol ${tag()}`;
+  const box = page.getByRole("textbox", { name: "First message" });
+  await box.fill(agenda);
   const posted = page.waitForRequest((r) => r.url().endsWith("/api/rooms") && r.method() === "POST");
-  await dialog.getByRole("button", { name: "Create Solo room" }).click();
+  await box.press("Enter");
   const body = (await posted).postDataJSON() as { kind: string; agenda: string; members: string[] };
   expect(body).toMatchObject({ kind: "solo", agenda });
   expect(body.members.sort()).toEqual(["ag_frontend-bro", "ag_vent"]);
@@ -62,20 +68,6 @@ test("New Solo room invites only registered agents, and opens the room with its 
   await expect(page.getByTestId("solo-members")).toContainText("frontend bro");
   const id = page.url().split("/c/")[1]!;
   await expect(soloGroup(page).locator(`a[href="#/c/${id}"]`)).toBeVisible();
-});
-
-test("the dialog asks for an agenda and an agent before it creates anything", async ({ page }) => {
-  await open(page, "#/c", "main-panel");
-  await soloGroup(page).getByRole("button", { name: "New Solo room" }).click();
-  const dialog = page.getByRole("dialog", { name: "New Solo room" });
-  let posted = false;
-  page.on("request", (r) => {
-    if (r.url().endsWith("/api/rooms") && r.method() === "POST") posted = true;
-  });
-  await dialog.getByRole("button", { name: "Create Solo room" }).click();
-  await expect(dialog).toContainText("Write what this room should settle");
-  await expect(dialog).toContainText("Invite at least one agent");
-  expect(posted).toBe(false);
 });
 
 test("a Solo room pins its agenda, lists its agents and shows their boards in the side panel", async ({ page }) => {

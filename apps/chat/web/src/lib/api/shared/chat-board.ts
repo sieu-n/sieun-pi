@@ -13,7 +13,7 @@ import { REQUIREMENT_STATUSES, type ArtifactLink, type BoardActor, type BoardOp,
 /** A user message that starts with this is the owner acting on the board (the server's steer); the client shows it as a small action line. */
 export const BOARD_PREFIX = "[board] ";
 export const PLAN_STATUSES: readonly PlanStatus[] = ["todo", "doing", "done", "blocked", "dropped"];
-const OWNER_OPS: ReadonlySet<BoardOp["op"]> = new Set(["todo_add", "todo_update", "todo_remove"]);
+const OWNER_OPS: ReadonlySet<BoardOp["op"]> = new Set(["plan_add", "plan_update", "plan_remove", "todo_add", "todo_update", "todo_remove"]);
 export const BOARD_OP_NAMES: readonly BoardOp["op"][] = ["plan_set", "plan_add", "plan_update", "plan_remove", "todo_add", "todo_update", "todo_remove"];
 /** The refusal for a scratch op: the owner removed the scratchpad on 10-15 ("remove the notepad feature completely"). */
 export const SCRATCHPAD_REMOVED = "The board has no scratchpad any more; the owner removed it on 2026-10-15. Put the decision in the note of the step it concerns " +
@@ -487,6 +487,7 @@ export function parseBoardOp(value: unknown): BoardOp {
     case "plan_update": {
       const op: BoardOp = { op: "plan_update", id: id(value.id) };
       if (value.parent !== undefined) op.parent = value.parent === null ? null : id(value.parent, "parent");
+      if (value.before !== undefined) op.before = value.before === null ? null : id(value.before, "before");
       const text = optStr(value.text, "text"); if (text !== undefined) op.text = text;
       const s = status(value.status); if (s) op.status = s;
       const job = nullableStr(value.job, "job"); if (job !== undefined) op.job = job;
@@ -546,7 +547,7 @@ const quote = (text: string) => `"${text.length > 80 ? text.slice(0, 79) + "…"
  * every agent write flags the open steps whose links name none. Without it (the browser's preview), links are only checked for their shape.
  */
 export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, now: string, newId: (kind: IdKind) => string, duties?: DutyKeys): { board: ChatBoard; summary: string } {
-  if (actor === "owner" && !OWNER_OPS.has(op.op)) throw new BoardError("forbidden", "The owner changes the todos; the agent keeps the plan.");
+  if (actor === "owner" && !OWNER_OPS.has(op.op)) throw new BoardError("forbidden", "The owner adds, changes and removes steps and todos; only the agent replaces the whole plan (plan_set).");
   const linkable = (link: string | undefined, kept?: string): void => {
     const problem = duties && link && link !== kept ? dutyLinkProblem(link, duties) : null;
     if (problem) invalid(problem);
@@ -662,14 +663,25 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
         next.target = storedTarget(op.target, item.target, now);
         parts.push(`set its target: ${targetText(next.target)}${next.target.current !== op.target.current ? ", keeping its newer reading" : ""}`);
       }
-      if (to === undefined) return done({ plan: map(board.plan, op.id, () => next) }, `updated ${item.id} ${quote(item.text)}: ${parts.join(", ") || "no change"}`);
-      // The item moves with its steps and keeps its id; an open item under a finished goal reopens it and every finished goal above it, as plan_add does.
+      if (to === undefined && op.before === undefined) return done({ plan: map(board.plan, op.id, () => next) }, `updated ${item.id} ${quote(item.text)}: ${parts.join(", ") || "no change"}`);
+      // The item moves with its steps and keeps its id, last in its new list or before `before`; an open item under a finished goal reopens it
+      // and every finished goal above it, as plan_add does.
       const rest = map(board.plan, op.id, () => null);
-      if (to === null) return done({ plan: [...rest, next] }, `updated ${item.id} ${quote(item.text)}: ${[...parts, "moved it to the top level"].join(", ")}`);
-      const reopened = OPEN_STATUSES.has(next.status) ? [...to.ancestors, to.item].filter(above => above.status === "done").map(above => above.id) : [];
-      let plan = map(rest, to.item.id, p => ({ ...p, children: [...p.children, next] }));
-      for (const above of reopened) plan = map(plan, above, p => ({ ...p, status: "todo", reopened: true }));
-      parts.push(`moved it under ${to.item.id}${reopened.length ? `, reopened ${reopened.join(", ")}` : ""}`);
+      const parent = to === undefined ? from : to === null ? null : to.item.id;
+      const siblings = parent === null ? rest : find(rest, parent)!.item.children;
+      if (op.before && !siblings.some(sibling => sibling.id === op.before)) invalid(`${op.before} is not a step beside ${item.id}; before names a step in the list ${item.id} goes to.`);
+      const placed = (list: PlanItem[]): PlanItem[] => {
+        const at = op.before ? list.findIndex(sibling => sibling.id === op.before) : -1;
+        return at < 0 ? [...list, next] : [...list.slice(0, at), next, ...list.slice(at)];
+      };
+      let plan = parent === null ? placed(rest) : map(rest, parent, p => ({ ...p, children: placed(p.children) }));
+      if (to === null) parts.push("moved it to the top level");
+      else if (to) {
+        const reopened = OPEN_STATUSES.has(next.status) ? [...to.ancestors, to.item].filter(above => above.status === "done").map(above => above.id) : [];
+        for (const above of reopened) plan = map(plan, above, p => ({ ...p, status: "todo", reopened: true }));
+        parts.push(`moved it under ${to.item.id}${reopened.length ? `, reopened ${reopened.join(", ")}` : ""}`);
+      }
+      if (op.before !== undefined) parts.push(op.before ? `put it before ${op.before}` : "put it last");
       return done({ plan }, `updated ${item.id} ${quote(item.text)}: ${parts.join(", ")}`);
     }
     case "plan_remove": {

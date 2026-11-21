@@ -13,7 +13,6 @@
   import SidebarRow from "$lib/shell/SidebarRow.svelte";
   import SectionDialog from "$lib/shell/SectionDialog.svelte";
   import { sidebar, soloGroups } from "$lib/shell/sidebar.svelte";
-  import { soloDialog } from "$lib/shell/solo-dialog.svelte";
   import { renameDialog } from "$lib/shell/rename-dialog.svelte";
   import { CHANNEL_DRAG_TYPE, channelDrop, groupChannels, sidebarSections, visibleRows, type BuiltinSection, type SectionId } from "$lib/shell/sidebar-sections.svelte";
   import { forYouHref } from "$pages/board/chips";
@@ -230,7 +229,7 @@
 
   {#if sidebar.data.solo.length}
     <SidebarSection id="solo" label="Solo" folded={folded("solo")} ontoggle={() => sidebarSections.toggle("solo")}>
-      {#snippet actions()}<IconButton icon="plus" label="New Solo room" size="xs" onclick={() => soloDialog.open()} />{/snippet}
+      {#snippet actions()}<IconButton icon="plus" label="New Solo room" size="xs" onclick={() => router.navigate(hrefFor("messages", ["new"], { kind: "solo" }))} />{/snippet}
       {#each shown(solo.open, "solo") as row (row.id)}{@render soloRow(row, "users")}{/each}
       {#if folded("solo")}
         {#each shown(solo.done, "solo") as row (row.id)}{@render soloRow(row, "check")}{/each}

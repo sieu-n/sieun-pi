@@ -13,6 +13,11 @@
   $effect(() => {
     void value;
     if (!element) return;
+    // A closed dialog or a hidden tab lays nothing out, so scrollHeight reads 0 and would pin the box at its padding; leave `rows` in charge.
+    if (!element.getClientRects().length) {
+      element.style.height = "";
+      return;
+    }
     element.style.height = "auto";
     const line = parseFloat(getComputedStyle(element).lineHeight) || 20;
     element.style.height = `${Math.min(element.scrollHeight, line * maxRows + 20)}px`;

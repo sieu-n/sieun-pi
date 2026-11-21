@@ -48,6 +48,7 @@
   });
 
   const apply = (ops: BoardOp[]) => store.apply(ops);
+  let draft = $state<{ parent: string | null } | null>(null);
   const empty = $derived(!board || (!board.plan.length && !board.todos.length));
 </script>
 
@@ -61,7 +62,11 @@
     </div>
   {:else}
     {#if empty}
-      <EmptyState icon="board" title="No plan yet" description="The chat writes its plan and its asks for you here as it works." size="sm" />
+      {#if !draft}
+        <EmptyState icon="board" title="No plan yet" description="The chat writes its plan and its asks for you here as it works, and you can add a step too." size="sm">
+          {#snippet action()}<Button size="sm" icon="plus" onclick={() => { draft = { parent: null }; }}>Add a step</Button>{/snippet}
+        </EmptyState>
+      {/if}
     {/if}
 
     {#if board && board.todos.length}
@@ -89,9 +94,9 @@
       </section>
     {/if}
 
-    {#if board && board.plan.length}
+    {#if board?.plan.length || draft}
       <section class="group" aria-label="Plan">
-        <PlanTree {chatId} plan={board.plan} {awaitingGo} {agents} {where} {focus} {onboardid} />
+        <PlanTree {chatId} plan={board?.plan ?? []} {awaitingGo} {agents} {where} {focus} {onboardid} onops={apply} bind:draft />
       </section>
     {/if}
 

@@ -5,6 +5,9 @@
   import { defaultHost, hostOptions, hostProjects } from "./host-badge";
   import ProjectPicker from "./ProjectPicker.svelte";
   import TextArea from "$lib/ui/TextArea.svelte";
+  import Picker from "$lib/ui/Picker.svelte";
+  import { toast } from "$lib/ui/toast.svelte";
+  import { directory } from "../channel/directory.svelte";
 
   type Props = {
     open: boolean;
@@ -28,6 +31,13 @@
   /** The boxes that run pi-host, from `GET /api/agent-hosts`; the picker shows only when there is more than one. */
   let hosts = $state<AgentHost[] | null>(null);
   let host = $state("");
+  /** Channels to add it to once it exists, Slack's last create step; each joins through `POST /api/rooms/:id/members`. */
+  let channels = $state<string[]>([]);
+  let channelsOpen = $state(false);
+  let channelsButton = $state<HTMLElement>();
+  const channelItems = $derived(directory.channels.filter((c) => !c.archived).map((c) => ({ id: c.id, label: c.name, icon: "hash" })));
+  const channelNames = $derived(channels.map((id) => directory.channels.find((c) => c.id === id)?.name).filter((n): n is string => !!n));
+  const channelsLabel = $derived(!channelNames.length ? "None" : channelNames.length < 3 ? channelNames.map((n) => `#${n}`).join(", ") : `#${channelNames[0]} and ${channelNames.length - 1} more`);
 
   $effect(() => {
     if (!open || hosts) return;
@@ -74,6 +84,7 @@
     level = catalog?.default.thinkingLevel;
     host = hosts ? defaultHost(hosts) : "";
     cwd = projects?.default ?? "";
+    channels = [];
     error = "";
     nameError = null;
     touched = false;
@@ -96,6 +107,9 @@
     try {
       const agent = await api.createAgent({ name: name.trim(), ...(brief.trim() ? { brief: brief.trim() } : {}), ...(model ? { model } : {}), ...(level ? { thinkingLevel: level } : {}), ...(cwd.trim() ? { cwd: cwd.trim() } : {}), ...(picked && !picked.self ? { host: picked.box } : {}) });
       if (agent.room) keepOpened(agent.room, agent.opened);
+      const joins = await Promise.allSettled(channels.map((id) => api.addMembers(id, [agent.id])));
+      const missed = channels.filter((_, i) => joins[i]?.status === "rejected").map((id) => `#${directory.channels.find((c) => c.id === id)?.name ?? id}`);
+      if (missed.length) toast.error(`Could not add ${agent.name} to ${missed.join(", ")}`);
       open = false;
       reset();
       oncreated(agent);
@@ -163,6 +177,10 @@
         </div>
       {/if}
       <div class="setting">
+        <span class="t-body">Channels</span>
+        <Button variant="outline" size="sm" trailingIcon="chevron-down" bind:element={channelsButton} disabled={pending} aria-label="Add to channels: {channelsLabel}" onclick={() => (channelsOpen = true)}>{channelsLabel}</Button>
+      </div>
+      <div class="setting">
         <span class="t-body">Project</span>
         {#key host}
           <ProjectPicker projects={folders} bind:value={cwd} disabled={pending || !folders} id="create-agent-project" onchange={() => (touched = true)} />
@@ -180,6 +198,21 @@
     <Button variant="primary" type="submit" form="create-agent-form" loading={pending} disabled={pending}>Create agent</Button>
   {/snippet}
 </Dialog>
+
+<Picker
+  bind:open={channelsOpen}
+  anchor={channelsButton}
+  items={channelItems}
+  value={channels}
+  multiple
+  searchable
+  label="Add to channels"
+  emptyText="No channels match"
+  onselect={(id) => {
+    touched = true;
+    channels = channels.includes(id) ? channels.filter((c) => c !== id) : [...channels, id];
+  }}
+/>
 
 <style>
   .form {

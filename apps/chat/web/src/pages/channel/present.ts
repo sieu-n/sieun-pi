@@ -99,3 +99,16 @@ export function agentPickerItems(agents: readonly AgentSummary[]): PickerItem[] 
     .filter((a) => a.id.startsWith("ag_") && !a.archived)
     .map((a) => ({ id: a.id, label: a.name, ...(a.status === "working" ? { detail: "working now" } : {}), avatar: { name: a.name, kind: "agent" as const, seed: a.id } }));
 }
+
+/**
+ * The To: list of New message, Slack's order: agents whose DM the sidebar lists, newest DM first, under "Recent", then every other
+ * registered agent by name under "Agents". `dmAgents` is the sidebar's DM rows' agent ids in their order.
+ */
+export function recentAgentItems(agents: readonly AgentSummary[], dmAgents: readonly (string | undefined)[]): PickerItem[] {
+  const items = agentPickerItems(agents);
+  const rank = new Map<string, number>();
+  dmAgents.forEach((id, index) => id && !rank.has(id) && rank.set(id, index));
+  const recent = items.filter((item) => rank.has(item.id)).sort((a, b) => (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0));
+  const rest = items.filter((item) => !rank.has(item.id)).sort((a, b) => a.label.localeCompare(b.label));
+  return [...recent.map((item) => ({ ...item, group: "Recent" })), ...rest.map((item) => ({ ...item, group: "Agents" }))];
+}

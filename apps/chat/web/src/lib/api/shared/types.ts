@@ -184,7 +184,7 @@ export type PlanItemInput = { id?: string; text: string; status?: PlanStatus; jo
 export type BoardOp =
   | { op: "plan_set"; items: PlanItemInput[] }
   | ({ op: "plan_add"; parent?: string; text: string; status?: PlanStatus; job?: string; sessionId?: string; note?: string; waitUntil?: string; waitFor?: string; target?: GoalTarget; duty?: string } & GateInput)
-  | { op: "plan_update"; id: string; parent?: string | null; text?: string; status?: PlanStatus; job?: string | null; sessionId?: string | null; note?: string | null; waitUntil?: string | null;
+  | { op: "plan_update"; id: string; parent?: string | null; before?: string | null; text?: string; status?: PlanStatus; job?: string | null; sessionId?: string | null; note?: string | null; waitUntil?: string | null;
       waitFor?: string | null; go?: "needed"; kind?: "build" | null; requirements?: Requirement[] | null; target?: GoalTarget | null; duty?: string | null }
   | { op: "plan_remove"; id: string }
   | { op: "todo_add"; text: string; choices?: string[]; step?: string; links?: ArtifactLink[] }
