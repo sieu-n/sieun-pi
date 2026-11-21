@@ -46,7 +46,7 @@
   const tabs = $derived(LAYOUTS.map(entry => ({ id: entry.id, label: entry.label })));
 </script>
 
-<Page measure="wide">
+<Page measure={layout?.measure ?? "wide"}>
   {#snippet header()}
     <PanelHeader title="Skills" icon="spark" level={1}>
       {#snippet actions()}

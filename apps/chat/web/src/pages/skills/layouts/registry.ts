@@ -13,7 +13,13 @@ export type LayoutProps = {
   reload: () => Promise<void>;
 };
 
-export type LayoutEntry = { id: string; label: string; component: Component<LayoutProps> };
+/** How wide the page column is for a layout, as Page's `measure` takes it. */
+export type LayoutMeasure = "default" | "wide" | "full";
+
+export type LayoutEntry = { id: string; label: string; measure: LayoutMeasure; component: Component<LayoutProps> };
+
+/** The layouts that need more than the wide column: the kinds matrix has 11 kind columns beside the skill, about 1,250 px. */
+const MEASURES: Readonly<Record<string, LayoutMeasure>> = { kinds: "full" };
 
 const found = import.meta.glob<Component<LayoutProps>>("./*/*Layout.svelte", { eager: true, import: "default" });
 
@@ -23,7 +29,7 @@ export const DEFAULT_LAYOUT = "current";
 export const LAYOUTS: readonly LayoutEntry[] = Object.entries(found)
   .map(([path, component]) => {
     const id = path.split("/")[1]!;
-    return { id, label: id.charAt(0).toUpperCase() + id.slice(1).replace(/-/g, " "), component };
+    return { id, label: id.charAt(0).toUpperCase() + id.slice(1).replace(/-/g, " "), measure: MEASURES[id] ?? "wide", component };
   })
   .sort((a, b) => Number(b.id === DEFAULT_LAYOUT) - Number(a.id === DEFAULT_LAYOUT) || a.id.localeCompare(b.id));
 
