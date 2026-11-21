@@ -113,14 +113,21 @@ const sh = (command: string, cwd: string) => new Promise<string>((resolve, rejec
     error ? reject(new Error(`${error.message.split("\n")[0]} ${String(stderr).trim().slice(-200)}`)) : resolve(stdout));
 });
 
-async function hog(key: string, query: string): Promise<unknown[][]> {
-  const response = await fetch(POSTHOG_QUERY, {
-    method: "POST",
-    headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-    body: JSON.stringify({ query: { kind: "HogQLQuery", query }, refresh: "blocking" }),
-  });
-  if (!response.ok) throw new Error(`PostHog query answered ${response.status}: ${(await response.text()).slice(0, 200)}`);
-  return ((await response.json()) as { results: unknown[][] }).results;
+// measured: PostHog answered 503 clickhouse_at_capacity on 11-13 00:00Z and 504 max execution time on 11-21 00:33Z, and a rerun at 00:5xZ read the day in 6.4 s.
+const HOG_SENDS = 2;
+const HOG_BUSY = new Set([503, 504]);
+
+export async function hog(key: string, query: string, send: typeof fetch = fetch): Promise<unknown[][]> {
+  for (let sent = 1; ; sent++) {
+    const response = await send(POSTHOG_QUERY, {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({ query: { kind: "HogQLQuery", query }, refresh: "blocking" }),
+    });
+    if (HOG_BUSY.has(response.status) && sent < HOG_SENDS) continue;
+    if (!response.ok) throw new Error(`PostHog query answered ${response.status}: ${(await response.text()).slice(0, 200)}`);
+    return ((await response.json()) as { results: unknown[][] }).results;
+  }
 }
 
 export async function measure(now: number): Promise<PrecheckOutput> {

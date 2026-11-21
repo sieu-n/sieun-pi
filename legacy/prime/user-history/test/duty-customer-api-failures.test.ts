@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { agingUntil } from "../scripts/duties/chat-system.ts";
-import { handleOf, lastFullDay, report, UNMEASURED } from "../scripts/duties/customer-api-failures.ts";
+import { handleOf, hog, lastFullDay, report, UNMEASURED } from "../scripts/duties/customer-api-failures.ts";
 import { judge, type DutyMetric, type DutyRunRecord } from "../src/shared/chat-duties.ts";
 import { metricStreaks } from "../src/shared/duty-streak.ts";
 
@@ -80,4 +80,27 @@ test("a rerun of a closed day reads quiet until the next UTC midnight, while the
   const runs = [rerun, first, before];
   assert.equal(metricStreaks(runs)[0]!.quietSince, Date.parse("2026-11-04T23:58:00Z"));
   assert.equal(agingUntil(runs), Date.parse("2026-11-06T00:00:00Z"));
+});
+
+test("a PostHog 503 or 504 is sent once more, and a 4xx or a second 5xx still throws (11-13 and 11-21 00:00Z runs)", async () => {
+  const sender = (statuses: number[]) => {
+    const seen: number[] = [];
+    const send = (async () => {
+      const status = statuses[seen.length]!;
+      seen.push(status);
+      return new Response(status === 200 ? JSON.stringify({ results: [[1]] }) : "busy", { status });
+    }) as typeof fetch;
+    return { send, seen };
+  };
+  for (const busy of [503, 504]) {
+    const once = sender([busy, 200]);
+    assert.deepEqual(await hog("k", "select 1", once.send), [[1]]);
+    assert.deepEqual(once.seen, [busy, 200]);
+  }
+  const twice = sender([503, 504, 200]);
+  await assert.rejects(hog("k", "select 1", twice.send), /answered 504/);
+  assert.equal(twice.seen.length, 2);
+  const denied = sender([403, 200]);
+  await assert.rejects(hog("k", "select 1", denied.send), /answered 403/);
+  assert.equal(denied.seen.length, 1);
 });
