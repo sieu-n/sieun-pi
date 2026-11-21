@@ -6,6 +6,7 @@ import { parseArgs } from "node:util";
 import type { AllowedModel } from "../../../config/allowed-models.ts";
 import { AGENT_RELAY_PATH } from "../../../components/prime-relay/agents/protocol.ts";
 import type { SkillsConfig } from "./skills.ts";
+import type { SkillsReviewConfig } from "./skills-review.ts";
 
 /**
  * A new thread's model when none is named: Opus 5.5, the owner's pin (c31, back on 2026-11-13 when he retired c221's Fable 5.2), one of
@@ -55,6 +56,11 @@ export interface Config {
    * reads server/fixture/skills-inventory.json and runs no scanner.
    */
   skills: SkillsConfig;
+  /**
+   * The skills review (server/skills-review.ts): its state folder `APPS_CHAT_SKILLS_REVIEW_DIR`, else ~/work/skills-review, and the Mac's ssh
+   * host `APPS_CHAT_SKILLS_REVIEW_MAC`, else `mac`. The fixture keeps a throwaway set under its data dir instead.
+   */
+  skillsReview: SkillsReviewConfig;
   /**
    * The Meilisearch search keeps its index in (meilisearch.service): `APPS_CHAT_MEILI_URL` and the master key in `APPS_CHAT_MEILI_KEY_FILE`.
    * Without it, as on the fixture or in a test, the server starts a Meilisearch of its own with a temp folder.
@@ -116,9 +122,12 @@ export function defaultProjects(home: string): string[] {
   return [join(home, "src/sieun-pi"), join(home, "Documents/Github/auto-sns-agent"), join(home, "Documents/Github/sieun-pi")];
 }
 
-/** The fixture's home folder, projects and agent folders, under its data dir, as `seedFixture` creates them. */
-export function fixtureFolders(dataDir: string): Pick<Config, "home" | "projects" | "agentsDir"> {
-  return { home: join(dataDir, "home"), projects: [join(dataDir, "work", "harness"), join(dataDir, "work", "crawler")], agentsDir: join(dataDir, "agent-folders") };
+/** The fixture's home folder, projects, agent folders and skills review folder, under its data dir, as `seedFixture` creates them. */
+export function fixtureFolders(dataDir: string): Pick<Config, "home" | "projects" | "agentsDir" | "skillsReview"> {
+  return {
+    home: join(dataDir, "home"), projects: [join(dataDir, "work", "harness"), join(dataDir, "work", "crawler")], agentsDir: join(dataDir, "agent-folders"),
+    skillsReview: { dir: join(dataDir, "skills-review"), fixture: true, macHost: null },
+  };
 }
 
 export function readConfig(argv = process.argv.slice(2), env = process.env): Config {
@@ -163,6 +172,9 @@ export function readConfig(argv = process.argv.slice(2), env = process.env): Con
     agentRefs: true,
     hostsFile: resolve(env.SIEUN_PI_HOSTS ?? join(home, ".config/sieun-pi/hosts.json")),
     skills: fixture ? { inventory: join(appDir, "server/fixture/skills-inventory.json"), scanner: null } : skillsConfig(env, home),
+    skillsReview: fixture
+      ? { dir: join(dataDir, "skills-review"), fixture: true, macHost: null }
+      : { dir: resolve(env.APPS_CHAT_SKILLS_REVIEW_DIR ?? join(home, "work/skills-review")), fixture: false, macHost: env.APPS_CHAT_SKILLS_REVIEW_MAC ?? "mac" },
     ...(!fixture && env.APPS_CHAT_MEILI_URL ? { meili: { url: env.APPS_CHAT_MEILI_URL, keyFile: resolve(env.APPS_CHAT_MEILI_KEY_FILE ?? join(home, ".config/meilisearch/master.key")) } } : {}),
   };
 }

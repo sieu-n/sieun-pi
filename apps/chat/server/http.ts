@@ -21,6 +21,7 @@ import { isHostAway } from "./host/types.ts";
 import { readJson } from "./store.ts";
 import { usageReport, hostsReport } from "./usage.ts";
 import { Skills } from "./skills.ts";
+import { decideBody, ReviewRefused, SkillsReview, undoBody } from "./skills-review.ts";
 import { type ClientVia, clientTimings, LoopStalls, RequestLog } from "./request-log.ts";
 import { accountRoutes, PoolError } from "./accounts.ts";
 import { serveWiki } from "./wiki/routes.ts";
@@ -122,6 +123,17 @@ function harnessKind(query: URLSearchParams): HarnessKind {
 export function routes(app: App): Route[] {
   const str = (value: string | null): string | undefined => (value === null || value === "" ? undefined : value);
   const skills = new Skills(app.config.skills, app.config.box, app.log, scan => app.broadcast({ type: "skills", scan }));
+  const review = new SkillsReview(app.config.skillsReview, skills, app.config.box, {
+    log: app.log,
+    broadcast: event => app.broadcast(event),
+    // A live fold goes to agent factory's work thread as a message from the review, the way a duty job's report reaches its chat.
+    fold: async (text, requestId) => {
+      await app.host.submit(app.boards.threadOf("ag_agent-factory"), { text, requestId, whenBusy: "followUp", entry: { kind: "agent.message", data: { from: "skills review", via: "skills review" } } });
+    },
+  });
+  const refused = (error: unknown): never => {
+    throw error instanceof ReviewRefused ? new BadRequest(error.message) : error;
+  };
   const folderAgent = (id: string): AgentRecord => {
     const agent = agentRecordOf(app, id);
     if (!agent) throw new NotFound(`No agent ${id}.`);
@@ -336,6 +348,26 @@ export function routes(app: App): Route[] {
       const id = q.get("id");
       if (!id) throw new BadRequest("A skill doc names its row as ?id=, the id GET /api/skills lists.");
       return skills.doc(id);
+    }),
+    route("GET", "/api/skills/review", async (_r, _p, q) => review.report(q.get("set"))),
+    route("GET", "/api/skills/review/item", async (_r, _p, q) => {
+      const id = q.get("id");
+      if (!id) throw new BadRequest("A review item names its id as ?id=, an id GET /api/skills/review lists.");
+      return review.item(q.get("set"), id);
+    }),
+    route("POST", "/api/skills/review/decide", async (_r, _p, _q, body) => {
+      try {
+        return await review.decide(decideBody(await body()));
+      } catch (error) {
+        return refused(error);
+      }
+    }),
+    route("POST", "/api/skills/review/undo", async (_r, _p, _q, body) => {
+      try {
+        return await review.undo(undoBody(await body()));
+      } catch (error) {
+        return refused(error);
+      }
     }),
     route("GET", "/api/corrections", async () => readJson(join(app.config.sharedDir, "corrections.json"), { corrections: [] })),
   ];

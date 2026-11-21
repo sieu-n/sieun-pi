@@ -44,6 +44,12 @@ export class Skills {
     return { inventory: read.inventory, readError: read.error, scan: { ...this.scan } };
   }
 
+  /** The inventory's raw rows, with the fields the page does not get, for the skills review (server/skills-review.ts). */
+  async rawRows(): Promise<{ rows: Record<string, unknown>[]; generatedAt: string | null; error: string | null }> {
+    const read = await this.read();
+    return { rows: read.raw, generatedAt: read.inventory?.generatedAt ?? null, error: read.error };
+  }
+
   /** Starts a scan unless one runs, and answers the scan state at once. `done` settles when that scan ends and its inventory is parsed. */
   startScan(): { scan: SkillScan; done: Promise<void> } {
     const done = this.start();
