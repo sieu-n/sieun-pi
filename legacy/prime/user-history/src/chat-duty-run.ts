@@ -121,7 +121,7 @@ export const CHECK_IN_FOCUS: readonly string[] = [
     "and owner job, and under each goal to push the message to send: the goal's title, the owner's words for it quoted only from his messages " +
     "with their message ids, the measured gap and the ask to name and attack the biggest blocker on that number now. Never label a board title, " +
     "a requirement line or a metric as his words, and read the goal with board.get right before you send, since its title and metric can change after the precheck.",
-  `For a goal that says steer, send its owner job that message with agent_message.send in this run. For a goal that says start, add one push ` +
+  `For a goal that says steer, send its owner job that message in this run with the job-steer call this brief names, since agent_message.send cannot reach a job of the chat. For a goal that says start, add one push ` +
     `step under the goal with duty "${GOAL_PUSH_LINK}" and its job set to one job that names and attacks the biggest blocker: a live job of ` +
     "that goal that already works on that blocker, or a new job you start with rlm.create_session whose brief opens with that message. One " +
     "owner job per goal: when its push step's job is alive, steer it and never start a second, and when its push step has no live job, set one " +
