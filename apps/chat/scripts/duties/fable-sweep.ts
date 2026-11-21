@@ -16,15 +16,25 @@
  *   step_stalled: an open board step with no live job on it, no wait still running and no open owner todo that holds it. A step whose job
  *     wrote in the last 45 min still moves, since its parent often closes the step right after the job reports (the 45 min of rule 6).
  *
+ * An item is fresh when it is new since the last run or was last raised 24 h ago or more, so a problem that stays shows once a day (the
+ * daily cadence c66 gives a duty) and not on every 3-hourly run. A sweep that finds things is the duty working, so the headline counts
+ * findings nobody has passed on yet, never the findings themselves (c67).
+ *
  * Metrics:
- *   items_worth_a_look, the headline, target 0: items new since the last run, plus items last raised 24 h ago or more, so a problem that
- *     stays shows once a day (the daily cadence c66 gives a duty) and not on every 3-hourly run.
- *   items_open: every item this run found, raised before or not.
+ *   findings_unposted, the headline, target 0. In run mode (PRECHECK_MODE=run) it is the fresh count, so a sweep with findings starts the
+ *     Fable job. In after mode (PRECHECK_MODE=after, once that job ended and its report reached the agent's work thread) it is 0 when the
+ *     agent's DM holds a post of the agent's after the run's start or the job's last answer was "nothing to report", and else the run's
+ *     fresh count again. The work thread posts the report after the job ends, so after mode waits up to 10 min for that post, ten times the
+ *     about one minute a comm thread takes to post (c224). The run and its job come from LAST_RUNS_FILE, and the run's fresh count from its
+ *     record, else from the state file.
+ *   sweep_age_min: minutes since the sweep before this one ran, target 195, the 180 min schedule plus 15 min.
+ *   items_fresh, items_open and a count per kind are detail with no target.
  *
  * Job entry times come from the job's pi-host thread file, read only (`<threads dir>/<thread>.sqlite`), because every conversation of a
  * thread shares one `updatedAt` in the :5184 lists. A step's age is the start of the job on it, else the first run that saw it open.
  *
- * Usage: OUTPUT_FILE=<file> [STATE_FILE=<file>] node --import tsx scripts/duties/fable-sweep.ts [--server http://127.0.0.1:5184] [--threads-dir <dir>]
+ * Usage: OUTPUT_FILE=<file> [STATE_FILE=<file>] [LAST_RUNS_FILE=<file>] [PRECHECK_MODE=run|after] node --import tsx scripts/duties/fable-sweep.ts
+ *   --agent <agent id> [--server http://127.0.0.1:5184] [--threads-dir <dir>]
  * Defaults: APPS_CHAT_URL else http://127.0.0.1:5184, ~/.prime/agent/pi-host/durable/threads. The detail file is OUTPUT_FILE with
  * `.items.md` in place of `.json`, else ~/work/fable-sweep/<stamp>.items.md, and the summary goes to OUTPUT_FILE, else stdout.
  */
@@ -52,7 +62,9 @@ const KIND_WORDS: Record<Kind, [string, string]> = {
 const counted = (kind: Kind, n: number): string => `${n} ${KIND_WORDS[kind][n === 1 ? 0 : 1]}`;
 
 export interface Item { kind: Kind; sig: string; agent: string; text: string; link: string; at?: number }
-export interface SweepState { raised?: Record<string, number>; seen?: Record<string, number> }
+export interface SweepState { raised?: Record<string, number>; seen?: Record<string, number>; lastRun?: { at: number; fresh: number } }
+/** The part of a duty run record (LAST_RUNS_FILE) this precheck reads. */
+export interface RunRecord { at: number; job?: { id: string; name: string }; metrics?: Record<string, { value: number }> }
 
 interface Author { id: string; kind: string; name?: string }
 interface Delivery { target: string; name: string; state: string; at: number }
@@ -185,6 +197,27 @@ export function worthALook(items: readonly Item[], state: SweepState, now: numbe
   return { fresh, next: { raised: nextRaised } };
 }
 
+/**
+ * Whether a sweep's findings reached the owner: "posted" when the agent's DM holds a post of the agent's after `since`, "nothing" when the
+ * job's last answer was "nothing to report", "pending" while the job sent a report the work thread has not posted yet, and "none" when the
+ * job sent nothing at all.
+ */
+export function reportState(input: { dm: readonly Post[]; agent: string; since: number; answer: readonly string[] }): "posted" | "nothing" | "pending" | "none" {
+  if (input.dm.some(post => post.author.id === input.agent && post.at > input.since)) return "posted";
+  const said = input.answer.map(text => text.trim()).filter(Boolean);
+  if (said.some(text => /^nothing to report\.?$/i.test(text))) return "nothing";
+  return said.length ? "pending" : "none";
+}
+
+/**
+ * The texts of a job's newest finished turn that said something: what it sent with send_message, and its final answer. A later empty
+ * turn, such as one on a [skill-route] notice the job got after its report (11-22), does not hide the report.
+ */
+export function answerOf(items: readonly { kind: string; live?: boolean; text?: string; sent?: string[] }[]): string[] {
+  const turn = [...items].reverse().find(item => item.kind === "turn" && !item.live && [...(item.sent ?? []), item.text ?? ""].some(text => text.trim()));
+  return turn ? [...(turn.sent ?? []), turn.text ?? ""] : [];
+}
+
 async function get<T>(server: string, path: string): Promise<T> {
   const res = await fetch(`${server}${path}`);
   if (!res.ok) throw new Error(`GET ${path} answered ${res.status}`);
@@ -194,7 +227,9 @@ async function get<T>(server: string, path: string): Promise<T> {
 interface Hit { conversation: { id: string; kind: string; name: string }; messageId: string; threadRoot?: string; kind: string; role: string; at: number; link: string }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const { values } = parseArgs({ options: { server: { type: "string" }, "threads-dir": { type: "string" } } });
+  const { values } = parseArgs({ options: { agent: { type: "string" }, server: { type: "string" }, "threads-dir": { type: "string" } } });
+  const mode = process.env.PRECHECK_MODE === "after" ? "after" : "run";
+  const lastRuns: RunRecord[] = process.env.LAST_RUNS_FILE && existsSync(process.env.LAST_RUNS_FILE) ? JSON.parse(readFileSync(process.env.LAST_RUNS_FILE, "utf8") || "[]") : [];
   const server = values.server ?? process.env.APPS_CHAT_URL ?? "http://127.0.0.1:5184";
   const threadsDir = values["threads-dir"] ?? join(homedir(), ".prime/agent/pi-host/durable/threads");
   const started = Date.now();
@@ -273,21 +308,50 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   writeFileSync(detailFile, [`# Everything at a glance, ${new Date(now).toISOString().slice(0, 16)}Z`,
     `${fresh.length} items worth a look of ${items.length} open. Items marked "raised before" were in a sweep less than 24 h ago. Links open on :5184.`, ...sections].join("\n\n") + "\n");
 
+  // The headline: in run mode this sweep's fresh findings; in after mode the measured run's findings until the owner's DM has them.
+  let unposted = fresh.length;
+  let report = "";
+  const measured = lastRuns.find(run => run.job);
+  if (mode === "after") {
+    const runFresh = measured ? measured.metrics?.findings_unposted?.value ?? state.lastRun?.fresh ?? 0 : 0;
+    unposted = runFresh;
+    const agent = agents.find(a => a.id === values.agent);
+    if (runFresh && measured?.job && agent?.room) {
+      const deadline = Date.now() + ANSWER_GRACE_MS;
+      for (;;) {
+        const [dm, job] = await Promise.all([
+          get<{ items: Post[] }>(server, `/api/c/${agent.room}/items?limit=20`),
+          get<{ items: { kind: string; live?: boolean; text?: string; sent?: string[] }[] }>(server, `/api/c/${measured.job.id}/items?limit=50`),
+        ]);
+        report = reportState({ dm: dm.items, agent: agent.id, since: measured.at, answer: answerOf(job.items) });
+        if (report === "posted" || report === "nothing") unposted = 0;
+        if (report !== "pending" || Date.now() >= deadline) break;
+        await new Promise(done => setTimeout(done, 15_000));
+      }
+    }
+  }
+  const previous = lastRuns[0];
+
   const counts = (list: readonly Item[]) => KINDS.map(kind => [kind, list.filter(item => item.kind === kind).length] as const).filter(([, n]) => n);
-  const flagged = [
-    { kind: "items_worth_a_look", sig: "summary", excerpt: `${fresh.length} worth a look of ${items.length} open: ${counts(fresh).map(([kind, n]) => counted(kind, n)).join(", ") || "nothing new"}. Every item with its link is in ${detailFile}.` },
-    ...KINDS.flatMap(kind => {
-      const list = fresh.filter(item => item.kind === kind);
-      return list.length ? [{ kind, sig: kind, excerpt: `${oneLine(list[0]!.text, 150)} (${list[0]!.link})${list.length > 1 ? `, and ${list.length - 1} more` : ""}` }] : [];
-    }),
-  ];
+  const flagged = mode === "after"
+    ? [{ kind: "findings_unposted", sig: "unposted", excerpt: `The sweep of ${measured ? new Date(measured.at).toISOString().slice(0, 16) : "?"}Z found ${unposted} items, and its report ${report === "none" ? "was empty" : "is not in the owner's DM yet"}. Every item is in ${detailFile}.` }]
+    : [
+      { kind: "findings_unposted", sig: "summary", excerpt: `${fresh.length} worth a look of ${items.length} open: ${counts(fresh).map(([kind, n]) => counted(kind, n)).join(", ") || "nothing new"}. Every item with its link is in ${detailFile}.` },
+      ...KINDS.flatMap(kind => {
+        const list = fresh.filter(item => item.kind === kind);
+        return list.length ? [{ kind, sig: kind, excerpt: `${oneLine(list[0]!.text, 150)} (${list[0]!.link})${list.length > 1 ? `, and ${list.length - 1} more` : ""}` }] : [];
+      }),
+    ];
   const output = {
-    metrics: { items_worth_a_look: fresh.length, items_open: items.length, ...Object.fromEntries(counts(items)) },
-    flagged: fresh.length ? flagged : [],
-    detailFile, ms: Date.now() - started,
+    metrics: {
+      findings_unposted: unposted, sweep_age_min: previous ? Math.round((now - previous.at) / MIN) : 0,
+      items_fresh: fresh.length, items_open: items.length, ...Object.fromEntries(counts(items)),
+    },
+    flagged: unposted ? flagged : [],
+    mode, ...(report ? { report } : {}), detailFile, ms: Date.now() - started,
     items: items.map(item => ({ ...item, fresh: freshSigs.has(item.sig) })),
   };
-  if (process.env.STATE_FILE) writeFileSync(process.env.STATE_FILE, JSON.stringify({ ...next, seen }));
+  if (process.env.STATE_FILE && mode === "run") writeFileSync(process.env.STATE_FILE, JSON.stringify({ ...next, seen, lastRun: { at: now, fresh: fresh.length } }));
   const json = JSON.stringify(output, null, 1);
   if (process.env.OUTPUT_FILE) writeFileSync(process.env.OUTPUT_FILE, json);
   else process.stdout.write(`${json}\n`);

@@ -1,15 +1,22 @@
 {
  "name": "Everything at a glance",
  "ownerWords": "Fable auditor agent를 하나 만들고 싶어\n(dm_agent-factory p68, 11-22, msg mwqwpszf)\n\n이게 main worker들은 opus가 되면 좋겠거든? 워낙 비용이 비싸니까\n얘는 그냥 다양한 분야에서 advisor가 됬으면 좋겠고, 일을 하는거보다 검토하고 나한테 말을 거는 용도였으면 좋겠어\n- 가끔 @로 occationally 멘션해서 조언 구하는 용도\n- 3-hourly로 모든 문제들을 전반적으로 훑어보고 문제가 될만한 부분/보고사항 제안사항 특이사항을 나한테 넘기는 식으로\ninteract하는걸 상상하긴함\n(dm_agent-factory p72, 11-22, msg mwqwsgx9)",
- "goal": "Every 3 hours the fable auditor looks over all of sw factory and tells the owner in its DM what is a problem, worth reporting, a suggestion or unusual, and says nothing when nothing stands out. The precheck (apps/chat/scripts/duties/fable-sweep.ts) reads :5184 across every agent that is not a test or archived: owner posts of the last 3 h that no agent answered after 10 min, owner posts whose delivery failed, stayed queued or reached no agent, jobs that read working with no new entry for 45 min (rule 6) and jobs that failed in the last 24 h, failed work and comm threads, duties whose last run missed or errored, and open board steps with no live job, running wait or open owner todo. Job entry times come from the pi-host thread files, read only. Each item carries its :5184 link and is raised once, then again a day later while it stays, so a quiet run starts no job and costs no Fable turn. Its first run on 11-22 took 0.4 s and found 10 items: 2 owner posts with no answer, 1 stuck job, 5 duties off target and 2 steps nobody moves.",
+ "goal": "Every 3 hours the fable auditor looks over all of sw factory and tells the owner in its DM what is a problem, worth reporting, a suggestion or unusual, and says nothing when nothing stands out. The precheck (apps/chat/scripts/duties/fable-sweep.ts) reads :5184 across every agent that is not a test or archived: owner posts of the last 3 h that no agent answered after 10 min, owner posts whose delivery failed, stayed queued or reached no agent, jobs that read working with no new entry for 45 min (rule 6) and jobs that failed in the last 24 h, failed work and comm threads, duties whose last run missed or errored, and open board steps with no live job, running wait or open owner todo. Job entry times come from the pi-host thread files, read only. Each item carries its :5184 link and is raised once, then again a day later while it stays, so a quiet run starts no job and costs no Fable turn. A sweep that finds things is the duty working, so the headline counts findings not yet passed on: the run's fresh items until the DM holds the auditor's post from after the run, or its job answered \"nothing to report\" (c67). The after-job measure waits up to 10 min for that post, which is why the precheck's soft target is 11 min while a sweep itself takes under 1 s. Its first run on 11-22 took 0.4 s and found 10 items: 2 owner posts with no answer, 1 stuck job, 5 duties off target and 2 steps nobody moves.",
  "metrics": [
   {
-   "key": "items_worth_a_look",
-   "label": "Items new since the last sweep, or last raised a day ago: owner posts with no answer, delivery errors, stuck or failed jobs, duties off target and steps nobody moves",
+   "key": "findings_unposted",
+   "label": "Findings of the last sweep not yet posted to the owner's DM or judged nothing to report",
    "op": "<=",
    "target": 0,
-   "unit": " items",
+   "unit": " findings",
    "headline": true
+  },
+  {
+   "key": "sweep_age_min",
+   "label": "Minutes since the last sweep ran, against the 180 min schedule plus 15 min",
+   "op": "<=",
+   "target": 195,
+   "unit": " min"
   }
  ],
  "schedule": {
@@ -21,10 +28,12 @@
    "node",
    "--import",
    "tsx",
-   "scripts/duties/fable-sweep.ts"
+   "scripts/duties/fable-sweep.ts",
+   "--agent",
+   "ag_fable-auditor"
   ],
   "cwd": "/home/sieun/.local/share/sieun-pi-apps-chat/current/apps/chat",
-  "timeoutMs": 30000
+  "timeoutMs": 660000
  },
- "onMiss": "This duty asks for a report, not fixes, so these lines replace the brief's lines on fix steps, subagents and the 3-line report. Read the flagged lines above and, only as you need it, the detail file they name, which lists every item with its :5184 link; open a linked thread, board or duty only to tell a real problem from noise. Start no job or subagent, add no fix step, change no board and edit no file. Pick what is a real problem, a thing to report, a suggestion or something unusual, and drop what is fine, such as a step whose job reported a minute ago. Send one message for the owner's DM with send_message, or as your final answer, in Slack style per the sw-factory skill: the answer first in one plain line, then one `- ` bullet per item with its link and the agent that should take it, at most 120 words, with no headings, labels or tables. When nothing stands out, reply exactly \"nothing to report\"."
+ "onMiss": "This duty asks for a report, not fixes, so these lines replace the brief's lines on fix steps and the 3-line report. Read the flagged lines above and, only as you need it, the detail file they name, which lists every item with its :5184 link; open a linked thread, board or duty to tell a real problem from noise, and start a job or subagent when a check needs one. Add no fix step, change no board and edit no file. Pick what is a real problem, a thing to report, a suggestion or something unusual, and drop what is fine, such as a step whose job reported a minute ago. Your final answer is the text of the owner's DM post itself, with nothing before or after it, in Slack style per the sw-factory skill: the answer first in one plain line, then one `- ` bullet per item with its link and the agent that should take it, at most 120 words, with no headings, labels or tables. When nothing stands out, answer exactly \"nothing to report\"."
 }

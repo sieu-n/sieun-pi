@@ -5,6 +5,8 @@
  * 2. A step is stalled only when no live job, running wait, open todo or recent job entry moves it.
  * 3. A working job with no entry for 45 min is stuck, and a job that failed in the last 24 h is listed.
  * 4. An item is worth a look when it is new or was last raised 24 h ago, so a quiet run starts no job.
+ * 5. A sweep's findings count as passed on once the agent posts in its DM after the run or its job answered "nothing to report"; a sweep
+ *    that finds things is the duty working, so after mode reads 0 then (c67).
  */
 import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -12,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
-import { jobFindings, lastEntries, postFindings, stalledSteps, worthALook, type Item, type Job, type Post } from "../../scripts/duties/fable-sweep.ts";
+import { answerOf, jobFindings, lastEntries, postFindings, reportState, stalledSteps, worthALook, type Item, type Job, type Post } from "../../scripts/duties/fable-sweep.ts";
 
 const MIN = 60_000;
 const now = Date.parse("2026-11-22T12:00:00Z");
@@ -103,4 +105,19 @@ test("a job's newest entry time comes from its thread file", () => {
   db.close();
   assert.deepEqual([...lastEntries(file, [2, 4])], [[2, 200]]);
   assert.equal(lastEntries(join(dir, "missing.sqlite"), [2]).size, 0);
+});
+
+test("findings count as passed on once the DM has the agent's post or the job found nothing", () => {
+  const since = now - 30 * MIN;
+  const auditor = { id: "ag_fable-auditor", kind: "chat" };
+  assert.equal(reportState({ dm: [reply("p1", 10, { author: auditor })], agent: auditor.id, since, answer: ["4 things"] }), "posted");
+  assert.equal(reportState({ dm: [reply("p1", 40, { author: auditor })], agent: auditor.id, since, answer: ["4 things"] }), "pending", "a post before the run is an older sweep's");
+  assert.equal(reportState({ dm: [post("p2", 10)], agent: auditor.id, since, answer: ["", "Nothing to report."] }), "nothing");
+  assert.equal(reportState({ dm: [], agent: auditor.id, since, answer: ["", " "] }), "none");
+});
+
+test("a later empty turn does not hide the job's report", () => {
+  const items = [{ kind: "turn", text: "4 things", sent: ["4 things"] }, { kind: "message", text: "[skill-route]" }, { kind: "turn", text: "" }];
+  assert.deepEqual(answerOf(items), ["4 things", "4 things"]);
+  assert.deepEqual(answerOf([{ kind: "turn", text: "nothing to report", live: true }]), []);
 });
