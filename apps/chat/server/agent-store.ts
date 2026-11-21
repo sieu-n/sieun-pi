@@ -139,6 +139,8 @@ type LogLine = { t: "post"; post: RoomPost } | { t: "set"; post: string; patch: 
  */
 export type WakeOn = "all" | "none";
 export interface RoomMember { agent: AgentId; wakeOn: WakeOn; addedAt: Ms }
+/** One add or remove of a member, which the room's timeline shows as a system line, as Slack's "X added Y" (group-rooms.ts `memberLine`). */
+export interface MemberChange { at: Ms; agent: AgentId; by: "owner" | AgentId; change: "added" | "removed" }
 
 /** `test`: a walk's throwaway room (`POST /api/rooms {test: true}`), which no owner list, live event or badge shows. */
 interface RoomBase { id: RoomId; createdAt: Ms; archived: boolean; test?: true }
@@ -149,8 +151,8 @@ interface RoomBase { id: RoomId; createdAt: Ms; archived: boolean; test?: true }
  */
 export type RoomRow =
   | (RoomBase & { kind: "dm"; agent: AgentId })
-  | (RoomBase & { kind: "channel"; name: string; purpose: string; homeChat?: string; members: RoomMember[] })
-  | (RoomBase & { kind: "solo"; name: string; agenda: string; members: RoomMember[]; closedAt?: Ms });
+  | (RoomBase & { kind: "channel"; name: string; purpose: string; homeChat?: string; members: RoomMember[]; memberLog?: MemberChange[] })
+  | (RoomBase & { kind: "solo"; name: string; agenda: string; members: RoomMember[]; memberLog?: MemberChange[]; closedAt?: Ms });
 export type GroupRoom = Exclude<RoomRow, { kind: "dm" }>;
 export const isGroupRoom = (row: RoomRow): row is GroupRoom => row.kind !== "dm";
 

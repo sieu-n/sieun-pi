@@ -7,13 +7,13 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import type {
-  AgentHostList, AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, Item, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, OpenedPage, ProjectList, Reaction, SendRequest, SendResult, Sidebar, ThinkingLevel,
+  AgentHostList, AgentId, AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, Item, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, OpenedPage, ProjectList, Reaction, Room, SendRequest, SendResult, Sidebar, ThinkingLevel,
   TimelinePage,
 } from "../web/src/lib/api/types.ts";
 import type { AllowedModel } from "../../../config/allowed-models.ts";
 import type { FeedRow } from "../../../components/prime-relay/agents/protocol.ts";
 import { AgentFolders, type BoxFiles } from "./agent-folder.ts";
-import { AgentStore, type AgentRecord, type RoomDelivery, type RoomId, type RoomPost } from "./agent-store.ts";
+import { AgentStore, type AgentRecord, type MemberChange, type RoomDelivery, type RoomId, type RoomPost, type WakeOn } from "./agent-store.ts";
 import { Agents, isGroupRoomId, isRoomId } from "./agents.ts";
 import { Boards } from "./boards.ts";
 import { MIN_BYTES } from "./compress.ts";
@@ -554,7 +554,7 @@ export class App {
         ...(group.kind === "channel"
           ? { purpose: group.purpose, ...(group.homeChat ? { homeChat: group.homeChat } : {}) }
           : { agenda: group.agenda, ...(group.closedAt !== undefined ? { closedAt: group.closedAt } : {}) }),
-        ...(readSeq !== undefined ? { readSeq } : {}),
+        ...(readSeq !== undefined ? { readSeq } : {}), ...(group.test ? { test: true as const } : {}),
       };
     }
     if (isRoomId(id)) {
@@ -815,6 +815,38 @@ export class App {
         this.log(`posts: telling ${d.target} about ${room} ${post.id} failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+  }
+
+  /** Adds agents to a channel or Solo room and makes each new member's comm thread there in the background (`ensureComms`). */
+  addMembers(id: ConversationId, agents: string[], wakeOn?: WakeOn, by: MemberChange["by"] = "owner"): { room: Room; added: AgentId[] } {
+    const result = this.groups.addMembers(id, agents, wakeOn, by);
+    if (result.added.length) void this.ensureComms();
+    return result;
+  }
+
+  /**
+   * An agent's set_room_member: adds `agent`, an agent id or name, to `room`, a channel or Solo room by id or `#name`, or takes it out.
+   * The answer's `text` is the tool's result line.
+   */
+  memberAsAgent(thread: string, input: { room?: unknown; agent?: unknown; member?: unknown }): { room: RoomId; agent: AgentId; member: boolean; text: string } {
+    const record = this.agents.ofComm(thread)?.record ?? this.agents.ofWorkThread(thread);
+    if (!record) throw new ReactionError(404, `Thread ${thread} is no agent's comm thread or work thread; call set_room_member from the agent's own thread.`);
+    if (typeof input.room !== "string" || !input.room.trim()) throw new ReactionError(400, "set_room_member names the room, such as ch_1a2b3c4d or #general.");
+    if (typeof input.agent !== "string" || !input.agent.trim()) throw new ReactionError(400, "set_room_member names the agent by its id, such as ag_vent, or its name.");
+    if (typeof input.member !== "boolean") throw new ReactionError(400, "set_room_member's member is true to add the agent or false to remove it.");
+    const row = this.groups.row(input.room.trim());
+    if (!row) throw new ReactionError(404, `No channel or Solo room ${input.room}; name it by its id, such as ch_1a2b3c4d, or as #name.`);
+    const target = this.threads.registered(input.agent.trim());
+    if (!target) throw new ReactionError(404, `No agent ${input.agent}; name a registered agent by its id, such as ag_vent, or its name.`);
+    const where = roomLabel(row);
+    if (input.member) {
+      const { added } = this.addMembers(row.id, [target.id], undefined, record.id);
+      const text = added.length ? `Added ${target.name} to ${where}; it hears every post there from now on.` : `${target.name} is already in ${where}; nothing changed.`;
+      return { room: row.id, agent: target.id, member: true, text };
+    }
+    const { removed } = this.groups.removeMember(row.id, target.id, record.id);
+    const text = removed ? `Removed ${target.name} from ${where}; later posts no longer reach it, unless one @mentions it.` : `${target.name} is not in ${where}; nothing changed.`;
+    return { room: row.id, agent: target.id, member: false, text };
   }
 
   /** The owner marks the thread of a room post done or reopens it (thread-done.ts); the room's watchers get its root at once. */

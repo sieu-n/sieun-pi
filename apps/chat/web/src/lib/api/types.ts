@@ -369,6 +369,8 @@ export interface ConversationHeader {
   /** Channels and Solo rooms: the member agents whose boards the side panel shows. */
   boards?: AgentId[];
   readSeq?: number;
+  /** A walk's throwaway room (`POST /api/rooms {test: true}`), whose member picker lists test agents too. */
+  test?: true;
 }
 
 export interface LivePartial { itemId: string; text: string; thinking: string; tool?: string }

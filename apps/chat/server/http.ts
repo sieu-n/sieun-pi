@@ -263,11 +263,15 @@ export function routes(app: App): Route[] {
       return { ...room, opened: await app.opened(room.id) };
     }),
     route("PATCH", "/api/rooms/:id", async (_r, p, _q, body) => app.groups.update(p.id!, ((await body()) ?? {}) as RoomPatch)),
+    // Adding twice or removing a non-member changes nothing; both answer the room (group-rooms.ts `addMembers`, `removeMember`).
     route("POST", "/api/rooms/:id/members", async (_r, p, _q, body) => {
       const input = ((await body()) ?? {}) as { agents?: string[]; wakeOn?: WakeOn };
-      return app.groups.addMembers(p.id!, input.agents ?? [], input.wakeOn);
+      return app.addMembers(p.id!, input.agents ?? [], input.wakeOn).room;
     }),
-    route("DELETE", "/api/rooms/:id/members/:agent", async (_r, p) => app.groups.removeMember(p.id!, p.agent!)),
+    route("DELETE", "/api/rooms/:id/members/:agent", async (_r, p) => app.groups.removeMember(p.id!, p.agent!).room),
+    route("POST", "/api/threads/:id/members", async (_r, p, _q, body) => {
+      return app.memberAsAgent(p.id!, ((await body()) ?? {}) as { room?: unknown; agent?: unknown; member?: unknown });
+    }),
     route("POST", "/api/dms", async (_r, _p, _q, body) => app.openDm(((await body()) as { agent: string }).agent)),
     route("GET", "/api/dms", async () => app.rooms.summaries()),
     // `from`, `where` and `place` take comma lists and repeated params alike; a value search cannot read is the caller's error.

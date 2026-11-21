@@ -16,12 +16,14 @@
  * 5. As in Slack, a mention reaches any registered agent: one that is not a member gets the post in its comm thread for the room, made on
  *    demand, and answers in the room, without joining it. A channel root post's delivery carries the root posts its target missed since its
  *    last one, with their images.
+ * 6. The owner or an agent (set_room_member) adds and removes members; each change is a system line in the room's timeline
+ *    (`memberLog`), and a removed member keeps its comm thread for the room, which a later add reuses.
  */
 import { randomUUID } from "node:crypto";
 import type {
   AgentId, ConversationSummary, Delivery, ImageRef, Item, LaterMark, Member, Room, RoomInput, RoomPatch, RunStatus, SendRequest, SendResult, TimelinePage,
 } from "../web/src/lib/api/types.ts";
-import { type AgentRecord, type AgentStore, type FeedCursor, type GroupRoom, type RoomDelivery, type RoomId, type RoomMember, type RoomPost, type WakeOn } from "./agent-store.ts";
+import { type AgentRecord, type AgentStore, type FeedCursor, type GroupRoom, type MemberChange, type RoomDelivery, type RoomId, type RoomMember, type RoomPost, type WakeOn } from "./agent-store.ts";
 import type { Agents } from "./agents.ts";
 import { isHostAway, type EntryRecord, type Host, type Submitted } from "./host/types.ts";
 import { refusedForGood, retryWait } from "./outbox.ts";
@@ -311,27 +313,58 @@ export class GroupRooms {
     return this.rows().some(r => r !== row && r.kind === "channel" && !r.archived && r.name === name);
   }
 
-  /** Adds registered agents, who wake on every post unless `wakeOn` is `none`. */
-  addMembers(id: string, agents: string[], wakeOn?: WakeOn): Room {
+  /**
+   * Adds registered agents, who wake on every post unless `wakeOn` is `none`; `added` names the ones that were not members, and each gets a
+   * system line. App.addMembers makes their comm threads.
+   */
+  addMembers(id: string, agents: string[], wakeOn?: WakeOn, by: MemberChange["by"] = "owner"): { room: Room; added: AgentId[] } {
     const row = this.require(id);
     if (!Array.isArray(agents) || !agents.length) throw new Error("A member add needs agents, a list of agent ids.");
     if (wakeOn !== undefined && !WAKE_ON.includes(wakeOn)) throw new Error(`A member's wakeOn is one of ${WAKE_ON.join(", ")}.`);
     const now = Date.now();
-    for (const agent of agents.map(given => this.memberId(given))) {
-      if (!row.members.some(m => m.agent === agent)) row.members.push({ agent, wakeOn: wakeOn ?? "all", addedAt: now } satisfies RoomMember);
+    const added = [...new Set(agents.map(given => this.memberId(given)))].filter(agent => !row.members.some(m => m.agent === agent));
+    for (const agent of added) row.members.push({ agent, wakeOn: wakeOn ?? "all", addedAt: now } satisfies RoomMember);
+    return { room: this.memberChanged(row, added.map(agent => ({ at: now, agent, by, change: "added" }))), added };
+  }
+
+  /**
+   * Takes a member out: later posts no longer wake it, its deliveries still on their way stop, and an @mention reaches it as any
+   * non-member's does (rule 5). Its comm thread for the room stays in its record, so adding it again goes on in the same thread. Removing a
+   * non-member changes nothing, and the owner is in every room.
+   */
+  removeMember(id: string, agent: string, by: MemberChange["by"] = "owner"): { room: Room; removed: boolean } {
+    const row = this.require(id);
+    if (agent === OWNER.id || agent === OWNER.name) throw new Error(`A room always has the owner; only an agent leaves ${roomLabel(row)}.`);
+    const key = this.deps.threads.registered(agent)?.id ?? agent;
+    if (!row.members.some(m => m.agent === key)) return { room: this.view(row), removed: false };
+    row.members = row.members.filter(m => m.agent !== key);
+    const now = Date.now();
+    const stopped = this.store.postsOf(row.id).filter(post => post.deliveries?.some(d => d.target === key && d.state === "sending"));
+    for (const post of stopped) {
+      clearTimeout(this.timers.get(`${post.room}/${post.id}/${key}`));
+      this.setDelivery(post, key, { ...post.deliveries!.find(d => d.target === key)!, state: "stopped", at: now, error: `Left ${roomLabel(row)} before this post reached it.` });
     }
+    if (stopped.length) this.emit(row, stopped);
+    return { room: this.memberChanged(row, [{ at: now, agent: key, by, change: "removed" }]), removed: true };
+  }
+
+  /** Saves the room after its members changed, logs each change and sends its system line to the room's watchers. */
+  private memberChanged(row: GroupRoom, changes: MemberChange[]): Room {
+    if (!changes.length) return this.view(row);
+    row.memberLog = [...(row.memberLog ?? []), ...changes];
     this.store.saveRooms();
     this.changed(row);
+    this.deps.events.items(row.id, changes.map(change => this.memberLine(change)));
     return this.view(row);
   }
 
-  removeMember(id: string, agent: string): Room {
-    const row = this.require(id);
-    const key = this.deps.threads.registered(agent)?.id ?? agent;
-    row.members = row.members.filter(m => m.agent !== key);
-    this.store.saveRooms();
-    this.changed(row);
-    return this.view(row);
+  /** A member change as the room shows it, such as "You added Crawler VP" or "Vent removed frontend bro". */
+  private memberLine(change: MemberChange): Item {
+    const agent = this.deps.threads.principal(change.agent);
+    return {
+      kind: "system", id: `m:${change.at}:${change.change}:${change.agent}`, at: change.at,
+      text: `${this.deps.threads.principal(change.by).name} ${change.change} ${agent.name}`, avatars: [agent],
+    };
   }
 
   /** The agent id of a registered agent; a job, a work thread no agent holds or a comm thread is refused. */
@@ -825,7 +858,11 @@ export class GroupRooms {
       end = at < 0 ? roots.length : at;
       start = Math.max(0, end - limit);
     }
-    const items = roots.slice(start, end).map(p => this.item(row, p, all));
+    // The member lines between the page's first root and the next page's, so each shows on exactly one page.
+    const from = start > 0 ? roots[start]!.at : -Infinity;
+    const to = end < roots.length ? roots[end]!.at : Infinity;
+    const lines = (row.memberLog ?? []).filter(c => c.at >= from && c.at < to).map(c => this.memberLine(c));
+    const items = [...roots.slice(start, end).map(p => this.item(row, p, all)), ...lines].sort((a, b) => a.at - b.at);
     return { items, ...(start > 0 ? { older: roots[start]!.id } : {}), ...(end < roots.length ? { newer: roots[end - 1]!.id } : {}), ...(focus ? { focus } : {}) };
   }
 
