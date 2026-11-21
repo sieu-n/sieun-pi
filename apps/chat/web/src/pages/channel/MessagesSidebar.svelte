@@ -7,7 +7,7 @@
   import type { PickerItem } from "$lib/ui/types";
   import type { Anchor } from "$lib/ui/floating";
   import type { MenuAction, MenuEntry } from "$lib/ui/menu";
-  import { agents, api, me, reads, view, type ConversationSummary } from "$lib/api";
+  import { agents, api, jobs, me, reads, view, type ConversationSummary } from "$lib/api";
   import { toast } from "$lib/ui/toast.svelte";
   import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import SidebarFrame from "$lib/shell/SidebarFrame.svelte";
@@ -43,6 +43,10 @@
   const names = (row: ConversationSummary): string[] => row.working.map((w) => w.name);
   /** Slack's pencil on a room whose box holds a draft, left off the open room, whose box shows the draft itself. */
   const hasDraft = (row: ConversationSummary): boolean => row.id !== current && drafts.inRoom(row.id);
+  // Thread drafts saved before 11-22 find their room as the jobs and channels load (lib/drafts.svelte.ts).
+  $effect(() => {
+    if (jobs.list.length || sidebar.data.channels.length) untrack(() => void drafts.resolveLegacy());
+  });
   const starred = $derived(starredRows(current));
   const solo = $derived(soloGroups(unstarred(sidebar.data.solo, current)));
   const forYouSelected = $derived(router.messagesView === "for-you");
