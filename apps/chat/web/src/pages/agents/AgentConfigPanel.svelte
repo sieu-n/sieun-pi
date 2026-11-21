@@ -14,7 +14,7 @@
   import ProjectPicker from "./ProjectPicker.svelte";
   import MemberPicker from "$pages/channel/MemberPicker.svelte";
   import { removeMembership } from "$pages/channel/membership";
-  import { agentMenu, renameAgent, unarchiveAgent } from "./agent-actions.svelte";
+  import { agentMenu, onAgentsChanged, renameAgent, unarchiveAgent } from "./agent-actions.svelte";
 
   type Props = {
     agentId: string;
@@ -66,6 +66,8 @@
   }
 
   const load = () => answer.refresh();
+  /** A rename, archive or unarchive reads the page again, since an archived agent's card is not in the live list that updates the header. */
+  $effect(() => onAgentsChanged(() => void load()));
   $effect(() => {
     void agentId;
     moving = false;
