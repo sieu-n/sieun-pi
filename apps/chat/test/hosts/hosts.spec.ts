@@ -1,34 +1,65 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
+type Thread = { id: string; name: string; status: string; model?: string | null; updatedAt?: number; children?: number };
 type Host = {
   name: string; address: string; self: boolean;
   relay: { state: "up"; pingMs: number } | { state: "unreachable"; error: string };
   piHost: { state: "answering"; version: string; socket?: string } | { state: "down"; error: string } | { state: "absent" };
   agentRelay?: { state: "up" | "away"; since: number; lastPongAt: number | null; version: string | null; piHost: { up: boolean; version?: string } | null; feedCursor: number } | null;
   machine: { cpu: { percent: number }; memory: { usedBytes: number; totalBytes: number } } | null;
-  threads: { id: string; name: string; status: string }[];
+  threads: Thread[];
 };
 type Report = { checkedAt: number; registryError: string | null; hosts: Host[] };
 
-test("every box shows with its machine, services and threads, and a thread opens its channel", async ({ page }) => {
+/** Serve /api/hosts as the fixture does, with `change` applied to its report. */
+const withHosts = (page: Page, change: (data: Report) => Report) =>
+  page.route("**/api/hosts", async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: change((await response.json()) as Report) });
+  });
+
+test("every box has a row with its figures, the picked box shows its services and threads, and a thread opens its channel", async ({ page }) => {
   await page.goto("/#/settings/hosts");
-  await expect(page.getByTestId("hosts-summary")).toBeVisible();
+  await expect(page.getByTestId("hosts-list")).toBeVisible();
   const data = (await (await page.request.get("/api/hosts")).json()) as Report;
-  const threads = data.hosts.reduce((sum, host) => sum + host.threads.length, 0);
-  await expect(page.getByTestId("hosts-summary")).toContainText(`${data.hosts.length} host`);
-  await expect(page.getByTestId("hosts-summary")).toContainText(`${threads} thread`);
   for (const host of data.hosts) {
-    const card = page.getByTestId(`host-${host.name}`);
-    await expect(card.getByRole("heading", { name: host.name, exact: true })).toBeVisible();
-    if (host.self) await expect(card.getByText("This box", { exact: true }).first()).toBeVisible();
-    if (host.machine) await expect(card.getByRole("meter", { name: "Memory" })).toBeVisible();
-    await expect(card.getByText("pi-host", { exact: true })).toBeVisible();
-    for (const thread of host.threads) await expect(card.getByTestId(`host-thread-${thread.id}`)).toContainText(thread.name);
+    const row = page.getByTestId(`host-row-${host.name}`);
+    await expect(row).toContainText(host.name);
+    if (host.self) await expect(row.getByText("This box", { exact: true })).toBeVisible();
+    if (host.machine) await expect(row.getByRole("meter", { name: "Memory" })).toBeVisible();
+    await row.click();
+    await expect(row).toHaveAttribute("aria-selected", "true");
+    const detail = page.getByTestId(`host-${host.name}`);
+    await expect(detail.getByRole("heading", { name: host.name, exact: true })).toBeVisible();
+    await expect(detail.getByText("pi-host", { exact: true })).toBeVisible();
+    if (host.piHost.state === "absent") continue;
+    await detail.getByRole("tab", { name: `All ${host.threads.length}`, exact: true }).click();
+    for (const thread of host.threads) await expect(detail.getByTestId(`host-thread-${thread.id}`)).toContainText(thread.name);
   }
-  const first = data.hosts.flatMap(host => host.threads)[0];
-  test.skip(!first, "no threads on any pi-host");
-  await page.getByTestId(`host-thread-${first!.id}`).click();
-  await expect(page).toHaveURL(new RegExp(`#/c/${first!.id}$`));
+  const owner = data.hosts.find(host => host.threads.length);
+  test.skip(!owner, "no threads on any pi-host");
+  const first = owner!.threads[0]!;
+  await page.getByTestId(`host-row-${owner!.name}`).click();
+  await page.getByTestId(`host-${owner!.name}`).getByRole("tab", { name: /^All / }).click();
+  await page.getByTestId(`host-thread-${first.id}`).click();
+  await expect(page).toHaveURL(new RegExp(`#/c/${first.id}$`));
+});
+
+test("the thread list shows working threads first, with an exact count on every status tab", async ({ page }) => {
+  const statuses = ["working", "working", "failed", "idle", "idle", "idle"];
+  await withHosts(page, data => {
+    const [first, ...rest] = data.hosts;
+    const threads = statuses.map((status, index) => ({ id: `t-${index}`, name: `thread ${index}`, status, model: null, updatedAt: data.checkedAt - index * 1000, children: 0 }));
+    return { ...data, hosts: [{ ...first!, self: true, piHost: { state: "answering", version: "0.1.0" }, threads }, ...rest.map(host => ({ ...host, self: false }))] };
+  });
+  await page.goto("/#/settings/hosts");
+  const detail = page.locator('[data-testid^="host-"][aria-label]').first();
+  for (const name of ["Working 2", "Failed 1", "Idle 3", "All 6"]) await expect(detail.getByRole("tab", { name, exact: true })).toBeVisible();
+  await expect(detail.getByRole("tab", { name: /^Sleeping/ })).toHaveCount(0);
+  await expect(detail.locator('[data-testid^="host-thread-"]')).toHaveCount(2);
+  await detail.getByRole("tab", { name: "All 6", exact: true }).click();
+  await expect(detail.locator('[data-testid^="host-thread-"]')).toHaveCount(6);
+  await page.unrouteAll({ behavior: "ignoreErrors" });
 });
 
 test("the page reads the hosts again every 2 seconds", async ({ page }) => {
@@ -39,22 +70,21 @@ test("the page reads the hosts again every 2 seconds", async ({ page }) => {
   expect(Date.now() - started).toBeLessThan(3500);
 });
 
-test("a box that does not answer says so, never zeros, and a down pi-host is named", async ({ page }) => {
-  await page.route("**/api/hosts", async route => {
-    const response = await route.fetch();
-    const data = (await response.json()) as Report;
+test("a box that does not answer says so, never zeros, a down pi-host is named, and the raw error stays in the tooltip", async ({ page }) => {
+  await withHosts(page, data => {
     const [first, ...rest] = data.hosts;
     const away: Host = { name: "far-box", address: "100.64.0.9", self: false, relay: { state: "unreachable", error: "connect ETIMEDOUT" }, piHost: { state: "absent" }, machine: null, threads: [] };
     const down: Host = { ...first!, piHost: { state: "down", error: "socket refused" } };
-    await route.fulfill({ response, json: { ...data, hosts: [down, ...rest, away] } });
+    return { ...data, hosts: [down, ...rest, away] };
   });
   await page.goto("/#/settings/hosts");
-  const far = page.getByTestId("host-far-box");
+  const far = page.getByTestId("host-row-far-box");
   await expect(far.getByText("Not answering", { exact: true })).toBeVisible();
-  await expect(far.getByText("connect ETIMEDOUT").first()).toBeVisible();
   await expect(far.getByRole("meter")).toHaveCount(0);
-  await expect(page.getByTestId("hosts-summary")).toContainText("answering");
-  await expect(page.getByText("pi-host down")).toBeVisible();
+  await expect(page.getByText("connect ETIMEDOUT")).toHaveCount(0);
+  await far.getByText("Not answering", { exact: true }).hover();
+  await expect(page.getByRole("tooltip")).toHaveText("connect ETIMEDOUT");
+  await expect(page.locator('[data-testid^="host-row-"]').first().getByText("pi-host down", { exact: true })).toBeVisible();
   await page.unrouteAll({ behavior: "ignoreErrors" });
 });
 
@@ -62,17 +92,15 @@ test("a failed hosts read shows the reason and Try again", async ({ page }) => {
   let fail = true;
   await page.route("**/api/hosts", route => (fail ? route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "hosts.json unreadable" }) }) : route.continue()));
   await page.goto("/#/settings/hosts");
-  await expect(page.getByText("Hosts aren't available")).toBeVisible();
+  await expect(page.getByText("Hosts didn't load")).toBeVisible();
   await expect(page.getByText("hosts.json unreadable")).toBeVisible();
   fail = false;
   await page.getByRole("button", { name: "Try again" }).click();
-  await expect(page.getByTestId("hosts-summary")).toBeVisible();
+  await expect(page.getByTestId("hosts-list")).toBeVisible();
 });
 
-test("a box's agent relay link shows up with its last pong and feed cursor, and away with the hello it last heard", async ({ page }) => {
-  await page.route("**/api/hosts", async route => {
-    const response = await route.fetch();
-    const data = (await response.json()) as Report;
+test("a box's agent relay link shows up with its last pong, away with the hello it last heard, and the feed cursor in its tooltip", async ({ page }) => {
+  await withHosts(page, data => {
     const now = data.checkedAt;
     const linked: Host = {
       name: "linked-box", address: "100.64.0.10", self: false, relay: { state: "unreachable", error: "no machine relay" }, piHost: { state: "answering", version: "0.1.0" },
@@ -82,18 +110,21 @@ test("a box's agent relay link shows up with its last pong and feed cursor, and 
       ...linked, name: "away-box", piHost: { state: "down", error: "away-box is offline" },
       agentRelay: { state: "away", since: now - 20_000, lastPongAt: now - 31_000, version: "0.1.0", piHost: { up: true, version: "0.1.0" }, feedCursor: 7 },
     };
-    await route.fulfill({ response, json: { ...data, hosts: [...data.hosts, linked, away] } });
+    return { ...data, hosts: [...data.hosts, linked, away] };
   });
   await page.goto("/#/settings/hosts");
+  await page.getByTestId("host-row-linked-box").click();
   const linked = page.getByTestId("agent-relay-linked-box");
   await expect(linked).toContainText("Linked since");
-  await expect(linked).toContainText("last pong 4 s ago");
-  await expect(linked).toContainText("feed cursor 7");
+  await expect(linked).toContainText("pong 4 s ago");
+  await linked.getByText(/^Linked since/).hover();
+  await expect(page.getByRole("tooltip")).toHaveText("relay 0.1.0 · feed cursor 7");
+  await expect(page.getByTestId("host-row-away-box")).toContainText("Offline, last seen");
+  await page.getByTestId("host-row-away-box").click();
   const away = page.getByTestId("host-away-box");
   await expect(away.getByTestId("agent-relay-away-box")).toContainText("Away since");
-  await expect(away.getByTestId("agent-relay-away-box")).toContainText("last pong 31 s ago");
-  await expect(away.getByText("Away", { exact: true })).toBeVisible();
-  await expect(away.getByText("lost its link to this box's agent relay")).toBeVisible();
-  await expect(away.getByText("its last hello said answering, version 0.1.0")).toBeVisible();
+  await expect(away.getByTestId("agent-relay-away-box")).toContainText("pong 31 s ago");
+  await expect(away.getByText("Posts to its agents wait until the box is back.")).toBeVisible();
+  await expect(away.getByText("Last heard up, 0.1.0")).toBeVisible();
   await page.unrouteAll({ behavior: "ignoreErrors" });
 });
