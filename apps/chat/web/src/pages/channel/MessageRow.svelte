@@ -5,8 +5,8 @@
   import Bubble from "$lib/ui/Bubble.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
-  import Lightbox from "$lib/ui/Lightbox.svelte";
   import FileCard from "$lib/ui/FileCard.svelte";
+  import Lightbox from "$lib/ui/Lightbox.svelte";
   import Menu from "$lib/ui/Menu.svelte";
   import type { MenuEntry } from "$lib/ui/menu";
   import { toast } from "$lib/ui/toast.svelte";
@@ -341,13 +341,6 @@
       {/each}
     </div>
   {/if}
-  {#if !live && (sent?.length || item.text)}
-    <LinkCards text={sent ? sent.join("\n\n") : item.text} onopen={(path, e) => (onartifact ? onartifact(`wiki:${path}`, e) : window.open(wikiUrl(path), "_blank", "noopener"))} />
-  {/if}
-{/snippet}
-
-{#snippet doneMark()}
-  <span class="done-mark" title={doneLabel} data-thread-done><Icon name="check" size={12} /><span class="sr-only">{doneLabel}</span></span>
   {#if files.length}
     <div class="files">
       {#each files as file, index (file.url + index)}
@@ -355,6 +348,13 @@
       {/each}
     </div>
   {/if}
+  {#if !live && (sent?.length || item.text)}
+    <LinkCards text={sent ? sent.join("\n\n") : item.text} onopen={(path, e) => (onartifact ? onartifact(`wiki:${path}`, e) : window.open(wikiUrl(path), "_blank", "noopener"))} />
+  {/if}
+{/snippet}
+
+{#snippet doneMark()}
+  <span class="done-mark" title={doneLabel} data-thread-done><Icon name="check" size={12} /><span class="sr-only">{doneLabel}</span></span>
 {/snippet}
 
 {#snippet tail()}
@@ -697,6 +697,9 @@
     flex-wrap: wrap;
     gap: 6px;
   }
+  .files {
+    margin-top: 4px;
+  }
   .image {
     display: block;
     padding: 0;
@@ -705,9 +708,6 @@
     overflow: hidden;
     background: var(--surface-inset);
     cursor: zoom-in;
-  .files {
-    margin-top: 4px;
-  }
   }
   .image img {
     --cap: 280px;
