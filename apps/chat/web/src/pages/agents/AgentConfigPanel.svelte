@@ -32,7 +32,7 @@
   const answer = view(() => reads.agentConfig(agentId));
   const config = $derived(answer.value);
   /** A chat agent's own duties, which the Duties section runs, pauses, edits, removes and adds through the board's list. */
-  const dutyChat = $derived(config?.board?.own ? config.board.chat : null);
+  const dutyChat = $derived(config?.agent.kind === "chat" ? config.agent.id : null);
   const dutyRows = view(() => (dutyChat ? reads.duties(dutyChat) : null));
   const error = $derived(answer.error ?? "");
   let moving = $state(false);
