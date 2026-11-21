@@ -24,6 +24,8 @@ export interface Ask {
   choices?: string[];
   step?: string;
   links?: { label: string; target: string }[];
+  /** The owner's Remind me, an ISO time; For you hides the open ask until then. */
+  remindAt?: string;
 }
 
 export const STATUS_LABEL: Record<StepStatus, string> = { todo: "To do", doing: "In progress", done: "Done", blocked: "Blocked", dropped: "Dropped" };

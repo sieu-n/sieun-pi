@@ -9,6 +9,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync 
 import { isAbsolute, join } from "node:path";
 import type { AgentSummary, BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatch, CheckInView, DutyAction, DutyRow, DutyView, ForYouItem, PlanItem } from "../web/src/lib/api/types.ts";
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
+import { snoozed } from "../web/src/lib/api/shared/snooze.ts";
 import { morningTime, upsertDuty, type Duty, type DutyRunRecord, type DutySchedule, type DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
 import { DEFAULT_MODEL, DEFAULT_THINKING } from "./config.ts";
 import { asAfter, measure, measureAfter, runStamp } from "./duty-run.ts";
@@ -95,6 +96,8 @@ export class Boards {
   /** The one pi-host read in flight per chat, which every caller shares. */
   private readonly reading = new Map<string, Promise<ChatBoard | null>>();
   private timer?: NodeJS.Timeout;
+  /** Sends the For you count again when the soonest Remind me on an open todo comes due. */
+  private snoozeTimer?: NodeJS.Timeout;
   private stopWakes?: () => void;
   /** Tells each chat what nobody owns on its board (server/step-owners.ts), on every tick. */
   readonly owners: StepOwners;
@@ -225,12 +228,27 @@ export class Boards {
     this.events.board(chat, board, awaitingGo(board));
     this.events.forYou(await this.forYouCount());
     if (summaries.length && actor === "owner") {
+      const images = ops.flatMap(op => op.op === "todo_update" && op.reply ? this.replyImages(op.reply) : []);
       await this.host.submit(thread, {
-        text: `${BOARD_PREFIX}${summaries.join("\n")}`, whenBusy: "followUp", requestId: `board:${chat}:${board.rev}`,
+        text: `${BOARD_PREFIX}${summaries.join("\n")}`, ...(images.length ? { images } : {}), whenBusy: "followUp", requestId: `board:${chat}:${board.rev}`,
         entry: { kind: "agent.message", data: { from: "owner", via: "board" } },
       }).catch(error => this.log(`board note to ${chat} failed: ${String(error)}`));
     }
     return { board, awaitingGo: awaitingGo(board), summaries };
+  }
+
+  /** The images the owner attached to an answer, as `![name](/api/uploads/<file>)` in its text, so the chat sees them with the `[board]` line. */
+  private replyImages(reply: string): { data: string; mimeType: string }[] {
+    const MIME: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+    return [...reply.matchAll(/\(\/api\/uploads\/([\w.-]+)\)/g)].flatMap(([, name]) => {
+      const mimeType = MIME[name!.split(".").at(-1)!.toLowerCase()];
+      if (!mimeType) return [];
+      try {
+        return [{ data: readFileSync(this.store.imagePath(name!)).toString("base64"), mimeType }];
+      } catch {
+        return [];
+      }
+    });
   }
 
   /** A doc event from pi-host: the thread wrote its board. */
@@ -259,8 +277,17 @@ export class Boards {
     return out.sort((a, b) => b.todo.at.localeCompare(a.todo.at));
   }
 
-  async forYouCount(): Promise<number> {
-    return (await this.forYou()).filter(item => !item.todo.done).length;
+  /** Open todos that no Remind me hides; the soonest reminder sends the count again when it comes due. */
+  async forYouCount(now = Date.now()): Promise<number> {
+    const open = (await this.forYou()).filter(item => !item.todo.done);
+    const due = open.filter(item => snoozed(item.todo, now)).map(item => Date.parse(item.todo.remindAt!));
+    clearTimeout(this.snoozeTimer);
+    if (due.length) {
+      // setTimeout takes at most 2^31-1 ms (about 24.8 days); a later reminder re-arms when this one fires.
+      this.snoozeTimer = setTimeout(() => void this.forYouCount().then(count => this.events.forYou(count), () => undefined), Math.min(Math.min(...due) - now + 50, 2 ** 31 - 1));
+      this.snoozeTimer.unref?.();
+    }
+    return open.length - due.length;
   }
 
   async index(): Promise<BoardRow[]> {
@@ -641,6 +668,7 @@ export class Boards {
   }
   stop(): void {
     clearInterval(this.timer);
+    clearTimeout(this.snoozeTimer);
     this.stopWakes?.();
   }
 

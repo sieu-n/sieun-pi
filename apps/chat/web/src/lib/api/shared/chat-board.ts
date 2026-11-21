@@ -516,6 +516,11 @@ export function parseBoardOp(value: unknown): BoardOp {
       if (value.done !== undefined) { if (typeof value.done !== "boolean") invalid("done must be true or false."); op.done = value.done; }
       if (value.reply === null) op.reply = null;
       else if (value.reply !== undefined) op.reply = str(value.reply, "reply");
+      if (value.remindAt === null) op.remindAt = null;
+      else if (value.remindAt !== undefined) {
+        if (typeof value.remindAt !== "string" || !Number.isFinite(Date.parse(value.remindAt))) invalid("remindAt must be an ISO time, such as 2026-11-23T00:00:00.000Z.");
+        op.remindAt = new Date(value.remindAt).toISOString();
+      }
       return op;
     }
     case "todo_remove": return { op: "todo_remove", id: id(value.id) };
@@ -685,6 +690,7 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
     case "todo_update": {
       const todo = board.todos.find(entry => entry.id === op.id) ?? unknown("todo", op.id);
       if (actor === "agent" && op.reply !== undefined) throw new BoardError("forbidden", AGENT_REPLY_ERROR);
+      if (actor === "agent" && op.remindAt !== undefined) throw new BoardError("forbidden", "Only the owner sets Remind me on a todo.");
       const newChoices = op.choices !== undefined && (op.choices ?? []).join("\n") !== (todo.choices ?? []).join("\n");
       if (actor === "agent" && todo.answeredBy === "owner" && (op.text !== undefined && op.text !== todo.text || newChoices)) {
         throw new BoardError("forbidden", "The owner answered this todo; its question stays as asked. Add a new todo for a new question.");
@@ -714,6 +720,8 @@ export function applyBoardOp(board: ChatBoard, op: BoardOp, actor: BoardActor, n
       if (op.reply === null) { delete next.reply; delete next.answeredBy; if (todo.reply) parts.push(`cleared the answer on ${label()}`); }
       else if (chose) { next.reply = op.reply!; next.answeredBy = "owner"; parts.push(`chose ${quote(op.reply!)} for ${quote(next.text)}`); }
       else if (op.reply !== undefined && op.reply !== todo.reply) { next.reply = op.reply; next.answeredBy = "owner"; parts.push(parts.length ? `answered: ${op.reply}` : `answered ${label()}: ${op.reply}`); }
+      if (op.remindAt === null) { delete next.remindAt; if (todo.remindAt) parts.push(`removed the reminder on ${label()}`); }
+      else if (op.remindAt !== undefined && op.remindAt !== todo.remindAt) { next.remindAt = op.remindAt; parts.push(`set a reminder on ${label()} for ${op.remindAt}, so it leaves For you until then`); }
       return done({ todos: board.todos.map(entry => entry.id === op.id ? next : entry) }, parts.length ? parts.join(" and ") : `left ${quote(todo.text)} as it was`,
         actor === "agent" && (op.text !== undefined && op.text !== todo.text || op.links !== undefined || newChoices) ? todoFlags(next) : []);
     }

@@ -1,14 +1,17 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import { api, forYou, type BoardOp } from "$lib/api";
-  import { Avatar, Bubble, Button, EmptyState, IconButton, IdChip, LoadingText, Menu, NavItem, PanelHeader, SplitPane, stampLabel, toast, type MenuEntry } from "$lib/ui";
+  import { Avatar, Bubble, Button, EmptyState, IconButton, IdChip, listKey, LoadingText, Menu, NavItem, PanelHeader, SplitPane, stampLabel, toast, type MenuEntry } from "$lib/ui";
+  import { whenLabel } from "$lib/remind";
   import { router } from "$lib/router.svelte";
+  import { tick } from "svelte";
   import AskCard from "./AskCard.svelte";
+  import NoteDialog from "./NoteDialog.svelte";
   import PlanMark from "./PlanMark.svelte";
   import { boardHref, chatHref, forYouHref } from "./chips";
   import { STATUS_LABEL as STEP_LABEL, type StepStatus } from "./model";
   import {
-    DEFAULT_FILTER, STATUS_LABEL, TYPE_LABEL, emptyWords, filterSummary, itemKey, shortAge, visibleItems,
+    DEFAULT_FILTER, STATUS_LABEL, TYPE_LABEL, changeAsk, changeWords, emptyWords, filterSummary, itemKey, shortAge, visibleItems,
     type ForYouFilter, type ForYouItem, type ForYouStatus, type ForYouType,
   } from "./for-you";
 
@@ -21,7 +24,11 @@
   onDestroy(() => clearInterval(clock));
 
   const items = $derived(forYou.items as ForYouItem[]);
-  const visible = $derived(visibleItems(items, filter));
+  const visible = $derived(visibleItems(items, filter, now));
+  let noteOpen = $state(false);
+  /** Set by a click on a row, so its ask opens with the reply box focused; j, k and the arrows open asks with focus left on the list. */
+  let replyOnOpen = $state(true);
+  let rowsEl = $state<HTMLUListElement>();
   const selectedKey = $derived(router.route.rest[1] && router.route.rest[2] ? `${router.route.rest[1]}/${router.route.rest[2]}` : null);
   const selected = $derived(selectedKey ? items.find(item => itemKey(item) === selectedKey) ?? null : null);
   const empty = $derived(emptyWords(filter));
@@ -42,20 +49,49 @@
     { type: "checkbox", id: "unanswered", label: "Show unanswered only", checked: filter.unansweredOnly, onselect: (checked: boolean) => { filter = { ...filter, unansweredOnly: checked }; } },
   ]);
 
-  const open = (item: ForYouItem) => router.navigate(forYouHref(item.chatId, item.todo.id));
+  const open = (item: ForYouItem) => { replyOnOpen = true; router.navigate(forYouHref(item.chatId, item.todo.id)); };
   const close = () => router.navigate(forYouHref());
+
+  /** Slack's Activity keys: j or Down opens the next ask, k or Up the one above, e marks the open ask done or opens it again, Esc closes it. */
+  async function onKeydown(e: KeyboardEvent) {
+    if (noteOpen || document.querySelector("dialog[open], [role=menu]")) return;
+    const key = listKey(e);
+    if (key === "next" || key === "prev") {
+      if (!visible.length) return;
+      e.preventDefault();
+      const at = visible.findIndex(item => itemKey(item) === selectedKey);
+      const next = at < 0 ? (key === "next" ? 0 : visible.length - 1) : Math.min(visible.length - 1, Math.max(0, at + (key === "next" ? 1 : -1)));
+      const item = visible[next]!;
+      replyOnOpen = false;
+      router.navigate(forYouHref(item.chatId, item.todo.id));
+      await tick();
+      const row = rowsEl?.querySelector<HTMLElement>(`[data-key="${CSS.escape(itemKey(item))}"] .nav-item`);
+      row?.focus();
+      row?.scrollIntoView({ block: "nearest" });
+    } else if (key === "toggle" && selected) {
+      e.preventDefault();
+      void markDone(selected);
+    } else if (key === "close" && selectedKey) {
+      e.preventDefault();
+      close();
+    }
+  }
 
   async function apply(item: ForYouItem, ops: BoardOp[]) {
     await api.boardOps(item.chatId, ops);
     await forYou.refresh();
   }
+  /** Done or Dismiss, or Reopen on a done one, with Undo in its toast. */
   async function markDone(item: ForYouItem) {
-    try {
-      await apply(item, [{ op: "todo_update", id: item.todo.id, done: !item.todo.done }]);
-      toast.success(item.todo.done ? `Reopened ${item.todo.id}` : `${item.todo.from === "agent" ? "Dismissed" : "Done"} ${item.todo.id}`);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "The board did not take that change.");
-    }
+    const change = item.todo.done ? "reopen" : "done";
+    await changeAsk(ops => apply(item, ops), item.todo, change, [{ op: "todo_update", id: item.todo.id, done: !item.todo.done }], changeWords(item.todo, change));
+  }
+  async function noteAdded(chat: string, id: string | undefined) {
+    noteOpen = false;
+    await forYou.refresh();
+    if (filter.status !== "open" || filter.unansweredOnly || (filter.type !== "all" && filter.type !== "notes")) filter = { ...filter, status: "open", unansweredOnly: false, type: "all" };
+    toast.success(id ? `Added your note ${id}` : "Added your note");
+    if (id) { replyOnOpen = false; router.navigate(forYouHref(chat, id)); }
   }
   const titlesFor = (item: ForYouItem): Map<string, string> => {
     const titles = new Map<string, string>([[item.todo.id, item.todo.text]]);
@@ -72,6 +108,7 @@
     <Menu bind:open={menuOpen} anchor={menuAnchor} items={menu} label="For you filters" />
     <span class="spacer"></span>
     {#if forYou.loading && items.length}<span class="t-caption status">Checking your chats…</span>{/if}
+    <IconButton size="sm" icon="plus" label="New note" onclick={() => { noteOpen = true; }} />
   </header>
 {/snippet}
 
@@ -84,9 +121,13 @@
       {:else if forYou.loading && !items.length}
         <div class="notice"><LoadingText text="Loading For you…" /></div>
       {:else if !visible.length}
-        <div class="empty" role="status"><EmptyState icon="inbox" title={empty.title} description={empty.description} /></div>
+        <div class="empty" role="status">
+          <EmptyState icon="inbox" title={empty.title} description={empty.description}>
+            {#snippet action()}{#if filter.type === "notes" && filter.status === "open"}<Button size="sm" variant="primary" icon="plus" onclick={() => { noteOpen = true; }}>New note</Button>{/if}{/snippet}
+          </EmptyState>
+        </div>
       {:else}
-        <ul class="rows" aria-label="For you asks">
+        <ul class="rows" aria-label="For you asks" bind:this={rowsEl}>
           {#each visible as item (itemKey(item))}
             {@const unanswered = item.todo.from === "agent" && !item.todo.done && !item.todo.reply}
             <li class="row" class:selected={selectedKey === itemKey(item)} data-key={itemKey(item)}>
@@ -94,7 +135,7 @@
                 {#snippet leading()}<Avatar name={item.chatName} kind={item.todo.from === "agent" ? "agent" : "person"} seed={item.chatId} size={32} />{/snippet}
                 {#snippet labelContent()}
                   <span class="heading">
-                    <span class="identity"><strong class="sender t-label-sm">{item.chatName}</strong><span class="source t-caption">{item.todo.id}{item.step ? ` · ${item.step.id}` : ""}{item.todo.from === "owner" ? " · your note" : ""}</span></span>
+                    <span class="identity"><strong class="sender t-label-sm">{item.chatName}</strong><span class="source t-caption">{item.todo.id}{item.step ? ` · ${item.step.id}` : ""}{item.todo.from === "owner" ? " · your note" : ""}{filter.status === "snoozed" && item.todo.remindAt ? ` · until ${whenLabel(Date.parse(item.todo.remindAt), now)}` : ""}</span></span>
                     <time class="date t-caption" datetime={item.todo.at}>{shortAge(item.todo.at, now)}</time>
                   </span>
                 {/snippet}
@@ -126,7 +167,7 @@
             <div class="byline t-caption"><strong class="t-label-sm">{item.todo.from === "agent" ? item.chatName : "You"}</strong><span>{stampLabel(Date.parse(item.todo.at), now)}</span><IdChip id={item.todo.id} chatId={item.chatId} href={boardHref(item.chatId, item.todo.id)} /></div>
             <Bubble own={item.todo.from === "owner"}>
               {#key itemKey(item)}
-                <AskCard chatId={item.chatId} ask={item.todo} titles={titlesFor(item)} onops={(ops) => apply(item, ops)} onboardid={boardId(item)} autofocusReply={!item.todo.choices?.length} />
+                <AskCard chatId={item.chatId} ask={item.todo} titles={titlesFor(item)} onops={(ops) => apply(item, ops)} onboardid={boardId(item)} autofocusReply={replyOnOpen && !item.todo.choices?.length} />
               {/key}
             </Bubble>
           </div>
@@ -147,6 +188,9 @@
     <section class="ask-detail" aria-label="Ask"><PanelHeader closeLabel="Close" onclose={close} divider title="For you" /><div class="detail-body"><EmptyState icon="inbox" title="This ask is gone" description="The chat removed it, or it moved to another chat." size="sm" /></div></section>
   {/if}
 {/snippet}
+
+<svelte:window onkeydown={onKeydown} />
+{#if noteOpen}<NoteDialog chat={selected?.chatId} onadded={noteAdded} onclose={() => { noteOpen = false; }} />{/if}
 
 <div class="page">
   <PanelHeader title="For you" icon="inbox" level={1} divider />

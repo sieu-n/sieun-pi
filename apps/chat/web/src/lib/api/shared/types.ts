@@ -170,6 +170,8 @@ export interface OwnerTodo {
   answeredBy?: "owner";
   /** The pages the owner opens to answer it; a review ask needs one here or an http URL in its text (`reviewAskWithoutLink`). */
   links?: ArtifactLink[];
+  /** The owner's Remind me on it, an ISO time: For you hides the open todo until then (`snoozed`) and lists it again after. */
+  remindAt?: string;
 }
 export interface ChatBoard { v: 2; rev: number; plan: PlanItem[]; todos: OwnerTodo[]; updatedAt: string;
   /** The highest plan and todo numbers the board has given (`idsTop`), so a removed item's id never goes to a new one. */
@@ -186,7 +188,7 @@ export type BoardOp =
       waitFor?: string | null; go?: "needed"; kind?: "build" | null; requirements?: Requirement[] | null; target?: GoalTarget | null; duty?: string | null }
   | { op: "plan_remove"; id: string }
   | { op: "todo_add"; text: string; choices?: string[]; step?: string; links?: ArtifactLink[] }
-  | { op: "todo_update"; id: string; text?: string; done?: boolean; reply?: string | null; links?: ArtifactLink[]; choices?: string[] | null }
+  | { op: "todo_update"; id: string; text?: string; done?: boolean; reply?: string | null; links?: ArtifactLink[]; choices?: string[] | null; remindAt?: string | null }
   | { op: "todo_remove"; id: string };
 
 export interface ThreadSnapshot {

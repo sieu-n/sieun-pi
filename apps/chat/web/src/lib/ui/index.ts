@@ -52,6 +52,7 @@ export { renderMarkdown, renderInline, escapeHtml, wikiUrl, imageSource, type Ma
 export { dayLabel, timeLabel, stampLabel, ageLabel } from "./datetime";
 export { hashString, hueFor, initials } from "./hash";
 export { modKey, isMac } from "./keyboard";
+export { listKey, moveListFocus, type ListKey } from "./list-keys";
 export { ICONS, type IconName } from "./icons";
 export type { MenuEntry } from "./menu";
 export type { TabItem, Status, StackMember, PickerItem, ModelOption } from "./types";
