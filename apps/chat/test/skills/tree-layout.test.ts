@@ -8,8 +8,8 @@ import {
 const T: SkillThresholds = { medianBytes: 4000, medianLines: 75, bloatBytes: 12000, nearDuplicate: 0.8, staleCheckoutDays: 30, source: "test" };
 
 const copy = (path: string, over: Partial<SkillCopy> = {}): SkillCopy => ({
-  id: `metal:${path}`, box: "metal", path, role: "source", installId: null, link: null, exists: true, hash: "h", lines: 10, bytes: 1000, files: 1,
-  mtime: null, loadedBy: ["prime"], changedLines: 0, checkout: null, ...over,
+  id: `metal:${path}`, box: "metal", path, role: "source", installId: null, link: null, realPath: over.link ?? path, exists: true, hash: "h", lines: 10,
+  bytes: 1000, folderBytes: 1000, files: 1, mtime: null, loadedBy: ["prime"], changedLines: 0, checkout: null, ...over,
 });
 
 const skill = (name: string, copies: SkillCopy[], uses: number, verdicts: SkillVerdictRow[] = []): SkillEntry => ({
@@ -25,6 +25,8 @@ const board = skill("board", [copy("/home/u/.prime/agent/skills/board", { link: 
 ]);
 const wiki = skill("wiki", [copy("/home/u/.prime/agent/skills/wiki", { link: "/home/u/gone", exists: false })], 0);
 const big = skill("big", [copy("/home/u/.prime/agent/skills/big", { bytes: 20000 })], 3, [{ rule: "bloated", action: "note", detail: "5x", copyId: null, other: null }]);
+
+const source = skill("tool", [copy("/home/u/src/x/skills/tool", { loadedBy: [] }), copy("/home/u/.prime/agent/skills/tool", { link: "/home/u/src/x/skills/tool" })], 1);
 
 const box: SkillBoxState = {
   box: "metal", state: "ok", scannedAt: null, lastOkAt: null, since: null, seconds: null, message: null, error: null,
@@ -50,6 +52,12 @@ test("old clones fold into the clutter group, and live roots stay children", () 
   assert.deepEqual(roots(list).map(f => f.node.path), ["/home/u/.prime/agent/skills"]);
   assert.equal(findFolder(list, "/home/u/code/old/skills")?.stale, true);
   assert.deepEqual(ancestors(list, "/home/u/code/old/skills"), ["/home/u", "/home/u/code/old/skills"]);
+});
+
+test("a source folder no tool lists reads as loaded through the links into it", () => {
+  const withSource = { ...box, tree: [node("home/u", "/home/u", 1, 1, [node(".prime/agent/skills", "/home/u/.prime/agent/skills", 0, 1), { ...node("src/x/skills", "/home/u/src/x/skills", 1, 0), loadedBy: [] }])] };
+  const list = folders(withSource, copiesByBox({ skills: [source] } as Parameters<typeof copiesByBox>[0]).get("metal") ?? []);
+  assert.equal(folderLine(list[0]!.children[1]!), "read through 1 link, 1 skill folder");
 });
 
 test("a folder line names its loaders and links against folders", () => {

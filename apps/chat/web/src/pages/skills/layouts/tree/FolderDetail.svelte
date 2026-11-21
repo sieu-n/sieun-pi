@@ -3,7 +3,7 @@
   import { Badge, Button } from "$lib/ui";
   import InstallDialog from "./InstallDialog.svelte";
   import {
-    PROBLEMS, folderLine, folderSkills, isBloated, sizeText, skillProblems, tilde, usesText, type CopyRef, type Folder, type FolderSkill, type Problem,
+    PROBLEMS, boxLabel, folderLine, folderSkills, isBloated, sizeText, skillProblems, sourceText, tilde, usesText, type CopyRef, type Folder, type FolderSkill, type Problem,
   } from "./model";
 
   type Props = {
@@ -36,7 +36,7 @@
   <header>
     <div class="title">
       <h2>{folder ? tilde(folder.node.path) : "Every folder"}</h2>
-      {#if folder}<Badge tone="outline">{folder.box}</Badge>{/if}
+      {#if folder}<Badge tone="outline">{boxLabel(folder.box)}</Badge>{/if}
       {#if folder?.stale}<Badge tone="warning">old clone</Badge>{/if}
       {#if folder && folder.broken > 0}<Badge tone="danger">{folder.broken} broken {folder.broken === 1 ? "link" : "links"}</Badge>{/if}
     </div>
@@ -59,8 +59,9 @@
             <span class="name">
               <span class="label">{s.name}</span>
               {#each skillProblems(s) as p (p)}<Badge tone={p === "bloated" ? "warning" : "danger"}>{PROBLEMS[p].label}</Badge>{/each}
+              <span class="source">{sourceText(s)}</span>
             </span>
-            <span class="copies">{s.copies.length} {s.copies.length === 1 ? "copy" : "copies"}{row.copies.length > 1 ? `, ${row.copies.length} here` : ""}</span>
+            <span class="copies">{s.copies.length} {s.copies.length === 1 ? "copy" : "copies"}{folder && row.copies.length > 1 ? `, ${row.copies.length} here` : ""}</span>
             <span class="drift" class:warn={drift !== null}>{drift ?? "same as source"}</span>
             <span class="size" class:warn={isBloated(s.size.bytes, t)}>{sizeText(s.size.bytes, t) ?? ""}</span>
             <span class="uses">{s.use.uses ? usesText(s.use.uses) : "never"}</span>
@@ -106,6 +107,7 @@
   .row:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
   .name { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); min-width: 0; }
   .label { font: var(--text-label-sm); overflow-wrap: anywhere; }
+  .source { flex-basis: 100%; color: var(--text-metadata); font: var(--text-caption); overflow-wrap: anywhere; }
   .copies, .drift, .size { color: var(--text-subtle); font: var(--text-caption); }
   .uses { justify-self: end; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .warn { color: var(--text-danger); }

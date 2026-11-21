@@ -4,7 +4,7 @@
   import { SKILL_RUNTIMES, type BoxName, type SkillEntry, type SkillRuntime, type SkillsView } from "$lib/api/shared/skills";
   import { Button, Dialog, Field, Picker, Select, type PickerItem } from "$lib/ui";
   import { act } from "./actions";
-  import { runtimeLabel, tilde, type Folder } from "./model";
+  import { boxLabel, runtimeLabel, sourceText, tilde, type Folder } from "./model";
 
   /**
    * Adds a skill to a folder or for an agent. Opened from a folder, the folder is set and the person picks the skill; opened from a skill,
@@ -63,19 +63,6 @@
   ]);
   const target = $derived(chosen && path !== RUNTIME_FOLDER ? `${path}/${chosen.name}` : null);
 
-  function sourceText(s: SkillEntry): string {
-    switch (s.source.kind) {
-      case "git":
-        return `${s.source.repo} ${s.source.path}`;
-      case "upstream":
-        return s.source.package;
-      case "harness":
-        return `harness ${s.source.entryKind}`;
-      case "local":
-        return `${s.source.box} ${tilde(s.source.path)}`;
-    }
-  }
-
   async function submit(): Promise<void> {
     if (!chosen || !box) return;
     busy = true;
@@ -99,7 +86,7 @@
     {/if}
     {#if !folder}
       <Field label="Box" id="install-box">
-        <Select id="install-box" label="Box" bind:value={box} options={view.boxes.map(b => ({ value: b.box, label: b.box }))} onchange={() => (path = RUNTIME_FOLDER)} />
+        <Select id="install-box" label="Box" bind:value={box} options={view.boxes.map(b => ({ value: b.box, label: boxLabel(b.box) }))} onchange={() => (path = RUNTIME_FOLDER)} />
       </Field>
       <Field label="Folder" id="install-folder">
         <Select id="install-folder" label="Folder" bind:value={path} options={[{ value: RUNTIME_FOLDER, label: "The runtime's own folder" }, ...boxRoots.map(f => ({ value: f.node.path, label: tilde(f.node.path) }))]} />
@@ -114,7 +101,7 @@
     <Field label="How" id="install-mode">
       <Select id="install-mode" label="How" bind:value={mode} options={[{ value: "link", label: "Link to the source" }, { value: "copy", label: "Copy of the source" }]} />
     </Field>
-    {#if target}<p class="where">Goes to <code>{tilde(target)}</code> on {box}.</p>{/if}
+    {#if target}<p class="where">Goes to <code>{tilde(target)}</code> on {boxLabel(box)}.</p>{/if}
   </div>
   {#snippet actions()}
     <Button variant="ghost" onclick={() => (open = false)}>Cancel</Button>

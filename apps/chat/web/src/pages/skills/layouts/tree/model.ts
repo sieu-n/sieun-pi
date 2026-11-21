@@ -13,6 +13,25 @@ export const PROBLEM_IDS = Object.keys(PROBLEMS) as Problem[];
 const RUNTIME_LABEL: Record<SkillRuntime, string> = { prime: "Prime", "pi-host": "pi-host", claude: "Claude Code", codex: "Codex", pi: "pi" };
 export const runtimeLabel = (runtime: SkillRuntime): string => RUNTIME_LABEL[runtime];
 
+export const boxLabel = (box: BoxName): string => (box === "mac" ? "Mac" : box);
+
+/** us-metal02 before the Mac, the order the owner names them in. */
+export const byBoxOrder = <T extends { box: BoxName }>(list: readonly T[]): T[] => [...list].sort((a, b) => Number(a.box === "mac") - Number(b.box === "mac"));
+
+export function sourceText(skill: SkillEntry): string {
+  const s = skill.source;
+  switch (s.kind) {
+    case "git":
+      return `${s.repo} ${s.path}`;
+    case "upstream":
+      return s.package;
+    case "harness":
+      return `harness ${s.entryKind} ${s.entryId}`;
+    case "local":
+      return `${boxLabel(s.box)} ${tilde(s.path)}`;
+  }
+}
+
 const ROLE_LABEL: Record<CopyRole, string> = { source: "source", checkout: "another checkout", install: "install", unowned: "no owner" };
 export const roleLabel = (role: CopyRole): string => ROLE_LABEL[role];
 
@@ -46,6 +65,8 @@ export type Folder = {
   name: string;
   skills: number;
   broken: number;
+  /** Links elsewhere on the box that point into this folder, which is how Prime reads a source folder no tool lists. */
+  linkedIn: number;
   /** Every copy under it sits in a checkout older than the newest one of its repo by `staleCheckoutDays`. */
   stale: boolean;
   problems: Record<Problem, number>;
@@ -55,6 +76,21 @@ export type Folder = {
 
 const hasProblem = (skill: SkillEntry, problem: Problem, copyId: string | null): boolean =>
   skill.verdicts.some(v => (PROBLEMS[problem].rules as readonly string[]).includes(v.rule) && (copyId === null || v.copyId === null || v.copyId === copyId));
+
+function linkedInto(refs: readonly CopyRef[], inside: readonly CopyRef[], folder: string): number {
+  const real = new Set(inside.filter(r => r.copy.link === null).map(r => r.copy.realPath));
+  return refs.filter(r => r.copy.link !== null && !under(r.copy.path, folder) && (real.has(r.copy.realPath) || under(r.copy.realPath, folder))).length;
+}
+
+const LONG_SEGMENT = 32;
+
+/** A folder name with each very long segment, such as a release hash, cut to its start; the full path goes in a tooltip. */
+export const shortName = (name: string): string =>
+  name.split("/").map(part => (part.length > LONG_SEGMENT ? `${part.slice(0, 20)}…` : part)).join("/");
+
+export function problemLine(folder: Folder): string {
+  return PROBLEM_IDS.filter(p => folder.problems[p] > 0).map(p => `${folder.problems[p]} ${PROBLEMS[p].label}`).join(", ");
+}
 
 export function folders(box: SkillBoxState, refs: readonly CopyRef[]): Folder[] {
   const build = (node: SkillTreeNode, top: boolean): Folder => {
@@ -67,6 +103,7 @@ export function folders(box: SkillBoxState, refs: readonly CopyRef[]): Folder[] 
       name: top ? tilde(node.path) : node.name,
       skills: node.copies + node.links,
       broken: inside.filter(r => !r.copy.exists).length,
+      linkedIn: linkedInto(refs, inside, node.path),
       stale: inside.length > 0 && inside.every(r => r.copy.checkout?.stale === true),
       problems,
       children: kids.filter(k => !k.stale),
@@ -82,7 +119,11 @@ export function withProblem(list: readonly Folder[], problem: Problem | null): F
 }
 
 export function folderLine(folder: Folder): string {
-  const who = folder.node.loadedBy.length ? folder.node.loadedBy.map(runtimeLabel).join(", ") : "nothing loads it";
+  const who = folder.node.loadedBy.length
+    ? folder.node.loadedBy.map(runtimeLabel).join(", ")
+    : folder.linkedIn > 0
+      ? `read through ${folder.linkedIn} ${folder.linkedIn === 1 ? "link" : "links"}`
+      : "nothing loads it";
   const { copies, links } = folder.node;
   const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
   const kinds = links === 0 ? plural(copies, "skill folder", "skill folders") : copies === 0 ? plural(links, "link", "links") : `${plural(copies, "folder", "folders")}, ${plural(links, "link", "links")}`;
@@ -162,7 +203,7 @@ export const usesText = (n: number): string => `${n.toLocaleString("en-US")} ${n
 export function boxLine(box: SkillBoxState): string | null {
   if (box.state === "ok") return null;
   if (box.message) return box.message;
-  return box.state === "never" ? `${box.box} has no scan yet` : `${box.box} is offline`;
+  return box.state === "never" ? `${boxLabel(box.box)} has no scan yet` : `${boxLabel(box.box)} is offline`;
 }
 
 export type TreeRow = { id: string; parent: string | null; expandable: boolean };

@@ -7,8 +7,8 @@
   import FolderDetail from "./FolderDetail.svelte";
   import SkillDetail from "./SkillDetail.svelte";
   import {
-    PROBLEMS, PROBLEM_IDS, ancestors, boxKey, boxLine, clutterKey, clutterLine, copiesByBox, findFolder, folderKey, folderLine, folders, kb, roots,
-    visibleRows, withProblem, type Folder, type Problem,
+    PROBLEMS, PROBLEM_IDS, ancestors, boxKey, boxLabel, boxLine, byBoxOrder, clutterKey, clutterLine, copiesByBox, findFolder, folderKey, folderLine,
+    folders, kb, problemLine, roots, shortName, visibleRows, withProblem, type Folder, type Problem,
   } from "./model";
 
   /**
@@ -24,7 +24,7 @@
   const problem = $derived<Problem | null>(PROBLEM_IDS.find(p => p === params.problem) ?? null);
   const byBox = $derived(copiesByBox(view));
   const allFolders = $derived(new Map(view.boxes.map(b => [b.box, folders(b, byBox.get(b.box) ?? [])])));
-  const shown = $derived(view.boxes.map(b => ({ box: b.box, state: b, folders: withProblem(allFolders.get(b.box) ?? [], problem) })));
+  const shown = $derived(byBoxOrder(view.boxes).map(b => ({ box: b.box, state: b, folders: withProblem(allFolders.get(b.box) ?? [], problem) })));
   const rootsByBox = $derived(new Map<BoxName, Folder[]>([...allFolders].map(([box, list]) => [box, roots(list)])));
   const selectedFolder = $derived(params.box && params.folder ? findFolder(allFolders.get(params.box) ?? [], params.folder) : null);
   const selectedSkill = $derived(params.skill ? (view.skills.find(s => s.id === params.skill) ?? null) : null);
@@ -151,7 +151,7 @@
             <div class="line box-line" role="presentation" onclick={() => ((focusId = id), toggle(id))}>
               <span class="chevron" class:open={open.has(id)}><Icon name="chevron-right" size={16} /></span>
               <Icon name="server" size={16} />
-              <span class="text"><span class="name">{b.box}</span>{#if b.state.state !== "ok"}<span class="sub" title={b.state.error ?? undefined}>{b.state.state === "offline" ? "asleep or offline" : "no scan yet"}</span>{/if}</span>
+              <span class="text"><span class="name">{boxLabel(b.box)}</span>{#if b.state.state !== "ok"}<span class="sub" title={b.state.error ?? undefined}>{b.state.state === "offline" ? "asleep or offline" : "no scan yet"}</span>{/if}</span>
             </div>
             {#if open.has(id)}
               <ul role="group">
@@ -165,7 +165,7 @@
 
     <div class="detail">
       {#if selectedSkill}
-        <button type="button" class="back" onclick={() => pick({ skill: null })}><Icon name="arrow-left" size={16} />{selectedFolder ? `Back to ${selectedFolder.name}` : "Back to every folder"}</button>
+        <button type="button" class="back" onclick={() => pick({ skill: null })}><Icon name="arrow-left" size={16} />{selectedFolder ? `Back to ${shortName(selectedFolder.name)}` : "Back to every folder"}</button>
         {#key selectedSkill.id}<SkillDetail {view} skill={selectedSkill} roots={rootsByBox} folder={selectedFolder?.node.path ?? null} {reload} />{/key}
       {:else}
         <FolderDetail {view} folder={selectedFolder} {refs} roots={rootsByBox} {problem} onskill={id => router.setParams({ skill: id })} {reload} />
@@ -177,19 +177,20 @@
 {#snippet folderItem(f: Folder, level: number)}
   {@const id = folderKey(f.box, f.node.path)}
   {@const expandable = f.children.length > 0 || f.clutter.length > 0}
+  {@const problems = problemLine(f)}
   <li role="treeitem" aria-level={level} aria-expanded={expandable ? open.has(id) : undefined} aria-selected={isSelected(f)} tabindex={current === id ? 0 : -1} data-tree-id={id} class="item" data-testid="tree-folder-item" data-path={f.node.path}>
     <div class="line" class:selected={isSelected(f)} class:stale={f.stale} role="presentation" onclick={() => ((focusId = id), selectFolder(f))}>
       {#if expandable}
         <span class="chevron" class:open={open.has(id)} role="presentation" onclick={e => (e.stopPropagation(), toggle(id))}><Icon name="chevron-right" size={16} /></span>
       {:else}<span class="chevron"></span>{/if}
       <Icon name={f.node.links > 0 && f.node.copies === 0 ? "link" : "folder"} size={16} />
-      <span class="text">
-        <span class="name">{f.name}</span>
+      <span class="text" title={f.node.path}>
+        <span class="name">{shortName(f.name)}</span>
         <span class="sub">{folderLine(f)}</span>
+        {#if problems}<span class="sub warn">{problems}</span>{/if}
       </span>
       <span class="flags">
         {#if f.broken > 0}<Badge tone="danger" title="Links whose target is gone">{f.broken} broken</Badge>{/if}
-        {#if problem && f.problems[problem] > 0}<Badge tone={problem === "bloated" ? "warning" : "danger"}>{f.problems[problem]}</Badge>{/if}
       </span>
     </div>
     {#if expandable && open.has(id)}
@@ -255,6 +256,7 @@
   .name { font: var(--text-label-sm); overflow-wrap: anywhere; }
   .sub { color: var(--text-subtle); font: var(--text-caption); }
   .flags { display: flex; flex: none; gap: var(--space-1); }
+  .warn { color: var(--text-danger); }
   .detail { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
   .back { display: inline-flex; align-self: flex-start; align-items: center; gap: var(--space-1); padding: 0; border: 0; background: none; color: var(--text-subtle); font: var(--text-body-sm); cursor: pointer; }
   .back:hover { color: var(--text-standard); }

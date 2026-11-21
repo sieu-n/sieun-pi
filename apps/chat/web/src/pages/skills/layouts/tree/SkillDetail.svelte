@@ -6,7 +6,7 @@
   import InstallDialog from "./InstallDialog.svelte";
   import MoveDialog from "./MoveDialog.svelte";
   import {
-    PROBLEMS, boxLine, driftText, isBloated, kb, roleLabel, runtimeLabel, sizeText, skillProblems, tilde, usesText, verdictsOf, type Folder,
+    PROBLEMS, boxLabel, boxLine, byBoxOrder, driftText, sourceText, isBloated, kb, roleLabel, runtimeLabel, sizeText, skillProblems, tilde, usesText, verdictsOf, type Folder,
   } from "./model";
 
   type Props = {
@@ -29,7 +29,7 @@
 
   const problems = $derived(skillProblems(skill));
   const t = $derived(view.thresholds);
-  const columns = $derived(view.boxes.map(box => ({ box, copies: skill.copies.filter(c => c.box === box.box).sort((a, b) => order(a) - order(b) || a.path.localeCompare(b.path)) })));
+  const columns = $derived(byBoxOrder(view.boxes).map(box => ({ box, copies: skill.copies.filter(c => c.box === box.box).sort((a, b) => order(a) - order(b) || a.path.localeCompare(b.path)) })));
   const mergeItems = $derived(
     view.skills
       .filter(s => s.id !== skill.id)
@@ -39,21 +39,8 @@
 
   const ROLE_ORDER = { source: 0, install: 1, checkout: 2, unowned: 3 } as const;
   const order = (c: SkillCopy): number => ROLE_ORDER[c.role] + (c.checkout?.stale ? 4 : 0);
+  const linksTo = (c: SkillCopy): SkillCopy[] => skill.copies.filter(l => l !== c && l.box === c.box && l.link !== null && l.realPath === c.realPath);
   const inFolder = (c: SkillCopy): boolean => folder !== null && c.path.startsWith(`${folder}/`);
-
-  function sourceLine(): string {
-    const s = skill.source;
-    switch (s.kind) {
-      case "git":
-        return `${s.repo}, ${s.path}`;
-      case "upstream":
-        return `upstream package ${s.package}`;
-      case "harness":
-        return `harness ${s.entryKind} ${s.entryId}`;
-      case "local":
-        return `a folder on ${s.box}, ${tilde(s.path)}`;
-    }
-  }
 
   function useLine(): string {
     const u = skill.use;
@@ -89,7 +76,7 @@
     </div>
     {#if skill.description}<p class="description">{skill.description}</p>{/if}
     <p class="meta">
-      Owned by {skill.owner.kind === "owner" ? "the owner" : skill.owner.id}. Source is {sourceLine()}.
+      Owned by {skill.owner.kind === "owner" ? "the owner" : skill.owner.id}. Source is {sourceText(skill)}.
       {useLine()}{skill.preimported ? " Its module is pre-imported, so each call counts." : ""}
       {#if sizeLine()}<span class:warn={isBloated(skill.size.bytes, t)}>{sizeLine()}.</span>{/if}
     </p>
@@ -103,11 +90,12 @@
 
   <div class="copies" style:--columns={columns.length}>
     {#each columns as { box, copies } (box.box)}
-      <section class="column" aria-label={`Copies on ${box.box}`}>
-        <h3>{box.box} <span class="count">{copies.length} {copies.length === 1 ? "copy" : "copies"}</span></h3>
+      <section class="column" aria-label={`Copies on ${boxLabel(box.box)}`}>
+        <h3>{boxLabel(box.box)} <span class="count">{copies.length} {copies.length === 1 ? "copy" : "copies"}</span></h3>
         {#if boxLine(box)}<p class="offline" title={box.error ?? undefined}>{boxLine(box)}</p>{/if}
         {#each copies as copy (copy.id)}
           {@const copyProblems = verdictsOf(skill, copy.id)}
+          {@const via = linksTo(copy)}
           <div class="copy" class:here={inFolder(copy)} class:gone={!copy.exists} data-testid="tree-copy" data-copy={copy.id}>
             <div class="path"><code>{tilde(copy.path)}</code></div>
             <div class="tags">
@@ -118,8 +106,11 @@
             <dl>
               {#if copy.link !== null}<dt>Points at</dt><dd><code>{tilde(copy.link)}</code></dd>{/if}
               <dt>Drift</dt><dd class:warn={(copy.changedLines ?? 0) > 0}>{driftText(copy)}</dd>
-              {#if copy.bytes !== null}<dt>Size</dt><dd class:warn={isBloated(copy.bytes, t)}>{copy.lines ?? "?"} lines, {kb(copy.bytes)}, {sizeText(copy.bytes, t)}</dd>{/if}
-              {#if copy.loadedBy.length}<dt>Loaded by</dt><dd>{copy.loadedBy.map(runtimeLabel).join(", ")}</dd>{:else}<dt>Loaded by</dt><dd class="warn">nothing</dd>{/if}
+              {#if copy.bytes !== null && copy.link === null}<dt>Size</dt><dd class:warn={isBloated(copy.bytes, t)}>{copy.lines ?? "?"} lines, {kb(copy.bytes)}, {sizeText(copy.bytes, t)}{copy.folderBytes !== null && copy.folderBytes > copy.bytes ? `, folder ${kb(copy.folderBytes)}` : ""}</dd>{/if}
+              <dt>Loaded by</dt>
+              {#if copy.loadedBy.length}<dd>{copy.loadedBy.map(runtimeLabel).join(", ")}</dd>
+              {:else if via.length}<dd>through {via.map(l => tilde(l.path)).join(", ")}</dd>
+              {:else}<dd class="warn">nothing</dd>{/if}
               {#if copy.checkout}<dt>Checkout</dt><dd>{tilde(copy.checkout.root)}{copy.checkout.branch ? ` on ${copy.checkout.branch}` : ""}{copy.checkout.headAt ? `, last commit ${ageLabel(Date.parse(copy.checkout.headAt), now)} ago` : ""}</dd>{/if}
             </dl>
             {#each copyProblems as v (v.rule + v.detail)}<p class="verdict">{v.detail}</p>{/each}
@@ -165,7 +156,7 @@
   dt { color: var(--text-metadata); }
   dd { margin: 0; color: var(--text-standard); overflow-wrap: anywhere; }
   .none { margin: 0; color: var(--text-subtle); font: var(--text-body-sm); }
-  @container (width < 640px) {
+  @container (width < 460px) {
     .copies { grid-template-columns: minmax(0, 1fr); }
   }
 </style>
