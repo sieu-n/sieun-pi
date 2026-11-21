@@ -7,12 +7,15 @@ const ROOM = "ch_cutover";
 // On 11-03 at a box load of 326 these took 18 to 33 s each against the 30 s default, while the fixture agents streamed their replies.
 test.describe.configure({ timeout: 60_000 });
 
-/** Hovers the row and clicks one of its hover-bar buttons; a fixture reply that scrolls the timeline mid-way makes it hover again. */
-async function action(post: Locator, button: string, opened: Locator): Promise<void> {
+/** Hovers the row and picks an item of its More actions menu; a fixture reply that scrolls the timeline mid-way makes it hover again. */
+async function action(post: Locator, item: string, opened: Locator): Promise<void> {
+  const page = post.page();
   await expect(async () => {
     if (await opened.isVisible()) return;
+    await page.keyboard.press("Escape");
     await post.hover();
-    await post.locator(button).click({ timeout: 5_000 });
+    await post.locator("[data-message-menu]").click({ timeout: 5_000 });
+    await page.getByRole("menuitem", { name: item }).click({ timeout: 5_000 });
   }).toPass({ timeout: 30_000 });
   await expect(opened).toBeVisible();
 }
@@ -27,7 +30,7 @@ test("the owner edits his own DM post in place, Enter saves it, and it shows (ed
   const id = await post(request, `draft ${word}`, "dm_vent");
   await open(page, "#/c/dm_vent");
   const mine = row(page, id);
-  await action(mine, "[data-edit-post]", mine.locator("[data-post-editor]"));
+  await action(mine, "Edit message", mine.locator("[data-post-editor]"));
   const box = mine.getByRole("textbox", { name: "Edit message" });
   await expect(box).toHaveValue(`draft ${word}`);
   await box.fill(`final ${word}\nsecond line :eyes:`);
@@ -66,7 +69,7 @@ test("Escape cancels an edit and keeps the post as it was", async ({ page, reque
   const id = await post(request, `keep ${word}`);
   await open(page, `#/c/${ROOM}`);
   const mine = row(page, id);
-  await action(mine, "[data-edit-post]", mine.locator("[data-post-editor]"));
+  await action(mine, "Edit message", mine.locator("[data-post-editor]"));
   await mine.getByRole("textbox", { name: "Edit message" }).fill("changed");
   await mine.getByRole("textbox", { name: "Edit message" }).press("Escape");
   await expect(mine.locator(".msg-text")).toHaveText(`keep ${word}`);
@@ -77,18 +80,21 @@ test("a deleted channel post with replies stays as a stub over its thread, as in
   const id = await post(request, `wrong room ${tag()}`);
   await request.post(`/api/c/${ROOM}/send`, { data: { text: "a reply that keeps the thread", requestId: crypto.randomUUID(), threadRoot: id } });
   await open(page, `#/c/${ROOM}`);
-  await action(row(page, id), "[data-delete-post]", page.locator("[data-confirm-delete]"));
+  await action(row(page, id), "Delete message", page.locator("[data-confirm-delete]"));
   await page.locator("[data-confirm-delete]").click();
   await expect(row(page, id).locator("[data-deleted]")).toHaveText("This message was deleted.", { timeout: 15_000 });
   await expect(row(page, id).locator("[data-thread-pill]")).toBeVisible();
-  await expect(row(page, id).locator("[data-edit-post]")).toHaveCount(0);
+  await row(page, id).hover();
+  await row(page, id).locator("[data-message-menu]").click();
+  await expect(page.getByRole("menuitem", { name: "Copy link" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: /Edit message|Delete message/ })).toHaveCount(0);
 });
 
 test("a deleted DM post leaves the conversation", async ({ page, request }) => {
   const response = await request.post("/api/c/dm_vent/send", { data: { text: `oops ${tag()}`, requestId: crypto.randomUUID() } });
   const id = ((await response.json()) as { item: { id: string } }).item.id;
   await open(page, "#/c/dm_vent");
-  await action(row(page, id), "[data-delete-post]", page.locator("[data-confirm-delete]"));
+  await action(row(page, id), "Delete message", page.locator("[data-confirm-delete]"));
   await page.locator("[data-confirm-delete]").click();
   await expect(row(page, id)).toHaveCount(0, { timeout: 15_000 });
   await page.reload();
@@ -102,5 +108,7 @@ test("an agent's post has no Edit or Delete", async ({ page, request }) => {
   await open(page, "#/c/dm_vent");
   await row(page, theirs.id).hover();
   await expect(row(page, theirs.id).locator("[data-quick-reaction]").first()).toBeVisible();
-  await expect(row(page, theirs.id).locator("[data-edit-post], [data-delete-post]")).toHaveCount(0);
+  await row(page, theirs.id).locator("[data-message-menu]").click();
+  await expect(page.getByRole("menuitem", { name: "Copy text" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: /Edit message|Delete message/ })).toHaveCount(0);
 });

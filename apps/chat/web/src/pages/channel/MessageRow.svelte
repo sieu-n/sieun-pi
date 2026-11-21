@@ -9,7 +9,7 @@
   import type { MenuEntry } from "$lib/ui/menu";
   import { toast } from "$lib/ui/toast.svelte";
   import { api, markUnread } from "$lib/api";
-  import { later, laterHref, laterMenuItem } from "$lib/later.svelte";
+  import { later, laterHref } from "$lib/later.svelte";
   import RemindDialog from "$lib/RemindDialog.svelte";
   import { dueLabel, remindedText, remindMenu } from "$lib/remind";
   import { askNotifyPermission } from "$lib/remind-notify";
@@ -102,7 +102,6 @@
       .filter((text): text is string => !!text) ?? []),
   ]);
   let lightbox = $state<string | null>(null);
-  let copied = $state(false);
   /** A stored post of the open DM, channel or Solo room takes reactions; a thread's transcript and a pending send do not. */
   const room = $derived(router.conversationId && /^(dm|ch|so)_/.test(router.conversationId) ? router.conversationId : null);
   const reactable = $derived(message && room && message.seq !== undefined && !pending && !message.deleted ? message : null);
@@ -131,7 +130,20 @@
   let picking = $state(false);
   /** The hover bar and an empty reactions bar mount on the row's first hover or focus, so a timeline does not build them for every row it draws. */
   let active = $state(false);
-  const activate = () => (active = true);
+  /**
+   * The bar sits in the gap above the post, as in Slack, so the post's own first line stays readable. A post at the top edge of its scroller
+   * would get the bar cut off there, so the bar drops inside it; a row under 480 px wide, the thread pane's, drops the three quick reactions.
+   */
+  let barInside = $state(false);
+  let barCompact = $state(false);
+  function activate() {
+    active = true;
+    if (!rowEl) return;
+    let scroller = rowEl.parentElement;
+    while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+    barInside = !!scroller && rowEl.getBoundingClientRect().top - scroller.getBoundingClientRect().top < 36;
+    barCompact = rowEl.clientWidth < 480;
+  }
 
   /**
    * A thread's root, a channel post with no threadRoot or any DM post, takes Mark thread done and Reopen thread (server/thread-done.ts). A
@@ -155,18 +167,30 @@
     if (reactable && room) setPin(room, reactable.id, !pinned);
   }
 
-  /** The message menu behind the hover bar's More actions; every message action that is not a hover bar button goes in this one list. */
+  /**
+   * The message menu behind the hover bar's More actions. The bar keeps Slack's few buttons (reactions, Reply in thread, Save for later),
+   * so it stays narrow and off the text, and every other message action goes in this one list.
+   */
   let menuOpen = $state(false);
   let moreButton = $state<HTMLButtonElement>();
-  const menuItems = $derived<MenuEntry[]>(
-    reactable ? [
+  const separator: MenuEntry = { type: "separator" };
+  const menuItems = $derived<MenuEntry[]>([
+    ...(reactable ? [
       { id: "unread", label: "Mark unread", icon: "dot", shortcut: "U", onselect: unread },
       remindMenu({ remindAt: reactable.later?.remindAt, kept: !!reactable.later?.unread, set: remind, custom: () => (customRemind = true), clear: () => remind(null) }),
-      ...(doneable ? [{ id: "done", label: done ? "Reopen thread" : "Mark thread done", icon: "check", onselect: toggleDone }] : []),
-      { id: "pin", label: pinned ? `Un-pin from ${pinPlace}` : `Pin to ${pinPlace}`, icon: "pin", onselect: togglePin },
-      ...(room ? [laterMenuItem(room, reactable)] : []),
-    ] : [],
-  );
+      separator,
+    ] : []),
+    ...(doneable ? [{ id: "done", label: done ? "Reopen thread" : "Mark thread done", icon: "check", onselect: afterPick(toggleDone) }] : []),
+    ...(reactable ? [{ id: "pin", label: pinned ? `Un-pin from ${pinPlace}` : `Pin to ${pinPlace}`, icon: "pin", onselect: afterPick(togglePin) }] : []),
+    ...(workHref && !why ? [{ id: "work", label: "Show work", icon: "robot", onselect: afterPick(() => workHref && router.navigate(workHref)) }] : []),
+    { id: "copy-link", label: "Copy link", icon: "link", onselect: afterPick(() => oncopylink(item)) },
+    { id: "copy-text", label: "Copy text", icon: "copy", onselect: afterPick(copyText) },
+    ...(editable ? [
+      separator,
+      { id: "edit", label: "Edit message", icon: "edit", onselect: () => (editing = true) },
+      { id: "delete", label: "Delete message", icon: "trash", tone: "danger" as const, onselect: () => (deleting = true) },
+    ] : []),
+  ]);
   /** Slack's Save for later: the hover bar's bookmark, the menu item and the label over a saved post (lib/later.svelte.ts). */
   const saved = $derived(reactable && room ? later.saved(room, reactable) : false);
   let customRemind = $state(false);
@@ -193,11 +217,19 @@
       () => toast.show("Marked as unread. It stays in Later until you reply, react or check it off."),
       () => toast.error("Could not mark the message unread"),
     );
-    // The menu hands focus back to More actions, which would keep the hover bar up; Slack drops it once the pick is made.
+    dropBar();
+  }
+
+  /** The menu hands focus back to More actions, which would keep the hover bar up; Slack drops it once the pick is made. */
+  function dropBar() {
     requestAnimationFrame(() => {
       if (document.activeElement instanceof HTMLElement && rowEl?.contains(document.activeElement)) document.activeElement.blur();
     });
   }
+  const afterPick = (action: () => void) => () => {
+    action();
+    dropBar();
+  };
 
   $effect(() => {
     const el = rowEl;
@@ -215,37 +247,27 @@
   }
 
   function copyText() {
-    void navigator.clipboard.writeText(item.text).then(() => {
-      copied = true;
-      setTimeout(() => (copied = false), 1200);
-    });
+    navigator.clipboard.writeText(sent ? sent.join("\n\n") : item.text).then(
+      () => toast.show("Message text copied"),
+      () => toast.error("Could not copy the message text"),
+    );
   }
 </script>
 
 {#snippet actionBar()}
-  <div class="actions" role="toolbar" aria-label="Message actions">
+  <div class="actions" class:inside={barInside} role="toolbar" aria-label="Message actions">
     {#if reactable}
-      {#each frequentEmoji.list.slice(0, 3) as emoji (emoji)}
+      {#each barCompact ? [] : frequentEmoji.list.slice(0, 3) as emoji (emoji)}
         <button type="button" class="quick" aria-label="React with {emoji}" data-quick-reaction={emoji} onclick={() => reactions?.toggle(emoji)}>{emoji}</button>
       {/each}
       <IconButton icon="emoji-add" label="Add reaction" size="sm" bind:element={reactButton} onclick={() => reactButton && reactions?.pick(reactButton)} data-add-reaction />
       <span class="divider" aria-hidden="true"></span>
     {/if}
     {#if canReply}<IconButton icon="reply" label="Reply in thread" size="sm" onclick={() => onthread(item.id)} />{/if}
-    {#if doneable}<IconButton icon="check" label={done ? "Reopen thread" : "Mark thread done"} size="sm" pressed={!!done} onclick={toggleDone} data-thread-done-toggle />{/if}
-    {#if workHref && !why}<IconButton icon="robot" label="Show work" size="sm" onclick={() => workHref && router.navigate(workHref)} data-show-work />{/if}
-    <IconButton icon="link" label="Copy link" size="sm" onclick={() => oncopylink(item)} />
-    <IconButton icon={copied ? "check" : "copy"} label={copied ? "Copied" : "Copy message"} size="sm" onclick={copyText} />
-    {#if editable}
-      <IconButton icon="edit" label="Edit message" size="sm" onclick={() => (editing = true)} data-edit-post />
-      <IconButton icon="trash" label="Delete message" size="sm" onclick={() => (deleting = true)} data-delete-post />
-    {/if}
     {#if reactable && room}
       <IconButton icon={saved ? "bookmark-filled" : "bookmark"} label={saved ? "Remove from Later" : "Save for later"} size="sm" pressed={saved} onclick={() => room && reactable && later.toggle(room, reactable)} data-save-later />
     {/if}
-    {#if menuItems.length}
-      <IconButton icon="more" label="More actions" size="sm" aria-haspopup="menu" aria-expanded={menuOpen} bind:element={moreButton} onclick={() => (menuOpen = !menuOpen)} data-message-menu />
-    {/if}
+    <IconButton icon="more" label="More actions" size="sm" aria-haspopup="menu" aria-expanded={menuOpen} bind:element={moreButton} onclick={() => (menuOpen = !menuOpen)} data-message-menu />
   </div>
   {#if menuOpen}<Menu bind:open={menuOpen} anchor={moreButton} items={menuItems} placement="bottom-end" label="Message actions" />{/if}
   {#if customRemind}<RemindDialog at={reactable?.later?.remindAt} onpick={remind} onclose={() => (customRemind = false)} />{/if}
@@ -637,7 +659,7 @@
   }
   .actions {
     position: absolute;
-    top: -18px;
+    top: -26px;
     right: 8px;
     z-index: 2;
     display: flex;
@@ -991,9 +1013,13 @@
   .slack .image img.sized {
     width: min(calc(var(--w) * 1px), var(--cap), calc(100cqi - 2px), calc(var(--cap) * var(--w) / var(--h)));
   }
+  /* The bar's bottom edge meets the top of the post's first line, so it covers only the end of the line above, as Slack's does. */
   .slack .actions {
-    top: -14px;
+    top: -28px;
     right: 12px;
+  }
+  .actions.inside {
+    top: 2px;
   }
   .slack .note,
   .slack .meta {
