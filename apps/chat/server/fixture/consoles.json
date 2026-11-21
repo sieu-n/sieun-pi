@@ -1,0 +1,78 @@
+{
+  "tiers": [
+    "local",
+    "staging",
+    "prod"
+  ],
+  "tier_names": {
+    "local": "Local dev",
+    "staging": "Staging",
+    "prod": "Prod"
+  },
+  "logins": "node scripts/consoles/logins.mjs <id>",
+  "consoles": [
+    {
+      "id": "postgres",
+      "name": "Postgres",
+      "group": "data",
+      "cells": {
+        "local": {
+          "tableplus": "local dev",
+          "access": "rw",
+          "sign_in": "password",
+          "user": "postgres",
+          "secret": {
+            "compose": "POSTGRES_PASSWORD"
+          }
+        },
+        "staging": {
+          "tableplus": "staging",
+          "access": "ro",
+          "sign_in": "password",
+          "user": "owner_ro",
+          "secret": {
+            "file": "apps/infra/.env.staging",
+            "key": "PG_STG_OWNER_RO_PASSWORD"
+          }
+        },
+        "prod": {
+          "tunnel": "ssh -N -L 5432:127.0.0.1:5432 root@box.example",
+          "tableplus": "prod",
+          "access": "ro",
+          "sign_in": "password",
+          "user": "owner_ro",
+          "secret": {
+            "file": "apps/infra/.env",
+            "key": "PG_PROD_OWNER_RO_PASSWORD"
+          }
+        }
+      }
+    },
+    {
+      "id": "hyperdx",
+      "name": "HyperDX",
+      "group": "obs",
+      "cells": {
+        "local": {
+          "none": "obs runs only on the prod box"
+        },
+        "staging": {
+          "same_as": "prod"
+        },
+        "prod": {
+          "url": "https://box.example:8443/",
+          "access": "rw",
+          "sign_in": "password",
+          "user": {
+            "file": "apps/infra/.env",
+            "key": "HDX_OWNER_EMAIL"
+          },
+          "secret": {
+            "file": "apps/infra/.env",
+            "key": "HDX_OWNER_PASSWORD"
+          }
+        }
+      }
+    }
+  ]
+}

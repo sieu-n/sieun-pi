@@ -8,7 +8,7 @@ const settingsNav = (page: Page) => page.getByRole("navigation", { name: "Settin
 test("the Settings sidebar lists this browser's pages first and each opens at #/settings/<id>", async ({ page }) => {
   await page.goto("/#/settings/usage");
   const links = settingsNav(page).getByRole("link");
-  await expect(links).toHaveText(["Preferences", "Notifications", "Keyboard", "Usage", "Hosts", "Accounts", "Skills"]);
+  await expect(links).toHaveText(["Preferences", "Notifications", "Keyboard", "Usage", "Hosts", "Accounts", "Skills", "Consoles"]);
   for (const [name, id] of [["Preferences", "preferences"], ["Notifications", "notifications"], ["Keyboard", "keyboard"]] as const) {
     await settingsNav(page).getByRole("link", { name }).click();
     await expect(page).toHaveURL(new RegExp(`#/settings/${id}$`));
@@ -95,4 +95,20 @@ test("Keyboard lists the shortcut table and filters it by name or keys", async (
   await expect(page.getByText('No shortcut matches "no such key"')).toBeVisible();
   await search.fill("");
   await expect(list.locator("[data-shortcut]")).toHaveCount(all);
+});
+
+test("Consoles shows one row per console and a column per tier, with links, tunnels, TablePlus groups and read-only marks", async ({ page }) => {
+  await page.goto("/#/settings/consoles");
+  await expect(page.getByRole("heading", { name: "Consoles", level: 1 })).toBeVisible();
+  const table = page.getByTestId("consoles-table");
+  await expect(table.locator("thead th")).toHaveText(["Console", "Local dev", "Staging", "Prod"]);
+  await expect(table.locator("tr[data-console] th")).toHaveText(["Postgres", "HyperDX"]);
+  const postgres = table.locator('tr[data-console="postgres"]');
+  await expect(postgres.locator('td[data-tier="staging"]')).toContainText("TablePlus · staging");
+  await expect(postgres.locator('td[data-tier="staging"]')).toContainText("read-only");
+  await expect(postgres.locator('td[data-tier="prod"] .tunnel code')).toHaveText("ssh -N -L 5432:127.0.0.1:5432 root@box.example");
+  const hdx = table.locator('tr[data-console="hyperdx"]');
+  await expect(hdx.locator('td[data-tier="local"]')).toHaveText("obs runs only on the prod box");
+  await expect(hdx.locator('td[data-tier="staging"]')).toContainText("Same as Prod");
+  await expect(hdx.locator('td[data-tier="staging"] a')).toHaveAttribute("href", "https://box.example:8443/");
 });

@@ -8,6 +8,7 @@ import type {
   LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, ReadAllRequest, ReadPoint, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageBucket, UsageRange, UsageReport, AccountsView,
 } from "./types.ts";
 import type { SkillDoc, SkillScan, SkillsReport } from "./shared/skills.ts";
+import type { ConsolesReport } from "./shared/consoles.ts";
 import type { PinRequest } from "./types.ts";
 import type { SavedLayout, SidebarLayout } from "./types.ts";
 import type { ConversationPrefs, PrefsPatch } from "./types.ts";
@@ -548,6 +549,8 @@ export const api = {
   usage: (opts: { range: UsageRange; bucket: UsageBucket; thread?: string; host?: string }) => call<UsageReport>("GET", `/api/usage${query(opts)}`),
   pool: () => call<AccountsView>("GET", "/api/pool"),
   hosts: () => call<HostsReport>("GET", "/api/hosts"),
+  /** The consoles table from auto-sns-agent's consoles.json, read as the file is now. */
+  consoles: () => call<ConsolesReport>("GET", "/api/consoles"),
   skills: () => call<SkillsReport>("GET", "/api/skills"),
   /** Starts a scan of the boxes unless one runs; the `skills` live event says when it ends. */
   scanSkills: () => call<{ scan: SkillScan }>("POST", "/api/skills/scan"),

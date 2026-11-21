@@ -23,6 +23,7 @@ import { isHostAway } from "./host/types.ts";
 import { readJson } from "./store.ts";
 import { usageReport, hostsReport } from "./usage.ts";
 import { Skills } from "./skills.ts";
+import { consolesReport } from "./consoles.ts";
 import { decideBody, ReviewRefused, SkillsReview, undoBody } from "./skills-review.ts";
 import { type ClientVia, clientTimings, LoopStalls, RequestLog } from "./request-log.ts";
 import { accountRoutes, PoolError } from "./accounts.ts";
@@ -405,6 +406,7 @@ export function routes(app: App): Route[] {
     route("GET", "/api/usage", async (_r, _p, q) => usageReport(app.host, app.threads, app.config.box, { range: str(q.get("range")), bucket: str(q.get("bucket")), thread: str(q.get("thread")), host: str(q.get("host")) })),
     ...accountRoutes(app, route),
     route("GET", "/api/hosts", async () => hostsReport(app.host, app.threads, app.config.box, app.config.socket, app.config.hostsFile)),
+    route("GET", "/api/consoles", async () => consolesReport(app.config.consoles)),
     route("GET", "/api/skills", async () => skills.report()),
     route("POST", "/api/skills/scan", async () => ({ scan: skills.startScan().scan })),
     route("GET", "/api/skills/doc", async (_r, _p, q) => {

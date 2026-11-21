@@ -12,6 +12,7 @@ export const SETTINGS_SECTIONS = [
   { id: "hosts", label: "Hosts", icon: "server", group: "admin" },
   { id: "accounts", label: "Accounts", icon: "users", group: "admin" },
   { id: "skills", label: "Skills", icon: "spark", group: "admin" },
+  { id: "consoles", label: "Consoles", icon: "external", group: "admin" },
 ] as const;
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"];

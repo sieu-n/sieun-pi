@@ -186,6 +186,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 | `api.usage({range, bucket, thread, host})` | `GET /api/usage` | `UsageReport`: rows per thread and model with tokens and the cost of each kind, and one bucket per minute, hour or local day of the range (1h, 24h, 7d, 30d or 90d) with its turns, tokens, cost of each kind and cost per model. |
 | `api.pool()` | `GET /api/pool` | `AccountsView` with no thread, from the pi-pool reading the Accounts endpoints share. |
 | `api.hosts()` | `GET /api/hosts` | `HostsReport`: each box's relay, pi-host, machine reading and threads. |
+| `api.consoles()` | `GET /api/consoles` | `ConsolesReport`: the consoles table from auto-sns-agent's `apps/infra/metal/config/consoles.json` on this box, read on each call (`server/consoles.ts`), or `readError` when the file is missing or broken. The Consoles section of Settings renders it. |
 | `api.skills()` | `GET /api/skills` | `SkillsReport`: the skills inventory of scripts/skills-inventory.py and its last or running scan, from a parsed copy the server reads again only when the file changed. A read never starts a scan. |
 | `api.scanSkills()` | `POST /api/skills/scan` | `{ scan }`: starts a scan unless one runs. Every page gets a `skills` live event when it starts and when it ends, after the new inventory is parsed. |
 | `api.skillDoc(id)` | `GET /api/skills/doc?id=` | `SkillDoc`: one row's SKILL.md text, read on this box or carried in the inventory for a row on another box. |

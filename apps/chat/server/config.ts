@@ -62,6 +62,11 @@ export interface Config {
    */
   skillsReview: SkillsReviewConfig;
   /**
+   * The consoles table the Consoles section reads (server/consoles.ts): `APPS_CHAT_CONSOLES`, else the auto-sns-agent checkout's
+   * apps/infra/metal/config/consoles.json. The fixture reads server/fixture/consoles.json.
+   */
+  consoles: string;
+  /**
    * The Meilisearch search keeps its index in (meilisearch.service): `APPS_CHAT_MEILI_URL` and the master key in `APPS_CHAT_MEILI_KEY_FILE`.
    * Without it, as on the fixture or in a test, the server starts a Meilisearch of its own with a temp folder.
    */
@@ -175,6 +180,9 @@ export function readConfig(argv = process.argv.slice(2), env = process.env): Con
     skillsReview: fixture
       ? { dir: join(dataDir, "skills-review"), fixture: true, macHost: null }
       : { dir: resolve(env.APPS_CHAT_SKILLS_REVIEW_DIR ?? join(home, "work/skills-review")), fixture: false, macHost: env.APPS_CHAT_SKILLS_REVIEW_MAC ?? "mac" },
+    consoles: fixture
+      ? join(appDir, "server/fixture/consoles.json")
+      : resolve(env.APPS_CHAT_CONSOLES ?? join(home, "Documents/Github/auto-sns-agent/apps/infra/metal/config/consoles.json")),
     ...(!fixture && env.APPS_CHAT_MEILI_URL ? { meili: { url: env.APPS_CHAT_MEILI_URL, keyFile: resolve(env.APPS_CHAT_MEILI_KEY_FILE ?? join(home, ".config/meilisearch/master.key")) } } : {}),
   };
 }

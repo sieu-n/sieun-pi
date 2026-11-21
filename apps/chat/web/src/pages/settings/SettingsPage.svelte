@@ -7,6 +7,7 @@
   import PreferencesPage from "$pages/preferences/PreferencesPage.svelte";
   import NotificationsPage from "$pages/notifications/NotificationsPage.svelte";
   import KeyboardPage from "$pages/keyboard/KeyboardPage.svelte";
+  import ConsolesPage from "$pages/consoles/ConsolesPage.svelte";
   import { router } from "$lib/router.svelte";
   import { openSection } from "./sections";
 
@@ -22,6 +23,8 @@
     <NotificationsPage />
   {:else if section === "keyboard"}
     <KeyboardPage />
+  {:else if section === "consoles"}
+    <ConsolesPage />
   {:else if section === "accounts"}
     <AccountsPage />
   {:else if section === "skills" && router.route.rest[1] === "review"}
