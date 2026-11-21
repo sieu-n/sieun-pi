@@ -111,7 +111,7 @@
           {#each threads as entry (entry.tree)}
             <li>
               {#if entry.href}<a href={entry.href} onclick={() => (open = false)}>{entry.name}</a>{:else}<span>{entry.name}</span>{/if}
-              <span class="quiet">{span(now - entry.at)} ago{entry.requests !== null ? `, ${entry.requests} requests` : ""}</span>
+              <span class="quiet">{span(now - entry.at)} ago{entry.requests !== null ? `, ${entry.requests} request${entry.requests === 1 ? "" : "s"}` : ""}</span>
             </li>
           {/each}
         </ul>
@@ -148,7 +148,7 @@
   .threads h3 span { color: var(--text-subtle); font-weight: 400; }
   .threads ul { display: flex; flex-direction: column; gap: var(--space-1); max-height: 14rem; margin: 0; padding: 0; overflow: auto; list-style: none; }
   .threads li { display: flex; justify-content: space-between; gap: var(--space-3); }
-  .threads a { overflow: hidden; color: var(--text-standard); text-decoration: underline; text-decoration-color: var(--border-standard); text-overflow: ellipsis; white-space: nowrap; }
+  .threads a { overflow: hidden; color: var(--text-standard); text-decoration: underline; text-decoration-color: var(--text-subtle); text-underline-offset: 2px; text-overflow: ellipsis; white-space: nowrap; }
   .quiet { display: inline-flex; align-items: center; gap: var(--space-1); margin: 0; color: var(--text-subtle); white-space: nowrap; }
   .spacer { flex: 1; }
   :global(.btn.remove-account) { color: var(--text-danger); }

@@ -286,6 +286,8 @@
     };
   });
   const priorityItems: PickerItem[] = POOL_PRIORITIES.map(level => ({ id: level, label: POOL_PRIORITY_LABEL[level] }));
+  /** A pool error in pi-pool's own lowercase words, such as "no openai-codex account can serve this session", which the line says plainly and keeps as its tooltip. */
+  const rawError = $derived(resolution?.error && resolution.selection.mode !== "manual" && !current?.wait && /^[a-z]/.test(resolution.error) ? resolution.error : null);
   const waiting = $derived(Boolean(thread && current && (current.wait || !resolution?.email)));
 
   function ask(next: Confirm): void {
@@ -401,7 +403,7 @@
         <PoolMeters {view} provider={current} {now} />
         <span class="spacer"></span>
         {#if current.rows.length}
-          <span class="search"><SearchField bind:value={query.text} placeholder="Search accounts" label="Search accounts" /></span>
+          <span class="search"><SearchField bind:value={query.text} placeholder="Search" label="Search accounts" /></span>
           <Select label="State" size="sm" options={STATE_FILTERS} value={query.state} onchange={(next: StateFilter) => (query = { ...query, state: next })} />
           {#if plans.length > 1}
             <Select label="Plan" size="sm" options={planOptions} value={shownQuery.plan} onchange={(next: string) => (query = { ...query, plan: next })} />
@@ -412,7 +414,11 @@
       {#if thread}
         <div class="thread" class:warning={waiting} data-testid="accounts-thread">
           <span class="for">{threadInfo?.name ?? thread}</span>
-          <span class="sentence" data-testid="resolution">{resolutionSentence(current, now)}</span>
+          {#if rawError}
+            <span class="sentence" data-testid="resolution" title={rawError}>No {PROVIDER_LABEL[current.provider]} account can serve this thread right now.</span>
+          {:else}
+            <span class="sentence" data-testid="resolution">{resolutionSentence(current, now)}</span>
+          {/if}
           <span class="spacer"></span>
           {#if view.priority}
             <span use:tooltip={POOL_PRIORITY_HINT}>
@@ -577,7 +583,7 @@
     .table :global(.row .actions > :not(:last-child)) { display: none; }
   }
   .filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
-  .search { width: 12rem; }
+  .search { width: 10rem; }
   .sort { display: inline-flex; align-items: center; gap: 2px; padding: 0; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
   .sort:hover, .sort.on { color: var(--text-standard); }
   .none { display: flex; align-items: center; gap: var(--space-2); margin: var(--space-3) var(--space-3); color: var(--text-subtle); font: var(--text-body-sm); }

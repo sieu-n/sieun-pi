@@ -32,10 +32,10 @@
 {/if}
 
 <style>
-  .pool { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-6, 24px); color: var(--text-subtle); font: var(--text-body-sm); font-variant-numeric: tabular-nums; }
+  .pool { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-5); color: var(--text-subtle); font: var(--text-body-sm); font-variant-numeric: tabular-nums; }
   .usable { cursor: default; }
   .usable strong { color: var(--text-standard); font-weight: 500; }
   .empty .usable strong { color: var(--text-danger); }
-  .window { display: inline-grid; grid-template-columns: auto 5rem auto; align-items: center; gap: var(--space-2); }
+  .window { display: inline-grid; grid-template-columns: auto 3.5rem auto; align-items: center; gap: var(--space-2); }
   .pct { color: var(--text-standard); }
 </style>
