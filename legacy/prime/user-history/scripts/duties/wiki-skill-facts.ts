@@ -194,14 +194,14 @@ const scriptNames = (json: string | null | undefined): Set<string> => {
 /**
  * Judges every doc's facts at its own commit (`revOf`) against HEAD. `objects` answers `rev:path` with the object's type, or null when missing;
  * `contents` answers `rev:path` with a blob's text; `namesAtHead` holds the env and constant names the code at HEAD still has; `namesAt` gives,
- * for a rev and names, the ones the code at that rev had. Each doc maps to its drifts, and a doc whose cited file only changed is in `changed`.
+ * for each rev and its names, the ones the code at that rev had. Each doc maps to its drifts, and a doc whose cited file only changed is in `changed`.
  */
 export async function judgeDocs(docs: readonly Doc[], revOf: (doc: Doc) => string | undefined, io: {
   objects: (names: readonly string[]) => Promise<Map<string, string | null>>;
   blobs: (names: readonly string[]) => Promise<Map<string, string | null>>;
   contents: (names: readonly string[]) => Promise<Map<string, string | null>>;
   namesAtHead: ReadonlySet<string>;
-  namesAt: (rev: string, names: readonly string[]) => Promise<Set<string>>;
+  namesAt: (asks: ReadonlyMap<string, readonly string[]>) => Promise<Map<string, Set<string>>>;
 }): Promise<{ drifts: Map<Doc, Drift[]>; changed: Set<Doc> }> {
   const asks = new Set<string>(); const reads = new Set<string>();
   for (const doc of docs) {
@@ -222,8 +222,7 @@ export async function judgeDocs(docs: readonly Doc[], revOf: (doc: Doc) => strin
     if (!rev) continue;
     for (const fact of doc.facts) if (fact.kind === "name" && !io.namesAtHead.has(fact.ref)) absent.set(rev, (absent.get(rev) ?? new Set()).add(fact.ref));
   }
-  const namesThen = new Map<string, Set<string>>();
-  for (const [rev, names] of absent) namesThen.set(rev, await io.namesAt(rev, [...names].sort()));
+  const namesThen = absent.size ? await io.namesAt(new Map([...absent].map(([rev, names]) => [rev, [...names].sort()]))) : new Map<string, Set<string>>();
 
   const drifts = new Map<Doc, Drift[]>(); const changed = new Set<Doc>();
   for (const doc of docs) {
@@ -359,6 +358,37 @@ export async function measureFacts(deps: FactsDeps): Promise<PrecheckOutput & { 
     auto.docs.push(doc); auto.revs.set(doc, rev);
   }
 
+  /**
+   * Which asked names each rev's code had, from one `git grep` over a tree of every distinct blob the revs hold (`git mktree`, an unreachable
+   * object). On 2026-11-21 one grep per rev took 209 s of a 229 s run for 51 revs and a run at load 123 took 541 s of its 600 s timeout; the
+   * 51 revs held 94,038 distinct blobs against 14,113 in one tree, and one grep over them took 8.6 s.
+   */
+  const namesAtRevs = async (from: Source, asks: ReadonlyMap<string, readonly string[]>): Promise<Map<string, Set<string>>> => {
+    const revBlobs = new Map<string, string[]>(); const modes = new Map<string, string>();
+    for (const rev of asks.keys()) {
+      const ids: string[] = [];
+      for (const entry of (await from.git(["ls-tree", "-r", "-z", rev])).toString("utf8").split("\0")) {
+        const match = /^(100644|100755) blob ([0-9a-f]+)\t(.*)$/s.exec(entry);
+        if (!match || match[3]!.endsWith(".md") || match[3]!.startsWith("apps/llm-wiki/content/")) continue;
+        ids.push(match[2]!); modes.set(match[2]!, match[1]!);
+      }
+      revBlobs.set(rev, ids);
+    }
+    const tree = (await from.git(["mktree"], [...modes].map(([id, mode]) => `${mode} blob ${id}\t${id}`).join("\n") + "\n")).toString("utf8").trim();
+    const names = [...new Set([...asks.values()].flat())];
+    const out = await from.git(["grep", "-I", "-o", "-w", "-F", ...names.flatMap(name => ["-e", name]), tree], undefined, [1]);
+    const inBlob = new Map<string, Set<string>>();
+    for (const line of out.toString("utf8").split("\n")) {
+      const match = /^[0-9a-f]+:([0-9a-f]+):(.+)$/.exec(line);
+      if (match) inBlob.set(match[1]!, (inBlob.get(match[1]!) ?? new Set()).add(match[2]!));
+    }
+    return new Map([...revBlobs].map(([rev, ids]) => {
+      const wanted = new Set(asks.get(rev)); const had = new Set<string>();
+      for (const id of ids) for (const name of inBlob.get(id) ?? []) if (wanted.has(name)) had.add(name);
+      return [rev, had];
+    }));
+  };
+
   const judgeSource = async (from: Source): Promise<Awaited<ReturnType<typeof judgeDocs>> | undefined> => {
     if (from.broken) return undefined;
     const names = [...new Set(from.docs.flatMap(doc => doc.facts.filter(fact => fact.kind === "name").map(fact => fact.ref)))].sort();
@@ -373,8 +403,7 @@ export async function measureFacts(deps: FactsDeps): Promise<PrecheckOutput & { 
       blobs: list => from.catFile(list, "--batch-check=%(objectname)"),
       contents: list => from.catFile(list, "--batch"),
       namesAtHead,
-      namesAt: (rev, list) => from.git(["grep", "-I", "-o", "-h", "-w", "-F", ...list.flatMap(name => ["-e", name]), rev, "--", ".", ":!*.md", ":!apps/llm-wiki/content"], undefined, [1])
-        .then(out => new Set(out.toString("utf8").split("\n").map(line => line.replace(/^[^:]*:/, "")).filter(Boolean))),
+      namesAt: asks => namesAtRevs(from, asks),
     }).catch(error => fail(`${from.label} judge`, error));
   };
   const autoJudged = await judgeSource(auto);
