@@ -21,7 +21,7 @@ import type { Agents } from "./agents.ts";
 import { isHostAway, type ContentBlock, type EntryRecord, type Host, type Message, type Submitted } from "./host/types.ts";
 import { refusedForGood, retryWait } from "./outbox.ts";
 import { postState } from "./post-edits.ts";
-import { reactionsOf, repliedPost } from "./reactions.ts";
+import { namedPost, reactionsOf, repliedPost } from "./reactions.ts";
 import { doneOf } from "./thread-done.ts";
 import { readMark, type Store } from "./store.ts";
 import { OWNER, type Threads } from "./threads.ts";
@@ -115,6 +115,24 @@ function jobsIn(thread: string, message: Message): string[] {
 
 const held = (message: Message): boolean => message.toolName === TELL_OWNER_TOOL && textOf(message).startsWith(TELL_OWNER_HELD);
 
+const EYES = ["eyes", ":eyes:", "👀"];
+
+/**
+ * The post a closing call names: 👀 taken off it, its For item marked completed, its thread marked done, or an edit of the agent's reply to
+ * it (`reply:<room>/<post>`), as pi-host's turn-end.ts `closes` reads a closing call. On 11-21 in #dev-app-search-prospect a comm thread
+ * answered the owner's p9 in a turn its work thread's report woke after his newer p11, with no reply_to, though the same round took 👀 off
+ * p9 and marked p9 completed; tell_owner refused that post for a dead link, its resend went out, and the answer landed in p11's thread.
+ */
+function closedPost(block: ContentBlock): string | undefined {
+  if (block.type !== "toolCall") return undefined;
+  const args = block.arguments ?? {};
+  const id = typeof args.message_id === "string" ? args.message_id.trim() : "";
+  if (!id) return undefined;
+  if ((block.name === "mark_message" && args.completed === true) || (block.name === "set_thread_done" && args.done === true)) return id;
+  if (block.name === "set_emoji" && args.on === false && EYES.includes(String(args.emoji).trim())) return id;
+  return block.name === "edit_message" && id.startsWith("reply:") ? id.slice("reply:".length) : undefined;
+}
+
 /** What the feed knows of a speaking call that went out: the post's text, time, dedup key, why, the entry that holds it, and the turn's jobs. */
 export interface Spoken {
   text: string;
@@ -123,6 +141,8 @@ export interface Spoken {
   why?: string;
   /** The call's `reply_to`: the post it answers, as a `[message id]`, a post id or `<room>/<post>`, which the side reads and never stores. */
   replyTo?: string;
+  /** With no `reply_to`, the posts the turn's closing calls name (`closedPost`), which the side reads as `namedPost` when they name one post. */
+  named?: string[];
   source: { thread: string; conversation: number; entry: number };
   jobs?: string[];
 }
@@ -170,12 +190,15 @@ function readFeedEntry(store: AgentStore, side: FeedSide, thread: string, cursor
   }
   if (!side.speaks(cursor.turn)) return;
   if (message?.role === "assistant") {
+    // A speaking call with no reply_to answers the post its own round closes, else the post a refused post of the turn was for.
+    const closed = blocks(message).flatMap(block => closedPost(block) ?? []);
+    const named = closed.length ? closed : cursor.turn?.named;
     for (const block of blocks(message)) {
       const sent = sentMessage(block);
       if (!sent || (sent.to && !side.aimedHere(sent.to)) || block.type !== "toolCall") continue;
       const why = typeof block.arguments?.why === "string" && block.arguments.why.trim() ? block.arguments.why.trim() : undefined;
       const replyTo = typeof block.arguments?.reply_to === "string" && block.arguments.reply_to.trim() ? block.arguments.reply_to.trim() : undefined;
-      cursor.open[sent.id] = { text: sent.text, entry: entry.id, ...(why ? { why } : {}), ...(replyTo ? { replyTo } : {}) };
+      cursor.open[sent.id] = { text: sent.text, entry: entry.id, ...(why ? { why } : {}), ...(replyTo ? { replyTo } : named?.length ? { named } : {}) };
     }
     return;
   }
@@ -183,16 +206,21 @@ function readFeedEntry(store: AgentStore, side: FeedSide, thread: string, cursor
   const call = message.toolCallId ? cursor.open[message.toolCallId] : undefined;
   if (call && message.toolCallId) {
     delete cursor.open[message.toolCallId];
-    if (!message.isError && !held(message)) {
+    if (message.isError || held(message)) {
+      const named = call.replyTo ? [call.replyTo] : call.named;
+      if (cursor.turn && named?.length) cursor.turn.named = named;
+    } else {
       const pending = cursor.turn?.jobs;
       const post = side.post({
         text: call.text, at: message.timestamp ?? Date.now(), requestId: `m:${thread}:${message.toolCallId}`, ...(call.why ? { why: call.why } : {}),
-        ...(call.replyTo ? { replyTo: call.replyTo } : {}), source: { thread, conversation: 1, entry: call.entry }, ...(pending?.length ? { jobs: pending } : {}),
+        ...(call.replyTo ? { replyTo: call.replyTo } : call.named?.length ? { named: call.named } : {}), source: { thread, conversation: 1, entry: call.entry },
+        ...(pending?.length ? { jobs: pending } : {}),
       }, cursor.turn);
       touched.set(post.id, post);
       if (cursor.turn) {
         cursor.turn.lastPost = post.id;
         delete cursor.turn.jobs;
+        delete cursor.turn.named;
       }
     }
   }
@@ -624,10 +652,11 @@ export class Rooms {
 
   /**
    * The DM's side of the feed: a turn a channel post started in the work thread before phase 5 speaks to that channel, so it posts nothing here.
-   * A post with no `reply_to` answers its turn's owner post, and in a turn no owner post started, such as one a work thread's report woke, the
-   * newest owner post sent here that no post of the agent answers yet. On 11-21 a blind run's comm thread answered the owner's quick question
-   * in the turn the work thread's report woke, with no reply_to, and the answer named no post. In the next run it marked that question's thread
-   * done in the step whose post tell_owner held as long, so a default that skipped done threads named the older task instead.
+   * A post with no `reply_to` answers the one post its turn's closing calls name (`closedPost`), else its turn's owner post, and in a turn no
+   * owner post started, such as one a work thread's report woke, the newest owner post sent here that no post of the agent answers yet.
+   * On 11-21 a blind run's comm thread answered the owner's quick question in the turn the work thread's report woke, with no reply_to, and
+   * the answer named no post. In the next run it marked that question's thread done in the step whose post tell_owner held as long, so a
+   * default that skipped done threads named the older task instead.
    */
   private dmSide(record: AgentRecord, thread: string): FeedSide {
     const posts = () => this.store.postsOf(record.room);
@@ -646,9 +675,10 @@ export class Rooms {
       },
       speaks: turn => !turn?.channel,
       aimedHere: () => false,
-      post: ({ replyTo, ...spoken }, turn) => {
+      post: ({ replyTo, named, ...spoken }, turn) => {
         const all = posts();
-        const answered = repliedPost(all, record, thread, record.room, replyTo) ?? (turn?.post ? all.find(p => p.id === turn.post) : replyTo?.trim() ? undefined : open(all));
+        const answered = repliedPost(all, record, thread, record.room, replyTo) ?? namedPost(all, record, thread, record.room, named) ??
+          (turn?.post ? all.find(p => p.id === turn.post) : replyTo?.trim() ? undefined : open(all));
         return this.store.append({ room: record.room, author: record.id, images: [], ...spoken, ...(answered?.author === "owner" ? { answers: answered.id } : {}) }).post;
       },
     };

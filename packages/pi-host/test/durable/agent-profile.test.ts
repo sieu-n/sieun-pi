@@ -181,6 +181,14 @@ test("a multi-point post and its checklist edits keep a one-sentence answer, sho
   }
 });
 
+test("an answer to an older post names it with reply_to and quotes nothing (owner, #dev-app-search-prospect p33, 11-21)", () => {
+  for (const room of ["dm_vent", "ch_1a2b3c4d"]) {
+    const text = commInstructions({ agent: "ag_vent", room, work: "w1" });
+    assert.match(text, /When you answer an older post of his while a newer one sits below it, set tell_owner's `reply_to` to that older post's \[message id\][\s\S]*quote nothing from it/);
+    assert.doesNotMatch(text, /quoted as `> /);
+  }
+});
+
 test("every edit of a checklist stays within 80 words, with nested detail only for a new fact (d4 blind run, 11-20 17:52 KST)", () => {
   for (const room of ["dm_vent", "ch_1a2b3c4d"]) {
     const text = commInstructions({ agent: "ag_vent", room, work: "w1" });

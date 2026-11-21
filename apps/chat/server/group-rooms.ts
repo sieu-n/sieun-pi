@@ -27,7 +27,7 @@ import { isHostAway, type EntryRecord, type Host, type Submitted } from "./host/
 import { refusedForGood, retryWait } from "./outbox.ts";
 import { postState } from "./post-edits.ts";
 import { laterLine, reminderPost } from "./later-agents.ts";
-import { reactionsLine, reactionsOf, repliedPost } from "./reactions.ts";
+import { namedPost, reactionsLine, reactionsOf, repliedPost } from "./reactions.ts";
 import { doneOf, reopens } from "./thread-done.ts";
 import { agedPost, agentPostParts, queuedNote, readFeedThread, type FeedSide, type Spoken } from "./rooms.ts";
 import { readMark, type Store } from "./store.ts";
@@ -688,6 +688,8 @@ export class GroupRooms {
   /**
    * The group room's side of the feed. An owner input names its post in its header; an agent message from this room names its post and
    * hops in its headers, because pi-host keeps only `from` and `via` of its data; any other input, such as a work-done notice, keeps the turn's. Every speaking call posts here with the turn's hops plus one.
+   * A speaking call with no reply_to goes in the thread of the one post its turn's closing calls name (rooms.ts `closedPost`) before the
+   * turn's post, since a work thread's report keeps the post of the owner's newest input, which may be a newer ask than the one it answers.
    */
   private side(row: GroupRoom, record: AgentRecord, thread: string): FeedSide {
     return {
@@ -713,9 +715,10 @@ export class GroupRooms {
         const name = to.trim().replace(/^#/, "").toLowerCase();
         return name === row.id.toLowerCase() || name === row.name.toLowerCase();
       },
-      post: ({ replyTo, ...spoken }: Spoken, turn: FeedCursor["turn"]) => {
+      post: ({ replyTo, named, ...spoken }: Spoken, turn: FeedCursor["turn"]) => {
         const posts = this.store.postsOf(row.id);
-        const started = repliedPost(posts, record, thread, row.id, replyTo) ?? (turn?.post ? posts.find(p => p.id === turn.post) : undefined);
+        const started = repliedPost(posts, record, thread, row.id, replyTo) ?? namedPost(posts, record, thread, row.id, named) ??
+          (turn?.post ? posts.find(p => p.id === turn.post) : undefined);
         const threadRoot = row.kind === "channel" && started ? started.threadRoot ?? started.id : undefined;
         return this.write(row, {
           author: record.id, images: [], ...spoken, hops: (turn?.hops ?? 0) + 1, mentions: this.mentionsIn(row, spoken.text, record.id),

@@ -107,6 +107,12 @@ export function repliedPost(posts: readonly RoomPost[], record: AgentRecord, thr
   }
 }
 
+/** The one post that the ids a turn's closing calls give name in `room`, as `repliedPost` reads each, or undefined when they name none or several. */
+export function namedPost(posts: readonly RoomPost[], record: AgentRecord, thread: string, room: RoomId, ids: readonly string[] | undefined): RoomPost | undefined {
+  const found = new Set((ids ?? []).flatMap(id => repliedPost(posts, record, thread, room, id) ?? []));
+  return found.size === 1 ? [...found][0] : undefined;
+}
+
 /** The one line set_emoji answers with, such as `👀 is on p12 in dm_vent. Reactions now: 👀 vent · 👍 Sieun (owner).` */
 export function reactionText(principal: (id: string) => Principal, post: RoomPost, emoji: string, on: boolean, qualified: boolean): string {
   const where = qualified ? `${post.room}/${post.id}` : `${post.id} in ${post.room}`;

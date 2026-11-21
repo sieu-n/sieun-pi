@@ -89,6 +89,9 @@ The owner wrote on 11-20 in #sw-factory-build: "시작하면서 눈까리 붙였
 4. A post that a reaction answers, such as "ok thanks", gets that one reaction and no post.
 5. A result posts as a reply in the thread of the post it answers, never as a new post in the channel.
 6. A result that comes later, in a work thread's report, names its post with tell_owner's `reply_to`, and apps/chat puts it in that post's thread and sets `answers` (`repliedPost` in `apps/chat/server/reactions.ts`).
+   It quotes nothing from his post, because a `> ...` quote is how a chat with no threads marks an older ask, and in a room the post still lands in the thread of his newer post.
+   On 11-21 in #dev-app-search-prospect the comm thread answered his p9 "is our API serving?" after his newer cost ask p11, opened with "> is our API serving?" as the role text then said, and set no `reply_to`, so the answer sat under p11 and he wrote "slop slop slop" (p33).
+   A post with no `reply_to` now goes to the post its round's closing calls name, such as `set_emoji` taking 👀 off, `mark_message` completed or `set_thread_done` true, and a resend after a refused post goes where the refused one was aimed (`closedPost` in `apps/chat/server/rooms.ts`).
 7. A follow-up in a thread the agent already worked on, such as "how does it work?", gets its answer within a minute from what the comm thread holds, the thread so far and the earlier report and page, with a mermaid diagram when the flow fits one and a real example such as a saved row (c52, c132).
    The proof still to check follows as `- [ ]` items, 👀 stays on, and the last edit confirms or corrects the answer.
    In the trace, p16 "데이터가 & flow가 정확하게 어떤식으로 구성되어있어?" got only a checklist, and its first finding came 5.6 min later.
@@ -106,7 +109,7 @@ Put behavior in code defaults and the tools' own text first, and never in a remi
 | Comm thread role text, DM and group | `packages/pi-host/src/durable/agent-profile.ts`, `slackPostStep` and `richPostStep` |
 | Refusals and notes on a comm post | `packages/pi-host/src/durable/comm-guard.ts`, run from `prime-chat.ts` |
 | When a post runs long | `longReply` in `legacy/prime/user-history/src/shared/reply-lint.ts`, loaded from the live :5182 release (`release-chat.mjs`), which counts a checklist's words without its `- [ ]` markers |
-| How a post is stored and which owner post it answers | `apps/chat/server/group-rooms.ts` and `rooms.ts`, `RoomPost.answers`, set from the turn's post or the call's `reply_to` |
+| How a post is stored and which owner post it answers | `apps/chat/server/group-rooms.ts` and `rooms.ts`, `RoomPost.answers`, set from the call's `reply_to`, else the post its round's closing calls name, else the turn's post |
 | When 👀 comes off and when a thread is marked done | `packages/pi-host/src/durable/agent-profile.ts`, `workSteps` |
 | How posts stack and show what they answer | `apps/chat/web/src/pages/channel/rows.ts` and `MessageRow.svelte` |
 | Prime chat tone | `config/AGENTS.md` rule 5 and the chat brief guidance |

@@ -161,12 +161,12 @@ export interface FeedCursor {
   /** The last entry id read. */
   entry: number;
   /** Speaking calls seen whose result has not landed yet. */
-  open: Record<string, { text: string; entry: number; why?: string; replyTo?: string }>;
+  open: Record<string, { text: string; entry: number; why?: string; replyTo?: string; named?: string[] }>;
   /**
-   * The input that started the current turn, whether a channel post started it, the turn's newest post, and the jobs the turn started before
-   * it had a post, which go on its next one.
+   * The input that started the current turn, whether a channel post started it, the turn's newest post, the jobs the turn started before
+   * it had a post, which go on its next one, and the post a refused post of the turn was for, which its resend answers.
    */
-  turn?: { input: number; channel: boolean; lastPost?: string; jobs?: string[]; post?: string; hops?: number };
+  turn?: { input: number; channel: boolean; lastPost?: string; jobs?: string[]; post?: string; hops?: number; named?: string[] };
 }
 
 /**

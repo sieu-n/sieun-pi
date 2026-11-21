@@ -149,6 +149,10 @@ export const IDEAL_REPLIES_PAGE = "wiki:agents/agent-factory/jobs/2026/11/20/113
  * Agent factory listed Hey, Superhuman, Gmail and Linear in one line each for "what are some features other apps provide regarding this?",
  * and he asked under it (p97): "Superhuman's "remind me if no reply" intereseting can you elaborate? 이런거 말할떄는 가장 흥미로운거 하나는 제대로
  * 설명해야지^^". So a list of options explains its most interesting one.
+ * The step once said to open an answer to an older post with his line quoted as `> ...`, which suits a chat with no threads. On 11-21 in
+ * #dev-app-search-prospect the comm thread answered the owner's p9 "is our API serving?" in a turn the work thread's report woke after his
+ * newer cost ask p11, opened the post with "> is our API serving?" and set no reply_to, so the answer sat in p11's thread, and he wrote
+ * "slop slop slop" under it (p33). So an answer to an older post names it with reply_to and quotes nothing.
  */
 function slackPostStep(): string {
   return "Write each post the way a sharp coworker types in Slack. Open with the answer in the first few words, such as \"yes\", \"nope\", \"not yet\" or \"got it\". " +
@@ -171,7 +175,8 @@ function slackPostStep(): string {
     "Never paste a raw JSON or log line into a post. Say in words what it shows, or link the file as `path:line`. " +
     "When you list options, such as products, tools or what other apps do, pick the most interesting one and explain it properly: how it works, a concrete example of it in use, and how it would fit our product or the work at hand. Name the others in a few words each. " +
     "Post no table unless the post you answer asks for one. Put the detail on a wiki page with `wiki.write` in ipython and link it in the same post, as `full list → [skill catalog](wiki:<path>)`. " +
-    `When you answer an older post of his while a newer one sits below it, open with his line quoted as \`> ...\`. Real before and after pairs are on ${IDEAL_REPLIES_PAGE}. ` +
+    "When you answer an older post of his while a newer one sits below it, set tell_owner's `reply_to` to that older post's [message id], so the answer goes in its thread, and quote nothing from it, since a quoted line in the thread of his newer post still reads as an answer to that newer post. " +
+    `Real before and after pairs are on ${IDEAL_REPLIES_PAGE}. ` +
     "This replaces the brief's one point per message, two calls for two points (c97) and no bullets unless he asks for a list, and rule 5's table for a comparison, because a room reads like Slack, not like a chat.";
 }
 

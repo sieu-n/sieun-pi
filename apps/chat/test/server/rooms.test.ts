@@ -154,6 +154,21 @@ describe("owner posts and the feed", () => {
     assert.equal(page.find(p => p.text === "all tests pass")?.answers, task.body.item.id);
   });
 
+  test("in a turn a report woke, a post with no reply_to answers the post its round closes", async () => {
+    // #dev-app-search-prospect on 11-21: the comm thread took 👀 off the older ask and marked it completed beside its answer, with no reply_to.
+    const task = await s.send("POST", `/api/c/${ROOM}/send`, { text: `quiet, is the API serving? ${Date.now()}`, requestId: "closed-1" });
+    const question = await s.send("POST", `/api/c/${ROOM}/send`, { text: `quiet, what does it cost? ${Date.now()}`, requestId: "closed-2" });
+    await until(() => posts(s), page => page.find(p => p.id === question.body.item.id)?.deliveries[0]?.state === "delivered");
+    host.append(thread(), 1, { kind: "agent.message", model: [{ role: "user", content: [{ type: "text", text: "the API serves" }], timestamp: Date.now() }], data: { from: ids.vent, via: "agent" } });
+    assistant([
+      { type: "toolCall", id: "c_closed1", name: "tell_owner", arguments: { text: "yes, it serves", why: "answer", about: "api" } },
+      { type: "toolCall", id: "c_closed2", name: "set_emoji", arguments: { message_id: task.body.item.id, emoji: "eyes", on: false } },
+    ]);
+    result("c_closed1", "tell_owner", "told the owner");
+    await s.app.rooms.feed(vent());
+    assert.equal((await posts(s)).find(p => p.text === "yes, it serves")?.answers, task.body.item.id);
+  });
+
   test("a turn a channel post started speaks to the channel, not the DM", async () => {
     const before = (await posts(s)).length;
     host.append(thread(), 1, { kind: "agent.message", model: [{ role: "user", content: [{ type: "text", text: "[#pi-cutover · post 9 from You (owner)] status?" }], timestamp: Date.now() }], data: { from: "owner", via: "#pi-cutover" } });

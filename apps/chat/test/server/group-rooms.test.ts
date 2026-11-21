@@ -269,6 +269,55 @@ describe("a channel on rooms", () => {
     host.beforeSubmit = undefined;
   });
 
+  test("a result with no reply_to goes in the thread of the post its turn's closing calls name, also when its first try was refused", async () => {
+    // #dev-app-search-prospect on 11-21: the work thread's report on p9 woke the comm thread after the owner's newer p11. Its round took 👀 off
+    // p9 and marked p9 completed beside a tell_owner with no reply_to, tell_owner refused that post for a dead link, and the resend landed under p11.
+    const submits: { thread: string; input: SubmitInput }[] = [];
+    host.beforeSubmit = (thread, input) => void submits.push({ thread, input });
+    const comm = commOf(s, agents.crawler, ids.cutoverChannel)!;
+    const t = host.threadsById.get(comm)!;
+    const toComm = () => submits.filter(x => x.thread === comm).length;
+    const asked = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "quiet, is our API serving?", requestId: "cl-asked" });
+    await until(async () => toComm(), n => n === 1);
+    const newer = await s.send("POST", `/api/c/${ids.cutoverChannel}/send`, { text: "quiet, what does breathing cost?", requestId: "cl-newer" });
+    await until(async () => toComm(), n => n === 2);
+    const stamp = stored(s, ids.cutoverChannel).find(p => p.id === asked.body.item.id)!.at.toString(36);
+    const round = (content: ContentBlock[], results: [string, string, boolean][]) => {
+      host.append(t, 1, { kind: "pi.assistant", model: [{ role: "assistant", content, provider: "anthropic", model: "claude-opus-5-5", stopReason: "toolUse", timestamp: Date.now() }] });
+      for (const [id, name, isError] of results) {
+        host.append(t, 1, { kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: id, toolName: name, content: [{ type: "text", text: isError ? "Not sent, a wiki: link in it opens no page." : "told the owner" }], isError, timestamp: Date.now() }] });
+      }
+    };
+    host.append(t, 1, { kind: "agent.message", model: [{ role: "user", content: [{ type: "text", text: "the API serves 175 of 178 routes" }], timestamp: Date.now() }], data: { from: "w-1", via: "agent" } });
+    round([
+      { type: "toolCall", id: "cl-a", name: "tell_owner", arguments: { text: "yes, 175 of 178 routes work, quiet." } },
+      { type: "toolCall", id: "cl-e", name: "set_emoji", arguments: { message_id: stamp, emoji: "eyes", on: false } },
+      { type: "toolCall", id: "cl-m", name: "mark_message", arguments: { message_id: `${ids.cutoverChannel}/${asked.body.item.id}`, completed: true } },
+    ], [["cl-e", "set_emoji", false], ["cl-m", "mark_message", false], ["cl-a", "tell_owner", true]]);
+    round([{ type: "toolCall", id: "cl-b", name: "tell_owner", arguments: { text: "yes, 175 of 178 routes work, quiet." } }], [["cl-b", "tell_owner", false]]);
+    // In the next report's turn the post and the done mark of its thread go out in one round.
+    host.append(t, 1, { kind: "agent.message", model: [{ role: "user", content: [{ type: "text", text: "the cost page is up" }], timestamp: Date.now() }], data: { from: "w-1", via: "agent" } });
+    round([
+      { type: "toolCall", id: "cl-c", name: "tell_owner", arguments: { text: "about $2k a month, quiet." } },
+      { type: "toolCall", id: "cl-d", name: "set_thread_done", arguments: { message_id: newer.body.item.id, done: true } },
+    ], [["cl-c", "tell_owner", false]]);
+    // A round that closes two posts names none, so its post goes where its turn's post is.
+    host.append(t, 1, { kind: "agent.message", model: [{ role: "user", content: [{ type: "text", text: "both done" }], timestamp: Date.now() }], data: { from: "w-1", via: "agent" } });
+    round([
+      { type: "toolCall", id: "cl-f", name: "tell_owner", arguments: { text: "both done, quiet." } },
+      { type: "toolCall", id: "cl-g", name: "mark_message", arguments: { message_id: asked.body.item.id, completed: true } },
+      { type: "toolCall", id: "cl-h", name: "mark_message", arguments: { message_id: newer.body.item.id, completed: true } },
+    ], [["cl-f", "tell_owner", false]]);
+    await s.app.groups.feed(comm);
+    const [a, b, c, f] = ["cl-a", "cl-b", "cl-c", "cl-f"].map(id => stored(s, ids.cutoverChannel).find(p => p.requestId === `m:${comm}:${id}`));
+    assert.equal(a, undefined, "a refused post lands nothing");
+    assert.deepEqual([b!.threadRoot, b!.answers], [asked.body.item.id, asked.body.item.id], "the resend answers the post the refused round closed");
+    assert.deepEqual([c!.threadRoot, c!.answers], [newer.body.item.id, newer.body.item.id]);
+    assert.deepEqual([f!.threadRoot, f!.answers], [newer.body.item.id, newer.body.item.id]);
+    assert.equal("named" in b!, false, "the post stores no closing call ids");
+    host.beforeSubmit = undefined;
+  });
+
   test("an agent's mention of an agent outside the channel reaches that agent's comm thread for the channel, and it stays out of the members", async () => {
     const submits: { thread: string; input: SubmitInput }[] = [];
     host.beforeSubmit = (thread, input) => void submits.push({ thread, input });
