@@ -32,8 +32,8 @@ test("a channel thread and a room the owner has not opened yet show their messag
   ]);
   await open(page, "#/c/ch_cutover");
   await warmed;
-  // The answer is in; one more turn of the page's loop keeps it as the page to show.
-  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
+  await expect.poll(() => keptPage(page, "replies", "ch_cutover\u0000p1")).toBe(true);
+  await expect.poll(() => keptPage(page, "timeline", dm)).toBe(true);
 
   const asked: string[] = [];
   await page.route(held, (route) => {
@@ -64,18 +64,23 @@ test("a read ahead and an unchanged refresh are logged as background, and a firs
   const warmed = page.waitForResponse((r) => r.url().includes(`/api/c/${dm}/items`));
   await open(page, "#/c/ch_cutover");
   await warmed;
-  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
+  await expect.poll(() => keptPage(page, "timeline", dm)).toBe(true);
   const refreshed = page.waitForResponse((r) => r.url().includes(`/api/c/${dm}/items`));
   await page.locator(`a[href="#/c/${dm}"]`).first().click();
   await expect(conversation(page).locator("[data-message-id]").first()).toBeVisible();
   await refreshed;
-  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 50)));
 
-  // The page posts its last batch of waits as it goes away.
-  const batch = page.waitForRequest((r) => r.url().endsWith("/api/timings"));
-  await page.evaluate(() => dispatchEvent(new Event("pagehide")));
-  const samples = ((await batch).postDataJSON() as { samples: { p: string; bg?: string }[] }).samples;
+  // The page posts its last batch of waits as it goes away. The refresh's line is kept once its body is read, after the answer's headers
+  // came, so each pagehide posts what the page holds by then until that line is among them.
+  const samples: { p: string; bg?: string }[] = [];
+  page.on("request", (r) => {
+    if (r.url().endsWith("/api/timings")) samples.push(...(r.postDataJSON() as { samples: { p: string; bg?: string }[] }).samples);
+  });
   const of = (path: string) => samples.filter((s) => s.p === path).map((s) => s.bg ?? "waited");
+  await expect.poll(async () => {
+    await page.evaluate(() => dispatchEvent(new Event("pagehide")));
+    return of(`/api/c/${dm}/items`).length;
+  }).toBeGreaterThanOrEqual(2);
   expect(of("/api/c/ch_cutover/items")).toEqual(["waited"]);
   expect(of(`/api/c/${dm}/items`)).toEqual(["ahead", "shown"]);
   expect(of("/api/c/ch_cutover/replies/p1")).toEqual(["ahead"]);
