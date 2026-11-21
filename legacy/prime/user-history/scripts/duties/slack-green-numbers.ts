@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { DutyRunRecord, FlaggedSlice, PrecheckOutput } from "../../src/shared/chat-duties.ts";
+import { allRows } from "./hogql-rows.ts";
 import { parseEnv } from "./local-dev-uptime.ts";
 
 /**
@@ -176,12 +177,17 @@ export async function readAccounts(deps: NumbersDeps): Promise<Account[]> {
 
 const projectUrl = (deps: NumbersDeps, path: string) => `${POSTHOG}/api/projects/${deps.env.POSTHOG_PROJECT_ID}/${path}`;
 
+/** The 7-day user_signed_up people with QA left out by isQa's rule inside the query, every row (allRows), so a QA burst cannot crowd out real ones. */
+export const SIGNUPS_QUERY = `SELECT distinct_id, any(person.properties.email) AS email FROM events WHERE event = 'user_signed_up' ` +
+  `AND timestamp >= now() - INTERVAL ${WINDOW_DAYS} DAY AND NOT startsWith(distinct_id, 'sg-qa-') GROUP BY distinct_id ` +
+  `HAVING NOT match(coalesce(toString(email), ''), '${QA_EMAILS.source.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}') ORDER BY distinct_id`;
+
 export async function readSignups(deps: NumbersDeps): Promise<Signup[]> {
   const key = deps.env.POSTHOG_PERSONAL_API_KEY;
   if (!key || !deps.env.POSTHOG_PROJECT_ID) throw new Error(`POSTHOG_PERSONAL_API_KEY or POSTHOG_PROJECT_ID is not set in ${REPO}/scripts/seo-agent/.env`);
-  const query = `SELECT distinct_id, any(person.properties.email) FROM events WHERE event = 'user_signed_up' AND timestamp >= now() - INTERVAL ${WINDOW_DAYS} DAY GROUP BY distinct_id`;
-  const { data } = await json<{ results: [string, string | null][] }>(deps, projectUrl(deps, "query/"), key, { query: { kind: "HogQLQuery", query }, refresh: "blocking" });
-  return data.results.map(([id, email]) => ({ id, email }));
+  const rows = await allRows(SIGNUPS_QUERY, async query =>
+    (await json<{ results: [string, string | null][] }>(deps, projectUrl(deps, "query/"), key, { query: { kind: "HogQLQuery", query }, refresh: "blocking" })).data.results);
+  return rows.map(([id, email]) => ({ id, email }));
 }
 
 interface QueryStatus { id: string; complete?: boolean; error?: boolean; error_message?: string | null }

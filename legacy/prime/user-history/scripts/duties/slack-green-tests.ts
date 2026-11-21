@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { type FlaggedSlice, type PrecheckOutput, PRECHECK_TARGET_MS } from "../../src/shared/chat-duties.ts";
+import { allRows } from "./hogql-rows.ts";
 import { parseEnv } from "./local-dev-uptime.ts";
 
 /**
@@ -205,20 +206,20 @@ export async function measureTests(query: Query, now: number): Promise<PrecheckO
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error)).replace(/phx_[A-Za-z0-9]+/g, "phx_***");
 
 /**
- * A HogQL query through PostHog's query API, failing on any non-200 or query error. It forces a fresh read, because on 11-13 the run right
+ * A HogQL query through PostHog's query API, every row of it (allRows), failing on any non-200 or query error. It forces a fresh read, because on 11-13 the run right
  * after seven experiments were ended at 12:54Z got the cached system.experiments rows and still read them as overdue.
  */
 export function posthogQuery(key: string, project: string, host = "https://us.posthog.com"): Query {
-  return async hogql => {
+  return hogql => allRows(hogql, async limited => {
     const response = await fetch(`${host}/api/projects/${project}/query/`, {
       method: "POST", headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ query: { kind: "HogQLQuery", query: hogql }, refresh: "force_blocking" }),
+      body: JSON.stringify({ query: { kind: "HogQLQuery", query: limited }, refresh: "force_blocking" }),
       signal: AbortSignal.timeout(PRECHECK_TARGET_MS / 3),
     });
     const body = await response.json() as { results?: unknown[][]; error?: string; detail?: string };
     if (!response.ok || !body.results) throw new Error(`HTTP ${response.status}: ${String(body.detail ?? body.error ?? "no results").slice(0, 300)}`);
     return body.results;
-  };
+  });
 }
 
 async function main(): Promise<void> {
