@@ -387,7 +387,7 @@
           <Avatar name={intro.name} kind="agent" seed={intro.agent} size={72} status={statusOf?.(intro.agent) ?? null} />
           <h2 class="intro-name">{intro.name}</h2>
           <p>This conversation is just between you and {intro.name}. Its page has its jobs, board and memory.</p>
-          <Button variant="outline" size="sm" icon="robot" href={hrefFor("agents", [intro.agent])}>View agent</Button>
+          <Button variant="outline" size="sm" icon="robot" href={hrefFor("agents", [intro.agent])}>Open agent</Button>
         </div>
       {:else if intro}
         <div class="intro" data-testid="channel-intro">

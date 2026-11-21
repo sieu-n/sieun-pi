@@ -299,7 +299,7 @@
   const menuItems = $derived<MenuEntry[]>([
     ...(isDm && agent
       ? [
-          { id: "agent", label: "View agent", icon: "robot", onselect: () => router.navigate(hrefFor("agents", [agent.id])) },
+          { id: "agent", label: "Open agent", icon: "robot", onselect: () => router.navigate(hrefFor("agents", [agent.id])) },
           { id: "jobs", label: "Jobs", icon: "terminal", onselect: () => router.navigate(hrefFor("agents", [agent.id], { section: "jobs" })) },
           { type: "separator" as const },
         ]

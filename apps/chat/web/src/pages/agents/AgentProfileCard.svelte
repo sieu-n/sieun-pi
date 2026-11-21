@@ -8,7 +8,7 @@
   import type { Anchor } from "$lib/ui/floating";
   import type { Status } from "$lib/ui/types";
   import HostBadge from "./HostBadge.svelte";
-  import { STATUS_LABEL, jobCounts, jobsLabel } from "./agents-model";
+  import { STATUS_LABEL, jobFilterCounts } from "./agents-model";
 
   type Props = {
     agent: string;
@@ -27,7 +27,11 @@
   const shownName = $derived(agent?.name ?? name);
   const dot = $derived<Status | null>(agent?.status === "working" ? "online" : agent?.status === "sleeping" ? "away" : agent?.status === "failed" ? "busy" : null);
   const statusText = $derived(!agent ? "" : agent.archived ? "Archived" : agent.status === "idle" ? `Idle · ${ageLabel(agent.updatedAt)}` : STATUS_LABEL[agent.status]);
-  const jobsText = $derived(jobsLabel(jobCounts(jobs.of(agentId)).get(agentId)) ?? "No jobs yet");
+  /** The counts its Jobs tab shows on its Active and Finished filters, which the line links to. */
+  const jobCount = $derived(jobFilterCounts(jobs.of(agentId), ""));
+  const jobsText = $derived(
+    [jobCount.active && `${jobCount.active} active`, jobCount.finished && `${jobCount.finished} finished`].filter(Boolean).join(", ") || "No jobs yet",
+  );
   const model = $derived(agent?.model ? `${agent.model.label}${agent.thinkingLevel ? ` · ${agent.thinkingLevel}` : ""}` : null);
 
   function go(href: string) {
@@ -59,7 +63,7 @@
     {/if}
     <div class="actions">
       <Button variant="primary" size="sm" icon="chat" onclick={() => go(hrefFor("messages", [agents.room(agentId)]))} data-testid="profile-message">Message</Button>
-      <Button variant="outline" size="sm" icon="robot" onclick={() => go(hrefFor("agents", [agentId]))} data-testid="profile-view">View agent</Button>
+      <Button variant="outline" size="sm" icon="robot" onclick={() => go(hrefFor("agents", [agentId]))} data-testid="profile-view">Open agent</Button>
     </div>
   </div>
 </Popover>

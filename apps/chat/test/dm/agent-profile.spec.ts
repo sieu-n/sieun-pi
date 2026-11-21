@@ -3,7 +3,7 @@ import { conversation, open, row, tag } from "../channel/helpers.ts";
 
 /**
  * An agent's profile from its DM, as Slack opens a person's: the header name, a post's author name and avatar open one profile card with
- * Message and View agent, the header menu has View agent and Jobs, and an empty DM opens on the agent's intro.
+ * Message and Open agent, the header menu has Open agent and Jobs, and an empty DM opens on the agent's intro.
  */
 const card = (page: import("@playwright/test").Page) => page.getByTestId("profile-card");
 
@@ -33,7 +33,7 @@ test("an empty DM opens on the agent's intro, and its header name opens the prof
   await expect(card(page)).toHaveCount(0);
 
   await open(page, `#/c/${agent.room}`);
-  await intro.getByRole("link", { name: "View agent" }).click();
+  await intro.getByRole("link", { name: "Open agent" }).click();
   await expect(page).toHaveURL(new RegExp(`#/agents/${agent.id}$`));
 });
 
@@ -45,7 +45,7 @@ test("the DM menu opens the agent and its Jobs tab", async ({ page }) => {
   await expect(page).toHaveURL(new RegExp(`#/agents/${agent.id}\\?section=jobs$`));
   await open(page, `#/c/${agent.room}`);
   await conversation(page).getByRole("button", { name: "Conversation actions" }).click();
-  await page.getByRole("menuitem", { name: "View agent" }).click();
+  await page.getByRole("menuitem", { name: "Open agent" }).click();
   await expect(page).toHaveURL(new RegExp(`#/agents/${agent.id}$`));
 });
 
