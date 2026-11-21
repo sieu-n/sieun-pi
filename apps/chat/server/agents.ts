@@ -19,6 +19,13 @@ import type { Store } from "./store.ts";
 const FIRST_INPUT_SCAN = 20;
 
 export const isAgentId = (id: string): boolean => id.startsWith("ag_");
+
+/**
+ * The model and thinking level a thread made for an agent runs on, its comm threads and duty jobs: the work thread's own, so an agent the
+ * owner put on another model, such as a Fable 5.2 advisor, answers and judges on it too; Opus 5.5 at high thinking (c31) when the row is unknown.
+ */
+export const threadModel = (work: DurableThread | undefined): { model: string; thinkingLevel: string } =>
+  work?.provider && work.modelId ? { model: `${work.provider}/${work.modelId}`, thinkingLevel: work.thinkingLevel || DEFAULT_THINKING } : { model: DEFAULT_MODEL, thinkingLevel: DEFAULT_THINKING };
 /** A DM room id, `dm_<slug>`. */
 export const isRoomId = (id: string): boolean => id.startsWith("dm_");
 /** A channel (`ch_<id>`) or Solo room (`so_<id>`) id (group-rooms.ts). */
@@ -139,20 +146,21 @@ export class Agents {
   }
 
   /**
-   * The thread `ensureComm` makes for the agent's comm thread in `room`, on Opus 5.5 at high thinking (c31): named `<agent> · DM`,
-   * `<agent> · #<channel>` or `<agent> · Solo <name>`. A work thread answers its comm thread by that exact name, so a name another root
-   * thread holds gets the room id after it.
+   * The thread `ensureComm` makes for the agent's comm thread in `room`, on its work thread's model and thinking level (`threadModel`):
+   * named `<agent> · DM`, `<agent> · #<channel>` or `<agent> · Solo <name>`. A work thread answers its comm thread by that exact name, so a
+   * name another root thread holds gets the room id after it.
    */
   private async commCreate(record: AgentRecord, room: RoomId): Promise<{ name: string; model: string; thinkingLevel: string; cwd: string }> {
     const row = this.store.rooms.rooms.find(r => r.id === room);
     const label = !row || row.kind === "dm" ? "DM" : row.kind === "channel" ? `#${row.name}` : `Solo ${row.name}`;
+    const threads = await this.host.threads().catch(() => []);
     let name = `${record.name} · ${label}`;
-    if (row && row.kind !== "dm" && (await this.host.threads().catch(() => [])).some(t => t.name === name)) name = `${name} (${room})`;
-    return { name, model: DEFAULT_MODEL, thinkingLevel: DEFAULT_THINKING, cwd: record.home };
+    if (row && row.kind !== "dm" && threads.some(t => t.name === name)) name = `${name} (${room})`;
+    return { name, ...threadModel(threads.find(t => t.id === record.workThread)), cwd: record.home };
   }
 
   /**
-   * The agent's comm thread for `room`: the one the record holds, or a new thread on Opus 5.5 at high thinking (c31) in the agent's home,
+   * The agent's comm thread for `room`: the one the record holds, or a new thread on its work thread's model in the agent's home,
    * saved in the record before anything else. Each call then writes the comm thread's `agent.ref` and the work thread's, which names a
    * comm thread (`agentRef`), and throws while the comm thread's ref is not written, so the caller tries again before the comm thread gets an
    * input without its role.

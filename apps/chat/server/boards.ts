@@ -11,11 +11,10 @@ import type { AgentSummary, BoardOp, BoardRow, BoardView, ChatBoard, CheckInPatc
 import { applyBoardOp, BOARD_PREFIX, emptyBoard, needsGo, nextIds, parseBoard, parseBoardOps, stepGo } from "../web/src/lib/api/shared/chat-board.ts";
 import { snoozed } from "../web/src/lib/api/shared/snooze.ts";
 import { morningTime, upsertDuty, type Duty, type DutyRunRecord, type DutySchedule, type DutyTrigger } from "../web/src/lib/api/shared/chat-duties.ts";
-import { DEFAULT_MODEL, DEFAULT_THINKING } from "./config.ts";
 import { asAfter, measure, measureAfter, runStamp } from "./duty-run.ts";
 import { dutyCard, judgedRun, missStreak } from "../web/src/lib/api/shared/duty-card.ts";
 import type { ChatAgent } from "../web/src/lib/api/shared/types.ts";
-import type { Agents } from "./agents.ts";
+import { threadModel, type Agents } from "./agents.ts";
 import type { Host } from "./host/types.ts";
 import { readJson, writeJson, type Store } from "./store.ts";
 import { OWNER_ZONE_OFFSET_MS } from "./search.ts";
@@ -535,9 +534,11 @@ export class Boards {
     if (brief) {
       const name = `${duty.name} duty ${runStamp(record.at)}`;
       try {
-        // The duty job works where its precheck runs, else in its chat's project folder, so it reads that folder's AGENTS.md chain.
-        const cwd = duty.precheck.cwd || this.threads.thread(thread)?.cwd;
-        const job = await this.threads.create({ name, model: DEFAULT_MODEL, thinkingLevel: DEFAULT_THINKING, ...(cwd ? { cwd } : {}) }, made => {
+        // The duty job works where its precheck runs, else in its chat's project folder, so it reads that folder's AGENTS.md chain. It runs on
+        // its chat's model, so a Fable advisor's sweep judges on Fable and every Opus agent's duty stays on Opus.
+        const work = this.threads.thread(thread);
+        const cwd = duty.precheck.cwd || work?.cwd;
+        const job = await this.threads.create({ name, ...threadModel(work), ...(cwd ? { cwd } : {}) }, made => {
           this.store.state.threads[made.id] = { kind: "job", parent: chat };
           this.store.saveState();
           this.agents.alias(made.id, chat);

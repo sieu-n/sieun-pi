@@ -111,7 +111,7 @@ classDiagram
 Rules that keep it simple:
 
 1. One agent has exactly one main work thread at a time. The comm threads of all its rooms delegate to it, so the owner's DM and a channel never fight over two copies of the work.
-2. A comm thread never runs coding tools that write. It may read files in the agent's home, read the agent's state, and post. No token cap of its own applies, so it compacts like any Prime thread, and on 11-20 one channel turn read 303,230 cached tokens. It runs Opus 5.5 at high thinking, as every thread does (owner rule c31).
+2. A comm thread never runs coding tools that write. It may read files in the agent's home, read the agent's state, and post. No token cap of its own applies, so it compacts like any Prime thread, and on 11-20 one channel turn read 303,230 cached tokens. It runs on its agent's work thread's model and thinking level, which is Opus 5.5 at high thinking for every agent but one the owner put on another model, such as the Fable 5.2 advisor (owner rule c31).
 3. A work thread never posts to a room. It writes to the board and reports to the comm thread with `agent_message.send`, and the comm thread decides whether to speak (owner rule c117: on a turn the owner did not start, the default is to say nothing).
 4. Room messages belong to the chat server. A thread holds copies of the posts it was given as inputs, and the room never reads its timeline from a thread.
 
@@ -230,7 +230,7 @@ Phase 4 built these calls from Prime's own tools, and the table at the end of ph
 | `subagent`, `write`, `edit`, `bash` | no | yes | yes | pi-host `durable/subagent.ts` and pi-durable `CodingTools`; a comm thread loses them (`COMM_REMOVED_TOOLS` in `durable/agent-profile.ts`) |
 | `read`, `ipython`, `search_history`, `correction_add`, `poteto_mode` | yes | yes | yes | pi-durable `CodingTools`, `durable/rlm.ts` and Prime's chat tools |
 
-The comm thread stays thin because it cannot change files, its inputs are only its room's posts and work notices, and its role text tells it to answer from state and hand over anything over a minute (today's chat brief rule c52). Comm, work and job threads all run Opus 5.5 at high thinking (owner rule c31).
+The comm thread stays thin because it cannot change files, its inputs are only its room's posts and work notices, and its role text tells it to answer from state and hand over anything over a minute (today's chat brief rule c52). Comm threads and duty jobs run on their agent's work thread's model, which is Opus 5.5 at high thinking unless the owner picked another model for that agent (owner rule c31).
 
 A comm thread's `tell_owner` keeps Prime's rules from `legacy/prime/user-history/src/chat-brief.ts`: one point per message, short sentences (c104) with a mermaid block, table or link where it carries the point better (rule 5 of `config/AGENTS.md`, which the comm role text puts above the brief's wiki-page line for a diagram he asks for), no message on a turn the owner did not start unless something finished that he asked for, a decision, a blocker or an answer (c117), and `replyTo` only for a wake-up that answers an older message. The text a turn ends with is not posted; it shows in the comm thread's fold. When a DM turn the owner started ends with text, no post and no hand-over, pi-host queues Prime's note for his unanswered message as its next input, once, so the model posts its answer or ends with no text (`packages/pi-host/src/durable/comm-reply.ts`).
 
@@ -421,7 +421,7 @@ Built and live on 2026-10-29: pi-host d3368356 (the folder in a163066e), apps/ch
 The plan was:
 
 1. pi-host `durable/comm.ts` (`agent_status`, `delegate`, `steer_work`, `room_history` through the chat server) and `durable/work.ts` (`report`, `start_job`, `wake`). Work-done notices go back to the comm thread that delegated, keyed `n:<thread>:<submission>`.
-2. `server/relay/` (in the chat server for now) maps (agent, room) to a comm thread and creates it on first delivery with `role: "comm"` and the agent's model, Opus 5.5 at high thinking (c31).
+2. `server/relay/` (in the chat server for now) maps (agent, room) to a comm thread and creates it on first delivery with `role: "comm"` and the agent's model, its work thread's model and thinking level (c31).
 3. DM deliveries go to the comm thread. The web shows the comm thread's turns in the fold and adds a "Work" pill when work is running.
 
 Built and live on 2026-10-29: pi-host fc286a05 and apps/chat 6821aa3f, both as release-6821aa3. It uses Prime's own tools where Prime has one, so the tools this phase planned map to the built calls like this, and section 2 lists the built calls:
