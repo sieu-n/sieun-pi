@@ -20,6 +20,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, ROOT_CONVERSATION_ID, type Extension } from "@earendil-works/pi-durable";
 import type { ChatApp } from "./chat-app.ts";
+import { crammedEdit } from "./comm-guard.ts";
 import { closingControl, forMeTools } from "./for-me.ts";
 import { longReply } from "../../../../legacy/prime/user-history/src/shared/reply-lint.ts";
 import { laterTools } from "./later.ts";
@@ -76,6 +77,7 @@ const isEyes = (emoji: string): boolean => ["eyes", ":eyes:", "👀"].includes(e
 /** The room tools of one thread, which call apps/chat as that thread. */
 export function roomTools(app: ChatApp, thread: string): Extension {
   const heldEdits = new Set<string>();
+  const heldCrammed = new Set<string>();
   return defineExtension({
     name: ROOM_TOOLS_EXTENSION,
     tools: [
@@ -121,6 +123,8 @@ export function roomTools(app: ChatApp, thread: string): Extension {
           if (api.conversationId !== ROOT_CONVERSATION_ID) return { output: text("edit_message works only in your agent's own thread, not in a job."), isError: true };
           const long = longEdit(args.text.trim(), heldEdits);
           if (long) return { output: text(long), isError: true };
+          const crammed = crammedEdit(args.text.trim(), heldCrammed);
+          if (crammed) return { output: text(crammed), isError: true };
           try {
             const answer = await app.editPost(thread, { message: args.message_id, text: args.text }, context.abortSignal);
             return { output: text(answer.text), ...await closingControl(true, api, context) };

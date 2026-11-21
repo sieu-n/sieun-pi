@@ -137,6 +137,24 @@ export function crammedLine(text: string): string | undefined {
   })?.trim();
 }
 
+/** How an edit held for a crammed line opens. */
+export const CRAMMED_EDIT_MARK = "Not edited, one line crams several results";
+
+/**
+ * The note for an edit_message text with a crammed line (`crammedLine`), or undefined when it has none or this very text was held once
+ * already, so the same text sent again goes out (c98). A checklist's last edit carries the answer, so it gets the same hold as a post: on
+ * 11-21 the first blind-threads.mjs run's last edit opened with "The Elixir app has 37 source files, 9,845 lines and 16 test files; its 234
+ * tests take about 35 s.", four results on the top line above bullets that gave them again.
+ */
+export function crammedEdit(edit: string, held: Set<string>): string | undefined {
+  if (held.has(edit)) return undefined;
+  const crammed = crammedLine(edit);
+  if (!crammed) return undefined;
+  held.add(edit);
+  return `${CRAMMED_EDIT_MARK}: "${crammed.length > 120 ? `${crammed.slice(0, 117)}...` : crammed}" holds several results in a row. ` +
+    "Keep the answer on top as one short sentence and give each result its own short item. Sending the very same text again edits it as it is (c98).";
+}
+
 interface TurnCall { role: string; content?: unknown; toolCallId?: unknown }
 
 /** Whether a speaking call with this very text was held for its table earlier in the turn. */
