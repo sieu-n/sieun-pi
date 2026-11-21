@@ -31,13 +31,13 @@ test("the owner forwards a channel post into a DM with a note, and the DM shows 
   const to = page.getByRole("combobox", { name: "To:" });
   await to.fill("vent");
   await to.press("Enter");
-  await expect(dialog.getByText("vent", { exact: true })).toBeVisible();
-  const note = page.getByRole("textbox", { name: "Message" });
+  await expect(dialog.getByRole("button", { name: "Remove Vent" })).toBeVisible();
+  const note = page.getByRole("textbox", { name: "Message", exact: true });
   await expect(note).toBeFocused();
   await note.fill(`see this ${word}`);
   await note.press("Enter");
   await expect(dialog).toHaveCount(0);
-  await expect(page.getByText("Message forwarded to vent")).toBeVisible();
+  await expect(page.getByText("Message forwarded to Vent")).toBeVisible();
 
   await page.getByRole("button", { name: "View" }).click();
   await expect(page).toHaveURL(/#\/c\/dm_vent/);

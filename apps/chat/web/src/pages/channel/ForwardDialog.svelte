@@ -8,7 +8,7 @@
 </script>
 
 <script lang="ts">
-  import { agents, api, me, requestId, type ForwardedPost } from "$lib/api";
+  import { agents, api, conversations, me, requestId, type ForwardedPost } from "$lib/api";
   import { conversationHref, router } from "$lib/router.svelte";
   import { sidebar } from "$lib/shell/sidebar.svelte";
   import Button from "$lib/ui/Button.svelte";
@@ -45,7 +45,15 @@
         ? { id: row.id, label: row.name, avatar: { name: row.name, kind: "agent", seed: row.agent ?? row.id } }
         : { id: row.id, label: row.name, icon: "users" };
 
-  /** Slack's order: the sidebar's rooms by their last post under Recent, then the other channels, then the agents with no DM in the sidebar. */
+  /** A room's name from what the page holds: the sidebar, the open conversations, the room list or its agent. */
+  const nameOf = (id: string): string =>
+    [...sidebar.data.channels, ...sidebar.data.dms, ...sidebar.data.solo].find((row) => row.id === id)?.name ??
+    conversations.byId(id)?.name ??
+    directory.room(id)?.name ??
+    agents.list.find((agent) => agents.room(agent.id) === id)?.name ??
+    id;
+
+  /** Slack's order, with the room you are in first when the sidebar does not list it, such as a test room: the sidebar's rooms by their last post under Recent, then the other channels, then the agents with no DM in the sidebar. */
   const items = $derived.by((): PickerItem[] => {
     const data = sidebar.data;
     const rows = [...data.channels, ...data.dms, ...data.solo.filter((row) => !row.closedAt)].filter((row) => !row.archived).sort((a, b) => b.lastActivityAt - a.lastActivityAt);
@@ -54,11 +62,14 @@
     const dms = agents.list
       .filter((agent) => agent.id.startsWith("ag_") && !agent.archived && !listed.has(agents.room(agent.id)))
       .sort((a, b) => a.name.localeCompare(b.name));
-    return [
-      ...rows.map((row) => ({ ...rowItem(row), group: "Recent" })),
+    const here = subject.kind === "post" ? subject.room : router.conversationId && /^(dm|ch|so)_/.test(router.conversationId) ? router.conversationId : null;
+    const hereRow = here && !listed.has(here) && !channels.some((room) => room.id === here) ? [{ id: here, name: nameOf(here), agent: agents.list.find((a) => agents.room(a.id) === here)?.id }] : [];
+    const all = [
+      ...[...hereRow, ...rows].map((row) => ({ ...rowItem(row), group: "Recent" })),
       ...channels.map((room) => ({ ...rowItem(room), group: "Channels" })),
       ...dms.map((agent) => ({ ...rowItem({ id: agents.room(agent.id), name: agent.name, agent: agent.id }), group: "Agents" })),
     ];
+    return all.filter((item, index) => all.findIndex((other) => other.id === item.id) === index);
   });
   const chosen = $derived(to ? items.find((item) => item.id === to) ?? null : null);
   const placeName = (item: PickerItem): string => (item.id.startsWith("ch_") ? `#${item.label}` : item.label);
@@ -68,15 +79,17 @@
     if (subject.kind !== "post") return null;
     const { room, item } = subject;
     if (item.forward && !item.text.trim() && !item.images.length) return item.forward;
-    const roomName = [...sidebar.data.channels, ...sidebar.data.dms, ...sidebar.data.solo].find((row) => row.id === room)?.name ?? directory.room(room)?.name ?? room;
-    return { room, roomName, post: item.id, ...(item.threadRoot ? { threadRoot: item.threadRoot } : {}), author: item.author, text: item.text, images: item.images, at: item.at };
+    return { room, roomName: nameOf(room), post: item.id, ...(item.threadRoot ? { threadRoot: item.threadRoot } : {}), author: item.author, text: item.text, images: item.images, at: item.at };
   });
   const context = $derived({ mentions: mentionContext(directory.agents, directory.channels, me.value?.owner.name ?? ""), plain: true });
   const title = $derived(subject.kind === "post" ? "Forward this message" : "Share this page");
 
   /** A pick moves the caret to the message box, as Slack's Forward does. */
   $effect(() => {
-    if (to) noteBox?.focus();
+    if (!to) return;
+    // The list hands focus back to the field as it closes, after this effect, so the move waits a frame.
+    const frame = requestAnimationFrame(() => noteBox?.focus());
+    return () => cancelAnimationFrame(frame);
   });
 
   function close() {
