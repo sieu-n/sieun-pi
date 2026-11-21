@@ -22,7 +22,7 @@ test("remindAt hides an open ask from the For you count until it comes due", asy
   const count = await s.app.boards.forYouCount();
   const soon = new Date(Date.now() + 400).toISOString();
   const view = await s.app.boards.apply(chatId, [{ op: "todo_update", id, remindAt: soon }]);
-  assert.equal(view.board.todos.find(todo => todo.id === id)?.remindAt, soon);
+  assert.equal(view.board?.todos.find(todo => todo.id === id)?.remindAt, soon);
   assert.match(view.summaries[0]!, /set a reminder on .* so it leaves For you until then/);
   assert.equal(await s.app.boards.forYouCount(), count - 1);
   const counts: number[] = [];
