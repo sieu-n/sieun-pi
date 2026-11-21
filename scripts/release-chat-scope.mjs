@@ -37,9 +37,9 @@ function target(app, from, spec, known) {
 }
 
 /**
- * The test files under `app` (paths relative to it) that reach one of `changed`: a changed test, a test that imports or names by relative path
- * a file that leads to a changed one through relative imports, and a test whose text names such a file by its basename, as the tests that spawn
- * a duty script do.
+ * The test files under `app` (paths relative to it) that reach one of `changed`: a changed test, a test that imports or names a changed file
+ * by relative path, and a test whose text names a changed file other than an index file by its basename, as the tests that spawn a duty script
+ * do. Only direct importers count, so a test that reaches a changed file through another file it imports does not run.
  */
 export function testsFor(app, changed) {
   const files = [];
