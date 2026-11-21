@@ -181,7 +181,7 @@ test("an agent.ref sets the root's tools and instructions for its role in its co
       assert.doesNotMatch(commInstructions({ ...comm, room }), /in progress/, room);
       assert.match(commInstructions({ ...comm, room }), /rule 5[\s\S]*asks for a diagram[\s\S]*draw it yourself as a ```mermaid block in your post[\s\S]*replaces the brief's line/, room);
       assert.doesNotMatch(commInstructions({ ...comm, room }), /short plain sentences/, room);
-      assert.match(commInstructions({ ...comm, room }), /coworker types in Slack[\s\S]*the answer first in a plain sentence[\s\S]*One answer is one post[\s\S]*answer both in that one post[\s\S]*tables unless he asks[\s\S]*wiki\.write[\s\S]*replaces rule 5's table for a comparison/, room);
+      assert.match(commInstructions({ ...comm, room }), /coworker types in Slack[\s\S]*the answer first in a plain sentence[\s\S]*One answer is one post\. When two of his posts wait for you and each asks its own thing, answer each with its own tell_owner call whose `reply_to` is that post[\s\S]*Merge them into one post only when the second adds to or corrects the first[\s\S]*tables unless he asks[\s\S]*wiki\.write[\s\S]*replaces rule 5's table for a comparison/, room);
       assert.doesNotMatch(commInstructions({ ...comm, room }), /tables, links|diagram, table or link/, room);
       assert.match(commInstructions({ ...comm, room }), /An answer with one point is one or two short sentences on one line\. Three sentences or three numbers in a row[\s\S]*each point on its own line or `- ` bullet[\s\S]*`- \[ \]` item per step/, room);
       assert.doesNotMatch(commInstructions({ ...comm, room }), /bullet reports/, room);

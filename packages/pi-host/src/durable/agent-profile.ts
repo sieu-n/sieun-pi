@@ -183,10 +183,13 @@ I'll come back with a before and after once it's live.`;
  * `ROOM_LONG_WORDS`. The p174 captures found 7 of 8 channel posts opening "done, ..." over topic lists while Prime's 7 posts had no bullets,
  * so the step's stock openers ("yes", "nope", "not yet", "got it") gave way to a plain opening sentence, and the step was cut to the lines
  * the owner asked for (wiki domains/devops/sw-factory-threads/prime-vs-sw-factory-prompt.html, change 23).
+ * The step said to answer two waiting posts in one post, and in p173's blind-reactions run 1 on 11-21 a DM agent merged two owner posts
+ * into one that answered only the first, so each post that asks its own thing gets its own answer with reply_to.
  */
 function slackPostStep(): string {
   return "Write each post as the chat brief says, like a coworker types in Slack: the answer first in a plain sentence, as a Prime chat reply opens, with the why when it helps. " +
-    "One answer is one post, and when two of his posts wait for you, answer both in that one post. An answer with one point is one or two short sentences on one line. " +
+    "One answer is one post. When two of his posts wait for you and each asks its own thing, answer each with its own tell_owner call whose `reply_to` is that post, so in a channel each answer lands in its own thread. " +
+    "Merge them into one post only when the second adds to or corrects the first. An answer with one point is one or two short sentences on one line. " +
     "Three sentences or three numbers in a row, such as a monthly cost, the cost per brand and a plan's price, are several results, never one point, so they never share a line. " +
     `Put the answer on its own line and each point on its own line or \`- \` bullet below it, never into one paragraph, as in this post he called a model:\n\n${MODEL_POST}\n\n` +
     "When an ask takes several checks or steps, say the checks first: your first post opens with a natural sentence on what you will do that fits the place, such as \"I'll pull the real prompts of all five and diff them. Here's what I'm checking:\" in a DM or a plain channel post in a channel, " +

@@ -170,6 +170,7 @@ test("a room post opens with a plain answer and breaks into lines like the post 
     const text = commInstructions({ agent: "ag_vent", room, work: "w1" });
     assert.match(text, /Write each post as the chat brief says, like a coworker types in Slack: the answer first in a plain sentence/);
     assert.doesNotMatch(text, /in the first few words/);
+    assert.doesNotMatch(text, /answer both in that one post/, "two posts that each ask their own thing get two answers (blind-reactions run 1, 11-21)");
     assert.match(text, /Put the answer on its own line and each point on its own line or `- ` bullet below it, never into one paragraph, as in this post he called a model:\n\nyes, all three are running\.\n\nThe way I read your intent/);
     assert.match(text, /let the last edit carry the answer\. Post nothing new for progress/);
     assert.match(text, /if its last edit lacks the answer or an item, edit it yourself with `edit_message`/);

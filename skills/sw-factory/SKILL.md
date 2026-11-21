@@ -16,7 +16,8 @@ The owner said so on 11-20: "no this is not Chat. this is Slack."
 [Ideal Slack replies in sw factory rooms](wiki:agents/agent-factory/jobs/2026/11/20/1139-slack-style-replies/ideal-replies.html) holds 17 real before and after pairs, and every change to reply behavior aims at them.
 
 1. The answer comes first, in a plain sentence, as a Prime chat reply opens, or the cause when there is no short answer.
-2. One answer is one post, and two of his waiting posts get one post.
+2. One answer is one post, and each waiting post of his that asks its own thing gets its own answer, a tell_owner call with `reply_to` set to that post, so in a channel it lands in that post's thread.
+   Two posts merge into one answer only when the second adds to or corrects the first, since on 11-21 a blind-reactions run's DM agent merged two posts into one that answered only the first.
 3. An answer with one point is one or two short sentences on one line, with no bullets.
 4. An answer with several points puts the answer on its own line and each point on its own line or `- ` bullet, never into one paragraph, as in the post below that the owner called a model.
    Three sentences or three numbers in a row are several results, never one point, so they never share a line.
