@@ -423,6 +423,12 @@ export interface ProjectList { projects: ProjectFolder[]; default: string | null
  */
 export type SearchWhere = "root" | "thread" | "tool";
 
+/**
+ * The six places a search hit sits in exactly one of (server/search.ts SEARCH_PLACES): top-level posts of channels, DMs and Solo rooms
+ * (`solo` also holds a root chat's own words), replies in any room's threads, the entries of agents' jobs and work threads, and tool output.
+ */
+export type SearchPlace = "channels" | "dms" | "solo" | "threads" | "jobs" | "tools";
+
 export interface SearchHit {
   id: string;
   where: SearchWhere;
@@ -468,11 +474,12 @@ export interface SearchMissing { box: string; note: string }
 export interface SearchResult { hits: SearchHit[]; total: number; nextCursor?: string; missing?: SearchMissing[] }
 /**
  * `from` takes many values, each `owner`, `agents` (anyone but the owner), an agent id or an agent name; `where` takes many of `root`,
- * `thread` and `tool`, all three when absent. Many values of one filter are OR-ed. `in` is a conversation id, a channel or Solo room name
- * (with or without `#`) or an agent name for its DM; `after` and `before` are YYYY-MM-DD in KST.
+ * `thread` and `tool`, all three when absent, and `place` many of the six SearchPlace values, all six when absent. Many values of one filter
+ * are OR-ed, and filters are AND-ed. `in` is a conversation id, a channel or Solo room name (with or without `#`) or an agent name for its
+ * DM; `after` and `before` are YYYY-MM-DD in KST.
  */
 export interface SearchQuery {
-  q: string; from?: string | string[]; in?: string; where?: SearchWhere | SearchWhere[]; after?: string; before?: string; sort?: "relevance" | "recent";
+  q: string; from?: string | string[]; in?: string; where?: SearchWhere | SearchWhere[]; place?: SearchPlace | readonly SearchPlace[]; after?: string; before?: string; sort?: "relevance" | "recent";
   limit?: number; cursor?: string;
   /** Leaves each hit's `text` out, for rows that show only the snippet. */
   brief?: boolean;

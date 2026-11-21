@@ -7,7 +7,7 @@
  * posts instead, so a hit opens the DM at the post. Channel and Solo room posts are searched as posts of their room (phase 5).
 
  */
-import type { ConversationKind, ConversationSummary, SearchHit, SearchMissing, SearchResult, SearchWhere } from "../web/src/lib/api/types.ts";
+import type { ConversationKind, ConversationSummary, SearchHit, SearchMissing, SearchPlace, SearchResult, SearchWhere } from "../web/src/lib/api/types.ts";
 import { CHANNEL_COPY_LIKE, type GroupRooms } from "./group-rooms.ts";
 import { describe, fullText, searchTerms, snippet, SYSTEM_AUTHOR } from "./search-snippet.ts";
 import { safeSnippet } from "./search-snippet.ts";
@@ -23,11 +23,12 @@ import { and, eq, isIn, not, or, type BoxIndexState, type Cond, type EntryDoc, t
 export const OWNER_ZONE_OFFSET_MS = 9 * 3600_000;
 
 /**
- * `from` holds `owner`, `agents`, agent ids and agent names, and `where` holds `root`, `thread` and `tool` (all three when empty); many
- * values of one filter are OR-ed. `in` is a conversation id, a channel or Solo room name, or an agent name for its DM.
+ * `from` holds `owner`, `agents`, agent ids and agent names, `where` holds `root`, `thread` and `tool` (all three when empty), and `place`
+ * the six places of SEARCH_PLACES (all six when empty); many values of one filter are OR-ed, and filters are AND-ed. `in` is a conversation
+ * id, a channel or Solo room name, or an agent name for its DM.
  */
 export interface SearchParams {
-  q: string; from?: readonly string[]; in?: string; where?: readonly string[]; after?: string; before?: string; sort?: "relevance" | "recent"; limit?: number; cursor?: string;
+  q: string; from?: readonly string[]; in?: string; where?: readonly string[]; place?: readonly string[]; after?: string; before?: string; sort?: "relevance" | "recent"; limit?: number; cursor?: string;
   /** Leaves each hit's longer `text` out: the Cmd K rows show only the snippet, and the 20 hits of "kimchi" were 52.0 KB with it on 11-19. */
   brief?: boolean;
 }
@@ -53,6 +54,23 @@ export const POST_KINDS = { root: "room.post", reply: "room.reply" } as const;
 
 export const SEARCH_WHERE: readonly SearchWhere[] = ["root", "thread", "tool"];
 
+/**
+ * The places every hit sits in exactly one of, in the order the search page's pills show them (owner, #sw-factory-build p126: "Where하고 이
+ * 카테고리하고 합쳐서,dropdown 말고 그냥 아이템들 list되어있는 pill들로"). `channels`, `dms` and `solo` are top-level posts of their rooms, and
+ * `solo` also a root chat's own words; `threads` are replies in any room; `jobs` are the entries of agents' work and of root chats' jobs, and
+ * `tools` tool output anywhere.
+ */
+export const SEARCH_PLACES: readonly SearchPlace[] = ["channels", "dms", "solo", "threads", "jobs", "tools"];
+
+/** The names `place` reads, singular forms and "tool calls" included. */
+const PLACE_NAMES: Readonly<Record<string, SearchPlace>> = {
+  channels: "channels", channel: "channels", dms: "dms", dm: "dms", solo: "solo", threads: "threads", thread: "threads",
+  jobs: "jobs", job: "jobs", tools: "tools", tool: "tools", "tool calls": "tools", toolcalls: "tools",
+};
+
+/** The places each `where` value covers, so `where` and `place` together keep the places both name. */
+const WHERE_PLACES: Readonly<Record<SearchWhere, readonly SearchPlace[]>> = { root: ["channels", "dms", "solo"], thread: ["threads"], tool: ["jobs", "tools"] };
+
 /** A filter value search cannot read, such as an unknown agent name; the API answers 400 with its message. */
 export class SearchFilterError extends Error {}
 
@@ -63,14 +81,15 @@ export class SearchFilterError extends Error {}
 export function parseQuery(params: SearchParams): Required<Pick<SearchParams, "q">> & Omit<SearchParams, "q"> {
   const out: SearchParams = { ...params, q: "" };
   const words: string[] = [];
-  const from: string[] = [];
+  const lists = { from: [] as string[], place: [] as string[] };
   for (const token of params.q.match(/"[^"]*"|\S+/g) ?? []) {
-    const match = /^(from|in|after|before):(.+)$/.exec(token);
+    const match = /^(from|place|in|after|before):(.+)$/.exec(token);
     if (!match) words.push(token);
-    else if (match[1] === "from") from.push(...listValues([match[2]!.replace(/^"|"$/g, "")]));
+    else if (match[1] === "from" || match[1] === "place") lists[match[1]].push(...listValues([match[2]!.replace(/^"|"$/g, "")]));
     else out[match[1] as "in" | "after" | "before"] ??= match[2]!.replace(/^"|"$/g, "");
   }
-  if (!out.from?.length && from.length) out.from = from;
+  if (!out.from?.length && lists.from.length) out.from = lists.from;
+  if (!out.place?.length && lists.place.length) out.place = lists.place;
   out.q = words.join(" ");
   return out as Required<Pick<SearchParams, "q">> & Omit<SearchParams, "q">;
 }
@@ -90,6 +109,34 @@ export function parseWhere(values: readonly string[] | undefined): Set<SearchWhe
     out.add(where);
   }
   return out;
+}
+
+/**
+ * The places a search keeps: the `place` values, all six when none is given, less those `where` leaves out. An unknown value is refused by
+ * name.
+ */
+export function parsePlace(values: readonly string[] | undefined, where: ReadonlySet<SearchWhere> = new Set(SEARCH_WHERE)): Set<SearchPlace> {
+  const named = new Set<SearchPlace>();
+  for (const value of values ?? []) {
+    const place = PLACE_NAMES[value.trim().toLowerCase().replace(/\s+/g, " ")];
+    if (!place) throw new SearchFilterError(`No place "${value}"; use ${SEARCH_PLACES.join(", ")}.`);
+    named.add(place);
+  }
+  const kept = new Set([...where].flatMap(w => WHERE_PLACES[w]));
+  return new Set(SEARCH_PLACES.filter(place => kept.has(place) && (!named.size || named.has(place))));
+}
+
+/**
+ * The post filter for rooms whose top-level posts and whose replies a search keeps, or undefined when it keeps none. `replies` is either
+ * empty or every room `tops` is drawn from, so equal lengths mean one room list with no kind filter.
+ */
+function postRooms(tops: readonly string[], replies: readonly string[]): Cond | undefined {
+  if (tops.length && tops.length === replies.length) return isIn("room", tops);
+  const conds = [
+    ...(tops.length ? [and(not(eq("kind", POST_KINDS.reply)), isIn("room", tops))] : []),
+    ...(replies.length ? [and(eq("kind", POST_KINDS.reply), isIn("room", replies))] : []),
+  ];
+  return conds.length ? (conds.length === 1 ? conds[0] : or(...conds)) : undefined;
 }
 
 /** The web hash route that opens a hit, written as web/src/lib/router.svelte.ts `conversationHref` writes it. */
@@ -181,7 +228,7 @@ export class Search {
     const range: Cond[] = [...(after === undefined ? [] : [{ op: "gte", field: "at", value: after } as Cond]), ...(before === undefined ? [] : [{ op: "lt", field: "at", value: before } as Cond])];
     const parts: Cond[] = [];
 
-    const where = parseWhere(query.where);
+    const places = parsePlace(query.place, parseWhere(query.where));
     const inId = query.in ? this.resolveIn(query.in) : undefined;
     const inChannel = inId ? this.groups.row(inId) : undefined;
     const inRoom = inId && (isRoomId(inId) || isAgentId(inId)) ? this.threads.agentRecords?.record(inId) : undefined;
@@ -192,8 +239,13 @@ export class Search {
     const comms = scope ? [] : this.commThreads();
     const rooms = this.listedRooms();
     const rootChats = this.rootChats();
-    const entryWhere = this.entryWhere(where, rootChats);
-    const postWhere = where.has("root") && where.has("thread") ? [] : where.has("root") ? [not(eq("kind", POST_KINDS.reply))] : where.has("thread") ? [eq("kind", POST_KINDS.reply)] : undefined;
+    const entryWhere = Search.entryPlaces(places, rootChats);
+    const groupRows = inChannel ? [inChannel] : undefined;
+    const channels = groupRows ? groupRows.filter(row => row.kind === "channel").map(row => row.id) : rooms.channels;
+    const solos = groupRows ? groupRows.filter(row => row.kind === "solo").map(row => row.id) : rooms.solos;
+    const dms = inRoom ? [inRoom.room] : rooms.dms;
+    const groupPosts = postRooms([...(places.has("channels") ? channels : []), ...(places.has("solo") ? solos : [])], places.has("threads") ? [...channels, ...solos] : []);
+    const dmPosts = postRooms(places.has("dms") ? dms : [], places.has("threads") ? dms : []);
     const anyOf = (conds: Cond[]): Cond[] => (from.length ? [or(...conds)] : []);
     if (!inChannel && entryWhere) {
       parts.push(and(
@@ -204,17 +256,15 @@ export class Search {
           : or(and(eq("kind", "agent.message"), isIn("author", f.authors)), and(not(eq("kind", "agent.message")), not(isIn("author", NOT_AGENTS)), f.work)))),
       ));
     }
-    if ((!inId || inChannel) && postWhere) {
+    if ((!inId || inChannel) && groupPosts) {
       parts.push(and(
-        eq("source", "post"), eq("dm", false), ...range, ...postWhere,
-        inChannel ? eq("room", inChannel.id) : isIn("room", rooms.channels),
+        eq("source", "post"), eq("dm", false), ...range, groupPosts,
         ...anyOf(from.map(f => f.kind === "owner" ? eq("author", "owner") : f.kind === "agents" ? not(eq("author", "owner")) : isIn("author", f.authors))),
       ));
     }
-    if ((!inId || inRoom) && postWhere) {
+    if ((!inId || inRoom) && dmPosts) {
       parts.push(and(
-        eq("source", "post"), eq("dm", true), eq("listed", true), ...range, ...postWhere,
-        inRoom ? eq("room", inRoom.room) : isIn("room", rooms.dms),
+        eq("source", "post"), eq("dm", true), eq("listed", true), ...range, dmPosts,
         ...anyOf(from.map(f => f.kind === "owner" ? eq("ownerPost", true) : f.kind === "agents" ? eq("ownerPost", false) : isIn("author", f.authors))),
       ));
     }
@@ -251,7 +301,7 @@ export class Search {
     const where = or(
       and(eq("source", "entry"), eq("channelCopy", false), eq("author", "owner"), ...range,
         ...(comms.length ? [not(isIn("threads", comms))] : []), ...(tests.length ? [not(isIn("keys", tests.map(t => `${t.thread}:${t.entry}`)))] : [])),
-      and(eq("source", "post"), eq("dm", false), isIn("room", rooms.channels), ...range),
+      and(eq("source", "post"), eq("dm", false), isIn("room", [...rooms.channels, ...rooms.solos]), ...range),
       and(eq("source", "post"), eq("dm", true), eq("listed", true), isIn("room", rooms.dms), ...range),
     );
     const found = await this.engine.search("", where, { sort: "recent", limit });
@@ -271,11 +321,13 @@ export class Search {
    * channels and test agents. app.ts `postDoc` indexes a post only in a channel, Solo room or agent DM, so naming the rooms to keep finds
    * the same posts as naming the test rooms to leave out; the posts of a DM whose record `Agents.dropUntitled` removed have no hit to show
    * and no part in `total`. On 11-21 the test rooms were 409 of 448, and their ids, twice in the filter, cost Meilisearch 7 to 8 ms of a
-   * 22 ms search on us-metal02 (~/work/p156-search/search-handler/).
+   * 22 ms search on us-metal02 (~/work/p156-search/search-handler/). Channels and Solo rooms come apart for `place`.
    */
-  private listedRooms(): { channels: string[]; dms: string[] } {
+  private listedRooms(): { channels: string[]; solos: string[]; dms: string[] } {
+    const rows = this.groups.rows().filter(row => !row.test);
     return {
-      channels: this.groups.rows().filter(row => !row.test).map(row => row.id),
+      channels: rows.filter(row => row.kind === "channel").map(row => row.id),
+      solos: rows.filter(row => row.kind === "solo").map(row => row.id),
       dms: (this.threads.agentRecords?.list() ?? []).filter(record => !record.test).map(record => record.room),
     };
   }
@@ -349,14 +401,23 @@ export class Search {
   }
 
   /**
-   * The entry filter for `where`, or undefined when it keeps no entry. A root chat's words are `root` and its tool output `tool`; every
-   * entry of a work thread or job is `tool`. An entry copied into a root chat and an agent's thread is the agent's: on 11-20 vent's work
-   * thread shared its first 9,481 entries, duty pushes included, with a root chat forked from it, and they read as his root messages.
+   * The entry filter for the places, or undefined when it keeps no entry. A root chat's words are `solo` and tool output anywhere is `tools`;
+   * every other entry of a work thread or job is `jobs`. An entry copied into a root chat and an agent's thread is the agent's: on 11-20
+   * vent's work thread shared its first 9,481 entries, duty pushes included, with a root chat forked from it, and they read as his root
+   * messages.
    */
-  private entryWhere(where: ReadonlySet<SearchWhere>, roots: RootChats): Cond[] | undefined {
-    if (where.has("root") && where.has("tool")) return [];
-    if (where.has("root")) return [isIn("convs", roots.convs), not(isIn("threads", roots.held)), not(isIn("kind", TOOL_KINDS))];
-    if (where.has("tool")) return [or(not(isIn("convs", roots.convs)), isIn("threads", roots.held), isIn("kind", TOOL_KINDS))];
+  private static entryPlaces(places: ReadonlySet<SearchPlace>, roots: RootChats): Cond[] | undefined {
+    const [solo, jobs, tools] = (["solo", "jobs", "tools"] as const).map(place => places.has(place));
+    const words = [isIn("convs", roots.convs), not(isIn("threads", roots.held))];
+    const work = [not(isIn("convs", roots.convs)), isIn("threads", roots.held)];
+    const tool = isIn("kind", TOOL_KINDS);
+    if (solo && jobs && tools) return [];
+    if (solo && jobs) return [not(tool)];
+    if (jobs && tools) return [or(...work, tool)];
+    if (solo && tools) return [or(and(...words), tool)];
+    if (solo) return [...words, not(tool)];
+    if (jobs) return [or(...work), not(tool)];
+    if (tools) return [tool];
     return undefined;
   }
 

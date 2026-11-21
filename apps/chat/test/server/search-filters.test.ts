@@ -5,10 +5,10 @@
  */
 import assert from "node:assert/strict";
 import { after, before, describe as suite, test } from "node:test";
-import type { SearchResult } from "../../web/src/lib/api/types.ts";
+import type { SearchHit, SearchPlace, SearchResult } from "../../web/src/lib/api/types.ts";
 import { FIXTURE_AGENTS as agents, FIXTURE_IDS as ids } from "../../server/fixture/seed.ts";
 import { and, eq, holds, not, type EntryDoc, type PostDoc } from "../../server/search-engine.ts";
-import { hitLink, parseQuery, threadTitle } from "../../server/search.ts";
+import { hitLink, parseQuery, SEARCH_PLACES, threadTitle } from "../../server/search.ts";
 import { describe, indexedAuthor } from "../../server/search-snippet.ts";
 import { start, type Running } from "./helpers.ts";
 
@@ -43,6 +43,42 @@ suite("search filters", () => {
     assert.ok(tool.hits.some(hit => hit.conversation.id === ids.vent && hit.role !== "tool"), "a work thread's answer is inside the work");
     assert.ok(tool.hits.some(hit => hit.conversation.id === `${ids.vent}:14`), "a job's entries are inside the work");
     assert.ok(!root.hits.some(hit => hit.conversation.kind === "job"));
+  });
+
+  test("place splits every hit into six places, OR-ed within, AND-ed with where, in and from", async () => {
+    const dm = await s.send("POST", "/api/c/dm_vent/send", { text: "is the relay up in the DM too", requestId: "filters-place-dm" });
+    assert.equal(dm.status, 200, JSON.stringify(dm.body));
+    const all = await search("");
+    const by = Object.fromEntries(await Promise.all(SEARCH_PLACES.map(async place => [place, await search(`place=${place}`)] as const)));
+    const fits: Record<SearchPlace, (hit: SearchHit) => boolean> = {
+      channels: hit => hit.where === "root" && hit.conversation.kind === "channel",
+      dms: hit => hit.where === "root" && hit.conversation.kind === "dm",
+      solo: hit => hit.where === "root" && hit.conversation.kind === "solo",
+      threads: hit => hit.where === "thread",
+      jobs: hit => hit.where === "tool" && hit.kind !== "tool",
+      tools: hit => hit.kind === "tool",
+    };
+    for (const place of SEARCH_PLACES) {
+      assert.ok(by[place]!.total > 0, place);
+      assert.ok(by[place]!.hits.every(fits[place]), place);
+    }
+    assert.equal(SEARCH_PLACES.reduce((sum, place) => sum + by[place]!.total, 0), all.total);
+    assert.ok(by.solo!.hits.some(hit => hit.conversation.id === ids.soloRoom), "a Solo room's posts");
+    const words = await s.get<SearchResult>("/api/search?q=clock&place=solo&limit=100");
+    assert.deepEqual(ids_(words), ids_(await s.get<SearchResult>("/api/search?q=clock&where=root&limit=100")), "a root chat's words");
+    const mix = await search("place=jobs,threads");
+    assert.equal(mix.total, by.jobs!.total + by.threads!.total);
+    assert.deepEqual(ids_(await search("place=jobs&place=threads")), ids_(mix));
+    assert.deepEqual(ids_(await search("place=Job,THREAD")), ids_(mix));
+    assert.deepEqual(ids_(await s.get<SearchResult>("/api/search?q=relay%20place:jobs%20place:threads&limit=100")), ids_(mix));
+    assert.deepEqual(ids_(await search("place=tool%20calls")), ids_(by.tools!));
+    assert.deepEqual(ids_(await search("place=channels,dms,solo,threads,jobs,tools")), ids_(all));
+    assert.equal((await search("where=root&place=threads")).total, 0);
+    assert.deepEqual(ids_(await search("where=tool&place=jobs,channels")), ids_(by.jobs!));
+    assert.deepEqual(ids_(await search(`in=${ids.cutoverChannel}&place=threads`)), ids_(await search(`in=${ids.cutoverChannel}&where=thread`)));
+    assert.equal((await search(`in=${ids.cutoverChannel}&place=solo,dms`)).total, 0);
+    const ownerJobs = await search("from=owner&place=jobs");
+    assert.ok(ownerJobs.hits.every(hit => fits.jobs(hit) && hit.author.id === "owner"));
   });
 
   test("each hit carries the link that opens it, and a reply names its thread", async () => {
@@ -106,7 +142,7 @@ suite("search filters", () => {
   });
 
   test("an unknown value is a 400 that names it", async () => {
-    for (const [query, word] of [["where=replies", "replies"], ["from=nobody", "nobody"], ["from=owner,nobody", "nobody"], ["in=nowhere", "nowhere"]] as const) {
+    for (const [query, word] of [["where=replies", "replies"], ["place=inbox", "inbox"], ["place=jobs,nowhere", "nowhere"], ["from=nobody", "nobody"], ["from=owner,nobody", "nobody"], ["in=nowhere", "nowhere"]] as const) {
       const answer = await s.send("GET", `/api/search?q=relay&${query}`);
       assert.equal(answer.status, 400, query);
       assert.match((answer.body as { error: string }).error, new RegExp(`"${word}"`), query);
