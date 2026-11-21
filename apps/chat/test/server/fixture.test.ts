@@ -354,13 +354,15 @@ describe("agents, usage and hosts", () => {
   });
 
   test("usage sums by thread and model and splits cost by kind", async () => {
-    const report = await s.get("/api/usage?days=7");
+    const report = await s.get("/api/usage?range=7d&bucket=hour");
     assert.ok(report.rows.length > 0);
     for (const row of report.rows) {
       const parts = row.cost.input + row.cost.output + row.cost.cacheRead + row.cost.cacheWrite;
       assert.ok(Math.abs(parts - row.cost.total) < 1e-9);
     }
-    assert.equal(report.days.length, 7);
+    assert.equal(report.buckets.length, 7 * 24);
+    const sum = (values: number[]) => values.reduce((a, b) => a + b, 0);
+    assert.ok(Math.abs(sum(report.buckets.map((b: { cost: { total: number } }) => b.cost.total)) - sum(report.rows.map((r: { cost: { total: number } }) => r.cost.total))) < 1e-9);
     const pool = await s.get("/api/pool");
     assert.equal(pool.providers.length, 2);
   });

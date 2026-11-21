@@ -510,7 +510,18 @@ export interface UsageRow {
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
   cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
 }
-export interface UsageReport { at: Ms; since: Ms; until: Ms; rows: UsageRow[]; days: { start: Ms; byModel: Record<string, number> }[]; previous: { cost: number; complete: boolean } }
+/** The span the Usage page reads, as Prime's chat Usage page offers it, ending with the bucket that holds now (shared/usage-range.ts). */
+export type UsageRange = "1h" | "24h" | "7d" | "30d" | "90d";
+/** What one chart bar sums. A minute and an hour start on the clock, and a day starts at the owner's local midnight. */
+export type UsageBucket = "minute" | "hour" | "day";
+/** One bucket's sums: turns, tokens and cost of each kind, and the cost of each model for the chart's stacks. */
+export interface UsageBucketSum {
+  start: Ms; turns: number;
+  tokens: UsageRow["tokens"]; cost: UsageRow["cost"];
+  byModel: Record<string, number>;
+}
+/** `buckets` holds every bucket of the range, empty ones too, and its sums equal the sums of `rows` (c191). */
+export interface UsageReport { at: Ms; since: Ms; until: Ms; range: UsageRange; bucket: UsageBucket; rows: UsageRow[]; buckets: UsageBucketSum[] }
 
 export interface HostThread { id: string; name: string; status: RunStatus; model: string | null; updatedAt: Ms; children: number }
 /**

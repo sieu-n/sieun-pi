@@ -5,7 +5,8 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AgentRelayLink, HostsReport, HostView, MachineView, UsageReport, UsageRow } from "../web/src/lib/api/types.ts";
+import { BUCKET_MS, bucketFor, isRange, RANGE_MS } from "../web/src/lib/api/shared/usage-range.ts";
+import type { AgentRelayLink, HostsReport, HostView, MachineView, UsageBucket, UsageBucketSum, UsageRange, UsageReport, UsageRow } from "../web/src/lib/api/types.ts";
 import { MultiHost } from "./host/multi-host.ts";
 import type { RelayHost } from "./host/relay-host.ts";
 import type { Host, Ping, UsageTotal } from "./host/types.ts";
@@ -20,64 +21,73 @@ export const costOf = (total: UsageTotal): UsageRow["cost"] => ({
 const DAY = 86_400_000;
 export const localDayStart = (at: number): number => Math.floor((at + OWNER_ZONE_OFFSET_MS) / DAY) * DAY - OWNER_ZONE_OFFSET_MS;
 
-type UsageFold = { totals: UsageTotal[]; perDay: UsageReport["days"]; previousCost: number };
+type UsageFold = { totals: UsageTotal[]; buckets: UsageBucketSum[] };
 const SUMS = ["turns", "input", "output", "cacheRead", "cacheWrite", "cost", "costInput", "costOutput", "costCacheRead", "costCacheWrite"] as const;
 
-/** The period's totals per thread and model, each day's cost per model and the cost of the period before, from one bucketed answer. */
-function byBucket(buckets: readonly UsageTotal[], since: number, days: number): UsageFold {
+/** The range's totals per thread and model, and each bucket's sums, from one bucketed answer whose every row names its bucket. */
+function fold(rows: readonly UsageTotal[], since: number, step: number, count: number): UsageFold {
   // The same thread and model on two boxes are two rows, each under its own box.
   const totals = new Map<string, UsageTotal>();
-  const perDay = Array.from({ length: days }, (_, i) => ({ start: since + i * DAY, byModel: {} as Record<string, number> }));
-  let previousCost = 0;
-  for (const row of buckets) {
-    if (row.bucket! < since) {
-      previousCost += row.cost;
-      continue;
-    }
-    const day = perDay[Math.round((row.bucket! - since) / DAY)];
-    if (day) day.byModel[row.model] = (day.byModel[row.model] ?? 0) + row.cost;
+  const buckets: UsageBucketSum[] = Array.from({ length: count }, (_, i) => ({
+    start: since + i * step, turns: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, byModel: {},
+  }));
+  for (const row of rows) {
+    const sum = buckets[Math.round((row.bucket! - since) / step)];
+    if (!sum) continue;
+    sum.turns += row.turns;
+    sum.tokens.input += row.input;
+    sum.tokens.output += row.output;
+    sum.tokens.cacheRead += row.cacheRead;
+    sum.tokens.cacheWrite += row.cacheWrite;
+    const cost = costOf(row);
+    for (const kind of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) sum.cost[kind] += cost[kind];
+    sum.byModel[row.model] = (sum.byModel[row.model] ?? 0) + row.cost;
     const key = `${row.host ?? ""}\u0000${row.thread}\u0000${row.model}`;
     const { bucket: _bucket, ...rest } = row;
-    const sum = totals.get(key);
-    if (!sum) totals.set(key, { ...rest });
-    else for (const name of SUMS) sum[name] += row[name];
+    const total = totals.get(key);
+    if (!total) totals.set(key, { ...rest });
+    else for (const name of SUMS) total[name] += row[name];
   }
-  return { totals: [...totals.values()], perDay, previousCost };
+  return { totals: [...totals.values()], buckets };
 }
 
-/** The same fold from one call per range, sent in one round, for a pi-host without `bucketMs`. */
-async function byRange(host: Host, since: number, until: number, days: number, scope: { threads?: string[] }, keep: (row: UsageTotal) => boolean): Promise<UsageFold> {
-  const [totals, perDay, previousRows] = await Promise.all([
-    host.usage({ since, until, ...scope }).then(rows => rows.filter(keep)),
-    Promise.all(Array.from({ length: days }, async (_, i) => {
-      const start = since + i * DAY;
-      const byModel: Record<string, number> = {};
-      for (const row of (await host.usage({ since: start, until: start + DAY, ...scope })).filter(keep)) byModel[row.model] = (byModel[row.model] ?? 0) + row.cost;
-      return { start, byModel };
-    })),
-    host.usage({ since: since - days * DAY, until: since, ...scope }).then(rows => rows.filter(keep)),
-  ]);
-  return { totals, perDay, previousCost: previousRows.reduce((sum, r) => sum + r.cost, 0) };
+/** For a pi-host without `bucketMs`: one call per bucket, sent in one round, each answer named with its bucket and folded the same way. */
+async function byCalls(host: Host, since: number, step: number, count: number, scope: { threads?: string[] }, keep: (row: UsageTotal) => boolean): Promise<UsageTotal[]> {
+  const answers = await Promise.all(Array.from({ length: count }, async (_, i) => {
+    const start = since + i * step;
+    return (await host.usage({ since: start, until: start + step, ...scope })).filter(keep).map(row => ({ ...row, bucket: start }));
+  }));
+  return answers.flat();
 }
 
-export async function usageReport(host: Host, threads: Threads, box: string, opts: { days: number; thread?: string; host?: string }, now = Date.now()): Promise<UsageReport> {
-  const days = Math.min(Math.max(Math.round(opts.days) || 1, 1), 366);
-  const until = localDayStart(now) + DAY;
-  const since = until - days * DAY;
+/** The first moment of the bucket that holds `at`: a clock minute or hour, or the owner's local midnight. */
+export const bucketStart = (bucket: UsageBucket, at: number): number => (bucket === "day" ? localDayStart(at) : Math.floor(at / BUCKET_MS[bucket]) * BUCKET_MS[bucket]);
+
+/**
+ * The range as whole buckets that end with the one holding now, as Prime's chat Usage page draws it: 24 hours for 24h by hour, 1,440 minutes
+ * for 24h by minute. A range or bucket the page does not offer reads as 24h and the range's default bucket.
+ */
+export async function usageReport(host: Host, threads: Threads, box: string, opts: { range?: string; bucket?: string; thread?: string; host?: string }, now = Date.now()): Promise<UsageReport> {
+  const range: UsageRange = isRange(opts.range) ? opts.range : "24h";
+  const bucket = bucketFor(range, opts.bucket);
+  const step = BUCKET_MS[bucket];
+  const count = RANGE_MS[range] / step;
+  const until = bucketStart(bucket, now) + step;
+  const since = until - count * step;
   const scope = opts.thread ? { threads: [opts.thread] } : {};
   // Each row names the box that answered it (MultiHost), and a single host's rows are this box's; the host filter keeps one box's rows.
   const hostOf = (row: UsageTotal): string => row.host ?? box;
   const keep = (row: UsageTotal): boolean => !opts.host || hostOf(row) === opts.host;
-  // One call with a bucket per day: on 11-03 the 30-day default asked pi-host 32 times, and api/usage took 380 to 400 ms on us-metal02.
-  const buckets = (await host.usage({ since: since - days * DAY, until, bucketMs: DAY, ...scope })).filter(keep);
-  // A box whose pi-host predates `bucketMs` answers without buckets; that box's report takes the one round of calls per range.
-  const { totals, perDay, previousCost } = buckets.every(row => row.bucket !== undefined) ? byBucket(buckets, since, days) : await byRange(host, since, until, days, scope, keep);
+  // One call with a bucket each: on 11-03 the 30-day page asked pi-host 32 times, and api/usage took 380 to 400 ms on us-metal02.
+  const answer = (await host.usage({ since, until, bucketMs: step, ...scope })).filter(keep);
+  const rowsByBucket = answer.every(row => row.bucket !== undefined) ? answer : await byCalls(host, since, step, count, scope, keep);
+  const { totals, buckets } = fold(rowsByBucket, since, step, count);
   const rows: UsageRow[] = totals.map(t => ({
     thread: t.thread, threadName: threads.thread(t.thread)?.name ?? t.thread, host: hostOf(t), model: t.model, turns: t.turns,
     tokens: { input: t.input, output: t.output, cacheRead: t.cacheRead, cacheWrite: t.cacheWrite }, cost: costOf(t),
   }));
-  const oldest = Math.min(...threads.threadsList().map(t => t.createdAt), now);
-  return { at: now, since, until, rows, days: perDay, previous: { cost: previousCost, complete: oldest <= since - days * DAY } };
+  return { at: now, since, until, range, bucket, rows, buckets };
 }
 
 interface RegistryHost { name: string; address: string; relayPort?: number; token?: string }

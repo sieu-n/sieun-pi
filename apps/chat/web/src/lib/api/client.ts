@@ -5,7 +5,7 @@
 import type {
   AgentConfig, AgentFolder, AgentHostList, AgentId, AgentSummary, BoardOp, BoardRow, BoardView, CheckInPatch, CheckInView, ChatAgent, ConversationHeader, ConversationId,
   ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, ImageRef, Item, JobNode, Me, MemoryInput, ModelCatalog, OpenedPage, ProjectList, SearchQuery, SearchResult, SendRequest,
-  LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageReport, AccountsView,
+  LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageBucket, UsageRange, UsageReport, AccountsView,
 } from "./types.ts";
 import type { SkillDoc, SkillScan, SkillsReport } from "./shared/skills.ts";
 import { shrink } from "./shrink.ts";
@@ -507,7 +507,7 @@ export const api = {
   markForMe: (agent: AgentId, messageId: string, completed: boolean) =>
     call<{ item: ForMeItem; pending: number }>("POST", `/api/agents/${enc(agent)}/for-me`, { messageId, completed }),
 
-  usage: (opts: { days: number; thread?: string; host?: string }) => call<UsageReport>("GET", `/api/usage${query(opts)}`),
+  usage: (opts: { range: UsageRange; bucket: UsageBucket; thread?: string; host?: string }) => call<UsageReport>("GET", `/api/usage${query(opts)}`),
   pool: () => call<AccountsView>("GET", "/api/pool"),
   hosts: () => call<HostsReport>("GET", "/api/hosts"),
   skills: () => call<SkillsReport>("GET", "/api/skills"),

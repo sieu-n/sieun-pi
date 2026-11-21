@@ -179,7 +179,7 @@ Pages call the server through `web/src/lib/api` (`import { api, timeline, agents
 
 | Call | Endpoint | Returns |
 |---|---|---|
-| `api.usage({days, thread, host})` | `GET /api/usage` | `UsageReport`: rows per thread and model with tokens and the cost of each kind, one row per local day by model, and the period before. |
+| `api.usage({range, bucket, thread, host})` | `GET /api/usage` | `UsageReport`: rows per thread and model with tokens and the cost of each kind, and one bucket per minute, hour or local day of the range (1h, 24h, 7d, 30d or 90d) with its turns, tokens, cost of each kind and cost per model. |
 | `api.pool()` | `GET /api/pool` | `AccountsView` with no thread, from the pi-pool reading the Accounts endpoints share. |
 | `api.hosts()` | `GET /api/hosts` | `HostsReport`: each box's relay, pi-host, machine reading and threads. |
 | `api.skills()` | `GET /api/skills` | `SkillsReport`: the skills inventory of scripts/skills-inventory.py and its last or running scan, from a parsed copy the server reads again only when the file changed. A read never starts a scan. |

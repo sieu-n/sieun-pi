@@ -1,6 +1,6 @@
 /**
  * api/hosts answers from each box's last machine reading and reads it again behind the answer (server/usage.ts `MachineReads`), and
- * api/usage reads every range in one bucketed call (`usageReport`). On 11-03 on us-metal02 the two took 1.1 s and 2.4 s.
+ * api/usage reads a range in one bucketed call (`usageReport`). On 11-03 on us-metal02 the two took 1.1 s and 2.4 s.
  * Run: cd apps/chat && node --import tsx --test --test-force-exit --test-isolation=none test/server/usage-hosts-speed.test.ts
  */
 import assert from "node:assert/strict";
@@ -49,30 +49,52 @@ test("a machine reading answers at once within the tick, and past it answers the
   assert.ok("error" in down && down.error === "connect ECONNREFUSED", "a relay that stops answering reads as unreachable at the next poll");
 });
 
-test("api/usage reads the period, each day and the period before in one bucketed call", async () => {
-  const DAY = 86_400_000;
+test("api/usage reads the range in one bucketed call, each bucket summed apart and the totals equal to their sum", async () => {
+  const HOUR = 3_600_000;
+  const now = Date.UTC(2026, 10, 22, 5, 30);
   const calls: { since?: number; until?: number; bucketMs?: number }[] = [];
-  const row = (bucket: number, thread: string, cost: number): UsageTotal => ({ bucket, thread, model: "m", turns: 1, input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost,
-    costInput: 0, costOutput: 0, costCacheRead: 0, costCacheWrite: 0 });
+  const row = (bucket: number, thread: string, cost: number): UsageTotal => ({ bucket, thread, model: "m", turns: 1, input: 1, output: 1, cacheRead: 2, cacheWrite: 0, cost,
+    costInput: 0, costOutput: 0, costCacheRead: cost, costCacheWrite: 0 });
   const host = {
     async usage(range: { since?: number; until?: number; bucketMs?: number }): Promise<UsageTotal[]> {
       calls.push(range);
       const since = range.since!;
-      return [row(since, "t", 5), ...Array.from({ length: 7 }, (_, i) => row(since + (7 + i) * DAY, "t", 1)), row(since + 13 * DAY, "u", 2)];
+      return [row(since, "t", 5), row(since + 23 * HOUR, "t", 1), row(since + 23 * HOUR, "u", 2)];
     },
   } as unknown as Host;
   const threads = { thread: () => undefined, threadsList: () => [] } as unknown as Threads;
-  const report = await usageReport(host, threads, "box", { days: 7 });
+  const report = await usageReport(host, threads, "box", { range: "24h", bucket: "hour" }, now);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0]!.bucketMs, DAY);
-  assert.equal(calls[0]!.until! - calls[0]!.since!, 14 * DAY, "the period and the one before");
-  assert.equal(report.days.length, 7);
-  assert.deepEqual(report.days.map(day => day.byModel.m), [1, 1, 1, 1, 1, 1, 3]);
-  assert.deepEqual(report.rows.map(r => [r.thread, r.turns, r.cost.total]), [["t", 7, 7], ["u", 1, 2]]);
-  assert.equal(report.previous.cost, 5);
+  assert.equal(calls[0]!.bucketMs, HOUR);
+  assert.equal(calls[0]!.until, Date.UTC(2026, 10, 22, 6), "the range ends with the hour that holds now");
+  assert.equal(calls[0]!.until! - calls[0]!.since!, 24 * HOUR);
+  assert.equal(report.buckets.length, 24);
+  assert.deepEqual(report.buckets.map(b => b.cost.total).filter(Boolean), [5, 3]);
+  assert.equal(report.buckets[23]!.turns, 2);
+  assert.equal(report.buckets[23]!.tokens.cacheRead, 4);
+  assert.equal(report.buckets[23]!.cost.cacheRead, 3, "cache reads keep their own cost in each bucket (c157)");
+  assert.deepEqual(report.rows.map(r => [r.thread, r.turns, r.cost.total]), [["t", 2, 6], ["u", 1, 2]]);
+  const sum = (values: number[]) => values.reduce((a, b) => a + b, 0);
+  assert.equal(sum(report.buckets.map(b => b.cost.total)), sum(report.rows.map(r => r.cost.total)));
 });
 
-test("api/usage from a pi-host without buckets asks each range in one round", async () => {
+test("api/usage offers each range only its own buckets, a day starting at the owner's midnight", async () => {
+  const calls: { since?: number; until?: number; bucketMs?: number }[] = [];
+  const host = { async usage(range: { since?: number; until?: number; bucketMs?: number }) { calls.push(range); return []; } } as unknown as Host;
+  const threads = { thread: () => undefined, threadsList: () => [] } as unknown as Threads;
+  const now = Date.UTC(2026, 10, 22, 5, 30, 12);
+  const minute = await usageReport(host, threads, "box", { range: "1h", bucket: "day" }, now);
+  assert.equal(minute.bucket, "minute", "1h has minutes only");
+  assert.equal(minute.buckets.length, 60);
+  assert.equal(minute.until, Date.UTC(2026, 10, 22, 5, 31));
+  const week = await usageReport(host, threads, "box", { range: "7d", bucket: "day" }, now);
+  assert.equal(week.buckets.length, 7);
+  assert.equal(week.until, Date.UTC(2026, 10, 22, 15), "the day after now starts at KST midnight");
+  const fallback = await usageReport(host, threads, "box", { range: "nope" }, now);
+  assert.deepEqual([fallback.range, fallback.bucket, fallback.buckets.length], ["24h", "hour", 24]);
+});
+
+test("api/usage from a pi-host without buckets asks each bucket in one round", async () => {
   let open = 0, most = 0;
   const host = {
     async usage(range: { since?: number; until?: number; bucketMs?: number }): Promise<UsageTotal[]> {
@@ -80,16 +102,14 @@ test("api/usage from a pi-host without buckets asks each range in one round", as
       most = Math.max(most, open);
       await new Promise(resolve => setTimeout(resolve, 20));
       open--;
-      return [{ thread: "t", model: "m", turns: 1, input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: range.until! - range.since! === 86_400_000 ? 1 : 7,
-        costInput: 0, costOutput: 0, costCacheRead: 0, costCacheWrite: 0 }];
+      return [{ thread: "t", model: "m", turns: 1, input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 1, costInput: 0, costOutput: 0, costCacheRead: 0, costCacheWrite: 0 }];
     },
   } as unknown as Host;
   const threads = { thread: () => undefined, threadsList: () => [] } as unknown as Threads;
-  const report = await usageReport(host, threads, "box", { days: 7 });
-  assert.equal(most, 9, "the period, 7 days and the period before all go out before any answers");
-  assert.ok(report.days.every(day => day.byModel.m === 1));
+  const report = await usageReport(host, threads, "box", { range: "7d", bucket: "day" });
+  assert.equal(most, 7, "the bucketed call answered without buckets, then all 7 days go out before any answers");
+  assert.ok(report.buckets.every(b => b.byModel.m === 1));
   assert.equal(report.rows[0]!.cost.total, 7);
-  assert.equal(report.previous.cost, 7);
 });
 
 test("api/usage labels each row with the box that answered it, and the host filter keeps that box's rows", async () => {
@@ -98,15 +118,14 @@ test("api/usage labels each row with the box that answered it, and the host filt
     cost, costInput: 0, costOutput: 0, costCacheRead: 0, costCacheWrite: 0 });
   const host = {
     async usage(range: { since?: number }): Promise<UsageTotal[]> {
-      const day = range.since! + 7 * DAY;
-      return [row(day, "us-metal02", 1), row(day, "mac", 2), row(range.since!, "mac", 4)];
+      return [row(range.since!, "us-metal02", 1), row(range.since!, "mac", 2), row(range.since! + 6 * DAY, "mac", 4)];
     },
   } as unknown as Host;
   const threads = { thread: () => undefined, threadsList: () => [] } as unknown as Threads;
-  const all = await usageReport(host, threads, "us-metal02", { days: 7 });
-  assert.deepEqual(all.rows.map(r => [r.host, r.cost.total]), [["us-metal02", 1], ["mac", 2]]);
-  const mac = await usageReport(host, threads, "us-metal02", { days: 7, host: "mac" });
-  assert.deepEqual(mac.rows.map(r => [r.host, r.cost.total]), [["mac", 2]]);
-  assert.equal(mac.previous.cost, 4);
-  assert.equal(mac.days[0]!.byModel.m, 2);
+  const all = await usageReport(host, threads, "us-metal02", { range: "7d", bucket: "day" });
+  assert.deepEqual(all.rows.map(r => [r.host, r.cost.total]), [["us-metal02", 1], ["mac", 6]]);
+  const mac = await usageReport(host, threads, "us-metal02", { range: "7d", bucket: "day", host: "mac" });
+  assert.deepEqual(mac.rows.map(r => [r.host, r.cost.total]), [["mac", 6]]);
+  assert.equal(mac.buckets[0]!.byModel.m, 2);
+  assert.equal(mac.buckets[6]!.byModel.m, 4);
 });

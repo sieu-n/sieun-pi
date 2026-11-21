@@ -1,11 +1,11 @@
-/** Pure sums for the Usage page: totals, per chat, per model, per kind and the daily chart series. Every sum is exact (c191). */
+/** Pure sums for the Usage page: totals, per chat, per model, per kind and the chart series. Every sum is exact (c191). */
 import type { UsageReport, UsageRow } from "$lib/api";
 
 export const KINDS = ["input", "output", "cacheRead", "cacheWrite"] as const;
 export type Kind = (typeof KINDS)[number];
 export type Tokens = UsageRow["tokens"];
 export type Cost = UsageRow["cost"];
-export type UsageDay = UsageReport["days"][number];
+export type UsageBucketSum = UsageReport["buckets"][number];
 
 export interface Total {
   readonly turns: number;
@@ -97,15 +97,15 @@ export function seriesOf(models: readonly string[]): Series[] {
   ];
 }
 
-/** Each day's cost per series, in series order. */
-export function dayCells(days: readonly UsageDay[], series: readonly Series[]): number[][] {
-  return days.map(day => series.map(line => line.models.reduce((sum, model) => sum + (day.byModel[model] ?? 0), 0)));
+/** Each bucket's cost per series, in series order. */
+export function cellsOf(buckets: readonly UsageBucketSum[], series: readonly Series[]): number[][] {
+  return buckets.map(bucket => series.map(line => line.models.reduce((sum, model) => sum + (bucket.byModel[model] ?? 0), 0)));
 }
 
-/** Models by their cost over the days, costliest first, for a stable color per model. */
-export function modelsByCost(days: readonly UsageDay[]): string[] {
+/** Models by their cost over the buckets, costliest first, for a stable color per model. */
+export function modelsByCost(buckets: readonly UsageBucketSum[]): string[] {
   const sums = new Map<string, number>();
-  for (const day of days) for (const [model, cost] of Object.entries(day.byModel)) sums.set(model, (sums.get(model) ?? 0) + cost);
+  for (const bucket of buckets) for (const [model, cost] of Object.entries(bucket.byModel)) sums.set(model, (sums.get(model) ?? 0) + cost);
   return [...sums].sort((a, b) => b[1] - a[1]).map(([model]) => model);
 }
 

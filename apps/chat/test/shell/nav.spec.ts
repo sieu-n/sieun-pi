@@ -79,7 +79,7 @@ test("the avatar menu opens Settings", async ({ page }) => {
 test("old #/usage, #/hosts and #/accounts links land in their Settings section with the query kept", async ({ page }) => {
   await page.goto("/#/usage?days=7");
   await expect(page).toHaveURL(/#\/settings\/usage\?days=7$/);
-  await expect(page.getByRole("combobox", { name: "Period", exact: true })).toHaveValue("7");
+  await expect(page.getByRole("tablist", { name: "Range" }).getByRole("tab", { name: "7d" })).toHaveAttribute("aria-selected", "true");
   await page.goto("/#/hosts");
   await expect(page).toHaveURL(/#\/settings\/hosts$/);
   await expect(page.getByRole("navigation", { name: "Settings" }).getByRole("link", { name: "Hosts" })).toHaveAttribute("aria-current", "page");
