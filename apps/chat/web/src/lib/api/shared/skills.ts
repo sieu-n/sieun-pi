@@ -1,6 +1,6 @@
 /**
  * The skills inventory that sieun-pi's scripts/skills-inventory.py writes to ~/work/skills-health/inventory.json, as the Skills section of
- * Settings reads it through GET /api/skills (server/skills.ts). The scanner owns the shape; `parseInventory` keeps the rows it can read and
+ * Settings' `current` layout reads it through GET /api/skills/inventory (server/skills.ts). The scanner owns the shape; `parseInventory` keeps the rows it can read and
  * fills a missing field with its empty value, so a scanner that adds a field or skips one never blanks the page.
  */
 
@@ -53,7 +53,7 @@ export type SkillInventory = { generatedAt: string | null; definition: string | 
 /** The scanner's last or running scan, which POST /api/skills/scan starts and the `skills` live event sends as it starts and ends. */
 export type SkillScan = { running: boolean; startedAt: number | null; endedAt: number | null; error: string | null };
 
-/** What GET /api/skills answers: the last inventory read, and the last or running scan. */
+/** What GET /api/skills/inventory answers for the `current` layout: the last inventory read, and the last or running scan. */
 export type SkillsReport = {
   inventory: SkillInventory | null;
   /** Why the inventory file did not read, such as "no inventory yet"; null when it read. */
@@ -138,3 +138,246 @@ export function useConversation(use: SkillUse): string | null {
   if (use.conversation === null || use.entry === null) return null;
   return use.conversation === 1 ? use.session : `${use.session}:${use.conversation}`;
 }
+
+/*
+ * The skills DB read model. sw factory keeps the wanted state of every skill in <data dir>/chat.sqlite (server/skills-db.ts): one row per
+ * skill with its owner, its one source and its installs. Each scan of scripts/skills-inventory.py adds the copies it saw on disk, and rules
+ * give every skill its verdicts. GET /api/skills answers one `SkillsView` that a Settings > Skills layout renders whole, and the `sw skills`
+ * commands (apps/chat/bin/sw.mjs) call the same routes. The owner asked for it in #sw-factory-build on 11-22 (msgs mwqwfx5h, mwqwgfsi):
+ * "DB에 저장되어있고 ... should be checkable/installable by command & api call" and "so idempotent, db owns ownership".
+ */
+
+/** A box the scanner reads: us-metal02 itself, or the Mac over ssh. */
+export type BoxName = string;
+
+/** The tools that load skills from disk. pi-host reads Prime's folders, so a Prime install reaches pi-host too. */
+export const SKILL_RUNTIMES = ["prime", "pi-host", "claude", "codex", "pi"] as const;
+export type SkillRuntime = (typeof SKILL_RUNTIMES)[number];
+
+/** Who answers for a skill: the owner, or an agent by its id, such as ag_agent-factory. */
+export type SkillOwner = { kind: "owner" } | { kind: "agent"; id: string };
+
+/**
+ * Where a skill's text lives. A git source names its repo and the folder in it, such as sieun-pi `skills/board`. An upstream source is a
+ * package the owner installed and keeps untouched (c226), such as a Claude Code plugin or Prime's bundled skills. A harness source is an
+ * entry in Prime's global continual harness. A local source is a folder on one box that no git repo or package holds.
+ */
+export type SkillSource =
+  | { kind: "git"; repo: string; path: string }
+  | { kind: "upstream"; package: string; url: string | null }
+  | { kind: "harness"; entryKind: string; entryId: string }
+  | { kind: "local"; box: BoxName; path: string };
+
+/**
+ * An install the DB wants on disk: a link to the source, or a copy of it, at `path` on `box`, for the runtimes that read that folder.
+ * `agent` names the agent the install is for, where one asked for it; pi-host has no per-agent skill folder, so it is a record only.
+ */
+export type SkillInstall = {
+  id: string;
+  box: BoxName;
+  path: string;
+  mode: "link" | "copy";
+  runtimes: SkillRuntime[];
+  agent: string | null;
+  state: InstallState;
+};
+
+/**
+ * How an install matches the disk at the last scan. `changed` is a copy edited in place since it was placed; `behind` is a copy whose
+ * source moved on since, which `sw skills apply` refreshes; `unknown` is an install on a box whose last scan failed.
+ */
+export type InstallState =
+  | { kind: "ok" }
+  | { kind: "missing" }
+  | { kind: "wrong-link"; target: string | null }
+  | { kind: "changed"; changedLines: number }
+  | { kind: "behind"; changedLines: number }
+  | { kind: "unknown"; reason: string };
+
+/**
+ * What one folder on disk is to its skill. `source` is the git folder or package folder that holds the text, `checkout` another checkout
+ * of the same git source (the Mac's sieun-pi, an old clone), `install` a link or copy an install row names, and `unowned` a folder the DB
+ * has no row for, which `sw skills check` lists until someone adopts or removes it.
+ */
+export type CopyRole = "source" | "checkout" | "install" | "unowned";
+
+/** One folder or link the last scan of its box saw. */
+export type SkillCopy = {
+  /** `<box>:<path>`, the id `sw skills remove` and `adopt` take. */
+  id: string;
+  box: BoxName;
+  path: string;
+  role: CopyRole;
+  installId: string | null;
+  /** Where a symlink points, else null. */
+  link: string | null;
+  /** False for a link whose target is gone. */
+  exists: boolean;
+  hash: string | null;
+  lines: number | null;
+  bytes: number | null;
+  files: number | null;
+  mtime: string | null;
+  /** The tools that read the folder this copy sits in. */
+  loadedBy: SkillRuntime[];
+  /** Lines added plus lines removed against the source text; 0 when identical, null when either text did not read. */
+  changedLines: number | null;
+  /** The git checkout this copy sits in, with its last commit time; `stale` when that commit is older than `STALE_CHECKOUT_DAYS`. */
+  checkout: { root: string; branch: string | null; headAt: string | null; stale: boolean } | null;
+};
+
+/**
+ * The rule verdicts, recomputed on every scan (server/skills-rules.ts). Only `merge` needs an agent, which checks the proposal before it
+ * applies, and nothing here removes a skill by itself: removal happens when a person or an agent calls remove.
+ */
+export const VERDICT_RULES = ["duplicate", "near-duplicate", "name-clash", "outdated", "stale-clone", "bloated", "unused", "broken"] as const;
+export type VerdictRule = (typeof VERDICT_RULES)[number];
+
+/** What a verdict proposes: remove a copy, merge it into another skill, review its description, or nothing but a note. */
+export type VerdictAction = "remove" | "merge" | "review-description" | "note";
+
+export type SkillVerdictRow = {
+  rule: VerdictRule;
+  action: VerdictAction;
+  detail: string;
+  /** The copy the verdict is about, or null when it is about the skill. */
+  copyId: string | null;
+  /** The skill or copy a duplicate or merge points at. */
+  other: string | null;
+};
+
+/** The thread kinds whose prompt can list a skill. */
+export const THREAD_KINDS = [
+  "sw-comm", "sw-work", "sw-job", "sw-subagent", "sw-duty", "prime-chat", "prime-job", "prime-subagent", "claude", "codex",
+] as const;
+export type ThreadKind = (typeof THREAD_KINDS)[number];
+
+/**
+ * How one thread kind sees a skill. `listed` puts its name and description in the prompt, `imported` lists it and pre-imports its Python
+ * module, `hidden` keeps it out (with `why`, such as disable-model-invocation), and `cwd` lists it only when the thread's folder is `repo`.
+ */
+export type SkillSight =
+  | { kind: ThreadKind; how: "listed" | "imported"; copyId: string }
+  | { kind: ThreadKind; how: "cwd"; repo: string; copyId: string }
+  | { kind: ThreadKind; how: "hidden"; why: string };
+
+/** Use in the last 30 days: tool calls that opened the SKILL.md or called its module, the sessions they came from, and the last one. */
+export type SkillUse30d = {
+  uses: number;
+  sessions: number;
+  lastUse: string | null;
+  byKind: Partial<Record<ThreadKind, { uses: number; sessions: number }>>;
+};
+
+export type SkillEntry = {
+  /** Stable id: the source key plus the name, such as `git:sieun-pi/skills/board`. */
+  id: string;
+  name: string;
+  description: string;
+  owner: SkillOwner;
+  source: SkillSource;
+  installs: SkillInstall[];
+  copies: SkillCopy[];
+  /** The source text's size against the median of our skills; `ratio` is bytes over the median bytes. */
+  size: { lines: number | null; bytes: number | null; ratio: number | null };
+  verdicts: SkillVerdictRow[];
+  use: SkillUse30d;
+  /** Whether a Python module of this name is pre-imported in Prime and pi-host, which counts every call as a use. */
+  preimported: boolean;
+  sees: SkillSight[];
+};
+
+/** A folder in a box's tree, with the skill folders under it. */
+export type SkillTreeNode = { name: string; path: string; copies: number; links: number; loadedBy: SkillRuntime[]; children: SkillTreeNode[] };
+
+/**
+ * A box's scan state. An asleep Mac keeps its last good scan: `state` is `offline`, `since` is the first failed scan after it, and
+ * `message` reads "Mac asleep or offline since X, showing its scan from Y"; `error` holds the raw ssh error for a hover.
+ */
+export type SkillBoxState = {
+  box: BoxName;
+  state: "ok" | "offline" | "never";
+  scannedAt: string | null;
+  lastOkAt: string | null;
+  since: string | null;
+  seconds: number | null;
+  message: string | null;
+  error: string | null;
+  tree: SkillTreeNode[];
+};
+
+/** The numbers the rules use, each with where it came from. */
+export type SkillThresholds = {
+  medianBytes: number;
+  medianLines: number;
+  bloatBytes: number;
+  nearDuplicate: number;
+  staleCheckoutDays: number;
+  source: string;
+};
+
+/** The headline counts over every skill. A skill counts once per rule however many of its copies match. */
+export type SkillCounts = {
+  skills: number;
+  copies: number;
+  installs: number;
+  duplicated: number;
+  outdated: number;
+  bloated: number;
+  neverUsed: number;
+  drift: number;
+};
+
+/** GET /api/skills: everything a layout needs, in one call. */
+export type SkillsView = {
+  generatedAt: string | null;
+  seededAt: string | null;
+  counts: SkillCounts;
+  thresholds: SkillThresholds;
+  boxes: SkillBoxState[];
+  skills: SkillEntry[];
+  scan: SkillScan;
+};
+
+/**
+ * One way the disk differs from the DB, which GET /api/skills/check lists. `unowned` is a folder with no row, `missing` an install not on
+ * disk, `changed` a copy edited in place, `behind` a copy whose source moved on, and `wrong-link` a link that points elsewhere. Each item
+ * names the commands that settle it.
+ */
+export type DriftItem =
+  | { kind: "unowned"; copyId: string; box: BoxName; path: string; name: string; fix: ("adopt" | "remove")[] }
+  | { kind: "missing" | "wrong-link" | "behind"; installId: string; skillId: string; box: BoxName; path: string; fix: ("apply" | "remove")[] }
+  | { kind: "changed"; installId: string; skillId: string; box: BoxName; path: string; changedLines: number; fix: ("adopt" | "remove")[] };
+
+export type SkillsCheck = { at: string; items: DriftItem[]; offline: BoxName[] };
+
+/** One step `sw skills apply` takes or would take, and how it went. */
+export type ApplyStep = {
+  installId: string;
+  box: BoxName;
+  path: string;
+  step: "create" | "relink" | "refresh";
+  result: "done" | "planned" | "queued" | "failed";
+  note: string | null;
+};
+
+/** POST /api/skills/apply, with `{ dryRun: true }` to plan only. `changes` counts the steps that did or would change the disk. */
+export type ApplyResult = { at: string; dryRun: boolean; changes: number; steps: ApplyStep[]; moveId: string | null };
+
+/** A logged change: what the DB and disk looked like before, so `sw skills undo <id>` puts it back. */
+export type SkillMove = {
+  id: string;
+  at: string;
+  kind: "install" | "remove" | "adopt" | "move" | "apply" | "own";
+  summary: string;
+  undoneAt: string | null;
+};
+
+export type InstallBody = { name: string; box: BoxName; runtime: SkillRuntime; agent?: string | null; mode?: "link" | "copy"; path?: string | null; source?: string | null };
+/** `target` is a copy id (`<box>:<path>`), an install id, or a skill id. */
+export type RemoveBody = { target: string };
+export type AdoptBody = { copyId: string; skillId?: string | null };
+export type MoveBody = { installId: string; path: string };
+export type UndoBody = { moveId: string };
+export type OwnBody = { skillId: string; owner: string };
+export type SkillsChange = { move: SkillMove; apply: ApplyResult | null };
