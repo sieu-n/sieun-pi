@@ -17,6 +17,7 @@ board.get("p220")          # one item in full: note, requirements, target JSON, 
 board.get("t43")           # one todo
 board.done(since="p250")   # done and dropped steps from p250 on, with their notes
 board.todos(all=True)      # every todo with its answer
+board.notes("land order")  # step notes and requirements that contain the text, in any case
 board.corrections()        # every owner correction in force, in full
 board.corrections("c12")   # one correction with the owner's words and what enforces it
 board.sends("iwebfusion")  # every email, ticket reply or message an agent sent or tried to send there (c37)

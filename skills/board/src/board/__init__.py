@@ -1,4 +1,4 @@
-"""Read a browser chat's board (plan, owner todos, scratchpad) as plain text, set a kernel-free wake with wake(), and record what a job owns with own().
+"""Read a browser chat's board (plan, owner todos) as plain text, set a kernel-free wake with wake(), and record what a job owns with own().
 
 The chat server keeps each chat's board in <agent dir>/browser-chat/boards/<chat session id>.json. The chat_board tool shows only the open
 checklist; these calls read the rest. A chat's kernel and every job under it find the chat from RLM_SESSION_DIR. corrections() reads the
@@ -205,11 +205,6 @@ def _todo_line(todo: dict) -> str:
     return f"  {'[x]' if todo.get('done') else '[ ]'} {todo['id']} {todo['text']} (from {todo.get('from', '?')}{extra}){choices}{links}{answer}"
 
 
-def _scratch_line(note: dict, depth: int) -> str:
-    links = " ".join(f"[{link.get('label', '')}]({link['target']})" for link in note.get("links", []))
-    return f"{'  ' * (depth + 1)}- {note['id']} {note['text']}{' ' + links if links else ''}"
-
-
 def open(chat: str | None = None) -> str:  # noqa: A001
     """The open checklist, the same view chat_board shows: open goals and steps, open todos, and a count of the rest."""
     try:
@@ -238,7 +233,7 @@ def open(chat: str | None = None) -> str:  # noqa: A001
 
 
 def get(id: str, chat: str | None = None) -> str:  # noqa: A002
-    """One item in full: a plan item (pN) with note, requirements, target and every step under it, a todo (tN) or a note (sN)."""
+    """One item in full: a plan item (pN) with note, requirements, target and every step under it, or a todo (tN)."""
     _, board = _load(chat)
     for item, _depth, above in _walk(board["plan"]):
         if item["id"] != id:
@@ -267,24 +262,14 @@ def get(id: str, chat: str | None = None) -> str:  # noqa: A002
     for todo in board["todos"]:
         if todo["id"] == id:
             return _Text(_todo_line(todo).strip() + f" (asked {todo.get('at', '?')})")
-    for note, depth, _ in _walk(board.get("scratch", [])):
-        if note["id"] == id:
-            return _Text("\n".join([_scratch_line(note, 0).strip() + f" ({note.get('at', '?')})"] + [_scratch_line(child, d) for child, d, _ in _walk(note.get("children", []))]))
     return _Text(f"No item {id} on this board.")
 
 
-def notes(query: str | None = None, chat: str | None = None) -> str:
-    """The scratchpad as an indented list with links. With query, only the notes, step notes and requirements whose text has it (any case)."""
+def notes(query: str, chat: str | None = None) -> str:
+    """The step notes and requirements whose text has query (any case)."""
     _, board = _load(chat)
-    if query is None:
-        lines = [_scratch_line(note, depth) for note, depth, _ in _walk(board.get("scratch", []))]
-        return _Text("\n".join(["Scratchpad:"] + (lines or ["  (empty)"])))
     needle = query.lower()
     lines = []
-    for note, _depth, _ in _walk(board.get("scratch", [])):
-        links = " ".join(link["target"] for link in note.get("links", []))
-        if needle in f"{note['text']} {links}".lower():
-            lines.append(_scratch_line(note, 0))
     for item, _depth, _ in _walk(board["plan"]):
         if item.get("note") and needle in item["note"].lower():
             lines.append(f"  {item['id']} note: {item['note']}")
