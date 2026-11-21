@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dayGroups, keepGroups, layoutRows, newestRows, STACK_MS } from "../../web/src/pages/channel/rows.ts";
-import { exactUnique, matchCandidates, openQuery } from "../../web/src/pages/channel/typeahead.ts";
+import { closedEmojiName, exactUnique, matchCandidates, openQuery, parseCommand } from "../../web/src/pages/channel/typeahead.ts";
 
 const now = new Date(2026, 9, 28, 15, 0).getTime();
 const at = (day: number, hour: number, minute = 0) => new Date(2026, 9, day, hour, minute).getTime();
@@ -102,6 +102,30 @@ test("openQuery finds @ and # at the caret and ignores emails and closed names",
   assert.equal(openQuery("\ufffc ", 2), null);
   assert.equal(openQuery("@cr\ufffc x", 6), null);
   assert.deepEqual(openQuery("\ufffc @v", 4), { trigger: "@", start: 2, text: "v" });
+});
+
+test("openQuery opens emoji after a colon and two letters, and commands only at the start", () => {
+  assert.deepEqual(openQuery("nice :thu", 9), { trigger: ":", start: 5, text: "thu" });
+  assert.deepEqual(openQuery(":+1", 3), { trigger: ":", start: 0, text: "+1" });
+  assert.equal(openQuery("nice :t", 7), null);
+  assert.equal(openQuery("at 10:30", 8), null);
+  assert.equal(openQuery("ok :) yes", 9), null);
+  assert.deepEqual(openQuery("@ann :)", 7), { trigger: "@", start: 0, text: "ann :)" });
+  assert.deepEqual(openQuery("/", 1), { trigger: "/", start: 0, text: "" });
+  assert.deepEqual(openQuery("/top", 4), { trigger: "/", start: 0, text: "top" });
+  assert.equal(openQuery("/topic new words", 16), null);
+  assert.equal(openQuery("/home/sieun", 11), null);
+  assert.equal(openQuery("see /top", 8), null);
+});
+
+test("closedEmojiName reads a whole :name: at the caret, and parseCommand reads a draft that is a command", () => {
+  assert.equal(closedEmojiName("nice :thumbsup:", 15), "thumbsup");
+  assert.equal(closedEmojiName("at 10:30:", 9), null);
+  assert.equal(closedEmojiName("nice :thumbsup", 14), null);
+  assert.deepEqual(parseCommand("/topic  Builds the app "), { name: "topic", args: "Builds the app" });
+  assert.deepEqual(parseCommand("/Archive"), { name: "archive", args: "" });
+  assert.equal(parseCommand("/home/sieun/src is the path"), null);
+  assert.equal(parseCommand("hi /topic x"), null);
 });
 
 test("matchCandidates ranks prefix, then word prefix, then substring, stable inside a rank", () => {

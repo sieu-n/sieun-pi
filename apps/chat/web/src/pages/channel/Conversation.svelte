@@ -35,6 +35,7 @@
   import { roomDraftKey, threadDraftKey } from "$lib/drafts.svelte";
   import Timeline from "./Timeline.svelte";
   import { directory } from "./directory.svelte";
+  import type { SlashCommand } from "./typeahead";
   import { AuthorBoards } from "./author-boards.svelte";
   import { avatarOf, mentionContext, placeText, type Outgoing } from "./present";
 
@@ -298,6 +299,33 @@
     void store.readNow().catch(() => toast.error(`Could not mark ${isChannel ? `#${name}` : name} as read`));
   }
 
+  /** What `/` lists in this room's composer. Each throws on a missing argument, which keeps the draft and shows the message. */
+  async function setTopic(text: string) {
+    if (!text) throw new Error(`Type the new ${isSolo ? "agenda" : "description"} after /topic`);
+    await api.updateRoom(id, { agenda: text });
+    await store.refreshHeader();
+    toast.success(isSolo ? "Agenda updated" : "Channel description updated");
+  }
+  async function renameRoom(text: string) {
+    if (!text) throw new Error("Type the new name after /rename");
+    const room = await api.updateRoom(id, { name: text.replace(/^#/, "") });
+    await store.refreshHeader();
+    toast.success(`Renamed to #${room.name}`);
+  }
+  const commands = $derived<SlashCommand[]>([
+    ...(isChannel || isSolo
+      ? [{ name: "topic", args: "[text]", description: isSolo ? "Set this room's agenda" : "Set the channel description", run: ({ args }: { args: string }) => setTopic(args) }]
+      : []),
+    ...(isChannel ? [{ name: "rename", args: "[name]", description: "Rename this channel", run: ({ args }: { args: string }) => renameRoom(args) }] : []),
+    ...(isSolo && header
+      ? [closedAt
+          ? { name: "reopen", description: "Reopen this room", run: () => setClosed(false) }
+          : { name: "close", description: "Close this room, as its agenda is done", run: () => setClosed(true) }]
+      : []),
+    { name: "search", args: "[words]", description: "Search in this conversation", run: ({ args }) => search.open({ kind: "conversation", id }, args) },
+    ...(working ? [{ name: "stop", description: "Stop the answer the agent is writing", run: stop }] : []),
+  ]);
+
   function onkeydown(e: KeyboardEvent) {
     if (modKey(e) && !e.shiftKey && e.key.toLowerCase() === "l") {
       e.preventDefault();
@@ -495,6 +523,7 @@
     autofocus
     onsend={send}
     onstop={stop}
+    {commands}
   />
   {/if}
 </section>

@@ -63,6 +63,15 @@ export function chipElement(doc: Document, target: ChipTarget): HTMLElement {
 
 /** Replaces the typed query (from its trigger to the caret) with a chip and a space, and puts the caret after them. */
 export function insertChip(root: HTMLElement, queryLength: number, target: ChipTarget): void {
+  replaceQuery(root, queryLength, [chipElement(root.ownerDocument, target), root.ownerDocument.createTextNode("\u00a0")]);
+}
+
+/** Replaces the typed query (from its trigger to the caret) with text, such as an emoji or a `/command `, and puts the caret after it. */
+export function insertQueryText(root: HTMLElement, queryLength: number, text: string): void {
+  replaceQuery(root, queryLength, [root.ownerDocument.createTextNode(text)]);
+}
+
+function replaceQuery(root: HTMLElement, queryLength: number, nodes: Node[]): void {
   const doc = root.ownerDocument;
   const selection = doc.getSelection();
   if (!selection || !selection.rangeCount) return;
@@ -77,15 +86,31 @@ export function insertChip(root: HTMLElement, queryLength: number, target: ChipT
     range.collapse(true);
   }
   range.deleteContents();
-  const chip = chipElement(doc, target);
-  const space = doc.createTextNode("\u00a0");
-  range.insertNode(space);
-  range.insertNode(chip);
+  for (const added of [...nodes].reverse()) range.insertNode(added);
   const after = doc.createRange();
-  after.setStartAfter(space);
+  after.setStartAfter(nodes[nodes.length - 1]!);
   after.collapse(true);
   selection.removeAllRanges();
   selection.addRange(after);
+}
+
+/** Puts text at a range kept while focus was elsewhere, such as the emoji picker's search field, and returns the range just after it. */
+export function insertTextAt(root: HTMLElement, at: Range | null, text: string): Range {
+  const doc = root.ownerDocument;
+  const range = at && root.contains(at.startContainer) ? at.cloneRange() : endOf(root);
+  range.deleteContents();
+  const node = doc.createTextNode(text);
+  range.insertNode(node);
+  range.setStartAfter(node);
+  range.collapse(true);
+  return range;
+}
+
+function endOf(root: HTMLElement): Range {
+  const range = root.ownerDocument.createRange();
+  range.selectNodeContents(root);
+  range.collapse(false);
+  return range;
 }
 
 /** Pastes plain text only, so styles from other pages never land in the draft. */

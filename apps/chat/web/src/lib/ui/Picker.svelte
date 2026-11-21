@@ -168,6 +168,8 @@
           >
             {#if item.avatar}
               <Avatar name={item.avatar.name} kind={item.avatar.kind ?? "agent"} seed={item.avatar.seed ?? item.id} src={item.avatar.src ?? null} size={20} />
+            {:else if item.glyph}
+              <span class="glyph" aria-hidden="true">{item.glyph}</span>
             {:else if item.icon}
               <Icon name={item.icon} size={18} />
             {/if}
@@ -231,6 +233,14 @@
   }
   .option.active {
     background: var(--affordance-ghost-hover);
+  }
+  .glyph {
+    flex: none;
+    width: 20px;
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+    font-size: 18px;
+    line-height: 1;
+    text-align: center;
   }
   .option[aria-disabled="true"] {
     opacity: 0.45;

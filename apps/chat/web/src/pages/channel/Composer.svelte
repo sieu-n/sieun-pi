@@ -2,14 +2,18 @@
   import { onMount } from "svelte";
   import { attach, type AgentSummary, type Attached, type Room } from "$lib/api";
   import { holdReload, releaseReload } from "$lib/api/reload";
+  import { emojiOf, searchEmoji } from "$lib/api/shared/emoji";
   import AvatarStack from "$lib/ui/AvatarStack.svelte";
   import Checkbox from "$lib/ui/Checkbox.svelte";
   import IconButton from "$lib/ui/IconButton.svelte";
   import Picker from "$lib/ui/Picker.svelte";
+  import Popover from "$lib/ui/Popover.svelte";
   import { toast } from "$lib/ui/toast.svelte";
   import type { PickerItem } from "$lib/ui/types";
-  import { insertChip, insertPlainText, readDraft, textBeforeCaret, type ChipTarget } from "./composer-dom";
-  import { matchCandidates, openQuery, type Query } from "./typeahead";
+  import { insertChip, insertPlainText, insertQueryText, insertTextAt, readDraft, textBeforeCaret, type ChipTarget } from "./composer-dom";
+  import EmojiPicker from "./EmojiPicker.svelte";
+  import { frequentEmoji } from "./frequent-emoji.svelte";
+  import { closedEmojiName, matchCandidates, openQuery, parseCommand, type Query, type SlashCommand } from "./typeahead";
   import type { Outgoing } from "./present";
   import { composing } from "$lib/ui/keyboard";
   import { drafts } from "$lib/drafts.svelte";
@@ -33,8 +37,10 @@
     /** Takes the message and returns at once; the page shows it as sending. A rejection puts the text back in an empty box. */
     onsend: (out: Outgoing) => Promise<void>;
     onstop?: () => void;
+    /** What `/` lists here; a draft that names one runs it instead of posting. With none, `/` opens nothing and such a draft posts. */
+    commands?: SlashCommand[];
   };
-  let { placeholder, agents, channels, room = null, working = false, draftKey, autofocus = false, compact = false, alsoSend = null, onsend, onstop }: Props = $props();
+  let { placeholder, agents, channels, room = null, working = false, draftKey, autofocus = false, compact = false, alsoSend = null, onsend, onstop, commands = [] }: Props = $props();
 
   /** An attached image, whose upload starts as it is attached (`attach`). */
   type Attachment = { file: File; image: Attached };
@@ -75,20 +81,30 @@
   const channelCandidates = $derived<Candidate[]>(
     channels.filter((c) => !c.archived).map((c) => ({ id: c.id, name: c.name, kind: "channel", detail: c.agenda || `${c.members.length} members`, target: { id: c.id, name: c.name, kind: "channel" } })),
   );
-  const matches = $derived(query ? matchCandidates(query.trigger === "@" ? agentCandidates : channelCandidates, query.text, 8) : []);
+  const matches = $derived(query?.trigger === "@" || query?.trigger === "#" ? matchCandidates(query.trigger === "@" ? agentCandidates : channelCandidates, query.text, 8) : []);
+  const commandMatches = $derived(query?.trigger === "/" ? commands.filter((c) => c.name.startsWith(query!.text.toLowerCase())) : []);
   const pickerItems = $derived<PickerItem[]>(
-    matches.map((m) => ({
-      id: m.id,
-      label: m.name,
-      trailing: m.kind,
-      ...(m.detail ? { detail: m.detail } : {}),
-      ...(m.kind === "channel" ? { icon: "hash" } : { avatar: { name: m.name, kind: "agent" as const, seed: m.id } }),
-    })),
+    query?.trigger === ":"
+      ? searchEmoji(query.text, 8).map((e) => ({ id: e.char, label: `:${e.names[0]}:`, glyph: e.char }))
+      : query?.trigger === "/"
+        ? commandMatches.map((c) => ({ id: c.name, label: `/${c.name}`, detail: c.description, ...(c.args ? { trailing: c.args } : {}) }))
+        : matches.map((m) => ({
+            id: m.id,
+            label: m.name,
+            trailing: m.kind,
+            ...(m.detail ? { detail: m.detail } : {}),
+            ...(m.kind === "channel" ? { icon: "hash" } : { avatar: { name: m.name, kind: "agent" as const, seed: m.id } }),
+          })),
   );
+  const pickerLabel = $derived(({ "@": "Agents", "#": "Channels", ":": "Emoji", "/": "Commands" } as const)[query?.trigger ?? "@"]);
   let pickerOpen = $state(false);
   $effect(() => {
-    pickerOpen = !!query && matches.length > 0;
+    pickerOpen = !!query && pickerItems.length > 0;
   });
+  /** The caret's last place in the box, so the emoji button inserts there while focus sits in the picker's search field. */
+  let lastRange: Range | null = null;
+  let emojiOpen = $state(false);
+  let emojiButton = $state<HTMLButtonElement>();
 
   onMount(() => {
     if (!box) return;
@@ -101,7 +117,10 @@
     // that pass cost 39 to 56 ms of each thread open in the box Chrome at 6x CPU throttle.
     if (autofocus) requestAnimationFrame(() => box?.isConnected && focusEnd());
     const onSelection = () => {
-      if (document.activeElement === box) updateQuery();
+      if (document.activeElement !== box) return;
+      const selection = document.getSelection();
+      if (selection?.rangeCount && box?.contains(selection.getRangeAt(0).startContainer)) lastRange = selection.getRangeAt(0).cloneRange();
+      updateQuery();
     };
     document.addEventListener("selectionchange", onSelection);
     return () => document.removeEventListener("selectionchange", onSelection);
@@ -149,11 +168,54 @@
   }
 
   function pick(id: string) {
-    const hit = matches.find((m) => m.id === id);
-    if (!box || !hit || !query) return;
-    insertChip(box, query.text.length, hit.target);
+    if (!box || !query) return;
+    if (query.trigger === ":") {
+      insertQueryText(box, query.text.length, `${id}\u00a0`);
+      frequentEmoji.use(id);
+    } else if (query.trigger === "/") {
+      insertQueryText(box, query.text.length, `/${id}\u00a0`);
+    } else {
+      const hit = matches.find((m) => m.id === id);
+      if (!hit) return;
+      insertChip(box, query.text.length, hit.target);
+    }
     query = null;
     sync();
+  }
+
+  /** Slack turns a whole `:name:` into its emoji as the closing colon is typed. */
+  function oninput(e: Event) {
+    if (box && e instanceof InputEvent && e.inputType === "insertText" && e.data === ":") {
+      const before = textBeforeCaret(box)?.text ?? "";
+      const name = closedEmojiName(before, before.length);
+      const emoji = name ? emojiOf(name) : undefined;
+      if (name && emoji) {
+        insertQueryText(box, name.length + 1, emoji.char);
+        frequentEmoji.use(emoji.char);
+      }
+    }
+    sync();
+  }
+
+  function caretBack() {
+    if (!box) return;
+    box.focus();
+    const selection = document.getSelection();
+    if (lastRange && box.contains(lastRange.startContainer)) {
+      selection?.removeAllRanges();
+      selection?.addRange(lastRange);
+    } else focusEnd();
+  }
+
+  /** A Shift pick keeps the picker open for the next emoji, as Slack's does. */
+  function pickEmoji(emoji: string, keepOpen: boolean) {
+    if (!box) return;
+    lastRange = insertTextAt(box, lastRange, emoji);
+    frequentEmoji.use(emoji);
+    sync();
+    if (keepOpen) return;
+    emojiOpen = false;
+    caretBack();
   }
 
   function onkeydown(e: KeyboardEvent) {
@@ -216,6 +278,11 @@
     if (!box) return;
     const draft = readDraft(box);
     if (!draft.text.trim() && !attachments.length) return;
+    const command = commands.length && !attachments.length ? parseCommand(draft.text) : null;
+    if (command) {
+      runCommand(command, draft);
+      return;
+    }
     const images: Outgoing["images"] = attachments.map((a) => a.image);
     const alsoInChannel = !!alsoSend && alsoChecked;
     box.replaceChildren();
@@ -232,9 +299,28 @@
     });
   }
 
+  function runCommand(command: { name: string; args: string }, draft: { text: string; mentions: string[] }) {
+    const known = commands.find((c) => c.name === command.name);
+    if (!known) {
+      toast.error(`/${command.name} is not a command here. Type / to see the list.`);
+      return;
+    }
+    box?.replaceChildren();
+    sync();
+    void Promise.resolve()
+      .then(() => known.run({ args: command.args, mentions: draft.mentions }))
+      .catch((error: unknown) => {
+        if (box && !readDraft(box).text) {
+          box.textContent = draft.text;
+          sync();
+        }
+        toast.error(error instanceof Error ? error.message : `/${command.name} did not work`);
+      });
+  }
+
   function mentionButton() {
     if (!box) return;
-    if (document.activeElement !== box) focusEnd();
+    if (document.activeElement !== box) caretBack();
     const before = textBeforeCaret(box)?.text ?? "";
     insertPlainText(box, before && !/\s$/.test(before) ? " @" : "@");
     sync();
@@ -268,7 +354,7 @@
     aria-label={placeholder}
     data-placeholder={placeholder}
     data-testid="composer-input"
-    oninput={sync}
+    {oninput}
     onblur={() => (query = null)}
     {onkeydown}
     {onpaste}
@@ -289,6 +375,7 @@
         <AvatarStack members={recipients.map((r) => ({ id: r.id, name: r.name, kind: "agent" }))} size={28} max={4} />
       </span>
     {/if}
+    <IconButton icon="smile" label="Emoji" size="sm" bind:element={emojiButton} pressed={emojiOpen} onclick={() => (emojiOpen = !emojiOpen)} data-testid="composer-emoji" />
     <IconButton icon="at" label="Mention an agent" size="sm" onclick={mentionButton} />
     <IconButton icon="paperclip" label="Attach images" size="sm" onclick={() => fileInput?.click()} />
     <input bind:this={fileInput} type="file" accept="image/*" multiple hidden onchange={(e) => {
@@ -311,11 +398,25 @@
   items={pickerItems}
   placement="top-start"
   width={340}
-  label={query?.trigger === "#" ? "Channels" : "Agents"}
+  label={pickerLabel}
   typeahead={box && query ? { query: "", keys: box } : undefined}
   onselect={(id) => pick(id)}
   onclose={dismiss}
 />
+
+<Popover
+  bind:open={emojiOpen}
+  anchor={emojiButton}
+  placement="top-start"
+  label="Emoji"
+  padding={0}
+  radius="row"
+  onclose={() => requestAnimationFrame(() => {
+    if (!document.activeElement || document.activeElement === document.body || document.activeElement === emojiButton) caretBack();
+  })}
+>
+  <EmojiPicker onpick={pickEmoji} />
+</Popover>
 
 <style>
   .composer {

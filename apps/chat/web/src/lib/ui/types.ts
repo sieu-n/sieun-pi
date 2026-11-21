@@ -20,6 +20,8 @@ export type PickerItem = {
   /** Rows with the same group sit under one heading, in first-seen order. */
   group?: string;
   icon?: string;
+  /** A character drawn where the icon goes, such as the emoji of an emoji row. */
+  glyph?: string;
   avatar?: { name: string; kind?: "person" | "agent"; seed?: string; src?: string | null };
   /** Short mono text at the right of the row, such as an agent's kind or parent. */
   trailing?: string;
