@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { commitGaps, compareVersions, containerLimits, followSteps, foldName, judgeRows, probeBoxAfterMac, runFollow, type LimitContext, managerLimits, parseLayers, parseShow, type ProbeOutput, publicSsh, rcuBoostOff, type Row, shortfall, unitLimits, unpushedNote }
+import { commitGaps, compareVersions, containerLimits, followSteps, foldName, heldNote, judgeRows, probeBoxAfterMac, runFollow, type LimitContext, managerLimits, parseLayers, parseShow, type ProbeOutput, publicSsh, rcuBoostOff, type Row, shortfall, unitLimits, unpushedNote }
   from "../scripts/duties/box-parity.ts";
 import { macAway } from "../scripts/duties/mac-reach.ts";
 
@@ -85,6 +85,29 @@ test("judgeRows counts misses, folds in panel outcomes and keeps intended and by
   assert.deepEqual(result.intended.map(verdict => verdict.row.id), ["poppler"]);
   assert.deepEqual(result.byDesign.map(verdict => verdict.row.id), ["hermes"]);
   assert.equal(result.matched, 3);
+});
+
+test("judgeRows lists a box probe held by a compose service stopped on purpose (c230) and counts it, while a held probe beside a real miss stays off", () => {
+  const rows: Row[] = [
+    { id: "devstack", tool: "cli devstack", mac: [{ which: "devstack" }], box: [{ run: ["devstack", "status"], held: ["crawler-v3", "tiktok-signer"], down: "^DOWN\\s+(\\S+)" }] },
+    { id: "stores", tool: "dev stores", probes: [{ port: 5432 }, { port: 8787, held: ["crawler-v3"] }] },
+    { id: "signer", tool: "dev service tiktok-signer", mac: [{ const: "ok" }], box: [{ out: ["docker", "inspect"], held: ["tiktok-signer"] }] },
+  ];
+  const held = (value: string, stopped: Record<string, string>) => `held:${JSON.stringify({ value, stopped })}`;
+  const mac = output("mac", { devstack: ["ok"], stores: ["ok", "ok"], signer: ["ok"] });
+  const box = output("box", {
+    devstack: [held("fail: exit 1: DOWN crawler-v3 DOWN tiktok-signer", { "crawler-v3": "2026-11-20T11:31:49Z", "tiktok-signer": "2026-11-20T11:32:39Z" })],
+    stores: ["fail: nothing answers on 127.0.0.1:5432", held("fail: nothing answers on 127.0.0.1:8787", { "crawler-v3": "2026-11-20T11:31:49Z" })],
+    signer: [held("fail: unhealthy", { "tiktok-signer": "2026-11-20T11:32:39Z" })],
+  });
+  const result = judgeRows(rows, mac, box, new Map());
+  assert.deepEqual(result.off.map(verdict => verdict.row.id), ["stores"]);
+  assert.equal(result.off[0]!.why, "Mac ok, box fail: nothing answers on 127.0.0.1:5432");
+  assert.deepEqual(result.held.map(verdict => verdict.row.id), ["devstack", "stores", "signer"]);
+  assert.match(result.held[0]!.why, /crawler-v3 was stopped on purpose \(exited 0 at 2026-11-20T11:31:49Z\) and tiktok-signer was stopped on purpose/);
+  assert.equal(result.matched, 2);
+  assert.equal(heldNote("absent", box.values.devstack![0]), "", "a Mac that lacks the tool asks nothing of the box");
+  assert.equal(heldNote("ok", "fail: exit 1"), undefined);
 });
 
 test("judgeRows takes a panel fail that the probe's shared regex matches as a match, and still counts any other fail", () => {

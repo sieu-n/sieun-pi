@@ -1191,7 +1191,12 @@
     "run": [
      "devstack",
      "status"
-    ]
+    ],
+    "held": [
+     "crawler-v3",
+     "tiktok-signer"
+    ],
+    "down": "^DOWN\\s+(\\S+)"
    }
   ]
  },
@@ -2034,7 +2039,10 @@
     "port": 3210
    },
    {
-    "port": 8787
+    "port": 8787,
+    "held": [
+     "crawler-v3"
+    ]
    }
   ]
  },
@@ -2103,7 +2111,10 @@
      "{{.State.Health.Status}}",
      "auto-sns-agent-tiktok-signer-1"
     ],
-    "expect": "^healthy"
+    "expect": "^healthy",
+    "held": [
+     "tiktok-signer"
+    ]
    }
   ],
   "note": "The Mac reaches the signer on its store box, so only the box container is checked."

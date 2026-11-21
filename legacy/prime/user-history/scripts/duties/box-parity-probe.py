@@ -7,7 +7,8 @@ On the box it also makes the real calls: logins, kernel imports and MCP initiali
 Mac starts /usr/bin/python3.
 Usage: python3 box-parity-probe.py <base64 of {"host": "mac"|"box", "rows": [...], "known": {cli: version read}}>
 A value is "ok", "absent", "fail: <why>", "v:<version>", "=<output>", "sha:<hex>", "blobs:<json list>", "set:<json list>"
-"synced:<json of the box's entries and the shared state's>" or "pruned:<json of the box's entries and the names its repo deleted>".
+"synced:<json of the box's entries and the shared state's>", "pruned:<json of the box's entries and the names its repo deleted>" or
+"held:<json of the failing value and the stop time of each compose service a box probe's `held` names that was stopped on purpose>".
 """
 import base64, configparser, glob, hashlib, json, os, re, select, socket, subprocess, sys, threading, time
 from concurrent.futures import ThreadPoolExecutor
@@ -461,8 +462,54 @@ def blobs(path, host):
     return "blobs:" + json.dumps(found)
 
 
+def compose_stopped(service):
+    """The finish time of a compose service whose every container exited with code 0, which `docker compose stop` gives and a crash does not,
+    or None when it has no container, one runs, restarts or exited nonzero, or docker cannot be read."""
+    done, text = run(["docker", "ps", "-aq", "--filter", "label=com.docker.compose.service=" + service])
+    ids = text.split() if done is not None and done.returncode == 0 else []
+    if not ids:
+        return None
+    done, text = run(["docker", "inspect", "-f", "{{.State.Status}} {{.State.ExitCode}} {{.State.FinishedAt}}"] + ids)
+    if done is None or done.returncode != 0:
+        return None
+    states = [line.split() for line in text.splitlines() if line.strip()]
+    if len(states) != len(ids) or any(len(state) != 3 or state[:2] != ["exited", "0"] for state in states):
+        return None
+    return max(state[2] for state in states)
+
+
+def held(spec, value, text):
+    """A box probe's failing value as "held:<json>" when only compose services someone stopped on purpose fail it, else the value unchanged.
+
+    `held` names the compose services the probe depends on, and `down` is a regex whose first group names each service the probe's output
+    reads as down. Every such service, or every `held` service when `down` is unset, must be in `held` and exited with code 0. On 11-20 at
+    11:31Z a job ran `docker compose stop tiktok-signer crawler-v3 crawler-worker` on us-metal02 under owner rule c230 ("NEVER EVER FUCKING
+    RUN WITHOUT PROXY JUST STOP FOR NOW"), and every box parity run after it counted the crawler rows off.
+    """
+    if not value.startswith("fail") or not spec.get("held"):
+        return value
+    names = sorted(set(re.findall(spec["down"], text or "", re.M))) if spec.get("down") else list(spec["held"])
+    if not names or any(name not in spec["held"] for name in names):
+        return value
+    stopped = dict((name, compose_stopped(name)) for name in names)
+    if not all(stopped.values()):
+        return value
+    return "held:" + json.dumps({"value": value, "stopped": stopped}, sort_keys=True)
+
+
 def probe(spec, host):
-    kind = next(k for k in spec if k not in ("expect", "cwd", "pattern", "at", "depth", "key", "names", "atTip", "intended", "shared", "follow", "synced", "gone"))
+    value, text = probe_text(spec, host)
+    return held(spec, value, text) if host == "box" else value
+
+
+def probe_text(spec, host):
+    """A probe's value, with the output of the command it ran for `held` to read, or "" when it ran none."""
+    value = probe_value(spec, host)
+    return (value, "") if isinstance(value, str) else value
+
+
+def probe_value(spec, host):
+    kind = next(k for k in spec if k not in ("expect", "cwd", "pattern", "at", "depth", "key", "names", "atTip", "intended", "shared", "follow", "synced", "gone", "held", "down"))
     if host == "mac" and kind not in READS:
         return "fail: %s is not a read, so the Mac side never runs it" % kind
     if kind == "const":
@@ -515,9 +562,9 @@ def probe(spec, host):
     if done is None:
         return text
     if done.returncode != 0:
-        return "fail: exit %d: %s" % (done.returncode, brief(text))
+        return "fail: exit %d: %s" % (done.returncode, brief(text)), text
     if spec.get("expect"):
-        return "ok" if re.search(spec["expect"], text, re.M) else "fail: " + brief(text)
+        return ("ok" if re.search(spec["expect"], text, re.M) else "fail: " + brief(text)), text
     return "=" + brief(done.stdout, 200) if kind == "out" else "ok"
 
 

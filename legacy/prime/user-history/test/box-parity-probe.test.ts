@@ -111,3 +111,51 @@ test("the box tip probe fetches origin's dev branches before it lists them, and 
   git(repo, "remote", "set-url", "origin", join(home, "gone.git"));
   assert.match(tip(), /^fail: git fetch: /);
 });
+
+
+test("a box probe that fails only because compose services its `held` names exited 0 reads held, and a crash, another down service or the Mac side stays a fail", () => {
+  const home = mkdtempSync(join(tmpdir(), "box-parity-held-"));
+  const bin = join(home, ".local/bin");
+  mkdirSync(bin, { recursive: true });
+  const states = join(home, "states");
+  mkdirSync(states);
+  writeFileSync(join(bin, "docker"), `#!/bin/sh
+if [ "$1" = ps ]; then s=\${4#label=com.docker.compose.service=}; [ -f "${states}/$s" ] && echo "id-$s"; exit 0; fi
+if [ "$1" = inspect ]; then for id in "$@"; do case "$id" in id-*) cat "${states}/\${id#id-}";; esac; done; exit 0; fi
+exit 1
+`, { mode: 0o755 });
+  writeFileSync(join(bin, "devstack"), `#!/bin/sh\ncat "${home}/devstack.out"; exit 1\n`, { mode: 0o755 });
+  const state = (service: string, text: string) => writeFileSync(join(states, service), `${text}\n`);
+  const devstack = (...down: string[]) => writeFileSync(join(home, "devstack.out"),
+    `ok   postgres             5432   select 1\n${down.map(service => `DOWN ${service}   8787   HTTP 000\n`).join("")}`);
+  const read = (host: "mac" | "box") => {
+    const rows = [
+      { id: "devstack", tool: "cli devstack", probes: [{ run: ["devstack", "status"], held: ["crawler-v3", "tiktok-signer"], down: "^DOWN\\s+(\\S+)" }] },
+      { id: "port", tool: "crawler port", probes: [{ port: 1, held: ["crawler-v3"] }] },
+    ];
+    const arg = Buffer.from(JSON.stringify({ host, rows, known: {} })).toString("base64");
+    const values = (JSON.parse(execFileSync("python3", [PROBE, arg], { env: { ...process.env, HOME: home }, encoding: "utf8" })) as { values: Record<string, string[]> }).values;
+    return { devstack: values.devstack![0]!, port: values.port![0]! };
+  };
+  const heldOf = (value: string) => JSON.parse(value.slice(5)) as { value: string; stopped: Record<string, string> };
+
+  state("crawler-v3", "exited 0 2026-11-20T11:31:49Z");
+  state("tiktok-signer", "exited 0 2026-11-20T11:32:39Z");
+  devstack("crawler-v3", "tiktok-signer");
+  const box = read("box");
+  assert.match(box.devstack, /^held:/);
+  assert.deepEqual(heldOf(box.devstack).stopped, { "crawler-v3": "2026-11-20T11:31:49Z", "tiktok-signer": "2026-11-20T11:32:39Z" });
+  assert.match(heldOf(box.devstack).value, /^fail: exit 1/);
+  assert.deepEqual(heldOf(box.port), { value: "fail: nothing answers on 127.0.0.1:1", stopped: { "crawler-v3": "2026-11-20T11:31:49Z" } });
+  assert.equal(read("mac").port, "fail: nothing answers on 127.0.0.1:1", "the Mac side only reads, so it never asks docker");
+
+  devstack("crawler-v3", "postgres");
+  assert.match(read("box").devstack, /^fail: exit 1/, "a down service outside `held` stays a fail");
+  devstack("crawler-v3");
+  state("crawler-v3", "exited 137 2026-11-20T11:31:49Z");
+  const crashed = read("box");
+  assert.match(crashed.devstack, /^fail: exit 1/, "a crash (nonzero exit) stays a fail");
+  assert.equal(crashed.port, "fail: nothing answers on 127.0.0.1:1");
+  state("crawler-v3", "restarting 0 0001-01-01T00:00:00Z");
+  assert.equal(read("box").port, "fail: nothing answers on 127.0.0.1:1", "a restarting container stays a fail");
+});

@@ -20,7 +20,8 @@ import { CHECKS, type Outcome, realDeps, runChecks } from "./skills-and-tools.ts
  *   Mac too, so a Mac whose Aside app is down asks nothing of the box, whose `aside` runs the Mac's CLI over ssh. A probe with `intended` (Poppler), a row with `byDesign`
  *   and a Mac commit the Mac never pushed to origin (`mac_unpushed`) are listed and never counted. Rows with a `panel` probe run that Skills and tools check (skills-and-tools.ts) here, without its fixes; a fail
  *   whose detail the probe's `shared` regex matches comes from a service both hosts use, such as Google on Virev or an account in the box's
- *   pi-pool, which the Mac reads through ~/.config/pi-pool/remote.json, so it is no box gap.
+ *   pi-pool, which the Mac reads through ~/.config/pi-pool/remote.json, so it is no box gap. A box probe that fails only because compose services
+ *   its `held` names exited with code 0, as the crawler did when a job stopped it under owner rule c230 on 11-20, is a `held` item and never counted.
  * - `resource_limits_set`: memory, CPU, IO, task and priority settings on the box's systemd units, Docker containers and systemd manager files that
  *   no vendor file ships (owner rule c107: "remove all the bullshit i didn't explicitly asked for"), one per setting and unit name with its numbers
  *   folded, plus services whose main process runs at a nice level its unit does not set. A limit at or above the box's RAM limits nothing.
@@ -53,7 +54,7 @@ export type Probe = Record<string, unknown>;
 export interface Row { id: string; tool: string; probes?: Probe[]; mac?: Probe[]; box?: Probe[]; note?: string; byDesign?: string }
 export interface ProbeOutput { host: "mac" | "box"; values: Record<string, string[]>; versions: Record<string, unknown>; ms: number }
 export interface RowVerdict { row: Row; why: string }
-export interface RowsResult { off: RowVerdict[]; byDesign: RowVerdict[]; intended: RowVerdict[]; unpushed: RowVerdict[]; stale: RowVerdict[]; matched: number }
+export interface RowsResult { off: RowVerdict[]; byDesign: RowVerdict[]; intended: RowVerdict[]; held: RowVerdict[]; unpushed: RowVerdict[]; stale: RowVerdict[]; matched: number }
 
 const setOf = (value: string): string[] | undefined => value.startsWith("set:") ? JSON.parse(value.slice(4)) as string[] : undefined;
 const failing = (value: string | undefined): boolean => value === undefined || value === "absent" || value.startsWith("fail");
@@ -184,16 +185,34 @@ export const panelValue = (outcome: Outcome | undefined, shared?: unknown): stri
 
 const probesOf = (row: Row, host: "mac" | "box"): Probe[] => row[host] ?? row.probes ?? [];
 
+interface Held { value: string; stopped: Record<string, string> }
+
+/**
+ * A box `held:` value from the probe: a probe that fails only because compose services it names in `held` were stopped on purpose (exited 0).
+ * Gives undefined for any other value, "" when the Mac's value asks nothing of the box anyway, and otherwise what the box lacks and who stopped.
+ * A crawler stopped under owner rule c230 stays stopped, since no crawl read leaves without a paid proxy, so it is no box gap.
+ */
+export function heldNote(mac: string | undefined, box: string | undefined): string | undefined {
+  if (!box?.startsWith("held:")) return undefined;
+  const { value, stopped } = JSON.parse(box.slice(5)) as Held;
+  const why = shortfall(mac, value);
+  if (!why) return "";
+  return `${why}, because ${Object.entries(stopped).map(([service, at]) => `${service} was stopped on purpose (exited 0 at ${at})`).join(" and ")}, so it is not counted`;
+}
+
 /** Each row's verdict from both hosts' probe values and the box's Skills and tools outcomes. */
 export function judgeRows(rows: readonly Row[], mac: ProbeOutput, box: ProbeOutput, panel: ReadonlyMap<string, Outcome>): RowsResult {
-  const result: RowsResult = { off: [], byDesign: [], intended: [], unpushed: [], stale: [], matched: 0 };
+  const result: RowsResult = { off: [], byDesign: [], intended: [], held: [], unpushed: [], stale: [], matched: 0 };
   for (const row of rows) {
     const boxProbes = probesOf(row, "box");
     const macValues = mac.values[row.id] ?? [];
     const boxValues = (box.values[row.id] ?? []).map((value, index) => value === "panel" ? panelValue(panel.get(String(boxProbes[index]?.panel)), boxProbes[index]?.shared) : value);
     const misses: string[] = [];
     const intended: string[] = [];
+    const held: string[] = [];
     probesOf(row, "mac").forEach((_, index) => {
+      const stop = heldNote(macValues[index], boxValues[index]);
+      if (stop !== undefined) { if (stop) held.push(stop); return; }
       const unpushed = unpushedNote(macValues[index], boxValues[index]);
       if (unpushed) result.unpushed.push({ row, why: unpushed });
       const stale = staleNote(macValues[index], boxValues[index]);
@@ -205,6 +224,7 @@ export function judgeRows(rows: readonly Row[], mac: ProbeOutput, box: ProbeOutp
       else misses.push(why);
     });
     if (intended.length) result.intended.push({ row, why: intended.join("; ") });
+    if (held.length) result.held.push({ row, why: held.join("; ") });
     if (!misses.length) { result.matched++; continue; }
     if (row.byDesign) { result.byDesign.push({ row, why: `${misses.join("; ")} (${row.byDesign})` }); result.matched++; continue; }
     result.off.push({ row, why: misses.join("; ") });
@@ -583,6 +603,7 @@ export async function measure(rows: readonly Row[], known: Record<string, unknow
     for (const { row, why } of result.off) flagged.push({ at, kind: "tool_row_off", item: row.id, excerpt: `${row.tool}: ${why}${row.note ? ` (${row.note})` : ""}`.slice(0, 600) });
     for (const { row, why } of result.intended) flagged.push({ at, kind: "intended", item: row.id, excerpt: `${row.tool}: ${why}`.slice(0, 600) });
     for (const { row, why } of result.byDesign) flagged.push({ at, kind: "by_design", item: row.id, excerpt: `${row.tool}: ${why}`.slice(0, 600) });
+    for (const { row, why } of result.held) flagged.push({ at, kind: "held", item: row.id, excerpt: `${row.tool}: ${why}`.slice(0, 600) });
     for (const { row, why } of result.unpushed) flagged.push({ at, kind: "mac_unpushed", item: row.id, excerpt: `${row.tool}: ${why}`.slice(0, 600) });
     for (const { row, why } of result.stale) flagged.push({ at, kind: "mac_stale", item: row.id, excerpt: `${row.tool}: ${why}`.slice(0, 600) });
     flagged.push({ at, kind: "rows", excerpt: `${result.matched} of ${rows.length} rows match; the Mac read took ${mac.ms} ms and the box probe ${box.ms} ms` });
