@@ -187,6 +187,7 @@ The glide plan in `wiki-dream.ts` expects at least 10 a day from 2026-10-11, and
 7. Delete a memory the current code contradicts without a move, and name the code path that proves it wrong in its ledger row.
 8. Keep a memory that is half repo fact and half Prime behaviour until its Prime half has a home.
 9. Record each move in `memoryMoves` with the skill, the commit and `deletedAt`.
+10. When `commit.mjs` or `land-object.mjs` prints a follow gate warning for the move, the job starts one writer per named page in the same run, which rechecks it against the new sentence, because on 2026-11-21 the move e5aa4cb9dd added one `--probed` sentence to `git-workflow/SKILL.md`, its mover left the 4 named pages alone, and the precheck flagged all 4 as `stale_vs_code` 2 minutes later.
 
 ## Commits, churn guards and "when unsure, leave it"
 
