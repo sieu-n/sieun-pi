@@ -184,6 +184,13 @@ export function linesTouch(lines, { tokens, paths }) {
  * such as `{ table: 'searchCampaignPoolCarry', largeRows: true },` in `CASCADE_TABLES` of convex/search/orgCascade.ts,
  * because apps/search/onboarding-orgs.html was retouched by 39 wiki-dream commits in the 7 days to 2026-10-30, and the
  * recheck after 506e664d4f dropped two rows the page never names changed only `last_verified`.
+ * A route the table holds behind its HTTP method, such as `"POST /api/watch-targets/monitor-range"` in `_CRAWLER_CONVEX` of
+ * apps/vent/src/vent/tables.py, keys those rows, and by method and route when the page writes both (`methodRows`), because
+ * auto-sns-agent 256d507bac dropped only `"GET /api/enrich/columns/runs/*"` there and flagged
+ * apps/search/brand-tracking-watches.html, which names only the monitor-range row. On a replay of the 1,989 dream rechecks
+ * in the 7 days to 2026-11-21 18:08Z this drops 3 flags of that page, all `last_verified` only, and none of the body changes,
+ * and adds 3 flags on `INTEGRATIONS` for 76000addb1 and 86038f4e2e, whose facts those rechecks wrote
+ * (~/work/wiki-stale-method-routes/).
  * @param {string} source
  * @param {string} definition
  * @returns {string[]}
@@ -194,14 +201,33 @@ export function entryKeys(source, definition) {
 	if (!/=\s*[({[]\s*$/.test(head)) return [];
 	/** @type {Set<string>} */
 	const keys = new Set();
-	for (const text of codeSpans(source))
-		for (const word of text.split(/[\s=]+/)) {
-			const key = word.replace(/^[`'"(]+|[`'",.;:)]+$/g, '');
-			if (!/^\/[^\s/]/.test(key) && !/^\w+(?:\.\w+)+$/.test(key) && !distinctive(key)) continue;
-			if (!definition.includes(`'${key}'`) && !definition.includes(`"${key}"`)) continue;
-			if (entry(definition, key) !== null) keys.add(key);
-		}
+	for (const text of codeSpans(source)) {
+		const spanWords = text.split(/[\s=]+/).map((word) => word.replace(/^[`'"(]+|[`'",.;:)]+$/g, ''));
+		spanWords.forEach((key, at) => {
+			const route = /^\/[^\s/]/.test(key);
+			const withMethod = `${spanWords[at - 1]} ${key}`;
+			const quoted = definition.includes(`'${key}'`) || definition.includes(`"${key}"`);
+			if (route && METHOD_ROUTE.test(withMethod) && methodRows(definition, withMethod) !== null) keys.add(withMethod);
+			else if (!route && !/^\w+(?:\.\w+)+$/.test(key) && !distinctive(key)) return;
+			else if ((quoted || (route && methodRows(definition, key) !== null)) && entry(definition, key) !== null) keys.add(key);
+		});
+	}
 	return [...keys];
+}
+
+/** A route behind its HTTP method, as the row `"POST /api/watch-targets/monitor-range",` of `_CRAWLER_CONVEX` in apps/vent/src/vent/tables.py holds it. */
+const METHOD_ROUTE = /^(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) \/[^\s/]/;
+
+/** The lines of a table that hold a method route such as `POST /api/x` quoted whole, or for a bare route `/api/x` the lines that hold it quoted behind any method, or null when none does.
+ * @param {string} definition
+ * @param {string} key
+ * @returns {string | null}
+ */
+function methodRows(definition, key) {
+	const id = key.replace(/[$.*+?^()[\]{}|\\]/g, '\\$&');
+	const quoted = new RegExp(`["'](?:${METHOD_ROUTE.test(key) ? '' : '(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) '})${id}["']`);
+	const lines = definition.split('\n').filter((line) => quoted.test(line));
+	return lines.length ? lines.join('\n') : null;
 }
 
 /** The head of a call that a definition assigns, as `_PROD_PROFILE = RuntimeProfile(` or `LIMITS = dict(`. */
@@ -243,14 +269,21 @@ export function namedEntries(definition, keys) {
 }
 
 /** The entry of a table keyed by `key`, or for a route or a distinctive word the array rows that hold it (`rowsHolding`).
+ * A method route such as `POST /api/x`, and a bare route that no row holds, key the lines that hold it quoted (`methodRows`).
  * An ALLCAPS word keys no row, because `'POST'` is a column of `OPERATION_ROWS` that every POST row holds.
  * @param {string} definition
  * @param {string} key
  * @returns {string | null}
  */
 const entry = (definition, key) =>
-	definitionText(definition, key) ??
-	(/^\/[^\s/]/.test(key) || (distinctive(key) && key !== key.toUpperCase()) ? rowsHolding(definition, key) : null);
+	METHOD_ROUTE.test(key)
+		? methodRows(definition, key)
+		: (definitionText(definition, key) ??
+			(/^\/[^\s/]/.test(key)
+				? (rowsHolding(definition, key) ?? methodRows(definition, key))
+				: distinctive(key) && key !== key.toUpperCase()
+					? rowsHolding(definition, key)
+					: null));
 
 const CLASS_HEAD =
 	/^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:class|interface)\s+[\w$]+|^\s*(?:export\s+)?(?:declare\s+)?type\s+[\w$]+(?:<[^=]*>)?\s*=\s*\{\s*$/;

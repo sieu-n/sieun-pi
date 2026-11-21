@@ -655,6 +655,33 @@ test('a path::name tuple table follows only the quoted keys the page names', (t)
 	assert.deepEqual(rows['apps/whole.html'], [{ ref: ref[0], ...at('04') }], 'a page naming no key follows the table');
 });
 
+// 2026-11-21: auto-sns-agent 256d507bac dropped only `"GET /api/enrich/columns/runs/*"` from the tuple `_CRAWLER_CONVEX` in
+// apps/vent/src/vent/tables.py and flagged apps/search/brand-tracking-watches.html, which names only the monitor-range row,
+// because entryKeys took a route only when the tuple held it quoted whole, never behind its method.
+test('a path::name tuple of method routes follows only the rows the page names, by method and route', (t) => {
+	const w = fixture(t);
+	const tables = (rows) => `_CRAWLER_CONVEX = (\n${rows.map((row) => `    "${row}",\n`).join('')})\n`;
+	const all = ['GET /api/enrich/columns/runs/*', 'GET /api/jobs/*', 'POST /api/jobs/*', 'POST /api/watch-targets/monitor-range'];
+	w.write('tables.py', tables(all));
+	const ref = ['tables.py::_CRAWLER_CONVEX'];
+	w.page('watches.html', ref, { body: '<p>Vent passes <code>POST /api/watch-targets/monitor-range</code>.</p>' });
+	w.page('jobs.html', ref, { body: '<p>Convex reads <code>/api/jobs/*</code>.</p>' });
+	w.page('job-get.html', ref, { body: '<p>Convex polls <code>GET /api/jobs/*</code>.</p>' });
+	w.page('whole.html', ref, { body: '<p>The crawler routes Convex calls.</p>' });
+	w.init();
+	w.commit('2026-10-20T01:00:00Z', 'pages');
+	w.write('tables.py', tables(all.filter((row) => row !== 'GET /api/enrich/columns/runs/*')));
+	w.commit('2026-10-20T04:00:00Z', 'runs poll goes');
+	w.write('tables.py', tables(['GET /api/jobs/*']));
+	w.commit('2026-10-20T05:00:00Z', 'monitor-range and job posts go');
+
+	const rows = w.refsByPage();
+	assert.deepEqual(rows['apps/watches.html'], [{ ref: ref[0], ...at('05') }], 'the runs poll drop is no change to the monitor-range row');
+	assert.deepEqual(rows['apps/jobs.html'], [{ ref: ref[0], ...at('05') }], 'a bare route follows its rows of every method');
+	assert.equal(rows['apps/job-get.html'], undefined, 'a POST row drop is no change to the GET row');
+	assert.deepEqual(rows['apps/whole.html'], [{ ref: ref[0], ...at('04', '05') }], 'a page naming no route follows the tuple');
+});
+
 // 2026-11-20: auto-sns-agent 1202c1dff0 dropped `box_proxy_ports=` from the call `_PROD_PROFILE = RuntimeProfile(` in
 // apps/crawler-v3/src/settings.py and flagged all 8 pages citing it, 5 of which name only other keyword arguments.
 test('a path::name call follows only the one keyword argument the page names', (t) => {
