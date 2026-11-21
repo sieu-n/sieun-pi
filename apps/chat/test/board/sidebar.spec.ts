@@ -1,12 +1,11 @@
-import { expect, test, type Page } from "@playwright/test";
-import { HARNESS_AGENT, VENT, resetFixture } from "./helpers";
+import type { Page } from "@playwright/test";
+import { HARNESS_AGENT, VENT, expect, resetFixture, test } from "./helpers";
 
-const server = process.env.CHAT_SERVER_URL ?? "http://127.0.0.1:5186";
 const VENT_AGENT = "ag_vent";
 
 test.describe.configure({ mode: "serial" });
-test.beforeEach(async ({ request, page }) => {
-  await resetFixture(request);
+test.beforeEach(async ({ request, page, chatServer }) => {
+  await resetFixture(request, chatServer);
   await page.addInitScript(() => { if (!sessionStorage.getItem("keep-folds")) localStorage.removeItem("chat.sidebarFolds"); });
 });
 
@@ -51,11 +50,11 @@ test("a board row opens that board in the main view with no back link", async ({
   await expect(main.getByRole("link", { name: "Open chat" })).toBeVisible();
 });
 
-test("answering an ask updates the sidebar badge live, and a board with nothing left moves to Boards", async ({ page, request }) => {
+test("answering an ask updates the sidebar badge live, and a board with nothing left moves to Boards", async ({ page, request, chatServer }) => {
   await page.goto(`/#/board/${HARNESS_AGENT}`);
   await page.getByRole("region", { name: "For you" }).getByRole("button", { name: "Friday 09:00" }).click();
   await expect(row(page, HARNESS_AGENT).locator(".trail")).toHaveText("1");
-  const done = await request.post(`${server}/api/threads/${VENT}/board`, { data: { ops: [{ op: "todo_update", id: "t1", done: true, reply: "Page me" }] } });
+  const done = await request.post(`${chatServer}/api/threads/${VENT}/board`, { data: { ops: [{ op: "todo_update", id: "t1", done: true, reply: "Page me" }] } });
   expect(done.ok()).toBe(true);
   await expect(sidebar(page).getByRole("region", { name: "Boards" }).locator(`a[href="#/board/${VENT_AGENT}"]`)).toBeVisible();
   await expect(sidebar(page).getByRole("region", { name: "Needs you" }).locator("a[data-sidebar-row]")).toHaveCount(2);

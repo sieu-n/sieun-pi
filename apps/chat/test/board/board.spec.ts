@@ -1,8 +1,7 @@
-import { expect, test } from "@playwright/test";
-import { HARNESS, HARNESS_AGENT, resetFixture } from "./helpers";
+import { HARNESS, HARNESS_AGENT, expect, resetFixture, test } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
-test.beforeEach(async ({ request }) => { await resetFixture(request); });
+test.beforeEach(async ({ request, chatServer }) => { await resetFixture(request, chatServer); });
 
 test("a chat's board shows its asks, the plan by status, its duties and its check-in", async ({ page }) => {
   await page.goto(`/#/board/${HARNESS}`);
@@ -32,12 +31,12 @@ test("a chip link with focus unfolds the plan to that step and marks it", async 
   await expect(page.locator('[data-step="p3"]')).toHaveClass(/flash/);
 });
 
-test("an ask answered on the board leaves the open list and the server keeps the reply", async ({ page, request }) => {
+test("an ask answered on the board leaves the open list and the server keeps the reply", async ({ page, request, chatServer }) => {
   await page.goto(`/#/board/${HARNESS}`);
   const asks = page.getByRole("region", { name: "For you" });
   await asks.getByRole("button", { name: "Friday 09:00" }).click();
   await expect(asks.locator(".ask-row")).toHaveCount(1);
-  const board = await (await request.get(`${process.env.CHAT_SERVER_URL ?? "http://127.0.0.1:5186"}/api/threads/${HARNESS}/board`)).json();
+  const board = await (await request.get(`${chatServer}/api/threads/${HARNESS}/board`)).json();
   expect(board.board.todos.find((todo: { id: string }) => todo.id === "t1")).toMatchObject({ done: true, reply: "Friday 09:00" });
   await asks.getByRole("button", { name: "Done 2" }).click();
   await expect(asks).toContainText("You: Friday 09:00");

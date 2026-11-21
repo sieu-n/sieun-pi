@@ -1,8 +1,7 @@
-import { expect, test } from "@playwright/test";
-import { CRAWLER, CRAWLER_AGENT, HARNESS_AGENT, VENT, resetFixture } from "./helpers";
+import { CRAWLER, CRAWLER_AGENT, HARNESS_AGENT, VENT, expect, resetFixture, test } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
-test.beforeEach(async ({ request }) => { await resetFixture(request); });
+test.beforeEach(async ({ request, chatServer }) => { await resetFixture(request, chatServer); });
 
 const rows = (page: import("@playwright/test").Page) => page.getByRole("list", { name: "For you asks" }).locator("li");
 
@@ -31,12 +30,12 @@ test("a row opens the ask beside the list, with its choices, links and step", as
   await expect(page).toHaveURL(/#\/c\/for-you$/);
 });
 
-test("a choice answers the ask in place: it leaves the open list and shows in Done with the reply", async ({ page, request }) => {
+test("a choice answers the ask in place: it leaves the open list and shows in Done with the reply", async ({ page, request, chatServer }) => {
   await page.goto(`/#/c/for-you/${CRAWLER_AGENT}/t1`);
   await page.getByRole("region", { name: "Ask" }).getByRole("button", { name: "Raise it" }).click();
   await expect(rows(page)).toHaveCount(3);
   await expect(page.getByRole("region", { name: "Ask" })).toContainText("You: Raise it");
-  const board = await (await request.get(`${process.env.CHAT_SERVER_URL ?? "http://127.0.0.1:5186"}/api/threads/${CRAWLER}/board`)).json();
+  const board = await (await request.get(`${chatServer}/api/threads/${CRAWLER}/board`)).json();
   expect(board.board.todos[0]).toMatchObject({ id: "t1", done: true, reply: "Raise it" });
   await page.getByRole("button", { name: "For you filters" }).click();
   await page.getByRole("menuitemradio", { name: "Done" }).click();
