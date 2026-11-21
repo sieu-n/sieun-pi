@@ -10,9 +10,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { fauxAssistantMessage, fauxProvider, fauxToolCall, type Message } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall, Type, type Message } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { createRegistry, Harness, ROOT_CONVERSATION_ID, type EntryRecord } from "@earendil-works/pi-durable";
+import { createRegistry, defineExtension, defineTool, Harness, ROOT_CONVERSATION_ID, type EntryRecord } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import type { ForMeItem, ForMeList, Principal } from "../../../../apps/chat/web/src/lib/api/types.ts";
 import { AGENT_REF_DOC, commInstructions } from "../../src/durable/agent-profile.ts";
@@ -60,6 +60,10 @@ before(async () => {
     calls.push({ method: req.method!, path: req.url!, body });
     const answer = (status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
     const url = new URL(req.url!, "http://x");
+    if (url.pathname.endsWith("/reactions")) {
+      const { emoji, on } = body as { emoji: string; on: boolean };
+      return answer(200, { text: `${emoji} is ${on ? "on" : "off"} p12 in ch_1a2b3c4d.` });
+    }
     if (!url.pathname.endsWith("/for-me")) return answer(404, { error: "No such route." });
     if (req.method === "GET") {
       const status = url.searchParams.get("status");
@@ -88,6 +92,10 @@ async function run(thread: string, plan: { name: string; args: Record<string, st
   models.setProvider(faux.provider);
   const registry = createRegistry();
   registry.install(roomTools(app, thread));
+  registry.install(defineExtension({ name: "fake-tell-owner", tools: [defineTool({
+    name: "tell_owner", description: "Post to the room.", parameters: Type.Object({ text: Type.String() }),
+    execute: async () => ({ output: [{ type: "text", text: "told the owner" }] }),
+  })] }));
   const harness = await Harness.open(await openNodeSqliteStorage(file), { models, registry }, context);
   const root = await harness.root(context, { agent: { model: MODEL, thinkingLevel: "off" } });
   if (ref) await harness.commit(async tx => { (await tx.doc(ChatDoc, ROOT_CONVERSATION_ID, AGENT_REF_DOC, null)).value = ref; }, context);
@@ -139,14 +147,25 @@ test("mark_message posts the mark as the thread and answers one line, and an err
   ]);
 });
 
-test("in a comm thread, the mark that leaves no item pending ends the turn with no further model request, and elsewhere the turn runs on", async () => {
+test("in a comm thread, a closing call after the turn's post ends the turn with no further model request, and elsewhere the turn runs on", async () => {
   const comm = { agent: "ag_vent", dir: dir, role: "comm", room: "ch_1a2b3c4d", work: "w1" };
-  const closing = await run("th_close", [{ name: MARK_MESSAGE_TOOL, args: { message_id: "ch_1a2b3c4d/p12", completed: true } }], comm);
-  assert.deepEqual(closing.map(r => [r.text, r.isError]), [["Marked ch_1a2b3c4d/p12 completed. 0 pending.", false]]);
+  const post = { name: "tell_owner", args: { text: "yes, it works" } };
+  const mark = { name: MARK_MESSAGE_TOOL, args: { message_id: "ch_1a2b3c4d/p12", completed: true } };
+  const eyesOff = { name: "set_emoji", args: { message_id: "ch_1a2b3c4d/p12", emoji: "eyes", on: false } };
+  const closing = await run("th_close", [post, mark], comm);
+  assert.deepEqual(closing.map(r => r.name), ["tell_owner", MARK_MESSAGE_TOOL]);
   assert.equal(finalTexts.get("th_close"), undefined, "the turn ended after the mark, with no closing text");
-  await run("th_open", [{ name: MARK_MESSAGE_TOOL, args: { message_id: "ch_1a2b3c4d/p12", completed: false } }], comm);
+  await run("th_eyes_close", [post, eyesOff], comm);
+  assert.equal(finalTexts.get("th_eyes_close"), undefined, "taking 👀 off after the post ends the turn too");
+
+  const eyesFirst = await run("th_eyes_first", [eyesOff, post, mark], comm);
+  assert.deepEqual(eyesFirst.map(r => r.name), ["set_emoji", "tell_owner", MARK_MESSAGE_TOOL], "👀 off before the reply leaves the turn running, so the reply still goes out");
+  assert.equal(finalTexts.get("th_eyes_first"), undefined, "the mark after that reply ends the turn");
+  await run("th_mark_first", [mark, post], comm);
+  assert.equal(finalTexts.get("th_mark_first"), "done", "a mark before any post runs on");
+  await run("th_open", [post, { ...mark, args: { ...mark.args, completed: false } }], comm);
   assert.equal(finalTexts.get("th_open"), "done", "a mark that leaves an item pending runs on");
-  await run("th_plain", [{ name: MARK_MESSAGE_TOOL, args: { message_id: "ch_1a2b3c4d/p12", completed: true } }]);
+  await run("th_plain", [post, mark]);
   assert.equal(finalTexts.get("th_plain"), "done", "a thread that is not a comm thread runs on");
 });
 
