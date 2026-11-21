@@ -30,7 +30,9 @@ export class Kept<T> {
   /** A `live` read holds what the socket's events said since its last answer, so reading it ahead again would bring the same. */
   private current = false;
 
-  constructor(private readonly of: Read<T>) {}
+  constructor(private readonly of: Read<T>, value: T | null) {
+    this.value = value;
+  }
 
   get loading(): boolean {
     return this.value === null && this.error === null;
@@ -118,6 +120,18 @@ export function restoreKept(pages: readonly KeptPage[]): void {
   for (const page of mine.slice(extra)) if (!entries.has(page.key)) restored.set(page.key, page.value);
 }
 
+/**
+ * A new kept answer, its state made outside the derived or effect that asked for it first. Svelte tracks no state a reaction made itself,
+ * so the # typeahead, whose derived made the rooms answer, never saw the rooms arrive and listed no channel (rename.spec.ts, 11-21).
+ */
+function outsideReactions<T>(of: Read<T>, value: T | null): Kept<T> {
+  let entry!: Kept<T>;
+  $effect.root(() => {
+    entry = new Kept(of, value);
+  })();
+  return entry;
+}
+
 const known = <T>(of: Read<T>): Kept<T> | undefined => entries.get(of.path) as Kept<T> | undefined;
 
 /** The kept answer of a read, the same object for every caller. The board and duties events carry their read's whole answer. */
@@ -133,8 +147,7 @@ export function kept<T>(of: Read<T>): Kept<T> {
   let entry = known(of);
   entries.delete(of.path);
   if (!entry) {
-    entry = new Kept(of);
-    if (restored.has(of.path)) entry.value = restored.get(of.path) as T;
+    entry = outsideReactions(of, restored.has(of.path) ? (restored.get(of.path) as T) : null);
     restored.delete(of.path);
   }
   entries.set(of.path, entry as Kept<unknown>);
