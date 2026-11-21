@@ -5,7 +5,7 @@
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
-import type { ConversationPatch, DutyAction, LaterPatch, MemoryInput, RoomInput, RoomPatch, SendRequest } from "../web/src/lib/api/types.ts";
+import type { ConversationPatch, DutyAction, LaterPatch, MemoryInput, ReadPoint, RoomInput, RoomPatch, SendRequest } from "../web/src/lib/api/types.ts";
 import { parseSchedule } from "../web/src/lib/api/shared/chat-duties.ts";
 import { agentConfig, agentRecordOf } from "./agent-config.ts";
 import { EntryExists, EntryMissing, HARNESS_KINDS, type HarnessKind } from "./agent-folder.ts";
@@ -96,6 +96,14 @@ function memoryInput(body: unknown): MemoryInput {
   if (typeof content !== "string" || !content.trim()) throw new BadRequest("A memory needs content, a string that is not blank.");
   if (path !== undefined && (typeof path !== "string" || !path.trim())) throw new BadRequest("A memory's path is a string that is not blank when given.");
   return { title, content, ...(path === undefined ? {} : { path }) };
+}
+
+/** One read point of a Mark all as read Undo, as `POST /api/read` answered it. */
+function readPoint(value: unknown): ReadPoint {
+  const { room, seq, from } = (value ?? {}) as Record<string, unknown>;
+  if (typeof room !== "string" || !room || typeof seq !== "number" || seq < 0) throw new BadRequest("A read point names its room and its seq, a number 0 or more.");
+  if (from !== undefined && typeof from !== "string") throw new BadRequest("A read point's from is a post id when given.");
+  return { room, seq, ...(from ? { from } : {}) };
 }
 
 /** A duties POST body: `set` with a duty definition, which upsertDuty checks, or another action with the duty's id. */
@@ -274,6 +282,15 @@ export function routes(app: App): Route[] {
       if (typeof unreadFrom === "string") app.markUnread(p.id!, unreadFrom);
       else app.markRead(p.id!, typeof seq === "number" ? seq : undefined);
       return { ok: true };
+    }),
+    route("POST", "/api/read", async (_r, _p, _q, body) => {
+      const input = ((await body()) ?? {}) as Record<string, unknown>;
+      if (Array.isArray(input.restore)) {
+        app.restoreReads(input.restore.map(readPoint));
+        return { ok: true };
+      }
+      if (!Array.isArray(input.rooms) || !input.rooms.every(id => typeof id === "string")) throw new BadRequest("Mark all as read takes rooms, a list of room ids, or restore.");
+      return { before: app.markAllRead(input.rooms as string[]) };
     }),
     route("GET", "/api/threads/:id/jobs", async (_r, p) => app.threads.jobs(p.id!)),
     route("GET", "/api/rooms", async (_r, _p, q) => app.groups.list({ test: q.get("test") === "1" })),

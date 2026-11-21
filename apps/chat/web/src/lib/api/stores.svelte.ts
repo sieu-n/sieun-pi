@@ -1152,6 +1152,15 @@ export class Timeline {
     return this.markShown ? undefined : this.openedUnread;
   }
 
+  /** Mark as read from the room's New messages bar or Esc: the room reads to its newest post and the New line goes, as in Slack. */
+  readNow(): Promise<unknown> {
+    this.openedUnread = undefined;
+    this.markShown = true;
+    this.marked = undefined;
+    markedUnread.delete(this.id);
+    return this.markRead(true);
+  }
+
   /**
    * Marks the conversation read up to its newest item, once per item. The server marks it read when it stores an owner send, so after the
    * open's first mark the page posts nothing while the newest item is the owner's own, and a send posts /read at most once, for the reply.

@@ -123,6 +123,11 @@ export interface ConversationSummary {
   closedAt?: Ms;
 }
 
+/** Where a room read from before Mark all as read, which its Undo puts back: `seq` 0 when he had read nothing, `from` the post he marked unread. */
+export interface ReadPoint { room: ConversationId; seq: number; from?: string }
+/** `POST /api/read`: Mark all as read on `rooms`, answered with their read points, or its Undo with the points to `restore`. */
+export type ReadAllRequest = { rooms: ConversationId[] } | { restore: ReadPoint[] };
+
 export interface Sidebar {
   /** Solo rooms (`so_<id>`, with `agenda`), open ones first, each newest first. */
   solo: ConversationSummary[];

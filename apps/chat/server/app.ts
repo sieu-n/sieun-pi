@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { WebSocket, WebSocketServer } from "ws";
 import type {
-  AgentHostList, AgentId, AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, Item, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, OpenedPage, ProjectList, Reaction, Room, SendRequest, SendResult, Sidebar, ThinkingLevel,
+  AgentHostList, AgentId, AgentSummary, ConversationHeader, ConversationId, Delivery, ConversationPatch, ConversationSummary, ImageRef, Item, LiveCommand, LiveEvent, Me, ModelCatalog, ModelInfo, OpenedPage, ProjectList, Reaction, ReadPoint, Room, SendRequest, SendResult, Sidebar, ThinkingLevel,
   TimelinePage,
 } from "../web/src/lib/api/types.ts";
 import type { AllowedModel } from "../../../config/allowed-models.ts";
@@ -1199,6 +1199,23 @@ export class App {
     this.store.state.reads[id] = { at: Date.now() };
     this.store.saveState();
     void this.threads.refresh();
+  }
+
+  /** Mark all as read: reads each room to its newest post and answers where each read point was, which `restoreReads` puts back for Undo. */
+  markAllRead(ids: readonly ConversationId[]): ReadPoint[] {
+    return ids.map(id => {
+      const was = this.store.state.reads[id];
+      this.markRead(id);
+      return { room: id, seq: was?.seq ?? 0, ...(was?.from ? { from: was.from } : {}) };
+    });
+  }
+
+  /** Undo of Mark all as read: each room reads from where it did, unread from its marked post again when it had one. */
+  restoreReads(points: readonly ReadPoint[]): void {
+    for (const { room, seq, from } of points) {
+      if (from && (isRoomId(room) || this.isGroup(room))) this.roomUnreadFrom(room, from);
+      else this.markRead(room, seq);
+    }
   }
 
   // Live hub

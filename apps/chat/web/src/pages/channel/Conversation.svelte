@@ -293,10 +293,18 @@
     ...(working ? [{ type: "separator" as const }, { id: "stop", label: "Stop", icon: "stop", onselect: stop }] : []),
   ]);
 
+  /** The New messages bar's Mark as read, and Esc in the room, as in Slack: the room reads to its newest post and its New line goes. */
+  function readNow() {
+    void store.readNow().catch(() => toast.error(`Could not mark ${isChannel ? `#${name}` : name} as read`));
+  }
+
   function onkeydown(e: KeyboardEvent) {
     if (modKey(e) && !e.shiftKey && e.key.toLowerCase() === "l") {
       e.preventDefault();
       composer?.focus();
+    } else if (e.key === "Escape" && !e.shiftKey && !modKey(e) && !e.altKey && !e.defaultPrevented && store.newLine && !threadParam && !document.querySelector("dialog[open], [role=menu], [role=listbox]")) {
+      e.preventDefault();
+      readNow();
     }
   }
 </script>
@@ -455,6 +463,7 @@
     {onartifact}
     newLine={store.newLine}
     onbottom={markRead}
+    onmarkread={readNow}
   />
   <div class="typing" aria-live="polite">
     {#if waitText && agent}

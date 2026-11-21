@@ -20,6 +20,7 @@
   import { later, laterHref } from "$lib/later.svelte";
   import { drafts, draftsHref } from "$lib/drafts.svelte";
   import Badge from "$lib/ui/Badge.svelte";
+  import { isUnread, markAllRead, unreadRooms, unreadsHref } from "$lib/unreads.svelte";
   import HostBadge from "$pages/agents/HostBadge.svelte";
 
   const current = $derived(router.conversationId);
@@ -92,8 +93,16 @@
     ];
   }
 
+  /** A section menu's Mark all as read, which reads every unread room in the section, as Slack's does. */
+  function readAllItem(rows: readonly ConversationSummary[]): MenuEntry {
+    const unread = rows.filter(isUnread);
+    return { id: "read-all", label: "Mark all as read", icon: "check", disabled: !unread.length, onselect: () => void markAllRead(unread) };
+  }
+
   function sectionMenu(id: SectionId): MenuEntry[] {
     return [
+      readAllItem(channels.sections.find((s) => s.section.id === id)?.rows ?? []),
+      { type: "separator" },
       { id: "rename", label: "Rename section", icon: "edit", onselect: () => (sidebarSections.dialog = { kind: "rename", id }) },
       {
         id: "delete",
@@ -168,6 +177,7 @@
       {/snippet}
     </SidebarRow>
     <SidebarRow href={forYouHref()} label="For you" icon="inbox" selected={forYouSelected} unread={sidebar.data.forYou} />
+    <SidebarRow href={unreadsHref()} label="All unreads" icon="messages" selected={router.messagesView === "unreads"} fresh={unreadRooms().length > 0} />
   </div>
 
   {#if sidebar.data.solo.length}
@@ -201,6 +211,8 @@
     <SidebarSection id="channels" label="Channels" folded={folded("channels")} ontoggle={() => sidebarSections.toggle("channels")} empty="No channels yet." isEmpty={!sidebar.data.channels.length}>
       {#snippet actions()}
         {@render more("channels", "Channels options", () => [
+          readAllItem(channels.rest),
+          { type: "separator" },
           { id: "new-section", label: "New section", icon: "plus", onselect: () => (sidebarSections.dialog = { kind: "new" }) },
         ])}
         <IconButton icon="plus" label="Create channel" size="xs" onclick={newChannel} />
@@ -210,7 +222,10 @@
   </div>
 
   <SidebarSection id="dms" label="Direct messages" folded={folded("dms")} ontoggle={() => sidebarSections.toggle("dms")}>
-    {#snippet actions()}<IconButton icon="plus" label="New message" size="xs" onclick={() => router.navigate(hrefFor("messages", ["new"], { kind: "dm" }))} />{/snippet}
+    {#snippet actions()}
+      {@render more("dms", "Direct messages options", () => [readAllItem(sidebar.data.dms)])}
+      <IconButton icon="plus" label="New message" size="xs" onclick={() => router.navigate(hrefFor("messages", ["new"], { kind: "dm" }))} />
+    {/snippet}
     {#each shown(sidebar.data.dms, "dms") as row (row.id)}
       <SidebarRow
         href={conversationHref(row.id)}

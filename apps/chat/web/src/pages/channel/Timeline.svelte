@@ -3,6 +3,8 @@
   import { newestReply, type Item, type TurnPlace } from "$lib/api";
   import Avatar from "$lib/ui/Avatar.svelte";
   import Button from "$lib/ui/Button.svelte";
+  import Icon from "$lib/ui/Icon.svelte";
+  import { stampLabel } from "$lib/ui/datetime";
   import DayDivider from "$lib/ui/DayDivider.svelte";
   import LoadingText from "$lib/ui/LoadingText.svelte";
   import SystemLine from "$lib/ui/SystemLine.svelte";
@@ -55,11 +57,13 @@
     newLine?: string | null;
     /** The feed reached its bottom; `byUser` when the owner scrolled or jumped there himself rather than a new row pulling the feed down. */
     onbottom?: (byUser: boolean) => void;
+    /** With a New line, Slack's bar on top, "3 new messages since 8:25 PM", whose Mark as read calls this. */
+    onmarkread?: () => void;
   };
   let {
     items, loading, error, hasOlder, loadingOlder, loadOlder, focus, flashFocus = true, context, liveLabel = null, queue = null, openThread = null, canReply = false, compact = false,
     layout = "bubble", beginning = null, replyCount = null, newLine = null,
-    statusOf, onretry, onretrysend, ondiscardsend, onthread, oncopylink, onmention, onboardid, onartifact, onbottom,
+    statusOf, onretry, onretrysend, ondiscardsend, onthread, oncopylink, onmention, onboardid, onartifact, onbottom, onmarkread,
   }: Props = $props();
 
   /** A post the owner deleted goes, as in Slack, except a channel root that keeps its replies, and the root atop a thread pane. */
@@ -260,6 +264,23 @@
     return !!row && !!scroller && row.getBoundingClientRect().bottom > scroller.getBoundingClientRect().top;
   }
 
+  /** The bar's count and time: the posts from the New line down that others wrote, and when the first of them came. */
+  const fresh = $derived.by(() => {
+    if (!newLine || !onmarkread || loading) return null;
+    const from = shown.findIndex((item) => item.id === newLine);
+    if (from < 0) return null;
+    const count = shown.slice(from).filter((item) => item.kind !== "system" && item.author.id !== "owner").length;
+    return { count: Math.max(count, 1), at: shown[from]!.at };
+  });
+
+  function toNewLine() {
+    const row = newLine && scroller ? scroller.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(newLine)}"]`) : null;
+    if (!scroller || !row) return;
+    stick = false;
+    scroller.scrollTop += row.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 48;
+    held = { row, top: row.getBoundingClientRect().top };
+  }
+
   function jump() {
     stick = true;
     scroller?.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });
@@ -368,6 +389,15 @@
       </div>
     {/if}
   </div>
+  {#if fresh && onmarkread}
+    <div class="fresh" role="status" data-testid="new-messages-bar">
+      <button type="button" class="fresh-jump" onclick={toNewLine} title="Jump to the first new message">
+        <Icon name="arrow-up" size={14} />
+        <span>{fresh.count} new {fresh.count === 1 ? "message" : "messages"} since {stampLabel(fresh.at)}</span>
+      </button>
+      <button type="button" class="fresh-read" onclick={onmarkread} title="Mark as read (Esc)">Mark as read</button>
+    </div>
+  {/if}
   <div class="jump" class:visible={showJump}>
     <Button variant="outline" size="sm" icon="arrow-down" onclick={jump} tabindex={showJump ? 0 : -1}>Jump to latest</Button>
   </div>
@@ -530,6 +560,56 @@
   .state .title {
     color: var(--text-standard);
     font-weight: 500;
+  }
+  /* Slack's New messages bar: the count since the first new post, which jumps to the New line, and Mark as read. */
+  .fresh {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    max-width: calc(100% - 32px);
+    border-radius: var(--radius-capsule);
+    background: var(--affordance-prominent);
+    color: var(--text-on-prominent);
+    box-shadow: var(--shadow-sm);
+    font: var(--text-caption);
+    font-weight: 600;
+    letter-spacing: var(--tracking-caption);
+    transform: translateX(-50%);
+    overflow: hidden;
+  }
+  .fresh button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+    padding: 0 12px;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .fresh-jump {
+    min-width: 0;
+  }
+  .fresh-jump span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .fresh-read {
+    flex: none;
+    border-left: 1px solid color-mix(in srgb, currentColor 30%, transparent) !important;
+  }
+  .fresh button:hover {
+    background: color-mix(in srgb, currentColor 14%, transparent);
+  }
+  .fresh button:focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: -3px;
   }
   .jump {
     position: absolute;

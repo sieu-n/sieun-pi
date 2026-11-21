@@ -35,6 +35,7 @@ export const SHORTCUT_GROUPS = [
       { id: "dms", label: "Direct messages", keys: ["mod", "shift", "k"] },
       { id: "for-you", label: "For you", keys: ["mod", "shift", "m"] },
       { id: "later", label: "Later", keys: ["mod", "shift", "s"] },
+      { id: "all-unreads", label: "All unreads", keys: ["mod", "shift", "a"] },
       { id: "messages", label: "Messages", keys: ["mod", "1"] },
       { id: "agents", label: "Agents", keys: ["mod", "2"] },
       { id: "board", label: "Board", keys: ["mod", "3"] },
@@ -53,6 +54,8 @@ export const SHORTCUT_GROUPS = [
       { id: "newline", label: "New line", keys: ["shift", "enter"], scope: "in the message box" },
       { id: "edit-last", label: "Edit your last message", keys: ["arrowup"], scope: "in an empty message box" },
       { id: "mark-unread", label: "Mark unread", keys: ["u"], scope: "on a hovered message" },
+      { id: "mark-read", label: "Mark the conversation read", keys: ["escape"], scope: "in a conversation with new messages" },
+      { id: "mark-all-read", label: "Mark all as read", keys: ["shift", "escape"] },
     ],
   },
   {

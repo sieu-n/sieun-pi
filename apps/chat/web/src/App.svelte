@@ -8,6 +8,7 @@
   import { shortcutsSheet } from "$lib/shell/shortcuts-sheet.svelte";
   import ShortcutsSheet from "$lib/shell/ShortcutsSheet.svelte";
   import { laterHref } from "$lib/later.svelte";
+  import { markAllRead, unreadsHref } from "$lib/unreads.svelte";
   import { forYouHref } from "$pages/board/chips";
   import { router, hrefFor } from "$lib/router.svelte";
   import { search } from "$lib/shell/search.svelte";
@@ -24,6 +25,7 @@
   import BoardPage from "$pages/board/BoardPage.svelte";
   import ForYouPage from "$pages/board/ForYouPage.svelte";
   import LaterPage from "$pages/later/LaterPage.svelte";
+  import UnreadsPage from "$pages/unreads/UnreadsPage.svelte";
   import DraftsPage from "$pages/drafts/DraftsPage.svelte";
   import SettingsPage from "$pages/settings/SettingsPage.svelte";
   import SearchDialog from "$pages/search/SearchDialog.svelte";
@@ -59,6 +61,8 @@
     dms: () => router.navigate(hrefFor("messages", ["new"], { kind: "dm" })),
     "for-you": () => router.navigate(forYouHref()),
     later: () => router.navigate(laterHref()),
+    "all-unreads": () => router.navigate(unreadsHref()),
+    "mark-all-read": () => void markAllRead(),
     messages: () => router.navigate(router.tabHref("messages")),
     agents: () => router.navigate(router.tabHref("agents")),
     board: () => router.navigate(router.tabHref("board")),
@@ -102,7 +106,7 @@
 
 <Shell>
   {#if router.route.page === "messages"}
-    {#if router.messagesView === "for-you"}<ForYouPage />{:else if router.messagesView === "later"}<LaterPage />{:else if router.messagesView === "drafts"}<DraftsPage />{:else}<ChannelPage />{/if}
+    {#if router.messagesView === "for-you"}<ForYouPage />{:else if router.messagesView === "later"}<LaterPage />{:else if router.messagesView === "drafts"}<DraftsPage />{:else if router.messagesView === "unreads"}<UnreadsPage />{:else}<ChannelPage />{/if}
   {:else if router.route.page === "agents"}
     <AgentsPage />
   {:else if router.route.page === "board"}
