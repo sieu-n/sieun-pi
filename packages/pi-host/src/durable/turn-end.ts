@@ -7,7 +7,8 @@
  * the round itself, or one an earlier round of the turn sent. Each of those calls that goes through returns pi-durable's `terminate` control
  * (`closingControl` in `for-me.ts`, the tell_owner hook in `prime-chat.ts`), and pi-durable ends the run with no further model request only
  * when every call of the round returns it, so a refused post or a mark that leaves an item pending lets the round run on. An agent that takes
- * 👀 off before it posts has no answer yet, so its turn runs on and the post still goes out.
+ * 👀 off before it posts has no answer yet, so its turn runs on and the post still goes out. A checklist post with open items ends the turn
+ * only once the turn handed the work over, so a mark beside the first checklist does not end the turn before the hand-over.
  */
 import type { Message } from "@earendil-works/pi-ai";
 
@@ -37,25 +38,37 @@ function wentOut(result: Message, call: Call): boolean {
   return result.content.some(part => part.type === "text" && part.text.trim() === TOLD);
 }
 
+/** A post whose text still has open `- [ ]` items, such as the checklist a comm thread posts before it hands the work over. */
+const opensChecklist = (call: Omit<Call, "id">): boolean =>
+  (call.name === "tell_owner" || call.name === "edit_message") && /^\s*[-*] \[ \]/m.test(String(call.arguments.text ?? ""));
+
+/** A hand-over to the work thread: the agent_message tool, or agent_message.send in a Python call. */
+const handsOver = (call: Omit<Call, "id">): boolean =>
+  call.name.startsWith("agent_message") || (call.name === "ipython" && /agent_message\.send\(/.test(String(call.arguments.code ?? "")));
+
 /**
  * Whether the round of call `callId` ends the turn, from the conversation's messages in order, which hold the round's assistant message and
- * may hold its finished results. False when the call's round is not among them.
+ * may hold its finished results. False when the call's round is not among them. A turn whose post is a checklist with open items ends only
+ * after a hand-over went out in it, since its work still has to start.
  */
 export function roundEndsTurn(messages: readonly Message[], callId: string): boolean {
   const at = messages.findLastIndex(message => message.role === "assistant" && message.content.some(part => part.type === "toolCall" && part.id === callId));
   if (at < 0) return false;
   const round = callsOf(messages[at]!);
   if (!round.every(call => posts(call) || closes(call)) || !round.some(closes)) return false;
-  if (round.some(posts)) return true;
+  const answers = round.filter(posts);
+  let handedOver = false;
   const results = new Map<string, Message>();
   for (let i = at - 1; i >= 0; i--) {
     const message = messages[i]!;
-    if (message.role === "user") return false;
+    if (message.role === "user") break;
     if (message.role === "toolResult") results.set(message.toolCallId, message);
     for (const call of callsOf(message)) {
       const result = results.get(call.id);
-      if (posts(call) && result && wentOut(result, call)) return true;
+      if (!result || !wentOut(result, call)) continue;
+      if (posts(call)) answers.push(call);
+      if (handsOver(call)) handedOver = true;
     }
   }
-  return false;
+  return answers.length > 0 && (handedOver || !answers.some(opensChecklist));
 }

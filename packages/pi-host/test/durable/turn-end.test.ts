@@ -64,3 +64,24 @@ test("a reaction answers a post that needs no words, and a round with any other 
   assert.equal(roundEndsTurn([input("p1"), onlyPost.message], onlyPost.ids[0]!), false);
   assert.equal(roundEndsTurn([input("p1")], "c999"), false, "a call whose round is not there");
 });
+
+test("a first checklist with open items and a mark in one round runs on to the hand-over, and ends the turn once the hand-over went out", () => {
+  const checklist = { name: "tell_owner", arguments: { text: "checking before you ship\n- git\n  - [ ] main vs origin\n  - [ ] uncommitted files" } };
+  const first = round(checklist, mark);
+  assert.equal(roundEndsTurn([input("p1"), first.message], first.ids[1]!), false, "the work has not been handed over yet");
+  const hand = round(ipython);
+  const closing = round(mark);
+  assert.equal(roundEndsTurn([input("p1"), first.message, result(first.ids[0]!, "tell_owner", TOLD), result(first.ids[1]!, "mark_message", "Marked ch_1/p1 completed. 0 pending."),
+    hand.message, result(hand.ids[0]!, "ipython", "{'id': 'agentmsg_1'}"), closing.message], closing.ids[0]!), true);
+  assert.equal(roundEndsTurn([input("p1"), first.message, result(first.ids[0]!, "tell_owner", TOLD), hand.message, result(hand.ids[0]!, "ipython", "NameError", true), closing.message], closing.ids[0]!), false,
+    "a hand-over that failed does not count");
+  const ticked = round({ name: "edit_message", arguments: { message_id: "reply:ch_1/p1", text: "ready to ship\n- git\n  - [x] main vs origin" } }, eyesOff, done);
+  assert.equal(roundEndsTurn([input("[agent-message from sibling:w]"), ticked.message], ticked.ids[0]!), true, "a checklist with every item ticked ends it");
+});
+
+test("a post with set_thread_done(false), which reopens the thread, runs on", () => {
+  const reopen = round(post, { name: "set_thread_done", arguments: { message_id: "p1", done: false } });
+  assert.equal(roundEndsTurn([input("p1"), reopen.message], reopen.ids[0]!), false);
+  const both = round(post, { name: "set_thread_done", arguments: { message_id: "p1", done: false } }, mark);
+  assert.equal(roundEndsTurn([input("p1"), both.message], both.ids[2]!), false);
+});
