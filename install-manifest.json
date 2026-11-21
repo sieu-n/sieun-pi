@@ -174,6 +174,13 @@
       "target": ".prime/agent/skills/unslop"
     },
     {
+      "id": "skill:mac-screen",
+      "kind": "link",
+      "source": "skills/mac-screen",
+      "scope": "home",
+      "target": ".prime/agent/skills/mac-screen"
+    },
+    {
       "id": "skill:websearch",
       "kind": "link",
       "source": "skills/websearch",
