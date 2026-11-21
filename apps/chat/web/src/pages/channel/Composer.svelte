@@ -123,7 +123,7 @@
 
   onMount(() => {
     if (!box) return;
-    const saved = draftKey ? drafts.text(draftKey) : null;
+    const saved = draftKey ? drafts.take(draftKey) : null;
     if (saved) {
       fillDraft(box, saved);
       sync();

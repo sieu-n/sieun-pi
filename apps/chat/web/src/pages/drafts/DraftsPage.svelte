@@ -6,6 +6,7 @@
   import { sidebar } from "$lib/shell/sidebar.svelte";
   import { Avatar, Button, EmptyState, Icon, IconButton, PanelHeader, stampLabel } from "$lib/ui";
   import { directory } from "$pages/channel/directory.svelte";
+  import { toast } from "$lib/ui/toast.svelte";
 
   let now = $state(Date.now());
   const clock = setInterval(() => (now = Date.now()), 30_000);
@@ -27,8 +28,22 @@
     return listed.kind === "channel" ? { name: `#${listed.name}`, kind: "channel" } : { name: listed.name, kind: "solo" };
   }
 
-  const hrefOf = (draft: Draft): string =>
-    draft.place.kind === "thread" ? conversationHref(draft.place.room, { thread: draft.place.thread }) : conversationHref(draft.place.room);
+  /** Where a row opens; a thread draft saved before 11-22 whose room no channel claims has none. */
+  function hrefOf(draft: Draft): string | null {
+    switch (draft.place.kind) {
+      case "room": return conversationHref(draft.place.room);
+      case "thread": return conversationHref(draft.place.room, { thread: draft.place.thread });
+      case "legacy": return null;
+      default: {
+        const _exhaustive: never = draft.place;
+        return _exhaustive;
+      }
+    }
+  }
+
+  function copy(draft: Draft): void {
+    void navigator.clipboard.writeText(draft.text).then(() => toast.show("Draft copied"), () => toast.error("Could not copy the draft"));
+  }
 </script>
 
 <div class="page" data-testid="drafts-page">
@@ -45,26 +60,42 @@
     {:else}
       <ul class="rows" aria-label="Drafts">
         {#each drafts.list as draft (draft.key)}
-          {@const where = whereOf(draft.place.room)}
+          {@const href = hrefOf(draft)}
           <li class="row" data-draft-key={draft.key}>
-            <a class="open" href={hrefOf(draft)} data-draft-open>
-              <span class="lead">
-                {#if where.kind === "dm"}
-                  <Avatar name={where.name} kind="agent" seed={where.agent} size={36} />
-                {:else}
-                  <span class="room-icon"><Icon name={where.kind === "solo" ? "users" : where.kind === "job" ? "robot" : "hash"} size={18} /></span>
-                {/if}
-              </span>
-              <span class="main">
-                <span class="heading">
-                  <strong class="where t-label-sm">{draft.place.kind === "thread" ? `Thread in ${where.name}` : where.name}</strong>
-                  {#if draft.at}<time class="t-caption" datetime={new Date(draft.at).toISOString()}>{stampLabel(draft.at, now)}</time>{/if}
+            {#if draft.place.kind === "legacy"}
+              <div class="open" data-draft-legacy>
+                <span class="lead"><span class="room-icon"><Icon name="chat" size={18} /></span></span>
+                <span class="main">
+                  <span class="heading"><strong class="where t-label-sm">Thread reply, room not known</strong></span>
+                  <span class="hint t-caption">Saved before drafts named their room. It fills the next {draft.place.thread} thread you open.</span>
+                  <span class="preview t-body">{draft.text}</span>
                 </span>
-                <span class="preview t-body">{draft.text}</span>
-              </span>
-            </a>
+              </div>
+            {:else}
+              {@const where = whereOf(draft.place.room)}
+              <a class="open" href={href} data-draft-open>
+                <span class="lead">
+                  {#if where.kind === "dm"}
+                    <Avatar name={where.name} kind="agent" seed={where.agent} size={36} />
+                  {:else}
+                    <span class="room-icon"><Icon name={where.kind === "solo" ? "users" : where.kind === "job" ? "robot" : "hash"} size={18} /></span>
+                  {/if}
+                </span>
+                <span class="main">
+                  <span class="heading">
+                    <strong class="where t-label-sm">{draft.place.kind === "thread" ? `Thread in ${where.name}` : where.name}</strong>
+                    {#if draft.at}<time class="t-caption" datetime={new Date(draft.at).toISOString()}>{stampLabel(draft.at, now)}</time>{/if}
+                  </span>
+                  <span class="preview t-body">{draft.text}</span>
+                </span>
+              </a>
+            {/if}
             <span class="row-actions">
-              <IconButton size="sm" icon="edit" label="Edit draft" onclick={() => router.navigate(hrefOf(draft))} data-draft-edit />
+              {#if href}
+                <IconButton size="sm" icon="edit" label="Edit draft" onclick={() => router.navigate(href)} data-draft-edit />
+              {:else}
+                <IconButton size="sm" icon="copy" label="Copy draft" onclick={() => copy(draft)} data-draft-copy />
+              {/if}
               <IconButton size="sm" icon="trash" label="Delete draft" onclick={() => drafts.remove(draft)} data-draft-delete />
             </span>
           </li>
@@ -88,6 +119,7 @@
   .heading { display: flex; align-items: baseline; gap: var(--space-2); min-width: 0; }
   .where { color: var(--text-standard); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .heading time { color: var(--text-metadata); flex: none; }
+  .hint { color: var(--text-subtle); }
   .preview { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; max-inline-size: 72ch; white-space: pre-line; color: var(--text-standard); }
   .row-actions { position: absolute; top: 8px; right: var(--space-3); display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--surface-panel); box-shadow: var(--shadow-float); opacity: 0; }
   .row:hover .row-actions, .row:focus-within .row-actions { opacity: 1; }

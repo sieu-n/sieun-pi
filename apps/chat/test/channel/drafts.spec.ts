@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
-import { composerInput, conversation, FRONTEND, open, tag } from "./helpers";
+import { composerInput, conversation, FRONTEND, open, tag, VENT } from "./helpers";
 
 const sidebarRow = (page: Page, id: string) => page.locator(`a[data-sidebar-row][href="#/c/${id}"]`);
 const draftsRow = (page: Page) => page.locator('a[data-sidebar-row][href="#/c/drafts"]');
@@ -56,8 +56,8 @@ test("a thread reply draft is kept per room and opens its thread from Drafts", a
   const pane = page.getByTestId("thread-pane");
   await composerInput(pane).click();
   await page.keyboard.type(text);
-  const key = await page.evaluate(() => Object.keys(localStorage).find((k) => k.startsWith("chat.draft.thread:")));
-  expect(key).toBe(`chat.draft.thread:${channel.id}:${thread}`);
+  const key = await page.evaluate(() => Object.keys(localStorage).find((k) => k.startsWith("chat.draft.reply:")));
+  expect(key).toBe(`chat.draft.reply:${channel.id}:${thread}`);
 
   await page.goto("/#/c/drafts");
   const item = page.getByTestId("drafts-page").locator("li[data-draft-key]").filter({ hasText: text });
@@ -65,4 +65,39 @@ test("a thread reply draft is kept per room and opens its thread from Drafts", a
   await expect(sidebarRow(page, channel.id).locator("[data-draft]")).toHaveCount(0);
   await item.locator("[data-draft-open]").click();
   await expect(composerInput(page.getByTestId("thread-pane"))).toHaveText(text);
+});
+
+test("thread drafts saved before drafts named their room move to their room, and one no channel claims stays readable", async ({ page }) => {
+  const word = tag();
+  const job = `${VENT}:14`;
+  const old = {
+    "chat.draft.thread:p3": `one channel has p3 ${word}`,
+    [`chat.draft.thread:${job}`]: `a job thread ${word}`,
+    "chat.draft.thread:p1": `both channels have p1 ${word}`,
+    "chat.draft.thread:ch_general:p2": JSON.stringify({ text: `written by 363f5088 ${word}`, at: Date.now() }),
+  };
+  await page.goto("/#/c/drafts");
+  await page.getByTestId("drafts-page").waitFor();
+  await page.evaluate((seed) => {
+    for (const k of Object.keys(localStorage)) if (k.startsWith("chat.draft.")) localStorage.removeItem(k);
+    for (const [k, v] of Object.entries(seed)) localStorage.setItem(k, v);
+  }, old);
+  await page.reload();
+
+  const list = page.getByTestId("drafts-page");
+  const item = (text: string) => list.locator("li[data-draft-key]").filter({ hasText: text });
+  await expect(item("one channel has p3")).toHaveAttribute("data-draft-key", "reply:ch_cutover:p3");
+  await expect(item("one channel has p3")).toContainText("Thread in #pi-cutover");
+  await expect(item("a job thread")).toHaveAttribute("data-draft-key", `reply:dm_vent:${job}`);
+  await expect(item("written by 363f5088")).toHaveAttribute("data-draft-key", "reply:ch_general:p2");
+  await expect(item("both channels have p1").locator("[data-draft-legacy]")).toContainText("Thread reply, room not known");
+  const keys = await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith("chat.draft.")).sort());
+  expect(keys).toEqual(["chat.draft.reply:ch_cutover:p3", "chat.draft.reply:ch_general:p2", `chat.draft.reply:dm_vent:${job}`, "chat.draft.thread:p1"].sort());
+
+  await item("one channel has p3").locator("[data-draft-open]").click();
+  await expect(composerInput(page.getByTestId("thread-pane"))).toHaveText(`one channel has p3 ${word}`);
+  await page.goto("/#/c/ch_general?thread=p1");
+  await expect(composerInput(page.getByTestId("thread-pane"))).toHaveText(`both channels have p1 ${word}`);
+  await page.goto("/#/c/drafts");
+  await expect(item("both channels have p1")).toHaveAttribute("data-draft-key", "reply:ch_general:p1");
 });
