@@ -4,13 +4,14 @@
  * real kinds of asks with no steering, and each reply is checked against the ideal replies page
  * (wiki:agents/agent-factory/jobs/2026/11/20/1139-slack-style-replies/ideal-replies.html).
  *
- *   node apps/chat/scripts/blind-replies.mjs [--asks <file.json> | --set lists | --set options | --set checklist] [--no-reaction] [--cwd <project>] [--host <box>] [--out <file.jsonl>] [--server http://127.0.0.1:5184]
+ *   node apps/chat/scripts/blind-replies.mjs [--asks <file.json> | --set lists | --set options | --set checklist | --set natural] [--no-reaction] [--cwd <project>] [--host <box>] [--out <file.jsonl>] [--server http://127.0.0.1:5184]
  *
  * The first ask is the channel's root post and every later one a reply in its thread, as the owner asks in a channel. An ask is
  * `{text, expect, wait}`, where `expect` is "reply" (one short Slack post), "list" (a one-line answer, then nested bullets and a task list,
  * as the owner asked under p85 and p95 in #sw-factory-build on 11-20, p101), "options" (names several apps and explains one in 20 words or
- * more, with an example and how it fits the asker's product, p97), "checklist" (one post of open `- [ ]` checks that edits tick off, p106), "line" (one short line with no bullets) or "reaction"
- * (no post), and `wait: false` sends the next ask at
+ * more, with an example and how it fits the asker's product, p97), "checklist" (one post of open `- [ ]` checks that edits tick off, p106), "natural" (a
+ * checklist post that opens with a natural sentence, holds no bare topic labels and states a pick before any question, p54), "line" (one short line with
+ * no bullets) or "reaction" (no post). An ask with `room: "dm"` goes to the agent's DM as a root post instead of the channel. `wait: false` sends the next ask at
  * once, so the agent answers both together, as when the owner sent p14 and p15 7 s apart on 11-20. The agent and the room are `test: true`, so no
  * owner list shows them. Each line of --out is one ask with its replies, its checks and pass or fail; the last line is the run's summary.
  *
@@ -19,6 +20,8 @@
  * reads the answer as whole, since the gaps between one turn's posts in #dev-search-general on 11-20 were 65 ms to 7 s.
  */
 import { appendFileSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 
 const { values } = parseArgs({ options: { asks: { type: "string" }, set: { type: "string" }, cwd: { type: "string" }, host: { type: "string" }, out: { type: "string" }, server: { type: "string" }, "no-reaction": { type: "boolean" } } });
@@ -59,7 +62,20 @@ const CHECKLIST_ASKS = [
   { text: "before i ship, can you check: is local main in sync with origin/main, how many files are uncommitted, does pi-host's comm-guard test pass, and is any TODO left in packages/pi-host/src/durable?", expect: "checklist" },
   { text: "is this checkout on main right now?", expect: "line" },
 ];
-const SETS = { default: DEFAULT_ASKS, lists: LIST_ASKS, options: OPTIONS_ASKS, checklist: CHECKLIST_ASKS };
+/**
+ * A multi-step ask in the agent's DM and one in the channel, with no hint about format, as the owner asked in dm_agent-factory p54 on 11-21
+ * (msg mwqt6ry1): "todo를 리스트하는건 좋은데, 자연스럽게 해야지 메시지면 메시지 context에 맞게, channel 도중이면 channel message concept에 맞게. 그리고
+ * follow-up question 물어도 돼 괜찮아 대신 primary suggestion은 꼭 두고", after a checklist post opened with "one table: Prime chat vs ..., file by
+ * file." over one-word topic bullets. Both asks leave a choice open, so a follow-up question is natural. They name a tool the asker
+ * wants to adopt, never sw factory, and the set runs at ~/code/symphony, a read-only upstream clone, so no agent edits a real repo.
+ */
+const NATURAL_ASKS = [
+  { room: "dm", text: "we want to try symphony for our team's backlog. can you work out what it'd take: how it picks up issues, how it runs each agent in its workspace, and what we'd change for our setup? we track work in github issues today, not linear, so not sure if we adapt symphony or move to linear", expect: "natural" },
+  { text: "before we pick symphony for the team, can you check how it retries a failed agent run, where it keeps run logs, and whether it can cap token spend per issue? also should we run it on one box or split it?", expect: "natural" },
+];
+const SETS = { default: DEFAULT_ASKS, lists: LIST_ASKS, options: OPTIONS_ASKS, checklist: CHECKLIST_ASKS, natural: NATURAL_ASKS };
+/** A set's own project when no --cwd is given, so the owner-style duty, which passes none, runs natural at the read-only clone too. */
+const SET_CWD = { natural: join(homedir(), "code/symphony") };
 const chosen = values.asks ? JSON.parse(readFileSync(values.asks, "utf8")) : SETS[values.set ?? "default"];
 if (!chosen) throw new Error(`--set is one of ${Object.keys(SETS).join(", ")}`);
 /**
@@ -98,8 +114,26 @@ const words = text => text.replace(/\]\([^)]*\)/g, "]").replace(/^[ \t]*(?:[-*+]
 const sentences = text => text.replace(/\]\([^)]*\)/g, "]").split(/(?<=[.!?])\s+|\n+/).filter(line => line.trim());
 
 const BULLET = /^\s*[-*+] /;
-const NESTED = /^ {2,}[-*+] /m;
 const TASK = /^\s*[-*+] \[[ xX]\] /m;
+
+/** A word that makes a line a sentence: a pronoun, an auxiliary, a common verb, or a word ending in -ed or -ing. */
+const VERB = /\b(i|i'll|i'm|i've|i'd|we|we'll|we're|we'd|you|you'd|it|it's|they|here's|there's|let's|let me|is|are|was|were|be|been|has|have|had|do|does|did|can|can't|could|will|won't|would|should|need|needs|check|look|pull|read|reads|diff|compare|run|runs|ran|find|found|work|works|go|goes|start|dig|see|map|trace|test|write|pass|passes|fail|fails|pick|picks|keep|keeps|use|uses|handle|handles|get|gets|got|show|shows|take|takes|make|makes|stay|stays|lives|sits|holds|\w+ed|\w+ing)\b/i;
+/** A bullet's text with no list or task marker. */
+const item = line => line.replace(/^[ \t]*[-*+][ \t]+(?:\[[ xX]\][ \t]*)?/, "").trim();
+/** A bullet that is a bare topic label, such as `- git` or `- instructions`: one to three words, no verb; an empty task box counts too. */
+const bareLabel = line => BULLET.test(line) && (() => { const t = item(line).replace(/[:.]$/, ""); return !t || (t.split(/\s+/).length <= 3 && !VERB.test(t)); })();
+/** A natural opening line for the place: five words or more with a verb, no `label:` opener and no ack such as "on it". */
+const naturalLine = line => !BULLET.test(line) && words(line) >= 5 && VERB.test(line) && !/^[^:\n]{1,25}:\s*\S/.test(line) && !/^\W*on it\b/i.test(line);
+/** Words that state the agent's own pick, as the owner asked in p54: "primary suggestion은 꼭 두고". */
+const PICK = /\b(i'd (go|pick|start|use|lean|suggest|recommend|keep|stay|move|adapt|write|run)|my pick|i'll|i'm going|i suggest|suggest|recommend|unless you'd rather|i lean|lean toward|my vote|going with|default to)\b/i;
+/** Whether every question in a text comes with a pick in or before the paragraph that asks it; code, links and URLs hold no question. */
+const pickFirst = text => {
+  const clean = text.replace(/```[\s\S]*?```|`[^`\n]*`|\]\([^)]*\)|https?:\/\/\S+/g, " ");
+  const at = clean.indexOf("?");
+  if (at < 0) return true;
+  const end = clean.indexOf("\n\n", at);
+  return PICK.test(clean.slice(0, end < 0 ? clean.length : end));
+};
 
 /** Apps with a snooze or remind-later feature, mail and chat apps and the todo apps OPTIONS_ASKS asks about, which an answer names. */
 const APPS = ["Slack", "Superhuman", "Gmail", "Outlook", "Linear", "Discord", "Teams", "Spark", "Hey", "Front", "Missive", "Todoist", "Notion", "Telegram", "WhatsApp", "Apple Mail", "Shortwave", "Boomerang",
@@ -149,11 +183,25 @@ function checks(ask, posts, asked, versions = new Map()) {
       ["no line over 35 words", lines.every(line => words(line) <= 35)],
     ];
   }
+  if (ask.expect === "natural") {
+    const all = posts.flatMap(p => versions.get(p.id) ?? [p.text]);
+    const firstPost = posts[0] ? (versions.get(posts[0].id) ?? [posts[0].text]) : [];
+    const firstLine = (firstPost[0] ?? "").split("\n").find(line => line.trim()) ?? "";
+    return [
+      ...plain,
+      ["the first post opens with a natural sentence", naturalLine(firstLine.trim())],
+      ["no version holds a bare topic label bullet", all.every(t => !t.split("\n").some(bareLabel))],
+      ["the first post lists its steps as open tasks", (firstPost[0]?.match(/^\s*[-*+] \[ \] \S/gm) ?? []).length >= 2],
+      ["a later edit of the first post ticks tasks", firstPost.slice(1).some(t => /^\s*[-*+] \[[xX]\] /m.test(t))],
+      ["every question comes with the agent's pick", all.every(pickFirst)],
+    ];
+  }
   if (ask.expect === "list") {
     return [
       ...plain,
       ["opens with a one-line answer, not a bullet", lines.length > 1 && !BULLET.test(lines[0]) && words(lines[0]) <= 25],
-      ["nested bullets", NESTED.test(text)],
+      // Nested topic groups are allowed but not required, since the owner asked for flat short sentences in p54 on 11-21.
+      ["bullets under the answer", lines.slice(1).some(line => BULLET.test(line))],
       ["a task list", TASK.test(text)],
       ["no line over 35 words", lines.every(line => words(line) <= 35)],
     ];
@@ -167,7 +215,8 @@ function checks(ask, posts, asked, versions = new Map()) {
 
 /** Month, day, time to the second and 2 random letters, since two runs started in one minute on 11-20 got one channel name. */
 const stamp = `${new Date().toISOString().slice(5, 19).replace(/[-T:]/g, "")}${Math.random().toString(36).slice(2, 4)}`;
-const agent = await call("POST", "/api/agents", { name: `blind replies ${stamp}`, test: true, ...(values.cwd ? { cwd: values.cwd } : {}), ...(values.host ? { host: values.host } : {}) });
+const cwd = values.cwd ?? SET_CWD[values.set];
+const agent = await call("POST", "/api/agents", { name: `blind replies ${stamp}`, test: true, ...(cwd ? { cwd } : {}), ...(values.host ? { host: values.host } : {}) });
 const room = await call("POST", "/api/rooms", { kind: "channel", name: `blind-replies-${stamp}`, agenda: "", members: [agent.id], test: true });
 console.log(`agent ${agent.id}, room ${room.id}`);
 
@@ -176,9 +225,10 @@ const results = [];
 /** Asks sent with `wait: false` go out at once, and the next ask waits for the answers to all of them, as when he sends two posts in a row. */
 let group = [];
 for (const [index, ask] of asks.entries()) {
-  const sent = await call("POST", `/api/c/${room.id}/send`, { text: ask.text, requestId: `blind-${stamp}-${index}`, ...(root ? { threadRoot: root } : {}) });
-  root ??= sent.item.id;
-  group.push({ ...ask, id: sent.item.id });
+  const dm = ask.room === "dm";
+  const sent = await call("POST", `/api/c/${dm ? agent.room : room.id}/send`, { text: ask.text, requestId: `blind-${stamp}-${index}`, ...(root && !dm ? { threadRoot: root } : {}) });
+  if (!dm) root ??= sent.item.id;
+  group.push({ ...ask, id: sent.item.id, seq: sent.item.seq });
   if (ask.wait === false) continue;
   const ids = new Set(group.map(g => g.id));
   const started = Date.now();
@@ -186,11 +236,14 @@ for (const [index, ask] of asks.entries()) {
   let lastNew = 0;
   /** Every text each answer post had, in order, so a checklist's first version and its edits can be checked. */
   const versions = new Map();
-  const quiet = ask.expect === "checklist" ? CHECKLIST_QUIET_MS : QUIET_MS;
+  const edited = ask.expect === "checklist" || ask.expect === "natural";
+  const quiet = edited ? CHECKLIST_QUIET_MS : QUIET_MS;
+  const since = Math.min(...group.map(g => g.seq ?? 0));
   for (;;) {
     await sleep(POLL_MS);
-    const thread = await call("GET", `/api/c/${room.id}/replies/${root}`);
-    const now = thread.items.filter(i => i.author?.id === agent.id && ids.has(i.answers));
+    // A DM has no thread, so its answers are the agent's posts after the ask, whatever they name as answered.
+    const thread = dm ? { root: undefined, items: (await call("GET", `/api/c/${agent.room}/items?limit=200`)).items.filter(i => i.kind === "message") } : await call("GET", `/api/c/${room.id}/replies/${root}`);
+    const now = thread.items.filter(i => i.author?.id === agent.id && (dm ? i.seq > since : ids.has(i.answers)));
     if (now.length > posts.length) lastNew = Date.now();
     for (const post of now) {
       const seen = versions.get(post.id) ?? [];
@@ -200,17 +253,17 @@ for (const [index, ask] of asks.entries()) {
       }
     }
     posts = now;
-    const reacted = [thread.root, ...thread.items].find(i => i.id === ask.id)?.reactions?.some(r => r.by.some(b => b.id === agent.id));
+    const reacted = [thread.root, ...thread.items].find(i => i?.id === ask.id)?.reactions?.some(r => r.by.some(b => b.id === agent.id));
     if (posts.length && Date.now() - lastNew > quiet) break;
     if (!posts.length && ask.expect === "reaction" && reacted && Date.now() - started > QUIET_MS) break;
-    if (Date.now() - started > (ask.expect === "checklist" ? 2 * FIRST_MS : FIRST_MS)) break;
+    if (Date.now() - started > (edited ? 2 * FIRST_MS : FIRST_MS)) break;
   }
   const text = group.map(g => g.text).join(" / ");
   const result = checks(ask, posts, group.length, versions);
-  const line = { ask: text, askIds: [...ids], expect: ask.expect, seconds: Math.round((Date.now() - started) / 1000), replies: posts.map(p => p.text), versions: posts.map(p => versions.get(p.id) ?? [p.text]), checks: Object.fromEntries(result), pass: result.every(([, ok]) => ok) };
+  const line = { ask: text, askIds: [...ids], room: dm ? agent.room : room.id, expect: ask.expect, seconds: Math.round((Date.now() - started) / 1000), replies: posts.map(p => p.text), versions: posts.map(p => versions.get(p.id) ?? [p.text]), checks: Object.fromEntries(result), pass: result.every(([, ok]) => ok) };
   results.push(line);
   console.log(`\n${line.pass ? "PASS" : "FAIL"} ${text}\n${posts.map(p => `  > ${p.text.replace(/\n/g, "\n    ")}`).join("\n") || "  (no post)"}\n  ${result.filter(([, ok]) => !ok).map(([name]) => `failed: ${name}`).join(", ")}`);
-  if (values.out) appendFileSync(values.out, `${JSON.stringify({ room: room.id, agent: agent.id, ...line })}\n`);
+  if (values.out) appendFileSync(values.out, `${JSON.stringify({ agent: agent.id, set: values.set ?? "default", ...line })}\n`);
   group = [];
 }
 const summary = { room: room.id, root, agent: agent.id, passed: results.filter(r => r.pass).length, of: results.length, pass: results.every(r => r.pass) };
