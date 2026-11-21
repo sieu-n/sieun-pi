@@ -339,9 +339,10 @@ export const HOST_WRITES = new RegExp(`${WRITES.source}|\\b(?:UPDATE\\s+\\w+(?:\
 export const hostWriters = (hosts: readonly HostLoop[]): HostLoop[] => hosts.filter(host => HOST_WRITES.test(host.text) && !RELEASE_DEPLOY.test(host.command));
 /**
  * A release's own deploy.sh, which CI starts as the transient unit virev-deploy-<env>: the deploy path itself, not a hand run. At 17:28Z
- * on 10-19 the staging deploy of 08ac626989 counted as a hand-run host loop.
+ * on 10-19 the staging deploy of 08ac626989 counted as a hand-run host loop. A service deploy (deploy-unit.sh --service, research-api or
+ * Vent) runs the live release's deploy.sh under /srv/<env>/current, and at 01:5xZ on 11-21 a staging research deploy counted as one.
  */
-const RELEASE_DEPLOY = /^(?:\/usr)?\/bin\/bash \/srv\/(?:prod|staging)\/releases\/[0-9a-f]{40}\/apps\/infra\/metal\/deploy\.sh /;
+const RELEASE_DEPLOY = /^(?:\/usr)?\/bin\/bash \/srv\/(?:prod|staging)\/(?:releases\/[0-9a-f]{40}|current)\/apps\/infra\/metal\/deploy\.sh /;
 
 /**
  * A one-off that runs itself: scripts/copy-oneoff.sh started it with a restart policy, so docker starts it again after a failure and an
