@@ -68,7 +68,8 @@ const TABLE = /^[ \t]*\|?.*\|.*\n[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,
 const TASK_ITEM = /^[ \t]*[-*+] \[[ xX]\] /;
 const OPEN_ITEM = /^[ \t]*[-*+] \[ \] \S/m;
 const MERMAID = /```mermaid/;
-const WRITER_NAME = /\b(page|writer|write|wiki|doc)\b/i;
+/** A job named for a page, such as "symphony adoption page"; a bare "write" also names jobs like "large file write rule", which on 11-21 edited AGENTS.md. */
+const WRITER_NAME = /\b(page|writer|wiki|docs?)\b/i;
 const WRITER_BRIEF = /\byou (?:are|take) the (?:page )?writer\b|Split:[^\n]*\byou write the page\b/i;
 const HELD = "Kept as a note, not sent";
 /** A text's words as tell_owner's long check counts them (reply-lint.ts `longReply`), with no list or task marker, as in blind-replies.mjs. */
