@@ -20,7 +20,7 @@
 
   async function read(): Promise<void> {
     try {
-      report = await api.skills();
+      report = await api.skillsInventory();
       error = null;
       now = Date.now();
     } catch (reason) {

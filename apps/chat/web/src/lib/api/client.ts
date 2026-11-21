@@ -7,7 +7,10 @@ import type {
   ConversationPatch, ConversationSummary, DutyAction, DutyRow, ForMeItem, ForMeList, ForMeStatus, ForYouItem, HarnessEntryView, HostsReport, ImageRef, Item, JobNode, Me, MemoryInput, ModelCatalog, OpenedPage, ProjectList, SearchQuery, SearchResult, SendRequest, WikiPages,
   LaterItem, LaterList, LaterPatch, LaterRequest, LaterState, ReactionRequest, ReadAllRequest, ReadPoint, Room, RoomInput, RoomPatch, SendResult, Sidebar, StepOutputRef, ThinkingLevel, ThreadDoneRequest, TimelinePage, UsageBucket, UsageRange, UsageReport, AccountsView,
 } from "./types.ts";
-import type { SkillDoc, SkillScan, SkillsReport } from "./shared/skills.ts";
+import type {
+  AdoptBody, ApplyBody, ApplyResult, InstallBody, MergeBody, MoveBody, OwnBody, RemoveBody, SkillDoc, SkillMoves, SkillScan, SkillsChange, SkillsCheck,
+  SkillsReport, SkillsView, UndoBody,
+} from "./shared/skills.ts";
 import type { ConsolesReport } from "./shared/consoles.ts";
 import type { PinRequest } from "./types.ts";
 import type { SavedLayout, SidebarLayout } from "./types.ts";
@@ -551,7 +554,23 @@ export const api = {
   hosts: () => call<HostsReport>("GET", "/api/hosts"),
   /** The consoles table from auto-sns-agent's consoles.json, read as the file is now. */
   consoles: () => call<ConsolesReport>("GET", "/api/consoles"),
-  skills: () => call<SkillsReport>("GET", "/api/skills"),
+  /** The skills DB read model, everything a Settings > Skills layout renders. */
+  skills: () => call<SkillsView>("GET", "/api/skills"),
+  /** The scanner's raw inventory, which the `current` layout reads. */
+  skillsInventory: () => call<SkillsReport>("GET", "/api/skills/inventory"),
+  /** Where the disk differs from the DB: folders with no row and installs the disk does not match. */
+  skillsCheck: () => call<SkillsCheck>("GET", "/api/skills/check"),
+  /** Makes the disk match the DB; a second run changes nothing. `dryRun` only plans. */
+  applySkills: (body: ApplyBody = {}) => call<ApplyResult>("POST", "/api/skills/apply", body),
+  installSkill: (body: InstallBody) => call<SkillsChange>("POST", "/api/skills/install", body),
+  /** Removes a copy, an install or a whole skill, with a backup that undo restores. */
+  removeSkill: (body: RemoveBody) => call<SkillsChange>("POST", "/api/skills/remove", body),
+  adoptSkill: (body: AdoptBody) => call<SkillsChange>("POST", "/api/skills/adopt", body),
+  moveSkill: (body: MoveBody) => call<SkillsChange>("POST", "/api/skills/move", body),
+  mergeSkill: (body: MergeBody) => call<SkillsChange>("POST", "/api/skills/merge", body),
+  ownSkill: (body: OwnBody) => call<SkillsChange>("POST", "/api/skills/own", body),
+  undoSkillMove: (body: UndoBody) => call<SkillsChange>("POST", "/api/skills/undo", body),
+  skillMoves: () => call<SkillMoves>("GET", "/api/skills/moves"),
   /** Starts a scan of the boxes unless one runs; the `skills` live event says when it ends. */
   scanSkills: () => call<{ scan: SkillScan }>("POST", "/api/skills/scan"),
   skillDoc: (id: string) => call<SkillDoc>("GET", `/api/skills/doc?id=${enc(id)}`),

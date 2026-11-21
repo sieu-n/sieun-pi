@@ -248,7 +248,7 @@ export type SkillVerdictRow = {
 
 /** The thread kinds whose prompt can list a skill. */
 export const THREAD_KINDS = [
-  "sw-comm", "sw-work", "sw-job", "sw-subagent", "sw-duty", "prime-chat", "prime-job", "prime-subagent", "claude", "codex",
+  "sw-comm", "sw-work", "sw-job", "sw-subagent", "sw-duty", "prime-chat", "prime-job", "prime-subagent", "prime-duty", "claude", "codex",
 ] as const;
 export type ThreadKind = (typeof THREAD_KINDS)[number];
 
@@ -368,7 +368,7 @@ export type ApplyResult = { at: string; dryRun: boolean; changes: number; steps:
 export type SkillMove = {
   id: string;
   at: string;
-  kind: "install" | "remove" | "adopt" | "move" | "apply" | "own";
+  kind: "install" | "remove" | "adopt" | "move" | "merge" | "apply" | "own";
   summary: string;
   undoneAt: string | null;
 };
@@ -380,4 +380,15 @@ export type AdoptBody = { copyId: string; skillId?: string | null };
 export type MoveBody = { installId: string; path: string };
 export type UndoBody = { moveId: string };
 export type OwnBody = { skillId: string; owner: string };
+/** Hands agent factory's work thread a merge of `skillId` into `into`: it checks the proposal, moves the lines `into` lacks, then removes `skillId`. */
+export type MergeBody = { skillId: string; into: string };
+export type ApplyBody = { dryRun?: boolean };
+
+/**
+ * What every change answers: its logged move, which `sw skills undo <move id>` reverses, and the disk steps it took. A step on a box that
+ * is asleep waits in the Mac queue and reads `queued`.
+ */
 export type SkillsChange = { move: SkillMove; apply: ApplyResult | null };
+
+/** GET /api/skills/moves: the newest changes first. */
+export type SkillMoves = { moves: SkillMove[] };
