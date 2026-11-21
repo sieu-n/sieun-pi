@@ -184,7 +184,7 @@
   const menuItems = $derived<MenuEntry[]>([
     ...(reactable ? [
       { id: "unread", label: "Mark unread", icon: "dot", shortcut: "U", onselect: unread },
-      remindMenu({ remindAt: reactable.later?.remindAt, kept: !!reactable.later?.unread, set: remind, custom: () => (customRemind = true), clear: () => remind(null) }),
+      { ...remindMenu({ remindAt: reactable.later?.remindAt, kept: !!reactable.later?.unread, set: remind, custom: () => (customRemind = true), clear: () => remind(null) }), shortcut: "M" },
       separator,
     ] : []),
     ...(doneable ? [{ id: "done", label: done ? "Reopen thread" : "Mark thread done", icon: "check", onselect: afterPick(toggleDone) }] : []),
@@ -194,8 +194,8 @@
     { id: "copy-text", label: "Copy text", icon: "copy", onselect: afterPick(copyText) },
     ...(editable ? [
       separator,
-      { id: "edit", label: "Edit message", icon: "edit", onselect: () => (editing = true) },
-      { id: "delete", label: "Delete message", icon: "trash", tone: "danger" as const, onselect: () => (deleting = true) },
+      { id: "edit", label: "Edit message", icon: "edit", shortcut: "E", onselect: () => (editing = true) },
+      { id: "delete", label: "Delete message", icon: "trash", shortcut: "Delete", tone: "danger" as const, onselect: () => (deleting = true) },
     ] : []),
   ]);
   /** Slack's Save for later: the hover bar's bookmark, the menu item and the label over a saved post (lib/later.svelte.ts). */
@@ -233,16 +233,43 @@
       if (document.activeElement instanceof HTMLElement && rowEl?.contains(document.activeElement)) document.activeElement.blur();
     });
   }
-  const afterPick = (action: () => void) => () => {
-    action();
-    dropBar();
-  };
+  function afterPick(action: () => void): () => void {
+    return () => {
+      action();
+      dropBar();
+    };
+  }
+
+  /** Remind me about this from the message menu, which M opens on its own from the post's keys. */
+  let remindOpen = $state(false);
+  const remindItems = $derived.by(() => {
+    const entry = menuItems.find((e) => e.type === "submenu" && e.id === "remind");
+    return entry?.type === "submenu" ? entry.items : [];
+  });
+
+  /** A key Timeline hands the post it acts on, focused or under the pointer, as Slack's message keys do; cancels the event when it acted. */
+  function postKey(e: Event) {
+    const key = (e as CustomEvent<string>).detail;
+    const thread = canReply || message?.thread ? replyKey : null;
+    const act: (() => void) | null =
+      key === "u" && reactable ? unread
+      : key === "a" && reactable && room ? () => void later.toggle(room, reactable)
+      : key === "m" && remindItems.length ? () => (remindOpen = true)
+      : key === "r" && reactable ? () => reactButton && reactions?.pick(reactButton)
+      : key === "t" && thread ? () => onthread(thread)
+      : key === "e" && editable && !editing ? () => (editing = true)
+      : key === "Delete" && editable ? () => (deleting = true)
+      : null;
+    if (!act) return;
+    e.preventDefault();
+    act();
+  }
 
   $effect(() => {
     const el = rowEl;
     if (!el) return;
-    el.addEventListener("markunread", unread);
-    return () => el.removeEventListener("markunread", unread);
+    el.addEventListener("postkey", postKey);
+    return () => el.removeEventListener("postkey", postKey);
   });
 
   /** Alt-click, Option-click on a Mac, marks the post unread as in Slack, before a link or button inside it acts on the click. */
@@ -267,16 +294,17 @@
       {#each barCompact ? [] : frequentEmoji.list.slice(0, 3) as emoji (emoji)}
         <button type="button" class="quick" aria-label="React with {emoji}" data-quick-reaction={emoji} onclick={() => reactions?.toggle(emoji)}>{emoji}</button>
       {/each}
-      <IconButton icon="emoji-add" label="Add reaction" size="sm" bind:element={reactButton} onclick={() => reactButton && reactions?.pick(reactButton)} data-add-reaction />
+      <IconButton icon="emoji-add" label="Add reaction" shortcut="R" size="sm" bind:element={reactButton} onclick={() => reactButton && reactions?.pick(reactButton)} data-add-reaction />
       <span class="divider" aria-hidden="true"></span>
     {/if}
-    {#if canReply}<IconButton icon="reply" label="Reply in thread" size="sm" onclick={() => onthread(replyKey)} />{/if}
+    {#if canReply}<IconButton icon="reply" label="Reply in thread" shortcut="T" size="sm" onclick={() => onthread(replyKey)} />{/if}
     {#if reactable && room}
-      <IconButton icon={saved ? "bookmark-filled" : "bookmark"} label={saved ? "Remove from Later" : "Save for later"} size="sm" pressed={saved} onclick={() => room && reactable && later.toggle(room, reactable)} data-save-later />
+      <IconButton icon={saved ? "bookmark-filled" : "bookmark"} label={saved ? "Remove from Later" : "Save for later"} shortcut="A" size="sm" pressed={saved} onclick={() => room && reactable && later.toggle(room, reactable)} data-save-later />
     {/if}
     <IconButton icon="more" label="More actions" size="sm" aria-haspopup="menu" aria-expanded={menuOpen} bind:element={moreButton} onclick={() => (menuOpen = !menuOpen)} data-message-menu />
   </div>
   {#if menuOpen}<Menu bind:open={menuOpen} anchor={moreButton} items={menuItems} placement="bottom-end" label="Message actions" />{/if}
+  {#if remindOpen}<Menu bind:open={remindOpen} anchor={moreButton ?? rowEl} items={remindItems} placement="bottom-end" label="Remind me about this" />{/if}
   {#if customRemind}<RemindDialog at={reactable?.later?.remindAt} onpick={remind} onclose={() => (customRemind = false)} />{/if}
 {/snippet}
 
@@ -390,7 +418,7 @@
 {/snippet}
 
 {#if slack}
-  <li bind:this={rowEl} class="row slack" class:pinned={!!pinned} class:own class:first class:done={!!done} class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
+  <li bind:this={rowEl} tabindex="-1" class="row slack" class:pinned={!!pinned} class:own class:first class:done={!!done} class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
     <div class="gutter">
       {#if first}
         {@render authorAvatar(36)}
@@ -455,7 +483,7 @@
     {#if active}{@render actionBar()}{/if}
   </li>
 {:else}
-  <li bind:this={rowEl} class="row" class:own class:first class:done={!!done} class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
+  <li bind:this={rowEl} tabindex="-1" class="row" class:own class:first class:done={!!done} class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
     {#if first}
       <div class="byline">
         {#if !own && item.author.kind !== "owner"}<Icon name="robot" size={13} />{/if}
@@ -834,6 +862,20 @@
   .slack:hover {
     background: color-mix(in srgb, var(--affordance-ghost-hover) 60%, transparent);
   }
+  /* A post keyboard focus is on reads as hovered, with its hover bar and time, inside an inset ring, as in Slack. */
+  .row:focus-visible {
+    outline-offset: -2px;
+  }
+  .slack:focus-visible {
+    background: color-mix(in srgb, var(--affordance-ghost-hover) 60%, transparent);
+  }
+  .row:focus-visible .actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .slack:focus-visible .clock {
+    visibility: visible;
+  }
   .slack::before {
     content: "";
     position: absolute;
@@ -861,10 +903,10 @@
     opacity: 0.55;
     transition: opacity var(--duration-fast) var(--ease-standard);
   }
-  .slack.done:is(:hover, :has(:focus-visible)) > :is(.gutter, .body),
-  .row.done:not(.slack):is(:hover, :has(:focus-visible)) > :not(.line),
-  .row.done:not(.slack):is(:hover, :has(:focus-visible)) .line > .gutter,
-  .row.done:not(.slack):is(:hover, :has(:focus-visible)) .stack > :not(.actions) {
+  .slack.done:is(:hover, :focus-visible, :has(:focus-visible)) > :is(.gutter, .body),
+  .row.done:not(.slack):is(:hover, :focus-visible, :has(:focus-visible)) > :not(.line),
+  .row.done:not(.slack):is(:hover, :focus-visible, :has(:focus-visible)) .line > .gutter,
+  .row.done:not(.slack):is(:hover, :focus-visible, :has(:focus-visible)) .stack > :not(.actions) {
     opacity: 1;
   }
   .done-mark {

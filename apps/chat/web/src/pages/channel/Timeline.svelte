@@ -287,21 +287,70 @@
     onbottom?.(true);
   }
 
-  /** U marks the post under the pointer, or the focused one, unread, as in Slack; MessageRow takes the `markunread` event. */
-  function markHovered(e: KeyboardEvent) {
-    if (e.key.toLowerCase() !== "u" || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || e.repeat) return;
-    if (e.defaultPrevented || document.querySelector("[role=menu]")) return;
-    if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
-    const row = scroller?.querySelector("[data-message-id]:hover, [data-message-id]:focus-within");
+  const POSTS = "li[data-message-id][data-kind]";
+  const POST_KEYS = new Set(["e", "r", "t", "a", "m", "u", "Delete"]);
+  /** The post keyboard focus was on last, which Shift+Tab from the composer goes back to. */
+  let lastFocused: HTMLElement | null = null;
+  let root = $state<HTMLElement>();
+
+  function posts(): HTMLElement[] {
+    return scroller ? [...scroller.querySelectorAll<HTMLElement>(POSTS)] : [];
+  }
+
+  function focusPost(row: HTMLElement | undefined) {
     if (!row) return;
-    e.preventDefault();
-    row.dispatchEvent(new CustomEvent("markunread"));
+    row.focus({ preventScroll: true });
+    row.scrollIntoView({ block: "nearest" });
+    lastFocused = row;
+  }
+
+  /** Up and Down move to the post above or below; above the first one drawn, the older rows draw or load first. */
+  async function stepFocus(row: HTMLElement, by: -1 | 1) {
+    if (by < 0 && posts()[0] === row && (!full || hasOlder)) await (full ? older() : drawAll());
+    const list = posts();
+    focusPost(list[list.indexOf(row) + by]);
+  }
+
+  /**
+   * Slack's message keys. Shift+Tab from this feed's composer focuses the post focused last, else the newest; Up and Down move between
+   * posts; and a single key acts on the focused post, else the one under the pointer: E edit, R react, T thread, A save for later, M remind
+   * me, U mark unread, Delete delete. MessageRow takes the `postkey` event and cancels it when the key did something.
+   */
+  function postKeys(e: KeyboardEvent) {
+    if (e.defaultPrevented || e.isComposing || !scroller || document.querySelector("[role=menu], dialog[open]")) return;
+    const target = e.target instanceof Element ? e.target : null;
+    if (e.key === "Tab" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      const box = target?.closest("[data-testid=composer-input]");
+      if (!box || !root?.parentElement?.contains(box)) return;
+      const list = posts();
+      const row = lastFocused && list.includes(lastFocused) ? lastFocused : list.at(-1);
+      if (!row) return;
+      e.preventDefault();
+      focusPost(row);
+      return;
+    }
+    if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || target?.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
+    const focusedRow = target?.closest<HTMLElement>(POSTS) ?? null;
+    if (focusedRow && !scroller.contains(focusedRow)) return;
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      if (!focusedRow || focusedRow !== target) return;
+      e.preventDefault();
+      void stepFocus(focusedRow, e.key === "ArrowUp" ? -1 : 1);
+      return;
+    }
+    if (e.repeat) return;
+    const key = e.key === "Backspace" ? "Delete" : e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (!POST_KEYS.has(key)) return;
+    // A post focused from the keyboard wins; after a click, the post under the pointer does, as the mouse has moved on.
+    const keyed = focusedRow === target && focusedRow?.matches(":focus-visible") ? focusedRow : null;
+    const row = keyed ?? scroller.querySelector<HTMLElement>(`${POSTS}:hover`) ?? focusedRow;
+    if (row && !row.dispatchEvent(new CustomEvent("postkey", { detail: key, cancelable: true }))) e.preventDefault();
   }
 </script>
 
-<svelte:window onkeydown={markHovered} />
+<svelte:window onkeydown={postKeys} />
 
-<div class="timeline" class:compact>
+<div class="timeline" class:compact bind:this={root}>
   <div class="feed" bind:this={scroller} {onscroll} data-testid="timeline">
     {#if loading}
       <div class="state"><LoadingText text="Loading messages…" /></div>
@@ -366,8 +415,7 @@
                     queue={row.item.id === waitingId ? queue : null}
                     flash={flashId === row.item.id}
                     {openThread}
-                    canReply={canReply && row.item.kind === "message" && (!row.item.threadRoot || !!row.item.alsoInChannel)}
-                    alsoIn={row.item.kind === "message" && row.item.alsoInChannel ? (replyCount !== null ? "thread" : "channel") : null}
+                    canReply={canReply && row.item.kind === "message" && !row.item.threadRoot}
                     {statusOf}
                     {onretrysend}
                     {ondiscardsend}

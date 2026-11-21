@@ -13,10 +13,38 @@
   let { maxWidth, overlay = false, full = false }: Props = $props();
   const content = $derived(sidePanel.content);
   const width = $derived(Math.min(sidePanel.width, Math.max(SIDE_PANEL_MIN, maxWidth)));
+  let aside = $state<HTMLElement>();
+
+  /** A field with text in it, whose Esc is its own; an empty one, such as the pane's reply box before typing, lets Esc close the pane. */
+  function typedIn(target: Element | null): boolean {
+    const field = target?.closest<HTMLElement>("input, textarea, select, [contenteditable]:not([contenteditable='false'])");
+    if (!field) return false;
+    return field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement || field instanceof HTMLSelectElement ? field.value !== "" : !!field.textContent?.trim();
+  }
+
+  /**
+   * Cmd+. (Ctrl+. off a Mac) closes the pane, as Slack closes its right pane, and so does Esc unless a menu, a dialog or a field with text
+   * takes it. Focus in the pane goes back to the main composer.
+   */
+  function onkeydown(e: KeyboardEvent) {
+    if (!content || e.defaultPrevented || e.isComposing || e.altKey || e.shiftKey) return;
+    const dot = e.key === "." && (e.metaKey || e.ctrlKey);
+    const target = e.target instanceof Element ? e.target : null;
+    const inPane = !!target && !!aside?.contains(target);
+    const esc = e.key === "Escape" && !e.metaKey && !e.ctrlKey && !document.querySelector("[role=menu], dialog[open]") && !typedIn(target);
+    if (!dot && !esc) return;
+    e.preventDefault();
+    sidePanel.close();
+    if (inPane || !document.activeElement || document.activeElement === document.body) {
+      requestAnimationFrame(() => document.querySelector<HTMLElement>("section.conversation [data-testid=composer-input]")?.focus());
+    }
+  }
 </script>
 
+<svelte:window {onkeydown} />
+
 {#if content}
-  <aside class="side-panel" class:overlay class:full style:width={full ? undefined : `${width}px`} aria-label={content.title} data-panel-key={content.key} data-testid="side-panel">
+  <aside bind:this={aside} class="side-panel" class:overlay class:full style:width={full ? undefined : `${width}px`} aria-label={content.title} data-panel-key={content.key} data-testid="side-panel">
     {#if !full}<ResizeHandle
       size={width}
       min={SIDE_PANEL_MIN}

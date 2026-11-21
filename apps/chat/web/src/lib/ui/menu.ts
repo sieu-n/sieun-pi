@@ -35,7 +35,7 @@ export type MenuCheckbox = {
   keepOpen?: boolean;
   onselect?: (checked: boolean) => void;
 };
-export type MenuSubmenu = { type: "submenu"; id: string; label: string; icon?: string; detail?: string; disabled?: boolean; items: MenuEntry[] };
+export type MenuSubmenu = { type: "submenu"; id: string; label: string; icon?: string; detail?: string; shortcut?: string; disabled?: boolean; items: MenuEntry[] };
 export type MenuSeparator = { type: "separator" };
 export type MenuLabel = { type: "label"; label: string };
 

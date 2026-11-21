@@ -131,6 +131,7 @@
             {#if entry.detail}<span class="detail">{entry.detail}</span>{/if}
           </span>
           {#if entry.type === "submenu"}
+            {#if entry.shortcut}<kbd>{entry.shortcut}</kbd>{/if}
             <Icon name="chevron-right" size={16} />
           {:else if entry.type !== "radio" && entry.type !== "checkbox" && entry.shortcut}
             <kbd>{entry.shortcut}</kbd>
