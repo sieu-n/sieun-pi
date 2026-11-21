@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { accountState, reasonText, resetText, resolvedAccount, shownWindows, staleText, STATE_LABEL, windowLabel } from "../../web/src/pages/accounts/model.ts";
-import { DM, accountChip, escape, firstJob, hintOf, makeRow, openConversation, providerOf, readView, serveView, withProvider, type PoolAccount } from "./helpers.ts";
+import { AGENT, DM, accountChip, escape, firstJob, hintOf, makeRow, openConversation, postedAction, providerOf, readView, serveView, withProvider, type PoolAccount } from "./helpers.ts";
 
 // A box with 80 busy cores slows a cold dev-server page, so each walk gets 60 s.
 test.describe.configure({ timeout: 60_000 });
@@ -130,4 +130,53 @@ test("39 the chip's meters show a per-model window only for the model the thread
   await expect(chip.getByRole("meter", { name: "Week", exact: true })).toBeVisible();
   await expect(chip.getByRole("meter", { name: "Opus", exact: true })).toBeVisible();
   await expect(chip.getByRole("meter", { name: "Fable", exact: true })).toHaveCount(0);
+});
+
+test("40 the picker lists accounts in the Accounts table's order, with off and signed-out accounts last in their own group", async ({ page }) => {
+  const view = await readView(page.request, DM);
+  const off = makeRow("a-off", { disabled: true, usable: false });
+  const login = makeRow("b-login", { reason: "needs-reauth", usable: false });
+  const spent = makeRow("c-spent", { reason: "limited 5h", usable: false });
+  const ready = makeRow("d-ready");
+  await serveView(page, withProvider(view, "anthropic", {
+    rows: [off, login, spent, ready], resolution: { account: ready.id, email: ready.email, reason: "new", pinned: false, selection: { mode: "auto" }, error: null }, wait: null, poolPin: null,
+  }));
+  await openConversation(page, DM);
+  await accountChip(page).click();
+  const picker = page.getByRole("dialog", { name: /account for this thread/ });
+  await expect(picker).toBeVisible();
+  const labels = await picker.getByRole("option").locator(".text > .label").allTextContents();
+  expect(labels).toEqual(["Auto", ready.label, spent.label, login.label, off.label]);
+  await expect(picker.getByText("Off or signed out", { exact: true })).toBeVisible();
+});
+
+test("40 pickers and menus are opaque cards, so the page behind never shows through", async ({ page }) => {
+  await serveView(page, await readView(page.request, DM));
+  await openConversation(page, DM);
+  await accountChip(page).click();
+  const picker = page.getByRole("dialog", { name: /account for this thread/ });
+  await expect(picker).toBeVisible();
+  const fill = await picker.evaluate((el) => ({ background: getComputedStyle(el).backgroundColor, blur: getComputedStyle(el).backdropFilter }));
+  expect(fill.blur).toBe("none");
+  expect(fill.background).toMatch(/^rgb\(\d+, \d+, \d+\)$/);
+});
+
+test("41 a channel header has one account chip per agent, named by its avatar, and its picker sets that agent's account", async ({ page }) => {
+  const view = await readView(page.request, AGENT);
+  await serveView(page, view);
+  await openConversation(page, "ch_general");
+  const chips = accountChip(page);
+  await expect(chips).toHaveCount(2);
+  const vent = chips.and(page.locator('[data-agent="ag_vent"]'));
+  await expect(vent).toBeVisible();
+  expect(await hintOf(page, vent)).toMatch(/The account vent uses\./i);
+  await vent.click();
+  const picker = page.getByRole("dialog", { name: /^Claude account for vent$/i });
+  await expect(picker).toBeVisible();
+  const row = providerOf(view, "anthropic").rows.find(entry => accountState(entry) === null)!;
+  const kept = await postedAction(page, "/api/accounts", () => picker.getByRole("option", { name: new RegExp(`^${escape(row.label)}`) }).click());
+  expect(kept.body).toMatchObject({ action: "use", account: row.id, id: AGENT });
+  await vent.click();
+  const back = await postedAction(page, "/api/accounts", () => picker.getByRole("option", { name: /^Auto/ }).click());
+  expect(back.body).toMatchObject({ action: "follow", id: AGENT });
 });

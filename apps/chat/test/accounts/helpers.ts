@@ -148,7 +148,7 @@ export async function hintOf(page: Page, target: Locator): Promise<string> {
 /** Opens a conversation by its id and waits for its header. */
 export async function openConversation(page: Page, id: string): Promise<void> {
   await page.goto(`/#/c/${encodeURIComponent(id)}`);
-  const header = accountChip(page);
+  const header = accountChip(page).first();
   try {
     await header.waitFor({ timeout: 15_000 });
   } catch {

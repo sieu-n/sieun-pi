@@ -405,6 +405,10 @@
 {#snippet actions()}
   {#if header && (isDm || kind === "job" || (kind === "solo" && !isSolo))}
     <AccountChip thread={id} model={header.model} />
+  {:else if header && (isChannel || isSolo)}
+    {#each memberAgents as agentId (agentId)}
+      <AccountChip thread={agentId} model={agents.byId(agentId)?.model ?? null} agent={{ id: agentId, name: memberName(agentId) }} />
+    {/each}
   {/if}
   {#if isChannel && header}
     <ChannelMembers

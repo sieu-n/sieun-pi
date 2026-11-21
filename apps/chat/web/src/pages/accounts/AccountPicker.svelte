@@ -1,17 +1,18 @@
 <script lang="ts">
-  import type { PoolProvider } from "$lib/api/shared/types.ts";
+  import type { PoolAccount, PoolProvider } from "$lib/api/shared/types.ts";
   import { hrefFor } from "$lib/router.svelte";
   import Badge from "$lib/ui/Badge.svelte";
   import Button from "$lib/ui/Button.svelte";
   import Picker from "$lib/ui/Picker.svelte";
   import type { Anchor } from "$lib/ui/floating";
   import type { PickerItem } from "$lib/ui/types";
-  import { accountState, planText, PROVIDER_LABEL, PROVIDER_SLUG, STATE_LABEL, staleText, type Tone } from "./model";
+  import { accountState, planText, PROVIDER_LABEL, PROVIDER_SLUG, sortedRows, STATE_LABEL, staleText, type Tone } from "./model";
   import UsageMeters from "./UsageMeters.svelte";
 
   /**
    * The account picker of one provider: Auto with the pool's next pick, then every account with its plan, usage meters, stale note and
-   * state badge. `value` is the manual account, null for Auto. `thread` names the thread the footer opens in Settings > Accounts.
+   * state badge, in the Accounts table's order, with the accounts that are off or signed out last in their own group, as Slack lists
+   * deactivated people last. `value` is the manual account, null for Auto. `thread` names the thread the footer opens in Settings > Accounts.
    */
   let {
     open = $bindable(),
@@ -41,15 +42,22 @@
   /** The pool's own next pick; under Manual the resolution names the kept account, so there is none to show. */
   const next = $derived(provider.resolution?.selection.mode === "manual" ? null : (provider.resolution?.account ?? null));
   const nextLabel = $derived(next ? (provider.rows.find((row) => row.id === next)?.label ?? provider.resolution?.email ?? next) : null);
+  const parked = (row: PoolAccount): boolean => {
+    const state = accountState(row);
+    return state === "off" || state === "needs-login";
+  };
+  const rows = $derived(sortedRows(provider));
+  const accountItem = (row: PoolAccount, group: string): PickerItem => ({
+    id: row.id,
+    label: row.label,
+    detail: [planText(row), row.id === next ? "Next pick" : null, staleText(row)].filter(Boolean).join(" · ") || undefined,
+    group,
+    keywords: [row.email, row.id],
+  });
   const items = $derived<PickerItem[]>([
     { id: AUTO, label: "Auto", detail: nextLabel ? `Next pick: ${nextLabel}` : value ? "The pool picks again on the next request" : "The pool picks when the thread starts", group: "Auto follows the pool" },
-    ...provider.rows.map((row) => ({
-      id: row.id,
-      label: row.label,
-      detail: [planText(row), row.id === next ? "Next pick" : null, staleText(row)].filter(Boolean).join(" · ") || undefined,
-      group: "Manual keeps one account",
-      keywords: [row.email, row.id],
-    })),
+    ...rows.filter((row) => !parked(row)).map((row) => accountItem(row, "Manual keeps one account")),
+    ...rows.filter(parked).map((row) => accountItem(row, "Off or signed out")),
   ]);
   const href = $derived(hrefFor("settings", ["accounts", PROVIDER_SLUG[provider.provider]], { thread }));
 </script>

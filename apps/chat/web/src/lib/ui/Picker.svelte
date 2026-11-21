@@ -144,7 +144,7 @@
   }
 </script>
 
-<Popover bind:open {anchor} {placement} {width} surface="glass" role="dialog" {label} onclose={close} padding={6} autofocus={!typeahead}>
+<Popover bind:open {anchor} {placement} {width} role="dialog" {label} onclose={close} padding={6} autofocus={!typeahead}>
   <div class="picker" onkeydown={onKeydown} onmousedown={(e) => typeahead && e.preventDefault()} role="presentation">
     {#if showSearch}
       <div class="search"><SearchField bind:value={query} {placeholder} label={placeholder} oninput={() => (active = 0)} data-autofocus aria-controls={listId} aria-activedescendant={filtered[active] ? `${listId}-${active}` : undefined} /></div>

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ModelRef } from "$lib/api";
   import type { AccountsView, NewChatAccount } from "$lib/api/shared/types.ts";
+  import Avatar from "$lib/ui/Avatar.svelte";
   import Chip from "$lib/ui/Chip.svelte";
   import Icon from "$lib/ui/Icon.svelte";
   import Spinner from "$lib/ui/Spinner.svelte";
@@ -14,17 +15,20 @@
   /**
    * The account a thread draws on, with its usage meters. `thread` is any sw factory id (a conversation, an agent or a DM room) and `model`
    * the thread's model, for its provider and its per-model window. A click opens the account picker, and a pick runs `use` or `follow` on
-   * the thread. With `onchoose` there is no thread yet: the chip holds `choice` for a new agent or chat and runs nothing.
+   * the thread. With `onchoose` there is no thread yet: the chip holds `choice` for a new agent or chat and runs nothing. `agent` names whose
+   * account it is where the room does not, as in a channel header: the chip leads with the agent's avatar and its tip and picker name it.
    */
   let {
     thread,
     model = null,
     choice = null,
+    agent = null,
     onchoose,
   }: {
     thread: string | null;
     model?: ModelRef | null;
     choice?: NewChatAccount | null;
+    agent?: { id: string; name: string } | null;
     onchoose?: (account: NewChatAccount | null) => void;
   } = $props();
 
@@ -62,6 +66,7 @@
   });
   const title = $derived(
     [
+      ...(agent ? [`The account ${agent.name} uses.`] : []),
       reason,
       ...(accountError && !reason.includes(accountError) ? [accountError] : []),
       ...shownWindows(windows, modelText).map((window) => `${windowLabel(window)} ${Math.round(window.pct)}%${resetText(window) ? `, ${resetText(window)}` : ""}`),
@@ -122,8 +127,10 @@
   data-testid="account-chip"
   data-mode={modeText?.toLowerCase()}
   data-account={account?.id}
+  data-agent={agent?.id}
 >
   <Chip size="sm" onclick={() => (open = !open)}>
+    {#if agent}<Avatar name={agent.name} kind="agent" seed={agent.id} size={16} title="" />{/if}
     {#if busy}<Spinner size={12} label="Changing the account" />{:else if warning}<Icon name="warning" size={14} />{/if}
     {#if modeText}<span class="mode">{modeText}</span>{/if}
     <span class="name">{label}</span>
@@ -139,7 +146,7 @@
     model={modelText}
     {value}
     thread={choosing ? null : thread}
-    label={choosing ? `${providerName} account for the new thread` : undefined}
+    label={choosing ? `${providerName} account for the new thread` : agent ? `${providerName} account for ${agent.name}` : undefined}
     onchoose={(next) => void choose(next)}
   />
 {/if}

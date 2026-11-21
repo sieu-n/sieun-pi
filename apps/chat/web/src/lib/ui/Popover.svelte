@@ -9,7 +9,7 @@
     anchor: Anchor | null | undefined;
     placement?: Placement;
     gap?: number;
-    /** glass is the blurred menu fill; solid is the opaque popover fill. */
+    /** solid, the default, is the opaque card of menus, pickers and popovers, as in Slack; glass is a blurred see-through fill. */
     surface?: "glass" | "solid";
     width?: number | "anchor" | "auto";
     maxHeight?: number;
@@ -30,7 +30,7 @@
     anchor,
     placement = "bottom-start",
     gap = 6,
-    surface = "glass",
+    surface = "solid",
     width = "auto",
     maxHeight = 480,
     padding = 6,
