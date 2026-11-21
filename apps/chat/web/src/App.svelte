@@ -13,11 +13,13 @@
   import { search } from "$lib/shell/search.svelte";
   import { soloDialog } from "$lib/shell/solo-dialog.svelte";
   import { renameDialog } from "$lib/shell/rename-dialog.svelte";
+  import { profileCard } from "$lib/shell/profile-card.svelte";
   import "$lib/shell/theme.svelte";
   import { initZoom, stepZoom } from "$lib/shell/zoom";
   import ChannelPage from "$pages/channel/ChannelPage.svelte";
   import CreateSoloDialog from "$pages/channel/CreateSoloDialog.svelte";
   import RenameChannelDialog from "$pages/channel/RenameChannelDialog.svelte";
+  import AgentProfileCard from "$pages/agents/AgentProfileCard.svelte";
   import AgentsPage from "$pages/agents/AgentsPage.svelte";
   import BoardPage from "$pages/board/BoardPage.svelte";
   import ForYouPage from "$pages/board/ForYouPage.svelte";
@@ -117,6 +119,7 @@
 <SearchDialog open={search.isOpen} scope={search.scope} query={search.query} onclose={() => search.close()} />
 <CreateSoloDialog open={soloDialog.isOpen} onclose={() => soloDialog.close()} />
 {#if renameDialog.target}<RenameChannelDialog target={renameDialog.target} onclose={() => renameDialog.close()} />{/if}
+{#if profileCard.target}{#key profileCard.target}<AgentProfileCard {...profileCard.target} onclose={() => profileCard.close()} />{/key}{/if}
 <ArtifactViewer />
 <ShortcutsSheet />
 <Toaster />

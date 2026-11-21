@@ -1,12 +1,14 @@
 <script lang="ts">
   import { tick } from "svelte";
   import type { Item, TurnPlace } from "$lib/api";
+  import Avatar from "$lib/ui/Avatar.svelte";
   import Button from "$lib/ui/Button.svelte";
   import DayDivider from "$lib/ui/DayDivider.svelte";
   import LoadingText from "$lib/ui/LoadingText.svelte";
   import SystemLine from "$lib/ui/SystemLine.svelte";
   import type { MarkdownContext } from "$lib/ui/markdown";
   import type { Status } from "$lib/ui/types";
+  import { hrefFor } from "$lib/router.svelte";
   import MessageRow from "./MessageRow.svelte";
   import { avatarOf, waitingSend } from "./present";
   import { dayGroups, keepGroups, layoutRows, newestRows, type DayGroup } from "./rows";
@@ -32,8 +34,11 @@
     compact?: boolean;
     /** bubble is the chat look; slack draws channel rows as Slack does. */
     layout?: "bubble" | "slack";
-    /** In slack layout, the intro drawn above the first post once no older posts are left, and as the empty state; a Solo room says room. */
-    beginning?: { name: string; purpose?: string | null; kind?: "channel" | "solo" } | null;
+    /**
+     * The intro drawn above the first post once no older posts are left, and as the empty state: a channel's or Solo room's in slack layout,
+     * and in a DM, as in Slack, the agent's avatar and name with a link to its page.
+     */
+    beginning?: { name: string; purpose?: string | null; kind?: "channel" | "solo" } | { kind: "dm"; name: string; agent: string } | null;
     /** In a thread pane, the replies under the root; Timeline draws an "N replies" divider after the first row. */
     replyCount?: number | null;
     statusOf?: (id: string) => Status | null;
@@ -70,8 +75,8 @@
   const days = $derived((keptDays = keepGroups(keptDays, dayGroups(rows))));
   const drawn = $derived(full ? days : newestRows(days, FIRST_ROWS));
   const slack = $derived(layout === "slack");
-  const intro = $derived(slack && full && beginning && !hasOlder && !loadingOlder ? beginning : null);
-  const introName = $derived(intro ? (intro.kind === "solo" ? intro.name : `#${intro.name}`) : "");
+  const intro = $derived(beginning && (slack || beginning.kind === "dm") && full && !hasOlder && !loadingOlder ? beginning : null);
+  const introName = $derived(intro ? (intro.kind === "solo" || intro.kind === "dm" ? intro.name : `#${intro.name}`) : "");
   const firstPost = $derived(rows.find((row) => row.kind === "post")?.key ?? null);
   const waitingId = $derived(queue ? waitingSend(items) : null);
   const liveId = $derived(items.findLast((item) => item.kind === "turn" && item.live)?.id ?? null);
@@ -296,7 +301,14 @@
           <Button variant="ghost" size="sm" onclick={older}>Load older messages</Button>
         {/if}
       </div>
-      {#if intro}
+      {#if intro?.kind === "dm"}
+        <div class="intro dm" data-testid="dm-intro">
+          <Avatar name={intro.name} kind="agent" seed={intro.agent} size={72} status={statusOf?.(intro.agent) ?? null} />
+          <h2 class="intro-name">{intro.name}</h2>
+          <p>This conversation is just between you and {intro.name}. Its page has its jobs, board and memory.</p>
+          <Button variant="outline" size="sm" icon="robot" href={hrefFor("agents", [intro.agent])}>View agent</Button>
+        </div>
+      {:else if intro}
         <div class="intro" data-testid="channel-intro">
           <h2 class="intro-name">{introName}</h2>
           <p>This is the very beginning of the <span class="intro-channel">{introName}</span> {intro.kind === "solo" ? "room" : "channel"}.</p>
@@ -439,6 +451,19 @@
   }
   .intro p {
     margin: 0;
+  }
+  .intro.dm {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    padding-top: 32px;
+  }
+  .intro.dm .intro-name {
+    margin: 4px 0 0;
+  }
+  .intro.dm p {
+    margin-bottom: 4px;
   }
   .intro-name {
     margin: 0 0 8px;

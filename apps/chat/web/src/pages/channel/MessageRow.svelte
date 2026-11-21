@@ -20,6 +20,7 @@
   import { wikiUrl, withAuthor, type MarkdownContext } from "$lib/ui/markdown";
   import type { Status } from "$lib/ui/types";
   import { conversationHref, router } from "$lib/router.svelte";
+  import { profileCard } from "$lib/shell/profile-card.svelte";
   import { frequentEmoji } from "./frequent-emoji.svelte";
   import Reactions from "./Reactions.svelte";
   import StepLine from "./StepLine.svelte";
@@ -62,6 +63,9 @@
   let { item, first, last, layout = "bubble", fullTime = false, replyTo = null, context: roomContext, liveLabel = null, queue = null, flash = false, openThread = null, canReply = false, statusOf, onretrysend, ondiscardsend, onthread, oncopylink, onmention, onboardid, onartifact }: Props = $props();
 
   const own = $derived(isOwn(item));
+  /** An agent's name and avatar open its profile card, as a person's do in Slack; the owner's and a job's stay plain. */
+  const profiled = $derived(item.author.kind === "chat");
+  const openProfile = (e: MouseEvent) => profileCard.toggle(item.author.id, item.author.name, e.currentTarget as HTMLElement);
   /** Board ids and job names in a post chip against its author's board and jobs, so p12 in vent's post is vent's p12. */
   const context = $derived(withAuthor(roomContext, item.author.id));
   const slack = $derived(layout === "slack");
@@ -322,11 +326,29 @@
   {/if}
 {/snippet}
 
+{#snippet authorName()}
+  {#if profiled}
+    <button type="button" class="author author-button" aria-haspopup="dialog" onclick={openProfile} data-author-button>{item.author.name}</button>
+  {:else}
+    <span class="author">{item.author.name}</span>
+  {/if}
+{/snippet}
+
+{#snippet authorAvatar(size: number)}
+  {#if profiled}
+    <button type="button" class="avatar-button" aria-label="Open {item.author.name}'s profile" aria-haspopup="dialog" tabindex="-1" onclick={openProfile} data-author-avatar>
+      <Avatar name={avatarOf(item.author).name} kind={avatarKind(item.author)} seed={item.author.id} {size} status={statusOf?.(item.author.id) ?? null} />
+    </button>
+  {:else}
+    <Avatar name={avatarOf(item.author).name} kind={avatarKind(item.author)} seed={item.author.id} {size} status={statusOf?.(item.author.id) ?? null} />
+  {/if}
+{/snippet}
+
 {#if slack}
   <li bind:this={rowEl} class="row slack" class:own class:first class:done={!!done} class:pending class:picking={picking || menuOpen} data-own-post={editable ? "" : undefined} data-message-id={item.id} data-kind={item.kind} data-flash={flash ? "" : undefined} data-live={live || undefined} onpointerenter={activate} onfocusin={activate} onclickcapture={altClick}>
     <div class="gutter">
       {#if first}
-        <Avatar name={avatarOf(item.author).name} kind={avatarKind(item.author)} seed={item.author.id} size={36} status={statusOf?.(item.author.id) ?? null} />
+        {@render authorAvatar(36)}
       {:else}
         <time class="clock" datetime={new Date(item.at).toISOString()} title={stampLabel(item.at)}>{clockLabel(item.at)}</time>
         {#if done}{@render doneMark()}{/if}
@@ -336,7 +358,7 @@
       {#if saved}{@render savedLabel()}{/if}
       {#if first}
         <div class="head">
-          <span class="author">{item.author.name}</span>
+          {@render authorName()}
           <time datetime={new Date(item.at).toISOString()} title={stampLabel(item.at)}>{fullTime ? stampLabel(item.at) : timeLabel(item.at)}</time>
           {#if done}{@render doneMark()}{/if}
         </div>
@@ -386,7 +408,7 @@
     {#if first}
       <div class="byline">
         {#if !own && item.author.kind !== "owner"}<Icon name="robot" size={13} />{/if}
-        <span class="author">{item.author.name}</span>
+        {@render authorName()}
         <time datetime={new Date(item.at).toISOString()} title={stampLabel(item.at)}>{timeLabel(item.at)}</time>
         {#if done}{@render doneMark()}{/if}
       </div>
@@ -394,7 +416,7 @@
     <div class="line">
       <div class="gutter">
         {#if last}
-          <Avatar name={avatarOf(item.author).name} kind={avatarKind(item.author)} seed={item.author.id} size={32} status={statusOf?.(item.author.id) ?? null} />
+          {@render authorAvatar(32)}
         {/if}
       </div>
       <div class="stack">
@@ -490,6 +512,28 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-weight: 500;
+  }
+  .author-button {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font-family: inherit;
+    font-size: inherit;
+    line-height: inherit;
+    letter-spacing: inherit;
+    cursor: pointer;
+  }
+  .author-button:hover {
+    text-decoration: underline;
+  }
+  .avatar-button {
+    display: inline-flex;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-control, 6px);
+    background: none;
+    cursor: pointer;
   }
   .byline time {
     flex: none;

@@ -3,7 +3,8 @@
   import { agents, api, boardStore, expectCall, isSoloRoom, jobs, me, prefetchThread, reads, timeline, view, type Item } from "$lib/api";
   import BoardPanel from "$pages/board/BoardPanel.svelte";
   import { boardHref, boardTitles, rememberTitles } from "$pages/board/chips";
-  import { conversationHref, router } from "$lib/router.svelte";
+  import { conversationHref, hrefFor, router } from "$lib/router.svelte";
+  import { profileCard } from "$lib/shell/profile-card.svelte";
   import { renameDialog } from "$lib/shell/rename-dialog.svelte";
   import { search } from "$lib/shell/search.svelte";
   import { sidePanel } from "$lib/shell/side-panel.svelte";
@@ -273,6 +274,13 @@
   }
 
   const menuItems = $derived<MenuEntry[]>([
+    ...(isDm && agent
+      ? [
+          { id: "agent", label: "View agent", icon: "robot", onselect: () => router.navigate(hrefFor("agents", [agent.id])) },
+          { id: "jobs", label: "Jobs", icon: "terminal", onselect: () => router.navigate(hrefFor("agents", [agent.id], { section: "jobs" })) },
+          { type: "separator" as const },
+        ]
+      : []),
     { id: "search", label: "Search in this conversation", icon: "search", onselect: () => search.open({ kind: "conversation", id }) },
     { id: "link", label: "Copy link", icon: "link", onselect: () => void navigator.clipboard.writeText(`${location.origin}${location.pathname}${conversationHref(id)}`).then(() => toast.show("Link copied")) },
     ...(paneBoard
@@ -348,7 +356,15 @@
 {/snippet}
 
 {#snippet titleContent()}
+  {#if isDm && agent}
+    <h1 class="title t-label-sm" data-testid="conversation-title">
+      <button type="button" class="title-button" aria-haspopup="dialog" onclick={(e) => profileCard.toggle(agent.id, name, e.currentTarget)} data-testid="dm-title-button">
+        <Avatar {name} kind="agent" seed={agent.id} size={20} status={statusOf(agent.id)} /><span class="title-name">{name}</span><Icon name="chevron-down" size={12} />
+      </button>
+    </h1>
+  {:else}
   <h1 class="title t-label-sm" data-testid="conversation-title">{name}</h1>
+  {/if}
   {#if isDm && liveAgent}<span class="host"><HostBadge agent={liveAgent} self={me.value?.host} /></span>{/if}
   {#if header?.purpose}<span class="purpose" title={header.purpose} data-testid="channel-purpose">{header.purpose}</span>{/if}
 {/snippet}
@@ -380,7 +396,7 @@
 {/snippet}
 
 <section class="conversation" class:slack={layout === "slack"} data-conversation={id} data-kind={kind}>
-  <PanelHeader icon={isChannel ? "hash" : isSolo ? "users" : kind === "solo" ? "chat" : "robot"} {titleContent} {actions} />
+  <PanelHeader icon={isChannel ? "hash" : isSolo ? "users" : kind === "solo" ? "chat" : isDm && agent ? undefined : "robot"} {titleContent} {actions} />
   {#if isSolo && header}
     <div class="solo-bar" data-testid="solo-agenda">
       <div class="agenda">
@@ -403,7 +419,7 @@
   <Timeline
     {items}
     {layout}
-    beginning={layout === "slack" && header ? { name, purpose: header.purpose ?? null, kind: isSolo ? "solo" : "channel" } : null}
+    beginning={layout === "slack" && header ? { name, purpose: header.purpose ?? null, kind: isSolo ? "solo" : "channel" } : isDm && agent ? { kind: "dm", name, agent: agent.id } : null}
     loading={store.loading}
     error={store.error}
     hasOlder={!!store.older}
@@ -502,6 +518,32 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .title-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    margin-left: -6px;
+    padding: 2px 6px;
+    border: 0;
+    border-radius: var(--radius-control, 6px);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+  .title-button:hover {
+    background: var(--affordance-ghost-hover);
+  }
+  .title-button :global(.avatar) {
+    flex: none;
+    margin-right: 2px;
+  }
+  .title-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .host {
     display: inline-flex;
