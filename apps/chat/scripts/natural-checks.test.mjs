@@ -20,6 +20,9 @@ I'll come back with a before and after once it's live.`;
 /** dm_agent-factory p51, the checklist the owner showed in p54: a label opener over one-word topics with empty boxes. */
 const P51 = "one table: Prime chat vs sw factory, file by file.\n- instructions\n  - [ ] \n- skills\n  - [ ] \n- tools\n  - [ ]\n- feel\n  - [ ]";
 
+/** #sw-factory-build p158, which the owner called slop in p159 (msg mwqwjznm, c234): a narrated plan over a process checklist. */
+const P158 = "I'll map how it really works first, then write one proposal with options and my pick. It will cover these:\n- [ ] How the data flows today.\n- [ ] Where each piece of data lives.\n- [ ] The options for where it should live.\n- [ ] My pick and why.\n- [ ] The calls only you can make.";
+
 /** A reply in the shape of dm_agent-factory p55, which the owner answered in p57: four sentences on one line. */
 const P55 = "Probably the comm thread lost the reply_to. The round closed on the wrong post, so the answer landed under p11. I'll trace closedPost in rooms.ts and add a test. I'd fix it in the server rather than the role text.";
 
@@ -39,11 +42,15 @@ test("the p55 wall fails on its 4-sentence line and its buried answer", () => {
   assert.ok(fails.includes("the first post's last version opens with a line of at most 2 sentences"));
 });
 
-test("a checklist of short sentences passes once an edit ticks it, and fails while its boxes stay open", () => {
-  const first = "I'll read how symphony picks up issues and runs agents. Here's what I'm checking:\n- [ ] Read how it polls linear.\n- [ ] Map how each agent gets its workspace.";
-  const done = "It polls linear every 30 s and runs one workspace per issue.\n- [x] Read how it polls linear.\n- [x] Map how each agent gets its workspace.";
-  assert.deepEqual(failed([[first, done]]), []);
-  assert.ok(failed([[first]]).includes("open tasks in the first post get ticked by a later edit"));
+test("p158 fails on its narrated plan and its open process checklist", () => {
+  const fails = failed([[P158]]);
+  assert.ok(fails.includes("the first version narrates no plan of the agent's own"));
+  assert.ok(fails.includes("the first version holds no open - [ ] item"));
+});
+
+test("a one-line deliverable passes, and so does a ticked list of results", () => {
+  assert.deepEqual(failed([["Proposal coming as one page, with my pick for where the data lives and the few calls only you can make."]]), []);
+  assert.deepEqual(failed([["It polls linear every 30 s and runs one workspace per issue.\n- [x] It takes 10 issues at once.\n- [x] Each issue gets its own clone."]]), []);
 });
 
 test("an ack such as Working on it is no natural opening", () => {

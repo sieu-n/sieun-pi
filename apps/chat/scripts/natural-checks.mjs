@@ -37,28 +37,34 @@ export const pickFirst = text => {
   const end = clean.indexOf("\n\n", at);
   return PICK.test(clean.slice(0, end < 0 ? clean.length : end));
 };
-const OPEN = /^\s*[-*+] \[ \] \S/gm;
-const TICKED = /^\s*[-*+] \[[xX]\] /m;
+const OPEN = /^\s*[-*+] \[ \] /m;
+/**
+ * A first reply that narrates the agent's own plan, such as #sw-factory-build p158 "I'll map how it really works first, then write one
+ * proposal with options and my pick. It will cover these:", which the owner answered in p159 (msg mwqwjznm, c234): "이런건 내부적으론 알아서
+ * 하고, 밖에서 보낼땐 slop slop slop fucking disgusting try again". Saying what he will get, such as "I'll come back with a before and after",
+ * stays fine.
+ */
+const NARRATION = /\b(?:i'll\b[^.\n]*\bfirst\b|first,? i(?:'ll| will)\b|(?:then|next|after that),? i(?:'ll| will)\b|here's what i(?:'m| am|'ll| will)\b|what i'm (?:checking|doing|looking at)|it will cover|will cover these|i'm going to|i(?:'ll| will) (?:check|look|read|dig|map|trace|go through|start|confirm|verify|research|run|investigate|explore)\b|let me (?:check|look|start|first)|my plan is)/i;
 
 /**
- * The natural checks for an ask's answer posts, given each post's versions in order (`[[first, ...edits], ...]`). Items may be plain
- * bullets or tasks; open tasks in the first post must be ticked by a later edit of it.
+ * The natural checks for an ask's answer posts, given each post's versions in order (`[[first, ...edits], ...]`). The first version gives
+ * the answer or says in one plain line what the owner will get, with no plan of the agent's own and no open `- [ ]` process items (c234);
+ * a ticked or plain list of results is fine.
  */
 export function naturalChecks(postVersions) {
   const all = postVersions.flat();
   const first = postVersions[0] ?? [];
   const firstLine = (first[0] ?? "").split("\n").find(line => line.trim())?.trim() ?? "";
-  const open = (first[0]?.match(OPEN) ?? []).length;
   const last = first.at(-1) ?? "";
   const counts = lineSentences(last);
   return [
     ["the first post opens with a natural sentence", naturalLine(firstLine)],
-    ["the first post lists its points or steps as 2 or more bullets", (first[0] ?? "").split("\n").filter(line => BULLET.test(line)).length >= 2],
+    ["the first version narrates no plan of the agent's own", !NARRATION.test((first[0] ?? "").replace(/```[\s\S]*?```|`[^`\n]*`/g, " "))],
+    ["the first version holds no open - [ ] item", !OPEN.test(first[0] ?? "")],
     ["no version holds a bare topic label bullet", all.every(text => !text.split("\n").some(bareLabel))],
-    ["open tasks in the first post get ticked by a later edit", open === 0 || first.slice(1).some(text => TICKED.test(text))],
     ["every question comes with the agent's pick", all.every(pickFirst)],
     ["no line of any version holds 3 or more sentences", all.every(text => lineSentences(text).every(n => n < 3))],
-    // The checklist post's last version, since a later post is often a one-line question; 35 words is config/AGENTS.md rule 5's sentence cap.
+    // The first post's last version, since a later post is often a one-line question; 35 words is config/AGENTS.md rule 5's sentence cap.
     ["the first post's last version opens with a line of at most 2 sentences", counts.length > 0 && counts[0] <= 2 && words(last.split("\n")[0]) <= 35],
   ];
 }
