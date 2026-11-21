@@ -49,8 +49,8 @@ test("the check-in menu takes a custom interval and a pause until a picked date 
   await pause.getByLabel("Date").fill("2099-01-02");
   await pause.getByLabel("Time").fill("14:30");
   await pause.getByRole("button", { name: "Save" }).click();
-  await expect(checkIn).toContainText(/Check-in paused until Jan 2 14:30/);
-  await expect(settings).toHaveText(/Paused \d+d/);
+  await expect(checkIn).toContainText("Check-in paused until Jan 2, 2099 14:30");
+  await expect(settings).toHaveText(/Paused until Jan 2, 2099/);
 });
 
 test("Find and Filter cut a plan to the matching steps, keep the path above each, and say when nothing matches", async ({ page }) => {

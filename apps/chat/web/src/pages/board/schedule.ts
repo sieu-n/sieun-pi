@@ -15,8 +15,10 @@ export function whenLabel(at: number, now: number): string {
   if (days === 0) return time;
   if (days === 1) return `${time} yesterday`;
   if (days === -1) return `${time} tomorrow`;
-  return `${new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${time}`;
+  return `${new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric", ...(sameYear(at, now) ? {} : { year: "numeric" }) })} ${time}`;
 }
+
+const sameYear = (left: number, right: number): boolean => new Date(left).getFullYear() === new Date(right).getFullYear();
 
 /** A schedule as the duty dialog picks it; `auto` leaves a new duty's daily time to the server's morning band. */
 export type ScheduleDraft = { kind: "daily"; at: string } | { kind: "every"; minutes: number } | { kind: "auto" };
@@ -135,6 +137,7 @@ export function checkInButton(state: CheckInState, now: number): string {
   if (pause === null) return `Check-in ${everyLabel(state.everyMs)}`;
   if (pause === "forever") return "Paused";
   const minutes = Math.max(1, Math.ceil((pause - now) / MINUTE));
+  if (minutes >= 7 * 24 * 60) return `Paused until ${new Date(pause).toLocaleDateString(undefined, { month: "short", day: "numeric", ...(sameYear(pause, now) ? {} : { year: "numeric" }) })}`;
   return `Paused ${minutes < 60 ? `${minutes}m` : minutes < 24 * 60 ? `${Math.ceil(minutes / 60)}h` : `${Math.ceil(minutes / (24 * 60))}d`}`;
 }
 
