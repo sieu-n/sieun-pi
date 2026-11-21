@@ -2,14 +2,26 @@
   import type { UsageBucket } from "$lib/api";
   import { BUCKET_MS } from "$lib/api/shared/usage-range";
   import { Button, Popover } from "$lib/ui";
-  import { bucketName, bucketTick, cost, exactCost, full, onStride, percent } from "./format";
-  import { axis, cacheHit, cellsOf, type Series, type UsageBucketSum } from "./stats";
+  import { bucketName, bucketTick, full, onStride, type ChartFormat, type TipRow } from "./format";
+  import { axis, type Series, type UsageBucketSum } from "./stats";
 
   /**
-   * Cost per minute, hour or day, stacked by model, as Prime's chat Usage chart groups it. A hover shows the bucket's split, turns and
-   * cache hit rate, and every bucket that ran a call is in a table one click away, with the range's total under it.
+   * One value per minute, hour or day, stacked by model, as Prime's chat Usage chart groups it: cost, tokens or tokens per second, as the
+   * caller's `cells` and `format` say. A hover shows the bucket's split and sum, then the caller's own rows (`tip`), and every bucket that
+   * ran a call is in a table one click away, each figure exact (c191), with the range's total under it when `total` is given.
    */
-  let { buckets, series, bucket }: { buckets: readonly UsageBucketSum[]; series: readonly Series[]; bucket: UsageBucket } = $props();
+  let { buckets, series, bucket, cells, format, total, tip }: {
+    buckets: readonly UsageBucketSum[];
+    series: readonly Series[];
+    bucket: UsageBucket;
+    /** Each bucket's value per series, in series order. */
+    cells: readonly (readonly number[])[];
+    format: ChartFormat;
+    /** The line over the plot; null hides it and the table's total row, as for a rate, whose sum means nothing. */
+    total: { text: string; title: string } | null;
+    /** More tip rows for the bucket at this index, muted, under its split and sum. */
+    tip?: (index: number) => readonly TipRow[];
+  } = $props();
 
   const HEIGHT = 200;
   const AXIS = 44;
@@ -32,7 +44,6 @@
   let hovered = $state<number | null>(null);
   let figures = $state(false);
 
-  const cells = $derived(cellsOf(buckets, series));
   const totals = $derived(cells.map(row => row.reduce((sum, value) => sum + value, 0)));
   const scale = $derived(axis(Math.max(0, ...totals)));
   const plotTop = 8;
@@ -50,7 +61,7 @@
   const anchorAt = (x: number) => (x < AXIS + LABEL_PX / 2 ? "start" : x > width - LABEL_PX / 2 ? "end" : "middle");
   const stacked = $derived(series.length > 1);
   const used = $derived(buckets.map((entry, index) => ({ entry, index })).filter(({ entry }) => entry.turns > 0));
-  const sum = $derived(buckets.reduce((total, entry) => total + entry.cost.total, 0));
+  const sum = $derived(totals.reduce((all, value) => all + value, 0));
 
   /** A bar segment, its top corners rounded when it ends the stack. */
   function segment(x: number, top: number, w: number, h: number, round: boolean): string {
@@ -72,7 +83,6 @@
     });
     return parts;
   }
-  const tick = (value: number) => (value === 0 ? "$0" : `$${value < 1 ? value.toFixed(2).replace(/0$/, "") : value.toLocaleString("en-US")}`);
 
   /** The bucket under the pointer, from its x in the plot: one hit area serves 1,440 minute bars as well as 7 days. */
   function move(event: PointerEvent): void {
@@ -83,7 +93,6 @@
     hovered = index >= 0 && index < buckets.length ? index : null;
   }
   let cursor = $state<HTMLElement | null>(null);
-  const tipHit = (entry: UsageBucketSum) => cacheHit(entry.tokens);
 </script>
 
 <div class="chart">
@@ -93,14 +102,14 @@
         {#each series as line (line.key)}<li><span class="swatch" style:background={line.color}></span>{line.label}</li>{/each}
       </ul>
     {/if}
-    <p class="sum" data-testid="usage-chart-total" title={exactCost(sum)}>{cost(sum)} in total</p>
+    {#if total}<p class="sum" data-testid="usage-chart-total" title={total.title}>{total.text}</p>{/if}
   </div>
   <div class="plot" bind:this={plotEl} bind:clientWidth={width} style:height="{HEIGHT}px">
     {#if width > 0}
-      <svg {width} height={HEIGHT} role="img" aria-label="Cost per {UNIT[bucket]}">
+      <svg {width} height={HEIGHT} role="img" aria-label="{format.label} per {UNIT[bucket]}">
         {#each scale.ticks as value (value)}
           <line x1={AXIS} x2={width} y1={y(value)} y2={y(value)} class="grid" />
-          <text x={AXIS - 8} y={y(value)} dy="0.32em" text-anchor="end" class="tick">{tick(value)}</text>
+          <text x={AXIS - 8} y={y(value)} dy="0.32em" text-anchor="end" class="tick">{format.tick(value)}</text>
         {/each}
         {#each buckets as entry, index (entry.start)}
           <g opacity={hovered === null || hovered === index ? 1 : 0.5}>
@@ -132,18 +141,18 @@
   <Popover open={hovered !== null && cursor !== null} anchor={cursor} placement="right-start" gap={12} surface="solid" autofocus={false} role="tooltip" padding={10} class="usage-tip" onclose={() => (hovered = null)}>
     {#if hovered !== null && buckets[hovered]}
       {@const entry = buckets[hovered]!}
-      {@const hit = tipHit(entry)}
       <span class="tip" data-testid="usage-chart-tip">
         <span class="tip-title">{bucketName(entry.start, bucket)}</span>
         {#if stacked}
           {#each series as line, position (line.key)}
-            <span class="tip-row"><span class="swatch" style:background={line.color}></span>{line.label}<span class="num">{cost(cells[hovered]?.[position] ?? 0)}</span></span>
+            {@const value = cells[hovered]?.[position] ?? 0}
+            <span class="tip-row"><span class="swatch" style:background={line.color}></span>{line.label}<span class="num" title={format.exact(value)}>{format.short(value)}</span></span>
           {/each}
         {/if}
-        <span class="tip-row strong">{stacked ? "Total" : "Cost"}<span class="num" title={exactCost(entry.cost.total)}>{cost(entry.cost.total)}</span></span>
-        <span class="tip-row muted">Cache reads<span class="num" title={exactCost(entry.cost.cacheRead)}>{cost(entry.cost.cacheRead)}</span></span>
-        <span class="tip-row muted">Turns<span class="num">{full(entry.turns)}</span></span>
-        <span class="tip-row muted">Cache hit<span class="num">{hit === null ? "–" : percent(hit)}</span></span>
+        <span class="tip-row strong">{stacked ? "Total" : format.label}<span class="num" title={format.exact(totals[hovered] ?? 0)}>{format.short(totals[hovered] ?? 0)}</span></span>
+        {#each tip?.(hovered) ?? [] as row (row.label)}
+          <span class="tip-row muted">{row.label}<span class="num" title={row.title}>{row.value}</span></span>
+        {/each}
       </span>
     {/if}
   </Popover>
@@ -154,33 +163,35 @@
     </Button>
   </div>
   <table class={figures ? "figures" : "sr-only"} data-testid="usage-figures">
-    <caption class="sr-only">Cost per {UNIT[bucket]}, for each {UNIT[bucket]} that ran a model call</caption>
+    <caption class="sr-only">{format.label} per {UNIT[bucket]}, for each {UNIT[bucket]} that ran a model call</caption>
     <thead>
       <tr>
         <th scope="col">{UNIT[bucket][0]!.toUpperCase()}{UNIT[bucket].slice(1)}</th>
         {#if stacked}{#each series as line (line.key)}<th scope="col">{line.label}</th>{/each}{/if}
         <th scope="col">Turns</th>
-        <th scope="col">{stacked ? "Total" : "Cost"}</th>
+        <th scope="col">{stacked ? "Total" : format.label}</th>
       </tr>
     </thead>
     <tbody>
       {#each used as { entry, index } (entry.start)}
         <tr>
           <th scope="row">{bucketName(entry.start, bucket)}</th>
-          {#if stacked}{#each series as line, position (line.key)}<td>{exactCost(cells[index]?.[position] ?? 0)}</td>{/each}{/if}
+          {#if stacked}{#each series as line, position (line.key)}<td>{format.exact(cells[index]?.[position] ?? 0)}</td>{/each}{/if}
           <td>{full(entry.turns)}</td>
-          <td>{exactCost(entry.cost.total)}</td>
+          <td>{format.exact(totals[index] ?? 0)}</td>
         </tr>
       {/each}
     </tbody>
-    <tfoot>
-      <tr>
-        <th scope="row">Total</th>
-        {#if stacked}{#each series as line (line.key)}<td>{exactCost(cells.reduce((total, row) => total + (row[series.indexOf(line)] ?? 0), 0))}</td>{/each}{/if}
-        <td>{full(buckets.reduce((total, entry) => total + entry.turns, 0))}</td>
-        <td data-testid="usage-figures-total">{exactCost(sum)}</td>
-      </tr>
-    </tfoot>
+    {#if total}
+      <tfoot>
+        <tr>
+          <th scope="row">Total</th>
+          {#if stacked}{#each series as line, position (line.key)}<td>{format.exact(cells.reduce((all, row) => all + (row[position] ?? 0), 0))}</td>{/each}{/if}
+          <td>{full(buckets.reduce((all, entry) => all + entry.turns, 0))}</td>
+          <td data-testid="usage-figures-total">{format.exact(sum)}</td>
+        </tr>
+      </tfoot>
+    {/if}
   </table>
 </div>
 

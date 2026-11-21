@@ -3,19 +3,22 @@
   import { bucketFor, isRange, RANGE_BUCKETS, USAGE_RANGES } from "$lib/api/shared/usage-range";
   import { hrefFor, router } from "$lib/router.svelte";
   import { Avatar, Button, CardGroup, EmptyState, IconButton, LoadingText, Page, PageHeader, PanelHeader, Select, Tabs } from "$lib/ui";
-  import CostChart from "./CostChart.svelte";
   import PoolCard from "./PoolCard.svelte";
-  import { cost, exactCost, full, percent } from "./format";
-  import { KIND_LABEL, KINDS, modelName, modelsByCost, seriesOf, summarize } from "./stats";
+  import UsageChart from "./UsageChart.svelte";
+  import { chartFormat, cost, count, exactCost, full, percent, type TipRow } from "./format";
+  import { bucketValue, cacheHit, cellsOf, KIND_LABEL, KINDS, METRIC_LABEL, modelName, modelsByCost, seriesOf, summarize, tokenSum, type Measure, type Metric, type Unit } from "./stats";
 
   /**
    * Usage: what every chat spent, from pi-host's own usage rows, with each token kind priced apart (c157) and every count exact (c191),
    * plus the account pool. The chart comes first, grouped by minute, hour or day over a range, as Prime's chat Usage page draws it (owner
-   * p132). The range, the grouping and the chat and host filters live in the URL, as #/settings/usage?range=7d&by=hour&thread=<id>&host=<box>.
+   * p132). The chart counts dollars or tokens, all of them or output only (owner p162). The unit, the token kind, the range, the grouping and
+   * the chat and host filters live in the URL, as #/settings/usage?unit=tokens&metric=output&range=7d&by=hour&thread=<id>&host=<box>.
    */
   const RANGE_LABEL: Record<UsageRange, string> = { "1h": "the last hour", "24h": "the last 24 hours", "7d": "the last 7 days", "30d": "the last 30 days", "90d": "the last 90 days" };
   const BUCKET_LABEL: Record<UsageBucket, string> = { minute: "Minute", hour: "Hour", day: "Day" };
   const BUCKETS: readonly UsageBucket[] = ["minute", "hour", "day"];
+  const UNIT_ITEMS: { id: Unit; label: string }[] = [{ id: "usd", label: "$" }, { id: "tokens", label: "Tokens" }];
+  const METRIC_ITEMS: { id: Metric; label: string }[] = [{ id: "total", label: METRIC_LABEL.total }, { id: "output", label: METRIC_LABEL.output }];
   /** An old #/settings/usage?days=7 link opens the range it meant. */
   const OLD_DAYS: Record<string, UsageRange> = { "1": "24h", "7": "7d", "30": "30d", "90": "90d" };
   const ALL = "all";
@@ -26,6 +29,8 @@
   const params = $derived(router.route.params);
   const range = $derived<UsageRange>(isRange(params.range) ? params.range : (OLD_DAYS[params.days ?? ""] ?? "24h"));
   const bucket = $derived(bucketFor(range, params.by));
+  const unit = $derived<Unit>(params.unit === "tokens" ? "tokens" : "usd");
+  const metric = $derived<Metric>(params.metric === "output" ? "output" : "total");
   const thread = $derived(params.thread ?? ALL);
   const host = $derived(params.host ?? ALL);
 
@@ -91,10 +96,29 @@
   /** A new range keeps the grouping when it offers it, as Prime's page does not; else the range's own default. */
   const pickRange = (next: UsageRange) => setParams({ range: next, by: RANGE_BUCKETS[next].includes(bucket) ? bucket : null });
   const pickBucket = (next: UsageBucket) => setParams({ range, by: next });
+  const pickUnit = (next: Unit) => setParams({ unit: next === "usd" ? null : next });
+  const pickMetric = (next: Metric) => setParams({ metric: next === "total" ? null : next });
 
   const summary = $derived(report ? summarize(report.rows) : null);
   const total = $derived(summary?.total ?? null);
   const series = $derived(report ? seriesOf(modelsByCost(report.buckets)) : []);
+  const measure = $derived<Measure>(unit === "usd" ? { unit } : { unit, metric });
+  const format = $derived(chartFormat(measure));
+  const cells = $derived(report ? cellsOf(report.buckets, series, measure) : []);
+  /** The range's sum from the buckets, as the table under the chart sums it. */
+  const chartSum = $derived(report ? report.buckets.reduce((all, entry) => all + bucketValue(entry, measure), 0) : 0);
+  const chartTotal = $derived(unit === "usd" ? { text: `${cost(chartSum)} in total`, title: exactCost(chartSum) } : { text: `${count(chartSum)} ${format.label.toLowerCase()} in total`, title: full(chartSum) });
+  /** The tip's rows under the split: in dollars the cache reads, in tokens the other token kind and the cost, then turns and cache hit. */
+  function tipRows(index: number): TipRow[] {
+    const entry = report?.buckets[index];
+    if (!entry) return [];
+    const hit = cacheHit(entry.tokens);
+    const priced = { label: "Cost", value: cost(entry.cost.total), title: exactCost(entry.cost.total) };
+    const kind = unit === "usd"
+      ? [{ label: "Cache reads", value: cost(entry.cost.cacheRead), title: exactCost(entry.cost.cacheRead) }]
+      : [metric === "total" ? { label: "Output", value: full(entry.tokens.output) } : { label: "All tokens", value: full(tokenSum(entry.tokens)) }, priced];
+    return [...kind, { label: "Turns", value: full(entry.turns) }, { label: "Cache hit", value: hit === null ? "–" : percent(hit) }];
+  }
   const maxChat = $derived(Math.max(0, ...(summary?.chats ?? []).map(chat => chat.cost.total)));
   const chatOptions = $derived([{ value: ALL, label: "All chats" }, ...Object.entries(chats).sort((a, b) => a[1].localeCompare(b[1])).map(([value, label]) => ({ value, label }))]);
   const hostOptions = $derived([{ value: ALL, label: "All hosts" }, ...hosts.map(value => ({ value, label: value }))]);
@@ -112,7 +136,9 @@
     </PanelHeader>
   {/snippet}
 
-  <div class="controls" role="group" aria-label="Range and grouping" data-testid="usage-filters">
+  <div class="controls" role="group" aria-label="Unit, range and grouping" data-testid="usage-filters">
+    <Tabs label="Unit" size="sm" items={UNIT_ITEMS} value={unit} onchange={pickUnit} />
+    <Tabs label="Token kind" size="sm" items={METRIC_ITEMS} value={metric} onchange={pickMetric} />
     <Tabs label="Range" size="sm" items={rangeItems} value={range} onchange={pickRange} />
     <span class="control">
       <span class="caption" aria-hidden="true">Group by</span>
@@ -140,8 +166,8 @@
     {#if !report.rows.length}
       <EmptyState icon="chart-bar" title="No usage in this range" description="No chat ran a model call in {RANGE_LABEL[report.range]}. Choose a longer range or another chat." />
     {:else}
-      <section class="section" aria-label="Cost per {report.bucket}" aria-busy={loading}>
-        <CostChart buckets={report.buckets} {series} bucket={report.bucket} />
+      <section class="section" aria-label="{format.label} per {report.bucket}" aria-busy={loading}>
+        <UsageChart buckets={report.buckets} {series} bucket={report.bucket} {cells} {format} total={chartTotal} tip={tipRows} />
       </section>
 
       <CardGroup title="Cost by token kind" description="Each kind at its own rate, so the shared prompt read from cache never counts as fresh input.">

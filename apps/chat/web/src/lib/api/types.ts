@@ -650,11 +650,12 @@ export interface UsageRow {
 export type UsageRange = "1h" | "24h" | "7d" | "30d" | "90d";
 /** What one chart bar sums. A minute and an hour start on the clock, and a day starts at the owner's local midnight. */
 export type UsageBucket = "minute" | "hour" | "day";
-/** One bucket's sums: turns, tokens and cost of each kind, and the cost of each model for the chart's stacks. */
+/** One bucket's sums: turns, tokens and cost of each kind, and each model's cost and tokens for the chart's stacks. */
 export interface UsageBucketSum {
   start: Ms; turns: number;
   tokens: UsageRow["tokens"]; cost: UsageRow["cost"];
   byModel: Record<string, number>;
+  tokensByModel: Record<string, UsageRow["tokens"]>;
 }
 /** `buckets` holds every bucket of the range, empty ones too, and its sums equal the sums of `rows` (c191). */
 export interface UsageReport { at: Ms; since: Ms; until: Ms; range: UsageRange; bucket: UsageBucket; rows: UsageRow[]; buckets: UsageBucketSum[] }

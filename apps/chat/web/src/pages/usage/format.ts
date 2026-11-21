@@ -1,4 +1,5 @@
 /** Number formats for the Usage and Hosts pages. A short figure always has its exact value one hover away (`full`). */
+import type { Measure } from "./stats";
 
 const dollars = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
@@ -37,3 +38,25 @@ export const bucketName = (start: number, bucket: "minute" | "hour" | "day"): st
 /** Where an axis label may sit: on a bucket whose local time is a whole `stride` of buckets, so 6-hour labels land on 0, 6, 12 and 18. */
 export const onStride = (start: number, step: number, stride: number): boolean =>
   Math.round((start - new Date(start).getTimezoneOffset() * 60_000) / step) % stride === 0;
+
+/** How a usage chart writes its values: what one bar counts, a short figure, its exact value for a hover or the table (c191), an axis label. */
+export interface ChartFormat {
+  readonly label: string;
+  short(value: number): string;
+  exact(value: number): string;
+  tick(value: number): string;
+}
+/** A muted tip row a chart's caller adds under the bucket's split. */
+export interface TipRow {
+  readonly label: string;
+  readonly value: string;
+  readonly title?: string;
+}
+
+const dollarTick = (value: number): string => (value === 0 ? "$0" : `$${value < 1 ? value.toFixed(2).replace(/0$/, "") : value.toLocaleString("en-US")}`);
+
+/** Dollars to the cent with the exact amount on hover, or tokens short with every digit on hover. */
+export const chartFormat = (measure: Measure): ChartFormat =>
+  measure.unit === "usd"
+    ? { label: "Cost", short: cost, exact: exactCost, tick: dollarTick }
+    : { label: measure.metric === "output" ? "Output tokens" : "Tokens", short: value => count(value), exact: full, tick: value => count(value) };

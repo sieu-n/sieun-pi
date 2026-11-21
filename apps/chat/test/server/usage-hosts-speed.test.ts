@@ -115,6 +115,7 @@ test("api/usage from a pi-host without buckets asks each bucket in one round", a
   const report = await usageReport(host, threads, "box", { range: "7d", bucket: "day" });
   assert.equal(most, 7, "the bucketed call answered without buckets, then all 7 days go out before any answers");
   assert.ok(report.buckets.every(b => b.byModel.m === 1));
+  assert.ok(report.buckets.every(b => JSON.stringify(b.tokensByModel.m) === JSON.stringify(b.tokens)), "one model's tokens per bucket equal the bucket's tokens");
   assert.equal(report.rows[0]!.cost.total, 7);
 });
 
@@ -134,6 +135,7 @@ test("api/usage labels each row with the box that answered it, and the host filt
   assert.deepEqual(mac.rows.map(r => [r.host, r.cost.total]), [["mac", 6]]);
   assert.equal(mac.buckets[0]!.byModel.m, 2);
   assert.equal(mac.buckets[6]!.byModel.m, 4);
+  assert.deepEqual(mac.buckets[6]!.tokensByModel.m, { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 });
 });
 
 test("api/usage answers from the kept rows with no call to any box, with the same sums as pi-host's own query, and follows new and dropped rows", async () => {

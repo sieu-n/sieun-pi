@@ -33,7 +33,7 @@ function fold(rows: readonly UsageTotal[], since: number, step: number, count: n
   const totals = new Map<string, UsageTotal>();
   const buckets: UsageBucketSum[] = Array.from({ length: count }, (_, i) => ({
     start: since + i * step, turns: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, byModel: {},
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, byModel: {}, tokensByModel: {},
   }));
   for (const row of rows) {
     const sum = buckets[Math.round((row.bucket! - since) / step)];
@@ -46,6 +46,11 @@ function fold(rows: readonly UsageTotal[], since: number, step: number, count: n
     const cost = costOf(row);
     for (const kind of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) sum.cost[kind] += cost[kind];
     sum.byModel[row.model] = (sum.byModel[row.model] ?? 0) + row.cost;
+    const tokens = sum.tokensByModel[row.model] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    tokens.input += row.input;
+    tokens.output += row.output;
+    tokens.cacheRead += row.cacheRead;
+    tokens.cacheWrite += row.cacheWrite;
     const key = `${row.host ?? ""}\u0000${row.thread}\u0000${row.model}`;
     const { bucket: _bucket, ...rest } = row;
     const total = totals.get(key);

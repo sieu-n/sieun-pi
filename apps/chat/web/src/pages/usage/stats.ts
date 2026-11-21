@@ -97,9 +97,29 @@ export function seriesOf(models: readonly string[]): Series[] {
   ];
 }
 
-/** Each bucket's cost per series, in series order. */
-export function cellsOf(buckets: readonly UsageBucketSum[], series: readonly Series[]): number[][] {
-  return buckets.map(bucket => series.map(line => line.models.reduce((sum, model) => sum + (bucket.byModel[model] ?? 0), 0)));
+/** What the chart counts: dollars, or tokens. */
+export type Unit = "usd" | "tokens";
+/** Which tokens count: every kind, or output only. */
+export type Metric = "total" | "output";
+export type Measure = { readonly unit: "usd" } | { readonly unit: "tokens"; readonly metric: Metric };
+
+export const METRIC_LABEL: Readonly<Record<Metric, string>> = { total: "Total", output: "Output" };
+export const metricOf = (tokens: Tokens, metric: Metric): number => (metric === "output" ? tokens.output : tokenSum(tokens));
+
+/** A bucket's whole measure: its cost, or its tokens of the metric. */
+export const bucketValue = (bucket: UsageBucketSum, measure: Measure): number =>
+  measure.unit === "usd" ? bucket.cost.total : metricOf(bucket.tokens, measure.metric);
+
+/** One model's measure in a bucket. */
+const modelValue = (bucket: UsageBucketSum, model: string, measure: Measure): number => {
+  if (measure.unit === "usd") return bucket.byModel[model] ?? 0;
+  const tokens = bucket.tokensByModel[model];
+  return tokens ? metricOf(tokens, measure.metric) : 0;
+};
+
+/** Each bucket's measure per series, in series order. */
+export function cellsOf(buckets: readonly UsageBucketSum[], series: readonly Series[], measure: Measure): number[][] {
+  return buckets.map(bucket => series.map(line => line.models.reduce((sum, model) => sum + modelValue(bucket, model, measure), 0)));
 }
 
 /** Models by their cost over the buckets, costliest first, for a stable color per model. */
