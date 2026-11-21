@@ -5,6 +5,7 @@
   import { boardHref, boardTitles, rememberTitles } from "$pages/board/chips";
   import { conversationHref, hrefFor, router } from "$lib/router.svelte";
   import { profileCard } from "$lib/shell/profile-card.svelte";
+  import { roomActions } from "$lib/shell/room-actions.svelte";
   import { renameDialog } from "$lib/shell/rename-dialog.svelte";
   import { search } from "$lib/shell/search.svelte";
   import { sidePanel } from "$lib/shell/side-panel.svelte";
@@ -291,6 +292,7 @@
           ? { id: "reopen", label: "Reopen room", icon: "refresh", onselect: () => void setClosed(false) }
           : { id: "close", label: "Close room", icon: "check", onselect: () => void setClosed(true) }]
       : []),
+    ...(isDm && roomActions(id).length ? [{ type: "separator" as const }, ...roomActions(id)] : []),
     ...(working ? [{ type: "separator" as const }, { id: "stop", label: "Stop", icon: "stop", onselect: stop }] : []),
   ]);
 

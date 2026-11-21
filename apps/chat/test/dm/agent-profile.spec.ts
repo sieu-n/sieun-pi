@@ -53,6 +53,10 @@ test("an agent post's name and avatar open its profile card, and Message opens i
   await open(page, "#/c/dm_vent?m=p10");
   const post = row(page, "p10");
   await post.evaluate((el) => el.scrollIntoView({ block: "center" }));
+  await conversation(page).getByRole("button", { name: "Conversation actions" }).click();
+  await expect(page.getByRole("menuitem", { name: "Mute conversation" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Close conversation" })).toBeVisible();
+  await page.keyboard.press("Escape");
   await post.locator("[data-author-button]").click();
   await expect(card(page)).toBeVisible();
   await expect(card(page)).toHaveAttribute("data-agent", "ag_vent");
@@ -61,7 +65,7 @@ test("an agent post's name and avatar open its profile card, and Message opens i
 
   await post.locator("[data-author-avatar]").click();
   await expect(card(page)).toBeVisible();
-  await card(page).getByTestId("profile-message").click();
+  await card(page).getByTestId("profile-message").press("Enter");
   await expect(card(page)).toHaveCount(0);
   await expect(page).toHaveURL(/#\/c\/dm_vent$/);
 });
