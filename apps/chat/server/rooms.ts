@@ -148,12 +148,15 @@ export async function readFeedThread(host: Host, store: AgentStore, side: FeedSi
   for (;;) {
     const page = await host.entries(thread, { conversation: 1, after: cursor.entry, limit: FEED_PAGE });
     const touched = new Map<string, RoomPost>();
+    const from = cursor.entry;
     for (const entry of page.entries) {
       if (entry.id <= cursor.entry) continue;
       readFeedEntry(store, side, thread, cursor, entry, touched);
       cursor.entry = entry.id;
     }
-    store.saveRooms();
+    // Only a page that moved the cursor saves rooms.json: each 2 s thread list read reads every feed, and a save of the unchanged 176 KB
+    // file after each empty page took 60 to 70 ms of that read on 11-21, and bumped the store's version, which builds every summary again (p156).
+    if (cursor.entry !== from) store.saveRooms();
     if (touched.size) changed([...touched.values()]);
     if (!page.more || !page.entries.length) return;
   }

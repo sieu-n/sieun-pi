@@ -21,7 +21,7 @@ import { randomUUID } from "node:crypto";
 import type {
   AgentId, ConversationSummary, Delivery, ImageRef, Item, LaterMark, Member, Room, RoomInput, RoomPatch, RunStatus, SendRequest, SendResult, TimelinePage,
 } from "../web/src/lib/api/types.ts";
-import { isGroupRoom, type AgentRecord, type AgentStore, type FeedCursor, type GroupRoom, type RoomDelivery, type RoomId, type RoomMember, type RoomPost, type WakeOn } from "./agent-store.ts";
+import { type AgentRecord, type AgentStore, type FeedCursor, type GroupRoom, type RoomDelivery, type RoomId, type RoomMember, type RoomPost, type WakeOn } from "./agent-store.ts";
 import type { Agents } from "./agents.ts";
 import { isHostAway, type EntryRecord, type Host, type Submitted } from "./host/types.ts";
 import { refusedForGood, retryWait } from "./outbox.ts";
@@ -157,13 +157,12 @@ export class GroupRooms {
   // Rooms
 
   rows(): GroupRoom[] {
-    return this.store.rooms.rooms.filter(isGroupRoom);
+    return [...this.store.groupRooms()];
   }
 
   /** A room by id, or a channel by its name with or without `#`. */
   row(id: string): GroupRoom | undefined {
-    const rows = this.rows();
-    return rows.find(r => r.id === id) ?? rows.find(r => r.kind === "channel" && !r.archived && r.name === channelName(id));
+    return this.store.groupRoom(id) ?? this.store.groupRooms().find(r => r.kind === "channel" && !r.archived && r.name === channelName(id));
   }
 
   require(id: string): GroupRoom {

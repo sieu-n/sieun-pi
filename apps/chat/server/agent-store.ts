@@ -197,6 +197,12 @@ interface StoreLookup {
   byWorkThread: Map<string, AgentRecord>;
   byComm: Map<string, { record: AgentRecord; room: RoomId }>;
   testRooms: Set<string>;
+  aliases: Record<string, AgentId>;
+  /** The channels and Solo rooms, in the rooms' order, and each by id (first match). */
+  groups: GroupRoom[];
+  groupById: Map<string, GroupRoom>;
+  /** Each agent's aliased threads, in the aliases' order. */
+  aliasedTo: Map<AgentId, string[]>;
 }
 
 export class AgentStore {
@@ -234,6 +240,20 @@ export class AgentStore {
     const agentId = id.startsWith("ag_") ? id : this.agents.aliases[id];
     return (agentId ? this.lookup().byId.get(agentId) : undefined) ?? (agentId ? undefined : this.commOwner(id)?.record);
   }
+  /**
+   * The channels and Solo rooms, and one by id. A room's kind never changes and a new room changes the rooms' length, so the lookup's list
+   * holds every group room; on 11-21 a filter of all 500 rooms for each agent's summary took 10 to 12 ms of each 2 s thread list read (p156).
+   */
+  groupRooms(): readonly GroupRoom[] {
+    return this.lookup().groups;
+  }
+  groupRoom(id: string): GroupRoom | undefined {
+    return this.lookup().groupById.get(id);
+  }
+  /** The threads aliased to the agent `id`, in the aliases' order; every alias change saves agents.json, which builds the lookup again. */
+  aliasedTo(id: AgentId): readonly string[] {
+    return this.lookup().aliasedTo.get(id) ?? [];
+  }
   /** The agent and room whose comm thread `thread` is. */
   commOwner(thread: string): { record: AgentRecord; room: RoomId } | undefined {
     return this.lookup().byComm.get(thread);
@@ -255,20 +275,32 @@ export class AgentStore {
     const { agents } = this.agents;
     const { rooms } = this.rooms;
     const cached = this.index;
-    if (cached && cached.version === this.version && cached.agents === agents && cached.agentCount === agents.length && cached.rooms === rooms && cached.roomCount === rooms.length) {
+    const { aliases } = this.agents;
+    if (cached && cached.version === this.version && cached.agents === agents && cached.agentCount === agents.length && cached.rooms === rooms && cached.roomCount === rooms.length && cached.aliases === aliases) {
       return cached;
     }
     const index: StoreLookup = {
-      version: this.version, agents, agentCount: agents.length, rooms, roomCount: rooms.length,
-      byId: new Map(), byRoom: new Map(), byWorkThread: new Map(), byComm: new Map(), testRooms: new Set(),
+      version: this.version, agents, agentCount: agents.length, rooms, roomCount: rooms.length, aliases,
+      byId: new Map(), byRoom: new Map(), byWorkThread: new Map(), byComm: new Map(), testRooms: new Set(), aliasedTo: new Map(),
+      groups: [], groupById: new Map(),
     };
+    for (const [thread, id] of Object.entries(aliases)) {
+      const threads = index.aliasedTo.get(id);
+      if (threads) threads.push(thread);
+      else index.aliasedTo.set(id, [thread]);
+    }
     for (const record of agents) {
       if (!index.byId.has(record.id)) index.byId.set(record.id, record);
       if (!index.byRoom.has(record.room)) index.byRoom.set(record.room, record);
       if (!index.byWorkThread.has(record.workThread)) index.byWorkThread.set(record.workThread, record);
       for (const [room, comm] of Object.entries(record.comm ?? {})) if (!index.byComm.has(comm)) index.byComm.set(comm, { record, room });
     }
-    for (const row of rooms) if (row.test) index.testRooms.add(row.id);
+    for (const row of rooms) {
+      if (row.test) index.testRooms.add(row.id);
+      if (!isGroupRoom(row)) continue;
+      index.groups.push(row);
+      if (!index.groupById.has(row.id)) index.groupById.set(row.id, row);
+    }
     this.index = index;
     return index;
   }

@@ -128,9 +128,12 @@ export class Agents {
     return this.store.agentByWorkThread(thread);
   }
 
-  /** Root job threads aliased to the agent. */
+  /**
+   * Root job threads aliased to the agent, from the store's lookup: a scan of every alias for each agent took 60 to 80 ms of each 2 s thread
+   * list read on 11-21, as every work thread's summary asked it, and stalled every request that waited behind it (p156).
+   */
   jobThreads(record: AgentRecord): string[] {
-    return Object.entries(this.store.agents.aliases).filter(([thread, id]) => id === record.id && thread !== record.workThread).map(([thread]) => thread);
+    return this.store.aliasedTo(record.id).filter(thread => thread !== record.workThread);
   }
 
   /** The agent and room whose comm thread `thread` is. */
